@@ -225,13 +225,18 @@ impl RpcServerHook for InstanceRpcServerHook {
     }
 }
 
+#[derive(Default)]
+struct ConfigOperation {
+    closing: bool,
+}
+
 #[derive(Clone)]
 pub struct InstanceConfigPatcher {
     global_ctx: Weak<GlobalCtx>,
     #[cfg(feature = "socks5")]
     socks5_server: Weak<Socks5Server>,
     core_instance: Weak<RuntimeCoreInstance>,
-    operation: Arc<Mutex<()>>,
+    operation: Arc<Mutex<ConfigOperation>>,
 }
 
 impl InstanceConfigPatcher {
@@ -290,55 +295,67 @@ impl InstanceConfigPatcher {
         &self,
         patch: crate::proto::api::config::InstanceConfigPatch,
     ) -> Result<(), anyhow::Error> {
-        let _operation = self.operation.lock().await;
+        let operation = self.operation.lock().await;
+        if operation.closing {
+            anyhow::bail!("instance is closing; config patch rejected");
+        }
         let patch_for_event = patch.clone();
         let global_ctx = weak_upgrade(&self.global_ctx)?;
+        let core_instance = weak_upgrade(&self.core_instance)?;
         let parsed_ipv6_public_addr_prefix = Self::validate_public_ipv6_patch(&global_ctx, &patch)?;
 
-        self.patch_port_forwards(patch.port_forwards).await?;
-        self.patch_acl(patch.acl).await?;
-        self.patch_proxy_networks(patch.proxy_networks).await?;
-        self.patch_routes(patch.routes).await?;
-        self.patch_exit_nodes(patch.exit_nodes).await?;
-        self.patch_mapped_listeners(patch.mapped_listeners).await?;
-        self.patch_connector(patch.connectors).await?;
+        // Preserve the legacy ordered partial-commit contract: earlier valid
+        // sub-patches stay applied if a later sub-patch fails. The shared lock
+        // prevents interleaving, and the final snapshot always mirrors every
+        // host change that did commit before the error.
+        let patch_result: Result<bool, anyhow::Error> = async {
+            self.patch_port_forwards(patch.port_forwards).await?;
+            self.patch_acl(patch.acl).await?;
+            self.patch_proxy_networks(patch.proxy_networks).await?;
+            self.patch_routes(patch.routes).await?;
+            self.patch_exit_nodes(patch.exit_nodes).await?;
+            self.patch_mapped_listeners(patch.mapped_listeners).await?;
+            self.patch_connector(patch.connectors).await?;
 
-        let mut provider_config_changed = false;
-        if let Some(hostname) = patch.hostname {
-            global_ctx.set_hostname(hostname.clone());
-            global_ctx.config.set_hostname(Some(hostname));
+            let mut provider_config_changed = false;
+            if let Some(hostname) = patch.hostname {
+                global_ctx.set_hostname(hostname.clone());
+                global_ctx.config.set_hostname(Some(hostname));
+            }
+            if let Some(ipv4) = patch.ipv4
+                && !global_ctx.config.get_dhcp()
+            {
+                global_ctx.set_ipv4(Some(ipv4.into()));
+                global_ctx.config.set_ipv4(Some(ipv4.into()));
+            }
+            if let Some(ipv6) = patch.ipv6 {
+                global_ctx.set_ipv6(Some(ipv6.into()));
+                global_ctx.config.set_ipv6(Some(ipv6.into()));
+            }
+            if let Some(disable_relay_data) = patch.disable_relay_data {
+                let mut flags = global_ctx.get_flags();
+                flags.disable_relay_data = disable_relay_data;
+                global_ctx.set_flags(flags);
+            }
+            if let Some(enabled) = patch.ipv6_public_addr_provider {
+                global_ctx.config.set_ipv6_public_addr_provider(enabled);
+                provider_config_changed = true;
+            }
+            if let Some(enabled) = patch.ipv6_public_addr_auto {
+                global_ctx.config.set_ipv6_public_addr_auto(enabled);
+            }
+            if let Some(prefix) = parsed_ipv6_public_addr_prefix {
+                global_ctx.config.set_ipv6_public_addr_prefix(prefix);
+                provider_config_changed = true;
+            }
+            Ok(provider_config_changed)
         }
-        if let Some(ipv4) = patch.ipv4
-            && !global_ctx.config.get_dhcp()
-        {
-            global_ctx.set_ipv4(Some(ipv4.into()));
-            global_ctx.config.set_ipv4(Some(ipv4.into()));
-        }
-        if let Some(ipv6) = patch.ipv6 {
-            global_ctx.set_ipv6(Some(ipv6.into()));
-            global_ctx.config.set_ipv6(Some(ipv6.into()));
-        }
-        if let Some(disable_relay_data) = patch.disable_relay_data {
-            let mut flags = global_ctx.get_flags();
-            flags.disable_relay_data = disable_relay_data;
-            global_ctx.set_flags(flags);
-        }
-        if let Some(enabled) = patch.ipv6_public_addr_provider {
-            global_ctx.config.set_ipv6_public_addr_provider(enabled);
-            provider_config_changed = true;
-        }
-        if let Some(enabled) = patch.ipv6_public_addr_auto {
-            global_ctx.config.set_ipv6_public_addr_auto(enabled);
-        }
-        if let Some(prefix) = parsed_ipv6_public_addr_prefix {
-            global_ctx.config.set_ipv6_public_addr_prefix(prefix);
-            provider_config_changed = true;
-        }
+        .await;
 
-        let core_instance = weak_upgrade(&self.core_instance)?;
         core_instance
             .update_runtime_config(runtime_core_config(&global_ctx))
             .await;
+        let provider_config_changed = patch_result?;
         global_ctx.issue_event(GlobalCtxEvent::ConfigPatched(patch_for_event));
 
         if provider_config_changed {
@@ -402,12 +419,14 @@ impl InstanceConfigPatcher {
         InstanceConfigPatcher::trace_patchables(&patches);
         crate::proto::api::config::patch_vec(&mut current_forwards, patches);
 
+        global_ctx
+            .config
+            .set_port_forwards(current_forwards.clone());
         #[cfg(feature = "socks5")]
         socks5_server
             .reload_port_forwards(&current_forwards)
             .await
             .with_context(|| "Failed to reload port forwards")?;
-        global_ctx.config.set_port_forwards(current_forwards);
 
         Ok(())
     }
@@ -604,7 +623,7 @@ pub struct Instance {
     peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
     peer_manager: Arc<PeerManager>,
     core_instance: Arc<RuntimeCoreInstance>,
-    config_operation: Arc<Mutex<()>>,
+    config_operation: Arc<Mutex<ConfigOperation>>,
 
     proxy: Arc<RuntimeProxyService>,
 
@@ -783,7 +802,7 @@ impl Instance {
             )
             .expect("runtime core instance composition should be valid"),
         );
-        let config_operation = Arc::new(Mutex::new(()));
+        let config_operation = Arc::new(Mutex::new(ConfigOperation::default()));
 
         #[cfg(feature = "wireguard")]
         let vpn_portal_inst = vpn_portal::wireguard::WireGuard::default();
@@ -981,7 +1000,10 @@ impl Instance {
 
     pub async fn run(&mut self) -> Result<(), Error> {
         let config_operation = self.config_operation.clone();
-        let _config_operation = config_operation.lock().await;
+        let config_operation = config_operation.lock().await;
+        if config_operation.closing {
+            return Err(anyhow::anyhow!("instance is closing; start rejected").into());
+        }
         self.core_instance
             .update_runtime_config(runtime_core_config(&self.global_ctx))
             .await;
@@ -1496,7 +1518,8 @@ impl Instance {
     }
 
     pub async fn clear_resources(&mut self) {
-        let _config_operation = self.config_operation.lock().await;
+        let mut config_operation = self.config_operation.lock().await;
+        config_operation.closing = true;
         self.core_instance.stop().await;
         #[cfg(feature = "tun")]
         let _ = self.nic_ctx.lock().await.take();
@@ -1506,9 +1529,12 @@ impl Instance {
 impl Drop for Instance {
     fn drop(&mut self) {
         let core_instance = self.core_instance.clone();
+        let config_operation = self.config_operation.clone();
         #[cfg(feature = "tun")]
         let nic_ctx = self.nic_ctx.clone();
         tokio::spawn(async move {
+            let mut config_operation = config_operation.lock().await;
+            config_operation.closing = true;
             #[cfg(feature = "tun")]
             nic_ctx.lock().await.take();
             core_instance.stop().await;
@@ -1519,12 +1545,17 @@ impl Drop for Instance {
 
 #[cfg(test)]
 mod tests {
+    use std::net::SocketAddr;
+
     use crate::{
         common::config::ConfigLoader,
         common::global_ctx::tests::get_mock_global_ctx,
         instance::instance::{InstanceConfigPatcher, InstanceRpcServerHook},
         proto::{
-            api::config::{AclPatch, ConfigPatchAction, InstanceConfigPatch, StringPatch},
+            api::config::{
+                AclPatch, ConfigPatchAction, InstanceConfigPatch, PortForwardPatch, StringPatch,
+            },
+            common::{PortForwardConfigPb, SocketType},
             rpc_impl::standalone::RpcServerHook,
         },
     };
@@ -1585,6 +1616,51 @@ mod tests {
                 .is_empty()
         );
         instance.clear_resources().await;
+    }
+
+    #[tokio::test]
+    async fn config_patch_preserves_ordered_partial_commit_semantics() {
+        let mut instance = Instance::new(TomlConfigLoader::default());
+        let mut patch = tcp_whitelist_patch("invalid");
+        patch.port_forwards.push(PortForwardPatch {
+            action: ConfigPatchAction::Add.into(),
+            cfg: Some(PortForwardConfigPb {
+                bind_addr: Some("127.0.0.1:0".parse::<SocketAddr>().unwrap().into()),
+                dst_addr: Some("127.0.0.1:1".parse::<SocketAddr>().unwrap().into()),
+                socket_type: SocketType::Tcp as i32,
+            }),
+        });
+
+        let error = instance
+            .get_config_patcher()
+            .apply_patch(patch)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("Invalid port number"));
+        assert_eq!(instance.global_ctx.config.get_port_forwards().len(), 1);
+        assert!(instance.global_ctx.config.get_tcp_whitelist().is_empty());
+        assert!(
+            instance
+                .core_instance
+                .acl_whitelist_snapshot()
+                .tcp_ports
+                .is_empty()
+        );
+        instance.clear_resources().await;
+    }
+
+    #[tokio::test]
+    async fn config_patch_rejects_live_changes_after_clear() {
+        let mut instance = Instance::new(TomlConfigLoader::default());
+        let patcher = instance.get_config_patcher();
+        instance.clear_resources().await;
+
+        let error = patcher
+            .apply_patch(tcp_whitelist_patch("80"))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("instance is closing"));
+        assert!(instance.global_ctx.config.get_tcp_whitelist().is_empty());
     }
 
     #[cfg(feature = "kcp")]
