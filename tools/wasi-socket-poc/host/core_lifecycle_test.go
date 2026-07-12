@@ -107,7 +107,7 @@ func instantiateCoreModule(
 	if err != nil {
 		t.Fatalf("instantiate easytier-core: %v", err)
 	}
-	core, err := CreateCoreInstance(ctx, module, config, packetSink)
+	core, err := NewCoreModule(module).CreateInstance(ctx, config, packetSink)
 	if err != nil {
 		t.Fatalf("create core instance: %v", err)
 	}
@@ -130,11 +130,6 @@ func driveCoreUntil(
 			return
 		}
 
-		// Starting and stopping tasks can leave more immediately runnable work.
-		// Drive them again before sleeping on external I/O or a timer.
-		if state == 1 || state == 3 {
-			continue
-		}
 		deadline := coreDeadline(t, ctx, module, handle)
 		if deadline < 0 {
 			t.Fatalf("query core deadline: status=%d core_error=%s", deadline, coreError(t, ctx, module, handle))
