@@ -3567,8 +3567,9 @@ mod tests {
 
     #[tokio::test]
     async fn portable_peer_manager_auth_uses_managed_credentials() {
-        let core = build_portable_for_test(portable_runtime_config("portable-net", 84)).unwrap();
-        let generated = core.credential_manager().generate_credential(
+        let admin_a = build_portable_for_test(portable_runtime_config("portable-net", 84)).unwrap();
+        let admin_b = build_portable_for_test(portable_runtime_config("portable-net", 85)).unwrap();
+        let generated = admin_a.credential_manager().generate_credential(
             vec!["guest".to_owned()],
             false,
             Vec::new(),
@@ -3582,15 +3583,58 @@ mod tests {
         let public_key = PublicKey::from(&StaticSecret::from(private_bytes));
 
         assert!(
-            core.context
+            admin_a
+                .context
                 .is_pubkey_trusted(public_key.as_bytes(), "portable-net")
         );
         assert!(
-            !core
+            !admin_a
                 .context
                 .is_pubkey_trusted(public_key.as_bytes(), "other")
         );
-        assert_eq!(core.context.trusted_credential_pubkeys("secret").len(), 1);
+        let trusted = admin_a.context.trusted_credential_pubkeys("secret");
+        assert_eq!(trusted.len(), 1);
+
+        let propagated_key = trusted[0].credential.as_ref().unwrap().pubkey.clone();
+        admin_b.context.update_trusted_keys(
+            std::collections::HashMap::from([(
+                propagated_key.clone(),
+                crate::peers::context::TrustedKeyMetadata {
+                    source: crate::peers::context::TrustedKeySource::OspfCredential,
+                    expiry_unix: None,
+                },
+            )]),
+            "portable-net",
+        );
+        assert!(
+            admin_b
+                .context
+                .is_pubkey_trusted(&propagated_key, "portable-net")
+        );
+        assert!(admin_b.context.is_pubkey_trusted_with_source(
+            &propagated_key,
+            "portable-net",
+            crate::peers::context::TrustedKeySource::OspfCredential,
+        ));
+        assert!(!admin_b.context.is_pubkey_trusted_with_source(
+            &propagated_key,
+            "portable-net",
+            crate::peers::context::TrustedKeySource::OspfNode,
+        ));
+
+        assert!(
+            admin_a
+                .credential_manager()
+                .revoke_credential(&generated.credential_id)
+        );
+        admin_b
+            .context
+            .update_trusted_keys(std::collections::HashMap::new(), "portable-net");
+        assert!(
+            !admin_b
+                .context
+                .is_pubkey_trusted(&propagated_key, "portable-net")
+        );
     }
 
     #[tokio::test]

@@ -96,6 +96,7 @@ pub(crate) struct ConfigPeerContextSupport {
     limiter_state: Mutex<ConfigLimiterState>,
     acl: ArcSwapOption<Acl>,
     credentials: Arc<CredentialManager>,
+    trusted_keys: TrustedKeyMapManager,
 }
 
 impl ConfigPeerContextSupport {
@@ -704,8 +705,26 @@ impl PeerContext for ConfigPeerContext {
     }
 
     fn is_pubkey_trusted(&self, pubkey: &[u8], network_name: &str) -> bool {
+        if self
+            .support
+            .trusted_keys
+            .verify_trusted_key(pubkey, network_name)
+        {
+            return true;
+        }
         network_name == self.runtime.network_identity.network_name
             && self.support.credentials.is_pubkey_trusted(pubkey)
+    }
+
+    fn is_pubkey_trusted_with_source(
+        &self,
+        pubkey: &[u8],
+        network_name: &str,
+        source: TrustedKeySource,
+    ) -> bool {
+        self.support
+            .trusted_keys
+            .verify_trusted_key_with_source(pubkey, network_name, Some(source))
     }
 
     fn trusted_credential_pubkeys(
@@ -717,6 +736,16 @@ impl PeerContext for ConfigPeerContext {
 
     fn remove_expired_credentials(&self) -> bool {
         self.support.credentials.remove_expired_credentials()
+    }
+
+    fn update_trusted_keys(&self, keys: TrustedKeyMap, network_name: &str) {
+        self.support
+            .trusted_keys
+            .update_trusted_keys(network_name, keys);
+    }
+
+    fn remove_trusted_keys(&self, network_name: &str) {
+        self.support.trusted_keys.remove_trusted_keys(network_name);
     }
 
     fn recv_limiter(&self, network_name: &str, is_foreign_network: bool) -> Option<ArcByteLimiter> {
