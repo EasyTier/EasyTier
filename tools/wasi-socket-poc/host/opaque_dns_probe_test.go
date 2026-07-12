@@ -14,19 +14,19 @@ import (
 
 type probeDNSResolver struct {
 	mu             sync.Mutex
-	queries        []decodedDNSQuery
+	queries        []DNSQuery
 	addressStarted chan struct{}
 	releaseAddress chan struct{}
 	startOnce      sync.Once
 }
 
-func (r *probeDNSResolver) record(query decodedDNSQuery) {
+func (r *probeDNSResolver) record(query DNSQuery) {
 	r.mu.Lock()
 	r.queries = append(r.queries, query)
 	r.mu.Unlock()
 }
 
-func (r *probeDNSResolver) lookupIP(ctx context.Context, query decodedDNSQuery) ([]netip.Addr, error) {
+func (r *probeDNSResolver) LookupIP(ctx context.Context, query DNSQuery) ([]netip.Addr, error) {
 	r.record(query)
 	r.startOnce.Do(func() { close(r.addressStarted) })
 	select {
@@ -37,12 +37,12 @@ func (r *probeDNSResolver) lookupIP(ctx context.Context, query decodedDNSQuery) 
 	return []netip.Addr{netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("2001:db8::1")}, nil
 }
 
-func (r *probeDNSResolver) lookupTXT(_ context.Context, query decodedDNSQuery) (string, error) {
+func (r *probeDNSResolver) LookupTXT(_ context.Context, query DNSQuery) (string, error) {
 	r.record(query)
 	return "tcp://peer.example:11010", nil
 }
 
-func (r *probeDNSResolver) lookupSRV(_ context.Context, query decodedDNSQuery) ([]*net.SRV, error) {
+func (r *probeDNSResolver) LookupSRV(_ context.Context, query DNSQuery) ([]*net.SRV, error) {
 	r.record(query)
 	return []*net.SRV{{
 		Target:   "peer.example.",
@@ -52,10 +52,10 @@ func (r *probeDNSResolver) lookupSRV(_ context.Context, query decodedDNSQuery) (
 	}}, nil
 }
 
-func (r *probeDNSResolver) recorded() []decodedDNSQuery {
+func (r *probeDNSResolver) recorded() []DNSQuery {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([]decodedDNSQuery(nil), r.queries...)
+	return append([]DNSQuery(nil), r.queries...)
 }
 
 func TestOpaqueDNSDrivesCoreResolver(t *testing.T) {
@@ -141,14 +141,14 @@ func TestOpaqueDNSDrivesCoreResolver(t *testing.T) {
 
 func assertDNSQuery(
 	t *testing.T,
-	query decodedDNSQuery,
+	query DNSQuery,
 	host string,
 	ipVersion uint8,
 	mark *uint32,
 	netns *string,
 ) {
 	t.Helper()
-	if query.host != host || query.ipVersion != ipVersion || !equalPointer(query.socketMark, mark) || !equalPointer(query.netns, netns) {
+	if query.Host != host || query.IPVersion != ipVersion || !equalPointer(query.SocketMark, mark) || !equalPointer(query.NetNS, netns) {
 		t.Fatalf("unexpected DNS query: %#v", query)
 	}
 }

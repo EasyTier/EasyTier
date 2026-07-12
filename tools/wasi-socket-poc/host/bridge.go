@@ -11,8 +11,10 @@ import (
 // BridgeConfig supplies host resources already authorized for core use. The
 // bridge owns every supplied connection and closes it during Close.
 type BridgeConfig struct {
-	TCPStreams map[uint64]net.Conn
-	UDPSockets map[uint64]net.PacketConn
+	TCPStreams           map[uint64]net.Conn
+	UDPSockets           map[uint64]net.PacketConn
+	DNSResolver          DNSResolver
+	ConnectorEnvironment ConnectorEnvironment
 }
 
 func NewBridge(config BridgeConfig) *Bridge {
@@ -21,6 +23,14 @@ func NewBridge(config BridgeConfig) *Bridge {
 		handles[handle] = connection
 	}
 	packets := config.UDPSockets
+	dnsResolver := config.DNSResolver
+	if dnsResolver == nil {
+		dnsResolver = unsupportedOpaqueDNSResolver{}
+	}
+	environment := config.ConnectorEnvironment
+	if environment == nil {
+		environment = unsupportedOpaqueEnvironment{}
+	}
 	bridge := &Bridge{
 		closeDone:           make(chan struct{}),
 		handles:             handles,
@@ -33,9 +43,9 @@ func NewBridge(config BridgeConfig) *Bridge {
 		tcpAccepts:          make(map[uint64]*opaqueTCPAcceptWaiter),
 		creates:             make(map[uint64]*opaqueCreateOperation),
 		dns:                 make(map[uint64]*opaqueDNSOperation),
-		dnsResolver:         unsupportedOpaqueDNSResolver{},
+		dnsResolver:         dnsResolver,
 		environment:         make(map[uint64]*opaqueEnvironmentOperation),
-		environmentResolver: unsupportedOpaqueEnvironment{},
+		environmentResolver: environment,
 		packetSinks:         make(map[uint64]*opaquePacketSinkState),
 		packetWrites:        make(map[uint64]*opaquePacketWriteWaiter),
 		nextHandle:          1 << 48,

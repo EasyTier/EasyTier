@@ -39,7 +39,7 @@ func (environment *probeOpaqueEnvironment) awaitRelease(
 	}
 }
 
-func (environment *probeOpaqueEnvironment) localAddrForRemote(
+func (environment *probeOpaqueEnvironment) LocalAddrForRemote(
 	ctx context.Context,
 	remote *net.UDPAddr,
 ) (net.Addr, error) {
@@ -52,7 +52,7 @@ func (environment *probeOpaqueEnvironment) localAddrForRemote(
 	return &net.UDPAddr{IP: net.ParseIP("192.0.2.10"), Port: 40000}, nil
 }
 
-func (environment *probeOpaqueEnvironment) udpPortMapping(
+func (environment *probeOpaqueEnvironment) UDPPortMapping(
 	ctx context.Context,
 	handle uint64,
 ) (net.Addr, error) {
@@ -68,7 +68,7 @@ func (environment *probeOpaqueEnvironment) udpPortMapping(
 	return &net.UDPAddr{IP: net.ParseIP("198.51.100.10"), Port: 45000}, nil
 }
 
-func (environment *probeOpaqueEnvironment) tcpPortMapping(
+func (environment *probeOpaqueEnvironment) TCPPortMapping(
 	ctx context.Context,
 	port uint16,
 ) (net.Addr, error) {

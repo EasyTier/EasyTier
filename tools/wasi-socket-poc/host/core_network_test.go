@@ -33,41 +33,41 @@ type coreNetworkDNSResolver struct {
 	successfulIPQueries []string
 }
 
-func (resolver *coreNetworkDNSResolver) record(query decodedDNSQuery) {
+func (resolver *coreNetworkDNSResolver) record(query DNSQuery) {
 	resolver.mu.Lock()
-	resolver.queries = append(resolver.queries, query.host)
+	resolver.queries = append(resolver.queries, query.Host)
 	resolver.mu.Unlock()
 }
 
-func (resolver *coreNetworkDNSResolver) lookupIP(
+func (resolver *coreNetworkDNSResolver) LookupIP(
 	_ context.Context,
-	query decodedDNSQuery,
+	query DNSQuery,
 ) ([]netip.Addr, error) {
 	resolver.record(query)
-	address, err := netip.ParseAddr(query.host)
+	address, err := netip.ParseAddr(query.Host)
 	if err != nil {
-		return nil, fmt.Errorf("network test does not resolve hostname %q", query.host)
+		return nil, fmt.Errorf("network test does not resolve hostname %q", query.Host)
 	}
 	resolver.mu.Lock()
-	resolver.successfulIPQueries = append(resolver.successfulIPQueries, query.host)
+	resolver.successfulIPQueries = append(resolver.successfulIPQueries, query.Host)
 	resolver.mu.Unlock()
 	return []netip.Addr{address}, nil
 }
 
-func (resolver *coreNetworkDNSResolver) lookupTXT(
+func (resolver *coreNetworkDNSResolver) LookupTXT(
 	_ context.Context,
-	query decodedDNSQuery,
+	query DNSQuery,
 ) (string, error) {
 	resolver.record(query)
-	return "", fmt.Errorf("network test does not resolve TXT %q", query.host)
+	return "", fmt.Errorf("network test does not resolve TXT %q", query.Host)
 }
 
-func (resolver *coreNetworkDNSResolver) lookupSRV(
+func (resolver *coreNetworkDNSResolver) LookupSRV(
 	_ context.Context,
-	query decodedDNSQuery,
+	query DNSQuery,
 ) ([]*net.SRV, error) {
 	resolver.record(query)
-	return nil, fmt.Errorf("network test does not resolve SRV %q", query.host)
+	return nil, fmt.Errorf("network test does not resolve SRV %q", query.Host)
 }
 
 func (resolver *coreNetworkDNSResolver) recorded() []string {

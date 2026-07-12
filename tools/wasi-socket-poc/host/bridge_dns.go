@@ -17,15 +17,15 @@ const (
 
 type unsupportedOpaqueDNSResolver struct{}
 
-func (unsupportedOpaqueDNSResolver) lookupIP(context.Context, decodedDNSQuery) ([]netip.Addr, error) {
+func (unsupportedOpaqueDNSResolver) LookupIP(context.Context, DNSQuery) ([]netip.Addr, error) {
 	return nil, fmt.Errorf("no Go DNS resolver was injected")
 }
 
-func (unsupportedOpaqueDNSResolver) lookupTXT(context.Context, decodedDNSQuery) (string, error) {
+func (unsupportedOpaqueDNSResolver) LookupTXT(context.Context, DNSQuery) (string, error) {
 	return "", fmt.Errorf("no Go DNS resolver was injected")
 }
 
-func (unsupportedOpaqueDNSResolver) lookupSRV(context.Context, decodedDNSQuery) ([]*net.SRV, error) {
+func (unsupportedOpaqueDNSResolver) LookupSRV(context.Context, DNSQuery) ([]*net.SRV, error) {
 	return nil, fmt.Errorf("no Go DNS resolver was injected")
 }
 
@@ -107,19 +107,19 @@ func (b *opaqueBridge) startDNS(
 		switch kind {
 		case opaqueDNSAddress:
 			var addresses []netip.Addr
-			addresses, err = b.dnsResolver.lookupIP(resolveContext, query)
+			addresses, err = b.dnsResolver.LookupIP(resolveContext, query)
 			if err == nil {
 				result, err = encodeDNSAddresses(addresses)
 			}
 		case opaqueDNSTXT:
 			var text string
-			text, err = b.dnsResolver.lookupTXT(resolveContext, query)
+			text, err = b.dnsResolver.LookupTXT(resolveContext, query)
 			if err == nil {
 				result, err = encodeDNSTXT(text)
 			}
 		case opaqueDNSSRV:
 			var records []*net.SRV
-			records, err = b.dnsResolver.lookupSRV(resolveContext, query)
+			records, err = b.dnsResolver.LookupSRV(resolveContext, query)
 			if err == nil {
 				result, err = encodeDNSSRV(records)
 			}

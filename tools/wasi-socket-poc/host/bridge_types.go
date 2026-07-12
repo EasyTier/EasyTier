@@ -81,12 +81,12 @@ type decodedUDPBindOptions struct {
 	localAddr *net.UDPAddr
 }
 
-type opaqueDNSResolver interface {
-	lookupIP(context.Context, decodedDNSQuery) ([]netip.Addr, error)
-	// lookupTXT returns one host-normalized core TXT value. Implementations
+type DNSResolver interface {
+	LookupIP(context.Context, DNSQuery) ([]netip.Addr, error)
+	// LookupTXT returns one host-normalized core TXT value. Implementations
 	// preserve their intended RR/chunk and UTF-8 policy before this seam.
-	lookupTXT(context.Context, decodedDNSQuery) (string, error)
-	lookupSRV(context.Context, decodedDNSQuery) ([]*net.SRV, error)
+	LookupTXT(context.Context, DNSQuery) (string, error)
+	LookupSRV(context.Context, DNSQuery) ([]*net.SRV, error)
 }
 
 type opaqueDNSOperation struct {
@@ -98,10 +98,10 @@ type opaqueDNSOperation struct {
 
 type opaqueDNSKind uint8
 
-type opaqueEnvironment interface {
-	localAddrForRemote(context.Context, *net.UDPAddr) (net.Addr, error)
-	udpPortMapping(context.Context, uint64) (net.Addr, error)
-	tcpPortMapping(context.Context, uint16) (net.Addr, error)
+type ConnectorEnvironment interface {
+	LocalAddrForRemote(context.Context, *net.UDPAddr) (net.Addr, error)
+	UDPPortMapping(context.Context, uint64) (net.Addr, error)
+	TCPPortMapping(context.Context, uint16) (net.Addr, error)
 }
 
 type opaqueEnvironmentOperation struct {
@@ -135,9 +135,9 @@ type Bridge struct {
 	tcpAccepts          map[uint64]*opaqueTCPAcceptWaiter
 	creates             map[uint64]*opaqueCreateOperation
 	dns                 map[uint64]*opaqueDNSOperation
-	dnsResolver         opaqueDNSResolver
+	dnsResolver         DNSResolver
 	environment         map[uint64]*opaqueEnvironmentOperation
-	environmentResolver opaqueEnvironment
+	environmentResolver ConnectorEnvironment
 	packetSinks         map[uint64]*opaquePacketSinkState
 	packetWrites        map[uint64]*opaquePacketWriteWaiter
 	environmentCalls    int

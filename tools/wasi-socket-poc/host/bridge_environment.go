@@ -12,21 +12,21 @@ import (
 
 type unsupportedOpaqueEnvironment struct{}
 
-func (unsupportedOpaqueEnvironment) localAddrForRemote(
+func (unsupportedOpaqueEnvironment) LocalAddrForRemote(
 	context.Context,
 	*net.UDPAddr,
 ) (net.Addr, error) {
 	return nil, fmt.Errorf("no Go connector environment was injected")
 }
 
-func (unsupportedOpaqueEnvironment) udpPortMapping(
+func (unsupportedOpaqueEnvironment) UDPPortMapping(
 	context.Context,
 	uint64,
 ) (net.Addr, error) {
 	return nil, fmt.Errorf("no Go connector environment was injected")
 }
 
-func (unsupportedOpaqueEnvironment) tcpPortMapping(
+func (unsupportedOpaqueEnvironment) TCPPortMapping(
 	context.Context,
 	uint16,
 ) (net.Addr, error) {
@@ -58,7 +58,7 @@ func (b *opaqueBridge) startLocalAddrForRemote(
 		return opaqueHostInvalid
 	}
 	return b.startEnvironmentOperation(operation, func(ctx context.Context) (net.Addr, error) {
-		return b.environmentResolver.localAddrForRemote(ctx, remote)
+		return b.environmentResolver.LocalAddrForRemote(ctx, remote)
 	})
 }
 
@@ -85,7 +85,7 @@ func (b *opaqueBridge) startUDPPortMapping(
 		return opaqueHostInvalid
 	}
 	return b.startEnvironmentOperation(operation, func(ctx context.Context) (net.Addr, error) {
-		return b.environmentResolver.udpPortMapping(ctx, handle)
+		return b.environmentResolver.UDPPortMapping(ctx, handle)
 	})
 }
 
@@ -109,7 +109,7 @@ func (b *opaqueBridge) startTCPPortMapping(
 		return opaqueHostInvalid
 	}
 	return b.startEnvironmentOperation(operation, func(ctx context.Context) (net.Addr, error) {
-		return b.environmentResolver.tcpPortMapping(ctx, uint16(localPort))
+		return b.environmentResolver.TCPPortMapping(ctx, uint16(localPort))
 	})
 }
 

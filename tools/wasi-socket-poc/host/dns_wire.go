@@ -13,64 +13,64 @@ const (
 	maxDNSResultLen = 1024 * 1024
 )
 
-type decodedDNSQuery struct {
-	host       string
-	ipVersion  uint8
-	socketMark *uint32
-	netns      *string
+type DNSQuery struct {
+	Host       string
+	IPVersion  uint8
+	SocketMark *uint32
+	NetNS      *string
 }
 
-func decodeDNSQuery(encoded []byte) (decodedDNSQuery, error) {
+func decodeDNSQuery(encoded []byte) (DNSQuery, error) {
 	if len(encoded) < 16 || encoded[0] != dnsWireVersion {
-		return decodedDNSQuery{}, fmt.Errorf("invalid DNS query header")
+		return DNSQuery{}, fmt.Errorf("invalid DNS query header")
 	}
-	query := decodedDNSQuery{ipVersion: encoded[1]}
-	if query.ipVersion != 0 && query.ipVersion != 4 && query.ipVersion != 6 {
-		return decodedDNSQuery{}, fmt.Errorf("invalid DNS IP version")
+	query := DNSQuery{IPVersion: encoded[1]}
+	if query.IPVersion != 0 && query.IPVersion != 4 && query.IPVersion != 6 {
+		return DNSQuery{}, fmt.Errorf("invalid DNS IP version")
 	}
 	if encoded[2] > 1 {
-		return decodedDNSQuery{}, fmt.Errorf("invalid DNS socket mark presence")
+		return DNSQuery{}, fmt.Errorf("invalid DNS socket mark presence")
 	}
 	if encoded[2] == 1 {
 		mark := binary.BigEndian.Uint32(encoded[3:7])
-		query.socketMark = &mark
+		query.SocketMark = &mark
 	} else if binary.BigEndian.Uint32(encoded[3:7]) != 0 {
-		return decodedDNSQuery{}, fmt.Errorf("DNS socket mark value without presence")
+		return DNSQuery{}, fmt.Errorf("DNS socket mark value without presence")
 	}
 	if encoded[7] > 1 {
-		return decodedDNSQuery{}, fmt.Errorf("invalid DNS netns presence")
+		return DNSQuery{}, fmt.Errorf("invalid DNS netns presence")
 	}
 	offset := 12
 	netnsLengthWire := binary.BigEndian.Uint32(encoded[8:12])
 	if uint64(netnsLengthWire) > uint64(len(encoded)-offset) {
-		return decodedDNSQuery{}, fmt.Errorf("truncated DNS netns token")
+		return DNSQuery{}, fmt.Errorf("truncated DNS netns token")
 	}
 	netnsLength := int(netnsLengthWire)
 	if encoded[7] == 0 && netnsLength != 0 {
-		return decodedDNSQuery{}, fmt.Errorf("DNS netns length without presence")
+		return DNSQuery{}, fmt.Errorf("DNS netns length without presence")
 	}
 	if encoded[7] == 1 {
 		netnsBytes := encoded[offset : offset+netnsLength]
 		if !utf8.Valid(netnsBytes) {
-			return decodedDNSQuery{}, fmt.Errorf("DNS netns token is not UTF-8")
+			return DNSQuery{}, fmt.Errorf("DNS netns token is not UTF-8")
 		}
 		netns := string(netnsBytes)
-		query.netns = &netns
+		query.NetNS = &netns
 	}
 	offset += netnsLength
 	if len(encoded)-offset < 4 {
-		return decodedDNSQuery{}, fmt.Errorf("missing DNS host length")
+		return DNSQuery{}, fmt.Errorf("missing DNS host length")
 	}
 	hostLengthWire := binary.BigEndian.Uint32(encoded[offset : offset+4])
 	offset += 4
 	if hostLengthWire == 0 || uint64(hostLengthWire) != uint64(len(encoded)-offset) {
-		return decodedDNSQuery{}, fmt.Errorf("invalid DNS host length")
+		return DNSQuery{}, fmt.Errorf("invalid DNS host length")
 	}
 	host := encoded[offset:]
 	if !utf8.Valid(host) {
-		return decodedDNSQuery{}, fmt.Errorf("DNS host is not UTF-8")
+		return DNSQuery{}, fmt.Errorf("DNS host is not UTF-8")
 	}
-	query.host = string(host)
+	query.Host = string(host)
 	return query, nil
 }
 
