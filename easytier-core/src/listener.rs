@@ -430,7 +430,7 @@ async fn run_listener<Accepted, H>(
                         if !will_retry {
                             return;
                         }
-                        tokio::time::sleep(options.listen_retry_delay).await;
+                        crate::runtime_time::sleep(options.listen_retry_delay).await;
                         continue;
                     }
                 }
@@ -449,7 +449,7 @@ async fn run_listener<Accepted, H>(
                         error: format!("{error:?}"),
                     });
                     tracing::error!(?error, ?listener, "listener accept error");
-                    tokio::time::sleep(options.accept_retry_delay).await;
+                    crate::runtime_time::sleep(options.accept_retry_delay).await;
                     break;
                 }
             };
@@ -487,7 +487,7 @@ async fn run_accepted_task_runner(
                     None => break,
                 }
             }
-            _ = tokio::time::sleep(Duration::from_secs(1)) => {
+            _ = crate::runtime_time::sleep(Duration::from_secs(1)) => {
                 let mut handler_tasks = handler_tasks.lock().await;
                 while let Some(task) = handler_tasks.try_join_next() {
                     if let Err(error) = task {
@@ -711,7 +711,7 @@ mod tests {
         );
 
         manager.run().await.unwrap();
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        crate::runtime_time::sleep(Duration::from_millis(20)).await;
 
         assert_eq!(listen_count.load(Ordering::Relaxed), 1);
         assert_eq!(handler.accepted.lock().unwrap().as_slice(), &[7]);
@@ -764,7 +764,7 @@ mod tests {
         );
 
         manager.run().await.unwrap();
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        crate::runtime_time::sleep(Duration::from_millis(20)).await;
 
         assert!(listen_count.load(Ordering::Relaxed) >= 2);
         assert_eq!(handler.accepted.lock().unwrap().as_slice(), &[3]);
@@ -823,7 +823,7 @@ mod tests {
         );
 
         assert!(manager.run().await.is_err());
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        crate::runtime_time::sleep(Duration::from_millis(20)).await;
         assert!(handler.accepted.lock().unwrap().is_empty());
         assert!(
             events
@@ -871,7 +871,7 @@ mod tests {
         );
 
         manager.run().await.unwrap();
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        crate::runtime_time::sleep(Duration::from_millis(20)).await;
 
         assert_eq!(accepted.lock().unwrap().as_slice(), &[11]);
     }
@@ -959,10 +959,10 @@ mod tests {
         );
 
         manager.run().await.unwrap();
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        crate::runtime_time::sleep(Duration::from_millis(20)).await;
         manager.stop().await;
 
-        tokio::time::timeout(Duration::from_secs(1), drop_rx)
+        crate::runtime_time::timeout(Duration::from_secs(1), drop_rx)
             .await
             .unwrap()
             .unwrap();
@@ -990,7 +990,7 @@ mod tests {
             tokio::spawn(async move { manager.run().await })
         };
 
-        tokio::time::timeout(Duration::from_secs(1), started.notified())
+        crate::runtime_time::timeout(Duration::from_secs(1), started.notified())
             .await
             .unwrap();
         manager.stop().await;
@@ -1034,7 +1034,7 @@ mod tests {
         );
 
         manager.run().await.unwrap();
-        tokio::time::timeout(Duration::from_secs(1), async {
+        crate::runtime_time::timeout(Duration::from_secs(1), async {
             loop {
                 if events.events.lock().unwrap().iter().any(|event| {
                     matches!(
@@ -1047,7 +1047,7 @@ mod tests {
                 }) {
                     break;
                 }
-                tokio::time::sleep(Duration::from_millis(1)).await;
+                crate::runtime_time::sleep(Duration::from_millis(1)).await;
             }
         })
         .await
@@ -1059,7 +1059,7 @@ mod tests {
         ));
 
         drop(manager);
-        tokio::time::timeout(Duration::from_secs(1), drop_rx)
+        crate::runtime_time::timeout(Duration::from_secs(1), drop_rx)
             .await
             .unwrap()
             .unwrap();
