@@ -52,6 +52,14 @@ pub trait TcpHolePunchTunnelSink: Send + Sync + 'static {
     async fn add_server_tunnel(&self, tunnel: Box<dyn Tunnel>) -> anyhow::Result<()>;
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum TcpHolePunchTransportError {
+    #[error("TCP hole-punch protocol upgrade failed")]
+    Upgrade(#[source] anyhow::Error),
+    #[error("TCP hole-punch tunnel admission failed")]
+    Admission(#[source] anyhow::Error),
+}
+
 #[async_trait]
 pub trait TcpHolePunchTransportSink: Send + Sync + 'static {
     type ConnectedSocket;
@@ -62,13 +70,13 @@ pub trait TcpHolePunchTransportSink: Send + Sync + 'static {
         socket: Self::ConnectedSocket,
         requested_url: url::Url,
         admission: TcpHolePunchAdmission,
-    ) -> anyhow::Result<()>;
+    ) -> Result<(), TcpHolePunchTransportError>;
 
     async fn add_accepted_transport(
         &self,
         socket: Self::AcceptedSocket,
         local_url: url::Url,
-    ) -> anyhow::Result<()>;
+    ) -> Result<(), TcpHolePunchTransportError>;
 }
 
 pub struct ProtocolTcpHolePunchTransportSink<ConnectedSocket, AcceptedSocket, T> {
@@ -109,27 +117,38 @@ where
         socket: ConnectedSocket,
         requested_url: url::Url,
         admission: TcpHolePunchAdmission,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), TcpHolePunchTransportError> {
         let tunnel = self
             .client_protocol
             .upgrade_client(ConnectedTransport::Tcp(socket), requested_url)
-            .await?;
+            .await
+            .map_err(TcpHolePunchTransportError::Upgrade)?;
         match admission {
             TcpHolePunchAdmission::Client => self.tunnel_sink.add_client_tunnel(tunnel).await,
             TcpHolePunchAdmission::Server => self.tunnel_sink.add_server_tunnel(tunnel).await,
         }
+        .map_err(TcpHolePunchTransportError::Admission)
     }
 
     async fn add_accepted_transport(
         &self,
         socket: AcceptedSocket,
         local_url: url::Url,
-    ) -> anyhow::Result<()> {
-        let upgrade = self.server_protocol.upgrade_tcp(socket, local_url).await?;
+    ) -> Result<(), TcpHolePunchTransportError> {
+        let upgrade = self
+            .server_protocol
+            .upgrade_tcp(socket, local_url)
+            .await
+            .map_err(TcpHolePunchTransportError::Upgrade)?;
         let ServerProtocolUpgrade::Tunnel(tunnel) = upgrade else {
-            anyhow::bail!("TCP hole-punch protocol returned a tunnel acceptor");
+            return Err(TcpHolePunchTransportError::Upgrade(anyhow::anyhow!(
+                "TCP hole-punch protocol returned a tunnel acceptor"
+            )));
         };
-        self.tunnel_sink.add_server_tunnel(tunnel).await
+        self.tunnel_sink
+            .add_server_tunnel(tunnel)
+            .await
+            .map_err(TcpHolePunchTransportError::Admission)
     }
 }
 
@@ -165,16 +184,22 @@ where
 }
 
 // TCP supports simultaneous connect, so both peers may dial from the mapped port.
-pub async fn try_connect_to_remote<H>(
+pub async fn try_connect_to_remote<H, AcceptedSocket>(
     host: Arc<H>,
-    transport_sink: Arc<TcpHolePunchTransportSinkFor<H>>,
+    transport_sink: Arc<
+        dyn TcpHolePunchTransportSink<
+                ConnectedSocket = <H as VirtualTcpSocketFactory>::Socket,
+                AcceptedSocket = AcceptedSocket,
+            >,
+    >,
     remote_mapped_addr: SocketAddr,
     local_port: u16,
     admission: TcpHolePunchAdmission,
     max_attempts: u32,
 ) -> anyhow::Result<()>
 where
-    H: TcpHolePunchHost,
+    H: VirtualTcpSocketFactory,
+    AcceptedSocket: 'static,
 {
     tracing::info!(
         ?remote_mapped_addr,
@@ -200,15 +225,19 @@ where
             let admission_result = transport_sink
                 .add_connected_transport(socket, requested_url.clone(), admission)
                 .await;
-            if let Err(error) = admission_result {
-                tracing::error!(
-                    ?remote_mapped_addr,
-                    local_port,
-                    attempts,
-                    ?error,
-                    "tcp hole punch server connected and added client tunnel failed"
-                );
-                continue;
+            match admission_result {
+                Ok(()) => {}
+                Err(TcpHolePunchTransportError::Upgrade(error)) => return Err(error),
+                Err(TcpHolePunchTransportError::Admission(error)) => {
+                    tracing::error!(
+                        ?remote_mapped_addr,
+                        local_port,
+                        attempts,
+                        ?error,
+                        "tcp hole punch server connected and added client tunnel failed"
+                    );
+                    continue;
+                }
             }
 
             tracing::info!(
@@ -281,7 +310,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use super::*;
 
@@ -289,6 +318,7 @@ mod tests {
     struct MockProtocols {
         client_upgrades: AtomicUsize,
         server_upgrades: AtomicUsize,
+        fail_client_upgrade: AtomicBool,
     }
 
     #[async_trait]
@@ -305,6 +335,9 @@ mod tests {
             let ConnectedTransport::Tcp(()) = connected else {
                 anyhow::bail!("expected TCP transport");
             };
+            if self.fail_client_upgrade.load(Ordering::Relaxed) {
+                anyhow::bail!("mock client upgrade failure");
+            }
             self.client_upgrades.fetch_add(1, Ordering::Relaxed);
             Ok(crate::tunnel::ring::create_ring_tunnel_pair().0)
         }
@@ -350,11 +383,15 @@ mod tests {
     struct MockTunnelSink {
         clients: AtomicUsize,
         servers: AtomicUsize,
+        fail_client_admission: AtomicBool,
     }
 
     #[async_trait]
     impl TcpHolePunchTunnelSink for MockTunnelSink {
         async fn add_client_tunnel(&self, _tunnel: Box<dyn Tunnel>) -> anyhow::Result<()> {
+            if self.fail_client_admission.load(Ordering::Relaxed) {
+                anyhow::bail!("mock client admission failure");
+            }
             self.clients.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
@@ -388,6 +425,32 @@ mod tests {
         assert_eq!(protocols.server_upgrades.load(Ordering::Relaxed), 1);
         assert_eq!(tunnel_sink.clients.load(Ordering::Relaxed), 1);
         assert_eq!(tunnel_sink.servers.load(Ordering::Relaxed), 2);
+
+        protocols.fail_client_upgrade.store(true, Ordering::Relaxed);
+        assert!(matches!(
+            sink.add_connected_transport(
+                (),
+                url::Url::parse("tcp://198.51.100.1:11010").unwrap(),
+                TcpHolePunchAdmission::Client,
+            )
+            .await,
+            Err(TcpHolePunchTransportError::Upgrade(_))
+        ));
+        protocols
+            .fail_client_upgrade
+            .store(false, Ordering::Relaxed);
+        tunnel_sink
+            .fail_client_admission
+            .store(true, Ordering::Relaxed);
+        assert!(matches!(
+            sink.add_connected_transport(
+                (),
+                url::Url::parse("tcp://198.51.100.1:11010").unwrap(),
+                TcpHolePunchAdmission::Client,
+            )
+            .await,
+            Err(TcpHolePunchTransportError::Admission(_))
+        ));
     }
 
     #[test]

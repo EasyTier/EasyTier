@@ -374,7 +374,7 @@ where
     TcpSocket: VirtualTcpSocket,
 {
     match local_url.scheme() {
-        "tcp" => Ok(raw::upgrade_accepted_tcp(socket)?),
+        "tcp" => Ok(raw::upgrade_accepted_tcp_with_local_url(socket, local_url)?),
         "ws" | "wss" if config.websocket => Ok(crate::runtime_time::timeout(
             config.websocket_timeout,
             websocket::upgrade_accepted(socket, local_url),
@@ -605,7 +605,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             tunnel.info().unwrap().local_addr.unwrap().url,
-            "tcp://127.0.0.1:1000"
+            "tcp://0.0.0.0:2000"
         );
 
         let disabled = upgrade_accepted_tcp(
