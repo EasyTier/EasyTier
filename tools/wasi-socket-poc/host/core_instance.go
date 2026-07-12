@@ -176,6 +176,9 @@ func driveUntil(
 			return err
 		}
 		if deadline == 0 {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			continue
 		}
 		if deadline == math.MaxInt64 {

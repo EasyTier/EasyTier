@@ -2,6 +2,7 @@ package host
 
 import (
 	"context"
+	"errors"
 	"math"
 	"sync"
 	"testing"
@@ -49,5 +50,21 @@ func TestDriveUntilWaitsForCompletionWhileStarting(t *testing.T) {
 	}
 	if driveCalls != 2 {
 		t.Fatalf("unexpected drive call count: %d", driveCalls)
+	}
+}
+
+func TestDriveUntilObservesCancellationBeforeImmediateRedrive(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	drive := func(context.Context) (CoreState, error) {
+		return CoreStateStarting, nil
+	}
+	nextDeadline := func(context.Context) (int64, error) {
+		cancel()
+		return 0, nil
+	}
+
+	err := driveUntil(ctx, nil, CoreStateRunning, drive, nextDeadline)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("immediate redrive returned %v, want context cancellation", err)
 	}
 }
