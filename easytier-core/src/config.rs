@@ -161,7 +161,7 @@ impl Default for PeerPolicyConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct P2pPolicyFlags {
     pub disable_udp_hole_punching: bool,
     pub disable_sym_hole_punching: bool,

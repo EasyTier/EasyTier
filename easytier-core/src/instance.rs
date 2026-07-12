@@ -1343,9 +1343,13 @@ mod tests {
             connectivity: CoreInstanceConfig::default(),
         };
 
+        let mut config = config;
+        config.connectivity.direct.testing = true;
         let encoded = serde_json::to_value(&config).unwrap();
+        assert!(encoded["connectivity"]["direct"].get("testing").is_none());
         let decoded: PortableCoreInstanceConfig = serde_json::from_value(encoded.clone()).unwrap();
 
+        assert!(!decoded.connectivity.direct.testing);
         assert_eq!(serde_json::to_value(decoded).unwrap(), encoded);
     }
 

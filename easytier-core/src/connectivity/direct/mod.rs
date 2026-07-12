@@ -156,6 +156,7 @@ pub struct DirectConnectorOptions {
     pub allow_interface_bind: bool,
     pub tcp_bind: TcpBindOptions,
     pub udp_bind: UdpBindOptions,
+    #[serde(skip)]
     pub testing: bool,
 }
 

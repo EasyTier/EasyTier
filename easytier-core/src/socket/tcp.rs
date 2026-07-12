@@ -22,7 +22,7 @@ pub trait VirtualTcpSocket: AsyncRead + AsyncWrite + Unpin + Send + 'static {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TcpSocketPurpose {
     DirectConnect,
     FakeTcp,
