@@ -9,6 +9,9 @@ use crate::connectivity::host::environment::HostConnectorEnvironmentServices;
 
 use super::{HostOperationId, HostSocketHandle, HostSocketRuntime, udp::HostUdpSocket};
 
+#[cfg(target_os = "wasi")]
+pub mod wasi;
+
 /// Mechanical asynchronous environment operations below connector policy.
 ///
 /// Submit calls must take ownership of their complete input before returning

@@ -136,3 +136,35 @@ where
         )
     }
 }
+
+#[cfg(target_os = "wasi")]
+pub type WasiHostCoreInstance = HostCoreInstance<
+    crate::socket::host::wasi_backend::WasiHostSocketBackend,
+    HostConnectorEnvironment<
+        HostConnectorEnvironmentServiceAdapter<
+            crate::socket::host::environment::wasi::WasiHostConnectorEnvironmentIo,
+        >,
+    >,
+>;
+
+#[cfg(target_os = "wasi")]
+pub fn new_wasi_host_core_instance(
+    config: PortableCoreInstanceConfig,
+    environment_snapshot: HostConnectorEnvironmentSnapshot,
+    packet_sink: HostPacketSinkHandle,
+) -> anyhow::Result<WasiHostCoreInstance> {
+    use crate::socket::host::{
+        dns::wasi::WasiHostDnsIo, environment::wasi::WasiHostConnectorEnvironmentIo,
+        packet::wasi::WasiHostPacketIo, wasi_backend::WasiHostSocketBackend,
+    };
+
+    HostCoreInstance::new_with_environment_io(
+        config,
+        Arc::new(WasiHostSocketBackend::default()),
+        environment_snapshot,
+        Arc::new(WasiHostConnectorEnvironmentIo),
+        Arc::new(WasiHostDnsIo),
+        Arc::new(WasiHostPacketIo),
+        packet_sink,
+    )
+}
