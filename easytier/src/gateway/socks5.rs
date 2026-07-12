@@ -31,7 +31,7 @@ use anyhow::Context;
 use dashmap::{DashMap, mapref::entry::Entry};
 use easytier_core::proxy::{
     ip_reassembler::{IpReassembler, SmolIpv4Packet},
-    socks5::{Socks5TcpRoute, Socks5TcpRouteContext},
+    socks5::{Socks5Entry, Socks5EntryKind, Socks5TcpRoute, Socks5TcpRouteContext},
     tokio_smoltcp::{self, BufferSize, Net, NetConfig, channel_device},
 };
 use pnet::packet::{
@@ -151,17 +151,10 @@ enum Socks5EntryData {
     Udp((Arc<SocksUdpSocket>, UdpClientKey)), // hold the socket to send data to dst
 }
 
-const UDP_ENTRY: u8 = 1;
-const TCP_ENTRY: u8 = 2;
+const UDP_ENTRY: Socks5EntryKind = Socks5EntryKind::Udp;
+const TCP_ENTRY: Socks5EntryKind = Socks5EntryKind::Tcp;
 #[cfg(feature = "ffi-dataplane")]
-const TCP_LISTEN_ENTRY: u8 = 3;
-
-#[derive(Debug, Eq, PartialEq, Hash, Clone)]
-struct Socks5Entry {
-    src: SocketAddr,
-    dst: SocketAddr,
-    entry_type: u8,
-}
+const TCP_LISTEN_ENTRY: Socks5EntryKind = Socks5EntryKind::TcpListen;
 
 type Socks5EntrySet = Arc<DashMap<Socks5Entry, Socks5EntryData>>;
 
@@ -269,7 +262,7 @@ impl AsyncTcpConnector for SmolTcpConnector {
         let entry = Socks5Entry {
             src: SocketAddr::new(local_addr, port),
             dst: addr,
-            entry_type: TCP_ENTRY,
+            kind: TCP_ENTRY,
         };
         *self.current_entry.lock().unwrap() = Some(entry.clone());
         let (replaced, old_entry_count, new_entry_count) = insert_entry_and_increment_count(
@@ -744,7 +737,7 @@ impl PeerPacketFilter for Socks5Server {
                         ipv4.get_destination().into(),
                         tcp_packet.get_destination(),
                     ),
-                    entry_type: TCP_ENTRY,
+                    kind: TCP_ENTRY,
                 };
                 #[cfg(feature = "ffi-dataplane")]
                 let entry = if self.entries.contains_key(&entry) {
@@ -755,7 +748,7 @@ impl PeerPacketFilter for Socks5Server {
                     Socks5Entry {
                         src: entry.src,
                         dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
-                        entry_type: TCP_LISTEN_ENTRY,
+                        kind: TCP_LISTEN_ENTRY,
                     }
                 };
                 (entry, Some(tcp_packet.get_flags()))
@@ -803,7 +796,7 @@ impl PeerPacketFilter for Socks5Server {
                             ipv4.get_destination().into(),
                             udp_packet.get_destination(),
                         ),
-                        entry_type: UDP_ENTRY,
+                        kind: UDP_ENTRY,
                     },
                     None,
                 )
@@ -1325,7 +1318,7 @@ impl Socks5Server {
                         let entry_key = Socks5Entry {
                             src: local_addr,
                             dst: dst_addr,
-                            entry_type: UDP_ENTRY,
+                            kind: UDP_ENTRY,
                         };
 
                         tracing::debug!("udp port forward binded socket = {:?}, entry_key = {:?}", local_addr, entry_key);
@@ -1545,7 +1538,7 @@ mod tests {
         let entry = Socks5Entry {
             src: local,
             dst: remote,
-            entry_type: TCP_ENTRY,
+            kind: TCP_ENTRY,
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         insert_entry_and_increment_count(
@@ -1585,7 +1578,7 @@ mod tests {
             Socks5Entry {
                 src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 144, 144, 1)), 40000),
                 dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 144, 144, 3)), 22),
-                entry_type: TCP_ENTRY,
+                kind: TCP_ENTRY,
             },
             Socks5EntryData::Tcp(listener),
         );
@@ -1617,7 +1610,7 @@ mod tests {
         let entry = Socks5Entry {
             src: local,
             dst: remote,
-            entry_type: TCP_ENTRY,
+            kind: TCP_ENTRY,
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         insert_entry_and_increment_count(
@@ -1649,7 +1642,7 @@ mod tests {
             Socks5Entry {
                 src: local,
                 dst: remote,
-                entry_type: UDP_ENTRY,
+                kind: UDP_ENTRY,
             },
             Socks5EntryData::Udp((
                 Arc::new(SocksUdpSocket::UdpSocket(udp_socket)),
@@ -1702,7 +1695,7 @@ mod tests {
         let entry = Socks5Entry {
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 42, 0, 2)), 40000),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 42, 0, 1)), 22),
-            entry_type: TCP_ENTRY,
+            kind: TCP_ENTRY,
         };
 
         let (removed, old_entry_count, new_entry_count) =
@@ -1721,7 +1714,7 @@ mod tests {
         let entry = Socks5Entry {
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 42, 0, 2)), 40000),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 42, 0, 1)), 22),
-            entry_type: TCP_ENTRY,
+            kind: TCP_ENTRY,
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         insert_entry_and_increment_count(
@@ -1752,7 +1745,7 @@ mod tests {
         let entry = Socks5Entry {
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 42, 0, 2)), 40000),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 42, 0, 1)), 22),
-            entry_type: TCP_ENTRY,
+            kind: TCP_ENTRY,
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let replacement = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

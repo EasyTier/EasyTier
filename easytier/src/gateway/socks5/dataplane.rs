@@ -170,7 +170,7 @@ impl DataPlaneTcpListener {
             Socks5Entry {
                 src: local_addr,
                 dst: peer_addr,
-                entry_type: TCP_ENTRY,
+                kind: TCP_ENTRY,
             },
         );
         let accepted = DataPlaneTcpStream {
@@ -223,7 +223,7 @@ impl DataPlaneUdpSocket {
         let key = Socks5Entry {
             src: self.local_addr,
             dst: addr,
-            entry_type: UDP_ENTRY,
+            kind: UDP_ENTRY,
         };
         try_insert_entry_and_increment_count(
             &self.entries,
@@ -360,7 +360,7 @@ impl Socks5Server {
             Socks5Entry {
                 src: local_addr,
                 dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
-                entry_type: TCP_LISTEN_ENTRY,
+                kind: TCP_LISTEN_ENTRY,
             },
         )
         .ok_or_else(|| anyhow::anyhow!("data plane tcp listener already exists"))?;

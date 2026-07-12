@@ -1,3 +1,20 @@
+use std::net::SocketAddr;
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[repr(u8)]
+pub enum Socks5EntryKind {
+    Udp = 1,
+    Tcp = 2,
+    TcpListen = 3,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct Socks5Entry {
+    pub src: SocketAddr,
+    pub dst: SocketAddr,
+    pub kind: Socks5EntryKind,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Socks5TcpRoute {
     Kernel,
@@ -32,7 +49,14 @@ impl Socks5TcpRouteContext {
 
 #[cfg(test)]
 mod tests {
-    use super::{Socks5TcpRoute, Socks5TcpRouteContext};
+    use super::{Socks5EntryKind, Socks5TcpRoute, Socks5TcpRouteContext};
+
+    #[test]
+    fn entry_kind_values_preserve_native_table_identity() {
+        assert_eq!(Socks5EntryKind::Udp as u8, 1);
+        assert_eq!(Socks5EntryKind::Tcp as u8, 2);
+        assert_eq!(Socks5EntryKind::TcpListen as u8, 3);
+    }
 
     fn virtual_destination() -> Socks5TcpRouteContext {
         Socks5TcpRouteContext {
