@@ -13,14 +13,6 @@ const (
 	maxDNSQueryLen = 4096
 )
 
-type opaqueDNSResolver interface {
-	lookupIP(context.Context, decodedDNSQuery) ([]netip.Addr, error)
-	// lookupTXT returns one host-normalized core TXT value. Implementations
-	// preserve their intended RR/chunk and UTF-8 policy before this seam.
-	lookupTXT(context.Context, decodedDNSQuery) (string, error)
-	lookupSRV(context.Context, decodedDNSQuery) ([]*net.SRV, error)
-}
-
 type unsupportedOpaqueDNSResolver struct{}
 
 func (unsupportedOpaqueDNSResolver) lookupIP(context.Context, decodedDNSQuery) ([]netip.Addr, error) {
@@ -34,15 +26,6 @@ func (unsupportedOpaqueDNSResolver) lookupTXT(context.Context, decodedDNSQuery) 
 func (unsupportedOpaqueDNSResolver) lookupSRV(context.Context, decodedDNSQuery) ([]*net.SRV, error) {
 	return nil, fmt.Errorf("no Go DNS resolver was injected")
 }
-
-type opaqueDNSOperation struct {
-	cancel context.CancelFunc
-	done   bool
-	result []byte
-	err    error
-}
-
-type opaqueDNSKind uint8
 
 const (
 	opaqueDNSAddress opaqueDNSKind = iota

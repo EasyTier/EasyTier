@@ -10,12 +10,6 @@ import (
 	"github.com/tetratelabs/wazero/api"
 )
 
-type opaqueEnvironment interface {
-	localAddrForRemote(context.Context, *net.UDPAddr) (net.Addr, error)
-	udpPortMapping(context.Context, uint64) (net.Addr, error)
-	tcpPortMapping(context.Context, uint16) (net.Addr, error)
-}
-
 type unsupportedOpaqueEnvironment struct{}
 
 func (unsupportedOpaqueEnvironment) localAddrForRemote(
@@ -37,13 +31,6 @@ func (unsupportedOpaqueEnvironment) tcpPortMapping(
 	uint16,
 ) (net.Addr, error) {
 	return nil, fmt.Errorf("no Go connector environment was injected")
-}
-
-type opaqueEnvironmentOperation struct {
-	cancel  context.CancelFunc
-	done    bool
-	address net.Addr
-	err     error
 }
 
 func (b *opaqueBridge) environmentCallCount() int {

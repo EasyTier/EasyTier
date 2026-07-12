@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"sync"
 	"testing"
 	"time"
 
@@ -28,41 +27,6 @@ const (
 	opaqueHostIOError = -3
 	opaqueHostMemory  = -4
 )
-
-type opaqueReadOperation struct {
-	handle uint64
-	done   bool
-	data   []byte
-	err    error
-}
-
-type opaqueWriteOperation struct {
-	done bool
-	err  error
-}
-
-type opaqueBridge struct {
-	mu                  sync.Mutex
-	handles             map[uint64]net.Conn
-	packets             map[uint64]*opaquePacketState
-	listeners           map[uint64]*opaqueTCPListenerState
-	reads               map[uint64]*opaqueReadOperation
-	writes              map[uint64]*opaqueWriteOperation
-	udpReads            map[uint64]*opaqueUDPReadWaiter
-	udpWrites           map[uint64]*opaqueUDPWriteWaiter
-	tcpAccepts          map[uint64]*opaqueTCPAcceptWaiter
-	creates             map[uint64]*opaqueCreateOperation
-	dns                 map[uint64]*opaqueDNSOperation
-	dnsResolver         opaqueDNSResolver
-	environment         map[uint64]*opaqueEnvironmentOperation
-	environmentResolver opaqueEnvironment
-	packetSinks         map[uint64]*opaquePacketSinkState
-	packetWrites        map[uint64]*opaquePacketWriteWaiter
-	environmentCalls    int
-	nextHandle          uint64
-	completion          chan struct{}
-	workers             sync.WaitGroup
-}
 
 func newOpaqueBridge(
 	handles map[uint64]net.Conn,

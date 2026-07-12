@@ -13,18 +13,6 @@ import (
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 )
 
-type opaqueTCPListenerState struct {
-	listener      net.Listener
-	accepted      []net.Conn
-	acceptRunning bool
-	acceptErr     error
-}
-
-type opaqueTCPAcceptWaiter struct {
-	handle uint64
-	ready  bool
-}
-
 func (b *opaqueBridge) startTCPBind(
 	_ context.Context,
 	module api.Module,

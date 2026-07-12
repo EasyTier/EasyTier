@@ -9,16 +9,6 @@ import (
 
 const maxHostPacketLen = 1024 * 1024
 
-type opaquePacketSinkState struct {
-	capacity int
-	packets  [][]byte
-}
-
-type opaquePacketWriteWaiter struct {
-	handle uint64
-	ready  bool
-}
-
 func (b *opaqueBridge) registerPacketSink(capacity int) (uint64, error) {
 	if capacity <= 0 {
 		return 0, fmt.Errorf("packet sink capacity must be positive")

@@ -23,26 +23,6 @@ const (
 	maxFactoryOptionsSize = 4096
 )
 
-type opaqueCreateOperation struct {
-	done       bool
-	cancel     context.CancelFunc
-	connection net.Conn
-	packet     net.PacketConn
-	listener   net.Listener
-	localAddr  net.Addr
-	peerAddr   net.Addr
-	err        error
-}
-
-type decodedTCPConnectOptions struct {
-	remoteAddr *net.TCPAddr
-	localAddr  *net.TCPAddr
-}
-
-type decodedUDPBindOptions struct {
-	localAddr *net.UDPAddr
-}
-
 func (b *opaqueBridge) startTCPConnect(
 	_ context.Context,
 	module api.Module,

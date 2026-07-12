@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"sync"
 	"testing"
 	"time"
 
@@ -19,36 +18,6 @@ const (
 	opaqueHostWouldBlock = -5
 	udpMetadataLen       = 48
 )
-
-type opaqueUDPDatagram struct {
-	data []byte
-	peer *net.UDPAddr
-}
-
-type opaqueUDPSend struct {
-	data []byte
-	peer *net.UDPAddr
-}
-
-type opaqueUDPReadWaiter struct {
-	handle uint64
-	ready  bool
-}
-
-type opaqueUDPWriteWaiter struct {
-	handle uint64
-	ready  bool
-}
-
-type opaquePacketState struct {
-	connection     net.PacketConn
-	received       []opaqueUDPDatagram
-	receiveRunning bool
-	receiveErr     error
-	sendQueue      chan opaqueUDPSend
-	sendErr        error
-	closeOnce      sync.Once
-}
 
 func newOpaquePacketState(connection net.PacketConn) *opaquePacketState {
 	return &opaquePacketState{
