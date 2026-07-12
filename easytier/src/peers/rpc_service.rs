@@ -15,9 +15,9 @@ use crate::{
             ListCredentialsResponse, ListForeignNetworkRequest, ListForeignNetworkResponse,
             ListGlobalForeignNetworkRequest, ListGlobalForeignNetworkResponse, ListPeerRequest,
             ListPeerResponse, ListPublicIpv6InfoRequest, ListPublicIpv6InfoResponse,
-            ListRouteRequest, ListRouteResponse, PeerInfo, PeerManageRpc, RevokeCredentialRequest,
-            RevokeCredentialResponse, ShowNodeInfoRequest, ShowNodeInfoResponse,
-            list_global_foreign_network_response::OneForeignNetwork,
+            ListRouteRequest, ListRouteResponse, NodeInfo, PeerInfo, PeerManageRpc,
+            RevokeCredentialRequest, RevokeCredentialResponse, ShowNodeInfoRequest,
+            ShowNodeInfoResponse, list_global_foreign_network_response::OneForeignNetwork,
         },
         rpc_types::{self, controller::BaseController},
     },
@@ -80,6 +80,18 @@ impl PeerManagerRpcService {
             });
         }
         response
+    }
+
+    fn format_prefix(prefix: &easytier_core::config::IpPrefix) -> String {
+        format!("{}/{}", prefix.address, prefix.prefix_len)
+    }
+
+    fn format_proxy_network(proxy: easytier_core::config::ProxyNetworkConfig) -> String {
+        let real = Self::format_prefix(&proxy.real);
+        match proxy.mapped {
+            Some(mapped) => format!("{}->{}", real, Self::format_prefix(&mapped)),
+            None => real,
+        }
     }
 }
 
@@ -180,8 +192,41 @@ impl PeerManageRpc for PeerManagerRpcService {
         _: BaseController,
         _request: ShowNodeInfoRequest, // Accept request of type HelloRequest
     ) -> Result<ShowNodeInfoResponse, rpc_types::error::Error> {
+        let peer_manager = weak_upgrade(&self.peer_manager)?;
+        let snapshot = weak_upgrade(&self.core_instance)?.node_snapshot().await;
         Ok(ShowNodeInfoResponse {
-            node_info: Some(weak_upgrade(&self.peer_manager)?.get_my_info().await),
+            node_info: Some(NodeInfo {
+                peer_id: snapshot.peer_id,
+                ipv4_addr: snapshot
+                    .ipv4_addr
+                    .map(|addr| addr.to_string())
+                    .unwrap_or_default(),
+                proxy_cidrs: snapshot
+                    .proxy_networks
+                    .into_iter()
+                    .map(Self::format_proxy_network)
+                    .collect(),
+                hostname: snapshot.hostname,
+                stun_info: Some(snapshot.stun_info),
+                inst_id: snapshot.instance_id.to_string(),
+                listeners: snapshot
+                    .listeners
+                    .into_iter()
+                    .map(|listener| listener.to_string())
+                    .collect(),
+                config: peer_manager.get_global_ctx_ref().config.dump(),
+                version: snapshot.version,
+                feature_flag: Some(snapshot.feature_flags),
+                ip_list: Some(
+                    peer_manager
+                        .get_global_ctx_ref()
+                        .get_ip_collector()
+                        .collect_ip_addrs()
+                        .await,
+                ),
+                public_ipv6_addr: snapshot.public_ipv6_addr.map(Into::into),
+                ipv6_public_addr_prefix: snapshot.ipv6_public_addr_prefix.map(Into::into),
+            }),
         })
     }
 }

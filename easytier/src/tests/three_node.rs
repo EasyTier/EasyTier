@@ -849,8 +849,8 @@ pub async fn public_ipv6_auto_addr_end_to_end() {
         .unwrap();
     assert_eq!(
         provider
-            .get_peer_manager()
-            .get_my_info()
+            .get_core_instance()
+            .node_snapshot()
             .await
             .ipv6_public_addr_prefix,
         Some(
@@ -859,11 +859,10 @@ pub async fn public_ipv6_auto_addr_end_to_end() {
                 provider_prefix.network_length()
             )
             .unwrap()
-            .into()
         )
     );
     let provider_info = provider.get_core_instance().local_public_ipv6_info().await;
-    let client_peer_id = client.get_peer_manager().get_my_info().await.peer_id;
+    let client_peer_id = client.get_core_instance().node_snapshot().await.peer_id;
     assert_eq!(
         provider_info.provider_prefix,
         Some(

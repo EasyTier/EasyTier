@@ -20,9 +20,9 @@ use url::Url;
 
 use crate::{
     compressor::{Compressor as _, DefaultCompressor},
-    config::{P2pPolicyFlags, PeerId},
+    config::{P2pPolicyFlags, PeerId, ProxyNetworkConfig},
     packet::{CompressorAlgo, PacketType, ZCPacket},
-    proto::common::FlagsInConfig,
+    proto::common::{FlagsInConfig, PeerFeatureFlag, StunInfo},
     proto::core_peer::peer::{ListPublicIpv6InfoResponse, PeerConnInfo, Route as CoreRoute},
     socket::{
         SocketContext,
@@ -78,6 +78,21 @@ pub struct PeerSnapshot {
     pub default_conn_id: Option<PeerConnId>,
     pub directly_connected_conns: Vec<PeerConnId>,
     pub conns: Vec<PeerConnInfo>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NodeSnapshot {
+    pub peer_id: PeerId,
+    pub ipv4_addr: Option<cidr::Ipv4Inet>,
+    pub proxy_networks: Vec<ProxyNetworkConfig>,
+    pub hostname: String,
+    pub stun_info: StunInfo,
+    pub instance_id: uuid::Uuid,
+    pub listeners: Vec<Url>,
+    pub version: String,
+    pub feature_flags: PeerFeatureFlag,
+    pub public_ipv6_addr: Option<cidr::Ipv6Inet>,
+    pub ipv6_public_addr_prefix: Option<cidr::Ipv6Inet>,
 }
 
 pub struct RpcTransport {
@@ -1314,6 +1329,26 @@ impl PeerManagerCore {
             });
         }
         snapshots
+    }
+
+    pub(crate) async fn node_snapshot(&self, listeners: Vec<Url>) -> NodeSnapshot {
+        NodeSnapshot {
+            peer_id: self.my_peer_id,
+            ipv4_addr: self.context.ipv4(),
+            proxy_networks: self.context.proxy_networks(),
+            hostname: self.context.hostname(),
+            stun_info: self.context.stun_info(),
+            instance_id: self.context.instance_id(),
+            listeners,
+            version: self.context.easytier_version(),
+            feature_flags: self.context.feature_flags(),
+            public_ipv6_addr: self.get_route().get_my_public_ipv6_addr().await,
+            ipv6_public_addr_prefix: self.context.advertised_ipv6_public_addr_prefix().map(
+                |prefix| {
+                    cidr::Ipv6Inet::new(prefix.first_address(), prefix.network_length()).unwrap()
+                },
+            ),
+        }
     }
 
     pub async fn list_route_snapshots(&self) -> Vec<CoreRoute> {
@@ -3403,7 +3438,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        config::{CoreConfig, IpPrefix, NetworkIdentity, NodeConfig},
+        config::{CoreConfig, IpPrefix, NetworkIdentity, NodeConfig, ProxyNetworkConfig},
         peers::{context::PeerContext, create_packet_recv_chan},
         proto::common::{PeerFeatureFlag, StunInfo},
     };
@@ -3563,6 +3598,35 @@ mod tests {
         assert_eq!(route.task_count(), 0);
         assert!(core.stats_manager.cleanup_task_is_stopped());
         assert!(core.acl_filter.cleanup_task_is_stopped());
+    }
+
+    #[tokio::test]
+    async fn node_snapshot_exposes_normalized_runtime_state() {
+        let instance_id = uuid::Uuid::from_u128(0x00112233445566778899aabbccddeeff);
+        let mut runtime = portable_runtime_config("portable-net", 91);
+        runtime.core.node.instance_id = Some(*instance_id.as_bytes());
+        runtime.core.node.hostname = Some("portable-node".to_owned());
+        runtime.core.routes.ipv4 = Some(IpPrefix::new("10.20.0.91".parse().unwrap(), 16).unwrap());
+        runtime.core.routes.proxy_networks = vec![ProxyNetworkConfig {
+            real: IpPrefix::new("10.40.0.0".parse().unwrap(), 16).unwrap(),
+            mapped: Some(IpPrefix::new("10.50.0.0".parse().unwrap(), 16).unwrap()),
+        }];
+        runtime.stun_info.public_ip = vec!["192.0.2.91".to_owned()];
+        let core = build_portable_for_test(runtime).unwrap();
+        let listener = Url::parse("tcp://0.0.0.0:11010").unwrap();
+
+        let snapshot = core.node_snapshot(vec![listener.clone()]).await;
+
+        assert_eq!(snapshot.peer_id, 91);
+        assert_eq!(snapshot.instance_id, instance_id);
+        assert_eq!(snapshot.hostname, "portable-node");
+        assert_eq!(snapshot.ipv4_addr, Some("10.20.0.91/16".parse().unwrap()));
+        assert_eq!(snapshot.proxy_networks.len(), 1);
+        assert_eq!(snapshot.listeners, vec![listener]);
+        assert_eq!(snapshot.stun_info.public_ip, vec!["192.0.2.91"]);
+        assert_eq!(snapshot.version, env!("CARGO_PKG_VERSION"));
+        assert!(snapshot.public_ipv6_addr.is_none());
+        assert!(snapshot.ipv6_public_addr_prefix.is_none());
     }
 
     #[tokio::test]

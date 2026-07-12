@@ -6,6 +6,7 @@ use std::{
 
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
+use easytier_core::config::{IpPrefix, ProxyNetworkConfig as CoreProxyNetworkConfig};
 use easytier_core::peers::context::{
     ArcByteLimiter, HostRoutingPolicy, NetworkIdentity as CoreNetworkIdentity, PeerContext,
     PeerContextEvent, PeerContextEventSubscriber, PeerEvent, PeerGroupIdentity,
@@ -215,6 +216,23 @@ impl PeerContext for GlobalCtx {
             .get_proxy_cidrs()
             .iter()
             .map(|x| x.mapped_cidr.unwrap_or(x.cidr))
+            .collect()
+    }
+
+    fn proxy_networks(&self) -> Vec<CoreProxyNetworkConfig> {
+        self.config
+            .get_proxy_cidrs()
+            .into_iter()
+            .map(|proxy| CoreProxyNetworkConfig {
+                real: IpPrefix {
+                    address: proxy.cidr.first_address().into(),
+                    prefix_len: proxy.cidr.network_length(),
+                },
+                mapped: proxy.mapped_cidr.map(|mapped| IpPrefix {
+                    address: mapped.first_address().into(),
+                    prefix_len: mapped.network_length(),
+                }),
+            })
             .collect()
     }
 

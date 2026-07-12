@@ -12,10 +12,7 @@ use std::{
 };
 
 use crate::{
-    common::{
-        PeerId, constants::EASYTIER_VERSION, dns::RuntimeDnsResolver, error::Error,
-        global_ctx::ArcGlobalCtx, stun::StunInfoCollectorTrait,
-    },
+    common::{PeerId, dns::RuntimeDnsResolver, error::Error, global_ctx::ArcGlobalCtx},
     peers::{
         PeerPacketFilter, peer_session::PeerSessionStore, traffic_metrics::TrafficMetricRecorder,
     },
@@ -345,49 +342,6 @@ impl PeerManager {
 
     pub(crate) fn traffic_metrics(&self) -> Arc<TrafficMetricRecorder> {
         self.core.traffic_metrics()
-    }
-
-    pub async fn get_my_info(&self) -> instance::NodeInfo {
-        instance::NodeInfo {
-            peer_id: self.my_peer_id(),
-            ipv4_addr: self
-                .global_ctx
-                .get_ipv4()
-                .map(|x| x.to_string())
-                .unwrap_or_default(),
-            proxy_cidrs: self
-                .global_ctx
-                .config
-                .get_proxy_cidrs()
-                .into_iter()
-                .map(|x| match x.mapped_cidr {
-                    None => x.cidr.to_string(),
-                    Some(mapped) => format!("{}->{}", x.cidr, mapped),
-                })
-                .collect(),
-            hostname: self.global_ctx.get_hostname(),
-            stun_info: Some(self.global_ctx.get_stun_info_collector().get_stun_info()),
-            inst_id: self.global_ctx.get_id().to_string(),
-            listeners: self
-                .global_ctx
-                .get_running_listeners()
-                .iter()
-                .map(|x| x.to_string())
-                .collect(),
-            config: self.global_ctx.config.dump(),
-            version: EASYTIER_VERSION.to_string(),
-            feature_flag: Some(self.global_ctx.get_feature_flags()),
-            ip_list: Some(self.global_ctx.get_ip_collector().collect_ip_addrs().await),
-            public_ipv6_addr: self.get_my_public_ipv6_addr().await.map(Into::into),
-            ipv6_public_addr_prefix: self
-                .global_ctx
-                .get_advertised_ipv6_public_addr_prefix()
-                .map(|prefix| {
-                    cidr::Ipv6Inet::new(prefix.first_address(), prefix.network_length())
-                        .unwrap()
-                        .into()
-                }),
-        }
     }
 
     pub async fn wait(&self) {

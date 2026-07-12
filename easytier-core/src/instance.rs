@@ -1143,6 +1143,12 @@ where
         self.peer_manager.list_peer_snapshots().await
     }
 
+    pub async fn node_snapshot(&self) -> crate::peers::peer_manager::NodeSnapshot {
+        self.peer_manager
+            .node_snapshot(self.running_listeners())
+            .await
+    }
+
     pub async fn route_snapshots(&self) -> Vec<crate::proto::core_peer::peer::Route> {
         self.peer_manager.list_route_snapshots().await
     }

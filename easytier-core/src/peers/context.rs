@@ -22,7 +22,8 @@ use sha2::Sha256;
 pub use crate::config::{NetworkIdentity, NetworkSecretDigest};
 use crate::{
     config::{
-        CoreConfig, IpPrefix, NodeConfig, PeerId, PeerPolicyConfig, RouteConfig, TrafficConfig,
+        CoreConfig, IpPrefix, NodeConfig, PeerId, PeerPolicyConfig, ProxyNetworkConfig,
+        RouteConfig, TrafficConfig,
     },
     peers::{credential_manager::CredentialManager, util::shrink_dashmap},
     token_bucket::TokenBucketManager,
@@ -449,6 +450,10 @@ pub trait PeerContext: Send + Sync {
         Vec::new()
     }
 
+    fn proxy_networks(&self) -> Vec<ProxyNetworkConfig> {
+        Vec::new()
+    }
+
     fn vpn_portal_cidr(&self) -> Option<Ipv4Cidr> {
         None
     }
@@ -681,6 +686,10 @@ impl PeerContext for ConfigPeerContext {
             .iter()
             .filter_map(|proxy| config_ipv4_cidr(proxy.mapped.as_ref().unwrap_or(&proxy.real)))
             .collect()
+    }
+
+    fn proxy_networks(&self) -> Vec<ProxyNetworkConfig> {
+        self.runtime.core.routes.proxy_networks.clone()
     }
 
     fn hostname(&self) -> String {
