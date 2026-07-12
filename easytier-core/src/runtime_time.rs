@@ -166,7 +166,7 @@ mod tracked {
     }
 
     pub struct Interval {
-        inner: tokio::time::Interval,
+        inner: Pin<Box<tokio::time::Sleep>>,
         period: Duration,
         next_deadline: Instant,
         missed_tick_behavior: MissedTickBehavior,
@@ -176,19 +176,20 @@ mod tracked {
     impl Interval {
         pub async fn tick(&mut self) -> Instant {
             self.registration.ensure();
-            let tick = self.inner.tick().await;
+            let tick = self.next_deadline;
+            self.inner.as_mut().await;
             let now = Instant::now();
             self.next_deadline = if now > tick + Duration::from_millis(5) {
                 next_interval_deadline(self.missed_tick_behavior, tick, now, self.period)
             } else {
                 tick + self.period
             };
+            self.inner.as_mut().reset(self.next_deadline);
             self.registration.reset(self.next_deadline);
             tick
         }
 
         pub fn set_missed_tick_behavior(&mut self, behavior: MissedTickBehavior) {
-            self.inner.set_missed_tick_behavior(behavior);
             self.missed_tick_behavior = behavior;
         }
     }
@@ -218,8 +219,9 @@ mod tracked {
     }
 
     pub fn interval_at(start: Instant, period: Duration) -> Interval {
+        assert!(period > Duration::ZERO, "`period` must be non-zero.");
         Interval {
-            inner: tokio::time::interval_at(start, period),
+            inner: Box::pin(tokio::time::sleep_until(start)),
             period,
             next_deadline: start,
             missed_tick_behavior: MissedTickBehavior::Burst,
