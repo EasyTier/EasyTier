@@ -1,4 +1,4 @@
-module github.com/easytier/easytier/tools/wasi-socket-poc/host
+module github.com/easytier/easytier/easytier-go-host
 
 go 1.25.0
 

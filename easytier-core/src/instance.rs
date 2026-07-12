@@ -1382,7 +1382,7 @@ mod tests {
         };
         create.validate().unwrap();
         let fixture =
-            include_bytes!("../../tools/wasi-socket-poc/host/testdata/minimal_core_instance.json");
+            include_bytes!("../../easytier-go-host/testdata/minimal_core_instance.json");
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(fixture).unwrap(),
             serde_json::to_value(&create).unwrap()

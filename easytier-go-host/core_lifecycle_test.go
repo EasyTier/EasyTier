@@ -242,7 +242,7 @@ func buildCore(t *testing.T) []byte {
 	if err != nil {
 		t.Fatalf("resolve host directory: %v", err)
 	}
-	repositoryDir := filepath.Clean(filepath.Join(hostDir, "..", "..", ".."))
+	repositoryDir := filepath.Clean(filepath.Join(hostDir, ".."))
 	command := exec.Command(
 		"cargo",
 		"build",

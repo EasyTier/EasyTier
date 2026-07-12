@@ -20,7 +20,7 @@ Requirements:
 - no cgo.
 
 ```sh
-cd tools/wasi-socket-poc/host
+cd easytier-go-host
 go test -v ./...
 ```
 

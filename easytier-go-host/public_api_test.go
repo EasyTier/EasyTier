@@ -6,7 +6,7 @@ import (
 	"net/netip"
 	"testing"
 
-	corehost "github.com/easytier/easytier/tools/wasi-socket-poc/host"
+	corehost "github.com/easytier/easytier/easytier-go-host"
 )
 
 type publicDNSResolver struct{}

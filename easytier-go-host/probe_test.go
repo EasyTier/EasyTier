@@ -314,7 +314,7 @@ func buildGuest(t *testing.T) []byte {
 	if err != nil {
 		t.Fatalf("resolve host directory: %v", err)
 	}
-	guestDir := filepath.Clean(filepath.Join(hostDir, "..", "guest"))
+	guestDir := filepath.Clean(filepath.Join(hostDir, "..", "tools", "wasi-socket-poc", "guest"))
 	command := exec.Command("cargo", "build", "--release", "--target", "wasm32-wasip1")
 	command.Dir = guestDir
 	output, err := command.CombinedOutput()
