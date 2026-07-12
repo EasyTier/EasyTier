@@ -278,6 +278,36 @@ Do not preserve old public Rust paths merely to make a migration appear less
 disruptive. Do preserve wire compatibility when it is an explicit protocol
 requirement; that is separate from Rust source compatibility.
 
+## Validation snapshot (2026-07-12)
+
+The current implementation milestone passes:
+
+- native `easytier-core` default, no-default, and all-feature checks;
+- `wasm32-wasip1` default, no-default, and all-feature checks plus test-artifact
+  linking;
+- 390 native `easytier-core` library tests;
+- all 28 `easytier-go-host` tests, including the real two-instance route and
+  packet exchange;
+- race-enabled Go bridge close, cancellation, and lifecycle tests;
+- ten repeated runs of the real core lifecycle, two-instance network, socket
+  factory, and listener paths;
+- 15 native Core-instance ownership/isolation tests and nine native direct
+  connector tests in the Docker environment.
+
+The source audit finds no direct real-OS network, DNS, filesystem, process, or
+platform syscall in `easytier-core`. Address-only uses of `std::net` and the
+in-memory smoltcp stream are not OS operations.
+
+Three native TCP hole-punch tests remain blocked before their hole-punch path:
+the shared legacy ring-tunnel fixture in `easytier/src/peers/tests.rs` does not
+provide `TunnelInfo`, so peer admission fails with `tunnel info is not set`.
+This is recorded as a test-harness blocker rather than changing production
+semantics during the connector refactor.
+
+Quantitative latency/idle-resource baselines and hard-kill isolation remain
+production-readiness work for the selected Go/WASI ABI. They do not change the
+socket ownership or portable-logic boundary established by this refactor.
+
 ## Validation matrix
 
 Every phase selects the relevant rows, and the final phase runs all rows:
