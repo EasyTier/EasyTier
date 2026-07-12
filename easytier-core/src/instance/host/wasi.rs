@@ -70,7 +70,8 @@ impl WasiInstanceRegistry {
 
     fn restore_entry(&mut self, handle: u64, entry: WasiInstanceEntry) {
         debug_assert!(self.active_entry);
-        debug_assert!(self.entries.insert(handle, entry).is_none());
+        let previous = self.entries.insert(handle, entry);
+        debug_assert!(previous.is_none());
         self.active_entry = false;
     }
 
