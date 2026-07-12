@@ -1,5 +1,6 @@
 //! Lifecycle owner for the portable EasyTier runtime.
 
+pub mod host;
 pub mod packet_io;
 pub mod public_ipv6_provider;
 
