@@ -36,6 +36,7 @@ pub struct PeerManager {
     global_ctx: ArcGlobalCtx,
     core: Arc<PeerManagerCore>,
     peer_context: Arc<RuntimePeerContext>,
+    ring_registry: Arc<RingTunnelRegistry>,
 
     foreign_network_manager: Arc<ForeignNetworkManager>,
 }
@@ -107,6 +108,7 @@ impl PeerManager {
 
         let global_ctx_for_foreign = global_ctx.clone();
         let peer_context_for_foreign = peer_context.clone();
+        let ring_registry_for_foreign = ring_registry.clone();
         let build_result = PeerManagerCore::new_with_default_components(
             route_algo,
             my_peer_id,
@@ -126,7 +128,7 @@ impl PeerManager {
                     my_peer_id,
                     global_ctx_for_foreign.clone(),
                     peer_context_for_foreign,
-                    ring_registry,
+                    ring_registry_for_foreign,
                     peer_session_store,
                     packet_sender_to_mgr,
                     accessor,
@@ -138,6 +140,7 @@ impl PeerManager {
             global_ctx,
             core: Arc::new(build_result.core),
             peer_context,
+            ring_registry,
             foreign_network_manager: build_result.foreign_network_manager,
         }
     }
@@ -148,6 +151,10 @@ impl PeerManager {
 
     pub fn core(&self) -> Arc<PeerManagerCore> {
         self.core.clone()
+    }
+
+    pub(crate) fn ring_registry(&self) -> Arc<RingTunnelRegistry> {
+        self.ring_registry.clone()
     }
 
     pub fn mark_recent_traffic(&self, dst_peer_id: PeerId) {

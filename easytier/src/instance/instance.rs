@@ -652,6 +652,7 @@ pub struct Instance {
     peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
     peer_manager: Arc<PeerManager>,
     core_instance: Arc<RuntimeCoreInstance>,
+    ring_registry: Arc<RingTunnelRegistry>,
     config_operation: Arc<ConfigOperation>,
 
     proxy: Arc<RuntimeProxyService>,
@@ -845,7 +846,7 @@ impl Instance {
                 transport_proxy,
                 Some(proxy.clone()),
                 Some(proxy_cidr_runtime),
-                ring_registry,
+                ring_registry.clone(),
             )
             .expect("runtime core instance composition should be valid"),
         );
@@ -869,6 +870,7 @@ impl Instance {
 
             peer_manager,
             core_instance,
+            ring_registry,
             config_operation,
 
             proxy,
@@ -1108,6 +1110,10 @@ impl Instance {
 
     pub fn get_peer_manager(&self) -> Arc<PeerManager> {
         self.peer_manager.clone()
+    }
+
+    pub(crate) fn ring_registry(&self) -> Arc<RingTunnelRegistry> {
+        self.ring_registry.clone()
     }
 
     #[cfg(feature = "ffi-dataplane")]
