@@ -143,3 +143,8 @@ type opaqueBridge struct {
 	completion          chan struct{}
 	workers             sync.WaitGroup
 }
+
+func (b *opaqueBridge) allocateHandleLocked() uint64 {
+	b.nextHandle++
+	return b.nextHandle
+}

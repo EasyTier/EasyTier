@@ -1,5 +1,7 @@
 package host
 
+// Packet sinks carry core egress into bounded host-owned queues.
+
 import (
 	"context"
 	"fmt"

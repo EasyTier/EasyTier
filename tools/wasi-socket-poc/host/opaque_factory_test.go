@@ -219,11 +219,6 @@ func (b *opaqueBridge) takeUDPBind(
 	return 0
 }
 
-func (b *opaqueBridge) allocateHandleLocked() uint64 {
-	b.nextHandle++
-	return b.nextHandle
-}
-
 func (b *opaqueBridge) discardCreateOperation(operation uint64) {
 	b.mu.Lock()
 	create := b.creates[operation]
