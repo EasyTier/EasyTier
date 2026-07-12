@@ -905,11 +905,7 @@ where
             })?;
             self.start_dhcp_ipv4(host).await?;
         }
-        if let Some(proxy_cidr_runtime) = &self.proxy_cidr_runtime
-            && !self.proxy_cidr_runtime_started.swap(true, Ordering::AcqRel)
-        {
-            proxy_cidr_runtime.start_updater();
-        }
+        self.start_proxy_cidr_runtime().await?;
         self.start_transport_proxy().await?;
         self.load_initial_acl().await?;
         self.start_proxy().await?;
@@ -917,6 +913,23 @@ where
         self.start_peer_center().await?;
         self.start_initial_peers().await?;
         self.start_proxy_cidr_monitor().await?;
+        Ok(())
+    }
+
+    async fn start_proxy_cidr_runtime(&self) -> anyhow::Result<()> {
+        let _operation = self.operation.lock().await;
+        let state = self.state();
+        if state != CoreInstanceState::Running {
+            anyhow::bail!("proxy CIDR runtime cannot start from core instance state {state:?}");
+        }
+        if self.cancel.is_cancelled() {
+            anyhow::bail!("proxy CIDR runtime start cancelled");
+        }
+        if let Some(proxy_cidr_runtime) = &self.proxy_cidr_runtime
+            && !self.proxy_cidr_runtime_started.swap(true, Ordering::AcqRel)
+        {
+            proxy_cidr_runtime.start_updater();
+        }
         Ok(())
     }
 

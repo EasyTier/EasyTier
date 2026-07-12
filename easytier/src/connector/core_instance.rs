@@ -505,10 +505,13 @@ mod tests {
             .expect("runtime core composition should succeed"),
         );
 
+        assert!(instance.start_network_services(None).await.is_err());
+        assert!(events.lock().unwrap().is_empty());
         instance.start().await.unwrap();
         instance.start_network_services(None).await.unwrap();
         instance.start_network_services(None).await.unwrap();
         instance.stop().await;
+        assert!(instance.start_network_services(None).await.is_err());
 
         assert_eq!(
             *events.lock().unwrap(),
