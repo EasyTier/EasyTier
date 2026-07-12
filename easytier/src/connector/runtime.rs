@@ -42,7 +42,7 @@ pub(crate) struct RuntimeConnectorHost {
 
 impl RuntimeConnectorHost {
     pub(crate) fn new(global_ctx: ArcGlobalCtx) -> Self {
-        Self::new_with_ring_registry(global_ctx, crate::tunnel::ring::runtime_ring_registry())
+        Self::new_with_ring_registry(global_ctx, Arc::new(RingTunnelRegistry::default()))
     }
 
     pub(crate) fn new_with_ring_registry(

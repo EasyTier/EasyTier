@@ -785,7 +785,7 @@ impl DhcpIpv4Host for RuntimeDhcpIpv4Host {
 
 impl Instance {
     pub fn new(config: impl ConfigLoader + 'static) -> Self {
-        Self::new_with_ring_registry(config, crate::tunnel::ring::runtime_ring_registry())
+        Self::new_with_ring_registry(config, Arc::new(RingTunnelRegistry::default()))
     }
 
     pub fn new_with_ring_registry(

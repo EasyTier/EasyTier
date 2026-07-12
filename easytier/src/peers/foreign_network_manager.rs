@@ -143,7 +143,7 @@ impl ForeignNetworkRuntimeImpl {
         Self::new_with_ring_registry(
             global_ctx,
             parent_context,
-            crate::tunnel::ring::runtime_ring_registry(),
+            Arc::new(RingTunnelRegistry::default()),
         )
     }
 

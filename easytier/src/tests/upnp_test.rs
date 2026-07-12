@@ -33,7 +33,10 @@ use crate::{
         tests::{connect_peer_manager, wait_route_appear, wait_route_appear_with_cost},
     },
     proto::common::{NatType, StunInfo},
-    tunnel::{common::tests::wait_for_condition, ring::RingTunnelConnector},
+    tunnel::{
+        common::tests::wait_for_condition,
+        ring::{RingTunnelConnector, RingTunnelRegistry},
+    },
 };
 
 const TEST_NS_A: &str = "upnp_a";
@@ -1420,13 +1423,33 @@ fn create_test_instance(
     stun_collector: Box<dyn StunInfoCollectorTrait>,
     configure_flags: impl FnOnce(&mut crate::common::config::Flags),
 ) -> Instance {
+    create_test_instance_with_ring_registry(
+        inst_name,
+        netns,
+        ipv4,
+        ipv6,
+        stun_collector,
+        configure_flags,
+        Arc::new(RingTunnelRegistry::default()),
+    )
+}
+
+fn create_test_instance_with_ring_registry(
+    inst_name: &str,
+    netns: Option<&str>,
+    ipv4: &str,
+    ipv6: &str,
+    stun_collector: Box<dyn StunInfoCollectorTrait>,
+    configure_flags: impl FnOnce(&mut crate::common::config::Flags),
+    ring_registry: Arc<RingTunnelRegistry>,
+) -> Instance {
     let config = create_test_instance_config(inst_name, netns, ipv4, ipv6);
     let mut flags = config.get_flags();
     flags.disable_tcp_hole_punching = true;
     configure_flags(&mut flags);
     config.set_flags(flags);
 
-    let instance = Instance::new(config);
+    let instance = Instance::new_with_ring_registry(config, ring_registry);
     instance
         .get_global_ctx()
         .replace_stun_info_collector(stun_collector);
@@ -1747,8 +1770,9 @@ async fn udp_hole_punch_succeeds_via_upnp_mappings_with_different_external_ports
 #[serial_test::serial(upnp)]
 async fn instances_build_direct_connection_via_upnp_udp_hole_punch() {
     let _env = DualGatewayUpnpIntegrationEnv::new().await.unwrap();
+    let ring_registry = Arc::new(RingTunnelRegistry::default());
 
-    let mut inst_a = create_test_instance(
+    let mut inst_a = create_test_instance_with_ring_registry(
         "upnp-inst-a",
         Some(DUAL_NS_A),
         "10.144.200.1/24",
@@ -1759,10 +1783,11 @@ async fn instances_build_direct_connection_via_upnp_udp_hole_punch() {
             external_ip: DUAL_EXTERNAL_A_IP,
         }),
         |flags| flags.need_p2p = true,
+        ring_registry.clone(),
     );
     let mut event_rx_a = inst_a.get_global_ctx().subscribe();
 
-    let mut inst_b = create_test_instance(
+    let mut inst_b = create_test_instance_with_ring_registry(
         "upnp-inst-b",
         None,
         "10.144.200.2/24",
@@ -1771,9 +1796,10 @@ async fn instances_build_direct_connection_via_upnp_udp_hole_punch() {
             udp_nat_type: NatType::Unknown,
         }),
         |_| {},
+        ring_registry.clone(),
     );
 
-    let mut inst_c = create_test_instance(
+    let mut inst_c = create_test_instance_with_ring_registry(
         "upnp-inst-c",
         Some(DUAL_NS_C),
         "10.144.200.3/24",
@@ -1784,6 +1810,7 @@ async fn instances_build_direct_connection_via_upnp_udp_hole_punch() {
             external_ip: DUAL_EXTERNAL_C_IP,
         }),
         |flags| flags.need_p2p = true,
+        ring_registry,
     );
     let mut event_rx_c = inst_c.get_global_ctx().subscribe();
 

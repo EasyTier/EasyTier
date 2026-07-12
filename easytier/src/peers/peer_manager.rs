@@ -61,7 +61,7 @@ impl PeerManager {
             route_algo,
             global_ctx,
             nic_channel,
-            crate::tunnel::ring::runtime_ring_registry(),
+            Arc::new(RingTunnelRegistry::default()),
         )
     }
 

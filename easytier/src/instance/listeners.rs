@@ -21,6 +21,8 @@ use easytier_core::{
 };
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
+#[cfg(any(test, feature = "faketcp"))]
+use crate::tunnel;
 #[cfg(feature = "faketcp")]
 use crate::tunnel::TunnelListener;
 use crate::{
@@ -30,7 +32,7 @@ use crate::{
         netns::NetNS,
     },
     tunnel::{
-        self, FromUrl, IpVersion, Tunnel,
+        FromUrl, IpVersion, Tunnel,
         tcp::resolve_tcp_bind_url_addr,
         tcp_socket::{RuntimeTcpListenerFactory, RuntimeTcpSocket},
         udp::{RuntimeUdpSessionControlHandler, RuntimeUdpSocketFactory},
@@ -105,7 +107,7 @@ impl<H: AcceptedTunnelHandler> ListenerManager<H> {
         Self::new_with_ring_registry(
             global_ctx,
             peer_manager,
-            tunnel::ring::runtime_ring_registry(),
+            Arc::new(RingTunnelRegistry::default()),
         )
     }
 

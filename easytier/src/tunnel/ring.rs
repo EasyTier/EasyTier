@@ -1,4 +1,4 @@
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 pub use easytier_core::tunnel::ring::{
@@ -13,13 +13,6 @@ use crate::tunnel::{FromUrl, IpVersion};
 use super::{
     Tunnel, TunnelConnector, TunnelError, TunnelInfo, TunnelListener, build_url_from_socket_addr,
 };
-
-static RUNTIME_RING_REGISTRY: LazyLock<Arc<RingTunnelRegistry>> =
-    LazyLock::new(|| Arc::new(RingTunnelRegistry::default()));
-
-pub(crate) fn runtime_ring_registry() -> Arc<RingTunnelRegistry> {
-    RUNTIME_RING_REGISTRY.clone()
-}
 
 pub struct RingTunnelListener {
     listener_addr: url::Url,
@@ -38,10 +31,6 @@ impl std::fmt::Debug for RingTunnelListener {
 }
 
 impl RingTunnelListener {
-    pub fn new(key: url::Url) -> Self {
-        Self::new_with_ring_registry(key, runtime_ring_registry())
-    }
-
     pub fn new_with_ring_registry(key: url::Url, ring_registry: Arc<RingTunnelRegistry>) -> Self {
         Self {
             listener_addr: key,
@@ -110,10 +99,6 @@ pub struct RingTunnelConnector {
 }
 
 impl RingTunnelConnector {
-    pub fn new(remote_addr: url::Url) -> Self {
-        Self::new_with_ring_registry(remote_addr, runtime_ring_registry())
-    }
-
     pub fn new_with_ring_registry(
         remote_addr: url::Url,
         ring_registry: Arc<RingTunnelRegistry>,

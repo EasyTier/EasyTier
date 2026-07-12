@@ -151,7 +151,7 @@ pub(crate) fn runtime_core_instance_adapters(
 ) -> CoreInstanceAdapters<RuntimeConnectorHost> {
     runtime_core_instance_adapters_with_ring_registry(
         global_ctx,
-        crate::tunnel::ring::runtime_ring_registry(),
+        Arc::new(RingTunnelRegistry::default()),
     )
 }
 
@@ -220,7 +220,7 @@ pub(crate) fn build_runtime_core_instance_with_services(
         transport_proxy,
         proxy,
         proxy_cidr_runtime,
-        crate::tunnel::ring::runtime_ring_registry(),
+        Arc::new(RingTunnelRegistry::default()),
     )
 }
 
