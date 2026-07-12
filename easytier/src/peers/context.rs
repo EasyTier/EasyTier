@@ -1,4 +1,8 @@
-use std::{net::IpAddr, sync::Arc};
+use std::{
+    collections::HashSet,
+    net::IpAddr,
+    sync::{Arc, Mutex},
+};
 
 use arc_swap::ArcSwap;
 use cidr::{Ipv4Cidr, Ipv4Inet, Ipv6Cidr, Ipv6Inet};
@@ -25,6 +29,7 @@ use crate::common::global_ctx::ArcGlobalCtx;
 /// and trusted-key storage that have not yet moved into the core instance.
 pub(crate) struct RuntimePeerContext {
     snapshot: ArcSwap<RuntimePeerSnapshot>,
+    refresh_lock: Mutex<()>,
     support: ArcGlobalCtx,
 }
 
@@ -34,10 +39,25 @@ struct RuntimePeerSnapshot {
     flags: FlagsInConfig,
     vpn_portal_cidr: Option<Ipv4Cidr>,
     pinned_peers: Vec<(url::Url, Option<String>)>,
+    peer_group_memberships: Vec<PeerGroupIdentity>,
+    acl_group_declarations: Vec<PeerGroupIdentity>,
 }
 
 impl RuntimePeerSnapshot {
     fn from_global_ctx(global_ctx: &ArcGlobalCtx) -> Self {
+        let acl_group_declarations = PeerContext::acl_group_declarations(global_ctx.as_ref());
+        let memberships = global_ctx
+            .config
+            .get_acl()
+            .and_then(|acl| acl.acl_v1)
+            .and_then(|acl| acl.group)
+            .map(|group| group.members.into_iter().collect::<HashSet<_>>())
+            .unwrap_or_default();
+        let peer_group_memberships = acl_group_declarations
+            .iter()
+            .filter(|group| memberships.contains(&group.group_name))
+            .cloned()
+            .collect();
         Self {
             runtime: runtime_peer_config(global_ctx),
             flags: global_ctx.get_flags(),
@@ -48,6 +68,8 @@ impl RuntimePeerSnapshot {
                 .into_iter()
                 .map(|peer| (peer.uri, peer.peer_public_key))
                 .collect(),
+            peer_group_memberships,
+            acl_group_declarations,
         }
     }
 }
@@ -56,11 +78,13 @@ impl RuntimePeerContext {
     pub(crate) fn new(support: ArcGlobalCtx) -> Self {
         Self {
             snapshot: ArcSwap::from_pointee(RuntimePeerSnapshot::from_global_ctx(&support)),
+            refresh_lock: Mutex::new(()),
             support,
         }
     }
 
     pub(crate) fn refresh(&self) {
+        let _guard = self.refresh_lock.lock().unwrap();
         self.snapshot
             .store(Arc::new(RuntimePeerSnapshot::from_global_ctx(
                 &self.support,
@@ -195,6 +219,7 @@ impl PeerContext for RuntimePeerContext {
 
     fn feature_flags(&self) -> PeerFeatureFlag {
         let mut flags = self.snapshot().runtime.feature_flags;
+        flags.avoid_relay_data |= self.support.get_avoid_relay_data_preference();
         flags.ipv6_public_addr_provider =
             self.support.get_feature_flags().ipv6_public_addr_provider;
         flags
@@ -256,11 +281,21 @@ impl PeerContext for RuntimePeerContext {
     }
 
     fn peer_groups(&self, peer_id: PeerId) -> Vec<PeerGroupInfo> {
-        PeerContext::peer_groups(self.support.as_ref(), peer_id)
+        self.snapshot()
+            .peer_group_memberships
+            .iter()
+            .map(|group| {
+                PeerGroupInfo::generate_with_proof(
+                    group.group_name.clone(),
+                    group.group_secret.clone(),
+                    peer_id,
+                )
+            })
+            .collect()
     }
 
     fn acl_group_declarations(&self) -> Vec<PeerGroupIdentity> {
-        PeerContext::acl_group_declarations(self.support.as_ref())
+        self.snapshot().acl_group_declarations.clone()
     }
 
     fn is_pubkey_trusted(&self, pubkey: &[u8], network_name: &str) -> bool {
@@ -332,6 +367,7 @@ mod tests {
         config::{PeerConfig, VpnPortalConfig},
         global_ctx::tests::get_mock_global_ctx,
     };
+    use crate::proto::acl::{Acl, AclV1, GroupIdentity, GroupInfo};
 
     #[tokio::test]
     async fn config_changes_require_an_explicit_snapshot_update() {
@@ -343,6 +379,18 @@ mod tests {
             uri: remote_url.clone(),
             peer_public_key: Some("before-key".to_owned()),
         }]);
+        global_ctx.config.set_acl(Some(Acl {
+            acl_v1: Some(AclV1 {
+                group: Some(GroupInfo {
+                    declares: vec![GroupIdentity {
+                        group_name: "before-group".to_owned(),
+                        group_secret: "before-secret".to_owned(),
+                    }],
+                    members: vec!["before-group".to_owned()],
+                }),
+                ..Default::default()
+            }),
+        }));
         let context = RuntimePeerContext::new(global_ctx.clone());
 
         global_ctx.set_hostname("after".to_owned());
@@ -359,6 +407,18 @@ mod tests {
             uri: remote_url.clone(),
             peer_public_key: Some("after-key".to_owned()),
         }]);
+        global_ctx.config.set_acl(Some(Acl {
+            acl_v1: Some(AclV1 {
+                group: Some(GroupInfo {
+                    declares: vec![GroupIdentity {
+                        group_name: "after-group".to_owned(),
+                        group_secret: "after-secret".to_owned(),
+                    }],
+                    members: vec!["after-group".to_owned()],
+                }),
+                ..Default::default()
+            }),
+        }));
         let mut flags = global_ctx.get_flags();
         flags.disable_relay_data = true;
         global_ctx.set_flags(flags.clone());
@@ -377,6 +437,14 @@ mod tests {
             context.pinned_remote_static_pubkey(Some(&tunnel_info)),
             Some("before-key".to_owned())
         );
+        assert_eq!(
+            context.acl_group_declarations()[0].group_name,
+            "before-group"
+        );
+        assert_eq!(context.peer_groups(7)[0].group_name, "before-group");
+
+        global_ctx.set_avoid_relay_data_preference(true);
+        assert!(context.feature_flags().avoid_relay_data);
 
         context.refresh();
         assert_eq!(context.hostname(), "after");
@@ -392,5 +460,10 @@ mod tests {
             context.pinned_remote_static_pubkey(Some(&tunnel_info)),
             Some("after-key".to_owned())
         );
+        assert_eq!(
+            context.acl_group_declarations()[0].group_name,
+            "after-group"
+        );
+        assert_eq!(context.peer_groups(7)[0].group_name, "after-group");
     }
 }

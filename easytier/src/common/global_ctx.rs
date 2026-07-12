@@ -858,6 +858,10 @@ impl GlobalCtx {
         self.feature_flags.load()
     }
 
+    pub fn get_avoid_relay_data_preference(&self) -> bool {
+        self.base_feature_flags.load().avoid_relay_data
+    }
+
     /// Replace the runtime/base advertised flags as a complete snapshot.
     ///
     /// This is intended for foreign scoped contexts that inherit an already

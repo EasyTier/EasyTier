@@ -472,12 +472,25 @@ impl InstanceConfigPatcher {
             crate::proto::api::config::patch_vec(&mut config.udp_whitelist, patches);
         }
         config.build()?;
-        weak_upgrade(&self.core_instance)?
-            .apply_acl_config(config.clone())
-            .await?;
+        let peer_manager = weak_upgrade(&self.peer_manager)?;
+        let previous_acl = global_ctx.config.get_acl();
+        let previous_tcp_whitelist = global_ctx.config.get_tcp_whitelist();
+        let previous_udp_whitelist = global_ctx.config.get_udp_whitelist();
+        let core_config = config.clone();
         global_ctx.config.set_acl(config.acl);
         global_ctx.config.set_tcp_whitelist(config.tcp_whitelist);
         global_ctx.config.set_udp_whitelist(config.udp_whitelist);
+        peer_manager.refresh_runtime_config();
+        if let Err(error) = weak_upgrade(&self.core_instance)?
+            .apply_acl_config(core_config)
+            .await
+        {
+            global_ctx.config.set_acl(previous_acl);
+            global_ctx.config.set_tcp_whitelist(previous_tcp_whitelist);
+            global_ctx.config.set_udp_whitelist(previous_udp_whitelist);
+            peer_manager.refresh_runtime_config();
+            return Err(error);
+        }
         Ok(())
     }
 
