@@ -1,0 +1,178 @@
+{
+  "version": 1,
+  "instance": {
+    "peer": {
+      "runtime": {
+        "core": {
+          "node": {
+            "peer_id": null,
+            "instance_id": null,
+            "hostname": null,
+            "network_name": ""
+          },
+          "routes": {
+            "ipv4": null,
+            "ipv6": null,
+            "advertised_routes": [],
+            "proxy_networks": [],
+            "foreign_networks": []
+          },
+          "peer_policy": {
+            "p2p_enabled": false,
+            "relay_peer_rpc": false,
+            "relay_data": true,
+            "latency_first": false,
+            "encryption_required": false
+          },
+          "traffic": {
+            "mtu": null,
+            "instance_recv_bps_limit": null,
+            "foreign_relay_bps_limit": null
+          }
+        },
+        "network_identity": {
+          "network_name": "default",
+          "network_secret": "test",
+          "network_secret_digest": null
+        },
+        "stun_info": {},
+        "feature_flags": {
+          "disable_p2p": true
+        },
+        "secure_mode": null,
+        "host_routing": {
+          "local_exit_node_fallback": false
+        }
+      },
+      "flags": {
+        "disable_p2p": true,
+        "data_compress_algo": "None"
+      },
+      "route_algo": "Ospf",
+      "exit_nodes": []
+    },
+    "connectivity": {
+      "initial_peers": [],
+      "listeners": [],
+      "runtime": {
+        "acl": {
+          "acl": null,
+          "tcp_whitelist": [],
+          "udp_whitelist": [],
+          "whitelist_priority": null
+        },
+        "dhcp_ipv4": false,
+        "proxy": {
+          "has_proxy_cidrs": false,
+          "already_started": false,
+          "enable_exit_node": false,
+          "no_tun": false,
+          "forward_by_system": false
+        },
+        "public_ipv6_provider": {
+          "provider_enabled": false,
+          "configured_prefix": null,
+          "provider_supported": false
+        }
+      },
+      "endpoint_discovery": {
+        "user_agent": "easytier-core",
+        "network_name": "",
+        "http_timeout": {
+          "secs": 20,
+          "nanos": 0
+        },
+        "http_ip_version": "Both",
+        "http_tcp_bind": {
+          "local_addr": null,
+          "socket_mark": null,
+          "bind_device": null,
+          "reuse_addr": null,
+          "reuse_port": false,
+          "only_v6": false
+        },
+        "dns_record_context": {
+          "ip_version": "Both",
+          "socket_mark": null,
+          "netns": null
+        },
+        "srv_protocols": ["tcp", "udp"]
+      },
+      "manual": {
+        "reconnect_interval": {
+          "secs": 1,
+          "nanos": 0
+        },
+        "connect_timeout": {
+          "secs": 2,
+          "nanos": 0
+        },
+        "websocket_connect_timeout": {
+          "secs": 20,
+          "nanos": 0
+        },
+        "bind_device": false,
+        "allow_interface_bind": true,
+        "tcp_bind": {
+          "local_addr": null,
+          "socket_mark": null,
+          "bind_device": null,
+          "reuse_addr": null,
+          "reuse_port": false,
+          "only_v6": false
+        },
+        "udp_bind": {
+          "local_addr": null,
+          "socket_mark": null,
+          "bind_device": null,
+          "reuse_addr": false,
+          "reuse_port": false,
+          "only_v6": false,
+          "purpose": "DirectConnect"
+        }
+      },
+      "direct": {
+        "network_name": "default",
+        "default_protocol": "tcp",
+        "enable_ipv6": true,
+        "allow_public_server": false,
+        "lazy_p2p": false,
+        "disable_p2p": true,
+        "need_p2p": false,
+        "bind_device": false,
+        "allow_interface_bind": true,
+        "tcp_bind": {
+          "local_addr": null,
+          "socket_mark": null,
+          "bind_device": null,
+          "reuse_addr": null,
+          "reuse_port": false,
+          "only_v6": false
+        },
+        "udp_bind": {
+          "local_addr": null,
+          "socket_mark": null,
+          "bind_device": null,
+          "reuse_addr": false,
+          "reuse_port": false,
+          "only_v6": false,
+          "purpose": "DirectConnect"
+        }
+      }
+    }
+  },
+  "environment": {
+    "public_ipv4": null,
+    "interface_ipv4s": [],
+    "public_ipv6": null,
+    "interface_ipv6s": [],
+    "mapped_listeners": [],
+    "running_listeners": [],
+    "local_ips": [],
+    "protected_tcp_ports": [],
+    "stun_public_ips": [],
+    "managed_ipv6s": [],
+    "preferred_ipv6_sources": [],
+    "tcp_nat_type": "Unknown"
+  }
+}

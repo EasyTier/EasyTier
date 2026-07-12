@@ -1328,10 +1328,17 @@ mod tests {
 
     #[test]
     fn portable_instance_config_round_trips_as_normalized_json() {
+        let mut core = crate::config::CoreConfig::default();
+        core.peer_policy.encryption_required = false;
+        core.peer_policy.p2p_enabled = false;
         let peer = crate::peers::peer_manager::PortablePeerManagerConfig::new(
             crate::peers::context::PeerRuntimeConfig {
-                core: crate::config::CoreConfig::default(),
-                network_identity: crate::config::NetworkIdentity::default(),
+                core,
+                network_identity: crate::config::NetworkIdentity {
+                    network_name: "default".to_owned(),
+                    network_secret: Some("test".to_owned()),
+                    network_secret_digest: None,
+                },
                 stun_info: crate::proto::common::StunInfo::default(),
                 feature_flags: crate::proto::common::PeerFeatureFlag::default(),
                 secure_mode: None,
@@ -1344,6 +1351,7 @@ mod tests {
         };
 
         let mut config = config;
+        config.connectivity.direct.disable_p2p = true;
         config.connectivity.direct.testing = true;
         let encoded = serde_json::to_value(&config).unwrap();
         assert!(encoded["connectivity"]["direct"].get("testing").is_none());
@@ -1359,6 +1367,12 @@ mod tests {
                 crate::connectivity::host::environment::HostConnectorEnvironmentSnapshot::default(),
         };
         create.validate().unwrap();
+        let fixture =
+            include_bytes!("../../tools/wasi-socket-poc/host/testdata/minimal_core_instance.json");
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(fixture).unwrap(),
+            serde_json::to_value(&create).unwrap()
+        );
         let create_json = serde_json::to_vec(&create).unwrap();
         serde_json::from_slice::<crate::instance::host::HostCoreInstanceCreateConfig>(&create_json)
             .unwrap()
