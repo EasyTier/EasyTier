@@ -8,6 +8,7 @@ use std::{
 };
 
 use easytier_core::{
+    connectivity::host::environment::HostConnectorEnvironmentServices,
     instance::PacketSink,
     socket::{
         IpVersion, NetNamespace, SocketContext,
@@ -15,6 +16,10 @@ use easytier_core::{
         host::{
             HostSocketHandle, HostSocketRuntime,
             dns::{HostDnsResolver, wasi::WasiHostDnsIo},
+            environment::{
+                HostConnectorEnvironmentServiceAdapter,
+                wasi::WasiHostConnectorEnvironmentIo,
+            },
             factory::HostSocketFactory,
             listener::HostTcpListenerFactory,
             packet::{HostPacketSink, HostPacketSinkHandle, wasi::WasiHostPacketIo},
@@ -51,6 +56,7 @@ thread_local! {
     static LISTENER_PROBE: RefCell<Option<FactoryProbe>> = const { RefCell::new(None) };
     static DNS_PROBE: RefCell<Option<FactoryProbe>> = const { RefCell::new(None) };
     static PACKET_PROBE: RefCell<Option<FactoryProbe>> = const { RefCell::new(None) };
+    static ENVIRONMENT_PROBE: RefCell<Option<FactoryProbe>> = const { RefCell::new(None) };
 }
 
 struct Probe {
@@ -593,6 +599,86 @@ pub extern "C" fn drive_packet_probe() -> u32 {
     PACKET_PROBE.with_borrow_mut(|slot| {
         let Some(probe) = slot.as_mut() else {
             return ERROR | 14;
+        };
+        probe.sockets.notify_completions();
+        probe
+            .runtime
+            .block_on(async { tokio::task::yield_now().await });
+        probe.status.load(Ordering::SeqCst)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn init_environment_probe(udp_handle: u64) -> i32 {
+    ENVIRONMENT_PROBE.with_borrow_mut(|slot| {
+        if slot.is_some() {
+            return -1;
+        }
+        let runtime = match Builder::new_current_thread().enable_time().build() {
+            Ok(runtime) => runtime,
+            Err(_) => return -2,
+        };
+        let status = Arc::new(AtomicU32::new(0));
+        let sockets = HostSocketRuntime::new();
+        let services = Arc::new(HostConnectorEnvironmentServiceAdapter::new(
+            sockets.clone(),
+            Arc::new(WasiHostConnectorEnvironmentIo),
+        ));
+        let udp_socket = Arc::new(sockets.udp_socket(
+            Arc::new(WasiHostUdpIo::default()),
+            HostSocketHandle(udp_handle),
+            "192.0.2.10:45000".parse().unwrap(),
+        ));
+        let task_status = status.clone();
+        runtime.spawn(async move {
+            let result: Result<(), String> = async {
+                let local = services
+                    .local_addr_for_remote("203.0.113.2:443".parse().unwrap())
+                    .await
+                    .map_err(|error| error.to_string())?;
+                if local != "192.0.2.10:40000".parse().unwrap() {
+                    return Err("local route result mismatch".to_owned());
+                }
+                let udp_mapping = services
+                    .udp_port_mapping(udp_socket)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                if udp_mapping != "198.51.100.10:45000".parse().unwrap() {
+                    return Err("UDP mapping result mismatch".to_owned());
+                }
+                let tcp_mapping = services
+                    .tcp_port_mapping(11010)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                if tcp_mapping != "198.51.100.11:11010".parse().unwrap() {
+                    return Err("TCP mapping result mismatch".to_owned());
+                }
+                Ok(())
+            }
+            .await;
+            match result {
+                Ok(()) => {
+                    task_status.fetch_or(DONE, Ordering::SeqCst);
+                }
+                Err(_) => {
+                    task_status.fetch_or(ERROR | 15, Ordering::SeqCst);
+                }
+            }
+        });
+        *slot = Some(FactoryProbe {
+            runtime,
+            status,
+            sockets,
+        });
+        0
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn drive_environment_probe() -> u32 {
+    ENVIRONMENT_PROBE.with_borrow_mut(|slot| {
+        let Some(probe) = slot.as_mut() else {
+            return ERROR | 16;
         };
         probe.sockets.notify_completions();
         probe
