@@ -123,6 +123,7 @@ type opaquePacketWriteWaiter struct {
 
 type Bridge struct {
 	mu                  sync.Mutex
+	closed              bool
 	handles             map[uint64]net.Conn
 	packets             map[uint64]*opaquePacketState
 	listeners           map[uint64]*opaqueTCPListenerState

@@ -16,11 +16,11 @@ type BridgeConfig struct {
 }
 
 func NewBridge(config BridgeConfig) *Bridge {
-	handles := config.TCPStreams
-	packets := config.UDPSockets
-	if handles == nil {
-		handles = make(map[uint64]net.Conn)
+	handles := make(map[uint64]net.Conn, len(config.TCPStreams))
+	for handle, connection := range config.TCPStreams {
+		handles[handle] = connection
 	}
+	packets := config.UDPSockets
 	bridge := &Bridge{
 		handles:             handles,
 		packets:             make(map[uint64]*opaquePacketState, len(packets)),
@@ -174,19 +174,31 @@ func (b *opaqueBridge) closeHandle(
 
 func (b *opaqueBridge) close() {
 	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return
+	}
+	b.closed = true
 	connections := make([]net.Conn, 0, len(b.handles))
 	for _, connection := range b.handles {
 		connections = append(connections, connection)
 	}
+	b.handles = make(map[uint64]net.Conn)
 	packets := make([]*opaquePacketState, 0, len(b.packets))
 	for _, packet := range b.packets {
 		packets = append(packets, packet)
 	}
+	b.packets = make(map[uint64]*opaquePacketState)
 	listeners := make([]*opaqueTCPListenerState, 0, len(b.listeners))
 	for _, listener := range b.listeners {
 		listeners = append(listeners, listener)
 	}
 	b.listeners = make(map[uint64]*opaqueTCPListenerState)
+	b.reads = make(map[uint64]*opaqueReadOperation)
+	b.writes = make(map[uint64]*opaqueWriteOperation)
+	b.udpReads = make(map[uint64]*opaqueUDPReadWaiter)
+	b.udpWrites = make(map[uint64]*opaqueUDPWriteWaiter)
+	b.tcpAccepts = make(map[uint64]*opaqueTCPAcceptWaiter)
 	creates := make([]*opaqueCreateOperation, 0, len(b.creates))
 	for _, create := range b.creates {
 		creates = append(creates, create)

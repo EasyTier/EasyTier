@@ -130,6 +130,11 @@ func (b *opaqueBridge) startEnvironmentOperation(
 	operationContext, cancel := context.WithCancel(context.Background())
 	result := &opaqueEnvironmentOperation{cancel: cancel}
 	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		cancel()
+		return opaqueHostInvalid
+	}
 	if _, duplicate := b.environment[operation]; duplicate {
 		b.mu.Unlock()
 		cancel()

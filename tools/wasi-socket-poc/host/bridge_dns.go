@@ -86,6 +86,11 @@ func (b *opaqueBridge) startDNS(
 	resolveContext, cancel := context.WithCancel(context.Background())
 	dns := &opaqueDNSOperation{cancel: cancel}
 	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		cancel()
+		return opaqueHostInvalid
+	}
 	if _, duplicate := b.dns[operation]; duplicate {
 		b.mu.Unlock()
 		cancel()

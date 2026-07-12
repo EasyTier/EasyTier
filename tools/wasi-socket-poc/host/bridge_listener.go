@@ -28,6 +28,11 @@ func (b *opaqueBridge) startTCPBind(
 	listenContext, cancel := context.WithCancel(context.Background())
 	create := &opaqueCreateOperation{cancel: cancel}
 	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		cancel()
+		return opaqueHostInvalid
+	}
 	if _, duplicate := b.creates[operation]; duplicate {
 		b.mu.Unlock()
 		cancel()

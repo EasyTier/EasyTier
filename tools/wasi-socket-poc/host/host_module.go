@@ -2,11 +2,18 @@ package host
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/tetratelabs/wazero"
 )
 
 func (b *opaqueBridge) instantiateHost(ctx context.Context, runtime wazero.Runtime) error {
+	b.mu.Lock()
+	closed := b.closed
+	b.mu.Unlock()
+	if closed {
+		return fmt.Errorf("bridge is closed")
+	}
 	_, err := runtime.NewHostModuleBuilder("easytier_host").
 		NewFunctionBuilder().WithFunc(b.startRead).Export("start_read").
 		NewFunctionBuilder().WithFunc(b.takeRead).Export("take_read").

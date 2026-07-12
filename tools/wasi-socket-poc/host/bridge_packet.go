@@ -17,6 +17,9 @@ func (b *opaqueBridge) registerPacketSink(capacity int) (uint64, error) {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.closed {
+		return 0, fmt.Errorf("bridge is closed")
+	}
 	handle := b.allocateHandleLocked()
 	b.packetSinks[handle] = &opaquePacketSinkState{capacity: capacity}
 	return handle, nil
