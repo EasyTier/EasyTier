@@ -133,17 +133,7 @@ func driveCoreUntil(
 ) {
 	t.Helper()
 	for {
-		results, err := module.ExportedFunction("easytier_instance_drive").Call(ctx, handle)
-		if err != nil {
-			t.Fatalf("drive core instance: %v", err)
-		}
-		if len(results) != 1 {
-			t.Fatalf("drive core instance returned %d values", len(results))
-		}
-		state := int32(results[0])
-		if state < 0 {
-			t.Fatalf("drive core instance: %s", coreError(t, ctx, module, handle))
-		}
+		state := driveCoreOnce(t, ctx, module, handle)
 		if state == wanted {
 			return
 		}
@@ -179,6 +169,22 @@ func driveCoreUntil(
 			t.Fatalf("wait for core deadline: %v", ctx.Err())
 		}
 	}
+}
+
+func driveCoreOnce(t *testing.T, ctx context.Context, module api.Module, handle uint64) int32 {
+	t.Helper()
+	results, err := module.ExportedFunction("easytier_instance_drive").Call(ctx, handle)
+	if err != nil {
+		t.Fatalf("drive core instance: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("drive core instance returned %d values", len(results))
+	}
+	state := int32(results[0])
+	if state < 0 {
+		t.Fatalf("drive core instance: %s", coreError(t, ctx, module, handle))
+	}
+	return state
 }
 
 func coreDeadline(t *testing.T, ctx context.Context, module api.Module, handle uint64) int64 {
