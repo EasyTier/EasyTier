@@ -20,7 +20,6 @@ use tokio::sync::Mutex;
 use tokio::sync::Notify;
 #[cfg(feature = "tun")]
 use tokio::{sync::oneshot, task::JoinSet};
-#[cfg(feature = "magic-dns")]
 use tokio_util::sync::CancellationToken;
 #[cfg(feature = "magic-dns")]
 use tokio_util::task::AbortOnDropHandle;
@@ -238,6 +237,7 @@ impl RpcServerHook for InstanceRpcServerHook {
 struct ConfigOperation {
     closing: AtomicBool,
     operation: Mutex<()>,
+    cancel: CancellationToken,
 }
 
 #[derive(Clone)]
@@ -715,8 +715,19 @@ impl DhcpIpv4Host for RuntimeDhcpIpv4Host {
         next: Option<Ipv4Inet>,
     ) -> anyhow::Result<()> {
         let _config_operation = self.config_operation.operation.lock().await;
+        if self.config_operation.closing.load(Ordering::Acquire) {
+            anyhow::bail!("instance is closing; DHCP update rejected");
+        }
         #[cfg(feature = "tun")]
-        Instance::clear_nic_ctx(self.nic_ctx.clone(), self.peer_packet_receiver.clone()).await;
+        tokio::select! {
+            _ = self.config_operation.cancel.cancelled() => {
+                anyhow::bail!("instance is closing; DHCP update cancelled");
+            }
+            _ = Instance::clear_nic_ctx(
+                self.nic_ctx.clone(),
+                self.peer_packet_receiver.clone(),
+            ) => {}
+        }
 
         let Some(ip) = next else {
             self.global_ctx.set_ipv4(None);
@@ -755,20 +766,30 @@ impl DhcpIpv4Host for RuntimeDhcpIpv4Host {
                 self.peer_packet_receiver.clone(),
                 self.nic_closed_notifier.clone(),
             );
-            if let Err(err) = new_nic_ctx.run(Some(ip), self.global_ctx.get_ipv6()).await {
+            let run_result = tokio::select! {
+                _ = self.config_operation.cancel.cancelled() => {
+                    anyhow::bail!("instance is closing; DHCP update cancelled");
+                }
+                result = new_nic_ctx.run(Some(ip), self.global_ctx.get_ipv6()) => result,
+            };
+            if let Err(err) = run_result {
                 self.global_ctx.set_ipv4(None);
                 peer_manager.refresh_runtime_config();
                 return Err(err.into());
             }
             #[cfg(feature = "magic-dns")]
             let ifname = new_nic_ctx.ifname().await;
-            Instance::use_new_nic_ctx(
-                self.nic_ctx.clone(),
-                new_nic_ctx,
-                #[cfg(feature = "magic-dns")]
-                Instance::create_magic_dns_runner(peer_manager, ifname, ip),
-            )
-            .await;
+            tokio::select! {
+                _ = self.config_operation.cancel.cancelled() => {
+                    anyhow::bail!("instance is closing; DHCP update cancelled");
+                }
+                _ = Instance::use_new_nic_ctx(
+                    self.nic_ctx.clone(),
+                    new_nic_ctx,
+                    #[cfg(feature = "magic-dns")]
+                    Instance::create_magic_dns_runner(peer_manager, ifname, ip),
+                ) => {}
+            }
         }
 
         self.global_ctx.set_ipv4(Some(ip));
@@ -1574,6 +1595,7 @@ impl Instance {
 
     pub async fn clear_resources(&mut self) {
         self.config_operation.closing.store(true, Ordering::Release);
+        self.config_operation.cancel.cancel();
         let _config_operation = self.config_operation.operation.lock().await;
         self.core_instance.stop().await;
         #[cfg(feature = "tun")]
@@ -1586,6 +1608,7 @@ impl Drop for Instance {
         let core_instance = self.core_instance.clone();
         let config_operation = self.config_operation.clone();
         config_operation.closing.store(true, Ordering::Release);
+        config_operation.cancel.cancel();
         #[cfg(feature = "tun")]
         let nic_ctx = self.nic_ctx.clone();
         tokio::spawn(async move {
