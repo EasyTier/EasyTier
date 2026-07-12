@@ -22,6 +22,7 @@ func NewBridge(config BridgeConfig) *Bridge {
 	}
 	packets := config.UDPSockets
 	bridge := &Bridge{
+		closeDone:           make(chan struct{}),
 		handles:             handles,
 		packets:             make(map[uint64]*opaquePacketState, len(packets)),
 		listeners:           make(map[uint64]*opaqueTCPListenerState),
@@ -174,8 +175,13 @@ func (b *opaqueBridge) closeHandle(
 
 func (b *opaqueBridge) close() {
 	b.mu.Lock()
+	if b.closeDone == nil {
+		b.closeDone = make(chan struct{})
+	}
 	if b.closed {
+		closeDone := b.closeDone
 		b.mu.Unlock()
+		<-closeDone
 		return
 	}
 	b.closed = true
@@ -251,4 +257,5 @@ func (b *opaqueBridge) close() {
 		operation.cancel()
 	}
 	b.workers.Wait()
+	close(b.closeDone)
 }

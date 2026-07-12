@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"testing"
+	"time"
 )
 
 func TestNewBridgeSnapshotsTCPStreams(t *testing.T) {
@@ -20,6 +21,52 @@ func TestNewBridgeSnapshotsTCPStreams(t *testing.T) {
 	bridge.mu.Unlock()
 	if !exists {
 		t.Fatal("bridge TCP resource table aliases the caller's map")
+	}
+}
+
+func TestConcurrentBridgeCloseWaitsForWorkers(t *testing.T) {
+	bridge := NewBridge(BridgeConfig{})
+	started := make(chan struct{})
+	cancelled := make(chan struct{})
+	release := make(chan struct{})
+	if status := bridge.startEnvironmentOperation(1, func(ctx context.Context) (net.Addr, error) {
+		close(started)
+		<-ctx.Done()
+		close(cancelled)
+		<-release
+		return nil, ctx.Err()
+	}); status != 0 {
+		t.Fatalf("start environment operation: %d", status)
+	}
+	<-started
+
+	firstDone := make(chan struct{})
+	go func() {
+		bridge.Close()
+		close(firstDone)
+	}()
+	<-cancelled
+	secondDone := make(chan struct{})
+	go func() {
+		bridge.Close()
+		close(secondDone)
+	}()
+	select {
+	case <-secondDone:
+		t.Fatal("concurrent Close returned before the worker exited")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	close(release)
+	for name, done := range map[string]<-chan struct{}{
+		"first":  firstDone,
+		"second": secondDone,
+	} {
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatalf("%s Close did not finish", name)
+		}
 	}
 }
 
