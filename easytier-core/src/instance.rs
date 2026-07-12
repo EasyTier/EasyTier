@@ -38,6 +38,7 @@ use crate::{
     peers::{
         acl_config::AclRuleConfig,
         create_packet_recv_chan,
+        peer_conn::PeerConnId,
         peer_manager::{PeerManagerCore, PortablePeerManagerConfig},
         public_ipv6::PublicIpv6ProviderConfig,
     },
@@ -1041,6 +1042,18 @@ where
             .get_peer_map()
             .list_peers_with_conn()
             .await
+    }
+
+    pub async fn close_peer_conn(
+        &self,
+        peer_id: crate::config::PeerId,
+        conn_id: &PeerConnId,
+    ) -> Result<(), crate::peers::error::Error> {
+        self.peer_manager.close_peer_conn(peer_id, conn_id).await
+    }
+
+    pub async fn wait(&self) {
+        self.peer_manager.wait().await;
     }
 
     pub async fn update_exit_nodes(&self, exit_nodes: Vec<IpAddr>) {

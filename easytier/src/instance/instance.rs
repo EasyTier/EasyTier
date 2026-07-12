@@ -1035,15 +1035,15 @@ impl Instance {
         peer_id: PeerId,
         conn_id: &PeerConnId,
     ) -> Result<(), Error> {
-        self.peer_manager
-            .get_peer_map()
+        self.core_instance
             .close_peer_conn(peer_id, conn_id)
-            .await?;
+            .await
+            .map_err(Error::from)?;
         Ok(())
     }
 
     pub async fn wait(&self) {
-        self.peer_manager.wait().await;
+        self.core_instance.wait().await;
     }
 
     pub fn id(&self) -> uuid::Uuid {
