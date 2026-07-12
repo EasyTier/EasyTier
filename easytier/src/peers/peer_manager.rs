@@ -229,8 +229,8 @@ impl PeerManager {
     }
 
     pub async fn list_routes(&self) -> Vec<instance::Route> {
-        self.get_route()
-            .list_routes()
+        self.core
+            .list_route_snapshots()
             .await
             .into_iter()
             .map(Into::into)
@@ -258,16 +258,16 @@ impl PeerManager {
     }
 
     pub async fn get_local_public_ipv6_info(&self) -> instance::ListPublicIpv6InfoResponse {
-        self.get_route().get_local_public_ipv6_info().await.into()
+        self.core.local_public_ipv6_info().await.into()
     }
 
     pub async fn dump_route(&self) -> String {
-        self.get_route().dump().await
+        self.core.dump_route().await
     }
 
     pub async fn list_global_foreign_network(&self) -> ListGlobalForeignNetworkResponse {
         let mut resp = ListGlobalForeignNetworkResponse::default();
-        let ret = self.get_route().list_foreign_network_info().await;
+        let ret = self.core.foreign_network_route_infos().await;
         for info in ret.infos.iter() {
             let entry = resp
                 .foreign_networks
@@ -291,7 +291,7 @@ impl PeerManager {
     }
 
     pub async fn get_foreign_network_summary(&self) -> RouteForeignNetworkSummary {
-        self.get_route().get_foreign_network_summary().await
+        self.core.foreign_network_route_summary().await
     }
 
     pub async fn remove_nic_packet_process_pipeline(&self, id: String) -> Result<(), Error> {

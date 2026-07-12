@@ -1048,6 +1048,32 @@ where
         self.peer_manager.list_peer_snapshots().await
     }
 
+    pub async fn route_snapshots(&self) -> Vec<crate::proto::core_peer::peer::Route> {
+        self.peer_manager.list_route_snapshots().await
+    }
+
+    pub async fn dump_route(&self) -> String {
+        self.peer_manager.dump_route().await
+    }
+
+    pub async fn local_public_ipv6_info(
+        &self,
+    ) -> crate::proto::core_peer::peer::ListPublicIpv6InfoResponse {
+        self.peer_manager.local_public_ipv6_info().await
+    }
+
+    pub async fn foreign_network_route_infos(
+        &self,
+    ) -> crate::proto::peer_rpc::RouteForeignNetworkInfos {
+        self.peer_manager.foreign_network_route_infos().await
+    }
+
+    pub async fn foreign_network_route_summary(
+        &self,
+    ) -> crate::proto::peer_rpc::RouteForeignNetworkSummary {
+        self.peer_manager.foreign_network_route_summary().await
+    }
+
     pub async fn close_peer_conn(
         &self,
         peer_id: crate::config::PeerId,

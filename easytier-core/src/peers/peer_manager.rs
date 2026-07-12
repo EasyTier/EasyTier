@@ -23,7 +23,7 @@ use crate::{
     config::{P2pPolicyFlags, PeerId},
     packet::{CompressorAlgo, PacketType, ZCPacket},
     proto::common::FlagsInConfig,
-    proto::core_peer::peer::{PeerConnInfo, Route as CoreRoute},
+    proto::core_peer::peer::{ListPublicIpv6InfoResponse, PeerConnInfo, Route as CoreRoute},
     socket::{
         SocketContext,
         dns::{DnsQuery, DnsResolver},
@@ -67,6 +67,7 @@ use super::{
 };
 use crate::proto::peer_rpc::{
     ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey, PeerIdentityType,
+    RouteForeignNetworkInfos, RouteForeignNetworkSummary,
 };
 use crate::stats_manager::{CounterHandle, LabelSet, LabelType, MetricName, StatsManager};
 
@@ -1291,6 +1292,26 @@ impl PeerManagerCore {
             });
         }
         snapshots
+    }
+
+    pub async fn list_route_snapshots(&self) -> Vec<CoreRoute> {
+        self.get_route().list_routes().await
+    }
+
+    pub async fn dump_route(&self) -> String {
+        self.get_route().dump().await
+    }
+
+    pub async fn local_public_ipv6_info(&self) -> ListPublicIpv6InfoResponse {
+        self.get_route().get_local_public_ipv6_info().await
+    }
+
+    pub async fn foreign_network_route_infos(&self) -> RouteForeignNetworkInfos {
+        self.get_route().list_foreign_network_info().await
+    }
+
+    pub async fn foreign_network_route_summary(&self) -> RouteForeignNetworkSummary {
+        self.get_route().get_foreign_network_summary().await
     }
 
     pub fn network_name(&self) -> &str {
