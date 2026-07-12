@@ -24,15 +24,17 @@ use crate::{
 };
 
 use super::{
-    BoxNicPacketFilter, BoxPeerPacketFilter, PacketRecvChan, encrypt::NullCipher,
-    foreign_network_client::ForeignNetworkClient, foreign_network_manager::ForeignNetworkManager,
-    peer_conn::PeerConnId, peer_map::PeerMap, peer_rpc::PeerRpcManager,
-    peer_task::ExternalTaskSignal, relay_peer_map::RelayPeerMap, route_trait::Route,
+    BoxNicPacketFilter, BoxPeerPacketFilter, PacketRecvChan, context::RuntimePeerContext,
+    encrypt::NullCipher, foreign_network_client::ForeignNetworkClient,
+    foreign_network_manager::ForeignNetworkManager, peer_conn::PeerConnId, peer_map::PeerMap,
+    peer_rpc::PeerRpcManager, peer_task::ExternalTaskSignal, relay_peer_map::RelayPeerMap,
+    route_trait::Route,
 };
 
 pub struct PeerManager {
     global_ctx: ArcGlobalCtx,
     core: Arc<PeerManagerCore>,
+    peer_context: Arc<RuntimePeerContext>,
 
     foreign_network_manager: Arc<ForeignNetworkManager>,
 }
@@ -86,12 +88,13 @@ impl PeerManager {
             compressor_algo_from_pb(global_ctx.get_flags().data_compress_algo())
                 .expect("invalid data compress algo, maybe some features not enabled");
         let exit_nodes = global_ctx.config.get_exit_nodes();
+        let peer_context = Arc::new(RuntimePeerContext::new(global_ctx.clone()));
 
         let global_ctx_for_foreign = global_ctx.clone();
         let build_result = PeerManagerCore::new_with_default_components(
             route_algo,
             my_peer_id,
-            global_ctx.clone(),
+            peer_context.clone(),
             global_ctx.clone(),
             global_ctx.stats_manager().clone(),
             global_ctx.get_acl_filter().clone(),
@@ -116,8 +119,13 @@ impl PeerManager {
         PeerManager {
             global_ctx,
             core: Arc::new(build_result.core),
+            peer_context,
             foreign_network_manager: build_result.foreign_network_manager,
         }
+    }
+
+    pub(crate) fn refresh_runtime_config(&self) {
+        self.peer_context.refresh();
     }
 
     pub fn core(&self) -> Arc<PeerManagerCore> {
@@ -439,6 +447,7 @@ mod tests {
         let mut flags = peer_mgr.get_global_ctx().get_flags();
         flags.lazy_p2p = true;
         peer_mgr.get_global_ctx().set_flags(flags);
+        peer_mgr.refresh_runtime_config();
         peer_mgr
     }
 
@@ -1084,6 +1093,8 @@ mod tests {
 
         set_secure_mode_cfg(&peer_mgr_a.get_global_ctx(), true);
         set_secure_mode_cfg(&peer_mgr_b.get_global_ctx(), true);
+        peer_mgr_a.refresh_runtime_config();
+        peer_mgr_b.refresh_runtime_config();
 
         let (a_ring, b_ring) = create_ring_tunnel_pair();
         let (a_ret, b_ret) = tokio::join!(
@@ -1164,6 +1175,8 @@ mod tests {
             .set_network_identity(NetworkIdentity::new("net1".to_string(), "sec1".to_string()));
 
         set_secure_mode_cfg(&peer_mgr_server.get_global_ctx(), true);
+        peer_mgr_client.refresh_runtime_config();
+        peer_mgr_server.refresh_runtime_config();
 
         let (c_ring, s_ring) = create_ring_tunnel_pair();
         let (c_ret, s_ret) = tokio::join!(
@@ -1207,6 +1220,8 @@ mod tests {
             .set_network_identity(NetworkIdentity::new_credential("net1".to_string()));
 
         set_secure_mode_cfg(&peer_mgr_server.get_global_ctx(), true);
+        peer_mgr_client.refresh_runtime_config();
+        peer_mgr_server.refresh_runtime_config();
 
         let (c_ring, s_ring) = create_ring_tunnel_pair();
         let (c_ret, s_ret) = tokio::join!(
@@ -1280,6 +1295,8 @@ mod tests {
                 peer_public_key: Some(server_pub_b64.clone()),
             },
         ]);
+        peer_mgr_client.refresh_runtime_config();
+        peer_mgr_server.refresh_runtime_config();
 
         let (c_ret, s_ret) = tokio::join!(
             peer_mgr_client.add_client_tunnel(a_ring, false),

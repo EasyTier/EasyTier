@@ -240,6 +240,7 @@ pub struct InstanceConfigPatcher {
     #[cfg(feature = "socks5")]
     socks5_server: Weak<Socks5Server>,
     core_instance: Weak<RuntimeCoreInstance>,
+    peer_manager: Weak<PeerManager>,
     operation: Arc<ConfigOperation>,
 }
 
@@ -309,6 +310,7 @@ impl InstanceConfigPatcher {
         let patch_for_event = patch.clone();
         let global_ctx = weak_upgrade(&self.global_ctx)?;
         let core_instance = weak_upgrade(&self.core_instance)?;
+        let peer_manager = weak_upgrade(&self.peer_manager)?;
         let parsed_ipv6_public_addr_prefix = Self::validate_public_ipv6_patch(&global_ctx, &patch)?;
 
         // Preserve the legacy ordered partial-commit contract: earlier valid
@@ -359,6 +361,7 @@ impl InstanceConfigPatcher {
         }
         .await;
 
+        peer_manager.refresh_runtime_config();
         core_instance
             .update_runtime_config(runtime_core_config(&global_ctx))
             .await;
@@ -656,7 +659,6 @@ struct RuntimeDhcpIpv4Host {
     peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
     #[cfg(feature = "tun")]
     nic_closed_notifier: Arc<Notify>,
-    #[cfg(all(not(mobile), feature = "tun"))]
     peer_manager: Weak<PeerManager>,
     #[cfg(all(not(mobile), feature = "tun"))]
     core_instance: Weak<RuntimeCoreInstance>,
@@ -672,7 +674,6 @@ impl RuntimeDhcpIpv4Host {
             peer_packet_receiver: instance.peer_packet_receiver.clone(),
             #[cfg(feature = "tun")]
             nic_closed_notifier: Arc::new(Notify::new()),
-            #[cfg(all(not(mobile), feature = "tun"))]
             peer_manager: Arc::downgrade(&instance.peer_manager),
             #[cfg(all(not(mobile), feature = "tun"))]
             core_instance: Arc::downgrade(&instance.core_instance),
@@ -701,6 +702,9 @@ impl DhcpIpv4Host for RuntimeDhcpIpv4Host {
 
         let Some(ip) = next else {
             self.global_ctx.set_ipv4(None);
+            if let Some(peer_manager) = self.peer_manager.upgrade() {
+                peer_manager.refresh_runtime_config();
+            }
             self.global_ctx
                 .issue_event(GlobalCtxEvent::DhcpIpv4Conflicted(previous));
             return Ok(());
@@ -708,6 +712,9 @@ impl DhcpIpv4Host for RuntimeDhcpIpv4Host {
 
         if self.global_ctx.no_tun() {
             self.global_ctx.set_ipv4(Some(ip));
+            if let Some(peer_manager) = self.peer_manager.upgrade() {
+                peer_manager.refresh_runtime_config();
+            }
             self.global_ctx
                 .issue_event(GlobalCtxEvent::DhcpIpv4Changed(previous, Some(ip)));
             return Ok(());
@@ -732,6 +739,7 @@ impl DhcpIpv4Host for RuntimeDhcpIpv4Host {
             );
             if let Err(err) = new_nic_ctx.run(Some(ip), self.global_ctx.get_ipv6()).await {
                 self.global_ctx.set_ipv4(None);
+                peer_manager.refresh_runtime_config();
                 return Err(err.into());
             }
             #[cfg(feature = "magic-dns")]
@@ -746,6 +754,9 @@ impl DhcpIpv4Host for RuntimeDhcpIpv4Host {
         }
 
         self.global_ctx.set_ipv4(Some(ip));
+        if let Some(peer_manager) = self.peer_manager.upgrade() {
+            peer_manager.refresh_runtime_config();
+        }
         self.global_ctx
             .issue_event(GlobalCtxEvent::DhcpIpv4Changed(previous, Some(ip)));
         Ok(())
@@ -1014,6 +1025,7 @@ impl Instance {
         if config_operation.closing.load(Ordering::Acquire) {
             return Err(anyhow::anyhow!("instance is closing; start rejected").into());
         }
+        self.peer_manager.refresh_runtime_config();
         self.core_instance
             .update_runtime_config(runtime_core_config(&self.global_ctx))
             .await;
@@ -1268,6 +1280,7 @@ impl Instance {
             #[cfg(feature = "socks5")]
             socks5_server: Arc::downgrade(&self.socks5_server),
             core_instance: Arc::downgrade(&self.core_instance),
+            peer_manager: Arc::downgrade(&self.peer_manager),
             operation: self.config_operation.clone(),
         }
     }
