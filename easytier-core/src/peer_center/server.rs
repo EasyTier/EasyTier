@@ -54,7 +54,7 @@ impl PeerCenterServer {
         let mut tasks = JoinSet::new();
         tasks.spawn(async move {
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                crate::runtime_time::sleep(std::time::Duration::from_secs(10)).await;
                 let Some(data) = weak_data.upgrade() else {
                     break;
                 };

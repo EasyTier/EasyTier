@@ -148,7 +148,7 @@ impl Client {
         let peer_infos = self.peer_info.clone();
         tasks.spawn(async move {
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                crate::runtime_time::sleep(std::time::Duration::from_secs(30)).await;
                 let now = std::time::Instant::now();
                 peer_infos.retain(|_, v| {
                     if let Some(last_active) = v.last_active {

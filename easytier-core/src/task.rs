@@ -211,7 +211,7 @@ where
                 }
 
                 select! {
-                    _ = tokio::time::sleep(std::time::Duration::from_millis(
+                    _ = crate::runtime_time::sleep(std::time::Duration::from_millis(
                         launcher.loop_interval_ms(),
                     )) => {},
                     _ = signal.notified() => {},
@@ -221,7 +221,7 @@ where
                 }
             } else {
                 select! {
-                    _ = tokio::time::sleep(std::time::Duration::from_millis(
+                    _ = crate::runtime_time::sleep(std::time::Duration::from_millis(
                         launcher.loop_interval_ms(),
                     )) => {},
                     _ = signal.notified() => {}
@@ -299,7 +299,7 @@ mod tests {
         assert_eq!(active_tasks.load(Ordering::SeqCst), 0);
 
         manager.start();
-        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        crate::runtime_time::timeout(std::time::Duration::from_secs(1), async {
             while active_tasks.load(Ordering::SeqCst) == 0 {
                 tokio::task::yield_now().await;
             }

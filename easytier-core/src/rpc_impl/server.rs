@@ -43,7 +43,7 @@ async fn join_joinset_background(
 ) {
     let js = Arc::downgrade(&js);
     while js.strong_count() > 0 && !stopped.load(Ordering::Relaxed) {
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        crate::runtime_time::sleep(std::time::Duration::from_secs(1)).await;
 
         let fut = future::poll_fn(|cx| {
             let Some(js) = js.upgrade() else {
@@ -225,7 +225,7 @@ impl Server {
         let packet_mergers = self.packet_mergers.clone();
         self.tasks.lock().unwrap().spawn(async move {
             loop {
-                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                crate::runtime_time::sleep(crate::runtime_time::Duration::from_secs(5)).await;
                 packet_mergers.retain(|_, v| v.last_updated().elapsed().as_secs() < 10);
                 packet_mergers.shrink_to_fit();
             }
