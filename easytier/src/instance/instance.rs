@@ -696,6 +696,15 @@ impl RuntimeDhcpIpv4Host {
             core_instance: Arc::downgrade(&instance.core_instance),
         })
     }
+
+    fn ensure_config_open(&self) -> anyhow::Result<()> {
+        if self.config_operation.closing.load(Ordering::Acquire)
+            || self.config_operation.cancel.is_cancelled()
+        {
+            anyhow::bail!("instance is closing; DHCP update cancelled");
+        }
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait]
@@ -715,11 +724,10 @@ impl DhcpIpv4Host for RuntimeDhcpIpv4Host {
         next: Option<Ipv4Inet>,
     ) -> anyhow::Result<()> {
         let _config_operation = self.config_operation.operation.lock().await;
-        if self.config_operation.closing.load(Ordering::Acquire) {
-            anyhow::bail!("instance is closing; DHCP update rejected");
-        }
+        self.ensure_config_open()?;
         #[cfg(feature = "tun")]
         tokio::select! {
+            biased;
             _ = self.config_operation.cancel.cancelled() => {
                 anyhow::bail!("instance is closing; DHCP update cancelled");
             }
@@ -728,8 +736,10 @@ impl DhcpIpv4Host for RuntimeDhcpIpv4Host {
                 self.peer_packet_receiver.clone(),
             ) => {}
         }
+        self.ensure_config_open()?;
 
         let Some(ip) = next else {
+            self.ensure_config_open()?;
             self.global_ctx.set_ipv4(None);
             if let Some(peer_manager) = self.peer_manager.upgrade() {
                 peer_manager.refresh_runtime_config();
@@ -740,6 +750,7 @@ impl DhcpIpv4Host for RuntimeDhcpIpv4Host {
         };
 
         if self.global_ctx.no_tun() {
+            self.ensure_config_open()?;
             self.global_ctx.set_ipv4(Some(ip));
             if let Some(peer_manager) = self.peer_manager.upgrade() {
                 peer_manager.refresh_runtime_config();
@@ -767,12 +778,14 @@ impl DhcpIpv4Host for RuntimeDhcpIpv4Host {
                 self.nic_closed_notifier.clone(),
             );
             let run_result = tokio::select! {
+                biased;
                 _ = self.config_operation.cancel.cancelled() => {
                     anyhow::bail!("instance is closing; DHCP update cancelled");
                 }
                 result = new_nic_ctx.run(Some(ip), self.global_ctx.get_ipv6()) => result,
             };
             if let Err(err) = run_result {
+                self.ensure_config_open()?;
                 self.global_ctx.set_ipv4(None);
                 peer_manager.refresh_runtime_config();
                 return Err(err.into());
@@ -780,6 +793,7 @@ impl DhcpIpv4Host for RuntimeDhcpIpv4Host {
             #[cfg(feature = "magic-dns")]
             let ifname = new_nic_ctx.ifname().await;
             tokio::select! {
+                biased;
                 _ = self.config_operation.cancel.cancelled() => {
                     anyhow::bail!("instance is closing; DHCP update cancelled");
                 }
@@ -792,6 +806,7 @@ impl DhcpIpv4Host for RuntimeDhcpIpv4Host {
             }
         }
 
+        self.ensure_config_open()?;
         self.global_ctx.set_ipv4(Some(ip));
         if let Some(peer_manager) = self.peer_manager.upgrade() {
             peer_manager.refresh_runtime_config();
