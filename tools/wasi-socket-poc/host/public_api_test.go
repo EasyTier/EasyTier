@@ -40,8 +40,32 @@ func (publicConnectorEnvironment) TCPPortMapping(context.Context, uint16) (net.A
 	return nil, nil
 }
 
+type publicSocketFactory struct{}
+
+func (publicSocketFactory) ConnectTCP(
+	context.Context,
+	corehost.TCPConnectOptions,
+) (net.Conn, error) {
+	return nil, nil
+}
+
+func (publicSocketFactory) BindUDP(
+	context.Context,
+	corehost.UDPBindOptions,
+) (net.PacketConn, error) {
+	return nil, nil
+}
+
+func (publicSocketFactory) ListenTCP(
+	context.Context,
+	corehost.TCPListenOptions,
+) (net.Listener, error) {
+	return nil, nil
+}
+
 var _ corehost.DNSResolver = publicDNSResolver{}
 var _ corehost.ConnectorEnvironment = publicConnectorEnvironment{}
+var _ corehost.SocketFactory = publicSocketFactory{}
 
 func TestBridgePublicPacketLifecycle(t *testing.T) {
 	bridge := corehost.NewBridge(corehost.BridgeConfig{})
@@ -60,6 +84,7 @@ func TestBridgePublicPacketLifecycle(t *testing.T) {
 
 func TestBridgePublicPolicyInjection(t *testing.T) {
 	bridge := corehost.NewBridge(corehost.BridgeConfig{
+		SocketFactory:        publicSocketFactory{},
 		DNSResolver:          publicDNSResolver{},
 		ConnectorEnvironment: publicConnectorEnvironment{},
 	})

@@ -13,6 +13,7 @@ import (
 type BridgeConfig struct {
 	TCPStreams           map[uint64]net.Conn
 	UDPSockets           map[uint64]net.PacketConn
+	SocketFactory        SocketFactory
 	DNSResolver          DNSResolver
 	ConnectorEnvironment ConnectorEnvironment
 }
@@ -26,6 +27,10 @@ func NewBridge(config BridgeConfig) *Bridge {
 	dnsResolver := config.DNSResolver
 	if dnsResolver == nil {
 		dnsResolver = unsupportedOpaqueDNSResolver{}
+	}
+	socketFactory := config.SocketFactory
+	if socketFactory == nil {
+		socketFactory = NetSocketFactory{}
 	}
 	environment := config.ConnectorEnvironment
 	if environment == nil {
@@ -44,6 +49,7 @@ func NewBridge(config BridgeConfig) *Bridge {
 		creates:             make(map[uint64]*opaqueCreateOperation),
 		dns:                 make(map[uint64]*opaqueDNSOperation),
 		dnsResolver:         dnsResolver,
+		socketFactory:       socketFactory,
 		environment:         make(map[uint64]*opaqueEnvironmentOperation),
 		environmentResolver: environment,
 		packetSinks:         make(map[uint64]*opaquePacketSinkState),

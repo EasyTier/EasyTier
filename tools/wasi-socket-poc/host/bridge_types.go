@@ -72,15 +72,6 @@ type opaqueCreateOperation struct {
 	err        error
 }
 
-type decodedTCPConnectOptions struct {
-	remoteAddr *net.TCPAddr
-	localAddr  *net.TCPAddr
-}
-
-type decodedUDPBindOptions struct {
-	localAddr *net.UDPAddr
-}
-
 type DNSResolver interface {
 	LookupIP(context.Context, DNSQuery) ([]netip.Addr, error)
 	// LookupTXT returns one host-normalized core TXT value. Implementations
@@ -136,6 +127,7 @@ type Bridge struct {
 	creates             map[uint64]*opaqueCreateOperation
 	dns                 map[uint64]*opaqueDNSOperation
 	dnsResolver         DNSResolver
+	socketFactory       SocketFactory
 	environment         map[uint64]*opaqueEnvironmentOperation
 	environmentResolver ConnectorEnvironment
 	packetSinks         map[uint64]*opaquePacketSinkState

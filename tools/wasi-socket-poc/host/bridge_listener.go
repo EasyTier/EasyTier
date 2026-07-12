@@ -21,7 +21,7 @@ func (b *opaqueBridge) startTCPBind(
 	if !ok {
 		return opaqueHostMemory
 	}
-	localAddr, err := decodeTCPListenOptions(options)
+	decoded, err := decodeTCPListenOptions(options)
 	if err != nil {
 		return opaqueHostInvalid
 	}
@@ -44,7 +44,7 @@ func (b *opaqueBridge) startTCPBind(
 
 	go func() {
 		defer b.workers.Done()
-		listener, err := (&net.ListenConfig{}).Listen(listenContext, "tcp", localAddr.String())
+		listener, err := b.socketFactory.ListenTCP(listenContext, decoded)
 		b.mu.Lock()
 		if b.creates[operation] != create {
 			b.mu.Unlock()
@@ -259,26 +259,29 @@ func (b *opaqueBridge) discardTCPAcceptWaiter(operation uint64) {
 	b.mu.Unlock()
 }
 
-func decodeTCPListenOptions(encoded []byte) (*net.TCPAddr, error) {
+func decodeTCPListenOptions(encoded []byte) (TCPListenOptions, error) {
 	if len(encoded) < 42 || encoded[0] != 1 {
-		return nil, fmt.Errorf("invalid TCP listen options")
+		return TCPListenOptions{}, fmt.Errorf("invalid TCP listen options")
 	}
 	local, err := decodeSocketAddress(encoded[1:28], false)
 	if err != nil || local == nil {
-		return nil, fmt.Errorf("invalid TCP listen address")
+		return TCPListenOptions{}, fmt.Errorf("invalid TCP listen address")
 	}
 	if err := validatePoCBindOptions(encoded[28], encoded[29:33], encoded[33], encoded[34], encoded[35]); err != nil {
-		return nil, err
+		return TCPListenOptions{}, err
 	}
 	if encoded[36] > 3 {
-		return nil, fmt.Errorf("invalid TCP listen purpose")
+		return TCPListenOptions{}, fmt.Errorf("invalid TCP listen purpose")
 	}
 	device, err := decodeBindDevice(encoded[37:])
 	if err != nil {
-		return nil, err
+		return TCPListenOptions{}, err
 	}
 	if device != nil {
-		return nil, fmt.Errorf("bind device policy is outside this PoC")
+		return TCPListenOptions{}, fmt.Errorf("bind device policy is outside this PoC")
 	}
-	return &net.TCPAddr{IP: local.IP, Port: local.Port, Zone: local.Zone}, nil
+	return TCPListenOptions{
+		LocalAddr: &net.TCPAddr{IP: local.IP, Port: local.Port, Zone: local.Zone},
+		Purpose:   TCPListenPurpose(encoded[36]),
+	}, nil
 }

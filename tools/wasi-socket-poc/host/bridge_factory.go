@@ -55,8 +55,7 @@ func (b *opaqueBridge) startTCPConnect(
 
 	go func() {
 		defer b.workers.Done()
-		dialer := net.Dialer{LocalAddr: decoded.localAddr}
-		connection, err := dialer.DialContext(dialContext, "tcp", decoded.remoteAddr.String())
+		connection, err := b.socketFactory.ConnectTCP(dialContext, decoded)
 
 		b.mu.Lock()
 		if b.creates[operation] != create {
@@ -136,14 +135,17 @@ func (b *opaqueBridge) startUDPBind(
 	if err != nil {
 		return opaqueHostInvalid
 	}
-	create := &opaqueCreateOperation{}
+	bindContext, cancel := context.WithCancel(context.Background())
+	create := &opaqueCreateOperation{cancel: cancel}
 	b.mu.Lock()
 	if b.closed {
 		b.mu.Unlock()
+		cancel()
 		return opaqueHostInvalid
 	}
 	if _, duplicate := b.creates[operation]; duplicate {
 		b.mu.Unlock()
+		cancel()
 		return opaqueHostInvalid
 	}
 	b.creates[operation] = create
@@ -152,12 +154,7 @@ func (b *opaqueBridge) startUDPBind(
 
 	go func() {
 		defer b.workers.Done()
-		localAddr := decoded.localAddr
-		network := "udp4"
-		if localAddr != nil && localAddr.IP.To4() == nil {
-			network = "udp6"
-		}
-		packet, err := net.ListenUDP(network, localAddr)
+		packet, err := b.socketFactory.BindUDP(bindContext, decoded)
 
 		b.mu.Lock()
 		if b.creates[operation] != create {
@@ -206,6 +203,9 @@ func (b *opaqueBridge) takeUDPBind(
 		return opaqueHostPending
 	}
 	delete(b.creates, operation)
+	if create.cancel != nil {
+		create.cancel()
+	}
 	if create.err != nil || create.packet == nil {
 		b.mu.Unlock()
 		return opaqueHostIOError
@@ -258,62 +258,63 @@ func readOwnedOptions(module api.Module, pointer, length uint32) ([]byte, bool) 
 	return append([]byte(nil), options...), true
 }
 
-func decodeTCPConnectOptions(encoded []byte) (decodedTCPConnectOptions, error) {
+func decodeTCPConnectOptions(encoded []byte) (TCPConnectOptions, error) {
 	if len(encoded) < 69 || encoded[0] != 1 {
-		return decodedTCPConnectOptions{}, fmt.Errorf("invalid TCP connect options")
+		return TCPConnectOptions{}, fmt.Errorf("invalid TCP connect options")
 	}
 	remote, err := decodeSocketAddress(encoded[1:28], false)
 	if err != nil || remote == nil {
-		return decodedTCPConnectOptions{}, fmt.Errorf("invalid TCP remote address")
+		return TCPConnectOptions{}, fmt.Errorf("invalid TCP remote address")
 	}
 	local, err := decodeSocketAddress(encoded[28:55], true)
 	if err != nil {
-		return decodedTCPConnectOptions{}, err
+		return TCPConnectOptions{}, err
 	}
 	if err := validatePoCBindOptions(encoded[55], encoded[56:60], encoded[60], encoded[61], encoded[62]); err != nil {
-		return decodedTCPConnectOptions{}, err
+		return TCPConnectOptions{}, err
 	}
 	if encoded[63] > 4 {
-		return decodedTCPConnectOptions{}, fmt.Errorf("invalid TCP purpose")
+		return TCPConnectOptions{}, fmt.Errorf("invalid TCP purpose")
 	}
 	if encoded[63] == 1 {
-		return decodedTCPConnectOptions{}, fmt.Errorf("FakeTCP is outside this PoC")
+		return TCPConnectOptions{}, fmt.Errorf("FakeTCP is outside this PoC")
 	}
 	device, err := decodeBindDevice(encoded[64:])
 	if err != nil {
-		return decodedTCPConnectOptions{}, err
+		return TCPConnectOptions{}, err
 	}
 	if device != nil {
-		return decodedTCPConnectOptions{}, fmt.Errorf("bind device policy is outside this PoC")
+		return TCPConnectOptions{}, fmt.Errorf("bind device policy is outside this PoC")
 	}
-	return decodedTCPConnectOptions{
-		remoteAddr: &net.TCPAddr{IP: remote.IP, Port: remote.Port, Zone: remote.Zone},
-		localAddr:  udpToTCPAddr(local),
+	return TCPConnectOptions{
+		RemoteAddr: &net.TCPAddr{IP: remote.IP, Port: remote.Port, Zone: remote.Zone},
+		LocalAddr:  udpToTCPAddr(local),
+		Purpose:    TCPConnectPurpose(encoded[63]),
 	}, nil
 }
 
-func decodeUDPBindOptions(encoded []byte) (decodedUDPBindOptions, error) {
+func decodeUDPBindOptions(encoded []byte) (UDPBindOptions, error) {
 	if len(encoded) < 42 || encoded[0] != 1 {
-		return decodedUDPBindOptions{}, fmt.Errorf("invalid UDP bind options")
+		return UDPBindOptions{}, fmt.Errorf("invalid UDP bind options")
 	}
 	local, err := decodeSocketAddress(encoded[1:28], true)
 	if err != nil {
-		return decodedUDPBindOptions{}, err
+		return UDPBindOptions{}, err
 	}
 	if err := validatePoCBindOptions(encoded[28], encoded[29:33], encoded[33], encoded[34], encoded[35]); err != nil {
-		return decodedUDPBindOptions{}, err
+		return UDPBindOptions{}, err
 	}
 	if encoded[36] > 4 {
-		return decodedUDPBindOptions{}, fmt.Errorf("invalid UDP purpose")
+		return UDPBindOptions{}, fmt.Errorf("invalid UDP purpose")
 	}
 	device, err := decodeBindDevice(encoded[37:])
 	if err != nil {
-		return decodedUDPBindOptions{}, err
+		return UDPBindOptions{}, err
 	}
 	if device != nil {
-		return decodedUDPBindOptions{}, fmt.Errorf("bind device policy is outside this PoC")
+		return UDPBindOptions{}, fmt.Errorf("bind device policy is outside this PoC")
 	}
-	return decodedUDPBindOptions{localAddr: local}, nil
+	return UDPBindOptions{LocalAddr: local, Purpose: UDPBindPurpose(encoded[36])}, nil
 }
 
 func validatePoCBindOptions(markPresent byte, mark []byte, reuseMode, reusePort, onlyV6 byte) error {

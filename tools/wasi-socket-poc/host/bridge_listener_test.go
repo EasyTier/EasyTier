@@ -21,14 +21,19 @@ func TestDecodeTCPProxyNatListenPurpose(t *testing.T) {
 	}
 	copy(encoded[1:28], local[:])
 	encoded[36] = 3
-	if _, err := decodeTCPListenOptions(encoded); err != nil {
+	options, err := decodeTCPListenOptions(encoded)
+	if err != nil {
 		t.Fatalf("decode proxy NAT TCP listen options: %v", err)
+	}
+	if options.Purpose != TCPListenProxyNAT {
+		t.Fatalf("decoded TCP listen purpose %d, want ProxyNAT", options.Purpose)
 	}
 }
 
 func TestOpaqueListenerAcceptsCoreStream(t *testing.T) {
 	port := reserveTCPPort(t)
-	bridge := newOpaqueBridge(nil, nil)
+	socketFactory := &recordingSocketFactory{inner: NetSocketFactory{}}
+	bridge := NewBridge(BridgeConfig{SocketFactory: socketFactory})
 	defer bridge.close()
 	wasm := buildGuest(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -108,5 +113,9 @@ func TestOpaqueListenerAcceptsCoreStream(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatalf("wait for listener peer: %v", ctx.Err())
+	}
+	_, _, listenCalls := socketFactory.calls()
+	if len(listenCalls) != 1 || listenCalls[0].Purpose != TCPListenManual {
+		t.Fatalf("unexpected TCP listener factory calls: %#v", listenCalls)
 	}
 }

@@ -21,8 +21,12 @@ func TestDecodeTCPProxyNatPurpose(t *testing.T) {
 	}
 	copy(encoded[1:28], remote[:])
 	encoded[63] = 4
-	if _, err := decodeTCPConnectOptions(encoded); err != nil {
+	options, err := decodeTCPConnectOptions(encoded)
+	if err != nil {
 		t.Fatalf("decode proxy NAT TCP connect options: %v", err)
+	}
+	if options.Purpose != TCPConnectProxyNAT {
+		t.Fatalf("decoded TCP purpose %d, want ProxyNAT", options.Purpose)
 	}
 }
 
@@ -30,8 +34,12 @@ func TestDecodeUDPProxyNatPurpose(t *testing.T) {
 	encoded := make([]byte, 42)
 	encoded[0] = 1
 	encoded[36] = 4
-	if _, err := decodeUDPBindOptions(encoded); err != nil {
+	options, err := decodeUDPBindOptions(encoded)
+	if err != nil {
 		t.Fatalf("decode proxy NAT UDP bind options: %v", err)
+	}
+	if options.Purpose != UDPBindProxyNAT {
+		t.Fatalf("decoded UDP purpose %d, want ProxyNAT", options.Purpose)
 	}
 }
 
@@ -71,7 +79,8 @@ func TestOpaqueFactoryCreatesSocketsForCore(t *testing.T) {
 		udpDone <- err
 	}()
 
-	bridge := newOpaqueBridge(nil, nil)
+	socketFactory := &recordingSocketFactory{inner: NetSocketFactory{}}
+	bridge := NewBridge(BridgeConfig{SocketFactory: socketFactory})
 	defer bridge.close()
 	wasm := buildGuest(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -131,6 +140,13 @@ func TestOpaqueFactoryCreatesSocketsForCore(t *testing.T) {
 		case <-ctx.Done():
 			t.Fatalf("wait for %s echo: %v", name, ctx.Err())
 		}
+	}
+	tcpCalls, udpCalls, _ := socketFactory.calls()
+	if len(tcpCalls) != 1 || tcpCalls[0].Purpose != TCPConnectDirect {
+		t.Fatalf("unexpected TCP factory calls: %#v", tcpCalls)
+	}
+	if len(udpCalls) != 1 || udpCalls[0].Purpose != UDPBindDirect {
+		t.Fatalf("unexpected UDP factory calls: %#v", udpCalls)
 	}
 }
 
