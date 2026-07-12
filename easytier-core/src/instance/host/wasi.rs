@@ -337,8 +337,8 @@ pub extern "C" fn easytier_instance_state(handle: u64) -> i32 {
     with_entry(handle, |entry| Ok(entry.state_code()))
 }
 
-/// Returns milliseconds until the next core timer, rounded up. `-1` means no
-/// timer is registered; other negative values are ABI status codes.
+/// Returns milliseconds until the next core timer, rounded up. `i64::MAX`
+/// means no timer is registered; negative values are ABI status codes.
 #[unsafe(no_mangle)]
 pub extern "C" fn easytier_instance_next_deadline_millis(handle: u64) -> i64 {
     INSTANCES.with_borrow_mut(|registry| {
@@ -352,7 +352,7 @@ pub extern "C" fn easytier_instance_next_deadline_millis(handle: u64) -> i64 {
         }
         next_deadline_millis(handle)
             .map(|millis| i64::try_from(millis).unwrap_or(i64::MAX))
-            .unwrap_or(-1)
+            .unwrap_or(i64::MAX)
     })
 }
 

@@ -169,6 +169,7 @@ mod tracked {
         inner: tokio::time::Interval,
         period: Duration,
         next_deadline: Instant,
+        missed_tick_behavior: MissedTickBehavior,
         registration: Registration,
     }
 
@@ -176,13 +177,39 @@ mod tracked {
         pub async fn tick(&mut self) -> Instant {
             self.registration.ensure();
             let tick = self.inner.tick().await;
-            self.next_deadline = tick + self.period;
+            let now = Instant::now();
+            self.next_deadline = if now > tick + Duration::from_millis(5) {
+                next_interval_deadline(self.missed_tick_behavior, tick, now, self.period)
+            } else {
+                tick + self.period
+            };
             self.registration.reset(self.next_deadline);
             tick
         }
 
         pub fn set_missed_tick_behavior(&mut self, behavior: MissedTickBehavior) {
             self.inner.set_missed_tick_behavior(behavior);
+            self.missed_tick_behavior = behavior;
+        }
+    }
+
+    pub(super) fn next_interval_deadline(
+        behavior: MissedTickBehavior,
+        tick: Instant,
+        now: Instant,
+        period: Duration,
+    ) -> Instant {
+        match behavior {
+            MissedTickBehavior::Burst => tick + period,
+            MissedTickBehavior::Delay => now + period,
+            MissedTickBehavior::Skip => {
+                now + period
+                    - Duration::from_nanos(
+                        ((now - tick).as_nanos() % period.as_nanos())
+                            .try_into()
+                            .expect("too much time has elapsed since the interval tick"),
+                    )
+            }
         }
     }
 
@@ -195,6 +222,7 @@ mod tracked {
             inner: tokio::time::interval_at(start, period),
             period,
             next_deadline: start,
+            missed_tick_behavior: MissedTickBehavior::Burst,
             registration: Registration::new(start),
         }
     }
@@ -272,5 +300,25 @@ mod tests {
         timeout.abort();
         let _ = timeout.await;
         assert_eq!(next_deadline_millis(9), None);
+    }
+
+    #[test]
+    fn computes_missed_interval_deadlines_like_tokio() {
+        let tick = Instant::now();
+        let now = tick + Duration::from_millis(250);
+        let period = Duration::from_millis(100);
+
+        assert_eq!(
+            tracked::next_interval_deadline(MissedTickBehavior::Burst, tick, now, period),
+            tick + period
+        );
+        assert_eq!(
+            tracked::next_interval_deadline(MissedTickBehavior::Delay, tick, now, period),
+            now + period
+        );
+        assert_eq!(
+            tracked::next_interval_deadline(MissedTickBehavior::Skip, tick, now, period),
+            tick + Duration::from_millis(300)
+        );
     }
 }
