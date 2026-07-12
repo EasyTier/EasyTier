@@ -28,7 +28,6 @@ use crate::{
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
         netns::NetNS,
     },
-    peers::peer_manager::PeerManager,
     tunnel::{
         self, FromUrl, IpVersion, Tunnel,
         tcp::resolve_tcp_bind_url_addr,
@@ -38,15 +37,6 @@ use crate::{
 };
 
 pub use easytier_core::listener::plan::{is_url_host_ipv6, is_url_host_unspecified};
-
-#[async_trait]
-impl AcceptedTunnelHandler for PeerManager {
-    #[tracing::instrument(skip(self))]
-    async fn handle_tunnel(&self, tunnel: Box<dyn Tunnel>) -> anyhow::Result<()> {
-        self.add_tunnel_as_server(tunnel, true).await?;
-        Ok(())
-    }
-}
 
 fn listener_scheme_registry() -> core_listener_plan::ListenerSchemeRegistry {
     let mut registry = core_listener_plan::ListenerSchemeRegistry::new()

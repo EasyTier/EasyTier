@@ -323,7 +323,7 @@ mod direct_connector_mapped_listener_tests {
         p_c.get_global_ctx()
             .config
             .set_listeners(vec![listener.parse().unwrap()]);
-        let mut lis_c = ListenerManager::new(p_c.get_global_ctx(), p_c.clone());
+        let mut lis_c = ListenerManager::new(p_c.get_global_ctx(), p_c.core());
         lis_c.prepare_listeners().await.unwrap();
         lis_c.run().await.unwrap();
 
