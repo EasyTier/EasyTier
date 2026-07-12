@@ -5,7 +5,6 @@ use std::{
     sync::Arc,
 };
 
-use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -22,9 +21,8 @@ use crate::{
 
 /// Host-observed facts consumed by core connector policy.
 ///
-/// The host may replace this snapshot when interfaces, STUN results, mapped
-/// listeners, or protected addresses change. Core owns all selection and
-/// connection policy applied to these facts.
+/// The host normalizes this snapshot before constructing an instance. Core
+/// owns all selection and connection policy applied to these facts.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostConnectorEnvironmentSnapshot {
     pub public_ipv4: Option<Ipv4Addr>,
@@ -81,27 +79,23 @@ pub trait HostConnectorEnvironmentServices: Send + Sync + 'static {
     async fn tcp_port_mapping(&self, local_port: u16) -> anyhow::Result<SocketAddr>;
 }
 
-/// Adapts an atomically replaceable host snapshot and slow host services to
-/// the connector capability interfaces.
+/// Adapts one coherent instance snapshot and slow host services to the
+/// connector capability interfaces.
 pub struct HostConnectorEnvironment<S> {
-    snapshot: ArcSwap<HostConnectorEnvironmentSnapshot>,
+    snapshot: Arc<HostConnectorEnvironmentSnapshot>,
     services: Arc<S>,
 }
 
 impl<S> HostConnectorEnvironment<S> {
     pub fn new(snapshot: HostConnectorEnvironmentSnapshot, services: Arc<S>) -> Self {
         Self {
-            snapshot: ArcSwap::from_pointee(snapshot),
+            snapshot: Arc::new(snapshot),
             services,
         }
     }
 
-    pub fn update_snapshot(&self, snapshot: HostConnectorEnvironmentSnapshot) {
-        self.snapshot.store(Arc::new(snapshot));
-    }
-
     pub fn snapshot(&self) -> Arc<HostConnectorEnvironmentSnapshot> {
-        self.snapshot.load_full()
+        self.snapshot.clone()
     }
 }
 
@@ -157,7 +151,17 @@ where
     }
 
     async fn preferred_ipv6_source(&self, ip: Ipv6Addr) -> Option<PreferredIpv6Source> {
-        self.snapshot()
+        let snapshot = self.snapshot();
+        if snapshot.managed_ipv6s.contains(&ip)
+            || ip.is_loopback()
+            || ip.is_unspecified()
+            || ip.is_unique_local()
+            || ip.is_unicast_link_local()
+            || ip.is_multicast()
+        {
+            return None;
+        }
+        snapshot
             .preferred_ipv6_sources
             .iter()
             .find(|source| source.ip == ip)
@@ -227,10 +231,16 @@ mod tests {
             protected_tcp_ports: vec![11010],
             stun_public_ips: vec!["198.51.100.1".parse().unwrap()],
             managed_ipv6s: vec!["fd00::1".parse().unwrap()],
-            preferred_ipv6_sources: vec![PreferredIpv6Source {
-                ip: "2001:db8::2".parse().unwrap(),
-                ifindex: 7,
-            }],
+            preferred_ipv6_sources: vec![
+                PreferredIpv6Source {
+                    ip: "2001:db8::2".parse().unwrap(),
+                    ifindex: 7,
+                },
+                PreferredIpv6Source {
+                    ip: "fd00::1".parse().unwrap(),
+                    ifindex: 8,
+                },
+            ],
             tcp_nat_type: NatType::Symmetric,
         }
     }
@@ -283,15 +293,15 @@ mod tests {
             })
         );
         assert_eq!(
+            environment
+                .preferred_ipv6_source("fd00::1".parse().unwrap())
+                .await,
+            None
+        );
+        assert_eq!(
             environment.tcp_port_mapping(42000).await.unwrap(),
             "198.51.100.2:42000".parse().unwrap()
         );
         assert_eq!(*services.tcp_mapping_requests.lock().unwrap(), vec![42000]);
-
-        let mut updated = snapshot();
-        updated.protected_tcp_ports = vec![22020];
-        environment.update_snapshot(updated);
-        assert!(!environment.is_protected_tcp_port(11010));
-        assert!(environment.is_protected_tcp_port(22020));
     }
 }
