@@ -668,6 +668,7 @@ pub struct Instance {
 
 struct RuntimeDhcpIpv4Host {
     global_ctx: ArcGlobalCtx,
+    config_operation: Arc<ConfigOperation>,
     #[cfg(feature = "tun")]
     nic_ctx: ArcNicCtx,
     #[cfg(feature = "tun")]
@@ -683,6 +684,7 @@ impl RuntimeDhcpIpv4Host {
     fn new(instance: &Instance) -> Arc<Self> {
         Arc::new(Self {
             global_ctx: instance.global_ctx.clone(),
+            config_operation: instance.config_operation.clone(),
             #[cfg(feature = "tun")]
             nic_ctx: instance.nic_ctx.clone(),
             #[cfg(feature = "tun")]
@@ -712,6 +714,7 @@ impl DhcpIpv4Host for RuntimeDhcpIpv4Host {
         previous: Option<Ipv4Inet>,
         next: Option<Ipv4Inet>,
     ) -> anyhow::Result<()> {
+        let _config_operation = self.config_operation.operation.lock().await;
         #[cfg(feature = "tun")]
         Instance::clear_nic_ctx(self.nic_ctx.clone(), self.peer_packet_receiver.clone()).await;
 

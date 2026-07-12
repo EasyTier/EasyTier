@@ -1134,14 +1134,6 @@ where
         Ok(())
     }
 
-    pub async fn apply_acl_config(&self, config: AclRuleConfig) -> anyhow::Result<()> {
-        let _operation = self.operation.lock().await;
-        self.reload_acl_config_inner(&config).await?;
-        self.runtime_config
-            .update_services(|services| services.acl = config);
-        Ok(())
-    }
-
     /// Applies ACL runtime effects without publishing a separate config
     /// version. The caller must subsequently submit the complete instance
     /// runtime config, including this ACL.
@@ -1154,7 +1146,6 @@ where
         *self.acl_whitelist.write() = AclWhitelistSnapshot::from(config);
         let acl = config.build()?;
         self.peer_manager.reload_acl(acl.as_ref());
-        self.refresh_acl_groups().await;
         Ok(())
     }
 
@@ -1162,7 +1153,14 @@ where
     /// no effect until submitted through this method.
     pub async fn update_runtime_config(&self, config: CoreInstanceRuntimeConfig) {
         let _operation = self.operation.lock().await;
+        let current = self.runtime_config.snapshot();
+        let refresh_acl_groups = current.peer.peer_group_memberships
+            != config.peer.peer_group_memberships
+            || current.peer.acl_group_declarations != config.peer.acl_group_declarations;
         self.runtime_config.replace(config);
+        if refresh_acl_groups {
+            self.refresh_acl_groups().await;
+        }
     }
 
     pub async fn start_dhcp_ipv4(
