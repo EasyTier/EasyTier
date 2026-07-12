@@ -4,6 +4,7 @@ use anyhow::Context as _;
 use easytier_core::connectivity::manual::discovery::{
     self, HttpDiscoveryRequest, HttpDiscoveryResponse, HttpEndpointSource, ResolvedHttpEndpoint,
 };
+use easytier_core::tunnel::ring::RingTunnelRegistry;
 use url::Url;
 
 use crate::{
@@ -56,22 +57,39 @@ fn interpret_http_discovery_response(
     discovery::resolve_http_endpoint(response).map_err(|error| Error::InvalidUrl(error.to_string()))
 }
 
-#[derive(Debug)]
 pub struct HttpTunnelConnector {
     addr: url::Url,
     bind_addrs: Vec<SocketAddr>,
     ip_version: IpVersion,
     global_ctx: ArcGlobalCtx,
+    ring_registry: Arc<RingTunnelRegistry>,
     redirect_type: HttpRedirectType,
 }
 
+impl std::fmt::Debug for HttpTunnelConnector {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("HttpTunnelConnector")
+            .field("addr", &self.addr)
+            .field("bind_addrs", &self.bind_addrs)
+            .field("ip_version", &self.ip_version)
+            .field("redirect_type", &self.redirect_type)
+            .finish_non_exhaustive()
+    }
+}
+
 impl HttpTunnelConnector {
-    pub fn new(addr: url::Url, global_ctx: ArcGlobalCtx) -> Self {
+    pub fn new(
+        addr: url::Url,
+        global_ctx: ArcGlobalCtx,
+        ring_registry: Arc<RingTunnelRegistry>,
+    ) -> Self {
         Self {
             addr,
             bind_addrs: Vec::new(),
             ip_version: IpVersion::Both,
             global_ctx,
+            ring_registry,
             redirect_type: HttpRedirectType::Unknown,
         }
     }
@@ -87,7 +105,10 @@ impl HttpTunnelConnector {
         tracing::info!(%url, %network_name, "sending HTTP discovery request");
         let options = runtime_manual_options(&self.global_ctx);
         let response = discovery::fetch_http_discovery(
-            Arc::new(RuntimeConnectorHost::new(self.global_ctx.clone())),
+            Arc::new(RuntimeConnectorHost::new_with_ring_registry(
+                self.global_ctx.clone(),
+                self.ring_registry.clone(),
+            )),
             &RuntimeDnsResolver::new(),
             HttpDiscoveryRequest {
                 url,
@@ -115,7 +136,13 @@ impl HttpTunnelConnector {
         original_url: &str,
     ) -> Result<Box<dyn TunnelConnector>, Error> {
         let url = self.get_redirected_url(original_url).await?;
-        create_connector_by_url(url.as_str(), &self.global_ctx, self.ip_version).await
+        create_connector_by_url(
+            url.as_str(),
+            &self.global_ctx,
+            self.ip_version,
+            self.ring_registry.clone(),
+        )
+        .await
     }
 }
 
@@ -266,7 +293,11 @@ mod tests {
         let mut flags = global_ctx.config.get_flags();
         flags.bind_device = false;
         global_ctx.set_flags(flags);
-        let mut connector = HttpTunnelConnector::new(test_url.clone(), global_ctx.clone());
+        let mut connector = HttpTunnelConnector::new(
+            test_url.clone(),
+            global_ctx.clone(),
+            Arc::new(RingTunnelRegistry::default()),
+        );
 
         let mut listener = TcpTunnelListener::new("tcp://0.0.0.0:25888".parse().unwrap());
         listener.listen().await.unwrap();

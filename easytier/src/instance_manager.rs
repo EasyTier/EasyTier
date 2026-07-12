@@ -66,6 +66,10 @@ impl NetworkInstanceManager {
         self.remote_mutation_lock.clone()
     }
 
+    pub(crate) fn ring_registry(&self) -> Arc<RingTunnelRegistry> {
+        self.ring_registry.clone()
+    }
+
     fn start_instance_task(&self, instance_id: uuid::Uuid) -> Result<(), anyhow::Error> {
         if tokio::runtime::Handle::try_current().is_err() {
             return Err(anyhow::anyhow!(

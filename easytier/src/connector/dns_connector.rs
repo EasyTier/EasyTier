@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::{net::SocketAddr, sync::Arc};
 
 use super::{create_connector_by_url, http_connector::TunnelWithInfo};
 use crate::{
@@ -7,25 +7,44 @@ use crate::{
     tunnel::{IpScheme, IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelScheme},
 };
 use anyhow::Context;
-use easytier_core::{connectivity::manual::discovery, socket::SocketContext};
+use easytier_core::{
+    connectivity::manual::discovery, socket::SocketContext, tunnel::ring::RingTunnelRegistry,
+};
 use strum::VariantArray;
 
-#[derive(Debug)]
 pub struct DnsTunnelConnector {
     scheme: TunnelScheme,
     addr: url::Url,
     bind_addrs: Vec<SocketAddr>,
     global_ctx: ArcGlobalCtx,
+    ring_registry: Arc<RingTunnelRegistry>,
     ip_version: IpVersion,
 }
 
+impl std::fmt::Debug for DnsTunnelConnector {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DnsTunnelConnector")
+            .field("scheme", &self.scheme)
+            .field("addr", &self.addr)
+            .field("bind_addrs", &self.bind_addrs)
+            .field("ip_version", &self.ip_version)
+            .finish_non_exhaustive()
+    }
+}
+
 impl DnsTunnelConnector {
-    pub fn new(addr: url::Url, global_ctx: ArcGlobalCtx) -> Self {
+    pub fn new(
+        addr: url::Url,
+        global_ctx: ArcGlobalCtx,
+        ring_registry: Arc<RingTunnelRegistry>,
+    ) -> Self {
         Self {
             scheme: (&addr).try_into().unwrap(),
             addr,
             bind_addrs: Vec::new(),
             global_ctx,
+            ring_registry,
             ip_version: IpVersion::Both,
         }
     }
@@ -46,7 +65,13 @@ impl DnsTunnelConnector {
         domain_name: &str,
     ) -> Result<Box<dyn TunnelConnector>, Error> {
         let url = self.resolve_txt_endpoint(domain_name).await?;
-        create_connector_by_url(url.as_str(), &self.global_ctx, self.ip_version).await
+        create_connector_by_url(
+            url.as_str(),
+            &self.global_ctx,
+            self.ip_version,
+            self.ring_registry.clone(),
+        )
+        .await
     }
 
     #[tracing::instrument(ret, err)]
@@ -70,7 +95,13 @@ impl DnsTunnelConnector {
         domain_name: &str,
     ) -> Result<Box<dyn TunnelConnector>, Error> {
         let url = self.resolve_srv_endpoint(domain_name).await?;
-        create_connector_by_url(url.as_str(), &self.global_ctx, self.ip_version).await
+        create_connector_by_url(
+            url.as_str(),
+            &self.global_ctx,
+            self.ip_version,
+            self.ring_registry.clone(),
+        )
+        .await
     }
 }
 
@@ -136,7 +167,11 @@ mod tests {
     async fn test_txt() {
         let url = "txt://txt.easytier.cn";
         let global_ctx = get_mock_global_ctx();
-        let mut connector = DnsTunnelConnector::new(url.parse().unwrap(), global_ctx);
+        let mut connector = DnsTunnelConnector::new(
+            url.parse().unwrap(),
+            global_ctx,
+            Arc::new(RingTunnelRegistry::default()),
+        );
         connector.set_ip_version(IpVersion::V4);
         for _ in 0..5 {
             match connector.connect().await {
@@ -155,7 +190,11 @@ mod tests {
     async fn test_srv() {
         let url = "srv://easytier.cn";
         let global_ctx = get_mock_global_ctx();
-        let mut connector = DnsTunnelConnector::new(url.parse().unwrap(), global_ctx);
+        let mut connector = DnsTunnelConnector::new(
+            url.parse().unwrap(),
+            global_ctx,
+            Arc::new(RingTunnelRegistry::default()),
+        );
         connector.set_ip_version(IpVersion::V4);
         for _ in 0..5 {
             match connector.connect().await {

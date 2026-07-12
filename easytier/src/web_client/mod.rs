@@ -17,6 +17,7 @@ use crate::{
 };
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
+use easytier_core::tunnel::ring::RingTunnelRegistry;
 use tokio_util::task::AbortOnDropHandle;
 use url::Url;
 use uuid::Uuid;
@@ -61,18 +62,23 @@ pub struct WebClient {
 struct ConfigServerConnector {
     url: Url,
     global_ctx: ArcGlobalCtx,
+    ring_registry: Arc<RingTunnelRegistry>,
 }
 
 #[async_trait]
 impl TunnelConnector for ConfigServerConnector {
     async fn connect(&mut self) -> std::result::Result<Box<dyn Tunnel>, TunnelError> {
-        let mut connector =
-            create_connector_by_url(self.url.as_str(), &self.global_ctx, IpVersion::Both)
-                .await
-                .map_err(|err| match err {
-                    crate::common::error::Error::TunnelError(err) => err,
-                    err => TunnelError::Anyhow(err.into()),
-                })?;
+        let mut connector = create_connector_by_url(
+            self.url.as_str(),
+            &self.global_ctx,
+            IpVersion::Both,
+            self.ring_registry.clone(),
+        )
+        .await
+        .map_err(|err| match err {
+            crate::common::error::Error::TunnelError(err) => err,
+            err => TunnelError::Anyhow(err.into()),
+        })?;
 
         connector.connect().await
     }
@@ -291,10 +297,12 @@ pub async fn run_web_client(
         None => gethostname::gethostname().to_string_lossy().to_string(),
         Some(hostname) => hostname,
     };
+    let ring_registry = manager.ring_registry();
     Ok(WebClient::new(
         ConfigServerConnector {
             url: c_url,
             global_ctx,
+            ring_registry,
         },
         token.to_string(),
         machine_id,

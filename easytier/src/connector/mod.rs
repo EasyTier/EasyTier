@@ -1,6 +1,10 @@
-use std::net::{IpAddr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+use std::{
+    net::{IpAddr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
+    sync::Arc,
+};
 
 use easytier_core::hole_punch::udp as core_udp_hole_punch;
+use easytier_core::tunnel::ring::RingTunnelRegistry;
 
 use crate::{
     common::{dns::socket_addrs, error::Error, global_ctx::ArcGlobalCtx, idn},
@@ -239,6 +243,7 @@ pub async fn create_connector_by_url(
     url: &str,
     global_ctx: &ArcGlobalCtx,
     ip_version: IpVersion,
+    ring_registry: Arc<RingTunnelRegistry>,
 ) -> Result<Box<dyn TunnelConnector + 'static>, Error> {
     let url = url::Url::parse(url).map_err(|_| Error::InvalidUrl(url.to_owned()))?;
     let url = idn::convert_idn_to_ascii(url)?;
@@ -289,9 +294,11 @@ pub async fn create_connector_by_url(
         #[cfg(unix)]
         TunnelScheme::Unix => tunnel::unix::UnixSocketTunnelConnector::new(url).boxed(),
         TunnelScheme::Http | TunnelScheme::Https => {
-            HttpTunnelConnector::new(url, global_ctx.clone()).boxed()
+            HttpTunnelConnector::new(url, global_ctx.clone(), ring_registry).boxed()
         }
-        TunnelScheme::Ring => RingTunnelConnector::new(url).boxed(),
+        TunnelScheme::Ring => {
+            RingTunnelConnector::new_with_ring_registry(url, ring_registry).boxed()
+        }
         TunnelScheme::Txt | TunnelScheme::Srv => {
             if url.host_str().is_none() {
                 return Err(Error::InvalidUrl(format!(
@@ -299,7 +306,7 @@ pub async fn create_connector_by_url(
                     url
                 )));
             }
-            DnsTunnelConnector::new(url, global_ctx.clone()).boxed()
+            DnsTunnelConnector::new(url, global_ctx.clone(), ring_registry).boxed()
         }
     };
     connector.set_ip_version(effective_connector_ip_version);
@@ -309,7 +316,9 @@ pub async fn create_connector_by_url(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
+    use std::{collections::BTreeSet, sync::Arc};
+
+    use easytier_core::tunnel::ring::RingTunnelRegistry;
 
     use crate::{
         common::global_ctx::tests::get_mock_global_ctx, proto::common::PeerFeatureFlag,
@@ -326,13 +335,43 @@ mod tests {
         let public_route: cidr::Ipv6Inet = "2001:db8::2/128".parse().unwrap();
         global_ctx.set_public_ipv6_routes(BTreeSet::from([public_route]));
 
-        let ret =
-            create_connector_by_url("tcp://[2001:db8::2]:11010", &global_ctx, IpVersion::V6).await;
+        let ret = create_connector_by_url(
+            "tcp://[2001:db8::2]:11010",
+            &global_ctx,
+            IpVersion::V6,
+            Arc::new(RingTunnelRegistry::default()),
+        )
+        .await;
 
         assert!(matches!(
             ret,
             Err(crate::common::error::Error::InvalidUrl(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn ring_url_factory_preserves_injected_registry() {
+        let global_ctx = get_mock_global_ctx();
+        let shared_registry = Arc::new(RingTunnelRegistry::default());
+        let listener_id = uuid::Uuid::new_v4();
+        let _listener = shared_registry.bind(listener_id).unwrap();
+        let url = format!("ring://{listener_id}");
+
+        let mut isolated = create_connector_by_url(
+            &url,
+            &global_ctx,
+            IpVersion::Both,
+            Arc::new(RingTunnelRegistry::default()),
+        )
+        .await
+        .unwrap();
+        assert!(isolated.connect().await.is_err());
+
+        let mut shared =
+            create_connector_by_url(&url, &global_ctx, IpVersion::Both, shared_registry)
+                .await
+                .unwrap();
+        assert!(shared.connect().await.is_ok());
     }
 
     #[test]
