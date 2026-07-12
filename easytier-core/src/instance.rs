@@ -1226,6 +1226,10 @@ where
         self.acl_whitelist.read().clone()
     }
 
+    pub fn runtime_config_snapshot(&self) -> CoreRuntimeConfig {
+        self.runtime_config.read().clone()
+    }
+
     pub fn generate_credential(
         &self,
         options: CredentialCreateOptions,

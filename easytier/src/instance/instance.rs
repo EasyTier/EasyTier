@@ -1,7 +1,10 @@
 #[cfg(feature = "tun")]
 use std::any::Any;
 use std::net::IpAddr;
-use std::sync::{Arc, Weak};
+use std::sync::{
+    Arc, Weak,
+    atomic::{AtomicBool, Ordering},
+};
 #[cfg(feature = "tun")]
 use std::time::Duration;
 
@@ -227,7 +230,8 @@ impl RpcServerHook for InstanceRpcServerHook {
 
 #[derive(Default)]
 struct ConfigOperation {
-    closing: bool,
+    closing: AtomicBool,
+    operation: Mutex<()>,
 }
 
 #[derive(Clone)]
@@ -236,7 +240,7 @@ pub struct InstanceConfigPatcher {
     #[cfg(feature = "socks5")]
     socks5_server: Weak<Socks5Server>,
     core_instance: Weak<RuntimeCoreInstance>,
-    operation: Arc<Mutex<ConfigOperation>>,
+    operation: Arc<ConfigOperation>,
 }
 
 impl InstanceConfigPatcher {
@@ -295,8 +299,11 @@ impl InstanceConfigPatcher {
         &self,
         patch: crate::proto::api::config::InstanceConfigPatch,
     ) -> Result<(), anyhow::Error> {
-        let operation = self.operation.lock().await;
-        if operation.closing {
+        if self.operation.closing.load(Ordering::Acquire) {
+            anyhow::bail!("instance is closing; config patch rejected");
+        }
+        let _operation = self.operation.operation.lock().await;
+        if self.operation.closing.load(Ordering::Acquire) {
             anyhow::bail!("instance is closing; config patch rejected");
         }
         let patch_for_event = patch.clone();
@@ -623,7 +630,7 @@ pub struct Instance {
     peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
     peer_manager: Arc<PeerManager>,
     core_instance: Arc<RuntimeCoreInstance>,
-    config_operation: Arc<Mutex<ConfigOperation>>,
+    config_operation: Arc<ConfigOperation>,
 
     proxy: Arc<RuntimeProxyService>,
 
@@ -802,7 +809,7 @@ impl Instance {
             )
             .expect("runtime core instance composition should be valid"),
         );
-        let config_operation = Arc::new(Mutex::new(ConfigOperation::default()));
+        let config_operation = Arc::new(ConfigOperation::default());
 
         #[cfg(feature = "wireguard")]
         let vpn_portal_inst = vpn_portal::wireguard::WireGuard::default();
@@ -1000,8 +1007,11 @@ impl Instance {
 
     pub async fn run(&mut self) -> Result<(), Error> {
         let config_operation = self.config_operation.clone();
-        let config_operation = config_operation.lock().await;
-        if config_operation.closing {
+        if config_operation.closing.load(Ordering::Acquire) {
+            return Err(anyhow::anyhow!("instance is closing; start rejected").into());
+        }
+        let _config_operation = config_operation.operation.lock().await;
+        if config_operation.closing.load(Ordering::Acquire) {
             return Err(anyhow::anyhow!("instance is closing; start rejected").into());
         }
         self.core_instance
@@ -1518,8 +1528,8 @@ impl Instance {
     }
 
     pub async fn clear_resources(&mut self) {
-        let mut config_operation = self.config_operation.lock().await;
-        config_operation.closing = true;
+        self.config_operation.closing.store(true, Ordering::Release);
+        let _config_operation = self.config_operation.operation.lock().await;
         self.core_instance.stop().await;
         #[cfg(feature = "tun")]
         let _ = self.nic_ctx.lock().await.take();
@@ -1530,11 +1540,11 @@ impl Drop for Instance {
     fn drop(&mut self) {
         let core_instance = self.core_instance.clone();
         let config_operation = self.config_operation.clone();
+        config_operation.closing.store(true, Ordering::Release);
         #[cfg(feature = "tun")]
         let nic_ctx = self.nic_ctx.clone();
         tokio::spawn(async move {
-            let mut config_operation = config_operation.lock().await;
-            config_operation.closing = true;
+            let _config_operation = config_operation.operation.lock().await;
             #[cfg(feature = "tun")]
             nic_ctx.lock().await.take();
             core_instance.stop().await;
@@ -1553,7 +1563,8 @@ mod tests {
         instance::instance::{InstanceConfigPatcher, InstanceRpcServerHook},
         proto::{
             api::config::{
-                AclPatch, ConfigPatchAction, InstanceConfigPatch, PortForwardPatch, StringPatch,
+                AclPatch, ConfigPatchAction, InstanceConfigPatch, PortForwardPatch,
+                ProxyNetworkPatch, StringPatch, UrlPatch,
             },
             common::{PortForwardConfigPb, SocketType},
             rpc_impl::standalone::RpcServerHook,
@@ -1661,6 +1672,61 @@ mod tests {
             .unwrap_err();
         assert!(error.to_string().contains("instance is closing"));
         assert!(instance.global_ctx.config.get_tcp_whitelist().is_empty());
+    }
+
+    #[tokio::test]
+    async fn partial_patch_failure_syncs_committed_proxy_policy_to_core() {
+        let mut instance = Instance::new(TomlConfigLoader::default());
+        let patch = InstanceConfigPatch {
+            proxy_networks: vec![ProxyNetworkPatch {
+                action: ConfigPatchAction::Add.into(),
+                cidr: Some("192.0.2.0/24".parse().unwrap()),
+                mapped_cidr: None,
+            }],
+            connectors: vec![UrlPatch {
+                action: ConfigPatchAction::Add.into(),
+                url: Some(
+                    "unsupported://peer.example:11010"
+                        .parse::<url::Url>()
+                        .unwrap()
+                        .into(),
+                ),
+            }],
+            ..Default::default()
+        };
+
+        let error = instance
+            .get_config_patcher()
+            .apply_patch(patch)
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported core manual connector URL")
+        );
+        assert_eq!(instance.global_ctx.config.get_proxy_cidrs().len(), 1);
+        assert!(
+            instance
+                .core_instance
+                .runtime_config_snapshot()
+                .proxy
+                .has_proxy_cidrs
+        );
+        instance.clear_resources().await;
+    }
+
+    #[tokio::test]
+    async fn drop_synchronously_rejects_retained_config_patcher() {
+        let instance = Instance::new(TomlConfigLoader::default());
+        let patcher = instance.get_config_patcher();
+        drop(instance);
+
+        let error = patcher
+            .apply_patch(tcp_whitelist_patch("80"))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("instance is closing"));
     }
 
     #[cfg(feature = "kcp")]
