@@ -11,7 +11,7 @@ use bytes::Bytes;
 use dashmap::DashMap;
 use futures::StreamExt;
 use prost::Message;
-use tokio::{sync::mpsc, task::JoinSet, time::timeout};
+use tokio::{sync::mpsc, task::JoinSet};
 
 use crate::{
     config::PeerId,
@@ -28,6 +28,7 @@ use crate::{
     rpc_impl::packet::{
         BuildRpcPacketArgs, PacketMerger, build_rpc_packet, compress_packet, decompress_packet,
     },
+    runtime_time::timeout,
     tunnel::{
         Tunnel, TunnelError, ZCPacketStream,
         mpsc::{MpscTunnel, MpscTunnelSender},

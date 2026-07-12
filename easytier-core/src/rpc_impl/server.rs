@@ -11,7 +11,7 @@ use bytes::Bytes;
 use dashmap::DashMap;
 use futures::StreamExt;
 use prost::Message;
-use tokio::{task::JoinSet, time::timeout};
+use tokio::task::JoinSet;
 
 use crate::{
     proto::{
@@ -22,6 +22,7 @@ use crate::{
         rpc_types::{controller::Controller, error::Result},
     },
     rpc_impl::packet::BuildRpcPacketArgs,
+    runtime_time::timeout,
     tunnel::{
         Tunnel, ZCPacketStream,
         mpsc::{MpscTunnel, MpscTunnelSender},

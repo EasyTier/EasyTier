@@ -4,11 +4,12 @@ use std::sync::{
 };
 
 use futures::{SinkExt as _, StreamExt};
-use tokio::{task::JoinSet, time::timeout};
+use tokio::task::JoinSet;
 
 use crate::{
     packet::PacketType,
     proto::rpc_types::error::Error,
+    runtime_time::timeout,
     tunnel::{Tunnel, ring::create_ring_tunnel_pair},
 };
 
