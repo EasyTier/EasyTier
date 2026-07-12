@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
 )
 
@@ -22,8 +23,8 @@ const (
 )
 
 // CoreModule serializes every call into one instantiated easytier-core module.
-// Construct exactly one CoreModule for each api.Module. A module owns at most
-// one live CoreInstance because host completion readiness is module-scoped.
+// A module owns at most one live CoreInstance because host completion readiness
+// is module-scoped.
 type CoreModule struct {
 	mu             sync.Mutex
 	module         api.Module
@@ -37,8 +38,19 @@ type CoreInstance struct {
 	dropped    bool
 }
 
-func NewCoreModule(module api.Module) *CoreModule {
-	return &CoreModule{module: module}
+// InstantiateCoreModule instantiates one compiled easytier-core module and
+// creates its unique call-serialization and completion ownership domain.
+func InstantiateCoreModule(
+	ctx context.Context,
+	runtime wazero.Runtime,
+	compiled wazero.CompiledModule,
+	moduleConfig wazero.ModuleConfig,
+) (*CoreModule, error) {
+	module, err := runtime.InstantiateModule(ctx, compiled, moduleConfig)
+	if err != nil {
+		return nil, err
+	}
+	return &CoreModule{module: module}, nil
 }
 
 // CreateInstance copies normalized JSON configuration into guest memory and

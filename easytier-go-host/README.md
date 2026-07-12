@@ -30,7 +30,15 @@ packetSink, err := bridge.RegisterPacketSink(16)
 if err != nil {
     return err
 }
-moduleOwner := corehost.NewCoreModule(module)
+moduleOwner, err := corehost.InstantiateCoreModule(
+    ctx,
+    runtime,
+    compiledModule,
+    wazero.NewModuleConfig().WithStartFunctions("_initialize"),
+)
+if err != nil {
+    return err
+}
 core, err := moduleOwner.CreateInstance(ctx, normalizedConfig, packetSink)
 if err != nil {
     return err
@@ -48,10 +56,11 @@ After it returns standard Go `net` resources, core/Tokio decides when read,
 write, receive, send, and accept operations are polled. The Go bridge does not
 own EasyTier framing, retries, routing, peer admission, or protocol state.
 
-All calls into one wazero module must use the same `CoreModule`. During normal
-shutdown, stop and drop every `CoreInstance` before closing the module and
-`Bridge`. `Bridge.Close` rejects new work, releases host resources, waits for
-in-flight workers, and is safe to call concurrently.
+`InstantiateCoreModule` creates the wazero module together with its unique
+serialization and completion ownership domain. During normal shutdown, stop
+and drop every `CoreInstance` before closing the runtime and `Bridge`.
+`Bridge.Close` rejects new work, releases host resources, waits for in-flight
+workers, and is safe to call concurrently.
 
 Run the conformance and integration tests with:
 

@@ -123,8 +123,9 @@ func instantiateCoreModule(
 	if err != nil {
 		t.Fatalf("compile easytier-core: %v", err)
 	}
-	module, err := runtime.InstantiateModule(
+	moduleOwner, err := InstantiateCoreModule(
 		ctx,
+		runtime,
 		compiled,
 		wazero.NewModuleConfig().
 			WithStartFunctions("_initialize").
@@ -135,12 +136,12 @@ func instantiateCoreModule(
 	if err != nil {
 		t.Fatalf("instantiate easytier-core: %v", err)
 	}
-	core, err := NewCoreModule(module).CreateInstance(ctx, config, packetSink)
+	core, err := moduleOwner.CreateInstance(ctx, config, packetSink)
 	if err != nil {
 		t.Fatalf("create core instance: %v", err)
 	}
 	initialized = true
-	return runtime, module, core, packetSink
+	return runtime, moduleOwner.module, core, packetSink
 }
 
 func driveCoreUntil(
