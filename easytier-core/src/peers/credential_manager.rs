@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    sync::Mutex,
+    sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -80,8 +80,15 @@ pub struct GeneratedCredential {
     pub changed: bool,
 }
 
+pub trait CredentialStorage: Send + Sync + 'static {
+    fn load(&self) -> anyhow::Result<Option<String>>;
+    fn store(&self, serialized_credentials: &str) -> anyhow::Result<()>;
+}
+
 pub struct CredentialManager {
     credentials: Mutex<HashMap<String, CredentialEntry>>,
+    storage: Option<Arc<dyn CredentialStorage>>,
+    storage_write: Mutex<()>,
 }
 
 impl Default for CredentialManager {
@@ -94,12 +101,35 @@ impl CredentialManager {
     pub fn new() -> Self {
         Self {
             credentials: Mutex::new(HashMap::new()),
+            storage: None,
+            storage_write: Mutex::new(()),
         }
     }
 
     pub fn from_entries(credentials: HashMap<String, CredentialEntry>) -> Self {
         Self {
             credentials: Mutex::new(credentials),
+            storage: None,
+            storage_write: Mutex::new(()),
+        }
+    }
+
+    pub fn from_storage(storage: Arc<dyn CredentialStorage>) -> Self {
+        let credentials = match storage.load() {
+            Ok(Some(serialized)) => serde_json::from_str(&serialized).unwrap_or_else(|error| {
+                tracing::warn!(?error, "failed to parse stored credentials");
+                HashMap::new()
+            }),
+            Ok(None) => HashMap::new(),
+            Err(error) => {
+                tracing::warn!(?error, "failed to load stored credentials");
+                HashMap::new()
+            }
+        };
+        Self {
+            credentials: Mutex::new(credentials),
+            storage: Some(storage),
+            storage_write: Mutex::new(()),
         }
     }
 
@@ -172,33 +202,37 @@ impl CredentialManager {
         credential_id: Option<String>,
         reusable: bool,
     ) -> GeneratedCredential {
-        let mut credentials = self.credentials.lock().unwrap();
-        let id = if let Some(id) = credential_id
-            .map(|x| x.trim().to_string())
-            .filter(|x| !x.is_empty())
-        {
-            if let Some(existing) = credentials.get(&id)
-                && !existing.secret.is_empty()
+        let generated = {
+            let mut credentials = self.credentials.lock().unwrap();
+            let id = if let Some(id) = credential_id
+                .map(|x| x.trim().to_string())
+                .filter(|x| !x.is_empty())
             {
-                return GeneratedCredential {
-                    credential_id: id,
-                    secret: existing.secret.clone(),
-                    changed: false,
-                };
-            }
-            id
-        } else {
-            uuid::Uuid::new_v4().to_string()
-        };
+                if let Some(existing) = credentials.get(&id)
+                    && !existing.secret.is_empty()
+                {
+                    return GeneratedCredential {
+                        credential_id: id,
+                        secret: existing.secret.clone(),
+                        changed: false,
+                    };
+                }
+                id
+            } else {
+                uuid::Uuid::new_v4().to_string()
+            };
 
-        let (entry, secret) =
-            Self::build_entry(groups, allow_relay, allowed_proxy_cidrs, reusable, ttl);
-        credentials.insert(id.clone(), entry);
-        GeneratedCredential {
-            credential_id: id,
-            secret,
-            changed: true,
-        }
+            let (entry, secret) =
+                Self::build_entry(groups, allow_relay, allowed_proxy_cidrs, reusable, ttl);
+            credentials.insert(id.clone(), entry);
+            GeneratedCredential {
+                credential_id: id,
+                secret,
+                changed: true,
+            }
+        };
+        self.persist();
+        generated
     }
 
     fn build_entry(
@@ -233,11 +267,16 @@ impl CredentialManager {
     }
 
     pub fn revoke_credential(&self, credential_id: &str) -> bool {
-        self.credentials
+        let removed = self
+            .credentials
             .lock()
             .unwrap()
             .remove(credential_id)
-            .is_some()
+            .is_some();
+        if removed {
+            self.persist();
+        }
+        removed
     }
 
     pub fn remove_expired_credentials(&self) -> bool {
@@ -248,7 +287,12 @@ impl CredentialManager {
         let mut credentials = self.credentials.lock().unwrap();
         let before = credentials.len();
         credentials.retain(|_, entry| entry.is_active_at(now));
-        before != credentials.len()
+        let changed = before != credentials.len();
+        drop(credentials);
+        if changed {
+            self.persist();
+        }
+        changed
     }
 
     pub fn get_trusted_pubkeys(&self, network_secret: &str) -> Vec<TrustedCredentialPubkeyProof> {
@@ -297,11 +341,44 @@ impl CredentialManager {
         }
         Some(decoded)
     }
+
+    fn persist(&self) {
+        let Some(storage) = &self.storage else {
+            return;
+        };
+        let _storage_write = self.storage_write.lock().unwrap();
+        let serialized = match self.with_entries(serde_json::to_string_pretty) {
+            Ok(serialized) => serialized,
+            Err(error) => {
+                tracing::warn!(?error, "failed to serialize credentials");
+                return;
+            }
+        };
+        if let Err(error) = storage.store(&serialized) {
+            tracing::warn!(?error, "failed to store credentials");
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Default)]
+    struct MemoryCredentialStorage {
+        serialized: Mutex<Option<String>>,
+    }
+
+    impl CredentialStorage for MemoryCredentialStorage {
+        fn load(&self) -> anyhow::Result<Option<String>> {
+            Ok(self.serialized.lock().unwrap().clone())
+        }
+
+        fn store(&self, serialized_credentials: &str) -> anyhow::Result<()> {
+            *self.serialized.lock().unwrap() = Some(serialized_credentials.to_owned());
+            Ok(())
+        }
+    }
 
     #[test]
     fn generate_and_revoke_credential() {
@@ -383,5 +460,34 @@ mod tests {
         assert_eq!(mgr.list_credentials().len(), 1);
         assert!(mgr.remove_expired_credentials());
         assert_eq!(mgr.list_credentials().len(), 1);
+    }
+
+    #[test]
+    fn injected_storage_loads_and_persists_mutations() {
+        let storage = Arc::new(MemoryCredentialStorage::default());
+        let manager = CredentialManager::from_storage(storage.clone());
+        let generated =
+            manager.generate_credential(vec![], false, vec![], Duration::from_secs(3600));
+
+        let reloaded = CredentialManager::from_storage(storage.clone());
+        assert_eq!(
+            reloaded.list_credentials()[0].credential_id,
+            generated.credential_id
+        );
+
+        assert!(manager.revoke_credential(&generated.credential_id));
+        let reloaded = CredentialManager::from_storage(storage);
+        assert!(reloaded.list_credentials().is_empty());
+    }
+
+    #[test]
+    fn malformed_storage_starts_with_empty_credentials() {
+        let storage = Arc::new(MemoryCredentialStorage {
+            serialized: Mutex::new(Some("not json".to_owned())),
+        });
+
+        let manager = CredentialManager::from_storage(storage);
+
+        assert!(manager.list_credentials().is_empty());
     }
 }
