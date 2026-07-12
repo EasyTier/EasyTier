@@ -62,9 +62,9 @@ The current architecture is still intermediate:
   upgrader; ring, Unix, and FakeTCP creation remain Host Adapter concerns;
 - native `Instance`, `PeerManager`, `PeerContext`, and process-global state
   still overlap in lifecycle and state ownership;
-- the wasm ABI and reusable Go bridge are now functional reference contracts,
-  but still need repeated failure/isolation measurements, quantitative gates,
-  and a stable final integration location outside the PoC tool tree;
+- the wasm ABI and reusable Go bridge are now functional reference contracts;
+  the bridge lives in the root `easytier-go-host` module, while repeated
+  failure/isolation measurements and quantitative gates remain open;
 - build features exist, but ownership has not yet settled into deep Modules
   suitable for deliberate feature slicing.
 

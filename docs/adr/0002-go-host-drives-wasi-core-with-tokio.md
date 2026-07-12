@@ -83,7 +83,8 @@ poll with WASIp1 `ENOTSUP`, so the current functional implementation uses
 opaque host handles and bounded cooperative drives. This is the selected
 reference implementation while the quantitative Phase 0 gates remain open.
 
-The reusable Go package reflects the ownership boundary in this decision:
+The reusable root [`easytier-go-host`](../../easytier-go-host/README.md) package
+reflects the ownership boundary in this decision:
 
 - `SocketFactory` controls only TCP connect, UDP bind, and TCP listen creation;
 - returned `net.Conn`, `net.PacketConn`, and `net.Listener` resources enter one
