@@ -18,20 +18,42 @@ type probeOpaqueEnvironment struct {
 	localRequests     []string
 	udpRequests       []uint64
 	tcpRequests       []uint16
+	started           chan string
+	release           chan struct{}
+}
+
+func (environment *probeOpaqueEnvironment) awaitRelease(
+	ctx context.Context,
+	kind string,
+) error {
+	select {
+	case environment.started <- kind:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case <-environment.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (environment *probeOpaqueEnvironment) localAddrForRemote(
-	_ context.Context,
+	ctx context.Context,
 	remote *net.UDPAddr,
 ) (net.Addr, error) {
 	environment.mu.Lock()
 	environment.localRequests = append(environment.localRequests, remote.String())
 	environment.mu.Unlock()
+	if err := environment.awaitRelease(ctx, "local"); err != nil {
+		return nil, err
+	}
 	return &net.UDPAddr{IP: net.ParseIP("192.0.2.10"), Port: 40000}, nil
 }
 
 func (environment *probeOpaqueEnvironment) udpPortMapping(
-	_ context.Context,
+	ctx context.Context,
 	handle uint64,
 ) (net.Addr, error) {
 	environment.mu.Lock()
@@ -40,16 +62,22 @@ func (environment *probeOpaqueEnvironment) udpPortMapping(
 	if handle != environment.expectedUDPHandle {
 		return nil, fmt.Errorf("unexpected UDP handle %d", handle)
 	}
+	if err := environment.awaitRelease(ctx, "udp"); err != nil {
+		return nil, err
+	}
 	return &net.UDPAddr{IP: net.ParseIP("198.51.100.10"), Port: 45000}, nil
 }
 
 func (environment *probeOpaqueEnvironment) tcpPortMapping(
-	_ context.Context,
+	ctx context.Context,
 	port uint16,
 ) (net.Addr, error) {
 	environment.mu.Lock()
 	environment.tcpRequests = append(environment.tcpRequests, port)
 	environment.mu.Unlock()
+	if err := environment.awaitRelease(ctx, "tcp"); err != nil {
+		return nil, err
+	}
 	return &net.TCPAddr{IP: net.ParseIP("198.51.100.11"), Port: int(port)}, nil
 }
 
@@ -67,7 +95,11 @@ func TestOpaqueEnvironmentDrivesCoreServices(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create environment UDP socket: %v", err)
 	}
-	environment := &probeOpaqueEnvironment{expectedUDPHandle: udpHandle}
+	environment := &probeOpaqueEnvironment{
+		expectedUDPHandle: udpHandle,
+		started:           make(chan string, 1),
+		release:           make(chan struct{}),
+	}
 	bridge := newOpaqueBridge(nil, map[uint64]net.PacketConn{udpHandle: packet})
 	bridge.environmentResolver = environment
 	defer bridge.close()
@@ -100,8 +132,9 @@ func TestOpaqueEnvironmentDrivesCoreServices(t *testing.T) {
 		t.Fatalf("initialize environment probe: results=%v error=%v", results, err)
 	}
 
-	for {
-		results, err = module.ExportedFunction("drive_environment_probe").Call(ctx)
+	drive := func() uint32 {
+		t.Helper()
+		results, err := module.ExportedFunction("drive_environment_probe").Call(ctx)
 		if err != nil || len(results) != 1 {
 			t.Fatalf("drive environment probe: results=%v error=%v", results, err)
 		}
@@ -109,14 +142,31 @@ func TestOpaqueEnvironmentDrivesCoreServices(t *testing.T) {
 		if status&opaqueError != 0 {
 			t.Fatalf("environment probe failed with status 0x%x", status)
 		}
+		return status
+	}
+	status := drive()
+	for _, expected := range []string{"local", "udp", "tcp"} {
 		if status&opaqueDone != 0 {
-			break
+			t.Fatalf("environment probe completed before %s operation", expected)
 		}
+		select {
+		case actual := <-environment.started:
+			if actual != expected {
+				t.Fatalf("unexpected environment operation: got=%s want=%s", actual, expected)
+			}
+		case <-ctx.Done():
+			t.Fatalf("wait for %s environment operation: %v", expected, ctx.Err())
+		}
+		environment.release <- struct{}{}
 		select {
 		case <-bridge.completion:
 		case <-ctx.Done():
-			t.Fatalf("wait for environment completion: %v", ctx.Err())
+			t.Fatalf("wait for %s environment completion: %v", expected, ctx.Err())
 		}
+		status = drive()
+	}
+	if status&opaqueDone == 0 {
+		t.Fatalf("environment probe did not complete: status=0x%x", status)
 	}
 
 	local, udp, tcp := environment.requests()
