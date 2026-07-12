@@ -398,6 +398,7 @@ mod tests {
                         peer_addr,
                         UdpSocketSendMeta {
                             src_ip: Some(source_ip),
+                            src_ifindex: None,
                         },
                     )
                     .await
@@ -417,7 +418,8 @@ mod tests {
                 b"udp".to_vec(),
                 peer_addr,
                 UdpSocketSendMeta {
-                    src_ip: Some(source_ip)
+                    src_ip: Some(source_ip),
+                    src_ifindex: None,
                 }
             )]
         );

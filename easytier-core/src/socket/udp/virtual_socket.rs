@@ -16,6 +16,7 @@ pub struct UdpSocketRecvMeta {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct UdpSocketSendMeta {
     pub src_ip: Option<IpAddr>,
+    pub src_ifindex: Option<u32>,
 }
 
 #[async_trait]

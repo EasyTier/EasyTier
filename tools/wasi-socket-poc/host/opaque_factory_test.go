@@ -397,7 +397,7 @@ func decodeSocketAddress(encoded []byte, optional bool) (*net.UDPAddr, error) {
 	}
 	metadata := make([]byte, udpMetadataLen)
 	copy(metadata, encoded)
-	address, _, flowinfo, err := decodeUDPMetadata(metadata)
+	address, _, flowinfo, _, err := decodeUDPMetadata(metadata)
 	if err == nil && flowinfo != 0 {
 		return nil, fmt.Errorf("IPv6 flowinfo is outside this PoC")
 	}
@@ -449,7 +449,7 @@ func encodeNetAddr(address net.Addr) ([socketAddressLen]byte, error) {
 	default:
 		return encoded, fmt.Errorf("unsupported socket address %T", address)
 	}
-	metadata, err := encodeUDPMetadata(udpAddr, nil)
+	metadata, err := encodeUDPMetadata(udpAddr, nil, 0)
 	if err != nil {
 		return encoded, err
 	}

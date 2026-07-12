@@ -4,7 +4,7 @@ use std::{
 };
 
 pub(super) const SOCKET_ADDRESS_LEN: usize = 27;
-pub(super) const UDP_METADATA_LEN: usize = 44;
+pub(super) const UDP_METADATA_LEN: usize = 48;
 
 const V4_FAMILY: u8 = 4;
 const V6_FAMILY: u8 = 6;
@@ -15,10 +15,12 @@ const FLOWINFO_BYTES: std::ops::Range<usize> = 19..23;
 const SCOPE_ID_BYTES: std::ops::Range<usize> = 23..27;
 const OPTIONAL_IP_FAMILY: usize = 27;
 const OPTIONAL_IP_BYTES: std::ops::Range<usize> = 28..44;
+const OPTIONAL_IFINDEX_BYTES: std::ops::Range<usize> = 44..48;
 
 pub(super) fn encode_udp_metadata(
     peer_addr: SocketAddr,
     optional_ip: Option<IpAddr>,
+    optional_ifindex: Option<u32>,
 ) -> [u8; UDP_METADATA_LEN] {
     let mut wire = [0_u8; UDP_METADATA_LEN];
     wire[..SOCKET_ADDRESS_LEN].copy_from_slice(&encode_socket_address(peer_addr));
@@ -34,6 +36,9 @@ pub(super) fn encode_udp_metadata(
             wire[OPTIONAL_IP_FAMILY] = V6_FAMILY;
             wire[OPTIONAL_IP_BYTES].copy_from_slice(&ip.octets());
         }
+    }
+    if let Some(ifindex) = optional_ifindex {
+        wire[OPTIONAL_IFINDEX_BYTES].copy_from_slice(&ifindex.to_be_bytes());
     }
     wire
 }
@@ -59,19 +64,27 @@ pub(super) fn encode_socket_address(addr: SocketAddr) -> [u8; SOCKET_ADDRESS_LEN
 
 pub(super) fn decode_udp_metadata(
     wire: &[u8; UDP_METADATA_LEN],
-) -> io::Result<(SocketAddr, Option<IpAddr>)> {
+) -> io::Result<(SocketAddr, Option<IpAddr>, Option<u32>)> {
     let address = <[u8; SOCKET_ADDRESS_LEN]>::try_from(&wire[..SOCKET_ADDRESS_LEN]).unwrap();
     let peer_addr = decode_socket_address(&address)?;
 
     let optional_ip = match wire[OPTIONAL_IP_FAMILY] {
         0 => {
             require_zero(&wire[OPTIONAL_IP_BYTES], "absent optional IP")?;
+            require_zero(
+                &wire[OPTIONAL_IFINDEX_BYTES],
+                "absent optional IP interface index",
+            )?;
             None
         }
         V4_FAMILY => {
             require_zero(
                 &wire[OPTIONAL_IP_BYTES.start + 4..OPTIONAL_IP_BYTES.end],
                 "optional IPv4 padding",
+            )?;
+            require_zero(
+                &wire[OPTIONAL_IFINDEX_BYTES],
+                "optional IPv4 interface index",
             )?;
             Some(IpAddr::V4(Ipv4Addr::from(
                 <[u8; 4]>::try_from(&wire[OPTIONAL_IP_BYTES.start..OPTIONAL_IP_BYTES.start + 4])
@@ -83,7 +96,12 @@ pub(super) fn decode_udp_metadata(
         ))),
         family => return Err(invalid_family("optional IP", family)),
     };
-    Ok((peer_addr, optional_ip))
+    let optional_ifindex =
+        match u32::from_be_bytes(wire[OPTIONAL_IFINDEX_BYTES].try_into().unwrap()) {
+            0 => None,
+            ifindex => Some(ifindex),
+        };
+    Ok((peer_addr, optional_ip, optional_ifindex))
 }
 
 pub(super) fn decode_socket_address(wire: &[u8; SOCKET_ADDRESS_LEN]) -> io::Result<SocketAddr> {
@@ -144,10 +162,13 @@ mod tests {
             0x04, 0xc0, 0x00, 0x02, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x00, 0x2b, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04,
             0xc6, 0x33, 0x64, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ];
-        assert_eq!(encode_udp_metadata(peer, source), expected);
-        assert_eq!(decode_udp_metadata(&expected).unwrap(), (peer, source));
+        assert_eq!(encode_udp_metadata(peer, source, None), expected);
+        assert_eq!(
+            decode_udp_metadata(&expected).unwrap(),
+            (peer, source, None)
+        );
     }
 
     #[test]
@@ -160,19 +181,27 @@ mod tests {
         ));
         let destination = Some(IpAddr::V6("2001:db8::2".parse().unwrap()));
         assert_eq!(
-            decode_udp_metadata(&encode_udp_metadata(peer, destination)).unwrap(),
-            (peer, destination)
+            decode_udp_metadata(&encode_udp_metadata(peer, destination, Some(17))).unwrap(),
+            (peer, destination, Some(17))
         );
     }
 
     #[test]
     fn rejects_noncanonical_or_unknown_families() {
-        let mut wire = encode_udp_metadata("192.0.2.1:11013".parse().unwrap(), None);
+        let mut wire = encode_udp_metadata("192.0.2.1:11013".parse().unwrap(), None, None);
         wire[ADDRESS_BYTES.start + 4] = 1;
         assert!(decode_udp_metadata(&wire).is_err());
 
-        wire = encode_udp_metadata("192.0.2.1:11013".parse().unwrap(), None);
+        wire = encode_udp_metadata("192.0.2.1:11013".parse().unwrap(), None, None);
         wire[OPTIONAL_IP_FAMILY] = 9;
+        assert!(decode_udp_metadata(&wire).is_err());
+
+        wire = encode_udp_metadata(
+            "192.0.2.1:11013".parse().unwrap(),
+            Some("192.0.2.2".parse().unwrap()),
+            None,
+        );
+        wire[OPTIONAL_IFINDEX_BYTES.end - 1] = 1;
         assert!(decode_udp_metadata(&wire).is_err());
     }
 }

@@ -121,7 +121,7 @@ impl HostUdpIo for WasiHostUdpIo {
                     )));
                 }
                 buffer.data.truncate(length);
-                let (peer_addr, dst_ip) = match decode_udp_metadata(&buffer.metadata) {
+                let (peer_addr, dst_ip, _) = match decode_udp_metadata(&buffer.metadata) {
                     Ok(metadata) => metadata,
                     Err(error) => return Poll::Ready(Err(error)),
                 };
@@ -145,10 +145,16 @@ impl HostUdpIo for WasiHostUdpIo {
         peer_addr: std::net::SocketAddr,
         meta: UdpSocketSendMeta,
     ) -> io::Result<()> {
+        if meta.src_ifindex.is_some() && !matches!(meta.src_ip, Some(std::net::IpAddr::V6(_))) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "UDP source interface index requires an IPv6 source address",
+            ));
+        }
         let length = u32::try_from(source.len()).map_err(|_| {
             io::Error::new(io::ErrorKind::InvalidInput, "UDP send buffer is too large")
         })?;
-        let metadata = encode_udp_metadata(peer_addr, meta.src_ip);
+        let metadata = encode_udp_metadata(peer_addr, meta.src_ip, meta.src_ifindex);
         match unsafe {
             try_udp_send(
                 handle.0,
