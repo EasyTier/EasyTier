@@ -24,6 +24,7 @@ const (
 
 type coreModuleState struct {
 	mu             sync.Mutex
+	driveMu        sync.Mutex
 	module         api.Module
 	bridge         *Bridge
 	activeInstance uint64
@@ -214,6 +215,8 @@ func (instance *CoreInstance) DriveUntil(
 	ctx context.Context,
 	wanted CoreState,
 ) error {
+	instance.coreModule.driveMu.Lock()
+	defer instance.coreModule.driveMu.Unlock()
 	return driveUntil(
 		ctx,
 		instance.coreModule.bridge.completion,

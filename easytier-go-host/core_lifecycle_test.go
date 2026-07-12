@@ -72,6 +72,7 @@ func TestCoreInstanceLifecycle(t *testing.T) {
 
 func TestCoreModuleAllowsOnlyOneLiveInstance(t *testing.T) {
 	bridge := newOpaqueBridge(nil, nil)
+	bridgeCopy := *bridge
 	defer bridge.close()
 	wasm := buildCore(t)
 	config, err := os.ReadFile(filepath.Join("testdata", "minimal_core_instance.json"))
@@ -108,7 +109,7 @@ func TestCoreModuleAllowsOnlyOneLiveInstance(t *testing.T) {
 		runtime,
 		compiled,
 		wazero.NewModuleConfig().WithName("second-core"),
-		bridge,
+		&bridgeCopy,
 	); err == nil {
 		t.Fatal("Bridge bound a second core module to one completion domain")
 	}

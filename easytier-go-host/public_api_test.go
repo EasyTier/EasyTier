@@ -70,9 +70,6 @@ var _ corehost.SocketFactory = publicSocketFactory{}
 func TestBridgePublicPacketLifecycle(t *testing.T) {
 	bridge := corehost.NewBridge(corehost.BridgeConfig{})
 	defer bridge.Close()
-	if bridge.Completion() == nil {
-		t.Fatal("bridge returned a nil completion channel")
-	}
 	handle, err := bridge.RegisterPacketSink(1)
 	if err != nil {
 		t.Fatalf("register packet sink: %v", err)

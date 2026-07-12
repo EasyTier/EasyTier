@@ -36,7 +36,7 @@ func NewBridge(config BridgeConfig) *Bridge {
 	if environment == nil {
 		environment = unsupportedOpaqueEnvironment{}
 	}
-	bridge := &Bridge{
+	bridge := &Bridge{bridgeState: &bridgeState{
 		closeDone:           make(chan struct{}),
 		handles:             handles,
 		packets:             make(map[uint64]*opaquePacketState, len(packets)),
@@ -56,7 +56,7 @@ func NewBridge(config BridgeConfig) *Bridge {
 		packetWrites:        make(map[uint64]*opaquePacketWriteWaiter),
 		nextHandle:          1 << 48,
 		completion:          make(chan struct{}, 1),
-	}
+	}}
 	for handle, connection := range packets {
 		state := newOpaquePacketState(connection)
 		bridge.packets[handle] = state
@@ -71,12 +71,6 @@ func newOpaqueBridge(
 	packets map[uint64]net.PacketConn,
 ) *Bridge {
 	return NewBridge(BridgeConfig{TCPStreams: handles, UDPSockets: packets})
-}
-
-// Completion returns a coalescing notification channel. A notification means
-// at least one host operation may be ready for another core drive.
-func (b *Bridge) Completion() <-chan struct{} {
-	return b.completion
 }
 
 // Close releases bridge-owned resources and waits for their workers to exit.

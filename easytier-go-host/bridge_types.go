@@ -112,7 +112,7 @@ type opaquePacketWriteWaiter struct {
 	ready  bool
 }
 
-type Bridge struct {
+type bridgeState struct {
 	mu                  sync.Mutex
 	closed              bool
 	coreModuleBound     bool
@@ -137,6 +137,12 @@ type Bridge struct {
 	nextHandle          uint64
 	completion          chan struct{}
 	workers             sync.WaitGroup
+}
+
+// Bridge owns the host resources and completion domain used by one core
+// module. Copies share the same private state.
+type Bridge struct {
+	*bridgeState
 }
 
 type opaqueBridge = Bridge
