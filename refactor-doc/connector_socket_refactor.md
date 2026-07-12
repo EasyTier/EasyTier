@@ -1,8 +1,9 @@
 # Connector Socket 重构方向
 
 > 状态：历史设计输入。当前实施顺序以
-> [`core_refactor_roadmap.md`](core_refactor_roadmap.md) 为准；本文关于
-> “先产出 Socket、再升级 Tunnel”的目标仍然有效，代码现状需重新核对。
+> [`core_refactor_roadmap.md`](core_refactor_roadmap.md) 为准。生产 Core instance
+> 的 manual、direct、TCP/UDP hole-punch 和 listener 路径已经实现“先产出
+> transport、再升级 tunnel”；本文保留为边界设计依据。
 
 ## 背景
 

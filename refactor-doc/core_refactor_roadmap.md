@@ -38,9 +38,9 @@ Already established:
 - peer routing, peer RPC, route state, stream framing, core-side TCP and UDP
   socket Interfaces, DNS Interface, and substantial hole-punch logic have moved
   into core;
-- UDP hole-punch completion and ordinary TCP/UDP manual reconnect/listener paths
-  now produce host-created sockets or sessions before core-owned tunnel upgrade
-  and peer admission;
+- manual, direct-connect, TCP hole-punch, UDP hole-punch, and inbound listener
+  paths now produce host-created TCP streams, byte streams, or core UDP sessions
+  before protocol upgrade and peer admission;
 - ordinary TCP and UDP connectors share one core-owned manual Connectivity
   Module for URL state, DNS, IP-family ordering, retries, status, and admission;
 - the native crate already contains Adapter implementations for several core
@@ -53,10 +53,9 @@ Already established:
 
 The current architecture is still intermediate:
 
-- non-TCP/UDP manual reconnect, direct-connect, and TCP hole-punch paths can
-  still create legacy tunnels outside the final socket seam;
-- not every inbound protocol listener is expressed as a core-owned socket
-  listener plus portable tunnel upgrade;
+- native listener planning and lifecycle still live in the runtime crate even
+  though accepted TCP/UDP/byte-stream values already enter the core protocol
+  upgrader; ring, Unix, and FakeTCP creation remain Host Adapter concerns;
 - native `Instance`, `PeerManager`, `PeerContext`, and process-global state
   still overlap in lifecycle and state ownership;
 - the wasm ABI and Go bridge are now functional reference contracts, but still
@@ -135,6 +134,13 @@ Work:
    NAT-PMP in Adapter Implementations; requests carry policy, not syscalls.
 6. Delete each legacy tunnel-producing path as soon as its replacement passes
    native and wasm conformance tests.
+
+Current boundary result: production manual, direct-connect, TCP hole-punch, UDP
+hole-punch, and listener admission no longer construct tunnels inside their
+connect/accept state machines. They pass `ConnectedTransport` or
+`AcceptedTransport` values to the shared protocol upgraders. Legacy standalone
+connectors remain for non-peer consumers and tests; they are not part of the
+Core instance admission path.
 
 ### Current protocol dependency constraints
 
