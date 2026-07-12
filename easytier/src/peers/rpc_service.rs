@@ -194,10 +194,7 @@ impl AclManageRpc for PeerManagerRpcService {
         _: BaseController,
         _request: GetAclStatsRequest,
     ) -> Result<GetAclStatsResponse, rpc_types::error::Error> {
-        let acl_stats = weak_upgrade(&self.peer_manager)?
-            .get_global_ctx()
-            .get_acl_filter()
-            .get_stats();
+        let acl_stats = weak_upgrade(&self.core_instance)?.acl_stats();
         Ok(GetAclStatsResponse {
             acl_stats: Some(acl_stats),
         })

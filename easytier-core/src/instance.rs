@@ -1158,6 +1158,10 @@ where
         self.peer_manager.foreign_network_route_summary().await
     }
 
+    pub fn acl_stats(&self) -> crate::proto::acl::AclStats {
+        self.peer_manager.acl_stats()
+    }
+
     pub async fn close_peer_conn(
         &self,
         peer_id: crate::config::PeerId,

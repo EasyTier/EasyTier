@@ -1314,6 +1314,10 @@ impl PeerManagerCore {
         self.get_route().get_foreign_network_summary().await
     }
 
+    pub fn acl_stats(&self) -> crate::proto::acl::AclStats {
+        self.acl_filter.get_stats()
+    }
+
     pub fn network_name(&self) -> &str {
         &self.network_name
     }
