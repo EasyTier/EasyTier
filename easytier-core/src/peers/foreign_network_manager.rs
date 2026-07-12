@@ -11,7 +11,7 @@ use tokio::sync::{
     Mutex,
     mpsc::{self, UnboundedReceiver, UnboundedSender},
 };
-use tokio::{task::JoinSet, time::timeout};
+use tokio::task::JoinSet;
 
 use crate::{
     config::PeerId,
@@ -19,6 +19,7 @@ use crate::{
     peer_center::instance::{PeerCenterInstance, PeerMapWithPeerRpcManager},
     peers::{PacketRecvChan, PacketRecvChanReceiver, recv_packet_from_chan},
     proto::core_peer::peer::PeerConnInfo,
+    runtime_time::timeout,
     stats_manager::{CounterHandle, LabelSet, LabelType, MetricName, StatsManager},
     token_bucket::TokenBucket,
 };
@@ -346,7 +347,7 @@ fn join_joinset_background(js: Arc<std::sync::Mutex<JoinSet<()>>>, origin: &'sta
     let js = Arc::downgrade(&js);
     tokio::spawn(async move {
         while js.strong_count() > 0 {
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            crate::runtime_time::sleep(std::time::Duration::from_secs(1)).await;
 
             let fut = future::poll_fn(|cx| {
                 let Some(js) = js.upgrade() else {
@@ -577,7 +578,7 @@ impl ForeignNetworkEntry {
         self.tasks.lock().await.spawn(async move {
             loop {
                 relay_peer_map.evict_idle_sessions(std::time::Duration::from_secs(60));
-                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                crate::runtime_time::sleep(std::time::Duration::from_secs(30)).await;
             }
         });
     }

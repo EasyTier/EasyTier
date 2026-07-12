@@ -19,16 +19,14 @@ use guarden::guard;
 use hmac::Mac;
 use prost::Message;
 
-use tokio::{
-    sync::broadcast,
-    task::JoinSet,
-    time::{Duration, timeout},
-};
+use tokio::{sync::broadcast, task::JoinSet};
 
 use tracing::Instrument;
 use zerocopy::AsBytes;
 
 use snow::{HandshakeState, params::NoiseParams};
+
+use crate::runtime_time::{Duration, timeout};
 
 use super::{
     PacketRecvChan,

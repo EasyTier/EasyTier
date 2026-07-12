@@ -24,8 +24,8 @@ impl From<snow::Error> for Error {
     }
 }
 
-impl From<tokio::time::error::Elapsed> for Error {
-    fn from(value: tokio::time::error::Elapsed) -> Self {
+impl From<crate::runtime_time::error::Elapsed> for Error {
+    fn from(value: crate::runtime_time::error::Elapsed) -> Self {
         Self::WaitRespError(value.to_string())
     }
 }

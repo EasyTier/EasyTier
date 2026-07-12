@@ -7,17 +7,14 @@ use std::{
 };
 
 use rand::{Rng, thread_rng};
-use tokio::{
-    sync::broadcast,
-    task::JoinSet,
-    time::{Interval, timeout},
-};
+use tokio::{sync::broadcast, task::JoinSet};
 use tracing::Instrument;
 
 use crate::{
     config::PeerId,
     packet::{PacketType, ZCPacket},
     peers::{context::ArcPeerContext, error::Error},
+    runtime_time::{Interval, interval, timeout},
     tunnel::{
         TunnelError,
         mpsc::MpscTunnelSender,
@@ -61,7 +58,7 @@ impl PingIntervalController {
         Self {
             throughput,
             loss_counter,
-            interval: tokio::time::interval(Duration::from_secs(1)),
+            interval: interval(Duration::from_secs(1)),
             logic_time: 0,
             last_send_logic_time: 0,
 

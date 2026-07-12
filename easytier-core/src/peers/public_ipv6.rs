@@ -710,7 +710,7 @@ impl PublicIpv6Service {
             return;
         }
         loop {
-            tokio::time::sleep(Duration::from_secs(15)).await;
+            crate::runtime_time::sleep(Duration::from_secs(15)).await;
             self.gc_provider_leases().await;
         }
     }
@@ -720,7 +720,7 @@ impl PublicIpv6Service {
             if self.sync_client_state().await {
                 self.sync_trigger.sync_now("sync_public_ipv6_client_state");
             }
-            tokio::time::sleep(Duration::from_secs(5)).await;
+            crate::runtime_time::sleep(Duration::from_secs(5)).await;
         }
     }
 

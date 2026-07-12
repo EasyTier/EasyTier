@@ -3412,14 +3412,14 @@ impl RouteSessionManager {
                 drop(service_impl);
                 drop(peer_rpc);
 
-                tokio::time::sleep(Duration::from_millis(retry_delay_ms)).await;
+                crate::runtime_time::sleep(Duration::from_millis(retry_delay_ms)).await;
                 retry_delay_ms = (retry_delay_ms * 2).min(RETRY_MAX_MS);
             }
 
             sync_now = sync_now.resubscribe();
 
             select! {
-                _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+                _ = crate::runtime_time::sleep(Duration::from_secs(1)) => {}
                 ret = sync_now.recv() => if let Err(e) = ret {
                     tracing::debug!(?e, "session_task sync_now recv failed, ospf route may exit");
                     break;
@@ -3469,7 +3469,7 @@ impl RouteSessionManager {
         loop {
             let mut recv = self.sync_now_broadcast.subscribe();
             select! {
-                _ = tokio::time::sleep(Duration::from_millis(next_sleep_ms)) => {}
+                _ = crate::runtime_time::sleep(Duration::from_millis(next_sleep_ms)) => {}
                 _ = recv.recv() => {}
             }
 
@@ -3939,7 +3939,7 @@ impl PeerRoute {
 
     async fn clear_expired_peer(service_impl: Arc<PeerRouteServiceImpl>) {
         loop {
-            tokio::time::sleep(Duration::from_secs(60)).await;
+            crate::runtime_time::sleep(Duration::from_secs(60)).await;
             service_impl.clear_expired_peer().await;
             // TODO: use debug log level for this.
             tracing::debug!(?service_impl, "clear_expired_peer");
@@ -3976,7 +3976,7 @@ impl PeerRoute {
             if let Some(receiver) = peer_event_receiver.as_mut() {
                 let event = select! {
                     ev = receiver.recv() => Some(ev),
-                    _ = tokio::time::sleep(Duration::from_secs(1)) => None,
+                    _ = crate::runtime_time::sleep(Duration::from_secs(1)) => None,
                 };
 
                 if let Some(ev) = event {
@@ -3992,7 +3992,7 @@ impl PeerRoute {
                     );
                 }
             } else {
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                crate::runtime_time::sleep(Duration::from_secs(1)).await;
             }
         }
     }
@@ -4614,7 +4614,7 @@ mod tests {
                     .await
             }
         });
-        tokio::time::timeout(Duration::from_secs(1), entered.notified())
+        crate::runtime_time::timeout(Duration::from_secs(1), entered.notified())
             .await
             .expect("route sync did not enter the interface call");
 
@@ -4622,7 +4622,7 @@ mod tests {
             let route = route.clone();
             async move { route.stop().await }
         });
-        tokio::time::timeout(Duration::from_secs(1), async {
+        crate::runtime_time::timeout(Duration::from_secs(1), async {
             while !route.service_impl.stopped.load(Ordering::Acquire) {
                 tokio::task::yield_now().await;
             }
@@ -4641,7 +4641,7 @@ mod tests {
             .await
             .expect("route sync task panicked")
             .expect("in-flight route sync failed");
-        tokio::time::timeout(Duration::from_secs(1), stop_task)
+        crate::runtime_time::timeout(Duration::from_secs(1), stop_task)
             .await
             .expect("route stop did not finish")
             .expect("route stop task panicked");

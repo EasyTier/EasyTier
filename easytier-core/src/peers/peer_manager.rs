@@ -1688,7 +1688,7 @@ impl PeerManagerCore {
 
     pub async fn wait(&self) {
         while !self.tasks.lock().await.is_empty() {
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            crate::runtime_time::sleep(std::time::Duration::from_secs(1)).await;
         }
     }
 
@@ -2300,7 +2300,7 @@ impl PeerMaintenanceTasks {
         tasks.lock().await.spawn(async move {
             loop {
                 peer_map.clean_peer_without_conn().await;
-                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                crate::runtime_time::sleep(std::time::Duration::from_secs(3)).await;
             }
         });
     }
@@ -2310,7 +2310,7 @@ impl PeerMaintenanceTasks {
         tasks.lock().await.spawn(async move {
             loop {
                 relay_peer_map.evict_idle_sessions(std::time::Duration::from_secs(60));
-                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                crate::runtime_time::sleep(std::time::Duration::from_secs(30)).await;
             }
         });
     }
@@ -2328,7 +2328,7 @@ impl PeerMaintenanceTasks {
                         foreign_network_client.get_peer_map().has_peer(peer_id)
                     }
                 });
-                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                crate::runtime_time::sleep(std::time::Duration::from_secs(30)).await;
             }
         });
     }
@@ -2337,7 +2337,7 @@ impl PeerMaintenanceTasks {
         let peer_session_store = self.peer_session_store.clone();
         tasks.lock().await.spawn(async move {
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                crate::runtime_time::sleep(std::time::Duration::from_secs(60)).await;
                 peer_session_store.evict_unused_sessions();
             }
         });
@@ -2361,7 +2361,7 @@ impl PeerMaintenanceTasks {
                     )
                     .await;
                 }
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                crate::runtime_time::sleep(std::time::Duration::from_secs(1)).await;
             }
         });
     }
