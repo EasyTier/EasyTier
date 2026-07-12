@@ -21,6 +21,7 @@ use crate::{
         netns::{NetNS, ROOT_NETNS_NAME},
         stats_manager::{LabelSet, LabelType, MetricName},
     },
+    connector::{protocol::runtime_client_protocol_upgrader, runtime::RuntimeConnectorHost},
     instance::instance::Instance,
     proto::{
         api::instance::TcpProxyEntryTransportType,
@@ -2452,34 +2453,51 @@ pub async fn instance_recv_bps_limit_test(#[values(100, 800)] bps_limit: u64) {
     drop_insts(insts).await;
 }
 
-async fn assert_direct_connect_blocked(inst: &Instance, dst_peer_id: PeerId, url: url::Url) {
-    async fn peer_conn_ids(inst: &Instance, peer_id: PeerId) -> Vec<String> {
-        let mut ids = inst
-            .get_peer_manager()
-            .get_peer_map()
-            .list_peer_conns(peer_id)
+async fn assert_peer_admission_blocked(inst: &Instance, url: url::Url) {
+    let ip = url
+        .host_str()
+        .expect("test URL should have a host")
+        .parse()
+        .expect("test URL should have a literal IP");
+    let target = std::net::SocketAddr::new(ip, url.port().expect("test URL should have a port"));
+    let host = Arc::new(RuntimeConnectorHost::new(inst.get_global_ctx()));
+    let protocol = runtime_client_protocol_upgrader(inst.get_global_ctx());
+    let peer_manager = inst.get_peer_manager().core();
+    let connect = async {
+        let connected = match url.scheme() {
+            "tcp" => easytier_core::connectivity::transport::ConnectedTransport::Tcp(
+                easytier_core::socket::tcp::VirtualTcpSocketFactory::connect_tcp(
+                    host.as_ref(),
+                    easytier_core::socket::tcp::TcpConnectOptions::direct_connect(target),
+                )
+                .await?,
+            ),
+            "udp" => easytier_core::connectivity::transport::ConnectedTransport::Udp(
+                easytier_core::connectivity::transport::connect_udp(
+                    host,
+                    target,
+                    Vec::new(),
+                    easytier_core::socket::udp::UdpBindOptions::direct_connect(),
+                    easytier_core::connectivity::transport::UdpSessionMode::EasyTierMux,
+                )
+                .await?,
+            ),
+            scheme => panic!("unsupported test scheme: {scheme}"),
+        };
+        let tunnel = easytier_core::connectivity::protocol::ClientProtocolUpgrader::upgrade_client(
+            protocol.as_ref(),
+            connected,
+            url,
+        )
+        .await?;
+        peer_manager
+            .add_client_tunnel(tunnel, true)
             .await
-            .unwrap_or_default()
-            .into_iter()
-            .map(|conn| conn.conn_id)
-            .collect::<Vec<_>>();
-        ids.sort();
-        ids
-    }
-
-    let before = peer_conn_ids(inst, dst_peer_id).await;
-    let ip_list = easytier_core::proto::peer_rpc::GetIpListResponse {
-        listeners: vec![url.into()],
-        ..Default::default()
+            .map(|_| ())
+            .map_err(anyhow::Error::from)
     };
-    let _ = tokio::time::timeout(
-        Duration::from_millis(100),
-        inst.get_core_instance()
-            .try_direct_connect_with_ip_list(dst_peer_id, ip_list),
-    )
-    .await;
-
-    assert_eq!(peer_conn_ids(inst, dst_peer_id).await, before);
+    let result = tokio::time::timeout(Duration::from_millis(100), connect).await;
+    assert!(matches!(result, Err(_) | Ok(Err(_))));
 }
 
 use std::fs;
@@ -2550,33 +2568,13 @@ async fn avoid_tunnel_loop_back_to_virtual_network(
     )
     .await;
 
-    assert_direct_connect_blocked(
-        &insts[0],
-        insts[1].peer_id(),
-        "tcp://10.144.144.2:11010".parse().unwrap(),
-    )
-    .await;
+    assert_peer_admission_blocked(&insts[0], "tcp://10.144.144.2:11010".parse().unwrap()).await;
 
-    assert_direct_connect_blocked(
-        &insts[0],
-        insts[2].peer_id(),
-        "udp://10.144.144.3:11010".parse().unwrap(),
-    )
-    .await;
+    assert_peer_admission_blocked(&insts[0], "udp://10.144.144.3:11010".parse().unwrap()).await;
 
-    assert_direct_connect_blocked(
-        &insts[0],
-        insts[2].peer_id(),
-        "tcp://10.1.2.3:11010".parse().unwrap(),
-    )
-    .await;
+    assert_peer_admission_blocked(&insts[0], "tcp://10.1.2.3:11010".parse().unwrap()).await;
 
-    assert_direct_connect_blocked(
-        &insts[0],
-        insts[2].peer_id(),
-        "udp://10.1.2.3:11010".parse().unwrap(),
-    )
-    .await;
+    assert_peer_admission_blocked(&insts[0], "udp://10.1.2.3:11010".parse().unwrap()).await;
 
     drop_insts(insts).await;
 
