@@ -21,8 +21,8 @@ use crate::{
 
 use super::{
     core_instance::{
-        RuntimeCoreInstance, runtime_core_instance_adapters, runtime_endpoint_discovery_config,
-        runtime_manual_options,
+        RuntimeCoreInstance, runtime_core_instance_adapters_with_ring_registry,
+        runtime_endpoint_discovery_config, runtime_manual_options,
     },
     runtime::RuntimeConnectorHost,
 };
@@ -70,7 +70,10 @@ pub struct ManualConnectorManager {
 
 impl ManualConnectorManager {
     pub fn new(global_ctx: ArcGlobalCtx, peer_manager: Arc<PeerManager>) -> Self {
-        let adapters = runtime_core_instance_adapters(global_ctx.clone());
+        let adapters = runtime_core_instance_adapters_with_ring_registry(
+            global_ctx.clone(),
+            peer_manager.ring_registry(),
+        );
         let endpoint_resolver = Arc::new(CoreManualEndpointResolver::new(
             adapters.host.clone(),
             adapters.dns.clone(),
@@ -187,12 +190,16 @@ impl ConnectorManageRpc for ConnectorManagerRpcService {
 mod tests {
     use std::time::Duration;
 
+    use easytier_core::tunnel::ring::RingTunnelRegistry;
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     use crate::{
         common::config::ConfigLoader,
         instance::listeners::ListenerManager,
-        peers::tests::{create_mock_peer_manager, wait_route_appear},
+        peers::tests::{
+            create_mock_peer_manager, create_mock_peer_manager_with_ring_registry,
+            wait_route_appear,
+        },
         set_global_var,
         tunnel::common::tests::wait_for_condition,
     };
@@ -336,8 +343,13 @@ mod tests {
     async fn core_ring_connector_and_listener_form_peer_connection() {
         set_global_var!(MANUAL_CONNECTOR_RECONNECT_INTERVAL_MS, 10);
 
-        let server = create_mock_peer_manager().await;
-        let mut listener_manager = ListenerManager::new(server.get_global_ctx(), server.core());
+        let ring_registry = Arc::new(RingTunnelRegistry::default());
+        let server = create_mock_peer_manager_with_ring_registry(ring_registry.clone()).await;
+        let mut listener_manager = ListenerManager::new_with_ring_registry(
+            server.get_global_ctx(),
+            server.core(),
+            ring_registry.clone(),
+        );
         listener_manager.prepare_listeners().await.unwrap();
         listener_manager.run().await.unwrap();
         let listener_url = server
@@ -347,7 +359,7 @@ mod tests {
             .find(|url| url.scheme() == "ring")
             .expect("Ring listener should start");
 
-        let client = create_mock_peer_manager().await;
+        let client = create_mock_peer_manager_with_ring_registry(ring_registry).await;
         let connector_manager =
             ManualConnectorManager::new(client.get_global_ctx(), client.clone());
         connector_manager

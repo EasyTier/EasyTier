@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use base64::Engine as _;
+use easytier_core::tunnel::ring::RingTunnelRegistry;
 
 use crate::{
     common::{
@@ -40,6 +41,20 @@ pub async fn create_mock_peer_manager() -> Arc<PeerManager> {
     ));
     peer_mgr.run().await.unwrap();
     peer_mgr
+}
+
+pub async fn create_mock_peer_manager_with_ring_registry(
+    ring_registry: Arc<RingTunnelRegistry>,
+) -> Arc<PeerManager> {
+    let (sender, _receiver) = create_packet_recv_chan();
+    let peer_manager = Arc::new(PeerManager::new_with_ring_registry(
+        RouteAlgoType::Ospf,
+        get_mock_global_ctx(),
+        sender,
+        ring_registry,
+    ));
+    peer_manager.run().await.unwrap();
+    peer_manager
 }
 
 pub async fn create_mock_peer_manager_with_name(network_name: String) -> Arc<PeerManager> {

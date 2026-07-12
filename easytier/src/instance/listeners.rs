@@ -1391,14 +1391,22 @@ mod tests {
     async fn handle_error_in_accept() {
         let handler = Arc::new(MockListenerHandler {});
         let global_ctx = get_mock_global_ctx();
+        let ring_registry = Arc::new(RingTunnelRegistry::default());
         let ring_id = core_listener_plan::ring_listener_url(global_ctx.get_id());
-        let mut listener_mgr = ListenerManager::new(global_ctx.clone(), handler.clone());
+        let mut listener_mgr = ListenerManager::new_with_ring_registry(
+            global_ctx.clone(),
+            handler.clone(),
+            ring_registry.clone(),
+        );
         listener_mgr.prepare_listeners().await.unwrap();
         listener_mgr.run().await.unwrap();
 
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
-        let host = Arc::new(RuntimeConnectorHost::new(global_ctx));
+        let host = Arc::new(RuntimeConnectorHost::new_with_ring_registry(
+            global_ctx,
+            ring_registry,
+        ));
         let connect_once = |ring_id| {
             let host = host.clone();
             async move {
