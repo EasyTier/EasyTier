@@ -204,7 +204,7 @@ impl<V> Socks5EntryTable<V> {
 
 #[cfg(feature = "proxy-packet")]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum Socks5PeerPacket {
+enum ClassifiedSocks5PeerPacket {
     Tcp {
         entry: Socks5Entry,
         listen_entry: Socks5Entry,
@@ -220,18 +220,36 @@ pub enum Socks5PeerPacket {
 }
 
 #[cfg(feature = "proxy-packet")]
-pub fn classify_peer_ipv4_payload(payload: &[u8]) -> Socks5PeerPacket {
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Socks5PeerPacketRoute {
+    Pass,
+    Unmatched {
+        entry: Socks5Entry,
+        tcp_flags: Option<u8>,
+    },
+    Deliver {
+        entry: Socks5Entry,
+        tcp_flags: Option<u8>,
+    },
+    FragmentedUdp {
+        source: Ipv4Addr,
+        mirror: bool,
+    },
+}
+
+#[cfg(feature = "proxy-packet")]
+fn classify_peer_ipv4_payload(payload: &[u8]) -> ClassifiedSocks5PeerPacket {
     let Some(ipv4) = Ipv4Packet::new(payload) else {
-        return Socks5PeerPacket::Unsupported;
+        return ClassifiedSocks5PeerPacket::Unsupported;
     };
     if ipv4.get_version() != 4 {
-        return Socks5PeerPacket::Unsupported;
+        return ClassifiedSocks5PeerPacket::Unsupported;
     }
 
     match ipv4.get_next_level_protocol() {
         IpNextHeaderProtocols::Tcp => {
             let Some(tcp) = TcpPacket::new(ipv4.payload()) else {
-                return Socks5PeerPacket::Unsupported;
+                return ClassifiedSocks5PeerPacket::Unsupported;
             };
             let entry = Socks5Entry {
                 dst: SocketAddr::new(ipv4.get_source().into(), tcp.get_source()),
@@ -243,7 +261,7 @@ pub fn classify_peer_ipv4_payload(payload: &[u8]) -> Socks5PeerPacket {
                 dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
                 kind: Socks5EntryKind::TcpListen,
             };
-            Socks5PeerPacket::Tcp {
+            ClassifiedSocks5PeerPacket::Tcp {
                 entry,
                 listen_entry,
                 flags: tcp.get_flags(),
@@ -252,14 +270,14 @@ pub fn classify_peer_ipv4_payload(payload: &[u8]) -> Socks5PeerPacket {
         IpNextHeaderProtocols::Udp => {
             let smol_ipv4 = SmolIpv4Packet::new_unchecked(ipv4.packet());
             if IpReassembler::is_packet_fragmented(&smol_ipv4) {
-                return Socks5PeerPacket::FragmentedUdp {
+                return ClassifiedSocks5PeerPacket::FragmentedUdp {
                     source: ipv4.get_source(),
                 };
             }
             let Some(udp) = UdpPacket::new(ipv4.payload()) else {
-                return Socks5PeerPacket::Unsupported;
+                return ClassifiedSocks5PeerPacket::Unsupported;
             };
-            Socks5PeerPacket::Udp {
+            ClassifiedSocks5PeerPacket::Udp {
                 entry: Socks5Entry {
                     dst: SocketAddr::new(ipv4.get_source().into(), udp.get_source()),
                     src: SocketAddr::new(ipv4.get_destination().into(), udp.get_destination()),
@@ -267,7 +285,45 @@ pub fn classify_peer_ipv4_payload(payload: &[u8]) -> Socks5PeerPacket {
                 },
             }
         }
-        _ => Socks5PeerPacket::Unsupported,
+        _ => ClassifiedSocks5PeerPacket::Unsupported,
+    }
+}
+
+#[cfg(feature = "proxy-packet")]
+impl<V> Socks5EntryTable<V> {
+    pub fn route_peer_ipv4_payload(
+        &self,
+        payload: &[u8],
+        allow_tcp_listen_fallback: bool,
+    ) -> Socks5PeerPacketRoute {
+        let (entry, tcp_flags) = match classify_peer_ipv4_payload(payload) {
+            ClassifiedSocks5PeerPacket::Tcp {
+                entry,
+                listen_entry,
+                flags,
+            } => {
+                let entry = if allow_tcp_listen_fallback && !self.contains_key(&entry) {
+                    listen_entry
+                } else {
+                    entry
+                };
+                (entry, Some(flags))
+            }
+            ClassifiedSocks5PeerPacket::Udp { entry } => (entry, None),
+            ClassifiedSocks5PeerPacket::FragmentedUdp { source } => {
+                return Socks5PeerPacketRoute::FragmentedUdp {
+                    source,
+                    mirror: self.contains_destination_ip(source.into()),
+                };
+            }
+            ClassifiedSocks5PeerPacket::Unsupported => return Socks5PeerPacketRoute::Pass,
+        };
+
+        if self.contains_key(&entry) {
+            Socks5PeerPacketRoute::Deliver { entry, tcp_flags }
+        } else {
+            Socks5PeerPacketRoute::Unmatched { entry, tcp_flags }
+        }
     }
 }
 
@@ -335,7 +391,7 @@ mod tests {
     };
 
     #[cfg(feature = "proxy-packet")]
-    use super::{Socks5PeerPacket, classify_peer_ipv4_payload};
+    use super::{ClassifiedSocks5PeerPacket, Socks5PeerPacketRoute, classify_peer_ipv4_payload};
     #[cfg(feature = "proxy-packet")]
     use pnet_packet::{
         MutablePacket,
@@ -440,7 +496,7 @@ mod tests {
 
         assert_eq!(
             classify_peer_ipv4_payload(&packet),
-            Socks5PeerPacket::Tcp {
+            ClassifiedSocks5PeerPacket::Tcp {
                 entry: Socks5Entry {
                     src: "10.2.2.3:4321".parse().unwrap(),
                     dst: "10.1.1.2:1234".parse().unwrap(),
@@ -466,7 +522,7 @@ mod tests {
         udp.set_destination(4321);
         assert_eq!(
             classify_peer_ipv4_payload(&packet),
-            Socks5PeerPacket::Udp {
+            ClassifiedSocks5PeerPacket::Udp {
                 entry: Socks5Entry {
                     src: "10.2.2.3:4321".parse().unwrap(),
                     dst: "10.1.1.2:1234".parse().unwrap(),
@@ -481,7 +537,7 @@ mod tests {
             .set_fragment_offset(1);
         assert_eq!(
             classify_peer_ipv4_payload(&fragmented),
-            Socks5PeerPacket::FragmentedUdp {
+            ClassifiedSocks5PeerPacket::FragmentedUdp {
                 source: Ipv4Addr::new(10, 1, 1, 2),
             }
         );
@@ -492,11 +548,94 @@ mod tests {
     fn rejects_malformed_and_unsupported_packets() {
         assert_eq!(
             classify_peer_ipv4_payload(&[]),
-            Socks5PeerPacket::Unsupported
+            ClassifiedSocks5PeerPacket::Unsupported
         );
         assert_eq!(
             classify_peer_ipv4_payload(&ipv4_packet(IpNextHeaderProtocols::Icmp, 8)),
-            Socks5PeerPacket::Unsupported
+            ClassifiedSocks5PeerPacket::Unsupported
+        );
+    }
+
+    #[cfg(feature = "proxy-packet")]
+    #[test]
+    fn entry_table_routes_tcp_exact_and_listen_fallback() {
+        let mut packet = ipv4_packet(IpNextHeaderProtocols::Tcp, 20);
+        let mut ipv4 = MutableIpv4Packet::new(&mut packet).unwrap();
+        let mut tcp = MutableTcpPacket::new(ipv4.payload_mut()).unwrap();
+        tcp.set_source(1234);
+        tcp.set_destination(4321);
+        tcp.set_flags(TcpFlags::SYN);
+
+        let exact = Socks5Entry {
+            src: "10.2.2.3:4321".parse().unwrap(),
+            dst: "10.1.1.2:1234".parse().unwrap(),
+            kind: Socks5EntryKind::Tcp,
+        };
+        let listen = Socks5Entry {
+            src: exact.src,
+            dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+            kind: Socks5EntryKind::TcpListen,
+        };
+        let table = Socks5EntryTable::default();
+
+        assert_eq!(
+            table.route_peer_ipv4_payload(&packet, false),
+            Socks5PeerPacketRoute::Unmatched {
+                entry: exact.clone(),
+                tcp_flags: Some(TcpFlags::SYN),
+            }
+        );
+
+        table.insert(listen.clone(), ());
+        assert_eq!(
+            table.route_peer_ipv4_payload(&packet, true),
+            Socks5PeerPacketRoute::Deliver {
+                entry: listen,
+                tcp_flags: Some(TcpFlags::SYN),
+            }
+        );
+
+        table.insert(exact.clone(), ());
+        assert_eq!(
+            table.route_peer_ipv4_payload(&packet, true),
+            Socks5PeerPacketRoute::Deliver {
+                entry: exact,
+                tcp_flags: Some(TcpFlags::SYN),
+            }
+        );
+    }
+
+    #[cfg(feature = "proxy-packet")]
+    #[test]
+    fn entry_table_routes_fragmented_udp_by_source_ip() {
+        let mut packet = ipv4_packet(IpNextHeaderProtocols::Udp, 8);
+        MutableIpv4Packet::new(&mut packet)
+            .unwrap()
+            .set_fragment_offset(1);
+        let table = Socks5EntryTable::default();
+
+        assert_eq!(
+            table.route_peer_ipv4_payload(&packet, false),
+            Socks5PeerPacketRoute::FragmentedUdp {
+                source: Ipv4Addr::new(10, 1, 1, 2),
+                mirror: false,
+            }
+        );
+
+        table.insert(
+            Socks5Entry {
+                src: "10.2.2.3:4321".parse().unwrap(),
+                dst: "10.1.1.2:1234".parse().unwrap(),
+                kind: Socks5EntryKind::Udp,
+            },
+            (),
+        );
+        assert_eq!(
+            table.route_peer_ipv4_payload(&packet, false),
+            Socks5PeerPacketRoute::FragmentedUdp {
+                source: Ipv4Addr::new(10, 1, 1, 2),
+                mirror: true,
+            }
         );
     }
 
