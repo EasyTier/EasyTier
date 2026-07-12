@@ -243,6 +243,58 @@ pub trait ListenerService: Send + Sync + 'static {
     async fn stop(&self);
 }
 
+pub struct ListenerServiceGroup {
+    operation: Mutex<()>,
+    services: Vec<Arc<dyn ListenerService>>,
+    started_count: AtomicUsize,
+}
+
+impl ListenerServiceGroup {
+    pub fn new(services: Vec<Arc<dyn ListenerService>>) -> Arc<Self> {
+        Arc::new(Self {
+            operation: Mutex::new(()),
+            services,
+            started_count: AtomicUsize::new(0),
+        })
+    }
+
+    async fn stop_started(&self) {
+        loop {
+            let started_count = self.started_count.load(Ordering::Acquire);
+            if started_count == 0 {
+                break;
+            }
+            self.services[started_count - 1].stop().await;
+            self.started_count
+                .store(started_count - 1, Ordering::Release);
+        }
+    }
+}
+
+#[async_trait]
+impl ListenerService for ListenerServiceGroup {
+    async fn start(&self) -> anyhow::Result<()> {
+        let _operation = self.operation.lock().await;
+        if self.started_count.load(Ordering::Acquire) != 0 {
+            return Ok(());
+        }
+
+        for (index, service) in self.services.iter().enumerate() {
+            self.started_count.store(index + 1, Ordering::Release);
+            if let Err(error) = service.start().await {
+                self.stop_started().await;
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
+    async fn stop(&self) {
+        let _operation = self.operation.lock().await;
+        self.stop_started().await;
+    }
+}
+
 #[async_trait]
 impl<H> ListenerService for TransportListenerService<H>
 where
@@ -446,27 +498,31 @@ where
             direct: direct_options,
         } = config;
 
-        let (listener, running_listeners): (
+        let (transport_listener, running_listeners): (
             Option<Arc<dyn ListenerService>>,
             Option<Arc<dyn RunningListenerProvider>>,
-        ) = match (listener, listeners.is_empty()) {
-            (Some(_), false) => {
-                anyhow::bail!("external and core transport listeners cannot both be configured")
+        ) = if listeners.is_empty() {
+            (None, None)
+        } else {
+            let handler = accepted_transport_handler
+                .unwrap_or_else(|| Arc::new(RawAcceptedTransportHandler::new(&peer_manager)));
+            let registry = Arc::new(RunningListenerRegistry::default());
+            let listener = Arc::new(TransportListenerService::new_with_events(
+                host.clone(),
+                listeners,
+                handler,
+                registry.clone(),
+            ));
+            (Some(listener), Some(registry))
+        };
+        let listener = match (transport_listener, listener) {
+            (Some(transport), Some(external)) => {
+                Some(ListenerServiceGroup::new(vec![transport, external])
+                    as Arc<dyn ListenerService>)
             }
-            (Some(listener), true) => (Some(listener), None),
-            (None, true) => (None, None),
-            (None, false) => {
-                let handler = accepted_transport_handler
-                    .unwrap_or_else(|| Arc::new(RawAcceptedTransportHandler::new(&peer_manager)));
-                let registry = Arc::new(RunningListenerRegistry::default());
-                let listener = Arc::new(TransportListenerService::new_with_events(
-                    host.clone(),
-                    listeners,
-                    handler,
-                    registry.clone(),
-                ));
-                (Some(listener), Some(registry))
-            }
+            (Some(transport), None) => Some(transport),
+            (None, Some(external)) => Some(external),
+            (None, None) => None,
         };
         let protocol = protocol.unwrap_or_else(|| {
             Arc::new(CoreClientProtocolUpgrader::new(
@@ -1144,6 +1200,12 @@ mod tests {
         events: Arc<Mutex<Vec<String>>>,
     }
 
+    struct RecordingListenerService {
+        name: &'static str,
+        fail_start: bool,
+        events: Arc<Mutex<Vec<String>>>,
+    }
+
     struct CancelOnceStopService {
         stop_calls: AtomicUsize,
         stop_entered: Notify,
@@ -1189,6 +1251,27 @@ mod tests {
         }
     }
 
+    #[async_trait]
+    impl ListenerService for RecordingListenerService {
+        async fn start(&self) -> anyhow::Result<()> {
+            self.events
+                .lock()
+                .unwrap()
+                .push(format!("start:{}", self.name));
+            if self.fail_start {
+                anyhow::bail!("{} start failed", self.name);
+            }
+            Ok(())
+        }
+
+        async fn stop(&self) {
+            self.events
+                .lock()
+                .unwrap()
+                .push(format!("stop:{}", self.name));
+        }
+    }
+
     fn service(
         name: &'static str,
         fail_start: bool,
@@ -1199,6 +1282,61 @@ mod tests {
             fail_start,
             events: events.clone(),
         })
+    }
+
+    fn listener_service(
+        name: &'static str,
+        fail_start: bool,
+        events: &Arc<Mutex<Vec<String>>>,
+    ) -> Arc<dyn ListenerService> {
+        Arc::new(RecordingListenerService {
+            name,
+            fail_start,
+            events: events.clone(),
+        })
+    }
+
+    #[tokio::test]
+    async fn listener_group_starts_in_order_and_stops_in_reverse() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let group = ListenerServiceGroup::new(vec![
+            listener_service("transport", false, &events),
+            listener_service("external", false, &events),
+        ]);
+
+        group.start().await.unwrap();
+        group.stop().await;
+
+        assert_eq!(
+            *events.lock().unwrap(),
+            [
+                "start:transport",
+                "start:external",
+                "stop:external",
+                "stop:transport",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn listener_group_rolls_back_the_failing_service_and_predecessors() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let group = ListenerServiceGroup::new(vec![
+            listener_service("transport", false, &events),
+            listener_service("external", true, &events),
+        ]);
+
+        assert!(group.start().await.is_err());
+
+        assert_eq!(
+            *events.lock().unwrap(),
+            [
+                "start:transport",
+                "start:external",
+                "stop:external",
+                "stop:transport",
+            ]
+        );
     }
 
     #[tokio::test]
