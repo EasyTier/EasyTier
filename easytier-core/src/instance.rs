@@ -28,7 +28,8 @@ use crate::{
     dhcp::{DhcpIpv4Host, DhcpIpv4RouteSource, DhcpIpv4Service},
     hole_punch::tcp::{TcpHolePunchConnector, TcpHolePunchHost},
     listener::{
-        AcceptedSocketHandler, RunningListenerProvider, RunningListenerRegistry,
+        AcceptedSocketHandler, RunningListenerProvider, RunningListenerProviderGroup,
+        RunningListenerRegistry,
         transport::{
             AcceptedTransport, HostAcceptedTcpSocket, RawAcceptedTransportHandler,
             TransportListenerConfig, TransportListenerService,
@@ -223,6 +224,25 @@ where
     pub proxy_cidr_runtime: Option<Arc<dyn ProxyCidrRuntime>>,
     pub proxy_cidr_monitor: Option<Arc<dyn ProxyCidrMonitorHost>>,
     pub public_ipv6_provider: Option<Arc<dyn PublicIpv6ProviderHost>>,
+}
+
+struct HostRunningListenerProvider<H>(Arc<H>);
+
+impl<H> std::fmt::Debug for HostRunningListenerProvider<H> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("HostRunningListenerProvider")
+            .finish_non_exhaustive()
+    }
+}
+
+impl<H> RunningListenerProvider for HostRunningListenerProvider<H>
+where
+    H: DirectConnectorHost,
+{
+    fn running_listeners(&self) -> Vec<Url> {
+        self.0.running_listeners()
+    }
 }
 
 pub trait CoreRuntimeConfigProvider: Send + Sync + 'static {
@@ -498,7 +518,8 @@ where
             direct: direct_options,
         } = config;
 
-        let (transport_listener, running_listeners): (
+        let has_external_listener = listener.is_some();
+        let (transport_listener, core_running_listeners): (
             Option<Arc<dyn ListenerService>>,
             Option<Arc<dyn RunningListenerProvider>>,
         ) = if listeners.is_empty() {
@@ -514,6 +535,13 @@ where
                 registry.clone(),
             ));
             (Some(listener), Some(registry))
+        };
+        let running_listeners = match (core_running_listeners, has_external_listener) {
+            (Some(core), true) => Some(RunningListenerProviderGroup::new(vec![
+                core,
+                Arc::new(HostRunningListenerProvider(host.clone())),
+            ]) as Arc<dyn RunningListenerProvider>),
+            (core, _) => core,
         };
         let listener = match (transport_listener, listener) {
             (Some(transport), Some(external)) => {
@@ -1206,6 +1234,15 @@ mod tests {
         events: Arc<Mutex<Vec<String>>>,
     }
 
+    #[derive(Debug)]
+    struct StaticRunningListeners(Vec<Url>);
+
+    impl RunningListenerProvider for StaticRunningListeners {
+        fn running_listeners(&self) -> Vec<Url> {
+            self.0.clone()
+        }
+    }
+
     struct CancelOnceStopService {
         stop_calls: AtomicUsize,
         stop_entered: Notify,
@@ -1335,6 +1372,25 @@ mod tests {
                 "start:external",
                 "stop:external",
                 "stop:transport",
+            ]
+        );
+    }
+
+    #[test]
+    fn running_listener_group_keeps_core_and_host_listeners() {
+        let core = Arc::new(StaticRunningListeners(vec![
+            "tcp://127.0.0.1:11010".parse().unwrap(),
+        ]));
+        let host = Arc::new(StaticRunningListeners(vec![
+            "udp://127.0.0.1:11010".parse().unwrap(),
+        ]));
+        let group = RunningListenerProviderGroup::new(vec![core, host]);
+
+        assert_eq!(
+            group.running_listeners(),
+            [
+                "tcp://127.0.0.1:11010".parse().unwrap(),
+                "udp://127.0.0.1:11010".parse().unwrap(),
             ]
         );
     }

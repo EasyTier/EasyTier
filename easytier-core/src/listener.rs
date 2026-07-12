@@ -93,6 +93,26 @@ pub trait RunningListenerProvider: Debug + Send + Sync + 'static {
     fn running_listeners(&self) -> Vec<Url>;
 }
 
+#[derive(Debug)]
+pub struct RunningListenerProviderGroup {
+    providers: Vec<Arc<dyn RunningListenerProvider>>,
+}
+
+impl RunningListenerProviderGroup {
+    pub fn new(providers: Vec<Arc<dyn RunningListenerProvider>>) -> Arc<Self> {
+        Arc::new(Self { providers })
+    }
+}
+
+impl RunningListenerProvider for RunningListenerProviderGroup {
+    fn running_listeners(&self) -> Vec<Url> {
+        self.providers
+            .iter()
+            .flat_map(|provider| provider.running_listeners())
+            .collect()
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct RunningListenerRegistry {
     listeners: std::sync::Mutex<Vec<(Url, usize)>>,
