@@ -802,10 +802,11 @@ impl Instance {
 
         let id = global_ctx.get_id();
 
-        let peer_manager = Arc::new(PeerManager::new(
+        let peer_manager = Arc::new(PeerManager::new_with_ring_registry(
             RouteAlgoType::Ospf,
             global_ctx.clone(),
             peer_packet_sender,
+            ring_registry.clone(),
         ));
         let proxy_cidr_runtime = Arc::new(runtime_cidr_set_without_updater(global_ctx.clone()));
         let proxy = RuntimeProxyService::new(

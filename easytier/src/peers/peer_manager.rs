@@ -3,6 +3,7 @@ pub use easytier_core::peers::peer_manager::RouteAlgoType;
 use easytier_core::peers::peer_manager::{
     DnsAddressResolver, PeerManagerCore, PipelineRegistrationGuard,
 };
+use easytier_core::tunnel::ring::RingTunnelRegistry;
 use quanta::Instant;
 use std::collections::BTreeSet;
 use std::{
@@ -54,6 +55,20 @@ impl PeerManager {
         route_algo: RouteAlgoType,
         global_ctx: ArcGlobalCtx,
         nic_channel: PacketRecvChan,
+    ) -> Self {
+        Self::new_with_ring_registry(
+            route_algo,
+            global_ctx,
+            nic_channel,
+            crate::tunnel::ring::runtime_ring_registry(),
+        )
+    }
+
+    pub(crate) fn new_with_ring_registry(
+        route_algo: RouteAlgoType,
+        global_ctx: ArcGlobalCtx,
+        nic_channel: PacketRecvChan,
+        ring_registry: Arc<RingTunnelRegistry>,
     ) -> Self {
         let my_peer_id = rand::random();
 
@@ -111,6 +126,7 @@ impl PeerManager {
                     my_peer_id,
                     global_ctx_for_foreign.clone(),
                     peer_context_for_foreign,
+                    ring_registry,
                     peer_session_store,
                     packet_sender_to_mgr,
                     accessor,

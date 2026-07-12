@@ -16,6 +16,7 @@ pub use easytier_core::peers::foreign_network_manager::{
     GlobalForeignNetworkAccessor,
 };
 use easytier_core::peers::peer_manager::{self as core_peer_manager, ForeignNetworkPacketHandler};
+use easytier_core::tunnel::ring::RingTunnelRegistry;
 use tokio::sync::Mutex;
 #[cfg(test)]
 use tokio::task::JoinSet;
@@ -133,14 +134,28 @@ struct RuntimeForeignNetworkContext {
 struct ForeignNetworkRuntimeImpl {
     global_ctx: ArcGlobalCtx,
     parent_context: ArcPeerContext,
+    ring_registry: Arc<RingTunnelRegistry>,
     foreign_contexts: DashMap<String, Arc<RuntimeForeignNetworkContext>>,
 }
 
 impl ForeignNetworkRuntimeImpl {
     fn new(global_ctx: ArcGlobalCtx, parent_context: ArcPeerContext) -> Self {
+        Self::new_with_ring_registry(
+            global_ctx,
+            parent_context,
+            crate::tunnel::ring::runtime_ring_registry(),
+        )
+    }
+
+    fn new_with_ring_registry(
+        global_ctx: ArcGlobalCtx,
+        parent_context: ArcPeerContext,
+        ring_registry: Arc<RingTunnelRegistry>,
+    ) -> Self {
         Self {
             global_ctx,
             parent_context,
+            ring_registry,
             foreign_contexts: DashMap::new(),
         }
     }
@@ -312,7 +327,10 @@ impl core_foreign_network_manager::ForeignNetworkRuntime for ForeignNetworkRunti
             .clone();
         peer_rpc.rpc_server().registry().register(
             DirectConnectorRpcServer::new(DirectConnectorRpcHandler::new(Arc::new(
-                RuntimeConnectorHost::new(foreign_global_ctx),
+                RuntimeConnectorHost::new_with_ring_registry(
+                    foreign_global_ctx,
+                    self.ring_registry.clone(),
+                ),
             ))),
             network_name,
         );
@@ -433,11 +451,16 @@ impl ForeignNetworkManager {
         _my_peer_id: PeerId,
         global_ctx: ArcGlobalCtx,
         parent_context: ArcPeerContext,
+        ring_registry: Arc<RingTunnelRegistry>,
         peer_session_store: Arc<PeerSessionStore>,
         packet_sender_to_mgr: PacketRecvChan,
         accessor: Box<dyn GlobalForeignNetworkAccessor>,
     ) -> Self {
-        let runtime = Arc::new(ForeignNetworkRuntimeImpl::new(global_ctx, parent_context));
+        let runtime = Arc::new(ForeignNetworkRuntimeImpl::new_with_ring_registry(
+            global_ctx,
+            parent_context,
+            ring_registry,
+        ));
         Self {
             core: core_foreign_network_manager::ForeignNetworkManager::new(
                 runtime.clone(),
