@@ -107,6 +107,22 @@ impl PeerRuntimeSnapshot {
     }
 }
 
+impl Default for PeerRuntimeSnapshot {
+    fn default() -> Self {
+        Self::new(
+            PeerRuntimeConfig {
+                core: CoreConfig::default(),
+                network_identity: NetworkIdentity::default(),
+                stun_info: StunInfo::default(),
+                feature_flags: PeerFeatureFlag::default(),
+                secure_mode: None,
+                host_routing: HostRoutingPolicy::default(),
+            },
+            FlagsInConfig::default(),
+        )
+    }
+}
+
 /// Supplies the current core-owned peer configuration version.
 pub trait PeerRuntimeConfigSource: Send + Sync {
     fn peer_runtime_snapshot(&self) -> Arc<PeerRuntimeSnapshot>;

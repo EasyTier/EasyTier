@@ -13,8 +13,9 @@ use std::sync::{
 };
 use std::{collections::BTreeSet, net::IpAddr, time::Duration};
 
+use arc_swap::ArcSwap;
 use async_trait::async_trait;
-use parking_lot::RwLock;
+use parking_lot::{Mutex as SyncMutex, RwLock};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -47,6 +48,7 @@ use crate::{
     peer_center::instance::{PeerCenterInstance, PeerCenterInstanceService},
     peers::{
         acl_config::AclRuleConfig,
+        context::{PeerRuntimeConfigSource, PeerRuntimeSnapshot},
         create_packet_recv_chan,
         credential_manager::{CredentialInfo, GeneratedCredential},
         peer_conn::PeerConnId,
@@ -162,6 +164,64 @@ impl Default for CoreRuntimeConfig {
                 provider_supported: false,
             },
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CoreInstanceRuntimeConfig {
+    pub services: CoreRuntimeConfig,
+    pub peer: Arc<PeerRuntimeSnapshot>,
+}
+
+struct CoreRuntimeConfigStoreInner {
+    snapshot: ArcSwap<CoreInstanceRuntimeConfig>,
+    update: SyncMutex<()>,
+}
+
+/// Atomic configuration authority shared by one core instance and its peer
+/// context. Readers always observe a complete submitted version.
+#[derive(Clone)]
+pub struct CoreRuntimeConfigStore {
+    inner: Arc<CoreRuntimeConfigStoreInner>,
+}
+
+impl CoreRuntimeConfigStore {
+    pub fn new(services: CoreRuntimeConfig, peer: Arc<PeerRuntimeSnapshot>) -> Self {
+        Self {
+            inner: Arc::new(CoreRuntimeConfigStoreInner {
+                snapshot: ArcSwap::from_pointee(CoreInstanceRuntimeConfig { services, peer }),
+                update: SyncMutex::new(()),
+            }),
+        }
+    }
+
+    pub fn snapshot(&self) -> Arc<CoreInstanceRuntimeConfig> {
+        self.inner.snapshot.load_full()
+    }
+
+    pub fn replace(&self, config: CoreInstanceRuntimeConfig) {
+        let _update = self.inner.update.lock();
+        self.inner.snapshot.store(Arc::new(config));
+    }
+
+    pub fn update_services(&self, update: impl FnOnce(&mut CoreRuntimeConfig)) {
+        let _update = self.inner.update.lock();
+        let mut config = self.inner.snapshot.load_full().as_ref().clone();
+        update(&mut config.services);
+        self.inner.snapshot.store(Arc::new(config));
+    }
+
+    pub fn update_peer(&self, peer: Arc<PeerRuntimeSnapshot>) {
+        let _update = self.inner.update.lock();
+        let mut config = self.inner.snapshot.load_full().as_ref().clone();
+        config.peer = peer;
+        self.inner.snapshot.store(Arc::new(config));
+    }
+}
+
+impl PeerRuntimeConfigSource for CoreRuntimeConfigStore {
+    fn peer_runtime_snapshot(&self) -> Arc<PeerRuntimeSnapshot> {
+        self.snapshot().peer.clone()
     }
 }
 
@@ -469,7 +529,7 @@ where
     public_ipv6_provider: Option<Arc<PublicIpv6ProviderService>>,
     initial_peers: Vec<Url>,
     initial_peers_started: AtomicBool,
-    runtime_config: RwLock<CoreRuntimeConfig>,
+    runtime_config: CoreRuntimeConfigStore,
     acl_whitelist: RwLock<AclWhitelistSnapshot>,
     initial_acl_loaded: AtomicBool,
 }
@@ -511,6 +571,19 @@ where
         peer_manager: Arc<PeerManagerCore>,
         adapters: CoreInstanceAdapters<H>,
         config: CoreInstanceConfig,
+    ) -> anyhow::Result<Self> {
+        let runtime_config = CoreRuntimeConfigStore::new(
+            config.runtime.clone(),
+            Arc::new(PeerRuntimeSnapshot::default()),
+        );
+        Self::new_with_runtime_config_store(peer_manager, adapters, config, runtime_config)
+    }
+
+    pub fn new_with_runtime_config_store(
+        peer_manager: Arc<PeerManagerCore>,
+        adapters: CoreInstanceAdapters<H>,
+        config: CoreInstanceConfig,
+        runtime_config: CoreRuntimeConfigStore,
     ) -> anyhow::Result<Self> {
         validate_listener_protocols(
             &config.listeners,
@@ -587,6 +660,7 @@ where
         ));
         peer_manager.initialize_portable_acl(&initial_runtime_config.acl)?;
         let acl_whitelist = AclWhitelistSnapshot::from(&initial_runtime_config.acl);
+        runtime_config.update_services(|services| *services = initial_runtime_config.clone());
         let manual = match manual_events {
             Some(events) => ManualConnectorManager::new_with_events(
                 peer_manager.clone(),
@@ -661,7 +735,7 @@ where
             public_ipv6_provider,
             initial_peers,
             initial_peers_started: AtomicBool::new(false),
-            runtime_config: RwLock::new(initial_runtime_config),
+            runtime_config,
             acl_whitelist: RwLock::new(acl_whitelist),
             initial_acl_loaded: AtomicBool::new(false),
         })
@@ -746,7 +820,7 @@ where
             anyhow::bail!("core instance cannot start from state {state:?}");
         }
 
-        let public_ipv6_config = self.runtime_config.read().public_ipv6_provider;
+        let public_ipv6_config = self.runtime_config.snapshot().services.public_ipv6_provider;
         public_ipv6_config.validate().map_err(anyhow::Error::new)?;
         if public_ipv6_config.provider_enabled && self.public_ipv6_provider.is_none() {
             anyhow::bail!("public IPv6 provider is enabled but no host adapter was provided");
@@ -947,7 +1021,7 @@ where
         if self.proxy_started.load(Ordering::Acquire) {
             return Ok(());
         }
-        if !self.runtime_config.read().proxy.should_start() {
+        if !self.runtime_config.snapshot().services.proxy.should_start() {
             return Ok(());
         }
 
@@ -1006,7 +1080,7 @@ where
         self: &Arc<Self>,
         dhcp_ipv4_host: Option<Arc<dyn DhcpIpv4Host>>,
     ) -> anyhow::Result<()> {
-        if self.runtime_config.read().dhcp_ipv4 {
+        if self.runtime_config.snapshot().services.dhcp_ipv4 {
             let host = dhcp_ipv4_host.ok_or_else(|| {
                 anyhow::anyhow!("DHCP IPv4 is enabled but no host adapter was provided")
             })?;
@@ -1050,7 +1124,7 @@ where
             return Ok(());
         }
 
-        let config = self.runtime_config.read().acl.clone();
+        let config = self.runtime_config.snapshot().services.acl.clone();
         *self.acl_whitelist.write() = AclWhitelistSnapshot::from(&config);
         let acl = config.build()?;
         if self.peer_manager.reload_acl(acl.as_ref()) {
@@ -1066,7 +1140,8 @@ where
         let acl = config.build()?;
         self.peer_manager.reload_acl(acl.as_ref());
         self.refresh_acl_groups().await;
-        self.runtime_config.write().acl = config;
+        self.runtime_config
+            .update_services(|services| services.acl = config);
         Ok(())
     }
 
@@ -1075,7 +1150,13 @@ where
     /// submits a new snapshot through this method.
     pub async fn update_runtime_config(&self, config: CoreRuntimeConfig) {
         let _operation = self.operation.lock().await;
-        *self.runtime_config.write() = config;
+        self.runtime_config
+            .update_services(|services| *services = config);
+    }
+
+    pub async fn update_instance_runtime_config(&self, config: CoreInstanceRuntimeConfig) {
+        let _operation = self.operation.lock().await;
+        self.runtime_config.replace(config);
     }
 
     pub async fn start_dhcp_ipv4(
@@ -1227,7 +1308,7 @@ where
     }
 
     pub fn runtime_config_snapshot(&self) -> CoreRuntimeConfig {
-        self.runtime_config.read().clone()
+        self.runtime_config.snapshot().services.clone()
     }
 
     pub fn generate_credential(
@@ -1328,6 +1409,36 @@ mod tests {
     use tokio::sync::Notify;
 
     use super::*;
+
+    #[test]
+    fn runtime_config_store_replaces_service_and_peer_as_one_version() {
+        let mut before_peer = PeerRuntimeSnapshot::default();
+        before_peer.runtime.core.node.hostname = Some("before".to_owned());
+        let store =
+            CoreRuntimeConfigStore::new(CoreRuntimeConfig::default(), Arc::new(before_peer));
+        let before = store.snapshot();
+
+        let mut after_services = CoreRuntimeConfig::default();
+        after_services.dhcp_ipv4 = true;
+        let mut after_peer = PeerRuntimeSnapshot::default();
+        after_peer.runtime.core.node.hostname = Some("after".to_owned());
+        store.replace(CoreInstanceRuntimeConfig {
+            services: after_services,
+            peer: Arc::new(after_peer),
+        });
+
+        assert!(!before.services.dhcp_ipv4);
+        assert_eq!(
+            before.peer.runtime.core.node.hostname.as_deref(),
+            Some("before")
+        );
+        let after = store.snapshot();
+        assert!(after.services.dhcp_ipv4);
+        assert_eq!(
+            after.peer.runtime.core.node.hostname.as_deref(),
+            Some("after")
+        );
+    }
 
     #[test]
     fn portable_instance_config_round_trips_as_normalized_json() {
