@@ -20,7 +20,7 @@ use crate::{
     peers::peer_manager::PeerManager,
 };
 
-use super::{CidrSet, runtime_cidr_set_without_updater};
+use super::CidrSet;
 
 #[derive(Debug)]
 struct RuntimeIcmpProxyAdapter {
@@ -132,7 +132,6 @@ fn socket_recv(
 }
 
 pub struct IcmpProxy {
-    cidr_set: CidrSet,
     service: Arc<IcmpProxyService<RuntimeIcmpProxyAdapter>>,
 }
 
@@ -140,8 +139,8 @@ impl IcmpProxy {
     pub fn new(
         global_ctx: ArcGlobalCtx,
         peer_manager: Arc<PeerManager>,
+        cidr_set: Arc<CidrSet>,
     ) -> Result<Arc<Self>, Error> {
-        let cidr_set = runtime_cidr_set_without_updater(global_ctx.clone());
         let runtime = Arc::new(RuntimeIcmpProxyAdapter::new(global_ctx));
         let service = IcmpProxyService::new(
             peer_manager.core(),
@@ -149,11 +148,10 @@ impl IcmpProxy {
             cidr_set.table(),
             Duration::from_secs(10),
         );
-        Ok(Arc::new(Self { cidr_set, service }))
+        Ok(Arc::new(Self { service }))
     }
 
     pub async fn start(&self) -> Result<(), Error> {
-        self.cidr_set.start_updater();
         self.service
             .start()
             .await
@@ -162,7 +160,6 @@ impl IcmpProxy {
 
     pub fn stop(&self) {
         self.service.stop();
-        self.cidr_set.stop_updater();
     }
 }
 

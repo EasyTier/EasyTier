@@ -26,7 +26,7 @@ use tokio::sync::Mutex;
 #[cfg(test)]
 use tokio::sync::mpsc::{Receiver, Sender, channel};
 
-use super::{CidrSet, runtime_cidr_set_without_updater};
+use super::CidrSet;
 #[cfg(test)]
 use crate::tunnel::packet_def::ZCPacket;
 use crate::{
@@ -77,7 +77,7 @@ impl UdpProxyPolicy for RuntimeUdpProxyPolicy {
 type RuntimeUdpProxy = UdpSocketProxyRuntime<RuntimeConnectorHost, RuntimeUdpProxyPolicy>;
 
 pub struct UdpProxy {
-    cidr_set: CidrSet,
+    cidr_set: Arc<CidrSet>,
     runtime: Arc<RuntimeUdpProxy>,
     service: Arc<UdpProxyService<RuntimeUdpProxy>>,
     #[cfg(test)]
@@ -90,8 +90,8 @@ impl UdpProxy {
     pub fn new(
         global_ctx: ArcGlobalCtx,
         peer_manager: Arc<PeerManager>,
+        cidr_set: Arc<CidrSet>,
     ) -> Result<Arc<Self>, Error> {
-        let cidr_set = runtime_cidr_set_without_updater(global_ctx.clone());
         let runtime = Arc::new(UdpSocketProxyRuntime::new(
             Arc::new(RuntimeConnectorHost::new(global_ctx.clone())),
             Arc::new(RuntimeUdpProxyPolicy::new(global_ctx)),
@@ -124,7 +124,6 @@ impl UdpProxy {
     }
 
     pub async fn start(&self) -> Result<(), Error> {
-        self.cidr_set.start_updater();
         self.service.start().await;
         Ok(())
     }
@@ -132,7 +131,6 @@ impl UdpProxy {
     pub fn stop(&self) {
         self.service.stop();
         self.runtime.close_all();
-        self.cidr_set.stop_updater();
     }
 
     pub fn engine(&self) -> Arc<UdpProxyEngine> {
@@ -257,6 +255,7 @@ mod tests {
     };
 
     use super::UdpProxy;
+    use crate::gateway::runtime_cidr_set_without_updater;
 
     #[test]
     fn udp_proxy_construction_does_not_require_tokio_runtime() {
@@ -273,7 +272,8 @@ mod tests {
             (global_ctx, peer_manager, packet_receiver)
         };
 
-        UdpProxy::new(global_ctx, peer_manager).unwrap();
+        let cidr_set = Arc::new(runtime_cidr_set_without_updater(global_ctx.clone()));
+        UdpProxy::new(global_ctx, peer_manager, cidr_set).unwrap();
     }
 
     fn build_udp_proxy_packet(
@@ -378,7 +378,9 @@ mod tests {
             global_ctx.clone(),
             packet_sender,
         ));
-        let proxy = UdpProxy::new(global_ctx, peer_manager).unwrap();
+        let cidr_set = Arc::new(runtime_cidr_set_without_updater(global_ctx.clone()));
+        cidr_set.start_updater();
+        let proxy = UdpProxy::new(global_ctx, peer_manager, cidr_set).unwrap();
         proxy.start().await.unwrap();
         assert!(!proxy.cidr_set.is_empty());
         let mut response_receiver = proxy.receiver.lock().await.take().unwrap();
@@ -424,7 +426,9 @@ mod tests {
             global_ctx.clone(),
             packet_sender,
         ));
-        let proxy = UdpProxy::new(global_ctx, peer_manager).unwrap();
+        let cidr_set = Arc::new(runtime_cidr_set_without_updater(global_ctx.clone()));
+        cidr_set.start_updater();
+        let proxy = UdpProxy::new(global_ctx, peer_manager, cidr_set).unwrap();
         proxy.start().await.unwrap();
         assert!(!proxy.cidr_set.is_empty());
         let mut response_receiver = proxy.receiver.lock().await.take().unwrap();
@@ -477,7 +481,9 @@ mod tests {
             global_ctx.clone(),
             packet_sender,
         ));
-        let proxy = UdpProxy::new(global_ctx, peer_manager).unwrap();
+        let cidr_set = Arc::new(runtime_cidr_set_without_updater(global_ctx.clone()));
+        cidr_set.start_updater();
+        let proxy = UdpProxy::new(global_ctx, peer_manager, cidr_set).unwrap();
         proxy.start().await.unwrap();
         assert!(!proxy.cidr_set.is_empty());
         let mut response_receiver = proxy.receiver.lock().await.take().unwrap();

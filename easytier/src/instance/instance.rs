@@ -27,7 +27,7 @@ use crate::common::config::ConfigLoader;
 use crate::common::error::Error;
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtx, GlobalCtxEvent};
 use crate::connector::core_instance::{
-    RuntimeCoreInstance, build_runtime_core_instance_with_transport,
+    RuntimeCoreInstance, build_runtime_core_instance_with_services,
 };
 use crate::connector::manual::{ConnectorManagerRpcService, ManualConnectorManager};
 use crate::gateway::icmp_proxy::IcmpProxy;
@@ -37,6 +37,7 @@ use crate::gateway::kcp_proxy::KcpProxyService;
 use crate::gateway::quic_proxy::QuicProxyService;
 use crate::gateway::tcp_proxy::{NatDstTcpConnector, TcpProxy, TcpProxyRpcService};
 use crate::gateway::udp_proxy::UdpProxy;
+use crate::gateway::{CidrSet, runtime_cidr_set_without_updater};
 use crate::launcher::NetworkConfigExt;
 use crate::peer_center::instance::PeerCenterInstanceService;
 use crate::peers::peer_conn::PeerConnId;
@@ -79,16 +80,21 @@ struct RuntimeProxyService {
 }
 
 impl RuntimeProxyService {
-    fn new(global_ctx: ArcGlobalCtx, peer_manager: Arc<PeerManager>) -> Result<Arc<Self>, Error> {
+    fn new(
+        global_ctx: ArcGlobalCtx,
+        peer_manager: Arc<PeerManager>,
+        cidr_set: Arc<CidrSet>,
+    ) -> Result<Arc<Self>, Error> {
         let tcp_proxy = TcpProxy::new(
             peer_manager.clone(),
             NatDstTcpConnector::new(Arc::new(
                 crate::connector::runtime::RuntimeConnectorHost::new(global_ctx.clone()),
             )),
+            cidr_set.clone(),
         );
-        let icmp_proxy = IcmpProxy::new(global_ctx.clone(), peer_manager.clone())
+        let icmp_proxy = IcmpProxy::new(global_ctx.clone(), peer_manager.clone(), cidr_set.clone())
             .with_context(|| "create icmp proxy failed")?;
-        let udp_proxy = UdpProxy::new(global_ctx.clone(), peer_manager)
+        let udp_proxy = UdpProxy::new(global_ctx.clone(), peer_manager, cidr_set)
             .with_context(|| "create UDP proxy failed")?;
         let services: Vec<Arc<dyn ProxyService>> = vec![tcp_proxy.clone(), icmp_proxy, udp_proxy];
         let group = ProxyServiceGroup::new_unconditional(services);
@@ -733,12 +739,23 @@ impl Instance {
             global_ctx.clone(),
             peer_packet_sender,
         ));
-        let proxy = RuntimeProxyService::new(global_ctx.clone(), peer_manager.clone())
-            .expect("runtime proxy adapter construction should be infallible");
+        let proxy_cidr_runtime = Arc::new(runtime_cidr_set_without_updater(global_ctx.clone()));
+        let proxy = RuntimeProxyService::new(
+            global_ctx.clone(),
+            peer_manager.clone(),
+            proxy_cidr_runtime.clone(),
+        )
+        .expect("runtime proxy adapter construction should be infallible");
         #[cfg(feature = "kcp")]
-        let kcp_proxy = Arc::new(KcpProxyService::new(peer_manager.clone()));
+        let kcp_proxy = Arc::new(KcpProxyService::new(
+            peer_manager.clone(),
+            proxy_cidr_runtime.clone(),
+        ));
         #[cfg(feature = "quic")]
-        let quic_proxy = Arc::new(QuicProxyService::new(peer_manager.clone()));
+        let quic_proxy = Arc::new(QuicProxyService::new(
+            peer_manager.clone(),
+            proxy_cidr_runtime.clone(),
+        ));
         #[cfg(any(feature = "kcp", feature = "quic"))]
         let transport_proxy: Option<Arc<dyn ProxyService>> = {
             let mut services: Vec<Arc<dyn ProxyService>> = Vec::new();
@@ -752,11 +769,12 @@ impl Instance {
         #[cfg(not(any(feature = "kcp", feature = "quic")))]
         let transport_proxy: Option<Arc<dyn ProxyService>> = None;
         let core_instance = Arc::new(
-            build_runtime_core_instance_with_transport(
+            build_runtime_core_instance_with_services(
                 global_ctx.clone(),
                 peer_manager.clone(),
                 transport_proxy,
                 Some(proxy.clone()),
+                Some(proxy_cidr_runtime),
             )
             .expect("runtime core instance composition should be valid"),
         );

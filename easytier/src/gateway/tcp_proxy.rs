@@ -28,7 +28,7 @@ use crate::proto::rpc_types;
 use crate::proto::rpc_types::controller::BaseController;
 use crate::tunnel::packet_def::ZCPacket;
 
-use super::{CidrSet, runtime_cidr_set_without_updater};
+use super::CidrSet;
 
 pub type NatDstTcpConnector = TcpSocketProxyConnector<RuntimeConnectorHost>;
 
@@ -138,16 +138,14 @@ fn transport_type_for_mode(mode: TcpProxyMode) -> TcpProxyEntryTransportType {
 pub struct TcpProxy<C: TcpProxyDestinationConnector> {
     global_ctx: Arc<GlobalCtx>,
     peer_manager: Weak<PeerManager>,
-    cidr_set: CidrSet,
     runtime: Arc<RuntimeTcpProxyAdapter>,
     service: Arc<TcpProxyService<RuntimeTcpProxyAdapter, RuntimeConnectorHost, C>>,
     transport_type: TcpProxyEntryTransportType,
 }
 
 impl<C: TcpProxyDestinationConnector> TcpProxy<C> {
-    pub fn new(peer_manager: Arc<PeerManager>, connector: C) -> Arc<Self> {
+    pub fn new(peer_manager: Arc<PeerManager>, connector: C, cidr_set: Arc<CidrSet>) -> Arc<Self> {
         let global_ctx = peer_manager.get_global_ctx();
-        let cidr_set = runtime_cidr_set_without_updater(global_ctx.clone());
         let transport_type = transport_type_for_mode(connector.proxy_mode());
         let runtime = Arc::new(RuntimeTcpProxyAdapter::new(
             global_ctx.clone(),
@@ -164,7 +162,6 @@ impl<C: TcpProxyDestinationConnector> TcpProxy<C> {
         Arc::new(Self {
             global_ctx,
             peer_manager: Arc::downgrade(&peer_manager),
-            cidr_set,
             runtime,
             service,
             transport_type,
@@ -176,7 +173,6 @@ impl<C: TcpProxyDestinationConnector> TcpProxy<C> {
     }
 
     pub async fn start(self: &Arc<Self>, add_pipeline: bool) -> Result<()> {
-        self.cidr_set.start_updater();
         self.runtime.latch_smoltcp_enabled();
         self.service
             .start(add_pipeline)
@@ -187,7 +183,6 @@ impl<C: TcpProxyDestinationConnector> TcpProxy<C> {
 
     pub fn stop(&self) {
         self.service.stop();
-        self.cidr_set.stop_updater();
     }
 
     pub async fn register_peer_pipeline(self: &Arc<Self>) {
@@ -262,7 +257,6 @@ impl<C: TcpProxyDestinationConnector> Drop for TcpProxy<C> {
 #[async_trait::async_trait]
 impl<C: TcpProxyDestinationConnector> ProxyService for TcpProxy<C> {
     async fn start(&self) -> anyhow::Result<()> {
-        self.cidr_set.start_updater();
         self.runtime.latch_smoltcp_enabled();
         self.service.start(true).await.map_err(anyhow::Error::new)
     }

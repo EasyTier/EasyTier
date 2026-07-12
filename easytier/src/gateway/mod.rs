@@ -44,10 +44,6 @@ impl ProxyCidrSnapshotProvider for RuntimeProxyCidrSnapshotProvider {
 
 pub(crate) type CidrSet = ProxyCidrTableRuntime<RuntimeProxyCidrSnapshotProvider>;
 
-pub(crate) fn runtime_cidr_set(global_ctx: ArcGlobalCtx) -> CidrSet {
-    ProxyCidrTableRuntime::new_started(Arc::new(RuntimeProxyCidrSnapshotProvider { global_ctx }))
-}
-
 pub(crate) fn runtime_cidr_set_without_updater(global_ctx: ArcGlobalCtx) -> CidrSet {
     ProxyCidrTableRuntime::new(Arc::new(RuntimeProxyCidrSnapshotProvider { global_ctx }))
 }

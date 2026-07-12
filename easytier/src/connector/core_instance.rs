@@ -12,7 +12,7 @@ use easytier_core::{
         CoreInstance, CoreInstanceAdapters, CoreInstanceConfig, CoreRuntimeConfig,
         CoreRuntimeConfigProvider,
     },
-    proxy::ProxyStartupContext,
+    proxy::{ProxyStartupContext, cidr_table::ProxyCidrRuntime},
     socket::{
         IpVersion, SocketContext,
         dns::{DnsRecordResolver, DnsResolver},
@@ -176,6 +176,7 @@ pub(crate) fn runtime_core_instance_adapters(
         })),
         transport_proxy: None,
         proxy: None,
+        proxy_cidr_runtime: None,
         proxy_cidr_monitor: Some(runtime_proxy_cidr_monitor_host(global_ctx.clone())),
         public_ipv6_provider: Some(runtime_public_ipv6_provider_host(&global_ctx)),
     }
@@ -194,6 +195,22 @@ pub(crate) fn build_runtime_core_instance_with_transport(
     peer_manager: Arc<PeerManager>,
     transport_proxy: Option<Arc<dyn easytier_core::instance::ProxyService>>,
     proxy: Option<Arc<dyn easytier_core::instance::ProxyService>>,
+) -> anyhow::Result<RuntimeCoreInstance> {
+    build_runtime_core_instance_with_services(
+        global_ctx,
+        peer_manager,
+        transport_proxy,
+        proxy,
+        None,
+    )
+}
+
+pub(crate) fn build_runtime_core_instance_with_services(
+    global_ctx: ArcGlobalCtx,
+    peer_manager: Arc<PeerManager>,
+    transport_proxy: Option<Arc<dyn easytier_core::instance::ProxyService>>,
+    proxy: Option<Arc<dyn easytier_core::instance::ProxyService>>,
+    proxy_cidr_runtime: Option<Arc<dyn ProxyCidrRuntime>>,
 ) -> anyhow::Result<RuntimeCoreInstance> {
     let config = CoreInstanceConfig {
         initial_peers: global_ctx
@@ -216,6 +233,7 @@ pub(crate) fn build_runtime_core_instance_with_transport(
     let mut adapters = runtime_core_instance_adapters(global_ctx.clone());
     adapters.transport_proxy = transport_proxy;
     adapters.proxy = proxy;
+    adapters.proxy_cidr_runtime = proxy_cidr_runtime;
     adapters.listener = Some(Arc::new(RuntimeListenerService::new(
         global_ctx,
         peer_manager.core(),
@@ -229,7 +247,7 @@ pub(crate) fn build_runtime_core_instance_with_transport(
 #[cfg(test)]
 mod tests {
     use std::sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     };
 
@@ -307,6 +325,45 @@ mod tests {
 
         async fn stop(&self) {
             self.stop_calls.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    struct OrderedProxyService {
+        name: &'static str,
+        events: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl ProxyService for OrderedProxyService {
+        async fn start(&self) -> anyhow::Result<()> {
+            self.events.lock().unwrap().push(match self.name {
+                "transport" => "start:transport",
+                "proxy" => "start:proxy",
+                _ => unreachable!(),
+            });
+            Ok(())
+        }
+
+        async fn stop(&self) {
+            self.events.lock().unwrap().push(match self.name {
+                "transport" => "stop:transport",
+                "proxy" => "stop:proxy",
+                _ => unreachable!(),
+            });
+        }
+    }
+
+    struct RecordingProxyCidrRuntime {
+        events: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    impl ProxyCidrRuntime for RecordingProxyCidrRuntime {
+        fn start_updater(&self) {
+            self.events.lock().unwrap().push("start:cidr");
+        }
+
+        fn stop_updater(&self) {
+            self.events.lock().unwrap().push("stop:cidr");
         }
     }
 
@@ -412,6 +469,58 @@ mod tests {
         assert_eq!(instance.state(), CoreInstanceState::Stopped);
         assert_eq!(transport_proxy.stop_calls.load(Ordering::Relaxed), 1);
         assert_eq!(proxy.stop_calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn runtime_core_instance_owns_proxy_cidr_lifecycle() {
+        let global_ctx = get_mock_global_ctx();
+        global_ctx
+            .config
+            .add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None)
+            .unwrap();
+        let (nic_channel, _nic_receiver) = create_packet_recv_chan();
+        let peer_manager = Arc::new(PeerManager::new(
+            RouteAlgoType::Ospf,
+            global_ctx.clone(),
+            nic_channel,
+        ));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let service = |name| {
+            Arc::new(OrderedProxyService {
+                name,
+                events: events.clone(),
+            }) as Arc<dyn ProxyService>
+        };
+        let cidr_runtime = Arc::new(RecordingProxyCidrRuntime {
+            events: events.clone(),
+        });
+        let instance = Arc::new(
+            build_runtime_core_instance_with_services(
+                global_ctx,
+                peer_manager,
+                Some(service("transport")),
+                Some(service("proxy")),
+                Some(cidr_runtime),
+            )
+            .expect("runtime core composition should succeed"),
+        );
+
+        instance.start().await.unwrap();
+        instance.start_network_services(None).await.unwrap();
+        instance.start_network_services(None).await.unwrap();
+        instance.stop().await;
+
+        assert_eq!(
+            *events.lock().unwrap(),
+            [
+                "start:cidr",
+                "start:transport",
+                "start:proxy",
+                "stop:transport",
+                "stop:proxy",
+                "stop:cidr",
+            ]
+        );
     }
 
     #[tokio::test]

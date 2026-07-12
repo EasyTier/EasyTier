@@ -22,6 +22,11 @@ pub trait ProxyCidrSnapshotProvider: Send + Sync {
     fn proxy_cidr_snapshot(&self) -> ProxyCidrSnapshot;
 }
 
+pub trait ProxyCidrRuntime: Send + Sync + 'static {
+    fn start_updater(&self);
+    fn stop_updater(&self);
+}
+
 pub struct ProxyCidrTableRuntime<P: ProxyCidrSnapshotProvider + 'static> {
     provider: Arc<P>,
     table: Arc<ProxyCidrTable>,
@@ -95,6 +100,16 @@ impl<P: ProxyCidrSnapshotProvider + 'static> std::fmt::Debug for ProxyCidrTableR
                 &self.updater_task.lock().unwrap().is_some(),
             )
             .finish_non_exhaustive()
+    }
+}
+
+impl<P: ProxyCidrSnapshotProvider + 'static> ProxyCidrRuntime for ProxyCidrTableRuntime<P> {
+    fn start_updater(&self) {
+        ProxyCidrTableRuntime::start_updater(self);
+    }
+
+    fn stop_updater(&self) {
+        ProxyCidrTableRuntime::stop_updater(self);
     }
 }
 

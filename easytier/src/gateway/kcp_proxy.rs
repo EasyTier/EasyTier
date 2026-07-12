@@ -31,7 +31,7 @@ use easytier_core::{
 };
 
 use super::{
-    CidrSet, runtime_cidr_set,
+    CidrSet,
     tcp_proxy::{NatDstTcpConnector, TcpProxy},
 };
 use crate::utils::task::HedgeExt;
@@ -230,7 +230,7 @@ pub struct KcpProxySrc {
 }
 
 impl KcpProxySrc {
-    pub async fn new(peer_manager: Arc<PeerManager>) -> Self {
+    pub async fn new(peer_manager: Arc<PeerManager>, cidr_set: Arc<CidrSet>) -> Self {
         let mut kcp_endpoint = create_kcp_endpoint();
         kcp_endpoint.run().await;
 
@@ -251,6 +251,7 @@ impl KcpProxySrc {
                 kcp_endpoint: kcp_endpoint.clone(),
                 peer_mgr: Arc::downgrade(&peer_manager),
             },
+            cidr_set,
         );
 
         Self {
@@ -294,7 +295,7 @@ pub struct KcpProxyDst {
 }
 
 impl KcpProxyDst {
-    pub async fn new(peer_manager: Arc<PeerManager>) -> Self {
+    pub async fn new(peer_manager: Arc<PeerManager>, cidr_set: Arc<CidrSet>) -> Self {
         let mut kcp_endpoint = create_kcp_endpoint();
         kcp_endpoint.run().await;
 
@@ -305,12 +306,11 @@ impl KcpProxyDst {
             output_receiver,
             false,
         ));
-        let cidr_set = runtime_cidr_set(peer_manager.get_global_ctx());
         Self {
             kcp_endpoint: Arc::new(kcp_endpoint),
             peer_manager,
             proxy_entries: Arc::new(DashMap::new()),
-            cidr_set: Arc::new(cidr_set),
+            cidr_set,
             tasks,
         }
     }
@@ -469,6 +469,7 @@ struct KcpProxyServiceState {
 
 pub struct KcpProxyService {
     peer_manager: Arc<PeerManager>,
+    cidr_set: Arc<CidrSet>,
     state: Mutex<Option<KcpProxyServiceState>>,
     src_endpoint: StdMutex<Option<Arc<KcpEndpoint>>>,
     src_tcp_proxy: StdMutex<Option<Arc<TcpProxy<NatDstKcpConnector>>>>,
@@ -476,9 +477,10 @@ pub struct KcpProxyService {
 }
 
 impl KcpProxyService {
-    pub fn new(peer_manager: Arc<PeerManager>) -> Self {
+    pub fn new(peer_manager: Arc<PeerManager>, cidr_set: Arc<CidrSet>) -> Self {
         Self {
             peer_manager,
+            cidr_set,
             state: Mutex::new(None),
             src_endpoint: StdMutex::new(None),
             src_tcp_proxy: StdMutex::new(None),
@@ -524,14 +526,14 @@ impl ProxyService for KcpProxyService {
 
         let (src_enabled, dst_enabled) = self.enabled_directions();
         let src = if src_enabled {
-            let src = KcpProxySrc::new(self.peer_manager.clone()).await;
+            let src = KcpProxySrc::new(self.peer_manager.clone(), self.cidr_set.clone()).await;
             src.start().await;
             Some(src)
         } else {
             None
         };
         let dst = if dst_enabled {
-            let mut dst = KcpProxyDst::new(self.peer_manager.clone()).await;
+            let mut dst = KcpProxyDst::new(self.peer_manager.clone(), self.cidr_set.clone()).await;
             dst.start().await;
             Some(dst)
         } else {

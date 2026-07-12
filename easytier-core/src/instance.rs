@@ -46,6 +46,7 @@ use crate::{
         cidr_monitor::{
             ProxyCidrDiff, ProxyCidrMonitor, ProxyCidrMonitorHost, collect_proxy_cidr_diff,
         },
+        cidr_table::ProxyCidrRuntime,
     },
     socket::{
         dns::{DnsRecordResolver, DnsResolver},
@@ -218,6 +219,7 @@ where
     pub runtime_config: Option<Arc<dyn CoreRuntimeConfigProvider>>,
     pub transport_proxy: Option<Arc<dyn ProxyService>>,
     pub proxy: Option<Arc<dyn ProxyService>>,
+    pub proxy_cidr_runtime: Option<Arc<dyn ProxyCidrRuntime>>,
     pub proxy_cidr_monitor: Option<Arc<dyn ProxyCidrMonitorHost>>,
     pub public_ipv6_provider: Option<Arc<dyn PublicIpv6ProviderHost>>,
 }
@@ -361,6 +363,8 @@ where
     transport_proxy_started: AtomicBool,
     proxy: Option<Arc<dyn ProxyService>>,
     proxy_started: AtomicBool,
+    proxy_cidr_runtime: Option<Arc<dyn ProxyCidrRuntime>>,
+    proxy_cidr_runtime_started: AtomicBool,
     proxy_cidr_monitor: Option<Arc<dyn ProxyCidrMonitorHost>>,
     proxy_cidr_monitor_task: Mutex<Option<AbortOnDropHandle<()>>>,
     dhcp_ipv4_task: Mutex<Option<AbortOnDropHandle<()>>>,
@@ -428,6 +432,7 @@ where
             runtime_config,
             transport_proxy,
             proxy,
+            proxy_cidr_runtime,
             proxy_cidr_monitor,
             public_ipv6_provider,
         } = adapters;
@@ -531,6 +536,8 @@ where
             transport_proxy_started: AtomicBool::new(false),
             proxy,
             proxy_started: AtomicBool::new(false),
+            proxy_cidr_runtime,
+            proxy_cidr_runtime_started: AtomicBool::new(false),
             proxy_cidr_monitor,
             proxy_cidr_monitor_task: Mutex::new(None),
             dhcp_ipv4_task: Mutex::new(None),
@@ -588,6 +595,13 @@ where
         {
             proxy.stop().await;
             self.proxy_started.store(false, Ordering::Release);
+        }
+        if let Some(proxy_cidr_runtime) = &self.proxy_cidr_runtime
+            && self
+                .proxy_cidr_runtime_started
+                .swap(false, Ordering::AcqRel)
+        {
+            proxy_cidr_runtime.stop_updater();
         }
         self.manual.stop().await;
         self.tcp_hole_punch.stop().await;
@@ -890,6 +904,11 @@ where
                 anyhow::anyhow!("DHCP IPv4 is enabled but no host adapter was provided")
             })?;
             self.start_dhcp_ipv4(host).await?;
+        }
+        if let Some(proxy_cidr_runtime) = &self.proxy_cidr_runtime
+            && !self.proxy_cidr_runtime_started.swap(true, Ordering::AcqRel)
+        {
+            proxy_cidr_runtime.start_updater();
         }
         self.start_transport_proxy().await?;
         self.load_initial_acl().await?;
