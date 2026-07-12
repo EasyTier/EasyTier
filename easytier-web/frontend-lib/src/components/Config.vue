@@ -243,6 +243,17 @@ watch(() => curNetwork.value, syncNormalizedNetwork, { immediate: true, deep: fa
 
               <div class="flex flex-row gap-x-9 flex-wrap">
                 <div class="flex flex-col gap-2 basis-5/12 grow">
+                  <div class="flex">
+                    <label for="tld_dns_zone">{{ t('tld_dns_zone') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('tld_dns_zone_help')"></span>
+                  </div>
+                  <InputText id="tld_dns_zone" v-model="curNetwork.tld_dns_zone"
+                    aria-describedby="tld_dns_zone-help" :placeholder="t('tld_dns_zone_placeholder')" />
+                </div>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap">
+                <div class="flex flex-col gap-2 basis-5/12 grow">
                   <label for="hostname">{{ t('hostname') }}</label>
                   <InputText id="hostname" v-model="curNetwork.hostname" aria-describedby="hostname-help" :format="true"
                     :placeholder="t('hostname_placeholder', [props.hostname])" />
