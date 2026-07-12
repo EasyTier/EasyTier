@@ -219,43 +219,7 @@ func instantiateOpaqueHost(
 ) {
 	t.Helper()
 
-	_, err := runtime.NewHostModuleBuilder("easytier_host").
-		NewFunctionBuilder().WithFunc(bridge.startRead).Export("start_read").
-		NewFunctionBuilder().WithFunc(bridge.takeRead).Export("take_read").
-		NewFunctionBuilder().WithFunc(bridge.startWrite).Export("start_write").
-		NewFunctionBuilder().WithFunc(bridge.takeWrite).Export("take_write").
-		NewFunctionBuilder().WithFunc(bridge.startUDPRecv).Export("start_udp_recv").
-		NewFunctionBuilder().WithFunc(bridge.takeUDPRecv).Export("take_udp_recv").
-		NewFunctionBuilder().WithFunc(bridge.tryUDPSend).Export("try_udp_send").
-		NewFunctionBuilder().WithFunc(bridge.startUDPSendReady).Export("start_udp_send_ready").
-		NewFunctionBuilder().WithFunc(bridge.takeUDPSendReady).Export("take_udp_send_ready").
-		NewFunctionBuilder().WithFunc(bridge.startTCPConnect).Export("start_tcp_connect").
-		NewFunctionBuilder().WithFunc(bridge.takeTCPConnect).Export("take_tcp_connect").
-		NewFunctionBuilder().WithFunc(bridge.startUDPBind).Export("start_udp_bind").
-		NewFunctionBuilder().WithFunc(bridge.takeUDPBind).Export("take_udp_bind").
-		NewFunctionBuilder().WithFunc(bridge.startTCPBind).Export("start_tcp_bind").
-		NewFunctionBuilder().WithFunc(bridge.takeTCPBind).Export("take_tcp_bind").
-		NewFunctionBuilder().WithFunc(bridge.startTCPAccept).Export("start_tcp_accept").
-		NewFunctionBuilder().WithFunc(bridge.takeTCPAccept).Export("take_tcp_accept").
-		NewFunctionBuilder().WithFunc(bridge.startDNSResolve).Export("start_dns_resolve").
-		NewFunctionBuilder().WithFunc(bridge.takeDNSResolve).Export("take_dns_resolve").
-		NewFunctionBuilder().WithFunc(bridge.startDNSTXT).Export("start_dns_txt").
-		NewFunctionBuilder().WithFunc(bridge.takeDNSTXT).Export("take_dns_txt").
-		NewFunctionBuilder().WithFunc(bridge.startDNSSRV).Export("start_dns_srv").
-		NewFunctionBuilder().WithFunc(bridge.takeDNSSRV).Export("take_dns_srv").
-		NewFunctionBuilder().WithFunc(bridge.startLocalAddrForRemote).Export("start_local_addr_for_remote").
-		NewFunctionBuilder().WithFunc(bridge.takeLocalAddrForRemote).Export("take_local_addr_for_remote").
-		NewFunctionBuilder().WithFunc(bridge.startUDPPortMapping).Export("start_udp_port_mapping").
-		NewFunctionBuilder().WithFunc(bridge.takeUDPPortMapping).Export("take_udp_port_mapping").
-		NewFunctionBuilder().WithFunc(bridge.startTCPPortMapping).Export("start_tcp_port_mapping").
-		NewFunctionBuilder().WithFunc(bridge.takeTCPPortMapping).Export("take_tcp_port_mapping").
-		NewFunctionBuilder().WithFunc(bridge.tryPacketWrite).Export("try_packet_write").
-		NewFunctionBuilder().WithFunc(bridge.startPacketWriteReady).Export("start_packet_write_ready").
-		NewFunctionBuilder().WithFunc(bridge.takePacketWriteReady).Export("take_packet_write_ready").
-		NewFunctionBuilder().WithFunc(bridge.cancelOperation).Export("cancel_operation").
-		NewFunctionBuilder().WithFunc(bridge.closeHandle).Export("close").
-		Instantiate(ctx)
-	if err != nil {
+	if err := bridge.instantiateHost(ctx, runtime); err != nil {
 		t.Fatalf("instantiate opaque socket host module: %v", err)
 	}
 }
