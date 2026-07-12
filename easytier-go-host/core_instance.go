@@ -22,13 +22,17 @@ const (
 	CoreStateStopped  CoreState = 4
 )
 
-// CoreModule serializes every call into one instantiated easytier-core module.
-// A module owns at most one live CoreInstance because host completion readiness
-// is module-scoped.
-type CoreModule struct {
+type coreModuleState struct {
 	mu             sync.Mutex
 	module         api.Module
+	bridge         *Bridge
 	activeInstance uint64
+}
+
+// CoreModule serializes every call into one instantiated easytier-core module.
+// Copies of a CoreModule share the same module, lock, and live-instance slot.
+type CoreModule struct {
+	*coreModuleState
 }
 
 // CoreInstance is one core handle owned by a CoreModule.
@@ -45,12 +49,42 @@ func InstantiateCoreModule(
 	runtime wazero.Runtime,
 	compiled wazero.CompiledModule,
 	moduleConfig wazero.ModuleConfig,
+	bridge *Bridge,
 ) (*CoreModule, error) {
-	module, err := runtime.InstantiateModule(ctx, compiled, moduleConfig)
-	if err != nil {
+	if bridge == nil {
+		return nil, fmt.Errorf("instantiate core module with nil bridge")
+	}
+	if err := bridge.claimCoreModule(); err != nil {
 		return nil, err
 	}
-	return &CoreModule{module: module}, nil
+	module, err := runtime.InstantiateModule(ctx, compiled, moduleConfig)
+	if err != nil {
+		bridge.releaseCoreModuleClaim()
+		return nil, err
+	}
+	return &CoreModule{coreModuleState: &coreModuleState{
+		module: module,
+		bridge: bridge,
+	}}, nil
+}
+
+func (b *Bridge) claimCoreModule() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		return fmt.Errorf("instantiate core module with closed bridge")
+	}
+	if b.coreModuleBound {
+		return fmt.Errorf("bridge already owns a core module")
+	}
+	b.coreModuleBound = true
+	return nil
+}
+
+func (b *Bridge) releaseCoreModuleClaim() {
+	b.mu.Lock()
+	b.coreModuleBound = false
+	b.mu.Unlock()
 }
 
 // CreateInstance copies normalized JSON configuration into guest memory and
@@ -178,10 +212,15 @@ func (instance *CoreInstance) NextDeadline(ctx context.Context) (int64, error) {
 // the exact next deadline exported by core.
 func (instance *CoreInstance) DriveUntil(
 	ctx context.Context,
-	completion <-chan struct{},
 	wanted CoreState,
 ) error {
-	return driveUntil(ctx, completion, wanted, instance.Drive, instance.NextDeadline)
+	return driveUntil(
+		ctx,
+		instance.coreModule.bridge.completion,
+		wanted,
+		instance.Drive,
+		instance.NextDeadline,
+	)
 }
 
 func driveUntil(

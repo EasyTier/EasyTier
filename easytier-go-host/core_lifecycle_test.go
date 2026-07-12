@@ -43,7 +43,7 @@ func TestCoreInstanceLifecycle(t *testing.T) {
 	if err := core.Start(ctx); err != nil {
 		t.Fatalf("start core instance: %v", err)
 	}
-	if err := core.DriveUntil(ctx, bridge.completion, CoreStateRunning); err != nil {
+	if err := core.DriveUntil(ctx, CoreStateRunning); err != nil {
 		t.Fatalf("drive core instance until running: %v", err)
 	}
 
@@ -61,7 +61,7 @@ func TestCoreInstanceLifecycle(t *testing.T) {
 	if err := core.Stop(ctx); err != nil {
 		t.Fatalf("stop core instance: %v", err)
 	}
-	if err := core.DriveUntil(ctx, bridge.completion, CoreStateStopped); err != nil {
+	if err := core.DriveUntil(ctx, CoreStateStopped); err != nil {
 		t.Fatalf("drive core instance until stopped: %v", err)
 	}
 	if err := core.Drop(ctx); err != nil {
@@ -82,19 +82,35 @@ func TestCoreModuleAllowsOnlyOneLiveInstance(t *testing.T) {
 	defer cancel()
 	runtime, _, core, packetSink := instantiateCoreModule(t, ctx, wasm, bridge, config)
 	defer runtime.Close(ctx)
+	moduleCopy := *core.coreModule
 
-	if _, err := core.coreModule.CreateInstance(ctx, config, packetSink); err == nil {
+	if _, err := moduleCopy.CreateInstance(ctx, config, packetSink); err == nil {
 		t.Fatal("CoreModule created two live instances with one completion domain")
 	}
 	if err := core.Drop(ctx); err != nil {
 		t.Fatalf("drop first core instance: %v", err)
 	}
-	replacement, err := core.coreModule.CreateInstance(ctx, config, packetSink)
+	replacement, err := moduleCopy.CreateInstance(ctx, config, packetSink)
 	if err != nil {
 		t.Fatalf("create replacement core instance: %v", err)
 	}
 	if err := replacement.Drop(ctx); err != nil {
 		t.Fatalf("drop replacement core instance: %v", err)
+	}
+
+	compiled, err := runtime.CompileModule(ctx, wasm)
+	if err != nil {
+		t.Fatalf("compile second easytier-core module: %v", err)
+	}
+	defer compiled.Close(ctx)
+	if _, err := InstantiateCoreModule(
+		ctx,
+		runtime,
+		compiled,
+		wazero.NewModuleConfig().WithName("second-core"),
+		bridge,
+	); err == nil {
+		t.Fatal("Bridge bound a second core module to one completion domain")
 	}
 }
 
@@ -132,6 +148,7 @@ func instantiateCoreModule(
 			WithSysWalltime().
 			WithSysNanotime().
 			WithSysNanosleep(),
+		bridge,
 	)
 	if err != nil {
 		t.Fatalf("instantiate easytier-core: %v", err)
