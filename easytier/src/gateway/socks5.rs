@@ -31,7 +31,7 @@ use anyhow::Context;
 use dashmap::{DashMap, mapref::entry::Entry};
 use easytier_core::proxy::{
     socks5::{
-        Socks5Entry, Socks5EntryKind, Socks5PeerPacket, Socks5TcpRoute, Socks5TcpRouteContext,
+        Socks5Entry, Socks5EntryKind, Socks5PeerPacket, Socks5TcpConnectPlan, Socks5TcpRoute,
         classify_peer_ipv4_payload,
     },
     tokio_smoltcp::{self, BufferSize, Net, NetConfig, channel_device},
@@ -370,7 +370,7 @@ impl AsyncTcpConnector for Socks5AutoConnector {
 
     async fn tcp_connect(
         &self,
-        mut addr: SocketAddr,
+        addr: SocketAddr,
         timeout_s: u64,
     ) -> crate::gateway::fast_socks5::Result<SocksTcpStream> {
         if self.inner_connector.lock().is_some() {
@@ -382,33 +382,27 @@ impl AsyncTcpConnector for Socks5AutoConnector {
             return Err(anyhow::anyhow!("peer manager is dropped").into());
         };
 
-        if let Some(local_addr) = self.smoltcp_net.as_ref().map(|n| n.get_address())
-            && local_addr == addr.ip()
-        {
-            addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), addr.port());
-        }
-
         let has_smoltcp_net = self.smoltcp_net.is_some();
-        let dst_peers = if has_smoltcp_net && !addr.ip().is_loopback() {
-            Some(peer_mgr_arc.get_msg_dst_peer(&addr.ip()).await.0)
-        } else {
-            None
-        };
         #[cfg(feature = "kcp")]
         let kcp_available = self.kcp_endpoint.is_some();
         #[cfg(not(feature = "kcp"))]
         let kcp_available = false;
-        let route_context = Socks5TcpRouteContext {
+        let plan = Socks5TcpConnectPlan::new(
+            addr,
+            self.smoltcp_net.as_ref().map(|net| net.get_address()),
             has_smoltcp_net,
-            destination_in_virtual_network: dst_peers
-                .as_ref()
-                .is_some_and(|peers| !peers.is_empty()),
-            destination_is_loopback: addr.ip().is_loopback(),
             kcp_available,
-            destination_allows_kcp: false,
+        );
+        let addr = plan.destination();
+        let dst_peers = if plan.needs_virtual_network_lookup() {
+            Some(peer_mgr_arc.get_msg_dst_peer(&addr.ip()).await.0)
+        } else {
+            None
         };
+        let destination_in_virtual_network =
+            dst_peers.as_ref().is_some_and(|peers| !peers.is_empty());
 
-        if !route_context.routes_over_virtual_network() {
+        if plan.route(destination_in_virtual_network, false) == Socks5TcpRoute::Kernel {
             // cannot find dst in virtual network, so try connect to dst directly
             tracing::trace!(
                 ?addr,
@@ -425,11 +419,7 @@ impl AsyncTcpConnector for Socks5AutoConnector {
 
         let dst_allow_kcp = peer_mgr_arc.check_allow_kcp_to_dst(&addr.ip()).await;
         tracing::debug!("dst_allow_kcp: {:?}", dst_allow_kcp);
-        let route = Socks5TcpRouteContext {
-            destination_allows_kcp: dst_allow_kcp,
-            ..route_context
-        }
-        .route();
+        let route = plan.route(destination_in_virtual_network, dst_allow_kcp);
 
         let connector: Box<dyn AsyncTcpConnector<S = SocksTcpStream> + Send> = match route {
             #[cfg(feature = "kcp")]
