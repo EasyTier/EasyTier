@@ -258,6 +258,9 @@ but no core Module receives it or a broad Interface implemented by it.
   context still derives all keys and rates from its core-owned snapshot, while
   native only supplies the token-bucket implementation. Limiting is no longer
   part of the broad live runtime-support Interface.
+- Control-plane traffic export uses `PeerControlTrafficSink`; native maps it to
+  the existing labelled `StatsManager` counters, while the broad live support
+  Interface no longer exposes the metrics registry's side effects.
 
 ### Exit criteria
 

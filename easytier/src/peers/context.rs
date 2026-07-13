@@ -1,8 +1,9 @@
 use std::collections::HashSet;
 
 use easytier_core::peers::context::{
-    ArcByteLimiter, PeerContext, PeerEvent, PeerEventSink, PeerLimiterFactory, PeerRuntimeConfig,
-    PeerRuntimeSnapshot, PeerRuntimeSupport, TrustedKeyMap, TrustedKeySource,
+    ArcByteLimiter, PeerContext, PeerControlTrafficSink, PeerEvent, PeerEventSink,
+    PeerLimiterFactory, PeerRuntimeConfig, PeerRuntimeSnapshot, PeerRuntimeSupport, TrustedKeyMap,
+    TrustedKeySource,
 };
 
 use crate::{
@@ -173,14 +174,6 @@ impl PeerRuntimeSupport for GlobalCtx {
     fn remove_trusted_keys(&self, network_name: &str) {
         PeerContext::remove_trusted_keys(self, network_name);
     }
-
-    fn record_control_tx(&self, network_name: &str, bytes: u64) {
-        PeerContext::record_control_tx(self, network_name, bytes);
-    }
-
-    fn record_control_rx(&self, network_name: &str, bytes: u64) {
-        PeerContext::record_control_rx(self, network_name, bytes);
-    }
 }
 
 #[cfg(test)]
@@ -195,6 +188,7 @@ mod tests {
     use crate::common::{
         config::{PeerConfig, VpnPortalConfig},
         global_ctx::tests::get_mock_global_ctx,
+        stats_manager::{LabelSet, LabelType, MetricName},
     };
     use crate::proto::{
         acl::{Acl, AclV1, GroupIdentity, GroupInfo},
@@ -210,6 +204,7 @@ mod tests {
         );
         let context = SubmittedPeerContext::new(
             Arc::new(config.clone()),
+            global_ctx.clone(),
             global_ctx.clone(),
             global_ctx.clone(),
             Arc::new(GlobalCtxPeerEventSink::new(global_ctx)),
@@ -229,6 +224,32 @@ mod tests {
             events.recv().await.unwrap(),
             GlobalCtxEvent::PeerAdded(7)
         ));
+    }
+
+    #[tokio::test]
+    async fn control_traffic_sink_preserves_native_metric_labels() {
+        let global_ctx = get_mock_global_ctx();
+        let labels =
+            LabelSet::new().with_label_type(LabelType::NetworkName("metrics-network".to_owned()));
+
+        PeerControlTrafficSink::record_control_tx(global_ctx.as_ref(), "metrics-network", 128);
+
+        assert_eq!(
+            global_ctx
+                .stats_manager()
+                .get_metric(MetricName::TrafficControlBytesTx, &labels)
+                .unwrap()
+                .value,
+            128
+        );
+        assert_eq!(
+            global_ctx
+                .stats_manager()
+                .get_metric(MetricName::TrafficControlPacketsTx, &labels)
+                .unwrap()
+                .value,
+            1
+        );
     }
 
     #[tokio::test]

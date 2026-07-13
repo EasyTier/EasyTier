@@ -10,8 +10,8 @@ use easytier_core::config::{IpPrefix, ProxyNetworkConfig as CoreProxyNetworkConf
 use easytier_core::peers::context::{
     ArcByteLimiter, BoxPeerRuntimeChangeSubscriber, HostRoutingPolicy,
     NetworkIdentity as CoreNetworkIdentity, PeerContext, PeerContextEvent,
-    PeerContextEventSubscriber, PeerEvent, PeerGroupIdentity, PeerRuntimeChangeSubscriber,
-    TrustedKeyMapManager, secret_proof_from_secret,
+    PeerContextEventSubscriber, PeerControlTrafficSink, PeerEvent, PeerGroupIdentity,
+    PeerRuntimeChangeSubscriber, TrustedKeyMapManager, secret_proof_from_secret,
 };
 pub use easytier_core::peers::context::{TrustedKeyMap, TrustedKeyMetadata, TrustedKeySource};
 use easytier_core::peers::encrypt::{derive_key_128, derive_key_256};
@@ -176,6 +176,26 @@ impl std::fmt::Debug for GlobalCtx {
 }
 
 pub type ArcGlobalCtx = std::sync::Arc<GlobalCtx>;
+
+impl PeerControlTrafficSink for GlobalCtx {
+    fn record_control_tx(&self, network_name: &str, bytes: u64) {
+        self.record_control_metric(
+            network_name,
+            bytes,
+            stats_manager::MetricName::TrafficControlBytesTx,
+            stats_manager::MetricName::TrafficControlPacketsTx,
+        );
+    }
+
+    fn record_control_rx(&self, network_name: &str, bytes: u64) {
+        self.record_control_metric(
+            network_name,
+            bytes,
+            stats_manager::MetricName::TrafficControlBytesRx,
+            stats_manager::MetricName::TrafficControlPacketsRx,
+        );
+    }
+}
 
 impl PeerContext for GlobalCtx {
     fn network_identity(&self) -> CoreNetworkIdentity {
@@ -388,21 +408,11 @@ impl PeerContext for GlobalCtx {
     }
 
     fn record_control_tx(&self, network_name: &str, bytes: u64) {
-        self.record_control_metric(
-            network_name,
-            bytes,
-            stats_manager::MetricName::TrafficControlBytesTx,
-            stats_manager::MetricName::TrafficControlPacketsTx,
-        );
+        PeerControlTrafficSink::record_control_tx(self, network_name, bytes);
     }
 
     fn record_control_rx(&self, network_name: &str, bytes: u64) {
-        self.record_control_metric(
-            network_name,
-            bytes,
-            stats_manager::MetricName::TrafficControlBytesRx,
-            stats_manager::MetricName::TrafficControlPacketsRx,
-        );
+        PeerControlTrafficSink::record_control_rx(self, network_name, bytes);
     }
 
     fn recv_limiter(&self, network_name: &str, is_foreign_network: bool) -> Option<ArcByteLimiter> {

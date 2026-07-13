@@ -62,6 +62,20 @@ impl PeerLimiterFactory for () {
     }
 }
 
+/// Receives peer control-plane traffic counters without exposing the host's
+/// metrics registry or any other runtime capability.
+pub trait PeerControlTrafficSink: Send + Sync {
+    fn record_control_tx(&self, network_name: &str, bytes: u64);
+
+    fn record_control_rx(&self, network_name: &str, bytes: u64);
+}
+
+impl PeerControlTrafficSink for () {
+    fn record_control_tx(&self, _network_name: &str, _bytes: u64) {}
+
+    fn record_control_rx(&self, _network_name: &str, _bytes: u64) {}
+}
+
 #[derive(Debug, Clone)]
 pub enum PeerEvent {
     PeerAdded(PeerId),
@@ -234,10 +248,6 @@ pub trait PeerRuntimeSupport: Send + Sync {
     fn update_trusted_keys(&self, _keys: TrustedKeyMap, _network_name: &str) {}
 
     fn remove_trusted_keys(&self, _network_name: &str) {}
-
-    fn record_control_tx(&self, _network_name: &str, _bytes: u64) {}
-
-    fn record_control_rx(&self, _network_name: &str, _bytes: u64) {}
 }
 
 /// Peer context whose configuration comes exclusively from a core-owned
@@ -247,6 +257,7 @@ pub struct SubmittedPeerContext {
     config: Arc<dyn PeerRuntimeConfigSource>,
     support: Arc<dyn PeerRuntimeSupport>,
     limiter_factory: Arc<dyn PeerLimiterFactory>,
+    traffic_sink: Arc<dyn PeerControlTrafficSink>,
     peer_events: tokio::sync::broadcast::Sender<PeerContextEvent>,
     event_sink: Arc<dyn PeerEventSink>,
 }
@@ -256,12 +267,14 @@ impl SubmittedPeerContext {
         config: Arc<dyn PeerRuntimeConfigSource>,
         support: Arc<dyn PeerRuntimeSupport>,
         limiter_factory: Arc<dyn PeerLimiterFactory>,
+        traffic_sink: Arc<dyn PeerControlTrafficSink>,
         event_sink: Arc<dyn PeerEventSink>,
     ) -> Self {
         Self {
             config,
             support,
             limiter_factory,
+            traffic_sink,
             peer_events: tokio::sync::broadcast::channel(16).0,
             event_sink,
         }
@@ -1234,11 +1247,11 @@ impl PeerContext for SubmittedPeerContext {
     }
 
     fn record_control_tx(&self, network_name: &str, bytes: u64) {
-        self.support.record_control_tx(network_name, bytes);
+        self.traffic_sink.record_control_tx(network_name, bytes);
     }
 
     fn record_control_rx(&self, network_name: &str, bytes: u64) {
-        self.support.record_control_rx(network_name, bytes);
+        self.traffic_sink.record_control_rx(network_name, bytes);
     }
 
     fn recv_limiter(&self, network_name: &str, is_foreign_network: bool) -> Option<ArcByteLimiter> {
@@ -1361,6 +1374,7 @@ mod tests {
             support.clone(),
             support.clone(),
             Arc::new(()),
+            Arc::new(()),
         );
 
         assert_eq!(context.hostname(), "before");
@@ -1389,7 +1403,8 @@ mod tests {
         });
         let sink = Arc::new(TestPeerEventSink::default());
         let support = Arc::new(TestSubmittedSupport::default());
-        let context = SubmittedPeerContext::new(config, support.clone(), support, sink.clone());
+        let context =
+            SubmittedPeerContext::new(config, support.clone(), support, Arc::new(()), sink.clone());
         let mut events = context.subscribe_peer_events().unwrap();
 
         context.issue_event(PeerEvent::PeerAdded(7));
@@ -1409,8 +1424,13 @@ mod tests {
             snapshot: ArcSwap::from_pointee(snapshot),
         });
         let support = Arc::new(TestSubmittedSupport::default());
-        let context =
-            SubmittedPeerContext::new(config, support.clone(), support.clone(), Arc::new(()));
+        let context = SubmittedPeerContext::new(
+            config,
+            support.clone(),
+            support.clone(),
+            Arc::new(()),
+            Arc::new(()),
+        );
 
         assert!(context.recv_limiter("foreign", true).is_some());
         assert!(context.foreign_forward_limiter("foreign").is_some());
@@ -1429,8 +1449,13 @@ mod tests {
             snapshot: ArcSwap::from_pointee(snapshot),
         });
         let support = Arc::new(TestSubmittedSupport::default());
-        let context =
-            SubmittedPeerContext::new(config, support.clone(), support.clone(), Arc::new(()));
+        let context = SubmittedPeerContext::new(
+            config,
+            support.clone(),
+            support.clone(),
+            Arc::new(()),
+            Arc::new(()),
+        );
 
         assert!(context.recv_limiter("foreign", true).is_some());
         assert!(context.foreign_forward_limiter("foreign").is_none());

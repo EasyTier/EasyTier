@@ -216,6 +216,7 @@ impl core_foreign_network_manager::ForeignNetworkRuntime for ForeignNetworkRunti
             Arc::new(runtime_config),
             foreign_global_ctx.clone(),
             foreign_global_ctx.clone(),
+            foreign_global_ctx.clone(),
             Arc::new(crate::peers::context::GlobalCtxPeerEventSink::new(
                 foreign_global_ctx.clone(),
             )),
@@ -1119,6 +1120,7 @@ pub mod tests {
         );
         let parent_context = Arc::new(easytier_core::peers::context::SubmittedPeerContext::new(
             Arc::new(runtime_config.clone()),
+            global_ctx.clone(),
             global_ctx.clone(),
             global_ctx.clone(),
             Arc::new(crate::peers::context::GlobalCtxPeerEventSink::new(

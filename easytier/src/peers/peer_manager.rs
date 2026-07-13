@@ -107,6 +107,7 @@ impl PeerManager {
             Arc::new(runtime_config.clone()),
             global_ctx.clone(),
             global_ctx.clone(),
+            global_ctx.clone(),
             Arc::new(GlobalCtxPeerEventSink::new(global_ctx.clone())),
         ));
 
