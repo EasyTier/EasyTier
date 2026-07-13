@@ -54,6 +54,7 @@ production ownership inventory is:
 | `peers/peer_manager.rs` | native composition, runtime-snapshot submission, identity/debug presentation, and DTO mapping | no peer-domain forwarding facade remains |
 | `common/global_ctx.rs` | native configuration source, Host observations, product events, persistence, metrics, interface state | no longer implements `PeerContext`; remaining uses are native capabilities and product projection |
 | `gateway/*` | concrete socket/protocol Adapters, product facades, and I/O composition | no portable ownership debt remains; KCP/QUIC engines, WireGuard, real listeners/sockets, netns, configuration, events, and RPC presentation intentionally remain native |
+| `tunnel/*` | native QUIC, WireGuard, WS/WSS, FakeTCP and Unix protocol engines plus framing helpers used by those engines | raw TCP/UDP/Ring Tunnel modules and native connector/listener traits are deleted; remaining engines are narrow Host/protocol Adapters |
 
 Already core-owned and not to be reimplemented:
 
@@ -65,7 +66,10 @@ Already core-owned and not to be reimplemented:
   classification and destination planning, smoltcp stack, portable SOCKS wire
   protocol and session state, and VPN portal client state;
 - connectivity state machines, listener lifecycle, socket Interfaces, and
-  protocol-selection policy.
+  protocol-selection policy;
+- raw TCP and UDP Tunnel framing/construction, UDP mux/session lifecycle and
+  classification, and Ring Tunnel/registry ownership. The detailed closure
+  record is [`tunnel_ownership_refactor.md`](tunnel_ownership_refactor.md).
 
 ## Slice 1: deepen the Foreign network Module
 

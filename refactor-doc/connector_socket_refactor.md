@@ -3,7 +3,33 @@
 > 状态：历史设计输入。当前实施顺序以
 > [`core_refactor_roadmap.md`](core_refactor_roadmap.md) 为准。生产 Core instance
 > 的 manual、direct、TCP/UDP hole-punch 和 listener 路径已经实现“先产出
-> transport、再升级 tunnel”；本文保留为边界设计依据。
+> transport、再升级 tunnel”；native raw TCP/UDP/Ring Tunnel 与 legacy
+> connector/listener traits 已删除。本文保留为边界设计依据，文中的
+> `ConnectedSocket` 等草案名称不是当前 API。
+
+## 完成记录（2026-07-13）
+
+实际落地的统一边界使用 `ConnectedTransport` / `AcceptedTransport`，而不是本文
+早期草案中的 `ConnectedSocket`：
+
+```text
+network manual / direct / hole-punch -> ConnectedTransport -> protocol upgrader
+network host listener                -> AcceptedTransport  -> protocol upgrader
+protocol upgrader                    -> core Tunnel        -> peer admission
+core Ring registry/listener          -> core Ring Tunnel   -> peer admission
+```
+
+TCP byte stream、UDP session 与 Ring Tunnel 的 portable owner 均在
+`easytier-core`。Ring 不经过 Host Adapter 或 `ConnectedTransport`，而是在 core
+内直接形成 Ring Tunnel。`easytier` 只实现 real socket Host Adapter，并保留依赖
+尚不能在 WASI 编译的 QUIC、WireGuard、WS/WSS、FakeTCP 等 concrete protocol
+engine。
+
+已删除的迁移层包括 `easytier::tunnel::TunnelConnector`、`TunnelListener`、
+`TunnelConnCounter`，native `tunnel/{tcp,udp,ring}.rs`，common test adapters 和
+easytier-web legacy listener adapter。最终 ownership map、允许保留的 native
+边界和 deletion checks 见
+[`tunnel_ownership_refactor.md`](tunnel_ownership_refactor.md)。
 
 ## 背景
 

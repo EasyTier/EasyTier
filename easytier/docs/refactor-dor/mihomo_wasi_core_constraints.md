@@ -53,6 +53,12 @@ EasyTier core must not assume that it owns the process network namespace or the
 device routing table. In an embedded proxy host, those decisions belong to the
 host.
 
+This constraint does not require concrete protocol engines to move into core
+before their dependencies support WASI. Native `easytier` may retain QUIC,
+WireGuard, WS/WSS, FakeTCP, Unix, and similar engines behind a narrow upgrade
+Adapter. It may not retain a second raw TCP/UDP/Ring Tunnel implementation or a
+parallel manual/direct/hole-punch orchestrator.
+
 ## Interface Constraints
 
 DNS-dependent decisions may live in core, but DNS Implementation must be
@@ -116,6 +122,11 @@ If state is needed for packet routing correctness across multiple call sites, it
 belongs behind a core Interface rather than being reconstructed in host or
 runtime glue.
 
+TCP framing, UDP mux/session classification and lifecycle, raw TCP/UDP Tunnel
+construction, and Ring Tunnel/registry state are portable ownership. They live
+in `easytier-core`; native and Go hosts inject resource Implementations into
+those Modules.
+
 ## Security Constraints
 
 The target integration must not ask mihomo users to configure an arbitrary
@@ -158,6 +169,17 @@ Core source must remain free of real OS socket implementations. Socket-like
 traits, a WASI Socket Adapter over host-provided resources, and in-memory or
 smoltcp-internal virtual sockets are acceptable. None may create a host OS
 socket while bypassing the Host Adapter.
+
+The native crate must not regain the deleted raw Tunnel or compatibility
+owners:
+
+```bash
+test ! -e easytier/src/tunnel/tcp.rs
+test ! -e easytier/src/tunnel/udp.rs
+test ! -e easytier/src/tunnel/ring.rs
+! rg '\b(TunnelConnector|TunnelListener|TunnelConnCounter)\b' \
+  easytier easytier-web --glob '*.rs'
+```
 
 The target mihomo-facing architecture is not satisfied merely because native
 FFI data-plane APIs exist. Those APIs can remain as compatibility support, but

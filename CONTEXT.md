@@ -69,8 +69,14 @@ Host-backed I/O does not imply host-owned I/O scheduling or protocol state.
 ### Tunnel
 
 An EasyTier packet connection produced by applying framing, metadata, and any
-protocol handshake to a socket. Peer admission consumes a tunnel; dial,
-listener accept, and hole punching produce sockets.
+protocol handshake to a socket. Peer admission consumes a tunnel; network
+dial, listener accept, and hole punching produce sockets or UDP sessions. Ring
+stays entirely inside core and may produce a Ring Tunnel directly.
+
+Core owns raw TCP and UDP Tunnel construction, TCP framing, UDP mux/session
+classification and lifecycle, and Ring Tunnel/registry state. A native
+protocol engine may perform an unavoidable non-WASI handshake behind an
+upgrader Adapter, but it is not a second raw Tunnel owner.
 
 ### Connectivity
 

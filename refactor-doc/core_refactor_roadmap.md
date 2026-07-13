@@ -43,6 +43,9 @@ Already established:
   before protocol upgrade and peer admission;
 - ordinary TCP and UDP connectors share one core-owned manual Connectivity
   Module for URL state, DNS, IP-family ordering, retries, status, and admission;
+- core owns the raw TCP, UDP, and Ring Tunnel implementations, including TCP
+  framing, UDP mux/session classification and lifecycle, Ring registry state,
+  and the injected-socket dialer/listener contracts;
 - the native crate already contains Adapter implementations for several core
   Interfaces.
 - `easytier-core` exports a versioned WASI lifecycle ABI and host-visible timer
@@ -57,8 +60,10 @@ Already established:
 
 The ownership architecture is now closed. Deliberate follow-up boundaries are:
 
-- ring, Unix, FakeTCP, KCP/quinn, WireGuard, real socket/listener, TUN, netns,
-  route, DNS, and product-presentation work remains in Host Adapters;
+- Unix, FakeTCP, KCP/quinn, WireGuard, real socket/listener, TUN, netns, route,
+  DNS, and product-presentation work remains in Host Adapters where it is a
+  real resource or a concrete non-WASI protocol engine; Ring ownership is
+  core-local and no longer a native Host Adapter responsibility;
 - the wasm ABI and reusable Go bridge are functional reference contracts, but
   quantitative latency/resource measurement and hard-kill isolation remain
   production-readiness work;
@@ -170,9 +175,12 @@ Work:
 Current boundary result: production manual, direct-connect, TCP hole-punch, UDP
 hole-punch, and listener admission no longer construct tunnels inside their
 connect/accept state machines. They pass `ConnectedTransport` or
-`AcceptedTransport` values to the shared protocol upgraders. Legacy standalone
-connectors remain for non-peer consumers and tests; they are not part of the
-Core instance admission path.
+`AcceptedTransport` values to the shared protocol upgraders. Core owns the raw
+TCP/UDP/Ring Tunnel types and injected-socket standalone dialers/listeners.
+Native protocol-specific standalone endpoints reuse the same upgrade helpers
+for tests, the web entry point, and VPN portal composition; the parallel native
+`TunnelConnector` / `TunnelListener` traits and adapters have been deleted.
+See the [Tunnel ownership closure](tunnel_ownership_refactor.md).
 
 ### Current protocol dependency constraints
 
@@ -213,6 +221,11 @@ Exit gate:
   normalization behave consistently across native and Go test Adapters;
 - native multi-node and hole-punch integration tests pass in the Docker test
   environment.
+
+Ownership part of this gate is complete. The native raw TCP/UDP/Ring modules,
+legacy connector/listener traits, and migration adapters are deleted. The
+quantitative Go/WASI and production-hardening gates remain the Phase 0
+follow-up described above.
 
 ## Phase 2: establish the authoritative Core instance
 
@@ -318,6 +331,9 @@ The completed ownership milestone passes:
 - four focused race-enabled Go bridge close, cancellation, and lifecycle
   tests;
 - four focused native SOCKS gateway tests;
+- core-trait WS/WSS, QUIC, WireGuard, Unix, and root FakeTCP tunnel tests;
+- core UDP listener/session tests and native IPv4/IPv6 hole-punch forwarding
+  tests after deletion of the native UDP Tunnel module;
 - three root/netns Docker SOCKS portal scenarios;
 - root/netns wrapped-TCP port-forward scenarios for the baseline, DHCP, and
   QUIC paths. A one-second DHCP/QUIC completion window timed out once in each

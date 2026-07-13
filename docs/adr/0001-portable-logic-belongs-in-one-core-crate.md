@@ -41,6 +41,26 @@ Interface complexity before the Module seams are stable.
 - Reviews must reject new authoritative routing or connectivity state in the
   host layer.
 
+## Implementation update (2026-07-13)
+
+The TCP/UDP/Ring ownership seam is closed:
+
+- core owns raw TCP and UDP Tunnel construction, framing, UDP mux/session
+  classification and lifecycle, and Ring Tunnel/registry state;
+- network manual, direct and hole-punch connectivity returns core
+  `ConnectedTransport` values before protocol upgrade and peer admission;
+- inbound network Host Adapters return core `AcceptedTransport` values;
+- Ring stays entirely inside core and produces a core Ring Tunnel without
+  crossing a Host Adapter;
+- native `easytier` retains real socket factories and concrete protocol engines
+  only where their dependencies are not yet WASI-capable;
+- the native `TunnelConnector`, `TunnelListener`, and `TunnelConnCounter`
+  traits, raw TCP/UDP/Ring modules, and compatibility adapters are deleted.
+
+The detailed ownership and deletion checks are recorded in
+[`tunnel_ownership_refactor.md`](../../refactor-doc/tunnel_ownership_refactor.md).
+Fine-grained feature slicing can now proceed without reopening this boundary.
+
 ## Rejected alternatives
 
 ### Multiple core crates now
