@@ -2,6 +2,7 @@ use std::{net::SocketAddr, sync::Arc};
 
 use anyhow::Context;
 use cidr::IpCidr;
+use easytier_core::{listener::SocketListener, tunnel::Tunnel};
 
 use crate::{
     instance::instance::InstanceRpcServerHook,
@@ -18,7 +19,10 @@ use crate::{
             manage::WebClientServiceServer,
         },
         peer_rpc::PeerCenterRpcServer,
-        rpc_impl::{service_registry::ServiceRegistry, standalone::StandAloneServer},
+        rpc_impl::{
+            service_registry::ServiceRegistry,
+            standalone::{RuntimeRpcListener, StandAloneServer, runtime_rpc_listener},
+        },
         rpc_types::error::Error,
     },
     rpc_service::{
@@ -30,30 +34,25 @@ use crate::{
         port_forward_manage::PortForwardManageRpcService, protected_port,
         proxy::TcpProxyRpcService, stats::StatsRpcService, vpn_portal::VpnPortalRpcService,
     },
-    tunnel::{TunnelListener, tcp::TcpTunnelListener},
     web_client::{DefaultHooks, WebClientHooks},
 };
 
-pub struct ApiRpcServer<T: TunnelListener + 'static> {
+pub struct ApiRpcServer<T>
+where
+    T: SocketListener<Accepted = Box<dyn Tunnel>> + 'static,
+{
     rpc_server: StandAloneServer<T>,
     protected_tcp_port: Option<u16>,
 }
 
-impl ApiRpcServer<TcpTunnelListener> {
+impl ApiRpcServer<RuntimeRpcListener> {
     pub fn new(
         rpc_portal: Option<String>,
         rpc_portal_whitelist: Option<Vec<IpCidr>>,
         instance_manager: Arc<NetworkInstanceManager>,
     ) -> anyhow::Result<Self> {
         let rpc_addr = parse_rpc_portal(rpc_portal)?;
-        let mut server = Self::from_tunnel(
-            TcpTunnelListener::new(
-                format!("tcp://{}", rpc_addr)
-                    .parse()
-                    .context("failed to parse rpc portal address")?,
-            ),
-            instance_manager,
-        );
+        let mut server = Self::from_tunnel(runtime_rpc_listener(rpc_addr), instance_manager);
         protected_port::register_protected_tcp_port(rpc_addr.port());
         server.protected_tcp_port = Some(rpc_addr.port());
 
@@ -65,7 +64,10 @@ impl ApiRpcServer<TcpTunnelListener> {
     }
 }
 
-impl<T: TunnelListener + 'static> ApiRpcServer<T> {
+impl<T> ApiRpcServer<T>
+where
+    T: SocketListener<Accepted = Box<dyn Tunnel>> + 'static,
+{
     pub fn from_tunnel(tunnel: T, instance_manager: Arc<NetworkInstanceManager>) -> Self {
         let rpc_server = StandAloneServer::new(tunnel);
         register_api_rpc_service(&instance_manager, rpc_server.registry(), None);
@@ -76,7 +78,10 @@ impl<T: TunnelListener + 'static> ApiRpcServer<T> {
     }
 }
 
-impl<T: TunnelListener + 'static> ApiRpcServer<T> {
+impl<T> ApiRpcServer<T>
+where
+    T: SocketListener<Accepted = Box<dyn Tunnel>> + 'static,
+{
     pub async fn serve(mut self) -> Result<Self, Error> {
         self.rpc_server.serve().await?;
         Ok(self)
@@ -88,7 +93,10 @@ impl<T: TunnelListener + 'static> ApiRpcServer<T> {
     }
 }
 
-impl<T: TunnelListener + 'static> Drop for ApiRpcServer<T> {
+impl<T> Drop for ApiRpcServer<T>
+where
+    T: SocketListener<Accepted = Box<dyn Tunnel>> + 'static,
+{
     fn drop(&mut self) {
         if let Some(port) = self.protected_tcp_port.take() {
             protected_port::unregister_protected_tcp_port(port);

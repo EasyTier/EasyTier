@@ -8,7 +8,7 @@ use std::{
 
 use easytier_core::socket::tcp::{
     TcpBindOptions, TcpConnectOptions, TcpListenOptions, TcpListenPurpose, TcpSocketPurpose,
-    VirtualTcpListener, VirtualTcpListenerFactory, VirtualTcpSocket,
+    VirtualTcpListener, VirtualTcpListenerFactory, VirtualTcpSocket, VirtualTcpSocketFactory,
 };
 use easytier_core::tunnel::ring::{RingByteStream, RingTunnelSocket};
 use socket2::{SockRef, TcpKeepalive};
@@ -36,7 +36,7 @@ enum RuntimeTcpSocketInner {
     FakeTcp(crate::tunnel::fake_tcp::FakeTcpSocket),
 }
 
-pub(crate) struct RuntimeTcpSocket {
+pub struct RuntimeTcpSocket {
     inner: RuntimeTcpSocketInner,
 }
 
@@ -174,7 +174,7 @@ impl VirtualTcpSocket for RuntimeTcpSocket {
 }
 
 #[derive(Debug)]
-pub(crate) struct RuntimeTcpListener {
+pub struct RuntimeTcpListener {
     listener: TcpListener,
     purpose: TcpListenPurpose,
 }
@@ -203,8 +203,30 @@ impl VirtualTcpListener for RuntimeTcpListener {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct RuntimeTcpListenerFactory {
+pub struct RuntimeTcpListenerFactory {
     net_ns: NetNS,
+}
+
+#[derive(Debug, Clone)]
+pub struct RuntimeTcpSocketFactory {
+    net_ns: NetNS,
+}
+
+impl RuntimeTcpSocketFactory {
+    pub(crate) fn new(net_ns: NetNS) -> Self {
+        Self { net_ns }
+    }
+}
+
+#[async_trait::async_trait]
+impl VirtualTcpSocketFactory for RuntimeTcpSocketFactory {
+    type Socket = RuntimeTcpSocket;
+
+    async fn connect_tcp(&self, options: TcpConnectOptions) -> anyhow::Result<Self::Socket> {
+        self.net_ns
+            .run_async(|| async move { connect_tcp(options).await.map_err(anyhow::Error::from) })
+            .await
+    }
 }
 
 impl RuntimeTcpListenerFactory {

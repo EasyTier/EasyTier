@@ -6,24 +6,20 @@ use easytier_core::{
 };
 use tokio::task::JoinSet;
 
-use crate::{
-    proto::{
-        api::instance::Route,
-        common::Void,
-        magic_dns::{
-            HandshakeRequest, MagicDnsServerRpc, MagicDnsServerRpcClientFactory,
-            UpdateDnsRecordRequest,
-        },
-        rpc_impl::standalone::StandAloneClient,
-        rpc_types::controller::BaseController,
+use crate::proto::{
+    api::instance::Route,
+    common::Void,
+    magic_dns::{
+        HandshakeRequest, MagicDnsServerRpc, MagicDnsServerRpcClientFactory, UpdateDnsRecordRequest,
     },
-    tunnel::tcp::TcpTunnelConnector,
+    rpc_impl::standalone::{RuntimeRpcClient, runtime_rpc_client},
+    rpc_types::controller::BaseController,
 };
 
 use super::MAGIC_DNS_INSTANCE_ADDR;
 
 pub struct MagicDnsClientInstance {
-    rpc_client: StandAloneClient<TcpTunnelConnector>,
+    rpc_client: RuntimeRpcClient,
     rpc_stub: Option<Box<dyn MagicDnsServerRpc<Controller = BaseController> + Send>>,
     route_source: Arc<PeerManagerCore>,
     tasks: JoinSet<()>,
@@ -75,8 +71,7 @@ impl MagicDnsRoutePublisher for RpcMagicDnsRoutePublisher {
 
 impl MagicDnsClientInstance {
     pub async fn new(route_source: Arc<PeerManagerCore>) -> Result<Self, anyhow::Error> {
-        let tcp_connector = TcpTunnelConnector::new(MAGIC_DNS_INSTANCE_ADDR.parse().unwrap());
-        let mut rpc_client = StandAloneClient::new(tcp_connector);
+        let mut rpc_client = runtime_rpc_client(MAGIC_DNS_INSTANCE_ADDR.parse().unwrap());
         let rpc_stub = rpc_client
             .scoped_client::<MagicDnsServerRpcClientFactory<BaseController>>("".to_string())
             .await?;

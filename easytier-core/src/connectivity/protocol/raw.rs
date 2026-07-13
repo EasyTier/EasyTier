@@ -1,18 +1,167 @@
-use std::net::SocketAddr;
+use std::{fmt, net::SocketAddr, sync::Arc};
 
+use async_trait::async_trait;
+use rand::seq::SliceRandom as _;
 use url::Url;
 
 use crate::{
-    connectivity::transport::{ConnectedByteStream, ConnectedTransport, ConnectedUdpSession},
+    connectivity::{
+        manual::resolve_url_addrs,
+        transport::{self, ConnectedByteStream, ConnectedTransport, ConnectedUdpSession},
+    },
+    listener::SocketListener,
     proto::common::TunnelInfo,
     socket::{
-        tcp::VirtualTcpSocket,
+        IpVersion,
+        dns::DnsResolver,
+        tcp::{
+            TcpBindOptions, TcpListenOptions, TcpSocketListener, TcpSocketPurpose,
+            VirtualTcpListenerFactory, VirtualTcpSocket, VirtualTcpSocketFactory,
+        },
         udp::{UdpSession, UdpSessionSocket},
     },
     tunnel::{Tunnel, TunnelError, tcp::TcpTunnelUpgrader, udp::UdpTunnelUpgrader},
 };
 
 const BYTE_STREAM_MAX_PACKET_SIZE: usize = 4096;
+const TCP_DEFAULT_PORT: u16 = 11010;
+
+#[async_trait]
+pub trait TunnelDialer: Send + Sync + 'static {
+    async fn connect(&self) -> anyhow::Result<Box<dyn Tunnel>>;
+
+    fn remote_url(&self) -> Url;
+}
+
+/// Core-owned raw TCP Tunnel connector over an injected socket factory.
+pub struct TcpTunnelDialer<F>
+where
+    F: VirtualTcpSocketFactory,
+{
+    remote_url: Url,
+    factory: Arc<F>,
+    dns: Arc<dyn DnsResolver>,
+    ip_version: IpVersion,
+    bind: TcpBindOptions,
+}
+
+impl<F> TcpTunnelDialer<F>
+where
+    F: VirtualTcpSocketFactory,
+{
+    pub fn new(remote_url: Url, factory: Arc<F>, dns: Arc<dyn DnsResolver>) -> Self {
+        Self {
+            remote_url,
+            factory,
+            dns,
+            ip_version: IpVersion::Both,
+            bind: TcpBindOptions::default(),
+        }
+    }
+
+    pub fn with_ip_version(mut self, ip_version: IpVersion) -> Self {
+        self.ip_version = ip_version;
+        self
+    }
+
+    pub fn with_bind(mut self, bind: TcpBindOptions) -> Self {
+        self.bind = bind;
+        self
+    }
+}
+
+#[async_trait]
+impl<F> TunnelDialer for TcpTunnelDialer<F>
+where
+    F: VirtualTcpSocketFactory,
+{
+    async fn connect(&self) -> anyhow::Result<Box<dyn Tunnel>> {
+        if self.remote_url.scheme() != "tcp" {
+            anyhow::bail!("raw TCP dialer requires tcp URL: {}", self.remote_url);
+        }
+        let remote_addr = resolve_url_addrs(
+            &self.remote_url,
+            TCP_DEFAULT_PORT,
+            self.ip_version,
+            self.bind.socket_mark,
+            self.dns.as_ref(),
+        )
+        .await?
+        .choose(&mut rand::thread_rng())
+        .copied()
+        .ok_or(TunnelError::NoDnsRecordFound(self.ip_version))?;
+        let socket = transport::connect_tcp(
+            self.factory.clone(),
+            remote_addr,
+            Vec::new(),
+            self.bind.clone(),
+            TcpSocketPurpose::ManualConnect,
+        )
+        .await?;
+        Ok(upgrade_connected_tcp(socket, self.remote_url.clone())?)
+    }
+
+    fn remote_url(&self) -> Url {
+        self.remote_url.clone()
+    }
+}
+
+/// Core-owned raw TCP Tunnel listener over an injected listener factory.
+pub struct TcpTunnelListener<F>
+where
+    F: VirtualTcpListenerFactory,
+{
+    inner: TcpSocketListener<F>,
+}
+
+impl<F> TcpTunnelListener<F>
+where
+    F: VirtualTcpListenerFactory,
+{
+    pub fn new(local_addr: SocketAddr, factory: Arc<F>) -> Self {
+        Self {
+            inner: TcpSocketListener::new_with_options(
+                socket_url("tcp", local_addr),
+                TcpListenOptions::manual_connect(local_addr),
+                factory,
+            ),
+        }
+    }
+}
+
+impl<F> fmt::Debug for TcpTunnelListener<F>
+where
+    F: VirtualTcpListenerFactory,
+{
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TcpTunnelListener")
+            .field("inner", &self.inner)
+            .finish()
+    }
+}
+
+#[async_trait]
+impl<F> SocketListener for TcpTunnelListener<F>
+where
+    F: VirtualTcpListenerFactory,
+{
+    type Accepted = Box<dyn Tunnel>;
+
+    async fn listen(&mut self) -> anyhow::Result<()> {
+        self.inner.listen().await
+    }
+
+    async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
+        let local_url = self.inner.local_url();
+        let socket = self.inner.accept().await?;
+        Ok(upgrade_accepted_tcp_with_local_url(socket, local_url)?)
+    }
+
+    fn local_url(&self) -> Url {
+        self.inner.local_url()
+    }
+}
 
 pub fn upgrade_connected<S>(
     connected: ConnectedTransport<S>,

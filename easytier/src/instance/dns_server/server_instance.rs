@@ -7,7 +7,7 @@
 // all the clients will exit and let the easytier instance to launch a new server instance.
 
 use super::{
-    MAGIC_DNS_INSTANCE_ADDR,
+    MAGIC_DNS_INSTANCE_SOCKET_ADDR,
     config::{GeneralConfigBuilder, RunConfigBuilder},
     server::Server,
     system_config::{OSConfig, SystemConfig},
@@ -29,10 +29,12 @@ use crate::{
             HandshakeResponse, MagicDnsServerRpc, MagicDnsServerRpcServer, UpdateDnsRecordRequest,
             dns_record::{self},
         },
-        rpc_impl::standalone::{RpcServerHook, StandAloneServer},
+        rpc_impl::standalone::{
+            RpcServerHook, RuntimeRpcListener, StandAloneServer, runtime_rpc_listener,
+        },
         rpc_types::controller::{BaseController, Controller},
     },
-    tunnel::{packet_def::ZCPacket, tcp::TcpTunnelListener},
+    tunnel::packet_def::ZCPacket,
 };
 use anyhow::Context;
 use cidr::Ipv4Inet;
@@ -339,7 +341,7 @@ impl RpcServerHook for MagicDnsServerInstanceData {
 }
 
 pub struct MagicDnsServerInstance {
-    rpc_server: StandAloneServer<TcpTunnelListener>,
+    rpc_server: StandAloneServer<RuntimeRpcListener>,
     pub(super) data: Arc<MagicDnsServerInstanceData>,
     peer_mgr: Arc<PeerManager>,
     tun_inet: Ipv4Inet,
@@ -372,7 +374,7 @@ impl MagicDnsServerInstance {
         tun_inet: Ipv4Inet,
         fake_ip: Ipv4Addr,
     ) -> Result<Self, anyhow::Error> {
-        let tcp_listener = TcpTunnelListener::new(MAGIC_DNS_INSTANCE_ADDR.parse()?);
+        let tcp_listener = runtime_rpc_listener(MAGIC_DNS_INSTANCE_SOCKET_ADDR.parse()?);
         let mut rpc_server = StandAloneServer::new(tcp_listener);
         rpc_server.serve().await?;
 

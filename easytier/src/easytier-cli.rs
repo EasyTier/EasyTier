@@ -73,10 +73,10 @@ use easytier::{
         },
         common::{NatType, PortForwardConfigPb, SocketType},
         peer_rpc::{GetGlobalPeerMapRequest, PeerCenterRpc, PeerCenterRpcClientFactory},
-        rpc_impl::standalone::StandAloneClient,
+        rpc_impl::standalone::{RuntimeRpcClient, runtime_rpc_client},
         rpc_types::{controller::BaseController, error::Error as RpcError},
     },
-    tunnel::{TunnelScheme, tcp::TcpTunnelConnector},
+    tunnel::TunnelScheme,
     utils::{PeerRoutePair, string::cost_to_str},
 };
 
@@ -535,7 +535,7 @@ struct CommandHandler<'a> {
     resolved_target: Option<InstanceTarget>,
 }
 
-type RpcClient = StandAloneClient<TcpTunnelConnector>;
+type RpcClient = RuntimeRpcClient;
 type LocalBoxFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, Error>> + 'a>>;
 type ForeignNetworkMap = BTreeMap<String, ForeignNetworkEntryPb>;
 type GlobalForeignNetworkMap = BTreeMap<u32, list_global_foreign_network_response::ForeignNetworks>;
@@ -2863,11 +2863,11 @@ async fn main() -> Result<(), Error> {
     rust_i18n::set_locale(&locale);
     let cli = Cli::parse();
 
-    let client = RpcClient::new(TcpTunnelConnector::new(
+    let client = runtime_rpc_client(
         format!("tcp://{}:{}", cli.rpc_portal.ip(), cli.rpc_portal.port())
             .parse()
             .unwrap(),
-    ));
+    );
     let handler = CommandHandler {
         client: Arc::new(tokio::sync::Mutex::new(client)),
         verbose: cli.verbose,

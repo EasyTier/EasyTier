@@ -4,16 +4,21 @@ use std::{
 };
 
 use anyhow::Context as _;
+use easytier_core::{
+    connectivity::protocol::raw::{TcpTunnelDialer, TcpTunnelListener, TunnelDialer},
+    listener::SocketListener,
+    tunnel::Tunnel,
+};
 use tokio::task::JoinSet;
 
 use crate::{
-    common::join_joinset_background,
+    common::{dns::RuntimeDnsResolver, join_joinset_background, netns::NetNS},
     proto::{
         common::TunnelInfo,
         rpc_impl::bidirect::BidirectRpcManager,
         rpc_types::{__rt::RpcClientFactory, error::Error},
     },
-    tunnel::{Tunnel, TunnelConnector, TunnelListener},
+    socket::tcp::{RuntimeTcpListenerFactory, RuntimeTcpSocketFactory},
 };
 
 use super::service_registry::ServiceRegistry;
@@ -33,6 +38,29 @@ pub trait RpcServerHook: Send + Sync {
 struct DefaultHook;
 impl RpcServerHook for DefaultHook {}
 
+pub type RuntimeRpcDialer = TcpTunnelDialer<RuntimeTcpSocketFactory>;
+pub type RuntimeRpcListener = TcpTunnelListener<RuntimeTcpListenerFactory>;
+pub type RuntimeRpcClient = StandAloneClient<RuntimeRpcDialer>;
+
+pub fn runtime_rpc_dialer(remote_url: url::Url) -> RuntimeRpcDialer {
+    TcpTunnelDialer::new(
+        remote_url,
+        Arc::new(RuntimeTcpSocketFactory::new(NetNS::new(None))),
+        Arc::new(RuntimeDnsResolver::new()),
+    )
+}
+
+pub fn runtime_rpc_client(remote_url: url::Url) -> RuntimeRpcClient {
+    StandAloneClient::new(runtime_rpc_dialer(remote_url))
+}
+
+pub fn runtime_rpc_listener(local_addr: std::net::SocketAddr) -> RuntimeRpcListener {
+    TcpTunnelListener::new(
+        local_addr,
+        Arc::new(RuntimeTcpListenerFactory::new(NetNS::new(None))),
+    )
+}
+
 pub struct StandAloneServer<L> {
     registry: Arc<ServiceRegistry>,
     listener: Option<L>,
@@ -42,7 +70,10 @@ pub struct StandAloneServer<L> {
     rx_timeout: Option<Duration>,
 }
 
-impl<L: TunnelListener + 'static> StandAloneServer<L> {
+impl<L> StandAloneServer<L>
+where
+    L: SocketListener<Accepted = Box<dyn Tunnel>> + 'static,
+{
     pub fn new(listener: L) -> Self {
         StandAloneServer {
             registry: Arc::new(ServiceRegistry::new()),
@@ -146,12 +177,12 @@ impl<L: TunnelListener + 'static> StandAloneServer<L> {
     }
 }
 
-pub struct StandAloneClient<C: TunnelConnector> {
+pub struct StandAloneClient<C: TunnelDialer> {
     connector: C,
     client: Option<BidirectRpcManager>,
 }
 
-impl<C: TunnelConnector> StandAloneClient<C> {
+impl<C: TunnelDialer> StandAloneClient<C> {
     pub fn new(connector: C) -> Self {
         StandAloneClient {
             connector,
@@ -201,24 +232,22 @@ impl<C: TunnelConnector> StandAloneClient<C> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        proto::rpc_impl::standalone::StandAloneServer,
-        tunnel::{
-            TunnelConnector as _,
-            tcp::{TcpTunnelConnector, TcpTunnelListener},
-        },
+    use easytier_core::connectivity::protocol::raw::TunnelDialer as _;
+
+    use crate::proto::rpc_impl::standalone::{
+        StandAloneServer, runtime_rpc_dialer, runtime_rpc_listener,
     };
 
     #[tokio::test]
     async fn standalone_exit_on_drop() {
-        let addr: url::Url = "tcp://0.0.0.0:53884".parse().unwrap();
-        let tunnel = TcpTunnelListener::new(addr.clone());
+        let addr = "0.0.0.0:53884".parse().unwrap();
+        let tunnel = runtime_rpc_listener(addr);
         let mut server = StandAloneServer::new(tunnel);
         server.serve().await.unwrap();
         drop(server);
 
         // tcp should closed
-        let mut connector = TcpTunnelConnector::new(addr);
+        let connector = runtime_rpc_dialer("tcp://0.0.0.0:53884".parse().unwrap());
         connector.connect().await.unwrap_err();
     }
 }
