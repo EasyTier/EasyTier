@@ -9,8 +9,10 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 use easytier_core::connectivity::direct::DirectConnectorRpcHandler;
+use easytier_core::instance::{CoreRuntimeConfig, CoreRuntimeConfigStore};
 #[cfg(test)]
 use easytier_core::peers::context::ArcPeerContext;
+use easytier_core::peers::context::SubmittedPeerContext;
 use easytier_core::peers::foreign_network_manager as core_foreign_network_manager;
 use easytier_core::tunnel::ring::RingTunnelRegistry;
 #[cfg(test)]
@@ -199,6 +201,16 @@ impl core_foreign_network_manager::ForeignNetworkRuntime for ForeignNetworkRunti
     ) -> core_foreign_network_manager::ForeignNetworkContext {
         let foreign_global_ctx =
             ForeignNetworkRuntimeImpl::build_foreign_global_ctx(spec, self.global_ctx.clone());
+        let runtime_config = CoreRuntimeConfigStore::new(
+            CoreRuntimeConfig::default(),
+            Arc::new(crate::peers::context::runtime_peer_snapshot(
+                &foreign_global_ctx,
+            )),
+        );
+        let peer_context = Arc::new(SubmittedPeerContext::new(
+            Arc::new(runtime_config),
+            foreign_global_ctx.clone(),
+        ));
         let lifecycle_token = Arc::new(());
         self.foreign_contexts.insert(
             spec.network.network_name.clone(),
@@ -208,7 +220,7 @@ impl core_foreign_network_manager::ForeignNetworkRuntime for ForeignNetworkRunti
             }),
         );
         core_foreign_network_manager::ForeignNetworkContext {
-            peer_context: foreign_global_ctx.clone(),
+            peer_context,
             public_ipv6_runtime: foreign_global_ctx,
             lifecycle_token,
         }

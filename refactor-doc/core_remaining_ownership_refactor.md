@@ -244,6 +244,13 @@ Do not move `GlobalCtx` into core. Split its roles:
 The final native composition may still own one `GlobalCtx` value internally,
 but no core Module receives it or a broad Interface implemented by it.
 
+### Progress
+
+- Native and foreign peer graphs now receive a core `SubmittedPeerContext`
+  backed by an explicit runtime snapshot. Foreign `GlobalCtx` values remain
+  only as live Host support and public-IPv6 Adapters; production composition no
+  longer coerces them directly into the broad peer-domain Interface.
+
 ### Exit criteria
 
 - `impl PeerContext for GlobalCtx` is removed;
