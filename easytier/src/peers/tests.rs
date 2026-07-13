@@ -83,6 +83,7 @@ fn set_private_mode(peer_mgr: &PeerManager, enabled: bool) {
     let mut flags = global_ctx.get_flags();
     flags.private_mode = enabled;
     global_ctx.set_flags(flags);
+    peer_mgr.refresh_runtime_config();
 }
 
 async fn connect_client_and_server(
