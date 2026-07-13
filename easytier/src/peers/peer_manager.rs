@@ -34,8 +34,7 @@ use crate::{
 use super::{
     BoxNicPacketFilter, BoxPeerPacketFilter, PacketRecvChan, context::runtime_peer_snapshot,
     encrypt::NullCipher, foreign_network_client::ForeignNetworkClient,
-    foreign_network_manager::ForeignNetworkRuntimeImpl, peer_conn::PeerConnId, peer_map::PeerMap,
-    route_trait::Route,
+    foreign_network_manager::ForeignNetworkRuntimeImpl, peer_conn::PeerConnId, route_trait::Route,
 };
 
 pub struct PeerManager {
@@ -317,10 +316,6 @@ impl PeerManager {
         self.core.run_for_test().await.map_err(Error::from)
     }
 
-    pub fn get_peer_map(&self) -> Arc<PeerMap> {
-        self.core.get_peer_map()
-    }
-
     pub fn my_node_id(&self) -> uuid::Uuid {
         self.global_ctx.get_id()
     }
@@ -470,7 +465,7 @@ mod tests {
         pkt: ZCPacket,
         dst_peer_id: PeerId,
     ) -> Result<(), easytier_core::peers::error::Error> {
-        let peer_map = peer_mgr.get_peer_map();
+        let peer_map = peer_mgr.core().get_peer_map();
         let foreign_network_client = peer_mgr.get_foreign_network_client();
         let relay_peer_map = peer_mgr.core().get_relay_peer_map();
         let traffic_metrics = peer_mgr.core().traffic_metrics();
@@ -1072,7 +1067,15 @@ mod tests {
 
         // wait mgr_a have 2 peers
         wait_for_condition(
-            || async { peer_mgr_a.get_peer_map().list_peers_with_conn().await.len() == 2 },
+            || async {
+                peer_mgr_a
+                    .core()
+                    .get_peer_map()
+                    .list_peers_with_conn()
+                    .await
+                    .len()
+                    == 2
+            },
             std::time::Duration::from_secs(5),
         )
         .await;
@@ -1080,7 +1083,15 @@ mod tests {
         drop(peer_mgr_b);
 
         wait_for_condition(
-            || async { peer_mgr_a.get_peer_map().list_peers_with_conn().await.len() == 1 },
+            || async {
+                peer_mgr_a
+                    .core()
+                    .get_peer_map()
+                    .list_peers_with_conn()
+                    .await
+                    .len()
+                    == 1
+            },
             std::time::Duration::from_secs(5),
         )
         .await;
@@ -1118,6 +1129,7 @@ mod tests {
                 let peer_mgr_a = peer_mgr_a.clone();
                 async move {
                     if !peer_mgr_a
+                        .core()
                         .get_peer_map()
                         .list_peers_with_conn()
                         .await
@@ -1125,7 +1137,11 @@ mod tests {
                     {
                         return false;
                     }
-                    let Some(conns) = peer_mgr_a.get_peer_map().list_peer_conns(peer_b_id).await
+                    let Some(conns) = peer_mgr_a
+                        .core()
+                        .get_peer_map()
+                        .list_peer_conns(peer_b_id)
+                        .await
                     else {
                         return false;
                     };
@@ -1146,6 +1162,7 @@ mod tests {
                 let peer_mgr_b = peer_mgr_b.clone();
                 async move {
                     if !peer_mgr_b
+                        .core()
                         .get_peer_map()
                         .list_peers_with_conn()
                         .await
@@ -1153,7 +1170,11 @@ mod tests {
                     {
                         return false;
                     }
-                    let Some(conns) = peer_mgr_b.get_peer_map().list_peer_conns(peer_a_id).await
+                    let Some(conns) = peer_mgr_b
+                        .core()
+                        .get_peer_map()
+                        .list_peer_conns(peer_a_id)
+                        .await
                     else {
                         return false;
                     };
@@ -1203,6 +1224,7 @@ mod tests {
                 let peer_mgr_server = peer_mgr_server.clone();
                 async move {
                     peer_mgr_server
+                        .core()
                         .get_peer_map()
                         .list_peers_with_conn()
                         .await
@@ -1249,6 +1271,7 @@ mod tests {
                 let peer_mgr_server = peer_mgr_server.clone();
                 async move {
                     peer_mgr_server
+                        .core()
                         .get_peer_map()
                         .list_peers_with_conn()
                         .await
@@ -1600,6 +1623,7 @@ mod tests {
             .unwrap();
 
         let conns = peer_mgr_a
+            .core()
             .get_peer_map()
             .list_peer_conns(peer_mgr_b.my_peer_id())
             .await;
@@ -1679,6 +1703,7 @@ mod tests {
                 let admin = admin.clone();
                 async move {
                     admin
+                        .core()
                         .get_peer_map()
                         .list_peer_conns(credential_peer_id)
                         .await
@@ -1694,6 +1719,7 @@ mod tests {
                 let admin = admin.clone();
                 async move {
                     admin
+                        .core()
                         .get_peer_map()
                         .list_peer_conns(credential_peer_id)
                         .await

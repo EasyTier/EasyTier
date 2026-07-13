@@ -318,7 +318,7 @@ fn create_public_server_credential_config(
 async fn wait_direct_peer(inst: &Instance, peer_id: u32, timeout: Duration, label: &str) {
     wait_for_condition(
         || async {
-            let peers = inst.get_peer_manager().get_peer_map().list_peers();
+            let peers = inst.get_peer_manager().core().get_peer_map().list_peers();
             let connected = peers.contains(&peer_id);
             println!("{label}: direct peers={:?}, target={}", peers, peer_id);
             connected
@@ -758,8 +758,16 @@ async fn credential_basic_connectivity() {
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     // Check peers and connections
-    let admin_peers = admin_inst.get_peer_manager().get_peer_map().list_peers();
-    let cred_peers = cred_inst.get_peer_manager().get_peer_map().list_peers();
+    let admin_peers = admin_inst
+        .get_peer_manager()
+        .core()
+        .get_peer_map()
+        .list_peers();
+    let cred_peers = cred_inst
+        .get_peer_manager()
+        .core()
+        .get_peer_map()
+        .list_peers();
     println!("Admin peers: {:?}", admin_peers);
     println!("Credential peers: {:?}", cred_peers);
 
@@ -768,8 +776,16 @@ async fn credential_basic_connectivity() {
         || async {
             let routes = admin_inst.get_peer_manager().list_routes().await;
             let cred_routes = cred_inst.get_peer_manager().list_routes().await;
-            let admin_peers = admin_inst.get_peer_manager().get_peer_map().list_peers();
-            let cred_peers = cred_inst.get_peer_manager().get_peer_map().list_peers();
+            let admin_peers = admin_inst
+                .get_peer_manager()
+                .core()
+                .get_peer_map()
+                .list_peers();
+            let cred_peers = cred_inst
+                .get_peer_manager()
+                .core()
+                .get_peer_map()
+                .list_peers();
             println!(
                 "Admin peers: {:?}, routes: {:?}",
                 admin_peers,
@@ -990,9 +1006,21 @@ async fn credential_relay_capability(#[case] allow_relay: bool) {
     // Wait for P2P connections to establish
     wait_for_condition(
         || async {
-            let peers_a = cred_a_inst.get_peer_manager().get_peer_map().list_peers();
-            let peers_b = cred_b_inst.get_peer_manager().get_peer_map().list_peers();
-            let peers_c = cred_c_inst.get_peer_manager().get_peer_map().list_peers();
+            let peers_a = cred_a_inst
+                .get_peer_manager()
+                .core()
+                .get_peer_map()
+                .list_peers();
+            let peers_b = cred_b_inst
+                .get_peer_manager()
+                .core()
+                .get_peer_map()
+                .list_peers();
+            let peers_c = cred_c_inst
+                .get_peer_manager()
+                .core()
+                .get_peer_map()
+                .list_peers();
 
             let a_connected_c = peers_a.contains(&cred_c_peer_id);
             let b_connected_c = peers_b.contains(&cred_c_peer_id);

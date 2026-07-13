@@ -261,7 +261,7 @@ async fn foreign_mgr_stress_test() {
                 i,
                 p.list_routes().await,
                 foreign_peer_count,
-                p.get_peer_map().list_peers()
+                p.core().get_peer_map().list_peers()
             );
         }
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -574,6 +574,7 @@ async fn relay_peer_map_pending_packets_flushed_on_handshake_success() {
             let peer_a = peer_a.clone();
             async move {
                 peer_a
+                    .core()
                     .get_peer_map()
                     .get_route_peer_info(peer_c_id)
                     .await
@@ -647,6 +648,7 @@ async fn relay_peer_map_real_link_handshake_success() {
             let peer_a = peer_a.clone();
             async move {
                 peer_a
+                    .core()
                     .get_peer_map()
                     .get_gateway_peer_id(peer_c_id, NextHopPolicy::LeastHop)
                     .await
@@ -662,6 +664,7 @@ async fn relay_peer_map_real_link_handshake_success() {
             let peer_a = peer_a.clone();
             async move {
                 peer_a
+                    .core()
                     .get_peer_map()
                     .get_route_peer_info(peer_c_id)
                     .await
@@ -735,6 +738,7 @@ async fn relay_peer_map_responder_rejects_mismatched_pubkey() {
             let peer_a = peer_a.clone();
             async move {
                 peer_a
+                    .core()
                     .get_peer_map()
                     .get_route_peer_info(peer_c_id)
                     .await
@@ -748,6 +752,7 @@ async fn relay_peer_map_responder_rejects_mismatched_pubkey() {
 
     // Get the original correct pubkey to verify it exists
     let original_info = peer_a
+        .core()
         .get_peer_map()
         .get_route_peer_info(peer_c_id)
         .await
@@ -863,6 +868,7 @@ async fn relay_peer_map_bidirectional_handshake_race() {
             let peer_a = peer_a.clone();
             async move {
                 peer_a
+                    .core()
                     .get_peer_map()
                     .get_route_peer_info(peer_c_id)
                     .await
@@ -879,6 +885,7 @@ async fn relay_peer_map_bidirectional_handshake_race() {
             let peer_c = peer_c.clone();
             async move {
                 peer_c
+                    .core()
                     .get_peer_map()
                     .get_route_peer_info(peer_a_id)
                     .await
@@ -1203,6 +1210,7 @@ async fn credential_expiry_disconnects_from_all_admins() {
             let admin_b = admin_b.clone();
             async move {
                 admin_b
+                    .core()
                     .get_peer_map()
                     .list_peer_conns(cred_c_id)
                     .await
@@ -1235,6 +1243,7 @@ async fn credential_expiry_disconnects_from_all_admins() {
             let admin_b = admin_b.clone();
             async move {
                 admin_b
+                    .core()
                     .get_peer_map()
                     .list_peer_conns(cred_c_id)
                     .await

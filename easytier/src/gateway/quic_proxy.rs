@@ -315,6 +315,7 @@ impl TcpProxyDestinationConnector for NatDstQuicConnector {
                 bail!("ipv6 is not supported");
             };
             peer_mgr
+                .core()
                 .get_peer_map()
                 .get_peer_id_by_ipv4(addr.ip())
                 .await

@@ -178,6 +178,10 @@ only:
 - Direct-connection checks and core graph/resource handles for relay state,
   peer RPC, peer sessions, NIC delivery, and traffic metrics are no longer
   re-exported one method at a time by the native facade.
+- Native callers and tests now enter the core peer graph through
+  `PeerManagerCore::get_peer_map`; the high-fanout native `get_peer_map`
+  projection has been deleted without introducing another compatibility
+  accessor.
 
 ### Exit criteria
 

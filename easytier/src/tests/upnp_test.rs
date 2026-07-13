@@ -1485,7 +1485,12 @@ async fn peer_has_udp_conn_to_remote_addr(
     peer_id: u32,
     expected_remote_addr: SocketAddr,
 ) -> bool {
-    let Some(conns) = peer_mgr.get_peer_map().list_peer_conns(peer_id).await else {
+    let Some(conns) = peer_mgr
+        .core()
+        .get_peer_map()
+        .list_peer_conns(peer_id)
+        .await
+    else {
         return false;
     };
 
@@ -1939,8 +1944,8 @@ async fn instances_build_direct_connection_via_upnp_udp_hole_punch() {
                 let peer_id_a = inst_a.peer_id();
                 let peer_id_c = inst_c.peer_id();
                 async move {
-                    peer_mgr_a.get_peer_map().has_peer(peer_id_c)
-                        && peer_mgr_c.get_peer_map().has_peer(peer_id_a)
+                    peer_mgr_a.core().get_peer_map().has_peer(peer_id_c)
+                        && peer_mgr_c.core().get_peer_map().has_peer(peer_id_a)
                         && peer_mgr_a
                             .list_routes()
                             .await

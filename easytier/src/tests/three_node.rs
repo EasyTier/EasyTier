@@ -1606,6 +1606,7 @@ pub async fn proxy_three_node_disconnect_test(#[values("tcp", "wg")] proto: &str
                 || async {
                     !insts[2]
                         .get_peer_manager()
+                        .core()
                         .get_peer_map()
                         .list_peers_with_conn()
                         .await
@@ -2093,6 +2094,7 @@ pub async fn manual_reconnector(#[values(true, false)] is_foreign: bool) {
     let conns_len = if !is_foreign {
         inst1
             .get_peer_manager()
+            .core()
             .get_peer_map()
             .list_peer_conns(center_inst_peer_id)
             .await
@@ -3414,6 +3416,7 @@ pub async fn lazy_p2p_builds_direct_connection_on_demand() {
     assert!(
         !insts[0]
             .get_peer_manager()
+            .core()
             .get_peer_map()
             .has_peer(inst3_peer_id),
         "inst1 should not proactively connect to inst3 when lazy_p2p is enabled"
@@ -3429,6 +3432,7 @@ pub async fn lazy_p2p_builds_direct_connection_on_demand() {
         || async {
             insts[0]
                 .get_peer_manager()
+                .core()
                 .get_peer_map()
                 .has_peer(inst3_peer_id)
         },
@@ -3462,6 +3466,7 @@ pub async fn need_p2p_overrides_lazy_p2p() {
         || async {
             insts[0]
                 .get_peer_manager()
+                .core()
                 .get_peer_map()
                 .has_peer(inst3_peer_id)
         },
@@ -3495,6 +3500,7 @@ pub async fn disable_p2p_still_connects_to_need_p2p_peers() {
         || async {
             insts[0]
                 .get_peer_manager()
+                .core()
                 .get_peer_map()
                 .has_peer(inst3_peer_id)
         },
@@ -3531,6 +3537,7 @@ pub async fn ordinary_nodes_do_not_proactively_connect_to_disable_p2p_peers() {
     assert!(
         !insts[0]
             .get_peer_manager()
+            .core()
             .get_peer_map()
             .has_peer(inst3_peer_id),
         "ordinary nodes should not proactively establish p2p with disable-p2p peers"
@@ -3565,6 +3572,7 @@ pub async fn lazy_p2p_warms_up_before_p2p_only_send() {
         || async {
             insts[0]
                 .get_peer_manager()
+                .core()
                 .get_peer_map()
                 .has_peer(inst3_peer_id)
         },
@@ -4242,6 +4250,7 @@ pub async fn relay_peer_e2e_encryption(#[values("tcp", "udp")] proto: &str) {
     // Verify inst1 sees inst3 via inst2 (non-direct path)
     let next_hop_to_inst3 = insts[0]
         .get_peer_manager()
+        .core()
         .get_peer_map()
         .get_gateway_peer_id(inst3_peer_id, NextHopPolicy::LeastHop)
         .await;
@@ -4256,6 +4265,7 @@ pub async fn relay_peer_e2e_encryption(#[values("tcp", "udp")] proto: &str) {
     assert!(
         !insts[0]
             .get_peer_manager()
+            .core()
             .get_peer_map()
             .has_peer(inst3_peer_id),
         "inst1 should NOT have direct connection to inst3"
@@ -4264,6 +4274,7 @@ pub async fn relay_peer_e2e_encryption(#[values("tcp", "udp")] proto: &str) {
     // Check if noise_static_pubkey is available for relay handshake
     let route_info_inst3 = insts[0]
         .get_peer_manager()
+        .core()
         .get_peer_map()
         .get_route_peer_info(inst3_peer_id)
         .await;
@@ -4279,6 +4290,7 @@ pub async fn relay_peer_e2e_encryption(#[values("tcp", "udp")] proto: &str) {
         || async {
             insts[0]
                 .get_peer_manager()
+                .core()
                 .get_peer_map()
                 .get_route_peer_info(inst3_peer_id)
                 .await
@@ -4472,6 +4484,7 @@ pub async fn relay_peer_session_cleanup() {
 
     let next_hop = insts[0]
         .get_peer_manager()
+        .core()
         .get_peer_map()
         .get_gateway_peer_id(inst3_peer_id, NextHopPolicy::LeastHop)
         .await;

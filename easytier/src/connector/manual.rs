@@ -255,7 +255,12 @@ mod tests {
         wait_route_appear(client.clone(), server.clone())
             .await
             .unwrap();
-        assert!(client.get_peer_map().is_client_url_alive(&listener_url));
+        assert!(
+            client
+                .core()
+                .get_peer_map()
+                .is_client_url_alive(&listener_url)
+        );
         assert!(
             client
                 .core()
@@ -264,6 +269,7 @@ mod tests {
 
         let server_peer_id = server.my_peer_id();
         let first_conn_id = client
+            .core()
             .get_peer_map()
             .get_peer_default_conn_id(server_peer_id)
             .await
@@ -277,6 +283,7 @@ mod tests {
                 let client = client.clone();
                 async move {
                     client
+                        .core()
                         .get_peer_map()
                         .get_peer_default_conn_id(server_peer_id)
                         .await
@@ -286,7 +293,12 @@ mod tests {
             Duration::from_secs(3),
         )
         .await;
-        assert!(client.get_peer_map().is_client_url_alive(&listener_url));
+        assert!(
+            client
+                .core()
+                .get_peer_map()
+                .is_client_url_alive(&listener_url)
+        );
 
         assert!(
             connector_manager
@@ -374,7 +386,12 @@ mod tests {
         wait_route_appear(client.clone(), server.clone())
             .await
             .unwrap();
-        assert!(client.get_peer_map().is_client_url_alive(&listener_url));
+        assert!(
+            client
+                .core()
+                .get_peer_map()
+                .is_client_url_alive(&listener_url)
+        );
         assert!(
             client
                 .core()
@@ -414,7 +431,12 @@ mod tests {
         wait_route_appear(client.clone(), server.clone())
             .await
             .unwrap();
-        assert!(client.get_peer_map().is_client_url_alive(&listener_url));
+        assert!(
+            client
+                .core()
+                .get_peer_map()
+                .is_client_url_alive(&listener_url)
+        );
         assert!(
             client
                 .core()
@@ -485,7 +507,12 @@ mod tests {
         wait_route_appear(client.clone(), server.clone())
             .await
             .unwrap();
-        assert!(client.get_peer_map().is_client_url_alive(&discovery_url));
+        assert!(
+            client
+                .core()
+                .get_peer_map()
+                .is_client_url_alive(&discovery_url)
+        );
         assert!(
             client
                 .core()
@@ -542,7 +569,12 @@ mod tests {
         wait_route_appear(client.clone(), server.clone())
             .await
             .unwrap();
-        assert!(client.get_peer_map().is_client_url_alive(&listener_url));
+        assert!(
+            client
+                .core()
+                .get_peer_map()
+                .is_client_url_alive(&listener_url)
+        );
         assert!(
             client
                 .core()
@@ -551,6 +583,7 @@ mod tests {
 
         let server_peer_id = server.my_peer_id();
         let first_conn_id = client
+            .core()
             .get_peer_map()
             .get_peer_default_conn_id(server_peer_id)
             .await
@@ -564,6 +597,7 @@ mod tests {
                 let client = client.clone();
                 async move {
                     client
+                        .core()
                         .get_peer_map()
                         .get_peer_default_conn_id(server_peer_id)
                         .await
@@ -573,7 +607,12 @@ mod tests {
             Duration::from_secs(3),
         )
         .await;
-        assert!(client.get_peer_map().is_client_url_alive(&listener_url));
+        assert!(
+            client
+                .core()
+                .get_peer_map()
+                .is_client_url_alive(&listener_url)
+        );
 
         assert!(
             connector_manager

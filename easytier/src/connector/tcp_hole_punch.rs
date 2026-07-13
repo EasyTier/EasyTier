@@ -117,11 +117,13 @@ mod tests {
                 let p_c = p_c.clone();
                 async move {
                     let a_has = p_a
+                        .core()
                         .get_peer_map()
                         .list_peer_conns(p_c.my_peer_id())
                         .await
                         .is_some_and(|c| !c.is_empty());
                     let c_has = p_c
+                        .core()
                         .get_peer_map()
                         .list_peer_conns(p_a.my_peer_id())
                         .await
@@ -159,14 +161,16 @@ mod tests {
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         assert!(
-            p_a.get_peer_map()
+            p_a.core()
+                .get_peer_map()
                 .list_peer_conns(p_c.my_peer_id())
                 .await
                 .map(|c| c.is_empty())
                 .unwrap_or(true)
         );
         assert!(
-            p_c.get_peer_map()
+            p_c.core()
+                .get_peer_map()
                 .list_peer_conns(p_a.my_peer_id())
                 .await
                 .map(|c| c.is_empty())

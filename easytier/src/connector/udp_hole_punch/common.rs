@@ -283,7 +283,11 @@ impl core_udp_hole_punch::UdpHolePunchPeerSource for RuntimeUdpHolePunchPeerSour
                     peer_id: route.peer_id,
                     udp_nat_type,
                     feature_flag: route.feature_flag.clone(),
-                    has_direct_connection: self.peer_mgr.get_peer_map().has_peer(route.peer_id),
+                    has_direct_connection: self
+                        .peer_mgr
+                        .core()
+                        .get_peer_map()
+                        .has_peer(route.peer_id),
                     has_recent_traffic: self.peer_mgr.core().has_recent_traffic(route.peer_id, now),
                 })
             })
