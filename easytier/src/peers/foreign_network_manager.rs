@@ -28,13 +28,9 @@ use crate::{
         PeerId,
         config::{ConfigLoader, TomlConfigLoader},
         error::Error,
-        global_ctx::{
-            ArcGlobalCtx, GlobalCtx, NetworkIdentity, TrustedKeySource,
-            check_network_in_relay_whitelist,
-        },
+        global_ctx::{ArcGlobalCtx, GlobalCtx, NetworkIdentity, TrustedKeySource},
         shrink_dashmap,
         stats_manager::StatsManager,
-        token_bucket::TokenBucket,
     },
     connector::runtime::RuntimeConnectorHost,
     proto::{
@@ -42,11 +38,9 @@ use crate::{
             ForeignNetworkEntryPb, ListForeignNetworkResponse, PeerInfo, TrustedKeyInfoPb,
             TrustedKeySourcePb,
         },
-        common::LimiterConfig,
         peer_rpc::DirectConnectorRpcServer,
     },
     tunnel::packet_def::ZCPacket,
-    use_global_var,
 };
 
 #[cfg(test)]
@@ -279,39 +273,6 @@ impl core_foreign_network_manager::ForeignNetworkRuntime for ForeignNetworkRunti
 
     fn stats_manager(&self) -> Arc<StatsManager> {
         self.global_ctx.stats_manager().clone()
-    }
-
-    fn relay_limiter(&self, network_name: &str) -> Option<Arc<TokenBucket>> {
-        let relay_bps_limit = self.parent_context.flags().foreign_relay_bps_limit;
-        (relay_bps_limit != u64::MAX).then(|| {
-            let limiter_config = LimiterConfig {
-                burst_rate: None,
-                bps: Some(relay_bps_limit),
-                fill_duration_ms: None,
-            };
-            self.global_ctx
-                .token_bucket_manager()
-                .get_or_create(network_name, limiter_config.into())
-        })
-    }
-
-    fn check_network_in_whitelist(
-        &self,
-        network_name: &str,
-    ) -> Result<(), easytier_core::peers::error::Error> {
-        check_network_in_relay_whitelist(
-            &self.parent_context.flags().relay_network_whitelist,
-            network_name,
-        )
-        .map_err(easytier_core::peers::error::Error::Other)
-    }
-
-    fn relay_all_peer_rpc(&self) -> bool {
-        self.parent_context.flags().relay_all_peer_rpc
-    }
-
-    fn max_direct_conns_per_peer_in_foreign_network(&self) -> usize {
-        use_global_var!(MAX_DIRECT_CONNS_PER_PEER_IN_FOREIGN_NETWORK) as usize
     }
 
     fn register_peer_rpc_services(
@@ -1465,21 +1426,42 @@ pub mod tests {
             global_ctx.clone(),
         ));
         let runtime = ForeignNetworkRuntimeImpl::new(global_ctx.clone(), parent_context.clone());
-        assert!(!runtime.relay_all_peer_rpc());
-        assert!(runtime.check_network_in_whitelist("net1").is_ok());
+        let parent_flags = runtime.parent_context().flags();
+        assert!(!parent_flags.relay_all_peer_rpc);
+        assert!(
+            easytier_core::peers::foreign_network_manager::check_network_in_relay_whitelist(
+                &parent_flags.relay_network_whitelist,
+                "net1",
+            )
+            .is_ok()
+        );
 
         let mut flags = global_ctx.get_flags();
         flags.relay_all_peer_rpc = true;
         flags.relay_network_whitelist.clear();
         global_ctx.set_flags(flags);
-        assert!(!runtime.relay_all_peer_rpc());
-        assert!(runtime.check_network_in_whitelist("net1").is_ok());
+        let parent_flags = runtime.parent_context().flags();
+        assert!(!parent_flags.relay_all_peer_rpc);
+        assert!(
+            easytier_core::peers::foreign_network_manager::check_network_in_relay_whitelist(
+                &parent_flags.relay_network_whitelist,
+                "net1",
+            )
+            .is_ok()
+        );
 
         runtime_config.update_peer(Arc::new(crate::peers::context::runtime_peer_snapshot(
             &global_ctx,
         )));
-        assert!(runtime.relay_all_peer_rpc());
-        assert!(runtime.check_network_in_whitelist("net1").is_err());
+        let parent_flags = runtime.parent_context().flags();
+        assert!(parent_flags.relay_all_peer_rpc);
+        assert!(
+            easytier_core::peers::foreign_network_manager::check_network_in_relay_whitelist(
+                &parent_flags.relay_network_whitelist,
+                "net1",
+            )
+            .is_err()
+        );
     }
 
     #[tokio::test]

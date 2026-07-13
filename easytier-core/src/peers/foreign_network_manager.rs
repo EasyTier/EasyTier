@@ -21,11 +21,12 @@ use crate::{
     proto::core_peer::peer::PeerConnInfo,
     runtime_time::timeout,
     stats_manager::{CounterHandle, LabelSet, LabelType, MetricName, StatsManager},
-    token_bucket::TokenBucket,
 };
 
 use super::{
-    context::{ArcPeerContext, NetworkIdentity, PeerContextEvent, TrustedKeySource},
+    context::{
+        ArcByteLimiter, ArcPeerContext, NetworkIdentity, PeerContextEvent, TrustedKeySource,
+    },
     error::Error,
     peer_conn::{PeerConn, PeerConnId},
     peer_map::PeerMap,
@@ -42,10 +43,39 @@ use super::{
 };
 use crate::proto::peer_rpc::PeerIdentityType;
 
+pub fn check_network_in_relay_whitelist(
+    relay_network_whitelist: &str,
+    network_name: &str,
+) -> Result<(), anyhow::Error> {
+    if relay_network_whitelist
+        .split(' ')
+        .map(wildmatch::WildMatch::new)
+        .any(|whitelist| whitelist.matches(network_name))
+    {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!("network {} not in whitelist", network_name))
+    }
+}
+
 #[async_trait::async_trait]
 #[auto_impl::auto_impl(&, Box, Arc)]
 pub trait GlobalForeignNetworkAccessor: Send + Sync + 'static {
     async fn list_global_foreign_peer(&self, network_identity: &NetworkIdentity) -> Vec<PeerId>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::check_network_in_relay_whitelist;
+
+    #[test]
+    fn relay_whitelist_supports_exact_wildcard_and_empty_rules() {
+        assert!(check_network_in_relay_whitelist("net1 net2*", "net1").is_ok());
+        assert!(check_network_in_relay_whitelist("net1 net2*", "net2-west").is_ok());
+        assert!(check_network_in_relay_whitelist("*", "any-network").is_ok());
+        assert!(check_network_in_relay_whitelist("", "net1").is_err());
+        assert!(check_network_in_relay_whitelist("net1 net2*", "net3").is_err());
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -299,22 +329,6 @@ pub trait ForeignNetworkRuntime: Send + Sync + 'static {
 
     fn stats_manager(&self) -> Arc<StatsManager>;
 
-    fn relay_limiter(&self, _network_name: &str) -> Option<Arc<TokenBucket>> {
-        None
-    }
-
-    fn check_network_in_whitelist(&self, _network_name: &str) -> Result<(), Error> {
-        Ok(())
-    }
-
-    fn relay_all_peer_rpc(&self) -> bool {
-        self.parent_context().flags().relay_all_peer_rpc
-    }
-
-    fn max_direct_conns_per_peer_in_foreign_network(&self) -> usize {
-        3
-    }
-
     fn register_peer_rpc_services(
         &self,
         _peer_rpc: &Arc<PeerRpcManager>,
@@ -389,7 +403,7 @@ struct ForeignNetworkEntry {
 
     packet_recv: Mutex<Option<PacketRecvChanReceiver>>,
 
-    bps_limiter: Option<Arc<TokenBucket>>,
+    bps_limiter: Option<ArcByteLimiter>,
 
     peer_center: Arc<PeerCenterInstance>,
 
@@ -488,7 +502,9 @@ impl ForeignNetworkEntry {
 
         runtime.register_peer_rpc_services(&peer_rpc, &foreign_context, &network.network_name);
 
-        let bps_limiter = runtime.relay_limiter(&network.network_name);
+        let bps_limiter = runtime
+            .parent_context()
+            .foreign_forward_limiter(&network.network_name);
 
         let peer_center = Arc::new(PeerCenterInstance::new(Arc::new(
             PeerMapWithPeerRpcManager {
@@ -843,11 +859,13 @@ impl ForeignNetworkManager {
         let peer_network = peer_conn.get_network_identity();
         tracing::info!(peer_conn = ?conn_info, network = ?peer_network, "add new peer conn in foreign network manager");
 
-        let ret = self
-            .runtime
-            .check_network_in_whitelist(&peer_network.network_name);
-        if ret.is_err() && !self.runtime.relay_all_peer_rpc() {
-            return ret;
+        let parent_flags = self.runtime.parent_context().flags();
+        let ret = check_network_in_relay_whitelist(
+            &parent_flags.relay_network_whitelist,
+            &peer_network.network_name,
+        );
+        if ret.is_err() && !parent_flags.relay_all_peer_rpc {
+            return ret.map_err(Error::Other);
         }
 
         let peer_digest_empty = Self::network_secret_digest_is_empty(&peer_network);
@@ -945,7 +963,10 @@ impl ForeignNetworkManager {
 
         if !new_added && let Some(peer) = entry.peer_map.get_peer_by_id(peer_conn.get_peer_id()) {
             let direct_conns_len = peer.get_directly_connections().len();
-            let max_count = self.runtime.max_direct_conns_per_peer_in_foreign_network();
+            let max_count = self
+                .runtime
+                .parent_context()
+                .max_direct_conns_per_peer_in_foreign_network();
             if direct_conns_len >= max_count {
                 return Err(anyhow::anyhow!(
                     "too many direct conns, cur: {}, max: {}",
@@ -1242,7 +1263,7 @@ pub struct ForeignNetworkPacketRouter {
     relay_data: bool,
     pm_sender: PacketRecvChan,
     network_name: String,
-    bps_limiter: Option<Arc<TokenBucket>>,
+    bps_limiter: Option<ArcByteLimiter>,
     counters: ForeignNetworkForwardCounters,
 }
 
@@ -1259,7 +1280,7 @@ impl ForeignNetworkPacketRouter {
         relay_data: bool,
         pm_sender: PacketRecvChan,
         network_name: String,
-        bps_limiter: Option<Arc<TokenBucket>>,
+        bps_limiter: Option<ArcByteLimiter>,
         stats_mgr: Arc<StatsManager>,
     ) -> Self {
         let label_set =

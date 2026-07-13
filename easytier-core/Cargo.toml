@@ -73,6 +73,7 @@ tokio-websockets = { version = "0.13.2", git = "https://github.com/EasyTier/toki
     "ring",
 ] }
 url = { version = "2.5", features = ["serde"] }
+wildmatch = "2.3.4"
 uuid = { version = "1.5.0", features = ["v4", "fast-rng"] }
 webpki-roots = "0.26"
 x25519-dalek = { version = "2.0", features = ["static_secrets"] }

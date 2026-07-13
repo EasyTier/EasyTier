@@ -182,6 +182,10 @@ impl ByteLimiter for TokenBucket {
     async fn consume(&self, bytes: u64) {
         TokenBucket::consume(self, bytes).await;
     }
+
+    fn try_consume(&self, bytes: u64) -> bool {
+        TokenBucket::try_consume(self, bytes)
+    }
 }
 
 pub struct TokenBucketManager {

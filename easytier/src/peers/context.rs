@@ -44,6 +44,9 @@ pub(crate) fn runtime_peer_snapshot(global_ctx: &ArcGlobalCtx) -> PeerRuntimeSna
         ospf_update_my_foreign_network_interval_sec: use_global_var!(
             OSPF_UPDATE_MY_GLOBAL_FOREIGN_NETWORK_INTERVAL_SEC
         ),
+        max_direct_conns_per_peer_in_foreign_network: use_global_var!(
+            MAX_DIRECT_CONNS_PER_PEER_IN_FOREIGN_NETWORK
+        ) as usize,
         hmac_secret_digest: use_global_var!(HMAC_SECRET_DIGEST),
     }
 }

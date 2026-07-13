@@ -35,11 +35,17 @@ pub const SECRET_PROOF_PREFIX: &[u8] = b"easytier secret proof";
 #[async_trait]
 pub trait ByteLimiter: Send + Sync {
     async fn consume(&self, bytes: u64);
+
+    fn try_consume(&self, bytes: u64) -> bool;
 }
 
 #[async_trait]
 impl ByteLimiter for () {
     async fn consume(&self, _bytes: u64) {}
+
+    fn try_consume(&self, _bytes: u64) -> bool {
+        true
+    }
 }
 
 pub type ArcByteLimiter = Arc<dyn ByteLimiter>;
@@ -89,6 +95,7 @@ pub struct PeerRuntimeSnapshot {
     pub peer_group_memberships: Vec<PeerGroupIdentity>,
     pub acl_group_declarations: Vec<PeerGroupIdentity>,
     pub ospf_update_my_foreign_network_interval_sec: u64,
+    pub max_direct_conns_per_peer_in_foreign_network: usize,
     pub hmac_secret_digest: bool,
 }
 
@@ -102,6 +109,7 @@ impl PeerRuntimeSnapshot {
             peer_group_memberships: Vec::new(),
             acl_group_declarations: Vec::new(),
             ospf_update_my_foreign_network_interval_sec: 10,
+            max_direct_conns_per_peer_in_foreign_network: 3,
             hmac_secret_digest: false,
         }
     }
@@ -617,6 +625,10 @@ pub trait PeerContext: Send + Sync {
         10
     }
 
+    fn max_direct_conns_per_peer_in_foreign_network(&self) -> usize {
+        3
+    }
+
     fn advertised_ipv6_public_addr_prefix(&self) -> Option<Ipv6Cidr> {
         None
     }
@@ -688,6 +700,10 @@ pub trait PeerContext: Send + Sync {
         _is_foreign_network: bool,
     ) -> Option<ArcByteLimiter> {
         None
+    }
+
+    fn foreign_forward_limiter(&self, network_name: &str) -> Option<ArcByteLimiter> {
+        self.recv_limiter(&format!("{network_name}:forward"), true)
     }
 
     fn issue_event(&self, _event: PeerEvent) {}
@@ -922,6 +938,10 @@ impl PeerContext for ConfigPeerContext {
 impl PeerContext for SubmittedPeerContext {
     fn runtime_config(&self) -> PeerRuntimeConfig {
         self.snapshot().runtime.clone()
+    }
+
+    fn max_direct_conns_per_peer_in_foreign_network(&self) -> usize {
+        self.snapshot().max_direct_conns_per_peer_in_foreign_network
     }
 
     fn network_identity(&self) -> NetworkIdentity {
@@ -1180,11 +1200,17 @@ mod tests {
     #[derive(Default)]
     struct TestSubmittedSupport {
         avoid_relay_data: AtomicBool,
+        limiter_keys: Mutex<Vec<String>>,
     }
 
     impl PeerRuntimeSupport for TestSubmittedSupport {
         fn avoid_relay_data_preference(&self) -> bool {
             self.avoid_relay_data.load(Ordering::Acquire)
+        }
+
+        fn recv_limiter(&self, key: &str, _bps: u64) -> Option<ArcByteLimiter> {
+            self.limiter_keys.lock().unwrap().push(key.to_owned());
+            Some(Arc::new(()))
         }
     }
 
@@ -1235,6 +1261,24 @@ mod tests {
             .snapshot
             .store(Arc::new(submitted_snapshot("after", false)));
         assert!(!context.feature_flags().avoid_relay_data);
+    }
+
+    #[test]
+    fn foreign_forward_limiter_is_independent_from_peer_receive_limiter() {
+        let mut snapshot = submitted_snapshot("limiter", false);
+        snapshot.flags.foreign_relay_bps_limit = 1024;
+        let config = Arc::new(TestSubmittedConfig {
+            snapshot: ArcSwap::from_pointee(snapshot),
+        });
+        let support = Arc::new(TestSubmittedSupport::default());
+        let context = SubmittedPeerContext::new(config, support.clone());
+
+        assert!(context.recv_limiter("foreign", true).is_some());
+        assert!(context.foreign_forward_limiter("foreign").is_some());
+        assert_eq!(
+            support.limiter_keys.lock().unwrap().as_slice(),
+            ["foreign:recv", "foreign:forward:recv"]
+        );
     }
 
     #[test]

@@ -14,6 +14,7 @@ use easytier_core::peers::context::{
 };
 pub use easytier_core::peers::context::{TrustedKeyMap, TrustedKeyMetadata, TrustedKeySource};
 use easytier_core::peers::encrypt::{derive_key_128, derive_key_256};
+use easytier_core::peers::foreign_network_manager::check_network_in_relay_whitelist;
 use easytier_core::peers::public_ipv6::PublicIpv6Runtime;
 
 use super::{
@@ -162,21 +163,6 @@ impl std::fmt::Debug for GlobalCtx {
 }
 
 pub type ArcGlobalCtx = std::sync::Arc<GlobalCtx>;
-
-pub(crate) fn check_network_in_relay_whitelist(
-    relay_network_whitelist: &str,
-    network_name: &str,
-) -> Result<(), anyhow::Error> {
-    if relay_network_whitelist
-        .split(' ')
-        .map(wildmatch::WildMatch::new)
-        .any(|whitelist| whitelist.matches(network_name))
-    {
-        Ok(())
-    } else {
-        Err(anyhow::anyhow!("network {} not in whitelist", network_name))
-    }
-}
 
 impl PeerContext for GlobalCtx {
     fn network_identity(&self) -> CoreNetworkIdentity {

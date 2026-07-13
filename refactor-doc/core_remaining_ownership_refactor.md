@@ -91,6 +91,18 @@ Core owns:
 - foreign entry creation, rollback, route/RPC/peer-center preparation, task
   ownership, shutdown, and management snapshot.
 
+### Progress
+
+- Core now evaluates the relay whitelist and relay-all fallback from the
+  submitted parent peer snapshot.
+- The maximum direct-connection limit is part of the submitted core snapshot
+  and is enforced by the core foreign manager.
+- Foreign relay limiter selection is performed by core through the parent
+  peer context; the native runtime no longer constructs or selects it.
+- The remaining runtime surface is context construction/removal, metrics,
+  native direct-connector RPC registration, trusted-key presentation, and the
+  temporary parent feature synchronization loop.
+
 The native Host Adapter owns only:
 
 - platform-backed connector and protocol-upgrade resources required by the
