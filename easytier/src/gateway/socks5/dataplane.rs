@@ -370,7 +370,8 @@ mod tests {
 
         wait_for_condition(
             || async {
-                a.get_route()
+                a.core()
+                    .get_route()
                     .get_peer_id_by_ipv4(&b_ip.address())
                     .await
                     .is_some()
