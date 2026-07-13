@@ -7,9 +7,9 @@ use async_trait::async_trait;
 use easytier_core::{
     hole_punch::udp::new_hole_punch_packet,
     socket::udp::{
-        PreferredIpv6Source, UdpBindOptions, UdpSessionControlHandler, UdpSessionLayer,
-        UdpSocketPurpose, UdpSocketRecvMeta, UdpSocketSendMeta, VirtualUdpSocket,
-        VirtualUdpSocketFactory,
+        PreferredIpv6Source, UdpBindOptions, UdpSessionAcceptKind, UdpSessionControlHandler,
+        UdpSessionLayer, UdpSessionListenRequest, UdpSessionSocketListener, UdpSocketPurpose,
+        UdpSocketRecvMeta, UdpSocketSendMeta, VirtualUdpSocket, VirtualUdpSocketFactory,
     },
 };
 use tokio::net::UdpSocket;
@@ -26,6 +26,19 @@ pub(crate) type RuntimeUdpSessionLayer = UdpSessionLayer<
     RuntimeUdpSessionControlHandler,
     RuntimeUdpSessionControlHandler,
 >;
+
+pub(crate) type RuntimeUdpSessionSocketListener =
+    UdpSessionSocketListener<RuntimeUdpSocketFactory, RuntimeUdpSocketFactory>;
+
+pub(crate) fn new_runtime_udp_session_listener(
+    url: url::Url,
+    request: UdpSessionListenRequest,
+    accept_kind: UdpSessionAcceptKind,
+    net_ns: NetNS,
+) -> RuntimeUdpSessionSocketListener {
+    let factory = Arc::new(RuntimeUdpSocketFactory::new(net_ns));
+    UdpSessionSocketListener::new_with_request(url, request, accept_kind, factory.clone(), factory)
+}
 
 pub(crate) struct RuntimeUdpSocket {
     socket: Arc<UdpSocket>,
