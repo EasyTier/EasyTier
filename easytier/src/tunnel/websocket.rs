@@ -36,13 +36,8 @@ impl WsTunnelListener {
     pub fn set_socket_mark(&mut self, socket_mark: Option<u32>) {
         self.socket_mark = socket_mark;
     }
-}
 
-#[async_trait::async_trait]
-impl easytier_core::listener::SocketListener for WsTunnelListener {
-    type Accepted = Box<dyn Tunnel>;
-
-    async fn listen(&mut self) -> anyhow::Result<()> {
+    async fn listen_tunnel(&mut self) -> Result<(), TunnelError> {
         self.listener = None;
 
         let addr = SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?;
@@ -60,7 +55,7 @@ impl easytier_core::listener::SocketListener for WsTunnelListener {
         Ok(())
     }
 
-    async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
+    async fn accept_tunnel(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
         loop {
             let listener = self.listener.as_ref().unwrap();
             // only fail on tcp accept error
@@ -68,7 +63,7 @@ impl easytier_core::listener::SocketListener for WsTunnelListener {
             stream.set_nodelay(true).unwrap();
             match timeout(
                 Duration::from_secs(3),
-                upgrade_accepted(RuntimeTcpSocket::new(stream), self.local_url()),
+                upgrade_accepted(RuntimeTcpSocket::new(stream), self.addr.clone()),
             )
             .await
             {
@@ -79,6 +74,19 @@ impl easytier_core::listener::SocketListener for WsTunnelListener {
                 }
             }
         }
+    }
+}
+
+#[async_trait::async_trait]
+impl easytier_core::listener::SocketListener for WsTunnelListener {
+    type Accepted = Box<dyn Tunnel>;
+
+    async fn listen(&mut self) -> anyhow::Result<()> {
+        Ok(self.listen_tunnel().await?)
+    }
+
+    async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
+        Ok(self.accept_tunnel().await?)
     }
 
     fn local_url(&self) -> url::Url {

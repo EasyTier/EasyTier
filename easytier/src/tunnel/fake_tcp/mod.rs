@@ -373,13 +373,8 @@ impl FakeTcpTunnelListener {
             (build_os_socket_reader_task(res.socket), stack),
         ))
     }
-}
 
-#[async_trait::async_trait]
-impl easytier_core::listener::SocketListener for FakeTcpTunnelListener {
-    type Accepted = Box<dyn Tunnel>;
-
-    async fn listen(&mut self) -> anyhow::Result<()> {
+    async fn listen_tunnel(&mut self) -> Result<(), TunnelError> {
         let port = self.addr.port().unwrap_or(0);
         let bind_addr = SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?;
         let os_listener = tokio::net::TcpListener::bind(bind_addr).await?;
@@ -388,14 +383,22 @@ impl easytier_core::listener::SocketListener for FakeTcpTunnelListener {
         Ok(())
     }
 
-    async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
+    async fn accept_tunnel(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
         let socket = self.accept_socket().await?;
-        Ok(
-            easytier_core::connectivity::protocol::faketcp::upgrade_accepted(
-                socket,
-                self.addr.clone(),
-            )?,
-        )
+        easytier_core::connectivity::protocol::faketcp::upgrade_accepted(socket, self.addr.clone())
+    }
+}
+
+#[async_trait::async_trait]
+impl easytier_core::listener::SocketListener for FakeTcpTunnelListener {
+    type Accepted = Box<dyn Tunnel>;
+
+    async fn listen(&mut self) -> anyhow::Result<()> {
+        Ok(self.listen_tunnel().await?)
+    }
+
+    async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
+        Ok(self.accept_tunnel().await?)
     }
 
     fn local_url(&self) -> url::Url {

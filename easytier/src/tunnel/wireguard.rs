@@ -541,13 +541,8 @@ impl WgTunnelListener {
             peer_map.insert(addr, Arc::new(wg));
         }
     }
-}
 
-#[async_trait]
-impl easytier_core::listener::SocketListener for WgTunnelListener {
-    type Accepted = Box<dyn Tunnel>;
-
-    async fn listen(&mut self) -> anyhow::Result<()> {
+    async fn listen_tunnel(&mut self) -> Result<(), TunnelError> {
         if self.session_listener.is_some() {
             return Ok(());
         }
@@ -577,12 +572,25 @@ impl easytier_core::listener::SocketListener for WgTunnelListener {
         Ok(())
     }
 
-    async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
+    async fn accept_tunnel(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
         if let Some(tunnel) = self.conn_recv.recv().await {
             tracing::info!(?tunnel, "Accepted tunnel");
             return Ok(tunnel);
         }
-        Err(TunnelError::Shutdown.into())
+        Err(TunnelError::Shutdown)
+    }
+}
+
+#[async_trait]
+impl easytier_core::listener::SocketListener for WgTunnelListener {
+    type Accepted = Box<dyn Tunnel>;
+
+    async fn listen(&mut self) -> anyhow::Result<()> {
+        Ok(self.listen_tunnel().await?)
+    }
+
+    async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
+        Ok(self.accept_tunnel().await?)
     }
 
     fn local_url(&self) -> url::Url {

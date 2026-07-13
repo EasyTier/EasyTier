@@ -1600,13 +1600,8 @@ impl QuicTunnelListener {
             global_ctx,
         }
     }
-}
 
-#[async_trait::async_trait]
-impl easytier_core::listener::SocketListener for QuicTunnelListener {
-    type Accepted = Box<dyn Tunnel>;
-
-    async fn listen(&mut self) -> anyhow::Result<()> {
+    async fn listen_tunnel(&mut self) -> Result<(), TunnelError> {
         if self.endpoint.is_some() {
             return Ok(());
         }
@@ -1642,7 +1637,11 @@ impl easytier_core::listener::SocketListener for QuicTunnelListener {
         )?);
         self.session_listener = Some(session_listener);
         let endpoint = self.endpoint.as_ref().unwrap().clone();
-        let local_url = self.local_url();
+        let local_url = self
+            .session_listener
+            .as_ref()
+            .map(|listener| easytier_core::listener::SocketListener::local_url(listener.as_ref()))
+            .unwrap_or_else(|| self.addr.clone());
         let udp_session_closers = self.udp_session_closers.clone();
         let pending_initials = self.pending_initials.clone();
         let conn_send = self.conn_send.clone();
@@ -1659,8 +1658,21 @@ impl easytier_core::listener::SocketListener for QuicTunnelListener {
         Ok(())
     }
 
+    async fn accept_tunnel(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
+        self.conn_recv.recv().await.ok_or(TunnelError::Shutdown)
+    }
+}
+
+#[async_trait::async_trait]
+impl easytier_core::listener::SocketListener for QuicTunnelListener {
+    type Accepted = Box<dyn Tunnel>;
+
+    async fn listen(&mut self) -> anyhow::Result<()> {
+        Ok(self.listen_tunnel().await?)
+    }
+
     async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
-        Ok(self.conn_recv.recv().await.ok_or(TunnelError::Shutdown)?)
+        Ok(self.accept_tunnel().await?)
     }
 
     fn local_url(&self) -> url::Url {

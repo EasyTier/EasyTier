@@ -59,23 +59,18 @@ impl UnixSocketTunnelListener {
     fn set_unlink_on_drop(&mut self, unlink: bool) {
         self.unlink_on_drop = unlink;
     }
-}
 
-#[async_trait]
-impl easytier_core::listener::SocketListener for UnixSocketTunnelListener {
-    type Accepted = Box<dyn Tunnel>;
-
-    async fn listen(&mut self) -> anyhow::Result<()> {
+    fn listen_tunnel(&mut self) -> Result<(), TunnelError> {
         self.listener = None;
         let path_str = self.addr.path();
         let path = Path::new(path_str);
 
-        let listener = UnixListener::bind(path).map_err(TunnelError::from)?;
+        let listener = UnixListener::bind(path)?;
         self.listener = Some(listener);
         Ok(())
     }
 
-    async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
+    async fn accept_tunnel(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
         loop {
             match self.do_accept().await {
                 Ok(ret) => return Ok(ret),
@@ -93,6 +88,19 @@ impl easytier_core::listener::SocketListener for UnixSocketTunnelListener {
                 }
             }
         }
+    }
+}
+
+#[async_trait]
+impl easytier_core::listener::SocketListener for UnixSocketTunnelListener {
+    type Accepted = Box<dyn Tunnel>;
+
+    async fn listen(&mut self) -> anyhow::Result<()> {
+        Ok(self.listen_tunnel()?)
+    }
+
+    async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
+        Ok(self.accept_tunnel().await?)
     }
 
     fn local_url(&self) -> url::Url {
