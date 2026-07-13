@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::{net::IpAddr, time::Duration};
 
 use clap::Parser;
+use client_manager::LegacyTunnelListener;
 use easytier::tunnel::websocket::WsTunnelListener;
 use easytier::{
     common::{
@@ -16,12 +17,13 @@ use easytier::{
         log,
         network::{local_ipv4, local_ipv6},
     },
-    tunnel::{TunnelListener, tcp::TcpTunnelListener, udp::UdpTunnelListener},
+    proto::rpc_impl::standalone::runtime_rpc_listener,
+    tunnel::udp::UdpTunnelListener,
     utils::panic::setup_panic_handler,
 };
+use easytier_core::{listener::SocketListener, tunnel::Tunnel};
 
 use easytier::tunnel::IpScheme;
-use easytier::utils::BoxExt;
 use mimalloc::MiMalloc;
 
 mod client_manager;
@@ -230,11 +232,17 @@ impl LoggingConfigLoader for &Cli {
     }
 }
 
-pub fn get_listener_by_url(scheme: IpScheme, l: &url::Url) -> Option<Box<dyn TunnelListener>> {
+pub fn get_listener_by_url(
+    scheme: IpScheme,
+    l: &url::Url,
+) -> Option<Box<dyn SocketListener<Accepted = Box<dyn Tunnel>>>> {
     Some(match scheme {
-        IpScheme::Tcp => TcpTunnelListener::new(l.clone()).boxed(),
-        IpScheme::Udp => UdpTunnelListener::new(l.clone()).boxed(),
-        IpScheme::Ws => WsTunnelListener::new(l.clone()).boxed(),
+        IpScheme::Tcp => {
+            let addr = l.socket_addrs(|| Some(11010)).ok()?.into_iter().next()?;
+            Box::new(runtime_rpc_listener(addr))
+        }
+        IpScheme::Udp => Box::new(LegacyTunnelListener(UdpTunnelListener::new(l.clone()))),
+        IpScheme::Ws => Box::new(LegacyTunnelListener(WsTunnelListener::new(l.clone()))),
         _ => return None,
     })
 }
@@ -244,8 +252,8 @@ async fn get_dual_stack_listener(
     port: u16,
 ) -> Result<
     (
-        Option<Box<dyn TunnelListener>>,
-        Option<Box<dyn TunnelListener>>,
+        Option<Box<dyn SocketListener<Accepted = Box<dyn Tunnel>>>>,
+        Option<Box<dyn SocketListener<Accepted = Box<dyn Tunnel>>>>,
     ),
     Error,
 > {

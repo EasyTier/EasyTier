@@ -2678,6 +2678,7 @@ dependencies = [
  "clap",
  "dashmap",
  "easytier",
+ "easytier-core",
  "image 0.24.9",
  "imageproc",
  "maxminddb",
