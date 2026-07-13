@@ -17,8 +17,7 @@ use easytier::{
         log,
         network::{local_ipv4, local_ipv6},
     },
-    proto::rpc_impl::standalone::runtime_rpc_listener,
-    tunnel::udp::UdpTunnelListener,
+    proto::rpc_impl::standalone::{runtime_rpc_listener, runtime_udp_tunnel_listener},
     utils::panic::setup_panic_handler,
 };
 use easytier_core::{listener::SocketListener, tunnel::Tunnel};
@@ -241,7 +240,10 @@ pub fn get_listener_by_url(
             let addr = l.socket_addrs(|| Some(11010)).ok()?.into_iter().next()?;
             Box::new(runtime_rpc_listener(addr))
         }
-        IpScheme::Udp => Box::new(LegacyTunnelListener(UdpTunnelListener::new(l.clone()))),
+        IpScheme::Udp => {
+            let addr = l.socket_addrs(|| Some(11010)).ok()?.into_iter().next()?;
+            Box::new(runtime_udp_tunnel_listener(l.clone(), addr))
+        }
         IpScheme::Ws => Box::new(LegacyTunnelListener(WsTunnelListener::new(l.clone()))),
         _ => return None,
     })
