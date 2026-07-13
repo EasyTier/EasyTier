@@ -47,7 +47,6 @@ use super::{PacketRecvChan, create_packet_recv_chan, peer_session::PeerSessionSt
 
 #[cfg(test)]
 struct ForeignNetworkEntry {
-    parent_global_ctx: ArcGlobalCtx,
     parent_runtime_config: CoreRuntimeConfigStore,
     parent_context: Arc<SubmittedPeerContext>,
     global_ctx: ArcGlobalCtx,
@@ -85,7 +84,6 @@ impl ForeignNetworkEntry {
         let (_, foreign_context) =
             crate::peers::context::build_submitted_peer_context(&foreign_global_ctx);
         Self {
-            parent_global_ctx: global_ctx,
             parent_runtime_config,
             parent_context,
             global_ctx: foreign_global_ctx,
@@ -111,8 +109,6 @@ impl ForeignNetworkEntry {
     }
 
     async fn run_parent_feature_flag_sync_routine(&self) {
-        let parent_global_ctx = self.parent_global_ctx.clone();
-        let parent_runtime_config = self.parent_runtime_config.clone();
         let parent_context = self.parent_context.clone();
         let foreign_context = self.foreign_context.clone();
         let relay_data = self.relay_data;
@@ -120,11 +116,8 @@ impl ForeignNetworkEntry {
             let parent_context_dyn: ArcPeerContext = parent_context.clone();
             let mut runtime_changes = parent_context_dyn
                 .subscribe_runtime_changes()
-                .expect("native GlobalCtx should provide runtime changes");
+                .expect("core runtime config should provide change notifications");
             loop {
-                parent_runtime_config.update_peer(Arc::new(
-                    crate::peers::context::runtime_peer_snapshot(&parent_global_ctx),
-                ));
                 ForeignNetworkEntry::sync_parent_relay_data_feature_flag(
                     &parent_context,
                     &foreign_context,
@@ -1090,7 +1083,9 @@ pub mod tests {
         let mut flags = global_ctx.get_flags();
         flags.disable_relay_data = true;
         global_ctx.set_flags(flags);
-        global_ctx.issue_event(GlobalCtxEvent::ConfigPatched(Default::default()));
+        entry.parent_runtime_config.update_peer(Arc::new(
+            crate::peers::context::runtime_peer_snapshot(&global_ctx),
+        ));
 
         wait_for_condition(
             || async { entry.global_ctx.get_feature_flags().avoid_relay_data },
@@ -1101,7 +1096,9 @@ pub mod tests {
         let mut flags = global_ctx.get_flags();
         flags.disable_relay_data = false;
         global_ctx.set_flags(flags);
-        global_ctx.issue_event(GlobalCtxEvent::ConfigPatched(Default::default()));
+        entry.parent_runtime_config.update_peer(Arc::new(
+            crate::peers::context::runtime_peer_snapshot(&global_ctx),
+        ));
 
         wait_for_condition(
             || async { !entry.global_ctx.get_feature_flags().avoid_relay_data },

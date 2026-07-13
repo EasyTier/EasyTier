@@ -189,6 +189,10 @@ impl Default for PeerRuntimeSnapshot {
 /// Supplies the current core-owned peer configuration version.
 pub trait PeerRuntimeConfigSource: Send + Sync {
     fn peer_runtime_snapshot(&self) -> Arc<PeerRuntimeSnapshot>;
+
+    fn subscribe_peer_runtime_changes(&self) -> Option<BoxPeerRuntimeChangeSubscriber> {
+        None
+    }
 }
 
 /// Dynamic relay preference and its change notification stream.
@@ -199,10 +203,6 @@ pub trait PeerRelayRuntime: Send + Sync {
 
     fn set_avoid_relay_data_preference(&self, _avoid_relay_data: bool) -> bool {
         false
-    }
-
-    fn subscribe_runtime_changes(&self) -> Option<BoxPeerRuntimeChangeSubscriber> {
-        None
     }
 }
 
@@ -1133,7 +1133,7 @@ impl PeerContext for SubmittedPeerContext {
     }
 
     fn subscribe_runtime_changes(&self) -> Option<BoxPeerRuntimeChangeSubscriber> {
-        self.relay_runtime.subscribe_runtime_changes()
+        self.config.subscribe_peer_runtime_changes()
     }
 
     fn easytier_version(&self) -> String {

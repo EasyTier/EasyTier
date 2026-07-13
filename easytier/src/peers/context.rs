@@ -214,12 +214,6 @@ impl PeerRelayRuntime for GlobalCtx {
     fn set_avoid_relay_data_preference(&self, avoid_relay_data: bool) -> bool {
         GlobalCtx::set_avoid_relay_data_preference(self, avoid_relay_data)
     }
-
-    fn subscribe_runtime_changes(
-        &self,
-    ) -> Option<easytier_core::peers::context::BoxPeerRuntimeChangeSubscriber> {
-        Some(GlobalCtx::subscribe_runtime_changes(self))
-    }
 }
 
 impl PeerPublicIpv6State for GlobalCtx {

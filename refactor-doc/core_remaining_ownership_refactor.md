@@ -276,6 +276,10 @@ but no core Module receives it or a broad Interface implemented by it.
   peer-event broadcast bus. Native configuration is normalized explicitly into
   `PeerRuntimeSnapshot`; main, foreign, and test peer graphs all receive
   `SubmittedPeerContext`, while product consumers keep the native event bus.
+- Peer runtime-change subscriptions now originate from
+  `CoreRuntimeConfigStore`; replacing a submitted peer snapshot publishes a
+  core-local version change. Foreign relay synchronization no longer observes
+  native `GlobalCtxEvent` merely to discover portable configuration updates.
 
 ### Exit criteria
 

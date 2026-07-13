@@ -48,7 +48,10 @@ use crate::{
     peer_center::instance::{PeerCenterInstance, PeerCenterInstanceService},
     peers::{
         acl_config::AclRuleConfig,
-        context::{PeerRuntimeConfigSource, PeerRuntimeSnapshot},
+        context::{
+            BoxPeerRuntimeChangeSubscriber, PeerRuntimeChangeSubscriber, PeerRuntimeConfigSource,
+            PeerRuntimeSnapshot,
+        },
         create_packet_recv_chan,
         credential_manager::{CredentialInfo, GeneratedCredential},
         peer_conn::PeerConnId,
@@ -176,6 +179,16 @@ pub struct CoreInstanceRuntimeConfig {
 struct CoreRuntimeConfigStoreInner {
     snapshot: ArcSwap<CoreInstanceRuntimeConfig>,
     update: SyncMutex<()>,
+    peer_changes: tokio::sync::watch::Sender<u64>,
+}
+
+struct CorePeerRuntimeChangeSubscriber(tokio::sync::watch::Receiver<u64>);
+
+#[async_trait]
+impl PeerRuntimeChangeSubscriber for CorePeerRuntimeChangeSubscriber {
+    async fn changed(&mut self) -> bool {
+        self.0.changed().await.is_ok()
+    }
 }
 
 /// Atomic configuration authority shared by one core instance and its peer
@@ -187,10 +200,12 @@ pub struct CoreRuntimeConfigStore {
 
 impl CoreRuntimeConfigStore {
     pub fn new(services: CoreRuntimeConfig, peer: Arc<PeerRuntimeSnapshot>) -> Self {
+        let (peer_changes, _) = tokio::sync::watch::channel(0);
         Self {
             inner: Arc::new(CoreRuntimeConfigStoreInner {
                 snapshot: ArcSwap::from_pointee(CoreInstanceRuntimeConfig { services, peer }),
                 update: SyncMutex::new(()),
+                peer_changes,
             }),
         }
     }
@@ -202,6 +217,7 @@ impl CoreRuntimeConfigStore {
     pub fn replace(&self, config: CoreInstanceRuntimeConfig) {
         let _update = self.inner.update.lock();
         self.inner.snapshot.store(Arc::new(config));
+        self.inner.peer_changes.send_modify(|version| *version += 1);
     }
 
     pub fn update_services(&self, update: impl FnOnce(&mut CoreRuntimeConfig)) {
@@ -216,12 +232,19 @@ impl CoreRuntimeConfigStore {
         let mut config = self.inner.snapshot.load_full().as_ref().clone();
         config.peer = peer;
         self.inner.snapshot.store(Arc::new(config));
+        self.inner.peer_changes.send_modify(|version| *version += 1);
     }
 }
 
 impl PeerRuntimeConfigSource for CoreRuntimeConfigStore {
     fn peer_runtime_snapshot(&self) -> Arc<PeerRuntimeSnapshot> {
         self.snapshot().peer.clone()
+    }
+
+    fn subscribe_peer_runtime_changes(&self) -> Option<BoxPeerRuntimeChangeSubscriber> {
+        Some(Box::new(CorePeerRuntimeChangeSubscriber(
+            self.inner.peer_changes.subscribe(),
+        )))
     }
 }
 
@@ -1442,6 +1465,21 @@ mod tests {
             after.peer.runtime.core.node.hostname.as_deref(),
             Some("after")
         );
+    }
+
+    #[tokio::test]
+    async fn runtime_config_store_notifies_peer_snapshot_changes() {
+        let store = CoreRuntimeConfigStore::new(
+            CoreRuntimeConfig::default(),
+            Arc::new(PeerRuntimeSnapshot::default()),
+        );
+        let mut changes = store.subscribe_peer_runtime_changes().unwrap();
+        let mut peer = PeerRuntimeSnapshot::default();
+        peer.runtime.core.node.hostname = Some("updated".to_owned());
+
+        store.update_peer(Arc::new(peer));
+
+        assert!(changes.changed().await);
     }
 
     #[test]

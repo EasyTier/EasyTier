@@ -6,10 +6,7 @@ use std::{
 
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
-use easytier_core::peers::context::{
-    BoxPeerRuntimeChangeSubscriber, PeerControlTrafficSink, PeerRuntimeChangeSubscriber,
-    TrustedKeyMapManager,
-};
+use easytier_core::peers::context::{PeerControlTrafficSink, TrustedKeyMapManager};
 pub use easytier_core::peers::context::{TrustedKeyMap, TrustedKeyMetadata, TrustedKeySource};
 use easytier_core::peers::encrypt::{derive_key_128, derive_key_256};
 use easytier_core::peers::foreign_network_manager::check_network_in_relay_whitelist;
@@ -95,18 +92,6 @@ pub enum GlobalCtxEvent {
 
 pub type EventBus = tokio::sync::broadcast::Sender<GlobalCtxEvent>;
 pub type EventBusSubscriber = tokio::sync::broadcast::Receiver<GlobalCtxEvent>;
-
-struct GlobalCtxRuntimeChangeSubscriber(EventBusSubscriber);
-
-#[async_trait]
-impl PeerRuntimeChangeSubscriber for GlobalCtxRuntimeChangeSubscriber {
-    async fn changed(&mut self) -> bool {
-        !matches!(
-            self.0.recv().await,
-            Err(tokio::sync::broadcast::error::RecvError::Closed)
-        )
-    }
-}
 
 pub struct GlobalCtx {
     pub inst_name: String,
@@ -365,10 +350,6 @@ impl GlobalCtx {
 
     pub fn subscribe(&self) -> EventBusSubscriber {
         self.event_bus.subscribe()
-    }
-
-    pub(crate) fn subscribe_runtime_changes(&self) -> BoxPeerRuntimeChangeSubscriber {
-        Box::new(GlobalCtxRuntimeChangeSubscriber(self.subscribe()))
     }
 
     pub fn issue_event(&self, event: GlobalCtxEvent) {
