@@ -241,10 +241,11 @@ where
         .choose(&mut rand::thread_rng())
         .copied()
         .ok_or(TunnelError::NoDnsRecordFound(self.ip_version))?;
+        let bind_addrs = udp_bind_addrs_for_remote(remote_addr, &self.bind_addrs);
         let connected = transport::connect_udp(
             self.host.clone(),
             remote_addr,
-            self.bind_addrs.clone(),
+            bind_addrs,
             self.bind.clone(),
             UdpSessionMode::EasyTierMux,
         )
@@ -318,11 +319,19 @@ where
     type Accepted = Box<dyn Tunnel>;
 
     async fn listen(&mut self) -> anyhow::Result<()> {
+        let local_url = self.inner.local_url();
+        if local_url.scheme() != "udp" {
+            anyhow::bail!("raw UDP listener requires udp URL: {local_url}");
+        }
         self.inner.listen().await
     }
 
     async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
-        Ok(upgrade_accepted_udp(self.inner.accept().await?)?)
+        let local_url = self.inner.local_url();
+        Ok(upgrade_accepted_udp_with_local_url(
+            self.inner.accept().await?,
+            local_url,
+        )?)
     }
 
     fn local_url(&self) -> Url {
@@ -444,8 +453,38 @@ where
 }
 
 pub fn upgrade_accepted_udp(session: UdpSession) -> Result<Box<dyn Tunnel>, TunnelError> {
-    let info = accepted_tunnel_info("udp", session.local_addr()?, session.peer_addr()?);
+    let local_url = socket_url("udp", session.local_addr()?);
+    upgrade_accepted_udp_with_local_url(session, local_url)
+}
+
+pub fn upgrade_accepted_udp_with_local_url(
+    session: UdpSession,
+    local_url: Url,
+) -> Result<Box<dyn Tunnel>, TunnelError> {
+    if local_url.scheme() != "udp" {
+        return Err(TunnelError::InvalidProtocol(format!(
+            "raw UDP listener requires udp URL: {local_url}"
+        )));
+    }
+    let remote_url = socket_url("udp", session.peer_addr()?);
+    let info = TunnelInfo {
+        tunnel_type: "udp".to_owned(),
+        local_addr: Some(local_url.into()),
+        remote_addr: Some(remote_url.clone().into()),
+        resolved_remote_addr: Some(remote_url.into()),
+    };
     UdpTunnelUpgrader::new(info).upgrade(session)
+}
+
+fn udp_bind_addrs_for_remote(
+    remote_addr: SocketAddr,
+    configured: &[SocketAddr],
+) -> Vec<SocketAddr> {
+    if remote_addr.is_ipv6() {
+        Vec::new()
+    } else {
+        configured.to_vec()
+    }
 }
 
 fn connected_tunnel_info(
@@ -459,20 +498,6 @@ fn connected_tunnel_info(
         local_addr: Some(socket_url(scheme, local_addr).into()),
         remote_addr: Some(requested_remote_addr.into()),
         resolved_remote_addr: Some(socket_url(scheme, resolved_remote_addr).into()),
-    }
-}
-
-fn accepted_tunnel_info(
-    scheme: &str,
-    local_addr: SocketAddr,
-    remote_addr: SocketAddr,
-) -> TunnelInfo {
-    let remote_url = socket_url(scheme, remote_addr);
-    TunnelInfo {
-        tunnel_type: scheme.to_owned(),
-        local_addr: Some(socket_url(scheme, local_addr).into()),
-        remote_addr: Some(remote_url.clone().into()),
-        resolved_remote_addr: Some(remote_url.into()),
     }
 }
 
@@ -497,7 +522,10 @@ mod tests {
     use futures::{SinkExt, StreamExt};
     use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, ReadBuf};
 
-    use crate::packet::ZCPacket;
+    use crate::{
+        packet::ZCPacket,
+        socket::udp::{UdpSessionKind, VirtualUdpSocket},
+    };
 
     use super::*;
 
@@ -564,6 +592,25 @@ mod tests {
         }
     }
 
+    struct MockUdpSocket {
+        local_addr: SocketAddr,
+    }
+
+    #[async_trait]
+    impl VirtualUdpSocket for MockUdpSocket {
+        fn local_addr(&self) -> io::Result<SocketAddr> {
+            Ok(self.local_addr)
+        }
+
+        async fn send_to(&self, data: &[u8], _addr: SocketAddr) -> io::Result<usize> {
+            Ok(data.len())
+        }
+
+        async fn recv_from(&self, _buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
+            std::future::pending().await
+        }
+    }
+
     #[test]
     fn raw_upgrader_preserves_requested_and_resolved_addresses() {
         let local_addr: SocketAddr = "127.0.0.1:1000".parse().unwrap();
@@ -601,6 +648,58 @@ mod tests {
             accepted.info().unwrap().local_addr.unwrap().url,
             requested_local_url.as_str()
         );
+    }
+
+    #[test]
+    fn raw_udp_uses_default_bind_for_ipv6_remote() {
+        let configured = vec!["192.0.2.1:0".parse().unwrap()];
+
+        assert_eq!(
+            udp_bind_addrs_for_remote("198.51.100.1:11010".parse().unwrap(), &configured),
+            configured
+        );
+        assert!(
+            udp_bind_addrs_for_remote("[2001:db8::1]:11010".parse().unwrap(), &configured)
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn accepted_udp_uses_explicit_listener_url() {
+        let local_addr = "127.0.0.1:1000".parse().unwrap();
+        let peer_addr = "127.0.0.1:2000".parse().unwrap();
+        let local_url: Url = "udp://listener.example:1000?bind_device=eth0"
+            .parse()
+            .unwrap();
+        let session = UdpSession::identity_standalone(
+            Arc::new(MockUdpSocket { local_addr }),
+            peer_addr,
+            UdpSessionKind::EasyTierMux,
+        )
+        .unwrap();
+
+        let tunnel = upgrade_accepted_udp_with_local_url(session, local_url.clone()).unwrap();
+        let info = tunnel.info().unwrap();
+
+        assert_eq!(info.local_addr.unwrap().url, local_url.as_str());
+        assert_eq!(info.remote_addr, info.resolved_remote_addr);
+    }
+
+    #[tokio::test]
+    async fn accepted_udp_rejects_non_udp_listener_url() {
+        let local_addr = "127.0.0.1:1000".parse().unwrap();
+        let session = UdpSession::identity_standalone(
+            Arc::new(MockUdpSocket { local_addr }),
+            "127.0.0.1:2000".parse().unwrap(),
+            UdpSessionKind::EasyTierMux,
+        )
+        .unwrap();
+
+        let error =
+            upgrade_accepted_udp_with_local_url(session, "quic://127.0.0.1:1000".parse().unwrap())
+                .unwrap_err();
+
+        assert!(matches!(error, TunnelError::InvalidProtocol(_)));
     }
 
     #[test]
