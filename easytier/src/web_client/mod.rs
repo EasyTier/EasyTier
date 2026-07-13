@@ -14,12 +14,15 @@ use crate::{
     },
     instance_manager::{DaemonGuard, NetworkInstanceManager},
     proto::common::NatType,
-    tunnel::{Tunnel, TunnelConnector, TunnelError, TunnelScheme},
+    tunnel::{Tunnel, TunnelScheme},
 };
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
 use easytier_core::{
-    connectivity::manual::{ManualTunnelConnector, discovery::CoreManualEndpointResolver},
+    connectivity::{
+        manual::{ManualTunnelConnector, discovery::CoreManualEndpointResolver},
+        protocol::raw::TunnelDialer,
+    },
     socket::IpVersion,
 };
 use tokio_util::task::AbortOnDropHandle;
@@ -69,12 +72,11 @@ struct ConfigServerConnector {
 }
 
 #[async_trait]
-impl TunnelConnector for ConfigServerConnector {
-    async fn connect(&mut self) -> std::result::Result<Box<dyn Tunnel>, TunnelError> {
+impl TunnelDialer for ConfigServerConnector {
+    async fn connect(&self) -> anyhow::Result<Box<dyn Tunnel>> {
         self.connector
             .connect(self.url.clone(), IpVersion::Both)
             .await
-            .map_err(TunnelError::Anyhow)
     }
 
     fn remote_url(&self) -> Url {
@@ -83,7 +85,7 @@ impl TunnelConnector for ConfigServerConnector {
 }
 
 impl WebClient {
-    pub fn new<T: TunnelConnector + 'static, S: ToString, H: ToString>(
+    pub fn new<T: TunnelDialer + 'static, S: ToString, H: ToString>(
         connector: T,
         token: S,
         machine_id: Uuid,
@@ -128,7 +130,7 @@ impl WebClient {
         controller: Arc<controller::Controller>,
         connected: Arc<AtomicBool>,
         secure_mode: bool,
-        mut connector: Box<dyn TunnelConnector>,
+        connector: Box<dyn TunnelDialer>,
     ) {
         loop {
             let conn = match connector.connect().await {

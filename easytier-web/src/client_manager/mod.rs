@@ -144,8 +144,9 @@ impl ClientManager {
     pub async fn add_listener<L: SocketListener<Accepted = Box<dyn Tunnel>> + 'static>(
         &mut self,
         mut listener: L,
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result<url::Url, anyhow::Error> {
         listener.listen().await?;
+        let local_url = listener.local_url();
         self.listeners_cnt.fetch_add(1, Ordering::Relaxed);
         let sessions = self.client_sessions.clone();
         let storage = self.storage.weak_ref();
@@ -186,7 +187,7 @@ impl ClientManager {
             listeners_cnt.fetch_sub(1, Ordering::Relaxed);
         });
 
-        Ok(())
+        Ok(local_url)
     }
 
     pub fn is_running(&self) -> bool {
@@ -416,23 +417,17 @@ mod tests {
         proto::{
             api::manage::{NetworkConfig, NetworkingMethod, PortForwardConfig},
             common::CompressionAlgoPb,
+            rpc_impl::standalone::{runtime_udp_tunnel_dialer, runtime_udp_tunnel_listener},
         },
         rpc_service::remote_client::Storage as RemoteStorage,
-        tunnel::{
-            common::tests::wait_for_condition,
-            udp::{UdpTunnelConnector, UdpTunnelListener},
-        },
+        tunnel::common::tests::wait_for_condition,
         web_client::{WebClient, run_web_client},
     };
     use serde_json::json;
     use sqlx::Executor;
-    use tokio::net::UdpSocket;
 
     use crate::{
-        FeatureFlags,
-        client_manager::{ClientManager, LegacyTunnelListener},
-        db::Db,
-        webhook::ManagedNetworkConfig,
+        FeatureFlags, client_manager::ClientManager, db::Db, webhook::ManagedNetworkConfig,
     };
 
     const MANAGED_CONFIG_TOKEN: &str = "managed-config-token";
@@ -546,14 +541,15 @@ mod tests {
     }
 
     async fn add_random_udp_listener(mgr: &mut ClientManager) -> std::net::SocketAddr {
-        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
-        let addr = socket.local_addr().unwrap();
-        let listener =
-            UdpTunnelListener::new_with_socket(format!("udp://{addr}").parse().unwrap(), socket);
-        mgr.add_listener(LegacyTunnelListener(listener))
-            .await
-            .unwrap();
-        addr
+        let local_url = "udp://127.0.0.1:0".parse().unwrap();
+        let listener = runtime_udp_tunnel_listener(local_url, "127.0.0.1:0".parse().unwrap());
+        let local_url = mgr.add_listener(listener).await.unwrap();
+        local_url
+            .socket_addrs(|| None)
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap()
     }
 
     async fn wait_for_validated_user(mgr: &ClientManager, machine_id: uuid::Uuid) -> i32 {
@@ -851,7 +847,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_client() {
-        let listener = UdpTunnelListener::new("udp://0.0.0.0:54333".parse().unwrap());
+        let listener = runtime_udp_tunnel_listener(
+            "udp://0.0.0.0:54333".parse().unwrap(),
+            "0.0.0.0:54333".parse().unwrap(),
+        );
         let mut mgr = ClientManager::new(
             Db::memory_db().await,
             None,
@@ -861,9 +860,7 @@ mod tests {
                 None, None, None, None, None,
             )),
         );
-        mgr.add_listener(LegacyTunnelListener(Box::new(listener)))
-            .await
-            .unwrap();
+        mgr.add_listener(listener).await.unwrap();
 
         mgr.db()
             .inner()
@@ -871,7 +868,7 @@ mod tests {
             .await
             .unwrap();
 
-        let connector = UdpTunnelConnector::new("udp://127.0.0.1:54333".parse().unwrap());
+        let connector = runtime_udp_tunnel_dialer("udp://127.0.0.1:54333".parse().unwrap());
         let _c = WebClient::new(
             connector,
             "test",
