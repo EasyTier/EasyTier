@@ -609,28 +609,9 @@ impl PeerPacketFilter for Socks5Server {
             }
             return Some(packet);
         }
-        let hdr = packet.peer_manager_header().unwrap();
-        let is_modified_src_packet = matches!(
-            hdr.packet_type,
-            x if x == PacketType::DataWithKcpSrcModified as u8
-                || x == PacketType::DataWithQuicSrcModified as u8
-        );
-        if hdr.packet_type != PacketType::Data as u8 && !is_modified_src_packet {
-            return Some(packet);
-        }
-        if is_modified_src_packet && hdr.from_peer_id != hdr.to_peer_id {
-            tracing::trace!(
-                packet_type = hdr.packet_type,
-                from_peer_id = hdr.from_peer_id.get(),
-                to_peer_id = hdr.to_peer_id.get(),
-                "socks5 passed non-loopback modified-source packet from peer"
-            );
-            return Some(packet);
-        }
-
         let route = self
             .entries
-            .route_peer_ipv4_payload(packet.payload(), cfg!(feature = "ffi-dataplane"));
+            .route_peer_packet(&packet, cfg!(feature = "ffi-dataplane"));
         let (entry_key, tcp_flags) = match route {
             Socks5PeerPacketRoute::Pass => return Some(packet),
             Socks5PeerPacketRoute::Unmatched { entry, tcp_flags } => {
