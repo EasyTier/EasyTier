@@ -50,9 +50,9 @@ production ownership inventory is:
 
 | Native Module | Current role | Remaining architectural friction |
 | --- | --- | --- |
-| `peers/foreign_network_manager.rs` | about 650 production lines plus extensive integration tests; wraps the core manager and implements its runtime Interface | runtime Interface still decides relay whitelist, relay-all, limiter, max connections, and feature synchronization; native facade forwards most core operations |
-| `peers/peer_manager.rs` | about 425 production lines plus tests; constructs `PeerManagerCore` and forwards management calls | broad facade exposes core internals one method at a time and still owns foreign-runtime composition |
-| `common/global_ctx.rs` | native configuration, observations, events, persistence, metrics, interface state | implements a broad `PeerContext` as well as submitted-config support, mixing core state access with host capabilities |
+| `peers/foreign_network_manager.rs` | GlobalCtx/direct-connector Host Adapter and management DTO mapper | no portable foreign-network policy remains; the core manager owns graph and lifecycle |
+| `peers/peer_manager.rs` | native composition, runtime-snapshot submission, identity/debug presentation, and DTO mapping | no peer-domain forwarding facade remains |
+| `common/global_ctx.rs` | native configuration source, Host observations, product events, persistence, metrics, interface state | no longer implements `PeerContext`; remaining uses are native capabilities and product projection |
 | `gateway/*` | concrete socket/protocol Adapters and product facades | TCP/UDP/ICMP/CIDR/wrapped/proxy-ACL engines are core-owned, but KCP/QUIC/SOCKS paths still mix portable policy with concrete engines |
 
 Already core-owned and not to be reimplemented:
@@ -304,15 +304,39 @@ engine.
 
 ### Required audit
 
-| Path | Expected core ownership | Expected native ownership |
-| --- | --- | --- |
-| TCP/UDP/ICMP proxy | engine, NAT/session state, pipeline lifecycle, packet transformation | real socket/listener/connect/copy, raw ICMP, netns, stats export |
-| KCP/QUIC wrapped proxy | eligibility, connection-state lookup, packet marking and forwarding policy | concrete endpoint and stream engine |
-| SOCKS5 | entry/session policy, routing choice, portable protocol state where dependency-safe | real listeners/sockets, CLI/product exposure, platform bind policy |
-| VPN portal | portable peer/session/policy state | TUN/WireGuard device and OS route operations |
+The field-by-field audit below records the observed owner, not only the desired
+file location. A row marked **move** is remaining migration debt; a row marked
+**keep** is an intentional Host Adapter or product-composition boundary.
+
+| Path / responsibility | Current core owner | Current native owner | Decision |
+| --- | --- | --- | --- |
+| TCP proxy classification, ACL and forwarding lifecycle | `TcpProxyService`, engine and runtime Interfaces | socket connector, copy loop, stats and management facade | **Keep**: the seam is already deep and host-neutral |
+| UDP NAT/session lifecycle and packet transformation | UDP engine, service and socket-runtime Interface | real UDP socket Adapter and test shims | **Keep**: native contains resource realization only |
+| ICMP request/session policy and peer pipeline lifecycle | ICMP engine and service | raw ICMP socket, netns and runtime Adapter | **Keep**: raw socket access is a Host capability |
+| Proxy CIDR lookup and monitor state | `ProxyCidrTable` and `ProxyCidrTableRuntime` | normalized GlobalCtx snapshot provider | **Keep**: configuration projection is the Adapter seam |
+| KCP/QUIC source-side wrapped TCP classification | packet classifier, marker and forwarding policy in `wrapped_tcp_proxy` | concrete KCP/quinn endpoint and stream handling | **Keep**: source policy is already core-owned |
+| KCP/QUIC destination mapping and ACL plan | CIDR table and ACL primitives exist separately | both paths duplicate CIDR rewrite, loop prevention, self/no-TUN rewrite, ACL chain selection and `PacketInfo` construction | **Move** to one core destination planner; keep group observation and concrete connect/copy in native |
+| SOCKS entry/session table and peer IPv4 packet routing | `Socks5EntryTable` and packet classifier | resource payloads stored behind the generic table | **Keep**: state and classification are already core-owned |
+| SOCKS TCP transport choice | `Socks5TcpConnectPlan` selects kernel, smoltcp or KCP | route/group observations and construction of the chosen concrete connector | **Keep**: core chooses; native realizes the engine |
+| SOCKS wire constants, address codec, authentication and handshake | none | vendored `fast_socks5` protocol Module | **Move** the portable stream-generic protocol Module to core; inject DNS/connect operations and retain real listeners/sockets in native |
+| SOCKS smoltcp and peer packet pumps | core owns the smoltcp stack implementation and peer route APIs | native composes channels, product port-forwards and concrete stream resources | **Keep** until the wire Module is moved; then reassess only duplicated policy, not I/O composition |
+| VPN portal client identity and peer-packet dispatch | peer packet/pipeline primitives exist | WireGuard portal owns the client-IP registry, replacement/removal rules and destination dispatch filter | **Move** registry and dispatch policy to a core Module with an opaque client sink value |
+| VPN portal WireGuard listener, tunnel and client config presentation | WireGuard tunnel protocol remains an accepted native engine | listener/device lifecycle, tunnel I/O, key material formatting, product events and RPC DTOs | **Keep** as concrete protocol Adapter and presentation |
+| VPN portal advertised routes | route/proxy-CIDR state is core-owned | native formats `AllowedIPs` and projects the configured portal CIDR | **Keep** formatting in native; do not create a second route authority |
 
 The audit must account for code already moved to `easytier-core::proxy`; it must
 delete duplicate native decisions rather than create parallel engines.
+
+### Migration order
+
+1. Add a core wrapped-TCP destination planner and switch both KCP and QUIC to
+   it before deleting their duplicated policy blocks.
+2. Move the stream-generic SOCKS wire protocol Module to core without changing
+   its handshake, authentication, timeout, DNS, or connector semantics.
+3. Move the VPN portal client registry and peer-packet dispatch policy to core;
+   keep the WireGuard tunnel engine and product events in native.
+4. Repeat the deletion test across `gateway/*`: removing a native facade must
+   leave only real resource composition or presentation work in its callers.
 
 ### Exit criteria
 
