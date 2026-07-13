@@ -94,13 +94,19 @@ async fn connect_client_and_server(
         {
             let client = client.clone();
             async move {
-                client.add_client_tunnel(client_ring, false).await?;
+                client.core().add_client_tunnel(client_ring, false).await?;
                 Ok(())
             }
         },
         {
             let server = server.clone();
-            async move { server.add_tunnel_as_server(server_ring, true).await }
+            async move {
+                server
+                    .core()
+                    .add_tunnel_as_server(server_ring, true)
+                    .await
+                    .map_err(Into::into)
+            }
         }
     )
 }
@@ -167,11 +173,19 @@ pub async fn connect_peer_manager(client: Arc<PeerManager>, server: Arc<PeerMana
     let (a_ring, b_ring) = create_ring_tunnel_pair();
     let a_mgr_copy = client;
     tokio::spawn(async move {
-        a_mgr_copy.add_client_tunnel(a_ring, false).await.unwrap();
+        a_mgr_copy
+            .core()
+            .add_client_tunnel(a_ring, false)
+            .await
+            .unwrap();
     });
     let b_mgr_copy = server;
     tokio::spawn(async move {
-        b_mgr_copy.add_tunnel_as_server(b_ring, true).await.unwrap();
+        b_mgr_copy
+            .core()
+            .add_tunnel_as_server(b_ring, true)
+            .await
+            .unwrap();
     });
 }
 
@@ -1587,6 +1601,7 @@ async fn unknown_credential_rejected_while_valid_credential_survives() {
         let unknown_cred = unknown_cred.clone();
         async move {
             unknown_cred
+                .core()
                 .add_client_tunnel(unknown_ring_client, false)
                 .await
         }
@@ -1595,6 +1610,7 @@ async fn unknown_credential_rejected_while_valid_credential_survives() {
         let admin_a = admin_a.clone();
         async move {
             admin_a
+                .core()
                 .add_tunnel_as_server(unknown_ring_server, true)
                 .await
         }

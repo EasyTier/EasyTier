@@ -67,12 +67,14 @@ mod tests {
         ));
         tokio::spawn(async move {
             client
+                .core()
                 .add_client_tunnel(client_tunnel, false)
                 .await
                 .unwrap();
         });
         tokio::spawn(async move {
             server
+                .core()
                 .add_tunnel_as_server(server_tunnel, true)
                 .await
                 .unwrap();

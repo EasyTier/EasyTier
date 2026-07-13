@@ -7,21 +7,22 @@ use easytier_core::{
 };
 use std::{fmt::Debug, sync::Arc};
 
+#[cfg(test)]
+use crate::common::error::Error;
 use crate::{
     common::{
         PeerId,
         config::{ConfigLoader, TomlConfigLoader},
         dns::RuntimeDnsResolver,
-        error::Error,
         global_ctx::ArcGlobalCtx,
     },
     proto::api::instance,
-    tunnel::{Tunnel, packet_def::compressor_algo_from_pb},
+    tunnel::packet_def::compressor_algo_from_pb,
 };
 
 use super::{
     PacketRecvChan, context::runtime_peer_snapshot, encrypt::NullCipher,
-    foreign_network_manager::ForeignNetworkRuntimeImpl, peer_conn::PeerConnId,
+    foreign_network_manager::ForeignNetworkRuntimeImpl,
 };
 
 pub struct PeerManager {
@@ -159,41 +160,6 @@ impl PeerManager {
         self.ring_registry.clone()
     }
 
-    pub async fn add_client_tunnel(
-        &self,
-        tunnel: Box<dyn Tunnel>,
-        is_directly_connected: bool,
-    ) -> Result<(PeerId, PeerConnId), Error> {
-        self.core
-            .add_client_tunnel(tunnel, is_directly_connected)
-            .await
-            .map_err(Error::from)
-    }
-
-    pub async fn add_client_tunnel_with_peer_id_hint(
-        &self,
-        tunnel: Box<dyn Tunnel>,
-        is_directly_connected: bool,
-        peer_id_hint: Option<PeerId>,
-    ) -> Result<(PeerId, PeerConnId), Error> {
-        self.core
-            .add_client_tunnel_with_peer_id_hint(tunnel, is_directly_connected, peer_id_hint)
-            .await
-            .map_err(Error::from)
-    }
-
-    #[tracing::instrument(ret)]
-    pub async fn add_tunnel_as_server(
-        &self,
-        tunnel: Box<dyn Tunnel>,
-        is_directly_connected: bool,
-    ) -> Result<(), Error> {
-        self.core
-            .add_tunnel_as_server(tunnel, is_directly_connected)
-            .await
-            .map_err(Error::from)
-    }
-
     pub async fn list_routes(&self) -> Vec<instance::Route> {
         self.core
             .list_route_snapshots()
@@ -232,21 +198,6 @@ impl PeerManager {
     pub(crate) fn foreign_global_ctx_for_test(&self, network_name: &str) -> Option<ArcGlobalCtx> {
         self.foreign_network_runtime
             .foreign_global_ctx_for_test(network_name)
-    }
-
-    pub async fn wait(&self) {
-        self.core.wait().await;
-    }
-
-    pub async fn close_peer_conn(
-        &self,
-        peer_id: PeerId,
-        conn_id: &PeerConnId,
-    ) -> Result<(), Error> {
-        self.core
-            .close_peer_conn(peer_id, conn_id)
-            .await
-            .map_err(Error::from)
     }
 
     pub async fn update_exit_nodes(&self) {
@@ -391,9 +342,11 @@ mod tests {
         );
 
         let (a_ring, b_ring) = create_ring_tunnel_pair();
+        let peer_mgr_a_core = peer_mgr_a.core();
+        let peer_mgr_b_core = peer_mgr_b.core();
         let (client_ret, server_ret) = tokio::join!(
-            peer_mgr_a.add_client_tunnel(a_ring, true),
-            peer_mgr_b.add_tunnel_as_server(b_ring, true)
+            peer_mgr_a_core.add_client_tunnel(a_ring, true),
+            peer_mgr_b_core.add_tunnel_as_server(b_ring, true)
         );
         client_ret.unwrap();
         server_ret.unwrap();
@@ -999,9 +952,11 @@ mod tests {
         peer_mgr_b.refresh_runtime_config();
 
         let (a_ring, b_ring) = create_ring_tunnel_pair();
+        let peer_mgr_a_core = peer_mgr_a.core();
+        let peer_mgr_b_core = peer_mgr_b.core();
         let (a_ret, b_ret) = tokio::join!(
-            peer_mgr_a.add_client_tunnel(a_ring, false),
-            peer_mgr_b.add_tunnel_as_server(b_ring, true)
+            peer_mgr_a_core.add_client_tunnel(a_ring, false),
+            peer_mgr_b_core.add_tunnel_as_server(b_ring, true)
         );
         let (peer_b_id, _) = a_ret.unwrap();
         b_ret.unwrap();
@@ -1091,9 +1046,11 @@ mod tests {
         peer_mgr_server.refresh_runtime_config();
 
         let (c_ring, s_ring) = create_ring_tunnel_pair();
+        let peer_mgr_client_core = peer_mgr_client.core();
+        let peer_mgr_server_core = peer_mgr_server.core();
         let (c_ret, s_ret) = tokio::join!(
-            peer_mgr_client.add_client_tunnel(c_ring, false),
-            peer_mgr_server.add_tunnel_as_server(s_ring, true)
+            peer_mgr_client_core.add_client_tunnel(c_ring, false),
+            peer_mgr_server_core.add_tunnel_as_server(s_ring, true)
         );
         let _ = c_ret;
         assert!(
@@ -1137,9 +1094,11 @@ mod tests {
         peer_mgr_server.refresh_runtime_config();
 
         let (c_ring, s_ring) = create_ring_tunnel_pair();
+        let peer_mgr_client_core = peer_mgr_client.core();
+        let peer_mgr_server_core = peer_mgr_server.core();
         let (c_ret, s_ret) = tokio::join!(
-            peer_mgr_client.add_client_tunnel(c_ring, false),
-            peer_mgr_server.add_tunnel_as_server(s_ring, true)
+            peer_mgr_client_core.add_client_tunnel(c_ring, false),
+            peer_mgr_server_core.add_tunnel_as_server(s_ring, true)
         );
 
         let _ = c_ret;
@@ -1212,9 +1171,11 @@ mod tests {
         peer_mgr_client.refresh_runtime_config();
         peer_mgr_server.refresh_runtime_config();
 
+        let peer_mgr_client_core = peer_mgr_client.core();
+        let peer_mgr_server_core = peer_mgr_server.core();
         let (c_ret, s_ret) = tokio::join!(
-            peer_mgr_client.add_client_tunnel(a_ring, false),
-            peer_mgr_server.add_tunnel_as_server(b_ring, true)
+            peer_mgr_client_core.add_client_tunnel(a_ring, false),
+            peer_mgr_server_core.add_tunnel_as_server(b_ring, true)
         );
         c_ret.unwrap();
         s_ret.unwrap();
@@ -1486,11 +1447,19 @@ mod tests {
 
         let a_mgr_copy = peer_mgr_a.clone();
         tokio::spawn(async move {
-            a_mgr_copy.add_client_tunnel(a_ring, false).await.unwrap();
+            a_mgr_copy
+                .core()
+                .add_client_tunnel(a_ring, false)
+                .await
+                .unwrap();
         });
         let b_mgr_copy = peer_mgr_b.clone();
         tokio::spawn(async move {
-            b_mgr_copy.add_tunnel_as_server(b_ring, true).await.unwrap();
+            b_mgr_copy
+                .core()
+                .add_tunnel_as_server(b_ring, true)
+                .await
+                .unwrap();
         });
 
         wait_for_condition(
@@ -1518,6 +1487,7 @@ mod tests {
         let conn_info = conns.as_ref().unwrap().first().unwrap();
 
         peer_mgr_a
+            .core()
             .close_peer_conn(peer_mgr_b.my_peer_id(), &conn_info.conn_id.parse().unwrap())
             .await
             .unwrap();
@@ -1651,6 +1621,7 @@ mod tests {
         assert!(conns.is_some());
         let conn_info = conns.as_ref().unwrap().first().unwrap();
         peer_mgr_client
+            .core()
             .close_peer_conn(peer_id, &conn_info.conn_id.parse().unwrap())
             .await
             .unwrap();
@@ -1695,6 +1666,7 @@ mod tests {
         let client_info = conns["client"].peers[0].clone();
         let conn_info = client_info.conns[0].clone();
         peer_mgr_server
+            .core()
             .close_peer_conn(client_info.peer_id, &conn_info.conn_id.parse().unwrap())
             .await
             .unwrap();

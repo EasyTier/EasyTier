@@ -193,6 +193,9 @@ only:
 - Packet sending for proxy/IP paths and NIC pipeline removal now call core
   directly; native no longer wraps core packet-plane errors solely to forward
   the same operation.
+- Tunnel admission, peer-connection close, and peer-manager wait are no longer
+  projected by the native facade. Native tests and composition use the core
+  lifecycle/admission Interface directly.
 
 ### Exit criteria
 

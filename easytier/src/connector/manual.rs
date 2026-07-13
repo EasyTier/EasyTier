@@ -275,6 +275,7 @@ mod tests {
             .await
             .unwrap();
         client
+            .core()
             .close_peer_conn(server_peer_id, &first_conn_id)
             .await
             .unwrap();
@@ -589,6 +590,7 @@ mod tests {
             .await
             .unwrap();
         client
+            .core()
             .close_peer_conn(server_peer_id, &first_conn_id)
             .await
             .unwrap();

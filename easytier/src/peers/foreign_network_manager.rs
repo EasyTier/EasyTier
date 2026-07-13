@@ -777,9 +777,11 @@ pub mod tests {
 
         let (a_ring, b_ring) = crate::tunnel::ring::create_ring_tunnel_pair();
         let (client_ret, server_ret) = tokio::time::timeout(Duration::from_secs(5), async {
+            let pma_net1_core = pma_net1.core();
+            let pm_center_core = pm_center.core();
             tokio::join!(
-                pma_net1.add_client_tunnel(a_ring, false),
-                pm_center.add_tunnel_as_server(b_ring, true)
+                pma_net1_core.add_client_tunnel(a_ring, false),
+                pm_center_core.add_tunnel_as_server(b_ring, true)
             )
         })
         .await
@@ -1345,10 +1347,11 @@ pub mod tests {
 
         let (a_ring, b_ring) = crate::tunnel::ring::create_ring_tunnel_pair();
         let a_mgr_copy = pma_net1.clone();
-        let client = tokio::spawn(async move { a_mgr_copy.add_client_tunnel(a_ring, false).await });
+        let client =
+            tokio::spawn(async move { a_mgr_copy.core().add_client_tunnel(a_ring, false).await });
         let b_mgr_copy = pm_center.clone();
         let server =
-            tokio::spawn(async move { b_mgr_copy.add_tunnel_as_server(b_ring, true).await });
+            tokio::spawn(async move { b_mgr_copy.core().add_tunnel_as_server(b_ring, true).await });
 
         assert!(client.await.unwrap().is_ok());
         assert!(server.await.unwrap().is_err());
@@ -1373,9 +1376,13 @@ pub mod tests {
         let (a_ring, b_ring) = crate::tunnel::ring::create_ring_tunnel_pair();
         let b_mgr_copy = pm_center.clone();
         let s_ret =
-            tokio::spawn(async move { b_mgr_copy.add_tunnel_as_server(b_ring, true).await });
+            tokio::spawn(async move { b_mgr_copy.core().add_tunnel_as_server(b_ring, true).await });
 
-        pma_net1.add_client_tunnel(a_ring, false).await.unwrap();
+        pma_net1
+            .core()
+            .add_client_tunnel(a_ring, false)
+            .await
+            .unwrap();
 
         s_ret.await.unwrap().unwrap();
     }
@@ -1849,10 +1856,20 @@ pub mod tests {
         let (a_ring, b_ring) = crate::tunnel::ring::create_ring_tunnel_pair();
         let a_mgr_copy = pma_net1.clone();
         tokio::spawn(async move {
-            a_mgr_copy.add_client_tunnel(a_ring, false).await.unwrap();
+            a_mgr_copy
+                .core()
+                .add_client_tunnel(a_ring, false)
+                .await
+                .unwrap();
         });
         let b_mgr_copy = pm_center1.clone();
 
-        assert!(b_mgr_copy.add_tunnel_as_server(b_ring, true).await.is_err());
+        assert!(
+            b_mgr_copy
+                .core()
+                .add_tunnel_as_server(b_ring, true)
+                .await
+                .is_err()
+        );
     }
 }
