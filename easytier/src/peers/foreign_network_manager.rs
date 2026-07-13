@@ -433,6 +433,7 @@ pub mod tests {
             PacketType::Data as u8,
         );
         pma_net1
+            .core()
             .get_foreign_network_client()
             .send_msg(rx_pkt, center_peer_id)
             .await
@@ -554,6 +555,7 @@ pub mod tests {
         );
         let transit_pkt_len = transit_pkt.buf_len() as u64;
         pma_net1
+            .core()
             .get_foreign_network_client()
             .send_msg(transit_pkt, center_peer_id)
             .await
@@ -670,6 +672,7 @@ pub mod tests {
             PacketType::Data as u8,
         );
         pma_net1
+            .core()
             .get_foreign_network_client()
             .send_msg(transit_pkt, center_peer_id)
             .await
@@ -736,6 +739,7 @@ pub mod tests {
         );
         let transit_pkt_len = transit_pkt.buf_len() as u64;
         pma_net1
+            .core()
             .get_foreign_network_client()
             .send_msg(transit_pkt, center_peer_id)
             .await
@@ -875,6 +879,7 @@ pub mod tests {
             PacketType::Data as u8,
         );
         pma_net1
+            .core()
             .get_foreign_network_client()
             .send_msg(encapsulated_tx_pkt, center_peer_id)
             .await
@@ -1448,6 +1453,7 @@ pub mod tests {
                     .unwrap()
             ],
             pma_net1
+                .core()
                 .get_foreign_network_client()
                 .get_peer_map()
                 .list_peers()
@@ -1460,6 +1466,7 @@ pub mod tests {
                     .unwrap()
             ],
             pmb_net1
+                .core()
                 .get_foreign_network_client()
                 .get_peer_map()
                 .list_peers()

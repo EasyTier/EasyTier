@@ -2103,6 +2103,7 @@ pub async fn manual_reconnector(#[values(true, false)] is_foreign: bool) {
     } else {
         inst1
             .get_peer_manager()
+            .core()
             .get_foreign_network_client()
             .get_peer_map()
             .list_peer_conns(center_inst_peer_id)

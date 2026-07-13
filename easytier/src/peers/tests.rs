@@ -151,6 +151,7 @@ async fn wait_for_public_peers_empty(client: Arc<PeerManager>) {
             let client = client.clone();
             async move {
                 client
+                    .core()
                     .get_foreign_network_client()
                     .list_public_peers()
                     .await

@@ -33,8 +33,8 @@ use crate::{
 
 use super::{
     BoxNicPacketFilter, BoxPeerPacketFilter, PacketRecvChan, context::runtime_peer_snapshot,
-    encrypt::NullCipher, foreign_network_client::ForeignNetworkClient,
-    foreign_network_manager::ForeignNetworkRuntimeImpl, peer_conn::PeerConnId, route_trait::Route,
+    encrypt::NullCipher, foreign_network_manager::ForeignNetworkRuntimeImpl, peer_conn::PeerConnId,
+    route_trait::Route,
 };
 
 pub struct PeerManager {
@@ -342,10 +342,6 @@ impl PeerManager {
             .foreign_global_ctx_for_test(network_name)
     }
 
-    pub fn get_foreign_network_client(&self) -> Arc<ForeignNetworkClient> {
-        self.core.get_foreign_network_client()
-    }
-
     pub async fn wait(&self) {
         self.core.wait().await;
     }
@@ -466,7 +462,7 @@ mod tests {
         dst_peer_id: PeerId,
     ) -> Result<(), easytier_core::peers::error::Error> {
         let peer_map = peer_mgr.core().get_peer_map();
-        let foreign_network_client = peer_mgr.get_foreign_network_client();
+        let foreign_network_client = peer_mgr.core().get_foreign_network_client();
         let relay_peer_map = peer_mgr.core().get_relay_peer_map();
         let traffic_metrics = peer_mgr.core().traffic_metrics();
         core_peer_manager::send_msg_internal(
@@ -1341,8 +1337,10 @@ mod tests {
             || {
                 let peer_mgr_client = peer_mgr_client.clone();
                 async move {
-                    let foreign_peer_map =
-                        peer_mgr_client.get_foreign_network_client().get_peer_map();
+                    let foreign_peer_map = peer_mgr_client
+                        .core()
+                        .get_foreign_network_client()
+                        .get_peer_map();
                     if foreign_peer_map.list_peers_with_conn().await.len() != 1 {
                         return false;
                     }
@@ -1739,6 +1737,7 @@ mod tests {
         wait_for_condition(
             || async {
                 peer_mgr_client
+                    .core()
                     .get_foreign_network_client()
                     .list_public_peers()
                     .await
@@ -1750,10 +1749,12 @@ mod tests {
         .await;
 
         let peer_id = peer_mgr_client
+            .core()
             .get_foreign_network_client()
             .list_public_peers()
             .await[0];
         let conns = peer_mgr_client
+            .core()
             .get_foreign_network_client()
             .get_peer_map()
             .list_peer_conns(peer_id)
@@ -1768,6 +1769,7 @@ mod tests {
         wait_for_condition(
             || async {
                 peer_mgr_client
+                    .core()
                     .get_foreign_network_client()
                     .list_public_peers()
                     .await
@@ -1786,6 +1788,7 @@ mod tests {
         wait_for_condition(
             || async {
                 peer_mgr_client
+                    .core()
                     .get_foreign_network_client()
                     .list_public_peers()
                     .await
@@ -1810,6 +1813,7 @@ mod tests {
         wait_for_condition(
             || async {
                 peer_mgr_client
+                    .core()
                     .get_foreign_network_client()
                     .list_public_peers()
                     .await

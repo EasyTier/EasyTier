@@ -182,6 +182,8 @@ only:
   `PeerManagerCore::get_peer_map`; the high-fanout native `get_peer_map`
   projection has been deleted without introducing another compatibility
   accessor.
+- Foreign-client state is likewise obtained from `PeerManagerCore`; the native
+  facade no longer re-exports the core foreign-client handle.
 
 ### Exit criteria
 
