@@ -1,9 +1,9 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::Arc};
 
 use easytier_core::peers::context::{
-    ArcByteLimiter, PeerContext, PeerControlTrafficSink, PeerEvent, PeerEventSink,
-    PeerLimiterFactory, PeerRuntimeConfig, PeerRuntimeSnapshot, PeerRuntimeSupport, TrustedKeyMap,
-    TrustedKeySource,
+    ArcByteLimiter, PeerContext, PeerCredentialEventSink, PeerEvent, PeerEventSink,
+    PeerLimiterFactory, PeerRuntimeConfig, PeerRuntimeSnapshot, PeerRuntimeSupport,
+    SubmittedPeerContextCapabilities,
 };
 
 use crate::{
@@ -74,6 +74,28 @@ impl PeerEventSink for GlobalCtxPeerEventSink {
     }
 }
 
+impl PeerCredentialEventSink for GlobalCtxPeerEventSink {
+    fn credential_changed(&self) {
+        self.global_ctx
+            .issue_event(GlobalCtxEvent::CredentialChanged);
+    }
+}
+
+pub(crate) fn submitted_peer_capabilities(
+    global_ctx: &ArcGlobalCtx,
+) -> SubmittedPeerContextCapabilities {
+    let event_sink = Arc::new(GlobalCtxPeerEventSink::new(global_ctx.clone()));
+    SubmittedPeerContextCapabilities {
+        runtime_support: global_ctx.clone(),
+        limiter_factory: global_ctx.clone(),
+        traffic_sink: global_ctx.clone(),
+        event_sink: event_sink.clone(),
+        credentials: global_ctx.get_credential_manager().core(),
+        trusted_keys: global_ctx.trusted_key_manager(),
+        credential_event_sink: event_sink,
+    }
+}
+
 impl PeerLimiterFactory for GlobalCtx {
     fn get_or_create_limiter(&self, key: &str, bps: u64) -> Option<ArcByteLimiter> {
         Some(
@@ -131,49 +153,6 @@ impl PeerRuntimeSupport for GlobalCtx {
     fn advertised_ipv6_public_addr_prefix(&self) -> Option<cidr::Ipv6Cidr> {
         self.get_advertised_ipv6_public_addr_prefix()
     }
-
-    fn is_pubkey_trusted(&self, pubkey: &[u8], network_name: &str) -> bool {
-        PeerContext::is_pubkey_trusted(self, pubkey, network_name)
-    }
-
-    fn is_pubkey_trusted_with_source(
-        &self,
-        pubkey: &[u8],
-        network_name: &str,
-        source: TrustedKeySource,
-    ) -> bool {
-        PeerContext::is_pubkey_trusted_with_source(self, pubkey, network_name, source)
-    }
-
-    fn list_trusted_keys(
-        &self,
-        network_name: &str,
-    ) -> Vec<(Vec<u8>, easytier_core::peers::context::TrustedKeyMetadata)> {
-        GlobalCtx::list_trusted_keys(self, network_name)
-    }
-
-    fn trusted_credential_pubkeys(
-        &self,
-        network_secret: &str,
-    ) -> Vec<crate::proto::peer_rpc::TrustedCredentialPubkeyProof> {
-        PeerContext::trusted_credential_pubkeys(self, network_secret)
-    }
-
-    fn remove_expired_credentials(&self) -> bool {
-        PeerContext::remove_expired_credentials(self)
-    }
-
-    fn issue_credential_changed(&self) {
-        self.issue_event(GlobalCtxEvent::CredentialChanged);
-    }
-
-    fn update_trusted_keys(&self, keys: TrustedKeyMap, network_name: &str) {
-        PeerContext::update_trusted_keys(self, keys, network_name);
-    }
-
-    fn remove_trusted_keys(&self, network_name: &str) {
-        PeerContext::remove_trusted_keys(self, network_name);
-    }
 }
 
 #[cfg(test)]
@@ -204,10 +183,7 @@ mod tests {
         );
         let context = SubmittedPeerContext::new(
             Arc::new(config.clone()),
-            global_ctx.clone(),
-            global_ctx.clone(),
-            global_ctx.clone(),
-            Arc::new(GlobalCtxPeerEventSink::new(global_ctx)),
+            submitted_peer_capabilities(&global_ctx),
         );
         (config, context)
     }
@@ -227,12 +203,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn credential_event_sink_projects_core_changes_to_global_context() {
+        let global_ctx = get_mock_global_ctx();
+        let mut events = global_ctx.subscribe();
+        let sink = GlobalCtxPeerEventSink::new(global_ctx);
+
+        sink.credential_changed();
+
+        assert!(matches!(
+            events.recv().await.unwrap(),
+            GlobalCtxEvent::CredentialChanged
+        ));
+    }
+
+    #[tokio::test]
     async fn control_traffic_sink_preserves_native_metric_labels() {
         let global_ctx = get_mock_global_ctx();
         let labels =
             LabelSet::new().with_label_type(LabelType::NetworkName("metrics-network".to_owned()));
 
-        PeerControlTrafficSink::record_control_tx(global_ctx.as_ref(), "metrics-network", 128);
+        easytier_core::peers::context::PeerControlTrafficSink::record_control_tx(
+            global_ctx.as_ref(),
+            "metrics-network",
+            128,
+        );
 
         assert_eq!(
             global_ctx

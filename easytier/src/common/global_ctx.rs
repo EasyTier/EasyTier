@@ -973,6 +973,10 @@ impl GlobalCtx {
         &self.credential_manager
     }
 
+    pub(crate) fn trusted_key_manager(&self) -> Arc<TrustedKeyMapManager> {
+        self.trusted_keys.clone()
+    }
+
     /// Check if a public key is trusted using two-level lookup:
     /// 1. OSPF propagated trusted_keys (lock-free)
     /// 2. Local credential_manager

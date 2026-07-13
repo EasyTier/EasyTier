@@ -19,7 +19,7 @@ use std::{fmt::Debug, sync::Arc};
 
 use super::{
     PacketRecvChan,
-    context::{GlobalCtxPeerEventSink, runtime_peer_snapshot},
+    context::{runtime_peer_snapshot, submitted_peer_capabilities},
     encrypt::NullCipher,
     foreign_network_manager::ForeignNetworkRuntimeImpl,
 };
@@ -105,10 +105,7 @@ impl PeerManager {
         );
         let peer_context = Arc::new(SubmittedPeerContext::new(
             Arc::new(runtime_config.clone()),
-            global_ctx.clone(),
-            global_ctx.clone(),
-            global_ctx.clone(),
-            Arc::new(GlobalCtxPeerEventSink::new(global_ctx.clone())),
+            submitted_peer_capabilities(&global_ctx),
         ));
 
         let foreign_network_runtime = Arc::new(ForeignNetworkRuntimeImpl::new_with_ring_registry(

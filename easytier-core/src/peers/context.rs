@@ -76,6 +76,15 @@ impl PeerControlTrafficSink for () {
     fn record_control_rx(&self, _network_name: &str, _bytes: u64) {}
 }
 
+/// Projects credential-store changes without exposing the store itself.
+pub trait PeerCredentialEventSink: Send + Sync {
+    fn credential_changed(&self);
+}
+
+impl PeerCredentialEventSink for () {
+    fn credential_changed(&self) {}
+}
+
 #[derive(Debug, Clone)]
 pub enum PeerEvent {
     PeerAdded(PeerId),
@@ -214,40 +223,19 @@ pub trait PeerRuntimeSupport: Send + Sync {
     fn advertised_ipv6_public_addr_prefix(&self) -> Option<Ipv6Cidr> {
         None
     }
+}
 
-    fn is_pubkey_trusted(&self, _pubkey: &[u8], _network_name: &str) -> bool {
-        false
-    }
-
-    fn is_pubkey_trusted_with_source(
-        &self,
-        _pubkey: &[u8],
-        _network_name: &str,
-        _source: TrustedKeySource,
-    ) -> bool {
-        false
-    }
-
-    fn list_trusted_keys(&self, _network_name: &str) -> Vec<(Vec<u8>, TrustedKeyMetadata)> {
-        Vec::new()
-    }
-
-    fn trusted_credential_pubkeys(
-        &self,
-        _network_secret: &str,
-    ) -> Vec<TrustedCredentialPubkeyProof> {
-        Vec::new()
-    }
-
-    fn remove_expired_credentials(&self) -> bool {
-        false
-    }
-
-    fn issue_credential_changed(&self) {}
-
-    fn update_trusted_keys(&self, _keys: TrustedKeyMap, _network_name: &str) {}
-
-    fn remove_trusted_keys(&self, _network_name: &str) {}
+/// Named capability bundle used to assemble the core-owned submitted context.
+/// Each field remains a separate Interface so peer Modules cannot reach an
+/// unrelated host capability through the bundle after construction.
+pub struct SubmittedPeerContextCapabilities {
+    pub runtime_support: Arc<dyn PeerRuntimeSupport>,
+    pub limiter_factory: Arc<dyn PeerLimiterFactory>,
+    pub traffic_sink: Arc<dyn PeerControlTrafficSink>,
+    pub event_sink: Arc<dyn PeerEventSink>,
+    pub credentials: Arc<CredentialManager>,
+    pub trusted_keys: Arc<TrustedKeyMapManager>,
+    pub credential_event_sink: Arc<dyn PeerCredentialEventSink>,
 }
 
 /// Peer context whose configuration comes exclusively from a core-owned
@@ -258,6 +246,9 @@ pub struct SubmittedPeerContext {
     support: Arc<dyn PeerRuntimeSupport>,
     limiter_factory: Arc<dyn PeerLimiterFactory>,
     traffic_sink: Arc<dyn PeerControlTrafficSink>,
+    credentials: Arc<CredentialManager>,
+    trusted_keys: Arc<TrustedKeyMapManager>,
+    credential_event_sink: Arc<dyn PeerCredentialEventSink>,
     peer_events: tokio::sync::broadcast::Sender<PeerContextEvent>,
     event_sink: Arc<dyn PeerEventSink>,
 }
@@ -265,18 +256,18 @@ pub struct SubmittedPeerContext {
 impl SubmittedPeerContext {
     pub fn new(
         config: Arc<dyn PeerRuntimeConfigSource>,
-        support: Arc<dyn PeerRuntimeSupport>,
-        limiter_factory: Arc<dyn PeerLimiterFactory>,
-        traffic_sink: Arc<dyn PeerControlTrafficSink>,
-        event_sink: Arc<dyn PeerEventSink>,
+        capabilities: SubmittedPeerContextCapabilities,
     ) -> Self {
         Self {
             config,
-            support,
-            limiter_factory,
-            traffic_sink,
+            support: capabilities.runtime_support,
+            limiter_factory: capabilities.limiter_factory,
+            traffic_sink: capabilities.traffic_sink,
+            credentials: capabilities.credentials,
+            trusted_keys: capabilities.trusted_keys,
+            credential_event_sink: capabilities.credential_event_sink,
             peer_events: tokio::sync::broadcast::channel(16).0,
-            event_sink,
+            event_sink: capabilities.event_sink,
         }
     }
 
@@ -1206,7 +1197,11 @@ impl PeerContext for SubmittedPeerContext {
     }
 
     fn is_pubkey_trusted(&self, pubkey: &[u8], network_name: &str) -> bool {
-        self.support.is_pubkey_trusted(pubkey, network_name)
+        if self.trusted_keys.verify_trusted_key(pubkey, network_name) {
+            return true;
+        }
+        network_name == self.snapshot().runtime.network_identity.network_name
+            && self.credentials.is_pubkey_trusted(pubkey)
     }
 
     fn is_pubkey_trusted_with_source(
@@ -1215,35 +1210,35 @@ impl PeerContext for SubmittedPeerContext {
         network_name: &str,
         source: TrustedKeySource,
     ) -> bool {
-        self.support
-            .is_pubkey_trusted_with_source(pubkey, network_name, source)
+        self.trusted_keys
+            .verify_trusted_key_with_source(pubkey, network_name, Some(source))
     }
 
     fn list_trusted_keys(&self, network_name: &str) -> Vec<(Vec<u8>, TrustedKeyMetadata)> {
-        self.support.list_trusted_keys(network_name)
+        self.trusted_keys.list_trusted_keys(network_name)
     }
 
     fn trusted_credential_pubkeys(
         &self,
         network_secret: &str,
     ) -> Vec<TrustedCredentialPubkeyProof> {
-        self.support.trusted_credential_pubkeys(network_secret)
+        self.credentials.get_trusted_pubkeys(network_secret)
     }
 
     fn remove_expired_credentials(&self) -> bool {
-        self.support.remove_expired_credentials()
+        self.credentials.remove_expired_credentials()
     }
 
     fn issue_credential_changed(&self) {
-        self.support.issue_credential_changed();
+        self.credential_event_sink.credential_changed();
     }
 
     fn update_trusted_keys(&self, keys: TrustedKeyMap, network_name: &str) {
-        self.support.update_trusted_keys(keys, network_name);
+        self.trusted_keys.update_trusted_keys(network_name, keys);
     }
 
     fn remove_trusted_keys(&self, network_name: &str) {
-        self.support.remove_trusted_keys(network_name);
+        self.trusted_keys.remove_trusted_keys(network_name);
     }
 
     fn record_control_tx(&self, network_name: &str, bytes: u64) {
@@ -1341,6 +1336,32 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct TestCredentialEventSink {
+        changed: AtomicBool,
+    }
+
+    impl PeerCredentialEventSink for TestCredentialEventSink {
+        fn credential_changed(&self) {
+            self.changed.store(true, Ordering::Release);
+        }
+    }
+
+    fn submitted_capabilities(
+        support: Arc<TestSubmittedSupport>,
+        event_sink: Arc<dyn PeerEventSink>,
+    ) -> SubmittedPeerContextCapabilities {
+        SubmittedPeerContextCapabilities {
+            runtime_support: support.clone(),
+            limiter_factory: support,
+            traffic_sink: Arc::new(()),
+            event_sink,
+            credentials: Arc::new(CredentialManager::new()),
+            trusted_keys: Arc::new(TrustedKeyMapManager::new()),
+            credential_event_sink: Arc::new(()),
+        }
+    }
+
     fn submitted_snapshot(hostname: &str, disable_relay_data: bool) -> PeerRuntimeSnapshot {
         let mut flags = FlagsInConfig::default();
         flags.disable_relay_data = disable_relay_data;
@@ -1371,10 +1392,7 @@ mod tests {
         let support = Arc::new(TestSubmittedSupport::default());
         let context = SubmittedPeerContext::new(
             config.clone(),
-            support.clone(),
-            support.clone(),
-            Arc::new(()),
-            Arc::new(()),
+            submitted_capabilities(support.clone(), Arc::new(())),
         );
 
         assert_eq!(context.hostname(), "before");
@@ -1404,7 +1422,7 @@ mod tests {
         let sink = Arc::new(TestPeerEventSink::default());
         let support = Arc::new(TestSubmittedSupport::default());
         let context =
-            SubmittedPeerContext::new(config, support.clone(), support, Arc::new(()), sink.clone());
+            SubmittedPeerContext::new(config, submitted_capabilities(support, sink.clone()));
         let mut events = context.subscribe_peer_events().unwrap();
 
         context.issue_event(PeerEvent::PeerAdded(7));
@@ -1417,6 +1435,34 @@ mod tests {
     }
 
     #[test]
+    fn submitted_peer_context_owns_trusted_keys_and_projects_credential_changes() {
+        let config = Arc::new(TestSubmittedConfig {
+            snapshot: ArcSwap::from_pointee(submitted_snapshot("trust", false)),
+        });
+        let support = Arc::new(TestSubmittedSupport::default());
+        let credential_events = Arc::new(TestCredentialEventSink::default());
+        let mut capabilities = submitted_capabilities(support, Arc::new(()));
+        capabilities.credential_event_sink = credential_events.clone();
+        let context = SubmittedPeerContext::new(config, capabilities);
+        let public_key = vec![7; 32];
+        let mut keys = TrustedKeyMap::new();
+        keys.insert(
+            public_key.clone(),
+            TrustedKeyMetadata {
+                source: TrustedKeySource::OspfNode,
+                expiry_unix: None,
+            },
+        );
+
+        context.update_trusted_keys(keys, "foreign");
+        context.issue_credential_changed();
+
+        assert!(context.is_pubkey_trusted(&public_key, "foreign"));
+        assert_eq!(context.list_trusted_keys("foreign").len(), 1);
+        assert!(credential_events.changed.load(Ordering::Acquire));
+    }
+
+    #[test]
     fn foreign_forward_limiter_is_independent_from_peer_receive_limiter() {
         let mut snapshot = submitted_snapshot("limiter", false);
         snapshot.flags.foreign_relay_bps_limit = 1024;
@@ -1426,10 +1472,7 @@ mod tests {
         let support = Arc::new(TestSubmittedSupport::default());
         let context = SubmittedPeerContext::new(
             config,
-            support.clone(),
-            support.clone(),
-            Arc::new(()),
-            Arc::new(()),
+            submitted_capabilities(support.clone(), Arc::new(())),
         );
 
         assert!(context.recv_limiter("foreign", true).is_some());
@@ -1451,10 +1494,7 @@ mod tests {
         let support = Arc::new(TestSubmittedSupport::default());
         let context = SubmittedPeerContext::new(
             config,
-            support.clone(),
-            support.clone(),
-            Arc::new(()),
-            Arc::new(()),
+            submitted_capabilities(support.clone(), Arc::new(())),
         );
 
         assert!(context.recv_limiter("foreign", true).is_some());

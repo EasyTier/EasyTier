@@ -261,6 +261,13 @@ but no core Module receives it or a broad Interface implemented by it.
 - Control-plane traffic export uses `PeerControlTrafficSink`; native maps it to
   the existing labelled `StatsManager` counters, while the broad live support
   Interface no longer exposes the metrics registry's side effects.
+- Submitted contexts now hold the core `CredentialManager` and
+  `TrustedKeyMapManager` directly. Native credential files remain a storage
+  Adapter, and only the `PeerCredentialEventSink` crosses back to product
+  events; trust lookup and OSPF key state are no longer Host support methods.
+- Named `SubmittedPeerContextCapabilities` makes each remaining Interface
+  explicit at the composition Seam and prevents positional capability wiring
+  from becoming a new broad runtime Interface.
 
 ### Exit criteria
 
