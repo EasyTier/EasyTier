@@ -525,6 +525,13 @@ impl GlobalCtx {
         }
     }
 
+    pub fn remove_running_listener(&self, url: &url::Url) {
+        self.running_listeners
+            .lock()
+            .unwrap()
+            .retain(|listener| listener != url);
+    }
+
     pub fn get_vpn_portal_cidr(&self) -> Option<cidr::Ipv4Cidr> {
         self.config.get_vpn_portal_config().map(|x| x.client_cidr)
     }

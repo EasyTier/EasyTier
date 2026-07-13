@@ -38,8 +38,8 @@ use crate::{
     dhcp::{DhcpIpv4Host, DhcpIpv4RouteSource, DhcpIpv4Service},
     hole_punch::tcp::{TcpHolePunchConnector, TcpHolePunchHost},
     listener::{
-        AcceptedSocketHandler, RunningListenerProvider, RunningListenerProviderGroup,
-        RunningListenerRegistry,
+        AcceptedSocketHandler, ListenerEventSink, ListenerEventSinkGroup, RunningListenerProvider,
+        RunningListenerProviderGroup, RunningListenerRegistry,
         transport::{
             AcceptedTransport, HostAcceptedTcpSocket, RawAcceptedTransportHandler,
             TransportListenerConfig, TransportListenerService,
@@ -333,6 +333,7 @@ where
     pub protocol: Option<Arc<dyn ClientProtocolUpgrader<<H as VirtualTcpSocketFactory>::Socket>>>,
     pub manual_events: Option<Arc<dyn ManualConnectivityEventSink>>,
     pub listener: Option<Arc<dyn ListenerService>>,
+    pub listener_events: Option<Arc<dyn ListenerEventSink>>,
     pub accepted_transport_handler:
         Option<Arc<dyn AcceptedSocketHandler<AcceptedTransport<HostAcceptedTcpSocket<H>>>>>,
     pub udp_hole_punch: Option<Arc<dyn UdpHolePunchService>>,
@@ -619,6 +620,7 @@ where
             protocol,
             manual_events,
             listener,
+            listener_events,
             accepted_transport_handler,
             udp_hole_punch,
             transport_proxy,
@@ -646,11 +648,18 @@ where
             let handler = accepted_transport_handler
                 .unwrap_or_else(|| Arc::new(RawAcceptedTransportHandler::new(&peer_manager)));
             let registry = Arc::new(RunningListenerRegistry::default());
+            let events: Arc<dyn ListenerEventSink> = match listener_events {
+                Some(listener_events) => {
+                    ListenerEventSinkGroup::new(vec![registry.clone(), listener_events])
+                }
+                None => registry.clone(),
+            };
             let listener = Arc::new(TransportListenerService::new_with_events(
                 host.clone(),
+                dns.clone(),
                 listeners,
                 handler,
-                registry.clone(),
+                events,
             ));
             (Some(listener), Some(registry))
         };

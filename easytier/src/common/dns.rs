@@ -15,6 +15,7 @@ use once_cell::sync::Lazy;
 use tokio::net::lookup_host;
 
 use super::error::Error;
+use super::netns::NetNS;
 
 pub fn get_default_resolver_config() -> ResolverConfig {
     let mut default_resolve_config = ResolverConfig::new();
@@ -48,18 +49,29 @@ pub static RESOLVER: Lazy<Arc<Resolver<GenericConnector<TokioRuntimeProvider>>>>
         Arc::new(builder.build())
     });
 
-pub(crate) struct RuntimeDnsResolver;
+pub(crate) struct RuntimeDnsResolver {
+    net_ns: Option<NetNS>,
+}
 
 impl RuntimeDnsResolver {
     pub(crate) fn new() -> Self {
-        Self
+        Self { net_ns: None }
+    }
+
+    pub(crate) fn new_with_netns(net_ns: NetNS) -> Self {
+        Self {
+            net_ns: Some(net_ns),
+        }
     }
 }
 
 #[async_trait]
 impl DnsResolver for RuntimeDnsResolver {
     async fn resolve(&self, query: DnsQuery) -> anyhow::Result<Vec<IpAddr>> {
-        Ok(resolve_ips(&query.host).await?)
+        match &self.net_ns {
+            Some(net_ns) => Ok(net_ns.run_async(|| resolve_ips(&query.host)).await?),
+            None => Ok(resolve_ips(&query.host).await?),
+        }
     }
 }
 

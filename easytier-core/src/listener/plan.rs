@@ -141,6 +141,18 @@ pub fn ring_listener_url(self_id: uuid::Uuid) -> Url {
         .expect("ring listener url should be valid")
 }
 
+pub fn listener_default_port(scheme: &str) -> Option<u16> {
+    match scheme {
+        "tcp" | "udp" => Some(11010),
+        "wg" => Some(11011),
+        "quic" => Some(11012),
+        "ws" => Some(80),
+        "wss" => Some(443),
+        "faketcp" => Some(11013),
+        _ => None,
+    }
+}
+
 pub fn listener_url_bind_device(url: &Url) -> Option<String> {
     url.path().strip_prefix('/').and_then(|path| {
         if path.is_empty() {
@@ -164,6 +176,19 @@ pub fn udp_session_listen_request(
     )
 }
 
+pub fn unresolved_udp_session_listen_request(
+    url: &Url,
+    socket_mark: Option<u32>,
+) -> UdpSessionListenRequest {
+    UdpSessionListenRequest::new(
+        UdpBindOptions::port_bound_listener("0.0.0.0:0".parse().unwrap())
+            .with_local_addr(None)
+            .with_only_v6(true)
+            .with_socket_mark(socket_mark)
+            .with_bind_device(listener_url_bind_device(url)),
+    )
+}
+
 pub fn tcp_listener_options(
     local_addr: std::net::SocketAddr,
     socket_mark: Option<u32>,
@@ -173,6 +198,14 @@ pub fn tcp_listener_options(
         .with_socket_mark(socket_mark)
         .with_only_v6(true);
     TcpListenOptions::direct_connect(local_addr).with_bind(bind)
+}
+
+pub fn unresolved_tcp_listener_options(socket_mark: Option<u32>) -> TcpListenOptions {
+    TcpListenOptions::direct_connect("0.0.0.0:0".parse().unwrap()).with_bind(
+        TcpBindOptions::default()
+            .with_socket_mark(socket_mark)
+            .with_only_v6(true),
+    )
 }
 
 pub fn is_url_host_ipv6(url: &Url) -> bool {

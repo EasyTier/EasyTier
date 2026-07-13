@@ -89,6 +89,25 @@ pub trait ListenerEventSink: Debug + Send + Sync {
     fn emit(&self, event: ListenerEvent);
 }
 
+#[derive(Debug)]
+pub struct ListenerEventSinkGroup {
+    sinks: Vec<Arc<dyn ListenerEventSink>>,
+}
+
+impl ListenerEventSinkGroup {
+    pub fn new(sinks: Vec<Arc<dyn ListenerEventSink>>) -> Arc<Self> {
+        Arc::new(Self { sinks })
+    }
+}
+
+impl ListenerEventSink for ListenerEventSinkGroup {
+    fn emit(&self, event: ListenerEvent) {
+        for sink in &self.sinks {
+            sink.emit(event.clone());
+        }
+    }
+}
+
 pub trait RunningListenerProvider: Debug + Send + Sync + 'static {
     fn running_listeners(&self) -> Vec<Url>;
 }
@@ -106,10 +125,17 @@ impl RunningListenerProviderGroup {
 
 impl RunningListenerProvider for RunningListenerProviderGroup {
     fn running_listeners(&self) -> Vec<Url> {
-        self.providers
+        let mut listeners = Vec::new();
+        for listener in self
+            .providers
             .iter()
             .flat_map(|provider| provider.running_listeners())
-            .collect()
+        {
+            if !listeners.contains(&listener) {
+                listeners.push(listener);
+            }
+        }
+        listeners
     }
 }
 
@@ -673,6 +699,22 @@ mod tests {
         assert_eq!(registry.running_listeners(), vec![url.clone()]);
         registry.emit(ListenerEvent::ListenerRemoved { url });
         assert!(registry.running_listeners().is_empty());
+    }
+
+    #[test]
+    fn running_listener_provider_group_deduplicates_urls() {
+        let first = Arc::new(RunningListenerRegistry::default());
+        let second = Arc::new(RunningListenerRegistry::default());
+        let url: Url = "tcp://127.0.0.1:11010".parse().unwrap();
+        for registry in [&first, &second] {
+            registry.emit(ListenerEvent::ListenerAdded {
+                url: url.clone(),
+                connection_counter: Arc::new(EmptyConnectionCounter),
+            });
+        }
+        let group = RunningListenerProviderGroup::new(vec![first, second]);
+
+        assert_eq!(group.running_listeners(), vec![url]);
     }
 
     #[tokio::test]

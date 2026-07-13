@@ -31,7 +31,10 @@ use crate::{
         dns::RuntimeDnsResolver,
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
     },
-    instance::listeners::RuntimeListenerService,
+    instance::listeners::{
+        RuntimeListenerService, runtime_accepted_transport_handler, runtime_listener_event_sink,
+        runtime_listener_plan, runtime_transport_listener_configs,
+    },
     instance::proxy_cidrs_monitor::runtime_proxy_cidr_monitor_host,
     instance::public_ipv6_provider::{
         runtime_public_ipv6_provider_config, runtime_public_ipv6_provider_host,
@@ -173,7 +176,9 @@ pub(crate) fn runtime_core_instance_adapters_with_ring_registry(
         global_ctx.clone(),
         ring_registry,
     ));
-    let dns: Arc<dyn DnsResolver> = Arc::new(RuntimeDnsResolver::new());
+    let dns: Arc<dyn DnsResolver> = Arc::new(RuntimeDnsResolver::new_with_netns(
+        global_ctx.net_ns.clone(),
+    ));
     let dns_records: Arc<dyn DnsRecordResolver> = Arc::new(RuntimeDnsResolver::new());
     CoreInstanceAdapters {
         host,
@@ -184,6 +189,7 @@ pub(crate) fn runtime_core_instance_adapters_with_ring_registry(
             global_ctx: global_ctx.clone(),
         })),
         listener: None,
+        listener_events: None,
         accepted_transport_handler: None,
         udp_hole_punch: None,
         transport_proxy: None,
@@ -242,6 +248,11 @@ pub(crate) fn build_runtime_core_instance_with_services_and_ring_registry(
     proxy_cidr_runtime: Option<Arc<dyn ProxyCidrRuntime>>,
     ring_registry: Arc<RingTunnelRegistry>,
 ) -> anyhow::Result<RuntimeCoreInstance> {
+    let listener_plan = runtime_listener_plan(&global_ctx);
+    let listener_configs = runtime_transport_listener_configs(
+        &listener_plan,
+        global_ctx.config.get_flags().socket_mark,
+    );
     let config = CoreInstanceConfig {
         initial_peers: global_ctx
             .config
@@ -249,7 +260,7 @@ pub(crate) fn build_runtime_core_instance_with_services_and_ring_registry(
             .into_iter()
             .map(|peer| peer.uri)
             .collect(),
-        listeners: Vec::new(),
+        listeners: listener_configs,
         runtime: runtime_core_config(&global_ctx),
         endpoint_discovery: runtime_endpoint_discovery_config(&global_ctx),
         manual: runtime_manual_options(&global_ctx),
@@ -262,10 +273,15 @@ pub(crate) fn build_runtime_core_instance_with_services_and_ring_registry(
     adapters.transport_proxy = transport_proxy;
     adapters.proxy = proxy;
     adapters.proxy_cidr_runtime = proxy_cidr_runtime;
+    let accepted_transport_handler =
+        runtime_accepted_transport_handler(global_ctx.clone(), &peer_manager.core());
+    adapters.listener_events = Some(runtime_listener_event_sink(global_ctx.clone()));
+    adapters.accepted_transport_handler = Some(accepted_transport_handler.clone());
     adapters.listener = Some(Arc::new(RuntimeListenerService::new(
         global_ctx,
-        peer_manager.core(),
+        accepted_transport_handler,
         ring_registry,
+        &listener_plan,
     )));
     adapters.udp_hole_punch = Some(Arc::new(super::udp_hole_punch::UdpHolePunchConnector::new(
         peer_manager.clone(),
@@ -634,6 +650,40 @@ mod tests {
         );
         assert_eq!(instance.acl_whitelist_snapshot().tcp_ports, ["invalid"]);
         instance.stop().await;
+    }
+
+    #[tokio::test]
+    async fn runtime_core_owns_configured_transport_listener_lifecycle() {
+        let global_ctx = get_mock_global_ctx();
+        global_ctx
+            .config
+            .set_listeners(vec!["tcp://127.0.0.1:0".parse().unwrap()]);
+        let (nic_channel, _nic_receiver) = create_packet_recv_chan();
+        let peer_manager = Arc::new(PeerManager::new(
+            RouteAlgoType::Ospf,
+            global_ctx.clone(),
+            nic_channel,
+        ));
+        let instance = Arc::new(
+            build_runtime_core_instance(global_ctx.clone(), peer_manager, None)
+                .expect("runtime core composition should succeed"),
+        );
+
+        instance.start().await.unwrap();
+        let listeners = instance.running_listeners();
+        assert_eq!(listeners.len(), 2);
+        assert_eq!(
+            listeners
+                .iter()
+                .filter(|listener| listener.scheme() == "tcp")
+                .count(),
+            1
+        );
+        assert_eq!(global_ctx.get_running_listeners().len(), 2);
+
+        instance.stop().await;
+        assert!(instance.running_listeners().is_empty());
+        assert!(global_ctx.get_running_listeners().is_empty());
     }
 
     #[tokio::test]

@@ -5,12 +5,17 @@ use std::{
 };
 
 use async_trait::async_trait;
+use rand::seq::SliceRandom as _;
 use serde::{Deserialize, Serialize};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use url::Url;
 
 use crate::{
-    connectivity::protocol::{
-        ServerProtocolAdmissionController, ServerProtocolUpgrade, ServerProtocolUpgrader, raw,
+    connectivity::{
+        manual::resolve_url_addrs,
+        protocol::{
+            ServerProtocolAdmissionController, ServerProtocolUpgrade, ServerProtocolUpgrader, raw,
+        },
     },
     listener::{
         AcceptedSocketHandler, ListenerConnectionCounter, ListenerEventSink, ListenerManager,
@@ -18,6 +23,8 @@ use crate::{
     },
     peers::peer_manager::PeerManagerCore,
     socket::{
+        IpVersion,
+        dns::DnsResolver,
         tcp::{TcpListenOptions, TcpSocketListener, VirtualTcpListener, VirtualTcpListenerFactory},
         udp::{
             UdpSession, UdpSessionAcceptKind, UdpSessionControlHandler, UdpSessionListenRequest,
@@ -37,6 +44,7 @@ pub enum AcceptedTransport<TcpSocket> {
     Tcp {
         socket: TcpSocket,
         local_url: Url,
+        upgrade_permit: Option<OwnedSemaphorePermit>,
     },
     Udp {
         session: UdpSession,
@@ -129,28 +137,35 @@ where
         &self,
         accepted: AcceptedTransport<TcpSocket>,
     ) -> anyhow::Result<()> {
-        let upgrade = match accepted {
-            AcceptedTransport::Tcp { socket, local_url } => {
-                self.protocol.upgrade_tcp(socket, local_url).await?
-            }
+        let (upgrade, _tcp_upgrade_permit) = match accepted {
+            AcceptedTransport::Tcp {
+                socket,
+                local_url,
+                upgrade_permit,
+            } => (
+                self.protocol.upgrade_tcp(socket, local_url).await?,
+                upgrade_permit,
+            ),
             AcceptedTransport::Udp {
                 session,
                 local_url,
                 admission,
-            } => {
+            } => (
                 self.protocol
                     .upgrade_udp(session, local_url, admission)
-                    .await?
-            }
+                    .await?,
+                None,
+            ),
             AcceptedTransport::ByteStream {
                 socket,
                 local_url,
                 remote_url,
-            } => {
+            } => (
                 self.protocol
                     .upgrade_byte_stream(socket, local_url, remote_url)
-                    .await?
-            }
+                    .await?,
+                None,
+            ),
         };
         self.handle_upgrade(upgrade).await
     }
@@ -178,7 +193,9 @@ where
             .upgrade()
             .ok_or_else(|| anyhow::anyhow!("peer manager is gone"))?;
         let tunnel = match accepted {
-            AcceptedTransport::Tcp { socket, local_url } => {
+            AcceptedTransport::Tcp {
+                socket, local_url, ..
+            } => {
                 if local_url.scheme() != "tcp" {
                     anyhow::bail!("unsupported raw TCP listener protocol: {local_url}");
                 }
@@ -248,17 +265,35 @@ struct TcpTransportListener<H>
 where
     H: VirtualTcpListenerFactory,
 {
-    inner: TcpSocketListener<H>,
+    url: Url,
+    options: TcpListenOptions,
+    host: Arc<H>,
+    dns: Arc<dyn DnsResolver>,
+    upgrade_slots: Option<Arc<Semaphore>>,
+    inner: Option<TcpSocketListener<H>>,
 }
 
 impl<H> TcpTransportListener<H>
 where
     H: VirtualTcpListenerFactory,
 {
-    fn new(url: Url, options: TcpListenOptions, host: Arc<H>) -> Self {
+    fn new(url: Url, options: TcpListenOptions, host: Arc<H>, dns: Arc<dyn DnsResolver>) -> Self {
+        let upgrade_slots =
+            matches!(url.scheme(), "ws" | "wss").then(|| Arc::new(Semaphore::new(1)));
         Self {
-            inner: TcpSocketListener::new_with_options(url, options, host),
+            url,
+            options,
+            host,
+            dns,
+            upgrade_slots,
+            inner: None,
         }
+    }
+
+    fn inner(&mut self) -> anyhow::Result<&mut TcpSocketListener<H>> {
+        self.inner
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("TCP transport listener is not started"))
     }
 }
 
@@ -269,7 +304,8 @@ where
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("TcpTransportListener")
-            .field("inner", &self.inner)
+            .field("url", &self.url)
+            .field("listening", &self.inner.is_some())
             .finish()
     }
 }
@@ -282,23 +318,49 @@ where
     type Accepted = AcceptedTransport<HostAcceptedTcpSocket<H>>;
 
     async fn listen(&mut self) -> anyhow::Result<()> {
-        self.inner.listen().await
+        if self.inner.is_some() {
+            return Ok(());
+        }
+        let mut options = self.options.clone();
+        if options.bind.local_addr.is_none() {
+            options.bind.local_addr = Some(
+                resolve_listener_addr(&self.url, options.bind.socket_mark, self.dns.as_ref())
+                    .await?,
+            );
+        }
+        let mut inner =
+            TcpSocketListener::new_with_options(self.url.clone(), options, self.host.clone());
+        inner.listen().await?;
+        self.inner = Some(inner);
+        Ok(())
     }
 
     async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
-        let socket = self.inner.accept().await?;
+        let upgrade_permit = match &self.upgrade_slots {
+            Some(slots) => Some(slots.clone().acquire_owned().await?),
+            None => None,
+        };
+        let local_url = self.local_url();
+        let socket = self.inner()?.accept().await?;
         Ok(AcceptedTransport::Tcp {
             socket,
-            local_url: self.inner.local_url(),
+            local_url,
+            upgrade_permit,
         })
     }
 
     fn local_url(&self) -> Url {
-        self.inner.local_url()
+        self.inner
+            .as_ref()
+            .map(SocketListener::local_url)
+            .unwrap_or_else(|| self.url.clone())
     }
 
     fn connection_counter(&self) -> Arc<dyn ListenerConnectionCounter> {
-        self.inner.connection_counter()
+        self.inner
+            .as_ref()
+            .map(SocketListener::connection_counter)
+            .unwrap_or_else(|| Arc::new(EmptyTransportConnectionCounter))
     }
 }
 
@@ -306,7 +368,12 @@ struct UdpTransportListener<H, TcpSocket>
 where
     H: VirtualUdpSocketFactory + UdpSessionControlHandler<H::Socket>,
 {
-    inner: UdpSessionSocketListener<H, H>,
+    url: Url,
+    request: UdpSessionListenRequest,
+    accept_kind: UdpSessionAcceptKind,
+    host: Arc<H>,
+    dns: Arc<dyn DnsResolver>,
+    inner: Option<UdpSessionSocketListener<H, H>>,
     protocol_admission: Option<ServerProtocolAdmissionController>,
     tcp_socket: PhantomData<fn() -> TcpSocket>,
 }
@@ -320,6 +387,7 @@ where
         request: UdpSessionListenRequest,
         accept_kind: UdpSessionAcceptKind,
         host: Arc<H>,
+        dns: Arc<dyn DnsResolver>,
     ) -> Self {
         let protocol_admission = matches!(
             accept_kind,
@@ -327,16 +395,21 @@ where
         )
         .then(ServerProtocolAdmissionController::quic);
         Self {
-            inner: UdpSessionSocketListener::new_with_request(
-                url,
-                request,
-                accept_kind,
-                host.clone(),
-                host,
-            ),
+            url,
+            request,
+            accept_kind,
+            host,
+            dns,
+            inner: None,
             protocol_admission,
             tcp_socket: PhantomData,
         }
+    }
+
+    fn inner(&mut self) -> anyhow::Result<&mut UdpSessionSocketListener<H, H>> {
+        self.inner
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("UDP transport listener is not started"))
     }
 }
 
@@ -347,7 +420,9 @@ where
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("UdpTransportListener")
-            .field("inner", &self.inner)
+            .field("url", &self.url)
+            .field("accept_kind", &self.accept_kind)
+            .field("listening", &self.inner.is_some())
             .finish()
     }
 }
@@ -361,12 +436,31 @@ where
     type Accepted = AcceptedTransport<TcpSocket>;
 
     async fn listen(&mut self) -> anyhow::Result<()> {
-        self.inner.listen().await
+        if self.inner.is_some() {
+            return Ok(());
+        }
+        let mut request = self.request.clone();
+        if request.bind.local_addr.is_none() {
+            request.bind.local_addr = Some(
+                resolve_listener_addr(&self.url, request.bind.socket_mark, self.dns.as_ref())
+                    .await?,
+            );
+        }
+        let mut inner = UdpSessionSocketListener::new_with_request(
+            self.url.clone(),
+            request,
+            self.accept_kind,
+            self.host.clone(),
+            self.host.clone(),
+        );
+        inner.listen().await?;
+        self.inner = Some(inner);
+        Ok(())
     }
 
     async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
         loop {
-            let session = self.inner.accept().await?;
+            let session = self.inner()?.accept().await?;
             let admission = match &self.protocol_admission {
                 Some(controller) => match controller.try_admit() {
                     Some(admission) => Some(admission),
@@ -382,19 +476,48 @@ where
             };
             return Ok(AcceptedTransport::Udp {
                 session,
-                local_url: self.inner.local_url(),
+                local_url: self.local_url(),
                 admission,
             });
         }
     }
 
     fn local_url(&self) -> Url {
-        self.inner.local_url()
+        self.inner
+            .as_ref()
+            .map(SocketListener::local_url)
+            .unwrap_or_else(|| self.url.clone())
     }
 
     fn connection_counter(&self) -> Arc<dyn ListenerConnectionCounter> {
-        self.inner.connection_counter()
+        self.inner
+            .as_ref()
+            .map(SocketListener::connection_counter)
+            .unwrap_or_else(|| Arc::new(EmptyTransportConnectionCounter))
     }
+}
+
+#[derive(Debug)]
+struct EmptyTransportConnectionCounter;
+
+impl ListenerConnectionCounter for EmptyTransportConnectionCounter {
+    fn get(&self) -> Option<u32> {
+        None
+    }
+}
+
+async fn resolve_listener_addr(
+    url: &Url,
+    socket_mark: Option<u32>,
+    dns: &dyn DnsResolver,
+) -> anyhow::Result<std::net::SocketAddr> {
+    let default_port = super::plan::listener_default_port(url.scheme())
+        .ok_or_else(|| anyhow::anyhow!("listener has no default port: {url}"))?;
+    resolve_url_addrs(url, default_port, IpVersion::Both, socket_mark, dns)
+        .await?
+        .choose(&mut rand::thread_rng())
+        .copied()
+        .ok_or_else(|| anyhow::anyhow!("listener has no resolved address: {url}"))
 }
 
 struct ErasedAcceptedTransportHandler<TcpSocket> {
@@ -438,23 +561,26 @@ where
 {
     pub fn new(
         host: Arc<H>,
+        dns: Arc<dyn DnsResolver>,
         configs: Vec<TransportListenerConfig>,
         handler: Arc<dyn AcceptedSocketHandler<AcceptedTransport<HostAcceptedTcpSocket<H>>>>,
     ) -> Self {
-        Self::build(host, configs, handler, None)
+        Self::build(host, dns, configs, handler, None)
     }
 
     pub fn new_with_events(
         host: Arc<H>,
+        dns: Arc<dyn DnsResolver>,
         configs: Vec<TransportListenerConfig>,
         handler: Arc<dyn AcceptedSocketHandler<AcceptedTransport<HostAcceptedTcpSocket<H>>>>,
         events: Arc<dyn ListenerEventSink>,
     ) -> Self {
-        Self::build(host, configs, handler, Some(events))
+        Self::build(host, dns, configs, handler, Some(events))
     }
 
     fn build(
         host: Arc<H>,
+        dns: Arc<dyn DnsResolver>,
         configs: Vec<TransportListenerConfig>,
         handler: Arc<dyn AcceptedSocketHandler<AcceptedTransport<HostAcceptedTcpSocket<H>>>>,
         events: Option<Arc<dyn ListenerEventSink>>,
@@ -470,12 +596,14 @@ where
             match config {
                 TransportListenerConfig::Tcp { url, options, .. } => {
                     let host = host.clone();
+                    let dns = dns.clone();
                     manager.add_listener(
                         move || {
                             Box::new(TcpTransportListener::new(
                                 url.clone(),
                                 options.clone(),
                                 host.clone(),
+                                dns.clone(),
                             ))
                         },
                         must_succeed,
@@ -488,6 +616,7 @@ where
                     ..
                 } => {
                     let host = host.clone();
+                    let dns = dns.clone();
                     manager.add_listener(
                         move || {
                             Box::new(UdpTransportListener::new(
@@ -495,6 +624,7 @@ where
                                 request.clone(),
                                 accept_kind,
                                 host.clone(),
+                                dns.clone(),
                             ))
                         },
                         must_succeed,
@@ -543,6 +673,7 @@ mod tests {
     use crate::{
         connectivity::protocol::{CoreServerProtocolUpgrader, ServerTunnelAcceptor},
         socket::{
+            dns::{DnsQuery, DnsResolver},
             tcp::{VirtualTcpListener, VirtualTcpSocket},
             udp::{
                 UdpBindOptions, UdpSessionKind, UdpSessionProtocol, UdpSessionSocket,
@@ -550,6 +681,15 @@ mod tests {
             },
         },
     };
+
+    struct MockDns;
+
+    #[async_trait]
+    impl DnsResolver for MockDns {
+        async fn resolve(&self, _query: DnsQuery) -> anyhow::Result<Vec<std::net::IpAddr>> {
+            Ok(vec!["127.0.0.1".parse().unwrap()])
+        }
+    }
 
     struct MockTcpSocket {
         stream: DuplexStream,
@@ -875,7 +1015,9 @@ mod tests {
         ) -> anyhow::Result<()> {
             let _active = ActiveHandlerGuard::new(self.active.clone());
             match accepted {
-                AcceptedTransport::Tcp { socket, local_url } => {
+                AcceptedTransport::Tcp {
+                    socket, local_url, ..
+                } => {
                     self.events.send(AcceptedEvent::Tcp {
                         port: local_url.port().unwrap(),
                     })?;
@@ -925,6 +1067,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unresolved_listener_urls_use_core_dns_and_protocol_default_ports() -> anyhow::Result<()>
+    {
+        let host = Arc::new(MockHost::new());
+        let mut tcp = TcpTransportListener::new(
+            "tcp://listener.example".parse()?,
+            super::super::plan::unresolved_tcp_listener_options(Some(7)),
+            host.clone(),
+            Arc::new(MockDns),
+        );
+        tcp.listen().await?;
+        assert_eq!(host.tcp_listener(0).local_addr()?.port(), 11010);
+
+        let mut udp = UdpTransportListener::<MockHost, MockTcpSocket>::new(
+            "wg://listener.example".parse()?,
+            super::super::plan::unresolved_udp_session_listen_request(
+                &"wg://listener.example".parse()?,
+                Some(7),
+            ),
+            UdpSessionAcceptKind::Classified(UdpSessionProtocol::WireGuard),
+            host.clone(),
+            Arc::new(MockDns),
+        );
+        udp.listen().await?;
+        assert_eq!(host.udp_socket(0).local_addr()?.port(), 11011);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn websocket_listener_limits_pending_upgrades() -> anyhow::Result<()> {
+        let host = Arc::new(MockHost::new());
+        let mut listener = TcpTransportListener::new(
+            "ws://127.0.0.1:0".parse()?,
+            super::super::plan::unresolved_tcp_listener_options(None),
+            host.clone(),
+            Arc::new(MockDns),
+        );
+        listener.listen().await?;
+        let socket = host.tcp_listener(0);
+        socket.accept_from("127.0.0.1:31000".parse()?);
+        socket.accept_from("127.0.0.1:31001".parse()?);
+
+        let first = listener.accept().await?;
+        assert!(
+            crate::runtime_time::timeout(Duration::from_millis(50), listener.accept())
+                .await
+                .is_err()
+        );
+        drop(first);
+        crate::runtime_time::timeout(Duration::from_secs(1), listener.accept()).await??;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn quic_admission_happens_before_transport_is_returned() -> anyhow::Result<()> {
         let host = Arc::new(MockHost::new());
         let mut listener = UdpTransportListener::<MockHost, MockTcpSocket>::new(
@@ -934,6 +1129,7 @@ mod tests {
             )),
             UdpSessionAcceptKind::Classified(UdpSessionProtocol::Quic),
             host.clone(),
+            Arc::new(MockDns),
         );
         listener.protocol_admission = Some(ServerProtocolAdmissionController::new(1, 1));
         listener.listen().await?;
@@ -989,6 +1185,7 @@ mod tests {
                     peer_addr: "127.0.0.1:31000".parse().unwrap(),
                 },
                 local_url: "tcp://127.0.0.1:21000".parse().unwrap(),
+                upgrade_permit: None,
             })
             .await
             .unwrap_err();
@@ -1067,6 +1264,7 @@ mod tests {
         });
         let service = TransportListenerService::new(
             host.clone(),
+            Arc::new(MockDns),
             vec![
                 TransportListenerConfig::Tcp {
                     url: "tcp://127.0.0.1:0".parse().unwrap(),
