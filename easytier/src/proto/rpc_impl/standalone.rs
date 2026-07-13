@@ -232,7 +232,9 @@ impl<C: TunnelDialer> StandAloneClient<C> {
 
 #[cfg(test)]
 mod tests {
-    use easytier_core::connectivity::protocol::raw::TunnelDialer as _;
+    use easytier_core::{
+        connectivity::protocol::raw::TunnelDialer as _, listener::SocketListener as _,
+    };
 
     use crate::proto::rpc_impl::standalone::{
         StandAloneServer, runtime_rpc_dialer, runtime_rpc_listener,
@@ -249,5 +251,15 @@ mod tests {
         // tcp should closed
         let connector = runtime_rpc_dialer("tcp://0.0.0.0:53884".parse().unwrap());
         connector.connect().await.unwrap_err();
+    }
+
+    #[tokio::test]
+    async fn standalone_ipv4_and_ipv6_listeners_share_port() {
+        let mut ipv6 = runtime_rpc_listener("[::]:0".parse().unwrap());
+        ipv6.listen().await.unwrap();
+        let port = ipv6.local_url().port().unwrap();
+
+        let mut ipv4 = runtime_rpc_listener(format!("0.0.0.0:{port}").parse().unwrap());
+        ipv4.listen().await.unwrap();
     }
 }

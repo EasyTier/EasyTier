@@ -119,10 +119,17 @@ where
     F: VirtualTcpListenerFactory,
 {
     pub fn new(local_addr: SocketAddr, factory: Arc<F>) -> Self {
+        let bind = TcpBindOptions::default()
+            .with_local_addr(Some(local_addr))
+            .with_only_v6(true);
+        Self::new_with_bind(local_addr, bind, factory)
+    }
+
+    pub fn new_with_bind(local_addr: SocketAddr, bind: TcpBindOptions, factory: Arc<F>) -> Self {
         Self {
             inner: TcpSocketListener::new_with_options(
                 socket_url("tcp", local_addr),
-                TcpListenOptions::manual_connect(local_addr),
+                TcpListenOptions::manual_connect(local_addr).with_bind(bind),
                 factory,
             ),
         }
