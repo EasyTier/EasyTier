@@ -291,9 +291,10 @@ pub async fn run_web_client(
         None => gethostname::gethostname().to_string_lossy().to_string(),
         Some(hostname) => hostname,
     };
+    let ring_registry = manager.ring_registry();
     let adapters = runtime_core_instance_adapters_with_ring_registry(
         global_ctx.clone(),
-        manager.ring_registry(),
+        ring_registry.clone(),
     );
     let endpoint_resolver = Arc::new(CoreManualEndpointResolver::new(
         adapters.host.clone(),
@@ -309,7 +310,8 @@ pub async fn run_web_client(
             .protocol
             .expect("native runtime should provide protocol upgrades"),
         runtime_manual_options(&global_ctx),
-    );
+    )
+    .with_ring_registry(ring_registry);
     Ok(WebClient::new(
         ConfigServerConnector {
             url: c_url,

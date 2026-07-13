@@ -18,6 +18,7 @@ use tokio::task::JoinSet;
 use tokio_util::{sync::CancellationToken, task::AbortOnDropHandle};
 use url::Url;
 
+use crate::tunnel::ring::RingTunnelRegistry;
 use crate::{
     connectivity::{
         protocol::ClientProtocolUpgrader,
@@ -148,6 +149,7 @@ where
     endpoint_resolver: Arc<dyn ManualEndpointResolver>,
     protocol: Arc<dyn ClientProtocolUpgrader<<H as VirtualTcpSocketFactory>::Socket>>,
     options: ManualConnectorOptions,
+    ring_registry: Option<Arc<RingTunnelRegistry>>,
 }
 
 impl<H> ManualTunnelConnector<H>
@@ -167,7 +169,13 @@ where
             endpoint_resolver,
             protocol,
             options,
+            ring_registry: None,
         }
+    }
+
+    pub fn with_ring_registry(mut self, ring_registry: Arc<RingTunnelRegistry>) -> Self {
+        self.ring_registry = Some(ring_registry);
+        self
     }
 
     pub async fn connect(
@@ -186,6 +194,25 @@ where
                 "unsupported client protocol upgrader: {}",
                 endpoint.url.scheme()
             );
+        }
+
+        if endpoint.url.scheme() == "ring" {
+            let remote_id = endpoint
+                .url
+                .host_str()
+                .ok_or_else(|| anyhow::anyhow!("ring URL has no peer id: {}", endpoint.url))?
+                .parse()?;
+            let tunnel = self
+                .ring_registry
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("ring registry is not configured"))?
+                .connect(remote_id)?
+                .into_tunnel();
+            return Ok(apply_resolved_endpoint_info(
+                tunnel,
+                requested_url,
+                endpoint.tunnel_prefixes,
+            ));
         }
 
         let transport = ManualTransport::from_url(&endpoint.url)?;

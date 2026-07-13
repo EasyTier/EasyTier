@@ -189,10 +189,28 @@ pub struct AcceptedRingSocket {
     pub remote_id: RingSocketId,
 }
 
+impl AcceptedRingSocket {
+    pub fn into_tunnel(self) -> Box<dyn Tunnel> {
+        Box::new(RingTunnel::new(
+            self.socket,
+            Some(ring_tunnel_info(self.local_id, self.remote_id)),
+        ))
+    }
+}
+
 pub struct DialedRingSocket {
     pub socket: Arc<RingTunnelSocket>,
     pub local_id: RingSocketId,
     pub remote_id: RingSocketId,
+}
+
+impl DialedRingSocket {
+    pub fn into_tunnel(self) -> Box<dyn Tunnel> {
+        Box::new(RingTunnel::new(
+            self.socket,
+            Some(ring_tunnel_info(self.local_id, self.remote_id)),
+        ))
+    }
 }
 
 pub struct RingTunnelSocketListener {
@@ -386,6 +404,21 @@ impl Tunnel for RingTunnel {
     }
 }
 
+fn ring_tunnel_info(local_id: RingSocketId, remote_id: RingSocketId) -> TunnelInfo {
+    TunnelInfo {
+        tunnel_type: "ring".to_owned(),
+        local_addr: Some(ring_url(local_id).into()),
+        remote_addr: Some(ring_url(remote_id).into()),
+        resolved_remote_addr: Some(ring_url(remote_id).into()),
+    }
+}
+
+fn ring_url(id: RingSocketId) -> url::Url {
+    format!("ring://{id}")
+        .parse()
+        .expect("ring socket id should form a valid URL")
+}
+
 pub fn create_ring_tunnel_pair() -> (Box<dyn Tunnel>, Box<dyn Tunnel>) {
     let (first, second) = create_ring_socket_pair(RING_TUNNEL_CAP);
     (
@@ -429,6 +462,25 @@ mod tests {
             first.connect(listener_id),
             Err(RingTunnelRegistryError::NotFound(id)) if id == listener_id
         ));
+    }
+
+    #[tokio::test]
+    async fn registry_endpoints_upgrade_to_packet_native_tunnels() {
+        let listener_id = uuid::Uuid::new_v4();
+        let registry = Arc::new(RingTunnelRegistry::default());
+        let mut listener = registry.bind(listener_id).unwrap();
+        let client = registry.connect(listener_id).unwrap().into_tunnel();
+        let server = listener.accept().await.unwrap().into_tunnel();
+        let (_client_stream, mut client_sink) = client.split();
+        let (mut server_stream, _server_sink) = server.split();
+
+        client_sink
+            .send(ZCPacket::new_with_payload(b"packet-native"))
+            .await
+            .unwrap();
+        let packet = server_stream.next().await.unwrap().unwrap();
+        assert_eq!(packet.payload(), b"packet-native");
+        assert_eq!(client.info().unwrap().tunnel_type, "ring");
     }
 
     #[tokio::test]
