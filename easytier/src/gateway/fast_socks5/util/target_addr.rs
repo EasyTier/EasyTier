@@ -1,4 +1,4 @@
-pub use easytier_core::proxy::socks5_protocol::{AddrError, TargetAddr, read_address};
+pub use easytier_core::proxy::socks5_protocol::{AddrError, TargetAddr};
 
 use anyhow::Context;
 use tokio::net::lookup_host;

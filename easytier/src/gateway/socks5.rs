@@ -24,7 +24,8 @@ use crate::{
     common::{config::PortForwardConfig, global_ctx::GlobalCtxEvent, join_joinset_background},
     gateway::fast_socks5::{
         server::{
-            AcceptAuthentication, AsyncTcpConnector, Config, SimpleUserPassword, Socks5Socket,
+            AcceptAuthentication, AsyncTcpConnector, Config, RuntimeSocks5Server,
+            SimpleUserPassword, Socks5Socket,
         },
         util::stream::tcp_connect_with_timeout,
     },
@@ -483,7 +484,12 @@ impl Socks5ServerNet {
         config.set_skip_auth(false);
         config.set_allow_no_auth(true);
 
-        let socket = Socks5Socket::new(stream, Arc::new(config), connector);
+        let socket = Socks5Socket::new(
+            stream,
+            Arc::new(config),
+            connector,
+            Arc::new(RuntimeSocks5Server),
+        );
 
         match socket.upgrade_to_socks5().await {
             Ok(_) => {

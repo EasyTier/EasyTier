@@ -27,6 +27,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod server;
 pub mod target_addr;
 
 use anyhow::Context;
