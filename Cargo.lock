@@ -2562,6 +2562,7 @@ dependencies = [
  "dashmap",
  "dunce",
  "easytier",
+ "easytier-core",
  "gethostname 1.1.0",
  "libc",
  "once_cell",

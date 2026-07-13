@@ -22,11 +22,14 @@ use easytier::{
     },
     instance_manager::NetworkInstanceManager,
     launcher::{NetworkConfig, NetworkConfigExt},
+    proto::rpc_impl::standalone::{runtime_rpc_dialer, runtime_rpc_listener},
     rpc_service::ApiRpcServer,
-    tunnel::TunnelListener,
-    tunnel::ring::RingTunnelListener,
-    tunnel::tcp::TcpTunnelListener,
     utils::panic::setup_panic_handler,
+};
+use easytier_core::{
+    connectivity::protocol::raw::TunnelDialer as _,
+    listener::SocketListener,
+    tunnel::{Tunnel, ring::RingTunnelRegistry},
 };
 use std::ops::Deref;
 use std::sync::Arc;
@@ -43,11 +46,13 @@ static INSTANCE_MANAGER: once_cell::sync::Lazy<RwLock<Option<Arc<NetworkInstance
 
 static RPC_RING_UUID: once_cell::sync::Lazy<uuid::Uuid> =
     once_cell::sync::Lazy::new(uuid::Uuid::new_v4);
+static RPC_RING_REGISTRY: once_cell::sync::Lazy<Arc<RingTunnelRegistry>> =
+    once_cell::sync::Lazy::new(|| Arc::new(RingTunnelRegistry::default()));
 
 static CLIENT_MANAGER: once_cell::sync::Lazy<RwLock<Option<manager::GUIClientManager>>> =
     once_cell::sync::Lazy::new(|| RwLock::new(None));
 
-type BoxedTunnelListener = Box<dyn TunnelListener>;
+type BoxedTunnelListener = Box<dyn SocketListener<Accepted = Box<dyn Tunnel>>>;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RpcServerKind {
@@ -372,6 +377,21 @@ fn normalize_normal_mode_rpc_portal(portal: &str) -> Result<(url::Url, url::Url)
     Ok((bind_url, connect_url))
 }
 
+async fn resolve_rpc_bind_url(url: &url::Url) -> Result<std::net::SocketAddr, String> {
+    if url.scheme() != "tcp" {
+        return Err(format!("RPC portal requires tcp URL: {url}"));
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| format!("RPC portal has no host: {url}"))?;
+    let port = url.port().unwrap_or(11010);
+    tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|error| format!("failed to resolve RPC portal {url}: {error}"))?
+        .next()
+        .ok_or_else(|| format!("RPC portal has no resolved address: {url}"))
+}
+
 #[tauri::command]
 async fn init_rpc_connection(
     _app: AppHandle,
@@ -422,12 +442,15 @@ async fn init_rpc_connection(
             *rpc_server_guard = None;
 
             let tunnel: BoxedTunnelListener = match desired_kind {
-                RpcServerKind::Ring => Box::new(RingTunnelListener::new(
-                    format!("ring://{}", RPC_RING_UUID.deref()).parse().unwrap(),
-                )),
-                RpcServerKind::Tcp => Box::new(TcpTunnelListener::new(
-                    bind_url.clone().expect("tcp rpc must have bind url"),
-                )),
+                RpcServerKind::Ring => Box::new(
+                    RPC_RING_REGISTRY
+                        .bind(*RPC_RING_UUID.deref())
+                        .map_err(|error| error.to_string())?,
+                ),
+                RpcServerKind::Tcp => {
+                    let bind_url = bind_url.as_ref().expect("tcp rpc must have bind url");
+                    Box::new(runtime_rpc_listener(resolve_rpc_bind_url(bind_url).await?))
+                }
             };
 
             let rpc_server = ApiRpcServer::from_tunnel(tunnel, instance_manager.clone())
@@ -600,18 +623,13 @@ mod manager {
     use super::*;
     use async_trait::async_trait;
     use dashmap::{DashMap, DashSet};
-    use easytier::common::global_ctx::GlobalCtx;
-    use easytier::common::stun::MockStunInfoCollector;
     use easytier::launcher::{NetworkConfig, NetworkConfigExt};
     use easytier::proto::api::logger::{LoggerRpc, LoggerRpcClientFactory, SetLoggerConfigRequest};
     use easytier::proto::api::manage::RunNetworkInstanceRequest;
-    use easytier::proto::common::NatType;
     use easytier::proto::rpc_impl::bidirect::BidirectRpcManager;
     use easytier::proto::rpc_types::controller::BaseController;
     use easytier::rpc_service::logger::LoggerRpcService;
     use easytier::rpc_service::remote_client::PersistentConfig;
-    use easytier::tunnel::TunnelConnector;
-    use easytier::tunnel::ring::RingTunnelConnector;
     use easytier::web_client::WebClientHooks;
 
     pub(super) struct GuiHooks {
@@ -878,26 +896,12 @@ mod manager {
     }
     impl GUIClientManager {
         pub async fn new(rpc_url: Option<String>) -> Result<Self, anyhow::Error> {
-            let global_ctx = Arc::new(GlobalCtx::new(TomlConfigLoader::default()));
-            global_ctx.replace_stun_info_collector(Box::new(MockStunInfoCollector {
-                udp_nat_type: NatType::Unknown,
-            }));
-            let mut flags = global_ctx.get_flags();
-            flags.bind_device = false;
-            global_ctx.set_flags(flags);
             let tunnel = if let Some(url) = rpc_url {
-                let mut connector = easytier::connector::create_connector_by_url(
-                    &url,
-                    &global_ctx,
-                    easytier::tunnel::IpVersion::Both,
-                )
-                .await?;
-                connector.connect().await?
+                runtime_rpc_dialer(url.parse()?).connect().await?
             } else {
-                let mut connector = RingTunnelConnector::new(
-                    format!("ring://{}", RPC_RING_UUID.deref()).parse().unwrap(),
-                );
-                connector.connect().await?
+                RPC_RING_REGISTRY
+                    .connect(*RPC_RING_UUID.deref())?
+                    .into_tunnel()
             };
 
             let rpc_manager = BidirectRpcManager::new();

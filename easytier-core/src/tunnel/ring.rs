@@ -7,11 +7,13 @@ use std::{
     task::{Context, Poll, ready},
 };
 
+use async_trait::async_trait;
 use futures::{Sink, Stream};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::{
+    listener::SocketListener,
     proto::common::TunnelInfo,
     socket::ring::{
         RING_SOCKET_CAPACITY, RingSocket, RingSocketId, RingSocketReceiver, RingSocketSendError,
@@ -253,6 +255,23 @@ impl RingTunnelSocketListener {
             local_id: self.local_id,
             remote_id: conn.client.id(),
         })
+    }
+}
+
+#[async_trait]
+impl SocketListener for RingTunnelSocketListener {
+    type Accepted = Box<dyn Tunnel>;
+
+    async fn listen(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
+        Ok(RingTunnelSocketListener::accept(self).await?.into_tunnel())
+    }
+
+    fn local_url(&self) -> url::Url {
+        ring_url(self.local_id)
     }
 }
 

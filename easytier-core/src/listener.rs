@@ -26,6 +26,7 @@ impl ListenerConnectionCounter for EmptyConnectionCounter {
 }
 
 #[async_trait]
+#[auto_impl::auto_impl(Box)]
 pub trait SocketListener: Debug + Send {
     type Accepted: Send + 'static;
 
