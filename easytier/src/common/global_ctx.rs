@@ -338,6 +338,10 @@ impl PeerContext for GlobalCtx {
         GlobalCtx::is_pubkey_trusted_with_source(self, pubkey, network_name, source)
     }
 
+    fn list_trusted_keys(&self, network_name: &str) -> Vec<(Vec<u8>, TrustedKeyMetadata)> {
+        GlobalCtx::list_trusted_keys(self, network_name)
+    }
+
     fn trusted_credential_pubkeys(
         &self,
         network_secret: &str,

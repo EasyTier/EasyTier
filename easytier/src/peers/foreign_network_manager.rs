@@ -30,7 +30,6 @@ use crate::{
         error::Error,
         global_ctx::{ArcGlobalCtx, GlobalCtx, NetworkIdentity, TrustedKeySource},
         shrink_dashmap,
-        stats_manager::StatsManager,
     },
     connector::runtime::RuntimeConnectorHost,
     proto::{
@@ -271,10 +270,6 @@ impl core_foreign_network_manager::ForeignNetworkRuntime for ForeignNetworkRunti
         shrink_dashmap(&self.foreign_contexts, None);
     }
 
-    fn stats_manager(&self) -> Arc<StatsManager> {
-        self.global_ctx.stats_manager().clone()
-    }
-
     fn register_peer_rpc_services(
         &self,
         peer_rpc: &Arc<PeerRpcManager>,
@@ -295,29 +290,6 @@ impl core_foreign_network_manager::ForeignNetworkRuntime for ForeignNetworkRunti
             ))),
             network_name,
         );
-    }
-
-    fn list_trusted_keys(
-        &self,
-        foreign_context: &core_foreign_network_manager::ForeignNetworkContext,
-        network_name: &str,
-    ) -> Vec<core_foreign_network_manager::ForeignNetworkTrustedKeyInfo> {
-        let Some(foreign_context) = self.get_runtime_foreign_context(network_name, foreign_context)
-        else {
-            return Vec::new();
-        };
-        let foreign_global_ctx = &foreign_context.global_ctx;
-        foreign_global_ctx
-            .list_trusted_keys(network_name)
-            .into_iter()
-            .map(
-                |(pubkey, metadata)| core_foreign_network_manager::ForeignNetworkTrustedKeyInfo {
-                    pubkey,
-                    source: metadata.source,
-                    expiry_unix: metadata.expiry_unix,
-                },
-            )
-            .collect()
     }
 
     fn sync_parent_relay_data_feature_flag(
@@ -417,6 +389,7 @@ impl ForeignNetworkManager {
         packet_sender_to_mgr: PacketRecvChan,
         accessor: Box<dyn GlobalForeignNetworkAccessor>,
     ) -> Self {
+        let stats_mgr = global_ctx.stats_manager().clone();
         let runtime = Arc::new(ForeignNetworkRuntimeImpl::new_with_ring_registry(
             global_ctx,
             parent_context,
@@ -425,6 +398,7 @@ impl ForeignNetworkManager {
         Self {
             core: core_foreign_network_manager::ForeignNetworkManager::new(
                 runtime.clone(),
+                stats_mgr,
                 peer_session_store,
                 packet_sender_to_mgr,
                 accessor,

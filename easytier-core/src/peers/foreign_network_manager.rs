@@ -327,22 +327,12 @@ pub trait ForeignNetworkRuntime: Send + Sync + 'static {
     ) {
     }
 
-    fn stats_manager(&self) -> Arc<StatsManager>;
-
     fn register_peer_rpc_services(
         &self,
         _peer_rpc: &Arc<PeerRpcManager>,
         _foreign_context: &ForeignNetworkContext,
         _network_name: &str,
     ) {
-    }
-
-    fn list_trusted_keys(
-        &self,
-        _foreign_context: &ForeignNetworkContext,
-        _network_name: &str,
-    ) -> Vec<ForeignNetworkTrustedKeyInfo> {
-        Vec::new()
     }
 
     fn sync_parent_relay_data_feature_flag(
@@ -421,11 +411,11 @@ impl ForeignNetworkEntry {
         network: NetworkIdentity,
         my_peer_id: PeerId,
         runtime: Arc<dyn ForeignNetworkRuntime>,
+        stats_mgr: Arc<StatsManager>,
         relay_data: bool,
         peer_session_store: Arc<PeerSessionStore>,
         pm_packet_sender: PacketRecvChan,
     ) -> Self {
-        let stats_mgr = runtime.stats_manager();
         let foreign_context = runtime.build_foreign_context(&network, relay_data);
         let network_name = network.network_name.clone();
 
@@ -723,6 +713,7 @@ impl ForeignNetworkManagerData {
         dst_peer_id: PeerId,
         relay_data: bool,
         runtime: Arc<dyn ForeignNetworkRuntime>,
+        stats_mgr: Arc<StatsManager>,
         peer_session_store: Arc<PeerSessionStore>,
         pm_packet_sender: &PacketRecvChan,
     ) -> (Arc<ForeignNetworkEntry>, bool) {
@@ -738,6 +729,7 @@ impl ForeignNetworkManagerData {
                     network_identity.clone(),
                     my_peer_id,
                     runtime,
+                    stats_mgr,
                     relay_data,
                     peer_session_store,
                     pm_packet_sender.clone(),
@@ -767,6 +759,7 @@ pub const FOREIGN_NETWORK_SERVICE_ID: u32 = 1;
 
 pub struct ForeignNetworkManager {
     runtime: Arc<dyn ForeignNetworkRuntime>,
+    stats_mgr: Arc<StatsManager>,
     peer_session_store: Arc<PeerSessionStore>,
     packet_sender_to_mgr: PacketRecvChan,
 
@@ -804,6 +797,7 @@ impl ForeignNetworkManager {
 
     pub fn new(
         runtime: Arc<dyn ForeignNetworkRuntime>,
+        stats_mgr: Arc<StatsManager>,
         peer_session_store: Arc<PeerSessionStore>,
         packet_sender_to_mgr: PacketRecvChan,
         accessor: Box<dyn GlobalForeignNetworkAccessor>,
@@ -823,6 +817,7 @@ impl ForeignNetworkManager {
 
         Self {
             runtime,
+            stats_mgr,
             peer_session_store,
             packet_sender_to_mgr,
             data,
@@ -890,6 +885,7 @@ impl ForeignNetworkManager {
                 peer_conn.get_peer_id(),
                 ret.is_ok(),
                 self.runtime.clone(),
+                self.stats_mgr.clone(),
                 self.peer_session_store.clone(),
                 &self.packet_sender_to_mgr,
             )
@@ -1057,8 +1053,16 @@ impl ForeignNetworkManager {
                 my_peer_id_for_this_network: item.my_peer_id,
                 peers: Default::default(),
                 trusted_keys: if include_trusted_keys {
-                    self.runtime
-                        .list_trusted_keys(&item.foreign_context, &item.network.network_name)
+                    item.foreign_context
+                        .peer_context
+                        .list_trusted_keys(&item.network.network_name)
+                        .into_iter()
+                        .map(|(pubkey, metadata)| ForeignNetworkTrustedKeyInfo {
+                            pubkey,
+                            source: metadata.source,
+                            expiry_unix: metadata.expiry_unix,
+                        })
+                        .collect()
                 } else {
                     Default::default()
                 },

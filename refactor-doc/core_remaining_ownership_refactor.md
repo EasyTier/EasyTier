@@ -99,9 +99,12 @@ Core owns:
   and is enforced by the core foreign manager.
 - Foreign relay limiter selection is performed by core through the parent
   peer context; the native runtime no longer constructs or selects it.
-- The remaining runtime surface is context construction/removal, metrics,
-  native direct-connector RPC registration, trusted-key presentation, and the
-  temporary parent feature synchronization loop.
+- Statistics are an explicit core manager dependency, and trusted-key
+  management snapshots are read through the core peer context; neither is
+  projected by the native foreign runtime anymore.
+- The remaining runtime surface is context construction/removal, native
+  direct-connector RPC registration, and the temporary parent feature
+  synchronization loop.
 
 The native Host Adapter owns only:
 

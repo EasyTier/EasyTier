@@ -176,6 +176,10 @@ pub trait PeerRuntimeSupport: Send + Sync {
         false
     }
 
+    fn list_trusted_keys(&self, _network_name: &str) -> Vec<(Vec<u8>, TrustedKeyMetadata)> {
+        Vec::new()
+    }
+
     fn trusted_credential_pubkeys(
         &self,
         _network_secret: &str,
@@ -673,6 +677,10 @@ pub trait PeerContext: Send + Sync {
         false
     }
 
+    fn list_trusted_keys(&self, _network_name: &str) -> Vec<(Vec<u8>, TrustedKeyMetadata)> {
+        Vec::new()
+    }
+
     fn trusted_credential_pubkeys(
         &self,
         _network_secret: &str,
@@ -893,6 +901,10 @@ impl PeerContext for ConfigPeerContext {
         self.support
             .trusted_keys
             .verify_trusted_key_with_source(pubkey, network_name, Some(source))
+    }
+
+    fn list_trusted_keys(&self, network_name: &str) -> Vec<(Vec<u8>, TrustedKeyMetadata)> {
+        self.support.trusted_keys.list_trusted_keys(network_name)
     }
 
     fn trusted_credential_pubkeys(
@@ -1136,6 +1148,10 @@ impl PeerContext for SubmittedPeerContext {
     ) -> bool {
         self.support
             .is_pubkey_trusted_with_source(pubkey, network_name, source)
+    }
+
+    fn list_trusted_keys(&self, network_name: &str) -> Vec<(Vec<u8>, TrustedKeyMetadata)> {
+        self.support.list_trusted_keys(network_name)
     }
 
     fn trusted_credential_pubkeys(
