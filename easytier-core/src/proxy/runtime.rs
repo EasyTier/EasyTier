@@ -24,6 +24,10 @@ pub trait ProxyRuntimeInfo: Send + Sync {
     fn is_ip_local_virtual_ip(&self, ip: &IpAddr) -> bool;
 }
 
+pub trait WrappedTcpDestinationRuntime: ProxyRuntimeInfo {
+    fn should_deny_tcp_proxy(&self, dst: SocketAddr) -> bool;
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ProxyRuntimeError {
     #[error(transparent)]

@@ -1,11 +1,109 @@
 use std::{
     future::Future,
-    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
+    net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
+    sync::Arc,
 };
 
+use easytier_proto::acl::{ChainType, Protocol};
 use smoltcp::wire::{IpProtocol, Ipv4Packet, TcpPacket};
 
-use crate::packet::{PacketType, ZCPacket};
+use crate::{
+    packet::{PacketType, ZCPacket},
+    peers::{acl_filter::AclFilter, acl_processor::PacketInfo, route_trait::Route},
+    proxy::{
+        cidr_table::ProxyCidrTable, proxy_acl::ProxyAclHandler,
+        runtime::WrappedTcpDestinationRuntime,
+    },
+};
+
+#[async_trait::async_trait]
+pub trait WrappedTcpPeerGroupResolver: Send + Sync {
+    async fn get_peer_groups_by_ip(&self, ip: &IpAddr) -> Arc<Vec<String>>;
+}
+
+#[async_trait::async_trait]
+impl<T> WrappedTcpPeerGroupResolver for T
+where
+    T: Route + Send + Sync + ?Sized,
+{
+    async fn get_peer_groups_by_ip(&self, ip: &IpAddr) -> Arc<Vec<String>> {
+        Route::get_peer_groups_by_ip(self, ip).await
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct WrappedTcpDestinationRequest<'a> {
+    pub src: SocketAddr,
+    pub dst: SocketAddr,
+    pub initial_payload: &'a [u8],
+}
+
+#[derive(Clone)]
+pub struct WrappedTcpDestinationPlan {
+    pub socket_dst: SocketAddr,
+    pub acl_handler: ProxyAclHandler,
+}
+
+pub async fn plan_wrapped_tcp_destination(
+    request: WrappedTcpDestinationRequest<'_>,
+    cidr_table: &ProxyCidrTable,
+    runtime: &dyn WrappedTcpDestinationRuntime,
+    group_resolver: &dyn WrappedTcpPeerGroupResolver,
+    acl_filter: Arc<AclFilter>,
+) -> anyhow::Result<WrappedTcpDestinationPlan> {
+    let mut mapped_dst = request.dst;
+    if let IpAddr::V4(dst_ip) = mapped_dst.ip()
+        && let Some(real_ip) = cidr_table.lookup_v4(dst_ip)
+    {
+        mapped_dst.set_ip(real_ip.into());
+    }
+
+    let src_ip = request.src.ip();
+    let dst_ip = mapped_dst.ip();
+    let (src_groups, dst_groups) = tokio::join!(
+        group_resolver.get_peer_groups_by_ip(&src_ip),
+        group_resolver.get_peer_groups_by_ip(&dst_ip),
+    );
+
+    if runtime.should_deny_tcp_proxy(mapped_dst) {
+        anyhow::bail!(
+            "dst socket {:?} is in running listeners, ignore it",
+            mapped_dst
+        );
+    }
+
+    let send_to_self = runtime.is_ip_local_virtual_ip(&dst_ip);
+    let socket_dst = if send_to_self && runtime.proxy_runtime_snapshot().no_tun {
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), mapped_dst.port())
+    } else {
+        mapped_dst
+    };
+
+    let acl_handler = ProxyAclHandler {
+        acl_filter,
+        packet_info: PacketInfo {
+            src_ip,
+            dst_ip,
+            src_port: Some(request.src.port()),
+            dst_port: Some(socket_dst.port()),
+            protocol: Protocol::Tcp,
+            packet_size: request.initial_payload.len(),
+            src_groups,
+            dst_groups,
+        },
+        chain_type: if send_to_self {
+            ChainType::Inbound
+        } else {
+            ChainType::Forward
+        },
+    };
+    acl_handler.handle_packet(request.initial_payload)?;
+
+    Ok(WrappedTcpDestinationPlan {
+        socket_dst,
+        acl_handler,
+    })
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WrappedTcpProxyTransport {
@@ -97,7 +195,124 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::proxy::{
+        cidr_table::{ProxyCidrRule, ProxyCidrSnapshot},
+        runtime::{ProxyRuntimeInfo, ProxyRuntimeSnapshot},
+    };
     use smoltcp::wire::{IpAddress, IpProtocol, Ipv4Packet, TcpPacket};
+
+    struct TestDestinationRuntime {
+        local_ip: IpAddr,
+        no_tun: bool,
+        denied: Option<SocketAddr>,
+    }
+
+    impl ProxyRuntimeInfo for TestDestinationRuntime {
+        fn proxy_runtime_snapshot(&self) -> ProxyRuntimeSnapshot {
+            ProxyRuntimeSnapshot {
+                no_tun: self.no_tun,
+                ..Default::default()
+            }
+        }
+
+        fn is_ip_local_virtual_ip(&self, ip: &IpAddr) -> bool {
+            *ip == self.local_ip
+        }
+    }
+
+    impl WrappedTcpDestinationRuntime for TestDestinationRuntime {
+        fn should_deny_tcp_proxy(&self, dst: SocketAddr) -> bool {
+            self.denied == Some(dst)
+        }
+    }
+
+    struct TestGroupResolver;
+
+    #[async_trait::async_trait]
+    impl WrappedTcpPeerGroupResolver for TestGroupResolver {
+        async fn get_peer_groups_by_ip(&self, ip: &IpAddr) -> Arc<Vec<String>> {
+            Arc::new(vec![format!("group-{ip}")])
+        }
+    }
+
+    fn destination_runtime(local_ip: &str, no_tun: bool) -> TestDestinationRuntime {
+        TestDestinationRuntime {
+            local_ip: local_ip.parse().unwrap(),
+            no_tun,
+            denied: None,
+        }
+    }
+
+    fn mapped_cidr_table() -> ProxyCidrTable {
+        ProxyCidrTable::from_snapshot(ProxyCidrSnapshot {
+            rules: vec![ProxyCidrRule {
+                cidr: "10.10.0.0/16".parse().unwrap(),
+                mapped_cidr: Some("100.64.0.0/16".parse().unwrap()),
+            }],
+        })
+    }
+
+    async fn destination_plan(
+        runtime: &TestDestinationRuntime,
+        dst: &str,
+    ) -> anyhow::Result<WrappedTcpDestinationPlan> {
+        plan_wrapped_tcp_destination(
+            WrappedTcpDestinationRequest {
+                src: "10.20.0.2:40000".parse().unwrap(),
+                dst: dst.parse().unwrap(),
+                initial_payload: b"header",
+            },
+            &mapped_cidr_table(),
+            runtime,
+            &TestGroupResolver,
+            Arc::new(AclFilter::new()),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn destination_plan_maps_cidr_and_builds_forward_acl_context() {
+        let plan = destination_plan(&destination_runtime("10.30.0.1", false), "100.64.2.3:443")
+            .await
+            .unwrap();
+
+        assert_eq!(plan.socket_dst, "10.10.2.3:443".parse().unwrap());
+        assert_eq!(plan.acl_handler.chain_type, ChainType::Forward);
+        assert_eq!(
+            plan.acl_handler.packet_info.dst_ip,
+            "10.10.2.3".parse::<IpAddr>().unwrap()
+        );
+        assert_eq!(
+            plan.acl_handler.packet_info.dst_groups.as_ref(),
+            &["group-10.10.2.3"]
+        );
+    }
+
+    #[tokio::test]
+    async fn destination_plan_rewrites_local_no_tun_socket_after_acl_identity() {
+        let plan = destination_plan(&destination_runtime("10.10.2.3", true), "100.64.2.3:443")
+            .await
+            .unwrap();
+
+        assert_eq!(plan.socket_dst, "127.0.0.1:443".parse().unwrap());
+        assert_eq!(plan.acl_handler.chain_type, ChainType::Inbound);
+        assert_eq!(
+            plan.acl_handler.packet_info.dst_ip,
+            "10.10.2.3".parse::<IpAddr>().unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn destination_plan_denies_mapped_running_listener() {
+        let mut runtime = destination_runtime("10.30.0.1", false);
+        runtime.denied = Some("10.10.2.3:443".parse().unwrap());
+
+        let err = destination_plan(&runtime, "100.64.2.3:443")
+            .await
+            .err()
+            .expect("mapped listener must be denied");
+        assert!(err.to_string().contains("running listeners"));
+    }
 
     fn build_tcp_packet(src: SocketAddrV4, dst: SocketAddrV4, syn: bool, ack: bool) -> ZCPacket {
         let mut raw = vec![0; smoltcp::wire::IPV4_HEADER_LEN + smoltcp::wire::TCP_HEADER_LEN];

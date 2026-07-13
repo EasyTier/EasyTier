@@ -1469,6 +1469,10 @@ impl PeerManagerCore {
         self.acl_filter.get_stats()
     }
 
+    pub fn acl_filter(&self) -> Arc<AclFilter> {
+        self.acl_filter.clone()
+    }
+
     pub fn network_name(&self) -> &str {
         &self.network_name
     }
