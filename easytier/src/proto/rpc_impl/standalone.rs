@@ -301,9 +301,13 @@ mod tests {
         let listener_url = listener.local_url();
         let dialer = runtime_udp_tunnel_dialer(listener_url.clone());
 
-        let (accepted, connected) = tokio::join!(listener.accept(), dialer.connect());
-        let accepted = accepted.unwrap();
-        let connected = connected.unwrap();
+        let (accepted, connected) =
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                tokio::try_join!(listener.accept(), dialer.connect())
+            })
+            .await
+            .unwrap()
+            .unwrap();
 
         assert_eq!(
             accepted.info().unwrap().local_addr.unwrap().url,
