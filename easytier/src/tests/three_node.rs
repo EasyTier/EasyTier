@@ -1830,6 +1830,7 @@ pub async fn wireguard_vpn_portal(#[values(true, false)] test_v6: bool) {
             wireguard_listen: "0.0.0.0:22121".parse().unwrap(),
             client_cidr: "10.14.14.0/24".parse().unwrap(),
         });
+    insts[2].get_peer_manager().refresh_runtime_config();
     insts[2].run_vpn_portal().await.unwrap();
 
     let dst_socket_addr = if test_v6 {

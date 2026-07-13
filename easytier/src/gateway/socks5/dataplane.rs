@@ -362,6 +362,8 @@ mod tests {
         let b_ip: cidr::Ipv4Inet = "10.126.126.2/24".parse().unwrap();
         a.get_global_ctx().set_ipv4(Some(a_ip));
         b.get_global_ctx().set_ipv4(Some(b_ip));
+        a.refresh_runtime_config();
+        b.refresh_runtime_config();
 
         let server_a = Socks5Server::new(a.get_global_ctx(), a.clone());
         let server_b = Socks5Server::new(b.get_global_ctx(), b.clone());

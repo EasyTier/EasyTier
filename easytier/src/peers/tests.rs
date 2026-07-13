@@ -1365,6 +1365,8 @@ async fn credential_node_connected_via_admin_b_trusts_admin_a_groups() {
             ..Default::default()
         }),
     }));
+    admin_a.refresh_runtime_config();
+    admin_b.refresh_runtime_config();
 
     connect_peer_manager(admin_a.clone(), admin_b.clone()).await;
     wait_route_appear(admin_a.clone(), admin_b.clone())
