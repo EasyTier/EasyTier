@@ -87,6 +87,24 @@ impl TunnelListener for WsTunnelListener {
     }
 }
 
+#[async_trait::async_trait]
+impl easytier_core::listener::SocketListener for WsTunnelListener {
+    type Accepted = Box<dyn Tunnel>;
+
+    async fn listen(&mut self) -> anyhow::Result<()> {
+        <Self as TunnelListener>::listen(self).await?;
+        Ok(())
+    }
+
+    async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
+        Ok(<Self as TunnelListener>::accept(self).await?)
+    }
+
+    fn local_url(&self) -> url::Url {
+        <Self as TunnelListener>::local_url(self)
+    }
+}
+
 pub struct WsTunnelConnector {
     addr: url::Url,
     ip_version: IpVersion,
@@ -106,6 +124,22 @@ impl WsTunnelConnector {
             bind_addrs: vec![],
             socket_mark: None,
         }
+    }
+
+    pub fn set_ip_version(&mut self, ip_version: IpVersion) {
+        self.ip_version = ip_version;
+    }
+
+    pub fn set_bind_addrs(&mut self, addrs: Vec<SocketAddr>) {
+        self.bind_addrs = addrs;
+    }
+
+    pub fn set_resolved_addr(&mut self, addr: SocketAddr) {
+        self.resolved_addr = Some(addr);
+    }
+
+    pub fn set_socket_mark(&mut self, socket_mark: Option<u32>) {
+        self.socket_mark = socket_mark;
     }
 
     async fn connect_with(
@@ -160,6 +194,18 @@ impl WsTunnelConnector {
         }
 
         wait_for_connect_futures(futures).await
+    }
+
+    async fn connect_tunnel(&self) -> Result<Box<dyn Tunnel>, TunnelError> {
+        let addr = match self.resolved_addr {
+            Some(addr) => addr,
+            None => SocketAddr::from_url(self.addr.clone(), self.ip_version).await?,
+        };
+        if self.bind_addrs.is_empty() || addr.is_ipv6() {
+            self.connect_with_default_bind(addr).await
+        } else {
+            self.connect_with_custom_bind(addr).await
+        }
     }
 }
 
@@ -218,15 +264,7 @@ where
 #[async_trait::async_trait]
 impl TunnelConnector for WsTunnelConnector {
     async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
-        let addr = match self.resolved_addr {
-            Some(addr) => addr,
-            None => SocketAddr::from_url(self.addr.clone(), self.ip_version).await?,
-        };
-        if self.bind_addrs.is_empty() || addr.is_ipv6() {
-            self.connect_with_default_bind(addr).await
-        } else {
-            self.connect_with_custom_bind(addr).await
-        }
+        self.connect_tunnel().await
     }
 
     fn remote_url(&self) -> url::Url {
@@ -234,19 +272,30 @@ impl TunnelConnector for WsTunnelConnector {
     }
 
     fn set_ip_version(&mut self, ip_version: IpVersion) {
-        self.ip_version = ip_version;
+        WsTunnelConnector::set_ip_version(self, ip_version);
     }
 
     fn set_bind_addrs(&mut self, addrs: Vec<SocketAddr>) {
-        self.bind_addrs = addrs;
+        WsTunnelConnector::set_bind_addrs(self, addrs);
     }
 
     fn set_resolved_addr(&mut self, addr: SocketAddr) {
-        self.resolved_addr = Some(addr);
+        WsTunnelConnector::set_resolved_addr(self, addr);
     }
 
     fn set_socket_mark(&mut self, socket_mark: Option<u32>) {
-        self.socket_mark = socket_mark;
+        WsTunnelConnector::set_socket_mark(self, socket_mark);
+    }
+}
+
+#[async_trait::async_trait]
+impl easytier_core::connectivity::protocol::raw::TunnelDialer for WsTunnelConnector {
+    async fn connect(&self) -> anyhow::Result<Box<dyn Tunnel>> {
+        Ok(self.connect_tunnel().await?)
+    }
+
+    fn remote_url(&self) -> url::Url {
+        self.addr.clone()
     }
 }
 

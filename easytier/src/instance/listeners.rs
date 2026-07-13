@@ -21,8 +21,6 @@ use tokio::sync::Mutex;
 #[cfg(test)]
 use easytier_core::tunnel::ring::RingTunnelRegistry;
 
-#[cfg(feature = "faketcp")]
-use crate::tunnel::TunnelListener;
 use crate::{
     common::{
         config::ConfigLoader as _,
@@ -293,7 +291,10 @@ impl Debug for RuntimeFakeTcpSocketListener {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("RuntimeFakeTcpSocketListener")
-            .field("url", &self.inner.local_url())
+            .field(
+                "url",
+                &core_listener::SocketListener::local_url(&self.inner),
+            )
             .finish()
     }
 }
@@ -305,12 +306,12 @@ impl core_listener::SocketListener for RuntimeFakeTcpSocketListener {
 
     async fn listen(&mut self) -> anyhow::Result<()> {
         let _guard = self.net_ns.guard();
-        self.inner.listen().await?;
+        core_listener::SocketListener::listen(&mut self.inner).await?;
         Ok(())
     }
 
     async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
-        let local_url = self.inner.local_url();
+        let local_url = core_listener::SocketListener::local_url(&self.inner);
         let socket = self.inner.accept_socket().await?;
         Ok(AcceptedTransport::Tcp {
             socket: RuntimeTcpSocket::from_fake_tcp(socket),
@@ -320,7 +321,7 @@ impl core_listener::SocketListener for RuntimeFakeTcpSocketListener {
     }
 
     fn local_url(&self) -> url::Url {
-        self.inner.local_url()
+        core_listener::SocketListener::local_url(&self.inner)
     }
 }
 

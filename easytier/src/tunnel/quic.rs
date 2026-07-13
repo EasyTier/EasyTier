@@ -21,7 +21,6 @@ use easytier_core::{
         protocol::{ServerProtocolAdmission, ServerTunnelAcceptor},
         transport::ConnectedUdpSession,
     },
-    listener::SocketListener as _,
     socket::udp::{
         UdpBindOptions, UdpSession, UdpSessionAcceptKind, UdpSessionListenRequest,
         UdpSessionProtocol, UdpSessionSocket, parse_quic_initial_dcid,
@@ -1576,6 +1575,16 @@ pub struct QuicTunnelListener {
     global_ctx: ArcGlobalCtx,
 }
 
+impl std::fmt::Debug for QuicTunnelListener {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("QuicTunnelListener")
+            .field("addr", &self.addr)
+            .field("listening", &self.endpoint.is_some())
+            .finish()
+    }
+}
+
 impl QuicTunnelListener {
     pub fn new(addr: url::Url, global_ctx: ArcGlobalCtx) -> Self {
         let (conn_send, conn_recv) = channel(100);
@@ -1611,7 +1620,7 @@ impl TunnelListener for QuicTunnelListener {
             UdpSessionAcceptKind::Classified(UdpSessionProtocol::Quic),
             NetNS::new(None),
         );
-        session_listener.listen().await?;
+        easytier_core::listener::SocketListener::listen(&mut session_listener).await?;
         let send_socket = session_listener.bound_socket()?.socket();
         let session_listener = Arc::new(session_listener);
         let udp_socket = Arc::new(QuicUdpListenerSocket::new(
@@ -1655,8 +1664,26 @@ impl TunnelListener for QuicTunnelListener {
     fn local_url(&self) -> url::Url {
         self.session_listener
             .as_ref()
-            .map(|listener| listener.local_url())
+            .map(|listener| easytier_core::listener::SocketListener::local_url(listener.as_ref()))
             .unwrap_or_else(|| self.addr.clone())
+    }
+}
+
+#[async_trait::async_trait]
+impl easytier_core::listener::SocketListener for QuicTunnelListener {
+    type Accepted = Box<dyn Tunnel>;
+
+    async fn listen(&mut self) -> anyhow::Result<()> {
+        <Self as TunnelListener>::listen(self).await?;
+        Ok(())
+    }
+
+    async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
+        Ok(<Self as TunnelListener>::accept(self).await?)
+    }
+
+    fn local_url(&self) -> url::Url {
+        <Self as TunnelListener>::local_url(self)
     }
 }
 
@@ -1675,6 +1702,52 @@ impl QuicTunnelConnector {
             ip_version: IpVersion::Both,
             resolved_addr: None,
         }
+    }
+
+    pub fn set_ip_version(&mut self, ip_version: IpVersion) {
+        self.ip_version = ip_version;
+    }
+
+    pub fn set_resolved_addr(&mut self, addr: SocketAddr) {
+        self.resolved_addr = Some(addr);
+    }
+
+    async fn connect_tunnel(&self) -> Result<Box<dyn Tunnel>, TunnelError> {
+        let addr = match self.resolved_addr {
+            Some(addr) => addr,
+            None => SocketAddr::from_url(self.addr.clone(), self.ip_version).await?,
+        };
+        let (endpoint, connection) = QuicEndpointManager::connect(&self.global_ctx, addr).await?;
+
+        let local_addr = endpoint.local_addr()?;
+
+        let (w, r) = connection
+            .open_bi()
+            .await
+            .with_context(|| "open_bi failed")?;
+
+        let info = TunnelInfo {
+            tunnel_type: "quic".to_owned(),
+            local_addr: Some(
+                super::build_url_from_socket_addr(&local_addr.to_string(), "quic").into(),
+            ),
+            remote_addr: Some(self.addr.clone().into()),
+            resolved_remote_addr: Some(
+                super::build_url_from_socket_addr(&connection.remote_address().to_string(), "quic")
+                    .into(),
+            ),
+        };
+
+        let arc_conn = Arc::new(ConnWrapper {
+            conn: connection,
+            _endpoint: None,
+            _udp_session_cleanup: None,
+        });
+        Ok(Box::new(TunnelWrapper::new(
+            FramedReader::new_with_associate_data(r, 4500, Some(Box::new(arc_conn.clone()))),
+            FramedWriter::new_with_associate_data(w, Some(Box::new(arc_conn))),
+            Some(info),
+        )))
     }
 }
 
@@ -1902,41 +1975,7 @@ impl ServerTunnelAcceptor for QuicAcceptedSession {
 #[async_trait::async_trait]
 impl TunnelConnector for QuicTunnelConnector {
     async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
-        let addr = match self.resolved_addr {
-            Some(addr) => addr,
-            None => SocketAddr::from_url(self.addr.clone(), self.ip_version).await?,
-        };
-        let (endpoint, connection) = QuicEndpointManager::connect(&self.global_ctx, addr).await?;
-
-        let local_addr = endpoint.local_addr()?;
-
-        let (w, r) = connection
-            .open_bi()
-            .await
-            .with_context(|| "open_bi failed")?;
-
-        let info = TunnelInfo {
-            tunnel_type: "quic".to_owned(),
-            local_addr: Some(
-                super::build_url_from_socket_addr(&local_addr.to_string(), "quic").into(),
-            ),
-            remote_addr: Some(self.addr.clone().into()),
-            resolved_remote_addr: Some(
-                super::build_url_from_socket_addr(&connection.remote_address().to_string(), "quic")
-                    .into(),
-            ),
-        };
-
-        let arc_conn = Arc::new(ConnWrapper {
-            conn: connection,
-            _endpoint: None,
-            _udp_session_cleanup: None,
-        });
-        Ok(Box::new(TunnelWrapper::new(
-            FramedReader::new_with_associate_data(r, 4500, Some(Box::new(arc_conn.clone()))),
-            FramedWriter::new_with_associate_data(w, Some(Box::new(arc_conn))),
-            Some(info),
-        )))
+        self.connect_tunnel().await
     }
 
     fn remote_url(&self) -> url::Url {
@@ -1944,11 +1983,22 @@ impl TunnelConnector for QuicTunnelConnector {
     }
 
     fn set_ip_version(&mut self, ip_version: IpVersion) {
-        self.ip_version = ip_version;
+        QuicTunnelConnector::set_ip_version(self, ip_version);
     }
 
     fn set_resolved_addr(&mut self, addr: SocketAddr) {
-        self.resolved_addr = Some(addr);
+        QuicTunnelConnector::set_resolved_addr(self, addr);
+    }
+}
+
+#[async_trait::async_trait]
+impl easytier_core::connectivity::protocol::raw::TunnelDialer for QuicTunnelConnector {
+    async fn connect(&self) -> anyhow::Result<Box<dyn Tunnel>> {
+        Ok(self.connect_tunnel().await?)
+    }
+
+    fn remote_url(&self) -> url::Url {
+        self.addr.clone()
     }
 }
 

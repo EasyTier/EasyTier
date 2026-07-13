@@ -38,7 +38,6 @@ use dashmap::DashMap;
 use easytier_core::tunnel::ring::create_ring_tunnel_pair;
 use easytier_core::{
     connectivity::transport::ConnectedUdpSession,
-    listener::SocketListener as _,
     socket::udp::{
         UdpBindOptions, UdpSession, UdpSessionAcceptKind, UdpSessionListenRequest,
         UdpSessionProtocol, UdpSessionSocket,
@@ -436,6 +435,16 @@ pub struct WgTunnelListener {
     tasks: JoinSet<()>,
 }
 
+impl Debug for WgTunnelListener {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("WgTunnelListener")
+            .field("addr", &self.addr)
+            .field("listening", &self.session_listener.is_some())
+            .finish()
+    }
+}
+
 impl WgTunnelListener {
     pub fn new(addr: url::Url, config: WgConfig) -> Self {
         let (conn_send, conn_recv) = unbounded_channel();
@@ -553,7 +562,7 @@ impl TunnelListener for WgTunnelListener {
             UdpSessionAcceptKind::Classified(UdpSessionProtocol::WireGuard),
             NetNS::new(None),
         );
-        session_listener.listen().await?;
+        easytier_core::listener::SocketListener::listen(&mut session_listener).await?;
         let session_listener = Arc::new(session_listener);
 
         self.tasks.spawn(Self::accept_udp_sessions(
@@ -578,8 +587,26 @@ impl TunnelListener for WgTunnelListener {
     fn local_url(&self) -> url::Url {
         self.session_listener
             .as_ref()
-            .map(|listener| listener.local_url())
+            .map(|listener| easytier_core::listener::SocketListener::local_url(listener.as_ref()))
             .unwrap_or_else(|| self.addr.clone())
+    }
+}
+
+#[async_trait]
+impl easytier_core::listener::SocketListener for WgTunnelListener {
+    type Accepted = Box<dyn Tunnel>;
+
+    async fn listen(&mut self) -> anyhow::Result<()> {
+        <Self as TunnelListener>::listen(self).await?;
+        Ok(())
+    }
+
+    async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
+        Ok(<Self as TunnelListener>::accept(self).await?)
+    }
+
+    fn local_url(&self) -> url::Url {
+        <Self as TunnelListener>::local_url(self)
     }
 }
 
@@ -612,6 +639,22 @@ impl WgTunnelConnector {
             resolved_addr: None,
             socket_mark: None,
         }
+    }
+
+    pub fn set_bind_addrs(&mut self, addrs: Vec<SocketAddr>) {
+        self.bind_addrs = addrs;
+    }
+
+    pub fn set_ip_version(&mut self, ip_version: IpVersion) {
+        self.ip_version = ip_version;
+    }
+
+    pub fn set_resolved_addr(&mut self, addr: SocketAddr) {
+        self.resolved_addr = Some(addr);
+    }
+
+    pub fn set_socket_mark(&mut self, socket_mark: Option<u32>) {
+        self.socket_mark = socket_mark;
     }
 
     #[tracing::instrument(skip(config))]
@@ -713,12 +756,8 @@ impl WgTunnelConnector {
             .call()?;
         Self::connect_with_socket(self.addr.clone(), self.config.clone(), socket, addr).await
     }
-}
 
-#[async_trait]
-impl super::TunnelConnector for WgTunnelConnector {
-    #[tracing::instrument]
-    async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
+    async fn connect_tunnel(&self) -> Result<Box<dyn Tunnel>, TunnelError> {
         let addr = match self.resolved_addr {
             Some(addr) => addr,
             None => SocketAddr::from_url(self.addr.clone(), self.ip_version).await?,
@@ -734,7 +773,7 @@ impl super::TunnelConnector for WgTunnelConnector {
             self.bind_addrs.clone()
         };
         let futures = FuturesUnordered::new();
-        for bind_addr in bind_addrs.into_iter() {
+        for bind_addr in bind_addrs {
             tracing::info!(?bind_addr, ?addr, "bind addr");
             match bind()
                 .addr(bind_addr)
@@ -757,25 +796,44 @@ impl super::TunnelConnector for WgTunnelConnector {
 
         wait_for_connect_futures(futures).await
     }
+}
+
+#[async_trait]
+impl super::TunnelConnector for WgTunnelConnector {
+    #[tracing::instrument]
+    async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
+        self.connect_tunnel().await
+    }
 
     fn remote_url(&self) -> url::Url {
         self.addr.clone()
     }
 
     fn set_bind_addrs(&mut self, addrs: Vec<SocketAddr>) {
-        self.bind_addrs = addrs;
+        WgTunnelConnector::set_bind_addrs(self, addrs);
     }
 
     fn set_ip_version(&mut self, ip_version: IpVersion) {
-        self.ip_version = ip_version;
+        WgTunnelConnector::set_ip_version(self, ip_version);
     }
 
     fn set_resolved_addr(&mut self, addr: SocketAddr) {
-        self.resolved_addr = Some(addr);
+        WgTunnelConnector::set_resolved_addr(self, addr);
     }
 
     fn set_socket_mark(&mut self, socket_mark: Option<u32>) {
-        self.socket_mark = socket_mark;
+        WgTunnelConnector::set_socket_mark(self, socket_mark);
+    }
+}
+
+#[async_trait]
+impl easytier_core::connectivity::protocol::raw::TunnelDialer for WgTunnelConnector {
+    async fn connect(&self) -> anyhow::Result<Box<dyn Tunnel>> {
+        Ok(self.connect_tunnel().await?)
+    }
+
+    fn remote_url(&self) -> url::Url {
+        self.addr.clone()
     }
 }
 

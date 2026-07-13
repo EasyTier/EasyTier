@@ -98,6 +98,24 @@ impl TunnelListener for UnixSocketTunnelListener {
     }
 }
 
+#[async_trait]
+impl easytier_core::listener::SocketListener for UnixSocketTunnelListener {
+    type Accepted = Box<dyn Tunnel>;
+
+    async fn listen(&mut self) -> anyhow::Result<()> {
+        <Self as TunnelListener>::listen(self).await?;
+        Ok(())
+    }
+
+    async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
+        Ok(<Self as TunnelListener>::accept(self).await?)
+    }
+
+    fn local_url(&self) -> url::Url {
+        <Self as TunnelListener>::local_url(self)
+    }
+}
+
 #[derive(Debug)]
 pub struct UnixSocketTunnelConnector {
     addr: url::Url,
@@ -107,11 +125,8 @@ impl UnixSocketTunnelConnector {
     pub fn new(addr: url::Url) -> Self {
         UnixSocketTunnelConnector { addr }
     }
-}
 
-#[async_trait]
-impl super::TunnelConnector for UnixSocketTunnelConnector {
-    async fn connect(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
+    async fn connect_tunnel(&self) -> Result<Box<dyn Tunnel>, TunnelError> {
         let path_str = self.addr.path();
         let path = Path::new(path_str);
         tracing::info!(url = ?self.addr, "connect unix socket start");
@@ -134,6 +149,13 @@ impl super::TunnelConnector for UnixSocketTunnelConnector {
             Some(info),
         )))
     }
+}
+
+#[async_trait]
+impl super::TunnelConnector for UnixSocketTunnelConnector {
+    async fn connect(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
+        self.connect_tunnel().await
+    }
 
     fn remote_url(&self) -> url::Url {
         self.addr.clone()
@@ -141,6 +163,17 @@ impl super::TunnelConnector for UnixSocketTunnelConnector {
 
     fn set_ip_version(&mut self, _ip_version: IpVersion) {
         // IP version is not applicable to UNIX sockets
+    }
+}
+
+#[async_trait]
+impl easytier_core::connectivity::protocol::raw::TunnelDialer for UnixSocketTunnelConnector {
+    async fn connect(&self) -> anyhow::Result<Box<dyn Tunnel>> {
+        Ok(self.connect_tunnel().await?)
+    }
+
+    fn remote_url(&self) -> url::Url {
+        self.addr.clone()
     }
 }
 

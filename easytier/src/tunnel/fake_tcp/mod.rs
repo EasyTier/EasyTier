@@ -92,6 +92,16 @@ pub struct FakeTcpTunnelListener {
     ip_to_ifname: IpToIfNameCache,
 }
 
+impl std::fmt::Debug for FakeTcpTunnelListener {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("FakeTcpTunnelListener")
+            .field("addr", &self.addr)
+            .field("listening", &self.os_listener.is_some())
+            .finish()
+    }
+}
+
 impl FakeTcpTunnelListener {
     pub fn new(addr: url::Url) -> Self {
         // Define filter: Capture all packets (or refine this if needed)
@@ -389,6 +399,24 @@ impl TunnelListener for FakeTcpTunnelListener {
     }
 }
 
+#[async_trait::async_trait]
+impl easytier_core::listener::SocketListener for FakeTcpTunnelListener {
+    type Accepted = Box<dyn Tunnel>;
+
+    async fn listen(&mut self) -> anyhow::Result<()> {
+        <Self as TunnelListener>::listen(self).await?;
+        Ok(())
+    }
+
+    async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
+        Ok(<Self as TunnelListener>::accept(self).await?)
+    }
+
+    fn local_url(&self) -> url::Url {
+        <Self as TunnelListener>::local_url(self)
+    }
+}
+
 pub struct FakeTcpTunnelConnector {
     addr: url::Url,
     ip_to_if_name: IpToIfNameCache,
@@ -404,6 +432,24 @@ impl FakeTcpTunnelConnector {
             resolved_addr: None,
             socket_mark: None,
         }
+    }
+
+    async fn connect_tunnel(&self) -> Result<Box<dyn Tunnel>, TunnelError> {
+        let remote_addr = match self.resolved_addr {
+            Some(addr) => addr,
+            None => SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?,
+        };
+        let socket =
+            connect_socket_with_cache(remote_addr, self.socket_mark, &self.ip_to_if_name).await?;
+        easytier_core::connectivity::protocol::faketcp::upgrade_connected(socket, self.addr.clone())
+    }
+
+    pub fn set_resolved_addr(&mut self, addr: SocketAddr) {
+        self.resolved_addr = Some(addr);
+    }
+
+    pub fn set_socket_mark(&mut self, socket_mark: Option<u32>) {
+        self.socket_mark = socket_mark;
     }
 }
 
@@ -499,13 +545,7 @@ pub(crate) async fn connect_socket(
 #[async_trait::async_trait]
 impl TunnelConnector for FakeTcpTunnelConnector {
     async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
-        let remote_addr = match self.resolved_addr {
-            Some(addr) => addr,
-            None => SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?,
-        };
-        let socket =
-            connect_socket_with_cache(remote_addr, self.socket_mark, &self.ip_to_if_name).await?;
-        easytier_core::connectivity::protocol::faketcp::upgrade_connected(socket, self.addr.clone())
+        self.connect_tunnel().await
     }
 
     fn remote_url(&self) -> url::Url {
@@ -513,11 +553,22 @@ impl TunnelConnector for FakeTcpTunnelConnector {
     }
 
     fn set_resolved_addr(&mut self, addr: SocketAddr) {
-        self.resolved_addr = Some(addr);
+        FakeTcpTunnelConnector::set_resolved_addr(self, addr);
     }
 
     fn set_socket_mark(&mut self, socket_mark: Option<u32>) {
-        self.socket_mark = socket_mark;
+        FakeTcpTunnelConnector::set_socket_mark(self, socket_mark);
+    }
+}
+
+#[async_trait::async_trait]
+impl easytier_core::connectivity::protocol::raw::TunnelDialer for FakeTcpTunnelConnector {
+    async fn connect(&self) -> anyhow::Result<Box<dyn Tunnel>> {
+        Ok(self.connect_tunnel().await?)
+    }
+
+    fn remote_url(&self) -> url::Url {
+        self.addr.clone()
     }
 }
 
