@@ -1,7 +1,10 @@
 use std::{
     collections::{HashMap, HashSet},
     net::IpAddr,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -143,6 +146,7 @@ pub struct HostRoutingPolicy {
 pub struct PeerRuntimeSnapshot {
     pub runtime: PeerRuntimeConfig,
     pub easytier_version: String,
+    pub avoid_relay_data_preference: bool,
     pub flags: FlagsInConfig,
     pub vpn_portal_cidr: Option<Ipv4Cidr>,
     pub pinned_peers: Vec<(url::Url, Option<String>)>,
@@ -155,9 +159,11 @@ pub struct PeerRuntimeSnapshot {
 
 impl PeerRuntimeSnapshot {
     pub fn new(runtime: PeerRuntimeConfig, flags: FlagsInConfig) -> Self {
+        let avoid_relay_data_preference = runtime.feature_flags.avoid_relay_data;
         Self {
             runtime,
             easytier_version: env!("CARGO_PKG_VERSION").to_owned(),
+            avoid_relay_data_preference,
             flags,
             vpn_portal_cidr: None,
             pinned_peers: Vec::new(),
@@ -195,18 +201,14 @@ pub trait PeerRuntimeConfigSource: Send + Sync {
     }
 }
 
-/// Dynamic relay preference and its change notification stream.
-pub trait PeerRelayRuntime: Send + Sync {
-    fn avoid_relay_data_preference(&self) -> bool {
-        false
-    }
-
-    fn set_avoid_relay_data_preference(&self, _avoid_relay_data: bool) -> bool {
-        false
-    }
+/// Projects core-owned relay preference to host-facing feature state.
+pub trait PeerRelayStateSink: Send + Sync {
+    fn set_avoid_relay_data_preference(&self, avoid_relay_data: bool);
 }
 
-impl PeerRelayRuntime for () {}
+impl PeerRelayStateSink for () {
+    fn set_avoid_relay_data_preference(&self, _avoid_relay_data: bool) {}
+}
 
 /// Supplies the host's current STUN observation.
 pub trait PeerStunInfoSource: Send + Sync {
@@ -238,7 +240,7 @@ impl PeerPublicIpv6State for () {}
 /// Each field remains a separate Interface so peer Modules cannot reach an
 /// unrelated host capability through the bundle after construction.
 pub struct SubmittedPeerContextCapabilities {
-    pub relay_runtime: Arc<dyn PeerRelayRuntime>,
+    pub relay_state_sink: Arc<dyn PeerRelayStateSink>,
     pub stun_info_source: Arc<dyn PeerStunInfoSource>,
     pub public_ipv6_state: Arc<dyn PeerPublicIpv6State>,
     pub limiter_factory: Arc<dyn PeerLimiterFactory>,
@@ -254,7 +256,8 @@ pub struct SubmittedPeerContextCapabilities {
 #[derive(Clone)]
 pub struct SubmittedPeerContext {
     config: Arc<dyn PeerRuntimeConfigSource>,
-    relay_runtime: Arc<dyn PeerRelayRuntime>,
+    avoid_relay_data_preference: Arc<AtomicBool>,
+    relay_state_sink: Arc<dyn PeerRelayStateSink>,
     stun_info_source: Arc<dyn PeerStunInfoSource>,
     public_ipv6_state: Arc<dyn PeerPublicIpv6State>,
     limiter_factory: Arc<dyn PeerLimiterFactory>,
@@ -271,9 +274,13 @@ impl SubmittedPeerContext {
         config: Arc<dyn PeerRuntimeConfigSource>,
         capabilities: SubmittedPeerContextCapabilities,
     ) -> Self {
+        let avoid_relay_data_preference = Arc::new(AtomicBool::new(
+            config.peer_runtime_snapshot().avoid_relay_data_preference,
+        ));
         Self {
             config,
-            relay_runtime: capabilities.relay_runtime,
+            avoid_relay_data_preference,
+            relay_state_sink: capabilities.relay_state_sink,
             stun_info_source: capabilities.stun_info_source,
             public_ipv6_state: capabilities.public_ipv6_state,
             limiter_factory: capabilities.limiter_factory,
@@ -1121,15 +1128,19 @@ impl PeerContext for SubmittedPeerContext {
     fn feature_flags(&self) -> PeerFeatureFlag {
         let snapshot = self.snapshot();
         let mut flags = snapshot.runtime.feature_flags;
-        flags.avoid_relay_data =
-            snapshot.flags.disable_relay_data || self.relay_runtime.avoid_relay_data_preference();
+        flags.avoid_relay_data = snapshot.flags.disable_relay_data
+            || self.avoid_relay_data_preference.load(Ordering::Acquire);
         flags.ipv6_public_addr_provider = self.public_ipv6_state.public_ipv6_provider_enabled();
         flags
     }
 
     fn set_avoid_relay_data_preference(&self, avoid_relay_data: bool) -> bool {
-        self.relay_runtime
-            .set_avoid_relay_data_preference(avoid_relay_data)
+        let before = self.feature_flags().avoid_relay_data;
+        self.avoid_relay_data_preference
+            .store(avoid_relay_data, Ordering::Release);
+        self.relay_state_sink
+            .set_avoid_relay_data_preference(avoid_relay_data);
+        before != self.feature_flags().avoid_relay_data
     }
 
     fn subscribe_runtime_changes(&self) -> Option<BoxPeerRuntimeChangeSubscriber> {
@@ -1323,14 +1334,7 @@ mod tests {
 
     #[derive(Default)]
     struct TestSubmittedSupport {
-        avoid_relay_data: AtomicBool,
         limiter_keys: Mutex<Vec<String>>,
-    }
-
-    impl PeerRelayRuntime for TestSubmittedSupport {
-        fn avoid_relay_data_preference(&self) -> bool {
-            self.avoid_relay_data.load(Ordering::Acquire)
-        }
     }
 
     impl PeerLimiterFactory for TestSubmittedSupport {
@@ -1367,7 +1371,7 @@ mod tests {
         event_sink: Arc<dyn PeerEventSink>,
     ) -> SubmittedPeerContextCapabilities {
         SubmittedPeerContextCapabilities {
-            relay_runtime: support.clone(),
+            relay_state_sink: Arc::new(()),
             stun_info_source: Arc::new(()),
             public_ipv6_state: Arc::new(()),
             limiter_factory: support,
@@ -1415,13 +1419,13 @@ mod tests {
         assert_eq!(context.hostname(), "before");
         assert!(!context.feature_flags().avoid_relay_data);
 
-        support.avoid_relay_data.store(true, Ordering::Release);
+        context.set_avoid_relay_data_preference(true);
         assert!(context.feature_flags().avoid_relay_data);
 
         config
             .snapshot
             .store(Arc::new(submitted_snapshot("after", true)));
-        support.avoid_relay_data.store(false, Ordering::Release);
+        context.set_avoid_relay_data_preference(false);
         assert_eq!(context.hostname(), "after");
         assert!(context.feature_flags().avoid_relay_data);
 

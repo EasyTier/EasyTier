@@ -1386,7 +1386,9 @@ mod tests {
 
         // when b's avoid_relay_data is true, a->c should route through d and e, cost is 3
         peer_mgr_b
-            .get_global_ctx()
+            .core()
+            .get_peer_map()
+            .context()
             .set_avoid_relay_data_preference(true);
         tokio::time::sleep(Duration::from_secs(2)).await;
         if wait_route_appear_with_cost(peer_mgr_a.clone(), peer_mgr_c.my_peer_id(), Some(3))

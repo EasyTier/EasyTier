@@ -10,7 +10,7 @@ use easytier_core::peers::context::PeerContext;
 use easytier_core::peers::context::{
     ArcByteLimiter, HostRoutingPolicy, NetworkIdentity as CoreNetworkIdentity,
     PeerCredentialEventSink, PeerEvent, PeerEventSink, PeerGroupIdentity, PeerLimiterFactory,
-    PeerPublicIpv6State, PeerRelayRuntime, PeerRuntimeConfig, PeerRuntimeSnapshot,
+    PeerPublicIpv6State, PeerRelayStateSink, PeerRuntimeConfig, PeerRuntimeSnapshot,
     PeerStunInfoSource, SubmittedPeerContext, SubmittedPeerContextCapabilities,
 };
 
@@ -48,6 +48,7 @@ pub(crate) fn runtime_peer_snapshot(global_ctx: &ArcGlobalCtx) -> PeerRuntimeSna
     PeerRuntimeSnapshot {
         runtime: runtime_peer_config(global_ctx),
         easytier_version: EASYTIER_VERSION.to_owned(),
+        avoid_relay_data_preference: global_ctx.get_avoid_relay_data_preference(),
         flags: global_ctx.get_flags(),
         vpn_portal_cidr: global_ctx.get_vpn_portal_cidr(),
         pinned_peers: global_ctx
@@ -116,7 +117,7 @@ pub(crate) fn submitted_peer_capabilities(
 ) -> SubmittedPeerContextCapabilities {
     let event_sink = Arc::new(GlobalCtxPeerEventSink::new(global_ctx.clone()));
     SubmittedPeerContextCapabilities {
-        relay_runtime: global_ctx.clone(),
+        relay_state_sink: global_ctx.clone(),
         stun_info_source: global_ctx.clone(),
         public_ipv6_state: global_ctx.clone(),
         limiter_factory: global_ctx.clone(),
@@ -206,13 +207,9 @@ impl PeerStunInfoSource for GlobalCtx {
     }
 }
 
-impl PeerRelayRuntime for GlobalCtx {
-    fn avoid_relay_data_preference(&self) -> bool {
-        self.get_avoid_relay_data_preference()
-    }
-
-    fn set_avoid_relay_data_preference(&self, avoid_relay_data: bool) -> bool {
-        GlobalCtx::set_avoid_relay_data_preference(self, avoid_relay_data)
+impl PeerRelayStateSink for GlobalCtx {
+    fn set_avoid_relay_data_preference(&self, avoid_relay_data: bool) {
+        GlobalCtx::set_avoid_relay_data_preference(self, avoid_relay_data);
     }
 }
 
@@ -384,8 +381,9 @@ mod tests {
         );
         assert_eq!(context.peer_groups(7)[0].group_name, "before-group");
 
-        global_ctx.set_avoid_relay_data_preference(true);
+        context.set_avoid_relay_data_preference(true);
         assert!(context.feature_flags().avoid_relay_data);
+        assert!(global_ctx.get_avoid_relay_data_preference());
 
         config.update_peer(Arc::new(runtime_peer_snapshot(&global_ctx)));
         assert_eq!(context.hostname(), "after");
@@ -416,8 +414,9 @@ mod tests {
 
         assert!(context.feature_flags().avoid_relay_data);
         config.update_peer(Arc::new(runtime_peer_snapshot(&global_ctx)));
-        global_ctx.set_avoid_relay_data_preference(false);
+        context.set_avoid_relay_data_preference(false);
         assert!(!context.feature_flags().avoid_relay_data);
+        assert!(!global_ctx.get_avoid_relay_data_preference());
 
         let mut flags = global_ctx.get_flags();
         flags.disable_relay_data = true;
