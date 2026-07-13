@@ -228,10 +228,6 @@ impl ForeignNetworkRuntimeImpl {
 
 #[async_trait::async_trait]
 impl core_foreign_network_manager::ForeignNetworkRuntime for ForeignNetworkRuntimeImpl {
-    fn parent_context(&self) -> easytier_core::peers::context::ArcPeerContext {
-        self.parent_context.clone()
-    }
-
     fn build_foreign_context(
         &self,
         network: &easytier_core::peers::context::NetworkIdentity,
@@ -392,12 +388,13 @@ impl ForeignNetworkManager {
         let stats_mgr = global_ctx.stats_manager().clone();
         let runtime = Arc::new(ForeignNetworkRuntimeImpl::new_with_ring_registry(
             global_ctx,
-            parent_context,
+            parent_context.clone(),
             ring_registry,
         ));
         Self {
             core: core_foreign_network_manager::ForeignNetworkManager::new(
                 runtime.clone(),
+                parent_context,
                 stats_mgr,
                 peer_session_store,
                 packet_sender_to_mgr,
@@ -1385,8 +1382,6 @@ pub mod tests {
 
     #[tokio::test]
     async fn parent_config_reads_require_peer_snapshot_refresh() {
-        use easytier_core::peers::foreign_network_manager::ForeignNetworkRuntime as _;
-
         let global_ctx = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
             "__access__".to_string(),
             "access_secret".to_string(),
@@ -1400,7 +1395,7 @@ pub mod tests {
             global_ctx.clone(),
         ));
         let runtime = ForeignNetworkRuntimeImpl::new(global_ctx.clone(), parent_context.clone());
-        let parent_flags = runtime.parent_context().flags();
+        let parent_flags = runtime.parent_context.flags();
         assert!(!parent_flags.relay_all_peer_rpc);
         assert!(
             easytier_core::peers::foreign_network_manager::check_network_in_relay_whitelist(
@@ -1414,7 +1409,7 @@ pub mod tests {
         flags.relay_all_peer_rpc = true;
         flags.relay_network_whitelist.clear();
         global_ctx.set_flags(flags);
-        let parent_flags = runtime.parent_context().flags();
+        let parent_flags = runtime.parent_context.flags();
         assert!(!parent_flags.relay_all_peer_rpc);
         assert!(
             easytier_core::peers::foreign_network_manager::check_network_in_relay_whitelist(
@@ -1427,7 +1422,7 @@ pub mod tests {
         runtime_config.update_peer(Arc::new(crate::peers::context::runtime_peer_snapshot(
             &global_ctx,
         )));
-        let parent_flags = runtime.parent_context().flags();
+        let parent_flags = runtime.parent_context.flags();
         assert!(parent_flags.relay_all_peer_rpc);
         assert!(
             easytier_core::peers::foreign_network_manager::check_network_in_relay_whitelist(

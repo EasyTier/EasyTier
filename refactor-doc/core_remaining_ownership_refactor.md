@@ -102,6 +102,8 @@ Core owns:
 - Statistics are an explicit core manager dependency, and trusted-key
   management snapshots are read through the core peer context; neither is
   projected by the native foreign runtime anymore.
+- The parent peer context is an explicit core manager dependency rather than
+  a value recovered through the Host runtime Interface.
 - The remaining runtime surface is context construction/removal, native
   direct-connector RPC registration, and the temporary parent feature
   synchronization loop.

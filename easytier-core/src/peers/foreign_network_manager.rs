@@ -312,8 +312,6 @@ pub trait ForeignNetworkInfoProvider: Send + Sync + 'static {
 #[async_trait::async_trait]
 #[auto_impl::auto_impl(&, Arc)]
 pub trait ForeignNetworkRuntime: Send + Sync + 'static {
-    fn parent_context(&self) -> ArcPeerContext;
-
     fn build_foreign_context(
         &self,
         network: &NetworkIdentity,
@@ -381,6 +379,7 @@ struct ForeignNetworkEntry {
     my_peer_id: PeerId,
 
     runtime: Arc<dyn ForeignNetworkRuntime>,
+    parent_context: ArcPeerContext,
     foreign_context: ForeignNetworkContext,
     network: NetworkIdentity,
     peer_map: Arc<PeerMap>,
@@ -411,6 +410,7 @@ impl ForeignNetworkEntry {
         network: NetworkIdentity,
         my_peer_id: PeerId,
         runtime: Arc<dyn ForeignNetworkRuntime>,
+        parent_context: ArcPeerContext,
         stats_mgr: Arc<StatsManager>,
         relay_data: bool,
         peer_session_store: Arc<PeerSessionStore>,
@@ -492,9 +492,7 @@ impl ForeignNetworkEntry {
 
         runtime.register_peer_rpc_services(&peer_rpc, &foreign_context, &network.network_name);
 
-        let bps_limiter = runtime
-            .parent_context()
-            .foreign_forward_limiter(&network.network_name);
+        let bps_limiter = parent_context.foreign_forward_limiter(&network.network_name);
 
         let peer_center = Arc::new(PeerCenterInstance::new(Arc::new(
             PeerMapWithPeerRpcManager {
@@ -508,6 +506,7 @@ impl ForeignNetworkEntry {
             my_peer_id,
 
             runtime,
+            parent_context,
             foreign_context,
             network,
             peer_map,
@@ -568,7 +567,7 @@ impl ForeignNetworkEntry {
             self.peer_map.clone(),
             self.relay_peer_map.clone(),
             self.traffic_metrics.clone(),
-            self.runtime.parent_context(),
+            self.parent_context.clone(),
             self.relay_data,
             pm_sender,
             self.network.network_name.clone(),
@@ -713,6 +712,7 @@ impl ForeignNetworkManagerData {
         dst_peer_id: PeerId,
         relay_data: bool,
         runtime: Arc<dyn ForeignNetworkRuntime>,
+        parent_context: ArcPeerContext,
         stats_mgr: Arc<StatsManager>,
         peer_session_store: Arc<PeerSessionStore>,
         pm_packet_sender: &PacketRecvChan,
@@ -729,6 +729,7 @@ impl ForeignNetworkManagerData {
                     network_identity.clone(),
                     my_peer_id,
                     runtime,
+                    parent_context,
                     stats_mgr,
                     relay_data,
                     peer_session_store,
@@ -759,6 +760,7 @@ pub const FOREIGN_NETWORK_SERVICE_ID: u32 = 1;
 
 pub struct ForeignNetworkManager {
     runtime: Arc<dyn ForeignNetworkRuntime>,
+    parent_context: ArcPeerContext,
     stats_mgr: Arc<StatsManager>,
     peer_session_store: Arc<PeerSessionStore>,
     packet_sender_to_mgr: PacketRecvChan,
@@ -797,6 +799,7 @@ impl ForeignNetworkManager {
 
     pub fn new(
         runtime: Arc<dyn ForeignNetworkRuntime>,
+        parent_context: ArcPeerContext,
         stats_mgr: Arc<StatsManager>,
         peer_session_store: Arc<PeerSessionStore>,
         packet_sender_to_mgr: PacketRecvChan,
@@ -817,6 +820,7 @@ impl ForeignNetworkManager {
 
         Self {
             runtime,
+            parent_context,
             stats_mgr,
             peer_session_store,
             packet_sender_to_mgr,
@@ -854,7 +858,7 @@ impl ForeignNetworkManager {
         let peer_network = peer_conn.get_network_identity();
         tracing::info!(peer_conn = ?conn_info, network = ?peer_network, "add new peer conn in foreign network manager");
 
-        let parent_flags = self.runtime.parent_context().flags();
+        let parent_flags = self.parent_context.flags();
         let ret = check_network_in_relay_whitelist(
             &parent_flags.relay_network_whitelist,
             &peer_network.network_name,
@@ -885,6 +889,7 @@ impl ForeignNetworkManager {
                 peer_conn.get_peer_id(),
                 ret.is_ok(),
                 self.runtime.clone(),
+                self.parent_context.clone(),
                 self.stats_mgr.clone(),
                 self.peer_session_store.clone(),
                 &self.packet_sender_to_mgr,
@@ -960,8 +965,7 @@ impl ForeignNetworkManager {
         if !new_added && let Some(peer) = entry.peer_map.get_peer_by_id(peer_conn.get_peer_id()) {
             let direct_conns_len = peer.get_directly_connections().len();
             let max_count = self
-                .runtime
-                .parent_context()
+                .parent_context
                 .max_direct_conns_per_peer_in_foreign_network();
             if direct_conns_len >= max_count {
                 return Err(anyhow::anyhow!(
