@@ -27,10 +27,8 @@ use easytier_core::{
 use crate::{
     common::{global_ctx::ArcGlobalCtx, network::IPCollector, stun::StunInfoCollectorTrait},
     proto::peer_rpc::GetIpListResponse,
-    tunnel::{
-        tcp_socket::{self, RuntimeTcpListener, RuntimeTcpListenerFactory, RuntimeTcpSocket},
-        udp::{RuntimeUdpSessionControlHandler, RuntimeUdpSocket, RuntimeUdpSocketFactory},
-    },
+    socket::tcp::{self, RuntimeTcpListener, RuntimeTcpListenerFactory, RuntimeTcpSocket},
+    tunnel::udp::{RuntimeUdpSessionControlHandler, RuntimeUdpSocket, RuntimeUdpSocketFactory},
 };
 
 pub(crate) struct RuntimeConnectorHost {
@@ -114,11 +112,9 @@ impl VirtualTcpSocketFactory for RuntimeConnectorHost {
 
         self.global_ctx
             .net_ns
-            .run_async(|| async move {
-                tcp_socket::connect_tcp(options)
-                    .await
-                    .map_err(anyhow::Error::from)
-            })
+            .run_async(
+                || async move { tcp::connect_tcp(options).await.map_err(anyhow::Error::from) },
+            )
             .await
     }
 }

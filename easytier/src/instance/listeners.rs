@@ -27,7 +27,8 @@ use crate::{
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
         netns::NetNS,
     },
-    tunnel::{FromUrl, IpVersion, Tunnel, tcp_socket::RuntimeTcpSocket},
+    socket::tcp::RuntimeTcpSocket,
+    tunnel::{FromUrl, IpVersion, Tunnel},
 };
 
 pub use easytier_core::listener::plan::{is_url_host_ipv6, is_url_host_unspecified};

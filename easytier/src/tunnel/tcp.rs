@@ -22,7 +22,7 @@ use super::{
     IpScheme, IpVersion, Tunnel, TunnelError, TunnelInfo, TunnelListener,
     common::wait_for_connect_futures,
 };
-use crate::{common::dns::RuntimeDnsResolver, tunnel::tcp_socket};
+use crate::{common::dns::RuntimeDnsResolver, socket::tcp};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum TcpUrlEndpoint {
@@ -53,8 +53,8 @@ impl TcpSingleSocketConnector {
         Self { options }
     }
 
-    async fn connect(self) -> Result<tcp_socket::RuntimeTcpSocket, TunnelError> {
-        tcp_socket::connect_tcp(self.options).await
+    async fn connect(self) -> Result<tcp::RuntimeTcpSocket, TunnelError> {
+        tcp::connect_tcp(self.options).await
     }
 }
 
@@ -72,7 +72,7 @@ impl TcpCandidateDialer {
         }
     }
 
-    async fn connect(self) -> Result<tcp_socket::RuntimeTcpSocket, TunnelError> {
+    async fn connect(self) -> Result<tcp::RuntimeTcpSocket, TunnelError> {
         let futures = FuturesUnordered::new();
 
         for candidate in self.candidates {
@@ -94,7 +94,7 @@ impl TcpCandidateDialer {
 #[derive(Debug)]
 pub struct TcpTunnelListener {
     addr: url::Url,
-    listener: Option<tcp_socket::RuntimeTcpListener>,
+    listener: Option<tcp::RuntimeTcpListener>,
     socket_mark: Option<u32>,
 }
 
@@ -141,7 +141,7 @@ impl TunnelListener for TcpTunnelListener {
             .with_socket_mark(self.socket_mark)
             .with_only_v6(true);
         let listener =
-            tcp_socket::bind_tcp_listener(TcpListenOptions::direct_connect(addr).with_bind(bind))?;
+            tcp::bind_tcp_listener(TcpListenOptions::direct_connect(addr).with_bind(bind))?;
 
         self.addr
             .set_port(Some(listener.local_addr()?.port()))
@@ -423,7 +423,7 @@ impl TcpTunnelConnector {
 
     fn upgrade_socket(
         &self,
-        socket: tcp_socket::RuntimeTcpSocket,
+        socket: tcp::RuntimeTcpSocket,
     ) -> Result<Box<dyn Tunnel>, super::TunnelError> {
         let local_addr = socket.local_addr()?;
         let peer_addr = socket.peer_addr()?;

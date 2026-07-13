@@ -3,7 +3,7 @@ use super::{
     common::wait_for_connect_futures,
 };
 use crate::tunnel::common::bind;
-use crate::{proto::common::TunnelInfo, tunnel::tcp_socket::RuntimeTcpSocket};
+use crate::{proto::common::TunnelInfo, socket::tcp::RuntimeTcpSocket};
 use easytier_core::{
     connectivity::protocol::{
         insecure_tls::{get_insecure_tls_client_config, init_crypto_provider},

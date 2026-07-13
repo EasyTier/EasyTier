@@ -14,7 +14,7 @@ use easytier_core::{
     tunnel::Tunnel,
 };
 
-use crate::{common::global_ctx::ArcGlobalCtx, tunnel::tcp_socket::RuntimeTcpSocket};
+use crate::{common::global_ctx::ArcGlobalCtx, socket::tcp::RuntimeTcpSocket};
 
 pub(crate) struct RuntimeClientProtocolUpgrader {
     global_ctx: ArcGlobalCtx,

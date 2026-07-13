@@ -25,6 +25,7 @@ pub mod peers;
 pub mod proto;
 pub mod rpc_service;
 pub mod service_manager;
+pub(crate) mod socket;
 pub mod tunnel;
 pub mod utils;
 pub mod web_client;

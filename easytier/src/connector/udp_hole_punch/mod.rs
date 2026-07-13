@@ -42,7 +42,7 @@ use crate::{
         },
         rpc_types::{self, controller::BaseController},
     },
-    tunnel::tcp_socket::RuntimeTcpSocket,
+    socket::tcp::RuntimeTcpSocket,
 };
 
 #[cfg(test)]
