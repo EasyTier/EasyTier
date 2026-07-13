@@ -27,15 +27,32 @@ use crate::{
     proto::{
         api::instance::TcpProxyEntryTransportType,
         common::{CompressionAlgoPb, SecureModeConfig},
+        rpc_impl::standalone::{
+            RuntimeRpcDialer, RuntimeRpcListener, runtime_rpc_dialer, runtime_rpc_listener,
+        },
     },
     tunnel::{
         common::tests::{
-            _tunnel_bench_netns, _tunnel_pingpong_netns_with_timeout, wait_for_condition,
+            _tunnel_bench_netns, _tunnel_pingpong_netns_with_timeout, CoreTunnelDialer,
+            CoreTunnelListener, wait_for_condition,
         },
-        tcp::{TcpTunnelConnector, TcpTunnelListener},
         udp::UdpTunnelConnector,
     },
 };
+
+fn core_tcp_listener(url: url::Url) -> CoreTunnelListener<RuntimeRpcListener> {
+    let addr = url
+        .socket_addrs(|| Some(11010))
+        .expect("test TCP listener URL should resolve")
+        .into_iter()
+        .next()
+        .expect("test TCP listener URL should have an address");
+    CoreTunnelListener(runtime_rpc_listener(addr))
+}
+
+fn core_tcp_dialer(url: url::Url) -> CoreTunnelDialer<RuntimeRpcDialer> {
+    CoreTunnelDialer(runtime_rpc_dialer(url))
+}
 
 #[cfg(feature = "wireguard")]
 use crate::{
@@ -1258,14 +1275,11 @@ async fn subnet_proxy_test_udp(listen_ip: &str, target_ip: &str, timeout: Durati
 }
 
 async fn subnet_proxy_test_tcp(listen_ip: &str, connect_ip: &str, timeout: Duration) {
-    use crate::tunnel::{
-        common::tests::_tunnel_pingpong_netns_with_timeout, tcp::TcpTunnelListener,
-    };
+    use crate::tunnel::common::tests::_tunnel_pingpong_netns_with_timeout;
     use rand::Rng;
 
-    let tcp_listener = TcpTunnelListener::new(format!("tcp://{listen_ip}:22223").parse().unwrap());
-    let tcp_connector =
-        TcpTunnelConnector::new(format!("tcp://{}:22223", connect_ip).parse().unwrap());
+    let tcp_listener = core_tcp_listener(format!("tcp://{listen_ip}:22223").parse().unwrap());
+    let tcp_connector = core_tcp_dialer(format!("tcp://{}:22223", connect_ip).parse().unwrap());
 
     let mut buf = vec![0; 32];
     rand::thread_rng().fill(&mut buf[..]);
@@ -2157,10 +2171,10 @@ pub async fn port_forward_test(
     )
     .await;
 
-    use crate::tunnel::{tcp::TcpTunnelListener, udp::UdpTunnelConnector, udp::UdpTunnelListener};
+    use crate::tunnel::{udp::UdpTunnelConnector, udp::UdpTunnelListener};
 
-    let tcp_listener = TcpTunnelListener::new("tcp://0.0.0.0:23456".parse().unwrap());
-    let tcp_connector = TcpTunnelConnector::new("tcp://127.0.0.1:23456".parse().unwrap());
+    let tcp_listener = core_tcp_listener("tcp://0.0.0.0:23456".parse().unwrap());
+    let tcp_connector = core_tcp_dialer("tcp://127.0.0.1:23456".parse().unwrap());
 
     let mut buf = vec![0; buf_size as usize];
     rand::thread_rng().fill(&mut buf[..]);
@@ -2176,8 +2190,8 @@ pub async fn port_forward_test(
     .await
     .unwrap();
 
-    let tcp_listener = TcpTunnelListener::new("tcp://0.0.0.0:23457".parse().unwrap());
-    let tcp_connector = TcpTunnelConnector::new("tcp://127.0.0.1:23457".parse().unwrap());
+    let tcp_listener = core_tcp_listener("tcp://0.0.0.0:23457".parse().unwrap());
+    let tcp_connector = core_tcp_dialer("tcp://127.0.0.1:23457".parse().unwrap());
 
     let mut buf = vec![0; buf_size as usize];
     rand::thread_rng().fill(&mut buf[..]);
@@ -2311,10 +2325,9 @@ pub async fn port_forward_with_inbound_default_drop_acl_test(
     }
 
     for (bind_port, server_ns) in [(23456, "net_c"), (23457, "net_d")] {
-        let tcp_listener =
-            TcpTunnelListener::new(format!("tcp://0.0.0.0:{bind_port}").parse().unwrap());
+        let tcp_listener = core_tcp_listener(format!("tcp://0.0.0.0:{bind_port}").parse().unwrap());
         let tcp_connector =
-            TcpTunnelConnector::new(format!("tcp://127.0.0.1:{bind_port}").parse().unwrap());
+            core_tcp_dialer(format!("tcp://127.0.0.1:{bind_port}").parse().unwrap());
 
         let mut buf = vec![0; 64];
         rand::thread_rng().fill(&mut buf[..]);
@@ -2371,8 +2384,8 @@ pub async fn relay_bps_limit_test(#[values(100, 200, 400, 800)] bps_limit: u64) 
     .await;
 
     // connect to virtual ip (no tun mode)
-    let tcp_listener = TcpTunnelListener::new("tcp://0.0.0.0:22223".parse().unwrap());
-    let tcp_connector = TcpTunnelConnector::new("tcp://10.144.144.3:22223".parse().unwrap());
+    let tcp_listener = core_tcp_listener("tcp://0.0.0.0:22223".parse().unwrap());
+    let tcp_connector = core_tcp_dialer("tcp://10.144.144.3:22223".parse().unwrap());
 
     let bps = _tunnel_bench_netns(
         tcp_listener,
@@ -2414,8 +2427,8 @@ pub async fn instance_recv_bps_limit_test(#[values(100, 800)] bps_limit: u64) {
     )
     .await;
 
-    let tcp_listener = TcpTunnelListener::new("tcp://0.0.0.0:22223".parse().unwrap());
-    let tcp_connector = TcpTunnelConnector::new("tcp://10.144.144.3:22223".parse().unwrap());
+    let tcp_listener = core_tcp_listener("tcp://0.0.0.0:22223".parse().unwrap());
+    let tcp_connector = core_tcp_dialer("tcp://10.144.144.3:22223".parse().unwrap());
 
     let bps = _tunnel_bench_netns(
         tcp_listener,
@@ -2575,7 +2588,6 @@ pub async fn acl_rule_test_inbound(
 ) {
     use crate::tunnel::{
         common::tests::_tunnel_pingpong_netns_with_timeout,
-        tcp::{TcpTunnelConnector, TcpTunnelListener},
         udp::{UdpTunnelConnector, UdpTunnelListener},
     };
     use rand::Rng;
@@ -2657,17 +2669,17 @@ pub async fn acl_rule_test_inbound(
     // TCP 测试部分
     {
         // 2. 在 inst2 上监听 8080 和 8081
-        let listener_8080 = TcpTunnelListener::new("tcp://0.0.0.0:8080".parse().unwrap());
-        let listener_8081 = TcpTunnelListener::new("tcp://0.0.0.0:8081".parse().unwrap());
-        let listener_8082 = TcpTunnelListener::new("tcp://0.0.0.0:8082".parse().unwrap());
+        let listener_8080 = core_tcp_listener("tcp://0.0.0.0:8080".parse().unwrap());
+        let listener_8081 = core_tcp_listener("tcp://0.0.0.0:8081".parse().unwrap());
+        let listener_8082 = core_tcp_listener("tcp://0.0.0.0:8082".parse().unwrap());
 
         // 3. inst1 作为客户端，尝试连接 inst2 的 8080（应被拒绝）和 8081（应被允许）
         let connector_8080 =
-            TcpTunnelConnector::new(format!("tcp://{}:8080", "10.144.144.3").parse().unwrap());
+            core_tcp_dialer(format!("tcp://{}:8080", "10.144.144.3").parse().unwrap());
         let connector_8081 =
-            TcpTunnelConnector::new(format!("tcp://{}:8081", "10.144.144.3").parse().unwrap());
+            core_tcp_dialer(format!("tcp://{}:8081", "10.144.144.3").parse().unwrap());
         let connector_8082 =
-            TcpTunnelConnector::new(format!("tcp://{}:8082", "10.144.144.3").parse().unwrap());
+            core_tcp_dialer(format!("tcp://{}:8082", "10.144.144.3").parse().unwrap());
 
         // 4. 构造测试数据
         let mut buf = vec![0; 32];
@@ -2778,7 +2790,6 @@ pub async fn acl_rule_test_subnet_proxy(
 ) {
     use crate::tunnel::{
         common::tests::_tunnel_pingpong_netns_with_timeout,
-        tcp::{TcpTunnelConnector, TcpTunnelListener},
         udp::{UdpTunnelConnector, UdpTunnelListener},
     };
     use rand::Rng;
@@ -2881,14 +2892,14 @@ pub async fn acl_rule_test_subnet_proxy(
     // TCP 测试部分 - 测试子网代理的 ACL 规则
     {
         // 在 net_d (10.1.2.4) 上监听多个端口
-        let listener_8080 = TcpTunnelListener::new("tcp://0.0.0.0:8080".parse().unwrap());
-        let listener_8081 = TcpTunnelListener::new("tcp://0.0.0.0:8081".parse().unwrap());
-        let listener_8082 = TcpTunnelListener::new("tcp://0.0.0.0:8082".parse().unwrap());
+        let listener_8080 = core_tcp_listener("tcp://0.0.0.0:8080".parse().unwrap());
+        let listener_8081 = core_tcp_listener("tcp://0.0.0.0:8081".parse().unwrap());
+        let listener_8082 = core_tcp_listener("tcp://0.0.0.0:8082".parse().unwrap());
 
         // 从 inst1 (net_a) 连接到子网代理
-        let connector_8080 = TcpTunnelConnector::new("tcp://10.1.2.4:8080".parse().unwrap());
-        let connector_8081 = TcpTunnelConnector::new("tcp://10.1.2.4:8081".parse().unwrap());
-        let connector_8082 = TcpTunnelConnector::new("tcp://10.1.2.4:8082".parse().unwrap());
+        let connector_8080 = core_tcp_dialer("tcp://10.1.2.4:8080".parse().unwrap());
+        let connector_8081 = core_tcp_dialer("tcp://10.1.2.4:8081".parse().unwrap());
+        let connector_8082 = core_tcp_dialer("tcp://10.1.2.4:8082".parse().unwrap());
 
         let mut buf = vec![0; 32];
         rand::thread_rng().fill(&mut buf[..]);
@@ -3136,7 +3147,6 @@ pub async fn acl_group_base_test(
     use crate::tunnel::{
         TunnelConnector, TunnelListener,
         common::tests::_tunnel_pingpong_netns_with_timeout,
-        tcp::{TcpTunnelConnector, TcpTunnelListener},
         udp::{UdpTunnelConnector, UdpTunnelListener},
     };
     use rand::Rng;
@@ -3252,7 +3262,7 @@ pub async fn acl_group_base_test(
 
     let make_listener = |port: u16| -> Box<dyn TunnelListener + Send + Sync + 'static> {
         match protocol {
-            "tcp" => Box::new(TcpTunnelListener::new(
+            "tcp" => Box::new(core_tcp_listener(
                 format!("tcp://0.0.0.0:{}", port).parse().unwrap(),
             )),
             "udp" => Box::new(UdpTunnelListener::new(
@@ -3264,7 +3274,7 @@ pub async fn acl_group_base_test(
 
     let make_connector = |port: u16| -> Box<dyn TunnelConnector + Send + Sync + 'static> {
         match protocol {
-            "tcp" => Box::new(TcpTunnelConnector::new(
+            "tcp" => Box::new(core_tcp_dialer(
                 format!("tcp://10.144.144.3:{}", port).parse().unwrap(),
             )),
             "udp" => Box::new(UdpTunnelConnector::new(
@@ -3568,7 +3578,6 @@ pub async fn acl_group_self_test(
     use crate::tunnel::{
         TunnelConnector, TunnelListener,
         common::tests::_tunnel_pingpong_netns_with_timeout,
-        tcp::{TcpTunnelConnector, TcpTunnelListener},
         udp::{UdpTunnelConnector, UdpTunnelListener},
     };
     use rand::Rng;
@@ -3655,7 +3664,7 @@ pub async fn acl_group_self_test(
 
     let make_listener = |port: u16| -> Box<dyn TunnelListener + Send + Sync + 'static> {
         match protocol {
-            "tcp" => Box::new(TcpTunnelListener::new(
+            "tcp" => Box::new(core_tcp_listener(
                 format!("tcp://0.0.0.0:{}", port).parse().unwrap(),
             )),
             "udp" => Box::new(UdpTunnelListener::new(
@@ -3667,7 +3676,7 @@ pub async fn acl_group_self_test(
 
     let make_connector = |port: u16| -> Box<dyn TunnelConnector + Send + Sync + 'static> {
         match protocol {
-            "tcp" => Box::new(TcpTunnelConnector::new(
+            "tcp" => Box::new(core_tcp_dialer(
                 format!("tcp://10.144.144.3:{}", port).parse().unwrap(),
             )),
             "udp" => Box::new(UdpTunnelConnector::new(
@@ -3762,7 +3771,6 @@ pub async fn whitelist_test(
     use crate::tunnel::{
         TunnelConnector, TunnelListener,
         common::tests::_tunnel_pingpong_netns_with_timeout,
-        tcp::{TcpTunnelConnector, TcpTunnelListener},
         udp::{UdpTunnelConnector, UdpTunnelListener},
     };
     use rand::Rng;
@@ -3770,7 +3778,7 @@ pub async fn whitelist_test(
     let make_listener =
         |protocol: &str, port: u16| -> Box<dyn TunnelListener + Send + Sync + 'static> {
             match protocol {
-                "tcp" => Box::new(TcpTunnelListener::new(
+                "tcp" => Box::new(core_tcp_listener(
                     format!("tcp://0.0.0.0:{}", port).parse().unwrap(),
                 )),
                 "udp" => Box::new(UdpTunnelListener::new(
@@ -3783,7 +3791,7 @@ pub async fn whitelist_test(
     let make_connector =
         |protocol: &str, port: u16| -> Box<dyn TunnelConnector + Send + Sync + 'static> {
             match protocol {
-                "tcp" => Box::new(TcpTunnelConnector::new(
+                "tcp" => Box::new(core_tcp_dialer(
                     format!("tcp://10.144.144.3:{}", port).parse().unwrap(),
                 )),
                 "udp" => Box::new(UdpTunnelConnector::new(
@@ -3982,8 +3990,8 @@ pub async fn config_patch_test() {
 
     let mut buf = vec![0; 32];
     rand::thread_rng().fill(&mut buf[..]);
-    let tcp_listener = TcpTunnelListener::new("tcp://0.0.0.0:23457".parse().unwrap());
-    let tcp_connector = TcpTunnelConnector::new("tcp://127.0.0.1:23458".parse().unwrap());
+    let tcp_listener = core_tcp_listener("tcp://0.0.0.0:23457".parse().unwrap());
+    let tcp_connector = core_tcp_dialer("tcp://127.0.0.1:23458".parse().unwrap());
     let result = _tunnel_pingpong_netns_with_timeout(
         tcp_listener,
         tcp_connector,
