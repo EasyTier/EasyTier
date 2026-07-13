@@ -18,7 +18,9 @@ use easytier_core::{
 use std::{fmt::Debug, sync::Arc};
 
 use super::{
-    PacketRecvChan, context::runtime_peer_snapshot, encrypt::NullCipher,
+    PacketRecvChan,
+    context::{GlobalCtxPeerEventSink, runtime_peer_snapshot},
+    encrypt::NullCipher,
     foreign_network_manager::ForeignNetworkRuntimeImpl,
 };
 
@@ -104,6 +106,7 @@ impl PeerManager {
         let peer_context = Arc::new(SubmittedPeerContext::new(
             Arc::new(runtime_config.clone()),
             global_ctx.clone(),
+            Arc::new(GlobalCtxPeerEventSink::new(global_ctx.clone())),
         ));
 
         let foreign_network_runtime = Arc::new(ForeignNetworkRuntimeImpl::new_with_ring_registry(

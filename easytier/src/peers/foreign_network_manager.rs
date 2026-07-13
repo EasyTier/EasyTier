@@ -210,6 +210,9 @@ impl core_foreign_network_manager::ForeignNetworkRuntime for ForeignNetworkRunti
         let peer_context = Arc::new(SubmittedPeerContext::new(
             Arc::new(runtime_config),
             foreign_global_ctx.clone(),
+            Arc::new(crate::peers::context::GlobalCtxPeerEventSink::new(
+                foreign_global_ctx.clone(),
+            )),
         ));
         let lifecycle_token = Arc::new(());
         self.foreign_contexts.insert(
@@ -1107,6 +1110,9 @@ pub mod tests {
         let parent_context = Arc::new(easytier_core::peers::context::SubmittedPeerContext::new(
             Arc::new(runtime_config.clone()),
             global_ctx.clone(),
+            Arc::new(crate::peers::context::GlobalCtxPeerEventSink::new(
+                global_ctx.clone(),
+            )),
         ));
         let parent_flags = parent_context.flags();
         assert!(!parent_flags.relay_all_peer_rpc);

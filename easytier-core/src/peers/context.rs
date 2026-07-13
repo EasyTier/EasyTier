@@ -76,6 +76,16 @@ pub trait PeerRuntimeChangeSubscriber: Send {
 
 pub type BoxPeerRuntimeChangeSubscriber = Box<dyn PeerRuntimeChangeSubscriber>;
 
+/// Projects peer-domain events without exposing the peer event stream or any
+/// other runtime capability to the receiver.
+pub trait PeerEventSink: Send + Sync {
+    fn issue_event(&self, event: PeerEvent);
+}
+
+impl PeerEventSink for () {
+    fn issue_event(&self, _event: PeerEvent) {}
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerRuntimeConfig {
     pub core: CoreConfig,
@@ -220,12 +230,6 @@ pub trait PeerRuntimeSupport: Send + Sync {
     fn recv_limiter(&self, _key: &str, _bps: u64) -> Option<ArcByteLimiter> {
         None
     }
-
-    fn issue_event(&self, _event: PeerEvent) {}
-
-    fn subscribe_peer_events(&self) -> Option<PeerContextEventSubscriber> {
-        None
-    }
 }
 
 /// Peer context whose configuration comes exclusively from a core-owned
@@ -234,14 +238,22 @@ pub trait PeerRuntimeSupport: Send + Sync {
 pub struct SubmittedPeerContext {
     config: Arc<dyn PeerRuntimeConfigSource>,
     support: Arc<dyn PeerRuntimeSupport>,
+    peer_events: tokio::sync::broadcast::Sender<PeerContextEvent>,
+    event_sink: Arc<dyn PeerEventSink>,
 }
 
 impl SubmittedPeerContext {
     pub fn new(
         config: Arc<dyn PeerRuntimeConfigSource>,
         support: Arc<dyn PeerRuntimeSupport>,
+        event_sink: Arc<dyn PeerEventSink>,
     ) -> Self {
-        Self { config, support }
+        Self {
+            config,
+            support,
+            peer_events: tokio::sync::broadcast::channel(16).0,
+            event_sink,
+        }
     }
 
     fn snapshot(&self) -> Arc<PeerRuntimeSnapshot> {
@@ -1245,11 +1257,18 @@ impl PeerContext for SubmittedPeerContext {
     }
 
     fn issue_event(&self, event: PeerEvent) {
-        self.support.issue_event(event);
+        let context_event = match &event {
+            PeerEvent::PeerAdded(peer_id) => PeerContextEvent::PeerAdded(*peer_id),
+            PeerEvent::PeerRemoved(peer_id) => PeerContextEvent::PeerRemoved(*peer_id),
+            PeerEvent::PeerConnAdded(_) => PeerContextEvent::PeerConnAdded,
+            PeerEvent::PeerConnRemoved(_) => PeerContextEvent::PeerConnRemoved,
+        };
+        let _ = self.peer_events.send(context_event);
+        self.event_sink.issue_event(event);
     }
 
     fn subscribe_peer_events(&self) -> Option<PeerContextEventSubscriber> {
-        self.support.subscribe_peer_events()
+        Some(self.peer_events.subscribe())
     }
 }
 
@@ -1285,6 +1304,17 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct TestPeerEventSink {
+        events: Mutex<Vec<PeerEvent>>,
+    }
+
+    impl PeerEventSink for TestPeerEventSink {
+        fn issue_event(&self, event: PeerEvent) {
+            self.events.lock().unwrap().push(event);
+        }
+    }
+
     fn submitted_snapshot(hostname: &str, disable_relay_data: bool) -> PeerRuntimeSnapshot {
         let mut flags = FlagsInConfig::default();
         flags.disable_relay_data = disable_relay_data;
@@ -1313,7 +1343,7 @@ mod tests {
             snapshot: ArcSwap::from_pointee(submitted_snapshot("before", false)),
         });
         let support = Arc::new(TestSubmittedSupport::default());
-        let context = SubmittedPeerContext::new(config.clone(), support.clone());
+        let context = SubmittedPeerContext::new(config.clone(), support.clone(), Arc::new(()));
 
         assert_eq!(context.hostname(), "before");
         assert!(!context.feature_flags().avoid_relay_data);
@@ -1334,6 +1364,28 @@ mod tests {
         assert!(!context.feature_flags().avoid_relay_data);
     }
 
+    #[tokio::test]
+    async fn submitted_peer_context_owns_events_and_projects_them_to_sink() {
+        let config = Arc::new(TestSubmittedConfig {
+            snapshot: ArcSwap::from_pointee(submitted_snapshot("events", false)),
+        });
+        let sink = Arc::new(TestPeerEventSink::default());
+        let context = SubmittedPeerContext::new(
+            config,
+            Arc::new(TestSubmittedSupport::default()),
+            sink.clone(),
+        );
+        let mut events = context.subscribe_peer_events().unwrap();
+
+        context.issue_event(PeerEvent::PeerAdded(7));
+
+        assert_eq!(events.recv().await.unwrap(), PeerContextEvent::PeerAdded(7));
+        assert!(matches!(
+            sink.events.lock().unwrap().as_slice(),
+            [PeerEvent::PeerAdded(7)]
+        ));
+    }
+
     #[test]
     fn foreign_forward_limiter_is_independent_from_peer_receive_limiter() {
         let mut snapshot = submitted_snapshot("limiter", false);
@@ -1342,7 +1394,7 @@ mod tests {
             snapshot: ArcSwap::from_pointee(snapshot),
         });
         let support = Arc::new(TestSubmittedSupport::default());
-        let context = SubmittedPeerContext::new(config, support.clone());
+        let context = SubmittedPeerContext::new(config, support.clone(), Arc::new(()));
 
         assert!(context.recv_limiter("foreign", true).is_some());
         assert!(context.foreign_forward_limiter("foreign").is_some());
@@ -1361,7 +1413,7 @@ mod tests {
             snapshot: ArcSwap::from_pointee(snapshot),
         });
         let support = Arc::new(TestSubmittedSupport::default());
-        let context = SubmittedPeerContext::new(config, support.clone());
+        let context = SubmittedPeerContext::new(config, support.clone(), Arc::new(()));
 
         assert!(context.recv_limiter("foreign", true).is_some());
         assert!(context.foreign_forward_limiter("foreign").is_none());

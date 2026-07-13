@@ -250,6 +250,10 @@ but no core Module receives it or a broad Interface implemented by it.
   backed by an explicit runtime snapshot. Foreign `GlobalCtx` values remain
   only as live Host support and public-IPv6 Adapters; production composition no
   longer coerces them directly into the broad peer-domain Interface.
+- `SubmittedPeerContext` owns its peer-event broadcast stream. A narrow
+  `PeerEventSink` projects rich events to native `GlobalCtxEvent` consumers,
+  while core state-machine subscriptions remain core-local; event publication
+  and subscription are no longer part of the live runtime-support Interface.
 
 ### Exit criteria
 

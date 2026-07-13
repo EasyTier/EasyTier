@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 
 use easytier_core::peers::context::{
-    ArcByteLimiter, PeerContext, PeerContextEventSubscriber, PeerEvent, PeerRuntimeConfig,
-    PeerRuntimeSnapshot, PeerRuntimeSupport, TrustedKeyMap, TrustedKeySource,
+    ArcByteLimiter, PeerContext, PeerEvent, PeerEventSink, PeerRuntimeConfig, PeerRuntimeSnapshot,
+    PeerRuntimeSupport, TrustedKeyMap, TrustedKeySource,
 };
 
 use crate::{
@@ -48,6 +48,28 @@ pub(crate) fn runtime_peer_snapshot(global_ctx: &ArcGlobalCtx) -> PeerRuntimeSna
             MAX_DIRECT_CONNS_PER_PEER_IN_FOREIGN_NETWORK
         ) as usize,
         hmac_secret_digest: use_global_var!(HMAC_SECRET_DIGEST),
+    }
+}
+
+pub(crate) struct GlobalCtxPeerEventSink {
+    global_ctx: ArcGlobalCtx,
+}
+
+impl GlobalCtxPeerEventSink {
+    pub(crate) fn new(global_ctx: ArcGlobalCtx) -> Self {
+        Self { global_ctx }
+    }
+}
+
+impl PeerEventSink for GlobalCtxPeerEventSink {
+    fn issue_event(&self, event: PeerEvent) {
+        let event = match event {
+            PeerEvent::PeerAdded(peer_id) => GlobalCtxEvent::PeerAdded(peer_id),
+            PeerEvent::PeerRemoved(peer_id) => GlobalCtxEvent::PeerRemoved(peer_id),
+            PeerEvent::PeerConnAdded(info) => GlobalCtxEvent::PeerConnAdded(info.into()),
+            PeerEvent::PeerConnRemoved(info) => GlobalCtxEvent::PeerConnRemoved(info.into()),
+        };
+        self.global_ctx.issue_event(event);
     }
 }
 
@@ -157,14 +179,6 @@ impl PeerRuntimeSupport for GlobalCtx {
             ),
         )
     }
-
-    fn issue_event(&self, event: PeerEvent) {
-        PeerContext::issue_event(self, event);
-    }
-
-    fn subscribe_peer_events(&self) -> Option<PeerContextEventSubscriber> {
-        PeerContext::subscribe_peer_events(self)
-    }
 }
 
 #[cfg(test)]
@@ -192,8 +206,26 @@ mod tests {
             CoreRuntimeConfig::default(),
             Arc::new(runtime_peer_snapshot(&global_ctx)),
         );
-        let context = SubmittedPeerContext::new(Arc::new(config.clone()), global_ctx);
+        let context = SubmittedPeerContext::new(
+            Arc::new(config.clone()),
+            global_ctx.clone(),
+            Arc::new(GlobalCtxPeerEventSink::new(global_ctx)),
+        );
         (config, context)
+    }
+
+    #[tokio::test]
+    async fn peer_event_sink_projects_core_events_to_global_context() {
+        let global_ctx = get_mock_global_ctx();
+        let mut events = global_ctx.subscribe();
+        let sink = GlobalCtxPeerEventSink::new(global_ctx);
+
+        sink.issue_event(PeerEvent::PeerAdded(7));
+
+        assert!(matches!(
+            events.recv().await.unwrap(),
+            GlobalCtxEvent::PeerAdded(7)
+        ));
     }
 
     #[tokio::test]
