@@ -5,17 +5,13 @@ only forward packets of peers that directly connected to this node.
 in the future, with the help wo peer center we can forward packets of peers that
 connected to any node in the local network.
 */
-use std::{sync::Arc, time::SystemTime};
+use std::sync::Arc;
 
 use dashmap::DashMap;
 use easytier_core::connectivity::direct::DirectConnectorRpcHandler;
 #[cfg(test)]
 use easytier_core::peers::context::ArcPeerContext;
 use easytier_core::peers::foreign_network_manager as core_foreign_network_manager;
-pub use easytier_core::peers::foreign_network_manager::{
-    ForeignNetworkInfoProvider, ForeignNetworkRouteInfo, ForeignNetworkRouteInfoProvider,
-    GlobalForeignNetworkAccessor,
-};
 use easytier_core::tunnel::ring::RingTunnelRegistry;
 #[cfg(test)]
 use tokio::sync::Mutex;
@@ -24,31 +20,28 @@ use tokio::task::JoinSet;
 
 #[cfg(test)]
 use crate::{
-    common::global_ctx::{GlobalCtxEvent, NetworkIdentity},
+    common::{
+        PeerId,
+        global_ctx::{GlobalCtxEvent, NetworkIdentity},
+    },
     proto::peer_rpc::PeerIdentityType,
 };
 use crate::{
     common::{
-        PeerId,
         config::{ConfigLoader, TomlConfigLoader},
-        error::Error,
         global_ctx::{ArcGlobalCtx, GlobalCtx, TrustedKeySource},
         shrink_dashmap,
     },
     connector::runtime::RuntimeConnectorHost,
     proto::{
-        api::instance::{
-            ForeignNetworkEntryPb, ListForeignNetworkResponse, PeerInfo, TrustedKeyInfoPb,
-            TrustedKeySourcePb,
-        },
+        api::instance::{ForeignNetworkEntryPb, PeerInfo, TrustedKeyInfoPb, TrustedKeySourcePb},
         peer_rpc::DirectConnectorRpcServer,
     },
-    tunnel::packet_def::ZCPacket,
 };
 
+use super::peer_rpc::PeerRpcManager;
 #[cfg(test)]
 use super::{PacketRecvChan, create_packet_recv_chan, peer_session::PeerSessionStore};
-use super::{peer_conn::PeerConn, peer_rpc::PeerRpcManager};
 
 #[cfg(test)]
 struct ForeignNetworkEntry {
@@ -129,9 +122,6 @@ impl ForeignNetworkEntry {
     }
 }
 
-pub const FOREIGN_NETWORK_SERVICE_ID: u32 =
-    core_foreign_network_manager::FOREIGN_NETWORK_SERVICE_ID;
-
 struct RuntimeForeignNetworkContext {
     global_ctx: ArcGlobalCtx,
     lifecycle_token: Arc<()>,
@@ -157,6 +147,13 @@ impl ForeignNetworkRuntimeImpl {
             ring_registry,
             foreign_contexts: DashMap::new(),
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn foreign_global_ctx_for_test(&self, network_name: &str) -> Option<ArcGlobalCtx> {
+        self.foreign_contexts
+            .get(network_name)
+            .map(|ctx| ctx.global_ctx.clone())
     }
 
     fn get_runtime_foreign_context(
@@ -251,11 +248,6 @@ impl core_foreign_network_manager::ForeignNetworkRuntime for ForeignNetworkRunti
     }
 }
 
-pub struct ForeignNetworkManager {
-    core: Arc<core_foreign_network_manager::ForeignNetworkManager>,
-    runtime: Arc<ForeignNetworkRuntimeImpl>,
-}
-
 pub(crate) fn foreign_network_info_to_api(
     info: core_foreign_network_manager::ForeignNetworkEntryInfo,
 ) -> ForeignNetworkEntryPb {
@@ -286,133 +278,19 @@ pub(crate) fn foreign_network_info_to_api(
     }
 }
 
-impl ForeignNetworkManager {
-    #[cfg(test)]
-    fn should_reject_credential_trust_path(identity_type: PeerIdentityType) -> bool {
-        matches!(identity_type, PeerIdentityType::Admin)
-    }
+#[cfg(test)]
+fn should_reject_credential_trust_path(identity_type: PeerIdentityType) -> bool {
+    matches!(identity_type, PeerIdentityType::Admin)
+}
 
-    #[cfg(test)]
-    fn is_credential_pubkey_trusted(
-        entry: &ForeignNetworkEntry,
-        remote_static_pubkey: &[u8],
-    ) -> bool {
-        remote_static_pubkey.len() == 32
-            && entry.global_ctx.is_pubkey_trusted_with_source(
-                remote_static_pubkey,
-                &entry.network.network_name,
-                TrustedKeySource::OspfCredential,
-            )
-    }
-
-    pub(super) fn from_core(
-        core: Arc<core_foreign_network_manager::ForeignNetworkManager>,
-        runtime: Arc<ForeignNetworkRuntimeImpl>,
-    ) -> Self {
-        Self { core, runtime }
-    }
-
-    #[cfg(test)]
-    fn fail_next_add_peer_conn_after_entry_insert(&self) {
-        self.core.fail_next_add_peer_conn_after_entry_insert();
-    }
-
-    #[cfg(test)]
-    fn foreign_global_ctx_for_test(&self, network_name: &str) -> Option<ArcGlobalCtx> {
-        self.runtime
-            .foreign_contexts
-            .get(network_name)
-            .map(|ctx| ctx.global_ctx.clone())
-    }
-
-    #[cfg(test)]
-    async fn record_rx_traffic_for_test(
-        &self,
-        network_name: &str,
-        peer_id: PeerId,
-        packet_type: u8,
-        bytes: u64,
-    ) -> bool {
-        self.core
-            .record_rx_traffic_for_test(network_name, peer_id, packet_type, bytes)
-            .await
-    }
-
-    #[cfg(test)]
-    fn contains_traffic_metric_peer_cache_for_test(
-        &self,
-        network_name: &str,
-        peer_id: PeerId,
-    ) -> bool {
-        self.core
-            .contains_traffic_metric_peer_cache_for_test(network_name, peer_id)
-    }
-
-    pub fn get_network_peer_id(&self, network_name: &str) -> Option<PeerId> {
-        self.core.get_network_peer_id(network_name)
-    }
-
-    pub(crate) fn is_existing_credential_pubkey_trusted(
-        &self,
-        network_name: &str,
-        remote_static_pubkey: &[u8],
-    ) -> bool {
-        self.core
-            .is_existing_credential_pubkey_trusted(network_name, remote_static_pubkey)
-    }
-
-    pub async fn add_peer_conn(&self, peer_conn: PeerConn) -> Result<(), Error> {
-        self.core.add_peer_conn(peer_conn).await.map_err(Into::into)
-    }
-
-    pub async fn list_foreign_networks(&self) -> ListForeignNetworkResponse {
-        self.list_foreign_networks_with_options(false).await
-    }
-
-    pub async fn list_foreign_networks_with_options(
-        &self,
-        include_trusted_keys: bool,
-    ) -> ListForeignNetworkResponse {
-        let mut ret = ListForeignNetworkResponse::default();
-        let networks = self
-            .core
-            .list_foreign_network_infos(include_trusted_keys)
-            .await;
-
-        for (network_name, info) in networks {
-            ret.foreign_networks
-                .insert(network_name, foreign_network_info_to_api(info));
-        }
-
-        ret
-    }
-
-    pub fn get_foreign_network_last_update(&self, network_name: &str) -> Option<SystemTime> {
-        self.core.get_foreign_network_last_update(network_name)
-    }
-
-    pub async fn forward_foreign_network_packet(
-        &self,
-        network_name: &str,
-        dst_peer_id: PeerId,
-        msg: ZCPacket,
-    ) -> Result<(), Error> {
-        self.core
-            .forward_foreign_network_packet(network_name, dst_peer_id, msg)
-            .await
-            .map_err(Into::into)
-    }
-
-    pub async fn close_peer_conn(
-        &self,
-        peer_id: PeerId,
-        conn_id: &super::peer_conn::PeerConnId,
-    ) -> Result<(), Error> {
-        self.core
-            .close_peer_conn(peer_id, conn_id)
-            .await
-            .map_err(Into::into)
-    }
+#[cfg(test)]
+fn is_credential_pubkey_trusted(entry: &ForeignNetworkEntry, remote_static_pubkey: &[u8]) -> bool {
+    remote_static_pubkey.len() == 32
+        && entry.global_ctx.is_pubkey_trusted_with_source(
+            remote_static_pubkey,
+            &entry.network.network_name,
+            TrustedKeySource::OspfCredential,
+        )
 }
 
 #[cfg(test)]
@@ -523,12 +401,12 @@ pub mod tests {
 
         println!("{:?}", pmb_net1.list_routes().await);
 
-        let rpc_resp = pm_center
+        let foreign_infos = pm_center
             .get_foreign_network_manager()
-            .list_foreign_networks()
+            .list_foreign_network_infos(false)
             .await;
-        assert_eq!(1, rpc_resp.foreign_networks.len());
-        assert_eq!(2, rpc_resp.foreign_networks["net1"].peers.len());
+        assert_eq!(1, foreign_infos.len());
+        assert_eq!(2, foreign_infos["net1"].peers.len());
     }
 
     #[tokio::test]
@@ -908,9 +786,8 @@ pub mod tests {
         assert!(foreign_mgr.get_network_peer_id("net1").is_none());
         assert!(
             foreign_mgr
-                .list_foreign_networks()
+                .list_foreign_network_infos(false)
                 .await
-                .foreign_networks
                 .is_empty()
         );
     }
@@ -951,7 +828,7 @@ pub mod tests {
             foreign_mgr.contains_traffic_metric_peer_cache_for_test("net1", pma_net1.my_peer_id())
         );
 
-        foreign_mgr
+        pm_center
             .foreign_global_ctx_for_test("net1")
             .unwrap()
             .issue_event(GlobalCtxEvent::PeerRemoved(pma_net1.my_peer_id()));
@@ -1049,13 +926,9 @@ pub mod tests {
 
         let without_trusted_keys = pm_center
             .get_foreign_network_manager()
-            .list_foreign_networks()
+            .list_foreign_network_infos(false)
             .await;
-        assert!(
-            without_trusted_keys.foreign_networks["net1"]
-                .trusted_keys
-                .is_empty()
-        );
+        assert!(without_trusted_keys["net1"].trusted_keys.is_empty());
 
         let foreign_mgr = pm_center.get_foreign_network_manager();
         wait_for_condition(
@@ -1063,9 +936,8 @@ pub mod tests {
                 let foreign_mgr = foreign_mgr.clone();
                 async move {
                     foreign_mgr
-                        .list_foreign_networks_with_options(true)
+                        .list_foreign_network_infos(true)
                         .await
-                        .foreign_networks
                         .get("net1")
                         .map(|entry| !entry.trusted_keys.is_empty())
                         .unwrap_or(false)
@@ -1078,12 +950,8 @@ pub mod tests {
         let core_infos = pm_center.core().list_foreign_network_infos(true).await;
         assert!(!core_infos["net1"].trusted_keys.is_empty());
 
-        let with_trusted_keys = foreign_mgr.list_foreign_networks_with_options(true).await;
-        assert!(
-            !with_trusted_keys.foreign_networks["net1"]
-                .trusted_keys
-                .is_empty()
-        );
+        let with_trusted_keys = foreign_mgr.list_foreign_network_infos(true).await;
+        assert!(!with_trusted_keys["net1"].trusted_keys.is_empty());
     }
 
     #[tokio::test]
@@ -1112,13 +980,13 @@ pub mod tests {
         assert_eq!(2, secure_a.list_routes().await.len());
         assert_eq!(2, secure_b.list_routes().await.len());
 
-        let rpc_resp = pm_center
+        let foreign_infos = pm_center
             .get_foreign_network_manager()
-            .list_foreign_networks()
+            .list_foreign_network_infos(false)
             .await;
-        assert_eq!(2, rpc_resp.foreign_networks.len());
-        assert_eq!(2, rpc_resp.foreign_networks["legacy-net"].peers.len());
-        assert_eq!(2, rpc_resp.foreign_networks["secure-net"].peers.len());
+        assert_eq!(2, foreign_infos.len());
+        assert_eq!(2, foreign_infos["legacy-net"].peers.len());
+        assert_eq!(2, foreign_infos["secure-net"].peers.len());
     }
 
     #[tokio::test]
@@ -1149,9 +1017,7 @@ pub mod tests {
             )]),
             &foreign_network.network_name,
         );
-        assert!(!ForeignNetworkManager::is_credential_pubkey_trusted(
-            &entry, &pubkey
-        ));
+        assert!(!is_credential_pubkey_trusted(&entry, &pubkey));
 
         entry.global_ctx.update_trusted_keys(
             HashMap::from([(
@@ -1163,9 +1029,7 @@ pub mod tests {
             )]),
             &foreign_network.network_name,
         );
-        assert!(ForeignNetworkManager::is_credential_pubkey_trusted(
-            &entry, &pubkey
-        ));
+        assert!(is_credential_pubkey_trusted(&entry, &pubkey));
     }
 
     #[tokio::test]
@@ -1458,13 +1322,11 @@ pub mod tests {
 
     #[test]
     fn credential_trust_path_rejects_admin_identity() {
-        assert!(ForeignNetworkManager::should_reject_credential_trust_path(
-            PeerIdentityType::Admin
-        ));
-        assert!(!ForeignNetworkManager::should_reject_credential_trust_path(
+        assert!(should_reject_credential_trust_path(PeerIdentityType::Admin));
+        assert!(!should_reject_credential_trust_path(
             PeerIdentityType::Credential
         ));
-        assert!(!ForeignNetworkManager::should_reject_credential_trust_path(
+        assert!(!should_reject_credential_trust_path(
             PeerIdentityType::SharedNode
         ));
     }
@@ -1488,9 +1350,8 @@ pub mod tests {
         assert!(
             pm_center
                 .get_foreign_network_manager()
-                .list_foreign_networks()
+                .list_foreign_network_infos(false)
                 .await
-                .foreign_networks
                 .is_empty()
         );
     }
@@ -1634,17 +1495,16 @@ pub mod tests {
         assert_eq!(2, pma_net2.list_routes().await.len());
         assert_eq!(2, pmb_net2.list_routes().await.len());
 
-        let rpc_resp = pm_center
+        let foreign_infos = pm_center
             .get_foreign_network_manager()
-            .list_foreign_networks()
+            .list_foreign_network_infos(false)
             .await;
-        assert_eq!(2, rpc_resp.foreign_networks.len());
-        assert_eq!(3, rpc_resp.foreign_networks["net1"].peers.len());
-        assert_eq!(2, rpc_resp.foreign_networks["net2"].peers.len());
+        assert_eq!(2, foreign_infos.len());
+        assert_eq!(3, foreign_infos["net1"].peers.len());
+        assert_eq!(2, foreign_infos["net2"].peers.len());
         assert_eq!(
             5,
-            rpc_resp
-                .foreign_networks
+            foreign_infos
                 .values()
                 .map(|entry| entry.peers.len())
                 .sum::<usize>()
@@ -1652,33 +1512,31 @@ pub mod tests {
 
         drop(pmb_net2);
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        let rpc_resp = pm_center
+        let foreign_infos = pm_center
             .get_foreign_network_manager()
-            .list_foreign_networks()
+            .list_foreign_network_infos(false)
             .await;
         assert_eq!(
             4,
-            rpc_resp
-                .foreign_networks
+            foreign_infos
                 .values()
                 .map(|entry| entry.peers.len())
                 .sum::<usize>()
         );
         drop(pma_net2);
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        let rpc_resp = pm_center
+        let foreign_infos = pm_center
             .get_foreign_network_manager()
-            .list_foreign_networks()
+            .list_foreign_network_infos(false)
             .await;
         assert_eq!(
             3,
-            rpc_resp
-                .foreign_networks
+            foreign_infos
                 .values()
                 .map(|entry| entry.peers.len())
                 .sum::<usize>()
         );
-        assert_eq!(1, rpc_resp.foreign_networks.len());
+        assert_eq!(1, foreign_infos.len());
     }
 
     #[tokio::test]

@@ -372,9 +372,8 @@ async fn wait_foreign_network_count(inst: &Instance, expected: usize, timeout: D
             let foreign_networks = inst
                 .get_peer_manager()
                 .get_foreign_network_manager()
-                .list_foreign_networks()
-                .await
-                .foreign_networks;
+                .list_foreign_network_infos(false)
+                .await;
             println!("foreign networks: {:?}", foreign_networks);
             foreign_networks.len() == expected
         },

@@ -6,7 +6,7 @@ use easytier_core::peers::peer_manager::{
 use easytier_core::tunnel::ring::RingTunnelRegistry;
 use easytier_core::{
     instance::{CoreRuntimeConfig, CoreRuntimeConfigStore},
-    peers::context::SubmittedPeerContext,
+    peers::{context::SubmittedPeerContext, foreign_network_manager::ForeignNetworkManager},
 };
 use quanta::Instant;
 use std::collections::BTreeSet;
@@ -35,16 +35,10 @@ use crate::{
 };
 
 use super::{
-    BoxNicPacketFilter, BoxPeerPacketFilter, PacketRecvChan,
-    context::runtime_peer_snapshot,
-    encrypt::NullCipher,
-    foreign_network_client::ForeignNetworkClient,
-    foreign_network_manager::{ForeignNetworkManager, ForeignNetworkRuntimeImpl},
-    peer_conn::PeerConnId,
-    peer_map::PeerMap,
-    peer_rpc::PeerRpcManager,
-    peer_task::ExternalTaskSignal,
-    relay_peer_map::RelayPeerMap,
+    BoxNicPacketFilter, BoxPeerPacketFilter, PacketRecvChan, context::runtime_peer_snapshot,
+    encrypt::NullCipher, foreign_network_client::ForeignNetworkClient,
+    foreign_network_manager::ForeignNetworkRuntimeImpl, peer_conn::PeerConnId, peer_map::PeerMap,
+    peer_rpc::PeerRpcManager, peer_task::ExternalTaskSignal, relay_peer_map::RelayPeerMap,
     route_trait::Route,
 };
 
@@ -56,6 +50,8 @@ pub struct PeerManager {
     ring_registry: Arc<RingTunnelRegistry>,
 
     foreign_network_manager: Arc<ForeignNetworkManager>,
+    #[cfg(test)]
+    foreign_network_runtime: Arc<ForeignNetworkRuntimeImpl>,
 }
 
 impl Debug for PeerManager {
@@ -151,10 +147,6 @@ impl PeerManager {
             TomlConfigLoader::default().get_flags(),
             foreign_network_runtime.clone(),
         );
-        let foreign_network_manager = Arc::new(ForeignNetworkManager::from_core(
-            build_result.foreign_network_manager,
-            foreign_network_runtime,
-        ));
 
         PeerManager {
             global_ctx,
@@ -162,7 +154,9 @@ impl PeerManager {
             peer_context,
             runtime_config,
             ring_registry,
-            foreign_network_manager,
+            foreign_network_manager: build_result.foreign_network_manager,
+            #[cfg(test)]
+            foreign_network_runtime,
         }
     }
 
@@ -393,6 +387,12 @@ impl PeerManager {
 
     pub fn get_foreign_network_manager(&self) -> Arc<ForeignNetworkManager> {
         self.foreign_network_manager.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn foreign_global_ctx_for_test(&self, network_name: &str) -> Option<ArcGlobalCtx> {
+        self.foreign_network_runtime
+            .foreign_global_ctx_for_test(network_name)
     }
 
     pub fn get_foreign_network_client(&self) -> Arc<ForeignNetworkClient> {
@@ -1393,9 +1393,9 @@ mod tests {
                 async move {
                     let foreigns = peer_mgr_server
                         .get_foreign_network_manager()
-                        .list_foreign_networks()
+                        .list_foreign_network_infos(false)
                         .await;
-                    let Some(entry) = foreigns.foreign_networks.get("user") else {
+                    let Some(entry) = foreigns.get("user") else {
                         return false;
                     };
                     entry.peers.iter().any(|p| {
@@ -1813,9 +1813,9 @@ mod tests {
 
         let conns = peer_mgr_server
             .foreign_network_manager
-            .list_foreign_networks()
+            .list_foreign_network_infos(false)
             .await;
-        let client_info = conns.foreign_networks["client"].peers[0].clone();
+        let client_info = conns["client"].peers[0].clone();
         let conn_info = client_info.conns[0].clone();
         peer_mgr_server
             .close_peer_conn(client_info.peer_id, &conn_info.conn_id.parse().unwrap())

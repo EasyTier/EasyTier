@@ -195,9 +195,8 @@ async fn init_three_node_ex_with_inst3<F: Fn(TomlConfigLoader) -> TomlConfigLoad
                 inst2
                     .get_peer_manager()
                     .get_foreign_network_manager()
-                    .list_foreign_networks()
+                    .list_foreign_network_infos(false)
                     .await
-                    .foreign_networks
                     .len()
                     == 1
             }

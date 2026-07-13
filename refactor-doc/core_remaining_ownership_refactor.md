@@ -112,8 +112,9 @@ Core owns:
   advertised features. Native only realizes that specification as a GlobalCtx
   and attaches host STUN, listener, and connector resources.
 - `PeerManagerCore` now constructs and owns the core foreign-network manager
-  from a `ForeignNetworkRuntime` Host Adapter. The native facade no longer
-  reimplements core admission, packet, route/info, or connection-close traits.
+  from a `ForeignNetworkRuntime` Host Adapter. The shallow native manager
+  facade has been deleted; native callers and tests use the core manager
+  Interface directly, while RPC presentation keeps a standalone DTO mapper.
 - The remaining runtime surface is context construction/removal and native
   direct-connector RPC registration.
 
@@ -136,6 +137,16 @@ The native Host Adapter owns only:
 - credential, secure-mode, relay, traffic, rollback, and route integration
   tests preserve current behaviour;
 - core native/wasm and native foreign-network tests pass.
+
+### Closure record
+
+The ownership move is complete as of 2026-07-13. The native foreign-network
+file contains the GlobalCtx/direct-connector Host Adapter and the management DTO
+mapper, but no peer-graph facade or portable policy projection. Core tests,
+native/WASI checks, native test compilation, and focused context/feature tests
+pass. Some legacy ring-based foreign tests still stop at the pre-existing
+missing-`TunnelInfo` fixture documented in the verification discipline; that
+fixture is not part of the ownership move.
 
 ## Slice 2: reduce the Native peer facade
 

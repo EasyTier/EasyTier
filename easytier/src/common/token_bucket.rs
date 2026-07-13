@@ -38,9 +38,8 @@ mod tests {
                 || async {
                     pm_center1
                         .get_foreign_network_manager()
-                        .list_foreign_networks()
+                        .list_foreign_network_infos(false)
                         .await
-                        .foreign_networks
                         .is_empty()
                 },
                 Duration::from_secs(5),

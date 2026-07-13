@@ -14,7 +14,6 @@ use crate::{
         },
         stats_manager::{LabelSet, LabelType, MetricName},
     },
-    proto::api::instance::TrustedKeySourcePb,
     tunnel::{
         common::tests::wait_for_condition,
         packet_def::{PacketType, ZCPacket},
@@ -113,9 +112,8 @@ async fn wait_for_foreign_network(server: Arc<PeerManager>, network_name: &'stat
             async move {
                 server
                     .get_foreign_network_manager()
-                    .list_foreign_networks()
+                    .list_foreign_network_infos(false)
                     .await
-                    .foreign_networks
                     .contains_key(network_name)
             }
         },
@@ -135,9 +133,8 @@ async fn wait_for_foreign_network_peer_count_at_least(
             async move {
                 server
                     .get_foreign_network_manager()
-                    .list_foreign_networks()
+                    .list_foreign_network_infos(false)
                     .await
-                    .foreign_networks
                     .get(network_name)
                     .map(|entry| entry.peers.len() >= min_peer_count)
                     .unwrap_or(false)
@@ -351,9 +348,8 @@ async fn private_mode_rejects_foreign_network_with_different_secret() {
     assert!(
         server
             .get_foreign_network_manager()
-            .list_foreign_networks()
+            .list_foreign_network_infos(false)
             .await
-            .foreign_networks
             .is_empty()
     );
 }
@@ -386,14 +382,13 @@ async fn private_mode_allows_trusted_foreign_credential() {
             async move {
                 server
                     .get_foreign_network_manager()
-                    .list_foreign_networks_with_options(true)
+                    .list_foreign_network_infos(true)
                     .await
-                    .foreign_networks
                     .get("tenant-a")
                     .map(|entry| {
                         entry.trusted_keys.iter().any(|trusted_key| {
                             trusted_key.pubkey == pubkey
-                                && trusted_key.source == TrustedKeySourcePb::OspfCredential as i32
+                                && trusted_key.source == TrustedKeySource::OspfCredential
                         })
                     })
                     .unwrap_or(false)
@@ -444,9 +439,8 @@ async fn private_mode_rejects_untrusted_foreign_credential() {
             async move {
                 server
                     .get_foreign_network_manager()
-                    .list_foreign_networks()
+                    .list_foreign_network_infos(false)
                     .await
-                    .foreign_networks
                     .get("tenant-a")
                     .map(|entry| entry.peers.len() == 1)
                     .unwrap_or(false)
