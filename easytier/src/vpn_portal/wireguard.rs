@@ -1,14 +1,15 @@
 use std::{
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6},
+    net::{IpAddr, Ipv6Addr, SocketAddr, SocketAddrV6},
     sync::Arc,
 };
 
 use anyhow::Context;
 use base64::{Engine, prelude::BASE64_STANDARD};
 use cidr::Ipv4Inet;
-use dashmap::DashMap;
+use easytier_core::vpn_portal::{
+    VpnPortalClientRemoval, VpnPortalClientSession, VpnPortalClientTable, VpnPortalPeerPacketRoute,
+};
 use futures::StreamExt;
-use pnet::packet::ipv4::Ipv4Packet;
 use tokio::task::JoinSet;
 use tracing::Level;
 
@@ -16,20 +17,20 @@ use crate::{
     common::{
         config::NetworkIdentity,
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
-        join_joinset_background, shrink_dashmap,
+        join_joinset_background,
     },
     peers::{PeerPacketFilter, peer_manager::PeerManager},
     tunnel::{
         Tunnel, TunnelListener,
         mpsc::{MpscTunnel, MpscTunnelSender},
-        packet_def::{PacketType, ZCPacket, ZCPacketType},
+        packet_def::{ZCPacket, ZCPacketType},
         wireguard::{WgConfig, WgTunnelListener},
     },
 };
 
 use super::VpnPortal;
 
-type WgPeerIpTable = Arc<DashMap<Ipv4Addr, Arc<ClientEntry>>>;
+type WgPeerIpTable = Arc<VpnPortalClientTable<MpscTunnelSender>>;
 
 pub(crate) fn get_wg_config_for_portal(nid: &NetworkIdentity) -> WgConfig {
     let key_seed = format!(
@@ -38,11 +39,6 @@ pub(crate) fn get_wg_config_for_portal(nid: &NetworkIdentity) -> WgConfig {
         nid.network_secret.as_ref().unwrap_or(&"".to_string())
     );
     WgConfig::new_for_portal(&key_seed, &key_seed)
-}
-
-struct ClientEntry {
-    endpoint_addr: Option<url::Url>,
-    sink: MpscTunnelSender,
 }
 
 struct WireGuardImpl {
@@ -69,7 +65,7 @@ impl WireGuardImpl {
             peer_mgr,
             wg_config,
             listener_addr,
-            wg_peer_ip_table: Arc::new(DashMap::new()),
+            wg_peer_ip_table: Arc::new(VpnPortalClientTable::new()),
             tasks: Arc::new(std::sync::Mutex::new(JoinSet::new())),
         }
     }
@@ -82,18 +78,17 @@ impl WireGuardImpl {
         let info = t.info().unwrap_or_default();
         let mut mpsc_tunnel = MpscTunnel::new(t, None);
         let mut stream = mpsc_tunnel.get_stream();
-        let mut ip_registered = false;
 
         let remote_addr = info.remote_addr.clone();
         let endpoint_addr = remote_addr.clone().map(Into::into);
+        let mut client_session =
+            VpnPortalClientSession::new(wg_peer_ip_table, endpoint_addr, mpsc_tunnel.get_sink());
         peer_mgr
             .get_global_ctx()
             .issue_event(GlobalCtxEvent::VpnPortalClientConnected(
                 info.local_addr.clone().unwrap_or_default().to_string(),
                 info.remote_addr.clone().unwrap_or_default().to_string(),
             ));
-
-        let mut map_key = None;
 
         loop {
             let msg = match stream.next().await {
@@ -110,46 +105,30 @@ impl WireGuardImpl {
 
             assert_eq!(msg.packet_type(), ZCPacketType::WG);
             let inner = msg.inner();
-            let Some(i) = Ipv4Packet::new(&inner) else {
+            let Some(client_packet) = client_session.observe_ipv4_payload(&inner) else {
                 tracing::error!(?inner, "Failed to parse ipv4 packet");
                 continue;
             };
-            if !ip_registered {
-                let client_entry = Arc::new(ClientEntry {
-                    endpoint_addr: endpoint_addr.clone(),
-                    sink: mpsc_tunnel.get_sink(),
-                });
-                map_key = Some(i.get_source());
-                // Be careful here: we may overwrite an existing entry if the client IP is reused,
-                // which is common when clients are behind NAT.
-                wg_peer_ip_table.insert(i.get_source(), client_entry.clone());
-                ip_registered = true;
-            }
-            tracing::trace!(?i, "Received from wg client");
-            let dst = i.get_destination();
+            tracing::trace!(?client_packet, "Received from wg client");
             let _ = peer_mgr
                 .core()
                 .send_msg_by_ip(
                     ZCPacket::new_with_payload(inner.as_ref()),
-                    IpAddr::V4(dst),
+                    IpAddr::V4(client_packet.destination),
                     false,
                 )
                 .await;
         }
 
-        if let Some(map_key) = map_key {
-            // Remove the client from the wg_peer_ip_table only when its endpoint address is unchanged,
-            // or we may break clients behind NAT.
-            match wg_peer_ip_table
-                .remove_if(&map_key, |_, entry| entry.endpoint_addr == endpoint_addr)
-            {
-                Some(_) => tracing::info!(?map_key, "Removed wg client from table"),
-                None => tracing::info!(
-                    ?map_key,
-                    "The wg client changed its endpoint address, not removing from table"
-                ),
+        match client_session.close() {
+            VpnPortalClientRemoval::Removed(address) => {
+                tracing::info!(?address, "Removed wg client from table")
             }
-            shrink_dashmap(&wg_peer_ip_table, None);
+            VpnPortalClientRemoval::EntryChangedOrMissing(address) => tracing::info!(
+                ?address,
+                "The wg client changed its endpoint address, not removing from table"
+            ),
+            VpnPortalClientRemoval::NotRegistered => {}
         }
 
         peer_mgr
@@ -168,26 +147,13 @@ impl WireGuardImpl {
         #[async_trait::async_trait]
         impl PeerPacketFilter for PeerPacketFilterForVpnPortal {
             async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
-                let hdr = packet.peer_manager_header().unwrap();
-                if hdr.packet_type != PacketType::Data as u8 {
-                    return Some(packet);
+                let entry = match self.wg_peer_ip_table.route_peer_packet(&packet) {
+                    VpnPortalPeerPacketRoute::Pass => return Some(packet),
+                    VpnPortalPeerPacketRoute::Drop => return None,
+                    VpnPortalPeerPacketRoute::Deliver { client, .. } => client,
                 };
 
-                let payload_bytes = packet.payload();
-                let ipv4 = Ipv4Packet::new(payload_bytes)?;
-                if ipv4.get_version() != 4 {
-                    return Some(packet);
-                }
-
-                let Some(entry) = self
-                    .wg_peer_ip_table
-                    .get(&ipv4.get_destination())
-                    .map(|f| f.clone())
-                else {
-                    return Some(packet);
-                };
-
-                tracing::trace!(?ipv4, "Packet filter for vpn portal");
+                tracing::trace!("Packet filter for vpn portal");
 
                 let payload_offset = packet.packet_type().get_packet_offsets().payload_offset;
                 let packet = ZCPacket::new_from_buf(
@@ -195,7 +161,7 @@ impl WireGuardImpl {
                     ZCPacketType::WG,
                 );
 
-                match entry.sink.try_send(packet) {
+                match entry.value().try_send(packet) {
                     Ok(_) => {
                         tracing::trace!("Sent packet to wg client");
                     }
@@ -366,14 +332,9 @@ PersistentKeepalive = 25
             .as_ref()
             .map(|w| {
                 w.wg_peer_ip_table
-                    .iter()
-                    .map(|x| {
-                        x.value()
-                            .endpoint_addr
-                            .as_ref()
-                            .map(|x| x.to_string())
-                            .unwrap_or_default()
-                    })
+                    .endpoint_addrs()
+                    .into_iter()
+                    .map(|endpoint| endpoint.map(|url| url.to_string()).unwrap_or_default())
                     .collect()
             })
             .unwrap_or_default()
