@@ -409,6 +409,22 @@ impl PeerContext for GlobalCtx {
         None
     }
 
+    fn foreign_forward_limiter(&self, network_name: &str) -> Option<ArcByteLimiter> {
+        let bps = self.get_flags().foreign_relay_bps_limit;
+        (bps != u64::MAX).then(|| {
+            let limiter: ArcByteLimiter = self.token_bucket_manager().get_or_create(
+                network_name,
+                crate::proto::common::LimiterConfig {
+                    burst_rate: None,
+                    bps: Some(bps),
+                    fill_duration_ms: None,
+                }
+                .into(),
+            );
+            limiter
+        })
+    }
+
     fn issue_event(&self, event: PeerEvent) {
         match event {
             PeerEvent::PeerAdded(peer_id) => self.issue_event(GlobalCtxEvent::PeerAdded(peer_id)),

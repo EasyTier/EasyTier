@@ -702,8 +702,8 @@ pub trait PeerContext: Send + Sync {
         None
     }
 
-    fn foreign_forward_limiter(&self, network_name: &str) -> Option<ArcByteLimiter> {
-        self.recv_limiter(&format!("{network_name}:forward"), true)
+    fn foreign_forward_limiter(&self, _network_name: &str) -> Option<ArcByteLimiter> {
+        None
     }
 
     fn issue_event(&self, _event: PeerEvent) {}
@@ -932,6 +932,18 @@ impl PeerContext for ConfigPeerContext {
             ("portable:instance:recv".to_owned(), instance_limit?)
         };
         self.support.get_or_create_limiter(&key, bps)
+    }
+
+    fn foreign_forward_limiter(&self, network_name: &str) -> Option<ArcByteLimiter> {
+        let bps = self
+            .runtime
+            .core
+            .traffic
+            .foreign_relay_bps_limit
+            .or(Some(self.flags.foreign_relay_bps_limit))
+            .filter(|limit| !matches!(*limit, 0 | u64::MAX))?;
+        self.support
+            .get_or_create_limiter(&format!("portable:foreign:{network_name}:forward"), bps)
     }
 }
 
@@ -1173,6 +1185,16 @@ impl PeerContext for SubmittedPeerContext {
         None
     }
 
+    fn foreign_forward_limiter(&self, network_name: &str) -> Option<ArcByteLimiter> {
+        let bps = self.snapshot().flags.foreign_relay_bps_limit;
+        (bps != u64::MAX)
+            .then(|| {
+                self.support
+                    .recv_limiter(&format!("{network_name}:forward"), bps)
+            })
+            .flatten()
+    }
+
     fn issue_event(&self, event: PeerEvent) {
         self.support.issue_event(event);
     }
@@ -1277,7 +1299,26 @@ mod tests {
         assert!(context.foreign_forward_limiter("foreign").is_some());
         assert_eq!(
             support.limiter_keys.lock().unwrap().as_slice(),
-            ["foreign:recv", "foreign:forward:recv"]
+            ["foreign:recv", "foreign:forward"]
+        );
+    }
+
+    #[test]
+    fn foreign_forward_limiter_does_not_fall_back_to_instance_limit() {
+        let mut snapshot = submitted_snapshot("limiter", false);
+        snapshot.flags.foreign_relay_bps_limit = u64::MAX;
+        snapshot.flags.instance_recv_bps_limit = 1024;
+        let config = Arc::new(TestSubmittedConfig {
+            snapshot: ArcSwap::from_pointee(snapshot),
+        });
+        let support = Arc::new(TestSubmittedSupport::default());
+        let context = SubmittedPeerContext::new(config, support.clone());
+
+        assert!(context.recv_limiter("foreign", true).is_some());
+        assert!(context.foreign_forward_limiter("foreign").is_none());
+        assert_eq!(
+            support.limiter_keys.lock().unwrap().as_slice(),
+            ["instance:recv"]
         );
     }
 
