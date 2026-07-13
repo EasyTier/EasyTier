@@ -275,7 +275,31 @@ impl VirtualUdpSocketFactory for RuntimeUdpSessionControlHandler {
 
 #[cfg(test)]
 mod tests {
+    use easytier_core::{
+        listener::SocketListener,
+        socket::udp::{
+            UdpSessionListenRequest, send_v4_hole_punch_control_packet,
+            send_v6_hole_punch_control_packet,
+        },
+    };
+
+    use crate::{
+        common::global_ctx::tests::get_mock_global_ctx,
+        connector::udp_hole_punch::common::RuntimeUdpHolePunchRuntime,
+    };
+
     use super::*;
+
+    #[tokio::test]
+    async fn runtime_udp_socket_reuses_session_layer() {
+        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let runtime_socket = Arc::new(RuntimeUdpSocket::new(socket));
+
+        let first = runtime_socket.udp_session_layer();
+        let second = runtime_socket.udp_session_layer();
+
+        assert!(Arc::ptr_eq(&first, &second));
+    }
 
     #[cfg(any(target_os = "linux", target_os = "android"))]
     #[tokio::test]
@@ -296,6 +320,75 @@ mod tests {
 
         assert_eq!(&buf[..len], b"pktinfo");
         assert_eq!(meta.dst_ip, Some(std::net::IpAddr::V4(Ipv4Addr::LOCALHOST)));
+    }
+
+    #[tokio::test]
+    async fn runtime_v4_hole_punch_control_packet_is_forwarded() {
+        let local_addr = SocketAddr::from(([0, 0, 0, 0], 0));
+        let mut listener = new_runtime_udp_session_listener(
+            "udp://0.0.0.0:0".parse().unwrap(),
+            UdpSessionListenRequest::new(UdpBindOptions::port_bound_listener(local_addr)),
+            UdpSessionAcceptKind::EasyTierMux,
+            NetNS::new(None),
+        );
+        listener.listen().await.unwrap();
+
+        let receiver = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let runtime = RuntimeUdpHolePunchRuntime::new(get_mock_global_ctx());
+        send_v4_hole_punch_control_packet(
+            &runtime,
+            listener.local_url().port().unwrap(),
+            match receiver.local_addr().unwrap() {
+                SocketAddr::V4(addr) => addr,
+                SocketAddr::V6(_) => unreachable!(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let mut buf = [0; 128];
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            receiver.recv_from(&mut buf),
+        )
+        .await
+        .expect("timeout waiting for v4 hole-punch packet")
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn runtime_v6_hole_punch_control_packet_is_forwarded() {
+        let local_addr = "[::]:0".parse().unwrap();
+        let mut listener = new_runtime_udp_session_listener(
+            "udp://[::]:0".parse().unwrap(),
+            UdpSessionListenRequest::new(UdpBindOptions::port_bound_listener(local_addr)),
+            UdpSessionAcceptKind::EasyTierMux,
+            NetNS::new(None),
+        );
+        listener.listen().await.unwrap();
+
+        let receiver = UdpSocket::bind("[::]:0").await.unwrap();
+        let runtime = RuntimeUdpHolePunchRuntime::new(get_mock_global_ctx());
+        send_v6_hole_punch_control_packet(
+            &runtime,
+            listener.local_url().port().unwrap(),
+            match receiver.local_addr().unwrap() {
+                SocketAddr::V6(addr) => addr,
+                SocketAddr::V4(_) => unreachable!(),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+        let mut buf = [0; 128];
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            receiver.recv_from(&mut buf),
+        )
+        .await
+        .expect("timeout waiting for v6 hole-punch packet")
+        .unwrap();
     }
 
     #[test]
