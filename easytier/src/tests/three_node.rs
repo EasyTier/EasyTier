@@ -7,7 +7,11 @@ use std::{
     time::Duration,
 };
 
-use easytier_core::tunnel::ring::RingTunnelRegistry;
+use easytier_core::{
+    connectivity::protocol::raw::TunnelDialer,
+    listener::SocketListener,
+    tunnel::{Tunnel, ring::RingTunnelRegistry},
+};
 use rand::{Rng, rngs::OsRng};
 use tokio::{net::UdpSocket, task::JoinSet};
 use x25519_dalek::StaticSecret;
@@ -33,45 +37,40 @@ use crate::{
         },
     },
     tunnel::common::tests::{
-        _tunnel_bench_netns, _tunnel_pingpong_netns_with_timeout, CoreTunnelDialer,
-        CoreTunnelListener, wait_for_condition,
+        _tunnel_bench_netns, _tunnel_pingpong_netns_with_timeout, wait_for_condition,
     },
 };
 
-fn core_tcp_listener(url: url::Url) -> CoreTunnelListener<RuntimeRpcListener> {
+fn core_tcp_listener(url: url::Url) -> RuntimeRpcListener {
     let addr = url
         .socket_addrs(|| Some(11010))
         .expect("test TCP listener URL should resolve")
         .into_iter()
         .next()
         .expect("test TCP listener URL should have an address");
-    CoreTunnelListener(runtime_rpc_listener(addr))
+    runtime_rpc_listener(addr)
 }
 
-fn core_tcp_dialer(url: url::Url) -> CoreTunnelDialer<RuntimeRpcDialer> {
-    CoreTunnelDialer(runtime_rpc_dialer(url))
+fn core_tcp_dialer(url: url::Url) -> RuntimeRpcDialer {
+    runtime_rpc_dialer(url)
 }
 
-fn core_udp_listener(url: url::Url) -> impl crate::tunnel::TunnelListener {
+fn core_udp_listener(url: url::Url) -> impl SocketListener<Accepted = Box<dyn Tunnel>> + Sync {
     let addr = url
         .socket_addrs(|| Some(11010))
         .expect("test UDP listener URL should resolve")
         .into_iter()
         .next()
         .expect("test UDP listener URL should have an address");
-    CoreTunnelListener(runtime_udp_tunnel_listener(url, addr))
+    runtime_udp_tunnel_listener(url, addr)
 }
 
-fn core_udp_dialer(url: url::Url) -> impl crate::tunnel::TunnelConnector {
-    CoreTunnelDialer(runtime_udp_tunnel_dialer(url))
+fn core_udp_dialer(url: url::Url) -> impl TunnelDialer {
+    runtime_udp_tunnel_dialer(url)
 }
 
 #[cfg(feature = "wireguard")]
-use crate::{
-    common::config::VpnPortalConfig,
-    tunnel::wireguard::{WgConfig, WgTunnelConnector},
-    vpn_portal::wireguard::get_wg_config_for_portal,
-};
+use crate::{common::config::VpnPortalConfig, vpn_portal::wireguard::get_wg_config_for_portal};
 
 pub fn prepare_linux_namespaces() {
     del_netns("net_a");
@@ -177,31 +176,17 @@ async fn init_three_node_ex_with_inst3<F: Fn(TomlConfigLoader) -> TomlConfigLoad
         #[cfg(feature = "wireguard")]
         inst1
             .get_conn_manager()
-            .add_connector(WgTunnelConnector::new(
-                "wg://10.1.1.2:11011".parse().unwrap(),
-                WgConfig::new_from_network_identity(
-                    &inst2.get_global_ctx().get_network_identity().network_name,
-                    &inst2
-                        .get_global_ctx()
-                        .get_network_identity()
-                        .network_secret
-                        .unwrap_or_default(),
-                ),
-            ));
+            .add_connector_url("wg://10.1.1.2:11011".parse().unwrap());
     } else if proto == "ws" {
         #[cfg(feature = "websocket")]
         inst1
             .get_conn_manager()
-            .add_connector(crate::tunnel::websocket::WsTunnelConnector::new(
-                "ws://10.1.1.2:11011".parse().unwrap(),
-            ));
+            .add_connector_url("ws://10.1.1.2:11011".parse().unwrap());
     } else if proto == "wss" {
         #[cfg(feature = "websocket")]
         inst1
             .get_conn_manager()
-            .add_connector(crate::tunnel::websocket::WsTunnelConnector::new(
-                "wss://10.1.1.2:11012".parse().unwrap(),
-            ));
+            .add_connector_url("wss://10.1.1.2:11012".parse().unwrap());
     }
 
     inst3
@@ -1551,7 +1536,6 @@ pub async fn data_compress(
 #[tokio::test]
 #[serial_test::serial]
 pub async fn proxy_three_node_disconnect_test(#[values("tcp", "wg")] proto: &str) {
-    use crate::tunnel::wireguard::{WgConfig, WgTunnelConnector};
     use tokio_util::task::AbortOnDropHandle;
 
     let insts = init_three_node(proto).await;
@@ -1568,17 +1552,7 @@ pub async fn proxy_three_node_disconnect_test(#[values("tcp", "wg")] proto: &str
     } else if proto == "wg" {
         inst4
             .get_conn_manager()
-            .add_connector(WgTunnelConnector::new(
-                "wg://10.1.2.3:11011".parse().unwrap(),
-                WgConfig::new_from_network_identity(
-                    &inst4.get_global_ctx().get_network_identity().network_name,
-                    &inst4
-                        .get_global_ctx()
-                        .get_network_identity()
-                        .network_secret
-                        .unwrap_or_default(),
-                ),
-            ));
+            .add_connector_url("wg://10.1.2.3:11011".parse().unwrap());
     } else {
         unreachable!("not support");
     }
@@ -3140,9 +3114,7 @@ pub async fn acl_group_base_test(
     #[values(true, false)] enable_kcp_proxy: bool,
     #[values(true, false)] enable_quic_proxy: bool,
 ) {
-    use crate::tunnel::{
-        TunnelConnector, TunnelListener, common::tests::_tunnel_pingpong_netns_with_timeout,
-    };
+    use crate::tunnel::common::tests::_tunnel_pingpong_netns_with_timeout;
     use rand::Rng;
 
     // 构造 ACL 配置，包含组信息
@@ -3254,7 +3226,7 @@ pub async fn acl_group_base_test(
 
     println!("Testing group-based ACL rules...");
 
-    let make_listener = |port: u16| -> Box<dyn TunnelListener + Send + Sync + 'static> {
+    let make_listener = |port: u16| -> Box<dyn SocketListener<Accepted = Box<dyn Tunnel>> + Sync> {
         match protocol {
             "tcp" => Box::new(core_tcp_listener(
                 format!("tcp://0.0.0.0:{}", port).parse().unwrap(),
@@ -3266,7 +3238,7 @@ pub async fn acl_group_base_test(
         }
     };
 
-    let make_connector = |port: u16| -> Box<dyn TunnelConnector + Send + Sync + 'static> {
+    let make_connector = |port: u16| -> Box<dyn TunnelDialer> {
         match protocol {
             "tcp" => Box::new(core_tcp_dialer(
                 format!("tcp://10.144.144.3:{}", port).parse().unwrap(),
@@ -3569,9 +3541,7 @@ pub async fn acl_group_self_test(
     #[values(true, false)] enable_kcp_proxy: bool,
     #[values(true, false)] enable_quic_proxy: bool,
 ) {
-    use crate::tunnel::{
-        TunnelConnector, TunnelListener, common::tests::_tunnel_pingpong_netns_with_timeout,
-    };
+    use crate::tunnel::common::tests::_tunnel_pingpong_netns_with_timeout;
     use rand::Rng;
 
     // 构造 ACL 配置，包含组信息
@@ -3654,7 +3624,7 @@ pub async fn acl_group_self_test(
 
     println!("Testing group-based ACL rules...");
 
-    let make_listener = |port: u16| -> Box<dyn TunnelListener + Send + Sync + 'static> {
+    let make_listener = |port: u16| -> Box<dyn SocketListener<Accepted = Box<dyn Tunnel>> + Sync> {
         match protocol {
             "tcp" => Box::new(core_tcp_listener(
                 format!("tcp://0.0.0.0:{}", port).parse().unwrap(),
@@ -3666,7 +3636,7 @@ pub async fn acl_group_self_test(
         }
     };
 
-    let make_connector = |port: u16| -> Box<dyn TunnelConnector + Send + Sync + 'static> {
+    let make_connector = |port: u16| -> Box<dyn TunnelDialer> {
         match protocol {
             "tcp" => Box::new(core_tcp_dialer(
                 format!("tcp://10.144.144.3:{}", port).parse().unwrap(),
@@ -3760,13 +3730,11 @@ pub async fn whitelist_test(
     )
     .await;
 
-    use crate::tunnel::{
-        TunnelConnector, TunnelListener, common::tests::_tunnel_pingpong_netns_with_timeout,
-    };
+    use crate::tunnel::common::tests::_tunnel_pingpong_netns_with_timeout;
     use rand::Rng;
 
     let make_listener =
-        |protocol: &str, port: u16| -> Box<dyn TunnelListener + Send + Sync + 'static> {
+        |protocol: &str, port: u16| -> Box<dyn SocketListener<Accepted = Box<dyn Tunnel>> + Sync> {
             match protocol {
                 "tcp" => Box::new(core_tcp_listener(
                     format!("tcp://0.0.0.0:{}", port).parse().unwrap(),
@@ -3778,18 +3746,17 @@ pub async fn whitelist_test(
             }
         };
 
-    let make_connector =
-        |protocol: &str, port: u16| -> Box<dyn TunnelConnector + Send + Sync + 'static> {
-            match protocol {
-                "tcp" => Box::new(core_tcp_dialer(
-                    format!("tcp://10.144.144.3:{}", port).parse().unwrap(),
-                )),
-                "udp" => Box::new(core_udp_dialer(
-                    format!("udp://10.144.144.3:{}", port).parse().unwrap(),
-                )),
-                _ => panic!("unsupported protocol: {}", protocol),
-            }
-        };
+    let make_connector = |protocol: &str, port: u16| -> Box<dyn TunnelDialer> {
+        match protocol {
+            "tcp" => Box::new(core_tcp_dialer(
+                format!("tcp://10.144.144.3:{}", port).parse().unwrap(),
+            )),
+            "udp" => Box::new(core_udp_dialer(
+                format!("udp://10.144.144.3:{}", port).parse().unwrap(),
+            )),
+            _ => panic!("unsupported protocol: {}", protocol),
+        }
+    };
 
     let mut buf = vec![0; 32];
     rand::thread_rng().fill(&mut buf[..]);

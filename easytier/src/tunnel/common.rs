@@ -282,10 +282,11 @@ pub mod tests {
     use futures::{Future, SinkExt, StreamExt};
     use tokio_util::bytes::{BufMut, Bytes, BytesMut};
 
-    use crate::{
-        common::netns::NetNS,
-        tunnel::{TunnelConnector, TunnelListener, packet_def::ZCPacket},
+    use easytier_core::{
+        connectivity::protocol::raw::TunnelDialer, listener::SocketListener, tunnel::Tunnel,
     };
+
+    use crate::{common::netns::NetNS, tunnel::packet_def::ZCPacket};
 
     #[cfg(test)]
     use crate::tunnel::{
@@ -379,7 +380,7 @@ pub mod tests {
         ));
     }
 
-    pub async fn _tunnel_echo_server(tunnel: Box<dyn crate::tunnel::Tunnel>, once: bool) {
+    pub async fn _tunnel_echo_server(tunnel: Box<dyn Tunnel>, once: bool) {
         let (mut recv, mut send) = tunnel.split();
 
         if !once {
@@ -412,62 +413,10 @@ pub mod tests {
         tracing::warn!("echo server exit...");
     }
 
-    #[cfg(test)]
-    pub(crate) struct CoreTunnelListener<L>(pub L);
-
-    #[cfg(test)]
-    #[async_trait::async_trait]
-    impl<L> TunnelListener for CoreTunnelListener<L>
-    where
-        L: easytier_core::listener::SocketListener<
-                Accepted = Box<dyn easytier_core::tunnel::Tunnel>,
-            > + Send,
-    {
-        async fn listen(&mut self) -> Result<(), crate::tunnel::TunnelError> {
-            easytier_core::listener::SocketListener::listen(&mut self.0)
-                .await
-                .map_err(crate::tunnel::TunnelError::Anyhow)
-        }
-
-        async fn accept(
-            &mut self,
-        ) -> Result<Box<dyn crate::tunnel::Tunnel>, crate::tunnel::TunnelError> {
-            easytier_core::listener::SocketListener::accept(&mut self.0)
-                .await
-                .map_err(crate::tunnel::TunnelError::Anyhow)
-        }
-
-        fn local_url(&self) -> url::Url {
-            easytier_core::listener::SocketListener::local_url(&self.0)
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) struct CoreTunnelDialer<D>(pub D);
-
-    #[cfg(test)]
-    #[async_trait::async_trait]
-    impl<D> TunnelConnector for CoreTunnelDialer<D>
-    where
-        D: easytier_core::connectivity::protocol::raw::TunnelDialer,
-    {
-        async fn connect(
-            &mut self,
-        ) -> Result<Box<dyn crate::tunnel::Tunnel>, crate::tunnel::TunnelError> {
-            easytier_core::connectivity::protocol::raw::TunnelDialer::connect(&self.0)
-                .await
-                .map_err(crate::tunnel::TunnelError::Anyhow)
-        }
-
-        fn remote_url(&self) -> url::Url {
-            easytier_core::connectivity::protocol::raw::TunnelDialer::remote_url(&self.0)
-        }
-    }
-
     pub(crate) async fn _tunnel_pingpong<L, C>(listener: L, connector: C)
     where
-        L: TunnelListener + Send + Sync + 'static,
-        C: TunnelConnector + Send + Sync + 'static,
+        L: SocketListener<Accepted = Box<dyn Tunnel>> + Sync + 'static,
+        C: TunnelDialer,
     {
         _tunnel_pingpong_netns_with_timeout(
             listener,
@@ -484,13 +433,13 @@ pub mod tests {
 
     async fn _tunnel_pingpong_netns<L, C>(
         mut listener: L,
-        mut connector: C,
+        connector: C,
         l_netns: NetNS,
         c_netns: NetNS,
         buf: Vec<u8>,
     ) where
-        L: TunnelListener + Send + Sync + 'static,
-        C: TunnelConnector + Send + Sync + 'static,
+        L: SocketListener<Accepted = Box<dyn Tunnel>> + Sync + 'static,
+        C: TunnelDialer,
     {
         l_netns
             .run_async(|| async {
@@ -555,8 +504,8 @@ pub mod tests {
         timeout: std::time::Duration,
     ) -> Result<(), anyhow::Error>
     where
-        L: TunnelListener + Send + Sync + 'static,
-        C: TunnelConnector + Send + Sync + 'static,
+        L: SocketListener<Accepted = Box<dyn Tunnel>> + Sync + 'static,
+        C: TunnelDialer,
     {
         let handle = tokio::spawn(async move {
             _tunnel_pingpong_netns(listener, connector, l_netns, c_netns, buf).await;
@@ -587,21 +536,21 @@ pub mod tests {
 
     pub(crate) async fn _tunnel_bench<L, C>(listener: L, connector: C)
     where
-        L: TunnelListener + Send + Sync + 'static,
-        C: TunnelConnector + Send + Sync + 'static,
+        L: SocketListener<Accepted = Box<dyn Tunnel>> + Sync + 'static,
+        C: TunnelDialer,
     {
         _tunnel_bench_netns(listener, connector, NetNS::new(None), NetNS::new(None)).await;
     }
 
     pub(crate) async fn _tunnel_bench_netns<L, C>(
         mut listener: L,
-        mut connector: C,
+        connector: C,
         netns_l: NetNS,
         netns_c: NetNS,
     ) -> usize
     where
-        L: TunnelListener + Send + Sync + 'static,
-        C: TunnelConnector + Send + Sync + 'static,
+        L: SocketListener<Accepted = Box<dyn Tunnel>> + Sync + 'static,
+        C: TunnelDialer,
     {
         {
             let _g = netns_l.guard();

@@ -7,7 +7,6 @@ use std::sync::Arc;
 use std::{net::IpAddr, time::Duration};
 
 use clap::Parser;
-use client_manager::LegacyTunnelListener;
 use easytier::tunnel::websocket::WsTunnelListener;
 use easytier::{
     common::{
@@ -244,7 +243,7 @@ pub fn get_listener_by_url(
             let addr = l.socket_addrs(|| Some(11010)).ok()?.into_iter().next()?;
             Box::new(runtime_udp_tunnel_listener(l.clone(), addr))
         }
-        IpScheme::Ws => Box::new(LegacyTunnelListener(WsTunnelListener::new(l.clone()))),
+        IpScheme::Ws => Box::new(WsTunnelListener::new(l.clone())),
         _ => return None,
     })
 }

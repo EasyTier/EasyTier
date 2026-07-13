@@ -6,8 +6,12 @@ use std::{
 use anyhow::Context;
 use base64::{Engine, prelude::BASE64_STANDARD};
 use cidr::Ipv4Inet;
-use easytier_core::vpn_portal::{
-    VpnPortalClientRemoval, VpnPortalClientSession, VpnPortalClientTable, VpnPortalPeerPacketRoute,
+use easytier_core::{
+    listener::SocketListener,
+    vpn_portal::{
+        VpnPortalClientRemoval, VpnPortalClientSession, VpnPortalClientTable,
+        VpnPortalPeerPacketRoute,
+    },
 };
 use futures::StreamExt;
 use tokio::task::JoinSet;
@@ -21,7 +25,7 @@ use crate::{
     },
     peers::{PeerPacketFilter, peer_manager::PeerManager},
     tunnel::{
-        Tunnel, TunnelListener,
+        Tunnel,
         mpsc::{MpscTunnel, MpscTunnelSender},
         packet_def::{ZCPacket, ZCPacketType},
         wireguard::{WgConfig, WgTunnelListener},

@@ -1,10 +1,8 @@
-use std::{collections::hash_map::DefaultHasher, hash::Hasher, net::SocketAddr, sync::Arc};
+use std::{collections::hash_map::DefaultHasher, hash::Hasher, net::SocketAddr};
 
 use crate::common::{dns::socket_addrs, error::Error};
-use async_trait::async_trait;
 use derive_more::{From, TryInto};
 use socket2::Protocol;
-use std::fmt::Debug;
 use strum::{Display, EnumString, IntoStaticStr, VariantArray};
 
 pub use crate::proto::common::TunnelInfo;
@@ -34,43 +32,6 @@ pub mod websocket;
 #[cfg(unix)]
 pub mod unix;
 
-#[auto_impl::auto_impl(Arc)]
-pub trait TunnelConnCounter: 'static + Send + Sync + Debug {
-    fn get(&self) -> Option<u32>;
-}
-
-#[async_trait]
-#[auto_impl::auto_impl(Box)]
-pub trait TunnelListener: Send {
-    async fn listen(&mut self) -> Result<(), TunnelError>;
-    async fn accept(&mut self) -> Result<Box<dyn Tunnel>, TunnelError>;
-    fn local_url(&self) -> url::Url;
-    fn get_conn_counter(&self) -> Arc<Box<dyn TunnelConnCounter>> {
-        #[derive(Debug)]
-        struct FakeTunnelConnCounter {}
-        impl TunnelConnCounter for FakeTunnelConnCounter {
-            fn get(&self) -> Option<u32> {
-                None
-            }
-        }
-        Arc::new(Box::new(FakeTunnelConnCounter {}))
-    }
-}
-
-#[async_trait]
-#[auto_impl::auto_impl(Box, &mut)]
-pub trait TunnelConnector: Send {
-    async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError>;
-    fn remote_url(&self) -> url::Url;
-    fn set_bind_addrs(&mut self, _addrs: Vec<SocketAddr>) {}
-    fn set_ip_version(&mut self, _ip_version: IpVersion) {}
-    fn set_resolved_addr(&mut self, _addr: SocketAddr) {}
-    /// Linux SO_MARK to apply to outbound sockets. `None` leaves SO_MARK
-    /// untouched; `Some(mark)` applies that exact value (including `Some(0)`).
-    /// Default impl is a no-op; IP-based connectors override.
-    fn set_socket_mark(&mut self, _socket_mark: Option<u32>) {}
-}
-
 pub fn build_url_from_socket_addr(addr: &String, scheme: &str) -> url::Url {
     if let Ok(sock_addr) = addr.parse::<SocketAddr>() {
         let url_str = format!("{}://0.0.0.0", scheme);
@@ -81,22 +42,6 @@ pub fn build_url_from_socket_addr(addr: &String, scheme: &str) -> url::Url {
         ret_url
     } else {
         url::Url::parse(format!("{}://{}", scheme, addr).as_str()).unwrap()
-    }
-}
-
-impl std::fmt::Debug for dyn TunnelConnector {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TunnelConnector")
-            .field("remote_url", &self.remote_url())
-            .finish()
-    }
-}
-
-impl std::fmt::Debug for dyn TunnelListener {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TunnelListener")
-            .field("local_url", &self.local_url())
-            .finish()
     }
 }
 

@@ -7,7 +7,7 @@ use tokio::net::{UnixListener, UnixStream, unix::SocketAddr};
 use super::TunnelInfo;
 
 use super::{
-    IpVersion, Tunnel, TunnelError, TunnelListener,
+    Tunnel, TunnelError,
     common::{FramedReader, FramedWriter},
 };
 
@@ -43,7 +43,7 @@ impl UnixSocketTunnelListener {
 
         let info = TunnelInfo {
             tunnel_type: "unix".to_owned(),
-            local_addr: Some(self.local_url().into()),
+            local_addr: Some(self.addr.clone().into()),
             remote_addr: remote_addr.clone().map(Into::into),
             resolved_remote_addr: remote_addr.map(Into::into),
         };
@@ -62,18 +62,20 @@ impl UnixSocketTunnelListener {
 }
 
 #[async_trait]
-impl TunnelListener for UnixSocketTunnelListener {
-    async fn listen(&mut self) -> Result<(), TunnelError> {
+impl easytier_core::listener::SocketListener for UnixSocketTunnelListener {
+    type Accepted = Box<dyn Tunnel>;
+
+    async fn listen(&mut self) -> anyhow::Result<()> {
         self.listener = None;
         let path_str = self.addr.path();
         let path = Path::new(path_str);
 
-        let listener = UnixListener::bind(path)?;
+        let listener = UnixListener::bind(path).map_err(TunnelError::from)?;
         self.listener = Some(listener);
         Ok(())
     }
 
-    async fn accept(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
+    async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
         loop {
             match self.do_accept().await {
                 Ok(ret) => return Ok(ret),
@@ -95,24 +97,6 @@ impl TunnelListener for UnixSocketTunnelListener {
 
     fn local_url(&self) -> url::Url {
         self.addr.clone()
-    }
-}
-
-#[async_trait]
-impl easytier_core::listener::SocketListener for UnixSocketTunnelListener {
-    type Accepted = Box<dyn Tunnel>;
-
-    async fn listen(&mut self) -> anyhow::Result<()> {
-        <Self as TunnelListener>::listen(self).await?;
-        Ok(())
-    }
-
-    async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
-        Ok(<Self as TunnelListener>::accept(self).await?)
-    }
-
-    fn local_url(&self) -> url::Url {
-        <Self as TunnelListener>::local_url(self)
     }
 }
 
@@ -152,21 +136,6 @@ impl UnixSocketTunnelConnector {
 }
 
 #[async_trait]
-impl super::TunnelConnector for UnixSocketTunnelConnector {
-    async fn connect(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
-        self.connect_tunnel().await
-    }
-
-    fn remote_url(&self) -> url::Url {
-        self.addr.clone()
-    }
-
-    fn set_ip_version(&mut self, _ip_version: IpVersion) {
-        // IP version is not applicable to UNIX sockets
-    }
-}
-
-#[async_trait]
 impl easytier_core::connectivity::protocol::raw::TunnelDialer for UnixSocketTunnelConnector {
     async fn connect(&self) -> anyhow::Result<Box<dyn Tunnel>> {
         Ok(self.connect_tunnel().await?)
@@ -188,6 +157,7 @@ impl Drop for UnixSocketTunnelListener {
 #[cfg(test)]
 mod tests {
     use crate::tunnel::common::tests::{_tunnel_bench, _tunnel_pingpong};
+    use easytier_core::listener::SocketListener;
 
     use super::*;
 
@@ -229,9 +199,10 @@ mod tests {
         let mut listener =
             UnixSocketTunnelListener::new("unix:///tmp/easytier-test-exists.sock".parse().unwrap());
         let result = listener.listen().await;
-        assert!(
-            matches!(result, Err(TunnelError::IOError(err)) if err.kind() == std::io::ErrorKind::AddrInUse)
-        )
+        assert!(matches!(
+            result.unwrap_err().downcast_ref::<TunnelError>(),
+            Some(TunnelError::IOError(err)) if err.kind() == std::io::ErrorKind::AddrInUse
+        ))
     }
 
     #[tokio::test]
@@ -245,8 +216,9 @@ mod tests {
         let result = listener.listen().await;
 
         fs::remove_file(path).unwrap();
-        assert!(
-            matches!(result, Err(TunnelError::IOError(err)) if err.kind() == std::io::ErrorKind::AddrInUse)
-        )
+        assert!(matches!(
+            result.unwrap_err().downcast_ref::<TunnelError>(),
+            Some(TunnelError::IOError(err)) if err.kind() == std::io::ErrorKind::AddrInUse
+        ))
     }
 }

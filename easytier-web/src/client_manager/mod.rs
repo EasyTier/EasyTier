@@ -15,7 +15,6 @@ use easytier::{
         api::manage::WebClientService, rpc_types::controller::BaseController, web::HeartbeatRequest,
     },
     rpc_service::remote_client::{self, RemoteClientManager},
-    tunnel::TunnelListener as LegacyTunnelListenerTrait,
     web_client::security,
 };
 use easytier_core::{listener::SocketListener, tunnel::Tunnel};
@@ -33,41 +32,6 @@ use crate::db::{Db, UserIdInDb, entity::user_running_network_configs};
 #[folder = "resources/"]
 #[include = "geoip2-cn.mmdb"]
 struct GeoipDb;
-
-pub struct LegacyTunnelListener<L>(pub L);
-
-impl<L> std::fmt::Debug for LegacyTunnelListener<L>
-where
-    L: LegacyTunnelListenerTrait,
-{
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("LegacyTunnelListener")
-            .field("local_url", &self.0.local_url())
-            .finish()
-    }
-}
-
-#[async_trait::async_trait]
-impl<L> SocketListener for LegacyTunnelListener<L>
-where
-    L: LegacyTunnelListenerTrait,
-{
-    type Accepted = Box<dyn Tunnel>;
-
-    async fn listen(&mut self) -> anyhow::Result<()> {
-        self.0.listen().await?;
-        Ok(())
-    }
-
-    async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
-        Ok(self.0.accept().await?)
-    }
-
-    fn local_url(&self) -> url::Url {
-        self.0.local_url()
-    }
-}
 
 pub fn is_managed_config_revision_conflict(error: &anyhow::Error) -> bool {
     managed_config::is_revision_conflict(error)

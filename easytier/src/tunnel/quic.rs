@@ -2,7 +2,7 @@
 //!
 //! Checkout the `README.md` for guidance.
 
-use super::{FromUrl, IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelListener};
+use super::{FromUrl, IpVersion, Tunnel, TunnelError};
 use crate::common::{global_ctx::ArcGlobalCtx, netns::NetNS};
 use crate::socket::{
     udp::{RuntimeUdpSessionSocketListener, new_runtime_udp_session_listener},
@@ -1603,8 +1603,10 @@ impl QuicTunnelListener {
 }
 
 #[async_trait::async_trait]
-impl TunnelListener for QuicTunnelListener {
-    async fn listen(&mut self) -> Result<(), TunnelError> {
+impl easytier_core::listener::SocketListener for QuicTunnelListener {
+    type Accepted = Box<dyn Tunnel>;
+
+    async fn listen(&mut self) -> anyhow::Result<()> {
         if self.endpoint.is_some() {
             return Ok(());
         }
@@ -1657,8 +1659,8 @@ impl TunnelListener for QuicTunnelListener {
         Ok(())
     }
 
-    async fn accept(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
-        self.conn_recv.recv().await.ok_or(TunnelError::Shutdown)
+    async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
+        Ok(self.conn_recv.recv().await.ok_or(TunnelError::Shutdown)?)
     }
 
     fn local_url(&self) -> url::Url {
@@ -1666,24 +1668,6 @@ impl TunnelListener for QuicTunnelListener {
             .as_ref()
             .map(|listener| easytier_core::listener::SocketListener::local_url(listener.as_ref()))
             .unwrap_or_else(|| self.addr.clone())
-    }
-}
-
-#[async_trait::async_trait]
-impl easytier_core::listener::SocketListener for QuicTunnelListener {
-    type Accepted = Box<dyn Tunnel>;
-
-    async fn listen(&mut self) -> anyhow::Result<()> {
-        <Self as TunnelListener>::listen(self).await?;
-        Ok(())
-    }
-
-    async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
-        Ok(<Self as TunnelListener>::accept(self).await?)
-    }
-
-    fn local_url(&self) -> url::Url {
-        <Self as TunnelListener>::local_url(self)
     }
 }
 
@@ -1973,25 +1957,6 @@ impl ServerTunnelAcceptor for QuicAcceptedSession {
 }
 
 #[async_trait::async_trait]
-impl TunnelConnector for QuicTunnelConnector {
-    async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
-        self.connect_tunnel().await
-    }
-
-    fn remote_url(&self) -> url::Url {
-        self.addr.clone()
-    }
-
-    fn set_ip_version(&mut self, ip_version: IpVersion) {
-        QuicTunnelConnector::set_ip_version(self, ip_version);
-    }
-
-    fn set_resolved_addr(&mut self, addr: SocketAddr) {
-        QuicTunnelConnector::set_resolved_addr(self, addr);
-    }
-}
-
-#[async_trait::async_trait]
 impl easytier_core::connectivity::protocol::raw::TunnelDialer for QuicTunnelConnector {
     async fn connect(&self) -> anyhow::Result<Box<dyn Tunnel>> {
         Ok(self.connect_tunnel().await?)
@@ -2006,12 +1971,11 @@ impl easytier_core::connectivity::protocol::raw::TunnelDialer for QuicTunnelConn
 mod tests {
     use crate::common::global_ctx::tests::get_mock_global_ctx_with_network;
     use crate::socket::udp::RuntimeUdpSessionControlHandler;
-    use crate::tunnel::{
-        TunnelConnector,
-        common::tests::{_tunnel_bench, _tunnel_pingpong},
-    };
+    use crate::tunnel::common::tests::{_tunnel_bench, _tunnel_pingpong};
     use easytier_core::{
+        connectivity::protocol::raw::TunnelDialer,
         connectivity::transport::{UdpSessionMode, connect_udp},
+        listener::SocketListener,
         socket::udp::UdpBindOptions,
     };
     use futures::future::poll_fn;
@@ -2035,8 +1999,8 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl TunnelConnector for SessionQuicConnector {
-        async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
+    impl easytier_core::connectivity::protocol::raw::TunnelDialer for SessionQuicConnector {
+        async fn connect(&self) -> anyhow::Result<Box<dyn Tunnel>> {
             let remote_addr =
                 SocketAddr::from_url(self.remote_url.clone(), IpVersion::Both).await?;
             let connected = connect_udp(
@@ -2047,7 +2011,7 @@ mod tests {
                 UdpSessionMode::Classified(UdpSessionProtocol::Quic),
             )
             .await?;
-            upgrade_connected(connected, self.remote_url.clone()).await
+            Ok(upgrade_connected(connected, self.remote_url.clone()).await?)
         }
 
         fn remote_url(&self) -> url::Url {
@@ -2683,7 +2647,7 @@ mod tests {
         RUNTIME.block_on(invalid_peer_addr_impl())
     }
     async fn invalid_peer_addr_impl() {
-        let mut connector =
+        let connector =
             QuicTunnelConnector::new("quic://127.0.0.1:0".parse().unwrap(), global_ctx());
         let err = format!("{:?}", connector.connect().await.unwrap_err());
         assert!(

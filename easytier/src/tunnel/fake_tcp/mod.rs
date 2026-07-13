@@ -19,10 +19,7 @@ use tokio::{
 
 use easytier_core::socket::tcp::VirtualTcpSocket;
 
-use crate::tunnel::{
-    FromUrl, IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelListener,
-    fake_tcp::netfilter::create_tun,
-};
+use crate::tunnel::{FromUrl, IpVersion, Tunnel, TunnelError, fake_tcp::netfilter::create_tun};
 
 use futures::Future;
 use tokio_util::task::AbortOnDropHandle;
@@ -379,8 +376,10 @@ impl FakeTcpTunnelListener {
 }
 
 #[async_trait::async_trait]
-impl TunnelListener for FakeTcpTunnelListener {
-    async fn listen(&mut self) -> Result<(), TunnelError> {
+impl easytier_core::listener::SocketListener for FakeTcpTunnelListener {
+    type Accepted = Box<dyn Tunnel>;
+
+    async fn listen(&mut self) -> anyhow::Result<()> {
         let port = self.addr.port().unwrap_or(0);
         let bind_addr = SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?;
         let os_listener = tokio::net::TcpListener::bind(bind_addr).await?;
@@ -389,9 +388,14 @@ impl TunnelListener for FakeTcpTunnelListener {
         Ok(())
     }
 
-    async fn accept(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
+    async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
         let socket = self.accept_socket().await?;
-        easytier_core::connectivity::protocol::faketcp::upgrade_accepted(socket, self.local_url())
+        Ok(
+            easytier_core::connectivity::protocol::faketcp::upgrade_accepted(
+                socket,
+                self.addr.clone(),
+            )?,
+        )
     }
 
     fn local_url(&self) -> url::Url {
@@ -399,27 +403,10 @@ impl TunnelListener for FakeTcpTunnelListener {
     }
 }
 
-#[async_trait::async_trait]
-impl easytier_core::listener::SocketListener for FakeTcpTunnelListener {
-    type Accepted = Box<dyn Tunnel>;
-
-    async fn listen(&mut self) -> anyhow::Result<()> {
-        <Self as TunnelListener>::listen(self).await?;
-        Ok(())
-    }
-
-    async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
-        Ok(<Self as TunnelListener>::accept(self).await?)
-    }
-
-    fn local_url(&self) -> url::Url {
-        <Self as TunnelListener>::local_url(self)
-    }
-}
-
 pub struct FakeTcpTunnelConnector {
     addr: url::Url,
     ip_to_if_name: IpToIfNameCache,
+    connect_lock: tokio::sync::Mutex<()>,
     resolved_addr: Option<SocketAddr>,
     socket_mark: Option<u32>,
 }
@@ -429,12 +416,14 @@ impl FakeTcpTunnelConnector {
         FakeTcpTunnelConnector {
             addr,
             ip_to_if_name: IpToIfNameCache::new(),
+            connect_lock: tokio::sync::Mutex::new(()),
             resolved_addr: None,
             socket_mark: None,
         }
     }
 
     async fn connect_tunnel(&self) -> Result<Box<dyn Tunnel>, TunnelError> {
+        let _connect_guard = self.connect_lock.lock().await;
         let remote_addr = match self.resolved_addr {
             Some(addr) => addr,
             None => SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?,
@@ -540,25 +529,6 @@ pub(crate) async fn connect_socket(
     socket_mark: Option<u32>,
 ) -> Result<FakeTcpSocket, TunnelError> {
     connect_socket_with_cache(remote_addr, socket_mark, &IpToIfNameCache::new()).await
-}
-
-#[async_trait::async_trait]
-impl TunnelConnector for FakeTcpTunnelConnector {
-    async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
-        self.connect_tunnel().await
-    }
-
-    fn remote_url(&self) -> url::Url {
-        self.addr.clone()
-    }
-
-    fn set_resolved_addr(&mut self, addr: SocketAddr) {
-        FakeTcpTunnelConnector::set_resolved_addr(self, addr);
-    }
-
-    fn set_socket_mark(&mut self, socket_mark: Option<u32>) {
-        FakeTcpTunnelConnector::set_socket_mark(self, socket_mark);
-    }
 }
 
 #[async_trait::async_trait]

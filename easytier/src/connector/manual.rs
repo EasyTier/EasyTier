@@ -15,7 +15,6 @@ use crate::{
         },
         rpc_types::{self, controller::BaseController},
     },
-    tunnel::TunnelConnector,
     utils::weak_upgrade,
 };
 
@@ -112,13 +111,6 @@ impl ManualConnectorManager {
         self.portable
             .add_connector(url)
             .expect("core manual connector URL should be valid");
-    }
-
-    pub fn add_connector<T>(&self, connector: T)
-    where
-        T: TunnelConnector + 'static,
-    {
-        self.add_connector_url(connector.remote_url());
     }
 
     pub async fn add_connector_by_url(&self, url: url::Url) -> Result<(), Error> {

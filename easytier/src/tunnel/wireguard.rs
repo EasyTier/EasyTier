@@ -9,8 +9,7 @@ use std::{
 use quanta::Instant;
 
 use super::{
-    FromUrl, IpVersion, Tunnel, TunnelError, TunnelInfo, TunnelListener, ZCPacketSink,
-    ZCPacketStream,
+    FromUrl, IpVersion, Tunnel, TunnelError, TunnelInfo, ZCPacketSink, ZCPacketStream,
     common::wait_for_connect_futures,
     packet_def::{PEER_MANAGER_HEADER_SIZE, ZCPacketType},
 };
@@ -545,8 +544,10 @@ impl WgTunnelListener {
 }
 
 #[async_trait]
-impl TunnelListener for WgTunnelListener {
-    async fn listen(&mut self) -> Result<(), TunnelError> {
+impl easytier_core::listener::SocketListener for WgTunnelListener {
+    type Accepted = Box<dyn Tunnel>;
+
+    async fn listen(&mut self) -> anyhow::Result<()> {
         if self.session_listener.is_some() {
             return Ok(());
         }
@@ -576,12 +577,12 @@ impl TunnelListener for WgTunnelListener {
         Ok(())
     }
 
-    async fn accept(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
+    async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
         if let Some(tunnel) = self.conn_recv.recv().await {
             tracing::info!(?tunnel, "Accepted tunnel");
             return Ok(tunnel);
         }
-        Err(TunnelError::Shutdown)
+        Err(TunnelError::Shutdown.into())
     }
 
     fn local_url(&self) -> url::Url {
@@ -589,24 +590,6 @@ impl TunnelListener for WgTunnelListener {
             .as_ref()
             .map(|listener| easytier_core::listener::SocketListener::local_url(listener.as_ref()))
             .unwrap_or_else(|| self.addr.clone())
-    }
-}
-
-#[async_trait]
-impl easytier_core::listener::SocketListener for WgTunnelListener {
-    type Accepted = Box<dyn Tunnel>;
-
-    async fn listen(&mut self) -> anyhow::Result<()> {
-        <Self as TunnelListener>::listen(self).await?;
-        Ok(())
-    }
-
-    async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
-        Ok(<Self as TunnelListener>::accept(self).await?)
-    }
-
-    fn local_url(&self) -> url::Url {
-        <Self as TunnelListener>::local_url(self)
     }
 }
 
@@ -799,35 +782,8 @@ impl WgTunnelConnector {
 }
 
 #[async_trait]
-impl super::TunnelConnector for WgTunnelConnector {
-    #[tracing::instrument]
-    async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
-        self.connect_tunnel().await
-    }
-
-    fn remote_url(&self) -> url::Url {
-        self.addr.clone()
-    }
-
-    fn set_bind_addrs(&mut self, addrs: Vec<SocketAddr>) {
-        WgTunnelConnector::set_bind_addrs(self, addrs);
-    }
-
-    fn set_ip_version(&mut self, ip_version: IpVersion) {
-        WgTunnelConnector::set_ip_version(self, ip_version);
-    }
-
-    fn set_resolved_addr(&mut self, addr: SocketAddr) {
-        WgTunnelConnector::set_resolved_addr(self, addr);
-    }
-
-    fn set_socket_mark(&mut self, socket_mark: Option<u32>) {
-        WgTunnelConnector::set_socket_mark(self, socket_mark);
-    }
-}
-
-#[async_trait]
 impl easytier_core::connectivity::protocol::raw::TunnelDialer for WgTunnelConnector {
+    #[tracing::instrument]
     async fn connect(&self) -> anyhow::Result<Box<dyn Tunnel>> {
         Ok(self.connect_tunnel().await?)
     }
@@ -840,11 +796,9 @@ impl easytier_core::connectivity::protocol::raw::TunnelDialer for WgTunnelConnec
 #[cfg(test)]
 pub mod tests {
     use super::*;
-    use crate::tunnel::{
-        TunnelConnector,
-        common::tests::{_tunnel_bench, _tunnel_pingpong},
-    };
+    use crate::tunnel::common::tests::{_tunnel_bench, _tunnel_pingpong};
     use boringtun::*;
+    use easytier_core::{connectivity::protocol::raw::TunnelDialer, listener::SocketListener};
 
     pub fn create_wg_config() -> (WgConfig, WgConfig) {
         let my_secret_key = x25519::StaticSecret::random_from_rng(rand::thread_rng());
@@ -908,7 +862,7 @@ pub mod tests {
         tokio::spawn(async move {
             let mut tunnels = vec![];
             for _ in 0..CONN_COUNT {
-                let mut connector = WgTunnelConnector::new(
+                let connector = WgTunnelConnector::new(
                     "wg://127.0.0.1:5595".parse().unwrap(),
                     client_cfg.clone(),
                 );
