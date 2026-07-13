@@ -8,7 +8,6 @@ use easytier_core::{
     instance::{CoreRuntimeConfig, CoreRuntimeConfigStore},
     peers::{context::SubmittedPeerContext, foreign_network_manager::ForeignNetworkManager},
 };
-use quanta::Instant;
 use std::collections::BTreeSet;
 use std::{
     fmt::Debug,
@@ -38,8 +37,7 @@ use super::{
     BoxNicPacketFilter, BoxPeerPacketFilter, PacketRecvChan, context::runtime_peer_snapshot,
     encrypt::NullCipher, foreign_network_client::ForeignNetworkClient,
     foreign_network_manager::ForeignNetworkRuntimeImpl, peer_conn::PeerConnId, peer_map::PeerMap,
-    peer_rpc::PeerRpcManager, peer_task::ExternalTaskSignal, relay_peer_map::RelayPeerMap,
-    route_trait::Route,
+    peer_rpc::PeerRpcManager, relay_peer_map::RelayPeerMap, route_trait::Route,
 };
 
 pub struct PeerManager {
@@ -177,26 +175,6 @@ impl PeerManager {
         self.ring_registry.clone()
     }
 
-    pub fn mark_recent_traffic(&self, dst_peer_id: PeerId) {
-        self.core.mark_recent_traffic(dst_peer_id);
-    }
-
-    pub fn has_recent_traffic(&self, peer_id: PeerId, now: Instant) -> bool {
-        self.core.has_recent_traffic(peer_id, now)
-    }
-
-    pub fn clear_recent_traffic(&self, peer_id: PeerId) {
-        self.core.clear_recent_traffic(peer_id);
-    }
-
-    pub fn p2p_demand_notify(&self) -> Arc<ExternalTaskSignal> {
-        self.core.p2p_demand_notify()
-    }
-
-    fn gc_recent_traffic(&self) {
-        self.core.gc_recent_traffic();
-    }
-
     pub async fn add_client_tunnel(
         &self,
         tunnel: Box<dyn Tunnel>,
@@ -280,10 +258,6 @@ impl PeerManager {
             .into_iter()
             .map(Into::into)
             .collect()
-    }
-
-    pub async fn get_route_peer_info_last_update_time(&self) -> Instant {
-        self.get_route().get_peer_info_last_update_time().await
     }
 
     pub async fn list_proxy_cidrs(&self) -> BTreeSet<Ipv4Cidr> {
@@ -560,8 +534,12 @@ mod tests {
         let peer_mgr_b = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
         let peer_b_id = peer_mgr_b.my_peer_id();
 
-        peer_mgr_a.mark_recent_traffic(peer_b_id);
-        assert!(peer_mgr_a.has_recent_traffic(peer_b_id, Instant::now()));
+        peer_mgr_a.core().mark_recent_traffic(peer_b_id);
+        assert!(
+            peer_mgr_a
+                .core()
+                .has_recent_traffic(peer_b_id, Instant::now())
+        );
 
         let (a_ring, b_ring) = create_ring_tunnel_pair();
         let (client_ret, server_ret) = tokio::join!(
@@ -583,15 +561,21 @@ mod tests {
         wait_for_condition(
             || {
                 let peer_mgr_a = peer_mgr_a.clone();
-                async move { !peer_mgr_a.has_recent_traffic(peer_b_id, Instant::now()) }
+                async move {
+                    !peer_mgr_a
+                        .core()
+                        .has_recent_traffic(peer_b_id, Instant::now())
+                }
             },
             Duration::from_secs(5),
         )
         .await;
 
-        peer_mgr_a.mark_recent_traffic(peer_b_id);
+        peer_mgr_a.core().mark_recent_traffic(peer_b_id);
         assert!(
-            !peer_mgr_a.has_recent_traffic(peer_b_id, Instant::now()),
+            !peer_mgr_a
+                .core()
+                .has_recent_traffic(peer_b_id, Instant::now()),
             "directly connected peers should not be tracked as lazy-p2p demand"
         );
     }
@@ -601,14 +585,14 @@ mod tests {
         let peer_mgr_a = create_lazy_peer_manager().await;
         let peer_mgr_b = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
         let peer_b_id = peer_mgr_b.my_peer_id();
-        let signal = peer_mgr_a.p2p_demand_notify();
+        let signal = peer_mgr_a.core().p2p_demand_notify();
 
         let initial_version = signal.version();
-        peer_mgr_a.mark_recent_traffic(peer_b_id);
+        peer_mgr_a.core().mark_recent_traffic(peer_b_id);
         assert_eq!(signal.version(), initial_version + 1);
 
         tokio::time::sleep(Duration::from_millis(5)).await;
-        peer_mgr_a.mark_recent_traffic(peer_b_id);
+        peer_mgr_a.core().mark_recent_traffic(peer_b_id);
         assert_eq!(
             signal.version(),
             initial_version + 1,

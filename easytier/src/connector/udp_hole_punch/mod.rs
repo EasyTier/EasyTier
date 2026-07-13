@@ -327,7 +327,7 @@ impl UdpHolePunchConnector {
             transport_sink.clone(),
             Arc::new(RuntimeUdpHolePunchRuntime::new(peer_mgr.get_global_ctx())),
             sym_punch_lock.clone(),
-            Some(peer_mgr.p2p_demand_notify()),
+            Some(peer_mgr.core().p2p_demand_notify()),
         );
         client.set_try_cone_before_sym(!RUN_TESTING.load(Ordering::Relaxed));
 
@@ -511,7 +511,7 @@ pub mod tests {
                 .contains(&p_c.my_peer_id())
         );
 
-        p_a.mark_recent_traffic(p_c.my_peer_id());
+        p_a.core().mark_recent_traffic(p_c.my_peer_id());
 
         assert!(
             collect_lazy_punch_peers(p_a.clone())

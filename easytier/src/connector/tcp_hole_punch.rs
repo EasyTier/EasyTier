@@ -199,7 +199,7 @@ mod tests {
                 .contains(&p_c.my_peer_id())
         );
 
-        p_a.mark_recent_traffic(p_c.my_peer_id());
+        p_a.core().mark_recent_traffic(p_c.my_peer_id());
 
         assert!(
             collect_lazy_punch_peers(&connector)

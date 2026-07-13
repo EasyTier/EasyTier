@@ -170,6 +170,12 @@ only:
 - platform-specific debug labels and resource handles that do not affect peer
   decisions.
 
+### Progress
+
+- Recent-traffic demand state and notification are used through the core
+  manager Interface. The native facade no longer projects mark/query/GC or
+  notification methods, and its unused route-update-time projection is gone.
+
 ### Exit criteria
 
 - native code does not forward admission, routing, relay, pipeline, credential,
