@@ -38,7 +38,7 @@ pub async fn create_mock_peer_manager() -> Arc<PeerManager> {
         get_mock_global_ctx(),
         s,
     ));
-    peer_mgr.run().await.unwrap();
+    peer_mgr.core().run_for_test().await.unwrap();
     peer_mgr
 }
 
@@ -52,7 +52,7 @@ pub async fn create_mock_peer_manager_with_ring_registry(
         sender,
         ring_registry,
     ));
-    peer_manager.run().await.unwrap();
+    peer_manager.core().run_for_test().await.unwrap();
     peer_manager
 }
 
@@ -61,7 +61,7 @@ pub async fn create_mock_peer_manager_with_name(network_name: String) -> Arc<Pee
     let g =
         get_mock_global_ctx_with_network(Some(NetworkIdentity::new(network_name, "".to_string())));
     let peer_mgr = Arc::new(PeerManager::new(RouteAlgoType::Ospf, g, s));
-    peer_mgr.run().await.unwrap();
+    peer_mgr.core().run_for_test().await.unwrap();
     peer_mgr
 }
 
@@ -74,7 +74,7 @@ pub async fn create_mock_peer_manager_secure(
         get_mock_global_ctx_with_network(Some(NetworkIdentity::new(network_name, network_secret)));
     set_secure_mode_cfg(&g, true);
     let peer_mgr = Arc::new(PeerManager::new(RouteAlgoType::Ospf, g, s));
-    peer_mgr.run().await.unwrap();
+    peer_mgr.core().run_for_test().await.unwrap();
     peer_mgr
 }
 
@@ -1000,7 +1000,7 @@ pub async fn create_mock_peer_manager_credential(
     }));
 
     let peer_mgr = Arc::new(PeerManager::new(RouteAlgoType::Ospf, g, s));
-    peer_mgr.run().await.unwrap();
+    peer_mgr.core().run_for_test().await.unwrap();
     peer_mgr
 }
 

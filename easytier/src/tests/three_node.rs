@@ -302,7 +302,7 @@ mod direct_connector_mapped_listener_tests {
         }));
 
         let peer_mgr = Arc::new(PeerManager::new(RouteAlgoType::Ospf, global_ctx, s));
-        peer_mgr.run().await.unwrap();
+        peer_mgr.core().run_for_test().await.unwrap();
         peer_mgr
     }
 

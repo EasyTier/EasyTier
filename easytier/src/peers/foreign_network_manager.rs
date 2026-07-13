@@ -342,7 +342,7 @@ pub mod tests {
             s,
         ));
         replace_stun_info_collector(peer_mgr.clone(), NatType::Unknown);
-        peer_mgr.run().await.unwrap();
+        peer_mgr.core().run_for_test().await.unwrap();
         peer_mgr
     }
 
@@ -356,7 +356,7 @@ pub mod tests {
         set_secure_mode_cfg(&global_ctx, true);
         let peer_mgr = Arc::new(PeerManager::new(RouteAlgoType::Ospf, global_ctx, s));
         replace_stun_info_collector(peer_mgr.clone(), NatType::Unknown);
-        peer_mgr.run().await.unwrap();
+        peer_mgr.core().run_for_test().await.unwrap();
         peer_mgr
     }
 
@@ -375,7 +375,7 @@ pub mod tests {
         set_secure_mode_cfg(&global_ctx, true);
         let peer_mgr = Arc::new(PeerManager::new(RouteAlgoType::Ospf, global_ctx, s));
         replace_stun_info_collector(peer_mgr.clone(), NatType::Unknown);
-        peer_mgr.run().await.unwrap();
+        peer_mgr.core().run_for_test().await.unwrap();
         peer_mgr
     }
 

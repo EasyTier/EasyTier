@@ -52,7 +52,7 @@ pub async fn prepare_env_with_tld_dns_zone(
 
     let (s, r) = create_packet_recv_chan();
     let peer_mgr = Arc::new(PeerManager::new(RouteAlgoType::Ospf, ctx, s));
-    peer_mgr.run().await.unwrap();
+    peer_mgr.core().run_for_test().await.unwrap();
     let core_instance = Arc::new(
         build_runtime_core_instance(peer_mgr.get_global_ctx(), peer_mgr.clone(), None).unwrap(),
     );
@@ -220,7 +220,7 @@ async fn test_magic_dns_update_replaces_records_for_same_client() {
 
     let (s, _r) = create_packet_recv_chan();
     let peer_mgr = Arc::new(PeerManager::new(RouteAlgoType::Ospf, ctx, s));
-    peer_mgr.run().await.unwrap();
+    peer_mgr.core().run_for_test().await.unwrap();
     replace_stun_info_collector(peer_mgr.clone(), NatType::PortRestricted);
 
     let fake_ip = Ipv4Addr::from_str(MAGIC_DNS_FAKE_IP).unwrap();

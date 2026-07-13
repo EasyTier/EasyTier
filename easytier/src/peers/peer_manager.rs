@@ -1,14 +1,3 @@
-pub use easytier_core::peers::peer_manager::RouteAlgoType;
-use easytier_core::peers::peer_manager::{DnsAddressResolver, PeerManagerCore};
-use easytier_core::tunnel::ring::RingTunnelRegistry;
-use easytier_core::{
-    instance::{CoreRuntimeConfig, CoreRuntimeConfigStore},
-    peers::{context::SubmittedPeerContext, foreign_network_manager::ForeignNetworkManager},
-};
-use std::{fmt::Debug, sync::Arc};
-
-#[cfg(test)]
-use crate::common::error::Error;
 use crate::{
     common::{
         PeerId,
@@ -19,6 +8,14 @@ use crate::{
     proto::api::instance,
     tunnel::packet_def::compressor_algo_from_pb,
 };
+pub use easytier_core::peers::peer_manager::RouteAlgoType;
+use easytier_core::peers::peer_manager::{DnsAddressResolver, PeerManagerCore};
+use easytier_core::tunnel::ring::RingTunnelRegistry;
+use easytier_core::{
+    instance::{CoreRuntimeConfig, CoreRuntimeConfigStore},
+    peers::{context::SubmittedPeerContext, foreign_network_manager::ForeignNetworkManager},
+};
+use std::{fmt::Debug, sync::Arc};
 
 use super::{
     PacketRecvChan, context::runtime_peer_snapshot, encrypt::NullCipher,
@@ -167,11 +164,6 @@ impl PeerManager {
             .into_iter()
             .map(Into::into)
             .collect()
-    }
-
-    #[cfg(test)]
-    pub async fn run(&self) -> Result<(), Error> {
-        self.core.run_for_test().await.map_err(Error::from)
     }
 
     pub fn my_node_id(&self) -> uuid::Uuid {
@@ -1338,7 +1330,7 @@ mod tests {
                 ..Default::default()
             });
             let peer_mgr = Arc::new(PeerManager::new(RouteAlgoType::Ospf, mock_global_ctx, s));
-            peer_mgr.run().await.unwrap();
+            peer_mgr.core().run_for_test().await.unwrap();
             peer_mgr
         };
 
@@ -1514,7 +1506,7 @@ mod tests {
             admin_ctx.clone(),
             admin_ch,
         ));
-        admin.run().await.unwrap();
+        admin.core().run_for_test().await.unwrap();
 
         let (_cred_id, cred_secret) = admin_ctx.get_credential_manager().generate_credential(
             vec![],
@@ -1550,7 +1542,7 @@ mod tests {
             credential_ctx,
             credential_ch,
         ));
-        credential.run().await.unwrap();
+        credential.core().run_for_test().await.unwrap();
         let credential_peer_id = credential.my_peer_id();
 
         connect_peer_manager(credential.clone(), admin.clone()).await;

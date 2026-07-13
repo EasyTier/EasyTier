@@ -1396,7 +1396,7 @@ async fn create_test_peer_manager(
 
     let (packet_tx, _packet_rx) = create_packet_recv_chan();
     let peer_mgr = Arc::new(PeerManager::new(RouteAlgoType::Ospf, global_ctx, packet_tx));
-    peer_mgr.run().await.unwrap();
+    peer_mgr.core().run_for_test().await.unwrap();
     peer_mgr
 }
 

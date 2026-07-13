@@ -196,6 +196,16 @@ only:
 - Tunnel admission, peer-connection close, and peer-manager wait are no longer
   projected by the native facade. Native tests and composition use the core
   lifecycle/admission Interface directly.
+- Test-only peer-manager startup now calls `PeerManagerCore::run_for_test`
+  directly. The native facade no longer owns a hidden core task lifecycle.
+
+The retained native Interface is intentionally limited to host composition,
+runtime-config synchronization, ring-registry and `GlobalCtx` resource access,
+local identity/debug presentation, foreign-context test inspection, and the
+route snapshot-to-protobuf mapper. By the deletion test, removing this Module
+would force those native Adapter and presentation decisions into callers; the
+remaining methods are therefore not shallow projections of peer-domain
+operations.
 
 ### Exit criteria
 
