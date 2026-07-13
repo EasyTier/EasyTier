@@ -254,6 +254,10 @@ but no core Module receives it or a broad Interface implemented by it.
   `PeerEventSink` projects rich events to native `GlobalCtxEvent` consumers,
   while core state-machine subscriptions remain core-local; event publication
   and subscription are no longer part of the live runtime-support Interface.
+- Limiter acquisition is isolated behind `PeerLimiterFactory`; the submitted
+  context still derives all keys and rates from its core-owned snapshot, while
+  native only supplies the token-bucket implementation. Limiting is no longer
+  part of the broad live runtime-support Interface.
 
 ### Exit criteria
 

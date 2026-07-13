@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 
 use easytier_core::peers::context::{
-    ArcByteLimiter, PeerContext, PeerEvent, PeerEventSink, PeerRuntimeConfig, PeerRuntimeSnapshot,
-    PeerRuntimeSupport, TrustedKeyMap, TrustedKeySource,
+    ArcByteLimiter, PeerContext, PeerEvent, PeerEventSink, PeerLimiterFactory, PeerRuntimeConfig,
+    PeerRuntimeSnapshot, PeerRuntimeSupport, TrustedKeyMap, TrustedKeySource,
 };
 
 use crate::{
@@ -70,6 +70,22 @@ impl PeerEventSink for GlobalCtxPeerEventSink {
             PeerEvent::PeerConnRemoved(info) => GlobalCtxEvent::PeerConnRemoved(info.into()),
         };
         self.global_ctx.issue_event(event);
+    }
+}
+
+impl PeerLimiterFactory for GlobalCtx {
+    fn get_or_create_limiter(&self, key: &str, bps: u64) -> Option<ArcByteLimiter> {
+        Some(
+            self.token_bucket_manager().get_or_create(
+                key,
+                LimiterConfig {
+                    burst_rate: None,
+                    bps: Some(bps),
+                    fill_duration_ms: None,
+                }
+                .into(),
+            ),
+        )
     }
 }
 
@@ -165,20 +181,6 @@ impl PeerRuntimeSupport for GlobalCtx {
     fn record_control_rx(&self, network_name: &str, bytes: u64) {
         PeerContext::record_control_rx(self, network_name, bytes);
     }
-
-    fn recv_limiter(&self, key: &str, bps: u64) -> Option<ArcByteLimiter> {
-        Some(
-            self.token_bucket_manager().get_or_create(
-                key,
-                LimiterConfig {
-                    burst_rate: None,
-                    bps: Some(bps),
-                    fill_duration_ms: None,
-                }
-                .into(),
-            ),
-        )
-    }
 }
 
 #[cfg(test)]
@@ -208,6 +210,7 @@ mod tests {
         );
         let context = SubmittedPeerContext::new(
             Arc::new(config.clone()),
+            global_ctx.clone(),
             global_ctx.clone(),
             Arc::new(GlobalCtxPeerEventSink::new(global_ctx)),
         );

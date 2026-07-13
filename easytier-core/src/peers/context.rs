@@ -50,6 +50,18 @@ impl ByteLimiter for () {
 
 pub type ArcByteLimiter = Arc<dyn ByteLimiter>;
 
+/// Creates or reuses a byte limiter without exposing the host's limiter
+/// manager or unrelated live runtime state.
+pub trait PeerLimiterFactory: Send + Sync {
+    fn get_or_create_limiter(&self, key: &str, bps: u64) -> Option<ArcByteLimiter>;
+}
+
+impl PeerLimiterFactory for () {
+    fn get_or_create_limiter(&self, _key: &str, _bps: u64) -> Option<ArcByteLimiter> {
+        None
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum PeerEvent {
     PeerAdded(PeerId),
@@ -226,10 +238,6 @@ pub trait PeerRuntimeSupport: Send + Sync {
     fn record_control_tx(&self, _network_name: &str, _bytes: u64) {}
 
     fn record_control_rx(&self, _network_name: &str, _bytes: u64) {}
-
-    fn recv_limiter(&self, _key: &str, _bps: u64) -> Option<ArcByteLimiter> {
-        None
-    }
 }
 
 /// Peer context whose configuration comes exclusively from a core-owned
@@ -238,6 +246,7 @@ pub trait PeerRuntimeSupport: Send + Sync {
 pub struct SubmittedPeerContext {
     config: Arc<dyn PeerRuntimeConfigSource>,
     support: Arc<dyn PeerRuntimeSupport>,
+    limiter_factory: Arc<dyn PeerLimiterFactory>,
     peer_events: tokio::sync::broadcast::Sender<PeerContextEvent>,
     event_sink: Arc<dyn PeerEventSink>,
 }
@@ -246,11 +255,13 @@ impl SubmittedPeerContext {
     pub fn new(
         config: Arc<dyn PeerRuntimeConfigSource>,
         support: Arc<dyn PeerRuntimeSupport>,
+        limiter_factory: Arc<dyn PeerLimiterFactory>,
         event_sink: Arc<dyn PeerEventSink>,
     ) -> Self {
         Self {
             config,
             support,
+            limiter_factory,
             peer_events: tokio::sync::broadcast::channel(16).0,
             event_sink,
         }
@@ -1233,15 +1244,15 @@ impl PeerContext for SubmittedPeerContext {
     fn recv_limiter(&self, network_name: &str, is_foreign_network: bool) -> Option<ArcByteLimiter> {
         let flags = &self.snapshot().flags;
         if is_foreign_network && flags.foreign_relay_bps_limit != u64::MAX {
-            return self.support.recv_limiter(
+            return self.limiter_factory.get_or_create_limiter(
                 &format!("{network_name}:recv"),
                 flags.foreign_relay_bps_limit,
             );
         }
         if flags.instance_recv_bps_limit != u64::MAX {
             return self
-                .support
-                .recv_limiter("instance:recv", flags.instance_recv_bps_limit);
+                .limiter_factory
+                .get_or_create_limiter("instance:recv", flags.instance_recv_bps_limit);
         }
         None
     }
@@ -1250,8 +1261,8 @@ impl PeerContext for SubmittedPeerContext {
         let bps = self.snapshot().flags.foreign_relay_bps_limit;
         (bps != u64::MAX)
             .then(|| {
-                self.support
-                    .recv_limiter(&format!("{network_name}:forward"), bps)
+                self.limiter_factory
+                    .get_or_create_limiter(&format!("{network_name}:forward"), bps)
             })
             .flatten()
     }
@@ -1297,8 +1308,10 @@ mod tests {
         fn avoid_relay_data_preference(&self) -> bool {
             self.avoid_relay_data.load(Ordering::Acquire)
         }
+    }
 
-        fn recv_limiter(&self, key: &str, _bps: u64) -> Option<ArcByteLimiter> {
+    impl PeerLimiterFactory for TestSubmittedSupport {
+        fn get_or_create_limiter(&self, key: &str, _bps: u64) -> Option<ArcByteLimiter> {
             self.limiter_keys.lock().unwrap().push(key.to_owned());
             Some(Arc::new(()))
         }
@@ -1343,7 +1356,12 @@ mod tests {
             snapshot: ArcSwap::from_pointee(submitted_snapshot("before", false)),
         });
         let support = Arc::new(TestSubmittedSupport::default());
-        let context = SubmittedPeerContext::new(config.clone(), support.clone(), Arc::new(()));
+        let context = SubmittedPeerContext::new(
+            config.clone(),
+            support.clone(),
+            support.clone(),
+            Arc::new(()),
+        );
 
         assert_eq!(context.hostname(), "before");
         assert!(!context.feature_flags().avoid_relay_data);
@@ -1370,11 +1388,8 @@ mod tests {
             snapshot: ArcSwap::from_pointee(submitted_snapshot("events", false)),
         });
         let sink = Arc::new(TestPeerEventSink::default());
-        let context = SubmittedPeerContext::new(
-            config,
-            Arc::new(TestSubmittedSupport::default()),
-            sink.clone(),
-        );
+        let support = Arc::new(TestSubmittedSupport::default());
+        let context = SubmittedPeerContext::new(config, support.clone(), support, sink.clone());
         let mut events = context.subscribe_peer_events().unwrap();
 
         context.issue_event(PeerEvent::PeerAdded(7));
@@ -1394,7 +1409,8 @@ mod tests {
             snapshot: ArcSwap::from_pointee(snapshot),
         });
         let support = Arc::new(TestSubmittedSupport::default());
-        let context = SubmittedPeerContext::new(config, support.clone(), Arc::new(()));
+        let context =
+            SubmittedPeerContext::new(config, support.clone(), support.clone(), Arc::new(()));
 
         assert!(context.recv_limiter("foreign", true).is_some());
         assert!(context.foreign_forward_limiter("foreign").is_some());
@@ -1413,7 +1429,8 @@ mod tests {
             snapshot: ArcSwap::from_pointee(snapshot),
         });
         let support = Arc::new(TestSubmittedSupport::default());
-        let context = SubmittedPeerContext::new(config, support.clone(), Arc::new(()));
+        let context =
+            SubmittedPeerContext::new(config, support.clone(), support.clone(), Arc::new(()));
 
         assert!(context.recv_limiter("foreign", true).is_some());
         assert!(context.foreign_forward_limiter("foreign").is_none());
