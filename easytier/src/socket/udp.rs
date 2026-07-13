@@ -277,6 +277,27 @@ impl VirtualUdpSocketFactory for RuntimeUdpSessionControlHandler {
 mod tests {
     use super::*;
 
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[tokio::test]
+    async fn runtime_udp_socket_reports_ipv4_destination_ip() {
+        let socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await.unwrap());
+        let runtime_socket = RuntimeUdpSocket::new(socket.clone());
+        let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        client
+            .send_to(
+                b"pktinfo",
+                SocketAddr::from(([127, 0, 0, 1], socket.local_addr().unwrap().port())),
+            )
+            .await
+            .unwrap();
+
+        let mut buf = [0; 32];
+        let (len, _peer, meta) = runtime_socket.recv_from_with_meta(&mut buf).await.unwrap();
+
+        assert_eq!(&buf[..len], b"pktinfo");
+        assert_eq!(meta.dst_ip, Some(std::net::IpAddr::V4(Ipv4Addr::LOCALHOST)));
+    }
+
     #[test]
     fn factory_interprets_bind_defaults_by_purpose() {
         let listener_addr = SocketAddr::from(([0, 0, 0, 0], 11010));

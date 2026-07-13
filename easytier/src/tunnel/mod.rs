@@ -18,7 +18,6 @@ pub mod filter;
 pub mod mpsc;
 pub mod packet_def;
 pub mod stats;
-pub mod udp;
 
 #[cfg(feature = "faketcp")]
 pub mod fake_tcp;
