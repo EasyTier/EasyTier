@@ -8,7 +8,10 @@ use std::{
 };
 
 use anyhow::{Context, anyhow, bail};
-use easytier_core::hole_punch::udp::{UdpHolePunchRuntime, VirtualUdpSocket};
+use easytier_core::{
+    hole_punch::udp::{UdpHolePunchRuntime, VirtualUdpSocket},
+    tunnel::ring::RingTunnelRegistry,
+};
 use igd_next::{
     GetGenericPortMappingEntryError, PortMappingEntry, PortMappingProtocol, SearchOptions,
     aio::tokio::search_gateway,
@@ -33,7 +36,7 @@ use crate::{
         tests::{connect_peer_manager, wait_route_appear, wait_route_appear_with_cost},
     },
     proto::common::{NatType, StunInfo},
-    tunnel::{common::tests::wait_for_condition, ring::RingTunnelRegistry},
+    tunnel::common::tests::wait_for_condition,
 };
 
 const TEST_NS_A: &str = "upnp_a";

@@ -516,6 +516,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ring_tunnel_observes_remote_close() {
+        let (left, right) = create_ring_tunnel_pair();
+        drop(left);
+
+        let (mut right_stream, _right_sink) = right.split();
+        assert!(right_stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn ring_stream_can_be_aborted_while_waiting() {
+        let (_left, right) = create_ring_tunnel_pair();
+        let (mut right_stream, _right_sink) = right.split();
+        let task = tokio::spawn(async move { right_stream.next().await });
+
+        tokio::task::yield_now().await;
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn ring_stream_wait_can_time_out() {
+        let (_left, right) = create_ring_tunnel_pair();
+        let (mut right_stream, _right_sink) = right.split();
+
+        assert!(
+            timeout(Duration::from_millis(10), right_stream.next())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
     async fn byte_stream_preserves_bytes_across_partial_reads() {
         let (left, right) = RingTunnelSocket::pair(8);
         let mut left = RingByteStream::new(left).unwrap();

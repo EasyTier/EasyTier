@@ -39,9 +39,9 @@ mod tests {
         instance::listeners::ListenerManager,
         peers::tests::{create_mock_peer_manager, wait_route_appear, wait_route_appear_with_cost},
         proto::common::TunnelInfo,
-        tunnel::{Tunnel, ring::RingTunnel},
+        tunnel::Tunnel,
     };
-    use easytier_core::tunnel::ring::create_ring_socket_pair;
+    use easytier_core::tunnel::ring::{RingTunnel, create_ring_socket_pair};
 
     fn ring_tunnel_info(local: &str, remote: &str) -> TunnelInfo {
         TunnelInfo {

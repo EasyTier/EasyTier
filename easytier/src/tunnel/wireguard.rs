@@ -13,7 +13,6 @@ use super::{
     ZCPacketStream,
     common::wait_for_connect_futures,
     packet_def::{PEER_MANAGER_HEADER_SIZE, ZCPacketType},
-    ring::create_ring_tunnel_pair,
     udp::{
         RuntimeUdpSessionLayer, RuntimeUdpSessionListener, RuntimeUdpSocket, UdpSessionAcceptKind,
         accept_udp_session,
@@ -37,6 +36,7 @@ use boringtun::{
 use bytes::BytesMut;
 use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
+use easytier_core::tunnel::ring::create_ring_tunnel_pair;
 use easytier_core::{
     connectivity::transport::ConnectedUdpSession,
     socket::udp::{UdpSession, UdpSessionProtocol, UdpSessionSocket},

@@ -7,6 +7,7 @@ use std::{
     time::Duration,
 };
 
+use easytier_core::tunnel::ring::RingTunnelRegistry;
 use rand::{Rng, rngs::OsRng};
 use tokio::{net::UdpSocket, task::JoinSet};
 use x25519_dalek::StaticSecret;
@@ -31,7 +32,6 @@ use crate::{
         common::tests::{
             _tunnel_bench_netns, _tunnel_pingpong_netns_with_timeout, wait_for_condition,
         },
-        ring::RingTunnelRegistry,
         tcp::{TcpTunnelConnector, TcpTunnelListener},
         udp::UdpTunnelConnector,
     },

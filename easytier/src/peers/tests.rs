@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use base64::Engine as _;
-use easytier_core::tunnel::ring::RingTunnelRegistry;
+use easytier_core::tunnel::ring::{RingTunnelRegistry, create_ring_tunnel_pair};
 
 use crate::{
     common::{
@@ -17,7 +17,6 @@ use crate::{
     tunnel::{
         common::tests::wait_for_condition,
         packet_def::{PacketType, ZCPacket},
-        ring::create_ring_tunnel_pair,
     },
 };
 

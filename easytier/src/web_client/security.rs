@@ -320,8 +320,8 @@ pub async fn accept_or_upgrade_server_tunnel(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tunnel::ring::create_ring_tunnel_pair;
     use bytes::BytesMut;
+    use easytier_core::tunnel::ring::create_ring_tunnel_pair;
 
     #[test]
     fn web_secure_cipher_algorithm_matches_support_flag() {

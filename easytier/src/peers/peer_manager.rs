@@ -231,9 +231,9 @@ mod tests {
             common::tests::wait_for_condition,
             filter::{TunnelWithFilter, tests::DropSendTunnelFilter},
             packet_def::{PacketType, ZCPacket},
-            ring::create_ring_tunnel_pair,
         },
     };
+    use easytier_core::tunnel::ring::create_ring_tunnel_pair;
 
     use super::PeerManager;
 

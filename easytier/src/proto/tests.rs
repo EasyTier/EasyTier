@@ -293,7 +293,7 @@ async fn rpc_timeout_test() {
 #[tokio::test]
 async fn rpc_tunnel_stuck_test() {
     use crate::proto::rpc_types;
-    use crate::tunnel::ring::RING_TUNNEL_CAP;
+    use easytier_core::tunnel::ring::RING_TUNNEL_CAP;
 
     let rpc_server = Server::new();
     rpc_server.run();

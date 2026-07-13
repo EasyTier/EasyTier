@@ -780,7 +780,7 @@ pub mod tests {
 
         foreign_mgr.fail_next_add_peer_conn_after_entry_insert();
 
-        let (a_ring, b_ring) = crate::tunnel::ring::create_ring_tunnel_pair();
+        let (a_ring, b_ring) = easytier_core::tunnel::ring::create_ring_tunnel_pair();
         let (client_ret, server_ret) = tokio::time::timeout(Duration::from_secs(5), async {
             let pma_net1_core = pma_net1.core();
             let pm_center_core = pm_center.core();
@@ -1363,7 +1363,7 @@ pub mod tests {
 
         let pma_net1 = create_mock_credential_peer_manager_for_foreign_network("net1").await;
 
-        let (a_ring, b_ring) = crate::tunnel::ring::create_ring_tunnel_pair();
+        let (a_ring, b_ring) = easytier_core::tunnel::ring::create_ring_tunnel_pair();
         let a_mgr_copy = pma_net1.clone();
         let client =
             tokio::spawn(async move { a_mgr_copy.core().add_client_tunnel(a_ring, false).await });
@@ -1392,7 +1392,7 @@ pub mod tests {
 
         let pma_net1 = create_mock_peer_manager_for_foreign_network(name.as_str()).await;
 
-        let (a_ring, b_ring) = crate::tunnel::ring::create_ring_tunnel_pair();
+        let (a_ring, b_ring) = easytier_core::tunnel::ring::create_ring_tunnel_pair();
         let b_mgr_copy = pm_center.clone();
         let s_ret =
             tokio::spawn(async move { b_mgr_copy.core().add_tunnel_as_server(b_ring, true).await });
@@ -1873,7 +1873,7 @@ pub mod tests {
 
         println!("routes: {:?}", pma_net1.list_routes().await);
 
-        let (a_ring, b_ring) = crate::tunnel::ring::create_ring_tunnel_pair();
+        let (a_ring, b_ring) = easytier_core::tunnel::ring::create_ring_tunnel_pair();
         let a_mgr_copy = pma_net1.clone();
         tokio::spawn(async move {
             a_mgr_copy
