@@ -1344,7 +1344,8 @@ impl StunInfoCollectorTrait for MockStunInfoCollector {
 
 #[cfg(test)]
 mod tests {
-    use crate::tunnel::{TunnelListener, udp::UdpTunnelListener};
+    use crate::proto::rpc_impl::standalone::runtime_udp_tunnel_listener;
+    use easytier_core::listener::SocketListener;
     use tokio::time::{sleep, timeout};
     use tokio_util::task::AbortOnDropHandle;
 
@@ -1376,8 +1377,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_internal_stun_server() {
-        let mut udp_server1 = UdpTunnelListener::new("udp://0.0.0.0:55555".parse().unwrap());
-        let mut udp_server2 = UdpTunnelListener::new("udp://0.0.0.0:55535".parse().unwrap());
+        let mut udp_server1 = runtime_udp_tunnel_listener(
+            "udp://0.0.0.0:55555".parse().unwrap(),
+            "0.0.0.0:55555".parse().unwrap(),
+        );
+        let mut udp_server2 = runtime_udp_tunnel_listener(
+            "udp://0.0.0.0:55535".parse().unwrap(),
+            "0.0.0.0:55535".parse().unwrap(),
+        );
 
         let mut tasks = JoinSet::new();
         tasks.spawn(async move {
@@ -1536,7 +1543,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_v4_stun() {
-        let mut udp_server = UdpTunnelListener::new("udp://0.0.0.0:55355".parse().unwrap());
+        let mut udp_server = runtime_udp_tunnel_listener(
+            "udp://0.0.0.0:55355".parse().unwrap(),
+            "0.0.0.0:55355".parse().unwrap(),
+        );
         let mut tasks = JoinSet::new();
         tasks.spawn(async move {
             udp_server.listen().await.unwrap();
@@ -1554,7 +1564,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_v6_stun() {
-        let mut udp_server = UdpTunnelListener::new("udp://[::]:55355".parse().unwrap());
+        let mut udp_server = runtime_udp_tunnel_listener(
+            "udp://[::]:55355".parse().unwrap(),
+            "[::]:55355".parse().unwrap(),
+        );
         let mut tasks = JoinSet::new();
         tasks.spawn(async move {
             udp_server.listen().await.unwrap();
