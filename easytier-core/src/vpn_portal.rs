@@ -62,7 +62,10 @@ impl<V> VpnPortalClientTable<V> {
         }
 
         let payload = packet.payload();
-        if payload.len() < IPV4_HEADER_LEN || payload[0] >> 4 != 4 {
+        if payload.len() < IPV4_HEADER_LEN {
+            return VpnPortalPeerPacketRoute::Drop;
+        }
+        if payload[0] >> 4 != 4 {
             return VpnPortalPeerPacketRoute::Pass;
         }
         let destination = ipv4_address(&payload[16..20]);
@@ -98,6 +101,7 @@ impl<V> VpnPortalClientTable<V> {
 
 pub enum VpnPortalPeerPacketRoute<V> {
     Pass,
+    Drop,
     Deliver {
         destination: Ipv4Addr,
         client: Arc<VpnPortalClient<V>>,
@@ -290,6 +294,16 @@ mod tests {
         assert!(matches!(
             table.route_peer_packet(&packet),
             VpnPortalPeerPacketRoute::Pass
+        ));
+    }
+
+    #[test]
+    fn peer_route_drops_short_data_payload() {
+        let table = VpnPortalClientTable::<()>::new();
+        let packet = peer_packet(&[0u8; IPV4_HEADER_LEN - 1], PacketType::Data);
+        assert!(matches!(
+            table.route_peer_packet(&packet),
+            VpnPortalPeerPacketRoute::Drop
         ));
     }
 }
