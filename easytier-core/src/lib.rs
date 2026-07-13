@@ -18,5 +18,6 @@ pub mod stun;
 pub mod task;
 pub mod token_bucket;
 pub mod tunnel;
+pub mod vpn_portal;
 
 pub use easytier_proto as proto;
