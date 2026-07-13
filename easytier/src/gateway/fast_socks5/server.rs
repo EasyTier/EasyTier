@@ -1,10 +1,10 @@
 use super::Socks5Command;
 use super::new_udp_header;
 use super::parse_udp_request;
-use super::read_exact;
 use super::util::stream::tcp_connect_with_timeout;
-use super::util::target_addr::{TargetAddr, read_address};
+use super::util::target_addr::{TargetAddr, read_address, resolve_dns};
 use super::{AuthenticationMethod, ReplyError, Result, SocksError, consts};
+use crate::read_exact;
 use anyhow::Context;
 use std::io;
 use std::net::IpAddr;
@@ -569,7 +569,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin, A: Authentication, C: AsyncTcpConnector>
         if let Some(target_addr) = self.target_addr.take() {
             // decide whether we have to resolve DNS or not
             self.target_addr = match target_addr {
-                TargetAddr::Domain(_, _) => Some(target_addr.resolve_dns().await?),
+                TargetAddr::Domain(_, _) => Some(resolve_dns(target_addr).await?),
                 TargetAddr::Ip(_) => Some(target_addr),
             };
         }

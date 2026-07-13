@@ -6,6 +6,7 @@ pub mod proxy_acl;
 #[cfg(feature = "proxy-packet")]
 pub mod runtime;
 pub mod socks5;
+pub mod socks5_protocol;
 
 #[cfg(feature = "proxy-packet")]
 pub mod icmp_proxy_engine;
