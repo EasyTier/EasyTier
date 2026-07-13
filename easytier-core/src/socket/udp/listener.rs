@@ -51,6 +51,7 @@ where
     accept_kind: UdpSessionAcceptKind,
     factory: Arc<F>,
     control_handler: Arc<H>,
+    socket: Option<Arc<F::Socket>>,
     layer: Option<Arc<Layer<F, H>>>,
     layer_ref: Arc<StdMutex<Option<Weak<Layer<F, H>>>>>,
 }
@@ -101,6 +102,7 @@ where
             accept_kind,
             factory,
             control_handler,
+            socket: None,
             layer: None,
             layer_ref: Arc::new(StdMutex::new(None)),
         }
@@ -110,6 +112,19 @@ where
         self.layer
             .clone()
             .ok_or_else(|| anyhow::anyhow!("udp session listener is not started"))
+    }
+
+    pub fn bound_socket(&self) -> anyhow::Result<Arc<F::Socket>> {
+        self.socket
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("udp session listener is not started"))
+    }
+
+    pub async fn accept_session(&self) -> anyhow::Result<UdpSession> {
+        let layer = self.layer()?;
+        let mut session = accept_udp_session(&layer, self.accept_kind).await?;
+        session.keep_layer_alive(layer);
+        Ok(session)
     }
 }
 
@@ -123,7 +138,7 @@ where
             .field("url", &self.url)
             .field("request", &self.request)
             .field("accept_kind", &self.accept_kind)
-            .field("listening", &self.layer.is_some())
+            .field("listening", &self.socket.is_some())
             .finish()
     }
 }
@@ -149,7 +164,7 @@ where
 
         let layer = Arc::new(
             UdpSessionLayer::new_with_control_handler_and_stun_responder(
-                socket,
+                socket.clone(),
                 self.control_handler.clone(),
                 self.factory.clone(),
             ),
@@ -159,15 +174,13 @@ where
         }
 
         *self.layer_ref.lock().unwrap() = Some(Arc::downgrade(&layer));
+        self.socket = Some(socket);
         self.layer = Some(layer);
         Ok(())
     }
 
     async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
-        let layer = self.layer()?;
-        let mut session = accept_udp_session(&layer, self.accept_kind).await?;
-        session.keep_layer_alive(layer);
-        Ok(session)
+        self.accept_session().await
     }
 
     fn local_url(&self) -> Url {

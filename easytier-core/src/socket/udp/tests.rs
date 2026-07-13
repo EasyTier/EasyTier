@@ -1820,6 +1820,10 @@ async fn udp_session_socket_listener_builds_port_bound_bind_options() {
     );
     assert_eq!(listener.local_url().port(), Some(11010));
     assert_eq!(listener.connection_counter().get(), Some(0));
+    assert!(Arc::ptr_eq(
+        &listener.bound_socket().unwrap(),
+        &factory.sockets()[0]
+    ));
 }
 
 #[tokio::test]
@@ -1839,7 +1843,7 @@ async fn udp_session_socket_listener_accepts_easy_tier_mux_session() {
         UdpSessionSocketListener::new("udp://127.0.0.1:0".parse().unwrap(), local_addr, factory);
 
     listener.listen().await.unwrap();
-    let session = tokio::time::timeout(Duration::from_secs(1), listener.accept())
+    let session = tokio::time::timeout(Duration::from_secs(1), listener.accept_session())
         .await
         .unwrap()
         .unwrap();
