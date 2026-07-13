@@ -95,6 +95,7 @@ where
             dns: dns.clone(),
             listener_dns: None,
             dns_records: dns,
+            ring_registry: Arc::new(crate::tunnel::ring::RingTunnelRegistry::default()),
             protocol: None,
             manual_events: None,
             listener: None,

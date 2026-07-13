@@ -31,6 +31,7 @@ use crate::{
             UdpSessionSocket, UdpSessionSocketListener, VirtualUdpSocketFactory,
         },
     },
+    tunnel::{Tunnel, ring::RingTunnelRegistry},
 };
 
 pub type HostAcceptedTcpSocket<H> =
@@ -41,6 +42,10 @@ pub type HostAcceptedTcpSocket<H> =
 /// Socket creation and binding belong to the host factory. Protocol handling
 /// consumes this value and may turn it into one or more EasyTier tunnels.
 pub enum AcceptedTransport<TcpSocket> {
+    Tunnel {
+        tunnel: Box<dyn Tunnel>,
+        local_url: Url,
+    },
     Tcp {
         socket: TcpSocket,
         local_url: Url,
@@ -61,7 +66,8 @@ pub enum AcceptedTransport<TcpSocket> {
 impl<TcpSocket> AcceptedTransport<TcpSocket> {
     pub fn local_url(&self) -> &Url {
         match self {
-            Self::Tcp { local_url, .. }
+            Self::Tunnel { local_url, .. }
+            | Self::Tcp { local_url, .. }
             | Self::Udp { local_url, .. }
             | Self::ByteStream { local_url, .. } => local_url,
         }
@@ -138,6 +144,9 @@ where
         accepted: AcceptedTransport<TcpSocket>,
     ) -> anyhow::Result<()> {
         let (upgrade, _tcp_upgrade_permit) = match accepted {
+            AcceptedTransport::Tunnel { tunnel, .. } => {
+                return self.handle_tunnel(tunnel).await;
+            }
             AcceptedTransport::Tcp {
                 socket,
                 local_url,
@@ -193,6 +202,7 @@ where
             .upgrade()
             .ok_or_else(|| anyhow::anyhow!("peer manager is gone"))?;
         let tunnel = match accepted {
+            AcceptedTransport::Tunnel { tunnel, .. } => tunnel,
             AcceptedTransport::Tcp {
                 socket, local_url, ..
             } => {
@@ -222,6 +232,10 @@ where
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TransportListenerConfig {
+    Ring {
+        url: Url,
+        must_succeed: bool,
+    },
     Tcp {
         url: Url,
         options: TcpListenOptions,
@@ -238,18 +252,21 @@ pub enum TransportListenerConfig {
 impl TransportListenerConfig {
     pub fn must_succeed(&self) -> bool {
         match self {
-            Self::Tcp { must_succeed, .. } | Self::Udp { must_succeed, .. } => *must_succeed,
+            Self::Ring { must_succeed, .. }
+            | Self::Tcp { must_succeed, .. }
+            | Self::Udp { must_succeed, .. } => *must_succeed,
         }
     }
 
     pub fn url(&self) -> &Url {
         match self {
-            Self::Tcp { url, .. } | Self::Udp { url, .. } => url,
+            Self::Ring { url, .. } | Self::Tcp { url, .. } | Self::Udp { url, .. } => url,
         }
     }
 
     pub fn supports_raw_handler(&self) -> bool {
-        matches!(self, Self::Tcp { url, .. } if url.scheme() == "tcp")
+        matches!(self, Self::Ring { .. })
+            || matches!(self, Self::Tcp { url, .. } if url.scheme() == "tcp")
             || matches!(
                 self,
                 Self::Udp {
@@ -258,6 +275,71 @@ impl TransportListenerConfig {
                     ..
                 } if url.scheme() == "udp"
             )
+    }
+}
+
+struct RingTransportListener<TcpSocket> {
+    url: Url,
+    registry: Arc<RingTunnelRegistry>,
+    inner: Option<crate::tunnel::ring::RingTunnelSocketListener>,
+    tcp_socket: PhantomData<fn() -> TcpSocket>,
+}
+
+impl<TcpSocket> RingTransportListener<TcpSocket> {
+    fn new(url: Url, registry: Arc<RingTunnelRegistry>) -> Self {
+        Self {
+            url,
+            registry,
+            inner: None,
+            tcp_socket: PhantomData,
+        }
+    }
+}
+
+impl<TcpSocket> fmt::Debug for RingTransportListener<TcpSocket> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RingTransportListener")
+            .field("url", &self.url)
+            .field("listening", &self.inner.is_some())
+            .finish()
+    }
+}
+
+#[async_trait]
+impl<TcpSocket> SocketListener for RingTransportListener<TcpSocket>
+where
+    TcpSocket: Send + 'static,
+{
+    type Accepted = AcceptedTransport<TcpSocket>;
+
+    async fn listen(&mut self) -> anyhow::Result<()> {
+        if self.inner.is_none() {
+            let local_id = self
+                .url
+                .host_str()
+                .ok_or_else(|| anyhow::anyhow!("ring listener URL has no peer id: {}", self.url))?
+                .parse()?;
+            self.inner = Some(self.registry.bind(local_id)?);
+        }
+        Ok(())
+    }
+
+    async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
+        let accepted = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("Ring transport listener is not started"))?
+            .accept()
+            .await?;
+        Ok(AcceptedTransport::Tunnel {
+            tunnel: accepted.into_tunnel(),
+            local_url: self.url.clone(),
+        })
+    }
+
+    fn local_url(&self) -> Url {
+        self.url.clone()
     }
 }
 
@@ -543,7 +625,7 @@ type HostTransportListenerManager<H> = ListenerManager<
     ErasedAcceptedTransportHandler<HostAcceptedTcpSocket<H>>,
 >;
 
-/// Owns TCP and UDP transport listeners built entirely from host factories.
+/// Owns core Ring listeners and TCP/UDP listeners built from host factories.
 pub struct TransportListenerService<H>
 where
     H: VirtualTcpListenerFactory
@@ -562,25 +644,28 @@ where
     pub fn new(
         host: Arc<H>,
         dns: Arc<dyn DnsResolver>,
+        ring_registry: Arc<RingTunnelRegistry>,
         configs: Vec<TransportListenerConfig>,
         handler: Arc<dyn AcceptedSocketHandler<AcceptedTransport<HostAcceptedTcpSocket<H>>>>,
     ) -> Self {
-        Self::build(host, dns, configs, handler, None)
+        Self::build(host, dns, ring_registry, configs, handler, None)
     }
 
     pub fn new_with_events(
         host: Arc<H>,
         dns: Arc<dyn DnsResolver>,
+        ring_registry: Arc<RingTunnelRegistry>,
         configs: Vec<TransportListenerConfig>,
         handler: Arc<dyn AcceptedSocketHandler<AcceptedTransport<HostAcceptedTcpSocket<H>>>>,
         events: Arc<dyn ListenerEventSink>,
     ) -> Self {
-        Self::build(host, dns, configs, handler, Some(events))
+        Self::build(host, dns, ring_registry, configs, handler, Some(events))
     }
 
     fn build(
         host: Arc<H>,
         dns: Arc<dyn DnsResolver>,
+        ring_registry: Arc<RingTunnelRegistry>,
         configs: Vec<TransportListenerConfig>,
         handler: Arc<dyn AcceptedSocketHandler<AcceptedTransport<HostAcceptedTcpSocket<H>>>>,
         events: Option<Arc<dyn ListenerEventSink>>,
@@ -594,6 +679,18 @@ where
         for config in configs {
             let must_succeed = config.must_succeed();
             match config {
+                TransportListenerConfig::Ring { url, .. } => {
+                    let ring_registry = ring_registry.clone();
+                    manager.add_listener(
+                        move || {
+                            Box::new(RingTransportListener::new(
+                                url.clone(),
+                                ring_registry.clone(),
+                            ))
+                        },
+                        must_succeed,
+                    );
+                }
                 TransportListenerConfig::Tcp { url, options, .. } => {
                     let host = host.clone();
                     let dns = dns.clone();
@@ -664,6 +761,7 @@ mod tests {
         time::Duration,
     };
 
+    use futures::{SinkExt as _, StreamExt as _};
     use tokio::{
         io::{AsyncRead, AsyncWrite, DuplexStream, ReadBuf},
         sync::{Mutex, Notify, mpsc},
@@ -672,6 +770,7 @@ mod tests {
     use super::*;
     use crate::{
         connectivity::protocol::{CoreServerProtocolUpgrader, ServerTunnelAcceptor},
+        packet::ZCPacket,
         socket::{
             dns::{DnsQuery, DnsResolver},
             tcp::{VirtualTcpListener, VirtualTcpSocket},
@@ -1015,6 +1114,9 @@ mod tests {
         ) -> anyhow::Result<()> {
             let _active = ActiveHandlerGuard::new(self.active.clone());
             match accepted {
+                AcceptedTransport::Tunnel { tunnel, .. } => {
+                    drop(tunnel);
+                }
                 AcceptedTransport::Tcp {
                     socket, local_url, ..
                 } => {
@@ -1064,6 +1166,30 @@ mod tests {
         packet[8] = 0;
         packet[9] = 1;
         packet
+    }
+
+    #[tokio::test]
+    async fn ring_listener_delivers_packet_native_tunnel() -> anyhow::Result<()> {
+        let local_id = uuid::Uuid::new_v4();
+        let registry = Arc::new(RingTunnelRegistry::default());
+        let mut listener = RingTransportListener::<MockTcpSocket>::new(
+            format!("ring://{local_id}").parse()?,
+            registry.clone(),
+        );
+        listener.listen().await?;
+        let client = registry.connect(local_id)?.into_tunnel();
+        let AcceptedTransport::Tunnel { tunnel: server, .. } = listener.accept().await? else {
+            anyhow::bail!("Ring listener did not produce a Tunnel");
+        };
+        let (_client_stream, mut client_sink) = client.split();
+        let (mut server_stream, _server_sink) = server.split();
+
+        client_sink
+            .send(ZCPacket::new_with_payload(b"packet-native-listener"))
+            .await?;
+        let packet = server_stream.next().await.transpose()?.unwrap();
+        assert_eq!(packet.payload(), b"packet-native-listener");
+        Ok(())
     }
 
     #[tokio::test]
@@ -1265,6 +1391,7 @@ mod tests {
         let service = TransportListenerService::new(
             host.clone(),
             Arc::new(MockDns),
+            Arc::new(RingTunnelRegistry::default()),
             vec![
                 TransportListenerConfig::Tcp {
                     url: "tcp://127.0.0.1:0".parse().unwrap(),

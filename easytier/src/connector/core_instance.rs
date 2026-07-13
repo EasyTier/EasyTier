@@ -174,7 +174,7 @@ pub(crate) fn runtime_core_instance_adapters_with_ring_registry(
 ) -> CoreInstanceAdapters<RuntimeConnectorHost> {
     let host = Arc::new(RuntimeConnectorHost::new_with_ring_registry(
         global_ctx.clone(),
-        ring_registry,
+        ring_registry.clone(),
     ));
     let dns: Arc<dyn DnsResolver> = Arc::new(RuntimeDnsResolver::new());
     let listener_dns: Arc<dyn DnsResolver> = Arc::new(RuntimeDnsResolver::new_with_netns(
@@ -186,6 +186,7 @@ pub(crate) fn runtime_core_instance_adapters_with_ring_registry(
         dns,
         listener_dns: Some(listener_dns),
         dns_records,
+        ring_registry,
         protocol: Some(runtime_client_protocol_upgrader(global_ctx.clone())),
         manual_events: Some(Arc::new(GlobalCtxManualConnectivityEventSink {
             global_ctx: global_ctx.clone(),
@@ -282,7 +283,6 @@ pub(crate) fn build_runtime_core_instance_with_services_and_ring_registry(
     adapters.listener = Some(Arc::new(RuntimeListenerService::new(
         global_ctx,
         accepted_transport_handler,
-        ring_registry,
         &listener_plan,
     )));
     adapters.udp_hole_punch = Some(Arc::new(super::udp_hole_punch::UdpHolePunchConnector::new(

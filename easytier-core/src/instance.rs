@@ -69,6 +69,7 @@ use crate::{
         dns::{DnsRecordResolver, DnsResolver},
         tcp::VirtualTcpSocketFactory,
     },
+    tunnel::ring::RingTunnelRegistry,
 };
 
 use self::public_ipv6_provider::{PublicIpv6ProviderHost, PublicIpv6ProviderService};
@@ -332,6 +333,7 @@ where
     /// Optional listener-specific resolver. When absent, listeners share `dns` with connectors.
     pub listener_dns: Option<Arc<dyn DnsResolver>>,
     pub dns_records: Arc<dyn DnsRecordResolver>,
+    pub ring_registry: Arc<RingTunnelRegistry>,
     pub protocol: Option<Arc<dyn ClientProtocolUpgrader<<H as VirtualTcpSocketFactory>::Socket>>>,
     pub manual_events: Option<Arc<dyn ManualConnectivityEventSink>>,
     pub listener: Option<Arc<dyn ListenerService>>,
@@ -620,6 +622,7 @@ where
             dns,
             listener_dns,
             dns_records,
+            ring_registry,
             protocol,
             manual_events,
             listener,
@@ -660,6 +663,7 @@ where
             let listener = Arc::new(TransportListenerService::new_with_events(
                 host.clone(),
                 listener_dns.unwrap_or_else(|| dns.clone()),
+                ring_registry.clone(),
                 listeners,
                 handler,
                 events,
@@ -703,6 +707,7 @@ where
                 dns.clone(),
                 endpoint_resolver,
                 protocol.clone(),
+                ring_registry.clone(),
                 manual_options,
                 events,
             ),
@@ -712,6 +717,7 @@ where
                 dns.clone(),
                 endpoint_resolver,
                 protocol.clone(),
+                ring_registry,
                 manual_options,
             ),
         };

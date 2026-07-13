@@ -88,6 +88,7 @@ impl ManualConnectorManager {
             adapters
                 .protocol
                 .expect("native runtime should provide optional protocol upgrades"),
+            adapters.ring_registry,
             runtime_manual_options(&global_ctx),
             adapters.manual_events.unwrap(),
         ));

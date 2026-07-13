@@ -15,9 +15,11 @@ use easytier_core::{
     },
     peers::peer_manager::PeerManagerCore,
     socket::udp::{UdpSessionAcceptKind, UdpSessionProtocol},
-    tunnel::ring::RingTunnelRegistry,
 };
 use tokio::sync::Mutex;
+
+#[cfg(test)]
+use easytier_core::tunnel::ring::RingTunnelRegistry;
 
 #[cfg(feature = "faketcp")]
 use crate::tunnel::TunnelListener;
@@ -28,7 +30,7 @@ use crate::{
         netns::NetNS,
     },
     socket::tcp::RuntimeTcpSocket,
-    tunnel::{FromUrl, IpVersion, Tunnel},
+    tunnel::Tunnel,
 };
 
 pub use easytier_core::listener::plan::{is_url_host_ipv6, is_url_host_unspecified};
@@ -51,6 +53,10 @@ pub(crate) fn runtime_transport_listener_configs(
     plan.listeners
         .iter()
         .filter_map(|listener| match listener.kind {
+            core_listener_plan::ListenerKind::Ring => Some(TransportListenerConfig::Ring {
+                url: listener.url.clone(),
+                must_succeed: listener.must_succeed,
+            }),
             core_listener_plan::ListenerKind::TcpStream if listener.url.scheme() != "faketcp" => {
                 Some(TransportListenerConfig::Tcp {
                     url: listener.url.clone(),
@@ -132,26 +138,12 @@ impl RuntimeListenerService {
     pub(crate) fn new(
         global_ctx: ArcGlobalCtx,
         handler: Arc<RuntimeAcceptedTransportHandler>,
-        ring_registry: Arc<RingTunnelRegistry>,
         plan: &core_listener_plan::ListenerPlan,
     ) -> Self {
         let events = runtime_listener_event_sink(global_ctx.clone());
         let mut manager = core_listener::ListenerManager::new_with_events(handler, events);
         for listener in &plan.listeners {
             match listener.kind {
-                core_listener_plan::ListenerKind::Ring => {
-                    let url = listener.url.clone();
-                    let ring_registry = ring_registry.clone();
-                    manager.add_listener(
-                        move || {
-                            Box::new(RuntimeRingStreamListener::new(
-                                url.clone(),
-                                ring_registry.clone(),
-                            ))
-                        },
-                        listener.must_succeed,
-                    );
-                }
                 #[cfg(feature = "faketcp")]
                 core_listener_plan::ListenerKind::TcpStream
                     if listener.url.scheme() == "faketcp" =>
@@ -206,63 +198,6 @@ impl ListenerService for RuntimeListenerService {
 
     async fn stop(&self) {
         self.manager.lock().await.stop().await;
-    }
-}
-
-struct RuntimeRingStreamListener {
-    url: url::Url,
-    ring_registry: Arc<RingTunnelRegistry>,
-    inner: Option<easytier_core::tunnel::ring::RingTunnelSocketListener>,
-}
-
-impl RuntimeRingStreamListener {
-    fn new(url: url::Url, ring_registry: Arc<RingTunnelRegistry>) -> Self {
-        Self {
-            url,
-            ring_registry,
-            inner: None,
-        }
-    }
-}
-
-impl Debug for RuntimeRingStreamListener {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("RuntimeRingStreamListener")
-            .field("url", &self.url)
-            .field("listening", &self.inner.is_some())
-            .finish()
-    }
-}
-
-#[async_trait]
-impl core_listener::SocketListener for RuntimeRingStreamListener {
-    type Accepted = AcceptedTransport<RuntimeTcpSocket>;
-
-    async fn listen(&mut self) -> anyhow::Result<()> {
-        if self.inner.is_none() {
-            let local_id = uuid::Uuid::from_url(self.url.clone(), IpVersion::Both).await?;
-            self.inner = Some(self.ring_registry.bind(local_id)?);
-        }
-        Ok(())
-    }
-
-    async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
-        let accepted = self
-            .inner
-            .as_mut()
-            .ok_or_else(|| anyhow::anyhow!("ring stream listener is not started"))?
-            .accept()
-            .await?;
-        Ok(AcceptedTransport::ByteStream {
-            socket: RuntimeTcpSocket::from_ring(accepted.socket)?,
-            local_url: format!("ring://{}", accepted.local_id).parse()?,
-            remote_url: Some(format!("ring://{}", accepted.remote_id).parse()?),
-        })
-    }
-
-    fn local_url(&self) -> url::Url {
-        self.url.clone()
     }
 }
 
@@ -576,17 +511,13 @@ impl ListenerManager<PeerManagerCore> {
                 Arc::new(crate::common::dns::RuntimeDnsResolver::new_with_netns(
                     global_ctx.net_ns.clone(),
                 )),
+                ring_registry,
                 configs,
                 handler.clone(),
                 runtime_listener_event_sink(global_ctx.clone()),
             ),
         );
-        let external = Arc::new(RuntimeListenerService::new(
-            global_ctx,
-            handler,
-            ring_registry,
-            &plan,
-        ));
+        let external = Arc::new(RuntimeListenerService::new(global_ctx, handler, &plan));
         Self {
             service: easytier_core::instance::ListenerServiceGroup::new(vec![transport, external]),
             handler: std::marker::PhantomData,
@@ -608,12 +539,7 @@ impl ListenerManager<PeerManagerCore> {
 
 #[cfg(test)]
 mod tests {
-    use easytier_core::{connectivity::manual::ManualConnectorHost, listener::SocketListener as _};
-
-    use crate::{
-        common::{config::ConfigLoader, global_ctx::tests::get_mock_global_ctx},
-        connector::runtime::RuntimeConnectorHost,
-    };
+    use crate::common::{config::ConfigLoader, global_ctx::tests::get_mock_global_ctx};
 
     use super::*;
 
@@ -627,38 +553,17 @@ mod tests {
         let plan = runtime_listener_plan(&global_ctx);
         let configs = runtime_transport_listener_configs(&plan, Some(7));
 
-        assert_eq!(configs.len(), 2);
+        assert_eq!(configs.len(), 3);
+        assert!(matches!(&configs[0], TransportListenerConfig::Ring { .. }));
         assert!(matches!(
-            &configs[0],
+            &configs[1],
             TransportListenerConfig::Tcp { options, .. }
                 if options.bind.local_addr.is_none() && options.bind.socket_mark == Some(7)
         ));
         assert!(matches!(
-            &configs[1],
+            &configs[2],
             TransportListenerConfig::Udp { request, .. }
                 if request.bind.local_addr.is_none() && request.bind.socket_mark == Some(7)
         ));
-    }
-
-    #[tokio::test]
-    async fn ring_listener_uses_injected_registry() {
-        let global_ctx = get_mock_global_ctx();
-        let registry = Arc::new(RingTunnelRegistry::default());
-        let isolated_host = RuntimeConnectorHost::new(global_ctx.clone());
-        let shared_host =
-            RuntimeConnectorHost::new_with_ring_registry(global_ctx, registry.clone());
-        let listener_url: url::Url = format!("ring://{}", uuid::Uuid::new_v4()).parse().unwrap();
-        let mut listener = RuntimeRingStreamListener::new(listener_url.clone(), registry);
-        listener.listen().await.unwrap();
-
-        assert!(
-            ManualConnectorHost::connect_byte_stream(&isolated_host, &listener_url)
-                .await
-                .is_err()
-        );
-        ManualConnectorHost::connect_byte_stream(&shared_host, &listener_url)
-            .await
-            .unwrap();
-        listener.accept().await.unwrap();
     }
 }

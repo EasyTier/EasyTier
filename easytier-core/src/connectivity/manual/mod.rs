@@ -189,30 +189,24 @@ where
             convert_idn_to_ascii(requested_url.clone())?,
         )
         .await?;
-        if !self.protocol.supports_scheme(endpoint.url.scheme()) {
-            anyhow::bail!(
-                "unsupported client protocol upgrader: {}",
-                endpoint.url.scheme()
-            );
-        }
-
         if endpoint.url.scheme() == "ring" {
-            let remote_id = endpoint
-                .url
-                .host_str()
-                .ok_or_else(|| anyhow::anyhow!("ring URL has no peer id: {}", endpoint.url))?
-                .parse()?;
-            let tunnel = self
+            let registry = self
                 .ring_registry
                 .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("ring registry is not configured"))?
-                .connect(remote_id)?
-                .into_tunnel();
+                .ok_or_else(|| anyhow::anyhow!("ring registry is not configured"))?;
+            let tunnel = connect_ring_tunnel(registry, &endpoint.url)?;
             return Ok(apply_resolved_endpoint_info(
                 tunnel,
                 requested_url,
                 endpoint.tunnel_prefixes,
             ));
+        }
+
+        if !self.protocol.supports_scheme(endpoint.url.scheme()) {
+            anyhow::bail!(
+                "unsupported client protocol upgrader: {}",
+                endpoint.url.scheme()
+            );
         }
 
         let transport = ManualTransport::from_url(&endpoint.url)?;
@@ -369,6 +363,7 @@ where
     dns: Arc<dyn DnsResolver>,
     endpoint_resolver: Arc<dyn ManualEndpointResolver>,
     protocol: Arc<dyn ClientProtocolUpgrader<<H as VirtualTcpSocketFactory>::Socket>>,
+    ring_registry: Arc<RingTunnelRegistry>,
     events: Arc<dyn ManualConnectivityEventSink>,
     options: ManualConnectorOptions,
 }
@@ -396,6 +391,7 @@ where
         dns: Arc<dyn DnsResolver>,
         endpoint_resolver: Arc<dyn ManualEndpointResolver>,
         protocol: Arc<dyn ClientProtocolUpgrader<<H as VirtualTcpSocketFactory>::Socket>>,
+        ring_registry: Arc<RingTunnelRegistry>,
         options: ManualConnectorOptions,
     ) -> Self {
         Self::new_with_events(
@@ -404,6 +400,7 @@ where
             dns,
             endpoint_resolver,
             protocol,
+            ring_registry,
             options,
             Arc::new(NoopManualConnectivityEventSink),
         )
@@ -415,6 +412,7 @@ where
         dns: Arc<dyn DnsResolver>,
         endpoint_resolver: Arc<dyn ManualEndpointResolver>,
         protocol: Arc<dyn ClientProtocolUpgrader<<H as VirtualTcpSocketFactory>::Socket>>,
+        ring_registry: Arc<RingTunnelRegistry>,
         options: ManualConnectorOptions,
         events: Arc<dyn ManualConnectivityEventSink>,
     ) -> Self {
@@ -428,6 +426,7 @@ where
             dns,
             endpoint_resolver,
             protocol,
+            ring_registry,
             events,
             options,
         });
@@ -680,6 +679,17 @@ fn apply_resolved_endpoint_info(
     })
 }
 
+fn connect_ring_tunnel(
+    registry: &RingTunnelRegistry,
+    endpoint: &Url,
+) -> anyhow::Result<Box<dyn Tunnel>> {
+    let remote_id = endpoint
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("ring URL has no peer id: {endpoint}"))?
+        .parse()?;
+    Ok(registry.connect(remote_id)?.into_tunnel())
+}
+
 async fn resolve_reconnect_ip_versions(
     url: &Url,
     connect_timeout: Duration,
@@ -794,17 +804,18 @@ where
         ),
     )
     .await?;
-    if !data.protocol.supports_scheme(endpoint.url.scheme()) {
+    if endpoint.url.scheme() != "ring" && !data.protocol.supports_scheme(endpoint.url.scheme()) {
         anyhow::bail!(
             "unsupported client protocol upgrader: {}",
             endpoint.url.scheme()
         );
     }
-    let transport = ManualTransport::from_url(&endpoint.url)?;
-    let resolved = if transport == ManualTransport::ByteStream {
-        None
-    } else {
-        Some(
+    let transport = (endpoint.url.scheme() != "ring")
+        .then(|| ManualTransport::from_url(&endpoint.url))
+        .transpose()?;
+    let resolved = match transport {
+        None | Some(ManualTransport::ByteStream) => None,
+        Some(transport) => Some(
             with_timeout_budget("resolve", started_at, connect_timeout, async {
                 let peer_manager = data.peer_manager.upgrade().ok_or_else(|| {
                     anyhow::anyhow!("peer manager is gone, cannot resolve connector")
@@ -836,13 +847,17 @@ where
                 Ok((remote_addr, bind_addrs))
             })
             .await?,
-        )
+        ),
     };
     data.events.emit(ManualConnectivityEvent::Connecting {
         url: requested_url.clone(),
     });
 
     let tunnel = with_timeout_budget("connect", started_at, connect_timeout, async {
+        if endpoint.url.scheme() == "ring" {
+            return connect_ring_tunnel(&data.ring_registry, &endpoint.url);
+        }
+        let transport = transport.expect("non-Ring endpoint should have a transport");
         let connected = match resolved {
             Some((remote_addr, bind_addrs)) => {
                 connect_resolved(
