@@ -88,6 +88,30 @@ The authoritative set of peers, peer connections, next hops, routes, sessions,
 relay state, and foreign-network state for a core instance. The host may present
 or cache snapshots but must not maintain a second source of truth.
 
+### Foreign network
+
+A peer graph projected for a different network identity and relayed through the
+current core instance. Core owns foreign-network admission, identity and
+credential checks, relay policy, per-network peer state, routes, traffic state,
+task lifecycle, and management snapshots. A Host Adapter may create
+platform-backed connector resources, persist credentials, and project events;
+it must not decide whitelist, relay, connection-limit, or feature policy.
+
+### Native peer facade
+
+The small native Module that assembles peer Host Adapters and translates native
+management models. It is not a peer graph owner. The deletion test for this
+Module should leave only composition and presentation work at callers; routing,
+admission, relay, lifecycle, and packet decisions must not reappear there.
+
+### Gateway dataplane
+
+The portable packet classification, proxy/NAT state, header transformation,
+session lifecycle, and forwarding decisions used by gateway features. These
+belong to core. Transparent-destination lookup, raw sockets, TUN, netns, real
+listeners, and concrete KCP/QUIC engines remain Host Adapter implementations
+when they require platform or non-WASI dependencies.
+
 ### Runtime configuration
 
 The normalized configuration consumed by core. Native TOML, CLI flags, web

@@ -1,6 +1,6 @@
 # EasyTier Core Refactor Roadmap
 
-> Status: active and authoritative. Updated 2026-07-12.
+> Status: active and authoritative. Updated 2026-07-13.
 
 ## Outcome
 
@@ -67,6 +67,26 @@ The current architecture is still intermediate:
   failure/isolation measurements and quantitative gates remain open;
 - build features exist, but ownership has not yet settled into deep Modules
   suitable for deliberate feature slicing.
+
+The remaining ownership work is specified in
+[`core_remaining_ownership_refactor.md`](core_remaining_ownership_refactor.md).
+That plan supersedes earlier statements that the native peer and gateway
+Adapters are already at their final depth.
+
+Current closure status on 2026-07-13:
+
+- the Core instance, native and Go completion domains, runtime configuration,
+  and per-instance ring registry now have single authoritative owners;
+- native `foreign_network_manager.rs` no longer owns a second foreign peer
+  graph, but its Host Adapter Interface still includes portable relay policy,
+  whitelist, limiter, connection-limit, and feature-synchronization decisions;
+- native `PeerManager` is primarily a facade, but still exposes a broad
+  forwarding Interface and constructs the foreign-network runtime graph;
+- `GlobalCtx` still implements the broad peer Interface in addition to narrow
+  submitted-config support, so capability Locality is incomplete;
+- core owns the TCP, UDP, ICMP, CIDR, wrapped-TCP, proxy ACL, smoltcp, and SOCKS
+  state Modules, while native KCP/QUIC/SOCKS composition still requires a
+  decision-by-decision gateway audit.
 
 ## Definition of done
 
@@ -278,15 +298,15 @@ Do not preserve old public Rust paths merely to make a migration appear less
 disruptive. Do preserve wire compatibility when it is an explicit protocol
 requirement; that is separate from Rust source compatibility.
 
-## Validation snapshot (2026-07-12)
+## Validation snapshot (2026-07-13)
 
 The current implementation milestone passes:
 
 - native `easytier-core` default, no-default, and all-feature checks;
 - `wasm32-wasip1` default, no-default, and all-feature checks plus test-artifact
   linking;
-- 390 native `easytier-core` library tests;
-- all 28 `easytier-go-host` tests, including the real two-instance route and
+- 392 native `easytier-core` library tests;
+- all 29 `easytier-go-host` tests, including the real two-instance route and
   packet exchange;
 - race-enabled Go bridge close, cancellation, and lifecycle tests;
 - ten repeated runs of the real core lifecycle, two-instance network, socket
