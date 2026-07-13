@@ -20,26 +20,25 @@ use tokio::{sync::Mutex, task::JoinSet};
 use easytier_core::{
     instance::ProxyService,
     proxy::{
-        proxy_acl::ProxyAclHandler,
+        cidr_table::ProxyCidrTable,
         runtime::TcpProxyDestinationConnector,
         tcp_proxy_engine::TcpProxyMode,
         wrapped_tcp_proxy::{
-            WrappedTcpProxyNicContext, WrappedTcpProxyTransport,
-            try_process_wrapped_tcp_packet_from_nic,
+            WrappedTcpDestinationRequest, WrappedTcpProxyNicContext, WrappedTcpProxyTransport,
+            plan_wrapped_tcp_destination, try_process_wrapped_tcp_packet_from_nic,
         },
     },
 };
 
 use super::{
-    CidrSet,
+    CidrSet, RuntimeWrappedTcpDestinationAdapter,
     tcp_proxy::{NatDstTcpConnector, TcpProxy},
 };
 use crate::utils::task::HedgeExt;
 use crate::{
-    common::{acl_processor::PacketInfo, error::Result, global_ctx::ArcGlobalCtx},
+    common::{error::Result, global_ctx::ArcGlobalCtx},
     peers::{NicPacketFilter, PeerPacketFilter, peer_manager::PeerManager},
     proto::{
-        acl::{ChainType, Protocol},
         api::instance::{
             ListTcpProxyEntryRequest, ListTcpProxyEntryResponse, TcpProxyEntry, TcpProxyEntryState,
             TcpProxyEntryTransportType, TcpProxyRpc,
@@ -323,18 +322,20 @@ impl KcpProxyDst {
         }
     }
 
-    #[tracing::instrument(ret, skip(route))]
+    #[tracing::instrument(ret, skip(route, runtime, acl_filter))]
     async fn handle_one_in_stream(
         kcp_stream: KcpStream,
         global_ctx: ArcGlobalCtx,
         proxy_entries: Arc<DashMap<ConnId, TcpProxyEntry>>,
-        cidr_set: Arc<CidrSet>,
+        cidr_table: Arc<ProxyCidrTable>,
+        runtime: Arc<RuntimeWrappedTcpDestinationAdapter>,
+        acl_filter: Arc<easytier_core::peers::acl_filter::AclFilter>,
         route: Arc<dyn crate::peers::route_trait::Route + Send + Sync + 'static>,
     ) -> Result<()> {
         let mut conn_data = kcp_stream.conn_data().clone();
         let parsed_conn_data = KcpConnData::decode(&mut conn_data)
             .with_context(|| format!("failed to decode kcp conn data: {:?}", conn_data))?;
-        let mut dst_socket: SocketAddr = parsed_conn_data
+        let dst_socket: SocketAddr = parsed_conn_data
             .dst
             .ok_or(anyhow::anyhow!(
                 "failed to get dst socket from kcp conn data: {:?}",
@@ -342,13 +343,6 @@ impl KcpProxyDst {
             ))?
             .into();
         let src_socket: SocketAddr = parsed_conn_data.src.unwrap_or_default().into();
-
-        if let IpAddr::V4(dst_v4_ip) = dst_socket.ip() {
-            let mut real_ip = dst_v4_ip;
-            if cidr_set.contains_v4(dst_v4_ip, &mut real_ip) {
-                dst_socket.set_ip(real_ip.into());
-            }
-        };
 
         let conn_id = kcp_stream.conn_id();
         proxy_entries.insert(
@@ -368,45 +362,20 @@ impl KcpProxyDst {
             }
         }
 
-        let src_ip = src_socket.ip();
-        let dst_ip = dst_socket.ip();
-        let (src_groups, dst_groups) = tokio::join!(
-            route.get_peer_groups_by_ip(&src_ip),
-            route.get_peer_groups_by_ip(&dst_ip)
-        );
-
-        if global_ctx.should_deny_proxy(&dst_socket, false) {
-            return Err(anyhow::anyhow!(
-                "dst socket {:?} is in running listeners, ignore it",
-                dst_socket
-            )
-            .into());
-        }
-
-        let send_to_self = global_ctx.is_ip_local_virtual_ip(&dst_ip);
-        if send_to_self && global_ctx.no_tun() {
-            dst_socket = format!("127.0.0.1:{}", dst_socket.port()).parse().unwrap();
-        }
-
-        let acl_handler = ProxyAclHandler {
-            acl_filter: global_ctx.get_acl_filter().clone(),
-            packet_info: PacketInfo {
-                src_ip,
-                dst_ip,
-                src_port: Some(src_socket.port()),
-                dst_port: Some(dst_socket.port()),
-                protocol: Protocol::Tcp,
-                packet_size: conn_data.len(),
-                src_groups,
-                dst_groups,
+        let plan = plan_wrapped_tcp_destination(
+            WrappedTcpDestinationRequest {
+                src: src_socket,
+                dst: dst_socket,
+                initial_payload: &conn_data,
             },
-            chain_type: if send_to_self {
-                ChainType::Inbound
-            } else {
-                ChainType::Forward
-            },
-        };
-        acl_handler.handle_packet(&conn_data)?;
+            cidr_table.as_ref(),
+            runtime.as_ref(),
+            route.as_ref(),
+            acl_filter,
+        )
+        .await?;
+        let dst_socket = plan.socket_dst;
+        let acl_handler = plan.acl_handler;
 
         tracing::debug!("kcp connect to dst socket: {:?}", dst_socket);
 
@@ -432,8 +401,10 @@ impl KcpProxyDst {
         let kcp_endpoint = self.kcp_endpoint.clone();
         let global_ctx = self.peer_manager.get_global_ctx();
         let proxy_entries = self.proxy_entries.clone();
-        let cidr_set = self.cidr_set.clone();
+        let cidr_table = self.cidr_set.table();
         let route = Arc::new(self.peer_manager.core().get_route());
+        let runtime = Arc::new(RuntimeWrappedTcpDestinationAdapter::new(global_ctx.clone()));
+        let acl_filter = self.peer_manager.core().acl_filter();
         self.tasks.spawn(async move {
             while let Ok(conn) = kcp_endpoint.accept().await {
                 let stream = KcpStream::new(&kcp_endpoint, conn)
@@ -442,14 +413,18 @@ impl KcpProxyDst {
 
                 let global_ctx = global_ctx.clone();
                 let proxy_entries = proxy_entries.clone();
-                let cidr_set = cidr_set.clone();
+                let cidr_table = cidr_table.clone();
                 let route = route.clone();
+                let runtime = runtime.clone();
+                let acl_filter = acl_filter.clone();
                 tokio::spawn(async move {
                     let _ = Self::handle_one_in_stream(
                         stream,
                         global_ctx,
                         proxy_entries,
-                        cidr_set,
+                        cidr_table,
+                        runtime,
+                        acl_filter,
                         route,
                     )
                     .await;

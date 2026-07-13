@@ -24,7 +24,9 @@ pub trait ProxyRuntimeInfo: Send + Sync {
     fn is_ip_local_virtual_ip(&self, ip: &IpAddr) -> bool;
 }
 
-pub trait WrappedTcpDestinationRuntime: ProxyRuntimeInfo {
+pub trait WrappedTcpDestinationRuntime: Send + Sync {
+    fn is_ip_local_virtual_ip(&self, ip: &IpAddr) -> bool;
+    fn no_tun(&self) -> bool;
     fn should_deny_tcp_proxy(&self, dst: SocketAddr) -> bool;
 }
 

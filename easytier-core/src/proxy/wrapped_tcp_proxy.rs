@@ -44,13 +44,16 @@ pub struct WrappedTcpDestinationPlan {
     pub acl_handler: ProxyAclHandler,
 }
 
-pub async fn plan_wrapped_tcp_destination(
+pub async fn plan_wrapped_tcp_destination<GroupResolver>(
     request: WrappedTcpDestinationRequest<'_>,
     cidr_table: &ProxyCidrTable,
     runtime: &dyn WrappedTcpDestinationRuntime,
-    group_resolver: &dyn WrappedTcpPeerGroupResolver,
+    group_resolver: &GroupResolver,
     acl_filter: Arc<AclFilter>,
-) -> anyhow::Result<WrappedTcpDestinationPlan> {
+) -> anyhow::Result<WrappedTcpDestinationPlan>
+where
+    GroupResolver: WrappedTcpPeerGroupResolver + ?Sized,
+{
     let mut mapped_dst = request.dst;
     if let IpAddr::V4(dst_ip) = mapped_dst.ip()
         && let Some(real_ip) = cidr_table.lookup_v4(dst_ip)
@@ -73,7 +76,7 @@ pub async fn plan_wrapped_tcp_destination(
     }
 
     let send_to_self = runtime.is_ip_local_virtual_ip(&dst_ip);
-    let socket_dst = if send_to_self && runtime.proxy_runtime_snapshot().no_tun {
+    let socket_dst = if send_to_self && runtime.no_tun() {
         SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), mapped_dst.port())
     } else {
         mapped_dst
@@ -195,10 +198,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proxy::{
-        cidr_table::{ProxyCidrRule, ProxyCidrSnapshot},
-        runtime::{ProxyRuntimeInfo, ProxyRuntimeSnapshot},
-    };
+    use crate::proxy::cidr_table::{ProxyCidrRule, ProxyCidrSnapshot};
     use smoltcp::wire::{IpAddress, IpProtocol, Ipv4Packet, TcpPacket};
 
     struct TestDestinationRuntime {
@@ -207,20 +207,15 @@ mod tests {
         denied: Option<SocketAddr>,
     }
 
-    impl ProxyRuntimeInfo for TestDestinationRuntime {
-        fn proxy_runtime_snapshot(&self) -> ProxyRuntimeSnapshot {
-            ProxyRuntimeSnapshot {
-                no_tun: self.no_tun,
-                ..Default::default()
-            }
-        }
-
+    impl WrappedTcpDestinationRuntime for TestDestinationRuntime {
         fn is_ip_local_virtual_ip(&self, ip: &IpAddr) -> bool {
             *ip == self.local_ip
         }
-    }
 
-    impl WrappedTcpDestinationRuntime for TestDestinationRuntime {
+        fn no_tun(&self) -> bool {
+            self.no_tun
+        }
+
         fn should_deny_tcp_proxy(&self, dst: SocketAddr) -> bool {
             self.denied == Some(dst)
         }

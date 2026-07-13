@@ -1,11 +1,9 @@
 use crate::common::PeerId;
-use crate::common::acl_processor::PacketInfo;
 use crate::common::global_ctx::ArcGlobalCtx;
 use crate::gateway::CidrSet;
 use crate::gateway::tcp_proxy::TcpProxy;
 use crate::peers::peer_manager::PeerManager;
 use crate::peers::{NicPacketFilter, PeerPacketFilter};
-use crate::proto::acl::{ChainType, Protocol};
 use crate::proto::api::instance::{
     ListTcpProxyEntryRequest, ListTcpProxyEntryResponse, TcpProxyEntry, TcpProxyEntryState,
     TcpProxyEntryTransportType, TcpProxyRpc,
@@ -40,27 +38,30 @@ use std::sync::{Arc, Mutex as StdMutex, Weak};
 use std::task::Poll;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, Join, join};
+use tokio::select;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::{Receiver, Sender, channel};
 use tokio::task::JoinSet;
 use tokio::time::timeout;
-use tokio::{join, select};
 use tokio_util::sync::PollSender;
 use tracing::{debug, error, info, instrument, trace, warn};
 
 use easytier_core::{
     instance::ProxyService,
+    peers::acl_filter::AclFilter,
     proxy::{
-        proxy_acl::ProxyAclHandler,
+        cidr_table::ProxyCidrTable,
         runtime::TcpProxyDestinationConnector,
         tcp_proxy_engine::TcpProxyMode,
         wrapped_tcp_proxy::{
-            WrappedTcpProxyNicContext, WrappedTcpProxyTransport,
-            try_process_wrapped_tcp_packet_from_nic,
+            WrappedTcpDestinationRequest, WrappedTcpProxyNicContext, WrappedTcpProxyTransport,
+            plan_wrapped_tcp_destination, try_process_wrapped_tcp_packet_from_nic,
         },
     },
 };
+
+use super::RuntimeWrappedTcpDestinationAdapter;
 
 //region packet
 #[derive(Debug, Constructor)]
@@ -576,7 +577,11 @@ impl QuicPacketSender {
 struct QuicStreamContext {
     global_ctx: ArcGlobalCtx,
     proxy_entries: Arc<DashMap<(StreamId, StreamId), TcpProxyEntry>>,
-    cidr_set: Arc<CidrSet>,
+    cidr_table: Arc<ProxyCidrTable>,
+    #[derivative(Debug = "ignore")]
+    runtime: Arc<RuntimeWrappedTcpDestinationAdapter>,
+    #[derivative(Debug = "ignore")]
+    acl_filter: Arc<AclFilter>,
     #[derivative(Debug = "ignore")]
     route: Arc<dyn crate::peers::route_trait::Route + Send + Sync + 'static>,
 }
@@ -587,7 +592,9 @@ impl QuicStreamContext {
         Self {
             global_ctx: global_ctx.clone(),
             proxy_entries: Arc::new(DashMap::new()),
-            cidr_set,
+            cidr_table: cidr_set.table(),
+            runtime: Arc::new(RuntimeWrappedTcpDestinationAdapter::new(global_ctx)),
+            acl_filter: peer_mgr.core().acl_filter(),
             route: Arc::new(peer_mgr.core().get_route()),
         }
     }
@@ -731,59 +738,26 @@ impl QuicStreamReceiver {
             .src
             .ok_or_else(|| anyhow!("missing src addr in quic stream header"))?
             .into();
-        let mut dst_socket: SocketAddr = conn_data_parsed
+        let dst_socket: SocketAddr = conn_data_parsed
             .dst
             .ok_or_else(|| anyhow!("missing dst addr in quic stream header"))?
             .into();
 
-        if let IpAddr::V4(dst_v4_ip) = dst_socket.ip() {
-            let mut real_ip = dst_v4_ip;
-            if ctx.cidr_set.contains_v4(dst_v4_ip, &mut real_ip) {
-                dst_socket.set_ip(real_ip.into());
-            }
-        };
-
-        let src_ip = src_socket.ip();
-        let dst_ip = dst_socket.ip();
-
-        let route = ctx.route.clone();
-        let (src_groups, dst_groups) = join!(
-            route.get_peer_groups_by_ip(&src_ip),
-            route.get_peer_groups_by_ip(&dst_ip)
-        );
-
         let global_ctx = ctx.global_ctx.clone();
-        if global_ctx.should_deny_proxy(&dst_socket, false) {
-            return Err(anyhow::anyhow!(
-                "dst socket {:?} is in running listeners, ignore it",
-                dst_socket
-            ));
-        }
-
-        let send_to_self = global_ctx.is_ip_local_virtual_ip(&dst_ip);
-        if send_to_self && global_ctx.no_tun() {
-            dst_socket = format!("127.0.0.1:{}", dst_socket.port()).parse()?;
-        }
-
-        let acl_handler = ProxyAclHandler {
-            acl_filter: global_ctx.get_acl_filter().clone(),
-            packet_info: PacketInfo {
-                src_ip,
-                dst_ip,
-                src_port: Some(src_socket.port()),
-                dst_port: Some(dst_socket.port()),
-                protocol: Protocol::Tcp,
-                packet_size: conn_data.len(),
-                src_groups,
-                dst_groups,
+        let plan = plan_wrapped_tcp_destination(
+            WrappedTcpDestinationRequest {
+                src: src_socket,
+                dst: dst_socket,
+                initial_payload: &conn_data,
             },
-            chain_type: if send_to_self {
-                ChainType::Inbound
-            } else {
-                ChainType::Forward
-            },
-        };
-        acl_handler.handle_packet(&conn_data)?;
+            ctx.cidr_table.as_ref(),
+            ctx.runtime.as_ref(),
+            ctx.route.as_ref(),
+            ctx.acl_filter.clone(),
+        )
+        .await?;
+        let dst_socket = plan.socket_dst;
+        let acl_handler = plan.acl_handler;
 
         debug!("quic connect to dst socket: {:?}", dst_socket);
 

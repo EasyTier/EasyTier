@@ -1,7 +1,10 @@
-use std::sync::Arc;
+use std::{net::IpAddr, sync::Arc};
 
-use easytier_core::proxy::cidr_table::{
-    ProxyCidrRule, ProxyCidrSnapshot, ProxyCidrSnapshotProvider, ProxyCidrTableRuntime,
+use easytier_core::proxy::{
+    cidr_table::{
+        ProxyCidrRule, ProxyCidrSnapshot, ProxyCidrSnapshotProvider, ProxyCidrTableRuntime,
+    },
+    runtime::WrappedTcpDestinationRuntime,
 };
 
 use crate::common::global_ctx::ArcGlobalCtx;
@@ -46,4 +49,28 @@ pub(crate) type CidrSet = ProxyCidrTableRuntime<RuntimeProxyCidrSnapshotProvider
 
 pub(crate) fn runtime_cidr_set_without_updater(global_ctx: ArcGlobalCtx) -> CidrSet {
     ProxyCidrTableRuntime::new(Arc::new(RuntimeProxyCidrSnapshotProvider { global_ctx }))
+}
+
+pub(crate) struct RuntimeWrappedTcpDestinationAdapter {
+    global_ctx: ArcGlobalCtx,
+}
+
+impl RuntimeWrappedTcpDestinationAdapter {
+    pub(crate) fn new(global_ctx: ArcGlobalCtx) -> Self {
+        Self { global_ctx }
+    }
+}
+
+impl WrappedTcpDestinationRuntime for RuntimeWrappedTcpDestinationAdapter {
+    fn is_ip_local_virtual_ip(&self, ip: &IpAddr) -> bool {
+        self.global_ctx.is_ip_local_virtual_ip(ip)
+    }
+
+    fn no_tun(&self) -> bool {
+        self.global_ctx.no_tun()
+    }
+
+    fn should_deny_tcp_proxy(&self, dst: std::net::SocketAddr) -> bool {
+        self.global_ctx.should_deny_proxy(&dst, false)
+    }
 }
