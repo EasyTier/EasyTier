@@ -104,6 +104,8 @@ Core owns:
   projected by the native foreign runtime anymore.
 - The parent peer context is an explicit core manager dependency rather than
   a value recovered through the Host runtime Interface.
+- Core computes and applies the reversible foreign `avoid_relay_data` policy;
+  the runtime only waits for the temporary native parent-change signal.
 - The remaining runtime surface is context construction/removal, native
   direct-connector RPC registration, and the temporary parent feature
   synchronization loop.

@@ -71,6 +71,10 @@ impl PeerRuntimeSupport for GlobalCtx {
         self.get_avoid_relay_data_preference()
     }
 
+    fn set_avoid_relay_data_preference(&self, avoid_relay_data: bool) -> bool {
+        GlobalCtx::set_avoid_relay_data_preference(self, avoid_relay_data)
+    }
+
     fn public_ipv6_provider_enabled(&self) -> bool {
         self.get_feature_flags().ipv6_public_addr_provider
     }

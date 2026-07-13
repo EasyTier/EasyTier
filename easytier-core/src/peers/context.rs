@@ -151,6 +151,10 @@ pub trait PeerRuntimeSupport: Send + Sync {
         false
     }
 
+    fn set_avoid_relay_data_preference(&self, _avoid_relay_data: bool) -> bool {
+        false
+    }
+
     fn public_ipv6_provider_enabled(&self) -> bool {
         false
     }
@@ -621,6 +625,10 @@ pub trait PeerContext: Send + Sync {
         PeerFeatureFlag::default()
     }
 
+    fn set_avoid_relay_data_preference(&self, _avoid_relay_data: bool) -> bool {
+        false
+    }
+
     fn easytier_version(&self) -> String {
         env!("CARGO_PKG_VERSION").to_string()
     }
@@ -1059,6 +1067,11 @@ impl PeerContext for SubmittedPeerContext {
             snapshot.flags.disable_relay_data || self.support.avoid_relay_data_preference();
         flags.ipv6_public_addr_provider = self.support.public_ipv6_provider_enabled();
         flags
+    }
+
+    fn set_avoid_relay_data_preference(&self, avoid_relay_data: bool) -> bool {
+        self.support
+            .set_avoid_relay_data_preference(avoid_relay_data)
     }
 
     fn easytier_version(&self) -> String {

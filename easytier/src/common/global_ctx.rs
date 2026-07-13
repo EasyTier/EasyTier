@@ -249,6 +249,10 @@ impl PeerContext for GlobalCtx {
         self.get_feature_flags()
     }
 
+    fn set_avoid_relay_data_preference(&self, avoid_relay_data: bool) -> bool {
+        GlobalCtx::set_avoid_relay_data_preference(self, avoid_relay_data)
+    }
+
     fn easytier_version(&self) -> String {
         EASYTIER_VERSION.to_string()
     }

@@ -58,6 +58,22 @@ pub fn check_network_in_relay_whitelist(
     }
 }
 
+pub fn desired_foreign_avoid_relay_data(parent_context: &ArcPeerContext, relay_data: bool) -> bool {
+    !relay_data || parent_context.feature_flags().avoid_relay_data
+}
+
+pub fn sync_foreign_avoid_relay_data(
+    parent_context: &ArcPeerContext,
+    foreign_context: &ArcPeerContext,
+    relay_data: bool,
+) -> bool {
+    let desired = desired_foreign_avoid_relay_data(parent_context, relay_data);
+    if foreign_context.feature_flags().avoid_relay_data == desired {
+        return false;
+    }
+    foreign_context.set_avoid_relay_data_preference(desired)
+}
+
 #[async_trait::async_trait]
 #[auto_impl::auto_impl(&, Box, Arc)]
 pub trait GlobalForeignNetworkAccessor: Send + Sync + 'static {
@@ -66,7 +82,49 @@ pub trait GlobalForeignNetworkAccessor: Send + Sync + 'static {
 
 #[cfg(test)]
 mod tests {
-    use super::check_network_in_relay_whitelist;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    use easytier_proto::common::PeerFeatureFlag;
+
+    use super::{
+        check_network_in_relay_whitelist, desired_foreign_avoid_relay_data,
+        sync_foreign_avoid_relay_data,
+    };
+    use crate::peers::context::{ArcPeerContext, NetworkIdentity, PeerContext};
+
+    struct FeatureContext {
+        avoid_relay_data: AtomicBool,
+    }
+
+    impl FeatureContext {
+        fn new(avoid_relay_data: bool) -> Self {
+            Self {
+                avoid_relay_data: AtomicBool::new(avoid_relay_data),
+            }
+        }
+    }
+
+    impl PeerContext for FeatureContext {
+        fn network_identity(&self) -> NetworkIdentity {
+            NetworkIdentity::default()
+        }
+
+        fn feature_flags(&self) -> PeerFeatureFlag {
+            PeerFeatureFlag {
+                avoid_relay_data: self.avoid_relay_data.load(Ordering::Acquire),
+                ..Default::default()
+            }
+        }
+
+        fn set_avoid_relay_data_preference(&self, avoid_relay_data: bool) -> bool {
+            self.avoid_relay_data
+                .swap(avoid_relay_data, Ordering::AcqRel)
+                != avoid_relay_data
+        }
+    }
 
     #[test]
     fn relay_whitelist_supports_exact_wildcard_and_empty_rules() {
@@ -75,6 +133,29 @@ mod tests {
         assert!(check_network_in_relay_whitelist("*", "any-network").is_ok());
         assert!(check_network_in_relay_whitelist("", "net1").is_err());
         assert!(check_network_in_relay_whitelist("net1 net2*", "net3").is_err());
+    }
+
+    #[test]
+    fn foreign_avoid_relay_data_policy_tracks_parent_and_relay_permission() {
+        let parent_state = Arc::new(FeatureContext::new(false));
+        let parent: ArcPeerContext = parent_state.clone();
+        let foreign_state = Arc::new(FeatureContext::new(true));
+        let foreign: ArcPeerContext = foreign_state.clone();
+
+        assert!(!desired_foreign_avoid_relay_data(&parent, true));
+        assert!(sync_foreign_avoid_relay_data(&parent, &foreign, true));
+        assert!(!foreign.feature_flags().avoid_relay_data);
+        assert!(!sync_foreign_avoid_relay_data(&parent, &foreign, true));
+
+        parent_state.avoid_relay_data.store(true, Ordering::Release);
+        assert!(sync_foreign_avoid_relay_data(&parent, &foreign, true));
+        assert!(foreign.feature_flags().avoid_relay_data);
+
+        parent_state
+            .avoid_relay_data
+            .store(false, Ordering::Release);
+        assert!(!sync_foreign_avoid_relay_data(&parent, &foreign, false));
+        assert!(foreign.feature_flags().avoid_relay_data);
     }
 }
 
@@ -333,13 +414,6 @@ pub trait ForeignNetworkRuntime: Send + Sync + 'static {
     ) {
     }
 
-    fn sync_parent_relay_data_feature_flag(
-        &self,
-        _foreign_context: &ForeignNetworkContext,
-        _relay_data: bool,
-    ) {
-    }
-
     async fn wait_parent_feature_change(&self, _foreign_context: &ForeignNetworkContext) {
         future::pending::<()>().await;
     }
@@ -590,11 +664,16 @@ impl ForeignNetworkEntry {
 
     async fn run_parent_feature_flag_sync_routine(&self) {
         let runtime = self.runtime.clone();
+        let parent_context = self.parent_context.clone();
         let foreign_context = self.foreign_context.clone();
         let relay_data = self.relay_data;
         self.tasks.lock().await.spawn(async move {
             loop {
-                runtime.sync_parent_relay_data_feature_flag(&foreign_context, relay_data);
+                sync_foreign_avoid_relay_data(
+                    &parent_context,
+                    &foreign_context.peer_context,
+                    relay_data,
+                );
                 runtime.wait_parent_feature_change(&foreign_context).await;
             }
         });

@@ -89,9 +89,10 @@ impl ForeignNetworkEntry {
         relay_data: bool,
     ) -> bool {
         let parent_context: ArcPeerContext = parent_global_ctx.clone();
-        ForeignNetworkRuntimeImpl::sync_parent_relay_data_feature_flag(
+        let foreign_context: ArcPeerContext = global_ctx.clone();
+        core_foreign_network_manager::sync_foreign_avoid_relay_data(
             &parent_context,
-            global_ctx,
+            &foreign_context,
             relay_data,
         )
     }
@@ -163,27 +164,6 @@ impl ForeignNetworkRuntimeImpl {
             .then(|| current.clone())
     }
 
-    fn desired_avoid_relay_data_feature_flag(
-        parent_context: &ArcPeerContext,
-        relay_data: bool,
-    ) -> bool {
-        !relay_data || parent_context.feature_flags().avoid_relay_data
-    }
-
-    fn sync_parent_relay_data_feature_flag(
-        parent_context: &ArcPeerContext,
-        global_ctx: &ArcGlobalCtx,
-        relay_data: bool,
-    ) -> bool {
-        let avoid_relay_data =
-            Self::desired_avoid_relay_data_feature_flag(parent_context, relay_data);
-        if global_ctx.get_feature_flags().avoid_relay_data == avoid_relay_data {
-            return false;
-        }
-
-        global_ctx.set_avoid_relay_data_preference(avoid_relay_data)
-    }
-
     fn build_foreign_global_ctx(
         network: &NetworkIdentity,
         global_ctx: ArcGlobalCtx,
@@ -215,7 +195,10 @@ impl ForeignNetworkRuntimeImpl {
         let mut feature_flag = parent_context.feature_flags();
         feature_flag.is_public_server = true;
         feature_flag.avoid_relay_data =
-            Self::desired_avoid_relay_data_feature_flag(&parent_context, relay_data);
+            core_foreign_network_manager::desired_foreign_avoid_relay_data(
+                &parent_context,
+                relay_data,
+            );
         foreign_global_ctx.set_base_advertised_feature_flags(feature_flag);
 
         for u in global_ctx.get_running_listeners().into_iter() {
@@ -285,24 +268,6 @@ impl core_foreign_network_manager::ForeignNetworkRuntime for ForeignNetworkRunti
                 ),
             ))),
             network_name,
-        );
-    }
-
-    fn sync_parent_relay_data_feature_flag(
-        &self,
-        foreign_context: &core_foreign_network_manager::ForeignNetworkContext,
-        relay_data: bool,
-    ) {
-        let network_name = foreign_context.peer_context.network_name();
-        let Some(foreign_context) =
-            self.get_runtime_foreign_context(&network_name, foreign_context)
-        else {
-            return;
-        };
-        ForeignNetworkRuntimeImpl::sync_parent_relay_data_feature_flag(
-            &self.parent_context,
-            &foreign_context.global_ctx,
-            relay_data,
         );
     }
 
@@ -1475,7 +1440,11 @@ pub mod tests {
             let foreign_context = foreign_context1.clone();
             async move {
                 runtime.wait_parent_feature_change(&foreign_context).await;
-                runtime.sync_parent_relay_data_feature_flag(&foreign_context, true);
+                core_foreign_network_manager::sync_foreign_avoid_relay_data(
+                    &runtime.parent_context,
+                    &foreign_context.peer_context,
+                    true,
+                );
             }
         });
         let task2 = tokio::spawn({
@@ -1483,7 +1452,11 @@ pub mod tests {
             let foreign_context = foreign_context2.clone();
             async move {
                 runtime.wait_parent_feature_change(&foreign_context).await;
-                runtime.sync_parent_relay_data_feature_flag(&foreign_context, true);
+                core_foreign_network_manager::sync_foreign_avoid_relay_data(
+                    &runtime.parent_context,
+                    &foreign_context.peer_context,
+                    true,
+                );
             }
         });
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -1530,7 +1503,11 @@ pub mod tests {
 
         let old_context = runtime.build_foreign_context(&network, false);
         let replacement_context = runtime.build_foreign_context(&network, true);
-        runtime.sync_parent_relay_data_feature_flag(&old_context, false);
+        core_foreign_network_manager::sync_foreign_avoid_relay_data(
+            &runtime.parent_context,
+            &old_context.peer_context,
+            false,
+        );
         assert!(
             !replacement_context
                 .peer_context
