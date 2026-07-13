@@ -68,6 +68,14 @@ pub enum PeerContextEvent {
 
 pub type PeerContextEventSubscriber = tokio::sync::broadcast::Receiver<PeerContextEvent>;
 
+#[async_trait]
+pub trait PeerRuntimeChangeSubscriber: Send {
+    /// Wait for the next change. Returns false when the stream is closed.
+    async fn changed(&mut self) -> bool;
+}
+
+pub type BoxPeerRuntimeChangeSubscriber = Box<dyn PeerRuntimeChangeSubscriber>;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerRuntimeConfig {
     pub core: CoreConfig,
@@ -153,6 +161,10 @@ pub trait PeerRuntimeSupport: Send + Sync {
 
     fn set_avoid_relay_data_preference(&self, _avoid_relay_data: bool) -> bool {
         false
+    }
+
+    fn subscribe_runtime_changes(&self) -> Option<BoxPeerRuntimeChangeSubscriber> {
+        None
     }
 
     fn public_ipv6_provider_enabled(&self) -> bool {
@@ -629,6 +641,10 @@ pub trait PeerContext: Send + Sync {
         false
     }
 
+    fn subscribe_runtime_changes(&self) -> Option<BoxPeerRuntimeChangeSubscriber> {
+        None
+    }
+
     fn easytier_version(&self) -> String {
         env!("CARGO_PKG_VERSION").to_string()
     }
@@ -1072,6 +1088,10 @@ impl PeerContext for SubmittedPeerContext {
     fn set_avoid_relay_data_preference(&self, avoid_relay_data: bool) -> bool {
         self.support
             .set_avoid_relay_data_preference(avoid_relay_data)
+    }
+
+    fn subscribe_runtime_changes(&self) -> Option<BoxPeerRuntimeChangeSubscriber> {
+        self.support.subscribe_runtime_changes()
     }
 
     fn easytier_version(&self) -> String {

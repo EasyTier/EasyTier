@@ -75,6 +75,12 @@ impl PeerRuntimeSupport for GlobalCtx {
         GlobalCtx::set_avoid_relay_data_preference(self, avoid_relay_data)
     }
 
+    fn subscribe_runtime_changes(
+        &self,
+    ) -> Option<easytier_core::peers::context::BoxPeerRuntimeChangeSubscriber> {
+        Some(GlobalCtx::subscribe_runtime_changes(self))
+    }
+
     fn public_ipv6_provider_enabled(&self) -> bool {
         self.get_feature_flags().ipv6_public_addr_provider
     }

@@ -390,7 +390,6 @@ pub trait ForeignNetworkInfoProvider: Send + Sync + 'static {
     ) -> std::collections::HashMap<String, ForeignNetworkEntryInfo>;
 }
 
-#[async_trait::async_trait]
 #[auto_impl::auto_impl(&, Arc)]
 pub trait ForeignNetworkRuntime: Send + Sync + 'static {
     fn build_foreign_context(
@@ -412,10 +411,6 @@ pub trait ForeignNetworkRuntime: Send + Sync + 'static {
         _foreign_context: &ForeignNetworkContext,
         _network_name: &str,
     ) {
-    }
-
-    async fn wait_parent_feature_change(&self, _foreign_context: &ForeignNetworkContext) {
-        future::pending::<()>().await;
     }
 }
 
@@ -663,18 +658,24 @@ impl ForeignNetworkEntry {
     }
 
     async fn run_parent_feature_flag_sync_routine(&self) {
-        let runtime = self.runtime.clone();
         let parent_context = self.parent_context.clone();
         let foreign_context = self.foreign_context.clone();
         let relay_data = self.relay_data;
+        let runtime_changes = parent_context.subscribe_runtime_changes();
+        sync_foreign_avoid_relay_data(&parent_context, &foreign_context.peer_context, relay_data);
+        let Some(mut runtime_changes) = runtime_changes else {
+            return;
+        };
         self.tasks.lock().await.spawn(async move {
             loop {
+                if !runtime_changes.changed().await {
+                    break;
+                }
                 sync_foreign_avoid_relay_data(
                     &parent_context,
                     &foreign_context.peer_context,
                     relay_data,
                 );
-                runtime.wait_parent_feature_change(&foreign_context).await;
             }
         });
     }

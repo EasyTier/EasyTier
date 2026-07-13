@@ -8,8 +8,9 @@ use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use easytier_core::config::{IpPrefix, ProxyNetworkConfig as CoreProxyNetworkConfig};
 use easytier_core::peers::context::{
-    ArcByteLimiter, HostRoutingPolicy, NetworkIdentity as CoreNetworkIdentity, PeerContext,
-    PeerContextEvent, PeerContextEventSubscriber, PeerEvent, PeerGroupIdentity,
+    ArcByteLimiter, BoxPeerRuntimeChangeSubscriber, HostRoutingPolicy,
+    NetworkIdentity as CoreNetworkIdentity, PeerContext, PeerContextEvent,
+    PeerContextEventSubscriber, PeerEvent, PeerGroupIdentity, PeerRuntimeChangeSubscriber,
     TrustedKeyMapManager, secret_proof_from_secret,
 };
 pub use easytier_core::peers::context::{TrustedKeyMap, TrustedKeyMetadata, TrustedKeySource};
@@ -100,6 +101,18 @@ pub enum GlobalCtxEvent {
 pub type EventBus = tokio::sync::broadcast::Sender<GlobalCtxEvent>;
 pub type EventBusSubscriber = tokio::sync::broadcast::Receiver<GlobalCtxEvent>;
 type PeerEventBus = tokio::sync::broadcast::Sender<PeerContextEvent>;
+
+struct GlobalCtxRuntimeChangeSubscriber(EventBusSubscriber);
+
+#[async_trait]
+impl PeerRuntimeChangeSubscriber for GlobalCtxRuntimeChangeSubscriber {
+    async fn changed(&mut self) -> bool {
+        !matches!(
+            self.0.recv().await,
+            Err(tokio::sync::broadcast::error::RecvError::Closed)
+        )
+    }
+}
 
 pub struct GlobalCtx {
     pub inst_name: String,
@@ -251,6 +264,10 @@ impl PeerContext for GlobalCtx {
 
     fn set_avoid_relay_data_preference(&self, avoid_relay_data: bool) -> bool {
         GlobalCtx::set_avoid_relay_data_preference(self, avoid_relay_data)
+    }
+
+    fn subscribe_runtime_changes(&self) -> Option<BoxPeerRuntimeChangeSubscriber> {
+        Some(GlobalCtx::subscribe_runtime_changes(self))
     }
 
     fn easytier_version(&self) -> String {
@@ -631,6 +648,10 @@ impl GlobalCtx {
 
     pub fn subscribe(&self) -> EventBusSubscriber {
         self.event_bus.subscribe()
+    }
+
+    pub(crate) fn subscribe_runtime_changes(&self) -> BoxPeerRuntimeChangeSubscriber {
+        Box::new(GlobalCtxRuntimeChangeSubscriber(self.subscribe()))
     }
 
     pub fn issue_event(&self, event: GlobalCtxEvent) {

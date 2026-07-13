@@ -17,6 +17,7 @@ pub use easytier_core::peers::foreign_network_manager::{
 };
 use easytier_core::peers::peer_manager::{self as core_peer_manager, ForeignNetworkPacketHandler};
 use easytier_core::tunnel::ring::RingTunnelRegistry;
+#[cfg(test)]
 use tokio::sync::Mutex;
 #[cfg(test)]
 use tokio::task::JoinSet;
@@ -102,7 +103,10 @@ impl ForeignNetworkEntry {
         let global_ctx = self.global_ctx.clone();
         let relay_data = self.relay_data;
         self.tasks.lock().await.spawn(async move {
-            let mut parent_events = parent_global_ctx.subscribe();
+            let parent_context: ArcPeerContext = parent_global_ctx.clone();
+            let mut runtime_changes = parent_context
+                .subscribe_runtime_changes()
+                .expect("native GlobalCtx should provide runtime changes");
             loop {
                 ForeignNetworkEntry::sync_parent_relay_data_feature_flag(
                     &parent_global_ctx,
@@ -110,7 +114,9 @@ impl ForeignNetworkEntry {
                     relay_data,
                 );
 
-                let _ = parent_events.recv().await;
+                if !runtime_changes.changed().await {
+                    break;
+                }
             }
         });
     }
@@ -121,7 +127,6 @@ pub const FOREIGN_NETWORK_SERVICE_ID: u32 =
 
 struct RuntimeForeignNetworkContext {
     global_ctx: ArcGlobalCtx,
-    parent_events: Mutex<crate::common::global_ctx::EventBusSubscriber>,
     lifecycle_token: Arc<()>,
 }
 
@@ -209,7 +214,6 @@ impl ForeignNetworkRuntimeImpl {
     }
 }
 
-#[async_trait::async_trait]
 impl core_foreign_network_manager::ForeignNetworkRuntime for ForeignNetworkRuntimeImpl {
     fn build_foreign_context(
         &self,
@@ -227,7 +231,6 @@ impl core_foreign_network_manager::ForeignNetworkRuntime for ForeignNetworkRunti
             network.network_name.clone(),
             Arc::new(RuntimeForeignNetworkContext {
                 global_ctx: foreign_global_ctx.clone(),
-                parent_events: Mutex::new(self.global_ctx.subscribe()),
                 lifecycle_token: lifecycle_token.clone(),
             }),
         );
@@ -269,21 +272,6 @@ impl core_foreign_network_manager::ForeignNetworkRuntime for ForeignNetworkRunti
             ))),
             network_name,
         );
-    }
-
-    async fn wait_parent_feature_change(
-        &self,
-        foreign_context: &core_foreign_network_manager::ForeignNetworkContext,
-    ) {
-        let network_name = foreign_context.peer_context.network_name();
-        let Some(foreign_context) =
-            self.get_runtime_foreign_context(&network_name, foreign_context)
-        else {
-            std::future::pending::<()>().await;
-            return;
-        };
-        let mut parent_events = foreign_context.parent_events.lock().await;
-        let _ = parent_events.recv().await;
     }
 }
 
@@ -1435,25 +1423,33 @@ pub mod tests {
                 .avoid_relay_data
         );
 
+        let mut runtime_changes1 = runtime
+            .parent_context
+            .subscribe_runtime_changes()
+            .expect("native GlobalCtx should provide runtime changes");
+        let mut runtime_changes2 = runtime
+            .parent_context
+            .subscribe_runtime_changes()
+            .expect("native GlobalCtx should provide runtime changes");
         let task1 = tokio::spawn({
-            let runtime = runtime.clone();
+            let parent_context = runtime.parent_context.clone();
             let foreign_context = foreign_context1.clone();
             async move {
-                runtime.wait_parent_feature_change(&foreign_context).await;
+                assert!(runtime_changes1.changed().await);
                 core_foreign_network_manager::sync_foreign_avoid_relay_data(
-                    &runtime.parent_context,
+                    &parent_context,
                     &foreign_context.peer_context,
                     true,
                 );
             }
         });
         let task2 = tokio::spawn({
-            let runtime = runtime.clone();
+            let parent_context = runtime.parent_context.clone();
             let foreign_context = foreign_context2.clone();
             async move {
-                runtime.wait_parent_feature_change(&foreign_context).await;
+                assert!(runtime_changes2.changed().await);
                 core_foreign_network_manager::sync_foreign_avoid_relay_data(
-                    &runtime.parent_context,
+                    &parent_context,
                     &foreign_context.peer_context,
                     true,
                 );
@@ -1514,15 +1510,6 @@ pub mod tests {
                 .feature_flags()
                 .avoid_relay_data
         );
-        assert!(
-            tokio::time::timeout(
-                Duration::from_millis(20),
-                runtime.wait_parent_feature_change(&old_context)
-            )
-            .await
-            .is_err()
-        );
-
         runtime.remove_foreign_context("net1", &old_context);
         let current = runtime.foreign_contexts.get("net1").unwrap();
         assert!(Arc::ptr_eq(
