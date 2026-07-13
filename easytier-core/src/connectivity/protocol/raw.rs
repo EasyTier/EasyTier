@@ -34,6 +34,7 @@ const TCP_DEFAULT_PORT: u16 = 11010;
 const UDP_DEFAULT_PORT: u16 = 11010;
 
 #[async_trait]
+#[auto_impl::auto_impl(Box, Arc)]
 pub trait TunnelDialer: Send + Sync + 'static {
     async fn connect(&self) -> anyhow::Result<Box<dyn Tunnel>>;
 
