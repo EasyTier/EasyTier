@@ -134,6 +134,98 @@ pub trait ManualEndpointResolver: Send + Sync + 'static {
     async fn resolve_endpoint(&self, url: &Url) -> anyhow::Result<Url>;
 }
 
+/// Connects one endpoint without owning peer-manager retry or admission policy.
+///
+/// This is intended for application protocols such as standalone RPC and the
+/// configuration client. The host creates transports, while core resolves the
+/// endpoint chain and upgrades the resulting socket or session into a tunnel.
+pub struct ManualTunnelConnector<H>
+where
+    H: ManualConnectorHost,
+{
+    host: Arc<H>,
+    dns: Arc<dyn DnsResolver>,
+    endpoint_resolver: Arc<dyn ManualEndpointResolver>,
+    protocol: Arc<dyn ClientProtocolUpgrader<<H as VirtualTcpSocketFactory>::Socket>>,
+    options: ManualConnectorOptions,
+}
+
+impl<H> ManualTunnelConnector<H>
+where
+    H: ManualConnectorHost,
+{
+    pub fn new(
+        host: Arc<H>,
+        dns: Arc<dyn DnsResolver>,
+        endpoint_resolver: Arc<dyn ManualEndpointResolver>,
+        protocol: Arc<dyn ClientProtocolUpgrader<<H as VirtualTcpSocketFactory>::Socket>>,
+        options: ManualConnectorOptions,
+    ) -> Self {
+        Self {
+            host,
+            dns,
+            endpoint_resolver,
+            protocol,
+            options,
+        }
+    }
+
+    pub async fn connect(
+        &self,
+        requested_url: Url,
+        ip_version: IpVersion,
+    ) -> anyhow::Result<Box<dyn Tunnel>> {
+        validate_manual_url(&requested_url)?;
+        let endpoint = resolve_manual_endpoint(
+            self.endpoint_resolver.as_ref(),
+            convert_idn_to_ascii(requested_url.clone())?,
+        )
+        .await?;
+        if !self.protocol.supports_scheme(endpoint.url.scheme()) {
+            anyhow::bail!(
+                "unsupported client protocol upgrader: {}",
+                endpoint.url.scheme()
+            );
+        }
+
+        let transport = ManualTransport::from_url(&endpoint.url)?;
+        let connected = if transport == ManualTransport::ByteStream {
+            ConnectedTransport::ByteStream(self.host.connect_byte_stream(&endpoint.url).await?)
+        } else {
+            let remote_addr = resolve_url_addrs(
+                &endpoint.url,
+                manual_default_port(&endpoint.url),
+                ip_version,
+                self.options.socket_mark(transport),
+                self.dns.as_ref(),
+            )
+            .await?
+            .choose(&mut rand::thread_rng())
+            .copied()
+            .ok_or(TunnelError::NoDnsRecordFound(ip_version))?;
+            connect_resolved(
+                self.host.clone(),
+                transport,
+                remote_addr,
+                Vec::new(),
+                self.options.tcp_bind.clone(),
+                self.options.udp_bind.clone(),
+            )
+            .await?
+        };
+
+        let tunnel = self
+            .protocol
+            .upgrade_client(connected, endpoint.url)
+            .await?;
+        Ok(apply_resolved_endpoint_info(
+            tunnel,
+            requested_url,
+            endpoint.tunnel_prefixes,
+        ))
+    }
+}
+
 struct ResolvedManualTunnel {
     inner: Box<dyn Tunnel>,
     info: TunnelInfo,

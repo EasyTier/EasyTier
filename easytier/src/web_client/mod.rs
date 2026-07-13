@@ -2,22 +2,26 @@ use std::sync::Arc;
 
 use crate::{
     common::{
-        MachineIdOptions,
-        config::TomlConfigLoader,
-        global_ctx::{ArcGlobalCtx, GlobalCtx},
-        log,
-        os_info::collect_device_os_info,
-        resolve_machine_id,
-        stun::MockStunInfoCollector,
+        MachineIdOptions, config::TomlConfigLoader, global_ctx::GlobalCtx, log,
+        os_info::collect_device_os_info, resolve_machine_id, stun::MockStunInfoCollector,
     },
-    connector::create_connector_by_url,
+    connector::{
+        core_instance::{
+            runtime_core_instance_adapters_with_ring_registry, runtime_endpoint_discovery_config,
+            runtime_manual_options,
+        },
+        runtime::RuntimeConnectorHost,
+    },
     instance_manager::{DaemonGuard, NetworkInstanceManager},
     proto::common::NatType,
-    tunnel::{IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelScheme},
+    tunnel::{Tunnel, TunnelConnector, TunnelError, TunnelScheme},
 };
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
-use easytier_core::tunnel::ring::RingTunnelRegistry;
+use easytier_core::{
+    connectivity::manual::{ManualTunnelConnector, discovery::CoreManualEndpointResolver},
+    socket::IpVersion,
+};
 use tokio_util::task::AbortOnDropHandle;
 use url::Url;
 use uuid::Uuid;
@@ -61,26 +65,16 @@ pub struct WebClient {
 
 struct ConfigServerConnector {
     url: Url,
-    global_ctx: ArcGlobalCtx,
-    ring_registry: Arc<RingTunnelRegistry>,
+    connector: ManualTunnelConnector<RuntimeConnectorHost>,
 }
 
 #[async_trait]
 impl TunnelConnector for ConfigServerConnector {
     async fn connect(&mut self) -> std::result::Result<Box<dyn Tunnel>, TunnelError> {
-        let mut connector = create_connector_by_url(
-            self.url.as_str(),
-            &self.global_ctx,
-            IpVersion::Both,
-            self.ring_registry.clone(),
-        )
-        .await
-        .map_err(|err| match err {
-            crate::common::error::Error::TunnelError(err) => err,
-            err => TunnelError::Anyhow(err.into()),
-        })?;
-
-        connector.connect().await
+        self.connector
+            .connect(self.url.clone(), IpVersion::Both)
+            .await
+            .map_err(TunnelError::Anyhow)
     }
 
     fn remote_url(&self) -> Url {
@@ -297,12 +291,29 @@ pub async fn run_web_client(
         None => gethostname::gethostname().to_string_lossy().to_string(),
         Some(hostname) => hostname,
     };
-    let ring_registry = manager.ring_registry();
+    let adapters = runtime_core_instance_adapters_with_ring_registry(
+        global_ctx.clone(),
+        manager.ring_registry(),
+    );
+    let endpoint_resolver = Arc::new(CoreManualEndpointResolver::new(
+        adapters.host.clone(),
+        adapters.dns.clone(),
+        adapters.dns_records.clone(),
+        runtime_endpoint_discovery_config(&global_ctx),
+    ));
+    let connector = ManualTunnelConnector::new(
+        adapters.host,
+        adapters.dns,
+        endpoint_resolver,
+        adapters
+            .protocol
+            .expect("native runtime should provide protocol upgrades"),
+        runtime_manual_options(&global_ctx),
+    );
     Ok(WebClient::new(
         ConfigServerConnector {
             url: c_url,
-            global_ctx,
-            ring_registry,
+            connector,
         },
         token.to_string(),
         machine_id,
