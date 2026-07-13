@@ -3,13 +3,15 @@
 //! Checkout the `README.md` for guidance.
 
 use super::{FromUrl, IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelListener};
-use crate::common::global_ctx::ArcGlobalCtx;
-use crate::socket::{udp::RuntimeUdpSessionLayer, udp_src};
+use crate::common::{global_ctx::ArcGlobalCtx, netns::NetNS};
+use crate::socket::{
+    udp::{RuntimeUdpSessionSocketListener, new_runtime_udp_session_listener},
+    udp_src,
+};
 use crate::tunnel::common::bind;
 use crate::tunnel::{
-    TunnelInfo,
+    TunnelInfo, TunnelUrl,
     common::{FramedReader, FramedWriter},
-    udp::RuntimeUdpSessionListener,
 };
 use anyhow::Context;
 use derivative::Derivative;
@@ -19,7 +21,11 @@ use easytier_core::{
         protocol::{ServerProtocolAdmission, ServerTunnelAcceptor},
         transport::ConnectedUdpSession,
     },
-    socket::udp::{UdpSession, UdpSessionProtocol, UdpSessionSocket, parse_quic_initial_dcid},
+    listener::SocketListener as _,
+    socket::udp::{
+        UdpBindOptions, UdpSession, UdpSessionAcceptKind, UdpSessionListenRequest,
+        UdpSessionProtocol, UdpSessionSocket, parse_quic_initial_dcid,
+    },
     tunnel::wrapper::TunnelWrapper,
 };
 use parking_lot::RwLock;
@@ -1160,7 +1166,7 @@ impl std::fmt::Debug for QuicUdpListenerSocket {
 
 impl QuicUdpListenerSocket {
     fn new(
-        layer: Arc<RuntimeUdpSessionLayer>,
+        session_listener: Arc<RuntimeUdpSessionSocketListener>,
         send_socket: Arc<UdpSocket>,
         udp_session_closers: QuicUdpSessionClosers,
         pending_initials: QuicUdpPendingInitials,
@@ -1170,13 +1176,12 @@ impl QuicUdpListenerSocket {
         let active_session_permits = Arc::new(Semaphore::new(QUIC_MAX_ACTIVE_UDP_SESSIONS));
         let accept_task = AbortOnDropHandle::new(tokio::spawn(async move {
             loop {
-                let session = match layer
-                    .accept_classified_session(UdpSessionProtocol::Quic)
-                    .await
-                {
+                let session = match session_listener.accept_session().await {
                     Ok(session) => session,
                     Err(err) => {
-                        let _ = incoming_tx.send(Err(err)).await;
+                        let _ = incoming_tx
+                            .send(Err(io::Error::other(err.to_string())))
+                            .await;
                         break;
                     }
                 };
@@ -1558,7 +1563,8 @@ async fn accept_quic_tunnels(
 }
 
 pub struct QuicTunnelListener {
-    session_listener: RuntimeUdpSessionListener,
+    addr: url::Url,
+    session_listener: Option<Arc<RuntimeUdpSessionSocketListener>>,
     endpoint: Option<Endpoint>,
     conn_send: Sender<Box<dyn Tunnel>>,
     conn_recv: Receiver<Box<dyn Tunnel>>,
@@ -1572,7 +1578,8 @@ impl QuicTunnelListener {
     pub fn new(addr: url::Url, global_ctx: ArcGlobalCtx) -> Self {
         let (conn_send, conn_recv) = channel(100);
         QuicTunnelListener {
-            session_listener: RuntimeUdpSessionListener::new(addr),
+            addr,
+            session_listener: None,
             endpoint: None,
             conn_send,
             conn_recv,
@@ -1591,23 +1598,22 @@ impl TunnelListener for QuicTunnelListener {
             return Ok(());
         }
         use crate::common::config::ConfigLoader as _;
-        self.session_listener
-            .set_socket_mark(self.global_ctx.config.get_flags().socket_mark);
-        let addr = SocketAddr::from_url(self.session_listener.local_url(), IpVersion::Both).await?;
-        self.session_listener
-            .set_only_v6(addr.ip() != IpAddr::V6(Ipv6Addr::UNSPECIFIED));
-        self.session_listener.listen().await?;
-        self.session_listener
-            .enable_classified_accept(UdpSessionProtocol::Quic)?;
-        let layer = self.session_listener.session_layer().ok_or_else(|| {
-            TunnelError::InternalError("udp listener session layer not started".to_owned())
-        })?;
-        let send_socket = self
-            .session_listener
-            .get_socket()
-            .ok_or_else(|| TunnelError::InternalError("udp listener not started".to_owned()))?;
+        let addr = SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?;
+        let bind = UdpBindOptions::port_bound_listener(addr)
+            .with_socket_mark(self.global_ctx.config.get_flags().socket_mark)
+            .with_bind_device(TunnelUrl::from(self.addr.clone()).bind_dev())
+            .with_only_v6(addr.ip() != IpAddr::V6(Ipv6Addr::UNSPECIFIED));
+        let mut session_listener = new_runtime_udp_session_listener(
+            self.addr.clone(),
+            UdpSessionListenRequest::new(bind),
+            UdpSessionAcceptKind::Classified(UdpSessionProtocol::Quic),
+            NetNS::new(None),
+        );
+        session_listener.listen().await?;
+        let send_socket = session_listener.bound_socket()?.socket();
+        let session_listener = Arc::new(session_listener);
         let udp_socket = Arc::new(QuicUdpListenerSocket::new(
-            layer,
+            session_listener.clone(),
             send_socket,
             self.udp_session_closers.clone(),
             self.pending_initials.clone(),
@@ -1621,6 +1627,7 @@ impl TunnelListener for QuicTunnelListener {
             udp_socket,
             runtime,
         )?);
+        self.session_listener = Some(session_listener);
         let endpoint = self.endpoint.as_ref().unwrap().clone();
         let local_url = self.local_url();
         let udp_session_closers = self.udp_session_closers.clone();
@@ -1644,7 +1651,10 @@ impl TunnelListener for QuicTunnelListener {
     }
 
     fn local_url(&self) -> url::Url {
-        self.session_listener.local_url()
+        self.session_listener
+            .as_ref()
+            .map(|listener| listener.local_url())
+            .unwrap_or_else(|| self.addr.clone())
     }
 }
 
