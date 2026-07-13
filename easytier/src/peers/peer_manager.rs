@@ -23,9 +23,7 @@ use crate::{
         error::Error,
         global_ctx::ArcGlobalCtx,
     },
-    peers::{
-        PeerPacketFilter, peer_session::PeerSessionStore, traffic_metrics::TrafficMetricRecorder,
-    },
+    peers::PeerPacketFilter,
     proto::api::instance,
     tunnel::{
         Tunnel,
@@ -37,7 +35,7 @@ use super::{
     BoxNicPacketFilter, BoxPeerPacketFilter, PacketRecvChan, context::runtime_peer_snapshot,
     encrypt::NullCipher, foreign_network_client::ForeignNetworkClient,
     foreign_network_manager::ForeignNetworkRuntimeImpl, peer_conn::PeerConnId, peer_map::PeerMap,
-    peer_rpc::PeerRpcManager, relay_peer_map::RelayPeerMap, route_trait::Route,
+    route_trait::Route,
 };
 
 pub struct PeerManager {
@@ -198,10 +196,6 @@ impl PeerManager {
             .map_err(Error::from)
     }
 
-    pub fn has_directly_connected_conn(&self, peer_id: PeerId) -> bool {
-        self.core.has_directly_connected_conn(peer_id)
-    }
-
     #[tracing::instrument(ret)]
     pub async fn add_tunnel_as_server(
         &self,
@@ -327,18 +321,6 @@ impl PeerManager {
         self.core.get_peer_map()
     }
 
-    pub fn get_relay_peer_map(&self) -> Arc<RelayPeerMap> {
-        self.core.get_relay_peer_map()
-    }
-
-    pub fn get_peer_rpc_mgr(&self) -> Arc<PeerRpcManager> {
-        self.core.get_peer_rpc_mgr()
-    }
-
-    pub fn get_peer_session_store(&self) -> Arc<PeerSessionStore> {
-        self.core.get_peer_session_store()
-    }
-
     pub fn my_node_id(&self) -> uuid::Uuid {
         self.global_ctx.get_id()
     }
@@ -355,10 +337,6 @@ impl PeerManager {
         &self.global_ctx
     }
 
-    pub fn get_nic_channel(&self) -> PacketRecvChan {
-        self.core.get_nic_channel()
-    }
-
     pub fn get_foreign_network_manager(&self) -> Arc<ForeignNetworkManager> {
         self.foreign_network_manager.clone()
     }
@@ -371,10 +349,6 @@ impl PeerManager {
 
     pub fn get_foreign_network_client(&self) -> Arc<ForeignNetworkClient> {
         self.core.get_foreign_network_client()
-    }
-
-    pub(crate) fn traffic_metrics(&self) -> Arc<TrafficMetricRecorder> {
-        self.core.traffic_metrics()
     }
 
     pub async fn wait(&self) {
@@ -498,8 +472,8 @@ mod tests {
     ) -> Result<(), easytier_core::peers::error::Error> {
         let peer_map = peer_mgr.get_peer_map();
         let foreign_network_client = peer_mgr.get_foreign_network_client();
-        let relay_peer_map = peer_mgr.get_relay_peer_map();
-        let traffic_metrics = peer_mgr.traffic_metrics();
+        let relay_peer_map = peer_mgr.core().get_relay_peer_map();
+        let traffic_metrics = peer_mgr.core().traffic_metrics();
         core_peer_manager::send_msg_internal(
             peer_map.as_ref(),
             &foreign_network_client,
@@ -552,7 +526,7 @@ mod tests {
         wait_for_condition(
             || {
                 let peer_mgr_a = peer_mgr_a.clone();
-                async move { peer_mgr_a.has_directly_connected_conn(peer_b_id) }
+                async move { peer_mgr_a.core().has_directly_connected_conn(peer_b_id) }
             },
             Duration::from_secs(5),
         )
@@ -1431,12 +1405,12 @@ mod tests {
         };
 
         let peer_mgr_a = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
-        register_service(&peer_mgr_a.get_peer_rpc_mgr(), "", 0, "hello a");
+        register_service(&peer_mgr_a.core().get_peer_rpc_mgr(), "", 0, "hello a");
 
         let peer_mgr_b = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
 
         let peer_mgr_c = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
-        register_service(&peer_mgr_c.get_peer_rpc_mgr(), "", 0, "hello c");
+        register_service(&peer_mgr_c.core().get_peer_rpc_mgr(), "", 0, "hello c");
 
         let (_connector1, _listener1) = connect_peer_managers_through_core(
             peer_mgr_a.clone(),
@@ -1463,6 +1437,7 @@ mod tests {
             .unwrap();
 
         let stub = peer_mgr_a
+            .core()
             .get_peer_rpc_mgr()
             .rpc_client()
             .scoped_client::<GreetingClientFactory<RpcController>>(

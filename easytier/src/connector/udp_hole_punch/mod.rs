@@ -346,6 +346,7 @@ impl UdpHolePunchConnector {
     pub async fn run_as_server(&self) -> Result<(), Error> {
         self.server.start().await;
         self.peer_mgr
+            .core()
             .get_peer_rpc_mgr()
             .rpc_server()
             .registry()
@@ -374,6 +375,7 @@ impl UdpHolePunchConnector {
         self.client.stop().await;
         self.server.begin_stop();
         self.peer_mgr
+            .core()
             .get_peer_rpc_mgr()
             .rpc_server()
             .registry()

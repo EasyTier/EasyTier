@@ -4297,8 +4297,8 @@ pub async fn relay_peer_e2e_encryption(#[values("tcp", "udp")] proto: &str) {
     );
 
     // Verify relay sessions are established
-    let relay_map_1 = insts[0].get_peer_manager().get_relay_peer_map();
-    let relay_map_3 = insts[2].get_peer_manager().get_relay_peer_map();
+    let relay_map_1 = insts[0].get_peer_manager().core().get_relay_peer_map();
+    let relay_map_3 = insts[2].get_peer_manager().core().get_relay_peer_map();
 
     println!(
         "Relay states after ping: inst1->inst3: {}, inst3->inst1: {}",
@@ -4456,7 +4456,7 @@ pub async fn relay_peer_session_cleanup() {
 
     let inst2_peer_id = insts[1].peer_id();
     let inst3_peer_id = insts[2].peer_id();
-    let relay_map_1 = insts[0].get_peer_manager().get_relay_peer_map();
+    let relay_map_1 = insts[0].get_peer_manager().core().get_relay_peer_map();
 
     wait_for_condition(
         || async { ping_test("net_a", "10.144.144.3", None).await },
@@ -4495,6 +4495,7 @@ pub async fn relay_peer_session_cleanup() {
 
     insts[0]
         .get_peer_manager()
+        .core()
         .get_peer_session_store()
         .evict_unused_sessions_idle(Duration::from_millis(0));
 

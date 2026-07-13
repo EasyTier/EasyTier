@@ -585,7 +585,7 @@ async fn relay_peer_map_pending_packets_flushed_on_handshake_success() {
     )
     .await;
 
-    let relay_a = peer_a.get_relay_peer_map();
+    let relay_a = peer_a.core().get_relay_peer_map();
 
     // Pre-populate pending packets buffer (simulating what send_msg does during handshake)
     for i in 0..3u8 {
@@ -673,8 +673,8 @@ async fn relay_peer_map_real_link_handshake_success() {
     )
     .await;
 
-    let relay_a = peer_a.get_relay_peer_map();
-    let relay_c = peer_c.get_relay_peer_map();
+    let relay_a = peer_a.core().get_relay_peer_map();
+    let relay_c = peer_c.core().get_relay_peer_map();
 
     relay_a
         .handshake_session(peer_c_id, NextHopPolicy::LeastHop, None)
@@ -758,7 +758,7 @@ async fn relay_peer_map_responder_rejects_mismatched_pubkey() {
     );
 
     // Attempt handshake - this should succeed because pubkeys match
-    let relay_a = peer_a.get_relay_peer_map();
+    let relay_a = peer_a.core().get_relay_peer_map();
     let result = relay_a
         .handshake_session(peer_c_id, NextHopPolicy::LeastHop, None)
         .await;
@@ -779,7 +779,7 @@ async fn relay_peer_map_responder_rejects_mismatched_pubkey() {
     )
     .await;
 
-    let relay_c = peer_c.get_relay_peer_map();
+    let relay_c = peer_c.core().get_relay_peer_map();
     wait_for_condition(
         || {
             let relay_c = relay_c.clone();
@@ -891,8 +891,8 @@ async fn relay_peer_map_bidirectional_handshake_race() {
     .await;
 
     // Simulate bidirectional handshake race by having both sides initiate simultaneously
-    let relay_a = peer_a.get_relay_peer_map();
-    let relay_c = peer_c.get_relay_peer_map();
+    let relay_a = peer_a.core().get_relay_peer_map();
+    let relay_c = peer_c.core().get_relay_peer_map();
 
     // Both sides initiate handshake at the same time
     let handle_a = tokio::spawn({

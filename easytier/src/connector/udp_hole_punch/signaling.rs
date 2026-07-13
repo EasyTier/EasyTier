@@ -45,6 +45,7 @@ impl PeerRpcUdpHolePunchSignaling {
         dst_peer_id: PeerId,
     ) -> Box<dyn UdpHolePunchRpc<Controller = BaseController> + Send + Sync + 'static> {
         self.peer_mgr
+            .core()
             .get_peer_rpc_mgr()
             .rpc_client()
             .scoped_client::<UdpHolePunchRpcClientFactory<BaseController>>(

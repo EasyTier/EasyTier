@@ -93,7 +93,6 @@ pub mod relay_peer_map {
     }
 }
 pub mod rpc_service;
-pub(crate) use easytier_core::peers::traffic_metrics;
 
 pub mod foreign_network_manager;
 

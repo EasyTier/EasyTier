@@ -175,6 +175,9 @@ only:
 - Recent-traffic demand state and notification are used through the core
   manager Interface. The native facade no longer projects mark/query/GC or
   notification methods, and its unused route-update-time projection is gone.
+- Direct-connection checks and core graph/resource handles for relay state,
+  peer RPC, peer sessions, NIC delivery, and traffic metrics are no longer
+  re-exported one method at a time by the native facade.
 
 ### Exit criteria
 

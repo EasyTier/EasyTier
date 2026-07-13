@@ -256,7 +256,11 @@ mod tests {
             .await
             .unwrap();
         assert!(client.get_peer_map().is_client_url_alive(&listener_url));
-        assert!(client.has_directly_connected_conn(server.my_peer_id()));
+        assert!(
+            client
+                .core()
+                .has_directly_connected_conn(server.my_peer_id())
+        );
 
         let server_peer_id = server.my_peer_id();
         let first_conn_id = client
@@ -371,7 +375,11 @@ mod tests {
             .await
             .unwrap();
         assert!(client.get_peer_map().is_client_url_alive(&listener_url));
-        assert!(client.has_directly_connected_conn(server.my_peer_id()));
+        assert!(
+            client
+                .core()
+                .has_directly_connected_conn(server.my_peer_id())
+        );
     }
 
     #[cfg(unix)]
@@ -407,7 +415,11 @@ mod tests {
             .await
             .unwrap();
         assert!(client.get_peer_map().is_client_url_alive(&listener_url));
-        assert!(client.has_directly_connected_conn(server.my_peer_id()));
+        assert!(
+            client
+                .core()
+                .has_directly_connected_conn(server.my_peer_id())
+        );
     }
 
     #[tokio::test]
@@ -474,7 +486,11 @@ mod tests {
             .await
             .unwrap();
         assert!(client.get_peer_map().is_client_url_alive(&discovery_url));
-        assert!(client.has_directly_connected_conn(server.my_peer_id()));
+        assert!(
+            client
+                .core()
+                .has_directly_connected_conn(server.my_peer_id())
+        );
     }
 
     #[tokio::test]
@@ -527,7 +543,11 @@ mod tests {
             .await
             .unwrap();
         assert!(client.get_peer_map().is_client_url_alive(&listener_url));
-        assert!(client.has_directly_connected_conn(server.my_peer_id()));
+        assert!(
+            client
+                .core()
+                .has_directly_connected_conn(server.my_peer_id())
+        );
 
         let server_peer_id = server.my_peer_id();
         let first_conn_id = client
