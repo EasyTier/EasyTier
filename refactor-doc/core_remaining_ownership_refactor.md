@@ -107,6 +107,10 @@ Core owns:
 - Core computes and applies the reversible foreign `avoid_relay_data` policy
   and owns its parent runtime-change subscription loop; native GlobalCtx only
   adapts the existing event stream to the narrow core subscriber Interface.
+- Core derives the complete foreign context specification: network identity,
+  hostname, secure mode, relay protocol/socket-mark flags, and initial
+  advertised features. Native only realizes that specification as a GlobalCtx
+  and attaches host STUN, listener, and connector resources.
 - The remaining runtime surface is context construction/removal and native
   direct-connector RPC registration.
 

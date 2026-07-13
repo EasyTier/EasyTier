@@ -115,4 +115,4 @@ pub use easytier_core::peers::{
     peer_session, recv_packet_from_chan, route_trait,
 };
 
-pub const PUBLIC_SERVER_HOSTNAME_PREFIX: &str = "PublicServer_";
+pub use easytier_core::peers::foreign_network_manager::PUBLIC_SERVER_HOSTNAME_PREFIX;

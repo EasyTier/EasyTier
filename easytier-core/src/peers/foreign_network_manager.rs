@@ -6,6 +6,7 @@ use std::{
 };
 
 use dashmap::{DashMap, DashSet};
+use easytier_proto::common::{FlagsInConfig, PeerFeatureFlag, SecureModeConfig};
 use guarden::{Guard, defer};
 use tokio::sync::{
     Mutex,
@@ -43,6 +44,8 @@ use super::{
 };
 use crate::proto::peer_rpc::PeerIdentityType;
 
+pub const PUBLIC_SERVER_HOSTNAME_PREFIX: &str = "PublicServer_";
+
 pub fn check_network_in_relay_whitelist(
     relay_network_whitelist: &str,
     network_name: &str,
@@ -74,6 +77,45 @@ pub fn sync_foreign_avoid_relay_data(
     foreign_context.set_avoid_relay_data_preference(desired)
 }
 
+#[derive(Clone, Debug)]
+pub struct ForeignNetworkContextSpec {
+    pub network: NetworkIdentity,
+    pub hostname: String,
+    pub secure_mode: Option<SecureModeConfig>,
+    pub flags: FlagsInConfig,
+    pub feature_flags: PeerFeatureFlag,
+}
+
+impl ForeignNetworkContextSpec {
+    pub fn from_parent(
+        network: NetworkIdentity,
+        parent_context: &ArcPeerContext,
+        relay_data: bool,
+        mut flags: FlagsInConfig,
+    ) -> Self {
+        let parent_flags = parent_context.flags();
+        flags.disable_relay_kcp = !parent_flags.enable_relay_foreign_network_kcp;
+        flags.disable_relay_quic = !parent_flags.enable_relay_foreign_network_quic;
+        flags.socket_mark = parent_flags.socket_mark;
+
+        let mut feature_flags = parent_context.feature_flags();
+        feature_flags.is_public_server = true;
+        feature_flags.avoid_relay_data =
+            desired_foreign_avoid_relay_data(parent_context, relay_data);
+
+        Self {
+            network,
+            hostname: format!(
+                "{PUBLIC_SERVER_HOSTNAME_PREFIX}{}",
+                parent_context.hostname()
+            ),
+            secure_mode: parent_context.secure_mode(),
+            flags,
+            feature_flags,
+        }
+    }
+}
+
 #[async_trait::async_trait]
 #[auto_impl::auto_impl(&, Box, Arc)]
 pub trait GlobalForeignNetworkAccessor: Send + Sync + 'static {
@@ -87,22 +129,26 @@ mod tests {
         atomic::{AtomicBool, Ordering},
     };
 
-    use easytier_proto::common::PeerFeatureFlag;
+    use easytier_proto::common::{FlagsInConfig, PeerFeatureFlag};
 
     use super::{
-        check_network_in_relay_whitelist, desired_foreign_avoid_relay_data,
-        sync_foreign_avoid_relay_data,
+        ForeignNetworkContextSpec, check_network_in_relay_whitelist,
+        desired_foreign_avoid_relay_data, sync_foreign_avoid_relay_data,
     };
     use crate::peers::context::{ArcPeerContext, NetworkIdentity, PeerContext};
 
     struct FeatureContext {
         avoid_relay_data: AtomicBool,
+        flags: FlagsInConfig,
+        hostname: String,
     }
 
     impl FeatureContext {
         fn new(avoid_relay_data: bool) -> Self {
             Self {
                 avoid_relay_data: AtomicBool::new(avoid_relay_data),
+                flags: FlagsInConfig::default(),
+                hostname: String::new(),
             }
         }
     }
@@ -117,6 +163,14 @@ mod tests {
                 avoid_relay_data: self.avoid_relay_data.load(Ordering::Acquire),
                 ..Default::default()
             }
+        }
+
+        fn flags(&self) -> FlagsInConfig {
+            self.flags.clone()
+        }
+
+        fn hostname(&self) -> String {
+            self.hostname.clone()
         }
 
         fn set_avoid_relay_data_preference(&self, avoid_relay_data: bool) -> bool {
@@ -156,6 +210,41 @@ mod tests {
             .store(false, Ordering::Release);
         assert!(!sync_foreign_avoid_relay_data(&parent, &foreign, false));
         assert!(foreign.feature_flags().avoid_relay_data);
+    }
+
+    #[test]
+    fn foreign_context_spec_is_derived_in_core() {
+        let mut parent_flags = FlagsInConfig::default();
+        parent_flags.enable_relay_foreign_network_kcp = true;
+        parent_flags.enable_relay_foreign_network_quic = false;
+        parent_flags.socket_mark = Some(7);
+        let parent: ArcPeerContext = Arc::new(FeatureContext {
+            avoid_relay_data: AtomicBool::new(false),
+            flags: parent_flags,
+            hostname: "parent".to_owned(),
+        });
+        let mut defaults = FlagsInConfig::default();
+        defaults.mtu = 1400;
+        defaults.relay_network_whitelist = "baseline".to_owned();
+        let network = NetworkIdentity {
+            network_name: "foreign".to_owned(),
+            network_secret: Some("secret".to_owned()),
+            network_secret_digest: None,
+        };
+
+        let spec =
+            ForeignNetworkContextSpec::from_parent(network.clone(), &parent, false, defaults);
+
+        assert_eq!(spec.network, network);
+        assert_eq!(spec.hostname, "PublicServer_parent");
+        assert!(spec.secure_mode.is_none());
+        assert!(!spec.flags.disable_relay_kcp);
+        assert!(spec.flags.disable_relay_quic);
+        assert_eq!(spec.flags.socket_mark, Some(7));
+        assert_eq!(spec.flags.mtu, 1400);
+        assert_eq!(spec.flags.relay_network_whitelist, "baseline");
+        assert!(spec.feature_flags.is_public_server);
+        assert!(spec.feature_flags.avoid_relay_data);
     }
 }
 
@@ -392,11 +481,7 @@ pub trait ForeignNetworkInfoProvider: Send + Sync + 'static {
 
 #[auto_impl::auto_impl(&, Arc)]
 pub trait ForeignNetworkRuntime: Send + Sync + 'static {
-    fn build_foreign_context(
-        &self,
-        network: &NetworkIdentity,
-        relay_data: bool,
-    ) -> ForeignNetworkContext;
+    fn build_foreign_context(&self, spec: &ForeignNetworkContextSpec) -> ForeignNetworkContext;
 
     fn remove_foreign_context(
         &self,
@@ -480,12 +565,19 @@ impl ForeignNetworkEntry {
         my_peer_id: PeerId,
         runtime: Arc<dyn ForeignNetworkRuntime>,
         parent_context: ArcPeerContext,
+        foreign_context_default_flags: FlagsInConfig,
         stats_mgr: Arc<StatsManager>,
         relay_data: bool,
         peer_session_store: Arc<PeerSessionStore>,
         pm_packet_sender: PacketRecvChan,
     ) -> Self {
-        let foreign_context = runtime.build_foreign_context(&network, relay_data);
+        let spec = ForeignNetworkContextSpec::from_parent(
+            network.clone(),
+            &parent_context,
+            relay_data,
+            foreign_context_default_flags,
+        );
+        let foreign_context = runtime.build_foreign_context(&spec);
         let network_name = network.network_name.clone();
 
         let (packet_sender, packet_recv) = super::create_packet_recv_chan();
@@ -793,6 +885,7 @@ impl ForeignNetworkManagerData {
         relay_data: bool,
         runtime: Arc<dyn ForeignNetworkRuntime>,
         parent_context: ArcPeerContext,
+        foreign_context_default_flags: FlagsInConfig,
         stats_mgr: Arc<StatsManager>,
         peer_session_store: Arc<PeerSessionStore>,
         pm_packet_sender: &PacketRecvChan,
@@ -810,6 +903,7 @@ impl ForeignNetworkManagerData {
                     my_peer_id,
                     runtime,
                     parent_context,
+                    foreign_context_default_flags,
                     stats_mgr,
                     relay_data,
                     peer_session_store,
@@ -841,6 +935,7 @@ pub const FOREIGN_NETWORK_SERVICE_ID: u32 = 1;
 pub struct ForeignNetworkManager {
     runtime: Arc<dyn ForeignNetworkRuntime>,
     parent_context: ArcPeerContext,
+    foreign_context_default_flags: FlagsInConfig,
     stats_mgr: Arc<StatsManager>,
     peer_session_store: Arc<PeerSessionStore>,
     packet_sender_to_mgr: PacketRecvChan,
@@ -880,6 +975,7 @@ impl ForeignNetworkManager {
     pub fn new(
         runtime: Arc<dyn ForeignNetworkRuntime>,
         parent_context: ArcPeerContext,
+        foreign_context_default_flags: FlagsInConfig,
         stats_mgr: Arc<StatsManager>,
         peer_session_store: Arc<PeerSessionStore>,
         packet_sender_to_mgr: PacketRecvChan,
@@ -901,6 +997,7 @@ impl ForeignNetworkManager {
         Self {
             runtime,
             parent_context,
+            foreign_context_default_flags,
             stats_mgr,
             peer_session_store,
             packet_sender_to_mgr,
@@ -970,6 +1067,7 @@ impl ForeignNetworkManager {
                 ret.is_ok(),
                 self.runtime.clone(),
                 self.parent_context.clone(),
+                self.foreign_context_default_flags.clone(),
                 self.stats_mgr.clone(),
                 self.peer_session_store.clone(),
                 &self.packet_sender_to_mgr,
