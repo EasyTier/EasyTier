@@ -268,6 +268,10 @@ but no core Module receives it or a broad Interface implemented by it.
 - Named `SubmittedPeerContextCapabilities` makes each remaining Interface
   explicit at the composition Seam and prevents positional capability wiring
   from becoming a new broad runtime Interface.
+- The former broad `PeerRuntimeSupport` has been deleted. STUN observations and
+  public-IPv6 lease/provider state use separate read-only Host Interfaces;
+  relay preference/change notification remains behind `PeerRelayRuntime`, and
+  the advertised EasyTier version is part of the submitted snapshot.
 
 ### Exit criteria
 

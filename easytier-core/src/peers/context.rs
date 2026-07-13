@@ -142,6 +142,7 @@ pub struct HostRoutingPolicy {
 #[derive(Debug, Clone)]
 pub struct PeerRuntimeSnapshot {
     pub runtime: PeerRuntimeConfig,
+    pub easytier_version: String,
     pub flags: FlagsInConfig,
     pub vpn_portal_cidr: Option<Ipv4Cidr>,
     pub pinned_peers: Vec<(url::Url, Option<String>)>,
@@ -156,6 +157,7 @@ impl PeerRuntimeSnapshot {
     pub fn new(runtime: PeerRuntimeConfig, flags: FlagsInConfig) -> Self {
         Self {
             runtime,
+            easytier_version: env!("CARGO_PKG_VERSION").to_owned(),
             flags,
             vpn_portal_cidr: None,
             pinned_peers: Vec::new(),
@@ -189,17 +191,8 @@ pub trait PeerRuntimeConfigSource: Send + Sync {
     fn peer_runtime_snapshot(&self) -> Arc<PeerRuntimeSnapshot>;
 }
 
-/// Live observations and side effects that cannot be represented as submitted
-/// peer configuration.
-pub trait PeerRuntimeSupport: Send + Sync {
-    fn stun_info(&self) -> StunInfo {
-        StunInfo::default()
-    }
-
-    fn public_ipv6_lease_contains(&self, _ip: &std::net::Ipv6Addr) -> bool {
-        false
-    }
-
+/// Dynamic relay preference and its change notification stream.
+pub trait PeerRelayRuntime: Send + Sync {
     fn avoid_relay_data_preference(&self) -> bool {
         false
     }
@@ -211,13 +204,27 @@ pub trait PeerRuntimeSupport: Send + Sync {
     fn subscribe_runtime_changes(&self) -> Option<BoxPeerRuntimeChangeSubscriber> {
         None
     }
+}
 
-    fn public_ipv6_provider_enabled(&self) -> bool {
+impl PeerRelayRuntime for () {}
+
+/// Supplies the host's current STUN observation.
+pub trait PeerStunInfoSource: Send + Sync {
+    fn stun_info(&self) -> StunInfo {
+        StunInfo::default()
+    }
+}
+
+impl PeerStunInfoSource for () {}
+
+/// Supplies public-IPv6 state observed or leased by the host.
+pub trait PeerPublicIpv6State: Send + Sync {
+    fn public_ipv6_lease_contains(&self, _ip: &std::net::Ipv6Addr) -> bool {
         false
     }
 
-    fn easytier_version(&self) -> String {
-        env!("CARGO_PKG_VERSION").to_owned()
+    fn public_ipv6_provider_enabled(&self) -> bool {
+        false
     }
 
     fn advertised_ipv6_public_addr_prefix(&self) -> Option<Ipv6Cidr> {
@@ -225,11 +232,15 @@ pub trait PeerRuntimeSupport: Send + Sync {
     }
 }
 
+impl PeerPublicIpv6State for () {}
+
 /// Named capability bundle used to assemble the core-owned submitted context.
 /// Each field remains a separate Interface so peer Modules cannot reach an
 /// unrelated host capability through the bundle after construction.
 pub struct SubmittedPeerContextCapabilities {
-    pub runtime_support: Arc<dyn PeerRuntimeSupport>,
+    pub relay_runtime: Arc<dyn PeerRelayRuntime>,
+    pub stun_info_source: Arc<dyn PeerStunInfoSource>,
+    pub public_ipv6_state: Arc<dyn PeerPublicIpv6State>,
     pub limiter_factory: Arc<dyn PeerLimiterFactory>,
     pub traffic_sink: Arc<dyn PeerControlTrafficSink>,
     pub event_sink: Arc<dyn PeerEventSink>,
@@ -243,7 +254,9 @@ pub struct SubmittedPeerContextCapabilities {
 #[derive(Clone)]
 pub struct SubmittedPeerContext {
     config: Arc<dyn PeerRuntimeConfigSource>,
-    support: Arc<dyn PeerRuntimeSupport>,
+    relay_runtime: Arc<dyn PeerRelayRuntime>,
+    stun_info_source: Arc<dyn PeerStunInfoSource>,
+    public_ipv6_state: Arc<dyn PeerPublicIpv6State>,
     limiter_factory: Arc<dyn PeerLimiterFactory>,
     traffic_sink: Arc<dyn PeerControlTrafficSink>,
     credentials: Arc<CredentialManager>,
@@ -260,7 +273,9 @@ impl SubmittedPeerContext {
     ) -> Self {
         Self {
             config,
-            support: capabilities.runtime_support,
+            relay_runtime: capabilities.relay_runtime,
+            stun_info_source: capabilities.stun_info_source,
+            public_ipv6_state: capabilities.public_ipv6_state,
             limiter_factory: capabilities.limiter_factory,
             traffic_sink: capabilities.traffic_sink,
             credentials: capabilities.credentials,
@@ -1036,7 +1051,7 @@ impl PeerContext for SubmittedPeerContext {
     }
 
     fn stun_info(&self) -> StunInfo {
-        self.support.stun_info()
+        self.stun_info_source.stun_info()
     }
 
     fn instance_id(&self) -> uuid::Uuid {
@@ -1071,7 +1086,7 @@ impl PeerContext for SubmittedPeerContext {
 
     fn is_ip_local_ipv6(&self, ip: &std::net::Ipv6Addr) -> bool {
         self.ipv6().is_some_and(|address| address.address() == *ip)
-            || self.support.public_ipv6_lease_contains(ip)
+            || self.public_ipv6_state.public_ipv6_lease_contains(ip)
     }
 
     fn proxy_cidrs(&self) -> Vec<Ipv4Cidr> {
@@ -1107,22 +1122,22 @@ impl PeerContext for SubmittedPeerContext {
         let snapshot = self.snapshot();
         let mut flags = snapshot.runtime.feature_flags;
         flags.avoid_relay_data =
-            snapshot.flags.disable_relay_data || self.support.avoid_relay_data_preference();
-        flags.ipv6_public_addr_provider = self.support.public_ipv6_provider_enabled();
+            snapshot.flags.disable_relay_data || self.relay_runtime.avoid_relay_data_preference();
+        flags.ipv6_public_addr_provider = self.public_ipv6_state.public_ipv6_provider_enabled();
         flags
     }
 
     fn set_avoid_relay_data_preference(&self, avoid_relay_data: bool) -> bool {
-        self.support
+        self.relay_runtime
             .set_avoid_relay_data_preference(avoid_relay_data)
     }
 
     fn subscribe_runtime_changes(&self) -> Option<BoxPeerRuntimeChangeSubscriber> {
-        self.support.subscribe_runtime_changes()
+        self.relay_runtime.subscribe_runtime_changes()
     }
 
     fn easytier_version(&self) -> String {
-        self.support.easytier_version()
+        self.snapshot().easytier_version.clone()
     }
 
     fn ospf_update_my_foreign_network_interval_sec(&self) -> u64 {
@@ -1130,7 +1145,7 @@ impl PeerContext for SubmittedPeerContext {
     }
 
     fn advertised_ipv6_public_addr_prefix(&self) -> Option<Ipv6Cidr> {
-        self.support.advertised_ipv6_public_addr_prefix()
+        self.public_ipv6_state.advertised_ipv6_public_addr_prefix()
     }
 
     fn is_ip_in_same_network(&self, ip: &IpAddr) -> bool {
@@ -1312,7 +1327,7 @@ mod tests {
         limiter_keys: Mutex<Vec<String>>,
     }
 
-    impl PeerRuntimeSupport for TestSubmittedSupport {
+    impl PeerRelayRuntime for TestSubmittedSupport {
         fn avoid_relay_data_preference(&self) -> bool {
             self.avoid_relay_data.load(Ordering::Acquire)
         }
@@ -1352,7 +1367,9 @@ mod tests {
         event_sink: Arc<dyn PeerEventSink>,
     ) -> SubmittedPeerContextCapabilities {
         SubmittedPeerContextCapabilities {
-            runtime_support: support.clone(),
+            relay_runtime: support.clone(),
+            stun_info_source: Arc::new(()),
+            public_ipv6_state: Arc::new(()),
             limiter_factory: support,
             traffic_sink: Arc::new(()),
             event_sink,

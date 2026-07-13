@@ -2,8 +2,8 @@ use std::{collections::HashSet, sync::Arc};
 
 use easytier_core::peers::context::{
     ArcByteLimiter, PeerContext, PeerCredentialEventSink, PeerEvent, PeerEventSink,
-    PeerLimiterFactory, PeerRuntimeConfig, PeerRuntimeSnapshot, PeerRuntimeSupport,
-    SubmittedPeerContextCapabilities,
+    PeerLimiterFactory, PeerPublicIpv6State, PeerRelayRuntime, PeerRuntimeConfig,
+    PeerRuntimeSnapshot, PeerStunInfoSource, SubmittedPeerContextCapabilities,
 };
 
 use crate::{
@@ -32,6 +32,7 @@ pub(crate) fn runtime_peer_snapshot(global_ctx: &ArcGlobalCtx) -> PeerRuntimeSna
         .collect();
     PeerRuntimeSnapshot {
         runtime: runtime_peer_config(global_ctx),
+        easytier_version: EASYTIER_VERSION.to_owned(),
         flags: global_ctx.get_flags(),
         vpn_portal_cidr: PeerContext::vpn_portal_cidr(global_ctx.as_ref()),
         pinned_peers: global_ctx
@@ -86,7 +87,9 @@ pub(crate) fn submitted_peer_capabilities(
 ) -> SubmittedPeerContextCapabilities {
     let event_sink = Arc::new(GlobalCtxPeerEventSink::new(global_ctx.clone()));
     SubmittedPeerContextCapabilities {
-        runtime_support: global_ctx.clone(),
+        relay_runtime: global_ctx.clone(),
+        stun_info_source: global_ctx.clone(),
+        public_ipv6_state: global_ctx.clone(),
         limiter_factory: global_ctx.clone(),
         traffic_sink: global_ctx.clone(),
         event_sink: event_sink.clone(),
@@ -118,16 +121,13 @@ fn runtime_peer_config(global_ctx: &ArcGlobalCtx) -> PeerRuntimeConfig {
     runtime
 }
 
-impl PeerRuntimeSupport for GlobalCtx {
+impl PeerStunInfoSource for GlobalCtx {
     fn stun_info(&self) -> crate::proto::common::StunInfo {
         PeerContext::stun_info(self)
     }
+}
 
-    fn public_ipv6_lease_contains(&self, ip: &std::net::Ipv6Addr) -> bool {
-        self.get_public_ipv6_lease()
-            .is_some_and(|address| address.address() == *ip)
-    }
-
+impl PeerRelayRuntime for GlobalCtx {
     fn avoid_relay_data_preference(&self) -> bool {
         self.get_avoid_relay_data_preference()
     }
@@ -141,13 +141,16 @@ impl PeerRuntimeSupport for GlobalCtx {
     ) -> Option<easytier_core::peers::context::BoxPeerRuntimeChangeSubscriber> {
         Some(GlobalCtx::subscribe_runtime_changes(self))
     }
+}
+
+impl PeerPublicIpv6State for GlobalCtx {
+    fn public_ipv6_lease_contains(&self, ip: &std::net::Ipv6Addr) -> bool {
+        self.get_public_ipv6_lease()
+            .is_some_and(|address| address.address() == *ip)
+    }
 
     fn public_ipv6_provider_enabled(&self) -> bool {
         self.get_feature_flags().ipv6_public_addr_provider
-    }
-
-    fn easytier_version(&self) -> String {
-        EASYTIER_VERSION.to_owned()
     }
 
     fn advertised_ipv6_public_addr_prefix(&self) -> Option<cidr::Ipv6Cidr> {
