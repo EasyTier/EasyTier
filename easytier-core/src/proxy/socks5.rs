@@ -15,6 +15,8 @@ use pnet_packet::{
 
 #[cfg(feature = "proxy-packet")]
 use super::ip_reassembler::{IpReassembler, SmolIpv4Packet};
+#[cfg(feature = "proxy-packet")]
+use crate::packet::{PacketType, ZCPacket};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[repr(u8)]
@@ -350,6 +352,29 @@ fn classify_peer_ipv4_payload(payload: &[u8]) -> ClassifiedSocks5PeerPacket {
 
 #[cfg(feature = "proxy-packet")]
 impl<V> Socks5EntryTable<V> {
+    pub fn route_peer_packet(
+        &self,
+        packet: &ZCPacket,
+        allow_tcp_listen_fallback: bool,
+    ) -> Socks5PeerPacketRoute {
+        let Some(header) = packet.peer_manager_header() else {
+            return Socks5PeerPacketRoute::Pass;
+        };
+        let is_modified_source = matches!(
+            header.packet_type,
+            x if x == PacketType::DataWithKcpSrcModified as u8
+                || x == PacketType::DataWithQuicSrcModified as u8
+        );
+        if header.packet_type != PacketType::Data as u8 && !is_modified_source {
+            return Socks5PeerPacketRoute::Pass;
+        }
+        if is_modified_source && header.from_peer_id != header.to_peer_id {
+            return Socks5PeerPacketRoute::Pass;
+        }
+
+        self.route_peer_ipv4_payload(packet.payload(), allow_tcp_listen_fallback)
+    }
+
     pub fn route_peer_ipv4_payload(
         &self,
         payload: &[u8],
@@ -452,6 +477,8 @@ mod tests {
 
     #[cfg(feature = "proxy-packet")]
     use super::{ClassifiedSocks5PeerPacket, Socks5PeerPacketRoute, classify_peer_ipv4_payload};
+    #[cfg(feature = "proxy-packet")]
+    use crate::packet::{PacketType, ZCPacket};
     #[cfg(feature = "proxy-packet")]
     use pnet_packet::{
         MutablePacket,
@@ -719,6 +746,58 @@ mod tests {
                 source: Ipv4Addr::new(10, 1, 1, 2),
                 mirror: true,
             }
+        );
+    }
+
+    #[cfg(feature = "proxy-packet")]
+    #[test]
+    fn entry_table_routes_loopback_modified_source_packets() {
+        let mut payload = ipv4_packet(IpNextHeaderProtocols::Tcp, 20);
+        let mut ipv4 = MutableIpv4Packet::new(&mut payload).unwrap();
+        let mut tcp = MutableTcpPacket::new(ipv4.payload_mut()).unwrap();
+        tcp.set_source(1234);
+        tcp.set_destination(4321);
+        let entry = Socks5Entry {
+            src: "10.2.2.3:4321".parse().unwrap(),
+            dst: "10.1.1.2:1234".parse().unwrap(),
+            kind: Socks5EntryKind::Tcp,
+        };
+        let table = Socks5EntryTable::default();
+        table.insert(entry.clone(), ());
+
+        for packet_type in [
+            PacketType::DataWithKcpSrcModified,
+            PacketType::DataWithQuicSrcModified,
+        ] {
+            let mut packet = ZCPacket::new_with_payload(&payload);
+            packet.fill_peer_manager_hdr(7, 7, packet_type as u8);
+            assert_eq!(
+                table.route_peer_packet(&packet, false),
+                Socks5PeerPacketRoute::Deliver {
+                    entry: entry.clone(),
+                    tcp_flags: Some(0),
+                }
+            );
+        }
+    }
+
+    #[cfg(feature = "proxy-packet")]
+    #[test]
+    fn entry_table_passes_non_loopback_or_malformed_modified_source_packets() {
+        let table = Socks5EntryTable::<()>::default();
+        let mut non_loopback =
+            ZCPacket::new_with_payload(&ipv4_packet(IpNextHeaderProtocols::Tcp, 20));
+        non_loopback.fill_peer_manager_hdr(7, 8, PacketType::DataWithKcpSrcModified as u8);
+        assert_eq!(
+            table.route_peer_packet(&non_loopback, false),
+            Socks5PeerPacketRoute::Pass
+        );
+
+        let mut malformed = ZCPacket::new_with_payload(&[0u8; 8]);
+        malformed.fill_peer_manager_hdr(7, 7, PacketType::DataWithQuicSrcModified as u8);
+        assert_eq!(
+            table.route_peer_packet(&malformed, false),
+            Socks5PeerPacketRoute::Pass
         );
     }
 
