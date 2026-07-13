@@ -848,8 +848,8 @@ mod tests {
     #[tokio::test]
     async fn test_client() {
         let listener = runtime_udp_tunnel_listener(
-            "udp://0.0.0.0:54333".parse().unwrap(),
-            "0.0.0.0:54333".parse().unwrap(),
+            "udp://127.0.0.1:0".parse().unwrap(),
+            "127.0.0.1:0".parse().unwrap(),
         );
         let mut mgr = ClientManager::new(
             Db::memory_db().await,
@@ -860,7 +860,7 @@ mod tests {
                 None, None, None, None, None,
             )),
         );
-        mgr.add_listener(listener).await.unwrap();
+        let listener_url = mgr.add_listener(listener).await.unwrap();
 
         mgr.db()
             .inner()
@@ -868,7 +868,7 @@ mod tests {
             .await
             .unwrap();
 
-        let connector = runtime_udp_tunnel_dialer("udp://127.0.0.1:54333".parse().unwrap());
+        let connector = runtime_udp_tunnel_dialer(listener_url);
         let _c = WebClient::new(
             connector,
             "test",
