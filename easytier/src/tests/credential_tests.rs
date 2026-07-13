@@ -844,7 +844,10 @@ async fn credential_relay_capability(#[case] allow_relay: bool) {
     let mut admin_inst = Instance::new(admin_config);
     // if cred c allow relay, we set admin inst avoid relay (if other same-cost path available, admin will not relay data)
     admin_inst
-        .get_global_ctx()
+        .get_peer_manager()
+        .core()
+        .get_peer_map()
+        .context()
         .set_avoid_relay_data_preference(allow_relay);
     admin_inst.run().await.unwrap();
 
