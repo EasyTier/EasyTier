@@ -1,8 +1,6 @@
 use cidr::{Ipv4Cidr, Ipv6Cidr};
 pub use easytier_core::peers::peer_manager::RouteAlgoType;
-use easytier_core::peers::peer_manager::{
-    DnsAddressResolver, PeerManagerCore, PipelineRegistrationGuard,
-};
+use easytier_core::peers::peer_manager::{DnsAddressResolver, PeerManagerCore};
 use easytier_core::tunnel::ring::RingTunnelRegistry;
 use easytier_core::{
     instance::{CoreRuntimeConfig, CoreRuntimeConfigStore},
@@ -23,7 +21,6 @@ use crate::{
         error::Error,
         global_ctx::ArcGlobalCtx,
     },
-    peers::PeerPacketFilter,
     proto::api::instance,
     tunnel::{
         Tunnel,
@@ -32,9 +29,8 @@ use crate::{
 };
 
 use super::{
-    BoxNicPacketFilter, BoxPeerPacketFilter, PacketRecvChan, context::runtime_peer_snapshot,
-    encrypt::NullCipher, foreign_network_manager::ForeignNetworkRuntimeImpl, peer_conn::PeerConnId,
-    route_trait::Route,
+    PacketRecvChan, context::runtime_peer_snapshot, encrypt::NullCipher,
+    foreign_network_manager::ForeignNetworkRuntimeImpl, peer_conn::PeerConnId, route_trait::Route,
 };
 
 pub struct PeerManager {
@@ -205,39 +201,6 @@ impl PeerManager {
             .add_tunnel_as_server(tunnel, is_directly_connected)
             .await
             .map_err(Error::from)
-    }
-
-    pub async fn add_packet_process_pipeline(&self, pipeline: BoxPeerPacketFilter) {
-        self.core.add_packet_process_pipeline(pipeline).await;
-    }
-
-    pub async fn add_nic_packet_process_pipeline(&self, pipeline: BoxNicPacketFilter) {
-        self.core.add_nic_packet_process_pipeline(pipeline).await;
-    }
-
-    pub async fn add_managed_packet_process_pipeline(
-        &self,
-        pipeline: BoxPeerPacketFilter,
-    ) -> PipelineRegistrationGuard {
-        self.core
-            .add_managed_packet_process_pipeline(pipeline)
-            .await
-    }
-
-    pub async fn add_managed_nic_packet_process_pipeline(
-        &self,
-        pipeline: BoxNicPacketFilter,
-    ) -> PipelineRegistrationGuard {
-        self.core
-            .add_managed_nic_packet_process_pipeline(pipeline)
-            .await
-    }
-
-    pub async fn add_route<T>(&self, route: T)
-    where
-        T: Route + PeerPacketFilter + Send + Sync + Clone + 'static,
-    {
-        self.core.add_route(route).await;
     }
 
     pub fn get_route(&self) -> Box<dyn Route + Send + Sync + 'static> {

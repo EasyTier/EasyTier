@@ -184,6 +184,9 @@ only:
   accessor.
 - Foreign-client state is likewise obtained from `PeerManagerCore`; the native
   facade no longer re-exports the core foreign-client handle.
+- Packet/NIC pipeline and route registration now use the core manager
+  Interface directly. The native facade no longer mirrors registration
+  methods or core registration-guard types.
 
 ### Exit criteria
 

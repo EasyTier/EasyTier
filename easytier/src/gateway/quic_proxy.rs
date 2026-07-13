@@ -1051,10 +1051,12 @@ impl QuicProxySrc {
         trace!("quic proxy src starting");
         let wrapped_filter = self.tcp_proxy.clone();
         self.peer_mgr
+            .core()
             .add_nic_packet_process_pipeline(Box::new(wrapped_filter))
             .await;
         self.tcp_proxy.0.register_peer_pipeline().await;
         self.peer_mgr
+            .core()
             .add_packet_process_pipeline(Box::new(QuicPacketReceiver {
                 tx: self.tx.clone(),
                 role: QuicProxyRole::Src,
@@ -1075,6 +1077,7 @@ impl QuicProxyDst {
     async fn run(&self) {
         trace!("quic proxy dst starting");
         self.peer_mgr
+            .core()
             .add_packet_process_pipeline(Box::new(QuicPacketReceiver {
                 tx: self.tx.clone(),
                 role: QuicProxyRole::Dst,

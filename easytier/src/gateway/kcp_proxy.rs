@@ -266,10 +266,12 @@ impl KcpProxySrc {
     pub async fn start(&self) {
         let wrapped_filter = self.tcp_proxy.clone();
         self.peer_manager
+            .core()
             .add_nic_packet_process_pipeline(Box::new(wrapped_filter))
             .await;
         self.tcp_proxy.0.register_peer_pipeline().await;
         self.peer_manager
+            .core()
             .add_packet_process_pipeline(Box::new(KcpEndpointFilter {
                 kcp_endpoint: self.kcp_endpoint.clone(),
                 is_src: true,
@@ -454,6 +456,7 @@ impl KcpProxyDst {
     pub async fn start(&mut self) {
         self.run_accept_task().await;
         self.peer_manager
+            .core()
             .add_packet_process_pipeline(Box::new(KcpEndpointFilter {
                 kcp_endpoint: self.kcp_endpoint.clone(),
                 is_src: false,

@@ -905,6 +905,7 @@ impl Socks5Server {
             return Err(anyhow::anyhow!("peer manager is gone").into());
         };
         peer_manager
+            .core()
             .add_packet_process_pipeline(Box::new(self.clone()))
             .await;
         tracing::trace!(

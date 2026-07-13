@@ -414,6 +414,7 @@ impl MagicDnsServerInstance {
         rpc_server.set_hook(data.clone());
 
         peer_mgr
+            .core()
             .add_nic_packet_process_pipeline(Box::new(data.clone()))
             .await;
         // Use configured tld_dns_zone or fall back to DEFAULT_ET_DNS_ZONE if empty
