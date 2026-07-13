@@ -515,21 +515,25 @@ impl GlobalCtx {
     }
 
     pub fn get_running_listeners(&self) -> Vec<url::Url> {
-        self.running_listeners.lock().unwrap().clone()
+        let listeners = self.running_listeners.lock().unwrap();
+        let mut unique = Vec::with_capacity(listeners.len());
+        for listener in listeners.iter() {
+            if !unique.contains(listener) {
+                unique.push(listener.clone());
+            }
+        }
+        unique
     }
 
     pub fn add_running_listener(&self, url: url::Url) {
-        let mut l = self.running_listeners.lock().unwrap();
-        if !l.contains(&url) {
-            l.push(url);
-        }
+        self.running_listeners.lock().unwrap().push(url);
     }
 
     pub fn remove_running_listener(&self, url: &url::Url) {
-        self.running_listeners
-            .lock()
-            .unwrap()
-            .retain(|listener| listener != url);
+        let mut listeners = self.running_listeners.lock().unwrap();
+        if let Some(index) = listeners.iter().position(|listener| listener == url) {
+            listeners.remove(index);
+        }
     }
 
     pub fn get_vpn_portal_cidr(&self) -> Option<cidr::Ipv4Cidr> {
@@ -812,6 +816,22 @@ pub mod tests {
             subscriber.recv().await.unwrap(),
             GlobalCtxEvent::PeerConnRemoved(PeerConnInfo::default())
         );
+    }
+
+    #[tokio::test]
+    async fn running_listener_projection_keeps_duplicate_registrations_alive() {
+        let global_ctx = GlobalCtx::new(TomlConfigLoader::default());
+        let listener: url::Url = "udp://127.0.0.1:11010".parse().unwrap();
+
+        global_ctx.add_running_listener(listener.clone());
+        global_ctx.add_running_listener(listener.clone());
+        assert_eq!(global_ctx.get_running_listeners(), vec![listener.clone()]);
+
+        global_ctx.remove_running_listener(&listener);
+        assert_eq!(global_ctx.get_running_listeners(), vec![listener.clone()]);
+
+        global_ctx.remove_running_listener(&listener);
+        assert!(global_ctx.get_running_listeners().is_empty());
     }
 
     #[tokio::test]

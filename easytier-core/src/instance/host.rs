@@ -93,6 +93,7 @@ where
         let adapters = CoreInstanceAdapters {
             host,
             dns: dns.clone(),
+            listener_dns: None,
             dns_records: dns,
             protocol: None,
             manual_events: None,

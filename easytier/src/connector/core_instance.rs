@@ -176,13 +176,15 @@ pub(crate) fn runtime_core_instance_adapters_with_ring_registry(
         global_ctx.clone(),
         ring_registry,
     ));
-    let dns: Arc<dyn DnsResolver> = Arc::new(RuntimeDnsResolver::new_with_netns(
+    let dns: Arc<dyn DnsResolver> = Arc::new(RuntimeDnsResolver::new());
+    let listener_dns: Arc<dyn DnsResolver> = Arc::new(RuntimeDnsResolver::new_with_netns(
         global_ctx.net_ns.clone(),
     ));
     let dns_records: Arc<dyn DnsRecordResolver> = Arc::new(RuntimeDnsResolver::new());
     CoreInstanceAdapters {
         host,
         dns,
+        listener_dns: Some(listener_dns),
         dns_records,
         protocol: Some(runtime_client_protocol_upgrader(global_ctx.clone())),
         manual_events: Some(Arc::new(GlobalCtxManualConnectivityEventSink {

@@ -329,6 +329,8 @@ where
 {
     pub host: Arc<H>,
     pub dns: Arc<dyn DnsResolver>,
+    /// Optional listener-specific resolver. When absent, listeners share `dns` with connectors.
+    pub listener_dns: Option<Arc<dyn DnsResolver>>,
     pub dns_records: Arc<dyn DnsRecordResolver>,
     pub protocol: Option<Arc<dyn ClientProtocolUpgrader<<H as VirtualTcpSocketFactory>::Socket>>>,
     pub manual_events: Option<Arc<dyn ManualConnectivityEventSink>>,
@@ -616,6 +618,7 @@ where
         let CoreInstanceAdapters {
             host,
             dns,
+            listener_dns,
             dns_records,
             protocol,
             manual_events,
@@ -656,7 +659,7 @@ where
             };
             let listener = Arc::new(TransportListenerService::new_with_events(
                 host.clone(),
-                dns.clone(),
+                listener_dns.unwrap_or_else(|| dns.clone()),
                 listeners,
                 handler,
                 events,
