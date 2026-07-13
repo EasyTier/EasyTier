@@ -172,10 +172,7 @@ pub(crate) fn runtime_core_instance_adapters_with_ring_registry(
     global_ctx: ArcGlobalCtx,
     ring_registry: Arc<RingTunnelRegistry>,
 ) -> CoreInstanceAdapters<RuntimeConnectorHost> {
-    let host = Arc::new(RuntimeConnectorHost::new_with_ring_registry(
-        global_ctx.clone(),
-        ring_registry.clone(),
-    ));
+    let host = Arc::new(RuntimeConnectorHost::new(global_ctx.clone()));
     let dns: Arc<dyn DnsResolver> = Arc::new(RuntimeDnsResolver::new());
     let listener_dns: Arc<dyn DnsResolver> = Arc::new(RuntimeDnsResolver::new_with_netns(
         global_ctx.net_ns.clone(),

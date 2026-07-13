@@ -88,15 +88,11 @@ impl RuntimeProxyService {
         global_ctx: ArcGlobalCtx,
         peer_manager: Arc<PeerManager>,
         cidr_set: Arc<CidrSet>,
-        ring_registry: Arc<RingTunnelRegistry>,
     ) -> Result<Arc<Self>, Error> {
         let tcp_proxy = TcpProxy::new(
             peer_manager.clone(),
             NatDstTcpConnector::new(Arc::new(
-                crate::connector::runtime::RuntimeConnectorHost::new_with_ring_registry(
-                    global_ctx.clone(),
-                    ring_registry,
-                ),
+                crate::connector::runtime::RuntimeConnectorHost::new(global_ctx.clone()),
             )),
             cidr_set.clone(),
         );
@@ -854,7 +850,6 @@ impl Instance {
             global_ctx.clone(),
             peer_manager.clone(),
             proxy_cidr_runtime.clone(),
-            ring_registry.clone(),
         )
         .expect("runtime proxy adapter construction should be infallible");
         #[cfg(feature = "kcp")]

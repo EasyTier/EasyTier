@@ -14,7 +14,6 @@ use easytier_core::instance::CoreRuntimeConfigStore;
 #[cfg(test)]
 use easytier_core::peers::context::{ArcPeerContext, SubmittedPeerContext};
 use easytier_core::peers::foreign_network_manager as core_foreign_network_manager;
-use easytier_core::tunnel::ring::RingTunnelRegistry;
 #[cfg(test)]
 use tokio::sync::Mutex;
 #[cfg(test)]
@@ -141,22 +140,13 @@ struct RuntimeForeignNetworkContext {
 
 pub(super) struct ForeignNetworkRuntimeImpl {
     global_ctx: ArcGlobalCtx,
-    ring_registry: Arc<RingTunnelRegistry>,
     foreign_contexts: DashMap<String, Arc<RuntimeForeignNetworkContext>>,
 }
 
 impl ForeignNetworkRuntimeImpl {
-    fn new(global_ctx: ArcGlobalCtx) -> Self {
-        Self::new_with_ring_registry(global_ctx, Arc::new(RingTunnelRegistry::default()))
-    }
-
-    pub(super) fn new_with_ring_registry(
-        global_ctx: ArcGlobalCtx,
-        ring_registry: Arc<RingTunnelRegistry>,
-    ) -> Self {
+    pub(super) fn new(global_ctx: ArcGlobalCtx) -> Self {
         Self {
             global_ctx,
-            ring_registry,
             foreign_contexts: DashMap::new(),
         }
     }
@@ -257,10 +247,7 @@ impl core_foreign_network_manager::ForeignNetworkRuntime for ForeignNetworkRunti
             .clone();
         peer_rpc.rpc_server().registry().register(
             DirectConnectorRpcServer::new(DirectConnectorRpcHandler::new(Arc::new(
-                RuntimeConnectorHost::new_with_ring_registry(
-                    foreign_global_ctx,
-                    self.ring_registry.clone(),
-                ),
+                RuntimeConnectorHost::new(foreign_global_ctx),
             ))),
             network_name,
         );

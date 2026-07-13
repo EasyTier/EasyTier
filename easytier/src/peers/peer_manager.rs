@@ -101,10 +101,7 @@ impl PeerManager {
         let exit_nodes = global_ctx.config.get_exit_nodes();
         let (runtime_config, peer_context) = build_submitted_peer_context(&global_ctx);
 
-        let foreign_network_runtime = Arc::new(ForeignNetworkRuntimeImpl::new_with_ring_registry(
-            global_ctx.clone(),
-            ring_registry.clone(),
-        ));
+        let foreign_network_runtime = Arc::new(ForeignNetworkRuntimeImpl::new(global_ctx.clone()));
         let build_result = PeerManagerCore::new_with_foreign_network_runtime(
             route_algo,
             my_peer_id,

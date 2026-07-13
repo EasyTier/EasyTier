@@ -10,7 +10,6 @@ use easytier_core::socket::tcp::{
     TcpBindOptions, TcpConnectOptions, TcpListenOptions, TcpListenPurpose, TcpSocketPurpose,
     VirtualTcpListener, VirtualTcpListenerFactory, VirtualTcpSocket, VirtualTcpSocketFactory,
 };
-use easytier_core::tunnel::ring::{RingByteStream, RingTunnelSocket};
 use socket2::{SockRef, TcpKeepalive};
 #[cfg(unix)]
 use tokio::net::UnixStream;
@@ -29,7 +28,6 @@ use crate::{
 
 enum RuntimeTcpSocketInner {
     Tcp(TcpStream),
-    Ring(RingByteStream),
     #[cfg(unix)]
     Unix(UnixStream),
     #[cfg(feature = "faketcp")]
@@ -48,12 +46,6 @@ impl RuntimeTcpSocket {
         Self {
             inner: RuntimeTcpSocketInner::Tcp(stream),
         }
-    }
-
-    pub(crate) fn from_ring(socket: Arc<RingTunnelSocket>) -> io::Result<Self> {
-        Ok(Self {
-            inner: RuntimeTcpSocketInner::Ring(RingByteStream::new(socket)?),
-        })
     }
 
     #[cfg(unix)]
@@ -79,7 +71,6 @@ impl AsyncRead for RuntimeTcpSocket {
     ) -> Poll<io::Result<()>> {
         match &mut self.inner {
             RuntimeTcpSocketInner::Tcp(stream) => Pin::new(stream).poll_read(cx, buf),
-            RuntimeTcpSocketInner::Ring(stream) => Pin::new(stream).poll_read(cx, buf),
             #[cfg(unix)]
             RuntimeTcpSocketInner::Unix(stream) => Pin::new(stream).poll_read(cx, buf),
             #[cfg(feature = "faketcp")]
@@ -96,7 +87,6 @@ impl AsyncWrite for RuntimeTcpSocket {
     ) -> Poll<io::Result<usize>> {
         match &mut self.inner {
             RuntimeTcpSocketInner::Tcp(stream) => Pin::new(stream).poll_write(cx, buf),
-            RuntimeTcpSocketInner::Ring(stream) => Pin::new(stream).poll_write(cx, buf),
             #[cfg(unix)]
             RuntimeTcpSocketInner::Unix(stream) => Pin::new(stream).poll_write(cx, buf),
             #[cfg(feature = "faketcp")]
@@ -107,7 +97,6 @@ impl AsyncWrite for RuntimeTcpSocket {
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         match &mut self.inner {
             RuntimeTcpSocketInner::Tcp(stream) => Pin::new(stream).poll_flush(cx),
-            RuntimeTcpSocketInner::Ring(stream) => Pin::new(stream).poll_flush(cx),
             #[cfg(unix)]
             RuntimeTcpSocketInner::Unix(stream) => Pin::new(stream).poll_flush(cx),
             #[cfg(feature = "faketcp")]
@@ -118,7 +107,6 @@ impl AsyncWrite for RuntimeTcpSocket {
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         match &mut self.inner {
             RuntimeTcpSocketInner::Tcp(stream) => Pin::new(stream).poll_shutdown(cx),
-            RuntimeTcpSocketInner::Ring(stream) => Pin::new(stream).poll_shutdown(cx),
             #[cfg(unix)]
             RuntimeTcpSocketInner::Unix(stream) => Pin::new(stream).poll_shutdown(cx),
             #[cfg(feature = "faketcp")]
@@ -131,10 +119,6 @@ impl VirtualTcpSocket for RuntimeTcpSocket {
     fn local_addr(&self) -> io::Result<SocketAddr> {
         match &self.inner {
             RuntimeTcpSocketInner::Tcp(stream) => stream.local_addr(),
-            RuntimeTcpSocketInner::Ring(_) => Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "ring stream has no IP local address",
-            )),
             #[cfg(unix)]
             RuntimeTcpSocketInner::Unix(_) => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -148,10 +132,6 @@ impl VirtualTcpSocket for RuntimeTcpSocket {
     fn peer_addr(&self) -> io::Result<SocketAddr> {
         match &self.inner {
             RuntimeTcpSocketInner::Tcp(stream) => stream.peer_addr(),
-            RuntimeTcpSocketInner::Ring(_) => Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "ring stream has no IP peer address",
-            )),
             #[cfg(unix)]
             RuntimeTcpSocketInner::Unix(_) => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -166,7 +146,7 @@ impl VirtualTcpSocket for RuntimeTcpSocket {
         match &self.inner {
             #[cfg(feature = "faketcp")]
             RuntimeTcpSocketInner::FakeTcp(socket) => socket.transport_label(),
-            RuntimeTcpSocketInner::Tcp(_) | RuntimeTcpSocketInner::Ring(_) => None,
+            RuntimeTcpSocketInner::Tcp(_) => None,
             #[cfg(unix)]
             RuntimeTcpSocketInner::Unix(_) => None,
         }
