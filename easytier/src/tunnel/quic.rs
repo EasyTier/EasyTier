@@ -1175,6 +1175,7 @@ impl QuicUdpListenerSocket {
         let (incoming_tx, incoming_rx) = channel(QUIC_UDP_DATAGRAM_QUEUE_CAPACITY);
         let active_session_permits = Arc::new(Semaphore::new(QUIC_MAX_ACTIVE_UDP_SESSIONS));
         let accept_task = AbortOnDropHandle::new(tokio::spawn(async move {
+            let mut session_tasks = JoinSet::new();
             loop {
                 let session = match session_listener.accept_session().await {
                     Ok(session) => session,
@@ -1208,7 +1209,7 @@ impl QuicUdpListenerSocket {
                 let session_incoming_tx = incoming_tx.clone();
                 let session_closers = udp_session_closers.clone();
                 let session_pending_initials = pending_initials.clone();
-                tokio::spawn(async move {
+                session_tasks.spawn(async move {
                     let _session_permit = session_permit;
                     let mut buf = vec![0u8; 64 * 1024];
                     let unclaimed_timeout = tokio::time::sleep(QUIC_UDP_UNCLAIMED_SESSION_TIMEOUT);
@@ -1315,6 +1316,7 @@ impl QuicUdpListenerSocket {
                         );
                     }
                 });
+                while session_tasks.try_join_next().is_some() {}
             }
         }));
 
