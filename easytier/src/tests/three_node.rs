@@ -29,6 +29,7 @@ use crate::{
         common::{CompressionAlgoPb, SecureModeConfig},
         rpc_impl::standalone::{
             RuntimeRpcDialer, RuntimeRpcListener, runtime_rpc_dialer, runtime_rpc_listener,
+            runtime_udp_tunnel_dialer, runtime_udp_tunnel_listener,
         },
     },
     tunnel::common::tests::{
@@ -49,6 +50,20 @@ fn core_tcp_listener(url: url::Url) -> CoreTunnelListener<RuntimeRpcListener> {
 
 fn core_tcp_dialer(url: url::Url) -> CoreTunnelDialer<RuntimeRpcDialer> {
     CoreTunnelDialer(runtime_rpc_dialer(url))
+}
+
+fn core_udp_listener(url: url::Url) -> impl crate::tunnel::TunnelListener {
+    let addr = url
+        .socket_addrs(|| Some(11010))
+        .expect("test UDP listener URL should resolve")
+        .into_iter()
+        .next()
+        .expect("test UDP listener URL should have an address");
+    CoreTunnelListener(runtime_udp_tunnel_listener(url, addr))
+}
+
+fn core_udp_dialer(url: url::Url) -> impl crate::tunnel::TunnelConnector {
+    CoreTunnelDialer(runtime_udp_tunnel_dialer(url))
 }
 
 #[cfg(feature = "wireguard")]
@@ -1217,16 +1232,11 @@ pub async fn subnet_proxy_loop_prevention_test() {
 }
 
 async fn subnet_proxy_test_udp(listen_ip: &str, target_ip: &str, timeout: Duration) {
-    use crate::tunnel::{
-        common::tests::_tunnel_pingpong_netns_with_timeout,
-        udp::{UdpTunnelConnector, UdpTunnelListener},
-    };
+    use crate::tunnel::common::tests::_tunnel_pingpong_netns_with_timeout;
     use rand::Rng;
 
-    let udp_listener =
-        UdpTunnelListener::new(format!("udp://{}:22233", listen_ip).parse().unwrap());
-    let udp_connector =
-        UdpTunnelConnector::new(format!("udp://{}:22233", target_ip).parse().unwrap());
+    let udp_listener = core_udp_listener(format!("udp://{}:22233", listen_ip).parse().unwrap());
+    let udp_connector = core_udp_dialer(format!("udp://{}:22233", target_ip).parse().unwrap());
 
     // NOTE: this should not excced udp tunnel max buffer size
     let mut buf = vec![0; 7 * 1024];
@@ -1250,10 +1260,8 @@ async fn subnet_proxy_test_udp(listen_ip: &str, target_ip: &str, timeout: Durati
     assert!(result.is_ok(), "{}", result.unwrap_err());
 
     // no fragment
-    let udp_listener =
-        UdpTunnelListener::new(format!("udp://{}:22233", listen_ip).parse().unwrap());
-    let udp_connector =
-        UdpTunnelConnector::new(format!("udp://{}:22233", target_ip).parse().unwrap());
+    let udp_listener = core_udp_listener(format!("udp://{}:22233", listen_ip).parse().unwrap());
+    let udp_connector = core_udp_dialer(format!("udp://{}:22233", target_ip).parse().unwrap());
 
     let mut buf = vec![0; 1024];
     rand::thread_rng().fill(&mut buf[..]);
@@ -2167,8 +2175,6 @@ pub async fn port_forward_test(
     )
     .await;
 
-    use crate::tunnel::{udp::UdpTunnelConnector, udp::UdpTunnelListener};
-
     let tcp_listener = core_tcp_listener("tcp://0.0.0.0:23456".parse().unwrap());
     let tcp_connector = core_tcp_dialer("tcp://127.0.0.1:23456".parse().unwrap());
 
@@ -2203,8 +2209,8 @@ pub async fn port_forward_test(
     .await
     .unwrap();
 
-    let udp_listener = UdpTunnelListener::new("udp://0.0.0.0:23458".parse().unwrap());
-    let udp_connector = UdpTunnelConnector::new("udp://127.0.0.1:23458".parse().unwrap());
+    let udp_listener = core_udp_listener("udp://0.0.0.0:23458".parse().unwrap());
+    let udp_connector = core_udp_dialer("udp://127.0.0.1:23458".parse().unwrap());
 
     let mut buf = vec![0; buf_size as usize];
     rand::thread_rng().fill(&mut buf[..]);
@@ -2220,8 +2226,8 @@ pub async fn port_forward_test(
     .await
     .unwrap();
 
-    let udp_listener = UdpTunnelListener::new("udp://0.0.0.0:23459".parse().unwrap());
-    let udp_connector = UdpTunnelConnector::new("udp://127.0.0.1:23459".parse().unwrap());
+    let udp_listener = core_udp_listener("udp://0.0.0.0:23459".parse().unwrap());
+    let udp_connector = core_udp_dialer("udp://127.0.0.1:23459".parse().unwrap());
 
     let mut buf = vec![0; buf_size as usize];
     rand::thread_rng().fill(&mut buf[..]);
@@ -2582,10 +2588,7 @@ pub async fn acl_rule_test_inbound(
     #[values(true, false)] enable_kcp_proxy: bool,
     #[values(true, false)] enable_quic_proxy: bool,
 ) {
-    use crate::tunnel::{
-        common::tests::_tunnel_pingpong_netns_with_timeout,
-        udp::{UdpTunnelConnector, UdpTunnelListener},
-    };
+    use crate::tunnel::common::tests::_tunnel_pingpong_netns_with_timeout;
     use rand::Rng;
     let insts = init_three_node_ex(
         "udp",
@@ -2726,14 +2729,14 @@ pub async fn acl_rule_test_inbound(
     // UDP 测试部分
     {
         // 1. 在 inst2 上监听 UDP 8080 和 8081
-        let listener_8080 = UdpTunnelListener::new("udp://0.0.0.0:8080".parse().unwrap());
-        let listener_8081 = UdpTunnelListener::new("udp://0.0.0.0:8081".parse().unwrap());
+        let listener_8080 = core_udp_listener("udp://0.0.0.0:8080".parse().unwrap());
+        let listener_8081 = core_udp_listener("udp://0.0.0.0:8081".parse().unwrap());
 
         // 2. inst1 作为客户端，尝试连接 inst2 的 8080（应被拒绝）和 8081（应被允许）
         let connector_8080 =
-            UdpTunnelConnector::new(format!("udp://{}:8080", "10.144.144.3").parse().unwrap());
+            core_udp_dialer(format!("udp://{}:8080", "10.144.144.3").parse().unwrap());
         let connector_8081 =
-            UdpTunnelConnector::new(format!("udp://{}:8081", "10.144.144.3").parse().unwrap());
+            core_udp_dialer(format!("udp://{}:8081", "10.144.144.3").parse().unwrap());
 
         // 3. 构造测试数据
         let mut buf = vec![0; 32];
@@ -2784,10 +2787,7 @@ pub async fn acl_rule_test_subnet_proxy(
     #[values(true, false)] enable_kcp_proxy: bool,
     #[values(true, false)] enable_quic_proxy: bool,
 ) {
-    use crate::tunnel::{
-        common::tests::_tunnel_pingpong_netns_with_timeout,
-        udp::{UdpTunnelConnector, UdpTunnelListener},
-    };
+    use crate::tunnel::common::tests::_tunnel_pingpong_netns_with_timeout;
     use rand::Rng;
 
     let insts = init_three_node_ex(
@@ -2950,11 +2950,11 @@ pub async fn acl_rule_test_subnet_proxy(
 
     // UDP 测试部分 - 测试子网代理的 ACL 规则
     {
-        let listener_8080 = UdpTunnelListener::new("udp://0.0.0.0:8080".parse().unwrap());
-        let listener_8082 = UdpTunnelListener::new("udp://0.0.0.0:8082".parse().unwrap());
+        let listener_8080 = core_udp_listener("udp://0.0.0.0:8080".parse().unwrap());
+        let listener_8082 = core_udp_listener("udp://0.0.0.0:8082".parse().unwrap());
 
-        let connector_8080 = UdpTunnelConnector::new("udp://10.1.2.4:8080".parse().unwrap());
-        let connector_8082 = UdpTunnelConnector::new("udp://10.1.2.4:8082".parse().unwrap());
+        let connector_8080 = core_udp_dialer("udp://10.1.2.4:8080".parse().unwrap());
+        let connector_8082 = core_udp_dialer("udp://10.1.2.4:8082".parse().unwrap());
 
         let mut buf = vec![0; 32];
         rand::thread_rng().fill(&mut buf[..]);
@@ -3141,9 +3141,7 @@ pub async fn acl_group_base_test(
     #[values(true, false)] enable_quic_proxy: bool,
 ) {
     use crate::tunnel::{
-        TunnelConnector, TunnelListener,
-        common::tests::_tunnel_pingpong_netns_with_timeout,
-        udp::{UdpTunnelConnector, UdpTunnelListener},
+        TunnelConnector, TunnelListener, common::tests::_tunnel_pingpong_netns_with_timeout,
     };
     use rand::Rng;
 
@@ -3261,7 +3259,7 @@ pub async fn acl_group_base_test(
             "tcp" => Box::new(core_tcp_listener(
                 format!("tcp://0.0.0.0:{}", port).parse().unwrap(),
             )),
-            "udp" => Box::new(UdpTunnelListener::new(
+            "udp" => Box::new(core_udp_listener(
                 format!("udp://0.0.0.0:{}", port).parse().unwrap(),
             )),
             _ => panic!("unsupported protocol: {}", protocol),
@@ -3273,7 +3271,7 @@ pub async fn acl_group_base_test(
             "tcp" => Box::new(core_tcp_dialer(
                 format!("tcp://10.144.144.3:{}", port).parse().unwrap(),
             )),
-            "udp" => Box::new(UdpTunnelConnector::new(
+            "udp" => Box::new(core_udp_dialer(
                 format!("udp://10.144.144.3:{}", port).parse().unwrap(),
             )),
             _ => panic!("unsupported protocol: {}", protocol),
@@ -3572,9 +3570,7 @@ pub async fn acl_group_self_test(
     #[values(true, false)] enable_quic_proxy: bool,
 ) {
     use crate::tunnel::{
-        TunnelConnector, TunnelListener,
-        common::tests::_tunnel_pingpong_netns_with_timeout,
-        udp::{UdpTunnelConnector, UdpTunnelListener},
+        TunnelConnector, TunnelListener, common::tests::_tunnel_pingpong_netns_with_timeout,
     };
     use rand::Rng;
 
@@ -3663,7 +3659,7 @@ pub async fn acl_group_self_test(
             "tcp" => Box::new(core_tcp_listener(
                 format!("tcp://0.0.0.0:{}", port).parse().unwrap(),
             )),
-            "udp" => Box::new(UdpTunnelListener::new(
+            "udp" => Box::new(core_udp_listener(
                 format!("udp://0.0.0.0:{}", port).parse().unwrap(),
             )),
             _ => panic!("unsupported protocol: {}", protocol),
@@ -3675,7 +3671,7 @@ pub async fn acl_group_self_test(
             "tcp" => Box::new(core_tcp_dialer(
                 format!("tcp://10.144.144.3:{}", port).parse().unwrap(),
             )),
-            "udp" => Box::new(UdpTunnelConnector::new(
+            "udp" => Box::new(core_udp_dialer(
                 format!("udp://10.144.144.3:{}", port).parse().unwrap(),
             )),
             _ => panic!("unsupported protocol: {}", protocol),
@@ -3765,9 +3761,7 @@ pub async fn whitelist_test(
     .await;
 
     use crate::tunnel::{
-        TunnelConnector, TunnelListener,
-        common::tests::_tunnel_pingpong_netns_with_timeout,
-        udp::{UdpTunnelConnector, UdpTunnelListener},
+        TunnelConnector, TunnelListener, common::tests::_tunnel_pingpong_netns_with_timeout,
     };
     use rand::Rng;
 
@@ -3777,7 +3771,7 @@ pub async fn whitelist_test(
                 "tcp" => Box::new(core_tcp_listener(
                     format!("tcp://0.0.0.0:{}", port).parse().unwrap(),
                 )),
-                "udp" => Box::new(UdpTunnelListener::new(
+                "udp" => Box::new(core_udp_listener(
                     format!("udp://0.0.0.0:{}", port).parse().unwrap(),
                 )),
                 _ => panic!("unsupported protocol: {}", protocol),
@@ -3790,7 +3784,7 @@ pub async fn whitelist_test(
                 "tcp" => Box::new(core_tcp_dialer(
                     format!("tcp://10.144.144.3:{}", port).parse().unwrap(),
                 )),
-                "udp" => Box::new(UdpTunnelConnector::new(
+                "udp" => Box::new(core_udp_dialer(
                     format!("udp://10.144.144.3:{}", port).parse().unwrap(),
                 )),
                 _ => panic!("unsupported protocol: {}", protocol),
