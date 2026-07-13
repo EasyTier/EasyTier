@@ -325,7 +325,7 @@ The completed ownership milestone passes:
 - native `easytier-core` default, no-default, and all-feature checks;
 - `wasm32-wasip1` no-default and all-feature checks, with the established
   default/no-default/all-feature guest test artifacts retained;
-- 410 native `easytier-core` library tests;
+- 469 native `easytier-core` library tests;
 - all 29 `easytier-go-host` tests, including the real two-instance route and
   packet exchange, plus `go build` and `go vet`;
 - four focused race-enabled Go bridge close, cancellation, and lifecycle
