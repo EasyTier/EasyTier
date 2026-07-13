@@ -5,8 +5,11 @@ use std::{
 
 use anyhow::Context as _;
 use easytier_core::{
-    connectivity::protocol::raw::{TcpTunnelDialer, TcpTunnelListener, TunnelDialer},
+    connectivity::protocol::raw::{
+        TcpTunnelDialer, TcpTunnelListener, TunnelDialer, UdpTunnelDialer, UdpTunnelListener,
+    },
     listener::SocketListener,
+    socket::udp::{UdpBindOptions, UdpSessionListenRequest},
     tunnel::Tunnel,
 };
 use tokio::task::JoinSet;
@@ -18,7 +21,11 @@ use crate::{
         rpc_impl::bidirect::BidirectRpcManager,
         rpc_types::{__rt::RpcClientFactory, error::Error},
     },
-    socket::tcp::{RuntimeTcpListenerFactory, RuntimeTcpSocketFactory},
+    socket::{
+        tcp::{RuntimeTcpListenerFactory, RuntimeTcpSocketFactory},
+        udp::RuntimeUdpSocketFactory,
+    },
+    tunnel::TunnelUrl,
 };
 
 use super::service_registry::ServiceRegistry;
@@ -58,6 +65,28 @@ pub fn runtime_rpc_listener(local_addr: std::net::SocketAddr) -> RuntimeRpcListe
     TcpTunnelListener::new(
         local_addr,
         Arc::new(RuntimeTcpListenerFactory::new(NetNS::new(None))),
+    )
+}
+
+pub fn runtime_udp_tunnel_dialer(remote_url: url::Url) -> impl TunnelDialer {
+    UdpTunnelDialer::new(
+        remote_url,
+        Arc::new(RuntimeUdpSocketFactory::new(NetNS::new(None))),
+        Arc::new(RuntimeDnsResolver::new()),
+    )
+}
+
+pub fn runtime_udp_tunnel_listener(
+    local_url: url::Url,
+    local_addr: std::net::SocketAddr,
+) -> impl SocketListener<Accepted = Box<dyn Tunnel>> {
+    let bind = UdpBindOptions::port_bound_listener(local_addr)
+        .with_bind_device(TunnelUrl::from(local_url.clone()).bind_dev())
+        .with_only_v6(true);
+    UdpTunnelListener::new_with_request(
+        local_url,
+        UdpSessionListenRequest::new(bind),
+        Arc::new(RuntimeUdpSocketFactory::new(NetNS::new(None))),
     )
 }
 
@@ -237,7 +266,8 @@ mod tests {
     };
 
     use crate::proto::rpc_impl::standalone::{
-        StandAloneServer, runtime_rpc_dialer, runtime_rpc_listener,
+        StandAloneServer, runtime_rpc_dialer, runtime_rpc_listener, runtime_udp_tunnel_dialer,
+        runtime_udp_tunnel_listener,
     };
 
     #[tokio::test]
@@ -261,5 +291,27 @@ mod tests {
 
         let mut ipv4 = runtime_rpc_listener(format!("0.0.0.0:{port}").parse().unwrap());
         ipv4.listen().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn runtime_udp_tunnel_endpoints_connect() {
+        let local_url = "udp://127.0.0.1:0".parse().unwrap();
+        let mut listener = runtime_udp_tunnel_listener(local_url, "127.0.0.1:0".parse().unwrap());
+        listener.listen().await.unwrap();
+        let listener_url = listener.local_url();
+        let dialer = runtime_udp_tunnel_dialer(listener_url.clone());
+
+        let (accepted, connected) = tokio::join!(listener.accept(), dialer.connect());
+        let accepted = accepted.unwrap();
+        let connected = connected.unwrap();
+
+        assert_eq!(
+            accepted.info().unwrap().local_addr.unwrap().url,
+            listener_url.as_str()
+        );
+        assert_eq!(
+            connected.info().unwrap().remote_addr.unwrap().url,
+            listener_url.as_str()
+        );
     }
 }

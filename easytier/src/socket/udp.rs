@@ -213,6 +213,30 @@ impl VirtualUdpSocketFactory for RuntimeUdpSocketFactory {
 }
 
 #[async_trait]
+impl UdpSessionControlHandler<RuntimeUdpSocket> for RuntimeUdpSocketFactory {
+    async fn send_v4_hole_punch(
+        &self,
+        socket: Arc<RuntimeUdpSocket>,
+        dst_addr: SocketAddrV4,
+    ) -> std::io::Result<usize> {
+        RuntimeUdpSessionControlHandler
+            .send_v4_hole_punch(socket, dst_addr)
+            .await
+    }
+
+    async fn send_v6_hole_punch(
+        &self,
+        socket: Arc<RuntimeUdpSocket>,
+        dst_addr: SocketAddrV6,
+        preferred_src: Option<PreferredIpv6Source>,
+    ) -> std::io::Result<usize> {
+        RuntimeUdpSessionControlHandler
+            .send_v6_hole_punch(socket, dst_addr, preferred_src)
+            .await
+    }
+}
+
+#[async_trait]
 impl VirtualUdpSocketFactory for RuntimeUdpSessionControlHandler {
     type Socket = RuntimeUdpSocket;
 
