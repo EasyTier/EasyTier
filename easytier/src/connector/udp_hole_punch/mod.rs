@@ -502,6 +502,7 @@ pub mod tests {
         let mut flags = p_a.get_global_ctx().get_flags();
         flags.lazy_p2p = true;
         p_a.get_global_ctx().set_flags(flags);
+        p_a.refresh_runtime_config();
 
         connect_peer_manager(p_a.clone(), p_b.clone()).await;
         connect_peer_manager(p_b.clone(), p_c.clone()).await;

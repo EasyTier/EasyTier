@@ -645,9 +645,7 @@ pub mod tests {
         let mut flags = pm_center.get_global_ctx().get_flags();
         flags.disable_relay_data = true;
         pm_center.get_global_ctx().set_flags(flags);
-        pm_center
-            .get_global_ctx()
-            .issue_event(GlobalCtxEvent::ConfigPatched(Default::default()));
+        pm_center.refresh_runtime_config();
 
         let center_peer_id = pm_center
             .get_foreign_network_manager()
@@ -732,6 +730,7 @@ pub mod tests {
         let mut flags = pm_center.get_global_ctx().get_flags();
         flags.disable_relay_data = true;
         pm_center.get_global_ctx().set_flags(flags);
+        pm_center.refresh_runtime_config();
 
         let center_peer_id = pm_center
             .get_foreign_network_manager()
@@ -943,6 +942,7 @@ pub mod tests {
     async fn foreign_network_list_can_include_trusted_keys() {
         let pm_center = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
         set_secure_mode_cfg(&pm_center.get_global_ctx(), true);
+        pm_center.refresh_runtime_config();
 
         let pma_net1 = create_mock_peer_manager_for_secure_foreign_network("net1").await;
         let pmb_net1 = create_mock_peer_manager_for_secure_foreign_network("net1").await;
@@ -986,6 +986,7 @@ pub mod tests {
     async fn secure_center_can_serve_legacy_and_secure_foreign_networks() {
         let pm_center = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
         set_secure_mode_cfg(&pm_center.get_global_ctx(), true);
+        pm_center.refresh_runtime_config();
 
         let legacy_a = create_mock_peer_manager_for_foreign_network("legacy-net").await;
         let legacy_b = create_mock_peer_manager_for_foreign_network("legacy-net").await;
@@ -1371,6 +1372,7 @@ pub mod tests {
     async fn zero_digest_peer_cannot_bootstrap_foreign_network() {
         let pm_center = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
         set_secure_mode_cfg(&pm_center.get_global_ctx(), true);
+        pm_center.refresh_runtime_config();
 
         let pma_net1 = create_mock_credential_peer_manager_for_foreign_network("net1").await;
 
@@ -1399,6 +1401,7 @@ pub mod tests {
         let mut flag = pm_center.get_global_ctx().get_flags();
         flag.relay_network_whitelist = ["net1".to_string(), "net2*".to_string()].join(" ");
         pm_center.get_global_ctx().set_flags(flag);
+        pm_center.refresh_runtime_config();
 
         let pma_net1 = create_mock_peer_manager_for_foreign_network(name.as_str()).await;
 
@@ -1430,6 +1433,7 @@ pub mod tests {
         flag.relay_network_whitelist = "".to_string();
         flag.relay_all_peer_rpc = true;
         pm_center.get_global_ctx().set_flags(flag);
+        pm_center.refresh_runtime_config();
         tracing::debug!("pm_center: {:?}", pm_center.my_peer_id());
 
         let pma_net1 = create_mock_peer_manager_for_foreign_network("net1").await;
