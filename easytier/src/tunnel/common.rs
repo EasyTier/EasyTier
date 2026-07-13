@@ -412,6 +412,58 @@ pub mod tests {
         tracing::warn!("echo server exit...");
     }
 
+    #[cfg(test)]
+    pub(crate) struct CoreTunnelListener<L>(pub L);
+
+    #[cfg(test)]
+    #[async_trait::async_trait]
+    impl<L> TunnelListener for CoreTunnelListener<L>
+    where
+        L: easytier_core::listener::SocketListener<
+                Accepted = Box<dyn easytier_core::tunnel::Tunnel>,
+            > + Send,
+    {
+        async fn listen(&mut self) -> Result<(), crate::tunnel::TunnelError> {
+            easytier_core::listener::SocketListener::listen(&mut self.0)
+                .await
+                .map_err(crate::tunnel::TunnelError::Anyhow)
+        }
+
+        async fn accept(
+            &mut self,
+        ) -> Result<Box<dyn crate::tunnel::Tunnel>, crate::tunnel::TunnelError> {
+            easytier_core::listener::SocketListener::accept(&mut self.0)
+                .await
+                .map_err(crate::tunnel::TunnelError::Anyhow)
+        }
+
+        fn local_url(&self) -> url::Url {
+            easytier_core::listener::SocketListener::local_url(&self.0)
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) struct CoreTunnelDialer<D>(pub D);
+
+    #[cfg(test)]
+    #[async_trait::async_trait]
+    impl<D> TunnelConnector for CoreTunnelDialer<D>
+    where
+        D: easytier_core::connectivity::protocol::raw::TunnelDialer,
+    {
+        async fn connect(
+            &mut self,
+        ) -> Result<Box<dyn crate::tunnel::Tunnel>, crate::tunnel::TunnelError> {
+            easytier_core::connectivity::protocol::raw::TunnelDialer::connect(&self.0)
+                .await
+                .map_err(crate::tunnel::TunnelError::Anyhow)
+        }
+
+        fn remote_url(&self) -> url::Url {
+            easytier_core::connectivity::protocol::raw::TunnelDialer::remote_url(&self.0)
+        }
+    }
+
     pub(crate) async fn _tunnel_pingpong<L, C>(listener: L, connector: C)
     where
         L: TunnelListener + Send + Sync + 'static,
