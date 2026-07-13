@@ -1063,6 +1063,7 @@ async fn credential_relay_capability(#[case] allow_relay: bool) {
         || async {
             let next_hop_a_to_b = cred_a_inst
                 .get_peer_manager()
+                .core()
                 .get_route()
                 .get_next_hop_with_policy(cred_b_peer_id, NextHopPolicy::LeastCost)
                 .await;
@@ -1086,6 +1087,7 @@ async fn credential_relay_capability(#[case] allow_relay: bool) {
     // Verify next hop from A to B based on allow_relay flag
     let next_hop_a_to_b = cred_a_inst
         .get_peer_manager()
+        .core()
         .get_route()
         .get_next_hop_with_policy(cred_b_peer_id, NextHopPolicy::LeastCost)
         .await;

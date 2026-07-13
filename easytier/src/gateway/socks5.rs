@@ -311,7 +311,7 @@ impl AsyncTcpConnector for Socks5AutoConnector {
         );
         let addr = plan.destination();
         let dst_peers = if plan.needs_virtual_network_lookup() {
-            Some(peer_mgr_arc.get_msg_dst_peer(&addr.ip()).await.0)
+            Some(peer_mgr_arc.core().get_msg_dst_peer(&addr.ip()).await.0)
         } else {
             None
         };
@@ -333,7 +333,7 @@ impl AsyncTcpConnector for Socks5AutoConnector {
             ));
         }
 
-        let dst_allow_kcp = peer_mgr_arc.check_allow_kcp_to_dst(&addr.ip()).await;
+        let dst_allow_kcp = peer_mgr_arc.core().check_allow_kcp_to_dst(&addr.ip()).await;
         tracing::debug!("dst_allow_kcp: {:?}", dst_allow_kcp);
         let route = plan.route(destination_in_virtual_network, dst_allow_kcp);
 

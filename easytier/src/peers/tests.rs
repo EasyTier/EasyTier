@@ -1307,7 +1307,7 @@ async fn credential_node_group_assignment() {
         || {
             let admin_b = admin_b.clone();
             async move {
-                let g = admin_b.get_route().get_peer_groups(cred_c_id);
+                let g = admin_b.core().get_route().get_peer_groups(cred_c_id);
                 g.contains(&"guest".to_string()) && g.contains(&"limited".to_string())
             }
         },
@@ -1407,6 +1407,7 @@ async fn credential_node_connected_via_admin_b_trusts_admin_a_groups() {
             let cred_c = cred_c.clone();
             async move {
                 cred_c
+                    .core()
                     .get_route()
                     .get_peer_groups(admin_a_id)
                     .contains(&"platform-admin".to_string())
@@ -1513,8 +1514,8 @@ async fn multi_admin_multi_credential_route_and_revocation_isolation() {
         || {
             let admin_d = admin_d.clone();
             async move {
-                let g1 = admin_d.get_route().get_peer_groups(cred_1_id);
-                let g2 = admin_d.get_route().get_peer_groups(cred_2_id);
+                let g1 = admin_d.core().get_route().get_peer_groups(cred_1_id);
+                let g2 = admin_d.core().get_route().get_peer_groups(cred_2_id);
                 g1.contains(&"guest-a".to_string()) && g2.contains(&"guest-b".to_string())
             }
         },

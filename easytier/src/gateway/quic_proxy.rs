@@ -449,6 +449,7 @@ impl TcpProxyForQuicSrc {
                     return false;
                 };
                 peer_manager
+                    .core()
                     .check_allow_quic_to_dst(&IpAddr::V4(dst_ip))
                     .await
             },
@@ -582,7 +583,7 @@ impl QuicStreamContext {
             global_ctx: global_ctx.clone(),
             proxy_entries: Arc::new(DashMap::new()),
             cidr_set,
-            route: Arc::new(peer_mgr.get_route()),
+            route: Arc::new(peer_mgr.core().get_route()),
         }
     }
 }

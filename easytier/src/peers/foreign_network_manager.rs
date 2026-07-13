@@ -1712,6 +1712,7 @@ pub mod tests {
         wait_for_condition(
             || async {
                 let n = pmb_net1
+                    .core()
                     .get_route()
                     .get_next_hop(pma_net1.my_peer_id())
                     .await;

@@ -187,6 +187,9 @@ only:
 - Packet/NIC pipeline and route registration now use the core manager
   Interface directly. The native facade no longer mirrors registration
   methods or core registration-guard types.
+- Route handles, proxy/public-IPv6 queries, destination selection, and
+  KCP/QUIC eligibility checks now stay on the core Interface. Native retains
+  only the route snapshot-to-protobuf presentation method.
 
 ### Exit criteria
 

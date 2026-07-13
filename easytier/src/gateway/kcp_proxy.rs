@@ -207,6 +207,7 @@ impl TcpProxyForKcpSrc {
                     return false;
                 };
                 peer_manager
+                    .core()
                     .check_allow_kcp_to_dst(&IpAddr::V4(dst_ip))
                     .await
             },
@@ -428,7 +429,7 @@ impl KcpProxyDst {
         let global_ctx = self.peer_manager.get_global_ctx();
         let proxy_entries = self.proxy_entries.clone();
         let cidr_set = self.cidr_set.clone();
-        let route = Arc::new(self.peer_manager.get_route());
+        let route = Arc::new(self.peer_manager.core().get_route());
         self.tasks.spawn(async move {
             while let Ok(conn) = kcp_endpoint.accept().await {
                 let stream = KcpStream::new(&kcp_endpoint, conn)

@@ -1,4 +1,3 @@
-use cidr::{Ipv4Cidr, Ipv6Cidr};
 pub use easytier_core::peers::peer_manager::RouteAlgoType;
 use easytier_core::peers::peer_manager::{DnsAddressResolver, PeerManagerCore};
 use easytier_core::tunnel::ring::RingTunnelRegistry;
@@ -6,12 +5,7 @@ use easytier_core::{
     instance::{CoreRuntimeConfig, CoreRuntimeConfigStore},
     peers::{context::SubmittedPeerContext, foreign_network_manager::ForeignNetworkManager},
 };
-use std::collections::BTreeSet;
-use std::{
-    fmt::Debug,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr},
-    sync::Arc,
-};
+use std::{fmt::Debug, net::IpAddr, sync::Arc};
 
 use crate::{
     common::{
@@ -30,7 +24,7 @@ use crate::{
 
 use super::{
     PacketRecvChan, context::runtime_peer_snapshot, encrypt::NullCipher,
-    foreign_network_manager::ForeignNetworkRuntimeImpl, peer_conn::PeerConnId, route_trait::Route,
+    foreign_network_manager::ForeignNetworkRuntimeImpl, peer_conn::PeerConnId,
 };
 
 pub struct PeerManager {
@@ -203,10 +197,6 @@ impl PeerManager {
             .map_err(Error::from)
     }
 
-    pub fn get_route(&self) -> Box<dyn Route + Send + Sync + 'static> {
-        self.core.get_route()
-    }
-
     pub async fn list_routes(&self) -> Vec<instance::Route> {
         self.core
             .list_route_snapshots()
@@ -214,22 +204,6 @@ impl PeerManager {
             .into_iter()
             .map(Into::into)
             .collect()
-    }
-
-    pub async fn list_proxy_cidrs(&self) -> BTreeSet<Ipv4Cidr> {
-        self.get_route().list_proxy_cidrs().await
-    }
-
-    pub async fn list_proxy_cidrs_v6(&self) -> BTreeSet<Ipv6Cidr> {
-        self.get_route().list_proxy_cidrs_v6().await
-    }
-
-    pub async fn list_public_ipv6_routes(&self) -> BTreeSet<cidr::Ipv6Inet> {
-        self.core.list_public_ipv6_routes().await
-    }
-
-    pub async fn get_my_public_ipv6_addr(&self) -> Option<cidr::Ipv6Inet> {
-        self.core.public_ipv6_addr().await
     }
 
     pub async fn remove_nic_packet_process_pipeline(&self, id: String) -> Result<(), Error> {
@@ -248,18 +222,6 @@ impl PeerManager {
             .send_msg_for_proxy(msg, dst_peer_id)
             .await
             .map_err(Error::from)
-    }
-
-    pub async fn get_msg_dst_peer(&self, addr: &IpAddr) -> (Vec<PeerId>, bool) {
-        self.core.get_msg_dst_peer(addr).await
-    }
-
-    pub async fn get_msg_dst_peer_ipv4(&self, ipv4_addr: &Ipv4Addr) -> (Vec<PeerId>, bool) {
-        self.core.get_msg_dst_peer_ipv4(ipv4_addr).await
-    }
-
-    pub async fn get_msg_dst_peer_ipv6(&self, ipv6_addr: &Ipv6Addr) -> (Vec<PeerId>, bool) {
-        self.core.get_msg_dst_peer_ipv6(ipv6_addr).await
     }
 
     pub async fn send_msg_by_ip(
@@ -318,14 +280,6 @@ impl PeerManager {
             .close_peer_conn(peer_id, conn_id)
             .await
             .map_err(Error::from)
-    }
-
-    pub async fn check_allow_kcp_to_dst(&self, dst_ip: &IpAddr) -> bool {
-        self.core.check_allow_kcp_to_dst(dst_ip).await
-    }
-
-    pub async fn check_allow_quic_to_dst(&self, dst_ip: &IpAddr) -> bool {
-        self.core.check_allow_quic_to_dst(dst_ip).await
     }
 
     pub async fn update_exit_nodes(&self) {
@@ -740,6 +694,7 @@ mod tests {
             .unwrap();
 
         peer_mgr_a
+            .core()
             .get_route()
             .set_route_cost_fn(Box::new(TestCostCalculator {
                 costs: HashMap::from([
@@ -757,6 +712,7 @@ mod tests {
                 let peer_mgr_c = peer_mgr_c.clone();
                 async move {
                     peer_mgr_a
+                        .core()
                         .get_route()
                         .get_next_hop_with_policy(peer_mgr_c.my_peer_id(), NextHopPolicy::LeastCost)
                         .await
@@ -1504,6 +1460,7 @@ mod tests {
             .await
             .unwrap();
         let ret = peer_mgr_a
+            .core()
             .get_route()
             .get_next_hop_with_policy(peer_mgr_c.my_peer_id(), NextHopPolicy::LeastCost)
             .await;
@@ -1520,12 +1477,13 @@ mod tests {
         {
             panic!(
                 "route not appear, a route table: {}, table: {:#?}",
-                peer_mgr_a.get_route().dump().await,
-                peer_mgr_a.get_route().list_routes().await
+                peer_mgr_a.core().get_route().dump().await,
+                peer_mgr_a.core().get_route().list_routes().await
             )
         }
 
         let ret = peer_mgr_a
+            .core()
             .get_route()
             .get_next_hop_with_policy(peer_mgr_c.my_peer_id(), NextHopPolicy::LeastCost)
             .await;
@@ -1539,6 +1497,7 @@ mod tests {
             .await
             .unwrap();
         let ret = peer_mgr_a
+            .core()
             .get_route()
             .get_next_hop_with_policy(peer_mgr_c.my_peer_id(), NextHopPolicy::LeastCost)
             .await;

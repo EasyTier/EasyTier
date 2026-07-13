@@ -778,7 +778,8 @@ async fn wait_for_public_ipv6_addr(inst: &Instance) -> cidr::Ipv6Inet {
     wait_for_condition(
         || async {
             inst.get_peer_manager()
-                .get_my_public_ipv6_addr()
+                .core()
+                .public_ipv6_addr()
                 .await
                 .is_some()
         },
@@ -786,7 +787,8 @@ async fn wait_for_public_ipv6_addr(inst: &Instance) -> cidr::Ipv6Inet {
     )
     .await;
     inst.get_peer_manager()
-        .get_my_public_ipv6_addr()
+        .core()
+        .public_ipv6_addr()
         .await
         .unwrap()
 }
@@ -795,6 +797,7 @@ async fn wait_for_public_ipv6_route(inst: &Instance, target: cidr::Ipv6Inet) {
     wait_for_condition(
         || async {
             inst.get_peer_manager()
+                .core()
                 .list_public_ipv6_routes()
                 .await
                 .contains(&target)

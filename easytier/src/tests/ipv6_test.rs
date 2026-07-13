@@ -57,7 +57,7 @@ async fn test_peer_manager_ipv6() {
 
     // Test IPv6 address lookup for unknown address
     let ipv6_addr = Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 2);
-    let (peers, _is_self) = peer_mgr.get_msg_dst_peer_ipv6(&ipv6_addr).await;
+    let (peers, _is_self) = peer_mgr.core().get_msg_dst_peer_ipv6(&ipv6_addr).await;
 
     // Should return empty peers list for unknown IPv6
     assert!(peers.is_empty());
