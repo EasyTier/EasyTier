@@ -46,9 +46,9 @@ use super::{
     error::Error,
     foreign_network_client::ForeignNetworkClient,
     foreign_network_manager::{
-        ForeignNetworkEntryInfo, ForeignNetworkInfoProvider, ForeignNetworkRouteInfo,
-        ForeignNetworkRouteInfoProvider, GlobalForeignNetworkAccessor,
-        peer_map_foreign_network_accessor,
+        ForeignNetworkEntryInfo, ForeignNetworkInfoProvider, ForeignNetworkManager,
+        ForeignNetworkRouteInfo, ForeignNetworkRouteInfoProvider, ForeignNetworkRuntime,
+        GlobalForeignNetworkAccessor, peer_map_foreign_network_accessor,
     },
     peer_conn::{PeerConn, PeerConnId},
     peer_map::PeerMap,
@@ -1003,7 +1003,57 @@ impl PeerManagerCore {
     /// Builds the default peer control-plane graph while letting runtime provide
     /// the foreign-network adapter that owns platform-specific context.
     #[allow(clippy::too_many_arguments)]
-    pub fn new_with_default_components<F, BuildForeignNetworkManager>(
+    pub fn new_with_foreign_network_runtime(
+        route_algo: RouteAlgoType,
+        my_peer_id: PeerId,
+        context: ArcPeerContext,
+        public_ipv6_runtime: Arc<dyn PublicIpv6Runtime>,
+        stats_manager: Arc<StatsManager>,
+        acl_filter: Arc<AclFilter>,
+        credential_manager: Arc<CredentialManager>,
+        nic_channel: PacketRecvChan,
+        encryptor: Arc<dyn Encryptor + 'static>,
+        is_secure_mode_enabled: bool,
+        data_compress_algo: CompressorAlgo,
+        exit_nodes: Vec<IpAddr>,
+        address_resolver: Arc<dyn AddressResolver>,
+        foreign_context_default_flags: FlagsInConfig,
+        foreign_network_runtime: Arc<dyn ForeignNetworkRuntime>,
+    ) -> PeerManagerCoreBuildResult<ForeignNetworkManager> {
+        let foreign_context = context.clone();
+        let foreign_stats_manager = stats_manager.clone();
+        Self::new_with_default_components(
+            route_algo,
+            my_peer_id,
+            context,
+            public_ipv6_runtime,
+            stats_manager,
+            acl_filter,
+            credential_manager,
+            nic_channel,
+            encryptor,
+            is_secure_mode_enabled,
+            data_compress_algo,
+            exit_nodes,
+            address_resolver,
+            move |_, peer_session_store, packet_sender_to_mgr, accessor| {
+                Arc::new(ForeignNetworkManager::new(
+                    foreign_network_runtime,
+                    foreign_context,
+                    foreign_context_default_flags,
+                    foreign_stats_manager,
+                    peer_session_store,
+                    packet_sender_to_mgr,
+                    accessor,
+                ))
+            },
+        )
+    }
+
+    /// Builds the default peer control-plane graph with a caller-provided
+    /// foreign-network manager implementation.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_with_default_components<F, BuildForeignNetworkManager>(
         route_algo: RouteAlgoType,
         my_peer_id: PeerId,
         context: ArcPeerContext,

@@ -17,7 +17,13 @@ use std::{
 };
 
 use crate::{
-    common::{PeerId, dns::RuntimeDnsResolver, error::Error, global_ctx::ArcGlobalCtx},
+    common::{
+        PeerId,
+        config::{ConfigLoader, TomlConfigLoader},
+        dns::RuntimeDnsResolver,
+        error::Error,
+        global_ctx::ArcGlobalCtx,
+    },
     peers::{
         PeerPacketFilter, peer_session::PeerSessionStore, traffic_metrics::TrafficMetricRecorder,
     },
@@ -29,10 +35,16 @@ use crate::{
 };
 
 use super::{
-    BoxNicPacketFilter, BoxPeerPacketFilter, PacketRecvChan, context::runtime_peer_snapshot,
-    encrypt::NullCipher, foreign_network_client::ForeignNetworkClient,
-    foreign_network_manager::ForeignNetworkManager, peer_conn::PeerConnId, peer_map::PeerMap,
-    peer_rpc::PeerRpcManager, peer_task::ExternalTaskSignal, relay_peer_map::RelayPeerMap,
+    BoxNicPacketFilter, BoxPeerPacketFilter, PacketRecvChan,
+    context::runtime_peer_snapshot,
+    encrypt::NullCipher,
+    foreign_network_client::ForeignNetworkClient,
+    foreign_network_manager::{ForeignNetworkManager, ForeignNetworkRuntimeImpl},
+    peer_conn::PeerConnId,
+    peer_map::PeerMap,
+    peer_rpc::PeerRpcManager,
+    peer_task::ExternalTaskSignal,
+    relay_peer_map::RelayPeerMap,
     route_trait::Route,
 };
 
@@ -118,10 +130,11 @@ impl PeerManager {
             global_ctx.clone(),
         ));
 
-        let global_ctx_for_foreign = global_ctx.clone();
-        let peer_context_for_foreign = peer_context.clone();
-        let ring_registry_for_foreign = ring_registry.clone();
-        let build_result = PeerManagerCore::new_with_default_components(
+        let foreign_network_runtime = Arc::new(ForeignNetworkRuntimeImpl::new_with_ring_registry(
+            global_ctx.clone(),
+            ring_registry.clone(),
+        ));
+        let build_result = PeerManagerCore::new_with_foreign_network_runtime(
             route_algo,
             my_peer_id,
             peer_context.clone(),
@@ -135,18 +148,13 @@ impl PeerManager {
             data_compress_algo,
             exit_nodes,
             Arc::new(DnsAddressResolver::new(Arc::new(RuntimeDnsResolver::new()))),
-            move |my_peer_id, peer_session_store, packet_sender_to_mgr, accessor| {
-                Arc::new(ForeignNetworkManager::new(
-                    my_peer_id,
-                    global_ctx_for_foreign.clone(),
-                    peer_context_for_foreign,
-                    ring_registry_for_foreign,
-                    peer_session_store,
-                    packet_sender_to_mgr,
-                    accessor,
-                ))
-            },
+            TomlConfigLoader::default().get_flags(),
+            foreign_network_runtime.clone(),
         );
+        let foreign_network_manager = Arc::new(ForeignNetworkManager::from_core(
+            build_result.foreign_network_manager,
+            foreign_network_runtime,
+        ));
 
         PeerManager {
             global_ctx,
@@ -154,7 +162,7 @@ impl PeerManager {
             peer_context,
             runtime_config,
             ring_registry,
-            foreign_network_manager: build_result.foreign_network_manager,
+            foreign_network_manager,
         }
     }
 

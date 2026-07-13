@@ -111,6 +111,9 @@ Core owns:
   hostname, secure mode, relay protocol/socket-mark flags, and initial
   advertised features. Native only realizes that specification as a GlobalCtx
   and attaches host STUN, listener, and connector resources.
+- `PeerManagerCore` now constructs and owns the core foreign-network manager
+  from a `ForeignNetworkRuntime` Host Adapter. The native facade no longer
+  reimplements core admission, packet, route/info, or connection-close traits.
 - The remaining runtime surface is context construction/removal and native
   direct-connector RPC registration.
 

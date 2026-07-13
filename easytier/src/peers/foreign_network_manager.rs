@@ -9,13 +9,13 @@ use std::{sync::Arc, time::SystemTime};
 
 use dashmap::DashMap;
 use easytier_core::connectivity::direct::DirectConnectorRpcHandler;
+#[cfg(test)]
 use easytier_core::peers::context::ArcPeerContext;
 use easytier_core::peers::foreign_network_manager as core_foreign_network_manager;
 pub use easytier_core::peers::foreign_network_manager::{
     ForeignNetworkInfoProvider, ForeignNetworkRouteInfo, ForeignNetworkRouteInfoProvider,
     GlobalForeignNetworkAccessor,
 };
-use easytier_core::peers::peer_manager::{self as core_peer_manager, ForeignNetworkPacketHandler};
 use easytier_core::tunnel::ring::RingTunnelRegistry;
 #[cfg(test)]
 use tokio::sync::Mutex;
@@ -47,10 +47,8 @@ use crate::{
 };
 
 #[cfg(test)]
-use super::create_packet_recv_chan;
-use super::{
-    PacketRecvChan, peer_conn::PeerConn, peer_rpc::PeerRpcManager, peer_session::PeerSessionStore,
-};
+use super::{PacketRecvChan, create_packet_recv_chan, peer_session::PeerSessionStore};
+use super::{peer_conn::PeerConn, peer_rpc::PeerRpcManager};
 
 #[cfg(test)]
 struct ForeignNetworkEntry {
@@ -139,7 +137,7 @@ struct RuntimeForeignNetworkContext {
     lifecycle_token: Arc<()>,
 }
 
-struct ForeignNetworkRuntimeImpl {
+pub(super) struct ForeignNetworkRuntimeImpl {
     global_ctx: ArcGlobalCtx,
     ring_registry: Arc<RingTunnelRegistry>,
     foreign_contexts: DashMap<String, Arc<RuntimeForeignNetworkContext>>,
@@ -150,7 +148,7 @@ impl ForeignNetworkRuntimeImpl {
         Self::new_with_ring_registry(global_ctx, Arc::new(RingTunnelRegistry::default()))
     }
 
-    fn new_with_ring_registry(
+    pub(super) fn new_with_ring_registry(
         global_ctx: ArcGlobalCtx,
         ring_registry: Arc<RingTunnelRegistry>,
     ) -> Self {
@@ -254,7 +252,7 @@ impl core_foreign_network_manager::ForeignNetworkRuntime for ForeignNetworkRunti
 }
 
 pub struct ForeignNetworkManager {
-    core: core_foreign_network_manager::ForeignNetworkManager,
+    core: Arc<core_foreign_network_manager::ForeignNetworkManager>,
     runtime: Arc<ForeignNetworkRuntimeImpl>,
 }
 
@@ -307,33 +305,11 @@ impl ForeignNetworkManager {
             )
     }
 
-    pub fn new(
-        _my_peer_id: PeerId,
-        global_ctx: ArcGlobalCtx,
-        parent_context: ArcPeerContext,
-        ring_registry: Arc<RingTunnelRegistry>,
-        peer_session_store: Arc<PeerSessionStore>,
-        packet_sender_to_mgr: PacketRecvChan,
-        accessor: Box<dyn GlobalForeignNetworkAccessor>,
+    pub(super) fn from_core(
+        core: Arc<core_foreign_network_manager::ForeignNetworkManager>,
+        runtime: Arc<ForeignNetworkRuntimeImpl>,
     ) -> Self {
-        let stats_mgr = global_ctx.stats_manager().clone();
-        let foreign_context_default_flags = TomlConfigLoader::default().get_flags();
-        let runtime = Arc::new(ForeignNetworkRuntimeImpl::new_with_ring_registry(
-            global_ctx,
-            ring_registry,
-        ));
-        Self {
-            core: core_foreign_network_manager::ForeignNetworkManager::new(
-                runtime.clone(),
-                parent_context,
-                foreign_context_default_flags,
-                stats_mgr,
-                peer_session_store,
-                packet_sender_to_mgr,
-                accessor,
-            ),
-            runtime,
-        }
+        Self { core, runtime }
     }
 
     #[cfg(test)]
@@ -436,85 +412,6 @@ impl ForeignNetworkManager {
             .close_peer_conn(peer_id, conn_id)
             .await
             .map_err(Into::into)
-    }
-}
-
-#[async_trait::async_trait]
-impl ForeignNetworkInfoProvider for ForeignNetworkManager {
-    async fn list_foreign_network_infos(
-        &self,
-        include_trusted_keys: bool,
-    ) -> std::collections::HashMap<String, core_foreign_network_manager::ForeignNetworkEntryInfo>
-    {
-        self.core
-            .list_foreign_network_infos(include_trusted_keys)
-            .await
-    }
-}
-
-#[async_trait::async_trait]
-impl ForeignNetworkRouteInfoProvider for ForeignNetworkManager {
-    async fn list_foreign_network_route_infos(&self) -> Vec<ForeignNetworkRouteInfo> {
-        self.core.list_foreign_network_route_infos().await
-    }
-
-    fn get_foreign_network_last_update(&self, network_name: &str) -> Option<SystemTime> {
-        ForeignNetworkManager::get_foreign_network_last_update(self, network_name)
-    }
-}
-
-#[async_trait::async_trait]
-impl ForeignNetworkPacketHandler for ForeignNetworkManager {
-    fn get_network_peer_id(&self, network_name: &str) -> Option<PeerId> {
-        ForeignNetworkManager::get_network_peer_id(self, network_name)
-    }
-
-    async fn forward_foreign_network_packet(
-        &self,
-        network_name: &str,
-        dst_peer_id: PeerId,
-        msg: ZCPacket,
-    ) -> anyhow::Result<()> {
-        ForeignNetworkManager::forward_foreign_network_packet(self, network_name, dst_peer_id, msg)
-            .await
-            .map_err(Into::into)
-    }
-}
-
-#[async_trait::async_trait]
-impl core_peer_manager::ForeignNetworkConnectionAdmission for ForeignNetworkManager {
-    fn get_network_peer_id(&self, network_name: &str) -> Option<PeerId> {
-        ForeignNetworkManager::get_network_peer_id(self, network_name)
-    }
-
-    fn is_existing_credential_pubkey_trusted(
-        &self,
-        network_name: &str,
-        remote_static_pubkey: &[u8],
-    ) -> bool {
-        ForeignNetworkManager::is_existing_credential_pubkey_trusted(
-            self,
-            network_name,
-            remote_static_pubkey,
-        )
-    }
-
-    async fn add_peer_conn(
-        &self,
-        peer_conn: super::peer_conn::PeerConn,
-    ) -> Result<(), easytier_core::peers::error::Error> {
-        self.core.add_peer_conn(peer_conn).await
-    }
-}
-
-#[async_trait::async_trait]
-impl core_peer_manager::ForeignPeerConnectionCloser for ForeignNetworkManager {
-    async fn close_peer_conn(
-        &self,
-        peer_id: PeerId,
-        conn_id: &super::peer_conn::PeerConnId,
-    ) -> Result<(), easytier_core::peers::error::Error> {
-        self.core.close_peer_conn(peer_id, conn_id).await
     }
 }
 
