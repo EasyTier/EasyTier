@@ -297,9 +297,10 @@ async fn relay_peer_map_secure_session_decrypt() {
         "sec1".to_string(),
     )));
     set_secure_mode_cfg(&ctx, true);
-    let peer_map = Arc::new(PeerMap::new(s, ctx.clone(), 10));
+    let (_, peer_context) = crate::peers::context::build_submitted_peer_context(&ctx);
+    let peer_map = Arc::new(PeerMap::new(s, peer_context.clone(), 10));
     let store = Arc::new(PeerSessionStore::new());
-    let relay_map = new_relay_peer_map(peer_map, None, ctx.clone(), 10, store.clone());
+    let relay_map = new_relay_peer_map(peer_map, None, peer_context, 10, store.clone());
 
     let algo = ctx.get_flags().encryption_algorithm.clone();
     let root_key = [7u8; 32];
@@ -471,11 +472,12 @@ async fn relay_peer_map_retry_backoff_and_evict() {
     let (s, _r) = create_packet_recv_chan();
     let ctx_secure = get_mock_global_ctx();
     set_secure_mode_cfg(&ctx_secure, true);
-    let peer_map = Arc::new(PeerMap::new(s, ctx_secure.clone(), 10));
+    let (_, secure_peer_context) = crate::peers::context::build_submitted_peer_context(&ctx_secure);
+    let peer_map = Arc::new(PeerMap::new(s, secure_peer_context.clone(), 10));
     let relay_map = new_relay_peer_map(
         peer_map,
         None,
-        ctx_secure.clone(),
+        secure_peer_context,
         10,
         Arc::new(PeerSessionStore::new()),
     );
@@ -489,11 +491,12 @@ async fn relay_peer_map_retry_backoff_and_evict() {
 
     let (s2, _r2) = create_packet_recv_chan();
     let ctx_plain = get_mock_global_ctx();
-    let peer_map_plain = Arc::new(PeerMap::new(s2, ctx_plain.clone(), 30));
+    let (_, plain_peer_context) = crate::peers::context::build_submitted_peer_context(&ctx_plain);
+    let peer_map_plain = Arc::new(PeerMap::new(s2, plain_peer_context.clone(), 30));
     let relay_map_plain = new_relay_peer_map(
         peer_map_plain,
         None,
-        ctx_plain.clone(),
+        plain_peer_context,
         30,
         Arc::new(PeerSessionStore::new()),
     );
@@ -518,9 +521,10 @@ async fn relay_peer_map_pending_packet_buffer() {
         "sec1".to_string(),
     )));
     set_secure_mode_cfg(&ctx, true);
-    let peer_map = Arc::new(PeerMap::new(s, ctx.clone(), 10));
+    let (_, peer_context) = crate::peers::context::build_submitted_peer_context(&ctx);
+    let peer_map = Arc::new(PeerMap::new(s, peer_context.clone(), 10));
     let store = Arc::new(PeerSessionStore::new());
-    let relay_map = new_relay_peer_map(peer_map, None, ctx.clone(), 10, store.clone());
+    let relay_map = new_relay_peer_map(peer_map, None, peer_context, 10, store.clone());
 
     // Send multiple packets while no session exists (handshake will fail, but packets should be buffered)
     for i in 0..5u8 {
@@ -818,9 +822,10 @@ async fn relay_peer_map_remove_peer() {
         "sec1".to_string(),
     )));
     set_secure_mode_cfg(&ctx, true);
-    let peer_map = Arc::new(PeerMap::new(s, ctx.clone(), 10));
+    let (_, peer_context) = crate::peers::context::build_submitted_peer_context(&ctx);
+    let peer_map = Arc::new(PeerMap::new(s, peer_context.clone(), 10));
     let store = Arc::new(PeerSessionStore::new());
-    let relay_map = new_relay_peer_map(peer_map, None, ctx.clone(), 10, store.clone());
+    let relay_map = new_relay_peer_map(peer_map, None, peer_context, 10, store.clone());
 
     let peer_1: PeerId = 100;
 

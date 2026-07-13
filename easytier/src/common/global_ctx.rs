@@ -6,12 +6,9 @@ use std::{
 
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
-use easytier_core::config::{IpPrefix, ProxyNetworkConfig as CoreProxyNetworkConfig};
 use easytier_core::peers::context::{
-    ArcByteLimiter, BoxPeerRuntimeChangeSubscriber, HostRoutingPolicy,
-    NetworkIdentity as CoreNetworkIdentity, PeerContext, PeerContextEvent,
-    PeerContextEventSubscriber, PeerControlTrafficSink, PeerEvent, PeerGroupIdentity,
-    PeerRuntimeChangeSubscriber, TrustedKeyMapManager, secret_proof_from_secret,
+    BoxPeerRuntimeChangeSubscriber, PeerControlTrafficSink, PeerRuntimeChangeSubscriber,
+    TrustedKeyMapManager,
 };
 pub use easytier_core::peers::context::{TrustedKeyMap, TrustedKeyMetadata, TrustedKeySource};
 use easytier_core::peers::encrypt::{derive_key_128, derive_key_256};
@@ -21,7 +18,6 @@ use easytier_core::peers::public_ipv6::PublicIpv6Runtime;
 use super::{
     PeerId,
     config::{ConfigLoader, Flags},
-    constants::EASYTIER_VERSION,
     netns::NetNS,
     network::IPCollector,
     stun::{StunInfoCollector, StunInfoCollectorTrait},
@@ -42,7 +38,6 @@ use crate::{
     },
     rpc_service::protected_port,
     tunnel::matches_protocol,
-    use_global_var,
 };
 use crossbeam::atomic::AtomicCell;
 use hmac::{Hmac, Mac};
@@ -100,7 +95,6 @@ pub enum GlobalCtxEvent {
 
 pub type EventBus = tokio::sync::broadcast::Sender<GlobalCtxEvent>;
 pub type EventBusSubscriber = tokio::sync::broadcast::Receiver<GlobalCtxEvent>;
-type PeerEventBus = tokio::sync::broadcast::Sender<PeerContextEvent>;
 
 struct GlobalCtxRuntimeChangeSubscriber(EventBusSubscriber);
 
@@ -122,7 +116,6 @@ pub struct GlobalCtx {
     pub network: NetworkIdentity,
 
     event_bus: EventBus,
-    peer_event_bus: PeerEventBus,
 
     cached_ipv4: AtomicCell<Option<cidr::Ipv4Inet>>,
     cached_ipv6: AtomicCell<Option<cidr::Ipv6Inet>>,
@@ -194,289 +187,6 @@ impl PeerControlTrafficSink for GlobalCtx {
             stats_manager::MetricName::TrafficControlBytesRx,
             stats_manager::MetricName::TrafficControlPacketsRx,
         );
-    }
-}
-
-impl PeerContext for GlobalCtx {
-    fn network_identity(&self) -> CoreNetworkIdentity {
-        let identity = self.get_network_identity();
-        CoreNetworkIdentity {
-            network_name: identity.network_name,
-            network_secret: identity.network_secret,
-            network_secret_digest: identity.network_secret_digest,
-        }
-    }
-
-    fn flags(&self) -> crate::proto::common::FlagsInConfig {
-        self.get_flags()
-    }
-
-    fn host_routing_policy(&self) -> HostRoutingPolicy {
-        HostRoutingPolicy {
-            local_exit_node_fallback: cfg!(target_env = "ohos"),
-        }
-    }
-
-    fn disable_relay_data(&self) -> bool {
-        self.flags_arc().disable_relay_data
-    }
-
-    fn secure_mode(&self) -> Option<crate::proto::common::SecureModeConfig> {
-        self.config.get_secure_mode()
-    }
-
-    fn stun_info(&self) -> crate::proto::common::StunInfo {
-        self.get_stun_info_collector().get_stun_info()
-    }
-
-    fn instance_id(&self) -> uuid::Uuid {
-        self.get_id()
-    }
-
-    fn ipv4(&self) -> Option<cidr::Ipv4Inet> {
-        self.get_ipv4()
-    }
-
-    fn ipv6(&self) -> Option<cidr::Ipv6Inet> {
-        self.get_ipv6()
-    }
-
-    fn is_ip_local_ipv6(&self, ip: &std::net::Ipv6Addr) -> bool {
-        GlobalCtx::is_ip_local_ipv6(self, ip)
-    }
-
-    fn proxy_cidrs(&self) -> Vec<cidr::Ipv4Cidr> {
-        self.config
-            .get_proxy_cidrs()
-            .iter()
-            .map(|x| x.mapped_cidr.unwrap_or(x.cidr))
-            .collect()
-    }
-
-    fn proxy_networks(&self) -> Vec<CoreProxyNetworkConfig> {
-        self.config
-            .get_proxy_cidrs()
-            .into_iter()
-            .map(|proxy| CoreProxyNetworkConfig {
-                real: IpPrefix {
-                    address: proxy.cidr.first_address().into(),
-                    prefix_len: proxy.cidr.network_length(),
-                },
-                mapped: proxy.mapped_cidr.map(|mapped| IpPrefix {
-                    address: mapped.first_address().into(),
-                    prefix_len: mapped.network_length(),
-                }),
-            })
-            .collect()
-    }
-
-    fn vpn_portal_cidr(&self) -> Option<cidr::Ipv4Cidr> {
-        self.get_vpn_portal_cidr()
-    }
-
-    fn hostname(&self) -> String {
-        self.get_hostname()
-    }
-
-    fn feature_flags(&self) -> crate::proto::common::PeerFeatureFlag {
-        self.get_feature_flags()
-    }
-
-    fn set_avoid_relay_data_preference(&self, avoid_relay_data: bool) -> bool {
-        GlobalCtx::set_avoid_relay_data_preference(self, avoid_relay_data)
-    }
-
-    fn subscribe_runtime_changes(&self) -> Option<BoxPeerRuntimeChangeSubscriber> {
-        Some(GlobalCtx::subscribe_runtime_changes(self))
-    }
-
-    fn easytier_version(&self) -> String {
-        EASYTIER_VERSION.to_string()
-    }
-
-    fn ospf_update_my_foreign_network_interval_sec(&self) -> u64 {
-        use_global_var!(OSPF_UPDATE_MY_GLOBAL_FOREIGN_NETWORK_INTERVAL_SEC)
-    }
-
-    fn advertised_ipv6_public_addr_prefix(&self) -> Option<cidr::Ipv6Cidr> {
-        self.get_advertised_ipv6_public_addr_prefix()
-    }
-
-    fn is_ip_in_same_network(&self, ip: &IpAddr) -> bool {
-        GlobalCtx::is_ip_in_same_network(self, ip)
-    }
-
-    fn is_ip_local_virtual_ip(&self, ip: &IpAddr) -> bool {
-        GlobalCtx::is_ip_local_virtual_ip(self, ip)
-    }
-
-    fn p2p_only(&self) -> bool {
-        GlobalCtx::p2p_only(self)
-    }
-
-    fn latency_first(&self) -> bool {
-        GlobalCtx::latency_first(self)
-    }
-
-    fn peer_groups(&self, peer_id: PeerId) -> Vec<PeerGroupInfo> {
-        self.get_acl_groups(peer_id)
-    }
-
-    fn acl_group_declarations(&self) -> Vec<PeerGroupIdentity> {
-        self.get_acl_group_declarations()
-            .into_iter()
-            .map(|group| PeerGroupIdentity {
-                group_name: group.group_name,
-                group_secret: group.group_secret,
-            })
-            .collect()
-    }
-
-    fn pinned_remote_static_pubkey(
-        &self,
-        tunnel_info: Option<&crate::proto::common::TunnelInfo>,
-    ) -> Option<String> {
-        let remote_url_str = tunnel_info
-            .and_then(|t| t.remote_addr.as_ref())
-            .map(|u| u.url.as_str())?;
-        let remote_url: url::Url = remote_url_str.parse().ok()?;
-
-        self.config
-            .get_peers()
-            .into_iter()
-            .find(|p| p.uri == remote_url)
-            .and_then(|p| p.peer_public_key)
-    }
-
-    fn secret_proof(&self, challenge: &[u8]) -> Option<hmac::Hmac<sha2::Sha256>> {
-        let secret = self.get_network_identity().network_secret?;
-        secret_proof_from_secret(&secret, challenge)
-    }
-
-    fn secret_digest(&self, network_identity: &CoreNetworkIdentity) -> Vec<u8> {
-        if use_global_var!(HMAC_SECRET_DIGEST) {
-            self.get_secret_proof(b"digest")
-                .map(|mac| mac.finalize().into_bytes().to_vec())
-                .unwrap_or_default()
-        } else {
-            network_identity
-                .secret_digest()
-                .unwrap_or_default()
-                .to_vec()
-        }
-    }
-
-    fn is_pubkey_trusted(&self, pubkey: &[u8], network_name: &str) -> bool {
-        self.is_pubkey_trusted(pubkey, network_name)
-    }
-
-    fn is_pubkey_trusted_with_source(
-        &self,
-        pubkey: &[u8],
-        network_name: &str,
-        source: TrustedKeySource,
-    ) -> bool {
-        GlobalCtx::is_pubkey_trusted_with_source(self, pubkey, network_name, source)
-    }
-
-    fn list_trusted_keys(&self, network_name: &str) -> Vec<(Vec<u8>, TrustedKeyMetadata)> {
-        GlobalCtx::list_trusted_keys(self, network_name)
-    }
-
-    fn trusted_credential_pubkeys(
-        &self,
-        network_secret: &str,
-    ) -> Vec<crate::proto::peer_rpc::TrustedCredentialPubkeyProof> {
-        self.get_credential_manager()
-            .get_trusted_pubkeys(network_secret)
-    }
-
-    fn remove_expired_credentials(&self) -> bool {
-        self.get_credential_manager().remove_expired_credentials()
-    }
-
-    fn issue_credential_changed(&self) {
-        GlobalCtx::issue_event(self, GlobalCtxEvent::CredentialChanged);
-    }
-
-    fn update_trusted_keys(&self, keys: TrustedKeyMap, network_name: &str) {
-        GlobalCtx::update_trusted_keys(self, keys, network_name);
-    }
-
-    fn remove_trusted_keys(&self, network_name: &str) {
-        GlobalCtx::remove_trusted_keys(self, network_name);
-    }
-
-    fn record_control_tx(&self, network_name: &str, bytes: u64) {
-        PeerControlTrafficSink::record_control_tx(self, network_name, bytes);
-    }
-
-    fn record_control_rx(&self, network_name: &str, bytes: u64) {
-        PeerControlTrafficSink::record_control_rx(self, network_name, bytes);
-    }
-
-    fn recv_limiter(&self, network_name: &str, is_foreign_network: bool) -> Option<ArcByteLimiter> {
-        let flags = self.get_flags();
-        if is_foreign_network && flags.foreign_relay_bps_limit != u64::MAX {
-            let limiter_config = crate::proto::common::LimiterConfig {
-                burst_rate: None,
-                bps: Some(flags.foreign_relay_bps_limit),
-                fill_duration_ms: None,
-            };
-            return Some(
-                self.token_bucket_manager()
-                    .get_or_create(&format!("{network_name}:recv"), limiter_config.into()),
-            );
-        }
-
-        if flags.instance_recv_bps_limit != u64::MAX {
-            let limiter_config = crate::proto::common::LimiterConfig {
-                burst_rate: None,
-                bps: Some(flags.instance_recv_bps_limit),
-                fill_duration_ms: None,
-            };
-            return Some(
-                self.token_bucket_manager()
-                    .get_or_create("instance:recv", limiter_config.into()),
-            );
-        }
-
-        None
-    }
-
-    fn foreign_forward_limiter(&self, network_name: &str) -> Option<ArcByteLimiter> {
-        let bps = self.get_flags().foreign_relay_bps_limit;
-        (bps != u64::MAX).then(|| {
-            let limiter: ArcByteLimiter = self.token_bucket_manager().get_or_create(
-                network_name,
-                crate::proto::common::LimiterConfig {
-                    burst_rate: None,
-                    bps: Some(bps),
-                    fill_duration_ms: None,
-                }
-                .into(),
-            );
-            limiter
-        })
-    }
-
-    fn issue_event(&self, event: PeerEvent) {
-        match event {
-            PeerEvent::PeerAdded(peer_id) => self.issue_event(GlobalCtxEvent::PeerAdded(peer_id)),
-            PeerEvent::PeerRemoved(peer_id) => {
-                self.issue_event(GlobalCtxEvent::PeerRemoved(peer_id))
-            }
-            PeerEvent::PeerConnAdded(info) => {
-                self.issue_event(GlobalCtxEvent::PeerConnAdded(info.into()))
-            }
-            PeerEvent::PeerConnRemoved(info) => {
-                self.issue_event(GlobalCtxEvent::PeerConnRemoved(info.into()))
-            }
-        }
-    }
-
-    fn subscribe_peer_events(&self) -> Option<PeerContextEventSubscriber> {
-        Some(self.peer_event_bus.subscribe())
     }
 }
 
@@ -584,8 +294,6 @@ impl GlobalCtx {
         let hostname = config_fs.get_hostname();
 
         let (event_bus, _) = tokio::sync::broadcast::channel(16);
-        let (peer_event_bus, _) = tokio::sync::broadcast::channel(16);
-
         let stun_info_collector = StunInfoCollector::new_with_default_servers();
 
         if let Some(stun_servers) = config_fs.get_stun_servers() {
@@ -618,7 +326,6 @@ impl GlobalCtx {
             network,
 
             event_bus,
-            peer_event_bus,
             cached_ipv4: AtomicCell::new(None),
             cached_ipv6: AtomicCell::new(None),
             public_ipv6_lease: AtomicCell::new(None),
@@ -665,7 +372,6 @@ impl GlobalCtx {
     }
 
     pub fn issue_event(&self, event: GlobalCtxEvent) {
-        self.issue_peer_context_event(&event);
         if let Err(e) = self.event_bus.send(event.clone()) {
             tracing::warn!(
                 "Failed to send event: {:?}, error: {:?}, receiver count: {}",
@@ -674,17 +380,6 @@ impl GlobalCtx {
                 self.event_bus.receiver_count()
             );
         }
-    }
-
-    fn issue_peer_context_event(&self, event: &GlobalCtxEvent) {
-        let event = match event {
-            GlobalCtxEvent::PeerAdded(peer_id) => PeerContextEvent::PeerAdded(*peer_id),
-            GlobalCtxEvent::PeerRemoved(peer_id) => PeerContextEvent::PeerRemoved(*peer_id),
-            GlobalCtxEvent::PeerConnAdded(_) => PeerContextEvent::PeerConnAdded,
-            GlobalCtxEvent::PeerConnRemoved(_) => PeerContextEvent::PeerConnRemoved,
-            _ => return,
-        };
-        let _ = self.peer_event_bus.send(event);
     }
 
     fn set_tun_device_name(&self, name: Option<String>) {
@@ -1107,7 +802,6 @@ pub mod tests {
         let global_ctx = GlobalCtx::new(config);
 
         let mut subscriber = global_ctx.subscribe();
-        let mut peer_subscriber = global_ctx.subscribe_peer_events().unwrap();
         let peer_id = new_peer_id();
         global_ctx.issue_event(GlobalCtxEvent::PeerAdded(peer_id));
         global_ctx.issue_event(GlobalCtxEvent::PeerRemoved(peer_id));
@@ -1129,22 +823,6 @@ pub mod tests {
         assert_eq!(
             subscriber.recv().await.unwrap(),
             GlobalCtxEvent::PeerConnRemoved(PeerConnInfo::default())
-        );
-        assert_eq!(
-            peer_subscriber.recv().await.unwrap(),
-            PeerContextEvent::PeerAdded(peer_id)
-        );
-        assert_eq!(
-            peer_subscriber.recv().await.unwrap(),
-            PeerContextEvent::PeerRemoved(peer_id)
-        );
-        assert_eq!(
-            peer_subscriber.recv().await.unwrap(),
-            PeerContextEvent::PeerConnAdded
-        );
-        assert_eq!(
-            peer_subscriber.recv().await.unwrap(),
-            PeerContextEvent::PeerConnRemoved
         );
     }
 

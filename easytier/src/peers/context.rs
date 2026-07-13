@@ -1,9 +1,17 @@
 use std::{collections::HashSet, sync::Arc};
 
+use easytier_core::config::{
+    CoreConfig, IpPrefix, NodeConfig, PeerPolicyConfig, ProxyNetworkConfig, RouteConfig,
+    TrafficConfig,
+};
+use easytier_core::instance::{CoreRuntimeConfig, CoreRuntimeConfigStore};
+#[cfg(test)]
+use easytier_core::peers::context::PeerContext;
 use easytier_core::peers::context::{
-    ArcByteLimiter, PeerContext, PeerCredentialEventSink, PeerEvent, PeerEventSink,
-    PeerLimiterFactory, PeerPublicIpv6State, PeerRelayRuntime, PeerRuntimeConfig,
-    PeerRuntimeSnapshot, PeerStunInfoSource, SubmittedPeerContextCapabilities,
+    ArcByteLimiter, HostRoutingPolicy, NetworkIdentity as CoreNetworkIdentity,
+    PeerCredentialEventSink, PeerEvent, PeerEventSink, PeerGroupIdentity, PeerLimiterFactory,
+    PeerPublicIpv6State, PeerRelayRuntime, PeerRuntimeConfig, PeerRuntimeSnapshot,
+    PeerStunInfoSource, SubmittedPeerContext, SubmittedPeerContextCapabilities,
 };
 
 use crate::{
@@ -17,7 +25,14 @@ use crate::{
 
 /// Normalizes the native host configuration into one portable peer version.
 pub(crate) fn runtime_peer_snapshot(global_ctx: &ArcGlobalCtx) -> PeerRuntimeSnapshot {
-    let acl_group_declarations = PeerContext::acl_group_declarations(global_ctx.as_ref());
+    let acl_group_declarations = global_ctx
+        .get_acl_group_declarations()
+        .into_iter()
+        .map(|group| PeerGroupIdentity {
+            group_name: group.group_name,
+            group_secret: group.group_secret,
+        })
+        .collect::<Vec<_>>();
     let memberships = global_ctx
         .config
         .get_acl()
@@ -34,7 +49,7 @@ pub(crate) fn runtime_peer_snapshot(global_ctx: &ArcGlobalCtx) -> PeerRuntimeSna
         runtime: runtime_peer_config(global_ctx),
         easytier_version: EASYTIER_VERSION.to_owned(),
         flags: global_ctx.get_flags(),
-        vpn_portal_cidr: PeerContext::vpn_portal_cidr(global_ctx.as_ref()),
+        vpn_portal_cidr: global_ctx.get_vpn_portal_cidr(),
         pinned_peers: global_ctx
             .config
             .get_peers()
@@ -51,6 +66,20 @@ pub(crate) fn runtime_peer_snapshot(global_ctx: &ArcGlobalCtx) -> PeerRuntimeSna
         ) as usize,
         hmac_secret_digest: use_global_var!(HMAC_SECRET_DIGEST),
     }
+}
+
+pub(crate) fn build_submitted_peer_context(
+    global_ctx: &ArcGlobalCtx,
+) -> (CoreRuntimeConfigStore, Arc<SubmittedPeerContext>) {
+    let runtime_config = CoreRuntimeConfigStore::new(
+        CoreRuntimeConfig::default(),
+        Arc::new(runtime_peer_snapshot(global_ctx)),
+    );
+    let peer_context = Arc::new(SubmittedPeerContext::new(
+        Arc::new(runtime_config.clone()),
+        submitted_peer_capabilities(global_ctx),
+    ));
+    (runtime_config, peer_context)
 }
 
 pub(crate) struct GlobalCtxPeerEventSink {
@@ -116,14 +145,64 @@ impl PeerLimiterFactory for GlobalCtx {
 }
 
 fn runtime_peer_config(global_ctx: &ArcGlobalCtx) -> PeerRuntimeConfig {
-    let mut runtime = PeerContext::runtime_config(global_ctx.as_ref());
-    runtime.core.routes.proxy_networks = PeerContext::proxy_networks(global_ctx.as_ref());
-    runtime
+    let identity = global_ctx.get_network_identity();
+    let network_identity = CoreNetworkIdentity {
+        network_name: identity.network_name,
+        network_secret: identity.network_secret,
+        network_secret_digest: identity.network_secret_digest,
+    };
+    let hostname = global_ctx.get_hostname();
+    let proxy_networks = global_ctx
+        .config
+        .get_proxy_cidrs()
+        .into_iter()
+        .map(|proxy| ProxyNetworkConfig {
+            real: IpPrefix {
+                address: proxy.cidr.first_address().into(),
+                prefix_len: proxy.cidr.network_length(),
+            },
+            mapped: proxy.mapped_cidr.map(|mapped| IpPrefix {
+                address: mapped.first_address().into(),
+                prefix_len: mapped.network_length(),
+            }),
+        })
+        .collect();
+    PeerRuntimeConfig {
+        core: CoreConfig {
+            node: NodeConfig {
+                peer_id: None,
+                instance_id: Some(*global_ctx.get_id().as_bytes()),
+                hostname: (!hostname.is_empty()).then_some(hostname),
+                network_name: network_identity.network_name.clone(),
+            },
+            routes: RouteConfig {
+                ipv4: global_ctx.get_ipv4().map(|value| IpPrefix {
+                    address: value.address().into(),
+                    prefix_len: value.network_length(),
+                }),
+                ipv6: global_ctx.get_ipv6().map(|value| IpPrefix {
+                    address: value.address().into(),
+                    prefix_len: value.network_length(),
+                }),
+                proxy_networks,
+                ..Default::default()
+            },
+            peer_policy: PeerPolicyConfig::default(),
+            traffic: TrafficConfig::default(),
+        },
+        network_identity,
+        stun_info: global_ctx.get_stun_info_collector().get_stun_info(),
+        feature_flags: global_ctx.get_feature_flags(),
+        secure_mode: global_ctx.config.get_secure_mode(),
+        host_routing: HostRoutingPolicy {
+            local_exit_node_fallback: cfg!(target_env = "ohos"),
+        },
+    }
 }
 
 impl PeerStunInfoSource for GlobalCtx {
     fn stun_info(&self) -> crate::proto::common::StunInfo {
-        PeerContext::stun_info(self)
+        self.get_stun_info_collector().get_stun_info()
     }
 }
 
@@ -161,10 +240,6 @@ impl PeerPublicIpv6State for GlobalCtx {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use easytier_core::{
-        instance::{CoreRuntimeConfig, CoreRuntimeConfigStore},
-        peers::context::SubmittedPeerContext,
-    };
     use std::sync::Arc;
 
     use crate::common::{
@@ -179,16 +254,8 @@ mod tests {
 
     fn submitted_context(
         global_ctx: ArcGlobalCtx,
-    ) -> (CoreRuntimeConfigStore, SubmittedPeerContext) {
-        let config = CoreRuntimeConfigStore::new(
-            CoreRuntimeConfig::default(),
-            Arc::new(runtime_peer_snapshot(&global_ctx)),
-        );
-        let context = SubmittedPeerContext::new(
-            Arc::new(config.clone()),
-            submitted_peer_capabilities(&global_ctx),
-        );
-        (config, context)
+    ) -> (CoreRuntimeConfigStore, Arc<SubmittedPeerContext>) {
+        build_submitted_peer_context(&global_ctx)
     }
 
     #[tokio::test]

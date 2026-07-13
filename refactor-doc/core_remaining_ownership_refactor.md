@@ -272,6 +272,10 @@ but no core Module receives it or a broad Interface implemented by it.
   public-IPv6 lease/provider state use separate read-only Host Interfaces;
   relay preference/change notification remains behind `PeerRelayRuntime`, and
   the advertised EasyTier version is part of the submitted snapshot.
+- `GlobalCtx` no longer implements `PeerContext` and no longer carries a second
+  peer-event broadcast bus. Native configuration is normalized explicitly into
+  `PeerRuntimeSnapshot`; main, foreign, and test peer graphs all receive
+  `SubmittedPeerContext`, while product consumers keep the native event bus.
 
 ### Exit criteria
 

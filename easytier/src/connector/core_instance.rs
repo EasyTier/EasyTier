@@ -288,7 +288,7 @@ mod tests {
     use easytier_core::{
         instance::{CoreInstanceState, ListenerService, PortableCoreInstanceConfig, ProxyService},
         listener::transport::TransportListenerConfig,
-        peers::{context::PeerContext, peer_manager::PortablePeerManagerConfig},
+        peers::peer_manager::PortablePeerManagerConfig,
         socket::{
             tcp::TcpListenOptions,
             udp::{UdpBindOptions, UdpSessionAcceptKind, UdpSessionListenRequest},
@@ -780,8 +780,10 @@ mod tests {
             String::new(),
         )));
         let (packet_sink, _packet_receiver) = create_host_packet_channel();
-        let peer = PortablePeerManagerConfig::new(global_ctx.runtime_config())
-            .with_flags(global_ctx.get_flags());
+        let peer = PortablePeerManagerConfig::new(
+            crate::peers::context::runtime_peer_snapshot(&global_ctx).runtime,
+        )
+        .with_flags(global_ctx.get_flags());
         let connectivity = CoreInstanceConfig {
             initial_peers: Vec::new(),
             listeners: vec![
@@ -842,10 +844,14 @@ mod tests {
         global_b.set_ipv4(Some("10.250.0.2/24".parse().unwrap()));
         let (packet_sink_a, _packet_receiver_a) = create_host_packet_channel();
         let (packet_sink_b, mut packet_receiver_b) = create_host_packet_channel();
-        let peer_a = PortablePeerManagerConfig::new(global_a.runtime_config())
-            .with_flags(global_a.get_flags());
-        let peer_b = PortablePeerManagerConfig::new(global_b.runtime_config())
-            .with_flags(global_b.get_flags());
+        let peer_a = PortablePeerManagerConfig::new(
+            crate::peers::context::runtime_peer_snapshot(&global_a).runtime,
+        )
+        .with_flags(global_a.get_flags());
+        let peer_b = PortablePeerManagerConfig::new(
+            crate::peers::context::runtime_peer_snapshot(&global_b).runtime,
+        )
+        .with_flags(global_b.get_flags());
         let instance_a = Arc::new(
             RuntimeCoreInstance::new_portable(
                 runtime_core_instance_adapters(global_a.clone()),
@@ -968,8 +974,10 @@ mod tests {
             String::new(),
         )));
         let (packet_sink, _packet_receiver) = create_host_packet_channel();
-        let peer = PortablePeerManagerConfig::new(global_ctx.runtime_config())
-            .with_flags(global_ctx.get_flags());
+        let peer = PortablePeerManagerConfig::new(
+            crate::peers::context::runtime_peer_snapshot(&global_ctx).runtime,
+        )
+        .with_flags(global_ctx.get_flags());
         let mut connectivity = CoreInstanceConfig {
             initial_peers: Vec::new(),
             listeners: Vec::new(),
@@ -998,8 +1006,10 @@ mod tests {
             String::new(),
         )));
         let (packet_sink, _packet_receiver) = create_host_packet_channel();
-        let peer = PortablePeerManagerConfig::new(global_ctx.runtime_config())
-            .with_flags(global_ctx.get_flags());
+        let peer = PortablePeerManagerConfig::new(
+            crate::peers::context::runtime_peer_snapshot(&global_ctx).runtime,
+        )
+        .with_flags(global_ctx.get_flags());
         let connectivity = CoreInstanceConfig {
             initial_peers: Vec::new(),
             listeners: vec![TransportListenerConfig::Udp {
