@@ -143,7 +143,7 @@ where
         &self,
         accepted: AcceptedTransport<TcpSocket>,
     ) -> anyhow::Result<()> {
-        let (upgrade, _tcp_upgrade_permit) = match accepted {
+        let (upgrade, tcp_upgrade_permit) = match accepted {
             AcceptedTransport::Tunnel { tunnel, .. } => {
                 return self.handle_tunnel(tunnel).await;
             }
@@ -176,6 +176,7 @@ where
                 None,
             ),
         };
+        drop(tcp_upgrade_permit);
         self.handle_upgrade(upgrade).await
     }
 }
@@ -217,7 +218,7 @@ where
                 if local_url.scheme() != "udp" {
                     anyhow::bail!("unsupported raw UDP listener protocol: {local_url}");
                 }
-                raw::upgrade_accepted_udp(session)?
+                raw::upgrade_accepted_udp_with_local_url(session, local_url)?
             }
             AcceptedTransport::ByteStream {
                 socket,
@@ -767,7 +768,7 @@ mod tests {
     use futures::{SinkExt as _, StreamExt as _};
     use tokio::{
         io::{AsyncRead, AsyncWrite, DuplexStream, ReadBuf},
-        sync::{Mutex, Notify, mpsc},
+        sync::{Mutex, Notify, Semaphore, mpsc},
     };
 
     use super::*;
@@ -1095,6 +1096,11 @@ mod tests {
         calls: AtomicUsize,
     }
 
+    struct BlockingTunnelHandler {
+        entered: Notify,
+        release: Notify,
+    }
+
     #[async_trait]
     impl AcceptedTunnelHandler for RecordingTunnelHandler {
         async fn handle_tunnel(
@@ -1105,6 +1111,18 @@ mod tests {
             if call == 0 {
                 anyhow::bail!("first admission rejected");
             }
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl AcceptedTunnelHandler for BlockingTunnelHandler {
+        async fn handle_tunnel(
+            &self,
+            _tunnel: Box<dyn crate::tunnel::Tunnel>,
+        ) -> anyhow::Result<()> {
+            self.entered.notify_one();
+            self.release.notified().await;
             Ok(())
         }
     }
@@ -1256,6 +1274,42 @@ mod tests {
         );
         drop(first);
         crate::runtime_time::timeout(Duration::from_secs(1), listener.accept()).await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn tcp_upgrade_permit_is_released_before_peer_admission() -> anyhow::Result<()> {
+        let tunnel_handler = Arc::new(BlockingTunnelHandler {
+            entered: Notify::new(),
+            release: Notify::new(),
+        });
+        let protocol = Arc::new(CoreServerProtocolUpgrader::new(Default::default()));
+        let handler = ProtocolAcceptedTransportHandler::new(&tunnel_handler, protocol);
+        let upgrade_slots = Arc::new(Semaphore::new(1));
+        let permit = upgrade_slots.clone().acquire_owned().await?;
+        let (stream, _remote) = tokio::io::duplex(64);
+
+        let task = tokio::spawn(async move {
+            handler
+                .handle_accepted_socket(AcceptedTransport::Tcp {
+                    socket: MockTcpSocket {
+                        stream,
+                        local_addr: "127.0.0.1:21000".parse().unwrap(),
+                        peer_addr: "127.0.0.1:31000".parse().unwrap(),
+                    },
+                    local_url: "tcp://127.0.0.1:21000".parse().unwrap(),
+                    upgrade_permit: Some(permit),
+                })
+                .await
+        });
+
+        tunnel_handler.entered.notified().await;
+        let next_permit =
+            crate::runtime_time::timeout(Duration::from_secs(1), upgrade_slots.acquire_owned())
+                .await??;
+        drop(next_permit);
+        tunnel_handler.release.notify_one();
+        task.await??;
         Ok(())
     }
 

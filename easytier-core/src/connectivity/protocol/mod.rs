@@ -392,7 +392,10 @@ pub fn upgrade_accepted_udp(
     local_url: &Url,
 ) -> anyhow::Result<Box<dyn Tunnel>> {
     match local_url.scheme() {
-        "udp" => Ok(raw::upgrade_accepted_udp(session)?),
+        "udp" => Ok(raw::upgrade_accepted_udp_with_local_url(
+            session,
+            local_url.clone(),
+        )?),
         scheme => anyhow::bail!("unsupported UDP listener protocol: {scheme}"),
     }
 }
@@ -403,12 +406,14 @@ mod tests {
         io,
         net::SocketAddr,
         pin::Pin,
+        sync::Arc,
         task::{Context, Poll},
     };
 
     use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
     use super::*;
+    use crate::socket::udp::{UdpSessionKind, VirtualUdpSocket};
 
     struct MockTcpSocket;
 
@@ -450,6 +455,25 @@ mod tests {
 
         fn peer_addr(&self) -> io::Result<SocketAddr> {
             Ok("127.0.0.1:2000".parse().unwrap())
+        }
+    }
+
+    struct MockUdpSocket {
+        local_addr: SocketAddr,
+    }
+
+    #[async_trait]
+    impl VirtualUdpSocket for MockUdpSocket {
+        fn local_addr(&self) -> io::Result<SocketAddr> {
+            Ok(self.local_addr)
+        }
+
+        async fn send_to(&self, data: &[u8], _addr: SocketAddr) -> io::Result<usize> {
+            Ok(data.len())
+        }
+
+        async fn recv_from(&self, _buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
+            std::future::pending().await
         }
     }
 
@@ -620,6 +644,28 @@ mod tests {
         assert_eq!(
             disabled.to_string(),
             "unsupported TCP listener protocol: ws"
+        );
+    }
+
+    #[tokio::test]
+    async fn core_server_raw_udp_preserves_explicit_listener_url() {
+        let local_url: Url = "udp://listener.example:1000/path?bind_device=eth0"
+            .parse()
+            .unwrap();
+        let session = UdpSession::identity_standalone(
+            Arc::new(MockUdpSocket {
+                local_addr: "127.0.0.1:1000".parse().unwrap(),
+            }),
+            "127.0.0.1:2000".parse().unwrap(),
+            UdpSessionKind::EasyTierMux,
+        )
+        .unwrap();
+
+        let tunnel = upgrade_accepted_udp(session, &local_url).unwrap();
+
+        assert_eq!(
+            tunnel.info().unwrap().local_addr.unwrap().url,
+            local_url.as_str()
         );
     }
 
