@@ -265,7 +265,7 @@ impl TransportListenerConfig {
     }
 
     pub fn supports_raw_handler(&self) -> bool {
-        matches!(self, Self::Ring { .. })
+        matches!(self, Self::Ring { url, .. } if url.scheme() == "ring")
             || matches!(self, Self::Tcp { url, .. } if url.scheme() == "tcp")
             || matches!(
                 self,
@@ -315,6 +315,9 @@ where
 
     async fn listen(&mut self) -> anyhow::Result<()> {
         if self.inner.is_none() {
+            if self.url.scheme() != "ring" {
+                anyhow::bail!("Ring listener requires ring URL: {}", self.url);
+            }
             let local_id = self
                 .url
                 .host_str()
@@ -1190,6 +1193,17 @@ mod tests {
         let packet = server_stream.next().await.transpose()?.unwrap();
         assert_eq!(packet.payload(), b"packet-native-listener");
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn ring_listener_rejects_non_ring_url() {
+        let registry = Arc::new(RingTunnelRegistry::default());
+        let mut listener = RingTransportListener::<MockTcpSocket>::new(
+            format!("tcp://{}", uuid::Uuid::new_v4()).parse().unwrap(),
+            registry,
+        );
+
+        assert!(listener.listen().await.is_err());
     }
 
     #[tokio::test]
