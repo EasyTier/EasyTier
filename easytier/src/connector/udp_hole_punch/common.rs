@@ -13,10 +13,8 @@ use crate::{
     common::{PeerId, error::Error, global_ctx::ArcGlobalCtx, upnp},
     peers::peer_manager::PeerManager,
     proto::common::NatType,
-    tunnel::{
-        common::{BindDev, bind},
-        udp::{RuntimeUdpSessionLayer, RuntimeUdpSocket},
-    },
+    socket::udp::{RuntimeUdpSessionLayer, RuntimeUdpSocket},
+    tunnel::common::{BindDev, bind},
 };
 
 #[allow(dead_code)]

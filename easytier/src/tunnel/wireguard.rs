@@ -13,14 +13,12 @@ use super::{
     ZCPacketStream,
     common::wait_for_connect_futures,
     packet_def::{PEER_MANAGER_HEADER_SIZE, ZCPacketType},
-    udp::{
-        RuntimeUdpSessionLayer, RuntimeUdpSessionListener, RuntimeUdpSocket, UdpSessionAcceptKind,
-        accept_udp_session,
-    },
+    udp::RuntimeUdpSessionListener,
 };
 use crate::tunnel::common::{BindDev, bind};
 use crate::{
     common::shrink_dashmap,
+    socket::udp::{RuntimeUdpSessionLayer, RuntimeUdpSocket},
     tunnel::{
         build_url_from_socket_addr,
         packet_def::{WG_TUNNEL_HEADER_SIZE, ZCPacket},
@@ -39,7 +37,9 @@ use dashmap::DashMap;
 use easytier_core::tunnel::ring::create_ring_tunnel_pair;
 use easytier_core::{
     connectivity::transport::ConnectedUdpSession,
-    socket::udp::{UdpSession, UdpSessionProtocol, UdpSessionSocket},
+    socket::udp::{
+        UdpSession, UdpSessionAcceptKind, UdpSessionProtocol, UdpSessionSocket, accept_udp_session,
+    },
     tunnel::wrapper::TunnelWrapper,
 };
 use futures::{SinkExt, StreamExt, stream::FuturesUnordered};

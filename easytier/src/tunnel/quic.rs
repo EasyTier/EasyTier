@@ -4,12 +4,12 @@
 
 use super::{FromUrl, IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelListener};
 use crate::common::global_ctx::ArcGlobalCtx;
+use crate::socket::{udp::RuntimeUdpSessionLayer, udp_src};
 use crate::tunnel::common::bind;
 use crate::tunnel::{
     TunnelInfo,
     common::{FramedReader, FramedWriter},
-    udp::{RuntimeUdpSessionLayer, RuntimeUdpSessionListener},
-    udp_src,
+    udp::RuntimeUdpSessionListener,
 };
 use anyhow::Context;
 use derivative::Derivative;
@@ -1943,10 +1943,10 @@ impl TunnelConnector for QuicTunnelConnector {
 #[cfg(test)]
 mod tests {
     use crate::common::global_ctx::tests::get_mock_global_ctx_with_network;
+    use crate::socket::udp::RuntimeUdpSessionControlHandler;
     use crate::tunnel::{
         TunnelConnector,
         common::tests::{_tunnel_bench, _tunnel_pingpong},
-        udp::RuntimeUdpSessionControlHandler,
     };
     use easytier_core::{
         connectivity::transport::{UdpSessionMode, connect_udp},

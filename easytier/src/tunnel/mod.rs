@@ -19,7 +19,6 @@ pub mod mpsc;
 pub mod packet_def;
 pub mod stats;
 pub mod udp;
-pub(crate) mod udp_src;
 
 #[cfg(feature = "faketcp")]
 pub mod fake_tcp;

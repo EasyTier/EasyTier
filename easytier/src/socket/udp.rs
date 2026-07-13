@@ -1,0 +1,287 @@
+use std::{
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
+    sync::{Arc, Mutex as StdMutex, Weak},
+};
+
+use async_trait::async_trait;
+use easytier_core::{
+    hole_punch::udp::new_hole_punch_packet,
+    socket::udp::{
+        PreferredIpv6Source, UdpBindOptions, UdpSessionControlHandler, UdpSessionLayer,
+        UdpSocketPurpose, UdpSocketRecvMeta, UdpSocketSendMeta, VirtualUdpSocket,
+        VirtualUdpSocketFactory,
+    },
+};
+use tokio::net::UdpSocket;
+
+use crate::{
+    common::netns::NetNS,
+    tunnel::common::{BindDev, bind},
+};
+
+use super::udp_src;
+
+pub(crate) type RuntimeUdpSessionLayer = UdpSessionLayer<
+    RuntimeUdpSocket,
+    RuntimeUdpSessionControlHandler,
+    RuntimeUdpSessionControlHandler,
+>;
+
+pub(crate) struct RuntimeUdpSocket {
+    socket: Arc<UdpSocket>,
+    udp_session_layer: StdMutex<Option<Weak<RuntimeUdpSessionLayer>>>,
+}
+
+impl RuntimeUdpSocket {
+    pub(crate) fn new(socket: Arc<UdpSocket>) -> Self {
+        if let Err(err) = udp_src::enable_recv_pktinfo(&socket) {
+            tracing::debug!(?err, "enable udp pktinfo failed");
+        }
+        Self {
+            socket,
+            udp_session_layer: StdMutex::new(None),
+        }
+    }
+
+    pub(crate) fn socket(&self) -> Arc<UdpSocket> {
+        self.socket.clone()
+    }
+
+    pub(crate) fn udp_session_layer(self: &Arc<Self>) -> Arc<RuntimeUdpSessionLayer> {
+        let mut weak_layer = self.udp_session_layer.lock().unwrap();
+        if let Some(layer) = weak_layer.as_ref().and_then(Weak::upgrade) {
+            return layer;
+        }
+
+        let control_handler = Arc::new(RuntimeUdpSessionControlHandler);
+        let layer = Arc::new(
+            UdpSessionLayer::new_with_control_handler_and_stun_responder(
+                self.clone(),
+                control_handler.clone(),
+                control_handler,
+            ),
+        );
+        *weak_layer = Some(Arc::downgrade(&layer));
+        layer
+    }
+}
+
+#[async_trait]
+impl VirtualUdpSocket for RuntimeUdpSocket {
+    fn local_addr(&self) -> std::io::Result<SocketAddr> {
+        self.socket.local_addr()
+    }
+
+    async fn send_to(&self, data: &[u8], addr: SocketAddr) -> std::io::Result<usize> {
+        self.socket.send_to(data, addr).await
+    }
+
+    async fn recv_from(&self, buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
+        self.socket.recv_from(buf).await
+    }
+
+    async fn send_to_with_meta(
+        &self,
+        data: &[u8],
+        addr: SocketAddr,
+        meta: UdpSocketSendMeta,
+    ) -> std::io::Result<usize> {
+        if let Some(src_ip) = meta.src_ip {
+            return udp_src::send_to_with_src_ip(&self.socket, src_ip, addr, data).await;
+        }
+        self.send_to(data, addr).await
+    }
+
+    async fn recv_from_with_meta(
+        &self,
+        buf: &mut [u8],
+    ) -> std::io::Result<(usize, SocketAddr, UdpSocketRecvMeta)> {
+        let (len, addr, dst_ip) = udp_src::recv_from_with_dst_ip(&self.socket, buf).await?;
+        Ok((len, addr, UdpSocketRecvMeta { dst_ip }))
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct RuntimeUdpSessionControlHandler;
+
+#[async_trait]
+impl UdpSessionControlHandler<RuntimeUdpSocket> for RuntimeUdpSessionControlHandler {
+    async fn send_v4_hole_punch(
+        &self,
+        socket: Arc<RuntimeUdpSocket>,
+        dst_addr: SocketAddrV4,
+    ) -> std::io::Result<usize> {
+        let udp_packet = new_hole_punch_packet(1, 32).into_bytes();
+        socket
+            .socket()
+            .try_send_to(&udp_packet, SocketAddr::V4(dst_addr))
+    }
+
+    async fn send_v6_hole_punch(
+        &self,
+        socket: Arc<RuntimeUdpSocket>,
+        dst_addr: SocketAddrV6,
+        preferred_src: Option<PreferredIpv6Source>,
+    ) -> std::io::Result<usize> {
+        let udp_packet = new_hole_punch_packet(1, 32).into_bytes();
+        let udp_socket = socket.socket();
+        if let Some(src) = preferred_src {
+            match udp_src::send_to_with_src_ipv6(
+                &udp_socket,
+                src.ip,
+                src.ifindex,
+                dst_addr,
+                &udp_packet,
+            ) {
+                Ok(ret) => return Ok(ret),
+                Err(err) => {
+                    tracing::debug!(
+                        ?src,
+                        ?dst_addr,
+                        ?err,
+                        "udp preferred v6 source failed, falling back"
+                    );
+                }
+            }
+        }
+        udp_socket.try_send_to(&udp_packet, SocketAddr::V6(dst_addr))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RuntimeUdpSocketFactory {
+    net_ns: NetNS,
+    socket_mark: Option<u32>,
+}
+
+impl RuntimeUdpSocketFactory {
+    pub(crate) fn new(net_ns: NetNS) -> Self {
+        Self {
+            net_ns,
+            socket_mark: None,
+        }
+    }
+
+    pub(crate) fn with_socket_mark(mut self, socket_mark: Option<u32>) -> Self {
+        self.socket_mark = socket_mark;
+        self
+    }
+
+    fn bind_device_for(&self, options: &UdpBindOptions) -> BindDev {
+        if let Some(bind_device) = &options.bind_device {
+            return BindDev::from(bind_device.as_str());
+        }
+
+        if matches!(
+            options.purpose,
+            UdpSocketPurpose::DirectConnect | UdpSocketPurpose::PortBoundListener
+        ) {
+            return BindDev::Auto;
+        }
+
+        BindDev::Disabled
+    }
+
+    fn reuse_addr_for(&self, options: &UdpBindOptions) -> bool {
+        options.reuse_addr
+            || (matches!(
+                options.purpose,
+                UdpSocketPurpose::PortBoundListener | UdpSocketPurpose::ProxyNat
+            ) && !cfg!(target_os = "windows"))
+    }
+}
+
+#[async_trait]
+impl VirtualUdpSocketFactory for RuntimeUdpSocketFactory {
+    type Socket = RuntimeUdpSocket;
+
+    async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
+        let bind_addr = options
+            .local_addr
+            .unwrap_or_else(|| SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)));
+        let socket = bind::<UdpSocket>()
+            .addr(bind_addr)
+            .dev(self.bind_device_for(&options))
+            .maybe_net_ns(Some(self.net_ns.clone()))
+            .only_v6(options.only_v6)
+            .reuse_addr(self.reuse_addr_for(&options))
+            .reuse_port(options.reuse_port)
+            .maybe_socket_mark(options.socket_mark.or(self.socket_mark))
+            .call()?;
+        Ok(Arc::new(RuntimeUdpSocket::new(Arc::new(socket))))
+    }
+}
+
+#[async_trait]
+impl VirtualUdpSocketFactory for RuntimeUdpSessionControlHandler {
+    type Socket = RuntimeUdpSocket;
+
+    async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
+        let bind_addr = options
+            .local_addr
+            .unwrap_or_else(|| SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)));
+        let bind_device = options
+            .bind_device
+            .map(BindDev::from)
+            .unwrap_or(BindDev::Disabled);
+        let socket = bind::<UdpSocket>()
+            .addr(bind_addr)
+            .dev(bind_device)
+            .only_v6(options.only_v6)
+            .reuse_addr(options.reuse_addr)
+            .reuse_port(options.reuse_port)
+            .maybe_socket_mark(options.socket_mark)
+            .call()?;
+        Ok(Arc::new(RuntimeUdpSocket::new(Arc::new(socket))))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn factory_interprets_bind_defaults_by_purpose() {
+        let listener_addr = SocketAddr::from(([0, 0, 0, 0], 11010));
+        let factory = RuntimeUdpSocketFactory::new(NetNS::new(None));
+
+        assert!(matches!(
+            factory.bind_device_for(&UdpBindOptions::port_bound_listener(listener_addr)),
+            BindDev::Auto
+        ));
+        assert!(matches!(
+            factory.bind_device_for(&UdpBindOptions::direct_connect()),
+            BindDev::Auto
+        ));
+        assert!(matches!(
+            factory.bind_device_for(&UdpBindOptions::hole_punch_control()),
+            BindDev::Disabled
+        ));
+        assert_eq!(
+            factory.reuse_addr_for(&UdpBindOptions::port_bound_listener(listener_addr)),
+            !cfg!(target_os = "windows")
+        );
+        assert!(!factory.reuse_addr_for(&UdpBindOptions::hole_punch_control()));
+        assert_eq!(
+            factory.reuse_addr_for(&UdpBindOptions::proxy_nat()),
+            !cfg!(target_os = "windows")
+        );
+    }
+
+    #[test]
+    fn factory_applies_listener_bind_device_option() {
+        let listener_addr = SocketAddr::from(([0, 0, 0, 0], 11010));
+        let factory = RuntimeUdpSocketFactory::new(NetNS::new(None));
+        let options = UdpBindOptions::port_bound_listener(listener_addr)
+            .with_bind_device(Some("eth0".to_owned()));
+
+        match factory.bind_device_for(&options) {
+            BindDev::Custom(dev) => assert_eq!(dev, "eth0"),
+            bind_device => panic!("unexpected bind device: {bind_device:?}"),
+        }
+        assert!(matches!(
+            factory.bind_device_for(&UdpBindOptions::hole_punch_control()),
+            BindDev::Disabled
+        ));
+    }
+}
