@@ -139,9 +139,7 @@ async fn init_three_node_ex_with_inst3<F: Fn(TomlConfigLoader) -> TomlConfigLoad
     if proto == "tcp" {
         inst1
             .get_conn_manager()
-            .add_connector(TcpTunnelConnector::new(
-                "tcp://10.1.1.2:11010".parse().unwrap(),
-            ));
+            .add_connector_url("tcp://10.1.1.2:11010".parse().unwrap());
     } else if proto == "udp" {
         inst1
             .get_conn_manager()
@@ -755,9 +753,7 @@ async fn init_public_ipv6_two_node_with_topology(
 
     provider
         .get_conn_manager()
-        .add_connector(TcpTunnelConnector::new(
-            "tcp://10.1.1.2:11010".parse().unwrap(),
-        ));
+        .add_connector_url("tcp://10.1.1.2:11010".parse().unwrap());
 
     wait_for_condition(
         || async {
@@ -1021,9 +1017,7 @@ pub async fn public_ipv6_auto_addr_reconnect_reuses_same_address() {
     client.run().await.unwrap();
     provider
         .get_conn_manager()
-        .add_connector(TcpTunnelConnector::new(
-            "tcp://10.1.1.2:11010".parse().unwrap(),
-        ));
+        .add_connector_url("tcp://10.1.1.2:11010".parse().unwrap());
 
     wait_for_condition(
         || async {
@@ -1552,9 +1546,7 @@ pub async fn proxy_three_node_disconnect_test(#[values("tcp", "wg")] proto: &str
     if proto == "tcp" {
         inst4
             .get_conn_manager()
-            .add_connector(TcpTunnelConnector::new(
-                "tcp://10.1.2.3:11010".parse().unwrap(),
-            ));
+            .add_connector_url("tcp://10.1.2.3:11010".parse().unwrap());
     } else if proto == "wg" {
         inst4
             .get_conn_manager()
