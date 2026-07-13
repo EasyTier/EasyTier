@@ -126,6 +126,8 @@ impl ForeignNetworkEntry {
 
 struct RuntimeForeignNetworkContext {
     global_ctx: ArcGlobalCtx,
+    #[cfg(test)]
+    peer_context: Arc<SubmittedPeerContext>,
     lifecycle_token: Arc<()>,
 }
 
@@ -152,10 +154,13 @@ impl ForeignNetworkRuntimeImpl {
     }
 
     #[cfg(test)]
-    pub(super) fn foreign_global_ctx_for_test(&self, network_name: &str) -> Option<ArcGlobalCtx> {
+    pub(super) fn foreign_peer_context_for_test(
+        &self,
+        network_name: &str,
+    ) -> Option<Arc<SubmittedPeerContext>> {
         self.foreign_contexts
             .get(network_name)
-            .map(|ctx| ctx.global_ctx.clone())
+            .map(|ctx| ctx.peer_context.clone())
     }
 
     fn get_runtime_foreign_context(
@@ -219,6 +224,8 @@ impl core_foreign_network_manager::ForeignNetworkRuntime for ForeignNetworkRunti
             spec.network.network_name.clone(),
             Arc::new(RuntimeForeignNetworkContext {
                 global_ctx: foreign_global_ctx.clone(),
+                #[cfg(test)]
+                peer_context: peer_context.clone(),
                 lifecycle_token: lifecycle_token.clone(),
             }),
         );
@@ -850,9 +857,11 @@ pub mod tests {
         );
 
         pm_center
-            .foreign_global_ctx_for_test("net1")
+            .foreign_peer_context_for_test("net1")
             .unwrap()
-            .issue_event(GlobalCtxEvent::PeerRemoved(pma_net1.my_peer_id()));
+            .issue_event(easytier_core::peers::context::PeerEvent::PeerRemoved(
+                pma_net1.my_peer_id(),
+            ));
 
         wait_for_condition(
             || {

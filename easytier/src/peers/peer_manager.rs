@@ -190,9 +190,12 @@ impl PeerManager {
     }
 
     #[cfg(test)]
-    pub(crate) fn foreign_global_ctx_for_test(&self, network_name: &str) -> Option<ArcGlobalCtx> {
+    pub(crate) fn foreign_peer_context_for_test(
+        &self,
+        network_name: &str,
+    ) -> Option<Arc<SubmittedPeerContext>> {
         self.foreign_network_runtime
-            .foreign_global_ctx_for_test(network_name)
+            .foreign_peer_context_for_test(network_name)
     }
 
     pub async fn update_exit_nodes(&self) {
