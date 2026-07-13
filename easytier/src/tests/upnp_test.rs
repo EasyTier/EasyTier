@@ -33,10 +33,7 @@ use crate::{
         tests::{connect_peer_manager, wait_route_appear, wait_route_appear_with_cost},
     },
     proto::common::{NatType, StunInfo},
-    tunnel::{
-        common::tests::wait_for_condition,
-        ring::{RingTunnelConnector, RingTunnelRegistry},
-    },
+    tunnel::{common::tests::wait_for_condition, ring::RingTunnelRegistry},
 };
 
 const TEST_NS_A: &str = "upnp_a";
@@ -1825,16 +1822,10 @@ async fn instances_build_direct_connection_via_upnp_udp_hole_punch() {
 
     inst_a
         .get_conn_manager()
-        .add_connector(RingTunnelConnector::new_with_ring_registry(
-            format!("ring://{}", inst_b.id()).parse().unwrap(),
-            inst_b.ring_registry(),
-        ));
+        .add_connector_url(format!("ring://{}", inst_b.id()).parse().unwrap());
     inst_c
         .get_conn_manager()
-        .add_connector(RingTunnelConnector::new_with_ring_registry(
-            format!("ring://{}", inst_b.id()).parse().unwrap(),
-            inst_b.ring_registry(),
-        ));
+        .add_connector_url(format!("ring://{}", inst_b.id()).parse().unwrap());
 
     timeout_stage(
         "wait_route_appear(inst_a, inst_c)",

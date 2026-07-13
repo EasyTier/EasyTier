@@ -107,15 +107,18 @@ impl ManualConnectorManager {
 }
 
 impl ManualConnectorManager {
+    pub fn add_connector_url(&self, url: url::Url) {
+        tracing::info!(%url, "add_connector");
+        self.portable
+            .add_connector(url)
+            .expect("core manual connector URL should be valid");
+    }
+
     pub fn add_connector<T>(&self, connector: T)
     where
         T: TunnelConnector + 'static,
     {
-        let url = connector.remote_url();
-        tracing::info!("add_connector: {}", url);
-        self.portable
-            .add_connector(url)
-            .expect("core manual connector URL should be valid");
+        self.add_connector_url(connector.remote_url());
     }
 
     pub async fn add_connector_by_url(&self, url: url::Url) -> Result<(), Error> {
