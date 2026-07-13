@@ -5,7 +5,7 @@ use easytier_core::{
     instance::{CoreRuntimeConfig, CoreRuntimeConfigStore},
     peers::{context::SubmittedPeerContext, foreign_network_manager::ForeignNetworkManager},
 };
-use std::{fmt::Debug, net::IpAddr, sync::Arc};
+use std::{fmt::Debug, sync::Arc};
 
 use crate::{
     common::{
@@ -16,10 +16,7 @@ use crate::{
         global_ctx::ArcGlobalCtx,
     },
     proto::api::instance,
-    tunnel::{
-        Tunnel,
-        packet_def::{ZCPacket, compressor_algo_from_pb},
-    },
+    tunnel::{Tunnel, packet_def::compressor_algo_from_pb},
 };
 
 use super::{
@@ -204,36 +201,6 @@ impl PeerManager {
             .into_iter()
             .map(Into::into)
             .collect()
-    }
-
-    pub async fn remove_nic_packet_process_pipeline(&self, id: String) -> Result<(), Error> {
-        self.core
-            .remove_nic_packet_process_pipeline(id)
-            .await
-            .map_err(Error::from)
-    }
-
-    pub async fn send_msg_for_proxy(
-        &self,
-        msg: ZCPacket,
-        dst_peer_id: PeerId,
-    ) -> Result<(), Error> {
-        self.core
-            .send_msg_for_proxy(msg, dst_peer_id)
-            .await
-            .map_err(Error::from)
-    }
-
-    pub async fn send_msg_by_ip(
-        &self,
-        msg: ZCPacket,
-        ip_addr: IpAddr,
-        not_send_to_self: bool,
-    ) -> Result<(), Error> {
-        self.core
-            .send_msg_by_ip(msg, ip_addr, not_send_to_self)
-            .await
-            .map_err(Error::from)
     }
 
     #[cfg(test)]

@@ -743,6 +743,7 @@ async fn forward_normalized_packet(
 ) {
     let packet = ZCPacket::new_with_payload(&normalized.packet);
     let ret = peer_manager
+        .core()
         .send_msg_by_ip(packet, IpAddr::V4(normalized.destination), true)
         .await;
 

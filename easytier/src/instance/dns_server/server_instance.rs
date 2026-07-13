@@ -456,6 +456,7 @@ impl MagicDnsServerInstance {
 
         let _ = self
             .peer_mgr
+            .core()
             .remove_nic_packet_process_pipeline(NIC_PIPELINE_NAME.to_string())
             .await;
     }

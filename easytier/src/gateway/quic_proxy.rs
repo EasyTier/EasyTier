@@ -558,7 +558,12 @@ impl QuicPacketSender {
                     addr.packet_type as u8,
                 );
 
-                if let Err(e) = self.peer_mgr.send_msg_for_proxy(packet, addr.peer_id).await {
+                if let Err(e) = self
+                    .peer_mgr
+                    .core()
+                    .send_msg_for_proxy(packet, addr.peer_id)
+                    .await
+                {
                     error!("failed to send QUIC packet to peer: {:?}", e);
                 }
             }

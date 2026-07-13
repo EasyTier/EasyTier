@@ -190,6 +190,9 @@ only:
 - Route handles, proxy/public-IPv6 queries, destination selection, and
   KCP/QUIC eligibility checks now stay on the core Interface. Native retains
   only the route snapshot-to-protobuf presentation method.
+- Packet sending for proxy/IP paths and NIC pipeline removal now call core
+  directly; native no longer wraps core packet-plane errors solely to forward
+  the same operation.
 
 ### Exit criteria
 

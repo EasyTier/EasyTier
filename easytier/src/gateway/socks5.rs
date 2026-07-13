@@ -436,6 +436,7 @@ impl Socks5ServerNet {
                     return;
                 };
                 if let Err(e) = peer_manager
+                    .core()
                     .send_msg_by_ip(packet, IpAddr::V4(dst), false)
                     .await
                 {
