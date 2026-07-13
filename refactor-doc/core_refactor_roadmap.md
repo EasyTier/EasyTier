@@ -1,6 +1,7 @@
 # EasyTier Core Refactor Roadmap
 
-> Status: active and authoritative. Updated 2026-07-13.
+> Status: core ownership migration complete; feature slicing and production
+> hardening remain follow-up work. Updated 2026-07-13.
 
 ## Outcome
 
@@ -24,10 +25,9 @@ these accepted decisions:
 
 ## Current baseline
 
-The `refactor_core` line contains 200 commits after `f24735a8`; at `40fb39b5`
-the accumulated diff changes 221 files with 46,055 insertions and 24,396
-deletions. This is useful migration history, not evidence that the ownership
-move is finished.
+The `refactor_core` line is a long-running vertical migration series after
+`f24735a8`. Its accumulated diff is useful history, but raw commit, file, and
+line counts are not acceptance metrics; ownership and deletion tests are.
 
 Already established:
 
@@ -55,23 +55,20 @@ Already established:
   socket creation is injectable while read/write/accept scheduling remains
   core/Tokio-owned.
 
-The current architecture is still intermediate:
+The ownership architecture is now closed. Deliberate follow-up boundaries are:
 
-- native listener planning and lifecycle still live in the runtime crate even
-  though accepted TCP/UDP/byte-stream values already enter the core protocol
-  upgrader; ring, Unix, and FakeTCP creation remain Host Adapter concerns;
-- native `Instance`, `PeerManager`, `PeerContext`, and process-global state
-  still overlap in lifecycle and state ownership;
-- the wasm ABI and reusable Go bridge are now functional reference contracts;
-  the bridge lives in the root `easytier-go-host` module, while repeated
-  failure/isolation measurements and quantitative gates remain open;
-- build features exist, but ownership has not yet settled into deep Modules
-  suitable for deliberate feature slicing.
+- ring, Unix, FakeTCP, KCP/quinn, WireGuard, real socket/listener, TUN, netns,
+  route, DNS, and product-presentation work remains in Host Adapters;
+- the wasm ABI and reusable Go bridge are functional reference contracts, but
+  quantitative latency/resource measurement and hard-kill isolation remain
+  production-readiness work;
+- feature slicing intentionally starts only now that deep Module ownership is
+  stable; it was not mixed into the ownership migration.
 
-The remaining ownership work is specified in
+The ownership migration and its closure evidence are recorded in
 [`core_remaining_ownership_refactor.md`](core_remaining_ownership_refactor.md).
-That plan supersedes earlier statements that the native peer and gateway
-Adapters are already at their final depth.
+That document is now the authoritative closure record for native peer,
+`GlobalCtx`, foreign-network, and gateway ownership.
 
 Current closure status on 2026-07-13:
 
@@ -81,14 +78,16 @@ Current closure status on 2026-07-13:
   lifecycle, snapshots, and manager assembly; native
   `foreign_network_manager.rs` contains only the GlobalCtx/direct-connector
   Host Adapter and RPC DTO conversion;
-- native `PeerManager` is primarily a facade and still exposes a broad
-  forwarding Interface, but it now receives the core-owned foreign manager
-  instead of reconstructing its graph;
-- `GlobalCtx` still implements the broad peer Interface in addition to narrow
-  submitted-config support, so capability Locality is incomplete;
-- core owns the TCP, UDP, ICMP, CIDR, wrapped-TCP, proxy ACL, smoltcp, and SOCKS
-  state Modules, while native KCP/QUIC/SOCKS composition still requires a
-  decision-by-decision gateway audit.
+- native `PeerManager` is limited to Host Adapter assembly, runtime-snapshot
+  submission, native resource/debug access, and protobuf presentation;
+- `GlobalCtx` no longer implements `PeerContext`; peer configuration, events,
+  credentials, trusted keys, relay preference, and runtime changes have
+  explicit core owners and narrow capability seams;
+- core owns gateway packet policy and state through TCP/UDP/ICMP services,
+  CIDR and ACL Modules, `WrappedTcpDestinationPlanner`, portable SOCKS
+  protocol/session Modules, and VPN portal client state;
+- native gateway code contains concrete engines, real resources, composition,
+  configuration/events, and presentation rather than a second policy owner.
 
 ## Definition of done
 
@@ -108,6 +107,10 @@ The whole refactor is done only when all of these hold:
 7. Native integration tests and wasm/Go-host conformance tests cover the same
    key behaviours.
 8. Deprecated native ownership and compatibility forwarding paths are deleted.
+
+These ownership criteria are met. Phase 4 feature slicing and the quantitative
+production-hardening items below are separately tracked follow-up work; they
+do not reopen native ownership of portable state or decisions.
 
 ## Phase 0: prove the Go/WASI socket and executor model
 
@@ -136,8 +139,10 @@ Exit gate:
 
 Current result: public WASIp1 virtual fds are rejected for Tokio socket I/O;
 opaque Model B passes the functional socket, DNS, environment, lifecycle,
-two-instance peer, route, and packet gates. Quantitative measurement and deeper
-failure/isolation cases remain before declaring the ABI production-ready.
+two-instance peer, route, and packet gates. Tokio remains responsible for
+read/write scheduling over host-created sockets. Quantitative measurement and
+deeper failure/isolation cases remain before declaring the ABI
+production-ready.
 
 ## Phase 1: close the socket-to-tunnel seam
 
@@ -302,29 +307,39 @@ requirement; that is separate from Rust source compatibility.
 
 ## Validation snapshot (2026-07-13)
 
-The current implementation milestone passes:
+The completed ownership milestone passes:
 
 - native `easytier-core` default, no-default, and all-feature checks;
-- `wasm32-wasip1` default, no-default, and all-feature checks plus test-artifact
-  linking;
-- 392 native `easytier-core` library tests;
+- `wasm32-wasip1` no-default and all-feature checks, with the established
+  default/no-default/all-feature guest test artifacts retained;
+- 410 native `easytier-core` library tests;
 - all 29 `easytier-go-host` tests, including the real two-instance route and
-  packet exchange;
-- race-enabled Go bridge close, cancellation, and lifecycle tests;
-- ten repeated runs of the real core lifecycle, two-instance network, socket
-  factory, and listener paths;
-- 15 native Core-instance ownership/isolation tests and nine native direct
-  connector tests in the Docker environment.
+  packet exchange, plus `go build` and `go vet`;
+- four focused race-enabled Go bridge close, cancellation, and lifecycle
+  tests;
+- four focused native SOCKS gateway tests;
+- three root/netns Docker SOCKS portal scenarios;
+- root/netns wrapped-TCP port-forward scenarios for the baseline, DHCP, and
+  QUIC paths. A one-second DHCP/QUIC completion window timed out once in each
+  variant and both passed unchanged on rerun, so no production or test
+  semantics were altered.
 
 The source audit finds no direct real-OS network, DNS, filesystem, process, or
 platform syscall in `easytier-core`. Address-only uses of `std::net` and the
 in-memory smoltcp stream are not OS operations.
 
-Three native TCP hole-punch tests remain blocked before their hole-punch path:
+The full Go race suite passes 21 tests and times out eight while initializing
+the WASM module or probe; it reports no data races. The focused lifecycle race
+tests pass, so these timeouts remain a quantitative race-instrumented WASM
+initialization limit rather than an ownership regression.
+
+WireGuard portal Docker tests stop at their baseline ping before
+`run_vpn_portal`, so they do not exercise the migrated client registry. Three
+native TCP hole-punch tests remain blocked before their hole-punch path:
 the shared legacy ring-tunnel fixture in `easytier/src/peers/tests.rs` does not
 provide `TunnelInfo`, so peer admission fails with `tunnel info is not set`.
-This is recorded as a test-harness blocker rather than changing production
-semantics during the connector refactor.
+These are recorded precondition/test-harness blockers rather than reasons to
+change production semantics during the ownership refactor.
 
 Quantitative latency/idle-resource baselines and hard-kill isolation remain
 production-readiness work for the selected Go/WASI ABI. They do not change the

@@ -112,6 +112,22 @@ belong to core. Transparent-destination lookup, raw sockets, TUN, netns, real
 listeners, and concrete KCP/QUIC engines remain Host Adapter implementations
 when they require platform or non-WASI dependencies.
 
+The named deep gateway Modules are:
+
+- `WrappedTcpDestinationPlanner`, which owns CIDR/group mapping, loop and
+  listener policy, self/no-TUN rewrite, ACL chain selection, and first-packet
+  planning for KCP and QUIC Adapters;
+- the portable SOCKS protocol Module, which owns wire framing, authentication,
+  command and DNS sequencing, TCP copying, UDP association lifecycle,
+  transport choice, entry/session state, and peer-packet routing;
+- `VpnPortalClientTable` and `VpnPortalClientSession`, which own client
+  identity, replacement-safe registry lifecycle, packet validation, and
+  dispatch independently of the concrete WireGuard engine.
+
+A native channel or smoltcp pump that only composes these core Interfaces with
+real resources is Adapter glue, not a second policy owner. Do not move it
+behind a shallow wrapper merely to relocate lines.
+
 ### Runtime configuration
 
 The normalized configuration consumed by core. Native TOML, CLI flags, web
@@ -137,6 +153,7 @@ It must not reconstruct core routing or connectivity decisions.
 | Socket | Interface, I/O scheduling, backpressure, requests, peer-scoped UDP session logic | creation policy, OS handles, syscalls, readiness mechanism |
 | Tunnel | portable framing and protocol logic | non-portable protocol engines only when unavoidable |
 | Packet plane | classification, transformation, proxy/NAT state | TUN/raw socket ingress and egress |
+| Gateway | wrapped destination policy, SOCKS protocol/session state, VPN portal client state | concrete engines, real listeners/sockets, netns, product events/configuration and RPC presentation |
 | Lifecycle | core task ownership and orderly shutdown rules | process lifecycle and hard-kill watchdog |
 | Time/random | portable Tokio/WASI use by default | replacement only when a host contract requires it |
 

@@ -1,6 +1,6 @@
 # Remaining Core Ownership Refactor
 
-> Status: active and authoritative for the remaining ownership migration.
+> Status: complete; authoritative closure record for the ownership migration.
 > Updated 2026-07-13.
 
 ## Outcome
@@ -53,7 +53,7 @@ production ownership inventory is:
 | `peers/foreign_network_manager.rs` | GlobalCtx/direct-connector Host Adapter and management DTO mapper | no portable foreign-network policy remains; the core manager owns graph and lifecycle |
 | `peers/peer_manager.rs` | native composition, runtime-snapshot submission, identity/debug presentation, and DTO mapping | no peer-domain forwarding facade remains |
 | `common/global_ctx.rs` | native configuration source, Host observations, product events, persistence, metrics, interface state | no longer implements `PeerContext`; remaining uses are native capabilities and product projection |
-| `gateway/*` | concrete socket/protocol Adapters and product facades | TCP/UDP/ICMP/CIDR/wrapped/proxy-ACL engines are core-owned, but KCP/QUIC/SOCKS paths still mix portable policy with concrete engines |
+| `gateway/*` | concrete socket/protocol Adapters, product facades, and I/O composition | no portable ownership debt remains; KCP/QUIC engines, WireGuard, real listeners/sockets, netns, configuration, events, and RPC presentation intentionally remain native |
 
 Already core-owned and not to be reimplemented:
 
@@ -62,7 +62,8 @@ Already core-owned and not to be reimplemented:
 - the Core instance runtime configuration store and submitted peer context;
 - TCP, UDP, and ICMP proxy engines and lifecycle Modules;
 - proxy CIDR table and monitor, packet reassembly, proxy ACL, wrapped TCP
-  policy, smoltcp stack, and SOCKS entry state;
+  classification and destination planning, smoltcp stack, portable SOCKS wire
+  protocol and session state, and VPN portal client state;
 - connectivity state machines, listener lifecycle, socket Interfaces, and
   protocol-selection policy.
 
@@ -216,6 +217,16 @@ operations.
 - the native facade owns no peer or route state and starts no core-domain task;
 - native peer and three-node integration tests pass unchanged.
 
+### Closure record
+
+The ownership move is complete as of 2026-07-13. Native `PeerManager` no
+longer projects admission, routing, relay, packet-plane, credential, or task
+lifecycle methods. Its remaining surface assembles native resources, submits
+runtime snapshots, exposes native-only ring and `GlobalCtx` handles, supplies
+debug identity, and maps core snapshots to protobuf presentation. Removing the
+facade would move real Adapter and presentation work into callers, so the
+remaining Module passes the deletion test.
+
 ## Slice 3: replace GlobalCtx with capability Adapters
 
 ### Problem
@@ -293,6 +304,16 @@ but no core Module receives it or a broad Interface implemented by it.
 - credential/trusted-key/event/metrics behaviour and shutdown remain covered;
 - source audit finds no `GlobalCtx` dependency in `easytier-core`.
 
+### Closure record
+
+The capability split is complete as of 2026-07-13. `GlobalCtx` does not
+implement `PeerContext`; core receives normalized snapshots and named narrow
+capabilities for events, limiters, traffic export, STUN observations, public
+IPv6 state, credentials, and relay-state projection. Core owns credential,
+trusted-key, runtime-change, and base relay-preference state. Native
+`GlobalCtx` remains a useful product composition object, but it is neither a
+core dependency nor an authoritative peer-domain store.
+
 ## Slice 4: audit and deepen Gateway dataplane Modules
 
 ### Classification rule
@@ -315,12 +336,12 @@ file location. A row marked **move** is remaining migration debt; a row marked
 | ICMP request/session policy and peer pipeline lifecycle | ICMP engine and service | raw ICMP socket, netns and runtime Adapter | **Keep**: raw socket access is a Host capability |
 | Proxy CIDR lookup and monitor state | `ProxyCidrTable` and `ProxyCidrTableRuntime` | normalized GlobalCtx snapshot provider | **Keep**: configuration projection is the Adapter seam |
 | KCP/QUIC source-side wrapped TCP classification | packet classifier, marker and forwarding policy in `wrapped_tcp_proxy` | concrete KCP/quinn endpoint and stream handling | **Keep**: source policy is already core-owned |
-| KCP/QUIC destination mapping and ACL plan | CIDR table and ACL primitives exist separately | both paths duplicate CIDR rewrite, loop prevention, self/no-TUN rewrite, ACL chain selection and `PacketInfo` construction | **Move** to one core destination planner; keep group observation and concrete connect/copy in native |
+| KCP/QUIC destination mapping and ACL plan | `WrappedTcpDestinationPlanner` owns CIDR/group lookup, listener denial, loop prevention, self/no-TUN rewrite, chain selection, `PacketInfo`, and first-payload planning | runtime observations plus concrete connect/copy | **Complete**: one core planner drives both native engines |
 | SOCKS entry/session table and peer IPv4 packet routing | `Socks5EntryTable` and packet classifier | resource payloads stored behind the generic table | **Keep**: state and classification are already core-owned |
 | SOCKS TCP transport choice | `Socks5TcpConnectPlan` selects kernel, smoltcp or KCP | route/group observations and construction of the chosen concrete connector | **Keep**: core chooses; native realizes the engine |
-| SOCKS wire constants, address codec, authentication and handshake | none | vendored `fast_socks5` protocol Module | **Move** the portable stream-generic protocol Module to core; inject DNS/connect operations and retain real listeners/sockets in native |
-| SOCKS smoltcp and peer packet pumps | core owns the smoltcp stack implementation and peer route APIs | native composes channels, product port-forwards and concrete stream resources | **Keep** until the wire Module is moved; then reassess only duplicated policy, not I/O composition |
-| VPN portal client identity and peer-packet dispatch | peer packet/pipeline primitives exist | WireGuard portal owns the client-IP registry, replacement/removal rules and destination dispatch filter | **Move** registry and dispatch policy to a core Module with an opaque client sink value |
+| SOCKS wire constants, address codec, authentication and handshake | stream-generic `socks5_protocol` Module owns wire framing, authentication, commands, DNS sequencing, TCP copy, and UDP association lifecycle | DNS, TCP and UDP runtime Adapters | **Complete**: portable protocol state is core-owned |
+| SOCKS smoltcp and peer packet pumps | core owns the smoltcp stack, entry/session state, transport choice, and peer packet routing | native wires channels, peer sender, product port-forwards, and concrete streams | **Keep**: the remaining code is I/O composition with no second policy owner |
+| VPN portal client identity and peer-packet dispatch | `VpnPortalClientTable` and `VpnPortalClientSession` own registry, replacement-safe removal, identity learning, packet validation, and dispatch | opaque WireGuard client sink and event/config projection | **Complete**: registry and dispatch policy are core-owned |
 | VPN portal WireGuard listener, tunnel and client config presentation | WireGuard tunnel protocol remains an accepted native engine | listener/device lifecycle, tunnel I/O, key material formatting, product events and RPC DTOs | **Keep** as concrete protocol Adapter and presentation |
 | VPN portal advertised routes | route/proxy-CIDR state is core-owned | native formats `AllowedIPs` and projects the configured portal CIDR | **Keep** formatting in native; do not create a second route authority |
 
@@ -337,6 +358,21 @@ delete duplicate native decisions rather than create parallel engines.
    keep the WireGuard tunnel engine and product events in native.
 4. Repeat the deletion test across `gateway/*`: removing a native facade must
    leave only real resource composition or presentation work in its callers.
+
+All four steps completed on 2026-07-13. The destination planner is shared by
+KCP and QUIC; the portable SOCKS codec and handshake/session state live in
+core; modified-source SOCKS packet routing and VPN portal registry/dispatch
+are core-owned; stale native state and duplicate routing checks were deleted.
+
+### Closure record
+
+The gateway ownership audit is closed. Native gateway code retains concrete
+KCP/quinn and WireGuard engines, real sockets/listeners, transparent-address
+lookup, netns handling, product configuration/events, RPC DTOs, and the
+smoltcp/channel pump that composes core Interfaces. Moving that pump behind a
+new pass-through wrapper would reduce Depth: deleting it does not force packet
+policy or session rules to reappear, because those rules already live in the
+core Modules named above.
 
 ### Exit criteria
 
@@ -403,3 +439,13 @@ unless a migration directly changes that fixture's ownership.
 - obsolete forwarding Interfaces and native ownership are deleted;
 - native, wasm, Go, and selected Docker scenarios pass;
 - `CONTEXT.md`, ADRs, roadmap, this plan, and code describe the same ownership.
+
+The ownership definition of done is met. Final validation covered 410 core
+tests; native, no-default, all-feature, and `wasm32-wasip1` checks; all 29 Go
+host tests plus build and vet; focused race-enabled lifecycle tests; native
+SOCKS tests; and root/netns Docker SOCKS and wrapped-TCP scenarios. A full Go
+race run has eight WASM-initialization deadline failures and no race-detector
+reports. WireGuard portal Docker tests stop at a baseline ping before entering
+the migrated portal path, and the legacy ring fixture still lacks
+`TunnelInfo`; both are recorded verification limitations rather than reasons
+to change production semantics in this migration.

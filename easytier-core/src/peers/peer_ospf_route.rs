@@ -1790,7 +1790,7 @@ impl SyncedRouteInfo {
 
     /// Collect trusted credential pubkeys from admin nodes (network_secret holders)
     /// and verify credential peers. Returns set of peer_ids that should be removed.
-    /// Also returns a HashMap of trusted keys for synchronization to GlobalCtx.
+    /// Also returns trusted-key metadata for the core trust-state update.
     fn verify_and_update_credential_trusts(
         &self,
         network_secret: Option<&str>,
