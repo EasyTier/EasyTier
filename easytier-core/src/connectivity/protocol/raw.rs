@@ -7,9 +7,11 @@ use url::Url;
 use crate::{
     connectivity::{
         manual::resolve_url_addrs,
-        transport::{self, ConnectedByteStream, ConnectedTransport, ConnectedUdpSession},
+        transport::{
+            self, ConnectedByteStream, ConnectedTransport, ConnectedUdpSession, UdpSessionMode,
+        },
     },
-    listener::SocketListener,
+    listener::{ListenerConnectionCounter, SocketListener},
     proto::common::TunnelInfo,
     socket::{
         IpVersion,
@@ -18,13 +20,18 @@ use crate::{
             TcpBindOptions, TcpListenOptions, TcpSocketListener, TcpSocketPurpose,
             VirtualTcpListenerFactory, VirtualTcpSocket, VirtualTcpSocketFactory,
         },
-        udp::{UdpSession, UdpSessionSocket},
+        udp::{
+            UdpBindOptions, UdpSession, UdpSessionAcceptKind, UdpSessionControlHandler,
+            UdpSessionListenRequest, UdpSessionSocket, UdpSessionSocketListener,
+            VirtualUdpSocketFactory,
+        },
     },
     tunnel::{Tunnel, TunnelError, tcp::TcpTunnelUpgrader, udp::UdpTunnelUpgrader},
 };
 
 const BYTE_STREAM_MAX_PACKET_SIZE: usize = 4096;
 const TCP_DEFAULT_PORT: u16 = 11010;
+const UDP_DEFAULT_PORT: u16 = 11010;
 
 #[async_trait]
 pub trait TunnelDialer: Send + Sync + 'static {
@@ -167,6 +174,163 @@ where
 
     fn local_url(&self) -> Url {
         self.inner.local_url()
+    }
+}
+
+/// Core-owned raw UDP Tunnel connector over an injected socket factory.
+pub struct UdpTunnelDialer<H>
+where
+    H: VirtualUdpSocketFactory + UdpSessionControlHandler<<H as VirtualUdpSocketFactory>::Socket>,
+{
+    remote_url: Url,
+    host: Arc<H>,
+    dns: Arc<dyn DnsResolver>,
+    ip_version: IpVersion,
+    bind_addrs: Vec<SocketAddr>,
+    bind: UdpBindOptions,
+}
+
+impl<H> UdpTunnelDialer<H>
+where
+    H: VirtualUdpSocketFactory + UdpSessionControlHandler<<H as VirtualUdpSocketFactory>::Socket>,
+{
+    pub fn new(remote_url: Url, host: Arc<H>, dns: Arc<dyn DnsResolver>) -> Self {
+        Self {
+            remote_url,
+            host,
+            dns,
+            ip_version: IpVersion::Both,
+            bind_addrs: Vec::new(),
+            bind: UdpBindOptions::direct_connect(),
+        }
+    }
+
+    pub fn with_ip_version(mut self, ip_version: IpVersion) -> Self {
+        self.ip_version = ip_version;
+        self
+    }
+
+    pub fn with_bind_addrs(mut self, bind_addrs: Vec<SocketAddr>) -> Self {
+        self.bind_addrs = bind_addrs;
+        self
+    }
+
+    pub fn with_bind(mut self, bind: UdpBindOptions) -> Self {
+        self.bind = bind;
+        self
+    }
+}
+
+#[async_trait]
+impl<H> TunnelDialer for UdpTunnelDialer<H>
+where
+    H: VirtualUdpSocketFactory + UdpSessionControlHandler<<H as VirtualUdpSocketFactory>::Socket>,
+{
+    async fn connect(&self) -> anyhow::Result<Box<dyn Tunnel>> {
+        if self.remote_url.scheme() != "udp" {
+            anyhow::bail!("raw UDP dialer requires udp URL: {}", self.remote_url);
+        }
+        let remote_addr = resolve_url_addrs(
+            &self.remote_url,
+            UDP_DEFAULT_PORT,
+            self.ip_version,
+            self.bind.socket_mark,
+            self.dns.as_ref(),
+        )
+        .await?
+        .choose(&mut rand::thread_rng())
+        .copied()
+        .ok_or(TunnelError::NoDnsRecordFound(self.ip_version))?;
+        let connected = transport::connect_udp(
+            self.host.clone(),
+            remote_addr,
+            self.bind_addrs.clone(),
+            self.bind.clone(),
+            UdpSessionMode::EasyTierMux,
+        )
+        .await?;
+        Ok(upgrade_connected_udp(connected, self.remote_url.clone())?)
+    }
+
+    fn remote_url(&self) -> Url {
+        self.remote_url.clone()
+    }
+}
+
+/// Core-owned raw UDP Tunnel listener over an injected socket factory.
+pub struct UdpTunnelListener<H>
+where
+    H: VirtualUdpSocketFactory + UdpSessionControlHandler<<H as VirtualUdpSocketFactory>::Socket>,
+{
+    inner: UdpSessionSocketListener<H, H>,
+}
+
+impl<H> UdpTunnelListener<H>
+where
+    H: VirtualUdpSocketFactory + UdpSessionControlHandler<<H as VirtualUdpSocketFactory>::Socket>,
+{
+    pub fn new(local_url: Url, local_addr: SocketAddr, host: Arc<H>) -> Self {
+        Self {
+            inner: UdpSessionSocketListener::new_with_control_handler(
+                local_url,
+                local_addr,
+                UdpSessionAcceptKind::EasyTierMux,
+                host.clone(),
+                host,
+            ),
+        }
+    }
+
+    pub fn new_with_request(
+        local_url: Url,
+        request: UdpSessionListenRequest,
+        host: Arc<H>,
+    ) -> Self {
+        Self {
+            inner: UdpSessionSocketListener::new_with_request(
+                local_url,
+                request,
+                UdpSessionAcceptKind::EasyTierMux,
+                host.clone(),
+                host,
+            ),
+        }
+    }
+}
+
+impl<H> fmt::Debug for UdpTunnelListener<H>
+where
+    H: VirtualUdpSocketFactory + UdpSessionControlHandler<<H as VirtualUdpSocketFactory>::Socket>,
+{
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("UdpTunnelListener")
+            .field("inner", &self.inner)
+            .finish()
+    }
+}
+
+#[async_trait]
+impl<H> SocketListener for UdpTunnelListener<H>
+where
+    H: VirtualUdpSocketFactory + UdpSessionControlHandler<<H as VirtualUdpSocketFactory>::Socket>,
+{
+    type Accepted = Box<dyn Tunnel>;
+
+    async fn listen(&mut self) -> anyhow::Result<()> {
+        self.inner.listen().await
+    }
+
+    async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
+        Ok(upgrade_accepted_udp(self.inner.accept().await?)?)
+    }
+
+    fn local_url(&self) -> Url {
+        self.inner.local_url()
+    }
+
+    fn connection_counter(&self) -> Arc<dyn ListenerConnectionCounter> {
+        self.inner.connection_counter()
     }
 }
 
