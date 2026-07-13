@@ -14,7 +14,7 @@ use crate::{
     },
     instance::instance::Instance,
     tests::three_node::{generate_secure_mode_config, generate_secure_mode_config_with_key},
-    tunnel::{common::tests::wait_for_condition, udp::UdpTunnelConnector},
+    tunnel::common::tests::wait_for_condition,
 };
 
 use super::{add_ns_to_bridge, create_netns, del_netns, drop_insts, ping_test};
@@ -414,9 +414,7 @@ async fn credential_peers_p2p_to_need_p2p_admin_through_public_server(
     .await;
     admin_inst
         .get_conn_manager()
-        .add_connector(UdpTunnelConnector::new(
-            "udp://10.1.1.1:11010".parse().unwrap(),
-        ));
+        .add_connector_url("udp://10.1.1.1:11010".parse().unwrap());
 
     wait_foreign_network_count(&public_server_inst, 1, Duration::from_secs(10)).await;
 
@@ -475,14 +473,10 @@ async fn credential_peers_p2p_to_need_p2p_admin_through_public_server(
 
     credential_a_inst
         .get_conn_manager()
-        .add_connector(UdpTunnelConnector::new(
-            "udp://10.1.1.1:11010".parse().unwrap(),
-        ));
+        .add_connector_url("udp://10.1.1.1:11010".parse().unwrap());
     credential_b_inst
         .get_conn_manager()
-        .add_connector(UdpTunnelConnector::new(
-            "udp://10.1.1.1:11010".parse().unwrap(),
-        ));
+        .add_connector_url("udp://10.1.1.1:11010".parse().unwrap());
 
     let admin_peer_id = admin_inst.peer_id();
     let credential_a_peer_id = credential_a_inst.peer_id();

@@ -15,7 +15,7 @@ use easytier_core::tunnel::ring::RingTunnelRegistry;
 use easytier::{
     common::config::{ConfigLoader, TomlConfigLoader},
     instance::instance::Instance,
-    tunnel::{packet_def::ZCPacket, udp::UdpTunnelConnector},
+    tunnel::packet_def::ZCPacket,
 };
 
 const VIRTUAL_IP_A: &str = "10.144.144.1";
@@ -287,17 +287,15 @@ async fn setup_topology(tunnel: TunnelKind, packet_size: usize) -> BenchTopology
             .parse()
             .unwrap(),
         ),
-        TunnelKind::Udp => inst_b
-            .get_conn_manager()
-            .add_connector(UdpTunnelConnector::new(
-                format!(
-                    "udp://{}:{}",
-                    docker.as_ref().expect("udp benchmark needs Docker").ip_a,
-                    tunnel_port
-                )
-                .parse()
-                .unwrap(),
-            )),
+        TunnelKind::Udp => inst_b.get_conn_manager().add_connector_url(
+            format!(
+                "udp://{}:{}",
+                docker.as_ref().expect("udp benchmark needs Docker").ip_a,
+                tunnel_port
+            )
+            .parse()
+            .unwrap(),
+        ),
     }
 
     wait_for_routes(&inst_a, &inst_b).await;

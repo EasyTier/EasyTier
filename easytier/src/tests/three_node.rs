@@ -31,12 +31,9 @@ use crate::{
             RuntimeRpcDialer, RuntimeRpcListener, runtime_rpc_dialer, runtime_rpc_listener,
         },
     },
-    tunnel::{
-        common::tests::{
-            _tunnel_bench_netns, _tunnel_pingpong_netns_with_timeout, CoreTunnelDialer,
-            CoreTunnelListener, wait_for_condition,
-        },
-        udp::UdpTunnelConnector,
+    tunnel::common::tests::{
+        _tunnel_bench_netns, _tunnel_pingpong_netns_with_timeout, CoreTunnelDialer,
+        CoreTunnelListener, wait_for_condition,
     },
 };
 
@@ -160,9 +157,7 @@ async fn init_three_node_ex_with_inst3<F: Fn(TomlConfigLoader) -> TomlConfigLoad
     } else if proto == "udp" {
         inst1
             .get_conn_manager()
-            .add_connector(UdpTunnelConnector::new(
-                "udp://10.1.1.2:11010".parse().unwrap(),
-            ));
+            .add_connector_url("udp://10.1.1.2:11010".parse().unwrap());
     } else if proto == "wg" {
         #[cfg(feature = "wireguard")]
         inst1
@@ -1223,7 +1218,8 @@ pub async fn subnet_proxy_loop_prevention_test() {
 
 async fn subnet_proxy_test_udp(listen_ip: &str, target_ip: &str, timeout: Duration) {
     use crate::tunnel::{
-        common::tests::_tunnel_pingpong_netns_with_timeout, udp::UdpTunnelListener,
+        common::tests::_tunnel_pingpong_netns_with_timeout,
+        udp::{UdpTunnelConnector, UdpTunnelListener},
     };
     use rand::Rng;
 
