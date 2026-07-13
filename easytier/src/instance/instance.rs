@@ -898,7 +898,7 @@ impl Instance {
         let vpn_portal_inst = vpn_portal::NullVpnPortal;
 
         #[cfg(feature = "socks5")]
-        let socks5_server = Socks5Server::new(global_ctx.clone(), peer_manager.clone(), None);
+        let socks5_server = Socks5Server::new(global_ctx.clone(), peer_manager.clone());
 
         Instance {
             inst_name: global_ctx.inst_name.clone(),

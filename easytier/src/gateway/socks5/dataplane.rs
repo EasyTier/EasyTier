@@ -363,8 +363,8 @@ mod tests {
         a.get_global_ctx().set_ipv4(Some(a_ip));
         b.get_global_ctx().set_ipv4(Some(b_ip));
 
-        let server_a = Socks5Server::new(a.get_global_ctx(), a.clone(), None);
-        let server_b = Socks5Server::new(b.get_global_ctx(), b.clone(), None);
+        let server_a = Socks5Server::new(a.get_global_ctx(), a.clone());
+        let server_b = Socks5Server::new(b.get_global_ctx(), b.clone());
         server_a.run(None).await.unwrap();
         server_b.run(None).await.unwrap();
 

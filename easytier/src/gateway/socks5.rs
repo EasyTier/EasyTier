@@ -24,8 +24,7 @@ use crate::{
     common::{config::PortForwardConfig, global_ctx::GlobalCtxEvent, join_joinset_background},
     gateway::fast_socks5::{
         server::{
-            AcceptAuthentication, AsyncTcpConnector, Config, RuntimeSocks5Server,
-            SimpleUserPassword, Socks5Socket,
+            AcceptAuthentication, AsyncTcpConnector, Config, RuntimeSocks5Server, Socks5Socket,
         },
         util::stream::tcp_connect_with_timeout,
     },
@@ -385,21 +384,16 @@ impl AsyncTcpConnector for Socks5AutoConnector {
 
 struct Socks5ServerNet {
     ipv4_addr: cidr::Ipv4Inet,
-    auth: Option<SimpleUserPassword>,
 
     smoltcp_net: Arc<Net>,
     forward_tasks: Arc<std::sync::Mutex<JoinSet<()>>>,
-
-    entries: Socks5EntrySet,
 }
 
 impl Socks5ServerNet {
     pub fn new(
         ipv4_addr: cidr::Ipv4Inet,
-        auth: Option<SimpleUserPassword>,
         peer_manager: Weak<PeerManager>,
         packet_recv: Arc<Mutex<mpsc::Receiver<ZCPacket>>>,
-        entries: Socks5EntrySet,
     ) -> Self {
         let mut forward_tasks = JoinSet::new();
         let mut cap = smoltcp::phy::DeviceCapabilities::default();
@@ -469,12 +463,9 @@ impl Socks5ServerNet {
 
         Self {
             ipv4_addr,
-            auth,
 
             smoltcp_net: Arc::new(net),
             forward_tasks,
-
-            entries,
         }
     }
 
@@ -527,7 +518,6 @@ struct UdpClientKey {
 pub struct Socks5Server {
     global_ctx: Arc<GlobalCtx>,
     peer_manager: Weak<PeerManager>,
-    auth: Option<SimpleUserPassword>,
 
     tasks: Arc<std::sync::Mutex<JoinSet<()>>>,
     packet_sender: mpsc::Sender<ZCPacket>,
@@ -685,16 +675,11 @@ impl PeerPacketFilter for Socks5Server {
 }
 
 impl Socks5Server {
-    pub fn new(
-        global_ctx: Arc<GlobalCtx>,
-        peer_manager: Arc<PeerManager>,
-        auth: Option<SimpleUserPassword>,
-    ) -> Arc<Self> {
+    pub fn new(global_ctx: Arc<GlobalCtx>, peer_manager: Arc<PeerManager>) -> Arc<Self> {
         let (packet_sender, packet_recv) = mpsc::channel(1024);
         Arc::new(Self {
             global_ctx,
             peer_manager: Arc::downgrade(&peer_manager),
-            auth,
 
             tasks: Arc::new(std::sync::Mutex::new(JoinSet::new())),
             packet_recv: Arc::new(Mutex::new(packet_recv)),
@@ -793,10 +778,8 @@ impl Socks5Server {
                     if let Some(cur_ipv4) = cur_ipv4 {
                         net.lock().await.replace(Socks5ServerNet::new(
                             cur_ipv4,
-                            None,
                             peer_manager.clone(),
                             packet_recv.clone(),
-                            entries.clone(),
                         ));
                         tracing::trace!(
                             ?cur_ipv4,
@@ -1349,7 +1332,7 @@ mod tests {
     #[tokio::test]
     async fn socks5_consumes_modified_data_when_entry_matches() {
         let peer_manager = create_mock_peer_manager().await;
-        let server = Socks5Server::new(peer_manager.get_global_ctx(), peer_manager, None);
+        let server = Socks5Server::new(peer_manager.get_global_ctx(), peer_manager);
 
         let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 144, 144, 1)), 40000);
         let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 144, 144, 3)), 22);
@@ -1383,7 +1366,7 @@ mod tests {
     #[tokio::test]
     async fn socks5_passes_through_unmatched_or_malformed_modified_data() {
         let peer_manager = create_mock_peer_manager().await;
-        let server = Socks5Server::new(peer_manager.get_global_ctx(), peer_manager, None);
+        let server = Socks5Server::new(peer_manager.get_global_ctx(), peer_manager);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         server.entries.insert(
             Socks5Entry {
@@ -1414,7 +1397,7 @@ mod tests {
     #[tokio::test]
     async fn socks5_passes_through_non_loopback_modified_data_even_when_entry_matches() {
         let peer_manager = create_mock_peer_manager().await;
-        let server = Socks5Server::new(peer_manager.get_global_ctx(), peer_manager, None);
+        let server = Socks5Server::new(peer_manager.get_global_ctx(), peer_manager);
 
         let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 144, 144, 1)), 40000);
         let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 144, 144, 3)), 22);
@@ -1439,7 +1422,7 @@ mod tests {
     #[tokio::test]
     async fn socks5_mirrors_fragmented_udp_when_entry_matches() {
         let peer_manager = create_mock_peer_manager().await;
-        let server = Socks5Server::new(peer_manager.get_global_ctx(), peer_manager, None);
+        let server = Socks5Server::new(peer_manager.get_global_ctx(), peer_manager);
 
         let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 144, 144, 1)), 40000);
         let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 144, 144, 3)), 53);
