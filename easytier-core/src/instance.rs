@@ -198,6 +198,7 @@ fn validate_portable_connectivity_config(
     {
         anyhow::bail!("direct connectivity P2P policy does not match peer policy");
     }
+    config.connectivity.runtime.acl.build()?;
     Ok(())
 }
 
@@ -1414,6 +1415,36 @@ mod tests {
             .unwrap();
         create.version += 1;
         assert!(create.validate().is_err());
+    }
+
+    #[test]
+    fn portable_config_validation_rejects_invalid_acl_whitelist() {
+        let peer = crate::peers::peer_manager::PortablePeerManagerConfig::new(
+            crate::peers::context::PeerRuntimeConfig {
+                core: crate::config::CoreConfig::default(),
+                network_identity: crate::config::NetworkIdentity {
+                    network_name: "default".to_owned(),
+                    network_secret: Some("test".to_owned()),
+                    network_secret_digest: None,
+                },
+                stun_info: crate::proto::common::StunInfo::default(),
+                feature_flags: crate::proto::common::PeerFeatureFlag::default(),
+                secure_mode: None,
+                host_routing: crate::peers::context::HostRoutingPolicy::default(),
+            },
+        );
+        let mut config = PortableCoreInstanceConfig {
+            peer,
+            connectivity: CoreInstanceConfig::default(),
+        };
+        config.connectivity.direct.lazy_p2p = config.peer.flags.lazy_p2p;
+        config.connectivity.direct.disable_p2p = config.peer.flags.disable_p2p;
+        config.connectivity.direct.need_p2p = config.peer.flags.need_p2p;
+        config.connectivity.runtime.acl.tcp_whitelist = vec!["9000-8000".to_owned()];
+
+        let error = validate_portable_connectivity_config(&config).unwrap_err();
+
+        assert!(error.to_string().contains("Start port must be <= end port"));
     }
 
     struct RecordingProxyService {

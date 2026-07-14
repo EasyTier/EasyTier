@@ -1036,10 +1036,12 @@ impl PeerManagerCore {
         config.runtime.feature_flags.need_p2p = config.flags.need_p2p;
         config.runtime.feature_flags.avoid_relay_data |= config.flags.disable_relay_data;
         let credential_manager = Arc::new(CredentialManager::new());
-        runtime_config.update_peer(Arc::new(PeerRuntimeSnapshot::new(
-            config.runtime.clone(),
-            config.flags.clone(),
-        )));
+        let mut submitted_snapshot = runtime_config.snapshot().peer.as_ref().clone();
+        submitted_snapshot.runtime = config.runtime.clone();
+        submitted_snapshot.avoid_relay_data_preference =
+            config.runtime.feature_flags.avoid_relay_data;
+        submitted_snapshot.flags = config.flags.clone();
+        runtime_config.update_peer(Arc::new(submitted_snapshot));
         let core_context_support = Arc::new(CorePeerContextSupport::new());
         let context: ArcPeerContext = Arc::new(SubmittedPeerContext::new_core_owned(
             runtime_config,
@@ -3767,6 +3769,45 @@ mod tests {
         assert_eq!(route.task_count(), 0);
         assert!(core.stats_manager.cleanup_task_is_stopped());
         assert!(core.acl_filter.cleanup_task_is_stopped());
+    }
+
+    #[tokio::test]
+    async fn portable_peer_assembly_preserves_submitted_acl_groups() {
+        let config = PortablePeerManagerConfig::new(portable_runtime_config("portable-net", 86));
+        let acl = crate::proto::acl::Acl {
+            acl_v1: Some(crate::proto::acl::AclV1 {
+                chains: Vec::new(),
+                group: Some(crate::proto::acl::GroupInfo {
+                    declares: vec![crate::proto::acl::GroupIdentity {
+                        group_name: "ops".to_owned(),
+                        group_secret: "ops-secret".to_owned(),
+                    }],
+                    members: vec!["ops".to_owned()],
+                }),
+            }),
+        };
+        let mut snapshot = PeerRuntimeSnapshot::new(config.runtime.clone(), config.flags.clone());
+        snapshot.set_acl_groups(Some(&acl));
+        let runtime_config =
+            CoreRuntimeConfigStore::new(CoreRuntimeConfig::default(), Arc::new(snapshot));
+        let (packet_tx, _packet_rx) = create_packet_recv_chan();
+
+        let core = PeerManagerCore::new_portable_with_optional_stun_info_source(
+            config,
+            runtime_config,
+            Arc::new(PanicDnsResolver),
+            SocketContext::default(),
+            None,
+            packet_tx,
+        )
+        .unwrap();
+
+        let groups = core.context.peer_groups(86);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].group_name, "ops");
+        assert!(groups[0].verify("ops-secret", 86));
+        assert_eq!(core.context.acl_group_declarations()[0].group_name, "ops");
+        core.clear_resources().await;
     }
 
     #[tokio::test]
