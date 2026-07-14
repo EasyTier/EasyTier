@@ -391,85 +391,150 @@ pub trait ProxyService: Send + Sync + 'static {
     async fn stop(&self);
 }
 
-pub struct ProxyServiceGroup {
-    operation: Mutex<()>,
-    services: Vec<Arc<dyn ProxyService>>,
-    started_count: AtomicUsize,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WrappedTransportDirections {
+    pub source: bool,
+    pub destination: bool,
 }
 
-impl ProxyServiceGroup {
-    pub fn new(services: Vec<Arc<dyn ProxyService>>) -> Arc<Self> {
-        Arc::new(Self {
-            operation: Mutex::new(()),
-            services,
-            started_count: AtomicUsize::new(0),
-        })
-    }
-
-    async fn stop_started(&self) {
-        loop {
-            let started_count = self.started_count.load(Ordering::Acquire);
-            if started_count == 0 {
-                break;
-            }
-            self.services[started_count - 1].stop().await;
-            self.started_count
-                .store(started_count - 1, Ordering::Release);
-        }
+impl WrappedTransportDirections {
+    fn enabled(self) -> bool {
+        self.source || self.destination
     }
 }
 
 #[async_trait]
-impl ProxyService for ProxyServiceGroup {
-    async fn start(&self) -> anyhow::Result<()> {
-        let _operation = self.operation.lock().await;
-        if self.started_count.load(Ordering::Acquire) != 0 {
-            return Ok(());
-        }
-
-        for (index, service) in self.services.iter().enumerate() {
-            self.started_count.store(index + 1, Ordering::Release);
-            if let Err(err) = service.start().await {
-                self.stop_started().await;
-                return Err(err);
-            }
-        }
-        Ok(())
-    }
-
-    async fn stop(&self) {
-        let _operation = self.operation.lock().await;
-        self.stop_started().await;
-    }
+pub trait WrappedTransportEngine: Send + Sync + 'static {
+    async fn start(&self, directions: WrappedTransportDirections) -> anyhow::Result<()>;
+    async fn stop(&self);
 }
 
-pub struct TransportProxyBuild<A> {
-    pub lifecycle: Option<Arc<dyn ProxyService>>,
+pub struct WrappedTransportEngineBuild<A> {
+    pub kcp: Option<Arc<dyn WrappedTransportEngine>>,
+    pub quic: Option<Arc<dyn WrappedTransportEngine>>,
     pub attachment: A,
 }
 
-pub trait TransportProxyFactory: Send + 'static {
+pub trait WrappedTransportEngineFactory: Send + 'static {
     type Attachment: Send + Sync + 'static;
 
     fn build(
         self,
         cidr_table: Arc<ProxyCidrTable>,
-    ) -> anyhow::Result<TransportProxyBuild<Self::Attachment>>;
+    ) -> anyhow::Result<WrappedTransportEngineBuild<Self::Attachment>>;
 }
 
-pub struct NoTransportProxyFactory;
+pub struct NoWrappedTransportEngineFactory;
 
-impl TransportProxyFactory for NoTransportProxyFactory {
+impl WrappedTransportEngineFactory for NoWrappedTransportEngineFactory {
     type Attachment = ();
 
     fn build(
         self,
         _cidr_table: Arc<ProxyCidrTable>,
-    ) -> anyhow::Result<TransportProxyBuild<Self::Attachment>> {
-        Ok(TransportProxyBuild {
-            lifecycle: None,
+    ) -> anyhow::Result<WrappedTransportEngineBuild<Self::Attachment>> {
+        Ok(WrappedTransportEngineBuild {
+            kcp: None,
+            quic: None,
             attachment: (),
         })
+    }
+}
+
+#[derive(Default)]
+struct WrappedTransportProxyState {
+    active: bool,
+    kcp_started: bool,
+    quic_started: bool,
+}
+
+struct WrappedTransportProxyModule {
+    runtime_config: CoreRuntimeConfigStore,
+    kcp: Option<Arc<dyn WrappedTransportEngine>>,
+    quic: Option<Arc<dyn WrappedTransportEngine>>,
+    state: Mutex<WrappedTransportProxyState>,
+}
+
+impl WrappedTransportProxyModule {
+    fn new(
+        runtime_config: CoreRuntimeConfigStore,
+        kcp: Option<Arc<dyn WrappedTransportEngine>>,
+        quic: Option<Arc<dyn WrappedTransportEngine>>,
+    ) -> Option<Arc<Self>> {
+        if kcp.is_none() && quic.is_none() {
+            return None;
+        }
+        Some(Arc::new(Self {
+            runtime_config,
+            kcp,
+            quic,
+            state: Mutex::new(WrappedTransportProxyState::default()),
+        }))
+    }
+
+    fn directions(&self) -> (WrappedTransportDirections, WrappedTransportDirections) {
+        let snapshot = self.runtime_config.snapshot();
+        let flags = &snapshot.peer.flags;
+        (
+            WrappedTransportDirections {
+                source: flags.enable_kcp_proxy,
+                destination: !flags.disable_kcp_input,
+            },
+            WrappedTransportDirections {
+                source: flags.enable_quic_proxy,
+                destination: !flags.disable_quic_input,
+            },
+        )
+    }
+
+    async fn stop_started(&self, state: &mut WrappedTransportProxyState) {
+        if state.quic_started {
+            if let Some(quic) = &self.quic {
+                quic.stop().await;
+            }
+            state.quic_started = false;
+        }
+        if state.kcp_started {
+            if let Some(kcp) = &self.kcp {
+                kcp.stop().await;
+            }
+            state.kcp_started = false;
+        }
+        state.active = false;
+    }
+
+    async fn start(&self) -> anyhow::Result<()> {
+        let mut state = self.state.lock().await;
+        if state.active {
+            return Ok(());
+        }
+        let (kcp_directions, quic_directions) = self.directions();
+
+        if let Some(kcp) = &self.kcp
+            && kcp_directions.enabled()
+        {
+            state.kcp_started = true;
+            if let Err(error) = kcp.start(kcp_directions).await {
+                self.stop_started(&mut state).await;
+                return Err(error);
+            }
+        }
+        if let Some(quic) = &self.quic
+            && quic_directions.enabled()
+        {
+            state.quic_started = true;
+            if let Err(error) = quic.start(quic_directions).await {
+                self.stop_started(&mut state).await;
+                return Err(error);
+            }
+        }
+        state.active = true;
+        Ok(())
+    }
+
+    async fn stop(&self) {
+        let mut state = self.state.lock().await;
+        self.stop_started(&mut state).await;
     }
 }
 
@@ -491,8 +556,7 @@ where
     listener: Option<Arc<dyn ListenerService>>,
     udp_hole_punch: CoreUdpHolePunchService<H>,
     udp_hole_punch_started: AtomicBool,
-    transport_proxy: Option<Arc<dyn ProxyService>>,
-    transport_proxy_started: AtomicBool,
+    transport_proxy: Option<Arc<WrappedTransportProxyModule>>,
     proxy_cidr_table: Arc<ProxyCidrTable>,
     #[cfg(feature = "proxy-packet")]
     proxy: Arc<CoreProxyModule<H>>,
@@ -589,7 +653,7 @@ where
             config.connectivity,
             runtime_config,
             stun,
-            NoTransportProxyFactory,
+            NoWrappedTransportEngineFactory,
         )?;
         instance.packet_egress = Some(PacketEgress::new(packet_rx, packet_sink));
         Ok(instance)
@@ -624,7 +688,7 @@ where
             config,
             runtime_config,
             stun,
-            NoTransportProxyFactory,
+            NoWrappedTransportEngineFactory,
         )
         .map(|(instance, ())| instance)
     }
@@ -637,7 +701,7 @@ where
         transport_proxy_factory: F,
     ) -> anyhow::Result<(Self, F::Attachment)>
     where
-        F: TransportProxyFactory,
+        F: WrappedTransportEngineFactory,
     {
         validate_listener_protocols(
             &config.listeners,
@@ -663,7 +727,7 @@ where
         transport_proxy_factory: F,
     ) -> anyhow::Result<(Self, F::Attachment)>
     where
-        F: TransportProxyFactory,
+        F: WrappedTransportEngineFactory,
     {
         let CoreInstanceAdapters {
             host,
@@ -804,10 +868,12 @@ where
                 icmp_proxy_host,
             )
         };
-        let TransportProxyBuild {
-            lifecycle: transport_proxy,
+        let WrappedTransportEngineBuild {
+            kcp,
+            quic,
             attachment: transport_proxy_attachment,
         } = transport_proxy_factory.build(proxy_cidr_table.clone())?;
+        let transport_proxy = WrappedTransportProxyModule::new(runtime_config.clone(), kcp, quic);
         let direct = DirectConnectorManager::new_with_running_listeners(
             peer_manager.clone(),
             host.clone(),
@@ -843,7 +909,6 @@ where
                 udp_hole_punch,
                 udp_hole_punch_started: AtomicBool::new(false),
                 transport_proxy,
-                transport_proxy_started: AtomicBool::new(false),
                 proxy_cidr_table,
                 #[cfg(feature = "proxy-packet")]
                 proxy,
@@ -896,11 +961,8 @@ where
         }
         self.udp_hole_punch.stop().await;
         self.udp_hole_punch_started.store(false, Ordering::Release);
-        if let Some(transport_proxy) = &self.transport_proxy
-            && self.transport_proxy_started.load(Ordering::Acquire)
-        {
+        if let Some(transport_proxy) = &self.transport_proxy {
             transport_proxy.stop().await;
-            self.transport_proxy_started.store(false, Ordering::Release);
         }
         #[cfg(feature = "proxy-packet")]
         if self.proxy_started.load(Ordering::Acquire) {
@@ -1078,12 +1140,7 @@ where
         let Some(transport_proxy) = &self.transport_proxy else {
             return Ok(());
         };
-        if self.transport_proxy_started.load(Ordering::Acquire) {
-            return Ok(());
-        }
-
         let mut recovery = self.recovery_guard();
-        self.transport_proxy_started.store(true, Ordering::Release);
         let start_result = tokio::select! {
             _ = self.cancel.cancelled() => {
                 Err(anyhow::anyhow!("transport proxy start cancelled"))
@@ -1092,13 +1149,11 @@ where
         };
         if let Err(error) = start_result {
             transport_proxy.stop().await;
-            self.transport_proxy_started.store(false, Ordering::Release);
             recovery.disarm();
             return Err(error);
         }
         if self.cancel.is_cancelled() {
             transport_proxy.stop().await;
-            self.transport_proxy_started.store(false, Ordering::Release);
             recovery.disarm();
             anyhow::bail!("transport proxy start cancelled");
         }
@@ -1637,7 +1692,7 @@ mod tests {
         assert!(error.to_string().contains("Start port must be <= end port"));
     }
 
-    struct RecordingProxyService {
+    struct RecordingWrappedTransportEngine {
         name: &'static str,
         fail_start: bool,
         events: Arc<Mutex<Vec<String>>>,
@@ -1658,7 +1713,7 @@ mod tests {
         }
     }
 
-    struct CancelOnceStopService {
+    struct CancelOnceStopEngine {
         stop_calls: AtomicUsize,
         stop_entered: Notify,
         release_first_stop: Notify,
@@ -1666,9 +1721,16 @@ mod tests {
     }
 
     #[async_trait]
-    impl ProxyService for CancelOnceStopService {
-        async fn start(&self) -> anyhow::Result<()> {
+    impl WrappedTransportEngine for CancelOnceStopEngine {
+        async fn start(&self, directions: WrappedTransportDirections) -> anyhow::Result<()> {
             self.events.lock().unwrap().push("start:blocking".into());
+            assert_eq!(
+                directions,
+                WrappedTransportDirections {
+                    source: true,
+                    destination: true,
+                }
+            );
             Ok(())
         }
 
@@ -1683,12 +1745,12 @@ mod tests {
     }
 
     #[async_trait]
-    impl ProxyService for RecordingProxyService {
-        async fn start(&self) -> anyhow::Result<()> {
-            self.events
-                .lock()
-                .unwrap()
-                .push(format!("start:{}", self.name));
+    impl WrappedTransportEngine for RecordingWrappedTransportEngine {
+        async fn start(&self, directions: WrappedTransportDirections) -> anyhow::Result<()> {
+            self.events.lock().unwrap().push(format!(
+                "start:{}:{}:{}",
+                self.name, directions.source, directions.destination
+            ));
             if self.fail_start {
                 anyhow::bail!("{} start failed", self.name);
             }
@@ -1724,12 +1786,12 @@ mod tests {
         }
     }
 
-    fn service(
+    fn wrapped_transport_engine(
         name: &'static str,
         fail_start: bool,
         events: &Arc<Mutex<Vec<String>>>,
-    ) -> Arc<dyn ProxyService> {
-        Arc::new(RecordingProxyService {
+    ) -> Arc<dyn WrappedTransportEngine> {
+        Arc::new(RecordingWrappedTransportEngine {
             name,
             fail_start,
             events: events.clone(),
@@ -1810,79 +1872,142 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn proxy_group_starts_in_order_and_stops_in_reverse() {
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let group = ProxyServiceGroup::new(vec![
-            service("tcp", false, &events),
-            service("icmp", false, &events),
-            service("udp", false, &events),
-        ]);
+    fn wrapped_transport_runtime(
+        kcp: WrappedTransportDirections,
+        quic: WrappedTransportDirections,
+    ) -> CoreRuntimeConfigStore {
+        let mut peer = PeerRuntimeSnapshot::default();
+        peer.flags.enable_kcp_proxy = kcp.source;
+        peer.flags.disable_kcp_input = !kcp.destination;
+        peer.flags.enable_quic_proxy = quic.source;
+        peer.flags.disable_quic_input = !quic.destination;
+        CoreRuntimeConfigStore::new(CoreRuntimeConfig::default(), Arc::new(peer))
+    }
 
-        group.start().await.unwrap();
-        group.stop().await;
+    #[tokio::test]
+    async fn wrapped_transport_module_reads_activation_flags_and_stops_in_reverse() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let runtime = wrapped_transport_runtime(
+            WrappedTransportDirections {
+                source: false,
+                destination: false,
+            },
+            WrappedTransportDirections {
+                source: false,
+                destination: false,
+            },
+        );
+        let module = WrappedTransportProxyModule::new(
+            runtime.clone(),
+            Some(wrapped_transport_engine("kcp", false, &events)),
+            Some(wrapped_transport_engine("quic", false, &events)),
+        )
+        .unwrap();
+
+        runtime.update_peer(Arc::new({
+            let mut peer = PeerRuntimeSnapshot::default();
+            peer.flags.enable_kcp_proxy = true;
+            peer.flags.disable_kcp_input = true;
+            peer.flags.enable_quic_proxy = false;
+            peer.flags.disable_quic_input = false;
+            peer
+        }));
+
+        module.start().await.unwrap();
+        module.start().await.unwrap();
+        module.stop().await;
+        module.stop().await;
 
         assert_eq!(
             *events.lock().unwrap(),
             [
-                "start:tcp",
-                "start:icmp",
-                "start:udp",
-                "stop:udp",
-                "stop:icmp",
-                "stop:tcp",
+                "start:kcp:true:false",
+                "start:quic:false:true",
+                "stop:quic",
+                "stop:kcp",
             ]
         );
     }
 
     #[tokio::test]
-    async fn proxy_group_rolls_back_the_failing_service_and_predecessors() {
+    async fn wrapped_transport_module_rolls_back_failing_engine_and_predecessor() {
         let events = Arc::new(Mutex::new(Vec::new()));
-        let group = ProxyServiceGroup::new(vec![
-            service("tcp", false, &events),
-            service("icmp", true, &events),
-            service("udp", false, &events),
-        ]);
+        let runtime = wrapped_transport_runtime(
+            WrappedTransportDirections {
+                source: true,
+                destination: true,
+            },
+            WrappedTransportDirections {
+                source: true,
+                destination: true,
+            },
+        );
+        let module = WrappedTransportProxyModule::new(
+            runtime,
+            Some(wrapped_transport_engine("kcp", false, &events)),
+            Some(wrapped_transport_engine("quic", true, &events)),
+        )
+        .unwrap();
 
-        assert!(group.start().await.is_err());
+        assert!(module.start().await.is_err());
 
         assert_eq!(
             *events.lock().unwrap(),
-            ["start:tcp", "start:icmp", "stop:icmp", "stop:tcp"]
+            [
+                "start:kcp:true:true",
+                "start:quic:true:true",
+                "stop:quic",
+                "stop:kcp",
+            ]
         );
     }
 
     #[tokio::test]
-    async fn proxy_group_retries_cleanup_after_stop_is_cancelled() {
+    async fn wrapped_transport_module_retries_cleanup_after_stop_is_cancelled() {
         let events = Arc::new(Mutex::new(Vec::new()));
-        let blocking = Arc::new(CancelOnceStopService {
+        let blocking = Arc::new(CancelOnceStopEngine {
             stop_calls: AtomicUsize::new(0),
             stop_entered: Notify::new(),
             release_first_stop: Notify::new(),
             events: events.clone(),
         });
-        let group = ProxyServiceGroup::new(vec![service("tcp", false, &events), blocking.clone()]);
-        group.start().await.unwrap();
+        let runtime = wrapped_transport_runtime(
+            WrappedTransportDirections {
+                source: true,
+                destination: true,
+            },
+            WrappedTransportDirections {
+                source: true,
+                destination: true,
+            },
+        );
+        let module = WrappedTransportProxyModule::new(
+            runtime,
+            Some(wrapped_transport_engine("kcp", false, &events)),
+            Some(blocking.clone()),
+        )
+        .unwrap();
+        module.start().await.unwrap();
 
         let stop_task = tokio::spawn({
-            let group = group.clone();
-            async move { group.stop().await }
+            let module = module.clone();
+            async move { module.stop().await }
         });
         blocking.stop_entered.notified().await;
         stop_task.abort();
         assert!(stop_task.await.unwrap_err().is_cancelled());
 
-        group.stop().await;
+        module.stop().await;
 
         assert_eq!(blocking.stop_calls.load(Ordering::Acquire), 2);
         assert_eq!(
             *events.lock().unwrap(),
             [
-                "start:tcp",
+                "start:kcp:true:true",
                 "start:blocking",
                 "stop:blocking",
                 "stop:blocking",
-                "stop:tcp",
+                "stop:kcp",
             ]
         );
     }

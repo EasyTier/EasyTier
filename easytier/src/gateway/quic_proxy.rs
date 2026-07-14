@@ -47,7 +47,7 @@ use tokio_util::sync::PollSender;
 use tracing::{debug, error, info, instrument, trace, warn};
 
 use easytier_core::{
-    instance::ProxyService,
+    instance::{WrappedTransportDirections, WrappedTransportEngine},
     peers::{acl_filter::AclFilter, peer_manager::PipelineRegistrationGuard},
     proxy::{
         cidr_table::ProxyCidrTable,
@@ -968,11 +968,6 @@ impl QuicProxyService {
         }
     }
 
-    pub(crate) fn enabled_directions(&self) -> (bool, bool) {
-        let flags = self.peer_manager.get_global_ctx().get_flags();
-        (flags.enable_quic_proxy, !flags.disable_quic_input)
-    }
-
     pub fn src_tcp_proxy(&self) -> Option<Arc<TcpProxy<NatDstQuicConnector>>> {
         self.src_tcp_proxy
             .lock()
@@ -990,17 +985,16 @@ impl QuicProxyService {
 }
 
 #[async_trait::async_trait]
-impl ProxyService for QuicProxyService {
-    async fn start(&self) -> anyhow::Result<()> {
+impl WrappedTransportEngine for QuicProxyService {
+    async fn start(&self, directions: WrappedTransportDirections) -> anyhow::Result<()> {
         let mut state = self.state.lock().await;
         if state.is_some() {
             return Ok(());
         }
 
-        let (src_enabled, dst_enabled) = self.enabled_directions();
         let mut proxy = QuicProxy::new(self.peer_manager.clone(), self.cidr_table.clone());
-        if src_enabled || dst_enabled {
-            proxy.run(src_enabled, dst_enabled).await;
+        if directions.source || directions.destination {
+            proxy.run(directions.source, directions.destination).await;
         }
 
         *self

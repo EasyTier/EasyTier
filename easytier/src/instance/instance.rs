@@ -11,9 +11,7 @@ use std::time::Duration;
 use anyhow::Context;
 use cidr::{IpCidr, Ipv4Inet};
 use easytier_core::dhcp::DhcpIpv4Host;
-#[cfg(any(feature = "kcp", feature = "quic"))]
-use easytier_core::instance::{ProxyService, ProxyServiceGroup};
-use easytier_core::instance::{TransportProxyBuild, TransportProxyFactory};
+use easytier_core::instance::{WrappedTransportEngineBuild, WrappedTransportEngineFactory};
 use easytier_core::proxy::cidr_table::ProxyCidrTable;
 use easytier_core::tunnel::ring::RingTunnelRegistry;
 #[cfg(feature = "tun")]
@@ -119,30 +117,31 @@ impl RuntimeTransportProxyAttachment {
     }
 }
 
-impl TransportProxyFactory for RuntimeTransportProxyFactory {
+impl WrappedTransportEngineFactory for RuntimeTransportProxyFactory {
     type Attachment = RuntimeTransportProxyAttachment;
 
     fn build(
         self,
         cidr_table: Arc<ProxyCidrTable>,
-    ) -> anyhow::Result<TransportProxyBuild<Self::Attachment>> {
+    ) -> anyhow::Result<WrappedTransportEngineBuild<Self::Attachment>> {
         #[cfg(any(feature = "kcp", feature = "quic"))]
-        let (lifecycle, attachment) = {
-            let mut services: Vec<Arc<dyn ProxyService>> = Vec::new();
+        let (kcp_engine, quic_engine, attachment) = {
             #[cfg(feature = "kcp")]
             let kcp = Arc::new(KcpProxyService::new(
                 self.peer_manager.clone(),
                 cidr_table.clone(),
             ));
-            #[cfg(feature = "kcp")]
-            services.push(kcp.clone());
             #[cfg(feature = "quic")]
             let quic = Arc::new(QuicProxyService::new(self.peer_manager, cidr_table));
-            #[cfg(feature = "quic")]
-            services.push(quic.clone());
-            let lifecycle: Arc<dyn ProxyService> = ProxyServiceGroup::new(services);
             (
-                Some(lifecycle),
+                #[cfg(feature = "kcp")]
+                Some(kcp.clone() as Arc<dyn easytier_core::instance::WrappedTransportEngine>),
+                #[cfg(not(feature = "kcp"))]
+                None,
+                #[cfg(feature = "quic")]
+                Some(quic.clone() as Arc<dyn easytier_core::instance::WrappedTransportEngine>),
+                #[cfg(not(feature = "quic"))]
+                None,
                 RuntimeTransportProxyAttachment {
                     #[cfg(feature = "kcp")]
                     kcp: Arc::downgrade(&kcp),
@@ -152,13 +151,14 @@ impl TransportProxyFactory for RuntimeTransportProxyFactory {
             )
         };
         #[cfg(not(any(feature = "kcp", feature = "quic")))]
-        let (lifecycle, attachment) = {
+        let (kcp_engine, quic_engine, attachment) = {
             let _ = (self, cidr_table);
-            (None, RuntimeTransportProxyAttachment {})
+            (None, None, RuntimeTransportProxyAttachment {})
         };
 
-        Ok(TransportProxyBuild {
-            lifecycle,
+        Ok(WrappedTransportEngineBuild {
+            kcp: kcp_engine,
+            quic: quic_engine,
             attachment,
         })
     }
@@ -1673,8 +1673,8 @@ mod tests {
         },
     };
     use crate::{common::config::TomlConfigLoader, instance::instance::Instance};
-    #[cfg(feature = "quic")]
-    use easytier_core::instance::ProxyService as _;
+    #[cfg(any(feature = "kcp", feature = "quic"))]
+    use easytier_core::instance::{WrappedTransportDirections, WrappedTransportEngine as _};
 
     fn tcp_whitelist_patch(port: &str) -> InstanceConfigPatch {
         InstanceConfigPatch {
@@ -1835,30 +1835,35 @@ mod tests {
 
     #[cfg(feature = "kcp")]
     #[tokio::test]
-    async fn kcp_proxy_reads_direction_flags_at_activation() {
+    async fn kcp_engine_uses_explicit_activation_directions() {
         let instance = Instance::new(TomlConfigLoader::default());
-        let mut flags = instance.global_ctx.get_flags();
-        flags.enable_kcp_proxy = true;
-        flags.disable_kcp_input = true;
-        instance.global_ctx.set_flags(flags);
+        let kcp = instance.transport_proxy.kcp();
+        kcp.start(WrappedTransportDirections {
+            source: true,
+            destination: false,
+        })
+        .await
+        .unwrap();
 
-        assert_eq!(
-            instance.transport_proxy.kcp().enabled_directions(),
-            (true, false)
-        );
+        assert!(kcp.src_endpoint().is_some());
+        assert!(kcp.dst_rpc_service().is_none());
+
+        kcp.stop().await;
+        assert!(kcp.src_endpoint().is_none());
+        assert!(kcp.dst_rpc_service().is_none());
     }
 
     #[cfg(feature = "quic")]
     #[tokio::test]
-    async fn quic_proxy_reads_direction_flags_at_activation() {
+    async fn quic_engine_uses_explicit_activation_directions() {
         let instance = Instance::new(TomlConfigLoader::default());
-        let mut flags = instance.global_ctx.get_flags();
-        flags.enable_quic_proxy = true;
-        flags.disable_quic_input = true;
-        instance.global_ctx.set_flags(flags);
-
         let quic = instance.transport_proxy.quic();
-        quic.start().await.unwrap();
+        quic.start(WrappedTransportDirections {
+            source: true,
+            destination: false,
+        })
+        .await
+        .unwrap();
         assert!(quic.src_tcp_proxy().is_some());
         assert!(quic.dst_rpc_service().is_none());
 

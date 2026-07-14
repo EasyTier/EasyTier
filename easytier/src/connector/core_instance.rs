@@ -9,8 +9,8 @@ use easytier_core::{
         },
     },
     instance::{
-        CoreInstance, CoreInstanceAdapters, CoreInstanceConfig, NoTransportProxyFactory,
-        TransportProxyFactory,
+        CoreInstance, CoreInstanceAdapters, CoreInstanceConfig, NoWrappedTransportEngineFactory,
+        WrappedTransportEngineFactory,
     },
     proxy::ProxyRuntimeConfig,
     runtime_config::{CoreInstanceRuntimeConfig, CoreRuntimeConfig},
@@ -260,7 +260,7 @@ pub(crate) fn build_runtime_core_instance(
     build_runtime_core_instance_with_transport_factory(
         global_ctx,
         peer_manager,
-        NoTransportProxyFactory,
+        NoWrappedTransportEngineFactory,
     )
     .map(|(instance, ())| instance)
 }
@@ -271,7 +271,7 @@ pub(crate) fn build_runtime_core_instance_with_transport_factory<F>(
     transport_proxy_factory: F,
 ) -> anyhow::Result<(RuntimeCoreInstance, F::Attachment)>
 where
-    F: TransportProxyFactory,
+    F: WrappedTransportEngineFactory,
 {
     build_runtime_core_instance_with_transport_factory_and_ring_registry(
         global_ctx,
@@ -288,7 +288,7 @@ pub(crate) fn build_runtime_core_instance_with_transport_factory_and_ring_regist
     ring_registry: Arc<RingTunnelRegistry>,
 ) -> anyhow::Result<(RuntimeCoreInstance, F::Attachment)>
 where
-    F: TransportProxyFactory,
+    F: WrappedTransportEngineFactory,
 {
     let listener_plan = runtime_listener_plan(&global_ctx);
     let listener_configs =
@@ -337,7 +337,10 @@ mod tests {
     };
 
     use easytier_core::{
-        instance::{CoreInstanceState, ListenerService, PortableCoreInstanceConfig, ProxyService},
+        instance::{
+            CoreInstanceState, ListenerService, PortableCoreInstanceConfig,
+            WrappedTransportDirections, WrappedTransportEngine,
+        },
         listener::transport::TransportListenerConfig,
         socket::{
             tcp::TcpListenOptions,
@@ -402,8 +405,8 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl ProxyService for RecordingProxyService {
-        async fn start(&self) -> anyhow::Result<()> {
+    impl WrappedTransportEngine for RecordingProxyService {
+        async fn start(&self, _directions: WrappedTransportDirections) -> anyhow::Result<()> {
             self.start_calls.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
@@ -414,19 +417,20 @@ mod tests {
     }
 
     struct TestTransportProxyFactory {
-        service: Arc<dyn ProxyService>,
+        service: Arc<dyn WrappedTransportEngine>,
     }
 
-    impl TransportProxyFactory for TestTransportProxyFactory {
+    impl WrappedTransportEngineFactory for TestTransportProxyFactory {
         type Attachment = Arc<easytier_core::proxy::cidr_table::ProxyCidrTable>;
 
         fn build(
             self,
             cidr_table: Arc<easytier_core::proxy::cidr_table::ProxyCidrTable>,
-        ) -> anyhow::Result<easytier_core::instance::TransportProxyBuild<Self::Attachment>>
+        ) -> anyhow::Result<easytier_core::instance::WrappedTransportEngineBuild<Self::Attachment>>
         {
-            Ok(easytier_core::instance::TransportProxyBuild {
-                lifecycle: Some(self.service),
+            Ok(easytier_core::instance::WrappedTransportEngineBuild {
+                kcp: Some(self.service),
+                quic: None,
                 attachment: cidr_table,
             })
         }
@@ -441,8 +445,8 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl ProxyService for BlockingProxyService {
-        async fn start(&self) -> anyhow::Result<()> {
+    impl WrappedTransportEngine for BlockingProxyService {
+        async fn start(&self, _directions: WrappedTransportDirections) -> anyhow::Result<()> {
             self.start_calls.fetch_add(1, Ordering::Relaxed);
             self.start_entered.notify_one();
             self.release_start.notified().await;

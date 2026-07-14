@@ -18,7 +18,7 @@ use prost::Message;
 use tokio::{sync::Mutex, task::JoinSet};
 
 use easytier_core::{
-    instance::ProxyService,
+    instance::{WrappedTransportDirections, WrappedTransportEngine},
     peers::peer_manager::PipelineRegistrationGuard,
     proxy::{
         cidr_table::ProxyCidrTable,
@@ -524,11 +524,6 @@ impl KcpProxyService {
         }
     }
 
-    pub(crate) fn enabled_directions(&self) -> (bool, bool) {
-        let flags = self.peer_manager.get_global_ctx().get_flags();
-        (flags.enable_kcp_proxy, !flags.disable_kcp_input)
-    }
-
     pub fn src_endpoint(&self) -> Option<Arc<KcpEndpoint>> {
         self.src_endpoint
             .lock()
@@ -553,15 +548,14 @@ impl KcpProxyService {
 }
 
 #[async_trait::async_trait]
-impl ProxyService for KcpProxyService {
-    async fn start(&self) -> anyhow::Result<()> {
+impl WrappedTransportEngine for KcpProxyService {
+    async fn start(&self, directions: WrappedTransportDirections) -> anyhow::Result<()> {
         let mut state = self.state.lock().await;
         if state.is_some() {
             return Ok(());
         }
 
-        let (src_enabled, dst_enabled) = self.enabled_directions();
-        let src = if src_enabled {
+        let src = if directions.source {
             let mut src =
                 KcpProxySrc::new(self.peer_manager.clone(), self.cidr_table.clone()).await;
             src.start().await;
@@ -569,7 +563,7 @@ impl ProxyService for KcpProxyService {
         } else {
             None
         };
-        let dst = if dst_enabled {
+        let dst = if directions.destination {
             let mut dst =
                 KcpProxyDst::new(self.peer_manager.clone(), self.cidr_table.clone()).await;
             dst.start().await;
