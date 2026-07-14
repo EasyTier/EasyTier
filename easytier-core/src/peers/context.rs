@@ -148,11 +148,35 @@ pub struct PeerRuntimeSnapshot {
     pub ospf_update_my_foreign_network_interval_sec: u64,
     pub max_direct_conns_per_peer_in_foreign_network: usize,
     pub hmac_secret_digest: bool,
+    pub traffic_limits: PeerTrafficLimits,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PeerTrafficLimits {
+    pub instance_recv_bps: Option<u64>,
+    pub foreign_relay_bps: Option<u64>,
+}
+
+impl PeerTrafficLimits {
+    fn from_portable(runtime: &PeerRuntimeConfig, flags: &FlagsInConfig) -> Self {
+        let traffic = &runtime.core.traffic;
+        Self {
+            instance_recv_bps: traffic
+                .instance_recv_bps_limit
+                .or(Some(flags.instance_recv_bps_limit))
+                .filter(|limit| !matches!(*limit, 0 | u64::MAX)),
+            foreign_relay_bps: traffic
+                .foreign_relay_bps_limit
+                .or(Some(flags.foreign_relay_bps_limit))
+                .filter(|limit| !matches!(*limit, 0 | u64::MAX)),
+        }
+    }
 }
 
 impl PeerRuntimeSnapshot {
     pub fn new(runtime: PeerRuntimeConfig, flags: FlagsInConfig) -> Self {
         let avoid_relay_data_preference = runtime.feature_flags.avoid_relay_data;
+        let traffic_limits = PeerTrafficLimits::from_portable(&runtime, &flags);
         Self {
             runtime,
             easytier_version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -165,6 +189,7 @@ impl PeerRuntimeSnapshot {
             ospf_update_my_foreign_network_interval_sec: 10,
             max_direct_conns_per_peer_in_foreign_network: 3,
             hmac_secret_digest: false,
+            traffic_limits,
         }
     }
 
@@ -1067,59 +1092,39 @@ impl PeerContext for SubmittedPeerContext {
     }
 
     fn recv_limiter(&self, network_name: &str, is_foreign_network: bool) -> Option<ArcByteLimiter> {
+        let limits = self.snapshot().traffic_limits;
         if let Some(support) = &self.core_support {
-            let snapshot = self.snapshot();
-            let traffic = &snapshot.runtime.core.traffic;
-            let foreign_limit = traffic
-                .foreign_relay_bps_limit
-                .or(Some(snapshot.flags.foreign_relay_bps_limit))
-                .filter(|limit| !matches!(*limit, 0 | u64::MAX));
-            let instance_limit = traffic
-                .instance_recv_bps_limit
-                .or(Some(snapshot.flags.instance_recv_bps_limit))
-                .filter(|limit| !matches!(*limit, 0 | u64::MAX));
-            let (key, bps) = if is_foreign_network && let Some(limit) = foreign_limit {
+            let (key, bps) = if is_foreign_network && let Some(limit) = limits.foreign_relay_bps {
                 (format!("portable:foreign:{network_name}:recv"), limit)
             } else {
-                ("portable:instance:recv".to_owned(), instance_limit?)
+                (
+                    "portable:instance:recv".to_owned(),
+                    limits.instance_recv_bps?,
+                )
             };
             return support.get_or_create_limiter(&key, bps);
         }
-        let flags = &self.snapshot().flags;
-        if is_foreign_network && flags.foreign_relay_bps_limit != u64::MAX {
-            return self.limiter_factory.get_or_create_limiter(
-                &format!("{network_name}:recv"),
-                flags.foreign_relay_bps_limit,
-            );
-        }
-        if flags.instance_recv_bps_limit != u64::MAX {
+        if is_foreign_network && let Some(bps) = limits.foreign_relay_bps {
             return self
                 .limiter_factory
-                .get_or_create_limiter("instance:recv", flags.instance_recv_bps_limit);
+                .get_or_create_limiter(&format!("{network_name}:recv"), bps);
+        }
+        if let Some(bps) = limits.instance_recv_bps {
+            return self
+                .limiter_factory
+                .get_or_create_limiter("instance:recv", bps);
         }
         None
     }
 
     fn foreign_forward_limiter(&self, network_name: &str) -> Option<ArcByteLimiter> {
+        let bps = self.snapshot().traffic_limits.foreign_relay_bps?;
         if let Some(support) = &self.core_support {
-            let snapshot = self.snapshot();
-            let bps = snapshot
-                .runtime
-                .core
-                .traffic
-                .foreign_relay_bps_limit
-                .or(Some(snapshot.flags.foreign_relay_bps_limit))
-                .filter(|limit| !matches!(*limit, 0 | u64::MAX))?;
             return support
                 .get_or_create_limiter(&format!("portable:foreign:{network_name}:forward"), bps);
         }
-        let bps = self.snapshot().flags.foreign_relay_bps_limit;
-        (bps != u64::MAX)
-            .then(|| {
-                self.limiter_factory
-                    .get_or_create_limiter(&format!("{network_name}:forward"), bps)
-            })
-            .flatten()
+        self.limiter_factory
+            .get_or_create_limiter(&format!("{network_name}:forward"), bps)
     }
 
     fn issue_event(&self, event: PeerEvent) {
@@ -1292,7 +1297,7 @@ mod tests {
     #[test]
     fn foreign_forward_limiter_is_independent_from_peer_receive_limiter() {
         let mut snapshot = submitted_snapshot("limiter", false);
-        snapshot.flags.foreign_relay_bps_limit = 1024;
+        snapshot.traffic_limits.foreign_relay_bps = Some(1024);
         let config = submitted_config(snapshot);
         let support = Arc::new(TestSubmittedSupport::default());
         let context = SubmittedPeerContext::new(
@@ -1311,8 +1316,8 @@ mod tests {
     #[test]
     fn foreign_forward_limiter_does_not_fall_back_to_instance_limit() {
         let mut snapshot = submitted_snapshot("limiter", false);
-        snapshot.flags.foreign_relay_bps_limit = u64::MAX;
-        snapshot.flags.instance_recv_bps_limit = 1024;
+        snapshot.traffic_limits.foreign_relay_bps = None;
+        snapshot.traffic_limits.instance_recv_bps = Some(1024);
         let config = submitted_config(snapshot);
         let support = Arc::new(TestSubmittedSupport::default());
         let context = SubmittedPeerContext::new(

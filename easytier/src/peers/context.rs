@@ -10,7 +10,7 @@ use easytier_core::peers::context::{
     ArcByteLimiter, HostRoutingPolicy, NetworkIdentity as CoreNetworkIdentity,
     PeerCredentialEventSink, PeerEvent, PeerEventSink, PeerLimiterFactory, PeerPublicIpv6State,
     PeerRelayStateSink, PeerRuntimeConfig, PeerRuntimeSnapshot, PeerStunInfoSource,
-    SubmittedPeerContext, SubmittedPeerContextCapabilities,
+    PeerTrafficLimits, SubmittedPeerContext, SubmittedPeerContextCapabilities,
 };
 use easytier_core::runtime_config::{CoreRuntimeConfig, CoreRuntimeConfigStore};
 
@@ -26,11 +26,12 @@ use crate::{
 /// Normalizes the native host configuration into one portable peer version.
 pub(crate) fn runtime_peer_snapshot(global_ctx: &ArcGlobalCtx) -> PeerRuntimeSnapshot {
     let acl = global_ctx.config.get_acl();
+    let flags = global_ctx.get_flags();
     let mut snapshot = PeerRuntimeSnapshot {
         runtime: runtime_peer_config(global_ctx),
         easytier_version: EASYTIER_VERSION.to_owned(),
         avoid_relay_data_preference: global_ctx.get_avoid_relay_data_preference(),
-        flags: global_ctx.get_flags(),
+        flags: flags.clone(),
         vpn_portal_cidr: global_ctx.get_vpn_portal_cidr(),
         pinned_peers: global_ctx
             .config
@@ -47,6 +48,12 @@ pub(crate) fn runtime_peer_snapshot(global_ctx: &ArcGlobalCtx) -> PeerRuntimeSna
             MAX_DIRECT_CONNS_PER_PEER_IN_FOREIGN_NETWORK
         ) as usize,
         hmac_secret_digest: use_global_var!(HMAC_SECRET_DIGEST),
+        traffic_limits: PeerTrafficLimits {
+            instance_recv_bps: (flags.instance_recv_bps_limit != u64::MAX)
+                .then_some(flags.instance_recv_bps_limit),
+            foreign_relay_bps: (flags.foreign_relay_bps_limit != u64::MAX)
+                .then_some(flags.foreign_relay_bps_limit),
+        },
     };
     snapshot.set_acl_groups(acl.as_ref());
     snapshot
