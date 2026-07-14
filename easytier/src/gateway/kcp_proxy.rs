@@ -24,8 +24,8 @@ use tokio_util::sync::CancellationToken;
 use easytier_core::{
     peers::peer_manager::PipelineRegistrationGuard,
     proxy::wrapped_transport::{
-        WrappedTransportDatagram, WrappedTransportEngine, WrappedTransportEngineStart,
-        WrappedTransportKind, WrappedTransportRole,
+        WrappedTransportDatagram, WrappedTransportDatagramBuffer, WrappedTransportEngine,
+        WrappedTransportEngineStart, WrappedTransportKind, WrappedTransportRole,
     },
     proxy::{
         cidr_table::ProxyCidrTable,
@@ -83,7 +83,7 @@ async fn handle_kcp_output(
                 transport: WrappedTransportKind::Kcp,
                 role,
                 peer_id,
-                payload: packet.inner().freeze(),
+                buffer: WrappedTransportDatagramBuffer::copy_from_payload(&packet.inner().freeze()),
             })
             .await
             .is_err()
@@ -524,7 +524,7 @@ impl KcpProxyService {
 
 #[async_trait::async_trait]
 impl WrappedTransportEngine for KcpProxyService {
-    async fn start(&self, options: WrappedTransportEngineStart) -> anyhow::Result<()> {
+    async fn prepare(&self, options: WrappedTransportEngineStart) -> anyhow::Result<()> {
         let mut state = self.state.lock().await;
         if state.is_some() {
             return Ok(());
@@ -532,25 +532,23 @@ impl WrappedTransportEngine for KcpProxyService {
         let directions = options.directions;
 
         let src = if directions.source {
-            let mut src = KcpProxySrc::new(
+            let src = KcpProxySrc::new(
                 self.peer_manager.clone(),
                 self.cidr_table.clone(),
                 options.datagrams.clone(),
             )
             .await;
-            src.start().await;
             Some(src)
         } else {
             None
         };
         let dst = if directions.destination {
-            let mut dst = KcpProxyDst::new(
+            let dst = KcpProxyDst::new(
                 self.peer_manager.clone(),
                 self.cidr_table.clone(),
                 options.datagrams,
             )
             .await;
-            dst.start().await;
             Some(dst)
         } else {
             None
@@ -572,6 +570,20 @@ impl WrappedTransportEngine for KcpProxyService {
             .expect("KCP destination proxy entries mutex poisoned") =
             dst.as_ref().map(|dst| dst.proxy_entries.clone());
         *state = Some(KcpProxyServiceState { src, dst });
+        Ok(())
+    }
+
+    async fn activate(&self) -> anyhow::Result<()> {
+        let mut state = self.state.lock().await;
+        let state = state
+            .as_mut()
+            .ok_or_else(|| anyhow!("KCP engine is not prepared"))?;
+        if let Some(src) = state.src.as_mut() {
+            src.start().await;
+        }
+        if let Some(dst) = state.dst.as_mut() {
+            dst.start().await;
+        }
         Ok(())
     }
 

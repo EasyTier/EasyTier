@@ -406,8 +406,12 @@ mod tests {
 
     #[async_trait::async_trait]
     impl WrappedTransportEngine for RecordingProxyService {
-        async fn start(&self, _options: WrappedTransportEngineStart) -> anyhow::Result<()> {
+        async fn prepare(&self, _options: WrappedTransportEngineStart) -> anyhow::Result<()> {
             self.start_calls.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+
+        async fn activate(&self) -> anyhow::Result<()> {
             Ok(())
         }
 
@@ -458,10 +462,14 @@ mod tests {
 
     #[async_trait::async_trait]
     impl WrappedTransportEngine for BlockingProxyService {
-        async fn start(&self, _options: WrappedTransportEngineStart) -> anyhow::Result<()> {
+        async fn prepare(&self, _options: WrappedTransportEngineStart) -> anyhow::Result<()> {
             self.start_calls.fetch_add(1, Ordering::Relaxed);
             self.start_entered.notify_one();
             self.release_start.notified().await;
+            Ok(())
+        }
+
+        async fn activate(&self) -> anyhow::Result<()> {
             Ok(())
         }
 

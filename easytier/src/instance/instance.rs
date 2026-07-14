@@ -1843,7 +1843,7 @@ mod tests {
         let instance = Instance::new(TomlConfigLoader::default());
         let kcp = instance.transport_proxy.kcp();
         let (datagrams, _datagram_rx) = tokio::sync::mpsc::channel(16);
-        kcp.start(WrappedTransportEngineStart {
+        kcp.prepare(WrappedTransportEngineStart {
             directions: WrappedTransportDirections {
                 source: true,
                 destination: true,
@@ -1853,6 +1853,7 @@ mod tests {
         })
         .await
         .unwrap();
+        kcp.activate().await.unwrap();
 
         assert!(kcp.src_endpoint().is_some());
         assert!(kcp.dst_rpc_service().is_some());
@@ -1868,7 +1869,7 @@ mod tests {
         let instance = Instance::new(TomlConfigLoader::default());
         let quic = instance.transport_proxy.quic();
         let (datagrams, _datagram_rx) = tokio::sync::mpsc::channel(16);
-        quic.start(WrappedTransportEngineStart {
+        quic.prepare(WrappedTransportEngineStart {
             directions: WrappedTransportDirections {
                 source: true,
                 destination: true,
@@ -1878,6 +1879,7 @@ mod tests {
         })
         .await
         .unwrap();
+        quic.activate().await.unwrap();
         assert!(quic.src_tcp_proxy().is_some());
         assert!(quic.dst_rpc_service().is_some());
 

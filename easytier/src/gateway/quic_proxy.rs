@@ -49,8 +49,8 @@ use tracing::{debug, error, info, instrument, trace, warn};
 use easytier_core::{
     peers::{acl_filter::AclFilter, peer_manager::PipelineRegistrationGuard},
     proxy::wrapped_transport::{
-        WrappedTransportDatagram, WrappedTransportEngine, WrappedTransportEngineStart,
-        WrappedTransportKind, WrappedTransportRole,
+        WrappedTransportDatagram, WrappedTransportDatagramBuffer, WrappedTransportEngine,
+        WrappedTransportEngineStart, WrappedTransportKind, WrappedTransportRole,
     },
     proxy::{
         cidr_table::ProxyCidrTable,
@@ -517,7 +517,6 @@ impl QuicPacketSender {
                 let mut payload = payload.split_to(len);
                 payload[..self.margins.header].copy_from_slice(&self.header);
                 payload.truncate(len - self.margins.trailer);
-                let packet = ZCPacket::new_from_buf(payload, self.zc_packet_type);
                 let role = match addr.packet_type {
                     PacketType::QuicSrc => WrappedTransportRole::Source,
                     PacketType::QuicDst => WrappedTransportRole::Destination,
@@ -532,7 +531,10 @@ impl QuicPacketSender {
                         transport: WrappedTransportKind::Quic,
                         role,
                         peer_id: addr.peer_id,
-                        payload: packet.payload_bytes().freeze(),
+                        buffer: WrappedTransportDatagramBuffer::from_packet_buffer(
+                            payload,
+                            self.zc_packet_type,
+                        ),
                     })
                     .await
                     .is_err()
@@ -811,7 +813,7 @@ impl QuicProxy {
         }
     }
 
-    pub async fn run(
+    pub async fn prepare(
         &mut self,
         my_peer_id: u32,
         src: bool,
@@ -891,13 +893,11 @@ impl QuicProxy {
                 self.cidr_table.clone(),
             );
 
-            let mut src = QuicProxySrc {
+            let src = QuicProxySrc {
                 peer_mgr: peer_mgr.clone(),
                 tcp_proxy,
                 pipeline_guards: Vec::new(),
             };
-            src.run().await;
-
             self.src = Some(src);
         }
 
@@ -915,20 +915,32 @@ impl QuicProxy {
             let dst = QuicProxyDst {
                 stream_ctx: stream_ctx.clone(),
             };
-            dst.run().await;
+            self.dst = Some(dst);
+        }
+    }
 
+    async fn activate(&mut self) -> anyhow::Result<()> {
+        if let Some(src) = self.src.as_mut() {
+            src.run().await;
+        }
+        if let Some(dst) = self.dst.as_ref() {
+            dst.run().await;
+            let endpoint = self
+                .endpoint
+                .as_ref()
+                .cloned()
+                .ok_or_else(|| anyhow!("QUIC endpoint is not prepared"))?;
             self.stream_task = Some(tokio::spawn(
                 QuicStreamReceiver {
-                    endpoint: endpoint.clone(),
+                    endpoint,
                     tasks: JoinSet::new(),
-                    ctx: stream_ctx,
+                    ctx: dst.stream_ctx.clone(),
                     cancel: self.stream_cancel.clone(),
                 }
                 .run(),
             ));
-
-            self.dst = Some(dst);
         }
+        Ok(())
     }
 
     async fn stop(&mut self) {
@@ -984,7 +996,7 @@ impl QuicProxyService {
 
 #[async_trait::async_trait]
 impl WrappedTransportEngine for QuicProxyService {
-    async fn start(&self, options: WrappedTransportEngineStart) -> anyhow::Result<()> {
+    async fn prepare(&self, options: WrappedTransportEngineStart) -> anyhow::Result<()> {
         let mut state = self.state.lock().await;
         if state.is_some() {
             return Ok(());
@@ -994,7 +1006,7 @@ impl WrappedTransportEngine for QuicProxyService {
         let mut proxy = QuicProxy::new(self.peer_manager.clone(), self.cidr_table.clone());
         if directions.source || directions.destination {
             proxy
-                .run(
+                .prepare(
                     options.my_peer_id,
                     directions.source,
                     directions.destination,
@@ -1015,6 +1027,15 @@ impl WrappedTransportEngine for QuicProxyService {
             proxy.dst().map(|dst| dst.stream_ctx.proxy_entries.clone());
         *state = Some(proxy);
         Ok(())
+    }
+
+    async fn activate(&self) -> anyhow::Result<()> {
+        let mut state = self.state.lock().await;
+        state
+            .as_mut()
+            .ok_or_else(|| anyhow!("QUIC engine is not prepared"))?
+            .activate()
+            .await
     }
 
     async fn inject_peer_datagram(

@@ -1,11 +1,11 @@
 use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use tokio::{sync::Mutex, task::JoinSet};
 
 use crate::{
-    packet::{PacketType, ZCPacket},
+    packet::{PacketType, ZCPacket, ZCPacketType},
     peers::{
         PeerPacketFilter,
         peer_manager::{PeerManagerCore, PipelineRegistrationGuard},
@@ -43,12 +43,25 @@ pub struct WrappedTransportDatagram {
     pub transport: WrappedTransportKind,
     pub role: WrappedTransportRole,
     pub peer_id: u32,
-    pub payload: Bytes,
+    pub buffer: WrappedTransportDatagramBuffer,
+}
+
+#[derive(Debug, Clone)]
+pub struct WrappedTransportDatagramBuffer(ZCPacket);
+
+impl WrappedTransportDatagramBuffer {
+    pub fn copy_from_payload(payload: &[u8]) -> Self {
+        Self(ZCPacket::new_with_payload(payload))
+    }
+
+    pub fn from_packet_buffer(buffer: BytesMut, packet_type: ZCPacketType) -> Self {
+        Self(ZCPacket::new_from_buf(buffer, packet_type))
+    }
 }
 
 impl WrappedTransportDatagram {
     fn into_packet(self, my_peer_id: u32) -> ZCPacket {
-        let mut packet = ZCPacket::new_with_payload(&self.payload);
+        let mut packet = self.buffer.0;
         packet.fill_peer_manager_hdr(
             my_peer_id,
             self.peer_id,
@@ -67,7 +80,8 @@ pub struct WrappedTransportEngineStart {
 
 #[async_trait]
 pub trait WrappedTransportEngine: Send + Sync + 'static {
-    async fn start(&self, options: WrappedTransportEngineStart) -> anyhow::Result<()>;
+    async fn prepare(&self, options: WrappedTransportEngineStart) -> anyhow::Result<()>;
+    async fn activate(&self) -> anyhow::Result<()>;
     async fn inject_peer_datagram(
         &self,
         role: WrappedTransportRole,
@@ -305,7 +319,7 @@ impl WrappedTransportProxyModule {
             let datagrams = self.spawn_datagram_egress(&mut state);
             state.kcp_started = true;
             if let Err(error) = kcp
-                .start(WrappedTransportEngineStart {
+                .prepare(WrappedTransportEngineStart {
                     directions: kcp_directions,
                     my_peer_id: self.peer_manager.my_peer_id(),
                     datagrams,
@@ -317,6 +331,10 @@ impl WrappedTransportProxyModule {
             }
             self.register_peer_filters(&mut state, kcp, WrappedTransportKind::Kcp, kcp_directions)
                 .await;
+            if let Err(error) = kcp.activate().await {
+                self.stop_started(&mut state).await;
+                return Err(error);
+            }
         }
         if let Some(quic) = &self.quic
             && quic_directions.enabled()
@@ -324,7 +342,7 @@ impl WrappedTransportProxyModule {
             let datagrams = self.spawn_datagram_egress(&mut state);
             state.quic_started = true;
             if let Err(error) = quic
-                .start(WrappedTransportEngineStart {
+                .prepare(WrappedTransportEngineStart {
                     directions: quic_directions,
                     my_peer_id: self.peer_manager.my_peer_id(),
                     datagrams,
@@ -341,6 +359,10 @@ impl WrappedTransportProxyModule {
                 quic_directions,
             )
             .await;
+            if let Err(error) = quic.activate().await {
+                self.stop_started(&mut state).await;
+                return Err(error);
+            }
         }
         state.active = true;
         Ok(())
@@ -394,7 +416,11 @@ mod tests {
 
     #[async_trait]
     impl WrappedTransportEngine for RecordingDatagramEngine {
-        async fn start(&self, _options: WrappedTransportEngineStart) -> anyhow::Result<()> {
+        async fn prepare(&self, _options: WrappedTransportEngineStart) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn activate(&self) -> anyhow::Result<()> {
             Ok(())
         }
 
@@ -416,8 +442,8 @@ mod tests {
 
     #[async_trait]
     impl WrappedTransportEngine for CancelOnceStopEngine {
-        async fn start(&self, options: WrappedTransportEngineStart) -> anyhow::Result<()> {
-            self.events.lock().unwrap().push("start:blocking".into());
+        async fn prepare(&self, options: WrappedTransportEngineStart) -> anyhow::Result<()> {
+            self.events.lock().unwrap().push("prepare:blocking".into());
             assert_eq!(
                 options.directions,
                 WrappedTransportDirections {
@@ -425,6 +451,11 @@ mod tests {
                     destination: true,
                 }
             );
+            Ok(())
+        }
+
+        async fn activate(&self) -> anyhow::Result<()> {
+            self.events.lock().unwrap().push("activate:blocking".into());
             Ok(())
         }
 
@@ -449,15 +480,23 @@ mod tests {
 
     #[async_trait]
     impl WrappedTransportEngine for RecordingWrappedTransportEngine {
-        async fn start(&self, options: WrappedTransportEngineStart) -> anyhow::Result<()> {
+        async fn prepare(&self, options: WrappedTransportEngineStart) -> anyhow::Result<()> {
             let directions = options.directions;
             self.events.lock().unwrap().push(format!(
-                "start:{}:{}:{}",
+                "prepare:{}:{}:{}",
                 self.name, directions.source, directions.destination
             ));
             if self.fail_start {
                 anyhow::bail!("{} start failed", self.name);
             }
+            Ok(())
+        }
+
+        async fn activate(&self) -> anyhow::Result<()> {
+            self.events
+                .lock()
+                .unwrap()
+                .push(format!("activate:{}", self.name));
             Ok(())
         }
 
@@ -598,7 +637,7 @@ mod tests {
                 transport,
                 role,
                 peer_id: 9,
-                payload: Bytes::from_static(b"wire"),
+                buffer: WrappedTransportDatagramBuffer::copy_from_payload(b"wire"),
             }
             .into_packet(7);
             let header = packet.peer_manager_header().unwrap();
@@ -608,6 +647,25 @@ mod tests {
             assert_eq!(header.packet_type, packet_type as u8);
             assert_eq!(packet.payload(), b"wire");
         }
+    }
+
+    #[test]
+    fn packet_buffer_preserves_headroom_allocation() {
+        let packet = ZCPacket::new_with_payload(b"wire");
+        let packet_type = packet.packet_type();
+        let buffer = packet.inner();
+        let allocation = buffer.as_ptr();
+
+        let mut packet = WrappedTransportDatagram {
+            transport: WrappedTransportKind::Quic,
+            role: WrappedTransportRole::Source,
+            peer_id: 9,
+            buffer: WrappedTransportDatagramBuffer::from_packet_buffer(buffer, packet_type),
+        }
+        .into_packet(7);
+
+        assert_eq!(packet.mut_inner().as_ptr(), allocation);
+        assert_eq!(packet.payload(), b"wire");
     }
 
     #[tokio::test]
@@ -648,8 +706,10 @@ mod tests {
         assert_eq!(
             *events.lock().unwrap(),
             [
-                "start:kcp:true:false",
-                "start:quic:false:true",
+                "prepare:kcp:true:false",
+                "activate:kcp",
+                "prepare:quic:false:true",
+                "activate:quic",
                 "stop:quic",
                 "stop:kcp",
             ]
@@ -682,8 +742,9 @@ mod tests {
         assert_eq!(
             *events.lock().unwrap(),
             [
-                "start:kcp:true:true",
-                "start:quic:true:true",
+                "prepare:kcp:true:true",
+                "activate:kcp",
+                "prepare:quic:true:true",
                 "stop:quic",
                 "stop:kcp",
             ]
@@ -732,8 +793,10 @@ mod tests {
         assert_eq!(
             *events.lock().unwrap(),
             [
-                "start:kcp:true:true",
-                "start:blocking",
+                "prepare:kcp:true:true",
+                "activate:kcp",
+                "prepare:blocking",
+                "activate:blocking",
                 "stop:blocking",
                 "stop:blocking",
                 "stop:kcp",
