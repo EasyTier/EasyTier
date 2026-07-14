@@ -3699,7 +3699,43 @@ mod tests {
         assert_eq!(route.task_count(), 0);
         assert!(core.stats_manager.cleanup_task_is_stopped());
         assert!(core.acl_filter.cleanup_task_is_stopped());
-        assert!(core.foreign_network_manager.is_stopped_for_test());
+        assert!(core.foreign_network_manager.is_stopped_for_test().await);
+        assert!(
+            !core
+                .foreign_network_manager
+                .admission_is_open_for_test()
+                .await
+        );
+    }
+
+    #[tokio::test]
+    async fn foreign_network_stop_waits_for_inflight_admission() {
+        let core = build_portable_for_test(portable_runtime_config("portable-net", 92)).unwrap();
+        let manager = core.foreign_network_manager.clone();
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let admission_manager = manager.clone();
+        let admission_entered = entered.clone();
+        let admission_release = release.clone();
+        let admission = tokio::spawn(async move {
+            admission_manager
+                .hold_admission_for_test(admission_entered, admission_release)
+                .await
+        });
+        entered.notified().await;
+
+        let stop_manager = manager.clone();
+        let stop = tokio::spawn(async move { stop_manager.stop().await });
+        tokio::task::yield_now().await;
+        assert!(!stop.is_finished());
+
+        release.notify_waiters();
+        admission.await.unwrap().unwrap();
+        stop.await.unwrap();
+        assert!(manager.is_stopped_for_test().await);
+        assert!(!manager.admission_is_open_for_test().await);
+
+        core.clear_resources().await;
     }
 
     #[tokio::test]

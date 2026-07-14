@@ -89,6 +89,7 @@ pub(crate) fn foreign_network_info_to_api(
 pub mod tests {
     use easytier_core::peers::context::PeerContext as _;
     use easytier_core::stats_manager::{LabelSet, LabelType, MetricName};
+    use easytier_core::tunnel::ring::RingTunnelRegistry;
 
     use crate::{
         common::global_ctx::tests::get_mock_global_ctx_with_network,
@@ -1078,6 +1079,41 @@ pub mod tests {
             Duration::from_secs(5),
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn stopped_populated_foreign_manager_closes_admission() {
+        let center = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+        let foreign = create_mock_peer_manager_for_foreign_network("net1").await;
+        let registry = Arc::new(RingTunnelRegistry::default());
+        let listener_id = uuid::Uuid::new_v4();
+        let mut listener = registry.bind(listener_id).unwrap();
+        let client_tunnel = registry.connect(listener_id).unwrap().into_tunnel();
+        let server_tunnel = listener.accept().await.unwrap().into_tunnel();
+        let foreign_core = foreign.core();
+        let center_core = center.core();
+        let (client_result, server_result) = tokio::join!(
+            foreign_core.add_client_tunnel(client_tunnel, false),
+            center_core.add_tunnel_as_server(server_tunnel, true),
+        );
+        client_result.unwrap();
+        server_result.unwrap();
+
+        let manager = center.get_foreign_network_manager();
+        wait_for_condition(
+            || {
+                let manager = manager.clone();
+                async move { !manager.list_foreign_network_infos(false).await.is_empty() }
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+
+        manager.stop().await;
+
+        assert!(manager.list_foreign_network_infos(false).await.is_empty());
+        assert!(manager.is_stopped_for_test().await);
+        assert!(!manager.admission_is_open_for_test().await);
     }
 
     #[tokio::test]

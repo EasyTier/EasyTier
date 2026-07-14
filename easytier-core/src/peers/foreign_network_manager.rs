@@ -9,7 +9,7 @@ use dashmap::{DashMap, DashSet};
 use easytier_proto::common::{FlagsInConfig, PeerFeatureFlag, SecureModeConfig};
 use guarden::{Guard, defer};
 use tokio::sync::{
-    Mutex,
+    Mutex, RwLock, RwLockReadGuard,
     mpsc::{self, UnboundedReceiver, UnboundedSender},
 };
 use tokio::task::JoinSet;
@@ -1111,6 +1111,13 @@ impl ForeignNetworkManagerData {
 
 pub const FOREIGN_NETWORK_SERVICE_ID: u32 = 1;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ForeignNetworkManagerState {
+    Running,
+    Stopping,
+    Stopped,
+}
+
 pub struct ForeignNetworkManager {
     rpc_registrar: Arc<dyn ForeignNetworkRpcRegistrar>,
     parent_context: Arc<CorePeerContext>,
@@ -1123,6 +1130,7 @@ pub struct ForeignNetworkManager {
 
     tasks: Arc<std::sync::Mutex<JoinSet<()>>>,
     task_reaper: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    lifecycle: RwLock<ForeignNetworkManagerState>,
 }
 
 impl ForeignNetworkManager {
@@ -1184,10 +1192,30 @@ impl ForeignNetworkManager {
             data,
             tasks,
             task_reaper: std::sync::Mutex::new(Some(task_reaper)),
+            lifecycle: RwLock::new(ForeignNetworkManagerState::Running),
         }
     }
 
+    async fn admission_guard(
+        &self,
+    ) -> Result<RwLockReadGuard<'_, ForeignNetworkManagerState>, Error> {
+        let guard = self.lifecycle.read().await;
+        if *guard != ForeignNetworkManagerState::Running {
+            return Err(anyhow::anyhow!("foreign network manager is stopping").into());
+        }
+        Ok(guard)
+    }
+
     pub async fn stop(&self) {
+        let mut lifecycle = self.lifecycle.write().await;
+        if *lifecycle == ForeignNetworkManagerState::Stopped {
+            return;
+        }
+        // Set this before the first await so cancellation permanently closes
+        // admission. A later stop call can safely resume the idempotent
+        // teardown while admissions remain rejected.
+        *lifecycle = ForeignNetworkManagerState::Stopping;
+
         let reaper = self.task_reaper.lock().unwrap().take();
         if let Some(reaper) = reaper {
             reaper.abort();
@@ -1206,20 +1234,42 @@ impl ForeignNetworkManager {
             .iter()
             .map(|entry| entry.value().clone())
             .collect::<Vec<_>>();
-        self.data.peer_network_map.clear();
-        self.data.network_peer_maps.clear();
-        self.data.network_peer_last_update.clear();
         for entry in entries {
             entry.stop().await;
         }
+        // Keep entries discoverable until every nested graph is stopped. If
+        // this future is cancelled, the next stop call can snapshot and retry
+        // the remaining idempotent teardown instead of losing ownership.
+        self.data.peer_network_map.clear();
+        self.data.network_peer_maps.clear();
+        self.data.network_peer_last_update.clear();
+        *lifecycle = ForeignNetworkManagerState::Stopped;
     }
 
-    #[cfg(test)]
-    pub(crate) fn is_stopped_for_test(&self) -> bool {
-        self.task_reaper.lock().unwrap().is_none()
+    #[cfg(any(test, feature = "test-utils"))]
+    pub async fn is_stopped_for_test(&self) -> bool {
+        *self.lifecycle.read().await == ForeignNetworkManagerState::Stopped
+            && self.task_reaper.lock().unwrap().is_none()
             && self.tasks.lock().unwrap().is_empty()
             && self.data.network_peer_maps.is_empty()
             && self.data.peer_network_map.is_empty()
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    pub async fn admission_is_open_for_test(&self) -> bool {
+        self.admission_guard().await.is_ok()
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    pub async fn hold_admission_for_test(
+        &self,
+        entered: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+    ) -> Result<(), Error> {
+        let _admission = self.admission_guard().await?;
+        entered.notify_one();
+        release.notified().await;
+        Ok(())
     }
 
     #[cfg(any(test, feature = "test-utils"))]
@@ -1257,6 +1307,7 @@ impl ForeignNetworkManager {
     }
 
     pub async fn add_peer_conn(&self, peer_conn: PeerConn) -> Result<(), Error> {
+        let _admission = self.admission_guard().await?;
         let conn_info = peer_conn.get_conn_info();
         let peer_network = peer_conn.get_network_identity();
         tracing::info!(peer_conn = ?conn_info, network = ?peer_network, "add new peer conn in foreign network manager");
