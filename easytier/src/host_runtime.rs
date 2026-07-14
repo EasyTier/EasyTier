@@ -21,6 +21,7 @@ use easytier_core::{
 
 use crate::{
     common::{dns::RuntimeDnsResolver, netns::NetNS, network::IPCollector},
+    proto::peer_rpc::GetIpListResponse,
     socket::{
         tcp::{RuntimeTcpListener, RuntimeTcpSocket},
         udp::{RuntimeUdpSocket, RuntimeUdpSocketFactory},
@@ -158,6 +159,10 @@ impl NativeHostRuntime {
                 ip,
                 ifindex: interface.index,
             })
+    }
+
+    pub(crate) async fn collect_ip_addrs(&self, context: &SocketContext) -> GetIpListResponse {
+        IPCollector::collect_local_ip_addrs(NetNS::from_socket_context(context)).await
     }
 }
 

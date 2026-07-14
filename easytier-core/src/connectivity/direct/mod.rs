@@ -64,7 +64,7 @@ const MAX_UDP_HOLE_PUNCH_CONNECTOR_ADDRS: usize = 16;
 
 #[async_trait]
 pub trait DirectConnectorHost: ManualConnectorHost {
-    async fn collect_ip_addrs(&self) -> anyhow::Result<GetIpListResponse>;
+    async fn collect_ip_addrs(&self, context: &SocketContext) -> anyhow::Result<GetIpListResponse>;
 
     fn mapped_listeners(&self) -> Vec<Url>;
 
@@ -1031,7 +1031,7 @@ where
         _: BaseController,
         _: GetIpListRequest,
     ) -> rpc_types::error::Result<GetIpListResponse> {
-        let mut response = self.host.collect_ip_addrs().await?;
+        let mut response = self.host.collect_ip_addrs(&self.socket_context).await?;
         response.listeners = self
             .host
             .mapped_listeners()

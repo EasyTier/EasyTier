@@ -15,7 +15,7 @@ use easytier_core::peers::foreign_network_manager as core_foreign_network_manage
 use crate::common::global_ctx::NetworkIdentity;
 use crate::{
     common::global_ctx::ArcGlobalCtx,
-    connector::runtime::runtime_connector_host,
+    connector::runtime::runtime_foreign_connector_host,
     proto::{
         api::instance::{ForeignNetworkEntryPb, PeerInfo, TrustedKeyInfoPb, TrustedKeySourcePb},
         peer_rpc::DirectConnectorRpcServer,
@@ -47,7 +47,7 @@ impl core_foreign_network_manager::ForeignNetworkRpcRegistrar
     ) {
         peer_rpc.rpc_server().registry().register(
             DirectConnectorRpcServer::new(DirectConnectorRpcHandler::new(
-                runtime_connector_host(self.global_ctx.clone()),
+                runtime_foreign_connector_host(self.global_ctx.clone()),
                 socket_context,
             )),
             network_name,

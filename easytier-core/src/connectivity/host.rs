@@ -191,7 +191,10 @@ where
     B: HostConnectorSocketBackend,
     E: HostConnectorEnvironmentServices,
 {
-    async fn collect_ip_addrs(&self) -> anyhow::Result<GetIpListResponse> {
+    async fn collect_ip_addrs(
+        &self,
+        _context: &SocketContext,
+    ) -> anyhow::Result<GetIpListResponse> {
         Ok(self.environment.ip_list())
     }
 
@@ -236,7 +239,12 @@ mod tests {
     };
 
     use crate::{
+        connectivity::direct::DirectConnectorRpcHandler,
         hole_punch::tcp::TcpHolePunchHost,
+        proto::{
+            peer_rpc::{DirectConnectorRpc as _, GetIpListRequest},
+            rpc_types::controller::BaseController,
+        },
         socket::{
             host::{
                 HostOperationId, HostSocketHandle, HostSocketIo, HostTcpIo,
@@ -495,6 +503,43 @@ mod tests {
             vec!["tcp://192.0.2.1:11010".parse::<Url>().unwrap()]
         );
         assert!(DirectConnectorHost::is_protected_tcp_port(&host, 11010));
+    }
+
+    #[tokio::test]
+    async fn direct_rpc_projects_listeners_and_filters_managed_ipv6() {
+        let host = Arc::new(HostConnectorAdapter::new(
+            HostSocketRuntime::new(),
+            Arc::new(UnsupportedBackend::default()),
+            test_environment_snapshot(),
+            Arc::new(TestEnvironmentServices::default()),
+        ));
+        let handler = DirectConnectorRpcHandler::new(
+            host,
+            SocketContext::default().with_socket_mark(Some(7)),
+        );
+
+        let response = handler
+            .get_ip_list(BaseController::default(), GetIpListRequest {})
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.interface_ipv4s,
+            vec![std::net::Ipv4Addr::new(192, 0, 2, 1).into()]
+        );
+        assert!(response.interface_ipv6s.is_empty());
+        assert!(response.public_ipv6.is_none());
+        assert_eq!(
+            response
+                .listeners
+                .into_iter()
+                .map(Url::from)
+                .collect::<Vec<_>>(),
+            vec![
+                "tcp://192.0.2.1:11010".parse::<Url>().unwrap(),
+                "udp://192.0.2.1:11010".parse::<Url>().unwrap(),
+            ]
+        );
     }
 
     #[tokio::test]

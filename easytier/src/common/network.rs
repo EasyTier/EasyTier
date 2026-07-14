@@ -221,10 +221,10 @@ impl IPCollector {
 
     pub async fn collect_ip_addrs(&self) -> GetIpListResponse {
         let mut task = self.collect_ip_task.lock().await;
+        Self::reap_finished_collectors(&mut task);
         if task.is_empty() {
             let cached_ip_list = self.cached_ip_list.clone();
-            *cached_ip_list.write().await =
-                Self::do_collect_local_ip_addrs(self.net_ns.clone()).await;
+            *cached_ip_list.write().await = Self::collect_local_ip_addrs(self.net_ns.clone()).await;
             let net_ns = self.net_ns.clone();
             let stun_info_collector = self.stun_info_collector.clone();
             let cached_ip_list = self.cached_ip_list.clone();
@@ -232,7 +232,7 @@ impl IPCollector {
                 let mut last_fetch_iface_time = std::time::Instant::now();
                 loop {
                     if last_fetch_iface_time.elapsed().as_secs() > CACHED_IP_LIST_TIMEOUT_SEC {
-                        let ifaces = Self::do_collect_local_ip_addrs(net_ns.clone()).await;
+                        let ifaces = Self::collect_local_ip_addrs(net_ns.clone()).await;
                         *cached_ip_list.write().await = ifaces;
                         last_fetch_iface_time = std::time::Instant::now();
                     }
@@ -272,8 +272,37 @@ impl IPCollector {
         self.cached_ip_list.read().await.deref().clone()
     }
 
+    fn reap_finished_collectors(tasks: &mut JoinSet<()>) -> bool {
+        let mut reaped = false;
+        while let Some(result) = tasks.try_join_next() {
+            reaped = true;
+            match result {
+                Ok(()) => tracing::warn!("IP address refresh task stopped unexpectedly"),
+                Err(error) => {
+                    tracing::error!(?error, "IP address refresh task failed; restarting")
+                }
+            }
+        }
+        reaped
+    }
+
     pub async fn collect_interfaces(net_ns: NetNS, filter: bool) -> Vec<NetworkInterface> {
-        let _g = net_ns.guard();
+        #[cfg(target_os = "linux")]
+        {
+            return Self::run_in_namespace(net_ns, move || async move {
+                Self::collect_interfaces_in_current_namespace(filter).await
+            })
+            .await;
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _g = net_ns.guard();
+            Self::collect_interfaces_in_current_namespace(filter).await
+        }
+    }
+
+    async fn collect_interfaces_in_current_namespace(filter: bool) -> Vec<NetworkInterface> {
         #[cfg(target_os = "windows")]
         let ifaces = Self::collect_interfaces_windows();
         #[cfg(not(target_os = "windows"))]
@@ -292,6 +321,24 @@ impl IPCollector {
         }
 
         ret
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn run_in_namespace<T, F, Fut>(net_ns: NetNS, operation: F) -> T
+    where
+        T: Send + 'static,
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = T> + 'static,
+    {
+        tokio::task::spawn_blocking(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build namespace-local runtime");
+            net_ns.run(|| runtime.block_on(operation()))
+        })
+        .await
+        .expect("namespace-local network operation panicked")
     }
 
     #[cfg(target_os = "windows")]
@@ -375,11 +422,26 @@ impl IPCollector {
     }
 
     #[tracing::instrument(skip(net_ns))]
-    async fn do_collect_local_ip_addrs(net_ns: NetNS) -> GetIpListResponse {
+    pub(crate) async fn collect_local_ip_addrs(net_ns: NetNS) -> GetIpListResponse {
+        #[cfg(target_os = "linux")]
+        {
+            return Self::run_in_namespace(net_ns, || async {
+                Self::collect_local_ip_addrs_in_current_namespace().await
+            })
+            .await;
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _g = net_ns.guard();
+            Self::collect_local_ip_addrs_in_current_namespace().await
+        }
+    }
+
+    async fn collect_local_ip_addrs_in_current_namespace() -> GetIpListResponse {
         let mut ret = GetIpListResponse::default();
 
-        let ifaces = Self::collect_interfaces(net_ns.clone(), true).await;
-        let _g = net_ns.guard();
+        let ifaces = Self::collect_interfaces_in_current_namespace(true).await;
         for iface in ifaces {
             for ip in iface.ips {
                 let ip: std::net::IpAddr = ip.ip();
@@ -392,8 +454,7 @@ impl IPCollector {
             }
         }
 
-        let ifaces = Self::collect_interfaces(net_ns.clone(), false).await;
-        let _g = net_ns.guard();
+        let ifaces = Self::collect_interfaces_in_current_namespace(false).await;
         for iface in ifaces {
             for ip in iface.ips {
                 let ip: std::net::IpAddr = ip.ip();
@@ -421,5 +482,35 @@ impl IPCollector {
         }
 
         ret
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn namespace_operation_does_not_migrate_between_os_threads() {
+        let (before, after) = IPCollector::run_in_namespace(NetNS::new(None), || async {
+            let before = std::thread::current().id();
+            tokio::task::yield_now().await;
+            (before, std::thread::current().id())
+        })
+        .await;
+
+        assert_eq!(before, after);
+    }
+
+    #[tokio::test]
+    async fn finished_address_collector_is_reaped_for_restart() {
+        let mut tasks = JoinSet::new();
+        tasks.spawn(async { panic!("simulated collector failure") });
+
+        while !IPCollector::reap_finished_collectors(&mut tasks) {
+            tokio::task::yield_now().await;
+        }
+
+        assert!(tasks.is_empty());
     }
 }
