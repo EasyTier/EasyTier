@@ -93,6 +93,16 @@ impl CoreRuntimeConfigStore {
         self.inner.peer_changes.send_modify(|version| *version += 1);
     }
 
+    pub(crate) fn modify_peer(&self, update: impl FnOnce(&mut PeerRuntimeSnapshot)) {
+        let _update = self.inner.update.lock();
+        let mut config = self.inner.snapshot.load_full().as_ref().clone();
+        let mut peer = config.peer.as_ref().clone();
+        update(&mut peer);
+        config.peer = Arc::new(peer);
+        self.inner.snapshot.store(Arc::new(config));
+        self.inner.peer_changes.send_modify(|version| *version += 1);
+    }
+
     pub fn subscribe_peer_runtime_changes(&self) -> tokio::sync::watch::Receiver<u64> {
         self.inner.peer_changes.subscribe()
     }
@@ -145,5 +155,20 @@ mod tests {
         store.update_peer(Arc::new(peer));
 
         assert!(changes.changed().await.is_ok());
+    }
+
+    #[test]
+    fn modifies_latest_peer_snapshot_without_replacing_other_fields() {
+        let mut peer = PeerRuntimeSnapshot::default();
+        peer.runtime.core.node.hostname = Some("before".to_owned());
+        let store = CoreRuntimeConfigStore::new(CoreRuntimeConfig::default(), Arc::new(peer));
+
+        store.modify_peer(|peer| {
+            peer.avoid_relay_data_preference = true;
+        });
+
+        let peer = &store.snapshot().peer;
+        assert_eq!(peer.runtime.core.node.hostname.as_deref(), Some("before"));
+        assert!(peer.avoid_relay_data_preference);
     }
 }

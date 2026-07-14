@@ -1040,7 +1040,7 @@ impl PeerManagerCore {
             config.runtime.clone(),
             config.flags.clone(),
         )));
-        let core_context_support = Arc::new(CorePeerContextSupport::default());
+        let core_context_support = Arc::new(CorePeerContextSupport::new(runtime_config.clone()));
         let context: ArcPeerContext = Arc::new(SubmittedPeerContext::new_core_owned(
             runtime_config,
             SubmittedPeerContextCapabilities {

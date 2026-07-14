@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     net::IpAddr,
     sync::{
         Arc, Mutex,
@@ -8,7 +8,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use arc_swap::{ArcSwap, ArcSwapOption};
+use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use cidr::{Ipv4Cidr, Ipv4Inet, Ipv6Cidr, Ipv6Inet};
 use dashmap::DashMap;
@@ -307,56 +307,49 @@ struct CoreLimiterState {
     stopped: bool,
 }
 
-#[derive(Default)]
 pub(crate) struct CorePeerContextSupport {
     limiter_state: Mutex<CoreLimiterState>,
-    acl: ArcSwapOption<Acl>,
+    config: CoreRuntimeConfigStore,
 }
 
 impl CorePeerContextSupport {
+    pub(crate) fn new(config: CoreRuntimeConfigStore) -> Self {
+        Self {
+            limiter_state: Mutex::new(CoreLimiterState::default()),
+            config,
+        }
+    }
+
     pub(crate) fn set_acl(&self, acl: Option<Acl>) {
-        self.acl.store(acl.map(Arc::new));
-    }
-
-    fn peer_groups(&self, peer_id: PeerId) -> Vec<PeerGroupInfo> {
-        let Some(acl) = self.acl.load_full() else {
-            return Vec::new();
-        };
-        let Some(group) = acl.acl_v1.as_ref().and_then(|acl| acl.group.as_ref()) else {
-            return Vec::new();
-        };
-        let memberships: HashSet<_> = group.members.iter().collect();
-        group
-            .declares
-            .iter()
-            .filter(|identity| memberships.contains(&identity.group_name))
-            .map(|identity| {
-                PeerGroupInfo::generate_with_proof(
-                    identity.group_name.clone(),
-                    identity.group_secret.clone(),
-                    peer_id,
-                )
-            })
-            .collect()
-    }
-
-    fn acl_group_declarations(&self) -> Vec<PeerGroupIdentity> {
-        let Some(acl) = self.acl.load_full() else {
-            return Vec::new();
-        };
-        acl.acl_v1
+        let group = acl
             .as_ref()
-            .and_then(|acl| acl.group.as_ref())
-            .map_or_else(Vec::new, |group| {
-                group
-                    .declares
-                    .iter()
-                    .map(|identity| PeerGroupIdentity {
-                        group_name: identity.group_name.clone(),
-                        group_secret: identity.group_secret.clone(),
-                    })
-                    .collect()
-            })
+            .and_then(|acl| acl.acl_v1.as_ref())
+            .and_then(|acl| acl.group.as_ref());
+        let declarations = group.map_or_else(Vec::new, |group| {
+            group
+                .declares
+                .iter()
+                .map(|identity| PeerGroupIdentity {
+                    group_name: identity.group_name.clone(),
+                    group_secret: identity.group_secret.clone(),
+                })
+                .collect()
+        });
+        let memberships = group.map_or_else(Vec::new, |group| {
+            group
+                .declares
+                .iter()
+                .filter(|identity| group.members.contains(&identity.group_name))
+                .map(|identity| PeerGroupIdentity {
+                    group_name: identity.group_name.clone(),
+                    group_secret: identity.group_secret.clone(),
+                })
+                .collect()
+        });
+        self.config.modify_peer(|snapshot| {
+            snapshot.peer_group_memberships = memberships;
+            snapshot.acl_group_declarations = declarations;
+        });
     }
 
     fn get_or_create_limiter(&self, key: &str, bps: u64) -> Option<ArcByteLimiter> {
@@ -1010,9 +1003,6 @@ impl PeerContext for SubmittedPeerContext {
     }
 
     fn peer_groups(&self, peer_id: PeerId) -> Vec<PeerGroupInfo> {
-        if let Some(support) = &self.core_support {
-            return support.peer_groups(peer_id);
-        }
         self.snapshot()
             .peer_group_memberships
             .iter()
@@ -1027,9 +1017,6 @@ impl PeerContext for SubmittedPeerContext {
     }
 
     fn acl_group_declarations(&self) -> Vec<PeerGroupIdentity> {
-        if let Some(support) = &self.core_support {
-            return support.acl_group_declarations();
-        }
         self.snapshot().acl_group_declarations.clone()
     }
 
@@ -1558,7 +1545,7 @@ mod tests {
             CoreRuntimeConfig::default(),
             Arc::new(PeerRuntimeSnapshot::new(runtime, flags)),
         );
-        let support = Arc::new(CorePeerContextSupport::default());
+        let support = Arc::new(CorePeerContextSupport::new(config.clone()));
         SubmittedPeerContext::new_core_owned(
             config,
             SubmittedPeerContextCapabilities {
