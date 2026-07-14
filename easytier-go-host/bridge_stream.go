@@ -9,10 +9,14 @@ import (
 )
 
 const (
-	opaqueHostPending = -1
-	opaqueHostInvalid = -2
-	opaqueHostIOError = -3
-	opaqueHostMemory  = -4
+	opaqueHostPending           = -1
+	opaqueHostInvalid           = -2
+	opaqueHostIOError           = -3
+	opaqueHostMemory            = -4
+	opaqueHostConnectionRefused = -6
+	opaqueHostConnectionAborted = -7
+	opaqueHostConnectionReset   = -8
+	opaqueHostNotConnected      = -9
 )
 
 func (b *opaqueBridge) startRead(

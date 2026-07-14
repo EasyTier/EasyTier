@@ -3,8 +3,11 @@ package host
 import (
 	"context"
 	"encoding/binary"
+	"errors"
+	"fmt"
 	"io"
 	"net"
+	"syscall"
 	"testing"
 	"time"
 
@@ -130,6 +133,91 @@ func TestDecodeGatewaySocketPurposes(t *testing.T) {
 		options, err := decodeUDPBindOptions(encoded)
 		if err != nil || options.Purpose != want {
 			t.Fatalf("decode UDP purpose %d: options=%#v error=%v", wire, options, err)
+		}
+	}
+}
+
+type tcpErrorSocketFactory struct {
+	err error
+}
+
+func (factory tcpErrorSocketFactory) ConnectTCP(
+	context.Context,
+	TCPConnectOptions,
+) (net.Conn, error) {
+	return nil, factory.err
+}
+
+func (tcpErrorSocketFactory) BindUDP(
+	context.Context,
+	UDPBindOptions,
+) (net.PacketConn, error) {
+	return nil, errors.New("unexpected UDP bind")
+}
+
+func (tcpErrorSocketFactory) ListenTCP(
+	context.Context,
+	TCPListenOptions,
+) (net.Listener, error) {
+	return nil, errors.New("unexpected TCP listen")
+}
+
+func TestOpaqueFactoryPreservesTCPConnectErrorKind(t *testing.T) {
+	bridge := NewBridge(BridgeConfig{SocketFactory: tcpErrorSocketFactory{
+		err: fmt.Errorf("wrapped connect: %w", syscall.ECONNREFUSED),
+	}})
+	defer bridge.close()
+	wasm := buildGuest(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	runtime := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfig().WithCloseOnContextDone(true))
+	defer runtime.Close(ctx)
+	instantiateOpaqueHost(t, ctx, runtime, bridge)
+	wasi_snapshot_preview1.MustInstantiate(ctx, runtime)
+	compiled, err := runtime.CompileModule(ctx, wasm)
+	if err != nil {
+		t.Fatalf("compile guest: %v", err)
+	}
+	module, err := runtime.InstantiateModule(
+		ctx,
+		compiled,
+		wazero.NewModuleConfig().WithStartFunctions("_initialize").WithSysWalltime().WithSysNanotime().WithSysNanosleep(),
+	)
+	if err != nil {
+		t.Fatalf("instantiate guest: %v", err)
+	}
+	if results, err := module.ExportedFunction("init_factory_error_probe").Call(ctx); err != nil || len(results) != 1 || int32(results[0]) != 0 {
+		t.Fatalf("initialize factory error probe: results=%v err=%v", results, err)
+	}
+
+	status := uint32(0)
+	for status&opaqueDone == 0 {
+		select {
+		case <-bridge.completion:
+		case <-time.After(5 * time.Millisecond):
+		case <-ctx.Done():
+			t.Fatalf("wait for factory error probe: %v", ctx.Err())
+		}
+		results, err := module.ExportedFunction("drive_factory_error_probe").Call(ctx)
+		if err != nil || len(results) != 1 {
+			t.Fatalf("drive factory error probe: results=%v err=%v", results, err)
+		}
+		status = uint32(results[0])
+	}
+	if status != opaqueDone|1 {
+		t.Fatalf("factory error status 0x%x, want ConnectionRefused", status)
+	}
+}
+
+func TestTCPConnectErrorStatus(t *testing.T) {
+	for err, want := range map[error]int32{
+		syscall.ECONNREFUSED: opaqueHostConnectionRefused,
+		syscall.ECONNABORTED: opaqueHostConnectionAborted,
+		syscall.ECONNRESET:   opaqueHostConnectionReset,
+		syscall.ENOTCONN:     opaqueHostNotConnected,
+	} {
+		if got := tcpConnectErrorStatus(fmt.Errorf("wrapped: %w", err)); got != want {
+			t.Fatalf("connect error %v status %d, want %d", err, got, want)
 		}
 	}
 }

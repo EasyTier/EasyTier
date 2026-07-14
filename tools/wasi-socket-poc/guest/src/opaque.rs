@@ -53,6 +53,7 @@ thread_local! {
     static PROBE: RefCell<Option<Probe>> = const { RefCell::new(None) };
     static UDP_PROBE: RefCell<Option<UdpProbe>> = const { RefCell::new(None) };
     static FACTORY_PROBE: RefCell<Option<FactoryProbe>> = const { RefCell::new(None) };
+    static FACTORY_ERROR_PROBE: RefCell<Option<FactoryProbe>> = const { RefCell::new(None) };
     static LISTENER_PROBE: RefCell<Option<FactoryProbe>> = const { RefCell::new(None) };
     static DNS_PROBE: RefCell<Option<FactoryProbe>> = const { RefCell::new(None) };
     static PACKET_PROBE: RefCell<Option<FactoryProbe>> = const { RefCell::new(None) };
@@ -365,6 +366,64 @@ pub extern "C" fn drive_factory_probe() -> u32 {
         {
             probe.status.fetch_or(DONE, Ordering::SeqCst);
         }
+        probe.status.load(Ordering::SeqCst)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn init_factory_error_probe() -> i32 {
+    FACTORY_ERROR_PROBE.with_borrow_mut(|slot| {
+        if slot.is_some() {
+            return -1;
+        }
+        let runtime = match Builder::new_current_thread().enable_time().build() {
+            Ok(runtime) => runtime,
+            Err(_) => return -2,
+        };
+        let status = Arc::new(AtomicU32::new(0));
+        let sockets = HostSocketRuntime::new();
+        let factory = HostSocketFactory::new(
+            sockets.clone(),
+            Arc::new(WasiHostSocketBackend::default()),
+        );
+        let task_status = status.clone();
+        runtime.spawn(async move {
+            let remote_addr = std::net::SocketAddr::from(([127, 0, 0, 1], 9));
+            let code = match factory.connect_tcp(TcpConnectOptions::socks5(remote_addr)).await {
+                Err(error) => match error
+                    .chain()
+                    .find_map(|cause| cause.downcast_ref::<std::io::Error>())
+                    .map(std::io::Error::kind)
+                {
+                    Some(std::io::ErrorKind::ConnectionRefused) => 1,
+                    Some(std::io::ErrorKind::ConnectionAborted) => 2,
+                    Some(std::io::ErrorKind::ConnectionReset) => 3,
+                    Some(std::io::ErrorKind::NotConnected) => 4,
+                    _ => 5,
+                },
+                Ok(_) => ERROR | 9,
+            };
+            task_status.store(DONE | code, Ordering::SeqCst);
+        });
+        *slot = Some(FactoryProbe {
+            runtime,
+            status,
+            sockets,
+        });
+        0
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn drive_factory_error_probe() -> u32 {
+    FACTORY_ERROR_PROBE.with_borrow_mut(|slot| {
+        let Some(probe) = slot.as_mut() else {
+            return ERROR | 10;
+        };
+        probe.sockets.notify_completions();
+        probe
+            .runtime
+            .block_on(async { tokio::task::yield_now().await });
         probe.status.load(Ordering::SeqCst)
     })
 }

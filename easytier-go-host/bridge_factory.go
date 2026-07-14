@@ -5,8 +5,10 @@ package host
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
+	"syscall"
 	"unicode/utf8"
 
 	"github.com/tetratelabs/wazero/api"
@@ -111,11 +113,12 @@ func (b *opaqueBridge) takeTCPConnect(
 	}
 	if create.err != nil || create.connection == nil {
 		connection := create.connection
+		status := tcpConnectErrorStatus(create.err)
 		b.mu.Unlock()
 		if connection != nil {
 			_ = connection.Close()
 		}
-		return opaqueHostIOError
+		return status
 	}
 	handle := b.allocateHandleLocked()
 	encoded, err := encodeTCPSocketResult(handle, create.localAddr, create.peerAddr)
@@ -128,6 +131,21 @@ func (b *opaqueBridge) takeTCPConnect(
 	b.handles[handle] = create.connection
 	b.mu.Unlock()
 	return 0
+}
+
+func tcpConnectErrorStatus(err error) int32 {
+	switch {
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return opaqueHostConnectionRefused
+	case errors.Is(err, syscall.ECONNABORTED):
+		return opaqueHostConnectionAborted
+	case errors.Is(err, syscall.ECONNRESET):
+		return opaqueHostConnectionReset
+	case errors.Is(err, syscall.ENOTCONN):
+		return opaqueHostNotConnected
+	default:
+		return opaqueHostIOError
+	}
 }
 
 func (b *opaqueBridge) startUDPBind(

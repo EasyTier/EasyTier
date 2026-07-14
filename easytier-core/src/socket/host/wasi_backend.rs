@@ -11,7 +11,7 @@ use super::{
     listener::{HostTcpBindResult, HostTcpListenerIo},
     udp::{HostUdpDatagram, HostUdpIo, wasi::WasiHostUdpIo},
     wasi::WasiHostTcpIo,
-    wasi_common::{host_error, status},
+    wasi_common::{host_error, status, tcp_connect_error},
     wasi_options::{
         BOUND_SOCKET_RESULT_LEN, TCP_SOCKET_RESULT_LEN, decode_tcp_bind_result,
         decode_tcp_socket_result, decode_udp_bind_result, encode_tcp_connect_options,
@@ -168,7 +168,7 @@ impl HostSocketFactoryIo for WasiHostSocketBackend {
         } {
             HOST_PENDING => Poll::Pending,
             0 => Poll::Ready(self.decode_transferred(&encoded, decode_tcp_socket_result(&encoded))),
-            value => Poll::Ready(Err(host_error("take_tcp_connect", value))),
+            value => Poll::Ready(Err(tcp_connect_error(value))),
         }
     }
 

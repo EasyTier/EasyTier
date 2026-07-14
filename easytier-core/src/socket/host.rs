@@ -24,7 +24,7 @@ pub mod udp;
 pub mod wasi;
 #[cfg(target_os = "wasi")]
 pub mod wasi_backend;
-#[cfg(target_os = "wasi")]
+#[cfg(any(test, target_os = "wasi"))]
 mod wasi_common;
 #[cfg(any(test, target_os = "wasi"))]
 mod wasi_options;
