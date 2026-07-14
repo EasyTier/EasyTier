@@ -96,11 +96,12 @@ impl UdpSessionControlHandler<RuntimeUdpSocket> for RuntimeConnectorHost {
 #[async_trait]
 impl ManualConnectorHost for RuntimeConnectorHost {
     async fn local_addr_for_remote(&self, remote_addr: SocketAddr) -> anyhow::Result<SocketAddr> {
-        let socket = self
-            .global_ctx
-            .net_ns
-            .run_async(|| tokio::net::UdpSocket::bind("[::]:0"))
-            .await?;
+        let socket = self.global_ctx.net_ns.run(|| {
+            let socket = std::net::UdpSocket::bind("[::]:0")?;
+            socket.set_nonblocking(true)?;
+            std::io::Result::Ok(socket)
+        })?;
+        let socket = tokio::net::UdpSocket::from_std(socket)?;
         socket.connect(remote_addr).await?;
         Ok(socket.local_addr()?)
     }

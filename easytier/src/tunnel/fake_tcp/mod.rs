@@ -19,7 +19,10 @@ use tokio::{
 
 use easytier_core::socket::tcp::VirtualTcpSocket;
 
-use crate::tunnel::{FromUrl, IpVersion, Tunnel, TunnelError, fake_tcp::netfilter::create_tun};
+use crate::{
+    common::netns::NetNS,
+    tunnel::{FromUrl, IpVersion, Tunnel, TunnelError, fake_tcp::netfilter::create_tun},
+};
 
 use futures::Future;
 use tokio_util::task::AbortOnDropHandle;
@@ -73,11 +76,14 @@ async fn create_tun_off_runtime(
     interface_name: String,
     src_addr: Option<SocketAddr>,
     dst_addr: SocketAddr,
+    net_ns: NetNS,
 ) -> Result<Arc<dyn stack::Tun>, TunnelError> {
-    tokio::task::spawn_blocking(move || create_tun(&interface_name, src_addr, dst_addr))
-        .await
-        .map_err(|e| TunnelError::InternalError(format!("faketcp create_tun task failed: {e}")))?
-        .map_err(Into::into)
+    tokio::task::spawn_blocking(move || {
+        net_ns.run(|| create_tun(&interface_name, src_addr, dst_addr))
+    })
+    .await
+    .map_err(|e| TunnelError::InternalError(format!("faketcp create_tun task failed: {e}")))?
+    .map_err(Into::into)
 }
 
 pub struct FakeTcpTunnelListener {
@@ -182,8 +188,13 @@ impl FakeTcpTunnelListener {
             self.stack_map.remove(interface_name);
         }
 
-        let tun =
-            create_tun_off_runtime(interface_name.to_string(), None, local_socket_addr).await?;
+        let tun = create_tun_off_runtime(
+            interface_name.to_string(),
+            None,
+            local_socket_addr,
+            NetNS::new(None),
+        )
+        .await?;
         tracing::info!(
             ?local_socket_addr,
             "create new stack with interface_name: {:?}",
@@ -431,8 +442,13 @@ impl FakeTcpTunnelConnector {
             Some(addr) => addr,
             None => SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?,
         };
-        let socket =
-            connect_socket_with_cache(remote_addr, self.socket_mark, &self.ip_to_if_name).await?;
+        let socket = connect_socket_with_cache(
+            remote_addr,
+            self.socket_mark,
+            &self.ip_to_if_name,
+            NetNS::new(None),
+        )
+        .await?;
         easytier_core::connectivity::protocol::faketcp::upgrade_connected(socket, self.addr.clone())
     }
 
@@ -468,34 +484,37 @@ async fn connect_socket_with_cache(
     remote_addr: SocketAddr,
     socket_mark: Option<u32>,
     ip_to_if_name: &IpToIfNameCache,
+    net_ns: NetNS,
 ) -> Result<FakeTcpSocket, TunnelError> {
-    let local_ip = get_local_ip_for_destination(remote_addr.ip())
-        .ok_or(TunnelError::InternalError("Failed to get local ip".into()))?;
+    let (local_ip, local_addr, interface_name, mac, os_socket) = net_ns.run(|| {
+        let local_ip = get_local_ip_for_destination(remote_addr.ip())
+            .ok_or(TunnelError::InternalError("Failed to get local ip".into()))?;
 
-    let os_socket = tokio::net::TcpSocket::new_v4()?;
-    // SO_MARK applies only to the kernel-visible "decoy" socket below.
-    // The actual FakeTCP payload travels via crafted segments written
-    // straight to the TUN device, which the kernel doesn't tag with
-    // SO_MARK. Operators relying on fwmark for FakeTCP must mark the
-    // TUN device's traffic with a separate nftables/iptables rule.
-    crate::tunnel::common::apply_socket_mark(&socket2::SockRef::from(&os_socket), socket_mark)?;
-    os_socket.bind("0.0.0.0:0".parse().unwrap())?;
-    let local_port = os_socket.local_addr()?.port();
-    let local_addr = SocketAddr::new(local_ip, local_port);
+        let os_socket = tokio::net::TcpSocket::new_v4()?;
+        // SO_MARK applies only to the kernel-visible "decoy" socket below.
+        // The actual FakeTCP payload travels via crafted segments written
+        // straight to the TUN device, which the kernel doesn't tag with
+        // SO_MARK. Operators relying on fwmark for FakeTCP must mark the
+        // TUN device's traffic with a separate nftables/iptables rule.
+        crate::tunnel::common::apply_socket_mark(&socket2::SockRef::from(&os_socket), socket_mark)?;
+        os_socket.bind("0.0.0.0:0".parse().unwrap())?;
+        let local_addr = SocketAddr::new(local_ip, os_socket.local_addr()?.port());
 
-    let (interface_name, mac) =
-        ip_to_if_name
-            .get_ifname(&local_ip)
-            .ok_or(TunnelError::InternalError(
-                "Failed to get interface name".into(),
-            ))?;
+        let (interface_name, mac) =
+            ip_to_if_name
+                .get_ifname(&local_ip)
+                .ok_or(TunnelError::InternalError(
+                    "Failed to get interface name".into(),
+                ))?;
+        Ok::<_, TunnelError>((local_ip, local_addr, interface_name, mac, os_socket))
+    })?;
 
     let (local_ip, local_ip6) = match local_ip {
         IpAddr::V4(ip) => (Some(ip), None),
         IpAddr::V6(ip) => (None, Some(ip)),
     };
 
-    let tun = create_tun_off_runtime(interface_name, Some(remote_addr), local_addr).await?;
+    let tun = create_tun_off_runtime(interface_name, Some(remote_addr), local_addr, net_ns).await?;
     let local_ip = local_ip.unwrap_or(Ipv4Addr::UNSPECIFIED);
     let stack = stack::Stack::new(tun, local_ip, local_ip6, mac);
     let tunnel_type = get_faketcp_tunnel_type_str(stack.driver_type());
@@ -530,8 +549,9 @@ async fn connect_socket_with_cache(
 pub(crate) async fn connect_socket(
     remote_addr: SocketAddr,
     socket_mark: Option<u32>,
+    net_ns: NetNS,
 ) -> Result<FakeTcpSocket, TunnelError> {
-    connect_socket_with_cache(remote_addr, socket_mark, &IpToIfNameCache::new()).await
+    connect_socket_with_cache(remote_addr, socket_mark, &IpToIfNameCache::new(), net_ns).await
 }
 
 #[async_trait::async_trait]
