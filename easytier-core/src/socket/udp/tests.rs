@@ -91,6 +91,14 @@ fn bind_options_constructors_describe_socket_purpose() {
         }
     );
     assert_eq!(
+        UdpBindOptions::port_forward(listener_addr).purpose,
+        UdpSocketPurpose::PortForward
+    );
+    assert_eq!(
+        UdpBindOptions::port_lease(listener_addr).purpose,
+        UdpSocketPurpose::PortLease
+    );
+    assert_eq!(
         UdpBindOptions::default(),
         UdpBindOptions::hole_punch_control()
     );

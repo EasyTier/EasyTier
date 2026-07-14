@@ -2,18 +2,83 @@ use std::{
     io,
     net::{IpAddr, Ipv6Addr, SocketAddr, SocketAddrV6},
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
-use crate::socket::{
-    IpVersion, SocketContext,
-    dns::{DnsQuery, DnsResolver},
-    udp::{UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory},
+use crate::{
+    runtime_time::timeout,
+    socket::{
+        IpVersion, SocketContext,
+        dns::{DnsQuery, DnsResolver},
+        tcp::{TcpBindOptions, TcpConnectOptions, TcpSocketPurpose, VirtualTcpSocketFactory},
+        udp::{UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory},
+    },
 };
 
 use super::{
-    AddrError, Result, SocksError, TargetAddr, new_udp_header, parse_udp_request,
-    server::{Socks5ServerRuntime, Socks5UdpAssociation},
+    AddrError, ReplyError, Result, SocksError, TargetAddr, new_udp_header, parse_udp_request,
+    server::{AsyncTcpConnector, Socks5ServerRuntime, Socks5UdpAssociation},
 };
+
+/// Portable kernel TCP connector for SOCKS and gateway traffic.
+pub struct HostSocks5TcpConnector<H> {
+    host: Arc<H>,
+    socket_context: SocketContext,
+    purpose: TcpSocketPurpose,
+}
+
+impl<H> HostSocks5TcpConnector<H>
+where
+    H: VirtualTcpSocketFactory,
+{
+    pub fn new(host: Arc<H>, socket_context: SocketContext, purpose: TcpSocketPurpose) -> Self {
+        Self {
+            host,
+            socket_context,
+            purpose,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl<H> AsyncTcpConnector for HostSocks5TcpConnector<H>
+where
+    H: VirtualTcpSocketFactory,
+    H::Socket: Sync,
+{
+    type S = H::Socket;
+
+    async fn tcp_connect(&self, addr: SocketAddr, timeout_s: u64) -> Result<Self::S> {
+        let options = TcpConnectOptions::direct_connect(addr)
+            .with_purpose(self.purpose)
+            .with_bind(TcpBindOptions::default().with_context(self.socket_context.clone()));
+        match timeout(
+            Duration::from_secs(timeout_s),
+            self.host.connect_tcp(options),
+        )
+        .await
+        {
+            Ok(Ok(socket)) => Ok(socket),
+            Ok(Err(error)) => Err(map_tcp_connect_error(error)),
+            Err(_) => Err(ReplyError::ConnectionTimeout.into()),
+        }
+    }
+}
+
+fn map_tcp_connect_error(error: anyhow::Error) -> SocksError {
+    let kind = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<io::Error>())
+        .map(io::Error::kind);
+    match kind {
+        Some(io::ErrorKind::ConnectionRefused) => ReplyError::ConnectionRefused.into(),
+        Some(io::ErrorKind::ConnectionAborted | io::ErrorKind::ConnectionReset) => {
+            ReplyError::ConnectionNotAllowed.into()
+        }
+        Some(io::ErrorKind::NotConnected) => ReplyError::NetworkUnreachable.into(),
+        _ => SocksError::Other(error),
+    }
+}
 
 /// Portable SOCKS command runtime backed exclusively by host capabilities.
 pub struct HostSocks5ServerRuntime<H>
@@ -211,6 +276,68 @@ mod tests {
     use super::*;
     use std::collections::VecDeque;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+
+    struct MockTcpSocket(tokio::io::DuplexStream);
+
+    impl AsyncRead for MockTcpSocket {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> std::task::Poll<io::Result<()>> {
+            std::pin::Pin::new(&mut self.0).poll_read(cx, buf)
+        }
+    }
+
+    impl AsyncWrite for MockTcpSocket {
+        fn poll_write(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> std::task::Poll<io::Result<usize>> {
+            std::pin::Pin::new(&mut self.0).poll_write(cx, buf)
+        }
+
+        fn poll_flush(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<io::Result<()>> {
+            std::pin::Pin::new(&mut self.0).poll_flush(cx)
+        }
+
+        fn poll_shutdown(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<io::Result<()>> {
+            std::pin::Pin::new(&mut self.0).poll_shutdown(cx)
+        }
+    }
+
+    impl crate::socket::tcp::VirtualTcpSocket for MockTcpSocket {
+        fn local_addr(&self) -> io::Result<SocketAddr> {
+            Ok("192.0.2.1:40000".parse().unwrap())
+        }
+
+        fn peer_addr(&self) -> io::Result<SocketAddr> {
+            Ok("198.51.100.2:443".parse().unwrap())
+        }
+    }
+
+    #[derive(Default)]
+    struct MockTcpHost {
+        options: Mutex<Vec<TcpConnectOptions>>,
+    }
+
+    #[async_trait::async_trait]
+    impl VirtualTcpSocketFactory for MockTcpHost {
+        type Socket = MockTcpSocket;
+
+        async fn connect_tcp(&self, options: TcpConnectOptions) -> anyhow::Result<Self::Socket> {
+            self.options.lock().unwrap().push(options);
+            Ok(MockTcpSocket(tokio::io::duplex(64).0))
+        }
+    }
 
     struct StaticDns;
 
@@ -261,6 +388,42 @@ mod tests {
             self.options.lock().unwrap().push(options);
             Ok(Arc::new(MockSocket::default()))
         }
+    }
+
+    #[tokio::test]
+    async fn tcp_connector_preserves_host_context_and_purpose() {
+        let host = Arc::new(MockTcpHost::default());
+        let context = SocketContext::default().with_socket_mark(Some(7));
+        let connector = HostSocks5TcpConnector::new(
+            host.clone(),
+            context.clone(),
+            TcpSocketPurpose::PortForward,
+        );
+        let remote = "198.51.100.2:443".parse().unwrap();
+
+        connector.tcp_connect(remote, 1).await.unwrap();
+
+        let options = host.options.lock().unwrap();
+        assert_eq!(options.len(), 1);
+        assert_eq!(options[0].remote_addr, remote);
+        assert_eq!(options[0].purpose, TcpSocketPurpose::PortForward);
+        assert_eq!(options[0].bind.context, context);
+    }
+
+    #[test]
+    fn tcp_connector_preserves_socks_reply_error_mapping() {
+        assert!(matches!(
+            map_tcp_connect_error(io::Error::from(io::ErrorKind::ConnectionRefused).into()),
+            SocksError::ReplyError(ReplyError::ConnectionRefused)
+        ));
+        assert!(matches!(
+            map_tcp_connect_error(io::Error::from(io::ErrorKind::ConnectionReset).into()),
+            SocksError::ReplyError(ReplyError::ConnectionNotAllowed)
+        ));
+        assert!(matches!(
+            map_tcp_connect_error(io::Error::from(io::ErrorKind::NotConnected).into()),
+            SocksError::ReplyError(ReplyError::NetworkUnreachable)
+        ));
     }
 
     #[tokio::test]

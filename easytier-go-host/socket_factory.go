@@ -15,6 +15,9 @@ const (
 	TCPConnectManual
 	TCPConnectProxyNAT
 	TCPConnectSTUNProbe
+	TCPConnectSocks5
+	TCPConnectPortForward
+	TCPConnectDataPlane
 )
 
 type UDPBindPurpose uint8
@@ -27,6 +30,8 @@ const (
 	UDPBindProxyNAT
 	UDPBindSTUNProbe
 	UDPBindSocks5
+	UDPBindPortForward
+	UDPBindPortLease
 )
 
 type TCPListenPurpose uint8
@@ -36,6 +41,9 @@ const (
 	TCPListenHolePunch
 	TCPListenManual
 	TCPListenProxyNAT
+	TCPListenSocks5
+	TCPListenPortForward
+	TCPListenPortLease
 )
 
 type IPVersion uint8

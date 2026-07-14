@@ -290,7 +290,7 @@ func decodeTCPListenOptions(encoded []byte) (TCPListenOptions, error) {
 	if err != nil {
 		return TCPListenOptions{}, err
 	}
-	if remainder[3] > 3 {
+	if remainder[3] > byte(TCPListenPortLease) {
 		return TCPListenOptions{}, fmt.Errorf("invalid TCP listen purpose")
 	}
 	return TCPListenOptions{

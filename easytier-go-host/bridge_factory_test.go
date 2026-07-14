@@ -93,6 +93,47 @@ func TestDecodeSocks5UDPBindPurpose(t *testing.T) {
 	}
 }
 
+func TestDecodeGatewaySocketPurposes(t *testing.T) {
+	if TCPConnectSocks5 != 6 || TCPConnectPortForward != 7 || TCPConnectDataPlane != 8 ||
+		UDPBindPortForward != 7 || UDPBindPortLease != 8 {
+		t.Fatalf("unstable gateway purpose ABI")
+	}
+
+	remote, err := encodeNetAddr(&net.TCPAddr{IP: net.IPv4(192, 0, 2, 2), Port: 443})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for wire, want := range map[byte]TCPConnectPurpose{
+		6: TCPConnectSocks5,
+		7: TCPConnectPortForward,
+		8: TCPConnectDataPlane,
+	} {
+		encoded := make([]byte, 75)
+		encoded[0] = 2
+		copy(encoded[1:28], remote[:])
+		encoded[55] = byte(IPVersionV4)
+		encoded[69] = wire
+		options, err := decodeTCPConnectOptions(encoded)
+		if err != nil || options.Purpose != want {
+			t.Fatalf("decode TCP purpose %d: options=%#v error=%v", wire, options, err)
+		}
+	}
+
+	for wire, want := range map[byte]UDPBindPurpose{
+		7: UDPBindPortForward,
+		8: UDPBindPortLease,
+	} {
+		encoded := make([]byte, 48)
+		encoded[0] = 2
+		encoded[28] = byte(IPVersionV4)
+		encoded[42] = wire
+		options, err := decodeUDPBindOptions(encoded)
+		if err != nil || options.Purpose != want {
+			t.Fatalf("decode UDP purpose %d: options=%#v error=%v", wire, options, err)
+		}
+	}
+}
+
 func TestNetSocketFactorySelectsDualStackForSocks5(t *testing.T) {
 	options := UDPBindOptions{
 		Context:   SocketContext{IPVersion: IPVersionV6},

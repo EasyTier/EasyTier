@@ -40,6 +40,9 @@ pub(super) fn encode_tcp_connect_options(options: &TcpConnectOptions) -> io::Res
         TcpSocketPurpose::ManualConnect => 3,
         TcpSocketPurpose::ProxyNat => 4,
         TcpSocketPurpose::StunProbe => 5,
+        TcpSocketPurpose::Socks5 => 6,
+        TcpSocketPurpose::PortForward => 7,
+        TcpSocketPurpose::DataPlane => 8,
     });
     encode_bind_device(&mut encoded, &options.bind.bind_device)?;
     Ok(encoded)
@@ -63,6 +66,8 @@ pub(super) fn encode_udp_bind_options(options: &UdpBindOptions) -> io::Result<Ve
         UdpSocketPurpose::ProxyNat => 4,
         UdpSocketPurpose::StunProbe => 5,
         UdpSocketPurpose::Socks5 => 6,
+        UdpSocketPurpose::PortForward => 7,
+        UdpSocketPurpose::PortLease => 8,
     });
     encode_bind_device(&mut encoded, &options.bind_device)?;
     Ok(encoded)
@@ -88,6 +93,9 @@ pub(super) fn encode_tcp_listen_options(options: &TcpListenOptions) -> io::Resul
         TcpListenPurpose::HolePunch => 1,
         TcpListenPurpose::ManualConnect => 2,
         TcpListenPurpose::ProxyNat => 3,
+        TcpListenPurpose::Socks5 => 4,
+        TcpListenPurpose::PortForward => 5,
+        TcpListenPurpose::PortLease => 6,
     });
     encode_bind_device(&mut encoded, &options.bind.bind_device)?;
     Ok(encoded)
@@ -309,6 +317,45 @@ mod tests {
 
         let udp = encode_udp_bind_options(&UdpBindOptions::stun_probe()).unwrap();
         assert_eq!(udp[42], 5);
+    }
+
+    #[test]
+    fn encodes_gateway_purposes_with_stable_values() {
+        let remote = "192.0.2.2:443".parse().unwrap();
+        assert_eq!(
+            encode_tcp_connect_options(&TcpConnectOptions::socks5(remote)).unwrap()[69],
+            6
+        );
+        assert_eq!(
+            encode_tcp_connect_options(&TcpConnectOptions::port_forward(remote)).unwrap()[69],
+            7
+        );
+        assert_eq!(
+            encode_tcp_connect_options(&TcpConnectOptions::data_plane(remote)).unwrap()[69],
+            8
+        );
+
+        let local = "0.0.0.0:0".parse().unwrap();
+        assert_eq!(
+            encode_tcp_listen_options(&TcpListenOptions::socks5(local)).unwrap()[42],
+            4
+        );
+        assert_eq!(
+            encode_tcp_listen_options(&TcpListenOptions::port_forward(local)).unwrap()[42],
+            5
+        );
+        assert_eq!(
+            encode_tcp_listen_options(&TcpListenOptions::port_lease(local)).unwrap()[42],
+            6
+        );
+        assert_eq!(
+            encode_udp_bind_options(&UdpBindOptions::port_forward(local)).unwrap()[42],
+            7
+        );
+        assert_eq!(
+            encode_udp_bind_options(&UdpBindOptions::port_lease(local)).unwrap()[42],
+            8
+        );
     }
 
     #[test]

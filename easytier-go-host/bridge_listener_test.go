@@ -32,6 +32,31 @@ func TestDecodeTCPProxyNatListenPurpose(t *testing.T) {
 	}
 }
 
+func TestDecodeGatewayTCPListenPurposes(t *testing.T) {
+	if TCPListenSocks5 != 4 || TCPListenPortForward != 5 || TCPListenPortLease != 6 {
+		t.Fatalf("unstable gateway listen purpose ABI")
+	}
+	local, err := encodeNetAddr(&net.TCPAddr{IP: net.IPv4zero, Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for wire, want := range map[byte]TCPListenPurpose{
+		4: TCPListenSocks5,
+		5: TCPListenPortForward,
+		6: TCPListenPortLease,
+	} {
+		encoded := make([]byte, 48)
+		encoded[0] = 2
+		copy(encoded[1:28], local[:])
+		encoded[28] = byte(IPVersionBoth)
+		encoded[42] = wire
+		options, err := decodeTCPListenOptions(encoded)
+		if err != nil || options.Purpose != want {
+			t.Fatalf("decode TCP listen purpose %d: options=%#v error=%v", wire, options, err)
+		}
+	}
+}
+
 func TestDecodeTCPListenBindPolicyForCustomFactory(t *testing.T) {
 	encoded := make([]byte, 51)
 	encoded[0] = 2

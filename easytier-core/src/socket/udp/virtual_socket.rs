@@ -183,6 +183,8 @@ pub enum UdpSocketPurpose {
     ProxyNat,
     StunProbe,
     Socks5,
+    PortForward,
+    PortLease,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -239,6 +241,14 @@ impl UdpBindOptions {
 
     pub fn socks5() -> Self {
         Self::for_purpose(UdpSocketPurpose::Socks5)
+    }
+
+    pub fn port_forward(local_addr: SocketAddr) -> Self {
+        Self::for_purpose(UdpSocketPurpose::PortForward).with_local_addr(Some(local_addr))
+    }
+
+    pub fn port_lease(local_addr: SocketAddr) -> Self {
+        Self::for_purpose(UdpSocketPurpose::PortLease).with_local_addr(Some(local_addr))
     }
 
     pub fn with_local_addr(mut self, local_addr: Option<SocketAddr>) -> Self {

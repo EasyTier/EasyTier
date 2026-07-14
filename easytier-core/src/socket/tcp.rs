@@ -33,6 +33,9 @@ pub enum TcpSocketPurpose {
     ManualConnect,
     ProxyNat,
     StunProbe,
+    Socks5,
+    PortForward,
+    DataPlane,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -159,6 +162,18 @@ impl TcpConnectOptions {
         }
     }
 
+    pub fn socks5(remote_addr: SocketAddr) -> Self {
+        Self::direct_connect(remote_addr).with_purpose(TcpSocketPurpose::Socks5)
+    }
+
+    pub fn port_forward(remote_addr: SocketAddr) -> Self {
+        Self::direct_connect(remote_addr).with_purpose(TcpSocketPurpose::PortForward)
+    }
+
+    pub fn data_plane(remote_addr: SocketAddr) -> Self {
+        Self::direct_connect(remote_addr).with_purpose(TcpSocketPurpose::DataPlane)
+    }
+
     pub fn with_bind(mut self, bind: TcpBindOptions) -> Self {
         self.bind = bind;
         self
@@ -187,6 +202,9 @@ pub enum TcpListenPurpose {
     HolePunch,
     ManualConnect,
     ProxyNat,
+    Socks5,
+    PortForward,
+    PortLease,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -221,6 +239,27 @@ impl TcpListenOptions {
         Self {
             bind: TcpBindOptions::default().with_local_addr(Some(local_addr)),
             purpose: TcpListenPurpose::ProxyNat,
+        }
+    }
+
+    pub fn socks5(local_addr: SocketAddr) -> Self {
+        Self {
+            bind: TcpBindOptions::default().with_local_addr(Some(local_addr)),
+            purpose: TcpListenPurpose::Socks5,
+        }
+    }
+
+    pub fn port_forward(local_addr: SocketAddr) -> Self {
+        Self {
+            bind: TcpBindOptions::default().with_local_addr(Some(local_addr)),
+            purpose: TcpListenPurpose::PortForward,
+        }
+    }
+
+    pub fn port_lease(local_addr: SocketAddr) -> Self {
+        Self {
+            bind: TcpBindOptions::default().with_local_addr(Some(local_addr)),
+            purpose: TcpListenPurpose::PortLease,
         }
     }
 
@@ -505,11 +544,36 @@ mod tests {
                 purpose: TcpSocketPurpose::StunProbe,
             }
         );
+        assert_eq!(
+            TcpConnectOptions::socks5(remote_addr).purpose,
+            TcpSocketPurpose::Socks5
+        );
+        assert_eq!(
+            TcpConnectOptions::port_forward(remote_addr).purpose,
+            TcpSocketPurpose::PortForward
+        );
+        assert_eq!(
+            TcpConnectOptions::data_plane(remote_addr).purpose,
+            TcpSocketPurpose::DataPlane
+        );
     }
 
     #[test]
     fn tcp_listen_options_preserve_socket_purpose() {
         let local_addr = SocketAddr::from(([0, 0, 0, 0], 11010));
+
+        assert_eq!(
+            TcpListenOptions::socks5(local_addr).purpose,
+            TcpListenPurpose::Socks5
+        );
+        assert_eq!(
+            TcpListenOptions::port_forward(local_addr).purpose,
+            TcpListenPurpose::PortForward
+        );
+        assert_eq!(
+            TcpListenOptions::port_lease(local_addr).purpose,
+            TcpListenPurpose::PortLease
+        );
 
         assert_eq!(
             TcpListenOptions::direct_connect(local_addr),
