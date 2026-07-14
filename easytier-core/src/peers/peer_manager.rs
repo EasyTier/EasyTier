@@ -1037,10 +1037,7 @@ impl PeerManagerCore {
         config.runtime.feature_flags.avoid_relay_data |= config.flags.disable_relay_data;
         let credential_manager = Arc::new(CredentialManager::new());
         let mut submitted_snapshot = runtime_config.snapshot().peer.as_ref().clone();
-        submitted_snapshot.runtime = config.runtime.clone();
-        submitted_snapshot.avoid_relay_data_preference =
-            config.runtime.feature_flags.avoid_relay_data;
-        submitted_snapshot.flags = config.flags.clone();
+        submitted_snapshot.replace_portable_config(config.runtime.clone(), config.flags.clone());
         runtime_config.update_peer(Arc::new(submitted_snapshot));
         let core_context_support = Arc::new(CorePeerContextSupport::new());
         let context: ArcPeerContext = Arc::new(SubmittedPeerContext::new_core_owned(

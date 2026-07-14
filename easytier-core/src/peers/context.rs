@@ -148,13 +148,13 @@ pub struct PeerRuntimeSnapshot {
     pub ospf_update_my_foreign_network_interval_sec: u64,
     pub max_direct_conns_per_peer_in_foreign_network: usize,
     pub hmac_secret_digest: bool,
-    pub traffic_limits: PeerTrafficLimits,
+    traffic_limits: PeerTrafficLimits,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct PeerTrafficLimits {
-    pub instance_recv_bps: Option<u64>,
-    pub foreign_relay_bps: Option<u64>,
+struct PeerTrafficLimits {
+    instance_recv_bps: Option<u64>,
+    foreign_relay_bps: Option<u64>,
 }
 
 impl PeerTrafficLimits {
@@ -191,6 +191,28 @@ impl PeerRuntimeSnapshot {
             hmac_secret_digest: false,
             traffic_limits,
         }
+    }
+
+    pub fn new_with_legacy_flags(runtime: PeerRuntimeConfig, flags: FlagsInConfig) -> Self {
+        let mut snapshot = Self::new(runtime, flags.clone());
+        snapshot.traffic_limits = PeerTrafficLimits {
+            instance_recv_bps: (flags.instance_recv_bps_limit != u64::MAX)
+                .then_some(flags.instance_recv_bps_limit),
+            foreign_relay_bps: (flags.foreign_relay_bps_limit != u64::MAX)
+                .then_some(flags.foreign_relay_bps_limit),
+        };
+        snapshot
+    }
+
+    pub(crate) fn replace_portable_config(
+        &mut self,
+        runtime: PeerRuntimeConfig,
+        flags: FlagsInConfig,
+    ) {
+        self.avoid_relay_data_preference = runtime.feature_flags.avoid_relay_data;
+        self.traffic_limits = PeerTrafficLimits::from_portable(&runtime, &flags);
+        self.runtime = runtime;
+        self.flags = flags;
     }
 
     pub fn set_acl_groups(&mut self, acl: Option<&Acl>) {
@@ -1220,6 +1242,21 @@ mod tests {
             },
             flags,
         )
+    }
+
+    #[test]
+    fn replacing_portable_config_recomputes_traffic_limits() {
+        let mut before_flags = FlagsInConfig::default();
+        before_flags.instance_recv_bps_limit = 1024;
+        let runtime = PeerRuntimeSnapshot::default().runtime;
+        let mut snapshot = PeerRuntimeSnapshot::new(runtime, before_flags);
+        assert_eq!(snapshot.traffic_limits.instance_recv_bps, Some(1024));
+
+        let mut runtime = PeerRuntimeSnapshot::default().runtime;
+        runtime.core.traffic.instance_recv_bps_limit = Some(2048);
+        snapshot.replace_portable_config(runtime, FlagsInConfig::default());
+
+        assert_eq!(snapshot.traffic_limits.instance_recv_bps, Some(2048));
     }
 
     fn submitted_config(snapshot: PeerRuntimeSnapshot) -> CoreRuntimeConfigStore {

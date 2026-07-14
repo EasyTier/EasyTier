@@ -10,7 +10,7 @@ use easytier_core::peers::context::{
     ArcByteLimiter, HostRoutingPolicy, NetworkIdentity as CoreNetworkIdentity,
     PeerCredentialEventSink, PeerEvent, PeerEventSink, PeerLimiterFactory, PeerPublicIpv6State,
     PeerRelayStateSink, PeerRuntimeConfig, PeerRuntimeSnapshot, PeerStunInfoSource,
-    PeerTrafficLimits, SubmittedPeerContext, SubmittedPeerContextCapabilities,
+    SubmittedPeerContext, SubmittedPeerContextCapabilities,
 };
 use easytier_core::runtime_config::{CoreRuntimeConfig, CoreRuntimeConfigStore};
 
@@ -27,34 +27,22 @@ use crate::{
 pub(crate) fn runtime_peer_snapshot(global_ctx: &ArcGlobalCtx) -> PeerRuntimeSnapshot {
     let acl = global_ctx.config.get_acl();
     let flags = global_ctx.get_flags();
-    let mut snapshot = PeerRuntimeSnapshot {
-        runtime: runtime_peer_config(global_ctx),
-        easytier_version: EASYTIER_VERSION.to_owned(),
-        avoid_relay_data_preference: global_ctx.get_avoid_relay_data_preference(),
-        flags: flags.clone(),
-        vpn_portal_cidr: global_ctx.get_vpn_portal_cidr(),
-        pinned_peers: global_ctx
-            .config
-            .get_peers()
-            .into_iter()
-            .map(|peer| (peer.uri, peer.peer_public_key))
-            .collect(),
-        peer_group_memberships: Vec::new(),
-        acl_group_declarations: Vec::new(),
-        ospf_update_my_foreign_network_interval_sec: use_global_var!(
-            OSPF_UPDATE_MY_GLOBAL_FOREIGN_NETWORK_INTERVAL_SEC
-        ),
-        max_direct_conns_per_peer_in_foreign_network: use_global_var!(
-            MAX_DIRECT_CONNS_PER_PEER_IN_FOREIGN_NETWORK
-        ) as usize,
-        hmac_secret_digest: use_global_var!(HMAC_SECRET_DIGEST),
-        traffic_limits: PeerTrafficLimits {
-            instance_recv_bps: (flags.instance_recv_bps_limit != u64::MAX)
-                .then_some(flags.instance_recv_bps_limit),
-            foreign_relay_bps: (flags.foreign_relay_bps_limit != u64::MAX)
-                .then_some(flags.foreign_relay_bps_limit),
-        },
-    };
+    let mut snapshot =
+        PeerRuntimeSnapshot::new_with_legacy_flags(runtime_peer_config(global_ctx), flags);
+    snapshot.easytier_version = EASYTIER_VERSION.to_owned();
+    snapshot.avoid_relay_data_preference = global_ctx.get_avoid_relay_data_preference();
+    snapshot.vpn_portal_cidr = global_ctx.get_vpn_portal_cidr();
+    snapshot.pinned_peers = global_ctx
+        .config
+        .get_peers()
+        .into_iter()
+        .map(|peer| (peer.uri, peer.peer_public_key))
+        .collect();
+    snapshot.ospf_update_my_foreign_network_interval_sec =
+        use_global_var!(OSPF_UPDATE_MY_GLOBAL_FOREIGN_NETWORK_INTERVAL_SEC);
+    snapshot.max_direct_conns_per_peer_in_foreign_network =
+        use_global_var!(MAX_DIRECT_CONNS_PER_PEER_IN_FOREIGN_NETWORK) as usize;
+    snapshot.hmac_secret_digest = use_global_var!(HMAC_SECRET_DIGEST);
     snapshot.set_acl_groups(acl.as_ref());
     snapshot
 }
