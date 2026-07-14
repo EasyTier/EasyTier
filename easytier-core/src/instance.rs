@@ -68,7 +68,9 @@ use crate::{
     socket::{
         dns::{DnsRecordResolver, DnsResolver},
         tcp::VirtualTcpSocketFactory,
+        udp::VirtualUdpSocketFactory,
     },
+    stun::{StunInfoProvider, StunSocketMapper},
     tunnel::ring::RingTunnelRegistry,
 };
 
@@ -329,6 +331,7 @@ where
     H: DirectConnectorHost + TcpHolePunchHost,
 {
     pub host: Arc<H>,
+    pub stun: Arc<dyn StunSocketMapper<<H as VirtualUdpSocketFactory>::Socket>>,
     pub dns: Arc<dyn DnsResolver>,
     /// Optional listener-specific resolver. When absent, listeners share `dns` with connectors.
     pub listener_dns: Option<Arc<dyn DnsResolver>>,
@@ -621,6 +624,7 @@ where
         )?;
         let CoreInstanceAdapters {
             host,
+            stun,
             dns,
             listener_dns,
             dns_records,
@@ -725,10 +729,12 @@ where
         };
         let tcp_hole_punch_protocol = protocol.clone();
         let tcp_hole_punch_socket_context = direct_options.tcp_bind.context.clone();
+        let tcp_stun: Arc<dyn StunInfoProvider> = stun.clone();
         let direct = match running_listeners {
             Some(running_listeners) => DirectConnectorManager::new_with_running_listeners(
                 peer_manager.clone(),
                 host.clone(),
+                stun.clone(),
                 running_listeners,
                 dns,
                 protocol,
@@ -737,6 +743,7 @@ where
             None => DirectConnectorManager::new(
                 peer_manager.clone(),
                 host.clone(),
+                stun,
                 dns,
                 protocol,
                 direct_options,
@@ -745,6 +752,7 @@ where
         let tcp_hole_punch = TcpHolePunchConnector::new(
             peer_manager.clone(),
             host,
+            tcp_stun,
             tcp_hole_punch_socket_context,
             tcp_hole_punch_protocol,
             Arc::new(CoreServerProtocolUpgrader::<HostAcceptedTcpSocket<H>>::new(

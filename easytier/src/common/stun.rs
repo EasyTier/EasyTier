@@ -6,11 +6,10 @@ use async_trait::async_trait;
 use easytier_core::{
     proto::common::{NatType, StunInfo},
     socket::SocketContext,
-    stun::{StunInfoCollector as CoreStunInfoCollector, StunInfoProvider as CoreStunInfoProvider},
+    stun::{StunInfoCollector as CoreStunInfoCollector, StunInfoProvider, StunSocketMapper},
 };
 
 use crate::{
-    common::error::Error,
     host_runtime::{NativeHostRuntime, native_host_runtime},
     socket::udp::RuntimeUdpSocket,
 };
@@ -41,61 +40,12 @@ pub fn default_udp_v6_stun_servers() -> Vec<String> {
     }
 }
 
-#[async_trait]
-#[auto_impl::auto_impl(&, Arc, Box)]
-pub trait StunInfoCollectorTrait: Send + Sync {
-    fn get_stun_info(&self) -> StunInfo;
-
-    async fn get_udp_port_mapping(&self, local_port: u16) -> Result<SocketAddr, Error>;
-
-    async fn get_udp_port_mapping_with_socket(
-        &self,
-        socket: Arc<RuntimeUdpSocket>,
-    ) -> Result<SocketAddr, Error>;
-
-    async fn get_tcp_port_mapping(&self, local_port: u16) -> Result<SocketAddr, Error>;
-
-    fn update_stun_info(&self) {}
-}
-
-#[async_trait]
-impl StunInfoCollectorTrait for StunInfoCollector {
-    fn get_stun_info(&self) -> StunInfo {
-        CoreStunInfoProvider::get_stun_info(self)
-    }
-
-    async fn get_udp_port_mapping(&self, local_port: u16) -> Result<SocketAddr, Error> {
-        CoreStunInfoProvider::get_udp_port_mapping(self, local_port)
-            .await
-            .map_err(Error::from)
-    }
-
-    async fn get_udp_port_mapping_with_socket(
-        &self,
-        socket: Arc<RuntimeUdpSocket>,
-    ) -> Result<SocketAddr, Error> {
-        CoreStunInfoProvider::get_udp_port_mapping_with_socket(self, socket)
-            .await
-            .map_err(Error::from)
-    }
-
-    async fn get_tcp_port_mapping(&self, local_port: u16) -> Result<SocketAddr, Error> {
-        CoreStunInfoProvider::get_tcp_port_mapping(self, local_port)
-            .await
-            .map_err(Error::from)
-    }
-
-    fn update_stun_info(&self) {
-        CoreStunInfoProvider::update_stun_info(self)
-    }
-}
-
 pub struct MockStunInfoCollector {
     pub udp_nat_type: NatType,
 }
 
 #[async_trait]
-impl StunInfoCollectorTrait for MockStunInfoCollector {
+impl StunInfoProvider for MockStunInfoCollector {
     fn get_stun_info(&self) -> StunInfo {
         StunInfo {
             udp_nat_type: self.udp_nat_type as i32,
@@ -107,26 +57,31 @@ impl StunInfoCollectorTrait for MockStunInfoCollector {
         }
     }
 
-    async fn get_udp_port_mapping(&self, mut port: u16) -> Result<SocketAddr, Error> {
+    async fn get_udp_port_mapping(&self, mut port: u16) -> anyhow::Result<SocketAddr> {
         if port == 0 {
             port = 40144;
         }
         Ok(SocketAddr::from(([127, 0, 0, 1], port)))
     }
 
+    async fn get_tcp_port_mapping(&self, mut port: u16) -> anyhow::Result<SocketAddr> {
+        if port == 0 {
+            port = 40144;
+        }
+        Ok(SocketAddr::from(([127, 0, 0, 1], port)))
+    }
+
+    fn update_stun_info(&self) {}
+}
+
+#[async_trait]
+impl StunSocketMapper<RuntimeUdpSocket> for MockStunInfoCollector {
     async fn get_udp_port_mapping_with_socket(
         &self,
         socket: Arc<RuntimeUdpSocket>,
-    ) -> Result<SocketAddr, Error> {
+    ) -> anyhow::Result<SocketAddr> {
         use easytier_core::socket::udp::VirtualUdpSocket as _;
         self.get_udp_port_mapping(socket.local_addr()?.port()).await
-    }
-
-    async fn get_tcp_port_mapping(&self, mut port: u16) -> Result<SocketAddr, Error> {
-        if port == 0 {
-            port = 40144;
-        }
-        Ok(SocketAddr::from(([127, 0, 0, 1], port)))
     }
 }
 
@@ -181,7 +136,7 @@ mod tests {
         let collector = runtime_stun_info_collector(context);
 
         assert_eq!(
-            StunInfoCollectorTrait::get_stun_info(&collector),
+            StunInfoProvider::get_stun_info(&collector),
             StunInfo::default()
         );
     }

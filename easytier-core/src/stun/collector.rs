@@ -49,19 +49,23 @@ const DEFAULT_UDP_V6_STUN_SERVERS: &[&str] = &["txt:stun-v6.easytier.cn"];
 
 #[async_trait]
 #[auto_impl::auto_impl(&, Arc, Box)]
-pub trait StunInfoProvider<S>: Send + Sync
-where
-    S: VirtualUdpSocket,
-{
+pub trait StunInfoProvider: Send + Sync {
     fn get_stun_info(&self) -> StunInfo;
 
     async fn get_udp_port_mapping(&self, local_port: u16) -> anyhow::Result<SocketAddr>;
 
-    async fn get_udp_port_mapping_with_socket(&self, socket: Arc<S>) -> anyhow::Result<SocketAddr>;
-
     async fn get_tcp_port_mapping(&self, local_port: u16) -> anyhow::Result<SocketAddr>;
 
     fn update_stun_info(&self);
+}
+
+#[async_trait]
+#[auto_impl::auto_impl(&, Arc, Box)]
+pub trait StunSocketMapper<S>: StunInfoProvider + Send + Sync
+where
+    S: VirtualUdpSocket,
+{
+    async fn get_udp_port_mapping_with_socket(&self, socket: Arc<S>) -> anyhow::Result<SocketAddr>;
 }
 
 pub struct StunInfoCollector<R, D>
@@ -328,7 +332,7 @@ where
 }
 
 #[async_trait]
-impl<R, D> StunInfoProvider<<R as VirtualUdpSocketFactory>::Socket> for StunInfoCollector<R, D>
+impl<R, D> StunInfoProvider for StunInfoCollector<R, D>
 where
     R: StunSocketRuntime,
     D: StunDnsRuntime,
@@ -385,48 +389,7 @@ where
                 SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), local_port),
             ))
             .await?;
-        self.get_udp_port_mapping_with_socket(socket).await
-    }
-
-    async fn get_udp_port_mapping_with_socket(
-        &self,
-        socket: Arc<<R as VirtualUdpSocketFactory>::Socket>,
-    ) -> anyhow::Result<SocketAddr> {
-        self.start_stun_routine();
-        let mut servers = self
-            .udp_nat_test_result
-            .read()
-            .unwrap()
-            .clone()
-            .map(|result| result.collect_available_stun_server())
-            .unwrap_or_default();
-        if servers.is_empty() {
-            let mut resolver = HostResolverIter::new(
-                self.dns.clone(),
-                self.socket_context.clone().with_ip_version(IpVersion::V4),
-                self.stun_servers.read().unwrap().clone(),
-                2,
-                false,
-            );
-            while let Some(addr) = resolver.next().await {
-                servers.push(addr);
-                if servers.len() >= 2 {
-                    break;
-                }
-            }
-        }
-
-        for server in servers {
-            match udp_bind_request(socket.clone(), server).await {
-                Ok(response) => {
-                    if let Some(mapped_addr) = response.mapped_socket_addr {
-                        return Ok(mapped_addr);
-                    }
-                }
-                Err(error) => tracing::warn!(?server, ?error, "stun bind request failed"),
-            }
-        }
-        anyhow::bail!("no UDP STUN mapping found")
+        StunSocketMapper::get_udp_port_mapping_with_socket(self, socket).await
     }
 
     async fn get_tcp_port_mapping(&self, local_port: u16) -> anyhow::Result<SocketAddr> {
@@ -476,6 +439,54 @@ where
 
     fn update_stun_info(&self) {
         self.redetect_notify.notify_waiters();
+    }
+}
+
+#[async_trait]
+impl<R, D> StunSocketMapper<<R as VirtualUdpSocketFactory>::Socket> for StunInfoCollector<R, D>
+where
+    R: StunSocketRuntime,
+    D: StunDnsRuntime,
+{
+    async fn get_udp_port_mapping_with_socket(
+        &self,
+        socket: Arc<<R as VirtualUdpSocketFactory>::Socket>,
+    ) -> anyhow::Result<SocketAddr> {
+        self.start_stun_routine();
+        let mut servers = self
+            .udp_nat_test_result
+            .read()
+            .unwrap()
+            .clone()
+            .map(|result| result.collect_available_stun_server())
+            .unwrap_or_default();
+        if servers.is_empty() {
+            let mut resolver = HostResolverIter::new(
+                self.dns.clone(),
+                self.socket_context.clone().with_ip_version(IpVersion::V4),
+                self.stun_servers.read().unwrap().clone(),
+                2,
+                false,
+            );
+            while let Some(addr) = resolver.next().await {
+                servers.push(addr);
+                if servers.len() >= 2 {
+                    break;
+                }
+            }
+        }
+
+        for server in servers {
+            match udp_bind_request(socket.clone(), server).await {
+                Ok(response) => {
+                    if let Some(mapped_addr) = response.mapped_socket_addr {
+                        return Ok(mapped_addr);
+                    }
+                }
+                Err(error) => tracing::warn!(?server, ?error, "stun bind request failed"),
+            }
+        }
+        anyhow::bail!("no UDP STUN mapping found")
     }
 }
 

@@ -15,9 +15,8 @@ use crate::{
         direct::DirectConnectorHost,
         manual::{ManualConnectorHost, ManualInterfaceAddrs},
     },
-    hole_punch::tcp::{TcpHolePunchEnvironment, TcpHolePunchHost},
     hole_punch::udp::new_hole_punch_packet,
-    proto::{common::NatType, peer_rpc::GetIpListResponse},
+    proto::peer_rpc::GetIpListResponse,
     socket::{
         host::{
             HostSocketRuntime, HostTcpStream,
@@ -56,11 +55,7 @@ pub trait DirectConnectorEnvironment: ManualConnectorEnvironment {
 
     fn is_protected_tcp_port(&self, port: u16) -> bool;
 
-    fn stun_public_ips(&self) -> Vec<IpAddr>;
-
     fn is_easytier_managed_ipv6(&self, ip: &Ipv6Addr) -> bool;
-
-    async fn udp_port_mapping(&self, socket: Arc<HostUdpSocket>) -> anyhow::Result<SocketAddr>;
 
     async fn preferred_ipv6_source(&self, ip: Ipv6Addr) -> Option<PreferredIpv6Source>;
 }
@@ -225,38 +220,12 @@ where
         self.environment.is_protected_tcp_port(port)
     }
 
-    fn stun_public_ips(&self) -> Vec<IpAddr> {
-        self.environment.stun_public_ips()
-    }
-
     fn is_easytier_managed_ipv6(&self, ip: &Ipv6Addr) -> bool {
         self.environment.is_easytier_managed_ipv6(ip)
     }
 
-    async fn udp_port_mapping(
-        &self,
-        socket: Arc<<Self as VirtualUdpSocketFactory>::Socket>,
-    ) -> anyhow::Result<SocketAddr> {
-        self.environment.udp_port_mapping(socket).await
-    }
-
     async fn preferred_ipv6_source(&self, ip: Ipv6Addr) -> Option<PreferredIpv6Source> {
         self.environment.preferred_ipv6_source(ip).await
-    }
-}
-
-#[async_trait]
-impl<B, E> TcpHolePunchHost for HostConnectorAdapter<B, E>
-where
-    B: HostConnectorSocketBackend,
-    E: TcpHolePunchEnvironment + Send + Sync + 'static,
-{
-    fn tcp_nat_type(&self) -> NatType {
-        self.environment.tcp_nat_type()
-    }
-
-    async fn tcp_port_mapping(&self, local_port: u16) -> anyhow::Result<SocketAddr> {
-        self.environment.tcp_port_mapping(local_port).await
     }
 }
 
@@ -271,14 +240,17 @@ mod tests {
         task::Poll,
     };
 
-    use crate::socket::{
-        host::{
-            HostOperationId, HostSocketHandle, HostSocketIo, HostTcpIo,
-            factory::{HostSocketFactoryIo, HostTcpConnectResult, HostUdpBindResult},
-            listener::{HostTcpBindResult, HostTcpListenerIo},
-            udp::{HostUdpDatagram, HostUdpIo},
+    use crate::{
+        hole_punch::tcp::TcpHolePunchHost,
+        socket::{
+            host::{
+                HostOperationId, HostSocketHandle, HostSocketIo, HostTcpIo,
+                factory::{HostSocketFactoryIo, HostTcpConnectResult, HostUdpBindResult},
+                listener::{HostTcpBindResult, HostTcpListenerIo},
+                udp::{HostUdpDatagram, HostUdpIo},
+            },
+            udp::UdpSocketSendMeta,
         },
-        udp::UdpSocketSendMeta,
     };
 
     use super::*;
@@ -481,34 +453,12 @@ mod tests {
             port == 11010
         }
 
-        fn stun_public_ips(&self) -> Vec<IpAddr> {
-            vec!["198.51.100.1".parse().unwrap()]
-        }
-
         fn is_easytier_managed_ipv6(&self, ip: &Ipv6Addr) -> bool {
             *ip == "2001:db8::1".parse::<Ipv6Addr>().unwrap()
         }
 
-        async fn udp_port_mapping(
-            &self,
-            _socket: Arc<HostUdpSocket>,
-        ) -> anyhow::Result<SocketAddr> {
-            Ok("198.51.100.1:41000".parse().unwrap())
-        }
-
         async fn preferred_ipv6_source(&self, ip: Ipv6Addr) -> Option<PreferredIpv6Source> {
             Some(PreferredIpv6Source { ip, ifindex: 7 })
-        }
-    }
-
-    #[async_trait]
-    impl TcpHolePunchEnvironment for TestEnvironment {
-        fn tcp_nat_type(&self) -> NatType {
-            NatType::Unknown
-        }
-
-        async fn tcp_port_mapping(&self, local_port: u16) -> anyhow::Result<SocketAddr> {
-            Ok(SocketAddr::new("198.51.100.1".parse().unwrap(), local_port))
         }
     }
 
@@ -556,13 +506,6 @@ mod tests {
             vec!["tcp://192.0.2.1:11010".parse::<Url>().unwrap()]
         );
         assert!(DirectConnectorHost::is_protected_tcp_port(&host, 11010));
-        assert_eq!(TcpHolePunchHost::tcp_nat_type(&host), NatType::Unknown);
-        assert_eq!(
-            TcpHolePunchHost::tcp_port_mapping(&host, 42000)
-                .await
-                .unwrap(),
-            "198.51.100.1:42000".parse().unwrap()
-        );
     }
 
     #[tokio::test]

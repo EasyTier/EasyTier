@@ -12,16 +12,14 @@ use easytier_core::peers::encrypt::{derive_key_128, derive_key_256};
 use easytier_core::peers::foreign_network_manager::check_network_in_relay_whitelist;
 use easytier_core::peers::public_ipv6::PublicIpv6Runtime;
 use easytier_core::socket::{NetNamespace, SocketContext};
+use easytier_core::stun::StunSocketMapper;
 
 use super::{
     PeerId,
     config::{ConfigLoader, Flags},
     netns::NetNS,
     network::IPCollector,
-    stun::{
-        StunInfoCollectorTrait, default_udp_stun_servers, default_udp_v6_stun_servers,
-        runtime_stun_info_collector,
-    },
+    stun::{default_udp_stun_servers, default_udp_v6_stun_servers, runtime_stun_info_collector},
 };
 use crate::{
     common::{
@@ -38,6 +36,7 @@ use crate::{
         peer_rpc::PeerGroupInfo,
     },
     rpc_service::protected_port,
+    socket::udp::RuntimeUdpSocket,
     tunnel::matches_protocol,
 };
 use crossbeam::atomic::AtomicCell;
@@ -116,7 +115,7 @@ pub struct GlobalCtx {
 
     hostname: Mutex<String>,
 
-    stun_info_collection: Mutex<Arc<dyn StunInfoCollectorTrait>>,
+    stun_info_collection: Mutex<Arc<dyn StunSocketMapper<RuntimeUdpSocket>>>,
 
     running_listeners: Mutex<Vec<url::Url>>,
     advertised_ipv6_public_addr_prefix: Mutex<Option<cidr::Ipv6Cidr>>,
@@ -505,12 +504,15 @@ impl GlobalCtx {
         *self.hostname.lock().unwrap() = hostname;
     }
 
-    pub fn get_stun_info_collector(&self) -> Arc<dyn StunInfoCollectorTrait> {
+    pub fn get_stun_info_collector(&self) -> Arc<dyn StunSocketMapper<RuntimeUdpSocket>> {
         self.stun_info_collection.lock().unwrap().clone()
     }
 
-    pub fn replace_stun_info_collector(&self, collector: Box<dyn StunInfoCollectorTrait>) {
-        let arc_collector: Arc<dyn StunInfoCollectorTrait> = Arc::new(collector);
+    pub fn replace_stun_info_collector(
+        &self,
+        collector: Box<dyn StunSocketMapper<RuntimeUdpSocket>>,
+    ) {
+        let arc_collector: Arc<dyn StunSocketMapper<RuntimeUdpSocket>> = Arc::from(collector);
         *self.stun_info_collection.lock().unwrap() = arc_collector.clone();
 
         // rebuild the ip collector

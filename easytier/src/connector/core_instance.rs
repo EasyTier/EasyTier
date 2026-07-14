@@ -186,6 +186,7 @@ pub(crate) fn runtime_core_instance_adapters_with_ring_registry(
     let dns_records: Arc<dyn DnsRecordResolver> = runtime_dns;
     CoreInstanceAdapters {
         host,
+        stun: global_ctx.get_stun_info_collector(),
         dns,
         listener_dns: None,
         dns_records,

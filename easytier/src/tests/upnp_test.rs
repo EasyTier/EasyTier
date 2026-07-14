@@ -10,6 +10,7 @@ use std::{
 use anyhow::{Context, anyhow, bail};
 use easytier_core::{
     hole_punch::udp::{UdpHolePunchRuntime, VirtualUdpSocket},
+    stun::{StunInfoProvider, StunSocketMapper},
     tunnel::ring::RingTunnelRegistry,
 };
 use igd_next::{
@@ -25,7 +26,7 @@ use crate::{
         error::Error,
         global_ctx::{GlobalCtx, GlobalCtxEvent},
         netns::NetNS,
-        stun::{MockStunInfoCollector, StunInfoCollectorTrait},
+        stun::MockStunInfoCollector,
     },
     connector::udp_hole_punch::{UdpHolePunchConnector, common::RuntimeUdpHolePunchRuntime},
     instance::instance::Instance,
@@ -297,7 +298,7 @@ struct GatewayBackedStunCollector {
 }
 
 #[async_trait::async_trait]
-impl StunInfoCollectorTrait for GatewayBackedStunCollector {
+impl StunInfoProvider for GatewayBackedStunCollector {
     fn get_stun_info(&self) -> StunInfo {
         StunInfo {
             udp_nat_type: NatType::PortRestricted as i32,
@@ -309,26 +310,31 @@ impl StunInfoCollectorTrait for GatewayBackedStunCollector {
         }
     }
 
-    async fn get_udp_port_mapping(&self, local_port: u16) -> Result<SocketAddr, Error> {
-        query_udp_mapping(self.netns, self.external_ip, self.client_ip, local_port).await
+    async fn get_udp_port_mapping(&self, local_port: u16) -> anyhow::Result<SocketAddr> {
+        Ok(query_udp_mapping(self.netns, self.external_ip, self.client_ip, local_port).await?)
     }
 
+    async fn get_tcp_port_mapping(&self, local_port: u16) -> anyhow::Result<SocketAddr> {
+        Ok(SocketAddr::new(IpAddr::V4(self.external_ip), local_port))
+    }
+
+    fn update_stun_info(&self) {}
+}
+
+#[async_trait::async_trait]
+impl StunSocketMapper<crate::socket::udp::RuntimeUdpSocket> for GatewayBackedStunCollector {
     async fn get_udp_port_mapping_with_socket(
         &self,
         udp: Arc<crate::socket::udp::RuntimeUdpSocket>,
-    ) -> Result<SocketAddr, Error> {
+    ) -> anyhow::Result<SocketAddr> {
         use easytier_core::socket::udp::VirtualUdpSocket as _;
-        query_udp_mapping(
+        Ok(query_udp_mapping(
             self.netns,
             self.external_ip,
             self.client_ip,
             udp.local_addr()?.port(),
         )
-        .await
-    }
-
-    async fn get_tcp_port_mapping(&self, local_port: u16) -> Result<SocketAddr, Error> {
-        Ok(SocketAddr::new(IpAddr::V4(self.external_ip), local_port))
+        .await?)
     }
 }
 
@@ -1380,7 +1386,7 @@ async fn create_test_peer_manager(
     inst_name: &str,
     netns: Option<&str>,
     disable_upnp: bool,
-    stun_collector: Box<dyn StunInfoCollectorTrait>,
+    stun_collector: Box<dyn StunSocketMapper<crate::socket::udp::RuntimeUdpSocket>>,
 ) -> Arc<PeerManager> {
     let config = TomlConfigLoader::default();
     config.set_inst_name(inst_name.to_owned());
@@ -1420,7 +1426,7 @@ fn create_test_instance(
     netns: Option<&str>,
     ipv4: &str,
     ipv6: &str,
-    stun_collector: Box<dyn StunInfoCollectorTrait>,
+    stun_collector: Box<dyn StunSocketMapper<crate::socket::udp::RuntimeUdpSocket>>,
     configure_flags: impl FnOnce(&mut crate::common::config::Flags),
 ) -> Instance {
     create_test_instance_with_ring_registry(
@@ -1439,7 +1445,7 @@ fn create_test_instance_with_ring_registry(
     netns: Option<&str>,
     ipv4: &str,
     ipv6: &str,
-    stun_collector: Box<dyn StunInfoCollectorTrait>,
+    stun_collector: Box<dyn StunSocketMapper<crate::socket::udp::RuntimeUdpSocket>>,
     configure_flags: impl FnOnce(&mut crate::common::config::Flags),
     ring_registry: Arc<RingTunnelRegistry>,
 ) -> Instance {

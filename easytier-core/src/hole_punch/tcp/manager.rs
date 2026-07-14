@@ -30,6 +30,7 @@ use crate::{
         IpVersion, SocketContext,
         tcp::{TcpBindOptions, TcpListenOptions, VirtualTcpListener},
     },
+    stun::StunInfoProvider,
     task::{PeerTaskLauncher, PeerTaskManager},
 };
 
@@ -126,6 +127,7 @@ where
     H: TcpHolePunchHost,
 {
     host: Arc<H>,
+    stun: Arc<dyn StunInfoProvider>,
     socket_context: SocketContext,
     transport_sink: Arc<TcpHolePunchTransportSinkFor<H>>,
     tasks: Arc<Mutex<JoinSet<()>>>,
@@ -139,11 +141,13 @@ where
 {
     fn new(
         host: Arc<H>,
+        stun: Arc<dyn StunInfoProvider>,
         socket_context: SocketContext,
         transport_sink: Arc<TcpHolePunchTransportSinkFor<H>>,
     ) -> Arc<Self> {
         Arc::new(Self {
             host,
+            stun,
             socket_context,
             transport_sink,
             tasks: Arc::new(Mutex::new(JoinSet::new())),
@@ -196,7 +200,8 @@ where
         _controller: Self::Controller,
         input: TcpHolePunchRequest,
     ) -> rpc_types::error::Result<TcpHolePunchResponse> {
-        let local_nat_type = self.host.tcp_nat_type();
+        let local_nat_type =
+            NatType::try_from(self.stun.get_stun_info().tcp_nat_type).unwrap_or(NatType::Unknown);
         tracing::debug!(?local_nat_type, "tcp hole punch rpc received");
         if local_nat_type == NatType::Unknown {
             tracing::warn!(?local_nat_type, "tcp hole punch rpc rejected (unknown)");
@@ -223,8 +228,8 @@ where
         )
         .await?;
         let local_mapped_addr = self
-            .host
-            .tcp_port_mapping(local_port)
+            .stun
+            .get_tcp_port_mapping(local_port)
             .await
             .context("failed to get tcp port mapping")?;
 
@@ -266,6 +271,7 @@ where
     H: TcpHolePunchHost,
 {
     host: Arc<H>,
+    stun: Arc<dyn StunInfoProvider>,
     socket_context: SocketContext,
     peer_manager: Arc<PeerManagerCore>,
     transport_sink: Arc<TcpHolePunchTransportSinkFor<H>>,
@@ -299,7 +305,8 @@ where
 
     #[tracing::instrument(skip(self), fields(dst_peer_id), err)]
     async fn do_punch_as_initiator(&self, dst_peer_id: PeerId) -> anyhow::Result<()> {
-        let local_nat_type = self.host.tcp_nat_type();
+        let local_nat_type =
+            NatType::try_from(self.stun.get_stun_info().tcp_nat_type).unwrap_or(NatType::Unknown);
         tracing::debug!(?local_nat_type, "tcp hole punch initiator start");
         if is_symmetric_tcp_nat(local_nat_type) || local_nat_type == NatType::Unknown {
             tracing::debug!("tcp hole punch initiator skipped (symmetric)");
@@ -309,8 +316,8 @@ where
         let local_port =
             select_local_port(self.host.as_ref(), self.socket_context.clone(), false).await?;
         let local_mapped_addr = self
-            .host
-            .tcp_port_mapping(local_port)
+            .stun
+            .get_tcp_port_mapping(local_port)
             .await
             .context("failed to get tcp port mapping")?;
 
@@ -410,7 +417,8 @@ where
     }
 
     async fn collect_peers_need_task(&self) -> Vec<PeerId> {
-        let local_nat_type = self.host.tcp_nat_type();
+        let local_nat_type =
+            NatType::try_from(self.stun.get_stun_info().tcp_nat_type).unwrap_or(NatType::Unknown);
         if is_symmetric_tcp_nat(local_nat_type) || local_nat_type == NatType::Unknown {
             tracing::trace!(
                 ?local_nat_type,
@@ -546,6 +554,7 @@ where
     pub fn new(
         peer_manager: Arc<PeerManagerCore>,
         host: Arc<H>,
+        stun: Arc<dyn StunInfoProvider>,
         socket_context: SocketContext,
         client_protocol: Arc<dyn ClientProtocolUpgrader<ConnectedTcpSocket<H>>>,
         server_protocol: Arc<dyn ServerProtocolUpgrader<AcceptedTcpSocket<H>>>,
@@ -558,13 +567,14 @@ where
             ));
         let data = Arc::new(TcpHolePunchConnectorData {
             host: host.clone(),
+            stun: stun.clone(),
             socket_context: socket_context.clone(),
             peer_manager: peer_manager.clone(),
             transport_sink: transport_sink.clone(),
             blacklist: TcpHolePunchBlacklist::new(),
         });
         Self {
-            server: TcpHolePunchServer::new(host, socket_context, transport_sink),
+            server: TcpHolePunchServer::new(host, stun, socket_context, transport_sink),
             client: PeerTaskManager::new_with_external_signal(
                 TcpHolePunchPeerTaskLauncher(data.clone()),
                 peer_manager.clone(),

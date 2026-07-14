@@ -7,7 +7,7 @@ use futures::future::poll_fn;
 
 use crate::connectivity::host::environment::HostConnectorEnvironmentServices;
 
-use super::{HostOperationId, HostSocketHandle, HostSocketRuntime, udp::HostUdpSocket};
+use super::{HostOperationId, HostSocketRuntime};
 
 #[cfg(target_os = "wasi")]
 pub mod wasi;
@@ -30,22 +30,6 @@ pub trait HostConnectorEnvironmentIo: Send + Sync + 'static {
         &self,
         operation: HostOperationId,
     ) -> Poll<io::Result<SocketAddr>>;
-
-    fn submit_udp_port_mapping(
-        &self,
-        operation: HostOperationId,
-        socket: HostSocketHandle,
-    ) -> io::Result<()>;
-
-    fn take_udp_port_mapping(&self, operation: HostOperationId) -> Poll<io::Result<SocketAddr>>;
-
-    fn submit_tcp_port_mapping(
-        &self,
-        operation: HostOperationId,
-        local_port: u16,
-    ) -> io::Result<()>;
-
-    fn take_tcp_port_mapping(&self, operation: HostOperationId) -> Poll<io::Result<SocketAddr>>;
 
     fn cancel_operation(&self, operation: HostOperationId) -> io::Result<()>;
 }
@@ -152,54 +136,17 @@ where
             )
             .await?)
     }
-
-    async fn udp_port_mapping(&self, socket: Arc<HostUdpSocket>) -> anyhow::Result<SocketAddr> {
-        let handle = socket.host_handle();
-        let result = self
-            .run_operation(
-                |io, operation| io.submit_udp_port_mapping(operation, handle),
-                HostConnectorEnvironmentIo::take_udp_port_mapping,
-            )
-            .await;
-        drop(socket);
-        Ok(result?)
-    }
-
-    async fn tcp_port_mapping(&self, local_port: u16) -> anyhow::Result<SocketAddr> {
-        Ok(self
-            .run_operation(
-                |io, operation| io.submit_tcp_port_mapping(operation, local_port),
-                HostConnectorEnvironmentIo::take_tcp_port_mapping,
-            )
-            .await?)
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::HashMap,
-        sync::{
-            Mutex,
-            atomic::{AtomicBool, Ordering},
-        },
-    };
-
-    use crate::socket::{
-        host::{
-            HostSocketIo,
-            udp::{HostUdpDatagram, HostUdpIo},
-        },
-        udp::UdpSocketSendMeta,
-    };
+    use std::{collections::HashMap, sync::Mutex};
 
     use super::*;
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum Request {
         Local(SocketAddr),
-        Udp(HostSocketHandle),
-        Tcp(u16),
     }
 
     #[derive(Debug, Clone, Copy)]
@@ -258,59 +205,6 @@ mod tests {
         }
     }
 
-    #[derive(Default)]
-    struct CloseTrackingUdpIo {
-        closed: AtomicBool,
-    }
-
-    impl HostSocketIo for CloseTrackingUdpIo {
-        fn cancel_operation(&self, _operation: HostOperationId) -> io::Result<()> {
-            Ok(())
-        }
-
-        fn close(&self, _handle: HostSocketHandle) -> io::Result<()> {
-            self.closed.store(true, Ordering::Relaxed);
-            Ok(())
-        }
-    }
-
-    impl HostUdpIo for CloseTrackingUdpIo {
-        fn submit_recv(
-            &self,
-            _handle: HostSocketHandle,
-            _operation: HostOperationId,
-            _capacity: usize,
-        ) -> io::Result<()> {
-            Err(io::ErrorKind::Unsupported.into())
-        }
-
-        fn take_recv(&self, _operation: HostOperationId) -> Poll<io::Result<HostUdpDatagram>> {
-            Poll::Ready(Err(io::ErrorKind::Unsupported.into()))
-        }
-
-        fn try_send(
-            &self,
-            _handle: HostSocketHandle,
-            _source: &[u8],
-            _peer_addr: SocketAddr,
-            _meta: UdpSocketSendMeta,
-        ) -> io::Result<()> {
-            Err(io::ErrorKind::Unsupported.into())
-        }
-
-        fn submit_send_ready(
-            &self,
-            _handle: HostSocketHandle,
-            _operation: HostOperationId,
-        ) -> io::Result<()> {
-            Err(io::ErrorKind::Unsupported.into())
-        }
-
-        fn take_send_ready(&self, _operation: HostOperationId) -> Poll<io::Result<()>> {
-            Poll::Ready(Err(io::ErrorKind::Unsupported.into()))
-        }
-    }
-
     impl HostConnectorEnvironmentIo for TestIo {
         fn submit_local_addr_for_remote(
             &self,
@@ -321,36 +215,6 @@ mod tests {
         }
 
         fn take_local_addr_for_remote(
-            &self,
-            operation: HostOperationId,
-        ) -> Poll<io::Result<SocketAddr>> {
-            self.take(operation)
-        }
-
-        fn submit_udp_port_mapping(
-            &self,
-            operation: HostOperationId,
-            socket: HostSocketHandle,
-        ) -> io::Result<()> {
-            self.submit(operation, Request::Udp(socket))
-        }
-
-        fn take_udp_port_mapping(
-            &self,
-            operation: HostOperationId,
-        ) -> Poll<io::Result<SocketAddr>> {
-            self.take(operation)
-        }
-
-        fn submit_tcp_port_mapping(
-            &self,
-            operation: HostOperationId,
-            local_port: u16,
-        ) -> io::Result<()> {
-            self.submit(operation, Request::Tcp(local_port))
-        }
-
-        fn take_tcp_port_mapping(
             &self,
             operation: HostOperationId,
         ) -> Poll<io::Result<SocketAddr>> {
@@ -390,23 +254,25 @@ mod tests {
             "192.0.2.1:40100".parse().unwrap()
         );
 
+        let pending_remote = "203.0.113.2:11010".parse().unwrap();
         let pending = tokio::spawn({
             let services = services.clone();
-            async move { services.tcp_port_mapping(42000).await }
+            async move { services.local_addr_for_remote(pending_remote).await }
         });
         tokio::task::yield_now().await;
-        let cancelled = io.operation_for(Request::Tcp(42000));
+        let cancelled = io.operation_for(Request::Local(pending_remote));
         pending.abort();
         let _ = pending.await;
         assert_eq!(*io.cancelled.lock().unwrap(), vec![cancelled]);
         assert!(!io.requests.lock().unwrap().contains_key(&cancelled));
 
+        let failed_remote = "203.0.113.3:11010".parse().unwrap();
         let failed = tokio::spawn({
             let services = services.clone();
-            async move { services.tcp_port_mapping(43000).await }
+            async move { services.local_addr_for_remote(failed_remote).await }
         });
         tokio::task::yield_now().await;
-        let failed_operation = io.operation_for(Request::Tcp(43000));
+        let failed_operation = io.operation_for(Request::Local(failed_remote));
         io.complete(
             failed_operation,
             Completion::Err(io::ErrorKind::AddrNotAvailable),
@@ -424,12 +290,13 @@ mod tests {
         );
         assert!(!io.requests.lock().unwrap().contains_key(&failed_operation));
 
+        let unread_remote = "203.0.113.4:11010".parse().unwrap();
         let unread = tokio::spawn({
             let services = services.clone();
-            async move { services.tcp_port_mapping(44000).await }
+            async move { services.local_addr_for_remote(unread_remote).await }
         });
         tokio::task::yield_now().await;
-        let unread_operation = io.operation_for(Request::Tcp(44000));
+        let unread_operation = io.operation_for(Request::Local(unread_remote));
         io.complete(
             unread_operation,
             Completion::Ok("198.51.100.1:44000".parse().unwrap()),
@@ -439,27 +306,5 @@ mod tests {
         let _ = unread.await;
         assert!(io.cancelled.lock().unwrap().contains(&unread_operation));
         assert!(!io.requests.lock().unwrap().contains_key(&unread_operation));
-
-        let handle = HostSocketHandle(17);
-        let udp_io = Arc::new(CloseTrackingUdpIo::default());
-        let socket =
-            Arc::new(runtime.udp_socket(udp_io.clone(), handle, "0.0.0.0:41000".parse().unwrap()));
-        let mapping = tokio::spawn({
-            let services = services.clone();
-            async move { services.udp_port_mapping(socket).await }
-        });
-        tokio::task::yield_now().await;
-        let mapping_operation = io.operation_for(Request::Udp(handle));
-        assert!(!udp_io.closed.load(Ordering::Relaxed));
-        io.complete(
-            mapping_operation,
-            Completion::Ok("198.51.100.1:41000".parse().unwrap()),
-        );
-        runtime.notify_completions();
-        assert_eq!(
-            mapping.await.unwrap().unwrap(),
-            "198.51.100.1:41000".parse().unwrap()
-        );
-        assert!(udp_io.closed.load(Ordering::Relaxed));
     }
 }

@@ -12,13 +12,13 @@ use crate::{
         DirectConnectorEnvironment, HostConnectorAdapter, HostConnectorSocketBackend,
         environment::{HostConnectorEnvironment, HostConnectorEnvironmentSnapshot},
     },
-    hole_punch::tcp::TcpHolePunchEnvironment,
     socket::host::{
         HostSocketRuntime,
         dns::{HostDnsIo, HostDnsResolver},
         environment::{HostConnectorEnvironmentIo, HostConnectorEnvironmentServiceAdapter},
         packet::{HostPacketIo, HostPacketSink, HostPacketSinkHandle},
     },
+    stun::StunInfoCollector,
 };
 
 use super::{CoreInstance, CoreInstanceAdapters, PortableCoreInstanceConfig};
@@ -52,7 +52,7 @@ impl HostCoreInstanceCreateConfig {
 pub struct HostCoreInstance<B, E>
 where
     B: HostConnectorSocketBackend,
-    E: DirectConnectorEnvironment + TcpHolePunchEnvironment,
+    E: DirectConnectorEnvironment,
 {
     socket_runtime: HostSocketRuntime,
     instance: Arc<CoreInstance<HostConnectorAdapter<B, E>>>,
@@ -61,7 +61,7 @@ where
 impl<B, E> HostCoreInstance<B, E>
 where
     B: HostConnectorSocketBackend,
-    E: DirectConnectorEnvironment + TcpHolePunchEnvironment,
+    E: DirectConnectorEnvironment,
 {
     /// Composes adapters under a caller-provided completion runtime.
     ///
@@ -85,6 +85,11 @@ where
             environment,
         ));
         let dns = Arc::new(HostDnsResolver::new(socket_runtime.clone(), dns_io));
+        let stun = Arc::new(StunInfoCollector::new_with_default_servers(
+            host.clone(),
+            dns.clone(),
+            config.connectivity.direct.udp_bind.context.clone(),
+        ));
         let packet_sink = Arc::new(HostPacketSink::new(
             socket_runtime.clone(),
             packet_io,
@@ -92,6 +97,7 @@ where
         ));
         let adapters = CoreInstanceAdapters {
             host,
+            stun,
             dns: dns.clone(),
             listener_dns: None,
             dns_records: dns,

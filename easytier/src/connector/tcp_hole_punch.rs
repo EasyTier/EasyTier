@@ -16,6 +16,7 @@ pub(crate) fn runtime_tcp_hole_punch_connector(
     RuntimeTcpHolePunchConnector::new(
         peer_manager.core(),
         Arc::new(RuntimeConnectorHost::new(global_ctx.clone())),
+        global_ctx.get_stun_info_collector(),
         runtime_socket_context(&global_ctx),
         super::protocol::runtime_client_protocol_upgrader(global_ctx.clone()),
         super::protocol::runtime_server_protocol_upgrader(global_ctx),
@@ -24,10 +25,10 @@ pub(crate) fn runtime_tcp_hole_punch_connector(
 
 #[cfg(test)]
 mod tests {
+    use easytier_core::stun::{StunInfoProvider, StunSocketMapper};
     use std::{net::SocketAddr, sync::Arc, time::Duration};
 
     use crate::{
-        common::{error::Error, stun::StunInfoCollectorTrait},
         connector::tcp_hole_punch::{
             RuntimeTcpHolePunchConnector, runtime_tcp_hole_punch_connector,
         },
@@ -45,7 +46,7 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl StunInfoCollectorTrait for MockStunInfoCollector {
+    impl StunInfoProvider for MockStunInfoCollector {
         fn get_stun_info(&self) -> StunInfo {
             StunInfo {
                 udp_nat_type: self.udp_nat_type as i32,
@@ -57,26 +58,31 @@ mod tests {
             }
         }
 
-        async fn get_udp_port_mapping(&self, mut port: u16) -> Result<SocketAddr, Error> {
+        async fn get_udp_port_mapping(&self, mut port: u16) -> anyhow::Result<SocketAddr> {
             if port == 0 {
                 port = 40144;
             }
             Ok(format!("127.0.0.1:{}", port).parse().unwrap())
         }
 
+        async fn get_tcp_port_mapping(&self, mut port: u16) -> anyhow::Result<SocketAddr> {
+            if port == 0 {
+                port = 40144;
+            }
+            Ok(format!("127.0.0.1:{}", port).parse().unwrap())
+        }
+
+        fn update_stun_info(&self) {}
+    }
+
+    #[async_trait::async_trait]
+    impl StunSocketMapper<crate::socket::udp::RuntimeUdpSocket> for MockStunInfoCollector {
         async fn get_udp_port_mapping_with_socket(
             &self,
             udp: std::sync::Arc<crate::socket::udp::RuntimeUdpSocket>,
-        ) -> Result<SocketAddr, Error> {
+        ) -> anyhow::Result<SocketAddr> {
             use easytier_core::socket::udp::VirtualUdpSocket as _;
             self.get_udp_port_mapping(udp.local_addr()?.port()).await
-        }
-
-        async fn get_tcp_port_mapping(&self, mut port: u16) -> Result<SocketAddr, Error> {
-            if port == 0 {
-                port = 40144;
-            }
-            Ok(format!("127.0.0.1:{}", port).parse().unwrap())
         }
     }
 

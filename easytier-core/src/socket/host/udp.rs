@@ -123,10 +123,6 @@ impl HostSocketRuntime {
 }
 
 impl HostUdpSocket {
-    pub(in crate::socket::host) fn host_handle(&self) -> HostSocketHandle {
-        self.handle
-    }
-
     async fn send(
         &self,
         data: &[u8],

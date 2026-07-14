@@ -9,6 +9,7 @@ use std::{
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Context, anyhow, bail};
+use easytier_core::stun::StunSocketMapper as _;
 use igd_next::{
     AddAnyPortError, PortMappingProtocol, SearchOptions,
     aio::{
@@ -21,10 +22,7 @@ use natpmp::{
 };
 use tokio::sync::oneshot;
 
-use super::{
-    global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
-    stun::StunInfoCollectorTrait as _,
-};
+use super::global_ctx::{ArcGlobalCtx, GlobalCtxEvent};
 use crate::socket::udp::RuntimeUdpSocket;
 use crate::tunnel::build_url_from_socket_addr;
 

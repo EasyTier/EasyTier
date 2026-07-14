@@ -18,6 +18,7 @@ use cidr::Ipv4Inet;
 use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand, builder::BoolishValueParser};
 use dashmap::DashMap;
 use easytier::ShellType;
+use easytier_core::stun::StunInfoProvider as _;
 use humansize::format_size;
 use rust_i18n::t;
 use service_manager::*;
@@ -29,10 +30,7 @@ use easytier::service_manager::{Service, ServiceInstallOptions};
 use tokio::time::timeout;
 
 use easytier::{
-    common::{
-        constants::EASYTIER_VERSION,
-        stun::{StunInfoCollectorTrait, runtime_stun_info_collector},
-    },
+    common::{constants::EASYTIER_VERSION, stun::runtime_stun_info_collector},
     peers,
     proto::{
         acl::AclStats,

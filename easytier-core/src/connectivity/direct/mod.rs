@@ -43,6 +43,7 @@ use crate::{
             send_v6_hole_punch_control_packet,
         },
     },
+    stun::StunSocketMapper,
     task::{PeerTaskLauncher, PeerTaskManager},
     tunnel::Tunnel,
 };
@@ -73,14 +74,7 @@ pub trait DirectConnectorHost: ManualConnectorHost {
 
     fn is_protected_tcp_port(&self, port: u16) -> bool;
 
-    fn stun_public_ips(&self) -> Vec<IpAddr>;
-
     fn is_easytier_managed_ipv6(&self, ip: &Ipv6Addr) -> bool;
-
-    async fn udp_port_mapping(
-        &self,
-        socket: Arc<<Self as VirtualUdpSocketFactory>::Socket>,
-    ) -> anyhow::Result<SocketAddr>;
 
     async fn preferred_ipv6_source(&self, ip: Ipv6Addr) -> Option<PreferredIpv6Source>;
 }
@@ -242,6 +236,7 @@ where
 {
     peer_manager: Arc<PeerManagerCore>,
     host: Arc<H>,
+    stun: Arc<dyn StunSocketMapper<<H as VirtualUdpSocketFactory>::Socket>>,
     running_listeners: Arc<dyn RunningListenerProvider>,
     dns: Arc<dyn DnsResolver>,
     protocol:
@@ -278,6 +273,7 @@ where
     pub fn new(
         peer_manager: Arc<PeerManagerCore>,
         host: Arc<H>,
+        stun: Arc<dyn StunSocketMapper<<H as VirtualUdpSocketFactory>::Socket>>,
         dns: Arc<dyn DnsResolver>,
         protocol: Arc<
             dyn ClientProtocolUpgrader<<H as crate::socket::tcp::VirtualTcpSocketFactory>::Socket>,
@@ -288,6 +284,7 @@ where
         Self::new_with_running_listeners(
             peer_manager,
             host,
+            stun,
             running_listeners,
             dns,
             protocol,
@@ -298,6 +295,7 @@ where
     pub fn new_with_running_listeners(
         peer_manager: Arc<PeerManagerCore>,
         host: Arc<H>,
+        stun: Arc<dyn StunSocketMapper<<H as VirtualUdpSocketFactory>::Socket>>,
         running_listeners: Arc<dyn RunningListenerProvider>,
         dns: Arc<dyn DnsResolver>,
         protocol: Arc<
@@ -308,6 +306,7 @@ where
         let data = Arc::new(DirectConnectorData {
             peer_manager: peer_manager.clone(),
             host,
+            stun,
             running_listeners,
             dns,
             protocol,
@@ -818,7 +817,10 @@ where
                     .with_local_addr(Some("0.0.0.0:0".parse().unwrap())),
             )
             .await?;
-        let connector_addr = self.host.udp_port_mapping(socket.clone()).await?;
+        let connector_addr = self
+            .stun
+            .get_udp_port_mapping_with_socket(socket.clone())
+            .await?;
         let _ = self
             .remote_send_udp_hole_punch_packet(dst_peer_id, vec![connector_addr], None, url)
             .await;
@@ -876,7 +878,13 @@ where
 
     async fn collect_ipv6_hole_punch_candidates(&self) -> anyhow::Result<Vec<Ipv6Addr>> {
         let mut candidates = Vec::new();
-        for ip in self.host.stun_public_ips() {
+        for ip in self
+            .stun
+            .get_stun_info()
+            .public_ip
+            .into_iter()
+            .filter_map(|ip| ip.parse().ok())
+        {
             if let IpAddr::V6(ip) = ip {
                 self.push_ipv6_candidate(&mut candidates, ip);
             }

@@ -190,9 +190,7 @@
     "running_listeners": [],
     "local_ips": [],
     "protected_tcp_ports": [],
-    "stun_public_ips": [],
     "managed_ipv6s": [],
-    "preferred_ipv6_sources": [],
-    "tcp_nat_type": "Unknown"
+    "preferred_ipv6_sources": []
   }
 }

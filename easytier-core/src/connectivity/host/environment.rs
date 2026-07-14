@@ -14,9 +14,8 @@ use crate::{
         host::{DirectConnectorEnvironment, ManualConnectorEnvironment},
         manual::ManualInterfaceAddrs,
     },
-    hole_punch::tcp::TcpHolePunchEnvironment,
-    proto::{common::NatType, peer_rpc::GetIpListResponse},
-    socket::{host::udp::HostUdpSocket, udp::PreferredIpv6Source},
+    proto::peer_rpc::GetIpListResponse,
+    socket::udp::PreferredIpv6Source,
 };
 
 /// Host-observed facts consumed by core connector policy.
@@ -33,10 +32,8 @@ pub struct HostConnectorEnvironmentSnapshot {
     pub running_listeners: Vec<Url>,
     pub local_ips: Vec<IpAddr>,
     pub protected_tcp_ports: Vec<u16>,
-    pub stun_public_ips: Vec<IpAddr>,
     pub managed_ipv6s: Vec<Ipv6Addr>,
     pub preferred_ipv6_sources: Vec<PreferredIpv6Source>,
-    pub tcp_nat_type: NatType,
 }
 
 impl HostConnectorEnvironmentSnapshot {
@@ -73,10 +70,6 @@ impl HostConnectorEnvironmentSnapshot {
 #[async_trait]
 pub trait HostConnectorEnvironmentServices: Send + Sync + 'static {
     async fn local_addr_for_remote(&self, remote_addr: SocketAddr) -> anyhow::Result<SocketAddr>;
-
-    async fn udp_port_mapping(&self, socket: Arc<HostUdpSocket>) -> anyhow::Result<SocketAddr>;
-
-    async fn tcp_port_mapping(&self, local_port: u16) -> anyhow::Result<SocketAddr>;
 }
 
 /// Adapts one coherent instance snapshot and slow host services to the
@@ -138,16 +131,8 @@ where
         self.snapshot().protected_tcp_ports.contains(&port)
     }
 
-    fn stun_public_ips(&self) -> Vec<IpAddr> {
-        self.snapshot().stun_public_ips.clone()
-    }
-
     fn is_easytier_managed_ipv6(&self, ip: &Ipv6Addr) -> bool {
         self.snapshot().managed_ipv6s.contains(ip)
-    }
-
-    async fn udp_port_mapping(&self, socket: Arc<HostUdpSocket>) -> anyhow::Result<SocketAddr> {
-        self.services.udp_port_mapping(socket).await
     }
 
     async fn preferred_ipv6_source(&self, ip: Ipv6Addr) -> Option<PreferredIpv6Source> {
@@ -169,31 +154,14 @@ where
     }
 }
 
-#[async_trait]
-impl<S> TcpHolePunchEnvironment for HostConnectorEnvironment<S>
-where
-    S: HostConnectorEnvironmentServices,
-{
-    fn tcp_nat_type(&self) -> NatType {
-        self.snapshot().tcp_nat_type
-    }
-
-    async fn tcp_port_mapping(&self, local_port: u16) -> anyhow::Result<SocketAddr> {
-        self.services.tcp_port_mapping(local_port).await
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
-
-    use crate::socket::udp::VirtualUdpSocket;
 
     use super::*;
 
     struct RecordingServices {
         local_requests: Mutex<Vec<SocketAddr>>,
-        tcp_mapping_requests: Mutex<Vec<u16>>,
     }
 
     #[async_trait]
@@ -204,18 +172,6 @@ mod tests {
         ) -> anyhow::Result<SocketAddr> {
             self.local_requests.lock().unwrap().push(remote_addr);
             Ok("192.0.2.1:40100".parse().unwrap())
-        }
-
-        async fn udp_port_mapping(&self, socket: Arc<HostUdpSocket>) -> anyhow::Result<SocketAddr> {
-            Ok(SocketAddr::new(
-                "198.51.100.1".parse().unwrap(),
-                socket.local_addr()?.port(),
-            ))
-        }
-
-        async fn tcp_port_mapping(&self, local_port: u16) -> anyhow::Result<SocketAddr> {
-            self.tcp_mapping_requests.lock().unwrap().push(local_port);
-            Ok(SocketAddr::new("198.51.100.2".parse().unwrap(), local_port))
         }
     }
 
@@ -229,7 +185,6 @@ mod tests {
             running_listeners: vec!["udp://[::]:11010".parse().unwrap()],
             local_ips: vec!["192.0.2.1".parse().unwrap()],
             protected_tcp_ports: vec![11010],
-            stun_public_ips: vec!["198.51.100.1".parse().unwrap()],
             managed_ipv6s: vec!["fd00::1".parse().unwrap()],
             preferred_ipv6_sources: vec![
                 PreferredIpv6Source {
@@ -241,7 +196,6 @@ mod tests {
                     ifindex: 8,
                 },
             ],
-            tcp_nat_type: NatType::Symmetric,
         }
     }
 
@@ -257,7 +211,6 @@ mod tests {
         );
         let services = Arc::new(RecordingServices {
             local_requests: Mutex::new(Vec::new()),
-            tcp_mapping_requests: Mutex::new(Vec::new()),
         });
         let environment = HostConnectorEnvironment::new(initial_snapshot, services.clone());
 
@@ -282,7 +235,6 @@ mod tests {
         assert!(environment.is_local_ip(&"192.0.2.1".parse().unwrap()));
         assert!(environment.is_protected_tcp_port(11010));
         assert!(environment.is_easytier_managed_ipv6(&"fd00::1".parse().unwrap()));
-        assert_eq!(environment.tcp_nat_type(), NatType::Symmetric);
         assert_eq!(
             environment
                 .preferred_ipv6_source("2001:db8::2".parse().unwrap())
@@ -298,10 +250,5 @@ mod tests {
                 .await,
             None
         );
-        assert_eq!(
-            environment.tcp_port_mapping(42000).await.unwrap(),
-            "198.51.100.2:42000".parse().unwrap()
-        );
-        assert_eq!(*services.tcp_mapping_requests.lock().unwrap(), vec![42000]);
     }
 }

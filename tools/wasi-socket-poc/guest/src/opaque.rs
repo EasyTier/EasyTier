@@ -609,7 +609,7 @@ pub extern "C" fn drive_packet_probe() -> u32 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn init_environment_probe(udp_handle: u64) -> i32 {
+pub extern "C" fn init_environment_probe() -> i32 {
     ENVIRONMENT_PROBE.with_borrow_mut(|slot| {
         if slot.is_some() {
             return -1;
@@ -624,11 +624,6 @@ pub extern "C" fn init_environment_probe(udp_handle: u64) -> i32 {
             sockets.clone(),
             Arc::new(WasiHostConnectorEnvironmentIo),
         ));
-        let udp_socket = Arc::new(sockets.udp_socket(
-            Arc::new(WasiHostUdpIo::default()),
-            HostSocketHandle(udp_handle),
-            "192.0.2.10:45000".parse().unwrap(),
-        ));
         let task_status = status.clone();
         runtime.spawn(async move {
             let result: Result<(), String> = async {
@@ -638,20 +633,6 @@ pub extern "C" fn init_environment_probe(udp_handle: u64) -> i32 {
                     .map_err(|error| error.to_string())?;
                 if local != "192.0.2.10:40000".parse().unwrap() {
                     return Err("local route result mismatch".to_owned());
-                }
-                let udp_mapping = services
-                    .udp_port_mapping(udp_socket)
-                    .await
-                    .map_err(|error| error.to_string())?;
-                if udp_mapping != "198.51.100.10:45000".parse().unwrap() {
-                    return Err("UDP mapping result mismatch".to_owned());
-                }
-                let tcp_mapping = services
-                    .tcp_port_mapping(11010)
-                    .await
-                    .map_err(|error| error.to_string())?;
-                if tcp_mapping != "198.51.100.11:11010".parse().unwrap() {
-                    return Err("TCP mapping result mismatch".to_owned());
                 }
                 Ok(())
             }

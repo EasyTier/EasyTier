@@ -26,6 +26,7 @@ pub(crate) fn runtime_direct_connector_manager(
     CoreDirectConnectorManager::new(
         peer_manager.core(),
         Arc::new(RuntimeConnectorHost::new(global_ctx.clone())),
+        global_ctx.get_stun_info_collector(),
         native_host_runtime() as Arc<dyn DnsResolver>,
         runtime_client_protocol_upgrader(global_ctx),
         options,

@@ -127,7 +127,7 @@ func TestOpaqueEnvironmentDrivesCoreServices(t *testing.T) {
 	if err != nil {
 		t.Fatalf("instantiate environment guest: %v", err)
 	}
-	results, err := module.ExportedFunction("init_environment_probe").Call(ctx, udpHandle)
+	results, err := module.ExportedFunction("init_environment_probe").Call(ctx)
 	if err != nil || len(results) != 1 || int32(results[0]) != 0 {
 		t.Fatalf("initialize environment probe: results=%v error=%v", results, err)
 	}
@@ -145,7 +145,7 @@ func TestOpaqueEnvironmentDrivesCoreServices(t *testing.T) {
 		return status
 	}
 	status := drive()
-	for _, expected := range []string{"local", "udp", "tcp"} {
+	for _, expected := range []string{"local"} {
 		if status&opaqueDone != 0 {
 			t.Fatalf("environment probe completed before %s operation", expected)
 		}
@@ -170,12 +170,10 @@ func TestOpaqueEnvironmentDrivesCoreServices(t *testing.T) {
 	}
 
 	local, udp, tcp := environment.requests()
-	if fmt.Sprint(local) != "[203.0.113.2:443]" ||
-		fmt.Sprint(udp) != fmt.Sprintf("[%d]", udpHandle) ||
-		fmt.Sprint(tcp) != "[11010]" {
+	if fmt.Sprint(local) != "[203.0.113.2:443]" || len(udp) != 0 || len(tcp) != 0 {
 		t.Fatalf("unexpected environment requests: local=%v udp=%v tcp=%v", local, udp, tcp)
 	}
-	if bridge.environmentCallCount() != 3 {
+	if bridge.environmentCallCount() != 1 {
 		t.Fatalf("unexpected environment call count: %d", bridge.environmentCallCount())
 	}
 }

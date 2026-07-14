@@ -3,7 +3,7 @@
 use std::{io, net::SocketAddr, task::Poll};
 
 use crate::socket::host::{
-    HostOperationId, HostSocketHandle,
+    HostOperationId,
     wasi_common::{host_error, status},
     wasi_wire::{SOCKET_ADDRESS_LEN, decode_socket_address, encode_socket_address},
 };
@@ -16,10 +16,6 @@ const HOST_PENDING: i32 = -1;
 unsafe extern "C" {
     fn start_local_addr_for_remote(operation: u64, remote_addr: u32, remote_addr_len: u32) -> i32;
     fn take_local_addr_for_remote(operation: u64, result: u32, result_len: u32) -> i32;
-    fn start_udp_port_mapping(operation: u64, socket: u64) -> i32;
-    fn take_udp_port_mapping(operation: u64, result: u32, result_len: u32) -> i32;
-    fn start_tcp_port_mapping(operation: u64, local_port: u32) -> i32;
-    fn take_tcp_port_mapping(operation: u64, result: u32, result_len: u32) -> i32;
     fn cancel_operation(operation: u64) -> i32;
 }
 
@@ -51,34 +47,6 @@ impl HostConnectorEnvironmentIo for WasiHostConnectorEnvironmentIo {
             operation,
             take_local_addr_for_remote,
         )
-    }
-
-    fn submit_udp_port_mapping(
-        &self,
-        operation: HostOperationId,
-        socket: HostSocketHandle,
-    ) -> io::Result<()> {
-        status("start_udp_port_mapping", unsafe {
-            start_udp_port_mapping(operation.0, socket.0)
-        })
-    }
-
-    fn take_udp_port_mapping(&self, operation: HostOperationId) -> Poll<io::Result<SocketAddr>> {
-        take_address("take_udp_port_mapping", operation, take_udp_port_mapping)
-    }
-
-    fn submit_tcp_port_mapping(
-        &self,
-        operation: HostOperationId,
-        local_port: u16,
-    ) -> io::Result<()> {
-        status("start_tcp_port_mapping", unsafe {
-            start_tcp_port_mapping(operation.0, u32::from(local_port))
-        })
-    }
-
-    fn take_tcp_port_mapping(&self, operation: HostOperationId) -> Poll<io::Result<SocketAddr>> {
-        take_address("take_tcp_port_mapping", operation, take_tcp_port_mapping)
     }
 
     fn cancel_operation(&self, operation: HostOperationId) -> io::Result<()> {

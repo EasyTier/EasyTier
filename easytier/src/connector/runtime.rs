@@ -10,8 +10,6 @@ use easytier_core::{
         manual::{ManualConnectorHost, ManualInterfaceAddrs},
         transport::ConnectedByteStream,
     },
-    hole_punch::tcp::TcpHolePunchHost,
-    proto::common::NatType,
     socket::{
         tcp::{
             TcpConnectOptions, TcpListenOptions, VirtualTcpListenerFactory, VirtualTcpSocketFactory,
@@ -23,7 +21,7 @@ use easytier_core::{
 };
 
 use crate::{
-    common::{global_ctx::ArcGlobalCtx, network::IPCollector, stun::StunInfoCollectorTrait},
+    common::{global_ctx::ArcGlobalCtx, network::IPCollector},
     host_runtime::{NativeHostRuntime, native_host_runtime},
     proto::peer_rpc::GetIpListResponse,
     socket::{
@@ -43,27 +41,6 @@ impl RuntimeConnectorHost {
             global_ctx,
             runtime: native_host_runtime(),
         }
-    }
-}
-
-#[async_trait]
-impl TcpHolePunchHost for RuntimeConnectorHost {
-    fn tcp_nat_type(&self) -> NatType {
-        NatType::try_from(
-            self.global_ctx
-                .get_stun_info_collector()
-                .get_stun_info()
-                .tcp_nat_type,
-        )
-        .unwrap_or(NatType::Unknown)
-    }
-
-    async fn tcp_port_mapping(&self, local_port: u16) -> anyhow::Result<SocketAddr> {
-        self.global_ctx
-            .get_stun_info_collector()
-            .get_tcp_port_mapping(local_port)
-            .await
-            .map_err(anyhow::Error::from)
     }
 }
 
@@ -190,29 +167,8 @@ impl DirectConnectorHost for RuntimeConnectorHost {
         self.global_ctx.is_protected_tcp_port(port)
     }
 
-    fn stun_public_ips(&self) -> Vec<IpAddr> {
-        self.global_ctx
-            .get_stun_info_collector()
-            .get_stun_info()
-            .public_ip
-            .into_iter()
-            .filter_map(|ip| ip.parse().ok())
-            .collect()
-    }
-
     fn is_easytier_managed_ipv6(&self, ip: &Ipv6Addr) -> bool {
         self.global_ctx.is_ip_easytier_managed_ipv6(ip)
-    }
-
-    async fn udp_port_mapping(
-        &self,
-        socket: Arc<<Self as VirtualUdpSocketFactory>::Socket>,
-    ) -> anyhow::Result<SocketAddr> {
-        self.global_ctx
-            .get_stun_info_collector()
-            .get_udp_port_mapping_with_socket(socket)
-            .await
-            .map_err(anyhow::Error::from)
     }
 
     async fn preferred_ipv6_source(&self, ip: Ipv6Addr) -> Option<PreferredIpv6Source> {

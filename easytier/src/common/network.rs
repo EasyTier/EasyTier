@@ -1,5 +1,6 @@
 use std::{net::IpAddr, ops::Deref, sync::Arc};
 
+use easytier_core::stun::{StunInfoProvider as _, StunSocketMapper};
 #[cfg(target_os = "windows")]
 use network_interface::{
     Addr as SystemAddr, NetworkInterface as SystemNetworkInterface, NetworkInterfaceConfig,
@@ -12,9 +13,9 @@ use tokio::{
     task::JoinSet,
 };
 
-use crate::proto::peer_rpc::GetIpListResponse;
+use crate::{proto::peer_rpc::GetIpListResponse, socket::udp::RuntimeUdpSocket};
 
-use super::{netns::NetNS, stun::StunInfoCollectorTrait};
+use super::netns::NetNS;
 
 pub const CACHED_IP_LIST_TIMEOUT_SEC: u64 = 60;
 
@@ -202,16 +203,19 @@ pub struct IPCollector {
     cached_ip_list: Arc<RwLock<GetIpListResponse>>,
     collect_ip_task: Mutex<JoinSet<()>>,
     net_ns: NetNS,
-    stun_info_collector: Arc<Box<dyn StunInfoCollectorTrait>>,
+    stun_info_collector: Arc<dyn StunSocketMapper<RuntimeUdpSocket>>,
 }
 
 impl IPCollector {
-    pub fn new<T: StunInfoCollectorTrait + 'static>(net_ns: NetNS, stun_info_collector: T) -> Self {
+    pub fn new(
+        net_ns: NetNS,
+        stun_info_collector: Arc<dyn StunSocketMapper<RuntimeUdpSocket>>,
+    ) -> Self {
         Self {
             cached_ip_list: Arc::new(RwLock::new(GetIpListResponse::default())),
             collect_ip_task: Mutex::new(JoinSet::new()),
             net_ns,
-            stun_info_collector: Arc::new(Box::new(stun_info_collector)),
+            stun_info_collector,
         }
     }
 
