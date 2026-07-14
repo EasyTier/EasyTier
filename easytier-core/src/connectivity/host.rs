@@ -406,15 +406,22 @@ mod tests {
         }
     }
 
-    struct TestEnvironmentServices;
+    #[derive(Default)]
+    struct TestEnvironmentServices {
+        local_requests: Mutex<Vec<(SocketAddr, SocketContext)>>,
+    }
 
     #[async_trait]
     impl HostConnectorEnvironmentServices for TestEnvironmentServices {
         async fn local_addr_for_remote(
             &self,
-            _remote_addr: SocketAddr,
-            _context: SocketContext,
+            remote_addr: SocketAddr,
+            context: SocketContext,
         ) -> anyhow::Result<SocketAddr> {
+            self.local_requests
+                .lock()
+                .unwrap()
+                .push((remote_addr, context));
             Ok("192.0.2.1:40100".parse().unwrap())
         }
     }
@@ -448,20 +455,23 @@ mod tests {
         type TestHost = HostConnectorAdapter<UnsupportedBackend, TestEnvironmentServices>;
         assert_core_host::<TestHost>();
 
+        let services = Arc::new(TestEnvironmentServices::default());
         let host = TestHost::new(
             HostSocketRuntime::new(),
             Arc::new(UnsupportedBackend::default()),
             test_environment_snapshot(),
-            Arc::new(TestEnvironmentServices),
+            services.clone(),
         );
-        let local = ManualConnectorHost::local_addr_for_remote(
-            &host,
-            "203.0.113.1:11010".parse().unwrap(),
-            SocketContext::default(),
-        )
-        .await
-        .unwrap();
+        let remote = "203.0.113.1:11010".parse().unwrap();
+        let context = SocketContext::default().with_socket_mark(Some(7));
+        let local = ManualConnectorHost::local_addr_for_remote(&host, remote, context.clone())
+            .await
+            .unwrap();
         assert_eq!(local, "192.0.2.1:40100".parse().unwrap());
+        assert_eq!(
+            *services.local_requests.lock().unwrap(),
+            vec![(remote, context)]
+        );
         assert_eq!(
             ManualConnectorHost::interface_addrs(&host)
                 .await
@@ -495,7 +505,7 @@ mod tests {
             runtime.clone(),
             backend.clone(),
             test_environment_snapshot(),
-            Arc::new(TestEnvironmentServices),
+            Arc::new(TestEnvironmentServices::default()),
         );
         let socket = Arc::new(runtime.udp_socket(
             backend.clone(),
