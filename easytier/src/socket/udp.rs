@@ -176,6 +176,12 @@ impl UdpSessionControlHandler<RuntimeUdpSocket> for RuntimeUdpSessionControlHand
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct RuntimeUdpSocketFactory;
 
+#[derive(Clone, Copy)]
+enum UdpBindPolicy {
+    PurposeDefaults,
+    ExplicitOptions,
+}
+
 impl RuntimeUdpSocketFactory {
     pub(crate) fn new() -> Self {
         Self
@@ -203,23 +209,36 @@ impl RuntimeUdpSocketFactory {
                 UdpSocketPurpose::PortBoundListener | UdpSocketPurpose::ProxyNat
             ) && !cfg!(target_os = "windows"))
     }
-}
 
-#[async_trait]
-impl VirtualUdpSocketFactory for RuntimeUdpSocketFactory {
-    type Socket = RuntimeUdpSocket;
-
-    async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
+    fn bind_udp_with_policy(
+        &self,
+        options: UdpBindOptions,
+        policy: UdpBindPolicy,
+    ) -> anyhow::Result<Arc<RuntimeUdpSocket>> {
         let context = options.context.clone();
         let bind_addr = options
             .local_addr
             .unwrap_or_else(|| SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)));
+        let bind_device = if matches!(policy, UdpBindPolicy::PurposeDefaults) {
+            self.bind_device_for(&options)
+        } else {
+            options
+                .bind_device
+                .as_deref()
+                .map(BindDev::from)
+                .unwrap_or(BindDev::Disabled)
+        };
+        let reuse_addr = if matches!(policy, UdpBindPolicy::PurposeDefaults) {
+            self.reuse_addr_for(&options)
+        } else {
+            options.reuse_addr
+        };
         let socket = bind::<UdpSocket>()
             .addr(bind_addr)
-            .dev(self.bind_device_for(&options))
+            .dev(bind_device)
             .maybe_net_ns(Some(NetNS::from_socket_context(&context)))
             .only_v6(options.only_v6)
-            .reuse_addr(self.reuse_addr_for(&options))
+            .reuse_addr(reuse_addr)
             .reuse_port(options.reuse_port)
             .maybe_socket_mark(context.socket_mark)
             .call()?;
@@ -227,6 +246,22 @@ impl VirtualUdpSocketFactory for RuntimeUdpSocketFactory {
             Arc::new(socket),
             context,
         )))
+    }
+
+    pub(crate) fn bind_udp_with_explicit_options(
+        &self,
+        options: UdpBindOptions,
+    ) -> anyhow::Result<Arc<RuntimeUdpSocket>> {
+        self.bind_udp_with_policy(options, UdpBindPolicy::ExplicitOptions)
+    }
+}
+
+#[async_trait]
+impl VirtualUdpSocketFactory for RuntimeUdpSocketFactory {
+    type Socket = RuntimeUdpSocket;
+
+    async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
+        self.bind_udp_with_policy(options, UdpBindPolicy::PurposeDefaults)
     }
 }
 

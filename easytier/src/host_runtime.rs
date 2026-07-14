@@ -1,5 +1,5 @@
 use std::{
-    net::{IpAddr, SocketAddrV4, SocketAddrV6},
+    net::{IpAddr, SocketAddr, SocketAddrV4, SocketAddrV6},
     sync::{Arc, OnceLock},
 };
 
@@ -102,25 +102,42 @@ impl NativeHostRuntime {
 
     pub(crate) async fn local_addr_for_remote(
         &self,
-        remote_addr: std::net::SocketAddr,
+        remote_addr: SocketAddr,
         context: SocketContext,
-    ) -> anyhow::Result<std::net::SocketAddr> {
+    ) -> anyhow::Result<SocketAddr> {
         let socket = NetNS::from_socket_context(&context).run(|| -> anyhow::Result<_> {
-            let socket = socket2::Socket::new(
-                socket2::Domain::IPV6,
-                socket2::Type::DGRAM,
-                Some(socket2::Protocol::UDP),
-            )?;
+            let (domain, bind_addr) = match remote_addr {
+                SocketAddr::V4(_) => (
+                    socket2::Domain::IPV4,
+                    SocketAddr::V4(SocketAddrV4::new(std::net::Ipv4Addr::UNSPECIFIED, 0)),
+                ),
+                SocketAddr::V6(_) => (
+                    socket2::Domain::IPV6,
+                    SocketAddr::V6(SocketAddrV6::new(std::net::Ipv6Addr::UNSPECIFIED, 0, 0, 0)),
+                ),
+            };
+            let socket =
+                socket2::Socket::new(domain, socket2::Type::DGRAM, Some(socket2::Protocol::UDP))?;
             crate::tunnel::common::apply_socket_mark(&socket, context.socket_mark)?;
             socket.set_nonblocking(true)?;
-            socket.bind(&socket2::SockAddr::from(std::net::SocketAddr::V6(
-                SocketAddrV6::new(std::net::Ipv6Addr::UNSPECIFIED, 0, 0, 0),
-            )))?;
+            socket.bind(&socket2::SockAddr::from(bind_addr))?;
             Ok(std::net::UdpSocket::from(socket))
         })?;
         let socket = tokio::net::UdpSocket::from_std(socket)?;
         socket.connect(remote_addr).await?;
         Ok(socket.local_addr()?)
+    }
+
+    pub(crate) fn bind_udp_with_explicit_options(
+        &self,
+        options: UdpBindOptions,
+    ) -> anyhow::Result<Arc<RuntimeUdpSocket>> {
+        // UDP hole punching historically used the request fields verbatim.
+        // Keep that policy while centralizing the actual OS socket creation.
+        let socket = self.udp_sockets.bind_udp_with_explicit_options(options)?;
+        #[cfg(target_os = "windows")]
+        crate::arch::windows::disable_connection_reset(socket.socket().as_ref())?;
+        Ok(socket)
     }
 
     pub(crate) async fn preferred_ipv6_source(
@@ -212,5 +229,18 @@ mod tests {
     #[test]
     fn native_host_runtime_is_process_wide() {
         assert!(Arc::ptr_eq(&native_host_runtime(), &native_host_runtime()));
+    }
+
+    #[tokio::test]
+    async fn native_route_probe_uses_remote_address_family() {
+        let local_addr = native_host_runtime()
+            .local_addr_for_remote(
+                SocketAddr::from(([127, 0, 0, 1], 9)),
+                SocketContext::default(),
+            )
+            .await
+            .unwrap();
+
+        assert!(local_addr.is_ipv4());
     }
 }

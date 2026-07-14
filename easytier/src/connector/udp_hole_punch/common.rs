@@ -10,15 +10,14 @@ use easytier_core::{
     socket::udp::{UdpSessionSocket, VirtualUdpSocket},
 };
 use quanta::Instant;
-use tokio::net::UdpSocket;
 
 use crate::{
-    common::{PeerId, error::Error, global_ctx::ArcGlobalCtx, netns::NetNS, upnp},
+    common::{PeerId, error::Error, global_ctx::ArcGlobalCtx, upnp},
     connector::core_instance::runtime_socket_context,
+    host_runtime::{NativeHostRuntime, native_host_runtime},
     peers::peer_manager::PeerManager,
     proto::common::NatType,
     socket::udp::{RuntimeUdpSessionLayer, RuntimeUdpSocket},
-    tunnel::common::{BindDev, bind},
 };
 
 #[allow(dead_code)]
@@ -72,11 +71,15 @@ impl core_udp_hole_punch::UdpPortMappingLease for RuntimeUdpPortMappingLease {}
 #[allow(dead_code)]
 pub(crate) struct RuntimeUdpHolePunchRuntime {
     global_ctx: ArcGlobalCtx,
+    runtime: Arc<NativeHostRuntime>,
 }
 
 impl RuntimeUdpHolePunchRuntime {
     pub(crate) fn new(global_ctx: ArcGlobalCtx) -> Self {
-        Self { global_ctx }
+        Self {
+            global_ctx,
+            runtime: native_host_runtime(),
+        }
     }
 
     async fn create_listener_ext(
@@ -127,6 +130,22 @@ impl RuntimeUdpHolePunchRuntime {
             port_mapping_lease,
         })
     }
+
+    async fn validate_socket_route(
+        &self,
+        context: easytier_core::socket::SocketContext,
+        remote_addr: SocketAddr,
+    ) -> Result<(), Error> {
+        let local_addr = self
+            .runtime
+            .local_addr_for_remote(remote_addr, context)
+            .await?;
+        if let Some(err) = easytier_managed_local_addr_error(&self.global_ctx, local_addr) {
+            return Err(anyhow::anyhow!(err).into());
+        }
+
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -141,31 +160,7 @@ impl core_udp_hole_punch::UdpHolePunchRuntime for RuntimeUdpHolePunchRuntime {
         &self,
         options: core_udp_hole_punch::UdpBindOptions,
     ) -> anyhow::Result<Arc<Self::Socket>> {
-        let bind_addr = options
-            .local_addr
-            .unwrap_or_else(|| SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)));
-        let bind_device = options
-            .bind_device
-            .map(BindDev::from)
-            .unwrap_or(BindDev::Disabled);
-        let socket = {
-            Arc::new(
-                bind::<UdpSocket>()
-                    .addr(bind_addr)
-                    .dev(bind_device)
-                    .maybe_net_ns(Some(NetNS::from_socket_context(&options.context)))
-                    .only_v6(options.only_v6)
-                    .reuse_addr(options.reuse_addr)
-                    .reuse_port(options.reuse_port)
-                    .maybe_socket_mark(options.context.socket_mark)
-                    .call()?,
-            )
-        };
-
-        Ok(Arc::new(RuntimeUdpSocket::new_with_context(
-            socket,
-            options.context,
-        )))
+        self.runtime.bind_udp_with_explicit_options(options)
     }
 
     async fn resolve_udp_public_addr(
@@ -208,7 +203,7 @@ impl core_udp_hole_punch::UdpHolePunchRuntime for RuntimeUdpHolePunchRuntime {
         socket: Arc<Self::Socket>,
         remote: SocketAddr,
     ) -> anyhow::Result<core_udp_hole_punch::UdpPunchSocket> {
-        check_udp_socket_local_addr(self.global_ctx.clone(), socket.socket_context(), remote)
+        self.validate_socket_route(socket.socket_context(), remote)
             .await?;
 
         #[cfg(target_os = "windows")]
@@ -295,26 +290,6 @@ impl core_udp_hole_punch::UdpHolePunchPeerSource for RuntimeUdpHolePunchPeerSour
             })
             .collect()
     }
-}
-
-async fn check_udp_socket_local_addr(
-    global_ctx: ArcGlobalCtx,
-    context: easytier_core::socket::SocketContext,
-    remote_mapped_addr: SocketAddr,
-) -> Result<(), Error> {
-    let socket = bind::<UdpSocket>()
-        .addr("0.0.0.0:0".parse().unwrap())
-        .maybe_net_ns(Some(NetNS::from_socket_context(&context)))
-        .maybe_socket_mark(context.socket_mark)
-        .call()?;
-    socket.connect(remote_mapped_addr).await?;
-    if let Ok(local_addr) = socket.local_addr()
-        && let Some(err) = easytier_managed_local_addr_error(&global_ctx, local_addr)
-    {
-        return Err(anyhow::anyhow!(err).into());
-    }
-
-    Ok(())
 }
 
 fn easytier_managed_local_addr_error(
