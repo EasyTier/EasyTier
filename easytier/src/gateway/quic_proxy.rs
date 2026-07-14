@@ -41,9 +41,9 @@ use tokio::select;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::{Receiver, Sender, channel};
-use tokio::task::JoinSet;
+use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::timeout;
-use tokio_util::sync::PollSender;
+use tokio_util::sync::{CancellationToken, PollSender};
 use tracing::{debug, error, info, instrument, trace, warn};
 
 use easytier_core::{
@@ -610,6 +610,7 @@ struct QuicStreamReceiver {
     endpoint: Endpoint,
     tasks: JoinSet<()>,
     ctx: Arc<QuicStreamContext>,
+    cancel: CancellationToken,
 }
 
 impl QuicStreamReceiver {
@@ -617,6 +618,8 @@ impl QuicStreamReceiver {
         loop {
             select! {
                 biased;
+
+                _ = self.cancel.cancelled() => break,
 
                 Some(incoming) = self.endpoint.accept() => {
                     let addr = incoming.remote_address();
@@ -629,20 +632,29 @@ impl QuicStreamReceiver {
                     };
 
                     let addr = connection.remote_address();
-                    let connection = match connection.await {
-                        Ok(connection) => connection,
-                        Err(e) => {
-                            error!("failed to accept quic connection from {:?}: {:?}", addr, e);
-                            continue;
+                    let connection = select! {
+                        biased;
+                        _ = self.cancel.cancelled() => break,
+                        result = connection => {
+                            match result {
+                                Ok(connection) => connection,
+                                Err(e) => {
+                                    error!("failed to accept quic connection from {:?}: {:?}", addr, e);
+                                    continue;
+                                }
+                            }
                         }
                     };
 
                     let ctx = self.ctx.clone();
+                    let cancel = self.cancel.clone();
                     self.tasks.spawn(async move {
                         let mut tasks = JoinSet::new();
                         loop {
                             select! {
                                 biased;
+
+                                _ = cancel.cancelled() => break,
 
                                 e = connection.closed() => {
                                     info!("connection to {:?} closed: {:?}", addr, e);
@@ -677,6 +689,7 @@ impl QuicStreamReceiver {
                             }
                         }
 
+                        tasks.shutdown().await;
                         connection.close(1u32.into(), b"error");
                     });
                 }
@@ -688,6 +701,11 @@ impl QuicStreamReceiver {
                     break;
                 }
             }
+        }
+        if self.cancel.is_cancelled() {
+            while self.tasks.join_next().await.is_some() {}
+        } else {
+            self.tasks.shutdown().await;
         }
     }
 
@@ -795,6 +813,8 @@ pub struct QuicProxy {
     dst: Option<QuicProxyDst>,
 
     tasks: JoinSet<()>,
+    stream_cancel: CancellationToken,
+    stream_task: Option<JoinHandle<()>>,
 }
 
 impl QuicProxy {
@@ -818,6 +838,8 @@ impl QuicProxy {
             src: None,
             dst: None,
             tasks: JoinSet::new(),
+            stream_cancel: CancellationToken::new(),
+            stream_task: None,
         }
     }
 
@@ -925,27 +947,36 @@ impl QuicProxy {
             };
             dst.run().await;
 
-            self.tasks.spawn(
+            self.stream_task = Some(tokio::spawn(
                 QuicStreamReceiver {
                     endpoint: endpoint.clone(),
                     tasks: JoinSet::new(),
                     ctx: stream_ctx,
+                    cancel: self.stream_cancel.clone(),
                 }
                 .run(),
-            );
+            ));
 
             self.dst = Some(dst);
         }
     }
 
-    fn stop(&mut self) {
+    async fn stop(&mut self) {
         if let Some(dst) = &mut self.dst {
             dst.stop();
         }
         if let Some(src) = &mut self.src {
             src.stop();
         }
-        self.tasks.abort_all();
+        self.stream_cancel.cancel();
+        if let Some(task) = self.stream_task.as_mut() {
+            let _ = task.await;
+        }
+        self.stream_task.take();
+        self.tasks.shutdown().await;
+        if let Some(endpoint) = self.endpoint.take() {
+            endpoint.close(1u32.into(), b"stopped");
+        }
     }
 }
 
@@ -1012,9 +1043,9 @@ impl WrappedTransportEngine for QuicProxyService {
     }
 
     async fn stop(&self) {
-        let mut state = self.state.lock().await.take();
-        if let Some(state) = &mut state {
-            state.stop();
+        let mut state = self.state.lock().await;
+        if let Some(active) = state.as_mut() {
+            active.stop().await;
         }
         self.src_tcp_proxy
             .lock()
@@ -1024,7 +1055,7 @@ impl WrappedTransportEngine for QuicProxyService {
             .lock()
             .expect("QUIC destination proxy entries mutex poisoned")
             .take();
-        drop(state);
+        state.take();
     }
 }
 

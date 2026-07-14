@@ -1840,13 +1840,13 @@ mod tests {
         let kcp = instance.transport_proxy.kcp();
         kcp.start(WrappedTransportDirections {
             source: true,
-            destination: false,
+            destination: true,
         })
         .await
         .unwrap();
 
         assert!(kcp.src_endpoint().is_some());
-        assert!(kcp.dst_rpc_service().is_none());
+        assert!(kcp.dst_rpc_service().is_some());
 
         kcp.stop().await;
         assert!(kcp.src_endpoint().is_none());
@@ -1860,12 +1860,12 @@ mod tests {
         let quic = instance.transport_proxy.quic();
         quic.start(WrappedTransportDirections {
             source: true,
-            destination: false,
+            destination: true,
         })
         .await
         .unwrap();
         assert!(quic.src_tcp_proxy().is_some());
-        assert!(quic.dst_rpc_service().is_none());
+        assert!(quic.dst_rpc_service().is_some());
 
         quic.stop().await;
         assert!(quic.src_tcp_proxy().is_none());

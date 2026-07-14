@@ -15,7 +15,11 @@ use kcp_sys::{
     stream::KcpStream,
 };
 use prost::Message;
-use tokio::{sync::Mutex, task::JoinSet};
+use tokio::{
+    sync::Mutex,
+    task::{JoinHandle, JoinSet},
+};
+use tokio_util::sync::CancellationToken;
 
 use easytier_core::{
     instance::{WrappedTransportDirections, WrappedTransportEngine},
@@ -305,12 +309,12 @@ impl KcpProxySrc {
         self.kcp_endpoint.clone()
     }
 
-    fn stop(&mut self) {
+    async fn stop(&mut self) {
         for guard in self.pipeline_guards.drain(..).rev() {
             guard.close();
         }
         self.tcp_proxy.stop();
-        self.tasks.abort_all();
+        self.tasks.shutdown().await;
     }
 }
 
@@ -321,6 +325,8 @@ pub struct KcpProxyDst {
     cidr_table: Arc<ProxyCidrTable>,
     pipeline_guards: Vec<PipelineRegistrationGuard>,
     tasks: JoinSet<()>,
+    accept_cancel: CancellationToken,
+    accept_task: Option<JoinHandle<()>>,
 }
 
 impl KcpProxyDst {
@@ -342,6 +348,8 @@ impl KcpProxyDst {
             cidr_table,
             pipeline_guards: Vec::new(),
             tasks,
+            accept_cancel: CancellationToken::new(),
+            accept_task: None,
         }
     }
 
@@ -428,12 +436,19 @@ impl KcpProxyDst {
         let route = self.peer_manager.core().get_route();
         let runtime = Arc::new(RuntimeWrappedTcpDestinationAdapter::new(global_ctx.clone()));
         let acl_filter = self.peer_manager.core().acl_filter();
-        self.tasks.spawn(async move {
+        let cancel = self.accept_cancel.clone();
+        self.accept_task = Some(tokio::spawn(async move {
             let mut streams = JoinSet::new();
             loop {
                 tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => {
+                        streams.shutdown().await;
+                        break;
+                    }
                     accepted = kcp_endpoint.accept() => {
                         let Ok(conn) = accepted else {
+                            streams.shutdown().await;
                             break;
                         };
                         let stream = KcpStream::new(&kcp_endpoint, conn)
@@ -462,7 +477,7 @@ impl KcpProxyDst {
                     _ = streams.join_next(), if !streams.is_empty() => {}
                 }
             }
-        });
+        }));
     }
 
     pub async fn start(&mut self) {
@@ -478,11 +493,16 @@ impl KcpProxyDst {
         self.pipeline_guards.push(guard);
     }
 
-    fn stop(&mut self) {
+    async fn stop(&mut self) {
         for guard in self.pipeline_guards.drain(..).rev() {
             guard.close();
         }
-        self.tasks.abort_all();
+        self.accept_cancel.cancel();
+        if let Some(task) = self.accept_task.as_mut() {
+            let _ = task.await;
+        }
+        self.accept_task.take();
+        self.tasks.shutdown().await;
     }
 }
 
@@ -493,12 +513,12 @@ struct KcpProxyServiceState {
 }
 
 impl KcpProxyServiceState {
-    fn stop(&mut self) {
+    async fn stop(&mut self) {
         if let Some(dst) = &mut self.dst {
-            dst.stop();
+            dst.stop().await;
         }
         if let Some(src) = &mut self.src {
-            src.stop();
+            src.stop().await;
         }
     }
 }
@@ -592,9 +612,9 @@ impl WrappedTransportEngine for KcpProxyService {
     }
 
     async fn stop(&self) {
-        let mut state = self.state.lock().await.take();
-        if let Some(state) = &mut state {
-            state.stop();
+        let mut state = self.state.lock().await;
+        if let Some(active) = state.as_mut() {
+            active.stop().await;
         }
         self.src_endpoint
             .lock()
@@ -608,7 +628,7 @@ impl WrappedTransportEngine for KcpProxyService {
             .lock()
             .expect("KCP destination proxy entries mutex poisoned")
             .take();
-        drop(state);
+        state.take();
     }
 }
 
