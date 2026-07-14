@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::sync::{
     Arc, Weak,
     atomic::{AtomicBool, Ordering},
@@ -31,6 +32,19 @@ use super::tcp_proxy_engine::{
     TcpNatEntry, TcpNatEntryState, TcpProxyEngine, TcpProxyMode, TcpProxyNicContext,
     TcpProxyPacketAction, TcpProxyPeerContext,
 };
+
+fn spawn_tcp_proxy_task(
+    started: &AtomicBool,
+    tasks: &std::sync::Mutex<JoinSet<()>>,
+    task: impl Future<Output = ()> + Send + 'static,
+) -> bool {
+    let mut tasks = tasks.lock().unwrap();
+    if !started.load(Ordering::Acquire) {
+        return false;
+    }
+    tasks.spawn(task);
+    true
+}
 
 pub struct TcpProxyService<
     R: TcpProxyRuntime + 'static,
@@ -204,7 +218,7 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
 
     fn spawn_syn_cleanup(self: &Arc<Self>) {
         let service = Arc::downgrade(self);
-        self.tasks.lock().unwrap().spawn(async move {
+        let _ = spawn_tcp_proxy_task(&self.started, &self.tasks, async move {
             loop {
                 crate::runtime_time::sleep(Duration::from_secs(10)).await;
                 let Some(service) = service.upgrade() else {
@@ -248,7 +262,7 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
             .replace(listener.clone());
 
         let service = Arc::downgrade(self);
-        self.tasks.lock().unwrap().spawn(async move {
+        let _ = spawn_tcp_proxy_task(&self.started, &self.tasks, async move {
             loop {
                 let accept_ret = listener.accept().await;
                 let Ok((src_stream, socket_addr)) = accept_ret else {
@@ -283,7 +297,7 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
 
         let mut output_rx = stack.take_output_rx().await?;
         let peer_manager = self.peer_manager.clone();
-        self.tasks.lock().unwrap().spawn(async move {
+        let _ = spawn_tcp_proxy_task(&self.started, &self.tasks, async move {
             while let Some(data) = output_rx.recv().await {
                 tracing::trace!(?data, "receive from smoltcp stack and send to peer manager");
                 let dst = match output_dst_ip(&data) {
@@ -303,7 +317,7 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
 
         let service = Arc::downgrade(self);
         let accept_stack = stack.clone();
-        self.tasks.lock().unwrap().spawn(async move {
+        let _ = spawn_tcp_proxy_task(&self.started, &self.tasks, async move {
             loop {
                 let accept_ret = accept_stack.accept().await;
                 let Ok((socket_addr, src_stream)) = accept_ret else {
@@ -343,10 +357,14 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
             entry.real_dst()
         );
 
-        self.tasks
-            .lock()
-            .unwrap()
-            .spawn(Self::connect_to_nat_dst(self.clone(), src_stream, entry));
+        if !spawn_tcp_proxy_task(
+            &self.started,
+            &self.tasks,
+            Self::connect_to_nat_dst(self.clone(), src_stream, entry.clone()),
+        ) {
+            entry.set_state(TcpNatEntryState::Closed);
+            self.engine.remove_entry(entry.id());
+        }
     }
 
     async fn connect_to_nat_dst(
@@ -496,6 +514,53 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
 {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct DropSignal(Arc<AtomicBool>);
+
+    impl Drop for DropSignal {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+
+    fn pending_task(dropped: Arc<AtomicBool>) -> impl Future<Output = ()> + Send + 'static {
+        let signal = DropSignal(dropped);
+        async move {
+            let _signal = signal;
+            std::future::pending::<()>().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn stop_fence_linearizes_task_registration() {
+        let started = AtomicBool::new(true);
+        let tasks = std::sync::Mutex::new(JoinSet::new());
+        let accepted_dropped = Arc::new(AtomicBool::new(false));
+
+        assert!(spawn_tcp_proxy_task(
+            &started,
+            &tasks,
+            pending_task(accepted_dropped.clone()),
+        ));
+        started.store(false, Ordering::Release);
+        let mut stopping = std::mem::take(&mut *tasks.lock().unwrap());
+        stopping.shutdown().await;
+        assert!(accepted_dropped.load(Ordering::Acquire));
+
+        let rejected_dropped = Arc::new(AtomicBool::new(false));
+        assert!(!spawn_tcp_proxy_task(
+            &started,
+            &tasks,
+            pending_task(rejected_dropped.clone()),
+        ));
+        assert!(rejected_dropped.load(Ordering::Acquire));
+        assert!(tasks.lock().unwrap().is_empty());
     }
 }
 
