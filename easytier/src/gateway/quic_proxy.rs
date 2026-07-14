@@ -595,7 +595,7 @@ impl QuicStreamContext {
             cidr_table: cidr_set.table(),
             runtime: Arc::new(RuntimeWrappedTcpDestinationAdapter::new(global_ctx)),
             acl_filter: peer_mgr.core().acl_filter(),
-            route: Arc::new(peer_mgr.core().get_route()),
+            route: peer_mgr.core().get_route(),
         }
     }
 }

@@ -184,12 +184,12 @@ pub trait Route {
     }
 }
 
-pub type ArcRoute = Arc<Box<dyn Route + Send + Sync>>;
+pub type ArcRoute = Arc<dyn Route + Send + Sync>;
 
-pub struct MockRoute {}
+pub(crate) struct DisabledRoute;
 
 #[async_trait::async_trait]
-impl Route for MockRoute {
+impl Route for DisabledRoute {
     async fn open(&self, _interface: RouteInterfaceBox) -> Result<u8, ()> {
         panic!("mock route")
     }

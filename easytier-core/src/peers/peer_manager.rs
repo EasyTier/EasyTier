@@ -62,7 +62,7 @@ use super::{
     recv_packet_from_chan,
     relay_peer_map::RelayPeerMap,
     route_trait::{
-        ArcRoute, ForeignNetworkRouteInfoMap, MockRoute, NextHopPolicy, Route, RouteInterface,
+        ArcRoute, DisabledRoute, ForeignNetworkRouteInfoMap, NextHopPolicy, Route, RouteInterface,
         RouteInterfaceBox,
     },
     traffic_metrics::{
@@ -313,15 +313,11 @@ impl RouteAlgoInst {
         }
     }
 
-    pub fn route_box(&self) -> Box<dyn Route + Send + Sync + 'static> {
-        match self {
-            RouteAlgoInst::Ospf(route) => Box::new(route.clone()),
-            RouteAlgoInst::None => Box::new(MockRoute {}),
-        }
-    }
-
     pub fn route_arc(&self) -> ArcRoute {
-        Arc::new(self.route_box())
+        match self {
+            RouteAlgoInst::Ospf(route) => route.clone(),
+            RouteAlgoInst::None => Arc::new(DisabledRoute),
+        }
     }
 }
 
@@ -568,7 +564,7 @@ async fn add_route<T>(
         .await
         .unwrap();
 
-    let arc_route: ArcRoute = Arc::new(Box::new(route));
+    let arc_route: ArcRoute = Arc::new(route);
     peers.add_route(arc_route).await;
 }
 
@@ -1625,8 +1621,8 @@ impl PeerManagerCore {
         self.traffic_metrics.clone()
     }
 
-    pub fn get_route(&self) -> Box<dyn Route + Send + Sync + 'static> {
-        self.route_algo_inst.route_box()
+    pub fn get_route(&self) -> ArcRoute {
+        self.route.clone()
     }
 
     pub fn mark_recent_traffic(&self, dst_peer_id: PeerId) {
@@ -2671,7 +2667,7 @@ impl PeerOutboundPacketRouter {
             false,
             None,
             |_| false,
-            self.route.as_ref().as_ref(),
+            self.route.as_ref(),
         ) {
             return false;
         }

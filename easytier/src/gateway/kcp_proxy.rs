@@ -402,7 +402,7 @@ impl KcpProxyDst {
         let global_ctx = self.peer_manager.get_global_ctx();
         let proxy_entries = self.proxy_entries.clone();
         let cidr_table = self.cidr_set.table();
-        let route = Arc::new(self.peer_manager.core().get_route());
+        let route = self.peer_manager.core().get_route();
         let runtime = Arc::new(RuntimeWrappedTcpDestinationAdapter::new(global_ctx.clone()));
         let acl_filter = self.peer_manager.core().acl_filter();
         self.tasks.spawn(async move {
