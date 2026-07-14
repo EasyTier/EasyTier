@@ -175,32 +175,41 @@ struct WrappedTransportSourceConnector {
 }
 
 #[cfg(feature = "proxy-packet")]
+async fn connect_wrapped_transport_source(
+    peer_manager: &PeerManagerCore,
+    engine: Arc<dyn WrappedTransportEngine>,
+    src: SocketAddr,
+    dst: SocketAddr,
+) -> anyhow::Result<Box<dyn TcpProxyStream>> {
+    let SocketAddr::V4(dst_v4) = dst else {
+        anyhow::bail!("IPv6 is not supported by wrapped TCP proxy");
+    };
+    let dst_peer_id = peer_manager
+        .get_peer_map()
+        .get_peer_id_by_ipv4(dst_v4.ip())
+        .await
+        .ok_or_else(|| anyhow::anyhow!("no peer found for wrapped TCP dst: {dst}"))?;
+    engine
+        .connect_source(WrappedTransportConnect {
+            my_peer_id: peer_manager.my_peer_id(),
+            dst_peer_id,
+            src,
+            dst,
+        })
+        .await
+}
+
+#[cfg(feature = "proxy-packet")]
 #[async_trait]
 impl TcpProxyDestinationConnector for WrappedTransportSourceConnector {
     type DstStream = Box<dyn TcpProxyStream>;
 
     async fn connect(&self, src: SocketAddr, dst: SocketAddr) -> anyhow::Result<Self::DstStream> {
-        let SocketAddr::V4(dst_v4) = dst else {
-            anyhow::bail!("IPv6 is not supported by wrapped TCP proxy");
-        };
-        let dst_peer_id = self
-            .peer_manager
-            .get_peer_map()
-            .get_peer_id_by_ipv4(dst_v4.ip())
-            .await
-            .ok_or_else(|| anyhow::anyhow!("no peer found for wrapped TCP dst: {dst}"))?;
         let engine = self
             .engine
             .upgrade()
             .ok_or_else(|| anyhow::anyhow!("wrapped transport engine is not available"))?;
-        engine
-            .connect_source(WrappedTransportConnect {
-                my_peer_id: self.peer_manager.my_peer_id(),
-                dst_peer_id,
-                src,
-                dst,
-            })
-            .await
+        connect_wrapped_transport_source(&self.peer_manager, engine, src, dst).await
     }
 
     fn proxy_mode(&self) -> TcpProxyMode {
@@ -440,6 +449,10 @@ struct WrappedTransportProxyState {
     active: bool,
     kcp_started: bool,
     quic_started: bool,
+    #[cfg(feature = "proxy-packet")]
+    kcp_source_connect_ready: bool,
+    #[cfg(feature = "proxy-packet")]
+    quic_source_connect_ready: bool,
     #[cfg(feature = "proxy-packet")]
     kcp_source_started: bool,
     #[cfg(feature = "proxy-packet")]
@@ -758,6 +771,11 @@ impl WrappedTransportProxyModule {
     }
 
     async fn stop_started(&self, state: &mut WrappedTransportProxyState) {
+        #[cfg(feature = "proxy-packet")]
+        {
+            state.kcp_source_connect_ready = false;
+            state.quic_source_connect_ready = false;
+        }
         for guard in state.pipeline_guards.drain(..).rev() {
             guard.close();
         }
@@ -879,6 +897,10 @@ impl WrappedTransportProxyModule {
                 self.stop_started(&mut state).await;
                 return Err(error);
             }
+            #[cfg(feature = "proxy-packet")]
+            if kcp_directions.source {
+                state.kcp_source_connect_ready = true;
+            }
         }
         if let Some(quic) = &self.quic
             && quic_directions.enabled()
@@ -922,6 +944,10 @@ impl WrappedTransportProxyModule {
                 self.stop_started(&mut state).await;
                 return Err(error);
             }
+            #[cfg(feature = "proxy-packet")]
+            if quic_directions.source {
+                state.quic_source_connect_ready = true;
+            }
         }
         state.active = true;
         Ok(())
@@ -930,6 +956,41 @@ impl WrappedTransportProxyModule {
     pub(crate) async fn stop(&self) {
         let mut state = self.state.lock().await;
         self.stop_started(&mut state).await;
+    }
+
+    #[cfg(feature = "proxy-packet")]
+    pub(crate) async fn source_connect_ready(&self, transport: WrappedTransportKind) -> bool {
+        let state = self.state.lock().await;
+        match transport {
+            WrappedTransportKind::Kcp => state.kcp_source_connect_ready,
+            WrappedTransportKind::Quic => state.quic_source_connect_ready,
+        }
+    }
+
+    #[cfg(feature = "proxy-packet")]
+    pub(crate) async fn connect_source(
+        &self,
+        transport: WrappedTransportKind,
+        src: SocketAddr,
+        dst: SocketAddr,
+    ) -> anyhow::Result<Box<dyn TcpProxyStream>> {
+        let engine = {
+            let state = self.state.lock().await;
+            let ready = match transport {
+                WrappedTransportKind::Kcp => state.kcp_source_connect_ready,
+                WrappedTransportKind::Quic => state.quic_source_connect_ready,
+            };
+            if !ready {
+                anyhow::bail!("{transport:?} source is not ready");
+            }
+            match transport {
+                WrappedTransportKind::Kcp => self.kcp.clone(),
+                WrappedTransportKind::Quic => self.quic.clone(),
+            }
+        }
+        .ok_or_else(|| anyhow::anyhow!("{transport:?} engine is not available"))?;
+
+        connect_wrapped_transport_source(&self.peer_manager, engine, src, dst).await
     }
 
     #[cfg(feature = "proxy-packet")]
@@ -1411,6 +1472,56 @@ mod tests {
         assert!(module.destination_is_started(WrappedTransportKind::Kcp));
         assert!(!module.destination_is_started(WrappedTransportKind::Quic));
         module.stop().await;
+    }
+
+    #[cfg(feature = "proxy-packet")]
+    #[tokio::test]
+    async fn source_connect_readiness_tracks_active_direction() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let destination_only = WrappedTransportProxyModule::new_without_sources(
+            wrapped_transport_peer_manager(),
+            wrapped_transport_runtime(
+                WrappedTransportDirections {
+                    source: false,
+                    destination: true,
+                },
+                WrappedTransportDirections {
+                    source: false,
+                    destination: false,
+                },
+            ),
+            Some(wrapped_transport_engine("kcp", false, &events)),
+            None,
+        )
+        .unwrap();
+        destination_only.start().await.unwrap();
+        assert!(
+            !destination_only
+                .source_connect_ready(WrappedTransportKind::Kcp)
+                .await
+        );
+        destination_only.stop().await;
+
+        let source = WrappedTransportProxyModule::new_without_sources(
+            wrapped_transport_peer_manager(),
+            wrapped_transport_runtime(
+                WrappedTransportDirections {
+                    source: true,
+                    destination: false,
+                },
+                WrappedTransportDirections {
+                    source: false,
+                    destination: false,
+                },
+            ),
+            Some(wrapped_transport_engine("kcp", false, &events)),
+            None,
+        )
+        .unwrap();
+        source.start().await.unwrap();
+        assert!(source.source_connect_ready(WrappedTransportKind::Kcp).await);
+        source.stop().await;
+        assert!(!source.source_connect_ready(WrappedTransportKind::Kcp).await);
     }
 
     #[tokio::test]
