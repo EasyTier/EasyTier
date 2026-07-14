@@ -1228,7 +1228,23 @@ where
         if self.cancel.is_cancelled() {
             anyhow::bail!("VPN portal start cancelled");
         }
-        self.vpn_portal.start().await
+        let mut recovery = self.recovery_guard();
+        let start_result = tokio::select! {
+            _ = self.cancel.cancelled() => Err(anyhow::anyhow!("VPN portal start cancelled")),
+            result = self.vpn_portal.start() => result,
+        };
+        if let Err(error) = start_result {
+            self.vpn_portal.stop().await;
+            recovery.disarm();
+            return Err(error);
+        }
+        if self.cancel.is_cancelled() {
+            self.vpn_portal.stop().await;
+            recovery.disarm();
+            anyhow::bail!("VPN portal start cancelled");
+        }
+        recovery.disarm();
+        Ok(())
     }
 
     pub async fn vpn_portal_info(&self) -> VpnPortalInfoSnapshot {

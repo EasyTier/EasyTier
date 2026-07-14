@@ -24,6 +24,10 @@ pub(crate) fn get_wg_config_for_portal(nid: &NetworkIdentity) -> WgConfig {
     WgConfig::new_for_portal(&key_seed, &key_seed)
 }
 
+fn listener_endpoint(listener_url: &url::Url) -> &str {
+    &listener_url[url::Position::BeforeHost..url::Position::AfterPort]
+}
+
 pub struct WireGuardPortalHost {
     global_ctx: ArcGlobalCtx,
     wg_config: WgConfig,
@@ -84,10 +88,7 @@ impl VpnPortalHost for WireGuardPortalHost {
     }
 
     fn render_client_config(&self, plan: &VpnPortalClientConfigPlan) -> String {
-        let Some(config) = self.global_ctx.config.get_vpn_portal_config() else {
-            return "ERROR: VPN Portal Config Not Set".to_owned();
-        };
-        let listener_addr = config.wireguard_listen;
+        let listener_addr = listener_endpoint(&plan.listener_url);
         format!(
             r#"
 [Interface]
@@ -110,5 +111,22 @@ PersistentKeepalive = 25
 
     fn not_started_client_config(&self) -> String {
         "ERROR: Wireguard VPN Portal Not Started".to_owned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::listener_endpoint;
+
+    #[test]
+    fn listener_endpoint_uses_the_active_listener_url() {
+        assert_eq!(
+            listener_endpoint(&"wg://192.0.2.10:51820".parse().unwrap()),
+            "192.0.2.10:51820"
+        );
+        assert_eq!(
+            listener_endpoint(&"wg://[2001:db8::10]:51820".parse().unwrap()),
+            "[2001:db8::10]:51820"
+        );
     }
 }

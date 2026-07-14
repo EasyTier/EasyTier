@@ -151,6 +151,7 @@ pub type VpnPortalListener = Box<dyn SocketListener<Accepted = Box<dyn Tunnel>>>
 pub struct VpnPortalClientConfigPlan {
     pub client_cidr: Ipv4Cidr,
     pub allowed_ips: Vec<String>,
+    pub listener_url: url::Url,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -193,7 +194,23 @@ impl VpnPortalEventSink for () {
 struct VpnPortalRuntime {
     cancel: CancellationToken,
     tasks: JoinSet<()>,
+    listener_urls: Vec<url::Url>,
     _pipeline: PipelineRegistrationGuard,
+}
+
+struct VpnPortalSessionEventGuard {
+    events: Arc<dyn VpnPortalEventSink>,
+    portal: String,
+    client: String,
+}
+
+impl Drop for VpnPortalSessionEventGuard {
+    fn drop(&mut self) {
+        self.events.emit(VpnPortalEvent::ClientDisconnected {
+            portal: self.portal.clone(),
+            client: self.client.clone(),
+        });
+    }
 }
 
 struct VpnPortalPeerPacketFilter {
@@ -272,8 +289,10 @@ impl VpnPortalModule {
 
         let cancel = CancellationToken::new();
         let mut tasks = JoinSet::new();
+        let mut listener_urls = Vec::with_capacity(listeners.len());
         for listener in listeners {
-            let local_url = listener.local_url().to_string();
+            let local_url = listener.local_url();
+            listener_urls.push(local_url);
             tasks.spawn(Self::run_listener(
                 listener,
                 self.peer_manager.clone(),
@@ -281,7 +300,6 @@ impl VpnPortalModule {
                 self.events.clone(),
                 cancel.clone(),
             ));
-            self.events.emit(VpnPortalEvent::Started(local_url));
         }
         let pipeline = self
             .peer_manager
@@ -292,8 +310,13 @@ impl VpnPortalModule {
         *self.runtime.lock().await = Some(VpnPortalRuntime {
             cancel,
             tasks,
+            listener_urls: listener_urls.clone(),
             _pipeline: pipeline,
         });
+        for local_url in listener_urls {
+            self.events
+                .emit(VpnPortalEvent::Started(local_url.to_string()));
+        }
         Ok(())
     }
 
@@ -305,25 +328,35 @@ impl VpnPortalModule {
         cancel: CancellationToken,
     ) {
         let mut sessions = JoinSet::new();
+        let mut accepting = true;
         loop {
+            if !accepting && sessions.is_empty() {
+                break;
+            }
             tokio::select! {
-                biased;
-                _ = cancel.cancelled() => break,
-                accepted = listener.accept() => {
-                    let Ok(tunnel) = accepted else {
-                        break;
-                    };
-                    sessions.spawn(Self::run_session(
-                        tunnel,
-                        peer_manager.clone(),
-                        clients.clone(),
-                        events.clone(),
-                    ));
+                _ = cancel.cancelled() => {
+                    sessions.shutdown().await;
+                    return;
+                },
+                accepted = listener.accept(), if accepting => {
+                    match accepted {
+                        Ok(tunnel) => {
+                            sessions.spawn(Self::run_session(
+                                tunnel,
+                                peer_manager.clone(),
+                                clients.clone(),
+                                events.clone(),
+                            ));
+                        }
+                        Err(error) => {
+                            tracing::warn!(?error, "VPN portal listener stopped accepting");
+                            accepting = false;
+                        }
+                    }
                 }
                 _ = sessions.join_next(), if !sessions.is_empty() => {}
             }
         }
-        sessions.shutdown().await;
     }
 
     async fn run_session(
@@ -338,12 +371,17 @@ impl VpnPortalModule {
         let endpoint = info.remote_addr.clone().map(Into::into);
         let mut tunnel = MpscTunnel::new(tunnel, None);
         let mut stream = tunnel.get_stream();
-        let mut session = VpnPortalClientSession::new(clients, endpoint, tunnel.get_sink());
 
         events.emit(VpnPortalEvent::ClientConnected {
             portal: portal.clone(),
             client: client.clone(),
         });
+        let _event_guard = VpnPortalSessionEventGuard {
+            events,
+            portal,
+            client,
+        };
+        let mut session = VpnPortalClientSession::new(clients, endpoint, tunnel.get_sink());
         loop {
             let message = match stream.next().await {
                 Some(Ok(message)) => message,
@@ -379,7 +417,6 @@ impl VpnPortalModule {
             ),
             VpnPortalClientRemoval::NotRegistered => {}
         }
-        events.emit(VpnPortalEvent::ClientDisconnected { portal, client });
     }
 
     pub async fn stop(&self) {
@@ -400,11 +437,15 @@ impl VpnPortalModule {
                 connected_clients: Vec::new(),
             };
         };
-        let started = self.runtime.lock().await.is_some();
-        let plan = if started {
-            self.client_config_plan().await
-        } else {
-            None
+        let runtime = self.runtime.lock().await;
+        let started = runtime.is_some();
+        let listener_url = runtime
+            .as_ref()
+            .and_then(|runtime| runtime.listener_urls.first().cloned());
+        drop(runtime);
+        let plan = match listener_url {
+            Some(listener_url) => self.client_config_plan(listener_url).await,
+            None => None,
         };
         VpnPortalInfoSnapshot {
             vpn_type: host.name(),
@@ -423,7 +464,10 @@ impl VpnPortalModule {
         }
     }
 
-    async fn client_config_plan(&self) -> Option<VpnPortalClientConfigPlan> {
+    async fn client_config_plan(
+        &self,
+        listener_url: url::Url,
+    ) -> Option<VpnPortalClientConfigPlan> {
         let config = self.runtime_config.snapshot();
         let client_cidr = config.peer.vpn_portal_cidr?;
         let routes = self.peer_manager.list_route_snapshots().await;
@@ -456,6 +500,7 @@ impl VpnPortalModule {
         Some(VpnPortalClientConfigPlan {
             client_cidr,
             allowed_ips,
+            listener_url,
         })
     }
 }
@@ -508,6 +553,12 @@ impl<V> VpnPortalClientSession<V> {
         } else {
             VpnPortalClientRemoval::EntryChangedOrMissing(address)
         }
+    }
+}
+
+impl<V> Drop for VpnPortalClientSession<V> {
+    fn drop(&mut self) {
+        let _ = self.close();
     }
 }
 
@@ -614,6 +665,19 @@ mod tests {
             session.close(),
             VpnPortalClientRemoval::Removed(Ipv4Addr::new(10, 10, 0, 2))
         );
+        assert!(table.is_empty());
+    }
+
+    #[test]
+    fn dropping_session_removes_matching_entry() {
+        let table = Arc::new(VpnPortalClientTable::new());
+        {
+            let mut session = VpnPortalClientSession::new(table.clone(), None, ());
+            session
+                .observe_ipv4_payload(&ipv4_payload([10, 10, 0, 2], [10, 10, 0, 3], 4))
+                .unwrap();
+            assert_eq!(table.len(), 1);
+        }
         assert!(table.is_empty());
     }
 
