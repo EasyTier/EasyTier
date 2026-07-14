@@ -2,6 +2,8 @@ use std::{sync::Arc, time::Duration};
 
 #[cfg(feature = "smoltcp")]
 use easytier_core::proxy::gateway::{GatewayEvent, GatewayEventSink};
+#[cfg(feature = "wireguard")]
+use easytier_core::vpn_portal::VpnPortalHost;
 use easytier_core::{
     connectivity::{
         direct::DirectConnectorOptions,
@@ -25,6 +27,7 @@ use easytier_core::{
     },
     stun::StunServerConfig,
     tunnel::ring::RingTunnelRegistry,
+    vpn_portal::{VpnPortalEvent, VpnPortalEventSink},
 };
 use strum::VariantArray as _;
 
@@ -62,6 +65,25 @@ pub(crate) type RuntimeCoreInstance = CoreInstance<RuntimeConnectorHost>;
 
 struct GlobalCtxManualConnectivityEventSink {
     global_ctx: ArcGlobalCtx,
+}
+
+struct GlobalCtxVpnPortalEventSink {
+    global_ctx: ArcGlobalCtx,
+}
+
+impl VpnPortalEventSink for GlobalCtxVpnPortalEventSink {
+    fn emit(&self, event: VpnPortalEvent) {
+        let event = match event {
+            VpnPortalEvent::Started(portal) => GlobalCtxEvent::VpnPortalStarted(portal),
+            VpnPortalEvent::ClientConnected { portal, client } => {
+                GlobalCtxEvent::VpnPortalClientConnected(portal, client)
+            }
+            VpnPortalEvent::ClientDisconnected { portal, client } => {
+                GlobalCtxEvent::VpnPortalClientDisconnected(portal, client)
+            }
+        };
+        self.global_ctx.issue_event(event);
+    }
 }
 
 #[cfg(feature = "smoltcp")]
@@ -281,6 +303,22 @@ pub(crate) fn runtime_core_instance_adapters_with_ring_registry(
         },
         proxy_cidr_monitor: Some(runtime_proxy_cidr_monitor_host(global_ctx.clone())),
         public_ipv6_provider: Some(runtime_public_ipv6_provider_host(&global_ctx)),
+        vpn_portal: {
+            #[cfg(feature = "wireguard")]
+            {
+                Some(
+                    crate::vpn_portal::wireguard::WireGuardPortalHost::new(global_ctx.clone())
+                        as Arc<dyn VpnPortalHost>,
+                )
+            }
+            #[cfg(not(feature = "wireguard"))]
+            {
+                None
+            }
+        },
+        vpn_portal_events: Some(Arc::new(GlobalCtxVpnPortalEventSink {
+            global_ctx: global_ctx.clone(),
+        })),
         #[cfg(feature = "smoltcp")]
         gateway_events: Some(Arc::new(GlobalCtxGatewayEventSink { global_ctx })),
     }

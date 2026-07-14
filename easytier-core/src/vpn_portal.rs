@@ -1,8 +1,26 @@
-use std::{net::Ipv4Addr, sync::Arc};
+use std::{
+    net::{IpAddr, Ipv4Addr},
+    sync::Arc,
+};
 
+use async_trait::async_trait;
+use cidr::{Ipv4Cidr, Ipv4Inet};
 use dashmap::DashMap;
+use futures::StreamExt;
+use tokio::sync::Mutex;
+use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
 
-use crate::packet::{PacketType, ZCPacket};
+use crate::{
+    listener::SocketListener,
+    packet::{PacketType, ZCPacket, ZCPacketType},
+    peers::{
+        PeerPacketFilter,
+        peer_manager::{PeerManagerCore, PipelineRegistrationGuard},
+    },
+    runtime_config::CoreRuntimeConfigStore,
+    tunnel::{Tunnel, mpsc::MpscTunnel, mpsc::MpscTunnelSender},
+};
 
 const IPV4_HEADER_LEN: usize = 20;
 
@@ -125,6 +143,321 @@ pub struct VpnPortalClientSession<V> {
     table: Arc<VpnPortalClientTable<V>>,
     client: Arc<VpnPortalClient<V>>,
     registered_ip: Option<Ipv4Addr>,
+}
+
+pub type VpnPortalListener = Box<dyn SocketListener<Accepted = Box<dyn Tunnel>>>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VpnPortalClientConfigPlan {
+    pub client_cidr: Ipv4Cidr,
+    pub allowed_ips: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VpnPortalInfoSnapshot {
+    pub vpn_type: String,
+    pub client_config: String,
+    pub connected_clients: Vec<String>,
+}
+
+#[async_trait]
+pub trait VpnPortalHost: Send + Sync + 'static {
+    /// Creates already-listening protocol engines. Core owns accepting from the
+    /// returned listeners and all portable session lifecycle after this seam.
+    async fn start_listeners(&self) -> anyhow::Result<Vec<VpnPortalListener>>;
+
+    fn name(&self) -> String;
+
+    fn render_client_config(&self, plan: &VpnPortalClientConfigPlan) -> String;
+
+    fn not_started_client_config(&self) -> String {
+        "ERROR: VPN Portal Not Started".to_owned()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VpnPortalEvent {
+    Started(String),
+    ClientConnected { portal: String, client: String },
+    ClientDisconnected { portal: String, client: String },
+}
+
+pub trait VpnPortalEventSink: Send + Sync + 'static {
+    fn emit(&self, event: VpnPortalEvent);
+}
+
+impl VpnPortalEventSink for () {
+    fn emit(&self, _event: VpnPortalEvent) {}
+}
+
+struct VpnPortalRuntime {
+    cancel: CancellationToken,
+    tasks: JoinSet<()>,
+    _pipeline: PipelineRegistrationGuard,
+}
+
+struct VpnPortalPeerPacketFilter {
+    clients: Arc<VpnPortalClientTable<MpscTunnelSender>>,
+}
+
+#[async_trait]
+impl PeerPacketFilter for VpnPortalPeerPacketFilter {
+    async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
+        let client = match self.clients.route_peer_packet(&packet) {
+            VpnPortalPeerPacketRoute::Pass => return Some(packet),
+            VpnPortalPeerPacketRoute::Drop => return None,
+            VpnPortalPeerPacketRoute::Deliver { client, .. } => client,
+        };
+
+        let payload_offset = packet.payload_offset();
+        let packet =
+            ZCPacket::new_from_buf(packet.inner().split_off(payload_offset), ZCPacketType::WG);
+        if let Err(error) = client.value().try_send(packet) {
+            tracing::debug!(?error, "failed to send packet to VPN portal client");
+        }
+        None
+    }
+}
+
+pub struct VpnPortalModule {
+    operation: Mutex<()>,
+    peer_manager: Arc<PeerManagerCore>,
+    runtime_config: CoreRuntimeConfigStore,
+    host: Option<Arc<dyn VpnPortalHost>>,
+    events: Arc<dyn VpnPortalEventSink>,
+    clients: Arc<VpnPortalClientTable<MpscTunnelSender>>,
+    runtime: Mutex<Option<VpnPortalRuntime>>,
+}
+
+impl VpnPortalModule {
+    pub fn new(
+        peer_manager: Arc<PeerManagerCore>,
+        runtime_config: CoreRuntimeConfigStore,
+        host: Option<Arc<dyn VpnPortalHost>>,
+        events: Arc<dyn VpnPortalEventSink>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            operation: Mutex::new(()),
+            peer_manager,
+            runtime_config,
+            host,
+            events,
+            clients: Arc::new(VpnPortalClientTable::new()),
+            runtime: Mutex::new(None),
+        })
+    }
+
+    pub async fn start(&self) -> anyhow::Result<()> {
+        let _operation = self.operation.lock().await;
+        if self.runtime.lock().await.is_some() {
+            return Ok(());
+        }
+        if self
+            .runtime_config
+            .snapshot()
+            .peer
+            .vpn_portal_cidr
+            .is_none()
+        {
+            return Ok(());
+        }
+        let Some(host) = self.host.as_ref() else {
+            return Ok(());
+        };
+
+        let listeners = host.start_listeners().await?;
+        if listeners.is_empty() {
+            anyhow::bail!("VPN portal host returned no active listeners");
+        }
+
+        let cancel = CancellationToken::new();
+        let mut tasks = JoinSet::new();
+        for listener in listeners {
+            let local_url = listener.local_url().to_string();
+            tasks.spawn(Self::run_listener(
+                listener,
+                self.peer_manager.clone(),
+                self.clients.clone(),
+                self.events.clone(),
+                cancel.clone(),
+            ));
+            self.events.emit(VpnPortalEvent::Started(local_url));
+        }
+        let pipeline = self
+            .peer_manager
+            .add_managed_packet_process_pipeline(Box::new(VpnPortalPeerPacketFilter {
+                clients: self.clients.clone(),
+            }))
+            .await;
+        *self.runtime.lock().await = Some(VpnPortalRuntime {
+            cancel,
+            tasks,
+            _pipeline: pipeline,
+        });
+        Ok(())
+    }
+
+    async fn run_listener(
+        mut listener: VpnPortalListener,
+        peer_manager: Arc<PeerManagerCore>,
+        clients: Arc<VpnPortalClientTable<MpscTunnelSender>>,
+        events: Arc<dyn VpnPortalEventSink>,
+        cancel: CancellationToken,
+    ) {
+        let mut sessions = JoinSet::new();
+        loop {
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => break,
+                accepted = listener.accept() => {
+                    let Ok(tunnel) = accepted else {
+                        break;
+                    };
+                    sessions.spawn(Self::run_session(
+                        tunnel,
+                        peer_manager.clone(),
+                        clients.clone(),
+                        events.clone(),
+                    ));
+                }
+                _ = sessions.join_next(), if !sessions.is_empty() => {}
+            }
+        }
+        sessions.shutdown().await;
+    }
+
+    async fn run_session(
+        tunnel: Box<dyn Tunnel>,
+        peer_manager: Arc<PeerManagerCore>,
+        clients: Arc<VpnPortalClientTable<MpscTunnelSender>>,
+        events: Arc<dyn VpnPortalEventSink>,
+    ) {
+        let info = tunnel.info().unwrap_or_default();
+        let portal = info.local_addr.clone().unwrap_or_default().to_string();
+        let client = info.remote_addr.clone().unwrap_or_default().to_string();
+        let endpoint = info.remote_addr.clone().map(Into::into);
+        let mut tunnel = MpscTunnel::new(tunnel, None);
+        let mut stream = tunnel.get_stream();
+        let mut session = VpnPortalClientSession::new(clients, endpoint, tunnel.get_sink());
+
+        events.emit(VpnPortalEvent::ClientConnected {
+            portal: portal.clone(),
+            client: client.clone(),
+        });
+        loop {
+            let message = match stream.next().await {
+                Some(Ok(message)) => message,
+                Some(Err(error)) => {
+                    tracing::error!(?error, "failed to receive from VPN portal client");
+                    break;
+                }
+                None => break,
+            };
+
+            assert_eq!(message.packet_type(), ZCPacketType::WG);
+            let payload = message.inner();
+            let Some(packet) = session.observe_ipv4_payload(&payload) else {
+                tracing::error!(?payload, "failed to parse VPN portal IPv4 packet");
+                continue;
+            };
+            let _ = peer_manager
+                .send_msg_by_ip(
+                    ZCPacket::new_with_payload(&payload),
+                    IpAddr::V4(packet.destination),
+                    false,
+                )
+                .await;
+        }
+
+        match session.close() {
+            VpnPortalClientRemoval::Removed(address) => {
+                tracing::info!(?address, "removed VPN portal client from table")
+            }
+            VpnPortalClientRemoval::EntryChangedOrMissing(address) => tracing::info!(
+                ?address,
+                "VPN portal client endpoint changed; retaining replacement"
+            ),
+            VpnPortalClientRemoval::NotRegistered => {}
+        }
+        events.emit(VpnPortalEvent::ClientDisconnected { portal, client });
+    }
+
+    pub async fn stop(&self) {
+        let _operation = self.operation.lock().await;
+        let Some(mut runtime) = self.runtime.lock().await.take() else {
+            return;
+        };
+        runtime.cancel.cancel();
+        runtime.tasks.shutdown().await;
+        self.clients.entries.clear();
+    }
+
+    pub async fn info_snapshot(&self) -> VpnPortalInfoSnapshot {
+        let Some(host) = self.host.as_ref() else {
+            return VpnPortalInfoSnapshot {
+                vpn_type: "null".to_owned(),
+                client_config: String::new(),
+                connected_clients: Vec::new(),
+            };
+        };
+        let started = self.runtime.lock().await.is_some();
+        let plan = if started {
+            self.client_config_plan().await
+        } else {
+            None
+        };
+        VpnPortalInfoSnapshot {
+            vpn_type: host.name(),
+            client_config: if started {
+                plan.as_ref()
+                    .map_or_else(String::new, |plan| host.render_client_config(plan))
+            } else {
+                host.not_started_client_config()
+            },
+            connected_clients: self
+                .clients
+                .endpoint_addrs()
+                .into_iter()
+                .map(|endpoint| endpoint.map(|url| url.to_string()).unwrap_or_default())
+                .collect(),
+        }
+    }
+
+    async fn client_config_plan(&self) -> Option<VpnPortalClientConfigPlan> {
+        let config = self.runtime_config.snapshot();
+        let client_cidr = config.peer.vpn_portal_cidr?;
+        let routes = self.peer_manager.list_route_snapshots().await;
+        let mut allowed_ips = routes
+            .iter()
+            .flat_map(|route| route.proxy_cidrs.iter().cloned())
+            .collect::<Vec<_>>();
+        let local_ipv4 = config
+            .peer
+            .runtime
+            .core
+            .routes
+            .ipv4
+            .as_ref()
+            .and_then(|prefix| {
+                let IpAddr::V4(address) = prefix.address else {
+                    return None;
+                };
+                Ipv4Inet::new(address, prefix.prefix_len).ok()
+            });
+        if let Some(ipv4) = routes
+            .iter()
+            .filter_map(|route| route.ipv4_addr.clone().map(Into::into))
+            .chain(local_ipv4)
+            .next()
+        {
+            allowed_ips.push(Ipv4Inet::from(ipv4).network().to_string());
+        }
+        allowed_ips.push(client_cidr.to_string());
+        Some(VpnPortalClientConfigPlan {
+            client_cidr,
+            allowed_ips,
+        })
+    }
 }
 
 impl<V> VpnPortalClientSession<V> {

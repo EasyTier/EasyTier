@@ -70,7 +70,6 @@ use crate::proto::rpc_types;
 use crate::proto::rpc_types::controller::BaseController;
 use crate::rpc_service::InstanceRpcService;
 use crate::utils::weak_upgrade;
-use crate::vpn_portal::{self, VpnPortal};
 
 #[cfg(feature = "magic-dns")]
 use super::dns_server::{MAGIC_DNS_FAKE_IP, runner::DnsRunner};
@@ -666,8 +665,6 @@ pub struct Instance {
 
     transport_proxy: RuntimeTransportProxyAttachment,
 
-    vpn_portal: Arc<Mutex<Box<dyn VpnPortal>>>,
-
     global_ctx: ArcGlobalCtx,
 }
 
@@ -865,11 +862,6 @@ impl Instance {
         let core_instance = Arc::new(core_instance);
         let config_operation = Arc::new(ConfigOperation::default());
 
-        #[cfg(feature = "wireguard")]
-        let vpn_portal_inst = vpn_portal::wireguard::WireGuard::default();
-        #[cfg(not(feature = "wireguard"))]
-        let vpn_portal_inst = vpn_portal::NullVpnPortal;
-
         Instance {
             inst_name: global_ctx.inst_name.clone(),
             id,
@@ -884,8 +876,6 @@ impl Instance {
             config_operation,
 
             transport_proxy,
-
-            vpn_portal: Arc::new(Mutex::new(Box::new(vpn_portal_inst))),
 
             global_ctx,
         }
@@ -1080,10 +1070,6 @@ impl Instance {
             .start_network_services(Some(RuntimeDhcpIpv4Host::new(self)))
             .await?;
 
-        if self.global_ctx.get_vpn_portal_cidr().is_some() {
-            self.run_vpn_portal().await?;
-        }
-
         #[cfg(feature = "socks5")]
         self.core_instance.start_gateway().await?;
 
@@ -1094,11 +1080,7 @@ impl Instance {
         if self.global_ctx.get_vpn_portal_cidr().is_none() {
             return Err(anyhow::anyhow!("vpn portal cidr not set.").into());
         }
-        self.vpn_portal
-            .lock()
-            .await
-            .start(self.get_global_ctx(), self.get_peer_manager())
-            .await?;
+        self.core_instance.start_vpn_portal().await?;
         Ok(())
     }
 
@@ -1151,8 +1133,7 @@ impl Instance {
     ) -> impl VpnPortalRpc<Controller = BaseController> + Clone + use<> {
         #[derive(Clone)]
         struct VpnPortalRpcService {
-            peer_mgr: Weak<PeerManager>,
-            vpn_portal: Weak<Mutex<Box<dyn VpnPortal>>>,
+            core_instance: Weak<RuntimeCoreInstance>,
         }
 
         #[async_trait::async_trait]
@@ -1164,20 +1145,15 @@ impl Instance {
                 _: BaseController,
                 _request: GetVpnPortalInfoRequest,
             ) -> Result<GetVpnPortalInfoResponse, rpc_types::error::Error> {
-                let Some(vpn_portal) = self.vpn_portal.upgrade() else {
+                let Some(core_instance) = self.core_instance.upgrade() else {
                     return Err(anyhow::anyhow!("vpn portal not available").into());
                 };
-
-                let Some(peer_mgr) = self.peer_mgr.upgrade() else {
-                    return Err(anyhow::anyhow!("peer manager not available").into());
-                };
-
-                let vpn_portal = vpn_portal.lock().await;
+                let info = core_instance.vpn_portal_info().await;
                 let ret = GetVpnPortalInfoResponse {
                     vpn_portal_info: Some(VpnPortalInfo {
-                        vpn_type: vpn_portal.name(),
-                        client_config: vpn_portal.dump_client_config(peer_mgr).await,
-                        connected_clients: vpn_portal.list_clients().await,
+                        vpn_type: info.vpn_type,
+                        client_config: info.client_config,
+                        connected_clients: info.connected_clients,
                     }),
                 };
 
@@ -1186,8 +1162,7 @@ impl Instance {
         }
 
         VpnPortalRpcService {
-            peer_mgr: Arc::downgrade(&self.peer_manager),
-            vpn_portal: Arc::downgrade(&self.vpn_portal),
+            core_instance: Arc::downgrade(&self.core_instance),
         }
     }
 
@@ -1549,10 +1524,6 @@ impl Instance {
 
     pub fn get_global_ctx(&self) -> ArcGlobalCtx {
         self.global_ctx.clone()
-    }
-
-    pub fn get_vpn_portal_inst(&self) -> Arc<Mutex<Box<dyn VpnPortal>>> {
-        self.vpn_portal.clone()
     }
 
     #[cfg(feature = "tun")]

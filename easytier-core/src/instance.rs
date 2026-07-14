@@ -76,6 +76,7 @@ use crate::{
         StunInfoCollector, StunInfoProvider, StunProviderSlot, StunServerConfig, StunSocketMapper,
     },
     tunnel::ring::RingTunnelRegistry,
+    vpn_portal::{VpnPortalEventSink, VpnPortalHost, VpnPortalInfoSnapshot, VpnPortalModule},
 };
 
 #[cfg(feature = "proxy-smoltcp-stack")]
@@ -272,6 +273,8 @@ where
     pub icmp_proxy_host: Option<Arc<dyn IcmpProxyHost>>,
     pub proxy_cidr_monitor: Option<Arc<dyn ProxyCidrMonitorHost>>,
     pub public_ipv6_provider: Option<Arc<dyn PublicIpv6ProviderHost>>,
+    pub vpn_portal: Option<Arc<dyn VpnPortalHost>>,
+    pub vpn_portal_events: Option<Arc<dyn VpnPortalEventSink>>,
     #[cfg(feature = "proxy-smoltcp-stack")]
     pub gateway_events: Option<Arc<dyn GatewayEventSink>>,
 }
@@ -437,6 +440,7 @@ where
     peer_center: Arc<PeerCenterInstance>,
     peer_center_started: AtomicBool,
     public_ipv6_provider: Option<Arc<PublicIpv6ProviderService>>,
+    vpn_portal: Arc<VpnPortalModule>,
     initial_peers: Vec<Url>,
     initial_peers_started: AtomicBool,
     runtime_config: CoreRuntimeConfigStore,
@@ -649,6 +653,8 @@ where
             icmp_proxy_host,
             proxy_cidr_monitor,
             public_ipv6_provider,
+            vpn_portal,
+            vpn_portal_events,
             #[cfg(feature = "proxy-smoltcp-stack")]
             gateway_events,
         } = adapters;
@@ -819,6 +825,12 @@ where
         );
         let peer_center = Arc::new(PeerCenterInstance::new(peer_manager.clone()));
         let public_ipv6_provider = public_ipv6_provider.map(PublicIpv6ProviderService::new);
+        let vpn_portal = VpnPortalModule::new(
+            peer_manager.clone(),
+            runtime_config.clone(),
+            vpn_portal,
+            vpn_portal_events.unwrap_or_else(|| Arc::new(())),
+        );
 
         Ok((
             Self {
@@ -847,6 +859,7 @@ where
                 peer_center,
                 peer_center_started: AtomicBool::new(false),
                 public_ipv6_provider,
+                vpn_portal,
                 initial_peers,
                 initial_peers_started: AtomicBool::new(false),
                 runtime_config,
@@ -877,6 +890,7 @@ where
     }
 
     async fn stop_components(&self) {
+        self.vpn_portal.stop().await;
         if let Some(public_ipv6_provider) = &self.public_ipv6_provider {
             public_ipv6_provider.stop().await;
         }
@@ -1201,7 +1215,24 @@ where
         self.start_peer_center().await?;
         self.start_initial_peers().await?;
         self.start_proxy_cidr_monitor().await?;
+        self.start_vpn_portal().await?;
         Ok(())
+    }
+
+    pub async fn start_vpn_portal(self: &Arc<Self>) -> anyhow::Result<()> {
+        let _operation = self.operation.lock().await;
+        let state = self.state();
+        if state != CoreInstanceState::Running {
+            anyhow::bail!("VPN portal cannot start from core instance state {state:?}");
+        }
+        if self.cancel.is_cancelled() {
+            anyhow::bail!("VPN portal start cancelled");
+        }
+        self.vpn_portal.start().await
+    }
+
+    pub async fn vpn_portal_info(&self) -> VpnPortalInfoSnapshot {
+        self.vpn_portal.info_snapshot().await
     }
 
     #[cfg(feature = "proxy-smoltcp-stack")]

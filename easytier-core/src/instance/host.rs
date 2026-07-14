@@ -108,6 +108,8 @@ where
             icmp_proxy_host: None,
             proxy_cidr_monitor: None,
             public_ipv6_provider: None,
+            vpn_portal: None,
+            vpn_portal_events: None,
             #[cfg(feature = "proxy-smoltcp-stack")]
             gateway_events: None,
         };
