@@ -12,7 +12,9 @@ use easytier_core::peers::context::{
     PeerPublicIpv6State, PeerRelayStateSink, PeerRuntimeConfig, PeerRuntimeSnapshot,
     PeerStunInfoSource,
 };
-use easytier_core::peers::peer_manager::{PortablePeerManagerConfig, RouteAlgoType};
+use easytier_core::peers::peer_manager::{
+    PeerManagerHostAdapters, PeerPublicIpv6HostAdapters, PortablePeerManagerConfig, RouteAlgoType,
+};
 use easytier_core::runtime_config::{CoreRuntimeConfig, CoreRuntimeConfigStore};
 
 use crate::{
@@ -23,6 +25,8 @@ use crate::{
     },
     use_global_var,
 };
+
+use super::foreign_network_manager::RuntimeForeignNetworkRpcRegistrar;
 
 /// Normalizes one native configuration version for the core peer graph.
 pub(crate) fn runtime_peer_manager_config(
@@ -177,6 +181,20 @@ pub(crate) fn core_peer_context_adapters(global_ctx: &ArcGlobalCtx) -> CorePeerC
         event_sink: event_sink.clone(),
         credential_storage: runtime_credential_storage(global_ctx.config.get_credential_file()),
         credential_event_sink: event_sink,
+    }
+}
+
+pub(crate) fn runtime_peer_manager_host_adapters(
+    global_ctx: &ArcGlobalCtx,
+) -> PeerManagerHostAdapters {
+    let event_sink = Arc::new(GlobalCtxPeerEventSink::new(global_ctx.clone()));
+    PeerManagerHostAdapters {
+        relay_state_sink: global_ctx.clone(),
+        event_sink: event_sink.clone(),
+        credential_storage: runtime_credential_storage(global_ctx.config.get_credential_file()),
+        credential_event_sink: event_sink,
+        public_ipv6: Some(PeerPublicIpv6HostAdapters::new(global_ctx.clone())),
+        foreign_rpc_registrar: Arc::new(RuntimeForeignNetworkRpcRegistrar::new(global_ctx.clone())),
     }
 }
 

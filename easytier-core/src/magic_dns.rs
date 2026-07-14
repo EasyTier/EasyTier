@@ -16,13 +16,58 @@ use pnet_packet::{
 };
 
 #[cfg(feature = "proxy-packet")]
-use crate::{config::PeerId, packet::ZCPacket};
+use crate::{
+    config::PeerId,
+    packet::ZCPacket,
+    peers::{BoxNicPacketFilter, NicPacketFilter},
+};
 
 #[cfg(feature = "proxy-packet")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MagicDnsQuery {
     pub source: std::net::SocketAddr,
     pub payload: Vec<u8>,
+}
+
+#[cfg(feature = "proxy-packet")]
+#[async_trait]
+pub trait MagicDnsQueryResolver: Send + Sync + 'static {
+    async fn resolve(&self, query: MagicDnsQuery) -> Option<Vec<u8>>;
+}
+
+#[cfg(feature = "proxy-packet")]
+struct MagicDnsPacketFilter {
+    fake_ip: Ipv4Addr,
+    my_peer_id: PeerId,
+    resolver: std::sync::Arc<dyn MagicDnsQueryResolver>,
+}
+
+#[cfg(feature = "proxy-packet")]
+pub(crate) fn magic_dns_packet_filter(
+    fake_ip: Ipv4Addr,
+    my_peer_id: PeerId,
+    resolver: std::sync::Arc<dyn MagicDnsQueryResolver>,
+) -> BoxNicPacketFilter {
+    Box::new(MagicDnsPacketFilter {
+        fake_ip,
+        my_peer_id,
+        resolver,
+    })
+}
+
+#[cfg(feature = "proxy-packet")]
+#[async_trait]
+impl NicPacketFilter for MagicDnsPacketFilter {
+    async fn try_process_packet_from_nic(&self, packet: &mut ZCPacket) -> bool {
+        process_magic_dns_packet(packet, self.fake_ip, self.my_peer_id, |query| {
+            self.resolver.resolve(query)
+        })
+        .await
+    }
+
+    fn id(&self) -> String {
+        "magic_dns_server".to_owned()
+    }
 }
 
 #[cfg(feature = "proxy-packet")]

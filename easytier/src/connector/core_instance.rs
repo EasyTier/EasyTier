@@ -12,7 +12,10 @@ use easytier_core::{
             discovery::ManualEndpointDiscoveryConfig,
         },
     },
-    instance::{CoreInstance, CoreInstanceAdapters, CoreInstanceConfig},
+    instance::{
+        CoreInstance, CoreInstanceAdapters, CoreInstanceConfig, PacketSink,
+        PortableCoreInstanceConfig,
+    },
     proxy::{
         ProxyRuntimeConfig,
         gateway::GatewayRuntimeConfig,
@@ -49,7 +52,7 @@ use crate::{
         runtime_public_ipv6_provider_config, runtime_public_ipv6_provider_host,
     },
     peers::{
-        context::runtime_peer_manager_config,
+        context::{runtime_peer_manager_config, runtime_peer_manager_host_adapters},
         peer_manager::{PeerManager, RouteAlgoType},
     },
     tunnel::IpScheme,
@@ -365,27 +368,14 @@ where
     let listener_plan = runtime_listener_plan(&global_ctx);
     let listener_configs =
         runtime_transport_listener_configs(&listener_plan, runtime_socket_context(&global_ctx));
-    let config = CoreInstanceConfig {
-        initial_peers: global_ctx
-            .config
-            .get_peers()
-            .into_iter()
-            .map(|peer| peer.uri)
-            .collect(),
-        listeners: listener_configs,
-        runtime: runtime_core_config(&global_ctx),
-        stun: runtime_stun_server_config(&global_ctx),
-        endpoint_discovery: runtime_endpoint_discovery_config(&global_ctx),
-        manual: runtime_manual_options(&global_ctx),
-        direct: runtime_direct_options(&global_ctx, false),
-    };
+    let config = runtime_connectivity_config(&global_ctx, listener_configs);
     let mut adapters = runtime_core_instance_adapters_with_ring_registry(
         global_ctx.clone(),
         ring_registry.clone(),
     );
     adapters.listener_events = Some(runtime_listener_event_sink(global_ctx.clone()));
     adapters.external_listener_factory = Some(RuntimeExternalListenerFactory::new(
-        global_ctx,
+        global_ctx.clone(),
         listener_plan,
     ));
     CoreInstance::new_with_runtime_config_store_and_transport_factory(
@@ -393,6 +383,60 @@ where
         adapters,
         config,
         peer_manager.runtime_config_store(),
+        transport_proxy_factory,
+    )
+}
+
+fn runtime_connectivity_config(
+    global_ctx: &ArcGlobalCtx,
+    listeners: Vec<easytier_core::listener::transport::TransportListenerConfig>,
+) -> CoreInstanceConfig {
+    CoreInstanceConfig {
+        initial_peers: global_ctx
+            .config
+            .get_peers()
+            .into_iter()
+            .map(|peer| peer.uri)
+            .collect(),
+        listeners,
+        runtime: runtime_core_config(&global_ctx),
+        stun: runtime_stun_server_config(&global_ctx),
+        endpoint_discovery: runtime_endpoint_discovery_config(&global_ctx),
+        manual: runtime_manual_options(&global_ctx),
+        direct: runtime_direct_options(&global_ctx, false),
+    }
+}
+
+pub(crate) fn build_portable_runtime_core_instance_with_transport_factory_and_ring_registry<F>(
+    global_ctx: ArcGlobalCtx,
+    packet_sink: Arc<dyn PacketSink>,
+    transport_proxy_factory: F,
+    ring_registry: Arc<RingTunnelRegistry>,
+) -> anyhow::Result<(RuntimeCoreInstance, F::Attachment)>
+where
+    F: WrappedTransportEngineFactory,
+{
+    let listener_plan = runtime_listener_plan(&global_ctx);
+    let listener_configs =
+        runtime_transport_listener_configs(&listener_plan, runtime_socket_context(&global_ctx));
+    let config = PortableCoreInstanceConfig {
+        peer: runtime_peer_manager_config(&global_ctx, RouteAlgoType::Ospf),
+        connectivity: runtime_connectivity_config(&global_ctx, listener_configs),
+    };
+    let mut adapters = runtime_core_instance_adapters_with_ring_registry(
+        global_ctx.clone(),
+        ring_registry.clone(),
+    );
+    adapters.listener_events = Some(runtime_listener_event_sink(global_ctx.clone()));
+    adapters.external_listener_factory = Some(RuntimeExternalListenerFactory::new(
+        global_ctx.clone(),
+        listener_plan,
+    ));
+    CoreInstance::new_portable_with_peer_adapters_and_transport_factory(
+        adapters,
+        runtime_peer_manager_host_adapters(&global_ctx),
+        config,
+        packet_sink,
         transport_proxy_factory,
     )
 }
@@ -621,6 +665,29 @@ mod tests {
         assert_eq!(config.udp_servers, vec!["stun-v4.example"]);
         assert_eq!(config.udp_v6_servers, vec!["stun-v6.example"]);
         assert_eq!(config.tcp_servers, default_tcp_stun_servers());
+    }
+
+    #[tokio::test]
+    async fn portable_runtime_builder_constructs_and_owns_peer_graph() {
+        let global_ctx = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
+            "portable-runtime-builder".to_owned(),
+            String::new(),
+        )));
+        let (packet_sink, _packet_receiver) = create_host_packet_channel();
+        let (instance, ()) =
+            build_portable_runtime_core_instance_with_transport_factory_and_ring_registry(
+                global_ctx,
+                Arc::new(packet_sink),
+                NoWrappedTransportEngineFactory,
+                Arc::new(RingTunnelRegistry::default()),
+            )
+            .unwrap();
+        let instance = Arc::new(instance);
+
+        instance.start().await.unwrap();
+        assert_ne!(instance.peer_id(), 0);
+        instance.stop().await;
+        assert_eq!(instance.state(), CoreInstanceState::Stopped);
     }
 
     #[test]

@@ -46,6 +46,7 @@ use crate::{
             RawAcceptedTransportHandler, TransportListenerConfig, TransportListenerService,
         },
     },
+    magic_dns::{MagicDnsRouteSnapshot, MagicDnsRouteSource},
     peer_center::instance::{PeerCenterInstance, PeerCenterInstanceService},
     peers::{
         acl_config::AclRuleConfig,
@@ -73,6 +74,7 @@ use crate::{
         tcp::VirtualTcpSocketFactory,
         udp::VirtualUdpSocketFactory,
     },
+    stats_manager::{CounterHandle, LabelSet, LabelType, MetricName, MetricSnapshot},
     stun::{
         StunInfoCollector, StunInfoProvider, StunProviderSlot, StunServerConfig, StunSocketMapper,
     },
@@ -91,6 +93,11 @@ use self::{
 use crate::proxy::wrapped_transport::{WrappedTransportKind, WrappedTransportRole};
 #[cfg(feature = "proxy-packet")]
 use crate::proxy::{runtime::IcmpProxyHost, service::CoreProxyModule};
+#[cfg(feature = "proxy-packet")]
+use crate::{
+    magic_dns::{MagicDnsQueryResolver, magic_dns_packet_filter},
+    peers::peer_manager::PipelineRegistrationGuard,
+};
 
 pub use packet_io::PacketSink;
 use packet_io::{PacketEgress, parse_ip_packet};
@@ -205,6 +212,32 @@ pub struct CredentialCreateOptions {
     pub ttl: Duration,
     pub credential_id: Option<String>,
     pub reusable: bool,
+}
+
+#[derive(Clone)]
+pub struct UdpBroadcastRelayStats {
+    packets_captured: CounterHandle,
+    packets_ignored: CounterHandle,
+    packets_forwarded: CounterHandle,
+    packets_forward_failed: CounterHandle,
+}
+
+impl UdpBroadcastRelayStats {
+    pub fn record_captured(&self) {
+        self.packets_captured.inc();
+    }
+
+    pub fn record_ignored(&self) {
+        self.packets_ignored.inc();
+    }
+
+    pub fn record_forwarded(&self) {
+        self.packets_forwarded.inc();
+    }
+
+    pub fn record_forward_failed(&self) {
+        self.packets_forward_failed.inc();
+    }
 }
 
 fn validate_portable_connectivity_config(
@@ -1667,6 +1700,54 @@ where
         self.peer_manager.credential_manager().list_credentials()
     }
 
+    pub fn metric_snapshots(&self) -> Vec<MetricSnapshot> {
+        self.peer_manager.stats_manager().get_all_metrics()
+    }
+
+    pub fn prometheus_metrics(&self) -> String {
+        self.peer_manager.stats_manager().export_prometheus()
+    }
+
+    pub fn udp_broadcast_relay_stats(&self) -> UdpBroadcastRelayStats {
+        let network_name = self
+            .runtime_config
+            .snapshot()
+            .peer
+            .runtime
+            .network_identity
+            .network_name
+            .clone();
+        let labels = LabelSet::new().with_label_type(LabelType::NetworkName(network_name));
+        let stats = self.peer_manager.stats_manager();
+        UdpBroadcastRelayStats {
+            packets_captured: stats
+                .get_counter(MetricName::UdpBroadcastRelayPacketsCaptured, labels.clone()),
+            packets_ignored: stats
+                .get_counter(MetricName::UdpBroadcastRelayPacketsIgnored, labels.clone()),
+            packets_forwarded: stats.get_counter(
+                MetricName::UdpBroadcastRelayPacketsForwarded,
+                labels.clone(),
+            ),
+            packets_forward_failed: stats
+                .get_counter(MetricName::UdpBroadcastRelayPacketsForwardFailed, labels),
+        }
+    }
+
+    #[cfg(feature = "proxy-packet")]
+    pub async fn register_magic_dns_resolver(
+        &self,
+        fake_ip: std::net::Ipv4Addr,
+        resolver: Arc<dyn MagicDnsQueryResolver>,
+    ) -> PipelineRegistrationGuard {
+        self.peer_manager
+            .add_managed_nic_packet_process_pipeline(magic_dns_packet_filter(
+                fake_ip,
+                self.peer_id(),
+                resolver,
+            ))
+            .await
+    }
+
     pub async fn close_peer_conn(
         &self,
         peer_id: crate::config::PeerId,
@@ -1709,6 +1790,32 @@ where
             )
             .await
             .map_err(Into::into)
+    }
+
+    pub async fn send_local_ip_packet(&self, packet: Vec<u8>) -> anyhow::Result<()> {
+        let destination = parse_ip_packet(&packet)?.destination;
+        self.peer_manager
+            .send_msg_by_ip(
+                crate::packet::ZCPacket::new_with_payload(&packet),
+                destination,
+                true,
+            )
+            .await
+            .map_err(Into::into)
+    }
+}
+
+#[async_trait]
+impl<H> MagicDnsRouteSource for CoreInstance<H>
+where
+    H: DirectConnectorHost + TcpHolePunchHost,
+{
+    async fn snapshot(&self) -> MagicDnsRouteSnapshot {
+        MagicDnsRouteSource::snapshot(self.peer_manager.as_ref()).await
+    }
+
+    async fn revision(&self) -> quanta::Instant {
+        MagicDnsRouteSource::revision(self.peer_manager.as_ref()).await
     }
 }
 
