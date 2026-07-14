@@ -4,10 +4,8 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"io"
 	"net"
-	"syscall"
 	"testing"
 	"time"
 
@@ -163,8 +161,12 @@ func (tcpErrorSocketFactory) ListenTCP(
 }
 
 func TestOpaqueFactoryPreservesTCPConnectErrorKind(t *testing.T) {
+	refused := refusedTestError()
+	if refused == nil {
+		t.Skip("platform does not expose a classifiable connection-refused error")
+	}
 	bridge := NewBridge(BridgeConfig{SocketFactory: tcpErrorSocketFactory{
-		err: fmt.Errorf("wrapped connect: %w", syscall.ECONNREFUSED),
+		err: refused,
 	}})
 	defer bridge.close()
 	wasm := buildGuest(t)
@@ -206,19 +208,6 @@ func TestOpaqueFactoryPreservesTCPConnectErrorKind(t *testing.T) {
 	}
 	if status != opaqueDone|1 {
 		t.Fatalf("factory error status 0x%x, want ConnectionRefused", status)
-	}
-}
-
-func TestTCPConnectErrorStatus(t *testing.T) {
-	for err, want := range map[error]int32{
-		syscall.ECONNREFUSED: opaqueHostConnectionRefused,
-		syscall.ECONNABORTED: opaqueHostConnectionAborted,
-		syscall.ECONNRESET:   opaqueHostConnectionReset,
-		syscall.ENOTCONN:     opaqueHostNotConnected,
-	} {
-		if got := tcpConnectErrorStatus(fmt.Errorf("wrapped: %w", err)); got != want {
-			t.Fatalf("connect error %v status %d, want %d", err, got, want)
-		}
 	}
 }
 

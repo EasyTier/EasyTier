@@ -5,10 +5,8 @@ package host
 import (
 	"context"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"net"
-	"syscall"
 	"unicode/utf8"
 
 	"github.com/tetratelabs/wazero/api"
@@ -135,13 +133,13 @@ func (b *opaqueBridge) takeTCPConnect(
 
 func tcpConnectErrorStatus(err error) int32 {
 	switch {
-	case errors.Is(err, syscall.ECONNREFUSED):
+	case isConnectionRefused(err):
 		return opaqueHostConnectionRefused
-	case errors.Is(err, syscall.ECONNABORTED):
+	case isConnectionAborted(err):
 		return opaqueHostConnectionAborted
-	case errors.Is(err, syscall.ECONNRESET):
+	case isConnectionReset(err):
 		return opaqueHostConnectionReset
-	case errors.Is(err, syscall.ENOTCONN):
+	case isNotConnected(err):
 		return opaqueHostNotConnected
 	default:
 		return opaqueHostIOError
