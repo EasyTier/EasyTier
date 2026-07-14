@@ -1419,6 +1419,7 @@ impl PeerManagerCore {
         P2pPolicyFlags {
             disable_udp_hole_punching: flags.disable_udp_hole_punching,
             disable_sym_hole_punching: flags.disable_sym_hole_punching,
+            disable_upnp: flags.disable_upnp,
             lazy_p2p: flags.lazy_p2p,
             disable_p2p: flags.disable_p2p,
             need_p2p: flags.need_p2p,

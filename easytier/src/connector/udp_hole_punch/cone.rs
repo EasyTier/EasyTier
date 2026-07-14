@@ -9,7 +9,7 @@ pub mod tests {
             reset_udp_port_mapping_attempts_for_test, udp_port_mapping_attempts_for_test,
         },
         connector::udp_hole_punch::{
-            UdpHolePunchConnector, common::RuntimeUdpHolePunchRuntime,
+            UdpHolePunchConnector, common::runtime_udp_hole_punch_runtime,
             signaling::PeerRpcUdpHolePunchSignaling,
             tests::create_mock_peer_manager_with_mock_stun,
         },
@@ -59,7 +59,7 @@ pub mod tests {
         reset_udp_port_mapping_attempts_for_test();
 
         let ret = punch_cone_to_cone(
-            Arc::new(RuntimeUdpHolePunchRuntime::new(p_a.get_global_ctx())),
+            runtime_udp_hole_punch_runtime(&p_a),
             Arc::new(PeerRpcUdpHolePunchSignaling::new(p_a.clone())),
             p_c.my_peer_id(),
         )

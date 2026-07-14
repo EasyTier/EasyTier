@@ -7,7 +7,9 @@ use std::{
 };
 
 use anyhow::Error;
-use common::{RuntimeUdpHolePunchPeerSource, RuntimeUdpHolePunchRuntime};
+use common::{
+    RuntimeUdpHolePunchPeerSource, RuntimeUdpHolePunchRuntime, runtime_udp_hole_punch_runtime,
+};
 use easytier_core::{
     hole_punch::udp::{
         BLACKLIST_TIMEOUT_SEC, ProtocolUdpHolePunchTransportSink,
@@ -68,18 +70,12 @@ struct UdpHolePunchServer {
 
 impl UdpHolePunchServer {
     pub fn new(
-        peer_mgr: Arc<PeerManager>,
         stun: Arc<dyn StunInfoProvider>,
         transport_sink: Arc<RuntimeUdpHolePunchTransportSink>,
         sym_punch_lock: UdpSymPunchLock,
+        runtime: Arc<RuntimeUdpHolePunchRuntime>,
     ) -> Arc<Self> {
-        let global_ctx = peer_mgr.get_global_ctx();
-        let inner = CoreUdpHolePunchServer::new(
-            Arc::new(RuntimeUdpHolePunchRuntime::new(global_ctx.clone())),
-            stun,
-            transport_sink,
-            sym_punch_lock,
-        );
+        let inner = CoreUdpHolePunchServer::new(runtime, stun, transport_sink, sym_punch_lock);
 
         Arc::new(Self { inner })
     }
@@ -327,11 +323,12 @@ impl UdpHolePunchConnector {
             super::protocol::runtime_client_protocol_upgrader(global_ctx.clone()),
             peer_mgr.core(),
         ));
+        let runtime = runtime_udp_hole_punch_runtime(&peer_mgr);
         let client = RuntimeUdpHolePunchConnector::new(
             Arc::new(RuntimeUdpHolePunchPeerSource::new(peer_mgr.clone())),
             Arc::new(PeerRpcUdpHolePunchSignaling::new(peer_mgr.clone())),
             transport_sink.clone(),
-            Arc::new(RuntimeUdpHolePunchRuntime::new(global_ctx)),
+            runtime.clone(),
             stun.clone(),
             sym_punch_lock.clone(),
             Some(peer_mgr.core().p2p_demand_notify()),
@@ -339,7 +336,7 @@ impl UdpHolePunchConnector {
         client.set_try_cone_before_sym(!RUN_TESTING.load(Ordering::Relaxed));
 
         Self {
-            server: UdpHolePunchServer::new(peer_mgr.clone(), stun, transport_sink, sym_punch_lock),
+            server: UdpHolePunchServer::new(stun, transport_sink, sym_punch_lock, runtime),
             client,
             peer_mgr,
         }

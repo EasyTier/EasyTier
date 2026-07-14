@@ -28,7 +28,7 @@ use crate::{
         netns::NetNS,
         stun::MockStunInfoCollector,
     },
-    connector::udp_hole_punch::{UdpHolePunchConnector, common::RuntimeUdpHolePunchRuntime},
+    connector::udp_hole_punch::{UdpHolePunchConnector, common::runtime_udp_hole_punch_runtime},
     instance::instance::Instance,
     peers::{
         create_packet_recv_chan,
@@ -1541,7 +1541,7 @@ async fn udp_hole_punch_listener_establishes_upnp_mapping() {
     .await;
     let mut event_rx = peer_mgr.get_global_ctx().subscribe();
 
-    let runtime = RuntimeUdpHolePunchRuntime::new(peer_mgr.get_global_ctx());
+    let runtime = runtime_udp_hole_punch_runtime(&peer_mgr);
     let listener = runtime.create_listener(true).await.unwrap();
     let local_port = listener.socket.local_addr().unwrap().port();
 
@@ -1596,7 +1596,7 @@ async fn udp_hole_punch_listener_skips_upnp_when_disabled() {
     .await;
     let mut event_rx = peer_mgr.get_global_ctx().subscribe();
 
-    let runtime = RuntimeUdpHolePunchRuntime::new(peer_mgr.get_global_ctx());
+    let runtime = runtime_udp_hole_punch_runtime(&peer_mgr);
     let listener = runtime.create_listener(true).await.unwrap();
     let local_port = listener.socket.local_addr().unwrap().port();
 

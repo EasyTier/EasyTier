@@ -70,7 +70,9 @@ pub trait UdpPunchConnCounter: Send + Sync {
     fn get(&self) -> Option<u32>;
 }
 
-pub trait UdpPortMappingLease: Send + Sync + std::fmt::Debug {}
+pub trait UdpPortMappingLease: Send + Sync + std::fmt::Debug {
+    fn public_addr_resolved(&self, _mapped_addr: SocketAddr) {}
+}
 
 pub struct UdpPunchListener<S> {
     pub socket: Arc<S>,

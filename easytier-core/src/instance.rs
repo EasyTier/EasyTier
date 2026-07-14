@@ -3,6 +3,7 @@
 pub mod host;
 pub mod packet_io;
 pub mod public_ipv6_provider;
+pub mod udp_hole_punch;
 
 #[cfg(any(test, target_os = "wasi"))]
 mod runtime_driver;

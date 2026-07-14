@@ -1,7 +1,6 @@
 use std::{
     fmt,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
-    sync::Arc,
     time::Duration,
 };
 
@@ -9,7 +8,7 @@ use std::{
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Context, anyhow, bail};
-use easytier_core::stun::StunSocketMapper as _;
+use easytier_core::hole_punch::udp::UdpPortMappingLease as CoreUdpPortMappingLease;
 use igd_next::{
     AddAnyPortError, PortMappingProtocol, SearchOptions,
     aio::{
@@ -23,7 +22,6 @@ use natpmp::{
 use tokio::sync::oneshot;
 
 use super::global_ctx::{ArcGlobalCtx, GlobalCtxEvent};
-use crate::socket::udp::RuntimeUdpSocket;
 use crate::tunnel::build_url_from_socket_addr;
 
 const UPNP_SEARCH_TIMEOUT: Duration = Duration::from_secs(1);
@@ -188,6 +186,8 @@ impl ActiveUdpPortMapping {
 }
 
 pub struct UdpPortMappingLease {
+    global_ctx: ArcGlobalCtx,
+    local_listener: url::Url,
     backend: &'static str,
     gateway_external_port: u16,
     stop_tx: Option<oneshot::Sender<()>>,
@@ -220,60 +220,30 @@ impl Drop for UdpPortMappingLease {
     }
 }
 
-pub async fn resolve_udp_public_addr(
-    global_ctx: ArcGlobalCtx,
-    local_listener: &url::Url,
-    socket: Arc<RuntimeUdpSocket>,
-) -> anyhow::Result<(SocketAddr, Option<UdpPortMappingLease>)> {
-    let port_mapping = match try_start_udp_port_mapping(&global_ctx, local_listener).await {
-        Ok(mapping) => mapping,
-        Err(err) => {
-            tracing::warn!(
-                ?err,
-                %local_listener,
-                "failed to establish udp port mapping, fallback to stun-only public addr resolution"
-            );
-            None
-        }
-    };
-
-    let mapped_addr = global_ctx
-        .get_stun_info_collector()
-        .get_udp_port_mapping_with_socket(socket)
-        .await
-        .map_err(anyhow::Error::from)
-        .with_context(|| format!("resolve udp public addr for {local_listener}"))?;
-
-    if let Some(port_mapping) = port_mapping.as_ref() {
+impl CoreUdpPortMappingLease for UdpPortMappingLease {
+    fn public_addr_resolved(&self, mapped_addr: SocketAddr) {
         let mapped_listener = build_url_from_socket_addr(&mapped_addr.to_string(), "udp");
-        global_ctx.issue_event(GlobalCtxEvent::ListenerPortMappingEstablished {
-            local_listener: local_listener.clone(),
-            mapped_listener,
-            backend: port_mapping.backend().to_string(),
-        });
+        self.global_ctx
+            .issue_event(GlobalCtxEvent::ListenerPortMappingEstablished {
+                local_listener: self.local_listener.clone(),
+                mapped_listener,
+                backend: self.backend().to_string(),
+            });
         tracing::info!(
-            %local_listener,
-            backend = port_mapping.backend(),
-            gateway_external_port = port_mapping.gateway_external_port(),
+            local_listener = %self.local_listener,
+            backend = self.backend(),
+            gateway_external_port = self.gateway_external_port(),
             stun_mapped_addr = %mapped_addr,
             "udp public addr resolved after port mapping"
         );
-    } else {
-        tracing::debug!(
-            %local_listener,
-            stun_mapped_addr = %mapped_addr,
-            "udp public addr resolved without port mapping"
-        );
     }
-
-    Ok((mapped_addr, port_mapping))
 }
 
-async fn try_start_udp_port_mapping(
+pub async fn start_udp_port_mapping(
     global_ctx: &ArcGlobalCtx,
     local_listener: &url::Url,
 ) -> anyhow::Result<Option<UdpPortMappingLease>> {
-    if global_ctx.get_flags().disable_upnp || !should_map_udp_listener(local_listener) {
+    if !should_map_udp_listener(local_listener) {
         return Ok(None);
     }
 
@@ -326,6 +296,8 @@ async fn try_start_udp_port_mapping(
     }
 
     Ok(Some(UdpPortMappingLease {
+        global_ctx: global_ctx.clone(),
+        local_listener: local_listener.clone(),
         backend,
         gateway_external_port,
         stop_tx: Some(stop_tx),

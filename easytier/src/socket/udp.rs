@@ -329,8 +329,8 @@ mod tests {
     };
 
     use crate::{
-        common::global_ctx::tests::get_mock_global_ctx,
-        connector::udp_hole_punch::common::RuntimeUdpHolePunchRuntime,
+        connector::udp_hole_punch::common::runtime_udp_hole_punch_runtime,
+        peers::tests::create_mock_peer_manager,
     };
 
     use super::*;
@@ -379,9 +379,10 @@ mod tests {
         listener.listen().await.unwrap();
 
         let receiver = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let runtime = RuntimeUdpHolePunchRuntime::new(get_mock_global_ctx());
+        let peer_manager = create_mock_peer_manager().await;
+        let runtime = runtime_udp_hole_punch_runtime(&peer_manager);
         send_v4_hole_punch_control_packet(
-            &runtime,
+            runtime.as_ref(),
             SocketContext::default(),
             listener.local_url().port().unwrap(),
             match receiver.local_addr().unwrap() {
@@ -414,9 +415,10 @@ mod tests {
         listener.listen().await.unwrap();
 
         let receiver = UdpSocket::bind("[::]:0").await.unwrap();
-        let runtime = RuntimeUdpHolePunchRuntime::new(get_mock_global_ctx());
+        let peer_manager = create_mock_peer_manager().await;
+        let runtime = runtime_udp_hole_punch_runtime(&peer_manager);
         send_v6_hole_punch_control_packet(
-            &runtime,
+            runtime.as_ref(),
             SocketContext::default(),
             listener.local_url().port().unwrap(),
             match receiver.local_addr().unwrap() {
