@@ -232,7 +232,7 @@ impl Default for ListenerManagerOptions {
     }
 }
 
-pub struct ListenerManager<Accepted, H> {
+pub struct ListenerManager<Accepted, H: ?Sized> {
     factories: Vec<ListenerFactory<Accepted>>,
     handler: Arc<H>,
     events: Arc<dyn ListenerEventSink>,
@@ -271,7 +271,7 @@ impl AcceptedTaskSpawner {
 impl<Accepted, H> ListenerManager<Accepted, H>
 where
     Accepted: Send + 'static,
-    H: AcceptedSocketHandler<Accepted> + 'static,
+    H: AcceptedSocketHandler<Accepted> + ?Sized + 'static,
 {
     pub fn new(handler: Arc<H>) -> Self {
         Self::new_with_options(
@@ -422,7 +422,7 @@ async fn run_listener<Accepted, H>(
     mut initial_listener: Option<RegisteredListener<Accepted>>,
 ) where
     Accepted: Send + 'static,
-    H: AcceptedSocketHandler<Accepted> + 'static,
+    H: AcceptedSocketHandler<Accepted> + ?Sized + 'static,
 {
     let mut listen_error_count = 0;
     loop {

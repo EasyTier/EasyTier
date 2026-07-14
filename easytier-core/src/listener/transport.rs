@@ -83,6 +83,89 @@ pub trait AcceptedTunnelHandler: Send + Sync + 'static {
     async fn handle_tunnel(&self, tunnel: Box<dyn crate::tunnel::Tunnel>) -> anyhow::Result<()>;
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AcceptedTunnelEvent {
+    Accepted {
+        local_url: String,
+        remote_url: String,
+    },
+    AdmissionFailed {
+        local_url: String,
+        remote_url: String,
+        error: String,
+    },
+}
+
+pub trait AcceptedTunnelEventSink: Send + Sync + 'static {
+    fn emit(&self, event: AcceptedTunnelEvent);
+}
+
+impl AcceptedTunnelEventSink for () {
+    fn emit(&self, _event: AcceptedTunnelEvent) {}
+}
+
+pub(crate) struct PeerAcceptedTunnelHandler {
+    peer_manager: Weak<PeerManagerCore>,
+    events: Arc<dyn AcceptedTunnelEventSink>,
+}
+
+impl PeerAcceptedTunnelHandler {
+    pub(crate) fn new(
+        peer_manager: &Arc<PeerManagerCore>,
+        events: Arc<dyn AcceptedTunnelEventSink>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            peer_manager: Arc::downgrade(peer_manager),
+            events,
+        })
+    }
+}
+
+#[async_trait]
+impl AcceptedTunnelHandler for PeerAcceptedTunnelHandler {
+    async fn handle_tunnel(&self, tunnel: Box<dyn Tunnel>) -> anyhow::Result<()> {
+        let tunnel_info = tunnel
+            .info()
+            .ok_or_else(|| anyhow::anyhow!("accepted tunnel has no tunnel info"))?;
+        let local_url = tunnel_info
+            .local_addr
+            .clone()
+            .unwrap_or_default()
+            .to_string();
+        let remote_url = tunnel_info
+            .remote_addr
+            .clone()
+            .unwrap_or_default()
+            .to_string();
+        self.events.emit(AcceptedTunnelEvent::Accepted {
+            local_url: local_url.clone(),
+            remote_url: remote_url.clone(),
+        });
+        tracing::info!(ret = ?tunnel, "conn accepted");
+
+        let Some(peer_manager) = self.peer_manager.upgrade() else {
+            let error = "peer manager is gone, cannot handle tunnel".to_owned();
+            self.events.emit(AcceptedTunnelEvent::AdmissionFailed {
+                local_url,
+                remote_url,
+                error: error.clone(),
+            });
+            tracing::error!(error = %error, "handle conn error");
+            return Err(anyhow::anyhow!(error));
+        };
+        if let Err(error) = peer_manager.add_tunnel_as_server(tunnel, true).await {
+            self.events.emit(AcceptedTunnelEvent::AdmissionFailed {
+                local_url,
+                remote_url,
+                error: error.to_string(),
+            });
+            tracing::error!(?error, "handle conn error");
+            return Err(error.into());
+        }
+        Ok(())
+    }
+}
+
 #[async_trait]
 impl AcceptedTunnelHandler for PeerManagerCore {
     async fn handle_tunnel(&self, tunnel: Box<dyn crate::tunnel::Tunnel>) -> anyhow::Result<()> {
@@ -93,7 +176,7 @@ impl AcceptedTunnelHandler for PeerManagerCore {
 
 /// Upgrades accepted sockets or sessions in core before peer admission.
 pub struct ProtocolAcceptedTransportHandler<TcpSocket, H> {
-    tunnel_handler: Weak<H>,
+    tunnel_handler: Arc<H>,
     protocol: Arc<dyn ServerProtocolUpgrader<TcpSocket>>,
 }
 
@@ -103,7 +186,7 @@ impl<TcpSocket, H> ProtocolAcceptedTransportHandler<TcpSocket, H> {
         protocol: Arc<dyn ServerProtocolUpgrader<TcpSocket>>,
     ) -> Self {
         Self {
-            tunnel_handler: Arc::downgrade(tunnel_handler),
+            tunnel_handler: tunnel_handler.clone(),
             protocol,
         }
     }
@@ -114,11 +197,7 @@ where
     H: AcceptedTunnelHandler,
 {
     async fn handle_tunnel(&self, tunnel: Box<dyn crate::tunnel::Tunnel>) -> anyhow::Result<()> {
-        self.tunnel_handler
-            .upgrade()
-            .ok_or_else(|| anyhow::anyhow!("accepted tunnel handler is gone"))?
-            .handle_tunnel(tunnel)
-            .await
+        self.tunnel_handler.handle_tunnel(tunnel).await
     }
 
     async fn handle_upgrade(&self, upgrade: ServerProtocolUpgrade) -> anyhow::Result<()> {
@@ -625,27 +704,9 @@ async fn resolve_listener_addr(
     .ok_or_else(|| anyhow::anyhow!("listener has no resolved address: {url}"))
 }
 
-struct ErasedAcceptedTransportHandler<TcpSocket> {
-    inner: Arc<dyn AcceptedSocketHandler<AcceptedTransport<TcpSocket>>>,
-}
-
-#[async_trait]
-impl<TcpSocket> AcceptedSocketHandler<AcceptedTransport<TcpSocket>>
-    for ErasedAcceptedTransportHandler<TcpSocket>
-where
-    TcpSocket: Send + 'static,
-{
-    async fn handle_accepted_socket(
-        &self,
-        accepted: AcceptedTransport<TcpSocket>,
-    ) -> anyhow::Result<()> {
-        self.inner.handle_accepted_socket(accepted).await
-    }
-}
-
 type HostTransportListenerManager<H> = ListenerManager<
     AcceptedTransport<HostAcceptedTcpSocket<H>>,
-    ErasedAcceptedTransportHandler<HostAcceptedTcpSocket<H>>,
+    dyn AcceptedSocketHandler<AcceptedTransport<HostAcceptedTcpSocket<H>>>,
 >;
 
 /// Owns core Ring listeners and TCP/UDP listeners built from host factories.
@@ -693,7 +754,6 @@ where
         handler: Arc<dyn AcceptedSocketHandler<AcceptedTransport<HostAcceptedTcpSocket<H>>>>,
         events: Option<Arc<dyn ListenerEventSink>>,
     ) -> Self {
-        let handler = Arc::new(ErasedAcceptedTransportHandler { inner: handler });
         let mut manager = match events {
             Some(events) => ListenerManager::new_with_events(handler, events),
             None => ListenerManager::new(handler),

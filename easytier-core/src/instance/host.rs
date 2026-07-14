@@ -100,9 +100,10 @@ where
             ring_registry: Arc::new(crate::tunnel::ring::RingTunnelRegistry::default()),
             protocol: None,
             manual_events: None,
-            listener: None,
+            external_listener_factory: None,
             listener_events: None,
-            accepted_transport_handler: None,
+            server_protocol: None,
+            accepted_tunnel_events: None,
             udp_hole_punch_platform: None,
             #[cfg(feature = "proxy-packet")]
             icmp_proxy_host: None,

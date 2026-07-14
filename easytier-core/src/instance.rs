@@ -32,7 +32,7 @@ use crate::{
         },
         protocol::{
             ClientProtocolUpgrader, CoreClientProtocolConfig, CoreClientProtocolUpgrader,
-            CoreServerProtocolConfig, CoreServerProtocolUpgrader,
+            CoreServerProtocolConfig, CoreServerProtocolUpgrader, ServerProtocolUpgrader,
         },
     },
     dhcp::{DhcpIpv4Host, DhcpIpv4RouteSource, DhcpIpv4Service},
@@ -41,8 +41,9 @@ use crate::{
         AcceptedSocketHandler, ListenerEventSink, ListenerEventSinkGroup, RunningListenerProvider,
         RunningListenerProviderGroup, RunningListenerRegistry,
         transport::{
-            AcceptedTransport, HostAcceptedTcpSocket, RawAcceptedTransportHandler,
-            TransportListenerConfig, TransportListenerService,
+            AcceptedTransport, AcceptedTunnelEventSink, HostAcceptedTcpSocket,
+            PeerAcceptedTunnelHandler, ProtocolAcceptedTransportHandler,
+            RawAcceptedTransportHandler, TransportListenerConfig, TransportListenerService,
         },
     },
     peer_center::instance::{PeerCenterInstance, PeerCenterInstanceService},
@@ -226,9 +227,9 @@ fn validate_portable_connectivity_config(
 
 fn validate_listener_protocols(
     listeners: &[TransportListenerConfig],
-    has_custom_handler: bool,
+    has_server_protocol: bool,
 ) -> anyhow::Result<()> {
-    if has_custom_handler {
+    if has_server_protocol {
         return Ok(());
     }
     if let Some(listener) = listeners
@@ -236,7 +237,7 @@ fn validate_listener_protocols(
         .find(|listener| !listener.supports_raw_handler())
     {
         anyhow::bail!(
-            "listener {} requires a custom accepted transport handler",
+            "listener {} requires a server protocol upgrader",
             listener.url()
         );
     }
@@ -262,10 +263,11 @@ where
     pub ring_registry: Arc<RingTunnelRegistry>,
     pub protocol: Option<Arc<dyn ClientProtocolUpgrader<<H as VirtualTcpSocketFactory>::Socket>>>,
     pub manual_events: Option<Arc<dyn ManualConnectivityEventSink>>,
-    pub listener: Option<Arc<dyn ListenerService>>,
+    pub external_listener_factory:
+        Option<Arc<dyn ExternalListenerFactory<AcceptedTransport<HostAcceptedTcpSocket<H>>>>>,
     pub listener_events: Option<Arc<dyn ListenerEventSink>>,
-    pub accepted_transport_handler:
-        Option<Arc<dyn AcceptedSocketHandler<AcceptedTransport<HostAcceptedTcpSocket<H>>>>>,
+    pub server_protocol: Option<Arc<dyn ServerProtocolUpgrader<HostAcceptedTcpSocket<H>>>>,
+    pub accepted_tunnel_events: Option<Arc<dyn AcceptedTunnelEventSink>>,
     /// Optional OS port-mapping adapter. STUN-only hole punching remains
     /// available when the host does not provide one.
     pub udp_hole_punch_platform: Option<Arc<dyn UdpHolePunchPlatform>>,
@@ -277,6 +279,26 @@ where
     pub vpn_portal_events: Option<Arc<dyn VpnPortalEventSink>>,
     #[cfg(feature = "proxy-smoltcp-stack")]
     pub gateway_events: Option<Arc<dyn GatewayEventSink>>,
+}
+
+pub trait ExternalListenerFactory<Accepted>: Send + Sync + 'static
+where
+    Accepted: Send + 'static,
+{
+    fn build(&self, handler: Arc<dyn AcceptedSocketHandler<Accepted>>) -> Arc<dyn ListenerService>;
+}
+
+impl<Accepted, F> ExternalListenerFactory<Accepted> for F
+where
+    Accepted: Send + 'static,
+    F: Fn(Arc<dyn AcceptedSocketHandler<Accepted>>) -> Arc<dyn ListenerService>
+        + Send
+        + Sync
+        + 'static,
+{
+    fn build(&self, handler: Arc<dyn AcceptedSocketHandler<Accepted>>) -> Arc<dyn ListenerService> {
+        self(handler)
+    }
 }
 
 struct CoreStunDnsAdapter {
@@ -521,7 +543,7 @@ where
         validate_portable_connectivity_config(&config)?;
         validate_listener_protocols(
             &config.connectivity.listeners,
-            adapters.accepted_transport_handler.is_some(),
+            adapters.server_protocol.is_some(),
         )?;
         let network_name = &config.peer.snapshot.runtime.network_identity.network_name;
         if config.connectivity.direct.network_name != *network_name {
@@ -584,10 +606,7 @@ where
         config: CoreInstanceConfig,
         runtime_config: CoreRuntimeConfigStore,
     ) -> anyhow::Result<Self> {
-        validate_listener_protocols(
-            &config.listeners,
-            adapters.accepted_transport_handler.is_some(),
-        )?;
+        validate_listener_protocols(&config.listeners, adapters.server_protocol.is_some())?;
         let stun = Self::prepare_stun(&adapters, &config);
         Self::new_with_prepared_stun(
             peer_manager,
@@ -610,10 +629,7 @@ where
     where
         F: WrappedTransportEngineFactory,
     {
-        validate_listener_protocols(
-            &config.listeners,
-            adapters.accepted_transport_handler.is_some(),
-        )?;
+        validate_listener_protocols(&config.listeners, adapters.server_protocol.is_some())?;
         let stun = Self::prepare_stun(&adapters, &config);
         Self::new_with_prepared_stun(
             peer_manager,
@@ -645,9 +661,10 @@ where
             ring_registry,
             protocol,
             manual_events,
-            listener,
+            external_listener_factory,
             listener_events,
-            accepted_transport_handler,
+            server_protocol,
+            accepted_tunnel_events,
             udp_hole_punch_platform,
             #[cfg(feature = "proxy-packet")]
             icmp_proxy_host,
@@ -668,6 +685,23 @@ where
             direct: direct_options,
         } = config;
 
+        let accepted_transport_handler: Arc<
+            dyn AcceptedSocketHandler<AcceptedTransport<HostAcceptedTcpSocket<H>>>,
+        > = match server_protocol {
+            Some(server_protocol) => {
+                let tunnel_handler = PeerAcceptedTunnelHandler::new(
+                    &peer_manager,
+                    accepted_tunnel_events.unwrap_or_else(|| Arc::new(())),
+                );
+                Arc::new(ProtocolAcceptedTransportHandler::new(
+                    &tunnel_handler,
+                    server_protocol,
+                ))
+            }
+            None => Arc::new(RawAcceptedTransportHandler::new(&peer_manager)),
+        };
+        let listener = external_listener_factory
+            .map(|factory| factory.build(accepted_transport_handler.clone()));
         let has_external_listener = listener.is_some();
         let (transport_listener, core_running_listeners): (
             Option<Arc<dyn ListenerService>>,
@@ -675,8 +709,6 @@ where
         ) = if listeners.is_empty() {
             (None, None)
         } else {
-            let handler = accepted_transport_handler
-                .unwrap_or_else(|| Arc::new(RawAcceptedTransportHandler::new(&peer_manager)));
             let registry = Arc::new(RunningListenerRegistry::default());
             let events: Arc<dyn ListenerEventSink> = match listener_events {
                 Some(listener_events) => {
@@ -689,7 +721,7 @@ where
                 listener_dns.unwrap_or_else(|| dns.clone()),
                 ring_registry.clone(),
                 listeners,
-                handler,
+                accepted_transport_handler,
                 events,
             ));
             (Some(listener), Some(registry))

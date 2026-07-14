@@ -1,19 +1,15 @@
-use std::{
-    fmt::Debug,
-    sync::{Arc, Weak},
-};
+use std::{fmt::Debug, sync::Arc};
 
 use async_trait::async_trait;
 use easytier_core::{
-    instance::ListenerService,
+    instance::{ExternalListenerFactory, ListenerService},
     listener::{
         self as core_listener, plan as core_listener_plan,
         transport::{
-            AcceptedTransport, AcceptedTunnelHandler, ProtocolAcceptedTransportHandler,
+            AcceptedTransport, AcceptedTunnelEvent, AcceptedTunnelEventSink,
             TransportListenerConfig,
         },
     },
-    peers::peer_manager::PeerManagerCore,
     socket::{
         SocketContext,
         udp::{UdpSessionAcceptKind, UdpSessionProtocol},
@@ -33,7 +29,11 @@ use crate::{
         netns::NetNS,
     },
     socket::tcp::RuntimeTcpSocket,
-    tunnel::Tunnel,
+};
+
+#[cfg(test)]
+use easytier_core::{
+    listener::transport::ProtocolAcceptedTransportHandler, peers::peer_manager::PeerManagerCore,
 };
 
 pub use easytier_core::listener::plan::{is_url_host_ipv6, is_url_host_unspecified};
@@ -130,17 +130,46 @@ pub(crate) struct RuntimeListenerService {
     manager: Mutex<
         core_listener::ListenerManager<
             AcceptedTransport<RuntimeTcpSocket>,
-            RuntimeAcceptedTransportHandler,
+            dyn core_listener::AcceptedSocketHandler<AcceptedTransport<RuntimeTcpSocket>>,
         >,
     >,
     failures: Vec<core_listener_plan::ListenerPlanFailure>,
     global_ctx: ArcGlobalCtx,
 }
 
+pub(crate) struct RuntimeExternalListenerFactory {
+    global_ctx: ArcGlobalCtx,
+    plan: core_listener_plan::ListenerPlan,
+}
+
+impl RuntimeExternalListenerFactory {
+    pub(crate) fn new(
+        global_ctx: ArcGlobalCtx,
+        plan: core_listener_plan::ListenerPlan,
+    ) -> Arc<Self> {
+        Arc::new(Self { global_ctx, plan })
+    }
+}
+
+impl ExternalListenerFactory<AcceptedTransport<RuntimeTcpSocket>>
+    for RuntimeExternalListenerFactory
+{
+    fn build(
+        &self,
+        handler: Arc<dyn core_listener::AcceptedSocketHandler<AcceptedTransport<RuntimeTcpSocket>>>,
+    ) -> Arc<dyn ListenerService> {
+        Arc::new(RuntimeListenerService::new(
+            self.global_ctx.clone(),
+            handler,
+            &self.plan,
+        ))
+    }
+}
+
 impl RuntimeListenerService {
     pub(crate) fn new(
         global_ctx: ArcGlobalCtx,
-        handler: Arc<RuntimeAcceptedTransportHandler>,
+        handler: Arc<dyn core_listener::AcceptedSocketHandler<AcceptedTransport<RuntimeTcpSocket>>>,
         plan: &core_listener_plan::ListenerPlan,
     ) -> Self {
         let events = runtime_listener_event_sink(global_ctx.clone());
@@ -381,103 +410,31 @@ impl core_listener::ListenerEventSink for GlobalCtxListenerEventSink {
     }
 }
 
-struct RuntimeAcceptedTunnelHandler {
+#[derive(Debug)]
+struct GlobalCtxAcceptedTunnelEventSink {
     global_ctx: ArcGlobalCtx,
-    inner: Weak<PeerManagerCore>,
 }
 
-impl Debug for RuntimeAcceptedTunnelHandler {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("RuntimeAcceptedTunnelHandler")
-            .field("inner_available", &self.inner.strong_count())
-            .finish()
-    }
+pub(crate) fn runtime_accepted_tunnel_event_sink(
+    global_ctx: ArcGlobalCtx,
+) -> Arc<dyn AcceptedTunnelEventSink> {
+    Arc::new(GlobalCtxAcceptedTunnelEventSink { global_ctx })
 }
 
-#[async_trait]
-impl AcceptedTunnelHandler for RuntimeAcceptedTunnelHandler {
-    async fn handle_tunnel(&self, tunnel: Box<dyn Tunnel>) -> anyhow::Result<()> {
-        let tunnel_info = tunnel
-            .info()
-            .ok_or_else(|| anyhow::anyhow!("accepted tunnel has no tunnel info"))?;
-        let local_url = tunnel_info
-            .local_addr
-            .clone()
-            .unwrap_or_default()
-            .to_string();
-        let remote_url = tunnel_info
-            .remote_addr
-            .clone()
-            .unwrap_or_default()
-            .to_string();
-        self.global_ctx
-            .issue_event(GlobalCtxEvent::ConnectionAccepted(
-                local_url.clone(),
-                remote_url.clone(),
-            ));
-        tracing::info!(ret = ?tunnel, "conn accepted");
-
-        let Some(inner) = self.inner.upgrade() else {
-            let error = "peer manager is gone, cannot handle tunnel".to_owned();
-            self.global_ctx.issue_event(GlobalCtxEvent::ConnectionError(
+impl AcceptedTunnelEventSink for GlobalCtxAcceptedTunnelEventSink {
+    fn emit(&self, event: AcceptedTunnelEvent) {
+        let event = match event {
+            AcceptedTunnelEvent::Accepted {
                 local_url,
                 remote_url,
-                error.clone(),
-            ));
-            tracing::error!(error = %error, "handle conn error");
-            return Err(anyhow::anyhow!(error));
+            } => GlobalCtxEvent::ConnectionAccepted(local_url, remote_url),
+            AcceptedTunnelEvent::AdmissionFailed {
+                local_url,
+                remote_url,
+                error,
+            } => GlobalCtxEvent::ConnectionError(local_url, remote_url, error),
         };
-        if let Err(error) = inner.handle_tunnel(tunnel).await {
-            self.global_ctx.issue_event(GlobalCtxEvent::ConnectionError(
-                local_url,
-                remote_url,
-                error.to_string(),
-            ));
-            tracing::error!(?error, "handle conn error");
-            return Err(error);
-        }
-        Ok(())
-    }
-}
-
-pub(crate) struct RuntimeAcceptedTransportHandler {
-    _tunnel_handler: Arc<RuntimeAcceptedTunnelHandler>,
-    protocol: ProtocolAcceptedTransportHandler<RuntimeTcpSocket, RuntimeAcceptedTunnelHandler>,
-}
-
-impl Debug for RuntimeAcceptedTransportHandler {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("RuntimeAcceptedTransportHandler")
-            .finish()
-    }
-}
-
-pub(crate) fn runtime_accepted_transport_handler(
-    global_ctx: ArcGlobalCtx,
-    peer_manager: &Arc<PeerManagerCore>,
-) -> Arc<RuntimeAcceptedTransportHandler> {
-    let protocol = crate::connector::protocol::runtime_server_protocol_upgrader(global_ctx.clone());
-    let tunnel_handler = Arc::new(RuntimeAcceptedTunnelHandler {
-        global_ctx,
-        inner: Arc::downgrade(peer_manager),
-    });
-    Arc::new(RuntimeAcceptedTransportHandler {
-        protocol: ProtocolAcceptedTransportHandler::new(&tunnel_handler, protocol),
-        _tunnel_handler: tunnel_handler,
-    })
-}
-
-#[async_trait]
-impl core_listener::AcceptedSocketHandler<AcceptedTransport<RuntimeTcpSocket>>
-    for RuntimeAcceptedTransportHandler
-{
-    async fn handle_accepted_socket(
-        &self,
-        accepted: AcceptedTransport<RuntimeTcpSocket>,
-    ) -> anyhow::Result<()> {
-        self.protocol.handle_accepted_socket(accepted).await
+        self.global_ctx.issue_event(event);
     }
 }
 
@@ -507,7 +464,12 @@ impl ListenerManager<PeerManagerCore> {
             &plan,
             crate::connector::core_instance::runtime_socket_context(&global_ctx),
         );
-        let handler = runtime_accepted_transport_handler(global_ctx.clone(), &peer_manager);
+        let handler: Arc<
+            dyn core_listener::AcceptedSocketHandler<AcceptedTransport<RuntimeTcpSocket>>,
+        > = Arc::new(ProtocolAcceptedTransportHandler::new(
+            &peer_manager,
+            crate::connector::protocol::runtime_server_protocol_upgrader(global_ctx.clone()),
+        ));
         let transport = Arc::new(
             easytier_core::listener::transport::TransportListenerService::new_with_events(
                 crate::connector::runtime::runtime_connector_host(global_ctx.clone()),

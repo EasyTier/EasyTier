@@ -41,8 +41,8 @@ use crate::{
     },
     host_runtime::native_host_runtime,
     instance::listeners::{
-        RuntimeListenerService, runtime_accepted_transport_handler, runtime_listener_event_sink,
-        runtime_listener_plan, runtime_transport_listener_configs,
+        RuntimeExternalListenerFactory, runtime_accepted_tunnel_event_sink,
+        runtime_listener_event_sink, runtime_listener_plan, runtime_transport_listener_configs,
     },
     instance::proxy_cidrs_monitor::runtime_proxy_cidr_monitor_host,
     instance::public_ipv6_provider::{
@@ -57,7 +57,7 @@ use crate::{
 };
 
 use super::{
-    protocol::runtime_client_protocol_upgrader,
+    protocol::{runtime_client_protocol_upgrader, runtime_server_protocol_upgrader},
     runtime::{RuntimeConnectorHost, runtime_connector_host},
 };
 
@@ -285,9 +285,10 @@ pub(crate) fn runtime_core_instance_adapters_with_ring_registry(
         manual_events: Some(Arc::new(GlobalCtxManualConnectivityEventSink {
             global_ctx: global_ctx.clone(),
         })),
-        listener: None,
+        external_listener_factory: None,
         listener_events: None,
-        accepted_transport_handler: None,
+        server_protocol: Some(runtime_server_protocol_upgrader(global_ctx.clone())),
+        accepted_tunnel_events: Some(runtime_accepted_tunnel_event_sink(global_ctx.clone())),
         udp_hole_punch_platform: Some(super::udp_hole_punch::runtime_udp_hole_punch_platform(
             global_ctx.clone(),
         )),
@@ -382,15 +383,11 @@ where
         global_ctx.clone(),
         ring_registry.clone(),
     );
-    let accepted_transport_handler =
-        runtime_accepted_transport_handler(global_ctx.clone(), &peer_manager.core());
     adapters.listener_events = Some(runtime_listener_event_sink(global_ctx.clone()));
-    adapters.accepted_transport_handler = Some(accepted_transport_handler.clone());
-    adapters.listener = Some(Arc::new(RuntimeListenerService::new(
+    adapters.external_listener_factory = Some(RuntimeExternalListenerFactory::new(
         global_ctx,
-        accepted_transport_handler,
-        &listener_plan,
-    )));
+        listener_plan,
+    ));
     CoreInstance::new_with_runtime_config_store_and_transport_factory(
         peer_manager.core(),
         adapters,
@@ -605,7 +602,7 @@ mod tests {
             direct: runtime_direct_options(&global_ctx, false),
         };
         let mut adapters = runtime_core_instance_adapters(global_ctx);
-        adapters.listener = Some(listener);
+        adapters.external_listener_factory = Some(Arc::new(move |_handler| listener.clone()));
         Arc::new(CoreInstance::new(peer_manager.core(), adapters, config).unwrap())
     }
 
@@ -1458,7 +1455,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn portable_core_instance_rejects_optional_listener_without_handler() {
+    async fn portable_core_instance_rejects_optional_listener_without_server_protocol() {
         let global_ctx = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
             "portable-listener-validation".to_owned(),
             String::new(),
@@ -1484,19 +1481,17 @@ mod tests {
             direct: runtime_direct_options(&global_ctx, false),
         };
 
+        let mut adapters = runtime_core_instance_adapters(global_ctx);
+        adapters.server_protocol = None;
         let error = RuntimeCoreInstance::new_portable(
-            runtime_core_instance_adapters(global_ctx),
+            adapters,
             PortableCoreInstanceConfig { peer, connectivity },
             Arc::new(packet_sink),
         )
         .err()
         .expect("optional listener without a handler should be rejected");
 
-        assert!(
-            error
-                .to_string()
-                .contains("custom accepted transport handler")
-        );
+        assert!(error.to_string().contains("server protocol upgrader"));
     }
 
     fn build_test_instance(network_name: &str) -> Arc<RuntimeCoreInstance> {
