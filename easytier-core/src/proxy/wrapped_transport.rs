@@ -1,6 +1,6 @@
 #[cfg(feature = "proxy-packet")]
 use std::net::{IpAddr, SocketAddr};
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, Mutex as StdMutex, Weak};
 
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
@@ -222,7 +222,11 @@ where
 {
     peer_manager: Arc<PeerManagerCore>,
     runtime: Arc<CoreProxyRuntime<H>>,
-    service: Arc<WrappedTransportSourceService<H>>,
+    host: Arc<H>,
+    connector: Arc<WrappedTransportSourceConnector>,
+    cidr_table: Arc<ProxyCidrTable>,
+    socket_context: SocketContext,
+    service: StdMutex<Option<Arc<WrappedTransportSourceService<H>>>>,
     transport: WrappedTransportKind,
 }
 
@@ -257,23 +261,39 @@ where
             engine: Arc::downgrade(engine),
             transport,
         });
-        let service = TcpProxyService::new_with_socket_context(
-            peer_manager.clone(),
-            runtime.clone(),
+        Arc::new(Self {
+            peer_manager,
+            runtime,
             host,
             connector,
             cidr_table,
             socket_context,
-        );
-        Arc::new(Self {
-            peer_manager,
-            runtime,
-            service,
+            service: StdMutex::new(None),
             transport,
         })
     }
 
+    fn build_service(&self) -> Arc<WrappedTransportSourceService<H>> {
+        TcpProxyService::new_with_socket_context(
+            self.peer_manager.clone(),
+            self.runtime.clone(),
+            self.host.clone(),
+            self.connector.clone(),
+            self.cidr_table.clone(),
+            self.socket_context.clone(),
+        )
+    }
+
     async fn start_service(self: &Arc<Self>) -> Result<PipelineRegistrationGuard, anyhow::Error> {
+        let service = {
+            let mut active = self.service.lock().unwrap();
+            if active.is_some() {
+                anyhow::bail!("wrapped transport source is already started");
+            }
+            let service = self.build_service();
+            active.replace(service.clone());
+            service
+        };
         self.runtime.latch_smoltcp();
         let guard = self
             .peer_manager
@@ -281,26 +301,36 @@ where
                 source: Arc::downgrade(self),
             }))
             .await;
-        self.service.register_peer_pipeline().await;
-        if let Err(error) = self.service.start(false).await {
+        service.register_peer_pipeline().await;
+        if let Err(error) = service.start(false).await {
             guard.close();
-            self.service.stop();
+            self.stop_service().await;
             return Err(anyhow::Error::new(error));
         }
         Ok(guard)
     }
 
-    fn stop_service(&self) {
-        self.service.stop();
+    async fn stop_service(&self) {
+        let service = self.service.lock().unwrap().take();
+        if let Some(service) = service {
+            service.stop_and_wait().await;
+        }
     }
 
     fn source_entry_snapshots(&self) -> Vec<TcpNatEntrySnapshot> {
-        self.service.engine().list_entries()
+        self.service
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map_or_else(Vec::new, |service| service.engine().list_entries())
     }
 
     async fn try_process_nic_packet(&self, packet: &mut ZCPacket) -> bool {
+        let Some(service) = self.service.lock().unwrap().clone() else {
+            return false;
+        };
         let snapshot = self.runtime.proxy_runtime_snapshot();
-        let engine = self.service.engine();
+        let engine = service.engine();
         if engine.try_process_packet_from_nic(
             packet,
             TcpProxyNicContext {
@@ -351,7 +381,7 @@ where
 #[async_trait]
 trait WrappedTransportSourceLifecycle: Send + Sync {
     async fn start(self: Arc<Self>) -> anyhow::Result<PipelineRegistrationGuard>;
-    fn stop(&self);
+    async fn stop(&self);
     fn entry_snapshots(&self) -> Vec<TcpNatEntrySnapshot>;
     fn is_started(&self) -> bool;
 }
@@ -366,8 +396,8 @@ where
         self.start_service().await
     }
 
-    fn stop(&self) {
-        self.stop_service();
+    async fn stop(&self) {
+        self.stop_service().await;
     }
 
     fn entry_snapshots(&self) -> Vec<TcpNatEntrySnapshot> {
@@ -375,7 +405,11 @@ where
     }
 
     fn is_started(&self) -> bool {
-        self.service.is_started()
+        self.service
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|service| service.is_started())
     }
 }
 
@@ -726,7 +760,7 @@ impl WrappedTransportProxyModule {
             #[cfg(feature = "proxy-packet")]
             if state.quic_source_started {
                 if let Some(source) = &self.quic_source {
-                    source.stop();
+                    source.stop().await;
                 }
                 state.quic_source_started = false;
             }
@@ -745,7 +779,7 @@ impl WrappedTransportProxyModule {
             #[cfg(feature = "proxy-packet")]
             if state.kcp_source_started {
                 if let Some(source) = &self.kcp_source {
-                    source.stop();
+                    source.stop().await;
                 }
                 state.kcp_source_started = false;
             }

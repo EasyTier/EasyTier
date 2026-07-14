@@ -144,6 +144,17 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
     }
 
     pub fn stop(&self) {
+        self.stop_resources();
+        self.tasks.lock().unwrap().abort_all();
+    }
+
+    pub(crate) async fn stop_and_wait(&self) {
+        self.stop_resources();
+        let mut tasks = std::mem::take(&mut *self.tasks.lock().unwrap());
+        tasks.shutdown().await;
+    }
+
+    fn stop_resources(&self) {
         self.started.store(false, Ordering::Release);
         if let Some(guard) = self.peer_pipeline_guard.lock().unwrap().take() {
             guard.close();
@@ -154,7 +165,10 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
         if let Some(listener) = self.kernel_listener.lock().unwrap().take() {
             drop(listener);
         }
-        self.tasks.lock().unwrap().abort_all();
+        #[cfg(feature = "proxy-smoltcp-stack")]
+        if let Some(stack) = self.smoltcp_stack.lock().unwrap().take() {
+            drop(stack);
+        }
     }
 
     async fn register_pipeline(self: &Arc<Self>) {
