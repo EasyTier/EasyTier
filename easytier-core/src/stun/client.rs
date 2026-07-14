@@ -370,6 +370,10 @@ where
             self.stun_packet_sender.subscribe(),
         )
     }
+
+    async fn stop(&mut self) {
+        self.tasks.shutdown().await;
+    }
 }
 
 impl<S> Drop for StunClientBuilder<S>
@@ -688,10 +692,13 @@ pub(super) async fn udp_bind_request<S>(
 where
     S: VirtualUdpSocket,
 {
-    StunClientBuilder::new(socket)
+    let mut clients = StunClientBuilder::new(socket);
+    let result = clients
         .new_stun_client(stun_server)
         .bind_request(false, false)
-        .await
+        .await;
+    clients.stop().await;
+    result
 }
 
 pub(super) fn stun_udp_bind_options(

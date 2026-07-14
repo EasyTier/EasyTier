@@ -196,10 +196,9 @@ where
     }
 
     fn start_stun_routine(&self) {
-        if self.started.load(Ordering::Relaxed) {
+        if self.started.swap(true, Ordering::AcqRel) {
             return;
         }
-        self.started.store(true, Ordering::Relaxed);
 
         let runtime = self.runtime.clone();
         let dns = self.dns.clone();
