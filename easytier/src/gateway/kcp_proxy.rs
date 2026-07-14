@@ -451,9 +451,10 @@ impl KcpProxyDst {
                             streams.shutdown().await;
                             break;
                         };
-                        let stream = KcpStream::new(&kcp_endpoint, conn)
-                            .ok_or(anyhow::anyhow!("failed to create kcp stream"))
-                            .unwrap();
+                        let Some(stream) = KcpStream::new(&kcp_endpoint, conn) else {
+                            tracing::warn!("failed to create accepted kcp stream");
+                            continue;
+                        };
 
                         let global_ctx = global_ctx.clone();
                         let proxy_entries = proxy_entries.clone();
