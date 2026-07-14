@@ -14,9 +14,12 @@ use crate::{
         transport::ConnectedTransport,
     },
     proto::common::NatType,
-    socket::tcp::{
-        TcpBindOptions, TcpConnectOptions, TcpListenOptions, VirtualTcpListener,
-        VirtualTcpListenerFactory, VirtualTcpSocketFactory,
+    socket::{
+        IpVersion, SocketContext,
+        tcp::{
+            TcpBindOptions, TcpConnectOptions, TcpListenOptions, VirtualTcpListener,
+            VirtualTcpListenerFactory, VirtualTcpSocketFactory,
+        },
     },
     tunnel::Tunnel,
 };
@@ -169,14 +172,25 @@ fn bind_addr_for_port(port: u16, is_v6: bool) -> SocketAddr {
     }
 }
 
-pub async fn select_local_port<H>(host: &H, is_v6: bool) -> anyhow::Result<u16>
+pub async fn select_local_port<H>(
+    host: &H,
+    context: SocketContext,
+    is_v6: bool,
+) -> anyhow::Result<u16>
 where
     H: VirtualTcpListenerFactory,
 {
     let bind_addr = bind_addr_for_port(0, is_v6);
     tracing::trace!(?bind_addr, is_v6, "tcp hole punch select local port");
+    let context = context.with_ip_version(if is_v6 { IpVersion::V6 } else { IpVersion::V4 });
     let listener = host
-        .bind_tcp(TcpListenOptions::hole_punch(bind_addr))
+        .bind_tcp(
+            TcpListenOptions::hole_punch(bind_addr).with_bind(
+                TcpBindOptions::default()
+                    .with_context(context)
+                    .with_local_addr(Some(bind_addr)),
+            ),
+        )
         .await?;
     let port = listener.local_addr()?.port();
     tracing::debug!(?bind_addr, port, "tcp hole punch selected local port");
@@ -194,6 +208,7 @@ pub async fn try_connect_to_remote<H, AcceptedSocket>(
     >,
     remote_mapped_addr: SocketAddr,
     local_port: u16,
+    context: SocketContext,
     admission: TcpHolePunchAdmission,
     max_attempts: u32,
 ) -> anyhow::Result<()>
@@ -208,6 +223,11 @@ where
     );
 
     let bind_addr = bind_addr_for_port(local_port, remote_mapped_addr.is_ipv6());
+    let context = context.with_ip_version(if remote_mapped_addr.is_ipv6() {
+        IpVersion::V6
+    } else {
+        IpVersion::V4
+    });
     let requested_url: url::Url = format!("tcp://{remote_mapped_addr}").parse().unwrap();
 
     let start = crate::runtime_time::Instant::now();
@@ -215,6 +235,7 @@ where
     while start.elapsed() < Duration::from_secs(10) && attempts < max_attempts {
         attempts = attempts.wrapping_add(1);
         let bind = TcpBindOptions::default()
+            .with_context(context.clone())
             .with_local_addr(Some(bind_addr))
             .with_only_v6(true);
         let options =

@@ -5,6 +5,7 @@ use crate::{
         dns::RuntimeDnsResolver,
         global_ctx::ArcGlobalCtx,
     },
+    connector::core_instance::runtime_socket_context,
     proto::api::instance,
     tunnel::packet_def::compressor_algo_from_pb,
 };
@@ -115,7 +116,10 @@ impl PeerManager {
             is_secure_mode_enabled,
             data_compress_algo,
             exit_nodes,
-            Arc::new(DnsAddressResolver::new(Arc::new(RuntimeDnsResolver::new()))),
+            Arc::new(
+                DnsAddressResolver::new(Arc::new(RuntimeDnsResolver::new()))
+                    .with_context(runtime_socket_context(&global_ctx)),
+            ),
             TomlConfigLoader::default().get_flags(),
             foreign_network_runtime.clone(),
         );

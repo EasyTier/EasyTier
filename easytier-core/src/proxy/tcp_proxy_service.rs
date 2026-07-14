@@ -14,7 +14,10 @@ use crate::{
         peer_manager::{PeerManagerCore, PipelineRegistrationGuard},
     },
     runtime_time::timeout,
-    socket::tcp::{TcpListenOptions, VirtualTcpListener, VirtualTcpListenerFactory},
+    socket::{
+        SocketContext,
+        tcp::{TcpBindOptions, TcpListenOptions, VirtualTcpListener, VirtualTcpListenerFactory},
+    },
 };
 
 use super::cidr_table::ProxyCidrTable;
@@ -37,6 +40,7 @@ pub struct TcpProxyService<
     peer_manager: Arc<PeerManagerCore>,
     runtime: Arc<R>,
     listener_factory: Arc<F>,
+    socket_context: SocketContext,
     connector: Arc<C>,
     engine: Arc<TcpProxyEngine>,
     mode: TcpProxyMode,
@@ -59,11 +63,30 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
         connector: Arc<C>,
         cidr_table: Arc<ProxyCidrTable>,
     ) -> Arc<Self> {
+        Self::new_with_socket_context(
+            peer_manager,
+            runtime,
+            listener_factory,
+            connector,
+            cidr_table,
+            SocketContext::default(),
+        )
+    }
+
+    pub fn new_with_socket_context(
+        peer_manager: Arc<PeerManagerCore>,
+        runtime: Arc<R>,
+        listener_factory: Arc<F>,
+        connector: Arc<C>,
+        cidr_table: Arc<ProxyCidrTable>,
+        socket_context: SocketContext,
+    ) -> Arc<Self> {
         let mode = connector.proxy_mode();
         Arc::new(Self {
             peer_manager,
             runtime,
             listener_factory,
+            socket_context,
             connector,
             engine: Arc::new(TcpProxyEngine::new(cidr_table)),
             mode,
@@ -190,7 +213,17 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
         let listen_addr = std::net::SocketAddr::new(std::net::Ipv4Addr::UNSPECIFIED.into(), 0);
         let listener = self
             .listener_factory
-            .bind_tcp(TcpListenOptions::proxy_nat(listen_addr))
+            .bind_tcp(
+                TcpListenOptions::proxy_nat(listen_addr).with_bind(
+                    TcpBindOptions::default()
+                        .with_context(
+                            self.socket_context
+                                .clone()
+                                .with_ip_version(crate::socket::IpVersion::V4),
+                        )
+                        .with_local_addr(Some(listen_addr)),
+                ),
+            )
             .await?;
         self.engine.set_local_port(listener.local_addr()?.port());
         self.kernel_listener

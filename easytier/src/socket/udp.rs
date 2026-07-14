@@ -349,6 +349,7 @@ mod tests {
         let runtime = RuntimeUdpHolePunchRuntime::new(get_mock_global_ctx());
         send_v4_hole_punch_control_packet(
             &runtime,
+            SocketContext::default(),
             listener.local_url().port().unwrap(),
             match receiver.local_addr().unwrap() {
                 SocketAddr::V4(addr) => addr,
@@ -383,6 +384,7 @@ mod tests {
         let runtime = RuntimeUdpHolePunchRuntime::new(get_mock_global_ctx());
         send_v6_hole_punch_control_packet(
             &runtime,
+            SocketContext::default(),
             listener.local_url().port().unwrap(),
             match receiver.local_addr().unwrap() {
                 SocketAddr::V6(addr) => addr,

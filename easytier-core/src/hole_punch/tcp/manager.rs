@@ -26,7 +26,7 @@ use crate::{
         },
         rpc_types::{self, controller::BaseController},
     },
-    socket::tcp::VirtualTcpListener,
+    socket::{SocketContext, tcp::VirtualTcpListener},
     task::{PeerTaskLauncher, PeerTaskManager},
 };
 
@@ -112,6 +112,7 @@ where
     H: TcpHolePunchHost,
 {
     host: Arc<H>,
+    socket_context: SocketContext,
     transport_sink: Arc<TcpHolePunchTransportSinkFor<H>>,
     tasks: Arc<Mutex<JoinSet<()>>>,
     reaper: Mutex<Option<AbortOnDropHandle<()>>>,
@@ -122,9 +123,14 @@ impl<H> TcpHolePunchServer<H>
 where
     H: TcpHolePunchHost,
 {
-    fn new(host: Arc<H>, transport_sink: Arc<TcpHolePunchTransportSinkFor<H>>) -> Arc<Self> {
+    fn new(
+        host: Arc<H>,
+        socket_context: SocketContext,
+        transport_sink: Arc<TcpHolePunchTransportSinkFor<H>>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             host,
+            socket_context,
             transport_sink,
             tasks: Arc::new(Mutex::new(JoinSet::new())),
             reaper: Mutex::new(None),
@@ -196,8 +202,12 @@ where
             return Err(anyhow::anyhow!("connector_mapped_addr is malformed").into());
         }
 
-        let local_port =
-            select_local_port(self.host.as_ref(), remote_mapped_addr.is_ipv6()).await?;
+        let local_port = select_local_port(
+            self.host.as_ref(),
+            self.socket_context.clone(),
+            remote_mapped_addr.is_ipv6(),
+        )
+        .await?;
         let local_mapped_addr = self
             .host
             .tcp_port_mapping(local_port)
@@ -212,6 +222,7 @@ where
         );
 
         let host = self.host.clone();
+        let socket_context = self.socket_context.clone();
         let transport_sink = self.transport_sink.clone();
         let mut tasks = self.tasks.lock().unwrap();
         if self.stopping.load(Ordering::Acquire) {
@@ -223,6 +234,7 @@ where
                 transport_sink,
                 remote_mapped_addr,
                 local_port,
+                socket_context,
                 TcpHolePunchAdmission::Client,
                 5,
             )
@@ -240,6 +252,7 @@ where
     H: TcpHolePunchHost,
 {
     host: Arc<H>,
+    socket_context: SocketContext,
     peer_manager: Arc<PeerManagerCore>,
     transport_sink: Arc<TcpHolePunchTransportSinkFor<H>>,
     blacklist: TcpHolePunchBlacklist,
@@ -279,7 +292,8 @@ where
             return Ok(());
         }
 
-        let local_port = select_local_port(self.host.as_ref(), false).await?;
+        let local_port =
+            select_local_port(self.host.as_ref(), self.socket_context.clone(), false).await?;
         let local_mapped_addr = self
             .host
             .tcp_port_mapping(local_port)
@@ -329,6 +343,7 @@ where
             self.transport_sink.clone(),
             remote_mapped_addr,
             local_port,
+            self.socket_context.clone(),
             TcpHolePunchAdmission::Server,
             1,
         )
@@ -354,6 +369,7 @@ where
         let bind_addr =
             std::net::SocketAddr::new(std::net::Ipv4Addr::UNSPECIFIED.into(), local_port);
         let bind = crate::socket::tcp::TcpBindOptions::default()
+            .with_context(self.socket_context.clone())
             .with_local_addr(Some(bind_addr))
             .with_only_v6(true);
         let listener = self
@@ -517,6 +533,7 @@ where
     pub fn new(
         peer_manager: Arc<PeerManagerCore>,
         host: Arc<H>,
+        socket_context: SocketContext,
         client_protocol: Arc<dyn ClientProtocolUpgrader<ConnectedTcpSocket<H>>>,
         server_protocol: Arc<dyn ServerProtocolUpgrader<AcceptedTcpSocket<H>>>,
     ) -> Self {
@@ -528,12 +545,13 @@ where
             ));
         let data = Arc::new(TcpHolePunchConnectorData {
             host: host.clone(),
+            socket_context: socket_context.clone(),
             peer_manager: peer_manager.clone(),
             transport_sink: transport_sink.clone(),
             blacklist: TcpHolePunchBlacklist::new(),
         });
         Self {
-            server: TcpHolePunchServer::new(host, transport_sink),
+            server: TcpHolePunchServer::new(host, socket_context, transport_sink),
             client: PeerTaskManager::new_with_external_signal(
                 TcpHolePunchPeerTaskLauncher(data.clone()),
                 peer_manager.clone(),

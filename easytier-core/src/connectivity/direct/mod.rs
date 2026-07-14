@@ -339,6 +339,7 @@ where
                     DirectConnectorRpcHandler::new_with_running_listeners(
                         self.data.host.clone(),
                         self.data.running_listeners.clone(),
+                        self.data.options.udp_bind.context.clone(),
                     ),
                 ),
                 &self.data.options.network_name,
@@ -361,6 +362,7 @@ where
                     DirectConnectorRpcHandler::new_with_running_listeners(
                         self.data.host.clone(),
                         self.data.running_listeners.clone(),
+                        self.data.options.udp_bind.context.clone(),
                     ),
                 ),
                 &self.data.options.network_name,
@@ -806,6 +808,13 @@ where
             .host
             .bind_udp(
                 UdpBindOptions::direct_connect()
+                    .with_context(
+                        self.options
+                            .udp_bind
+                            .context
+                            .clone()
+                            .with_ip_version(IpVersion::V4),
+                    )
                     .with_local_addr(Some("0.0.0.0:0".parse().unwrap())),
             )
             .await?;
@@ -830,7 +839,15 @@ where
         let socket = self
             .host
             .bind_udp(
-                UdpBindOptions::direct_connect().with_local_addr(Some("[::]:0".parse().unwrap())),
+                UdpBindOptions::direct_connect()
+                    .with_context(
+                        self.options
+                            .udp_bind
+                            .context
+                            .clone()
+                            .with_ip_version(IpVersion::V6),
+                    )
+                    .with_local_addr(Some("[::]:0".parse().unwrap())),
             )
             .await?;
         let connector_ips = self.collect_ipv6_hole_punch_candidates().await?;
@@ -948,6 +965,7 @@ where
 {
     host: Arc<H>,
     running_listeners: Arc<dyn RunningListenerProvider>,
+    socket_context: SocketContext,
 }
 
 impl<H> Clone for DirectConnectorRpcHandler<H>
@@ -958,6 +976,7 @@ where
         Self {
             host: self.host.clone(),
             running_listeners: self.running_listeners.clone(),
+            socket_context: self.socket_context.clone(),
         }
     }
 }
@@ -966,21 +985,24 @@ impl<H> DirectConnectorRpcHandler<H>
 where
     H: DirectConnectorHost,
 {
-    pub fn new(host: Arc<H>) -> Self {
+    pub fn new(host: Arc<H>, socket_context: SocketContext) -> Self {
         let running_listeners = Arc::new(HostRunningListenerProvider { host: host.clone() });
         Self {
             host,
             running_listeners,
+            socket_context,
         }
     }
 
     pub fn new_with_running_listeners(
         host: Arc<H>,
         running_listeners: Arc<dyn RunningListenerProvider>,
+        socket_context: SocketContext,
     ) -> Self {
         Self {
             host,
             running_listeners,
+            socket_context,
         }
     }
 }
@@ -1035,12 +1057,18 @@ where
             for connector_addr in &connector_addrs {
                 let result = match connector_addr {
                     SocketAddr::V4(addr) => {
-                        send_v4_hole_punch_control_packet(self.host.as_ref(), listener_port, *addr)
-                            .await
+                        send_v4_hole_punch_control_packet(
+                            self.host.as_ref(),
+                            self.socket_context.clone(),
+                            listener_port,
+                            *addr,
+                        )
+                        .await
                     }
                     SocketAddr::V6(addr) => {
                         send_v6_hole_punch_control_packet(
                             self.host.as_ref(),
+                            self.socket_context.clone(),
                             listener_port,
                             *addr,
                             preferred_source,

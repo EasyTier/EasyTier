@@ -585,9 +585,11 @@ where
             );
         }
         let (packet_tx, packet_rx) = create_packet_recv_chan();
-        let peer_manager = Arc::new(PeerManagerCore::new_portable(
+        let dns_context = config.connectivity.direct.tcp_bind.context.clone();
+        let peer_manager = Arc::new(PeerManagerCore::new_portable_with_dns_context(
             config.peer,
             adapters.dns.clone(),
+            dns_context,
             packet_tx,
         )?);
         let mut instance = Self::new(peer_manager, adapters, config.connectivity)?;
@@ -722,6 +724,7 @@ where
             ),
         };
         let tcp_hole_punch_protocol = protocol.clone();
+        let tcp_hole_punch_socket_context = direct_options.tcp_bind.context.clone();
         let direct = match running_listeners {
             Some(running_listeners) => DirectConnectorManager::new_with_running_listeners(
                 peer_manager.clone(),
@@ -742,6 +745,7 @@ where
         let tcp_hole_punch = TcpHolePunchConnector::new(
             peer_manager.clone(),
             host,
+            tcp_hole_punch_socket_context,
             tcp_hole_punch_protocol,
             Arc::new(CoreServerProtocolUpgrader::<HostAcceptedTcpSocket<H>>::new(
                 CoreServerProtocolConfig::default(),

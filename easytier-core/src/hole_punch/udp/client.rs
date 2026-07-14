@@ -58,7 +58,7 @@ where
     tracing::info!(?dst_peer_id, "start hole punching");
     let tid = rand::random();
 
-    let udp_array = UdpSocketArray::new(1, runtime.clone());
+    let udp_array = UdpSocketArray::new_with_context(1, runtime.clone(), runtime.socket_context());
 
     let resp = signaling
         .select_punch_listener(
@@ -71,9 +71,15 @@ where
         .await?;
     let remote_mapped_addr = resp.listener_mapped_addr;
 
-    let local_socket =
-        UdpHolePunchRuntime::bind_udp(runtime.as_ref(), UdpBindOptions::hole_punch_control())
-            .await?;
+    let local_socket = UdpHolePunchRuntime::bind_udp(
+        runtime.as_ref(),
+        UdpBindOptions::hole_punch_control().with_context(
+            runtime
+                .socket_context()
+                .with_ip_version(crate::socket::IpVersion::V4),
+        ),
+    )
+    .await?;
     let resolved = runtime
         .resolve_udp_public_addr(local_socket.clone())
         .await?;
@@ -218,9 +224,10 @@ where
             return Ok(udp_array);
         }
 
-        let udp_array = Arc::new(UdpSocketArray::new(
+        let udp_array = Arc::new(UdpSocketArray::new_with_context(
             UDP_ARRAY_SIZE_FOR_HARD_SYM,
             self.runtime.clone(),
+            self.runtime.socket_context(),
         ));
         udp_array.start().await?;
         wlocked.replace(udp_array.clone());
@@ -469,7 +476,11 @@ where
     ) -> UdpHolePunchClientResult<Option<UdpPunchSocket>> {
         *is_busy = false;
 
-        let udp_array = UdpSocketArray::new(UDP_ARRAY_SIZE_FOR_BOTH_EASY_SYM, self.runtime.clone());
+        let udp_array = UdpSocketArray::new_with_context(
+            UDP_ARRAY_SIZE_FOR_BOTH_EASY_SYM,
+            self.runtime.clone(),
+            self.runtime.socket_context(),
+        );
         udp_array.start().await?;
 
         let cur_mapped_addr = self.runtime.get_udp_port_mapping(0).await?;
@@ -759,7 +770,10 @@ mod tests {
 
         assert_eq!(socket.local_addr().unwrap().port(), 10000);
         let bind_options = runtime.bind_options.lock().await;
-        assert_eq!(bind_options.as_slice(), &[UdpBindOptions::direct_connect()]);
+        assert_eq!(
+            bind_options.as_slice(),
+            &[UdpBindOptions::direct_connect().with_ip_version(crate::socket::IpVersion::V4)]
+        );
     }
 
     struct RecordingSignaling {

@@ -93,7 +93,10 @@ impl RuntimeProxyService {
             peer_manager.clone(),
             NatDstTcpConnector::new(Arc::new(
                 crate::connector::runtime::RuntimeConnectorHost::new(global_ctx.clone()),
-            )),
+            ))
+            .with_socket_context(
+                crate::connector::core_instance::runtime_socket_context(&global_ctx),
+            ),
             cidr_set.clone(),
         );
         let icmp_proxy = IcmpProxy::new(global_ctx.clone(), peer_manager.clone(), cidr_set.clone())

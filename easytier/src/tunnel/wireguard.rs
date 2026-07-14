@@ -37,9 +37,12 @@ use dashmap::DashMap;
 use easytier_core::tunnel::ring::create_ring_tunnel_pair;
 use easytier_core::{
     connectivity::transport::ConnectedUdpSession,
-    socket::udp::{
-        UdpBindOptions, UdpSession, UdpSessionAcceptKind, UdpSessionListenRequest,
-        UdpSessionProtocol, UdpSessionSocket,
+    socket::{
+        SocketContext,
+        udp::{
+            UdpBindOptions, UdpSession, UdpSessionAcceptKind, UdpSessionListenRequest,
+            UdpSessionProtocol, UdpSessionSocket,
+        },
     },
     tunnel::wrapper::TunnelWrapper,
 };
@@ -653,10 +656,11 @@ impl WgTunnelConnector {
         addr_url: url::Url,
         config: WgConfig,
         udp: UdpSocket,
+        context: SocketContext,
         addr: SocketAddr,
     ) -> Result<Box<dyn super::Tunnel>, super::TunnelError> {
         tracing::warn!("wg connect: {:?}", addr);
-        let runtime_socket = Arc::new(RuntimeUdpSocket::new(Arc::new(udp)));
+        let runtime_socket = Arc::new(RuntimeUdpSocket::new_with_context(Arc::new(udp), context));
         let layer = runtime_socket.udp_session_layer();
         let session = layer.open_classified_session(UdpSessionProtocol::WireGuard, addr)?;
         upgrade_connected(ConnectedUdpSession::new(session, layer), addr_url, config).await
@@ -745,7 +749,17 @@ impl WgTunnelConnector {
             .only_v6(true)
             .maybe_socket_mark(self.socket_mark)
             .call()?;
-        Self::connect_with_socket(self.addr.clone(), self.config.clone(), socket, addr).await
+        let context = SocketContext::default()
+            .with_ip_version(IpVersion::V6)
+            .with_socket_mark(self.socket_mark);
+        Self::connect_with_socket(
+            self.addr.clone(),
+            self.config.clone(),
+            socket,
+            context,
+            addr,
+        )
+        .await
     }
 
     async fn connect_tunnel(&self) -> Result<Box<dyn Tunnel>, TunnelError> {
@@ -776,6 +790,9 @@ impl WgTunnelConnector {
                     self.addr.clone(),
                     self.config.clone(),
                     socket,
+                    SocketContext::default()
+                        .with_ip_version(IpVersion::V4)
+                        .with_socket_mark(self.socket_mark),
                     addr,
                 )),
                 Err(error) => {

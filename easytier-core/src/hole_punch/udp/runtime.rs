@@ -11,7 +11,10 @@ use crate::{
         transport::{ConnectedTransport, ConnectedUdpSession},
     },
     proto::common::StunInfo,
-    socket::udp::{UdpBindOptions, UdpSession, VirtualUdpSocket, VirtualUdpSocketFactory},
+    socket::{
+        SocketContext,
+        udp::{UdpBindOptions, UdpSession, VirtualUdpSocket, VirtualUdpSocketFactory},
+    },
     tunnel::Tunnel,
 };
 
@@ -304,12 +307,23 @@ pub trait UdpHolePunchPeerSource: Send + Sync {
 pub trait UdpHolePunchRuntime: Send + Sync + 'static {
     type Socket: VirtualUdpSocket + 'static;
 
+    fn socket_context(&self) -> SocketContext {
+        SocketContext::default()
+    }
+
     fn stun_info(&self) -> StunInfo;
 
     async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>>;
 
     async fn bind_direct_connect_udp(&self) -> anyhow::Result<Arc<Self::Socket>> {
-        UdpHolePunchRuntime::bind_udp(self, UdpBindOptions::direct_connect()).await
+        UdpHolePunchRuntime::bind_udp(
+            self,
+            UdpBindOptions::direct_connect().with_context(
+                self.socket_context()
+                    .with_ip_version(crate::socket::IpVersion::V4),
+            ),
+        )
+        .await
     }
 
     async fn resolve_udp_public_addr(

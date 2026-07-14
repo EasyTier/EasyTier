@@ -857,8 +857,17 @@ impl PeerManagerCore {
     /// Optional foreign-network and public-IPv6 policy are disabled until their
     /// runtime configuration moves behind this composition seam.
     pub fn new_portable(
+        config: PortablePeerManagerConfig,
+        dns: Arc<dyn DnsResolver>,
+        nic_channel: PacketRecvChan,
+    ) -> anyhow::Result<Self> {
+        Self::new_portable_with_dns_context(config, dns, SocketContext::default(), nic_channel)
+    }
+
+    pub fn new_portable_with_dns_context(
         mut config: PortablePeerManagerConfig,
         dns: Arc<dyn DnsResolver>,
+        dns_context: SocketContext,
         nic_channel: PacketRecvChan,
     ) -> anyhow::Result<Self> {
         let network_name = config.runtime.network_identity.network_name.clone();
@@ -976,7 +985,7 @@ impl PeerManagerCore {
         });
         let stats_manager = Arc::new(StatsManager::new());
         let acl_filter = Arc::new(AclFilter::new());
-        let address_resolver = Arc::new(DnsAddressResolver::new(dns));
+        let address_resolver = Arc::new(DnsAddressResolver::new(dns).with_context(dns_context));
 
         let result = Self::new_with_default_components(
             config.route_algo,
@@ -3641,6 +3650,16 @@ mod tests {
         }
     }
 
+    struct ContextDnsResolver(SocketContext);
+
+    #[async_trait::async_trait]
+    impl DnsResolver for ContextDnsResolver {
+        async fn resolve(&self, query: DnsQuery) -> anyhow::Result<Vec<IpAddr>> {
+            assert_eq!(query.context, self.0);
+            Ok(vec![IpAddr::from([192, 0, 2, 11])])
+        }
+    }
+
     #[tokio::test]
     async fn dns_address_resolver_uses_host_dns_and_default_port() {
         let resolver = DnsAddressResolver::new(Arc::new(StaticDnsResolver));
@@ -3659,6 +3678,21 @@ mod tests {
                 SocketAddr::new("2001:db8::10".parse().unwrap(), 11010),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn dns_address_resolver_forwards_instance_socket_context() {
+        let context = SocketContext::default()
+            .with_socket_mark(Some(0))
+            .with_netns(Some(crate::socket::NetNamespace::new("instance-a")));
+        let resolver = DnsAddressResolver::new(Arc::new(ContextDnsResolver(context.clone())))
+            .with_context(context);
+
+        let result = resolver
+            .resolve_remote(&Url::parse("tcp://example.test").unwrap(), Some(11010))
+            .await;
+
+        assert!(matches!(result, AddressResolution::IpAddrs(_)));
     }
 
     #[tokio::test]

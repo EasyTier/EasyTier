@@ -5,12 +5,16 @@ use std::{
 };
 
 use async_trait::async_trait;
-use easytier_core::{hole_punch::udp as core_udp_hole_punch, socket::udp::UdpSessionSocket};
+use easytier_core::{
+    hole_punch::udp as core_udp_hole_punch,
+    socket::udp::{UdpSessionSocket, VirtualUdpSocket},
+};
 use quanta::Instant;
 use tokio::net::UdpSocket;
 
 use crate::{
-    common::{PeerId, error::Error, global_ctx::ArcGlobalCtx, upnp},
+    common::{PeerId, error::Error, global_ctx::ArcGlobalCtx, netns::NetNS, upnp},
+    connector::core_instance::runtime_socket_context,
     peers::peer_manager::PeerManager,
     proto::common::NatType,
     socket::udp::{RuntimeUdpSessionLayer, RuntimeUdpSocket},
@@ -85,7 +89,11 @@ impl RuntimeUdpHolePunchRuntime {
                 SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port),
             )),
             None => core_udp_hole_punch::UdpBindOptions::hole_punch_control(),
-        };
+        }
+        .with_context(
+            runtime_socket_context(&self.global_ctx)
+                .with_ip_version(easytier_core::socket::IpVersion::V4),
+        );
         let socket = core_udp_hole_punch::UdpHolePunchRuntime::bind_udp(self, bind_options).await?;
         let local_port = socket.socket().local_addr()?.port();
         let listen_url: url::Url = format!("udp://0.0.0.0:{local_port}").parse().unwrap();
@@ -125,6 +133,10 @@ impl RuntimeUdpHolePunchRuntime {
 impl core_udp_hole_punch::UdpHolePunchRuntime for RuntimeUdpHolePunchRuntime {
     type Socket = RuntimeUdpSocket;
 
+    fn socket_context(&self) -> easytier_core::socket::SocketContext {
+        runtime_socket_context(&self.global_ctx)
+    }
+
     fn stun_info(&self) -> crate::proto::common::StunInfo {
         self.global_ctx.get_stun_info_collector().get_stun_info()
     }
@@ -145,7 +157,7 @@ impl core_udp_hole_punch::UdpHolePunchRuntime for RuntimeUdpHolePunchRuntime {
                 bind::<UdpSocket>()
                     .addr(bind_addr)
                     .dev(bind_device)
-                    .maybe_net_ns(Some(self.global_ctx.net_ns.clone()))
+                    .maybe_net_ns(Some(NetNS::from_socket_context(&options.context)))
                     .only_v6(options.only_v6)
                     .reuse_addr(options.reuse_addr)
                     .reuse_port(options.reuse_port)
@@ -208,7 +220,8 @@ impl core_udp_hole_punch::UdpHolePunchRuntime for RuntimeUdpHolePunchRuntime {
         socket: Arc<Self::Socket>,
         remote: SocketAddr,
     ) -> anyhow::Result<core_udp_hole_punch::UdpPunchSocket> {
-        check_udp_socket_local_addr(self.global_ctx.clone(), remote).await?;
+        check_udp_socket_local_addr(self.global_ctx.clone(), socket.socket_context(), remote)
+            .await?;
 
         #[cfg(target_os = "windows")]
         crate::arch::windows::disable_connection_reset(socket.socket().as_ref())?;
@@ -298,9 +311,14 @@ impl core_udp_hole_punch::UdpHolePunchPeerSource for RuntimeUdpHolePunchPeerSour
 
 async fn check_udp_socket_local_addr(
     global_ctx: ArcGlobalCtx,
+    context: easytier_core::socket::SocketContext,
     remote_mapped_addr: SocketAddr,
 ) -> Result<(), Error> {
-    let socket = UdpSocket::bind("0.0.0.0:0").await?;
+    let socket = bind::<UdpSocket>()
+        .addr("0.0.0.0:0".parse().unwrap())
+        .maybe_net_ns(Some(NetNS::from_socket_context(&context)))
+        .maybe_socket_mark(context.socket_mark)
+        .call()?;
     socket.connect(remote_mapped_addr).await?;
     if let Ok(local_addr) = socket.local_addr()
         && let Some(err) = easytier_managed_local_addr_error(&global_ctx, local_addr)
@@ -331,6 +349,8 @@ fn easytier_managed_local_addr_error(
 mod tests {
     use std::{collections::BTreeSet, net::SocketAddr};
 
+    use easytier_core::socket::{IpVersion, SocketContext, udp::VirtualUdpSocket};
+
     use crate::common::global_ctx::tests::get_mock_global_ctx;
 
     use super::{core_udp_hole_punch, easytier_managed_local_addr_error};
@@ -352,15 +372,19 @@ mod tests {
     #[tokio::test]
     async fn runtime_adapter_can_bind_udp_socket() {
         let runtime = super::RuntimeUdpHolePunchRuntime::new(get_mock_global_ctx());
+        let context = SocketContext::default()
+            .with_ip_version(IpVersion::V4)
+            .with_socket_mark(Some(0));
 
         let socket = core_udp_hole_punch::UdpHolePunchRuntime::bind_udp(
             &runtime,
-            core_udp_hole_punch::UdpBindOptions::hole_punch_control(),
+            core_udp_hole_punch::UdpBindOptions::hole_punch_control().with_context(context.clone()),
         )
         .await
         .unwrap();
 
         assert_ne!(socket.socket().local_addr().unwrap().port(), 0);
+        assert_eq!(socket.socket_context(), context);
     }
 
     #[tokio::test]

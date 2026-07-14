@@ -20,7 +20,7 @@ use tokio::sync::{Semaphore, mpsc, watch};
 use crate::{
     listener::SocketListener,
     packet::{PacketType, UDP_TUNNEL_HEADER_SIZE, UdpPacketType, ZCPacket, ZCPacketType},
-    socket::{SocketContext, ring::RingSocketSendError},
+    socket::{IpVersion, NetNamespace, SocketContext, ring::RingSocketSendError},
     stun::{Attribute, ChangeRequest, u32_to_tid},
 };
 
@@ -1895,17 +1895,23 @@ async fn udp_session_dialer_uses_factory_as_stun_responder() {
 async fn v4_hole_punch_control_sender_uses_factory_socket() {
     let factory = MockVirtualUdpSocketFactory::new(13000);
     let dst_addr = SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 1), 11010);
+    let context = SocketContext::default()
+        .with_socket_mark(Some(0))
+        .with_netns(Some(NetNamespace::new("instance-a")));
 
-    send_v4_hole_punch_control_packet(&factory, 22020, dst_addr)
+    send_v4_hole_punch_control_packet(&factory, context.clone(), 22020, dst_addr)
         .await
         .unwrap();
 
     assert_eq!(
         factory.bind_options(),
         vec![
-            UdpBindOptions::hole_punch_control().with_local_addr(Some(SocketAddr::V4(
-                SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)
-            )))
+            UdpBindOptions::hole_punch_control()
+                .with_context(context.with_ip_version(IpVersion::V4))
+                .with_local_addr(Some(SocketAddr::V4(SocketAddrV4::new(
+                    Ipv4Addr::LOCALHOST,
+                    0
+                ))))
         ]
     );
     let sockets = factory.sockets();
@@ -1927,17 +1933,31 @@ async fn v6_hole_punch_control_sender_uses_factory_socket() {
         ip: "2001:db8::2".parse().unwrap(),
         ifindex: 42,
     };
+    let context = SocketContext::default()
+        .with_socket_mark(Some(0))
+        .with_netns(Some(NetNamespace::new("instance-a")));
 
-    send_v6_hole_punch_control_packet(&factory, 22020, dst_addr, Some(preferred_src))
-        .await
-        .unwrap();
+    send_v6_hole_punch_control_packet(
+        &factory,
+        context.clone(),
+        22020,
+        dst_addr,
+        Some(preferred_src),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(
         factory.bind_options(),
         vec![
-            UdpBindOptions::hole_punch_control().with_local_addr(Some(SocketAddr::V6(
-                SocketAddrV6::new(Ipv6Addr::LOCALHOST, 0, 0, 0)
-            )))
+            UdpBindOptions::hole_punch_control()
+                .with_context(context.with_ip_version(IpVersion::V6))
+                .with_local_addr(Some(SocketAddr::V6(SocketAddrV6::new(
+                    Ipv6Addr::LOCALHOST,
+                    0,
+                    0,
+                    0
+                ))))
         ]
     );
     let sockets = factory.sockets();

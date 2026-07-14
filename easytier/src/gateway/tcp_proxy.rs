@@ -18,7 +18,7 @@ use std::sync::{
 use crate::common::error::Result;
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtx};
 use crate::common::stats_manager::{LabelSet, LabelType, MetricName};
-use crate::connector::runtime::RuntimeConnectorHost;
+use crate::connector::{core_instance::runtime_socket_context, runtime::RuntimeConnectorHost};
 use crate::peers::peer_manager::PeerManager;
 use crate::proto::api::instance::{
     ListTcpProxyEntryRequest, ListTcpProxyEntryResponse, TcpProxyEntry, TcpProxyEntryState,
@@ -151,12 +151,13 @@ impl<C: TcpProxyDestinationConnector> TcpProxy<C> {
             global_ctx.clone(),
             transport_type,
         ));
-        let service = TcpProxyService::new(
+        let service = TcpProxyService::new_with_socket_context(
             peer_manager.core(),
             runtime.clone(),
             Arc::new(RuntimeConnectorHost::new(global_ctx.clone())),
             Arc::new(connector),
             cidr_set.table(),
+            runtime_socket_context(&global_ctx),
         );
 
         Arc::new(Self {

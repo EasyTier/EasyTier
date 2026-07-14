@@ -23,7 +23,7 @@ use crate::{
 
 use super::{CoreInstance, CoreInstanceAdapters, PortableCoreInstanceConfig};
 
-pub const HOST_CORE_INSTANCE_CONFIG_VERSION: u32 = 1;
+pub const HOST_CORE_INSTANCE_CONFIG_VERSION: u32 = 2;
 
 /// Versioned payload accepted by host-driven instance frontends.
 #[derive(Debug, Clone, Serialize, Deserialize)]

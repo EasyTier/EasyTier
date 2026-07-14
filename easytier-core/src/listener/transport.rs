@@ -414,6 +414,13 @@ where
                     .await?,
             );
         }
+        if let Some(local_addr) = options.bind.local_addr {
+            options.bind.context.ip_version = if local_addr.is_ipv4() {
+                IpVersion::V4
+            } else {
+                IpVersion::V6
+            };
+        }
         let mut inner =
             TcpSocketListener::new_with_options(self.url.clone(), options, self.host.clone());
         inner.listen().await?;
@@ -531,6 +538,13 @@ where
                 resolve_listener_addr(&self.url, request.bind.context.clone(), self.dns.as_ref())
                     .await?,
             );
+        }
+        if let Some(local_addr) = request.bind.local_addr {
+            request.bind.context.ip_version = if local_addr.is_ipv4() {
+                IpVersion::V4
+            } else {
+                IpVersion::V6
+            };
         }
         let mut inner = UdpSessionSocketListener::new_with_request(
             self.url.clone(),

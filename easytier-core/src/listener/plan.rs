@@ -8,7 +8,7 @@ use percent_encoding::percent_decode_str;
 use url::Url;
 
 use crate::socket::{
-    SocketContext,
+    IpVersion, SocketContext,
     tcp::{TcpBindOptions, TcpListenOptions},
     udp::{UdpBindOptions, UdpSessionListenRequest},
 };
@@ -169,6 +169,11 @@ pub fn udp_session_listen_request(
     local_addr: std::net::SocketAddr,
     context: SocketContext,
 ) -> UdpSessionListenRequest {
+    let context = context.with_ip_version(if local_addr.is_ipv4() {
+        IpVersion::V4
+    } else {
+        IpVersion::V6
+    });
     UdpSessionListenRequest::new(
         UdpBindOptions::port_bound_listener(local_addr)
             .with_only_v6(true)
@@ -194,6 +199,11 @@ pub fn tcp_listener_options(
     local_addr: std::net::SocketAddr,
     context: SocketContext,
 ) -> TcpListenOptions {
+    let context = context.with_ip_version(if local_addr.is_ipv4() {
+        IpVersion::V4
+    } else {
+        IpVersion::V6
+    });
     let bind = TcpBindOptions::default()
         .with_local_addr(Some(local_addr))
         .with_context(context)
@@ -375,6 +385,7 @@ mod tests {
             UdpSessionListenRequest::new(
                 UdpBindOptions::port_bound_listener(local_addr)
                     .with_only_v6(true)
+                    .with_ip_version(IpVersion::V4)
                     .with_socket_mark(Some(7))
                     .with_bind_device(Some("eth0".to_owned()))
             )
@@ -395,6 +406,7 @@ mod tests {
             TcpListenOptions::direct_connect(local_addr).with_bind(
                 TcpBindOptions::default()
                     .with_local_addr(Some(local_addr))
+                    .with_ip_version(IpVersion::V4)
                     .with_socket_mark(Some(7))
                     .with_only_v6(true)
             )

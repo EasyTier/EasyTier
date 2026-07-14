@@ -123,6 +123,7 @@ where
 
 pub async fn send_v4_hole_punch_control_packet<F>(
     factory: &F,
+    context: SocketContext,
     listener_port: u16,
     dst_addr: SocketAddrV4,
 ) -> anyhow::Result<()>
@@ -131,9 +132,12 @@ where
 {
     let socket = factory
         .bind_udp(
-            UdpBindOptions::hole_punch_control().with_local_addr(Some(SocketAddr::V4(
-                SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0),
-            ))),
+            UdpBindOptions::hole_punch_control()
+                .with_context(context.with_ip_version(IpVersion::V4))
+                .with_local_addr(Some(SocketAddr::V4(SocketAddrV4::new(
+                    Ipv4Addr::LOCALHOST,
+                    0,
+                )))),
         )
         .await?;
     let packet = new_v4_hole_punch_packet(&dst_addr).into_bytes();
@@ -144,6 +148,7 @@ where
 
 pub async fn send_v6_hole_punch_control_packet<F>(
     factory: &F,
+    context: SocketContext,
     listener_port: u16,
     dst_addr: SocketAddrV6,
     preferred_src: Option<PreferredIpv6Source>,
@@ -153,9 +158,14 @@ where
 {
     let socket = factory
         .bind_udp(
-            UdpBindOptions::hole_punch_control().with_local_addr(Some(SocketAddr::V6(
-                SocketAddrV6::new(Ipv6Addr::LOCALHOST, 0, 0, 0),
-            ))),
+            UdpBindOptions::hole_punch_control()
+                .with_context(context.with_ip_version(IpVersion::V6))
+                .with_local_addr(Some(SocketAddr::V6(SocketAddrV6::new(
+                    Ipv6Addr::LOCALHOST,
+                    0,
+                    0,
+                    0,
+                )))),
         )
         .await?;
     let packet = new_v6_hole_punch_packet(&dst_addr, preferred_src).into_bytes();

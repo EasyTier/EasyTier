@@ -12,6 +12,7 @@ use super::{
     HOLE_PUNCH_PACKET_BODY_LEN, UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory,
     hole_punch_packet_tid,
 };
+use crate::socket::{IpVersion, SocketContext};
 
 pub struct PunchedUdpSocket<S> {
     pub socket: Arc<S>,
@@ -35,6 +36,7 @@ where
     sockets: Arc<DashMap<SocketAddr, Arc<R::Socket>>>,
     max_socket_count: usize,
     socket_factory: Arc<R>,
+    socket_context: SocketContext,
     tasks: Arc<Mutex<JoinSet<()>>>,
 
     interest_tids: Arc<DashSet<u32>>,
@@ -46,6 +48,14 @@ where
     R: VirtualUdpSocketFactory,
 {
     pub fn new(max_socket_count: usize, socket_factory: Arc<R>) -> Self {
+        Self::new_with_context(max_socket_count, socket_factory, SocketContext::default())
+    }
+
+    pub fn new_with_context(
+        max_socket_count: usize,
+        socket_factory: Arc<R>,
+        socket_context: SocketContext,
+    ) -> Self {
         let tasks = Arc::new(Mutex::new(JoinSet::new()));
         join_joinset_background(tasks.clone(), "UdpSocketArray");
 
@@ -53,6 +63,7 @@ where
             sockets: Arc::new(DashMap::new()),
             max_socket_count,
             socket_factory,
+            socket_context,
             tasks,
 
             interest_tids: Arc::new(DashSet::new()),
@@ -120,7 +131,10 @@ where
         while self.sockets.len() < self.max_socket_count {
             let socket = self
                 .socket_factory
-                .bind_udp(UdpBindOptions::hole_punch_candidate())
+                .bind_udp(
+                    UdpBindOptions::hole_punch_candidate()
+                        .with_context(self.socket_context.clone().with_ip_version(IpVersion::V4)),
+                )
                 .await?;
             self.add_new_socket(socket).await?;
         }
@@ -253,7 +267,7 @@ mod tests {
     use tokio::sync::Mutex as TokioMutex;
 
     use super::*;
-    use crate::hole_punch::udp::new_hole_punch_packet;
+    use crate::{hole_punch::udp::new_hole_punch_packet, socket::NetNamespace};
 
     struct MockSocket {
         local_addr: SocketAddr,
@@ -374,7 +388,10 @@ mod tests {
     #[tokio::test]
     async fn start_binds_up_to_max_socket_count() {
         let runtime = Arc::new(MockFactory::new());
-        let array = UdpSocketArray::new(2, runtime.clone());
+        let context = SocketContext::default()
+            .with_socket_mark(Some(0))
+            .with_netns(Some(NetNamespace::new("instance-a")));
+        let array = UdpSocketArray::new_with_context(2, runtime.clone(), context.clone());
 
         array.start().await.unwrap();
 
@@ -385,8 +402,10 @@ mod tests {
         assert_eq!(
             bind_options.as_slice(),
             &[
-                UdpBindOptions::hole_punch_candidate(),
-                UdpBindOptions::hole_punch_candidate(),
+                UdpBindOptions::hole_punch_candidate()
+                    .with_context(context.clone().with_ip_version(IpVersion::V4)),
+                UdpBindOptions::hole_punch_candidate()
+                    .with_context(context.with_ip_version(IpVersion::V4)),
             ]
         );
     }

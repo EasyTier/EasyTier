@@ -834,7 +834,11 @@ where
         let socket_count = request.udp_socket_count as usize;
         let transaction_id = request.transaction_id;
 
-        let udp_array = UdpSocketArray::new(socket_count, self.common.runtime.clone());
+        let udp_array = UdpSocketArray::new_with_context(
+            socket_count,
+            self.common.runtime.clone(),
+            self.common.runtime.socket_context(),
+        );
         udp_array.start().await?;
         udp_array.add_intreast_tid(transaction_id);
 
