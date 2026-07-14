@@ -1,7 +1,7 @@
 # Remaining Core Ownership Refactor
 
 > Status: complete; authoritative closure record for the ownership migration.
-> Updated 2026-07-13.
+> Updated 2026-07-14.
 
 ## Outcome
 
@@ -114,8 +114,9 @@ Core owns:
   adapts the existing event stream to the narrow core subscriber Interface.
 - Core derives the complete foreign context specification: network identity,
   hostname, secure mode, relay protocol/socket-mark flags, and initial
-  advertised features. Native only realizes that specification as a GlobalCtx
-  and attaches host STUN, listener, and connector resources.
+  advertised features. Native only realizes that specification as a GlobalCtx,
+  shares the per-instance core STUN provider, and attaches listener and
+  connector Host resources.
 - `PeerManagerCore` now constructs and owns the core foreign-network manager
   from a `ForeignNetworkRuntime` Host Adapter. The shallow native manager
   facade has been deleted; native callers and tests use the core manager
@@ -252,8 +253,9 @@ Do not move `GlobalCtx` into core. Split its roles:
 - peer and route events originate in core and are projected through an event
   sink Adapter;
 - traffic accounting uses core metrics Modules, with optional native export;
-- STUN/public-endpoint, public-IPv6 lease, interface inventory, netns, TUN,
-  route installation, and system DNS remain Host capabilities;
+- STUN protocol, public-endpoint state, mapping, and lifecycle belong to core;
+  public-IPv6 lease, interface inventory, netns, TUN, route installation, real
+  sockets, and system DNS remain Host capabilities;
 - platform configuration parsing and persistence remain native.
 
 The final native composition may still own one `GlobalCtx` value internally,
@@ -283,9 +285,10 @@ but no core Module receives it or a broad Interface implemented by it.
 - Named `SubmittedPeerContextCapabilities` makes each remaining Interface
   explicit at the composition Seam and prevents positional capability wiring
   from becoming a new broad runtime Interface.
-- The former broad `PeerRuntimeSupport` has been deleted. STUN observations and
-  public-IPv6 lease/provider state use separate read-only Host Interfaces, and
-  the advertised EasyTier version is part of the submitted snapshot.
+- The former broad `PeerRuntimeSupport` has been deleted. STUN observations use
+  a separate read-only core Interface backed by the per-instance core collector;
+  public-IPv6 lease/provider state remains a Host Interface, and the advertised
+  EasyTier version is part of the submitted snapshot.
 - `GlobalCtx` no longer implements `PeerContext` and no longer carries a second
   peer-event broadcast bus. Native configuration is normalized explicitly into
   `PeerRuntimeSnapshot`; main, foreign, and test peer graphs all receive
@@ -310,11 +313,12 @@ but no core Module receives it or a broad Interface implemented by it.
 
 ### Closure record
 
-The capability split is complete as of 2026-07-13. `GlobalCtx` does not
+The capability split is complete as of 2026-07-14. `GlobalCtx` does not
 implement `PeerContext`; core receives normalized snapshots and named narrow
-capabilities for events, limiters, traffic export, STUN observations, public
-IPv6 state, credentials, and relay-state projection. Core owns credential,
-trusted-key, runtime-change, and base relay-preference state. Native
+capabilities for events, limiters, traffic export, public IPv6 state,
+credentials, and relay-state projection. Core owns STUN observations and
+lifecycle, credential, trusted-key, runtime-change, and base relay-preference
+state. Native
 `GlobalCtx` remains a useful product composition object, but it is neither a
 core dependency nor an authoritative peer-domain store.
 
@@ -444,12 +448,13 @@ unless a migration directly changes that fixture's ownership.
 - native, wasm, Go, and selected Docker scenarios pass;
 - `CONTEXT.md`, ADRs, roadmap, this plan, and code describe the same ownership.
 
-The ownership definition of done is met. Final validation covered 410 core
-tests; native, no-default, all-feature, and `wasm32-wasip1` checks; all 29 Go
+The ownership definition of done is met. Final validation covered 482 core
+tests; native, no-default, all-feature, and `wasm32-wasip1` checks; all 31 Go
 host tests plus build and vet; focused race-enabled lifecycle tests; native
-SOCKS tests; and root/netns Docker SOCKS and wrapped-TCP scenarios. A full Go
-race run has eight WASM-initialization deadline failures and no race-detector
-reports. WireGuard portal Docker tests stop at a baseline ping before entering
+SOCKS tests; and root/netns Docker SOCKS and wrapped-TCP scenarios. An earlier
+full Go race run exceeded eight fixed WASM-initialization deadlines and produced
+no race-detector reports. WireGuard portal Docker tests stop at a baseline ping
+before entering
 the migrated portal path, and the legacy ring fixture still lacks
 `TunnelInfo`; both are recorded verification limitations rather than reasons
 to change production semantics in this migration.

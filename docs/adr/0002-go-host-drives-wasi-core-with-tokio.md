@@ -100,6 +100,13 @@ host completions, not a periodic drive tick. Functional socket, DNS,
 environment, packet, lifecycle, two-peer route, and packet-exchange gates pass;
 performance, repeated-failure, and hard-isolation gates are still outstanding.
 
+The host-driven create schema is version 4 as of 2026-07-14. Socket creation,
+DNS, and connector route probes carry the complete core `SocketContext`, while
+the Go host exposes no STUN/NAT-state or STUN port-mapping API. STUN state and
+probing are core-owned and use the same host-created TCP/UDP sockets as native
+core. The opaque completion model and Tokio ownership described above are
+unchanged.
+
 ## Phase 0 unresolved decisions
 
 Phase 0 must resolve four independent choices:

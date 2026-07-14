@@ -1,6 +1,6 @@
 # EasyTier Core Refactor Documents
 
-> Status: authoritative index. Updated 2026-07-13.
+> Status: authoritative index. Updated 2026-07-14.
 
 This directory records the plan for moving portable EasyTier behaviour into the
 single `easytier-core` crate. When documents disagree, use the following order:
@@ -19,6 +19,7 @@ single `easytier-core` crate. When documents disagree, use the following order:
 | Document | Status | Role |
 | --- | --- | --- |
 | [`core_refactor_roadmap.md`](core_refactor_roadmap.md) | Active | Overall migration order and gates |
+| [`host_runtime_stun_refactor.md`](host_runtime_stun_refactor.md) | Complete | Process-level host runtime, request context, and core STUN closure record |
 | [`tunnel_ownership_refactor.md`](tunnel_ownership_refactor.md) | Complete | TCP/UDP/Ring Tunnel ownership and connector/listener closure record |
 | [`go_wasi_host_poc.md`](go_wasi_host_poc.md) | Deferred validation | Required before finalizing the Go/WASM socket ABI |
 | [`core_config_peer_context_refactor.md`](core_config_peer_context_refactor.md) | Partially current | Input to the Core instance phase |

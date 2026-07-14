@@ -55,6 +55,26 @@ A concrete native or Go implementation of host capabilities at a seam owned by
 core. The native and Go implementations are the two real Adapters that validate
 the seam.
 
+### Process host runtime
+
+The process-level implementation of stateless or shared platform capabilities.
+Native TCP/UDP creation, listeners, DNS, Unix/FakeTCP resources, route probes,
+and request-scoped connector interface discovery use one shared runtime. The
+runtime must not capture an instance `GlobalCtx`, netns, socket mark, or mutable
+connectivity state.
+
+Instance differences are request data. `SocketContext` carries IP-family policy,
+an optional exact socket mark, and an opaque netns token. The host interprets
+those values only while performing the requested OS operation.
+
+### Instance host projection
+
+A narrow view of facts belonging to one core instance, such as mapped/running
+listeners, protected ports, managed addresses, and collected interface/public
+address observations. It may retain a native instance composition object, but
+it is not a socket factory, DNS resolver, or portable state owner. Real OS
+operations delegate to the process host runtime with explicit request context.
+
 ### Socket
 
 A host-authorized communication endpoint below EasyTier protocol framing. A
@@ -84,8 +104,10 @@ The logic that decides how and when to obtain a socket for a peer. It includes
 manual reconnect, direct candidate selection, TCP and UDP hole punching,
 blacklists, retry/backoff, listener reuse, and task lifecycle.
 
-Connectivity belongs in core. DNS resolution, real socket creation, UPnP,
-NAT-PMP, netns, socket marks, and bind-device operations belong to Host
+Connectivity belongs in core. STUN codec, probing, retry, NAT inference, public
+endpoint state, port mapping, and lifecycle are connectivity logic and also
+belong in core. DNS resolution, real socket creation, UPnP, NAT-PMP, interface
+enumeration, netns, socket marks, and bind-device operations belong to Host
 Adapters.
 
 ### Peer graph
@@ -155,7 +177,7 @@ It must not reconstruct core routing or connectivity decisions.
 | --- | --- | --- |
 | Configuration | normalized state, validation, defaults independent of host OS | input parsing, persistence, host-OS default selection |
 | Peers | peer graph, admission, sessions, RPC dispatch, routing | presentation and external persistence |
-| Connectivity | candidates, retries, backoff, blacklists, hole-punch state | DNS, real sockets, UPnP/NAT-PMP, platform policy |
+| Connectivity | candidates, retries, backoff, blacklists, hole-punch state, STUN protocol/state/NAT inference | DNS, real sockets, UPnP/NAT-PMP, platform policy and interface facts |
 | Socket | Interface, I/O scheduling, backpressure, requests, peer-scoped UDP session logic | creation policy, OS handles, syscalls, readiness mechanism |
 | Tunnel | portable framing and protocol logic | non-portable protocol engines only when unavoidable |
 | Packet plane | classification, transformation, proxy/NAT state | TUN/raw socket ingress and egress |
@@ -188,6 +210,9 @@ It must not reconstruct core routing or connectivity decisions.
     requirement.
 13. Feature slicing follows stable deep Modules after ownership is settled; it
     is not an early migration goal.
+14. The process-level socket/DNS Host Runtime contains no instance state.
+    Instance-specific OS requests carry explicit context; instance projections
+    contain facts and policy inputs but do not create connector resources.
 
 ## Architecture vocabulary
 

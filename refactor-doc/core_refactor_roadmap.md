@@ -1,7 +1,7 @@
 # EasyTier Core Refactor Roadmap
 
 > Status: core ownership migration complete; feature slicing and production
-> hardening remain follow-up work. Updated 2026-07-13.
+> hardening remain follow-up work. Updated 2026-07-14.
 
 ## Outcome
 
@@ -57,6 +57,15 @@ Already established:
   `DNSResolver`, `ConnectorEnvironment`, `CoreModule`, and `CoreInstance` APIs;
   socket creation is injectable while read/write/accept scheduling remains
   core/Tokio-owned.
+- one process-level native `NativeHostRuntime` implements real socket, listener,
+  DNS, Unix/FakeTCP, route-probe, and interface-discovery capabilities; instance
+  netns and mark differences arrive through `SocketContext` rather than captured
+  `GlobalCtx` state;
+- STUN codec, probing, retry, UDP/TCP NAT inference, public endpoint/port state,
+  and per-instance lifecycle are core-owned and shared by manual, direct, TCP
+  hole-punch, UDP hole-punch, peer, IP-collection, and UPnP composition;
+- host create schema v4 passes route-probe socket context and exposes no Go STUN
+  state or mapping operations.
 
 The ownership architecture is now closed. Deliberate follow-up boundaries are:
 
@@ -75,7 +84,7 @@ The ownership migration and its closure evidence are recorded in
 That document is now the authoritative closure record for native peer,
 `GlobalCtx`, foreign-network, and gateway ownership.
 
-Current closure status on 2026-07-13:
+Current closure status on 2026-07-14:
 
 - the Core instance, native and Go completion domains, runtime configuration,
   and per-instance ring registry now have single authoritative owners;
@@ -93,6 +102,11 @@ Current closure status on 2026-07-13:
   protocol/session Modules, and VPN portal client state;
 - native gateway code contains concrete engines, real resources, composition,
   configuration/events, and presentation rather than a second policy owner.
+- process-level Host Adapters have one composition root, while
+  `RuntimeConnectorHost` is explicitly an instance-facts projection with a
+  private centralized constructor;
+- core STUN and process Host Runtime closure evidence is recorded in
+  [`host_runtime_stun_refactor.md`](host_runtime_stun_refactor.md).
 
 ## Definition of done
 
@@ -318,15 +332,15 @@ Do not preserve old public Rust paths merely to make a migration appear less
 disruptive. Do preserve wire compatibility when it is an explicit protocol
 requirement; that is separate from Rust source compatibility.
 
-## Validation snapshot (2026-07-13)
+## Validation snapshot (2026-07-14)
 
 The completed ownership milestone passes:
 
 - native `easytier-core` default, no-default, and all-feature checks;
 - `wasm32-wasip1` no-default and all-feature checks, with the established
   default/no-default/all-feature guest test artifacts retained;
-- 471 native `easytier-core` library tests;
-- all 29 `easytier-go-host` tests, including the real two-instance route and
+- 482 native `easytier-core` all-feature tests;
+- all 31 `easytier-go-host` tests, including the real two-instance route and
   packet exchange, plus `go build` and `go vet`;
 - four focused race-enabled Go bridge close, cancellation, and lifecycle
   tests;
@@ -344,10 +358,11 @@ The source audit finds no direct real-OS network, DNS, filesystem, process, or
 platform syscall in `easytier-core`. Address-only uses of `std::net` and the
 in-memory smoltcp stream are not OS operations.
 
-The full Go race suite passes 21 tests and times out eight while initializing
-the WASM module or probe; it reports no data races. The focused lifecycle race
-tests pass, so these timeouts remain a quantitative race-instrumented WASM
-initialization limit rather than an ownership regression.
+An earlier full Go race suite passed 21 tests and exceeded fixed deadlines in
+eight tests while initializing an instrumented WASM module or probe; it reported
+no data races. Normal Go tests and focused lifecycle race tests pass, so this is
+recorded as a quantitative race-instrumented initialization limit rather than an
+ownership regression.
 
 WireGuard portal Docker tests stop at their baseline ping before
 `run_vpn_portal`, so they do not exercise the migrated client registry. Three

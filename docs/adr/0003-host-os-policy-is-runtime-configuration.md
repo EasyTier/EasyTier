@@ -38,6 +38,23 @@ incorrectly tied to the guest target when embedded.
 - Source checks should distinguish forbidden OS operations from allowed policy
   data; a blanket ban on all `cfg(target_*)` is not appropriate.
 
+## Implementation update (2026-07-14)
+
+The native host now has one process-level `NativeHostRuntime` for TCP, UDP,
+listeners, DNS, Unix/FakeTCP resources, route probes, and interface discovery.
+It does not retain `GlobalCtx` or instance netns/mark state. Callers clone one
+shared `Arc`; they do not construct per-instance socket or DNS factories.
+
+`SocketContext` is the request contract for IP family, exact optional socket
+mark, and opaque netns token. Route probes and preferred-source discovery carry
+the same context as the subsequent socket request. Linux namespace guards cover
+only synchronous resource creation and never cross `await`; Tokio continues
+asynchronous I/O after the guard is released.
+
+`RuntimeConnectorHost` remains an instance projection for listener, address,
+and protected-port facts. It is deliberately not the process runtime and does
+not execute real connector socket operations.
+
 ## Rejected alternatives
 
 ### Ban all target conditionals from core
