@@ -1,5 +1,7 @@
 //! Core-owned UDP hole-punch socket/session runtime.
 
+mod rpc;
+
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
     sync::{Arc, Weak},
@@ -7,23 +9,71 @@ use std::{
 
 use anyhow::Context as _;
 use async_trait::async_trait;
+use quanta::Instant;
 
 use crate::{
-    connectivity::direct::DirectConnectorHost,
+    connectivity::{direct::DirectConnectorHost, protocol::ClientProtocolUpgrader},
     hole_punch::udp::{
-        UdpHolePunchRuntime, UdpPortMappingLease, UdpPunchAcceptor, UdpPunchConnCounter,
-        UdpPunchListener, UdpPunchSocket, UdpResolvedPublicAddr,
+        ProtocolUdpHolePunchTransportSink, UdpHolePunchConnector, UdpHolePunchPeerSource,
+        UdpHolePunchRuntime, UdpPortMappingLease, UdpPunchAcceptor, UdpPunchCandidate,
+        UdpPunchConnCounter, UdpPunchListener, UdpPunchSocket, UdpResolvedPublicAddr,
+        UdpSymPunchLock,
     },
     peers::peer_manager::PeerManagerCore,
+    proto::peer_rpc::UdpHolePunchRpcServer,
     socket::{
         IpVersion, SocketContext,
+        tcp::VirtualTcpSocketFactory,
         udp::{
             UdpBindOptions, UdpSessionControlHandler, UdpSessionLayer, UdpSessionSocket,
             UdpSessionStunResponder, VirtualUdpSocket, VirtualUdpSocketFactory,
         },
     },
-    stun::StunSocketMapper,
+    stun::{StunInfoProvider, StunProviderSlot, StunSocketMapper},
 };
+
+use self::rpc::{PeerRpcUdpHolePunchSignaling, UdpHolePunchRpcEndpoint};
+
+#[async_trait]
+impl UdpHolePunchPeerSource for PeerManagerCore {
+    fn local_peer_id(&self) -> crate::config::PeerId {
+        PeerManagerCore::my_peer_id(self)
+    }
+
+    fn network_name(&self) -> &str {
+        PeerManagerCore::network_name(self)
+    }
+
+    fn p2p_policy_flags(&self) -> crate::config::P2pPolicyFlags {
+        PeerManagerCore::p2p_policy_flags(self)
+    }
+
+    async fn candidates(&self) -> Vec<UdpPunchCandidate> {
+        let now = Instant::now();
+        let peer_map = self.get_peer_map();
+        self.list_route_snapshots()
+            .await
+            .into_iter()
+            .filter_map(|route| {
+                let udp_nat_type = route
+                    .stun_info
+                    .as_ref()
+                    .map(|info| info.udp_nat_type)
+                    .unwrap_or_default();
+                let Ok(udp_nat_type) = crate::proto::common::NatType::try_from(udp_nat_type) else {
+                    return None;
+                };
+                Some(UdpPunchCandidate {
+                    peer_id: route.peer_id,
+                    udp_nat_type,
+                    feature_flag: route.feature_flag,
+                    has_direct_connection: peer_map.has_peer(route.peer_id),
+                    has_recent_traffic: self.has_recent_traffic(route.peer_id, now),
+                })
+            })
+            .collect()
+    }
+}
 
 #[async_trait]
 pub trait UdpHolePunchPlatform: Send + Sync + 'static {
@@ -98,7 +148,113 @@ fn managed_local_addr_error(
 }
 
 type HostUdpSocket<H> = <H as VirtualUdpSocketFactory>::Socket;
+type HostTcpSocket<H> = <H as VirtualTcpSocketFactory>::Socket;
 type CoreUdpSessionLayer<H> = UdpSessionLayer<HostUdpSocket<H>, H, H>;
+type CoreUdpHolePunchTransportSink<H> =
+    ProtocolUdpHolePunchTransportSink<HostTcpSocket<H>, PeerManagerCore>;
+type CoreUdpHolePunchConnector<H> = UdpHolePunchConnector<
+    PeerManagerCore,
+    PeerRpcUdpHolePunchSignaling,
+    CoreUdpHolePunchTransportSink<H>,
+    CoreUdpHolePunchRuntime<H>,
+>;
+type CoreUdpHolePunchEndpoint<H> =
+    UdpHolePunchRpcEndpoint<CoreUdpHolePunchRuntime<H>, CoreUdpHolePunchTransportSink<H>>;
+
+pub(crate) struct CoreUdpHolePunchService<H>
+where
+    H: DirectConnectorHost,
+{
+    server: Arc<CoreUdpHolePunchEndpoint<H>>,
+    client: CoreUdpHolePunchConnector<H>,
+    peer_manager: Arc<PeerManagerCore>,
+}
+
+impl<H> CoreUdpHolePunchService<H>
+where
+    H: DirectConnectorHost + Send + Sync + 'static,
+    HostUdpSocket<H>: VirtualUdpSocket + 'static,
+{
+    pub(crate) fn new(
+        peer_manager: Arc<PeerManagerCore>,
+        host: Arc<H>,
+        stun: Arc<StunProviderSlot<HostUdpSocket<H>>>,
+        platform: Arc<dyn UdpHolePunchPlatform>,
+        socket_context: SocketContext,
+        protocol: Arc<dyn ClientProtocolUpgrader<HostTcpSocket<H>>>,
+    ) -> Self {
+        let stun_mapper: Arc<dyn StunSocketMapper<HostUdpSocket<H>>> = stun.clone();
+        let stun_info: Arc<dyn StunInfoProvider> = stun;
+        let transport_sink = Arc::new(ProtocolUdpHolePunchTransportSink::new(
+            protocol,
+            peer_manager.clone(),
+        ));
+        let runtime = Arc::new(CoreUdpHolePunchRuntime::new(
+            host,
+            peer_manager.clone(),
+            stun_mapper,
+            platform,
+            socket_context,
+        ));
+        let sym_punch_lock = UdpSymPunchLock::default();
+        let client = UdpHolePunchConnector::new(
+            peer_manager.clone(),
+            Arc::new(PeerRpcUdpHolePunchSignaling::new(peer_manager.clone())),
+            transport_sink.clone(),
+            runtime.clone(),
+            stun_info.clone(),
+            sym_punch_lock.clone(),
+            Some(peer_manager.p2p_demand_notify()),
+        );
+
+        Self {
+            server: UdpHolePunchRpcEndpoint::new(
+                stun_info,
+                transport_sink,
+                sym_punch_lock,
+                runtime,
+            ),
+            client,
+            peer_manager,
+        }
+    }
+
+    pub(crate) async fn start(&self) -> anyhow::Result<()> {
+        if self
+            .peer_manager
+            .p2p_policy_flags()
+            .disable_udp_hole_punching
+        {
+            return Ok(());
+        }
+
+        self.server.start().await;
+        self.peer_manager
+            .get_peer_rpc_mgr()
+            .rpc_server()
+            .registry()
+            .register(
+                UdpHolePunchRpcServer::new(Arc::downgrade(&self.server)),
+                self.peer_manager.network_name(),
+            );
+        self.client.run_as_client();
+        Ok(())
+    }
+
+    pub(crate) async fn stop(&self) {
+        self.client.stop().await;
+        self.server.begin_stop();
+        self.peer_manager
+            .get_peer_rpc_mgr()
+            .rpc_server()
+            .registry()
+            .unregister(
+                UdpHolePunchRpcServer::new(Arc::downgrade(&self.server)),
+                self.peer_manager.network_name(),
+            );
+        self.server.stop().await;
+    }
+}
 
 struct CoreUdpPunchAcceptor<H>
 where

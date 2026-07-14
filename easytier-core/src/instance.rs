@@ -72,7 +72,10 @@ use crate::{
     tunnel::ring::RingTunnelRegistry,
 };
 
-use self::public_ipv6_provider::{PublicIpv6ProviderHost, PublicIpv6ProviderService};
+use self::{
+    public_ipv6_provider::{PublicIpv6ProviderHost, PublicIpv6ProviderService},
+    udp_hole_punch::{CoreUdpHolePunchService, UdpHolePunchPlatform},
+};
 
 pub use packet_io::PacketSink;
 use packet_io::{PacketEgress, parse_ip_packet};
@@ -245,7 +248,9 @@ where
     pub listener_events: Option<Arc<dyn ListenerEventSink>>,
     pub accepted_transport_handler:
         Option<Arc<dyn AcceptedSocketHandler<AcceptedTransport<HostAcceptedTcpSocket<H>>>>>,
-    pub udp_hole_punch: Option<Arc<dyn UdpHolePunchService>>,
+    /// Optional OS port-mapping adapter. STUN-only hole punching remains
+    /// available when the host does not provide one.
+    pub udp_hole_punch_platform: Option<Arc<dyn UdpHolePunchPlatform>>,
     pub transport_proxy: Option<Arc<dyn ProxyService>>,
     pub proxy: Option<Arc<dyn ProxyService>>,
     pub proxy_cidr_runtime: Option<Arc<dyn ProxyCidrRuntime>>,
@@ -376,12 +381,6 @@ where
 }
 
 #[async_trait]
-pub trait UdpHolePunchService: Send + Sync + 'static {
-    async fn start(&self) -> anyhow::Result<()>;
-    async fn stop(&self);
-}
-
-#[async_trait]
 pub trait ProxyService: Send + Sync + 'static {
     async fn start(&self) -> anyhow::Result<()>;
     async fn stop(&self);
@@ -455,7 +454,7 @@ where
     direct: DirectConnectorManager<H>,
     tcp_hole_punch: TcpHolePunchConnector<H>,
     listener: Option<Arc<dyn ListenerService>>,
-    udp_hole_punch: Option<Arc<dyn UdpHolePunchService>>,
+    udp_hole_punch: CoreUdpHolePunchService<H>,
     udp_hole_punch_started: AtomicBool,
     transport_proxy: Option<Arc<dyn ProxyService>>,
     transport_proxy_started: AtomicBool,
@@ -604,7 +603,7 @@ where
             listener,
             listener_events,
             accepted_transport_handler,
-            udp_hole_punch,
+            udp_hole_punch_platform,
             transport_proxy,
             proxy,
             proxy_cidr_runtime,
@@ -699,7 +698,16 @@ where
         };
         let tcp_hole_punch_protocol = protocol.clone();
         let tcp_hole_punch_socket_context = direct_options.tcp_bind.context.clone();
+        let udp_hole_punch_socket_context = direct_options.udp_bind.context.clone();
         let tcp_stun: Arc<dyn StunInfoProvider> = stun.clone();
+        let udp_hole_punch = CoreUdpHolePunchService::new(
+            peer_manager.clone(),
+            host.clone(),
+            stun.clone(),
+            udp_hole_punch_platform.unwrap_or_else(|| Arc::new(())),
+            udp_hole_punch_socket_context,
+            protocol.clone(),
+        );
         let direct = match running_listeners {
             Some(running_listeners) => DirectConnectorManager::new_with_running_listeners(
                 peer_manager.clone(),
@@ -713,7 +721,7 @@ where
             None => DirectConnectorManager::new(
                 peer_manager.clone(),
                 host.clone(),
-                stun,
+                stun.clone(),
                 dns,
                 protocol,
                 direct_options,
@@ -792,10 +800,8 @@ where
         if let Some(listener) = &self.listener {
             listener.stop().await;
         }
-        if let Some(udp_hole_punch) = &self.udp_hole_punch {
-            udp_hole_punch.stop().await;
-            self.udp_hole_punch_started.store(false, Ordering::Release);
-        }
+        self.udp_hole_punch.stop().await;
+        self.udp_hole_punch_started.store(false, Ordering::Release);
         if let Some(transport_proxy) = &self.transport_proxy
             && self.transport_proxy_started.load(Ordering::Acquire)
         {
@@ -904,9 +910,6 @@ where
         if state != CoreInstanceState::Running {
             anyhow::bail!("UDP hole punching cannot start from core instance state {state:?}");
         }
-        let Some(udp_hole_punch) = &self.udp_hole_punch else {
-            return Ok(());
-        };
         if self.udp_hole_punch_started.load(Ordering::Acquire) {
             return Ok(());
         }
@@ -917,10 +920,10 @@ where
             _ = self.cancel.cancelled() => {
                 Err(anyhow::anyhow!("UDP hole punching start cancelled"))
             }
-            result = udp_hole_punch.start() => result,
+            result = self.udp_hole_punch.start() => result,
         };
         if let Err(error) = start_result {
-            udp_hole_punch.stop().await;
+            self.udp_hole_punch.stop().await;
             self.udp_hole_punch_started.store(false, Ordering::Release);
             recovery.disarm();
             return Err(error);

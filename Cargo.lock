@@ -2431,7 +2431,6 @@ dependencies = [
  "tikv-jemalloc-sys",
  "tikv-jemallocator",
  "time",
- "timedmap",
  "tokio",
  "tokio-rustls",
  "tokio-socks",
@@ -10043,12 +10042,6 @@ dependencies = [
  "num-conv",
  "time-core",
 ]
-
-[[package]]
-name = "timedmap"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "825f6c8a18bc36d56a62f66af7296385b628c9c5543a8663d4c217fc920bfefd"
 
 [[package]]
 name = "tinystr"

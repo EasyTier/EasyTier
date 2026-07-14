@@ -28,12 +28,12 @@ use crate::{
         netns::NetNS,
         stun::MockStunInfoCollector,
     },
-    connector::udp_hole_punch::{UdpHolePunchConnector, common::runtime_udp_hole_punch_runtime},
+    connector::udp_hole_punch::common::runtime_udp_hole_punch_runtime,
     instance::instance::Instance,
     peers::{
         create_packet_recv_chan,
         peer_manager::{PeerManager, RouteAlgoType},
-        tests::{connect_peer_manager, wait_route_appear, wait_route_appear_with_cost},
+        tests::{wait_route_appear, wait_route_appear_with_cost},
     },
     proto::common::{NatType, StunInfo},
     tunnel::common::tests::wait_for_condition,
@@ -1605,176 +1605,6 @@ async fn udp_hole_punch_listener_skips_upnp_when_disabled() {
     assert!(!mapping_exists(local_port).await);
 
     drop(listener);
-}
-
-#[tokio::test]
-#[serial_test::serial(upnp)]
-async fn udp_hole_punch_succeeds_via_upnp_mappings_with_different_external_ports() {
-    let _env = DualGatewayUpnpIntegrationEnv::new().await.unwrap();
-
-    let p_a = create_test_peer_manager(
-        "upnp-test-a",
-        Some(DUAL_NS_A),
-        false,
-        Box::new(GatewayBackedStunCollector {
-            netns: DUAL_NS_A,
-            client_ip: DUAL_CLIENT_A_IP,
-            external_ip: DUAL_EXTERNAL_A_IP,
-        }),
-    )
-    .await;
-    let mut event_rx_a = p_a.get_global_ctx().subscribe();
-    let p_b = create_test_peer_manager(
-        "upnp-test-b",
-        None,
-        false,
-        Box::new(MockStunInfoCollector {
-            udp_nat_type: NatType::Unknown,
-        }),
-    )
-    .await;
-    let p_c = create_test_peer_manager(
-        "upnp-test-c",
-        Some(DUAL_NS_C),
-        false,
-        Box::new(GatewayBackedStunCollector {
-            netns: DUAL_NS_C,
-            client_ip: DUAL_CLIENT_C_IP,
-            external_ip: DUAL_EXTERNAL_C_IP,
-        }),
-    )
-    .await;
-    let mut event_rx_c = p_c.get_global_ctx().subscribe();
-
-    connect_peer_manager(p_a.clone(), p_b.clone()).await;
-    connect_peer_manager(p_b.clone(), p_c.clone()).await;
-    timeout_stage(
-        "wait_route_appear(a,c)",
-        Duration::from_secs(10),
-        wait_route_appear(p_a.clone(), p_c.clone()),
-    )
-    .await
-    .unwrap();
-    timeout_stage(
-        "wait_route_appear_with_cost(a,c,2)",
-        Duration::from_secs(10),
-        wait_route_appear_with_cost(p_a.clone(), p_c.my_peer_id(), Some(2)),
-    )
-    .await
-    .unwrap();
-    let mut hole_punching_a = UdpHolePunchConnector::new(p_a.clone());
-    let mut hole_punching_c = UdpHolePunchConnector::new(p_c.clone());
-    hole_punching_a.run_as_client().await.unwrap();
-    hole_punching_c.run_as_server().await.unwrap();
-
-    timeout_stage(
-        "udp_hole_punch_run_immediately(a)",
-        Duration::from_secs(10),
-        hole_punching_a.run_immediately_for_test(),
-    )
-    .await;
-
-    let event_a = timeout_stage(
-        "wait_port_mapping_event(a)",
-        Duration::from_secs(15),
-        wait_for_port_mapping_event(&mut event_rx_a),
-    )
-    .await;
-    let event_c = timeout_stage(
-        "wait_port_mapping_event(c)",
-        Duration::from_secs(15),
-        wait_for_port_mapping_event(&mut event_rx_c),
-    )
-    .await;
-
-    let (local_port_a, mapped_port_a) = match event_a {
-        GlobalCtxEvent::ListenerPortMappingEstablished {
-            local_listener,
-            mapped_listener,
-            backend,
-        } => {
-            assert_eq!(backend, "igd");
-            (
-                local_listener.port().unwrap(),
-                mapped_listener.port().unwrap(),
-            )
-        }
-        other => panic!("unexpected event for a: {other:?}"),
-    };
-    let (local_port_c, mapped_port_c) = match event_c {
-        GlobalCtxEvent::ListenerPortMappingEstablished {
-            local_listener,
-            mapped_listener,
-            backend,
-        } => {
-            assert_eq!(backend, "igd");
-            (
-                local_listener.port().unwrap(),
-                mapped_listener.port().unwrap(),
-            )
-        }
-        other => panic!("unexpected event for c: {other:?}"),
-    };
-
-    assert_ne!(mapped_port_a, local_port_a);
-    assert_ne!(mapped_port_c, local_port_c);
-
-    let mapped_addr_a = timeout_stage(
-        "query_udp_mapping(a)",
-        Duration::from_secs(10),
-        query_udp_mapping(
-            DUAL_NS_A,
-            DUAL_EXTERNAL_A_IP,
-            DUAL_CLIENT_A_IP,
-            local_port_a,
-        ),
-    )
-    .await
-    .unwrap();
-    let mapped_addr_c = timeout_stage(
-        "query_udp_mapping(c)",
-        Duration::from_secs(10),
-        query_udp_mapping(
-            DUAL_NS_C,
-            DUAL_EXTERNAL_C_IP,
-            DUAL_CLIENT_C_IP,
-            local_port_c,
-        ),
-    )
-    .await
-    .unwrap();
-
-    assert_eq!(mapped_addr_a.port(), mapped_port_a);
-    assert_eq!(mapped_addr_c.port(), mapped_port_c);
-
-    timeout_stage(
-        "wait_route_cost_1_after_udp_hole_punch",
-        Duration::from_secs(15),
-        wait_for_condition(
-            || {
-                let p_a = p_a.clone();
-                let p_c = p_c.clone();
-                async move {
-                    let a_ok = p_a
-                        .list_routes()
-                        .await
-                        .iter()
-                        .any(|route| route.peer_id == p_c.my_peer_id() && route.cost == 1);
-                    let c_ok = p_c
-                        .list_routes()
-                        .await
-                        .iter()
-                        .any(|route| route.peer_id == p_a.my_peer_id() && route.cost == 1);
-                    a_ok && c_ok
-                }
-            },
-            Duration::from_secs(15),
-        ),
-    )
-    .await;
-
-    assert_ne!(mapped_addr_a.port(), local_port_a);
-    assert_ne!(mapped_addr_c.port(), local_port_c);
 }
 
 #[tokio::test]

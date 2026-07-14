@@ -218,7 +218,9 @@ pub(crate) fn runtime_core_instance_adapters_with_ring_registry(
         listener: None,
         listener_events: None,
         accepted_transport_handler: None,
-        udp_hole_punch: None,
+        udp_hole_punch_platform: Some(super::udp_hole_punch::runtime_udp_hole_punch_platform(
+            global_ctx.clone(),
+        )),
         transport_proxy: None,
         proxy: None,
         proxy_cidr_runtime: None,
@@ -307,9 +309,6 @@ pub(crate) fn build_runtime_core_instance_with_services_and_ring_registry(
         global_ctx,
         accepted_transport_handler,
         &listener_plan,
-    )));
-    adapters.udp_hole_punch = Some(Arc::new(super::udp_hole_punch::UdpHolePunchConnector::new(
-        peer_manager.clone(),
     )));
     CoreInstance::new_with_runtime_config_store(
         peer_manager.core(),

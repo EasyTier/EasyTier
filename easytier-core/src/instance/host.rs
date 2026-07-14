@@ -103,7 +103,7 @@ where
             listener: None,
             listener_events: None,
             accepted_transport_handler: None,
-            udp_hole_punch: None,
+            udp_hole_punch_platform: None,
             transport_proxy: None,
             proxy: None,
             proxy_cidr_runtime: None,
