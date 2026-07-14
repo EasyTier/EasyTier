@@ -11,6 +11,7 @@ use easytier_core::{
         transport::ConnectedByteStream,
     },
     socket::{
+        SocketContext,
         tcp::{
             TcpConnectOptions, TcpListenOptions, VirtualTcpListenerFactory, VirtualTcpSocketFactory,
         },
@@ -95,15 +96,14 @@ impl UdpSessionControlHandler<RuntimeUdpSocket> for RuntimeConnectorHost {
 
 #[async_trait]
 impl ManualConnectorHost for RuntimeConnectorHost {
-    async fn local_addr_for_remote(&self, remote_addr: SocketAddr) -> anyhow::Result<SocketAddr> {
-        let socket = self.global_ctx.net_ns.run(|| {
-            let socket = std::net::UdpSocket::bind("[::]:0")?;
-            socket.set_nonblocking(true)?;
-            std::io::Result::Ok(socket)
-        })?;
-        let socket = tokio::net::UdpSocket::from_std(socket)?;
-        socket.connect(remote_addr).await?;
-        Ok(socket.local_addr()?)
+    async fn local_addr_for_remote(
+        &self,
+        remote_addr: SocketAddr,
+        context: SocketContext,
+    ) -> anyhow::Result<SocketAddr> {
+        self.runtime
+            .local_addr_for_remote(remote_addr, context)
+            .await
     }
 
     async fn interface_addrs(&self) -> anyhow::Result<ManualInterfaceAddrs> {

@@ -628,7 +628,10 @@ pub extern "C" fn init_environment_probe() -> i32 {
         runtime.spawn(async move {
             let result: Result<(), String> = async {
                 let local = services
-                    .local_addr_for_remote("203.0.113.2:443".parse().unwrap())
+                    .local_addr_for_remote(
+                        "203.0.113.2:443".parse().unwrap(),
+                        easytier_core::socket::SocketContext::default(),
+                    )
                     .await
                     .map_err(|error| error.to_string())?;
                 if local != "192.0.2.10:40000".parse().unwrap() {

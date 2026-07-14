@@ -15,6 +15,7 @@ import (
 type probeOpaqueEnvironment struct {
 	mu            sync.Mutex
 	localRequests []string
+	localContexts []SocketContext
 	started       chan string
 	release       chan struct{}
 }
@@ -39,9 +40,11 @@ func (environment *probeOpaqueEnvironment) awaitRelease(
 func (environment *probeOpaqueEnvironment) LocalAddrForRemote(
 	ctx context.Context,
 	remote *net.UDPAddr,
+	socketContext SocketContext,
 ) (net.Addr, error) {
 	environment.mu.Lock()
 	environment.localRequests = append(environment.localRequests, remote.String())
+	environment.localContexts = append(environment.localContexts, socketContext)
 	environment.mu.Unlock()
 	if err := environment.awaitRelease(ctx, "local"); err != nil {
 		return nil, err
@@ -53,6 +56,12 @@ func (environment *probeOpaqueEnvironment) requests() []string {
 	environment.mu.Lock()
 	defer environment.mu.Unlock()
 	return append([]string(nil), environment.localRequests...)
+}
+
+func (environment *probeOpaqueEnvironment) contexts() []SocketContext {
+	environment.mu.Lock()
+	defer environment.mu.Unlock()
+	return append([]SocketContext(nil), environment.localContexts...)
 }
 
 func TestOpaqueEnvironmentDrivesCoreServices(t *testing.T) {
@@ -132,6 +141,11 @@ func TestOpaqueEnvironmentDrivesCoreServices(t *testing.T) {
 	local := environment.requests()
 	if fmt.Sprint(local) != "[203.0.113.2:443]" {
 		t.Fatalf("unexpected environment requests: local=%v", local)
+	}
+	contexts := environment.contexts()
+	if len(contexts) != 1 || contexts[0].IPVersion != IPVersionBoth ||
+		contexts[0].SocketMark != nil || contexts[0].NetNS != nil {
+		t.Fatalf("unexpected environment socket contexts: %v", contexts)
 	}
 	if bridge.environmentCallCount() != 1 {
 		t.Fatalf("unexpected environment call count: %d", bridge.environmentCallCount())

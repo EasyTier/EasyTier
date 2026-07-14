@@ -18,6 +18,7 @@ use crate::{
     hole_punch::udp::new_hole_punch_packet,
     proto::peer_rpc::GetIpListResponse,
     socket::{
+        SocketContext,
         host::{
             HostSocketRuntime, HostTcpStream,
             factory::{HostSocketBackend, HostSocketFactory},
@@ -37,7 +38,11 @@ use crate::{
 /// Non-socket capabilities required by manual connectivity.
 #[async_trait]
 pub trait ManualConnectorEnvironment: Send + Sync + 'static {
-    async fn local_addr_for_remote(&self, remote_addr: SocketAddr) -> anyhow::Result<SocketAddr>;
+    async fn local_addr_for_remote(
+        &self,
+        remote_addr: SocketAddr,
+        context: SocketContext,
+    ) -> anyhow::Result<SocketAddr>;
 
     async fn interface_addrs(&self) -> anyhow::Result<ManualInterfaceAddrs>;
 }
@@ -185,8 +190,14 @@ where
     B: HostConnectorSocketBackend,
     E: ManualConnectorEnvironment,
 {
-    async fn local_addr_for_remote(&self, remote_addr: SocketAddr) -> anyhow::Result<SocketAddr> {
-        self.environment.local_addr_for_remote(remote_addr).await
+    async fn local_addr_for_remote(
+        &self,
+        remote_addr: SocketAddr,
+        context: SocketContext,
+    ) -> anyhow::Result<SocketAddr> {
+        self.environment
+            .local_addr_for_remote(remote_addr, context)
+            .await
     }
 
     async fn interface_addrs(&self) -> anyhow::Result<ManualInterfaceAddrs> {
@@ -418,6 +429,7 @@ mod tests {
         async fn local_addr_for_remote(
             &self,
             _remote_addr: SocketAddr,
+            _context: SocketContext,
         ) -> anyhow::Result<SocketAddr> {
             Ok("192.0.2.1:40100".parse().unwrap())
         }
@@ -478,10 +490,13 @@ mod tests {
             Arc::new(UnsupportedBackend::default()),
             Arc::new(TestEnvironment),
         );
-        let local =
-            ManualConnectorHost::local_addr_for_remote(&host, "203.0.113.1:11010".parse().unwrap())
-                .await
-                .unwrap();
+        let local = ManualConnectorHost::local_addr_for_remote(
+            &host,
+            "203.0.113.1:11010".parse().unwrap(),
+            SocketContext::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(local, "192.0.2.1:40100".parse().unwrap());
         assert_eq!(
             ManualConnectorHost::interface_addrs(&host)

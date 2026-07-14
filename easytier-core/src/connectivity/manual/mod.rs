@@ -118,7 +118,11 @@ pub trait ManualConnectorHost:
     + VirtualUdpSocketFactory
     + UdpSessionControlHandler<<Self as VirtualUdpSocketFactory>::Socket>
 {
-    async fn local_addr_for_remote(&self, remote_addr: SocketAddr) -> anyhow::Result<SocketAddr>;
+    async fn local_addr_for_remote(
+        &self,
+        remote_addr: SocketAddr,
+        context: SocketContext,
+    ) -> anyhow::Result<SocketAddr>;
 
     async fn interface_addrs(&self) -> anyhow::Result<ManualInterfaceAddrs>;
 
@@ -938,7 +942,7 @@ where
     H: ManualConnectorHost,
 {
     let ip_version = context.ip_version;
-    let addrs = resolve_url_addrs(url, default_port, context, dns).await?;
+    let addrs = resolve_url_addrs(url, default_port, context.clone(), dns).await?;
     let mut usable = Vec::new();
     let mut rejected_reason = None;
     for addr in addrs {
@@ -953,7 +957,7 @@ where
             ));
             continue;
         }
-        match host.local_addr_for_remote(addr).await {
+        match host.local_addr_for_remote(addr, context.clone()).await {
             Ok(SocketAddr::V6(local_addr))
                 if peer_manager.is_easytier_managed_ipv6(local_addr.ip()).await =>
             {

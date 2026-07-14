@@ -15,7 +15,7 @@ use crate::{
         manual::ManualInterfaceAddrs,
     },
     proto::peer_rpc::GetIpListResponse,
-    socket::udp::PreferredIpv6Source,
+    socket::{SocketContext, udp::PreferredIpv6Source},
 };
 
 /// Host-observed facts consumed by core connector policy.
@@ -69,7 +69,11 @@ impl HostConnectorEnvironmentSnapshot {
 /// Slow or socket-specific system operations below connector policy.
 #[async_trait]
 pub trait HostConnectorEnvironmentServices: Send + Sync + 'static {
-    async fn local_addr_for_remote(&self, remote_addr: SocketAddr) -> anyhow::Result<SocketAddr>;
+    async fn local_addr_for_remote(
+        &self,
+        remote_addr: SocketAddr,
+        context: SocketContext,
+    ) -> anyhow::Result<SocketAddr>;
 }
 
 /// Adapts one coherent instance snapshot and slow host services to the
@@ -97,8 +101,14 @@ impl<S> ManualConnectorEnvironment for HostConnectorEnvironment<S>
 where
     S: HostConnectorEnvironmentServices,
 {
-    async fn local_addr_for_remote(&self, remote_addr: SocketAddr) -> anyhow::Result<SocketAddr> {
-        self.services.local_addr_for_remote(remote_addr).await
+    async fn local_addr_for_remote(
+        &self,
+        remote_addr: SocketAddr,
+        context: SocketContext,
+    ) -> anyhow::Result<SocketAddr> {
+        self.services
+            .local_addr_for_remote(remote_addr, context)
+            .await
     }
 
     async fn interface_addrs(&self) -> anyhow::Result<ManualInterfaceAddrs> {
@@ -161,7 +171,7 @@ mod tests {
     use super::*;
 
     struct RecordingServices {
-        local_requests: Mutex<Vec<SocketAddr>>,
+        local_requests: Mutex<Vec<(SocketAddr, SocketContext)>>,
     }
 
     #[async_trait]
@@ -169,8 +179,12 @@ mod tests {
         async fn local_addr_for_remote(
             &self,
             remote_addr: SocketAddr,
+            context: SocketContext,
         ) -> anyhow::Result<SocketAddr> {
-            self.local_requests.lock().unwrap().push(remote_addr);
+            self.local_requests
+                .lock()
+                .unwrap()
+                .push((remote_addr, context));
             Ok("192.0.2.1:40100".parse().unwrap())
         }
     }
@@ -215,11 +229,18 @@ mod tests {
         let environment = HostConnectorEnvironment::new(initial_snapshot, services.clone());
 
         let remote = "203.0.113.1:11010".parse().unwrap();
+        let context = SocketContext::default().with_socket_mark(Some(7));
         assert_eq!(
-            environment.local_addr_for_remote(remote).await.unwrap(),
+            environment
+                .local_addr_for_remote(remote, context.clone())
+                .await
+                .unwrap(),
             "192.0.2.1:40100".parse().unwrap()
         );
-        assert_eq!(*services.local_requests.lock().unwrap(), vec![remote]);
+        assert_eq!(
+            *services.local_requests.lock().unwrap(),
+            vec![(remote, context)]
+        );
         assert_eq!(
             environment.interface_addrs().await.unwrap().public_ipv6,
             Some("2001:db8::1".parse().unwrap())

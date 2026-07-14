@@ -90,7 +90,7 @@ type opaqueDNSOperation struct {
 type opaqueDNSKind uint8
 
 type ConnectorEnvironment interface {
-	LocalAddrForRemote(context.Context, *net.UDPAddr) (net.Addr, error)
+	LocalAddrForRemote(context.Context, *net.UDPAddr, SocketContext) (net.Addr, error)
 }
 
 type opaqueEnvironmentOperation struct {

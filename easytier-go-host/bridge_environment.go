@@ -15,6 +15,7 @@ type unsupportedOpaqueEnvironment struct{}
 func (unsupportedOpaqueEnvironment) LocalAddrForRemote(
 	context.Context,
 	*net.UDPAddr,
+	SocketContext,
 ) (net.Addr, error) {
 	return nil, fmt.Errorf("no Go connector environment was injected")
 }
@@ -31,6 +32,8 @@ func (b *opaqueBridge) startLocalAddrForRemote(
 	operation uint64,
 	remotePointer uint32,
 	remoteLength uint32,
+	contextPointer uint32,
+	contextLength uint32,
 ) int32 {
 	if remoteLength != socketAddressLen {
 		return opaqueHostInvalid
@@ -43,8 +46,16 @@ func (b *opaqueBridge) startLocalAddrForRemote(
 	if err != nil {
 		return opaqueHostInvalid
 	}
+	encodedContext, ok := readOwnedOptions(module, contextPointer, contextLength)
+	if !ok {
+		return opaqueHostMemory
+	}
+	socketContext, remainder, err := decodeSocketContext(encodedContext)
+	if err != nil || len(remainder) != 0 {
+		return opaqueHostInvalid
+	}
 	return b.startEnvironmentOperation(operation, func(ctx context.Context) (net.Addr, error) {
-		return b.environmentResolver.LocalAddrForRemote(ctx, remote)
+		return b.environmentResolver.LocalAddrForRemote(ctx, remote, socketContext)
 	})
 }
 

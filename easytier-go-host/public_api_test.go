@@ -28,6 +28,7 @@ type publicConnectorEnvironment struct{}
 func (publicConnectorEnvironment) LocalAddrForRemote(
 	context.Context,
 	*net.UDPAddr,
+	corehost.SocketContext,
 ) (net.Addr, error) {
 	return nil, nil
 }

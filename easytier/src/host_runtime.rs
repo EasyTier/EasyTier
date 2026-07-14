@@ -5,6 +5,7 @@ use std::{
 
 use async_trait::async_trait;
 use easytier_core::socket::{
+    SocketContext,
     dns::{DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord},
     tcp::{
         TcpConnectOptions, TcpListenOptions, TcpSocketPurpose, VirtualTcpListenerFactory,
@@ -68,6 +69,31 @@ impl VirtualTcpSocketFactory for NativeHostRuntime {
         crate::socket::tcp::connect_tcp(options)
             .await
             .map_err(anyhow::Error::from)
+    }
+}
+
+impl NativeHostRuntime {
+    pub(crate) async fn local_addr_for_remote(
+        &self,
+        remote_addr: std::net::SocketAddr,
+        context: SocketContext,
+    ) -> anyhow::Result<std::net::SocketAddr> {
+        let socket = NetNS::from_socket_context(&context).run(|| -> anyhow::Result<_> {
+            let socket = socket2::Socket::new(
+                socket2::Domain::IPV6,
+                socket2::Type::DGRAM,
+                Some(socket2::Protocol::UDP),
+            )?;
+            crate::tunnel::common::apply_socket_mark(&socket, context.socket_mark)?;
+            socket.set_nonblocking(true)?;
+            socket.bind(&socket2::SockAddr::from(std::net::SocketAddr::V6(
+                SocketAddrV6::new(std::net::Ipv6Addr::UNSPECIFIED, 0, 0, 0),
+            )))?;
+            Ok(std::net::UdpSocket::from(socket))
+        })?;
+        let socket = tokio::net::UdpSocket::from_std(socket)?;
+        socket.connect(remote_addr).await?;
+        Ok(socket.local_addr()?)
     }
 }
 

@@ -5,7 +5,9 @@ use std::{io, net::SocketAddr, sync::Arc, task::Poll};
 use async_trait::async_trait;
 use futures::future::poll_fn;
 
-use crate::connectivity::host::environment::HostConnectorEnvironmentServices;
+use crate::{
+    connectivity::host::environment::HostConnectorEnvironmentServices, socket::SocketContext,
+};
 
 use super::{HostOperationId, HostSocketRuntime};
 
@@ -24,6 +26,7 @@ pub trait HostConnectorEnvironmentIo: Send + Sync + 'static {
         &self,
         operation: HostOperationId,
         remote_addr: SocketAddr,
+        context: &SocketContext,
     ) -> io::Result<()>;
 
     fn take_local_addr_for_remote(
@@ -128,10 +131,14 @@ impl<I> HostConnectorEnvironmentServices for HostConnectorEnvironmentServiceAdap
 where
     I: HostConnectorEnvironmentIo,
 {
-    async fn local_addr_for_remote(&self, remote_addr: SocketAddr) -> anyhow::Result<SocketAddr> {
+    async fn local_addr_for_remote(
+        &self,
+        remote_addr: SocketAddr,
+        context: SocketContext,
+    ) -> anyhow::Result<SocketAddr> {
         Ok(self
             .run_operation(
-                |io, operation| io.submit_local_addr_for_remote(operation, remote_addr),
+                |io, operation| io.submit_local_addr_for_remote(operation, remote_addr, &context),
                 HostConnectorEnvironmentIo::take_local_addr_for_remote,
             )
             .await?)
@@ -144,9 +151,9 @@ mod tests {
 
     use super::*;
 
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[derive(Debug, Clone, PartialEq, Eq)]
     enum Request {
-        Local(SocketAddr),
+        Local(SocketAddr, SocketContext),
     }
 
     #[derive(Debug, Clone, Copy)]
@@ -210,8 +217,9 @@ mod tests {
             &self,
             operation: HostOperationId,
             remote_addr: SocketAddr,
+            context: &SocketContext,
         ) -> io::Result<()> {
-            self.submit(operation, Request::Local(remote_addr))
+            self.submit(operation, Request::Local(remote_addr, context.clone()))
         }
 
         fn take_local_addr_for_remote(
@@ -237,13 +245,15 @@ mod tests {
             io.clone(),
         ));
         let remote = "203.0.113.1:11010".parse().unwrap();
+        let context = SocketContext::default().with_socket_mark(Some(7));
         let task = tokio::spawn({
             let services = services.clone();
-            async move { services.local_addr_for_remote(remote).await }
+            let context = context.clone();
+            async move { services.local_addr_for_remote(remote, context).await }
         });
         tokio::task::yield_now().await;
 
-        let operation = io.operation_for(Request::Local(remote));
+        let operation = io.operation_for(Request::Local(remote, context));
         io.complete(
             operation,
             Completion::Ok("192.0.2.1:40100".parse().unwrap()),
@@ -257,10 +267,14 @@ mod tests {
         let pending_remote = "203.0.113.2:11010".parse().unwrap();
         let pending = tokio::spawn({
             let services = services.clone();
-            async move { services.local_addr_for_remote(pending_remote).await }
+            async move {
+                services
+                    .local_addr_for_remote(pending_remote, SocketContext::default())
+                    .await
+            }
         });
         tokio::task::yield_now().await;
-        let cancelled = io.operation_for(Request::Local(pending_remote));
+        let cancelled = io.operation_for(Request::Local(pending_remote, SocketContext::default()));
         pending.abort();
         let _ = pending.await;
         assert_eq!(*io.cancelled.lock().unwrap(), vec![cancelled]);
@@ -269,10 +283,15 @@ mod tests {
         let failed_remote = "203.0.113.3:11010".parse().unwrap();
         let failed = tokio::spawn({
             let services = services.clone();
-            async move { services.local_addr_for_remote(failed_remote).await }
+            async move {
+                services
+                    .local_addr_for_remote(failed_remote, SocketContext::default())
+                    .await
+            }
         });
         tokio::task::yield_now().await;
-        let failed_operation = io.operation_for(Request::Local(failed_remote));
+        let failed_operation =
+            io.operation_for(Request::Local(failed_remote, SocketContext::default()));
         io.complete(
             failed_operation,
             Completion::Err(io::ErrorKind::AddrNotAvailable),
@@ -293,10 +312,15 @@ mod tests {
         let unread_remote = "203.0.113.4:11010".parse().unwrap();
         let unread = tokio::spawn({
             let services = services.clone();
-            async move { services.local_addr_for_remote(unread_remote).await }
+            async move {
+                services
+                    .local_addr_for_remote(unread_remote, SocketContext::default())
+                    .await
+            }
         });
         tokio::task::yield_now().await;
-        let unread_operation = io.operation_for(Request::Local(unread_remote));
+        let unread_operation =
+            io.operation_for(Request::Local(unread_remote, SocketContext::default()));
         io.complete(
             unread_operation,
             Completion::Ok("198.51.100.1:44000".parse().unwrap()),

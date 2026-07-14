@@ -165,6 +165,12 @@ fn encode_context(encoded: &mut Vec<u8>, context: &SocketContext) -> io::Result<
     Ok(())
 }
 
+pub(super) fn encode_socket_context(context: &SocketContext) -> io::Result<Vec<u8>> {
+    let mut encoded = Vec::with_capacity(11 + context_variable_len(context));
+    encode_context(&mut encoded, context)?;
+    Ok(encoded)
+}
+
 fn encode_bind_device(encoded: &mut Vec<u8>, device: &Option<String>) -> io::Result<()> {
     let bytes = device.as_deref().unwrap_or_default().as_bytes();
     encoded.push(u8::from(device.is_some()));
