@@ -194,7 +194,9 @@ impl RuntimeUdpSocketFactory {
 
         if matches!(
             options.purpose,
-            UdpSocketPurpose::DirectConnect | UdpSocketPurpose::PortBoundListener
+            UdpSocketPurpose::DirectConnect
+                | UdpSocketPurpose::PortBoundListener
+                | UdpSocketPurpose::PortForward
         ) {
             return BindDev::Auto;
         }
@@ -206,7 +208,9 @@ impl RuntimeUdpSocketFactory {
         options.reuse_addr
             || (matches!(
                 options.purpose,
-                UdpSocketPurpose::PortBoundListener | UdpSocketPurpose::ProxyNat
+                UdpSocketPurpose::PortBoundListener
+                    | UdpSocketPurpose::ProxyNat
+                    | UdpSocketPurpose::PortForward
             ) && !cfg!(target_os = "windows"))
     }
 
@@ -454,6 +458,14 @@ mod tests {
             BindDev::Auto
         ));
         assert!(matches!(
+            factory.bind_device_for(&UdpBindOptions::port_forward(listener_addr)),
+            BindDev::Auto
+        ));
+        assert!(matches!(
+            factory.bind_device_for(&UdpBindOptions::port_lease(listener_addr)),
+            BindDev::Disabled
+        ));
+        assert!(matches!(
             factory.bind_device_for(&UdpBindOptions::hole_punch_control()),
             BindDev::Disabled
         ));
@@ -466,6 +478,11 @@ mod tests {
             factory.reuse_addr_for(&UdpBindOptions::proxy_nat()),
             !cfg!(target_os = "windows")
         );
+        assert_eq!(
+            factory.reuse_addr_for(&UdpBindOptions::port_forward(listener_addr)),
+            !cfg!(target_os = "windows")
+        );
+        assert!(!factory.reuse_addr_for(&UdpBindOptions::port_lease(listener_addr)));
     }
 
     #[test]

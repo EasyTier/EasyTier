@@ -273,7 +273,11 @@ pub(crate) fn bind_tcp_listener(
     let addr = bind_options.local_addr.ok_or_else(|| {
         TunnelError::InvalidAddr("tcp listener requires a local bind address".to_owned())
     })?;
-    let bind_dev = bind_dev_from_options(&bind_options, false);
+    let bind_dev = if bind_options.bind_device.is_none() && purpose == TcpListenPurpose::PortLease {
+        BindDev::Disabled
+    } else {
+        bind_dev_from_options(&bind_options, false)
+    };
     let listener = bind::<TcpListener>()
         .addr(addr)
         .dev(bind_dev)

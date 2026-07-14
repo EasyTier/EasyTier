@@ -29,11 +29,13 @@ use anyhow::Context as _;
 use quanta::Instant;
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::{common::error::Error, gateway::fast_socks5::server::AsyncTcpConnector};
+use crate::common::error::Error;
 use easytier_core::proxy::{
     socks5::Socks5EntryGuard,
+    socks5_protocol::server::AsyncTcpConnector,
     tokio_smoltcp::{Net, TcpListener},
 };
+use easytier_core::socket::tcp::TcpSocketPurpose;
 
 use super::{
     Socks5AutoConnector, Socks5Entry, Socks5EntryData, Socks5EntrySet, Socks5Server,
@@ -258,6 +260,9 @@ impl Socks5Server {
             entries: self.entries.clone(),
             smoltcp_net: Some(smoltcp_net),
             src_addr: local_addr,
+            host: self.host.clone(),
+            socket_context: self.socket_context.clone(),
+            kernel_purpose: TcpSocketPurpose::DataPlane,
             inner_connector: parking_lot::Mutex::new(None),
         };
 
