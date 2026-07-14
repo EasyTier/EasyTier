@@ -1384,6 +1384,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "proxy-packet")]
     #[tokio::test]
     async fn destination_state_only_reports_available_engines() {
         let events = Arc::new(Mutex::new(Vec::new()));
