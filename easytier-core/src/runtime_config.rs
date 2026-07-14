@@ -11,14 +11,14 @@ use crate::{
         acl_config::AclRuleConfig, context::PeerRuntimeSnapshot,
         public_ipv6::PublicIpv6ProviderConfig,
     },
-    proxy::ProxyStartupContext,
+    proxy::ProxyRuntimeConfig,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoreRuntimeConfig {
     pub acl: AclRuleConfig,
     pub dhcp_ipv4: bool,
-    pub proxy: ProxyStartupContext,
+    pub proxy: ProxyRuntimeConfig,
     pub public_ipv6_provider: PublicIpv6ProviderConfig,
 }
 
@@ -27,7 +27,7 @@ impl Default for CoreRuntimeConfig {
         Self {
             acl: AclRuleConfig::default(),
             dhcp_ipv4: false,
-            proxy: ProxyStartupContext::default(),
+            proxy: ProxyRuntimeConfig::default(),
             public_ipv6_provider: PublicIpv6ProviderConfig {
                 provider_enabled: false,
                 configured_prefix: None,

@@ -74,11 +74,12 @@
         },
         "dhcp_ipv4": false,
         "proxy": {
-          "has_proxy_cidrs": false,
-          "already_started": false,
           "enable_exit_node": false,
           "no_tun": false,
-          "forward_by_system": false
+          "forward_by_system": false,
+          "force_smoltcp": false,
+          "icmp_failure_is_fatal": false,
+          "udp_response_ipv4_mtu": 1280
         },
         "public_ipv6_provider": {
           "provider_enabled": false,

@@ -1805,12 +1805,14 @@ mod tests {
                 .contains("unsupported core manual connector URL")
         );
         assert_eq!(instance.global_ctx.config.get_proxy_cidrs().len(), 1);
-        assert!(
+        assert_eq!(
             instance
                 .core_instance
-                .runtime_config_snapshot()
-                .proxy
-                .has_proxy_cidrs
+                .node_snapshot()
+                .await
+                .proxy_networks
+                .len(),
+            1
         );
         instance.clear_resources().await;
     }

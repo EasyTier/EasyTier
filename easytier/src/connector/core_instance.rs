@@ -9,7 +9,7 @@ use easytier_core::{
         },
     },
     instance::{CoreInstance, CoreInstanceAdapters, CoreInstanceConfig},
-    proxy::{ProxyStartupContext, cidr_table::ProxyCidrRuntime},
+    proxy::{ProxyRuntimeConfig, cidr_table::ProxyCidrRuntime},
     runtime_config::{CoreInstanceRuntimeConfig, CoreRuntimeConfig},
     socket::{
         IpVersion, NetNamespace, SocketContext,
@@ -74,13 +74,27 @@ pub(crate) fn runtime_instance_config(global_ctx: &ArcGlobalCtx) -> CoreInstance
     }
 }
 
-pub(crate) fn runtime_proxy_startup_context(global_ctx: &ArcGlobalCtx) -> ProxyStartupContext {
-    ProxyStartupContext {
-        has_proxy_cidrs: !global_ctx.config.get_proxy_cidrs().is_empty(),
-        already_started: false,
+pub(crate) fn runtime_proxy_startup_context(global_ctx: &ArcGlobalCtx) -> ProxyRuntimeConfig {
+    ProxyRuntimeConfig {
         enable_exit_node: global_ctx.enable_exit_node(),
         no_tun: global_ctx.no_tun(),
         forward_by_system: global_ctx.proxy_forward_by_system(),
+        force_smoltcp: cfg!(feature = "smoltcp")
+            && (global_ctx.get_flags().use_smoltcp
+                || global_ctx.no_tun()
+                || cfg!(any(
+                    target_os = "android",
+                    target_os = "ios",
+                    all(target_os = "macos", feature = "macos-ne"),
+                    target_env = "ohos"
+                ))),
+        icmp_failure_is_fatal: cfg!(not(any(
+            target_os = "android",
+            target_os = "ios",
+            all(target_os = "macos", feature = "macos-ne"),
+            target_env = "ohos"
+        ))),
+        udp_response_ipv4_mtu: 1280,
     }
 }
 
@@ -506,6 +520,28 @@ mod tests {
         assert_eq!(config.udp_servers, vec!["stun-v4.example"]);
         assert_eq!(config.udp_v6_servers, vec!["stun-v6.example"]);
         assert_eq!(config.tcp_servers, default_tcp_stun_servers());
+    }
+
+    #[test]
+    fn runtime_proxy_config_normalizes_platform_policy() {
+        let global_ctx = get_mock_global_ctx();
+        let mut flags = global_ctx.get_flags();
+        flags.use_smoltcp = true;
+        global_ctx.set_flags(flags);
+
+        let config = runtime_proxy_startup_context(&global_ctx);
+
+        assert_eq!(config.force_smoltcp, cfg!(feature = "smoltcp"));
+        assert_eq!(
+            config.icmp_failure_is_fatal,
+            cfg!(not(any(
+                target_os = "android",
+                target_os = "ios",
+                all(target_os = "macos", feature = "macos-ne"),
+                target_env = "ohos"
+            )))
+        );
+        assert_eq!(config.udp_response_ipv4_mtu, 1280);
     }
 
     #[tokio::test]

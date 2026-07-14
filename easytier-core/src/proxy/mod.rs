@@ -33,19 +33,19 @@ pub mod udp_socket_runtime;
 #[cfg(feature = "proxy-packet")]
 pub mod wrapped_tcp_proxy;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProxyStartupContext {
-    pub has_proxy_cidrs: bool,
-    pub already_started: bool,
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProxyRuntimeConfig {
     pub enable_exit_node: bool,
     pub no_tun: bool,
     pub forward_by_system: bool,
+    pub force_smoltcp: bool,
+    pub icmp_failure_is_fatal: bool,
+    pub udp_response_ipv4_mtu: usize,
 }
 
-impl ProxyStartupContext {
-    pub fn should_start(self) -> bool {
-        if (!self.has_proxy_cidrs || self.already_started) && !self.enable_exit_node && !self.no_tun
-        {
+impl ProxyRuntimeConfig {
+    pub fn should_start(self, has_proxy_networks: bool) -> bool {
+        if !has_proxy_networks && !self.enable_exit_node && !self.no_tun {
             return false;
         }
 
@@ -53,70 +53,72 @@ impl ProxyStartupContext {
     }
 }
 
+impl Default for ProxyRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            enable_exit_node: false,
+            no_tun: false,
+            forward_by_system: false,
+            force_smoltcp: false,
+            icmp_failure_is_fatal: false,
+            udp_response_ipv4_mtu: 1280,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::ProxyStartupContext;
+    use super::ProxyRuntimeConfig;
 
     #[test]
     fn proxy_startup_policy_preserves_runtime_modes() {
-        assert!(!ProxyStartupContext::default().should_start());
+        assert!(!ProxyRuntimeConfig::default().should_start(false));
+        assert!(ProxyRuntimeConfig::default().should_start(true));
         assert!(
-            ProxyStartupContext {
-                has_proxy_cidrs: true,
-                ..Default::default()
-            }
-            .should_start()
-        );
-        assert!(
-            ProxyStartupContext {
+            ProxyRuntimeConfig {
                 enable_exit_node: true,
                 ..Default::default()
             }
-            .should_start()
+            .should_start(false)
         );
         assert!(
-            ProxyStartupContext {
+            ProxyRuntimeConfig {
                 no_tun: true,
                 ..Default::default()
             }
-            .should_start()
+            .should_start(false)
         );
     }
 
     #[test]
-    fn proxy_startup_policy_preserves_restart_and_system_forwarding_rules() {
+    fn proxy_startup_policy_preserves_system_forwarding_rules() {
         assert!(
-            !ProxyStartupContext {
-                has_proxy_cidrs: true,
-                already_started: true,
-                ..Default::default()
-            }
-            .should_start()
-        );
-        assert!(
-            !ProxyStartupContext {
-                has_proxy_cidrs: true,
+            !ProxyRuntimeConfig {
                 forward_by_system: true,
                 ..Default::default()
             }
-            .should_start()
+            .should_start(true)
         );
         assert!(
-            !ProxyStartupContext {
+            !ProxyRuntimeConfig {
                 enable_exit_node: true,
                 forward_by_system: true,
                 ..Default::default()
             }
-            .should_start()
+            .should_start(false)
         );
         assert!(
-            ProxyStartupContext {
-                already_started: true,
+            ProxyRuntimeConfig {
                 no_tun: true,
                 forward_by_system: true,
                 ..Default::default()
             }
-            .should_start()
+            .should_start(false)
         );
+    }
+
+    #[test]
+    fn proxy_runtime_defaults_preserve_udp_mtu() {
+        assert_eq!(ProxyRuntimeConfig::default().udp_response_ipv4_mtu, 1280);
     }
 }

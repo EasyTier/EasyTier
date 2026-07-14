@@ -1047,7 +1047,9 @@ where
         if self.proxy_started.load(Ordering::Acquire) {
             return Ok(());
         }
-        if !self.runtime_config.snapshot().services.proxy.should_start() {
+        let config = self.runtime_config.snapshot();
+        let has_proxy_networks = !config.peer.runtime.core.routes.proxy_networks.is_empty();
+        if !config.services.proxy.should_start(has_proxy_networks) {
             return Ok(());
         }
 
