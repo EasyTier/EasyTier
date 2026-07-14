@@ -344,6 +344,20 @@ impl PeerMap {
         routes.insert(0, route);
     }
 
+    pub(crate) async fn clear_resources(&self) {
+        for peer_id in self.list_peers() {
+            let _ = self.close_peer(peer_id).await;
+        }
+        let routes = {
+            let mut routes = self.routes.write().await;
+            std::mem::take(&mut *routes)
+        };
+        for route in routes {
+            route.close().await;
+        }
+        self.alive_client_urls.lock().clear();
+    }
+
     pub async fn clean_peer_without_conn(&self) {
         let mut to_remove = vec![];
 

@@ -41,15 +41,16 @@ use super::{
     acl_filter::AclFilter,
     context::{
         ArcPeerContext, CorePeerContext, CorePeerContextAdapters, HostRoutingPolicy,
-        NetworkIdentity, PeerContext, PeerRuntimeConfig, PeerRuntimeSnapshot, PeerStunInfoSource,
+        NetworkIdentity, PeerContext, PeerCredentialEventSink, PeerEventSink, PeerPublicIpv6State,
+        PeerRelayStateSink, PeerRuntimeConfig, PeerRuntimeSnapshot, PeerStunInfoSource,
     },
-    credential_manager::CredentialManager,
+    credential_manager::{CredentialManager, CredentialStorage},
     encrypt::{Encryptor, NullCipher, create_encryptor, derive_key_128, derive_key_256},
     error::Error,
     foreign_network_client::ForeignNetworkClient,
     foreign_network_manager::{
         ForeignNetworkEntryInfo, ForeignNetworkInfoProvider, ForeignNetworkManager,
-        ForeignNetworkRouteInfoProvider, ForeignNetworkRpcRegistrar, GlobalForeignNetworkAccessor,
+        ForeignNetworkRouteInfoProvider, ForeignNetworkRpcRegistrar,
         peer_map_foreign_network_accessor,
     },
     peer_conn::{PeerConn, PeerConnId},
@@ -234,24 +235,55 @@ impl PortablePeerManagerConfig {
 /// Every field is a narrow projection or resource adapter. The peer graph and
 /// all of its portable state remain constructed and owned by core.
 pub struct PeerManagerHostAdapters {
-    pub context: CorePeerContextAdapters,
-    pub public_ipv6_runtime: Option<Arc<dyn PublicIpv6Runtime>>,
+    pub relay_state_sink: Arc<dyn PeerRelayStateSink>,
+    pub event_sink: Arc<dyn PeerEventSink>,
+    pub credential_storage: Option<Arc<dyn CredentialStorage>>,
+    pub credential_event_sink: Arc<dyn PeerCredentialEventSink>,
+    pub public_ipv6: Option<PeerPublicIpv6HostAdapters>,
     pub foreign_rpc_registrar: Arc<dyn ForeignNetworkRpcRegistrar>,
-    pub foreign_context_default_flags: FlagsInConfig,
+}
+
+/// One coherent public-IPv6 host capability.
+///
+/// State observations and OS mutations must come from the same host object so
+/// core cannot accidentally reconcile one provider while advertising another.
+pub struct PeerPublicIpv6HostAdapters {
+    state: Arc<dyn PeerPublicIpv6State>,
+    runtime: Arc<dyn PublicIpv6Runtime>,
+}
+
+impl PeerPublicIpv6HostAdapters {
+    pub fn new<T>(host: Arc<T>) -> Self
+    where
+        T: PeerPublicIpv6State + PublicIpv6Runtime + 'static,
+    {
+        Self {
+            state: host.clone(),
+            runtime: host,
+        }
+    }
 }
 
 impl Default for PeerManagerHostAdapters {
     fn default() -> Self {
         Self {
-            context: CorePeerContextAdapters::default(),
-            public_ipv6_runtime: None,
+            relay_state_sink: Arc::new(()),
+            event_sink: Arc::new(()),
+            credential_storage: None,
+            credential_event_sink: Arc::new(()),
+            public_ipv6: None,
             foreign_rpc_registrar: Arc::new(()),
-            foreign_context_default_flags: FlagsInConfig::default(),
         }
     }
 }
 
 fn validate_portable_routes(routes: &crate::config::RouteConfig) -> anyhow::Result<()> {
+    if !routes.advertised_routes.is_empty() {
+        anyhow::bail!("portable peer manager does not support advertised routes yet");
+    }
+    if !routes.foreign_networks.is_empty() {
+        anyhow::bail!("portable peer manager does not support foreign networks yet");
+    }
     if let Some(prefix) = &routes.ipv4 {
         if !matches!(prefix.address, IpAddr::V4(_)) || prefix.prefix_len > 32 {
             anyhow::bail!("routes.ipv4 must contain a valid IPv4 prefix");
@@ -583,9 +615,9 @@ pub struct PeerManagerTrafficCounters {
     pub compress_tx_bytes_after: CounterHandle,
 }
 
-pub struct PeerManagerCoreBuildResult<F> {
+pub struct PeerManagerCoreBuildResult {
     pub core: PeerManagerCore,
-    pub foreign_network_manager: Arc<F>,
+    pub foreign_network_manager: Arc<ForeignNetworkManager>,
 }
 
 pub struct PeerManagerCore {
@@ -604,6 +636,7 @@ pub struct PeerManagerCore {
     foreign_network_provider: Arc<dyn ForeignNetworkRouteInfoProvider>,
     foreign_network_info_provider: Arc<dyn ForeignNetworkInfoProvider>,
     foreign_network_closer: Arc<dyn ForeignPeerConnectionCloser>,
+    foreign_network_manager: Arc<ForeignNetworkManager>,
     relay_peer_map: Arc<RelayPeerMap>,
     peer_connection_admission: PeerConnectionAdmission,
     outbound_packet_router: PeerOutboundPacketRouter,
@@ -848,7 +881,7 @@ impl PeerManagerCore {
         dns_context: SocketContext,
         stun_info_source: Option<Arc<dyn PeerStunInfoSource>>,
         nic_channel: PacketRecvChan,
-        mut host_adapters: PeerManagerHostAdapters,
+        host_adapters: PeerManagerHostAdapters,
     ) -> anyhow::Result<Self> {
         let runtime = &mut config.snapshot.runtime;
         let flags = &config.snapshot.flags;
@@ -937,46 +970,50 @@ impl PeerManagerCore {
         runtime.feature_flags.need_p2p = flags.need_p2p;
         runtime.feature_flags.avoid_relay_data |= flags.disable_relay_data;
         runtime_config.update_peer(Arc::new(config.snapshot.clone()));
-        host_adapters.context.stun_info_source = stun_info_source;
-        let context = Arc::new(CorePeerContext::new(runtime_config, host_adapters.context));
-        let public_ipv6_runtime = host_adapters
-            .public_ipv6_runtime
-            .unwrap_or_else(|| Arc::new(DisabledPublicIpv6Runtime::new(instance_id, network_name)));
-        let stats_manager = context.stats_manager();
-        let credential_manager = context.credential_manager();
-        let acl_filter = Arc::new(AclFilter::new());
+        let PeerManagerHostAdapters {
+            relay_state_sink,
+            event_sink,
+            credential_storage,
+            credential_event_sink,
+            public_ipv6,
+            foreign_rpc_registrar,
+        } = host_adapters;
+        let (public_ipv6_state, public_ipv6_runtime): (
+            Arc<dyn PeerPublicIpv6State>,
+            Arc<dyn PublicIpv6Runtime>,
+        ) = match public_ipv6 {
+            Some(public_ipv6) => (public_ipv6.state, public_ipv6.runtime),
+            None => (
+                Arc::new(()),
+                Arc::new(DisabledPublicIpv6Runtime::new(instance_id, network_name)),
+            ),
+        };
+        let context = Arc::new(CorePeerContext::new(
+            runtime_config,
+            CorePeerContextAdapters {
+                relay_state_sink,
+                stun_info_source,
+                public_ipv6_state,
+                event_sink,
+                credential_storage,
+                credential_event_sink,
+            },
+        ));
         let address_resolver = Arc::new(DnsAddressResolver::new(dns).with_context(dns_context));
-
-        let foreign_parent_context = context.clone();
-        let foreign_stats_manager = stats_manager.clone();
-        let foreign_rpc_registrar = host_adapters.foreign_rpc_registrar;
-        let foreign_context_default_flags = host_adapters.foreign_context_default_flags;
 
         let result = Self::new_with_default_components(
             config.route_algo,
             my_peer_id,
             context,
             public_ipv6_runtime,
-            stats_manager,
-            acl_filter,
-            credential_manager,
             nic_channel,
             encryptor,
             is_secure_mode_enabled,
             data_compress_algo,
             config.exit_nodes,
             address_resolver,
-            move |_, peer_session_store, packet_sender_to_mgr, accessor| {
-                Arc::new(ForeignNetworkManager::new(
-                    foreign_rpc_registrar,
-                    foreign_parent_context,
-                    foreign_context_default_flags,
-                    foreign_stats_manager,
-                    peer_session_store,
-                    packet_sender_to_mgr,
-                    accessor,
-                ))
-            },
+            FlagsInConfig::default(),
+            foreign_rpc_registrar,
         );
         let mut core = result.core;
         core.owns_maintenance_tasks = true;
@@ -999,76 +1036,43 @@ impl PeerManagerCore {
         address_resolver: Arc<dyn AddressResolver>,
         foreign_context_default_flags: FlagsInConfig,
         foreign_rpc_registrar: Arc<dyn ForeignNetworkRpcRegistrar>,
-    ) -> PeerManagerCoreBuildResult<ForeignNetworkManager> {
-        let stats_manager = context.stats_manager();
-        let credential_manager = context.credential_manager();
-        let foreign_parent_context = context.clone();
-        let foreign_stats_manager = stats_manager.clone();
+    ) -> PeerManagerCoreBuildResult {
         let mut result = Self::new_with_default_components(
             route_algo,
             my_peer_id,
             context,
             public_ipv6_runtime,
-            stats_manager,
-            Arc::new(AclFilter::new()),
-            credential_manager,
             nic_channel,
             encryptor,
             is_secure_mode_enabled,
             data_compress_algo,
             exit_nodes,
             address_resolver,
-            move |_, peer_session_store, packet_sender_to_mgr, accessor| {
-                Arc::new(ForeignNetworkManager::new(
-                    foreign_rpc_registrar,
-                    foreign_parent_context,
-                    foreign_context_default_flags,
-                    foreign_stats_manager,
-                    peer_session_store,
-                    packet_sender_to_mgr,
-                    accessor,
-                ))
-            },
+            foreign_context_default_flags,
+            foreign_rpc_registrar,
         );
         result.core.owns_maintenance_tasks = true;
         result
     }
 
-    /// Builds the default peer control-plane graph with a caller-provided
-    /// foreign-network manager implementation.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new_with_default_components<F, BuildForeignNetworkManager>(
+    pub(crate) fn new_with_default_components(
         route_algo: RouteAlgoType,
         my_peer_id: PeerId,
         core_context: Arc<CorePeerContext>,
         public_ipv6_runtime: Arc<dyn PublicIpv6Runtime>,
-        stats_manager: Arc<StatsManager>,
-        acl_filter: Arc<AclFilter>,
-        credential_manager: Arc<CredentialManager>,
         nic_channel: PacketRecvChan,
         encryptor: Arc<dyn Encryptor + 'static>,
         is_secure_mode_enabled: bool,
         data_compress_algo: CompressorAlgo,
         exit_nodes: Vec<IpAddr>,
         address_resolver: Arc<dyn AddressResolver>,
-        build_foreign_network_manager: BuildForeignNetworkManager,
-    ) -> PeerManagerCoreBuildResult<F>
-    where
-        F: ForeignNetworkConnectionAdmission
-            + ForeignNetworkPacketHandler
-            + ForeignNetworkInfoProvider
-            + ForeignNetworkRouteInfoProvider
-            + ForeignPeerConnectionCloser
-            + Send
-            + Sync
-            + 'static,
-        BuildForeignNetworkManager: FnOnce(
-            PeerId,
-            Arc<PeerSessionStore>,
-            PacketRecvChan,
-            Box<dyn GlobalForeignNetworkAccessor>,
-        ) -> Arc<F>,
-    {
+        foreign_context_default_flags: FlagsInConfig,
+        foreign_rpc_registrar: Arc<dyn ForeignNetworkRpcRegistrar>,
+    ) -> PeerManagerCoreBuildResult {
+        let stats_manager = core_context.stats_manager();
+        let credential_manager = core_context.credential_manager();
+        let acl_filter = Arc::new(AclFilter::new());
         let context: ArcPeerContext = core_context.clone();
         let (packet_send, packet_recv) = super::create_packet_recv_chan();
         let peers = Arc::new(PeerMap::new(
@@ -1097,12 +1101,15 @@ impl PeerManagerCore {
             peer_rpc_mgr.clone(),
         );
 
-        let foreign_network_manager = build_foreign_network_manager(
-            my_peer_id,
+        let foreign_network_manager = Arc::new(ForeignNetworkManager::new(
+            foreign_rpc_registrar,
+            core_context.clone(),
+            foreign_context_default_flags,
+            stats_manager.clone(),
             peer_session_store.clone(),
             packet_send.clone(),
             peer_map_foreign_network_accessor(Arc::downgrade(&peers)),
-        );
+        ));
         let foreign_network_client = Arc::new(ForeignNetworkClient::new(
             context.clone(),
             packet_send,
@@ -1255,6 +1262,7 @@ impl PeerManagerCore {
                 foreign_network_provider,
                 foreign_network_info_provider,
                 foreign_network_closer,
+                foreign_network_manager: foreign_network_manager.clone(),
                 relay_peer_map,
                 peer_connection_admission,
                 outbound_packet_router,
@@ -1659,6 +1667,7 @@ impl PeerManagerCore {
         };
         tasks.abort_all();
         while tasks.join_next().await.is_some() {}
+        self.foreign_network_manager.stop().await;
         self.route.close().await;
         self.peer_rpc_mgr.stop().await;
         self.context.stop().await;
@@ -3690,6 +3699,7 @@ mod tests {
         assert_eq!(route.task_count(), 0);
         assert!(core.stats_manager.cleanup_task_is_stopped());
         assert!(core.acl_filter.cleanup_task_is_stopped());
+        assert!(core.foreign_network_manager.is_stopped_for_test());
     }
 
     #[tokio::test]
@@ -3700,8 +3710,6 @@ mod tests {
             Arc::new(config.snapshot.clone()),
         );
         let events = Arc::new(CountingPeerEventSink::default());
-        let mut context = CorePeerContextAdapters::default();
-        context.event_sink = events.clone();
         let (packet_tx, _packet_rx) = create_packet_recv_chan();
 
         let core = PeerManagerCore::new_portable_with_runtime_config_store_and_host_adapters(
@@ -3712,7 +3720,7 @@ mod tests {
             Arc::new(()),
             packet_tx,
             PeerManagerHostAdapters {
-                context,
+                event_sink: events.clone(),
                 ..Default::default()
             },
         )
@@ -4049,8 +4057,18 @@ mod tests {
             .routes
             .advertised_routes
             .push(IpPrefix::new("10.60.0.0".parse().unwrap(), 16).unwrap());
-        let core = build_portable_for_test(advertised).unwrap();
-        core.clear_resources().await;
+        assert!(build_portable_for_test(advertised).is_err());
+
+        let mut foreign = portable_runtime_config("portable-net", 90);
+        foreign
+            .core
+            .routes
+            .foreign_networks
+            .push(crate::config::ForeignNetworkConfig {
+                name: "other-net".to_owned(),
+                cidrs: Vec::new(),
+            });
+        assert!(build_portable_for_test(foreign).is_err());
     }
 
     #[test]

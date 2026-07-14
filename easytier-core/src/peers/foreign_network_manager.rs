@@ -664,7 +664,10 @@ pub trait ForeignNetworkRpcRegistrar: Send + Sync + 'static {
 
 impl ForeignNetworkRpcRegistrar for () {}
 
-fn join_joinset_background(js: Arc<std::sync::Mutex<JoinSet<()>>>, origin: &'static str) {
+fn join_joinset_background(
+    js: Arc<std::sync::Mutex<JoinSet<()>>>,
+    origin: &'static str,
+) -> tokio::task::JoinHandle<()> {
     let js = Arc::downgrade(&js);
     tokio::spawn(async move {
         while js.strong_count() > 0 {
@@ -691,7 +694,7 @@ fn join_joinset_background(js: Arc<std::sync::Mutex<JoinSet<()>>>, origin: &'sta
         }
 
         tracing::debug!(origin, "joinset task exit");
-    });
+    })
 }
 
 struct ForeignNetworkEntry {
@@ -945,6 +948,19 @@ impl ForeignNetworkEntry {
         self.peer_rpc.run();
         self.peer_center.init().await;
     }
+
+    async fn stop(&self) {
+        let mut tasks = {
+            let mut tasks = self.tasks.lock().await;
+            std::mem::replace(&mut *tasks, JoinSet::new())
+        };
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
+        self.peer_center.stop().await;
+        self.peer_rpc.stop().await;
+        self.peer_map.clear_resources().await;
+        self.foreign_context.peer_context.stop().await;
+    }
 }
 
 impl Drop for ForeignNetworkEntry {
@@ -1106,6 +1122,7 @@ pub struct ForeignNetworkManager {
     data: Arc<ForeignNetworkManagerData>,
 
     tasks: Arc<std::sync::Mutex<JoinSet<()>>>,
+    task_reaper: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl ForeignNetworkManager {
@@ -1155,7 +1172,7 @@ impl ForeignNetworkManager {
         });
 
         let tasks = Arc::new(std::sync::Mutex::new(JoinSet::new()));
-        join_joinset_background(tasks.clone(), "ForeignNetworkManager");
+        let task_reaper = join_joinset_background(tasks.clone(), "ForeignNetworkManager");
 
         Self {
             rpc_registrar,
@@ -1166,7 +1183,43 @@ impl ForeignNetworkManager {
             packet_sender_to_mgr,
             data,
             tasks,
+            task_reaper: std::sync::Mutex::new(Some(task_reaper)),
         }
+    }
+
+    pub async fn stop(&self) {
+        let reaper = self.task_reaper.lock().unwrap().take();
+        if let Some(reaper) = reaper {
+            reaper.abort();
+            let _ = reaper.await;
+        }
+        let mut tasks = {
+            let mut tasks = self.tasks.lock().unwrap();
+            std::mem::replace(&mut *tasks, JoinSet::new())
+        };
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
+
+        let entries = self
+            .data
+            .network_peer_maps
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect::<Vec<_>>();
+        self.data.peer_network_map.clear();
+        self.data.network_peer_maps.clear();
+        self.data.network_peer_last_update.clear();
+        for entry in entries {
+            entry.stop().await;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_stopped_for_test(&self) -> bool {
+        self.task_reaper.lock().unwrap().is_none()
+            && self.tasks.lock().unwrap().is_empty()
+            && self.data.network_peer_maps.is_empty()
+            && self.data.peer_network_map.is_empty()
     }
 
     #[cfg(any(test, feature = "test-utils"))]
@@ -1597,6 +1650,10 @@ impl super::peer_manager::ForeignPeerConnectionCloser for ForeignNetworkManager 
 
 impl Drop for ForeignNetworkManager {
     fn drop(&mut self) {
+        if let Some(reaper) = self.task_reaper.lock().unwrap().take() {
+            reaper.abort();
+        }
+        self.tasks.lock().unwrap().abort_all();
         self.data.peer_network_map.clear();
         self.data.network_peer_maps.clear();
     }
