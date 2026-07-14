@@ -52,7 +52,9 @@ use crate::{
         create_packet_recv_chan,
         credential_manager::{CredentialInfo, GeneratedCredential},
         peer_conn::PeerConnId,
-        peer_manager::{PeerManagerCore, PeerSnapshot, PortablePeerManagerConfig},
+        peer_manager::{
+            PeerManagerCore, PeerManagerHostAdapters, PeerSnapshot, PortablePeerManagerConfig,
+        },
     },
     proxy::{
         cidr_monitor::{
@@ -475,9 +477,43 @@ where
 
     pub fn new_portable(
         adapters: CoreInstanceAdapters<H>,
-        mut config: PortableCoreInstanceConfig,
+        config: PortableCoreInstanceConfig,
         packet_sink: Arc<dyn PacketSink>,
     ) -> anyhow::Result<Self> {
+        Self::new_portable_with_peer_adapters(
+            adapters,
+            PeerManagerHostAdapters::default(),
+            config,
+            packet_sink,
+        )
+    }
+
+    pub fn new_portable_with_peer_adapters(
+        adapters: CoreInstanceAdapters<H>,
+        peer_adapters: PeerManagerHostAdapters,
+        config: PortableCoreInstanceConfig,
+        packet_sink: Arc<dyn PacketSink>,
+    ) -> anyhow::Result<Self> {
+        Self::new_portable_with_peer_adapters_and_transport_factory(
+            adapters,
+            peer_adapters,
+            config,
+            packet_sink,
+            NoWrappedTransportEngineFactory,
+        )
+        .map(|(instance, ())| instance)
+    }
+
+    pub fn new_portable_with_peer_adapters_and_transport_factory<F>(
+        adapters: CoreInstanceAdapters<H>,
+        peer_adapters: PeerManagerHostAdapters,
+        mut config: PortableCoreInstanceConfig,
+        packet_sink: Arc<dyn PacketSink>,
+        transport_proxy_factory: F,
+    ) -> anyhow::Result<(Self, F::Attachment)>
+    where
+        F: WrappedTransportEngineFactory,
+    {
         validate_portable_connectivity_config(&config)?;
         validate_listener_protocols(
             &config.connectivity.listeners,
@@ -504,25 +540,26 @@ where
         let stun = Self::prepare_stun(&adapters, &config.connectivity);
         let peer_stun: Arc<dyn StunInfoProvider> = stun.clone();
         let peer_manager = Arc::new(
-            PeerManagerCore::new_portable_with_runtime_config_store_and_stun_info_source(
+            PeerManagerCore::new_portable_with_runtime_config_store_and_host_adapters(
                 config.peer,
                 runtime_config.clone(),
                 adapters.dns.clone(),
                 dns_context,
                 Arc::new(CoreStunPeerInfoSource(peer_stun)),
                 packet_tx,
+                peer_adapters,
             )?,
         );
-        let (mut instance, ()) = Self::new_with_prepared_stun(
+        let (mut instance, attachment) = Self::new_with_prepared_stun(
             peer_manager,
             adapters,
             config.connectivity,
             runtime_config,
             stun,
-            NoWrappedTransportEngineFactory,
+            transport_proxy_factory,
         )?;
         instance.packet_egress = Some(PacketEgress::new(packet_rx, packet_sink));
-        Ok(instance)
+        Ok((instance, attachment))
     }
 
     pub fn new(

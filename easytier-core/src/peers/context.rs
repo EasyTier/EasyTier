@@ -272,6 +272,19 @@ pub struct CorePeerContextAdapters {
     pub credential_event_sink: Arc<dyn PeerCredentialEventSink>,
 }
 
+impl Default for CorePeerContextAdapters {
+    fn default() -> Self {
+        Self {
+            relay_state_sink: Arc::new(()),
+            stun_info_source: None,
+            public_ipv6_state: Arc::new(()),
+            event_sink: Arc::new(()),
+            credential_storage: None,
+            credential_event_sink: Arc::new(()),
+        }
+    }
+}
+
 /// Peer context backed by one core-owned submitted snapshot and its instance
 /// runtime resources.
 pub struct CorePeerContext {

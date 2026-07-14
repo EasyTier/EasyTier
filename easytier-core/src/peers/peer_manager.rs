@@ -49,8 +49,8 @@ use super::{
     foreign_network_client::ForeignNetworkClient,
     foreign_network_manager::{
         ForeignNetworkEntryInfo, ForeignNetworkInfoProvider, ForeignNetworkManager,
-        ForeignNetworkRouteInfo, ForeignNetworkRouteInfoProvider, ForeignNetworkRpcRegistrar,
-        GlobalForeignNetworkAccessor, peer_map_foreign_network_accessor,
+        ForeignNetworkRouteInfoProvider, ForeignNetworkRpcRegistrar, GlobalForeignNetworkAccessor,
+        peer_map_foreign_network_accessor,
     },
     peer_conn::{PeerConn, PeerConnId},
     peer_map::PeerMap,
@@ -229,6 +229,28 @@ impl PortablePeerManagerConfig {
     }
 }
 
+/// Host capabilities used while composing the core-owned peer runtime.
+///
+/// Every field is a narrow projection or resource adapter. The peer graph and
+/// all of its portable state remain constructed and owned by core.
+pub struct PeerManagerHostAdapters {
+    pub context: CorePeerContextAdapters,
+    pub public_ipv6_runtime: Option<Arc<dyn PublicIpv6Runtime>>,
+    pub foreign_rpc_registrar: Arc<dyn ForeignNetworkRpcRegistrar>,
+    pub foreign_context_default_flags: FlagsInConfig,
+}
+
+impl Default for PeerManagerHostAdapters {
+    fn default() -> Self {
+        Self {
+            context: CorePeerContextAdapters::default(),
+            public_ipv6_runtime: None,
+            foreign_rpc_registrar: Arc::new(()),
+            foreign_context_default_flags: FlagsInConfig::default(),
+        }
+    }
+}
+
 fn validate_portable_routes(routes: &crate::config::RouteConfig) -> anyhow::Result<()> {
     if let Some(prefix) = &routes.ipv4 {
         if !matches!(prefix.address, IpAddr::V4(_)) || prefix.prefix_len > 32 {
@@ -255,12 +277,6 @@ fn validate_portable_routes(routes: &crate::config::RouteConfig) -> anyhow::Resu
                 anyhow::bail!("proxy network {field} must be a valid IPv4 network prefix");
             }
         }
-    }
-    if !routes.advertised_routes.is_empty() {
-        anyhow::bail!("advertised routes are not available in portable composition");
-    }
-    if !routes.foreign_networks.is_empty() {
-        anyhow::bail!("foreign network routes are not available in portable composition");
     }
     Ok(())
 }
@@ -703,71 +719,6 @@ impl AddressResolver for DnsAddressResolver {
     }
 }
 
-struct DisabledForeignNetworkManager;
-
-#[async_trait::async_trait]
-impl ForeignNetworkConnectionAdmission for DisabledForeignNetworkManager {
-    fn allow_client_foreign_network(&self) -> bool {
-        false
-    }
-
-    fn get_network_peer_id(&self, _network_name: &str) -> Option<PeerId> {
-        None
-    }
-
-    fn is_existing_credential_pubkey_trusted(
-        &self,
-        _network_name: &str,
-        _remote_static_pubkey: &[u8],
-    ) -> bool {
-        false
-    }
-
-    async fn add_peer_conn(&self, _peer_conn: PeerConn) -> Result<(), Error> {
-        Err(anyhow::anyhow!("foreign networks are disabled for this core instance").into())
-    }
-}
-
-#[async_trait::async_trait]
-impl ForeignNetworkPacketHandler for DisabledForeignNetworkManager {
-    fn get_network_peer_id(&self, _network_name: &str) -> Option<PeerId> {
-        None
-    }
-
-    async fn forward_foreign_network_packet(
-        &self,
-        _network_name: &str,
-        _dst_peer_id: PeerId,
-        _msg: ZCPacket,
-    ) -> anyhow::Result<()> {
-        anyhow::bail!("foreign networks are disabled for this core instance")
-    }
-}
-
-#[async_trait::async_trait]
-impl ForeignNetworkRouteInfoProvider for DisabledForeignNetworkManager {
-    async fn list_foreign_network_route_infos(&self) -> Vec<ForeignNetworkRouteInfo> {
-        Vec::new()
-    }
-}
-
-#[async_trait::async_trait]
-impl ForeignNetworkInfoProvider for DisabledForeignNetworkManager {
-    async fn list_foreign_network_infos(
-        &self,
-        _include_trusted_keys: bool,
-    ) -> std::collections::HashMap<String, ForeignNetworkEntryInfo> {
-        std::collections::HashMap::new()
-    }
-}
-
-#[async_trait::async_trait]
-impl ForeignPeerConnectionCloser for DisabledForeignNetworkManager {
-    async fn close_peer_conn(&self, _peer_id: PeerId, _conn_id: &PeerConnId) -> Result<(), Error> {
-        Err(Error::NotFound)
-    }
-}
-
 async fn check_resolved_remote_addr_not_from_virtual_network(
     context: &ArcPeerContext,
     address_resolver: &dyn AddressResolver,
@@ -842,24 +793,6 @@ impl PeerManagerCore {
         )
     }
 
-    pub(crate) fn new_portable_with_runtime_config_store_and_stun_info_source(
-        config: PortablePeerManagerConfig,
-        runtime_config: CoreRuntimeConfigStore,
-        dns: Arc<dyn DnsResolver>,
-        dns_context: SocketContext,
-        stun_info_source: Arc<dyn PeerStunInfoSource>,
-        nic_channel: PacketRecvChan,
-    ) -> anyhow::Result<Self> {
-        Self::new_portable_with_optional_stun_info_source(
-            config,
-            runtime_config,
-            dns,
-            dns_context,
-            Some(stun_info_source),
-            nic_channel,
-        )
-    }
-
     fn portable_runtime_config_store(config: &PortablePeerManagerConfig) -> CoreRuntimeConfigStore {
         CoreRuntimeConfigStore::new(
             CoreRuntimeConfig::default(),
@@ -868,12 +801,54 @@ impl PeerManagerCore {
     }
 
     fn new_portable_with_optional_stun_info_source(
+        config: PortablePeerManagerConfig,
+        runtime_config: CoreRuntimeConfigStore,
+        dns: Arc<dyn DnsResolver>,
+        dns_context: SocketContext,
+        stun_info_source: Option<Arc<dyn PeerStunInfoSource>>,
+        nic_channel: PacketRecvChan,
+    ) -> anyhow::Result<Self> {
+        Self::new_portable_with_host_adapters(
+            config,
+            runtime_config,
+            dns,
+            dns_context,
+            stun_info_source,
+            nic_channel,
+            PeerManagerHostAdapters::default(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_portable_with_runtime_config_store_and_host_adapters(
+        config: PortablePeerManagerConfig,
+        runtime_config: CoreRuntimeConfigStore,
+        dns: Arc<dyn DnsResolver>,
+        dns_context: SocketContext,
+        stun_info_source: Arc<dyn PeerStunInfoSource>,
+        nic_channel: PacketRecvChan,
+        host_adapters: PeerManagerHostAdapters,
+    ) -> anyhow::Result<Self> {
+        Self::new_portable_with_host_adapters(
+            config,
+            runtime_config,
+            dns,
+            dns_context,
+            Some(stun_info_source),
+            nic_channel,
+            host_adapters,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_portable_with_host_adapters(
         mut config: PortablePeerManagerConfig,
         runtime_config: CoreRuntimeConfigStore,
         dns: Arc<dyn DnsResolver>,
         dns_context: SocketContext,
         stun_info_source: Option<Arc<dyn PeerStunInfoSource>>,
         nic_channel: PacketRecvChan,
+        mut host_adapters: PeerManagerHostAdapters,
     ) -> anyhow::Result<Self> {
         let runtime = &mut config.snapshot.runtime;
         let flags = &config.snapshot.flags;
@@ -962,23 +937,20 @@ impl PeerManagerCore {
         runtime.feature_flags.need_p2p = flags.need_p2p;
         runtime.feature_flags.avoid_relay_data |= flags.disable_relay_data;
         runtime_config.update_peer(Arc::new(config.snapshot.clone()));
-        let context = Arc::new(CorePeerContext::new(
-            runtime_config,
-            CorePeerContextAdapters {
-                relay_state_sink: Arc::new(()),
-                stun_info_source,
-                public_ipv6_state: Arc::new(()),
-                event_sink: Arc::new(()),
-                credential_storage: None,
-                credential_event_sink: Arc::new(()),
-            },
-        ));
-        let public_ipv6_runtime =
-            Arc::new(DisabledPublicIpv6Runtime::new(instance_id, network_name));
+        host_adapters.context.stun_info_source = stun_info_source;
+        let context = Arc::new(CorePeerContext::new(runtime_config, host_adapters.context));
+        let public_ipv6_runtime = host_adapters
+            .public_ipv6_runtime
+            .unwrap_or_else(|| Arc::new(DisabledPublicIpv6Runtime::new(instance_id, network_name)));
         let stats_manager = context.stats_manager();
         let credential_manager = context.credential_manager();
         let acl_filter = Arc::new(AclFilter::new());
         let address_resolver = Arc::new(DnsAddressResolver::new(dns).with_context(dns_context));
+
+        let foreign_parent_context = context.clone();
+        let foreign_stats_manager = stats_manager.clone();
+        let foreign_rpc_registrar = host_adapters.foreign_rpc_registrar;
+        let foreign_context_default_flags = host_adapters.foreign_context_default_flags;
 
         let result = Self::new_with_default_components(
             config.route_algo,
@@ -994,7 +966,17 @@ impl PeerManagerCore {
             data_compress_algo,
             config.exit_nodes,
             address_resolver,
-            |_, _, _, _| Arc::new(DisabledForeignNetworkManager),
+            move |_, peer_session_store, packet_sender_to_mgr, accessor| {
+                Arc::new(ForeignNetworkManager::new(
+                    foreign_rpc_registrar,
+                    foreign_parent_context,
+                    foreign_context_default_flags,
+                    foreign_stats_manager,
+                    peer_session_store,
+                    packet_sender_to_mgr,
+                    accessor,
+                ))
+            },
         );
         let mut core = result.core;
         core.owns_maintenance_tasks = true;
@@ -3493,7 +3475,11 @@ pub async fn send_msg_internal(
 
 #[cfg(test)]
 mod tests {
-    use std::{net::SocketAddr, time::Duration};
+    use std::{
+        net::SocketAddr,
+        sync::atomic::{AtomicUsize, Ordering},
+        time::Duration,
+    };
 
     use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
     use dashmap::DashMap;
@@ -3503,7 +3489,10 @@ mod tests {
     use super::*;
     use crate::{
         config::{CoreConfig, IpPrefix, NetworkIdentity, NodeConfig, ProxyNetworkConfig},
-        peers::{context::PeerContext, create_packet_recv_chan},
+        peers::{
+            context::{PeerContext, PeerEvent},
+            create_packet_recv_chan,
+        },
         proto::common::{PeerFeatureFlag, StunInfo},
     };
 
@@ -3562,6 +3551,15 @@ mod tests {
     impl DnsResolver for PanicDnsResolver {
         async fn resolve(&self, _query: DnsQuery) -> anyhow::Result<Vec<IpAddr>> {
             panic!("IP literals must not invoke DNS")
+        }
+    }
+
+    #[derive(Default)]
+    struct CountingPeerEventSink(AtomicUsize);
+
+    impl super::super::context::PeerEventSink for CountingPeerEventSink {
+        fn issue_event(&self, _event: super::super::context::PeerEvent) {
+            self.0.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -3676,7 +3674,11 @@ mod tests {
         assert_eq!(core.context.network_name(), "portable-net");
         assert_ne!(core.context.instance_id(), uuid::Uuid::nil());
         assert_eq!(core.data_compress_algo, CompressorAlgo::None);
-        assert!(!DisabledForeignNetworkManager.allow_client_foreign_network());
+        assert!(
+            core.peer_connection_admission
+                .foreign_network_admission
+                .allow_client_foreign_network()
+        );
         assert!(core.list_foreign_network_infos(false).await.is_empty());
 
         core.run().await.unwrap();
@@ -3688,6 +3690,37 @@ mod tests {
         assert_eq!(route.task_count(), 0);
         assert!(core.stats_manager.cleanup_task_is_stopped());
         assert!(core.acl_filter.cleanup_task_is_stopped());
+    }
+
+    #[tokio::test]
+    async fn portable_peer_manager_uses_host_context_adapters() {
+        let config = PortablePeerManagerConfig::new(portable_runtime_config("portable-net", 78));
+        let runtime_config = CoreRuntimeConfigStore::new(
+            CoreRuntimeConfig::default(),
+            Arc::new(config.snapshot.clone()),
+        );
+        let events = Arc::new(CountingPeerEventSink::default());
+        let mut context = CorePeerContextAdapters::default();
+        context.event_sink = events.clone();
+        let (packet_tx, _packet_rx) = create_packet_recv_chan();
+
+        let core = PeerManagerCore::new_portable_with_runtime_config_store_and_host_adapters(
+            config,
+            runtime_config,
+            Arc::new(PanicDnsResolver),
+            SocketContext::default(),
+            Arc::new(()),
+            packet_tx,
+            PeerManagerHostAdapters {
+                context,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        core.context.issue_event(PeerEvent::PeerAdded(99));
+        assert_eq!(events.0.load(Ordering::Relaxed), 1);
+        core.clear_resources().await;
     }
 
     #[tokio::test]
@@ -3983,7 +4016,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn portable_peer_manager_rejects_invalid_identity_and_routes() {
+    async fn portable_peer_manager_rejects_invalid_identity_and_prefixes() {
         let mut digest_only = portable_runtime_config("portable-net", 85);
         digest_only.network_identity.network_secret = None;
         digest_only.network_identity.network_secret_digest = Some([1; 32]);
@@ -4016,7 +4049,8 @@ mod tests {
             .routes
             .advertised_routes
             .push(IpPrefix::new("10.60.0.0".parse().unwrap(), 16).unwrap());
-        assert!(build_portable_for_test(advertised).is_err());
+        let core = build_portable_for_test(advertised).unwrap();
+        core.clear_resources().await;
     }
 
     #[test]
