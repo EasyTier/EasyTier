@@ -93,14 +93,6 @@ pub trait TcpProxyStream: AsyncRead + AsyncWrite + Unpin + Send {}
 
 impl<T> TcpProxyStream for T where T: AsyncRead + AsyncWrite + Unpin + Send {}
 
-pub trait TcpProxySrcStream: TcpProxyStream {}
-
-impl<T> TcpProxySrcStream for T where T: TcpProxyStream {}
-
-pub trait TcpProxyDstStream: TcpProxyStream {}
-
-impl<T> TcpProxyDstStream for T where T: TcpProxyStream {}
-
 #[derive(Debug, Clone, Copy)]
 pub struct TcpProxyConnectContext {
     pub entry_id: TcpNatEntryId,
@@ -117,7 +109,7 @@ pub trait TcpProxyRuntime: ProxyRuntimeInfo {
 
 #[async_trait::async_trait]
 pub trait TcpProxyDestinationConnector: Send + Sync + 'static {
-    type DstStream: TcpProxyDstStream + 'static;
+    type DstStream: TcpProxyStream + 'static;
 
     async fn connect(&self, src: SocketAddr, dst: SocketAddr) -> anyhow::Result<Self::DstStream>;
 

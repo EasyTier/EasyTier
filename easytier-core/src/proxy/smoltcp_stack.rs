@@ -9,7 +9,7 @@ use crate::{
     runtime_time::{Duration, timeout},
 };
 
-use super::runtime::TcpProxySrcStream;
+use super::runtime::TcpProxyStream;
 use super::tokio_smoltcp::{BufferSize, Net, NetConfig, channel_device};
 
 type SmolTcpAcceptResult = anyhow::Result<(super::tokio_smoltcp::TcpStream, SocketAddr)>;
@@ -117,7 +117,7 @@ impl SmolTcpStack {
         tracing::info!("smol tcp listener added");
     }
 
-    pub async fn accept(&self) -> anyhow::Result<(SocketAddr, Box<dyn TcpProxySrcStream>)> {
+    pub async fn accept(&self) -> anyhow::Result<(SocketAddr, Box<dyn TcpProxyStream>)> {
         let (stream, src) = self
             .listener_rx
             .lock()

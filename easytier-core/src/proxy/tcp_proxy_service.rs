@@ -22,8 +22,8 @@ use crate::{
 
 use super::cidr_table::ProxyCidrTable;
 use super::runtime::{
-    ProxyRuntimeError, TcpProxyConnectContext, TcpProxyDestinationConnector, TcpProxyDstStream,
-    TcpProxyRuntime, TcpProxySrcStream,
+    ProxyRuntimeError, TcpProxyConnectContext, TcpProxyDestinationConnector, TcpProxyRuntime,
+    TcpProxyStream,
 };
 #[cfg(feature = "proxy-smoltcp-stack")]
 use super::smoltcp_stack::{SmolTcpStack, output_dst_ip};
@@ -308,7 +308,7 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
     async fn handle_accept(
         self: Arc<Self>,
         socket_addr: std::net::SocketAddr,
-        src_stream: Box<dyn TcpProxySrcStream>,
+        src_stream: Box<dyn TcpProxyStream>,
     ) {
         let snapshot = self.runtime.proxy_runtime_snapshot();
         let Some(entry) = self
@@ -335,7 +335,7 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
 
     async fn connect_to_nat_dst(
         service: Arc<Self>,
-        mut src_stream: Box<dyn TcpProxySrcStream>,
+        mut src_stream: Box<dyn TcpProxyStream>,
         entry: Arc<TcpNatEntry>,
     ) {
         if service.runtime.should_deny_tcp_proxy(entry.real_dst()) {
@@ -368,7 +368,7 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
             service.engine.remove_entry(entry.id());
             return;
         };
-        let mut dst_stream: Box<dyn TcpProxyDstStream> = Box::new(dst_stream);
+        let mut dst_stream: Box<dyn TcpProxyStream> = Box::new(dst_stream);
 
         tracing::info!(?entry, "tcp connection to dst established");
         if entry.state() == TcpNatEntryState::ConnectingDst {
@@ -455,8 +455,8 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
 }
 
 async fn copy_bidirectional_no_shutdown(
-    src: &mut dyn TcpProxySrcStream,
-    dst: &mut dyn TcpProxyDstStream,
+    src: &mut dyn TcpProxyStream,
+    dst: &mut dyn TcpProxyStream,
 ) -> Result<(), ProxyRuntimeError> {
     let (mut src_reader, mut src_writer) = tokio::io::split(src);
     let (mut dst_reader, mut dst_writer) = tokio::io::split(dst);
