@@ -19,6 +19,7 @@ use easytier_core::runtime_config::{CoreRuntimeConfig, CoreRuntimeConfigStore};
 
 use crate::{
     common::{
+        config::{ConfigLoader as _, TomlConfigLoader},
         constants::EASYTIER_VERSION,
         credential_manager::runtime_credential_storage,
         global_ctx::{ArcGlobalCtx, GlobalCtx, GlobalCtxEvent},
@@ -125,6 +126,18 @@ pub(crate) fn runtime_peer_manager_config(
         snapshot,
         route_algo,
         exit_nodes: global_ctx.config.get_exit_nodes(),
+        foreign_context_default_flags: TomlConfigLoader::default().get_flags(),
+    }
+}
+
+pub(crate) fn initialize_runtime_peer_host_state(global_ctx: &ArcGlobalCtx) {
+    if global_ctx
+        .check_network_in_whitelist(&global_ctx.get_network_name())
+        .is_err()
+    {
+        // Preserve the legacy policy: a local network outside the relay
+        // whitelist should not relay TUN traffic when another route exists.
+        global_ctx.set_avoid_relay_data_preference(true);
     }
 }
 
@@ -296,6 +309,10 @@ mod tests {
         assert_eq!(config.route_algo, RouteAlgoType::None);
         assert_eq!(config.exit_nodes, vec![exit_node]);
         assert_eq!(config.snapshot.flags, flags);
+        assert_eq!(
+            config.foreign_context_default_flags,
+            TomlConfigLoader::default().get_flags()
+        );
         assert!(!runtime.core.peer_policy.p2p_enabled);
         assert!(runtime.core.peer_policy.relay_peer_rpc);
         assert!(!runtime.core.peer_policy.relay_data);
@@ -309,6 +326,20 @@ mod tests {
             config.snapshot.avoid_relay_data_preference,
             global_ctx.get_avoid_relay_data_preference()
         );
+    }
+
+    #[test]
+    fn relay_whitelist_initialization_precedes_portable_snapshot() {
+        let global_ctx = get_mock_global_ctx();
+        let mut flags = global_ctx.get_flags();
+        flags.relay_network_whitelist = "other-network".to_owned();
+        global_ctx.set_flags(flags);
+
+        initialize_runtime_peer_host_state(&global_ctx);
+        let config = runtime_peer_manager_config(&global_ctx, RouteAlgoType::Ospf);
+
+        assert!(global_ctx.get_avoid_relay_data_preference());
+        assert!(config.snapshot.avoid_relay_data_preference);
     }
 
     #[tokio::test]

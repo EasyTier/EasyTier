@@ -1,5 +1,5 @@
 {
-  "version": 8,
+  "version": 9,
   "instance": {
     "peer": {
       "snapshot": {
@@ -60,7 +60,11 @@
         "hmac_secret_digest": false
       },
       "route_algo": "Ospf",
-      "exit_nodes": []
+      "exit_nodes": [],
+      "foreign_context_default_flags": {
+        "disable_p2p": true,
+        "data_compress_algo": "None"
+      }
     },
     "connectivity": {
       "initial_peers": [],

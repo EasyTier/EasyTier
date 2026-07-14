@@ -52,7 +52,10 @@ use crate::{
         runtime_public_ipv6_provider_config, runtime_public_ipv6_provider_host,
     },
     peers::{
-        context::{runtime_peer_manager_config, runtime_peer_manager_host_adapters},
+        context::{
+            initialize_runtime_peer_host_state, runtime_peer_manager_config,
+            runtime_peer_manager_host_adapters,
+        },
         peer_manager::{PeerManager, RouteAlgoType},
     },
     tunnel::IpScheme,
@@ -416,6 +419,7 @@ pub(crate) fn build_portable_runtime_core_instance_with_transport_factory_and_ri
 where
     F: WrappedTransportEngineFactory,
 {
+    initialize_runtime_peer_host_state(&global_ctx);
     let listener_plan = runtime_listener_plan(&global_ctx);
     let listener_configs =
         runtime_transport_listener_configs(&listener_plan, runtime_socket_context(&global_ctx));

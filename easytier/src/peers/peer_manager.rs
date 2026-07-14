@@ -1,10 +1,5 @@
 use crate::{
-    common::{
-        PeerId,
-        config::{ConfigLoader, TomlConfigLoader},
-        credential_manager::CredentialManager,
-        global_ctx::ArcGlobalCtx,
-    },
+    common::{PeerId, credential_manager::CredentialManager, global_ctx::ArcGlobalCtx},
     connector::core_instance::runtime_socket_context,
     host_runtime::native_host_runtime,
     proto::api::instance,
@@ -27,7 +22,9 @@ use std::{fmt::Debug, sync::Arc};
 
 use super::{
     PacketRecvChan,
-    context::{build_core_peer_context, runtime_peer_manager_config},
+    context::{
+        build_core_peer_context, initialize_runtime_peer_host_state, runtime_peer_manager_config,
+    },
     encrypt::NullCipher,
     foreign_network_manager::RuntimeForeignNetworkRpcRegistrar,
 };
@@ -76,13 +73,7 @@ impl PeerManager {
     ) -> Self {
         let my_peer_id = rand::random();
 
-        if global_ctx
-            .check_network_in_whitelist(&global_ctx.get_network_name())
-            .is_err()
-        {
-            // if local network is not in whitelist, avoid relay data when exist any other route path
-            global_ctx.set_avoid_relay_data_preference(true);
-        }
+        initialize_runtime_peer_host_state(&global_ctx);
 
         let config = runtime_peer_manager_config(&global_ctx, route_algo);
         let flags = &config.snapshot.flags;
@@ -134,7 +125,7 @@ impl PeerManager {
                 DnsAddressResolver::new(native_host_runtime())
                     .with_context(runtime_socket_context(&global_ctx)),
             ),
-            TomlConfigLoader::default().get_flags(),
+            config.foreign_context_default_flags,
             foreign_rpc_registrar,
         );
         let credential_manager = Arc::new(CredentialManager::from_core(

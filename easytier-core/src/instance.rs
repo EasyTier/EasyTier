@@ -396,6 +396,35 @@ pub struct ListenerServiceGroup {
     started_count: AtomicUsize,
 }
 
+/// Owns one Magic DNS resolver installed in the core NIC pipeline.
+///
+/// `close` waits until readers that may already be invoking the resolver have
+/// finished, then removes the entry so the resolver can be dropped promptly.
+#[cfg(feature = "proxy-packet")]
+pub struct MagicDnsResolverRegistration {
+    peer_manager: Weak<PeerManagerCore>,
+    pipeline: PipelineRegistrationGuard,
+}
+
+#[cfg(feature = "proxy-packet")]
+impl MagicDnsResolverRegistration {
+    pub async fn close(&self) {
+        self.pipeline.close();
+        if let Some(peer_manager) = self.peer_manager.upgrade() {
+            peer_manager
+                .remove_managed_nic_packet_process_pipeline(&self.pipeline)
+                .await;
+        }
+    }
+}
+
+#[cfg(feature = "proxy-packet")]
+impl Drop for MagicDnsResolverRegistration {
+    fn drop(&mut self) {
+        self.pipeline.close();
+    }
+}
+
 impl ListenerServiceGroup {
     pub fn new(services: Vec<Arc<dyn ListenerService>>) -> Arc<Self> {
         Arc::new(Self {
@@ -1738,14 +1767,19 @@ where
         &self,
         fake_ip: std::net::Ipv4Addr,
         resolver: Arc<dyn MagicDnsQueryResolver>,
-    ) -> PipelineRegistrationGuard {
-        self.peer_manager
+    ) -> MagicDnsResolverRegistration {
+        let pipeline = self
+            .peer_manager
             .add_managed_nic_packet_process_pipeline(magic_dns_packet_filter(
                 fake_ip,
                 self.peer_id(),
                 resolver,
             ))
-            .await
+            .await;
+        MagicDnsResolverRegistration {
+            peer_manager: Arc::downgrade(&self.peer_manager),
+            pipeline,
+        }
     }
 
     pub async fn close_peer_conn(

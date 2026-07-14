@@ -37,10 +37,10 @@ use crate::{
 };
 use anyhow::Context;
 use cidr::Ipv4Inet;
+use easytier_core::instance::MagicDnsResolverRegistration;
 use easytier_core::magic_dns::{
     MagicDnsQuery, MagicDnsQueryResolver, MagicDnsRecordStore, MagicDnsRoute,
 };
-use easytier_core::peers::peer_manager::PipelineRegistrationGuard;
 use hickory_proto::rr::LowerName;
 use hickory_proto::serialize::binary::{BinDecodable, BinEncoder};
 use hickory_server::authority::{MessageRequest, MessageResponse};
@@ -332,7 +332,7 @@ impl RpcServerHook for MagicDnsServerInstanceData {
 pub struct MagicDnsServerInstance {
     rpc_server: StandAloneServer<RuntimeRpcListener>,
     pub(super) data: Arc<MagicDnsServerInstanceData>,
-    packet_filter: PipelineRegistrationGuard,
+    packet_filter: MagicDnsResolverRegistration,
     tun_inet: Ipv4Inet,
 }
 
@@ -444,7 +444,7 @@ impl MagicDnsServerInstance {
             }
         }
 
-        self.packet_filter.close();
+        self.packet_filter.close().await;
     }
 }
 

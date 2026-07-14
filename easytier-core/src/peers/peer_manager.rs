@@ -204,6 +204,11 @@ pub struct PortablePeerManagerConfig {
     pub snapshot: PeerRuntimeSnapshot,
     pub route_algo: RouteAlgoType,
     pub exit_nodes: Vec<IpAddr>,
+    /// Defaults inherited by peer contexts created for foreign networks.
+    ///
+    /// This is explicit because those contexts participate in the same
+    /// handshake as the parent but do not inherit all parent policy flags.
+    pub foreign_context_default_flags: FlagsInConfig,
 }
 
 impl PortablePeerManagerConfig {
@@ -222,10 +227,12 @@ impl PortablePeerManagerConfig {
         flags.foreign_relay_bps_limit = traffic.foreign_relay_bps_limit.unwrap_or_default();
         runtime.feature_flags.disable_p2p = flags.disable_p2p;
         runtime.feature_flags.avoid_relay_data |= flags.disable_relay_data;
+        let foreign_context_default_flags = flags.clone();
         Self {
             snapshot: PeerRuntimeSnapshot::new(runtime, flags),
             route_algo: RouteAlgoType::Ospf,
             exit_nodes: Vec::new(),
+            foreign_context_default_flags,
         }
     }
 }
@@ -504,7 +511,7 @@ pub struct PipelineRegistrationGuard {
 
 impl PipelineRegistrationGuard {
     pub fn close(&self) {
-        self.active.store(false, Ordering::Relaxed);
+        self.active.store(false, Ordering::Release);
     }
 }
 
@@ -552,6 +559,18 @@ fn managed_nic_pipeline_entry(
         }),
         PipelineRegistrationGuard { active },
     )
+}
+
+#[cfg(any(feature = "proxy-packet", test))]
+async fn remove_managed_nic_pipeline_entry(
+    pipeline: &RwLock<Vec<Arc<NicPipelineEntry>>>,
+    registration: &PipelineRegistrationGuard,
+) {
+    registration.close();
+    pipeline
+        .write()
+        .await
+        .retain(|entry| !Arc::ptr_eq(&entry.active, &registration.active));
 }
 
 async fn init_packet_process_pipeline(
@@ -1012,7 +1031,7 @@ impl PeerManagerCore {
             data_compress_algo,
             config.exit_nodes,
             address_resolver,
-            FlagsInConfig::default(),
+            config.foreign_context_default_flags,
             foreign_rpc_registrar,
         );
         let mut core = result.core;
@@ -1566,6 +1585,14 @@ impl PeerManagerCore {
         let (entry, guard) = managed_nic_pipeline_entry(pipeline);
         self.nic_packet_process_pipeline.write().await.push(entry);
         guard
+    }
+
+    #[cfg(feature = "proxy-packet")]
+    pub(crate) async fn remove_managed_nic_packet_process_pipeline(
+        &self,
+        registration: &PipelineRegistrationGuard,
+    ) {
+        remove_managed_nic_pipeline_entry(&self.nic_packet_process_pipeline, registration).await;
     }
 
     pub async fn add_route<T>(&self, route: Arc<T>)
@@ -2502,7 +2529,7 @@ impl PeerOutboundPacketRouter {
         }
 
         for pipeline in self.nic_packet_process_pipeline.read().await.iter().rev() {
-            if !pipeline.active.load(Ordering::Relaxed) {
+            if !pipeline.active.load(Ordering::Acquire) {
                 continue;
             }
             let _ = pipeline.filter.try_process_packet_from_nic(data).await;
@@ -3138,7 +3165,7 @@ impl PeerPacketRouter {
             let mut zc_packet = Some(ret);
             tracing::trace!(?zc_packet, "try_process_packet_from_peer");
             for pipeline in self.peer_packet_process_pipeline.read().await.iter().rev() {
-                if !pipeline.active.load(Ordering::Relaxed) {
+                if !pipeline.active.load(Ordering::Acquire) {
                     continue;
                 }
                 zc_packet = pipeline
@@ -3582,6 +3609,44 @@ mod tests {
         }
     }
 
+    struct DropCountingNicFilter(Arc<AtomicUsize>);
+
+    impl Drop for DropCountingNicFilter {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl super::super::NicPacketFilter for DropCountingNicFilter {
+        async fn try_process_packet_from_nic(&self, _data: &mut ZCPacket) -> bool {
+            true
+        }
+    }
+
+    #[tokio::test]
+    async fn managed_nic_pipeline_removal_waits_for_readers_and_drops_filter() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let (entry, registration) =
+            managed_nic_pipeline_entry(Box::new(DropCountingNicFilter(drops.clone())));
+        let pipeline = Arc::new(RwLock::new(vec![entry]));
+        let reader = pipeline.read().await;
+        let remove_pipeline = pipeline.clone();
+        let remove_registration = registration.clone();
+        let removal = tokio::spawn(async move {
+            remove_managed_nic_pipeline_entry(&remove_pipeline, &remove_registration).await;
+        });
+
+        tokio::task::yield_now().await;
+        assert!(!removal.is_finished());
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
+
+        drop(reader);
+        removal.await.unwrap();
+        assert!(pipeline.read().await.is_empty());
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+    }
+
     #[tokio::test]
     async fn dns_address_resolver_uses_host_dns_and_default_port() {
         let resolver = DnsAddressResolver::new(Arc::new(StaticDnsResolver));
@@ -4022,11 +4087,8 @@ mod tests {
             .flags;
         flags.instance_recv_bps_limit = u64::MAX;
         flags.foreign_relay_bps_limit = u64::MAX;
-        let config = PortablePeerManagerConfig {
-            snapshot: PeerRuntimeSnapshot::new(runtime, flags),
-            route_algo: RouteAlgoType::Ospf,
-            exit_nodes: Vec::new(),
-        };
+        let mut config = PortablePeerManagerConfig::new(runtime.clone());
+        config.snapshot = PeerRuntimeSnapshot::new(runtime, flags);
 
         let core = build_portable_config_for_test(config).unwrap();
         assert!(core.context.recv_limiter("portable-net", false).is_none());
