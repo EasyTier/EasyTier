@@ -62,7 +62,11 @@ pub trait DirectConnectorEnvironment: ManualConnectorEnvironment {
 
     fn is_easytier_managed_ipv6(&self, ip: &Ipv6Addr) -> bool;
 
-    async fn preferred_ipv6_source(&self, ip: Ipv6Addr) -> Option<PreferredIpv6Source>;
+    async fn preferred_ipv6_source(
+        &self,
+        ip: Ipv6Addr,
+        context: SocketContext,
+    ) -> Option<PreferredIpv6Source>;
 }
 
 /// One host handle domain capable of creating and operating connector sockets.
@@ -235,8 +239,12 @@ where
         self.environment.is_easytier_managed_ipv6(ip)
     }
 
-    async fn preferred_ipv6_source(&self, ip: Ipv6Addr) -> Option<PreferredIpv6Source> {
-        self.environment.preferred_ipv6_source(ip).await
+    async fn preferred_ipv6_source(
+        &self,
+        ip: Ipv6Addr,
+        context: SocketContext,
+    ) -> Option<PreferredIpv6Source> {
+        self.environment.preferred_ipv6_source(ip, context).await
     }
 }
 
@@ -469,7 +477,11 @@ mod tests {
             *ip == "2001:db8::1".parse::<Ipv6Addr>().unwrap()
         }
 
-        async fn preferred_ipv6_source(&self, ip: Ipv6Addr) -> Option<PreferredIpv6Source> {
+        async fn preferred_ipv6_source(
+            &self,
+            ip: Ipv6Addr,
+            _context: SocketContext,
+        ) -> Option<PreferredIpv6Source> {
             Some(PreferredIpv6Source { ip, ifindex: 7 })
         }
     }

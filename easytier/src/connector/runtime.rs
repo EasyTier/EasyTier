@@ -22,7 +22,7 @@ use easytier_core::{
 };
 
 use crate::{
-    common::{global_ctx::ArcGlobalCtx, network::IPCollector},
+    common::global_ctx::ArcGlobalCtx,
     host_runtime::{NativeHostRuntime, native_host_runtime},
     proto::peer_rpc::GetIpListResponse,
     socket::{
@@ -136,22 +136,7 @@ impl ManualConnectorHost for RuntimeConnectorHost {
         &self,
         url: &url::Url,
     ) -> anyhow::Result<ConnectedByteStream<RuntimeTcpSocket>> {
-        #[cfg(unix)]
-        if url.scheme() == "unix" {
-            let stream = tokio::net::UnixStream::connect(url.path()).await?;
-            let local_url = stream
-                .local_addr()
-                .ok()
-                .and_then(crate::tunnel::unix::url_from_unix_socket_addr);
-            return Ok(ConnectedByteStream::new(
-                RuntimeTcpSocket::from_unix(stream),
-                local_url,
-                url.clone(),
-                Some(url.clone()),
-            ));
-        }
-
-        anyhow::bail!("unsupported runtime byte stream: {url}")
+        self.runtime.connect_byte_stream(url).await
     }
 }
 
@@ -181,7 +166,11 @@ impl DirectConnectorHost for RuntimeConnectorHost {
         self.global_ctx.is_ip_easytier_managed_ipv6(ip)
     }
 
-    async fn preferred_ipv6_source(&self, ip: Ipv6Addr) -> Option<PreferredIpv6Source> {
+    async fn preferred_ipv6_source(
+        &self,
+        ip: Ipv6Addr,
+        context: SocketContext,
+    ) -> Option<PreferredIpv6Source> {
         if self.global_ctx.is_ip_easytier_managed_ipv6(&ip)
             || ip.is_loopback()
             || ip.is_unspecified()
@@ -192,18 +181,6 @@ impl DirectConnectorHost for RuntimeConnectorHost {
             return None;
         }
 
-        IPCollector::collect_interfaces(self.global_ctx.net_ns.clone(), false)
-            .await
-            .into_iter()
-            .find(|interface| {
-                interface
-                    .ips
-                    .iter()
-                    .any(|local| matches!(local.ip(), IpAddr::V6(local_ip) if local_ip == ip))
-            })
-            .map(|interface| PreferredIpv6Source {
-                ip,
-                ifindex: interface.index,
-            })
+        self.runtime.preferred_ipv6_source(ip, context).await
     }
 }

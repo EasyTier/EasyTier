@@ -145,7 +145,11 @@ where
         self.snapshot().managed_ipv6s.contains(ip)
     }
 
-    async fn preferred_ipv6_source(&self, ip: Ipv6Addr) -> Option<PreferredIpv6Source> {
+    async fn preferred_ipv6_source(
+        &self,
+        ip: Ipv6Addr,
+        _context: SocketContext,
+    ) -> Option<PreferredIpv6Source> {
         let snapshot = self.snapshot();
         if snapshot.managed_ipv6s.contains(&ip)
             || ip.is_loopback()
@@ -258,7 +262,7 @@ mod tests {
         assert!(environment.is_easytier_managed_ipv6(&"fd00::1".parse().unwrap()));
         assert_eq!(
             environment
-                .preferred_ipv6_source("2001:db8::2".parse().unwrap())
+                .preferred_ipv6_source("2001:db8::2".parse().unwrap(), SocketContext::default(),)
                 .await,
             Some(PreferredIpv6Source {
                 ip: "2001:db8::2".parse().unwrap(),
@@ -267,7 +271,7 @@ mod tests {
         );
         assert_eq!(
             environment
-                .preferred_ipv6_source("fd00::1".parse().unwrap())
+                .preferred_ipv6_source("fd00::1".parse().unwrap(), SocketContext::default())
                 .await,
             None
         );

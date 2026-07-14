@@ -4,18 +4,23 @@ use std::{
 };
 
 use async_trait::async_trait;
-use easytier_core::socket::{
-    SocketContext,
-    dns::{DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord},
-    tcp::{
-        TcpConnectOptions, TcpListenOptions, TcpSocketPurpose, VirtualTcpListenerFactory,
-        VirtualTcpSocketFactory,
+use easytier_core::{
+    connectivity::transport::ConnectedByteStream,
+    socket::{
+        SocketContext,
+        dns::{DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord},
+        tcp::{
+            TcpConnectOptions, TcpListenOptions, TcpSocketPurpose, VirtualTcpListenerFactory,
+            VirtualTcpSocketFactory,
+        },
+        udp::{
+            PreferredIpv6Source, UdpBindOptions, UdpSessionControlHandler, VirtualUdpSocketFactory,
+        },
     },
-    udp::{PreferredIpv6Source, UdpBindOptions, UdpSessionControlHandler, VirtualUdpSocketFactory},
 };
 
 use crate::{
-    common::{dns::RuntimeDnsResolver, netns::NetNS},
+    common::{dns::RuntimeDnsResolver, netns::NetNS, network::IPCollector},
     socket::{
         tcp::{RuntimeTcpListener, RuntimeTcpSocket},
         udp::{RuntimeUdpSocket, RuntimeUdpSocketFactory},
@@ -73,6 +78,28 @@ impl VirtualTcpSocketFactory for NativeHostRuntime {
 }
 
 impl NativeHostRuntime {
+    pub(crate) async fn connect_byte_stream(
+        &self,
+        url: &url::Url,
+    ) -> anyhow::Result<ConnectedByteStream<RuntimeTcpSocket>> {
+        #[cfg(unix)]
+        if url.scheme() == "unix" {
+            let stream = tokio::net::UnixStream::connect(url.path()).await?;
+            let local_url = stream
+                .local_addr()
+                .ok()
+                .and_then(crate::tunnel::unix::url_from_unix_socket_addr);
+            return Ok(ConnectedByteStream::new(
+                RuntimeTcpSocket::from_unix(stream),
+                local_url,
+                url.clone(),
+                Some(url.clone()),
+            ));
+        }
+
+        anyhow::bail!("unsupported runtime byte stream: {url}")
+    }
+
     pub(crate) async fn local_addr_for_remote(
         &self,
         remote_addr: std::net::SocketAddr,
@@ -94,6 +121,26 @@ impl NativeHostRuntime {
         let socket = tokio::net::UdpSocket::from_std(socket)?;
         socket.connect(remote_addr).await?;
         Ok(socket.local_addr()?)
+    }
+
+    pub(crate) async fn preferred_ipv6_source(
+        &self,
+        ip: std::net::Ipv6Addr,
+        context: SocketContext,
+    ) -> Option<PreferredIpv6Source> {
+        IPCollector::collect_interfaces(NetNS::from_socket_context(&context), false)
+            .await
+            .into_iter()
+            .find(|interface| {
+                interface
+                    .ips
+                    .iter()
+                    .any(|local| matches!(local.ip(), IpAddr::V6(local_ip) if local_ip == ip))
+            })
+            .map(|interface| PreferredIpv6Source {
+                ip,
+                ifindex: interface.index,
+            })
     }
 }
 

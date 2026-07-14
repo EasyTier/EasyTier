@@ -76,7 +76,11 @@ pub trait DirectConnectorHost: ManualConnectorHost {
 
     fn is_easytier_managed_ipv6(&self, ip: &Ipv6Addr) -> bool;
 
-    async fn preferred_ipv6_source(&self, ip: Ipv6Addr) -> Option<PreferredIpv6Source>;
+    async fn preferred_ipv6_source(
+        &self,
+        ip: Ipv6Addr,
+        context: SocketContext,
+    ) -> Option<PreferredIpv6Source>;
 }
 
 struct HostRunningListenerProvider<H>
@@ -1057,7 +1061,11 @@ where
         let (listener_port, connector_addrs, preferred_src_ipv6) =
             connector_addrs_from_request(request)?;
         let preferred_source = match preferred_src_ipv6.map(Ipv6Addr::from) {
-            Some(ip) => self.host.preferred_ipv6_source(ip).await,
+            Some(ip) => {
+                self.host
+                    .preferred_ipv6_source(ip, self.socket_context.clone())
+                    .await
+            }
             None => None,
         };
 
