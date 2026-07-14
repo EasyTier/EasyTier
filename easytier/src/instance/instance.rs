@@ -19,9 +19,9 @@ use easytier_core::proxy::wrapped_transport::{
 use easytier_core::tunnel::ring::RingTunnelRegistry;
 #[cfg(feature = "tun")]
 use futures::FutureExt;
-use tokio::sync::Mutex;
 #[cfg(feature = "tun")]
 use tokio::sync::Notify;
+use tokio::sync::{Mutex, mpsc};
 #[cfg(feature = "tun")]
 use tokio::{sync::oneshot, task::JoinSet};
 use tokio_util::sync::CancellationToken;
@@ -34,7 +34,8 @@ use crate::common::config::ConfigLoader;
 use crate::common::error::Error;
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtx, GlobalCtxEvent};
 use crate::connector::core_instance::{
-    RuntimeCoreInstance, build_runtime_core_instance_with_transport_factory_and_ring_registry,
+    RuntimeCoreInstance,
+    build_portable_runtime_core_instance_with_transport_factory_and_ring_registry,
     runtime_instance_config,
 };
 use crate::connector::manual::{ConnectorManagerRpcService, ManualConnectorManager};
@@ -46,11 +47,7 @@ use crate::gateway::tcp_proxy::CoreTcpProxyRpcService;
 use crate::launcher::NetworkConfigExt;
 use crate::peer_center::instance::PeerCenterInstanceService;
 use crate::peers::peer_conn::PeerConnId;
-use crate::peers::peer_manager::{PeerManager, RouteAlgoType};
-#[cfg(feature = "tun")]
-use crate::peers::recv_packet_from_chan;
 use crate::peers::rpc_service::PeerManagerRpcService;
-use crate::peers::{PacketRecvChanReceiver, create_packet_recv_chan};
 use crate::proto::api::config::{
     ConfigPatchAction, ConfigRpc, GetConfigRequest, GetConfigResponse, PatchConfigRequest,
     PatchConfigResponse, PortForwardPatch,
@@ -74,6 +71,8 @@ use crate::utils::weak_upgrade;
 #[cfg(feature = "magic-dns")]
 use super::dns_server::{MAGIC_DNS_FAKE_IP, runner::DnsRunner};
 use super::public_ipv6_provider::validate_public_ipv6_config_values;
+
+pub(crate) type HostPacketReceiver = mpsc::Receiver<Vec<u8>>;
 
 struct RuntimeTransportProxyFactory;
 
@@ -270,7 +269,6 @@ struct ConfigOperation {
 pub struct InstanceConfigPatcher {
     global_ctx: Weak<GlobalCtx>,
     core_instance: Weak<RuntimeCoreInstance>,
-    peer_manager: Weak<PeerManager>,
     operation: Arc<ConfigOperation>,
 }
 
@@ -657,10 +655,8 @@ pub struct Instance {
     #[cfg(feature = "tun")]
     nic_ctx: ArcNicCtx,
 
-    peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
-    peer_manager: Arc<PeerManager>,
+    peer_packet_receiver: Arc<Mutex<HostPacketReceiver>>,
     core_instance: Arc<RuntimeCoreInstance>,
-    ring_registry: Arc<RingTunnelRegistry>,
     config_operation: Arc<ConfigOperation>,
 
     transport_proxy: RuntimeTransportProxyAttachment,
@@ -674,11 +670,9 @@ struct RuntimeDhcpIpv4Host {
     #[cfg(feature = "tun")]
     nic_ctx: ArcNicCtx,
     #[cfg(feature = "tun")]
-    peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
+    peer_packet_receiver: Arc<Mutex<HostPacketReceiver>>,
     #[cfg(feature = "tun")]
     nic_closed_notifier: Arc<Notify>,
-    peer_manager: Weak<PeerManager>,
-    #[cfg(all(not(mobile), feature = "tun"))]
     core_instance: Weak<RuntimeCoreInstance>,
 }
 
@@ -693,8 +687,6 @@ impl RuntimeDhcpIpv4Host {
             peer_packet_receiver: instance.peer_packet_receiver.clone(),
             #[cfg(feature = "tun")]
             nic_closed_notifier: Arc::new(Notify::new()),
-            peer_manager: Arc::downgrade(&instance.peer_manager),
-            #[cfg(all(not(mobile), feature = "tun"))]
             core_instance: Arc::downgrade(&instance.core_instance),
         })
     }
@@ -706,6 +698,14 @@ impl RuntimeDhcpIpv4Host {
             anyhow::bail!("instance is closing; DHCP update cancelled");
         }
         Ok(())
+    }
+
+    async fn refresh_peer_runtime_config(&self) {
+        if let Some(core_instance) = self.core_instance.upgrade() {
+            core_instance
+                .update_peer_runtime_snapshot(runtime_instance_config(&self.global_ctx).peer)
+                .await;
+        }
     }
 }
 
@@ -743,9 +743,7 @@ impl DhcpIpv4Host for RuntimeDhcpIpv4Host {
         let Some(ip) = next else {
             self.ensure_config_open()?;
             self.global_ctx.set_ipv4(None);
-            if let Some(peer_manager) = self.peer_manager.upgrade() {
-                peer_manager.refresh_runtime_config();
-            }
+            self.refresh_peer_runtime_config().await;
             self.global_ctx
                 .issue_event(GlobalCtxEvent::DhcpIpv4Conflicted(previous));
             return Ok(());
@@ -754,9 +752,7 @@ impl DhcpIpv4Host for RuntimeDhcpIpv4Host {
         if self.global_ctx.no_tun() {
             self.ensure_config_open()?;
             self.global_ctx.set_ipv4(Some(ip));
-            if let Some(peer_manager) = self.peer_manager.upgrade() {
-                peer_manager.refresh_runtime_config();
-            }
+            self.refresh_peer_runtime_config().await;
             self.global_ctx
                 .issue_event(GlobalCtxEvent::DhcpIpv4Changed(previous, Some(ip)));
             return Ok(());
@@ -764,10 +760,6 @@ impl DhcpIpv4Host for RuntimeDhcpIpv4Host {
 
         #[cfg(all(not(mobile), feature = "tun"))]
         {
-            let peer_manager = self
-                .peer_manager
-                .upgrade()
-                .context("peer manager is gone during DHCP IPv4 apply")?;
             let core_instance = self
                 .core_instance
                 .upgrade()
@@ -788,7 +780,9 @@ impl DhcpIpv4Host for RuntimeDhcpIpv4Host {
             if let Err(err) = run_result {
                 self.ensure_config_open()?;
                 self.global_ctx.set_ipv4(None);
-                peer_manager.refresh_runtime_config();
+                core_instance
+                    .update_peer_runtime_snapshot(runtime_instance_config(&self.global_ctx).peer)
+                    .await;
                 return Err(err.into());
             }
             #[cfg(feature = "magic-dns")]
@@ -820,9 +814,7 @@ impl DhcpIpv4Host for RuntimeDhcpIpv4Host {
 
         self.ensure_config_open()?;
         self.global_ctx.set_ipv4(Some(ip));
-        if let Some(peer_manager) = self.peer_manager.upgrade() {
-            peer_manager.refresh_runtime_config();
-        }
+        self.refresh_peer_runtime_config().await;
         self.global_ctx
             .issue_event(GlobalCtxEvent::DhcpIpv4Changed(previous, Some(ip)));
         Ok(())
@@ -845,20 +837,14 @@ impl Instance {
             global_ctx.config.dump()
         );
 
-        let (peer_packet_sender, peer_packet_receiver) = create_packet_recv_chan();
+        let (peer_packet_sender, peer_packet_receiver) = mpsc::channel(128);
 
         let id = global_ctx.get_id();
 
-        let peer_manager = Arc::new(PeerManager::new_with_ring_registry(
-            RouteAlgoType::Ospf,
-            global_ctx.clone(),
-            peer_packet_sender,
-            ring_registry.clone(),
-        ));
         let (core_instance, transport_proxy) =
-            build_runtime_core_instance_with_transport_factory_and_ring_registry(
+            build_portable_runtime_core_instance_with_transport_factory_and_ring_registry(
                 global_ctx.clone(),
-                peer_manager.clone(),
+                Arc::new(peer_packet_sender),
                 RuntimeTransportProxyFactory::new(),
                 ring_registry.clone(),
             )
@@ -874,9 +860,7 @@ impl Instance {
             #[cfg(feature = "tun")]
             nic_ctx: Arc::new(Mutex::new(None)),
 
-            peer_manager,
             core_instance,
-            ring_registry,
             config_operation,
 
             transport_proxy,
@@ -891,26 +875,28 @@ impl Instance {
         ))
     }
 
-    // use a mock nic ctx to consume packets.
     #[cfg(feature = "tun")]
-    async fn clear_nic_ctx(
-        arc_nic_ctx: ArcNicCtx,
-        packet_recv: Arc<Mutex<PacketRecvChanReceiver>>,
-    ) {
+    async fn stop_nic_ctx(arc_nic_ctx: &ArcNicCtx) {
+        let mut old_ctx = arc_nic_ctx.lock().await.take();
         #[cfg(feature = "magic-dns")]
-        if let Some(old_ctx) = arc_nic_ctx.lock().await.take()
-            && let Some(dns_runner) = old_ctx.magic_dns
-        {
+        if let Some(dns_runner) = old_ctx.as_mut().and_then(|ctx| ctx.magic_dns.take()) {
             dns_runner.dns_runner_cancel_token.cancel();
             tracing::debug!("cancelling dns runner task");
             let ret = dns_runner.dns_runner_task.await;
             tracing::debug!("dns runner task cancelled, ret: {:?}", ret);
-        };
+        }
+        drop(old_ctx);
+    }
+
+    // use a mock nic ctx to consume packets.
+    #[cfg(feature = "tun")]
+    async fn clear_nic_ctx(arc_nic_ctx: ArcNicCtx, packet_recv: Arc<Mutex<HostPacketReceiver>>) {
+        Self::stop_nic_ctx(&arc_nic_ctx).await;
 
         let mut tasks = JoinSet::new();
         tasks.spawn(async move {
             let mut packet_recv = packet_recv.lock().await;
-            while let Ok(packet) = recv_packet_from_chan(&mut packet_recv).await {
+            while let Some(packet) = packet_recv.recv().await {
                 tracing::trace!("packet consumed by mock nic ctx: {:?}", packet);
             }
         });
@@ -949,6 +935,7 @@ impl Instance {
         nic_ctx: NicCtx,
         #[cfg(feature = "magic-dns")] magic_dns: Option<DnsRunner>,
     ) {
+        Self::stop_nic_ctx(&arc_nic_ctx).await;
         let mut g = arc_nic_ctx.lock().await;
         *g = Some(NicCtxContainer::new(
             nic_ctx,
@@ -970,8 +957,8 @@ impl Instance {
         }
 
         let nic_ctx = self.nic_ctx.clone();
-        let peer_mgr = Arc::downgrade(&self.peer_manager);
         let core_instance = Arc::downgrade(&self.core_instance);
+        let global_ctx = self.global_ctx.clone();
         let peer_packet_receiver = self.peer_packet_receiver.clone();
 
         tokio::spawn(async move {
@@ -979,14 +966,6 @@ impl Instance {
             loop {
                 let close_notifier = Arc::new(Notify::new());
                 {
-                    let Some(peer_mgr) = peer_mgr.upgrade() else {
-                        tracing::warn!("peer manager is dropped, stop static ip check.");
-                        if let Some(output_tx) = output_tx.take() {
-                            let _ = output_tx.send(Err(Error::Unknown));
-                            return;
-                        }
-                        return;
-                    };
                     let Some(core_instance) = core_instance.upgrade() else {
                         tracing::warn!("core instance is dropped, stop static IP check.");
                         if let Some(output_tx) = output_tx.take() {
@@ -996,7 +975,7 @@ impl Instance {
                     };
 
                     let mut new_nic_ctx = NicCtx::new(
-                        peer_mgr.get_global_ctx(),
+                        global_ctx.clone(),
                         &core_instance,
                         peer_packet_receiver.clone(),
                         close_notifier.clone(),
@@ -1018,7 +997,7 @@ impl Instance {
                         let ifname = new_nic_ctx.ifname().await;
                         let dns_runner = if let Some(ipv4) = ipv4_addr {
                             Self::create_magic_dns_runner(
-                                peer_mgr.get_global_ctx(),
+                                global_ctx.clone(),
                                 core_instance.clone(),
                                 ifname,
                                 ipv4,
@@ -1036,11 +1015,11 @@ impl Instance {
                     let _ = output_tx.send(Ok(()));
                 }
 
-                // NOTICE: make sure we do not hold the peer manager here,
+                // NOTICE: make sure we do not hold the core instance here.
                 while close_notifier.notified().now_or_never().is_none() {
                     tokio::time::sleep(Duration::from_secs(1)).await;
-                    if peer_mgr.strong_count() == 0 {
-                        tracing::warn!("peer manager is dropped, stop static ip check.");
+                    if core_instance.strong_count() == 0 {
+                        tracing::warn!("core instance is dropped, stop static IP check.");
                         return;
                     }
                 }
@@ -1091,26 +1070,6 @@ impl Instance {
         }
         self.core_instance.start_vpn_portal().await?;
         Ok(())
-    }
-
-    pub fn get_peer_manager(&self) -> Arc<PeerManager> {
-        self.peer_manager.clone()
-    }
-
-    pub fn stats_manager(&self) -> Arc<easytier_core::stats_manager::StatsManager> {
-        self.peer_manager.stats_manager()
-    }
-
-    pub fn acl_filter(&self) -> Arc<easytier_core::peers::acl_filter::AclFilter> {
-        self.peer_manager.acl_filter()
-    }
-
-    pub fn credential_manager(&self) -> Arc<crate::common::credential_manager::CredentialManager> {
-        self.peer_manager.credential_manager()
-    }
-
-    pub(crate) fn ring_registry(&self) -> Arc<RingTunnelRegistry> {
-        self.ring_registry.clone()
     }
 
     pub async fn close_peer_conn(
@@ -1237,7 +1196,7 @@ impl Instance {
     fn get_stats_rpc_service(&self) -> impl StatsRpc<Controller = BaseController> + Clone + use<> {
         #[derive(Clone)]
         pub struct StatsRpcService {
-            peer_manager: Weak<PeerManager>,
+            core_instance: Weak<RuntimeCoreInstance>,
         }
 
         #[async_trait::async_trait]
@@ -1249,9 +1208,7 @@ impl Instance {
                 _: BaseController,
                 _request: GetStatsRequest,
             ) -> Result<GetStatsResponse, rpc_types::error::Error> {
-                let snapshots = weak_upgrade(&self.peer_manager)?
-                    .stats_manager()
-                    .get_all_metrics();
+                let snapshots = weak_upgrade(&self.core_instance)?.metric_snapshots();
 
                 let metrics = snapshots
                     .into_iter()
@@ -1277,16 +1234,14 @@ impl Instance {
                 _: BaseController,
                 _request: GetPrometheusStatsRequest,
             ) -> Result<GetPrometheusStatsResponse, rpc_types::error::Error> {
-                let prometheus_text = weak_upgrade(&self.peer_manager)?
-                    .stats_manager()
-                    .export_prometheus();
+                let prometheus_text = weak_upgrade(&self.core_instance)?.prometheus_metrics();
 
                 Ok(GetPrometheusStatsResponse { prometheus_text })
             }
         }
 
         StatsRpcService {
-            peer_manager: Arc::downgrade(&self.peer_manager),
+            core_instance: Arc::downgrade(&self.core_instance),
         }
     }
 
@@ -1294,7 +1249,6 @@ impl Instance {
         InstanceConfigPatcher {
             global_ctx: Arc::downgrade(&self.global_ctx),
             core_instance: Arc::downgrade(&self.core_instance),
-            peer_manager: Arc::downgrade(&self.peer_manager),
             operation: self.config_operation.clone(),
         }
     }
@@ -1437,10 +1391,7 @@ impl Instance {
         }
 
         ApiRpcServiceImpl {
-            peer_mgr_rpc_service: PeerManagerRpcService::new(
-                self.peer_manager.clone(),
-                &self.core_instance,
-            ),
+            peer_mgr_rpc_service: PeerManagerRpcService::new(&self.global_ctx, &self.core_instance),
             connector_mgr_rpc_service: ConnectorManagerRpcService::new(&self.core_instance),
             mapped_listener_mgr_rpc_service: self.get_mapped_listener_manager_rpc_service(),
             vpn_portal_rpc_service: self.get_vpn_portal_rpc_service(),
@@ -1517,7 +1468,7 @@ impl Instance {
                 tcp_proxy_rpc_services
             },
             acl_manage_rpc_service: PeerManagerRpcService::new(
-                self.peer_manager.clone(),
+                &self.global_ctx,
                 &self.core_instance,
             ),
             port_forward_manage_rpc_service: self.get_port_forward_manager_rpc_service(),
@@ -1525,7 +1476,7 @@ impl Instance {
             config_rpc_service: self.get_config_service(),
             peer_center_rpc_service: Arc::new(self.core_instance.peer_center_rpc_service()),
             credential_manage_rpc_service: PeerManagerRpcService::new(
-                self.peer_manager.clone(),
+                &self.global_ctx,
                 &self.core_instance,
             ),
         }
@@ -1540,7 +1491,7 @@ impl Instance {
         self.nic_ctx.clone()
     }
 
-    pub fn get_peer_packet_receiver(&self) -> Arc<Mutex<PacketRecvChanReceiver>> {
+    pub fn get_peer_packet_receiver(&self) -> Arc<Mutex<HostPacketReceiver>> {
         self.peer_packet_receiver.clone()
     }
 
@@ -1553,7 +1504,7 @@ impl Instance {
         nic_ctx: ArcNicCtx,
         global_ctx: ArcGlobalCtx,
         core_instance: Arc<RuntimeCoreInstance>,
-        peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
+        peer_packet_receiver: Arc<Mutex<HostPacketReceiver>>,
         fd: i32,
     ) -> Result<(), anyhow::Error> {
         tracing::info!("setup_nic_ctx_for_mobile, fd: {}", fd);
@@ -1586,9 +1537,9 @@ impl Instance {
         self.config_operation.closing.store(true, Ordering::Release);
         self.config_operation.cancel.cancel();
         let _config_operation = self.config_operation.operation.lock().await;
-        self.core_instance.stop().await;
         #[cfg(feature = "tun")]
-        let _ = self.nic_ctx.lock().await.take();
+        Self::stop_nic_ctx(&self.nic_ctx).await;
+        self.core_instance.stop().await;
     }
 }
 
@@ -1603,7 +1554,7 @@ impl Drop for Instance {
         tokio::spawn(async move {
             let _config_operation = config_operation.operation.lock().await;
             #[cfg(feature = "tun")]
-            nic_ctx.lock().await.take();
+            Self::stop_nic_ctx(&nic_ctx).await;
             core_instance.stop().await;
             drop(core_instance);
         });
@@ -1613,7 +1564,16 @@ impl Drop for Instance {
 #[cfg(test)]
 mod tests {
     use std::net::SocketAddr;
+    #[cfg(all(feature = "tun", feature = "magic-dns"))]
+    use std::sync::Arc;
 
+    #[cfg(all(feature = "tun", feature = "magic-dns"))]
+    use tokio::sync::Mutex;
+    #[cfg(all(feature = "tun", feature = "magic-dns"))]
+    use tokio_util::{sync::CancellationToken, task::AbortOnDropHandle};
+
+    #[cfg(all(feature = "tun", feature = "magic-dns"))]
+    use crate::instance::instance::{MagicDnsContainer, NicCtxContainer};
     use crate::{
         common::config::ConfigLoader,
         common::global_ctx::tests::get_mock_global_ctx,
@@ -1645,6 +1605,30 @@ mod tests {
             }),
             ..Default::default()
         }
+    }
+
+    #[cfg(all(feature = "tun", feature = "magic-dns"))]
+    #[tokio::test]
+    async fn stopping_nic_waits_for_dns_runner_cleanup() {
+        let cancel = CancellationToken::new();
+        let task_cancel = cancel.clone();
+        let (cleaned_tx, cleaned_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            task_cancel.cancelled().await;
+            let _ = cleaned_tx.send(());
+        });
+        let nic_ctx = Arc::new(Mutex::new(Some(NicCtxContainer {
+            nic_ctx: None,
+            magic_dns: Some(MagicDnsContainer {
+                dns_runner_task: AbortOnDropHandle::new(task),
+                dns_runner_cancel_token: cancel,
+            }),
+        })));
+
+        Instance::stop_nic_ctx(&nic_ctx).await;
+
+        cleaned_rx.await.unwrap();
+        assert!(nic_ctx.lock().await.is_none());
     }
 
     #[tokio::test]
@@ -1801,7 +1785,7 @@ mod tests {
                 source: true,
                 destination: false,
             },
-            my_peer_id: instance.peer_manager.my_peer_id(),
+            my_peer_id: instance.core_instance.peer_id(),
             datagrams,
             destination_ingress: None,
         })
@@ -1825,7 +1809,7 @@ mod tests {
                 source: true,
                 destination: false,
             },
-            my_peer_id: instance.peer_manager.my_peer_id(),
+            my_peer_id: instance.core_instance.peer_id(),
             datagrams,
             destination_ingress: None,
         })
@@ -1853,27 +1837,14 @@ mod tests {
             .unwrap();
 
         assert_eq!(generated.credential_id, "shared-credential");
-        assert_eq!(
-            instance
-                .peer_manager
-                .credential_manager()
-                .list_credentials()
-                .len(),
-            1
-        );
+        assert_eq!(instance.core_instance.credential_snapshots().len(), 1);
         assert!(
             instance
                 .core_instance
                 .revoke_credential("shared-credential")
                 .unwrap()
         );
-        assert!(
-            instance
-                .peer_manager
-                .credential_manager()
-                .list_credentials()
-                .is_empty()
-        );
+        assert!(instance.core_instance.credential_snapshots().is_empty());
     }
 
     #[tokio::test]

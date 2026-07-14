@@ -5,6 +5,7 @@ use std::{
 
 use crate::{
     common::credential_manager::core_credential_info_to_api,
+    common::global_ctx::GlobalCtx,
     connector::core_instance::RuntimeCoreInstance,
     proto::{
         api::instance::{
@@ -24,21 +25,21 @@ use crate::{
     utils::weak_upgrade,
 };
 
-use super::{foreign_network_manager::foreign_network_info_to_api, peer_manager::PeerManager};
+use super::foreign_network_manager::foreign_network_info_to_api;
 
 #[derive(Clone)]
 pub struct PeerManagerRpcService {
-    peer_manager: Weak<PeerManager>,
+    global_ctx: Weak<GlobalCtx>,
     core_instance: Weak<RuntimeCoreInstance>,
 }
 
 impl PeerManagerRpcService {
     pub(crate) fn new(
-        peer_manager: Arc<PeerManager>,
+        global_ctx: &Arc<GlobalCtx>,
         core_instance: &Arc<RuntimeCoreInstance>,
     ) -> Self {
         PeerManagerRpcService {
-            peer_manager: Arc::downgrade(&peer_manager),
+            global_ctx: Arc::downgrade(global_ctx),
             core_instance: Arc::downgrade(core_instance),
         }
     }
@@ -203,7 +204,7 @@ impl PeerManageRpc for PeerManagerRpcService {
         _: BaseController,
         _request: ShowNodeInfoRequest, // Accept request of type HelloRequest
     ) -> Result<ShowNodeInfoResponse, rpc_types::error::Error> {
-        let peer_manager = weak_upgrade(&self.peer_manager)?;
+        let global_ctx = weak_upgrade(&self.global_ctx)?;
         let snapshot = weak_upgrade(&self.core_instance)?.node_snapshot().await;
         Ok(ShowNodeInfoResponse {
             node_info: Some(NodeInfo {
@@ -225,16 +226,10 @@ impl PeerManageRpc for PeerManagerRpcService {
                     .into_iter()
                     .map(|listener| listener.to_string())
                     .collect(),
-                config: peer_manager.get_global_ctx_ref().config.dump(),
+                config: global_ctx.config.dump(),
                 version: snapshot.version,
                 feature_flag: Some(snapshot.feature_flags),
-                ip_list: Some(
-                    peer_manager
-                        .get_global_ctx_ref()
-                        .get_ip_collector()
-                        .collect_ip_addrs()
-                        .await,
-                ),
+                ip_list: Some(global_ctx.get_ip_collector().collect_ip_addrs().await),
                 public_ipv6_addr: snapshot.public_ipv6_addr.map(Into::into),
                 ipv6_public_addr_prefix: snapshot.ipv6_public_addr_prefix.map(Into::into),
             }),

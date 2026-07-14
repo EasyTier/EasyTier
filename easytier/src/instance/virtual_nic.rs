@@ -15,7 +15,7 @@ use crate::{
         log,
     },
     connector::core_instance::RuntimeCoreInstance,
-    peers::{PacketRecvChanReceiver, recv_packet_from_chan},
+    instance::instance::HostPacketReceiver,
     tunnel::{
         StreamItem, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream,
         common::{FramedWriter, ZCPacketToBytes, reserve_buf},
@@ -799,7 +799,7 @@ impl VirtualNic {
 pub struct NicCtx {
     global_ctx: ArcGlobalCtx,
     core_instance: Weak<RuntimeCoreInstance>,
-    peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
+    peer_packet_receiver: Arc<Mutex<HostPacketReceiver>>,
 
     close_notifier: Arc<Notify>,
 
@@ -814,7 +814,7 @@ impl NicCtx {
     pub(crate) fn new(
         global_ctx: ArcGlobalCtx,
         core_instance: &Arc<RuntimeCoreInstance>,
-        peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
+        peer_packet_receiver: Arc<Mutex<HostPacketReceiver>>,
         close_notifier: Arc<Notify>,
     ) -> Self {
         NicCtx {
@@ -915,12 +915,12 @@ impl NicCtx {
         self.tasks.spawn(async move {
             // unlock until coroutine finished
             let mut channel = channel.lock().await;
-            while let Ok(packet) = recv_packet_from_chan(&mut channel).await {
+            while let Some(packet) = channel.recv().await {
                 tracing::trace!(
                     "[USER_PACKET] forward packet from peers to nic. packet: {:?}",
                     packet
                 );
-                let ret = sink.send(packet).await;
+                let ret = sink.send(ZCPacket::new_with_payload(&packet)).await;
                 if ret.is_err() {
                     tracing::error!(?ret, "do_forward_tunnel_to_nic sink error");
                 }
