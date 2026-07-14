@@ -774,7 +774,6 @@ impl DhcpIpv4Host for RuntimeDhcpIpv4Host {
                 .context("core instance is gone during DHCP IPv4 apply")?;
             let mut new_nic_ctx = NicCtx::new(
                 self.global_ctx.clone(),
-                &peer_manager,
                 &core_instance,
                 self.peer_packet_receiver.clone(),
                 self.nic_closed_notifier.clone(),
@@ -809,7 +808,12 @@ impl DhcpIpv4Host for RuntimeDhcpIpv4Host {
                     self.nic_ctx.clone(),
                     new_nic_ctx,
                     #[cfg(feature = "magic-dns")]
-                    Instance::create_magic_dns_runner(peer_manager, ifname, ip),
+                    Instance::create_magic_dns_runner(
+                        self.global_ctx.clone(),
+                        core_instance,
+                        ifname,
+                        ip,
+                    ),
                 ) => {}
             }
         }
@@ -920,17 +924,18 @@ impl Instance {
 
     #[cfg(feature = "magic-dns")]
     fn create_magic_dns_runner(
-        peer_mgr: Arc<PeerManager>,
+        global_ctx: ArcGlobalCtx,
+        core_instance: Arc<RuntimeCoreInstance>,
         tun_dev: Option<String>,
         tun_ip: Ipv4Inet,
     ) -> Option<DnsRunner> {
-        let ctx = peer_mgr.get_global_ctx();
-        if !ctx.config.get_flags().accept_dns {
+        if !global_ctx.config.get_flags().accept_dns {
             return None;
         }
 
         let runner = DnsRunner::new(
-            peer_mgr,
+            core_instance,
+            global_ctx,
             tun_dev,
             tun_ip,
             MAGIC_DNS_FAKE_IP.parse().unwrap(),
@@ -992,7 +997,6 @@ impl Instance {
 
                     let mut new_nic_ctx = NicCtx::new(
                         peer_mgr.get_global_ctx(),
-                        &peer_mgr,
                         &core_instance,
                         peer_packet_receiver.clone(),
                         close_notifier.clone(),
@@ -1013,7 +1017,12 @@ impl Instance {
                     {
                         let ifname = new_nic_ctx.ifname().await;
                         let dns_runner = if let Some(ipv4) = ipv4_addr {
-                            Self::create_magic_dns_runner(peer_mgr, ifname, ipv4)
+                            Self::create_magic_dns_runner(
+                                peer_mgr.get_global_ctx(),
+                                core_instance.clone(),
+                                ifname,
+                                ipv4,
+                            )
                         } else {
                             None
                         };
@@ -1543,7 +1552,6 @@ impl Instance {
     pub(crate) async fn setup_nic_ctx_for_mobile(
         nic_ctx: ArcNicCtx,
         global_ctx: ArcGlobalCtx,
-        peer_manager: Arc<PeerManager>,
         core_instance: Arc<RuntimeCoreInstance>,
         peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
         fd: i32,
@@ -1556,7 +1564,6 @@ impl Instance {
         let close_notifier = Arc::new(Notify::new());
         let mut new_nic_ctx = NicCtx::new(
             global_ctx.clone(),
-            &peer_manager,
             &core_instance,
             peer_packet_receiver.clone(),
             close_notifier.clone(),
@@ -1567,7 +1574,7 @@ impl Instance {
             .with_context(|| "add ip failed")?;
 
         let magic_dns_runner = if let Some(ipv4) = global_ctx.get_ipv4() {
-            Self::create_magic_dns_runner(peer_manager.clone(), None, ipv4)
+            Self::create_magic_dns_runner(global_ctx.clone(), core_instance.clone(), None, ipv4)
         } else {
             None
         };

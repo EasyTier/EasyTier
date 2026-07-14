@@ -14,14 +14,14 @@ use super::{
 };
 use crate::{
     common::{
-        PeerId,
+        global_ctx::ArcGlobalCtx,
         ifcfg::{IfConfiger, IfConfiguerTrait},
     },
+    connector::core_instance::RuntimeCoreInstance,
     instance::dns_server::{
         config::{Record, RecordBuilder, RecordType},
         server::build_authority,
     },
-    peers::{NicPacketFilter, peer_manager::PeerManager},
     proto::{
         common::{TunnelInfo, Void},
         magic_dns::{
@@ -34,13 +34,13 @@ use crate::{
         },
         rpc_types::controller::{BaseController, Controller},
     },
-    tunnel::packet_def::ZCPacket,
 };
 use anyhow::Context;
 use cidr::Ipv4Inet;
 use easytier_core::magic_dns::{
-    MagicDnsQuery, MagicDnsRecordStore, MagicDnsRoute, process_magic_dns_packet,
+    MagicDnsQuery, MagicDnsQueryResolver, MagicDnsRecordStore, MagicDnsRoute,
 };
+use easytier_core::peers::peer_manager::PipelineRegistrationGuard;
 use hickory_proto::rr::LowerName;
 use hickory_proto::serialize::binary::{BinDecodable, BinEncoder};
 use hickory_server::authority::{MessageRequest, MessageResponse};
@@ -48,15 +48,11 @@ use hickory_server::server::{Request, RequestHandler, ResponseHandler, ResponseI
 use std::sync::Mutex;
 use std::{collections::BTreeMap, io, net::Ipv4Addr, str::FromStr, sync::Arc, time::Duration};
 
-static NIC_PIPELINE_NAME: &str = "magic_dns_server";
-
 pub(super) struct MagicDnsServerInstanceData {
     dns_server: Server,
     tun_dev: Option<String>,
     tun_ip: Ipv4Addr,
     fake_ip: Ipv4Addr,
-    my_peer_id: PeerId,
-
     route_store: MagicDnsRecordStore,
     record_apply: tokio::sync::Mutex<()>,
 
@@ -276,7 +272,7 @@ impl ResponseHandler for ResponseWrapper {
 }
 
 impl MagicDnsServerInstanceData {
-    async fn resolve_query(&self, query: MagicDnsQuery) -> Option<Vec<u8>> {
+    async fn resolve_query_inner(&self, query: MagicDnsQuery) -> Option<Vec<u8>> {
         let request = Request::new(
             MessageRequest::from_bytes(&query.payload).ok()?,
             query.source,
@@ -300,16 +296,9 @@ impl MagicDnsServerInstanceData {
 }
 
 #[async_trait::async_trait]
-impl NicPacketFilter for MagicDnsServerInstanceData {
-    async fn try_process_packet_from_nic(&self, zc_packet: &mut ZCPacket) -> bool {
-        process_magic_dns_packet(zc_packet, self.fake_ip, self.my_peer_id, |query| {
-            self.resolve_query(query)
-        })
-        .await
-    }
-
-    fn id(&self) -> String {
-        NIC_PIPELINE_NAME.to_string()
+impl MagicDnsQueryResolver for MagicDnsServerInstanceData {
+    async fn resolve(&self, query: MagicDnsQuery) -> Option<Vec<u8>> {
+        self.resolve_query_inner(query).await
     }
 }
 
@@ -343,7 +332,7 @@ impl RpcServerHook for MagicDnsServerInstanceData {
 pub struct MagicDnsServerInstance {
     rpc_server: StandAloneServer<RuntimeRpcListener>,
     pub(super) data: Arc<MagicDnsServerInstanceData>,
-    peer_mgr: Arc<PeerManager>,
+    packet_filter: PipelineRegistrationGuard,
     tun_inet: Ipv4Inet,
 }
 
@@ -368,8 +357,9 @@ fn get_system_config(
 }
 
 impl MagicDnsServerInstance {
-    pub async fn new(
-        peer_mgr: Arc<PeerManager>,
+    pub(crate) async fn new(
+        core_instance: Arc<RuntimeCoreInstance>,
+        global_ctx: ArcGlobalCtx,
         tun_dev: Option<String>,
         tun_inet: Ipv4Inet,
         fake_ip: Ipv4Addr,
@@ -404,7 +394,6 @@ impl MagicDnsServerInstance {
             tun_dev: tun_dev.clone(),
             tun_ip: tun_inet.address(),
             fake_ip,
-            my_peer_id: peer_mgr.my_peer_id(),
             route_store: MagicDnsRecordStore::default(),
             record_apply: tokio::sync::Mutex::new(()),
             system_config: get_system_config(tun_dev.as_deref())?,
@@ -415,12 +404,11 @@ impl MagicDnsServerInstance {
             .register(MagicDnsServerRpcServer::new_arc(data.clone()), "");
         rpc_server.set_hook(data.clone());
 
-        peer_mgr
-            .core()
-            .add_nic_packet_process_pipeline(Box::new(data.clone()))
+        let packet_filter = core_instance
+            .register_magic_dns_resolver(fake_ip, data.clone())
             .await;
         // Use configured tld_dns_zone or fall back to DEFAULT_ET_DNS_ZONE if empty
-        let flags = peer_mgr.get_global_ctx().config.get_flags();
+        let flags = global_ctx.config.get_flags();
         let tld_dns_zone_clone = flags.tld_dns_zone.clone();
 
         data.update_dns_records(std::iter::empty(), &tld_dns_zone_clone)
@@ -435,7 +423,7 @@ impl MagicDnsServerInstance {
         Ok(Self {
             rpc_server,
             data,
-            peer_mgr,
+            packet_filter,
             tun_inet,
         })
     }
@@ -456,11 +444,7 @@ impl MagicDnsServerInstance {
             }
         }
 
-        let _ = self
-            .peer_mgr
-            .core()
-            .remove_nic_packet_process_pipeline(NIC_PIPELINE_NAME.to_string())
-            .await;
+        self.packet_filter.close();
     }
 }
 

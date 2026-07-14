@@ -1,8 +1,9 @@
 use cidr::Ipv4Inet;
 use tokio_util::sync::CancellationToken;
 
-use crate::peers::peer_manager::PeerManager;
 use std::{net::Ipv4Addr, sync::Arc, time::Duration};
+
+use crate::{common::global_ctx::ArcGlobalCtx, connector::core_instance::RuntimeCoreInstance};
 
 use super::{client_instance::MagicDnsClientInstance, server_instance::MagicDnsServerInstance};
 
@@ -11,15 +12,17 @@ static DEFAULT_ET_DNS_ZONE: &str = "et.net.";
 pub struct DnsRunner {
     client: Option<MagicDnsClientInstance>,
     server: Option<MagicDnsServerInstance>,
-    peer_mgr: Arc<PeerManager>,
+    core_instance: Arc<RuntimeCoreInstance>,
+    global_ctx: ArcGlobalCtx,
     tun_dev: Option<String>,
     tun_inet: Ipv4Inet,
     fake_ip: Ipv4Addr,
 }
 
 impl DnsRunner {
-    pub fn new(
-        peer_mgr: Arc<PeerManager>,
+    pub(crate) fn new(
+        core_instance: Arc<RuntimeCoreInstance>,
+        global_ctx: ArcGlobalCtx,
         tun_dev: Option<String>,
         tun_inet: Ipv4Inet,
         fake_ip: Ipv4Addr,
@@ -27,7 +30,8 @@ impl DnsRunner {
         Self {
             client: None,
             server: None,
-            peer_mgr,
+            core_instance,
+            global_ctx,
             tun_dev,
             tun_inet,
             fake_ip,
@@ -44,7 +48,8 @@ impl DnsRunner {
     async fn run_once(&mut self) -> anyhow::Result<()> {
         // try server first
         match MagicDnsServerInstance::new(
-            self.peer_mgr.clone(),
+            self.core_instance.clone(),
+            self.global_ctx.clone(),
             self.tun_dev.clone(),
             self.tun_inet,
             self.fake_ip,
@@ -61,7 +66,7 @@ impl DnsRunner {
         }
 
         // every runner must run a client
-        let client = MagicDnsClientInstance::new(self.peer_mgr.core()).await?;
+        let client = MagicDnsClientInstance::new(self.core_instance.clone()).await?;
         self.client = Some(client);
         self.client.as_mut().unwrap().run_and_wait().await;
 

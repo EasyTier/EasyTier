@@ -15,7 +15,7 @@ use crate::{
         log,
     },
     connector::core_instance::RuntimeCoreInstance,
-    peers::{PacketRecvChanReceiver, peer_manager::PeerManager, recv_packet_from_chan},
+    peers::{PacketRecvChanReceiver, recv_packet_from_chan},
     tunnel::{
         StreamItem, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream,
         common::{FramedWriter, ZCPacketToBytes, reserve_buf},
@@ -798,7 +798,6 @@ impl VirtualNic {
 
 pub struct NicCtx {
     global_ctx: ArcGlobalCtx,
-    peer_mgr: Weak<PeerManager>,
     core_instance: Weak<RuntimeCoreInstance>,
     peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
 
@@ -814,14 +813,12 @@ pub struct NicCtx {
 impl NicCtx {
     pub(crate) fn new(
         global_ctx: ArcGlobalCtx,
-        peer_manager: &Arc<PeerManager>,
         core_instance: &Arc<RuntimeCoreInstance>,
         peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
         close_notifier: Arc<Notify>,
     ) -> Self {
         NicCtx {
             global_ctx: global_ctx.clone(),
-            peer_mgr: Arc::downgrade(peer_manager),
             core_instance: Arc::downgrade(core_instance),
             peer_packet_receiver,
 
@@ -939,12 +936,16 @@ impl NicCtx {
             return;
         }
 
-        let Some(peer_manager) = self.peer_mgr.upgrade() else {
-            tracing::warn!("peer manager is dropped, skip Windows UDP broadcast relay");
+        let Some(core_instance) = self.core_instance.upgrade() else {
+            tracing::warn!("core instance is dropped, skip Windows UDP broadcast relay");
             return;
         };
 
-        match super::windows_udp_broadcast::start(peer_manager, virtual_ipv4) {
+        match super::windows_udp_broadcast::start(
+            core_instance,
+            self.global_ctx.clone(),
+            virtual_ipv4,
+        ) {
             Ok(handle) => {
                 self.windows_udp_broadcast_relay = Some(handle);
                 tracing::info!("Windows UDP broadcast relay started");

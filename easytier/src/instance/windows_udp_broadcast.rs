@@ -10,16 +10,16 @@ use pnet::packet::{
 #[cfg(any(windows, test))]
 use {
     crate::{
-        common::global_ctx::GlobalCtxEvent, peers::peer_manager::PeerManager,
-        tunnel::packet_def::ZCPacket,
+        common::global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
+        connector::core_instance::RuntimeCoreInstance,
     },
     anyhow::Context,
-    easytier_core::stats_manager::{CounterHandle, LabelSet, LabelType, MetricName},
+    easytier_core::instance::UdpBroadcastRelayStats,
     network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig},
     socket2::{Domain, Protocol, SockAddr, Socket, Type},
     std::{
         io,
-        net::{IpAddr, SocketAddrV4, UdpSocket as StdUdpSocket},
+        net::{SocketAddrV4, UdpSocket as StdUdpSocket},
         sync::Arc,
     },
     tokio_util::task::AbortOnDropHandle,
@@ -144,58 +144,6 @@ struct ParsedUdpBroadcastPacket {
     udp_len: usize,
     normalized_destination: Ipv4Addr,
     summary: UdpPacketSummary,
-}
-
-#[cfg(any(windows, test))]
-#[derive(Clone)]
-struct BroadcastRelayStats {
-    packets_captured: CounterHandle,
-    packets_ignored: CounterHandle,
-    packets_forwarded: CounterHandle,
-    packets_forward_failed: CounterHandle,
-}
-
-#[cfg(any(windows, test))]
-impl BroadcastRelayStats {
-    fn new(peer_manager: &PeerManager) -> Self {
-        let global_ctx = peer_manager.get_global_ctx();
-        let label_set =
-            LabelSet::new().with_label_type(LabelType::NetworkName(global_ctx.get_network_name()));
-        let stats_manager = peer_manager.stats_manager();
-
-        Self {
-            packets_captured: stats_manager.get_counter(
-                MetricName::UdpBroadcastRelayPacketsCaptured,
-                label_set.clone(),
-            ),
-            packets_ignored: stats_manager.get_counter(
-                MetricName::UdpBroadcastRelayPacketsIgnored,
-                label_set.clone(),
-            ),
-            packets_forwarded: stats_manager.get_counter(
-                MetricName::UdpBroadcastRelayPacketsForwarded,
-                label_set.clone(),
-            ),
-            packets_forward_failed: stats_manager
-                .get_counter(MetricName::UdpBroadcastRelayPacketsForwardFailed, label_set),
-        }
-    }
-
-    fn record_captured(&self) {
-        self.packets_captured.inc();
-    }
-
-    fn record_ignored(&self) {
-        self.packets_ignored.inc();
-    }
-
-    fn record_forwarded(&self) {
-        self.packets_forwarded.inc();
-    }
-
-    fn record_forward_failed(&self) {
-        self.packets_forward_failed.inc();
-    }
 }
 
 fn should_ignore_interface_addr(addr: Ipv4Addr) -> bool {
@@ -722,28 +670,24 @@ fn open_capture_socket(_config: &BroadcastRelayConfig) -> anyhow::Result<Capture
 
 #[cfg(any(windows, test))]
 fn issue_start_result_event(
-    peer_manager: &PeerManager,
+    global_ctx: &ArcGlobalCtx,
     capture_backend: Option<&str>,
     error: Option<String>,
 ) {
-    peer_manager
-        .get_global_ctx()
-        .issue_event(GlobalCtxEvent::UdpBroadcastRelayStartResult {
-            capture_backend: capture_backend.map(str::to_owned),
-            error,
-        });
+    global_ctx.issue_event(GlobalCtxEvent::UdpBroadcastRelayStartResult {
+        capture_backend: capture_backend.map(str::to_owned),
+        error,
+    });
 }
 
 #[cfg(any(windows, test))]
 async fn forward_normalized_packet(
-    peer_manager: &PeerManager,
+    core_instance: &RuntimeCoreInstance,
     normalized: NormalizedPacket,
-    stats: &BroadcastRelayStats,
+    stats: &UdpBroadcastRelayStats,
 ) {
-    let packet = ZCPacket::new_with_payload(&normalized.packet);
-    let ret = peer_manager
-        .core()
-        .send_msg_by_ip(packet, IpAddr::V4(normalized.destination), true)
+    let ret = core_instance
+        .send_local_ip_packet(normalized.packet.clone())
         .await;
 
     let summary = UdpPacketSummary::parse(&normalized.packet);
@@ -805,10 +749,10 @@ async fn forward_normalized_packet(
 
 #[cfg(any(windows, test))]
 async fn capture_loop(
-    peer_manager: Arc<PeerManager>,
+    core_instance: Arc<RuntimeCoreInstance>,
     config: BroadcastRelayConfig,
     mut socket: CaptureSocket,
-    stats: BroadcastRelayStats,
+    stats: UdpBroadcastRelayStats,
 ) {
     let mut capture_backend = socket.backend_name();
 
@@ -855,26 +799,27 @@ async fn capture_loop(
         };
 
         if let Some(normalized) = normalized {
-            forward_normalized_packet(&peer_manager, normalized, &stats).await;
+            forward_normalized_packet(&core_instance, normalized, &stats).await;
         }
     }
 }
 
 #[cfg(any(windows, test))]
 pub(crate) fn start(
-    peer_manager: Arc<PeerManager>,
+    core_instance: Arc<RuntimeCoreInstance>,
+    global_ctx: ArcGlobalCtx,
     virtual_ipv4: Ipv4Inet,
 ) -> anyhow::Result<AbortOnDropHandle<()>> {
     let physical_interfaces = match collect_physical_interfaces(virtual_ipv4) {
         Ok(interfaces) => interfaces,
         Err(err) => {
-            issue_start_result_event(&peer_manager, None, Some(format!("{err:#}")));
+            issue_start_result_event(&global_ctx, None, Some(format!("{err:#}")));
             return Err(err);
         }
     };
     if physical_interfaces.is_empty() {
         let msg = "no physical IPv4 interface is available for UDP broadcast relay";
-        issue_start_result_event(&peer_manager, None, Some(msg.to_owned()));
+        issue_start_result_event(&global_ctx, None, Some(msg.to_owned()));
         anyhow::bail!(msg);
     }
 
@@ -882,12 +827,12 @@ pub(crate) fn start(
     let socket = match open_capture_socket(&config) {
         Ok(socket) => socket,
         Err(err) => {
-            issue_start_result_event(&peer_manager, None, Some(format!("{err:#}")));
+            issue_start_result_event(&global_ctx, None, Some(format!("{err:#}")));
             return Err(err);
         }
     };
     let capture_backend = socket.backend_name();
-    issue_start_result_event(&peer_manager, Some(capture_backend), None);
+    issue_start_result_event(&global_ctx, Some(capture_backend), None);
 
     tracing::debug!(
         virtual_ipv4 = %config.virtual_ipv4,
@@ -896,8 +841,8 @@ pub(crate) fn start(
         "starting Windows UDP broadcast relay"
     );
 
-    let stats = BroadcastRelayStats::new(&peer_manager);
-    let task = tokio::spawn(capture_loop(peer_manager, config, socket, stats));
+    let stats = core_instance.udp_broadcast_relay_stats();
+    let task = tokio::spawn(capture_loop(core_instance, config, socket, stats));
     Ok(AbortOnDropHandle::new(task))
 }
 
