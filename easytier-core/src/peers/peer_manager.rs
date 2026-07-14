@@ -31,6 +31,7 @@ use crate::{
         SocketContext,
         dns::{DnsQuery, DnsResolver},
     },
+    task::ExternalTaskSignal,
     tunnel::Tunnel,
 };
 
@@ -57,7 +58,6 @@ use super::{
     peer_ospf_route::PeerRoute,
     peer_rpc::PeerRpcManagerTransport,
     peer_session::PeerSessionStore,
-    peer_task::ExternalTaskSignal,
     public_ipv6::PublicIpv6Runtime,
     recv_packet_from_chan,
     relay_peer_map::RelayPeerMap,

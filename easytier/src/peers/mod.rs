@@ -1,6 +1,4 @@
-pub use easytier_core::peers::{
-    acl_filter, foreign_network_client, peer_map, peer_ospf_route, peer_task,
-};
+pub use easytier_core::peers::{acl_filter, foreign_network_client, peer_map, peer_ospf_route};
 
 pub mod credential_manager {
     pub use crate::common::credential_manager::*;
