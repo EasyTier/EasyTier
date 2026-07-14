@@ -1,5 +1,5 @@
 {
-  "version": 5,
+  "version": 6,
   "instance": {
     "peer": {
       "snapshot": {
@@ -85,6 +85,24 @@
           "configured_prefix": null,
           "provider_supported": false
         }
+      },
+      "stun": {
+        "udp_servers": [
+          "txt:stun.easytier.cn",
+          "stun.miwifi.com",
+          "stun.chat.bilibili.com",
+          "stun.hitv.com"
+        ],
+        "tcp_servers": [
+          "stun.hot-chilli.net",
+          "stun.fitauto.ru",
+          "fwa.lifesizecloud.com",
+          "global.turn.twilio.com",
+          "turn.cloudflare.com",
+          "stun.voip.blackberry.com",
+          "stun.radiojar.com"
+        ],
+        "udp_v6_servers": ["txt:stun-v6.easytier.cn"]
       },
       "endpoint_discovery": {
         "user_agent": "easytier-core",

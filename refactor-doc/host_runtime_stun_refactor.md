@@ -13,8 +13,11 @@ The native and Go hosts now implement the same ownership boundary:
   principally through `SocketContext`;
 - connector and listener policy, STUN protocol/state, retries, NAT inference,
   port mapping, and lifecycle remain in `easytier-core`;
-- native `GlobalCtx` projects product and instance facts but is not a socket,
-  DNS, or STUN algorithm owner;
+- `CoreInstance` constructs the sole production STUN collector from normalized
+  server configuration plus socket and DNS Host Adapters;
+- native `GlobalCtx` retains only an initially empty, stable STUN projection
+  slot for pre-Core consumers and test replacement; it is not a socket, DNS,
+  collector, or STUN algorithm owner;
 - the Go host no longer implements a parallel STUN surface.
 
 This closes the process-vs-instance capability debt without making instance
@@ -30,9 +33,12 @@ Core owns:
   and probing rules;
 - UDP and TCP NAT inference, public endpoint and port-range state, redetection,
   and per-instance task lifecycle;
-- `StunInfoProvider`, `StunSocketMapper`, and the stable per-instance
-  `StunProviderSlot` used by peer state, direct connectivity, TCP hole punching,
-  UDP hole punching, IP collection, and native UPnP composition;
+- production construction of `StunInfoCollector` from `StunServerConfig`, the
+  Host socket runtime, separate UDP/TCP `SocketContext` values, and combined
+  address/record DNS capabilities;
+- `StunInfoProvider`, `StunSocketMapper`, and installation into the stable
+  per-instance `StunProviderSlot` used by peer state, direct connectivity, TCP
+  hole punching, UDP hole punching, IP collection, and native UPnP composition;
 - the normalized socket request model, including IP family, `Option<u32>` socket
   mark semantics (where `Some(0)` is distinct from `None`), and an opaque netns
   token;
@@ -86,18 +92,19 @@ UPnP and NAT-PMP remain host capabilities because they integrate with native
 gateway discovery and platform resources. They may consume the core
 `StunSocketMapper`; this does not make native code the STUN state owner.
 
-`easytier/src/common/stun.rs` is now native composition, server-default
-selection, and test fixtures around `easytier_core::stun::StunInfoCollector`.
-It contains no production STUN codec, probing state machine, retry policy, or
-NAT inference implementation.
+`easytier/src/common/stun.rs` now contains native default-list selection, test
+fixtures, and the standalone CLI diagnostic collector. It does not construct a
+collector for a complete EasyTier instance and contains no production STUN
+codec, probing state machine, retry policy, or NAT inference implementation.
 
 ## Go/WASM contract
 
-Host instance create schema version 5 submits one normalized peer snapshot and
-uses:
+Host instance create schema version 6 submits one normalized peer snapshot plus
+normalized STUN server configuration and uses:
 
 - Go-owned `SocketFactory`, `DNSResolver`, `ConnectorEnvironment`, and packet
   sink implementations;
+- a core-created STUN collector rather than a host-created Module;
 - core/Tokio-owned read, write, accept, readiness, cancellation, framing, and
   protocol scheduling over opaque host handles;
 - a route-probe environment request carrying the complete `SocketContext`;

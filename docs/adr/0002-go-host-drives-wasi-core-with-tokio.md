@@ -100,14 +100,14 @@ host completions, not a periodic drive tick. Functional socket, DNS,
 environment, packet, lifecycle, two-peer route, and packet-exchange gates pass;
 performance, repeated-failure, and hard-isolation gates are still outstanding.
 
-The host-driven create schema is version 5 as of 2026-07-14. Peer configuration
+The host-driven create schema is version 6 as of 2026-07-14. Peer configuration
 is submitted as one normalized runtime snapshot instead of separate runtime and
-legacy-flag objects. Socket creation,
-DNS, and connector route probes carry the complete core `SocketContext`, while
-the Go host exposes no STUN/NAT-state or STUN port-mapping API. STUN state and
-probing are core-owned and use the same host-created TCP/UDP sockets as native
-core. The opaque completion model and Tokio ownership described above are
-unchanged.
+legacy-flag objects. The connectivity snapshot also carries normalized UDP,
+TCP, and IPv6 UDP STUN server lists. Socket creation, DNS, and connector route
+probes carry the complete core `SocketContext`, while the Go host exposes no
+STUN/NAT-state or STUN port-mapping API. `CoreInstance` constructs its STUN
+collector from those lists and the same host-created TCP/UDP sockets used by
+native core. The opaque completion model and Tokio ownership are unchanged.
 
 ## Phase 0 unresolved decisions
 

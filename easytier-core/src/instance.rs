@@ -61,11 +61,13 @@ use crate::{
     },
     runtime_config::{CoreInstanceRuntimeConfig, CoreRuntimeConfig, CoreRuntimeConfigStore},
     socket::{
-        dns::{DnsRecordResolver, DnsResolver},
+        dns::{DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord},
         tcp::VirtualTcpSocketFactory,
         udp::VirtualUdpSocketFactory,
     },
-    stun::{StunInfoProvider, StunSocketMapper},
+    stun::{
+        StunInfoCollector, StunInfoProvider, StunProviderSlot, StunServerConfig, StunSocketMapper,
+    },
     tunnel::ring::RingTunnelRegistry,
 };
 
@@ -150,6 +152,7 @@ pub struct CoreInstanceConfig {
     pub initial_peers: Vec<Url>,
     pub listeners: Vec<TransportListenerConfig>,
     pub runtime: CoreRuntimeConfig,
+    pub stun: StunServerConfig,
     pub endpoint_discovery: ManualEndpointDiscoveryConfig,
     pub manual: ManualConnectorOptions,
     pub direct: DirectConnectorOptions,
@@ -161,6 +164,7 @@ impl Default for CoreInstanceConfig {
             initial_peers: Vec::new(),
             listeners: Vec::new(),
             runtime: CoreRuntimeConfig::default(),
+            stun: StunServerConfig::default(),
             endpoint_discovery: ManualEndpointDiscoveryConfig::default(),
             manual: ManualConnectorOptions::default(),
             direct: DirectConnectorOptions::default(),
@@ -226,7 +230,9 @@ where
     H: DirectConnectorHost + TcpHolePunchHost,
 {
     pub host: Arc<H>,
-    pub stun: Arc<dyn StunSocketMapper<<H as VirtualUdpSocketFactory>::Socket>>,
+    /// Optional stable projection used by native services and test overrides.
+    /// Core installs its collector only when the slot is empty.
+    pub stun_projection: Option<Arc<StunProviderSlot<<H as VirtualUdpSocketFactory>::Socket>>>,
     pub dns: Arc<dyn DnsResolver>,
     /// Optional listener-specific resolver. When absent, listeners share `dns` with connectors.
     pub listener_dns: Option<Arc<dyn DnsResolver>>,
@@ -244,6 +250,29 @@ where
     pub proxy_cidr_runtime: Option<Arc<dyn ProxyCidrRuntime>>,
     pub proxy_cidr_monitor: Option<Arc<dyn ProxyCidrMonitorHost>>,
     pub public_ipv6_provider: Option<Arc<dyn PublicIpv6ProviderHost>>,
+}
+
+struct CoreStunDnsAdapter {
+    addresses: Arc<dyn DnsResolver>,
+    records: Arc<dyn DnsRecordResolver>,
+}
+
+#[async_trait]
+impl DnsResolver for CoreStunDnsAdapter {
+    async fn resolve(&self, query: DnsQuery) -> anyhow::Result<Vec<IpAddr>> {
+        self.addresses.resolve(query).await
+    }
+}
+
+#[async_trait]
+impl DnsRecordResolver for CoreStunDnsAdapter {
+    async fn resolve_txt(&self, query: DnsQuery) -> anyhow::Result<String> {
+        self.records.resolve_txt(query).await
+    }
+
+    async fn resolve_srv(&self, query: DnsQuery) -> anyhow::Result<Vec<DnsSrvRecord>> {
+        self.records.resolve_srv(query).await
+    }
 }
 
 struct CoreStunPeerInfoSource(Arc<dyn StunInfoProvider>);
@@ -451,6 +480,33 @@ impl<H> CoreInstance<H>
 where
     H: DirectConnectorHost + TcpHolePunchHost,
 {
+    fn prepare_stun(
+        adapters: &CoreInstanceAdapters<H>,
+        config: &CoreInstanceConfig,
+    ) -> Arc<StunProviderSlot<<H as VirtualUdpSocketFactory>::Socket>> {
+        let dns = Arc::new(CoreStunDnsAdapter {
+            addresses: adapters.dns.clone(),
+            records: adapters.dns_records.clone(),
+        });
+        let collector: Arc<dyn StunSocketMapper<<H as VirtualUdpSocketFactory>::Socket>> =
+            Arc::new(StunInfoCollector::new_with_socket_contexts(
+                adapters.host.clone(),
+                dns,
+                config.direct.udp_bind.context.clone(),
+                config.direct.tcp_bind.context.clone(),
+                config.stun.udp_servers.clone(),
+                config.stun.tcp_servers.clone(),
+                config.stun.udp_v6_servers.clone(),
+            ));
+        match &adapters.stun_projection {
+            Some(projection) => {
+                projection.install_if_empty(collector);
+                projection.clone()
+            }
+            None => Arc::new(StunProviderSlot::new(collector)),
+        }
+    }
+
     pub fn new_portable(
         adapters: CoreInstanceAdapters<H>,
         mut config: PortableCoreInstanceConfig,
@@ -479,7 +535,8 @@ where
             config.connectivity.runtime.clone(),
             Arc::new(config.peer.snapshot.clone()),
         );
-        let peer_stun: Arc<dyn StunInfoProvider> = adapters.stun.clone();
+        let stun = Self::prepare_stun(&adapters, &config.connectivity);
+        let peer_stun: Arc<dyn StunInfoProvider> = stun.clone();
         let peer_manager = Arc::new(
             PeerManagerCore::new_portable_with_runtime_config_store_and_stun_info_source(
                 config.peer,
@@ -490,11 +547,12 @@ where
                 packet_tx,
             )?,
         );
-        let mut instance = Self::new_with_runtime_config_store(
+        let mut instance = Self::new_with_prepared_stun(
             peer_manager,
             adapters,
             config.connectivity,
             runtime_config,
+            stun,
         )?;
         instance.packet_egress = Some(PacketEgress::new(packet_rx, packet_sink));
         Ok(instance)
@@ -522,9 +580,20 @@ where
             &config.listeners,
             adapters.accepted_transport_handler.is_some(),
         )?;
+        let stun = Self::prepare_stun(&adapters, &config);
+        Self::new_with_prepared_stun(peer_manager, adapters, config, runtime_config, stun)
+    }
+
+    fn new_with_prepared_stun(
+        peer_manager: Arc<PeerManagerCore>,
+        adapters: CoreInstanceAdapters<H>,
+        config: CoreInstanceConfig,
+        runtime_config: CoreRuntimeConfigStore,
+        stun: Arc<StunProviderSlot<<H as VirtualUdpSocketFactory>::Socket>>,
+    ) -> anyhow::Result<Self> {
         let CoreInstanceAdapters {
             host,
-            stun,
+            stun_projection: _,
             dns,
             listener_dns,
             dns_records,
@@ -545,6 +614,7 @@ where
             initial_peers,
             listeners,
             runtime: initial_runtime_config,
+            stun: _,
             endpoint_discovery,
             manual: manual_options,
             direct: direct_options,

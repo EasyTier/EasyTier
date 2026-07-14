@@ -7,4 +7,6 @@ pub use client::{
     UdpNatTypeDetector,
 };
 pub use codec::*;
-pub use collector::{StunInfoCollector, StunInfoProvider, StunProviderSlot, StunSocketMapper};
+pub use collector::{
+    StunInfoCollector, StunInfoProvider, StunProviderSlot, StunServerConfig, StunSocketMapper,
+};

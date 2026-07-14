@@ -18,12 +18,11 @@ use crate::{
         environment::{HostConnectorEnvironmentIo, HostConnectorEnvironmentServiceAdapter},
         packet::{HostPacketIo, HostPacketSink, HostPacketSinkHandle},
     },
-    stun::StunInfoCollector,
 };
 
 use super::{CoreInstance, CoreInstanceAdapters, PortableCoreInstanceConfig};
 
-pub const HOST_CORE_INSTANCE_CONFIG_VERSION: u32 = 5;
+pub const HOST_CORE_INSTANCE_CONFIG_VERSION: u32 = 6;
 
 /// Versioned payload accepted by host-driven instance frontends.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,14 +86,6 @@ where
             environment_services,
         ));
         let dns = Arc::new(HostDnsResolver::new(socket_runtime.clone(), dns_io));
-        let stun = Arc::new(
-            StunInfoCollector::new_with_default_servers_and_socket_contexts(
-                host.clone(),
-                dns.clone(),
-                config.connectivity.direct.udp_bind.context.clone(),
-                config.connectivity.direct.tcp_bind.context.clone(),
-            ),
-        );
         let packet_sink = Arc::new(HostPacketSink::new(
             socket_runtime.clone(),
             packet_io,
@@ -102,7 +93,7 @@ where
         ));
         let adapters = CoreInstanceAdapters {
             host,
-            stun,
+            stun_projection: None,
             dns: dns.clone(),
             listener_dns: None,
             dns_records: dns,

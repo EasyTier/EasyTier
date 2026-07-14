@@ -17,6 +17,7 @@ use easytier_core::{
         tcp::TcpBindOptions,
         udp::UdpBindOptions,
     },
+    stun::StunServerConfig,
     tunnel::ring::RingTunnelRegistry,
 };
 use strum::VariantArray as _;
@@ -27,6 +28,7 @@ use crate::{
         acl_processor::runtime_acl_config,
         config::ConfigLoader as _,
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
+        stun::{default_tcp_stun_servers, default_udp_stun_servers, default_udp_v6_stun_servers},
     },
     host_runtime::native_host_runtime,
     instance::listeners::{
@@ -171,6 +173,20 @@ pub(crate) fn runtime_socket_context(global_ctx: &ArcGlobalCtx) -> SocketContext
         .with_netns(global_ctx.net_ns.name().map(NetNamespace::new))
 }
 
+pub(crate) fn runtime_stun_server_config(global_ctx: &ArcGlobalCtx) -> StunServerConfig {
+    StunServerConfig {
+        udp_servers: global_ctx
+            .config
+            .get_stun_servers()
+            .unwrap_or_else(default_udp_stun_servers),
+        tcp_servers: default_tcp_stun_servers(),
+        udp_v6_servers: global_ctx
+            .config
+            .get_stun_servers_v6()
+            .unwrap_or_else(default_udp_v6_stun_servers),
+    }
+}
+
 pub(crate) fn runtime_core_instance_adapters(
     global_ctx: ArcGlobalCtx,
 ) -> CoreInstanceAdapters<RuntimeConnectorHost> {
@@ -190,7 +206,7 @@ pub(crate) fn runtime_core_instance_adapters_with_ring_registry(
     let dns_records: Arc<dyn DnsRecordResolver> = runtime_dns;
     CoreInstanceAdapters {
         host,
-        stun: global_ctx.get_stun_info_collector(),
+        stun_projection: Some(global_ctx.stun_projection()),
         dns,
         listener_dns: None,
         dns_records,
@@ -271,6 +287,7 @@ pub(crate) fn build_runtime_core_instance_with_services_and_ring_registry(
             .collect(),
         listeners: listener_configs,
         runtime: runtime_core_config(&global_ctx),
+        stun: runtime_stun_server_config(&global_ctx),
         endpoint_discovery: runtime_endpoint_discovery_config(&global_ctx),
         manual: runtime_manual_options(&global_ctx),
         direct: runtime_direct_options(&global_ctx, false),
@@ -332,11 +349,13 @@ mod tests {
                 NetworkIdentity,
                 tests::{get_mock_global_ctx, get_mock_global_ctx_with_network},
             },
+            stun::MockStunInfoCollector,
         },
         peers::{
             create_packet_recv_chan,
             peer_manager::{PeerManager, RouteAlgoType},
         },
+        proto::common::NatType,
     };
 
     use super::*;
@@ -463,6 +482,7 @@ mod tests {
             initial_peers: Vec::new(),
             listeners: Vec::new(),
             runtime: Default::default(),
+            stun: runtime_stun_server_config(&global_ctx),
             endpoint_discovery: runtime_endpoint_discovery_config(&global_ctx),
             manual: runtime_manual_options(&global_ctx),
             direct: runtime_direct_options(&global_ctx, false),
@@ -470,6 +490,47 @@ mod tests {
         let mut adapters = runtime_core_instance_adapters(global_ctx);
         adapters.listener = Some(listener);
         Arc::new(CoreInstance::new(peer_manager.core(), adapters, config).unwrap())
+    }
+
+    #[test]
+    fn runtime_stun_config_normalizes_native_server_selection() {
+        let global_ctx = get_mock_global_ctx();
+        global_ctx
+            .config
+            .set_stun_servers(Some(vec!["stun-v4.example".to_owned()]));
+        global_ctx
+            .config
+            .set_stun_servers_v6(Some(vec!["stun-v6.example".to_owned()]));
+
+        let config = runtime_stun_server_config(&global_ctx);
+
+        assert_eq!(config.udp_servers, vec!["stun-v4.example"]);
+        assert_eq!(config.udp_v6_servers, vec!["stun-v6.example"]);
+        assert_eq!(config.tcp_servers, default_tcp_stun_servers());
+    }
+
+    #[tokio::test]
+    async fn core_instance_preserves_preinstalled_stun_projection() {
+        let global_ctx = get_mock_global_ctx();
+        global_ctx.replace_stun_info_collector(Box::new(MockStunInfoCollector {
+            udp_nat_type: NatType::Symmetric,
+        }));
+        let (nic_channel, _nic_receiver) = create_packet_recv_chan();
+        let peer_manager = Arc::new(PeerManager::new(
+            RouteAlgoType::Ospf,
+            global_ctx.clone(),
+            nic_channel,
+        ));
+        let _instance =
+            build_runtime_core_instance(global_ctx.clone(), peer_manager, None).unwrap();
+
+        assert_eq!(
+            global_ctx
+                .get_stun_info_collector()
+                .get_stun_info()
+                .udp_nat_type,
+            NatType::Symmetric as i32
+        );
     }
 
     #[tokio::test]
@@ -855,6 +916,7 @@ mod tests {
                 },
             ],
             runtime: Default::default(),
+            stun: runtime_stun_server_config(&global_ctx),
             endpoint_discovery: runtime_endpoint_discovery_config(&global_ctx),
             manual: runtime_manual_options(&global_ctx),
             direct: runtime_direct_options(&global_ctx, false),
@@ -914,6 +976,7 @@ mod tests {
                             must_succeed: true,
                         }],
                         runtime: Default::default(),
+                        stun: runtime_stun_server_config(&global_a),
                         endpoint_discovery: runtime_endpoint_discovery_config(&global_a),
                         manual: Default::default(),
                         direct: runtime_direct_options(&global_a, true),
@@ -932,6 +995,7 @@ mod tests {
                         initial_peers: Vec::new(),
                         listeners: Vec::new(),
                         runtime: Default::default(),
+                        stun: runtime_stun_server_config(&global_b),
                         endpoint_discovery: runtime_endpoint_discovery_config(&global_b),
                         manual: Default::default(),
                         direct: runtime_direct_options(&global_b, true),
@@ -1026,6 +1090,7 @@ mod tests {
             initial_peers: Vec::new(),
             listeners: Vec::new(),
             runtime: Default::default(),
+            stun: runtime_stun_server_config(&global_ctx),
             endpoint_discovery: runtime_endpoint_discovery_config(&global_ctx),
             manual: runtime_manual_options(&global_ctx),
             direct: runtime_direct_options(&global_ctx, false),
@@ -1064,6 +1129,7 @@ mod tests {
                 must_succeed: true,
             }],
             runtime: Default::default(),
+            stun: runtime_stun_server_config(&global_ctx),
             endpoint_discovery: runtime_endpoint_discovery_config(&global_ctx),
             manual: runtime_manual_options(&global_ctx),
             direct: runtime_direct_options(&global_ctx, false),

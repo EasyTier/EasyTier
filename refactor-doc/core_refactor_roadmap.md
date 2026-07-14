@@ -62,10 +62,11 @@ Already established:
   netns and mark differences arrive through `SocketContext` rather than captured
   `GlobalCtx` state;
 - STUN codec, probing, retry, UDP/TCP NAT inference, public endpoint/port state,
-  and per-instance lifecycle are core-owned and shared by manual, direct, TCP
-  hole-punch, UDP hole-punch, peer, IP-collection, and UPnP composition;
-- host create schema v4 passes route-probe socket context and exposes no Go STUN
-  state or mapping operations.
+  collector construction, and per-instance lifecycle are core-owned and shared
+  by manual, direct, TCP hole-punch, UDP hole-punch, peer, IP-collection, and
+  UPnP composition; native `GlobalCtx` keeps only an empty live projection slot;
+- host create schema v6 passes route-probe socket context and normalized STUN
+  server configuration while exposing no Go STUN state or mapping operations.
 
 The ownership architecture is now closed. Deliberate follow-up boundaries are:
 

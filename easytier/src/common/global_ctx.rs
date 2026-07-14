@@ -8,7 +8,6 @@ use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use easytier_core::peers::foreign_network_manager::check_network_in_relay_whitelist;
 use easytier_core::peers::public_ipv6::PublicIpv6Runtime;
-use easytier_core::socket::{NetNamespace, SocketContext};
 use easytier_core::stun::{StunProviderSlot, StunSocketMapper};
 
 use super::{
@@ -16,7 +15,6 @@ use super::{
     config::{ConfigLoader, Flags},
     netns::NetNS,
     network::IPCollector,
-    stun::{default_udp_stun_servers, default_udp_v6_stun_servers, runtime_stun_info_collector},
 };
 use crate::{
     common::config::ProxyNetworkConfig,
@@ -224,26 +222,7 @@ impl GlobalCtx {
         let flags = config_fs.get_flags();
 
         let (event_bus, _) = tokio::sync::broadcast::channel(16);
-        let socket_context = SocketContext::default()
-            .with_socket_mark(flags.socket_mark)
-            .with_netns(net_ns.name().map(NetNamespace::new));
-        let stun_info_collector = runtime_stun_info_collector(socket_context);
-
-        if let Some(stun_servers) = config_fs.get_stun_servers() {
-            stun_info_collector.set_stun_servers(stun_servers);
-        } else {
-            stun_info_collector.set_stun_servers(default_udp_stun_servers());
-        }
-
-        if let Some(stun_servers) = config_fs.get_stun_servers_v6() {
-            stun_info_collector.set_stun_servers_v6(stun_servers);
-        } else {
-            stun_info_collector.set_stun_servers_v6(default_udp_v6_stun_servers());
-        }
-
-        let stun_info_collector: Arc<dyn StunSocketMapper<RuntimeUdpSocket>> =
-            Arc::new(stun_info_collector);
-        let stun_info_collection = Arc::new(StunProviderSlot::new(stun_info_collector));
+        let stun_info_collection = Arc::new(StunProviderSlot::empty());
 
         let base_feature_flags = PeerFeatureFlag::default();
         let feature_flags = Self::derive_feature_flags(&flags, base_feature_flags);
@@ -435,6 +414,10 @@ impl GlobalCtx {
     }
 
     pub fn get_stun_info_collector(&self) -> Arc<dyn StunSocketMapper<RuntimeUdpSocket>> {
+        self.stun_info_collection.clone()
+    }
+
+    pub(crate) fn stun_projection(&self) -> Arc<StunProviderSlot<RuntimeUdpSocket>> {
         self.stun_info_collection.clone()
     }
 
