@@ -1674,7 +1674,9 @@ mod tests {
     };
     use crate::{common::config::TomlConfigLoader, instance::instance::Instance};
     #[cfg(any(feature = "kcp", feature = "quic"))]
-    use easytier_core::instance::{WrappedTransportDirections, WrappedTransportEngine as _};
+    use easytier_core::instance::{
+        WrappedTransportDirections, WrappedTransportEngine as _, WrappedTransportEngineStart,
+    };
 
     fn tcp_whitelist_patch(port: &str) -> InstanceConfigPatch {
         InstanceConfigPatch {
@@ -1838,9 +1840,14 @@ mod tests {
     async fn kcp_engine_uses_explicit_activation_directions() {
         let instance = Instance::new(TomlConfigLoader::default());
         let kcp = instance.transport_proxy.kcp();
-        kcp.start(WrappedTransportDirections {
-            source: true,
-            destination: true,
+        let (datagrams, _datagram_rx) = tokio::sync::mpsc::channel(16);
+        kcp.start(WrappedTransportEngineStart {
+            directions: WrappedTransportDirections {
+                source: true,
+                destination: true,
+            },
+            my_peer_id: instance.peer_manager.my_peer_id(),
+            datagrams,
         })
         .await
         .unwrap();
@@ -1858,9 +1865,14 @@ mod tests {
     async fn quic_engine_uses_explicit_activation_directions() {
         let instance = Instance::new(TomlConfigLoader::default());
         let quic = instance.transport_proxy.quic();
-        quic.start(WrappedTransportDirections {
-            source: true,
-            destination: true,
+        let (datagrams, _datagram_rx) = tokio::sync::mpsc::channel(16);
+        quic.start(WrappedTransportEngineStart {
+            directions: WrappedTransportDirections {
+                source: true,
+                destination: true,
+            },
+            my_peer_id: instance.peer_manager.my_peer_id(),
+            datagrams,
         })
         .await
         .unwrap();

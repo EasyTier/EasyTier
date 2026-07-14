@@ -1,8 +1,8 @@
 use crate::common::PeerId;
 use crate::common::global_ctx::ArcGlobalCtx;
 use crate::gateway::tcp_proxy::TcpProxy;
+use crate::peers::NicPacketFilter;
 use crate::peers::peer_manager::PeerManager;
-use crate::peers::{NicPacketFilter, PeerPacketFilter};
 use crate::proto::api::instance::{
     ListTcpProxyEntryRequest, ListTcpProxyEntryResponse, TcpProxyEntry, TcpProxyEntryState,
     TcpProxyEntryTransportType, TcpProxyRpc,
@@ -47,7 +47,10 @@ use tokio_util::sync::{CancellationToken, PollSender};
 use tracing::{debug, error, info, instrument, trace, warn};
 
 use easytier_core::{
-    instance::{WrappedTransportDirections, WrappedTransportEngine},
+    instance::{
+        WrappedTransportDatagram, WrappedTransportEngine, WrappedTransportEngineStart,
+        WrappedTransportKind, WrappedTransportRole,
+    },
     peers::{acl_filter::AclFilter, peer_manager::PipelineRegistrationGuard},
     proxy::{
         cidr_table::ProxyCidrTable,
@@ -476,14 +479,6 @@ enum QuicProxyRole {
 
 impl QuicProxyRole {
     #[inline]
-    const fn incoming(&self) -> PacketType {
-        match self {
-            QuicProxyRole::Src => PacketType::QuicDst,
-            QuicProxyRole::Dst => PacketType::QuicSrc,
-        }
-    }
-
-    #[inline]
     const fn outgoing(&self) -> PacketType {
         match self {
             QuicProxyRole::Src => PacketType::QuicSrc,
@@ -492,45 +487,10 @@ impl QuicProxyRole {
     }
 }
 
-// Receive packets from peers and forward them to the QUIC endpoint
-#[derive(Debug)]
-struct QuicPacketReceiver {
-    tx: Weak<Sender<QuicPacket>>,
-    role: QuicProxyRole,
-}
-
-#[async_trait::async_trait]
-impl PeerPacketFilter for QuicPacketReceiver {
-    async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
-        let header = packet.peer_manager_header().unwrap();
-
-        if header.packet_type != self.role.incoming() as u8 {
-            return Some(packet);
-        }
-
-        let Some(tx) = self.tx.upgrade() else {
-            return Some(packet);
-        };
-
-        let addr = QuicAddr::new(header.from_peer_id.get(), self.role.outgoing());
-
-        if let Err(e) = tx.try_send(QuicPacket::new(
-            addr.into(),
-            packet.payload_bytes(),
-            None,
-            None,
-        )) {
-            debug!("failed to send quic packet to endpoint: {:?}", e);
-        }
-
-        None
-    }
-}
-
 // Send to peers packets received from the QUIC endpoint
 #[derive(Debug)]
 struct QuicPacketSender {
-    peer_mgr: Arc<PeerManager>,
+    datagrams: Sender<WrappedTransportDatagram>,
     rx: Receiver<QuicPacket>,
 
     header: Bytes,
@@ -557,21 +517,27 @@ impl QuicPacketSender {
                 let mut payload = payload.split_to(len);
                 payload[..self.margins.header].copy_from_slice(&self.header);
                 payload.truncate(len - self.margins.trailer);
-                let mut packet = ZCPacket::new_from_buf(payload, self.zc_packet_type);
-
-                packet.fill_peer_manager_hdr(
-                    self.peer_mgr.my_peer_id(),
-                    addr.peer_id,
-                    addr.packet_type as u8,
-                );
-
-                if let Err(e) = self
-                    .peer_mgr
-                    .core()
-                    .send_msg_for_proxy(packet, addr.peer_id)
+                let packet = ZCPacket::new_from_buf(payload, self.zc_packet_type);
+                let role = match addr.packet_type {
+                    PacketType::QuicSrc => WrappedTransportRole::Source,
+                    PacketType::QuicDst => WrappedTransportRole::Destination,
+                    packet_type => {
+                        error!(?packet_type, "invalid QUIC proxy output packet type");
+                        continue;
+                    }
+                };
+                if self
+                    .datagrams
+                    .send(WrappedTransportDatagram {
+                        transport: WrappedTransportKind::Quic,
+                        role,
+                        peer_id: addr.peer_id,
+                        payload: packet.payload_bytes().freeze(),
+                    })
                     .await
+                    .is_err()
                 {
-                    error!("failed to send QUIC packet to peer: {:?}", e);
+                    break;
                 }
             }
         }
@@ -808,6 +774,7 @@ pub struct QuicProxy {
     cidr_table: Arc<ProxyCidrTable>,
 
     endpoint: Option<Endpoint>,
+    input_tx: Option<Arc<Sender<QuicPacket>>>,
 
     src: Option<QuicProxySrc>,
     dst: Option<QuicProxyDst>,
@@ -835,6 +802,7 @@ impl QuicProxy {
             peer_mgr,
             cidr_table,
             endpoint: None,
+            input_tx: None,
             src: None,
             dst: None,
             tasks: JoinSet::new(),
@@ -843,7 +811,13 @@ impl QuicProxy {
         }
     }
 
-    pub async fn run(&mut self, src: bool, dst: bool) {
+    pub async fn run(
+        &mut self,
+        my_peer_id: u32,
+        src: bool,
+        dst: bool,
+        datagrams: Sender<WrappedTransportDatagram>,
+    ) {
         trace!("quic proxy starting");
 
         if self.endpoint.is_some() {
@@ -865,10 +839,11 @@ impl QuicProxy {
 
         let (in_tx, in_rx) = channel(1024);
         let in_tx = Arc::new(in_tx);
+        self.input_tx = Some(in_tx.clone());
         let (out_tx, out_rx) = channel(1024);
 
         let socket = QuicSocket {
-            addr: SocketAddr::new(Ipv4Addr::from(self.peer_mgr.my_peer_id()).into(), 0),
+            addr: SocketAddr::new(Ipv4Addr::from(my_peer_id).into(), 0),
             rx: AtomicRefCell::new(in_rx),
             tx: out_tx,
             margins,
@@ -884,10 +859,9 @@ impl QuicProxy {
         endpoint.set_default_client_config(client_config());
         self.endpoint = Some(endpoint.clone());
 
-        let peer_mgr = self.peer_mgr.clone();
         self.tasks.spawn(
             QuicPacketSender {
-                peer_mgr,
+                datagrams,
                 rx: out_rx,
                 header,
                 zc_packet_type,
@@ -920,7 +894,6 @@ impl QuicProxy {
             let mut src = QuicProxySrc {
                 peer_mgr: peer_mgr.clone(),
                 tcp_proxy,
-                tx: in_tx.clone(),
                 pipeline_guards: Vec::new(),
             };
             src.run().await;
@@ -939,11 +912,8 @@ impl QuicProxy {
                 self.cidr_table.clone(),
             ));
 
-            let mut dst = QuicProxyDst {
-                peer_mgr: peer_mgr.clone(),
-                tx: in_tx.clone(),
+            let dst = QuicProxyDst {
                 stream_ctx: stream_ctx.clone(),
-                pipeline_guards: Vec::new(),
             };
             dst.run().await;
 
@@ -962,9 +932,6 @@ impl QuicProxy {
     }
 
     async fn stop(&mut self) {
-        if let Some(dst) = &mut self.dst {
-            dst.stop();
-        }
         if let Some(src) = &mut self.src {
             src.stop();
         }
@@ -1017,15 +984,23 @@ impl QuicProxyService {
 
 #[async_trait::async_trait]
 impl WrappedTransportEngine for QuicProxyService {
-    async fn start(&self, directions: WrappedTransportDirections) -> anyhow::Result<()> {
+    async fn start(&self, options: WrappedTransportEngineStart) -> anyhow::Result<()> {
         let mut state = self.state.lock().await;
         if state.is_some() {
             return Ok(());
         }
+        let directions = options.directions;
 
         let mut proxy = QuicProxy::new(self.peer_manager.clone(), self.cidr_table.clone());
         if directions.source || directions.destination {
-            proxy.run(directions.source, directions.destination).await;
+            proxy
+                .run(
+                    options.my_peer_id,
+                    directions.source,
+                    directions.destination,
+                    options.datagrams,
+                )
+                .await;
         }
 
         *self
@@ -1040,6 +1015,30 @@ impl WrappedTransportEngine for QuicProxyService {
             proxy.dst().map(|dst| dst.stream_ctx.proxy_entries.clone());
         *state = Some(proxy);
         Ok(())
+    }
+
+    async fn inject_peer_datagram(
+        &self,
+        role: WrappedTransportRole,
+        from_peer_id: u32,
+        payload: Bytes,
+    ) -> anyhow::Result<()> {
+        let tx = {
+            let state = self.state.lock().await;
+            state.as_ref().and_then(|proxy| proxy.input_tx.clone())
+        }
+        .ok_or_else(|| anyhow!("QUIC endpoint is not active"))?;
+        let role = match role {
+            WrappedTransportRole::Source => QuicProxyRole::Src,
+            WrappedTransportRole::Destination => QuicProxyRole::Dst,
+        };
+        tx.try_send(QuicPacket::new(
+            QuicAddr::new(from_peer_id, role.outgoing()).into(),
+            payload.into(),
+            None,
+            None,
+        ))
+        .map_err(|error| anyhow!("failed to inject QUIC datagram: {error}"))
     }
 
     async fn stop(&self) {
@@ -1062,8 +1061,6 @@ impl WrappedTransportEngine for QuicProxyService {
 pub struct QuicProxySrc {
     peer_mgr: Arc<PeerManager>,
     tcp_proxy: Arc<TcpProxy<NatDstQuicConnector>>,
-
-    tx: Arc<Sender<QuicPacket>>,
     pipeline_guards: Vec<PipelineRegistrationGuard>,
 }
 
@@ -1085,15 +1082,6 @@ impl QuicProxySrc {
             .await;
         self.pipeline_guards.push(guard);
         self.tcp_proxy.register_peer_pipeline().await;
-        let guard = self
-            .peer_mgr
-            .core()
-            .add_managed_packet_process_pipeline(Box::new(QuicPacketReceiver {
-                tx: Arc::downgrade(&self.tx),
-                role: QuicProxyRole::Src,
-            }))
-            .await;
-        self.pipeline_guards.push(guard);
         self.tcp_proxy.start(false).await.unwrap();
     }
 
@@ -1106,31 +1094,12 @@ impl QuicProxySrc {
 }
 
 pub struct QuicProxyDst {
-    peer_mgr: Arc<PeerManager>,
-
-    tx: Arc<Sender<QuicPacket>>,
     stream_ctx: Arc<QuicStreamContext>,
-    pipeline_guards: Vec<PipelineRegistrationGuard>,
 }
 
 impl QuicProxyDst {
-    async fn run(&mut self) {
+    async fn run(&self) {
         trace!("quic proxy dst starting");
-        let guard = self
-            .peer_mgr
-            .core()
-            .add_managed_packet_process_pipeline(Box::new(QuicPacketReceiver {
-                tx: Arc::downgrade(&self.tx),
-                role: QuicProxyRole::Dst,
-            }))
-            .await;
-        self.pipeline_guards.push(guard);
-    }
-
-    fn stop(&mut self) {
-        for guard in self.pipeline_guards.drain(..).rev() {
-            guard.close();
-        }
     }
 }
 
@@ -1166,26 +1135,6 @@ mod tests {
     use super::*;
     use bytes::Buf;
     use quanta::Instant;
-
-    #[tokio::test]
-    async fn stale_packet_receiver_releases_packets() {
-        let (tx, _rx) = channel(1);
-        let tx = Arc::new(tx);
-        let receiver = QuicPacketReceiver {
-            tx: Arc::downgrade(&tx),
-            role: QuicProxyRole::Dst,
-        };
-        drop(tx);
-        let mut packet = ZCPacket::new_with_payload(&[]);
-        packet.fill_peer_manager_hdr(1, 2, PacketType::QuicSrc as u8);
-
-        assert!(
-            receiver
-                .try_process_packet_from_peer(packet)
-                .await
-                .is_some()
-        );
-    }
 
     /// Helper function: Create a pair of interconnected QuicSockets.
     /// Data sent by socket_a will enter socket_b's rx, and vice versa.

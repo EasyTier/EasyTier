@@ -338,8 +338,8 @@ mod tests {
 
     use easytier_core::{
         instance::{
-            CoreInstanceState, ListenerService, PortableCoreInstanceConfig,
-            WrappedTransportDirections, WrappedTransportEngine,
+            CoreInstanceState, ListenerService, PortableCoreInstanceConfig, WrappedTransportEngine,
+            WrappedTransportEngineStart, WrappedTransportRole,
         },
         listener::transport::TransportListenerConfig,
         socket::{
@@ -406,8 +406,17 @@ mod tests {
 
     #[async_trait::async_trait]
     impl WrappedTransportEngine for RecordingProxyService {
-        async fn start(&self, _directions: WrappedTransportDirections) -> anyhow::Result<()> {
+        async fn start(&self, _options: WrappedTransportEngineStart) -> anyhow::Result<()> {
             self.start_calls.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+
+        async fn inject_peer_datagram(
+            &self,
+            _role: WrappedTransportRole,
+            _from_peer_id: u32,
+            _payload: bytes::Bytes,
+        ) -> anyhow::Result<()> {
             Ok(())
         }
 
@@ -446,10 +455,19 @@ mod tests {
 
     #[async_trait::async_trait]
     impl WrappedTransportEngine for BlockingProxyService {
-        async fn start(&self, _directions: WrappedTransportDirections) -> anyhow::Result<()> {
+        async fn start(&self, _options: WrappedTransportEngineStart) -> anyhow::Result<()> {
             self.start_calls.fetch_add(1, Ordering::Relaxed);
             self.start_entered.notify_one();
             self.release_start.notified().await;
+            Ok(())
+        }
+
+        async fn inject_peer_datagram(
+            &self,
+            _role: WrappedTransportRole,
+            _from_peer_id: u32,
+            _payload: bytes::Bytes,
+        ) -> anyhow::Result<()> {
             Ok(())
         }
 
