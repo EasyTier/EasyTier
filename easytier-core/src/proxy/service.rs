@@ -27,6 +27,7 @@ use super::{
     runtime::{
         IcmpProxyHost, IcmpProxyRuntime, IcmpProxySocket, ProxyRuntimeError, ProxyRuntimeInfo,
         ProxyRuntimeSnapshot, TcpProxyConnectContext, TcpProxyRuntime, UdpProxyPolicy,
+        WrappedTcpDestinationRuntime,
     },
     tcp_proxy_engine::TcpNatEntrySnapshot,
     tcp_proxy_service::TcpProxyService,
@@ -176,6 +177,23 @@ where
     }
 }
 
+impl<H> WrappedTcpDestinationRuntime for CoreProxyRuntime<H>
+where
+    H: DirectConnectorHost,
+{
+    fn is_ip_local_virtual_ip(&self, ip: &IpAddr) -> bool {
+        ProxyRuntimeInfo::is_ip_local_virtual_ip(self, ip)
+    }
+
+    fn no_tun(&self) -> bool {
+        self.proxy_runtime_snapshot().no_tun
+    }
+
+    fn should_deny_tcp_proxy(&self, dst: SocketAddr) -> bool {
+        TcpProxyRuntime::should_deny_tcp_proxy(self, dst)
+    }
+}
+
 #[async_trait::async_trait]
 impl<H> UdpProxyPolicy for CoreProxyRuntime<H>
 where
@@ -209,7 +227,7 @@ where
     }
 
     fn is_ip_local_virtual_ip(&self, ip: &IpAddr) -> bool {
-        self.policy.is_ip_local_virtual_ip(ip)
+        ProxyRuntimeInfo::is_ip_local_virtual_ip(self.policy.as_ref(), ip)
     }
 }
 

@@ -6,10 +6,8 @@ use std::{
 
 use anyhow::{Context, anyhow, bail};
 use bytes::Bytes;
-use dashmap::DashMap;
-use guarden::defer;
 use kcp_sys::{
-    endpoint::{ConnId, KcpEndpoint, KcpPacketReceiver},
+    endpoint::{KcpEndpoint, KcpPacketReceiver},
     ffi_safe::KcpConfig,
     packet_def::KcpPacket,
     stream::KcpStream,
@@ -23,32 +21,18 @@ use tokio_util::sync::CancellationToken;
 
 use easytier_core::{
     proxy::wrapped_transport::{
-        WrappedTransportConnect, WrappedTransportDatagram, WrappedTransportDatagramBuffer,
-        WrappedTransportEngine, WrappedTransportEngineStart, WrappedTransportKind,
-        WrappedTransportRole,
+        WrappedTransportAcceptedStream, WrappedTransportConnect, WrappedTransportDatagram,
+        WrappedTransportDatagramBuffer, WrappedTransportDestinationIngress, WrappedTransportEngine,
+        WrappedTransportEngineStart, WrappedTransportKind, WrappedTransportRole,
     },
     proxy::{
-        cidr_table::ProxyCidrTable,
         runtime::{TcpProxyDestinationConnector, TcpProxyStream},
         tcp_proxy_engine::TcpProxyMode,
-        wrapped_tcp_proxy::{WrappedTcpDestinationRequest, plan_wrapped_tcp_destination},
     },
 };
 
-use super::{RuntimeWrappedTcpDestinationAdapter, tcp_proxy::NatDstTcpConnector};
 use crate::utils::task::HedgeExt;
-use crate::{
-    common::{error::Result, global_ctx::ArcGlobalCtx},
-    peers::peer_manager::PeerManager,
-    proto::{
-        api::instance::{
-            ListTcpProxyEntryRequest, ListTcpProxyEntryResponse, TcpProxyEntry, TcpProxyEntryState,
-            TcpProxyEntryTransportType, TcpProxyRpc,
-        },
-        peer_rpc::KcpConnData,
-        rpc_types::{self, controller::BaseController},
-    },
-};
+use crate::{peers::peer_manager::PeerManager, proto::peer_rpc::KcpConnData};
 
 fn create_kcp_endpoint() -> KcpEndpoint {
     let mut kcp_endpoint = KcpEndpoint::new();
@@ -206,9 +190,7 @@ impl KcpProxySrc {
 
 pub struct KcpProxyDst {
     kcp_endpoint: Arc<KcpEndpoint>,
-    peer_manager: Arc<PeerManager>,
-    proxy_entries: Arc<DashMap<ConnId, TcpProxyEntry>>,
-    cidr_table: Arc<ProxyCidrTable>,
+    destination_ingress: WrappedTransportDestinationIngress,
     tasks: JoinSet<()>,
     accept_cancel: CancellationToken,
     accept_task: Option<JoinHandle<()>>,
@@ -216,8 +198,7 @@ pub struct KcpProxyDst {
 
 impl KcpProxyDst {
     pub async fn new(
-        peer_manager: Arc<PeerManager>,
-        cidr_table: Arc<ProxyCidrTable>,
+        destination_ingress: WrappedTransportDestinationIngress,
         datagrams: tokio::sync::mpsc::Sender<WrappedTransportDatagram>,
     ) -> Self {
         let mut kcp_endpoint = create_kcp_endpoint();
@@ -232,25 +213,18 @@ impl KcpProxyDst {
         ));
         Self {
             kcp_endpoint: Arc::new(kcp_endpoint),
-            peer_manager,
-            proxy_entries: Arc::new(DashMap::new()),
-            cidr_table,
+            destination_ingress,
             tasks,
             accept_cancel: CancellationToken::new(),
             accept_task: None,
         }
     }
 
-    #[tracing::instrument(ret, skip(route, runtime, acl_filter))]
+    #[tracing::instrument(ret, skip(destination_ingress))]
     async fn handle_one_in_stream(
         kcp_stream: KcpStream,
-        global_ctx: ArcGlobalCtx,
-        proxy_entries: Arc<DashMap<ConnId, TcpProxyEntry>>,
-        cidr_table: Arc<ProxyCidrTable>,
-        runtime: Arc<RuntimeWrappedTcpDestinationAdapter>,
-        acl_filter: Arc<easytier_core::peers::acl_filter::AclFilter>,
-        route: Arc<dyn crate::peers::route_trait::Route + Send + Sync + 'static>,
-    ) -> Result<()> {
+        destination_ingress: WrappedTransportDestinationIngress,
+    ) -> anyhow::Result<()> {
         let mut conn_data = kcp_stream.conn_data().clone();
         let parsed_conn_data = KcpConnData::decode(&mut conn_data)
             .with_context(|| format!("failed to decode kcp conn data: {:?}", conn_data))?;
@@ -263,67 +237,19 @@ impl KcpProxyDst {
             .into();
         let src_socket: SocketAddr = parsed_conn_data.src.unwrap_or_default().into();
 
-        let conn_id = kcp_stream.conn_id();
-        proxy_entries.insert(
-            conn_id,
-            TcpProxyEntry {
-                src: parsed_conn_data.src,
-                dst: parsed_conn_data.dst,
-                start_time: chrono::Local::now().timestamp() as u64,
-                state: TcpProxyEntryState::ConnectingDst.into(),
-                transport_type: TcpProxyEntryTransportType::Kcp.into(),
-            },
-        );
-        defer! {
-            proxy_entries.remove(&conn_id);
-            if proxy_entries.capacity() - proxy_entries.len() > 16 {
-                proxy_entries.shrink_to_fit();
-            }
-        }
-
-        let plan = plan_wrapped_tcp_destination(
-            WrappedTcpDestinationRequest {
+        destination_ingress
+            .submit(WrappedTransportAcceptedStream {
                 src: src_socket,
                 dst: dst_socket,
-                initial_payload: &conn_data,
-            },
-            cidr_table.as_ref(),
-            runtime.as_ref(),
-            route.as_ref(),
-            acl_filter,
-        )
-        .await?;
-        let dst_socket = plan.socket_dst;
-        let acl_handler = plan.acl_handler;
-
-        tracing::debug!("kcp connect to dst socket: {:?}", dst_socket);
-
-        let connector = NatDstTcpConnector::new(crate::connector::runtime::runtime_connector_host(
-            global_ctx.clone(),
-        ));
-        let ret = connector
-            .connect("0.0.0.0:0".parse().unwrap(), dst_socket)
-            .await?;
-
-        if let Some(mut e) = proxy_entries.get_mut(&kcp_stream.conn_id()) {
-            e.state = TcpProxyEntryState::Connected.into();
-        }
-
-        acl_handler
-            .copy_bidirection_with_acl(kcp_stream, ret)
-            .await?;
-
-        Ok(())
+                initial_acl_packet_size: conn_data.len(),
+                stream: Box::new(kcp_stream),
+            })
+            .await
     }
 
     async fn run_accept_task(&mut self) {
         let kcp_endpoint = self.kcp_endpoint.clone();
-        let global_ctx = self.peer_manager.get_global_ctx();
-        let proxy_entries = self.proxy_entries.clone();
-        let cidr_table = self.cidr_table.clone();
-        let route = self.peer_manager.core().get_route();
-        let runtime = Arc::new(RuntimeWrappedTcpDestinationAdapter::new(global_ctx.clone()));
-        let acl_filter = self.peer_manager.core().acl_filter();
+        let destination_ingress = self.destination_ingress.clone();
         let cancel = self.accept_cancel.clone();
         self.accept_task = Some(tokio::spawn(async move {
             let mut streams = JoinSet::new();
@@ -344,23 +270,9 @@ impl KcpProxyDst {
                             continue;
                         };
 
-                        let global_ctx = global_ctx.clone();
-                        let proxy_entries = proxy_entries.clone();
-                        let cidr_table = cidr_table.clone();
-                        let route = route.clone();
-                        let runtime = runtime.clone();
-                        let acl_filter = acl_filter.clone();
+                        let destination_ingress = destination_ingress.clone();
                         streams.spawn(async move {
-                            let _ = Self::handle_one_in_stream(
-                                stream,
-                                global_ctx,
-                                proxy_entries,
-                                cidr_table,
-                                runtime,
-                                acl_filter,
-                                route,
-                            )
-                            .await;
+                            let _ = Self::handle_one_in_stream(stream, destination_ingress).await;
                         });
                     }
                     _ = streams.join_next(), if !streams.is_empty() => {}
@@ -401,21 +313,15 @@ impl KcpProxyServiceState {
 }
 
 pub struct KcpProxyService {
-    peer_manager: Arc<PeerManager>,
-    cidr_table: Arc<ProxyCidrTable>,
     state: Mutex<Option<KcpProxyServiceState>>,
     src_endpoint: StdMutex<Option<Arc<KcpEndpoint>>>,
-    dst_proxy_entries: StdMutex<Option<Arc<DashMap<ConnId, TcpProxyEntry>>>>,
 }
 
 impl KcpProxyService {
-    pub fn new(peer_manager: Arc<PeerManager>, cidr_table: Arc<ProxyCidrTable>) -> Self {
+    pub fn new() -> Self {
         Self {
-            peer_manager,
-            cidr_table,
             state: Mutex::new(None),
             src_endpoint: StdMutex::new(None),
-            dst_proxy_entries: StdMutex::new(None),
         }
     }
 
@@ -424,14 +330,6 @@ impl KcpProxyService {
             .lock()
             .expect("KCP source endpoint mutex poisoned")
             .clone()
-    }
-
-    pub fn dst_rpc_service(&self) -> Option<KcpProxyDstRpcService> {
-        self.dst_proxy_entries
-            .lock()
-            .expect("KCP destination proxy entries mutex poisoned")
-            .as_ref()
-            .map(KcpProxyDstRpcService::new)
     }
 }
 
@@ -451,12 +349,10 @@ impl WrappedTransportEngine for KcpProxyService {
             None
         };
         let dst = if directions.destination {
-            let dst = KcpProxyDst::new(
-                self.peer_manager.clone(),
-                self.cidr_table.clone(),
-                options.datagrams,
-            )
-            .await;
+            let destination_ingress = options
+                .destination_ingress
+                .ok_or_else(|| anyhow!("KCP destination ingress is required"))?;
+            let dst = KcpProxyDst::new(destination_ingress, options.datagrams).await;
             Some(dst)
         } else {
             None
@@ -467,11 +363,6 @@ impl WrappedTransportEngine for KcpProxyService {
             .lock()
             .expect("KCP source endpoint mutex poisoned") =
             src.as_ref().map(KcpProxySrc::get_kcp_endpoint);
-        *self
-            .dst_proxy_entries
-            .lock()
-            .expect("KCP destination proxy entries mutex poisoned") =
-            dst.as_ref().map(|dst| dst.proxy_entries.clone());
         *state = Some(KcpProxyServiceState { src, dst });
         Ok(())
     }
@@ -546,37 +437,6 @@ impl WrappedTransportEngine for KcpProxyService {
             .lock()
             .expect("KCP source endpoint mutex poisoned")
             .take();
-        self.dst_proxy_entries
-            .lock()
-            .expect("KCP destination proxy entries mutex poisoned")
-            .take();
         state.take();
-    }
-}
-
-#[derive(Clone)]
-pub struct KcpProxyDstRpcService(Weak<DashMap<ConnId, TcpProxyEntry>>);
-
-impl KcpProxyDstRpcService {
-    pub fn new(proxy_entries: &Arc<DashMap<ConnId, TcpProxyEntry>>) -> Self {
-        Self(Arc::downgrade(proxy_entries))
-    }
-}
-
-#[async_trait::async_trait]
-impl TcpProxyRpc for KcpProxyDstRpcService {
-    type Controller = BaseController;
-    async fn list_tcp_proxy_entry(
-        &self,
-        _: BaseController,
-        _request: ListTcpProxyEntryRequest, // Accept request of type HelloRequest
-    ) -> std::result::Result<ListTcpProxyEntryResponse, rpc_types::error::Error> {
-        let mut reply = ListTcpProxyEntryResponse::default();
-        if let Some(tcp_proxy) = self.0.upgrade() {
-            for item in tcp_proxy.iter() {
-                reply.entries.push(*item.value());
-            }
-        }
-        Ok(reply)
     }
 }

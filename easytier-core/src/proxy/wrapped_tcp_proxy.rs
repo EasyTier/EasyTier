@@ -32,10 +32,10 @@ where
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct WrappedTcpDestinationRequest<'a> {
+pub struct WrappedTcpDestinationRequest {
     pub src: SocketAddr,
     pub dst: SocketAddr,
-    pub initial_payload: &'a [u8],
+    pub initial_packet_size: usize,
 }
 
 #[derive(Clone)]
@@ -45,7 +45,7 @@ pub struct WrappedTcpDestinationPlan {
 }
 
 pub async fn plan_wrapped_tcp_destination<GroupResolver>(
-    request: WrappedTcpDestinationRequest<'_>,
+    request: WrappedTcpDestinationRequest,
     cidr_table: &ProxyCidrTable,
     runtime: &dyn WrappedTcpDestinationRuntime,
     group_resolver: &GroupResolver,
@@ -90,7 +90,7 @@ where
             src_port: Some(request.src.port()),
             dst_port: Some(socket_dst.port()),
             protocol: Protocol::Tcp,
-            packet_size: request.initial_payload.len(),
+            packet_size: request.initial_packet_size,
             src_groups,
             dst_groups,
         },
@@ -100,7 +100,7 @@ where
             ChainType::Forward
         },
     };
-    acl_handler.handle_packet(request.initial_payload)?;
+    acl_handler.handle_packet_size(request.initial_packet_size)?;
 
     Ok(WrappedTcpDestinationPlan {
         socket_dst,
@@ -255,7 +255,7 @@ mod tests {
             WrappedTcpDestinationRequest {
                 src: "10.20.0.2:40000".parse().unwrap(),
                 dst: dst.parse().unwrap(),
-                initial_payload: b"header",
+                initial_packet_size: b"header".len(),
             },
             &mapped_cidr_table(),
             runtime,

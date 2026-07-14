@@ -15,8 +15,12 @@ pub struct ProxyAclHandler {
 
 impl ProxyAclHandler {
     pub fn handle_packet(&self, buf: &[u8]) -> anyhow::Result<()> {
+        self.handle_packet_size(buf.len())
+    }
+
+    pub fn handle_packet_size(&self, packet_size: usize) -> anyhow::Result<()> {
         let mut packet_info = self.packet_info.clone();
-        packet_info.packet_size = buf.len();
+        packet_info.packet_size = packet_size;
         let processor = self.acl_filter.get_processor();
         let ret = processor.process_packet(&packet_info, self.chain_type);
         self.acl_filter

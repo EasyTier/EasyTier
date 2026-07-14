@@ -81,7 +81,7 @@ use self::{
     udp_hole_punch::{CoreUdpHolePunchService, UdpHolePunchPlatform},
 };
 #[cfg(feature = "proxy-packet")]
-use crate::proxy::wrapped_transport::WrappedTransportKind;
+use crate::proxy::wrapped_transport::{WrappedTransportKind, WrappedTransportRole};
 #[cfg(feature = "proxy-packet")]
 use crate::proxy::{runtime::IcmpProxyHost, service::CoreProxyModule};
 
@@ -731,7 +731,7 @@ where
             kcp,
             quic,
             attachment: transport_proxy_attachment,
-        } = transport_proxy_factory.build(proxy_cidr_table.clone())?;
+        } = transport_proxy_factory.build()?;
         let transport_proxy = WrappedTransportProxyModule::new(
             peer_manager.clone(),
             runtime_config.clone(),
@@ -1381,17 +1381,28 @@ where
     pub fn wrapped_tcp_proxy_entry_snapshots(
         &self,
         transport: WrappedTransportKind,
+        role: WrappedTransportRole,
     ) -> Vec<crate::proxy::tcp_proxy_engine::TcpNatEntrySnapshot> {
         self.transport_proxy
             .as_ref()
-            .map_or_else(Vec::new, |proxy| proxy.source_entry_snapshots(transport))
+            .map_or_else(Vec::new, |proxy| match role {
+                WrappedTransportRole::Source => proxy.source_entry_snapshots(transport),
+                WrappedTransportRole::Destination => proxy.destination_entry_snapshots(transport),
+            })
     }
 
     #[cfg(feature = "proxy-packet")]
-    pub fn wrapped_transport_source_is_started(&self, transport: WrappedTransportKind) -> bool {
+    pub fn wrapped_transport_is_started(
+        &self,
+        transport: WrappedTransportKind,
+        role: WrappedTransportRole,
+    ) -> bool {
         self.transport_proxy
             .as_ref()
-            .is_some_and(|proxy| proxy.source_is_started(transport))
+            .is_some_and(|proxy| match role {
+                WrappedTransportRole::Source => proxy.source_is_started(transport),
+                WrappedTransportRole::Destination => proxy.destination_is_started(transport),
+            })
     }
 
     pub fn generate_credential(

@@ -35,6 +35,8 @@ pub mod udp_proxy_service;
 pub mod udp_socket_runtime;
 #[cfg(feature = "proxy-packet")]
 pub mod wrapped_tcp_proxy;
+#[cfg(feature = "proxy-packet")]
+pub(crate) mod wrapped_transport_destination;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProxyRuntimeConfig {

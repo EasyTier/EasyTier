@@ -11,7 +11,6 @@ use std::time::Duration;
 use anyhow::Context;
 use cidr::{IpCidr, Ipv4Inet};
 use easytier_core::dhcp::DhcpIpv4Host;
-use easytier_core::proxy::cidr_table::ProxyCidrTable;
 use easytier_core::proxy::wrapped_transport::{
     WrappedTransportEngine, WrappedTransportEngineBuild, WrappedTransportEngineFactory,
 };
@@ -78,19 +77,11 @@ use super::public_ipv6_provider::validate_public_ipv6_config_values;
 #[cfg(feature = "socks5")]
 use crate::gateway::socks5::Socks5Server;
 
-struct RuntimeTransportProxyFactory {
-    #[cfg(any(feature = "kcp", feature = "quic"))]
-    peer_manager: Arc<PeerManager>,
-}
+struct RuntimeTransportProxyFactory;
 
 impl RuntimeTransportProxyFactory {
-    fn new(peer_manager: Arc<PeerManager>) -> Self {
-        #[cfg(not(any(feature = "kcp", feature = "quic")))]
-        let _ = peer_manager;
-        Self {
-            #[cfg(any(feature = "kcp", feature = "quic"))]
-            peer_manager,
-        }
+    fn new() -> Self {
+        Self
     }
 }
 
@@ -120,19 +111,13 @@ impl RuntimeTransportProxyAttachment {
 impl WrappedTransportEngineFactory for RuntimeTransportProxyFactory {
     type Attachment = RuntimeTransportProxyAttachment;
 
-    fn build(
-        self,
-        cidr_table: Arc<ProxyCidrTable>,
-    ) -> anyhow::Result<WrappedTransportEngineBuild<Self::Attachment>> {
+    fn build(self) -> anyhow::Result<WrappedTransportEngineBuild<Self::Attachment>> {
         #[cfg(any(feature = "kcp", feature = "quic"))]
         let (kcp_engine, quic_engine, attachment) = {
             #[cfg(feature = "kcp")]
-            let kcp = Arc::new(KcpProxyService::new(
-                self.peer_manager.clone(),
-                cidr_table.clone(),
-            ));
+            let kcp = Arc::new(KcpProxyService::new());
             #[cfg(feature = "quic")]
-            let quic = Arc::new(QuicProxyService::new(self.peer_manager, cidr_table));
+            let quic = Arc::new(QuicProxyService::new());
             (
                 #[cfg(feature = "kcp")]
                 Some(kcp.clone() as Arc<dyn WrappedTransportEngine>),
@@ -152,7 +137,7 @@ impl WrappedTransportEngineFactory for RuntimeTransportProxyFactory {
         };
         #[cfg(not(any(feature = "kcp", feature = "quic")))]
         let (kcp_engine, quic_engine, attachment) = {
-            let _ = (self, cidr_table);
+            let _ = self;
             (None, None, RuntimeTransportProxyAttachment {})
         };
 
@@ -890,7 +875,7 @@ impl Instance {
             build_runtime_core_instance_with_transport_factory_and_ring_registry(
                 global_ctx.clone(),
                 peer_manager.clone(),
-                RuntimeTransportProxyFactory::new(peer_manager.clone()),
+                RuntimeTransportProxyFactory::new(),
                 ring_registry.clone(),
             )
             .expect("runtime core instance composition should be valid");
@@ -1528,39 +1513,63 @@ impl Instance {
                     Arc::new(CoreTcpProxyRpcService::new(&self.core_instance)),
                 );
                 #[cfg(feature = "kcp")]
-                if self.core_instance.wrapped_transport_source_is_started(
+                if self.core_instance.wrapped_transport_is_started(
                     easytier_core::proxy::wrapped_transport::WrappedTransportKind::Kcp,
+                    easytier_core::proxy::wrapped_transport::WrappedTransportRole::Source,
                 ) {
                     tcp_proxy_rpc_services.insert(
                         "kcp_src".to_string(),
                         Arc::new(CoreTcpProxyRpcService::new_wrapped(
                             &self.core_instance,
                             easytier_core::proxy::wrapped_transport::WrappedTransportKind::Kcp,
+                            easytier_core::proxy::wrapped_transport::WrappedTransportRole::Source,
                         )),
                     );
                 }
 
                 #[cfg(feature = "kcp")]
-                if let Some(kcp_proxy) = self.transport_proxy.kcp().dst_rpc_service() {
-                    tcp_proxy_rpc_services.insert("kcp_dst".to_string(), Arc::new(kcp_proxy));
+                if self.core_instance.wrapped_transport_is_started(
+                    easytier_core::proxy::wrapped_transport::WrappedTransportKind::Kcp,
+                    easytier_core::proxy::wrapped_transport::WrappedTransportRole::Destination,
+                ) {
+                    tcp_proxy_rpc_services.insert(
+                        "kcp_dst".to_string(),
+                        Arc::new(CoreTcpProxyRpcService::new_wrapped(
+                            &self.core_instance,
+                            easytier_core::proxy::wrapped_transport::WrappedTransportKind::Kcp,
+                            easytier_core::proxy::wrapped_transport::WrappedTransportRole::Destination,
+                        )),
+                    );
                 }
 
                 #[cfg(feature = "quic")]
-                if self.core_instance.wrapped_transport_source_is_started(
+                if self.core_instance.wrapped_transport_is_started(
                     easytier_core::proxy::wrapped_transport::WrappedTransportKind::Quic,
+                    easytier_core::proxy::wrapped_transport::WrappedTransportRole::Source,
                 ) {
                     tcp_proxy_rpc_services.insert(
                         "quic_src".to_string(),
                         Arc::new(CoreTcpProxyRpcService::new_wrapped(
                             &self.core_instance,
                             easytier_core::proxy::wrapped_transport::WrappedTransportKind::Quic,
+                            easytier_core::proxy::wrapped_transport::WrappedTransportRole::Source,
                         )),
                     );
                 }
 
                 #[cfg(feature = "quic")]
-                if let Some(quic_proxy) = self.transport_proxy.quic().dst_rpc_service() {
-                    tcp_proxy_rpc_services.insert("quic_dst".to_string(), Arc::new(quic_proxy));
+                if self.core_instance.wrapped_transport_is_started(
+                    easytier_core::proxy::wrapped_transport::WrappedTransportKind::Quic,
+                    easytier_core::proxy::wrapped_transport::WrappedTransportRole::Destination,
+                ) {
+                    tcp_proxy_rpc_services.insert(
+                        "quic_dst".to_string(),
+                        Arc::new(CoreTcpProxyRpcService::new_wrapped(
+                            &self.core_instance,
+                            easytier_core::proxy::wrapped_transport::WrappedTransportKind::Quic,
+                            easytier_core::proxy::wrapped_transport::WrappedTransportRole::Destination,
+                        )),
+                    );
                 }
 
                 tcp_proxy_rpc_services
@@ -1847,53 +1856,49 @@ mod tests {
 
     #[cfg(feature = "kcp")]
     #[tokio::test]
-    async fn kcp_engine_uses_explicit_activation_directions() {
+    async fn kcp_engine_uses_explicit_source_direction() {
         let instance = Instance::new(TomlConfigLoader::default());
         let kcp = instance.transport_proxy.kcp();
         let (datagrams, _datagram_rx) = tokio::sync::mpsc::channel(16);
         kcp.prepare(WrappedTransportEngineStart {
             directions: WrappedTransportDirections {
                 source: true,
-                destination: true,
+                destination: false,
             },
             my_peer_id: instance.peer_manager.my_peer_id(),
             datagrams,
+            destination_ingress: None,
         })
         .await
         .unwrap();
         kcp.activate().await.unwrap();
 
         assert!(kcp.src_endpoint().is_some());
-        assert!(kcp.dst_rpc_service().is_some());
-
         kcp.stop().await;
         assert!(kcp.src_endpoint().is_none());
-        assert!(kcp.dst_rpc_service().is_none());
     }
 
     #[cfg(feature = "quic")]
     #[tokio::test]
-    async fn quic_engine_uses_explicit_activation_directions() {
+    async fn quic_engine_uses_explicit_source_direction() {
         let instance = Instance::new(TomlConfigLoader::default());
         let quic = instance.transport_proxy.quic();
         let (datagrams, _datagram_rx) = tokio::sync::mpsc::channel(16);
         quic.prepare(WrappedTransportEngineStart {
             directions: WrappedTransportDirections {
                 source: true,
-                destination: true,
+                destination: false,
             },
             my_peer_id: instance.peer_manager.my_peer_id(),
             datagrams,
+            destination_ingress: None,
         })
         .await
         .unwrap();
         quic.activate().await.unwrap();
         assert!(quic.source_is_prepared().await);
-        assert!(quic.dst_rpc_service().is_some());
-
         quic.stop().await;
         assert!(!quic.source_is_prepared().await);
-        assert!(quic.dst_rpc_service().is_none());
     }
 
     #[tokio::test]

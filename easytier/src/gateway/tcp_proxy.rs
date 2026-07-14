@@ -3,7 +3,7 @@ use std::sync::{Arc, Weak};
 use easytier_core::proxy::{
     tcp_proxy_engine::{TcpNatEntrySnapshot, TcpNatEntryState as CoreTcpNatEntryState},
     tcp_socket_connector::TcpSocketProxyConnector,
-    wrapped_transport::WrappedTransportKind,
+    wrapped_transport::{WrappedTransportKind, WrappedTransportRole},
 };
 
 use crate::{
@@ -46,7 +46,7 @@ fn tcp_entry_state_to_pb(state: CoreTcpNatEntryState) -> TcpProxyEntryState {
 #[derive(Clone, Copy)]
 enum CoreTcpProxySource {
     Tcp,
-    Wrapped(WrappedTransportKind),
+    Wrapped(WrappedTransportKind, WrappedTransportRole),
 }
 
 #[derive(Clone)]
@@ -66,10 +66,11 @@ impl CoreTcpProxyRpcService {
     pub fn new_wrapped(
         core_instance: &Arc<crate::connector::core_instance::RuntimeCoreInstance>,
         transport: WrappedTransportKind,
+        role: WrappedTransportRole,
     ) -> Self {
         Self {
             core_instance: Arc::downgrade(core_instance),
-            source: CoreTcpProxySource::Wrapped(transport),
+            source: CoreTcpProxySource::Wrapped(transport, role),
         }
     }
 }
@@ -89,12 +90,12 @@ impl TcpProxyRpc for CoreTcpProxyRpcService {
                     core.tcp_proxy_entry_snapshots(),
                     TcpProxyEntryTransportType::Tcp,
                 ),
-                CoreTcpProxySource::Wrapped(WrappedTransportKind::Kcp) => (
-                    core.wrapped_tcp_proxy_entry_snapshots(WrappedTransportKind::Kcp),
+                CoreTcpProxySource::Wrapped(WrappedTransportKind::Kcp, role) => (
+                    core.wrapped_tcp_proxy_entry_snapshots(WrappedTransportKind::Kcp, role),
                     TcpProxyEntryTransportType::Kcp,
                 ),
-                CoreTcpProxySource::Wrapped(WrappedTransportKind::Quic) => (
-                    core.wrapped_tcp_proxy_entry_snapshots(WrappedTransportKind::Quic),
+                CoreTcpProxySource::Wrapped(WrappedTransportKind::Quic, role) => (
+                    core.wrapped_tcp_proxy_entry_snapshots(WrappedTransportKind::Quic, role),
                     TcpProxyEntryTransportType::Quic,
                 ),
             };
