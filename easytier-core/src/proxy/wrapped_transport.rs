@@ -961,10 +961,11 @@ impl WrappedTransportProxyModule {
     #[cfg(feature = "proxy-packet")]
     pub(crate) async fn source_connect_ready(&self, transport: WrappedTransportKind) -> bool {
         let state = self.state.lock().await;
-        match transport {
-            WrappedTransportKind::Kcp => state.kcp_source_connect_ready,
-            WrappedTransportKind::Quic => state.quic_source_connect_ready,
-        }
+        state.active
+            && match transport {
+                WrappedTransportKind::Kcp => state.kcp_source_connect_ready,
+                WrappedTransportKind::Quic => state.quic_source_connect_ready,
+            }
     }
 
     #[cfg(feature = "proxy-packet")]
@@ -976,10 +977,11 @@ impl WrappedTransportProxyModule {
     ) -> anyhow::Result<Box<dyn TcpProxyStream>> {
         let engine = {
             let state = self.state.lock().await;
-            let ready = match transport {
-                WrappedTransportKind::Kcp => state.kcp_source_connect_ready,
-                WrappedTransportKind::Quic => state.quic_source_connect_ready,
-            };
+            let ready = state.active
+                && match transport {
+                    WrappedTransportKind::Kcp => state.kcp_source_connect_ready,
+                    WrappedTransportKind::Quic => state.quic_source_connect_ready,
+                };
             if !ready {
                 anyhow::bail!("{transport:?} source is not ready");
             }
@@ -1641,6 +1643,8 @@ mod tests {
         blocking.first_prepare_entered.notified().await;
         first_start.abort();
         assert!(first_start.await.unwrap_err().is_cancelled());
+        #[cfg(feature = "proxy-packet")]
+        assert!(!module.source_connect_ready(WrappedTransportKind::Kcp).await);
 
         module.start().await.unwrap();
 
