@@ -117,7 +117,10 @@ where
                 continue;
             }
 
-            let (host, port) = host_and_port(&endpoint)?;
+            let Some((host, port)) = host_and_port(&endpoint) else {
+                tracing::warn!(?endpoint, "invalid stun server endpoint");
+                continue;
+            };
             match self
                 .dns
                 .resolve(DnsQuery::new(host.clone(), self.context.clone()))
@@ -142,14 +145,6 @@ fn explicit_socket_addr(endpoint: &str) -> Option<SocketAddr> {
     if let Ok(addr) = endpoint.parse() {
         return Some(addr);
     }
-
-    if endpoint.matches(':').count() > 1
-        && let Some((ip, port)) = endpoint.rsplit_once(':')
-        && let (Ok(ip), Ok(port)) = (ip.parse::<IpAddr>(), port.parse::<u16>())
-    {
-        return Some(SocketAddr::new(ip, port));
-    }
-
     endpoint
         .parse::<IpAddr>()
         .ok()
@@ -604,6 +599,22 @@ where
         }
     }
 
+    pub(super) async fn get_extra_bind_result(
+        &self,
+        source_port: u16,
+        stun_server: SocketAddr,
+    ) -> anyhow::Result<BindRequestResponse> {
+        let socket = self
+            .runtime
+            .bind_udp(stun_udp_bind_options(
+                self.socket_context.clone(),
+                IpVersion::V4,
+                SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), source_port),
+            ))
+            .await?;
+        udp_bind_request(socket, stun_server).await
+    }
+
     pub async fn detect_nat_type(
         &self,
         source_port: u16,
@@ -668,6 +679,19 @@ where
             responses,
         ))
     }
+}
+
+pub(super) async fn udp_bind_request<S>(
+    socket: Arc<S>,
+    stun_server: SocketAddr,
+) -> anyhow::Result<BindRequestResponse>
+where
+    S: VirtualUdpSocket,
+{
+    StunClientBuilder::new(socket)
+        .new_stun_client(stun_server)
+        .bind_request(false, false)
+        .await
 }
 
 pub(super) fn stun_udp_bind_options(
@@ -822,6 +846,20 @@ where
     }
 }
 
+pub(super) async fn tcp_bind_request<R>(
+    runtime: Arc<R>,
+    socket_context: SocketContext,
+    stun_server: SocketAddr,
+    source_port: u16,
+) -> anyhow::Result<BindRequestResponse>
+where
+    R: StunSocketRuntime,
+{
+    TcpStunClient::new(runtime, socket_context, stun_server, source_port)
+        .bind_request()
+        .await
+}
+
 pub struct TcpNatTypeDetector<R, D> {
     runtime: Arc<R>,
     dns: Arc<D>,
@@ -903,7 +941,31 @@ where
 
 #[cfg(test)]
 mod tests {
+    use async_trait::async_trait;
+
+    use crate::socket::dns::{DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord};
+
     use super::*;
+
+    struct EmptyDns;
+
+    #[async_trait]
+    impl DnsResolver for EmptyDns {
+        async fn resolve(&self, _query: DnsQuery) -> anyhow::Result<Vec<IpAddr>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[async_trait]
+    impl DnsRecordResolver for EmptyDns {
+        async fn resolve_txt(&self, _query: DnsQuery) -> anyhow::Result<String> {
+            Ok(String::new())
+        }
+
+        async fn resolve_srv(&self, _query: DnsQuery) -> anyhow::Result<Vec<DnsSrvRecord>> {
+            Ok(Vec::new())
+        }
+    }
 
     #[test]
     fn explicit_endpoints_keep_ports_and_default_bare_ips() {
@@ -912,12 +974,31 @@ mod tests {
             Some("127.0.0.1:5555".parse().unwrap())
         );
         assert_eq!(
-            explicit_socket_addr("::1:5555"),
+            explicit_socket_addr("[::1]:5555"),
             Some("[::1]:5555".parse().unwrap())
         );
         assert_eq!(
             explicit_socket_addr("2001:db8::1"),
             Some("[2001:db8::1]:3478".parse().unwrap())
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_endpoint_does_not_hide_later_servers() {
+        let mut resolver = HostResolverIter::new(
+            Arc::new(EmptyDns),
+            SocketContext::default(),
+            vec![
+                "bad.example:not-a-port".to_owned(),
+                "127.0.0.1:3478".to_owned(),
+            ],
+            1,
+            false,
+        );
+
+        assert_eq!(
+            resolver.next().await,
+            Some("127.0.0.1:3478".parse().unwrap())
         );
     }
 
