@@ -10,10 +10,10 @@ use std::sync::Arc;
 use dashmap::DashMap;
 use easytier_core::connectivity::direct::DirectConnectorRpcHandler;
 #[cfg(test)]
-use easytier_core::instance::CoreRuntimeConfigStore;
-#[cfg(test)]
 use easytier_core::peers::context::{ArcPeerContext, SubmittedPeerContext};
 use easytier_core::peers::foreign_network_manager as core_foreign_network_manager;
+#[cfg(test)]
+use easytier_core::runtime_config::CoreRuntimeConfigStore;
 #[cfg(test)]
 use tokio::sync::Mutex;
 #[cfg(test)]

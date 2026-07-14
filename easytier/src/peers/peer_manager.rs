@@ -13,8 +13,8 @@ pub use easytier_core::peers::peer_manager::RouteAlgoType;
 use easytier_core::peers::peer_manager::{DnsAddressResolver, PeerManagerCore};
 use easytier_core::tunnel::ring::RingTunnelRegistry;
 use easytier_core::{
-    instance::CoreRuntimeConfigStore,
     peers::{context::SubmittedPeerContext, foreign_network_manager::ForeignNetworkManager},
+    runtime_config::CoreRuntimeConfigStore,
 };
 use std::{fmt::Debug, sync::Arc};
 

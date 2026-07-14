@@ -8,11 +8,9 @@ use easytier_core::{
             discovery::ManualEndpointDiscoveryConfig,
         },
     },
-    instance::{
-        CoreInstance, CoreInstanceAdapters, CoreInstanceConfig, CoreInstanceRuntimeConfig,
-        CoreRuntimeConfig,
-    },
+    instance::{CoreInstance, CoreInstanceAdapters, CoreInstanceConfig},
     proxy::{ProxyStartupContext, cidr_table::ProxyCidrRuntime},
+    runtime_config::{CoreInstanceRuntimeConfig, CoreRuntimeConfig},
     socket::{
         IpVersion, NetNamespace, SocketContext,
         dns::{DnsRecordResolver, DnsResolver},

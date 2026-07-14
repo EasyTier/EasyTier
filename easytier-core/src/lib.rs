@@ -11,6 +11,7 @@ pub mod peer_center;
 pub mod peers;
 pub mod proxy;
 pub mod rpc_impl;
+pub mod runtime_config;
 pub mod runtime_time;
 pub mod socket;
 pub mod stats_manager;

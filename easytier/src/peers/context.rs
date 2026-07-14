@@ -4,7 +4,6 @@ use easytier_core::config::{
     CoreConfig, IpPrefix, NodeConfig, PeerPolicyConfig, ProxyNetworkConfig, RouteConfig,
     TrafficConfig,
 };
-use easytier_core::instance::{CoreRuntimeConfig, CoreRuntimeConfigStore};
 #[cfg(test)]
 use easytier_core::peers::context::PeerContext;
 use easytier_core::peers::context::{
@@ -13,6 +12,7 @@ use easytier_core::peers::context::{
     PeerPublicIpv6State, PeerRelayStateSink, PeerRuntimeConfig, PeerRuntimeSnapshot,
     PeerStunInfoSource, SubmittedPeerContext, SubmittedPeerContextCapabilities,
 };
+use easytier_core::runtime_config::{CoreRuntimeConfig, CoreRuntimeConfigStore};
 
 use crate::{
     common::{
