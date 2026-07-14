@@ -26,7 +26,10 @@ use crate::{
         },
         rpc_types::{self, controller::BaseController},
     },
-    socket::{SocketContext, tcp::VirtualTcpListener},
+    socket::{
+        IpVersion, SocketContext,
+        tcp::{TcpBindOptions, TcpListenOptions, VirtualTcpListener},
+    },
     task::{PeerTaskLauncher, PeerTaskManager},
 };
 
@@ -37,6 +40,17 @@ use super::{
 };
 
 const BLACKLIST_TIMEOUT: Duration = Duration::from_secs(3600);
+
+fn fallback_listener_options(
+    socket_context: SocketContext,
+    bind_addr: std::net::SocketAddr,
+) -> TcpListenOptions {
+    let bind = TcpBindOptions::default()
+        .with_context(socket_context.with_ip_version(IpVersion::V4))
+        .with_local_addr(Some(bind_addr))
+        .with_only_v6(true);
+    TcpListenOptions::hole_punch(bind_addr).with_bind(bind)
+}
 
 struct TcpHolePunchBlacklist {
     entries: DashMap<PeerId, Instant>,
@@ -368,13 +382,12 @@ where
 
         let bind_addr =
             std::net::SocketAddr::new(std::net::Ipv4Addr::UNSPECIFIED.into(), local_port);
-        let bind = crate::socket::tcp::TcpBindOptions::default()
-            .with_context(self.socket_context.clone())
-            .with_local_addr(Some(bind_addr))
-            .with_only_v6(true);
         let listener = self
             .host
-            .bind_tcp(crate::socket::tcp::TcpListenOptions::hole_punch(bind_addr).with_bind(bind))
+            .bind_tcp(fallback_listener_options(
+                self.socket_context.clone(),
+                bind_addr,
+            ))
             .await?;
         tracing::info!(
             dst_peer_id,
@@ -623,5 +636,35 @@ mod tests {
         assert!(blacklist.contains(7));
         blacklist.cleanup();
         assert!(blacklist.contains(7));
+    }
+
+    #[test]
+    fn fallback_listener_normalizes_context_to_ipv4() {
+        let bind_addr = "0.0.0.0:23333".parse().unwrap();
+        let context = SocketContext::default()
+            .with_socket_mark(Some(0))
+            .with_netns(Some(crate::socket::NetNamespace::new("test-netns")));
+
+        let options = fallback_listener_options(context, bind_addr);
+
+        assert_eq!(
+            options.purpose,
+            crate::socket::tcp::TcpListenPurpose::HolePunch
+        );
+        assert_eq!(options.bind.local_addr, Some(bind_addr));
+        assert_eq!(options.bind.context.ip_version, IpVersion::V4);
+        assert_eq!(options.bind.context.socket_mark, Some(0));
+        assert_eq!(
+            options
+                .bind
+                .context
+                .netns
+                .as_ref()
+                .map(|netns| netns.token()),
+            Some("test-netns")
+        );
+        assert!(options.bind.only_v6);
+        assert_eq!(options.bind.reuse_addr, None);
+        assert!(!options.bind.reuse_port);
     }
 }

@@ -19,7 +19,7 @@ use easytier_core::{
         udp_proxy_service::UdpProxyService,
         udp_socket_runtime::UdpSocketProxyRuntime,
     },
-    socket::udp::UdpBindOptions,
+    socket::{IpVersion, SocketContext, udp::UdpBindOptions},
 };
 #[cfg(test)]
 use tokio::sync::Mutex;
@@ -76,6 +76,10 @@ impl UdpProxyPolicy for RuntimeUdpProxyPolicy {
 
 type RuntimeUdpProxy = UdpSocketProxyRuntime<RuntimeConnectorHost, RuntimeUdpProxyPolicy>;
 
+fn runtime_udp_proxy_bind_options(socket_context: SocketContext) -> UdpBindOptions {
+    UdpBindOptions::proxy_nat().with_context(socket_context.with_ip_version(IpVersion::V4))
+}
+
 pub struct UdpProxy {
     cidr_set: Arc<CidrSet>,
     runtime: Arc<RuntimeUdpProxy>,
@@ -96,7 +100,7 @@ impl UdpProxy {
         let runtime = Arc::new(UdpSocketProxyRuntime::new(
             Arc::new(RuntimeConnectorHost::new(global_ctx.clone())),
             Arc::new(RuntimeUdpProxyPolicy::new(global_ctx)),
-            UdpBindOptions::proxy_nat().with_context(socket_context),
+            runtime_udp_proxy_bind_options(socket_context),
             Duration::from_secs(120),
         ));
         let service = UdpProxyService::new(
@@ -275,6 +279,34 @@ mod tests {
 
         let cidr_set = Arc::new(runtime_cidr_set_without_updater(global_ctx.clone()));
         UdpProxy::new(global_ctx, peer_manager, cidr_set).unwrap();
+    }
+
+    #[test]
+    fn udp_proxy_bind_options_preserve_instance_context_as_ipv4() {
+        let context = easytier_core::socket::SocketContext::default()
+            .with_socket_mark(Some(0))
+            .with_netns(Some(easytier_core::socket::NetNamespace::new("test-netns")));
+
+        let options = super::runtime_udp_proxy_bind_options(context);
+
+        assert_eq!(
+            options.purpose,
+            easytier_core::socket::udp::UdpSocketPurpose::ProxyNat
+        );
+        assert_eq!(
+            options.context.ip_version,
+            easytier_core::socket::IpVersion::V4
+        );
+        assert_eq!(options.context.socket_mark, Some(0));
+        assert_eq!(
+            options.context.netns.as_ref().map(|netns| netns.token()),
+            Some("test-netns")
+        );
+        assert_eq!(options.local_addr, None);
+        assert_eq!(options.bind_device, None);
+        assert!(!options.reuse_addr);
+        assert!(!options.reuse_port);
+        assert!(!options.only_v6);
     }
 
     fn build_udp_proxy_packet(
