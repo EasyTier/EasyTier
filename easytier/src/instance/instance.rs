@@ -91,8 +91,8 @@ impl RuntimeProxyService {
     ) -> Result<Arc<Self>, Error> {
         let tcp_proxy = TcpProxy::new(
             peer_manager.clone(),
-            NatDstTcpConnector::new(Arc::new(
-                crate::connector::runtime::RuntimeConnectorHost::new(global_ctx.clone()),
+            NatDstTcpConnector::new(crate::connector::runtime::runtime_connector_host(
+                global_ctx.clone(),
             ))
             .with_socket_context(
                 crate::connector::core_instance::runtime_socket_context(&global_ctx),

@@ -44,7 +44,10 @@ use crate::{
     use_global_var,
 };
 
-use super::{protocol::runtime_client_protocol_upgrader, runtime::RuntimeConnectorHost};
+use super::{
+    protocol::runtime_client_protocol_upgrader,
+    runtime::{RuntimeConnectorHost, runtime_connector_host},
+};
 
 pub(crate) type RuntimeCoreInstance = CoreInstance<RuntimeConnectorHost>;
 
@@ -180,7 +183,7 @@ pub(crate) fn runtime_core_instance_adapters_with_ring_registry(
     global_ctx: ArcGlobalCtx,
     ring_registry: Arc<RingTunnelRegistry>,
 ) -> CoreInstanceAdapters<RuntimeConnectorHost> {
-    let host = Arc::new(RuntimeConnectorHost::new(global_ctx.clone()));
+    let host = runtime_connector_host(global_ctx.clone());
     let runtime_dns = native_host_runtime();
     let dns: Arc<dyn DnsResolver> = runtime_dns.clone();
     let dns_records: Arc<dyn DnsRecordResolver> = runtime_dns;

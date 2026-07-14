@@ -31,7 +31,10 @@ use super::CidrSet;
 use crate::tunnel::packet_def::ZCPacket;
 use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx},
-    connector::{core_instance::runtime_socket_context, runtime::RuntimeConnectorHost},
+    connector::{
+        core_instance::runtime_socket_context,
+        runtime::{RuntimeConnectorHost, runtime_connector_host},
+    },
     peers::peer_manager::PeerManager,
 };
 
@@ -98,7 +101,7 @@ impl UdpProxy {
     ) -> Result<Arc<Self>, Error> {
         let socket_context = runtime_socket_context(&global_ctx);
         let runtime = Arc::new(UdpSocketProxyRuntime::new(
-            Arc::new(RuntimeConnectorHost::new(global_ctx.clone())),
+            runtime_connector_host(global_ctx.clone()),
             Arc::new(RuntimeUdpProxyPolicy::new(global_ctx)),
             runtime_udp_proxy_bind_options(socket_context),
             Duration::from_secs(120),

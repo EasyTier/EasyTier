@@ -3,7 +3,10 @@ use std::sync::Arc;
 use easytier_core::hole_punch::tcp::TcpHolePunchConnector as CoreTcpHolePunchConnector;
 
 use crate::{
-    connector::{core_instance::runtime_socket_context, runtime::RuntimeConnectorHost},
+    connector::{
+        core_instance::runtime_socket_context,
+        runtime::{RuntimeConnectorHost, runtime_connector_host},
+    },
     peers::peer_manager::PeerManager,
 };
 
@@ -15,7 +18,7 @@ pub(crate) fn runtime_tcp_hole_punch_connector(
     let global_ctx = peer_manager.get_global_ctx();
     RuntimeTcpHolePunchConnector::new(
         peer_manager.core(),
-        Arc::new(RuntimeConnectorHost::new(global_ctx.clone())),
+        runtime_connector_host(global_ctx.clone()),
         global_ctx.get_stun_info_collector(),
         runtime_socket_context(&global_ctx),
         super::protocol::runtime_client_protocol_upgrader(global_ctx.clone()),

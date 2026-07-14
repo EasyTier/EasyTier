@@ -26,7 +26,7 @@ use crate::{
         netns::{NetNS, ROOT_NETNS_NAME},
         stats_manager::{LabelSet, LabelType, MetricName},
     },
-    connector::{protocol::runtime_client_protocol_upgrader, runtime::RuntimeConnectorHost},
+    connector::{protocol::runtime_client_protocol_upgrader, runtime::runtime_connector_host},
     instance::instance::Instance,
     proto::{
         api::instance::TcpProxyEntryTransportType,
@@ -2434,7 +2434,7 @@ async fn assert_peer_admission_blocked(inst: &Instance, url: url::Url) {
         .parse()
         .expect("test URL should have a literal IP");
     let target = std::net::SocketAddr::new(ip, url.port().expect("test URL should have a port"));
-    let host = Arc::new(RuntimeConnectorHost::new(inst.get_global_ctx()));
+    let host = runtime_connector_host(inst.get_global_ctx());
     let protocol = runtime_client_protocol_upgrader(inst.get_global_ctx());
     let peer_manager = inst.get_peer_manager().core();
     let connect = async {

@@ -33,7 +33,7 @@ use crate::{
         global_ctx::{ArcGlobalCtx, GlobalCtx, TrustedKeySource},
         shrink_dashmap,
     },
-    connector::runtime::RuntimeConnectorHost,
+    connector::runtime::runtime_connector_host,
     proto::{
         api::instance::{ForeignNetworkEntryPb, PeerInfo, TrustedKeyInfoPb, TrustedKeySourcePb},
         peer_rpc::DirectConnectorRpcServer,
@@ -247,7 +247,7 @@ impl core_foreign_network_manager::ForeignNetworkRuntime for ForeignNetworkRunti
             .clone();
         peer_rpc.rpc_server().registry().register(
             DirectConnectorRpcServer::new(DirectConnectorRpcHandler::new(
-                Arc::new(RuntimeConnectorHost::new(foreign_global_ctx.clone())),
+                runtime_connector_host(foreign_global_ctx.clone()),
                 crate::connector::core_instance::runtime_socket_context(&foreign_global_ctx),
             )),
             network_name,

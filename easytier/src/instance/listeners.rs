@@ -510,9 +510,7 @@ impl ListenerManager<PeerManagerCore> {
         let handler = runtime_accepted_transport_handler(global_ctx.clone(), &peer_manager);
         let transport = Arc::new(
             easytier_core::listener::transport::TransportListenerService::new_with_events(
-                Arc::new(crate::connector::runtime::RuntimeConnectorHost::new(
-                    global_ctx.clone(),
-                )),
+                crate::connector::runtime::runtime_connector_host(global_ctx.clone()),
                 native_host_runtime(),
                 ring_registry,
                 configs,

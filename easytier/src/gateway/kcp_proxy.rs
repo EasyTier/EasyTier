@@ -379,8 +379,8 @@ impl KcpProxyDst {
 
         tracing::debug!("kcp connect to dst socket: {:?}", dst_socket);
 
-        let connector = NatDstTcpConnector::new(Arc::new(
-            crate::connector::runtime::RuntimeConnectorHost::new(global_ctx.clone()),
+        let connector = NatDstTcpConnector::new(crate::connector::runtime::runtime_connector_host(
+            global_ctx.clone(),
         ));
         let ret = connector
             .connect("0.0.0.0:0".parse().unwrap(), dst_socket)

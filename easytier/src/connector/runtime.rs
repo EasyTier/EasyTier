@@ -31,18 +31,27 @@ use crate::{
     },
 };
 
+/// Instance-scoped connector facts projected onto the process-wide host runtime.
+///
+/// This is not an OS capability owner: all real socket operations delegate to
+/// [`NativeHostRuntime`]. `GlobalCtx` is retained only for instance facts such as
+/// current listeners, protected ports, and collected interface addresses.
 pub(crate) struct RuntimeConnectorHost {
     global_ctx: ArcGlobalCtx,
     runtime: Arc<NativeHostRuntime>,
 }
 
 impl RuntimeConnectorHost {
-    pub(crate) fn new(global_ctx: ArcGlobalCtx) -> Self {
+    fn new(global_ctx: ArcGlobalCtx) -> Self {
         Self {
             global_ctx,
             runtime: native_host_runtime(),
         }
     }
+}
+
+pub(crate) fn runtime_connector_host(global_ctx: ArcGlobalCtx) -> Arc<RuntimeConnectorHost> {
+    Arc::new(RuntimeConnectorHost::new(global_ctx))
 }
 
 #[async_trait]
