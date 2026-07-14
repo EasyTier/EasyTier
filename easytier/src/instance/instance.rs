@@ -104,7 +104,7 @@ impl RuntimeProxyService {
         let udp_proxy = UdpProxy::new(global_ctx.clone(), peer_manager, cidr_set)
             .with_context(|| "create UDP proxy failed")?;
         let services: Vec<Arc<dyn ProxyService>> = vec![tcp_proxy.clone(), icmp_proxy, udp_proxy];
-        let group = ProxyServiceGroup::new_unconditional(services);
+        let group = ProxyServiceGroup::new(services);
         Ok(Arc::new(Self { group, tcp_proxy }))
     }
 }
@@ -872,7 +872,7 @@ impl Instance {
             services.push(kcp_proxy.clone());
             #[cfg(feature = "quic")]
             services.push(quic_proxy.clone());
-            let group: Arc<dyn ProxyService> = ProxyServiceGroup::new_unconditional(services);
+            let group: Arc<dyn ProxyService> = ProxyServiceGroup::new(services);
             Some(group)
         };
         #[cfg(not(any(feature = "kcp", feature = "quic")))]

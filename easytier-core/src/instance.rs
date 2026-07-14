@@ -356,40 +356,19 @@ pub trait ProxyService: Send + Sync + 'static {
     async fn stop(&self);
 }
 
-pub trait ProxyStartupPolicy: Send + Sync + 'static {
-    fn should_start(&self) -> bool;
-}
-
 pub struct ProxyServiceGroup {
     operation: Mutex<()>,
-    policy: Arc<dyn ProxyStartupPolicy>,
     services: Vec<Arc<dyn ProxyService>>,
     started_count: AtomicUsize,
 }
 
-struct UnconditionalProxyStartupPolicy;
-
-impl ProxyStartupPolicy for UnconditionalProxyStartupPolicy {
-    fn should_start(&self) -> bool {
-        true
-    }
-}
-
 impl ProxyServiceGroup {
-    pub fn new(
-        policy: Arc<dyn ProxyStartupPolicy>,
-        services: Vec<Arc<dyn ProxyService>>,
-    ) -> Arc<Self> {
+    pub fn new(services: Vec<Arc<dyn ProxyService>>) -> Arc<Self> {
         Arc::new(Self {
             operation: Mutex::new(()),
-            policy,
             services,
             started_count: AtomicUsize::new(0),
         })
-    }
-
-    pub fn new_unconditional(services: Vec<Arc<dyn ProxyService>>) -> Arc<Self> {
-        Self::new(Arc::new(UnconditionalProxyStartupPolicy), services)
     }
 
     async fn stop_started(&self) {
@@ -409,7 +388,7 @@ impl ProxyServiceGroup {
 impl ProxyService for ProxyServiceGroup {
     async fn start(&self) -> anyhow::Result<()> {
         let _operation = self.operation.lock().await;
-        if self.started_count.load(Ordering::Acquire) != 0 || !self.policy.should_start() {
+        if self.started_count.load(Ordering::Acquire) != 0 {
             return Ok(());
         }
 
@@ -1440,14 +1419,6 @@ mod tests {
         assert!(create.validate().is_err());
     }
 
-    struct StaticProxyPolicy(bool);
-
-    impl ProxyStartupPolicy for StaticProxyPolicy {
-        fn should_start(&self) -> bool {
-            self.0
-        }
-    }
-
     struct RecordingProxyService {
         name: &'static str,
         fail_start: bool,
@@ -1624,14 +1595,11 @@ mod tests {
     #[tokio::test]
     async fn proxy_group_starts_in_order_and_stops_in_reverse() {
         let events = Arc::new(Mutex::new(Vec::new()));
-        let group = ProxyServiceGroup::new(
-            Arc::new(StaticProxyPolicy(true)),
-            vec![
-                service("tcp", false, &events),
-                service("icmp", false, &events),
-                service("udp", false, &events),
-            ],
-        );
+        let group = ProxyServiceGroup::new(vec![
+            service("tcp", false, &events),
+            service("icmp", false, &events),
+            service("udp", false, &events),
+        ]);
 
         group.start().await.unwrap();
         group.stop().await;
@@ -1652,14 +1620,11 @@ mod tests {
     #[tokio::test]
     async fn proxy_group_rolls_back_the_failing_service_and_predecessors() {
         let events = Arc::new(Mutex::new(Vec::new()));
-        let group = ProxyServiceGroup::new(
-            Arc::new(StaticProxyPolicy(true)),
-            vec![
-                service("tcp", false, &events),
-                service("icmp", true, &events),
-                service("udp", false, &events),
-            ],
-        );
+        let group = ProxyServiceGroup::new(vec![
+            service("tcp", false, &events),
+            service("icmp", true, &events),
+            service("udp", false, &events),
+        ]);
 
         assert!(group.start().await.is_err());
 
@@ -1667,20 +1632,6 @@ mod tests {
             *events.lock().unwrap(),
             ["start:tcp", "start:icmp", "stop:icmp", "stop:tcp"]
         );
-    }
-
-    #[tokio::test]
-    async fn proxy_group_skips_services_when_policy_is_disabled() {
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let group = ProxyServiceGroup::new(
-            Arc::new(StaticProxyPolicy(false)),
-            vec![service("tcp", false, &events)],
-        );
-
-        group.start().await.unwrap();
-        group.stop().await;
-
-        assert!(events.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -1692,10 +1643,7 @@ mod tests {
             release_first_stop: Notify::new(),
             events: events.clone(),
         });
-        let group = ProxyServiceGroup::new(
-            Arc::new(StaticProxyPolicy(true)),
-            vec![service("tcp", false, &events), blocking.clone()],
-        );
+        let group = ProxyServiceGroup::new(vec![service("tcp", false, &events), blocking.clone()]);
         group.start().await.unwrap();
 
         let stop_task = tokio::spawn({
