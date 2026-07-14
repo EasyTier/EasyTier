@@ -53,9 +53,8 @@ pub async fn prepare_env_with_tld_dns_zone(
     let (s, r) = create_packet_recv_chan();
     let peer_mgr = Arc::new(PeerManager::new(RouteAlgoType::Ospf, ctx, s));
     peer_mgr.core().run_for_test().await.unwrap();
-    let core_instance = Arc::new(
-        build_runtime_core_instance(peer_mgr.get_global_ctx(), peer_mgr.clone(), None).unwrap(),
-    );
+    let core_instance =
+        Arc::new(build_runtime_core_instance(peer_mgr.get_global_ctx(), peer_mgr.clone()).unwrap());
     replace_stun_info_collector(peer_mgr.clone(), NatType::PortRestricted);
 
     let r = Arc::new(tokio::sync::Mutex::new(r));

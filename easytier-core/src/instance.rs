@@ -58,7 +58,7 @@ use crate::{
         cidr_monitor::{
             ProxyCidrDiff, ProxyCidrMonitor, ProxyCidrMonitorHost, collect_proxy_cidr_diff,
         },
-        cidr_table::ProxyCidrRuntime,
+        cidr_table::ProxyCidrTable,
     },
     runtime_config::{CoreInstanceRuntimeConfig, CoreRuntimeConfig, CoreRuntimeConfigStore},
     socket::{
@@ -76,6 +76,8 @@ use self::{
     public_ipv6_provider::{PublicIpv6ProviderHost, PublicIpv6ProviderService},
     udp_hole_punch::{CoreUdpHolePunchService, UdpHolePunchPlatform},
 };
+#[cfg(feature = "proxy-packet")]
+use crate::proxy::{runtime::IcmpProxyHost, service::CoreProxyModule};
 
 pub use packet_io::PacketSink;
 use packet_io::{PacketEgress, parse_ip_packet};
@@ -251,9 +253,8 @@ where
     /// Optional OS port-mapping adapter. STUN-only hole punching remains
     /// available when the host does not provide one.
     pub udp_hole_punch_platform: Option<Arc<dyn UdpHolePunchPlatform>>,
-    pub transport_proxy: Option<Arc<dyn ProxyService>>,
-    pub proxy: Option<Arc<dyn ProxyService>>,
-    pub proxy_cidr_runtime: Option<Arc<dyn ProxyCidrRuntime>>,
+    #[cfg(feature = "proxy-packet")]
+    pub icmp_proxy_host: Option<Arc<dyn IcmpProxyHost>>,
     pub proxy_cidr_monitor: Option<Arc<dyn ProxyCidrMonitorHost>>,
     pub public_ipv6_provider: Option<Arc<dyn PublicIpv6ProviderHost>>,
 }
@@ -438,6 +439,36 @@ impl ProxyService for ProxyServiceGroup {
     }
 }
 
+pub struct TransportProxyBuild<A> {
+    pub lifecycle: Option<Arc<dyn ProxyService>>,
+    pub attachment: A,
+}
+
+pub trait TransportProxyFactory: Send + 'static {
+    type Attachment: Send + Sync + 'static;
+
+    fn build(
+        self,
+        cidr_table: Arc<ProxyCidrTable>,
+    ) -> anyhow::Result<TransportProxyBuild<Self::Attachment>>;
+}
+
+pub struct NoTransportProxyFactory;
+
+impl TransportProxyFactory for NoTransportProxyFactory {
+    type Attachment = ();
+
+    fn build(
+        self,
+        _cidr_table: Arc<ProxyCidrTable>,
+    ) -> anyhow::Result<TransportProxyBuild<Self::Attachment>> {
+        Ok(TransportProxyBuild {
+            lifecycle: None,
+            attachment: (),
+        })
+    }
+}
+
 /// Owns the portable peer and connectivity runtime for one EasyTier instance.
 ///
 /// An instance is intentionally one-shot: after it is stopped, construct a new
@@ -458,10 +489,10 @@ where
     udp_hole_punch_started: AtomicBool,
     transport_proxy: Option<Arc<dyn ProxyService>>,
     transport_proxy_started: AtomicBool,
-    proxy: Option<Arc<dyn ProxyService>>,
+    #[cfg(feature = "proxy-packet")]
+    proxy: Arc<CoreProxyModule<H>>,
+    #[cfg(feature = "proxy-packet")]
     proxy_started: AtomicBool,
-    proxy_cidr_runtime: Option<Arc<dyn ProxyCidrRuntime>>,
-    proxy_cidr_runtime_started: AtomicBool,
     proxy_cidr_monitor: Option<Arc<dyn ProxyCidrMonitorHost>>,
     proxy_cidr_monitor_task: Mutex<Option<AbortOnDropHandle<()>>>,
     dhcp_ipv4_task: Mutex<Option<AbortOnDropHandle<()>>>,
@@ -547,12 +578,13 @@ where
                 packet_tx,
             )?,
         );
-        let mut instance = Self::new_with_prepared_stun(
+        let (mut instance, ()) = Self::new_with_prepared_stun(
             peer_manager,
             adapters,
             config.connectivity,
             runtime_config,
             stun,
+            NoTransportProxyFactory,
         )?;
         instance.packet_egress = Some(PacketEgress::new(packet_rx, packet_sink));
         Ok(instance)
@@ -581,16 +613,53 @@ where
             adapters.accepted_transport_handler.is_some(),
         )?;
         let stun = Self::prepare_stun(&adapters, &config);
-        Self::new_with_prepared_stun(peer_manager, adapters, config, runtime_config, stun)
+        Self::new_with_prepared_stun(
+            peer_manager,
+            adapters,
+            config,
+            runtime_config,
+            stun,
+            NoTransportProxyFactory,
+        )
+        .map(|(instance, ())| instance)
     }
 
-    fn new_with_prepared_stun(
+    pub fn new_with_runtime_config_store_and_transport_factory<F>(
+        peer_manager: Arc<PeerManagerCore>,
+        adapters: CoreInstanceAdapters<H>,
+        config: CoreInstanceConfig,
+        runtime_config: CoreRuntimeConfigStore,
+        transport_proxy_factory: F,
+    ) -> anyhow::Result<(Self, F::Attachment)>
+    where
+        F: TransportProxyFactory,
+    {
+        validate_listener_protocols(
+            &config.listeners,
+            adapters.accepted_transport_handler.is_some(),
+        )?;
+        let stun = Self::prepare_stun(&adapters, &config);
+        Self::new_with_prepared_stun(
+            peer_manager,
+            adapters,
+            config,
+            runtime_config,
+            stun,
+            transport_proxy_factory,
+        )
+    }
+
+    fn new_with_prepared_stun<F>(
         peer_manager: Arc<PeerManagerCore>,
         adapters: CoreInstanceAdapters<H>,
         config: CoreInstanceConfig,
         runtime_config: CoreRuntimeConfigStore,
         stun: Arc<StunProviderSlot<<H as VirtualUdpSocketFactory>::Socket>>,
-    ) -> anyhow::Result<Self> {
+        transport_proxy_factory: F,
+    ) -> anyhow::Result<(Self, F::Attachment)>
+    where
+        F: TransportProxyFactory,
+    {
         let CoreInstanceAdapters {
             host,
             stun_projection: _,
@@ -604,9 +673,8 @@ where
             listener_events,
             accepted_transport_handler,
             udp_hole_punch_platform,
-            transport_proxy,
-            proxy,
-            proxy_cidr_runtime,
+            #[cfg(feature = "proxy-packet")]
+            icmp_proxy_host,
             proxy_cidr_monitor,
             public_ipv6_provider,
         } = adapters;
@@ -646,13 +714,15 @@ where
             ));
             (Some(listener), Some(registry))
         };
-        let running_listeners = match (core_running_listeners, has_external_listener) {
-            (Some(core), true) => Some(RunningListenerProviderGroup::new(vec![
-                core,
-                Arc::new(HostRunningListenerProvider(host.clone())),
-            ]) as Arc<dyn RunningListenerProvider>),
-            (core, _) => core,
-        };
+        let running_listeners: Arc<dyn RunningListenerProvider> =
+            match (core_running_listeners, has_external_listener) {
+                (Some(core), true) => RunningListenerProviderGroup::new(vec![
+                    core,
+                    Arc::new(HostRunningListenerProvider(host.clone())),
+                ]) as Arc<dyn RunningListenerProvider>,
+                (Some(core), false) => core,
+                (None, _) => Arc::new(HostRunningListenerProvider(host.clone())),
+            };
         let listener = match (transport_listener, listener) {
             (Some(transport), Some(external)) => {
                 Some(ListenerServiceGroup::new(vec![transport, external])
@@ -708,25 +778,32 @@ where
             udp_hole_punch_socket_context,
             protocol.clone(),
         );
-        let direct = match running_listeners {
-            Some(running_listeners) => DirectConnectorManager::new_with_running_listeners(
-                peer_manager.clone(),
-                host.clone(),
-                stun.clone(),
-                running_listeners,
-                dns,
-                protocol,
-                direct_options,
-            ),
-            None => DirectConnectorManager::new(
-                peer_manager.clone(),
-                host.clone(),
-                stun.clone(),
-                dns,
-                protocol,
-                direct_options,
-            ),
-        };
+        #[cfg(feature = "proxy-packet")]
+        let proxy = CoreProxyModule::new(
+            peer_manager.clone(),
+            host.clone(),
+            running_listeners.clone(),
+            runtime_config.clone(),
+            direct_options.tcp_bind.context.clone(),
+            icmp_proxy_host,
+        );
+        #[cfg(feature = "proxy-packet")]
+        let proxy_cidr_table = proxy.cidr_table();
+        #[cfg(not(feature = "proxy-packet"))]
+        let proxy_cidr_table = Arc::new(ProxyCidrTable::new());
+        let TransportProxyBuild {
+            lifecycle: transport_proxy,
+            attachment: transport_proxy_attachment,
+        } = transport_proxy_factory.build(proxy_cidr_table)?;
+        let direct = DirectConnectorManager::new_with_running_listeners(
+            peer_manager.clone(),
+            host.clone(),
+            stun.clone(),
+            running_listeners,
+            dns,
+            protocol,
+            direct_options,
+        );
         let tcp_hole_punch = TcpHolePunchConnector::new(
             peer_manager.clone(),
             host,
@@ -740,36 +817,39 @@ where
         let peer_center = Arc::new(PeerCenterInstance::new(peer_manager.clone()));
         let public_ipv6_provider = public_ipv6_provider.map(PublicIpv6ProviderService::new);
 
-        Ok(Self {
-            state: AtomicU8::new(CoreInstanceState::Created as u8),
-            operation: Mutex::new(()),
-            cancel: CancellationToken::new(),
-            peer_manager,
-            manual,
-            direct,
-            tcp_hole_punch,
-            listener,
-            udp_hole_punch,
-            udp_hole_punch_started: AtomicBool::new(false),
-            transport_proxy,
-            transport_proxy_started: AtomicBool::new(false),
-            proxy,
-            proxy_started: AtomicBool::new(false),
-            proxy_cidr_runtime,
-            proxy_cidr_runtime_started: AtomicBool::new(false),
-            proxy_cidr_monitor,
-            proxy_cidr_monitor_task: Mutex::new(None),
-            dhcp_ipv4_task: Mutex::new(None),
-            packet_egress: None,
-            peer_center,
-            peer_center_started: AtomicBool::new(false),
-            public_ipv6_provider,
-            initial_peers,
-            initial_peers_started: AtomicBool::new(false),
-            runtime_config,
-            acl_whitelist: RwLock::new(acl_whitelist),
-            initial_acl_loaded: AtomicBool::new(false),
-        })
+        Ok((
+            Self {
+                state: AtomicU8::new(CoreInstanceState::Created as u8),
+                operation: Mutex::new(()),
+                cancel: CancellationToken::new(),
+                peer_manager,
+                manual,
+                direct,
+                tcp_hole_punch,
+                listener,
+                udp_hole_punch,
+                udp_hole_punch_started: AtomicBool::new(false),
+                transport_proxy,
+                transport_proxy_started: AtomicBool::new(false),
+                #[cfg(feature = "proxy-packet")]
+                proxy,
+                #[cfg(feature = "proxy-packet")]
+                proxy_started: AtomicBool::new(false),
+                proxy_cidr_monitor,
+                proxy_cidr_monitor_task: Mutex::new(None),
+                dhcp_ipv4_task: Mutex::new(None),
+                packet_egress: None,
+                peer_center,
+                peer_center_started: AtomicBool::new(false),
+                public_ipv6_provider,
+                initial_peers,
+                initial_peers_started: AtomicBool::new(false),
+                runtime_config,
+                acl_whitelist: RwLock::new(acl_whitelist),
+                initial_acl_loaded: AtomicBool::new(false),
+            },
+            transport_proxy_attachment,
+        ))
     }
 
     pub fn state(&self) -> CoreInstanceState {
@@ -808,18 +888,10 @@ where
             transport_proxy.stop().await;
             self.transport_proxy_started.store(false, Ordering::Release);
         }
-        if let Some(proxy) = &self.proxy
-            && self.proxy_started.load(Ordering::Acquire)
-        {
-            proxy.stop().await;
+        #[cfg(feature = "proxy-packet")]
+        if self.proxy_started.load(Ordering::Acquire) {
+            self.proxy.stop().await;
             self.proxy_started.store(false, Ordering::Release);
-        }
-        if let Some(proxy_cidr_runtime) = &self.proxy_cidr_runtime
-            && self
-                .proxy_cidr_runtime_started
-                .swap(false, Ordering::AcqRel)
-        {
-            proxy_cidr_runtime.stop_updater();
         }
         self.manual.stop().await;
         self.tcp_hole_punch.stop().await;
@@ -1035,15 +1107,14 @@ where
     }
 
     /// Starts proxy services after the host has prepared its packet interface.
+    #[cfg(feature = "proxy-packet")]
     pub async fn start_proxy(self: &Arc<Self>) -> anyhow::Result<()> {
         let _operation = self.operation.lock().await;
         let state = self.state();
         if state != CoreInstanceState::Running {
             anyhow::bail!("proxy services cannot start from core instance state {state:?}");
         }
-        let Some(proxy) = &self.proxy else {
-            return Ok(());
-        };
+        let proxy = &self.proxy;
         if self.proxy_started.load(Ordering::Acquire) {
             return Ok(());
         }
@@ -1059,7 +1130,7 @@ where
             _ = self.cancel.cancelled() => {
                 Err(anyhow::anyhow!("proxy service start cancelled"))
             }
-            result = proxy.start() => result,
+            result = proxy.start() => result.map_err(anyhow::Error::new),
         };
         if let Err(error) = start_result {
             proxy.stop().await;
@@ -1074,6 +1145,17 @@ where
             anyhow::bail!("proxy service start cancelled");
         }
         recovery.disarm();
+        Ok(())
+    }
+
+    /// Validates proxy lifecycle ordering when packet proxy support is absent.
+    #[cfg(not(feature = "proxy-packet"))]
+    pub async fn start_proxy(self: &Arc<Self>) -> anyhow::Result<()> {
+        let _operation = self.operation.lock().await;
+        let state = self.state();
+        if state != CoreInstanceState::Running {
+            anyhow::bail!("proxy services cannot start from core instance state {state:?}");
+        }
         Ok(())
     }
 
@@ -1114,7 +1196,7 @@ where
             })?;
             self.start_dhcp_ipv4(host).await?;
         }
-        self.start_proxy_cidr_runtime().await?;
+        self.refresh_proxy_cidr_table().await?;
         self.start_transport_proxy().await?;
         self.load_initial_acl().await?;
         self.start_proxy().await?;
@@ -1125,20 +1207,17 @@ where
         Ok(())
     }
 
-    async fn start_proxy_cidr_runtime(&self) -> anyhow::Result<()> {
+    async fn refresh_proxy_cidr_table(&self) -> anyhow::Result<()> {
         let _operation = self.operation.lock().await;
         let state = self.state();
         if state != CoreInstanceState::Running {
-            anyhow::bail!("proxy CIDR runtime cannot start from core instance state {state:?}");
+            anyhow::bail!("proxy CIDR table cannot update from core instance state {state:?}");
         }
         if self.cancel.is_cancelled() {
-            anyhow::bail!("proxy CIDR runtime start cancelled");
+            anyhow::bail!("proxy CIDR table update cancelled");
         }
-        if let Some(proxy_cidr_runtime) = &self.proxy_cidr_runtime
-            && !self.proxy_cidr_runtime_started.swap(true, Ordering::AcqRel)
-        {
-            proxy_cidr_runtime.start_updater();
-        }
+        #[cfg(feature = "proxy-packet")]
+        self.proxy.update_cidr_table();
         Ok(())
     }
 
@@ -1184,6 +1263,8 @@ where
             != config.peer.peer_group_memberships
             || current.peer.acl_group_declarations != config.peer.acl_group_declarations;
         self.runtime_config.replace(config);
+        #[cfg(feature = "proxy-packet")]
+        self.proxy.update_cidr_table();
         if refresh_acl_groups {
             self.refresh_acl_groups().await;
         }
@@ -1339,6 +1420,24 @@ where
 
     pub fn runtime_config_snapshot(&self) -> CoreRuntimeConfig {
         self.runtime_config.snapshot().services.clone()
+    }
+
+    pub fn proxy_is_started(&self) -> bool {
+        #[cfg(feature = "proxy-packet")]
+        {
+            self.proxy_started.load(Ordering::Acquire)
+        }
+        #[cfg(not(feature = "proxy-packet"))]
+        {
+            false
+        }
+    }
+
+    #[cfg(feature = "proxy-packet")]
+    pub fn tcp_proxy_entry_snapshots(
+        &self,
+    ) -> Vec<crate::proxy::tcp_proxy_engine::TcpNatEntrySnapshot> {
+        self.proxy.tcp_entry_snapshots()
     }
 
     pub fn generate_credential(

@@ -1,5 +1,6 @@
 use cidr::Ipv4Inet;
 use easytier_core::instance::ProxyService;
+use easytier_core::proxy::cidr_table::ProxyCidrTable;
 use easytier_core::proxy::runtime::{
     ProxyRuntimeInfo, ProxyRuntimeSnapshot, TcpProxyConnectContext, TcpProxyDestinationConnector,
     TcpProxyRuntime,
@@ -30,8 +31,6 @@ use crate::proto::api::instance::{
 use crate::proto::rpc_types;
 use crate::proto::rpc_types::controller::BaseController;
 use crate::tunnel::packet_def::ZCPacket;
-
-use super::CidrSet;
 
 pub type NatDstTcpConnector = TcpSocketProxyConnector<RuntimeConnectorHost>;
 
@@ -152,7 +151,11 @@ pub struct TcpProxy<C: TcpProxyDestinationConnector> {
 }
 
 impl<C: TcpProxyDestinationConnector> TcpProxy<C> {
-    pub fn new(peer_manager: Arc<PeerManager>, connector: C, cidr_set: Arc<CidrSet>) -> Arc<Self> {
+    pub fn new(
+        peer_manager: Arc<PeerManager>,
+        connector: C,
+        cidr_table: Arc<ProxyCidrTable>,
+    ) -> Arc<Self> {
         let global_ctx = peer_manager.get_global_ctx();
         let transport_type = transport_type_for_mode(connector.proxy_mode());
         let runtime = Arc::new(RuntimeTcpProxyAdapter::new(
@@ -165,7 +168,7 @@ impl<C: TcpProxyDestinationConnector> TcpProxy<C> {
             runtime.clone(),
             runtime_connector_host(global_ctx.clone()),
             Arc::new(connector),
-            cidr_set.table(),
+            cidr_table,
             runtime_socket_context(&global_ctx),
         );
 
@@ -327,5 +330,37 @@ impl<C: TcpProxyDestinationConnector> TcpProxyRpcService<C> {
         Self {
             tcp_proxy: Arc::downgrade(&tcp_proxy),
         }
+    }
+}
+
+#[derive(Clone)]
+pub struct CoreTcpProxyRpcService {
+    core_instance: Weak<crate::connector::core_instance::RuntimeCoreInstance>,
+}
+
+impl CoreTcpProxyRpcService {
+    pub fn new(core_instance: &Arc<crate::connector::core_instance::RuntimeCoreInstance>) -> Self {
+        Self {
+            core_instance: Arc::downgrade(core_instance),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl TcpProxyRpc for CoreTcpProxyRpcService {
+    type Controller = BaseController;
+
+    async fn list_tcp_proxy_entry(
+        &self,
+        _: BaseController,
+        _request: ListTcpProxyEntryRequest,
+    ) -> std::result::Result<ListTcpProxyEntryResponse, rpc_types::error::Error> {
+        let entries = self.core_instance.upgrade().map_or_else(Vec::new, |core| {
+            core.tcp_proxy_entry_snapshots()
+                .into_iter()
+                .map(|entry| tcp_entry_snapshot_to_pb(entry, TcpProxyEntryTransportType::Tcp))
+                .collect()
+        });
+        Ok(ListTcpProxyEntryResponse { entries })
     }
 }

@@ -104,9 +104,8 @@ where
             listener_events: None,
             accepted_transport_handler: None,
             udp_hole_punch_platform: None,
-            transport_proxy: None,
-            proxy: None,
-            proxy_cidr_runtime: None,
+            #[cfg(feature = "proxy-packet")]
+            icmp_proxy_host: None,
             proxy_cidr_monitor: None,
             public_ipv6_provider: None,
         };

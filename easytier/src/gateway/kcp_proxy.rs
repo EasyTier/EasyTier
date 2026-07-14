@@ -31,7 +31,7 @@ use easytier_core::{
 };
 
 use super::{
-    CidrSet, RuntimeWrappedTcpDestinationAdapter,
+    RuntimeWrappedTcpDestinationAdapter,
     tcp_proxy::{NatDstTcpConnector, TcpProxy},
 };
 use crate::utils::task::HedgeExt;
@@ -235,7 +235,7 @@ pub struct KcpProxySrc {
 }
 
 impl KcpProxySrc {
-    pub async fn new(peer_manager: Arc<PeerManager>, cidr_set: Arc<CidrSet>) -> Self {
+    pub async fn new(peer_manager: Arc<PeerManager>, cidr_table: Arc<ProxyCidrTable>) -> Self {
         let mut kcp_endpoint = create_kcp_endpoint();
         kcp_endpoint.run().await;
 
@@ -256,7 +256,7 @@ impl KcpProxySrc {
                 kcp_endpoint: kcp_endpoint.clone(),
                 peer_mgr: Arc::downgrade(&peer_manager),
             },
-            cidr_set,
+            cidr_table,
         );
 
         Self {
@@ -297,12 +297,12 @@ pub struct KcpProxyDst {
     kcp_endpoint: Arc<KcpEndpoint>,
     peer_manager: Arc<PeerManager>,
     proxy_entries: Arc<DashMap<ConnId, TcpProxyEntry>>,
-    cidr_set: Arc<CidrSet>,
+    cidr_table: Arc<ProxyCidrTable>,
     tasks: JoinSet<()>,
 }
 
 impl KcpProxyDst {
-    pub async fn new(peer_manager: Arc<PeerManager>, cidr_set: Arc<CidrSet>) -> Self {
+    pub async fn new(peer_manager: Arc<PeerManager>, cidr_table: Arc<ProxyCidrTable>) -> Self {
         let mut kcp_endpoint = create_kcp_endpoint();
         kcp_endpoint.run().await;
 
@@ -317,7 +317,7 @@ impl KcpProxyDst {
             kcp_endpoint: Arc::new(kcp_endpoint),
             peer_manager,
             proxy_entries: Arc::new(DashMap::new()),
-            cidr_set,
+            cidr_table,
             tasks,
         }
     }
@@ -401,7 +401,7 @@ impl KcpProxyDst {
         let kcp_endpoint = self.kcp_endpoint.clone();
         let global_ctx = self.peer_manager.get_global_ctx();
         let proxy_entries = self.proxy_entries.clone();
-        let cidr_table = self.cidr_set.table();
+        let cidr_table = self.cidr_table.clone();
         let route = self.peer_manager.core().get_route();
         let runtime = Arc::new(RuntimeWrappedTcpDestinationAdapter::new(global_ctx.clone()));
         let acl_filter = self.peer_manager.core().acl_filter();
@@ -453,7 +453,7 @@ struct KcpProxyServiceState {
 
 pub struct KcpProxyService {
     peer_manager: Arc<PeerManager>,
-    cidr_set: Arc<CidrSet>,
+    cidr_table: Arc<ProxyCidrTable>,
     state: Mutex<Option<KcpProxyServiceState>>,
     src_endpoint: StdMutex<Option<Arc<KcpEndpoint>>>,
     src_tcp_proxy: StdMutex<Option<Arc<TcpProxy<NatDstKcpConnector>>>>,
@@ -461,10 +461,10 @@ pub struct KcpProxyService {
 }
 
 impl KcpProxyService {
-    pub fn new(peer_manager: Arc<PeerManager>, cidr_set: Arc<CidrSet>) -> Self {
+    pub fn new(peer_manager: Arc<PeerManager>, cidr_table: Arc<ProxyCidrTable>) -> Self {
         Self {
             peer_manager,
-            cidr_set,
+            cidr_table,
             state: Mutex::new(None),
             src_endpoint: StdMutex::new(None),
             src_tcp_proxy: StdMutex::new(None),
@@ -510,14 +510,15 @@ impl ProxyService for KcpProxyService {
 
         let (src_enabled, dst_enabled) = self.enabled_directions();
         let src = if src_enabled {
-            let src = KcpProxySrc::new(self.peer_manager.clone(), self.cidr_set.clone()).await;
+            let src = KcpProxySrc::new(self.peer_manager.clone(), self.cidr_table.clone()).await;
             src.start().await;
             Some(src)
         } else {
             None
         };
         let dst = if dst_enabled {
-            let mut dst = KcpProxyDst::new(self.peer_manager.clone(), self.cidr_set.clone()).await;
+            let mut dst =
+                KcpProxyDst::new(self.peer_manager.clone(), self.cidr_table.clone()).await;
             dst.start().await;
             Some(dst)
         } else {

@@ -5,6 +5,8 @@ pub mod cidr_table;
 pub mod proxy_acl;
 #[cfg(feature = "proxy-packet")]
 pub mod runtime;
+#[cfg(feature = "proxy-packet")]
+pub(crate) mod service;
 pub mod socks5;
 pub mod socks5_protocol;
 

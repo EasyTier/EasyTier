@@ -47,11 +47,21 @@ pub trait IcmpProxySocket: Send + Sync + 'static {
     async fn send(&self, destination: Ipv4Addr, packet: &[u8]) -> Result<(), ProxyRuntimeError>;
 
     async fn recv(&self) -> Result<(IpAddr, Vec<u8>), ProxyRuntimeError>;
+
+    fn close(&self) {}
+}
+
+#[async_trait::async_trait]
+pub trait IcmpProxyHost: Send + Sync + 'static {
+    async fn open_icmp_v4(
+        &self,
+        context: crate::socket::SocketContext,
+    ) -> Result<Arc<dyn IcmpProxySocket>, ProxyRuntimeError>;
 }
 
 #[async_trait::async_trait]
 pub trait IcmpProxyRuntime: ProxyRuntimeInfo {
-    type Socket: IcmpProxySocket;
+    type Socket: IcmpProxySocket + ?Sized;
 
     async fn start_icmp(&self) -> Result<Arc<Self::Socket>, ProxyRuntimeError>;
 

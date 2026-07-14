@@ -1,6 +1,5 @@
 use crate::common::PeerId;
 use crate::common::global_ctx::ArcGlobalCtx;
-use crate::gateway::CidrSet;
 use crate::gateway::tcp_proxy::TcpProxy;
 use crate::peers::peer_manager::PeerManager;
 use crate::peers::{NicPacketFilter, PeerPacketFilter};
@@ -587,12 +586,12 @@ struct QuicStreamContext {
 }
 
 impl QuicStreamContext {
-    fn new(peer_mgr: Arc<PeerManager>, cidr_set: Arc<CidrSet>) -> Self {
+    fn new(peer_mgr: Arc<PeerManager>, cidr_table: Arc<ProxyCidrTable>) -> Self {
         let global_ctx = peer_mgr.get_global_ctx();
         Self {
             global_ctx: global_ctx.clone(),
             proxy_entries: Arc::new(DashMap::new()),
-            cidr_table: cidr_set.table(),
+            cidr_table,
             runtime: Arc::new(RuntimeWrappedTcpDestinationAdapter::new(global_ctx)),
             acl_filter: peer_mgr.core().acl_filter(),
             route: peer_mgr.core().get_route(),
@@ -781,7 +780,7 @@ impl QuicStreamReceiver {
 
 pub struct QuicProxy {
     peer_mgr: Arc<PeerManager>,
-    cidr_set: Arc<CidrSet>,
+    cidr_table: Arc<ProxyCidrTable>,
 
     endpoint: Option<Endpoint>,
 
@@ -804,10 +803,10 @@ impl QuicProxy {
 }
 
 impl QuicProxy {
-    pub fn new(peer_mgr: Arc<PeerManager>, cidr_set: Arc<CidrSet>) -> Self {
+    pub fn new(peer_mgr: Arc<PeerManager>, cidr_table: Arc<ProxyCidrTable>) -> Self {
         Self {
             peer_mgr,
-            cidr_set,
+            cidr_table,
             endpoint: None,
             src: None,
             dst: None,
@@ -885,7 +884,7 @@ impl QuicProxy {
                         .time_to_idle(Duration::from_secs(600)) // cf. quinn transport config (max_idle_timeout)
                         .build(),
                 },
-                self.cidr_set.clone(),
+                self.cidr_table.clone(),
             ));
 
             let src = QuicProxySrc {
@@ -906,7 +905,7 @@ impl QuicProxy {
 
             let stream_ctx = Arc::new(QuicStreamContext::new(
                 peer_mgr.clone(),
-                self.cidr_set.clone(),
+                self.cidr_table.clone(),
             ));
 
             let dst = QuicProxyDst {
@@ -932,17 +931,17 @@ impl QuicProxy {
 
 pub struct QuicProxyService {
     peer_manager: Arc<PeerManager>,
-    cidr_set: Arc<CidrSet>,
+    cidr_table: Arc<ProxyCidrTable>,
     state: Mutex<Option<QuicProxy>>,
     src_tcp_proxy: StdMutex<Option<Arc<TcpProxy<NatDstQuicConnector>>>>,
     dst_proxy_entries: StdMutex<Option<Arc<DashMap<(StreamId, StreamId), TcpProxyEntry>>>>,
 }
 
 impl QuicProxyService {
-    pub fn new(peer_manager: Arc<PeerManager>, cidr_set: Arc<CidrSet>) -> Self {
+    pub fn new(peer_manager: Arc<PeerManager>, cidr_table: Arc<ProxyCidrTable>) -> Self {
         Self {
             peer_manager,
-            cidr_set,
+            cidr_table,
             state: Mutex::new(None),
             src_tcp_proxy: StdMutex::new(None),
             dst_proxy_entries: StdMutex::new(None),
@@ -979,7 +978,7 @@ impl ProxyService for QuicProxyService {
         }
 
         let (src_enabled, dst_enabled) = self.enabled_directions();
-        let mut proxy = QuicProxy::new(self.peer_manager.clone(), self.cidr_set.clone());
+        let mut proxy = QuicProxy::new(self.peer_manager.clone(), self.cidr_table.clone());
         if src_enabled || dst_enabled {
             proxy.run(src_enabled, dst_enabled).await;
         }

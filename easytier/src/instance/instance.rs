@@ -11,7 +11,10 @@ use std::time::Duration;
 use anyhow::Context;
 use cidr::{IpCidr, Ipv4Inet};
 use easytier_core::dhcp::DhcpIpv4Host;
+#[cfg(any(feature = "kcp", feature = "quic"))]
 use easytier_core::instance::{ProxyService, ProxyServiceGroup};
+use easytier_core::instance::{TransportProxyBuild, TransportProxyFactory};
+use easytier_core::proxy::cidr_table::ProxyCidrTable;
 use easytier_core::tunnel::ring::RingTunnelRegistry;
 #[cfg(feature = "tun")]
 use futures::FutureExt;
@@ -30,18 +33,17 @@ use crate::common::config::ConfigLoader;
 use crate::common::error::Error;
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtx, GlobalCtxEvent};
 use crate::connector::core_instance::{
-    RuntimeCoreInstance, build_runtime_core_instance_with_services_and_ring_registry,
+    RuntimeCoreInstance, build_runtime_core_instance_with_transport_factory_and_ring_registry,
     runtime_instance_config,
 };
 use crate::connector::manual::{ConnectorManagerRpcService, ManualConnectorManager};
-use crate::gateway::icmp_proxy::IcmpProxy;
 #[cfg(feature = "kcp")]
 use crate::gateway::kcp_proxy::KcpProxyService;
 #[cfg(feature = "quic")]
 use crate::gateway::quic_proxy::QuicProxyService;
-use crate::gateway::tcp_proxy::{NatDstTcpConnector, TcpProxy, TcpProxyRpcService};
-use crate::gateway::udp_proxy::UdpProxy;
-use crate::gateway::{CidrSet, runtime_cidr_set_without_updater};
+use crate::gateway::tcp_proxy::CoreTcpProxyRpcService;
+#[cfg(any(feature = "kcp", feature = "quic"))]
+use crate::gateway::tcp_proxy::TcpProxyRpcService;
 use crate::launcher::NetworkConfigExt;
 use crate::peer_center::instance::PeerCenterInstanceService;
 use crate::peers::peer_conn::PeerConnId;
@@ -78,45 +80,87 @@ use super::public_ipv6_provider::validate_public_ipv6_config_values;
 #[cfg(feature = "socks5")]
 use crate::gateway::socks5::Socks5Server;
 
-struct RuntimeProxyService {
-    group: Arc<ProxyServiceGroup>,
-    tcp_proxy: Arc<TcpProxy<NatDstTcpConnector>>,
+struct RuntimeTransportProxyFactory {
+    #[cfg(any(feature = "kcp", feature = "quic"))]
+    peer_manager: Arc<PeerManager>,
 }
 
-impl RuntimeProxyService {
-    fn new(
-        global_ctx: ArcGlobalCtx,
-        peer_manager: Arc<PeerManager>,
-        cidr_set: Arc<CidrSet>,
-    ) -> Result<Arc<Self>, Error> {
-        let tcp_proxy = TcpProxy::new(
-            peer_manager.clone(),
-            NatDstTcpConnector::new(crate::connector::runtime::runtime_connector_host(
-                global_ctx.clone(),
-            ))
-            .with_socket_context(
-                crate::connector::core_instance::runtime_socket_context(&global_ctx),
-            ),
-            cidr_set.clone(),
-        );
-        let icmp_proxy = IcmpProxy::new(global_ctx.clone(), peer_manager.clone(), cidr_set.clone())
-            .with_context(|| "create icmp proxy failed")?;
-        let udp_proxy = UdpProxy::new(global_ctx.clone(), peer_manager, cidr_set)
-            .with_context(|| "create UDP proxy failed")?;
-        let services: Vec<Arc<dyn ProxyService>> = vec![tcp_proxy.clone(), icmp_proxy, udp_proxy];
-        let group = ProxyServiceGroup::new(services);
-        Ok(Arc::new(Self { group, tcp_proxy }))
+impl RuntimeTransportProxyFactory {
+    fn new(peer_manager: Arc<PeerManager>) -> Self {
+        #[cfg(not(any(feature = "kcp", feature = "quic")))]
+        let _ = peer_manager;
+        Self {
+            #[cfg(any(feature = "kcp", feature = "quic"))]
+            peer_manager,
+        }
     }
 }
 
-#[async_trait::async_trait]
-impl ProxyService for RuntimeProxyService {
-    async fn start(&self) -> anyhow::Result<()> {
-        self.group.start().await
+struct RuntimeTransportProxyAttachment {
+    #[cfg(feature = "kcp")]
+    kcp: Weak<KcpProxyService>,
+    #[cfg(feature = "quic")]
+    quic: Weak<QuicProxyService>,
+}
+
+impl RuntimeTransportProxyAttachment {
+    #[cfg(feature = "kcp")]
+    fn kcp(&self) -> Arc<KcpProxyService> {
+        self.kcp
+            .upgrade()
+            .expect("core must retain the KCP proxy lifecycle")
     }
 
-    async fn stop(&self) {
-        self.group.stop().await;
+    #[cfg(feature = "quic")]
+    fn quic(&self) -> Arc<QuicProxyService> {
+        self.quic
+            .upgrade()
+            .expect("core must retain the QUIC proxy lifecycle")
+    }
+}
+
+impl TransportProxyFactory for RuntimeTransportProxyFactory {
+    type Attachment = RuntimeTransportProxyAttachment;
+
+    fn build(
+        self,
+        cidr_table: Arc<ProxyCidrTable>,
+    ) -> anyhow::Result<TransportProxyBuild<Self::Attachment>> {
+        #[cfg(any(feature = "kcp", feature = "quic"))]
+        let (lifecycle, attachment) = {
+            let mut services: Vec<Arc<dyn ProxyService>> = Vec::new();
+            #[cfg(feature = "kcp")]
+            let kcp = Arc::new(KcpProxyService::new(
+                self.peer_manager.clone(),
+                cidr_table.clone(),
+            ));
+            #[cfg(feature = "kcp")]
+            services.push(kcp.clone());
+            #[cfg(feature = "quic")]
+            let quic = Arc::new(QuicProxyService::new(self.peer_manager, cidr_table));
+            #[cfg(feature = "quic")]
+            services.push(quic.clone());
+            let lifecycle: Arc<dyn ProxyService> = ProxyServiceGroup::new(services);
+            (
+                Some(lifecycle),
+                RuntimeTransportProxyAttachment {
+                    #[cfg(feature = "kcp")]
+                    kcp: Arc::downgrade(&kcp),
+                    #[cfg(feature = "quic")]
+                    quic: Arc::downgrade(&quic),
+                },
+            )
+        };
+        #[cfg(not(any(feature = "kcp", feature = "quic")))]
+        let (lifecycle, attachment) = {
+            let _ = (self, cidr_table);
+            (None, RuntimeTransportProxyAttachment {})
+        };
+
+        Ok(TransportProxyBuild {
+            lifecycle,
+            attachment,
+        })
     }
 }
 
@@ -649,13 +693,7 @@ pub struct Instance {
     ring_registry: Arc<RingTunnelRegistry>,
     config_operation: Arc<ConfigOperation>,
 
-    proxy: Arc<RuntimeProxyService>,
-
-    #[cfg(feature = "kcp")]
-    kcp_proxy: Arc<KcpProxyService>,
-
-    #[cfg(feature = "quic")]
-    quic_proxy: Arc<QuicProxyService>,
+    transport_proxy: RuntimeTransportProxyAttachment,
 
     vpn_portal: Arc<Mutex<Box<dyn VpnPortal>>>,
 
@@ -848,46 +886,15 @@ impl Instance {
             peer_packet_sender,
             ring_registry.clone(),
         ));
-        let proxy_cidr_runtime = Arc::new(runtime_cidr_set_without_updater(global_ctx.clone()));
-        let proxy = RuntimeProxyService::new(
-            global_ctx.clone(),
-            peer_manager.clone(),
-            proxy_cidr_runtime.clone(),
-        )
-        .expect("runtime proxy adapter construction should be infallible");
-        #[cfg(feature = "kcp")]
-        let kcp_proxy = Arc::new(KcpProxyService::new(
-            peer_manager.clone(),
-            proxy_cidr_runtime.clone(),
-        ));
-        #[cfg(feature = "quic")]
-        let quic_proxy = Arc::new(QuicProxyService::new(
-            peer_manager.clone(),
-            proxy_cidr_runtime.clone(),
-        ));
-        #[cfg(any(feature = "kcp", feature = "quic"))]
-        let transport_proxy: Option<Arc<dyn ProxyService>> = {
-            let mut services: Vec<Arc<dyn ProxyService>> = Vec::new();
-            #[cfg(feature = "kcp")]
-            services.push(kcp_proxy.clone());
-            #[cfg(feature = "quic")]
-            services.push(quic_proxy.clone());
-            let group: Arc<dyn ProxyService> = ProxyServiceGroup::new(services);
-            Some(group)
-        };
-        #[cfg(not(any(feature = "kcp", feature = "quic")))]
-        let transport_proxy: Option<Arc<dyn ProxyService>> = None;
-        let core_instance = Arc::new(
-            build_runtime_core_instance_with_services_and_ring_registry(
+        let (core_instance, transport_proxy) =
+            build_runtime_core_instance_with_transport_factory_and_ring_registry(
                 global_ctx.clone(),
                 peer_manager.clone(),
-                transport_proxy,
-                Some(proxy.clone()),
-                Some(proxy_cidr_runtime),
+                RuntimeTransportProxyFactory::new(peer_manager.clone()),
                 ring_registry.clone(),
             )
-            .expect("runtime core instance composition should be valid"),
-        );
+            .expect("runtime core instance composition should be valid");
+        let core_instance = Arc::new(core_instance);
         let config_operation = Arc::new(ConfigOperation::default());
 
         #[cfg(feature = "wireguard")]
@@ -911,12 +918,7 @@ impl Instance {
             ring_registry,
             config_operation,
 
-            proxy,
-            #[cfg(feature = "kcp")]
-            kcp_proxy,
-
-            #[cfg(feature = "quic")]
-            quic_proxy,
+            transport_proxy,
 
             vpn_portal: Arc::new(Mutex::new(Box::new(vpn_portal_inst))),
 
@@ -1124,7 +1126,8 @@ impl Instance {
         self.socks5_server
             .run(
                 #[cfg(feature = "kcp")]
-                self.kcp_proxy
+                self.transport_proxy
+                    .kcp()
                     .src_endpoint()
                     .map(|endpoint| Arc::downgrade(&endpoint)),
             )
@@ -1522,10 +1525,10 @@ impl Instance {
 
                 tcp_proxy_rpc_services.insert(
                     "tcp".to_string(),
-                    Arc::new(TcpProxyRpcService::new(self.proxy.tcp_proxy.clone())),
+                    Arc::new(CoreTcpProxyRpcService::new(&self.core_instance)),
                 );
                 #[cfg(feature = "kcp")]
-                if let Some(kcp_proxy) = self.kcp_proxy.src_tcp_proxy() {
+                if let Some(kcp_proxy) = self.transport_proxy.kcp().src_tcp_proxy() {
                     tcp_proxy_rpc_services.insert(
                         "kcp_src".to_string(),
                         Arc::new(TcpProxyRpcService::new(kcp_proxy)),
@@ -1533,12 +1536,12 @@ impl Instance {
                 }
 
                 #[cfg(feature = "kcp")]
-                if let Some(kcp_proxy) = self.kcp_proxy.dst_rpc_service() {
+                if let Some(kcp_proxy) = self.transport_proxy.kcp().dst_rpc_service() {
                     tcp_proxy_rpc_services.insert("kcp_dst".to_string(), Arc::new(kcp_proxy));
                 }
 
                 #[cfg(feature = "quic")]
-                if let Some(quic_proxy) = self.quic_proxy.src_tcp_proxy() {
+                if let Some(quic_proxy) = self.transport_proxy.quic().src_tcp_proxy() {
                     tcp_proxy_rpc_services.insert(
                         "quic_src".to_string(),
                         Arc::new(TcpProxyRpcService::new(quic_proxy)),
@@ -1546,7 +1549,7 @@ impl Instance {
                 }
 
                 #[cfg(feature = "quic")]
-                if let Some(quic_proxy) = self.quic_proxy.dst_rpc_service() {
+                if let Some(quic_proxy) = self.transport_proxy.quic().dst_rpc_service() {
                     tcp_proxy_rpc_services.insert("quic_dst".to_string(), Arc::new(quic_proxy));
                 }
 
@@ -1839,7 +1842,10 @@ mod tests {
         flags.disable_kcp_input = true;
         instance.global_ctx.set_flags(flags);
 
-        assert_eq!(instance.kcp_proxy.enabled_directions(), (true, false));
+        assert_eq!(
+            instance.transport_proxy.kcp().enabled_directions(),
+            (true, false)
+        );
     }
 
     #[cfg(feature = "quic")]
@@ -1851,13 +1857,14 @@ mod tests {
         flags.disable_quic_input = true;
         instance.global_ctx.set_flags(flags);
 
-        instance.quic_proxy.start().await.unwrap();
-        assert!(instance.quic_proxy.src_tcp_proxy().is_some());
-        assert!(instance.quic_proxy.dst_rpc_service().is_none());
+        let quic = instance.transport_proxy.quic();
+        quic.start().await.unwrap();
+        assert!(quic.src_tcp_proxy().is_some());
+        assert!(quic.dst_rpc_service().is_none());
 
-        instance.quic_proxy.stop().await;
-        assert!(instance.quic_proxy.src_tcp_proxy().is_none());
-        assert!(instance.quic_proxy.dst_rpc_service().is_none());
+        quic.stop().await;
+        assert!(quic.src_tcp_proxy().is_none());
+        assert!(quic.dst_rpc_service().is_none());
     }
 
     #[tokio::test]
