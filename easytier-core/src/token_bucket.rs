@@ -168,8 +168,12 @@ impl TokenBucket {
 
     /// Consume tokens, blocking if not available
     pub async fn consume(&self, tokens: u64) {
-        while !self.try_consume(tokens) {
-            self.refill_notifier.notified().await;
+        loop {
+            let notified = self.refill_notifier.notified();
+            if self.try_consume(tokens) {
+                return;
+            }
+            notified.await;
         }
     }
 
