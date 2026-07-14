@@ -32,14 +32,6 @@ func (publicConnectorEnvironment) LocalAddrForRemote(
 	return nil, nil
 }
 
-func (publicConnectorEnvironment) UDPPortMapping(context.Context, uint64) (net.Addr, error) {
-	return nil, nil
-}
-
-func (publicConnectorEnvironment) TCPPortMapping(context.Context, uint16) (net.Addr, error) {
-	return nil, nil
-}
-
 type publicSocketFactory struct{}
 
 func (publicSocketFactory) ConnectTCP(

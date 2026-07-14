@@ -91,8 +91,6 @@ type opaqueDNSKind uint8
 
 type ConnectorEnvironment interface {
 	LocalAddrForRemote(context.Context, *net.UDPAddr) (net.Addr, error)
-	UDPPortMapping(context.Context, uint64) (net.Addr, error)
-	TCPPortMapping(context.Context, uint16) (net.Addr, error)
 }
 
 type opaqueEnvironmentOperation struct {

@@ -19,20 +19,6 @@ func (unsupportedOpaqueEnvironment) LocalAddrForRemote(
 	return nil, fmt.Errorf("no Go connector environment was injected")
 }
 
-func (unsupportedOpaqueEnvironment) UDPPortMapping(
-	context.Context,
-	uint64,
-) (net.Addr, error) {
-	return nil, fmt.Errorf("no Go connector environment was injected")
-}
-
-func (unsupportedOpaqueEnvironment) TCPPortMapping(
-	context.Context,
-	uint16,
-) (net.Addr, error) {
-	return nil, fmt.Errorf("no Go connector environment was injected")
-}
-
 func (b *opaqueBridge) environmentCallCount() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -63,57 +49,6 @@ func (b *opaqueBridge) startLocalAddrForRemote(
 }
 
 func (b *opaqueBridge) takeLocalAddrForRemote(
-	_ context.Context,
-	module api.Module,
-	operation uint64,
-	resultPointer uint32,
-	resultLength uint32,
-) int32 {
-	return b.takeEnvironmentOperation(module, operation, resultPointer, resultLength)
-}
-
-func (b *opaqueBridge) startUDPPortMapping(
-	_ context.Context,
-	_ api.Module,
-	operation uint64,
-	handle uint64,
-) int32 {
-	b.mu.Lock()
-	_, exists := b.packets[handle]
-	b.mu.Unlock()
-	if !exists {
-		return opaqueHostInvalid
-	}
-	return b.startEnvironmentOperation(operation, func(ctx context.Context) (net.Addr, error) {
-		return b.environmentResolver.UDPPortMapping(ctx, handle)
-	})
-}
-
-func (b *opaqueBridge) takeUDPPortMapping(
-	_ context.Context,
-	module api.Module,
-	operation uint64,
-	resultPointer uint32,
-	resultLength uint32,
-) int32 {
-	return b.takeEnvironmentOperation(module, operation, resultPointer, resultLength)
-}
-
-func (b *opaqueBridge) startTCPPortMapping(
-	_ context.Context,
-	_ api.Module,
-	operation uint64,
-	localPort uint32,
-) int32 {
-	if localPort > 0xffff {
-		return opaqueHostInvalid
-	}
-	return b.startEnvironmentOperation(operation, func(ctx context.Context) (net.Addr, error) {
-		return b.environmentResolver.TCPPortMapping(ctx, uint16(localPort))
-	})
-}
-
-func (b *opaqueBridge) takeTCPPortMapping(
 	_ context.Context,
 	module api.Module,
 	operation uint64,

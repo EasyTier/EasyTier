@@ -48,10 +48,6 @@ func (b *opaqueBridge) instantiateHost(ctx context.Context, runtime wazero.Runti
 		NewFunctionBuilder().WithFunc(b.takeDNSSRV).Export("take_dns_srv").
 		NewFunctionBuilder().WithFunc(b.startLocalAddrForRemote).Export("start_local_addr_for_remote").
 		NewFunctionBuilder().WithFunc(b.takeLocalAddrForRemote).Export("take_local_addr_for_remote").
-		NewFunctionBuilder().WithFunc(b.startUDPPortMapping).Export("start_udp_port_mapping").
-		NewFunctionBuilder().WithFunc(b.takeUDPPortMapping).Export("take_udp_port_mapping").
-		NewFunctionBuilder().WithFunc(b.startTCPPortMapping).Export("start_tcp_port_mapping").
-		NewFunctionBuilder().WithFunc(b.takeTCPPortMapping).Export("take_tcp_port_mapping").
 		NewFunctionBuilder().WithFunc(b.tryPacketWrite).Export("try_packet_write").
 		NewFunctionBuilder().WithFunc(b.startPacketWriteReady).Export("start_packet_write_ready").
 		NewFunctionBuilder().WithFunc(b.takePacketWriteReady).Export("take_packet_write_ready").
