@@ -115,6 +115,15 @@ struct DestinationRun {
     supervisor: tokio::task::JoinHandle<()>,
 }
 
+async fn stop_destination_run(run: &Mutex<Option<DestinationRun>>) {
+    let mut run = run.lock().await;
+    if let Some(current) = run.as_mut() {
+        current.cancel.cancel();
+        let _ = (&mut current.supervisor).await;
+        run.take();
+    }
+}
+
 pub(crate) struct WrappedTransportDestinationModule<H>
 where
     H: DirectConnectorHost + TcpHolePunchHost,
@@ -225,11 +234,7 @@ where
     pub(crate) async fn stop(&self) {
         self.active.store(false, Ordering::Release);
         self.enabled.store(0, Ordering::Release);
-        let run = self.run.lock().await.take();
-        if let Some(run) = run {
-            run.cancel.cancel();
-            let _ = run.supervisor.await;
-        }
+        stop_destination_run(&self.run).await;
         self.entries.clear();
     }
 
@@ -326,5 +331,42 @@ where
 
     fn is_started(&self, transport: WrappedTransportKind) -> bool {
         WrappedTransportDestinationModule::is_started(self, transport)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::Notify;
+
+    #[tokio::test]
+    async fn cancelled_stop_retains_supervisor_for_retry() {
+        let cancel = CancellationToken::new();
+        let stop_entered = Arc::new(Notify::new());
+        let release_stop = Arc::new(Notify::new());
+        let supervisor = tokio::spawn({
+            let cancel = cancel.clone();
+            let stop_entered = stop_entered.clone();
+            let release_stop = release_stop.clone();
+            async move {
+                cancel.cancelled().await;
+                stop_entered.notify_one();
+                release_stop.notified().await;
+            }
+        });
+        let run = Arc::new(Mutex::new(Some(DestinationRun { cancel, supervisor })));
+
+        let first_stop = tokio::spawn({
+            let run = run.clone();
+            async move { stop_destination_run(run.as_ref()).await }
+        });
+        stop_entered.notified().await;
+        first_stop.abort();
+        assert!(first_stop.await.unwrap_err().is_cancelled());
+        assert!(run.lock().await.is_some());
+
+        release_stop.notify_one();
+        stop_destination_run(run.as_ref()).await;
+        assert!(run.lock().await.is_none());
     }
 }

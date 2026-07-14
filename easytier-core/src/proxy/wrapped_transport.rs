@@ -501,6 +501,7 @@ struct WrappedTransportPeerFilter {
 #[derive(Default)]
 struct TestWrappedTransportDestination {
     active: std::sync::atomic::AtomicBool,
+    enabled: std::sync::atomic::AtomicU8,
 }
 
 #[cfg(all(test, feature = "proxy-packet"))]
@@ -508,25 +509,35 @@ struct TestWrappedTransportDestination {
 impl WrappedTransportDestinationLifecycle for TestWrappedTransportDestination {
     async fn start(
         self: Arc<Self>,
-        _kcp: bool,
-        _quic: bool,
+        kcp: bool,
+        quic: bool,
     ) -> anyhow::Result<WrappedTransportDestinationIngresses> {
         self.active
             .store(true, std::sync::atomic::Ordering::Release);
+        self.enabled.store(
+            (kcp as u8) | ((quic as u8) << 1),
+            std::sync::atomic::Ordering::Release,
+        );
         Ok(WrappedTransportDestinationIngresses::default())
     }
 
     async fn stop(&self) {
         self.active
             .store(false, std::sync::atomic::Ordering::Release);
+        self.enabled.store(0, std::sync::atomic::Ordering::Release);
     }
 
     fn entry_snapshots(&self, _transport: WrappedTransportKind) -> Vec<TcpNatEntrySnapshot> {
         Vec::new()
     }
 
-    fn is_started(&self, _transport: WrappedTransportKind) -> bool {
+    fn is_started(&self, transport: WrappedTransportKind) -> bool {
+        let mask = match transport {
+            WrappedTransportKind::Kcp => 1,
+            WrappedTransportKind::Quic => 2,
+        };
         self.active.load(std::sync::atomic::Ordering::Acquire)
+            && self.enabled.load(std::sync::atomic::Ordering::Acquire) & mask != 0
     }
 }
 
@@ -809,17 +820,18 @@ impl WrappedTransportProxyModule {
         }
         let (kcp_directions, quic_directions) = self.directions();
         #[cfg(feature = "proxy-packet")]
-        let destination_ingresses = if kcp_directions.destination || quic_directions.destination {
+        let kcp_destination = kcp_directions.destination && self.kcp.is_some();
+        #[cfg(feature = "proxy-packet")]
+        let quic_destination = quic_directions.destination && self.quic.is_some();
+        #[cfg(feature = "proxy-packet")]
+        let destination_ingresses = if kcp_destination || quic_destination {
             state.destination_started = true;
             let destination = self
                 .destination
                 .as_ref()
                 .expect("wrapped destination owner must match its engines")
                 .clone();
-            match destination
-                .start(kcp_directions.destination, quic_directions.destination)
-                .await
-            {
+            match destination.start(kcp_destination, quic_destination).await {
                 Ok(ingresses) => ingresses,
                 Err(error) => {
                     self.stop_started(&mut state).await;
@@ -1370,6 +1382,34 @@ mod tests {
                 "stop:kcp",
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn destination_state_only_reports_available_engines() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let runtime = wrapped_transport_runtime(
+            WrappedTransportDirections {
+                source: false,
+                destination: true,
+            },
+            WrappedTransportDirections {
+                source: false,
+                destination: true,
+            },
+        );
+        let module = WrappedTransportProxyModule::new_without_sources(
+            wrapped_transport_peer_manager(),
+            runtime,
+            Some(wrapped_transport_engine("kcp", false, &events)),
+            None,
+        )
+        .unwrap();
+
+        module.start().await.unwrap();
+
+        assert!(module.destination_is_started(WrappedTransportKind::Kcp));
+        assert!(!module.destination_is_started(WrappedTransportKind::Quic));
+        module.stop().await;
     }
 
     #[tokio::test]
