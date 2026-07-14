@@ -216,11 +216,32 @@ fn bind_tcp_socket(
     bind::<TcpSocket>()
         .addr(bind_addr)
         .dev(bind_dev)
+        .net_ns(NetNS::from_socket_context(&bind_options.context))
         .only_v6(bind_options.only_v6)
         .reuse_addr(native_reuse_addr(&bind_options))
         .reuse_port(bind_options.reuse_port)
         .maybe_socket_mark(bind_options.context.socket_mark)
         .call()
+}
+
+fn create_tcp_socket(
+    remote_addr: SocketAddr,
+    bind_options: &TcpBindOptions,
+) -> Result<TcpSocket, TunnelError> {
+    // A network namespace is a thread property, but the socket retains its
+    // namespace after creation. Never keep the guard across connect().await.
+    NetNS::from_socket_context(&bind_options.context).run(|| {
+        let socket = if remote_addr.is_ipv4() {
+            TcpSocket::new_v4()?
+        } else {
+            TcpSocket::new_v6()?
+        };
+        apply_socket_mark(
+            &socket2::SockRef::from(&socket),
+            bind_options.context.socket_mark,
+        )?;
+        Ok(socket)
+    })
 }
 
 fn must_bind_before_connect(bind_options: &TcpBindOptions) -> bool {
@@ -268,34 +289,13 @@ pub(crate) fn bind_tcp_listener(
 pub(crate) async fn connect_tcp(
     options: TcpConnectOptions,
 ) -> Result<RuntimeTcpSocket, TunnelError> {
-    let net_ns = NetNS::from_socket_context(&options.bind.context);
-    net_ns
-        .run_async(|| connect_tcp_in_current_netns(options))
-        .await
-}
-
-async fn connect_tcp_in_current_netns(
-    options: TcpConnectOptions,
-) -> Result<RuntimeTcpSocket, TunnelError> {
     let remote_addr = options.remote_addr;
     let purpose = options.purpose;
     let bind_options = options.bind;
 
     if !must_bind_before_connect(&bind_options) {
-        let stream = if bind_options.context.socket_mark.is_some() {
-            let socket = if remote_addr.is_ipv4() {
-                TcpSocket::new_v4()?
-            } else {
-                TcpSocket::new_v6()?
-            };
-            apply_socket_mark(
-                &socket2::SockRef::from(&socket),
-                bind_options.context.socket_mark,
-            )?;
-            socket.connect(remote_addr).await?
-        } else {
-            TcpStream::connect(remote_addr).await?
-        };
+        let socket = create_tcp_socket(remote_addr, &bind_options)?;
+        let stream = socket.connect(remote_addr).await?;
         prepare_connected_tcp_socket(&stream, purpose)?;
         return Ok(RuntimeTcpSocket::new(stream));
     }
