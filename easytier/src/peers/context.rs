@@ -7,9 +7,10 @@ use easytier_core::config::{
 #[cfg(test)]
 use easytier_core::peers::context::PeerContext;
 use easytier_core::peers::context::{
-    HostRoutingPolicy, NetworkIdentity as CoreNetworkIdentity, PeerCredentialEventSink, PeerEvent,
-    PeerEventSink, PeerPublicIpv6State, PeerRelayStateSink, PeerRuntimeConfig, PeerRuntimeSnapshot,
-    PeerStunInfoSource, SubmittedPeerContext, SubmittedPeerContextCapabilities,
+    CorePeerContext, CorePeerContextAdapters, HostRoutingPolicy,
+    NetworkIdentity as CoreNetworkIdentity, PeerCredentialEventSink, PeerEvent, PeerEventSink,
+    PeerPublicIpv6State, PeerRelayStateSink, PeerRuntimeConfig, PeerRuntimeSnapshot,
+    PeerStunInfoSource,
 };
 use easytier_core::runtime_config::{CoreRuntimeConfig, CoreRuntimeConfigStore};
 
@@ -45,16 +46,16 @@ pub(crate) fn runtime_peer_snapshot(global_ctx: &ArcGlobalCtx) -> PeerRuntimeSna
     snapshot
 }
 
-pub(crate) fn build_submitted_peer_context(
+pub(crate) fn build_core_peer_context(
     global_ctx: &ArcGlobalCtx,
-) -> (CoreRuntimeConfigStore, Arc<SubmittedPeerContext>) {
+) -> (CoreRuntimeConfigStore, Arc<CorePeerContext>) {
     let runtime_config = CoreRuntimeConfigStore::new(
         CoreRuntimeConfig::default(),
         Arc::new(runtime_peer_snapshot(global_ctx)),
     );
-    let peer_context = Arc::new(SubmittedPeerContext::new(
+    let peer_context = Arc::new(CorePeerContext::new(
         runtime_config.clone(),
-        submitted_peer_capabilities(global_ctx),
+        core_peer_context_adapters(global_ctx),
     ));
     (runtime_config, peer_context)
 }
@@ -88,11 +89,9 @@ impl PeerCredentialEventSink for GlobalCtxPeerEventSink {
     }
 }
 
-pub(crate) fn submitted_peer_capabilities(
-    global_ctx: &ArcGlobalCtx,
-) -> SubmittedPeerContextCapabilities {
+pub(crate) fn core_peer_context_adapters(global_ctx: &ArcGlobalCtx) -> CorePeerContextAdapters {
     let event_sink = Arc::new(GlobalCtxPeerEventSink::new(global_ctx.clone()));
-    SubmittedPeerContextCapabilities {
+    CorePeerContextAdapters {
         relay_state_sink: global_ctx.clone(),
         stun_info_source: Some(global_ctx.clone()),
         public_ipv6_state: global_ctx.clone(),
@@ -207,8 +206,8 @@ mod tests {
 
     fn submitted_context(
         global_ctx: ArcGlobalCtx,
-    ) -> (CoreRuntimeConfigStore, Arc<SubmittedPeerContext>) {
-        build_submitted_peer_context(&global_ctx)
+    ) -> (CoreRuntimeConfigStore, Arc<CorePeerContext>) {
+        build_core_peer_context(&global_ctx)
     }
 
     #[tokio::test]

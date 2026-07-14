@@ -13,14 +13,14 @@ pub use easytier_core::peers::peer_manager::RouteAlgoType;
 use easytier_core::peers::peer_manager::{DnsAddressResolver, PeerManagerCore};
 use easytier_core::tunnel::ring::RingTunnelRegistry;
 use easytier_core::{
-    peers::{context::SubmittedPeerContext, foreign_network_manager::ForeignNetworkManager},
+    peers::{context::CorePeerContext, foreign_network_manager::ForeignNetworkManager},
     runtime_config::CoreRuntimeConfigStore,
 };
 use std::{fmt::Debug, sync::Arc};
 
 use super::{
     PacketRecvChan,
-    context::{build_submitted_peer_context, runtime_peer_snapshot},
+    context::{build_core_peer_context, runtime_peer_snapshot},
     encrypt::NullCipher,
     foreign_network_manager::ForeignNetworkRuntimeImpl,
 };
@@ -28,7 +28,7 @@ use super::{
 pub struct PeerManager {
     global_ctx: ArcGlobalCtx,
     core: Arc<PeerManagerCore>,
-    peer_context: Arc<SubmittedPeerContext>,
+    peer_context: Arc<CorePeerContext>,
     runtime_config: CoreRuntimeConfigStore,
     ring_registry: Arc<RingTunnelRegistry>,
 
@@ -100,7 +100,7 @@ impl PeerManager {
             compressor_algo_from_pb(global_ctx.get_flags().data_compress_algo())
                 .expect("invalid data compress algo, maybe some features not enabled");
         let exit_nodes = global_ctx.config.get_exit_nodes();
-        let (runtime_config, peer_context) = build_submitted_peer_context(&global_ctx);
+        let (runtime_config, peer_context) = build_core_peer_context(&global_ctx);
 
         let foreign_network_runtime = Arc::new(ForeignNetworkRuntimeImpl::new(global_ctx.clone()));
         let build_result = PeerManagerCore::new_with_foreign_network_runtime(
@@ -186,7 +186,7 @@ impl PeerManager {
     pub(crate) fn foreign_peer_context_for_test(
         &self,
         network_name: &str,
-    ) -> Option<Arc<SubmittedPeerContext>> {
+    ) -> Option<Arc<CorePeerContext>> {
         self.foreign_network_runtime
             .foreign_peer_context_for_test(network_name)
     }

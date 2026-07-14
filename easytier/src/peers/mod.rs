@@ -54,8 +54,7 @@ pub mod peer_conn {
             config.set_network_identity(identity.clone().into());
 
             let global_ctx = Arc::new(GlobalCtx::new(config));
-            let (_, peer_context) =
-                crate::peers::context::build_submitted_peer_context(&global_ctx);
+            let (_, peer_context) = crate::peers::context::build_core_peer_context(&global_ctx);
             let digest = peer_context.secret_digest(&identity);
 
             assert_eq!(digest, identity.secret_digest().unwrap().to_vec());

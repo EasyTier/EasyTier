@@ -10,7 +10,7 @@ use std::sync::Arc;
 use dashmap::DashMap;
 use easytier_core::connectivity::direct::DirectConnectorRpcHandler;
 #[cfg(test)]
-use easytier_core::peers::context::{ArcPeerContext, SubmittedPeerContext};
+use easytier_core::peers::context::{ArcPeerContext, CorePeerContext};
 use easytier_core::peers::foreign_network_manager as core_foreign_network_manager;
 #[cfg(test)]
 use easytier_core::runtime_config::CoreRuntimeConfigStore;
@@ -47,9 +47,9 @@ use super::{PacketRecvChan, create_packet_recv_chan, peer_session::PeerSessionSt
 #[cfg(test)]
 struct ForeignNetworkEntry {
     parent_runtime_config: CoreRuntimeConfigStore,
-    parent_context: Arc<SubmittedPeerContext>,
+    parent_context: Arc<CorePeerContext>,
     global_ctx: ArcGlobalCtx,
-    foreign_context: Arc<SubmittedPeerContext>,
+    foreign_context: Arc<CorePeerContext>,
     network: NetworkIdentity,
     relay_data: bool,
     tasks: Mutex<JoinSet<()>>,
@@ -66,7 +66,7 @@ impl ForeignNetworkEntry {
         _pm_packet_sender: PacketRecvChan,
     ) -> Self {
         let (parent_runtime_config, parent_context) =
-            crate::peers::context::build_submitted_peer_context(&global_ctx);
+            crate::peers::context::build_core_peer_context(&global_ctx);
         let parent_context_dyn: ArcPeerContext = parent_context.clone();
         let spec = core_foreign_network_manager::ForeignNetworkContextSpec::from_parent(
             easytier_core::config::NetworkIdentity {
@@ -81,7 +81,7 @@ impl ForeignNetworkEntry {
         let foreign_global_ctx =
             ForeignNetworkRuntimeImpl::build_foreign_global_ctx(&spec, global_ctx.clone());
         let (_, foreign_context) =
-            crate::peers::context::build_submitted_peer_context(&foreign_global_ctx);
+            crate::peers::context::build_core_peer_context(&foreign_global_ctx);
         Self {
             parent_runtime_config,
             parent_context,
@@ -94,8 +94,8 @@ impl ForeignNetworkEntry {
     }
 
     fn sync_parent_relay_data_feature_flag(
-        parent_context: &Arc<SubmittedPeerContext>,
-        foreign_context: &Arc<SubmittedPeerContext>,
+        parent_context: &Arc<CorePeerContext>,
+        foreign_context: &Arc<CorePeerContext>,
         relay_data: bool,
     ) -> bool {
         let parent_context: ArcPeerContext = parent_context.clone();
@@ -134,7 +134,7 @@ impl ForeignNetworkEntry {
 struct RuntimeForeignNetworkContext {
     global_ctx: ArcGlobalCtx,
     #[cfg(test)]
-    peer_context: Arc<SubmittedPeerContext>,
+    peer_context: Arc<CorePeerContext>,
     lifecycle_token: Arc<()>,
 }
 
@@ -155,7 +155,7 @@ impl ForeignNetworkRuntimeImpl {
     pub(super) fn foreign_peer_context_for_test(
         &self,
         network_name: &str,
-    ) -> Option<Arc<SubmittedPeerContext>> {
+    ) -> Option<Arc<CorePeerContext>> {
         self.foreign_contexts
             .get(network_name)
             .map(|ctx| ctx.peer_context.clone())
@@ -204,8 +204,7 @@ impl core_foreign_network_manager::ForeignNetworkRuntime for ForeignNetworkRunti
     ) -> core_foreign_network_manager::ForeignNetworkContext {
         let foreign_global_ctx =
             ForeignNetworkRuntimeImpl::build_foreign_global_ctx(spec, self.global_ctx.clone());
-        let (_, peer_context) =
-            crate::peers::context::build_submitted_peer_context(&foreign_global_ctx);
+        let (_, peer_context) = crate::peers::context::build_core_peer_context(&foreign_global_ctx);
         let lifecycle_token = Arc::new(());
         self.foreign_contexts.insert(
             spec.network.network_name.clone(),
@@ -1103,7 +1102,7 @@ pub mod tests {
             "access_secret".to_string(),
         )));
         let (runtime_config, parent_context) =
-            crate::peers::context::build_submitted_peer_context(&global_ctx);
+            crate::peers::context::build_core_peer_context(&global_ctx);
         let parent_flags = parent_context.flags();
         assert!(!parent_flags.relay_all_peer_rpc);
         assert!(
@@ -1151,9 +1150,9 @@ pub mod tests {
             "access_secret".to_string(),
         )));
         let runtime = Arc::new(ForeignNetworkRuntimeImpl::new(global_ctx.clone()));
-        let (parent_runtime_config, parent_submitted_context) =
-            crate::peers::context::build_submitted_peer_context(&global_ctx);
-        let parent_context: ArcPeerContext = parent_submitted_context;
+        let (parent_runtime_config, parent_core_context) =
+            crate::peers::context::build_core_peer_context(&global_ctx);
+        let parent_context: ArcPeerContext = parent_core_context;
         let net1 = easytier_core::peers::context::NetworkIdentity {
             network_name: "net1".to_string(),
             network_secret: Some("net1_secret".to_string()),
@@ -1261,9 +1260,8 @@ pub mod tests {
             "__access__".to_string(),
             "access_secret".to_string(),
         )));
-        let (_, parent_submitted_context) =
-            crate::peers::context::build_submitted_peer_context(&global_ctx);
-        let parent_context: ArcPeerContext = parent_submitted_context;
+        let (_, parent_core_context) = crate::peers::context::build_core_peer_context(&global_ctx);
+        let parent_context: ArcPeerContext = parent_core_context;
         let runtime = ForeignNetworkRuntimeImpl::new(global_ctx);
         let network = easytier_core::peers::context::NetworkIdentity {
             network_name: "net1".to_string(),

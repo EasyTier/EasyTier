@@ -283,10 +283,9 @@ pub trait PeerPublicIpv6State: Send + Sync {
 
 impl PeerPublicIpv6State for () {}
 
-/// Named capability bundle used to assemble the core-owned submitted context.
-/// Each field remains a separate Interface so peer Modules cannot reach an
-/// unrelated host capability through the bundle after construction.
-pub struct SubmittedPeerContextCapabilities {
+/// Host adapters used to assemble the core-owned peer context. Each field stays
+/// narrow so peer modules cannot reach unrelated host state after construction.
+pub struct CorePeerContextAdapters {
     pub relay_state_sink: Arc<dyn PeerRelayStateSink>,
     pub stun_info_source: Option<Arc<dyn PeerStunInfoSource>>,
     pub public_ipv6_state: Arc<dyn PeerPublicIpv6State>,
@@ -299,7 +298,7 @@ pub struct SubmittedPeerContextCapabilities {
 
 /// Peer context backed by one core-owned submitted snapshot and its instance
 /// runtime resources.
-pub struct SubmittedPeerContext {
+pub struct CorePeerContext {
     config: CoreRuntimeConfigStore,
     avoid_relay_data_preference: AtomicBool,
     relay_state_sink: Arc<dyn PeerRelayStateSink>,
@@ -314,26 +313,23 @@ pub struct SubmittedPeerContext {
     event_sink: Arc<dyn PeerEventSink>,
 }
 
-impl SubmittedPeerContext {
-    pub fn new(
-        config: CoreRuntimeConfigStore,
-        capabilities: SubmittedPeerContextCapabilities,
-    ) -> Self {
+impl CorePeerContext {
+    pub fn new(config: CoreRuntimeConfigStore, adapters: CorePeerContextAdapters) -> Self {
         let avoid_relay_data_preference =
             AtomicBool::new(config.snapshot().peer.avoid_relay_data_preference);
         Self {
             config,
             avoid_relay_data_preference,
-            relay_state_sink: capabilities.relay_state_sink,
-            stun_info_source: capabilities.stun_info_source,
-            public_ipv6_state: capabilities.public_ipv6_state,
+            relay_state_sink: adapters.relay_state_sink,
+            stun_info_source: adapters.stun_info_source,
+            public_ipv6_state: adapters.public_ipv6_state,
             limiter_state: Mutex::new(CoreLimiterState::default()),
-            traffic_sink: capabilities.traffic_sink,
-            credentials: capabilities.credentials,
-            trusted_keys: capabilities.trusted_keys,
-            credential_event_sink: capabilities.credential_event_sink,
+            traffic_sink: adapters.traffic_sink,
+            credentials: adapters.credentials,
+            trusted_keys: adapters.trusted_keys,
+            credential_event_sink: adapters.credential_event_sink,
             peer_events: tokio::sync::broadcast::channel(PEER_EVENT_CAPACITY).0,
-            event_sink: capabilities.event_sink,
+            event_sink: adapters.event_sink,
         }
     }
 
@@ -809,7 +805,7 @@ impl PeerContext for NoopPeerContext {
     }
 }
 
-impl PeerContext for SubmittedPeerContext {
+impl PeerContext for CorePeerContext {
     fn runtime_config(&self) -> PeerRuntimeConfig {
         let mut runtime = self.snapshot().runtime.clone();
         runtime.stun_info = self.stun_info();
@@ -1116,10 +1112,8 @@ mod tests {
         }
     }
 
-    fn submitted_capabilities(
-        event_sink: Arc<dyn PeerEventSink>,
-    ) -> SubmittedPeerContextCapabilities {
-        SubmittedPeerContextCapabilities {
+    fn test_core_context_adapters(event_sink: Arc<dyn PeerEventSink>) -> CorePeerContextAdapters {
+        CorePeerContextAdapters {
             relay_state_sink: Arc::new(()),
             stun_info_source: Some(Arc::new(())),
             public_ipv6_state: Arc::new(()),
@@ -1173,10 +1167,10 @@ mod tests {
     }
 
     #[test]
-    fn submitted_peer_context_separates_config_versions_from_live_support() {
+    fn core_peer_context_separates_config_versions_from_live_support() {
         let config = submitted_config(submitted_snapshot("before", false));
         let context =
-            SubmittedPeerContext::new(config.clone(), submitted_capabilities(Arc::new(())));
+            CorePeerContext::new(config.clone(), test_core_context_adapters(Arc::new(())));
 
         assert_eq!(context.hostname(), "before");
         assert!(!context.feature_flags().avoid_relay_data);
@@ -1194,10 +1188,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn submitted_peer_context_owns_events_and_projects_them_to_sink() {
+    async fn core_peer_context_owns_events_and_projects_them_to_sink() {
         let config = submitted_config(submitted_snapshot("events", false));
         let sink = Arc::new(TestPeerEventSink::default());
-        let context = SubmittedPeerContext::new(config, submitted_capabilities(sink.clone()));
+        let context = CorePeerContext::new(config, test_core_context_adapters(sink.clone()));
         let mut events = context.subscribe_peer_events().unwrap();
 
         context.issue_event(PeerEvent::PeerAdded(7));
@@ -1210,12 +1204,12 @@ mod tests {
     }
 
     #[test]
-    fn submitted_peer_context_owns_trusted_keys_and_projects_credential_changes() {
+    fn core_peer_context_owns_trusted_keys_and_projects_credential_changes() {
         let config = submitted_config(submitted_snapshot("trust", false));
         let credential_events = Arc::new(TestCredentialEventSink::default());
-        let mut capabilities = submitted_capabilities(Arc::new(()));
-        capabilities.credential_event_sink = credential_events.clone();
-        let context = SubmittedPeerContext::new(config, capabilities);
+        let mut adapters = test_core_context_adapters(Arc::new(()));
+        adapters.credential_event_sink = credential_events.clone();
+        let context = CorePeerContext::new(config, adapters);
         let public_key = vec![7; 32];
         let mut keys = TrustedKeyMap::new();
         keys.insert(
@@ -1239,7 +1233,7 @@ mod tests {
         let mut snapshot = submitted_snapshot("limiter", false);
         snapshot.traffic_limits.foreign_relay_bps = Some(1024);
         let config = submitted_config(snapshot);
-        let context = SubmittedPeerContext::new(config, submitted_capabilities(Arc::new(())));
+        let context = CorePeerContext::new(config, test_core_context_adapters(Arc::new(())));
 
         let receive = context.recv_limiter("foreign", true).unwrap();
         let receive_again = context.recv_limiter("foreign", true).unwrap();
@@ -1255,7 +1249,7 @@ mod tests {
         snapshot.traffic_limits.foreign_relay_bps = None;
         snapshot.traffic_limits.instance_recv_bps = Some(1024);
         let config = submitted_config(snapshot);
-        let context = SubmittedPeerContext::new(config, submitted_capabilities(Arc::new(())));
+        let context = CorePeerContext::new(config, test_core_context_adapters(Arc::new(())));
 
         assert!(context.recv_limiter("foreign", true).is_some());
         assert!(context.foreign_forward_limiter("foreign").is_none());
@@ -1467,7 +1461,7 @@ mod tests {
         runtime: PeerRuntimeConfig,
         flags: FlagsInConfig,
         stun_info_source: Option<Arc<dyn PeerStunInfoSource>>,
-    ) -> SubmittedPeerContext {
+    ) -> CorePeerContext {
         core_owned_context_with_acl(runtime, flags, stun_info_source, None)
     }
 
@@ -1476,13 +1470,13 @@ mod tests {
         flags: FlagsInConfig,
         stun_info_source: Option<Arc<dyn PeerStunInfoSource>>,
         acl: Option<&Acl>,
-    ) -> SubmittedPeerContext {
+    ) -> CorePeerContext {
         let mut snapshot = PeerRuntimeSnapshot::new(runtime, flags);
         snapshot.set_acl_groups(acl);
         let config = CoreRuntimeConfigStore::new(CoreRuntimeConfig::default(), Arc::new(snapshot));
-        SubmittedPeerContext::new(
+        CorePeerContext::new(
             config,
-            SubmittedPeerContextCapabilities {
+            CorePeerContextAdapters {
                 relay_state_sink: Arc::new(()),
                 stun_info_source,
                 public_ipv6_state: Arc::new(()),
@@ -1495,10 +1489,7 @@ mod tests {
         )
     }
 
-    fn core_context_with_routes(
-        ipv4: Option<IpPrefix>,
-        ipv6: Option<IpPrefix>,
-    ) -> SubmittedPeerContext {
+    fn core_context_with_routes(ipv4: Option<IpPrefix>, ipv6: Option<IpPrefix>) -> CorePeerContext {
         core_owned_context(
             PeerRuntimeConfig {
                 core: CoreConfig {
