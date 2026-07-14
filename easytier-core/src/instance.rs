@@ -50,7 +50,7 @@ use crate::{
         acl_config::AclRuleConfig,
         context::{
             BoxPeerRuntimeChangeSubscriber, PeerRuntimeChangeSubscriber, PeerRuntimeConfigSource,
-            PeerRuntimeSnapshot,
+            PeerRuntimeSnapshot, PeerStunInfoSource,
         },
         create_packet_recv_chan,
         credential_manager::{CredentialInfo, GeneratedCredential},
@@ -351,6 +351,14 @@ where
     pub public_ipv6_provider: Option<Arc<dyn PublicIpv6ProviderHost>>,
 }
 
+struct CoreStunPeerInfoSource(Arc<dyn StunInfoProvider>);
+
+impl PeerStunInfoSource for CoreStunPeerInfoSource {
+    fn stun_info(&self) -> crate::proto::common::StunInfo {
+        self.0.get_stun_info()
+    }
+}
+
 struct HostRunningListenerProvider<H>(Arc<H>);
 
 impl<H> std::fmt::Debug for HostRunningListenerProvider<H> {
@@ -589,12 +597,16 @@ where
         }
         let (packet_tx, packet_rx) = create_packet_recv_chan();
         let dns_context = config.connectivity.direct.tcp_bind.context.clone();
-        let peer_manager = Arc::new(PeerManagerCore::new_portable_with_dns_context(
-            config.peer,
-            adapters.dns.clone(),
-            dns_context,
-            packet_tx,
-        )?);
+        let peer_stun: Arc<dyn StunInfoProvider> = adapters.stun.clone();
+        let peer_manager = Arc::new(
+            PeerManagerCore::new_portable_with_dns_context_and_stun_info_source(
+                config.peer,
+                adapters.dns.clone(),
+                dns_context,
+                Arc::new(CoreStunPeerInfoSource(peer_stun)),
+                packet_tx,
+            )?,
+        );
         let mut instance = Self::new(peer_manager, adapters, config.connectivity)?;
         instance.packet_egress = Some(PacketEgress::new(packet_rx, packet_sink));
         Ok(instance)

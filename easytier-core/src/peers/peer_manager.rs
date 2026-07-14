@@ -39,7 +39,7 @@ use super::{
     acl_filter::AclFilter,
     context::{
         ArcPeerContext, ConfigPeerContext, ConfigPeerContextSupport, HostRoutingPolicy,
-        NetworkIdentity, PeerRuntimeConfig,
+        NetworkIdentity, PeerRuntimeConfig, PeerStunInfoSource,
     },
     credential_manager::CredentialManager,
     encrypt::{Encryptor, NullCipher, create_encryptor, derive_key_128, derive_key_256},
@@ -865,9 +865,41 @@ impl PeerManagerCore {
     }
 
     pub fn new_portable_with_dns_context(
+        config: PortablePeerManagerConfig,
+        dns: Arc<dyn DnsResolver>,
+        dns_context: SocketContext,
+        nic_channel: PacketRecvChan,
+    ) -> anyhow::Result<Self> {
+        Self::new_portable_with_optional_stun_info_source(
+            config,
+            dns,
+            dns_context,
+            None,
+            nic_channel,
+        )
+    }
+
+    pub fn new_portable_with_dns_context_and_stun_info_source(
+        config: PortablePeerManagerConfig,
+        dns: Arc<dyn DnsResolver>,
+        dns_context: SocketContext,
+        stun_info_source: Arc<dyn PeerStunInfoSource>,
+        nic_channel: PacketRecvChan,
+    ) -> anyhow::Result<Self> {
+        Self::new_portable_with_optional_stun_info_source(
+            config,
+            dns,
+            dns_context,
+            Some(stun_info_source),
+            nic_channel,
+        )
+    }
+
+    fn new_portable_with_optional_stun_info_source(
         mut config: PortablePeerManagerConfig,
         dns: Arc<dyn DnsResolver>,
         dns_context: SocketContext,
+        stun_info_source: Option<Arc<dyn PeerStunInfoSource>>,
         nic_channel: PacketRecvChan,
     ) -> anyhow::Result<Self> {
         let network_name = config.runtime.network_identity.network_name.clone();
@@ -973,10 +1005,12 @@ impl PeerManagerCore {
         config.runtime.feature_flags.need_p2p = config.flags.need_p2p;
         config.runtime.feature_flags.avoid_relay_data |= config.flags.disable_relay_data;
         let credential_manager = Arc::new(CredentialManager::new());
-        let config_context = Arc::new(
-            ConfigPeerContext::new(config.runtime, credential_manager.clone())
-                .with_flags(config.flags),
-        );
+        let mut config_context = ConfigPeerContext::new(config.runtime, credential_manager.clone())
+            .with_flags(config.flags);
+        if let Some(stun_info_source) = stun_info_source {
+            config_context = config_context.with_stun_info_source(stun_info_source);
+        }
+        let config_context = Arc::new(config_context);
         let config_context_support = config_context.support();
         let context: ArcPeerContext = config_context;
         let public_ipv6_runtime = Arc::new(DisabledPublicIpv6Runtime {

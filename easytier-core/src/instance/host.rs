@@ -85,11 +85,14 @@ where
             environment,
         ));
         let dns = Arc::new(HostDnsResolver::new(socket_runtime.clone(), dns_io));
-        let stun = Arc::new(StunInfoCollector::new_with_default_servers(
-            host.clone(),
-            dns.clone(),
-            config.connectivity.direct.udp_bind.context.clone(),
-        ));
+        let stun = Arc::new(
+            StunInfoCollector::new_with_default_servers_and_socket_contexts(
+                host.clone(),
+                dns.clone(),
+                config.connectivity.direct.udp_bind.context.clone(),
+                config.connectivity.direct.tcp_bind.context.clone(),
+            ),
+        );
         let packet_sink = Arc::new(HostPacketSink::new(
             socket_runtime.clone(),
             packet_io,

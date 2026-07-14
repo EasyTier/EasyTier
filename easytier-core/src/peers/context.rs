@@ -210,7 +210,7 @@ impl PeerRelayStateSink for () {
     fn set_avoid_relay_data_preference(&self, _avoid_relay_data: bool) {}
 }
 
-/// Supplies the host's current STUN observation.
+/// Supplies the instance's current STUN observation.
 pub trait PeerStunInfoSource: Send + Sync {
     fn stun_info(&self) -> StunInfo {
         StunInfo::default()
@@ -302,6 +302,7 @@ impl SubmittedPeerContext {
 pub(crate) struct ConfigPeerContext {
     runtime: PeerRuntimeConfig,
     flags: FlagsInConfig,
+    stun_info_source: Option<Arc<dyn PeerStunInfoSource>>,
     peer_events: tokio::sync::broadcast::Sender<PeerContextEvent>,
     support: Arc<ConfigPeerContextSupport>,
 }
@@ -409,6 +410,7 @@ impl ConfigPeerContext {
         Self {
             runtime,
             flags: FlagsInConfig::default(),
+            stun_info_source: None,
             peer_events: tokio::sync::broadcast::channel(100).0,
             support: Arc::new(ConfigPeerContextSupport::new(credentials)),
         }
@@ -416,6 +418,14 @@ impl ConfigPeerContext {
 
     pub(crate) fn with_flags(mut self, flags: FlagsInConfig) -> Self {
         self.flags = flags;
+        self
+    }
+
+    pub(crate) fn with_stun_info_source(
+        mut self,
+        stun_info_source: Arc<dyn PeerStunInfoSource>,
+    ) -> Self {
+        self.stun_info_source = Some(stun_info_source);
         self
     }
 
@@ -857,7 +867,9 @@ impl PeerContext for NoopPeerContext {
 
 impl PeerContext for ConfigPeerContext {
     fn runtime_config(&self) -> PeerRuntimeConfig {
-        self.runtime.clone()
+        let mut runtime = self.runtime.clone();
+        runtime.stun_info = self.stun_info();
+        runtime
     }
 
     fn network_identity(&self) -> NetworkIdentity {
@@ -891,7 +903,10 @@ impl PeerContext for ConfigPeerContext {
     }
 
     fn stun_info(&self) -> StunInfo {
-        self.runtime.stun_info.clone()
+        self.stun_info_source
+            .as_ref()
+            .map(|source| source.stun_info())
+            .unwrap_or_else(|| self.runtime.stun_info.clone())
     }
 
     fn instance_id(&self) -> uuid::Uuid {
@@ -1702,6 +1717,27 @@ mod tests {
             .finalize()
             .into_bytes();
         assert_eq!(proof, expected);
+    }
+
+    #[test]
+    fn config_peer_context_uses_live_stun_source_when_injected() {
+        struct TestStunInfoSource(StunInfo);
+
+        impl PeerStunInfoSource for TestStunInfoSource {
+            fn stun_info(&self) -> StunInfo {
+                self.0.clone()
+            }
+        }
+
+        let mut runtime = PeerRuntimeSnapshot::default().runtime;
+        runtime.stun_info.tcp_nat_type = 1;
+        let mut live = StunInfo::default();
+        live.tcp_nat_type = 4;
+        let context = ConfigPeerContext::new(runtime, Arc::new(CredentialManager::new()))
+            .with_stun_info_source(Arc::new(TestStunInfoSource(live.clone())));
+
+        assert_eq!(context.stun_info(), live);
+        assert_eq!(context.runtime_config().stun_info, live);
     }
 
     fn config_context_with_routes(

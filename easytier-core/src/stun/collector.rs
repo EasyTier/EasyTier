@@ -75,7 +75,8 @@ where
 {
     runtime: Arc<R>,
     dns: Arc<D>,
-    socket_context: SocketContext,
+    udp_socket_context: SocketContext,
+    tcp_socket_context: SocketContext,
     stun_servers: Arc<RwLock<Vec<String>>>,
     tcp_stun_servers: Arc<RwLock<Vec<String>>>,
     stun_servers_v6: Arc<RwLock<Vec<String>>>,
@@ -101,10 +102,31 @@ where
         tcp_stun_servers: Vec<String>,
         stun_servers_v6: Vec<String>,
     ) -> Self {
+        Self::new_with_socket_contexts(
+            runtime,
+            dns,
+            socket_context.clone(),
+            socket_context,
+            udp_stun_servers,
+            tcp_stun_servers,
+            stun_servers_v6,
+        )
+    }
+
+    pub fn new_with_socket_contexts(
+        runtime: Arc<R>,
+        dns: Arc<D>,
+        udp_socket_context: SocketContext,
+        tcp_socket_context: SocketContext,
+        udp_stun_servers: Vec<String>,
+        tcp_stun_servers: Vec<String>,
+        stun_servers_v6: Vec<String>,
+    ) -> Self {
         Self {
             runtime,
             dns,
-            socket_context,
+            udp_socket_context,
+            tcp_socket_context,
             stun_servers: Arc::new(RwLock::new(udp_stun_servers)),
             tcp_stun_servers: Arc::new(RwLock::new(tcp_stun_servers)),
             stun_servers_v6: Arc::new(RwLock::new(stun_servers_v6)),
@@ -127,6 +149,23 @@ where
             runtime,
             dns,
             socket_context,
+            Self::get_default_servers(),
+            Self::get_default_tcp_servers(),
+            Self::get_default_servers_v6(),
+        )
+    }
+
+    pub fn new_with_default_servers_and_socket_contexts(
+        runtime: Arc<R>,
+        dns: Arc<D>,
+        udp_socket_context: SocketContext,
+        tcp_socket_context: SocketContext,
+    ) -> Self {
+        Self::new_with_socket_contexts(
+            runtime,
+            dns,
+            udp_socket_context,
+            tcp_socket_context,
             Self::get_default_servers(),
             Self::get_default_tcp_servers(),
             Self::get_default_servers_v6(),
@@ -206,7 +245,7 @@ where
 
         let runtime = self.runtime.clone();
         let dns = self.dns.clone();
-        let socket_context = self.socket_context.clone();
+        let socket_context = self.udp_socket_context.clone();
         let stun_servers = self.stun_servers.clone();
         let udp_nat_test_result = self.udp_nat_test_result.clone();
         let nat_test_time = self.nat_test_result_time.clone();
@@ -262,7 +301,7 @@ where
 
         let runtime = self.runtime.clone();
         let dns = self.dns.clone();
-        let socket_context = self.socket_context.clone();
+        let socket_context = self.tcp_socket_context.clone();
         let tcp_stun_servers = self.tcp_stun_servers.clone();
         let tcp_nat_test_result = self.tcp_nat_test_result.clone();
         let nat_test_time = self.nat_test_result_time.clone();
@@ -299,7 +338,7 @@ where
 
         let runtime = self.runtime.clone();
         let dns = self.dns.clone();
-        let socket_context = self.socket_context.clone();
+        let socket_context = self.udp_socket_context.clone();
         let stun_servers_v6 = self.stun_servers_v6.clone();
         let public_ipv6 = self.public_ipv6.clone();
         let redetect_notify = self.redetect_notify.clone();
@@ -384,7 +423,7 @@ where
         let socket = self
             .runtime
             .bind_udp(stun_udp_bind_options(
-                self.socket_context.clone(),
+                self.udp_socket_context.clone(),
                 IpVersion::V4,
                 SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), local_port),
             ))
@@ -404,7 +443,9 @@ where
         if servers.is_empty() {
             let mut resolver = HostResolverIter::new(
                 self.dns.clone(),
-                self.socket_context.clone().with_ip_version(IpVersion::V4),
+                self.tcp_socket_context
+                    .clone()
+                    .with_ip_version(IpVersion::V4),
                 self.tcp_stun_servers.read().unwrap().clone(),
                 2,
                 false,
@@ -420,7 +461,7 @@ where
         for server in servers {
             match tcp_bind_request(
                 self.runtime.clone(),
-                self.socket_context.clone(),
+                self.tcp_socket_context.clone(),
                 server,
                 local_port,
             )
@@ -463,7 +504,9 @@ where
         if servers.is_empty() {
             let mut resolver = HostResolverIter::new(
                 self.dns.clone(),
-                self.socket_context.clone().with_ip_version(IpVersion::V4),
+                self.udp_socket_context
+                    .clone()
+                    .with_ip_version(IpVersion::V4),
                 self.stun_servers.read().unwrap().clone(),
                 2,
                 false,
@@ -675,6 +718,28 @@ mod tests {
         assert_eq!(&sampled[..2], &["a", "b"]);
         assert_eq!(sampled.len(), 3);
         assert!(matches!(sampled[2].as_str(), "c" | "d"));
+    }
+
+    #[test]
+    fn collector_keeps_udp_and_tcp_socket_contexts_separate() {
+        let udp_context = SocketContext::default()
+            .with_socket_mark(Some(11))
+            .with_netns(Some(NetNamespace::new("udp-instance")));
+        let tcp_context = SocketContext::default()
+            .with_socket_mark(Some(22))
+            .with_netns(Some(NetNamespace::new("tcp-instance")));
+        let collector = StunInfoCollector::new_with_socket_contexts(
+            Arc::new(MockRuntime::default()),
+            Arc::new(MockDns),
+            udp_context.clone(),
+            tcp_context.clone(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+
+        assert_eq!(collector.udp_socket_context, udp_context);
+        assert_eq!(collector.tcp_socket_context, tcp_context);
     }
 
     #[tokio::test]
