@@ -77,7 +77,7 @@ pub(crate) fn build_submitted_peer_context(
         Arc::new(runtime_peer_snapshot(global_ctx)),
     );
     let peer_context = Arc::new(SubmittedPeerContext::new(
-        Arc::new(runtime_config.clone()),
+        runtime_config.clone(),
         submitted_peer_capabilities(global_ctx),
     ));
     (runtime_config, peer_context)

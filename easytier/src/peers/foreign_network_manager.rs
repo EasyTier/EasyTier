@@ -123,7 +123,7 @@ impl ForeignNetworkEntry {
                     relay_data,
                 );
 
-                if !runtime_changes.changed().await {
+                if runtime_changes.changed().await.is_err() {
                     break;
                 }
             }
@@ -1203,7 +1203,7 @@ pub mod tests {
             let parent_context = parent_context.clone();
             let foreign_context = foreign_context1.clone();
             async move {
-                assert!(runtime_changes1.changed().await);
+                assert!(runtime_changes1.changed().await.is_ok());
                 core_foreign_network_manager::sync_foreign_avoid_relay_data(
                     &parent_context,
                     &foreign_context.peer_context,
@@ -1215,7 +1215,7 @@ pub mod tests {
             let parent_context = parent_context.clone();
             let foreign_context = foreign_context2.clone();
             async move {
-                assert!(runtime_changes2.changed().await);
+                assert!(runtime_changes2.changed().await.is_ok());
                 core_foreign_network_manager::sync_foreign_avoid_relay_data(
                     &parent_context,
                     &foreign_context.peer_context,

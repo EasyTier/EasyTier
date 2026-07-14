@@ -760,7 +760,7 @@ impl ForeignNetworkEntry {
         };
         self.tasks.lock().await.spawn(async move {
             loop {
-                if !runtime_changes.changed().await {
+                if runtime_changes.changed().await.is_err() {
                     break;
                 }
                 sync_foreign_avoid_relay_data(

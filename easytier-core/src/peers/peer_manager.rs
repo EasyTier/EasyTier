@@ -1046,7 +1046,7 @@ impl PeerManagerCore {
         )));
         let core_context_support = Arc::new(CorePeerContextSupport::default());
         let context: ArcPeerContext = Arc::new(SubmittedPeerContext::new_core_owned(
-            Arc::new(runtime_config),
+            runtime_config,
             SubmittedPeerContextCapabilities {
                 relay_state_sink: Arc::new(()),
                 stun_info_source,

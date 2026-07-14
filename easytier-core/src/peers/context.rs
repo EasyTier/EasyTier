@@ -30,6 +30,7 @@ use crate::{
         RouteConfig, TrafficConfig,
     },
     peers::{credential_manager::CredentialManager, util::shrink_dashmap},
+    runtime_config::CoreRuntimeConfigStore,
     token_bucket::TokenBucketManager,
 };
 
@@ -105,14 +106,6 @@ pub enum PeerContextEvent {
 }
 
 pub type PeerContextEventSubscriber = tokio::sync::broadcast::Receiver<PeerContextEvent>;
-
-#[async_trait]
-pub trait PeerRuntimeChangeSubscriber: Send {
-    /// Wait for the next change. Returns false when the stream is closed.
-    async fn changed(&mut self) -> bool;
-}
-
-pub type BoxPeerRuntimeChangeSubscriber = Box<dyn PeerRuntimeChangeSubscriber>;
 
 /// Projects peer-domain events without exposing the peer event stream or any
 /// other runtime capability to the receiver.
@@ -192,15 +185,6 @@ impl Default for PeerRuntimeSnapshot {
     }
 }
 
-/// Supplies the current core-owned peer configuration version.
-pub trait PeerRuntimeConfigSource: Send + Sync {
-    fn peer_runtime_snapshot(&self) -> Arc<PeerRuntimeSnapshot>;
-
-    fn subscribe_peer_runtime_changes(&self) -> Option<BoxPeerRuntimeChangeSubscriber> {
-        None
-    }
-}
-
 /// Projects core-owned relay preference to host-facing feature state.
 pub trait PeerRelayStateSink: Send + Sync {
     fn set_avoid_relay_data_preference(&self, avoid_relay_data: bool);
@@ -255,7 +239,7 @@ pub struct SubmittedPeerContextCapabilities {
 /// submitted snapshot while live effects stay behind a narrow support seam.
 #[derive(Clone)]
 pub struct SubmittedPeerContext {
-    config: Arc<dyn PeerRuntimeConfigSource>,
+    config: CoreRuntimeConfigStore,
     avoid_relay_data_preference: Arc<AtomicBool>,
     relay_state_sink: Arc<dyn PeerRelayStateSink>,
     stun_info_source: Option<Arc<dyn PeerStunInfoSource>>,
@@ -272,14 +256,14 @@ pub struct SubmittedPeerContext {
 
 impl SubmittedPeerContext {
     pub fn new(
-        config: Arc<dyn PeerRuntimeConfigSource>,
+        config: CoreRuntimeConfigStore,
         capabilities: SubmittedPeerContextCapabilities,
     ) -> Self {
         Self::new_inner(config, capabilities, None, 16)
     }
 
     pub(crate) fn new_core_owned(
-        config: Arc<dyn PeerRuntimeConfigSource>,
+        config: CoreRuntimeConfigStore,
         capabilities: SubmittedPeerContextCapabilities,
         support: Arc<CorePeerContextSupport>,
     ) -> Self {
@@ -287,13 +271,13 @@ impl SubmittedPeerContext {
     }
 
     fn new_inner(
-        config: Arc<dyn PeerRuntimeConfigSource>,
+        config: CoreRuntimeConfigStore,
         capabilities: SubmittedPeerContextCapabilities,
         core_support: Option<Arc<CorePeerContextSupport>>,
         peer_event_capacity: usize,
     ) -> Self {
         let avoid_relay_data_preference = Arc::new(AtomicBool::new(
-            config.peer_runtime_snapshot().avoid_relay_data_preference,
+            config.snapshot().peer.avoid_relay_data_preference,
         ));
         Self {
             config,
@@ -313,7 +297,7 @@ impl SubmittedPeerContext {
     }
 
     fn snapshot(&self) -> Arc<PeerRuntimeSnapshot> {
-        self.config.peer_runtime_snapshot()
+        self.config.snapshot().peer.clone()
     }
 }
 
@@ -678,7 +662,7 @@ pub trait PeerContext: Send + Sync {
         false
     }
 
-    fn subscribe_runtime_changes(&self) -> Option<BoxPeerRuntimeChangeSubscriber> {
+    fn subscribe_runtime_changes(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
         None
     }
 
@@ -964,8 +948,8 @@ impl PeerContext for SubmittedPeerContext {
         before != self.feature_flags().avoid_relay_data
     }
 
-    fn subscribe_runtime_changes(&self) -> Option<BoxPeerRuntimeChangeSubscriber> {
-        self.config.subscribe_peer_runtime_changes()
+    fn subscribe_runtime_changes(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
+        Some(self.config.subscribe_peer_runtime_changes())
     }
 
     fn easytier_version(&self) -> String {
@@ -1180,16 +1164,6 @@ mod tests {
     use crate::runtime_config::{CoreRuntimeConfig, CoreRuntimeConfigStore};
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    struct TestSubmittedConfig {
-        snapshot: ArcSwap<PeerRuntimeSnapshot>,
-    }
-
-    impl PeerRuntimeConfigSource for TestSubmittedConfig {
-        fn peer_runtime_snapshot(&self) -> Arc<PeerRuntimeSnapshot> {
-            self.snapshot.load_full()
-        }
-    }
-
     #[derive(Default)]
     struct TestSubmittedSupport {
         limiter_keys: Mutex<Vec<String>>,
@@ -1263,11 +1237,13 @@ mod tests {
         )
     }
 
+    fn submitted_config(snapshot: PeerRuntimeSnapshot) -> CoreRuntimeConfigStore {
+        CoreRuntimeConfigStore::new(CoreRuntimeConfig::default(), Arc::new(snapshot))
+    }
+
     #[test]
     fn submitted_peer_context_separates_config_versions_from_live_support() {
-        let config = Arc::new(TestSubmittedConfig {
-            snapshot: ArcSwap::from_pointee(submitted_snapshot("before", false)),
-        });
+        let config = submitted_config(submitted_snapshot("before", false));
         let support = Arc::new(TestSubmittedSupport::default());
         let context = SubmittedPeerContext::new(
             config.clone(),
@@ -1280,24 +1256,18 @@ mod tests {
         context.set_avoid_relay_data_preference(true);
         assert!(context.feature_flags().avoid_relay_data);
 
-        config
-            .snapshot
-            .store(Arc::new(submitted_snapshot("after", true)));
+        config.update_peer(Arc::new(submitted_snapshot("after", true)));
         context.set_avoid_relay_data_preference(false);
         assert_eq!(context.hostname(), "after");
         assert!(context.feature_flags().avoid_relay_data);
 
-        config
-            .snapshot
-            .store(Arc::new(submitted_snapshot("after", false)));
+        config.update_peer(Arc::new(submitted_snapshot("after", false)));
         assert!(!context.feature_flags().avoid_relay_data);
     }
 
     #[tokio::test]
     async fn submitted_peer_context_owns_events_and_projects_them_to_sink() {
-        let config = Arc::new(TestSubmittedConfig {
-            snapshot: ArcSwap::from_pointee(submitted_snapshot("events", false)),
-        });
+        let config = submitted_config(submitted_snapshot("events", false));
         let sink = Arc::new(TestPeerEventSink::default());
         let support = Arc::new(TestSubmittedSupport::default());
         let context =
@@ -1315,9 +1285,7 @@ mod tests {
 
     #[test]
     fn submitted_peer_context_owns_trusted_keys_and_projects_credential_changes() {
-        let config = Arc::new(TestSubmittedConfig {
-            snapshot: ArcSwap::from_pointee(submitted_snapshot("trust", false)),
-        });
+        let config = submitted_config(submitted_snapshot("trust", false));
         let support = Arc::new(TestSubmittedSupport::default());
         let credential_events = Arc::new(TestCredentialEventSink::default());
         let mut capabilities = submitted_capabilities(support, Arc::new(()));
@@ -1345,9 +1313,7 @@ mod tests {
     fn foreign_forward_limiter_is_independent_from_peer_receive_limiter() {
         let mut snapshot = submitted_snapshot("limiter", false);
         snapshot.flags.foreign_relay_bps_limit = 1024;
-        let config = Arc::new(TestSubmittedConfig {
-            snapshot: ArcSwap::from_pointee(snapshot),
-        });
+        let config = submitted_config(snapshot);
         let support = Arc::new(TestSubmittedSupport::default());
         let context = SubmittedPeerContext::new(
             config,
@@ -1367,9 +1333,7 @@ mod tests {
         let mut snapshot = submitted_snapshot("limiter", false);
         snapshot.flags.foreign_relay_bps_limit = u64::MAX;
         snapshot.flags.instance_recv_bps_limit = 1024;
-        let config = Arc::new(TestSubmittedConfig {
-            snapshot: ArcSwap::from_pointee(snapshot),
-        });
+        let config = submitted_config(snapshot);
         let support = Arc::new(TestSubmittedSupport::default());
         let context = SubmittedPeerContext::new(
             config,
@@ -1590,10 +1554,10 @@ mod tests {
         flags: FlagsInConfig,
         stun_info_source: Option<Arc<dyn PeerStunInfoSource>>,
     ) -> SubmittedPeerContext {
-        let config = Arc::new(CoreRuntimeConfigStore::new(
+        let config = CoreRuntimeConfigStore::new(
             CoreRuntimeConfig::default(),
             Arc::new(PeerRuntimeSnapshot::new(runtime, flags)),
-        ));
+        );
         let support = Arc::new(CorePeerContextSupport::default());
         SubmittedPeerContext::new_core_owned(
             config,

@@ -3,17 +3,12 @@
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
-use async_trait::async_trait;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     peers::{
-        acl_config::AclRuleConfig,
-        context::{
-            BoxPeerRuntimeChangeSubscriber, PeerRuntimeChangeSubscriber, PeerRuntimeConfigSource,
-            PeerRuntimeSnapshot,
-        },
+        acl_config::AclRuleConfig, context::PeerRuntimeSnapshot,
         public_ipv6::PublicIpv6ProviderConfig,
     },
     proxy::ProxyStartupContext,
@@ -52,15 +47,6 @@ struct CoreRuntimeConfigStoreInner {
     snapshot: ArcSwap<CoreInstanceRuntimeConfig>,
     update: Mutex<()>,
     peer_changes: tokio::sync::watch::Sender<u64>,
-}
-
-struct CorePeerRuntimeChangeSubscriber(tokio::sync::watch::Receiver<u64>);
-
-#[async_trait]
-impl PeerRuntimeChangeSubscriber for CorePeerRuntimeChangeSubscriber {
-    async fn changed(&mut self) -> bool {
-        self.0.changed().await.is_ok()
-    }
 }
 
 /// Atomic configuration authority shared by one core instance and its peer
@@ -106,17 +92,9 @@ impl CoreRuntimeConfigStore {
         self.inner.snapshot.store(Arc::new(config));
         self.inner.peer_changes.send_modify(|version| *version += 1);
     }
-}
 
-impl PeerRuntimeConfigSource for CoreRuntimeConfigStore {
-    fn peer_runtime_snapshot(&self) -> Arc<PeerRuntimeSnapshot> {
-        self.snapshot().peer.clone()
-    }
-
-    fn subscribe_peer_runtime_changes(&self) -> Option<BoxPeerRuntimeChangeSubscriber> {
-        Some(Box::new(CorePeerRuntimeChangeSubscriber(
-            self.inner.peer_changes.subscribe(),
-        )))
+    pub fn subscribe_peer_runtime_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.inner.peer_changes.subscribe()
     }
 }
 
@@ -160,12 +138,12 @@ mod tests {
             CoreRuntimeConfig::default(),
             Arc::new(PeerRuntimeSnapshot::default()),
         );
-        let mut changes = store.subscribe_peer_runtime_changes().unwrap();
+        let mut changes = store.subscribe_peer_runtime_changes();
         let mut peer = PeerRuntimeSnapshot::default();
         peer.runtime.core.node.hostname = Some("updated".to_owned());
 
         store.update_peer(Arc::new(peer));
 
-        assert!(changes.changed().await);
+        assert!(changes.changed().await.is_ok());
     }
 }
