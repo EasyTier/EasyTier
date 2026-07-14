@@ -180,9 +180,11 @@ mod tests {
     use easytier_proto::common::{FlagsInConfig, PeerFeatureFlag};
 
     use super::{
-        ForeignNetworkContextSpec, build_foreign_context, check_network_in_relay_whitelist,
-        desired_foreign_avoid_relay_data, sync_foreign_avoid_relay_data,
+        ForeignNetworkContextSpec, abort_and_join_persistent_tasks, build_foreign_context,
+        check_network_in_relay_whitelist, desired_foreign_avoid_relay_data,
+        sync_foreign_avoid_relay_data,
     };
+
     use crate::{
         peers::context::{
             ArcPeerContext, CorePeerContext, CorePeerContextAdapters, NetworkIdentity, PeerContext,
@@ -192,6 +194,42 @@ mod tests {
         runtime_config::{CoreRuntimeConfig, CoreRuntimeConfigStore},
         stats_manager::{LabelSet, LabelType, MetricName},
     };
+
+    #[tokio::test]
+    async fn cancelled_join_wait_keeps_persistent_task_ownership() {
+        struct DropFlag(Arc<AtomicBool>);
+
+        impl Drop for DropFlag {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+
+        let tasks = std::sync::Mutex::new(tokio::task::JoinSet::new());
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let dropped = Arc::new(AtomicBool::new(false));
+        let task_entered = entered.clone();
+        let task_dropped = dropped.clone();
+        tasks.lock().unwrap().spawn(async move {
+            let _drop = DropFlag(task_dropped);
+            task_entered.notify_one();
+            std::future::pending::<()>().await;
+        });
+        entered.notified().await;
+
+        {
+            let first_wait = abort_and_join_persistent_tasks(&tasks);
+            tokio::pin!(first_wait);
+            assert!(matches!(
+                futures::poll!(first_wait.as_mut()),
+                std::task::Poll::Pending
+            ));
+        }
+
+        abort_and_join_persistent_tasks(&tasks).await;
+        assert!(dropped.load(Ordering::Acquire));
+        assert!(tasks.lock().unwrap().is_empty());
+    }
 
     struct FeatureContext {
         avoid_relay_data: AtomicBool,
@@ -697,6 +735,21 @@ fn join_joinset_background(
     })
 }
 
+async fn abort_and_join_persistent_tasks(tasks: &std::sync::Mutex<JoinSet<()>>) {
+    tasks.lock().unwrap().abort_all();
+    future::poll_fn(|cx| {
+        let mut tasks = tasks.lock().unwrap();
+        loop {
+            match tasks.poll_join_next(cx) {
+                std::task::Poll::Ready(Some(_)) => continue,
+                std::task::Poll::Ready(None) => return std::task::Poll::Ready(()),
+                std::task::Poll::Pending => return std::task::Poll::Pending,
+            }
+        }
+    })
+    .await;
+}
+
 struct ForeignNetworkEntry {
     my_peer_id: PeerId,
 
@@ -950,12 +1003,10 @@ impl ForeignNetworkEntry {
     }
 
     async fn stop(&self) {
-        let mut tasks = {
-            let mut tasks = self.tasks.lock().await;
-            std::mem::replace(&mut *tasks, JoinSet::new())
-        };
+        let mut tasks = self.tasks.lock().await;
         tasks.abort_all();
         while tasks.join_next().await.is_some() {}
+        drop(tasks);
         self.peer_center.stop().await;
         self.peer_rpc.stop().await;
         self.peer_map.clear_resources().await;
@@ -1129,7 +1180,7 @@ pub struct ForeignNetworkManager {
     data: Arc<ForeignNetworkManagerData>,
 
     tasks: Arc<std::sync::Mutex<JoinSet<()>>>,
-    task_reaper: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    task_reaper: Mutex<Option<tokio::task::JoinHandle<()>>>,
     lifecycle: RwLock<ForeignNetworkManagerState>,
 }
 
@@ -1191,7 +1242,7 @@ impl ForeignNetworkManager {
             packet_sender_to_mgr,
             data,
             tasks,
-            task_reaper: std::sync::Mutex::new(Some(task_reaper)),
+            task_reaper: Mutex::new(Some(task_reaper)),
             lifecycle: RwLock::new(ForeignNetworkManagerState::Running),
         }
     }
@@ -1216,17 +1267,14 @@ impl ForeignNetworkManager {
         // teardown while admissions remain rejected.
         *lifecycle = ForeignNetworkManagerState::Stopping;
 
-        let reaper = self.task_reaper.lock().unwrap().take();
-        if let Some(reaper) = reaper {
+        let mut reaper = self.task_reaper.lock().await;
+        if let Some(reaper) = reaper.as_mut() {
             reaper.abort();
             let _ = reaper.await;
         }
-        let mut tasks = {
-            let mut tasks = self.tasks.lock().unwrap();
-            std::mem::replace(&mut *tasks, JoinSet::new())
-        };
-        tasks.abort_all();
-        while tasks.join_next().await.is_some() {}
+        reaper.take();
+        drop(reaper);
+        abort_and_join_persistent_tasks(&self.tasks).await;
 
         let entries = self
             .data
@@ -1249,7 +1297,7 @@ impl ForeignNetworkManager {
     #[cfg(any(test, feature = "test-utils"))]
     pub async fn is_stopped_for_test(&self) -> bool {
         *self.lifecycle.read().await == ForeignNetworkManagerState::Stopped
-            && self.task_reaper.lock().unwrap().is_none()
+            && self.task_reaper.lock().await.is_none()
             && self.tasks.lock().unwrap().is_empty()
             && self.data.network_peer_maps.is_empty()
             && self.data.peer_network_map.is_empty()
@@ -1701,7 +1749,9 @@ impl super::peer_manager::ForeignPeerConnectionCloser for ForeignNetworkManager 
 
 impl Drop for ForeignNetworkManager {
     fn drop(&mut self) {
-        if let Some(reaper) = self.task_reaper.lock().unwrap().take() {
+        if let Ok(mut reaper) = self.task_reaper.try_lock()
+            && let Some(reaper) = reaper.take()
+        {
             reaper.abort();
         }
         self.tasks.lock().unwrap().abort_all();
