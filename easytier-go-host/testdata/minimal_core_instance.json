@@ -1,5 +1,5 @@
 {
-  "version": 7,
+  "version": 8,
   "instance": {
     "peer": {
       "snapshot": {
@@ -73,6 +73,10 @@
           "whitelist_priority": null
         },
         "dhcp_ipv4": false,
+        "gateway": {
+          "socks5_bind": null,
+          "port_forwards": []
+        },
         "proxy": {
           "enable_exit_node": false,
           "no_tun": false,
