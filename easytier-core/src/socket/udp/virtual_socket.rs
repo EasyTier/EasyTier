@@ -182,6 +182,7 @@ pub enum UdpSocketPurpose {
     PortBoundListener,
     ProxyNat,
     StunProbe,
+    Socks5,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -234,6 +235,10 @@ impl UdpBindOptions {
 
     pub fn stun_probe() -> Self {
         Self::for_purpose(UdpSocketPurpose::StunProbe)
+    }
+
+    pub fn socks5() -> Self {
+        Self::for_purpose(UdpSocketPurpose::Socks5)
     }
 
     pub fn with_local_addr(mut self, local_addr: Option<SocketAddr>) -> Self {

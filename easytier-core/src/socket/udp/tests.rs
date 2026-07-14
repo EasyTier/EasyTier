@@ -79,6 +79,18 @@ fn bind_options_constructors_describe_socket_purpose() {
         }
     );
     assert_eq!(
+        UdpBindOptions::socks5(),
+        UdpBindOptions {
+            context: SocketContext::default(),
+            local_addr: None,
+            bind_device: None,
+            reuse_addr: false,
+            reuse_port: false,
+            only_v6: false,
+            purpose: UdpSocketPurpose::Socks5,
+        }
+    );
+    assert_eq!(
         UdpBindOptions::default(),
         UdpBindOptions::hole_punch_control()
     );

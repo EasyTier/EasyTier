@@ -24,7 +24,7 @@ use crate::{
     common::{config::PortForwardConfig, global_ctx::GlobalCtxEvent, join_joinset_background},
     gateway::fast_socks5::{
         server::{
-            AcceptAuthentication, AsyncTcpConnector, Config, RuntimeSocks5Server, Socks5Socket,
+            AcceptAuthentication, AsyncTcpConnector, Config, Socks5ServerRuntime, Socks5Socket,
         },
         util::stream::tcp_connect_with_timeout,
     },
@@ -37,6 +37,7 @@ use easytier_core::proxy::{
         Socks5Entry, Socks5EntryKind, Socks5EntryTable, Socks5PeerPacketRoute,
         Socks5TcpConnectPlan, Socks5TcpRoute,
     },
+    socks5_protocol::runtime::HostSocks5ServerRuntime,
     tokio_smoltcp::{self, BufferSize, Net, NetConfig, channel_device},
 };
 use pnet::packet::{Packet, ip::IpNextHeaderProtocols, ipv4::Ipv4Packet, tcp::TcpPacket};
@@ -52,6 +53,8 @@ use tokio::{
 use crate::tunnel::common::bind;
 use crate::{
     common::{error::Error, global_ctx::GlobalCtx},
+    connector::core_instance::runtime_socket_context,
+    host_runtime::native_host_runtime,
     peers::{PeerPacketFilter, peer_manager::PeerManager},
 };
 #[cfg(feature = "kcp")]
@@ -387,6 +390,7 @@ struct Socks5ServerNet {
 
     smoltcp_net: Arc<Net>,
     forward_tasks: Arc<std::sync::Mutex<JoinSet<()>>>,
+    command_runtime: Arc<dyn Socks5ServerRuntime>,
 }
 
 impl Socks5ServerNet {
@@ -394,6 +398,7 @@ impl Socks5ServerNet {
         ipv4_addr: cidr::Ipv4Inet,
         peer_manager: Weak<PeerManager>,
         packet_recv: Arc<Mutex<mpsc::Receiver<ZCPacket>>>,
+        command_runtime: Arc<dyn Socks5ServerRuntime>,
     ) -> Self {
         let mut forward_tasks = JoinSet::new();
         let mut cap = smoltcp::phy::DeviceCapabilities::default();
@@ -466,21 +471,21 @@ impl Socks5ServerNet {
 
             smoltcp_net: Arc::new(net),
             forward_tasks,
+            command_runtime,
         }
     }
 
-    async fn handle_tcp_stream_task(stream: tokio::net::TcpStream, connector: Socks5AutoConnector) {
+    async fn handle_tcp_stream_task(
+        stream: tokio::net::TcpStream,
+        connector: Socks5AutoConnector,
+        command_runtime: Arc<dyn Socks5ServerRuntime>,
+    ) {
         let mut config = Config::<AcceptAuthentication>::default();
         config.set_request_timeout(10);
         config.set_skip_auth(false);
         config.set_allow_no_auth(true);
 
-        let socket = Socks5Socket::new(
-            stream,
-            Arc::new(config),
-            connector,
-            Arc::new(RuntimeSocks5Server),
-        );
+        let socket = Socks5Socket::new(stream, Arc::new(config), connector, command_runtime);
 
         match socket.upgrade_to_socks5().await {
             Ok(_) => {
@@ -496,7 +501,11 @@ impl Socks5ServerNet {
         self.forward_tasks
             .lock()
             .unwrap()
-            .spawn(Self::handle_tcp_stream_task(stream, connector));
+            .spawn(Self::handle_tcp_stream_task(
+                stream,
+                connector,
+                self.command_runtime.clone(),
+            ));
     }
 }
 
@@ -518,6 +527,7 @@ struct UdpClientKey {
 pub struct Socks5Server {
     global_ctx: Arc<GlobalCtx>,
     peer_manager: Weak<PeerManager>,
+    command_runtime: Arc<dyn Socks5ServerRuntime>,
 
     tasks: Arc<std::sync::Mutex<JoinSet<()>>>,
     packet_sender: mpsc::Sender<ZCPacket>,
@@ -677,9 +687,16 @@ impl PeerPacketFilter for Socks5Server {
 impl Socks5Server {
     pub fn new(global_ctx: Arc<GlobalCtx>, peer_manager: Arc<PeerManager>) -> Arc<Self> {
         let (packet_sender, packet_recv) = mpsc::channel(1024);
+        let host = native_host_runtime();
+        let command_runtime = Arc::new(HostSocks5ServerRuntime::new(
+            host.clone(),
+            host,
+            runtime_socket_context(&global_ctx),
+        ));
         Arc::new(Self {
             global_ctx,
             peer_manager: Arc::downgrade(&peer_manager),
+            command_runtime,
 
             tasks: Arc::new(std::sync::Mutex::new(JoinSet::new())),
             packet_recv: Arc::new(Mutex::new(packet_recv)),
@@ -714,6 +731,7 @@ impl Socks5Server {
         let cancel_tokens = self.cancel_tokens.clone();
         let port_forward_list_change_notifier = self.port_forward_list_change_notifier.clone();
         let socks5_enabled = self.socks5_enabled.clone();
+        let command_runtime = self.command_runtime.clone();
         #[cfg(feature = "ffi-dataplane")]
         let data_plane_refs = self.data_plane_refs.clone();
         #[cfg(feature = "ffi-dataplane")]
@@ -780,6 +798,7 @@ impl Socks5Server {
                             cur_ipv4,
                             peer_manager.clone(),
                             packet_recv.clone(),
+                            command_runtime.clone(),
                         ));
                         tracing::trace!(
                             ?cur_ipv4,
@@ -834,6 +853,7 @@ impl Socks5Server {
             let entries = self.entries.clone();
             let peer_manager = self.peer_manager.clone();
             let net = self.net.clone();
+            let command_runtime = self.command_runtime.clone();
             self.tasks.lock().unwrap().spawn(async move {
                 loop {
                     match listener.accept().await {
@@ -856,7 +876,9 @@ impl Socks5Server {
                                 net.handle_tcp_stream(socket, connector);
                             } else {
                                 tokio::spawn(Socks5ServerNet::handle_tcp_stream_task(
-                                    socket, connector,
+                                    socket,
+                                    connector,
+                                    command_runtime.clone(),
                                 ));
                             }
                         }

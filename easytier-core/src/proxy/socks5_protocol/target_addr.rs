@@ -5,7 +5,6 @@ use anyhow::Context;
 use std::fmt;
 use std::io;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
-use std::vec::IntoIter;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
@@ -87,21 +86,6 @@ impl TargetAddr {
             }
         }
         Ok(buf)
-    }
-}
-
-// async-std ToSocketAddrs doesn't supports external trait implementation
-// @see https://github.com/async-rs/async-std/issues/539
-impl std::net::ToSocketAddrs for TargetAddr {
-    type Iter = IntoIter<SocketAddr>;
-
-    fn to_socket_addrs(&self) -> io::Result<IntoIter<SocketAddr>> {
-        match *self {
-            TargetAddr::Ip(addr) => Ok(vec![addr].into_iter()),
-            TargetAddr::Domain(_, _) => Err(io::Error::other(
-                "Domain name has to be explicitly resolved, please use TargetAddr::resolve_dns().",
-            )),
-        }
     }
 }
 

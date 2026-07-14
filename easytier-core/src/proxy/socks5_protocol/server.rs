@@ -5,7 +5,7 @@ use anyhow::Context;
 use std::io;
 use std::net::IpAddr;
 use std::net::Ipv4Addr;
-use std::net::{SocketAddr, ToSocketAddrs as StdToSocketAddrs};
+use std::net::SocketAddr;
 use std::ops::Deref;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -627,15 +627,15 @@ impl<T: AsyncRead + AsyncWrite + Unpin, A: Authentication, C: AsyncTcpConnector>
     /// Connect to the target address that the client wants,
     /// then forward the data between them (client <=> target address).
     async fn execute_command_connect(&mut self) -> Result<()> {
-        // async-std's ToSocketAddrs doesn't supports external trait implementation
-        // @see https://github.com/async-rs/async-std/issues/539
-        let addr = self
-            .target_addr
-            .as_ref()
-            .context("target_addr empty")?
-            .to_socket_addrs()?
-            .next()
-            .context("unreachable")?;
+        let addr = match self.target_addr.as_ref().context("target_addr empty")? {
+            TargetAddr::Ip(addr) => *addr,
+            TargetAddr::Domain(_, _) => {
+                return Err(io::Error::other(
+                    "domain must be resolved when SOCKS DNS resolution is enabled",
+                )
+                .into());
+            }
+        };
 
         // TCP connect with timeout, to avoid memory leak for connection that takes forever
         let outbound = self
@@ -904,6 +904,23 @@ mod tests {
         drop(client_stream);
         drop(destination_stream);
         assert!(task.await.unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn unresolved_domain_keeps_dns_disabled_failure_semantics() {
+        let (server_stream, _client_stream) = tokio::io::duplex(128);
+        let (outbound, _destination_stream) = tokio::io::duplex(128);
+        let mut socket = Socks5Socket::new(
+            server_stream,
+            Arc::new(Config::<AcceptAuthentication>::default()),
+            connector(outbound),
+            Arc::new(TestRuntime),
+        );
+        socket.target_addr = Some(TargetAddr::Domain("peer.example".into(), 443));
+
+        let error = socket.execute_command_connect().await.unwrap_err();
+
+        assert!(matches!(error, SocksError::Io(_)));
     }
 
     #[tokio::test]

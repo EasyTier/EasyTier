@@ -62,6 +62,7 @@ pub(super) fn encode_udp_bind_options(options: &UdpBindOptions) -> io::Result<Ve
         UdpSocketPurpose::PortBoundListener => 3,
         UdpSocketPurpose::ProxyNat => 4,
         UdpSocketPurpose::StunProbe => 5,
+        UdpSocketPurpose::Socks5 => 6,
     });
     encode_bind_device(&mut encoded, &options.bind_device)?;
     Ok(encoded)
@@ -279,6 +280,12 @@ mod tests {
     fn encodes_udp_proxy_nat_purpose() {
         let encoded = encode_udp_bind_options(&UdpBindOptions::proxy_nat()).unwrap();
         assert_eq!(encoded[42], 4);
+    }
+
+    #[test]
+    fn encodes_udp_socks5_purpose() {
+        let encoded = encode_udp_bind_options(&UdpBindOptions::socks5()).unwrap();
+        assert_eq!(encoded[42], 6);
     }
 
     #[test]
