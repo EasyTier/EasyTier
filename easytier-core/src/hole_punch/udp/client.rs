@@ -12,7 +12,7 @@ use rand::Rng;
 use tokio::sync::RwLock;
 use tokio_util::task::AbortOnDropHandle;
 
-use crate::config::PeerId;
+use crate::{config::PeerId, stun::StunInfoProvider};
 
 use super::{
     HOLE_PUNCH_PACKET_BODY_LEN, SelectPunchListener, SendPunchPacketBothEasySym,
@@ -175,6 +175,7 @@ where
 {
     runtime: Arc<R>,
     signaling: Arc<S>,
+    stun: Arc<dyn StunInfoProvider>,
     udp_array: RwLock<Option<Arc<UdpSocketArray<R>>>>,
     try_direct_connect: AtomicBool,
     punch_predictably: AtomicBool,
@@ -185,10 +186,11 @@ where
     R: UdpHolePunchRuntime,
     S: UdpHolePunchSignaling + 'static,
 {
-    pub fn new(runtime: Arc<R>, signaling: Arc<S>) -> Self {
+    pub fn new(runtime: Arc<R>, signaling: Arc<S>, stun: Arc<dyn StunInfoProvider>) -> Self {
         Self {
             runtime,
             signaling,
+            stun,
             udp_array: RwLock::new(None),
             try_direct_connect: AtomicBool::new(true),
             punch_predictably: AtomicBool::new(true),
@@ -236,7 +238,7 @@ where
 
     async fn get_base_port_for_easy_sym(&self, my_nat_info: UdpNatType) -> Option<u16> {
         if my_nat_info.is_easy_sym() {
-            match self.runtime.get_udp_port_mapping(0).await {
+            match self.stun.get_udp_port_mapping(0).await {
                 Ok(addr) => Some(addr.port()),
                 ret => {
                     tracing::warn!(?ret, "failed to get udp port mapping for easy sym");
@@ -377,7 +379,7 @@ where
             }
         }
 
-        let stun_info = self.runtime.stun_info();
+        let stun_info = self.stun.get_stun_info();
         let public_ips: Vec<Ipv4Addr> = stun_info
             .public_ip
             .iter()
@@ -455,6 +457,7 @@ where
 {
     runtime: Arc<R>,
     signaling: Arc<S>,
+    stun: Arc<dyn StunInfoProvider>,
 }
 
 impl<R, S> UdpBothEasySymPunchClient<R, S>
@@ -462,8 +465,12 @@ where
     R: UdpHolePunchRuntime,
     S: UdpHolePunchSignaling + 'static,
 {
-    pub fn new(runtime: Arc<R>, signaling: Arc<S>) -> Self {
-        Self { runtime, signaling }
+    pub fn new(runtime: Arc<R>, signaling: Arc<S>, stun: Arc<dyn StunInfoProvider>) -> Self {
+        Self {
+            runtime,
+            signaling,
+            stun,
+        }
     }
 
     #[tracing::instrument(ret, skip(self))]
@@ -483,7 +490,7 @@ where
         );
         udp_array.start().await?;
 
-        let cur_mapped_addr = self.runtime.get_udp_port_mapping(0).await?;
+        let cur_mapped_addr = self.stun.get_udp_port_mapping(0).await?;
         let my_public_ip = match cur_mapped_addr.ip() {
             IpAddr::V4(v4) => v4,
             _ => {
@@ -626,7 +633,6 @@ mod tests {
     struct MockRuntime {
         bind_count: AtomicUsize,
         resolve_count: AtomicUsize,
-        port_mapping_count: AtomicUsize,
         bind_options: tokio::sync::Mutex<Vec<UdpBindOptions>>,
     }
 
@@ -635,7 +641,6 @@ mod tests {
             Self {
                 bind_count: AtomicUsize::new(0),
                 resolve_count: AtomicUsize::new(0),
-                port_mapping_count: AtomicUsize::new(0),
                 bind_options: tokio::sync::Mutex::new(Vec::new()),
             }
         }
@@ -644,13 +649,6 @@ mod tests {
     #[async_trait]
     impl UdpHolePunchRuntime for MockRuntime {
         type Socket = MockSocket;
-
-        fn stun_info(&self) -> StunInfo {
-            StunInfo {
-                public_ip: vec!["127.0.0.1".to_string()],
-                ..Default::default()
-            }
-        }
 
         async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
             self.bind_options.lock().await.push(options);
@@ -669,11 +667,6 @@ mod tests {
                 mapped_addr: SocketAddr::from(([203, 0, 113, 1], 10000)),
                 port_mapping_lease: None,
             })
-        }
-
-        async fn get_udp_port_mapping(&self, _port: u16) -> anyhow::Result<SocketAddr> {
-            self.port_mapping_count.fetch_add(1, Ordering::Relaxed);
-            Ok(SocketAddr::from(([203, 0, 113, 1], 10000)))
         }
 
         async fn create_listener(
@@ -697,6 +690,32 @@ mod tests {
         ) -> anyhow::Result<UdpPunchSocket> {
             unimplemented!("not used by cone client tests")
         }
+    }
+
+    #[derive(Default)]
+    struct MockStunInfoProvider {
+        port_mapping_count: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl StunInfoProvider for MockStunInfoProvider {
+        fn get_stun_info(&self) -> StunInfo {
+            StunInfo {
+                public_ip: vec!["127.0.0.1".to_string()],
+                ..Default::default()
+            }
+        }
+
+        async fn get_udp_port_mapping(&self, _port: u16) -> anyhow::Result<SocketAddr> {
+            self.port_mapping_count.fetch_add(1, Ordering::Relaxed);
+            Ok(SocketAddr::from(([203, 0, 113, 1], 10000)))
+        }
+
+        async fn get_tcp_port_mapping(&self, _port: u16) -> anyhow::Result<SocketAddr> {
+            unreachable!("TCP mapping is not used by UDP hole-punch tests")
+        }
+
+        fn update_stun_info(&self) {}
     }
 
     struct RejectingSignaling;
@@ -862,7 +881,8 @@ mod tests {
     async fn sym_to_cone_easy_sym_uses_port_mapping_in_predictable_request() {
         let runtime = Arc::new(MockRuntime::new());
         let signaling = Arc::new(RecordingSignaling::new(42));
-        let client = UdpSymToConePunchClient::new(runtime.clone(), signaling.clone());
+        let stun = Arc::new(MockStunInfoProvider::default());
+        let client = UdpSymToConePunchClient::new(runtime.clone(), signaling.clone(), stun.clone());
         client.set_try_direct_connect(false);
 
         let mut last_port_idx = 7;
@@ -872,7 +892,7 @@ mod tests {
             .unwrap();
 
         assert!(ret.is_none());
-        assert_eq!(runtime.port_mapping_count.load(Ordering::Relaxed), 1);
+        assert_eq!(stun.port_mapping_count.load(Ordering::Relaxed), 1);
 
         let easy_requests = signaling.easy_requests.lock().await;
         assert_eq!(easy_requests.len(), 1);
@@ -895,7 +915,8 @@ mod tests {
     async fn sym_to_cone_hard_sym_sends_random_request_and_updates_port_index() {
         let runtime = Arc::new(MockRuntime::new());
         let signaling = Arc::new(RecordingSignaling::new(321));
-        let client = UdpSymToConePunchClient::new(runtime.clone(), signaling.clone());
+        let stun = Arc::new(MockStunInfoProvider::default());
+        let client = UdpSymToConePunchClient::new(runtime.clone(), signaling.clone(), stun.clone());
         client.set_try_direct_connect(false);
 
         let mut last_port_idx = 123;
@@ -905,7 +926,7 @@ mod tests {
             .unwrap();
 
         assert!(ret.is_none());
-        assert_eq!(runtime.port_mapping_count.load(Ordering::Relaxed), 0);
+        assert_eq!(stun.port_mapping_count.load(Ordering::Relaxed), 0);
         assert!(signaling.easy_requests.lock().await.is_empty());
 
         let hard_requests = signaling.hard_requests.lock().await;
@@ -930,13 +951,15 @@ mod tests {
     #[tokio::test]
     async fn both_easy_sym_sends_remote_request_and_reports_busy() {
         let runtime = Arc::new(MockRuntime::new());
+        let stun = Arc::new(MockStunInfoProvider::default());
         let signaling = Arc::new(RecordingSignaling::new(0).with_both_response(
             super::super::SendPunchPacketBothEasySymResponse {
                 is_busy: true,
                 base_mapped_addr: None,
             },
         ));
-        let client = UdpBothEasySymPunchClient::new(runtime.clone(), signaling.clone());
+        let client =
+            UdpBothEasySymPunchClient::new(runtime.clone(), signaling.clone(), stun.clone());
 
         let mut is_busy = false;
         let err = client
@@ -951,7 +974,7 @@ mod tests {
 
         assert!(is_busy);
         assert!(err.to_string().contains("remote is busy"));
-        assert_eq!(runtime.port_mapping_count.load(Ordering::Relaxed), 1);
+        assert_eq!(stun.port_mapping_count.load(Ordering::Relaxed), 1);
         assert_eq!(
             runtime.bind_count.load(Ordering::Relaxed),
             UDP_ARRAY_SIZE_FOR_BOTH_EASY_SYM

@@ -17,6 +17,7 @@ use tokio::{
 use crate::{
     config::PeerId,
     proto::common::NatType,
+    stun::StunInfoProvider,
     task::{ExternalTaskSignal, PeerTaskLauncher, PeerTaskManager},
 };
 
@@ -90,6 +91,7 @@ where
     signaling: Arc<S>,
     transport_sink: Arc<T>,
     runtime: Arc<R>,
+    stun: Arc<dyn StunInfoProvider>,
     sym_punch_lock: UdpSymPunchLock,
     try_cone_before_sym: AtomicBool,
 }
@@ -105,6 +107,7 @@ where
     signaling: Arc<S>,
     transport_sink: Arc<T>,
     runtime: Arc<R>,
+    stun: Arc<dyn StunInfoProvider>,
     sym_punch_lock: UdpSymPunchLock,
     blacklist: UdpHolePunchBlacklist,
     try_cone_before_sym: Arc<AtomicBool>,
@@ -125,6 +128,7 @@ where
             signaling: parts.signaling.clone(),
             transport_sink: parts.transport_sink.clone(),
             runtime: parts.runtime.clone(),
+            stun: parts.stun.clone(),
             sym_punch_lock: parts.sym_punch_lock.clone(),
             blacklist: UdpHolePunchBlacklist::new(),
             try_cone_before_sym: Arc::new(AtomicBool::new(
@@ -133,10 +137,12 @@ where
             sym_to_cone_client: UdpSymToConePunchClient::new(
                 parts.runtime.clone(),
                 parts.signaling.clone(),
+                parts.stun.clone(),
             ),
             both_easy_sym_client: UdpBothEasySymPunchClient::new(
                 parts.runtime.clone(),
                 parts.signaling.clone(),
+                parts.stun.clone(),
             ),
         })
     }
@@ -393,7 +399,7 @@ where
     }
 
     async fn collect_peers_need_task(&self, data: &Self::Data) -> Vec<Self::CollectPeerItem> {
-        let my_nat_type = data.runtime.stun_info().udp_nat_type;
+        let my_nat_type = data.stun.get_stun_info().udp_nat_type;
         let my_nat_type: UdpNatType = NatType::try_from(my_nat_type)
             .unwrap_or(NatType::Unknown)
             .into();
@@ -479,6 +485,7 @@ where
         signaling: Arc<S>,
         transport_sink: Arc<T>,
         runtime: Arc<R>,
+        stun: Arc<dyn StunInfoProvider>,
         sym_punch_lock: UdpSymPunchLock,
         external_signal: Option<Arc<ExternalTaskSignal>>,
     ) -> Self {
@@ -487,6 +494,7 @@ where
             signaling,
             transport_sink,
             runtime,
+            stun,
             sym_punch_lock,
             try_cone_before_sym: AtomicBool::new(true),
         });

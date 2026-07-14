@@ -24,6 +24,7 @@ use easytier_core::{
     },
     instance::UdpHolePunchService,
     peers::peer_manager::PeerManagerCore,
+    stun::StunInfoProvider,
 };
 use once_cell::sync::Lazy;
 use signaling::PeerRpcUdpHolePunchSignaling;
@@ -68,11 +69,14 @@ struct UdpHolePunchServer {
 impl UdpHolePunchServer {
     pub fn new(
         peer_mgr: Arc<PeerManager>,
+        stun: Arc<dyn StunInfoProvider>,
         transport_sink: Arc<RuntimeUdpHolePunchTransportSink>,
         sym_punch_lock: UdpSymPunchLock,
     ) -> Arc<Self> {
+        let global_ctx = peer_mgr.get_global_ctx();
         let inner = CoreUdpHolePunchServer::new(
-            Arc::new(RuntimeUdpHolePunchRuntime::new(peer_mgr.get_global_ctx())),
+            Arc::new(RuntimeUdpHolePunchRuntime::new(global_ctx.clone())),
+            stun,
             transport_sink,
             sym_punch_lock,
         );
@@ -317,22 +321,25 @@ pub struct UdpHolePunchConnector {
 impl UdpHolePunchConnector {
     pub fn new(peer_mgr: Arc<PeerManager>) -> Self {
         let sym_punch_lock = UdpSymPunchLock::default();
+        let global_ctx = peer_mgr.get_global_ctx();
+        let stun: Arc<dyn StunInfoProvider> = global_ctx.get_stun_info_collector();
         let transport_sink = Arc::new(ProtocolUdpHolePunchTransportSink::new(
-            super::protocol::runtime_client_protocol_upgrader(peer_mgr.get_global_ctx()),
+            super::protocol::runtime_client_protocol_upgrader(global_ctx.clone()),
             peer_mgr.core(),
         ));
         let client = RuntimeUdpHolePunchConnector::new(
             Arc::new(RuntimeUdpHolePunchPeerSource::new(peer_mgr.clone())),
             Arc::new(PeerRpcUdpHolePunchSignaling::new(peer_mgr.clone())),
             transport_sink.clone(),
-            Arc::new(RuntimeUdpHolePunchRuntime::new(peer_mgr.get_global_ctx())),
+            Arc::new(RuntimeUdpHolePunchRuntime::new(global_ctx)),
+            stun.clone(),
             sym_punch_lock.clone(),
             Some(peer_mgr.core().p2p_demand_notify()),
         );
         client.set_try_cone_before_sym(!RUN_TESTING.load(Ordering::Relaxed));
 
         Self {
-            server: UdpHolePunchServer::new(peer_mgr.clone(), transport_sink, sym_punch_lock),
+            server: UdpHolePunchServer::new(peer_mgr.clone(), stun, transport_sink, sym_punch_lock),
             client,
             peer_mgr,
         }

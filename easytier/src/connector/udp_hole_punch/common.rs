@@ -137,10 +137,6 @@ impl core_udp_hole_punch::UdpHolePunchRuntime for RuntimeUdpHolePunchRuntime {
         runtime_socket_context(&self.global_ctx)
     }
 
-    fn stun_info(&self) -> crate::proto::common::StunInfo {
-        self.global_ctx.get_stun_info_collector().get_stun_info()
-    }
-
     async fn bind_udp(
         &self,
         options: core_udp_hole_punch::UdpBindOptions,
@@ -191,14 +187,6 @@ impl core_udp_hole_punch::UdpHolePunchRuntime for RuntimeUdpHolePunchRuntime {
             mapped_addr,
             port_mapping_lease,
         })
-    }
-
-    async fn get_udp_port_mapping(&self, port: u16) -> anyhow::Result<SocketAddr> {
-        self.global_ctx
-            .get_stun_info_collector()
-            .get_udp_port_mapping(port)
-            .await
-            .map_err(anyhow::Error::from)
     }
 
     async fn create_listener(

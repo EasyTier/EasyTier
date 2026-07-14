@@ -17,6 +17,8 @@ use tokio::{
 };
 use tokio_util::task::AbortOnDropHandle;
 
+use crate::stun::StunInfoProvider;
+
 use super::{
     HOLE_PUNCH_PACKET_BODY_LEN, MAX_PUBLIC_UDP_HOLE_PUNCH_LISTENERS, ReusableUdpPunchListener,
     SelectPunchListener, SelectPunchListenerResponse, SendPunchPacketBothEasySym,
@@ -54,12 +56,19 @@ where
     R: UdpHolePunchRuntime,
     T: UdpHolePunchTransportSink + 'static,
 {
-    pub fn new(runtime: Arc<R>, transport_sink: Arc<T>, sym_punch_lock: UdpSymPunchLock) -> Self {
+    pub fn new(
+        runtime: Arc<R>,
+        stun: Arc<dyn StunInfoProvider>,
+        transport_sink: Arc<T>,
+        sym_punch_lock: UdpSymPunchLock,
+    ) -> Self {
         let common = Arc::new(UdpHolePunchServerCommon::new(
             runtime.clone(),
+            stun.clone(),
             transport_sink.clone(),
         ));
-        let both_easy_sym_common = Arc::new(UdpHolePunchServerCommon::new(runtime, transport_sink));
+        let both_easy_sym_common =
+            Arc::new(UdpHolePunchServerCommon::new(runtime, stun, transport_sink));
         let both_easy_sym_server = UdpBothEasySymPunchServer::new(both_easy_sym_common);
         let mut shuffled_port_vec: Vec<u16> = (1..=65535).collect();
         shuffled_port_vec.shuffle(&mut rand::thread_rng());
@@ -326,6 +335,7 @@ where
     T: UdpHolePunchTransportSink + 'static,
 {
     runtime: Arc<R>,
+    stun: Arc<dyn StunInfoProvider>,
     transport_sink: Arc<T>,
     listeners: Arc<Mutex<Vec<Arc<UdpPunchListenerRecord<R::Socket>>>>>,
     pending: Arc<Mutex<Vec<Arc<UdpPunchListenerRecord<R::Socket>>>>>,
@@ -338,11 +348,12 @@ where
     R: UdpHolePunchRuntime,
     T: UdpHolePunchTransportSink + 'static,
 {
-    pub fn new(runtime: Arc<R>, transport_sink: Arc<T>) -> Self {
+    pub fn new(runtime: Arc<R>, stun: Arc<dyn StunInfoProvider>, transport_sink: Arc<T>) -> Self {
         let listeners = Arc::new(Mutex::new(Vec::new()));
 
         Self {
             runtime,
+            stun,
             transport_sink,
             listeners,
             pending: Arc::new(Mutex::new(Vec::new())),
@@ -825,7 +836,7 @@ where
 
         let cur_mapped_addr = self
             .common
-            .runtime
+            .stun
             .get_udp_port_mapping(0)
             .await
             .with_context(|| "failed to get udp port mapping")?;
@@ -1023,10 +1034,6 @@ mod tests {
     impl UdpHolePunchRuntime for MockRuntime {
         type Socket = MockSocket;
 
-        fn stun_info(&self) -> StunInfo {
-            StunInfo::default()
-        }
-
         async fn bind_udp(&self, _options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
             Ok(Arc::new(MockSocket {
                 local_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
@@ -1043,10 +1050,6 @@ mod tests {
                 mapped_addr: socket.local_addr()?,
                 port_mapping_lease: None,
             })
-        }
-
-        async fn get_udp_port_mapping(&self, _port: u16) -> anyhow::Result<SocketAddr> {
-            Ok(SocketAddr::from(([203, 0, 113, 1], 10000)))
         }
 
         async fn create_listener(
@@ -1076,6 +1079,29 @@ mod tests {
                 UdpSession::identity_standalone(socket, remote, UdpSessionKind::EasyTierMux)?;
             Ok(UdpPunchSocket::new(session, remote, ()))
         }
+    }
+
+    struct MockStunInfoProvider;
+
+    #[async_trait]
+    impl StunInfoProvider for MockStunInfoProvider {
+        fn get_stun_info(&self) -> StunInfo {
+            StunInfo::default()
+        }
+
+        async fn get_udp_port_mapping(&self, _port: u16) -> anyhow::Result<SocketAddr> {
+            Ok(SocketAddr::from(([203, 0, 113, 1], 10000)))
+        }
+
+        async fn get_tcp_port_mapping(&self, _port: u16) -> anyhow::Result<SocketAddr> {
+            unreachable!("TCP mapping is not used by UDP hole-punch tests")
+        }
+
+        fn update_stun_info(&self) {}
+    }
+
+    fn mock_stun() -> Arc<dyn StunInfoProvider> {
+        Arc::new(MockStunInfoProvider)
     }
 
     #[derive(Default)]
@@ -1123,7 +1149,8 @@ mod tests {
     async fn server_keeps_both_easy_sym_listener_pool_separate() {
         let runtime = Arc::new(MockRuntime::new(Vec::new()));
         let sink = Arc::new(MockSink::default());
-        let server = UdpHolePunchServer::new(runtime, sink, UdpSymPunchLock::default());
+        let server =
+            UdpHolePunchServer::new(runtime, mock_stun(), sink, UdpSymPunchLock::default());
 
         assert!(!Arc::ptr_eq(
             &server.common,
@@ -1136,14 +1163,15 @@ mod tests {
         let runtime = Arc::new(MockRuntime::new(Vec::new()));
         let sink = Arc::new(MockSink::default());
 
-        let _server = UdpHolePunchServer::new(runtime, sink, UdpSymPunchLock::default());
+        let _server =
+            UdpHolePunchServer::new(runtime, mock_stun(), sink, UdpSymPunchLock::default());
     }
 
     #[tokio::test]
     async fn common_lifecycle_joins_cleanup_and_listener_tasks() {
         let runtime = Arc::new(MockRuntime::new(vec![listener(10003, Vec::new())]));
         let sink = Arc::new(MockSink::default());
-        let common = Arc::new(UdpHolePunchServerCommon::new(runtime, sink));
+        let common = Arc::new(UdpHolePunchServerCommon::new(runtime, mock_stun(), sink));
 
         common.start();
         common.select_listener(false, false).await.unwrap();
@@ -1157,7 +1185,7 @@ mod tests {
     async fn select_listener_creates_and_finds_listener() {
         let runtime = Arc::new(MockRuntime::new(vec![listener(10000, Vec::new())]));
         let sink = Arc::new(MockSink::default());
-        let common = UdpHolePunchServerCommon::new(runtime, sink);
+        let common = UdpHolePunchServerCommon::new(runtime, mock_stun(), sink);
 
         let selected = common.select_listener(false, true).await.unwrap();
 
@@ -1189,7 +1217,7 @@ mod tests {
             vec![punched_socket],
         )]));
         let sink = Arc::new(MockSink::default());
-        let common = UdpHolePunchServerCommon::new(runtime, sink.clone());
+        let common = UdpHolePunchServerCommon::new(runtime, mock_stun(), sink.clone());
 
         common.select_listener(false, false).await.unwrap();
 
@@ -1328,7 +1356,7 @@ mod tests {
     async fn both_easy_sym_server_reports_busy_while_task_running() {
         let runtime = Arc::new(MockRuntime::new(Vec::new()));
         let sink = Arc::new(MockSink::default());
-        let common = Arc::new(UdpHolePunchServerCommon::new(runtime, sink));
+        let common = Arc::new(UdpHolePunchServerCommon::new(runtime, mock_stun(), sink));
         let server = UdpBothEasySymPunchServer::new(common);
         let request = SendPunchPacketBothEasySym {
             udp_socket_count: 1,

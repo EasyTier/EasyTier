@@ -10,7 +10,6 @@ use crate::{
         protocol::ClientProtocolUpgrader,
         transport::{ConnectedTransport, ConnectedUdpSession},
     },
-    proto::common::StunInfo,
     socket::{
         SocketContext,
         udp::{UdpBindOptions, UdpSession, VirtualUdpSocket, VirtualUdpSocketFactory},
@@ -311,8 +310,6 @@ pub trait UdpHolePunchRuntime: Send + Sync + 'static {
         SocketContext::default()
     }
 
-    fn stun_info(&self) -> StunInfo;
-
     async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>>;
 
     async fn bind_direct_connect_udp(&self) -> anyhow::Result<Arc<Self::Socket>> {
@@ -330,8 +327,6 @@ pub trait UdpHolePunchRuntime: Send + Sync + 'static {
         &self,
         socket: Arc<Self::Socket>,
     ) -> anyhow::Result<UdpResolvedPublicAddr>;
-
-    async fn get_udp_port_mapping(&self, port: u16) -> anyhow::Result<SocketAddr>;
 
     async fn create_listener(
         &self,
