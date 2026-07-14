@@ -11,13 +11,14 @@ use crate::{
         acl_config::AclRuleConfig, context::PeerRuntimeSnapshot,
         public_ipv6::PublicIpv6ProviderConfig,
     },
-    proxy::ProxyRuntimeConfig,
+    proxy::{ProxyRuntimeConfig, gateway::GatewayRuntimeConfig},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoreRuntimeConfig {
     pub acl: AclRuleConfig,
     pub dhcp_ipv4: bool,
+    pub gateway: GatewayRuntimeConfig,
     pub proxy: ProxyRuntimeConfig,
     pub public_ipv6_provider: PublicIpv6ProviderConfig,
 }
@@ -27,6 +28,7 @@ impl Default for CoreRuntimeConfig {
         Self {
             acl: AclRuleConfig::default(),
             dhcp_ipv4: false,
+            gateway: GatewayRuntimeConfig::default(),
             proxy: ProxyRuntimeConfig::default(),
             public_ipv6_provider: PublicIpv6ProviderConfig {
                 provider_enabled: false,
@@ -47,6 +49,7 @@ struct CoreRuntimeConfigStoreInner {
     snapshot: ArcSwap<CoreInstanceRuntimeConfig>,
     update: Mutex<()>,
     peer_changes: tokio::sync::watch::Sender<u64>,
+    service_changes: tokio::sync::watch::Sender<u64>,
 }
 
 /// Atomic configuration authority shared by one core instance and its peer
@@ -59,11 +62,13 @@ pub struct CoreRuntimeConfigStore {
 impl CoreRuntimeConfigStore {
     pub fn new(services: CoreRuntimeConfig, peer: Arc<PeerRuntimeSnapshot>) -> Self {
         let (peer_changes, _) = tokio::sync::watch::channel(0);
+        let (service_changes, _) = tokio::sync::watch::channel(0);
         Self {
             inner: Arc::new(CoreRuntimeConfigStoreInner {
                 snapshot: ArcSwap::from_pointee(CoreInstanceRuntimeConfig { services, peer }),
                 update: Mutex::new(()),
                 peer_changes,
+                service_changes,
             }),
         }
     }
@@ -76,6 +81,9 @@ impl CoreRuntimeConfigStore {
         let _update = self.inner.update.lock();
         self.inner.snapshot.store(Arc::new(config));
         self.inner.peer_changes.send_modify(|version| *version += 1);
+        self.inner
+            .service_changes
+            .send_modify(|version| *version += 1);
     }
 
     pub fn update_services(&self, update: impl FnOnce(&mut CoreRuntimeConfig)) {
@@ -83,6 +91,9 @@ impl CoreRuntimeConfigStore {
         let mut config = self.inner.snapshot.load_full().as_ref().clone();
         update(&mut config.services);
         self.inner.snapshot.store(Arc::new(config));
+        self.inner
+            .service_changes
+            .send_modify(|version| *version += 1);
     }
 
     pub fn update_peer(&self, peer: Arc<PeerRuntimeSnapshot>) {
@@ -95,6 +106,10 @@ impl CoreRuntimeConfigStore {
 
     pub fn subscribe_peer_runtime_changes(&self) -> tokio::sync::watch::Receiver<u64> {
         self.inner.peer_changes.subscribe()
+    }
+
+    pub fn subscribe_service_runtime_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.inner.service_changes.subscribe()
     }
 }
 
@@ -145,5 +160,19 @@ mod tests {
         store.update_peer(Arc::new(peer));
 
         assert!(changes.changed().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn notifies_service_snapshot_changes() {
+        let store = CoreRuntimeConfigStore::new(
+            CoreRuntimeConfig::default(),
+            Arc::new(PeerRuntimeSnapshot::default()),
+        );
+        let mut changes = store.subscribe_service_runtime_changes();
+
+        store.update_services(|services| services.dhcp_ipv4 = true);
+
+        assert!(changes.changed().await.is_ok());
+        assert!(store.snapshot().services.dhcp_ipv4);
     }
 }

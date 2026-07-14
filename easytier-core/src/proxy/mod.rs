@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod cidr_monitor;
 pub mod cidr_table;
+pub mod gateway;
 pub mod proxy_acl;
 #[cfg(feature = "proxy-packet")]
 pub mod runtime;

@@ -11,6 +11,7 @@ use easytier_core::{
     instance::{CoreInstance, CoreInstanceAdapters, CoreInstanceConfig},
     proxy::{
         ProxyRuntimeConfig,
+        gateway::GatewayRuntimeConfig,
         wrapped_transport::{NoWrappedTransportEngineFactory, WrappedTransportEngineFactory},
     },
     runtime_config::{CoreInstanceRuntimeConfig, CoreRuntimeConfig},
@@ -65,6 +66,18 @@ pub(crate) fn runtime_core_config(global_ctx: &ArcGlobalCtx) -> CoreRuntimeConfi
     CoreRuntimeConfig {
         acl: runtime_acl_config(global_ctx),
         dhcp_ipv4: global_ctx.config.get_dhcp(),
+        gateway: GatewayRuntimeConfig {
+            socks5_bind: global_ctx.config.get_socks5_portal().map(|proxy_url| {
+                format!(
+                    "{}:{}",
+                    proxy_url.host_str().unwrap(),
+                    proxy_url.port().unwrap()
+                )
+                .parse()
+                .unwrap()
+            }),
+            port_forwards: global_ctx.config.get_port_forwards(),
+        },
         proxy: runtime_proxy_startup_context(global_ctx),
         public_ipv6_provider: runtime_public_ipv6_provider_config(global_ctx),
     }

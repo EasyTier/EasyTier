@@ -15,13 +15,15 @@ use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString, VariantArray};
 use tokio::io::AsyncReadExt as _;
 
+pub use easytier_core::proxy::gateway::PortForwardConfig;
+
 use crate::{
     common::stun::{default_udp_stun_servers, default_udp_v6_stun_servers},
     instance::dns_server::DEFAULT_ET_DNS_ZONE,
     proto::{
         acl::Acl,
         api::manage::ConfigSource as RpcConfigSource,
-        common::{CompressionAlgoPb, PortForwardConfigPb, SecureModeConfig, SocketType},
+        common::{CompressionAlgoPb, SecureModeConfig},
     },
     tunnel::{IpScheme, TunnelScheme, generate_digest_from_str},
 };
@@ -510,41 +512,6 @@ impl LoggingConfigLoader for &LoggingConfig {
 pub struct VpnPortalConfig {
     pub client_cidr: cidr::Ipv4Cidr,
     pub wireguard_listen: SocketAddr,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Hash)]
-pub struct PortForwardConfig {
-    pub bind_addr: SocketAddr,
-    pub dst_addr: SocketAddr,
-    pub proto: String,
-}
-
-impl From<PortForwardConfigPb> for PortForwardConfig {
-    fn from(config: PortForwardConfigPb) -> Self {
-        PortForwardConfig {
-            bind_addr: config.bind_addr.unwrap_or_default().into(),
-            dst_addr: config.dst_addr.unwrap_or_default().into(),
-            proto: match SocketType::try_from(config.socket_type) {
-                Ok(SocketType::Tcp) => "tcp".to_string(),
-                Ok(SocketType::Udp) => "udp".to_string(),
-                _ => "tcp".to_string(),
-            },
-        }
-    }
-}
-
-impl From<PortForwardConfig> for PortForwardConfigPb {
-    fn from(val: PortForwardConfig) -> Self {
-        PortForwardConfigPb {
-            bind_addr: Some(val.bind_addr.into()),
-            dst_addr: Some(val.dst_addr.into()),
-            socket_type: match val.proto.to_lowercase().as_str() {
-                "tcp" => SocketType::Tcp as i32,
-                "udp" => SocketType::Udp as i32,
-                _ => SocketType::Tcp as i32,
-            },
-        }
-    }
 }
 
 pub fn process_secure_mode_cfg(mut user_cfg: SecureModeConfig) -> anyhow::Result<SecureModeConfig> {
