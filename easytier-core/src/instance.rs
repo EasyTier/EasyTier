@@ -470,12 +470,12 @@ where
         }
         let (packet_tx, packet_rx) = create_packet_recv_chan();
         let dns_context = config.connectivity.direct.tcp_bind.context.clone();
+        let mut peer_snapshot =
+            PeerRuntimeSnapshot::new(config.peer.runtime.clone(), config.peer.flags.clone());
+        peer_snapshot.set_acl_groups(config.connectivity.runtime.acl.acl.as_ref());
         let runtime_config = CoreRuntimeConfigStore::new(
             config.connectivity.runtime.clone(),
-            Arc::new(PeerRuntimeSnapshot::new(
-                config.peer.runtime.clone(),
-                config.peer.flags.clone(),
-            )),
+            Arc::new(peer_snapshot),
         );
         let peer_stun: Arc<dyn StunInfoProvider> = adapters.stun.clone();
         let peer_manager = Arc::new(
@@ -601,7 +601,6 @@ where
             dns_records,
             endpoint_discovery,
         ));
-        peer_manager.initialize_portable_acl(&initial_runtime_config.acl)?;
         let acl_whitelist = AclWhitelistSnapshot::from(&initial_runtime_config.acl);
         runtime_config.update_services(|services| *services = initial_runtime_config.clone());
         let manual = match manual_events {
@@ -1078,9 +1077,7 @@ where
         let config = self.runtime_config.snapshot().services.acl.clone();
         *self.acl_whitelist.write() = AclWhitelistSnapshot::from(&config);
         let acl = config.build()?;
-        if self.peer_manager.reload_acl(acl.as_ref()) {
-            self.refresh_acl_groups().await;
-        }
+        self.peer_manager.reload_acl(acl.as_ref());
         self.initial_acl_loaded.store(true, Ordering::Release);
         Ok(())
     }

@@ -167,6 +167,33 @@ impl PeerRuntimeSnapshot {
             hmac_secret_digest: false,
         }
     }
+
+    pub fn set_acl_groups(&mut self, acl: Option<&Acl>) {
+        let group = acl
+            .and_then(|acl| acl.acl_v1.as_ref())
+            .and_then(|acl| acl.group.as_ref());
+        self.acl_group_declarations = group.map_or_else(Vec::new, |group| {
+            group
+                .declares
+                .iter()
+                .map(|identity| PeerGroupIdentity {
+                    group_name: identity.group_name.clone(),
+                    group_secret: identity.group_secret.clone(),
+                })
+                .collect()
+        });
+        self.peer_group_memberships = group.map_or_else(Vec::new, |group| {
+            group
+                .declares
+                .iter()
+                .filter(|identity| group.members.contains(&identity.group_name))
+                .map(|identity| PeerGroupIdentity {
+                    group_name: identity.group_name.clone(),
+                    group_secret: identity.group_secret.clone(),
+                })
+                .collect()
+        });
+    }
 }
 
 impl Default for PeerRuntimeSnapshot {
@@ -309,47 +336,13 @@ struct CoreLimiterState {
 
 pub(crate) struct CorePeerContextSupport {
     limiter_state: Mutex<CoreLimiterState>,
-    config: CoreRuntimeConfigStore,
 }
 
 impl CorePeerContextSupport {
-    pub(crate) fn new(config: CoreRuntimeConfigStore) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             limiter_state: Mutex::new(CoreLimiterState::default()),
-            config,
         }
-    }
-
-    pub(crate) fn set_acl(&self, acl: Option<Acl>) {
-        let group = acl
-            .as_ref()
-            .and_then(|acl| acl.acl_v1.as_ref())
-            .and_then(|acl| acl.group.as_ref());
-        let declarations = group.map_or_else(Vec::new, |group| {
-            group
-                .declares
-                .iter()
-                .map(|identity| PeerGroupIdentity {
-                    group_name: identity.group_name.clone(),
-                    group_secret: identity.group_secret.clone(),
-                })
-                .collect()
-        });
-        let memberships = group.map_or_else(Vec::new, |group| {
-            group
-                .declares
-                .iter()
-                .filter(|identity| group.members.contains(&identity.group_name))
-                .map(|identity| PeerGroupIdentity {
-                    group_name: identity.group_name.clone(),
-                    group_secret: identity.group_secret.clone(),
-                })
-                .collect()
-        });
-        self.config.modify_peer(|snapshot| {
-            snapshot.peer_group_memberships = memberships;
-            snapshot.acl_group_declarations = declarations;
-        });
     }
 
     fn get_or_create_limiter(&self, key: &str, bps: u64) -> Option<ArcByteLimiter> {
@@ -1454,7 +1447,19 @@ mod tests {
         };
         let mut flags = FlagsInConfig::default();
         flags.p2p_only = true;
-        let context = core_owned_context(runtime.clone(), flags.clone(), None);
+        let acl = Acl {
+            acl_v1: Some(easytier_proto::acl::AclV1 {
+                chains: Vec::new(),
+                group: Some(easytier_proto::acl::GroupInfo {
+                    declares: vec![easytier_proto::acl::GroupIdentity {
+                        group_name: "ops".to_string(),
+                        group_secret: "group-secret".to_string(),
+                    }],
+                    members: vec!["ops".to_string()],
+                }),
+            }),
+        };
+        let context = core_owned_context_with_acl(runtime.clone(), flags.clone(), None, Some(&acl));
 
         assert_eq!(context.runtime_config().core, runtime.core);
         assert_eq!(context.network_identity(), runtime.network_identity);
@@ -1476,18 +1481,6 @@ mod tests {
         assert!(context.secure_mode().unwrap().enabled);
         assert!(context.host_routing_policy().local_exit_node_fallback);
 
-        context.core_support.as_ref().unwrap().set_acl(Some(Acl {
-            acl_v1: Some(easytier_proto::acl::AclV1 {
-                chains: Vec::new(),
-                group: Some(easytier_proto::acl::GroupInfo {
-                    declares: vec![easytier_proto::acl::GroupIdentity {
-                        group_name: "ops".to_string(),
-                        group_secret: "group-secret".to_string(),
-                    }],
-                    members: vec!["ops".to_string()],
-                }),
-            }),
-        }));
         let groups = context.peer_groups(7);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].group_name, "ops");
@@ -1541,11 +1534,19 @@ mod tests {
         flags: FlagsInConfig,
         stun_info_source: Option<Arc<dyn PeerStunInfoSource>>,
     ) -> SubmittedPeerContext {
-        let config = CoreRuntimeConfigStore::new(
-            CoreRuntimeConfig::default(),
-            Arc::new(PeerRuntimeSnapshot::new(runtime, flags)),
-        );
-        let support = Arc::new(CorePeerContextSupport::new(config.clone()));
+        core_owned_context_with_acl(runtime, flags, stun_info_source, None)
+    }
+
+    fn core_owned_context_with_acl(
+        runtime: PeerRuntimeConfig,
+        flags: FlagsInConfig,
+        stun_info_source: Option<Arc<dyn PeerStunInfoSource>>,
+        acl: Option<&Acl>,
+    ) -> SubmittedPeerContext {
+        let mut snapshot = PeerRuntimeSnapshot::new(runtime, flags);
+        snapshot.set_acl_groups(acl);
+        let config = CoreRuntimeConfigStore::new(CoreRuntimeConfig::default(), Arc::new(snapshot));
+        let support = Arc::new(CorePeerContextSupport::new());
         SubmittedPeerContext::new_core_owned(
             config,
             SubmittedPeerContextCapabilities {

@@ -1040,7 +1040,7 @@ impl PeerManagerCore {
             config.runtime.clone(),
             config.flags.clone(),
         )));
-        let core_context_support = Arc::new(CorePeerContextSupport::new(runtime_config.clone()));
+        let core_context_support = Arc::new(CorePeerContextSupport::new());
         let context: ArcPeerContext = Arc::new(SubmittedPeerContext::new_core_owned(
             runtime_config,
             SubmittedPeerContextCapabilities {
@@ -1735,25 +1735,12 @@ impl PeerManagerCore {
         *self.exit_nodes.write().await = exit_nodes;
     }
 
-    pub(crate) fn initialize_portable_acl(
-        &self,
-        config: &super::acl_config::AclRuleConfig,
-    ) -> anyhow::Result<()> {
-        let Some(support) = &self.core_context_support else {
-            return Ok(());
-        };
-        support.set_acl(config.build()?);
-        Ok(())
-    }
-
-    pub(crate) fn reload_acl(&self, acl: Option<&crate::proto::acl::Acl>) -> bool {
+    pub(crate) fn reload_acl(&self, acl: Option<&crate::proto::acl::Acl>) {
         // ACL rule effects are staged separately from configuration publication.
         // Keep the submitted group snapshot unchanged so CoreInstance can detect
         // the group change and refresh route trust state when the complete
         // runtime configuration is published.
-        let refresh_groups_on_initial_load = self.core_context_support.is_some();
         self.acl_filter.reload_rules(acl);
-        refresh_groups_on_initial_load
     }
 
     pub async fn wait(&self) {
@@ -3780,50 +3767,6 @@ mod tests {
         assert_eq!(route.task_count(), 0);
         assert!(core.stats_manager.cleanup_task_is_stopped());
         assert!(core.acl_filter.cleanup_task_is_stopped());
-    }
-
-    #[tokio::test]
-    async fn portable_acl_reload_stages_groups_until_snapshot_publication() {
-        fn acl_config(group_name: &str) -> crate::peers::acl_config::AclRuleConfig {
-            crate::peers::acl_config::AclRuleConfig {
-                acl: Some(crate::proto::acl::Acl {
-                    acl_v1: Some(crate::proto::acl::AclV1 {
-                        chains: Vec::new(),
-                        group: Some(crate::proto::acl::GroupInfo {
-                            declares: vec![crate::proto::acl::GroupIdentity {
-                                group_name: group_name.to_owned(),
-                                group_secret: format!("{group_name}-secret"),
-                            }],
-                            members: vec![group_name.to_owned()],
-                        }),
-                    }),
-                }),
-                ..Default::default()
-            }
-        }
-
-        let config = PortablePeerManagerConfig::new(portable_runtime_config("portable-net", 86));
-        let runtime_config = PeerManagerCore::portable_runtime_config_store(&config);
-        let (packet_tx, _packet_rx) = create_packet_recv_chan();
-        let core = PeerManagerCore::new_portable_with_optional_stun_info_source(
-            config,
-            runtime_config,
-            Arc::new(PanicDnsResolver),
-            SocketContext::default(),
-            None,
-            packet_tx,
-        )
-        .unwrap();
-        core.initialize_portable_acl(&acl_config("before")).unwrap();
-        assert_eq!(core.context.peer_groups(86)[0].group_name, "before");
-
-        let after = acl_config("after").build().unwrap();
-        assert!(core.reload_acl(after.as_ref()));
-        assert_eq!(core.context.peer_groups(86)[0].group_name, "before");
-
-        core.core_context_support.as_ref().unwrap().set_acl(after);
-        assert_eq!(core.context.peer_groups(86)[0].group_name, "after");
-        core.clear_resources().await;
     }
 
     #[tokio::test]

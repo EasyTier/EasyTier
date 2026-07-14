@@ -1,4 +1,4 @@
-use std::{collections::HashSet, sync::Arc};
+use std::sync::Arc;
 
 use easytier_core::config::{
     CoreConfig, IpPrefix, NodeConfig, PeerPolicyConfig, ProxyNetworkConfig, RouteConfig,
@@ -8,9 +8,9 @@ use easytier_core::config::{
 use easytier_core::peers::context::PeerContext;
 use easytier_core::peers::context::{
     ArcByteLimiter, HostRoutingPolicy, NetworkIdentity as CoreNetworkIdentity,
-    PeerCredentialEventSink, PeerEvent, PeerEventSink, PeerGroupIdentity, PeerLimiterFactory,
-    PeerPublicIpv6State, PeerRelayStateSink, PeerRuntimeConfig, PeerRuntimeSnapshot,
-    PeerStunInfoSource, SubmittedPeerContext, SubmittedPeerContextCapabilities,
+    PeerCredentialEventSink, PeerEvent, PeerEventSink, PeerLimiterFactory, PeerPublicIpv6State,
+    PeerRelayStateSink, PeerRuntimeConfig, PeerRuntimeSnapshot, PeerStunInfoSource,
+    SubmittedPeerContext, SubmittedPeerContextCapabilities,
 };
 use easytier_core::runtime_config::{CoreRuntimeConfig, CoreRuntimeConfigStore};
 
@@ -25,27 +25,8 @@ use crate::{
 
 /// Normalizes the native host configuration into one portable peer version.
 pub(crate) fn runtime_peer_snapshot(global_ctx: &ArcGlobalCtx) -> PeerRuntimeSnapshot {
-    let acl_group_declarations = global_ctx
-        .get_acl_group_declarations()
-        .into_iter()
-        .map(|group| PeerGroupIdentity {
-            group_name: group.group_name,
-            group_secret: group.group_secret,
-        })
-        .collect::<Vec<_>>();
-    let memberships = global_ctx
-        .config
-        .get_acl()
-        .and_then(|acl| acl.acl_v1)
-        .and_then(|acl| acl.group)
-        .map(|group| group.members.into_iter().collect::<HashSet<_>>())
-        .unwrap_or_default();
-    let peer_group_memberships = acl_group_declarations
-        .iter()
-        .filter(|group| memberships.contains(&group.group_name))
-        .cloned()
-        .collect();
-    PeerRuntimeSnapshot {
+    let acl = global_ctx.config.get_acl();
+    let mut snapshot = PeerRuntimeSnapshot {
         runtime: runtime_peer_config(global_ctx),
         easytier_version: EASYTIER_VERSION.to_owned(),
         avoid_relay_data_preference: global_ctx.get_avoid_relay_data_preference(),
@@ -57,8 +38,8 @@ pub(crate) fn runtime_peer_snapshot(global_ctx: &ArcGlobalCtx) -> PeerRuntimeSna
             .into_iter()
             .map(|peer| (peer.uri, peer.peer_public_key))
             .collect(),
-        peer_group_memberships,
-        acl_group_declarations,
+        peer_group_memberships: Vec::new(),
+        acl_group_declarations: Vec::new(),
         ospf_update_my_foreign_network_interval_sec: use_global_var!(
             OSPF_UPDATE_MY_GLOBAL_FOREIGN_NETWORK_INTERVAL_SEC
         ),
@@ -66,7 +47,9 @@ pub(crate) fn runtime_peer_snapshot(global_ctx: &ArcGlobalCtx) -> PeerRuntimeSna
             MAX_DIRECT_CONNS_PER_PEER_IN_FOREIGN_NETWORK
         ) as usize,
         hmac_secret_digest: use_global_var!(HMAC_SECRET_DIGEST),
-    }
+    };
+    snapshot.set_acl_groups(acl.as_ref());
+    snapshot
 }
 
 pub(crate) fn build_submitted_peer_context(
