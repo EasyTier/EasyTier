@@ -491,17 +491,30 @@ where
         }
         let (packet_tx, packet_rx) = create_packet_recv_chan();
         let dns_context = config.connectivity.direct.tcp_bind.context.clone();
+        let runtime_config = CoreRuntimeConfigStore::new(
+            config.connectivity.runtime.clone(),
+            Arc::new(PeerRuntimeSnapshot::new(
+                config.peer.runtime.clone(),
+                config.peer.flags.clone(),
+            )),
+        );
         let peer_stun: Arc<dyn StunInfoProvider> = adapters.stun.clone();
         let peer_manager = Arc::new(
-            PeerManagerCore::new_portable_with_dns_context_and_stun_info_source(
+            PeerManagerCore::new_portable_with_runtime_config_store_and_stun_info_source(
                 config.peer,
+                runtime_config.clone(),
                 adapters.dns.clone(),
                 dns_context,
                 Arc::new(CoreStunPeerInfoSource(peer_stun)),
                 packet_tx,
             )?,
         );
-        let mut instance = Self::new(peer_manager, adapters, config.connectivity)?;
+        let mut instance = Self::new_with_runtime_config_store(
+            peer_manager,
+            adapters,
+            config.connectivity,
+            runtime_config,
+        )?;
         instance.packet_egress = Some(PacketEgress::new(packet_rx, packet_sink));
         Ok(instance)
     }

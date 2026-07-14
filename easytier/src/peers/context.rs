@@ -118,7 +118,7 @@ pub(crate) fn submitted_peer_capabilities(
     let event_sink = Arc::new(GlobalCtxPeerEventSink::new(global_ctx.clone()));
     SubmittedPeerContextCapabilities {
         relay_state_sink: global_ctx.clone(),
-        stun_info_source: global_ctx.clone(),
+        stun_info_source: Some(global_ctx.clone()),
         public_ipv6_state: global_ctx.clone(),
         limiter_factory: global_ctx.clone(),
         traffic_sink: global_ctx.clone(),

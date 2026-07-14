@@ -241,7 +241,7 @@ impl PeerPublicIpv6State for () {}
 /// unrelated host capability through the bundle after construction.
 pub struct SubmittedPeerContextCapabilities {
     pub relay_state_sink: Arc<dyn PeerRelayStateSink>,
-    pub stun_info_source: Arc<dyn PeerStunInfoSource>,
+    pub stun_info_source: Option<Arc<dyn PeerStunInfoSource>>,
     pub public_ipv6_state: Arc<dyn PeerPublicIpv6State>,
     pub limiter_factory: Arc<dyn PeerLimiterFactory>,
     pub traffic_sink: Arc<dyn PeerControlTrafficSink>,
@@ -258,7 +258,7 @@ pub struct SubmittedPeerContext {
     config: Arc<dyn PeerRuntimeConfigSource>,
     avoid_relay_data_preference: Arc<AtomicBool>,
     relay_state_sink: Arc<dyn PeerRelayStateSink>,
-    stun_info_source: Arc<dyn PeerStunInfoSource>,
+    stun_info_source: Option<Arc<dyn PeerStunInfoSource>>,
     public_ipv6_state: Arc<dyn PeerPublicIpv6State>,
     limiter_factory: Arc<dyn PeerLimiterFactory>,
     traffic_sink: Arc<dyn PeerControlTrafficSink>,
@@ -267,12 +267,30 @@ pub struct SubmittedPeerContext {
     credential_event_sink: Arc<dyn PeerCredentialEventSink>,
     peer_events: tokio::sync::broadcast::Sender<PeerContextEvent>,
     event_sink: Arc<dyn PeerEventSink>,
+    core_support: Option<Arc<CorePeerContextSupport>>,
 }
 
 impl SubmittedPeerContext {
     pub fn new(
         config: Arc<dyn PeerRuntimeConfigSource>,
         capabilities: SubmittedPeerContextCapabilities,
+    ) -> Self {
+        Self::new_inner(config, capabilities, None, 16)
+    }
+
+    pub(crate) fn new_core_owned(
+        config: Arc<dyn PeerRuntimeConfigSource>,
+        capabilities: SubmittedPeerContextCapabilities,
+        support: Arc<CorePeerContextSupport>,
+    ) -> Self {
+        Self::new_inner(config, capabilities, Some(support), 100)
+    }
+
+    fn new_inner(
+        config: Arc<dyn PeerRuntimeConfigSource>,
+        capabilities: SubmittedPeerContextCapabilities,
+        core_support: Option<Arc<CorePeerContextSupport>>,
+        peer_event_capacity: usize,
     ) -> Self {
         let avoid_relay_data_preference = Arc::new(AtomicBool::new(
             config.peer_runtime_snapshot().avoid_relay_data_preference,
@@ -288,8 +306,9 @@ impl SubmittedPeerContext {
             credentials: capabilities.credentials,
             trusted_keys: capabilities.trusted_keys,
             credential_event_sink: capabilities.credential_event_sink,
-            peer_events: tokio::sync::broadcast::channel(16).0,
+            peer_events: tokio::sync::broadcast::channel(peer_event_capacity).0,
             event_sink: capabilities.event_sink,
+            core_support,
         }
     }
 
@@ -298,37 +317,19 @@ impl SubmittedPeerContext {
     }
 }
 
-#[derive(Clone)]
-pub(crate) struct ConfigPeerContext {
-    runtime: PeerRuntimeConfig,
-    flags: FlagsInConfig,
-    stun_info_source: Option<Arc<dyn PeerStunInfoSource>>,
-    peer_events: tokio::sync::broadcast::Sender<PeerContextEvent>,
-    support: Arc<ConfigPeerContextSupport>,
-}
-
 #[derive(Default)]
-struct ConfigLimiterState {
+struct CoreLimiterState {
     manager: Option<TokenBucketManager>,
     stopped: bool,
 }
 
 #[derive(Default)]
-pub(crate) struct ConfigPeerContextSupport {
-    limiter_state: Mutex<ConfigLimiterState>,
+pub(crate) struct CorePeerContextSupport {
+    limiter_state: Mutex<CoreLimiterState>,
     acl: ArcSwapOption<Acl>,
-    credentials: Arc<CredentialManager>,
-    trusted_keys: TrustedKeyMapManager,
 }
 
-impl ConfigPeerContextSupport {
-    fn new(credentials: Arc<CredentialManager>) -> Self {
-        Self {
-            credentials,
-            ..Default::default()
-        }
-    }
-
+impl CorePeerContextSupport {
     pub(crate) fn set_acl(&self, acl: Option<Acl>) {
         self.acl.store(acl.map(Arc::new));
     }
@@ -405,32 +406,9 @@ impl ConfigPeerContextSupport {
     }
 }
 
-impl ConfigPeerContext {
-    pub(crate) fn new(runtime: PeerRuntimeConfig, credentials: Arc<CredentialManager>) -> Self {
-        Self {
-            runtime,
-            flags: FlagsInConfig::default(),
-            stun_info_source: None,
-            peer_events: tokio::sync::broadcast::channel(100).0,
-            support: Arc::new(ConfigPeerContextSupport::new(credentials)),
-        }
-    }
-
-    pub(crate) fn with_flags(mut self, flags: FlagsInConfig) -> Self {
-        self.flags = flags;
-        self
-    }
-
-    pub(crate) fn with_stun_info_source(
-        mut self,
-        stun_info_source: Arc<dyn PeerStunInfoSource>,
-    ) -> Self {
-        self.stun_info_source = Some(stun_info_source);
-        self
-    }
-
-    pub(crate) fn support(&self) -> Arc<ConfigPeerContextSupport> {
-        self.support.clone()
+impl PeerLimiterFactory for CorePeerContextSupport {
+    fn get_or_create_limiter(&self, key: &str, bps: u64) -> Option<ArcByteLimiter> {
+        CorePeerContextSupport::get_or_create_limiter(self, key, bps)
     }
 }
 
@@ -865,191 +843,13 @@ impl PeerContext for NoopPeerContext {
     }
 }
 
-impl PeerContext for ConfigPeerContext {
-    fn runtime_config(&self) -> PeerRuntimeConfig {
-        let mut runtime = self.runtime.clone();
-        runtime.stun_info = self.stun_info();
-        runtime
-    }
-
-    fn network_identity(&self) -> NetworkIdentity {
-        self.runtime.network_identity.clone()
-    }
-
-    fn flags(&self) -> FlagsInConfig {
-        self.flags.clone()
-    }
-
-    fn host_routing_policy(&self) -> HostRoutingPolicy {
-        self.runtime.host_routing
-    }
-
-    fn issue_event(&self, event: PeerEvent) {
-        let event = match event {
-            PeerEvent::PeerAdded(peer_id) => PeerContextEvent::PeerAdded(peer_id),
-            PeerEvent::PeerRemoved(peer_id) => PeerContextEvent::PeerRemoved(peer_id),
-            PeerEvent::PeerConnAdded(_) => PeerContextEvent::PeerConnAdded,
-            PeerEvent::PeerConnRemoved(_) => PeerContextEvent::PeerConnRemoved,
-        };
-        let _ = self.peer_events.send(event);
-    }
-
-    fn subscribe_peer_events(&self) -> Option<PeerContextEventSubscriber> {
-        Some(self.peer_events.subscribe())
-    }
-
-    fn secure_mode(&self) -> Option<SecureModeConfig> {
-        self.runtime.secure_mode.clone()
-    }
-
-    fn stun_info(&self) -> StunInfo {
-        self.stun_info_source
-            .as_ref()
-            .map(|source| source.stun_info())
-            .unwrap_or_else(|| self.runtime.stun_info.clone())
-    }
-
-    fn instance_id(&self) -> uuid::Uuid {
-        self.runtime
-            .core
-            .node
-            .instance_id
-            .map(uuid::Uuid::from_bytes)
-            .unwrap_or_else(uuid::Uuid::nil)
-    }
-
-    fn ipv4(&self) -> Option<Ipv4Inet> {
-        self.runtime.core.routes.ipv4.as_ref().and_then(config_ipv4)
-    }
-
-    fn ipv6(&self) -> Option<Ipv6Inet> {
-        self.runtime.core.routes.ipv6.as_ref().and_then(config_ipv6)
-    }
-
-    fn is_ip_in_same_network(&self, ip: &IpAddr) -> bool {
-        match ip {
-            IpAddr::V4(ip) => self.ipv4().is_some_and(|network| network.contains(ip)),
-            IpAddr::V6(ip) => self.ipv6().is_some_and(|network| network.contains(ip)),
-        }
-    }
-
-    fn proxy_cidrs(&self) -> Vec<Ipv4Cidr> {
-        self.runtime
-            .core
-            .routes
-            .proxy_networks
-            .iter()
-            .filter_map(|proxy| config_ipv4_cidr(proxy.mapped.as_ref().unwrap_or(&proxy.real)))
-            .collect()
-    }
-
-    fn proxy_networks(&self) -> Vec<ProxyNetworkConfig> {
-        self.runtime.core.routes.proxy_networks.clone()
-    }
-
-    fn hostname(&self) -> String {
-        self.runtime.core.node.hostname.clone().unwrap_or_default()
-    }
-
-    fn feature_flags(&self) -> PeerFeatureFlag {
-        self.runtime.feature_flags
-    }
-
-    fn peer_groups(&self, peer_id: PeerId) -> Vec<PeerGroupInfo> {
-        self.support.peer_groups(peer_id)
-    }
-
-    fn acl_group_declarations(&self) -> Vec<PeerGroupIdentity> {
-        self.support.acl_group_declarations()
-    }
-
-    fn secret_proof(&self, challenge: &[u8]) -> Option<Hmac<Sha256>> {
-        let secret = self.runtime.network_identity.network_secret.as_ref()?;
-        secret_proof_from_secret(secret, challenge)
-    }
-
-    fn is_pubkey_trusted(&self, pubkey: &[u8], network_name: &str) -> bool {
-        if self
-            .support
-            .trusted_keys
-            .verify_trusted_key(pubkey, network_name)
-        {
-            return true;
-        }
-        network_name == self.runtime.network_identity.network_name
-            && self.support.credentials.is_pubkey_trusted(pubkey)
-    }
-
-    fn is_pubkey_trusted_with_source(
-        &self,
-        pubkey: &[u8],
-        network_name: &str,
-        source: TrustedKeySource,
-    ) -> bool {
-        self.support
-            .trusted_keys
-            .verify_trusted_key_with_source(pubkey, network_name, Some(source))
-    }
-
-    fn list_trusted_keys(&self, network_name: &str) -> Vec<(Vec<u8>, TrustedKeyMetadata)> {
-        self.support.trusted_keys.list_trusted_keys(network_name)
-    }
-
-    fn trusted_credential_pubkeys(
-        &self,
-        network_secret: &str,
-    ) -> Vec<TrustedCredentialPubkeyProof> {
-        self.support.credentials.get_trusted_pubkeys(network_secret)
-    }
-
-    fn remove_expired_credentials(&self) -> bool {
-        self.support.credentials.remove_expired_credentials()
-    }
-
-    fn update_trusted_keys(&self, keys: TrustedKeyMap, network_name: &str) {
-        self.support
-            .trusted_keys
-            .update_trusted_keys(network_name, keys);
-    }
-
-    fn remove_trusted_keys(&self, network_name: &str) {
-        self.support.trusted_keys.remove_trusted_keys(network_name);
-    }
-
-    fn recv_limiter(&self, network_name: &str, is_foreign_network: bool) -> Option<ArcByteLimiter> {
-        let traffic = &self.runtime.core.traffic;
-        let foreign_limit = traffic
-            .foreign_relay_bps_limit
-            .or(Some(self.flags.foreign_relay_bps_limit))
-            .filter(|limit| !matches!(*limit, 0 | u64::MAX));
-        let instance_limit = traffic
-            .instance_recv_bps_limit
-            .or(Some(self.flags.instance_recv_bps_limit))
-            .filter(|limit| !matches!(*limit, 0 | u64::MAX));
-        let (key, bps) = if is_foreign_network && let Some(limit) = foreign_limit {
-            (format!("portable:foreign:{network_name}:recv"), limit)
-        } else {
-            ("portable:instance:recv".to_owned(), instance_limit?)
-        };
-        self.support.get_or_create_limiter(&key, bps)
-    }
-
-    fn foreign_forward_limiter(&self, network_name: &str) -> Option<ArcByteLimiter> {
-        let bps = self
-            .runtime
-            .core
-            .traffic
-            .foreign_relay_bps_limit
-            .or(Some(self.flags.foreign_relay_bps_limit))
-            .filter(|limit| !matches!(*limit, 0 | u64::MAX))?;
-        self.support
-            .get_or_create_limiter(&format!("portable:foreign:{network_name}:forward"), bps)
-    }
-}
-
 impl PeerContext for SubmittedPeerContext {
     fn runtime_config(&self) -> PeerRuntimeConfig {
-        self.snapshot().runtime.clone()
+        let mut runtime = self.snapshot().runtime.clone();
+        if self.core_support.is_some() {
+            runtime.stun_info = self.stun_info();
+        }
+        runtime
     }
 
     fn max_direct_conns_per_peer_in_foreign_network(&self) -> usize {
@@ -1073,7 +873,10 @@ impl PeerContext for SubmittedPeerContext {
     }
 
     fn stun_info(&self) -> StunInfo {
-        self.stun_info_source.stun_info()
+        self.stun_info_source
+            .as_ref()
+            .map(|source| source.stun_info())
+            .unwrap_or_else(|| self.snapshot().runtime.stun_info.clone())
     }
 
     fn instance_id(&self) -> uuid::Uuid {
@@ -1143,6 +946,9 @@ impl PeerContext for SubmittedPeerContext {
     fn feature_flags(&self) -> PeerFeatureFlag {
         let snapshot = self.snapshot();
         let mut flags = snapshot.runtime.feature_flags;
+        if self.core_support.is_some() {
+            return flags;
+        }
         flags.avoid_relay_data = snapshot.flags.disable_relay_data
             || self.avoid_relay_data_preference.load(Ordering::Acquire);
         flags.ipv6_public_addr_provider = self.public_ipv6_state.public_ipv6_provider_enabled();
@@ -1220,6 +1026,9 @@ impl PeerContext for SubmittedPeerContext {
     }
 
     fn peer_groups(&self, peer_id: PeerId) -> Vec<PeerGroupInfo> {
+        if let Some(support) = &self.core_support {
+            return support.peer_groups(peer_id);
+        }
         self.snapshot()
             .peer_group_memberships
             .iter()
@@ -1234,6 +1043,9 @@ impl PeerContext for SubmittedPeerContext {
     }
 
     fn acl_group_declarations(&self) -> Vec<PeerGroupIdentity> {
+        if let Some(support) = &self.core_support {
+            return support.acl_group_declarations();
+        }
         self.snapshot().acl_group_declarations.clone()
     }
 
@@ -1291,6 +1103,24 @@ impl PeerContext for SubmittedPeerContext {
     }
 
     fn recv_limiter(&self, network_name: &str, is_foreign_network: bool) -> Option<ArcByteLimiter> {
+        if let Some(support) = &self.core_support {
+            let snapshot = self.snapshot();
+            let traffic = &snapshot.runtime.core.traffic;
+            let foreign_limit = traffic
+                .foreign_relay_bps_limit
+                .or(Some(snapshot.flags.foreign_relay_bps_limit))
+                .filter(|limit| !matches!(*limit, 0 | u64::MAX));
+            let instance_limit = traffic
+                .instance_recv_bps_limit
+                .or(Some(snapshot.flags.instance_recv_bps_limit))
+                .filter(|limit| !matches!(*limit, 0 | u64::MAX));
+            let (key, bps) = if is_foreign_network && let Some(limit) = foreign_limit {
+                (format!("portable:foreign:{network_name}:recv"), limit)
+            } else {
+                ("portable:instance:recv".to_owned(), instance_limit?)
+            };
+            return support.get_or_create_limiter(&key, bps);
+        }
         let flags = &self.snapshot().flags;
         if is_foreign_network && flags.foreign_relay_bps_limit != u64::MAX {
             return self.limiter_factory.get_or_create_limiter(
@@ -1307,6 +1137,18 @@ impl PeerContext for SubmittedPeerContext {
     }
 
     fn foreign_forward_limiter(&self, network_name: &str) -> Option<ArcByteLimiter> {
+        if let Some(support) = &self.core_support {
+            let snapshot = self.snapshot();
+            let bps = snapshot
+                .runtime
+                .core
+                .traffic
+                .foreign_relay_bps_limit
+                .or(Some(snapshot.flags.foreign_relay_bps_limit))
+                .filter(|limit| !matches!(*limit, 0 | u64::MAX))?;
+            return support
+                .get_or_create_limiter(&format!("portable:foreign:{network_name}:forward"), bps);
+        }
         let bps = self.snapshot().flags.foreign_relay_bps_limit;
         (bps != u64::MAX)
             .then(|| {
@@ -1335,6 +1177,7 @@ impl PeerContext for SubmittedPeerContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime_config::{CoreRuntimeConfig, CoreRuntimeConfigStore};
     use std::sync::atomic::{AtomicBool, Ordering};
 
     struct TestSubmittedConfig {
@@ -1387,7 +1230,7 @@ mod tests {
     ) -> SubmittedPeerContextCapabilities {
         SubmittedPeerContextCapabilities {
             relay_state_sink: Arc::new(()),
-            stun_info_source: Arc::new(()),
+            stun_info_source: Some(Arc::new(())),
             public_ipv6_state: Arc::new(()),
             limiter_factory: support,
             traffic_sink: Arc::new(()),
@@ -1616,7 +1459,7 @@ mod tests {
     }
 
     #[test]
-    fn config_peer_context_reads_normalized_snapshot() {
+    fn core_owned_peer_context_reads_normalized_snapshot() {
         let instance_id = uuid::Uuid::from_u128(0x00112233445566778899aabbccddeeff);
         let runtime = PeerRuntimeConfig {
             core: CoreConfig {
@@ -1660,8 +1503,7 @@ mod tests {
         };
         let mut flags = FlagsInConfig::default();
         flags.p2p_only = true;
-        let context = ConfigPeerContext::new(runtime.clone(), Arc::new(CredentialManager::new()))
-            .with_flags(flags.clone());
+        let context = core_owned_context(runtime.clone(), flags.clone(), None);
 
         assert_eq!(context.runtime_config().core, runtime.core);
         assert_eq!(context.network_identity(), runtime.network_identity);
@@ -1683,7 +1525,7 @@ mod tests {
         assert!(context.secure_mode().unwrap().enabled);
         assert!(context.host_routing_policy().local_exit_node_fallback);
 
-        context.support.set_acl(Some(Acl {
+        context.core_support.as_ref().unwrap().set_acl(Some(Acl {
             acl_v1: Some(easytier_proto::acl::AclV1 {
                 chains: Vec::new(),
                 group: Some(easytier_proto::acl::GroupInfo {
@@ -1720,7 +1562,7 @@ mod tests {
     }
 
     #[test]
-    fn config_peer_context_uses_live_stun_source_when_injected() {
+    fn core_owned_peer_context_uses_live_stun_source_when_injected() {
         struct TestStunInfoSource(StunInfo);
 
         impl PeerStunInfoSource for TestStunInfoSource {
@@ -1733,18 +1575,48 @@ mod tests {
         runtime.stun_info.tcp_nat_type = 1;
         let mut live = StunInfo::default();
         live.tcp_nat_type = 4;
-        let context = ConfigPeerContext::new(runtime, Arc::new(CredentialManager::new()))
-            .with_stun_info_source(Arc::new(TestStunInfoSource(live.clone())));
+        let context = core_owned_context(
+            runtime,
+            FlagsInConfig::default(),
+            Some(Arc::new(TestStunInfoSource(live.clone()))),
+        );
 
         assert_eq!(context.stun_info(), live);
         assert_eq!(context.runtime_config().stun_info, live);
     }
 
-    fn config_context_with_routes(
+    fn core_owned_context(
+        runtime: PeerRuntimeConfig,
+        flags: FlagsInConfig,
+        stun_info_source: Option<Arc<dyn PeerStunInfoSource>>,
+    ) -> SubmittedPeerContext {
+        let config = Arc::new(CoreRuntimeConfigStore::new(
+            CoreRuntimeConfig::default(),
+            Arc::new(PeerRuntimeSnapshot::new(runtime, flags)),
+        ));
+        let support = Arc::new(CorePeerContextSupport::default());
+        SubmittedPeerContext::new_core_owned(
+            config,
+            SubmittedPeerContextCapabilities {
+                relay_state_sink: Arc::new(()),
+                stun_info_source,
+                public_ipv6_state: Arc::new(()),
+                limiter_factory: Arc::new(()),
+                traffic_sink: Arc::new(()),
+                event_sink: Arc::new(()),
+                credentials: Arc::new(CredentialManager::new()),
+                trusted_keys: Arc::new(TrustedKeyMapManager::new()),
+                credential_event_sink: Arc::new(()),
+            },
+            support,
+        )
+    }
+
+    fn core_context_with_routes(
         ipv4: Option<IpPrefix>,
         ipv6: Option<IpPrefix>,
-    ) -> ConfigPeerContext {
-        ConfigPeerContext::new(
+    ) -> SubmittedPeerContext {
+        core_owned_context(
             PeerRuntimeConfig {
                 core: CoreConfig {
                     routes: RouteConfig {
@@ -1760,13 +1632,14 @@ mod tests {
                 secure_mode: None,
                 host_routing: HostRoutingPolicy::default(),
             },
-            Arc::new(CredentialManager::new()),
+            FlagsInConfig::default(),
+            None,
         )
     }
 
     #[tokio::test]
-    async fn config_peer_context_publishes_peer_events_per_instance() {
-        let context = config_context_with_routes(None, None);
+    async fn core_owned_peer_context_publishes_peer_events_per_instance() {
+        let context = core_context_with_routes(None, None);
         let mut events = context.subscribe_peer_events().unwrap();
 
         context.issue_event(PeerEvent::PeerAdded(7));
@@ -1789,8 +1662,8 @@ mod tests {
     }
 
     #[test]
-    fn config_peer_context_validates_route_family_and_prefix_edges() {
-        let mismatched = config_context_with_routes(
+    fn core_owned_peer_context_validates_route_family_and_prefix_edges() {
+        let mismatched = core_context_with_routes(
             Some(IpPrefix {
                 address: "2001:db8::1".parse().unwrap(),
                 prefix_len: 64,
@@ -1805,7 +1678,7 @@ mod tests {
         assert!(!mismatched.is_ip_in_same_network(&"2001:db8::2".parse().unwrap()));
         assert!(!mismatched.is_ip_in_same_network(&"10.20.0.2".parse().unwrap()));
 
-        let edges = config_context_with_routes(
+        let edges = core_context_with_routes(
             Some(IpPrefix::new("10.20.0.7".parse().unwrap(), 0).unwrap()),
             Some(IpPrefix::new("2001:db8::7".parse().unwrap(), 128).unwrap()),
         );
@@ -1813,7 +1686,7 @@ mod tests {
         assert!(edges.is_ip_in_same_network(&"2001:db8::7".parse().unwrap()));
         assert!(!edges.is_ip_in_same_network(&"2001:db8::8".parse().unwrap()));
 
-        let invalid = config_context_with_routes(
+        let invalid = core_context_with_routes(
             Some(IpPrefix {
                 address: "10.20.0.7".parse().unwrap(),
                 prefix_len: 33,

@@ -26,6 +26,7 @@ use crate::{
     packet::{CompressorAlgo, PacketType, ZCPacket},
     proto::common::{FlagsInConfig, PeerFeatureFlag, StunInfo},
     proto::core_peer::peer::{ListPublicIpv6InfoResponse, PeerConnInfo, Route as CoreRoute},
+    runtime_config::{CoreRuntimeConfig, CoreRuntimeConfigStore},
     socket::{
         SocketContext,
         dns::{DnsQuery, DnsResolver},
@@ -38,8 +39,9 @@ use super::{
     PeerPacketFilter,
     acl_filter::AclFilter,
     context::{
-        ArcPeerContext, ConfigPeerContext, ConfigPeerContextSupport, HostRoutingPolicy,
-        NetworkIdentity, PeerRuntimeConfig, PeerStunInfoSource,
+        ArcPeerContext, CorePeerContextSupport, HostRoutingPolicy, NetworkIdentity,
+        PeerRuntimeConfig, PeerRuntimeSnapshot, PeerStunInfoSource, SubmittedPeerContext,
+        SubmittedPeerContextCapabilities, TrustedKeyMapManager,
     },
     credential_manager::CredentialManager,
     encrypt::{Encryptor, NullCipher, create_encryptor, derive_key_128, derive_key_256},
@@ -616,7 +618,7 @@ pub struct PeerManagerCore {
     network_name: String,
     counters: PeerManagerTrafficCounters,
     owns_support_tasks: bool,
-    config_context_support: Option<Arc<ConfigPeerContextSupport>>,
+    core_context_support: Option<Arc<CorePeerContextSupport>>,
 }
 
 pub enum AddressResolution {
@@ -870,8 +872,10 @@ impl PeerManagerCore {
         dns_context: SocketContext,
         nic_channel: PacketRecvChan,
     ) -> anyhow::Result<Self> {
+        let runtime_config = Self::portable_runtime_config_store(&config);
         Self::new_portable_with_optional_stun_info_source(
             config,
+            runtime_config,
             dns,
             dns_context,
             None,
@@ -886,8 +890,10 @@ impl PeerManagerCore {
         stun_info_source: Arc<dyn PeerStunInfoSource>,
         nic_channel: PacketRecvChan,
     ) -> anyhow::Result<Self> {
+        let runtime_config = Self::portable_runtime_config_store(&config);
         Self::new_portable_with_optional_stun_info_source(
             config,
+            runtime_config,
             dns,
             dns_context,
             Some(stun_info_source),
@@ -895,8 +901,37 @@ impl PeerManagerCore {
         )
     }
 
+    pub(crate) fn new_portable_with_runtime_config_store_and_stun_info_source(
+        config: PortablePeerManagerConfig,
+        runtime_config: CoreRuntimeConfigStore,
+        dns: Arc<dyn DnsResolver>,
+        dns_context: SocketContext,
+        stun_info_source: Arc<dyn PeerStunInfoSource>,
+        nic_channel: PacketRecvChan,
+    ) -> anyhow::Result<Self> {
+        Self::new_portable_with_optional_stun_info_source(
+            config,
+            runtime_config,
+            dns,
+            dns_context,
+            Some(stun_info_source),
+            nic_channel,
+        )
+    }
+
+    fn portable_runtime_config_store(config: &PortablePeerManagerConfig) -> CoreRuntimeConfigStore {
+        CoreRuntimeConfigStore::new(
+            CoreRuntimeConfig::default(),
+            Arc::new(PeerRuntimeSnapshot::new(
+                config.runtime.clone(),
+                config.flags.clone(),
+            )),
+        )
+    }
+
     fn new_portable_with_optional_stun_info_source(
         mut config: PortablePeerManagerConfig,
+        runtime_config: CoreRuntimeConfigStore,
         dns: Arc<dyn DnsResolver>,
         dns_context: SocketContext,
         stun_info_source: Option<Arc<dyn PeerStunInfoSource>>,
@@ -1005,14 +1040,26 @@ impl PeerManagerCore {
         config.runtime.feature_flags.need_p2p = config.flags.need_p2p;
         config.runtime.feature_flags.avoid_relay_data |= config.flags.disable_relay_data;
         let credential_manager = Arc::new(CredentialManager::new());
-        let mut config_context = ConfigPeerContext::new(config.runtime, credential_manager.clone())
-            .with_flags(config.flags);
-        if let Some(stun_info_source) = stun_info_source {
-            config_context = config_context.with_stun_info_source(stun_info_source);
-        }
-        let config_context = Arc::new(config_context);
-        let config_context_support = config_context.support();
-        let context: ArcPeerContext = config_context;
+        runtime_config.update_peer(Arc::new(PeerRuntimeSnapshot::new(
+            config.runtime.clone(),
+            config.flags.clone(),
+        )));
+        let core_context_support = Arc::new(CorePeerContextSupport::default());
+        let context: ArcPeerContext = Arc::new(SubmittedPeerContext::new_core_owned(
+            Arc::new(runtime_config),
+            SubmittedPeerContextCapabilities {
+                relay_state_sink: Arc::new(()),
+                stun_info_source,
+                public_ipv6_state: Arc::new(()),
+                limiter_factory: core_context_support.clone(),
+                traffic_sink: Arc::new(()),
+                event_sink: Arc::new(()),
+                credentials: credential_manager.clone(),
+                trusted_keys: Arc::new(TrustedKeyMapManager::new()),
+                credential_event_sink: Arc::new(()),
+            },
+            core_context_support.clone(),
+        ));
         let public_ipv6_runtime = Arc::new(DisabledPublicIpv6Runtime {
             instance_id,
             network_name,
@@ -1039,7 +1086,7 @@ impl PeerManagerCore {
         );
         let mut core = result.core;
         core.owns_support_tasks = true;
-        core.config_context_support = Some(config_context_support);
+        core.core_context_support = Some(core_context_support);
         Ok(core)
     }
 
@@ -1402,7 +1449,7 @@ impl PeerManagerCore {
             network_name,
             counters,
             owns_support_tasks: false,
-            config_context_support: None,
+            core_context_support: None,
         }
     }
 
@@ -1765,7 +1812,7 @@ impl PeerManagerCore {
         &self,
         config: &super::acl_config::AclRuleConfig,
     ) -> anyhow::Result<()> {
-        let Some(support) = &self.config_context_support else {
+        let Some(support) = &self.core_context_support else {
             return Ok(());
         };
         support.set_acl(config.build()?);
@@ -1773,7 +1820,7 @@ impl PeerManagerCore {
     }
 
     pub(crate) fn reload_acl(&self, acl: Option<&crate::proto::acl::Acl>) -> bool {
-        let portable_context_updated = if let Some(support) = &self.config_context_support {
+        let portable_context_updated = if let Some(support) = &self.core_context_support {
             support.set_acl(acl.cloned());
             true
         } else {
@@ -1798,7 +1845,7 @@ impl PeerManagerCore {
         while tasks.join_next().await.is_some() {}
         self.route.close().await;
         self.peer_rpc_mgr.stop().await;
-        if let Some(support) = &self.config_context_support {
+        if let Some(support) = &self.core_context_support {
             support.stop().await;
         }
         if self.owns_support_tasks {
