@@ -544,9 +544,9 @@ async fn add_route<T>(
     foreign_network_client: Arc<ForeignNetworkClient>,
     foreign_network_provider: Arc<dyn ForeignNetworkRouteInfoProvider>,
     my_peer_id: PeerId,
-    route: T,
+    route: Arc<T>,
 ) where
-    T: Route + PeerPacketFilter + Send + Sync + Clone + 'static,
+    T: Route + PeerPacketFilter + Send + Sync + 'static,
 {
     // for route
     peer_packet_process_pipeline
@@ -564,7 +564,7 @@ async fn add_route<T>(
         .await
         .unwrap();
 
-    let arc_route: ArcRoute = Arc::new(route);
+    let arc_route: ArcRoute = route;
     peers.add_route(arc_route).await;
 }
 
@@ -1726,9 +1726,9 @@ impl PeerManagerCore {
         guard
     }
 
-    pub async fn add_route<T>(&self, route: T)
+    pub async fn add_route<T>(&self, route: Arc<T>)
     where
-        T: Route + PeerPacketFilter + Send + Sync + Clone + 'static,
+        T: Route + PeerPacketFilter + Send + Sync + 'static,
     {
         add_route(
             self.peer_packet_process_pipeline.as_ref(),

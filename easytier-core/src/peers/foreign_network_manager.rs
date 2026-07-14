@@ -715,7 +715,7 @@ impl ForeignNetworkEntry {
             .set_route_cost_fn(self.peer_center.get_cost_calculator())
             .await;
 
-        self.peer_map.add_route(Arc::new(Box::new(route))).await;
+        self.peer_map.add_route(route).await;
     }
 
     async fn start_packet_recv(&self) {
