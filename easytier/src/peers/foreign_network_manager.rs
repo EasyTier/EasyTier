@@ -796,8 +796,10 @@ pub mod tests {
             "__access__".to_string(),
             "access_secret".to_string(),
         )));
+        let config =
+            crate::peers::context::runtime_peer_manager_config(&global_ctx, RouteAlgoType::Ospf);
         let (runtime_config, parent_context) =
-            crate::peers::context::build_core_peer_context(&global_ctx);
+            crate::peers::context::build_core_peer_context(&global_ctx, &config);
         let parent_flags = parent_context.flags();
         assert!(!parent_flags.relay_all_peer_rpc);
         assert!(
@@ -822,9 +824,10 @@ pub mod tests {
             .is_ok()
         );
 
-        runtime_config.update_peer(Arc::new(crate::peers::context::runtime_peer_snapshot(
-            &global_ctx,
-        )));
+        runtime_config.update_peer(Arc::new(
+            crate::peers::context::runtime_peer_manager_config(&global_ctx, RouteAlgoType::Ospf)
+                .snapshot,
+        ));
         let parent_flags = parent_context.flags();
         assert!(parent_flags.relay_all_peer_rpc);
         assert!(

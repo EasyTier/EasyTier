@@ -187,7 +187,7 @@ pub struct CredentialCreateOptions {
 fn validate_portable_connectivity_config(
     config: &PortableCoreInstanceConfig,
 ) -> anyhow::Result<()> {
-    let peer_flags = &config.peer.flags;
+    let peer_flags = &config.peer.snapshot.flags;
     let direct = &config.connectivity.direct;
     if (direct.lazy_p2p, direct.disable_p2p, direct.need_p2p)
         != (
@@ -453,7 +453,7 @@ where
 {
     pub fn new_portable(
         adapters: CoreInstanceAdapters<H>,
-        config: PortableCoreInstanceConfig,
+        mut config: PortableCoreInstanceConfig,
         packet_sink: Arc<dyn PacketSink>,
     ) -> anyhow::Result<Self> {
         validate_portable_connectivity_config(&config)?;
@@ -461,7 +461,7 @@ where
             &config.connectivity.listeners,
             adapters.accepted_transport_handler.is_some(),
         )?;
-        let network_name = &config.peer.runtime.network_identity.network_name;
+        let network_name = &config.peer.snapshot.runtime.network_identity.network_name;
         if config.connectivity.direct.network_name != *network_name {
             anyhow::bail!(
                 "direct connectivity network {:?} does not match peer identity {:?}",
@@ -471,12 +471,13 @@ where
         }
         let (packet_tx, packet_rx) = create_packet_recv_chan();
         let dns_context = config.connectivity.direct.tcp_bind.context.clone();
-        let mut peer_snapshot =
-            PeerRuntimeSnapshot::new(config.peer.runtime.clone(), config.peer.flags.clone());
-        peer_snapshot.set_acl_groups(config.connectivity.runtime.acl.acl.as_ref());
+        config
+            .peer
+            .snapshot
+            .set_acl_groups(config.connectivity.runtime.acl.acl.as_ref());
         let runtime_config = CoreRuntimeConfigStore::new(
             config.connectivity.runtime.clone(),
-            Arc::new(peer_snapshot),
+            Arc::new(config.peer.snapshot.clone()),
         );
         let peer_stun: Arc<dyn StunInfoProvider> = adapters.stun.clone();
         let peer_manager = Arc::new(
@@ -1437,9 +1438,9 @@ mod tests {
             peer,
             connectivity: CoreInstanceConfig::default(),
         };
-        config.connectivity.direct.lazy_p2p = config.peer.flags.lazy_p2p;
-        config.connectivity.direct.disable_p2p = config.peer.flags.disable_p2p;
-        config.connectivity.direct.need_p2p = config.peer.flags.need_p2p;
+        config.connectivity.direct.lazy_p2p = config.peer.snapshot.flags.lazy_p2p;
+        config.connectivity.direct.disable_p2p = config.peer.snapshot.flags.disable_p2p;
+        config.connectivity.direct.need_p2p = config.peer.snapshot.flags.need_p2p;
         config.connectivity.runtime.acl.tcp_whitelist = vec!["9000-8000".to_owned()];
 
         let error = validate_portable_connectivity_config(&config).unwrap_err();

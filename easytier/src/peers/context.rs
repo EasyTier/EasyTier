@@ -12,6 +12,7 @@ use easytier_core::peers::context::{
     PeerPublicIpv6State, PeerRelayStateSink, PeerRuntimeConfig, PeerRuntimeSnapshot,
     PeerStunInfoSource,
 };
+use easytier_core::peers::peer_manager::{PortablePeerManagerConfig, RouteAlgoType};
 use easytier_core::runtime_config::{CoreRuntimeConfig, CoreRuntimeConfigStore};
 
 use crate::{
@@ -23,12 +24,84 @@ use crate::{
     use_global_var,
 };
 
-/// Normalizes the native host configuration into one portable peer version.
-pub(crate) fn runtime_peer_snapshot(global_ctx: &ArcGlobalCtx) -> PeerRuntimeSnapshot {
+/// Normalizes one native configuration version for the core peer graph.
+pub(crate) fn runtime_peer_manager_config(
+    global_ctx: &ArcGlobalCtx,
+    route_algo: RouteAlgoType,
+) -> PortablePeerManagerConfig {
     let acl = global_ctx.config.get_acl();
     let flags = global_ctx.get_flags();
-    let mut snapshot =
-        PeerRuntimeSnapshot::new_with_legacy_flags(runtime_peer_config(global_ctx), flags);
+    let identity = global_ctx.get_network_identity();
+    let network_identity = CoreNetworkIdentity {
+        network_name: identity.network_name,
+        network_secret: identity.network_secret,
+        network_secret_digest: identity.network_secret_digest,
+    };
+    let hostname = global_ctx.get_hostname();
+    let proxy_networks = global_ctx
+        .config
+        .get_proxy_cidrs()
+        .into_iter()
+        .map(|proxy| ProxyNetworkConfig {
+            real: IpPrefix {
+                address: proxy.cidr.first_address().into(),
+                prefix_len: proxy.cidr.network_length(),
+            },
+            mapped: proxy.mapped_cidr.map(|mapped| IpPrefix {
+                address: mapped.first_address().into(),
+                prefix_len: mapped.network_length(),
+            }),
+        })
+        .collect();
+    let mut feature_flags = global_ctx.get_feature_flags();
+    // Public-IPv6 provider state is live host state, not submitted config.
+    feature_flags.ipv6_public_addr_provider = false;
+    let runtime = PeerRuntimeConfig {
+        core: CoreConfig {
+            node: NodeConfig {
+                peer_id: None,
+                instance_id: Some(*global_ctx.get_id().as_bytes()),
+                hostname: (!hostname.is_empty()).then_some(hostname),
+                network_name: network_identity.network_name.clone(),
+            },
+            routes: RouteConfig {
+                ipv4: global_ctx.get_ipv4().map(|value| IpPrefix {
+                    address: value.address().into(),
+                    prefix_len: value.network_length(),
+                }),
+                ipv6: global_ctx.get_ipv6().map(|value| IpPrefix {
+                    address: value.address().into(),
+                    prefix_len: value.network_length(),
+                }),
+                proxy_networks,
+                ..Default::default()
+            },
+            peer_policy: PeerPolicyConfig {
+                p2p_enabled: !flags.disable_p2p,
+                relay_peer_rpc: flags.relay_all_peer_rpc,
+                relay_data: !flags.disable_relay_data,
+                latency_first: flags.latency_first,
+                encryption_required: flags.enable_encryption,
+            },
+            traffic: TrafficConfig {
+                mtu: u16::try_from(flags.mtu)
+                    .ok()
+                    .filter(|configured| *configured != 0),
+                instance_recv_bps_limit: (flags.instance_recv_bps_limit != u64::MAX)
+                    .then_some(flags.instance_recv_bps_limit),
+                foreign_relay_bps_limit: (flags.foreign_relay_bps_limit != u64::MAX)
+                    .then_some(flags.foreign_relay_bps_limit),
+            },
+        },
+        network_identity,
+        stun_info: global_ctx.get_stun_info_collector().get_stun_info(),
+        feature_flags,
+        secure_mode: global_ctx.config.get_secure_mode(),
+        host_routing: HostRoutingPolicy {
+            local_exit_node_fallback: cfg!(target_env = "ohos"),
+        },
+    };
+    let mut snapshot = PeerRuntimeSnapshot::new(runtime, flags);
     snapshot.easytier_version = EASYTIER_VERSION.to_owned();
     snapshot.avoid_relay_data_preference = global_ctx.get_avoid_relay_data_preference();
     snapshot.vpn_portal_cidr = global_ctx.get_vpn_portal_cidr();
@@ -44,15 +117,20 @@ pub(crate) fn runtime_peer_snapshot(global_ctx: &ArcGlobalCtx) -> PeerRuntimeSna
         use_global_var!(MAX_DIRECT_CONNS_PER_PEER_IN_FOREIGN_NETWORK) as usize;
     snapshot.hmac_secret_digest = use_global_var!(HMAC_SECRET_DIGEST);
     snapshot.set_acl_groups(acl.as_ref());
-    snapshot
+    PortablePeerManagerConfig {
+        snapshot,
+        route_algo,
+        exit_nodes: global_ctx.config.get_exit_nodes(),
+    }
 }
 
 pub(crate) fn build_core_peer_context(
     global_ctx: &ArcGlobalCtx,
+    config: &PortablePeerManagerConfig,
 ) -> (CoreRuntimeConfigStore, Arc<CorePeerContext>) {
     let runtime_config = CoreRuntimeConfigStore::new(
         CoreRuntimeConfig::default(),
-        Arc::new(runtime_peer_snapshot(global_ctx)),
+        Arc::new(config.snapshot.clone()),
     );
     let peer_context = Arc::new(CorePeerContext::new(
         runtime_config.clone(),
@@ -102,65 +180,6 @@ pub(crate) fn core_peer_context_adapters(global_ctx: &ArcGlobalCtx) -> CorePeerC
     }
 }
 
-fn runtime_peer_config(global_ctx: &ArcGlobalCtx) -> PeerRuntimeConfig {
-    let identity = global_ctx.get_network_identity();
-    let network_identity = CoreNetworkIdentity {
-        network_name: identity.network_name,
-        network_secret: identity.network_secret,
-        network_secret_digest: identity.network_secret_digest,
-    };
-    let hostname = global_ctx.get_hostname();
-    let proxy_networks = global_ctx
-        .config
-        .get_proxy_cidrs()
-        .into_iter()
-        .map(|proxy| ProxyNetworkConfig {
-            real: IpPrefix {
-                address: proxy.cidr.first_address().into(),
-                prefix_len: proxy.cidr.network_length(),
-            },
-            mapped: proxy.mapped_cidr.map(|mapped| IpPrefix {
-                address: mapped.first_address().into(),
-                prefix_len: mapped.network_length(),
-            }),
-        })
-        .collect();
-    let mut feature_flags = global_ctx.get_feature_flags();
-    // Public-IPv6 provider state is live host state, not submitted config.
-    feature_flags.ipv6_public_addr_provider = false;
-    PeerRuntimeConfig {
-        core: CoreConfig {
-            node: NodeConfig {
-                peer_id: None,
-                instance_id: Some(*global_ctx.get_id().as_bytes()),
-                hostname: (!hostname.is_empty()).then_some(hostname),
-                network_name: network_identity.network_name.clone(),
-            },
-            routes: RouteConfig {
-                ipv4: global_ctx.get_ipv4().map(|value| IpPrefix {
-                    address: value.address().into(),
-                    prefix_len: value.network_length(),
-                }),
-                ipv6: global_ctx.get_ipv6().map(|value| IpPrefix {
-                    address: value.address().into(),
-                    prefix_len: value.network_length(),
-                }),
-                proxy_networks,
-                ..Default::default()
-            },
-            peer_policy: PeerPolicyConfig::default(),
-            traffic: TrafficConfig::default(),
-        },
-        network_identity,
-        stun_info: global_ctx.get_stun_info_collector().get_stun_info(),
-        feature_flags,
-        secure_mode: global_ctx.config.get_secure_mode(),
-        host_routing: HostRoutingPolicy {
-            local_exit_node_fallback: cfg!(target_env = "ohos"),
-        },
-    }
-}
-
 impl PeerStunInfoSource for GlobalCtx {
     fn stun_info(&self) -> crate::proto::common::StunInfo {
         self.get_stun_info_collector().get_stun_info()
@@ -205,7 +224,8 @@ mod tests {
     fn core_context_for_test(
         global_ctx: ArcGlobalCtx,
     ) -> (CoreRuntimeConfigStore, Arc<CorePeerContext>) {
-        build_core_peer_context(&global_ctx)
+        let config = runtime_peer_manager_config(&global_ctx, RouteAlgoType::Ospf);
+        build_core_peer_context(&global_ctx, &config)
     }
 
     #[tokio::test]
@@ -234,6 +254,43 @@ mod tests {
             events.recv().await.unwrap(),
             GlobalCtxEvent::CredentialChanged
         ));
+    }
+
+    #[test]
+    fn native_peer_config_submits_one_complete_snapshot() {
+        let global_ctx = get_mock_global_ctx();
+        let mut flags = global_ctx.get_flags();
+        flags.disable_p2p = true;
+        flags.relay_all_peer_rpc = true;
+        flags.disable_relay_data = true;
+        flags.latency_first = true;
+        flags.enable_encryption = false;
+        flags.mtu = 1400;
+        flags.instance_recv_bps_limit = 0;
+        flags.foreign_relay_bps_limit = u64::MAX;
+        global_ctx.set_flags(flags.clone());
+        let exit_node = "192.0.2.9".parse().unwrap();
+        global_ctx.config.set_exit_nodes(vec![exit_node]);
+
+        let config = runtime_peer_manager_config(&global_ctx, RouteAlgoType::None);
+        let runtime = &config.snapshot.runtime;
+
+        assert_eq!(config.route_algo, RouteAlgoType::None);
+        assert_eq!(config.exit_nodes, vec![exit_node]);
+        assert_eq!(config.snapshot.flags, flags);
+        assert!(!runtime.core.peer_policy.p2p_enabled);
+        assert!(runtime.core.peer_policy.relay_peer_rpc);
+        assert!(!runtime.core.peer_policy.relay_data);
+        assert!(runtime.core.peer_policy.latency_first);
+        assert!(!runtime.core.peer_policy.encryption_required);
+        assert_eq!(runtime.core.traffic.mtu, Some(1400));
+        assert_eq!(runtime.core.traffic.instance_recv_bps_limit, Some(0));
+        assert_eq!(runtime.core.traffic.foreign_relay_bps_limit, None);
+        assert_eq!(config.snapshot.easytier_version, EASYTIER_VERSION);
+        assert_eq!(
+            config.snapshot.avoid_relay_data_preference,
+            global_ctx.get_avoid_relay_data_preference()
+        );
     }
 
     #[tokio::test]
@@ -314,7 +371,9 @@ mod tests {
         assert!(context.feature_flags().avoid_relay_data);
         assert!(global_ctx.get_avoid_relay_data_preference());
 
-        config.update_peer(Arc::new(runtime_peer_snapshot(&global_ctx)));
+        config.update_peer(Arc::new(
+            runtime_peer_manager_config(&global_ctx, RouteAlgoType::Ospf).snapshot,
+        ));
         assert_eq!(context.hostname(), "after");
         assert_eq!(context.proxy_networks().len(), 1);
         assert!(context.disable_relay_data());
@@ -342,7 +401,9 @@ mod tests {
         let (config, context) = core_context_for_test(global_ctx.clone());
 
         assert!(context.feature_flags().avoid_relay_data);
-        config.update_peer(Arc::new(runtime_peer_snapshot(&global_ctx)));
+        config.update_peer(Arc::new(
+            runtime_peer_manager_config(&global_ctx, RouteAlgoType::Ospf).snapshot,
+        ));
         context.set_avoid_relay_data_preference(false);
         assert!(!context.feature_flags().avoid_relay_data);
         assert!(!global_ctx.get_avoid_relay_data_preference());
@@ -350,7 +411,9 @@ mod tests {
         let mut flags = global_ctx.get_flags();
         flags.disable_relay_data = true;
         global_ctx.set_flags(flags);
-        config.update_peer(Arc::new(runtime_peer_snapshot(&global_ctx)));
+        config.update_peer(Arc::new(
+            runtime_peer_manager_config(&global_ctx, RouteAlgoType::Ospf).snapshot,
+        ));
         assert!(context.feature_flags().avoid_relay_data);
     }
 }

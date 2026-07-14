@@ -26,13 +26,14 @@ use std::{fmt::Debug, sync::Arc};
 
 use super::{
     PacketRecvChan,
-    context::{build_core_peer_context, runtime_peer_snapshot},
+    context::{build_core_peer_context, runtime_peer_manager_config},
     encrypt::NullCipher,
     foreign_network_manager::RuntimeForeignNetworkRpcRegistrar,
 };
 
 pub struct PeerManager {
     global_ctx: ArcGlobalCtx,
+    route_algo: RouteAlgoType,
     core: Arc<PeerManagerCore>,
     peer_context: Arc<CorePeerContext>,
     runtime_config: CoreRuntimeConfigStore,
@@ -74,9 +75,19 @@ impl PeerManager {
     ) -> Self {
         let my_peer_id = rand::random();
 
-        let encryptor = if global_ctx.get_flags().enable_encryption {
+        if global_ctx
+            .check_network_in_whitelist(&global_ctx.get_network_name())
+            .is_err()
+        {
+            // if local network is not in whitelist, avoid relay data when exist any other route path
+            global_ctx.set_avoid_relay_data_preference(true);
+        }
+
+        let config = runtime_peer_manager_config(&global_ctx, route_algo);
+        let flags = &config.snapshot.flags;
+        let encryptor = if flags.enable_encryption {
             // 只有在启用加密时才使用工厂函数选择算法
-            let algorithm = &global_ctx.get_flags().encryption_algorithm;
+            let algorithm = &flags.encryption_algorithm;
             super::encrypt::create_encryptor(
                 algorithm,
                 global_ctx.get_128_key(),
@@ -87,30 +98,22 @@ impl PeerManager {
             Arc::new(NullCipher)
         };
 
-        if global_ctx
-            .check_network_in_whitelist(&global_ctx.get_network_name())
-            .is_err()
-        {
-            // if local network is not in whitelist, avoid relay data when exist any other route path
-            global_ctx.set_avoid_relay_data_preference(true);
-        }
-
-        let is_secure_mode_enabled = global_ctx
-            .config
-            .get_secure_mode()
+        let is_secure_mode_enabled = config
+            .snapshot
+            .runtime
+            .secure_mode
+            .as_ref()
             .map(|cfg| cfg.enabled)
             .unwrap_or(false);
 
-        let data_compress_algo =
-            compressor_algo_from_pb(global_ctx.get_flags().data_compress_algo())
-                .expect("invalid data compress algo, maybe some features not enabled");
-        let exit_nodes = global_ctx.config.get_exit_nodes();
-        let (runtime_config, peer_context) = build_core_peer_context(&global_ctx);
+        let data_compress_algo = compressor_algo_from_pb(flags.data_compress_algo())
+            .expect("invalid data compress algo, maybe some features not enabled");
+        let (runtime_config, peer_context) = build_core_peer_context(&global_ctx, &config);
 
         let foreign_rpc_registrar =
             Arc::new(RuntimeForeignNetworkRpcRegistrar::new(global_ctx.clone()));
         let build_result = PeerManagerCore::new_with_foreign_rpc_registrar(
-            route_algo,
+            config.route_algo,
             my_peer_id,
             peer_context.clone(),
             global_ctx.clone(),
@@ -118,7 +121,7 @@ impl PeerManager {
             encryptor,
             is_secure_mode_enabled,
             data_compress_algo,
-            exit_nodes,
+            config.exit_nodes,
             Arc::new(
                 DnsAddressResolver::new(native_host_runtime())
                     .with_context(runtime_socket_context(&global_ctx)),
@@ -132,6 +135,7 @@ impl PeerManager {
 
         PeerManager {
             global_ctx,
+            route_algo,
             core: Arc::new(build_result.core),
             peer_context,
             runtime_config,
@@ -142,8 +146,8 @@ impl PeerManager {
     }
 
     pub(crate) fn refresh_runtime_config(&self) {
-        self.runtime_config
-            .update_peer(Arc::new(runtime_peer_snapshot(&self.global_ctx)));
+        let config = runtime_peer_manager_config(&self.global_ctx, self.route_algo);
+        self.runtime_config.update_peer(Arc::new(config.snapshot));
     }
 
     pub(crate) fn runtime_config_store(&self) -> CoreRuntimeConfigStore {

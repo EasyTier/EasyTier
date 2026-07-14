@@ -1,52 +1,63 @@
 {
-  "version": 4,
+  "version": 5,
   "instance": {
     "peer": {
-      "runtime": {
-        "core": {
-          "node": {
-            "peer_id": null,
-            "instance_id": null,
-            "hostname": null,
-            "network_name": ""
+      "snapshot": {
+        "runtime": {
+          "core": {
+            "node": {
+              "peer_id": null,
+              "instance_id": null,
+              "hostname": null,
+              "network_name": ""
+            },
+            "routes": {
+              "ipv4": null,
+              "ipv6": null,
+              "advertised_routes": [],
+              "proxy_networks": [],
+              "foreign_networks": []
+            },
+            "peer_policy": {
+              "p2p_enabled": false,
+              "relay_peer_rpc": false,
+              "relay_data": true,
+              "latency_first": false,
+              "encryption_required": false
+            },
+            "traffic": {
+              "mtu": null,
+              "instance_recv_bps_limit": null,
+              "foreign_relay_bps_limit": null
+            }
           },
-          "routes": {
-            "ipv4": null,
-            "ipv6": null,
-            "advertised_routes": [],
-            "proxy_networks": [],
-            "foreign_networks": []
+          "network_identity": {
+            "network_name": "default",
+            "network_secret": "test",
+            "network_secret_digest": null
           },
-          "peer_policy": {
-            "p2p_enabled": false,
-            "relay_peer_rpc": false,
-            "relay_data": true,
-            "latency_first": false,
-            "encryption_required": false
+          "stun_info": {},
+          "feature_flags": {
+            "disable_p2p": true
           },
-          "traffic": {
-            "mtu": null,
-            "instance_recv_bps_limit": null,
-            "foreign_relay_bps_limit": null
+          "secure_mode": null,
+          "host_routing": {
+            "local_exit_node_fallback": false
           }
         },
-        "network_identity": {
-          "network_name": "default",
-          "network_secret": "test",
-          "network_secret_digest": null
+        "easytier_version": "2.6.4",
+        "avoid_relay_data_preference": false,
+        "flags": {
+          "disable_p2p": true,
+          "data_compress_algo": "None"
         },
-        "stun_info": {},
-        "feature_flags": {
-          "disable_p2p": true
-        },
-        "secure_mode": null,
-        "host_routing": {
-          "local_exit_node_fallback": false
-        }
-      },
-      "flags": {
-        "disable_p2p": true,
-        "data_compress_algo": "None"
+        "vpn_portal_cidr": null,
+        "pinned_peers": [],
+        "peer_group_memberships": [],
+        "acl_group_declarations": [],
+        "ospf_update_my_foreign_network_interval_sec": 10,
+        "max_direct_conns_per_peer_in_foreign_network": 3,
+        "hmac_secret_digest": false
       },
       "route_algo": "Ospf",
       "exit_nodes": []

@@ -200,8 +200,7 @@ pub enum RouteAlgoType {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PortablePeerManagerConfig {
-    pub runtime: PeerRuntimeConfig,
-    pub flags: FlagsInConfig,
+    pub snapshot: PeerRuntimeSnapshot,
     pub route_algo: RouteAlgoType,
     pub exit_nodes: Vec<IpAddr>,
 }
@@ -223,16 +222,10 @@ impl PortablePeerManagerConfig {
         runtime.feature_flags.disable_p2p = flags.disable_p2p;
         runtime.feature_flags.avoid_relay_data |= flags.disable_relay_data;
         Self {
-            runtime,
-            flags,
+            snapshot: PeerRuntimeSnapshot::new(runtime, flags),
             route_algo: RouteAlgoType::Ospf,
             exit_nodes: Vec::new(),
         }
-    }
-
-    pub fn with_flags(mut self, flags: FlagsInConfig) -> Self {
-        self.flags = flags;
-        self
     }
 }
 
@@ -870,10 +863,7 @@ impl PeerManagerCore {
     fn portable_runtime_config_store(config: &PortablePeerManagerConfig) -> CoreRuntimeConfigStore {
         CoreRuntimeConfigStore::new(
             CoreRuntimeConfig::default(),
-            Arc::new(PeerRuntimeSnapshot::new(
-                config.runtime.clone(),
-                config.flags.clone(),
-            )),
+            Arc::new(config.snapshot.clone()),
         )
     }
 
@@ -885,28 +875,26 @@ impl PeerManagerCore {
         stun_info_source: Option<Arc<dyn PeerStunInfoSource>>,
         nic_channel: PacketRecvChan,
     ) -> anyhow::Result<Self> {
-        let network_name = config.runtime.network_identity.network_name.clone();
+        let runtime = &mut config.snapshot.runtime;
+        let flags = &config.snapshot.flags;
+        let network_name = runtime.network_identity.network_name.clone();
         if network_name.is_empty() {
             anyhow::bail!("network identity name cannot be empty");
         }
-        match config.runtime.core.node.network_name.as_str() {
-            "" => config.runtime.core.node.network_name = network_name.clone(),
+        match runtime.core.node.network_name.as_str() {
+            "" => runtime.core.node.network_name = network_name.clone(),
             configured if configured != network_name => anyhow::bail!(
                 "core node network name {configured:?} does not match identity {network_name:?}"
             ),
             _ => {}
         }
-        validate_portable_routes(&config.runtime.core.routes)?;
+        validate_portable_routes(&runtime.core.routes)?;
 
         if let (Some(_), Some(expected_digest)) = (
-            config.runtime.network_identity.network_secret.as_ref(),
-            config
-                .runtime
-                .network_identity
-                .network_secret_digest
-                .as_ref(),
+            runtime.network_identity.network_secret.as_ref(),
+            runtime.network_identity.network_secret_digest.as_ref(),
         ) {
-            let mut identity = config.runtime.network_identity.clone();
+            let mut identity = runtime.network_identity.clone();
             identity.network_secret_digest = None;
             let derived_digest = identity
                 .secret_digest()
@@ -915,9 +903,8 @@ impl PeerManagerCore {
                 anyhow::bail!("network secret does not match the configured digest");
             }
         }
-        if config.runtime.network_identity.network_secret.is_none()
-            && config
-                .runtime
+        if runtime.network_identity.network_secret.is_none()
+            && runtime
                 .network_identity
                 .network_secret_digest
                 .as_ref()
@@ -925,22 +912,16 @@ impl PeerManagerCore {
         {
             anyhow::bail!("digest-only local identity requires credential key capabilities");
         }
-        let is_secure_mode_enabled = config
-            .runtime
+        let is_secure_mode_enabled = runtime
             .secure_mode
             .as_ref()
             .is_some_and(|secure| secure.enabled);
-        let is_credential_peer = config.runtime.network_identity.network_secret.is_none();
+        let is_credential_peer = runtime.network_identity.network_secret.is_none();
         if is_credential_peer && !is_secure_mode_enabled {
             anyhow::bail!("credential peer identity requires secure mode and a local keypair");
         }
-        config.runtime.feature_flags.is_credential_peer = is_credential_peer;
-        if let Some(secure) = config
-            .runtime
-            .secure_mode
-            .as_ref()
-            .filter(|secure| secure.enabled)
-        {
+        runtime.feature_flags.is_credential_peer = is_credential_peer;
+        if let Some(secure) = runtime.secure_mode.as_ref().filter(|secure| secure.enabled) {
             let private_key = secure.private_key()?;
             let public_key = secure.public_key()?;
             let derived_public = x25519_dalek::PublicKey::from(&private_key);
@@ -948,48 +929,39 @@ impl PeerManagerCore {
                 anyhow::bail!("secure mode public key does not match its private key");
             }
         }
-        let data_compress_algo = CompressorAlgo::try_from(config.flags.data_compress_algo())?;
+        let data_compress_algo = CompressorAlgo::try_from(flags.data_compress_algo())?;
         if tokio::runtime::Handle::try_current().is_err() {
             anyhow::bail!("portable peer manager construction requires an entered Tokio runtime");
         }
 
-        let my_peer_id = config
-            .runtime
-            .core
-            .node
-            .peer_id
-            .unwrap_or_else(rand::random);
-        config.runtime.core.node.peer_id = Some(my_peer_id);
-        let instance_id = config
-            .runtime
+        let my_peer_id = runtime.core.node.peer_id.unwrap_or_else(rand::random);
+        runtime.core.node.peer_id = Some(my_peer_id);
+        let instance_id = runtime
             .core
             .node
             .instance_id
             .map(uuid::Uuid::from_bytes)
             .unwrap_or_else(uuid::Uuid::new_v4);
-        config.runtime.core.node.instance_id = Some(*instance_id.as_bytes());
+        runtime.core.node.instance_id = Some(*instance_id.as_bytes());
 
-        let secret = config
-            .runtime
+        let secret = runtime
             .network_identity
             .network_secret
             .as_deref()
             .unwrap_or_default();
-        let encryptor: Arc<dyn Encryptor> = if config.flags.enable_encryption {
+        let encryptor: Arc<dyn Encryptor> = if flags.enable_encryption {
             create_encryptor(
-                &config.flags.encryption_algorithm,
+                &flags.encryption_algorithm,
                 derive_key_128(secret),
                 derive_key_256(secret),
             )
         } else {
             Arc::new(NullCipher)
         };
-        config.runtime.feature_flags.disable_p2p = config.flags.disable_p2p;
-        config.runtime.feature_flags.need_p2p = config.flags.need_p2p;
-        config.runtime.feature_flags.avoid_relay_data |= config.flags.disable_relay_data;
-        let mut submitted_snapshot = runtime_config.snapshot().peer.as_ref().clone();
-        submitted_snapshot.replace_portable_config(config.runtime.clone(), config.flags.clone());
-        runtime_config.update_peer(Arc::new(submitted_snapshot));
+        runtime.feature_flags.disable_p2p = flags.disable_p2p;
+        runtime.feature_flags.need_p2p = flags.need_p2p;
+        runtime.feature_flags.avoid_relay_data |= flags.disable_relay_data;
+        runtime_config.update_peer(Arc::new(config.snapshot.clone()));
         let context = Arc::new(CorePeerContext::new(
             runtime_config,
             CorePeerContextAdapters {
@@ -3719,7 +3691,8 @@ mod tests {
 
     #[tokio::test]
     async fn portable_peer_assembly_preserves_submitted_acl_groups() {
-        let config = PortablePeerManagerConfig::new(portable_runtime_config("portable-net", 86));
+        let mut config =
+            PortablePeerManagerConfig::new(portable_runtime_config("portable-net", 86));
         let acl = crate::proto::acl::Acl {
             acl_v1: Some(crate::proto::acl::AclV1 {
                 chains: Vec::new(),
@@ -3732,10 +3705,11 @@ mod tests {
                 }),
             }),
         };
-        let mut snapshot = PeerRuntimeSnapshot::new(config.runtime.clone(), config.flags.clone());
-        snapshot.set_acl_groups(Some(&acl));
-        let runtime_config =
-            CoreRuntimeConfigStore::new(CoreRuntimeConfig::default(), Arc::new(snapshot));
+        config.snapshot.set_acl_groups(Some(&acl));
+        let runtime_config = CoreRuntimeConfigStore::new(
+            CoreRuntimeConfig::default(),
+            Arc::new(config.snapshot.clone()),
+        );
         let (packet_tx, _packet_rx) = create_packet_recv_chan();
 
         let core = PeerManagerCore::new_portable_with_optional_stun_info_source(
@@ -3964,12 +3938,19 @@ mod tests {
 
     #[tokio::test]
     async fn portable_peer_manager_accepts_legacy_unlimited_limits() {
-        let config = PortablePeerManagerConfig::new(portable_runtime_config("portable-net", 84));
-        let mut flags = config.flags.clone();
+        let runtime = portable_runtime_config("portable-net", 84);
+        let mut flags = PortablePeerManagerConfig::new(runtime.clone())
+            .snapshot
+            .flags;
         flags.instance_recv_bps_limit = u64::MAX;
         flags.foreign_relay_bps_limit = u64::MAX;
+        let config = PortablePeerManagerConfig {
+            snapshot: PeerRuntimeSnapshot::new(runtime, flags),
+            route_algo: RouteAlgoType::Ospf,
+            exit_nodes: Vec::new(),
+        };
 
-        let core = build_portable_config_for_test(config.with_flags(flags)).unwrap();
+        let core = build_portable_config_for_test(config).unwrap();
         assert!(core.context.recv_limiter("portable-net", false).is_none());
         assert!(core.context.recv_limiter("foreign-net", true).is_none());
         core.clear_resources().await;

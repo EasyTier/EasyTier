@@ -93,7 +93,8 @@ NAT inference implementation.
 
 ## Go/WASM contract
 
-Host instance create schema version 4 uses:
+Host instance create schema version 5 submits one normalized peer snapshot and
+uses:
 
 - Go-owned `SocketFactory`, `DNSResolver`, `ConnectorEnvironment`, and packet
   sink implementations;

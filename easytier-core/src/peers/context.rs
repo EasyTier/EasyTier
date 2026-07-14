@@ -114,7 +114,7 @@ pub struct HostRoutingPolicy {
 }
 
 /// One normalized peer configuration version submitted by a host.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerRuntimeSnapshot {
     pub runtime: PeerRuntimeConfig,
     pub easytier_version: String,
@@ -127,7 +127,6 @@ pub struct PeerRuntimeSnapshot {
     pub ospf_update_my_foreign_network_interval_sec: u64,
     pub max_direct_conns_per_peer_in_foreign_network: usize,
     pub hmac_secret_digest: bool,
-    traffic_limits: PeerTrafficLimits,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -140,14 +139,14 @@ impl PeerTrafficLimits {
     fn from_portable(runtime: &PeerRuntimeConfig, flags: &FlagsInConfig) -> Self {
         let traffic = &runtime.core.traffic;
         Self {
-            instance_recv_bps: traffic
-                .instance_recv_bps_limit
-                .or(Some(flags.instance_recv_bps_limit))
-                .filter(|limit| !matches!(*limit, 0 | u64::MAX)),
-            foreign_relay_bps: traffic
-                .foreign_relay_bps_limit
-                .or(Some(flags.foreign_relay_bps_limit))
-                .filter(|limit| !matches!(*limit, 0 | u64::MAX)),
+            instance_recv_bps: traffic.instance_recv_bps_limit.or_else(|| {
+                (!matches!(flags.instance_recv_bps_limit, 0 | u64::MAX))
+                    .then_some(flags.instance_recv_bps_limit)
+            }),
+            foreign_relay_bps: traffic.foreign_relay_bps_limit.or_else(|| {
+                (!matches!(flags.foreign_relay_bps_limit, 0 | u64::MAX))
+                    .then_some(flags.foreign_relay_bps_limit)
+            }),
         }
     }
 }
@@ -155,7 +154,6 @@ impl PeerTrafficLimits {
 impl PeerRuntimeSnapshot {
     pub fn new(runtime: PeerRuntimeConfig, flags: FlagsInConfig) -> Self {
         let avoid_relay_data_preference = runtime.feature_flags.avoid_relay_data;
-        let traffic_limits = PeerTrafficLimits::from_portable(&runtime, &flags);
         Self {
             runtime,
             easytier_version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -168,30 +166,11 @@ impl PeerRuntimeSnapshot {
             ospf_update_my_foreign_network_interval_sec: 10,
             max_direct_conns_per_peer_in_foreign_network: 3,
             hmac_secret_digest: false,
-            traffic_limits,
         }
     }
 
-    pub fn new_with_legacy_flags(runtime: PeerRuntimeConfig, flags: FlagsInConfig) -> Self {
-        let mut snapshot = Self::new(runtime, flags.clone());
-        snapshot.traffic_limits = PeerTrafficLimits {
-            instance_recv_bps: (flags.instance_recv_bps_limit != u64::MAX)
-                .then_some(flags.instance_recv_bps_limit),
-            foreign_relay_bps: (flags.foreign_relay_bps_limit != u64::MAX)
-                .then_some(flags.foreign_relay_bps_limit),
-        };
-        snapshot
-    }
-
-    pub(crate) fn replace_portable_config(
-        &mut self,
-        runtime: PeerRuntimeConfig,
-        flags: FlagsInConfig,
-    ) {
-        self.avoid_relay_data_preference = runtime.feature_flags.avoid_relay_data;
-        self.traffic_limits = PeerTrafficLimits::from_portable(&runtime, &flags);
-        self.runtime = runtime;
-        self.flags = flags;
+    fn traffic_limits(&self) -> PeerTrafficLimits {
+        PeerTrafficLimits::from_portable(&self.runtime, &self.flags)
     }
 
     pub fn set_acl_groups(&mut self, acl: Option<&Acl>) {
@@ -444,7 +423,7 @@ fn ipv6_inet_to_config(value: Ipv6Inet) -> IpPrefix {
         .expect("Ipv6Inet should always have a valid IPv6 prefix length")
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PeerGroupIdentity {
     pub group_name: String,
     pub group_secret: String,
@@ -1111,7 +1090,7 @@ impl PeerContext for CorePeerContext {
     }
 
     fn recv_limiter(&self, network_name: &str, is_foreign_network: bool) -> Option<ArcByteLimiter> {
-        let limits = self.snapshot().traffic_limits;
+        let limits = self.snapshot().traffic_limits();
         let (key, bps) = if is_foreign_network && let Some(limit) = limits.foreign_relay_bps {
             (format!("peer:foreign:{network_name}:recv"), limit)
         } else {
@@ -1121,7 +1100,7 @@ impl PeerContext for CorePeerContext {
     }
 
     fn foreign_forward_limiter(&self, network_name: &str) -> Option<ArcByteLimiter> {
-        let bps = self.snapshot().traffic_limits.foreign_relay_bps?;
+        let bps = self.snapshot().traffic_limits().foreign_relay_bps?;
         self.get_or_create_limiter(&format!("peer:foreign:{network_name}:forward"), bps)
     }
 
@@ -1235,18 +1214,40 @@ mod tests {
     }
 
     #[test]
-    fn replacing_portable_config_recomputes_traffic_limits() {
-        let mut before_flags = FlagsInConfig::default();
-        before_flags.instance_recv_bps_limit = 1024;
-        let runtime = PeerRuntimeSnapshot::default().runtime;
-        let mut snapshot = PeerRuntimeSnapshot::new(runtime, before_flags);
-        assert_eq!(snapshot.traffic_limits.instance_recv_bps, Some(1024));
-
+    fn explicit_traffic_limits_preserve_zero_and_override_flags() {
         let mut runtime = PeerRuntimeSnapshot::default().runtime;
-        runtime.core.traffic.instance_recv_bps_limit = Some(2048);
-        snapshot.replace_portable_config(runtime, FlagsInConfig::default());
+        runtime.core.traffic.instance_recv_bps_limit = Some(0);
+        runtime.core.traffic.foreign_relay_bps_limit = Some(2048);
+        let mut flags = FlagsInConfig::default();
+        flags.instance_recv_bps_limit = 1024;
+        flags.foreign_relay_bps_limit = 4096;
 
-        assert_eq!(snapshot.traffic_limits.instance_recv_bps, Some(2048));
+        let snapshot = PeerRuntimeSnapshot::new(runtime, flags);
+
+        assert_eq!(snapshot.traffic_limits().instance_recv_bps, Some(0));
+        assert_eq!(snapshot.traffic_limits().foreign_relay_bps, Some(2048));
+    }
+
+    #[test]
+    fn legacy_traffic_limits_ignore_unlimited_sentinels() {
+        let runtime = PeerRuntimeSnapshot::default().runtime;
+        let mut flags = FlagsInConfig::default();
+        flags.instance_recv_bps_limit = 1024;
+        flags.foreign_relay_bps_limit = u64::MAX;
+
+        let snapshot = PeerRuntimeSnapshot::new(runtime, flags);
+
+        assert_eq!(snapshot.traffic_limits().instance_recv_bps, Some(1024));
+        assert_eq!(snapshot.traffic_limits().foreign_relay_bps, None);
+    }
+
+    #[test]
+    fn portable_traffic_limits_default_to_unlimited() {
+        let runtime = PeerRuntimeSnapshot::default().runtime;
+
+        let snapshot = PeerRuntimeSnapshot::new(runtime, FlagsInConfig::default());
+
+        assert_eq!(snapshot.traffic_limits(), PeerTrafficLimits::default());
     }
 
     fn submitted_config(snapshot: PeerRuntimeSnapshot) -> CoreRuntimeConfigStore {
@@ -1318,7 +1319,7 @@ mod tests {
     #[tokio::test]
     async fn foreign_forward_limiter_is_independent_from_peer_receive_limiter() {
         let mut snapshot = submitted_snapshot("limiter", false);
-        snapshot.traffic_limits.foreign_relay_bps = Some(1024);
+        snapshot.runtime.core.traffic.foreign_relay_bps_limit = Some(1024);
         let config = submitted_config(snapshot);
         let context = CorePeerContext::new(config, test_core_context_adapters(Arc::new(())));
 
@@ -1333,8 +1334,8 @@ mod tests {
     #[tokio::test]
     async fn foreign_forward_limiter_does_not_fall_back_to_instance_limit() {
         let mut snapshot = submitted_snapshot("limiter", false);
-        snapshot.traffic_limits.foreign_relay_bps = None;
-        snapshot.traffic_limits.instance_recv_bps = Some(1024);
+        snapshot.runtime.core.traffic.foreign_relay_bps_limit = None;
+        snapshot.runtime.core.traffic.instance_recv_bps_limit = Some(1024);
         let config = submitted_config(snapshot);
         let context = CorePeerContext::new(config, test_core_context_adapters(Arc::new(())));
 

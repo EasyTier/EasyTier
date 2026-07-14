@@ -366,7 +366,8 @@ func coreNetworkConfig(
 	}
 	instance := jsonObject(t, config, "instance")
 	peer := jsonObject(t, instance, "peer")
-	runtime := jsonObject(t, peer, "runtime")
+	snapshot := jsonObject(t, peer, "snapshot")
+	runtime := jsonObject(t, snapshot, "runtime")
 	core := jsonObject(t, runtime, "core")
 	node := jsonObject(t, core, "node")
 	node["peer_id"] = peerID

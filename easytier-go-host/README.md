@@ -15,7 +15,8 @@ egress. `Bridge` owns Go resources and host imports. `CoreModule` serializes all
 calls into one wazero module, and `CoreInstance` exposes create, start, bounded
 drive, stop, and drop.
 
-The normalized create payload currently uses schema version 4.
+The normalized create payload currently uses schema version 5. Peer runtime
+state and legacy flag semantics are submitted as one peer snapshot.
 `ConnectorEnvironment.LocalAddrForRemote` receives both the remote UDP address
 and the complete `SocketContext`, allowing the host to apply the same netns,
 socket-mark, and IP-family policy as the subsequent socket request. STUN state,
