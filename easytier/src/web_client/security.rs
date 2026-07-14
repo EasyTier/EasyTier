@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use easytier_core::tunnel::filter::{TunnelFilter, TunnelWithFilter};
 use futures::{SinkExt, StreamExt};
 use snow::{Builder, params::NoiseParams};
 
@@ -10,7 +11,6 @@ use crate::{
     proto::common::TunnelInfo,
     tunnel::{
         SplitTunnel, StreamItem, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream,
-        filter::{TunnelFilter, TunnelWithFilter},
         packet_def::{PacketType, ZCPacket, ZCPacketType},
     },
 };

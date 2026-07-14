@@ -10,6 +10,7 @@ use std::{
 use easytier_core::{
     connectivity::protocol::raw::TunnelDialer,
     listener::SocketListener,
+    stats_manager::{LabelSet, LabelType, MetricName},
     tunnel::{Tunnel, ring::RingTunnelRegistry},
 };
 use rand::{Rng, rngs::OsRng};
@@ -24,7 +25,6 @@ use crate::{
     common::{
         config::{ConfigLoader, NetworkIdentity, PortForwardConfig, TomlConfigLoader},
         netns::{NetNS, ROOT_NETNS_NAME},
-        stats_manager::{LabelSet, LabelType, MetricName},
     },
     connector::{protocol::runtime_client_protocol_upgrader, runtime::runtime_connector_host},
     instance::instance::Instance,

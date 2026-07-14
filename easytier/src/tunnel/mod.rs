@@ -12,10 +12,7 @@ pub use easytier_core::tunnel::{
 };
 
 pub mod common;
-pub mod filter;
-pub mod mpsc;
 pub mod packet_def;
-pub mod stats;
 
 #[cfg(feature = "faketcp")]
 pub mod fake_tcp;

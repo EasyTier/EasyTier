@@ -9,6 +9,7 @@ use easytier_core::proxy::tcp_proxy_engine::{
 };
 use easytier_core::proxy::tcp_proxy_service::TcpProxyService;
 use easytier_core::proxy::tcp_socket_connector::TcpSocketProxyConnector;
+use easytier_core::stats_manager::{LabelSet, LabelType, MetricName};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{
     Arc, Weak,
@@ -17,7 +18,6 @@ use std::sync::{
 
 use crate::common::error::Result;
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtx};
-use crate::common::stats_manager::{LabelSet, LabelType, MetricName};
 use crate::connector::{
     core_instance::runtime_socket_context,
     runtime::{RuntimeConnectorHost, runtime_connector_host},

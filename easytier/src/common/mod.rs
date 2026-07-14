@@ -8,7 +8,6 @@ use tokio::{task::JoinSet, time::timeout};
 use tracing::Instrument;
 
 pub mod acl_processor;
-pub mod compressor;
 pub mod config;
 pub mod constants;
 pub mod credential_manager;
@@ -23,9 +22,7 @@ pub mod machine_id;
 pub mod netns;
 pub mod network;
 pub mod os_info;
-pub mod stats_manager;
 pub mod stun;
-pub mod token_bucket;
 pub mod tracing_rolling_appender;
 pub mod upnp;
 

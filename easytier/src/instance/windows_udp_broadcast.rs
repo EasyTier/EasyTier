@@ -10,12 +10,11 @@ use pnet::packet::{
 #[cfg(any(windows, test))]
 use {
     crate::{
-        common::global_ctx::GlobalCtxEvent,
-        common::stats_manager::{CounterHandle, LabelSet, LabelType, MetricName},
-        peers::peer_manager::PeerManager,
+        common::global_ctx::GlobalCtxEvent, peers::peer_manager::PeerManager,
         tunnel::packet_def::ZCPacket,
     },
     anyhow::Context,
+    easytier_core::stats_manager::{CounterHandle, LabelSet, LabelType, MetricName},
     network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig},
     socket2::{Domain, Protocol, SockAddr, Socket, Type},
     std::{

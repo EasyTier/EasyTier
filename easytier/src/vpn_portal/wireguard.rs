@@ -8,6 +8,7 @@ use base64::{Engine, prelude::BASE64_STANDARD};
 use cidr::Ipv4Inet;
 use easytier_core::{
     listener::SocketListener,
+    tunnel::mpsc::{MpscTunnel, MpscTunnelSender},
     vpn_portal::{
         VpnPortalClientRemoval, VpnPortalClientSession, VpnPortalClientTable,
         VpnPortalPeerPacketRoute,
@@ -26,7 +27,6 @@ use crate::{
     peers::{PeerPacketFilter, peer_manager::PeerManager},
     tunnel::{
         Tunnel,
-        mpsc::{MpscTunnel, MpscTunnelSender},
         packet_def::{ZCPacket, ZCPacketType},
         wireguard::{WgConfig, WgTunnelListener},
     },

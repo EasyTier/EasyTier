@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use base64::Engine as _;
+use easytier_core::stats_manager::{LabelSet, LabelType, MetricName};
 use easytier_core::tunnel::ring::{RingTunnelRegistry, create_ring_tunnel_pair};
 
 use crate::{
@@ -12,7 +13,6 @@ use crate::{
             NetworkIdentity, TrustedKeySource,
             tests::{get_mock_global_ctx, get_mock_global_ctx_with_network},
         },
-        stats_manager::{LabelSet, LabelType, MetricName},
     },
     tunnel::{
         common::tests::wait_for_condition,

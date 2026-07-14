@@ -302,10 +302,10 @@ fn is_credential_pubkey_trusted(entry: &ForeignNetworkEntry, remote_static_pubke
 #[cfg(test)]
 pub mod tests {
     use easytier_core::peers::context::PeerContext as _;
+    use easytier_core::stats_manager::{LabelSet, LabelType, MetricName};
 
     use crate::{
         common::global_ctx::tests::get_mock_global_ctx_with_network,
-        common::stats_manager::{LabelSet, LabelType, MetricName},
         connector::udp_hole_punch::tests::{
             create_mock_peer_manager_with_mock_stun, replace_stun_info_collector,
         },

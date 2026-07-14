@@ -12,6 +12,7 @@ use easytier_core::peers::encrypt::{derive_key_128, derive_key_256};
 use easytier_core::peers::foreign_network_manager::check_network_in_relay_whitelist;
 use easytier_core::peers::public_ipv6::PublicIpv6Runtime;
 use easytier_core::socket::{NetNamespace, SocketContext};
+use easytier_core::stats_manager::{self, StatsManager};
 use easytier_core::stun::{StunProviderSlot, StunSocketMapper};
 
 use super::{
@@ -22,11 +23,7 @@ use super::{
     stun::{default_udp_stun_servers, default_udp_v6_stun_servers, runtime_stun_info_collector},
 };
 use crate::{
-    common::{
-        config::ProxyNetworkConfig,
-        credential_manager::CredentialManager,
-        stats_manager::{self, StatsManager},
-    },
+    common::{config::ProxyNetworkConfig, credential_manager::CredentialManager},
     peers::acl_filter::AclFilter,
     proto::{
         acl::GroupIdentity,

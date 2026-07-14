@@ -192,19 +192,19 @@ impl PeerPublicIpv6State for GlobalCtx {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use easytier_core::stats_manager::{LabelSet, LabelType, MetricName};
     use std::sync::Arc;
 
     use crate::common::{
         config::{PeerConfig, VpnPortalConfig},
         global_ctx::tests::get_mock_global_ctx,
-        stats_manager::{LabelSet, LabelType, MetricName},
     };
     use crate::proto::{
         acl::{Acl, AclV1, GroupIdentity, GroupInfo},
         common::TunnelInfo,
     };
 
-    fn submitted_context(
+    fn core_context_for_test(
         global_ctx: ArcGlobalCtx,
     ) -> (CoreRuntimeConfigStore, Arc<CorePeerContext>) {
         build_core_peer_context(&global_ctx)
@@ -290,7 +290,7 @@ mod tests {
                 ..Default::default()
             }),
         }));
-        let (config, context) = submitted_context(global_ctx.clone());
+        let (config, context) = core_context_for_test(global_ctx.clone());
 
         global_ctx.set_hostname("after".to_owned());
         global_ctx.set_ipv4(Some("198.51.100.1/24".parse().unwrap()));
@@ -371,7 +371,7 @@ mod tests {
     async fn runtime_avoid_relay_preference_remains_reversible_after_refresh() {
         let global_ctx = get_mock_global_ctx();
         global_ctx.set_avoid_relay_data_preference(true);
-        let (config, context) = submitted_context(global_ctx.clone());
+        let (config, context) = core_context_for_test(global_ctx.clone());
 
         assert!(context.feature_flags().avoid_relay_data);
         config.update_peer(Arc::new(runtime_peer_snapshot(&global_ctx)));

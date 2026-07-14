@@ -613,7 +613,7 @@ pub struct PeerManagerCore {
     stats_manager: Arc<StatsManager>,
     network_name: String,
     counters: PeerManagerTrafficCounters,
-    owns_support_tasks: bool,
+    owns_maintenance_tasks: bool,
 }
 
 pub enum AddressResolution {
@@ -1076,7 +1076,7 @@ impl PeerManagerCore {
             |_, _, _, _| Arc::new(DisabledForeignNetworkManager),
         );
         let mut core = result.core;
-        core.owns_support_tasks = true;
+        core.owns_maintenance_tasks = true;
         Ok(core)
     }
 
@@ -1368,7 +1368,7 @@ impl PeerManagerCore {
                 stats_manager,
                 network_name,
                 counters: self_tx_counters,
-                owns_support_tasks: false,
+                owns_maintenance_tasks: false,
             },
             foreign_network_manager,
         }
@@ -1753,7 +1753,7 @@ impl PeerManagerCore {
         self.route.close().await;
         self.peer_rpc_mgr.stop().await;
         self.context.stop().await;
-        if self.owns_support_tasks {
+        if self.owns_maintenance_tasks {
             self.stats_manager.stop_cleanup_task().await;
             self.acl_filter.stop_cleanup_task().await;
         }

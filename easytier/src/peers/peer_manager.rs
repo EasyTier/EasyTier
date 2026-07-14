@@ -201,7 +201,19 @@ impl PeerManager {
 mod tests {
     use base64::Engine;
     use easytier_core::peers::peer_manager::{self as core_peer_manager, PeerManagerCore};
-    use std::{collections::HashMap, sync::Arc, time::Duration};
+    use easytier_core::stats_manager::{LabelSet, LabelType, MetricName};
+    use easytier_core::tunnel::{
+        SinkItem,
+        filter::{TunnelFilter, TunnelWithFilter},
+    };
+    use std::{
+        collections::HashMap,
+        sync::{
+            Arc,
+            atomic::{AtomicU32, Ordering},
+        },
+        time::Duration,
+    };
 
     use quanta::Instant;
 
@@ -210,7 +222,6 @@ mod tests {
             PeerId,
             config::Flags,
             global_ctx::{NetworkIdentity, tests::get_mock_global_ctx},
-            stats_manager::{LabelSet, LabelType, MetricName},
         },
         connector::{
             manual::ManualConnectorManager,
@@ -233,13 +244,43 @@ mod tests {
         },
         tunnel::{
             common::tests::wait_for_condition,
-            filter::{TunnelWithFilter, tests::DropSendTunnelFilter},
             packet_def::{PacketType, ZCPacket},
         },
     };
     use easytier_core::tunnel::ring::create_ring_tunnel_pair;
 
     use super::PeerManager;
+
+    struct DropSendTunnelFilter {
+        start: u32,
+        end: u32,
+        current: AtomicU32,
+    }
+
+    impl DropSendTunnelFilter {
+        fn new(start: u32, end: u32) -> Self {
+            Self {
+                start,
+                end,
+                current: AtomicU32::new(0),
+            }
+        }
+    }
+
+    impl TunnelFilter for DropSendTunnelFilter {
+        type FilterOutput = ();
+
+        fn before_send(&self, data: SinkItem) -> Option<SinkItem> {
+            let current = self.current.fetch_add(1, Ordering::SeqCst) + 1;
+            if current >= self.start && current < self.end {
+                tracing::trace!(?data, "drop packet");
+                return None;
+            }
+            Some(data)
+        }
+
+        fn filter_output(&self) {}
+    }
 
     fn register_service(
         rpc_mgr: &crate::peers::peer_rpc::PeerRpcManager,

@@ -80,7 +80,7 @@ pub mod tests;
 pub mod peer_rpc {
     pub use easytier_core::peers::peer_rpc::*;
 
-    pub use crate::common::stats_manager::StatsRpcMetrics;
+    pub use easytier_core::stats_manager::StatsRpcMetrics;
 }
 
 pub(crate) use easytier_core::peers::secure_datagram;
