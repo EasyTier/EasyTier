@@ -1,6 +1,6 @@
 use atomic_shim::AtomicU64;
 use dashmap::DashMap;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::Notify;
@@ -18,6 +18,7 @@ pub struct TokenBucket {
     start_time: Instant,         // Bucket creation time
 
     refill_notifier: Arc<Notify>,
+    stopped: AtomicBool,
 }
 
 #[derive(Clone, Copy)]
@@ -68,6 +69,7 @@ impl TokenBucket {
             refill_task: Mutex::new(None),
             start_time: std::time::Instant::now(),
             refill_notifier: Arc::new(Notify::new()),
+            stopped: AtomicBool::new(false),
         });
 
         // Start background refill task
@@ -137,6 +139,9 @@ impl TokenBucket {
     /// # Returns
     /// `true` if tokens were consumed, `false` if insufficient tokens
     pub fn try_consume(&self, tokens: u64) -> bool {
+        if self.stopped.load(Ordering::Acquire) {
+            return true;
+        }
         // Fast path for oversized packets
         if tokens > self.config.capacity {
             return false;
@@ -169,6 +174,8 @@ impl TokenBucket {
     }
 
     async fn stop(&self) {
+        self.stopped.store(true, Ordering::Release);
+        self.refill_notifier.notify_waiters();
         let task = self.refill_task.lock().unwrap().take();
         if let Some(task) = task {
             task.abort();
@@ -289,6 +296,26 @@ mod tests {
 
         // Should be able to take remaining tokens
         assert!(bucket.try_consume(500));
+    }
+
+    #[tokio::test]
+    async fn stop_releases_waiting_consumers() {
+        let bucket = TokenBucket::new(1, 1, Duration::from_secs(60));
+        assert!(bucket.try_consume(1));
+        let waiting = tokio::spawn({
+            let bucket = bucket.clone();
+            async move { bucket.consume(1).await }
+        });
+        tokio::task::yield_now().await;
+        assert!(!waiting.is_finished());
+
+        bucket.stop().await;
+
+        tokio::time::timeout(Duration::from_secs(1), waiting)
+            .await
+            .expect("stopped limiter should release consumers")
+            .unwrap();
+        assert!(bucket.try_consume(u64::MAX));
     }
 
     /// Test background refill functionality
