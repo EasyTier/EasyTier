@@ -48,7 +48,7 @@ use tracing::{debug, error, info, instrument, trace, warn};
 
 use easytier_core::{
     instance::ProxyService,
-    peers::acl_filter::AclFilter,
+    peers::{acl_filter::AclFilter, peer_manager::PipelineRegistrationGuard},
     proxy::{
         cidr_table::ProxyCidrTable,
         runtime::TcpProxyDestinationConnector,
@@ -425,23 +425,26 @@ impl TcpProxyDestinationConnector for NatDstQuicConnector {
 }
 
 #[derive(Clone)]
-struct TcpProxyForQuicSrc(Arc<TcpProxy<NatDstQuicConnector>>);
+struct TcpProxyForQuicSrc(Weak<TcpProxy<NatDstQuicConnector>>);
 
 impl TcpProxyForQuicSrc {
     async fn try_process_nic_packet(&self, zc_packet: &mut ZCPacket) -> bool {
-        if self.0.try_process_packet_from_nic(zc_packet).await {
+        let Some(proxy) = self.0.upgrade() else {
+            return false;
+        };
+        if proxy.try_process_packet_from_nic(zc_packet).await {
             return true;
         }
 
-        let tcp_proxy = self.0.clone();
-        let peer_manager = self.0.get_peer_manager();
+        let tcp_proxy = proxy.clone();
+        let peer_manager = proxy.get_peer_manager();
         try_process_wrapped_tcp_packet_from_nic(
             zc_packet,
             WrappedTcpProxyNicContext {
                 transport: WrappedTcpProxyTransport::Quic,
-                my_peer_id: self.0.get_my_peer_id(),
-                local_ipv4: self.0.get_local_ip(),
-                smoltcp_enabled: self.0.is_smoltcp_enabled(),
+                my_peer_id: proxy.get_my_peer_id(),
+                local_ipv4: proxy.get_local_ip(),
+                smoltcp_enabled: proxy.is_smoltcp_enabled(),
             },
             move |src| tcp_proxy.is_tcp_proxy_connection(src),
             move |dst_ip| async move {
@@ -492,7 +495,7 @@ impl QuicProxyRole {
 // Receive packets from peers and forward them to the QUIC endpoint
 #[derive(Debug)]
 struct QuicPacketReceiver {
-    tx: Sender<QuicPacket>,
+    tx: Weak<Sender<QuicPacket>>,
     role: QuicProxyRole,
 }
 
@@ -505,9 +508,13 @@ impl PeerPacketFilter for QuicPacketReceiver {
             return Some(packet);
         }
 
+        let Some(tx) = self.tx.upgrade() else {
+            return Some(packet);
+        };
+
         let addr = QuicAddr::new(header.from_peer_id.get(), self.role.outgoing());
 
-        if let Err(e) = self.tx.try_send(QuicPacket::new(
+        if let Err(e) = tx.try_send(QuicPacket::new(
             addr.into(),
             packet.payload_bytes(),
             None,
@@ -835,6 +842,7 @@ impl QuicProxy {
         let margins = (header.len(), TAIL_RESERVED_SIZE).into();
 
         let (in_tx, in_rx) = channel(1024);
+        let in_tx = Arc::new(in_tx);
         let (out_tx, out_rx) = channel(1024);
 
         let socket = QuicSocket {
@@ -874,7 +882,7 @@ impl QuicProxy {
                 return;
             }
 
-            let tcp_proxy = TcpProxyForQuicSrc(TcpProxy::new(
+            let tcp_proxy = TcpProxy::new(
                 peer_mgr.clone(),
                 NatDstQuicConnector {
                     endpoint: endpoint.clone(),
@@ -885,12 +893,13 @@ impl QuicProxy {
                         .build(),
                 },
                 self.cidr_table.clone(),
-            ));
+            );
 
-            let src = QuicProxySrc {
+            let mut src = QuicProxySrc {
                 peer_mgr: peer_mgr.clone(),
                 tcp_proxy,
                 tx: in_tx.clone(),
+                pipeline_guards: Vec::new(),
             };
             src.run().await;
 
@@ -908,10 +917,11 @@ impl QuicProxy {
                 self.cidr_table.clone(),
             ));
 
-            let dst = QuicProxyDst {
+            let mut dst = QuicProxyDst {
                 peer_mgr: peer_mgr.clone(),
                 tx: in_tx.clone(),
                 stream_ctx: stream_ctx.clone(),
+                pipeline_guards: Vec::new(),
             };
             dst.run().await;
 
@@ -926,6 +936,16 @@ impl QuicProxy {
 
             self.dst = Some(dst);
         }
+    }
+
+    fn stop(&mut self) {
+        if let Some(dst) = &mut self.dst {
+            dst.stop();
+        }
+        if let Some(src) = &mut self.src {
+            src.stop();
+        }
+        self.tasks.abort_all();
     }
 }
 
@@ -998,7 +1018,10 @@ impl ProxyService for QuicProxyService {
     }
 
     async fn stop(&self) {
-        let state = self.state.lock().await.take();
+        let mut state = self.state.lock().await.take();
+        if let Some(state) = &mut state {
+            state.stop();
+        }
         self.src_tcp_proxy
             .lock()
             .expect("QUIC source TCP proxy mutex poisoned")
@@ -1013,55 +1036,76 @@ impl ProxyService for QuicProxyService {
 
 pub struct QuicProxySrc {
     peer_mgr: Arc<PeerManager>,
-    tcp_proxy: TcpProxyForQuicSrc,
+    tcp_proxy: Arc<TcpProxy<NatDstQuicConnector>>,
 
-    tx: Sender<QuicPacket>,
+    tx: Arc<Sender<QuicPacket>>,
+    pipeline_guards: Vec<PipelineRegistrationGuard>,
 }
 
 impl QuicProxySrc {
     #[inline]
     pub fn get_tcp_proxy(&self) -> Arc<TcpProxy<NatDstQuicConnector>> {
-        self.tcp_proxy.0.clone()
+        self.tcp_proxy.clone()
     }
 }
 
 impl QuicProxySrc {
-    async fn run(&self) {
+    async fn run(&mut self) {
         trace!("quic proxy src starting");
-        let wrapped_filter = self.tcp_proxy.clone();
-        self.peer_mgr
+        let wrapped_filter = TcpProxyForQuicSrc(Arc::downgrade(&self.tcp_proxy));
+        let guard = self
+            .peer_mgr
             .core()
-            .add_nic_packet_process_pipeline(Box::new(wrapped_filter))
+            .add_managed_nic_packet_process_pipeline(Box::new(wrapped_filter))
             .await;
-        self.tcp_proxy.0.register_peer_pipeline().await;
-        self.peer_mgr
+        self.pipeline_guards.push(guard);
+        self.tcp_proxy.register_peer_pipeline().await;
+        let guard = self
+            .peer_mgr
             .core()
-            .add_packet_process_pipeline(Box::new(QuicPacketReceiver {
-                tx: self.tx.clone(),
+            .add_managed_packet_process_pipeline(Box::new(QuicPacketReceiver {
+                tx: Arc::downgrade(&self.tx),
                 role: QuicProxyRole::Src,
             }))
             .await;
-        self.tcp_proxy.0.start(false).await.unwrap();
+        self.pipeline_guards.push(guard);
+        self.tcp_proxy.start(false).await.unwrap();
+    }
+
+    fn stop(&mut self) {
+        for guard in self.pipeline_guards.drain(..).rev() {
+            guard.close();
+        }
+        self.tcp_proxy.stop();
     }
 }
 
 pub struct QuicProxyDst {
     peer_mgr: Arc<PeerManager>,
 
-    tx: Sender<QuicPacket>,
+    tx: Arc<Sender<QuicPacket>>,
     stream_ctx: Arc<QuicStreamContext>,
+    pipeline_guards: Vec<PipelineRegistrationGuard>,
 }
 
 impl QuicProxyDst {
-    async fn run(&self) {
+    async fn run(&mut self) {
         trace!("quic proxy dst starting");
-        self.peer_mgr
+        let guard = self
+            .peer_mgr
             .core()
-            .add_packet_process_pipeline(Box::new(QuicPacketReceiver {
-                tx: self.tx.clone(),
+            .add_managed_packet_process_pipeline(Box::new(QuicPacketReceiver {
+                tx: Arc::downgrade(&self.tx),
                 role: QuicProxyRole::Dst,
             }))
             .await;
+        self.pipeline_guards.push(guard);
+    }
+
+    fn stop(&mut self) {
+        for guard in self.pipeline_guards.drain(..).rev() {
+            guard.close();
+        }
     }
 }
 
@@ -1097,6 +1141,26 @@ mod tests {
     use super::*;
     use bytes::Buf;
     use quanta::Instant;
+
+    #[tokio::test]
+    async fn stale_packet_receiver_releases_packets() {
+        let (tx, _rx) = channel(1);
+        let tx = Arc::new(tx);
+        let receiver = QuicPacketReceiver {
+            tx: Arc::downgrade(&tx),
+            role: QuicProxyRole::Dst,
+        };
+        drop(tx);
+        let mut packet = ZCPacket::new_with_payload(&[]);
+        packet.fill_peer_manager_hdr(1, 2, PacketType::QuicSrc as u8);
+
+        assert!(
+            receiver
+                .try_process_packet_from_peer(packet)
+                .await
+                .is_some()
+        );
+    }
 
     /// Helper function: Create a pair of interconnected QuicSockets.
     /// Data sent by socket_a will enter socket_b's rx, and vice versa.

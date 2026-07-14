@@ -19,6 +19,7 @@ use tokio::{sync::Mutex, task::JoinSet};
 
 use easytier_core::{
     instance::ProxyService,
+    peers::peer_manager::PipelineRegistrationGuard,
     proxy::{
         cidr_table::ProxyCidrTable,
         runtime::TcpProxyDestinationConnector,
@@ -60,7 +61,7 @@ fn create_kcp_endpoint() -> KcpEndpoint {
 }
 
 struct KcpEndpointFilter {
-    kcp_endpoint: Arc<KcpEndpoint>,
+    kcp_endpoint: Weak<KcpEndpoint>,
     is_src: bool,
 }
 
@@ -76,8 +77,11 @@ impl PeerPacketFilter for KcpEndpointFilter {
             return Some(packet);
         }
 
-        let _ = self
-            .kcp_endpoint
+        let Some(kcp_endpoint) = self.kcp_endpoint.upgrade() else {
+            return Some(packet);
+        };
+
+        let _ = kcp_endpoint
             .input_sender_ref()
             .send(KcpPacket::from(packet.payload_bytes()))
             .await;
@@ -186,23 +190,26 @@ impl TcpProxyDestinationConnector for NatDstKcpConnector {
 }
 
 #[derive(Clone)]
-struct TcpProxyForKcpSrc(Arc<TcpProxy<NatDstKcpConnector>>);
+struct TcpProxyForKcpSrc(Weak<TcpProxy<NatDstKcpConnector>>);
 
 impl TcpProxyForKcpSrc {
     async fn try_process_nic_packet(&self, zc_packet: &mut ZCPacket) -> bool {
-        if self.0.try_process_packet_from_nic(zc_packet).await {
+        let Some(proxy) = self.0.upgrade() else {
+            return false;
+        };
+        if proxy.try_process_packet_from_nic(zc_packet).await {
             return true;
         }
 
-        let tcp_proxy = self.0.clone();
-        let peer_manager = self.0.get_peer_manager();
+        let tcp_proxy = proxy.clone();
+        let peer_manager = proxy.get_peer_manager();
         try_process_wrapped_tcp_packet_from_nic(
             zc_packet,
             WrappedTcpProxyNicContext {
                 transport: WrappedTcpProxyTransport::Kcp,
-                my_peer_id: self.0.get_my_peer_id(),
-                local_ipv4: self.0.get_local_ip(),
-                smoltcp_enabled: self.0.is_smoltcp_enabled(),
+                my_peer_id: proxy.get_my_peer_id(),
+                local_ipv4: proxy.get_local_ip(),
+                smoltcp_enabled: proxy.is_smoltcp_enabled(),
             },
             move |src| tcp_proxy.is_tcp_proxy_connection(src),
             move |dst_ip| async move {
@@ -230,7 +237,8 @@ pub struct KcpProxySrc {
     kcp_endpoint: Arc<KcpEndpoint>,
     peer_manager: Arc<PeerManager>,
 
-    tcp_proxy: TcpProxyForKcpSrc,
+    tcp_proxy: Arc<TcpProxy<NatDstKcpConnector>>,
+    pipeline_guards: Vec<PipelineRegistrationGuard>,
     tasks: JoinSet<()>,
 }
 
@@ -262,34 +270,47 @@ impl KcpProxySrc {
         Self {
             kcp_endpoint,
             peer_manager,
-            tcp_proxy: TcpProxyForKcpSrc(tcp_proxy),
+            tcp_proxy,
+            pipeline_guards: Vec::new(),
             tasks,
         }
     }
 
-    pub async fn start(&self) {
-        let wrapped_filter = self.tcp_proxy.clone();
-        self.peer_manager
+    pub async fn start(&mut self) {
+        let wrapped_filter = TcpProxyForKcpSrc(Arc::downgrade(&self.tcp_proxy));
+        let guard = self
+            .peer_manager
             .core()
-            .add_nic_packet_process_pipeline(Box::new(wrapped_filter))
+            .add_managed_nic_packet_process_pipeline(Box::new(wrapped_filter))
             .await;
-        self.tcp_proxy.0.register_peer_pipeline().await;
-        self.peer_manager
+        self.pipeline_guards.push(guard);
+        self.tcp_proxy.register_peer_pipeline().await;
+        let guard = self
+            .peer_manager
             .core()
-            .add_packet_process_pipeline(Box::new(KcpEndpointFilter {
-                kcp_endpoint: self.kcp_endpoint.clone(),
+            .add_managed_packet_process_pipeline(Box::new(KcpEndpointFilter {
+                kcp_endpoint: Arc::downgrade(&self.kcp_endpoint),
                 is_src: true,
             }))
             .await;
-        self.tcp_proxy.0.start(false).await.unwrap();
+        self.pipeline_guards.push(guard);
+        self.tcp_proxy.start(false).await.unwrap();
     }
 
     pub fn get_tcp_proxy(&self) -> Arc<TcpProxy<NatDstKcpConnector>> {
-        self.tcp_proxy.0.clone()
+        self.tcp_proxy.clone()
     }
 
     pub fn get_kcp_endpoint(&self) -> Arc<KcpEndpoint> {
         self.kcp_endpoint.clone()
+    }
+
+    fn stop(&mut self) {
+        for guard in self.pipeline_guards.drain(..).rev() {
+            guard.close();
+        }
+        self.tcp_proxy.stop();
+        self.tasks.abort_all();
     }
 }
 
@@ -298,6 +319,7 @@ pub struct KcpProxyDst {
     peer_manager: Arc<PeerManager>,
     proxy_entries: Arc<DashMap<ConnId, TcpProxyEntry>>,
     cidr_table: Arc<ProxyCidrTable>,
+    pipeline_guards: Vec<PipelineRegistrationGuard>,
     tasks: JoinSet<()>,
 }
 
@@ -318,6 +340,7 @@ impl KcpProxyDst {
             peer_manager,
             proxy_entries: Arc::new(DashMap::new()),
             cidr_table,
+            pipeline_guards: Vec::new(),
             tasks,
         }
     }
@@ -406,42 +429,60 @@ impl KcpProxyDst {
         let runtime = Arc::new(RuntimeWrappedTcpDestinationAdapter::new(global_ctx.clone()));
         let acl_filter = self.peer_manager.core().acl_filter();
         self.tasks.spawn(async move {
-            while let Ok(conn) = kcp_endpoint.accept().await {
-                let stream = KcpStream::new(&kcp_endpoint, conn)
-                    .ok_or(anyhow::anyhow!("failed to create kcp stream"))
-                    .unwrap();
+            let mut streams = JoinSet::new();
+            loop {
+                tokio::select! {
+                    accepted = kcp_endpoint.accept() => {
+                        let Ok(conn) = accepted else {
+                            break;
+                        };
+                        let stream = KcpStream::new(&kcp_endpoint, conn)
+                            .ok_or(anyhow::anyhow!("failed to create kcp stream"))
+                            .unwrap();
 
-                let global_ctx = global_ctx.clone();
-                let proxy_entries = proxy_entries.clone();
-                let cidr_table = cidr_table.clone();
-                let route = route.clone();
-                let runtime = runtime.clone();
-                let acl_filter = acl_filter.clone();
-                tokio::spawn(async move {
-                    let _ = Self::handle_one_in_stream(
-                        stream,
-                        global_ctx,
-                        proxy_entries,
-                        cidr_table,
-                        runtime,
-                        acl_filter,
-                        route,
-                    )
-                    .await;
-                });
+                        let global_ctx = global_ctx.clone();
+                        let proxy_entries = proxy_entries.clone();
+                        let cidr_table = cidr_table.clone();
+                        let route = route.clone();
+                        let runtime = runtime.clone();
+                        let acl_filter = acl_filter.clone();
+                        streams.spawn(async move {
+                            let _ = Self::handle_one_in_stream(
+                                stream,
+                                global_ctx,
+                                proxy_entries,
+                                cidr_table,
+                                runtime,
+                                acl_filter,
+                                route,
+                            )
+                            .await;
+                        });
+                    }
+                    _ = streams.join_next(), if !streams.is_empty() => {}
+                }
             }
         });
     }
 
     pub async fn start(&mut self) {
         self.run_accept_task().await;
-        self.peer_manager
+        let guard = self
+            .peer_manager
             .core()
-            .add_packet_process_pipeline(Box::new(KcpEndpointFilter {
-                kcp_endpoint: self.kcp_endpoint.clone(),
+            .add_managed_packet_process_pipeline(Box::new(KcpEndpointFilter {
+                kcp_endpoint: Arc::downgrade(&self.kcp_endpoint),
                 is_src: false,
             }))
             .await;
+        self.pipeline_guards.push(guard);
+    }
+
+    fn stop(&mut self) {
+        for guard in self.pipeline_guards.drain(..).rev() {
+            guard.close();
+        }
+        self.tasks.abort_all();
     }
 }
 
@@ -449,6 +490,17 @@ impl KcpProxyDst {
 struct KcpProxyServiceState {
     src: Option<KcpProxySrc>,
     dst: Option<KcpProxyDst>,
+}
+
+impl KcpProxyServiceState {
+    fn stop(&mut self) {
+        if let Some(dst) = &mut self.dst {
+            dst.stop();
+        }
+        if let Some(src) = &mut self.src {
+            src.stop();
+        }
+    }
 }
 
 pub struct KcpProxyService {
@@ -510,7 +562,8 @@ impl ProxyService for KcpProxyService {
 
         let (src_enabled, dst_enabled) = self.enabled_directions();
         let src = if src_enabled {
-            let src = KcpProxySrc::new(self.peer_manager.clone(), self.cidr_table.clone()).await;
+            let mut src =
+                KcpProxySrc::new(self.peer_manager.clone(), self.cidr_table.clone()).await;
             src.start().await;
             Some(src)
         } else {
@@ -545,7 +598,10 @@ impl ProxyService for KcpProxyService {
     }
 
     async fn stop(&self) {
-        let state = self.state.lock().await.take();
+        let mut state = self.state.lock().await.take();
+        if let Some(state) = &mut state {
+            state.stop();
+        }
         self.src_endpoint
             .lock()
             .expect("KCP source endpoint mutex poisoned")
@@ -586,5 +642,24 @@ impl TcpProxyRpc for KcpProxyDstRpcService {
             }
         }
         Ok(reply)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn stale_endpoint_filter_releases_packets() {
+        let endpoint = Arc::new(create_kcp_endpoint());
+        let filter = KcpEndpointFilter {
+            kcp_endpoint: Arc::downgrade(&endpoint),
+            is_src: false,
+        };
+        drop(endpoint);
+        let mut packet = ZCPacket::new_with_payload(&[]);
+        packet.fill_peer_manager_hdr(1, 2, PacketType::KcpSrc as u8);
+
+        assert!(filter.try_process_packet_from_peer(packet).await.is_some());
     }
 }
