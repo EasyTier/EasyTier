@@ -100,7 +100,7 @@ host completions, not a periodic drive tick. Functional socket, DNS,
 environment, packet, lifecycle, two-peer route, and packet-exchange gates pass;
 performance, repeated-failure, and hard-isolation gates are still outstanding.
 
-The host-driven create schema is version 6 as of 2026-07-14. Peer configuration
+The host-driven create schema is version 7 as of 2026-07-14. Peer configuration
 is submitted as one normalized runtime snapshot instead of separate runtime and
 legacy-flag objects. The connectivity snapshot also carries normalized UDP,
 TCP, and IPv6 UDP STUN server lists. Socket creation, DNS, and connector route

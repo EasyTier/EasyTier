@@ -114,7 +114,7 @@ hide Go/native record-chunk differences behind a default resolver. Variable DNS
 results use a non-consuming size probe followed by one bounded owned copy, and
 rejected results are canceled explicitly.
 
-The host create schema is version 6 and submits one normalized peer snapshot
+The host create schema is version 7 and submits one normalized peer snapshot
 plus the UDP, TCP, and IPv6 UDP STUN server lists in connectivity configuration.
 Connector route probes also receive the complete socket context. The Go
 environment does not construct or expose STUN state, NAT type, public endpoints,
