@@ -1665,14 +1665,23 @@ where
         self.runtime_config.snapshot().services.clone()
     }
 
-    pub fn update_peer_runtime_snapshot(&self, mut snapshot: Arc<PeerRuntimeSnapshot>) {
+    pub async fn update_peer_runtime_snapshot(&self, mut snapshot: Arc<PeerRuntimeSnapshot>) {
+        let _operation = self.operation.lock().await;
         let current = self.runtime_config.snapshot();
         retain_core_peer_identity(
             &mut snapshot,
             self.peer_id(),
             current.peer.runtime.core.node.instance_id,
         );
+        let refresh_acl_groups = current.peer.peer_group_memberships
+            != snapshot.peer_group_memberships
+            || current.peer.acl_group_declarations != snapshot.acl_group_declarations;
         self.runtime_config.update_peer(snapshot);
+        self.proxy_cidr_table
+            .update_snapshot(proxy_cidr_snapshot(self.runtime_config.snapshot().as_ref()));
+        if refresh_acl_groups {
+            self.refresh_acl_groups().await;
+        }
     }
 
     pub fn proxy_is_started(&self) -> bool {
