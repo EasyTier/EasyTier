@@ -233,3 +233,24 @@ pub async fn read_address<T: AsyncRead + Unpin>(
 
     Ok(addr)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::ToSocketAddrs;
+
+    #[test]
+    fn target_addr_to_socket_addrs_keeps_ip_only_contract() {
+        let address: SocketAddr = "192.0.2.8:443".parse().unwrap();
+        let resolved = TargetAddr::Ip(address)
+            .to_socket_addrs()
+            .unwrap()
+            .collect::<Vec<_>>();
+        assert_eq!(resolved, vec![address]);
+
+        let error = TargetAddr::Domain("peer.example".into(), 443)
+            .to_socket_addrs()
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+    }
+}

@@ -166,7 +166,7 @@ where
             return Ok(());
         }
 
-        let mut target = match target {
+        let target = match target {
             TargetAddr::Ip(address) => address,
             TargetAddr::Domain(_, _) => {
                 return Err(io::Error::other(
@@ -175,10 +175,7 @@ where
                 .into());
             }
         };
-        if let IpAddr::V4(ipv4) = target.ip() {
-            target.set_ip(IpAddr::V6(ipv4.to_ipv6_mapped()));
-        }
-        outbound.send_to(data, target).await?;
+        outbound.send_to(data, ipv4_mapped_addr(target)).await?;
     }
 }
 
@@ -196,10 +193,17 @@ where
         let Some(client) = client else {
             continue;
         };
-        let mut data = new_udp_header(remote)?;
+        let mut data = new_udp_header(ipv4_mapped_addr(remote))?;
         data.extend_from_slice(&buffer[..size]);
         association.inbound.send_to(&data, client).await?;
     }
+}
+
+fn ipv4_mapped_addr(mut address: SocketAddr) -> SocketAddr {
+    if let IpAddr::V4(ipv4) = address.ip() {
+        address.set_ip(IpAddr::V6(ipv4.to_ipv6_mapped()));
+    }
+    address
 }
 
 #[cfg(test)]
@@ -345,5 +349,13 @@ mod tests {
 
         assert!(error.to_string().contains("must be explicitly resolved"));
         assert!(outbound.sends.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn udp_response_preserves_ipv6_wire_family_for_mapped_ipv4() {
+        let remote = ipv4_mapped_addr("198.51.100.3:53".parse().unwrap());
+        let header = new_udp_header(remote).unwrap();
+
+        assert_eq!(header[3], super::super::consts::SOCKS5_ADDR_TYPE_IPV6);
     }
 }

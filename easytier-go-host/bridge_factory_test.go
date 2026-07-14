@@ -77,10 +77,13 @@ func TestDecodeSTUNProbePurposes(t *testing.T) {
 }
 
 func TestDecodeSocks5UDPBindPurpose(t *testing.T) {
+	if UDPBindSocks5 != 6 {
+		t.Fatalf("SOCKS5 UDP purpose %d, want stable wire value 6", UDPBindSocks5)
+	}
 	encoded := make([]byte, 48)
 	encoded[0] = 2
 	encoded[28] = byte(IPVersionV6)
-	encoded[42] = byte(UDPBindSocks5)
+	encoded[42] = 6
 	options, err := decodeUDPBindOptions(encoded)
 	if err != nil {
 		t.Fatalf("decode SOCKS5 UDP options: %v", err)
