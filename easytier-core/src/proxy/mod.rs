@@ -9,6 +9,7 @@ pub mod runtime;
 pub(crate) mod service;
 pub mod socks5;
 pub mod socks5_protocol;
+pub mod wrapped_transport;
 
 #[cfg(feature = "proxy-packet")]
 pub mod icmp_proxy_engine;

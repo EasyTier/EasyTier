@@ -22,11 +22,11 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use easytier_core::{
-    instance::{
+    peers::peer_manager::PipelineRegistrationGuard,
+    proxy::wrapped_transport::{
         WrappedTransportDatagram, WrappedTransportEngine, WrappedTransportEngineStart,
         WrappedTransportKind, WrappedTransportRole,
     },
-    peers::peer_manager::PipelineRegistrationGuard,
     proxy::{
         cidr_table::ProxyCidrTable,
         runtime::TcpProxyDestinationConnector,

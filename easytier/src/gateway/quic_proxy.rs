@@ -47,11 +47,11 @@ use tokio_util::sync::{CancellationToken, PollSender};
 use tracing::{debug, error, info, instrument, trace, warn};
 
 use easytier_core::{
-    instance::{
+    peers::{acl_filter::AclFilter, peer_manager::PipelineRegistrationGuard},
+    proxy::wrapped_transport::{
         WrappedTransportDatagram, WrappedTransportEngine, WrappedTransportEngineStart,
         WrappedTransportKind, WrappedTransportRole,
     },
-    peers::{acl_filter::AclFilter, peer_manager::PipelineRegistrationGuard},
     proxy::{
         cidr_table::ProxyCidrTable,
         runtime::TcpProxyDestinationConnector,

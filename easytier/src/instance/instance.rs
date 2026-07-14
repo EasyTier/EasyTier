@@ -11,8 +11,10 @@ use std::time::Duration;
 use anyhow::Context;
 use cidr::{IpCidr, Ipv4Inet};
 use easytier_core::dhcp::DhcpIpv4Host;
-use easytier_core::instance::{WrappedTransportEngineBuild, WrappedTransportEngineFactory};
 use easytier_core::proxy::cidr_table::ProxyCidrTable;
+use easytier_core::proxy::wrapped_transport::{
+    WrappedTransportEngine, WrappedTransportEngineBuild, WrappedTransportEngineFactory,
+};
 use easytier_core::tunnel::ring::RingTunnelRegistry;
 #[cfg(feature = "tun")]
 use futures::FutureExt;
@@ -135,11 +137,11 @@ impl WrappedTransportEngineFactory for RuntimeTransportProxyFactory {
             let quic = Arc::new(QuicProxyService::new(self.peer_manager, cidr_table));
             (
                 #[cfg(feature = "kcp")]
-                Some(kcp.clone() as Arc<dyn easytier_core::instance::WrappedTransportEngine>),
+                Some(kcp.clone() as Arc<dyn WrappedTransportEngine>),
                 #[cfg(not(feature = "kcp"))]
                 None,
                 #[cfg(feature = "quic")]
-                Some(quic.clone() as Arc<dyn easytier_core::instance::WrappedTransportEngine>),
+                Some(quic.clone() as Arc<dyn WrappedTransportEngine>),
                 #[cfg(not(feature = "quic"))]
                 None,
                 RuntimeTransportProxyAttachment {
@@ -1674,7 +1676,7 @@ mod tests {
     };
     use crate::{common::config::TomlConfigLoader, instance::instance::Instance};
     #[cfg(any(feature = "kcp", feature = "quic"))]
-    use easytier_core::instance::{
+    use easytier_core::proxy::wrapped_transport::{
         WrappedTransportDirections, WrappedTransportEngine as _, WrappedTransportEngineStart,
     };
 

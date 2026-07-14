@@ -8,11 +8,11 @@ use easytier_core::{
             discovery::ManualEndpointDiscoveryConfig,
         },
     },
-    instance::{
-        CoreInstance, CoreInstanceAdapters, CoreInstanceConfig, NoWrappedTransportEngineFactory,
-        WrappedTransportEngineFactory,
+    instance::{CoreInstance, CoreInstanceAdapters, CoreInstanceConfig},
+    proxy::{
+        ProxyRuntimeConfig,
+        wrapped_transport::{NoWrappedTransportEngineFactory, WrappedTransportEngineFactory},
     },
-    proxy::ProxyRuntimeConfig,
     runtime_config::{CoreInstanceRuntimeConfig, CoreRuntimeConfig},
     socket::{
         IpVersion, NetNamespace, SocketContext,
@@ -337,11 +337,11 @@ mod tests {
     };
 
     use easytier_core::{
-        instance::{
-            CoreInstanceState, ListenerService, PortableCoreInstanceConfig, WrappedTransportEngine,
-            WrappedTransportEngineStart, WrappedTransportRole,
-        },
+        instance::{CoreInstanceState, ListenerService, PortableCoreInstanceConfig},
         listener::transport::TransportListenerConfig,
+        proxy::wrapped_transport::{
+            WrappedTransportEngine, WrappedTransportEngineStart, WrappedTransportRole,
+        },
         socket::{
             tcp::TcpListenOptions,
             udp::{UdpBindOptions, UdpSessionAcceptKind, UdpSessionListenRequest},
@@ -435,13 +435,16 @@ mod tests {
         fn build(
             self,
             cidr_table: Arc<easytier_core::proxy::cidr_table::ProxyCidrTable>,
-        ) -> anyhow::Result<easytier_core::instance::WrappedTransportEngineBuild<Self::Attachment>>
-        {
-            Ok(easytier_core::instance::WrappedTransportEngineBuild {
-                kcp: Some(self.service),
-                quic: None,
-                attachment: cidr_table,
-            })
+        ) -> anyhow::Result<
+            easytier_core::proxy::wrapped_transport::WrappedTransportEngineBuild<Self::Attachment>,
+        > {
+            Ok(
+                easytier_core::proxy::wrapped_transport::WrappedTransportEngineBuild {
+                    kcp: Some(self.service),
+                    quic: None,
+                    attachment: cidr_table,
+                },
+            )
         }
     }
 
