@@ -1,3 +1,5 @@
+//! STUN message codec and responder support.
+
 use std::net::SocketAddr;
 use std::sync::Arc;
 

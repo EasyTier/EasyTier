@@ -14,6 +14,7 @@ const (
 	TCPConnectHolePunch
 	TCPConnectManual
 	TCPConnectProxyNAT
+	TCPConnectSTUNProbe
 )
 
 type UDPBindPurpose uint8
@@ -24,6 +25,7 @@ const (
 	UDPBindDirect
 	UDPBindPortBoundListener
 	UDPBindProxyNAT
+	UDPBindSTUNProbe
 )
 
 type TCPListenPurpose uint8

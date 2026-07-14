@@ -3,6 +3,7 @@ use std::{
     net::{IpAddr, SocketAddr},
     pin::Pin,
     task::{Context, Poll},
+    time::Duration,
 };
 
 use easytier_core::socket::tcp::{
@@ -295,18 +296,22 @@ async fn connect_tcp_in_current_netns(
         } else {
             TcpStream::connect(remote_addr).await?
         };
-        if purpose == TcpSocketPurpose::ProxyNat {
-            prepare_proxy_tcp_socket(&stream)?;
-        }
+        prepare_connected_tcp_socket(&stream, purpose)?;
         return Ok(RuntimeTcpSocket::new(stream));
     }
 
     let socket = bind_tcp_socket(remote_addr, bind_options)?;
     let stream = socket.connect(remote_addr).await?;
-    if purpose == TcpSocketPurpose::ProxyNat {
-        prepare_proxy_tcp_socket(&stream)?;
-    }
+    prepare_connected_tcp_socket(&stream, purpose)?;
     Ok(RuntimeTcpSocket::new(stream))
+}
+
+fn prepare_connected_tcp_socket(stream: &TcpStream, purpose: TcpSocketPurpose) -> io::Result<()> {
+    match purpose {
+        TcpSocketPurpose::ProxyNat => prepare_proxy_tcp_socket(stream),
+        TcpSocketPurpose::StunProbe => SockRef::from(stream).set_linger(Some(Duration::ZERO)),
+        _ => Ok(()),
+    }
 }
 
 pub(crate) fn prepare_proxy_tcp_socket(stream: &TcpStream) -> io::Result<()> {

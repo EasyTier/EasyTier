@@ -39,6 +39,7 @@ pub(super) fn encode_tcp_connect_options(options: &TcpConnectOptions) -> io::Res
         TcpSocketPurpose::HolePunch => 2,
         TcpSocketPurpose::ManualConnect => 3,
         TcpSocketPurpose::ProxyNat => 4,
+        TcpSocketPurpose::StunProbe => 5,
     });
     encode_bind_device(&mut encoded, &options.bind.bind_device)?;
     Ok(encoded)
@@ -60,6 +61,7 @@ pub(super) fn encode_udp_bind_options(options: &UdpBindOptions) -> io::Result<Ve
         UdpSocketPurpose::DirectConnect => 2,
         UdpSocketPurpose::PortBoundListener => 3,
         UdpSocketPurpose::ProxyNat => 4,
+        UdpSocketPurpose::StunProbe => 5,
     });
     encode_bind_device(&mut encoded, &options.bind_device)?;
     Ok(encoded)
@@ -282,6 +284,18 @@ mod tests {
         let local = "0.0.0.0:0".parse().unwrap();
         let listen = encode_tcp_listen_options(&TcpListenOptions::proxy_nat(local)).unwrap();
         assert_eq!(listen[42], 3);
+    }
+
+    #[test]
+    fn encodes_stun_probe_purposes() {
+        let remote = "192.0.2.2:3478".parse().unwrap();
+        let local = "0.0.0.0:0".parse().unwrap();
+        let tcp =
+            encode_tcp_connect_options(&TcpConnectOptions::stun_probe(remote, local)).unwrap();
+        assert_eq!(tcp[69], 5);
+
+        let udp = encode_udp_bind_options(&UdpBindOptions::stun_probe()).unwrap();
+        assert_eq!(udp[42], 5);
     }
 
     #[test]

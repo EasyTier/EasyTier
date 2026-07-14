@@ -32,6 +32,7 @@ pub enum TcpSocketPurpose {
     HolePunch,
     ManualConnect,
     ProxyNat,
+    StunProbe,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -147,6 +148,14 @@ impl TcpConnectOptions {
             remote_addr,
             bind: TcpBindOptions::default(),
             purpose: TcpSocketPurpose::ProxyNat,
+        }
+    }
+
+    pub fn stun_probe(remote_addr: SocketAddr, local_addr: SocketAddr) -> Self {
+        Self {
+            remote_addr,
+            bind: TcpBindOptions::default().with_local_addr(Some(local_addr)),
+            purpose: TcpSocketPurpose::StunProbe,
         }
     }
 
@@ -486,6 +495,14 @@ mod tests {
                 remote_addr,
                 bind: TcpBindOptions::default(),
                 purpose: TcpSocketPurpose::ProxyNat,
+            }
+        );
+        assert_eq!(
+            TcpConnectOptions::stun_probe(remote_addr, local_addr),
+            TcpConnectOptions {
+                remote_addr,
+                bind: TcpBindOptions::default().with_local_addr(Some(local_addr)),
+                purpose: TcpSocketPurpose::StunProbe,
             }
         );
     }

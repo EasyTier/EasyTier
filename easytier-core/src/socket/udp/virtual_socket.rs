@@ -181,6 +181,7 @@ pub enum UdpSocketPurpose {
     DirectConnect,
     PortBoundListener,
     ProxyNat,
+    StunProbe,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -229,6 +230,10 @@ impl UdpBindOptions {
 
     pub fn proxy_nat() -> Self {
         Self::for_purpose(UdpSocketPurpose::ProxyNat)
+    }
+
+    pub fn stun_probe() -> Self {
+        Self::for_purpose(UdpSocketPurpose::StunProbe)
     }
 
     pub fn with_local_addr(mut self, local_addr: Option<SocketAddr>) -> Self {

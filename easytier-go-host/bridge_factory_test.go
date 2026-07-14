@@ -45,6 +45,37 @@ func TestDecodeUDPProxyNatPurpose(t *testing.T) {
 	}
 }
 
+func TestDecodeSTUNProbePurposes(t *testing.T) {
+	tcpEncoded := make([]byte, 75)
+	tcpEncoded[0] = 2
+	remote, err := encodeNetAddr(&net.TCPAddr{IP: net.IPv4(192, 0, 2, 2), Port: 3478})
+	if err != nil {
+		t.Fatal(err)
+	}
+	copy(tcpEncoded[1:28], remote[:])
+	tcpEncoded[55] = byte(IPVersionV4)
+	tcpEncoded[69] = 5
+	tcp, err := decodeTCPConnectOptions(tcpEncoded)
+	if err != nil {
+		t.Fatalf("decode STUN TCP options: %v", err)
+	}
+	if tcp.Purpose != TCPConnectSTUNProbe {
+		t.Fatalf("decoded TCP purpose %d, want STUNProbe", tcp.Purpose)
+	}
+
+	udpEncoded := make([]byte, 48)
+	udpEncoded[0] = 2
+	udpEncoded[28] = byte(IPVersionV4)
+	udpEncoded[42] = 5
+	udp, err := decodeUDPBindOptions(udpEncoded)
+	if err != nil {
+		t.Fatalf("decode STUN UDP options: %v", err)
+	}
+	if udp.Purpose != UDPBindSTUNProbe {
+		t.Fatalf("decoded UDP purpose %d, want STUNProbe", udp.Purpose)
+	}
+}
+
 func TestDecodeTCPBindPolicyForCustomFactory(t *testing.T) {
 	encoded := make([]byte, 78)
 	encoded[0] = 2
