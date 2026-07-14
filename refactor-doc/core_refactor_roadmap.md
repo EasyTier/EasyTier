@@ -89,9 +89,9 @@ Current closure status on 2026-07-14:
 - the Core instance, native and Go completion domains, runtime configuration,
   and per-instance ring registry now have single authoritative owners;
 - the foreign-network ownership move is complete: core owns policy, state,
-  lifecycle, snapshots, and manager assembly; native
-  `foreign_network_manager.rs` contains only the GlobalCtx/direct-connector
-  Host Adapter and RPC DTO conversion;
+  lifecycle, snapshots, context/resource construction, and manager assembly;
+  native `foreign_network_manager.rs` contains only the generated
+  direct-connector RPC Adapter, RPC DTO conversion, and integration tests;
 - native `PeerManager` is limited to Host Adapter assembly, runtime-snapshot
   submission, native resource/debug access, and protobuf presentation;
 - `GlobalCtx` no longer implements `PeerContext`; peer configuration, events,

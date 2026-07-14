@@ -1,6 +1,6 @@
 use std::time::{Duration, SystemTime};
 use std::{
-    collections::{BTreeSet, HashSet},
+    collections::BTreeSet,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     sync::{
         Arc, Weak,
@@ -49,7 +49,7 @@ use super::{
     foreign_network_client::ForeignNetworkClient,
     foreign_network_manager::{
         ForeignNetworkEntryInfo, ForeignNetworkInfoProvider, ForeignNetworkManager,
-        ForeignNetworkRouteInfo, ForeignNetworkRouteInfoProvider, ForeignNetworkRuntime,
+        ForeignNetworkRouteInfo, ForeignNetworkRouteInfoProvider, ForeignNetworkRpcRegistrar,
         GlobalForeignNetworkAccessor, peer_map_foreign_network_accessor,
     },
     peer_conn::{PeerConn, PeerConnId},
@@ -57,7 +57,7 @@ use super::{
     peer_ospf_route::PeerRoute,
     peer_rpc::PeerRpcManagerTransport,
     peer_session::PeerSessionStore,
-    public_ipv6::PublicIpv6Runtime,
+    public_ipv6::{DisabledPublicIpv6Runtime, PublicIpv6Runtime},
     recv_packet_from_chan,
     relay_peer_map::RelayPeerMap,
     route_trait::{
@@ -710,52 +710,6 @@ impl AddressResolver for DnsAddressResolver {
     }
 }
 
-struct DisabledPublicIpv6Runtime {
-    instance_id: uuid::Uuid,
-    network_name: String,
-}
-
-#[async_trait::async_trait]
-impl PublicIpv6Runtime for DisabledPublicIpv6Runtime {
-    fn ipv6_public_addr_auto(&self) -> bool {
-        false
-    }
-
-    fn ipv6_public_addr_provider(&self) -> bool {
-        false
-    }
-
-    fn instance_id(&self) -> uuid::Uuid {
-        self.instance_id
-    }
-
-    fn network_name(&self) -> String {
-        self.network_name.clone()
-    }
-
-    async fn collect_reserved_public_ipv6_addrs(
-        &self,
-        _prefix: cidr::Ipv6Cidr,
-    ) -> HashSet<Ipv6Addr> {
-        HashSet::new()
-    }
-
-    fn public_ipv6_lease_changed(
-        &self,
-        _old: Option<cidr::Ipv6Inet>,
-        _new: Option<cidr::Ipv6Inet>,
-    ) {
-    }
-
-    fn public_ipv6_routes_changed(
-        &self,
-        _routes: BTreeSet<cidr::Ipv6Inet>,
-        _added: Vec<cidr::Ipv6Inet>,
-        _removed: Vec<cidr::Ipv6Inet>,
-    ) {
-    }
-}
-
 struct DisabledForeignNetworkManager;
 
 #[async_trait::async_trait]
@@ -1047,10 +1001,8 @@ impl PeerManagerCore {
                 credential_event_sink: Arc::new(()),
             },
         ));
-        let public_ipv6_runtime = Arc::new(DisabledPublicIpv6Runtime {
-            instance_id,
-            network_name,
-        });
+        let public_ipv6_runtime =
+            Arc::new(DisabledPublicIpv6Runtime::new(instance_id, network_name));
         let stats_manager = context.stats_manager();
         let credential_manager = context.credential_manager();
         let acl_filter = Arc::new(AclFilter::new());
@@ -1077,10 +1029,10 @@ impl PeerManagerCore {
         Ok(core)
     }
 
-    /// Builds the default peer control-plane graph while letting runtime provide
-    /// the foreign-network adapter that owns platform-specific context.
+    /// Builds the default peer control-plane graph with an optional host RPC
+    /// registrar. Foreign contexts and their lifecycle remain core-owned.
     #[allow(clippy::too_many_arguments)]
-    pub fn new_with_foreign_network_runtime(
+    pub fn new_with_foreign_rpc_registrar(
         route_algo: RouteAlgoType,
         my_peer_id: PeerId,
         context: Arc<CorePeerContext>,
@@ -1092,11 +1044,11 @@ impl PeerManagerCore {
         exit_nodes: Vec<IpAddr>,
         address_resolver: Arc<dyn AddressResolver>,
         foreign_context_default_flags: FlagsInConfig,
-        foreign_network_runtime: Arc<dyn ForeignNetworkRuntime>,
+        foreign_rpc_registrar: Arc<dyn ForeignNetworkRpcRegistrar>,
     ) -> PeerManagerCoreBuildResult<ForeignNetworkManager> {
         let stats_manager = context.stats_manager();
         let credential_manager = context.credential_manager();
-        let foreign_context: ArcPeerContext = context.clone();
+        let foreign_parent_context = context.clone();
         let foreign_stats_manager = stats_manager.clone();
         let mut result = Self::new_with_default_components(
             route_algo,
@@ -1114,8 +1066,8 @@ impl PeerManagerCore {
             address_resolver,
             move |_, peer_session_store, packet_sender_to_mgr, accessor| {
                 Arc::new(ForeignNetworkManager::new(
-                    foreign_network_runtime,
-                    foreign_context,
+                    foreign_rpc_registrar,
+                    foreign_parent_context,
                     foreign_context_default_flags,
                     foreign_stats_manager,
                     peer_session_store,

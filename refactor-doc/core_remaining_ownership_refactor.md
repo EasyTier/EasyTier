@@ -50,7 +50,7 @@ production ownership inventory is:
 
 | Native Module | Current role | Remaining architectural friction |
 | --- | --- | --- |
-| `peers/foreign_network_manager.rs` | GlobalCtx/direct-connector Host Adapter and management DTO mapper | no portable foreign-network policy remains; the core manager owns graph and lifecycle |
+| `peers/foreign_network_manager.rs` | generated direct-connector RPC Host Adapter and management DTO mapper | no portable foreign-network construction, policy, state, or lifecycle remains |
 | `peers/peer_manager.rs` | native composition, runtime-snapshot submission, identity/debug presentation, and DTO mapping | no peer-domain forwarding facade remains |
 | `common/global_ctx.rs` | native configuration source, Host observations, product events, persistence, metrics, interface state | no longer implements `PeerContext`; remaining uses are native capabilities and product projection |
 | `gateway/*` | concrete socket/protocol Adapters, product facades, and I/O composition | no portable ownership debt remains; KCP/QUIC engines, WireGuard, real listeners/sockets, netns, configuration, events, and RPC presentation intentionally remain native |
@@ -112,25 +112,24 @@ Core owns:
 - Core computes and applies the reversible foreign `avoid_relay_data` policy
   and owns its parent runtime-change subscription loop; native GlobalCtx only
   adapts the existing event stream to the narrow core subscriber Interface.
-- Core derives the complete foreign context specification: network identity,
-  hostname, secure mode, relay protocol/socket-mark flags, and initial
-  advertised features. Native only realizes that specification as a GlobalCtx,
-  shares the per-instance core STUN provider, and attaches listener and
-  connector Host resources.
-- `PeerManagerCore` now constructs and owns the core foreign-network manager
-  from a `ForeignNetworkRuntime` Host Adapter. The shallow native manager
-  facade has been deleted; native callers and tests use the core manager
-  Interface directly, while RPC presentation keeps a standalone DTO mapper.
-- The remaining runtime surface is context construction/removal and native
-  direct-connector RPC registration.
+- Core derives the complete foreign context specification and constructs the
+  `CorePeerContext`, runtime snapshot, independent credential/trusted-key/event
+  state, shared instance statistics, live parent STUN projection, public-IPv6
+  runtime, route graph, tasks, and cleanup internally.
+- `PeerManagerCore` constructs and owns the core foreign-network manager. The
+  former `ForeignNetworkRuntime` Interface and native foreign `GlobalCtx`
+  registry are deleted, so native cannot construct, replace, or remove foreign
+  contexts.
+- The only cross-host Seam is `ForeignNetworkRpcRegistrar`: native registers
+  its generated direct-connector RPC server, while core supplies the RPC
+  manager, network domain, and explicit socket request context. The no-op
+  Adapter supports hosts that do not provide that generated server.
+- The foreign context specification is private core Implementation rather than
+  public Interface.
 
 The native Host Adapter owns only:
 
-- platform-backed connector and protocol-upgrade resources required by the
-  foreign network;
 - registration of native-only direct-connector RPC handling;
-- credential persistence or event projection that actually crosses the host
-  seam;
 - conversion of core management snapshots to native protobuf responses.
 
 ### Exit criteria
@@ -146,13 +145,15 @@ The native Host Adapter owns only:
 
 ### Closure record
 
-The ownership move is complete as of 2026-07-13. The native foreign-network
-file contains the GlobalCtx/direct-connector Host Adapter and the management DTO
-mapper, but no peer-graph facade or portable policy projection. Core tests,
-native/WASI checks, native test compilation, and focused context/feature tests
-pass. Some legacy ring-based foreign tests still stop at the pre-existing
-missing-`TunnelInfo` fixture documented in the verification discipline; that
-fixture is not part of the ownership move.
+The ownership move is complete as of 2026-07-14. The native foreign-network
+file contains only the generated direct-connector RPC Adapter, management DTO
+mapping, and integration tests. Foreign context construction, resource
+identity, state, graph, and lifecycle are core-local. Core tests verify shared
+instance statistics, independent credential/trusted-key state, live parent
+STUN, normalized host-routing policy, and control metrics. Some legacy
+ring-based foreign tests still stop at the pre-existing missing-`TunnelInfo`
+fixture documented in the verification discipline; that fixture is not part
+of the ownership move.
 
 ## Slice 2: reduce the Native peer facade
 
@@ -263,10 +264,10 @@ but no core Module receives it or a broad Interface implemented by it.
 
 ### Progress
 
-- Native and foreign peer graphs now receive a core `SubmittedPeerContext`
-  backed by an explicit runtime snapshot. Foreign `GlobalCtx` values remain
-  only as live Host support and public-IPv6 Adapters; production composition no
-  longer coerces them directly into the broad peer-domain Interface.
+- Native and foreign peer graphs now receive a core `CorePeerContext` backed by
+  an explicit runtime snapshot. Foreign contexts are constructed entirely in
+  core; native no longer creates foreign `GlobalCtx` values or keeps a parallel
+  foreign-context registry.
 - `SubmittedPeerContext` owns its peer-event broadcast stream. A narrow
   `PeerEventSink` projects rich events to native `GlobalCtxEvent` consumers,
   while core state-machine subscriptions remain core-local; event publication

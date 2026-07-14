@@ -81,7 +81,7 @@ tokio = { version = "1", default-features = false, features = [
 `easytier` 中剩余的 `peers` 文件是 runtime Adapter 或测试：
 
 - `peer_manager.rs`：保留产品侧 `PeerManager` 包装，负责选择 runtime 配置、真实 tunnel connect/netns、管理 API DTO 转换和 node info 拼装；核心 peer graph 由 `easytier-core::peers::peer_manager::PeerManagerCore` 构造和运行。
-- `foreign_network_manager.rs`：保留 `GlobalCtx`、event bus、trusted-key storage、direct connector RPC server 注册等 runtime adapter；foreign network 的核心状态、entry 生命周期和 packet/route 逻辑在 core。
+- `foreign_network_manager.rs`：仅保留 generated direct connector RPC server 的 Host Adapter、管理 DTO 转换和集成测试；foreign context 构造、资源、状态、entry 生命周期和 packet/route 逻辑均在 core。
 - `peer_rpc_service.rs`：保留真实 IP 收集、listener 展示和 UDP hole-punch packet 发送，属于 socket/OS runtime 能力。
 - `rpc_service.rs`：保留管理 API、ACL/Credential API 和 API DTO 组装，属于产品入口层。
 - `encrypt/`：保留 runtime feature 下的 OpenSSL/ring backend 选择；core 已有 wasm-safe encryptor surface 和纯 Rust backend。

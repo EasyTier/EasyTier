@@ -695,6 +695,10 @@ pub trait PeerContext: Send + Sync {
         3
     }
 
+    fn hmac_secret_digest(&self) -> bool {
+        false
+    }
+
     fn advertised_ipv6_public_addr_prefix(&self) -> Option<Ipv6Cidr> {
         None
     }
@@ -970,6 +974,10 @@ impl PeerContext for CorePeerContext {
 
     fn ospf_update_my_foreign_network_interval_sec(&self) -> u64 {
         self.snapshot().ospf_update_my_foreign_network_interval_sec
+    }
+
+    fn hmac_secret_digest(&self) -> bool {
+        self.snapshot().hmac_secret_digest
     }
 
     fn advertised_ipv6_public_addr_prefix(&self) -> Option<Ipv6Cidr> {

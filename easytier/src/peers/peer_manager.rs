@@ -28,7 +28,7 @@ use super::{
     PacketRecvChan,
     context::{build_core_peer_context, runtime_peer_snapshot},
     encrypt::NullCipher,
-    foreign_network_manager::ForeignNetworkRuntimeImpl,
+    foreign_network_manager::RuntimeForeignNetworkRpcRegistrar,
 };
 
 pub struct PeerManager {
@@ -40,8 +40,6 @@ pub struct PeerManager {
     ring_registry: Arc<RingTunnelRegistry>,
 
     foreign_network_manager: Arc<ForeignNetworkManager>,
-    #[cfg(test)]
-    foreign_network_runtime: Arc<ForeignNetworkRuntimeImpl>,
 }
 
 impl Debug for PeerManager {
@@ -109,11 +107,9 @@ impl PeerManager {
         let exit_nodes = global_ctx.config.get_exit_nodes();
         let (runtime_config, peer_context) = build_core_peer_context(&global_ctx);
 
-        let foreign_network_runtime = Arc::new(ForeignNetworkRuntimeImpl::new(
-            global_ctx.clone(),
-            peer_context.clone(),
-        ));
-        let build_result = PeerManagerCore::new_with_foreign_network_runtime(
+        let foreign_rpc_registrar =
+            Arc::new(RuntimeForeignNetworkRpcRegistrar::new(global_ctx.clone()));
+        let build_result = PeerManagerCore::new_with_foreign_rpc_registrar(
             route_algo,
             my_peer_id,
             peer_context.clone(),
@@ -128,7 +124,7 @@ impl PeerManager {
                     .with_context(runtime_socket_context(&global_ctx)),
             ),
             TomlConfigLoader::default().get_flags(),
-            foreign_network_runtime.clone(),
+            foreign_rpc_registrar,
         );
         let credential_manager = Arc::new(CredentialManager::from_core(
             peer_context.credential_manager(),
@@ -142,8 +138,6 @@ impl PeerManager {
             credential_manager,
             ring_registry,
             foreign_network_manager: build_result.foreign_network_manager,
-            #[cfg(test)]
-            foreign_network_runtime,
         }
     }
 
@@ -227,7 +221,7 @@ impl PeerManager {
         &self,
         network_name: &str,
     ) -> Option<Arc<CorePeerContext>> {
-        self.foreign_network_runtime
+        self.foreign_network_manager
             .foreign_peer_context_for_test(network_name)
     }
 

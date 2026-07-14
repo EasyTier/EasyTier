@@ -7,33 +7,14 @@ connected to any node in the local network.
 */
 use std::sync::Arc;
 
-use dashmap::DashMap;
 use easytier_core::connectivity::direct::DirectConnectorRpcHandler;
-#[cfg(test)]
-use easytier_core::peers::context::{ArcPeerContext, TrustedKeyMetadata};
-use easytier_core::peers::context::{CorePeerContext, TrustedKeySource};
+use easytier_core::peers::context::TrustedKeySource;
 use easytier_core::peers::foreign_network_manager as core_foreign_network_manager;
-#[cfg(test)]
-use easytier_core::runtime_config::CoreRuntimeConfigStore;
-#[cfg(test)]
-use tokio::sync::Mutex;
-#[cfg(test)]
-use tokio::task::JoinSet;
 
 #[cfg(test)]
+use crate::common::global_ctx::NetworkIdentity;
 use crate::{
-    common::{
-        PeerId,
-        global_ctx::{GlobalCtxEvent, NetworkIdentity},
-    },
-    proto::peer_rpc::PeerIdentityType,
-};
-use crate::{
-    common::{
-        config::{ConfigLoader, TomlConfigLoader},
-        global_ctx::{ArcGlobalCtx, GlobalCtx},
-        shrink_dashmap,
-    },
+    common::global_ctx::ArcGlobalCtx,
     connector::runtime::runtime_connector_host,
     proto::{
         api::instance::{ForeignNetworkEntryPb, PeerInfo, TrustedKeyInfoPb, TrustedKeySourcePb},
@@ -41,219 +22,33 @@ use crate::{
     },
 };
 
+#[cfg(test)]
+use super::create_packet_recv_chan;
 use super::peer_rpc::PeerRpcManager;
-#[cfg(test)]
-use super::{PacketRecvChan, create_packet_recv_chan, peer_session::PeerSessionStore};
 
-#[cfg(test)]
-struct ForeignNetworkEntry {
-    parent_runtime_config: CoreRuntimeConfigStore,
-    parent_context: Arc<CorePeerContext>,
+pub(super) struct RuntimeForeignNetworkRpcRegistrar {
     global_ctx: ArcGlobalCtx,
-    foreign_context: Arc<CorePeerContext>,
-    network: NetworkIdentity,
-    relay_data: bool,
-    tasks: Mutex<JoinSet<()>>,
 }
 
-#[cfg(test)]
-impl ForeignNetworkEntry {
-    fn new(
-        network: NetworkIdentity,
-        _my_peer_id: PeerId,
-        global_ctx: ArcGlobalCtx,
-        relay_data: bool,
-        _peer_session_store: Arc<PeerSessionStore>,
-        _pm_packet_sender: PacketRecvChan,
-    ) -> Self {
-        let (parent_runtime_config, parent_context) =
-            crate::peers::context::build_core_peer_context(&global_ctx);
-        let parent_context_dyn: ArcPeerContext = parent_context.clone();
-        let spec = core_foreign_network_manager::ForeignNetworkContextSpec::from_parent(
-            easytier_core::config::NetworkIdentity {
-                network_name: network.network_name.clone(),
-                network_secret: network.network_secret.clone(),
-                network_secret_digest: network.network_secret_digest,
-            },
-            &parent_context_dyn,
-            relay_data,
-            TomlConfigLoader::default().get_flags(),
-        );
-        let foreign_global_ctx =
-            ForeignNetworkRuntimeImpl::build_foreign_global_ctx(&spec, global_ctx.clone());
-        let (_, foreign_context) = crate::peers::context::build_foreign_core_peer_context(
-            &foreign_global_ctx,
-            &parent_context,
-        );
-        Self {
-            parent_runtime_config,
-            parent_context,
-            global_ctx: foreign_global_ctx,
-            foreign_context,
-            network,
-            relay_data,
-            tasks: Mutex::new(JoinSet::new()),
-        }
-    }
-
-    fn sync_parent_relay_data_feature_flag(
-        parent_context: &Arc<CorePeerContext>,
-        foreign_context: &Arc<CorePeerContext>,
-        relay_data: bool,
-    ) -> bool {
-        let parent_context: ArcPeerContext = parent_context.clone();
-        let foreign_context: ArcPeerContext = foreign_context.clone();
-        core_foreign_network_manager::sync_foreign_avoid_relay_data(
-            &parent_context,
-            &foreign_context,
-            relay_data,
-        )
-    }
-
-    async fn run_parent_feature_flag_sync_routine(&self) {
-        let parent_context = self.parent_context.clone();
-        let foreign_context = self.foreign_context.clone();
-        let relay_data = self.relay_data;
-        self.tasks.lock().await.spawn(async move {
-            let parent_context_dyn: ArcPeerContext = parent_context.clone();
-            let mut runtime_changes = parent_context_dyn
-                .subscribe_runtime_changes()
-                .expect("core runtime config should provide change notifications");
-            loop {
-                ForeignNetworkEntry::sync_parent_relay_data_feature_flag(
-                    &parent_context,
-                    &foreign_context,
-                    relay_data,
-                );
-
-                if runtime_changes.changed().await.is_err() {
-                    break;
-                }
-            }
-        });
+impl RuntimeForeignNetworkRpcRegistrar {
+    pub(super) fn new(global_ctx: ArcGlobalCtx) -> Self {
+        Self { global_ctx }
     }
 }
 
-struct RuntimeForeignNetworkContext {
-    global_ctx: ArcGlobalCtx,
-    peer_context: Arc<CorePeerContext>,
-    lifecycle_token: Arc<()>,
-}
-
-pub(super) struct ForeignNetworkRuntimeImpl {
-    global_ctx: ArcGlobalCtx,
-    parent_peer_context: Arc<CorePeerContext>,
-    foreign_contexts: DashMap<String, Arc<RuntimeForeignNetworkContext>>,
-}
-
-impl ForeignNetworkRuntimeImpl {
-    pub(super) fn new(global_ctx: ArcGlobalCtx, parent_peer_context: Arc<CorePeerContext>) -> Self {
-        Self {
-            global_ctx,
-            parent_peer_context,
-            foreign_contexts: DashMap::new(),
-        }
-    }
-
-    #[cfg(test)]
-    pub(super) fn foreign_peer_context_for_test(
-        &self,
-        network_name: &str,
-    ) -> Option<Arc<CorePeerContext>> {
-        self.foreign_contexts
-            .get(network_name)
-            .map(|ctx| ctx.peer_context.clone())
-    }
-
-    fn get_runtime_foreign_context(
-        &self,
-        network_name: &str,
-        foreign_context: &core_foreign_network_manager::ForeignNetworkContext,
-    ) -> Option<Arc<RuntimeForeignNetworkContext>> {
-        let current = self.foreign_contexts.get(network_name)?;
-        Arc::ptr_eq(&current.lifecycle_token, &foreign_context.lifecycle_token)
-            .then(|| current.clone())
-    }
-
-    fn build_foreign_global_ctx(
-        spec: &core_foreign_network_manager::ForeignNetworkContextSpec,
-        global_ctx: ArcGlobalCtx,
-    ) -> ArcGlobalCtx {
-        let config = TomlConfigLoader::default();
-        config.set_network_identity(spec.network.clone().into());
-        config.set_hostname(Some(spec.hostname.clone()));
-        config.set_secure_mode(spec.secure_mode.clone());
-        config.set_flags(spec.flags.clone());
-
-        config.set_mapped_listeners(Some(global_ctx.config.get_mapped_listeners()));
-
-        let foreign_global_ctx = Arc::new(GlobalCtx::new(config));
-        foreign_global_ctx
-            .replace_stun_info_collector(Box::new(global_ctx.get_stun_info_collector().clone()));
-
-        foreign_global_ctx.set_base_advertised_feature_flags(spec.feature_flags);
-
-        for u in global_ctx.get_running_listeners().into_iter() {
-            foreign_global_ctx.add_running_listener(u);
-        }
-
-        foreign_global_ctx
-    }
-}
-
-impl core_foreign_network_manager::ForeignNetworkRuntime for ForeignNetworkRuntimeImpl {
-    fn build_foreign_context(
-        &self,
-        spec: &core_foreign_network_manager::ForeignNetworkContextSpec,
-    ) -> core_foreign_network_manager::ForeignNetworkContext {
-        let foreign_global_ctx =
-            ForeignNetworkRuntimeImpl::build_foreign_global_ctx(spec, self.global_ctx.clone());
-        let (_, peer_context) = crate::peers::context::build_foreign_core_peer_context(
-            &foreign_global_ctx,
-            &self.parent_peer_context,
-        );
-        let lifecycle_token = Arc::new(());
-        self.foreign_contexts.insert(
-            spec.network.network_name.clone(),
-            Arc::new(RuntimeForeignNetworkContext {
-                global_ctx: foreign_global_ctx.clone(),
-                peer_context: peer_context.clone(),
-                lifecycle_token: lifecycle_token.clone(),
-            }),
-        );
-        core_foreign_network_manager::ForeignNetworkContext {
-            peer_context,
-            public_ipv6_runtime: foreign_global_ctx,
-            lifecycle_token,
-        }
-    }
-
-    fn remove_foreign_context(
-        &self,
-        network_name: &str,
-        foreign_context: &core_foreign_network_manager::ForeignNetworkContext,
-    ) {
-        self.foreign_contexts.remove_if(network_name, |_, current| {
-            Arc::ptr_eq(&current.lifecycle_token, &foreign_context.lifecycle_token)
-        });
-        shrink_dashmap(&self.foreign_contexts, None);
-    }
-
+impl core_foreign_network_manager::ForeignNetworkRpcRegistrar
+    for RuntimeForeignNetworkRpcRegistrar
+{
     fn register_peer_rpc_services(
         &self,
         peer_rpc: &Arc<PeerRpcManager>,
-        foreign_context: &core_foreign_network_manager::ForeignNetworkContext,
         network_name: &str,
+        socket_context: easytier_core::socket::SocketContext,
     ) {
-        let foreign_global_ctx = self
-            .get_runtime_foreign_context(network_name, foreign_context)
-            .expect("foreign context should be built before use")
-            .global_ctx
-            .clone();
         peer_rpc.rpc_server().registry().register(
             DirectConnectorRpcServer::new(DirectConnectorRpcHandler::new(
-                runtime_connector_host(foreign_global_ctx.clone()),
-                crate::connector::core_instance::runtime_socket_context(&foreign_global_ctx),
+                runtime_connector_host(self.global_ctx.clone()),
+                socket_context,
             )),
             network_name,
         );
@@ -291,24 +86,6 @@ pub(crate) fn foreign_network_info_to_api(
 }
 
 #[cfg(test)]
-fn should_reject_credential_trust_path(identity_type: PeerIdentityType) -> bool {
-    matches!(identity_type, PeerIdentityType::Admin)
-}
-
-#[cfg(test)]
-fn is_credential_pubkey_trusted(entry: &ForeignNetworkEntry, remote_static_pubkey: &[u8]) -> bool {
-    remote_static_pubkey.len() == 32
-        && entry
-            .foreign_context
-            .trusted_key_manager()
-            .verify_trusted_key_with_source(
-                remote_static_pubkey,
-                &entry.network.network_name,
-                Some(TrustedKeySource::OspfCredential),
-            )
-}
-
-#[cfg(test)]
 pub mod tests {
     use easytier_core::peers::context::PeerContext as _;
     use easytier_core::stats_manager::{LabelSet, LabelType, MetricName};
@@ -330,7 +107,7 @@ pub mod tests {
             packet_def::{PacketType, ZCPacket},
         },
     };
-    use std::{collections::HashMap, time::Duration};
+    use std::time::Duration;
 
     use super::*;
 
@@ -1014,102 +791,6 @@ pub mod tests {
     }
 
     #[tokio::test]
-    async fn credential_pubkey_trust_requires_ospf_credential_source() {
-        let global_ctx = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
-            "__access__".to_string(),
-            "access_secret".to_string(),
-        )));
-        let foreign_network = NetworkIdentity::new("net1".to_string(), "net1_secret".to_string());
-        let (pm_packet_sender, _pm_packet_recv) = create_packet_recv_chan();
-        let entry = ForeignNetworkEntry::new(
-            foreign_network.clone(),
-            1,
-            global_ctx.clone(),
-            false,
-            Arc::new(PeerSessionStore::new()),
-            pm_packet_sender,
-        );
-        let pubkey = vec![7; 32];
-
-        entry
-            .foreign_context
-            .trusted_key_manager()
-            .update_trusted_keys(
-                &foreign_network.network_name,
-                HashMap::from([(
-                    pubkey.clone(),
-                    TrustedKeyMetadata {
-                        source: TrustedKeySource::OspfNode,
-                        expiry_unix: None,
-                    },
-                )]),
-            );
-        assert!(!is_credential_pubkey_trusted(&entry, &pubkey));
-
-        entry
-            .foreign_context
-            .trusted_key_manager()
-            .update_trusted_keys(
-                &foreign_network.network_name,
-                HashMap::from([(
-                    pubkey.clone(),
-                    TrustedKeyMetadata {
-                        source: TrustedKeySource::OspfCredential,
-                        expiry_unix: None,
-                    },
-                )]),
-            );
-        assert!(is_credential_pubkey_trusted(&entry, &pubkey));
-    }
-
-    #[tokio::test]
-    async fn foreign_entry_feature_flag_tracks_parent_disable_relay_data_toggle() {
-        let global_ctx = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
-            "__access__".to_string(),
-            "access_secret".to_string(),
-        )));
-        let foreign_network = NetworkIdentity::new("net1".to_string(), "net1_secret".to_string());
-        let (pm_packet_sender, _pm_packet_recv) = create_packet_recv_chan();
-        let entry = ForeignNetworkEntry::new(
-            foreign_network,
-            1,
-            global_ctx.clone(),
-            true,
-            Arc::new(PeerSessionStore::new()),
-            pm_packet_sender,
-        );
-        assert!(!entry.global_ctx.get_feature_flags().avoid_relay_data);
-
-        entry.run_parent_feature_flag_sync_routine().await;
-
-        let mut flags = global_ctx.get_flags();
-        flags.disable_relay_data = true;
-        global_ctx.set_flags(flags);
-        entry.parent_runtime_config.update_peer(Arc::new(
-            crate::peers::context::runtime_peer_snapshot(&global_ctx),
-        ));
-
-        wait_for_condition(
-            || async { entry.global_ctx.get_feature_flags().avoid_relay_data },
-            Duration::from_secs(2),
-        )
-        .await;
-
-        let mut flags = global_ctx.get_flags();
-        flags.disable_relay_data = false;
-        global_ctx.set_flags(flags);
-        entry.parent_runtime_config.update_peer(Arc::new(
-            crate::peers::context::runtime_peer_snapshot(&global_ctx),
-        ));
-
-        wait_for_condition(
-            || async { !entry.global_ctx.get_feature_flags().avoid_relay_data },
-            Duration::from_secs(2),
-        )
-        .await;
-    }
-
-    #[tokio::test]
     async fn parent_config_reads_require_peer_snapshot_refresh() {
         let global_ctx = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
             "__access__".to_string(),
@@ -1153,245 +834,6 @@ pub mod tests {
             )
             .is_err()
         );
-    }
-
-    #[tokio::test]
-    async fn foreign_contexts_share_parent_stats_and_follow_feature_changes() {
-        use easytier_core::peers::foreign_network_manager::ForeignNetworkRuntime as _;
-
-        let global_ctx = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
-            "__access__".to_string(),
-            "access_secret".to_string(),
-        )));
-        let (parent_runtime_config, parent_core_context) =
-            crate::peers::context::build_core_peer_context(&global_ctx);
-        let runtime = Arc::new(ForeignNetworkRuntimeImpl::new(
-            global_ctx.clone(),
-            parent_core_context.clone(),
-        ));
-        let parent_context: ArcPeerContext = parent_core_context.clone();
-        let net1 = easytier_core::peers::context::NetworkIdentity {
-            network_name: "net1".to_string(),
-            network_secret: Some("net1_secret".to_string()),
-            network_secret_digest: None,
-        };
-        let net2 = easytier_core::peers::context::NetworkIdentity {
-            network_name: "net2".to_string(),
-            network_secret: Some("net2_secret".to_string()),
-            network_secret_digest: None,
-        };
-        let foreign_context1 = runtime.build_foreign_context(
-            &core_foreign_network_manager::ForeignNetworkContextSpec::from_parent(
-                net1,
-                &parent_context,
-                true,
-                TomlConfigLoader::default().get_flags(),
-            ),
-        );
-        let foreign_context2 = runtime.build_foreign_context(
-            &core_foreign_network_manager::ForeignNetworkContextSpec::from_parent(
-                net2,
-                &parent_context,
-                true,
-                TomlConfigLoader::default().get_flags(),
-            ),
-        );
-        let foreign_core_context = runtime.foreign_peer_context_for_test("net1").unwrap();
-        assert!(Arc::ptr_eq(
-            &parent_core_context.stats_manager(),
-            &foreign_core_context.stats_manager(),
-        ));
-        let labels = LabelSet::new().with_label_type(LabelType::NetworkName("net1".to_owned()));
-        foreign_core_context.record_control_tx("net1", 64);
-        assert_eq!(
-            parent_core_context
-                .stats_manager()
-                .get_metric(MetricName::TrafficControlBytesTx, &labels)
-                .unwrap()
-                .value,
-            64,
-        );
-        assert_eq!(
-            parent_core_context
-                .stats_manager()
-                .get_metric(MetricName::TrafficControlPacketsTx, &labels)
-                .unwrap()
-                .value,
-            1,
-        );
-        assert!(
-            !foreign_context1
-                .peer_context
-                .feature_flags()
-                .avoid_relay_data
-        );
-        assert!(
-            !foreign_context2
-                .peer_context
-                .feature_flags()
-                .avoid_relay_data
-        );
-
-        let mut runtime_changes1 = parent_context
-            .subscribe_runtime_changes()
-            .expect("native GlobalCtx should provide runtime changes");
-        let mut runtime_changes2 = parent_context
-            .subscribe_runtime_changes()
-            .expect("native GlobalCtx should provide runtime changes");
-        let task1 = tokio::spawn({
-            let parent_context = parent_context.clone();
-            let foreign_context = foreign_context1.clone();
-            async move {
-                assert!(runtime_changes1.changed().await.is_ok());
-                core_foreign_network_manager::sync_foreign_avoid_relay_data(
-                    &parent_context,
-                    &foreign_context.peer_context,
-                    true,
-                );
-            }
-        });
-        let task2 = tokio::spawn({
-            let parent_context = parent_context.clone();
-            let foreign_context = foreign_context2.clone();
-            async move {
-                assert!(runtime_changes2.changed().await.is_ok());
-                core_foreign_network_manager::sync_foreign_avoid_relay_data(
-                    &parent_context,
-                    &foreign_context.peer_context,
-                    true,
-                );
-            }
-        });
-        tokio::time::sleep(Duration::from_millis(10)).await;
-
-        let mut flags = global_ctx.get_flags();
-        flags.disable_relay_data = true;
-        global_ctx.set_flags(flags);
-        parent_runtime_config.update_peer(Arc::new(crate::peers::context::runtime_peer_snapshot(
-            &global_ctx,
-        )));
-        global_ctx.issue_event(GlobalCtxEvent::ConfigPatched(Default::default()));
-
-        tokio::time::timeout(Duration::from_secs(2), async {
-            task1.await.unwrap();
-            task2.await.unwrap();
-        })
-        .await
-        .unwrap();
-        assert!(
-            foreign_context1
-                .peer_context
-                .feature_flags()
-                .avoid_relay_data
-        );
-        assert!(
-            foreign_context2
-                .peer_context
-                .feature_flags()
-                .avoid_relay_data
-        );
-    }
-
-    #[tokio::test]
-    async fn stale_foreign_context_removal_keeps_replacement() {
-        use easytier_core::peers::foreign_network_manager::ForeignNetworkRuntime as _;
-
-        let global_ctx = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
-            "__access__".to_string(),
-            "access_secret".to_string(),
-        )));
-        let (_, parent_core_context) = crate::peers::context::build_core_peer_context(&global_ctx);
-        let parent_context: ArcPeerContext = parent_core_context.clone();
-        let runtime = ForeignNetworkRuntimeImpl::new(global_ctx, parent_core_context);
-        let network = easytier_core::peers::context::NetworkIdentity {
-            network_name: "net1".to_string(),
-            network_secret: Some("net1_secret".to_string()),
-            network_secret_digest: None,
-        };
-
-        let old_context = runtime.build_foreign_context(
-            &core_foreign_network_manager::ForeignNetworkContextSpec::from_parent(
-                network.clone(),
-                &parent_context,
-                false,
-                TomlConfigLoader::default().get_flags(),
-            ),
-        );
-        let replacement_context = runtime.build_foreign_context(
-            &core_foreign_network_manager::ForeignNetworkContextSpec::from_parent(
-                network,
-                &parent_context,
-                true,
-                TomlConfigLoader::default().get_flags(),
-            ),
-        );
-        core_foreign_network_manager::sync_foreign_avoid_relay_data(
-            &parent_context,
-            &old_context.peer_context,
-            false,
-        );
-        assert!(
-            !replacement_context
-                .peer_context
-                .feature_flags()
-                .avoid_relay_data
-        );
-        runtime.remove_foreign_context("net1", &old_context);
-        let current = runtime.foreign_contexts.get("net1").unwrap();
-        assert!(Arc::ptr_eq(
-            &current.lifecycle_token,
-            &replacement_context.lifecycle_token
-        ));
-        drop(current);
-
-        runtime.remove_foreign_context("net1", &replacement_context);
-        assert!(runtime.foreign_contexts.get("net1").is_none());
-    }
-
-    #[tokio::test]
-    async fn foreign_entry_without_relay_data_keeps_avoid_feature_flag() {
-        let global_ctx = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
-            "__access__".to_string(),
-            "access_secret".to_string(),
-        )));
-        let foreign_network = NetworkIdentity::new("net1".to_string(), "net1_secret".to_string());
-        let (pm_packet_sender, _pm_packet_recv) = create_packet_recv_chan();
-        let entry = ForeignNetworkEntry::new(
-            foreign_network,
-            1,
-            global_ctx.clone(),
-            false,
-            Arc::new(PeerSessionStore::new()),
-            pm_packet_sender,
-        );
-
-        assert!(entry.global_ctx.get_feature_flags().avoid_relay_data);
-
-        let mut flags = global_ctx.get_flags();
-        flags.disable_relay_data = false;
-        global_ctx.set_flags(flags);
-        entry.parent_runtime_config.update_peer(Arc::new(
-            crate::peers::context::runtime_peer_snapshot(&global_ctx),
-        ));
-
-        ForeignNetworkEntry::sync_parent_relay_data_feature_flag(
-            &entry.parent_context,
-            &entry.foreign_context,
-            entry.relay_data,
-        );
-
-        assert!(entry.global_ctx.get_feature_flags().avoid_relay_data);
-    }
-
-    #[test]
-    fn credential_trust_path_rejects_admin_identity() {
-        assert!(should_reject_credential_trust_path(PeerIdentityType::Admin));
-        assert!(!should_reject_credential_trust_path(
-            PeerIdentityType::Credential
-        ));
-        assert!(!should_reject_credential_trust_path(
-            PeerIdentityType::SharedNode
-        ));
     }
 
     #[tokio::test]

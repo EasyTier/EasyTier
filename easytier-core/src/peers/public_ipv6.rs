@@ -189,6 +189,53 @@ pub trait PublicIpv6Runtime: Send + Sync {
     );
 }
 
+pub(super) struct DisabledPublicIpv6Runtime {
+    instance_id: uuid::Uuid,
+    network_name: String,
+}
+
+impl DisabledPublicIpv6Runtime {
+    pub(super) fn new(instance_id: uuid::Uuid, network_name: String) -> Self {
+        Self {
+            instance_id,
+            network_name,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl PublicIpv6Runtime for DisabledPublicIpv6Runtime {
+    fn ipv6_public_addr_auto(&self) -> bool {
+        false
+    }
+
+    fn ipv6_public_addr_provider(&self) -> bool {
+        false
+    }
+
+    fn instance_id(&self) -> uuid::Uuid {
+        self.instance_id
+    }
+
+    fn network_name(&self) -> String {
+        self.network_name.clone()
+    }
+
+    async fn collect_reserved_public_ipv6_addrs(&self, _prefix: Ipv6Cidr) -> HashSet<Ipv6Addr> {
+        HashSet::new()
+    }
+
+    fn public_ipv6_lease_changed(&self, _old: Option<Ipv6Inet>, _new: Option<Ipv6Inet>) {}
+
+    fn public_ipv6_routes_changed(
+        &self,
+        _routes: BTreeSet<Ipv6Inet>,
+        _added: Vec<Ipv6Inet>,
+        _removed: Vec<Ipv6Inet>,
+    ) {
+    }
+}
+
 pub struct PublicIpv6Service {
     runtime: Arc<dyn PublicIpv6Runtime>,
     peer_rpc: Weak<PeerRpcManager>,

@@ -15,18 +15,22 @@ use tokio::sync::{
 use tokio::task::JoinSet;
 
 use crate::{
-    config::PeerId,
+    config::{CoreConfig, NodeConfig, PeerId},
     packet::{PacketType, ZCPacket},
     peer_center::instance::{PeerCenterInstance, PeerMapWithPeerRpcManager},
     peers::{PacketRecvChan, PacketRecvChanReceiver, recv_packet_from_chan},
     proto::core_peer::peer::PeerConnInfo,
+    runtime_config::{CoreRuntimeConfig, CoreRuntimeConfigStore},
     runtime_time::timeout,
+    socket::SocketContext,
     stats_manager::{CounterHandle, LabelSet, LabelType, MetricName, StatsManager},
 };
 
 use super::{
     context::{
-        ArcByteLimiter, ArcPeerContext, NetworkIdentity, PeerContextEvent, TrustedKeySource,
+        ArcByteLimiter, ArcPeerContext, CorePeerContext, CorePeerContextAdapters, NetworkIdentity,
+        PeerContext, PeerContextEvent, PeerRuntimeConfig, PeerRuntimeSnapshot, PeerStunInfoSource,
+        TrustedKeySource,
     },
     error::Error,
     peer_conn::{PeerConn, PeerConnId},
@@ -34,7 +38,7 @@ use super::{
     peer_ospf_route::PeerRoute,
     peer_rpc::{PeerRpcManager, PeerRpcManagerTransport},
     peer_session::PeerSessionStore,
-    public_ipv6::PublicIpv6Runtime,
+    public_ipv6::{DisabledPublicIpv6Runtime, PublicIpv6Runtime},
     relay_peer_map::RelayPeerMap,
     route_trait::{NextHopPolicy, Route, RouteInterface, RouteInterfaceBox},
     traffic_metrics::{
@@ -78,16 +82,16 @@ pub fn sync_foreign_avoid_relay_data(
 }
 
 #[derive(Clone, Debug)]
-pub struct ForeignNetworkContextSpec {
-    pub network: NetworkIdentity,
-    pub hostname: String,
-    pub secure_mode: Option<SecureModeConfig>,
-    pub flags: FlagsInConfig,
-    pub feature_flags: PeerFeatureFlag,
+struct ForeignNetworkContextSpec {
+    network: NetworkIdentity,
+    hostname: String,
+    secure_mode: Option<SecureModeConfig>,
+    flags: FlagsInConfig,
+    feature_flags: PeerFeatureFlag,
 }
 
 impl ForeignNetworkContextSpec {
-    pub fn from_parent(
+    fn from_parent(
         network: NetworkIdentity,
         parent_context: &ArcPeerContext,
         relay_data: bool,
@@ -102,6 +106,14 @@ impl ForeignNetworkContextSpec {
         feature_flags.is_public_server = true;
         feature_flags.avoid_relay_data =
             desired_foreign_avoid_relay_data(parent_context, relay_data);
+        feature_flags.kcp_input = !flags.disable_kcp_input;
+        feature_flags.no_relay_kcp = flags.disable_relay_kcp;
+        feature_flags.support_conn_list_sync = true;
+        feature_flags.quic_input = !flags.disable_quic_input;
+        feature_flags.no_relay_quic = flags.disable_relay_quic;
+        feature_flags.need_p2p = flags.need_p2p;
+        feature_flags.disable_p2p = flags.disable_p2p;
+        feature_flags.ipv6_public_addr_provider = false;
 
         Self {
             network,
@@ -113,6 +125,42 @@ impl ForeignNetworkContextSpec {
             flags,
             feature_flags,
         }
+    }
+
+    fn peer_snapshot(&self, parent_context: &ArcPeerContext) -> PeerRuntimeSnapshot {
+        let instance_id = uuid::Uuid::new_v4();
+        let runtime = PeerRuntimeConfig {
+            core: CoreConfig {
+                node: NodeConfig {
+                    instance_id: Some(*instance_id.as_bytes()),
+                    hostname: Some(self.hostname.clone()),
+                    network_name: self.network.network_name.clone(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            network_identity: self.network.clone(),
+            stun_info: parent_context.stun_info(),
+            feature_flags: self.feature_flags,
+            secure_mode: self.secure_mode.clone(),
+            host_routing: parent_context.host_routing_policy(),
+        };
+        let mut snapshot = PeerRuntimeSnapshot::new(runtime, self.flags.clone());
+        snapshot.easytier_version = parent_context.easytier_version();
+        snapshot.ospf_update_my_foreign_network_interval_sec =
+            parent_context.ospf_update_my_foreign_network_interval_sec();
+        snapshot.max_direct_conns_per_peer_in_foreign_network =
+            parent_context.max_direct_conns_per_peer_in_foreign_network();
+        snapshot.hmac_secret_digest = parent_context.hmac_secret_digest();
+        snapshot
+    }
+}
+
+struct ParentStunInfoSource(ArcPeerContext);
+
+impl PeerStunInfoSource for ParentStunInfoSource {
+    fn stun_info(&self) -> crate::proto::common::StunInfo {
+        self.0.stun_info()
     }
 }
 
@@ -132,10 +180,18 @@ mod tests {
     use easytier_proto::common::{FlagsInConfig, PeerFeatureFlag};
 
     use super::{
-        ForeignNetworkContextSpec, check_network_in_relay_whitelist,
+        ForeignNetworkContextSpec, build_foreign_context, check_network_in_relay_whitelist,
         desired_foreign_avoid_relay_data, sync_foreign_avoid_relay_data,
     };
-    use crate::peers::context::{ArcPeerContext, NetworkIdentity, PeerContext};
+    use crate::{
+        peers::context::{
+            ArcPeerContext, CorePeerContext, CorePeerContextAdapters, NetworkIdentity, PeerContext,
+            PeerRuntimeSnapshot,
+        },
+        proto::common::StunInfo,
+        runtime_config::{CoreRuntimeConfig, CoreRuntimeConfigStore},
+        stats_manager::{LabelSet, LabelType, MetricName},
+    };
 
     struct FeatureContext {
         avoid_relay_data: AtomicBool,
@@ -245,6 +301,93 @@ mod tests {
         assert_eq!(spec.flags.relay_network_whitelist, "baseline");
         assert!(spec.feature_flags.is_public_server);
         assert!(spec.feature_flags.avoid_relay_data);
+    }
+
+    #[test]
+    fn foreign_context_resources_are_assembled_in_core() {
+        let mut parent_snapshot = PeerRuntimeSnapshot::default();
+        parent_snapshot.runtime.core.node.hostname = Some("parent".to_owned());
+        parent_snapshot.runtime.stun_info = StunInfo {
+            public_ip: vec!["198.51.100.1".to_owned()],
+            ..Default::default()
+        };
+        parent_snapshot
+            .runtime
+            .host_routing
+            .local_exit_node_fallback = true;
+        parent_snapshot.hmac_secret_digest = true;
+        let parent_config = CoreRuntimeConfigStore::new(
+            CoreRuntimeConfig::default(),
+            Arc::new(parent_snapshot.clone()),
+        );
+        let parent = Arc::new(CorePeerContext::new(
+            parent_config.clone(),
+            CorePeerContextAdapters {
+                relay_state_sink: Arc::new(()),
+                stun_info_source: None,
+                public_ipv6_state: Arc::new(()),
+                event_sink: Arc::new(()),
+                credential_storage: None,
+                credential_event_sink: Arc::new(()),
+            },
+        ));
+        let parent_dyn: ArcPeerContext = parent.clone();
+        let spec = ForeignNetworkContextSpec::from_parent(
+            NetworkIdentity {
+                network_name: "foreign".to_owned(),
+                network_secret: Some("secret".to_owned()),
+                network_secret_digest: None,
+            },
+            &parent_dyn,
+            true,
+            FlagsInConfig::default(),
+        );
+
+        let foreign = build_foreign_context(&spec, &parent);
+
+        assert!(Arc::ptr_eq(
+            &parent.stats_manager(),
+            &foreign.peer_context.stats_manager(),
+        ));
+        assert!(!Arc::ptr_eq(
+            &parent.credential_manager(),
+            &foreign.peer_context.credential_manager(),
+        ));
+        assert!(!Arc::ptr_eq(
+            &parent.trusted_key_manager(),
+            &foreign.peer_context.trusted_key_manager(),
+        ));
+        assert_eq!(foreign.peer_context.network_name(), "foreign");
+        assert_eq!(foreign.peer_context.hostname(), "PublicServer_parent");
+        assert_eq!(
+            foreign.peer_context.stun_info().public_ip,
+            vec!["198.51.100.1"]
+        );
+        assert!(
+            foreign
+                .peer_context
+                .host_routing_policy()
+                .local_exit_node_fallback
+        );
+        assert!(foreign.peer_context.hmac_secret_digest());
+
+        parent_snapshot.runtime.stun_info.public_ip = vec!["203.0.113.2".to_owned()];
+        parent_config.update_peer(Arc::new(parent_snapshot));
+        assert_eq!(
+            foreign.peer_context.stun_info().public_ip,
+            vec!["203.0.113.2"]
+        );
+
+        foreign.peer_context.record_control_tx("foreign", 64);
+        let labels = LabelSet::new().with_label_type(LabelType::NetworkName("foreign".to_owned()));
+        assert_eq!(
+            parent
+                .stats_manager()
+                .get_metric(MetricName::TrafficControlBytesTx, &labels)
+                .unwrap()
+                .value,
+            64
+        );
     }
 }
 
@@ -443,10 +586,39 @@ pub fn build_rpc_transport(
 }
 
 #[derive(Clone)]
-pub struct ForeignNetworkContext {
-    pub peer_context: ArcPeerContext,
-    pub public_ipv6_runtime: Arc<dyn PublicIpv6Runtime>,
-    pub lifecycle_token: Arc<()>,
+struct ForeignNetworkContext {
+    peer_context: Arc<CorePeerContext>,
+    public_ipv6_runtime: Arc<dyn PublicIpv6Runtime>,
+}
+
+fn build_foreign_context(
+    spec: &ForeignNetworkContextSpec,
+    parent_context: &Arc<CorePeerContext>,
+) -> ForeignNetworkContext {
+    let parent_context_dyn: ArcPeerContext = parent_context.clone();
+    let runtime_config = CoreRuntimeConfigStore::new(
+        CoreRuntimeConfig::default(),
+        Arc::new(spec.peer_snapshot(&parent_context_dyn)),
+    );
+    let peer_context = Arc::new(CorePeerContext::new_foreign(
+        runtime_config,
+        CorePeerContextAdapters {
+            relay_state_sink: Arc::new(()),
+            stun_info_source: Some(Arc::new(ParentStunInfoSource(parent_context_dyn))),
+            public_ipv6_state: Arc::new(()),
+            event_sink: Arc::new(()),
+            credential_storage: None,
+            credential_event_sink: Arc::new(()),
+        },
+        parent_context,
+    ));
+    ForeignNetworkContext {
+        public_ipv6_runtime: Arc::new(DisabledPublicIpv6Runtime::new(
+            peer_context.instance_id(),
+            spec.network.network_name.clone(),
+        )),
+        peer_context,
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -480,24 +652,17 @@ pub trait ForeignNetworkInfoProvider: Send + Sync + 'static {
 }
 
 #[auto_impl::auto_impl(&, Arc)]
-pub trait ForeignNetworkRuntime: Send + Sync + 'static {
-    fn build_foreign_context(&self, spec: &ForeignNetworkContextSpec) -> ForeignNetworkContext;
-
-    fn remove_foreign_context(
-        &self,
-        _network_name: &str,
-        _foreign_context: &ForeignNetworkContext,
-    ) {
-    }
-
+pub trait ForeignNetworkRpcRegistrar: Send + Sync + 'static {
     fn register_peer_rpc_services(
         &self,
         _peer_rpc: &Arc<PeerRpcManager>,
-        _foreign_context: &ForeignNetworkContext,
         _network_name: &str,
+        _socket_context: SocketContext,
     ) {
     }
 }
+
+impl ForeignNetworkRpcRegistrar for () {}
 
 fn join_joinset_background(js: Arc<std::sync::Mutex<JoinSet<()>>>, origin: &'static str) {
     let js = Arc::downgrade(&js);
@@ -532,7 +697,6 @@ fn join_joinset_background(js: Arc<std::sync::Mutex<JoinSet<()>>>, origin: &'sta
 struct ForeignNetworkEntry {
     my_peer_id: PeerId,
 
-    runtime: Arc<dyn ForeignNetworkRuntime>,
     parent_context: ArcPeerContext,
     foreign_context: ForeignNetworkContext,
     network: NetworkIdentity,
@@ -563,21 +727,22 @@ impl ForeignNetworkEntry {
     fn new(
         network: NetworkIdentity,
         my_peer_id: PeerId,
-        runtime: Arc<dyn ForeignNetworkRuntime>,
-        parent_context: ArcPeerContext,
+        rpc_registrar: Arc<dyn ForeignNetworkRpcRegistrar>,
+        parent_context: Arc<CorePeerContext>,
         foreign_context_default_flags: FlagsInConfig,
         stats_mgr: Arc<StatsManager>,
         relay_data: bool,
         peer_session_store: Arc<PeerSessionStore>,
         pm_packet_sender: PacketRecvChan,
     ) -> Self {
+        let parent_context_dyn: ArcPeerContext = parent_context.clone();
         let spec = ForeignNetworkContextSpec::from_parent(
             network.clone(),
-            &parent_context,
+            &parent_context_dyn,
             relay_data,
             foreign_context_default_flags,
         );
-        let foreign_context = runtime.build_foreign_context(&spec);
+        let foreign_context = build_foreign_context(&spec, &parent_context);
         let network_name = network.network_name.clone();
 
         let (packet_sender, packet_recv) = super::create_packet_recv_chan();
@@ -651,7 +816,11 @@ impl ForeignNetworkEntry {
         let (peer_rpc, rpc_transport_sender) =
             build_rpc_transport(my_peer_id, Arc::downgrade(&peer_map));
 
-        runtime.register_peer_rpc_services(&peer_rpc, &foreign_context, &network.network_name);
+        rpc_registrar.register_peer_rpc_services(
+            &peer_rpc,
+            &network.network_name,
+            SocketContext::default().with_socket_mark(spec.flags.socket_mark),
+        );
 
         let bps_limiter = parent_context.foreign_forward_limiter(&network.network_name);
 
@@ -666,8 +835,7 @@ impl ForeignNetworkEntry {
         Self {
             my_peer_id,
 
-            runtime,
-            parent_context,
+            parent_context: parent_context_dyn,
             foreign_context,
             network,
             peer_map,
@@ -752,9 +920,10 @@ impl ForeignNetworkEntry {
     async fn run_parent_feature_flag_sync_routine(&self) {
         let parent_context = self.parent_context.clone();
         let foreign_context = self.foreign_context.clone();
+        let foreign_peer_context: ArcPeerContext = foreign_context.peer_context.clone();
         let relay_data = self.relay_data;
         let runtime_changes = parent_context.subscribe_runtime_changes();
-        sync_foreign_avoid_relay_data(&parent_context, &foreign_context.peer_context, relay_data);
+        sync_foreign_avoid_relay_data(&parent_context, &foreign_peer_context, relay_data);
         let Some(mut runtime_changes) = runtime_changes else {
             return;
         };
@@ -763,11 +932,7 @@ impl ForeignNetworkEntry {
                 if runtime_changes.changed().await.is_err() {
                     break;
                 }
-                sync_foreign_avoid_relay_data(
-                    &parent_context,
-                    &foreign_context.peer_context,
-                    relay_data,
-                );
+                sync_foreign_avoid_relay_data(&parent_context, &foreign_peer_context, relay_data);
             }
         });
     }
@@ -791,8 +956,6 @@ impl Drop for ForeignNetworkEntry {
         self.foreign_context
             .peer_context
             .remove_trusted_keys(&self.network.network_name);
-        self.runtime
-            .remove_foreign_context(&self.network.network_name, &self.foreign_context);
 
         tracing::debug!(self.my_peer_id, ?self.network, "drop foreign network entry");
     }
@@ -883,8 +1046,8 @@ impl ForeignNetworkManagerData {
         my_peer_id: PeerId,
         dst_peer_id: PeerId,
         relay_data: bool,
-        runtime: Arc<dyn ForeignNetworkRuntime>,
-        parent_context: ArcPeerContext,
+        rpc_registrar: Arc<dyn ForeignNetworkRpcRegistrar>,
+        parent_context: Arc<CorePeerContext>,
         foreign_context_default_flags: FlagsInConfig,
         stats_mgr: Arc<StatsManager>,
         peer_session_store: Arc<PeerSessionStore>,
@@ -901,7 +1064,7 @@ impl ForeignNetworkManagerData {
                 Arc::new(ForeignNetworkEntry::new(
                     network_identity.clone(),
                     my_peer_id,
-                    runtime,
+                    rpc_registrar,
                     parent_context,
                     foreign_context_default_flags,
                     stats_mgr,
@@ -933,8 +1096,8 @@ impl ForeignNetworkManagerData {
 pub const FOREIGN_NETWORK_SERVICE_ID: u32 = 1;
 
 pub struct ForeignNetworkManager {
-    runtime: Arc<dyn ForeignNetworkRuntime>,
-    parent_context: ArcPeerContext,
+    rpc_registrar: Arc<dyn ForeignNetworkRpcRegistrar>,
+    parent_context: Arc<CorePeerContext>,
     foreign_context_default_flags: FlagsInConfig,
     stats_mgr: Arc<StatsManager>,
     peer_session_store: Arc<PeerSessionStore>,
@@ -973,8 +1136,8 @@ impl ForeignNetworkManager {
     }
 
     pub fn new(
-        runtime: Arc<dyn ForeignNetworkRuntime>,
-        parent_context: ArcPeerContext,
+        rpc_registrar: Arc<dyn ForeignNetworkRpcRegistrar>,
+        parent_context: Arc<CorePeerContext>,
         foreign_context_default_flags: FlagsInConfig,
         stats_mgr: Arc<StatsManager>,
         peer_session_store: Arc<PeerSessionStore>,
@@ -995,7 +1158,7 @@ impl ForeignNetworkManager {
         join_joinset_background(tasks.clone(), "ForeignNetworkManager");
 
         Self {
-            runtime,
+            rpc_registrar,
             parent_context,
             foreign_context_default_flags,
             stats_mgr,
@@ -1018,6 +1181,16 @@ impl ForeignNetworkManager {
             .network_peer_maps
             .get(network_name)
             .map(|v| v.my_peer_id)
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn foreign_peer_context_for_test(
+        &self,
+        network_name: &str,
+    ) -> Option<Arc<CorePeerContext>> {
+        self.data
+            .get_network_entry(network_name)
+            .map(|entry| entry.foreign_context.peer_context.clone())
     }
 
     pub fn is_existing_credential_pubkey_trusted(
@@ -1065,7 +1238,7 @@ impl ForeignNetworkManager {
                 peer_conn.get_my_peer_id(),
                 peer_conn.get_peer_id(),
                 ret.is_ok(),
-                self.runtime.clone(),
+                self.rpc_registrar.clone(),
                 self.parent_context.clone(),
                 self.foreign_context_default_flags.clone(),
                 self.stats_mgr.clone(),

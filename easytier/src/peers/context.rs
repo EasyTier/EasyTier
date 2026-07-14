@@ -61,22 +61,6 @@ pub(crate) fn build_core_peer_context(
     (runtime_config, peer_context)
 }
 
-pub(crate) fn build_foreign_core_peer_context(
-    global_ctx: &ArcGlobalCtx,
-    parent: &CorePeerContext,
-) -> (CoreRuntimeConfigStore, Arc<CorePeerContext>) {
-    let runtime_config = CoreRuntimeConfigStore::new(
-        CoreRuntimeConfig::default(),
-        Arc::new(runtime_peer_snapshot(global_ctx)),
-    );
-    let peer_context = Arc::new(CorePeerContext::new_foreign(
-        runtime_config.clone(),
-        core_peer_context_adapters(global_ctx),
-        parent,
-    ));
-    (runtime_config, peer_context)
-}
-
 pub(crate) struct GlobalCtxPeerEventSink {
     global_ctx: ArcGlobalCtx,
 }
