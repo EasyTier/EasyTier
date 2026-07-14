@@ -26,7 +26,6 @@ use crate::{
         config::ProxyNetworkConfig,
         credential_manager::CredentialManager,
         stats_manager::{self, StatsManager},
-        token_bucket::TokenBucketManager,
     },
     peers::acl_filter::AclFilter,
     proto::{
@@ -130,8 +129,6 @@ pub struct GlobalCtx {
     base_feature_flags: AtomicCell<PeerFeatureFlag>,
 
     feature_flags: AtomicCell<PeerFeatureFlag>,
-
-    token_bucket_manager: TokenBucketManager,
 
     stats_manager: Arc<StatsManager>,
 
@@ -342,8 +339,6 @@ impl GlobalCtx {
             base_feature_flags: AtomicCell::new(base_feature_flags),
 
             feature_flags: AtomicCell::new(feature_flags),
-
-            token_bucket_manager: TokenBucketManager::new(),
 
             stats_manager: Arc::new(StatsManager::new()),
 
@@ -646,10 +641,6 @@ impl GlobalCtx {
         feature_flags.ipv6_public_addr_provider = enabled;
         self.feature_flags.store(feature_flags);
         true
-    }
-
-    pub fn token_bucket_manager(&self) -> &TokenBucketManager {
-        &self.token_bucket_manager
     }
 
     pub fn stats_manager(&self) -> &Arc<StatsManager> {

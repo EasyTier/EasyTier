@@ -40,8 +40,8 @@ use super::{
     PeerPacketFilter,
     acl_filter::AclFilter,
     context::{
-        ArcPeerContext, CorePeerContextSupport, HostRoutingPolicy, NetworkIdentity,
-        PeerRuntimeConfig, PeerRuntimeSnapshot, PeerStunInfoSource, SubmittedPeerContext,
+        ArcPeerContext, HostRoutingPolicy, NetworkIdentity, PeerContext, PeerRuntimeConfig,
+        PeerRuntimeSnapshot, PeerStunInfoSource, SubmittedPeerContext,
         SubmittedPeerContextCapabilities, TrustedKeyMapManager,
     },
     credential_manager::CredentialManager,
@@ -606,7 +606,7 @@ pub struct PeerManagerCore {
     exit_nodes: Arc<RwLock<Vec<IpAddr>>>,
     acl_filter: Arc<AclFilter>,
     credential_manager: Arc<CredentialManager>,
-    context: ArcPeerContext,
+    context: Arc<SubmittedPeerContext>,
     is_secure_mode_enabled: bool,
     route: ArcRoute,
     traffic_metrics: Arc<TrafficMetricRecorder>,
@@ -614,7 +614,6 @@ pub struct PeerManagerCore {
     network_name: String,
     counters: PeerManagerTrafficCounters,
     owns_support_tasks: bool,
-    core_context_support: Option<Arc<CorePeerContextSupport>>,
 }
 
 pub enum AddressResolution {
@@ -1039,21 +1038,18 @@ impl PeerManagerCore {
         let mut submitted_snapshot = runtime_config.snapshot().peer.as_ref().clone();
         submitted_snapshot.replace_portable_config(config.runtime.clone(), config.flags.clone());
         runtime_config.update_peer(Arc::new(submitted_snapshot));
-        let core_context_support = Arc::new(CorePeerContextSupport::new());
-        let context: ArcPeerContext = Arc::new(SubmittedPeerContext::new_core_owned(
+        let context = Arc::new(SubmittedPeerContext::new(
             runtime_config,
             SubmittedPeerContextCapabilities {
                 relay_state_sink: Arc::new(()),
                 stun_info_source,
                 public_ipv6_state: Arc::new(()),
-                limiter_factory: core_context_support.clone(),
                 traffic_sink: Arc::new(()),
                 event_sink: Arc::new(()),
                 credentials: credential_manager.clone(),
                 trusted_keys: Arc::new(TrustedKeyMapManager::new()),
                 credential_event_sink: Arc::new(()),
             },
-            core_context_support.clone(),
         ));
         let public_ipv6_runtime = Arc::new(DisabledPublicIpv6Runtime {
             instance_id,
@@ -1081,7 +1077,6 @@ impl PeerManagerCore {
         );
         let mut core = result.core;
         core.owns_support_tasks = true;
-        core.core_context_support = Some(core_context_support);
         Ok(core)
     }
 
@@ -1091,7 +1086,7 @@ impl PeerManagerCore {
     pub fn new_with_foreign_network_runtime(
         route_algo: RouteAlgoType,
         my_peer_id: PeerId,
-        context: ArcPeerContext,
+        context: Arc<SubmittedPeerContext>,
         public_ipv6_runtime: Arc<dyn PublicIpv6Runtime>,
         stats_manager: Arc<StatsManager>,
         acl_filter: Arc<AclFilter>,
@@ -1105,7 +1100,7 @@ impl PeerManagerCore {
         foreign_context_default_flags: FlagsInConfig,
         foreign_network_runtime: Arc<dyn ForeignNetworkRuntime>,
     ) -> PeerManagerCoreBuildResult<ForeignNetworkManager> {
-        let foreign_context = context.clone();
+        let foreign_context: ArcPeerContext = context.clone();
         let foreign_stats_manager = stats_manager.clone();
         Self::new_with_default_components(
             route_algo,
@@ -1141,7 +1136,7 @@ impl PeerManagerCore {
     pub(crate) fn new_with_default_components<F, BuildForeignNetworkManager>(
         route_algo: RouteAlgoType,
         my_peer_id: PeerId,
-        context: ArcPeerContext,
+        submitted_context: Arc<SubmittedPeerContext>,
         public_ipv6_runtime: Arc<dyn PublicIpv6Runtime>,
         stats_manager: Arc<StatsManager>,
         acl_filter: Arc<AclFilter>,
@@ -1170,6 +1165,7 @@ impl PeerManagerCore {
             Box<dyn GlobalForeignNetworkAccessor>,
         ) -> Arc<F>,
     {
+        let context: ArcPeerContext = submitted_context.clone();
         let (packet_send, packet_recv) = super::create_packet_recv_chan();
         let peers = Arc::new(PeerMap::new(
             packet_send.clone(),
@@ -1365,7 +1361,7 @@ impl PeerManagerCore {
                 exit_nodes,
                 acl_filter,
                 credential_manager,
-                context,
+                context: submitted_context,
                 is_secure_mode_enabled,
                 route,
                 traffic_metrics,
@@ -1373,7 +1369,6 @@ impl PeerManagerCore {
                 network_name,
                 counters: self_tx_counters,
                 owns_support_tasks: false,
-                core_context_support: None,
             },
             foreign_network_manager,
         }
@@ -1757,9 +1752,7 @@ impl PeerManagerCore {
         while tasks.join_next().await.is_some() {}
         self.route.close().await;
         self.peer_rpc_mgr.stop().await;
-        if let Some(support) = &self.core_context_support {
-            support.stop().await;
-        }
+        self.context.stop().await;
         if self.owns_support_tasks {
             self.stats_manager.stop_cleanup_task().await;
             self.acl_filter.stop_cleanup_task().await;

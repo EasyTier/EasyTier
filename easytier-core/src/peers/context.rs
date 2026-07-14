@@ -35,6 +35,7 @@ use crate::{
 };
 
 pub const SECRET_PROOF_PREFIX: &[u8] = b"easytier secret proof";
+const PEER_EVENT_CAPACITY: usize = 100;
 
 #[async_trait]
 pub trait ByteLimiter: Send + Sync {
@@ -53,18 +54,6 @@ impl ByteLimiter for () {
 }
 
 pub type ArcByteLimiter = Arc<dyn ByteLimiter>;
-
-/// Creates or reuses a byte limiter without exposing the host's limiter
-/// manager or unrelated live runtime state.
-pub trait PeerLimiterFactory: Send + Sync {
-    fn get_or_create_limiter(&self, key: &str, bps: u64) -> Option<ArcByteLimiter>;
-}
-
-impl PeerLimiterFactory for () {
-    fn get_or_create_limiter(&self, _key: &str, _bps: u64) -> Option<ArcByteLimiter> {
-        None
-    }
-}
 
 /// Receives peer control-plane traffic counters without exposing the host's
 /// metrics registry or any other runtime capability.
@@ -301,7 +290,6 @@ pub struct SubmittedPeerContextCapabilities {
     pub relay_state_sink: Arc<dyn PeerRelayStateSink>,
     pub stun_info_source: Option<Arc<dyn PeerStunInfoSource>>,
     pub public_ipv6_state: Arc<dyn PeerPublicIpv6State>,
-    pub limiter_factory: Arc<dyn PeerLimiterFactory>,
     pub traffic_sink: Arc<dyn PeerControlTrafficSink>,
     pub event_sink: Arc<dyn PeerEventSink>,
     pub credentials: Arc<CredentialManager>,
@@ -309,23 +297,21 @@ pub struct SubmittedPeerContextCapabilities {
     pub credential_event_sink: Arc<dyn PeerCredentialEventSink>,
 }
 
-/// Peer context whose configuration comes exclusively from a core-owned
-/// submitted snapshot while live effects stay behind a narrow support seam.
-#[derive(Clone)]
+/// Peer context backed by one core-owned submitted snapshot and its instance
+/// runtime resources.
 pub struct SubmittedPeerContext {
     config: CoreRuntimeConfigStore,
-    avoid_relay_data_preference: Arc<AtomicBool>,
+    avoid_relay_data_preference: AtomicBool,
     relay_state_sink: Arc<dyn PeerRelayStateSink>,
     stun_info_source: Option<Arc<dyn PeerStunInfoSource>>,
     public_ipv6_state: Arc<dyn PeerPublicIpv6State>,
-    limiter_factory: Arc<dyn PeerLimiterFactory>,
+    limiter_state: Mutex<CoreLimiterState>,
     traffic_sink: Arc<dyn PeerControlTrafficSink>,
     credentials: Arc<CredentialManager>,
     trusted_keys: Arc<TrustedKeyMapManager>,
     credential_event_sink: Arc<dyn PeerCredentialEventSink>,
     peer_events: tokio::sync::broadcast::Sender<PeerContextEvent>,
     event_sink: Arc<dyn PeerEventSink>,
-    core_support: Option<Arc<CorePeerContextSupport>>,
 }
 
 impl SubmittedPeerContext {
@@ -333,63 +319,26 @@ impl SubmittedPeerContext {
         config: CoreRuntimeConfigStore,
         capabilities: SubmittedPeerContextCapabilities,
     ) -> Self {
-        Self::new_inner(config, capabilities, None, 16)
-    }
-
-    pub(crate) fn new_core_owned(
-        config: CoreRuntimeConfigStore,
-        capabilities: SubmittedPeerContextCapabilities,
-        support: Arc<CorePeerContextSupport>,
-    ) -> Self {
-        Self::new_inner(config, capabilities, Some(support), 100)
-    }
-
-    fn new_inner(
-        config: CoreRuntimeConfigStore,
-        capabilities: SubmittedPeerContextCapabilities,
-        core_support: Option<Arc<CorePeerContextSupport>>,
-        peer_event_capacity: usize,
-    ) -> Self {
-        let avoid_relay_data_preference = Arc::new(AtomicBool::new(
-            config.snapshot().peer.avoid_relay_data_preference,
-        ));
+        let avoid_relay_data_preference =
+            AtomicBool::new(config.snapshot().peer.avoid_relay_data_preference);
         Self {
             config,
             avoid_relay_data_preference,
             relay_state_sink: capabilities.relay_state_sink,
             stun_info_source: capabilities.stun_info_source,
             public_ipv6_state: capabilities.public_ipv6_state,
-            limiter_factory: capabilities.limiter_factory,
+            limiter_state: Mutex::new(CoreLimiterState::default()),
             traffic_sink: capabilities.traffic_sink,
             credentials: capabilities.credentials,
             trusted_keys: capabilities.trusted_keys,
             credential_event_sink: capabilities.credential_event_sink,
-            peer_events: tokio::sync::broadcast::channel(peer_event_capacity).0,
+            peer_events: tokio::sync::broadcast::channel(PEER_EVENT_CAPACITY).0,
             event_sink: capabilities.event_sink,
-            core_support,
         }
     }
 
     fn snapshot(&self) -> Arc<PeerRuntimeSnapshot> {
         self.config.snapshot().peer.clone()
-    }
-}
-
-#[derive(Default)]
-struct CoreLimiterState {
-    manager: Option<TokenBucketManager>,
-    stopped: bool,
-}
-
-pub(crate) struct CorePeerContextSupport {
-    limiter_state: Mutex<CoreLimiterState>,
-}
-
-impl CorePeerContextSupport {
-    pub(crate) fn new() -> Self {
-        Self {
-            limiter_state: Mutex::new(CoreLimiterState::default()),
-        }
     }
 
     fn get_or_create_limiter(&self, key: &str, bps: u64) -> Option<ArcByteLimiter> {
@@ -423,10 +372,10 @@ impl CorePeerContextSupport {
     }
 }
 
-impl PeerLimiterFactory for CorePeerContextSupport {
-    fn get_or_create_limiter(&self, key: &str, bps: u64) -> Option<ArcByteLimiter> {
-        CorePeerContextSupport::get_or_create_limiter(self, key, bps)
-    }
+#[derive(Default)]
+struct CoreLimiterState {
+    manager: Option<TokenBucketManager>,
+    stopped: bool,
 }
 
 fn config_ipv4(value: &IpPrefix) -> Option<Ipv4Inet> {
@@ -863,9 +812,7 @@ impl PeerContext for NoopPeerContext {
 impl PeerContext for SubmittedPeerContext {
     fn runtime_config(&self) -> PeerRuntimeConfig {
         let mut runtime = self.snapshot().runtime.clone();
-        if self.core_support.is_some() {
-            runtime.stun_info = self.stun_info();
-        }
+        runtime.stun_info = self.stun_info();
         runtime
     }
 
@@ -963,12 +910,9 @@ impl PeerContext for SubmittedPeerContext {
     fn feature_flags(&self) -> PeerFeatureFlag {
         let snapshot = self.snapshot();
         let mut flags = snapshot.runtime.feature_flags;
-        if self.core_support.is_some() {
-            return flags;
-        }
         flags.avoid_relay_data = snapshot.flags.disable_relay_data
             || self.avoid_relay_data_preference.load(Ordering::Acquire);
-        flags.ipv6_public_addr_provider = self.public_ipv6_state.public_ipv6_provider_enabled();
+        flags.ipv6_public_addr_provider |= self.public_ipv6_state.public_ipv6_provider_enabled();
         flags
     }
 
@@ -1115,38 +1059,17 @@ impl PeerContext for SubmittedPeerContext {
 
     fn recv_limiter(&self, network_name: &str, is_foreign_network: bool) -> Option<ArcByteLimiter> {
         let limits = self.snapshot().traffic_limits;
-        if let Some(support) = &self.core_support {
-            let (key, bps) = if is_foreign_network && let Some(limit) = limits.foreign_relay_bps {
-                (format!("portable:foreign:{network_name}:recv"), limit)
-            } else {
-                (
-                    "portable:instance:recv".to_owned(),
-                    limits.instance_recv_bps?,
-                )
-            };
-            return support.get_or_create_limiter(&key, bps);
-        }
-        if is_foreign_network && let Some(bps) = limits.foreign_relay_bps {
-            return self
-                .limiter_factory
-                .get_or_create_limiter(&format!("{network_name}:recv"), bps);
-        }
-        if let Some(bps) = limits.instance_recv_bps {
-            return self
-                .limiter_factory
-                .get_or_create_limiter("instance:recv", bps);
-        }
-        None
+        let (key, bps) = if is_foreign_network && let Some(limit) = limits.foreign_relay_bps {
+            (format!("peer:foreign:{network_name}:recv"), limit)
+        } else {
+            ("peer:instance:recv".to_owned(), limits.instance_recv_bps?)
+        };
+        self.get_or_create_limiter(&key, bps)
     }
 
     fn foreign_forward_limiter(&self, network_name: &str) -> Option<ArcByteLimiter> {
         let bps = self.snapshot().traffic_limits.foreign_relay_bps?;
-        if let Some(support) = &self.core_support {
-            return support
-                .get_or_create_limiter(&format!("portable:foreign:{network_name}:forward"), bps);
-        }
-        self.limiter_factory
-            .get_or_create_limiter(&format!("{network_name}:forward"), bps)
+        self.get_or_create_limiter(&format!("peer:foreign:{network_name}:forward"), bps)
     }
 
     fn issue_event(&self, event: PeerEvent) {
@@ -1172,18 +1095,6 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     #[derive(Default)]
-    struct TestSubmittedSupport {
-        limiter_keys: Mutex<Vec<String>>,
-    }
-
-    impl PeerLimiterFactory for TestSubmittedSupport {
-        fn get_or_create_limiter(&self, key: &str, _bps: u64) -> Option<ArcByteLimiter> {
-            self.limiter_keys.lock().unwrap().push(key.to_owned());
-            Some(Arc::new(()))
-        }
-    }
-
-    #[derive(Default)]
     struct TestPeerEventSink {
         events: Mutex<Vec<PeerEvent>>,
     }
@@ -1206,14 +1117,12 @@ mod tests {
     }
 
     fn submitted_capabilities(
-        support: Arc<TestSubmittedSupport>,
         event_sink: Arc<dyn PeerEventSink>,
     ) -> SubmittedPeerContextCapabilities {
         SubmittedPeerContextCapabilities {
             relay_state_sink: Arc::new(()),
             stun_info_source: Some(Arc::new(())),
             public_ipv6_state: Arc::new(()),
-            limiter_factory: support,
             traffic_sink: Arc::new(()),
             event_sink,
             credentials: Arc::new(CredentialManager::new()),
@@ -1266,11 +1175,8 @@ mod tests {
     #[test]
     fn submitted_peer_context_separates_config_versions_from_live_support() {
         let config = submitted_config(submitted_snapshot("before", false));
-        let support = Arc::new(TestSubmittedSupport::default());
-        let context = SubmittedPeerContext::new(
-            config.clone(),
-            submitted_capabilities(support.clone(), Arc::new(())),
-        );
+        let context =
+            SubmittedPeerContext::new(config.clone(), submitted_capabilities(Arc::new(())));
 
         assert_eq!(context.hostname(), "before");
         assert!(!context.feature_flags().avoid_relay_data);
@@ -1291,9 +1197,7 @@ mod tests {
     async fn submitted_peer_context_owns_events_and_projects_them_to_sink() {
         let config = submitted_config(submitted_snapshot("events", false));
         let sink = Arc::new(TestPeerEventSink::default());
-        let support = Arc::new(TestSubmittedSupport::default());
-        let context =
-            SubmittedPeerContext::new(config, submitted_capabilities(support, sink.clone()));
+        let context = SubmittedPeerContext::new(config, submitted_capabilities(sink.clone()));
         let mut events = context.subscribe_peer_events().unwrap();
 
         context.issue_event(PeerEvent::PeerAdded(7));
@@ -1308,9 +1212,8 @@ mod tests {
     #[test]
     fn submitted_peer_context_owns_trusted_keys_and_projects_credential_changes() {
         let config = submitted_config(submitted_snapshot("trust", false));
-        let support = Arc::new(TestSubmittedSupport::default());
         let credential_events = Arc::new(TestCredentialEventSink::default());
-        let mut capabilities = submitted_capabilities(support, Arc::new(()));
+        let mut capabilities = submitted_capabilities(Arc::new(()));
         capabilities.credential_event_sink = credential_events.clone();
         let context = SubmittedPeerContext::new(config, capabilities);
         let public_key = vec![7; 32];
@@ -1331,43 +1234,32 @@ mod tests {
         assert!(credential_events.changed.load(Ordering::Acquire));
     }
 
-    #[test]
-    fn foreign_forward_limiter_is_independent_from_peer_receive_limiter() {
+    #[tokio::test]
+    async fn foreign_forward_limiter_is_independent_from_peer_receive_limiter() {
         let mut snapshot = submitted_snapshot("limiter", false);
         snapshot.traffic_limits.foreign_relay_bps = Some(1024);
         let config = submitted_config(snapshot);
-        let support = Arc::new(TestSubmittedSupport::default());
-        let context = SubmittedPeerContext::new(
-            config,
-            submitted_capabilities(support.clone(), Arc::new(())),
-        );
+        let context = SubmittedPeerContext::new(config, submitted_capabilities(Arc::new(())));
 
-        assert!(context.recv_limiter("foreign", true).is_some());
-        assert!(context.foreign_forward_limiter("foreign").is_some());
-        assert_eq!(
-            support.limiter_keys.lock().unwrap().as_slice(),
-            ["foreign:recv", "foreign:forward"]
-        );
+        let receive = context.recv_limiter("foreign", true).unwrap();
+        let receive_again = context.recv_limiter("foreign", true).unwrap();
+        let forward = context.foreign_forward_limiter("foreign").unwrap();
+        assert!(Arc::ptr_eq(&receive, &receive_again));
+        assert!(!Arc::ptr_eq(&receive, &forward));
+        context.stop().await;
     }
 
-    #[test]
-    fn foreign_forward_limiter_does_not_fall_back_to_instance_limit() {
+    #[tokio::test]
+    async fn foreign_forward_limiter_does_not_fall_back_to_instance_limit() {
         let mut snapshot = submitted_snapshot("limiter", false);
         snapshot.traffic_limits.foreign_relay_bps = None;
         snapshot.traffic_limits.instance_recv_bps = Some(1024);
         let config = submitted_config(snapshot);
-        let support = Arc::new(TestSubmittedSupport::default());
-        let context = SubmittedPeerContext::new(
-            config,
-            submitted_capabilities(support.clone(), Arc::new(())),
-        );
+        let context = SubmittedPeerContext::new(config, submitted_capabilities(Arc::new(())));
 
         assert!(context.recv_limiter("foreign", true).is_some());
         assert!(context.foreign_forward_limiter("foreign").is_none());
-        assert_eq!(
-            support.limiter_keys.lock().unwrap().as_slice(),
-            ["instance:recv"]
-        );
+        context.stop().await;
     }
 
     #[test]
@@ -1588,21 +1480,18 @@ mod tests {
         let mut snapshot = PeerRuntimeSnapshot::new(runtime, flags);
         snapshot.set_acl_groups(acl);
         let config = CoreRuntimeConfigStore::new(CoreRuntimeConfig::default(), Arc::new(snapshot));
-        let support = Arc::new(CorePeerContextSupport::new());
-        SubmittedPeerContext::new_core_owned(
+        SubmittedPeerContext::new(
             config,
             SubmittedPeerContextCapabilities {
                 relay_state_sink: Arc::new(()),
                 stun_info_source,
                 public_ipv6_state: Arc::new(()),
-                limiter_factory: Arc::new(()),
                 traffic_sink: Arc::new(()),
                 event_sink: Arc::new(()),
                 credentials: Arc::new(CredentialManager::new()),
                 trusted_keys: Arc::new(TrustedKeyMapManager::new()),
                 credential_event_sink: Arc::new(()),
             },
-            support,
         )
     }
 

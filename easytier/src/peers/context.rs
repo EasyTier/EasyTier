@@ -7,10 +7,9 @@ use easytier_core::config::{
 #[cfg(test)]
 use easytier_core::peers::context::PeerContext;
 use easytier_core::peers::context::{
-    ArcByteLimiter, HostRoutingPolicy, NetworkIdentity as CoreNetworkIdentity,
-    PeerCredentialEventSink, PeerEvent, PeerEventSink, PeerLimiterFactory, PeerPublicIpv6State,
-    PeerRelayStateSink, PeerRuntimeConfig, PeerRuntimeSnapshot, PeerStunInfoSource,
-    SubmittedPeerContext, SubmittedPeerContextCapabilities,
+    HostRoutingPolicy, NetworkIdentity as CoreNetworkIdentity, PeerCredentialEventSink, PeerEvent,
+    PeerEventSink, PeerPublicIpv6State, PeerRelayStateSink, PeerRuntimeConfig, PeerRuntimeSnapshot,
+    PeerStunInfoSource, SubmittedPeerContext, SubmittedPeerContextCapabilities,
 };
 use easytier_core::runtime_config::{CoreRuntimeConfig, CoreRuntimeConfigStore};
 
@@ -19,7 +18,6 @@ use crate::{
         constants::EASYTIER_VERSION,
         global_ctx::{ArcGlobalCtx, GlobalCtx, GlobalCtxEvent},
     },
-    proto::common::LimiterConfig,
     use_global_var,
 };
 
@@ -98,28 +96,11 @@ pub(crate) fn submitted_peer_capabilities(
         relay_state_sink: global_ctx.clone(),
         stun_info_source: Some(global_ctx.clone()),
         public_ipv6_state: global_ctx.clone(),
-        limiter_factory: global_ctx.clone(),
         traffic_sink: global_ctx.clone(),
         event_sink: event_sink.clone(),
         credentials: global_ctx.get_credential_manager().core(),
         trusted_keys: global_ctx.trusted_key_manager(),
         credential_event_sink: event_sink,
-    }
-}
-
-impl PeerLimiterFactory for GlobalCtx {
-    fn get_or_create_limiter(&self, key: &str, bps: u64) -> Option<ArcByteLimiter> {
-        Some(
-            self.token_bucket_manager().get_or_create(
-                key,
-                LimiterConfig {
-                    burst_rate: None,
-                    bps: Some(bps),
-                    fill_duration_ms: None,
-                }
-                .into(),
-            ),
-        )
     }
 }
 
@@ -146,6 +127,9 @@ fn runtime_peer_config(global_ctx: &ArcGlobalCtx) -> PeerRuntimeConfig {
             }),
         })
         .collect();
+    let mut feature_flags = global_ctx.get_feature_flags();
+    // Public-IPv6 provider state is live host state, not submitted config.
+    feature_flags.ipv6_public_addr_provider = false;
     PeerRuntimeConfig {
         core: CoreConfig {
             node: NodeConfig {
@@ -171,7 +155,7 @@ fn runtime_peer_config(global_ctx: &ArcGlobalCtx) -> PeerRuntimeConfig {
         },
         network_identity,
         stun_info: global_ctx.get_stun_info_collector().get_stun_info(),
-        feature_flags: global_ctx.get_feature_flags(),
+        feature_flags,
         secure_mode: global_ctx.config.get_secure_mode(),
         host_routing: HostRoutingPolicy {
             local_exit_node_fallback: cfg!(target_env = "ohos"),
