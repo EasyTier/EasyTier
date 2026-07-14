@@ -20,7 +20,7 @@ use tokio::sync::{Semaphore, mpsc, watch};
 use crate::{
     listener::SocketListener,
     packet::{PacketType, UDP_TUNNEL_HEADER_SIZE, UdpPacketType, ZCPacket, ZCPacketType},
-    socket::ring::RingSocketSendError,
+    socket::{SocketContext, ring::RingSocketSendError},
     stun::{Attribute, ChangeRequest, u32_to_tid},
 };
 
@@ -33,8 +33,8 @@ fn bind_options_constructors_describe_socket_purpose() {
     assert_eq!(
         UdpBindOptions::hole_punch_control(),
         UdpBindOptions {
+            context: SocketContext::default(),
             local_addr: None,
-            socket_mark: None,
             bind_device: None,
             reuse_addr: false,
             reuse_port: false,
@@ -45,8 +45,8 @@ fn bind_options_constructors_describe_socket_purpose() {
     assert_eq!(
         UdpBindOptions::hole_punch_candidate(),
         UdpBindOptions {
+            context: SocketContext::default(),
             local_addr: None,
-            socket_mark: None,
             bind_device: None,
             reuse_addr: false,
             reuse_port: false,
@@ -57,8 +57,8 @@ fn bind_options_constructors_describe_socket_purpose() {
     assert_eq!(
         UdpBindOptions::direct_connect(),
         UdpBindOptions {
+            context: SocketContext::default(),
             local_addr: None,
-            socket_mark: None,
             bind_device: None,
             reuse_addr: false,
             reuse_port: false,
@@ -69,8 +69,8 @@ fn bind_options_constructors_describe_socket_purpose() {
     assert_eq!(
         UdpBindOptions::port_bound_listener(listener_addr),
         UdpBindOptions {
+            context: SocketContext::default(),
             local_addr: Some(listener_addr),
-            socket_mark: None,
             bind_device: None,
             reuse_addr: false,
             reuse_port: false,
@@ -97,8 +97,8 @@ fn session_connect_request_keeps_peer_scoped_udp_shape() {
     assert_eq!(
         request.bind,
         UdpBindOptions {
+            context: SocketContext::default(),
             local_addr: Some(bind_addr),
-            socket_mark: None,
             bind_device: None,
             reuse_addr: false,
             reuse_port: false,

@@ -49,52 +49,49 @@ pub static RESOLVER: Lazy<Arc<Resolver<GenericConnector<TokioRuntimeProvider>>>>
         Arc::new(builder.build())
     });
 
-pub(crate) struct RuntimeDnsResolver {
-    net_ns: Option<NetNS>,
-}
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct RuntimeDnsResolver;
 
 impl RuntimeDnsResolver {
     pub(crate) fn new() -> Self {
-        Self { net_ns: None }
-    }
-
-    pub(crate) fn new_with_netns(net_ns: NetNS) -> Self {
-        Self {
-            net_ns: Some(net_ns),
-        }
+        Self
     }
 }
 
 #[async_trait]
 impl DnsResolver for RuntimeDnsResolver {
     async fn resolve(&self, query: DnsQuery) -> anyhow::Result<Vec<IpAddr>> {
-        match &self.net_ns {
-            Some(net_ns) => Ok(net_ns.run_async(|| resolve_ips(&query.host)).await?),
-            None => Ok(resolve_ips(&query.host).await?),
-        }
+        let net_ns = NetNS::from_socket_context(&query.context);
+        Ok(net_ns.run_async(|| resolve_ips(&query.host)).await?)
     }
 }
 
 #[async_trait]
 impl DnsRecordResolver for RuntimeDnsResolver {
     async fn resolve_txt(&self, query: DnsQuery) -> anyhow::Result<String> {
-        Ok(resolve_txt_record(&query.host).await?)
+        let net_ns = NetNS::from_socket_context(&query.context);
+        Ok(net_ns.run_async(|| resolve_txt_record(&query.host)).await?)
     }
 
     async fn resolve_srv(&self, query: DnsQuery) -> anyhow::Result<Vec<DnsSrvRecord>> {
-        let response = RESOLVER
-            .srv_lookup(&query.host)
-            .await
-            .with_context(|| format!("srv_lookup failed, srv_domain: {}", query.host))?;
-        Ok(response
-            .iter()
-            .map(|record| DnsSrvRecord {
-                priority: record.priority(),
-                weight: record.weight(),
-                port: record.port(),
-                target: record.target().to_utf8(),
+        let net_ns = NetNS::from_socket_context(&query.context);
+        net_ns
+            .run_async(|| async {
+                let response = RESOLVER
+                    .srv_lookup(&query.host)
+                    .await
+                    .with_context(|| format!("srv_lookup failed, srv_domain: {}", query.host))?;
+                Ok(response
+                    .iter()
+                    .map(|record| DnsSrvRecord {
+                        priority: record.priority(),
+                        weight: record.weight(),
+                        port: record.port(),
+                        target: record.target().to_utf8(),
+                    })
+                    .collect())
             })
-            .collect())
+            .await
     }
 }
 

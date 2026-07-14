@@ -6,10 +6,13 @@ use std::{
 use async_trait::async_trait;
 use easytier_core::{
     hole_punch::udp::new_hole_punch_packet,
-    socket::udp::{
-        PreferredIpv6Source, UdpBindOptions, UdpSessionAcceptKind, UdpSessionControlHandler,
-        UdpSessionLayer, UdpSessionListenRequest, UdpSessionSocketListener, UdpSocketPurpose,
-        UdpSocketRecvMeta, UdpSocketSendMeta, VirtualUdpSocket, VirtualUdpSocketFactory,
+    socket::{
+        NetNamespace, SocketContext,
+        udp::{
+            PreferredIpv6Source, UdpBindOptions, UdpSessionAcceptKind, UdpSessionControlHandler,
+            UdpSessionLayer, UdpSessionListenRequest, UdpSessionSocketListener, UdpSocketPurpose,
+            UdpSocketRecvMeta, UdpSocketSendMeta, VirtualUdpSocket, VirtualUdpSocketFactory,
+        },
     },
 };
 use tokio::net::UdpSocket;
@@ -32,26 +35,33 @@ pub(crate) type RuntimeUdpSessionSocketListener =
 
 pub(crate) fn new_runtime_udp_session_listener(
     url: url::Url,
-    request: UdpSessionListenRequest,
+    mut request: UdpSessionListenRequest,
     accept_kind: UdpSessionAcceptKind,
     net_ns: NetNS,
 ) -> RuntimeUdpSessionSocketListener {
-    let factory = Arc::new(RuntimeUdpSocketFactory::new(net_ns));
+    request.bind.context.netns = net_ns.name().map(NetNamespace::new);
+    let factory = Arc::new(RuntimeUdpSocketFactory::new());
     UdpSessionSocketListener::new_with_request(url, request, accept_kind, factory.clone(), factory)
 }
 
 pub(crate) struct RuntimeUdpSocket {
     socket: Arc<UdpSocket>,
+    context: SocketContext,
     udp_session_layer: StdMutex<Option<Weak<RuntimeUdpSessionLayer>>>,
 }
 
 impl RuntimeUdpSocket {
     pub(crate) fn new(socket: Arc<UdpSocket>) -> Self {
+        Self::new_with_context(socket, SocketContext::default())
+    }
+
+    pub(crate) fn new_with_context(socket: Arc<UdpSocket>, context: SocketContext) -> Self {
         if let Err(err) = udp_src::enable_recv_pktinfo(&socket) {
             tracing::debug!(?err, "enable udp pktinfo failed");
         }
         Self {
             socket,
+            context,
             udp_session_layer: StdMutex::new(None),
         }
     }
@@ -83,6 +93,10 @@ impl RuntimeUdpSocket {
 impl VirtualUdpSocket for RuntimeUdpSocket {
     fn local_addr(&self) -> std::io::Result<SocketAddr> {
         self.socket.local_addr()
+    }
+
+    fn socket_context(&self) -> SocketContext {
+        self.context.clone()
     }
 
     async fn send_to(&self, data: &[u8], addr: SocketAddr) -> std::io::Result<usize> {
@@ -161,23 +175,12 @@ impl UdpSessionControlHandler<RuntimeUdpSocket> for RuntimeUdpSessionControlHand
     }
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct RuntimeUdpSocketFactory {
-    net_ns: NetNS,
-    socket_mark: Option<u32>,
-}
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct RuntimeUdpSocketFactory;
 
 impl RuntimeUdpSocketFactory {
-    pub(crate) fn new(net_ns: NetNS) -> Self {
-        Self {
-            net_ns,
-            socket_mark: None,
-        }
-    }
-
-    pub(crate) fn with_socket_mark(mut self, socket_mark: Option<u32>) -> Self {
-        self.socket_mark = socket_mark;
-        self
+    pub(crate) fn new() -> Self {
+        Self
     }
 
     fn bind_device_for(&self, options: &UdpBindOptions) -> BindDev {
@@ -209,19 +212,23 @@ impl VirtualUdpSocketFactory for RuntimeUdpSocketFactory {
     type Socket = RuntimeUdpSocket;
 
     async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
+        let context = options.context.clone();
         let bind_addr = options
             .local_addr
             .unwrap_or_else(|| SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)));
         let socket = bind::<UdpSocket>()
             .addr(bind_addr)
             .dev(self.bind_device_for(&options))
-            .maybe_net_ns(Some(self.net_ns.clone()))
+            .maybe_net_ns(Some(NetNS::from_socket_context(&context)))
             .only_v6(options.only_v6)
             .reuse_addr(self.reuse_addr_for(&options))
             .reuse_port(options.reuse_port)
-            .maybe_socket_mark(options.socket_mark.or(self.socket_mark))
+            .maybe_socket_mark(context.socket_mark)
             .call()?;
-        Ok(Arc::new(RuntimeUdpSocket::new(Arc::new(socket))))
+        Ok(Arc::new(RuntimeUdpSocket::new_with_context(
+            Arc::new(socket),
+            context,
+        )))
     }
 }
 
@@ -254,6 +261,7 @@ impl VirtualUdpSocketFactory for RuntimeUdpSessionControlHandler {
     type Socket = RuntimeUdpSocket;
 
     async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
+        let context = options.context.clone();
         let bind_addr = options
             .local_addr
             .unwrap_or_else(|| SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)));
@@ -264,12 +272,16 @@ impl VirtualUdpSocketFactory for RuntimeUdpSessionControlHandler {
         let socket = bind::<UdpSocket>()
             .addr(bind_addr)
             .dev(bind_device)
+            .maybe_net_ns(Some(NetNS::from_socket_context(&context)))
             .only_v6(options.only_v6)
             .reuse_addr(options.reuse_addr)
             .reuse_port(options.reuse_port)
-            .maybe_socket_mark(options.socket_mark)
+            .maybe_socket_mark(context.socket_mark)
             .call()?;
-        Ok(Arc::new(RuntimeUdpSocket::new(Arc::new(socket))))
+        Ok(Arc::new(RuntimeUdpSocket::new_with_context(
+            Arc::new(socket),
+            context,
+        )))
     }
 }
 
@@ -394,7 +406,7 @@ mod tests {
     #[test]
     fn factory_interprets_bind_defaults_by_purpose() {
         let listener_addr = SocketAddr::from(([0, 0, 0, 0], 11010));
-        let factory = RuntimeUdpSocketFactory::new(NetNS::new(None));
+        let factory = RuntimeUdpSocketFactory::new();
 
         assert!(matches!(
             factory.bind_device_for(&UdpBindOptions::port_bound_listener(listener_addr)),
@@ -422,7 +434,7 @@ mod tests {
     #[test]
     fn factory_applies_listener_bind_device_option() {
         let listener_addr = SocketAddr::from(([0, 0, 0, 0], 11010));
-        let factory = RuntimeUdpSocketFactory::new(NetNS::new(None));
+        let factory = RuntimeUdpSocketFactory::new();
         let options = UdpBindOptions::port_bound_listener(listener_addr)
             .with_bind_device(Some("eth0".to_owned()));
 

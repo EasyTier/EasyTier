@@ -8,6 +8,7 @@ use percent_encoding::percent_decode_str;
 use url::Url;
 
 use crate::socket::{
+    SocketContext,
     tcp::{TcpBindOptions, TcpListenOptions},
     udp::{UdpBindOptions, UdpSessionListenRequest},
 };
@@ -166,44 +167,44 @@ pub fn listener_url_bind_device(url: &Url) -> Option<String> {
 pub fn udp_session_listen_request(
     url: &Url,
     local_addr: std::net::SocketAddr,
-    socket_mark: Option<u32>,
+    context: SocketContext,
 ) -> UdpSessionListenRequest {
     UdpSessionListenRequest::new(
         UdpBindOptions::port_bound_listener(local_addr)
             .with_only_v6(true)
-            .with_socket_mark(socket_mark)
+            .with_context(context)
             .with_bind_device(listener_url_bind_device(url)),
     )
 }
 
 pub fn unresolved_udp_session_listen_request(
     url: &Url,
-    socket_mark: Option<u32>,
+    context: SocketContext,
 ) -> UdpSessionListenRequest {
     UdpSessionListenRequest::new(
         UdpBindOptions::port_bound_listener("0.0.0.0:0".parse().unwrap())
             .with_local_addr(None)
             .with_only_v6(true)
-            .with_socket_mark(socket_mark)
+            .with_context(context)
             .with_bind_device(listener_url_bind_device(url)),
     )
 }
 
 pub fn tcp_listener_options(
     local_addr: std::net::SocketAddr,
-    socket_mark: Option<u32>,
+    context: SocketContext,
 ) -> TcpListenOptions {
     let bind = TcpBindOptions::default()
         .with_local_addr(Some(local_addr))
-        .with_socket_mark(socket_mark)
+        .with_context(context)
         .with_only_v6(true);
     TcpListenOptions::direct_connect(local_addr).with_bind(bind)
 }
 
-pub fn unresolved_tcp_listener_options(socket_mark: Option<u32>) -> TcpListenOptions {
+pub fn unresolved_tcp_listener_options(context: SocketContext) -> TcpListenOptions {
     TcpListenOptions::direct_connect("0.0.0.0:0".parse().unwrap()).with_bind(
         TcpBindOptions::default()
-            .with_socket_mark(socket_mark)
+            .with_context(context)
             .with_only_v6(true),
     )
 }
@@ -363,7 +364,11 @@ mod tests {
         let url = "udp://0.0.0.0:11010/eth0".parse().unwrap();
         let local_addr: SocketAddr = "0.0.0.0:11010".parse().unwrap();
 
-        let request = udp_session_listen_request(&url, local_addr, Some(7));
+        let request = udp_session_listen_request(
+            &url,
+            local_addr,
+            SocketContext::default().with_socket_mark(Some(7)),
+        );
 
         assert_eq!(
             request,
@@ -380,7 +385,10 @@ mod tests {
     fn tcp_listener_options_preserve_existing_listener_bind_options() {
         let local_addr: std::net::SocketAddr = "0.0.0.0:11010".parse().unwrap();
 
-        let options = tcp_listener_options(local_addr, Some(7));
+        let options = tcp_listener_options(
+            local_addr,
+            SocketContext::default().with_socket_mark(Some(7)),
+        );
 
         assert_eq!(
             options,

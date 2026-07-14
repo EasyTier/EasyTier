@@ -34,7 +34,7 @@ use crate::{
         rpc_types::{self, controller::BaseController},
     },
     socket::{
-        IpVersion,
+        IpVersion, SocketContext,
         dns::DnsResolver,
         tcp::{TcpBindOptions, TcpSocketPurpose},
         udp::{
@@ -180,11 +180,12 @@ impl Default for DirectConnectorOptions {
 }
 
 impl DirectConnectorOptions {
-    fn socket_mark(&self, transport: DirectTransport) -> Option<u32> {
-        match transport {
-            DirectTransport::Tcp(_) => self.tcp_bind.socket_mark,
-            DirectTransport::Udp(_) => self.udp_bind.socket_mark,
-        }
+    fn socket_context(&self, transport: DirectTransport, ip_version: IpVersion) -> SocketContext {
+        let context = match transport {
+            DirectTransport::Tcp(_) => self.tcp_bind.context.clone(),
+            DirectTransport::Udp(_) => self.udp_bind.context.clone(),
+        };
+        context.with_ip_version(ip_version)
     }
 }
 
@@ -571,7 +572,7 @@ where
     ) {
         let Ok(mut addrs) = resolve_mapped_listener_addrs(
             listener,
-            self.options.tcp_bind.socket_mark,
+            self.options.tcp_bind.context.clone(),
             self.dns.as_ref(),
         )
         .await
@@ -750,8 +751,7 @@ where
             self.dns.as_ref(),
             &normalized,
             default_port,
-            IpVersion::Both,
-            self.options.socket_mark(transport),
+            self.options.socket_context(transport, IpVersion::Both),
         )
         .await?;
         let bind_addrs = if self.options.bind_device
@@ -1110,12 +1110,18 @@ fn is_udp_protocol(scheme: &str) -> bool {
 
 async fn resolve_mapped_listener_addrs(
     listener: &Url,
-    socket_mark: Option<u32>,
+    context: SocketContext,
     dns: &dyn DnsResolver,
 ) -> anyhow::Result<Vec<SocketAddr>> {
     let port = mapped_listener_port(listener)
         .ok_or_else(|| anyhow::anyhow!("listener has no default port: {listener}"))?;
-    resolve_url_addrs(listener, port, IpVersion::Both, socket_mark, dns).await
+    resolve_url_addrs(
+        listener,
+        port,
+        context.with_ip_version(IpVersion::Both),
+        dns,
+    )
+    .await
 }
 
 fn resolve_literal_url(url: &Url, ip_version: IpVersion) -> anyhow::Result<SocketAddr> {

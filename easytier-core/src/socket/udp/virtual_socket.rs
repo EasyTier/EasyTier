@@ -7,6 +7,8 @@ use std::{
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+use crate::socket::{IpVersion, SocketContext};
+
 use super::packet::{new_v4_hole_punch_packet, new_v6_hole_punch_packet};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +25,10 @@ pub struct UdpSocketSendMeta {
 #[async_trait]
 pub trait VirtualUdpSocket: Send + Sync + 'static {
     fn local_addr(&self) -> std::io::Result<SocketAddr>;
+
+    fn socket_context(&self) -> SocketContext {
+        SocketContext::default()
+    }
 
     async fn send_to(&self, data: &[u8], addr: SocketAddr) -> std::io::Result<usize>;
 
@@ -169,8 +175,9 @@ pub enum UdpSocketPurpose {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UdpBindOptions {
+    #[serde(default)]
+    pub context: SocketContext,
     pub local_addr: Option<SocketAddr>,
-    pub socket_mark: Option<u32>,
     pub bind_device: Option<String>,
     pub reuse_addr: bool,
     pub reuse_port: bool,
@@ -181,8 +188,8 @@ pub struct UdpBindOptions {
 impl UdpBindOptions {
     fn for_purpose(purpose: UdpSocketPurpose) -> Self {
         Self {
+            context: SocketContext::default(),
             local_addr: None,
-            socket_mark: None,
             bind_device: None,
             reuse_addr: false,
             reuse_port: false,
@@ -220,7 +227,17 @@ impl UdpBindOptions {
     }
 
     pub fn with_socket_mark(mut self, socket_mark: Option<u32>) -> Self {
-        self.socket_mark = socket_mark;
+        self.context.socket_mark = socket_mark;
+        self
+    }
+
+    pub fn with_context(mut self, context: SocketContext) -> Self {
+        self.context = context;
+        self
+    }
+
+    pub fn with_ip_version(mut self, ip_version: IpVersion) -> Self {
+        self.context.ip_version = ip_version;
         self
     }
 

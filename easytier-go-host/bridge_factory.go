@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"unicode/utf8"
 
 	"github.com/tetratelabs/wazero/api"
 )
@@ -272,7 +273,7 @@ func readOwnedOptions(module api.Module, pointer, length uint32) ([]byte, bool) 
 }
 
 func decodeTCPConnectOptions(encoded []byte) (TCPConnectOptions, error) {
-	if len(encoded) < 69 || encoded[0] != 1 {
+	if len(encoded) < 75 || encoded[0] != 2 {
 		return TCPConnectOptions{}, fmt.Errorf("invalid TCP connect options")
 	}
 	remote, err := decodeSocketAddress(encoded[1:28], false)
@@ -283,83 +284,82 @@ func decodeTCPConnectOptions(encoded []byte) (TCPConnectOptions, error) {
 	if err != nil {
 		return TCPConnectOptions{}, err
 	}
+	context, remainder, err := decodeSocketContext(encoded[55:])
+	if err != nil {
+		return TCPConnectOptions{}, fmt.Errorf("invalid TCP socket context: %w", err)
+	}
+	if len(remainder) < 9 {
+		return TCPConnectOptions{}, fmt.Errorf("truncated TCP bind policy")
+	}
 	bind, err := decodeTCPBindPolicy(
-		udpToTCPAddr(local),
-		encoded[55],
-		encoded[56:60],
-		encoded[60],
-		encoded[61],
-		encoded[62],
-		encoded[64:],
+		udpToTCPAddr(local), context, remainder[0], remainder[1], remainder[2], remainder[4:],
 	)
 	if err != nil {
 		return TCPConnectOptions{}, err
 	}
-	if encoded[63] > 4 {
+	if remainder[3] > 4 {
 		return TCPConnectOptions{}, fmt.Errorf("invalid TCP purpose")
 	}
 	return TCPConnectOptions{
 		RemoteAddr: &net.TCPAddr{IP: remote.IP, Port: remote.Port, Zone: remote.Zone},
 		Bind:       bind,
-		Purpose:    TCPConnectPurpose(encoded[63]),
+		Purpose:    TCPConnectPurpose(remainder[3]),
 	}, nil
 }
 
 func decodeUDPBindOptions(encoded []byte) (UDPBindOptions, error) {
-	if len(encoded) < 42 || encoded[0] != 1 {
+	if len(encoded) < 48 || encoded[0] != 2 {
 		return UDPBindOptions{}, fmt.Errorf("invalid UDP bind options")
 	}
 	local, err := decodeSocketAddress(encoded[1:28], true)
 	if err != nil {
 		return UDPBindOptions{}, err
 	}
-	mark, err := decodeSocketMark(encoded[28], encoded[29:33])
+	context, remainder, err := decodeSocketContext(encoded[28:])
+	if err != nil {
+		return UDPBindOptions{}, fmt.Errorf("invalid UDP socket context: %w", err)
+	}
+	if len(remainder) < 9 {
+		return UDPBindOptions{}, fmt.Errorf("truncated UDP bind policy")
+	}
+	reuseAddr, err := decodeWireBool("UDP reuse_addr", remainder[0])
 	if err != nil {
 		return UDPBindOptions{}, err
 	}
-	reuseAddr, err := decodeWireBool("UDP reuse_addr", encoded[33])
+	reusePort, err := decodeWireBool("UDP reuse_port", remainder[1])
 	if err != nil {
 		return UDPBindOptions{}, err
 	}
-	reusePort, err := decodeWireBool("UDP reuse_port", encoded[34])
+	onlyV6, err := decodeWireBool("UDP only_v6", remainder[2])
 	if err != nil {
 		return UDPBindOptions{}, err
 	}
-	onlyV6, err := decodeWireBool("UDP only_v6", encoded[35])
-	if err != nil {
-		return UDPBindOptions{}, err
-	}
-	if encoded[36] > 4 {
+	if remainder[3] > 4 {
 		return UDPBindOptions{}, fmt.Errorf("invalid UDP purpose")
 	}
-	device, err := decodeBindDevice(encoded[37:])
+	device, err := decodeBindDevice(remainder[4:])
 	if err != nil {
 		return UDPBindOptions{}, err
 	}
 	return UDPBindOptions{
+		Context:    context,
 		LocalAddr:  local,
-		SocketMark: mark,
 		BindDevice: device,
 		ReuseAddr:  reuseAddr,
 		ReusePort:  reusePort,
 		OnlyV6:     onlyV6,
-		Purpose:    UDPBindPurpose(encoded[36]),
+		Purpose:    UDPBindPurpose(remainder[3]),
 	}, nil
 }
 
 func decodeTCPBindPolicy(
 	localAddr *net.TCPAddr,
-	markPresent byte,
-	markBytes []byte,
+	context SocketContext,
 	reuseMode byte,
 	reusePortByte byte,
 	onlyV6Byte byte,
 	deviceBytes []byte,
 ) (TCPBindOptions, error) {
-	mark, err := decodeSocketMark(markPresent, markBytes)
-	if err != nil {
-		return TCPBindOptions{}, err
-	}
 	var reuseAddr *bool
 	switch reuseMode {
 	case 0:
@@ -385,13 +385,44 @@ func decodeTCPBindPolicy(
 		return TCPBindOptions{}, err
 	}
 	return TCPBindOptions{
+		Context:    context,
 		LocalAddr:  localAddr,
-		SocketMark: mark,
 		BindDevice: device,
 		ReuseAddr:  reuseAddr,
 		ReusePort:  reusePort,
 		OnlyV6:     onlyV6,
 	}, nil
+}
+
+func decodeSocketContext(encoded []byte) (SocketContext, []byte, error) {
+	if len(encoded) < 11 || encoded[0] > byte(IPVersionBoth) {
+		return SocketContext{}, nil, fmt.Errorf("invalid IP version")
+	}
+	mark, err := decodeSocketMark(encoded[1], encoded[2:6])
+	if err != nil {
+		return SocketContext{}, nil, err
+	}
+	if encoded[6] > 1 {
+		return SocketContext{}, nil, fmt.Errorf("invalid netns presence")
+	}
+	length := int(binary.BigEndian.Uint32(encoded[7:11]))
+	if length > len(encoded)-11 || (encoded[6] == 0 && length != 0) {
+		return SocketContext{}, nil, fmt.Errorf("invalid netns length")
+	}
+	var netns *string
+	if encoded[6] == 1 {
+		token := encoded[11 : 11+length]
+		if !utf8.Valid(token) {
+			return SocketContext{}, nil, fmt.Errorf("netns token is not UTF-8")
+		}
+		value := string(token)
+		netns = &value
+	}
+	return SocketContext{
+		IPVersion:  IPVersion(encoded[0]),
+		SocketMark: mark,
+		NetNS:      netns,
+	}, encoded[11+length:], nil
 }
 
 func decodeSocketMark(present byte, encoded []byte) (*uint32, error) {

@@ -175,8 +175,11 @@ where
     let addrs = resolve_url_addrs(
         &request.url,
         default_port,
-        request.ip_version,
-        request.tcp_bind.socket_mark,
+        request
+            .tcp_bind
+            .context
+            .clone()
+            .with_ip_version(request.ip_version),
         dns,
     )
     .await?;
@@ -650,7 +653,7 @@ mod tests {
         let options = &host.connects.lock().unwrap()[0];
         assert_eq!(options.remote_addr, "192.0.2.1:18080".parse().unwrap());
         assert_eq!(options.purpose, TcpSocketPurpose::ManualConnect);
-        assert_eq!(options.bind.socket_mark, Some(9));
+        assert_eq!(options.bind.context.socket_mark, Some(9));
     }
 
     #[test]
@@ -875,7 +878,7 @@ mod tests {
         let connects = host.connects.lock().unwrap();
         assert_eq!(connects.len(), 1);
         assert_eq!(connects[0].remote_addr, "192.0.2.1:18081".parse().unwrap());
-        assert_eq!(connects[0].bind.socket_mark, Some(23));
+        assert_eq!(connects[0].bind.context.socket_mark, Some(23));
     }
 
     #[tokio::test]

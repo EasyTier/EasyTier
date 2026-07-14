@@ -14,14 +14,15 @@ import (
 )
 
 func TestDecodeTCPProxyNatListenPurpose(t *testing.T) {
-	encoded := make([]byte, 42)
-	encoded[0] = 1
+	encoded := make([]byte, 48)
+	encoded[0] = 2
 	local, err := encodeNetAddr(&net.TCPAddr{IP: net.IPv4zero, Port: 0})
 	if err != nil {
 		t.Fatal(err)
 	}
 	copy(encoded[1:28], local[:])
-	encoded[36] = 3
+	encoded[28] = byte(IPVersionBoth)
+	encoded[42] = 3
 	options, err := decodeTCPListenOptions(encoded)
 	if err != nil {
 		t.Fatalf("decode proxy NAT TCP listen options: %v", err)
@@ -32,28 +33,29 @@ func TestDecodeTCPProxyNatListenPurpose(t *testing.T) {
 }
 
 func TestDecodeTCPListenBindPolicyForCustomFactory(t *testing.T) {
-	encoded := make([]byte, 45)
-	encoded[0] = 1
+	encoded := make([]byte, 51)
+	encoded[0] = 2
 	local, err := encodeNetAddr(&net.TCPAddr{IP: net.IPv4zero, Port: 11010})
 	if err != nil {
 		t.Fatal(err)
 	}
 	copy(encoded[1:28], local[:])
-	encoded[28] = 1
-	binary.BigEndian.PutUint32(encoded[29:33], 11)
-	encoded[33] = 1
-	encoded[34] = 1
-	encoded[35] = 1
-	encoded[36] = byte(TCPListenManual)
-	encoded[37] = 1
-	binary.BigEndian.PutUint32(encoded[38:42], 3)
-	copy(encoded[42:], "tun")
+	encoded[28] = byte(IPVersionBoth)
+	encoded[29] = 1
+	binary.BigEndian.PutUint32(encoded[30:34], 11)
+	encoded[39] = 1
+	encoded[40] = 1
+	encoded[41] = 1
+	encoded[42] = byte(TCPListenManual)
+	encoded[43] = 1
+	binary.BigEndian.PutUint32(encoded[44:48], 3)
+	copy(encoded[48:], "tun")
 
 	options, err := decodeTCPListenOptions(encoded)
 	if err != nil {
 		t.Fatalf("decode TCP listen bind policy: %v", err)
 	}
-	if options.Bind.SocketMark == nil || *options.Bind.SocketMark != 11 ||
+	if options.Bind.Context.SocketMark == nil || *options.Bind.Context.SocketMark != 11 ||
 		options.Bind.BindDevice == nil || *options.Bind.BindDevice != "tun" ||
 		options.Bind.ReuseAddr == nil || *options.Bind.ReuseAddr ||
 		!options.Bind.ReusePort || !options.Bind.OnlyV6 {

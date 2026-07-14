@@ -4,7 +4,10 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::listener::SocketListener;
+use crate::{
+    listener::SocketListener,
+    socket::{IpVersion, SocketContext},
+};
 
 /// A core-visible TCP stream endpoint.
 ///
@@ -33,8 +36,9 @@ pub enum TcpSocketPurpose {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TcpBindOptions {
+    #[serde(default)]
+    pub context: SocketContext,
     pub local_addr: Option<SocketAddr>,
-    pub socket_mark: Option<u32>,
     pub bind_device: Option<String>,
     /// `None` delegates the platform default to the host socket adapter.
     pub reuse_addr: Option<bool>,
@@ -45,8 +49,8 @@ pub struct TcpBindOptions {
 impl TcpBindOptions {
     pub fn new() -> Self {
         Self {
+            context: SocketContext::default(),
             local_addr: None,
-            socket_mark: None,
             bind_device: None,
             reuse_addr: None,
             reuse_port: false,
@@ -60,7 +64,17 @@ impl TcpBindOptions {
     }
 
     pub fn with_socket_mark(mut self, socket_mark: Option<u32>) -> Self {
-        self.socket_mark = socket_mark;
+        self.context.socket_mark = socket_mark;
+        self
+    }
+
+    pub fn with_context(mut self, context: SocketContext) -> Self {
+        self.context = context;
+        self
+    }
+
+    pub fn with_ip_version(mut self, ip_version: IpVersion) -> Self {
+        self.context.ip_version = ip_version;
         self
     }
 
@@ -524,8 +538,8 @@ mod tests {
         assert_eq!(
             options,
             TcpBindOptions {
+                context: SocketContext::default().with_socket_mark(Some(7)),
                 local_addr: Some(local_addr),
-                socket_mark: Some(7),
                 bind_device: Some("eth0".to_owned()),
                 reuse_addr: Some(true),
                 reuse_port: true,

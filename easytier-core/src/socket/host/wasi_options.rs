@@ -1,6 +1,7 @@
 use std::io;
 
 use crate::socket::{
+    IpVersion, SocketContext,
     tcp::{TcpConnectOptions, TcpListenOptions, TcpListenPurpose, TcpSocketPurpose},
     udp::{UdpBindOptions, UdpSocketPurpose},
 };
@@ -12,16 +13,19 @@ use super::{
     wasi_wire::{SOCKET_ADDRESS_LEN, decode_socket_address, encode_socket_address},
 };
 
-const OPTIONS_VERSION: u8 = 1;
+const OPTIONS_VERSION: u8 = 2;
 pub(super) const TCP_SOCKET_RESULT_LEN: usize = 8 + SOCKET_ADDRESS_LEN * 2;
 pub(super) const BOUND_SOCKET_RESULT_LEN: usize = 8 + SOCKET_ADDRESS_LEN;
 
 pub(super) fn encode_tcp_connect_options(options: &TcpConnectOptions) -> io::Result<Vec<u8>> {
-    let mut encoded = Vec::with_capacity(69 + bind_device_len(&options.bind.bind_device));
+    let mut encoded = Vec::with_capacity(
+        75 + context_variable_len(&options.bind.context)
+            + bind_device_len(&options.bind.bind_device),
+    );
     encoded.push(OPTIONS_VERSION);
     encoded.extend_from_slice(&encode_socket_address(options.remote_addr));
     encode_optional_address(&mut encoded, options.bind.local_addr);
-    encode_mark(&mut encoded, options.bind.socket_mark);
+    encode_context(&mut encoded, &options.bind.context)?;
     encoded.push(match options.bind.reuse_addr {
         None => 0,
         Some(false) => 1,
@@ -41,10 +45,12 @@ pub(super) fn encode_tcp_connect_options(options: &TcpConnectOptions) -> io::Res
 }
 
 pub(super) fn encode_udp_bind_options(options: &UdpBindOptions) -> io::Result<Vec<u8>> {
-    let mut encoded = Vec::with_capacity(42 + bind_device_len(&options.bind_device));
+    let mut encoded = Vec::with_capacity(
+        48 + context_variable_len(&options.context) + bind_device_len(&options.bind_device),
+    );
     encoded.push(OPTIONS_VERSION);
     encode_optional_address(&mut encoded, options.local_addr);
-    encode_mark(&mut encoded, options.socket_mark);
+    encode_context(&mut encoded, &options.context)?;
     encoded.push(u8::from(options.reuse_addr));
     encoded.push(u8::from(options.reuse_port));
     encoded.push(u8::from(options.only_v6));
@@ -60,10 +66,13 @@ pub(super) fn encode_udp_bind_options(options: &UdpBindOptions) -> io::Result<Ve
 }
 
 pub(super) fn encode_tcp_listen_options(options: &TcpListenOptions) -> io::Result<Vec<u8>> {
-    let mut encoded = Vec::with_capacity(42 + bind_device_len(&options.bind.bind_device));
+    let mut encoded = Vec::with_capacity(
+        48 + context_variable_len(&options.bind.context)
+            + bind_device_len(&options.bind.bind_device),
+    );
     encoded.push(OPTIONS_VERSION);
     encode_optional_address(&mut encoded, options.bind.local_addr);
-    encode_mark(&mut encoded, options.bind.socket_mark);
+    encode_context(&mut encoded, &options.bind.context)?;
     encoded.push(match options.bind.reuse_addr {
         None => 0,
         Some(false) => 1,
@@ -136,6 +145,24 @@ fn encode_mark(encoded: &mut Vec<u8>, mark: Option<u32>) {
     encoded.extend_from_slice(&mark.unwrap_or_default().to_be_bytes());
 }
 
+fn encode_context(encoded: &mut Vec<u8>, context: &SocketContext) -> io::Result<()> {
+    encoded.push(match context.ip_version {
+        IpVersion::V4 => 0,
+        IpVersion::V6 => 1,
+        IpVersion::Both => 2,
+    });
+    encode_mark(encoded, context.socket_mark);
+    let netns = context.netns.as_ref().map(|netns| netns.token().as_bytes());
+    encoded.push(u8::from(netns.is_some()));
+    let length = u32::try_from(netns.map_or(0, <[u8]>::len))
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "netns token is too long"))?;
+    encoded.extend_from_slice(&length.to_be_bytes());
+    if let Some(netns) = netns {
+        encoded.extend_from_slice(netns);
+    }
+    Ok(())
+}
+
 fn encode_bind_device(encoded: &mut Vec<u8>, device: &Option<String>) -> io::Result<()> {
     let bytes = device.as_deref().unwrap_or_default().as_bytes();
     encoded.push(u8::from(device.is_some()));
@@ -150,9 +177,16 @@ fn bind_device_len(device: &Option<String>) -> usize {
     device.as_ref().map_or(0, String::len)
 }
 
+fn context_variable_len(context: &SocketContext) -> usize {
+    context
+        .netns
+        .as_ref()
+        .map_or(0, |netns| netns.token().len())
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::socket::tcp::TcpBindOptions;
+    use crate::socket::{NetNamespace, tcp::TcpBindOptions};
 
     use super::*;
 
@@ -170,13 +204,13 @@ mod tests {
             purpose: TcpSocketPurpose::ManualConnect,
         };
         let encoded = encode_tcp_connect_options(&options).unwrap();
-        assert_eq!(encoded.len(), 76);
+        assert_eq!(encoded.len(), 82);
         assert_eq!(encoded[0], OPTIONS_VERSION);
-        assert_eq!(&encoded[55..60], &[1, 1, 2, 3, 4]);
-        assert_eq!(&encoded[60..64], &[2, 1, 1, 3]);
-        assert_eq!(encoded[64], 1);
-        assert_eq!(&encoded[65..69], &7_u32.to_be_bytes());
-        assert_eq!(&encoded[69..], b"mihomo0");
+        assert_eq!(&encoded[55..66], &[2, 1, 1, 2, 3, 4, 0, 0, 0, 0, 0]);
+        assert_eq!(&encoded[66..70], &[2, 1, 1, 3]);
+        assert_eq!(encoded[70], 1);
+        assert_eq!(&encoded[71..75], &7_u32.to_be_bytes());
+        assert_eq!(&encoded[75..], b"mihomo0");
     }
 
     #[test]
@@ -188,16 +222,16 @@ mod tests {
                 .with_bind(TcpBindOptions::default().with_bind_device(Some(String::new()))),
         )
         .unwrap();
-        assert_eq!(&none[64..69], &[0, 0, 0, 0, 0]);
-        assert_eq!(&empty[64..69], &[1, 0, 0, 0, 0]);
+        assert_eq!(&none[70..75], &[0, 0, 0, 0, 0]);
+        assert_eq!(&empty[70..75], &[1, 0, 0, 0, 0]);
 
         let udp_none = encode_udp_bind_options(&UdpBindOptions::direct_connect()).unwrap();
         let udp_empty = encode_udp_bind_options(
             &UdpBindOptions::direct_connect().with_bind_device(Some(String::new())),
         )
         .unwrap();
-        assert_eq!(&udp_none[37..42], &[0, 0, 0, 0, 0]);
-        assert_eq!(&udp_empty[37..42], &[1, 0, 0, 0, 0]);
+        assert_eq!(&udp_none[43..48], &[0, 0, 0, 0, 0]);
+        assert_eq!(&udp_empty[43..48], &[1, 0, 0, 0, 0]);
 
         let listen_none = encode_tcp_listen_options(&TcpListenOptions::direct_connect(
             "192.0.2.1:11013".parse().unwrap(),
@@ -208,25 +242,46 @@ mod tests {
                 .with_bind(TcpBindOptions::default().with_bind_device(Some(String::new()))),
         )
         .unwrap();
-        assert_eq!(&listen_none[37..42], &[0, 0, 0, 0, 0]);
-        assert_eq!(&listen_empty[37..42], &[1, 0, 0, 0, 0]);
+        assert_eq!(&listen_none[43..48], &[0, 0, 0, 0, 0]);
+        assert_eq!(&listen_empty[43..48], &[1, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn encodes_socket_context_netns_and_zero_mark() {
+        let bind = TcpBindOptions::default().with_context(
+            SocketContext::default()
+                .with_ip_version(IpVersion::V6)
+                .with_socket_mark(Some(0))
+                .with_netns(Some(NetNamespace::new("instance-a"))),
+        );
+        let encoded = encode_tcp_connect_options(
+            &TcpConnectOptions::direct_connect("[2001:db8::2]:11013".parse().unwrap())
+                .with_bind(bind),
+        )
+        .unwrap();
+
+        assert_eq!(encoded[55], 1);
+        assert_eq!(&encoded[56..61], &[1, 0, 0, 0, 0]);
+        assert_eq!(encoded[61], 1);
+        assert_eq!(&encoded[62..66], &10_u32.to_be_bytes());
+        assert_eq!(&encoded[66..76], b"instance-a");
     }
 
     #[test]
     fn encodes_udp_proxy_nat_purpose() {
         let encoded = encode_udp_bind_options(&UdpBindOptions::proxy_nat()).unwrap();
-        assert_eq!(encoded[36], 4);
+        assert_eq!(encoded[42], 4);
     }
 
     #[test]
     fn encodes_tcp_proxy_nat_purposes() {
         let remote = "192.0.2.2:11013".parse().unwrap();
         let connect = encode_tcp_connect_options(&TcpConnectOptions::proxy_nat(remote)).unwrap();
-        assert_eq!(connect[63], 4);
+        assert_eq!(connect[69], 4);
 
         let local = "0.0.0.0:0".parse().unwrap();
         let listen = encode_tcp_listen_options(&TcpListenOptions::proxy_nat(local)).unwrap();
-        assert_eq!(listen[36], 3);
+        assert_eq!(listen[42], 3);
     }
 
     #[test]

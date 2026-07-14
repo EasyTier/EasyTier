@@ -39,6 +39,27 @@ pub struct SocketContext {
     pub netns: Option<NetNamespace>,
 }
 
+impl SocketContext {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_ip_version(mut self, ip_version: IpVersion) -> Self {
+        self.ip_version = ip_version;
+        self
+    }
+
+    pub fn with_socket_mark(mut self, socket_mark: Option<u32>) -> Self {
+        self.socket_mark = socket_mark;
+        self
+    }
+
+    pub fn with_netns(mut self, netns: Option<NetNamespace>) -> Self {
+        self.netns = netns;
+        self
+    }
+}
+
 impl Default for SocketContext {
     fn default() -> Self {
         Self {

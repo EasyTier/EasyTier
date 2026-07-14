@@ -13,14 +13,15 @@ import (
 )
 
 func TestDecodeTCPProxyNatPurpose(t *testing.T) {
-	encoded := make([]byte, 69)
-	encoded[0] = 1
+	encoded := make([]byte, 75)
+	encoded[0] = 2
 	remote, err := encodeNetAddr(&net.TCPAddr{IP: net.IPv4(192, 0, 2, 2), Port: 11013})
 	if err != nil {
 		t.Fatal(err)
 	}
 	copy(encoded[1:28], remote[:])
-	encoded[63] = 4
+	encoded[55] = byte(IPVersionBoth)
+	encoded[69] = 4
 	options, err := decodeTCPConnectOptions(encoded)
 	if err != nil {
 		t.Fatalf("decode proxy NAT TCP connect options: %v", err)
@@ -31,9 +32,10 @@ func TestDecodeTCPProxyNatPurpose(t *testing.T) {
 }
 
 func TestDecodeUDPProxyNatPurpose(t *testing.T) {
-	encoded := make([]byte, 42)
-	encoded[0] = 1
-	encoded[36] = 4
+	encoded := make([]byte, 48)
+	encoded[0] = 2
+	encoded[28] = byte(IPVersionBoth)
+	encoded[42] = 4
 	options, err := decodeUDPBindOptions(encoded)
 	if err != nil {
 		t.Fatalf("decode proxy NAT UDP bind options: %v", err)
@@ -44,28 +46,29 @@ func TestDecodeUDPProxyNatPurpose(t *testing.T) {
 }
 
 func TestDecodeTCPBindPolicyForCustomFactory(t *testing.T) {
-	encoded := make([]byte, 72)
-	encoded[0] = 1
+	encoded := make([]byte, 78)
+	encoded[0] = 2
 	remote, err := encodeNetAddr(&net.TCPAddr{IP: net.IPv4(192, 0, 2, 2), Port: 11013})
 	if err != nil {
 		t.Fatal(err)
 	}
 	copy(encoded[1:28], remote[:])
-	encoded[55] = 1
-	binary.BigEndian.PutUint32(encoded[56:60], 7)
-	encoded[60] = 2
-	encoded[61] = 1
-	encoded[62] = 1
-	encoded[63] = byte(TCPConnectManual)
-	encoded[64] = 1
-	binary.BigEndian.PutUint32(encoded[65:69], 3)
-	copy(encoded[69:], "tun")
+	encoded[55] = byte(IPVersionBoth)
+	encoded[56] = 1
+	binary.BigEndian.PutUint32(encoded[57:61], 7)
+	encoded[66] = 2
+	encoded[67] = 1
+	encoded[68] = 1
+	encoded[69] = byte(TCPConnectManual)
+	encoded[70] = 1
+	binary.BigEndian.PutUint32(encoded[71:75], 3)
+	copy(encoded[75:], "tun")
 
 	options, err := decodeTCPConnectOptions(encoded)
 	if err != nil {
 		t.Fatalf("decode TCP bind policy: %v", err)
 	}
-	if options.Bind.SocketMark == nil || *options.Bind.SocketMark != 7 ||
+	if options.Bind.Context.SocketMark == nil || *options.Bind.Context.SocketMark != 7 ||
 		options.Bind.BindDevice == nil || *options.Bind.BindDevice != "tun" ||
 		options.Bind.ReuseAddr == nil || !*options.Bind.ReuseAddr ||
 		!options.Bind.ReusePort || !options.Bind.OnlyV6 {
@@ -77,29 +80,49 @@ func TestDecodeTCPBindPolicyForCustomFactory(t *testing.T) {
 }
 
 func TestDecodeUDPBindPolicyForCustomFactory(t *testing.T) {
-	encoded := make([]byte, 45)
-	encoded[0] = 1
-	encoded[28] = 1
-	binary.BigEndian.PutUint32(encoded[29:33], 9)
-	encoded[33] = 1
-	encoded[34] = 1
-	encoded[35] = 1
-	encoded[36] = byte(UDPBindProxyNAT)
-	encoded[37] = 1
-	binary.BigEndian.PutUint32(encoded[38:42], 3)
-	copy(encoded[42:], "tun")
+	encoded := make([]byte, 51)
+	encoded[0] = 2
+	encoded[28] = byte(IPVersionBoth)
+	encoded[29] = 1
+	binary.BigEndian.PutUint32(encoded[30:34], 9)
+	encoded[39] = 1
+	encoded[40] = 1
+	encoded[41] = 1
+	encoded[42] = byte(UDPBindProxyNAT)
+	encoded[43] = 1
+	binary.BigEndian.PutUint32(encoded[44:48], 3)
+	copy(encoded[48:], "tun")
 
 	options, err := decodeUDPBindOptions(encoded)
 	if err != nil {
 		t.Fatalf("decode UDP bind policy: %v", err)
 	}
-	if options.SocketMark == nil || *options.SocketMark != 9 ||
+	if options.Context.SocketMark == nil || *options.Context.SocketMark != 9 ||
 		options.BindDevice == nil || *options.BindDevice != "tun" ||
 		!options.ReuseAddr || !options.ReusePort || !options.OnlyV6 {
 		t.Fatalf("unexpected UDP bind policy: %#v", options)
 	}
 	if _, err := (NetSocketFactory{}).BindUDP(context.Background(), options); err == nil {
 		t.Fatal("NetSocketFactory accepted a non-default UDP bind policy")
+	}
+}
+
+func TestDecodeSocketContextPreservesNetNSAndZeroMark(t *testing.T) {
+	encoded := make([]byte, 21)
+	encoded[0] = byte(IPVersionV6)
+	encoded[1] = 1
+	encoded[6] = 1
+	binary.BigEndian.PutUint32(encoded[7:11], 10)
+	copy(encoded[11:], "instance-a")
+
+	context, remainder, err := decodeSocketContext(encoded)
+	if err != nil {
+		t.Fatalf("decode socket context: %v", err)
+	}
+	if context.IPVersion != IPVersionV6 || context.SocketMark == nil ||
+		*context.SocketMark != 0 || context.NetNS == nil || *context.NetNS != "instance-a" ||
+		len(remainder) != 0 {
+		t.Fatalf("unexpected socket context: %#v remainder=%v", context, remainder)
 	}
 }
 
@@ -211,14 +234,15 @@ func TestOpaqueFactoryCreatesSocketsForCore(t *testing.T) {
 }
 
 func TestFactoryRejectsUnsupportedTransportAndFlowinfo(t *testing.T) {
-	base := make([]byte, 69)
-	base[0] = 1
+	base := make([]byte, 75)
+	base[0] = 2
 	remote, err := encodeNetAddr(&net.TCPAddr{IP: net.IPv4(192, 0, 2, 2), Port: 11013})
 	if err != nil {
 		t.Fatal(err)
 	}
 	copy(base[1:28], remote[:])
-	base[63] = 1
+	base[55] = byte(IPVersionBoth)
+	base[69] = 1
 	options, err := decodeTCPConnectOptions(base)
 	if err != nil || options.Purpose != TCPConnectFake {
 		t.Fatalf("decode FakeTCP purpose: options=%#v error=%v", options, err)
@@ -233,7 +257,7 @@ func TestFactoryRejectsUnsupportedTransportAndFlowinfo(t *testing.T) {
 	}
 	binary.BigEndian.PutUint32(remote[19:23], 7)
 	copy(base[1:28], remote[:])
-	base[63] = 0
+	base[69] = 0
 	if _, err := decodeTCPConnectOptions(base); err == nil {
 		t.Fatal("nonzero IPv6 flowinfo was silently discarded")
 	}

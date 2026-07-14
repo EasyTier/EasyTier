@@ -15,7 +15,7 @@ use easytier_core::{
 use tokio::task::JoinSet;
 
 use crate::{
-    common::{dns::RuntimeDnsResolver, join_joinset_background, netns::NetNS},
+    common::{dns::RuntimeDnsResolver, join_joinset_background},
     proto::{
         common::TunnelInfo,
         rpc_impl::bidirect::BidirectRpcManager,
@@ -52,7 +52,7 @@ pub type RuntimeRpcClient = StandAloneClient<RuntimeRpcDialer>;
 pub fn runtime_rpc_dialer(remote_url: url::Url) -> RuntimeRpcDialer {
     TcpTunnelDialer::new(
         remote_url,
-        Arc::new(RuntimeTcpSocketFactory::new(NetNS::new(None))),
+        Arc::new(RuntimeTcpSocketFactory::new()),
         Arc::new(RuntimeDnsResolver::new()),
     )
 }
@@ -62,16 +62,13 @@ pub fn runtime_rpc_client(remote_url: url::Url) -> RuntimeRpcClient {
 }
 
 pub fn runtime_rpc_listener(local_addr: std::net::SocketAddr) -> RuntimeRpcListener {
-    TcpTunnelListener::new(
-        local_addr,
-        Arc::new(RuntimeTcpListenerFactory::new(NetNS::new(None))),
-    )
+    TcpTunnelListener::new(local_addr, Arc::new(RuntimeTcpListenerFactory::new()))
 }
 
 pub fn runtime_udp_tunnel_dialer(remote_url: url::Url) -> impl TunnelDialer {
     UdpTunnelDialer::new(
         remote_url,
-        Arc::new(RuntimeUdpSocketFactory::new(NetNS::new(None))),
+        Arc::new(RuntimeUdpSocketFactory::new()),
         Arc::new(RuntimeDnsResolver::new()),
     )
 }
@@ -86,7 +83,7 @@ pub fn runtime_udp_tunnel_listener(
     UdpTunnelListener::new_with_request(
         local_url,
         UdpSessionListenRequest::new(bind),
-        Arc::new(RuntimeUdpSocketFactory::new(NetNS::new(None))),
+        Arc::new(RuntimeUdpSocketFactory::new()),
     )
 }
 

@@ -216,8 +216,7 @@ where
             let remote_addr = resolve_url_addrs(
                 &endpoint.url,
                 manual_default_port(&endpoint.url),
-                ip_version,
-                self.options.socket_mark(transport),
+                self.options.socket_context(transport, ip_version),
                 self.dns.as_ref(),
             )
             .await?
@@ -341,12 +340,17 @@ impl ManualConnectorOptions {
         }
     }
 
-    pub(crate) fn socket_mark(&self, transport: ManualTransport) -> Option<u32> {
-        match transport {
-            ManualTransport::Tcp(_) => self.tcp_bind.socket_mark,
-            ManualTransport::Udp(_) => self.udp_bind.socket_mark,
-            ManualTransport::ByteStream => None,
-        }
+    pub(crate) fn socket_context(
+        &self,
+        transport: ManualTransport,
+        ip_version: IpVersion,
+    ) -> SocketContext {
+        let context = match transport {
+            ManualTransport::Tcp(_) => self.tcp_bind.context.clone(),
+            ManualTransport::Udp(_) => self.udp_bind.context.clone(),
+            ManualTransport::ByteStream => SocketContext::default(),
+        };
+        context.with_ip_version(ip_version)
     }
 }
 
@@ -693,7 +697,7 @@ fn connect_ring_tunnel(
 async fn resolve_reconnect_ip_versions(
     url: &Url,
     connect_timeout: Duration,
-    socket_mark: Option<u32>,
+    context: SocketContext,
     dns: &dyn DnsResolver,
 ) -> anyhow::Result<Vec<IpVersion>> {
     if matches!(
@@ -713,8 +717,7 @@ async fn resolve_reconnect_ip_versions(
         resolve_url_addrs(
             url,
             MANUAL_PREFLIGHT_DEFAULT_PORT,
-            IpVersion::Both,
-            socket_mark,
+            context.with_ip_version(IpVersion::Both),
             dns,
         ),
     )
@@ -750,7 +753,8 @@ where
         connect_timeout,
         ManualTransport::from_url(&normalized_url)
             .ok()
-            .and_then(|transport| data.options.socket_mark(transport)),
+            .map(|transport| data.options.socket_context(transport, IpVersion::Both))
+            .unwrap_or_default(),
         data.dns.as_ref(),
     )
     .await
@@ -826,8 +830,7 @@ where
                     data.dns.as_ref(),
                     &endpoint.url,
                     manual_default_port(&endpoint.url),
-                    ip_version,
-                    data.options.socket_mark(transport),
+                    data.options.socket_context(transport, ip_version),
                 )
                 .await?;
                 let bind_addrs = if data.options.bind_device
@@ -929,13 +932,13 @@ pub(crate) async fn resolve_remote_addr<H>(
     dns: &dyn DnsResolver,
     url: &Url,
     default_port: u16,
-    ip_version: IpVersion,
-    socket_mark: Option<u32>,
+    context: SocketContext,
 ) -> anyhow::Result<SocketAddr>
 where
     H: ManualConnectorHost,
 {
-    let addrs = resolve_url_addrs(url, default_port, ip_version, socket_mark, dns).await?;
+    let ip_version = context.ip_version;
+    let addrs = resolve_url_addrs(url, default_port, context, dns).await?;
     let mut usable = Vec::new();
     let mut rejected_reason = None;
     for addr in addrs {
@@ -1012,10 +1015,10 @@ where
 pub(crate) async fn resolve_url_addrs(
     url: &Url,
     default_port: u16,
-    ip_version: IpVersion,
-    socket_mark: Option<u32>,
+    context: SocketContext,
     dns: &dyn DnsResolver,
 ) -> anyhow::Result<Vec<SocketAddr>> {
+    let ip_version = context.ip_version;
     let host = url
         .host()
         .ok_or_else(|| anyhow::anyhow!("URL has no host: {url}"))?;
@@ -1024,14 +1027,7 @@ pub(crate) async fn resolve_url_addrs(
         url::Host::Ipv4(addr) => vec![SocketAddr::new(IpAddr::V4(addr), port)],
         url::Host::Ipv6(addr) => vec![SocketAddr::new(IpAddr::V6(addr), port)],
         url::Host::Domain(host) => dns
-            .resolve(DnsQuery::new(
-                host,
-                SocketContext {
-                    ip_version,
-                    socket_mark,
-                    netns: None,
-                },
-            ))
+            .resolve(DnsQuery::new(host, context))
             .await?
             .into_iter()
             .map(|addr| SocketAddr::new(addr, port))
@@ -1216,7 +1212,7 @@ mod tests {
         let versions = resolve_reconnect_ip_versions(
             &"txt://discovery.example".parse().unwrap(),
             Duration::from_secs(1),
-            None,
+            SocketContext::default(),
             &resolver,
         )
         .await
@@ -1235,7 +1231,7 @@ mod tests {
         let versions = resolve_reconnect_ip_versions(
             &"ring://local".parse().unwrap(),
             Duration::from_secs(1),
-            None,
+            SocketContext::default(),
             &resolver,
         )
         .await
@@ -1283,9 +1279,16 @@ mod tests {
         };
         let url: Url = "udp://example.com:12000".parse().unwrap();
 
-        let addrs = resolve_url_addrs(&url, MANUAL_DEFAULT_PORT, IpVersion::V6, Some(7), &resolver)
-            .await
-            .unwrap();
+        let addrs = resolve_url_addrs(
+            &url,
+            MANUAL_DEFAULT_PORT,
+            SocketContext::default()
+                .with_ip_version(IpVersion::V6)
+                .with_socket_mark(Some(7)),
+            &resolver,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(addrs, vec!["[::1]:12000".parse().unwrap()]);
         assert_eq!(

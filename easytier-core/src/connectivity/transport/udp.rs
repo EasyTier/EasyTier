@@ -2,9 +2,12 @@ use std::{net::SocketAddr, sync::Arc};
 
 use futures::stream::FuturesUnordered;
 
-use crate::socket::udp::{
-    UdpBindOptions, UdpSession, UdpSessionControlHandler, UdpSessionLayer, UdpSessionProtocol,
-    VirtualUdpSocketFactory,
+use crate::socket::{
+    IpVersion,
+    udp::{
+        UdpBindOptions, UdpSession, UdpSessionControlHandler, UdpSessionLayer, UdpSessionProtocol,
+        VirtualUdpSocketFactory,
+    },
 };
 
 use super::first_success;
@@ -50,6 +53,12 @@ pub async fn connect_udp<H>(
 where
     H: VirtualUdpSocketFactory + UdpSessionControlHandler<<H as VirtualUdpSocketFactory>::Socket>,
 {
+    let ip_version = if remote_addr.is_ipv4() {
+        IpVersion::V4
+    } else {
+        IpVersion::V6
+    };
+    let default_bind = default_bind.with_ip_version(ip_version);
     let futures = FuturesUnordered::new();
     if bind_addrs.is_empty() {
         let local_addr = if remote_addr.is_ipv4() {

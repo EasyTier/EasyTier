@@ -149,12 +149,15 @@ impl core_udp_hole_punch::UdpHolePunchRuntime for RuntimeUdpHolePunchRuntime {
                     .only_v6(options.only_v6)
                     .reuse_addr(options.reuse_addr)
                     .reuse_port(options.reuse_port)
-                    .maybe_socket_mark(options.socket_mark)
+                    .maybe_socket_mark(options.context.socket_mark)
                     .call()?,
             )
         };
 
-        Ok(Arc::new(RuntimeUdpSocket::new(socket)))
+        Ok(Arc::new(RuntimeUdpSocket::new_with_context(
+            socket,
+            options.context,
+        )))
     }
 
     async fn resolve_udp_public_addr(

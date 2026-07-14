@@ -161,6 +161,7 @@ where
     }
 
     async fn bind_udp(&self, options: UdpBindOptions) -> io::Result<Arc<HostUdpSocket>> {
+        let context = options.context.clone();
         let operation = self.runtime.next_operation();
         self.backend.submit_udp_bind(operation, &options)?;
         let mut pending =
@@ -183,10 +184,11 @@ where
             }
         })
         .await?;
-        Ok(Arc::new(self.runtime.udp_socket(
+        Ok(Arc::new(self.runtime.udp_socket_with_context(
             self.backend.clone(),
             result.handle,
             result.local_addr,
+            context,
         )))
     }
 }
@@ -502,8 +504,8 @@ mod tests {
         let io = Arc::new(TestHostIo::default());
         let (runtime, factory) = test_factory(io.clone());
         let options = UdpBindOptions {
+            context: crate::socket::SocketContext::default().with_socket_mark(Some(9)),
             local_addr: Some("[::]:11013".parse().unwrap()),
-            socket_mark: Some(9),
             bind_device: Some("host-device".to_owned()),
             reuse_addr: true,
             reuse_port: true,

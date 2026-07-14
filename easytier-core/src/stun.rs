@@ -383,7 +383,11 @@ where
                 "[::]:0".parse().unwrap()
             };
             let socket = factory
-                .bind_udp(UdpBindOptions::hole_punch_control().with_local_addr(Some(bind_addr)))
+                .bind_udp(
+                    UdpBindOptions::hole_punch_control()
+                        .with_context(socket.socket_context())
+                        .with_local_addr(Some(bind_addr)),
+                )
                 .await?;
             socket.send_to(&response.bytes, addr).await?;
         }

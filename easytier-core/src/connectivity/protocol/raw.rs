@@ -90,8 +90,7 @@ where
         let remote_addr = resolve_url_addrs(
             &self.remote_url,
             TCP_DEFAULT_PORT,
-            self.ip_version,
-            self.bind.socket_mark,
+            self.bind.context.clone().with_ip_version(self.ip_version),
             self.dns.as_ref(),
         )
         .await?
@@ -234,8 +233,7 @@ where
         let remote_addr = resolve_url_addrs(
             &self.remote_url,
             UDP_DEFAULT_PORT,
-            self.ip_version,
-            self.bind.socket_mark,
+            self.bind.context.clone().with_ip_version(self.ip_version),
             self.dns.as_ref(),
         )
         .await?

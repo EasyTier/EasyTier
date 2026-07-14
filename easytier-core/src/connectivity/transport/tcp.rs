@@ -2,8 +2,9 @@ use std::{net::SocketAddr, sync::Arc};
 
 use futures::stream::FuturesUnordered;
 
-use crate::socket::tcp::{
-    TcpBindOptions, TcpConnectOptions, TcpSocketPurpose, VirtualTcpSocketFactory,
+use crate::socket::{
+    IpVersion,
+    tcp::{TcpBindOptions, TcpConnectOptions, TcpSocketPurpose, VirtualTcpSocketFactory},
 };
 
 use super::first_success;
@@ -18,6 +19,12 @@ pub async fn connect_tcp<H>(
 where
     H: VirtualTcpSocketFactory,
 {
+    let ip_version = if remote_addr.is_ipv4() {
+        IpVersion::V4
+    } else {
+        IpVersion::V6
+    };
+    let default_bind = default_bind.with_ip_version(ip_version);
     let futures = FuturesUnordered::new();
     if bind_addrs.is_empty() {
         futures.push(

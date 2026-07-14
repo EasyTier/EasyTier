@@ -35,9 +35,23 @@ const (
 	TCPListenProxyNAT
 )
 
-type TCPBindOptions struct {
-	LocalAddr  *net.TCPAddr
+type IPVersion uint8
+
+const (
+	IPVersionV4 IPVersion = iota
+	IPVersionV6
+	IPVersionBoth
+)
+
+type SocketContext struct {
+	IPVersion  IPVersion
 	SocketMark *uint32
+	NetNS      *string
+}
+
+type TCPBindOptions struct {
+	Context    SocketContext
+	LocalAddr  *net.TCPAddr
 	BindDevice *string
 	ReuseAddr  *bool
 	ReusePort  bool
@@ -51,8 +65,8 @@ type TCPConnectOptions struct {
 }
 
 type UDPBindOptions struct {
+	Context    SocketContext
 	LocalAddr  *net.UDPAddr
-	SocketMark *uint32
 	BindDevice *string
 	ReuseAddr  bool
 	ReusePort  bool
@@ -94,7 +108,8 @@ func (NetSocketFactory) BindUDP(
 	_ context.Context,
 	options UDPBindOptions,
 ) (net.PacketConn, error) {
-	if options.SocketMark != nil || options.BindDevice != nil || options.ReuseAddr ||
+	if options.Context.SocketMark != nil || options.Context.NetNS != nil ||
+		options.BindDevice != nil || options.ReuseAddr ||
 		options.ReusePort || options.OnlyV6 {
 		return nil, fmt.Errorf("non-default UDP bind policy is not supported by NetSocketFactory")
 	}
@@ -116,7 +131,8 @@ func (NetSocketFactory) ListenTCP(
 }
 
 func validateNetTCPBindOptions(options TCPBindOptions) error {
-	if options.SocketMark != nil || options.BindDevice != nil || options.ReuseAddr != nil ||
+	if options.Context.SocketMark != nil || options.Context.NetNS != nil ||
+		options.BindDevice != nil || options.ReuseAddr != nil ||
 		options.ReusePort || options.OnlyV6 {
 		return fmt.Errorf("non-default TCP bind policy is not supported by NetSocketFactory")
 	}

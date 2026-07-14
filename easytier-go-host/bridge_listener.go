@@ -269,30 +269,32 @@ func (b *opaqueBridge) discardTCPAcceptWaiter(operation uint64) {
 }
 
 func decodeTCPListenOptions(encoded []byte) (TCPListenOptions, error) {
-	if len(encoded) < 42 || encoded[0] != 1 {
+	if len(encoded) < 48 || encoded[0] != 2 {
 		return TCPListenOptions{}, fmt.Errorf("invalid TCP listen options")
 	}
 	local, err := decodeSocketAddress(encoded[1:28], false)
 	if err != nil || local == nil {
 		return TCPListenOptions{}, fmt.Errorf("invalid TCP listen address")
 	}
+	context, remainder, err := decodeSocketContext(encoded[28:])
+	if err != nil {
+		return TCPListenOptions{}, fmt.Errorf("invalid TCP listen socket context: %w", err)
+	}
+	if len(remainder) < 9 {
+		return TCPListenOptions{}, fmt.Errorf("truncated TCP listen bind policy")
+	}
 	bind, err := decodeTCPBindPolicy(
 		&net.TCPAddr{IP: local.IP, Port: local.Port, Zone: local.Zone},
-		encoded[28],
-		encoded[29:33],
-		encoded[33],
-		encoded[34],
-		encoded[35],
-		encoded[37:],
+		context, remainder[0], remainder[1], remainder[2], remainder[4:],
 	)
 	if err != nil {
 		return TCPListenOptions{}, err
 	}
-	if encoded[36] > 3 {
+	if remainder[3] > 3 {
 		return TCPListenOptions{}, fmt.Errorf("invalid TCP listen purpose")
 	}
 	return TCPListenOptions{
 		Bind:    bind,
-		Purpose: TCPListenPurpose(encoded[36]),
+		Purpose: TCPListenPurpose(remainder[3]),
 	}, nil
 }

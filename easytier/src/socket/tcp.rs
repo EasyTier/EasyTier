@@ -182,19 +182,15 @@ impl VirtualTcpListener for RuntimeTcpListener {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct RuntimeTcpListenerFactory {
-    net_ns: NetNS,
-}
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RuntimeTcpListenerFactory;
 
-#[derive(Debug, Clone)]
-pub struct RuntimeTcpSocketFactory {
-    net_ns: NetNS,
-}
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RuntimeTcpSocketFactory;
 
 impl RuntimeTcpSocketFactory {
-    pub(crate) fn new(net_ns: NetNS) -> Self {
-        Self { net_ns }
+    pub(crate) fn new() -> Self {
+        Self
     }
 }
 
@@ -203,15 +199,13 @@ impl VirtualTcpSocketFactory for RuntimeTcpSocketFactory {
     type Socket = RuntimeTcpSocket;
 
     async fn connect_tcp(&self, options: TcpConnectOptions) -> anyhow::Result<Self::Socket> {
-        self.net_ns
-            .run_async(|| async move { connect_tcp(options).await.map_err(anyhow::Error::from) })
-            .await
+        connect_tcp(options).await.map_err(anyhow::Error::from)
     }
 }
 
 impl RuntimeTcpListenerFactory {
-    pub(crate) fn new(net_ns: NetNS) -> Self {
-        Self { net_ns }
+    pub(crate) fn new() -> Self {
+        Self
     }
 }
 
@@ -220,10 +214,7 @@ impl VirtualTcpListenerFactory for RuntimeTcpListenerFactory {
     type Listener = RuntimeTcpListener;
 
     async fn bind_tcp(&self, options: TcpListenOptions) -> anyhow::Result<Arc<Self::Listener>> {
-        Ok(Arc::new(bind_tcp_listener_with_netns(
-            options,
-            Some(self.net_ns.clone()),
-        )?))
+        Ok(Arc::new(bind_tcp_listener(options)?))
     }
 }
 
@@ -264,7 +255,7 @@ fn bind_tcp_socket(
         .only_v6(bind_options.only_v6)
         .reuse_addr(native_reuse_addr(&bind_options))
         .reuse_port(bind_options.reuse_port)
-        .maybe_socket_mark(bind_options.socket_mark)
+        .maybe_socket_mark(bind_options.context.socket_mark)
         .call()
 }
 
@@ -291,15 +282,9 @@ fn native_reuse_addr(bind_options: &TcpBindOptions) -> bool {
 pub(crate) fn bind_tcp_listener(
     options: TcpListenOptions,
 ) -> Result<RuntimeTcpListener, TunnelError> {
-    bind_tcp_listener_with_netns(options, None)
-}
-
-fn bind_tcp_listener_with_netns(
-    options: TcpListenOptions,
-    net_ns: Option<NetNS>,
-) -> Result<RuntimeTcpListener, TunnelError> {
     let purpose = options.purpose;
     let bind_options = options.bind;
+    let net_ns = NetNS::from_socket_context(&bind_options.context);
     let addr = bind_options.local_addr.ok_or_else(|| {
         TunnelError::InvalidAddr("tcp listener requires a local bind address".to_owned())
     })?;
@@ -307,11 +292,11 @@ fn bind_tcp_listener_with_netns(
     let listener = bind::<TcpListener>()
         .addr(addr)
         .dev(bind_dev)
-        .maybe_net_ns(net_ns)
+        .maybe_net_ns(Some(net_ns))
         .only_v6(bind_options.only_v6)
         .reuse_addr(native_reuse_addr(&bind_options))
         .reuse_port(bind_options.reuse_port)
-        .maybe_socket_mark(bind_options.socket_mark)
+        .maybe_socket_mark(bind_options.context.socket_mark)
         .call()?;
     Ok(RuntimeTcpListener::new(listener, purpose))
 }
@@ -319,18 +304,30 @@ fn bind_tcp_listener_with_netns(
 pub(crate) async fn connect_tcp(
     options: TcpConnectOptions,
 ) -> Result<RuntimeTcpSocket, TunnelError> {
+    let net_ns = NetNS::from_socket_context(&options.bind.context);
+    net_ns
+        .run_async(|| connect_tcp_in_current_netns(options))
+        .await
+}
+
+async fn connect_tcp_in_current_netns(
+    options: TcpConnectOptions,
+) -> Result<RuntimeTcpSocket, TunnelError> {
     let remote_addr = options.remote_addr;
     let purpose = options.purpose;
     let bind_options = options.bind;
 
     if !must_bind_before_connect(&bind_options) {
-        let stream = if bind_options.socket_mark.is_some() {
+        let stream = if bind_options.context.socket_mark.is_some() {
             let socket = if remote_addr.is_ipv4() {
                 TcpSocket::new_v4()?
             } else {
                 TcpSocket::new_v6()?
             };
-            apply_socket_mark(&socket2::SockRef::from(&socket), bind_options.socket_mark)?;
+            apply_socket_mark(
+                &socket2::SockRef::from(&socket),
+                bind_options.context.socket_mark,
+            )?;
             socket.connect(remote_addr).await?
         } else {
             TcpStream::connect(remote_addr).await?

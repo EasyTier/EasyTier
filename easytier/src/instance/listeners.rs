@@ -14,7 +14,10 @@ use easytier_core::{
         },
     },
     peers::peer_manager::PeerManagerCore,
-    socket::udp::{UdpSessionAcceptKind, UdpSessionProtocol},
+    socket::{
+        SocketContext,
+        udp::{UdpSessionAcceptKind, UdpSessionProtocol},
+    },
 };
 use tokio::sync::Mutex;
 
@@ -46,7 +49,7 @@ pub(crate) fn runtime_listener_plan(global_ctx: &ArcGlobalCtx) -> core_listener_
 
 pub(crate) fn runtime_transport_listener_configs(
     plan: &core_listener_plan::ListenerPlan,
-    socket_mark: Option<u32>,
+    context: SocketContext,
 ) -> Vec<TransportListenerConfig> {
     plan.listeners
         .iter()
@@ -58,7 +61,7 @@ pub(crate) fn runtime_transport_listener_configs(
             core_listener_plan::ListenerKind::TcpStream if listener.url.scheme() != "faketcp" => {
                 Some(TransportListenerConfig::Tcp {
                     url: listener.url.clone(),
-                    options: core_listener_plan::unresolved_tcp_listener_options(socket_mark),
+                    options: core_listener_plan::unresolved_tcp_listener_options(context.clone()),
                     must_succeed: listener.must_succeed,
                 })
             }
@@ -75,7 +78,7 @@ pub(crate) fn runtime_transport_listener_configs(
                     url: listener.url.clone(),
                     request: core_listener_plan::unresolved_udp_session_listen_request(
                         &listener.url,
-                        socket_mark,
+                        context.clone(),
                     ),
                     accept_kind,
                     must_succeed: listener.must_succeed,
@@ -498,17 +501,17 @@ impl ListenerManager<PeerManagerCore> {
         ring_registry: Arc<RingTunnelRegistry>,
     ) -> Self {
         let plan = runtime_listener_plan(&global_ctx);
-        let configs =
-            runtime_transport_listener_configs(&plan, global_ctx.config.get_flags().socket_mark);
+        let configs = runtime_transport_listener_configs(
+            &plan,
+            crate::connector::core_instance::runtime_socket_context(&global_ctx),
+        );
         let handler = runtime_accepted_transport_handler(global_ctx.clone(), &peer_manager);
         let transport = Arc::new(
             easytier_core::listener::transport::TransportListenerService::new_with_events(
                 Arc::new(crate::connector::runtime::RuntimeConnectorHost::new(
                     global_ctx.clone(),
                 )),
-                Arc::new(crate::common::dns::RuntimeDnsResolver::new_with_netns(
-                    global_ctx.net_ns.clone(),
-                )),
+                Arc::new(crate::common::dns::RuntimeDnsResolver::new()),
                 ring_registry,
                 configs,
                 handler.clone(),
@@ -549,19 +552,24 @@ mod tests {
             "udp://127.0.0.1:0".parse().unwrap(),
         ]);
         let plan = runtime_listener_plan(&global_ctx);
-        let configs = runtime_transport_listener_configs(&plan, Some(7));
+        let configs = runtime_transport_listener_configs(
+            &plan,
+            SocketContext::default().with_socket_mark(Some(7)),
+        );
 
         assert_eq!(configs.len(), 3);
         assert!(matches!(&configs[0], TransportListenerConfig::Ring { .. }));
         assert!(matches!(
             &configs[1],
             TransportListenerConfig::Tcp { options, .. }
-                if options.bind.local_addr.is_none() && options.bind.socket_mark == Some(7)
+                if options.bind.local_addr.is_none()
+                    && options.bind.context.socket_mark == Some(7)
         ));
         assert!(matches!(
             &configs[2],
             TransportListenerConfig::Udp { request, .. }
-                if request.bind.local_addr.is_none() && request.bind.socket_mark == Some(7)
+                if request.bind.local_addr.is_none()
+                    && request.bind.context.socket_mark == Some(7)
         ));
     }
 }

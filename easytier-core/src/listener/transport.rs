@@ -23,7 +23,7 @@ use crate::{
     },
     peers::peer_manager::PeerManagerCore,
     socket::{
-        IpVersion,
+        IpVersion, SocketContext,
         dns::DnsResolver,
         tcp::{TcpListenOptions, TcpSocketListener, VirtualTcpListener, VirtualTcpListenerFactory},
         udp::{
@@ -410,7 +410,7 @@ where
         let mut options = self.options.clone();
         if options.bind.local_addr.is_none() {
             options.bind.local_addr = Some(
-                resolve_listener_addr(&self.url, options.bind.socket_mark, self.dns.as_ref())
+                resolve_listener_addr(&self.url, options.bind.context.clone(), self.dns.as_ref())
                     .await?,
             );
         }
@@ -528,7 +528,7 @@ where
         let mut request = self.request.clone();
         if request.bind.local_addr.is_none() {
             request.bind.local_addr = Some(
-                resolve_listener_addr(&self.url, request.bind.socket_mark, self.dns.as_ref())
+                resolve_listener_addr(&self.url, request.bind.context.clone(), self.dns.as_ref())
                     .await?,
             );
         }
@@ -594,16 +594,21 @@ impl ListenerConnectionCounter for EmptyTransportConnectionCounter {
 
 async fn resolve_listener_addr(
     url: &Url,
-    socket_mark: Option<u32>,
+    context: SocketContext,
     dns: &dyn DnsResolver,
 ) -> anyhow::Result<std::net::SocketAddr> {
     let default_port = super::plan::listener_default_port(url.scheme())
         .ok_or_else(|| anyhow::anyhow!("listener has no default port: {url}"))?;
-    resolve_url_addrs(url, default_port, IpVersion::Both, socket_mark, dns)
-        .await?
-        .choose(&mut rand::thread_rng())
-        .copied()
-        .ok_or_else(|| anyhow::anyhow!("listener has no resolved address: {url}"))
+    resolve_url_addrs(
+        url,
+        default_port,
+        context.with_ip_version(IpVersion::Both),
+        dns,
+    )
+    .await?
+    .choose(&mut rand::thread_rng())
+    .copied()
+    .ok_or_else(|| anyhow::anyhow!("listener has no resolved address: {url}"))
 }
 
 struct ErasedAcceptedTransportHandler<TcpSocket> {
@@ -1230,7 +1235,9 @@ mod tests {
         let host = Arc::new(MockHost::new());
         let mut tcp = TcpTransportListener::new(
             "tcp://listener.example".parse()?,
-            super::super::plan::unresolved_tcp_listener_options(Some(7)),
+            super::super::plan::unresolved_tcp_listener_options(
+                SocketContext::default().with_socket_mark(Some(7)),
+            ),
             host.clone(),
             Arc::new(MockDns),
         );
@@ -1241,7 +1248,7 @@ mod tests {
             "wg://listener.example".parse()?,
             super::super::plan::unresolved_udp_session_listen_request(
                 &"wg://listener.example".parse()?,
-                Some(7),
+                SocketContext::default().with_socket_mark(Some(7)),
             ),
             UdpSessionAcceptKind::Classified(UdpSessionProtocol::WireGuard),
             host.clone(),
@@ -1257,7 +1264,7 @@ mod tests {
         let host = Arc::new(MockHost::new());
         let mut listener = TcpTransportListener::new(
             "ws://127.0.0.1:0".parse()?,
-            super::super::plan::unresolved_tcp_listener_options(None),
+            super::super::plan::unresolved_tcp_listener_options(SocketContext::default()),
             host.clone(),
             Arc::new(MockDns),
         );

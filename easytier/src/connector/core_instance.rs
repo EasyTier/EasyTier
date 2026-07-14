@@ -14,7 +14,7 @@ use easytier_core::{
     },
     proxy::{ProxyStartupContext, cidr_table::ProxyCidrRuntime},
     socket::{
-        IpVersion, SocketContext,
+        IpVersion, NetNamespace, SocketContext,
         dns::{DnsRecordResolver, DnsResolver},
         tcp::TcpBindOptions,
         udp::UdpBindOptions,
@@ -101,6 +101,7 @@ impl ManualConnectivityEventSink for GlobalCtxManualConnectivityEventSink {
 
 pub(crate) fn runtime_manual_options(global_ctx: &ArcGlobalCtx) -> ManualConnectorOptions {
     let flags = global_ctx.config.get_flags();
+    let socket_context = runtime_socket_context(global_ctx);
     ManualConnectorOptions {
         reconnect_interval: Duration::from_millis(use_global_var!(
             MANUAL_CONNECTOR_RECONNECT_INTERVAL_MS
@@ -114,8 +115,8 @@ pub(crate) fn runtime_manual_options(global_ctx: &ArcGlobalCtx) -> ManualConnect
             all(target_os = "macos", feature = "macos-ne"),
             target_env = "ohos"
         )),
-        tcp_bind: TcpBindOptions::default().with_socket_mark(flags.socket_mark),
-        udp_bind: UdpBindOptions::direct_connect().with_socket_mark(flags.socket_mark),
+        tcp_bind: TcpBindOptions::default().with_context(socket_context.clone()),
+        udp_bind: UdpBindOptions::direct_connect().with_context(socket_context),
     }
 }
 
@@ -128,7 +129,7 @@ pub(crate) fn runtime_endpoint_discovery_config(
         http_timeout: Duration::from_secs(20),
         http_ip_version: IpVersion::Both,
         http_tcp_bind: runtime_manual_options(global_ctx).tcp_bind,
-        dns_record_context: SocketContext::default(),
+        dns_record_context: runtime_socket_context(global_ctx),
         srv_protocols: IpScheme::VARIANTS.iter().map(ToString::to_string).collect(),
     }
 }
@@ -138,6 +139,7 @@ pub(crate) fn runtime_direct_options(
     testing: bool,
 ) -> DirectConnectorOptions {
     let flags = global_ctx.config.get_flags();
+    let socket_context = runtime_socket_context(global_ctx);
     DirectConnectorOptions {
         network_name: global_ctx.get_network_name(),
         default_protocol: flags.default_protocol,
@@ -153,10 +155,16 @@ pub(crate) fn runtime_direct_options(
             all(target_os = "macos", feature = "macos-ne"),
             target_env = "ohos"
         )),
-        tcp_bind: TcpBindOptions::default().with_socket_mark(flags.socket_mark),
-        udp_bind: UdpBindOptions::direct_connect().with_socket_mark(flags.socket_mark),
+        tcp_bind: TcpBindOptions::default().with_context(socket_context.clone()),
+        udp_bind: UdpBindOptions::direct_connect().with_context(socket_context),
         testing,
     }
+}
+
+pub(crate) fn runtime_socket_context(global_ctx: &ArcGlobalCtx) -> SocketContext {
+    SocketContext::default()
+        .with_socket_mark(global_ctx.config.get_flags().socket_mark)
+        .with_netns(global_ctx.net_ns.name().map(NetNamespace::new))
 }
 
 pub(crate) fn runtime_core_instance_adapters(
@@ -173,15 +181,13 @@ pub(crate) fn runtime_core_instance_adapters_with_ring_registry(
     ring_registry: Arc<RingTunnelRegistry>,
 ) -> CoreInstanceAdapters<RuntimeConnectorHost> {
     let host = Arc::new(RuntimeConnectorHost::new(global_ctx.clone()));
-    let dns: Arc<dyn DnsResolver> = Arc::new(RuntimeDnsResolver::new());
-    let listener_dns: Arc<dyn DnsResolver> = Arc::new(RuntimeDnsResolver::new_with_netns(
-        global_ctx.net_ns.clone(),
-    ));
-    let dns_records: Arc<dyn DnsRecordResolver> = Arc::new(RuntimeDnsResolver::new());
+    let runtime_dns = Arc::new(RuntimeDnsResolver::new());
+    let dns: Arc<dyn DnsResolver> = runtime_dns.clone();
+    let dns_records: Arc<dyn DnsRecordResolver> = runtime_dns;
     CoreInstanceAdapters {
         host,
         dns,
-        listener_dns: Some(listener_dns),
+        listener_dns: None,
         dns_records,
         ring_registry,
         protocol: Some(runtime_client_protocol_upgrader(global_ctx.clone())),
@@ -249,10 +255,8 @@ pub(crate) fn build_runtime_core_instance_with_services_and_ring_registry(
     ring_registry: Arc<RingTunnelRegistry>,
 ) -> anyhow::Result<RuntimeCoreInstance> {
     let listener_plan = runtime_listener_plan(&global_ctx);
-    let listener_configs = runtime_transport_listener_configs(
-        &listener_plan,
-        global_ctx.config.get_flags().socket_mark,
-    );
+    let listener_configs =
+        runtime_transport_listener_configs(&listener_plan, runtime_socket_context(&global_ctx));
     let config = CoreInstanceConfig {
         initial_peers: global_ctx
             .config

@@ -84,8 +84,12 @@
         },
         "http_ip_version": "Both",
         "http_tcp_bind": {
+          "context": {
+            "ip_version": "Both",
+            "socket_mark": null,
+            "netns": null
+          },
           "local_addr": null,
-          "socket_mark": null,
           "bind_device": null,
           "reuse_addr": null,
           "reuse_port": false,
@@ -114,16 +118,24 @@
         "bind_device": false,
         "allow_interface_bind": true,
         "tcp_bind": {
+          "context": {
+            "ip_version": "Both",
+            "socket_mark": null,
+            "netns": null
+          },
           "local_addr": null,
-          "socket_mark": null,
           "bind_device": null,
           "reuse_addr": null,
           "reuse_port": false,
           "only_v6": false
         },
         "udp_bind": {
+          "context": {
+            "ip_version": "Both",
+            "socket_mark": null,
+            "netns": null
+          },
           "local_addr": null,
-          "socket_mark": null,
           "bind_device": null,
           "reuse_addr": false,
           "reuse_port": false,
@@ -142,16 +154,24 @@
         "bind_device": false,
         "allow_interface_bind": true,
         "tcp_bind": {
+          "context": {
+            "ip_version": "Both",
+            "socket_mark": null,
+            "netns": null
+          },
           "local_addr": null,
-          "socket_mark": null,
           "bind_device": null,
           "reuse_addr": null,
           "reuse_port": false,
           "only_v6": false
         },
         "udp_bind": {
+          "context": {
+            "ip_version": "Both",
+            "socket_mark": null,
+            "netns": null
+          },
           "local_addr": null,
-          "socket_mark": null,
           "bind_device": null,
           "reuse_addr": false,
           "reuse_port": false,

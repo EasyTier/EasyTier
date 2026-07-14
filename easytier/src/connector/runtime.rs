@@ -41,8 +41,8 @@ pub(crate) struct RuntimeConnectorHost {
 impl RuntimeConnectorHost {
     pub(crate) fn new(global_ctx: ArcGlobalCtx) -> Self {
         Self {
-            tcp_listener_factory: RuntimeTcpListenerFactory::new(global_ctx.net_ns.clone()),
-            udp_socket_factory: RuntimeUdpSocketFactory::new(global_ctx.net_ns.clone()),
+            tcp_listener_factory: RuntimeTcpListenerFactory::new(),
+            udp_socket_factory: RuntimeUdpSocketFactory::new(),
             global_ctx,
         }
     }
@@ -86,10 +86,9 @@ impl VirtualTcpSocketFactory for RuntimeConnectorHost {
         #[cfg(feature = "faketcp")]
         if options.purpose == TcpSocketPurpose::FakeTcp {
             let remote_addr = options.remote_addr;
-            let socket_mark = options.bind.socket_mark;
-            let socket = self
-                .global_ctx
-                .net_ns
+            let socket_mark = options.bind.context.socket_mark;
+            let net_ns = crate::common::netns::NetNS::from_socket_context(&options.bind.context);
+            let socket = net_ns
                 .run_async(|| async move {
                     crate::tunnel::fake_tcp::connect_socket(remote_addr, socket_mark).await
                 })
@@ -102,12 +101,7 @@ impl VirtualTcpSocketFactory for RuntimeConnectorHost {
             anyhow::bail!("FakeTCP socket support is disabled")
         }
 
-        self.global_ctx
-            .net_ns
-            .run_async(
-                || async move { tcp::connect_tcp(options).await.map_err(anyhow::Error::from) },
-            )
-            .await
+        tcp::connect_tcp(options).await.map_err(anyhow::Error::from)
     }
 }
 

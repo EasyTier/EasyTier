@@ -2,7 +2,10 @@ use std::{fmt, future::poll_fn, io, net::SocketAddr, sync::Arc, task::Poll};
 
 use async_trait::async_trait;
 
-use crate::socket::udp::{UdpSocketRecvMeta, UdpSocketSendMeta, VirtualUdpSocket};
+use crate::socket::{
+    SocketContext,
+    udp::{UdpSocketRecvMeta, UdpSocketSendMeta, VirtualUdpSocket},
+};
 
 use super::{HostOperationId, HostSocketHandle, HostSocketIo, HostSocketRuntime};
 
@@ -89,6 +92,7 @@ pub struct HostUdpSocket {
     io: Arc<dyn HostUdpIo>,
     handle: HostSocketHandle,
     local_addr: SocketAddr,
+    context: SocketContext,
 }
 
 impl HostSocketRuntime {
@@ -98,11 +102,22 @@ impl HostSocketRuntime {
         handle: HostSocketHandle,
         local_addr: SocketAddr,
     ) -> HostUdpSocket {
+        self.udp_socket_with_context(io, handle, local_addr, SocketContext::default())
+    }
+
+    pub fn udp_socket_with_context(
+        &self,
+        io: Arc<dyn HostUdpIo>,
+        handle: HostSocketHandle,
+        local_addr: SocketAddr,
+        context: SocketContext,
+    ) -> HostUdpSocket {
         HostUdpSocket {
             runtime: self.clone(),
             io,
             handle,
             local_addr,
+            context,
         }
     }
 }
@@ -196,6 +211,10 @@ impl fmt::Debug for HostUdpSocket {
 impl VirtualUdpSocket for HostUdpSocket {
     fn local_addr(&self) -> io::Result<SocketAddr> {
         Ok(self.local_addr)
+    }
+
+    fn socket_context(&self) -> SocketContext {
+        self.context.clone()
     }
 
     async fn send_to(&self, data: &[u8], addr: SocketAddr) -> io::Result<usize> {
