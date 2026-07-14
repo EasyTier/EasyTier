@@ -29,8 +29,12 @@ use crate::{
         CoreConfig, IpPrefix, NodeConfig, PeerId, PeerPolicyConfig, ProxyNetworkConfig,
         RouteConfig, TrafficConfig,
     },
-    peers::{credential_manager::CredentialManager, util::shrink_dashmap},
+    peers::{
+        credential_manager::{CredentialManager, CredentialStorage},
+        util::shrink_dashmap,
+    },
     runtime_config::CoreRuntimeConfigStore,
+    stats_manager::{LabelSet, LabelType, MetricName, StatsManager},
     token_bucket::TokenBucketManager,
 };
 
@@ -54,20 +58,6 @@ impl ByteLimiter for () {
 }
 
 pub type ArcByteLimiter = Arc<dyn ByteLimiter>;
-
-/// Receives peer control-plane traffic counters without exposing the host's
-/// metrics registry or any other runtime capability.
-pub trait PeerControlTrafficSink: Send + Sync {
-    fn record_control_tx(&self, network_name: &str, bytes: u64);
-
-    fn record_control_rx(&self, network_name: &str, bytes: u64);
-}
-
-impl PeerControlTrafficSink for () {
-    fn record_control_tx(&self, _network_name: &str, _bytes: u64) {}
-
-    fn record_control_rx(&self, _network_name: &str, _bytes: u64) {}
-}
 
 /// Projects credential-store changes without exposing the store itself.
 pub trait PeerCredentialEventSink: Send + Sync {
@@ -289,10 +279,8 @@ pub struct CorePeerContextAdapters {
     pub relay_state_sink: Arc<dyn PeerRelayStateSink>,
     pub stun_info_source: Option<Arc<dyn PeerStunInfoSource>>,
     pub public_ipv6_state: Arc<dyn PeerPublicIpv6State>,
-    pub traffic_sink: Arc<dyn PeerControlTrafficSink>,
     pub event_sink: Arc<dyn PeerEventSink>,
-    pub credentials: Arc<CredentialManager>,
-    pub trusted_keys: Arc<TrustedKeyMapManager>,
+    pub credential_storage: Option<Arc<dyn CredentialStorage>>,
     pub credential_event_sink: Arc<dyn PeerCredentialEventSink>,
 }
 
@@ -305,7 +293,7 @@ pub struct CorePeerContext {
     stun_info_source: Option<Arc<dyn PeerStunInfoSource>>,
     public_ipv6_state: Arc<dyn PeerPublicIpv6State>,
     limiter_state: Mutex<CoreLimiterState>,
-    traffic_sink: Arc<dyn PeerControlTrafficSink>,
+    stats_manager: Arc<StatsManager>,
     credentials: Arc<CredentialManager>,
     trusted_keys: Arc<TrustedKeyMapManager>,
     credential_event_sink: Arc<dyn PeerCredentialEventSink>,
@@ -315,8 +303,32 @@ pub struct CorePeerContext {
 
 impl CorePeerContext {
     pub fn new(config: CoreRuntimeConfigStore, adapters: CorePeerContextAdapters) -> Self {
+        Self::new_with_stats_manager(config, adapters, Arc::new(StatsManager::new()))
+    }
+
+    /// Builds a foreign-network context that contributes to the same
+    /// instance-level metrics registry while retaining independent identity,
+    /// credential, trusted-key, event, and limiter state.
+    pub fn new_foreign(
+        config: CoreRuntimeConfigStore,
+        adapters: CorePeerContextAdapters,
+        parent: &CorePeerContext,
+    ) -> Self {
+        Self::new_with_stats_manager(config, adapters, parent.stats_manager())
+    }
+
+    fn new_with_stats_manager(
+        config: CoreRuntimeConfigStore,
+        adapters: CorePeerContextAdapters,
+        stats_manager: Arc<StatsManager>,
+    ) -> Self {
         let avoid_relay_data_preference =
             AtomicBool::new(config.snapshot().peer.avoid_relay_data_preference);
+        let credentials = Arc::new(
+            adapters
+                .credential_storage
+                .map_or_else(CredentialManager::new, CredentialManager::from_storage),
+        );
         Self {
             config,
             avoid_relay_data_preference,
@@ -324,9 +336,9 @@ impl CorePeerContext {
             stun_info_source: adapters.stun_info_source,
             public_ipv6_state: adapters.public_ipv6_state,
             limiter_state: Mutex::new(CoreLimiterState::default()),
-            traffic_sink: adapters.traffic_sink,
-            credentials: adapters.credentials,
-            trusted_keys: adapters.trusted_keys,
+            stats_manager,
+            credentials,
+            trusted_keys: Arc::new(TrustedKeyMapManager::new()),
             credential_event_sink: adapters.credential_event_sink,
             peer_events: tokio::sync::broadcast::channel(PEER_EVENT_CAPACITY).0,
             event_sink: adapters.event_sink,
@@ -335,6 +347,33 @@ impl CorePeerContext {
 
     fn snapshot(&self) -> Arc<PeerRuntimeSnapshot> {
         self.config.snapshot().peer.clone()
+    }
+
+    pub fn stats_manager(&self) -> Arc<StatsManager> {
+        self.stats_manager.clone()
+    }
+
+    pub fn credential_manager(&self) -> Arc<CredentialManager> {
+        self.credentials.clone()
+    }
+
+    pub fn trusted_key_manager(&self) -> Arc<TrustedKeyMapManager> {
+        self.trusted_keys.clone()
+    }
+
+    fn record_control_metric(
+        &self,
+        network_name: &str,
+        bytes: u64,
+        bytes_metric: MetricName,
+        packets_metric: MetricName,
+    ) {
+        let labels =
+            LabelSet::new().with_label_type(LabelType::NetworkName(network_name.to_owned()));
+        self.stats_manager
+            .get_counter(bytes_metric, labels.clone())
+            .add(bytes);
+        self.stats_manager.get_counter(packets_metric, labels).inc();
     }
 
     fn get_or_create_limiter(&self, key: &str, bps: u64) -> Option<ArcByteLimiter> {
@@ -1046,11 +1085,21 @@ impl PeerContext for CorePeerContext {
     }
 
     fn record_control_tx(&self, network_name: &str, bytes: u64) {
-        self.traffic_sink.record_control_tx(network_name, bytes);
+        self.record_control_metric(
+            network_name,
+            bytes,
+            MetricName::TrafficControlBytesTx,
+            MetricName::TrafficControlPacketsTx,
+        );
     }
 
     fn record_control_rx(&self, network_name: &str, bytes: u64) {
-        self.traffic_sink.record_control_rx(network_name, bytes);
+        self.record_control_metric(
+            network_name,
+            bytes,
+            MetricName::TrafficControlBytesRx,
+            MetricName::TrafficControlPacketsRx,
+        );
     }
 
     fn recv_limiter(&self, network_name: &str, is_foreign_network: bool) -> Option<ArcByteLimiter> {
@@ -1117,10 +1166,8 @@ mod tests {
             relay_state_sink: Arc::new(()),
             stun_info_source: Some(Arc::new(())),
             public_ipv6_state: Arc::new(()),
-            traffic_sink: Arc::new(()),
             event_sink,
-            credentials: Arc::new(CredentialManager::new()),
-            trusted_keys: Arc::new(TrustedKeyMapManager::new()),
+            credential_storage: None,
             credential_event_sink: Arc::new(()),
         }
     }
@@ -1145,6 +1192,38 @@ mod tests {
             },
             flags,
         )
+    }
+
+    #[test]
+    fn records_control_traffic_in_core_owned_metrics() {
+        let context = CorePeerContext::new(
+            CoreRuntimeConfigStore::new(
+                CoreRuntimeConfig::default(),
+                Arc::new(PeerRuntimeSnapshot::default()),
+            ),
+            test_core_context_adapters(Arc::new(())),
+        );
+        let labels =
+            LabelSet::new().with_label_type(LabelType::NetworkName("metrics-network".to_owned()));
+
+        PeerContext::record_control_tx(&context, "metrics-network", 128);
+
+        assert_eq!(
+            context
+                .stats_manager()
+                .get_metric(MetricName::TrafficControlBytesTx, &labels)
+                .unwrap()
+                .value,
+            128
+        );
+        assert_eq!(
+            context
+                .stats_manager()
+                .get_metric(MetricName::TrafficControlPacketsTx, &labels)
+                .unwrap()
+                .value,
+            1
+        );
     }
 
     #[test]
@@ -1480,10 +1559,8 @@ mod tests {
                 relay_state_sink: Arc::new(()),
                 stun_info_source,
                 public_ipv6_state: Arc::new(()),
-                traffic_sink: Arc::new(()),
                 event_sink: Arc::new(()),
-                credentials: Arc::new(CredentialManager::new()),
-                trusted_keys: Arc::new(TrustedKeyMapManager::new()),
+                credential_storage: None,
                 credential_event_sink: Arc::new(()),
             },
         )

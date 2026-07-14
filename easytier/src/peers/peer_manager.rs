@@ -2,6 +2,7 @@ use crate::{
     common::{
         PeerId,
         config::{ConfigLoader, TomlConfigLoader},
+        credential_manager::CredentialManager,
         global_ctx::ArcGlobalCtx,
     },
     connector::core_instance::runtime_socket_context,
@@ -13,8 +14,13 @@ pub use easytier_core::peers::peer_manager::RouteAlgoType;
 use easytier_core::peers::peer_manager::{DnsAddressResolver, PeerManagerCore};
 use easytier_core::tunnel::ring::RingTunnelRegistry;
 use easytier_core::{
-    peers::{context::CorePeerContext, foreign_network_manager::ForeignNetworkManager},
+    peers::{
+        acl_filter::AclFilter,
+        context::{CorePeerContext, TrustedKeyMapManager, TrustedKeySource},
+        foreign_network_manager::ForeignNetworkManager,
+    },
     runtime_config::CoreRuntimeConfigStore,
+    stats_manager::StatsManager,
 };
 use std::{fmt::Debug, sync::Arc};
 
@@ -30,6 +36,7 @@ pub struct PeerManager {
     core: Arc<PeerManagerCore>,
     peer_context: Arc<CorePeerContext>,
     runtime_config: CoreRuntimeConfigStore,
+    credential_manager: Arc<CredentialManager>,
     ring_registry: Arc<RingTunnelRegistry>,
 
     foreign_network_manager: Arc<ForeignNetworkManager>,
@@ -102,15 +109,15 @@ impl PeerManager {
         let exit_nodes = global_ctx.config.get_exit_nodes();
         let (runtime_config, peer_context) = build_core_peer_context(&global_ctx);
 
-        let foreign_network_runtime = Arc::new(ForeignNetworkRuntimeImpl::new(global_ctx.clone()));
+        let foreign_network_runtime = Arc::new(ForeignNetworkRuntimeImpl::new(
+            global_ctx.clone(),
+            peer_context.clone(),
+        ));
         let build_result = PeerManagerCore::new_with_foreign_network_runtime(
             route_algo,
             my_peer_id,
             peer_context.clone(),
             global_ctx.clone(),
-            global_ctx.stats_manager().clone(),
-            global_ctx.get_acl_filter().clone(),
-            global_ctx.get_credential_manager().core(),
             nic_channel,
             encryptor,
             is_secure_mode_enabled,
@@ -123,12 +130,16 @@ impl PeerManager {
             TomlConfigLoader::default().get_flags(),
             foreign_network_runtime.clone(),
         );
+        let credential_manager = Arc::new(CredentialManager::from_core(
+            peer_context.credential_manager(),
+        ));
 
         PeerManager {
             global_ctx,
             core: Arc::new(build_result.core),
             peer_context,
             runtime_config,
+            credential_manager,
             ring_registry,
             foreign_network_manager: build_result.foreign_network_manager,
             #[cfg(test)]
@@ -147,6 +158,35 @@ impl PeerManager {
 
     pub fn core(&self) -> Arc<PeerManagerCore> {
         self.core.clone()
+    }
+
+    pub fn stats_manager(&self) -> Arc<StatsManager> {
+        self.core.stats_manager()
+    }
+
+    pub fn acl_filter(&self) -> Arc<AclFilter> {
+        self.core.acl_filter()
+    }
+
+    pub fn credential_manager(&self) -> Arc<CredentialManager> {
+        self.credential_manager.clone()
+    }
+
+    pub(crate) fn trusted_key_manager(&self) -> Arc<TrustedKeyMapManager> {
+        self.peer_context.trusted_key_manager()
+    }
+
+    pub(crate) fn is_pubkey_trusted_with_source(
+        &self,
+        pubkey: &[u8],
+        network_name: &str,
+        source: TrustedKeySource,
+    ) -> bool {
+        self.trusted_key_manager().verify_trusted_key_with_source(
+            pubkey,
+            network_name,
+            Some(source),
+        )
     }
 
     pub(crate) fn ring_registry(&self) -> Arc<RingTunnelRegistry> {
@@ -310,7 +350,6 @@ mod tests {
 
     fn metric_value(peer_mgr: &PeerManager, metric: MetricName, labels: &LabelSet) -> u64 {
         peer_mgr
-            .get_global_ctx()
             .stats_manager()
             .get_metric(metric, labels)
             .map(|metric| metric.value)
@@ -358,6 +397,29 @@ mod tests {
         assert!(core_peer_manager::should_mark_recent_traffic_for_fanout(0));
         assert!(core_peer_manager::should_mark_recent_traffic_for_fanout(1));
         assert!(!core_peer_manager::should_mark_recent_traffic_for_fanout(2));
+    }
+
+    #[tokio::test]
+    async fn native_peer_manager_projects_core_owned_peer_resources() {
+        let global_ctx = get_mock_global_ctx();
+        let (packet_tx, _packet_rx) = create_packet_recv_chan();
+        let peer_manager = PeerManager::new(RouteAlgoType::Ospf, global_ctx.clone(), packet_tx);
+        let core = peer_manager.core();
+        let core_stats = core.stats_manager();
+        let core_acl = core.acl_filter();
+        let core_credentials = core.credential_manager();
+        let core_trusted_keys = peer_manager.peer_context.trusted_key_manager();
+
+        assert!(Arc::ptr_eq(&peer_manager.stats_manager(), &core_stats));
+        assert!(Arc::ptr_eq(&peer_manager.acl_filter(), &core_acl));
+        assert!(Arc::ptr_eq(
+            &peer_manager.credential_manager().core(),
+            &core_credentials,
+        ));
+        assert!(Arc::ptr_eq(
+            &peer_manager.trusted_key_manager(),
+            &core_trusted_keys,
+        ));
     }
 
     #[tokio::test]
@@ -468,7 +530,6 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(
             peer_mgr
-                .get_global_ctx()
                 .stats_manager()
                 .get_metric(MetricName::TrafficBytesTx, &network_labels)
                 .unwrap()
@@ -477,7 +538,6 @@ mod tests {
         );
         assert_eq!(
             peer_mgr
-                .get_global_ctx()
                 .stats_manager()
                 .get_metric(MetricName::TrafficPacketsTx, &network_labels)
                 .unwrap()
@@ -486,7 +546,6 @@ mod tests {
         );
         assert!(
             peer_mgr
-                .get_global_ctx()
                 .stats_manager()
                 .get_metric(
                     MetricName::TrafficBytesTxByInstance,
@@ -498,7 +557,6 @@ mod tests {
         );
         assert!(
             peer_mgr
-                .get_global_ctx()
                 .stats_manager()
                 .get_metric(
                     MetricName::TrafficPacketsTxByInstance,
@@ -554,7 +612,6 @@ mod tests {
         );
         assert!(
             peer_mgr
-                .get_global_ctx()
                 .stats_manager()
                 .get_metric(
                     MetricName::TrafficBytesTxByInstance,
@@ -566,7 +623,6 @@ mod tests {
         );
         assert!(
             peer_mgr
-                .get_global_ctx()
                 .stats_manager()
                 .get_metric(
                     MetricName::TrafficControlBytesTxByInstance,
@@ -1550,7 +1606,7 @@ mod tests {
         ));
         admin.core().run_for_test().await.unwrap();
 
-        let (_cred_id, cred_secret) = admin_ctx.get_credential_manager().generate_credential(
+        let (_cred_id, cred_secret) = admin.credential_manager().generate_credential(
             vec![],
             false,
             vec![],

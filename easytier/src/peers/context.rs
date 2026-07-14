@@ -17,6 +17,7 @@ use easytier_core::runtime_config::{CoreRuntimeConfig, CoreRuntimeConfigStore};
 use crate::{
     common::{
         constants::EASYTIER_VERSION,
+        credential_manager::runtime_credential_storage,
         global_ctx::{ArcGlobalCtx, GlobalCtx, GlobalCtxEvent},
     },
     use_global_var,
@@ -60,6 +61,22 @@ pub(crate) fn build_core_peer_context(
     (runtime_config, peer_context)
 }
 
+pub(crate) fn build_foreign_core_peer_context(
+    global_ctx: &ArcGlobalCtx,
+    parent: &CorePeerContext,
+) -> (CoreRuntimeConfigStore, Arc<CorePeerContext>) {
+    let runtime_config = CoreRuntimeConfigStore::new(
+        CoreRuntimeConfig::default(),
+        Arc::new(runtime_peer_snapshot(global_ctx)),
+    );
+    let peer_context = Arc::new(CorePeerContext::new_foreign(
+        runtime_config.clone(),
+        core_peer_context_adapters(global_ctx),
+        parent,
+    ));
+    (runtime_config, peer_context)
+}
+
 pub(crate) struct GlobalCtxPeerEventSink {
     global_ctx: ArcGlobalCtx,
 }
@@ -95,10 +112,8 @@ pub(crate) fn core_peer_context_adapters(global_ctx: &ArcGlobalCtx) -> CorePeerC
         relay_state_sink: global_ctx.clone(),
         stun_info_source: Some(global_ctx.clone()),
         public_ipv6_state: global_ctx.clone(),
-        traffic_sink: global_ctx.clone(),
         event_sink: event_sink.clone(),
-        credentials: global_ctx.get_credential_manager().core(),
-        trusted_keys: global_ctx.trusted_key_manager(),
+        credential_storage: runtime_credential_storage(global_ctx.config.get_credential_file()),
         credential_event_sink: event_sink,
     }
 }
@@ -192,7 +207,6 @@ impl PeerPublicIpv6State for GlobalCtx {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use easytier_core::stats_manager::{LabelSet, LabelType, MetricName};
     use std::sync::Arc;
 
     use crate::common::{
@@ -236,36 +250,6 @@ mod tests {
             events.recv().await.unwrap(),
             GlobalCtxEvent::CredentialChanged
         ));
-    }
-
-    #[tokio::test]
-    async fn control_traffic_sink_preserves_native_metric_labels() {
-        let global_ctx = get_mock_global_ctx();
-        let labels =
-            LabelSet::new().with_label_type(LabelType::NetworkName("metrics-network".to_owned()));
-
-        easytier_core::peers::context::PeerControlTrafficSink::record_control_tx(
-            global_ctx.as_ref(),
-            "metrics-network",
-            128,
-        );
-
-        assert_eq!(
-            global_ctx
-                .stats_manager()
-                .get_metric(MetricName::TrafficControlBytesTx, &labels)
-                .unwrap()
-                .value,
-            128
-        );
-        assert_eq!(
-            global_ctx
-                .stats_manager()
-                .get_metric(MetricName::TrafficControlPacketsTx, &labels)
-                .unwrap()
-                .value,
-            1
-        );
     }
 
     #[tokio::test]

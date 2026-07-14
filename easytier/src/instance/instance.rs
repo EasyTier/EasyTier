@@ -1149,6 +1149,18 @@ impl Instance {
         self.peer_manager.clone()
     }
 
+    pub fn stats_manager(&self) -> Arc<easytier_core::stats_manager::StatsManager> {
+        self.peer_manager.stats_manager()
+    }
+
+    pub fn acl_filter(&self) -> Arc<easytier_core::peers::acl_filter::AclFilter> {
+        self.peer_manager.acl_filter()
+    }
+
+    pub fn credential_manager(&self) -> Arc<crate::common::credential_manager::CredentialManager> {
+        self.peer_manager.credential_manager()
+    }
+
     pub(crate) fn ring_registry(&self) -> Arc<RingTunnelRegistry> {
         self.ring_registry.clone()
     }
@@ -1293,7 +1305,7 @@ impl Instance {
     fn get_stats_rpc_service(&self) -> impl StatsRpc<Controller = BaseController> + Clone + use<> {
         #[derive(Clone)]
         pub struct StatsRpcService {
-            global_ctx: Weak<GlobalCtx>,
+            peer_manager: Weak<PeerManager>,
         }
 
         #[async_trait::async_trait]
@@ -1305,7 +1317,7 @@ impl Instance {
                 _: BaseController,
                 _request: GetStatsRequest,
             ) -> Result<GetStatsResponse, rpc_types::error::Error> {
-                let snapshots = weak_upgrade(&self.global_ctx)?
+                let snapshots = weak_upgrade(&self.peer_manager)?
                     .stats_manager()
                     .get_all_metrics();
 
@@ -1333,7 +1345,7 @@ impl Instance {
                 _: BaseController,
                 _request: GetPrometheusStatsRequest,
             ) -> Result<GetPrometheusStatsResponse, rpc_types::error::Error> {
-                let prometheus_text = weak_upgrade(&self.global_ctx)?
+                let prometheus_text = weak_upgrade(&self.peer_manager)?
                     .stats_manager()
                     .export_prometheus();
 
@@ -1342,7 +1354,7 @@ impl Instance {
         }
 
         StatsRpcService {
-            global_ctx: Arc::downgrade(&self.global_ctx),
+            peer_manager: Arc::downgrade(&self.peer_manager),
         }
     }
 
@@ -1864,8 +1876,8 @@ mod tests {
         assert_eq!(generated.credential_id, "shared-credential");
         assert_eq!(
             instance
-                .global_ctx
-                .get_credential_manager()
+                .peer_manager
+                .credential_manager()
                 .list_credentials()
                 .len(),
             1
@@ -1878,8 +1890,8 @@ mod tests {
         );
         assert!(
             instance
-                .global_ctx
-                .get_credential_manager()
+                .peer_manager
+                .credential_manager()
                 .list_credentials()
                 .is_empty()
         );

@@ -9,7 +9,7 @@ use easytier_core::proxy::tcp_proxy_engine::{
 };
 use easytier_core::proxy::tcp_proxy_service::TcpProxyService;
 use easytier_core::proxy::tcp_socket_connector::TcpSocketProxyConnector;
-use easytier_core::stats_manager::{LabelSet, LabelType, MetricName};
+use easytier_core::stats_manager::{LabelSet, LabelType, MetricName, StatsManager};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{
     Arc, Weak,
@@ -38,15 +38,21 @@ pub type NatDstTcpConnector = TcpSocketProxyConnector<RuntimeConnectorHost>;
 #[derive(Clone)]
 struct RuntimeTcpProxyAdapter {
     global_ctx: Arc<GlobalCtx>,
+    stats_manager: Arc<StatsManager>,
     transport_type: TcpProxyEntryTransportType,
     smoltcp_enabled: Arc<AtomicBool>,
 }
 
 impl RuntimeTcpProxyAdapter {
-    fn new(global_ctx: ArcGlobalCtx, transport_type: TcpProxyEntryTransportType) -> Self {
+    fn new(
+        global_ctx: ArcGlobalCtx,
+        stats_manager: Arc<StatsManager>,
+        transport_type: TcpProxyEntryTransportType,
+    ) -> Self {
         let smoltcp_enabled = Self::compute_smoltcp_enabled(&global_ctx);
         Self {
             global_ctx,
+            stats_manager,
             transport_type,
             smoltcp_enabled: Arc::new(AtomicBool::new(smoltcp_enabled)),
         }
@@ -115,8 +121,7 @@ impl TcpProxyRuntime for RuntimeTcpProxyAdapter {
     }
 
     fn record_tcp_proxy_connect(&self, ctx: TcpProxyConnectContext, socket_dst: SocketAddr) {
-        self.global_ctx
-            .stats_manager()
+        self.stats_manager
             .get_counter(
                 MetricName::TcpProxyConnect,
                 LabelSet::new()
@@ -152,6 +157,7 @@ impl<C: TcpProxyDestinationConnector> TcpProxy<C> {
         let transport_type = transport_type_for_mode(connector.proxy_mode());
         let runtime = Arc::new(RuntimeTcpProxyAdapter::new(
             global_ctx.clone(),
+            peer_manager.stats_manager(),
             transport_type,
         ));
         let service = TcpProxyService::new_with_socket_context(

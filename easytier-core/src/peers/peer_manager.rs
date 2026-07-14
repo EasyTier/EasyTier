@@ -42,7 +42,6 @@ use super::{
     context::{
         ArcPeerContext, CorePeerContext, CorePeerContextAdapters, HostRoutingPolicy,
         NetworkIdentity, PeerContext, PeerRuntimeConfig, PeerRuntimeSnapshot, PeerStunInfoSource,
-        TrustedKeyMapManager,
     },
     credential_manager::CredentialManager,
     encrypt::{Encryptor, NullCipher, create_encryptor, derive_key_128, derive_key_256},
@@ -1034,7 +1033,6 @@ impl PeerManagerCore {
         config.runtime.feature_flags.disable_p2p = config.flags.disable_p2p;
         config.runtime.feature_flags.need_p2p = config.flags.need_p2p;
         config.runtime.feature_flags.avoid_relay_data |= config.flags.disable_relay_data;
-        let credential_manager = Arc::new(CredentialManager::new());
         let mut submitted_snapshot = runtime_config.snapshot().peer.as_ref().clone();
         submitted_snapshot.replace_portable_config(config.runtime.clone(), config.flags.clone());
         runtime_config.update_peer(Arc::new(submitted_snapshot));
@@ -1044,10 +1042,8 @@ impl PeerManagerCore {
                 relay_state_sink: Arc::new(()),
                 stun_info_source,
                 public_ipv6_state: Arc::new(()),
-                traffic_sink: Arc::new(()),
                 event_sink: Arc::new(()),
-                credentials: credential_manager.clone(),
-                trusted_keys: Arc::new(TrustedKeyMapManager::new()),
+                credential_storage: None,
                 credential_event_sink: Arc::new(()),
             },
         ));
@@ -1055,7 +1051,8 @@ impl PeerManagerCore {
             instance_id,
             network_name,
         });
-        let stats_manager = Arc::new(StatsManager::new());
+        let stats_manager = context.stats_manager();
+        let credential_manager = context.credential_manager();
         let acl_filter = Arc::new(AclFilter::new());
         let address_resolver = Arc::new(DnsAddressResolver::new(dns).with_context(dns_context));
 
@@ -1088,9 +1085,6 @@ impl PeerManagerCore {
         my_peer_id: PeerId,
         context: Arc<CorePeerContext>,
         public_ipv6_runtime: Arc<dyn PublicIpv6Runtime>,
-        stats_manager: Arc<StatsManager>,
-        acl_filter: Arc<AclFilter>,
-        credential_manager: Arc<CredentialManager>,
         nic_channel: PacketRecvChan,
         encryptor: Arc<dyn Encryptor + 'static>,
         is_secure_mode_enabled: bool,
@@ -1100,15 +1094,17 @@ impl PeerManagerCore {
         foreign_context_default_flags: FlagsInConfig,
         foreign_network_runtime: Arc<dyn ForeignNetworkRuntime>,
     ) -> PeerManagerCoreBuildResult<ForeignNetworkManager> {
+        let stats_manager = context.stats_manager();
+        let credential_manager = context.credential_manager();
         let foreign_context: ArcPeerContext = context.clone();
         let foreign_stats_manager = stats_manager.clone();
-        Self::new_with_default_components(
+        let mut result = Self::new_with_default_components(
             route_algo,
             my_peer_id,
             context,
             public_ipv6_runtime,
             stats_manager,
-            acl_filter,
+            Arc::new(AclFilter::new()),
             credential_manager,
             nic_channel,
             encryptor,
@@ -1127,7 +1123,9 @@ impl PeerManagerCore {
                     accessor,
                 ))
             },
-        )
+        );
+        result.core.owns_maintenance_tasks = true;
+        result
     }
 
     /// Builds the default peer control-plane graph with a caller-provided
@@ -1380,6 +1378,10 @@ impl PeerManagerCore {
 
     pub fn credential_manager(&self) -> Arc<CredentialManager> {
         self.credential_manager.clone()
+    }
+
+    pub fn stats_manager(&self) -> Arc<StatsManager> {
+        self.stats_manager.clone()
     }
 
     pub fn can_manage_credentials(&self) -> bool {
@@ -1824,6 +1826,8 @@ impl PeerManagerCore {
     }
 
     pub(crate) async fn run(&self) -> Result<(), Error> {
+        self.stats_manager.start_cleanup_task();
+
         if let Some(route) = self.route_algo_inst.ospf_route() {
             self.add_route(route).await;
         }

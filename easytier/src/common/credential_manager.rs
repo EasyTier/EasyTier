@@ -27,16 +27,29 @@ impl CredentialStorage for FileCredentialStorage {
     }
 }
 
+pub(crate) fn runtime_credential_storage(
+    path: Option<PathBuf>,
+) -> Option<Arc<dyn CredentialStorage>> {
+    path.map(|path| Arc::new(FileCredentialStorage { path }) as Arc<dyn CredentialStorage>)
+}
+
 impl CredentialManager {
+    #[cfg(test)]
     pub fn new(storage_path: Option<PathBuf>) -> Self {
-        let core = storage_path.map_or_else(CoreCredentialManager::new, |path| {
-            CoreCredentialManager::from_storage(Arc::new(FileCredentialStorage { path }))
-        });
+        let core = runtime_credential_storage(storage_path).map_or_else(
+            CoreCredentialManager::new,
+            CoreCredentialManager::from_storage,
+        );
         Self {
             core: Arc::new(core),
         }
     }
 
+    pub(crate) fn from_core(core: Arc<CoreCredentialManager>) -> Self {
+        Self { core }
+    }
+
+    #[cfg(test)]
     pub fn core(&self) -> Arc<CoreCredentialManager> {
         self.core.clone()
     }

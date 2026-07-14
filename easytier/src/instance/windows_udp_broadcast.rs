@@ -161,7 +161,7 @@ impl BroadcastRelayStats {
         let global_ctx = peer_manager.get_global_ctx();
         let label_set =
             LabelSet::new().with_label_type(LabelType::NetworkName(global_ctx.get_network_name()));
-        let stats_manager = global_ctx.stats_manager();
+        let stats_manager = peer_manager.stats_manager();
 
         Self {
             packets_captured: stats_manager.get_counter(

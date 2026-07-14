@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use base64::Engine as _;
+use easytier_core::peers::context::TrustedKeySource;
 use easytier_core::stats_manager::{LabelSet, LabelType, MetricName};
 use easytier_core::tunnel::ring::{RingTunnelRegistry, create_ring_tunnel_pair};
 
@@ -10,7 +11,7 @@ use crate::{
         PeerId,
         error::Error,
         global_ctx::{
-            NetworkIdentity, TrustedKeySource,
+            NetworkIdentity,
             tests::{get_mock_global_ctx, get_mock_global_ctx_with_network},
         },
     },
@@ -218,7 +219,6 @@ pub async fn wait_route_appear(
 
 fn metric_value(peer_mgr: &PeerManager, metric: MetricName, network_name: &str) -> u64 {
     peer_mgr
-        .get_global_ctx()
         .stats_manager()
         .get_metric(
             metric,
@@ -376,10 +376,12 @@ async fn private_mode_allows_trusted_foreign_credential() {
     let admin = create_mock_peer_manager_secure("tenant-a".to_string(), "shared".to_string()).await;
     set_private_mode(&server, true);
 
-    let (_cred_id, cred_secret) = admin
-        .get_global_ctx()
-        .get_credential_manager()
-        .generate_credential(vec![], false, vec![], Duration::from_secs(3600));
+    let (_cred_id, cred_secret) = admin.credential_manager().generate_credential(
+        vec![],
+        false,
+        vec![],
+        Duration::from_secs(3600),
+    );
 
     let privkey_bytes: [u8; 32] = base64::engine::general_purpose::STANDARD
         .decode(&cred_secret)
@@ -1018,15 +1020,12 @@ async fn credential_node_joins_network() {
     let admin_b = create_mock_peer_manager_secure("net1".to_string(), "secret".to_string()).await;
 
     // Generate credential on admin_a
-    let (_cred_id, cred_secret) = admin_a
-        .get_global_ctx()
-        .get_credential_manager()
-        .generate_credential(
-            vec!["guest".to_string()],
-            false,
-            vec![],
-            std::time::Duration::from_secs(3600),
-        );
+    let (_cred_id, cred_secret) = admin_a.credential_manager().generate_credential(
+        vec!["guest".to_string()],
+        false,
+        vec![],
+        std::time::Duration::from_secs(3600),
+    );
 
     // Create credential node using the generated key
     let privkey_bytes: [u8; 32] = base64::engine::general_purpose::STANDARD
@@ -1115,10 +1114,12 @@ async fn credential_revocation_removes_from_routes() {
     let admin_a = create_mock_peer_manager_secure("net1".to_string(), "secret".to_string()).await;
     let admin_b = create_mock_peer_manager_secure("net1".to_string(), "secret".to_string()).await;
 
-    let (cred_id, cred_secret) = admin_a
-        .get_global_ctx()
-        .get_credential_manager()
-        .generate_credential(vec![], false, vec![], std::time::Duration::from_secs(3600));
+    let (cred_id, cred_secret) = admin_a.credential_manager().generate_credential(
+        vec![],
+        false,
+        vec![],
+        std::time::Duration::from_secs(3600),
+    );
 
     let privkey_bytes: [u8; 32] = base64::engine::general_purpose::STANDARD
         .decode(&cred_secret)
@@ -1150,12 +1151,7 @@ async fn credential_revocation_removes_from_routes() {
     .await;
 
     // Now revoke the credential
-    assert!(
-        admin_a
-            .get_global_ctx()
-            .get_credential_manager()
-            .revoke_credential(&cred_id)
-    );
+    assert!(admin_a.credential_manager().revoke_credential(&cred_id));
     // Issue event to trigger OSPF sync
     admin_a
         .get_global_ctx()
@@ -1188,10 +1184,12 @@ async fn credential_expiry_disconnects_from_all_admins() {
         .await
         .unwrap();
 
-    let (_cred_id, cred_secret) = admin_a
-        .get_global_ctx()
-        .get_credential_manager()
-        .generate_credential(vec![], false, vec![], std::time::Duration::from_secs(2));
+    let (_cred_id, cred_secret) = admin_a.credential_manager().generate_credential(
+        vec![],
+        false,
+        vec![],
+        std::time::Duration::from_secs(2),
+    );
 
     admin_a
         .get_global_ctx()
@@ -1282,15 +1280,12 @@ async fn credential_node_group_assignment() {
     let admin_a = create_mock_peer_manager_secure("net1".to_string(), "secret".to_string()).await;
     let admin_b = create_mock_peer_manager_secure("net1".to_string(), "secret".to_string()).await;
 
-    let (_cred_id, cred_secret) = admin_a
-        .get_global_ctx()
-        .get_credential_manager()
-        .generate_credential(
-            vec!["guest".to_string(), "limited".to_string()],
-            false,
-            vec![],
-            std::time::Duration::from_secs(3600),
-        );
+    let (_cred_id, cred_secret) = admin_a.credential_manager().generate_credential(
+        vec!["guest".to_string(), "limited".to_string()],
+        false,
+        vec![],
+        std::time::Duration::from_secs(3600),
+    );
 
     let privkey_bytes: [u8; 32] = base64::engine::general_purpose::STANDARD
         .decode(&cred_secret)
@@ -1372,10 +1367,12 @@ async fn credential_node_connected_via_admin_b_trusts_admin_a_groups() {
         .await
         .unwrap();
 
-    let (_cred_id, cred_secret) = admin_a
-        .get_global_ctx()
-        .get_credential_manager()
-        .generate_credential(vec![], false, vec![], std::time::Duration::from_secs(3600));
+    let (_cred_id, cred_secret) = admin_a.credential_manager().generate_credential(
+        vec![],
+        false,
+        vec![],
+        std::time::Duration::from_secs(3600),
+    );
     admin_a
         .get_global_ctx()
         .issue_event(crate::common::global_ctx::GlobalCtxEvent::CredentialChanged);
@@ -1393,7 +1390,7 @@ async fn credential_node_connected_via_admin_b_trusts_admin_a_groups() {
             let admin_b = admin_b.clone();
             let credential_pubkey = credential_pubkey.clone();
             async move {
-                admin_b.get_global_ctx().is_pubkey_trusted_with_source(
+                admin_b.is_pubkey_trusted_with_source(
                     &credential_pubkey,
                     "net1",
                     TrustedKeySource::OspfCredential,
@@ -1472,24 +1469,18 @@ async fn multi_admin_multi_credential_route_and_revocation_isolation() {
         .await
         .unwrap();
 
-    let (cred1_id, cred1_secret) = admin_a
-        .get_global_ctx()
-        .get_credential_manager()
-        .generate_credential(
-            vec!["guest-a".to_string()],
-            false,
-            vec![],
-            std::time::Duration::from_secs(3600),
-        );
-    let (_cred2_id, cred2_secret) = admin_b
-        .get_global_ctx()
-        .get_credential_manager()
-        .generate_credential(
-            vec!["guest-b".to_string()],
-            false,
-            vec![],
-            std::time::Duration::from_secs(3600),
-        );
+    let (cred1_id, cred1_secret) = admin_a.credential_manager().generate_credential(
+        vec!["guest-a".to_string()],
+        false,
+        vec![],
+        std::time::Duration::from_secs(3600),
+    );
+    let (_cred2_id, cred2_secret) = admin_b.credential_manager().generate_credential(
+        vec!["guest-b".to_string()],
+        false,
+        vec![],
+        std::time::Duration::from_secs(3600),
+    );
 
     let cred1_private: [u8; 32] = base64::engine::general_purpose::STANDARD
         .decode(&cred1_secret)
@@ -1544,12 +1535,7 @@ async fn multi_admin_multi_credential_route_and_revocation_isolation() {
     )
     .await;
 
-    assert!(
-        admin_a
-            .get_global_ctx()
-            .get_credential_manager()
-            .revoke_credential(&cred1_id)
-    );
+    assert!(admin_a.credential_manager().revoke_credential(&cred1_id));
     admin_a
         .get_global_ctx()
         .issue_event(crate::common::global_ctx::GlobalCtxEvent::CredentialChanged);
@@ -1578,15 +1564,12 @@ async fn unknown_credential_rejected_while_valid_credential_survives() {
         .await
         .unwrap();
 
-    let (_cred_id, cred_secret) = admin_a
-        .get_global_ctx()
-        .get_credential_manager()
-        .generate_credential(
-            vec!["stable".to_string()],
-            false,
-            vec![],
-            std::time::Duration::from_secs(3600),
-        );
+    let (_cred_id, cred_secret) = admin_a.credential_manager().generate_credential(
+        vec!["stable".to_string()],
+        false,
+        vec![],
+        std::time::Duration::from_secs(3600),
+    );
 
     let valid_private: [u8; 32] = base64::engine::general_purpose::STANDARD
         .decode(&cred_secret)

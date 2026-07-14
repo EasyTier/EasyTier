@@ -609,11 +609,28 @@ pub struct StatsManager {
 impl StatsManager {
     /// Create a new StatsManager
     pub fn new() -> Self {
-        let counters = Arc::new(DashMap::new());
+        let manager = Self {
+            counters: Arc::new(DashMap::new()),
+            cleanup_task: Mutex::new(None),
+        };
+        manager.start_cleanup_task();
+        manager
+    }
 
-        // Start cleanup task only if we're in a tokio runtime
-        let counters_clone = Arc::downgrade(&counters);
-        let cleanup_task = tokio::spawn(async move {
+    pub(crate) fn start_cleanup_task(&self) {
+        let mut cleanup_task = self.cleanup_task.lock().unwrap();
+        if cleanup_task
+            .as_ref()
+            .is_some_and(|task| !task.is_finished())
+        {
+            return;
+        }
+        cleanup_task.take();
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let counters = Arc::downgrade(&self.counters);
+        *cleanup_task = Some(AbortOnDropHandle::new(runtime.spawn(async move {
             let mut interval = interval(Duration::from_secs(60)); // Check every minute
             loop {
                 interval.tick().await;
@@ -622,7 +639,7 @@ impl StatsManager {
                     continue;
                 };
 
-                let Some(counters) = counters_clone.upgrade() else {
+                let Some(counters) = counters.upgrade() else {
                     break;
                 };
 
@@ -632,12 +649,7 @@ impl StatsManager {
                 });
                 counters.shrink_to_fit();
             }
-        });
-
-        Self {
-            counters,
-            cleanup_task: Mutex::new(Some(AbortOnDropHandle::new(cleanup_task))),
-        }
+        })));
     }
 
     pub(crate) async fn stop_cleanup_task(&self) {
@@ -929,6 +941,65 @@ impl RpcMetrics for StatsManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cleanup_task_can_start_after_sync_construction() {
+        let stats = StatsManager::new();
+        assert!(stats.cleanup_task_is_stopped());
+
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap()
+            .block_on(async {
+                stats.start_cleanup_task();
+                assert!(!stats.cleanup_task_is_stopped());
+                stats.stop_cleanup_task().await;
+            });
+
+        assert!(stats.cleanup_task_is_stopped());
+    }
+
+    #[test]
+    fn cleanup_task_restarts_after_its_runtime_stops() {
+        let first_runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let stats = first_runtime.block_on(async {
+            let stats = StatsManager::new();
+            assert!(!stats.cleanup_task_is_stopped());
+            stats
+        });
+        drop(first_runtime);
+        assert!(
+            stats
+                .cleanup_task
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .is_finished()
+        );
+
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap()
+            .block_on(async {
+                stats.start_cleanup_task();
+                assert!(
+                    !stats
+                        .cleanup_task
+                        .lock()
+                        .unwrap()
+                        .as_ref()
+                        .unwrap()
+                        .is_finished()
+                );
+                stats.stop_cleanup_task().await;
+            });
+    }
 
     #[tokio::test]
     async fn test_label_set() {

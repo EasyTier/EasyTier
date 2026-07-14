@@ -128,10 +128,12 @@ async fn create_credential_config(
     ipv4: &str,
     ipv6: &str,
 ) -> TomlConfigLoader {
-    let (_cred_id, cred_secret) = admin_inst
-        .get_global_ctx()
-        .get_credential_manager()
-        .generate_credential(vec![], false, vec![], Duration::from_secs(3600));
+    let (_cred_id, cred_secret) = admin_inst.credential_manager().generate_credential(
+        vec![],
+        false,
+        vec![],
+        Duration::from_secs(3600),
+    );
 
     build_credential_config(
         admin_inst
@@ -419,8 +421,7 @@ async fn credential_peers_p2p_to_need_p2p_admin_through_public_server(
     wait_foreign_network_count(&public_server_inst, 1, Duration::from_secs(10)).await;
 
     let (_credential_a_id, credential_a_secret) = admin_inst
-        .get_global_ctx()
-        .get_credential_manager()
+        .credential_manager()
         .generate_credential_with_options(
             vec![],
             false,
@@ -430,8 +431,7 @@ async fn credential_peers_p2p_to_need_p2p_admin_through_public_server(
             false,
         );
     let (_credential_b_id, credential_b_secret) = admin_inst
-        .get_global_ctx()
-        .get_credential_manager()
+        .credential_manager()
         .generate_credential_with_options(
             vec![],
             false,
@@ -547,10 +547,12 @@ fn create_generated_credential_config(
     ipv4: &str,
     ipv6: &str,
 ) -> (TomlConfigLoader, String) {
-    let (cred_id, cred_secret) = admin_inst
-        .get_global_ctx()
-        .get_credential_manager()
-        .generate_credential(vec![], false, vec![], Duration::from_secs(3600));
+    let (cred_id, cred_secret) = admin_inst.credential_manager().generate_credential(
+        vec![],
+        false,
+        vec![],
+        Duration::from_secs(3600),
+    );
     let config = build_credential_config(
         admin_inst
             .get_global_ctx()
@@ -847,20 +849,26 @@ async fn credential_relay_capability(#[case] allow_relay: bool) {
 
     // Generate credentials for A, B, C
     // C has configurable allow_relay
-    let (_cred_a_id, cred_a_secret) = admin_inst
-        .get_global_ctx()
-        .get_credential_manager()
-        .generate_credential(vec![], false, vec![], Duration::from_secs(3600));
+    let (_cred_a_id, cred_a_secret) = admin_inst.credential_manager().generate_credential(
+        vec![],
+        false,
+        vec![],
+        Duration::from_secs(3600),
+    );
 
-    let (_cred_b_id, cred_b_secret) = admin_inst
-        .get_global_ctx()
-        .get_credential_manager()
-        .generate_credential(vec![], false, vec![], Duration::from_secs(3600));
+    let (_cred_b_id, cred_b_secret) = admin_inst.credential_manager().generate_credential(
+        vec![],
+        false,
+        vec![],
+        Duration::from_secs(3600),
+    );
 
-    let (_cred_c_id, cred_c_secret) = admin_inst
-        .get_global_ctx()
-        .get_credential_manager()
-        .generate_credential(vec![], allow_relay, vec![], Duration::from_secs(3600));
+    let (_cred_c_id, cred_c_secret) = admin_inst.credential_manager().generate_credential(
+        vec![],
+        allow_relay,
+        vec![],
+        Duration::from_secs(3600),
+    );
 
     // Create credential A on ns_c1
     let cred_a_config = {
@@ -1191,10 +1199,12 @@ async fn credential_revocation_propagates() {
     admin_inst.run().await.unwrap();
 
     // Generate credential on admin
-    let (cred_id, cred_secret) = admin_inst
-        .get_global_ctx()
-        .get_credential_manager()
-        .generate_credential(vec![], false, vec![], Duration::from_secs(3600));
+    let (cred_id, cred_secret) = admin_inst.credential_manager().generate_credential(
+        vec![],
+        false,
+        vec![],
+        Duration::from_secs(3600),
+    );
 
     // Create credential node
     let cred_config = {
@@ -1256,10 +1266,7 @@ async fn credential_revocation_propagates() {
 
     // Revoke the credential
     assert!(
-        admin_inst
-            .get_global_ctx()
-            .get_credential_manager()
-            .revoke_credential(&cred_id),
+        admin_inst.credential_manager().revoke_credential(&cred_id),
         "Credential should be revoked successfully"
     );
 
@@ -1308,8 +1315,7 @@ async fn credential_non_reusable_allows_only_one_peer() {
     admin_inst.run().await.unwrap();
 
     let (_cred_id, cred_secret) = admin_inst
-        .get_global_ctx()
-        .get_credential_manager()
+        .credential_manager()
         .generate_credential_with_options(
             vec![],
             false,
@@ -1604,8 +1610,7 @@ async fn credential_unknown_via_shared_rejected(#[values(true, false)] test_revo
 
         assert!(
             admin_a_inst
-                .get_global_ctx()
-                .get_credential_manager()
+                .credential_manager()
                 .revoke_credential(credential_id.as_ref().unwrap()),
             "credential should be revoked successfully"
         );
@@ -1817,8 +1822,7 @@ async fn credential_non_reusable_across_two_admins_allows_only_one_peer() {
     .await;
 
     let (_cred_id, cred_secret) = admin_a_inst
-        .get_global_ctx()
-        .get_credential_manager()
+        .credential_manager()
         .generate_credential_with_options(
             vec![],
             false,

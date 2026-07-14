@@ -6,13 +6,10 @@ use std::{
 
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
-use easytier_core::peers::context::{PeerControlTrafficSink, TrustedKeyMapManager};
-pub use easytier_core::peers::context::{TrustedKeyMap, TrustedKeyMetadata, TrustedKeySource};
 use easytier_core::peers::encrypt::{derive_key_128, derive_key_256};
 use easytier_core::peers::foreign_network_manager::check_network_in_relay_whitelist;
 use easytier_core::peers::public_ipv6::PublicIpv6Runtime;
 use easytier_core::socket::{NetNamespace, SocketContext};
-use easytier_core::stats_manager::{self, StatsManager};
 use easytier_core::stun::{StunProviderSlot, StunSocketMapper};
 
 use super::{
@@ -23,8 +20,7 @@ use super::{
     stun::{default_udp_stun_servers, default_udp_v6_stun_servers, runtime_stun_info_collector},
 };
 use crate::{
-    common::{config::ProxyNetworkConfig, credential_manager::CredentialManager},
-    peers::acl_filter::AclFilter,
+    common::config::ProxyNetworkConfig,
     proto::{
         acl::GroupIdentity,
         api::{config::InstanceConfigPatch, instance::PeerConnInfo},
@@ -126,16 +122,6 @@ pub struct GlobalCtx {
     base_feature_flags: AtomicCell<PeerFeatureFlag>,
 
     feature_flags: AtomicCell<PeerFeatureFlag>,
-
-    stats_manager: Arc<StatsManager>,
-
-    acl_filter: Arc<AclFilter>,
-
-    credential_manager: Arc<CredentialManager>,
-
-    /// OSPF propagated trusted keys (peer pubkeys and admin credentials)
-    /// Stored in ArcSwap for lock-free reads and atomic batch updates
-    trusted_keys: Arc<TrustedKeyMapManager>,
 }
 
 impl std::fmt::Debug for GlobalCtx {
@@ -151,26 +137,6 @@ impl std::fmt::Debug for GlobalCtx {
 }
 
 pub type ArcGlobalCtx = std::sync::Arc<GlobalCtx>;
-
-impl PeerControlTrafficSink for GlobalCtx {
-    fn record_control_tx(&self, network_name: &str, bytes: u64) {
-        self.record_control_metric(
-            network_name,
-            bytes,
-            stats_manager::MetricName::TrafficControlBytesTx,
-            stats_manager::MetricName::TrafficControlPacketsTx,
-        );
-    }
-
-    fn record_control_rx(&self, network_name: &str, bytes: u64) {
-        self.record_control_metric(
-            network_name,
-            bytes,
-            stats_manager::MetricName::TrafficControlBytesRx,
-            stats_manager::MetricName::TrafficControlPacketsRx,
-        );
-    }
-}
 
 #[async_trait]
 impl PublicIpv6Runtime for GlobalCtx {
@@ -230,24 +196,6 @@ impl PublicIpv6Runtime for GlobalCtx {
 }
 
 impl GlobalCtx {
-    fn record_control_metric(
-        &self,
-        network_name: &str,
-        bytes: u64,
-        bytes_metric: stats_manager::MetricName,
-        packets_metric: stats_manager::MetricName,
-    ) {
-        let label_set = stats_manager::LabelSet::new().with_label_type(
-            stats_manager::LabelType::NetworkName(network_name.to_string()),
-        );
-        self.stats_manager()
-            .get_counter(bytes_metric, label_set.clone())
-            .add(bytes);
-        self.stats_manager()
-            .get_counter(packets_metric, label_set)
-            .inc();
-    }
-
     fn apply_disable_relay_data_flag(
         flags: &Flags,
         mut feature_flags: PeerFeatureFlag,
@@ -301,9 +249,6 @@ impl GlobalCtx {
         let base_feature_flags = PeerFeatureFlag::default();
         let feature_flags = Self::derive_feature_flags(&flags, base_feature_flags);
 
-        let credential_storage_path = config_fs.get_credential_file();
-        let credential_manager = Arc::new(CredentialManager::new(credential_storage_path));
-
         GlobalCtx {
             inst_name: config_fs.get_inst_name(),
             id,
@@ -336,14 +281,6 @@ impl GlobalCtx {
             base_feature_flags: AtomicCell::new(base_feature_flags),
 
             feature_flags: AtomicCell::new(feature_flags),
-
-            stats_manager: Arc::new(StatsManager::new()),
-
-            acl_filter: Arc::new(AclFilter::new()),
-
-            credential_manager,
-
-            trusted_keys: Arc::new(TrustedKeyMapManager::new()),
         }
     }
 
@@ -640,63 +577,6 @@ impl GlobalCtx {
         true
     }
 
-    pub fn stats_manager(&self) -> &Arc<StatsManager> {
-        &self.stats_manager
-    }
-
-    pub fn get_acl_filter(&self) -> &Arc<AclFilter> {
-        &self.acl_filter
-    }
-
-    pub fn get_credential_manager(&self) -> &Arc<CredentialManager> {
-        &self.credential_manager
-    }
-
-    pub(crate) fn trusted_key_manager(&self) -> Arc<TrustedKeyMapManager> {
-        self.trusted_keys.clone()
-    }
-
-    /// Check if a public key is trusted using two-level lookup:
-    /// 1. OSPF propagated trusted_keys (lock-free)
-    /// 2. Local credential_manager
-    pub fn is_pubkey_trusted(&self, pubkey: &[u8], network_name: &str) -> bool {
-        // First level: check OSPF propagated keys (lock-free)
-        if self.trusted_keys.verify_trusted_key(pubkey, network_name) {
-            return true;
-        }
-
-        // Second level: check local credential_manager if in the same network
-        if network_name == self.get_network_name() {
-            return self.credential_manager.is_pubkey_trusted(pubkey);
-        }
-
-        false
-    }
-
-    pub fn is_pubkey_trusted_with_source(
-        &self,
-        pubkey: &[u8],
-        network_name: &str,
-        source: TrustedKeySource,
-    ) -> bool {
-        self.trusted_keys
-            .verify_trusted_key_with_source(pubkey, network_name, Some(source))
-    }
-
-    /// Atomically replace all OSPF trusted keys with a new set
-    /// Called by OSPF route layer after each route update
-    pub fn update_trusted_keys(&self, keys: TrustedKeyMap, network_name: &str) {
-        self.trusted_keys.update_trusted_keys(network_name, keys);
-    }
-
-    pub fn remove_trusted_keys(&self, network_name: &str) {
-        self.trusted_keys.remove_trusted_keys(network_name);
-    }
-
-    pub fn list_trusted_keys(&self, network_name: &str) -> Vec<(Vec<u8>, TrustedKeyMetadata)> {
-        self.trusted_keys.list_trusted_keys(network_name)
-    }
-
     pub fn get_acl_groups(&self, peer_id: PeerId) -> Vec<PeerGroupInfo> {
         use std::collections::HashSet;
         self.config
@@ -869,37 +749,6 @@ pub mod tests {
             subscriber.recv().await.unwrap(),
             GlobalCtxEvent::TunDeviceError("closed".to_string())
         );
-    }
-
-    #[tokio::test]
-    async fn trusted_key_source_lookup_is_precise() {
-        let config = TomlConfigLoader::default();
-        let global_ctx = GlobalCtx::new(config);
-        let network_name = "net1";
-        let pubkey = vec![1; 32];
-
-        global_ctx.update_trusted_keys(
-            std::collections::HashMap::from([(
-                pubkey.clone(),
-                TrustedKeyMetadata {
-                    source: TrustedKeySource::OspfCredential,
-                    expiry_unix: None,
-                },
-            )]),
-            network_name,
-        );
-
-        assert!(global_ctx.is_pubkey_trusted(&pubkey, network_name));
-        assert!(!global_ctx.is_pubkey_trusted_with_source(
-            &pubkey,
-            network_name,
-            TrustedKeySource::OspfNode,
-        ));
-        assert!(global_ctx.is_pubkey_trusted_with_source(
-            &pubkey,
-            network_name,
-            TrustedKeySource::OspfCredential,
-        ));
     }
 
     #[tokio::test]

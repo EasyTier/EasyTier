@@ -10,7 +10,8 @@ use std::sync::Arc;
 use dashmap::DashMap;
 use easytier_core::connectivity::direct::DirectConnectorRpcHandler;
 #[cfg(test)]
-use easytier_core::peers::context::{ArcPeerContext, CorePeerContext};
+use easytier_core::peers::context::{ArcPeerContext, TrustedKeyMetadata};
+use easytier_core::peers::context::{CorePeerContext, TrustedKeySource};
 use easytier_core::peers::foreign_network_manager as core_foreign_network_manager;
 #[cfg(test)]
 use easytier_core::runtime_config::CoreRuntimeConfigStore;
@@ -30,7 +31,7 @@ use crate::{
 use crate::{
     common::{
         config::{ConfigLoader, TomlConfigLoader},
-        global_ctx::{ArcGlobalCtx, GlobalCtx, TrustedKeySource},
+        global_ctx::{ArcGlobalCtx, GlobalCtx},
         shrink_dashmap,
     },
     connector::runtime::runtime_connector_host,
@@ -80,8 +81,10 @@ impl ForeignNetworkEntry {
         );
         let foreign_global_ctx =
             ForeignNetworkRuntimeImpl::build_foreign_global_ctx(&spec, global_ctx.clone());
-        let (_, foreign_context) =
-            crate::peers::context::build_core_peer_context(&foreign_global_ctx);
+        let (_, foreign_context) = crate::peers::context::build_foreign_core_peer_context(
+            &foreign_global_ctx,
+            &parent_context,
+        );
         Self {
             parent_runtime_config,
             parent_context,
@@ -133,20 +136,21 @@ impl ForeignNetworkEntry {
 
 struct RuntimeForeignNetworkContext {
     global_ctx: ArcGlobalCtx,
-    #[cfg(test)]
     peer_context: Arc<CorePeerContext>,
     lifecycle_token: Arc<()>,
 }
 
 pub(super) struct ForeignNetworkRuntimeImpl {
     global_ctx: ArcGlobalCtx,
+    parent_peer_context: Arc<CorePeerContext>,
     foreign_contexts: DashMap<String, Arc<RuntimeForeignNetworkContext>>,
 }
 
 impl ForeignNetworkRuntimeImpl {
-    pub(super) fn new(global_ctx: ArcGlobalCtx) -> Self {
+    pub(super) fn new(global_ctx: ArcGlobalCtx, parent_peer_context: Arc<CorePeerContext>) -> Self {
         Self {
             global_ctx,
+            parent_peer_context,
             foreign_contexts: DashMap::new(),
         }
     }
@@ -204,13 +208,15 @@ impl core_foreign_network_manager::ForeignNetworkRuntime for ForeignNetworkRunti
     ) -> core_foreign_network_manager::ForeignNetworkContext {
         let foreign_global_ctx =
             ForeignNetworkRuntimeImpl::build_foreign_global_ctx(spec, self.global_ctx.clone());
-        let (_, peer_context) = crate::peers::context::build_core_peer_context(&foreign_global_ctx);
+        let (_, peer_context) = crate::peers::context::build_foreign_core_peer_context(
+            &foreign_global_ctx,
+            &self.parent_peer_context,
+        );
         let lifecycle_token = Arc::new(());
         self.foreign_contexts.insert(
             spec.network.network_name.clone(),
             Arc::new(RuntimeForeignNetworkContext {
                 global_ctx: foreign_global_ctx.clone(),
-                #[cfg(test)]
                 peer_context: peer_context.clone(),
                 lifecycle_token: lifecycle_token.clone(),
             }),
@@ -292,11 +298,14 @@ fn should_reject_credential_trust_path(identity_type: PeerIdentityType) -> bool 
 #[cfg(test)]
 fn is_credential_pubkey_trusted(entry: &ForeignNetworkEntry, remote_static_pubkey: &[u8]) -> bool {
     remote_static_pubkey.len() == 32
-        && entry.global_ctx.is_pubkey_trusted_with_source(
-            remote_static_pubkey,
-            &entry.network.network_name,
-            TrustedKeySource::OspfCredential,
-        )
+        && entry
+            .foreign_context
+            .trusted_key_manager()
+            .verify_trusted_key_with_source(
+                remote_static_pubkey,
+                &entry.network.network_name,
+                Some(TrustedKeySource::OspfCredential),
+            )
 }
 
 #[cfg(test)]
@@ -327,7 +336,6 @@ pub mod tests {
 
     fn metric_value(peer_mgr: &PeerManager, metric: MetricName, labels: LabelSet) -> u64 {
         peer_mgr
-            .get_global_ctx()
             .stats_manager()
             .get_metric(metric, &labels)
             .map(|metric| metric.value)
@@ -1023,28 +1031,34 @@ pub mod tests {
         );
         let pubkey = vec![7; 32];
 
-        entry.global_ctx.update_trusted_keys(
-            HashMap::from([(
-                pubkey.clone(),
-                crate::common::global_ctx::TrustedKeyMetadata {
-                    source: TrustedKeySource::OspfNode,
-                    expiry_unix: None,
-                },
-            )]),
-            &foreign_network.network_name,
-        );
+        entry
+            .foreign_context
+            .trusted_key_manager()
+            .update_trusted_keys(
+                &foreign_network.network_name,
+                HashMap::from([(
+                    pubkey.clone(),
+                    TrustedKeyMetadata {
+                        source: TrustedKeySource::OspfNode,
+                        expiry_unix: None,
+                    },
+                )]),
+            );
         assert!(!is_credential_pubkey_trusted(&entry, &pubkey));
 
-        entry.global_ctx.update_trusted_keys(
-            HashMap::from([(
-                pubkey.clone(),
-                crate::common::global_ctx::TrustedKeyMetadata {
-                    source: TrustedKeySource::OspfCredential,
-                    expiry_unix: None,
-                },
-            )]),
-            &foreign_network.network_name,
-        );
+        entry
+            .foreign_context
+            .trusted_key_manager()
+            .update_trusted_keys(
+                &foreign_network.network_name,
+                HashMap::from([(
+                    pubkey.clone(),
+                    TrustedKeyMetadata {
+                        source: TrustedKeySource::OspfCredential,
+                        expiry_unix: None,
+                    },
+                )]),
+            );
         assert!(is_credential_pubkey_trusted(&entry, &pubkey));
     }
 
@@ -1142,17 +1156,20 @@ pub mod tests {
     }
 
     #[tokio::test]
-    async fn parent_feature_flag_change_reaches_each_foreign_context() {
+    async fn foreign_contexts_share_parent_stats_and_follow_feature_changes() {
         use easytier_core::peers::foreign_network_manager::ForeignNetworkRuntime as _;
 
         let global_ctx = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
             "__access__".to_string(),
             "access_secret".to_string(),
         )));
-        let runtime = Arc::new(ForeignNetworkRuntimeImpl::new(global_ctx.clone()));
         let (parent_runtime_config, parent_core_context) =
             crate::peers::context::build_core_peer_context(&global_ctx);
-        let parent_context: ArcPeerContext = parent_core_context;
+        let runtime = Arc::new(ForeignNetworkRuntimeImpl::new(
+            global_ctx.clone(),
+            parent_core_context.clone(),
+        ));
+        let parent_context: ArcPeerContext = parent_core_context.clone();
         let net1 = easytier_core::peers::context::NetworkIdentity {
             network_name: "net1".to_string(),
             network_secret: Some("net1_secret".to_string()),
@@ -1178,6 +1195,29 @@ pub mod tests {
                 true,
                 TomlConfigLoader::default().get_flags(),
             ),
+        );
+        let foreign_core_context = runtime.foreign_peer_context_for_test("net1").unwrap();
+        assert!(Arc::ptr_eq(
+            &parent_core_context.stats_manager(),
+            &foreign_core_context.stats_manager(),
+        ));
+        let labels = LabelSet::new().with_label_type(LabelType::NetworkName("net1".to_owned()));
+        foreign_core_context.record_control_tx("net1", 64);
+        assert_eq!(
+            parent_core_context
+                .stats_manager()
+                .get_metric(MetricName::TrafficControlBytesTx, &labels)
+                .unwrap()
+                .value,
+            64,
+        );
+        assert_eq!(
+            parent_core_context
+                .stats_manager()
+                .get_metric(MetricName::TrafficControlPacketsTx, &labels)
+                .unwrap()
+                .value,
+            1,
         );
         assert!(
             !foreign_context1
@@ -1261,8 +1301,8 @@ pub mod tests {
             "access_secret".to_string(),
         )));
         let (_, parent_core_context) = crate::peers::context::build_core_peer_context(&global_ctx);
-        let parent_context: ArcPeerContext = parent_core_context;
-        let runtime = ForeignNetworkRuntimeImpl::new(global_ctx);
+        let parent_context: ArcPeerContext = parent_core_context.clone();
+        let runtime = ForeignNetworkRuntimeImpl::new(global_ctx, parent_core_context);
         let network = easytier_core::peers::context::NetworkIdentity {
             network_name: "net1".to_string(),
             network_secret: Some("net1_secret".to_string()),

@@ -1196,17 +1196,13 @@ pub async fn subnet_proxy_loop_prevention_test() {
 
     println!(
         "inst0 metrics: {:?}",
-        insts[0]
-            .get_global_ctx()
-            .stats_manager()
-            .export_prometheus()
+        insts[0].stats_manager().export_prometheus()
     );
 
-    let all_metrics = insts[0].get_global_ctx().stats_manager().get_all_metrics();
+    let all_metrics = insts[0].stats_manager().get_all_metrics();
     for metric in all_metrics {
         if metric.name == MetricName::TrafficPacketsSelfTx {
             let counter = insts[0]
-                .get_global_ctx()
                 .stats_manager()
                 .get_counter(metric.name, metric.labels.clone());
             assert!(counter.get() < 40);
@@ -1342,7 +1338,6 @@ pub async fn quic_proxy() {
     subnet_proxy_test_tcp("0.0.0.0", "10.144.144.3", Duration::from_secs(5)).await;
 
     let metrics = insts[0]
-        .get_global_ctx()
         .stats_manager()
         .get_metrics_by_prefix(&MetricName::TcpProxyConnect.to_string());
     assert_eq!(metrics.len(), 2);
@@ -1438,7 +1433,6 @@ pub async fn subnet_proxy_three_node_test(
     }
     if enable_quic_proxy && !disable_quic_input {
         let metrics = insts[0]
-            .get_global_ctx()
             .stats_manager()
             .get_metrics_by_prefix(&MetricName::TcpProxyConnect.to_string());
         assert_eq!(metrics.len(), 3);
@@ -1452,7 +1446,6 @@ pub async fn subnet_proxy_three_node_test(
         }
     } else if enable_kcp_proxy && !disable_kcp_input {
         let metrics = insts[0]
-            .get_global_ctx()
             .stats_manager()
             .get_metrics_by_prefix(&MetricName::TcpProxyConnect.to_string());
         assert_eq!(metrics.len(), 3);
@@ -1467,7 +1460,6 @@ pub async fn subnet_proxy_three_node_test(
     } else {
         // tcp subnet proxy
         let metrics = insts[2]
-            .get_global_ctx()
             .stats_manager()
             .get_metrics_by_prefix(&MetricName::TcpProxyConnect.to_string());
         if no_tun {
@@ -2318,7 +2310,7 @@ pub async fn port_forward_with_inbound_default_drop_acl_test(
         )
         .await;
 
-        let stats = insts[0].get_global_ctx().get_acl_filter().get_stats();
+        let stats = insts[0].acl_filter().get_stats();
         println!(
             "port forward source bind_port={} dhcp={} enable_quic_proxy={} ACL stats: {}",
             bind_port, dhcp, enable_quic_proxy, stats
@@ -2634,10 +2626,7 @@ pub async fn acl_rule_test_inbound(
     let acl_toml = toml::to_string(&acl).unwrap();
     println!("ACL TOML: {}", acl_toml);
 
-    insts[2]
-        .get_global_ctx()
-        .get_acl_filter()
-        .reload_rules(Some(&acl));
+    insts[2].acl_filter().reload_rules(Some(&acl));
 
     // TCP 测试部分
     {
@@ -2696,7 +2685,7 @@ pub async fn acl_rule_test_inbound(
 
         assert!(result.is_err(), "TCP 连接 8082 应被 ACL 拦截，不能成功");
 
-        let stats = insts[2].get_global_ctx().get_acl_filter().get_stats();
+        let stats = insts[2].acl_filter().get_stats();
         println!("stats: {:?}", stats);
     }
 
@@ -2741,15 +2730,12 @@ pub async fn acl_rule_test_inbound(
 
         assert!(result.is_err(), "UDP 连接 8080 应被 ACL 拦截，不能成功");
 
-        let stats = insts[2].get_global_ctx().get_acl_filter().get_stats();
+        let stats = insts[2].acl_filter().get_stats();
         println!("stats: {}", stats);
     }
 
     // remove acl, 8080 should succ
-    insts[2]
-        .get_global_ctx()
-        .get_acl_filter()
-        .reload_rules(None);
+    insts[2].acl_filter().reload_rules(None);
 
     drop_insts(insts).await;
 }
@@ -2854,10 +2840,7 @@ pub async fn acl_rule_test_subnet_proxy(
     acl.acl_v1 = Some(acl_v1);
 
     // 在 inst3 上应用 ACL 规则
-    insts[2]
-        .get_global_ctx()
-        .get_acl_filter()
-        .reload_rules(Some(&acl));
+    insts[2].acl_filter().reload_rules(Some(&acl));
 
     // TCP 测试部分 - 测试子网代理的 ACL 规则
     {
@@ -2918,7 +2901,7 @@ pub async fn acl_rule_test_subnet_proxy(
             "TCP 连接子网代理 8081 应被 ACL 拦截，不能成功"
         );
 
-        let stats = insts[2].get_global_ctx().get_acl_filter().get_stats();
+        let stats = insts[2].acl_filter().get_stats();
         println!("ACL stats after TCP tests: {:?}", stats);
     }
 
@@ -2956,7 +2939,7 @@ pub async fn acl_rule_test_subnet_proxy(
         )
         .await;
 
-        let stats = insts[2].get_global_ctx().get_acl_filter().get_stats();
+        let stats = insts[2].acl_filter().get_stats();
         println!("ACL stats after UDP tests: {}", stats);
 
         assert!(
@@ -2974,10 +2957,7 @@ pub async fn acl_rule_test_subnet_proxy(
     .unwrap_err();
 
     // 移除 ACL 规则
-    insts[2]
-        .get_global_ctx()
-        .get_acl_filter()
-        .reload_rules(None);
+    insts[2].acl_filter().reload_rules(None);
 
     // 验证移除 ACL 后，ICMP 可以正常工作
     wait_for_condition(
@@ -3334,7 +3314,7 @@ pub async fn acl_group_base_test(
         protocol
     );
 
-    let stats = insts[2].get_global_ctx().get_acl_filter().get_stats();
+    let stats = insts[2].acl_filter().get_stats();
     println!("ACL stats after group {} tests: {:?}", protocol, stats);
 
     println!("✓ All group-based ACL tests completed successfully");
@@ -3692,7 +3672,7 @@ pub async fn acl_group_self_test(
         protocol
     );
 
-    let stats = insts[2].get_global_ctx().get_acl_filter().get_stats();
+    let stats = insts[2].acl_filter().get_stats();
     println!("ACL stats after group {} tests: {:?}", protocol, stats);
 
     println!("✓ All group-based ACL tests completed successfully");
@@ -4308,32 +4288,26 @@ pub async fn relay_peer_e2e_encryption_udp() {
     wait_for_condition(
         || async {
             insts[0]
-                .get_global_ctx()
                 .stats_manager()
                 .get_metric(MetricName::TrafficBytesTx, &tx_labels)
                 .is_none()
                 && insts[0]
-                    .get_global_ctx()
                     .stats_manager()
                     .get_metric(MetricName::TrafficPacketsTx, &tx_labels)
                     .is_none()
                 && insts[0]
-                    .get_global_ctx()
                     .stats_manager()
                     .get_metric(MetricName::TrafficBytesTx, &total_labels)
                     .is_some_and(|metric| metric.value > 0)
                 && insts[0]
-                    .get_global_ctx()
                     .stats_manager()
                     .get_metric(MetricName::TrafficPacketsTx, &total_labels)
                     .is_some_and(|metric| metric.value > 0)
                 && insts[0]
-                    .get_global_ctx()
                     .stats_manager()
                     .get_metric(MetricName::TrafficBytesTxByInstance, &tx_labels)
                     .is_some_and(|metric| metric.value > 0)
                 && insts[0]
-                    .get_global_ctx()
                     .stats_manager()
                     .get_metric(MetricName::TrafficPacketsTxByInstance, &tx_labels)
                     .is_some_and(|metric| metric.value > 0)
@@ -4345,32 +4319,26 @@ pub async fn relay_peer_e2e_encryption_udp() {
     wait_for_condition(
         || async {
             insts[2]
-                .get_global_ctx()
                 .stats_manager()
                 .get_metric(MetricName::TrafficBytesRx, &rx_labels)
                 .is_none()
                 && insts[2]
-                    .get_global_ctx()
                     .stats_manager()
                     .get_metric(MetricName::TrafficPacketsRx, &rx_labels)
                     .is_none()
                 && insts[2]
-                    .get_global_ctx()
                     .stats_manager()
                     .get_metric(MetricName::TrafficBytesRx, &total_labels)
                     .is_some_and(|metric| metric.value > 0)
                 && insts[2]
-                    .get_global_ctx()
                     .stats_manager()
                     .get_metric(MetricName::TrafficPacketsRx, &total_labels)
                     .is_some_and(|metric| metric.value > 0)
                 && insts[2]
-                    .get_global_ctx()
                     .stats_manager()
                     .get_metric(MetricName::TrafficBytesRxByInstance, &rx_labels)
                     .is_some_and(|metric| metric.value > 0)
                 && insts[2]
-                    .get_global_ctx()
                     .stats_manager()
                     .get_metric(MetricName::TrafficPacketsRxByInstance, &rx_labels)
                     .is_some_and(|metric| metric.value > 0)
