@@ -14,6 +14,8 @@ use pnet::{
     datalink::{self, DataLinkSender, NetworkInterface},
     packet::{ethernet::EtherTypes, ip::IpNextHeaderProtocols, ipv6::Ipv6Packet},
 };
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::MetadataExt;
 use tokio::sync::Mutex;
 
 use crate::tunnel::fake_tcp::stack;
@@ -203,14 +205,27 @@ impl InterfaceWorker {
     }
 }
 
-static INTERFACE_MANAGERS: Lazy<DashMap<String, Weak<InterfaceWorker>>> = Lazy::new(DashMap::new);
+type InterfaceWorkerKey = (Option<u64>, String);
+
+static INTERFACE_MANAGERS: Lazy<DashMap<InterfaceWorkerKey, Weak<InterfaceWorker>>> =
+    Lazy::new(DashMap::new);
+
+fn current_network_namespace_id() -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        return std::fs::metadata("/proc/thread-self/ns/net")
+            .ok()
+            .map(|metadata| metadata.ino());
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    None
+}
 
 fn get_or_create_worker(interface_name: &str) -> io::Result<Arc<InterfaceWorker>> {
+    let key = (current_network_namespace_id(), interface_name.to_owned());
     // Check if we have an active worker
-    if let Some(worker) = INTERFACE_MANAGERS
-        .get(interface_name)
-        .and_then(|w| w.upgrade())
-    {
+    if let Some(worker) = INTERFACE_MANAGERS.get(&key).and_then(|w| w.upgrade()) {
         return Ok(worker);
     }
 
@@ -234,7 +249,7 @@ fn get_or_create_worker(interface_name: &str) -> io::Result<Arc<InterfaceWorker>
         })?;
 
     let worker = InterfaceWorker::new(interface)?;
-    INTERFACE_MANAGERS.insert(interface_name.to_string(), Arc::downgrade(&worker));
+    INTERFACE_MANAGERS.insert(key, Arc::downgrade(&worker));
     Ok(worker)
 }
 
