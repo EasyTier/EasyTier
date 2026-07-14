@@ -10,6 +10,7 @@ use crate::{
     proto::api::instance,
     tunnel::packet_def::compressor_algo_from_pb,
 };
+use easytier_core::peers::encrypt::{derive_key_128, derive_key_256};
 pub use easytier_core::peers::peer_manager::RouteAlgoType;
 use easytier_core::peers::peer_manager::{DnsAddressResolver, PeerManagerCore};
 use easytier_core::tunnel::ring::RingTunnelRegistry;
@@ -88,10 +89,17 @@ impl PeerManager {
         let encryptor = if flags.enable_encryption {
             // 只有在启用加密时才使用工厂函数选择算法
             let algorithm = &flags.encryption_algorithm;
+            let secret = config
+                .snapshot
+                .runtime
+                .network_identity
+                .network_secret
+                .as_deref()
+                .unwrap_or_default();
             super::encrypt::create_encryptor(
                 algorithm,
-                global_ctx.get_128_key(),
-                global_ctx.get_256_key(),
+                derive_key_128(secret),
+                derive_key_256(secret),
             )
         } else {
             // disable_encryption = true 时使用 NullCipher

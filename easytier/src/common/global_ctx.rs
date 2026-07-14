@@ -6,7 +6,6 @@ use std::{
 
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
-use easytier_core::peers::encrypt::{derive_key_128, derive_key_256};
 use easytier_core::peers::foreign_network_manager::check_network_in_relay_whitelist;
 use easytier_core::peers::public_ipv6::PublicIpv6Runtime;
 use easytier_core::socket::{NetNamespace, SocketContext};
@@ -488,24 +487,6 @@ impl GlobalCtx {
 
     pub fn flags_arc(&self) -> Arc<Flags> {
         self.flags.load_full()
-    }
-
-    pub fn get_128_key(&self) -> [u8; 16] {
-        let secret = self
-            .config
-            .get_network_identity()
-            .network_secret
-            .unwrap_or_default();
-        derive_key_128(&secret)
-    }
-
-    pub fn get_256_key(&self) -> [u8; 32] {
-        let secret = self
-            .config
-            .get_network_identity()
-            .network_secret
-            .unwrap_or_default();
-        derive_key_256(&secret)
     }
 
     pub fn enable_exit_node(&self) -> bool {

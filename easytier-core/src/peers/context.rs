@@ -139,14 +139,23 @@ impl PeerTrafficLimits {
     fn from_portable(runtime: &PeerRuntimeConfig, flags: &FlagsInConfig) -> Self {
         let traffic = &runtime.core.traffic;
         Self {
-            instance_recv_bps: traffic.instance_recv_bps_limit.or_else(|| {
-                (!matches!(flags.instance_recv_bps_limit, 0 | u64::MAX))
-                    .then_some(flags.instance_recv_bps_limit)
-            }),
-            foreign_relay_bps: traffic.foreign_relay_bps_limit.or_else(|| {
-                (!matches!(flags.foreign_relay_bps_limit, 0 | u64::MAX))
-                    .then_some(flags.foreign_relay_bps_limit)
-            }),
+            instance_recv_bps: Self::normalize(
+                traffic.instance_recv_bps_limit,
+                flags.instance_recv_bps_limit,
+            ),
+            foreign_relay_bps: Self::normalize(
+                traffic.foreign_relay_bps_limit,
+                flags.foreign_relay_bps_limit,
+            ),
+        }
+    }
+
+    fn normalize(explicit: Option<u64>, legacy: u64) -> Option<u64> {
+        match explicit {
+            Some(u64::MAX) => None,
+            Some(limit) => Some(limit),
+            None if !matches!(legacy, 0 | u64::MAX) => Some(legacy),
+            None => None,
         }
     }
 }
@@ -1239,6 +1248,20 @@ mod tests {
 
         assert_eq!(snapshot.traffic_limits().instance_recv_bps, Some(1024));
         assert_eq!(snapshot.traffic_limits().foreign_relay_bps, None);
+    }
+
+    #[test]
+    fn explicit_unlimited_limits_override_legacy_values() {
+        let mut runtime = PeerRuntimeSnapshot::default().runtime;
+        runtime.core.traffic.instance_recv_bps_limit = Some(u64::MAX);
+        runtime.core.traffic.foreign_relay_bps_limit = Some(u64::MAX);
+        let mut flags = FlagsInConfig::default();
+        flags.instance_recv_bps_limit = 1024;
+        flags.foreign_relay_bps_limit = 2048;
+
+        let snapshot = PeerRuntimeSnapshot::new(runtime, flags);
+
+        assert_eq!(snapshot.traffic_limits(), PeerTrafficLimits::default());
     }
 
     #[test]
