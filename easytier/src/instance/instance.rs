@@ -42,8 +42,6 @@ use crate::gateway::kcp_proxy::KcpProxyService;
 #[cfg(feature = "quic")]
 use crate::gateway::quic_proxy::QuicProxyService;
 use crate::gateway::tcp_proxy::CoreTcpProxyRpcService;
-#[cfg(any(feature = "kcp", feature = "quic"))]
-use crate::gateway::tcp_proxy::TcpProxyRpcService;
 use crate::launcher::NetworkConfigExt;
 use crate::peer_center::instance::PeerCenterInstanceService;
 use crate::peers::peer_conn::PeerConnId;
@@ -1530,10 +1528,15 @@ impl Instance {
                     Arc::new(CoreTcpProxyRpcService::new(&self.core_instance)),
                 );
                 #[cfg(feature = "kcp")]
-                if let Some(kcp_proxy) = self.transport_proxy.kcp().src_tcp_proxy() {
+                if self.core_instance.wrapped_transport_source_is_started(
+                    easytier_core::proxy::wrapped_transport::WrappedTransportKind::Kcp,
+                ) {
                     tcp_proxy_rpc_services.insert(
                         "kcp_src".to_string(),
-                        Arc::new(TcpProxyRpcService::new(kcp_proxy)),
+                        Arc::new(CoreTcpProxyRpcService::new_wrapped(
+                            &self.core_instance,
+                            easytier_core::proxy::wrapped_transport::WrappedTransportKind::Kcp,
+                        )),
                     );
                 }
 
@@ -1543,10 +1546,15 @@ impl Instance {
                 }
 
                 #[cfg(feature = "quic")]
-                if let Some(quic_proxy) = self.transport_proxy.quic().src_tcp_proxy() {
+                if self.core_instance.wrapped_transport_source_is_started(
+                    easytier_core::proxy::wrapped_transport::WrappedTransportKind::Quic,
+                ) {
                     tcp_proxy_rpc_services.insert(
                         "quic_src".to_string(),
-                        Arc::new(TcpProxyRpcService::new(quic_proxy)),
+                        Arc::new(CoreTcpProxyRpcService::new_wrapped(
+                            &self.core_instance,
+                            easytier_core::proxy::wrapped_transport::WrappedTransportKind::Quic,
+                        )),
                     );
                 }
 
@@ -1880,11 +1888,11 @@ mod tests {
         .await
         .unwrap();
         quic.activate().await.unwrap();
-        assert!(quic.src_tcp_proxy().is_some());
+        assert!(quic.source_is_prepared().await);
         assert!(quic.dst_rpc_service().is_some());
 
         quic.stop().await;
-        assert!(quic.src_tcp_proxy().is_none());
+        assert!(!quic.source_is_prepared().await);
         assert!(quic.dst_rpc_service().is_none());
     }
 

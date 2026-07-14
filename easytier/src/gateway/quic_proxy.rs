@@ -1,7 +1,5 @@
 use crate::common::PeerId;
 use crate::common::global_ctx::ArcGlobalCtx;
-use crate::gateway::tcp_proxy::TcpProxy;
-use crate::peers::NicPacketFilter;
 use crate::peers::peer_manager::PeerManager;
 use crate::proto::api::instance::{
     ListTcpProxyEntryRequest, ListTcpProxyEntryResponse, TcpProxyEntry, TcpProxyEntryState,
@@ -13,7 +11,7 @@ use crate::proto::rpc_types::controller::BaseController;
 use crate::tunnel::packet_def::{PacketType, TAIL_RESERVED_SIZE, ZCPacket, ZCPacketType};
 use crate::tunnel::quic::{client_config, endpoint_config, server_config};
 use crate::utils::task::HedgeExt;
-use anyhow::{Context, Error, anyhow, bail, ensure};
+use anyhow::{Context, Error, anyhow, ensure};
 use atomic_refcell::AtomicRefCell;
 use bytes::{BufMut, Bytes, BytesMut};
 use dashmap::DashMap;
@@ -47,19 +45,16 @@ use tokio_util::sync::{CancellationToken, PollSender};
 use tracing::{debug, error, info, instrument, trace, warn};
 
 use easytier_core::{
-    peers::{acl_filter::AclFilter, peer_manager::PipelineRegistrationGuard},
+    peers::acl_filter::AclFilter,
     proxy::wrapped_transport::{
-        WrappedTransportDatagram, WrappedTransportDatagramBuffer, WrappedTransportEngine,
-        WrappedTransportEngineStart, WrappedTransportKind, WrappedTransportRole,
+        WrappedTransportConnect, WrappedTransportDatagram, WrappedTransportDatagramBuffer,
+        WrappedTransportEngine, WrappedTransportEngineStart, WrappedTransportKind,
+        WrappedTransportRole,
     },
     proxy::{
         cidr_table::ProxyCidrTable,
-        runtime::TcpProxyDestinationConnector,
-        tcp_proxy_engine::TcpProxyMode,
-        wrapped_tcp_proxy::{
-            WrappedTcpDestinationRequest, WrappedTcpProxyNicContext, WrappedTcpProxyTransport,
-            plan_wrapped_tcp_destination, try_process_wrapped_tcp_packet_from_nic,
-        },
+        runtime::{TcpProxyDestinationConnector, TcpProxyStream},
+        wrapped_tcp_proxy::{WrappedTcpDestinationRequest, plan_wrapped_tcp_destination},
     },
 };
 
@@ -295,36 +290,16 @@ impl From<(SendStream, RecvStream)> for QuicStream {
 #[derive(Debug, Clone)]
 pub struct NatDstQuicConnector {
     pub(crate) endpoint: Endpoint,
-    pub(crate) peer_mgr: Weak<PeerManager>,
     pub(crate) conn_map: Cache<PeerId, Connection>,
 }
 
-#[async_trait::async_trait]
-impl TcpProxyDestinationConnector for NatDstQuicConnector {
-    type DstStream = QuicStreamInner;
-
-    async fn connect(
+impl NatDstQuicConnector {
+    async fn connect_to_peer(
         &self,
+        dst_peer: PeerId,
         src: SocketAddr,
         nat_dst: SocketAddr,
-    ) -> anyhow::Result<Self::DstStream> {
-        let peer_mgr = self
-            .peer_mgr
-            .upgrade()
-            .ok_or_else(|| anyhow!("peer manager is not available"))?;
-
-        let dst_peer = {
-            let SocketAddr::V4(addr) = nat_dst else {
-                bail!("ipv6 is not supported");
-            };
-            peer_mgr
-                .core()
-                .get_peer_map()
-                .get_peer_id_by_ipv4(addr.ip())
-                .await
-                .ok_or_else(|| anyhow!("no peer found for nat dst: {}", nat_dst))?
-        };
-
+    ) -> anyhow::Result<QuicStreamInner> {
         tracing::trace!(?nat_dst, ?dst_peer, "quic nat");
 
         let header = {
@@ -419,55 +394,6 @@ impl TcpProxyDestinationConnector for NatDstQuicConnector {
 
             break result;
         }
-    }
-
-    #[inline]
-    fn proxy_mode(&self) -> TcpProxyMode {
-        TcpProxyMode::QuicSrc
-    }
-}
-
-#[derive(Clone)]
-struct TcpProxyForQuicSrc(Weak<TcpProxy<NatDstQuicConnector>>);
-
-impl TcpProxyForQuicSrc {
-    async fn try_process_nic_packet(&self, zc_packet: &mut ZCPacket) -> bool {
-        let Some(proxy) = self.0.upgrade() else {
-            return false;
-        };
-        if proxy.try_process_packet_from_nic(zc_packet).await {
-            return true;
-        }
-
-        let tcp_proxy = proxy.clone();
-        let peer_manager = proxy.get_peer_manager();
-        try_process_wrapped_tcp_packet_from_nic(
-            zc_packet,
-            WrappedTcpProxyNicContext {
-                transport: WrappedTcpProxyTransport::Quic,
-                my_peer_id: proxy.get_my_peer_id(),
-                local_ipv4: proxy.get_local_ip(),
-                smoltcp_enabled: proxy.is_smoltcp_enabled(),
-            },
-            move |src| tcp_proxy.is_tcp_proxy_connection(src),
-            move |dst_ip| async move {
-                let Some(peer_manager) = peer_manager else {
-                    return false;
-                };
-                peer_manager
-                    .core()
-                    .check_allow_quic_to_dst(&IpAddr::V4(dst_ip))
-                    .await
-            },
-        )
-        .await
-    }
-}
-
-#[async_trait::async_trait]
-impl NicPacketFilter for TcpProxyForQuicSrc {
-    async fn try_process_packet_from_nic(&self, zc_packet: &mut ZCPacket) -> bool {
-        self.try_process_nic_packet(zc_packet).await
     }
 }
 
@@ -778,7 +704,7 @@ pub struct QuicProxy {
     endpoint: Option<Endpoint>,
     input_tx: Option<Arc<Sender<QuicPacket>>>,
 
-    src: Option<QuicProxySrc>,
+    source_connector: Option<NatDstQuicConnector>,
     dst: Option<QuicProxyDst>,
 
     tasks: JoinSet<()>,
@@ -787,11 +713,6 @@ pub struct QuicProxy {
 }
 
 impl QuicProxy {
-    #[inline]
-    pub fn src(&self) -> Option<&QuicProxySrc> {
-        self.src.as_ref()
-    }
-
     #[inline]
     pub fn dst(&self) -> Option<&QuicProxyDst> {
         self.dst.as_ref()
@@ -805,7 +726,7 @@ impl QuicProxy {
             cidr_table,
             endpoint: None,
             input_tx: None,
-            src: None,
+            source_connector: None,
             dst: None,
             tasks: JoinSet::new(),
             stream_cancel: CancellationToken::new(),
@@ -875,30 +796,18 @@ impl QuicProxy {
         let peer_mgr = self.peer_mgr.clone();
 
         if src {
-            if self.src.is_some() {
+            if self.source_connector.is_some() {
                 error!("quic proxy src already running");
                 return;
             }
 
-            let tcp_proxy = TcpProxy::new(
-                peer_mgr.clone(),
-                NatDstQuicConnector {
-                    endpoint: endpoint.clone(),
-                    peer_mgr: Arc::downgrade(&peer_mgr),
-                    conn_map: Cache::builder()
-                        .max_capacity(u8::MAX.into()) // cf. quinn transport config (max_concurrent_bidi_streams)
-                        .time_to_idle(Duration::from_secs(600)) // cf. quinn transport config (max_idle_timeout)
-                        .build(),
-                },
-                self.cidr_table.clone(),
-            );
-
-            let src = QuicProxySrc {
-                peer_mgr: peer_mgr.clone(),
-                tcp_proxy,
-                pipeline_guards: Vec::new(),
-            };
-            self.src = Some(src);
+            self.source_connector = Some(NatDstQuicConnector {
+                endpoint: endpoint.clone(),
+                conn_map: Cache::builder()
+                    .max_capacity(u8::MAX.into()) // cf. quinn transport config (max_concurrent_bidi_streams)
+                    .time_to_idle(Duration::from_secs(600)) // cf. quinn transport config (max_idle_timeout)
+                    .build(),
+            });
         }
 
         if dst {
@@ -920,9 +829,6 @@ impl QuicProxy {
     }
 
     async fn activate(&mut self) -> anyhow::Result<()> {
-        if let Some(src) = self.src.as_mut() {
-            src.run().await;
-        }
         if let Some(dst) = self.dst.as_ref() {
             dst.run().await;
             let endpoint = self
@@ -944,9 +850,6 @@ impl QuicProxy {
     }
 
     async fn stop(&mut self) {
-        if let Some(src) = &mut self.src {
-            src.stop();
-        }
         self.stream_cancel.cancel();
         if let Some(task) = self.stream_task.as_mut() {
             let _ = task.await;
@@ -963,7 +866,6 @@ pub struct QuicProxyService {
     peer_manager: Arc<PeerManager>,
     cidr_table: Arc<ProxyCidrTable>,
     state: Mutex<Option<QuicProxy>>,
-    src_tcp_proxy: StdMutex<Option<Arc<TcpProxy<NatDstQuicConnector>>>>,
     dst_proxy_entries: StdMutex<Option<Arc<DashMap<(StreamId, StreamId), TcpProxyEntry>>>>,
 }
 
@@ -973,16 +875,8 @@ impl QuicProxyService {
             peer_manager,
             cidr_table,
             state: Mutex::new(None),
-            src_tcp_proxy: StdMutex::new(None),
             dst_proxy_entries: StdMutex::new(None),
         }
-    }
-
-    pub fn src_tcp_proxy(&self) -> Option<Arc<TcpProxy<NatDstQuicConnector>>> {
-        self.src_tcp_proxy
-            .lock()
-            .expect("QUIC source TCP proxy mutex poisoned")
-            .clone()
     }
 
     pub fn dst_rpc_service(&self) -> Option<QuicProxyDstRpcService> {
@@ -991,6 +885,16 @@ impl QuicProxyService {
             .expect("QUIC destination proxy entries mutex poisoned")
             .as_ref()
             .map(QuicProxyDstRpcService::new)
+    }
+
+    #[cfg(test)]
+    pub async fn source_is_prepared(&self) -> bool {
+        self.state
+            .lock()
+            .await
+            .as_ref()
+            .and_then(|proxy| proxy.source_connector.as_ref())
+            .is_some()
     }
 }
 
@@ -1015,11 +919,6 @@ impl WrappedTransportEngine for QuicProxyService {
                 .await;
         }
 
-        *self
-            .src_tcp_proxy
-            .lock()
-            .expect("QUIC source TCP proxy mutex poisoned") =
-            proxy.src().map(QuicProxySrc::get_tcp_proxy);
         *self
             .dst_proxy_entries
             .lock()
@@ -1062,55 +961,33 @@ impl WrappedTransportEngine for QuicProxyService {
         .map_err(|error| anyhow!("failed to inject QUIC datagram: {error}"))
     }
 
+    async fn connect_source(
+        &self,
+        request: WrappedTransportConnect,
+    ) -> anyhow::Result<Box<dyn TcpProxyStream>> {
+        let connector = {
+            let state = self.state.lock().await;
+            state
+                .as_ref()
+                .and_then(|proxy| proxy.source_connector.clone())
+        }
+        .ok_or_else(|| anyhow!("QUIC source endpoint is not prepared"))?;
+        let stream = connector
+            .connect_to_peer(request.dst_peer_id, request.src, request.dst)
+            .await?;
+        Ok(Box::new(stream))
+    }
+
     async fn stop(&self) {
         let mut state = self.state.lock().await;
         if let Some(active) = state.as_mut() {
             active.stop().await;
         }
-        self.src_tcp_proxy
-            .lock()
-            .expect("QUIC source TCP proxy mutex poisoned")
-            .take();
         self.dst_proxy_entries
             .lock()
             .expect("QUIC destination proxy entries mutex poisoned")
             .take();
         state.take();
-    }
-}
-
-pub struct QuicProxySrc {
-    peer_mgr: Arc<PeerManager>,
-    tcp_proxy: Arc<TcpProxy<NatDstQuicConnector>>,
-    pipeline_guards: Vec<PipelineRegistrationGuard>,
-}
-
-impl QuicProxySrc {
-    #[inline]
-    pub fn get_tcp_proxy(&self) -> Arc<TcpProxy<NatDstQuicConnector>> {
-        self.tcp_proxy.clone()
-    }
-}
-
-impl QuicProxySrc {
-    async fn run(&mut self) {
-        trace!("quic proxy src starting");
-        let wrapped_filter = TcpProxyForQuicSrc(Arc::downgrade(&self.tcp_proxy));
-        let guard = self
-            .peer_mgr
-            .core()
-            .add_managed_nic_packet_process_pipeline(Box::new(wrapped_filter))
-            .await;
-        self.pipeline_guards.push(guard);
-        self.tcp_proxy.register_peer_pipeline().await;
-        self.tcp_proxy.start(false).await.unwrap();
-    }
-
-    fn stop(&mut self) {
-        for guard in self.pipeline_guards.drain(..).rev() {
-            guard.close();
-        }
-        self.tcp_proxy.stop();
     }
 }
 

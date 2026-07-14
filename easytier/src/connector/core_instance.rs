@@ -340,7 +340,8 @@ mod tests {
         instance::{CoreInstanceState, ListenerService, PortableCoreInstanceConfig},
         listener::transport::TransportListenerConfig,
         proxy::wrapped_transport::{
-            WrappedTransportEngine, WrappedTransportEngineStart, WrappedTransportRole,
+            WrappedTransportConnect, WrappedTransportEngine, WrappedTransportEngineStart,
+            WrappedTransportKind, WrappedTransportRole,
         },
         socket::{
             tcp::TcpListenOptions,
@@ -424,6 +425,13 @@ mod tests {
             Ok(())
         }
 
+        async fn connect_source(
+            &self,
+            _request: WrappedTransportConnect,
+        ) -> anyhow::Result<Box<dyn easytier_core::proxy::runtime::TcpProxyStream>> {
+            anyhow::bail!("recording engine does not open streams")
+        }
+
         async fn stop(&self) {
             self.stop_calls.fetch_add(1, Ordering::Relaxed);
         }
@@ -480,6 +488,13 @@ mod tests {
             _payload: bytes::Bytes,
         ) -> anyhow::Result<()> {
             Ok(())
+        }
+
+        async fn connect_source(
+            &self,
+            _request: WrappedTransportConnect,
+        ) -> anyhow::Result<Box<dyn easytier_core::proxy::runtime::TcpProxyStream>> {
+            anyhow::bail!("blocking engine does not open streams")
         }
 
         async fn stop(&self) {
@@ -629,6 +644,45 @@ mod tests {
         assert_eq!(instance.state(), CoreInstanceState::Stopped);
         assert_eq!(transport_proxy.stop_calls.load(Ordering::Relaxed), 1);
         assert!(!instance.proxy_is_started());
+    }
+
+    #[tokio::test]
+    async fn runtime_core_instance_owns_wrapped_transport_source_nat() {
+        let global_ctx = get_mock_global_ctx();
+        let mut flags = global_ctx.get_flags();
+        flags.enable_kcp_proxy = true;
+        flags.disable_kcp_input = true;
+        global_ctx.set_flags(flags);
+        let (nic_channel, _nic_receiver) = create_packet_recv_chan();
+        let peer_manager = Arc::new(PeerManager::new(
+            RouteAlgoType::Ospf,
+            global_ctx.clone(),
+            nic_channel,
+        ));
+        let engine = Arc::new(RecordingProxyService::default());
+        let (instance, _) = build_runtime_core_instance_with_transport_factory(
+            global_ctx,
+            peer_manager,
+            TestTransportProxyFactory {
+                service: engine.clone(),
+            },
+        )
+        .expect("runtime core composition should succeed");
+        let instance = Arc::new(instance);
+
+        instance.start().await.unwrap();
+        instance.start_network_services(None).await.unwrap();
+
+        assert!(instance.wrapped_transport_source_is_started(WrappedTransportKind::Kcp));
+        assert!(
+            instance
+                .wrapped_tcp_proxy_entry_snapshots(WrappedTransportKind::Kcp)
+                .is_empty()
+        );
+
+        instance.stop().await;
+        assert!(!instance.wrapped_transport_source_is_started(WrappedTransportKind::Kcp));
+        assert_eq!(engine.stop_calls.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test]

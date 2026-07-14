@@ -81,6 +81,8 @@ use self::{
     udp_hole_punch::{CoreUdpHolePunchService, UdpHolePunchPlatform},
 };
 #[cfg(feature = "proxy-packet")]
+use crate::proxy::wrapped_transport::WrappedTransportKind;
+#[cfg(feature = "proxy-packet")]
 use crate::proxy::{runtime::IcmpProxyHost, service::CoreProxyModule};
 
 pub use packet_io::PacketSink;
@@ -707,9 +709,9 @@ where
         let proxy_cidr_table = Arc::new(ProxyCidrTable::from_snapshot(proxy_cidr_snapshot(
             runtime_config.snapshot().as_ref(),
         )));
+        let tcp_proxy_socket_context = direct_options.tcp_bind.context.clone();
         #[cfg(feature = "proxy-packet")]
         let proxy = {
-            let tcp_socket_context = direct_options.tcp_bind.context.clone();
             let udp_socket_context = direct_options.udp_bind.context.clone();
             // Raw ICMP shares the datagram/network-layer routing context.
             let icmp_socket_context = direct_options.udp_bind.context.clone();
@@ -719,7 +721,7 @@ where
                 running_listeners.clone(),
                 runtime_config.clone(),
                 proxy_cidr_table.clone(),
-                tcp_socket_context,
+                tcp_proxy_socket_context.clone(),
                 udp_socket_context,
                 icmp_socket_context,
                 icmp_proxy_host,
@@ -735,6 +737,10 @@ where
             runtime_config.clone(),
             kcp,
             quic,
+            host.clone(),
+            running_listeners.clone(),
+            proxy_cidr_table.clone(),
+            tcp_proxy_socket_context,
         );
         let direct = DirectConnectorManager::new_with_running_listeners(
             peer_manager.clone(),
@@ -1369,6 +1375,23 @@ where
         &self,
     ) -> Vec<crate::proxy::tcp_proxy_engine::TcpNatEntrySnapshot> {
         self.proxy.tcp_entry_snapshots()
+    }
+
+    #[cfg(feature = "proxy-packet")]
+    pub fn wrapped_tcp_proxy_entry_snapshots(
+        &self,
+        transport: WrappedTransportKind,
+    ) -> Vec<crate::proxy::tcp_proxy_engine::TcpNatEntrySnapshot> {
+        self.transport_proxy
+            .as_ref()
+            .map_or_else(Vec::new, |proxy| proxy.source_entry_snapshots(transport))
+    }
+
+    #[cfg(feature = "proxy-packet")]
+    pub fn wrapped_transport_source_is_started(&self, transport: WrappedTransportKind) -> bool {
+        self.transport_proxy
+            .as_ref()
+            .is_some_and(|proxy| proxy.source_is_started(transport))
     }
 
     pub fn generate_credential(

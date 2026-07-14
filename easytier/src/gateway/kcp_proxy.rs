@@ -1,5 +1,5 @@
 use std::{
-    net::{IpAddr, SocketAddr},
+    net::SocketAddr,
     sync::{Arc, Mutex as StdMutex, Weak},
     time::Duration,
 };
@@ -22,30 +22,24 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use easytier_core::{
-    peers::peer_manager::PipelineRegistrationGuard,
     proxy::wrapped_transport::{
-        WrappedTransportDatagram, WrappedTransportDatagramBuffer, WrappedTransportEngine,
-        WrappedTransportEngineStart, WrappedTransportKind, WrappedTransportRole,
+        WrappedTransportConnect, WrappedTransportDatagram, WrappedTransportDatagramBuffer,
+        WrappedTransportEngine, WrappedTransportEngineStart, WrappedTransportKind,
+        WrappedTransportRole,
     },
     proxy::{
         cidr_table::ProxyCidrTable,
-        runtime::TcpProxyDestinationConnector,
+        runtime::{TcpProxyDestinationConnector, TcpProxyStream},
         tcp_proxy_engine::TcpProxyMode,
-        wrapped_tcp_proxy::{
-            WrappedTcpDestinationRequest, WrappedTcpProxyNicContext, WrappedTcpProxyTransport,
-            plan_wrapped_tcp_destination, try_process_wrapped_tcp_packet_from_nic,
-        },
+        wrapped_tcp_proxy::{WrappedTcpDestinationRequest, plan_wrapped_tcp_destination},
     },
 };
 
-use super::{
-    RuntimeWrappedTcpDestinationAdapter,
-    tcp_proxy::{NatDstTcpConnector, TcpProxy},
-};
+use super::{RuntimeWrappedTcpDestinationAdapter, tcp_proxy::NatDstTcpConnector};
 use crate::utils::task::HedgeExt;
 use crate::{
     common::{error::Result, global_ctx::ArcGlobalCtx},
-    peers::{NicPacketFilter, peer_manager::PeerManager},
+    peers::peer_manager::PeerManager,
     proto::{
         api::instance::{
             ListTcpProxyEntryRequest, ListTcpProxyEntryResponse, TcpProxyEntry, TcpProxyEntryState,
@@ -54,7 +48,6 @@ use crate::{
         peer_rpc::KcpConnData,
         rpc_types::{self, controller::BaseController},
     },
-    tunnel::packet_def::ZCPacket,
 };
 
 fn create_kcp_endpoint() -> KcpEndpoint {
@@ -99,6 +92,40 @@ pub struct NatDstKcpConnector {
     pub(crate) peer_mgr: Weak<PeerManager>,
 }
 
+async fn connect_kcp_source(
+    kcp_endpoint: Arc<KcpEndpoint>,
+    my_peer_id: u32,
+    dst_peer_id: u32,
+    src: SocketAddr,
+    dst: SocketAddr,
+) -> anyhow::Result<KcpStream> {
+    let conn_data = KcpConnData {
+        src: Some(src.into()),
+        dst: Some(dst.into()),
+    };
+
+    (0..5)
+        .map(|_| {
+            let kcp_endpoint = kcp_endpoint.clone();
+            let conn_data = conn_data.clone();
+            async move {
+                let conn_id = kcp_endpoint
+                    .connect(
+                        Duration::from_secs(10),
+                        my_peer_id,
+                        dst_peer_id,
+                        Bytes::from(conn_data.encode_to_vec()),
+                    )
+                    .await?;
+
+                KcpStream::new(&kcp_endpoint, conn_id).context("failed to create kcp stream")
+            }
+        })
+        .hedge(Duration::from_millis(200))
+        .await
+        .context("failed to connect to peer")
+}
+
 #[async_trait::async_trait]
 impl TcpProxyDestinationConnector for NatDstKcpConnector {
     type DstStream = KcpStream;
@@ -126,35 +153,14 @@ impl TcpProxyDestinationConnector for NatDstKcpConnector {
         };
 
         tracing::trace!(?nat_dst, ?dst_peer, "kcp nat");
-
-        let conn_data = KcpConnData {
-            src: Some(src.into()),
-            dst: Some(nat_dst.into()),
-        };
-
-        let stream = (0..5)
-            .map(|_| {
-                let kcp_endpoint = self.kcp_endpoint.clone();
-                let my_peer_id = peer_mgr.my_peer_id();
-
-                async move {
-                    let conn_id = kcp_endpoint
-                        .connect(
-                            Duration::from_secs(10),
-                            my_peer_id,
-                            dst_peer,
-                            Bytes::from(conn_data.encode_to_vec()),
-                        )
-                        .await?;
-
-                    KcpStream::new(&kcp_endpoint, conn_id).context("failed to create kcp stream")
-                }
-            })
-            .hedge(Duration::from_millis(200))
-            .await
-            .context("failed to connect to peer")?;
-
-        Ok(stream)
+        connect_kcp_source(
+            self.kcp_endpoint.clone(),
+            peer_mgr.my_peer_id(),
+            dst_peer,
+            src,
+            nat_dst,
+        )
+        .await
     }
 
     fn proxy_mode(&self) -> TcpProxyMode {
@@ -162,65 +168,13 @@ impl TcpProxyDestinationConnector for NatDstKcpConnector {
     }
 }
 
-#[derive(Clone)]
-struct TcpProxyForKcpSrc(Weak<TcpProxy<NatDstKcpConnector>>);
-
-impl TcpProxyForKcpSrc {
-    async fn try_process_nic_packet(&self, zc_packet: &mut ZCPacket) -> bool {
-        let Some(proxy) = self.0.upgrade() else {
-            return false;
-        };
-        if proxy.try_process_packet_from_nic(zc_packet).await {
-            return true;
-        }
-
-        let tcp_proxy = proxy.clone();
-        let peer_manager = proxy.get_peer_manager();
-        try_process_wrapped_tcp_packet_from_nic(
-            zc_packet,
-            WrappedTcpProxyNicContext {
-                transport: WrappedTcpProxyTransport::Kcp,
-                my_peer_id: proxy.get_my_peer_id(),
-                local_ipv4: proxy.get_local_ip(),
-                smoltcp_enabled: proxy.is_smoltcp_enabled(),
-            },
-            move |src| tcp_proxy.is_tcp_proxy_connection(src),
-            move |dst_ip| async move {
-                let Some(peer_manager) = peer_manager else {
-                    return false;
-                };
-                peer_manager
-                    .core()
-                    .check_allow_kcp_to_dst(&IpAddr::V4(dst_ip))
-                    .await
-            },
-        )
-        .await
-    }
-}
-
-#[async_trait::async_trait]
-impl NicPacketFilter for TcpProxyForKcpSrc {
-    async fn try_process_packet_from_nic(&self, zc_packet: &mut ZCPacket) -> bool {
-        self.try_process_nic_packet(zc_packet).await
-    }
-}
-
 pub struct KcpProxySrc {
     kcp_endpoint: Arc<KcpEndpoint>,
-    peer_manager: Arc<PeerManager>,
-
-    tcp_proxy: Arc<TcpProxy<NatDstKcpConnector>>,
-    pipeline_guards: Vec<PipelineRegistrationGuard>,
     tasks: JoinSet<()>,
 }
 
 impl KcpProxySrc {
-    pub async fn new(
-        peer_manager: Arc<PeerManager>,
-        cidr_table: Arc<ProxyCidrTable>,
-        datagrams: tokio::sync::mpsc::Sender<WrappedTransportDatagram>,
-    ) -> Self {
+    pub async fn new(datagrams: tokio::sync::mpsc::Sender<WrappedTransportDatagram>) -> Self {
         let mut kcp_endpoint = create_kcp_endpoint();
         kcp_endpoint.run().await;
 
@@ -235,38 +189,10 @@ impl KcpProxySrc {
 
         let kcp_endpoint = Arc::new(kcp_endpoint);
 
-        let tcp_proxy = TcpProxy::new(
-            peer_manager.clone(),
-            NatDstKcpConnector {
-                kcp_endpoint: kcp_endpoint.clone(),
-                peer_mgr: Arc::downgrade(&peer_manager),
-            },
-            cidr_table,
-        );
-
         Self {
             kcp_endpoint,
-            peer_manager,
-            tcp_proxy,
-            pipeline_guards: Vec::new(),
             tasks,
         }
-    }
-
-    pub async fn start(&mut self) {
-        let wrapped_filter = TcpProxyForKcpSrc(Arc::downgrade(&self.tcp_proxy));
-        let guard = self
-            .peer_manager
-            .core()
-            .add_managed_nic_packet_process_pipeline(Box::new(wrapped_filter))
-            .await;
-        self.pipeline_guards.push(guard);
-        self.tcp_proxy.register_peer_pipeline().await;
-        self.tcp_proxy.start(false).await.unwrap();
-    }
-
-    pub fn get_tcp_proxy(&self) -> Arc<TcpProxy<NatDstKcpConnector>> {
-        self.tcp_proxy.clone()
     }
 
     pub fn get_kcp_endpoint(&self) -> Arc<KcpEndpoint> {
@@ -274,10 +200,6 @@ impl KcpProxySrc {
     }
 
     async fn stop(&mut self) {
-        for guard in self.pipeline_guards.drain(..).rev() {
-            guard.close();
-        }
-        self.tcp_proxy.stop();
         self.tasks.shutdown().await;
     }
 }
@@ -483,7 +405,6 @@ pub struct KcpProxyService {
     cidr_table: Arc<ProxyCidrTable>,
     state: Mutex<Option<KcpProxyServiceState>>,
     src_endpoint: StdMutex<Option<Arc<KcpEndpoint>>>,
-    src_tcp_proxy: StdMutex<Option<Arc<TcpProxy<NatDstKcpConnector>>>>,
     dst_proxy_entries: StdMutex<Option<Arc<DashMap<ConnId, TcpProxyEntry>>>>,
 }
 
@@ -494,7 +415,6 @@ impl KcpProxyService {
             cidr_table,
             state: Mutex::new(None),
             src_endpoint: StdMutex::new(None),
-            src_tcp_proxy: StdMutex::new(None),
             dst_proxy_entries: StdMutex::new(None),
         }
     }
@@ -503,13 +423,6 @@ impl KcpProxyService {
         self.src_endpoint
             .lock()
             .expect("KCP source endpoint mutex poisoned")
-            .clone()
-    }
-
-    pub fn src_tcp_proxy(&self) -> Option<Arc<TcpProxy<NatDstKcpConnector>>> {
-        self.src_tcp_proxy
-            .lock()
-            .expect("KCP source TCP proxy mutex poisoned")
             .clone()
     }
 
@@ -532,12 +445,7 @@ impl WrappedTransportEngine for KcpProxyService {
         let directions = options.directions;
 
         let src = if directions.source {
-            let src = KcpProxySrc::new(
-                self.peer_manager.clone(),
-                self.cidr_table.clone(),
-                options.datagrams.clone(),
-            )
-            .await;
+            let src = KcpProxySrc::new(options.datagrams.clone()).await;
             Some(src)
         } else {
             None
@@ -560,11 +468,6 @@ impl WrappedTransportEngine for KcpProxyService {
             .expect("KCP source endpoint mutex poisoned") =
             src.as_ref().map(KcpProxySrc::get_kcp_endpoint);
         *self
-            .src_tcp_proxy
-            .lock()
-            .expect("KCP source TCP proxy mutex poisoned") =
-            src.as_ref().map(KcpProxySrc::get_tcp_proxy);
-        *self
             .dst_proxy_entries
             .lock()
             .expect("KCP destination proxy entries mutex poisoned") =
@@ -578,9 +481,6 @@ impl WrappedTransportEngine for KcpProxyService {
         let state = state
             .as_mut()
             .ok_or_else(|| anyhow!("KCP engine is not prepared"))?;
-        if let Some(src) = state.src.as_mut() {
-            src.start().await;
-        }
         if let Some(dst) = state.dst.as_mut() {
             dst.start().await;
         }
@@ -614,6 +514,29 @@ impl WrappedTransportEngine for KcpProxyService {
             .map_err(|error| anyhow!("failed to inject KCP datagram: {error}"))
     }
 
+    async fn connect_source(
+        &self,
+        request: WrappedTransportConnect,
+    ) -> anyhow::Result<Box<dyn TcpProxyStream>> {
+        let endpoint = {
+            let state = self.state.lock().await;
+            state
+                .as_ref()
+                .and_then(|state| state.src.as_ref())
+                .map(KcpProxySrc::get_kcp_endpoint)
+        }
+        .ok_or_else(|| anyhow!("KCP source endpoint is not prepared"))?;
+        let stream = connect_kcp_source(
+            endpoint,
+            request.my_peer_id,
+            request.dst_peer_id,
+            request.src,
+            request.dst,
+        )
+        .await?;
+        Ok(Box::new(stream))
+    }
+
     async fn stop(&self) {
         let mut state = self.state.lock().await;
         if let Some(active) = state.as_mut() {
@@ -622,10 +545,6 @@ impl WrappedTransportEngine for KcpProxyService {
         self.src_endpoint
             .lock()
             .expect("KCP source endpoint mutex poisoned")
-            .take();
-        self.src_tcp_proxy
-            .lock()
-            .expect("KCP source TCP proxy mutex poisoned")
             .take();
         self.dst_proxy_entries
             .lock()

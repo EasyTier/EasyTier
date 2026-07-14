@@ -1,3 +1,5 @@
+#[cfg(feature = "proxy-packet")]
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
@@ -5,6 +7,9 @@ use bytes::{Bytes, BytesMut};
 use tokio::{sync::Mutex, task::JoinSet};
 
 use crate::{
+    connectivity::direct::DirectConnectorHost,
+    hole_punch::tcp::TcpHolePunchHost,
+    listener::RunningListenerProvider,
     packet::{PacketType, ZCPacket, ZCPacketType},
     peers::{
         PeerPacketFilter,
@@ -12,6 +17,19 @@ use crate::{
     },
     proxy::cidr_table::ProxyCidrTable,
     runtime_config::CoreRuntimeConfigStore,
+    socket::SocketContext,
+};
+
+#[cfg(feature = "proxy-packet")]
+use crate::proxy::{
+    runtime::{ProxyRuntimeInfo, TcpProxyDestinationConnector, TcpProxyStream},
+    service::CoreProxyRuntime,
+    tcp_proxy_engine::{TcpNatEntrySnapshot, TcpProxyMode, TcpProxyNicContext},
+    tcp_proxy_service::TcpProxyService,
+    wrapped_tcp_proxy::{
+        WrappedTcpProxyNicContext, WrappedTcpProxyTransport,
+        try_process_wrapped_tcp_packet_from_nic,
+    },
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,6 +96,15 @@ pub struct WrappedTransportEngineStart {
     pub datagrams: tokio::sync::mpsc::Sender<WrappedTransportDatagram>,
 }
 
+#[cfg(feature = "proxy-packet")]
+#[derive(Debug, Clone, Copy)]
+pub struct WrappedTransportConnect {
+    pub my_peer_id: u32,
+    pub dst_peer_id: u32,
+    pub src: SocketAddr,
+    pub dst: SocketAddr,
+}
+
 #[async_trait]
 pub trait WrappedTransportEngine: Send + Sync + 'static {
     async fn prepare(&self, options: WrappedTransportEngineStart) -> anyhow::Result<()>;
@@ -88,6 +115,11 @@ pub trait WrappedTransportEngine: Send + Sync + 'static {
         from_peer_id: u32,
         payload: Bytes,
     ) -> anyhow::Result<()>;
+    #[cfg(feature = "proxy-packet")]
+    async fn connect_source(
+        &self,
+        request: WrappedTransportConnect,
+    ) -> anyhow::Result<Box<dyn TcpProxyStream>>;
     async fn stop(&self);
 }
 
@@ -123,13 +155,275 @@ impl WrappedTransportEngineFactory for NoWrappedTransportEngineFactory {
     }
 }
 
+#[cfg(feature = "proxy-packet")]
+#[derive(Clone)]
+struct WrappedTransportSourceConnector {
+    peer_manager: Arc<PeerManagerCore>,
+    engine: Weak<dyn WrappedTransportEngine>,
+    transport: WrappedTransportKind,
+}
+
+#[cfg(feature = "proxy-packet")]
+#[async_trait]
+impl TcpProxyDestinationConnector for WrappedTransportSourceConnector {
+    type DstStream = Box<dyn TcpProxyStream>;
+
+    async fn connect(&self, src: SocketAddr, dst: SocketAddr) -> anyhow::Result<Self::DstStream> {
+        let SocketAddr::V4(dst_v4) = dst else {
+            anyhow::bail!("IPv6 is not supported by wrapped TCP proxy");
+        };
+        let dst_peer_id = self
+            .peer_manager
+            .get_peer_map()
+            .get_peer_id_by_ipv4(dst_v4.ip())
+            .await
+            .ok_or_else(|| anyhow::anyhow!("no peer found for wrapped TCP dst: {dst}"))?;
+        let engine = self
+            .engine
+            .upgrade()
+            .ok_or_else(|| anyhow::anyhow!("wrapped transport engine is not available"))?;
+        engine
+            .connect_source(WrappedTransportConnect {
+                my_peer_id: self.peer_manager.my_peer_id(),
+                dst_peer_id,
+                src,
+                dst,
+            })
+            .await
+    }
+
+    fn proxy_mode(&self) -> TcpProxyMode {
+        match self.transport {
+            WrappedTransportKind::Kcp => TcpProxyMode::KcpSrc,
+            WrappedTransportKind::Quic => TcpProxyMode::QuicSrc,
+        }
+    }
+}
+
+#[cfg(feature = "proxy-packet")]
+type WrappedTransportSourceService<H> =
+    TcpProxyService<CoreProxyRuntime<H>, H, WrappedTransportSourceConnector>;
+
+#[cfg(feature = "proxy-packet")]
+struct WrappedTransportSource<H>
+where
+    H: DirectConnectorHost + TcpHolePunchHost,
+{
+    peer_manager: Arc<PeerManagerCore>,
+    runtime: Arc<CoreProxyRuntime<H>>,
+    service: Arc<WrappedTransportSourceService<H>>,
+    transport: WrappedTransportKind,
+}
+
+#[cfg(feature = "proxy-packet")]
+impl<H> WrappedTransportSource<H>
+where
+    H: DirectConnectorHost + TcpHolePunchHost,
+{
+    fn new(
+        peer_manager: Arc<PeerManagerCore>,
+        host: Arc<H>,
+        running_listeners: Arc<dyn RunningListenerProvider>,
+        runtime_config: CoreRuntimeConfigStore,
+        cidr_table: Arc<ProxyCidrTable>,
+        socket_context: SocketContext,
+        engine: &Arc<dyn WrappedTransportEngine>,
+        transport: WrappedTransportKind,
+    ) -> Arc<Self> {
+        let protocol_label = match transport {
+            WrappedTransportKind::Kcp => "KCP",
+            WrappedTransportKind::Quic => "QUIC",
+        };
+        let runtime = CoreProxyRuntime::new(
+            peer_manager.clone(),
+            host.clone(),
+            running_listeners,
+            runtime_config,
+            protocol_label,
+        );
+        let connector = Arc::new(WrappedTransportSourceConnector {
+            peer_manager: peer_manager.clone(),
+            engine: Arc::downgrade(engine),
+            transport,
+        });
+        let service = TcpProxyService::new_with_socket_context(
+            peer_manager.clone(),
+            runtime.clone(),
+            host,
+            connector,
+            cidr_table,
+            socket_context,
+        );
+        Arc::new(Self {
+            peer_manager,
+            runtime,
+            service,
+            transport,
+        })
+    }
+
+    async fn start_service(self: &Arc<Self>) -> Result<PipelineRegistrationGuard, anyhow::Error> {
+        self.runtime.latch_smoltcp();
+        let guard = self
+            .peer_manager
+            .add_managed_nic_packet_process_pipeline(Box::new(WrappedTransportSourceFilter {
+                source: Arc::downgrade(self),
+            }))
+            .await;
+        self.service.register_peer_pipeline().await;
+        if let Err(error) = self.service.start(false).await {
+            guard.close();
+            self.service.stop();
+            return Err(anyhow::Error::new(error));
+        }
+        Ok(guard)
+    }
+
+    fn stop_service(&self) {
+        self.service.stop();
+    }
+
+    fn source_entry_snapshots(&self) -> Vec<TcpNatEntrySnapshot> {
+        self.service.engine().list_entries()
+    }
+
+    async fn try_process_nic_packet(&self, packet: &mut ZCPacket) -> bool {
+        let snapshot = self.runtime.proxy_runtime_snapshot();
+        let engine = self.service.engine();
+        if engine.try_process_packet_from_nic(
+            packet,
+            TcpProxyNicContext {
+                local_inet: snapshot.local_inet,
+                local_port: engine.local_port(),
+                my_peer_id: self.peer_manager.my_peer_id(),
+                smoltcp_enabled: snapshot.smoltcp_enabled,
+            },
+        ) {
+            return true;
+        }
+
+        let connection_engine = engine.clone();
+        let peer_manager = self.peer_manager.clone();
+        let transport = self.transport;
+        try_process_wrapped_tcp_packet_from_nic(
+            packet,
+            WrappedTcpProxyNicContext {
+                transport: match transport {
+                    WrappedTransportKind::Kcp => WrappedTcpProxyTransport::Kcp,
+                    WrappedTransportKind::Quic => WrappedTcpProxyTransport::Quic,
+                },
+                my_peer_id: self.peer_manager.my_peer_id(),
+                local_ipv4: snapshot.local_inet.map(|inet| inet.address()),
+                smoltcp_enabled: snapshot.smoltcp_enabled,
+            },
+            move |src| connection_engine.is_tcp_proxy_connection(src),
+            move |dst_ip| async move {
+                match transport {
+                    WrappedTransportKind::Kcp => {
+                        peer_manager
+                            .check_allow_kcp_to_dst(&IpAddr::V4(dst_ip))
+                            .await
+                    }
+                    WrappedTransportKind::Quic => {
+                        peer_manager
+                            .check_allow_quic_to_dst(&IpAddr::V4(dst_ip))
+                            .await
+                    }
+                }
+            },
+        )
+        .await
+    }
+}
+
+#[cfg(feature = "proxy-packet")]
+#[async_trait]
+trait WrappedTransportSourceLifecycle: Send + Sync {
+    async fn start(self: Arc<Self>) -> anyhow::Result<PipelineRegistrationGuard>;
+    fn stop(&self);
+    fn entry_snapshots(&self) -> Vec<TcpNatEntrySnapshot>;
+    fn is_started(&self) -> bool;
+}
+
+#[cfg(feature = "proxy-packet")]
+#[async_trait]
+impl<H> WrappedTransportSourceLifecycle for WrappedTransportSource<H>
+where
+    H: DirectConnectorHost + TcpHolePunchHost,
+{
+    async fn start(self: Arc<Self>) -> anyhow::Result<PipelineRegistrationGuard> {
+        self.start_service().await
+    }
+
+    fn stop(&self) {
+        self.stop_service();
+    }
+
+    fn entry_snapshots(&self) -> Vec<TcpNatEntrySnapshot> {
+        self.source_entry_snapshots()
+    }
+
+    fn is_started(&self) -> bool {
+        self.service.is_started()
+    }
+}
+
+#[cfg(feature = "proxy-packet")]
+struct WrappedTransportSourceFilter<H>
+where
+    H: DirectConnectorHost + TcpHolePunchHost,
+{
+    source: Weak<WrappedTransportSource<H>>,
+}
+
+#[cfg(feature = "proxy-packet")]
+#[async_trait]
+impl<H> crate::peers::NicPacketFilter for WrappedTransportSourceFilter<H>
+where
+    H: DirectConnectorHost + TcpHolePunchHost,
+{
+    async fn try_process_packet_from_nic(&self, packet: &mut ZCPacket) -> bool {
+        let Some(source) = self.source.upgrade() else {
+            return false;
+        };
+        source.try_process_nic_packet(packet).await
+    }
+}
+
 #[derive(Default)]
 struct WrappedTransportProxyState {
     active: bool,
     kcp_started: bool,
     quic_started: bool,
+    #[cfg(feature = "proxy-packet")]
+    kcp_source_started: bool,
+    #[cfg(feature = "proxy-packet")]
+    quic_source_started: bool,
+    #[cfg(feature = "proxy-packet")]
+    kcp_source_guard: Option<PipelineRegistrationGuard>,
+    #[cfg(feature = "proxy-packet")]
+    quic_source_guard: Option<PipelineRegistrationGuard>,
     pipeline_guards: Vec<PipelineRegistrationGuard>,
     tasks: JoinSet<()>,
+}
+
+impl WrappedTransportProxyState {
+    fn has_partial_start(&self) -> bool {
+        self.kcp_started
+            || self.quic_started
+            || !self.pipeline_guards.is_empty()
+            || !self.tasks.is_empty()
+            || {
+                #[cfg(feature = "proxy-packet")]
+                {
+                    self.kcp_source_started || self.quic_source_started
+                }
+                #[cfg(not(feature = "proxy-packet"))]
+                {
+                    false
+                }
+            }
+    }
 }
 
 impl WrappedTransportKind {
@@ -189,13 +483,77 @@ pub(crate) struct WrappedTransportProxyModule {
     runtime_config: CoreRuntimeConfigStore,
     kcp: Option<Arc<dyn WrappedTransportEngine>>,
     quic: Option<Arc<dyn WrappedTransportEngine>>,
+    #[cfg(feature = "proxy-packet")]
+    kcp_source: Option<Arc<dyn WrappedTransportSourceLifecycle>>,
+    #[cfg(feature = "proxy-packet")]
+    quic_source: Option<Arc<dyn WrappedTransportSourceLifecycle>>,
     state: Mutex<WrappedTransportProxyState>,
 }
 
 impl WrappedTransportProxyModule {
     const DATAGRAM_QUEUE_CAPACITY: usize = 1024;
 
-    pub(crate) fn new(
+    pub(crate) fn new<H>(
+        peer_manager: Arc<PeerManagerCore>,
+        runtime_config: CoreRuntimeConfigStore,
+        kcp: Option<Arc<dyn WrappedTransportEngine>>,
+        quic: Option<Arc<dyn WrappedTransportEngine>>,
+        host: Arc<H>,
+        running_listeners: Arc<dyn RunningListenerProvider>,
+        cidr_table: Arc<ProxyCidrTable>,
+        socket_context: SocketContext,
+    ) -> Option<Arc<Self>>
+    where
+        H: DirectConnectorHost + TcpHolePunchHost,
+    {
+        if kcp.is_none() && quic.is_none() {
+            return None;
+        }
+        #[cfg(feature = "proxy-packet")]
+        let kcp_source: Option<Arc<dyn WrappedTransportSourceLifecycle>> =
+            kcp.as_ref().map(|engine| {
+                WrappedTransportSource::new(
+                    peer_manager.clone(),
+                    host.clone(),
+                    running_listeners.clone(),
+                    runtime_config.clone(),
+                    cidr_table.clone(),
+                    socket_context.clone(),
+                    engine,
+                    WrappedTransportKind::Kcp,
+                ) as Arc<dyn WrappedTransportSourceLifecycle>
+            });
+        #[cfg(feature = "proxy-packet")]
+        let quic_source: Option<Arc<dyn WrappedTransportSourceLifecycle>> =
+            quic.as_ref().map(|engine| {
+                WrappedTransportSource::new(
+                    peer_manager.clone(),
+                    host.clone(),
+                    running_listeners.clone(),
+                    runtime_config.clone(),
+                    cidr_table,
+                    socket_context,
+                    engine,
+                    WrappedTransportKind::Quic,
+                ) as Arc<dyn WrappedTransportSourceLifecycle>
+            });
+        #[cfg(not(feature = "proxy-packet"))]
+        let _ = (host, running_listeners, cidr_table, socket_context);
+        Some(Arc::new(Self {
+            peer_manager,
+            runtime_config,
+            kcp,
+            quic,
+            #[cfg(feature = "proxy-packet")]
+            kcp_source,
+            #[cfg(feature = "proxy-packet")]
+            quic_source,
+            state: Mutex::new(WrappedTransportProxyState::default()),
+        }))
+    }
+
+    #[cfg(test)]
+    fn new_without_sources(
         peer_manager: Arc<PeerManagerCore>,
         runtime_config: CoreRuntimeConfigStore,
         kcp: Option<Arc<dyn WrappedTransportEngine>>,
@@ -209,6 +567,10 @@ impl WrappedTransportProxyModule {
             runtime_config,
             kcp,
             quic,
+            #[cfg(feature = "proxy-packet")]
+            kcp_source: None,
+            #[cfg(feature = "proxy-packet")]
+            quic_source: None,
             state: Mutex::new(WrappedTransportProxyState::default()),
         }))
     }
@@ -291,12 +653,38 @@ impl WrappedTransportProxyModule {
             guard.close();
         }
         if state.quic_started {
+            #[cfg(feature = "proxy-packet")]
+            {
+                if let Some(guard) = state.quic_source_guard.take() {
+                    guard.close();
+                }
+            }
+            #[cfg(feature = "proxy-packet")]
+            if state.quic_source_started {
+                if let Some(source) = &self.quic_source {
+                    source.stop();
+                }
+                state.quic_source_started = false;
+            }
             if let Some(quic) = &self.quic {
                 quic.stop().await;
             }
             state.quic_started = false;
         }
         if state.kcp_started {
+            #[cfg(feature = "proxy-packet")]
+            {
+                if let Some(guard) = state.kcp_source_guard.take() {
+                    guard.close();
+                }
+            }
+            #[cfg(feature = "proxy-packet")]
+            if state.kcp_source_started {
+                if let Some(source) = &self.kcp_source {
+                    source.stop();
+                }
+                state.kcp_source_started = false;
+            }
             if let Some(kcp) = &self.kcp {
                 kcp.stop().await;
             }
@@ -310,6 +698,9 @@ impl WrappedTransportProxyModule {
         let mut state = self.state.lock().await;
         if state.active {
             return Ok(());
+        }
+        if state.has_partial_start() {
+            self.stop_started(&mut state).await;
         }
         let (kcp_directions, quic_directions) = self.directions();
 
@@ -331,6 +722,19 @@ impl WrappedTransportProxyModule {
             }
             self.register_peer_filters(&mut state, kcp, WrappedTransportKind::Kcp, kcp_directions)
                 .await;
+            #[cfg(feature = "proxy-packet")]
+            if kcp_directions.source
+                && let Some(source) = &self.kcp_source
+            {
+                state.kcp_source_started = true;
+                match source.clone().start().await {
+                    Ok(guard) => state.kcp_source_guard = Some(guard),
+                    Err(error) => {
+                        self.stop_started(&mut state).await;
+                        return Err(error);
+                    }
+                }
+            }
             if let Err(error) = kcp.activate().await {
                 self.stop_started(&mut state).await;
                 return Err(error);
@@ -359,6 +763,19 @@ impl WrappedTransportProxyModule {
                 quic_directions,
             )
             .await;
+            #[cfg(feature = "proxy-packet")]
+            if quic_directions.source
+                && let Some(source) = &self.quic_source
+            {
+                state.quic_source_started = true;
+                match source.clone().start().await {
+                    Ok(guard) => state.quic_source_guard = Some(guard),
+                    Err(error) => {
+                        self.stop_started(&mut state).await;
+                        return Err(error);
+                    }
+                }
+            }
             if let Err(error) = quic.activate().await {
                 self.stop_started(&mut state).await;
                 return Err(error);
@@ -371,6 +788,27 @@ impl WrappedTransportProxyModule {
     pub(crate) async fn stop(&self) {
         let mut state = self.state.lock().await;
         self.stop_started(&mut state).await;
+    }
+
+    #[cfg(feature = "proxy-packet")]
+    pub(crate) fn source_entry_snapshots(
+        &self,
+        transport: WrappedTransportKind,
+    ) -> Vec<TcpNatEntrySnapshot> {
+        match transport {
+            WrappedTransportKind::Kcp => self.kcp_source.as_ref(),
+            WrappedTransportKind::Quic => self.quic_source.as_ref(),
+        }
+        .map_or_else(Vec::new, |source| source.entry_snapshots())
+    }
+
+    #[cfg(feature = "proxy-packet")]
+    pub(crate) fn source_is_started(&self, transport: WrappedTransportKind) -> bool {
+        match transport {
+            WrappedTransportKind::Kcp => self.kcp_source.as_ref(),
+            WrappedTransportKind::Quic => self.quic_source.as_ref(),
+        }
+        .is_some_and(|source| source.is_started())
     }
 }
 
@@ -410,6 +848,14 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct AbortOncePrepareEngine {
+        prepare_calls: AtomicUsize,
+        activate_calls: AtomicUsize,
+        stop_calls: AtomicUsize,
+        first_prepare_entered: Notify,
+    }
+
+    #[derive(Default)]
     struct RecordingDatagramEngine {
         injections: Mutex<Vec<(WrappedTransportRole, u32, Bytes)>>,
     }
@@ -435,6 +881,14 @@ mod tests {
                 .unwrap()
                 .push((role, from_peer_id, payload));
             Ok(())
+        }
+
+        #[cfg(feature = "proxy-packet")]
+        async fn connect_source(
+            &self,
+            _request: WrappedTransportConnect,
+        ) -> anyhow::Result<Box<dyn TcpProxyStream>> {
+            anyhow::bail!("recording engine does not open streams")
         }
 
         async fn stop(&self) {}
@@ -468,6 +922,14 @@ mod tests {
             Ok(())
         }
 
+        #[cfg(feature = "proxy-packet")]
+        async fn connect_source(
+            &self,
+            _request: WrappedTransportConnect,
+        ) -> anyhow::Result<Box<dyn TcpProxyStream>> {
+            anyhow::bail!("blocking engine does not open streams")
+        }
+
         async fn stop(&self) {
             let call = self.stop_calls.fetch_add(1, Ordering::AcqRel);
             self.events.lock().unwrap().push("stop:blocking".into());
@@ -475,6 +937,43 @@ mod tests {
                 self.stop_entered.notify_one();
                 self.release_first_stop.notified().await;
             }
+        }
+    }
+
+    #[async_trait]
+    impl WrappedTransportEngine for AbortOncePrepareEngine {
+        async fn prepare(&self, _options: WrappedTransportEngineStart) -> anyhow::Result<()> {
+            if self.prepare_calls.fetch_add(1, Ordering::AcqRel) == 0 {
+                self.first_prepare_entered.notify_one();
+                std::future::pending::<()>().await;
+            }
+            Ok(())
+        }
+
+        async fn activate(&self) -> anyhow::Result<()> {
+            self.activate_calls.fetch_add(1, Ordering::AcqRel);
+            Ok(())
+        }
+
+        async fn inject_peer_datagram(
+            &self,
+            _role: WrappedTransportRole,
+            _from_peer_id: u32,
+            _payload: Bytes,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        #[cfg(feature = "proxy-packet")]
+        async fn connect_source(
+            &self,
+            _request: WrappedTransportConnect,
+        ) -> anyhow::Result<Box<dyn TcpProxyStream>> {
+            anyhow::bail!("blocking engine does not open streams")
+        }
+
+        async fn stop(&self) {
+            self.stop_calls.fetch_add(1, Ordering::AcqRel);
         }
     }
 
@@ -507,6 +1006,14 @@ mod tests {
             _payload: Bytes,
         ) -> anyhow::Result<()> {
             Ok(())
+        }
+
+        #[cfg(feature = "proxy-packet")]
+        async fn connect_source(
+            &self,
+            _request: WrappedTransportConnect,
+        ) -> anyhow::Result<Box<dyn TcpProxyStream>> {
+            anyhow::bail!("recording engine does not open streams")
         }
 
         async fn stop(&self) {
@@ -681,7 +1188,7 @@ mod tests {
                 destination: false,
             },
         );
-        let module = WrappedTransportProxyModule::new(
+        let module = WrappedTransportProxyModule::new_without_sources(
             wrapped_transport_peer_manager(),
             runtime.clone(),
             Some(wrapped_transport_engine("kcp", false, &events)),
@@ -729,7 +1236,7 @@ mod tests {
                 destination: true,
             },
         );
-        let module = WrappedTransportProxyModule::new(
+        let module = WrappedTransportProxyModule::new_without_sources(
             wrapped_transport_peer_manager(),
             runtime,
             Some(wrapped_transport_engine("kcp", false, &events)),
@@ -770,7 +1277,7 @@ mod tests {
                 destination: true,
             },
         );
-        let module = WrappedTransportProxyModule::new(
+        let module = WrappedTransportProxyModule::new_without_sources(
             wrapped_transport_peer_manager(),
             runtime,
             Some(wrapped_transport_engine("kcp", false, &events)),
@@ -802,5 +1309,55 @@ mod tests {
                 "stop:kcp",
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn module_cleans_partial_start_before_retry() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let blocking = Arc::new(AbortOncePrepareEngine::default());
+        let runtime = wrapped_transport_runtime(
+            WrappedTransportDirections {
+                source: true,
+                destination: true,
+            },
+            WrappedTransportDirections {
+                source: true,
+                destination: true,
+            },
+        );
+        let module = WrappedTransportProxyModule::new_without_sources(
+            wrapped_transport_peer_manager(),
+            runtime,
+            Some(wrapped_transport_engine("kcp", false, &events)),
+            Some(blocking.clone()),
+        )
+        .unwrap();
+
+        let first_start = tokio::spawn({
+            let module = module.clone();
+            async move { module.start().await }
+        });
+        blocking.first_prepare_entered.notified().await;
+        first_start.abort();
+        assert!(first_start.await.unwrap_err().is_cancelled());
+
+        module.start().await.unwrap();
+
+        assert_eq!(blocking.prepare_calls.load(Ordering::Acquire), 2);
+        assert_eq!(blocking.activate_calls.load(Ordering::Acquire), 1);
+        assert_eq!(blocking.stop_calls.load(Ordering::Acquire), 1);
+        assert_eq!(
+            *events.lock().unwrap(),
+            [
+                "prepare:kcp:true:true",
+                "activate:kcp",
+                "stop:kcp",
+                "prepare:kcp:true:true",
+                "activate:kcp",
+            ]
+        );
+
+        module.stop().await;
+        assert_eq!(blocking.stop_calls.load(Ordering::Acquire), 2);
     }
 }

@@ -35,7 +35,6 @@ use super::{
     udp_socket_runtime::UdpSocketProxyRuntime,
 };
 
-const TCP_PROXY_PROTOCOL_LABEL: &str = "TCP";
 const UDP_PROXY_SOCKET_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 const PROXY_FRAGMENT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -81,7 +80,7 @@ fn listener_uses_udp(url: &url::Url) -> bool {
     matches!(url.scheme(), "udp" | "wg" | "quic")
 }
 
-struct CoreProxyRuntime<H>
+pub(crate) struct CoreProxyRuntime<H>
 where
     H: DirectConnectorHost,
 {
@@ -90,6 +89,7 @@ where
     running_listeners: Arc<dyn RunningListenerProvider>,
     config: CoreRuntimeConfigStore,
     stats: Arc<StatsManager>,
+    protocol_label: &'static str,
     smoltcp_enabled: AtomicBool,
 }
 
@@ -97,11 +97,12 @@ impl<H> CoreProxyRuntime<H>
 where
     H: DirectConnectorHost,
 {
-    fn new(
+    pub(crate) fn new(
         peer_manager: Arc<PeerManagerCore>,
         host: Arc<H>,
         running_listeners: Arc<dyn RunningListenerProvider>,
         config: CoreRuntimeConfigStore,
+        protocol_label: &'static str,
     ) -> Arc<Self> {
         Arc::new(Self {
             stats: peer_manager.stats_manager(),
@@ -109,11 +110,12 @@ where
             host,
             running_listeners,
             config,
+            protocol_label,
             smoltcp_enabled: AtomicBool::new(false),
         })
     }
 
-    fn latch_smoltcp(&self) {
+    pub(crate) fn latch_smoltcp(&self) {
         self.smoltcp_enabled.store(
             self.config.snapshot().services.proxy.force_smoltcp,
             Ordering::Release,
@@ -166,7 +168,7 @@ where
             .get_counter(
                 MetricName::TcpProxyConnect,
                 LabelSet::new()
-                    .with_label_type(LabelType::Protocol(TCP_PROXY_PROTOCOL_LABEL.to_owned()))
+                    .with_label_type(LabelType::Protocol(self.protocol_label.to_owned()))
                     .with_label_type(LabelType::DstIp(socket_dst.ip().to_string()))
                     .with_label_type(LabelType::MappedDstIp(context.mapped_dst.ip().to_string())),
             )
@@ -275,6 +277,7 @@ where
             host.clone(),
             running_listeners,
             config.clone(),
+            "TCP",
         );
         let tcp_connector = Arc::new(
             TcpSocketProxyConnector::new(host.clone())

@@ -104,6 +104,10 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
         self.engine.clone()
     }
 
+    pub fn is_started(&self) -> bool {
+        self.started.load(Ordering::Acquire)
+    }
+
     pub async fn start(self: &Arc<Self>, register_pipeline: bool) -> Result<(), ProxyRuntimeError> {
         if self.started.swap(true, Ordering::AcqRel) {
             return Ok(());
@@ -140,9 +144,7 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
     }
 
     pub fn stop(&self) {
-        if !self.started.swap(false, Ordering::AcqRel) {
-            return;
-        }
+        self.started.store(false, Ordering::Release);
         if let Some(guard) = self.peer_pipeline_guard.lock().unwrap().take() {
             guard.close();
         }
