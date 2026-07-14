@@ -58,7 +58,7 @@ use crate::{
         cidr_monitor::{
             ProxyCidrDiff, ProxyCidrMonitor, ProxyCidrMonitorHost, collect_proxy_cidr_diff,
         },
-        cidr_table::ProxyCidrTable,
+        cidr_table::{ProxyCidrSnapshot, ProxyCidrTable},
     },
     runtime_config::{CoreInstanceRuntimeConfig, CoreRuntimeConfig, CoreRuntimeConfigStore},
     socket::{
@@ -229,6 +229,10 @@ fn validate_listener_protocols(
         );
     }
     Ok(())
+}
+
+fn proxy_cidr_snapshot(config: &CoreInstanceRuntimeConfig) -> ProxyCidrSnapshot {
+    ProxyCidrSnapshot::from_proxy_networks(&config.peer.runtime.core.routes.proxy_networks)
 }
 
 pub struct CoreInstanceAdapters<H>
@@ -489,6 +493,7 @@ where
     udp_hole_punch_started: AtomicBool,
     transport_proxy: Option<Arc<dyn ProxyService>>,
     transport_proxy_started: AtomicBool,
+    proxy_cidr_table: Arc<ProxyCidrTable>,
     #[cfg(feature = "proxy-packet")]
     proxy: Arc<CoreProxyModule<H>>,
     #[cfg(feature = "proxy-packet")]
@@ -778,23 +783,31 @@ where
             udp_hole_punch_socket_context,
             protocol.clone(),
         );
+        let proxy_cidr_table = Arc::new(ProxyCidrTable::from_snapshot(proxy_cidr_snapshot(
+            runtime_config.snapshot().as_ref(),
+        )));
         #[cfg(feature = "proxy-packet")]
-        let proxy = CoreProxyModule::new(
-            peer_manager.clone(),
-            host.clone(),
-            running_listeners.clone(),
-            runtime_config.clone(),
-            direct_options.tcp_bind.context.clone(),
-            icmp_proxy_host,
-        );
-        #[cfg(feature = "proxy-packet")]
-        let proxy_cidr_table = proxy.cidr_table();
-        #[cfg(not(feature = "proxy-packet"))]
-        let proxy_cidr_table = Arc::new(ProxyCidrTable::new());
+        let proxy = {
+            let tcp_socket_context = direct_options.tcp_bind.context.clone();
+            let udp_socket_context = direct_options.udp_bind.context.clone();
+            // Raw ICMP shares the datagram/network-layer routing context.
+            let icmp_socket_context = direct_options.udp_bind.context.clone();
+            CoreProxyModule::new(
+                peer_manager.clone(),
+                host.clone(),
+                running_listeners.clone(),
+                runtime_config.clone(),
+                proxy_cidr_table.clone(),
+                tcp_socket_context,
+                udp_socket_context,
+                icmp_socket_context,
+                icmp_proxy_host,
+            )
+        };
         let TransportProxyBuild {
             lifecycle: transport_proxy,
             attachment: transport_proxy_attachment,
-        } = transport_proxy_factory.build(proxy_cidr_table)?;
+        } = transport_proxy_factory.build(proxy_cidr_table.clone())?;
         let direct = DirectConnectorManager::new_with_running_listeners(
             peer_manager.clone(),
             host.clone(),
@@ -831,6 +844,7 @@ where
                 udp_hole_punch_started: AtomicBool::new(false),
                 transport_proxy,
                 transport_proxy_started: AtomicBool::new(false),
+                proxy_cidr_table,
                 #[cfg(feature = "proxy-packet")]
                 proxy,
                 #[cfg(feature = "proxy-packet")]
@@ -1216,8 +1230,8 @@ where
         if self.cancel.is_cancelled() {
             anyhow::bail!("proxy CIDR table update cancelled");
         }
-        #[cfg(feature = "proxy-packet")]
-        self.proxy.update_cidr_table();
+        self.proxy_cidr_table
+            .update_snapshot(proxy_cidr_snapshot(self.runtime_config.snapshot().as_ref()));
         Ok(())
     }
 
@@ -1263,8 +1277,8 @@ where
             != config.peer.peer_group_memberships
             || current.peer.acl_group_declarations != config.peer.acl_group_declarations;
         self.runtime_config.replace(config);
-        #[cfg(feature = "proxy-packet")]
-        self.proxy.update_cidr_table();
+        self.proxy_cidr_table
+            .update_snapshot(proxy_cidr_snapshot(self.runtime_config.snapshot().as_ref()));
         if refresh_acl_groups {
             self.refresh_acl_groups().await;
         }

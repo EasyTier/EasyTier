@@ -1,6 +1,8 @@
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr};
 
 use parking_lot::RwLock;
+
+use crate::config::{IpPrefix, ProxyNetworkConfig};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProxyCidrRule {
@@ -11,6 +13,28 @@ pub struct ProxyCidrRule {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ProxyCidrSnapshot {
     pub rules: Vec<ProxyCidrRule>,
+}
+
+impl ProxyCidrSnapshot {
+    pub fn from_proxy_networks(networks: &[ProxyNetworkConfig]) -> Self {
+        Self {
+            rules: networks.iter().filter_map(proxy_cidr_rule).collect(),
+        }
+    }
+}
+
+fn ipv4_cidr(prefix: &IpPrefix) -> Option<cidr::Ipv4Cidr> {
+    let IpAddr::V4(address) = prefix.address else {
+        return None;
+    };
+    cidr::Ipv4Cidr::new(address, prefix.prefix_len).ok()
+}
+
+fn proxy_cidr_rule(config: &ProxyNetworkConfig) -> Option<ProxyCidrRule> {
+    Some(ProxyCidrRule {
+        cidr: ipv4_cidr(&config.real)?,
+        mapped_cidr: config.mapped.as_ref().and_then(ipv4_cidr),
+    })
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -78,6 +102,8 @@ impl ProxyCidrEntry {
 
 #[cfg(test)]
 mod tests {
+    use crate::config::{IpPrefix, ProxyNetworkConfig};
+
     use super::*;
 
     #[test]
@@ -108,6 +134,26 @@ mod tests {
         assert_eq!(
             table.lookup_v4("10.10.10.42".parse().unwrap()),
             Some("127.0.0.42".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn snapshot_normalizes_proxy_network_config() {
+        let snapshot = ProxyCidrSnapshot::from_proxy_networks(&[ProxyNetworkConfig {
+            real: IpPrefix {
+                address: "192.0.2.0".parse().unwrap(),
+                prefix_len: 24,
+            },
+            mapped: Some(IpPrefix {
+                address: "198.51.100.0".parse().unwrap(),
+                prefix_len: 24,
+            }),
+        }]);
+        let table = ProxyCidrTable::from_snapshot(snapshot);
+
+        assert_eq!(
+            table.lookup_v4("198.51.100.42".parse().unwrap()),
+            Some("192.0.2.42".parse().unwrap())
         );
     }
 }

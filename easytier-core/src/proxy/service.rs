@@ -7,11 +7,11 @@ use std::{
     time::Duration,
 };
 
-use cidr::{Ipv4Cidr, Ipv4Inet};
+use cidr::Ipv4Inet;
 use tokio::sync::Mutex;
 
 use crate::{
-    config::{IpPrefix, ProxyNetworkConfig},
+    config::IpPrefix,
     connectivity::direct::DirectConnectorHost,
     hole_punch::tcp::TcpHolePunchHost,
     listener::RunningListenerProvider,
@@ -22,7 +22,7 @@ use crate::{
 };
 
 use super::{
-    cidr_table::{ProxyCidrRule, ProxyCidrSnapshot, ProxyCidrTable},
+    cidr_table::ProxyCidrTable,
     icmp_proxy_service::IcmpProxyService,
     runtime::{
         IcmpProxyHost, IcmpProxyRuntime, IcmpProxySocket, ProxyRuntimeError, ProxyRuntimeInfo,
@@ -39,6 +39,10 @@ const TCP_PROXY_PROTOCOL_LABEL: &str = "TCP";
 const UDP_PROXY_SOCKET_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 const PROXY_FRAGMENT_TIMEOUT: Duration = Duration::from_secs(10);
 
+fn udp_proxy_bind_options(context: SocketContext) -> UdpBindOptions {
+    UdpBindOptions::proxy_nat().with_context(context.with_ip_version(IpVersion::V4))
+}
+
 fn ipv4_inet(prefix: &IpPrefix) -> Option<Ipv4Inet> {
     let IpAddr::V4(address) = prefix.address else {
         return None;
@@ -49,34 +53,6 @@ fn ipv4_inet(prefix: &IpPrefix) -> Option<Ipv4Inet> {
 fn smoltcp_proxy_inet() -> Ipv4Inet {
     Ipv4Inet::new(Ipv4Addr::new(192, 88, 99, 254), 24)
         .expect("smoltcp proxy address must be a valid IPv4 interface")
-}
-
-fn ipv4_cidr(prefix: &IpPrefix) -> Option<Ipv4Cidr> {
-    let IpAddr::V4(address) = prefix.address else {
-        return None;
-    };
-    Ipv4Cidr::new(address, prefix.prefix_len).ok()
-}
-
-fn proxy_cidr_rule(config: &ProxyNetworkConfig) -> Option<ProxyCidrRule> {
-    Some(ProxyCidrRule {
-        cidr: ipv4_cidr(&config.real)?,
-        mapped_cidr: config.mapped.as_ref().and_then(ipv4_cidr),
-    })
-}
-
-fn proxy_cidr_snapshot(config: &CoreInstanceRuntimeConfig) -> ProxyCidrSnapshot {
-    ProxyCidrSnapshot {
-        rules: config
-            .peer
-            .runtime
-            .core
-            .routes
-            .proxy_networks
-            .iter()
-            .filter_map(proxy_cidr_rule)
-            .collect(),
-    }
 }
 
 fn runtime_snapshot(
@@ -270,7 +246,6 @@ where
 {
     operation: Mutex<()>,
     runtime: Arc<CoreProxyRuntime<H>>,
-    cidr_table: Arc<ProxyCidrTable>,
     tcp: Arc<CoreTcpProxy<H>>,
     icmp: Option<Arc<CoreIcmpProxy<H>>>,
     udp_runtime: Arc<CoreUdpProxyRuntime<H>>,
@@ -289,7 +264,10 @@ where
         host: Arc<H>,
         running_listeners: Arc<dyn RunningListenerProvider>,
         config: CoreRuntimeConfigStore,
-        socket_context: SocketContext,
+        cidr_table: Arc<ProxyCidrTable>,
+        tcp_socket_context: SocketContext,
+        udp_socket_context: SocketContext,
+        icmp_socket_context: SocketContext,
         icmp_host: Option<Arc<dyn IcmpProxyHost>>,
     ) -> Arc<Self> {
         let runtime = CoreProxyRuntime::new(
@@ -298,11 +276,9 @@ where
             running_listeners,
             config.clone(),
         );
-        let cidr_table = Arc::new(ProxyCidrTable::from_snapshot(proxy_cidr_snapshot(
-            config.snapshot().as_ref(),
-        )));
         let tcp_connector = Arc::new(
-            TcpSocketProxyConnector::new(host.clone()).with_socket_context(socket_context.clone()),
+            TcpSocketProxyConnector::new(host.clone())
+                .with_socket_context(tcp_socket_context.clone()),
         );
         let tcp = TcpProxyService::new_with_socket_context(
             peer_manager.clone(),
@@ -310,7 +286,7 @@ where
             host.clone(),
             tcp_connector,
             cidr_table.clone(),
-            socket_context.clone(),
+            tcp_socket_context,
         );
         let icmp = icmp_host.map(|host| {
             IcmpProxyService::new(
@@ -319,7 +295,7 @@ where
                     policy: runtime.clone(),
                     host,
                     socket: std::sync::Mutex::new(None),
-                    context: socket_context.clone().with_ip_version(IpVersion::V4),
+                    context: icmp_socket_context.with_ip_version(IpVersion::V4),
                 }),
                 cidr_table.clone(),
                 PROXY_FRAGMENT_TIMEOUT,
@@ -328,7 +304,7 @@ where
         let udp_runtime = Arc::new(UdpSocketProxyRuntime::new(
             host,
             runtime.clone(),
-            UdpBindOptions::proxy_nat().with_context(socket_context.with_ip_version(IpVersion::V4)),
+            udp_proxy_bind_options(udp_socket_context),
             UDP_PROXY_SOCKET_IDLE_TIMEOUT,
         ));
         let udp = UdpProxyService::new(
@@ -341,7 +317,6 @@ where
         Arc::new(Self {
             operation: Mutex::new(()),
             runtime,
-            cidr_table,
             tcp,
             icmp,
             udp_runtime,
@@ -350,15 +325,6 @@ where
             icmp_started: AtomicBool::new(false),
             udp_started: AtomicBool::new(false),
         })
-    }
-
-    pub(crate) fn cidr_table(&self) -> Arc<ProxyCidrTable> {
-        self.cidr_table.clone()
-    }
-
-    pub(crate) fn update_cidr_table(&self) {
-        self.cidr_table
-            .update_snapshot(proxy_cidr_snapshot(self.runtime.config.snapshot().as_ref()));
     }
 
     pub(crate) fn tcp_entry_snapshots(&self) -> Vec<TcpNatEntrySnapshot> {
@@ -503,7 +469,10 @@ mod tests {
 
     #[test]
     fn cidr_snapshot_maps_submitted_network_without_host_polling() {
-        let snapshot = proxy_cidr_snapshot(&test_config());
+        let config = test_config();
+        let snapshot = crate::proxy::cidr_table::ProxyCidrSnapshot::from_proxy_networks(
+            &config.peer.runtime.core.routes.proxy_networks,
+        );
         let table = ProxyCidrTable::from_snapshot(snapshot);
 
         assert_eq!(
@@ -524,5 +493,25 @@ mod tests {
                 &format!("{scheme}://127.0.0.1:11010").parse().unwrap()
             ));
         }
+    }
+
+    #[test]
+    fn udp_proxy_bind_options_preserve_the_datagram_context() {
+        let context = SocketContext::default()
+            .with_socket_mark(Some(73))
+            .with_netns(Some(crate::socket::NetNamespace::new("udp-proxy")));
+
+        let options = udp_proxy_bind_options(context);
+
+        assert_eq!(options.context.ip_version, IpVersion::V4);
+        assert_eq!(options.context.socket_mark, Some(73));
+        assert_eq!(
+            options.context.netns.as_ref().map(|netns| netns.token()),
+            Some("udp-proxy")
+        );
+        assert_eq!(
+            options.purpose,
+            crate::socket::udp::UdpSocketPurpose::ProxyNat
+        );
     }
 }
