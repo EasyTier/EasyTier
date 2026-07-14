@@ -205,21 +205,40 @@ impl InterfaceWorker {
     }
 }
 
-type InterfaceWorkerKey = (Option<u64>, String);
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum NetworkNamespaceId {
+    #[cfg(target_os = "linux")]
+    LinuxInode(u64),
+    #[cfg(target_os = "linux")]
+    LinuxUnshared(u32),
+    #[cfg(not(target_os = "linux"))]
+    Unsupported,
+}
+
+type InterfaceWorkerKey = (NetworkNamespaceId, String);
 
 static INTERFACE_MANAGERS: Lazy<DashMap<InterfaceWorkerKey, Weak<InterfaceWorker>>> =
     Lazy::new(DashMap::new);
 
-fn current_network_namespace_id() -> Option<u64> {
+fn current_network_namespace_id() -> NetworkNamespaceId {
     #[cfg(target_os = "linux")]
     {
-        return std::fs::metadata("/proc/thread-self/ns/net")
-            .ok()
-            .map(|metadata| metadata.ino());
+        match std::fs::metadata("/proc/thread-self/ns/net") {
+            Ok(metadata) => return NetworkNamespaceId::LinuxInode(metadata.ino()),
+            Err(error) => {
+                static NEXT_UNSHARED_ID: AtomicU32 = AtomicU32::new(0);
+                let id = NEXT_UNSHARED_ID.fetch_add(1, Ordering::Relaxed);
+                tracing::warn!(
+                    ?error,
+                    "failed to identify current network namespace; disabling FakeTCP pnet worker sharing"
+                );
+                return NetworkNamespaceId::LinuxUnshared(id);
+            }
+        }
     }
 
     #[cfg(not(target_os = "linux"))]
-    None
+    NetworkNamespaceId::Unsupported
 }
 
 fn get_or_create_worker(interface_name: &str) -> io::Result<Arc<InterfaceWorker>> {
