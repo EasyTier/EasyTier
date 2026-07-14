@@ -210,7 +210,7 @@ impl DirectConnectorHost for RuntimeConnectorHost {
     ) -> anyhow::Result<SocketAddr> {
         self.global_ctx
             .get_stun_info_collector()
-            .get_udp_port_mapping_with_socket(socket.socket())
+            .get_udp_port_mapping_with_socket(socket)
             .await
             .map_err(anyhow::Error::from)
     }

@@ -19,12 +19,13 @@ use igd_next::{
 use natpmp::{
     Protocol as NatPmpProtocol, Response as NatPmpResponse, new_tokio_natpmp, new_tokio_natpmp_with,
 };
-use tokio::{net::UdpSocket, sync::oneshot};
+use tokio::sync::oneshot;
 
 use super::{
     global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
     stun::StunInfoCollectorTrait as _,
 };
+use crate::socket::udp::RuntimeUdpSocket;
 use crate::tunnel::build_url_from_socket_addr;
 
 const UPNP_SEARCH_TIMEOUT: Duration = Duration::from_secs(1);
@@ -224,7 +225,7 @@ impl Drop for UdpPortMappingLease {
 pub async fn resolve_udp_public_addr(
     global_ctx: ArcGlobalCtx,
     local_listener: &url::Url,
-    socket: Arc<UdpSocket>,
+    socket: Arc<RuntimeUdpSocket>,
 ) -> anyhow::Result<(SocketAddr, Option<UdpPortMappingLease>)> {
     let port_mapping = match try_start_udp_port_mapping(&global_ctx, local_listener).await {
         Ok(mapping) => mapping,

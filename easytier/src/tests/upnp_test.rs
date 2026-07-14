@@ -17,7 +17,6 @@ use igd_next::{
     aio::tokio::search_gateway,
 };
 use tempfile::TempDir;
-use tokio::net::UdpSocket;
 
 use super::{create_netns, del_netns, drop_insts, get_host_veth_name, ping_test};
 use crate::{
@@ -316,8 +315,9 @@ impl StunInfoCollectorTrait for GatewayBackedStunCollector {
 
     async fn get_udp_port_mapping_with_socket(
         &self,
-        udp: Arc<UdpSocket>,
+        udp: Arc<crate::socket::udp::RuntimeUdpSocket>,
     ) -> Result<SocketAddr, Error> {
+        use easytier_core::socket::udp::VirtualUdpSocket as _;
         query_udp_mapping(
             self.netns,
             self.external_ip,

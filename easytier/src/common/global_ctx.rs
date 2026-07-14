@@ -11,13 +11,17 @@ pub use easytier_core::peers::context::{TrustedKeyMap, TrustedKeyMetadata, Trust
 use easytier_core::peers::encrypt::{derive_key_128, derive_key_256};
 use easytier_core::peers::foreign_network_manager::check_network_in_relay_whitelist;
 use easytier_core::peers::public_ipv6::PublicIpv6Runtime;
+use easytier_core::socket::{NetNamespace, SocketContext};
 
 use super::{
     PeerId,
     config::{ConfigLoader, Flags},
     netns::NetNS,
     network::IPCollector,
-    stun::{StunInfoCollector, StunInfoCollectorTrait},
+    stun::{
+        StunInfoCollectorTrait, default_udp_stun_servers, default_udp_v6_stun_servers,
+        runtime_stun_info_collector,
+    },
 };
 use crate::{
     common::{
@@ -277,25 +281,27 @@ impl GlobalCtx {
         let network = config_fs.get_network_identity();
         let net_ns = NetNS::new(config_fs.get_netns());
         let hostname = config_fs.get_hostname();
+        let flags = config_fs.get_flags();
 
         let (event_bus, _) = tokio::sync::broadcast::channel(16);
-        let stun_info_collector = StunInfoCollector::new_with_default_servers();
+        let socket_context = SocketContext::default()
+            .with_socket_mark(flags.socket_mark)
+            .with_netns(net_ns.name().map(NetNamespace::new));
+        let stun_info_collector = runtime_stun_info_collector(socket_context);
 
         if let Some(stun_servers) = config_fs.get_stun_servers() {
             stun_info_collector.set_stun_servers(stun_servers);
         } else {
-            stun_info_collector.set_stun_servers(StunInfoCollector::get_default_servers());
+            stun_info_collector.set_stun_servers(default_udp_stun_servers());
         }
 
         if let Some(stun_servers) = config_fs.get_stun_servers_v6() {
             stun_info_collector.set_stun_servers_v6(stun_servers);
         } else {
-            stun_info_collector.set_stun_servers_v6(StunInfoCollector::get_default_servers_v6());
+            stun_info_collector.set_stun_servers_v6(default_udp_v6_stun_servers());
         }
 
         let stun_info_collector = Arc::new(stun_info_collector);
-
-        let flags = config_fs.get_flags();
 
         let base_feature_flags = PeerFeatureFlag::default();
         let feature_flags = Self::derive_feature_flags(&flags, base_feature_flags);

@@ -66,8 +66,9 @@ mod tests {
 
         async fn get_udp_port_mapping_with_socket(
             &self,
-            udp: std::sync::Arc<tokio::net::UdpSocket>,
+            udp: std::sync::Arc<crate::socket::udp::RuntimeUdpSocket>,
         ) -> Result<SocketAddr, Error> {
+            use easytier_core::socket::udp::VirtualUdpSocket as _;
             self.get_udp_port_mapping(udp.local_addr()?.port()).await
         }
 

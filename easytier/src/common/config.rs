@@ -16,7 +16,7 @@ use strum::{Display, EnumString, VariantArray};
 use tokio::io::AsyncReadExt as _;
 
 use crate::{
-    common::stun::StunInfoCollector,
+    common::stun::{default_udp_stun_servers, default_udp_v6_stun_servers},
     instance::dns_server::DEFAULT_ET_DNS_ZONE,
     proto::{
         acl::Acl,
@@ -1155,10 +1155,10 @@ impl ConfigLoader for TomlConfigLoader {
         let mut config = self.config.lock().unwrap().clone();
         Self::normalize_config_source(&mut config);
         config.flags = Some(flags_diff_from_default(&self.get_flags()));
-        if config.stun_servers == Some(StunInfoCollector::get_default_servers()) {
+        if config.stun_servers == Some(default_udp_stun_servers()) {
             config.stun_servers = None;
         }
-        if config.stun_servers_v6 == Some(StunInfoCollector::get_default_servers_v6()) {
+        if config.stun_servers_v6 == Some(default_udp_v6_stun_servers()) {
             config.stun_servers_v6 = None;
         }
         toml::to_string_pretty(&config).unwrap()

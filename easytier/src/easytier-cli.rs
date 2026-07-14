@@ -31,7 +31,7 @@ use tokio::time::timeout;
 use easytier::{
     common::{
         constants::EASYTIER_VERSION,
-        stun::{StunInfoCollector, StunInfoCollectorTrait},
+        stun::{StunInfoCollectorTrait, runtime_stun_info_collector},
     },
     peers,
     proto::{
@@ -2941,7 +2941,7 @@ async fn main() -> Result<(), Error> {
         },
         SubCommand::Stun => {
             timeout(Duration::from_secs(25), async move {
-                let collector = StunInfoCollector::new_with_default_servers();
+                let collector = runtime_stun_info_collector(Default::default());
                 loop {
                     let ret = collector.get_stun_info();
                     if ret.udp_nat_type != NatType::Unknown as i32

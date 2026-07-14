@@ -99,7 +99,7 @@ impl RuntimeUdpHolePunchRuntime {
         let listen_url: url::Url = format!("udp://0.0.0.0:{local_port}").parse().unwrap();
 
         let (mapped_addr, port_mapping_lease) = if with_mapped_addr {
-            upnp::resolve_udp_public_addr(self.global_ctx.clone(), &listen_url, socket.socket())
+            upnp::resolve_udp_public_addr(self.global_ctx.clone(), &listen_url, socket.clone())
                 .await?
         } else {
             (
@@ -179,7 +179,7 @@ impl core_udp_hole_punch::UdpHolePunchRuntime for RuntimeUdpHolePunchRuntime {
         let local_port = socket.socket().local_addr()?.port();
         let listen_url: url::Url = format!("udp://0.0.0.0:{local_port}").parse().unwrap();
         let (mapped_addr, port_mapping_lease) =
-            upnp::resolve_udp_public_addr(self.global_ctx.clone(), &listen_url, socket.socket())
+            upnp::resolve_udp_public_addr(self.global_ctx.clone(), &listen_url, socket.clone())
                 .await?;
         let port_mapping_lease = port_mapping_lease.map(|lease| {
             Box::new(RuntimeUdpPortMappingLease {
