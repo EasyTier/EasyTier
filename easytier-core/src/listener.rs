@@ -190,17 +190,8 @@ impl ListenerEventSink for NoopListenerEventSink {
     fn emit(&self, _event: ListenerEvent) {}
 }
 
-pub trait ListenerCreator<Accepted>:
-    Fn() -> Box<dyn SocketListener<Accepted = Accepted>> + Send + Sync
-{
-}
-
-impl<Accepted, T> ListenerCreator<Accepted> for T where
-    T: Fn() -> Box<dyn SocketListener<Accepted = Accepted>> + Send + Sync
-{
-}
-
-type ListenerCreatorArc<Accepted> = Arc<Box<dyn ListenerCreator<Accepted>>>;
+type ListenerCreatorArc<Accepted> =
+    Arc<dyn Fn() -> Box<dyn SocketListener<Accepted = Accepted>> + Send + Sync>;
 
 #[derive(Clone)]
 pub struct ListenerFactory<Accepted> {
@@ -211,10 +202,10 @@ pub struct ListenerFactory<Accepted> {
 impl<Accepted> ListenerFactory<Accepted> {
     pub fn new<C>(creator: C, must_succeed: bool) -> Self
     where
-        C: ListenerCreator<Accepted> + 'static,
+        C: Fn() -> Box<dyn SocketListener<Accepted = Accepted>> + Send + Sync + 'static,
     {
         Self {
-            creator: Arc::new(Box::new(creator)),
+            creator: Arc::new(creator),
             must_succeed,
         }
     }
@@ -316,7 +307,7 @@ where
 
     pub fn add_listener<C>(&mut self, creator: C, must_succeed: bool)
     where
-        C: ListenerCreator<Accepted> + 'static,
+        C: Fn() -> Box<dyn SocketListener<Accepted = Accepted>> + Send + Sync + 'static,
     {
         self.factories
             .push(ListenerFactory::new(creator, must_succeed));
