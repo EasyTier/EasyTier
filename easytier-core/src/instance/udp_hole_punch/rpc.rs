@@ -61,6 +61,13 @@ fn select_listener_request_to_rpc(request: SelectPunchListener) -> SelectPunchLi
     }
 }
 
+fn select_listener_request_from_rpc(input: SelectPunchListenerRequest) -> SelectPunchListener {
+    SelectPunchListener {
+        force_new: input.force_new,
+        prefer_port_mapping: input.prefer_port_mapping,
+    }
+}
+
 fn select_listener_response_from_rpc(
     response: SelectPunchListenerResponse,
 ) -> Result<CoreSelectPunchListenerResponse, UdpHolePunchSignalError> {
@@ -461,10 +468,7 @@ where
     ) -> rpc_types::error::Result<SelectPunchListenerResponse> {
         let response = UdpHolePunchInbound::select_punch_listener(
             self,
-            SelectPunchListener {
-                force_new: input.force_new,
-                prefer_port_mapping: input.prefer_port_mapping,
-            },
+            select_listener_request_from_rpc(input),
         )
         .await
         .map_err(signal_error_to_rpc_error)?;
@@ -546,22 +550,32 @@ mod tests {
 
     #[test]
     fn select_listener_dto_preserves_fields_and_requires_response_addr() {
-        let request = select_listener_request_to_rpc(SelectPunchListener {
+        let domain_request = SelectPunchListener {
             force_new: true,
             prefer_port_mapping: false,
-        });
-        assert!(request.force_new);
-        assert!(!request.prefer_port_mapping);
+        };
+        let rpc_request = select_listener_request_to_rpc(domain_request.clone());
+        assert!(rpc_request.force_new);
+        assert!(!rpc_request.prefer_port_mapping);
+        assert_eq!(
+            select_listener_request_from_rpc(SelectPunchListenerRequest {
+                force_new: true,
+                prefer_port_mapping: false,
+            }),
+            domain_request
+        );
 
         let mapped_addr: SocketAddr = "198.51.100.1:31001".parse().unwrap();
         let core_response = CoreSelectPunchListenerResponse {
             listener_mapped_addr: mapped_addr,
         };
+        let rpc_response = select_listener_response_to_rpc(core_response.clone());
         assert_eq!(
-            select_listener_response_from_rpc(select_listener_response_to_rpc(
-                core_response.clone()
-            ))
-            .unwrap(),
+            SocketAddr::from(rpc_response.listener_mapped_addr.clone().unwrap()),
+            mapped_addr
+        );
+        assert_eq!(
+            select_listener_response_from_rpc(rpc_response).unwrap(),
             core_response
         );
 
@@ -584,10 +598,20 @@ mod tests {
             packet_interval_ms: 500,
         };
 
+        let rpc = cone_request_to_rpc(request.clone());
         assert_eq!(
-            cone_request_from_rpc(cone_request_to_rpc(request.clone())).unwrap(),
-            request
+            SocketAddr::from(rpc.listener_mapped_addr.clone().unwrap()),
+            request.listener_mapped_addr
         );
+        assert_eq!(
+            SocketAddr::from(rpc.dest_addr.clone().unwrap()),
+            request.dest_addr
+        );
+        assert_eq!(rpc.transaction_id, 12);
+        assert_eq!(rpc.packet_count_per_batch, 3);
+        assert_eq!(rpc.packet_batch_count, 4);
+        assert_eq!(rpc.packet_interval_ms, 500);
+        assert_eq!(cone_request_from_rpc(rpc).unwrap(), request);
     }
 
     #[test]
@@ -600,11 +624,23 @@ mod tests {
             round: 19,
         };
 
+        let rpc = hard_symmetric_request_to_rpc(request.clone());
         assert_eq!(
-            hard_symmetric_request_from_rpc(hard_symmetric_request_to_rpc(request.clone()))
-                .unwrap(),
-            request
+            SocketAddr::from(rpc.listener_mapped_addr.clone().unwrap()),
+            request.listener_mapped_addr
         );
+        assert_eq!(
+            rpc.public_ips
+                .iter()
+                .cloned()
+                .map(Ipv4Addr::from)
+                .collect::<Vec<_>>(),
+            request.public_ips
+        );
+        assert_eq!(rpc.transaction_id, 13);
+        assert_eq!(rpc.port_index, 17);
+        assert_eq!(rpc.round, 19);
+        assert_eq!(hard_symmetric_request_from_rpc(rpc).unwrap(), request);
     }
 
     #[test]
@@ -618,11 +654,24 @@ mod tests {
             is_incremental: true,
         };
 
+        let rpc = easy_symmetric_request_to_rpc(request.clone());
         assert_eq!(
-            easy_symmetric_request_from_rpc(easy_symmetric_request_to_rpc(request.clone()))
-                .unwrap(),
-            request
+            SocketAddr::from(rpc.listener_mapped_addr.clone().unwrap()),
+            request.listener_mapped_addr
         );
+        assert_eq!(
+            rpc.public_ips
+                .iter()
+                .cloned()
+                .map(Ipv4Addr::from)
+                .collect::<Vec<_>>(),
+            request.public_ips
+        );
+        assert_eq!(rpc.transaction_id, 15);
+        assert_eq!(rpc.base_port_num, 33000);
+        assert_eq!(rpc.max_port_num, 51);
+        assert!(rpc.is_incremental);
+        assert_eq!(easy_symmetric_request_from_rpc(rpc).unwrap(), request);
     }
 
     #[test]
@@ -635,13 +684,16 @@ mod tests {
             wait_time_ms: 2500,
         };
 
+        let rpc = both_easy_symmetric_request_to_rpc(request.clone());
+        assert_eq!(rpc.udp_socket_count, 25);
         assert_eq!(
-            both_easy_symmetric_request_from_rpc(both_easy_symmetric_request_to_rpc(
-                request.clone()
-            ))
-            .unwrap(),
-            request
+            Ipv4Addr::from(rpc.public_ip.clone().unwrap()),
+            request.public_ip
         );
+        assert_eq!(rpc.transaction_id, 16);
+        assert_eq!(rpc.dst_port_num, 34000);
+        assert_eq!(rpc.wait_time_ms, 2500);
+        assert_eq!(both_easy_symmetric_request_from_rpc(rpc).unwrap(), request);
     }
 
     #[test]
@@ -649,19 +701,22 @@ mod tests {
         let hard_response = CoreSendPunchPacketHardSymResponse {
             next_port_index: 41,
         };
-        assert_eq!(
-            hard_symmetric_response_from_rpc(hard_symmetric_response_to_rpc(hard_response.clone())),
-            hard_response
-        );
+        let hard_rpc = hard_symmetric_response_to_rpc(hard_response.clone());
+        assert_eq!(hard_rpc.next_port_index, 41);
+        assert_eq!(hard_symmetric_response_from_rpc(hard_rpc), hard_response);
 
         let both_response = CoreSendPunchPacketBothEasySymResponse {
             is_busy: true,
             base_mapped_addr: Some("198.51.100.8:31008".parse().unwrap()),
         };
+        let both_rpc = both_easy_symmetric_response_to_rpc(both_response.clone());
+        assert!(both_rpc.is_busy);
         assert_eq!(
-            both_easy_symmetric_response_from_rpc(both_easy_symmetric_response_to_rpc(
-                both_response.clone()
-            )),
+            SocketAddr::from(both_rpc.base_mapped_addr.clone().unwrap()),
+            both_response.base_mapped_addr.unwrap()
+        );
+        assert_eq!(
+            both_easy_symmetric_response_from_rpc(both_rpc),
             both_response
         );
     }
@@ -671,7 +726,10 @@ mod tests {
         let cone_listener_error = cone_request_from_rpc(SendPunchPacketConeRequest::default())
             .unwrap_err()
             .to_string();
-        assert!(cone_listener_error.contains("missing listener_mapped_addr"));
+        assert_eq!(
+            cone_listener_error,
+            "Rust error: send_punch_packet_for_cone request missing listener_mapped_addr"
+        );
 
         let cone_dest_error = cone_request_from_rpc(SendPunchPacketConeRequest {
             listener_mapped_addr: Some("198.51.100.7:31007".parse::<SocketAddr>().unwrap().into()),
@@ -679,25 +737,28 @@ mod tests {
         })
         .unwrap_err()
         .to_string();
-        assert!(cone_dest_error.contains("missing dest_addr"));
+        assert_eq!(
+            cone_dest_error,
+            "Rust error: send_punch_packet_for_cone request missing dest_addr"
+        );
 
-        assert!(
+        assert_eq!(
             hard_symmetric_request_from_rpc(SendPunchPacketHardSymRequest::default())
                 .unwrap_err()
-                .to_string()
-                .contains("missing listener_addr")
+                .to_string(),
+            "Rust error: try_punch_symmetric request missing listener_addr"
         );
-        assert!(
+        assert_eq!(
             easy_symmetric_request_from_rpc(SendPunchPacketEasySymRequest::default())
                 .unwrap_err()
-                .to_string()
-                .contains("missing listener_addr")
+                .to_string(),
+            "Rust error: send_punch_packet_easy_sym request missing listener_addr"
         );
-        assert!(
+        assert_eq!(
             both_easy_symmetric_request_from_rpc(SendPunchPacketBothEasySymRequest::default())
                 .unwrap_err()
-                .to_string()
-                .contains("public_ip is required")
+                .to_string(),
+            "Rust error: public_ip is required"
         );
     }
 
@@ -736,15 +797,23 @@ mod tests {
             signal_error_to_rpc_error(UdpHolePunchSignalError::InvalidServiceKey),
             rpc_types::error::Error::InvalidServiceKey(_, _)
         ));
-        assert!(matches!(
-            signal_error_to_rpc_error(UdpHolePunchSignalError::RemoteRejected(
-                "rejected".to_owned()
-            )),
-            rpc_types::error::Error::ExecutionError(_)
-        ));
-        assert!(matches!(
-            signal_error_to_rpc_error(UdpHolePunchSignalError::Transport("closed".to_owned())),
-            rpc_types::error::Error::ExecutionError(_)
-        ));
+        for (domain_error, expected_message) in [
+            (UdpHolePunchSignalError::Timeout, "timeout"),
+            (
+                UdpHolePunchSignalError::RemoteRejected("rejected".to_owned()),
+                "rejected",
+            ),
+            (
+                UdpHolePunchSignalError::Transport("closed".to_owned()),
+                "closed",
+            ),
+        ] {
+            let rpc_types::error::Error::ExecutionError(error) =
+                signal_error_to_rpc_error(domain_error)
+            else {
+                panic!("domain error should map to execution error");
+            };
+            assert_eq!(error.to_string(), expected_message);
+        }
     }
 }
