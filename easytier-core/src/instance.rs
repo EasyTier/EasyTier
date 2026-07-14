@@ -281,6 +281,16 @@ fn proxy_cidr_snapshot(config: &CoreInstanceRuntimeConfig) -> ProxyCidrSnapshot 
     ProxyCidrSnapshot::from_proxy_networks(&config.peer.runtime.core.routes.proxy_networks)
 }
 
+fn retain_core_peer_identity(
+    peer: &mut Arc<PeerRuntimeSnapshot>,
+    peer_id: crate::config::PeerId,
+    instance_id: Option<[u8; 16]>,
+) {
+    let peer = Arc::make_mut(peer);
+    peer.runtime.core.node.peer_id = Some(peer_id);
+    peer.runtime.core.node.instance_id = instance_id;
+}
+
 pub struct CoreInstanceAdapters<H>
 where
     H: DirectConnectorHost + TcpHolePunchHost,
@@ -1471,10 +1481,15 @@ where
     /// no effect until submitted through this method.
     pub async fn update_runtime_config(
         &self,
-        config: CoreInstanceRuntimeConfig,
+        mut config: CoreInstanceRuntimeConfig,
     ) -> anyhow::Result<()> {
         let _operation = self.operation.lock().await;
         let current = self.runtime_config.snapshot();
+        retain_core_peer_identity(
+            &mut config.peer,
+            self.peer_id(),
+            current.peer.runtime.core.node.instance_id,
+        );
         let refresh_acl_groups = current.peer.peer_group_memberships
             != config.peer.peer_group_memberships
             || current.peer.acl_group_declarations != config.peer.acl_group_declarations;
@@ -1648,6 +1663,16 @@ where
 
     pub fn runtime_config_snapshot(&self) -> CoreRuntimeConfig {
         self.runtime_config.snapshot().services.clone()
+    }
+
+    pub fn update_peer_runtime_snapshot(&self, mut snapshot: Arc<PeerRuntimeSnapshot>) {
+        let current = self.runtime_config.snapshot();
+        retain_core_peer_identity(
+            &mut snapshot,
+            self.peer_id(),
+            current.peer.runtime.core.node.instance_id,
+        );
+        self.runtime_config.update_peer(snapshot);
     }
 
     pub fn proxy_is_started(&self) -> bool {
@@ -1869,6 +1894,22 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
+
+    #[test]
+    fn runtime_updates_retain_core_owned_peer_identity() {
+        let mut snapshot = Arc::new(PeerRuntimeSnapshot::default());
+        Arc::make_mut(&mut snapshot).runtime.core.node.peer_id = Some(17);
+        Arc::make_mut(&mut snapshot).runtime.core.node.instance_id = Some([1; 16]);
+        let submitted = snapshot.clone();
+
+        retain_core_peer_identity(&mut snapshot, 23, Some([2; 16]));
+
+        assert_eq!(snapshot.runtime.core.node.peer_id, Some(23));
+        assert_eq!(snapshot.runtime.core.node.instance_id, Some([2; 16]));
+        assert_eq!(submitted.runtime.core.node.peer_id, Some(17));
+        assert_eq!(submitted.runtime.core.node.instance_id, Some([1; 16]));
+    }
+
     #[test]
     fn portable_instance_config_round_trips_as_normalized_json() {
         let mut core = crate::config::CoreConfig::default();
