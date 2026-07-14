@@ -404,9 +404,6 @@ impl MagicDnsServerInstance {
             .register(MagicDnsServerRpcServer::new_arc(data.clone()), "");
         rpc_server.set_hook(data.clone());
 
-        let packet_filter = core_instance
-            .register_magic_dns_resolver(fake_ip, data.clone())
-            .await;
         // Use configured tld_dns_zone or fall back to DEFAULT_ET_DNS_ZONE if empty
         let flags = global_ctx.config.get_flags();
         let tld_dns_zone_clone = flags.tld_dns_zone.clone();
@@ -419,6 +416,13 @@ impl MagicDnsServerInstance {
         tokio::task::spawn_blocking(move || data_clone.do_system_config(&tld_dns_zone_clone))
             .await
             .context("Failed to configure system")??;
+
+        // Install the resolver only after all fallible initialization has
+        // completed, so construction failure cannot leave a managed pipeline
+        // registration that never reaches async cleanup.
+        let packet_filter = core_instance
+            .register_magic_dns_resolver(fake_ip, data.clone())
+            .await;
 
         Ok(Self {
             rpc_server,

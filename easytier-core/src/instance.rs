@@ -404,6 +404,7 @@ pub struct ListenerServiceGroup {
 pub struct MagicDnsResolverRegistration {
     peer_manager: Weak<PeerManagerCore>,
     pipeline: PipelineRegistrationGuard,
+    runtime: tokio::runtime::Handle,
 }
 
 #[cfg(feature = "proxy-packet")]
@@ -422,6 +423,15 @@ impl MagicDnsResolverRegistration {
 impl Drop for MagicDnsResolverRegistration {
     fn drop(&mut self) {
         self.pipeline.close();
+        let Some(peer_manager) = self.peer_manager.upgrade() else {
+            return;
+        };
+        let pipeline = self.pipeline.clone();
+        self.runtime.spawn(async move {
+            peer_manager
+                .remove_managed_nic_packet_process_pipeline(&pipeline)
+                .await;
+        });
     }
 }
 
@@ -1779,6 +1789,7 @@ where
         MagicDnsResolverRegistration {
             peer_manager: Arc::downgrade(&self.peer_manager),
             pipeline,
+            runtime: tokio::runtime::Handle::current(),
         }
     }
 
