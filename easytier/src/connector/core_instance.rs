@@ -28,9 +28,9 @@ use crate::{
     common::{
         acl_processor::runtime_acl_config,
         config::ConfigLoader as _,
-        dns::RuntimeDnsResolver,
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
     },
+    host_runtime::native_host_runtime,
     instance::listeners::{
         RuntimeListenerService, runtime_accepted_transport_handler, runtime_listener_event_sink,
         runtime_listener_plan, runtime_transport_listener_configs,
@@ -181,7 +181,7 @@ pub(crate) fn runtime_core_instance_adapters_with_ring_registry(
     ring_registry: Arc<RingTunnelRegistry>,
 ) -> CoreInstanceAdapters<RuntimeConnectorHost> {
     let host = Arc::new(RuntimeConnectorHost::new(global_ctx.clone()));
-    let runtime_dns = Arc::new(RuntimeDnsResolver::new());
+    let runtime_dns = native_host_runtime();
     let dns: Arc<dyn DnsResolver> = runtime_dns.clone();
     let dns_records: Arc<dyn DnsRecordResolver> = runtime_dns;
     CoreInstanceAdapters {

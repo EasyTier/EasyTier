@@ -22,6 +22,8 @@ use easytier_core::{
 use tokio::sync::Mutex;
 
 #[cfg(test)]
+use crate::host_runtime::native_host_runtime;
+#[cfg(test)]
 use easytier_core::tunnel::ring::RingTunnelRegistry;
 
 use crate::{
@@ -511,7 +513,7 @@ impl ListenerManager<PeerManagerCore> {
                 Arc::new(crate::connector::runtime::RuntimeConnectorHost::new(
                     global_ctx.clone(),
                 )),
-                Arc::new(crate::common::dns::RuntimeDnsResolver::new()),
+                native_host_runtime(),
                 ring_registry,
                 configs,
                 handler.clone(),

@@ -15,15 +15,12 @@ use easytier_core::{
 use tokio::task::JoinSet;
 
 use crate::{
-    common::{dns::RuntimeDnsResolver, join_joinset_background},
+    common::join_joinset_background,
+    host_runtime::{NativeHostRuntime, native_host_runtime},
     proto::{
         common::TunnelInfo,
         rpc_impl::bidirect::BidirectRpcManager,
         rpc_types::{__rt::RpcClientFactory, error::Error},
-    },
-    socket::{
-        tcp::{RuntimeTcpListenerFactory, RuntimeTcpSocketFactory},
-        udp::RuntimeUdpSocketFactory,
     },
     tunnel::TunnelUrl,
 };
@@ -45,16 +42,12 @@ pub trait RpcServerHook: Send + Sync {
 struct DefaultHook;
 impl RpcServerHook for DefaultHook {}
 
-pub type RuntimeRpcDialer = TcpTunnelDialer<RuntimeTcpSocketFactory>;
-pub type RuntimeRpcListener = TcpTunnelListener<RuntimeTcpListenerFactory>;
+pub type RuntimeRpcDialer = TcpTunnelDialer<NativeHostRuntime>;
+pub type RuntimeRpcListener = TcpTunnelListener<NativeHostRuntime>;
 pub type RuntimeRpcClient = StandAloneClient<RuntimeRpcDialer>;
 
 pub fn runtime_rpc_dialer(remote_url: url::Url) -> RuntimeRpcDialer {
-    TcpTunnelDialer::new(
-        remote_url,
-        Arc::new(RuntimeTcpSocketFactory::new()),
-        Arc::new(RuntimeDnsResolver::new()),
-    )
+    TcpTunnelDialer::new(remote_url, native_host_runtime(), native_host_runtime())
 }
 
 pub fn runtime_rpc_client(remote_url: url::Url) -> RuntimeRpcClient {
@@ -62,15 +55,11 @@ pub fn runtime_rpc_client(remote_url: url::Url) -> RuntimeRpcClient {
 }
 
 pub fn runtime_rpc_listener(local_addr: std::net::SocketAddr) -> RuntimeRpcListener {
-    TcpTunnelListener::new(local_addr, Arc::new(RuntimeTcpListenerFactory::new()))
+    TcpTunnelListener::new(local_addr, native_host_runtime())
 }
 
 pub fn runtime_udp_tunnel_dialer(remote_url: url::Url) -> impl TunnelDialer {
-    UdpTunnelDialer::new(
-        remote_url,
-        Arc::new(RuntimeUdpSocketFactory::new()),
-        Arc::new(RuntimeDnsResolver::new()),
-    )
+    UdpTunnelDialer::new(remote_url, native_host_runtime(), native_host_runtime())
 }
 
 pub fn runtime_udp_tunnel_listener(
@@ -83,7 +72,7 @@ pub fn runtime_udp_tunnel_listener(
     UdpTunnelListener::new_with_request(
         local_url,
         UdpSessionListenRequest::new(bind),
-        Arc::new(RuntimeUdpSocketFactory::new()),
+        native_host_runtime(),
     )
 }
 

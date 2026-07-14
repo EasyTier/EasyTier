@@ -2,10 +2,10 @@ use crate::{
     common::{
         PeerId,
         config::{ConfigLoader, TomlConfigLoader},
-        dns::RuntimeDnsResolver,
         global_ctx::ArcGlobalCtx,
     },
     connector::core_instance::runtime_socket_context,
+    host_runtime::native_host_runtime,
     proto::api::instance,
     tunnel::packet_def::compressor_algo_from_pb,
 };
@@ -117,7 +117,7 @@ impl PeerManager {
             data_compress_algo,
             exit_nodes,
             Arc::new(
-                DnsAddressResolver::new(Arc::new(RuntimeDnsResolver::new()))
+                DnsAddressResolver::new(native_host_runtime())
                     .with_context(runtime_socket_context(&global_ctx)),
             ),
             TomlConfigLoader::default().get_flags(),

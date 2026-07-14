@@ -19,19 +19,17 @@ use tokio::net::UdpSocket;
 
 use crate::{
     common::netns::NetNS,
+    host_runtime::{NativeHostRuntime, native_host_runtime},
     tunnel::common::{BindDev, bind},
 };
 
 use super::udp_src;
 
-pub(crate) type RuntimeUdpSessionLayer = UdpSessionLayer<
-    RuntimeUdpSocket,
-    RuntimeUdpSessionControlHandler,
-    RuntimeUdpSessionControlHandler,
->;
+pub(crate) type RuntimeUdpSessionLayer =
+    UdpSessionLayer<RuntimeUdpSocket, NativeHostRuntime, NativeHostRuntime>;
 
 pub(crate) type RuntimeUdpSessionSocketListener =
-    UdpSessionSocketListener<RuntimeUdpSocketFactory, RuntimeUdpSocketFactory>;
+    UdpSessionSocketListener<NativeHostRuntime, NativeHostRuntime>;
 
 pub(crate) fn new_runtime_udp_session_listener(
     url: url::Url,
@@ -40,11 +38,11 @@ pub(crate) fn new_runtime_udp_session_listener(
     net_ns: NetNS,
 ) -> RuntimeUdpSessionSocketListener {
     request.bind.context.netns = net_ns.name().map(NetNamespace::new);
-    let factory = Arc::new(RuntimeUdpSocketFactory::new());
-    UdpSessionSocketListener::new_with_request(url, request, accept_kind, factory.clone(), factory)
+    let runtime = native_host_runtime();
+    UdpSessionSocketListener::new_with_request(url, request, accept_kind, runtime.clone(), runtime)
 }
 
-pub(crate) struct RuntimeUdpSocket {
+pub struct RuntimeUdpSocket {
     socket: Arc<UdpSocket>,
     context: SocketContext,
     udp_session_layer: StdMutex<Option<Weak<RuntimeUdpSessionLayer>>>,
@@ -76,12 +74,12 @@ impl RuntimeUdpSocket {
             return layer;
         }
 
-        let control_handler = Arc::new(RuntimeUdpSessionControlHandler);
+        let runtime = native_host_runtime();
         let layer = Arc::new(
             UdpSessionLayer::new_with_control_handler_and_stun_responder(
                 self.clone(),
-                control_handler.clone(),
-                control_handler,
+                runtime.clone(),
+                runtime,
             ),
         );
         *weak_layer = Some(Arc::downgrade(&layer));

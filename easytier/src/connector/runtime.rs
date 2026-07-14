@@ -14,8 +14,7 @@ use easytier_core::{
     proto::common::NatType,
     socket::{
         tcp::{
-            TcpConnectOptions, TcpListenOptions, TcpSocketPurpose, VirtualTcpListenerFactory,
-            VirtualTcpSocketFactory,
+            TcpConnectOptions, TcpListenOptions, VirtualTcpListenerFactory, VirtualTcpSocketFactory,
         },
         udp::{
             PreferredIpv6Source, UdpBindOptions, UdpSessionControlHandler, VirtualUdpSocketFactory,
@@ -25,25 +24,24 @@ use easytier_core::{
 
 use crate::{
     common::{global_ctx::ArcGlobalCtx, network::IPCollector, stun::StunInfoCollectorTrait},
+    host_runtime::{NativeHostRuntime, native_host_runtime},
     proto::peer_rpc::GetIpListResponse,
     socket::{
-        tcp::{self, RuntimeTcpListener, RuntimeTcpListenerFactory, RuntimeTcpSocket},
-        udp::{RuntimeUdpSessionControlHandler, RuntimeUdpSocket, RuntimeUdpSocketFactory},
+        tcp::{RuntimeTcpListener, RuntimeTcpSocket},
+        udp::RuntimeUdpSocket,
     },
 };
 
 pub(crate) struct RuntimeConnectorHost {
     global_ctx: ArcGlobalCtx,
-    tcp_listener_factory: RuntimeTcpListenerFactory,
-    udp_socket_factory: RuntimeUdpSocketFactory,
+    runtime: Arc<NativeHostRuntime>,
 }
 
 impl RuntimeConnectorHost {
     pub(crate) fn new(global_ctx: ArcGlobalCtx) -> Self {
         Self {
-            tcp_listener_factory: RuntimeTcpListenerFactory::new(),
-            udp_socket_factory: RuntimeUdpSocketFactory::new(),
             global_ctx,
+            runtime: native_host_runtime(),
         }
     }
 }
@@ -74,7 +72,7 @@ impl VirtualTcpListenerFactory for RuntimeConnectorHost {
     type Listener = RuntimeTcpListener;
 
     async fn bind_tcp(&self, options: TcpListenOptions) -> anyhow::Result<Arc<Self::Listener>> {
-        self.tcp_listener_factory.bind_tcp(options).await
+        self.runtime.bind_tcp(options).await
     }
 }
 
@@ -83,25 +81,7 @@ impl VirtualTcpSocketFactory for RuntimeConnectorHost {
     type Socket = RuntimeTcpSocket;
 
     async fn connect_tcp(&self, options: TcpConnectOptions) -> anyhow::Result<Self::Socket> {
-        #[cfg(feature = "faketcp")]
-        if options.purpose == TcpSocketPurpose::FakeTcp {
-            let remote_addr = options.remote_addr;
-            let socket_mark = options.bind.context.socket_mark;
-            let net_ns = crate::common::netns::NetNS::from_socket_context(&options.bind.context);
-            let socket = net_ns
-                .run_async(|| async move {
-                    crate::tunnel::fake_tcp::connect_socket(remote_addr, socket_mark).await
-                })
-                .await?;
-            return Ok(RuntimeTcpSocket::from_fake_tcp(socket));
-        }
-
-        #[cfg(not(feature = "faketcp"))]
-        if options.purpose == TcpSocketPurpose::FakeTcp {
-            anyhow::bail!("FakeTCP socket support is disabled")
-        }
-
-        tcp::connect_tcp(options).await.map_err(anyhow::Error::from)
+        self.runtime.connect_tcp(options).await
     }
 }
 
@@ -110,10 +90,7 @@ impl VirtualUdpSocketFactory for RuntimeConnectorHost {
     type Socket = RuntimeUdpSocket;
 
     async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
-        let socket = self.udp_socket_factory.bind_udp(options).await?;
-        #[cfg(target_os = "windows")]
-        crate::arch::windows::disable_connection_reset(socket.socket().as_ref())?;
-        Ok(socket)
+        self.runtime.bind_udp(options).await
     }
 }
 
@@ -124,9 +101,7 @@ impl UdpSessionControlHandler<RuntimeUdpSocket> for RuntimeConnectorHost {
         socket: Arc<RuntimeUdpSocket>,
         dst_addr: SocketAddrV4,
     ) -> std::io::Result<usize> {
-        RuntimeUdpSessionControlHandler
-            .send_v4_hole_punch(socket, dst_addr)
-            .await
+        self.runtime.send_v4_hole_punch(socket, dst_addr).await
     }
 
     async fn send_v6_hole_punch(
@@ -135,7 +110,7 @@ impl UdpSessionControlHandler<RuntimeUdpSocket> for RuntimeConnectorHost {
         dst_addr: SocketAddrV6,
         preferred_src: Option<PreferredIpv6Source>,
     ) -> std::io::Result<usize> {
-        RuntimeUdpSessionControlHandler
+        self.runtime
             .send_v6_hole_punch(socket, dst_addr, preferred_src)
             .await
     }

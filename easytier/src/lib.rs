@@ -8,10 +8,13 @@ use clap_complete::{Generator, Shell};
 // Re-export `Instant` at the crate root so public APIs that expose it
 // (e.g. `Route::get_peer_info_last_update_time`) reference a deliberate
 // public type rather than leaking an inaccessible one.
+pub use host_runtime::NativeHostRuntime;
 pub use quanta::Instant;
+pub use socket::udp::RuntimeUdpSocket;
 
 mod arch;
 mod gateway;
+mod host_runtime;
 pub mod instance;
 mod peer_center;
 mod vpn_portal;

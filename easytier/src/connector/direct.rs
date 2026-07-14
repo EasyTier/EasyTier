@@ -6,7 +6,7 @@ use easytier_core::{
 };
 
 use crate::{
-    common::{dns::RuntimeDnsResolver, global_ctx::ArcGlobalCtx},
+    common::global_ctx::ArcGlobalCtx, host_runtime::native_host_runtime,
     peers::peer_manager::PeerManager,
 };
 
@@ -26,7 +26,7 @@ pub(crate) fn runtime_direct_connector_manager(
     CoreDirectConnectorManager::new(
         peer_manager.core(),
         Arc::new(RuntimeConnectorHost::new(global_ctx.clone())),
-        Arc::new(RuntimeDnsResolver::new()) as Arc<dyn DnsResolver>,
+        native_host_runtime() as Arc<dyn DnsResolver>,
         runtime_client_protocol_upgrader(global_ctx),
         options,
     )

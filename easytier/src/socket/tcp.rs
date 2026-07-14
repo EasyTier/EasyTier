@@ -2,13 +2,12 @@ use std::{
     io,
     net::{IpAddr, SocketAddr},
     pin::Pin,
-    sync::Arc,
     task::{Context, Poll},
 };
 
 use easytier_core::socket::tcp::{
     TcpBindOptions, TcpConnectOptions, TcpListenOptions, TcpListenPurpose, TcpSocketPurpose,
-    VirtualTcpListener, VirtualTcpListenerFactory, VirtualTcpSocket, VirtualTcpSocketFactory,
+    VirtualTcpListener, VirtualTcpSocket,
 };
 use socket2::{SockRef, TcpKeepalive};
 #[cfg(unix)]
@@ -179,42 +178,6 @@ impl VirtualTcpListener for RuntimeTcpListener {
             prepare_proxy_tcp_socket(&stream)?;
         }
         Ok((RuntimeTcpSocket::new(stream), addr))
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-pub struct RuntimeTcpListenerFactory;
-
-#[derive(Debug, Clone, Copy, Default)]
-pub struct RuntimeTcpSocketFactory;
-
-impl RuntimeTcpSocketFactory {
-    pub(crate) fn new() -> Self {
-        Self
-    }
-}
-
-#[async_trait::async_trait]
-impl VirtualTcpSocketFactory for RuntimeTcpSocketFactory {
-    type Socket = RuntimeTcpSocket;
-
-    async fn connect_tcp(&self, options: TcpConnectOptions) -> anyhow::Result<Self::Socket> {
-        connect_tcp(options).await.map_err(anyhow::Error::from)
-    }
-}
-
-impl RuntimeTcpListenerFactory {
-    pub(crate) fn new() -> Self {
-        Self
-    }
-}
-
-#[async_trait::async_trait]
-impl VirtualTcpListenerFactory for RuntimeTcpListenerFactory {
-    type Listener = RuntimeTcpListener;
-
-    async fn bind_tcp(&self, options: TcpListenOptions) -> anyhow::Result<Arc<Self::Listener>> {
-        Ok(Arc::new(bind_tcp_listener(options)?))
     }
 }
 
