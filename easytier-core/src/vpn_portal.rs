@@ -105,10 +105,10 @@ impl<V> VpnPortalClientTable<V> {
         self.entries.insert(address, client);
     }
 
-    fn remove_if_endpoint(&self, address: &Ipv4Addr, endpoint_addr: &Option<url::Url>) -> bool {
+    fn remove_if_current(&self, address: &Ipv4Addr, client: &Arc<VpnPortalClient<V>>) -> bool {
         let removed = self
             .entries
-            .remove_if(address, |_, client| &client.endpoint_addr == endpoint_addr)
+            .remove_if(address, |_, current| Arc::ptr_eq(current, client))
             .is_some();
         if self.entries.capacity() - self.entries.len() > 16 {
             self.entries.shrink_to_fit();
@@ -330,6 +330,7 @@ impl VpnPortalModule {
         let mut sessions = JoinSet::new();
         let mut accepting = true;
         loop {
+            while sessions.try_join_next().is_some() {}
             if !accepting && sessions.is_empty() {
                 break;
             }
@@ -425,7 +426,7 @@ impl VpnPortalModule {
             return;
         };
         runtime.cancel.cancel();
-        runtime.tasks.shutdown().await;
+        while runtime.tasks.join_next().await.is_some() {}
         self.clients.entries.clear();
     }
 
@@ -545,10 +546,7 @@ impl<V> VpnPortalClientSession<V> {
         let Some(address) = self.registered_ip.take() else {
             return VpnPortalClientRemoval::NotRegistered;
         };
-        if self
-            .table
-            .remove_if_endpoint(&address, &self.client.endpoint_addr)
-        {
+        if self.table.remove_if_current(&address, &self.client) {
             VpnPortalClientRemoval::Removed(address)
         } else {
             VpnPortalClientRemoval::EntryChangedOrMissing(address)
@@ -641,6 +639,29 @@ mod tests {
         let VpnPortalPeerPacketRoute::Deliver { client, .. } = table.route_peer_packet(&routed)
         else {
             panic!("replacement must remain registered");
+        };
+        assert_eq!(client.value(), &"replacement");
+    }
+
+    #[test]
+    fn dropping_old_session_does_not_remove_same_endpoint_replacement() {
+        let table = Arc::new(VpnPortalClientTable::new());
+        let endpoint = Some("wg://198.51.100.2:51820".parse().unwrap());
+        let payload = ipv4_payload([10, 10, 0, 2], [10, 10, 0, 3], 4);
+        let mut old = VpnPortalClientSession::new(table.clone(), endpoint.clone(), "old");
+        let mut replacement = VpnPortalClientSession::new(table.clone(), endpoint, "replacement");
+        old.observe_ipv4_payload(&payload).unwrap();
+        replacement.observe_ipv4_payload(&payload).unwrap();
+
+        drop(old);
+
+        let routed = peer_packet(
+            &ipv4_payload([10, 10, 0, 3], [10, 10, 0, 2], 4),
+            PacketType::Data,
+        );
+        let VpnPortalPeerPacketRoute::Deliver { client, .. } = table.route_peer_packet(&routed)
+        else {
+            panic!("same-endpoint replacement must remain registered");
         };
         assert_eq!(client.value(), &"replacement");
     }
