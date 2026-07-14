@@ -26,7 +26,6 @@ use crate::{
         config::{ConfigLoader, NetworkIdentity, PortForwardConfig, TomlConfigLoader},
         netns::{NetNS, ROOT_NETNS_NAME},
     },
-    connector::{protocol::runtime_client_protocol_upgrader, runtime::runtime_connector_host},
     instance::instance::Instance,
     proto::{
         api::instance::TcpProxyEntryTransportType,
@@ -67,6 +66,17 @@ fn core_udp_listener(url: url::Url) -> impl SocketListener<Accepted = Box<dyn Tu
 
 fn core_udp_dialer(url: url::Url) -> impl TunnelDialer {
     runtime_udp_tunnel_dialer(url)
+}
+
+async fn reload_instance_acl(inst: &Instance, acl: Option<&crate::proto::acl::Acl>) {
+    let config = easytier_core::peers::acl_config::AclRuleConfig {
+        acl: acl.cloned(),
+        ..Default::default()
+    };
+    inst.get_core_instance()
+        .reload_acl_config(&config)
+        .await
+        .unwrap();
 }
 
 #[cfg(feature = "wireguard")]
@@ -197,12 +207,11 @@ async fn init_three_node_ex_with_inst3<F: Fn(TomlConfigLoader) -> TomlConfigLoad
     wait_for_condition(
         || async {
             if !use_public_server {
-                inst2.get_peer_manager().list_routes().await.len() == 2
+                inst2.get_core_instance().route_snapshots().await.len() == 2
             } else {
                 inst2
-                    .get_peer_manager()
-                    .get_foreign_network_manager()
-                    .list_foreign_network_infos(false)
+                    .get_core_instance()
+                    .foreign_network_snapshots(false)
                     .await
                     .len()
                     == 1
@@ -214,7 +223,7 @@ async fn init_three_node_ex_with_inst3<F: Fn(TomlConfigLoader) -> TomlConfigLoad
 
     wait_for_condition(
         || async {
-            let routes = inst1.get_peer_manager().list_routes().await;
+            let routes = inst1.get_core_instance().route_snapshots().await;
             println!("routes: {:?}", routes);
             routes.len() == 2
         },
@@ -224,7 +233,7 @@ async fn init_three_node_ex_with_inst3<F: Fn(TomlConfigLoader) -> TomlConfigLoad
 
     wait_for_condition(
         || async {
-            let routes = inst3.get_peer_manager().list_routes().await;
+            let routes = inst3.get_core_instance().route_snapshots().await;
             println!("routes: {:?}", routes);
             routes.len() == 2
         },
@@ -263,14 +272,14 @@ pub async fn drop_insts(insts: Vec<Instance>) {
     for mut inst in insts {
         set.spawn(async move {
             inst.clear_resources().await;
-            let pm = Arc::downgrade(&inst.get_peer_manager());
+            let core = Arc::downgrade(&inst.get_core_instance());
             drop(inst);
             let now = std::time::Instant::now();
-            while now.elapsed().as_secs() < 5 && pm.strong_count() > 0 {
+            while now.elapsed().as_secs() < 5 && core.strong_count() > 0 {
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             }
 
-            debug_assert_eq!(pm.strong_count(), 0, "PeerManager should be dropped");
+            debug_assert_eq!(core.strong_count(), 0, "CoreInstance should be dropped");
         });
     }
     while set.join_next().await.is_some() {}
@@ -769,8 +778,8 @@ async fn init_public_ipv6_two_node_with_topology(
 
     wait_for_condition(
         || async {
-            provider.get_peer_manager().list_routes().await.len() == 1
-                && client.get_peer_manager().list_routes().await.len() == 1
+            provider.get_core_instance().route_snapshots().await.len() == 1
+                && client.get_core_instance().route_snapshots().await.len() == 1
         },
         Duration::from_secs(8),
     )
@@ -781,29 +790,18 @@ async fn init_public_ipv6_two_node_with_topology(
 
 async fn wait_for_public_ipv6_addr(inst: &Instance) -> cidr::Ipv6Inet {
     wait_for_condition(
-        || async {
-            inst.get_peer_manager()
-                .core()
-                .public_ipv6_addr()
-                .await
-                .is_some()
-        },
+        || async { inst.get_core_instance().public_ipv6_addr().await.is_some() },
         Duration::from_secs(10),
     )
     .await;
-    inst.get_peer_manager()
-        .core()
-        .public_ipv6_addr()
-        .await
-        .unwrap()
+    inst.get_core_instance().public_ipv6_addr().await.unwrap()
 }
 
 async fn wait_for_public_ipv6_route(inst: &Instance, target: cidr::Ipv6Inet) {
     wait_for_condition(
         || async {
-            inst.get_peer_manager()
-                .core()
-                .list_public_ipv6_routes()
+            inst.get_core_instance()
+                .public_ipv6_routes()
                 .await
                 .contains(&target)
         },
@@ -1033,8 +1031,8 @@ pub async fn public_ipv6_auto_addr_reconnect_reuses_same_address() {
 
     wait_for_condition(
         || async {
-            provider.get_peer_manager().list_routes().await.len() == 1
-                && client.get_peer_manager().list_routes().await.len() == 1
+            provider.get_core_instance().route_snapshots().await.len() == 1
+                && client.get_core_instance().route_snapshots().await.len() == 1
         },
         Duration::from_secs(8),
     )
@@ -1093,13 +1091,13 @@ pub async fn basic_three_node_test(
     check_route(
         "10.144.144.2/24",
         insts[1].peer_id(),
-        insts[0].get_peer_manager().list_routes().await,
+        insts[0].get_core_instance().route_snapshots().await,
     );
 
     check_route(
         "10.144.144.3/24",
         insts[2].peer_id(),
-        insts[0].get_peer_manager().list_routes().await,
+        insts[0].get_core_instance().route_snapshots().await,
     );
 
     // Test IPv4 connectivity
@@ -1170,7 +1168,7 @@ pub async fn subnet_proxy_loop_prevention_test() {
 
     // 等待代理路由出现 - inst1 应该看到 inst2 的代理路由
     wait_proxy_route_appear(
-        &insts[0].get_peer_manager(),
+        &insts[0].get_core_instance(),
         "10.144.144.2/24",
         insts[1].peer_id(),
         "10.1.2.0/24",
@@ -1179,7 +1177,7 @@ pub async fn subnet_proxy_loop_prevention_test() {
 
     // 等待代理路由出现 - inst2 应该看到 inst1 的代理路由
     wait_proxy_route_appear(
-        &insts[1].get_peer_manager(),
+        &insts[1].get_core_instance(),
         "10.144.144.1/24",
         insts[0].peer_id(),
         "10.1.2.0/24",
@@ -1196,16 +1194,13 @@ pub async fn subnet_proxy_loop_prevention_test() {
 
     println!(
         "inst0 metrics: {:?}",
-        insts[0].stats_manager().export_prometheus()
+        insts[0].get_core_instance().prometheus_metrics()
     );
 
-    let all_metrics = insts[0].stats_manager().get_all_metrics();
+    let all_metrics = insts[0].get_core_instance().metric_snapshots();
     for metric in all_metrics {
         if metric.name == MetricName::TrafficPacketsSelfTx {
-            let counter = insts[0]
-                .stats_manager()
-                .get_counter(metric.name, metric.labels.clone());
-            assert!(counter.get() < 40);
+            assert!(metric.value < 40);
         }
     }
 
@@ -1323,7 +1318,7 @@ pub async fn quic_proxy() {
     assert_eq!(insts[2].get_global_ctx().config.get_proxy_cidrs().len(), 1);
 
     wait_proxy_route_appear(
-        &insts[0].get_peer_manager(),
+        &insts[0].get_core_instance(),
         "10.144.144.3/24",
         insts[2].peer_id(),
         "10.1.2.0/24",
@@ -1338,8 +1333,8 @@ pub async fn quic_proxy() {
     subnet_proxy_test_tcp("0.0.0.0", "10.144.144.3", Duration::from_secs(5)).await;
 
     let metrics = insts[0]
-        .stats_manager()
-        .get_metrics_by_prefix(&MetricName::TcpProxyConnect.to_string());
+        .get_core_instance()
+        .metric_snapshots_by_prefix(&MetricName::TcpProxyConnect.to_string());
     assert_eq!(metrics.len(), 2);
     assert_eq!(1, metrics[0].value);
     assert_eq!(1, metrics[1].value);
@@ -1407,14 +1402,14 @@ pub async fn subnet_proxy_three_node_test(
     assert_eq!(insts[2].get_global_ctx().config.get_proxy_cidrs().len(), 2);
 
     wait_proxy_route_appear(
-        &insts[0].get_peer_manager(),
+        &insts[0].get_core_instance(),
         "10.144.144.3/24",
         insts[2].peer_id(),
         "10.1.2.0/24",
     )
     .await;
     wait_proxy_route_appear(
-        &insts[0].get_peer_manager(),
+        &insts[0].get_core_instance(),
         "10.144.144.3/24",
         insts[2].peer_id(),
         "10.1.3.0/24",
@@ -1433,8 +1428,8 @@ pub async fn subnet_proxy_three_node_test(
     }
     if enable_quic_proxy && !disable_quic_input {
         let metrics = insts[0]
-            .stats_manager()
-            .get_metrics_by_prefix(&MetricName::TcpProxyConnect.to_string());
+            .get_core_instance()
+            .metric_snapshots_by_prefix(&MetricName::TcpProxyConnect.to_string());
         assert_eq!(metrics.len(), 3);
         for metric in metrics {
             assert_eq!(1, metric.value);
@@ -1446,8 +1441,8 @@ pub async fn subnet_proxy_three_node_test(
         }
     } else if enable_kcp_proxy && !disable_kcp_input {
         let metrics = insts[0]
-            .stats_manager()
-            .get_metrics_by_prefix(&MetricName::TcpProxyConnect.to_string());
+            .get_core_instance()
+            .metric_snapshots_by_prefix(&MetricName::TcpProxyConnect.to_string());
         assert_eq!(metrics.len(), 3);
         for metric in metrics {
             assert_eq!(1, metric.value);
@@ -1460,8 +1455,8 @@ pub async fn subnet_proxy_three_node_test(
     } else {
         // tcp subnet proxy
         let metrics = insts[2]
-            .stats_manager()
-            .get_metrics_by_prefix(&MetricName::TcpProxyConnect.to_string());
+            .get_core_instance()
+            .metric_snapshots_by_prefix(&MetricName::TcpProxyConnect.to_string());
         if no_tun {
             assert_eq!(metrics.len(), 3);
         } else {
@@ -1561,8 +1556,8 @@ pub async fn proxy_three_node_disconnect_test(#[values("tcp", "wg")] proto: &str
             wait_for_condition(
                 || async {
                     insts[0]
-                        .get_peer_manager()
-                        .list_routes()
+                        .get_core_instance()
+                        .route_snapshots()
                         .await
                         .iter()
                         .any(|r| r.peer_id == inst4.peer_id())
@@ -1581,10 +1576,8 @@ pub async fn proxy_three_node_disconnect_test(#[values("tcp", "wg")] proto: &str
             wait_for_condition(
                 || async {
                     !insts[2]
-                        .get_peer_manager()
-                        .core()
-                        .get_peer_map()
-                        .list_peers_with_conn()
+                        .get_core_instance()
+                        .connected_peers()
                         .await
                         .iter()
                         .any(|r| *r == inst4.peer_id())
@@ -1599,8 +1592,8 @@ pub async fn proxy_three_node_disconnect_test(#[values("tcp", "wg")] proto: &str
             wait_for_condition(
                 || async {
                     !insts[0]
-                        .get_peer_manager()
-                        .list_routes()
+                        .get_core_instance()
+                        .route_snapshots()
                         .await
                         .iter()
                         .any(|r| r.peer_id == inst4.peer_id())
@@ -1707,8 +1700,8 @@ pub async fn foreign_network_forward_nic_data() {
 
     wait_for_condition(
         || async {
-            inst1.get_peer_manager().list_routes().await.len() == 2
-                && inst2.get_peer_manager().list_routes().await.len() == 2
+            inst1.get_core_instance().route_snapshots().await.len() == 2
+                && inst2.get_core_instance().route_snapshots().await.len() == 2
         },
         Duration::from_secs(5),
     )
@@ -1797,7 +1790,13 @@ pub async fn wireguard_vpn_portal(#[values(true, false)] test_v6: bool) {
             wireguard_listen: "0.0.0.0:22121".parse().unwrap(),
             client_cidr: "10.14.14.0/24".parse().unwrap(),
         });
-    insts[2].get_peer_manager().refresh_runtime_config();
+    insts[2]
+        .get_core_instance()
+        .update_peer_runtime_snapshot(
+            crate::connector::core_instance::runtime_instance_config(&insts[2].get_global_ctx())
+                .peer,
+        )
+        .await;
     insts[2].run_vpn_portal().await.unwrap();
 
     let dst_socket_addr = if test_v6 {
@@ -1969,9 +1968,10 @@ pub async fn foreign_network_functional_cluster() {
         .get_conn_manager()
         .add_connector_url(format!("ring://{}", center_inst2.id()).parse().unwrap());
 
-    let peer_map_inst1 = inst1.get_peer_manager();
-    println!("inst1 peer map: {:?}", peer_map_inst1.list_routes().await);
-    drop(peer_map_inst1);
+    println!(
+        "inst1 peer map: {:?}",
+        inst1.get_core_instance().route_snapshots().await
+    );
 
     wait_for_condition(
         || async { ping_test("net_c", "10.144.145.2", None).await },
@@ -2037,33 +2037,23 @@ pub async fn manual_reconnector(#[values(true, false)] is_foreign: bool) {
     let center_inst_peer_id = if !is_foreign {
         center_inst.peer_id()
     } else {
+        let network_name = inst1.get_global_ctx().get_network_identity().network_name;
         center_inst
-            .get_peer_manager()
-            .get_foreign_network_manager()
-            .get_network_peer_id(&inst1.get_global_ctx().get_network_identity().network_name)
+            .get_core_instance()
+            .foreign_network_snapshots(false)
+            .await
+            .get(&network_name)
+            .map(|network| network.my_peer_id_for_this_network)
             .unwrap()
     };
 
-    let conns_len = if !is_foreign {
-        inst1
-            .get_peer_manager()
-            .core()
-            .get_peer_map()
-            .list_peer_conns(center_inst_peer_id)
-            .await
-            .unwrap()
-            .len()
-    } else {
-        inst1
-            .get_peer_manager()
-            .core()
-            .get_foreign_network_client()
-            .get_peer_map()
-            .list_peer_conns(center_inst_peer_id)
-            .await
-            .unwrap()
-            .len()
-    };
+    let conns_len = inst1
+        .get_core_instance()
+        .peer_snapshots()
+        .await
+        .into_iter()
+        .find(|peer| peer.peer_id == center_inst_peer_id)
+        .map_or(0, |peer| peer.conns.len());
 
     assert!(conns_len > 0);
 
@@ -2310,7 +2300,7 @@ pub async fn port_forward_with_inbound_default_drop_acl_test(
         )
         .await;
 
-        let stats = insts[0].acl_filter().get_stats();
+        let stats = insts[0].get_core_instance().acl_stats();
         println!(
             "port forward source bind_port={} dhcp={} enable_quic_proxy={} ACL stats: {}",
             bind_port, dhcp, enable_quic_proxy, stats
@@ -2420,50 +2410,10 @@ pub async fn instance_recv_bps_limit_test(#[values(100, 800)] bps_limit: u64) {
 }
 
 async fn assert_peer_admission_blocked(inst: &Instance, url: url::Url) {
-    let ip = url
-        .host_str()
-        .expect("test URL should have a host")
-        .parse()
-        .expect("test URL should have a literal IP");
-    let target = std::net::SocketAddr::new(ip, url.port().expect("test URL should have a port"));
-    let host = runtime_connector_host(inst.get_global_ctx());
-    let protocol = runtime_client_protocol_upgrader(inst.get_global_ctx());
-    let peer_manager = inst.get_peer_manager().core();
-    let connect = async {
-        let connected = match url.scheme() {
-            "tcp" => easytier_core::connectivity::transport::ConnectedTransport::Tcp(
-                easytier_core::socket::tcp::VirtualTcpSocketFactory::connect_tcp(
-                    host.as_ref(),
-                    easytier_core::socket::tcp::TcpConnectOptions::direct_connect(target),
-                )
-                .await?,
-            ),
-            "udp" => easytier_core::connectivity::transport::ConnectedTransport::Udp(
-                easytier_core::connectivity::transport::connect_udp(
-                    host,
-                    target,
-                    Vec::new(),
-                    easytier_core::socket::udp::UdpBindOptions::direct_connect(),
-                    easytier_core::connectivity::transport::UdpSessionMode::EasyTierMux,
-                )
-                .await?,
-            ),
-            scheme => panic!("unsupported test scheme: {scheme}"),
-        };
-        let tunnel = easytier_core::connectivity::protocol::ClientProtocolUpgrader::upgrade_client(
-            protocol.as_ref(),
-            connected,
-            url,
-        )
-        .await?;
-        peer_manager
-            .add_client_tunnel(tunnel, true)
-            .await
-            .map(|_| ())
-            .map_err(anyhow::Error::from)
-    };
-    let result = tokio::time::timeout(Duration::from_millis(100), connect).await;
-    assert!(matches!(result, Err(_) | Ok(Err(_))));
+    inst.get_conn_manager().add_connector_url(url.clone());
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(inst.get_core_instance().connected_peers().await.is_empty());
+    inst.get_conn_manager().remove_connector(url).await.unwrap();
 }
 
 use std::fs;
@@ -2626,7 +2576,7 @@ pub async fn acl_rule_test_inbound(
     let acl_toml = toml::to_string(&acl).unwrap();
     println!("ACL TOML: {}", acl_toml);
 
-    insts[2].acl_filter().reload_rules(Some(&acl));
+    reload_instance_acl(&insts[2], Some(&acl)).await;
 
     // TCP 测试部分
     {
@@ -2685,7 +2635,7 @@ pub async fn acl_rule_test_inbound(
 
         assert!(result.is_err(), "TCP 连接 8082 应被 ACL 拦截，不能成功");
 
-        let stats = insts[2].acl_filter().get_stats();
+        let stats = insts[2].get_core_instance().acl_stats();
         println!("stats: {:?}", stats);
     }
 
@@ -2730,12 +2680,12 @@ pub async fn acl_rule_test_inbound(
 
         assert!(result.is_err(), "UDP 连接 8080 应被 ACL 拦截，不能成功");
 
-        let stats = insts[2].acl_filter().get_stats();
+        let stats = insts[2].get_core_instance().acl_stats();
         println!("stats: {}", stats);
     }
 
     // remove acl, 8080 should succ
-    insts[2].acl_filter().reload_rules(None);
+    reload_instance_acl(&insts[2], None).await;
 
     drop_insts(insts).await;
 }
@@ -2771,7 +2721,7 @@ pub async fn acl_rule_test_subnet_proxy(
 
     // 等待代理路由出现
     wait_proxy_route_appear(
-        &insts[0].get_peer_manager(),
+        &insts[0].get_core_instance(),
         "10.144.144.3/24",
         insts[2].peer_id(),
         "10.1.2.0/24",
@@ -2840,7 +2790,7 @@ pub async fn acl_rule_test_subnet_proxy(
     acl.acl_v1 = Some(acl_v1);
 
     // 在 inst3 上应用 ACL 规则
-    insts[2].acl_filter().reload_rules(Some(&acl));
+    reload_instance_acl(&insts[2], Some(&acl)).await;
 
     // TCP 测试部分 - 测试子网代理的 ACL 规则
     {
@@ -2901,7 +2851,7 @@ pub async fn acl_rule_test_subnet_proxy(
             "TCP 连接子网代理 8081 应被 ACL 拦截，不能成功"
         );
 
-        let stats = insts[2].acl_filter().get_stats();
+        let stats = insts[2].get_core_instance().acl_stats();
         println!("ACL stats after TCP tests: {:?}", stats);
     }
 
@@ -2939,7 +2889,7 @@ pub async fn acl_rule_test_subnet_proxy(
         )
         .await;
 
-        let stats = insts[2].acl_filter().get_stats();
+        let stats = insts[2].get_core_instance().acl_stats();
         println!("ACL stats after UDP tests: {}", stats);
 
         assert!(
@@ -2957,7 +2907,7 @@ pub async fn acl_rule_test_subnet_proxy(
     .unwrap_err();
 
     // 移除 ACL 规则
-    insts[2].acl_filter().reload_rules(None);
+    reload_instance_acl(&insts[2], None).await;
 
     // 验证移除 ACL 后，ICMP 可以正常工作
     wait_for_condition(
@@ -2991,13 +2941,12 @@ where
 }
 
 async fn wait_route_cost(inst: &Instance, peer_id: u32, cost: i32, timeout: Duration) {
-    let peer_manager = inst.get_peer_manager();
+    let core = inst.get_core_instance();
     wait_for_condition(
         move || {
-            let peer_manager = peer_manager.clone();
+            let core = core.clone();
             async move {
-                peer_manager
-                    .list_routes()
+                core.route_snapshots()
                     .await
                     .iter()
                     .any(|route| route.peer_id == peer_id && route.cost == cost)
@@ -3016,8 +2965,6 @@ pub async fn p2p_only_test(
     #[values(true, false)] enable_kcp_proxy: bool,
     #[values(true, false)] enable_quic_proxy: bool,
 ) {
-    use crate::peers::tests::wait_route_appear_with_cost;
-
     let insts = init_three_node_ex(
         "udp",
         |cfg| {
@@ -3043,13 +2990,7 @@ pub async fn p2p_only_test(
         insts[2]
             .get_conn_manager()
             .add_connector_url(format!("ring://{}", insts[0].id()).parse().unwrap());
-        wait_route_appear_with_cost(
-            insts[2].get_peer_manager(),
-            insts[0].get_peer_manager().my_peer_id(),
-            Some(1),
-        )
-        .await
-        .unwrap();
+        wait_route_cost(&insts[2], insts[0].peer_id(), 1, Duration::from_secs(5)).await;
     }
 
     let target_ip = "10.1.2.4";
@@ -3314,7 +3255,7 @@ pub async fn acl_group_base_test(
         protocol
     );
 
-    let stats = insts[2].acl_filter().get_stats();
+    let stats = insts[2].get_core_instance().acl_stats();
     println!("ACL stats after group {} tests: {:?}", protocol, stats);
 
     println!("✓ All group-based ACL tests completed successfully");
@@ -3338,10 +3279,10 @@ pub async fn lazy_p2p_builds_direct_connection_on_demand() {
     let inst3_peer_id = insts[2].peer_id();
     assert!(
         !insts[0]
-            .get_peer_manager()
-            .core()
-            .get_peer_map()
-            .has_peer(inst3_peer_id),
+            .get_core_instance()
+            .connected_peers()
+            .await
+            .contains(&inst3_peer_id),
         "inst1 should not proactively connect to inst3 when lazy_p2p is enabled"
     );
     wait_route_cost(&insts[0], inst3_peer_id, 2, Duration::from_secs(5)).await;
@@ -3354,10 +3295,10 @@ pub async fn lazy_p2p_builds_direct_connection_on_demand() {
     wait_for_condition(
         || async {
             insts[0]
-                .get_peer_manager()
-                .core()
-                .get_peer_map()
-                .has_peer(inst3_peer_id)
+                .get_core_instance()
+                .connected_peers()
+                .await
+                .contains(&inst3_peer_id)
         },
         Duration::from_secs(10),
     )
@@ -3388,10 +3329,10 @@ pub async fn need_p2p_overrides_lazy_p2p() {
     wait_for_condition(
         || async {
             insts[0]
-                .get_peer_manager()
-                .core()
-                .get_peer_map()
-                .has_peer(inst3_peer_id)
+                .get_core_instance()
+                .connected_peers()
+                .await
+                .contains(&inst3_peer_id)
         },
         Duration::from_secs(10),
     )
@@ -3422,10 +3363,10 @@ pub async fn disable_p2p_still_connects_to_need_p2p_peers() {
     wait_for_condition(
         || async {
             insts[0]
-                .get_peer_manager()
-                .core()
-                .get_peer_map()
-                .has_peer(inst3_peer_id)
+                .get_core_instance()
+                .connected_peers()
+                .await
+                .contains(&inst3_peer_id)
         },
         Duration::from_secs(10),
     )
@@ -3459,10 +3400,10 @@ pub async fn ordinary_nodes_do_not_proactively_connect_to_disable_p2p_peers() {
 
     assert!(
         !insts[0]
-            .get_peer_manager()
-            .core()
-            .get_peer_map()
-            .has_peer(inst3_peer_id),
+            .get_core_instance()
+            .connected_peers()
+            .await
+            .contains(&inst3_peer_id),
         "ordinary nodes should not proactively establish p2p with disable-p2p peers"
     );
     wait_route_cost(&insts[0], inst3_peer_id, 2, Duration::from_secs(3)).await;
@@ -3494,10 +3435,10 @@ pub async fn lazy_p2p_warms_up_before_p2p_only_send() {
     wait_for_condition(
         || async {
             insts[0]
-                .get_peer_manager()
-                .core()
-                .get_peer_map()
-                .has_peer(inst3_peer_id)
+                .get_core_instance()
+                .connected_peers()
+                .await
+                .contains(&inst3_peer_id)
         },
         Duration::from_secs(10),
     )
@@ -3672,7 +3613,7 @@ pub async fn acl_group_self_test(
         protocol
     );
 
-    let stats = insts[2].acl_filter().get_stats();
+    let stats = insts[2].get_core_instance().acl_stats();
     println!("ACL stats after group {} tests: {:?}", protocol, stats);
 
     println!("✓ All group-based ACL tests completed successfully");
@@ -3806,13 +3747,13 @@ pub async fn config_patch_test() {
     check_route(
         "10.144.144.2/24",
         insts[1].peer_id(),
-        insts[0].get_peer_manager().list_routes().await,
+        insts[0].get_core_instance().route_snapshots().await,
     );
 
     check_route(
         "10.144.144.3/24",
         insts[2].peer_id(),
-        insts[0].get_peer_manager().list_routes().await,
+        insts[0].get_core_instance().route_snapshots().await,
     );
 
     // 测试1： 修改hostname、ip、子网代理
@@ -3838,7 +3779,7 @@ pub async fn config_patch_test() {
     );
     tokio::time::sleep(Duration::from_secs(1)).await;
     check_route_ex(
-        insts[0].get_peer_manager().list_routes().await,
+        insts[0].get_core_instance().route_snapshots().await,
         insts[1].peer_id(),
         |r| {
             assert_eq!(r.hostname, "new_inst1");
@@ -3970,7 +3911,7 @@ pub async fn config_patch_disable_relay_data_test() {
     );
 
     check_route_ex(
-        insts[0].get_peer_manager().list_routes().await,
+        insts[0].get_core_instance().route_snapshots().await,
         dst_peer_id,
         |route| {
             assert_eq!(route.next_hop_peer_id, relay_peer_id);
@@ -4010,9 +3951,9 @@ pub async fn config_patch_disable_relay_data_test() {
 
     wait_for_condition(
         || {
-            let peer_mgr = insts[0].get_peer_manager().clone();
+            let core = insts[0].get_core_instance();
             async move {
-                peer_mgr.list_routes().await.iter().any(|route| {
+                core.route_snapshots().await.iter().any(|route| {
                     route.peer_id == relay_peer_id
                         && route
                             .feature_flag
@@ -4027,7 +3968,7 @@ pub async fn config_patch_disable_relay_data_test() {
     .await;
 
     check_route_ex(
-        insts[0].get_peer_manager().list_routes().await,
+        insts[0].get_core_instance().route_snapshots().await,
         dst_peer_id,
         |route| {
             assert_eq!(route.next_hop_peer_id, relay_peer_id);
@@ -4065,9 +4006,9 @@ pub async fn config_patch_disable_relay_data_test() {
 
     wait_for_condition(
         || {
-            let peer_mgr = insts[0].get_peer_manager().clone();
+            let core = insts[0].get_core_instance();
             async move {
-                peer_mgr.list_routes().await.iter().any(|route| {
+                core.route_snapshots().await.iter().any(|route| {
                     route.peer_id == relay_peer_id
                         && route
                             .feature_flag
@@ -4152,7 +4093,7 @@ pub async fn relay_peer_e2e_encryption(#[values("tcp", "udp")] proto: &str) {
     // Wait for routes to be established
     wait_for_condition(
         || async {
-            let routes = insts[0].get_peer_manager().list_routes().await;
+            let routes = insts[0].get_core_instance().route_snapshots().await;
             routes.len() == 2
         },
         Duration::from_secs(10),
@@ -4161,10 +4102,8 @@ pub async fn relay_peer_e2e_encryption(#[values("tcp", "udp")] proto: &str) {
 
     // Verify inst1 sees inst3 via inst2 (non-direct path)
     let next_hop_to_inst3 = insts[0]
-        .get_peer_manager()
-        .core()
-        .get_peer_map()
-        .get_gateway_peer_id(inst3_peer_id, NextHopPolicy::LeastHop)
+        .get_core_instance()
+        .next_hop(inst3_peer_id, NextHopPolicy::LeastHop)
         .await;
     println!("Next hop from inst1 to inst3: {:?}", next_hop_to_inst3);
     assert_eq!(
@@ -4176,37 +4115,31 @@ pub async fn relay_peer_e2e_encryption(#[values("tcp", "udp")] proto: &str) {
     // Verify inst1 has no direct connection to inst3
     assert!(
         !insts[0]
-            .get_peer_manager()
-            .core()
-            .get_peer_map()
-            .has_peer(inst3_peer_id),
+            .get_core_instance()
+            .connected_peers()
+            .await
+            .contains(&inst3_peer_id),
         "inst1 should NOT have direct connection to inst3"
     );
 
     // Check if noise_static_pubkey is available for relay handshake
     let route_info_inst3 = insts[0]
-        .get_peer_manager()
-        .core()
-        .get_peer_map()
-        .get_route_peer_info(inst3_peer_id)
+        .get_core_instance()
+        .route_peer_static_public_key(inst3_peer_id)
         .await;
     println!(
         "Route info for inst3 on inst1: noise_static_pubkey len = {:?}",
-        route_info_inst3
-            .as_ref()
-            .map(|i| i.noise_static_pubkey.len())
+        route_info_inst3.as_ref().map(Vec::len)
     );
 
     // Wait until relay route info includes inst3 static pubkey for IK handshake.
     wait_for_condition(
         || async {
             insts[0]
-                .get_peer_manager()
-                .core()
-                .get_peer_map()
-                .get_route_peer_info(inst3_peer_id)
+                .get_core_instance()
+                .route_peer_static_public_key(inst3_peer_id)
                 .await
-                .is_some_and(|info| !info.noise_static_pubkey.is_empty())
+                .is_some_and(|key| !key.is_empty())
         },
         Duration::from_secs(10),
     )
@@ -4221,13 +4154,16 @@ pub async fn relay_peer_e2e_encryption(#[values("tcp", "udp")] proto: &str) {
     );
 
     // Verify relay sessions are established
-    let relay_map_1 = insts[0].get_peer_manager().core().get_relay_peer_map();
-    let relay_map_3 = insts[2].get_peer_manager().core().get_relay_peer_map();
+    let relay_1 = insts[0]
+        .get_core_instance()
+        .relay_session_snapshot(inst3_peer_id);
+    let relay_3 = insts[2]
+        .get_core_instance()
+        .relay_session_snapshot(inst1_peer_id);
 
     println!(
         "Relay states after ping: inst1->inst3: {}, inst3->inst1: {}",
-        relay_map_1.has_state(inst3_peer_id),
-        relay_map_3.has_state(inst1_peer_id)
+        relay_1.has_state, relay_3.has_state
     );
 
     // Test bidirectional connectivity
@@ -4265,7 +4201,7 @@ pub async fn relay_peer_e2e_encryption_udp() {
 
     wait_for_condition(
         || async {
-            let routes = insts[0].get_peer_manager().list_routes().await;
+            let routes = insts[0].get_core_instance().route_snapshots().await;
             routes.len() == 2
         },
         Duration::from_secs(10),
@@ -4288,28 +4224,28 @@ pub async fn relay_peer_e2e_encryption_udp() {
     wait_for_condition(
         || async {
             insts[0]
-                .stats_manager()
-                .get_metric(MetricName::TrafficBytesTx, &tx_labels)
+                .get_core_instance()
+                .metric_snapshot(MetricName::TrafficBytesTx, &tx_labels)
                 .is_none()
                 && insts[0]
-                    .stats_manager()
-                    .get_metric(MetricName::TrafficPacketsTx, &tx_labels)
+                    .get_core_instance()
+                    .metric_snapshot(MetricName::TrafficPacketsTx, &tx_labels)
                     .is_none()
                 && insts[0]
-                    .stats_manager()
-                    .get_metric(MetricName::TrafficBytesTx, &total_labels)
+                    .get_core_instance()
+                    .metric_snapshot(MetricName::TrafficBytesTx, &total_labels)
                     .is_some_and(|metric| metric.value > 0)
                 && insts[0]
-                    .stats_manager()
-                    .get_metric(MetricName::TrafficPacketsTx, &total_labels)
+                    .get_core_instance()
+                    .metric_snapshot(MetricName::TrafficPacketsTx, &total_labels)
                     .is_some_and(|metric| metric.value > 0)
                 && insts[0]
-                    .stats_manager()
-                    .get_metric(MetricName::TrafficBytesTxByInstance, &tx_labels)
+                    .get_core_instance()
+                    .metric_snapshot(MetricName::TrafficBytesTxByInstance, &tx_labels)
                     .is_some_and(|metric| metric.value > 0)
                 && insts[0]
-                    .stats_manager()
-                    .get_metric(MetricName::TrafficPacketsTxByInstance, &tx_labels)
+                    .get_core_instance()
+                    .metric_snapshot(MetricName::TrafficPacketsTxByInstance, &tx_labels)
                     .is_some_and(|metric| metric.value > 0)
         },
         Duration::from_secs(10),
@@ -4319,28 +4255,28 @@ pub async fn relay_peer_e2e_encryption_udp() {
     wait_for_condition(
         || async {
             insts[2]
-                .stats_manager()
-                .get_metric(MetricName::TrafficBytesRx, &rx_labels)
+                .get_core_instance()
+                .metric_snapshot(MetricName::TrafficBytesRx, &rx_labels)
                 .is_none()
                 && insts[2]
-                    .stats_manager()
-                    .get_metric(MetricName::TrafficPacketsRx, &rx_labels)
+                    .get_core_instance()
+                    .metric_snapshot(MetricName::TrafficPacketsRx, &rx_labels)
                     .is_none()
                 && insts[2]
-                    .stats_manager()
-                    .get_metric(MetricName::TrafficBytesRx, &total_labels)
+                    .get_core_instance()
+                    .metric_snapshot(MetricName::TrafficBytesRx, &total_labels)
                     .is_some_and(|metric| metric.value > 0)
                 && insts[2]
-                    .stats_manager()
-                    .get_metric(MetricName::TrafficPacketsRx, &total_labels)
+                    .get_core_instance()
+                    .metric_snapshot(MetricName::TrafficPacketsRx, &total_labels)
                     .is_some_and(|metric| metric.value > 0)
                 && insts[2]
-                    .stats_manager()
-                    .get_metric(MetricName::TrafficBytesRxByInstance, &rx_labels)
+                    .get_core_instance()
+                    .metric_snapshot(MetricName::TrafficBytesRxByInstance, &rx_labels)
                     .is_some_and(|metric| metric.value > 0)
                 && insts[2]
-                    .stats_manager()
-                    .get_metric(MetricName::TrafficPacketsRxByInstance, &rx_labels)
+                    .get_core_instance()
+                    .metric_snapshot(MetricName::TrafficPacketsRxByInstance, &rx_labels)
                     .is_some_and(|metric| metric.value > 0)
         },
         Duration::from_secs(10),
@@ -4368,7 +4304,7 @@ pub async fn relay_peer_session_cleanup() {
 
     let inst2_peer_id = insts[1].peer_id();
     let inst3_peer_id = insts[2].peer_id();
-    let relay_map_1 = insts[0].get_peer_manager().core().get_relay_peer_map();
+    let core_1 = insts[0].get_core_instance();
 
     wait_for_condition(
         || async { ping_test("net_a", "10.144.144.3", None).await },
@@ -4377,16 +4313,17 @@ pub async fn relay_peer_session_cleanup() {
     .await;
 
     wait_for_condition(
-        || async { relay_map_1.has_state(inst3_peer_id) && relay_map_1.has_session(inst3_peer_id) },
+        || async {
+            let relay = core_1.relay_session_snapshot(inst3_peer_id);
+            relay.has_state && relay.has_session
+        },
         Duration::from_secs(3),
     )
     .await;
 
     let next_hop = insts[0]
-        .get_peer_manager()
-        .core()
-        .get_peer_map()
-        .get_gateway_peer_id(inst3_peer_id, NextHopPolicy::LeastHop)
+        .get_core_instance()
+        .next_hop(inst3_peer_id, NextHopPolicy::LeastHop)
         .await;
     assert_eq!(next_hop, Some(inst2_peer_id));
 
@@ -4396,24 +4333,20 @@ pub async fn relay_peer_session_cleanup() {
 
     wait_for_condition(
         || async {
-            let routes = insts[0].get_peer_manager().list_routes().await;
+            let routes = insts[0].get_core_instance().route_snapshots().await;
             !routes.iter().any(|r| r.peer_id == inst3_peer_id)
         },
         Duration::from_secs(6),
     )
     .await;
 
-    relay_map_1.evict_idle_sessions(Duration::from_millis(0));
-    assert!(!relay_map_1.has_state(inst3_peer_id));
+    core_1.evict_idle_relay_sessions(Duration::from_millis(0));
+    assert!(!core_1.relay_session_snapshot(inst3_peer_id).has_state);
 
-    insts[0]
-        .get_peer_manager()
-        .core()
-        .get_peer_session_store()
-        .evict_unused_sessions_idle(Duration::from_millis(0));
+    core_1.evict_unused_peer_sessions(Duration::from_millis(0));
 
     wait_for_condition(
-        || async { !relay_map_1.has_session(inst3_peer_id) },
+        || async { !core_1.relay_session_snapshot(inst3_peer_id).has_session },
         Duration::from_secs(1),
     )
     .await;

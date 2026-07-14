@@ -10,7 +10,6 @@ mod credential_tests;
 mod upnp_test;
 
 use crate::common::PeerId;
-use crate::peers::peer_manager::PeerManager;
 
 pub fn set_env_var<K: AsRef<std::ffi::OsStr>, V: AsRef<std::ffi::OsStr>>(key: K, value: V) {
     unsafe { std::env::set_var(key, value) }
@@ -186,7 +185,11 @@ pub fn add_ns_to_bridge(br_name: &str, ns_name: &str) {
         .unwrap();
 }
 
-fn check_route(ipv4: &str, dst_peer_id: PeerId, routes: Vec<crate::proto::api::instance::Route>) {
+fn check_route(
+    ipv4: &str,
+    dst_peer_id: PeerId,
+    routes: Vec<easytier_core::proto::core_peer::peer::Route>,
+) {
     let mut found = false;
     for r in routes.iter() {
         if r.ipv4_addr == Some(ipv4.parse().unwrap()) {
@@ -202,9 +205,9 @@ fn check_route(ipv4: &str, dst_peer_id: PeerId, routes: Vec<crate::proto::api::i
 }
 
 fn check_route_ex(
-    routes: Vec<crate::proto::api::instance::Route>,
+    routes: Vec<easytier_core::proto::core_peer::peer::Route>,
     peer_id: PeerId,
-    checker: impl Fn(&crate::proto::api::instance::Route) -> bool,
+    checker: impl Fn(&easytier_core::proto::core_peer::peer::Route) -> bool,
 ) {
     let mut found = false;
     for r in routes.iter() {
@@ -217,14 +220,14 @@ fn check_route_ex(
 }
 
 async fn wait_proxy_route_appear(
-    mgr: &std::sync::Arc<PeerManager>,
+    core: &std::sync::Arc<crate::connector::core_instance::RuntimeCoreInstance>,
     ipv4: &str,
     dst_peer_id: PeerId,
     proxy_cidr: &str,
 ) {
     let now = std::time::Instant::now();
     loop {
-        for r in mgr.list_routes().await.iter() {
+        for r in core.route_snapshots().await.iter() {
             if r.proxy_cidrs.contains(&proxy_cidr.to_owned()) {
                 assert_eq!(r.peer_id, dst_peer_id);
                 assert_eq!(r.ipv4_addr, Some(ipv4.parse().unwrap()));
@@ -260,13 +263,13 @@ pub async fn drop_insts(insts: Vec<crate::instance::instance::Instance>) {
     for mut inst in insts {
         set.spawn(async move {
             inst.clear_resources().await;
-            let pm = std::sync::Arc::downgrade(&inst.get_peer_manager());
+            let core = std::sync::Arc::downgrade(&inst.get_core_instance());
             drop(inst);
             let now = std::time::Instant::now();
-            while now.elapsed().as_secs() < 5 && pm.strong_count() > 0 {
+            while now.elapsed().as_secs() < 5 && core.strong_count() > 0 {
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             }
-            assert_eq!(pm.strong_count(), 0, "PeerManager should be dropped");
+            assert_eq!(core.strong_count(), 0, "CoreInstance should be dropped");
         });
     }
     while set.join_next().await.is_some() {}

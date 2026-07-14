@@ -33,7 +33,6 @@ use crate::{
     peers::{
         create_packet_recv_chan,
         peer_manager::{PeerManager, RouteAlgoType},
-        tests::{wait_route_appear, wait_route_appear_with_cost},
     },
     proto::common::{NatType, StunInfo},
     tunnel::common::tests::wait_for_condition,
@@ -1487,20 +1486,20 @@ where
 }
 
 async fn peer_has_udp_conn_to_remote_addr(
-    peer_mgr: Arc<PeerManager>,
+    core: Arc<crate::connector::core_instance::RuntimeCoreInstance>,
     peer_id: u32,
     expected_remote_addr: SocketAddr,
 ) -> bool {
-    let Some(conns) = peer_mgr
-        .core()
-        .get_peer_map()
-        .list_peer_conns(peer_id)
+    let Some(peer) = core
+        .peer_snapshots()
         .await
+        .into_iter()
+        .find(|peer| peer.peer_id == peer_id)
     else {
         return false;
     };
 
-    conns.iter().any(|conn| {
+    peer.conns.iter().any(|conn| {
         let Some(tunnel) = conn.tunnel.as_ref() else {
             return false;
         };
@@ -1522,6 +1521,27 @@ async fn peer_has_udp_conn_to_remote_addr(
         remote_ip == expected_remote_addr.ip()
             && remote_addr.port() == Some(expected_remote_addr.port())
     })
+}
+
+async fn wait_instance_route(
+    inst: &Instance,
+    peer_id: u32,
+    cost: Option<i32>,
+) -> Result<(), Error> {
+    let core = inst.get_core_instance();
+    let now = std::time::Instant::now();
+    while now.elapsed() < Duration::from_secs(5) {
+        if core
+            .route_snapshots()
+            .await
+            .iter()
+            .any(|route| route.peer_id == peer_id && cost.is_none_or(|cost| route.cost == cost))
+        {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    Err(Error::NotFound)
 }
 
 #[tokio::test]
@@ -1669,14 +1689,17 @@ async fn instances_build_direct_connection_via_upnp_udp_hole_punch() {
     timeout_stage(
         "wait_route_appear(inst_a, inst_c)",
         Duration::from_secs(10),
-        wait_route_appear(inst_a.get_peer_manager(), inst_c.get_peer_manager()),
+        async {
+            wait_instance_route(&inst_a, inst_c.peer_id(), None).await?;
+            wait_instance_route(&inst_c, inst_a.peer_id(), None).await
+        },
     )
     .await
     .unwrap();
     timeout_stage(
         "wait_route_cost_2(inst_a -> inst_c)",
         Duration::from_secs(10),
-        wait_route_appear_with_cost(inst_a.get_peer_manager(), inst_c.peer_id(), Some(2)),
+        wait_instance_route(&inst_a, inst_c.peer_id(), Some(2)),
     )
     .await
     .unwrap();
@@ -1769,31 +1792,31 @@ async fn instances_build_direct_connection_via_upnp_udp_hole_punch() {
         Duration::from_secs(20),
         wait_for_condition(
             || {
-                let peer_mgr_a = inst_a.get_peer_manager();
-                let peer_mgr_c = inst_c.get_peer_manager();
+                let core_a = inst_a.get_core_instance();
+                let core_c = inst_c.get_core_instance();
                 let peer_id_a = inst_a.peer_id();
                 let peer_id_c = inst_c.peer_id();
                 async move {
-                    peer_mgr_a.core().get_peer_map().has_peer(peer_id_c)
-                        && peer_mgr_c.core().get_peer_map().has_peer(peer_id_a)
-                        && peer_mgr_a
-                            .list_routes()
+                    core_a.connected_peers().await.contains(&peer_id_c)
+                        && core_c.connected_peers().await.contains(&peer_id_a)
+                        && core_a
+                            .route_snapshots()
                             .await
                             .iter()
                             .any(|route| route.peer_id == peer_id_c && route.cost == 1)
-                        && peer_mgr_c
-                            .list_routes()
+                        && core_c
+                            .route_snapshots()
                             .await
                             .iter()
                             .any(|route| route.peer_id == peer_id_a && route.cost == 1)
                         && peer_has_udp_conn_to_remote_addr(
-                            peer_mgr_a.clone(),
+                            core_a.clone(),
                             peer_id_c,
                             mapped_addr_c,
                         )
                         .await
                         && peer_has_udp_conn_to_remote_addr(
-                            peer_mgr_c.clone(),
+                            core_c.clone(),
                             peer_id_a,
                             mapped_addr_a,
                         )

@@ -25,6 +25,57 @@ const PUBLIC_SERVER_NETWORK_NAME: &str = "__public_server__";
 const PUBLIC_SERVER_SHARED_SECRET: &str = "public-server-shared-secret";
 const NEED_P2P_ADMIN_NETWORK_NAME: &str = "need_p2p_credential_test_network";
 
+fn generate_credential(
+    admin: &Instance,
+    groups: Vec<String>,
+    allow_relay: bool,
+    allowed_proxy_cidrs: Vec<String>,
+    ttl: Duration,
+) -> (String, String) {
+    generate_credential_with_options(
+        admin,
+        groups,
+        allow_relay,
+        allowed_proxy_cidrs,
+        ttl,
+        None,
+        true,
+    )
+}
+
+fn generate_credential_with_options(
+    admin: &Instance,
+    groups: Vec<String>,
+    allow_relay: bool,
+    allowed_proxy_cidrs: Vec<String>,
+    ttl: Duration,
+    credential_id: Option<String>,
+    reusable: bool,
+) -> (String, String) {
+    let generated = admin
+        .get_core_instance()
+        .generate_credential(easytier_core::instance::CredentialCreateOptions {
+            groups,
+            allow_relay,
+            allowed_proxy_cidrs,
+            ttl,
+            credential_id,
+            reusable,
+        })
+        .unwrap();
+    (generated.credential_id, generated.secret)
+}
+
+async fn set_avoid_relay_data(inst: &Instance, avoid_relay_data: bool) {
+    inst.get_global_ctx()
+        .set_avoid_relay_data_preference(avoid_relay_data);
+    inst.get_core_instance()
+        .update_peer_runtime_snapshot(
+            crate::connector::core_instance::runtime_instance_config(&inst.get_global_ctx()).peer,
+        )
+        .await;
+}
+
 /// Prepare network namespaces for credential tests
 /// Topology:
 ///   br_a (10.1.1.0/24): ns_adm (10.1.1.1), ns_c1 (10.1.1.2), ns_c2 (10.1.1.3), ns_c3 (10.1.1.4), ns_c4 (10.1.1.5)
@@ -128,12 +179,8 @@ async fn create_credential_config(
     ipv4: &str,
     ipv6: &str,
 ) -> TomlConfigLoader {
-    let (_cred_id, cred_secret) = admin_inst.credential_manager().generate_credential(
-        vec![],
-        false,
-        vec![],
-        Duration::from_secs(3600),
-    );
+    let (_cred_id, cred_secret) =
+        generate_credential(admin_inst, vec![], false, vec![], Duration::from_secs(3600));
 
     build_credential_config(
         admin_inst
@@ -320,7 +367,7 @@ fn create_public_server_credential_config(
 async fn wait_direct_peer(inst: &Instance, peer_id: u32, timeout: Duration, label: &str) {
     wait_for_condition(
         || async {
-            let peers = inst.get_peer_manager().core().get_peer_map().list_peers();
+            let peers = inst.get_core_instance().connected_peers().await;
             let connected = peers.contains(&peer_id);
             println!("{label}: direct peers={:?}, target={}", peers, peer_id);
             connected
@@ -348,7 +395,7 @@ async fn wait_running_listener(inst: &Instance, scheme: &str, timeout: Duration,
 async fn wait_route_cost(inst: &Instance, peer_id: u32, cost: i32, timeout: Duration, label: &str) {
     wait_for_condition(
         || async {
-            let routes = inst.get_peer_manager().list_routes().await;
+            let routes = inst.get_core_instance().route_snapshots().await;
             let matched = routes
                 .iter()
                 .any(|route| route.peer_id == peer_id && route.cost == cost);
@@ -372,9 +419,8 @@ async fn wait_foreign_network_count(inst: &Instance, expected: usize, timeout: D
     wait_for_condition(
         || async {
             let foreign_networks = inst
-                .get_peer_manager()
-                .get_foreign_network_manager()
-                .list_foreign_network_infos(false)
+                .get_core_instance()
+                .foreign_network_snapshots(false)
                 .await;
             println!("foreign networks: {:?}", foreign_networks);
             foreign_networks.len() == expected
@@ -420,26 +466,24 @@ async fn credential_peers_p2p_to_need_p2p_admin_through_public_server(
 
     wait_foreign_network_count(&public_server_inst, 1, Duration::from_secs(10)).await;
 
-    let (_credential_a_id, credential_a_secret) = admin_inst
-        .credential_manager()
-        .generate_credential_with_options(
-            vec![],
-            false,
-            vec!["10.1.0.0/24".to_string()],
-            Duration::from_secs(3600),
-            Some("credential-peer-a".to_string()),
-            false,
-        );
-    let (_credential_b_id, credential_b_secret) = admin_inst
-        .credential_manager()
-        .generate_credential_with_options(
-            vec![],
-            false,
-            vec![],
-            Duration::from_secs(3600),
-            Some("credential-peer-b".to_string()),
-            false,
-        );
+    let (_credential_a_id, credential_a_secret) = generate_credential_with_options(
+        &admin_inst,
+        vec![],
+        false,
+        vec!["10.1.0.0/24".to_string()],
+        Duration::from_secs(3600),
+        Some("credential-peer-a".to_string()),
+        false,
+    );
+    let (_credential_b_id, credential_b_secret) = generate_credential_with_options(
+        &admin_inst,
+        vec![],
+        false,
+        vec![],
+        Duration::from_secs(3600),
+        Some("credential-peer-b".to_string()),
+        false,
+    );
     admin_inst
         .get_global_ctx()
         .issue_event(GlobalCtxEvent::CredentialChanged);
@@ -547,12 +591,8 @@ fn create_generated_credential_config(
     ipv4: &str,
     ipv6: &str,
 ) -> (TomlConfigLoader, String) {
-    let (cred_id, cred_secret) = admin_inst.credential_manager().generate_credential(
-        vec![],
-        false,
-        vec![],
-        Duration::from_secs(3600),
-    );
+    let (cred_id, cred_secret) =
+        generate_credential(admin_inst, vec![], false, vec![], Duration::from_secs(3600));
     let config = build_credential_config(
         admin_inst
             .get_global_ctx()
@@ -589,8 +629,8 @@ async fn wait_route_presence_on_admins(
 ) {
     wait_for_condition(
         || async {
-            let admin_a_routes = admin_a_inst.get_peer_manager().list_routes().await;
-            let admin_c_routes = admin_c_inst.get_peer_manager().list_routes().await;
+            let admin_a_routes = admin_a_inst.get_core_instance().route_snapshots().await;
+            let admin_c_routes = admin_c_inst.get_core_instance().route_snapshots().await;
             let admin_a_has = admin_a_routes.iter().any(|r| r.peer_id == peer_id);
             let admin_c_has = admin_c_routes.iter().any(|r| r.peer_id == peer_id);
             if should_exist {
@@ -613,8 +653,8 @@ async fn assert_shared_visibility_stable(
     label: &str,
 ) {
     for _ in 0..5 {
-        let admin_a_routes = admin_a_inst.get_peer_manager().list_routes().await;
-        let admin_c_routes = admin_c_inst.get_peer_manager().list_routes().await;
+        let admin_a_routes = admin_a_inst.get_core_instance().route_snapshots().await;
+        let admin_c_routes = admin_c_inst.get_core_instance().route_snapshots().await;
         let admin_a_has = admin_a_routes.iter().any(|r| r.peer_id == peer_id);
         let admin_c_has = admin_c_routes.iter().any(|r| r.peer_id == peer_id);
         if should_exist {
@@ -661,8 +701,8 @@ async fn wait_stable_single_visible_peer_on_admins(
     let mut stable_samples = 0;
 
     loop {
-        let admin_a_routes = admin_a_inst.get_peer_manager().list_routes().await;
-        let admin_c_routes = admin_c_inst.get_peer_manager().list_routes().await;
+        let admin_a_routes = admin_a_inst.get_core_instance().route_snapshots().await;
+        let admin_c_routes = admin_c_inst.get_core_instance().route_snapshots().await;
 
         let admin_a_has_a = admin_a_routes.iter().any(|r| r.peer_id == peer_a_id);
         let admin_a_has_b = admin_a_routes.iter().any(|r| r.peer_id == peer_b_id);
@@ -752,34 +792,18 @@ async fn credential_basic_connectivity() {
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     // Check peers and connections
-    let admin_peers = admin_inst
-        .get_peer_manager()
-        .core()
-        .get_peer_map()
-        .list_peers();
-    let cred_peers = cred_inst
-        .get_peer_manager()
-        .core()
-        .get_peer_map()
-        .list_peers();
+    let admin_peers = admin_inst.get_core_instance().connected_peers().await;
+    let cred_peers = cred_inst.get_core_instance().connected_peers().await;
     println!("Admin peers: {:?}", admin_peers);
     println!("Credential peers: {:?}", cred_peers);
 
     // Wait for credential to appear in admin's route table
     wait_for_condition(
         || async {
-            let routes = admin_inst.get_peer_manager().list_routes().await;
-            let cred_routes = cred_inst.get_peer_manager().list_routes().await;
-            let admin_peers = admin_inst
-                .get_peer_manager()
-                .core()
-                .get_peer_map()
-                .list_peers();
-            let cred_peers = cred_inst
-                .get_peer_manager()
-                .core()
-                .get_peer_map()
-                .list_peers();
+            let routes = admin_inst.get_core_instance().route_snapshots().await;
+            let cred_routes = cred_inst.get_core_instance().route_snapshots().await;
+            let admin_peers = admin_inst.get_core_instance().connected_peers().await;
+            let cred_peers = cred_inst.get_core_instance().connected_peers().await;
             println!(
                 "Admin peers: {:?}, routes: {:?}",
                 admin_peers,
@@ -837,33 +861,31 @@ async fn credential_relay_capability(#[case] allow_relay: bool) {
     let admin_config = create_admin_config("admin", Some("ns_adm"), "10.144.144.1", "fd00::1/64");
     let mut admin_inst = Instance::new(admin_config);
     // if cred c allow relay, we set admin inst avoid relay (if other same-cost path available, admin will not relay data)
-    admin_inst
-        .get_peer_manager()
-        .core()
-        .get_peer_map()
-        .context()
-        .set_avoid_relay_data_preference(allow_relay);
+    set_avoid_relay_data(&admin_inst, allow_relay).await;
     admin_inst.run().await.unwrap();
 
     let admin_peer_id = admin_inst.peer_id();
 
     // Generate credentials for A, B, C
     // C has configurable allow_relay
-    let (_cred_a_id, cred_a_secret) = admin_inst.credential_manager().generate_credential(
+    let (_cred_a_id, cred_a_secret) = generate_credential(
+        &admin_inst,
         vec![],
         false,
         vec![],
         Duration::from_secs(3600),
     );
 
-    let (_cred_b_id, cred_b_secret) = admin_inst.credential_manager().generate_credential(
+    let (_cred_b_id, cred_b_secret) = generate_credential(
+        &admin_inst,
         vec![],
         false,
         vec![],
         Duration::from_secs(3600),
     );
 
-    let (_cred_c_id, cred_c_secret) = admin_inst.credential_manager().generate_credential(
+    let (_cred_c_id, cred_c_secret) = generate_credential(
+        &admin_inst,
         vec![],
         allow_relay,
         vec![],
@@ -985,7 +1007,7 @@ async fn credential_relay_capability(#[case] allow_relay: bool) {
     // Wait for all nodes to appear in admin's route table
     wait_for_condition(
         || async {
-            let routes = admin_inst.get_peer_manager().list_routes().await;
+            let routes = admin_inst.get_core_instance().route_snapshots().await;
             let has_a = routes.iter().any(|r| r.peer_id == cred_a_peer_id);
             let has_b = routes.iter().any(|r| r.peer_id == cred_b_peer_id);
             let has_c = routes.iter().any(|r| r.peer_id == cred_c_peer_id);
@@ -999,21 +1021,9 @@ async fn credential_relay_capability(#[case] allow_relay: bool) {
     // Wait for P2P connections to establish
     wait_for_condition(
         || async {
-            let peers_a = cred_a_inst
-                .get_peer_manager()
-                .core()
-                .get_peer_map()
-                .list_peers();
-            let peers_b = cred_b_inst
-                .get_peer_manager()
-                .core()
-                .get_peer_map()
-                .list_peers();
-            let peers_c = cred_c_inst
-                .get_peer_manager()
-                .core()
-                .get_peer_map()
-                .list_peers();
+            let peers_a = cred_a_inst.get_core_instance().connected_peers().await;
+            let peers_b = cred_b_inst.get_core_instance().connected_peers().await;
+            let peers_c = cred_c_inst.get_core_instance().connected_peers().await;
 
             let a_connected_c = peers_a.contains(&cred_c_peer_id);
             let b_connected_c = peers_b.contains(&cred_c_peer_id);
@@ -1038,7 +1048,7 @@ async fn credential_relay_capability(#[case] allow_relay: bool) {
     // Wait for routes to propagate
     wait_for_condition(
         || async {
-            let routes_a = cred_a_inst.get_peer_manager().list_routes().await;
+            let routes_a = cred_a_inst.get_core_instance().route_snapshots().await;
             let a_sees_b = routes_a.iter().any(|r| r.peer_id == cred_b_peer_id);
             let cost_a_to_b = routes_a
                 .iter()
@@ -1055,10 +1065,8 @@ async fn credential_relay_capability(#[case] allow_relay: bool) {
     wait_for_condition(
         || async {
             let next_hop_a_to_b = cred_a_inst
-                .get_peer_manager()
-                .core()
-                .get_route()
-                .get_next_hop_with_policy(cred_b_peer_id, NextHopPolicy::LeastCost)
+                .get_core_instance()
+                .next_hop(cred_b_peer_id, NextHopPolicy::LeastCost)
                 .await;
             println!(
                 "Next hop convergence A->B={:?} (admin={}, c={}), allow_relay={}",
@@ -1079,10 +1087,8 @@ async fn credential_relay_capability(#[case] allow_relay: bool) {
 
     // Verify next hop from A to B based on allow_relay flag
     let next_hop_a_to_b = cred_a_inst
-        .get_peer_manager()
-        .core()
-        .get_route()
-        .get_next_hop_with_policy(cred_b_peer_id, NextHopPolicy::LeastCost)
+        .get_core_instance()
+        .next_hop(cred_b_peer_id, NextHopPolicy::LeastCost)
         .await;
 
     println!(
@@ -1161,7 +1167,7 @@ async fn credential_two_credentials_communicate_tcp() {
     // Wait for both credentials to appear in admin's route table
     wait_for_condition(
         || async {
-            let routes = admin_inst.get_peer_manager().list_routes().await;
+            let routes = admin_inst.get_core_instance().route_snapshots().await;
             routes.iter().any(|r| r.peer_id == cred1_peer_id)
                 && routes.iter().any(|r| r.peer_id == cred2_peer_id)
         },
@@ -1199,7 +1205,8 @@ async fn credential_revocation_propagates() {
     admin_inst.run().await.unwrap();
 
     // Generate credential on admin
-    let (cred_id, cred_secret) = admin_inst.credential_manager().generate_credential(
+    let (cred_id, cred_secret) = generate_credential(
+        &admin_inst,
         vec![],
         false,
         vec![],
@@ -1247,8 +1254,8 @@ async fn credential_revocation_propagates() {
     wait_for_condition(
         || async {
             admin_inst
-                .get_peer_manager()
-                .list_routes()
+                .get_core_instance()
+                .route_snapshots()
                 .await
                 .iter()
                 .any(|r| r.peer_id == cred_peer_id)
@@ -1266,7 +1273,10 @@ async fn credential_revocation_propagates() {
 
     // Revoke the credential
     assert!(
-        admin_inst.credential_manager().revoke_credential(&cred_id),
+        admin_inst
+            .get_core_instance()
+            .revoke_credential(&cred_id)
+            .unwrap(),
         "Credential should be revoked successfully"
     );
 
@@ -1279,8 +1289,8 @@ async fn credential_revocation_propagates() {
     wait_for_condition(
         || async {
             !admin_inst
-                .get_peer_manager()
-                .list_routes()
+                .get_core_instance()
+                .route_snapshots()
                 .await
                 .iter()
                 .any(|r| r.peer_id == cred_peer_id)
@@ -1314,16 +1324,15 @@ async fn credential_non_reusable_allows_only_one_peer() {
     let mut admin_inst = Instance::new(admin_config);
     admin_inst.run().await.unwrap();
 
-    let (_cred_id, cred_secret) = admin_inst
-        .credential_manager()
-        .generate_credential_with_options(
-            vec![],
-            false,
-            vec![],
-            Duration::from_secs(3600),
-            None,
-            false,
-        );
+    let (_cred_id, cred_secret) = generate_credential_with_options(
+        &admin_inst,
+        vec![],
+        false,
+        vec![],
+        Duration::from_secs(3600),
+        None,
+        false,
+    );
 
     let network_name = admin_inst
         .get_global_ctx()
@@ -1359,8 +1368,8 @@ async fn credential_non_reusable_allows_only_one_peer() {
     wait_for_condition(
         || async {
             admin_inst
-                .get_peer_manager()
-                .list_routes()
+                .get_core_instance()
+                .route_snapshots()
                 .await
                 .iter()
                 .any(|r| r.peer_id == cred1_peer_id)
@@ -1383,7 +1392,7 @@ async fn credential_non_reusable_allows_only_one_peer() {
 
     // The non-reusable credential owner is elected by lowest peer_id, so either cred1 or cred2
     // may win. Determine the winner and loser dynamically.
-    let admin_routes = admin_inst.get_peer_manager().list_routes().await;
+    let admin_routes = admin_inst.get_core_instance().route_snapshots().await;
     let (winner_peer_id, winner_ip, winner_inst, loser_peer_id, loser_ip, loser_inst) =
         if admin_routes.iter().any(|r| r.peer_id == cred1_peer_id) {
             (
@@ -1411,7 +1420,7 @@ async fn credential_non_reusable_allows_only_one_peer() {
         };
 
     for _ in 0..5 {
-        let admin_routes = admin_inst.get_peer_manager().list_routes().await;
+        let admin_routes = admin_inst.get_core_instance().route_snapshots().await;
         assert!(
             admin_routes.iter().any(|r| r.peer_id == winner_peer_id),
             "winning credential peer should remain present: {:?}",
@@ -1425,7 +1434,7 @@ async fn credential_non_reusable_allows_only_one_peer() {
     }
 
     for _ in 0..5 {
-        let admin_routes = admin_inst.get_peer_manager().list_routes().await;
+        let admin_routes = admin_inst.get_core_instance().route_snapshots().await;
         assert!(
             !admin_routes.iter().any(|r| r.peer_id == loser_peer_id),
             "losing credential peer should not appear in routes: {:?}",
@@ -1442,7 +1451,7 @@ async fn credential_non_reusable_allows_only_one_peer() {
 
     wait_for_condition(
         || async {
-            let routes = admin_inst.get_peer_manager().list_routes().await;
+            let routes = admin_inst.get_core_instance().route_snapshots().await;
             !routes.iter().any(|r| r.peer_id == winner_peer_id)
                 && routes.iter().any(|r| r.peer_id == loser_peer_id)
         },
@@ -1501,7 +1510,7 @@ async fn credential_unknown_rejected() {
     tokio::time::sleep(Duration::from_secs(5)).await;
 
     // Verify credential does NOT appear in admin's route table
-    let routes = admin_inst.get_peer_manager().list_routes().await;
+    let routes = admin_inst.get_core_instance().route_snapshots().await;
     assert!(
         !routes.iter().any(|r| r.peer_id == cred_peer_id),
         "Unknown credential node should NOT appear in admin's route table"
@@ -1551,8 +1560,8 @@ async fn credential_unknown_via_shared_rejected(#[values(true, false)] test_revo
     let admin_c_peer_id = admin_c_inst.peer_id();
     wait_for_condition(
         || async {
-            let a_routes = admin_a_inst.get_peer_manager().list_routes().await;
-            let c_routes = admin_c_inst.get_peer_manager().list_routes().await;
+            let a_routes = admin_a_inst.get_core_instance().route_snapshots().await;
+            let c_routes = admin_c_inst.get_core_instance().route_snapshots().await;
             a_routes.iter().any(|r| r.peer_id == admin_c_peer_id)
                 || c_routes.iter().any(|r| r.peer_id == admin_a_inst.peer_id())
         },
@@ -1610,8 +1619,9 @@ async fn credential_unknown_via_shared_rejected(#[values(true, false)] test_revo
 
         assert!(
             admin_a_inst
-                .credential_manager()
-                .revoke_credential(credential_id.as_ref().unwrap()),
+                .get_core_instance()
+                .revoke_credential(credential_id.as_ref().unwrap())
+                .unwrap(),
             "credential should be revoked successfully"
         );
         admin_a_inst
@@ -1706,8 +1716,8 @@ async fn credential_admin_shared_admin_credential_connectivity(
     let admin_c_peer_id = admin_c_inst.peer_id();
     wait_for_condition(
         || async {
-            let a_routes = admin_a_inst.get_peer_manager().list_routes().await;
-            let c_routes = admin_c_inst.get_peer_manager().list_routes().await;
+            let a_routes = admin_a_inst.get_core_instance().route_snapshots().await;
+            let c_routes = admin_c_inst.get_core_instance().route_snapshots().await;
             println!(
                 "bootstrap routes: a={:?} c={:?}",
                 a_routes.iter().map(|r| r.peer_id).collect::<Vec<_>>(),
@@ -1751,8 +1761,8 @@ async fn credential_admin_shared_admin_credential_connectivity(
     wait_for_condition(
         || async {
             admin_c_inst
-                .get_peer_manager()
-                .list_routes()
+                .get_core_instance()
+                .route_snapshots()
                 .await
                 .iter()
                 .any(|r| r.peer_id == cred_d_peer_id)
@@ -1812,8 +1822,8 @@ async fn credential_non_reusable_across_two_admins_allows_only_one_peer() {
     let admin_c_peer_id = admin_c_inst.peer_id();
     wait_for_condition(
         || async {
-            let a_routes = admin_a_inst.get_peer_manager().list_routes().await;
-            let c_routes = admin_c_inst.get_peer_manager().list_routes().await;
+            let a_routes = admin_a_inst.get_core_instance().route_snapshots().await;
+            let c_routes = admin_c_inst.get_core_instance().route_snapshots().await;
             a_routes.iter().any(|r| r.peer_id == admin_c_peer_id)
                 || c_routes.iter().any(|r| r.peer_id == admin_a_inst.peer_id())
         },
@@ -1821,16 +1831,15 @@ async fn credential_non_reusable_across_two_admins_allows_only_one_peer() {
     )
     .await;
 
-    let (_cred_id, cred_secret) = admin_a_inst
-        .credential_manager()
-        .generate_credential_with_options(
-            vec![],
-            false,
-            vec![],
-            Duration::from_secs(3600),
-            None,
-            false,
-        );
+    let (_cred_id, cred_secret) = generate_credential_with_options(
+        &admin_a_inst,
+        vec![],
+        false,
+        vec![],
+        Duration::from_secs(3600),
+        None,
+        false,
+    );
     admin_a_inst
         .get_global_ctx()
         .issue_event(GlobalCtxEvent::CredentialChanged);
@@ -1933,8 +1942,8 @@ async fn credential_non_reusable_across_two_admins_allows_only_one_peer() {
 
     wait_for_condition(
         || async {
-            let admin_a_routes = admin_a_inst.get_peer_manager().list_routes().await;
-            let admin_c_routes = admin_c_inst.get_peer_manager().list_routes().await;
+            let admin_a_routes = admin_a_inst.get_core_instance().route_snapshots().await;
+            let admin_c_routes = admin_c_inst.get_core_instance().route_snapshots().await;
             admin_a_routes.iter().any(|r| r.peer_id == loser_peer_id)
                 && admin_c_routes.iter().any(|r| r.peer_id == loser_peer_id)
                 && !admin_a_routes.iter().any(|r| r.peer_id == winner_peer_id)
