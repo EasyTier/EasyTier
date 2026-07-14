@@ -13,6 +13,7 @@ use url::Url;
 use crate::{
     connectivity::{
         direct::DirectConnectorHost,
+        host::environment::{HostConnectorEnvironmentServices, HostConnectorEnvironmentSnapshot},
         manual::{ManualConnectorHost, ManualInterfaceAddrs},
     },
     hole_punch::udp::new_hole_punch_packet,
@@ -35,40 +36,6 @@ use crate::{
     },
 };
 
-/// Non-socket capabilities required by manual connectivity.
-#[async_trait]
-pub trait ManualConnectorEnvironment: Send + Sync + 'static {
-    async fn local_addr_for_remote(
-        &self,
-        remote_addr: SocketAddr,
-        context: SocketContext,
-    ) -> anyhow::Result<SocketAddr>;
-
-    async fn interface_addrs(&self) -> anyhow::Result<ManualInterfaceAddrs>;
-}
-
-/// Runtime state and address-policy capabilities required by direct connectivity.
-#[async_trait]
-pub trait DirectConnectorEnvironment: ManualConnectorEnvironment {
-    async fn collect_ip_addrs(&self) -> anyhow::Result<GetIpListResponse>;
-
-    fn mapped_listeners(&self) -> Vec<Url>;
-
-    fn running_listeners(&self) -> Vec<Url>;
-
-    fn is_local_ip(&self, ip: &IpAddr) -> bool;
-
-    fn is_protected_tcp_port(&self, port: u16) -> bool;
-
-    fn is_easytier_managed_ipv6(&self, ip: &Ipv6Addr) -> bool;
-
-    async fn preferred_ipv6_source(
-        &self,
-        ip: Ipv6Addr,
-        context: SocketContext,
-    ) -> Option<PreferredIpv6Source>;
-}
-
 /// One host handle domain capable of creating and operating connector sockets.
 pub trait HostConnectorSocketBackend: HostSocketBackend + HostTcpListenerBackend {}
 
@@ -81,21 +48,30 @@ impl<T> HostConnectorSocketBackend for T where T: HostSocketBackend + HostTcpLis
 pub struct HostConnectorAdapter<B, E>
 where
     B: HostConnectorSocketBackend,
+    E: HostConnectorEnvironmentServices,
 {
     sockets: HostSocketFactory<B>,
     listeners: HostTcpListenerFactory<B>,
-    environment: Arc<E>,
+    environment: Arc<HostConnectorEnvironmentSnapshot>,
+    environment_services: Arc<E>,
 }
 
 impl<B, E> HostConnectorAdapter<B, E>
 where
     B: HostConnectorSocketBackend,
+    E: HostConnectorEnvironmentServices,
 {
-    pub fn new(runtime: HostSocketRuntime, backend: Arc<B>, environment: Arc<E>) -> Self {
+    pub fn new(
+        runtime: HostSocketRuntime,
+        backend: Arc<B>,
+        environment: HostConnectorEnvironmentSnapshot,
+        environment_services: Arc<E>,
+    ) -> Self {
         Self {
             sockets: HostSocketFactory::new(runtime.clone(), backend.clone()),
             listeners: HostTcpListenerFactory::new(runtime, backend),
-            environment,
+            environment: Arc::new(environment),
+            environment_services,
         }
     }
 }
@@ -104,7 +80,7 @@ where
 impl<B, E> VirtualTcpSocketFactory for HostConnectorAdapter<B, E>
 where
     B: HostConnectorSocketBackend,
-    E: Send + Sync + 'static,
+    E: HostConnectorEnvironmentServices,
 {
     type Socket = HostTcpStream;
 
@@ -117,7 +93,7 @@ where
 impl<B, E> VirtualUdpSocketFactory for HostConnectorAdapter<B, E>
 where
     B: HostConnectorSocketBackend,
-    E: Send + Sync + 'static,
+    E: HostConnectorEnvironmentServices,
 {
     type Socket = HostUdpSocket;
 
@@ -130,7 +106,7 @@ where
 impl<B, E> VirtualTcpListenerFactory for HostConnectorAdapter<B, E>
 where
     B: HostConnectorSocketBackend,
-    E: Send + Sync + 'static,
+    E: HostConnectorEnvironmentServices,
 {
     type Listener = HostTcpListener<B>;
 
@@ -143,7 +119,7 @@ where
 impl<B, E> UdpSessionControlHandler<HostUdpSocket> for HostConnectorAdapter<B, E>
 where
     B: HostConnectorSocketBackend,
-    E: Send + Sync + 'static,
+    E: HostConnectorEnvironmentServices,
 {
     async fn send_v4_hole_punch(
         &self,
@@ -192,20 +168,20 @@ where
 impl<B, E> ManualConnectorHost for HostConnectorAdapter<B, E>
 where
     B: HostConnectorSocketBackend,
-    E: ManualConnectorEnvironment,
+    E: HostConnectorEnvironmentServices,
 {
     async fn local_addr_for_remote(
         &self,
         remote_addr: SocketAddr,
         context: SocketContext,
     ) -> anyhow::Result<SocketAddr> {
-        self.environment
+        self.environment_services
             .local_addr_for_remote(remote_addr, context)
             .await
     }
 
     async fn interface_addrs(&self) -> anyhow::Result<ManualInterfaceAddrs> {
-        self.environment.interface_addrs().await
+        Ok(self.environment.manual_interface_addrs())
     }
 }
 
@@ -213,38 +189,38 @@ where
 impl<B, E> DirectConnectorHost for HostConnectorAdapter<B, E>
 where
     B: HostConnectorSocketBackend,
-    E: DirectConnectorEnvironment,
+    E: HostConnectorEnvironmentServices,
 {
     async fn collect_ip_addrs(&self) -> anyhow::Result<GetIpListResponse> {
-        self.environment.collect_ip_addrs().await
+        Ok(self.environment.ip_list())
     }
 
     fn mapped_listeners(&self) -> Vec<Url> {
-        self.environment.mapped_listeners()
+        self.environment.mapped_listeners.clone()
     }
 
     fn running_listeners(&self) -> Vec<Url> {
-        self.environment.running_listeners()
+        self.environment.running_listeners.clone()
     }
 
     fn is_local_ip(&self, ip: &IpAddr) -> bool {
-        self.environment.is_local_ip(ip)
+        self.environment.local_ips.contains(ip)
     }
 
     fn is_protected_tcp_port(&self, port: u16) -> bool {
-        self.environment.is_protected_tcp_port(port)
+        self.environment.protected_tcp_ports.contains(&port)
     }
 
     fn is_easytier_managed_ipv6(&self, ip: &Ipv6Addr) -> bool {
-        self.environment.is_easytier_managed_ipv6(ip)
+        self.environment.managed_ipv6s.contains(ip)
     }
 
     async fn preferred_ipv6_source(
         &self,
         ip: Ipv6Addr,
-        context: SocketContext,
+        _context: SocketContext,
     ) -> Option<PreferredIpv6Source> {
-        self.environment.preferred_ipv6_source(ip, context).await
+        self.environment.preferred_ipv6_source(ip)
     }
 }
 
@@ -430,10 +406,10 @@ mod tests {
         }
     }
 
-    struct TestEnvironment;
+    struct TestEnvironmentServices;
 
     #[async_trait]
-    impl ManualConnectorEnvironment for TestEnvironment {
+    impl HostConnectorEnvironmentServices for TestEnvironmentServices {
         async fn local_addr_for_remote(
             &self,
             _remote_addr: SocketAddr,
@@ -441,48 +417,23 @@ mod tests {
         ) -> anyhow::Result<SocketAddr> {
             Ok("192.0.2.1:40100".parse().unwrap())
         }
-
-        async fn interface_addrs(&self) -> anyhow::Result<ManualInterfaceAddrs> {
-            Ok(ManualInterfaceAddrs {
-                interface_ipv4s: vec!["192.0.2.1".parse().unwrap()],
-                interface_ipv6s: vec!["2001:db8::1".parse().unwrap()],
-                public_ipv6: Some("2001:db8::1".parse().unwrap()),
-            })
-        }
     }
 
-    #[async_trait]
-    impl DirectConnectorEnvironment for TestEnvironment {
-        async fn collect_ip_addrs(&self) -> anyhow::Result<GetIpListResponse> {
-            Ok(GetIpListResponse::default())
-        }
-
-        fn mapped_listeners(&self) -> Vec<Url> {
-            vec!["tcp://192.0.2.1:11010".parse().unwrap()]
-        }
-
-        fn running_listeners(&self) -> Vec<Url> {
-            vec!["udp://192.0.2.1:11010".parse().unwrap()]
-        }
-
-        fn is_local_ip(&self, ip: &IpAddr) -> bool {
-            *ip == "192.0.2.1".parse::<IpAddr>().unwrap()
-        }
-
-        fn is_protected_tcp_port(&self, port: u16) -> bool {
-            port == 11010
-        }
-
-        fn is_easytier_managed_ipv6(&self, ip: &Ipv6Addr) -> bool {
-            *ip == "2001:db8::1".parse::<Ipv6Addr>().unwrap()
-        }
-
-        async fn preferred_ipv6_source(
-            &self,
-            ip: Ipv6Addr,
-            _context: SocketContext,
-        ) -> Option<PreferredIpv6Source> {
-            Some(PreferredIpv6Source { ip, ifindex: 7 })
+    fn test_environment_snapshot() -> HostConnectorEnvironmentSnapshot {
+        HostConnectorEnvironmentSnapshot {
+            interface_ipv4s: vec!["192.0.2.1".parse().unwrap()],
+            public_ipv6: Some("2001:db8::1".parse().unwrap()),
+            interface_ipv6s: vec!["2001:db8::1".parse().unwrap()],
+            mapped_listeners: vec!["tcp://192.0.2.1:11010".parse().unwrap()],
+            running_listeners: vec!["udp://192.0.2.1:11010".parse().unwrap()],
+            local_ips: vec!["192.0.2.1".parse().unwrap()],
+            protected_tcp_ports: vec![11010],
+            managed_ipv6s: vec!["2001:db8::1".parse().unwrap()],
+            preferred_ipv6_sources: vec![PreferredIpv6Source {
+                ip: "2001:db8::1".parse().unwrap(),
+                ifindex: 7,
+            }],
+            ..Default::default()
         }
     }
 
@@ -494,13 +445,14 @@ mod tests {
 
     #[tokio::test]
     async fn delegates_connector_environment_without_owning_policy() {
-        type TestHost = HostConnectorAdapter<UnsupportedBackend, TestEnvironment>;
+        type TestHost = HostConnectorAdapter<UnsupportedBackend, TestEnvironmentServices>;
         assert_core_host::<TestHost>();
 
         let host = TestHost::new(
             HostSocketRuntime::new(),
             Arc::new(UnsupportedBackend::default()),
-            Arc::new(TestEnvironment),
+            test_environment_snapshot(),
+            Arc::new(TestEnvironmentServices),
         );
         let local = ManualConnectorHost::local_addr_for_remote(
             &host,
@@ -539,8 +491,12 @@ mod tests {
     async fn core_builds_udp_hole_punch_packets_and_falls_back_without_source() {
         let runtime = HostSocketRuntime::new();
         let backend = Arc::new(UnsupportedBackend::default());
-        let host =
-            HostConnectorAdapter::new(runtime.clone(), backend.clone(), Arc::new(TestEnvironment));
+        let host = HostConnectorAdapter::new(
+            runtime.clone(),
+            backend.clone(),
+            test_environment_snapshot(),
+            Arc::new(TestEnvironmentServices),
+        );
         let socket = Arc::new(runtime.udp_socket(
             backend.clone(),
             HostSocketHandle(7),

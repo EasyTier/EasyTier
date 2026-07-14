@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     connectivity::host::{
-        DirectConnectorEnvironment, HostConnectorAdapter, HostConnectorSocketBackend,
-        environment::{HostConnectorEnvironment, HostConnectorEnvironmentSnapshot},
+        HostConnectorAdapter, HostConnectorSocketBackend,
+        environment::{HostConnectorEnvironmentServices, HostConnectorEnvironmentSnapshot},
     },
     socket::host::{
         HostSocketRuntime,
@@ -52,7 +52,7 @@ impl HostCoreInstanceCreateConfig {
 pub struct HostCoreInstance<B, E>
 where
     B: HostConnectorSocketBackend,
-    E: DirectConnectorEnvironment,
+    E: HostConnectorEnvironmentServices,
 {
     socket_runtime: HostSocketRuntime,
     instance: Arc<CoreInstance<HostConnectorAdapter<B, E>>>,
@@ -61,7 +61,7 @@ where
 impl<B, E> HostCoreInstance<B, E>
 where
     B: HostConnectorSocketBackend,
-    E: DirectConnectorEnvironment,
+    E: HostConnectorEnvironmentServices,
 {
     /// Composes adapters under a caller-provided completion runtime.
     ///
@@ -70,7 +70,8 @@ where
         config: PortableCoreInstanceConfig,
         socket_runtime: HostSocketRuntime,
         socket_backend: Arc<B>,
-        environment: Arc<E>,
+        environment_snapshot: HostConnectorEnvironmentSnapshot,
+        environment_services: Arc<E>,
         dns_io: Arc<D>,
         packet_io: Arc<P>,
         packet_sink: HostPacketSinkHandle,
@@ -82,7 +83,8 @@ where
         let host = Arc::new(HostConnectorAdapter::new(
             socket_runtime.clone(),
             socket_backend,
-            environment,
+            environment_snapshot,
+            environment_services,
         ));
         let dns = Arc::new(HostDnsResolver::new(socket_runtime.clone(), dns_io));
         let stun = Arc::new(
@@ -134,7 +136,7 @@ where
     }
 }
 
-impl<B, I> HostCoreInstance<B, HostConnectorEnvironment<HostConnectorEnvironmentServiceAdapter<I>>>
+impl<B, I> HostCoreInstance<B, HostConnectorEnvironmentServiceAdapter<I>>
 where
     B: HostConnectorSocketBackend,
     I: HostConnectorEnvironmentIo,
@@ -159,15 +161,12 @@ where
             socket_runtime.clone(),
             environment_io,
         ));
-        let environment = Arc::new(HostConnectorEnvironment::new(
-            environment_snapshot,
-            services,
-        ));
         Self::new_with_runtime(
             config,
             socket_runtime,
             socket_backend,
-            environment,
+            environment_snapshot,
+            services,
             dns_io,
             packet_io,
             packet_sink,
@@ -178,10 +177,8 @@ where
 #[cfg(target_os = "wasi")]
 pub type WasiHostCoreInstance = HostCoreInstance<
     crate::socket::host::wasi_backend::WasiHostSocketBackend,
-    HostConnectorEnvironment<
-        HostConnectorEnvironmentServiceAdapter<
-            crate::socket::host::environment::wasi::WasiHostConnectorEnvironmentIo,
-        >,
+    HostConnectorEnvironmentServiceAdapter<
+        crate::socket::host::environment::wasi::WasiHostConnectorEnvironmentIo,
     >,
 >;
 
