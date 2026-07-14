@@ -209,8 +209,6 @@ impl InterfaceWorker {
 enum NetworkNamespaceId {
     #[cfg(target_os = "linux")]
     LinuxInode(u64),
-    #[cfg(target_os = "linux")]
-    LinuxUnshared(u32),
     #[cfg(not(target_os = "linux"))]
     Unsupported,
 }
@@ -220,31 +218,34 @@ type InterfaceWorkerKey = (NetworkNamespaceId, String);
 static INTERFACE_MANAGERS: Lazy<DashMap<InterfaceWorkerKey, Weak<InterfaceWorker>>> =
     Lazy::new(DashMap::new);
 
-fn current_network_namespace_id() -> NetworkNamespaceId {
+fn current_network_namespace_id() -> Option<NetworkNamespaceId> {
     #[cfg(target_os = "linux")]
     {
         match std::fs::metadata("/proc/thread-self/ns/net") {
-            Ok(metadata) => return NetworkNamespaceId::LinuxInode(metadata.ino()),
+            Ok(metadata) => return Some(NetworkNamespaceId::LinuxInode(metadata.ino())),
             Err(error) => {
-                static NEXT_UNSHARED_ID: AtomicU32 = AtomicU32::new(0);
-                let id = NEXT_UNSHARED_ID.fetch_add(1, Ordering::Relaxed);
                 tracing::warn!(
                     ?error,
                     "failed to identify current network namespace; disabling FakeTCP pnet worker sharing"
                 );
-                return NetworkNamespaceId::LinuxUnshared(id);
+                return None;
             }
         }
     }
 
     #[cfg(not(target_os = "linux"))]
-    NetworkNamespaceId::Unsupported
+    Some(NetworkNamespaceId::Unsupported)
 }
 
 fn get_or_create_worker(interface_name: &str) -> io::Result<Arc<InterfaceWorker>> {
-    let key = (current_network_namespace_id(), interface_name.to_owned());
+    let key = current_network_namespace_id()
+        .map(|namespace_id| (namespace_id, interface_name.to_owned()));
     // Check if we have an active worker
-    if let Some(worker) = INTERFACE_MANAGERS.get(&key).and_then(|w| w.upgrade()) {
+    if let Some(worker) = key
+        .as_ref()
+        .and_then(|key| INTERFACE_MANAGERS.get(key))
+        .and_then(|worker| worker.upgrade())
+    {
         return Ok(worker);
     }
 
@@ -268,7 +269,9 @@ fn get_or_create_worker(interface_name: &str) -> io::Result<Arc<InterfaceWorker>
         })?;
 
     let worker = InterfaceWorker::new(interface)?;
-    INTERFACE_MANAGERS.insert(key, Arc::downgrade(&worker));
+    if let Some(key) = key {
+        INTERFACE_MANAGERS.insert(key, Arc::downgrade(&worker));
+    }
     Ok(worker)
 }
 
