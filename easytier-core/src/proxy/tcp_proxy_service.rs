@@ -1,7 +1,7 @@
 use std::future::Future;
 use std::sync::{
     Arc, Weak,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use std::time::Duration;
 
@@ -35,11 +35,14 @@ use super::tcp_proxy_engine::{
 
 fn spawn_tcp_proxy_task(
     started: &AtomicBool,
+    generation: &AtomicU64,
+    expected_generation: u64,
     tasks: &std::sync::Mutex<JoinSet<()>>,
     task: impl Future<Output = ()> + Send + 'static,
 ) -> bool {
     let mut tasks = tasks.lock().unwrap();
-    if !started.load(Ordering::Acquire) {
+    if !started.load(Ordering::Acquire) || generation.load(Ordering::Acquire) != expected_generation
+    {
         return false;
     }
     tasks.spawn(task);
@@ -65,6 +68,7 @@ pub struct TcpProxyService<
     smoltcp_stack: std::sync::Mutex<Option<Arc<SmolTcpStack>>>,
     tasks: std::sync::Mutex<JoinSet<()>>,
     started: AtomicBool,
+    generation: AtomicU64,
 }
 
 impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDestinationConnector>
@@ -111,6 +115,7 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
             smoltcp_stack: std::sync::Mutex::new(None),
             tasks: std::sync::Mutex::new(JoinSet::new()),
             started: AtomicBool::new(false),
+            generation: AtomicU64::new(0),
         })
     }
 
@@ -126,12 +131,16 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
         if self.started.swap(true, Ordering::AcqRel) {
             return Ok(());
         }
+        let generation = self
+            .generation
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1);
 
         let snapshot = self.runtime.proxy_runtime_snapshot();
         let start_result = if snapshot.smoltcp_enabled {
             #[cfg(feature = "proxy-smoltcp-stack")]
             {
-                self.start_smoltcp().await
+                self.start_smoltcp(generation).await
             }
 
             #[cfg(not(feature = "proxy-smoltcp-stack"))]
@@ -141,7 +150,7 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
                 )))
             }
         } else {
-            self.start_kernel_listener().await
+            self.start_kernel_listener(generation).await
         };
 
         if let Err(err) = start_result {
@@ -152,7 +161,7 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
         if register_pipeline {
             self.register_pipeline().await;
         }
-        self.spawn_syn_cleanup();
+        self.spawn_syn_cleanup(generation);
 
         Ok(())
     }
@@ -216,18 +225,24 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
         self.nic_pipeline_guard.lock().unwrap().replace(nic_guard);
     }
 
-    fn spawn_syn_cleanup(self: &Arc<Self>) {
+    fn spawn_syn_cleanup(self: &Arc<Self>, generation: u64) {
         let service = Arc::downgrade(self);
-        let _ = spawn_tcp_proxy_task(&self.started, &self.tasks, async move {
-            loop {
-                crate::runtime_time::sleep(Duration::from_secs(10)).await;
-                let Some(service) = service.upgrade() else {
-                    break;
-                };
-                service.engine.cleanup_expired_syn(Duration::from_secs(30));
-                service.drain_completed_tasks();
-            }
-        });
+        let _ = spawn_tcp_proxy_task(
+            &self.started,
+            &self.generation,
+            generation,
+            &self.tasks,
+            async move {
+                loop {
+                    crate::runtime_time::sleep(Duration::from_secs(10)).await;
+                    let Some(service) = service.upgrade() else {
+                        break;
+                    };
+                    service.engine.cleanup_expired_syn(Duration::from_secs(30));
+                    service.drain_completed_tasks();
+                }
+            },
+        );
     }
 
     fn drain_completed_tasks(&self) {
@@ -239,7 +254,10 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
         }
     }
 
-    async fn start_kernel_listener(self: &Arc<Self>) -> Result<(), ProxyRuntimeError> {
+    async fn start_kernel_listener(
+        self: &Arc<Self>,
+        generation: u64,
+    ) -> Result<(), ProxyRuntimeError> {
         let listen_addr = std::net::SocketAddr::new(std::net::Ipv4Addr::UNSPECIFIED.into(), 0);
         let listener = self
             .listener_factory
@@ -262,30 +280,36 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
             .replace(listener.clone());
 
         let service = Arc::downgrade(self);
-        let _ = spawn_tcp_proxy_task(&self.started, &self.tasks, async move {
-            loop {
-                let accept_ret = listener.accept().await;
-                let Ok((src_stream, socket_addr)) = accept_ret else {
-                    tracing::error!(
-                        error = ?accept_ret.err(),
-                        "nat tcp listener accept failed"
-                    );
-                    continue;
-                };
-                let Some(service) = service.upgrade() else {
-                    break;
-                };
-                service
-                    .handle_accept(socket_addr, Box::new(src_stream))
-                    .await;
-            }
-        });
+        let _ = spawn_tcp_proxy_task(
+            &self.started,
+            &self.generation,
+            generation,
+            &self.tasks,
+            async move {
+                loop {
+                    let accept_ret = listener.accept().await;
+                    let Ok((src_stream, socket_addr)) = accept_ret else {
+                        tracing::error!(
+                            error = ?accept_ret.err(),
+                            "nat tcp listener accept failed"
+                        );
+                        continue;
+                    };
+                    let Some(service) = service.upgrade() else {
+                        break;
+                    };
+                    service
+                        .handle_accept(generation, socket_addr, Box::new(src_stream))
+                        .await;
+                }
+            },
+        );
 
         Ok(())
     }
 
     #[cfg(feature = "proxy-smoltcp-stack")]
-    async fn start_smoltcp(self: &Arc<Self>) -> Result<(), ProxyRuntimeError> {
+    async fn start_smoltcp(self: &Arc<Self>, generation: u64) -> Result<(), ProxyRuntimeError> {
         let local_ip = self
             .runtime
             .proxy_runtime_snapshot()
@@ -297,39 +321,53 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
 
         let mut output_rx = stack.take_output_rx().await?;
         let peer_manager = self.peer_manager.clone();
-        let _ = spawn_tcp_proxy_task(&self.started, &self.tasks, async move {
-            while let Some(data) = output_rx.recv().await {
-                tracing::trace!(?data, "receive from smoltcp stack and send to peer manager");
-                let dst = match output_dst_ip(&data) {
-                    Ok(dst) => dst,
-                    Err(err) => {
-                        tracing::error!(?err, ?data, "invalid smoltcp output packet");
-                        continue;
+        let _ = spawn_tcp_proxy_task(
+            &self.started,
+            &self.generation,
+            generation,
+            &self.tasks,
+            async move {
+                while let Some(data) = output_rx.recv().await {
+                    tracing::trace!(?data, "receive from smoltcp stack and send to peer manager");
+                    let dst = match output_dst_ip(&data) {
+                        Ok(dst) => dst,
+                        Err(err) => {
+                            tracing::error!(?err, ?data, "invalid smoltcp output packet");
+                            continue;
+                        }
+                    };
+                    let packet = ZCPacket::new_with_payload(&data);
+                    if let Err(err) = peer_manager.send_msg_by_ip(packet, dst, false).await {
+                        tracing::error!(?err, "send to peer failed in smoltcp sender");
                     }
-                };
-                let packet = ZCPacket::new_with_payload(&data);
-                if let Err(err) = peer_manager.send_msg_by_ip(packet, dst, false).await {
-                    tracing::error!(?err, "send to peer failed in smoltcp sender");
                 }
-            }
-            tracing::error!("smoltcp stack stream exited");
-        });
+                tracing::error!("smoltcp stack stream exited");
+            },
+        );
 
         let service = Arc::downgrade(self);
         let accept_stack = stack.clone();
-        let _ = spawn_tcp_proxy_task(&self.started, &self.tasks, async move {
-            loop {
-                let accept_ret = accept_stack.accept().await;
-                let Ok((socket_addr, src_stream)) = accept_ret else {
-                    tracing::error!(error = ?accept_ret.err(), "smoltcp accept failed");
-                    continue;
-                };
-                let Some(service) = service.upgrade() else {
-                    break;
-                };
-                service.handle_accept(socket_addr, src_stream).await;
-            }
-        });
+        let _ = spawn_tcp_proxy_task(
+            &self.started,
+            &self.generation,
+            generation,
+            &self.tasks,
+            async move {
+                loop {
+                    let accept_ret = accept_stack.accept().await;
+                    let Ok((socket_addr, src_stream)) = accept_ret else {
+                        tracing::error!(error = ?accept_ret.err(), "smoltcp accept failed");
+                        continue;
+                    };
+                    let Some(service) = service.upgrade() else {
+                        break;
+                    };
+                    service
+                        .handle_accept(generation, socket_addr, src_stream)
+                        .await;
+                }
+            },
+        );
 
         self.smoltcp_stack.lock().unwrap().replace(stack);
         Ok(())
@@ -337,6 +375,7 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
 
     async fn handle_accept(
         self: Arc<Self>,
+        generation: u64,
         socket_addr: std::net::SocketAddr,
         src_stream: Box<dyn TcpProxyStream>,
     ) {
@@ -359,6 +398,8 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
 
         if !spawn_tcp_proxy_task(
             &self.started,
+            &self.generation,
+            generation,
             &self.tasks,
             Self::connect_to_nat_dst(self.clone(), src_stream, entry.clone()),
         ) {
@@ -540,11 +581,14 @@ mod tests {
     #[tokio::test]
     async fn stop_fence_linearizes_task_registration() {
         let started = AtomicBool::new(true);
+        let generation = AtomicU64::new(1);
         let tasks = std::sync::Mutex::new(JoinSet::new());
         let accepted_dropped = Arc::new(AtomicBool::new(false));
 
         assert!(spawn_tcp_proxy_task(
             &started,
+            &generation,
+            1,
             &tasks,
             pending_task(accepted_dropped.clone()),
         ));
@@ -553,14 +597,30 @@ mod tests {
         stopping.shutdown().await;
         assert!(accepted_dropped.load(Ordering::Acquire));
 
+        started.store(true, Ordering::Release);
+        generation.store(2, Ordering::Release);
+
         let rejected_dropped = Arc::new(AtomicBool::new(false));
         assert!(!spawn_tcp_proxy_task(
             &started,
+            &generation,
+            1,
             &tasks,
             pending_task(rejected_dropped.clone()),
         ));
         assert!(rejected_dropped.load(Ordering::Acquire));
-        assert!(tasks.lock().unwrap().is_empty());
+
+        let current_dropped = Arc::new(AtomicBool::new(false));
+        assert!(spawn_tcp_proxy_task(
+            &started,
+            &generation,
+            2,
+            &tasks,
+            pending_task(current_dropped.clone()),
+        ));
+        let mut current = std::mem::take(&mut *tasks.lock().unwrap());
+        current.shutdown().await;
+        assert!(current_dropped.load(Ordering::Acquire));
     }
 }
 
