@@ -12,7 +12,7 @@ use easytier_core::peers::encrypt::{derive_key_128, derive_key_256};
 use easytier_core::peers::foreign_network_manager::check_network_in_relay_whitelist;
 use easytier_core::peers::public_ipv6::PublicIpv6Runtime;
 use easytier_core::socket::{NetNamespace, SocketContext};
-use easytier_core::stun::StunSocketMapper;
+use easytier_core::stun::{StunProviderSlot, StunSocketMapper};
 
 use super::{
     PeerId,
@@ -115,7 +115,7 @@ pub struct GlobalCtx {
 
     hostname: Mutex<String>,
 
-    stun_info_collection: Mutex<Arc<dyn StunSocketMapper<RuntimeUdpSocket>>>,
+    stun_info_collection: Arc<StunProviderSlot<RuntimeUdpSocket>>,
 
     running_listeners: Mutex<Vec<url::Url>>,
     advertised_ipv6_public_addr_prefix: Mutex<Option<cidr::Ipv6Cidr>>,
@@ -300,7 +300,9 @@ impl GlobalCtx {
             stun_info_collector.set_stun_servers_v6(default_udp_v6_stun_servers());
         }
 
-        let stun_info_collector = Arc::new(stun_info_collector);
+        let stun_info_collector: Arc<dyn StunSocketMapper<RuntimeUdpSocket>> =
+            Arc::new(stun_info_collector);
+        let stun_info_collection = Arc::new(StunProviderSlot::new(stun_info_collector));
 
         let base_feature_flags = PeerFeatureFlag::default();
         let feature_flags = Self::derive_feature_flags(&flags, base_feature_flags);
@@ -324,12 +326,12 @@ impl GlobalCtx {
 
             ip_collector: Mutex::new(Some(Arc::new(IPCollector::new(
                 net_ns,
-                stun_info_collector.clone(),
+                stun_info_collection.clone(),
             )))),
 
             hostname: Mutex::new(hostname),
 
-            stun_info_collection: Mutex::new(stun_info_collector),
+            stun_info_collection,
 
             running_listeners: Mutex::new(Vec::new()),
             advertised_ipv6_public_addr_prefix: Mutex::new(None),
@@ -505,7 +507,7 @@ impl GlobalCtx {
     }
 
     pub fn get_stun_info_collector(&self) -> Arc<dyn StunSocketMapper<RuntimeUdpSocket>> {
-        self.stun_info_collection.lock().unwrap().clone()
+        self.stun_info_collection.clone()
     }
 
     pub fn replace_stun_info_collector(
@@ -513,13 +515,7 @@ impl GlobalCtx {
         collector: Box<dyn StunSocketMapper<RuntimeUdpSocket>>,
     ) {
         let arc_collector: Arc<dyn StunSocketMapper<RuntimeUdpSocket>> = Arc::from(collector);
-        *self.stun_info_collection.lock().unwrap() = arc_collector.clone();
-
-        // rebuild the ip collector
-        *self.ip_collector.lock().unwrap() = Some(Arc::new(IPCollector::new(
-            self.net_ns.clone(),
-            arc_collector,
-        )));
+        self.stun_info_collection.replace(arc_collector);
     }
 
     pub fn get_running_listeners(&self) -> Vec<url::Url> {
@@ -823,6 +819,21 @@ pub mod tests {
         assert_eq!(
             subscriber.recv().await.unwrap(),
             GlobalCtxEvent::PeerConnRemoved(PeerConnInfo::default())
+        );
+    }
+
+    #[tokio::test]
+    async fn held_stun_provider_handle_observes_replacement() {
+        let global_ctx = GlobalCtx::new(TomlConfigLoader::default());
+        let held_provider = global_ctx.get_stun_info_collector();
+
+        global_ctx.replace_stun_info_collector(Box::new(MockStunInfoCollector {
+            udp_nat_type: NatType::PortRestricted,
+        }));
+
+        assert_eq!(
+            held_provider.get_stun_info().udp_nat_type,
+            NatType::PortRestricted as i32
         );
     }
 

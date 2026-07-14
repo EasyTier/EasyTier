@@ -68,6 +68,70 @@ where
     async fn get_udp_port_mapping_with_socket(&self, socket: Arc<S>) -> anyhow::Result<SocketAddr>;
 }
 
+/// Stable per-instance handle whose underlying STUN provider can be replaced.
+///
+/// Each async operation snapshots the current provider before awaiting so a
+/// replacement never holds the slot lock across host I/O.
+pub struct StunProviderSlot<S>
+where
+    S: VirtualUdpSocket,
+{
+    provider: RwLock<Arc<dyn StunSocketMapper<S>>>,
+}
+
+impl<S> StunProviderSlot<S>
+where
+    S: VirtualUdpSocket,
+{
+    pub fn new(provider: Arc<dyn StunSocketMapper<S>>) -> Self {
+        Self {
+            provider: RwLock::new(provider),
+        }
+    }
+
+    pub fn replace(&self, provider: Arc<dyn StunSocketMapper<S>>) {
+        *self.provider.write().unwrap() = provider;
+    }
+
+    fn current(&self) -> Arc<dyn StunSocketMapper<S>> {
+        self.provider.read().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl<S> StunInfoProvider for StunProviderSlot<S>
+where
+    S: VirtualUdpSocket + 'static,
+{
+    fn get_stun_info(&self) -> StunInfo {
+        self.current().get_stun_info()
+    }
+
+    async fn get_udp_port_mapping(&self, local_port: u16) -> anyhow::Result<SocketAddr> {
+        self.current().get_udp_port_mapping(local_port).await
+    }
+
+    async fn get_tcp_port_mapping(&self, local_port: u16) -> anyhow::Result<SocketAddr> {
+        self.current().get_tcp_port_mapping(local_port).await
+    }
+
+    fn update_stun_info(&self) {
+        self.current().update_stun_info();
+    }
+}
+
+#[async_trait]
+impl<S> StunSocketMapper<S> for StunProviderSlot<S>
+where
+    S: VirtualUdpSocket + 'static,
+{
+    async fn get_udp_port_mapping_with_socket(&self, socket: Arc<S>) -> anyhow::Result<SocketAddr> {
+        self.current()
+            .get_udp_port_mapping_with_socket(socket)
+            .await
+    }
+}
+
 pub struct StunInfoCollector<R, D>
 where
     R: StunSocketRuntime,
