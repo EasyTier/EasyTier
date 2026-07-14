@@ -44,7 +44,6 @@ where
 impl<H> AsyncTcpConnector for HostSocks5TcpConnector<H>
 where
     H: VirtualTcpSocketFactory,
-    H::Socket: Sync,
 {
     type S = H::Socket;
 

@@ -116,6 +116,10 @@ impl WasiInstanceEntry {
                 instance.stop().await;
                 return Err(error);
             }
+            if let Err(error) = instance.start_gateway().await {
+                instance.stop().await;
+                return Err(error);
+            }
             Ok(())
         }));
         Ok(())

@@ -1,5 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
+#[cfg(feature = "smoltcp")]
+use easytier_core::proxy::gateway::{GatewayEvent, GatewayEventSink};
 use easytier_core::{
     connectivity::{
         direct::DirectConnectorOptions,
@@ -60,6 +62,22 @@ pub(crate) type RuntimeCoreInstance = CoreInstance<RuntimeConnectorHost>;
 
 struct GlobalCtxManualConnectivityEventSink {
     global_ctx: ArcGlobalCtx,
+}
+
+#[cfg(feature = "smoltcp")]
+struct GlobalCtxGatewayEventSink {
+    global_ctx: ArcGlobalCtx,
+}
+
+#[cfg(feature = "smoltcp")]
+impl GatewayEventSink for GlobalCtxGatewayEventSink {
+    fn emit(&self, event: GatewayEvent) {
+        match event {
+            GatewayEvent::PortForwardAdded(config) => self
+                .global_ctx
+                .issue_event(GlobalCtxEvent::PortForwardAdded(config.into())),
+        }
+    }
 }
 
 pub(crate) fn runtime_core_config(global_ctx: &ArcGlobalCtx) -> CoreRuntimeConfig {
@@ -263,6 +281,8 @@ pub(crate) fn runtime_core_instance_adapters_with_ring_registry(
         },
         proxy_cidr_monitor: Some(runtime_proxy_cidr_monitor_host(global_ctx.clone())),
         public_ipv6_provider: Some(runtime_public_ipv6_provider_host(&global_ctx)),
+        #[cfg(feature = "smoltcp")]
+        gateway_events: Some(Arc::new(GlobalCtxGatewayEventSink { global_ctx })),
     }
 }
 
@@ -909,7 +929,7 @@ mod tests {
                 }];
             peer
         });
-        instance.update_runtime_config(config).await;
+        instance.update_runtime_config(config).await.unwrap();
         let proxy_networks = instance.node_snapshot().await.proxy_networks;
         assert_eq!(proxy_networks.len(), 1);
         assert_eq!(
@@ -961,7 +981,8 @@ mod tests {
 
         instance
             .update_runtime_config(runtime_instance_config(&global_ctx))
-            .await;
+            .await
+            .unwrap();
         instance.start_proxy().await.unwrap();
         assert!(instance.proxy_is_started());
 
@@ -990,7 +1011,8 @@ mod tests {
             .set_tcp_whitelist(vec!["invalid".to_string()]);
         instance
             .update_runtime_config(runtime_instance_config(&global_ctx))
-            .await;
+            .await
+            .unwrap();
         instance.start().await.unwrap();
         let error = instance.start_network_services(None).await.unwrap_err();
         assert!(
@@ -1052,7 +1074,8 @@ mod tests {
         global_ctx.config.set_dhcp(true);
         instance
             .update_runtime_config(runtime_instance_config(&global_ctx))
-            .await;
+            .await
+            .unwrap();
         instance.start().await.unwrap();
         let error = instance.start_network_services(None).await.unwrap_err();
         assert!(
@@ -1082,7 +1105,8 @@ mod tests {
             .set_ipv6_public_addr_prefix(Some("fd00::/64".parse().unwrap()));
         instance
             .update_runtime_config(runtime_instance_config(&global_ctx))
-            .await;
+            .await
+            .unwrap();
         let error = instance.start().await.unwrap_err();
         assert!(
             error.to_string().contains("not a valid global unicast"),

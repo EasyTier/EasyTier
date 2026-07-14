@@ -2416,7 +2416,6 @@ dependencies = [
  "service-manager",
  "sha2",
  "shellexpand",
- "smoltcp",
  "snow",
  "socket2 0.5.10",
  "strum 0.27.2",

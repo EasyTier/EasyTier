@@ -1,10 +1,6 @@
-use std::{
-    net::SocketAddr,
-    sync::{Arc, Mutex as StdMutex, Weak},
-    time::Duration,
-};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
-use anyhow::{Context, anyhow, bail};
+use anyhow::{Context, anyhow};
 use bytes::Bytes;
 use kcp_sys::{
     endpoint::{KcpEndpoint, KcpPacketReceiver},
@@ -20,19 +16,16 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use easytier_core::{
+    proxy::runtime::TcpProxyStream,
     proxy::wrapped_transport::{
         WrappedTransportAcceptedStream, WrappedTransportConnect, WrappedTransportDatagram,
         WrappedTransportDatagramBuffer, WrappedTransportDestinationIngress, WrappedTransportEngine,
         WrappedTransportEngineStart, WrappedTransportKind, WrappedTransportRole,
     },
-    proxy::{
-        runtime::{TcpProxyDestinationConnector, TcpProxyStream},
-        tcp_proxy_engine::TcpProxyMode,
-    },
 };
 
+use crate::proto::peer_rpc::KcpConnData;
 use crate::utils::task::HedgeExt;
-use crate::{peers::peer_manager::PeerManager, proto::peer_rpc::KcpConnData};
 
 fn create_kcp_endpoint() -> KcpEndpoint {
     let mut kcp_endpoint = KcpEndpoint::new();
@@ -70,12 +63,6 @@ async fn handle_kcp_output(
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct NatDstKcpConnector {
-    pub(crate) kcp_endpoint: Arc<KcpEndpoint>,
-    pub(crate) peer_mgr: Weak<PeerManager>,
-}
-
 async fn connect_kcp_source(
     kcp_endpoint: Arc<KcpEndpoint>,
     my_peer_id: u32,
@@ -108,48 +95,6 @@ async fn connect_kcp_source(
         .hedge(Duration::from_millis(200))
         .await
         .context("failed to connect to peer")
-}
-
-#[async_trait::async_trait]
-impl TcpProxyDestinationConnector for NatDstKcpConnector {
-    type DstStream = KcpStream;
-
-    async fn connect(
-        &self,
-        src: SocketAddr,
-        nat_dst: SocketAddr,
-    ) -> anyhow::Result<Self::DstStream> {
-        let peer_mgr = self
-            .peer_mgr
-            .upgrade()
-            .ok_or_else(|| anyhow!("peer manager is not available"))?;
-
-        let dst_peer = {
-            let SocketAddr::V4(addr) = nat_dst else {
-                bail!("ipv6 is not supported");
-            };
-            peer_mgr
-                .core()
-                .get_peer_map()
-                .get_peer_id_by_ipv4(addr.ip())
-                .await
-                .ok_or_else(|| anyhow!("no peer found for nat dst: {}", nat_dst))?
-        };
-
-        tracing::trace!(?nat_dst, ?dst_peer, "kcp nat");
-        connect_kcp_source(
-            self.kcp_endpoint.clone(),
-            peer_mgr.my_peer_id(),
-            dst_peer,
-            src,
-            nat_dst,
-        )
-        .await
-    }
-
-    fn proxy_mode(&self) -> TcpProxyMode {
-        TcpProxyMode::KcpSrc
-    }
 }
 
 pub struct KcpProxySrc {
@@ -314,22 +259,21 @@ impl KcpProxyServiceState {
 
 pub struct KcpProxyService {
     state: Mutex<Option<KcpProxyServiceState>>,
-    src_endpoint: StdMutex<Option<Arc<KcpEndpoint>>>,
 }
 
 impl KcpProxyService {
     pub fn new() -> Self {
         Self {
             state: Mutex::new(None),
-            src_endpoint: StdMutex::new(None),
         }
     }
 
-    pub fn src_endpoint(&self) -> Option<Arc<KcpEndpoint>> {
-        self.src_endpoint
+    pub async fn source_is_prepared(&self) -> bool {
+        self.state
             .lock()
-            .expect("KCP source endpoint mutex poisoned")
-            .clone()
+            .await
+            .as_ref()
+            .is_some_and(|state| state.src.is_some())
     }
 }
 
@@ -358,11 +302,6 @@ impl WrappedTransportEngine for KcpProxyService {
             None
         };
 
-        *self
-            .src_endpoint
-            .lock()
-            .expect("KCP source endpoint mutex poisoned") =
-            src.as_ref().map(KcpProxySrc::get_kcp_endpoint);
         *state = Some(KcpProxyServiceState { src, dst });
         Ok(())
     }
@@ -433,10 +372,6 @@ impl WrappedTransportEngine for KcpProxyService {
         if let Some(active) = state.as_mut() {
             active.stop().await;
         }
-        self.src_endpoint
-            .lock()
-            .expect("KCP source endpoint mutex poisoned")
-            .take();
         state.take();
     }
 }

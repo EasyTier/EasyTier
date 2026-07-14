@@ -3,9 +3,7 @@ use crate::common::config::{
     process_secure_mode_cfg,
 };
 #[cfg(feature = "ffi-dataplane")]
-use crate::gateway::socks5::Socks5Server;
-#[cfg(feature = "ffi-dataplane")]
-pub use crate::gateway::socks5::{DataPlaneTcpListener, DataPlaneTcpStream, DataPlaneUdpSocket};
+use crate::connector::core_instance::RuntimeCoreInstance;
 use crate::proto::api::{self, manage};
 use crate::proto::rpc_types::controller::BaseController;
 use crate::rpc_service::InstanceRpcService;
@@ -23,6 +21,10 @@ use crate::{
 };
 use anyhow::Context;
 use chrono::{DateTime, Local};
+#[cfg(feature = "ffi-dataplane")]
+pub use easytier_core::proxy::gateway::{
+    DataPlaneTcpListener, DataPlaneTcpStream, DataPlaneUdpSocket,
+};
 use easytier_core::tunnel::ring::RingTunnelRegistry;
 use std::{
     collections::VecDeque,
@@ -51,7 +53,7 @@ struct EasyTierData {
     event_subscriber: RwLock<broadcast::Sender<GlobalCtxEvent>>,
     instance_stop_notifier: Arc<tokio::sync::Notify>,
     #[cfg(feature = "ffi-dataplane")]
-    data_plane: tokio::sync::watch::Sender<Option<Arc<Socks5Server>>>,
+    data_plane: tokio::sync::watch::Sender<Option<Arc<RuntimeCoreInstance>>>,
     #[cfg(feature = "ffi-dataplane")]
     runtime_handle: (
         parking_lot::Mutex<Option<tokio::runtime::Handle>>,
@@ -192,7 +194,7 @@ impl EasyTierLauncher {
 
         #[cfg(feature = "ffi-dataplane")]
         data.data_plane
-            .send_replace(Some(instance.get_socks5_server()));
+            .send_replace(Some(instance.get_core_instance()));
 
         api_service
             .write()
@@ -307,17 +309,12 @@ impl EasyTierLauncher {
         }
     }
 
-    #[cfg(feature = "ffi-dataplane")]
-    pub fn get_data_plane(&self) -> Option<Arc<Socks5Server>> {
-        self.data.data_plane.borrow().clone()
-    }
-
     /// Waits up to `deadline` for the data-plane server to be published.
     #[cfg(feature = "ffi-dataplane")]
-    pub async fn wait_data_plane(
+    async fn wait_data_plane(
         &self,
         deadline: tokio::time::Instant,
-    ) -> Option<Arc<Socks5Server>> {
+    ) -> Option<Arc<RuntimeCoreInstance>> {
         let mut rx = self.data.data_plane.subscribe();
         loop {
             if let Some(server) = rx.borrow_and_update().clone() {
@@ -560,17 +557,17 @@ impl NetworkInstance {
     async fn wait_data_plane(
         &self,
         timeout: std::time::Duration,
-    ) -> anyhow::Result<(Arc<Socks5Server>, tokio::time::Instant)> {
+    ) -> anyhow::Result<(Arc<RuntimeCoreInstance>, tokio::time::Instant)> {
         let deadline = tokio::time::Instant::now() + timeout;
         let launcher = self
             .launcher
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("data plane is not ready"))?;
-        let server = launcher
+        let core_instance = launcher
             .wait_data_plane(deadline)
             .await
             .ok_or_else(|| anyhow::anyhow!("data plane is not ready"))?;
-        Ok((server, deadline))
+        Ok((core_instance, deadline))
     }
 
     #[cfg(feature = "ffi-dataplane")]
@@ -579,8 +576,8 @@ impl NetworkInstance {
         dst_addr: SocketAddr,
         timeout: std::time::Duration,
     ) -> anyhow::Result<DataPlaneTcpStream> {
-        let (server, deadline) = self.wait_data_plane(timeout).await?;
-        server
+        let (core_instance, deadline) = self.wait_data_plane(timeout).await?;
+        core_instance
             .data_plane_tcp_connect(dst_addr, deadline - tokio::time::Instant::now())
             .await
             .map_err(Into::into)
@@ -592,8 +589,8 @@ impl NetworkInstance {
         local_port: u16,
         timeout: std::time::Duration,
     ) -> anyhow::Result<DataPlaneTcpListener> {
-        let (server, deadline) = self.wait_data_plane(timeout).await?;
-        server
+        let (core_instance, deadline) = self.wait_data_plane(timeout).await?;
+        core_instance
             .data_plane_tcp_bind(local_port, deadline - tokio::time::Instant::now())
             .await
             .map_err(Into::into)
@@ -605,8 +602,8 @@ impl NetworkInstance {
         local_port: u16,
         timeout: std::time::Duration,
     ) -> anyhow::Result<DataPlaneUdpSocket> {
-        let (server, deadline) = self.wait_data_plane(timeout).await?;
-        server
+        let (core_instance, deadline) = self.wait_data_plane(timeout).await?;
+        core_instance
             .data_plane_udp_bind(local_port, deadline - tokio::time::Instant::now())
             .await
             .map_err(Into::into)

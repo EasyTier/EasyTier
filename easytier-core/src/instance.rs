@@ -76,6 +76,9 @@ use crate::{
     tunnel::ring::RingTunnelRegistry,
 };
 
+#[cfg(feature = "proxy-smoltcp-stack")]
+use crate::proxy::gateway::{GatewayEventSink, GatewayModule};
+
 use self::{
     public_ipv6_provider::{PublicIpv6ProviderHost, PublicIpv6ProviderService},
     udp_hole_punch::{CoreUdpHolePunchService, UdpHolePunchPlatform},
@@ -267,6 +270,8 @@ where
     pub icmp_proxy_host: Option<Arc<dyn IcmpProxyHost>>,
     pub proxy_cidr_monitor: Option<Arc<dyn ProxyCidrMonitorHost>>,
     pub public_ipv6_provider: Option<Arc<dyn PublicIpv6ProviderHost>>,
+    #[cfg(feature = "proxy-smoltcp-stack")]
+    pub gateway_events: Option<Arc<dyn GatewayEventSink>>,
 }
 
 struct CoreStunDnsAdapter {
@@ -416,6 +421,8 @@ where
     udp_hole_punch: CoreUdpHolePunchService<H>,
     udp_hole_punch_started: AtomicBool,
     transport_proxy: Option<Arc<WrappedTransportProxyModule>>,
+    #[cfg(feature = "proxy-smoltcp-stack")]
+    gateway: Arc<GatewayModule<H>>,
     proxy_cidr_table: Arc<ProxyCidrTable>,
     #[cfg(feature = "proxy-packet")]
     proxy: Arc<CoreProxyModule<H>>,
@@ -605,6 +612,8 @@ where
             icmp_proxy_host,
             proxy_cidr_monitor,
             public_ipv6_provider,
+            #[cfg(feature = "proxy-smoltcp-stack")]
+            gateway_events,
         } = adapters;
         let CoreInstanceConfig {
             initial_peers,
@@ -742,6 +751,16 @@ where
             proxy_cidr_table.clone(),
             tcp_proxy_socket_context,
         );
+        #[cfg(feature = "proxy-smoltcp-stack")]
+        let gateway = GatewayModule::new(
+            runtime_config.clone(),
+            peer_manager.clone(),
+            transport_proxy.as_ref(),
+            host.clone(),
+            dns.clone(),
+            direct_options.tcp_bind.context.clone(),
+            gateway_events.unwrap_or_else(|| Arc::new(())),
+        );
         let direct = DirectConnectorManager::new_with_running_listeners(
             peer_manager.clone(),
             host.clone(),
@@ -777,6 +796,8 @@ where
                 udp_hole_punch,
                 udp_hole_punch_started: AtomicBool::new(false),
                 transport_proxy,
+                #[cfg(feature = "proxy-smoltcp-stack")]
+                gateway,
                 proxy_cidr_table,
                 #[cfg(feature = "proxy-packet")]
                 proxy,
@@ -829,6 +850,8 @@ where
         }
         self.udp_hole_punch.stop().await;
         self.udp_hole_punch_started.store(false, Ordering::Release);
+        #[cfg(feature = "proxy-smoltcp-stack")]
+        self.gateway.stop().await;
         if let Some(transport_proxy) = &self.transport_proxy {
             transport_proxy.stop().await;
         }
@@ -1144,6 +1167,71 @@ where
         Ok(())
     }
 
+    #[cfg(feature = "proxy-smoltcp-stack")]
+    pub async fn start_gateway(self: &Arc<Self>) -> anyhow::Result<()> {
+        let _operation = self.operation.lock().await;
+        let state = self.state();
+        if state != CoreInstanceState::Running {
+            anyhow::bail!("gateway cannot start from core instance state {state:?}");
+        }
+        if self.cancel.is_cancelled() {
+            anyhow::bail!("gateway start cancelled");
+        }
+        let mut recovery = self.recovery_guard();
+        let start_result = tokio::select! {
+            _ = self.cancel.cancelled() => Err(anyhow::anyhow!("gateway start cancelled")),
+            result = self.gateway.start() => result,
+        };
+        if let Err(error) = start_result {
+            self.gateway.stop().await;
+            recovery.disarm();
+            return Err(error);
+        }
+        if self.cancel.is_cancelled() {
+            self.gateway.stop().await;
+            recovery.disarm();
+            anyhow::bail!("gateway start cancelled");
+        }
+        recovery.disarm();
+        Ok(())
+    }
+
+    #[cfg(not(feature = "proxy-smoltcp-stack"))]
+    pub async fn start_gateway(self: &Arc<Self>) -> anyhow::Result<()> {
+        let state = self.state();
+        if state != CoreInstanceState::Running {
+            anyhow::bail!("gateway cannot start from core instance state {state:?}");
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "proxy-smoltcp-stack")]
+    pub async fn data_plane_tcp_connect(
+        &self,
+        dst_addr: std::net::SocketAddr,
+        timeout: Duration,
+    ) -> anyhow::Result<crate::proxy::gateway::DataPlaneTcpStream> {
+        self.gateway.data_plane_tcp_connect(dst_addr, timeout).await
+    }
+
+    #[cfg(feature = "proxy-smoltcp-stack")]
+    pub async fn data_plane_tcp_bind(
+        &self,
+        local_port: u16,
+        timeout: Duration,
+    ) -> anyhow::Result<crate::proxy::gateway::DataPlaneTcpListener> {
+        self.gateway.data_plane_tcp_bind(local_port, timeout).await
+    }
+
+    #[cfg(feature = "proxy-smoltcp-stack")]
+    pub async fn data_plane_udp_bind(
+        &self,
+        local_port: u16,
+        timeout: Duration,
+    ) -> anyhow::Result<crate::proxy::gateway::DataPlaneUdpSocket> {
+        self.gateway.data_plane_udp_bind(local_port, timeout).await
+    }
+
     async fn refresh_proxy_cidr_table(&self) -> anyhow::Result<()> {
         let _operation = self.operation.lock().await;
         let state = self.state();
@@ -1193,7 +1281,10 @@ where
 
     /// Publishes one complete instance configuration version. Host changes have
     /// no effect until submitted through this method.
-    pub async fn update_runtime_config(&self, config: CoreInstanceRuntimeConfig) {
+    pub async fn update_runtime_config(
+        &self,
+        config: CoreInstanceRuntimeConfig,
+    ) -> anyhow::Result<()> {
         let _operation = self.operation.lock().await;
         let current = self.runtime_config.snapshot();
         let refresh_acl_groups = current.peer.peer_group_memberships
@@ -1205,6 +1296,18 @@ where
         if refresh_acl_groups {
             self.refresh_acl_groups().await;
         }
+        #[cfg(feature = "proxy-smoltcp-stack")]
+        self.gateway
+            .reload_port_forwards(
+                &self
+                    .runtime_config
+                    .snapshot()
+                    .services
+                    .gateway
+                    .port_forwards,
+            )
+            .await?;
+        Ok(())
     }
 
     pub async fn start_dhcp_ipv4(

@@ -175,7 +175,7 @@ impl<A: Authentication> Config<A> {
 
 #[async_trait::async_trait]
 pub trait AsyncTcpConnector {
-    type S: AsyncRead + AsyncWrite + Unpin + Send + Sync;
+    type S: AsyncRead + AsyncWrite + Unpin + Send;
 
     async fn tcp_connect(&self, addr: SocketAddr, timeout_s: u64) -> Result<Self::S>;
 }

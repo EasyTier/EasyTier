@@ -959,6 +959,7 @@ impl WrappedTransportProxyModule {
     }
 
     #[cfg(feature = "proxy-packet")]
+    #[cfg(any(feature = "proxy-smoltcp-stack", test))]
     pub(crate) async fn source_connect_ready(&self, transport: WrappedTransportKind) -> bool {
         let state = self.state.lock().await;
         state.active
@@ -969,6 +970,7 @@ impl WrappedTransportProxyModule {
     }
 
     #[cfg(feature = "proxy-packet")]
+    #[cfg(any(feature = "proxy-smoltcp-stack", test))]
     pub(crate) async fn connect_source(
         &self,
         transport: WrappedTransportKind,

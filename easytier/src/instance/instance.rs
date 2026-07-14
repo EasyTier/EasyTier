@@ -11,8 +11,10 @@ use std::time::Duration;
 use anyhow::Context;
 use cidr::{IpCidr, Ipv4Inet};
 use easytier_core::dhcp::DhcpIpv4Host;
+#[cfg(any(feature = "kcp", feature = "quic"))]
+use easytier_core::proxy::wrapped_transport::WrappedTransportEngine;
 use easytier_core::proxy::wrapped_transport::{
-    WrappedTransportEngine, WrappedTransportEngineBuild, WrappedTransportEngineFactory,
+    WrappedTransportEngineBuild, WrappedTransportEngineFactory,
 };
 use easytier_core::tunnel::ring::RingTunnelRegistry;
 #[cfg(feature = "tun")]
@@ -73,9 +75,6 @@ use crate::vpn_portal::{self, VpnPortal};
 #[cfg(feature = "magic-dns")]
 use super::dns_server::{MAGIC_DNS_FAKE_IP, runner::DnsRunner};
 use super::public_ipv6_provider::validate_public_ipv6_config_values;
-
-#[cfg(feature = "socks5")]
-use crate::gateway::socks5::Socks5Server;
 
 struct RuntimeTransportProxyFactory;
 
@@ -271,8 +270,6 @@ struct ConfigOperation {
 #[derive(Clone)]
 pub struct InstanceConfigPatcher {
     global_ctx: Weak<GlobalCtx>,
-    #[cfg(feature = "socks5")]
-    socks5_server: Weak<Socks5Server>,
     core_instance: Weak<RuntimeCoreInstance>,
     peer_manager: Weak<PeerManager>,
     operation: Arc<ConfigOperation>,
@@ -396,7 +393,7 @@ impl InstanceConfigPatcher {
 
         core_instance
             .update_runtime_config(runtime_instance_config(&global_ctx))
-            .await;
+            .await?;
         let provider_config_changed = patch_result?;
         global_ctx.issue_event(GlobalCtxEvent::ConfigPatched(patch_for_event));
 
@@ -444,10 +441,6 @@ impl InstanceConfigPatcher {
         if port_forwards.is_empty() {
             return Ok(());
         }
-        #[cfg(feature = "socks5")]
-        let Some(socks5_server) = self.socks5_server.upgrade() else {
-            return Err(anyhow::anyhow!("socks5 server not available"));
-        };
         let global_ctx = weak_upgrade(&self.global_ctx)?;
 
         let mut current_forwards = global_ctx.config.get_port_forwards();
@@ -461,14 +454,7 @@ impl InstanceConfigPatcher {
         InstanceConfigPatcher::trace_patchables(&patches);
         crate::proto::api::config::patch_vec(&mut current_forwards, patches);
 
-        global_ctx
-            .config
-            .set_port_forwards(current_forwards.clone());
-        #[cfg(feature = "socks5")]
-        socks5_server
-            .reload_port_forwards(&current_forwards)
-            .await
-            .with_context(|| "Failed to reload port forwards")?;
+        global_ctx.config.set_port_forwards(current_forwards);
 
         Ok(())
     }
@@ -682,9 +668,6 @@ pub struct Instance {
 
     vpn_portal: Arc<Mutex<Box<dyn VpnPortal>>>,
 
-    #[cfg(feature = "socks5")]
-    socks5_server: Arc<Socks5Server>,
-
     global_ctx: ArcGlobalCtx,
 }
 
@@ -887,9 +870,6 @@ impl Instance {
         #[cfg(not(feature = "wireguard"))]
         let vpn_portal_inst = vpn_portal::NullVpnPortal;
 
-        #[cfg(feature = "socks5")]
-        let socks5_server = Socks5Server::new(global_ctx.clone(), peer_manager.clone());
-
         Instance {
             inst_name: global_ctx.inst_name.clone(),
             id,
@@ -906,9 +886,6 @@ impl Instance {
             transport_proxy,
 
             vpn_portal: Arc::new(Mutex::new(Box::new(vpn_portal_inst))),
-
-            #[cfg(feature = "socks5")]
-            socks5_server,
 
             global_ctx,
         }
@@ -1083,7 +1060,7 @@ impl Instance {
         }
         self.core_instance
             .update_runtime_config(runtime_instance_config(&self.global_ctx))
-            .await;
+            .await?;
         self.core_instance.start().await?;
 
         #[cfg(feature = "tun")]
@@ -1108,15 +1085,7 @@ impl Instance {
         }
 
         #[cfg(feature = "socks5")]
-        self.socks5_server
-            .run(
-                #[cfg(feature = "kcp")]
-                self.transport_proxy
-                    .kcp()
-                    .src_endpoint()
-                    .map(|endpoint| Arc::downgrade(&endpoint)),
-            )
-            .await?;
+        self.core_instance.start_gateway().await?;
 
         Ok(())
     }
@@ -1151,11 +1120,6 @@ impl Instance {
 
     pub(crate) fn ring_registry(&self) -> Arc<RingTunnelRegistry> {
         self.ring_registry.clone()
-    }
-
-    #[cfg(feature = "ffi-dataplane")]
-    pub fn get_socks5_server(&self) -> Arc<Socks5Server> {
-        self.socks5_server.clone()
     }
 
     pub async fn close_peer_conn(
@@ -1264,8 +1228,6 @@ impl Instance {
         #[derive(Clone)]
         pub struct PortForwardManagerRpcService {
             global_ctx: Weak<GlobalCtx>,
-            #[cfg(feature = "socks5")]
-            socks5_server: Weak<Socks5Server>,
         }
 
         #[async_trait::async_trait]
@@ -1285,8 +1247,6 @@ impl Instance {
 
         PortForwardManagerRpcService {
             global_ctx: Arc::downgrade(&self.global_ctx),
-            #[cfg(feature = "socks5")]
-            socks5_server: Arc::downgrade(&self.socks5_server),
         }
     }
 
@@ -1349,8 +1309,6 @@ impl Instance {
     pub fn get_config_patcher(&self) -> InstanceConfigPatcher {
         InstanceConfigPatcher {
             global_ctx: Arc::downgrade(&self.global_ctx),
-            #[cfg(feature = "socks5")]
-            socks5_server: Arc::downgrade(&self.socks5_server),
             core_instance: Arc::downgrade(&self.core_instance),
             peer_manager: Arc::downgrade(&self.peer_manager),
             operation: self.config_operation.clone(),
@@ -1873,9 +1831,9 @@ mod tests {
         .unwrap();
         kcp.activate().await.unwrap();
 
-        assert!(kcp.src_endpoint().is_some());
+        assert!(kcp.source_is_prepared().await);
         kcp.stop().await;
-        assert!(kcp.src_endpoint().is_none());
+        assert!(!kcp.source_is_prepared().await);
     }
 
     #[cfg(feature = "quic")]
