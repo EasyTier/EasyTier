@@ -5,6 +5,7 @@ use anyhow::Context;
 use std::fmt;
 use std::io;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+use std::vec::IntoIter;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
@@ -86,6 +87,19 @@ impl TargetAddr {
             }
         }
         Ok(buf)
+    }
+}
+
+impl std::net::ToSocketAddrs for TargetAddr {
+    type Iter = IntoIter<SocketAddr>;
+
+    fn to_socket_addrs(&self) -> io::Result<Self::Iter> {
+        match self {
+            TargetAddr::Ip(address) => Ok(vec![*address].into_iter()),
+            TargetAddr::Domain(_, _) => Err(io::Error::other(
+                "domain name has to be explicitly resolved",
+            )),
+        }
     }
 }
 

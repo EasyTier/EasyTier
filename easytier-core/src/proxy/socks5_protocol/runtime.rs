@@ -93,7 +93,6 @@ where
         Ok(Box::new(HostSocks5UdpAssociation {
             inbound,
             host: self.host.clone(),
-            dns: self.dns.clone(),
             socket_context: self.socket_context.clone(),
             client: Mutex::new(None),
         }))
@@ -106,7 +105,6 @@ where
 {
     inbound: Arc<H::Socket>,
     host: Arc<H>,
-    dns: Arc<dyn DnsResolver>,
     socket_context: SocketContext,
     client: Mutex<Option<SocketAddr>>,
 }
@@ -121,18 +119,22 @@ where
     }
 
     async fn transfer(self: Box<Self>) -> Result<()> {
-        let runtime = HostSocks5ServerRuntime::new(
-            self.host.clone(),
-            self.dns.clone(),
-            self.socket_context.clone(),
-        );
         let outbound = self
             .host
-            .bind_udp(runtime.udp_bind_options())
+            .bind_udp(
+                UdpBindOptions::socks5()
+                    .with_context(self.socket_context.clone().with_ip_version(IpVersion::V6))
+                    .with_local_addr(Some(SocketAddr::V6(SocketAddrV6::new(
+                        Ipv6Addr::UNSPECIFIED,
+                        0,
+                        0,
+                        0,
+                    )))),
+            )
             .await
             .map_err(SocksError::Other)?;
         tokio::try_join!(
-            transfer_requests(self.as_ref(), outbound.as_ref(), &runtime),
+            transfer_requests(self.as_ref(), outbound.as_ref()),
             transfer_responses(self.as_ref(), outbound.as_ref()),
         )?;
         Ok(())
@@ -142,7 +144,6 @@ where
 async fn transfer_requests<H>(
     association: &HostSocks5UdpAssociation<H>,
     outbound: &H::Socket,
-    runtime: &HostSocks5ServerRuntime<H>,
 ) -> Result<()>
 where
     H: VirtualUdpSocketFactory,
@@ -165,7 +166,15 @@ where
             return Ok(());
         }
 
-        let mut target = runtime.resolve_target(target).await?;
+        let mut target = match target {
+            TargetAddr::Ip(address) => address,
+            TargetAddr::Domain(_, _) => {
+                return Err(io::Error::other(
+                    "SOCKS UDP domain targets must be explicitly resolved by the client",
+                )
+                .into());
+            }
+        };
         if let IpAddr::V4(ipv4) = target.ip() {
             target.set_ip(IpAddr::V6(ipv4.to_ipv6_mapped()));
         }
@@ -196,6 +205,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct StaticDns;
@@ -208,7 +218,11 @@ mod tests {
         }
     }
 
-    struct MockSocket;
+    #[derive(Default)]
+    struct MockSocket {
+        receives: Mutex<VecDeque<(Vec<u8>, SocketAddr)>>,
+        sends: Mutex<Vec<(Vec<u8>, SocketAddr)>>,
+    }
 
     #[async_trait::async_trait]
     impl VirtualUdpSocket for MockSocket {
@@ -216,12 +230,15 @@ mod tests {
             Ok("[::]:42000".parse().unwrap())
         }
 
-        async fn send_to(&self, _data: &[u8], _addr: SocketAddr) -> io::Result<usize> {
-            unreachable!()
+        async fn send_to(&self, data: &[u8], addr: SocketAddr) -> io::Result<usize> {
+            self.sends.lock().unwrap().push((data.to_vec(), addr));
+            Ok(data.len())
         }
 
-        async fn recv_from(&self, _buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
-            unreachable!()
+        async fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
+            let (data, addr) = self.receives.lock().unwrap().pop_front().unwrap();
+            buf[..data.len()].copy_from_slice(&data);
+            Ok((data.len(), addr))
         }
     }
 
@@ -238,7 +255,7 @@ mod tests {
         async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
             self.binds.fetch_add(1, Ordering::Relaxed);
             self.options.lock().unwrap().push(options);
-            Ok(Arc::new(MockSocket))
+            Ok(Arc::new(MockSocket::default()))
         }
     }
 
@@ -266,5 +283,67 @@ mod tests {
         );
         assert_eq!(options[0].context.socket_mark, context.socket_mark);
         assert_eq!(options[0].context.ip_version, IpVersion::V6);
+    }
+
+    #[tokio::test]
+    async fn udp_requests_pin_the_first_client_and_map_ipv4_targets() {
+        let client: SocketAddr = "192.0.2.1:1000".parse().unwrap();
+        let other_client: SocketAddr = "192.0.2.2:1000".parse().unwrap();
+        let target: SocketAddr = "198.51.100.3:53".parse().unwrap();
+        let inbound = Arc::new(MockSocket::default());
+        let outbound = MockSocket::default();
+
+        let mut request = new_udp_header(target).unwrap();
+        request.extend_from_slice(b"first");
+        let mut ignored = new_udp_header(target).unwrap();
+        ignored.extend_from_slice(b"ignored");
+        let mut fragmented = new_udp_header(target).unwrap();
+        fragmented[2] = 1;
+        inbound.receives.lock().unwrap().extend([
+            (request, client),
+            (ignored, other_client),
+            (fragmented, client),
+        ]);
+
+        let association = HostSocks5UdpAssociation {
+            inbound,
+            host: Arc::new(MockHost::default()),
+            socket_context: SocketContext::default(),
+            client: Mutex::new(None),
+        };
+        transfer_requests(&association, &outbound).await.unwrap();
+
+        assert_eq!(*association.client.lock().unwrap(), Some(client));
+        let sends = outbound.sends.lock().unwrap();
+        assert_eq!(sends.len(), 1);
+        assert_eq!(sends[0].0, b"first");
+        assert_eq!(sends[0].1, "[::ffff:198.51.100.3]:53".parse().unwrap());
+    }
+
+    #[tokio::test]
+    async fn udp_requests_reject_domain_targets_without_dns() {
+        let client: SocketAddr = "192.0.2.1:1000".parse().unwrap();
+        let inbound = Arc::new(MockSocket::default());
+        let outbound = MockSocket::default();
+        let mut request = new_udp_header(("peer.example", 53)).unwrap();
+        request.extend_from_slice(b"query");
+        inbound
+            .receives
+            .lock()
+            .unwrap()
+            .push_back((request, client));
+
+        let association = HostSocks5UdpAssociation {
+            inbound,
+            host: Arc::new(MockHost::default()),
+            socket_context: SocketContext::default(),
+            client: Mutex::new(None),
+        };
+        let error = transfer_requests(&association, &outbound)
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("must be explicitly resolved"));
+        assert!(outbound.sends.lock().unwrap().is_empty());
     }
 }

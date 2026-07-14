@@ -76,6 +76,36 @@ func TestDecodeSTUNProbePurposes(t *testing.T) {
 	}
 }
 
+func TestDecodeSocks5UDPBindPurpose(t *testing.T) {
+	encoded := make([]byte, 48)
+	encoded[0] = 2
+	encoded[28] = byte(IPVersionV6)
+	encoded[42] = byte(UDPBindSocks5)
+	options, err := decodeUDPBindOptions(encoded)
+	if err != nil {
+		t.Fatalf("decode SOCKS5 UDP options: %v", err)
+	}
+	if options.Purpose != UDPBindSocks5 {
+		t.Fatalf("decoded UDP purpose %d, want Socks5", options.Purpose)
+	}
+}
+
+func TestNetSocketFactorySelectsDualStackForSocks5(t *testing.T) {
+	options := UDPBindOptions{
+		Context:   SocketContext{IPVersion: IPVersionV6},
+		LocalAddr: &net.UDPAddr{IP: net.IPv6unspecified},
+		OnlyV6:    false,
+		Purpose:   UDPBindSocks5,
+	}
+	if network := udpNetwork(options); network != "udp" {
+		t.Fatalf("SOCKS5 UDP network %q, want dual-stack udp", network)
+	}
+	options.OnlyV6 = true
+	if network := udpNetwork(options); network != "udp6" {
+		t.Fatalf("IPv6-only UDP network %q, want udp6", network)
+	}
+}
+
 func TestDecodeTCPBindPolicyForCustomFactory(t *testing.T) {
 	encoded := make([]byte, 78)
 	encoded[0] = 2

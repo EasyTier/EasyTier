@@ -334,7 +334,7 @@ func decodeUDPBindOptions(encoded []byte) (UDPBindOptions, error) {
 	if err != nil {
 		return UDPBindOptions{}, err
 	}
-	if remainder[3] > 5 {
+	if remainder[3] > byte(UDPBindSocks5) {
 		return UDPBindOptions{}, fmt.Errorf("invalid UDP purpose")
 	}
 	device, err := decodeBindDevice(remainder[4:])

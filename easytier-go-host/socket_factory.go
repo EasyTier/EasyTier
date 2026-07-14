@@ -26,6 +26,7 @@ const (
 	UDPBindPortBoundListener
 	UDPBindProxyNAT
 	UDPBindSTUNProbe
+	UDPBindSocks5
 )
 
 type TCPListenPurpose uint8
@@ -111,15 +112,27 @@ func (NetSocketFactory) BindUDP(
 	options UDPBindOptions,
 ) (net.PacketConn, error) {
 	if options.Context.SocketMark != nil || options.Context.NetNS != nil ||
-		options.BindDevice != nil || options.ReuseAddr ||
-		options.ReusePort || options.OnlyV6 {
+		options.BindDevice != nil || options.ReuseAddr || options.ReusePort {
 		return nil, fmt.Errorf("non-default UDP bind policy is not supported by NetSocketFactory")
 	}
-	network := "udp4"
-	if options.LocalAddr != nil && options.LocalAddr.IP.To4() == nil {
-		network = "udp6"
-	}
+	network := udpNetwork(options)
 	return net.ListenUDP(network, options.LocalAddr)
+}
+
+func udpNetwork(options UDPBindOptions) string {
+	if options.LocalAddr != nil && options.LocalAddr.IP.To4() != nil {
+		return "udp4"
+	}
+	if options.OnlyV6 {
+		return "udp6"
+	}
+	if options.LocalAddr != nil && len(options.LocalAddr.IP) != 0 {
+		return "udp"
+	}
+	if options.Context.IPVersion == IPVersionV4 {
+		return "udp4"
+	}
+	return "udp"
 }
 
 func (NetSocketFactory) ListenTCP(
