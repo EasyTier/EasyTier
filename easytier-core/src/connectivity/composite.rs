@@ -1,8 +1,10 @@
 //! Composes process-wide socket capabilities with instance-scoped network facts.
 
 use std::{
+    future::Future,
     net::{IpAddr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
     sync::Arc,
+    time::{Duration, Instant},
 };
 
 use async_trait::async_trait;
@@ -25,6 +27,51 @@ use crate::{
         },
     },
 };
+
+const INTERFACE_ADDR_CACHE_TTL: Duration = Duration::from_secs(60);
+
+#[derive(Clone)]
+struct CachedInterfaceAddrs {
+    context: SocketContext,
+    collected_at: Instant,
+    response: GetIpListResponse,
+}
+
+struct InterfaceAddrCache {
+    entries: tokio::sync::Mutex<Vec<CachedInterfaceAddrs>>,
+    ttl: Duration,
+}
+
+impl InterfaceAddrCache {
+    fn new(ttl: Duration) -> Self {
+        Self {
+            entries: tokio::sync::Mutex::new(Vec::new()),
+            ttl,
+        }
+    }
+
+    async fn get_or_collect<F, Fut>(&self, context: &SocketContext, collect: F) -> GetIpListResponse
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = GetIpListResponse>,
+    {
+        // Keep the lock across collection so concurrent misses cannot perform
+        // duplicate host I/O or let an older result overwrite a newer one.
+        let mut entries = self.entries.lock().await;
+        entries.retain(|entry| entry.collected_at.elapsed() < self.ttl);
+        if let Some(entry) = entries.iter().find(|entry| &entry.context == context) {
+            return entry.response.clone();
+        }
+
+        let response = collect().await;
+        entries.push(CachedInterfaceAddrs {
+            context: context.clone(),
+            collected_at: Instant::now(),
+            response: response.clone(),
+        });
+        response
+    }
+}
 
 /// Mechanical connector operations supplied by one process-wide runtime.
 #[async_trait]
@@ -66,6 +113,7 @@ pub trait ConnectorEnvironment: Send + Sync + 'static {
 pub struct ConnectorHostAdapter<S, E> {
     sockets: Arc<S>,
     environment: Arc<E>,
+    interface_addrs: InterfaceAddrCache,
 }
 
 impl<S, E> ConnectorHostAdapter<S, E> {
@@ -73,7 +121,19 @@ impl<S, E> ConnectorHostAdapter<S, E> {
         Self {
             sockets,
             environment,
+            interface_addrs: InterfaceAddrCache::new(INTERFACE_ADDR_CACHE_TTL),
         }
+    }
+}
+
+impl<S, E> ConnectorHostAdapter<S, E>
+where
+    S: ConnectorRuntime,
+{
+    async fn cached_ip_addrs(&self, context: &SocketContext) -> GetIpListResponse {
+        self.interface_addrs
+            .get_or_collect(context, || self.sockets.collect_ip_addrs(context))
+            .await
     }
 }
 
@@ -162,8 +222,7 @@ where
 
     async fn interface_addrs(&self) -> anyhow::Result<ManualInterfaceAddrs> {
         let addrs = self
-            .sockets
-            .collect_ip_addrs(&self.environment.socket_context())
+            .cached_ip_addrs(&self.environment.socket_context())
             .await;
         Ok(ManualInterfaceAddrs {
             interface_ipv4s: addrs
@@ -197,11 +256,11 @@ where
     E: ConnectorEnvironment,
 {
     async fn collect_ip_addrs(&self, context: &SocketContext) -> GetIpListResponse {
-        self.sockets.collect_ip_addrs(context).await
+        self.cached_ip_addrs(context).await
     }
 
     async fn collect_foreign_ip_addrs(&self, context: &SocketContext) -> GetIpListResponse {
-        self.sockets.collect_ip_addrs(context).await
+        self.cached_ip_addrs(context).await
     }
 
     fn mapped_listeners(&self) -> Vec<Url> {
@@ -249,4 +308,110 @@ fn valid_public_ipv6_candidate(ip: Ipv6Addr) -> bool {
         || ip.is_unique_local()
         || ip.is_unicast_link_local()
         || ip.is_multicast())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use tokio::sync::oneshot;
+
+    use super::*;
+    use crate::socket::{IpVersion, NetNamespace};
+
+    #[tokio::test]
+    async fn concurrent_cache_misses_share_one_collection() {
+        let cache = Arc::new(InterfaceAddrCache::new(Duration::from_secs(60)));
+        let context = SocketContext::default();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (started_tx, started_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+
+        let first = tokio::spawn({
+            let cache = cache.clone();
+            let context = context.clone();
+            let calls = calls.clone();
+            async move {
+                cache
+                    .get_or_collect(&context, || async move {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        let _ = started_tx.send(());
+                        let _ = release_rx.await;
+                        GetIpListResponse::default()
+                    })
+                    .await
+            }
+        });
+        started_rx.await.unwrap();
+
+        let (second_started_tx, second_started_rx) = oneshot::channel();
+        let second = tokio::spawn({
+            let cache = cache.clone();
+            let context = context.clone();
+            let calls = calls.clone();
+            async move {
+                let _ = second_started_tx.send(());
+                cache
+                    .get_or_collect(&context, || async move {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        GetIpListResponse::default()
+                    })
+                    .await
+            }
+        });
+        second_started_rx.await.unwrap();
+        tokio::task::yield_now().await;
+        let _ = release_tx.send(());
+
+        first.await.unwrap();
+        second.await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn cache_keys_include_the_complete_socket_context() {
+        let cache = InterfaceAddrCache::new(Duration::from_secs(60));
+        let calls = AtomicUsize::new(0);
+        let contexts = [
+            SocketContext::default(),
+            SocketContext::default().with_ip_version(IpVersion::V4),
+            SocketContext::default().with_socket_mark(Some(7)),
+            SocketContext::default().with_netns(Some(NetNamespace::new("foreign-a"))),
+        ];
+
+        for context in &contexts {
+            cache
+                .get_or_collect(context, || async {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    GetIpListResponse::default()
+                })
+                .await;
+        }
+        cache
+            .get_or_collect(&contexts[0], || async {
+                calls.fetch_add(1, Ordering::SeqCst);
+                GetIpListResponse::default()
+            })
+            .await;
+
+        assert_eq!(calls.load(Ordering::SeqCst), contexts.len());
+    }
+
+    #[tokio::test]
+    async fn expired_entries_are_recollected() {
+        let cache = InterfaceAddrCache::new(Duration::ZERO);
+        let calls = AtomicUsize::new(0);
+        let context = SocketContext::default();
+
+        for _ in 0..2 {
+            cache
+                .get_or_collect(&context, || async {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    GetIpListResponse::default()
+                })
+                .await;
+        }
+
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
 }

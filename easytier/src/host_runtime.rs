@@ -1,8 +1,6 @@
 use std::{
-    collections::HashMap,
     net::{IpAddr, SocketAddr, SocketAddrV4, SocketAddrV6},
     sync::{Arc, OnceLock},
-    time::{Duration, Instant},
 };
 
 use async_trait::async_trait;
@@ -22,10 +20,7 @@ use easytier_core::{
 };
 
 use crate::{
-    common::{
-        dns::RuntimeDnsResolver, netns::NetNS, network::CACHED_IP_LIST_TIMEOUT_SEC,
-        network::IPCollector,
-    },
+    common::{dns::RuntimeDnsResolver, netns::NetNS, network::IPCollector},
     proto::peer_rpc::GetIpListResponse,
     socket::{
         tcp::{RuntimeTcpListener, RuntimeTcpSocket},
@@ -42,23 +37,6 @@ use crate::{
 pub struct NativeHostRuntime {
     udp_sockets: RuntimeUdpSocketFactory,
     dns: RuntimeDnsResolver,
-    foreign_interface_cache: tokio::sync::Mutex<HashMap<Option<String>, CachedInterfaceAddrs>>,
-}
-
-#[derive(Debug, Clone)]
-struct CachedInterfaceAddrs {
-    collected_at: Instant,
-    response: GetIpListResponse,
-}
-
-impl CachedInterfaceAddrs {
-    fn is_fresh(&self) -> bool {
-        self.collected_at.elapsed() < Duration::from_secs(CACHED_IP_LIST_TIMEOUT_SEC)
-    }
-}
-
-fn foreign_interface_cache_key(context: &SocketContext) -> Option<String> {
-    context.netns.as_ref().map(|netns| netns.token().to_owned())
 }
 
 static NATIVE_HOST_RUNTIME: OnceLock<Arc<NativeHostRuntime>> = OnceLock::new();
@@ -69,7 +47,6 @@ pub(crate) fn native_host_runtime() -> Arc<NativeHostRuntime> {
             Arc::new(NativeHostRuntime {
                 udp_sockets: RuntimeUdpSocketFactory::new(),
                 dns: RuntimeDnsResolver::new(),
-                foreign_interface_cache: tokio::sync::Mutex::new(HashMap::new()),
             })
         })
         .clone()
@@ -174,28 +151,7 @@ impl ConnectorRuntime for NativeHostRuntime {
     }
 
     async fn collect_ip_addrs(&self, context: &SocketContext) -> GetIpListResponse {
-        let cache_key = foreign_interface_cache_key(context);
-        if let Some(response) = self
-            .foreign_interface_cache
-            .lock()
-            .await
-            .get(&cache_key)
-            .filter(|cached| cached.is_fresh())
-            .map(|cached| cached.response.clone())
-        {
-            return response;
-        }
-
-        let response =
-            IPCollector::collect_local_ip_addrs(NetNS::from_socket_context(context)).await;
-        self.foreign_interface_cache.lock().await.insert(
-            cache_key,
-            CachedInterfaceAddrs {
-                collected_at: Instant::now(),
-                response: response.clone(),
-            },
-        );
-        response
+        IPCollector::collect_local_ip_addrs(NetNS::from_socket_context(context)).await
     }
 }
 
@@ -277,34 +233,10 @@ impl DnsRecordResolver for NativeHostRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use easytier_core::socket::NetNamespace;
 
     #[test]
     fn native_host_runtime_is_process_wide() {
         assert!(Arc::ptr_eq(&native_host_runtime(), &native_host_runtime()));
-    }
-
-    #[test]
-    fn foreign_interface_cache_is_keyed_by_netns_and_ttl() {
-        let context = SocketContext::default().with_netns(Some(NetNamespace::new("foreign-a")));
-        assert_ne!(
-            foreign_interface_cache_key(&context),
-            foreign_interface_cache_key(
-                &SocketContext::default().with_netns(Some(NetNamespace::new("foreign-b")))
-            )
-        );
-
-        let cached = CachedInterfaceAddrs {
-            collected_at: Instant::now(),
-            response: GetIpListResponse::default(),
-        };
-        assert!(cached.is_fresh());
-
-        let expired = CachedInterfaceAddrs {
-            collected_at: Instant::now() - Duration::from_secs(CACHED_IP_LIST_TIMEOUT_SEC + 1),
-            ..cached
-        };
-        assert!(!expired.is_fresh());
     }
 
     #[tokio::test]

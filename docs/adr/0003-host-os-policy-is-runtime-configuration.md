@@ -59,6 +59,13 @@ preferred-source discovery all go through `NativeHostRuntime`; portable core
 applies the preferred-source eligibility policy. Running listeners are absent
 from this seam because the core listener registry is authoritative.
 
+Interface observations are cached by the per-instance `ConnectorHostAdapter`,
+not by `NativeHostRuntime`. Core keys entries by the complete `SocketContext`,
+expires them after the existing 60-second observation window, and coalesces
+concurrent misses. This keeps the process runtime stateless and prevents one
+instance, socket mark, IP-family policy, or namespace lifecycle from reusing
+another instance's observation.
+
 ## Rejected alternatives
 
 ### Ban all target conditionals from core
