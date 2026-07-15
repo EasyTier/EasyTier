@@ -329,12 +329,13 @@ where
         }
     }
     schemes = schemes.disable_ipv6_shadow("quic");
-    for scheme in ["faketcp", "unix"] {
-        if server_protocol.is_some_and(|protocol| protocol.supports_scheme(scheme))
-            && external_factory.is_some_and(|factory| factory.supports_scheme(scheme))
-        {
-            schemes = schemes.support(scheme, ListenerKind::External);
-        }
+    if server_protocol.is_some_and(|protocol| protocol.supports_scheme("faketcp"))
+        && external_factory.is_some_and(|factory| factory.supports_scheme("faketcp"))
+    {
+        schemes = schemes.support("faketcp", ListenerKind::External);
+    }
+    if external_factory.is_some_and(|factory| factory.supports_scheme("unix")) {
+        schemes = schemes.support("unix", ListenerKind::External);
     }
     schemes = schemes.disable_ipv6_shadow("faketcp");
     let plan = crate::listener::plan::plan_listeners(config.request(self_id), &schemes);
@@ -2147,6 +2148,28 @@ mod tests {
         assert_eq!(plan.transports.len(), 1);
         assert!(plan.external.is_empty());
         assert_eq!(plan.failures.len(), 1);
+    }
+
+    #[test]
+    fn raw_unix_listener_does_not_require_a_server_protocol() {
+        let config = ListenerRuntimeConfig::new(
+            vec!["unix:///tmp/easytier-test".parse().unwrap()],
+            false,
+            SocketContext::default(),
+        );
+
+        let plan = prepare_listener_plan::<(), ()>(
+            Some(&config),
+            uuid::Uuid::new_v4(),
+            None,
+            Some(&TestExternalListenerFactory),
+        )
+        .unwrap();
+
+        assert_eq!(plan.transports.len(), 1);
+        assert_eq!(plan.external.len(), 1);
+        assert!(plan.failures.is_empty());
+        assert_eq!(plan.external[0].0.url.scheme(), "unix");
     }
 
     #[test]

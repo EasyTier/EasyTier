@@ -1047,6 +1047,8 @@ mod tests {
     struct MockHost {
         next_tcp_port: AtomicU16,
         next_udp_port: AtomicU16,
+        tcp_bind_options: StdMutex<Vec<TcpListenOptions>>,
+        udp_bind_options: StdMutex<Vec<UdpBindOptions>>,
         tcp_listeners: StdMutex<Vec<Arc<MockTcpListener>>>,
         udp_sockets: StdMutex<Vec<Arc<MockUdpSocket>>>,
     }
@@ -1056,6 +1058,8 @@ mod tests {
             Self {
                 next_tcp_port: AtomicU16::new(21000),
                 next_udp_port: AtomicU16::new(22000),
+                tcp_bind_options: StdMutex::new(Vec::new()),
+                udp_bind_options: StdMutex::new(Vec::new()),
                 tcp_listeners: StdMutex::new(Vec::new()),
                 udp_sockets: StdMutex::new(Vec::new()),
             }
@@ -1067,6 +1071,14 @@ mod tests {
 
         fn udp_socket(&self, index: usize) -> Arc<MockUdpSocket> {
             self.udp_sockets.lock().unwrap()[index].clone()
+        }
+
+        fn tcp_bind_options(&self, index: usize) -> TcpListenOptions {
+            self.tcp_bind_options.lock().unwrap()[index].clone()
+        }
+
+        fn udp_bind_options(&self, index: usize) -> UdpBindOptions {
+            self.udp_bind_options.lock().unwrap()[index].clone()
         }
     }
 
@@ -1084,6 +1096,7 @@ mod tests {
 
         async fn bind_tcp(&self, options: TcpListenOptions) -> anyhow::Result<Arc<Self::Listener>> {
             let local_addr = assigned_addr(options.bind.local_addr, &self.next_tcp_port);
+            self.tcp_bind_options.lock().unwrap().push(options);
             let listener = Arc::new(MockTcpListener::new(local_addr));
             self.tcp_listeners.lock().unwrap().push(listener.clone());
             Ok(listener)
@@ -1096,6 +1109,7 @@ mod tests {
 
         async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
             let local_addr = assigned_addr(options.local_addr, &self.next_udp_port);
+            self.udp_bind_options.lock().unwrap().push(options);
             let socket = Arc::new(MockUdpSocket::new(local_addr));
             self.udp_sockets.lock().unwrap().push(socket.clone());
             Ok(socket)
@@ -1366,6 +1380,11 @@ mod tests {
         );
         tcp.listen().await?;
         assert_eq!(host.tcp_listener(0).local_addr()?.port(), 11010);
+        assert_eq!(
+            host.tcp_bind_options(0).bind.context.ip_version,
+            IpVersion::V4
+        );
+        assert!(!host.tcp_bind_options(0).bind.only_v6);
 
         let mut udp = UdpTransportListener::<MockHost, MockTcpSocket>::new(
             "wg://listener.example".parse()?,
@@ -1379,6 +1398,36 @@ mod tests {
         );
         udp.listen().await?;
         assert_eq!(host.udp_socket(0).local_addr()?.port(), 11011);
+        assert_eq!(host.udp_bind_options(0).context.ip_version, IpVersion::V4);
+        assert!(!host.udp_bind_options(0).only_v6);
+
+        let mut tcp_v6 = TcpTransportListener::new(
+            "tcp://[::1]:0".parse()?,
+            super::super::plan::unresolved_tcp_listener_options(SocketContext::default()),
+            host.clone(),
+            Arc::new(MockDns),
+        );
+        tcp_v6.listen().await?;
+        assert_eq!(
+            host.tcp_bind_options(1).bind.context.ip_version,
+            IpVersion::V6
+        );
+        assert!(host.tcp_bind_options(1).bind.only_v6);
+
+        let udp_v6_url: Url = "udp://[::1]:0".parse()?;
+        let mut udp_v6 = UdpTransportListener::<MockHost, MockTcpSocket>::new(
+            udp_v6_url.clone(),
+            super::super::plan::unresolved_udp_session_listen_request(
+                &udp_v6_url,
+                SocketContext::default(),
+            ),
+            UdpSessionAcceptKind::EasyTierMux,
+            host.clone(),
+            Arc::new(MockDns),
+        );
+        udp_v6.listen().await?;
+        assert_eq!(host.udp_bind_options(1).context.ip_version, IpVersion::V6);
+        assert!(host.udp_bind_options(1).only_v6);
         Ok(())
     }
 
