@@ -10,8 +10,11 @@ mod runtime_driver;
 
 use std::sync::{
     Arc, Weak,
-    atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicU8, Ordering},
 };
+
+#[cfg(feature = "test-utils")]
+use std::sync::atomic::AtomicUsize;
 use std::{collections::BTreeSet, net::IpAddr, time::Duration};
 
 use async_trait::async_trait;

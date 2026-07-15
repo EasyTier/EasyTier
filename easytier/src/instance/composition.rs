@@ -100,6 +100,7 @@ impl ManualConnectivityEventSink for GlobalCtxManualConnectivityEventSink {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn runtime_core_instance_adapters(
     global_ctx: ArcGlobalCtx,
 ) -> CoreInstanceAdapters<NativeInstanceHost> {
@@ -166,6 +167,7 @@ pub(crate) fn runtime_core_instance_adapters_with_process_runtime(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn build_portable_runtime_core_instance_with_transport_factory_and_process_runtime<F>(
     global_ctx: ArcGlobalCtx,
     packet_sink: Arc<dyn PacketSink>,
