@@ -6,15 +6,16 @@ use easytier_core::config::{
 };
 #[cfg(test)]
 use easytier_core::peers::context::PeerContext;
+#[cfg(test)]
+use easytier_core::peers::context::{CorePeerContext, CorePeerContextAdapters, PeerStunInfoSource};
 use easytier_core::peers::context::{
-    CorePeerContext, CorePeerContextAdapters, HostRoutingPolicy,
-    NetworkIdentity as CoreNetworkIdentity, PeerCredentialEventSink, PeerEvent, PeerEventSink,
-    PeerPublicIpv6State, PeerRelayStateSink, PeerRuntimeConfig, PeerRuntimeSnapshot,
-    PeerStunInfoSource,
+    HostRoutingPolicy, NetworkIdentity as CoreNetworkIdentity, PeerCredentialEventSink, PeerEvent,
+    PeerEventSink, PeerPublicIpv6State, PeerRelayStateSink, PeerRuntimeConfig, PeerRuntimeSnapshot,
 };
 use easytier_core::peers::peer_manager::{
     PeerManagerHostAdapters, PeerPublicIpv6HostAdapters, PortablePeerManagerConfig, RouteAlgoType,
 };
+#[cfg(test)]
 use easytier_core::runtime_config::{CoreRuntimeConfig, CoreRuntimeConfigStore};
 
 use crate::{
@@ -141,6 +142,7 @@ pub(crate) fn initialize_runtime_peer_host_state(global_ctx: &ArcGlobalCtx) {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn build_core_peer_context(
     global_ctx: &ArcGlobalCtx,
     config: &PortablePeerManagerConfig,
@@ -185,6 +187,7 @@ impl PeerCredentialEventSink for GlobalCtxPeerEventSink {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn core_peer_context_adapters(global_ctx: &ArcGlobalCtx) -> CorePeerContextAdapters {
     let event_sink = Arc::new(GlobalCtxPeerEventSink::new(global_ctx.clone()));
     CorePeerContextAdapters {
@@ -211,6 +214,7 @@ pub(crate) fn runtime_peer_manager_host_adapters(
     }
 }
 
+#[cfg(test)]
 impl PeerStunInfoSource for GlobalCtx {
     fn stun_info(&self) -> crate::proto::common::StunInfo {
         self.get_stun_info_collector().get_stun_info()

@@ -1,9 +1,12 @@
-use std::{path::PathBuf, sync::Arc, time::Duration};
+#[cfg(test)]
+use std::time::Duration;
+use std::{path::PathBuf, sync::Arc};
 
-use easytier_core::peers::credential_manager::{
-    CredentialInfo, CredentialManager as CoreCredentialManager, CredentialStorage,
-};
+#[cfg(test)]
+use easytier_core::peers::credential_manager::CredentialManager as CoreCredentialManager;
+use easytier_core::peers::credential_manager::{CredentialInfo, CredentialStorage};
 
+#[cfg(test)]
 pub struct CredentialManager {
     core: Arc<CoreCredentialManager>,
 }
@@ -33,8 +36,8 @@ pub(crate) fn runtime_credential_storage(
     path.map(|path| Arc::new(FileCredentialStorage { path }) as Arc<dyn CredentialStorage>)
 }
 
+#[cfg(test)]
 impl CredentialManager {
-    #[cfg(test)]
     pub fn new(storage_path: Option<PathBuf>) -> Self {
         let core = runtime_credential_storage(storage_path).map_or_else(
             CoreCredentialManager::new,
@@ -49,7 +52,6 @@ impl CredentialManager {
         Self { core }
     }
 
-    #[cfg(test)]
     pub fn core(&self) -> Arc<CoreCredentialManager> {
         self.core.clone()
     }
