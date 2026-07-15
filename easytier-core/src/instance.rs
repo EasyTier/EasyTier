@@ -1726,6 +1726,8 @@ where
         let refresh_acl_groups = current.peer.peer_group_memberships
             != snapshot.peer_group_memberships
             || current.peer.acl_group_declarations != snapshot.acl_group_declarations;
+        self.peer_manager
+            .set_avoid_relay_data_preference(snapshot.avoid_relay_data_preference);
         self.runtime_config.update_peer(snapshot);
         self.proxy_cidr_table
             .update_snapshot(proxy_cidr_snapshot(self.runtime_config.snapshot().as_ref()));

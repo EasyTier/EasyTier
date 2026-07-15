@@ -1340,6 +1340,11 @@ impl PeerManagerCore {
         self.context.network_identity().network_secret.is_some()
     }
 
+    pub(crate) fn set_avoid_relay_data_preference(&self, avoid_relay_data: bool) {
+        self.context
+            .set_avoid_relay_data_preference(avoid_relay_data);
+    }
+
     pub fn notify_credential_changed(&self) {
         self.context.issue_credential_changed();
     }

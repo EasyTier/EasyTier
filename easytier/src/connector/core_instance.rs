@@ -694,6 +694,44 @@ mod tests {
         assert_eq!(instance.state(), CoreInstanceState::Stopped);
     }
 
+    #[tokio::test]
+    async fn peer_runtime_update_refreshes_avoid_relay_preference() {
+        let global_ctx = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
+            "portable-runtime-update".to_owned(),
+            String::new(),
+        )));
+        let (packet_sink, _packet_receiver) = create_host_packet_channel();
+        let (instance, ()) =
+            build_portable_runtime_core_instance_with_transport_factory_and_ring_registry(
+                global_ctx.clone(),
+                Arc::new(packet_sink),
+                NoWrappedTransportEngineFactory,
+                Arc::new(RingTunnelRegistry::default()),
+            )
+            .unwrap();
+
+        assert!(
+            !instance
+                .node_snapshot()
+                .await
+                .feature_flags
+                .avoid_relay_data
+        );
+
+        global_ctx.set_avoid_relay_data_preference(true);
+        instance
+            .update_peer_runtime_snapshot(runtime_instance_config(&global_ctx).peer)
+            .await;
+
+        assert!(
+            instance
+                .node_snapshot()
+                .await
+                .feature_flags
+                .avoid_relay_data
+        );
+    }
+
     #[test]
     fn runtime_proxy_config_normalizes_platform_policy() {
         let global_ctx = get_mock_global_ctx();
