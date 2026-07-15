@@ -235,18 +235,16 @@ pub(crate) fn build_portable_test_core_instance(
 #[cfg(test)]
 mod tests {
     use std::sync::{
-        Arc, Mutex as StdMutex,
+        Arc,
         atomic::{AtomicUsize, Ordering},
     };
-    use std::time::Duration;
 
     use easytier_core::{
         instance::{CoreInstanceConfig, CoreInstanceState, PortableCoreInstanceConfig},
         listener::plan::ListenerRuntimeConfig,
         proxy::wrapped_transport::{
-            WrappedTransportAcceptedStream, WrappedTransportConnect,
-            WrappedTransportDestinationIngress, WrappedTransportEngine,
-            WrappedTransportEngineStart, WrappedTransportKind, WrappedTransportRole,
+            WrappedTransportConnect, WrappedTransportEngine, WrappedTransportEngineStart,
+            WrappedTransportRole,
         },
     };
     use pnet::packet::{
@@ -308,14 +306,12 @@ mod tests {
     struct RecordingProxyService {
         start_calls: AtomicUsize,
         stop_calls: AtomicUsize,
-        destination_ingress: StdMutex<Option<WrappedTransportDestinationIngress>>,
     }
 
     #[async_trait::async_trait]
     impl WrappedTransportEngine for RecordingProxyService {
-        async fn prepare(&self, options: WrappedTransportEngineStart) -> anyhow::Result<()> {
+        async fn prepare(&self, _options: WrappedTransportEngineStart) -> anyhow::Result<()> {
             self.start_calls.fetch_add(1, Ordering::Relaxed);
-            *self.destination_ingress.lock().unwrap() = options.destination_ingress;
             Ok(())
         }
 
@@ -341,12 +337,6 @@ mod tests {
 
         async fn stop(&self) {
             self.stop_calls.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    impl RecordingProxyService {
-        fn destination_ingress(&self) -> Option<WrappedTransportDestinationIngress> {
-            self.destination_ingress.lock().unwrap().clone()
         }
     }
 
@@ -393,138 +383,6 @@ mod tests {
         assert_ne!(instance.peer_id(), 0);
         instance.stop().await;
         assert_eq!(instance.state(), CoreInstanceState::Stopped);
-    }
-
-    #[tokio::test]
-    async fn runtime_core_instance_owns_wrapped_transport_destination_sessions() {
-        let global_ctx = get_mock_global_ctx();
-        let mut flags = global_ctx.get_flags();
-        flags.enable_kcp_proxy = false;
-        flags.disable_kcp_input = false;
-        global_ctx.set_flags(flags);
-        let engine = Arc::new(RecordingProxyService::default());
-        let (instance, ()) = build_portable_test_instance_with_transport_factory(
-            global_ctx,
-            TestTransportProxyFactory {
-                service: engine.clone(),
-            },
-        )
-        .expect("runtime core composition should succeed");
-        let instance = Arc::new(instance);
-
-        instance.start().await.unwrap();
-        instance.start_network_services(None).await.unwrap();
-        assert!(instance.wrapped_transport_is_started(
-            WrappedTransportKind::Kcp,
-            WrappedTransportRole::Destination,
-        ));
-
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let destination = listener.local_addr().unwrap();
-        let ingress = engine
-            .destination_ingress()
-            .expect("core should inject a destination ingress");
-        let (core_stream, peer_stream) = tokio::io::duplex(1024);
-        ingress
-            .submit(WrappedTransportAcceptedStream {
-                src: "10.0.0.2:40000".parse().unwrap(),
-                dst: destination,
-                initial_acl_packet_size: 16,
-                stream: Box::new(core_stream),
-            })
-            .await
-            .unwrap();
-
-        let (destination_stream, _) =
-            tokio::time::timeout(Duration::from_secs(2), listener.accept())
-                .await
-                .expect("core should connect through the Host adapter")
-                .unwrap();
-        tokio::time::timeout(Duration::from_secs(2), async {
-            loop {
-                let entries = instance.wrapped_tcp_proxy_entry_snapshots(
-                    WrappedTransportKind::Kcp,
-                    WrappedTransportRole::Destination,
-                );
-                if entries.iter().any(|entry| {
-                    entry.state
-                        == easytier_core::proxy::tcp_proxy_engine::TcpNatEntryState::Connected
-                }) {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("core should own the connected destination entry");
-
-        drop(peer_stream);
-        drop(destination_stream);
-        tokio::time::timeout(Duration::from_secs(2), async {
-            while !instance
-                .wrapped_tcp_proxy_entry_snapshots(
-                    WrappedTransportKind::Kcp,
-                    WrappedTransportRole::Destination,
-                )
-                .is_empty()
-            {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("completed destination entry should be removed");
-
-        let (core_stream, _blocked_peer_stream) = tokio::io::duplex(1024);
-        ingress
-            .submit(WrappedTransportAcceptedStream {
-                src: "10.0.0.2:40001".parse().unwrap(),
-                dst: destination,
-                initial_acl_packet_size: 16,
-                stream: Box::new(core_stream),
-            })
-            .await
-            .unwrap();
-        let (_blocked_destination_stream, _) =
-            tokio::time::timeout(Duration::from_secs(2), listener.accept())
-                .await
-                .expect("second destination session should connect")
-                .unwrap();
-        tokio::time::timeout(Duration::from_secs(2), async {
-            while instance
-                .wrapped_tcp_proxy_entry_snapshots(
-                    WrappedTransportKind::Kcp,
-                    WrappedTransportRole::Destination,
-                )
-                .is_empty()
-            {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("blocked destination session should be visible");
-
-        tokio::time::timeout(Duration::from_secs(2), instance.stop())
-            .await
-            .expect("stop should cancel core-owned destination sessions");
-        assert!(
-            instance
-                .wrapped_tcp_proxy_entry_snapshots(
-                    WrappedTransportKind::Kcp,
-                    WrappedTransportRole::Destination,
-                )
-                .is_empty()
-        );
-        assert!(
-            ingress
-                .submit(WrappedTransportAcceptedStream {
-                    src: "10.0.0.2:40002".parse().unwrap(),
-                    dst: destination,
-                    initial_acl_packet_size: 16,
-                    stream: Box::new(tokio::io::duplex(64).0),
-                })
-                .await
-                .is_err()
-        );
     }
 
     #[tokio::test]

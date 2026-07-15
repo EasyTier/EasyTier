@@ -2299,6 +2299,9 @@ mod tests {
         };
         use tokio_util::task::AbortOnDropHandle;
 
+        #[cfg(feature = "proxy-packet")]
+        use std::sync::Mutex as StdMutex;
+
         use super::*;
         use crate::{
             config::{CoreConfig, IpPrefix, NetworkIdentity, ProxyNetworkConfig},
@@ -2319,7 +2322,7 @@ mod tests {
                 SocketContext,
                 dns::{DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord},
                 tcp::{
-                    TcpConnectOptions, TcpListenOptions, VirtualTcpListener,
+                    TcpConnectOptions, TcpListenOptions, TcpSocketPurpose, VirtualTcpListener,
                     VirtualTcpListenerFactory, VirtualTcpSocket, VirtualTcpSocketFactory,
                 },
                 udp::{
@@ -2329,15 +2332,15 @@ mod tests {
             },
         };
 
-        struct TestTcpSocket;
+        struct TestTcpSocket(tokio::io::DuplexStream);
 
         impl AsyncRead for TestTcpSocket {
             fn poll_read(
                 self: Pin<&mut Self>,
                 _cx: &mut Context<'_>,
-                _buf: &mut ReadBuf<'_>,
+                buf: &mut ReadBuf<'_>,
             ) -> Poll<io::Result<()>> {
-                Poll::Pending
+                Pin::new(&mut self.get_mut().0).poll_read(_cx, buf)
             }
         }
 
@@ -2347,15 +2350,15 @@ mod tests {
                 _cx: &mut Context<'_>,
                 buf: &[u8],
             ) -> Poll<io::Result<usize>> {
-                Poll::Ready(Ok(buf.len()))
+                Pin::new(&mut self.get_mut().0).poll_write(_cx, buf)
             }
 
-            fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-                Poll::Ready(Ok(()))
+            fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+                Pin::new(&mut self.get_mut().0).poll_flush(cx)
             }
 
-            fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-                Poll::Ready(Ok(()))
+            fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+                Pin::new(&mut self.get_mut().0).poll_shutdown(cx)
             }
         }
 
@@ -2401,7 +2404,11 @@ mod tests {
             }
         }
 
-        struct TestHost;
+        #[derive(Default)]
+        struct TestHost {
+            proxy_nat_connections:
+                Option<tokio::sync::mpsc::UnboundedSender<tokio::io::DuplexStream>>,
+        }
 
         #[async_trait]
         impl VirtualTcpSocketFactory for TestHost {
@@ -2409,9 +2416,20 @@ mod tests {
 
             async fn connect_tcp(
                 &self,
-                _options: TcpConnectOptions,
+                options: TcpConnectOptions,
             ) -> anyhow::Result<Self::Socket> {
-                anyhow::bail!("test host does not connect TCP sockets")
+                if options.purpose != TcpSocketPurpose::ProxyNat {
+                    anyhow::bail!("test host does not connect non-proxy TCP sockets");
+                }
+                let connections = self
+                    .proxy_nat_connections
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("test host proxy NAT is disabled"))?;
+                let (socket, peer) = tokio::io::duplex(1024);
+                connections
+                    .send(peer)
+                    .map_err(|_| anyhow::anyhow!("test host proxy NAT receiver is closed"))?;
+                Ok(TestTcpSocket(socket))
             }
         }
 
@@ -2566,9 +2584,18 @@ mod tests {
                 Arc<dyn ExternalListenerFactory<AcceptedTransport<TestTcpSocket>>>,
             >,
         ) -> CoreInstanceAdapters<TestHost> {
+            adapters_with_host(Arc::new(TestHost::default()), external_listener_factory)
+        }
+
+        fn adapters_with_host(
+            host: Arc<TestHost>,
+            external_listener_factory: Option<
+                Arc<dyn ExternalListenerFactory<AcceptedTransport<TestTcpSocket>>>,
+            >,
+        ) -> CoreInstanceAdapters<TestHost> {
             let dns = Arc::new(TestDns);
             CoreInstanceAdapters {
-                host: Arc::new(TestHost),
+                host,
                 stun_projection: None,
                 dns: dns.clone(),
                 listener_dns: None,
@@ -2636,6 +2663,10 @@ mod tests {
             start_calls: AtomicUsize,
             stop_calls: AtomicUsize,
             start_gate: Option<Arc<ProxyStartGate>>,
+            #[cfg(feature = "proxy-packet")]
+            destination_ingress: StdMutex<
+                Option<crate::proxy::wrapped_transport::WrappedTransportDestinationIngress>,
+            >,
         }
 
         #[derive(Default)]
@@ -2655,12 +2686,26 @@ mod tests {
                     gate,
                 )
             }
+
+            #[cfg(feature = "proxy-packet")]
+            fn destination_ingress(
+                &self,
+            ) -> Option<crate::proxy::wrapped_transport::WrappedTransportDestinationIngress>
+            {
+                self.destination_ingress.lock().unwrap().clone()
+            }
         }
 
         #[async_trait]
         impl WrappedTransportEngine for RecordingProxyService {
-            async fn prepare(&self, _options: WrappedTransportEngineStart) -> anyhow::Result<()> {
+            async fn prepare(&self, options: WrappedTransportEngineStart) -> anyhow::Result<()> {
                 self.start_calls.fetch_add(1, Ordering::Relaxed);
+                #[cfg(feature = "proxy-packet")]
+                {
+                    *self.destination_ingress.lock().unwrap() = options.destination_ingress;
+                }
+                #[cfg(not(feature = "proxy-packet"))]
+                let _ = options;
                 if let Some(gate) = &self.start_gate {
                     gate.entered.notify_one();
                     gate.release.notified().await;
@@ -3016,6 +3061,141 @@ mod tests {
                 WrappedTransportRole::Source,
             ));
             assert_eq!(engine.stop_calls.load(Ordering::Relaxed), 1);
+        }
+
+        #[cfg(feature = "proxy-packet")]
+        #[tokio::test]
+        async fn runtime_core_instance_owns_wrapped_transport_destination_sessions() {
+            let mut config = test_config("wrapped-destination");
+            config.peer.snapshot.flags.enable_kcp_proxy = false;
+            config.peer.snapshot.flags.disable_kcp_input = false;
+            let engine = Arc::new(RecordingProxyService::default());
+            let (connections, mut connection_receiver) = tokio::sync::mpsc::unbounded_channel();
+            let host = Arc::new(TestHost {
+                proxy_nat_connections: Some(connections),
+            });
+            let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+            let (instance, ()) =
+                CoreInstance::new_portable_with_peer_adapters_and_transport_factory(
+                    adapters_with_host(host, None),
+                    PeerManagerHostAdapters::default(),
+                    config,
+                    Arc::new(packet_sink),
+                    TestTransportProxyFactory {
+                        service: engine.clone(),
+                    },
+                )
+                .unwrap();
+            let instance = Arc::new(instance);
+
+            instance.start().await.unwrap();
+            instance.start_network_services(None).await.unwrap();
+            assert!(instance.wrapped_transport_is_started(
+                WrappedTransportKind::Kcp,
+                WrappedTransportRole::Destination,
+            ));
+
+            let destination: SocketAddr = "127.0.0.1:20100".parse().unwrap();
+            let ingress = engine
+                .destination_ingress()
+                .expect("core should inject a destination ingress");
+            let (core_stream, peer_stream) = tokio::io::duplex(1024);
+            ingress
+                .submit(
+                    crate::proxy::wrapped_transport::WrappedTransportAcceptedStream {
+                        src: "10.0.0.2:40000".parse().unwrap(),
+                        dst: destination,
+                        initial_acl_packet_size: 16,
+                        stream: Box::new(core_stream),
+                    },
+                )
+                .await
+                .unwrap();
+            let destination_stream = connection_receiver.recv().await.unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                loop {
+                    let entries = instance.wrapped_tcp_proxy_entry_snapshots(
+                        WrappedTransportKind::Kcp,
+                        WrappedTransportRole::Destination,
+                    );
+                    if entries.iter().any(|entry| {
+                        entry.state == crate::proxy::tcp_proxy_engine::TcpNatEntryState::Connected
+                    }) {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("core should own the connected destination entry");
+
+            drop(peer_stream);
+            drop(destination_stream);
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                while !instance
+                    .wrapped_tcp_proxy_entry_snapshots(
+                        WrappedTransportKind::Kcp,
+                        WrappedTransportRole::Destination,
+                    )
+                    .is_empty()
+                {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("completed destination entry should be removed");
+
+            let (core_stream, _blocked_peer_stream) = tokio::io::duplex(1024);
+            ingress
+                .submit(
+                    crate::proxy::wrapped_transport::WrappedTransportAcceptedStream {
+                        src: "10.0.0.2:40001".parse().unwrap(),
+                        dst: destination,
+                        initial_acl_packet_size: 16,
+                        stream: Box::new(core_stream),
+                    },
+                )
+                .await
+                .unwrap();
+            let _blocked_destination_stream = connection_receiver.recv().await.unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                while instance
+                    .wrapped_tcp_proxy_entry_snapshots(
+                        WrappedTransportKind::Kcp,
+                        WrappedTransportRole::Destination,
+                    )
+                    .is_empty()
+                {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("blocked destination session should be visible");
+
+            tokio::time::timeout(std::time::Duration::from_secs(2), instance.stop())
+                .await
+                .expect("stop should cancel core-owned destination sessions");
+            assert!(
+                instance
+                    .wrapped_tcp_proxy_entry_snapshots(
+                        WrappedTransportKind::Kcp,
+                        WrappedTransportRole::Destination,
+                    )
+                    .is_empty()
+            );
+            assert!(
+                ingress
+                    .submit(
+                        crate::proxy::wrapped_transport::WrappedTransportAcceptedStream {
+                            src: "10.0.0.2:40002".parse().unwrap(),
+                            dst: destination,
+                            initial_acl_packet_size: 16,
+                            stream: Box::new(tokio::io::duplex(64).0),
+                        },
+                    )
+                    .await
+                    .is_err()
+            );
         }
 
         #[tokio::test]
