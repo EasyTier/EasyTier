@@ -1,4 +1,4 @@
-//! Process-scoped portable resources shared by core instances.
+//! Host-domain portable resources shared by core instances.
 
 use std::sync::Arc;
 
@@ -16,10 +16,11 @@ use crate::{
 };
 
 /// Owns portable resources whose identity is shared across core instances in
-/// one host process.
+/// one native process or one instantiated WASI module.
 ///
-/// Native and Go composition roots pass this handle around, but never receive
-/// the internal managers it owns.
+/// Native composition roots pass this handle around. The WASI lifecycle keeps
+/// it module-local and never exposes it through the Go ABI. Neither host can
+/// receive the internal managers it owns.
 #[derive(Default)]
 pub struct CoreProcessRuntime {
     ring_registry: Arc<RingTunnelRegistry>,
