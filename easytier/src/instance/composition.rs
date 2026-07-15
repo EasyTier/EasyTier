@@ -100,13 +100,6 @@ impl ManualConnectivityEventSink for GlobalCtxManualConnectivityEventSink {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn runtime_core_instance_adapters(
-    global_ctx: ArcGlobalCtx,
-) -> CoreInstanceAdapters<NativeInstanceHost> {
-    runtime_core_instance_adapters_with_process_runtime(global_ctx, CoreProcessRuntime::new())
-}
-
 pub(crate) fn runtime_core_instance_adapters_with_process_runtime(
     global_ctx: ArcGlobalCtx,
     process_runtime: Arc<CoreProcessRuntime>,
@@ -476,7 +469,10 @@ mod tests {
         };
         let instance = Arc::new(
             NativeCoreInstance::new_portable(
-                runtime_core_instance_adapters(global_ctx),
+                runtime_core_instance_adapters_with_process_runtime(
+                    global_ctx,
+                    CoreProcessRuntime::new(),
+                ),
                 PortableCoreInstanceConfig { peer, connectivity },
                 Arc::new(packet_sink),
             )
@@ -517,7 +513,10 @@ mod tests {
         let peer_b = runtime_peer_manager_config(&global_b, RouteAlgoType::Ospf);
         let instance_a = Arc::new(
             NativeCoreInstance::new_portable(
-                runtime_core_instance_adapters(global_a.clone()),
+                runtime_core_instance_adapters_with_process_runtime(
+                    global_a.clone(),
+                    CoreProcessRuntime::new(),
+                ),
                 PortableCoreInstanceConfig {
                     peer: peer_a,
                     connectivity: CoreInstanceConfig {
@@ -540,7 +539,10 @@ mod tests {
         );
         let instance_b = Arc::new(
             NativeCoreInstance::new_portable(
-                runtime_core_instance_adapters(global_b.clone()),
+                runtime_core_instance_adapters_with_process_runtime(
+                    global_b.clone(),
+                    CoreProcessRuntime::new(),
+                ),
                 PortableCoreInstanceConfig {
                     peer: peer_b,
                     connectivity: CoreInstanceConfig {

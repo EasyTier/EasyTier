@@ -2,22 +2,16 @@ use std::sync::{Arc, Weak};
 
 use easytier_core::proxy::{
     tcp_proxy_engine::{TcpNatEntrySnapshot, TcpNatEntryState as CoreTcpNatEntryState},
-    tcp_socket_connector::TcpSocketProxyConnector,
     wrapped_transport::{WrappedTransportKind, WrappedTransportRole},
 };
 
-use crate::{
-    instance::host::NativeInstanceHost,
-    proto::{
-        api::instance::{
-            ListTcpProxyEntryRequest, ListTcpProxyEntryResponse, TcpProxyEntry, TcpProxyEntryState,
-            TcpProxyEntryTransportType, TcpProxyRpc,
-        },
-        rpc_types::{self, controller::BaseController},
+use crate::proto::{
+    api::instance::{
+        ListTcpProxyEntryRequest, ListTcpProxyEntryResponse, TcpProxyEntry, TcpProxyEntryState,
+        TcpProxyEntryTransportType, TcpProxyRpc,
     },
+    rpc_types::{self, controller::BaseController},
 };
-
-pub type NatDstTcpConnector = TcpSocketProxyConnector<NativeInstanceHost>;
 
 fn tcp_entry_snapshot_to_pb(
     entry: TcpNatEntrySnapshot,
