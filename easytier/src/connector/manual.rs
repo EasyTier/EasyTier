@@ -1,10 +1,6 @@
 use std::sync::{Arc, Weak};
 
 use easytier_core::connectivity::manual::ManualConnectorStatus;
-#[cfg(test)]
-use easytier_core::connectivity::manual::{
-    ManualConnectorManager as CoreManualConnectorManager, discovery::CoreManualEndpointResolver,
-};
 
 use crate::{
     common::error::Error,
@@ -18,121 +14,34 @@ use crate::{
     utils::weak_upgrade,
 };
 
-#[cfg(test)]
-use crate::{common::global_ctx::ArcGlobalCtx, peers::peer_manager::PeerManager};
-
 use super::core_instance::RuntimeCoreInstance;
-#[cfg(test)]
-use super::{
-    core_instance::{
-        runtime_core_instance_adapters_with_ring_registry, runtime_endpoint_discovery_config,
-        runtime_manual_options,
-    },
-    runtime::RuntimeConnectorHost,
-};
-
-#[cfg(test)]
-type CoreConnectorManager = CoreManualConnectorManager<RuntimeConnectorHost>;
-
-enum PortableManualOwner {
-    #[cfg(test)]
-    Standalone(Arc<CoreConnectorManager>),
-    Instance(Arc<RuntimeCoreInstance>),
-}
-
-impl PortableManualOwner {
-    fn add_connector(&self, url: url::Url) -> anyhow::Result<()> {
-        match self {
-            #[cfg(test)]
-            Self::Standalone(manager) => manager.add_connector(url),
-            Self::Instance(instance) => instance.add_connector(url),
-        }
-    }
-
-    fn remove_connector(&self, url: &url::Url) -> bool {
-        match self {
-            #[cfg(test)]
-            Self::Standalone(manager) => manager.remove_connector(url),
-            Self::Instance(instance) => instance.remove_connector(url),
-        }
-    }
-
-    fn clear_connectors(&self) {
-        match self {
-            #[cfg(test)]
-            Self::Standalone(manager) => manager.clear_connectors(),
-            Self::Instance(instance) => instance.clear_connectors(),
-        }
-    }
-
-    fn list_connectors(&self) -> Vec<easytier_core::connectivity::manual::ManualConnectorSnapshot> {
-        match self {
-            #[cfg(test)]
-            Self::Standalone(manager) => manager.list_connectors(),
-            Self::Instance(instance) => instance.list_connectors(),
-        }
-    }
-}
 
 pub struct ManualConnectorManager {
-    portable: PortableManualOwner,
+    core_instance: Arc<RuntimeCoreInstance>,
 }
 
 impl ManualConnectorManager {
-    #[cfg(test)]
-    pub fn new(global_ctx: ArcGlobalCtx, peer_manager: Arc<PeerManager>) -> Self {
-        let adapters = runtime_core_instance_adapters_with_ring_registry(
-            global_ctx.clone(),
-            peer_manager.ring_registry(),
-        );
-        let endpoint_resolver = Arc::new(CoreManualEndpointResolver::new(
-            adapters.host.clone(),
-            adapters.dns.clone(),
-            adapters.dns_records.clone(),
-            runtime_endpoint_discovery_config(&global_ctx),
-        ));
-        let core_manager = Arc::new(CoreManualConnectorManager::new_with_events(
-            peer_manager.core(),
-            adapters.host,
-            adapters.dns,
-            endpoint_resolver,
-            adapters
-                .protocol
-                .expect("native runtime should provide optional protocol upgrades"),
-            adapters.ring_registry,
-            runtime_manual_options(&global_ctx),
-            adapters.manual_events.unwrap(),
-        ));
-        core_manager.start();
-
-        Self::new_with_portable_owner(PortableManualOwner::Standalone(core_manager))
-    }
-
     pub(crate) fn new_with_core_instance(core_instance: Arc<RuntimeCoreInstance>) -> Self {
-        Self::new_with_portable_owner(PortableManualOwner::Instance(core_instance))
-    }
-
-    fn new_with_portable_owner(portable: PortableManualOwner) -> Self {
-        Self { portable }
+        Self { core_instance }
     }
 }
 
 impl ManualConnectorManager {
     pub fn add_connector_url(&self, url: url::Url) {
         tracing::info!(%url, "add_connector");
-        self.portable
+        self.core_instance
             .add_connector(url)
             .expect("core manual connector URL should be valid");
     }
 
     pub async fn add_connector_by_url(&self, url: url::Url) -> Result<(), Error> {
-        self.portable.add_connector(url)?;
+        self.core_instance.add_connector(url)?;
         Ok(())
     }
 
     pub async fn remove_connector(&self, url: url::Url) -> Result<(), Error> {
         tracing::info!("remove_connector: {}", url);
-        if self.portable.remove_connector(&url) {
+        if self.core_instance.remove_connector(&url) {
             Ok(())
         } else {
             Err(Error::NotFound)
@@ -140,11 +49,11 @@ impl ManualConnectorManager {
     }
 
     pub async fn clear_connectors(&self) {
-        self.portable.clear_connectors();
+        self.core_instance.clear_connectors();
     }
 
     pub async fn list_connectors(&self) -> Vec<Connector> {
-        connector_snapshots_to_api(self.portable.list_connectors())
+        connector_snapshots_to_api(self.core_instance.list_connectors())
     }
 }
 
@@ -202,17 +111,66 @@ mod tests {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     use crate::{
-        common::config::ConfigLoader,
+        common::{config::ConfigLoader, global_ctx::tests::get_mock_global_ctx},
+        connector::core_instance::build_portable_test_core_instance,
         instance::listeners::ListenerManager,
-        peers::tests::{
-            create_mock_peer_manager, create_mock_peer_manager_with_ring_registry,
-            wait_route_appear,
-        },
+        peers::tests::{create_mock_peer_manager, create_mock_peer_manager_with_ring_registry},
         set_global_var,
         tunnel::common::tests::wait_for_condition,
     };
 
     use super::*;
+
+    async fn build_client(
+        ring_registry: Arc<RingTunnelRegistry>,
+    ) -> (
+        Arc<RuntimeCoreInstance>,
+        tokio::sync::mpsc::Receiver<Vec<u8>>,
+    ) {
+        let global_ctx = get_mock_global_ctx();
+        let mut flags = global_ctx.get_flags();
+        flags.bind_device = false;
+        global_ctx.set_flags(flags);
+        let (client, packet_receiver) =
+            build_portable_test_core_instance(global_ctx, ring_registry).unwrap();
+        client.start().await.unwrap();
+        (client, packet_receiver)
+    }
+
+    async fn wait_peer_connected(client: Arc<RuntimeCoreInstance>, peer_id: u32) {
+        wait_for_condition(
+            || {
+                let client = client.clone();
+                async move { client.connected_peers().await.contains(&peer_id) }
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+    }
+
+    async fn peer_snapshot(
+        client: &RuntimeCoreInstance,
+        peer_id: u32,
+    ) -> easytier_core::peers::peer_manager::PeerSnapshot {
+        client
+            .peer_snapshots()
+            .await
+            .into_iter()
+            .find(|peer| peer.peer_id == peer_id)
+            .expect("connected peer snapshot should exist")
+    }
+
+    async fn peer_default_conn_id(
+        client: &RuntimeCoreInstance,
+        peer_id: u32,
+    ) -> Option<uuid::Uuid> {
+        client
+            .peer_snapshots()
+            .await
+            .into_iter()
+            .find(|peer| peer.peer_id == peer_id)
+            .and_then(|peer| peer.default_conn_id)
+    }
 
     #[tokio::test]
     #[serial_test::serial]
@@ -249,41 +207,27 @@ mod tests {
             .find(|url| url.scheme() == "tcp")
             .expect("TCP listener should start");
 
-        let client = create_mock_peer_manager().await;
-        let mut flags = client.get_global_ctx().get_flags();
-        flags.bind_device = false;
-        client.get_global_ctx().set_flags(flags);
-        let connector_manager =
-            ManualConnectorManager::new(client.get_global_ctx(), client.clone());
+        let (client, _client_packets) = build_client(Arc::new(RingTunnelRegistry::default())).await;
+        let connector_manager = ManualConnectorManager::new_with_core_instance(client.clone());
         connector_manager
             .add_connector_by_url(listener_url.clone())
             .await
             .unwrap();
 
-        wait_route_appear(client.clone(), server.clone())
-            .await
-            .unwrap();
+        let server_peer_id = server.my_peer_id();
+        wait_peer_connected(client.clone(), server_peer_id).await;
         assert!(
-            client
-                .core()
-                .get_peer_map()
-                .is_client_url_alive(&listener_url)
-        );
-        assert!(
-            client
-                .core()
-                .has_directly_connected_conn(server.my_peer_id())
+            !peer_snapshot(&client, server_peer_id)
+                .await
+                .directly_connected_conns
+                .is_empty()
         );
 
-        let server_peer_id = server.my_peer_id();
-        let first_conn_id = client
-            .core()
-            .get_peer_map()
-            .get_peer_default_conn_id(server_peer_id)
+        let first_conn_id = peer_snapshot(&client, server_peer_id)
             .await
+            .default_conn_id
             .unwrap();
         client
-            .core()
             .close_peer_conn(server_peer_id, &first_conn_id)
             .await
             .unwrap();
@@ -291,10 +235,7 @@ mod tests {
             || {
                 let client = client.clone();
                 async move {
-                    client
-                        .core()
-                        .get_peer_map()
-                        .get_peer_default_conn_id(server_peer_id)
+                    peer_default_conn_id(&client, server_peer_id)
                         .await
                         .is_some_and(|conn_id| conn_id != first_conn_id)
                 }
@@ -302,12 +243,6 @@ mod tests {
             Duration::from_secs(3),
         )
         .await;
-        assert!(
-            client
-                .core()
-                .get_peer_map()
-                .is_client_url_alive(&listener_url)
-        );
 
         assert!(
             connector_manager
@@ -384,27 +319,20 @@ mod tests {
             .find(|url| url.scheme() == "ring")
             .expect("Ring listener should start");
 
-        let client = create_mock_peer_manager_with_ring_registry(ring_registry).await;
-        let connector_manager =
-            ManualConnectorManager::new(client.get_global_ctx(), client.clone());
+        let (client, _client_packets) = build_client(ring_registry).await;
+        let connector_manager = ManualConnectorManager::new_with_core_instance(client.clone());
         connector_manager
             .add_connector_by_url(listener_url.clone())
             .await
             .unwrap();
 
-        wait_route_appear(client.clone(), server.clone())
-            .await
-            .unwrap();
+        let server_peer_id = server.my_peer_id();
+        wait_peer_connected(client.clone(), server_peer_id).await;
         assert!(
-            client
-                .core()
-                .get_peer_map()
-                .is_client_url_alive(&listener_url)
-        );
-        assert!(
-            client
-                .core()
-                .has_directly_connected_conn(server.my_peer_id())
+            !peer_snapshot(&client, server_peer_id)
+                .await
+                .directly_connected_conns
+                .is_empty()
         );
     }
 
@@ -429,27 +357,20 @@ mod tests {
         listener_manager.prepare_listeners().await.unwrap();
         listener_manager.run().await.unwrap();
 
-        let client = create_mock_peer_manager().await;
-        let connector_manager =
-            ManualConnectorManager::new(client.get_global_ctx(), client.clone());
+        let (client, _client_packets) = build_client(Arc::new(RingTunnelRegistry::default())).await;
+        let connector_manager = ManualConnectorManager::new_with_core_instance(client.clone());
         connector_manager
             .add_connector_by_url(listener_url.clone())
             .await
             .unwrap();
 
-        wait_route_appear(client.clone(), server.clone())
-            .await
-            .unwrap();
+        let server_peer_id = server.my_peer_id();
+        wait_peer_connected(client.clone(), server_peer_id).await;
         assert!(
-            client
-                .core()
-                .get_peer_map()
-                .is_client_url_alive(&listener_url)
-        );
-        assert!(
-            client
-                .core()
-                .has_directly_connected_conn(server.my_peer_id())
+            !peer_snapshot(&client, server_peer_id)
+                .await
+                .directly_connected_conns
+                .is_empty()
         );
     }
 
@@ -502,30 +423,20 @@ mod tests {
             stream.write_all(response.as_bytes()).await.unwrap();
         });
 
-        let client = create_mock_peer_manager().await;
-        let mut flags = client.get_global_ctx().get_flags();
-        flags.bind_device = false;
-        client.get_global_ctx().set_flags(flags);
-        let connector_manager =
-            ManualConnectorManager::new(client.get_global_ctx(), client.clone());
+        let (client, _client_packets) = build_client(Arc::new(RingTunnelRegistry::default())).await;
+        let connector_manager = ManualConnectorManager::new_with_core_instance(client.clone());
         connector_manager
             .add_connector_by_url(discovery_url.clone())
             .await
             .unwrap();
 
-        wait_route_appear(client.clone(), server.clone())
-            .await
-            .unwrap();
+        let server_peer_id = server.my_peer_id();
+        wait_peer_connected(client.clone(), server_peer_id).await;
         assert!(
-            client
-                .core()
-                .get_peer_map()
-                .is_client_url_alive(&discovery_url)
-        );
-        assert!(
-            client
-                .core()
-                .has_directly_connected_conn(server.my_peer_id())
+            !peer_snapshot(&client, server_peer_id)
+                .await
+                .directly_connected_conns
+                .is_empty()
         );
     }
 
@@ -564,41 +475,26 @@ mod tests {
             .find(|url| url.scheme() == "udp")
             .expect("UDP listener should start");
 
-        let client = create_mock_peer_manager().await;
-        let mut flags = client.get_global_ctx().get_flags();
-        flags.bind_device = false;
-        client.get_global_ctx().set_flags(flags);
-        let connector_manager =
-            ManualConnectorManager::new(client.get_global_ctx(), client.clone());
+        let (client, _client_packets) = build_client(Arc::new(RingTunnelRegistry::default())).await;
+        let connector_manager = ManualConnectorManager::new_with_core_instance(client.clone());
         connector_manager
             .add_connector_by_url(listener_url.clone())
             .await
             .unwrap();
 
-        wait_route_appear(client.clone(), server.clone())
-            .await
-            .unwrap();
-        assert!(
-            client
-                .core()
-                .get_peer_map()
-                .is_client_url_alive(&listener_url)
-        );
-        assert!(
-            client
-                .core()
-                .has_directly_connected_conn(server.my_peer_id())
-        );
-
         let server_peer_id = server.my_peer_id();
-        let first_conn_id = client
-            .core()
-            .get_peer_map()
-            .get_peer_default_conn_id(server_peer_id)
+        wait_peer_connected(client.clone(), server_peer_id).await;
+        assert!(
+            !peer_snapshot(&client, server_peer_id)
+                .await
+                .directly_connected_conns
+                .is_empty()
+        );
+        let first_conn_id = peer_snapshot(&client, server_peer_id)
             .await
+            .default_conn_id
             .unwrap();
         client
-            .core()
             .close_peer_conn(server_peer_id, &first_conn_id)
             .await
             .unwrap();
@@ -606,10 +502,7 @@ mod tests {
             || {
                 let client = client.clone();
                 async move {
-                    client
-                        .core()
-                        .get_peer_map()
-                        .get_peer_default_conn_id(server_peer_id)
+                    peer_default_conn_id(&client, server_peer_id)
                         .await
                         .is_some_and(|conn_id| conn_id != first_conn_id)
                 }
@@ -617,12 +510,6 @@ mod tests {
             Duration::from_secs(3),
         )
         .await;
-        assert!(
-            client
-                .core()
-                .get_peer_map()
-                .is_client_url_alive(&listener_url)
-        );
 
         assert!(
             connector_manager

@@ -6,10 +6,22 @@ pub use easytier_core::peer_center::instance::PeerCenterInstanceService;
 mod tests {
     use std::{sync::Arc, time::Duration};
 
-    use easytier_core::peers::peer_manager::PeerManagerCore;
+    use easytier_core::{
+        connectivity::manual::{
+            ManualConnectorManager as CoreManualConnectorManager,
+            discovery::CoreManualEndpointResolver,
+        },
+        peers::peer_manager::PeerManagerCore,
+    };
 
     use crate::{
-        connector::manual::ManualConnectorManager,
+        connector::{
+            core_instance::{
+                runtime_core_instance_adapters_with_ring_registry,
+                runtime_endpoint_discovery_config, runtime_manual_options,
+            },
+            runtime::RuntimeConnectorHost,
+        },
         instance::listeners::ListenerManager,
         peers::{
             peer_manager::PeerManager,
@@ -27,7 +39,10 @@ mod tests {
     async fn connect_through_core(
         client: Arc<PeerManager>,
         server: Arc<PeerManager>,
-    ) -> (ManualConnectorManager, ListenerManager<PeerManagerCore>) {
+    ) -> (
+        Arc<CoreManualConnectorManager<RuntimeConnectorHost>>,
+        ListenerManager<PeerManagerCore>,
+    ) {
         server
             .get_global_ctx()
             .config
@@ -42,11 +57,32 @@ mod tests {
             .find(|url| url.scheme() == "tcp")
             .unwrap();
 
-        let mut flags = client.get_global_ctx().get_flags();
+        let global_ctx = client.get_global_ctx();
+        let mut flags = global_ctx.get_flags();
         flags.bind_device = false;
-        client.get_global_ctx().set_flags(flags);
-        let connector = ManualConnectorManager::new(client.get_global_ctx(), client);
-        connector.add_connector_by_url(listener_url).await.unwrap();
+        global_ctx.set_flags(flags);
+        let adapters = runtime_core_instance_adapters_with_ring_registry(
+            global_ctx.clone(),
+            client.ring_registry(),
+        );
+        let endpoint_resolver = Arc::new(CoreManualEndpointResolver::new(
+            adapters.host.clone(),
+            adapters.dns.clone(),
+            adapters.dns_records.clone(),
+            runtime_endpoint_discovery_config(&global_ctx),
+        ));
+        let connector = Arc::new(CoreManualConnectorManager::new_with_events(
+            client.core(),
+            adapters.host,
+            adapters.dns,
+            endpoint_resolver,
+            adapters.protocol.unwrap(),
+            adapters.ring_registry,
+            runtime_manual_options(&global_ctx),
+            adapters.manual_events.unwrap(),
+        ));
+        connector.start();
+        connector.add_connector(listener_url).unwrap();
         (connector, listener)
     }
 

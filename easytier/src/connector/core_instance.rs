@@ -386,6 +386,25 @@ where
 }
 
 #[cfg(test)]
+pub(crate) fn build_portable_test_core_instance(
+    global_ctx: ArcGlobalCtx,
+    ring_registry: Arc<RingTunnelRegistry>,
+) -> anyhow::Result<(
+    Arc<RuntimeCoreInstance>,
+    tokio::sync::mpsc::Receiver<Vec<u8>>,
+)> {
+    let (packet_sink, packet_receiver) = tokio::sync::mpsc::channel(16);
+    let (instance, ()) =
+        build_portable_runtime_core_instance_with_transport_factory_and_ring_registry(
+            global_ctx,
+            Arc::new(packet_sink),
+            NoWrappedTransportEngineFactory,
+            ring_registry,
+        )?;
+    Ok((Arc::new(instance), packet_receiver))
+}
+
+#[cfg(test)]
 mod tests {
     use std::sync::{
         Arc, Mutex as StdMutex,
