@@ -405,8 +405,8 @@ where
     H: DirectConnectorHost + TcpHolePunchHost,
 {
     pub host: Arc<H>,
-    /// Optional stable projection used by native services and test overrides.
-    /// Core installs its collector only when the slot is empty.
+    /// Optional preinstalled stable slot for deterministic adapters and tests.
+    /// Core installs its production collector only when the slot is empty.
     pub stun_projection: Option<Arc<StunProviderSlot<<H as VirtualUdpSocketFactory>::Socket>>>,
     pub dns: Arc<dyn DnsResolver>,
     /// Optional listener-specific resolver. When absent, listeners share `dns` with connectors.
@@ -2279,5 +2279,936 @@ mod tests {
         let error = validate_portable_connectivity_config(&config).unwrap_err();
 
         assert!(error.to_string().contains("Start port must be <= end port"));
+    }
+
+    mod portable_runtime {
+        use std::{
+            io,
+            net::{IpAddr, Ipv6Addr, SocketAddr},
+            pin::Pin,
+            sync::{
+                Arc,
+                atomic::{AtomicUsize, Ordering},
+            },
+            task::{Context, Poll},
+        };
+
+        use tokio::{
+            io::{AsyncRead, AsyncWrite, ReadBuf},
+            sync::Notify,
+        };
+        use tokio_util::task::AbortOnDropHandle;
+
+        use super::*;
+        use crate::{
+            config::{CoreConfig, IpPrefix, NetworkIdentity, ProxyNetworkConfig},
+            connectivity::manual::{ManualConnectorHost, ManualInterfaceAddrs},
+            listener::transport::AcceptedTransport,
+            peers::{
+                context::{HostRoutingPolicy, PeerRuntimeConfig},
+                peer_manager::{PeerManagerHostAdapters, PortablePeerManagerConfig},
+            },
+            proto::{common::StunInfo, peer_rpc::GetIpListResponse},
+            proxy::wrapped_transport::{
+                NoWrappedTransportEngineFactory, WrappedTransportEngine,
+                WrappedTransportEngineBuild, WrappedTransportEngineFactory,
+                WrappedTransportEngineStart, WrappedTransportKind, WrappedTransportRole,
+            },
+            runtime_config::CoreInstanceRuntimeConfig,
+            socket::{
+                SocketContext,
+                dns::{DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord},
+                tcp::{
+                    TcpConnectOptions, TcpListenOptions, VirtualTcpListener,
+                    VirtualTcpListenerFactory, VirtualTcpSocket, VirtualTcpSocketFactory,
+                },
+                udp::{
+                    PreferredIpv6Source, UdpBindOptions, UdpSessionControlHandler,
+                    VirtualUdpSocket, VirtualUdpSocketFactory,
+                },
+            },
+        };
+
+        struct TestTcpSocket;
+
+        impl AsyncRead for TestTcpSocket {
+            fn poll_read(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+                _buf: &mut ReadBuf<'_>,
+            ) -> Poll<io::Result<()>> {
+                Poll::Pending
+            }
+        }
+
+        impl AsyncWrite for TestTcpSocket {
+            fn poll_write(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+                buf: &[u8],
+            ) -> Poll<io::Result<usize>> {
+                Poll::Ready(Ok(buf.len()))
+            }
+
+            fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+                Poll::Ready(Ok(()))
+            }
+
+            fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+                Poll::Ready(Ok(()))
+            }
+        }
+
+        impl VirtualTcpSocket for TestTcpSocket {
+            fn local_addr(&self) -> io::Result<SocketAddr> {
+                Ok("127.0.0.1:20000".parse().unwrap())
+            }
+
+            fn peer_addr(&self) -> io::Result<SocketAddr> {
+                Ok("127.0.0.1:20001".parse().unwrap())
+            }
+        }
+
+        struct TestTcpListener(SocketAddr);
+
+        #[async_trait]
+        impl VirtualTcpListener for TestTcpListener {
+            type Socket = TestTcpSocket;
+
+            fn local_addr(&self) -> io::Result<SocketAddr> {
+                Ok(self.0)
+            }
+
+            async fn accept(&self) -> io::Result<(Self::Socket, SocketAddr)> {
+                std::future::pending().await
+            }
+        }
+
+        struct TestUdpSocket(SocketAddr);
+
+        #[async_trait]
+        impl VirtualUdpSocket for TestUdpSocket {
+            fn local_addr(&self) -> io::Result<SocketAddr> {
+                Ok(self.0)
+            }
+
+            async fn send_to(&self, data: &[u8], _addr: SocketAddr) -> io::Result<usize> {
+                Ok(data.len())
+            }
+
+            async fn recv_from(&self, _buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
+                std::future::pending().await
+            }
+        }
+
+        struct TestHost;
+
+        #[async_trait]
+        impl VirtualTcpSocketFactory for TestHost {
+            type Socket = TestTcpSocket;
+
+            async fn connect_tcp(
+                &self,
+                _options: TcpConnectOptions,
+            ) -> anyhow::Result<Self::Socket> {
+                anyhow::bail!("test host does not connect TCP sockets")
+            }
+        }
+
+        #[async_trait]
+        impl VirtualTcpListenerFactory for TestHost {
+            type Listener = TestTcpListener;
+
+            async fn bind_tcp(
+                &self,
+                options: TcpListenOptions,
+            ) -> anyhow::Result<Arc<Self::Listener>> {
+                let address = options
+                    .bind
+                    .local_addr
+                    .unwrap_or_else(|| "127.0.0.1:20000".parse().unwrap());
+                Ok(Arc::new(TestTcpListener(address)))
+            }
+        }
+
+        #[async_trait]
+        impl VirtualUdpSocketFactory for TestHost {
+            type Socket = TestUdpSocket;
+
+            async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
+                let address = options
+                    .local_addr
+                    .unwrap_or_else(|| "127.0.0.1:20002".parse().unwrap());
+                Ok(Arc::new(TestUdpSocket(address)))
+            }
+        }
+
+        #[async_trait]
+        impl UdpSessionControlHandler<TestUdpSocket> for TestHost {}
+
+        #[async_trait]
+        impl ManualConnectorHost for TestHost {
+            async fn local_addr_for_remote(
+                &self,
+                remote_addr: SocketAddr,
+                _context: SocketContext,
+            ) -> anyhow::Result<SocketAddr> {
+                Ok(match remote_addr {
+                    SocketAddr::V4(_) => "127.0.0.1:0".parse().unwrap(),
+                    SocketAddr::V6(_) => "[::1]:0".parse().unwrap(),
+                })
+            }
+
+            async fn interface_addrs(&self) -> anyhow::Result<ManualInterfaceAddrs> {
+                Ok(ManualInterfaceAddrs {
+                    interface_ipv4s: vec![],
+                    interface_ipv6s: vec![],
+                    public_ipv6: None,
+                })
+            }
+        }
+
+        #[async_trait]
+        impl DirectConnectorHost for TestHost {
+            async fn collect_ip_addrs(&self, _context: &SocketContext) -> GetIpListResponse {
+                GetIpListResponse::default()
+            }
+
+            fn mapped_listeners(&self) -> Vec<Url> {
+                Vec::new()
+            }
+
+            fn is_local_ip(&self, _ip: &IpAddr) -> bool {
+                false
+            }
+
+            fn is_protected_tcp_port(&self, _port: u16) -> bool {
+                false
+            }
+
+            async fn preferred_ipv6_source(
+                &self,
+                _ip: Ipv6Addr,
+                _context: SocketContext,
+            ) -> Option<PreferredIpv6Source> {
+                None
+            }
+        }
+
+        struct TestDns;
+
+        #[async_trait]
+        impl DnsResolver for TestDns {
+            async fn resolve(&self, query: DnsQuery) -> anyhow::Result<Vec<IpAddr>> {
+                Ok(query.host.parse().into_iter().collect())
+            }
+        }
+
+        #[async_trait]
+        impl DnsRecordResolver for TestDns {
+            async fn resolve_txt(&self, _query: DnsQuery) -> anyhow::Result<String> {
+                anyhow::bail!("test DNS has no TXT records")
+            }
+
+            async fn resolve_srv(&self, _query: DnsQuery) -> anyhow::Result<Vec<DnsSrvRecord>> {
+                Ok(Vec::new())
+            }
+        }
+
+        fn test_config(network_name: &str) -> PortableCoreInstanceConfig {
+            let mut core = CoreConfig::default();
+            core.node.network_name = network_name.to_owned();
+            core.peer_policy.encryption_required = false;
+            let peer = PortablePeerManagerConfig::new(PeerRuntimeConfig {
+                core,
+                network_identity: NetworkIdentity {
+                    network_name: network_name.to_owned(),
+                    network_secret: Some(String::new()),
+                    network_secret_digest: None,
+                },
+                stun_info: StunInfo::default(),
+                feature_flags: Default::default(),
+                secure_mode: None,
+                host_routing: HostRoutingPolicy::default(),
+            });
+            let mut connectivity = CoreInstanceConfig::default();
+            connectivity.direct.network_name = network_name.to_owned();
+            connectivity.direct.lazy_p2p = peer.snapshot.flags.lazy_p2p;
+            connectivity.direct.disable_p2p = peer.snapshot.flags.disable_p2p;
+            connectivity.direct.need_p2p = peer.snapshot.flags.need_p2p;
+            PortableCoreInstanceConfig { peer, connectivity }
+        }
+
+        fn runtime_snapshot(config: &PortableCoreInstanceConfig) -> CoreInstanceRuntimeConfig {
+            CoreInstanceRuntimeConfig {
+                services: config.connectivity.runtime.clone(),
+                peer: Arc::new(config.peer.snapshot.clone()),
+            }
+        }
+
+        fn proxy_network(real: &str, mapped: Option<&str>) -> ProxyNetworkConfig {
+            fn prefix(value: &str) -> IpPrefix {
+                let (address, prefix_len) = value.split_once('/').unwrap();
+                IpPrefix {
+                    address: address.parse().unwrap(),
+                    prefix_len: prefix_len.parse().unwrap(),
+                }
+            }
+
+            ProxyNetworkConfig {
+                real: prefix(real),
+                mapped: mapped.map(prefix),
+            }
+        }
+
+        fn adapters(
+            external_listener_factory: Option<
+                Arc<dyn ExternalListenerFactory<AcceptedTransport<TestTcpSocket>>>,
+            >,
+        ) -> CoreInstanceAdapters<TestHost> {
+            let dns = Arc::new(TestDns);
+            CoreInstanceAdapters {
+                host: Arc::new(TestHost),
+                stun_projection: None,
+                dns: dns.clone(),
+                listener_dns: None,
+                dns_records: dns,
+                process_runtime: CoreProcessRuntime::new(),
+                protocol: None,
+                manual_events: None,
+                external_listener_factory,
+                listener_events: None,
+                server_protocol: None,
+                accepted_tunnel_events: None,
+                udp_hole_punch_platform: None,
+                #[cfg(feature = "proxy-packet")]
+                icmp_proxy_host: None,
+                proxy_cidr_monitor: None,
+                public_ipv6_host: None,
+                public_ipv6_provider: None,
+                vpn_portal: None,
+                vpn_portal_events: None,
+                #[cfg(feature = "proxy-smoltcp-stack")]
+                gateway_events: None,
+            }
+        }
+
+        fn build_with_factory<F>(
+            config: PortableCoreInstanceConfig,
+            factory: F,
+        ) -> anyhow::Result<(Arc<CoreInstance<TestHost>>, F::Attachment)>
+        where
+            F: WrappedTransportEngineFactory,
+        {
+            build_with_factory_and_listener(config, factory, None)
+        }
+
+        fn build_with_factory_and_listener<F>(
+            config: PortableCoreInstanceConfig,
+            factory: F,
+            external_listener_factory: Option<
+                Arc<dyn ExternalListenerFactory<AcceptedTransport<TestTcpSocket>>>,
+            >,
+        ) -> anyhow::Result<(Arc<CoreInstance<TestHost>>, F::Attachment)>
+        where
+            F: WrappedTransportEngineFactory,
+        {
+            let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+            CoreInstance::new_portable_with_peer_adapters_and_transport_factory(
+                adapters(external_listener_factory),
+                PeerManagerHostAdapters::default(),
+                config,
+                Arc::new(packet_sink),
+                factory,
+            )
+            .map(|(instance, attachment)| (Arc::new(instance), attachment))
+        }
+
+        fn build_instance(
+            config: PortableCoreInstanceConfig,
+        ) -> anyhow::Result<Arc<CoreInstance<TestHost>>> {
+            build_with_factory(config, NoWrappedTransportEngineFactory)
+                .map(|(instance, ())| instance)
+        }
+
+        #[derive(Default)]
+        struct RecordingProxyService {
+            start_calls: AtomicUsize,
+            stop_calls: AtomicUsize,
+            start_gate: Option<Arc<ProxyStartGate>>,
+        }
+
+        #[derive(Default)]
+        struct ProxyStartGate {
+            entered: Notify,
+            release: Notify,
+        }
+
+        impl RecordingProxyService {
+            fn blocking() -> (Arc<Self>, Arc<ProxyStartGate>) {
+                let gate = Arc::new(ProxyStartGate::default());
+                (
+                    Arc::new(Self {
+                        start_gate: Some(gate.clone()),
+                        ..Default::default()
+                    }),
+                    gate,
+                )
+            }
+        }
+
+        #[async_trait]
+        impl WrappedTransportEngine for RecordingProxyService {
+            async fn prepare(&self, _options: WrappedTransportEngineStart) -> anyhow::Result<()> {
+                self.start_calls.fetch_add(1, Ordering::Relaxed);
+                if let Some(gate) = &self.start_gate {
+                    gate.entered.notify_one();
+                    gate.release.notified().await;
+                }
+                Ok(())
+            }
+
+            async fn activate(&self) -> anyhow::Result<()> {
+                Ok(())
+            }
+
+            async fn inject_peer_datagram(
+                &self,
+                _role: WrappedTransportRole,
+                _from_peer_id: u32,
+                _payload: bytes::Bytes,
+            ) -> anyhow::Result<()> {
+                Ok(())
+            }
+
+            #[cfg(feature = "proxy-packet")]
+            async fn connect_source(
+                &self,
+                _request: crate::proxy::wrapped_transport::WrappedTransportConnect,
+            ) -> anyhow::Result<Box<dyn crate::proxy::runtime::TcpProxyStream>> {
+                anyhow::bail!("recording engine does not open streams")
+            }
+
+            async fn stop(&self) {
+                self.stop_calls.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        struct TestTransportProxyFactory {
+            service: Arc<dyn WrappedTransportEngine>,
+        }
+
+        impl WrappedTransportEngineFactory for TestTransportProxyFactory {
+            type Attachment = ();
+
+            fn build(self) -> anyhow::Result<WrappedTransportEngineBuild<Self::Attachment>> {
+                Ok(WrappedTransportEngineBuild {
+                    kcp: Some(self.service),
+                    quic: None,
+                    attachment: (),
+                })
+            }
+        }
+
+        #[derive(Debug, Default)]
+        struct BlockingListenerState {
+            start_entered: Notify,
+            drop_calls: AtomicUsize,
+        }
+
+        #[derive(Debug)]
+        struct BlockingSocketListener {
+            url: Url,
+            state: Arc<BlockingListenerState>,
+        }
+
+        #[async_trait]
+        impl SocketListener for BlockingSocketListener {
+            type Accepted = AcceptedTransport<TestTcpSocket>;
+
+            async fn listen(&mut self) -> anyhow::Result<()> {
+                self.state.start_entered.notify_one();
+                std::future::pending().await
+            }
+
+            async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
+                std::future::pending().await
+            }
+
+            fn local_url(&self) -> Url {
+                self.url.clone()
+            }
+        }
+
+        impl Drop for BlockingSocketListener {
+            fn drop(&mut self) {
+                self.state.drop_calls.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        struct BlockingExternalListenerFactory {
+            state: Arc<BlockingListenerState>,
+        }
+
+        impl ExternalListenerFactory<AcceptedTransport<TestTcpSocket>> for BlockingExternalListenerFactory {
+            fn supports_scheme(&self, scheme: &str) -> bool {
+                scheme == "unix"
+            }
+
+            fn create(
+                &self,
+                request: ExternalListenerRequest,
+            ) -> Box<dyn SocketListener<Accepted = AcceptedTransport<TestTcpSocket>>> {
+                Box::new(BlockingSocketListener {
+                    url: request.url,
+                    state: self.state.clone(),
+                })
+            }
+        }
+
+        #[tokio::test]
+        async fn runtime_updates_refresh_avoid_relay_preference() {
+            let config = test_config("portable-runtime-update");
+            let instance = build_instance(config.clone()).unwrap();
+
+            assert!(
+                !instance
+                    .node_snapshot()
+                    .await
+                    .feature_flags
+                    .avoid_relay_data
+            );
+
+            let mut enabled = Arc::new(config.peer.snapshot.clone());
+            Arc::make_mut(&mut enabled).avoid_relay_data_preference = true;
+            instance.update_peer_runtime_snapshot(enabled).await;
+            assert!(
+                instance
+                    .node_snapshot()
+                    .await
+                    .feature_flags
+                    .avoid_relay_data
+            );
+
+            let mut disabled = runtime_snapshot(&config);
+            Arc::make_mut(&mut disabled.peer).avoid_relay_data_preference = false;
+            instance.update_runtime_config(disabled).await.unwrap();
+            assert!(
+                !instance
+                    .node_snapshot()
+                    .await
+                    .feature_flags
+                    .avoid_relay_data
+            );
+        }
+
+        #[cfg(feature = "test-utils")]
+        #[tokio::test]
+        async fn concurrent_runtime_updates_keep_snapshot_and_derived_state_coherent() {
+            let config = test_config("concurrent-runtime-update");
+            let instance = build_instance(config.clone()).unwrap();
+            instance.start().await.unwrap();
+            instance.start_network_services(None).await.unwrap();
+
+            let original = instance.node_snapshot().await;
+            let mut full = runtime_snapshot(&config);
+            full.services.dhcp_ipv4 = true;
+            full.services.acl.tcp_whitelist = vec!["80".to_owned()];
+            {
+                let peer = Arc::make_mut(&mut full.peer);
+                peer.runtime.core.node.hostname = Some("full".to_owned());
+                peer.runtime.core.routes.proxy_networks =
+                    vec![proxy_network("192.0.2.0/24", Some("198.51.100.0/24"))];
+            }
+            let mut peer_only = Arc::new(config.peer.snapshot.clone());
+            {
+                let peer = Arc::make_mut(&mut peer_only);
+                peer.runtime.core.node.hostname = Some("peer".to_owned());
+                peer.runtime.core.routes.proxy_networks =
+                    vec![proxy_network("203.0.113.0/24", Some("10.20.30.0/24"))];
+            }
+
+            let start = Arc::new(tokio::sync::Barrier::new(3));
+            let full_update = tokio::spawn({
+                let instance = instance.clone();
+                let start = start.clone();
+                async move {
+                    start.wait().await;
+                    instance.update_runtime_config(full).await
+                }
+            });
+            let peer_update = tokio::spawn({
+                let instance = instance.clone();
+                let start = start.clone();
+                async move {
+                    start.wait().await;
+                    instance.update_peer_runtime_snapshot(peer_only).await;
+                }
+            });
+            start.wait().await;
+            full_update.await.unwrap().unwrap();
+            peer_update.await.unwrap();
+
+            assert!(instance.runtime_config_snapshot().dhcp_ipv4);
+            assert_eq!(instance.acl_whitelist_snapshot().tcp_ports, ["80"]);
+            assert_eq!(instance.acl_reload_count_for_test(), 1);
+            let node = instance.node_snapshot().await;
+            assert_eq!(node.peer_id, original.peer_id);
+            assert_eq!(node.instance_id, original.instance_id);
+            match node.hostname.as_str() {
+                "full" => assert_eq!(
+                    instance.proxy_cidr_lookup_for_test("198.51.100.42".parse().unwrap()),
+                    Some("192.0.2.42".parse().unwrap())
+                ),
+                "peer" => assert_eq!(
+                    instance.proxy_cidr_lookup_for_test("10.20.30.42".parse().unwrap()),
+                    Some("203.0.113.42".parse().unwrap())
+                ),
+                hostname => panic!("unexpected final hostname: {hostname:?}"),
+            }
+
+            instance.stop().await;
+        }
+
+        #[cfg(feature = "test-utils")]
+        #[tokio::test]
+        async fn active_runtime_update_skips_unchanged_and_rejects_invalid_acl() {
+            let config = test_config("invalid-active-acl-update");
+            let instance = build_instance(config.clone()).unwrap();
+            instance.start().await.unwrap();
+            instance.start_network_services(None).await.unwrap();
+
+            let mut unrelated = runtime_snapshot(&config);
+            Arc::make_mut(&mut unrelated.peer)
+                .runtime
+                .core
+                .node
+                .hostname = Some("accepted".to_owned());
+            instance.update_runtime_config(unrelated).await.unwrap();
+            assert_eq!(instance.acl_reload_count_for_test(), 0);
+            let before = instance.node_snapshot().await;
+
+            let mut rejected = runtime_snapshot(&config);
+            rejected.services.dhcp_ipv4 = true;
+            rejected.services.acl.tcp_whitelist = vec!["invalid".to_owned()];
+            Arc::make_mut(&mut rejected.peer).runtime.core.node.hostname =
+                Some("rejected".to_owned());
+
+            let error = instance.update_runtime_config(rejected).await.unwrap_err();
+            assert!(error.to_string().contains("Invalid port number"));
+            assert!(!instance.runtime_config_snapshot().dhcp_ipv4);
+            assert!(instance.acl_whitelist_snapshot().tcp_ports.is_empty());
+            assert_eq!(instance.acl_reload_count_for_test(), 0);
+            assert_eq!(instance.node_snapshot().await.hostname, before.hostname);
+            instance.stop().await;
+        }
+
+        #[cfg(feature = "proxy-packet")]
+        #[tokio::test]
+        async fn runtime_core_instance_owns_connectivity_lifecycle() {
+            let mut config = test_config("connectivity-lifecycle");
+            config.peer.snapshot.runtime.core.routes.proxy_networks =
+                vec![proxy_network("10.1.2.0/24", None)];
+            let initial_peer: Url = "tcp://127.0.0.1:29999".parse().unwrap();
+            config.connectivity.initial_peers = vec![initial_peer.clone()];
+            let proxy = Arc::new(RecordingProxyService::default());
+            let (instance, ()) = build_with_factory(
+                config,
+                TestTransportProxyFactory {
+                    service: proxy.clone(),
+                },
+            )
+            .unwrap();
+
+            assert_eq!(instance.state(), CoreInstanceState::Created);
+            assert!(instance.list_connectors().is_empty());
+            assert!(instance.start_transport_proxy().await.is_err());
+            assert!(instance.start_network_services(None).await.is_err());
+            assert!(instance.start_proxy().await.is_err());
+            assert!(instance.start_peer_center().await.is_err());
+            instance.start().await.unwrap();
+            assert_eq!(instance.state(), CoreInstanceState::Running);
+            assert!(instance.list_connectors().is_empty());
+            assert!(instance.start_initial_peers().await.is_err());
+            assert!(instance.start().await.is_err());
+            instance.start_network_services(None).await.unwrap();
+            instance.start_network_services(None).await.unwrap();
+            assert_eq!(proxy.start_calls.load(Ordering::Relaxed), 1);
+            assert_eq!(instance.list_connectors().len(), 1);
+            assert_eq!(instance.list_connectors()[0].url, initial_peer);
+            assert!(instance.proxy_is_started());
+
+            instance.stop().await;
+            instance.stop().await;
+            assert_eq!(instance.state(), CoreInstanceState::Stopped);
+            assert_eq!(proxy.stop_calls.load(Ordering::Relaxed), 1);
+            assert!(!instance.proxy_is_started());
+        }
+
+        #[cfg(feature = "proxy-packet")]
+        #[tokio::test]
+        async fn runtime_core_instance_owns_wrapped_transport_source_nat() {
+            let mut config = test_config("wrapped-source");
+            config.peer.snapshot.flags.enable_kcp_proxy = true;
+            config.peer.snapshot.flags.disable_kcp_input = true;
+            let engine = Arc::new(RecordingProxyService::default());
+            let (instance, ()) = build_with_factory(
+                config,
+                TestTransportProxyFactory {
+                    service: engine.clone(),
+                },
+            )
+            .unwrap();
+
+            instance.start().await.unwrap();
+            instance.start_network_services(None).await.unwrap();
+            assert!(instance.wrapped_transport_is_started(
+                WrappedTransportKind::Kcp,
+                WrappedTransportRole::Source,
+            ));
+            assert!(
+                instance
+                    .wrapped_tcp_proxy_entry_snapshots(
+                        WrappedTransportKind::Kcp,
+                        WrappedTransportRole::Source,
+                    )
+                    .is_empty()
+            );
+
+            instance.stop().await;
+            assert!(!instance.wrapped_transport_is_started(
+                WrappedTransportKind::Kcp,
+                WrappedTransportRole::Source,
+            ));
+            assert_eq!(engine.stop_calls.load(Ordering::Relaxed), 1);
+        }
+
+        #[tokio::test]
+        async fn runtime_core_instance_owns_the_transport_proxy_cidr_table() {
+            let mut config = test_config("transport-proxy-cidr");
+            config.peer.snapshot.runtime.core.routes.proxy_networks =
+                vec![proxy_network("192.0.2.0/24", Some("198.51.100.0/24"))];
+            let mut updated = runtime_snapshot(&config);
+            let proxy = Arc::new(RecordingProxyService::default());
+            let (instance, ()) = build_with_factory(
+                config,
+                TestTransportProxyFactory {
+                    service: proxy.clone(),
+                },
+            )
+            .unwrap();
+
+            assert!(instance.start_network_services(None).await.is_err());
+            assert_eq!(instance.node_snapshot().await.proxy_networks.len(), 1);
+            instance.start().await.unwrap();
+            instance.start_network_services(None).await.unwrap();
+            instance.start_network_services(None).await.unwrap();
+            assert_eq!(proxy.start_calls.load(Ordering::Relaxed), 1);
+
+            Arc::make_mut(&mut updated.peer)
+                .runtime
+                .core
+                .routes
+                .proxy_networks = vec![proxy_network("203.0.113.0/24", Some("10.20.30.0/24"))];
+            instance.update_runtime_config(updated).await.unwrap();
+            let proxy_networks = instance.node_snapshot().await.proxy_networks;
+            assert_eq!(proxy_networks.len(), 1);
+            assert_eq!(
+                proxy_networks[0].real.address,
+                "203.0.113.0".parse::<IpAddr>().unwrap()
+            );
+            assert_eq!(
+                proxy_networks[0].mapped.as_ref().unwrap().address,
+                "10.20.30.0".parse::<IpAddr>().unwrap()
+            );
+
+            instance.stop().await;
+            assert!(instance.start_network_services(None).await.is_err());
+            assert_eq!(proxy.stop_calls.load(Ordering::Relaxed), 1);
+        }
+
+        #[tokio::test]
+        async fn runtime_core_accepts_explicit_acl_runtime_snapshot() {
+            let config = test_config("explicit-acl");
+            let instance = build_instance(config.clone()).unwrap();
+            assert_eq!(instance.acl_whitelist_snapshot(), Default::default());
+
+            let mut updated = runtime_snapshot(&config);
+            updated.services.acl.tcp_whitelist = vec!["invalid".to_owned()];
+            instance.update_runtime_config(updated).await.unwrap();
+            instance.start().await.unwrap();
+            let error = instance.start_network_services(None).await.unwrap_err();
+            assert!(error.to_string().contains("Invalid port number"));
+            assert_eq!(instance.acl_whitelist_snapshot().tcp_ports, ["invalid"]);
+            instance.stop().await;
+        }
+
+        #[tokio::test]
+        async fn runtime_core_accepts_explicit_dhcp_runtime_snapshot() {
+            let config = test_config("explicit-dhcp");
+            let instance = build_instance(config.clone()).unwrap();
+            let mut updated = runtime_snapshot(&config);
+            updated.services.dhcp_ipv4 = true;
+            instance.update_runtime_config(updated).await.unwrap();
+            instance.start().await.unwrap();
+            let error = instance.start_network_services(None).await.unwrap_err();
+            assert!(error.to_string().contains("no host adapter was provided"));
+            instance.stop().await;
+        }
+
+        #[tokio::test]
+        async fn runtime_core_accepts_explicit_public_ipv6_runtime_snapshot() {
+            let config = test_config("explicit-public-ipv6");
+            let instance = build_instance(config.clone()).unwrap();
+            let mut updated = runtime_snapshot(&config);
+            updated.services.public_ipv6_provider.provider_enabled = true;
+            updated.services.public_ipv6_provider.provider_supported = true;
+            updated.services.public_ipv6_provider.configured_prefix =
+                Some("fd00::/64".parse().unwrap());
+            instance.update_runtime_config(updated).await.unwrap();
+
+            let error = instance.start().await.unwrap_err();
+            assert!(error.to_string().contains("not a valid global unicast"));
+            assert_eq!(instance.state(), CoreInstanceState::Created);
+        }
+
+        #[tokio::test]
+        async fn stopping_while_transport_proxy_starts_rolls_back_once() {
+            let mut config = test_config("blocking-transport-proxy");
+            config.peer.snapshot.runtime.core.routes.proxy_networks =
+                vec![proxy_network("10.1.2.0/24", None)];
+            config.connectivity.initial_peers = vec!["tcp://127.0.0.1:29998".parse().unwrap()];
+            let (proxy, start_gate) = RecordingProxyService::blocking();
+            let (instance, ()) = build_with_factory(
+                config,
+                TestTransportProxyFactory {
+                    service: proxy.clone(),
+                },
+            )
+            .unwrap();
+            instance.start().await.unwrap();
+            instance.start_peer_center().await.unwrap();
+
+            let start_task = tokio::spawn({
+                let instance = instance.clone();
+                async move { instance.start_transport_proxy().await }
+            });
+            start_gate.entered.notified().await;
+            let initial_peer_task = tokio::spawn({
+                let instance = instance.clone();
+                async move { instance.start_initial_peers().await }
+            });
+            tokio::task::yield_now().await;
+            let stop_task = tokio::spawn({
+                let instance = instance.clone();
+                async move { instance.stop().await }
+            });
+            tokio::task::yield_now().await;
+            start_gate.release.notify_one();
+
+            assert!(start_task.await.unwrap().is_err());
+            assert!(initial_peer_task.await.unwrap().is_err());
+            stop_task.await.unwrap();
+            assert!(instance.list_connectors().is_empty());
+            assert_eq!(instance.state(), CoreInstanceState::Stopped);
+            assert_eq!(proxy.start_calls.load(Ordering::Relaxed), 1);
+            assert_eq!(proxy.stop_calls.load(Ordering::Relaxed), 1);
+        }
+
+        #[tokio::test]
+        async fn invalid_initial_peer_fails_during_activation() {
+            let mut config = test_config("invalid-initial-peer");
+            config.connectivity.initial_peers =
+                vec!["unsupported://peer.example:1234".parse().unwrap()];
+            let instance = build_instance(config).unwrap();
+
+            instance.start().await.unwrap();
+            instance.start_peer_center().await.unwrap();
+            let error = instance.start_initial_peers().await.unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("unsupported core manual connector URL")
+            );
+            instance.stop().await;
+        }
+
+        #[test]
+        fn portable_core_instance_rejects_conflicting_p2p_policy() {
+            let mut config = test_config("conflicting-p2p");
+            config.connectivity.direct.disable_p2p = !config.peer.snapshot.flags.disable_p2p;
+
+            let error = build_instance(config)
+                .err()
+                .expect("conflicting P2P policy should be rejected");
+            assert!(error.to_string().contains("P2P policy"));
+        }
+
+        #[tokio::test]
+        async fn runtime_core_instances_keep_lifecycle_and_connectors_isolated() {
+            let instance_a = build_instance(test_config("instance-a")).unwrap();
+            let instance_b = build_instance(test_config("instance-b")).unwrap();
+            let connector_a: Url = "tcp://127.0.0.1:21001".parse().unwrap();
+            let connector_b: Url = "udp://127.0.0.1:21002".parse().unwrap();
+
+            instance_a.add_connector(connector_a.clone()).unwrap();
+            instance_b.add_connector(connector_b.clone()).unwrap();
+            assert_eq!(instance_a.list_connectors()[0].url, connector_a);
+            assert_eq!(instance_b.list_connectors()[0].url, connector_b);
+            instance_a.clear_connectors();
+            instance_b.clear_connectors();
+
+            let (start_a, start_b) = tokio::join!(instance_a.start(), instance_b.start());
+            start_a.unwrap();
+            start_b.unwrap();
+            let (udp_a, udp_b) = tokio::join!(
+                instance_a.start_udp_hole_punch(),
+                instance_b.start_udp_hole_punch()
+            );
+            udp_a.unwrap();
+            udp_b.unwrap();
+            assert_eq!(instance_a.state(), CoreInstanceState::Running);
+            assert_eq!(instance_b.state(), CoreInstanceState::Running);
+
+            instance_a.stop().await;
+            assert_eq!(instance_a.state(), CoreInstanceState::Stopped);
+            assert_eq!(instance_b.state(), CoreInstanceState::Running);
+            instance_b.stop().await;
+            assert_eq!(instance_b.state(), CoreInstanceState::Stopped);
+        }
+
+        #[cfg(unix)]
+        #[tokio::test]
+        async fn stop_cancels_pending_listener_start() {
+            let state = Arc::new(BlockingListenerState::default());
+            let mut config = test_config("pending-listener");
+            config.connectivity.listeners = Some(ListenerRuntimeConfig::new(
+                vec!["unix:///tmp/easytier-pending-listener".parse().unwrap()],
+                false,
+                SocketContext::default(),
+            ));
+            let (instance, ()) = build_with_factory_and_listener(
+                config,
+                NoWrappedTransportEngineFactory,
+                Some(Arc::new(BlockingExternalListenerFactory {
+                    state: state.clone(),
+                })),
+            )
+            .unwrap();
+            let start_instance = instance.clone();
+            let start_task =
+                AbortOnDropHandle::new(tokio::spawn(async move { start_instance.start().await }));
+            let start_result = tokio::time::timeout(Duration::from_secs(1), async {
+                state.start_entered.notified().await;
+                instance.stop().await;
+                start_task.await.unwrap()
+            })
+            .await
+            .expect("listener cancellation should complete promptly");
+
+            assert!(start_result.is_err());
+            assert_eq!(instance.state(), CoreInstanceState::Stopped);
+            assert_eq!(state.drop_calls.load(Ordering::Relaxed), 1);
+        }
     }
 }
