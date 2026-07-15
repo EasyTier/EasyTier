@@ -27,7 +27,7 @@ use crate::{
         config::{ConfigLoader, NetworkIdentity, PortForwardConfig, TomlConfigLoader},
         netns::{NetNS, ROOT_NETNS_NAME},
     },
-    instance::composition::runtime_instance_config,
+    instance::config::runtime_instance_config,
     instance::instance::Instance,
     proto::{
         api::instance::TcpProxyEntryTransportType,
@@ -1701,7 +1701,7 @@ pub async fn wireguard_vpn_portal(#[values(true, false)] test_v6: bool) {
     insts[2]
         .get_core_instance()
         .update_peer_runtime_snapshot(
-            crate::instance::composition::runtime_instance_config(&insts[2].get_global_ctx()).peer,
+            crate::instance::config::runtime_instance_config(&insts[2].get_global_ctx()).peer,
         )
         .await;
     insts[2].run_vpn_portal().await.unwrap();

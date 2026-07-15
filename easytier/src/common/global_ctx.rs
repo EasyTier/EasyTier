@@ -20,7 +20,6 @@ use super::{
 #[cfg(test)]
 use crate::socket::udp::RuntimeUdpSocket;
 use crate::{
-    common::config::ProxyNetworkConfig,
     proto::{
         api::{config::InstanceConfigPatch, instance::PeerConnInfo},
         common::PortForwardConfigPb,
@@ -92,8 +91,6 @@ pub struct GlobalCtx {
 
     cached_ipv4: AtomicCell<Option<cidr::Ipv4Inet>>,
     cached_ipv6: AtomicCell<Option<cidr::Ipv6Inet>>,
-    cached_proxy_cidrs: AtomicCell<Option<Vec<ProxyNetworkConfig>>>,
-
     hostname: Mutex<String>,
 
     #[cfg(test)]
@@ -179,8 +176,6 @@ impl GlobalCtx {
             event_bus,
             cached_ipv4: AtomicCell::new(None),
             cached_ipv6: AtomicCell::new(None),
-            cached_proxy_cidrs: AtomicCell::new(None),
-
             hostname: Mutex::new(hostname),
 
             #[cfg(test)]

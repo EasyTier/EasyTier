@@ -6,10 +6,8 @@ use crate::{
         os_info::collect_device_os_info, resolve_machine_id,
     },
     instance::{
-        composition::{
-            runtime_core_instance_adapters_with_process_runtime, runtime_endpoint_discovery_config,
-            runtime_manual_options,
-        },
+        composition::runtime_core_instance_adapters_with_process_runtime,
+        config::{runtime_endpoint_discovery_config, runtime_manual_options},
         host::NativeInstanceHost,
     },
     instance_manager::{DaemonGuard, NetworkInstanceManager},

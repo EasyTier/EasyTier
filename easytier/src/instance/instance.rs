@@ -29,7 +29,6 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::AbortOnDropHandle;
 
 use crate::common::PeerId;
-use crate::common::acl_processor::runtime_acl_config;
 use crate::common::config::ConfigLoader;
 use crate::common::error::Error;
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtx, GlobalCtxEvent};
@@ -38,13 +37,15 @@ use crate::gateway::kcp_proxy::KcpProxyService;
 #[cfg(feature = "quic")]
 use crate::gateway::quic_proxy::QuicProxyService;
 use crate::gateway::tcp_proxy::CoreTcpProxyRpcService;
-use crate::instance::composition::{
-    NativeCoreInstance,
-    build_portable_runtime_core_instance_with_transport_factory_and_process_runtime,
-    runtime_instance_config,
-};
 use crate::instance::management::connector::InstanceConnectorManagementRpc;
 use crate::instance::management::peer::InstancePeerManagementRpc;
+use crate::instance::{
+    composition::{
+        NativeCoreInstance,
+        build_portable_runtime_core_instance_with_transport_factory_and_process_runtime,
+    },
+    config::{runtime_acl_config, runtime_instance_config},
+};
 use crate::launcher::NetworkConfigExt;
 use crate::proto::api::config::{
     ConfigPatchAction, ConfigRpc, GetConfigRequest, GetConfigResponse, PatchConfigRequest,

@@ -1,9 +1,5 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
-use easytier_core::config::{
-    CoreConfig, IpPrefix, NodeConfig, PeerPolicyConfig, ProxyNetworkConfig, RouteConfig,
-    TrafficConfig,
-};
 use easytier_core::peers::context::{
     HostRoutingPolicy, NetworkIdentity as CoreNetworkIdentity, PeerCredentialEventSink, PeerEvent,
     PeerEventSink, PeerRuntimeConfig, PeerRuntimeSnapshot,
@@ -12,17 +8,204 @@ use easytier_core::peers::foreign_network_manager::check_network_in_relay_whitel
 use easytier_core::peers::peer_manager::{
     PeerManagerHostAdapters, PortablePeerManagerConfig, RouteAlgoType,
 };
+use easytier_core::{
+    config::{
+        CoreConfig, IpPrefix, NodeConfig, PeerPolicyConfig, ProxyNetworkConfig, RouteConfig,
+        TrafficConfig,
+    },
+    connectivity::{
+        direct::DirectConnectorOptions,
+        manual::{ManualConnectorOptions, discovery::ManualEndpointDiscoveryConfig},
+    },
+    instance::CoreInstanceConfig,
+    listener::plan::ListenerRuntimeConfig,
+    peers::acl_config::AclRuleConfig,
+    proxy::{ProxyRuntimeConfig, gateway::GatewayRuntimeConfig},
+    runtime_config::{CoreInstanceRuntimeConfig, CoreRuntimeConfig},
+    socket::{IpVersion, NetNamespace, SocketContext, tcp::TcpBindOptions, udp::UdpBindOptions},
+    stun::StunServerConfig,
+};
 
 use crate::{
+    VERSION,
     common::{
         config::{ConfigLoader as _, Flags, TomlConfigLoader},
         constants::EASYTIER_VERSION,
         credential_manager::runtime_credential_storage,
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
+        stun::{default_tcp_stun_servers, default_udp_stun_servers, default_udp_v6_stun_servers},
     },
+    instance::public_ipv6_provider::runtime_public_ipv6_provider_config,
     proto::common::PeerFeatureFlag,
+    tunnel::IpScheme,
     use_global_var,
 };
+use strum::VariantArray as _;
+
+pub(crate) fn runtime_acl_config(global_ctx: &ArcGlobalCtx) -> AclRuleConfig {
+    AclRuleConfig {
+        acl: global_ctx.config.get_acl(),
+        tcp_whitelist: global_ctx.config.get_tcp_whitelist(),
+        udp_whitelist: global_ctx.config.get_udp_whitelist(),
+        whitelist_priority: None,
+    }
+}
+
+pub(crate) fn runtime_core_config(global_ctx: &ArcGlobalCtx) -> CoreRuntimeConfig {
+    CoreRuntimeConfig {
+        acl: runtime_acl_config(global_ctx),
+        dhcp_ipv4: global_ctx.config.get_dhcp(),
+        gateway: GatewayRuntimeConfig {
+            socks5_bind: global_ctx.config.get_socks5_portal().map(|proxy_url| {
+                format!(
+                    "{}:{}",
+                    proxy_url.host_str().unwrap(),
+                    proxy_url.port().unwrap()
+                )
+                .parse()
+                .unwrap()
+            }),
+            port_forwards: global_ctx.config.get_port_forwards(),
+        },
+        proxy: runtime_proxy_startup_context(global_ctx),
+        public_ipv6_auto: global_ctx.config.get_ipv6_public_addr_auto(),
+        public_ipv6_provider: runtime_public_ipv6_provider_config(global_ctx),
+    }
+}
+
+pub(crate) fn runtime_instance_config(global_ctx: &ArcGlobalCtx) -> CoreInstanceRuntimeConfig {
+    CoreInstanceRuntimeConfig {
+        services: runtime_core_config(global_ctx),
+        peer: Arc::new(runtime_peer_manager_config(global_ctx, RouteAlgoType::Ospf).snapshot),
+    }
+}
+
+pub(crate) fn runtime_proxy_startup_context(global_ctx: &ArcGlobalCtx) -> ProxyRuntimeConfig {
+    ProxyRuntimeConfig {
+        enable_exit_node: global_ctx.enable_exit_node(),
+        no_tun: global_ctx.no_tun(),
+        forward_by_system: global_ctx.proxy_forward_by_system(),
+        force_smoltcp: cfg!(feature = "smoltcp")
+            && (global_ctx.get_flags().use_smoltcp
+                || global_ctx.no_tun()
+                || cfg!(any(
+                    target_os = "android",
+                    target_os = "ios",
+                    all(target_os = "macos", feature = "macos-ne"),
+                    target_env = "ohos"
+                ))),
+        icmp_failure_is_fatal: cfg!(not(any(
+            target_os = "android",
+            target_os = "ios",
+            all(target_os = "macos", feature = "macos-ne"),
+            target_env = "ohos"
+        ))),
+        udp_response_ipv4_mtu: 1280,
+    }
+}
+
+pub(crate) fn runtime_manual_options(global_ctx: &ArcGlobalCtx) -> ManualConnectorOptions {
+    let flags = global_ctx.config.get_flags();
+    let socket_context = runtime_socket_context(global_ctx);
+    ManualConnectorOptions {
+        reconnect_interval: Duration::from_millis(use_global_var!(
+            MANUAL_CONNECTOR_RECONNECT_INTERVAL_MS
+        )),
+        connect_timeout: Duration::from_secs(2),
+        websocket_connect_timeout: Duration::from_secs(20),
+        bind_device: flags.bind_device,
+        allow_interface_bind: !cfg!(any(
+            target_os = "android",
+            target_os = "ios",
+            all(target_os = "macos", feature = "macos-ne"),
+            target_env = "ohos"
+        )),
+        tcp_bind: TcpBindOptions::default().with_context(socket_context.clone()),
+        udp_bind: UdpBindOptions::direct_connect().with_context(socket_context),
+    }
+}
+
+pub(crate) fn runtime_endpoint_discovery_config(
+    global_ctx: &ArcGlobalCtx,
+) -> ManualEndpointDiscoveryConfig {
+    ManualEndpointDiscoveryConfig {
+        user_agent: format!("easytier/{VERSION}"),
+        network_name: global_ctx.network.network_name.clone(),
+        http_timeout: Duration::from_secs(20),
+        http_ip_version: IpVersion::Both,
+        http_tcp_bind: runtime_manual_options(global_ctx).tcp_bind,
+        dns_record_context: runtime_socket_context(global_ctx),
+        srv_protocols: IpScheme::VARIANTS.iter().map(ToString::to_string).collect(),
+    }
+}
+
+pub(crate) fn runtime_direct_options(
+    global_ctx: &ArcGlobalCtx,
+    testing: bool,
+) -> DirectConnectorOptions {
+    let flags = global_ctx.config.get_flags();
+    let socket_context = runtime_socket_context(global_ctx);
+    DirectConnectorOptions {
+        network_name: global_ctx.get_network_name(),
+        default_protocol: flags.default_protocol,
+        enable_ipv6: flags.enable_ipv6,
+        allow_public_server: use_global_var!(DIRECT_CONNECT_TO_PUBLIC_SERVER),
+        lazy_p2p: flags.lazy_p2p,
+        disable_p2p: flags.disable_p2p,
+        need_p2p: flags.need_p2p,
+        bind_device: flags.bind_device,
+        allow_interface_bind: !cfg!(any(
+            target_os = "android",
+            target_os = "ios",
+            all(target_os = "macos", feature = "macos-ne"),
+            target_env = "ohos"
+        )),
+        tcp_bind: TcpBindOptions::default().with_context(socket_context.clone()),
+        udp_bind: UdpBindOptions::direct_connect().with_context(socket_context),
+        testing,
+    }
+}
+
+pub(crate) fn runtime_socket_context(global_ctx: &ArcGlobalCtx) -> SocketContext {
+    SocketContext::default()
+        .with_socket_mark(global_ctx.config.get_flags().socket_mark)
+        .with_netns(global_ctx.net_ns.name().map(NetNamespace::new))
+}
+
+pub(crate) fn runtime_stun_server_config(global_ctx: &ArcGlobalCtx) -> StunServerConfig {
+    StunServerConfig {
+        udp_servers: global_ctx
+            .config
+            .get_stun_servers()
+            .unwrap_or_else(default_udp_stun_servers),
+        tcp_servers: default_tcp_stun_servers(),
+        udp_v6_servers: global_ctx
+            .config
+            .get_stun_servers_v6()
+            .unwrap_or_else(default_udp_v6_stun_servers),
+    }
+}
+
+pub(crate) fn runtime_connectivity_config(global_ctx: &ArcGlobalCtx) -> CoreInstanceConfig {
+    CoreInstanceConfig {
+        initial_peers: global_ctx
+            .config
+            .get_peers()
+            .into_iter()
+            .map(|peer| peer.uri)
+            .collect(),
+        listeners: Some(ListenerRuntimeConfig::new(
+            global_ctx.config.get_listener_uris(),
+            global_ctx.config.get_flags().enable_ipv6,
+            runtime_socket_context(global_ctx),
+        )),
+        runtime: runtime_core_config(global_ctx),
+        stun: runtime_stun_server_config(global_ctx),
+        endpoint_discovery: runtime_endpoint_discovery_config(global_ctx),
+        manual: runtime_manual_options(global_ctx),
+        direct: runtime_direct_options(global_ctx, false),
+    }
+}
 
 fn runtime_peer_feature_flags(flags: &Flags) -> PeerFeatureFlag {
     PeerFeatureFlag {
@@ -189,6 +372,45 @@ pub(crate) fn runtime_peer_manager_host_adapters(
 mod tests {
     use super::*;
     use crate::common::global_ctx::tests::get_mock_global_ctx;
+
+    #[test]
+    fn runtime_stun_config_normalizes_native_server_selection() {
+        let global_ctx = get_mock_global_ctx();
+        global_ctx
+            .config
+            .set_stun_servers(Some(vec!["stun-v4.example".to_owned()]));
+        global_ctx
+            .config
+            .set_stun_servers_v6(Some(vec!["stun-v6.example".to_owned()]));
+
+        let config = runtime_stun_server_config(&global_ctx);
+
+        assert_eq!(config.udp_servers, vec!["stun-v4.example"]);
+        assert_eq!(config.udp_v6_servers, vec!["stun-v6.example"]);
+        assert_eq!(config.tcp_servers, default_tcp_stun_servers());
+    }
+
+    #[test]
+    fn runtime_proxy_config_normalizes_platform_policy() {
+        let global_ctx = get_mock_global_ctx();
+        let mut flags = global_ctx.get_flags();
+        flags.use_smoltcp = true;
+        global_ctx.set_flags(flags);
+
+        let config = runtime_proxy_startup_context(&global_ctx);
+
+        assert_eq!(config.force_smoltcp, cfg!(feature = "smoltcp"));
+        assert_eq!(
+            config.icmp_failure_is_fatal,
+            cfg!(not(any(
+                target_os = "android",
+                target_os = "ios",
+                all(target_os = "macos", feature = "macos-ne"),
+                target_env = "ohos"
+            )))
+        );
+        assert_eq!(config.udp_response_ipv4_mtu, 1280);
+    }
 
     #[tokio::test]
     async fn peer_event_sink_projects_core_events_to_global_context() {

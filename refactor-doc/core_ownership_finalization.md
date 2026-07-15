@@ -51,6 +51,11 @@ The old `easytier/src/connector`, `easytier/src/peers`, and native
 `peer_center` facade directories are deleted. They must not be recreated as
 compatibility or test-only shells.
 
+`instance/config.rs` is the single native normalization boundary for core
+snapshots and connectivity options. `instance/composition.rs` consumes those
+values while wiring Host Adapters into one `CoreInstance`; it must not grow a
+second set of ACL, STUN, proxy, listener, or connector policy builders.
+
 Native utility facades are subject to the same rule. Packet types are imported
 directly from `easytier_core::packet`, and IDN normalization plus its tests live
 with core manual connectivity; native `tunnel/packet_def.rs` and
@@ -178,6 +183,7 @@ GlobalCtx.public_ipv6_provider_active
 HostConnectorEnvironmentSnapshot.managed_ipv6s
 easytier/src/tunnel/packet_def.rs
 easytier/src/common/idn.rs
+easytier/src/common/acl_processor.rs
 pub use easytier_core::tunnel::framed (native production)
 easytier/src/gateway/tests.rs
 easytier/benches/tx_throughput.rs

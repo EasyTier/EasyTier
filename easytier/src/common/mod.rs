@@ -7,7 +7,6 @@ use time::util::refresh_tz;
 use tokio::{task::JoinSet, time::timeout};
 use tracing::Instrument;
 
-pub mod acl_processor;
 pub mod config;
 pub mod constants;
 pub mod credential_manager;
