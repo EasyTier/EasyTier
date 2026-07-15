@@ -1181,6 +1181,7 @@ mod tests {
     struct RecordingServerProtocolUpgrader {
         tcp_calls: AtomicUsize,
         udp_calls: AtomicUsize,
+        byte_stream_calls: AtomicUsize,
     }
 
     impl RecordingServerProtocolUpgrader {
@@ -1188,6 +1189,7 @@ mod tests {
             Self {
                 tcp_calls: AtomicUsize::new(0),
                 udp_calls: AtomicUsize::new(0),
+                byte_stream_calls: AtomicUsize::new(0),
             }
         }
     }
@@ -1236,6 +1238,7 @@ mod tests {
             local_url: Url,
             remote_url: Option<Url>,
         ) -> anyhow::Result<ServerProtocolUpgrade> {
+            self.byte_stream_calls.fetch_add(1, Ordering::Relaxed);
             Ok(ServerProtocolUpgrade::Tunnel(
                 raw::upgrade_accepted_byte_stream(socket, local_url, remote_url)?,
             ))
@@ -1589,6 +1592,21 @@ mod tests {
             .await?;
         assert_eq!(protocol.udp_calls.load(Ordering::Relaxed), 1);
         assert_eq!(tunnel_handler.calls.load(Ordering::Relaxed), 3);
+
+        let (stream, _remote) = tokio::io::duplex(64);
+        handler
+            .handle_accepted_socket(AcceptedTransport::ByteStream {
+                socket: MockTcpSocket {
+                    stream,
+                    local_addr: "127.0.0.1:21002".parse()?,
+                    peer_addr: "127.0.0.1:31002".parse()?,
+                },
+                local_url: "external://local".parse()?,
+                remote_url: Some("external://remote".parse()?),
+            })
+            .await?;
+        assert_eq!(protocol.byte_stream_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(tunnel_handler.calls.load(Ordering::Relaxed), 4);
 
         Ok::<(), anyhow::Error>(())
     }
