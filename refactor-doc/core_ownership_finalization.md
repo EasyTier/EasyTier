@@ -1,8 +1,12 @@
 # EasyTier Core Ownership Finalization
 
-This document is the current ownership contract after the portable-core
-refactor. Earlier component documents remain useful design history, but this
-file is authoritative when paths or intermediate facades disagree.
+> Status: transition snapshot recorded before concrete Tunnel ownership was
+> finalized. [`CONTEXT.md`](../CONTEXT.md) is the authoritative target when this
+> snapshot or older paths disagree with it.
+
+This document records the core-ownership baseline reached during the
+portable-core refactor. It remains useful implementation history, but it is not
+the final ownership contract for concrete Tunnel Modules.
 
 ## Target boundary
 
@@ -24,8 +28,9 @@ The native `easytier` crate owns only:
 - product configuration parsing and normalization into core snapshots;
 - process-wide OS capabilities (`NativeHostRuntime`) and narrow instance Host
   Adapter facts (`NativeInstanceEnvironment`);
-- concrete native protocol engines such as QUIC, WireGuard, WebSocket,
-  FakeTCP and Unix streams;
+- concrete native protocol engines such as QUIC and WebSocket, plus temporary
+  WireGuard migration debt;
+- FakeTCP and Unix socket resources below core-owned portable framing;
 - composition, management protobuf projection, UI/RPC presentation and real OS
   integration.
 
@@ -157,8 +162,9 @@ convenient.
 The host creates TCP, UDP and listener resources. Core/Tokio drives their
 read/write/accept scheduling. Connector and listener Modules produce only a
 raw core TCP stream, UDP session, or Ring transport. Native protocol engines
-then upgrade those values to QUIC, WireGuard, WebSocket or other concrete
-protocols.
+upgrade those values only for native-owned protocols such as QUIC and
+WebSocket. WireGuard's temporary native engine is migration debt; FakeTCP and
+Unix stop at the socket seam.
 
 `ConnectorRuntime` is the process capability Interface for external byte
 streams, route probes, interface observations and preferred IPv6 source
@@ -168,9 +174,9 @@ The runtime performs fresh interface observation. Core's per-instance
 `ConnectorHostAdapter` owns the bounded observation cache, keys it by the full
 socket context and coalesces concurrent refreshes only within that context.
 
-The native protocol Adapter receives an immutable WireGuard configuration at
-composition time. It does not retain `GlobalCtx` and cannot observe identity
-changes halfway through a handshake.
+While WireGuard remains in transition, its native protocol Adapter receives an
+immutable configuration at composition time. It does not retain `GlobalCtx`
+and cannot observe identity changes halfway through a handshake.
 
 ## Public IPv6 provider seam
 
