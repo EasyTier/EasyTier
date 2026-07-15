@@ -13,6 +13,8 @@ file is authoritative when paths or intermediate facades disagree.
 - manual/direct connectivity, endpoint discovery, TCP and UDP hole punching;
 - STUN collection and projection;
 - transport listener planning/runtime and the running-listener registry;
+- public-IPv6 provider resolution, configuration-race retries, lifecycle and
+  desired NDP state;
 - TCP/UDP/Ring transport construction, UDP mux/session classification and
   portable proxy/VPN orchestration;
 - configuration snapshots and task cancellation for those Modules.
@@ -43,6 +45,7 @@ target.
 | management projection | `instance/management` | Converts core snapshots to protobuf; no domain manager construction |
 | protocol engines | `tunnel/protocol.rs` and engine Modules | Upgrade a core TCP stream or UDP session; no connector policy |
 | UDP port mapping | `instance/udp_hole_punch.rs` | UPnP/NAT-PMP lease Adapter only |
+| public IPv6 platform | `instance/public_ipv6_provider.rs` | Linux observation and NDP/sysctl/netlink operations only; no provider state machine |
 
 The old `easytier/src/connector`, `easytier/src/peers`, and native
 `peer_center` facade directories are deleted. They must not be recreated as
@@ -109,6 +112,21 @@ The native protocol Adapter receives an immutable WireGuard configuration at
 composition time. It does not retain `GlobalCtx` and cannot observe identity
 changes halfway through a handshake.
 
+## Public IPv6 provider seam
+
+`PublicIpv6ProviderService` reads the core runtime snapshot and owns provider
+resolution, stale-configuration retries, Disabled/Pending/Active state,
+reconcile scheduling, state-change logging and shutdown cleanup. It derives an
+optional `PublicIpv6NdpDesired` value; native does not reconstruct that state
+machine.
+
+The native platform Adapter may inspect Linux forwarding, routes and
+interfaces, apply NDP proxy entries, and mirror the resolved state into
+`GlobalCtx` for existing presentation and peer projections. Its Interface has
+no start/stop, config retry, state resolution or policy methods. Tests for the
+portable state machine live in core; native retains only Linux selection,
+syscall/resource and vertical integration tests.
+
 ## Static deletion gates
 
 The following searches must remain empty in native production code:
@@ -124,6 +142,9 @@ RuntimeListenerService
 ListenerServiceGroup
 runtime_listener_plan
 TransportListenerConfig (native production)
+RuntimePublicIpv6ProviderHost
+PublicIpv6ProviderRuntimeState (native production)
+reconcile_public_ipv6_provider_runtime
 ```
 
 Direct imports from `easytier_core` are preferred over shallow native

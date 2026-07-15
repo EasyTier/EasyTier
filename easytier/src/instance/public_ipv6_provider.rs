@@ -5,10 +5,12 @@ use std::sync::Arc;
 #[cfg(target_os = "linux")]
 use anyhow::Context;
 use cidr::{Ipv6Cidr, Ipv6Inet};
-use easytier_core::instance::public_ipv6_provider::PublicIpv6ProviderHost;
+use easytier_core::instance::public_ipv6_provider::{
+    PublicIpv6NdpDesired, PublicIpv6NdpTarget, PublicIpv6PlatformError,
+    PublicIpv6PlatformObservation, PublicIpv6ProviderHost, PublicIpv6ProviderState,
+};
 use easytier_core::peers::public_ipv6::{
-    PublicIpv6ProviderConfig, PublicIpv6ProviderResolution, is_global_routable_public_ipv6_prefix,
-    resolve_public_ipv6_provider,
+    PublicIpv6ProviderConfig, is_global_routable_public_ipv6_prefix,
 };
 #[cfg(target_os = "linux")]
 use netlink_packet_route::route::{RouteAddress, RouteAttribute, RouteMessage, RouteType};
@@ -24,28 +26,6 @@ use crate::common::{
     netns::NetNS,
 };
 
-const PUBLIC_IPV6_PROVIDER_RECONCILE_MAX_RETRIES: usize = 3;
-
-#[cfg(target_os = "linux")]
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct NdpProxyTarget {
-    wan_iface: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PublicIpv6ProviderActiveState {
-    prefix: Ipv6Cidr,
-    #[cfg(target_os = "linux")]
-    ndp_proxy: Option<NdpProxyTarget>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum PublicIpv6ProviderRuntimeState {
-    Disabled,
-    Pending(String),
-    Active(PublicIpv6ProviderActiveState),
-}
-
 pub(crate) fn runtime_public_ipv6_provider_config(
     global_ctx: &ArcGlobalCtx,
 ) -> PublicIpv6ProviderConfig {
@@ -54,14 +34,6 @@ pub(crate) fn runtime_public_ipv6_provider_config(
         configured_prefix: global_ctx.config.get_ipv6_public_addr_prefix(),
         provider_supported: cfg!(target_os = "linux"),
     }
-}
-
-fn should_run_public_ipv6_provider_reconcile_task(config: PublicIpv6ProviderConfig) -> bool {
-    config.should_run_reconcile()
-}
-
-fn should_run_public_ipv6_provider_reconcile(global_ctx: &ArcGlobalCtx) -> bool {
-    should_run_public_ipv6_provider_reconcile_task(runtime_public_ipv6_provider_config(global_ctx))
 }
 
 pub(super) fn validate_public_ipv6_config_values(
@@ -165,7 +137,7 @@ struct DetectedIpv6Route {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct DetectedPublicIpv6Prefix {
     prefix: Ipv6Cidr,
-    ndp_proxy: Option<NdpProxyTarget>,
+    ndp_target: Option<PublicIpv6NdpTarget>,
 }
 
 #[cfg(target_os = "linux")]
@@ -240,7 +212,7 @@ fn detect_public_ipv6_prefix_from_routes(
 
             delegated.then_some(DetectedPublicIpv6Prefix {
                 prefix,
-                ndp_proxy: None,
+                ndp_target: None,
             })
         })
         .min_by_key(|detected| detected.prefix.network_length())
@@ -366,8 +338,8 @@ fn select_public_ipv6_prefix_from_default_route_interfaces(
         .min_by_key(|iface| (iface.prefix.network_length(), iface.ifindex))?;
     Some(DetectedPublicIpv6Prefix {
         prefix: iface.prefix,
-        ndp_proxy: Some(NdpProxyTarget {
-            wan_iface: iface.interface_name,
+        ndp_target: Some(PublicIpv6NdpTarget {
+            wan_interface: iface.interface_name,
         }),
     })
 }
@@ -390,7 +362,7 @@ fn ipv6_cidr_contains_cidr(outer: Ipv6Cidr, inner: Ipv6Cidr) -> bool {
 fn detect_configured_prefix_ndp_proxy_target(
     routes: &[DetectedIpv6Route],
     prefix: Ipv6Cidr,
-) -> Option<NdpProxyTarget> {
+) -> Option<PublicIpv6NdpTarget> {
     let wan_ifindices = default_route_ifindices(routes);
     if wan_ifindices.is_empty() {
         return None;
@@ -415,8 +387,8 @@ fn detect_configured_prefix_ndp_proxy_target(
                 || (iface.prefix.network_length() == 128 && prefix.contains(&iface.address))
         })
         .min_by_key(|iface| (iface.prefix.network_length(), iface.ifindex))
-        .map(|iface| NdpProxyTarget {
-            wan_iface: iface.interface_name,
+        .map(|iface| PublicIpv6NdpTarget {
+            wan_interface: iface.interface_name,
         })
 }
 
@@ -431,7 +403,7 @@ fn list_detected_ipv6_routes() -> Result<Vec<DetectedIpv6Route>, Error> {
 }
 
 #[cfg(target_os = "linux")]
-async fn detect_public_ipv6_prefix_linux() -> Result<Option<DetectedPublicIpv6Prefix>, Error> {
+fn detect_public_ipv6_prefix_linux() -> Result<Option<DetectedPublicIpv6Prefix>, Error> {
     let routes = list_detected_ipv6_routes()?;
     let loopback_ifindex =
         get_interface_index("lo").with_context(|| "failed to resolve linux loopback ifindex")?;
@@ -445,198 +417,8 @@ async fn detect_public_ipv6_prefix_linux() -> Result<Option<DetectedPublicIpv6Pr
 }
 
 #[cfg(not(target_os = "linux"))]
-async fn detect_public_ipv6_prefix_linux() -> Result<Option<Ipv6Cidr>, Error> {
+fn detect_public_ipv6_prefix_linux() -> Result<Option<Ipv6Cidr>, Error> {
     Ok(None)
-}
-
-#[cfg(target_os = "linux")]
-fn active_public_ipv6_provider_state(
-    prefix: Ipv6Cidr,
-    ndp_proxy: Option<NdpProxyTarget>,
-) -> PublicIpv6ProviderRuntimeState {
-    PublicIpv6ProviderRuntimeState::Active(PublicIpv6ProviderActiveState { prefix, ndp_proxy })
-}
-
-#[cfg(not(target_os = "linux"))]
-fn active_public_ipv6_provider_state(prefix: Ipv6Cidr) -> PublicIpv6ProviderRuntimeState {
-    PublicIpv6ProviderRuntimeState::Active(PublicIpv6ProviderActiveState { prefix })
-}
-
-#[cfg(target_os = "linux")]
-fn runtime_state_from_resolution(
-    resolution: PublicIpv6ProviderResolution,
-    ndp_proxy: Option<NdpProxyTarget>,
-) -> PublicIpv6ProviderRuntimeState {
-    match resolution {
-        PublicIpv6ProviderResolution::Disabled => PublicIpv6ProviderRuntimeState::Disabled,
-        PublicIpv6ProviderResolution::Pending(error) => {
-            PublicIpv6ProviderRuntimeState::Pending(error)
-        }
-        PublicIpv6ProviderResolution::Active(prefix) => {
-            active_public_ipv6_provider_state(prefix, ndp_proxy)
-        }
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn runtime_state_from_resolution(
-    resolution: PublicIpv6ProviderResolution,
-) -> PublicIpv6ProviderRuntimeState {
-    match resolution {
-        PublicIpv6ProviderResolution::Disabled => PublicIpv6ProviderRuntimeState::Disabled,
-        PublicIpv6ProviderResolution::Pending(error) => {
-            PublicIpv6ProviderRuntimeState::Pending(error)
-        }
-        PublicIpv6ProviderResolution::Active(prefix) => active_public_ipv6_provider_state(prefix),
-    }
-}
-
-#[cfg(target_os = "linux")]
-async fn resolve_public_ipv6_provider_runtime_state_linux(
-    global_ctx: &ArcGlobalCtx,
-    config: PublicIpv6ProviderConfig,
-) -> PublicIpv6ProviderRuntimeState {
-    let _g = global_ctx.net_ns.guard();
-
-    if let Err(err) = ensure_linux_ipv6_forwarding() {
-        return PublicIpv6ProviderRuntimeState::Pending(err.to_string());
-    }
-
-    if let Some(prefix) = config.configured_prefix {
-        let resolution = resolve_public_ipv6_provider(config, Ok(None));
-        if !matches!(resolution, PublicIpv6ProviderResolution::Active(_)) {
-            return runtime_state_from_resolution(resolution, None);
-        }
-        let ndp_proxy = match list_detected_ipv6_routes() {
-            Ok(routes) => detect_configured_prefix_ndp_proxy_target(&routes, prefix),
-            Err(err) => {
-                tracing::warn!(
-                    prefix = %prefix,
-                    ?err,
-                    "failed to detect NDP proxy target for configured public IPv6 prefix"
-                );
-                None
-            }
-        };
-        return runtime_state_from_resolution(resolution, ndp_proxy);
-    }
-
-    let detected = detect_public_ipv6_prefix_linux().await;
-    let ndp_proxy = detected
-        .as_ref()
-        .ok()
-        .and_then(|detected| detected.as_ref())
-        .and_then(|detected| detected.ndp_proxy.clone());
-    let detected_prefix = detected
-        .map(|detected| detected.map(|detected| detected.prefix))
-        .map_err(|error| error.to_string());
-    runtime_state_from_resolution(
-        resolve_public_ipv6_provider(config, detected_prefix),
-        ndp_proxy,
-    )
-}
-
-async fn resolve_public_ipv6_provider_runtime_state(
-    _global_ctx: &ArcGlobalCtx,
-    config: PublicIpv6ProviderConfig,
-) -> PublicIpv6ProviderRuntimeState {
-    if !config.provider_enabled || !config.provider_supported {
-        #[cfg(target_os = "linux")]
-        return runtime_state_from_resolution(resolve_public_ipv6_provider(config, Ok(None)), None);
-        #[cfg(not(target_os = "linux"))]
-        return runtime_state_from_resolution(resolve_public_ipv6_provider(config, Ok(None)));
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        return resolve_public_ipv6_provider_runtime_state_linux(_global_ctx, config).await;
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    {
-        runtime_state_from_resolution(resolve_public_ipv6_provider(config, Ok(None)))
-    }
-}
-
-fn apply_public_ipv6_provider_runtime_state(
-    global_ctx: &ArcGlobalCtx,
-    state: &PublicIpv6ProviderRuntimeState,
-) -> bool {
-    let next_prefix = match state {
-        PublicIpv6ProviderRuntimeState::Active(active) => Some(active.prefix),
-        PublicIpv6ProviderRuntimeState::Disabled | PublicIpv6ProviderRuntimeState::Pending(_) => {
-            None
-        }
-    };
-    let prefix_changed = global_ctx.set_advertised_ipv6_public_addr_prefix(next_prefix);
-
-    let next_provider_enabled = matches!(state, PublicIpv6ProviderRuntimeState::Active(_));
-    let feature_changed = global_ctx.set_public_ipv6_provider_active(next_provider_enabled);
-
-    prefix_changed || feature_changed
-}
-
-fn try_apply_public_ipv6_provider_runtime_state(
-    global_ctx: &ArcGlobalCtx,
-    config: PublicIpv6ProviderConfig,
-    state: &PublicIpv6ProviderRuntimeState,
-) -> Option<bool> {
-    (runtime_public_ipv6_provider_config(global_ctx) == config)
-        .then(|| apply_public_ipv6_provider_runtime_state(global_ctx, state))
-}
-
-fn current_public_ipv6_provider_runtime_state(
-    global_ctx: &ArcGlobalCtx,
-) -> PublicIpv6ProviderRuntimeState {
-    match (
-        global_ctx.public_ipv6_provider_active(),
-        global_ctx.get_advertised_ipv6_public_addr_prefix(),
-    ) {
-        (false, _) => PublicIpv6ProviderRuntimeState::Disabled,
-        #[cfg(target_os = "linux")]
-        (true, Some(prefix)) => active_public_ipv6_provider_state(prefix, None),
-        #[cfg(not(target_os = "linux"))]
-        (true, Some(prefix)) => active_public_ipv6_provider_state(prefix),
-        (true, None) => PublicIpv6ProviderRuntimeState::Pending(
-            "public IPv6 provider runtime is missing an advertised prefix".to_string(),
-        ),
-    }
-}
-
-async fn reconcile_public_ipv6_provider_runtime_with_state(
-    global_ctx: &ArcGlobalCtx,
-) -> (PublicIpv6ProviderRuntimeState, bool) {
-    for attempt in 0..PUBLIC_IPV6_PROVIDER_RECONCILE_MAX_RETRIES {
-        let config = runtime_public_ipv6_provider_config(global_ctx);
-        let next_state = resolve_public_ipv6_provider_runtime_state(global_ctx, config).await;
-
-        if let Some(changed) =
-            try_apply_public_ipv6_provider_runtime_state(global_ctx, config, &next_state)
-        {
-            return (next_state, changed);
-        }
-
-        tracing::debug!(
-            attempt = attempt + 1,
-            max_retries = PUBLIC_IPV6_PROVIDER_RECONCILE_MAX_RETRIES,
-            "public IPv6 provider config changed during reconcile, retrying"
-        );
-    }
-
-    tracing::warn!(
-        max_retries = PUBLIC_IPV6_PROVIDER_RECONCILE_MAX_RETRIES,
-        "skipping public IPv6 provider reconcile because config kept changing"
-    );
-    (
-        current_public_ipv6_provider_runtime_state(global_ctx),
-        false,
-    )
-}
-
-pub(super) async fn reconcile_public_ipv6_provider_runtime(global_ctx: &ArcGlobalCtx) -> bool {
-    reconcile_public_ipv6_provider_runtime_with_state(global_ctx)
-        .await
-        .1
 }
 
 #[cfg(target_os = "linux")]
@@ -651,9 +433,9 @@ impl NdpProxyRuntime {
     fn reconcile(
         &mut self,
         global_ctx: &ArcGlobalCtx,
-        state: &PublicIpv6ProviderRuntimeState,
+        desired: Option<&PublicIpv6NdpDesired>,
     ) -> bool {
-        let Some((prefix, target)) = ndp_proxy_target(state) else {
+        let Some(desired) = desired else {
             return !self.clear_current(global_ctx);
         };
 
@@ -665,27 +447,27 @@ impl NdpProxyRuntime {
 
         let _g = global_ctx.net_ns.guard();
 
-        if self.wan_iface.as_deref() != Some(target.wan_iface.as_str()) {
+        if self.wan_iface.as_deref() != Some(desired.target.wan_interface.as_str()) {
             if !self.clear_current_locked() {
                 tracing::warn!(
                     old_wan_iface = ?self.wan_iface,
-                    new_wan_iface = %target.wan_iface,
+                    new_wan_iface = %desired.target.wan_interface,
                     remaining_entries = self.applied.len(),
                     "waiting to remove old NDP proxy entries before switching WAN interface"
                 );
                 return true;
             }
-            self.wan_iface = Some(target.wan_iface.clone());
+            self.wan_iface = Some(desired.target.wan_interface.clone());
         }
 
         if let Err(err) = sync_ndp_proxy_entries(
-            target.wan_iface.as_str(),
+            desired.target.wan_interface.as_str(),
             tun_iface.as_str(),
-            prefix,
+            desired.prefix,
             &mut self.applied,
         ) {
             tracing::warn!(
-                wan_iface = %target.wan_iface,
+                wan_iface = %desired.target.wan_interface,
                 tun_iface = %tun_iface,
                 ?err,
                 "failed to sync NDP proxy entries"
@@ -796,19 +578,6 @@ fn clear_owned_ndp_proxy_entries(
 }
 
 #[cfg(target_os = "linux")]
-fn ndp_proxy_target(state: &PublicIpv6ProviderRuntimeState) -> Option<(Ipv6Cidr, &NdpProxyTarget)> {
-    match state {
-        PublicIpv6ProviderRuntimeState::Active(active) => active
-            .ndp_proxy
-            .as_ref()
-            .map(|target| (active.prefix, target)),
-        PublicIpv6ProviderRuntimeState::Disabled | PublicIpv6ProviderRuntimeState::Pending(_) => {
-            None
-        }
-    }
-}
-
-#[cfg(target_os = "linux")]
 fn ensure_linux_ndp_proxy_enabled(wan_iface: &str) -> Result<(), Error> {
     let path = Path::new("/proc/sys/net/ipv6/conf")
         .join(wan_iface)
@@ -899,15 +668,6 @@ fn sync_ndp_proxy_entries(
 }
 
 #[cfg(target_os = "linux")]
-fn reconcile_ndp_proxy_runtime(
-    runtime: &mut NdpProxyRuntime,
-    global_ctx: &ArcGlobalCtx,
-    state: &PublicIpv6ProviderRuntimeState,
-) -> bool {
-    runtime.reconcile(global_ctx, state)
-}
-
-#[cfg(target_os = "linux")]
 fn cleanup_ndp_proxy_runtime(runtime: &mut NdpProxyRuntime, net_ns: &NetNS) {
     if !runtime.clear_current_in_netns(net_ns) {
         tracing::warn!(
@@ -917,26 +677,6 @@ fn cleanup_ndp_proxy_runtime(runtime: &mut NdpProxyRuntime, net_ns: &NetNS) {
         );
     }
 }
-
-#[cfg(not(target_os = "linux"))]
-fn reconcile_ndp_proxy_runtime(
-    _runtime: &mut (),
-    _global_ctx: &ArcGlobalCtx,
-    _state: &PublicIpv6ProviderRuntimeState,
-) -> bool {
-    false
-}
-
-#[cfg(not(target_os = "linux"))]
-fn cleanup_ndp_proxy_runtime(_runtime: &mut (), _net_ns: &NetNS) {}
-
-#[cfg(target_os = "linux")]
-fn new_ndp_proxy_runtime() -> NdpProxyRuntime {
-    NdpProxyRuntime::default()
-}
-
-#[cfg(not(target_os = "linux"))]
-fn new_ndp_proxy_runtime() {}
 
 fn should_reconcile_immediately(event: &GlobalCtxEvent) -> bool {
     matches!(
@@ -964,123 +704,122 @@ async fn wait_for_public_ipv6_provider_reconcile_event(
     }
 }
 
-fn log_public_ipv6_provider_state_change(
-    last_state: Option<&PublicIpv6ProviderRuntimeState>,
-    next_state: &PublicIpv6ProviderRuntimeState,
-    changed: bool,
-) {
-    if last_state != Some(next_state) {
-        match next_state {
-            PublicIpv6ProviderRuntimeState::Disabled if last_state.is_some() => {
-                tracing::info!("public IPv6 provider disabled");
-            }
-            PublicIpv6ProviderRuntimeState::Disabled => {}
-            PublicIpv6ProviderRuntimeState::Pending(reason) => {
-                tracing::warn!(reason = %reason, "public IPv6 provider not ready");
-            }
-            PublicIpv6ProviderRuntimeState::Active(active) => {
-                #[cfg(target_os = "linux")]
-                {
-                    if let Some(target) = active.ndp_proxy.as_ref() {
-                        tracing::info!(
-                            prefix = %active.prefix,
-                            wan_iface = %target.wan_iface,
-                            "public IPv6 provider is active with NDP proxy"
-                        );
-                    } else {
-                        tracing::info!(
-                            prefix = %active.prefix,
-                            "public IPv6 provider is active"
-                        );
-                    }
-                }
-                #[cfg(not(target_os = "linux"))]
-                tracing::info!(prefix = %active.prefix, "public IPv6 provider is active");
-            }
-        }
-    } else if changed {
-        tracing::info!("public IPv6 provider runtime state changed");
-    }
-}
-
-struct RuntimePublicIpv6ProviderState {
-    last_state: Option<PublicIpv6ProviderRuntimeState>,
-    ndp_proxy: NdpProxyRuntime,
-}
-
-pub(super) struct RuntimePublicIpv6ProviderHost {
+pub(super) struct RuntimePublicIpv6ProviderPlatform {
     global_ctx: std::sync::Weak<crate::common::global_ctx::GlobalCtx>,
+    #[cfg(target_os = "linux")]
     net_ns: NetNS,
     event_receiver: tokio::sync::Mutex<tokio::sync::broadcast::Receiver<GlobalCtxEvent>>,
-    state: std::sync::Mutex<RuntimePublicIpv6ProviderState>,
+    #[cfg(target_os = "linux")]
+    ndp_proxy: std::sync::Mutex<NdpProxyRuntime>,
 }
 
-impl RuntimePublicIpv6ProviderHost {
+impl RuntimePublicIpv6ProviderPlatform {
     fn new(global_ctx: &ArcGlobalCtx) -> Arc<Self> {
         Arc::new(Self {
             global_ctx: Arc::downgrade(global_ctx),
+            #[cfg(target_os = "linux")]
             net_ns: global_ctx.net_ns.clone(),
             event_receiver: tokio::sync::Mutex::new(global_ctx.subscribe()),
-            state: std::sync::Mutex::new(RuntimePublicIpv6ProviderState {
-                last_state: None,
-                ndp_proxy: new_ndp_proxy_runtime(),
-            }),
+            #[cfg(target_os = "linux")]
+            ndp_proxy: std::sync::Mutex::new(NdpProxyRuntime::default()),
         })
     }
 }
 
 #[async_trait::async_trait]
-impl PublicIpv6ProviderHost for RuntimePublicIpv6ProviderHost {
-    fn should_run(&self) -> bool {
-        self.global_ctx
-            .upgrade()
-            .is_some_and(|global_ctx| should_run_public_ipv6_provider_reconcile(&global_ctx))
-    }
-
-    async fn prepare(&self) {
+impl PublicIpv6ProviderHost for RuntimePublicIpv6ProviderPlatform {
+    fn inspect(
+        &self,
+        config: PublicIpv6ProviderConfig,
+    ) -> Result<PublicIpv6PlatformObservation, PublicIpv6PlatformError> {
         let Some(global_ctx) = self.global_ctx.upgrade() else {
-            return;
-        };
-        *self.event_receiver.lock().await = global_ctx.subscribe();
-    }
-
-    async fn apply_config(&self) -> bool {
-        let Some(global_ctx) = self.global_ctx.upgrade() else {
-            return false;
-        };
-        reconcile_public_ipv6_provider_runtime(&global_ctx).await;
-        true
-    }
-
-    async fn reconcile(&self) -> bool {
-        let Some(global_ctx) = self.global_ctx.upgrade() else {
-            tracing::debug!("global ctx dropped, stopping public IPv6 provider reconcile");
-            return false;
+            return Err(PublicIpv6PlatformError::Unavailable);
         };
 
-        let (next_state, changed) =
-            reconcile_public_ipv6_provider_runtime_with_state(&global_ctx).await;
-        let mut state = self.state.lock().unwrap();
-        log_public_ipv6_provider_state_change(state.last_state.as_ref(), &next_state, changed);
-        let _ = reconcile_ndp_proxy_runtime(&mut state.ndp_proxy, &global_ctx, &next_state);
-        state.last_state = Some(next_state);
-        true
+        #[cfg(target_os = "linux")]
+        {
+            let _guard = global_ctx.net_ns.guard();
+            ensure_linux_ipv6_forwarding()
+                .map_err(|error| PublicIpv6PlatformError::Failed(error.to_string()))?;
+
+            if let Some(prefix) = config.configured_prefix {
+                let ndp_target = match list_detected_ipv6_routes() {
+                    Ok(routes) => detect_configured_prefix_ndp_proxy_target(&routes, prefix),
+                    Err(error) => {
+                        tracing::warn!(
+                            %prefix,
+                            ?error,
+                            "failed to detect NDP proxy target for configured public IPv6 prefix"
+                        );
+                        None
+                    }
+                };
+                return Ok(PublicIpv6PlatformObservation {
+                    detected_prefix: None,
+                    ndp_target,
+                });
+            }
+
+            return detect_public_ipv6_prefix_linux()
+                .map(|detected| PublicIpv6PlatformObservation {
+                    detected_prefix: detected.as_ref().map(|detected| detected.prefix),
+                    ndp_target: detected.and_then(|detected| detected.ndp_target),
+                })
+                .map_err(|error| PublicIpv6PlatformError::Failed(error.to_string()));
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (global_ctx, config);
+            Ok(PublicIpv6PlatformObservation::default())
+        }
+    }
+
+    fn publish(&self, state: &PublicIpv6ProviderState) -> Result<bool, PublicIpv6PlatformError> {
+        let Some(global_ctx) = self.global_ctx.upgrade() else {
+            return Err(PublicIpv6PlatformError::Unavailable);
+        };
+        let prefix_changed =
+            global_ctx.set_advertised_ipv6_public_addr_prefix(state.advertised_prefix());
+        let feature_changed = global_ctx.set_public_ipv6_provider_active(state.provider_active());
+        Ok(prefix_changed || feature_changed)
+    }
+
+    fn sync_ndp(
+        &self,
+        desired: Option<PublicIpv6NdpDesired>,
+    ) -> Result<(), PublicIpv6PlatformError> {
+        #[cfg(target_os = "linux")]
+        {
+            let mut runtime = self.ndp_proxy.lock().unwrap();
+            if let Some(global_ctx) = self.global_ctx.upgrade() {
+                let _ = runtime.reconcile(&global_ctx, desired.as_ref());
+                return Ok(());
+            }
+            if desired.is_none() {
+                cleanup_ndp_proxy_runtime(&mut runtime, &self.net_ns);
+                return Ok(());
+            }
+            Err(PublicIpv6PlatformError::Unavailable)
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = desired;
+            Ok(())
+        }
     }
 
     async fn wait_for_change(&self) -> bool {
         let mut event_receiver = self.event_receiver.lock().await;
         wait_for_public_ipv6_provider_reconcile_event(&mut event_receiver).await
     }
-
-    fn cleanup(&self) {
-        cleanup_ndp_proxy_runtime(&mut self.state.lock().unwrap().ndp_proxy, &self.net_ns);
-    }
 }
 
-pub(crate) fn runtime_public_ipv6_provider_host(
+pub(crate) fn runtime_public_ipv6_provider_platform(
     global_ctx: &ArcGlobalCtx,
 ) -> Arc<dyn PublicIpv6ProviderHost> {
-    RuntimePublicIpv6ProviderHost::new(global_ctx)
+    RuntimePublicIpv6ProviderPlatform::new(global_ctx)
 }
 
 #[cfg(test)]
@@ -1107,12 +846,7 @@ mod tests {
 
     #[cfg(not(target_os = "linux"))]
     use super::ensure_public_ipv6_provider_supported;
-    use super::{
-        PublicIpv6ProviderConfig, PublicIpv6ProviderRuntimeState,
-        active_public_ipv6_provider_state, runtime_public_ipv6_provider_config,
-        should_run_public_ipv6_provider_reconcile_task,
-        try_apply_public_ipv6_provider_runtime_state,
-    };
+    use super::{PublicIpv6ProviderConfig, runtime_public_ipv6_provider_config};
     use crate::common::{
         config::{ConfigLoader, TomlConfigLoader},
         error::Error,
@@ -1190,17 +924,6 @@ mod tests {
             src: src.map(|cidr| cidr.parse().unwrap()),
             ifindex,
             kind,
-        }
-    }
-
-    fn active_state(prefix: cidr::Ipv6Cidr) -> PublicIpv6ProviderRuntimeState {
-        #[cfg(target_os = "linux")]
-        {
-            active_public_ipv6_provider_state(prefix, None)
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            active_public_ipv6_provider_state(prefix)
         }
     }
 
@@ -1355,77 +1078,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_reconcile_task_runs_when_provider_enabled() {
-        assert!(!should_run_public_ipv6_provider_reconcile_task(
-            PublicIpv6ProviderConfig {
-                provider_enabled: false,
-                configured_prefix: None,
-                provider_supported: cfg!(target_os = "linux"),
-            }
-        ));
-        assert!(should_run_public_ipv6_provider_reconcile_task(
-            PublicIpv6ProviderConfig {
-                provider_enabled: true,
-                configured_prefix: Some("2001:db8::/48".parse().unwrap()),
-                provider_supported: cfg!(target_os = "linux"),
-            }
-        ));
-        assert!(should_run_public_ipv6_provider_reconcile_task(
-            PublicIpv6ProviderConfig {
-                provider_enabled: true,
-                configured_prefix: None,
-                provider_supported: cfg!(target_os = "linux"),
-            }
-        ));
-    }
-
-    #[tokio::test]
-    async fn test_try_apply_public_ipv6_provider_runtime_state_rejects_stale_config() {
-        let global_ctx = test_global_ctx();
-        let prefix = "2001:db8::/48".parse().unwrap();
-        let config = PublicIpv6ProviderConfig {
-            provider_enabled: true,
-            configured_prefix: Some(prefix),
-            provider_supported: cfg!(target_os = "linux"),
-        };
-
-        global_ctx.config.set_ipv6_public_addr_provider(false);
-        global_ctx.config.set_ipv6_public_addr_prefix(None);
-
-        let changed = try_apply_public_ipv6_provider_runtime_state(
-            &global_ctx,
-            config,
-            &active_state(prefix),
-        );
-
-        assert_eq!(changed, None);
-        assert_eq!(global_ctx.get_advertised_ipv6_public_addr_prefix(), None);
-        assert!(!global_ctx.public_ipv6_provider_active());
-    }
-
-    #[tokio::test]
-    async fn test_try_apply_public_ipv6_provider_runtime_state_applies_matching_config() {
-        let global_ctx = test_global_ctx();
-        let prefix = "2001:db8::/48".parse().unwrap();
-        global_ctx.config.set_ipv6_public_addr_provider(true);
-        global_ctx.config.set_ipv6_public_addr_prefix(Some(prefix));
-        let config = runtime_public_ipv6_provider_config(&global_ctx);
-
-        let changed = try_apply_public_ipv6_provider_runtime_state(
-            &global_ctx,
-            config,
-            &active_state(prefix),
-        );
-
-        assert_eq!(changed, Some(true));
-        assert_eq!(
-            global_ctx.get_advertised_ipv6_public_addr_prefix(),
-            Some(prefix)
-        );
-        assert!(global_ctx.public_ipv6_provider_active());
-    }
-
     #[cfg(target_os = "linux")]
     #[test]
     fn test_public_ipv6_provider_platform_check_accepts_linux() {
@@ -1496,7 +1148,7 @@ mod tests {
         run_ip(&["-6", "route", "add", "2001:db8:100::/56", "dev", &lan_if]);
 
         assert_eq!(
-            detected_prefix(detect_public_ipv6_prefix_linux().await.unwrap()),
+            detected_prefix(detect_public_ipv6_prefix_linux().unwrap()),
             Some("2001:db8:100::/56".parse().unwrap())
         );
     }
@@ -1546,9 +1198,9 @@ mod tests {
         // NO delegated route on a LAN interface — this is the IA_NA case
         // The fallback should find both prefixes via interface scanning and
         // prefer the shorter /48.
-        let detected = detect_public_ipv6_prefix_linux().await.unwrap().unwrap();
+        let detected = detect_public_ipv6_prefix_linux().unwrap().unwrap();
         assert_eq!(detected.prefix, "2001:db8:bbbb::/48".parse().unwrap());
-        assert_eq!(detected.ndp_proxy.unwrap().wan_iface, wan_if);
+        assert_eq!(detected.ndp_target.unwrap().wan_interface, wan_if);
     }
 
     #[cfg(target_os = "linux")]
@@ -1578,7 +1230,7 @@ mod tests {
         let detected = detect_public_ipv6_prefix_from_interfaces(&routes)
             .expect("fallback should select the default-route interface");
         assert_eq!(detected.prefix, "2001:db8:dddd::/64".parse().unwrap());
-        assert_eq!(detected.ndp_proxy.unwrap().wan_iface, wan_if);
+        assert_eq!(detected.ndp_target.unwrap().wan_interface, wan_if);
     }
 
     #[cfg(target_os = "linux")]
@@ -1631,7 +1283,7 @@ mod tests {
             .expect("default-route public IPv6 prefix should be selected");
 
         assert_eq!(detected.prefix, "2001:db9:2222::/48".parse().unwrap());
-        assert_eq!(detected.ndp_proxy.unwrap().wan_iface, "wan2");
+        assert_eq!(detected.ndp_target.unwrap().wan_interface, "wan2");
     }
 
     #[cfg(target_os = "linux")]
@@ -1649,7 +1301,7 @@ mod tests {
 
         let target = super::detect_configured_prefix_ndp_proxy_target(&routes, configured_prefix)
             .expect("configured on-link prefix should require NDP proxy");
-        assert_eq!(target.wan_iface, wan_if);
+        assert_eq!(target.wan_interface, wan_if);
     }
 
     #[cfg(target_os = "linux")]
@@ -1684,9 +1336,9 @@ mod tests {
         run_ip(&["-6", "addr", "add", "2001:db8:cccc::1/48", "dev", &wan_if]);
         run_ip(&["-6", "route", "add", "default", "dev", &wan_if]);
 
-        let detected = detect_public_ipv6_prefix_linux().await.unwrap().unwrap();
+        let detected = detect_public_ipv6_prefix_linux().unwrap().unwrap();
         assert_eq!(detected.prefix, "2001:db8:cccc::/48".parse().unwrap());
-        assert_eq!(detected.ndp_proxy.unwrap().wan_iface, wan_if);
+        assert_eq!(detected.ndp_target.unwrap().wan_interface, wan_if);
     }
 
     #[cfg(target_os = "linux")]
@@ -1901,9 +1553,18 @@ mod tests {
         global_ctx.config.set_ipv6_public_addr_prefix(Some(prefix));
         global_ctx.set_tun_device_ready(tun_if);
 
-        let host = super::RuntimePublicIpv6ProviderHost::new(&global_ctx);
-        let service =
-            easytier_core::instance::public_ipv6_provider::PublicIpv6ProviderService::new(host);
+        let platform = super::RuntimePublicIpv6ProviderPlatform::new(&global_ctx);
+        let runtime_config = easytier_core::runtime_config::CoreRuntimeConfigStore::new(
+            easytier_core::runtime_config::CoreRuntimeConfig {
+                public_ipv6_provider: runtime_public_ipv6_provider_config(&global_ctx),
+                ..Default::default()
+            },
+            Arc::new(easytier_core::peers::context::PeerRuntimeSnapshot::default()),
+        );
+        let service = easytier_core::instance::public_ipv6_provider::PublicIpv6ProviderService::new(
+            platform,
+            runtime_config,
+        );
         service.start().await;
         wait_for_ndp_proxy_entry(&wan_if, leased_addr, true).await;
 
@@ -1963,7 +1624,7 @@ mod tests {
             applied: std::collections::BTreeSet::from([addr]),
         };
 
-        assert!(!runtime.reconcile(&global_ctx, &PublicIpv6ProviderRuntimeState::Disabled));
+        assert!(!runtime.reconcile(&global_ctx, None));
         assert!(!runtime.cleanup_pending());
     }
 
@@ -2014,7 +1675,7 @@ mod tests {
         run_ip(&["-6", "route", "add", "2001:db9::/48", "dev", &lan_if_2]);
 
         assert_eq!(
-            detected_prefix(detect_public_ipv6_prefix_linux().await.unwrap()),
+            detected_prefix(detect_public_ipv6_prefix_linux().unwrap()),
             Some("2001:db9::/48".parse().unwrap())
         );
     }

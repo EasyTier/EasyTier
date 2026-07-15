@@ -963,7 +963,8 @@ where
             )),
         );
         let peer_center = Arc::new(PeerCenterInstance::new(peer_manager.clone()));
-        let public_ipv6_provider = public_ipv6_provider.map(PublicIpv6ProviderService::new);
+        let public_ipv6_provider = public_ipv6_provider
+            .map(|host| PublicIpv6ProviderService::new(host, runtime_config.clone()));
         let vpn_portal = VpnPortalModule::new(
             peer_manager.clone(),
             runtime_config.clone(),

@@ -53,7 +53,7 @@ use crate::{
     },
     instance::proxy_cidrs_monitor::runtime_proxy_cidr_monitor_host,
     instance::public_ipv6_provider::{
-        runtime_public_ipv6_provider_config, runtime_public_ipv6_provider_host,
+        runtime_public_ipv6_provider_config, runtime_public_ipv6_provider_platform,
     },
     tunnel::IpScheme,
     use_global_var,
@@ -310,7 +310,7 @@ pub(crate) fn runtime_core_instance_adapters_with_process_runtime(
             }
         },
         proxy_cidr_monitor: Some(runtime_proxy_cidr_monitor_host(global_ctx.clone())),
-        public_ipv6_provider: Some(runtime_public_ipv6_provider_host(&global_ctx)),
+        public_ipv6_provider: Some(runtime_public_ipv6_provider_platform(&global_ctx)),
         vpn_portal: {
             #[cfg(feature = "wireguard")]
             {
