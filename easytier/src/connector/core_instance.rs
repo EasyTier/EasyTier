@@ -751,6 +751,139 @@ mod tests {
         );
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_runtime_updates_keep_snapshot_and_derived_state_coherent() {
+        let global_ctx = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
+            "concurrent-runtime-update".to_owned(),
+            String::new(),
+        )));
+        let (packet_sink, _packet_receiver) = create_host_packet_channel();
+        let (instance, ()) =
+            build_portable_runtime_core_instance_with_transport_factory_and_ring_registry(
+                global_ctx.clone(),
+                Arc::new(packet_sink),
+                NoWrappedTransportEngineFactory,
+                Arc::new(RingTunnelRegistry::default()),
+            )
+            .unwrap();
+        let instance = Arc::new(instance);
+        instance.start().await.unwrap();
+        instance.start_network_services(None).await.unwrap();
+
+        let original = instance.node_snapshot().await;
+        let mut full = runtime_instance_config(&global_ctx);
+        full.services.dhcp_ipv4 = true;
+        full.services.acl.tcp_whitelist = vec!["80".to_owned()];
+        {
+            let peer = Arc::make_mut(&mut full.peer);
+            peer.runtime.core.node.hostname = Some("full".to_owned());
+            peer.runtime.core.routes.proxy_networks =
+                vec![easytier_core::config::ProxyNetworkConfig {
+                    real: easytier_core::config::IpPrefix {
+                        address: "192.0.2.0".parse().unwrap(),
+                        prefix_len: 24,
+                    },
+                    mapped: Some(easytier_core::config::IpPrefix {
+                        address: "198.51.100.0".parse().unwrap(),
+                        prefix_len: 24,
+                    }),
+                }];
+        }
+        let mut peer_only = runtime_instance_config(&global_ctx).peer;
+        {
+            let peer = Arc::make_mut(&mut peer_only);
+            peer.runtime.core.node.hostname = Some("peer".to_owned());
+            peer.runtime.core.routes.proxy_networks =
+                vec![easytier_core::config::ProxyNetworkConfig {
+                    real: easytier_core::config::IpPrefix {
+                        address: "203.0.113.0".parse().unwrap(),
+                        prefix_len: 24,
+                    },
+                    mapped: Some(easytier_core::config::IpPrefix {
+                        address: "10.20.30.0".parse().unwrap(),
+                        prefix_len: 24,
+                    }),
+                }];
+        }
+
+        let start = Arc::new(tokio::sync::Barrier::new(3));
+        let full_update = tokio::spawn({
+            let instance = instance.clone();
+            let start = start.clone();
+            async move {
+                start.wait().await;
+                instance.update_runtime_config(full).await
+            }
+        });
+        let peer_update = tokio::spawn({
+            let instance = instance.clone();
+            let start = start.clone();
+            async move {
+                start.wait().await;
+                instance.update_peer_runtime_snapshot(peer_only).await;
+            }
+        });
+        start.wait().await;
+        full_update.await.unwrap().unwrap();
+        peer_update.await.unwrap();
+
+        assert!(instance.runtime_config_snapshot().dhcp_ipv4);
+        assert_eq!(
+            instance.acl_whitelist_snapshot().tcp_ports,
+            ["80".to_owned()]
+        );
+        let node = instance.node_snapshot().await;
+        assert_eq!(node.peer_id, original.peer_id);
+        assert_eq!(node.instance_id, original.instance_id);
+        match node.hostname.as_str() {
+            "full" => assert_eq!(
+                instance.proxy_cidr_lookup_for_test("198.51.100.42".parse().unwrap()),
+                Some("192.0.2.42".parse().unwrap())
+            ),
+            "peer" => assert_eq!(
+                instance.proxy_cidr_lookup_for_test("10.20.30.42".parse().unwrap()),
+                Some("203.0.113.42".parse().unwrap())
+            ),
+            hostname => panic!("unexpected final hostname: {hostname:?}"),
+        }
+
+        instance.stop().await;
+    }
+
+    #[tokio::test]
+    async fn active_runtime_update_rejects_invalid_acl_before_publish() {
+        let global_ctx = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
+            "invalid-active-acl-update".to_owned(),
+            String::new(),
+        )));
+        let (packet_sink, _packet_receiver) = create_host_packet_channel();
+        let (instance, ()) =
+            build_portable_runtime_core_instance_with_transport_factory_and_ring_registry(
+                global_ctx.clone(),
+                Arc::new(packet_sink),
+                NoWrappedTransportEngineFactory,
+                Arc::new(RingTunnelRegistry::default()),
+            )
+            .unwrap();
+        let instance = Arc::new(instance);
+        instance.start().await.unwrap();
+        instance.start_network_services(None).await.unwrap();
+        let before = instance.node_snapshot().await;
+
+        let mut rejected = runtime_instance_config(&global_ctx);
+        rejected.services.dhcp_ipv4 = true;
+        rejected.services.acl.tcp_whitelist = vec!["invalid".to_owned()];
+        Arc::make_mut(&mut rejected.peer).runtime.core.node.hostname = Some("rejected".to_owned());
+
+        let error = instance.update_runtime_config(rejected).await.unwrap_err();
+
+        assert!(error.to_string().contains("Invalid port number"));
+        assert!(!instance.runtime_config_snapshot().dhcp_ipv4);
+        assert!(instance.acl_whitelist_snapshot().tcp_ports.is_empty());
+        assert_eq!(instance.node_snapshot().await.hostname, before.hostname);
+        instance.stop().await;
+    }
+
     #[test]
     fn runtime_proxy_config_normalizes_platform_policy() {
         let global_ctx = get_mock_global_ctx();

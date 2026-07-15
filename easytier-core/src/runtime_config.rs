@@ -175,4 +175,19 @@ mod tests {
         assert!(changes.changed().await.is_ok());
         assert!(store.snapshot().services.dhcp_ipv4);
     }
+
+    #[tokio::test]
+    async fn peer_update_does_not_notify_service_watchers() {
+        let store = CoreRuntimeConfigStore::new(
+            CoreRuntimeConfig::default(),
+            Arc::new(PeerRuntimeSnapshot::default()),
+        );
+        let changes = store.subscribe_service_runtime_changes();
+        let mut peer = PeerRuntimeSnapshot::default();
+        peer.runtime.core.node.hostname = Some("updated".to_owned());
+
+        store.update_peer(Arc::new(peer));
+
+        assert!(!changes.has_changed().unwrap());
+    }
 }

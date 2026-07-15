@@ -1470,18 +1470,10 @@ where
         Ok(())
     }
 
-    /// Applies ACL runtime effects without publishing a separate config
-    /// version. The caller must subsequently submit the complete instance
-    /// runtime config, including this ACL.
-    pub async fn reload_acl_config(&self, config: &AclRuleConfig) -> anyhow::Result<()> {
-        let _operation = self.operation.lock().await;
-        self.reload_acl_config_inner(config).await
-    }
-
     async fn reload_acl_config_inner(&self, config: &AclRuleConfig) -> anyhow::Result<()> {
-        *self.acl_whitelist.write() = AclWhitelistSnapshot::from(config);
         let acl = config.build()?;
         self.peer_manager.reload_acl(acl.as_ref());
+        *self.acl_whitelist.write() = AclWhitelistSnapshot::from(config);
         Ok(())
     }
 
@@ -1506,6 +1498,11 @@ where
         let refresh_acl_groups = current.peer.peer_group_memberships
             != config.peer.peer_group_memberships
             || current.peer.acl_group_declarations != config.peer.acl_group_declarations;
+        if self.initial_acl_loaded.load(Ordering::Acquire) {
+            self.reload_acl_config_inner(&config.services.acl).await?;
+        } else {
+            *self.acl_whitelist.write() = AclWhitelistSnapshot::from(&config.services.acl);
+        }
         self.sync_peer_runtime_state(&config.peer);
         self.runtime_config.replace(config);
         self.proxy_cidr_table
@@ -1731,6 +1728,15 @@ where
 
     pub fn runtime_config_snapshot(&self) -> CoreRuntimeConfig {
         self.runtime_config.snapshot().services.clone()
+    }
+
+    #[cfg(feature = "test-utils")]
+    #[doc(hidden)]
+    pub fn proxy_cidr_lookup_for_test(
+        &self,
+        address: std::net::Ipv4Addr,
+    ) -> Option<std::net::Ipv4Addr> {
+        self.proxy_cidr_table.lookup_v4(address)
     }
 
     pub async fn update_peer_runtime_snapshot(&self, mut snapshot: Arc<PeerRuntimeSnapshot>) {

@@ -26,6 +26,7 @@ use crate::{
         config::{ConfigLoader, NetworkIdentity, PortForwardConfig, TomlConfigLoader},
         netns::{NetNS, ROOT_NETNS_NAME},
     },
+    connector::core_instance::runtime_instance_config,
     instance::instance::Instance,
     proto::{
         api::instance::TcpProxyEntryTransportType,
@@ -76,12 +77,13 @@ fn core_udp_dialer(url: url::Url) -> impl TunnelDialer {
 }
 
 async fn reload_instance_acl(inst: &Instance, acl: Option<&crate::proto::acl::Acl>) {
-    let config = easytier_core::peers::acl_config::AclRuleConfig {
+    let mut config = runtime_instance_config(&inst.get_global_ctx());
+    config.services.acl = easytier_core::peers::acl_config::AclRuleConfig {
         acl: acl.cloned(),
         ..Default::default()
     };
     inst.get_core_instance()
-        .reload_acl_config(&config)
+        .update_runtime_config(config)
         .await
         .unwrap();
 }
