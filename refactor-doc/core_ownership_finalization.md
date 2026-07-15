@@ -246,5 +246,33 @@ Before declaring the refactor complete, verify:
 5. the static deletion gates above and the absence of OS calls in portable
    Modules.
 
+The ownership-finalization baseline was run on 2026-07-15:
+
+- `cargo test -p easytier-core --all-features` passed 580 tests with one
+  ignored test, and the native concurrent lifecycle case retained its
+  multi-thread Tokio runtime;
+- `cargo check -p easytier-core --target wasm32-wasip1 --all-features` passed,
+  while native-only multi-thread test support remained outside the WASI
+  dependency graph;
+- native all-feature unit-test compilation, the core-owned TCP listener
+  vertical test, and the QUIC ping-pong test passed;
+- the root-capable Docker run of `basic_three_node_test` passed all 65 TCP,
+  UDP, WireGuard, WS and WSS protocol/encryption combinations;
+- the Go host's normal suite passed all 37 tests, including the two-core WASM
+  route and packet exchange;
+- the full Go `-race` run passed 28 tests and produced no data-race report. Its
+  nine WASM-backed tests exceeded their fixed five-second initialization
+  contexts because race instrumentation makes wazero compilation take roughly
+  19--45 seconds. These are test-harness initialization timeouts rather than
+  core data-plane failures; the same tests pass without race instrumentation;
+- native deletion searches, portable OS-call searches, formatting and diff
+  checks passed.
+
+The Go race timeout is a limitation of the current WASI proof harness. It must
+not be hidden by widening production timeouts or adding core fallback paths.
+If the proof harness becomes a maintained product gate, it should compile and
+instantiate its WASM modules outside the short operation contexts, then apply
+deadlines only to the behavior being tested.
+
 Fine-grained Cargo feature slicing is intentionally deferred until these
 ownership gates remain stable.
