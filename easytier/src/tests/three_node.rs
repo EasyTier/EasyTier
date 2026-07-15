@@ -24,6 +24,7 @@ use super::*;
 use crate::{
     common::{
         config::{ConfigLoader, NetworkIdentity, PortForwardConfig, TomlConfigLoader},
+        global_ctx::GlobalCtxEvent,
         netns::{NetNS, ROOT_NETNS_NAME},
     },
     instance::instance::Instance,
@@ -2429,10 +2430,25 @@ pub async fn instance_recv_bps_limit_test(#[values(100, 800)] bps_limit: u64) {
 }
 
 async fn assert_peer_admission_blocked(inst: &Instance, url: url::Url) {
-    inst.get_conn_manager().add_connector_url(url.clone());
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(inst.get_core_instance().connected_peers().await.is_empty());
-    inst.get_conn_manager().remove_connector(url).await.unwrap();
+    let mut events = inst.get_global_ctx().subscribe();
+    let core = inst.get_core_instance();
+    core.add_connector(url.clone()).unwrap();
+    let rejected = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let GlobalCtxEvent::ConnectError(dst, _, error) = events.recv().await.unwrap() else {
+                continue;
+            };
+            if dst == url.as_str() && error.contains("from the same network") {
+                break;
+            }
+        }
+    })
+    .await;
+    assert!(core.remove_connector(&url));
+    assert!(
+        rejected.is_ok(),
+        "connector to {url} should be rejected as a virtual-network loop"
+    );
 }
 
 use std::fs;
@@ -4353,5 +4369,6 @@ pub async fn relay_peer_session_cleanup() {
     )
     .await;
 
+    drop(core_1);
     drop_insts(insts).await;
 }
