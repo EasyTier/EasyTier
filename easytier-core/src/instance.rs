@@ -662,6 +662,7 @@ where
         let peer_stun: Arc<dyn StunInfoProvider> = stun.clone();
         let foreign_rpc_registrar = Arc::new(ForeignDirectConnectorRpcRegistrar::new(
             adapters.host.clone(),
+            stun.clone(),
         ));
         let peer_manager = Arc::new(
             PeerManagerCore::new_portable_with_runtime_config_store_and_host_adapters(

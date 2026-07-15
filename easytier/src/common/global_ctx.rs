@@ -245,10 +245,7 @@ impl GlobalCtx {
             public_ipv6_routes: Mutex::new(BTreeSet::new()),
             cached_proxy_cidrs: AtomicCell::new(None),
 
-            ip_collector: Mutex::new(Some(Arc::new(IPCollector::new(
-                net_ns,
-                stun_info_collection.clone(),
-            )))),
+            ip_collector: Mutex::new(Some(Arc::new(IPCollector::new(net_ns)))),
 
             hostname: Mutex::new(hostname),
 

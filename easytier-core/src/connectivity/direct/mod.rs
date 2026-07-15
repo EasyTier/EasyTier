@@ -46,7 +46,7 @@ use crate::{
             send_v6_hole_punch_control_packet,
         },
     },
-    stun::StunSocketMapper,
+    stun::{StunInfoProvider, StunSocketMapper},
     task::{PeerTaskLauncher, PeerTaskManager},
     tunnel::Tunnel,
 };
@@ -357,10 +357,11 @@ where
             .registry()
             .register(
                 GeneratedDirectConnectorRpcServer::new(
-                    DirectConnectorRpcHandler::new_with_running_listeners(
+                    DirectConnectorRpcHandler::new_with_running_listeners_and_stun(
                         self.data.host.clone(),
                         self.data.running_listeners.clone(),
                         self.data.options.udp_bind.context.clone(),
+                        Some(self.data.stun.clone()),
                     ),
                 ),
                 &self.data.options.network_name,
@@ -380,10 +381,11 @@ where
             .registry()
             .unregister(
                 GeneratedDirectConnectorRpcServer::new(
-                    DirectConnectorRpcHandler::new_with_running_listeners(
+                    DirectConnectorRpcHandler::new_with_running_listeners_and_stun(
                         self.data.host.clone(),
                         self.data.running_listeners.clone(),
                         self.data.options.udp_bind.context.clone(),
+                        Some(self.data.stun.clone()),
                     ),
                 ),
                 &self.data.options.network_name,
@@ -997,6 +999,7 @@ where
     running_listeners: Arc<dyn RunningListenerProvider>,
     socket_context: SocketContext,
     foreign_network: bool,
+    stun: Option<Arc<dyn StunInfoProvider>>,
 }
 
 impl<H> Clone for DirectConnectorRpcHandler<H>
@@ -1009,6 +1012,7 @@ where
             running_listeners: self.running_listeners.clone(),
             socket_context: self.socket_context.clone(),
             foreign_network: self.foreign_network,
+            stun: self.stun.clone(),
         }
     }
 }
@@ -1018,22 +1022,40 @@ where
     H: DirectConnectorHost,
 {
     pub fn new(host: Arc<H>, socket_context: SocketContext) -> Self {
+        Self::new_with_stun(host, socket_context, None)
+    }
+
+    pub fn new_with_stun(
+        host: Arc<H>,
+        socket_context: SocketContext,
+        stun: Option<Arc<dyn StunInfoProvider>>,
+    ) -> Self {
         let running_listeners = Arc::new(HostRunningListenerProvider { host: host.clone() });
         Self {
             host,
             running_listeners,
             socket_context,
             foreign_network: false,
+            stun,
         }
     }
 
     pub fn new_for_foreign_network(host: Arc<H>, socket_context: SocketContext) -> Self {
+        Self::new_for_foreign_network_with_stun(host, socket_context, None)
+    }
+
+    pub fn new_for_foreign_network_with_stun(
+        host: Arc<H>,
+        socket_context: SocketContext,
+        stun: Option<Arc<dyn StunInfoProvider>>,
+    ) -> Self {
         let running_listeners = Arc::new(HostRunningListenerProvider { host: host.clone() });
         Self {
             host,
             running_listeners,
             socket_context,
             foreign_network: true,
+            stun,
         }
     }
 
@@ -1042,11 +1064,21 @@ where
         running_listeners: Arc<dyn RunningListenerProvider>,
         socket_context: SocketContext,
     ) -> Self {
+        Self::new_with_running_listeners_and_stun(host, running_listeners, socket_context, None)
+    }
+
+    fn new_with_running_listeners_and_stun(
+        host: Arc<H>,
+        running_listeners: Arc<dyn RunningListenerProvider>,
+        socket_context: SocketContext,
+        stun: Option<Arc<dyn StunInfoProvider>>,
+    ) -> Self {
         Self {
             host,
             running_listeners,
             socket_context,
             foreign_network: false,
+            stun,
         }
     }
 }
@@ -1056,14 +1088,15 @@ where
     H: DirectConnectorHost,
 {
     host: Arc<H>,
+    stun: Arc<dyn StunInfoProvider>,
 }
 
 impl<H> ForeignDirectConnectorRpcRegistrar<H>
 where
     H: DirectConnectorHost,
 {
-    pub fn new(host: Arc<H>) -> Self {
-        Self { host }
+    pub fn new(host: Arc<H>, stun: Arc<dyn StunInfoProvider>) -> Self {
+        Self { host, stun }
     }
 }
 
@@ -1079,9 +1112,10 @@ where
     ) {
         peer_rpc.rpc_server().registry().register(
             GeneratedDirectConnectorRpcServer::new(
-                DirectConnectorRpcHandler::new_for_foreign_network(
+                DirectConnectorRpcHandler::new_for_foreign_network_with_stun(
                     self.host.clone(),
                     socket_context,
+                    Some(self.stun.clone()),
                 ),
             ),
             network_name,
@@ -1115,6 +1149,15 @@ where
             .chain(self.running_listeners.running_listeners())
             .map(Into::into)
             .collect();
+        if let Some(stun) = &self.stun {
+            for public_ip in stun.get_stun_info().public_ip {
+                match public_ip.parse::<IpAddr>() {
+                    Ok(IpAddr::V4(ip)) => response.public_ipv4 = Some(ip.into()),
+                    Ok(IpAddr::V6(ip)) => response.public_ipv6 = Some(ip.into()),
+                    Err(_) => {}
+                }
+            }
+        }
         if !self.foreign_network {
             response
                 .interface_ipv6s

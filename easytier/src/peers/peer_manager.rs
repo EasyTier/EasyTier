@@ -111,6 +111,7 @@ impl PeerManager {
 
         let foreign_rpc_registrar = Arc::new(ForeignDirectConnectorRpcRegistrar::new(
             runtime_connector_host(global_ctx.clone()),
+            global_ctx.get_stun_info_collector(),
         ));
         let build_result = PeerManagerCore::new_with_foreign_rpc_registrar(
             config.route_algo,

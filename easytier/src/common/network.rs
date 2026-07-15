@@ -1,6 +1,5 @@
 use std::{net::IpAddr, ops::Deref, sync::Arc};
 
-use easytier_core::stun::{StunInfoProvider as _, StunSocketMapper};
 #[cfg(target_os = "windows")]
 use network_interface::{
     Addr as SystemAddr, NetworkInterface as SystemNetworkInterface, NetworkInterfaceConfig,
@@ -13,7 +12,7 @@ use tokio::{
     task::JoinSet,
 };
 
-use crate::{proto::peer_rpc::GetIpListResponse, socket::udp::RuntimeUdpSocket};
+use crate::proto::peer_rpc::GetIpListResponse;
 
 use super::netns::NetNS;
 
@@ -203,19 +202,14 @@ pub struct IPCollector {
     cached_ip_list: Arc<RwLock<GetIpListResponse>>,
     collect_ip_task: Mutex<JoinSet<()>>,
     net_ns: NetNS,
-    stun_info_collector: Arc<dyn StunSocketMapper<RuntimeUdpSocket>>,
 }
 
 impl IPCollector {
-    pub fn new(
-        net_ns: NetNS,
-        stun_info_collector: Arc<dyn StunSocketMapper<RuntimeUdpSocket>>,
-    ) -> Self {
+    pub fn new(net_ns: NetNS) -> Self {
         Self {
             cached_ip_list: Arc::new(RwLock::new(GetIpListResponse::default())),
             collect_ip_task: Mutex::new(JoinSet::new()),
             net_ns,
-            stun_info_collector,
         }
     }
 
@@ -226,45 +220,13 @@ impl IPCollector {
             let cached_ip_list = self.cached_ip_list.clone();
             *cached_ip_list.write().await = Self::collect_local_ip_addrs(self.net_ns.clone()).await;
             let net_ns = self.net_ns.clone();
-            let stun_info_collector = self.stun_info_collector.clone();
             let cached_ip_list = self.cached_ip_list.clone();
             task.spawn(async move {
-                let mut last_fetch_iface_time = std::time::Instant::now();
                 loop {
-                    if last_fetch_iface_time.elapsed().as_secs() > CACHED_IP_LIST_TIMEOUT_SEC {
-                        let ifaces = Self::collect_local_ip_addrs(net_ns.clone()).await;
-                        *cached_ip_list.write().await = ifaces;
-                        last_fetch_iface_time = std::time::Instant::now();
-                    }
-
-                    let stun_info = stun_info_collector.get_stun_info();
-                    for ip in stun_info.public_ip.iter() {
-                        let Ok(ip_addr) = ip.parse::<IpAddr>() else {
-                            continue;
-                        };
-
-                        match ip_addr {
-                            IpAddr::V4(v) => {
-                                cached_ip_list.write().await.public_ipv4.replace(v.into());
-                            }
-                            IpAddr::V6(v) => {
-                                cached_ip_list.write().await.public_ipv6.replace(v.into());
-                            }
-                        }
-                    }
-
-                    tracing::debug!(
-                        "got public ip: {:?}, {:?}",
-                        cached_ip_list.read().await.public_ipv4,
-                        cached_ip_list.read().await.public_ipv6
-                    );
-
-                    let sleep_sec = if cached_ip_list.read().await.public_ipv4.is_some() {
-                        CACHED_IP_LIST_TIMEOUT_SEC
-                    } else {
-                        3
-                    };
-                    tokio::time::sleep(std::time::Duration::from_secs(sleep_sec)).await;
+                    tokio::time::sleep(std::time::Duration::from_secs(CACHED_IP_LIST_TIMEOUT_SEC))
+                        .await;
+                    let ifaces = Self::collect_local_ip_addrs(net_ns.clone()).await;
+                    *cached_ip_list.write().await = ifaces;
                 }
             });
         }

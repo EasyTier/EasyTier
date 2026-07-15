@@ -242,6 +242,7 @@ mod tests {
         connectivity::direct::DirectConnectorRpcHandler,
         hole_punch::tcp::TcpHolePunchHost,
         proto::{
+            common::StunInfo,
             peer_rpc::{DirectConnectorRpc as _, GetIpListRequest},
             rpc_types::controller::BaseController,
         },
@@ -254,6 +255,7 @@ mod tests {
             },
             udp::UdpSocketSendMeta,
         },
+        stun::StunInfoProvider,
     };
 
     use super::*;
@@ -262,6 +264,28 @@ mod tests {
     struct UnsupportedBackend {
         udp_send_attempts: Mutex<Vec<(Vec<u8>, SocketAddr, UdpSocketSendMeta)>>,
         reject_preferred_source: AtomicBool,
+    }
+
+    struct FixedStunProvider;
+
+    #[async_trait]
+    impl StunInfoProvider for FixedStunProvider {
+        fn get_stun_info(&self) -> StunInfo {
+            StunInfo {
+                public_ip: vec!["198.51.100.7".to_owned(), "2001:db8::1".to_owned()],
+                ..Default::default()
+            }
+        }
+
+        async fn get_udp_port_mapping(&self, _local_port: u16) -> anyhow::Result<SocketAddr> {
+            anyhow::bail!("unused by direct RPC projection test")
+        }
+
+        async fn get_tcp_port_mapping(&self, _local_port: u16) -> anyhow::Result<SocketAddr> {
+            anyhow::bail!("unused by direct RPC projection test")
+        }
+
+        fn update_stun_info(&self) {}
     }
 
     fn unsupported<T>() -> io::Result<T> {
@@ -513,9 +537,10 @@ mod tests {
             test_environment_snapshot(),
             Arc::new(TestEnvironmentServices::default()),
         ));
-        let handler = DirectConnectorRpcHandler::new(
+        let handler = DirectConnectorRpcHandler::new_with_stun(
             host,
             SocketContext::default().with_socket_mark(Some(7)),
+            Some(Arc::new(FixedStunProvider)),
         );
 
         let response = handler
@@ -528,6 +553,10 @@ mod tests {
             vec![std::net::Ipv4Addr::new(192, 0, 2, 1).into()]
         );
         assert!(response.interface_ipv6s.is_empty());
+        assert_eq!(
+            response.public_ipv4,
+            Some("198.51.100.7".parse::<std::net::Ipv4Addr>().unwrap().into())
+        );
         assert!(response.public_ipv6.is_none());
         assert_eq!(
             response
@@ -550,9 +579,10 @@ mod tests {
             test_environment_snapshot(),
             Arc::new(TestEnvironmentServices::default()),
         ));
-        let handler = DirectConnectorRpcHandler::new_for_foreign_network(
+        let handler = DirectConnectorRpcHandler::new_for_foreign_network_with_stun(
             host,
             SocketContext::default().with_socket_mark(Some(7)),
+            Some(Arc::new(FixedStunProvider)),
         );
 
         let response = handler
@@ -567,6 +597,10 @@ mod tests {
         assert_eq!(
             response.public_ipv6,
             Some("2001:db8::1".parse::<std::net::Ipv6Addr>().unwrap().into())
+        );
+        assert_eq!(
+            response.public_ipv4,
+            Some("198.51.100.7".parse::<std::net::Ipv4Addr>().unwrap().into())
         );
     }
 
