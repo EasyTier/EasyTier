@@ -17,16 +17,11 @@ use easytier_core::{
 };
 
 use crate::{
-    common::{
-        config::ConfigLoader as _,
-        global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
-    },
+    common::global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
     host_runtime::native_host_runtime,
     instance::config::{
-        runtime_connectivity_config, runtime_core_config, runtime_direct_options,
-        runtime_endpoint_discovery_config, runtime_instance_config, runtime_manual_options,
-        runtime_peer_manager_config, runtime_peer_manager_host_adapters,
-        runtime_proxy_startup_context, runtime_socket_context, runtime_stun_server_config,
+        runtime_connectivity_config, runtime_peer_manager_config,
+        runtime_peer_manager_host_adapters,
     },
     instance::listeners::{
         RuntimeExternalListenerFactory, runtime_accepted_tunnel_event_sink,
@@ -251,12 +246,16 @@ mod tests {
 
     use crate::{
         common::{
-            config::PeerConfig,
+            config::{ConfigLoader as _, PeerConfig},
             global_ctx::{
                 NetworkIdentity,
                 tests::{get_mock_global_ctx, get_mock_global_ctx_with_network},
             },
             stun::MockStunInfoCollector,
+        },
+        instance::config::{
+            runtime_direct_options, runtime_endpoint_discovery_config, runtime_instance_config,
+            runtime_manual_options, runtime_socket_context, runtime_stun_server_config,
         },
         proto::common::NatType,
     };
