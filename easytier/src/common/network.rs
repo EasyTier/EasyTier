@@ -1,4 +1,7 @@
-use std::{net::IpAddr, ops::Deref, sync::Arc};
+use std::{ops::Deref, sync::Arc};
+
+#[cfg(target_os = "windows")]
+use std::net::IpAddr;
 
 #[cfg(target_os = "windows")]
 use network_interface::{

@@ -8,6 +8,7 @@ use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use easytier_core::peers::foreign_network_manager::check_network_in_relay_whitelist;
 use easytier_core::peers::public_ipv6::PublicIpv6Runtime;
+#[cfg(test)]
 use easytier_core::stun::{StunProviderSlot, StunSocketMapper};
 
 use super::{
@@ -16,6 +17,8 @@ use super::{
     netns::NetNS,
     network::IPCollector,
 };
+#[cfg(test)]
+use crate::socket::udp::RuntimeUdpSocket;
 use crate::{
     common::config::ProxyNetworkConfig,
     proto::{
@@ -25,7 +28,6 @@ use crate::{
         peer_rpc::PeerGroupInfo,
     },
     rpc_service::protected_port,
-    socket::udp::RuntimeUdpSocket,
     tunnel::matches_protocol,
 };
 use crossbeam::atomic::AtomicCell;
@@ -110,6 +112,7 @@ pub struct GlobalCtx {
 
     hostname: Mutex<String>,
 
+    #[cfg(test)]
     stun_info_collection: Arc<StunProviderSlot<RuntimeUdpSocket>>,
 
     running_listeners: Mutex<Vec<url::Url>>,
@@ -226,6 +229,7 @@ impl GlobalCtx {
         let flags = config_fs.get_flags();
 
         let (event_bus, _) = tokio::sync::broadcast::channel(16);
+        #[cfg(test)]
         let stun_info_collection = Arc::new(StunProviderSlot::empty());
 
         let base_feature_flags = PeerFeatureFlag::default();
@@ -249,6 +253,7 @@ impl GlobalCtx {
 
             hostname: Mutex::new(hostname),
 
+            #[cfg(test)]
             stun_info_collection,
 
             running_listeners: Mutex::new(Vec::new()),
@@ -415,14 +420,17 @@ impl GlobalCtx {
         *self.hostname.lock().unwrap() = hostname;
     }
 
+    #[cfg(test)]
     pub fn get_stun_info_collector(&self) -> Arc<dyn StunSocketMapper<RuntimeUdpSocket>> {
         self.stun_info_collection.clone()
     }
 
+    #[cfg(test)]
     pub(crate) fn stun_projection(&self) -> Arc<StunProviderSlot<RuntimeUdpSocket>> {
         self.stun_info_collection.clone()
     }
 
+    #[cfg(test)]
     pub fn replace_stun_info_collector(
         &self,
         collector: Box<dyn StunSocketMapper<RuntimeUdpSocket>>,

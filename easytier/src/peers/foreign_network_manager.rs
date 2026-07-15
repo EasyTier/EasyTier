@@ -5,6 +5,7 @@ only forward packets of peers that directly connected to this node.
 in the future, with the help wo peer center we can forward packets of peers that
 connected to any node in the local network.
 */
+#[cfg(test)]
 use std::sync::Arc;
 
 use easytier_core::peers::context::TrustedKeySource;

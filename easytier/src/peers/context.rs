@@ -98,7 +98,7 @@ pub(crate) fn runtime_peer_manager_config(
             },
         },
         network_identity,
-        stun_info: global_ctx.get_stun_info_collector().get_stun_info(),
+        stun_info: Default::default(),
         feature_flags,
         secure_mode: global_ctx.config.get_secure_mode(),
         host_routing: HostRoutingPolicy {

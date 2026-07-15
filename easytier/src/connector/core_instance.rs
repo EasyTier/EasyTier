@@ -281,7 +281,16 @@ pub(crate) fn runtime_core_instance_adapters_with_ring_registry(
     let dns_records: Arc<dyn DnsRecordResolver> = runtime_dns;
     CoreInstanceAdapters {
         host,
-        stun_projection: Some(global_ctx.stun_projection()),
+        stun_projection: {
+            #[cfg(test)]
+            {
+                Some(global_ctx.stun_projection())
+            }
+            #[cfg(not(test))]
+            {
+                None
+            }
+        },
         dns,
         listener_dns: None,
         dns_records,
