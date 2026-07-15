@@ -73,6 +73,11 @@ raw core TCP stream, UDP session, or Ring transport. Native protocol engines
 then upgrade those values to QUIC, WireGuard, WebSocket or other concrete
 protocols.
 
+`ConnectorRuntime` is the process capability Interface for external byte
+streams, route probes, interface observations and preferred IPv6 source
+queries. `NativeInstanceEnvironment` contains no runtime handle and cannot
+perform those operations; it exposes only `SocketContext` and instance facts.
+
 The native protocol Adapter receives an immutable WireGuard configuration at
 composition time. It does not retain `GlobalCtx` and cannot observe identity
 changes halfway through a handshake.

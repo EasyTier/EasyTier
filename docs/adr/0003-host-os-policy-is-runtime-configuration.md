@@ -52,10 +52,12 @@ only synchronous resource creation and never cross `await`; Tokio continues
 asynchronous I/O after the guard is released.
 
 Core's `ConnectorHostAdapter` composes that process runtime with a narrow native
-`NativeInstanceEnvironment`. The environment projects only instance address,
-mapped-listener, protected-port, and preferred-source facts. It cannot create
-or operate sockets. Running listeners are absent from this seam because the
-core listener registry is authoritative.
+`NativeInstanceEnvironment`. The environment projects only the immutable
+`SocketContext` plus instance-owned mapped-listener, protected-port and managed
+IPv6 facts. Byte-stream creation, route probes, interface observation and
+preferred-source discovery all go through `NativeHostRuntime`; portable core
+applies the preferred-source eligibility policy. Running listeners are absent
+from this seam because the core listener registry is authoritative.
 
 ## Rejected alternatives
 

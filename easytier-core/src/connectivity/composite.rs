@@ -26,51 +26,40 @@ use crate::{
     },
 };
 
-/// Instance facts and environment queries consumed by portable connector policy.
-///
-/// Socket creation and I/O are deliberately absent; those belong to the
-/// process-wide socket runtime passed separately to [`ConnectorHostAdapter`].
+/// Mechanical connector operations supplied by one process-wide runtime.
 #[async_trait]
-pub trait ConnectorEnvironment<TcpSocket>: Send + Sync + 'static {
+pub trait ConnectorRuntime: VirtualTcpSocketFactory + Send + Sync + 'static {
+    async fn connect_byte_stream(
+        &self,
+        url: &Url,
+    ) -> anyhow::Result<ConnectedByteStream<Self::Socket>>;
+
     async fn local_addr_for_remote(
         &self,
         remote_addr: SocketAddr,
         context: SocketContext,
     ) -> anyhow::Result<SocketAddr>;
 
-    async fn interface_addrs(&self) -> anyhow::Result<ManualInterfaceAddrs>;
-
-    async fn connect_byte_stream(
-        &self,
-        url: &Url,
-    ) -> anyhow::Result<ConnectedByteStream<TcpSocket>> {
-        anyhow::bail!("environment does not support external byte stream: {url}")
-    }
-
     async fn collect_ip_addrs(&self, context: &SocketContext) -> GetIpListResponse;
-
-    async fn collect_foreign_ip_addrs(&self, context: &SocketContext) -> GetIpListResponse {
-        self.collect_ip_addrs(context).await
-    }
-
-    fn mapped_listeners(&self) -> Vec<Url>;
-    fn is_local_ip(&self, ip: &IpAddr) -> bool;
-    fn is_protected_tcp_port(&self, port: u16) -> bool;
-    fn is_easytier_managed_ipv6(&self, ip: &Ipv6Addr) -> bool;
 
     async fn preferred_ipv6_source(
         &self,
         ip: Ipv6Addr,
         context: SocketContext,
     ) -> Option<PreferredIpv6Source>;
+}
 
-    async fn preferred_foreign_ipv6_source(
-        &self,
-        ip: Ipv6Addr,
-        context: SocketContext,
-    ) -> Option<PreferredIpv6Source> {
-        self.preferred_ipv6_source(ip, context).await
-    }
+/// Instance facts consumed by portable connector policy.
+///
+/// Socket creation, route probing and host interface I/O are deliberately
+/// absent; those belong to the process-wide [`ConnectorRuntime`].
+pub trait ConnectorEnvironment: Send + Sync + 'static {
+    fn socket_context(&self) -> SocketContext;
+
+    fn mapped_listeners(&self) -> Vec<Url>;
+    fn is_local_ip(&self, ip: &IpAddr) -> bool;
+    fn is_protected_tcp_port(&self, port: u16) -> bool;
+    fn is_easytier_managed_ipv6(&self, ip: &Ipv6Addr) -> bool;
 }
 
 /// Deep adapter that combines one socket runtime with one instance environment.
@@ -156,47 +145,63 @@ where
 #[async_trait]
 impl<S, E> ManualConnectorHost for ConnectorHostAdapter<S, E>
 where
-    S: VirtualTcpSocketFactory
+    S: ConnectorRuntime
         + VirtualUdpSocketFactory
         + UdpSessionControlHandler<<S as VirtualUdpSocketFactory>::Socket>,
-    E: ConnectorEnvironment<<S as VirtualTcpSocketFactory>::Socket>,
+    E: ConnectorEnvironment,
 {
     async fn local_addr_for_remote(
         &self,
         remote_addr: SocketAddr,
         context: SocketContext,
     ) -> anyhow::Result<SocketAddr> {
-        self.environment
+        self.sockets
             .local_addr_for_remote(remote_addr, context)
             .await
     }
 
     async fn interface_addrs(&self) -> anyhow::Result<ManualInterfaceAddrs> {
-        self.environment.interface_addrs().await
+        let addrs = self
+            .sockets
+            .collect_ip_addrs(&self.environment.socket_context())
+            .await;
+        Ok(ManualInterfaceAddrs {
+            interface_ipv4s: addrs
+                .interface_ipv4s
+                .into_iter()
+                .map(std::net::Ipv4Addr::from)
+                .collect(),
+            interface_ipv6s: addrs
+                .interface_ipv6s
+                .into_iter()
+                .map(std::net::Ipv6Addr::from)
+                .collect(),
+            public_ipv6: addrs.public_ipv6.map(std::net::Ipv6Addr::from),
+        })
     }
 
     async fn connect_byte_stream(
         &self,
         url: &Url,
     ) -> anyhow::Result<ConnectedByteStream<<Self as VirtualTcpSocketFactory>::Socket>> {
-        self.environment.connect_byte_stream(url).await
+        self.sockets.connect_byte_stream(url).await
     }
 }
 
 #[async_trait]
 impl<S, E> DirectConnectorHost for ConnectorHostAdapter<S, E>
 where
-    S: VirtualTcpSocketFactory
+    S: ConnectorRuntime
         + VirtualUdpSocketFactory
         + UdpSessionControlHandler<<S as VirtualUdpSocketFactory>::Socket>,
-    E: ConnectorEnvironment<<S as VirtualTcpSocketFactory>::Socket>,
+    E: ConnectorEnvironment,
 {
     async fn collect_ip_addrs(&self, context: &SocketContext) -> GetIpListResponse {
-        self.environment.collect_ip_addrs(context).await
+        self.sockets.collect_ip_addrs(context).await
     }
 
     async fn collect_foreign_ip_addrs(&self, context: &SocketContext) -> GetIpListResponse {
-        self.environment.collect_foreign_ip_addrs(context).await
+        self.sockets.collect_ip_addrs(context).await
     }
 
     fn mapped_listeners(&self) -> Vec<Url> {
@@ -220,7 +225,10 @@ where
         ip: Ipv6Addr,
         context: SocketContext,
     ) -> Option<PreferredIpv6Source> {
-        self.environment.preferred_ipv6_source(ip, context).await
+        if self.environment.is_easytier_managed_ipv6(&ip) || !valid_public_ipv6_candidate(ip) {
+            return None;
+        }
+        self.sockets.preferred_ipv6_source(ip, context).await
     }
 
     async fn preferred_foreign_ipv6_source(
@@ -228,8 +236,17 @@ where
         ip: Ipv6Addr,
         context: SocketContext,
     ) -> Option<PreferredIpv6Source> {
-        self.environment
-            .preferred_foreign_ipv6_source(ip, context)
-            .await
+        if !valid_public_ipv6_candidate(ip) {
+            return None;
+        }
+        self.sockets.preferred_ipv6_source(ip, context).await
     }
+}
+
+fn valid_public_ipv6_candidate(ip: Ipv6Addr) -> bool {
+    !(ip.is_loopback()
+        || ip.is_unspecified()
+        || ip.is_unique_local()
+        || ip.is_unicast_link_local()
+        || ip.is_multicast())
 }

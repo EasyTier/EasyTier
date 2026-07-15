@@ -416,7 +416,10 @@ mod tests {
 
     use easytier_core::{
         instance::{CoreInstanceState, ListenerService, PortableCoreInstanceConfig},
-        listener::transport::TransportListenerConfig,
+        listener::{
+            ListenerConnectionCounter, ListenerEvent, ListenerEventSink,
+            transport::TransportListenerConfig,
+        },
         proxy::wrapped_transport::{
             WrappedTransportAcceptedStream, WrappedTransportConnect,
             WrappedTransportDestinationIngress, WrappedTransportEngine,
@@ -486,6 +489,38 @@ mod tests {
     struct BlockingListenerService {
         start_entered: Notify,
         stop_calls: AtomicUsize,
+    }
+
+    #[derive(Debug)]
+    struct ExternalRegistryListener {
+        url: url::Url,
+        events: Arc<dyn ListenerEventSink>,
+    }
+
+    #[derive(Debug)]
+    struct NoConnections;
+
+    impl ListenerConnectionCounter for NoConnections {
+        fn get(&self) -> Option<u32> {
+            Some(0)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ListenerService for ExternalRegistryListener {
+        async fn start(&self) -> anyhow::Result<()> {
+            self.events.emit(ListenerEvent::ListenerAdded {
+                url: self.url.clone(),
+                connection_counter: Arc::new(NoConnections),
+            });
+            Ok(())
+        }
+
+        async fn stop(&self) {
+            self.events.emit(ListenerEvent::ListenerRemoved {
+                url: self.url.clone(),
+            });
+        }
     }
 
     #[async_trait::async_trait]
@@ -1284,6 +1319,48 @@ mod tests {
                 .count(),
             1
         );
+        instance.stop().await;
+        assert!(instance.running_listeners().is_empty());
+    }
+
+    #[tokio::test]
+    async fn external_listener_uses_core_running_listener_registry() {
+        let global_ctx = get_mock_global_ctx();
+        let external_url: url::Url = "unix:///tmp/easytier-external-listener-test"
+            .parse()
+            .unwrap();
+        let peer = runtime_peer_manager_config(&global_ctx, RouteAlgoType::Ospf);
+        let connectivity = CoreInstanceConfig {
+            initial_peers: Vec::new(),
+            listeners: Vec::new(),
+            runtime: Default::default(),
+            stun: runtime_stun_server_config(&global_ctx),
+            endpoint_discovery: runtime_endpoint_discovery_config(&global_ctx),
+            manual: runtime_manual_options(&global_ctx),
+            direct: runtime_direct_options(&global_ctx, false),
+        };
+        let mut adapters = runtime_core_instance_adapters(global_ctx);
+        let service_url = external_url.clone();
+        adapters.external_listener_factory = Some(Arc::new(move |_handler, events| {
+            Arc::new(ExternalRegistryListener {
+                url: service_url.clone(),
+                events,
+            }) as Arc<dyn ListenerService>
+        }));
+        let (packet_sink, _packet_receiver) = create_host_packet_channel();
+        let instance = Arc::new(
+            CoreInstance::new_portable(
+                adapters,
+                PortableCoreInstanceConfig { peer, connectivity },
+                Arc::new(packet_sink),
+            )
+            .unwrap(),
+        );
+
+        instance.start().await.unwrap();
+        assert_eq!(instance.running_listeners(), vec![external_url.clone()]);
+        assert_eq!(instance.node_snapshot().await.listeners, vec![external_url]);
+
         instance.stop().await;
         assert!(instance.running_listeners().is_empty());
     }

@@ -6,7 +6,9 @@ use std::{
 
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
+use easytier_core::connectivity::composite::ConnectorRuntime as _;
 use easytier_core::peers::public_ipv6::PublicIpv6Runtime;
+use easytier_core::socket::{NetNamespace, SocketContext};
 #[cfg(test)]
 use easytier_core::stun::{StunProviderSlot, StunSocketMapper};
 
@@ -14,7 +16,6 @@ use super::{
     PeerId,
     config::{ConfigLoader, Flags},
     netns::NetNS,
-    network::IPCollector,
 };
 #[cfg(test)]
 use crate::socket::udp::RuntimeUdpSocket;
@@ -95,8 +96,6 @@ pub struct GlobalCtx {
     public_ipv6_routes: Mutex<BTreeSet<std::net::Ipv6Addr>>,
     cached_proxy_cidrs: AtomicCell<Option<Vec<ProxyNetworkConfig>>>,
 
-    ip_collector: Mutex<Option<Arc<IPCollector>>>,
-
     hostname: Mutex<String>,
 
     #[cfg(test)]
@@ -146,7 +145,12 @@ impl PublicIpv6Runtime for GlobalCtx {
         &self,
         prefix: cidr::Ipv6Cidr,
     ) -> HashSet<Ipv6Addr> {
-        let ip_list = self.get_ip_collector().collect_ip_addrs().await;
+        let context = SocketContext::default()
+            .with_socket_mark(self.config.get_flags().socket_mark)
+            .with_netns(self.net_ns.name().map(NetNamespace::new));
+        let ip_list = crate::host_runtime::native_host_runtime()
+            .collect_ip_addrs(&context)
+            .await;
         let mut reserved = HashSet::new();
         reserved.extend(
             ip_list
@@ -206,8 +210,6 @@ impl GlobalCtx {
             public_ipv6_lease: AtomicCell::new(None),
             public_ipv6_routes: Mutex::new(BTreeSet::new()),
             cached_proxy_cidrs: AtomicCell::new(None),
-
-            ip_collector: Mutex::new(Some(Arc::new(IPCollector::new(net_ns)))),
 
             hostname: Mutex::new(hostname),
 
@@ -347,10 +349,6 @@ impl GlobalCtx {
 
     pub fn get_network_name(&self) -> String {
         self.get_network_identity().network_name
-    }
-
-    pub fn get_ip_collector(&self) -> Arc<IPCollector> {
-        self.ip_collector.lock().unwrap().as_ref().unwrap().clone()
     }
 
     pub fn get_hostname(&self) -> String {
