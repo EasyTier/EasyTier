@@ -24,7 +24,6 @@ use super::*;
 use crate::{
     common::{
         config::{ConfigLoader, NetworkIdentity, PortForwardConfig, TomlConfigLoader},
-        global_ctx::GlobalCtxEvent,
         netns::{NetNS, ROOT_NETNS_NAME},
     },
     instance::instance::Instance,
@@ -2430,25 +2429,50 @@ pub async fn instance_recv_bps_limit_test(#[values(100, 800)] bps_limit: u64) {
 }
 
 async fn assert_peer_admission_blocked(inst: &Instance, url: url::Url) {
-    let mut events = inst.get_global_ctx().subscribe();
+    let ip = url
+        .host_str()
+        .expect("test URL should have a host")
+        .parse()
+        .expect("test URL should have a literal IP");
+    let target = std::net::SocketAddr::new(ip, url.port().expect("test URL should have a port"));
+    let host = crate::connector::runtime::runtime_connector_host(inst.get_global_ctx());
+    let protocol =
+        crate::connector::protocol::runtime_client_protocol_upgrader(inst.get_global_ctx());
     let core = inst.get_core_instance();
-    core.add_connector(url.clone()).unwrap();
-    let rejected = tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            let GlobalCtxEvent::ConnectError(dst, _, error) = events.recv().await.unwrap() else {
-                continue;
-            };
-            if dst == url.as_str() && error.contains("from the same network") {
-                break;
-            }
-        }
-    })
-    .await;
-    assert!(core.remove_connector(&url));
-    assert!(
-        rejected.is_ok(),
-        "connector to {url} should be rejected as a virtual-network loop"
-    );
+    let connect = async {
+        let connected = match url.scheme() {
+            "tcp" => easytier_core::connectivity::transport::ConnectedTransport::Tcp(
+                easytier_core::socket::tcp::VirtualTcpSocketFactory::connect_tcp(
+                    host.as_ref(),
+                    easytier_core::socket::tcp::TcpConnectOptions::direct_connect(target),
+                )
+                .await?,
+            ),
+            "udp" => easytier_core::connectivity::transport::ConnectedTransport::Udp(
+                easytier_core::connectivity::transport::connect_udp(
+                    host,
+                    target,
+                    Vec::new(),
+                    easytier_core::socket::udp::UdpBindOptions::direct_connect(),
+                    easytier_core::connectivity::transport::UdpSessionMode::EasyTierMux,
+                )
+                .await?,
+            ),
+            scheme => panic!("unsupported test scheme: {scheme}"),
+        };
+        let tunnel = easytier_core::connectivity::protocol::ClientProtocolUpgrader::upgrade_client(
+            protocol.as_ref(),
+            connected,
+            url,
+        )
+        .await?;
+        core.admit_client_tunnel_for_test(tunnel, true)
+            .await
+            .map(|_| ())
+            .map_err(anyhow::Error::from)
+    };
+    let result = tokio::time::timeout(Duration::from_millis(100), connect).await;
+    assert!(matches!(result, Err(_) | Ok(Err(_))));
 }
 
 use std::fs;

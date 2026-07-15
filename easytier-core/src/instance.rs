@@ -1611,6 +1611,18 @@ where
             .await
     }
 
+    #[cfg(feature = "test-utils")]
+    #[doc(hidden)]
+    pub async fn admit_client_tunnel_for_test(
+        &self,
+        tunnel: Box<dyn crate::tunnel::Tunnel>,
+        is_directly_connected: bool,
+    ) -> Result<(crate::config::PeerId, PeerConnId), crate::peers::error::Error> {
+        self.peer_manager
+            .add_client_tunnel(tunnel, is_directly_connected)
+            .await
+    }
+
     pub async fn peer_snapshots(&self) -> Vec<PeerSnapshot> {
         self.peer_manager.list_peer_snapshots().await
     }
