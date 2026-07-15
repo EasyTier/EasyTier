@@ -113,13 +113,29 @@ mod tests {
     use crate::{
         common::{config::ConfigLoader, global_ctx::tests::get_mock_global_ctx},
         connector::core_instance::build_portable_test_core_instance,
-        instance::listeners::ListenerManager,
-        peers::tests::{create_mock_peer_manager, create_mock_peer_manager_with_ring_registry},
         set_global_var,
         tunnel::common::tests::wait_for_condition,
     };
 
     use super::*;
+
+    async fn build_instance(
+        listeners: Vec<url::Url>,
+        ring_registry: Arc<RingTunnelRegistry>,
+    ) -> (
+        Arc<RuntimeCoreInstance>,
+        tokio::sync::mpsc::Receiver<Vec<u8>>,
+    ) {
+        let global_ctx = get_mock_global_ctx();
+        global_ctx.config.set_listeners(listeners);
+        let mut flags = global_ctx.get_flags();
+        flags.bind_device = false;
+        global_ctx.set_flags(flags);
+        let (instance, packet_receiver) =
+            build_portable_test_core_instance(global_ctx, ring_registry).unwrap();
+        instance.start().await.unwrap();
+        (instance, packet_receiver)
+    }
 
     async fn build_client(
         ring_registry: Arc<RingTunnelRegistry>,
@@ -127,14 +143,7 @@ mod tests {
         Arc<RuntimeCoreInstance>,
         tokio::sync::mpsc::Receiver<Vec<u8>>,
     ) {
-        let global_ctx = get_mock_global_ctx();
-        let mut flags = global_ctx.get_flags();
-        flags.bind_device = false;
-        global_ctx.set_flags(flags);
-        let (client, packet_receiver) =
-            build_portable_test_core_instance(global_ctx, ring_registry).unwrap();
-        client.start().await.unwrap();
-        (client, packet_receiver)
+        build_instance(Vec::new(), ring_registry).await
     }
 
     async fn wait_peer_connected(client: Arc<RuntimeCoreInstance>, peer_id: u32) {
@@ -177,32 +186,13 @@ mod tests {
     async fn core_tcp_connector_and_listener_form_peer_connection() {
         set_global_var!(MANUAL_CONNECTOR_RECONNECT_INTERVAL_MS, 10);
 
-        let server = create_mock_peer_manager().await;
-        server
-            .get_global_ctx()
-            .config
-            .set_listeners(vec!["tcp://127.0.0.1:0".parse().unwrap()]);
-        let mut listener_manager = ListenerManager::new(server.get_global_ctx(), server.core());
-        listener_manager.prepare_listeners().await.unwrap();
-        listener_manager.run().await.unwrap();
-
-        wait_for_condition(
-            || {
-                let server = server.clone();
-                async move {
-                    server
-                        .get_global_ctx()
-                        .get_running_listeners()
-                        .into_iter()
-                        .any(|url| url.scheme() == "tcp")
-                }
-            },
-            Duration::from_secs(2),
+        let (server, _server_packets) = build_instance(
+            vec!["tcp://127.0.0.1:0".parse().unwrap()],
+            Arc::new(RingTunnelRegistry::default()),
         )
         .await;
         let listener_url = server
-            .get_global_ctx()
-            .get_running_listeners()
+            .running_listeners()
             .into_iter()
             .find(|url| url.scheme() == "tcp")
             .expect("TCP listener should start");
@@ -214,7 +204,7 @@ mod tests {
             .await
             .unwrap();
 
-        let server_peer_id = server.my_peer_id();
+        let server_peer_id = server.peer_id();
         wait_peer_connected(client.clone(), server_peer_id).await;
         assert!(
             !peer_snapshot(&client, server_peer_id)
@@ -304,17 +294,9 @@ mod tests {
         set_global_var!(MANUAL_CONNECTOR_RECONNECT_INTERVAL_MS, 10);
 
         let ring_registry = Arc::new(RingTunnelRegistry::default());
-        let server = create_mock_peer_manager_with_ring_registry(ring_registry.clone()).await;
-        let mut listener_manager = ListenerManager::new_with_ring_registry(
-            server.get_global_ctx(),
-            server.core(),
-            ring_registry.clone(),
-        );
-        listener_manager.prepare_listeners().await.unwrap();
-        listener_manager.run().await.unwrap();
+        let (server, _server_packets) = build_instance(Vec::new(), ring_registry.clone()).await;
         let listener_url = server
-            .get_global_ctx()
-            .get_running_listeners()
+            .running_listeners()
             .into_iter()
             .find(|url| url.scheme() == "ring")
             .expect("Ring listener should start");
@@ -326,7 +308,7 @@ mod tests {
             .await
             .unwrap();
 
-        let server_peer_id = server.my_peer_id();
+        let server_peer_id = server.peer_id();
         wait_peer_connected(client.clone(), server_peer_id).await;
         assert!(
             !peer_snapshot(&client, server_peer_id)
@@ -348,14 +330,11 @@ mod tests {
         .parse()
         .unwrap();
 
-        let server = create_mock_peer_manager().await;
-        server
-            .get_global_ctx()
-            .config
-            .set_listeners(vec![listener_url.clone()]);
-        let mut listener_manager = ListenerManager::new(server.get_global_ctx(), server.core());
-        listener_manager.prepare_listeners().await.unwrap();
-        listener_manager.run().await.unwrap();
+        let (server, _server_packets) = build_instance(
+            vec![listener_url.clone()],
+            Arc::new(RingTunnelRegistry::default()),
+        )
+        .await;
 
         let (client, _client_packets) = build_client(Arc::new(RingTunnelRegistry::default())).await;
         let connector_manager = ManualConnectorManager::new_with_core_instance(client.clone());
@@ -364,7 +343,7 @@ mod tests {
             .await
             .unwrap();
 
-        let server_peer_id = server.my_peer_id();
+        let server_peer_id = server.peer_id();
         wait_peer_connected(client.clone(), server_peer_id).await;
         assert!(
             !peer_snapshot(&client, server_peer_id)
@@ -379,31 +358,13 @@ mod tests {
     async fn core_http_discovery_connects_through_resolved_tcp_endpoint() {
         set_global_var!(MANUAL_CONNECTOR_RECONNECT_INTERVAL_MS, 10);
 
-        let server = create_mock_peer_manager().await;
-        server
-            .get_global_ctx()
-            .config
-            .set_listeners(vec!["tcp://127.0.0.1:0".parse().unwrap()]);
-        let mut listener_manager = ListenerManager::new(server.get_global_ctx(), server.core());
-        listener_manager.prepare_listeners().await.unwrap();
-        listener_manager.run().await.unwrap();
-        wait_for_condition(
-            || {
-                let server = server.clone();
-                async move {
-                    server
-                        .get_global_ctx()
-                        .get_running_listeners()
-                        .into_iter()
-                        .any(|url| url.scheme() == "tcp")
-                }
-            },
-            Duration::from_secs(2),
+        let (server, _server_packets) = build_instance(
+            vec!["tcp://127.0.0.1:0".parse().unwrap()],
+            Arc::new(RingTunnelRegistry::default()),
         )
         .await;
         let target_url = server
-            .get_global_ctx()
-            .get_running_listeners()
+            .running_listeners()
             .into_iter()
             .find(|url| url.scheme() == "tcp")
             .unwrap();
@@ -430,7 +391,7 @@ mod tests {
             .await
             .unwrap();
 
-        let server_peer_id = server.my_peer_id();
+        let server_peer_id = server.peer_id();
         wait_peer_connected(client.clone(), server_peer_id).await;
         assert!(
             !peer_snapshot(&client, server_peer_id)
@@ -445,32 +406,13 @@ mod tests {
     async fn core_udp_connector_and_listener_form_peer_connection() {
         set_global_var!(MANUAL_CONNECTOR_RECONNECT_INTERVAL_MS, 10);
 
-        let server = create_mock_peer_manager().await;
-        server
-            .get_global_ctx()
-            .config
-            .set_listeners(vec!["udp://127.0.0.1:0".parse().unwrap()]);
-        let mut listener_manager = ListenerManager::new(server.get_global_ctx(), server.core());
-        listener_manager.prepare_listeners().await.unwrap();
-        listener_manager.run().await.unwrap();
-
-        wait_for_condition(
-            || {
-                let server = server.clone();
-                async move {
-                    server
-                        .get_global_ctx()
-                        .get_running_listeners()
-                        .into_iter()
-                        .any(|url| url.scheme() == "udp")
-                }
-            },
-            Duration::from_secs(2),
+        let (server, _server_packets) = build_instance(
+            vec!["udp://127.0.0.1:0".parse().unwrap()],
+            Arc::new(RingTunnelRegistry::default()),
         )
         .await;
         let listener_url = server
-            .get_global_ctx()
-            .get_running_listeners()
+            .running_listeners()
             .into_iter()
             .find(|url| url.scheme() == "udp")
             .expect("UDP listener should start");
@@ -482,7 +424,7 @@ mod tests {
             .await
             .unwrap();
 
-        let server_peer_id = server.my_peer_id();
+        let server_peer_id = server.peer_id();
         wait_peer_connected(client.clone(), server_peer_id).await;
         assert!(
             !peer_snapshot(&client, server_peer_id)
