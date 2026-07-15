@@ -247,10 +247,20 @@ where
                 socket,
                 local_url,
                 remote_url,
-            } => {
+            } if local_url.scheme() == "unix" => {
                 let tunnel = raw::upgrade_accepted_byte_stream(socket, local_url, remote_url)?;
                 return self.handle_tunnel(tunnel).await;
             }
+            AcceptedTransport::ByteStream {
+                socket,
+                local_url,
+                remote_url,
+            } => (
+                self.protocol
+                    .upgrade_byte_stream(socket, local_url, remote_url)
+                    .await?,
+                None,
+            ),
         };
         drop(tcp_upgrade_permit);
         self.handle_upgrade(upgrade).await
