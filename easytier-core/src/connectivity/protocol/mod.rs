@@ -1,4 +1,4 @@
-use std::{marker::PhantomData, sync::Arc, time::Duration};
+use std::{marker::PhantomData, num::NonZeroUsize, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -11,15 +11,16 @@ use crate::{
 
 use super::transport::ConnectedTransport;
 
-pub mod insecure_tls;
 pub mod raw;
-#[cfg(feature = "websocket")]
-pub mod websocket;
 pub mod wireguard;
 
 #[async_trait]
 pub trait ClientProtocolUpgrader<TcpSocket>: Send + Sync + 'static {
     fn supports_scheme(&self, scheme: &str) -> bool;
+
+    fn connect_timeout(&self, _scheme: &str) -> Option<Duration> {
+        None
+    }
 
     async fn upgrade_client(
         &self,
@@ -77,6 +78,10 @@ impl ServerProtocolAdmissionController {
 #[async_trait]
 pub trait ServerProtocolUpgrader<TcpSocket>: Send + Sync + 'static {
     fn supports_scheme(&self, scheme: &str) -> bool;
+
+    fn max_pending_tcp_upgrades(&self, _scheme: &str) -> Option<NonZeroUsize> {
+        None
+    }
 
     async fn upgrade_tcp(
         &self,
@@ -148,6 +153,13 @@ where
         }
     }
 
+    fn connect_timeout(&self, scheme: &str) -> Option<Duration> {
+        self.external
+            .as_ref()
+            .filter(|external| external.supports_scheme(scheme))
+            .and_then(|external| external.connect_timeout(scheme))
+    }
+
     async fn upgrade_client(
         &self,
         connected: ConnectedTransport<TcpSocket>,
@@ -214,18 +226,14 @@ where
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CoreServerProtocolConfig {
     pub unix: bool,
-    pub websocket: bool,
     pub faketcp: bool,
-    pub websocket_timeout: Duration,
 }
 
 impl Default for CoreServerProtocolConfig {
     fn default() -> Self {
         Self {
             unix: false,
-            websocket: false,
             faketcp: false,
-            websocket_timeout: Duration::from_secs(3),
         }
     }
 }
@@ -262,7 +270,6 @@ impl<TcpSocket: 'static> CoreServerProtocolUpgrader<TcpSocket> {
         match scheme {
             "tcp" | "udp" | "ring" => Some(true),
             "unix" => Some(self.config.unix),
-            "ws" | "wss" => Some(cfg!(feature = "websocket") && self.config.websocket),
             "faketcp" => Some(self.config.faketcp),
             _ => None,
         }
@@ -293,13 +300,20 @@ where
         })
     }
 
+    fn max_pending_tcp_upgrades(&self, scheme: &str) -> Option<NonZeroUsize> {
+        self.external
+            .as_ref()
+            .filter(|external| external.supports_scheme(scheme))
+            .and_then(|external| external.max_pending_tcp_upgrades(scheme))
+    }
+
     async fn upgrade_tcp(
         &self,
         socket: TcpSocket,
         local_url: Url,
     ) -> anyhow::Result<ServerProtocolUpgrade> {
         match local_url.scheme() {
-            "tcp" | "ws" | "wss" | "faketcp" => Ok(ServerProtocolUpgrade::Tunnel(
+            "tcp" | "faketcp" => Ok(ServerProtocolUpgrade::Tunnel(
                 upgrade_accepted_tcp(socket, local_url, self.config).await?,
             )),
             "udp" | "wg" | "quic" => {
@@ -322,7 +336,7 @@ where
             "udp" => Ok(ServerProtocolUpgrade::Tunnel(upgrade_accepted_udp(
                 session, &local_url,
             )?)),
-            "tcp" | "ws" | "wss" | "faketcp" => {
+            "tcp" | "faketcp" => {
                 anyhow::bail!("{} protocol requires a TCP transport", local_url.scheme())
             }
             "ring" | "unix" => {
@@ -349,7 +363,7 @@ where
             "unix" if self.config.unix => Ok(ServerProtocolUpgrade::Tunnel(
                 raw::upgrade_accepted_byte_stream(socket, local_url, remote_url)?,
             )),
-            "tcp" | "ws" | "wss" | "faketcp" => {
+            "tcp" | "faketcp" => {
                 anyhow::bail!("{} protocol requires a TCP transport", local_url.scheme())
             }
             "udp" | "wg" | "quic" => {
@@ -375,12 +389,6 @@ where
 {
     match local_url.scheme() {
         "tcp" => Ok(raw::upgrade_accepted_tcp_with_local_url(socket, local_url)?),
-        #[cfg(feature = "websocket")]
-        "ws" | "wss" if config.websocket => Ok(crate::runtime_time::timeout(
-            config.websocket_timeout,
-            websocket::upgrade_accepted(socket, local_url),
-        )
-        .await??),
         "faketcp" if config.faketcp => {
             Ok(raw::upgrade_accepted_tcp_with_local_url(socket, local_url)?)
         }
@@ -668,17 +676,6 @@ mod tests {
             tunnel.info().unwrap().local_addr.unwrap().url,
             local_url.as_str()
         );
-    }
-
-    #[test]
-    fn core_server_websocket_capability_follows_feature() {
-        let upgrader = CoreServerProtocolUpgrader::<MockTcpSocket>::new(CoreServerProtocolConfig {
-            websocket: true,
-            ..Default::default()
-        });
-
-        assert_eq!(upgrader.supports_scheme("ws"), cfg!(feature = "websocket"));
-        assert_eq!(upgrader.supports_scheme("wss"), cfg!(feature = "websocket"));
     }
 
     #[tokio::test]

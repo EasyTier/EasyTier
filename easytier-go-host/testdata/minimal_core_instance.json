@@ -1,5 +1,5 @@
 {
-  "version": 12,
+  "version": 13,
   "instance": {
     "peer": {
       "snapshot": {
@@ -150,7 +150,7 @@
           "secs": 2,
           "nanos": 0
         },
-        "websocket_connect_timeout": {
+        "endpoint_discovery_timeout": {
           "secs": 20,
           "nanos": 0
         },

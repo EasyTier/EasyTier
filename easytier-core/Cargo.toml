@@ -29,7 +29,6 @@ crossbeam = "0.8.4"
 dashmap = "6.0"
 easytier-proto = { path = "../easytier-proto", default-features = false, features = ["core"] }
 futures = "0.3"
-forwarded-header-value = "0.1.1"
 guarden = "0.2"
 hmac = "0.12.1"
 http-body-util = "0.1"
@@ -49,7 +48,6 @@ prost-reflect = { version = "0.16.4", default-features = false, features = ["der
 prost-wkt-types = "0.7.1"
 rand = "0.8.5"
 quanta = "0.12"
-rcgen = "0.12.1"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1"
@@ -68,10 +66,6 @@ tokio = { version = "1", default-features = false, features = [
 ] }
 tokio-util = { version = "0.7", features = ["io", "rt"] }
 tokio-rustls = { version = "0.26", default-features = false }
-tokio-websockets = { version = "0.13.2", git = "https://github.com/EasyTier/tokio-websockets", optional = true, default-features = false, features = [
-    "server",
-    "ring",
-] }
 url = { version = "2.5", features = ["serde"] }
 wildmatch = "2.3.4"
 uuid = { version = "1.5.0", features = ["v4", "fast-rng"] }
@@ -86,7 +80,6 @@ chacha20poly1305 = { version = "0.10.1", optional = true }
 default = []
 aes-gcm = ["dep:aes-gcm"]
 chacha20 = ["dep:chacha20poly1305"]
-websocket = ["dep:tokio-websockets"]
 proxy-packet = [
     "dep:pnet_packet",
     "dep:smoltcp",

@@ -65,7 +65,7 @@ Already established:
   collector construction, and per-instance lifecycle are core-owned and shared
   by manual, direct, TCP hole-punch, UDP hole-punch, peer, IP-collection, and
   UPnP composition; native `GlobalCtx` contains no STUN state or projection;
-- host create schema v12 passes route-probe socket context, normalized STUN
+- host create schema v13 passes route-probe socket context, normalized STUN
   server configuration, and core-owned gateway runtime configuration while
   exposing no Go STUN state or mapping operations. Listener input is normalized
   URLs plus IPv6 policy and `SocketContext`; core derives the internal plan.
@@ -216,16 +216,12 @@ See the [Tunnel ownership closure](tunnel_ownership_refactor.md).
 
 ### Current protocol dependency constraints
 
-The WS/WSS accepted-socket upgrade is core-owned. The outbound upgrade still
-uses native `tokio-websockets::ClientBuilder::connect_on` because the current
-EasyTier fork couples its `client` feature to `tokio/net`, even when the caller
-provides an established stream. Enabling that feature in `easytier-core` breaks
-the stable `wasm32-wasip1` Tokio profile.
-
-Complete the outbound move by splitting an established-stream client handshake
-feature from socket creation in the existing fork. Do not hide the client path
-with a WASI `cfg`, replace the wire implementation during the refactor, or let
-the host perform the WebSocket handshake.
+WS/WSS is one native Tunnel Module. Its client and server upgrade, TLS,
+handshake, framing, lifecycle and tests remain together so the ownership Seam
+does not split one concrete protocol across crates. This preserves the current
+EasyTier `tokio-websockets` fork, header limit and fragmentation behaviour.
+Core retains only the generic external-protocol upgrade Interface and socket
+planning metadata; Go/WASI does not advertise WS/WSS.
 
 QUIC already receives a core `ConnectedUdpSession`, and Quinn's abstract-socket
 Interface can drive that session without creating a socket. However, Quinn

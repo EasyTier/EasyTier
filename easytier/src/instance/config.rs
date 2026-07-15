@@ -112,7 +112,7 @@ pub(crate) fn runtime_manual_options(global_ctx: &ArcGlobalCtx) -> ManualConnect
             MANUAL_CONNECTOR_RECONNECT_INTERVAL_MS
         )),
         connect_timeout: Duration::from_secs(2),
-        websocket_connect_timeout: Duration::from_secs(20),
+        endpoint_discovery_timeout: Duration::from_secs(20),
         bind_device: flags.bind_device,
         allow_interface_bind: !cfg!(any(
             target_os = "android",

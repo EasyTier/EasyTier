@@ -326,6 +326,7 @@ pub(crate) enum TransportListenerConfig {
     Tcp {
         url: Url,
         options: TcpListenOptions,
+        max_pending_upgrades: Option<std::num::NonZeroUsize>,
         must_succeed: bool,
     },
     Udp {
@@ -449,9 +450,14 @@ impl<H> TcpTransportListener<H>
 where
     H: VirtualTcpListenerFactory,
 {
-    fn new(url: Url, options: TcpListenOptions, host: Arc<H>, dns: Arc<dyn DnsResolver>) -> Self {
-        let upgrade_slots =
-            matches!(url.scheme(), "ws" | "wss").then(|| Arc::new(Semaphore::new(1)));
+    fn new(
+        url: Url,
+        options: TcpListenOptions,
+        max_pending_upgrades: Option<std::num::NonZeroUsize>,
+        host: Arc<H>,
+        dns: Arc<dyn DnsResolver>,
+    ) -> Self {
+        let upgrade_slots = max_pending_upgrades.map(|limit| Arc::new(Semaphore::new(limit.get())));
         Self {
             url,
             options,
@@ -808,7 +814,12 @@ where
                         must_succeed,
                     );
                 }
-                TransportListenerConfig::Tcp { url, options, .. } => {
+                TransportListenerConfig::Tcp {
+                    url,
+                    options,
+                    max_pending_upgrades,
+                    ..
+                } => {
                     let host = host.clone();
                     let dns = dns.clone();
                     manager.add_listener(
@@ -816,6 +827,7 @@ where
                             Box::new(TcpTransportListener::new(
                                 url.clone(),
                                 options.clone(),
+                                max_pending_upgrades,
                                 host.clone(),
                                 dns.clone(),
                             ))
@@ -1386,6 +1398,7 @@ mod tests {
             super::super::plan::unresolved_tcp_listener_options(
                 SocketContext::default().with_socket_mark(Some(7)),
             ),
+            None,
             host.clone(),
             Arc::new(MockDns),
         );
@@ -1415,6 +1428,7 @@ mod tests {
         let mut tcp_v6 = TcpTransportListener::new(
             "tcp://[::1]:0".parse()?,
             super::super::plan::unresolved_tcp_listener_options(SocketContext::default()),
+            None,
             host.clone(),
             Arc::new(MockDns),
         );
@@ -1443,11 +1457,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn websocket_listener_limits_pending_upgrades() -> anyhow::Result<()> {
+    async fn tcp_listener_applies_protocol_upgrade_limit() -> anyhow::Result<()> {
         let host = Arc::new(MockHost::new());
         let mut listener = TcpTransportListener::new(
-            "ws://127.0.0.1:0".parse()?,
+            "tcp://127.0.0.1:0".parse()?,
             super::super::plan::unresolved_tcp_listener_options(SocketContext::default()),
+            Some(std::num::NonZeroUsize::MIN),
             host.clone(),
             Arc::new(MockDns),
         );
@@ -1669,6 +1684,7 @@ mod tests {
                 TransportListenerConfig::Tcp {
                     url: "tcp://127.0.0.1:0".parse().unwrap(),
                     options: TcpListenOptions::manual_connect("127.0.0.1:0".parse().unwrap()),
+                    max_pending_upgrades: None,
                     must_succeed: true,
                 },
                 TransportListenerConfig::Udp {

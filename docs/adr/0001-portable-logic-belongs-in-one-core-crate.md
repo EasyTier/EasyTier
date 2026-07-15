@@ -93,7 +93,7 @@ supported schemes from protocol and host capabilities, and owns one manager for
 Ring, TCP, UDP-session, Unix, and FakeTCP listeners. Native advertises and
 creates only the concrete Unix/FakeTCP `SocketListener`; it never receives the
 plan, accepted-socket handler, event sink, or lifecycle. The Go/WASI create
-schema version 12 likewise submits URL-level listener input rather than an
+schema version 13 likewise submits URL-level listener input rather than an
 internal transport plan and cannot inject an EasyTier-managed IPv6 set.
 
 The public-IPv6 provider state machine is also core-owned. Core reads the

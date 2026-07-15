@@ -352,13 +352,18 @@ where
                 url: listener.url,
                 must_succeed,
             }),
-            ListenerKind::TcpStream => transports.push(TransportListenerConfig::Tcp {
-                url: listener.url,
-                options: crate::listener::plan::unresolved_tcp_listener_options(
-                    config.socket_context.clone(),
-                ),
-                must_succeed,
-            }),
+            ListenerKind::TcpStream => {
+                let max_pending_upgrades = server_protocol
+                    .and_then(|protocol| protocol.max_pending_tcp_upgrades(listener.url.scheme()));
+                transports.push(TransportListenerConfig::Tcp {
+                    url: listener.url,
+                    options: crate::listener::plan::unresolved_tcp_listener_options(
+                        config.socket_context.clone(),
+                    ),
+                    max_pending_upgrades,
+                    must_succeed,
+                });
+            }
             ListenerKind::UdpSession => {
                 let accept_kind = match listener.url.scheme() {
                     "udp" => UdpSessionAcceptKind::EasyTierMux,

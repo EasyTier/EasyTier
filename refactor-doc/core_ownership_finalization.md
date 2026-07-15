@@ -135,10 +135,13 @@ It also carries no STUN provider or projection: core constructs and owns the
 slot, while deterministic native integration tests inject a provider only at
 the `CoreInstanceAdapters` test seam.
 
-The Go create schema is version 12. It submits the same URL-level listener
+The Go create schema is version 13. It submits the same URL-level listener
 configuration and core public-IPv6 options as native. It has no internal
 transport plan, `environment.running_listeners`, or host-supplied
 `managed_ipv6s` policy field.
+The normalized long endpoint-discovery budget is
+`endpoint_discovery_timeout`; native-only WS/WSS and QUIC engines are not
+advertised by the Go/WASI core artifact.
 
 ## Process-scoped portable state
 

@@ -311,7 +311,7 @@ pub struct ManualConnectorSnapshot {
 pub struct ManualConnectorOptions {
     pub reconnect_interval: Duration,
     pub connect_timeout: Duration,
-    pub websocket_connect_timeout: Duration,
+    pub endpoint_discovery_timeout: Duration,
     pub bind_device: bool,
     pub allow_interface_bind: bool,
     pub tcp_bind: TcpBindOptions,
@@ -323,7 +323,7 @@ impl Default for ManualConnectorOptions {
         Self {
             reconnect_interval: Duration::from_secs(1),
             connect_timeout: Duration::from_secs(2),
-            websocket_connect_timeout: Duration::from_secs(20),
+            endpoint_discovery_timeout: Duration::from_secs(20),
             bind_device: false,
             allow_interface_bind: true,
             tcp_bind: TcpBindOptions::default(),
@@ -333,14 +333,17 @@ impl Default for ManualConnectorOptions {
 }
 
 impl ManualConnectorOptions {
-    fn connect_timeout(&self, url: &Url) -> Duration {
-        if matches!(
-            url.scheme(),
-            "ws" | "wss" | "http" | "https" | "txt" | "srv"
-        ) {
-            self.websocket_connect_timeout
+    fn connect_timeout<TcpSocket: 'static>(
+        &self,
+        url: &Url,
+        protocol: &dyn ClientProtocolUpgrader<TcpSocket>,
+    ) -> Duration {
+        if is_manual_endpoint_scheme(url.scheme()) {
+            self.endpoint_discovery_timeout
         } else {
-            self.connect_timeout
+            protocol
+                .connect_timeout(url.scheme())
+                .unwrap_or(self.connect_timeout)
         }
     }
 
@@ -743,7 +746,7 @@ where
     H: ManualConnectorHost,
 {
     validate_manual_url(&url)?;
-    let connect_timeout = data.options.connect_timeout(&url);
+    let connect_timeout = data.options.connect_timeout(&url, data.protocol.as_ref());
     tracing::info!(%url, "manual reconnect start");
     let normalized_url = match convert_idn_to_ascii(url.clone()) {
         Ok(url) => url,
@@ -1310,14 +1313,39 @@ mod tests {
     }
 
     #[test]
-    fn websocket_connectors_keep_the_longer_timeout() {
+    fn external_protocol_and_discovery_timeouts_are_explicit() {
+        struct Protocol;
+
+        #[async_trait]
+        impl ClientProtocolUpgrader<()> for Protocol {
+            fn supports_scheme(&self, scheme: &str) -> bool {
+                scheme == "external"
+            }
+
+            fn connect_timeout(&self, scheme: &str) -> Option<Duration> {
+                (scheme == "external").then_some(Duration::from_secs(20))
+            }
+
+            async fn upgrade_client(
+                &self,
+                _connected: ConnectedTransport<()>,
+                _requested_url: Url,
+            ) -> anyhow::Result<Box<dyn Tunnel>> {
+                unreachable!()
+            }
+        }
+
         let options = ManualConnectorOptions::default();
         assert_eq!(
-            options.connect_timeout(&"ws://127.0.0.1".parse().unwrap()),
+            options.connect_timeout(&"external://127.0.0.1".parse().unwrap(), &Protocol),
             Duration::from_secs(20)
         );
         assert_eq!(
-            options.connect_timeout(&"tcp://127.0.0.1".parse().unwrap()),
+            options.connect_timeout(&"txt://example.com".parse().unwrap(), &Protocol),
+            Duration::from_secs(20)
+        );
+        assert_eq!(
+            options.connect_timeout(&"tcp://127.0.0.1".parse().unwrap(), &Protocol),
             Duration::from_secs(2)
         );
     }

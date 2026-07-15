@@ -41,16 +41,10 @@ pub enum TunnelError {
     Shutdown,
     #[error("no dns record found")]
     NoDnsRecordFound(IpVersion),
-    #[error("websocket error: {0}")]
-    WebSocketError(String),
+    #[error("{0}")]
+    ProtocolError(String),
     #[error("tunnel error: {0}")]
     TunError(String),
-}
-
-impl TunnelError {
-    pub fn websocket_error<E: std::fmt::Display>(error: E) -> Self {
-        Self::WebSocketError(error.to_string())
-    }
 }
 
 impl From<TunnelError> for crate::proto::rpc_types::error::Error {
