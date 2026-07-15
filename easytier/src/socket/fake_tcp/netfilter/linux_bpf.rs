@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
-use crate::tunnel::fake_tcp::stack;
+use crate::socket::fake_tcp::stack;
 
 const ETH_HDR_LEN: usize = 14;
 const ETH_TYPE_OFFSET: u32 = 12;
@@ -630,8 +630,8 @@ impl stack::Tun for LinuxBpfTun {
 mod tests {
     use super::*;
 
-    use crate::tunnel::fake_tcp::packet::build_tcp_packet;
-    use crate::tunnel::fake_tcp::stack::Tun;
+    use crate::socket::fake_tcp::packet::build_tcp_packet;
+    use crate::socket::fake_tcp::stack::Tun;
     use pnet::datalink;
     use pnet::packet::tcp::TcpFlags;
     use pnet::util::MacAddr;

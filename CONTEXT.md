@@ -98,6 +98,16 @@ classification and lifecycle, and Ring Tunnel/registry state. A native
 protocol engine may perform an unavoidable non-WASI handshake behind an
 upgrader Adapter, but it is not a second raw Tunnel owner.
 
+Each concrete Tunnel protocol is an atomic Module: its client and server
+upgrade, handshake, framing, protocol configuration, lifecycle and protocol
+tests belong to one crate. Splitting those responsibilities between core and
+native is forbidden. TCP, UDP, Ring, WebSocket/WSS and WireGuard belong to
+core. QUIC belongs to native while the published Quinn dependency cannot build
+for `wasm32-wasip1`; this refactor does not introduce a Quinn fork. FakeTCP and
+Unix are Host socket transports rather than distinct EasyTier Tunnel Modules:
+they produce a virtual TCP socket or byte stream that core wraps with its
+portable framing.
+
 ### Listener runtime
 
 The per-instance Module that turns normalized listener URLs into Ring, TCP,

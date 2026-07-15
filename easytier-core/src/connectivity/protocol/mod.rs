@@ -11,7 +11,6 @@ use crate::{
 
 use super::transport::ConnectedTransport;
 
-pub mod faketcp;
 pub mod insecure_tls;
 pub mod raw;
 #[cfg(feature = "websocket")]
@@ -175,7 +174,7 @@ where
             "unix" if self.config.unix => upgrade_byte_stream(connected),
             "faketcp" if self.config.faketcp => match connected {
                 ConnectedTransport::Tcp(socket) => {
-                    Ok(faketcp::upgrade_connected(socket, requested_url)?)
+                    Ok(raw::upgrade_connected_tcp(socket, requested_url)?)
                 }
                 ConnectedTransport::Udp(_) | ConnectedTransport::ByteStream(_) => {
                     anyhow::bail!("FakeTCP protocol requires a TCP transport")
@@ -382,7 +381,9 @@ where
             websocket::upgrade_accepted(socket, local_url),
         )
         .await??),
-        "faketcp" if config.faketcp => Ok(faketcp::upgrade_accepted(socket, local_url)?),
+        "faketcp" if config.faketcp => {
+            Ok(raw::upgrade_accepted_tcp_with_local_url(socket, local_url)?)
+        }
         scheme => anyhow::bail!("unsupported TCP listener protocol: {scheme}"),
     }
 }

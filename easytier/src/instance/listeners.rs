@@ -68,7 +68,7 @@ impl RuntimeUnixStreamListener {
 
 #[cfg(unix)]
 fn unix_stream_remote_url(remote_addr: tokio::net::unix::SocketAddr) -> url::Url {
-    crate::tunnel::unix::url_from_unix_socket_addr(remote_addr).unwrap_or_else(|| {
+    crate::socket::tcp::url_from_unix_socket_addr(remote_addr).unwrap_or_else(|| {
         format!("unix://anonymous/{}", uuid::Uuid::new_v4())
             .parse()
             .expect("synthetic Unix stream URL should be valid")
@@ -127,7 +127,7 @@ impl Drop for RuntimeUnixStreamListener {
 #[cfg(feature = "faketcp")]
 struct RuntimeFakeTcpSocketListener {
     net_ns: NetNS,
-    inner: crate::tunnel::fake_tcp::FakeTcpTunnelListener,
+    inner: crate::socket::fake_tcp::FakeTcpSocketListener,
 }
 
 #[cfg(feature = "faketcp")]
@@ -135,7 +135,7 @@ impl RuntimeFakeTcpSocketListener {
     fn new(url: url::Url, net_ns: NetNS) -> Self {
         Self {
             net_ns,
-            inner: crate::tunnel::fake_tcp::FakeTcpTunnelListener::new(url),
+            inner: crate::socket::fake_tcp::FakeTcpSocketListener::new(url),
         }
     }
 }
@@ -273,5 +273,49 @@ mod tests {
         );
         assert_eq!(factory.supports_scheme("unix"), cfg!(unix));
         assert!(!factory.supports_scheme("tcp"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unix_adapters_exchange_bytes_and_unlink_listener() {
+        use easytier_core::connectivity::composite::ConnectorRuntime;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("easytier.sock");
+        let url: url::Url = format!("unix://{}", path.display()).parse().unwrap();
+        let mut listener = RuntimeUnixStreamListener::new(url.clone());
+        core_listener::SocketListener::listen(&mut listener)
+            .await
+            .unwrap();
+
+        let runtime = crate::host_runtime::native_host_runtime();
+        let (accepted, connected) = tokio::join!(
+            core_listener::SocketListener::accept(&mut listener),
+            runtime.connect_byte_stream(&url),
+        );
+        let AcceptedTransport::ByteStream {
+            socket: mut server,
+            local_url,
+            ..
+        } = accepted.unwrap()
+        else {
+            panic!("Unix listener returned a non-byte-stream transport");
+        };
+        let (mut client, _, _, _) = connected.unwrap().into_parts();
+        assert_eq!(local_url, url);
+
+        client.write_all(b"ping").await.unwrap();
+        let mut request = [0; 4];
+        server.read_exact(&mut request).await.unwrap();
+        assert_eq!(&request, b"ping");
+
+        server.write_all(b"pong").await.unwrap();
+        let mut response = [0; 4];
+        client.read_exact(&mut response).await.unwrap();
+        assert_eq!(&response, b"pong");
+
+        drop(listener);
+        assert!(!path.exists());
     }
 }

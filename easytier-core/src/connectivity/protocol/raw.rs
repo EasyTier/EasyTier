@@ -383,8 +383,14 @@ where
 {
     let local_addr = socket.local_addr()?;
     let resolved_remote_addr = socket.peer_addr()?;
+    let scheme = requested_remote_addr.scheme().to_owned();
+    let tunnel_type = socket
+        .transport_label()
+        .unwrap_or(scheme.as_str())
+        .to_owned();
     let info = connected_tunnel_info(
-        "tcp",
+        &scheme,
+        &tunnel_type,
         local_addr,
         resolved_remote_addr,
         requested_remote_addr,
@@ -398,6 +404,7 @@ pub fn upgrade_connected_udp(
 ) -> Result<Box<dyn Tunnel>, TunnelError> {
     let (session, layer) = connected.into_parts();
     let info = connected_tunnel_info(
+        "udp",
         "udp",
         session.local_addr()?,
         session.peer_addr()?,
@@ -422,9 +429,13 @@ where
     S: VirtualTcpSocket,
 {
     let remote_addr = socket.peer_addr()?;
-    let remote_url = socket_url("tcp", remote_addr);
+    let scheme = local_url.scheme().to_owned();
+    let remote_url = socket_url(&scheme, remote_addr);
     let info = TunnelInfo {
-        tunnel_type: "tcp".to_owned(),
+        tunnel_type: socket
+            .transport_label()
+            .unwrap_or(scheme.as_str())
+            .to_owned(),
         local_addr: Some(local_url.into()),
         remote_addr: Some(remote_url.clone().into()),
         resolved_remote_addr: Some(remote_url.into()),
@@ -488,12 +499,13 @@ fn udp_bind_addrs_for_remote(
 
 fn connected_tunnel_info(
     scheme: &str,
+    tunnel_type: &str,
     local_addr: SocketAddr,
     resolved_remote_addr: SocketAddr,
     requested_remote_addr: Url,
 ) -> TunnelInfo {
     TunnelInfo {
-        tunnel_type: scheme.to_owned(),
+        tunnel_type: tunnel_type.to_owned(),
         local_addr: Some(socket_url(scheme, local_addr).into()),
         remote_addr: Some(requested_remote_addr.into()),
         resolved_remote_addr: Some(socket_url(scheme, resolved_remote_addr).into()),
@@ -532,6 +544,7 @@ mod tests {
         stream: DuplexStream,
         local_addr: SocketAddr,
         peer_addr: SocketAddr,
+        transport_label: Option<&'static str>,
     }
 
     impl MockTcpSocket {
@@ -549,7 +562,13 @@ mod tests {
                 stream,
                 local_addr,
                 peer_addr,
+                transport_label: None,
             }
+        }
+
+        fn with_transport_label(mut self, transport_label: &'static str) -> Self {
+            self.transport_label = Some(transport_label);
+            self
         }
     }
 
@@ -588,6 +607,10 @@ mod tests {
 
         fn peer_addr(&self) -> io::Result<SocketAddr> {
             Ok(self.peer_addr)
+        }
+
+        fn transport_label(&self) -> Option<&str> {
+            self.transport_label
         }
     }
 
@@ -646,6 +669,37 @@ mod tests {
         assert_eq!(
             accepted.info().unwrap().local_addr.unwrap().url,
             requested_local_url.as_str()
+        );
+    }
+
+    #[test]
+    fn raw_tcp_upgrader_preserves_host_transport_label() {
+        let local_addr: SocketAddr = "192.0.2.1:10000".parse().unwrap();
+        let peer_addr: SocketAddr = "192.0.2.2:11013".parse().unwrap();
+        let requested_url: Url = "faketcp://peer.example:11013".parse().unwrap();
+
+        let connected = upgrade_connected_tcp(
+            MockTcpSocket::new(local_addr, peer_addr).with_transport_label("faketcp_test-driver"),
+            requested_url.clone(),
+        )
+        .unwrap();
+        let connected_info = connected.info().unwrap();
+        assert_eq!(connected_info.tunnel_type, "faketcp_test-driver");
+        assert_eq!(
+            connected_info.resolved_remote_addr.unwrap().url,
+            "faketcp://192.0.2.2:11013"
+        );
+
+        let accepted = upgrade_accepted_tcp_with_local_url(
+            MockTcpSocket::new(local_addr, peer_addr).with_transport_label("faketcp_test-driver"),
+            "faketcp://0.0.0.0:11013".parse().unwrap(),
+        )
+        .unwrap();
+        let accepted_info = accepted.info().unwrap();
+        assert_eq!(accepted_info.tunnel_type, "faketcp_test-driver");
+        assert_eq!(
+            accepted_info.remote_addr,
+            accepted_info.resolved_remote_addr
         );
     }
 

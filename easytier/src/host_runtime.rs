@@ -63,7 +63,7 @@ impl VirtualTcpSocketFactory for NativeHostRuntime {
             let socket_mark = options.bind.context.socket_mark;
             let net_ns = NetNS::from_socket_context(&options.bind.context);
             let socket =
-                crate::tunnel::fake_tcp::connect_socket(remote_addr, socket_mark, net_ns).await?;
+                crate::socket::fake_tcp::connect_socket(remote_addr, socket_mark, net_ns).await?;
             return Ok(RuntimeTcpSocket::from_fake_tcp(socket));
         }
 
@@ -90,7 +90,7 @@ impl ConnectorRuntime for NativeHostRuntime {
             let local_url = stream
                 .local_addr()
                 .ok()
-                .and_then(crate::tunnel::unix::url_from_unix_socket_addr);
+                .and_then(crate::socket::tcp::url_from_unix_socket_addr);
             return Ok(ConnectedByteStream::new(
                 RuntimeTcpSocket::from_unix(stream),
                 local_url,

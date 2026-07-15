@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
-use crate::tunnel::fake_tcp::stack;
+use crate::socket::fake_tcp::stack;
 
 const ETH_HDR_LEN: usize = 14;
 const ETH_TYPE_OFFSET: u32 = 12;

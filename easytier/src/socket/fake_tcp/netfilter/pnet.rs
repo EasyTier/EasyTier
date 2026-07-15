@@ -18,7 +18,7 @@ use pnet::{
 use std::os::unix::fs::MetadataExt;
 use tokio::sync::Mutex;
 
-use crate::tunnel::fake_tcp::stack;
+use crate::socket::fake_tcp::stack;
 
 type PacketFilter = Box<dyn Fn(&[u8]) -> bool + Send + Sync>;
 
@@ -76,7 +76,7 @@ fn filter_tcp_packet(
 
             tracing::trace!(
                 ?tcp,
-                "FakeTcpTunnelListener packet matched filter, dispatching, src_addr: {:?}, dst_addr: {:?}, packet_src_ip: {:?}, packet_dst_ip: {:?}, packet_src_port: {:?}, packet_dst_port: {:?}",
+                "FakeTcpSocketListener packet matched filter, dispatching, src_addr: {:?}, dst_addr: {:?}, packet_src_ip: {:?}, packet_dst_ip: {:?}, packet_src_port: {:?}, packet_dst_port: {:?}",
                 src_addr,
                 dst_addr,
                 ipv4.get_source(),
@@ -122,7 +122,7 @@ fn filter_tcp_packet(
 
             tracing::trace!(
                 ?tcp,
-                "FakeTcpTunnelListener packet matched filter, dispatching"
+                "FakeTcpSocketListener packet matched filter, dispatching"
             );
         }
         _ => return false,

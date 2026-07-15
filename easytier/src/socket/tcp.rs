@@ -31,7 +31,7 @@ enum RuntimeTcpSocketInner {
     #[cfg(unix)]
     Unix(UnixStream),
     #[cfg(feature = "faketcp")]
-    FakeTcp(crate::tunnel::fake_tcp::FakeTcpSocket),
+    FakeTcp(crate::socket::fake_tcp::FakeTcpSocket),
 }
 
 pub struct RuntimeTcpSocket {
@@ -56,11 +56,18 @@ impl RuntimeTcpSocket {
     }
 
     #[cfg(feature = "faketcp")]
-    pub(crate) fn from_fake_tcp(socket: crate::tunnel::fake_tcp::FakeTcpSocket) -> Self {
+    pub(crate) fn from_fake_tcp(socket: crate::socket::fake_tcp::FakeTcpSocket) -> Self {
         Self {
             inner: RuntimeTcpSocketInner::FakeTcp(socket),
         }
     }
+}
+
+#[cfg(unix)]
+pub(crate) fn url_from_unix_socket_addr(addr: tokio::net::unix::SocketAddr) -> Option<url::Url> {
+    addr.as_pathname()
+        .and_then(|path| path.to_str())
+        .and_then(|path| format!("unix://{path}").parse().ok())
 }
 
 impl AsyncRead for RuntimeTcpSocket {

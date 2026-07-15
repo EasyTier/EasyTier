@@ -19,13 +19,12 @@ use tokio::{
 
 use easytier_core::{
     socket::tcp::VirtualTcpSocket,
-    tunnel::{IpVersion, Tunnel, TunnelError},
+    tunnel::{IpVersion, TunnelError},
 };
 
-use crate::{
-    common::netns::NetNS,
-    tunnel::{FromUrl, fake_tcp::netfilter::create_tun},
-};
+use crate::{common::netns::NetNS, tunnel::FromUrl};
+
+use self::netfilter::create_tun;
 
 use futures::Future;
 use tokio_util::task::AbortOnDropHandle;
@@ -71,7 +70,7 @@ impl IpToIfNameCache {
     }
 }
 
-fn get_faketcp_tunnel_type_str(driver_type: &str) -> String {
+fn faketcp_transport_label(driver_type: &str) -> String {
     format!("faketcp_{}", driver_type)
 }
 
@@ -89,7 +88,7 @@ async fn create_tun_off_runtime(
     .map_err(Into::into)
 }
 
-pub struct FakeTcpTunnelListener {
+pub(crate) struct FakeTcpSocketListener {
     addr: url::Url,
     os_listener: Option<tokio::net::TcpListener>,
     // interface_name -> fake tcp stack
@@ -98,26 +97,19 @@ pub struct FakeTcpTunnelListener {
     ip_to_ifname: IpToIfNameCache,
 }
 
-impl std::fmt::Debug for FakeTcpTunnelListener {
+impl std::fmt::Debug for FakeTcpSocketListener {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
-            .debug_struct("FakeTcpTunnelListener")
+            .debug_struct("FakeTcpSocketListener")
             .field("addr", &self.addr)
             .field("listening", &self.os_listener.is_some())
             .finish()
     }
 }
 
-impl FakeTcpTunnelListener {
-    pub fn new(addr: url::Url) -> Self {
-        // Define filter: Capture all packets (or refine this if needed)
-        // For FakeTCP, we probably want to capture packets destined to us?
-        // But `stack::Stack` handles IP/TCP logic.
-        // Maybe we just capture everything for now as a raw tunnel?
-        // Or better, filter based on some criteria?
-        // The user said "satisfy filter function".
-        // Let's create a filter that accepts everything for now, or maybe only IP packets?
-        FakeTcpTunnelListener {
+impl FakeTcpSocketListener {
+    pub(crate) fn new(addr: url::Url) -> Self {
+        FakeTcpSocketListener {
             addr,
             os_listener: None,
             stack_map: DashMap::new(),
@@ -226,7 +218,7 @@ fn build_os_socket_reader_task(mut socket: TcpStream) -> AbortOnDropHandle<()> {
                 break;
             }
         }
-        tracing::info!("FakeTcpTunnelListener os socket closed");
+        tracing::info!("FakeTcpSocketListener os socket closed");
     }))
 }
 
@@ -241,19 +233,19 @@ enum FakeTcpReadState {
 pub(crate) struct FakeTcpSocket {
     socket: Arc<stack::Socket>,
     read_state: FakeTcpReadState,
-    tunnel_type: String,
+    transport_label: String,
     _lifetime_guard: Box<dyn Send + Sync>,
 }
 
 impl FakeTcpSocket {
-    fn new<T>(socket: stack::Socket, tunnel_type: String, lifetime_guard: T) -> Self
+    fn new<T>(socket: stack::Socket, transport_label: String, lifetime_guard: T) -> Self
     where
         T: Send + Sync + 'static,
     {
         Self {
             socket: Arc::new(socket),
             read_state: FakeTcpReadState::Buffered(BytesMut::new()),
-            tunnel_type,
+            transport_label,
             _lifetime_guard: Box::new(lifetime_guard),
         }
     }
@@ -339,7 +331,7 @@ impl VirtualTcpSocket for FakeTcpSocket {
     }
 
     fn transport_label(&self) -> Option<&str> {
-        Some(&self.tunnel_type)
+        Some(&self.transport_label)
     }
 }
 
@@ -352,9 +344,9 @@ struct AcceptResult {
     mac: Option<MacAddr>,
 }
 
-impl FakeTcpTunnelListener {
+impl FakeTcpSocketListener {
     pub(crate) async fn accept_socket(&mut self) -> Result<FakeTcpSocket, TunnelError> {
-        tracing::debug!("FakeTcpTunnelListener waiting for accept");
+        tracing::debug!("FakeTcpSocketListener waiting for accept");
         let (res, stack, socket) = loop {
             let res = self.do_accept().await?;
             let stack = self.get_stack(&res).await?;
@@ -377,90 +369,41 @@ impl FakeTcpTunnelListener {
         tracing::info!(
             ?res,
             remote = socket.remote_addr().to_string(),
-            "FakeTcpTunnelListener accepted connection"
+            "FakeTcpSocketListener accepted connection"
         );
 
-        let tunnel_type = get_faketcp_tunnel_type_str(stack.driver_type());
+        let transport_label = faketcp_transport_label(stack.driver_type());
         Ok(FakeTcpSocket::new(
             socket,
-            tunnel_type,
+            transport_label,
             (build_os_socket_reader_task(res.socket), stack),
         ))
     }
 
-    async fn listen_tunnel(&mut self) -> Result<(), TunnelError> {
+    async fn listen_socket(&mut self) -> Result<(), TunnelError> {
         let port = self.addr.port().unwrap_or(0);
         let bind_addr = SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?;
         let os_listener = tokio::net::TcpListener::bind(bind_addr).await?;
-        tracing::info!(port, "FakeTcpTunnelListener listening");
+        tracing::info!(port, "FakeTcpSocketListener listening");
         self.os_listener = Some(os_listener);
         Ok(())
-    }
-
-    async fn accept_tunnel(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
-        let socket = self.accept_socket().await?;
-        easytier_core::connectivity::protocol::faketcp::upgrade_accepted(socket, self.addr.clone())
     }
 }
 
 #[async_trait::async_trait]
-impl easytier_core::listener::SocketListener for FakeTcpTunnelListener {
-    type Accepted = Box<dyn Tunnel>;
+impl easytier_core::listener::SocketListener for FakeTcpSocketListener {
+    type Accepted = FakeTcpSocket;
 
     async fn listen(&mut self) -> anyhow::Result<()> {
-        Ok(self.listen_tunnel().await?)
+        Ok(self.listen_socket().await?)
     }
 
     async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
-        Ok(self.accept_tunnel().await?)
+        Ok(self.accept_socket().await?)
     }
 
     fn local_url(&self) -> url::Url {
         self.addr.clone()
-    }
-}
-
-pub struct FakeTcpTunnelConnector {
-    addr: url::Url,
-    ip_to_if_name: IpToIfNameCache,
-    connect_lock: tokio::sync::Mutex<()>,
-    resolved_addr: Option<SocketAddr>,
-    socket_mark: Option<u32>,
-}
-
-impl FakeTcpTunnelConnector {
-    pub fn new(addr: url::Url) -> Self {
-        FakeTcpTunnelConnector {
-            addr,
-            ip_to_if_name: IpToIfNameCache::new(),
-            connect_lock: tokio::sync::Mutex::new(()),
-            resolved_addr: None,
-            socket_mark: None,
-        }
-    }
-
-    async fn connect_tunnel(&self) -> Result<Box<dyn Tunnel>, TunnelError> {
-        let _connect_guard = self.connect_lock.lock().await;
-        let remote_addr = match self.resolved_addr {
-            Some(addr) => addr,
-            None => SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?,
-        };
-        let socket = connect_socket_with_cache(
-            remote_addr,
-            self.socket_mark,
-            &self.ip_to_if_name,
-            NetNS::new(None),
-        )
-        .await?;
-        easytier_core::connectivity::protocol::faketcp::upgrade_connected(socket, self.addr.clone())
-    }
-
-    pub fn set_resolved_addr(&mut self, addr: SocketAddr) {
-        self.resolved_addr = Some(addr);
-    }
-
-    pub fn set_socket_mark(&mut self, socket_mark: Option<u32>) {
-        self.socket_mark = socket_mark;
     }
 }
 
@@ -520,7 +463,7 @@ async fn connect_socket_with_cache(
     let tun = create_tun_off_runtime(interface_name, Some(remote_addr), local_addr, net_ns).await?;
     let local_ip = local_ip.unwrap_or(Ipv4Addr::UNSPECIFIED);
     let stack = stack::Stack::new(tun, local_ip, local_ip6, mac);
-    let tunnel_type = get_faketcp_tunnel_type_str(stack.driver_type());
+    let transport_label = faketcp_transport_label(stack.driver_type());
 
     let socket = stack
         .try_alloc_established_socket(local_addr, remote_addr, stack::State::SynSent)
@@ -530,7 +473,7 @@ async fn connect_socket_with_cache(
 
     let os_stream = os_socket.connect(remote_addr).await?;
 
-    tracing::info!(?remote_addr, "FakeTcpTunnelConnector connecting");
+    tracing::info!(?remote_addr, "FakeTCP socket connecting");
 
     let mut buf = BytesMut::new();
     socket
@@ -540,11 +483,11 @@ async fn connect_socket_with_cache(
             "Failed to recv bytes to establish connection".into(),
         ))?;
 
-    tracing::info!(local_addr = ?socket.local_addr(), "FakeTcpTunnelConnector connected");
+    tracing::info!(local_addr = ?socket.local_addr(), "FakeTCP socket connected");
 
     Ok(FakeTcpSocket::new(
         socket,
-        tunnel_type,
+        transport_label,
         (build_os_socket_reader_task(os_stream), stack),
     ))
 }
@@ -557,25 +500,15 @@ pub(crate) async fn connect_socket(
     connect_socket_with_cache(remote_addr, socket_mark, &IpToIfNameCache::new(), net_ns).await
 }
 
-#[async_trait::async_trait]
-impl easytier_core::connectivity::protocol::raw::TunnelDialer for FakeTcpTunnelConnector {
-    async fn connect(&self) -> anyhow::Result<Box<dyn Tunnel>> {
-        Ok(self.connect_tunnel().await?)
-    }
-
-    fn remote_url(&self) -> url::Url {
-        self.addr.clone()
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use crate::tunnel::common::tests::_tunnel_pingpong;
+    use easytier_core::listener::SocketListener;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::*;
 
     #[tokio::test]
-    async fn faketcp_pingpong() {
+    async fn faketcp_socket_pingpong() {
         #[cfg(target_family = "unix")]
         {
             if unsafe { nix::libc::geteuid() } != 0 {
@@ -583,9 +516,25 @@ mod tests {
             }
         }
 
-        let listener = FakeTcpTunnelListener::new("faketcp://0.0.0.0:31011".parse().unwrap());
-        let connector = FakeTcpTunnelConnector::new("faketcp://127.0.0.1:31011".parse().unwrap());
+        let mut listener = FakeTcpSocketListener::new("faketcp://0.0.0.0:31011".parse().unwrap());
+        listener.listen().await.unwrap();
 
-        _tunnel_pingpong(listener, connector).await
+        let server = tokio::spawn(async move {
+            let mut socket = listener.accept().await.unwrap();
+            let mut request = [0; 4];
+            socket.read_exact(&mut request).await.unwrap();
+            assert_eq!(&request, b"ping");
+            socket.write_all(b"pong").await.unwrap();
+        });
+
+        let mut socket = connect_socket("127.0.0.1:31011".parse().unwrap(), None, NetNS::new(None))
+            .await
+            .unwrap();
+        socket.write_all(b"ping").await.unwrap();
+        let mut response = [0; 4];
+        socket.read_exact(&mut response).await.unwrap();
+        assert_eq!(&response, b"pong");
+
+        server.await.unwrap();
     }
 }

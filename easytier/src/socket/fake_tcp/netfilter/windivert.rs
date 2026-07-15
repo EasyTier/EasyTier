@@ -11,7 +11,7 @@ use windivert::packet::WinDivertPacket;
 use windivert::prelude::{WinDivertFlags, WinDivertShutdownMode};
 use windivert::{WinDivert, layer};
 
-use crate::tunnel::fake_tcp::stack;
+use crate::socket::fake_tcp::stack;
 
 struct WinDivertReader {
     inner: UnsafeCell<WinDivert<layer::NetworkLayer>>,

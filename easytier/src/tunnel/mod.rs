@@ -9,9 +9,6 @@ use strum::{Display, EnumString, IntoStaticStr, VariantArray};
 pub mod common;
 pub(crate) mod protocol;
 
-#[cfg(feature = "faketcp")]
-pub mod fake_tcp;
-
 #[cfg(feature = "wireguard")]
 pub mod wireguard;
 
@@ -20,9 +17,6 @@ pub mod quic;
 
 #[cfg(feature = "websocket")]
 pub mod websocket;
-
-#[cfg(unix)]
-pub mod unix;
 
 pub fn build_url_from_socket_addr(addr: &String, scheme: &str) -> url::Url {
     if let Ok(sock_addr) = addr.parse::<SocketAddr>() {
