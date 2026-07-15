@@ -1,6 +1,8 @@
 #[cfg(feature = "proxy-packet")]
 use std::net::{IpAddr, SocketAddr};
-use std::sync::{Arc, Mutex as StdMutex, Weak};
+#[cfg(feature = "proxy-packet")]
+use std::sync::Mutex as StdMutex;
+use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
