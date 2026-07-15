@@ -15,7 +15,6 @@ pub mod dns;
 pub mod env_parser;
 pub mod error;
 pub mod global_ctx;
-pub mod idn;
 pub mod ifcfg;
 pub mod log;
 pub mod machine_id;

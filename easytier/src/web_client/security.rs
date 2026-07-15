@@ -1,18 +1,18 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use easytier_core::peers::secure_datagram::{SecureDatagramDirection, SecureDatagramSession};
-use easytier_core::tunnel::filter::{TunnelFilter, TunnelWithFilter};
+use easytier_core::{
+    packet::{PacketType, ZCPacket, ZCPacketType},
+    peers::secure_datagram::{SecureDatagramDirection, SecureDatagramSession},
+    tunnel::filter::{TunnelFilter, TunnelWithFilter},
+};
 use futures::{SinkExt, StreamExt};
 use snow::{Builder, params::NoiseParams};
 
 use crate::{
     common::config::EncryptionAlgorithm,
     proto::common::TunnelInfo,
-    tunnel::{
-        SplitTunnel, StreamItem, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream,
-        packet_def::{PacketType, ZCPacket, ZCPacketType},
-    },
+    tunnel::{SplitTunnel, StreamItem, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream},
 };
 
 const NOISE_MAGIC: &[u8] = b"ET_WEB_NOISE_V1:";

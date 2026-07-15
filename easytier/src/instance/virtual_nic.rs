@@ -19,11 +19,13 @@ use crate::{
     tunnel::{
         StreamItem, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream,
         common::{FramedWriter, ZCPacketToBytes, reserve_buf},
-        packet_def::{TAIL_RESERVED_SIZE, ZCPacket, ZCPacketType},
     },
 };
 
-use easytier_core::tunnel::wrapper::TunnelWrapper;
+use easytier_core::{
+    packet::{TAIL_RESERVED_SIZE, ZCPacket, ZCPacketType},
+    tunnel::wrapper::TunnelWrapper,
+};
 
 use byteorder::WriteBytesExt as _;
 use bytes::{Buf, BufMut, BytesMut};

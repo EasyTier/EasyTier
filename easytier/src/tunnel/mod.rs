@@ -12,7 +12,6 @@ pub use easytier_core::tunnel::{
 };
 
 pub mod common;
-pub mod packet_def;
 pub(crate) mod protocol;
 
 #[cfg(feature = "faketcp")]

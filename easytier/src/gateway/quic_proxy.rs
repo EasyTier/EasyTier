@@ -1,12 +1,12 @@
 use crate::common::PeerId;
 use crate::proto::peer_rpc::KcpConnData as QuicConnData;
-use crate::tunnel::packet_def::{PacketType, TAIL_RESERVED_SIZE, ZCPacket, ZCPacketType};
 use crate::tunnel::quic::{client_config, endpoint_config, server_config};
 use crate::utils::task::HedgeExt;
 use anyhow::{Context, Error, anyhow, ensure};
 use atomic_refcell::AtomicRefCell;
 use bytes::{BufMut, Bytes, BytesMut};
 use derive_more::{Constructor, Deref, DerefMut, From, Into};
+use easytier_core::packet::{PacketType, TAIL_RESERVED_SIZE, ZCPacket, ZCPacketType};
 use moka::future::Cache;
 use prost::Message;
 use quinn::udp::{EcnCodepoint, RecvMeta, Transmit};

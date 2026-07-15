@@ -283,16 +283,16 @@ pub mod tests {
     use tokio_util::bytes::{BufMut, Bytes, BytesMut};
 
     use easytier_core::{
-        connectivity::protocol::raw::TunnelDialer, listener::SocketListener, tunnel::Tunnel,
+        connectivity::protocol::raw::TunnelDialer, listener::SocketListener, packet::ZCPacket,
+        tunnel::Tunnel,
     };
 
-    use crate::{common::netns::NetNS, tunnel::packet_def::ZCPacket};
+    use crate::common::netns::NetNS;
 
     #[cfg(test)]
-    use crate::tunnel::{
-        TunnelError,
-        packet_def::{PEER_MANAGER_HEADER_SIZE, TCP_TUNNEL_HEADER_SIZE},
-    };
+    use crate::tunnel::TunnelError;
+    #[cfg(test)]
+    use easytier_core::packet::{PEER_MANAGER_HEADER_SIZE, TCP_TUNNEL_HEADER_SIZE};
 
     #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
     #[test]

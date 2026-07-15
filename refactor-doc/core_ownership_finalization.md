@@ -51,6 +51,11 @@ The old `easytier/src/connector`, `easytier/src/peers`, and native
 `peer_center` facade directories are deleted. They must not be recreated as
 compatibility or test-only shells.
 
+Native utility facades are subject to the same rule. Packet types are imported
+directly from `easytier_core::packet`, and IDN normalization plus its tests live
+with core manual connectivity; native `tunnel/packet_def.rs` and
+`common/idn.rs` must not be recreated as re-export or test-only Modules.
+
 ## Listener truth
 
 `CoreInstance` accepts normalized listener URLs, IPv6 policy, and one
@@ -159,6 +164,8 @@ GlobalCtx.public_ipv6_routes
 GlobalCtx.advertised_ipv6_public_addr_prefix
 GlobalCtx.public_ipv6_provider_active
 HostConnectorEnvironmentSnapshot.managed_ipv6s
+easytier/src/tunnel/packet_def.rs
+easytier/src/common/idn.rs
 ```
 
 Direct imports from `easytier_core` are preferred over shallow native

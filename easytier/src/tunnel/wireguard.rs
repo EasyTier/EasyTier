@@ -11,7 +11,6 @@ use quanta::Instant;
 use super::{
     FromUrl, IpVersion, Tunnel, TunnelError, TunnelInfo, ZCPacketSink, ZCPacketStream,
     common::wait_for_connect_futures,
-    packet_def::{PEER_MANAGER_HEADER_SIZE, ZCPacketType},
 };
 use crate::tunnel::common::{BindDev, bind};
 use crate::{
@@ -19,10 +18,7 @@ use crate::{
     socket::udp::{
         RuntimeUdpSessionSocketListener, RuntimeUdpSocket, new_runtime_udp_session_listener,
     },
-    tunnel::{
-        TunnelUrl, build_url_from_socket_addr,
-        packet_def::{WG_TUNNEL_HEADER_SIZE, ZCPacket},
-    },
+    tunnel::{TunnelUrl, build_url_from_socket_addr},
 };
 use anyhow::Context;
 use async_recursion::async_recursion;
@@ -37,6 +33,7 @@ use dashmap::DashMap;
 use easytier_core::tunnel::ring::create_ring_tunnel_pair;
 use easytier_core::{
     connectivity::transport::ConnectedUdpSession,
+    packet::{PEER_MANAGER_HEADER_SIZE, WG_TUNNEL_HEADER_SIZE, ZCPacket, ZCPacketType},
     socket::{
         SocketContext,
         udp::{

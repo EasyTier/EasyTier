@@ -1102,6 +1102,53 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn idn_normalization_covers_connector_schemes_and_url_round_trips() {
+        let cases = [
+            ("example.com", "example.com"),
+            ("test.org:8080/path", "test.org:8080/path"),
+            ("räksmörgås.nu", "xn--rksmrgs-5wao1o.nu"),
+            ("中文.测试", "xn--fiq228c.xn--0zwm56d"),
+            ("räksmörgås.nu:8080", "xn--rksmrgs-5wao1o.nu:8080"),
+            ("例子.测试/path", "xn--fsqu00a.xn--0zwm56d/path"),
+            ("中文.测试:9000/api", "xn--fiq228c.xn--0zwm56d:9000/api"),
+            ("räksmörgås.nu:8080/path", "xn--rksmrgs-5wao1o.nu:8080/path"),
+            (
+                "中文.测试:8000/用户/管理",
+                "xn--fiq228c.xn--0zwm56d:8000/%E7%94%A8%E6%88%B7/%E7%AE%A1%E7%90%86",
+            ),
+            ("[2001:db8::1]:8080", "[2001:db8::1]:8080"),
+            ("[2001:db8::1]/path", "[2001:db8::1]/path"),
+            (
+                "[2001:db8::1]/路径/资源",
+                "[2001:db8::1]/%E8%B7%AF%E5%BE%84/%E8%B5%84%E6%BA%90",
+            ),
+        ];
+        let schemes = ["tcp", "udp", "ws", "wss", "wg", "quic", "http", "https"];
+
+        for (host_part, expected_host_part) in cases {
+            for scheme in schemes {
+                for round_trip in [false, true] {
+                    let input = Url::parse(&format!("{scheme}://{host_part}")).unwrap();
+                    let input = if round_trip {
+                        input.to_string().parse().unwrap()
+                    } else {
+                        input
+                    };
+                    let actual = convert_idn_to_ascii(input.clone()).unwrap().to_string();
+                    let mut expected = format!("{scheme}://{expected_host_part}");
+                    if input.is_special()
+                        && actual.ends_with('/')
+                        && !expected_host_part.ends_with('/')
+                    {
+                        expected.push('/');
+                    }
+                    assert_eq!(actual, expected, "scheme={scheme}, input={host_part}");
+                }
+            }
+        }
+    }
+
     struct StaticDnsResolver {
         ips: Vec<IpAddr>,
         queries: Mutex<Vec<DnsQuery>>,
