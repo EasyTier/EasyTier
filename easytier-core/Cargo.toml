@@ -102,5 +102,5 @@ proxy-smoltcp-stack = [
     "smoltcp/proto-ipv6",
     "smoltcp/async",
 ]
-test-utils = []
+test-utils = ["tokio/rt-multi-thread"]
 zstd = ["dep:zstd"]
