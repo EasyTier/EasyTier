@@ -71,6 +71,15 @@ Native protocol engines also import the core `Tunnel`, split stream/sink,
 packet stream, error, and IP-version types directly. `easytier::tunnel` owns
 only native protocol modules plus URL/scheme and OS-resolution helpers; it is
 not a public forwarding namespace for the portable tunnel model.
+WireGuard consumers likewise import the core `WgConfig` directly rather than
+publishing it through the native engine module. Native tunnel ping-pong and
+benchmark helpers compile only for the crate test target and are not a
+cross-crate production utility API.
+
+Native composition has no default process-runtime facade. Production roots
+pass their process-scoped `CoreProcessRuntime` explicitly, and tests that need
+isolated Ring registries do the same. Unused aliases for core proxy connectors
+must not be retained merely to preserve old native names.
 
 The obsolete native `tx_throughput` benchmark was removed with the manager
 facades it depended on. A replacement peer-graph or raw-transport benchmark
@@ -218,6 +227,8 @@ pub use easytier_core::tunnel::{ (native production)
 easytier/src/gateway/tests.rs
 easytier/benches/tx_throughput.rs
 runtime_core_instance_owns_* (native composition tests)
+NatDstTcpConnector
+pub use easytier_core::connectivity::protocol::wireguard::WgConfig
 ```
 
 Direct imports from `easytier_core` are preferred over shallow native

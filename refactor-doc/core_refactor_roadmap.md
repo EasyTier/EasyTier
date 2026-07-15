@@ -120,6 +120,11 @@ Current closure status on 2026-07-14:
   retains only Adapter construction and vertical integration coverage. CI
   archives both crates, while native config normalization is tested at its own
   boundary.
+- native production no longer compiles tunnel test helpers or mock STUN
+  providers, and it contains no default process-runtime constructor or unused
+  alias for a core proxy connector. Core's test-only multi-thread Tokio support
+  is supplied by a non-WASI dev-dependency, so `--all-features` remains a valid
+  WASI production build.
 
 ## Definition of done
 
