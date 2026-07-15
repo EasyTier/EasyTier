@@ -6,18 +6,16 @@ use std::{
 };
 
 use anyhow::Context;
-use easytier::{
-    proto::{
-        api::{
-            config::{ConfigRpc, ConfigRpcClientFactory},
-            manage::{WebClientService, WebClientServiceClientFactory},
-        },
-        rpc_impl::bidirect::BidirectRpcManager,
-        rpc_types::{self, controller::BaseController},
-        web::{HeartbeatRequest, HeartbeatResponse, WebServerService, WebServerServiceServer},
+use easytier::proto::{
+    api::{
+        config::{ConfigRpc, ConfigRpcClientFactory},
+        manage::{WebClientService, WebClientServiceClientFactory},
     },
-    tunnel::Tunnel,
+    rpc_impl::bidirect::BidirectRpcManager,
+    rpc_types::{self, controller::BaseController},
+    web::{HeartbeatRequest, HeartbeatResponse, WebServerService, WebServerServiceServer},
 };
+use easytier_core::tunnel::Tunnel;
 use tokio::sync::{Notify, RwLock, broadcast};
 use tokio_util::task::AbortOnDropHandle;
 
