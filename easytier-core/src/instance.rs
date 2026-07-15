@@ -2407,7 +2407,7 @@ mod tests {
         #[derive(Default)]
         struct TestHost {
             proxy_nat_connections:
-                Option<tokio::sync::mpsc::UnboundedSender<tokio::io::DuplexStream>>,
+                Option<tokio::sync::mpsc::UnboundedSender<(SocketAddr, tokio::io::DuplexStream)>>,
         }
 
         #[async_trait]
@@ -2427,7 +2427,7 @@ mod tests {
                     .ok_or_else(|| anyhow::anyhow!("test host proxy NAT is disabled"))?;
                 let (socket, peer) = tokio::io::duplex(1024);
                 connections
-                    .send(peer)
+                    .send((options.remote_addr, peer))
                     .map_err(|_| anyhow::anyhow!("test host proxy NAT receiver is closed"))?;
                 Ok(TestTcpSocket(socket))
             }
@@ -3111,7 +3111,14 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            let destination_stream = connection_receiver.recv().await.unwrap();
+            let (connected_destination, destination_stream) = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                connection_receiver.recv(),
+            )
+            .await
+            .expect("core should request the destination socket")
+            .unwrap();
+            assert_eq!(connected_destination, destination);
             tokio::time::timeout(std::time::Duration::from_secs(2), async {
                 loop {
                     let entries = instance.wrapped_tcp_proxy_entry_snapshots(
@@ -3157,7 +3164,14 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            let _blocked_destination_stream = connection_receiver.recv().await.unwrap();
+            let (connected_destination, _blocked_destination_stream) = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                connection_receiver.recv(),
+            )
+            .await
+            .expect("second destination session should request a socket")
+            .unwrap();
+            assert_eq!(connected_destination, destination);
             tokio::time::timeout(std::time::Duration::from_secs(2), async {
                 while instance
                     .wrapped_tcp_proxy_entry_snapshots(
