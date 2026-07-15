@@ -222,6 +222,8 @@ pub struct UdpBroadcastRelayStats {
     packets_forward_failed: CounterHandle,
 }
 
+#[cfg(feature = "test-utils")]
+#[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PeerRelaySessionSnapshot {
     pub has_state: bool,
@@ -1617,46 +1619,43 @@ where
         self.peer_manager.list_route_snapshots().await
     }
 
-    pub async fn next_hop(
+    #[cfg(feature = "test-utils")]
+    #[doc(hidden)]
+    pub async fn relay_route_has_static_key_for_test(
         &self,
         peer_id: crate::config::PeerId,
-        policy: crate::peers::route_trait::NextHopPolicy,
-    ) -> Option<crate::config::PeerId> {
-        self.peer_manager
-            .get_route()
-            .get_next_hop_with_policy(peer_id, policy)
-            .await
-    }
-
-    pub async fn route_peer_static_public_key(
-        &self,
-        peer_id: crate::config::PeerId,
-    ) -> Option<Vec<u8>> {
+    ) -> bool {
         self.peer_manager
             .get_peer_map()
             .get_route_peer_info(peer_id)
             .await
-            .map(|info| info.noise_static_pubkey)
+            .is_some_and(|info| !info.noise_static_pubkey.is_empty())
     }
 
-    pub fn relay_session_snapshot(
+    #[cfg(feature = "test-utils")]
+    #[doc(hidden)]
+    pub fn relay_session_snapshot_for_test(
         &self,
         peer_id: crate::config::PeerId,
     ) -> PeerRelaySessionSnapshot {
         let relay = self.peer_manager.get_relay_peer_map();
         PeerRelaySessionSnapshot {
             has_state: relay.has_state(peer_id),
-            has_session: relay.has_session(peer_id),
+            has_session: relay.has_session_without_touch(peer_id),
         }
     }
 
-    pub fn evict_idle_relay_sessions(&self, idle: Duration) {
+    #[cfg(feature = "test-utils")]
+    #[doc(hidden)]
+    pub fn evict_idle_relay_sessions_for_test(&self, idle: Duration) {
         self.peer_manager
             .get_relay_peer_map()
             .evict_idle_sessions(idle);
     }
 
-    pub fn evict_unused_peer_sessions(&self, idle: Duration) {
+    #[cfg(feature = "test-utils")]
+    #[doc(hidden)]
+    pub fn evict_unused_peer_sessions_for_test(&self, idle: Duration) {
         self.peer_manager
             .get_peer_session_store()
             .evict_unused_sessions_idle(idle);
@@ -1826,16 +1825,6 @@ where
 
     pub fn metric_snapshots(&self) -> Vec<MetricSnapshot> {
         self.peer_manager.stats_manager().get_all_metrics()
-    }
-
-    pub fn metric_snapshots_by_prefix(&self, prefix: &str) -> Vec<MetricSnapshot> {
-        self.peer_manager
-            .stats_manager()
-            .get_metrics_by_prefix(prefix)
-    }
-
-    pub fn metric_snapshot(&self, name: MetricName, labels: &LabelSet) -> Option<MetricSnapshot> {
-        self.peer_manager.stats_manager().get_metric(name, labels)
     }
 
     pub fn prometheus_metrics(&self) -> String {

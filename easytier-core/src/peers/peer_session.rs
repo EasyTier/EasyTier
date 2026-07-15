@@ -101,6 +101,13 @@ impl PeerSessionStore {
         }
     }
 
+    #[cfg(feature = "test-utils")]
+    pub(crate) fn contains_valid(&self, key: &SessionKey) -> bool {
+        self.sessions
+            .get(key)
+            .is_some_and(|entry| entry.session.is_valid())
+    }
+
     pub fn remove(&self, key: &SessionKey) {
         self.sessions.remove(key);
     }
@@ -535,6 +542,31 @@ mod tests {
         assert!(
             !store.sessions.contains_key(&key),
             "invalid sessions should not be kept by recent activity"
+        );
+    }
+
+    #[cfg(feature = "test-utils")]
+    #[test]
+    fn contains_valid_does_not_refresh_session_activity() {
+        let store = PeerSessionStore::new();
+        let key = SessionKey::new("net".to_string(), 20);
+        let session = Arc::new(PeerSession::new(
+            20,
+            PeerSession::new_root_key(),
+            1,
+            0,
+            "aes-gcm".to_string(),
+            "aes-gcm".to_string(),
+            None,
+        ));
+        store.insert_session(key.clone(), session);
+        let last_used_at = store.sessions.get(&key).unwrap().last_used_at.load();
+
+        assert!(store.contains_valid(&key));
+
+        assert_eq!(
+            store.sessions.get(&key).unwrap().last_used_at.load(),
+            last_used_at
         );
     }
 }

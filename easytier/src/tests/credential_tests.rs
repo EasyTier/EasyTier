@@ -853,8 +853,6 @@ async fn credential_basic_connectivity() {
 #[tokio::test]
 #[serial_test::serial]
 async fn credential_relay_capability(#[case] allow_relay: bool) {
-    use crate::peers::route_trait::NextHopPolicy;
-
     prepare_credential_network();
 
     // Create admin node
@@ -1066,8 +1064,11 @@ async fn credential_relay_capability(#[case] allow_relay: bool) {
         || async {
             let next_hop_a_to_b = cred_a_inst
                 .get_core_instance()
-                .next_hop(cred_b_peer_id, NextHopPolicy::LeastCost)
-                .await;
+                .route_snapshots()
+                .await
+                .into_iter()
+                .find(|route| route.peer_id == cred_b_peer_id)
+                .and_then(|route| route.next_hop_peer_id_latency_first);
             println!(
                 "Next hop convergence A->B={:?} (admin={}, c={}), allow_relay={}",
                 next_hop_a_to_b, admin_peer_id, cred_c_peer_id, allow_relay
@@ -1088,8 +1089,11 @@ async fn credential_relay_capability(#[case] allow_relay: bool) {
     // Verify next hop from A to B based on allow_relay flag
     let next_hop_a_to_b = cred_a_inst
         .get_core_instance()
-        .next_hop(cred_b_peer_id, NextHopPolicy::LeastCost)
-        .await;
+        .route_snapshots()
+        .await
+        .into_iter()
+        .find(|route| route.peer_id == cred_b_peer_id)
+        .and_then(|route| route.next_hop_peer_id_latency_first);
 
     println!(
         "Next hop A->B={:?} (admin={}, c={}), allow_relay={}",

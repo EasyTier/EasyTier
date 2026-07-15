@@ -10,7 +10,7 @@ use std::{
 use easytier_core::{
     connectivity::protocol::raw::TunnelDialer,
     listener::SocketListener,
-    stats_manager::{LabelSet, LabelType, MetricName},
+    stats_manager::{LabelSet, LabelType, MetricName, MetricSnapshot},
     tunnel::{Tunnel, ring::RingTunnelRegistry},
 };
 use rand::{Rng, rngs::OsRng};
@@ -39,6 +39,13 @@ use crate::{
         _tunnel_bench_netns, _tunnel_pingpong_netns_with_timeout, wait_for_condition,
     },
 };
+
+fn metric_value(metrics: &[MetricSnapshot], name: MetricName, labels: &LabelSet) -> Option<u64> {
+    metrics
+        .iter()
+        .find(|metric| metric.name == name && metric.labels == *labels)
+        .map(|metric| metric.value)
+}
 
 fn core_tcp_listener(url: url::Url) -> RuntimeRpcListener {
     let addr = url
@@ -1334,7 +1341,10 @@ pub async fn quic_proxy() {
 
     let metrics = insts[0]
         .get_core_instance()
-        .metric_snapshots_by_prefix(&MetricName::TcpProxyConnect.to_string());
+        .metric_snapshots()
+        .into_iter()
+        .filter(|metric| metric.name == MetricName::TcpProxyConnect)
+        .collect::<Vec<_>>();
     assert_eq!(metrics.len(), 2);
     assert_eq!(1, metrics[0].value);
     assert_eq!(1, metrics[1].value);
@@ -1429,7 +1439,10 @@ pub async fn subnet_proxy_three_node_test(
     if enable_quic_proxy && !disable_quic_input {
         let metrics = insts[0]
             .get_core_instance()
-            .metric_snapshots_by_prefix(&MetricName::TcpProxyConnect.to_string());
+            .metric_snapshots()
+            .into_iter()
+            .filter(|metric| metric.name == MetricName::TcpProxyConnect)
+            .collect::<Vec<_>>();
         assert_eq!(metrics.len(), 3);
         for metric in metrics {
             assert_eq!(1, metric.value);
@@ -1442,7 +1455,10 @@ pub async fn subnet_proxy_three_node_test(
     } else if enable_kcp_proxy && !disable_kcp_input {
         let metrics = insts[0]
             .get_core_instance()
-            .metric_snapshots_by_prefix(&MetricName::TcpProxyConnect.to_string());
+            .metric_snapshots()
+            .into_iter()
+            .filter(|metric| metric.name == MetricName::TcpProxyConnect)
+            .collect::<Vec<_>>();
         assert_eq!(metrics.len(), 3);
         for metric in metrics {
             assert_eq!(1, metric.value);
@@ -1456,7 +1472,10 @@ pub async fn subnet_proxy_three_node_test(
         // tcp subnet proxy
         let metrics = insts[2]
             .get_core_instance()
-            .metric_snapshots_by_prefix(&MetricName::TcpProxyConnect.to_string());
+            .metric_snapshots()
+            .into_iter()
+            .filter(|metric| metric.name == MetricName::TcpProxyConnect)
+            .collect::<Vec<_>>();
         if no_tun {
             assert_eq!(metrics.len(), 3);
         } else {
@@ -4058,8 +4077,6 @@ pub fn generate_secure_mode_config() -> SecureModeConfig {
 #[tokio::test]
 #[serial_test::serial]
 pub async fn relay_peer_e2e_encryption(#[values("tcp", "udp")] proto: &str) {
-    use crate::peers::route_trait::NextHopPolicy;
-
     let insts = init_three_node_ex(
         proto,
         |cfg| {
@@ -4103,8 +4120,11 @@ pub async fn relay_peer_e2e_encryption(#[values("tcp", "udp")] proto: &str) {
     // Verify inst1 sees inst3 via inst2 (non-direct path)
     let next_hop_to_inst3 = insts[0]
         .get_core_instance()
-        .next_hop(inst3_peer_id, NextHopPolicy::LeastHop)
-        .await;
+        .route_snapshots()
+        .await
+        .into_iter()
+        .find(|route| route.peer_id == inst3_peer_id)
+        .map(|route| route.next_hop_peer_id);
     println!("Next hop from inst1 to inst3: {:?}", next_hop_to_inst3);
     assert_eq!(
         next_hop_to_inst3,
@@ -4123,13 +4143,13 @@ pub async fn relay_peer_e2e_encryption(#[values("tcp", "udp")] proto: &str) {
     );
 
     // Check if noise_static_pubkey is available for relay handshake
-    let route_info_inst3 = insts[0]
+    let route_has_static_key = insts[0]
         .get_core_instance()
-        .route_peer_static_public_key(inst3_peer_id)
+        .relay_route_has_static_key_for_test(inst3_peer_id)
         .await;
     println!(
-        "Route info for inst3 on inst1: noise_static_pubkey len = {:?}",
-        route_info_inst3.as_ref().map(Vec::len)
+        "Route info for inst3 on inst1 has a relay static key: {}",
+        route_has_static_key
     );
 
     // Wait until relay route info includes inst3 static pubkey for IK handshake.
@@ -4137,9 +4157,8 @@ pub async fn relay_peer_e2e_encryption(#[values("tcp", "udp")] proto: &str) {
         || async {
             insts[0]
                 .get_core_instance()
-                .route_peer_static_public_key(inst3_peer_id)
+                .relay_route_has_static_key_for_test(inst3_peer_id)
                 .await
-                .is_some_and(|key| !key.is_empty())
         },
         Duration::from_secs(10),
     )
@@ -4156,10 +4175,10 @@ pub async fn relay_peer_e2e_encryption(#[values("tcp", "udp")] proto: &str) {
     // Verify relay sessions are established
     let relay_1 = insts[0]
         .get_core_instance()
-        .relay_session_snapshot(inst3_peer_id);
+        .relay_session_snapshot_for_test(inst3_peer_id);
     let relay_3 = insts[2]
         .get_core_instance()
-        .relay_session_snapshot(inst1_peer_id);
+        .relay_session_snapshot_for_test(inst1_peer_id);
 
     println!(
         "Relay states after ping: inst1->inst3: {}, inst3->inst1: {}",
@@ -4223,30 +4242,17 @@ pub async fn relay_peer_e2e_encryption_udp() {
 
     wait_for_condition(
         || async {
-            insts[0]
-                .get_core_instance()
-                .metric_snapshot(MetricName::TrafficBytesTx, &tx_labels)
-                .is_none()
-                && insts[0]
-                    .get_core_instance()
-                    .metric_snapshot(MetricName::TrafficPacketsTx, &tx_labels)
-                    .is_none()
-                && insts[0]
-                    .get_core_instance()
-                    .metric_snapshot(MetricName::TrafficBytesTx, &total_labels)
-                    .is_some_and(|metric| metric.value > 0)
-                && insts[0]
-                    .get_core_instance()
-                    .metric_snapshot(MetricName::TrafficPacketsTx, &total_labels)
-                    .is_some_and(|metric| metric.value > 0)
-                && insts[0]
-                    .get_core_instance()
-                    .metric_snapshot(MetricName::TrafficBytesTxByInstance, &tx_labels)
-                    .is_some_and(|metric| metric.value > 0)
-                && insts[0]
-                    .get_core_instance()
-                    .metric_snapshot(MetricName::TrafficPacketsTxByInstance, &tx_labels)
-                    .is_some_and(|metric| metric.value > 0)
+            let metrics = insts[0].get_core_instance().metric_snapshots();
+            metric_value(&metrics, MetricName::TrafficBytesTx, &tx_labels).is_none()
+                && metric_value(&metrics, MetricName::TrafficPacketsTx, &tx_labels).is_none()
+                && metric_value(&metrics, MetricName::TrafficBytesTx, &total_labels)
+                    .is_some_and(|value| value > 0)
+                && metric_value(&metrics, MetricName::TrafficPacketsTx, &total_labels)
+                    .is_some_and(|value| value > 0)
+                && metric_value(&metrics, MetricName::TrafficBytesTxByInstance, &tx_labels)
+                    .is_some_and(|value| value > 0)
+                && metric_value(&metrics, MetricName::TrafficPacketsTxByInstance, &tx_labels)
+                    .is_some_and(|value| value > 0)
         },
         Duration::from_secs(10),
     )
@@ -4254,30 +4260,17 @@ pub async fn relay_peer_e2e_encryption_udp() {
 
     wait_for_condition(
         || async {
-            insts[2]
-                .get_core_instance()
-                .metric_snapshot(MetricName::TrafficBytesRx, &rx_labels)
-                .is_none()
-                && insts[2]
-                    .get_core_instance()
-                    .metric_snapshot(MetricName::TrafficPacketsRx, &rx_labels)
-                    .is_none()
-                && insts[2]
-                    .get_core_instance()
-                    .metric_snapshot(MetricName::TrafficBytesRx, &total_labels)
-                    .is_some_and(|metric| metric.value > 0)
-                && insts[2]
-                    .get_core_instance()
-                    .metric_snapshot(MetricName::TrafficPacketsRx, &total_labels)
-                    .is_some_and(|metric| metric.value > 0)
-                && insts[2]
-                    .get_core_instance()
-                    .metric_snapshot(MetricName::TrafficBytesRxByInstance, &rx_labels)
-                    .is_some_and(|metric| metric.value > 0)
-                && insts[2]
-                    .get_core_instance()
-                    .metric_snapshot(MetricName::TrafficPacketsRxByInstance, &rx_labels)
-                    .is_some_and(|metric| metric.value > 0)
+            let metrics = insts[2].get_core_instance().metric_snapshots();
+            metric_value(&metrics, MetricName::TrafficBytesRx, &rx_labels).is_none()
+                && metric_value(&metrics, MetricName::TrafficPacketsRx, &rx_labels).is_none()
+                && metric_value(&metrics, MetricName::TrafficBytesRx, &total_labels)
+                    .is_some_and(|value| value > 0)
+                && metric_value(&metrics, MetricName::TrafficPacketsRx, &total_labels)
+                    .is_some_and(|value| value > 0)
+                && metric_value(&metrics, MetricName::TrafficBytesRxByInstance, &rx_labels)
+                    .is_some_and(|value| value > 0)
+                && metric_value(&metrics, MetricName::TrafficPacketsRxByInstance, &rx_labels)
+                    .is_some_and(|value| value > 0)
         },
         Duration::from_secs(10),
     )
@@ -4290,8 +4283,6 @@ pub async fn relay_peer_e2e_encryption_udp() {
 #[tokio::test]
 #[serial_test::serial]
 pub async fn relay_peer_session_cleanup() {
-    use crate::peers::route_trait::NextHopPolicy;
-
     let mut insts = init_three_node_ex(
         "tcp",
         |cfg| {
@@ -4314,7 +4305,7 @@ pub async fn relay_peer_session_cleanup() {
 
     wait_for_condition(
         || async {
-            let relay = core_1.relay_session_snapshot(inst3_peer_id);
+            let relay = core_1.relay_session_snapshot_for_test(inst3_peer_id);
             relay.has_state && relay.has_session
         },
         Duration::from_secs(3),
@@ -4323,8 +4314,11 @@ pub async fn relay_peer_session_cleanup() {
 
     let next_hop = insts[0]
         .get_core_instance()
-        .next_hop(inst3_peer_id, NextHopPolicy::LeastHop)
-        .await;
+        .route_snapshots()
+        .await
+        .into_iter()
+        .find(|route| route.peer_id == inst3_peer_id)
+        .map(|route| route.next_hop_peer_id);
     assert_eq!(next_hop, Some(inst2_peer_id));
 
     let mut inst2 = insts.remove(1);
@@ -4340,13 +4334,21 @@ pub async fn relay_peer_session_cleanup() {
     )
     .await;
 
-    core_1.evict_idle_relay_sessions(Duration::from_millis(0));
-    assert!(!core_1.relay_session_snapshot(inst3_peer_id).has_state);
+    core_1.evict_idle_relay_sessions_for_test(Duration::from_millis(0));
+    assert!(
+        !core_1
+            .relay_session_snapshot_for_test(inst3_peer_id)
+            .has_state
+    );
 
-    core_1.evict_unused_peer_sessions(Duration::from_millis(0));
+    core_1.evict_unused_peer_sessions_for_test(Duration::from_millis(0));
 
     wait_for_condition(
-        || async { !core_1.relay_session_snapshot(inst3_peer_id).has_session },
+        || async {
+            !core_1
+                .relay_session_snapshot_for_test(inst3_peer_id)
+                .has_session
+        },
         Duration::from_secs(1),
     )
     .await;

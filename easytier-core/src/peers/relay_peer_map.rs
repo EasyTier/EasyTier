@@ -288,6 +288,14 @@ impl RelayPeerMap {
             .is_some()
     }
 
+    #[cfg(feature = "test-utils")]
+    pub(crate) fn has_session_without_touch(&self, dst_peer_id: PeerId) -> bool {
+        self.peer_session_store.contains_valid(&SessionKey::new(
+            self.context.network_identity().network_name,
+            dst_peer_id,
+        ))
+    }
+
     pub async fn ensure_session(
         self: &Arc<Self>,
         dst_peer_id: PeerId,
