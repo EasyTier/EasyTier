@@ -61,6 +61,7 @@ use crate::{
             PeerManagerCore, PeerManagerHostAdapters, PeerSnapshot, PortablePeerManagerConfig,
         },
     },
+    process_runtime::CoreProcessRuntime,
     proxy::{
         cidr_monitor::{
             ProxyCidrDiff, ProxyCidrMonitor, ProxyCidrMonitorHost, collect_proxy_cidr_diff,
@@ -81,7 +82,6 @@ use crate::{
     stun::{
         StunInfoCollector, StunInfoProvider, StunProviderSlot, StunServerConfig, StunSocketMapper,
     },
-    tunnel::ring::RingTunnelRegistry,
     vpn_portal::{VpnPortalEventSink, VpnPortalHost, VpnPortalInfoSnapshot, VpnPortalModule},
 };
 
@@ -314,7 +314,7 @@ where
     /// Optional listener-specific resolver. When absent, listeners share `dns` with connectors.
     pub listener_dns: Option<Arc<dyn DnsResolver>>,
     pub dns_records: Arc<dyn DnsRecordResolver>,
-    pub ring_registry: Arc<RingTunnelRegistry>,
+    pub process_runtime: Arc<CoreProcessRuntime>,
     pub protocol: Option<Arc<dyn ClientProtocolUpgrader<<H as VirtualTcpSocketFactory>::Socket>>>,
     pub manual_events: Option<Arc<dyn ManualConnectivityEventSink>>,
     pub external_listener_factory:
@@ -750,7 +750,7 @@ where
             dns,
             listener_dns,
             dns_records,
-            ring_registry,
+            process_runtime,
             protocol,
             manual_events,
             external_listener_factory,
@@ -767,6 +767,7 @@ where
             #[cfg(feature = "proxy-smoltcp-stack")]
             gateway_events,
         } = adapters;
+        let ring_registry = process_runtime.ring_registry();
         let CoreInstanceConfig {
             initial_peers,
             listeners,

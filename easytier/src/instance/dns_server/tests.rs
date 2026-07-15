@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use cidr::Ipv4Inet;
 use easytier_core::{
-    magic_dns::MagicDnsRoute, proxy::wrapped_transport::NoWrappedTransportEngineFactory,
-    tunnel::ring::RingTunnelRegistry,
+    magic_dns::MagicDnsRoute, process_runtime::CoreProcessRuntime,
+    proxy::wrapped_transport::NoWrappedTransportEngineFactory,
 };
 use hickory_client::client::{Client, ClientHandle as _};
 use hickory_proto::rr;
@@ -18,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 use crate::common::global_ctx::{ArcGlobalCtx, tests::get_mock_global_ctx};
 use crate::instance::composition::{
     NativeCoreInstance,
-    build_portable_runtime_core_instance_with_transport_factory_and_ring_registry,
+    build_portable_runtime_core_instance_with_transport_factory_and_process_runtime,
 };
 
 use crate::instance::dns_server::runner::DnsRunner;
@@ -44,11 +44,11 @@ async fn build_test_core(
 ) {
     let (packet_sink, packet_receiver) = tokio::sync::mpsc::channel(128);
     let (core_instance, ()) =
-        build_portable_runtime_core_instance_with_transport_factory_and_ring_registry(
+        build_portable_runtime_core_instance_with_transport_factory_and_process_runtime(
             ctx,
             Arc::new(packet_sink),
             NoWrappedTransportEngineFactory,
-            Arc::new(RingTunnelRegistry::default()),
+            CoreProcessRuntime::new(),
         )
         .unwrap();
     let core_instance = Arc::new(core_instance);

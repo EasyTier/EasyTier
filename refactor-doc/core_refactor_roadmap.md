@@ -89,7 +89,7 @@ That document is now the authoritative closure record for native peer,
 Current closure status on 2026-07-14:
 
 - the Core instance, native and Go completion domains, runtime configuration,
-  and per-instance ring registry now have single authoritative owners;
+  and process-scoped Ring registry now have single authoritative owners;
 - the foreign-network ownership move is complete: core owns policy, state,
   lifecycle, snapshots, context/resource construction, and manager assembly;
   native management code only converts core snapshots to protobuf;
@@ -108,6 +108,8 @@ Current closure status on 2026-07-14:
   socket operations;
 - core STUN and process Host Runtime closure evidence is recorded in
   [`host_runtime_stun_refactor.md`](host_runtime_stun_refactor.md).
+- `CoreProcessRuntime` hides shared portable process resources from native and
+  Go composition roots; Ring registry construction and access are core-local.
 
 ## Definition of done
 

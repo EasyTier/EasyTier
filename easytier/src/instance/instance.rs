@@ -11,12 +11,12 @@ use std::time::Duration;
 use anyhow::Context;
 use cidr::{IpCidr, Ipv4Inet};
 use easytier_core::dhcp::DhcpIpv4Host;
+use easytier_core::process_runtime::CoreProcessRuntime;
 #[cfg(any(feature = "kcp", feature = "quic"))]
 use easytier_core::proxy::wrapped_transport::WrappedTransportEngine;
 use easytier_core::proxy::wrapped_transport::{
     WrappedTransportEngineBuild, WrappedTransportEngineFactory,
 };
-use easytier_core::tunnel::ring::RingTunnelRegistry;
 #[cfg(feature = "tun")]
 use futures::FutureExt;
 #[cfg(feature = "tun")]
@@ -40,7 +40,7 @@ use crate::gateway::quic_proxy::QuicProxyService;
 use crate::gateway::tcp_proxy::CoreTcpProxyRpcService;
 use crate::instance::composition::{
     NativeCoreInstance,
-    build_portable_runtime_core_instance_with_transport_factory_and_ring_registry,
+    build_portable_runtime_core_instance_with_transport_factory_and_process_runtime,
     runtime_instance_config,
 };
 use crate::instance::management::connector::InstanceConnectorManagementRpc;
@@ -810,12 +810,12 @@ impl DhcpIpv4Host for RuntimeDhcpIpv4Host {
 
 impl Instance {
     pub fn new(config: impl ConfigLoader + 'static) -> Self {
-        Self::new_with_ring_registry(config, Arc::new(RingTunnelRegistry::default()))
+        Self::new_with_process_runtime(config, CoreProcessRuntime::new())
     }
 
-    pub fn new_with_ring_registry(
+    pub fn new_with_process_runtime(
         config: impl ConfigLoader + 'static,
-        ring_registry: Arc<RingTunnelRegistry>,
+        process_runtime: Arc<CoreProcessRuntime>,
     ) -> Self {
         let global_ctx = Arc::new(GlobalCtx::new(config));
 
@@ -829,11 +829,11 @@ impl Instance {
         let id = global_ctx.get_id();
 
         let (core_instance, transport_proxy) =
-            build_portable_runtime_core_instance_with_transport_factory_and_ring_registry(
+            build_portable_runtime_core_instance_with_transport_factory_and_process_runtime(
                 global_ctx.clone(),
                 Arc::new(peer_packet_sender),
                 RuntimeTransportProxyFactory::new(),
-                ring_registry.clone(),
+                process_runtime,
             )
             .expect("runtime core instance composition should be valid");
         let core_instance = Arc::new(core_instance);

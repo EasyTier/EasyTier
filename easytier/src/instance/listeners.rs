@@ -16,11 +16,6 @@ use easytier_core::{
 };
 use tokio::sync::Mutex;
 
-#[cfg(test)]
-use crate::host_runtime::native_host_runtime;
-#[cfg(test)]
-use easytier_core::tunnel::ring::RingTunnelRegistry;
-
 #[cfg(feature = "faketcp")]
 use crate::common::netns::NetNS;
 use crate::{
@@ -29,11 +24,6 @@ use crate::{
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
     },
     socket::tcp::RuntimeTcpSocket,
-};
-
-#[cfg(test)]
-use easytier_core::{
-    listener::transport::ProtocolAcceptedTransportHandler, peers::peer_manager::PeerManagerCore,
 };
 
 pub use easytier_core::listener::plan::{is_url_host_ipv6, is_url_host_unspecified};
@@ -434,71 +424,6 @@ impl AcceptedTunnelEventSink for GlobalCtxAcceptedTunnelEventSink {
             } => GlobalCtxEvent::ConnectionError(local_url, remote_url, error),
         };
         self.global_ctx.issue_event(event);
-    }
-}
-
-#[cfg(test)]
-pub struct ListenerManager<H> {
-    service: Arc<dyn ListenerService>,
-    handler: std::marker::PhantomData<fn() -> H>,
-}
-
-#[cfg(test)]
-impl ListenerManager<PeerManagerCore> {
-    pub fn new(global_ctx: ArcGlobalCtx, peer_manager: Arc<PeerManagerCore>) -> Self {
-        Self::new_with_ring_registry(
-            global_ctx,
-            peer_manager,
-            Arc::new(RingTunnelRegistry::default()),
-        )
-    }
-
-    pub(crate) fn new_with_ring_registry(
-        global_ctx: ArcGlobalCtx,
-        peer_manager: Arc<PeerManagerCore>,
-        ring_registry: Arc<RingTunnelRegistry>,
-    ) -> Self {
-        let plan = runtime_listener_plan(&global_ctx);
-        let configs = runtime_transport_listener_configs(
-            &plan,
-            crate::instance::composition::runtime_socket_context(&global_ctx),
-        );
-        let handler: Arc<
-            dyn core_listener::AcceptedSocketHandler<AcceptedTransport<RuntimeTcpSocket>>,
-        > = Arc::new(ProtocolAcceptedTransportHandler::new(
-            &peer_manager,
-            crate::tunnel::protocol::runtime_server_protocol_upgrader(global_ctx.clone()),
-        ));
-        let transport = Arc::new(
-            easytier_core::listener::transport::TransportListenerService::new_with_events(
-                crate::instance::host::native_instance_host(global_ctx.clone()),
-                native_host_runtime(),
-                ring_registry,
-                configs,
-                handler.clone(),
-                runtime_listener_event_sink(global_ctx.clone()),
-            ),
-        );
-        let events = runtime_listener_event_sink(global_ctx.clone());
-        let external = Arc::new(RuntimeListenerService::new(
-            global_ctx, handler, &plan, events,
-        ));
-        Self {
-            service: easytier_core::instance::ListenerServiceGroup::new(vec![transport, external]),
-            handler: std::marker::PhantomData,
-        }
-    }
-
-    pub async fn prepare_listeners(&mut self) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    pub async fn run(&mut self) -> anyhow::Result<()> {
-        self.service.start().await
-    }
-
-    pub async fn stop(&self) {
-        self.service.stop().await;
     }
 }
 

@@ -7,7 +7,7 @@ use crate::{
     },
     instance::{
         composition::{
-            runtime_core_instance_adapters_with_ring_registry, runtime_endpoint_discovery_config,
+            runtime_core_instance_adapters_with_process_runtime, runtime_endpoint_discovery_config,
             runtime_manual_options,
         },
         host::NativeInstanceHost,
@@ -289,10 +289,10 @@ pub async fn run_web_client(
         None => gethostname::gethostname().to_string_lossy().to_string(),
         Some(hostname) => hostname,
     };
-    let ring_registry = manager.ring_registry();
-    let adapters = runtime_core_instance_adapters_with_ring_registry(
+    let process_runtime = manager.process_runtime();
+    let adapters = runtime_core_instance_adapters_with_process_runtime(
         global_ctx.clone(),
-        ring_registry.clone(),
+        process_runtime.clone(),
     );
     let endpoint_resolver = Arc::new(CoreManualEndpointResolver::new(
         adapters.host.clone(),
@@ -300,7 +300,7 @@ pub async fn run_web_client(
         adapters.dns_records.clone(),
         runtime_endpoint_discovery_config(&global_ctx),
     ));
-    let connector = ManualTunnelConnector::new(
+    let connector = process_runtime.manual_connector(
         adapters.host,
         adapters.dns,
         endpoint_resolver,
@@ -308,8 +308,7 @@ pub async fn run_web_client(
             .protocol
             .expect("native runtime should provide protocol upgrades"),
         runtime_manual_options(&global_ctx),
-    )
-    .with_ring_registry(ring_registry);
+    );
     Ok(WebClient::new(
         ConfigServerConnector {
             url: c_url,

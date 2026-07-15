@@ -10,8 +10,9 @@ use std::{
 use easytier_core::{
     connectivity::protocol::raw::TunnelDialer,
     listener::SocketListener,
+    process_runtime::CoreProcessRuntime,
     stats_manager::{LabelSet, LabelType, MetricName, MetricSnapshot},
-    tunnel::{Tunnel, ring::RingTunnelRegistry},
+    tunnel::Tunnel,
 };
 use rand::{Rng, rngs::OsRng};
 use tokio::{net::UdpSocket, task::JoinSet};
@@ -149,34 +150,34 @@ async fn init_three_node_ex_with_inst3<F: Fn(TomlConfigLoader) -> TomlConfigLoad
     inst3_ipv6: &str,
 ) -> Vec<Instance> {
     prepare_linux_namespaces();
-    let ring_registry = Arc::new(RingTunnelRegistry::default());
+    let process_runtime = CoreProcessRuntime::new();
 
-    let mut inst1 = Instance::new_with_ring_registry(
+    let mut inst1 = Instance::new_with_process_runtime(
         cfg_cb(get_inst_config(
             "inst1",
             Some("net_a"),
             "10.144.144.1",
             "fd00::1/64",
         )),
-        ring_registry.clone(),
+        process_runtime.clone(),
     );
-    let mut inst2 = Instance::new_with_ring_registry(
+    let mut inst2 = Instance::new_with_process_runtime(
         cfg_cb(get_inst_config(
             "inst2",
             Some("net_b"),
             "10.144.144.2",
             "fd00::2/64",
         )),
-        ring_registry.clone(),
+        process_runtime.clone(),
     );
-    let mut inst3 = Instance::new_with_ring_registry(
+    let mut inst3 = Instance::new_with_process_runtime(
         cfg_cb(get_inst_config(
             "inst3",
             Some(inst3_ns),
             inst3_ipv4,
             inst3_ipv6,
         )),
-        ring_registry,
+        process_runtime,
     );
 
     inst1.run().await.unwrap();
@@ -1571,21 +1572,21 @@ pub async fn udp_broadcast_test() {
 #[serial_test::serial]
 pub async fn foreign_network_forward_nic_data() {
     prepare_linux_namespaces();
-    let ring_registry = Arc::new(RingTunnelRegistry::default());
+    let process_runtime = CoreProcessRuntime::new();
 
     let center_node_config = get_inst_config("inst1", Some("net_a"), "10.144.144.1", "fd00::1/64");
     center_node_config
         .set_network_identity(NetworkIdentity::new("center".to_string(), "".to_string()));
     let mut center_inst =
-        Instance::new_with_ring_registry(center_node_config, ring_registry.clone());
+        Instance::new_with_process_runtime(center_node_config, process_runtime.clone());
 
-    let mut inst1 = Instance::new_with_ring_registry(
+    let mut inst1 = Instance::new_with_process_runtime(
         get_inst_config("inst1", Some("net_b"), "10.144.145.1", "fd00:1::1/64"),
-        ring_registry.clone(),
+        process_runtime.clone(),
     );
-    let mut inst2 = Instance::new_with_ring_registry(
+    let mut inst2 = Instance::new_with_process_runtime(
         get_inst_config("inst2", Some("net_c"), "10.144.145.2", "fd00:1::2/64"),
-        ring_registry,
+        process_runtime,
     );
 
     center_inst.run().await.unwrap();
@@ -1828,27 +1829,27 @@ pub async fn socks5_vpn_portal(
 pub async fn foreign_network_functional_cluster() {
     crate::set_global_var!(OSPF_UPDATE_MY_GLOBAL_FOREIGN_NETWORK_INTERVAL_SEC, 1);
     prepare_linux_namespaces();
-    let ring_registry = Arc::new(RingTunnelRegistry::default());
+    let process_runtime = CoreProcessRuntime::new();
 
     let center_node_config1 = get_inst_config("inst1", Some("net_a"), "10.144.144.1", "fd00::1/64");
     center_node_config1
         .set_network_identity(NetworkIdentity::new("center".to_string(), "".to_string()));
     let mut center_inst1 =
-        Instance::new_with_ring_registry(center_node_config1, ring_registry.clone());
+        Instance::new_with_process_runtime(center_node_config1, process_runtime.clone());
 
     let center_node_config2 = get_inst_config("inst2", Some("net_b"), "10.144.144.2", "fd00::2/64");
     center_node_config2
         .set_network_identity(NetworkIdentity::new("center".to_string(), "".to_string()));
     let mut center_inst2 =
-        Instance::new_with_ring_registry(center_node_config2, ring_registry.clone());
+        Instance::new_with_process_runtime(center_node_config2, process_runtime.clone());
 
     let inst1_config = get_inst_config("inst1", Some("net_c"), "10.144.145.1", "fd00:2::1/64");
     inst1_config.set_listeners(vec![]);
-    let mut inst1 = Instance::new_with_ring_registry(inst1_config, ring_registry.clone());
+    let mut inst1 = Instance::new_with_process_runtime(inst1_config, process_runtime.clone());
 
-    let mut inst2 = Instance::new_with_ring_registry(
+    let mut inst2 = Instance::new_with_process_runtime(
         get_inst_config("inst2", Some("net_d"), "10.144.145.2", "fd00:2::2/64"),
-        ring_registry,
+        process_runtime,
     );
 
     center_inst1.run().await.unwrap();
@@ -1890,7 +1891,7 @@ pub async fn foreign_network_functional_cluster() {
 #[serial_test::serial]
 pub async fn manual_reconnector(#[values(true, false)] is_foreign: bool) {
     prepare_linux_namespaces();
-    let ring_registry = Arc::new(RingTunnelRegistry::default());
+    let process_runtime = CoreProcessRuntime::new();
 
     let center_node_config = get_inst_config("inst1", Some("net_a"), "10.144.144.1", "fd00::1/64");
     if is_foreign {
@@ -1898,15 +1899,15 @@ pub async fn manual_reconnector(#[values(true, false)] is_foreign: bool) {
             .set_network_identity(NetworkIdentity::new("center".to_string(), "".to_string()));
     }
     let mut center_inst =
-        Instance::new_with_ring_registry(center_node_config, ring_registry.clone());
+        Instance::new_with_process_runtime(center_node_config, process_runtime.clone());
 
     let inst1_config = get_inst_config("inst1", Some("net_b"), "10.144.145.1", "fd00:1::1/64");
     inst1_config.set_listeners(vec![]);
-    let mut inst1 = Instance::new_with_ring_registry(inst1_config, ring_registry.clone());
+    let mut inst1 = Instance::new_with_process_runtime(inst1_config, process_runtime.clone());
 
-    let mut inst2 = Instance::new_with_ring_registry(
+    let mut inst2 = Instance::new_with_process_runtime(
         get_inst_config("inst2", Some("net_c"), "10.144.145.2", "fd00:1::2/64"),
-        ring_registry,
+        process_runtime,
     );
 
     center_inst.run().await.unwrap();

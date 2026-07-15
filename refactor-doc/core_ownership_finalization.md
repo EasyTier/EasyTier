@@ -65,6 +65,19 @@ active, exposed through the narrow `PeerPublicIpv6State` Adapter.
 The Go create schema is version 10 and therefore has no
 `environment.running_listeners` field.
 
+## Process-scoped portable state
+
+`CoreProcessRuntime` is the only process-scoped portable owner. It currently
+owns the Ring transport registry so core instances and one-shot connectors in
+the same host process can rendezvous without exposing that registry to the
+host. Native and Go composition roots may create and share the opaque runtime
+handle, but they must not construct, inspect, or replace its internal managers.
+
+Per-instance state still belongs to `CoreInstance`; process scope is reserved
+for resources whose identity must be shared across instances. New portable
+managers must not be added to `CoreProcessRuntime` merely to make composition
+convenient.
+
 ## Socket and protocol seam
 
 The host creates TCP, UDP and listener resources. Core/Tokio drives their

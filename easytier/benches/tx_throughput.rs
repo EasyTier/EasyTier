@@ -10,7 +10,7 @@ use std::{
 
 use bytes::BytesMut;
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use easytier_core::tunnel::ring::RingTunnelRegistry;
+use easytier_core::process_runtime::CoreProcessRuntime;
 
 use easytier::{
     common::config::{ConfigLoader, TomlConfigLoader},
@@ -261,14 +261,14 @@ async fn setup_topology(tunnel: TunnelKind, packet_size: usize) -> BenchTopology
         ],
     };
 
-    let ring_registry = Arc::new(RingTunnelRegistry::default());
-    let mut inst_a = Instance::new_with_ring_registry(
+    let process_runtime = CoreProcessRuntime::new();
+    let mut inst_a = Instance::new_with_process_runtime(
         no_tun_config("hot-a", VIRTUAL_IP_A, netns_a, listeners_a),
-        ring_registry.clone(),
+        process_runtime.clone(),
     );
-    let mut inst_b = Instance::new_with_ring_registry(
+    let mut inst_b = Instance::new_with_process_runtime(
         no_tun_config("hot-b", VIRTUAL_IP_B, netns_b, Vec::new()),
-        ring_registry.clone(),
+        process_runtime.clone(),
     );
 
     inst_a.run().await.expect("inst_a run");

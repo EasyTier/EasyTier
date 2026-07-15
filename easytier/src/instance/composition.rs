@@ -19,6 +19,7 @@ use easytier_core::{
         PortableCoreInstanceConfig,
     },
     peers::peer_manager::RouteAlgoType,
+    process_runtime::CoreProcessRuntime,
     proxy::{
         ProxyRuntimeConfig, gateway::GatewayRuntimeConfig,
         wrapped_transport::WrappedTransportEngineFactory,
@@ -31,7 +32,6 @@ use easytier_core::{
         udp::UdpBindOptions,
     },
     stun::StunServerConfig,
-    tunnel::ring::RingTunnelRegistry,
     vpn_portal::{VpnPortalEvent, VpnPortalEventSink},
 };
 use strum::VariantArray as _;
@@ -260,15 +260,12 @@ pub(crate) fn runtime_stun_server_config(global_ctx: &ArcGlobalCtx) -> StunServe
 pub(crate) fn runtime_core_instance_adapters(
     global_ctx: ArcGlobalCtx,
 ) -> CoreInstanceAdapters<NativeInstanceHost> {
-    runtime_core_instance_adapters_with_ring_registry(
-        global_ctx,
-        Arc::new(RingTunnelRegistry::default()),
-    )
+    runtime_core_instance_adapters_with_process_runtime(global_ctx, CoreProcessRuntime::new())
 }
 
-pub(crate) fn runtime_core_instance_adapters_with_ring_registry(
+pub(crate) fn runtime_core_instance_adapters_with_process_runtime(
     global_ctx: ArcGlobalCtx,
-    ring_registry: Arc<RingTunnelRegistry>,
+    process_runtime: Arc<CoreProcessRuntime>,
 ) -> CoreInstanceAdapters<NativeInstanceHost> {
     let host = native_instance_host(global_ctx.clone());
     let runtime_dns = native_host_runtime();
@@ -289,7 +286,7 @@ pub(crate) fn runtime_core_instance_adapters_with_ring_registry(
         dns,
         listener_dns: None,
         dns_records,
-        ring_registry,
+        process_runtime,
         protocol: Some(runtime_client_protocol_upgrader(global_ctx.clone())),
         manual_events: Some(Arc::new(GlobalCtxManualConnectivityEventSink {
             global_ctx: global_ctx.clone(),
@@ -354,11 +351,11 @@ fn runtime_connectivity_config(
     }
 }
 
-pub(crate) fn build_portable_runtime_core_instance_with_transport_factory_and_ring_registry<F>(
+pub(crate) fn build_portable_runtime_core_instance_with_transport_factory_and_process_runtime<F>(
     global_ctx: ArcGlobalCtx,
     packet_sink: Arc<dyn PacketSink>,
     transport_proxy_factory: F,
-    ring_registry: Arc<RingTunnelRegistry>,
+    process_runtime: Arc<CoreProcessRuntime>,
 ) -> anyhow::Result<(NativeCoreInstance, F::Attachment)>
 where
     F: WrappedTransportEngineFactory,
@@ -370,10 +367,8 @@ where
         peer: runtime_peer_manager_config(&global_ctx, RouteAlgoType::Ospf),
         connectivity: runtime_connectivity_config(&global_ctx, listener_configs),
     };
-    let mut adapters = runtime_core_instance_adapters_with_ring_registry(
-        global_ctx.clone(),
-        ring_registry.clone(),
-    );
+    let mut adapters =
+        runtime_core_instance_adapters_with_process_runtime(global_ctx.clone(), process_runtime);
     adapters.listener_events = Some(runtime_listener_event_sink(global_ctx.clone()));
     adapters.external_listener_factory = Some(RuntimeExternalListenerFactory::new(
         global_ctx.clone(),
@@ -391,18 +386,18 @@ where
 #[cfg(test)]
 pub(crate) fn build_portable_test_core_instance(
     global_ctx: ArcGlobalCtx,
-    ring_registry: Arc<RingTunnelRegistry>,
+    process_runtime: Arc<CoreProcessRuntime>,
 ) -> anyhow::Result<(
     Arc<NativeCoreInstance>,
     tokio::sync::mpsc::Receiver<Vec<u8>>,
 )> {
     let (packet_sink, packet_receiver) = tokio::sync::mpsc::channel(16);
     let (instance, ()) =
-        build_portable_runtime_core_instance_with_transport_factory_and_ring_registry(
+        build_portable_runtime_core_instance_with_transport_factory_and_process_runtime(
             global_ctx,
             Arc::new(packet_sink),
             NoWrappedTransportEngineFactory,
-            ring_registry,
+            process_runtime,
         )?;
     Ok((Arc::new(instance), packet_receiver))
 }
@@ -467,11 +462,11 @@ mod tests {
         F: WrappedTransportEngineFactory,
     {
         let (packet_sink, _packet_receiver) = create_host_packet_channel();
-        build_portable_runtime_core_instance_with_transport_factory_and_ring_registry(
+        build_portable_runtime_core_instance_with_transport_factory_and_process_runtime(
             global_ctx,
             Arc::new(packet_sink),
             transport_proxy_factory,
-            Arc::new(RingTunnelRegistry::default()),
+            CoreProcessRuntime::new(),
         )
     }
 
@@ -702,11 +697,11 @@ mod tests {
         )));
         let (packet_sink, _packet_receiver) = create_host_packet_channel();
         let (instance, ()) =
-            build_portable_runtime_core_instance_with_transport_factory_and_ring_registry(
+            build_portable_runtime_core_instance_with_transport_factory_and_process_runtime(
                 global_ctx,
                 Arc::new(packet_sink),
                 NoWrappedTransportEngineFactory,
-                Arc::new(RingTunnelRegistry::default()),
+                CoreProcessRuntime::new(),
             )
             .unwrap();
         let instance = Arc::new(instance);
@@ -725,11 +720,11 @@ mod tests {
         )));
         let (packet_sink, _packet_receiver) = create_host_packet_channel();
         let (instance, ()) =
-            build_portable_runtime_core_instance_with_transport_factory_and_ring_registry(
+            build_portable_runtime_core_instance_with_transport_factory_and_process_runtime(
                 global_ctx.clone(),
                 Arc::new(packet_sink),
                 NoWrappedTransportEngineFactory,
-                Arc::new(RingTunnelRegistry::default()),
+                CoreProcessRuntime::new(),
             )
             .unwrap();
 
@@ -774,11 +769,11 @@ mod tests {
         )));
         let (packet_sink, _packet_receiver) = create_host_packet_channel();
         let (instance, ()) =
-            build_portable_runtime_core_instance_with_transport_factory_and_ring_registry(
+            build_portable_runtime_core_instance_with_transport_factory_and_process_runtime(
                 global_ctx.clone(),
                 Arc::new(packet_sink),
                 NoWrappedTransportEngineFactory,
-                Arc::new(RingTunnelRegistry::default()),
+                CoreProcessRuntime::new(),
             )
             .unwrap();
         let instance = Arc::new(instance);
@@ -874,11 +869,11 @@ mod tests {
         )));
         let (packet_sink, _packet_receiver) = create_host_packet_channel();
         let (instance, ()) =
-            build_portable_runtime_core_instance_with_transport_factory_and_ring_registry(
+            build_portable_runtime_core_instance_with_transport_factory_and_process_runtime(
                 global_ctx.clone(),
                 Arc::new(packet_sink),
                 NoWrappedTransportEngineFactory,
-                Arc::new(RingTunnelRegistry::default()),
+                CoreProcessRuntime::new(),
             )
             .unwrap();
         let instance = Arc::new(instance);

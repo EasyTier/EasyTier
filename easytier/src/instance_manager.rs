@@ -1,7 +1,7 @@
 #[cfg(feature = "ffi-dataplane")]
 use crate::launcher::{DataPlaneTcpListener, DataPlaneTcpStream, DataPlaneUdpSocket};
 use dashmap::DashMap;
-use easytier_core::tunnel::ring::RingTunnelRegistry;
+use easytier_core::process_runtime::CoreProcessRuntime;
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 use tokio_util::task::AbortOnDropHandle;
 
@@ -34,7 +34,7 @@ pub struct NetworkInstanceManager {
     config_dir: Option<PathBuf>,
     guard_counter: Arc<()>,
     remote_mutation_lock: Arc<tokio::sync::Mutex<()>>,
-    ring_registry: Arc<RingTunnelRegistry>,
+    process_runtime: Arc<CoreProcessRuntime>,
 }
 
 impl Default for NetworkInstanceManager {
@@ -53,7 +53,7 @@ impl NetworkInstanceManager {
             config_dir: None,
             guard_counter: Arc::new(()),
             remote_mutation_lock: Arc::new(tokio::sync::Mutex::new(())),
-            ring_registry: Arc::new(RingTunnelRegistry::default()),
+            process_runtime: CoreProcessRuntime::new(),
         }
     }
 
@@ -66,8 +66,8 @@ impl NetworkInstanceManager {
         self.remote_mutation_lock.clone()
     }
 
-    pub(crate) fn ring_registry(&self) -> Arc<RingTunnelRegistry> {
-        self.ring_registry.clone()
+    pub(crate) fn process_runtime(&self) -> Arc<CoreProcessRuntime> {
+        self.process_runtime.clone()
     }
 
     fn start_instance_task(&self, instance_id: uuid::Uuid) -> Result<(), anyhow::Error> {
@@ -123,10 +123,10 @@ impl NetworkInstanceManager {
             anyhow::bail!("instance {} already exists", instance_id);
         }
 
-        let mut instance = NetworkInstance::new_with_ring_registry(
+        let mut instance = NetworkInstance::new_with_process_runtime(
             cfg,
             config_file_control,
-            self.ring_registry.clone(),
+            self.process_runtime.clone(),
         );
         instance.start()?;
 

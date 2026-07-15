@@ -9,8 +9,8 @@ use std::{
 
 use anyhow::{Context, anyhow, bail};
 use easytier_core::{
+    process_runtime::CoreProcessRuntime,
     stun::{StunInfoProvider, StunSocketMapper},
-    tunnel::ring::RingTunnelRegistry,
 };
 use igd_next::{
     GetGenericPortMappingEntryError, PortMappingEntry, PortMappingProtocol, SearchOptions,
@@ -1398,25 +1398,25 @@ fn create_test_instance(
     stun_collector: Box<dyn StunSocketMapper<crate::socket::udp::RuntimeUdpSocket>>,
     configure_flags: impl FnOnce(&mut crate::common::config::Flags),
 ) -> Instance {
-    create_test_instance_with_ring_registry(
+    create_test_instance_with_process_runtime(
         inst_name,
         netns,
         ipv4,
         ipv6,
         stun_collector,
         configure_flags,
-        Arc::new(RingTunnelRegistry::default()),
+        CoreProcessRuntime::new(),
     )
 }
 
-fn create_test_instance_with_ring_registry(
+fn create_test_instance_with_process_runtime(
     inst_name: &str,
     netns: Option<&str>,
     ipv4: &str,
     ipv6: &str,
     stun_collector: Box<dyn StunSocketMapper<crate::socket::udp::RuntimeUdpSocket>>,
     configure_flags: impl FnOnce(&mut crate::common::config::Flags),
-    ring_registry: Arc<RingTunnelRegistry>,
+    process_runtime: Arc<CoreProcessRuntime>,
 ) -> Instance {
     let config = create_test_instance_config(inst_name, netns, ipv4, ipv6);
     let mut flags = config.get_flags();
@@ -1424,7 +1424,7 @@ fn create_test_instance_with_ring_registry(
     configure_flags(&mut flags);
     config.set_flags(flags);
 
-    let instance = Instance::new_with_ring_registry(config, ring_registry);
+    let instance = Instance::new_with_process_runtime(config, process_runtime);
     instance
         .get_global_ctx()
         .replace_stun_info_collector(stun_collector);
@@ -1518,9 +1518,9 @@ async fn wait_instance_route(
 #[serial_test::serial(upnp)]
 async fn instances_build_direct_connection_via_upnp_udp_hole_punch() {
     let _env = DualGatewayUpnpIntegrationEnv::new().await.unwrap();
-    let ring_registry = Arc::new(RingTunnelRegistry::default());
+    let process_runtime = CoreProcessRuntime::new();
 
-    let mut inst_a = create_test_instance_with_ring_registry(
+    let mut inst_a = create_test_instance_with_process_runtime(
         "upnp-inst-a",
         Some(DUAL_NS_A),
         "10.144.200.1/24",
@@ -1531,11 +1531,11 @@ async fn instances_build_direct_connection_via_upnp_udp_hole_punch() {
             external_ip: DUAL_EXTERNAL_A_IP,
         }),
         |flags| flags.need_p2p = true,
-        ring_registry.clone(),
+        process_runtime.clone(),
     );
     let mut event_rx_a = inst_a.get_global_ctx().subscribe();
 
-    let mut inst_b = create_test_instance_with_ring_registry(
+    let mut inst_b = create_test_instance_with_process_runtime(
         "upnp-inst-b",
         None,
         "10.144.200.2/24",
@@ -1544,10 +1544,10 @@ async fn instances_build_direct_connection_via_upnp_udp_hole_punch() {
             udp_nat_type: NatType::Unknown,
         }),
         |_| {},
-        ring_registry.clone(),
+        process_runtime.clone(),
     );
 
-    let mut inst_c = create_test_instance_with_ring_registry(
+    let mut inst_c = create_test_instance_with_process_runtime(
         "upnp-inst-c",
         Some(DUAL_NS_C),
         "10.144.200.3/24",
@@ -1558,7 +1558,7 @@ async fn instances_build_direct_connection_via_upnp_udp_hole_punch() {
             external_ip: DUAL_EXTERNAL_C_IP,
         }),
         |flags| flags.need_p2p = true,
-        ring_registry,
+        process_runtime,
     );
     let mut event_rx_c = inst_c.get_global_ctx().subscribe();
 

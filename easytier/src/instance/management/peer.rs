@@ -377,7 +377,7 @@ impl CredentialManageRpc for InstancePeerManagementRpc {
 mod tests {
     use std::net::{Ipv4Addr, Ipv6Addr};
 
-    use easytier_core::tunnel::ring::RingTunnelRegistry;
+    use easytier_core::process_runtime::CoreProcessRuntime;
 
     use crate::{
         common::{global_ctx::tests::get_mock_global_ctx, stun::MockStunInfoCollector},
@@ -393,11 +393,9 @@ mod tests {
         global_ctx.replace_stun_info_collector(Box::new(MockStunInfoCollector {
             udp_nat_type: NatType::Symmetric,
         }));
-        let (core_instance, _packet_receiver) = build_portable_test_core_instance(
-            global_ctx.clone(),
-            Arc::new(RingTunnelRegistry::default()),
-        )
-        .unwrap();
+        let (core_instance, _packet_receiver) =
+            build_portable_test_core_instance(global_ctx.clone(), CoreProcessRuntime::new())
+                .unwrap();
         let service = InstancePeerManagementRpc::new(&global_ctx, &core_instance);
 
         let response = service
