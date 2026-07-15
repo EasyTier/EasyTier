@@ -6,9 +6,12 @@ use std::{
     time::Duration,
 };
 
-use easytier_core::socket::tcp::{
-    TcpBindOptions, TcpConnectOptions, TcpListenOptions, TcpListenPurpose, TcpSocketPurpose,
-    VirtualTcpListener, VirtualTcpSocket,
+use easytier_core::{
+    socket::tcp::{
+        TcpBindOptions, TcpConnectOptions, TcpListenOptions, TcpListenPurpose, TcpSocketPurpose,
+        VirtualTcpListener, VirtualTcpSocket,
+    },
+    tunnel::TunnelError,
 };
 use socket2::{SockRef, TcpKeepalive};
 #[cfg(unix)]
@@ -20,10 +23,7 @@ use tokio::{
 
 use crate::{
     common::netns::NetNS,
-    tunnel::{
-        TunnelError,
-        common::{BindDev, apply_socket_mark, bind},
-    },
+    tunnel::common::{BindDev, apply_socket_mark, bind},
 };
 
 enum RuntimeTcpSocketInner {

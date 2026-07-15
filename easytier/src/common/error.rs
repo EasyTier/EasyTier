@@ -1,7 +1,7 @@
 use std::{io, result};
 use thiserror::Error;
 
-use crate::tunnel;
+use easytier_core::tunnel::TunnelError;
 
 use super::PeerId;
 
@@ -15,7 +15,7 @@ pub enum Error {
     TunError(#[from] tun::Error),
 
     #[error("tunnel error {0}")]
-    TunnelError(#[from] tunnel::TunnelError),
+    TunnelError(#[from] TunnelError),
     #[error("Peer has no conn, PeerId: {0}")]
     PeerNoConnectionError(PeerId),
     #[error("RouteError: {0:?}")]
