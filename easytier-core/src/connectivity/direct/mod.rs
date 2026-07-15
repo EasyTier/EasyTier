@@ -67,12 +67,9 @@ const MAX_UDP_HOLE_PUNCH_CONNECTOR_ADDRS: usize = 16;
 
 #[async_trait]
 pub trait DirectConnectorHost: ManualConnectorHost {
-    async fn collect_ip_addrs(&self, context: &SocketContext) -> anyhow::Result<GetIpListResponse>;
+    async fn collect_ip_addrs(&self, context: &SocketContext) -> GetIpListResponse;
 
-    async fn collect_foreign_ip_addrs(
-        &self,
-        context: &SocketContext,
-    ) -> anyhow::Result<GetIpListResponse> {
+    async fn collect_foreign_ip_addrs(&self, context: &SocketContext) -> GetIpListResponse {
         self.collect_ip_addrs(context).await
     }
 
@@ -404,6 +401,16 @@ where
 
     pub fn running_listeners(&self) -> Vec<Url> {
         self.data.running_listeners.running_listeners()
+    }
+
+    pub async fn local_address_observations(&self) -> GetIpListResponse {
+        collect_address_observations(
+            self.data.host.as_ref(),
+            &self.data.options.udp_bind.context,
+            false,
+            Some(self.data.stun.as_ref()),
+        )
+        .await
     }
 }
 
@@ -1083,6 +1090,45 @@ where
     }
 }
 
+async fn collect_address_observations<H>(
+    host: &H,
+    socket_context: &SocketContext,
+    foreign_network: bool,
+    stun: Option<&dyn StunInfoProvider>,
+) -> GetIpListResponse
+where
+    H: DirectConnectorHost,
+{
+    let mut response = if foreign_network {
+        host.collect_foreign_ip_addrs(socket_context).await
+    } else {
+        host.collect_ip_addrs(socket_context).await
+    };
+    if let Some(stun) = stun {
+        for public_ip in stun.get_stun_info().public_ip {
+            match public_ip.parse::<IpAddr>() {
+                Ok(IpAddr::V4(ip)) => response.public_ipv4 = Some(ip.into()),
+                Ok(IpAddr::V6(ip)) => response.public_ipv6 = Some(ip.into()),
+                Err(_) => {}
+            }
+        }
+    }
+    if !foreign_network {
+        response
+            .interface_ipv6s
+            .retain(|ip| !host.is_easytier_managed_ipv6(&Ipv6Addr::from(*ip)));
+        if response
+            .public_ipv6
+            .as_ref()
+            .map(|ip| Ipv6Addr::from(*ip))
+            .is_some_and(|ip| host.is_easytier_managed_ipv6(&ip))
+        {
+            response.public_ipv6 = None;
+        }
+    }
+    response
+}
+
 pub struct ForeignDirectConnectorRpcRegistrar<H>
 where
     H: DirectConnectorHost,
@@ -1135,13 +1181,13 @@ where
         _: BaseController,
         _: GetIpListRequest,
     ) -> rpc_types::error::Result<GetIpListResponse> {
-        let mut response = if self.foreign_network {
-            self.host
-                .collect_foreign_ip_addrs(&self.socket_context)
-                .await?
-        } else {
-            self.host.collect_ip_addrs(&self.socket_context).await?
-        };
+        let mut response = collect_address_observations(
+            self.host.as_ref(),
+            &self.socket_context,
+            self.foreign_network,
+            self.stun.as_deref(),
+        )
+        .await;
         response.listeners = self
             .host
             .mapped_listeners()
@@ -1149,28 +1195,6 @@ where
             .chain(self.running_listeners.running_listeners())
             .map(Into::into)
             .collect();
-        if let Some(stun) = &self.stun {
-            for public_ip in stun.get_stun_info().public_ip {
-                match public_ip.parse::<IpAddr>() {
-                    Ok(IpAddr::V4(ip)) => response.public_ipv4 = Some(ip.into()),
-                    Ok(IpAddr::V6(ip)) => response.public_ipv6 = Some(ip.into()),
-                    Err(_) => {}
-                }
-            }
-        }
-        if !self.foreign_network {
-            response
-                .interface_ipv6s
-                .retain(|ip| !self.host.is_easytier_managed_ipv6(&Ipv6Addr::from(*ip)));
-            if response
-                .public_ipv6
-                .as_ref()
-                .map(|ip| Ipv6Addr::from(*ip))
-                .is_some_and(|ip| self.host.is_easytier_managed_ipv6(&ip))
-            {
-                response.public_ipv6 = None;
-            }
-        }
         Ok(response)
     }
 

@@ -191,11 +191,8 @@ where
     B: HostConnectorSocketBackend,
     E: HostConnectorEnvironmentServices,
 {
-    async fn collect_ip_addrs(
-        &self,
-        _context: &SocketContext,
-    ) -> anyhow::Result<GetIpListResponse> {
-        Ok(self.environment.ip_list())
+    async fn collect_ip_addrs(&self, _context: &SocketContext) -> GetIpListResponse {
+        self.environment.ip_list()
     }
 
     fn mapped_listeners(&self) -> Vec<Url> {

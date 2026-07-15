@@ -1640,9 +1640,12 @@ where
     }
 
     pub async fn node_snapshot(&self) -> crate::peers::peer_manager::NodeSnapshot {
-        self.peer_manager
+        let mut snapshot = self
+            .peer_manager
             .node_snapshot(self.running_listeners())
-            .await
+            .await;
+        snapshot.ip_list = self.direct.local_address_observations().await;
+        snapshot
     }
 
     pub async fn route_snapshots(&self) -> Vec<crate::proto::core_peer::peer::Route> {

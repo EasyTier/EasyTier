@@ -229,7 +229,7 @@ impl PeerManageRpc for PeerManagerRpcService {
                 config: global_ctx.config.dump(),
                 version: snapshot.version,
                 feature_flag: Some(snapshot.feature_flags),
-                ip_list: Some(global_ctx.get_ip_collector().collect_ip_addrs().await),
+                ip_list: Some(snapshot.ip_list),
                 public_ipv6_addr: snapshot.public_ipv6_addr.map(Into::into),
                 ipv6_public_addr_prefix: snapshot.ipv6_public_addr_prefix.map(Into::into),
             }),
@@ -328,5 +328,43 @@ impl CredentialManageRpc for PeerManagerRpcService {
                 .map(core_credential_info_to_api)
                 .collect(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    use easytier_core::tunnel::ring::RingTunnelRegistry;
+
+    use crate::{
+        common::{global_ctx::tests::get_mock_global_ctx, stun::MockStunInfoCollector},
+        connector::core_instance::build_portable_test_core_instance,
+        proto::common::NatType,
+    };
+
+    use super::*;
+
+    #[tokio::test]
+    async fn node_info_uses_core_owned_stun_addresses() {
+        let global_ctx = get_mock_global_ctx();
+        global_ctx.replace_stun_info_collector(Box::new(MockStunInfoCollector {
+            udp_nat_type: NatType::Symmetric,
+        }));
+        let (core_instance, _packet_receiver) = build_portable_test_core_instance(
+            global_ctx.clone(),
+            Arc::new(RingTunnelRegistry::default()),
+        )
+        .unwrap();
+        let service = PeerManagerRpcService::new(&global_ctx, &core_instance);
+
+        let response = service
+            .show_node_info(BaseController::default(), ShowNodeInfoRequest::default())
+            .await
+            .unwrap();
+        let ip_list = response.node_info.unwrap().ip_list.unwrap();
+
+        assert_eq!(ip_list.public_ipv4, Some(Ipv4Addr::LOCALHOST.into()));
+        assert_eq!(ip_list.public_ipv6, Some(Ipv6Addr::LOCALHOST.into()));
     }
 }

@@ -73,7 +73,7 @@ use super::{
     util::shrink_dashmap,
 };
 use crate::proto::peer_rpc::{
-    ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey, PeerIdentityType,
+    ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey, GetIpListResponse, PeerIdentityType,
     RouteForeignNetworkInfos, RouteForeignNetworkSummary,
 };
 use crate::stats_manager::{CounterHandle, LabelSet, LabelType, MetricName, StatsManager};
@@ -97,6 +97,7 @@ pub struct NodeSnapshot {
     pub listeners: Vec<Url>,
     pub version: String,
     pub feature_flags: PeerFeatureFlag,
+    pub ip_list: GetIpListResponse,
     pub public_ipv6_addr: Option<cidr::Ipv6Inet>,
     pub ipv6_public_addr_prefix: Option<cidr::Ipv6Inet>,
 }
@@ -1390,6 +1391,7 @@ impl PeerManagerCore {
             listeners,
             version: self.context.easytier_version(),
             feature_flags: self.context.feature_flags(),
+            ip_list: GetIpListResponse::default(),
             public_ipv6_addr: self.get_route().get_my_public_ipv6_addr().await,
             ipv6_public_addr_prefix: self.context.advertised_ipv6_public_addr_prefix().map(
                 |prefix| {

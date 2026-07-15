@@ -173,20 +173,17 @@ impl ManualConnectorHost for RuntimeConnectorHost {
 
 #[async_trait]
 impl DirectConnectorHost for RuntimeConnectorHost {
-    async fn collect_ip_addrs(&self, context: &SocketContext) -> anyhow::Result<GetIpListResponse> {
+    async fn collect_ip_addrs(&self, context: &SocketContext) -> GetIpListResponse {
         let _ = context;
-        Ok(self.global_ctx.get_ip_collector().collect_ip_addrs().await)
+        self.global_ctx.get_ip_collector().collect_ip_addrs().await
     }
 
-    async fn collect_foreign_ip_addrs(
-        &self,
-        context: &SocketContext,
-    ) -> anyhow::Result<GetIpListResponse> {
+    async fn collect_foreign_ip_addrs(&self, context: &SocketContext) -> GetIpListResponse {
         let mut response = self.global_ctx.get_ip_collector().collect_ip_addrs().await;
         let local = self.collect_foreign_interface_addrs(context).await;
         response.interface_ipv4s = local.interface_ipv4s;
         response.interface_ipv6s = local.interface_ipv6s;
-        Ok(response)
+        response
     }
 
     fn mapped_listeners(&self) -> Vec<url::Url> {
@@ -292,9 +289,7 @@ mod tests {
         let global_ctx = Arc::new(GlobalCtx::new(TomlConfigLoader::default()));
         let host = runtime_connector_host(global_ctx);
 
-        host.collect_ip_addrs(&SocketContext::default())
-            .await
-            .unwrap();
+        host.collect_ip_addrs(&SocketContext::default()).await;
 
         assert!(host.foreign_interface_cache.lock().await.is_none());
     }
