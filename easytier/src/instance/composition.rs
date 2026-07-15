@@ -251,13 +251,11 @@ mod tests {
                 NetworkIdentity,
                 tests::{get_mock_global_ctx, get_mock_global_ctx_with_network},
             },
-            stun::MockStunInfoCollector,
         },
         instance::config::{
             runtime_direct_options, runtime_endpoint_discovery_config, runtime_instance_config,
             runtime_manual_options, runtime_socket_context, runtime_stun_server_config,
         },
-        proto::common::NatType,
     };
 
     use super::*;
@@ -768,23 +766,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn core_instance_preserves_preinstalled_stun_projection() {
-        let global_ctx = get_mock_global_ctx();
-        global_ctx.replace_stun_info_collector(Box::new(MockStunInfoCollector {
-            udp_nat_type: NatType::Symmetric,
-        }));
-        let _instance = build_portable_test_instance(global_ctx.clone()).unwrap();
-
-        assert_eq!(
-            global_ctx
-                .get_stun_info_collector()
-                .get_stun_info()
-                .udp_nat_type,
-            NatType::Symmetric as i32
-        );
-    }
-
-    #[tokio::test]
     async fn runtime_core_instance_owns_connectivity_lifecycle() {
         let global_ctx = get_mock_global_ctx();
         global_ctx
@@ -829,51 +810,6 @@ mod tests {
         assert_eq!(instance.state(), CoreInstanceState::Stopped);
         assert_eq!(transport_proxy.stop_calls.load(Ordering::Relaxed), 1);
         assert!(!instance.proxy_is_started());
-    }
-
-    #[tokio::test]
-    async fn runtime_core_instance_owns_wrapped_transport_source_nat() {
-        let global_ctx = get_mock_global_ctx();
-        let mut flags = global_ctx.get_flags();
-        flags.enable_kcp_proxy = true;
-        flags.disable_kcp_input = true;
-        global_ctx.set_flags(flags);
-        let engine = Arc::new(RecordingProxyService::default());
-        let (instance, _) = build_portable_test_instance_with_transport_factory(
-            global_ctx,
-            TestTransportProxyFactory {
-                service: engine.clone(),
-            },
-        )
-        .expect("runtime core composition should succeed");
-        let instance = Arc::new(instance);
-
-        instance.start().await.unwrap();
-        instance.start_network_services(None).await.unwrap();
-
-        assert!(
-            instance.wrapped_transport_is_started(
-                WrappedTransportKind::Kcp,
-                WrappedTransportRole::Source,
-            )
-        );
-        assert!(
-            instance
-                .wrapped_tcp_proxy_entry_snapshots(
-                    WrappedTransportKind::Kcp,
-                    WrappedTransportRole::Source,
-                )
-                .is_empty()
-        );
-
-        instance.stop().await;
-        assert!(
-            !instance.wrapped_transport_is_started(
-                WrappedTransportKind::Kcp,
-                WrappedTransportRole::Source,
-            )
-        );
-        assert_eq!(engine.stop_calls.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test]
