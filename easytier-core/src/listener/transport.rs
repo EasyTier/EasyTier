@@ -247,12 +247,10 @@ where
                 socket,
                 local_url,
                 remote_url,
-            } => (
-                self.protocol
-                    .upgrade_byte_stream(socket, local_url, remote_url)
-                    .await?,
-                None,
-            ),
+            } => {
+                let tunnel = raw::upgrade_accepted_byte_stream(socket, local_url, remote_url)?;
+                return self.handle_tunnel(tunnel).await;
+            }
         };
         drop(tcp_upgrade_permit);
         self.handle_upgrade(upgrade).await
@@ -1617,8 +1615,8 @@ mod tests {
                     local_addr: "127.0.0.1:21000".parse()?,
                     peer_addr: "127.0.0.1:31000".parse()?,
                 },
-                local_url: "ring://local".parse()?,
-                remote_url: Some("ring://remote".parse()?),
+                local_url: "unix:///tmp/easytier.sock".parse()?,
+                remote_url: Some("unix://anonymous/remote".parse()?),
             })
             .await?;
         assert_eq!(tunnel_handler.calls.load(Ordering::Relaxed), 2);
