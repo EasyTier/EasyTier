@@ -958,10 +958,13 @@ impl PeerContext for CorePeerContext {
 
     fn set_avoid_relay_data_preference(&self, avoid_relay_data: bool) -> bool {
         let before = self.feature_flags().avoid_relay_data;
-        self.avoid_relay_data_preference
-            .store(avoid_relay_data, Ordering::Release);
-        self.relay_state_sink
-            .set_avoid_relay_data_preference(avoid_relay_data);
+        let previous = self
+            .avoid_relay_data_preference
+            .swap(avoid_relay_data, Ordering::AcqRel);
+        if previous != avoid_relay_data {
+            self.relay_state_sink
+                .set_avoid_relay_data_preference(avoid_relay_data);
+        }
         before != self.feature_flags().avoid_relay_data
     }
 

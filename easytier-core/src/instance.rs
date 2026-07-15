@@ -1485,6 +1485,11 @@ where
         Ok(())
     }
 
+    fn sync_peer_runtime_state(&self, snapshot: &PeerRuntimeSnapshot) {
+        self.peer_manager
+            .set_avoid_relay_data_preference(snapshot.avoid_relay_data_preference);
+    }
+
     /// Publishes one complete instance configuration version. Host changes have
     /// no effect until submitted through this method.
     pub async fn update_runtime_config(
@@ -1501,6 +1506,7 @@ where
         let refresh_acl_groups = current.peer.peer_group_memberships
             != config.peer.peer_group_memberships
             || current.peer.acl_group_declarations != config.peer.acl_group_declarations;
+        self.sync_peer_runtime_state(&config.peer);
         self.runtime_config.replace(config);
         self.proxy_cidr_table
             .update_snapshot(proxy_cidr_snapshot(self.runtime_config.snapshot().as_ref()));
@@ -1726,8 +1732,7 @@ where
         let refresh_acl_groups = current.peer.peer_group_memberships
             != snapshot.peer_group_memberships
             || current.peer.acl_group_declarations != snapshot.acl_group_declarations;
-        self.peer_manager
-            .set_avoid_relay_data_preference(snapshot.avoid_relay_data_preference);
+        self.sync_peer_runtime_state(&snapshot);
         self.runtime_config.update_peer(snapshot);
         self.proxy_cidr_table
             .update_snapshot(proxy_cidr_snapshot(self.runtime_config.snapshot().as_ref()));

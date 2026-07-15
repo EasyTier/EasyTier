@@ -33,6 +33,12 @@ use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use socket2::Protocol;
 
+#[derive(Debug, Clone, Copy)]
+struct FeatureFlagState {
+    base: PeerFeatureFlag,
+    effective: PeerFeatureFlag,
+}
+
 pub type NetworkIdentity = crate::common::config::NetworkIdentity;
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -116,9 +122,7 @@ pub struct GlobalCtx {
     // overlaid by set_flags. Keep this separate so config patches do not erase
     // runtime state such as public-server role, IPv6 provider status, or the
     // non-whitelist avoid-relay preference.
-    base_feature_flags: AtomicCell<PeerFeatureFlag>,
-
-    feature_flags: AtomicCell<PeerFeatureFlag>,
+    feature_flags: Mutex<FeatureFlagState>,
 }
 
 impl std::fmt::Debug for GlobalCtx {
@@ -256,9 +260,10 @@ impl GlobalCtx {
 
             flags: ArcSwap::new(Arc::new(flags)),
 
-            base_feature_flags: AtomicCell::new(base_feature_flags),
-
-            feature_flags: AtomicCell::new(feature_flags),
+            feature_flags: Mutex::new(FeatureFlagState {
+                base: base_feature_flags,
+                effective: feature_flags,
+            }),
         }
     }
 
@@ -460,11 +465,9 @@ impl GlobalCtx {
     }
 
     pub fn set_flags(&self, flags: Flags) {
+        let mut feature_flags = self.feature_flags.lock().unwrap();
         self.config.set_flags(flags.clone());
-        self.feature_flags.store(Self::derive_feature_flags(
-            &flags,
-            self.base_feature_flags.load(),
-        ));
+        feature_flags.effective = Self::derive_feature_flags(&flags, feature_flags.base);
         self.flags.store(Arc::new(flags));
     }
 
@@ -485,11 +488,11 @@ impl GlobalCtx {
     }
 
     pub fn get_feature_flags(&self) -> PeerFeatureFlag {
-        self.feature_flags.load()
+        self.feature_flags.lock().unwrap().effective
     }
 
     pub fn get_avoid_relay_data_preference(&self) -> bool {
-        self.base_feature_flags.load().avoid_relay_data
+        self.feature_flags.lock().unwrap().base.avoid_relay_data
     }
 
     /// Replace the runtime/base advertised flags as a complete snapshot.
@@ -499,13 +502,10 @@ impl GlobalCtx {
     /// a narrower setter so they do not accidentally overwrite unrelated runtime
     /// state.
     pub fn set_base_advertised_feature_flags(&self, feature_flags: PeerFeatureFlag) {
-        self.base_feature_flags.store(feature_flags);
+        let mut state = self.feature_flags.lock().unwrap();
+        state.base = feature_flags;
         let flags = self.flags.load();
-        self.feature_flags
-            .store(Self::apply_disable_relay_data_flag(
-                flags.as_ref(),
-                feature_flags,
-            ));
+        state.effective = Self::apply_disable_relay_data_flag(flags.as_ref(), feature_flags);
     }
 
     /// Set the avoid-relay preference that is independent of disable_relay_data.
@@ -513,31 +513,23 @@ impl GlobalCtx {
     /// disable_relay_data still forces the effective advertised flag to true,
     /// but this base preference is preserved when that config flag is toggled.
     pub fn set_avoid_relay_data_preference(&self, avoid_relay_data: bool) -> bool {
-        let mut base_feature_flags = self.base_feature_flags.load();
-        base_feature_flags.avoid_relay_data = avoid_relay_data;
-        self.base_feature_flags.store(base_feature_flags);
-
-        let mut feature_flags = self.feature_flags.load();
-        let previous = feature_flags.avoid_relay_data;
-        feature_flags.avoid_relay_data = avoid_relay_data || self.flags.load().disable_relay_data;
-        self.feature_flags.store(feature_flags);
-        previous != feature_flags.avoid_relay_data
+        let mut state = self.feature_flags.lock().unwrap();
+        state.base.avoid_relay_data = avoid_relay_data;
+        let previous = state.effective.avoid_relay_data;
+        state.effective.avoid_relay_data = avoid_relay_data || self.flags.load().disable_relay_data;
+        previous != state.effective.avoid_relay_data
     }
 
     /// Set the runtime IPv6-provider advertised bit without touching
     /// config-derived feature flags.
     pub fn set_ipv6_public_addr_provider_feature_flag(&self, enabled: bool) -> bool {
-        let mut base_feature_flags = self.base_feature_flags.load();
-        base_feature_flags.ipv6_public_addr_provider = enabled;
-        self.base_feature_flags.store(base_feature_flags);
-
-        let mut feature_flags = self.feature_flags.load();
-        if feature_flags.ipv6_public_addr_provider == enabled {
+        let mut state = self.feature_flags.lock().unwrap();
+        state.base.ipv6_public_addr_provider = enabled;
+        if state.effective.ipv6_public_addr_provider == enabled {
             return false;
         }
 
-        feature_flags.ipv6_public_addr_provider = enabled;
-        self.feature_flags.store(feature_flags);
+        state.effective.ipv6_public_addr_provider = enabled;
         true
     }
 

@@ -700,7 +700,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn peer_runtime_update_refreshes_avoid_relay_preference() {
+    async fn runtime_updates_refresh_avoid_relay_preference() {
         let global_ctx = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
             "portable-runtime-update".to_owned(),
             String::new(),
@@ -730,6 +730,20 @@ mod tests {
 
         assert!(
             instance
+                .node_snapshot()
+                .await
+                .feature_flags
+                .avoid_relay_data
+        );
+
+        global_ctx.set_avoid_relay_data_preference(false);
+        instance
+            .update_runtime_config(runtime_instance_config(&global_ctx))
+            .await
+            .unwrap();
+
+        assert!(
+            !instance
                 .node_snapshot()
                 .await
                 .feature_flags
