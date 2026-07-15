@@ -1,6 +1,6 @@
 # EasyTier Core Refactor Documents
 
-> Status: authoritative index. Updated 2026-07-14.
+> Status: authoritative index. Updated 2026-07-15.
 
 This directory records the plan for moving portable EasyTier behaviour into the
 single `easytier-core` crate. When documents disagree, use the following order:

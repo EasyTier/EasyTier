@@ -78,6 +78,26 @@ must be owned by `easytier-core`; a native benchmark may measure only a public
 host-facing API or a concrete native protocol engine. Benchmark code must not
 recover `PeerManager` or connector-manager access through `Instance`.
 
+## Test ownership
+
+Portable tests follow the same ownership boundary as production code. Runtime
+snapshot updates, connector/listener lifecycle, source-proxy lifecycle,
+wrapped destination sessions, listener-registry projection, cancellation and
+multi-instance isolation are exercised through `CoreInstance` in
+`easytier-core`. The portable host harness is `cfg(test)` and substitutes only
+socket, DNS and packet-plane resources; it does not add production Interfaces
+or bypass Module construction.
+
+Native `instance/composition.rs` tests are limited to the native composition
+root: normalized config and Adapter construction, concrete listener wiring,
+and a vertical TCP listener connection. Product-config-to-core mapping is
+tested directly beside `instance/config.rs`, rather than indirectly repeating
+portable lifecycle tests through `GlobalCtx`.
+
+The repository nextest archive includes both `easytier` and `easytier-core`.
+Moving a behavior test into core must not silently remove it from CI, and a
+concurrent behavior test must retain its required Tokio runtime flavor.
+
 ## Listener truth
 
 `CoreInstance` accepts normalized listener URLs, IPv6 policy, and one
@@ -197,6 +217,7 @@ pub use easytier_core::tunnel::framed (native production)
 pub use easytier_core::tunnel::{ (native production)
 easytier/src/gateway/tests.rs
 easytier/benches/tx_throughput.rs
+runtime_core_instance_owns_* (native composition tests)
 ```
 
 Direct imports from `easytier_core` are preferred over shallow native

@@ -115,6 +115,11 @@ Current closure status on 2026-07-14:
 - `CoreInstance` owns listener planning and one lifecycle manager for Ring,
   TCP, UDP-session, Unix, and FakeTCP listeners. Native listener code is a
   stateless Unix/FakeTCP resource Adapter and contains no plan or manager.
+- portable CoreInstance lifecycle, runtime-update, listener-registry and
+  wrapped-transport session tests live in `easytier-core`; native composition
+  retains only Adapter construction and vertical integration coverage. CI
+  archives both crates, while native config normalization is tested at its own
+  boundary.
 
 ## Definition of done
 

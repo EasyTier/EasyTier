@@ -78,6 +78,10 @@ The second native orchestration center has been removed:
 - portable tests no longer require native peer or connector facades. Native
   tests are limited to configuration projection, Host Adapters, concrete
   protocol engines, and vertical OS integration.
+- portable `CoreInstance` lifecycle, runtime-update, listener-registry and
+  wrapped-transport session tests are owned by `easytier-core`; the nextest
+  archive includes both crates, and native configuration mapping is tested
+  directly beside its normalization boundary.
 
 Core now owns the only running-listener registry. Transport and external
 listeners publish into the same event sink; native may mirror events for UI
