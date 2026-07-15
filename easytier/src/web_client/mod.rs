@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::{
     common::{
         MachineIdOptions, config::TomlConfigLoader, global_ctx::GlobalCtx, log,
-        os_info::collect_device_os_info, resolve_machine_id, stun::MockStunInfoCollector,
+        os_info::collect_device_os_info, resolve_machine_id,
     },
     connector::{
         core_instance::{
@@ -13,7 +13,6 @@ use crate::{
         runtime::RuntimeConnectorHost,
     },
     instance_manager::{DaemonGuard, NetworkInstanceManager},
-    proto::common::NatType,
     tunnel::{Tunnel, TunnelScheme},
 };
 use anyhow::{Context as _, Result};
@@ -282,9 +281,6 @@ pub async fn run_web_client(
 
     let config = TomlConfigLoader::default();
     let global_ctx = Arc::new(GlobalCtx::new(config));
-    global_ctx.replace_stun_info_collector(Box::new(MockStunInfoCollector {
-        udp_nat_type: NatType::Unknown,
-    }));
     let mut flags = global_ctx.get_flags();
     flags.bind_device = false;
     global_ctx.set_flags(flags);
