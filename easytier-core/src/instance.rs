@@ -2766,6 +2766,41 @@ mod tests {
             }
         }
 
+        #[derive(Debug)]
+        struct ReadySocketListener(Url);
+
+        #[async_trait]
+        impl SocketListener for ReadySocketListener {
+            type Accepted = AcceptedTransport<TestTcpSocket>;
+
+            async fn listen(&mut self) -> anyhow::Result<()> {
+                Ok(())
+            }
+
+            async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
+                std::future::pending().await
+            }
+
+            fn local_url(&self) -> Url {
+                self.0.clone()
+            }
+        }
+
+        struct ReadyExternalListenerFactory;
+
+        impl ExternalListenerFactory<AcceptedTransport<TestTcpSocket>> for ReadyExternalListenerFactory {
+            fn supports_scheme(&self, scheme: &str) -> bool {
+                scheme == "unix"
+            }
+
+            fn create(
+                &self,
+                request: ExternalListenerRequest,
+            ) -> Box<dyn SocketListener<Accepted = AcceptedTransport<TestTcpSocket>>> {
+                Box::new(ReadySocketListener(request.url))
+            }
+        }
+
         #[tokio::test]
         async fn runtime_updates_refresh_avoid_relay_preference() {
             let config = test_config("portable-runtime-update");
@@ -3209,6 +3244,35 @@ mod tests {
             assert!(start_result.is_err());
             assert_eq!(instance.state(), CoreInstanceState::Stopped);
             assert_eq!(state.drop_calls.load(Ordering::Relaxed), 1);
+        }
+
+        #[tokio::test]
+        async fn external_listener_uses_core_running_listener_registry() {
+            let external_url: Url = "unix:///tmp/easytier-external-listener-test"
+                .parse()
+                .unwrap();
+            let mut config = test_config("external-listener-registry");
+            config.connectivity.listeners = Some(ListenerRuntimeConfig::new(
+                vec![external_url.clone()],
+                false,
+                SocketContext::default(),
+            ));
+            let (instance, ()) = build_with_factory_and_listener(
+                config,
+                NoWrappedTransportEngineFactory,
+                Some(Arc::new(ReadyExternalListenerFactory)),
+            )
+            .unwrap();
+
+            instance.start().await.unwrap();
+            let running = instance.running_listeners();
+            assert_eq!(running.len(), 2);
+            assert!(running.iter().any(|url| url.scheme() == "ring"));
+            assert!(running.contains(&external_url));
+            assert_eq!(instance.node_snapshot().await.listeners, running);
+
+            instance.stop().await;
+            assert!(instance.running_listeners().is_empty());
         }
     }
 }
