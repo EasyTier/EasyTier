@@ -32,13 +32,17 @@ const INTERFACE_ADDR_CACHE_TTL: Duration = Duration::from_secs(60);
 
 #[derive(Clone)]
 struct CachedInterfaceAddrs {
-    context: SocketContext,
     collected_at: Instant,
     response: GetIpListResponse,
 }
 
+struct InterfaceAddrCacheEntry {
+    context: SocketContext,
+    value: Arc<tokio::sync::Mutex<Option<CachedInterfaceAddrs>>>,
+}
+
 struct InterfaceAddrCache {
-    entries: tokio::sync::Mutex<Vec<CachedInterfaceAddrs>>,
+    entries: tokio::sync::Mutex<Vec<InterfaceAddrCacheEntry>>,
     ttl: Duration,
 }
 
@@ -55,17 +59,42 @@ impl InterfaceAddrCache {
         F: FnOnce() -> Fut,
         Fut: Future<Output = GetIpListResponse>,
     {
-        // Keep the lock across collection so concurrent misses cannot perform
-        // duplicate host I/O or let an older result overwrite a newer one.
-        let mut entries = self.entries.lock().await;
-        entries.retain(|entry| entry.collected_at.elapsed() < self.ttl);
-        if let Some(entry) = entries.iter().find(|entry| &entry.context == context) {
-            return entry.response.clone();
+        let value = {
+            let mut entries = self.entries.lock().await;
+            entries.retain(|entry| {
+                if Arc::strong_count(&entry.value) > 1 {
+                    return true;
+                }
+                entry.value.try_lock().map_or(true, |cached| {
+                    cached
+                        .as_ref()
+                        .is_some_and(|cached| cached.collected_at.elapsed() < self.ttl)
+                })
+            });
+            if let Some(entry) = entries.iter().find(|entry| &entry.context == context) {
+                entry.value.clone()
+            } else {
+                let value = Arc::new(tokio::sync::Mutex::new(None));
+                entries.push(InterfaceAddrCacheEntry {
+                    context: context.clone(),
+                    value: value.clone(),
+                });
+                value
+            }
+        };
+
+        // Only collectors for the same socket context share this lock. A slow
+        // namespace observation cannot block fresh hits or refreshes elsewhere.
+        let mut cached = value.lock().await;
+        if let Some(cached) = cached
+            .as_ref()
+            .filter(|cached| cached.collected_at.elapsed() < self.ttl)
+        {
+            return cached.response.clone();
         }
 
         let response = collect().await;
-        entries.push(CachedInterfaceAddrs {
-            context: context.clone(),
+        *cached = Some(CachedInterfaceAddrs {
             collected_at: Instant::now(),
             response: response.clone(),
         });
@@ -395,6 +424,76 @@ mod tests {
             .await;
 
         assert_eq!(calls.load(Ordering::SeqCst), contexts.len());
+    }
+
+    #[tokio::test]
+    async fn slow_collection_does_not_block_a_different_context() {
+        let cache = Arc::new(InterfaceAddrCache::new(Duration::from_secs(60)));
+        let slow_context = SocketContext::default().with_socket_mark(Some(1));
+        let other_context = SocketContext::default().with_socket_mark(Some(2));
+        let (started_tx, started_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        let slow = tokio::spawn({
+            let cache = cache.clone();
+            async move {
+                cache
+                    .get_or_collect(&slow_context, || async move {
+                        let _ = started_tx.send(());
+                        let _ = release_rx.await;
+                        GetIpListResponse::default()
+                    })
+                    .await
+            }
+        });
+        started_rx.await.unwrap();
+
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            cache.get_or_collect(&other_context, || async { GetIpListResponse::default() }),
+        )
+        .await
+        .expect("different socket contexts must collect independently");
+
+        let _ = release_tx.send(());
+        slow.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn slow_collection_does_not_block_a_fresh_hit() {
+        let cache = Arc::new(InterfaceAddrCache::new(Duration::from_secs(60)));
+        let cached_context = SocketContext::default().with_socket_mark(Some(1));
+        let slow_context = SocketContext::default().with_socket_mark(Some(2));
+        cache
+            .get_or_collect(&cached_context, || async { GetIpListResponse::default() })
+            .await;
+
+        let (started_tx, started_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        let slow = tokio::spawn({
+            let cache = cache.clone();
+            async move {
+                cache
+                    .get_or_collect(&slow_context, || async move {
+                        let _ = started_tx.send(());
+                        let _ = release_rx.await;
+                        GetIpListResponse::default()
+                    })
+                    .await
+            }
+        });
+        started_rx.await.unwrap();
+
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            cache.get_or_collect(&cached_context, || async {
+                panic!("fresh cache hit must not recollect")
+            }),
+        )
+        .await
+        .expect("fresh hit must not wait for another socket context");
+
+        let _ = release_tx.send(());
+        slow.await.unwrap();
     }
 
     #[tokio::test]

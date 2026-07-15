@@ -96,7 +96,7 @@ queries. `NativeInstanceEnvironment` contains no runtime handle and cannot
 perform those operations; it exposes only `SocketContext` and instance facts.
 The runtime performs fresh interface observation. Core's per-instance
 `ConnectorHostAdapter` owns the bounded observation cache, keys it by the full
-socket context and coalesces concurrent refreshes.
+socket context and coalesces concurrent refreshes only within that context.
 
 The native protocol Adapter receives an immutable WireGuard configuration at
 composition time. It does not retain `GlobalCtx` and cannot observe identity
