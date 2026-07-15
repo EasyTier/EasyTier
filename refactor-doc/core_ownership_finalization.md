@@ -92,6 +92,9 @@ normalized once into `PeerRuntimeSnapshot`; core owns live relay preference,
 feature-flag derivation, ACL groups, secret-proof behavior and public-IPv6
 provider/lease/route policy. `GlobalCtx` receives public-IPv6 delta events for
 native consumers but does not retain a queryable mirror of that state.
+It also carries no STUN provider or projection: core constructs and owns the
+slot, while deterministic native integration tests inject a provider only at
+the `CoreInstanceAdapters` test seam.
 
 The Go create schema is version 12. It submits the same URL-level listener
 configuration and core public-IPv6 options as native. It has no internal
@@ -180,6 +183,7 @@ GlobalCtx.public_ipv6_lease
 GlobalCtx.public_ipv6_routes
 GlobalCtx.advertised_ipv6_public_addr_prefix
 GlobalCtx.public_ipv6_provider_active
+GlobalCtx.stun_info_collection
 HostConnectorEnvironmentSnapshot.managed_ipv6s
 easytier/src/tunnel/packet_def.rs
 easytier/src/common/idn.rs

@@ -1424,11 +1424,7 @@ fn create_test_instance_with_process_runtime(
     configure_flags(&mut flags);
     config.set_flags(flags);
 
-    let instance = Instance::new_with_process_runtime(config, process_runtime);
-    instance
-        .get_global_ctx()
-        .replace_stun_info_collector(stun_collector);
-    instance
+    Instance::new_with_process_runtime_and_stun_provider(config, process_runtime, stun_collector)
 }
 
 async fn wait_for_port_mapping_event(

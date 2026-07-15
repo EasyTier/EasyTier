@@ -4,6 +4,8 @@ use std::sync::Arc;
 use easytier_core::proxy::gateway::{GatewayEvent, GatewayEventSink};
 #[cfg(test)]
 use easytier_core::proxy::wrapped_transport::NoWrappedTransportEngineFactory;
+#[cfg(test)]
+use easytier_core::stun::{StunProviderSlot, StunSocketMapper};
 #[cfg(feature = "wireguard")]
 use easytier_core::vpn_portal::VpnPortalHost;
 use easytier_core::{
@@ -16,6 +18,8 @@ use easytier_core::{
     vpn_portal::{VpnPortalEvent, VpnPortalEventSink},
 };
 
+#[cfg(test)]
+use crate::socket::udp::RuntimeUdpSocket;
 use crate::{
     common::global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
     host_runtime::native_host_runtime,
@@ -112,16 +116,7 @@ pub(crate) fn runtime_core_instance_adapters_with_process_runtime(
     let dns_records: Arc<dyn DnsRecordResolver> = runtime_dns;
     CoreInstanceAdapters {
         host,
-        stun_projection: {
-            #[cfg(test)]
-            {
-                Some(global_ctx.stun_projection())
-            }
-            #[cfg(not(test))]
-            {
-                None
-            }
-        },
+        stun_projection: None,
         dns,
         listener_dns: None,
         dns_records,
@@ -180,12 +175,29 @@ pub(crate) fn build_portable_runtime_core_instance_with_transport_factory_and_pr
 where
     F: WrappedTransportEngineFactory,
 {
+    let adapters =
+        runtime_core_instance_adapters_with_process_runtime(global_ctx.clone(), process_runtime);
+    build_portable_runtime_core_instance_with_transport_factory_and_adapters(
+        global_ctx,
+        packet_sink,
+        transport_proxy_factory,
+        adapters,
+    )
+}
+
+pub(crate) fn build_portable_runtime_core_instance_with_transport_factory_and_adapters<F>(
+    global_ctx: ArcGlobalCtx,
+    packet_sink: Arc<dyn PacketSink>,
+    transport_proxy_factory: F,
+    mut adapters: CoreInstanceAdapters<NativeInstanceHost>,
+) -> anyhow::Result<(NativeCoreInstance, F::Attachment)>
+where
+    F: WrappedTransportEngineFactory,
+{
     let config = PortableCoreInstanceConfig {
         peer: runtime_peer_manager_config(&global_ctx, RouteAlgoType::Ospf),
         connectivity: runtime_connectivity_config(&global_ctx),
     };
-    let mut adapters =
-        runtime_core_instance_adapters_with_process_runtime(global_ctx.clone(), process_runtime);
     adapters.listener_events = Some(runtime_listener_event_sink(global_ctx.clone()));
     adapters.external_listener_factory = Some(RuntimeExternalListenerFactory::new());
     CoreInstance::new_portable_with_peer_adapters_and_transport_factory(
@@ -201,18 +213,22 @@ where
 pub(crate) fn build_portable_test_core_instance(
     global_ctx: ArcGlobalCtx,
     process_runtime: Arc<CoreProcessRuntime>,
+    stun_collector: Box<dyn StunSocketMapper<RuntimeUdpSocket>>,
 ) -> anyhow::Result<(
     Arc<NativeCoreInstance>,
     tokio::sync::mpsc::Receiver<Vec<u8>>,
 )> {
     let (packet_sink, packet_receiver) = tokio::sync::mpsc::channel(16);
-    let (instance, ()) =
-        build_portable_runtime_core_instance_with_transport_factory_and_process_runtime(
-            global_ctx,
-            Arc::new(packet_sink),
-            NoWrappedTransportEngineFactory,
-            process_runtime,
-        )?;
+    let mut adapters =
+        runtime_core_instance_adapters_with_process_runtime(global_ctx.clone(), process_runtime);
+    let provider: Arc<dyn StunSocketMapper<RuntimeUdpSocket>> = Arc::from(stun_collector);
+    adapters.stun_projection = Some(Arc::new(StunProviderSlot::new(provider)));
+    let (instance, ()) = build_portable_runtime_core_instance_with_transport_factory_and_adapters(
+        global_ctx,
+        Arc::new(packet_sink),
+        NoWrappedTransportEngineFactory,
+        adapters,
+    )?;
     Ok((Arc::new(instance), packet_receiver))
 }
 

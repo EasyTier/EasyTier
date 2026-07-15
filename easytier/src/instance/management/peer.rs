@@ -390,12 +390,14 @@ mod tests {
     #[tokio::test]
     async fn node_info_uses_core_owned_stun_addresses() {
         let global_ctx = get_mock_global_ctx();
-        global_ctx.replace_stun_info_collector(Box::new(MockStunInfoCollector {
-            udp_nat_type: NatType::Symmetric,
-        }));
-        let (core_instance, _packet_receiver) =
-            build_portable_test_core_instance(global_ctx.clone(), CoreProcessRuntime::new())
-                .unwrap();
+        let (core_instance, _packet_receiver) = build_portable_test_core_instance(
+            global_ctx.clone(),
+            CoreProcessRuntime::new(),
+            Box::new(MockStunInfoCollector {
+                udp_nat_type: NatType::Symmetric,
+            }),
+        )
+        .unwrap();
         let service = InstancePeerManagementRpc::new(&global_ctx, &core_instance);
 
         let response = service

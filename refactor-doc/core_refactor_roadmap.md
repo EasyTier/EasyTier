@@ -64,8 +64,8 @@ Already established:
 - STUN codec, probing, retry, UDP/TCP NAT inference, public endpoint/port state,
   collector construction, and per-instance lifecycle are core-owned and shared
   by manual, direct, TCP hole-punch, UDP hole-punch, peer, IP-collection, and
-  UPnP composition; native `GlobalCtx` keeps only an empty live projection slot;
-- host create schema v11 passes route-probe socket context, normalized STUN
+  UPnP composition; native `GlobalCtx` contains no STUN state or projection;
+- host create schema v12 passes route-probe socket context, normalized STUN
   server configuration, and core-owned gateway runtime configuration while
   exposing no Go STUN state or mapping operations. Listener input is normalized
   URLs plus IPv6 policy and `SocketContext`; core derives the internal plan.

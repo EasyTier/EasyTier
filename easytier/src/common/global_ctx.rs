@@ -9,16 +9,12 @@ use async_trait::async_trait;
 use easytier_core::connectivity::composite::ConnectorRuntime as _;
 use easytier_core::peers::public_ipv6::PublicIpv6Host;
 use easytier_core::socket::{NetNamespace, SocketContext};
-#[cfg(test)]
-use easytier_core::stun::{StunProviderSlot, StunSocketMapper};
 
 use super::{
     PeerId,
     config::{ConfigLoader, Flags},
     netns::NetNS,
 };
-#[cfg(test)]
-use crate::socket::udp::RuntimeUdpSocket;
 use crate::{
     proto::{
         api::{config::InstanceConfigPatch, instance::PeerConnInfo},
@@ -93,9 +89,6 @@ pub struct GlobalCtx {
     cached_ipv6: AtomicCell<Option<cidr::Ipv6Inet>>,
     hostname: Mutex<String>,
 
-    #[cfg(test)]
-    stun_info_collection: Arc<StunProviderSlot<RuntimeUdpSocket>>,
-
     tun_device_name: Mutex<Option<String>>,
 
     flags: ArcSwap<Flags>,
@@ -163,9 +156,6 @@ impl GlobalCtx {
         let flags = config_fs.get_flags();
 
         let (event_bus, _) = tokio::sync::broadcast::channel(16);
-        #[cfg(test)]
-        let stun_info_collection = Arc::new(StunProviderSlot::empty());
-
         GlobalCtx {
             inst_name: config_fs.get_inst_name(),
             id,
@@ -177,9 +167,6 @@ impl GlobalCtx {
             cached_ipv4: AtomicCell::new(None),
             cached_ipv6: AtomicCell::new(None),
             hostname: Mutex::new(hostname),
-
-            #[cfg(test)]
-            stun_info_collection,
 
             tun_device_name: Mutex::new(None),
 
@@ -286,25 +273,6 @@ impl GlobalCtx {
         *self.hostname.lock().unwrap() = hostname;
     }
 
-    #[cfg(test)]
-    pub fn get_stun_info_collector(&self) -> Arc<dyn StunSocketMapper<RuntimeUdpSocket>> {
-        self.stun_info_collection.clone()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn stun_projection(&self) -> Arc<StunProviderSlot<RuntimeUdpSocket>> {
-        self.stun_info_collection.clone()
-    }
-
-    #[cfg(test)]
-    pub fn replace_stun_info_collector(
-        &self,
-        collector: Box<dyn StunSocketMapper<RuntimeUdpSocket>>,
-    ) {
-        let arc_collector: Arc<dyn StunSocketMapper<RuntimeUdpSocket>> = Arc::from(collector);
-        self.stun_info_collection.replace(arc_collector);
-    }
-
     pub fn get_vpn_portal_cidr(&self) -> Option<cidr::Ipv4Cidr> {
         self.config.get_vpn_portal_config().map(|x| x.client_cidr)
     }
@@ -346,10 +314,7 @@ impl GlobalCtx {
 
 #[cfg(test)]
 pub mod tests {
-    use crate::{
-        common::{config::TomlConfigLoader, new_peer_id, stun::MockStunInfoCollector},
-        proto::common::NatType,
-    };
+    use crate::common::{config::TomlConfigLoader, new_peer_id};
 
     use super::*;
 
@@ -380,21 +345,6 @@ pub mod tests {
         assert_eq!(
             subscriber.recv().await.unwrap(),
             GlobalCtxEvent::PeerConnRemoved(PeerConnInfo::default())
-        );
-    }
-
-    #[tokio::test]
-    async fn held_stun_provider_handle_observes_replacement() {
-        let global_ctx = GlobalCtx::new(TomlConfigLoader::default());
-        let held_provider = global_ctx.get_stun_info_collector();
-
-        global_ctx.replace_stun_info_collector(Box::new(MockStunInfoCollector {
-            udp_nat_type: NatType::PortRestricted,
-        }));
-
-        assert_eq!(
-            held_provider.get_stun_info().udp_nat_type,
-            NatType::PortRestricted as i32
         );
     }
 
@@ -436,9 +386,6 @@ pub mod tests {
         config_fs.set_network_identity(network_identy.unwrap_or_default());
 
         let ctx = Arc::new(GlobalCtx::new(config_fs));
-        ctx.replace_stun_info_collector(Box::new(MockStunInfoCollector {
-            udp_nat_type: NatType::Unknown,
-        }));
         ctx
     }
 

@@ -15,9 +15,9 @@ The native and Go hosts now implement the same ownership boundary:
   port mapping, and lifecycle remain in `easytier-core`;
 - `CoreInstance` constructs the sole production STUN collector from normalized
   server configuration plus socket and DNS Host Adapters;
-- native `GlobalCtx` retains only an initially empty, stable STUN projection
-  slot for pre-Core consumers and test replacement; it is not a socket, DNS,
-  collector, or STUN algorithm owner;
+- native `GlobalCtx` contains no STUN provider, projection slot, or replacement
+  API. Native integration tests that need a deterministic provider inject a
+  test-only slot directly into `CoreInstanceAdapters` before construction;
 - the Go host no longer implements a parallel STUN surface.
 
 This closes the process-vs-instance capability debt without making instance
@@ -126,6 +126,7 @@ The boundary is closed when all of these remain true:
 - production `RuntimeDnsResolver::new` and `RuntimeUdpSocketFactory::new` calls
   exist only in `NativeHostRuntime`;
 - `GlobalCtx` contains no running-listener registry;
+- `GlobalCtx` contains no STUN provider or projection slot;
 - Go `ConnectorEnvironment` exposes only host facts such as
   `LocalAddrForRemote`, not STUN state or port mapping;
 - STUN production algorithms and mutable state live under
@@ -143,8 +144,8 @@ The 2026-07-14 closure run passes:
 - `easytier-core` compilation for `wasm32-wasip1`;
 - all 31 `easytier-go-host` tests, including guest rebuild, lifecycle, DNS,
   socket, environment, two-instance route, and packet exchange paths;
-- focused native process-runtime, stable STUN-provider identity, and UDP/TCP
-  STUN/connectivity checks run during the migration.
+- focused native process-runtime and UDP/TCP STUN/connectivity checks run
+  during the migration; provider-slot identity is covered directly in core.
 
 Known pre-existing integration-test limitations were not repaired in this
 ownership refactor: legacy Ring test helpers without `TunnelInfo` block several

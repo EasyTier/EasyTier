@@ -42,7 +42,8 @@ use crate::instance::management::peer::InstancePeerManagementRpc;
 use crate::instance::{
     composition::{
         NativeCoreInstance,
-        build_portable_runtime_core_instance_with_transport_factory_and_process_runtime,
+        build_portable_runtime_core_instance_with_transport_factory_and_adapters,
+        runtime_core_instance_adapters_with_process_runtime,
     },
     config::{runtime_acl_config, runtime_instance_config},
 };
@@ -819,7 +820,41 @@ impl Instance {
         process_runtime: Arc<CoreProcessRuntime>,
     ) -> Self {
         let global_ctx = Arc::new(GlobalCtx::new(config));
+        let adapters = runtime_core_instance_adapters_with_process_runtime(
+            global_ctx.clone(),
+            process_runtime,
+        );
+        Self::new_with_runtime_adapters(global_ctx, adapters)
+    }
 
+    #[cfg(test)]
+    pub(crate) fn new_with_process_runtime_and_stun_provider(
+        config: impl ConfigLoader + 'static,
+        process_runtime: Arc<CoreProcessRuntime>,
+        stun_provider: Box<
+            dyn easytier_core::stun::StunSocketMapper<crate::socket::udp::RuntimeUdpSocket>,
+        >,
+    ) -> Self {
+        let global_ctx = Arc::new(GlobalCtx::new(config));
+        let mut adapters = runtime_core_instance_adapters_with_process_runtime(
+            global_ctx.clone(),
+            process_runtime,
+        );
+        let provider: Arc<
+            dyn easytier_core::stun::StunSocketMapper<crate::socket::udp::RuntimeUdpSocket>,
+        > = Arc::from(stun_provider);
+        adapters.stun_projection = Some(Arc::new(easytier_core::stun::StunProviderSlot::new(
+            provider,
+        )));
+        Self::new_with_runtime_adapters(global_ctx, adapters)
+    }
+
+    fn new_with_runtime_adapters(
+        global_ctx: ArcGlobalCtx,
+        adapters: easytier_core::instance::CoreInstanceAdapters<
+            crate::instance::host::NativeInstanceHost,
+        >,
+    ) -> Self {
         tracing::info!(
             "[INIT] instance creating. config: {}",
             global_ctx.config.dump()
@@ -830,11 +865,11 @@ impl Instance {
         let id = global_ctx.get_id();
 
         let (core_instance, transport_proxy) =
-            build_portable_runtime_core_instance_with_transport_factory_and_process_runtime(
+            build_portable_runtime_core_instance_with_transport_factory_and_adapters(
                 global_ctx.clone(),
                 Arc::new(peer_packet_sender),
                 RuntimeTransportProxyFactory::new(),
-                process_runtime,
+                adapters,
             )
             .expect("runtime core instance composition should be valid");
         let core_instance = Arc::new(core_instance);
