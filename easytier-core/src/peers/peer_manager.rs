@@ -10,6 +10,7 @@ use std::{
 
 use anyhow::Context;
 use dashmap::DashMap;
+use parking_lot::RwLock as SyncRwLock;
 use quanta::Instant;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{
@@ -496,22 +497,24 @@ impl PeerPacketFilter for PeerRpcPacketProcessor {
 
 pub(crate) struct PeerPipelineEntry {
     active: Arc<AtomicBool>,
-    filter: BoxPeerPacketFilter,
+    filter: Arc<SyncRwLock<Option<Arc<dyn PeerPacketFilter + Send + Sync>>>>,
 }
 
 pub(crate) struct NicPipelineEntry {
     active: Arc<AtomicBool>,
-    filter: BoxNicPacketFilter,
+    filter: Arc<SyncRwLock<Option<Arc<dyn super::NicPacketFilter + Send + Sync>>>>,
 }
 
 #[derive(Clone)]
 pub struct PipelineRegistrationGuard {
     active: Arc<AtomicBool>,
+    release_filter: Arc<dyn Fn() + Send + Sync>,
 }
 
 impl PipelineRegistrationGuard {
     pub fn close(&self) {
         self.active.store(false, Ordering::Release);
+        (self.release_filter)();
     }
 }
 
@@ -524,14 +527,14 @@ impl Drop for PipelineRegistrationGuard {
 fn permanent_peer_pipeline_entry(filter: BoxPeerPacketFilter) -> Arc<PeerPipelineEntry> {
     Arc::new(PeerPipelineEntry {
         active: Arc::new(AtomicBool::new(true)),
-        filter,
+        filter: Arc::new(SyncRwLock::new(Some(Arc::from(filter)))),
     })
 }
 
 fn permanent_nic_pipeline_entry(filter: BoxNicPacketFilter) -> Arc<NicPipelineEntry> {
     Arc::new(NicPipelineEntry {
         active: Arc::new(AtomicBool::new(true)),
-        filter,
+        filter: Arc::new(SyncRwLock::new(Some(Arc::from(filter)))),
     })
 }
 
@@ -539,12 +542,19 @@ fn managed_peer_pipeline_entry(
     filter: BoxPeerPacketFilter,
 ) -> (Arc<PeerPipelineEntry>, PipelineRegistrationGuard) {
     let active = Arc::new(AtomicBool::new(true));
+    let filter = Arc::new(SyncRwLock::new(Some(Arc::from(filter))));
+    let release_filter = filter.clone();
     (
         Arc::new(PeerPipelineEntry {
             active: active.clone(),
             filter,
         }),
-        PipelineRegistrationGuard { active },
+        PipelineRegistrationGuard {
+            active,
+            release_filter: Arc::new(move || {
+                release_filter.write().take();
+            }),
+        },
     )
 }
 
@@ -552,12 +562,19 @@ fn managed_nic_pipeline_entry(
     filter: BoxNicPacketFilter,
 ) -> (Arc<NicPipelineEntry>, PipelineRegistrationGuard) {
     let active = Arc::new(AtomicBool::new(true));
+    let filter = Arc::new(SyncRwLock::new(Some(Arc::from(filter))));
+    let release_filter = filter.clone();
     (
         Arc::new(NicPipelineEntry {
             active: active.clone(),
             filter,
         }),
-        PipelineRegistrationGuard { active },
+        PipelineRegistrationGuard {
+            active,
+            release_filter: Arc::new(move || {
+                release_filter.write().take();
+            }),
+        },
     )
 }
 
@@ -1574,7 +1591,9 @@ impl PeerManagerCore {
         pipeline: BoxPeerPacketFilter,
     ) -> PipelineRegistrationGuard {
         let (entry, guard) = managed_peer_pipeline_entry(pipeline);
-        self.peer_packet_process_pipeline.write().await.push(entry);
+        let mut pipelines = self.peer_packet_process_pipeline.write().await;
+        pipelines.retain(|pipeline| pipeline.active.load(Ordering::Acquire));
+        pipelines.push(entry);
         guard
     }
 
@@ -1583,7 +1602,9 @@ impl PeerManagerCore {
         pipeline: BoxNicPacketFilter,
     ) -> PipelineRegistrationGuard {
         let (entry, guard) = managed_nic_pipeline_entry(pipeline);
-        self.nic_packet_process_pipeline.write().await.push(entry);
+        let mut pipelines = self.nic_packet_process_pipeline.write().await;
+        pipelines.retain(|pipeline| pipeline.active.load(Ordering::Acquire));
+        pipelines.push(entry);
         guard
     }
 
@@ -1612,7 +1633,13 @@ impl PeerManagerCore {
 
     pub async fn remove_nic_packet_process_pipeline(&self, id: String) -> Result<(), Error> {
         let mut pipelines = self.nic_packet_process_pipeline.write().await;
-        if let Some(pos) = pipelines.iter().position(|x| x.filter.id() == id) {
+        if let Some(pos) = pipelines.iter().position(|pipeline| {
+            pipeline
+                .filter
+                .read()
+                .as_ref()
+                .is_some_and(|filter| filter.id() == id)
+        }) {
             pipelines.remove(pos);
             Ok(())
         } else {
@@ -2532,7 +2559,10 @@ impl PeerOutboundPacketRouter {
             if !pipeline.active.load(Ordering::Acquire) {
                 continue;
             }
-            let _ = pipeline.filter.try_process_packet_from_nic(data).await;
+            let filter = pipeline.filter.read().clone();
+            if let Some(filter) = filter {
+                let _ = filter.try_process_packet_from_nic(data).await;
+            }
         }
 
         true
@@ -3168,10 +3198,12 @@ impl PeerPacketRouter {
                 if !pipeline.active.load(Ordering::Acquire) {
                     continue;
                 }
-                zc_packet = pipeline
-                    .filter
-                    .try_process_packet_from_peer(zc_packet.unwrap())
-                    .await;
+                let filter = pipeline.filter.read().clone();
+                if let Some(filter) = filter {
+                    zc_packet = filter
+                        .try_process_packet_from_peer(zc_packet.unwrap())
+                        .await;
+                }
                 if zc_packet.is_none() {
                     processed = true;
                     break;
@@ -3631,6 +3663,7 @@ mod tests {
             managed_nic_pipeline_entry(Box::new(DropCountingNicFilter(drops.clone())));
         let pipeline = Arc::new(RwLock::new(vec![entry]));
         let reader = pipeline.read().await;
+        let active_filter = reader[0].filter.read().clone().unwrap();
         let remove_pipeline = pipeline.clone();
         let remove_registration = registration.clone();
         let removal = tokio::spawn(async move {
@@ -3642,8 +3675,21 @@ mod tests {
         assert_eq!(drops.load(Ordering::Relaxed), 0);
 
         drop(reader);
+        drop(active_filter);
         removal.await.unwrap();
         assert!(pipeline.read().await.is_empty());
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn managed_pipeline_guard_releases_filter_without_a_runtime() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let (entry, registration) =
+            managed_nic_pipeline_entry(Box::new(DropCountingNicFilter(drops.clone())));
+
+        drop(registration);
+
+        assert!(entry.filter.read().is_none());
         assert_eq!(drops.load(Ordering::Relaxed), 1);
     }
 

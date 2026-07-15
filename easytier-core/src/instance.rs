@@ -1873,6 +1873,7 @@ where
         fake_ip: std::net::Ipv4Addr,
         resolver: Arc<dyn MagicDnsQueryResolver>,
     ) -> MagicDnsResolverRegistration {
+        let runtime = tokio::runtime::Handle::current();
         let pipeline = self
             .peer_manager
             .add_managed_nic_packet_process_pipeline(magic_dns_packet_filter(
@@ -1884,7 +1885,7 @@ where
         MagicDnsResolverRegistration {
             peer_manager: Arc::downgrade(&self.peer_manager),
             pipeline,
-            runtime: tokio::runtime::Handle::current(),
+            runtime,
         }
     }
 
