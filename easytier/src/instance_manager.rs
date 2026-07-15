@@ -66,7 +66,7 @@ impl NetworkInstanceManager {
         self.remote_mutation_lock.clone()
     }
 
-    pub(crate) fn process_runtime(&self) -> Arc<CoreProcessRuntime> {
+    pub fn process_runtime(&self) -> Arc<CoreProcessRuntime> {
         self.process_runtime.clone()
     }
 

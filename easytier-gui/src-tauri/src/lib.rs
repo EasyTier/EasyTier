@@ -27,9 +27,8 @@ use easytier::{
     utils::panic::setup_panic_handler,
 };
 use easytier_core::{
-    connectivity::protocol::raw::TunnelDialer as _,
-    listener::SocketListener,
-    tunnel::{Tunnel, ring::RingTunnelRegistry},
+    connectivity::protocol::raw::TunnelDialer as _, listener::SocketListener,
+    process_runtime::CoreProcessRuntime, tunnel::Tunnel,
 };
 use std::ops::Deref;
 use std::sync::Arc;
@@ -46,8 +45,6 @@ static INSTANCE_MANAGER: once_cell::sync::Lazy<RwLock<Option<Arc<NetworkInstance
 
 static RPC_RING_UUID: once_cell::sync::Lazy<uuid::Uuid> =
     once_cell::sync::Lazy::new(uuid::Uuid::new_v4);
-static RPC_RING_REGISTRY: once_cell::sync::Lazy<Arc<RingTunnelRegistry>> =
-    once_cell::sync::Lazy::new(|| Arc::new(RingTunnelRegistry::default()));
 
 static CLIENT_MANAGER: once_cell::sync::Lazy<RwLock<Option<manager::GUIClientManager>>> =
     once_cell::sync::Lazy::new(|| RwLock::new(None));
@@ -410,6 +407,7 @@ async fn init_rpc_connection(
         .map_err(|_| "Failed to acquire lock for rpc server")?;
 
     let mut client_url = url.clone();
+    let mut local_process_runtime = None;
     if is_normal_mode {
         let instance_manager = if let Some(im) = instance_manager_guard.take() {
             im
@@ -442,11 +440,10 @@ async fn init_rpc_connection(
             *rpc_server_guard = None;
 
             let tunnel: BoxedTunnelListener = match desired_kind {
-                RpcServerKind::Ring => Box::new(
-                    RPC_RING_REGISTRY
-                        .bind(*RPC_RING_UUID.deref())
-                        .map_err(|error| error.to_string())?,
-                ),
+                RpcServerKind::Ring => instance_manager
+                    .process_runtime()
+                    .bind_ring_tunnel(*RPC_RING_UUID.deref())
+                    .map_err(|error| error.to_string())?,
                 RpcServerKind::Tcp => {
                     let bind_url = bind_url.as_ref().expect("tcp rpc must have bind url");
                     Box::new(runtime_rpc_listener(resolve_rpc_bind_url(bind_url).await?))
@@ -465,6 +462,7 @@ async fn init_rpc_connection(
             });
         }
 
+        local_process_runtime = Some(instance_manager.process_runtime());
         *instance_manager_guard = Some(instance_manager);
         client_url = connect_url.map(|u| u.to_string());
     } else {
@@ -473,7 +471,7 @@ async fn init_rpc_connection(
 
     let client_manager = tokio::time::timeout(
         std::time::Duration::from_millis(1000),
-        manager::GUIClientManager::new(client_url),
+        manager::GUIClientManager::new(client_url, local_process_runtime),
     )
     .await
     .map_err(|_| "connect remote rpc timed out".to_string())?
@@ -895,13 +893,16 @@ mod manager {
         pub(super) rpc_manager: BidirectRpcManager,
     }
     impl GUIClientManager {
-        pub async fn new(rpc_url: Option<String>) -> Result<Self, anyhow::Error> {
+        pub async fn new(
+            rpc_url: Option<String>,
+            local_process_runtime: Option<Arc<CoreProcessRuntime>>,
+        ) -> Result<Self, anyhow::Error> {
             let tunnel = if let Some(url) = rpc_url {
                 runtime_rpc_dialer(url.parse()?).connect().await?
             } else {
-                RPC_RING_REGISTRY
-                    .connect(*RPC_RING_UUID.deref())?
-                    .into_tunnel()
+                local_process_runtime
+                    .context("local RPC requires a core process runtime")?
+                    .connect_ring_tunnel(*RPC_RING_UUID.deref())?
             };
 
             let rpc_manager = BidirectRpcManager::new();

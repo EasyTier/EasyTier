@@ -108,8 +108,9 @@ Current closure status on 2026-07-14:
   socket operations;
 - core STUN and process Host Runtime closure evidence is recorded in
   [`host_runtime_stun_refactor.md`](host_runtime_stun_refactor.md).
-- `CoreProcessRuntime` hides shared portable process resources from native and
-  Go composition roots; Ring registry construction and access are core-local.
+- `CoreProcessRuntime` hides shared portable process resources from native
+  composition; the WASI module lifecycle creates the corresponding module-local
+  runtime. Ring registry construction and access are core-local.
 
 ## Definition of done
 

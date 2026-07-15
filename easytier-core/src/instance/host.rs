@@ -12,6 +12,7 @@ use crate::{
         HostConnectorAdapter, HostConnectorSocketBackend,
         environment::{HostConnectorEnvironmentServices, HostConnectorEnvironmentSnapshot},
     },
+    process_runtime::CoreProcessRuntime,
     socket::host::{
         HostSocketRuntime,
         dns::{HostDnsIo, HostDnsResolver},
@@ -67,6 +68,7 @@ where
     /// Any asynchronous environment implementation must use this same runtime.
     pub fn new_with_runtime<D, P>(
         config: PortableCoreInstanceConfig,
+        process_runtime: Arc<CoreProcessRuntime>,
         socket_runtime: HostSocketRuntime,
         socket_backend: Arc<B>,
         environment_snapshot: HostConnectorEnvironmentSnapshot,
@@ -97,7 +99,7 @@ where
             dns: dns.clone(),
             listener_dns: None,
             dns_records: dns,
-            process_runtime: crate::process_runtime::CoreProcessRuntime::new(),
+            process_runtime,
             protocol: None,
             manual_events: None,
             external_listener_factory: None,
@@ -140,6 +142,7 @@ where
     /// completion runtime.
     pub fn new_with_environment_io<D, P>(
         config: PortableCoreInstanceConfig,
+        process_runtime: Arc<CoreProcessRuntime>,
         socket_backend: Arc<B>,
         environment_snapshot: HostConnectorEnvironmentSnapshot,
         environment_io: Arc<I>,
@@ -158,6 +161,7 @@ where
         ));
         Self::new_with_runtime(
             config,
+            process_runtime,
             socket_runtime,
             socket_backend,
             environment_snapshot,
@@ -180,6 +184,7 @@ pub type WasiHostCoreInstance = HostCoreInstance<
 #[cfg(target_os = "wasi")]
 pub fn new_wasi_host_core_instance(
     config: PortableCoreInstanceConfig,
+    process_runtime: Arc<CoreProcessRuntime>,
     environment_snapshot: HostConnectorEnvironmentSnapshot,
     packet_sink: HostPacketSinkHandle,
 ) -> anyhow::Result<WasiHostCoreInstance> {
@@ -190,6 +195,7 @@ pub fn new_wasi_host_core_instance(
 
     HostCoreInstance::new_with_environment_io(
         config,
+        process_runtime,
         Arc::new(WasiHostSocketBackend::default()),
         environment_snapshot,
         Arc::new(WasiHostConnectorEnvironmentIo),

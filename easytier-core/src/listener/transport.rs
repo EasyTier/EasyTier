@@ -725,7 +725,8 @@ where
         + VirtualUdpSocketFactory
         + UdpSessionControlHandler<<H as VirtualUdpSocketFactory>::Socket>,
 {
-    pub fn new(
+    #[cfg(test)]
+    pub(crate) fn new(
         host: Arc<H>,
         dns: Arc<dyn DnsResolver>,
         ring_registry: Arc<RingTunnelRegistry>,
@@ -735,7 +736,7 @@ where
         Self::build(host, dns, ring_registry, configs, handler, None)
     }
 
-    pub fn new_with_events(
+    pub(crate) fn new_with_events(
         host: Arc<H>,
         dns: Arc<dyn DnsResolver>,
         ring_registry: Arc<RingTunnelRegistry>,

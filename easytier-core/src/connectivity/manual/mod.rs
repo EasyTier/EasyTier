@@ -177,7 +177,7 @@ where
         }
     }
 
-    pub fn with_ring_registry(mut self, ring_registry: Arc<RingTunnelRegistry>) -> Self {
+    pub(crate) fn with_ring_registry(mut self, ring_registry: Arc<RingTunnelRegistry>) -> Self {
         self.ring_registry = Some(ring_registry);
         self
     }
@@ -393,7 +393,7 @@ impl<H> ManualConnectorManager<H>
 where
     H: ManualConnectorHost,
 {
-    pub fn new(
+    pub(crate) fn new(
         peer_manager: Arc<PeerManagerCore>,
         host: Arc<H>,
         dns: Arc<dyn DnsResolver>,
@@ -414,7 +414,7 @@ where
         )
     }
 
-    pub fn new_with_events(
+    pub(crate) fn new_with_events(
         peer_manager: Arc<PeerManagerCore>,
         host: Arc<H>,
         dns: Arc<dyn DnsResolver>,

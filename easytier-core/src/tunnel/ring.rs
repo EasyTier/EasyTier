@@ -131,12 +131,12 @@ struct PendingRingConnection {
 type ConnectionMap = HashMap<RingSocketId, UnboundedSender<Arc<PendingRingConnection>>>;
 
 #[derive(Default)]
-pub struct RingTunnelRegistry {
+pub(crate) struct RingTunnelRegistry {
     connections: Mutex<ConnectionMap>,
 }
 
 impl RingTunnelRegistry {
-    pub fn bind(
+    pub(crate) fn bind(
         self: &Arc<Self>,
         local_id: RingSocketId,
     ) -> Result<RingTunnelSocketListener, RingTunnelRegistryError> {
@@ -155,7 +155,7 @@ impl RingTunnelRegistry {
         })
     }
 
-    pub fn connect(
+    pub(crate) fn connect(
         &self,
         remote_id: RingSocketId,
     ) -> Result<DialedRingSocket, RingTunnelRegistryError> {

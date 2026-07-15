@@ -70,8 +70,12 @@ The Go create schema is version 10 and therefore has no
 `CoreProcessRuntime` is the only process-scoped portable owner. It currently
 owns the Ring transport registry so core instances and one-shot connectors in
 the same host process can rendezvous without exposing that registry to the
-host. Native and Go composition roots may create and share the opaque runtime
-handle, but they must not construct, inspect, or replace its internal managers.
+host. Native and in-process composition roots may create and share the opaque
+runtime handle, but they must not construct, inspect, or replace its internal
+managers. The WASI lifecycle ABI owns one runtime per instantiated module and
+shares it across handles created in that module; an `Arc` is never passed
+through the Go ABI. Separate WASM module instances have separate linear
+memories and therefore use host TCP/UDP sockets, not Ring, to communicate.
 
 Per-instance state still belongs to `CoreInstance`; process scope is reserved
 for resources whose identity must be shared across instances. New portable

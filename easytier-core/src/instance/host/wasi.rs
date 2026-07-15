@@ -10,6 +10,7 @@ use crate::{
         host::HostCoreInstanceCreateConfig,
         runtime_driver::{RuntimeDriveOutcome, RuntimeDriver},
     },
+    process_runtime::CoreProcessRuntime,
     runtime_time::{clear_domain, enter_domain, next_deadline_millis},
     socket::host::packet::HostPacketSinkHandle,
 };
@@ -28,13 +29,26 @@ thread_local! {
     static INSTANCES: RefCell<WasiInstanceRegistry> = RefCell::new(WasiInstanceRegistry::default());
 }
 
-#[derive(Default)]
 struct WasiInstanceRegistry {
     next_handle: u64,
     entries: BTreeMap<u64, WasiInstanceEntry>,
     buffers: BTreeMap<u32, Box<[u8]>>,
+    process_runtime: std::sync::Arc<CoreProcessRuntime>,
     active_entry: bool,
     error: String,
+}
+
+impl Default for WasiInstanceRegistry {
+    fn default() -> Self {
+        Self {
+            next_handle: 0,
+            entries: BTreeMap::new(),
+            buffers: BTreeMap::new(),
+            process_runtime: CoreProcessRuntime::new(),
+            active_entry: false,
+            error: String::new(),
+        }
+    }
 }
 
 struct WasiInstanceEntry {
@@ -295,11 +309,13 @@ pub extern "C" fn easytier_instance_create(
         }
     };
     let handle = INSTANCES.with_borrow_mut(WasiInstanceRegistry::allocate_handle);
+    let process_runtime = INSTANCES.with_borrow(|registry| registry.process_runtime.clone());
     let instance = {
         let _domain = enter_domain(handle);
         let _runtime = runtime.enter();
         new_wasi_host_core_instance(
             config.instance,
+            process_runtime,
             config.environment,
             HostPacketSinkHandle(packet_sink_handle),
         )
