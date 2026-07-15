@@ -376,7 +376,7 @@ mod tests {
     #[test]
     fn native_connectivity_config_maps_owned_runtime_inputs() {
         let global_ctx = get_mock_global_ctx();
-        let peer_url = "tcp://127.0.0.1:29999".parse().unwrap();
+        let peer_url: url::Url = "tcp://127.0.0.1:29999".parse().unwrap();
         let public_ipv6_prefix = "2001:db8:1::/64".parse().unwrap();
         global_ctx.config.set_peers(vec![PeerConfig {
             uri: peer_url.clone(),
