@@ -61,9 +61,6 @@ use crate::{
     use_global_var,
 };
 
-#[cfg(test)]
-use crate::peers::peer_manager::PeerManager;
-
 use super::{
     protocol::{runtime_client_protocol_upgrader, runtime_server_protocol_upgrader},
     runtime::{RuntimeConnectorHost, runtime_connector_host},
@@ -333,68 +330,6 @@ pub(crate) fn runtime_core_instance_adapters_with_ring_registry(
     }
 }
 
-#[cfg(test)]
-pub(crate) fn build_runtime_core_instance(
-    global_ctx: ArcGlobalCtx,
-    peer_manager: Arc<PeerManager>,
-) -> anyhow::Result<RuntimeCoreInstance> {
-    build_runtime_core_instance_with_transport_factory(
-        global_ctx,
-        peer_manager,
-        NoWrappedTransportEngineFactory,
-    )
-    .map(|(instance, ())| instance)
-}
-
-#[cfg(test)]
-pub(crate) fn build_runtime_core_instance_with_transport_factory<F>(
-    global_ctx: ArcGlobalCtx,
-    peer_manager: Arc<PeerManager>,
-    transport_proxy_factory: F,
-) -> anyhow::Result<(RuntimeCoreInstance, F::Attachment)>
-where
-    F: WrappedTransportEngineFactory,
-{
-    build_runtime_core_instance_with_transport_factory_and_ring_registry(
-        global_ctx,
-        peer_manager,
-        transport_proxy_factory,
-        Arc::new(RingTunnelRegistry::default()),
-    )
-}
-
-#[cfg(test)]
-pub(crate) fn build_runtime_core_instance_with_transport_factory_and_ring_registry<F>(
-    global_ctx: ArcGlobalCtx,
-    peer_manager: Arc<PeerManager>,
-    transport_proxy_factory: F,
-    ring_registry: Arc<RingTunnelRegistry>,
-) -> anyhow::Result<(RuntimeCoreInstance, F::Attachment)>
-where
-    F: WrappedTransportEngineFactory,
-{
-    let listener_plan = runtime_listener_plan(&global_ctx);
-    let listener_configs =
-        runtime_transport_listener_configs(&listener_plan, runtime_socket_context(&global_ctx));
-    let config = runtime_connectivity_config(&global_ctx, listener_configs);
-    let mut adapters = runtime_core_instance_adapters_with_ring_registry(
-        global_ctx.clone(),
-        ring_registry.clone(),
-    );
-    adapters.listener_events = Some(runtime_listener_event_sink(global_ctx.clone()));
-    adapters.external_listener_factory = Some(RuntimeExternalListenerFactory::new(
-        global_ctx.clone(),
-        listener_plan,
-    ));
-    CoreInstance::new_with_runtime_config_store_and_transport_factory(
-        peer_manager.core(),
-        adapters,
-        config,
-        peer_manager.runtime_config_store(),
-        transport_proxy_factory,
-    )
-}
-
 fn runtime_connectivity_config(
     global_ctx: &ArcGlobalCtx,
     listeners: Vec<easytier_core::listener::transport::TransportListenerConfig>,
@@ -487,10 +422,6 @@ mod tests {
             },
             stun::MockStunInfoCollector,
         },
-        peers::{
-            create_packet_recv_chan,
-            peer_manager::{PeerManager, RouteAlgoType},
-        },
         proto::common::NatType,
     };
 
@@ -501,6 +432,32 @@ mod tests {
         tokio::sync::mpsc::Receiver<Vec<u8>>,
     ) {
         tokio::sync::mpsc::channel(16)
+    }
+
+    fn build_portable_test_instance_with_transport_factory<F>(
+        global_ctx: ArcGlobalCtx,
+        transport_proxy_factory: F,
+    ) -> anyhow::Result<(RuntimeCoreInstance, F::Attachment)>
+    where
+        F: WrappedTransportEngineFactory,
+    {
+        let (packet_sink, _packet_receiver) = create_host_packet_channel();
+        build_portable_runtime_core_instance_with_transport_factory_and_ring_registry(
+            global_ctx,
+            Arc::new(packet_sink),
+            transport_proxy_factory,
+            Arc::new(RingTunnelRegistry::default()),
+        )
+    }
+
+    fn build_portable_test_instance(
+        global_ctx: ArcGlobalCtx,
+    ) -> anyhow::Result<RuntimeCoreInstance> {
+        build_portable_test_instance_with_transport_factory(
+            global_ctx,
+            NoWrappedTransportEngineFactory,
+        )
+        .map(|(instance, ())| instance)
     }
 
     #[derive(Default)]
@@ -639,13 +596,9 @@ mod tests {
             network_name.to_owned(),
             String::new(),
         )));
-        let (nic_channel, _nic_receiver) = create_packet_recv_chan();
-        let peer_manager = Arc::new(PeerManager::new(
-            RouteAlgoType::Ospf,
-            global_ctx.clone(),
-            nic_channel,
-        ));
-        let config = CoreInstanceConfig {
+        initialize_runtime_peer_host_state(&global_ctx);
+        let peer = runtime_peer_manager_config(&global_ctx, RouteAlgoType::Ospf);
+        let connectivity = CoreInstanceConfig {
             initial_peers: Vec::new(),
             listeners: Vec::new(),
             runtime: Default::default(),
@@ -656,7 +609,15 @@ mod tests {
         };
         let mut adapters = runtime_core_instance_adapters(global_ctx);
         adapters.external_listener_factory = Some(Arc::new(move |_handler| listener.clone()));
-        Arc::new(CoreInstance::new(peer_manager.core(), adapters, config).unwrap())
+        let (packet_sink, _packet_receiver) = create_host_packet_channel();
+        Arc::new(
+            CoreInstance::new_portable(
+                adapters,
+                PortableCoreInstanceConfig { peer, connectivity },
+                Arc::new(packet_sink),
+            )
+            .unwrap(),
+        )
     }
 
     #[test]
@@ -923,13 +884,7 @@ mod tests {
         global_ctx.replace_stun_info_collector(Box::new(MockStunInfoCollector {
             udp_nat_type: NatType::Symmetric,
         }));
-        let (nic_channel, _nic_receiver) = create_packet_recv_chan();
-        let peer_manager = Arc::new(PeerManager::new(
-            RouteAlgoType::Ospf,
-            global_ctx.clone(),
-            nic_channel,
-        ));
-        let _instance = build_runtime_core_instance(global_ctx.clone(), peer_manager).unwrap();
+        let _instance = build_portable_test_instance(global_ctx.clone()).unwrap();
 
         assert_eq!(
             global_ctx
@@ -952,16 +907,9 @@ mod tests {
             uri: initial_peer.clone(),
             peer_public_key: None,
         }]);
-        let (nic_channel, _nic_receiver) = create_packet_recv_chan();
-        let peer_manager = Arc::new(PeerManager::new(
-            RouteAlgoType::Ospf,
-            global_ctx.clone(),
-            nic_channel,
-        ));
         let transport_proxy = Arc::new(RecordingProxyService::default());
-        let (instance, _cidr_table) = build_runtime_core_instance_with_transport_factory(
+        let (instance, _cidr_table) = build_portable_test_instance_with_transport_factory(
             global_ctx,
-            peer_manager,
             TestTransportProxyFactory {
                 service: transport_proxy.clone(),
             },
@@ -1001,16 +949,9 @@ mod tests {
         flags.enable_kcp_proxy = true;
         flags.disable_kcp_input = true;
         global_ctx.set_flags(flags);
-        let (nic_channel, _nic_receiver) = create_packet_recv_chan();
-        let peer_manager = Arc::new(PeerManager::new(
-            RouteAlgoType::Ospf,
-            global_ctx.clone(),
-            nic_channel,
-        ));
         let engine = Arc::new(RecordingProxyService::default());
-        let (instance, _) = build_runtime_core_instance_with_transport_factory(
+        let (instance, _) = build_portable_test_instance_with_transport_factory(
             global_ctx,
-            peer_manager,
             TestTransportProxyFactory {
                 service: engine.clone(),
             },
@@ -1053,16 +994,9 @@ mod tests {
         flags.enable_kcp_proxy = false;
         flags.disable_kcp_input = false;
         global_ctx.set_flags(flags);
-        let (nic_channel, _nic_receiver) = create_packet_recv_chan();
-        let peer_manager = Arc::new(PeerManager::new(
-            RouteAlgoType::Ospf,
-            global_ctx.clone(),
-            nic_channel,
-        ));
         let engine = Arc::new(RecordingProxyService::default());
-        let (instance, ()) = build_runtime_core_instance_with_transport_factory(
+        let (instance, ()) = build_portable_test_instance_with_transport_factory(
             global_ctx,
-            peer_manager,
             TestTransportProxyFactory {
                 service: engine.clone(),
             },
@@ -1195,17 +1129,10 @@ mod tests {
                 Some("198.51.100.0/24".parse().unwrap()),
             )
             .unwrap();
-        let (nic_channel, _nic_receiver) = create_packet_recv_chan();
-        let peer_manager = Arc::new(PeerManager::new(
-            RouteAlgoType::Ospf,
-            global_ctx.clone(),
-            nic_channel,
-        ));
         let transport_proxy = Arc::new(RecordingProxyService::default());
         let runtime_global_ctx = global_ctx.clone();
-        let (instance, ()) = build_runtime_core_instance_with_transport_factory(
+        let (instance, ()) = build_portable_test_instance_with_transport_factory(
             global_ctx,
-            peer_manager,
             TestTransportProxyFactory {
                 service: transport_proxy.clone(),
             },
@@ -1256,16 +1183,9 @@ mod tests {
     #[tokio::test]
     async fn runtime_core_requires_explicit_proxy_policy_update() {
         let global_ctx = get_mock_global_ctx();
-        let (nic_channel, _nic_receiver) = create_packet_recv_chan();
-        let peer_manager = Arc::new(PeerManager::new(
-            RouteAlgoType::Ospf,
-            global_ctx.clone(),
-            nic_channel,
-        ));
         let transport_proxy = Arc::new(RecordingProxyService::default());
-        let (instance, _cidr_table) = build_runtime_core_instance_with_transport_factory(
+        let (instance, _cidr_table) = build_portable_test_instance_with_transport_factory(
             global_ctx.clone(),
-            peer_manager,
             TestTransportProxyFactory {
                 service: transport_proxy.clone(),
             },
@@ -1301,14 +1221,8 @@ mod tests {
     #[tokio::test]
     async fn runtime_core_accepts_explicit_acl_runtime_snapshot() {
         let global_ctx = get_mock_global_ctx();
-        let (nic_channel, _nic_receiver) = create_packet_recv_chan();
-        let peer_manager = Arc::new(PeerManager::new(
-            RouteAlgoType::Ospf,
-            global_ctx.clone(),
-            nic_channel,
-        ));
         let instance = Arc::new(
-            build_runtime_core_instance(global_ctx.clone(), peer_manager)
+            build_portable_test_instance(global_ctx.clone())
                 .expect("runtime core composition should succeed"),
         );
         assert_eq!(instance.acl_whitelist_snapshot(), Default::default());
@@ -1336,14 +1250,8 @@ mod tests {
         global_ctx
             .config
             .set_listeners(vec!["tcp://127.0.0.1:0".parse().unwrap()]);
-        let (nic_channel, _nic_receiver) = create_packet_recv_chan();
-        let peer_manager = Arc::new(PeerManager::new(
-            RouteAlgoType::Ospf,
-            global_ctx.clone(),
-            nic_channel,
-        ));
         let instance = Arc::new(
-            build_runtime_core_instance(global_ctx.clone(), peer_manager)
+            build_portable_test_instance(global_ctx.clone())
                 .expect("runtime core composition should succeed"),
         );
 
@@ -1367,14 +1275,8 @@ mod tests {
     #[tokio::test]
     async fn runtime_core_accepts_explicit_dhcp_runtime_snapshot() {
         let global_ctx = get_mock_global_ctx();
-        let (nic_channel, _nic_receiver) = create_packet_recv_chan();
-        let peer_manager = Arc::new(PeerManager::new(
-            RouteAlgoType::Ospf,
-            global_ctx.clone(),
-            nic_channel,
-        ));
         let instance = Arc::new(
-            build_runtime_core_instance(global_ctx.clone(), peer_manager)
+            build_portable_test_instance(global_ctx.clone())
                 .expect("runtime core composition should succeed"),
         );
 
@@ -1395,14 +1297,8 @@ mod tests {
     #[tokio::test]
     async fn runtime_core_accepts_explicit_public_ipv6_runtime_snapshot() {
         let global_ctx = get_mock_global_ctx();
-        let (nic_channel, _nic_receiver) = create_packet_recv_chan();
-        let peer_manager = Arc::new(PeerManager::new(
-            RouteAlgoType::Ospf,
-            global_ctx.clone(),
-            nic_channel,
-        ));
         let instance = Arc::new(
-            build_runtime_core_instance(global_ctx.clone(), peer_manager)
+            build_portable_test_instance(global_ctx.clone())
                 .expect("runtime core composition should succeed"),
         );
 
@@ -1434,16 +1330,9 @@ mod tests {
             uri: initial_peer,
             peer_public_key: None,
         }]);
-        let (nic_channel, _nic_receiver) = create_packet_recv_chan();
-        let peer_manager = Arc::new(PeerManager::new(
-            RouteAlgoType::Ospf,
-            global_ctx.clone(),
-            nic_channel,
-        ));
         let proxy = Arc::new(BlockingProxyService::default());
-        let (instance, _cidr_table) = build_runtime_core_instance_with_transport_factory(
+        let (instance, _cidr_table) = build_portable_test_instance_with_transport_factory(
             global_ctx,
-            peer_manager,
             TestTransportProxyFactory {
                 service: proxy.clone(),
             },
@@ -1486,14 +1375,8 @@ mod tests {
             uri: "unsupported://peer.example:1234".parse().unwrap(),
             peer_public_key: None,
         }]);
-        let (nic_channel, _nic_receiver) = create_packet_recv_chan();
-        let peer_manager = Arc::new(PeerManager::new(
-            RouteAlgoType::Ospf,
-            global_ctx.clone(),
-            nic_channel,
-        ));
         let instance = Arc::new(
-            build_runtime_core_instance(global_ctx, peer_manager)
+            build_portable_test_instance(global_ctx)
                 .expect("invalid peer schemes must not panic during composition"),
         );
 
@@ -1771,13 +1654,7 @@ mod tests {
             network_name.to_owned(),
             String::new(),
         )));
-        let (nic_channel, _nic_receiver) = create_packet_recv_chan();
-        let peer_manager = Arc::new(PeerManager::new(
-            RouteAlgoType::Ospf,
-            global_ctx.clone(),
-            nic_channel,
-        ));
-        Arc::new(build_runtime_core_instance(global_ctx, peer_manager).unwrap())
+        Arc::new(build_portable_test_instance(global_ctx).unwrap())
     }
 
     #[tokio::test]

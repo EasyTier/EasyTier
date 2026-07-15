@@ -3,118 +3,125 @@ use std::{sync::Arc, time::Duration};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::{
-    common::global_ctx::tests::get_mock_global_ctx,
+    common::global_ctx::{NetworkIdentity, tests::get_mock_global_ctx_with_network},
     connector::core_instance::{
-        RuntimeCoreInstance, build_runtime_core_instance, runtime_instance_config,
+        RuntimeCoreInstance, runtime_core_instance_adapters, runtime_direct_options,
+        runtime_endpoint_discovery_config, runtime_stun_server_config,
     },
-    peers::{
-        create_packet_recv_chan,
-        peer_manager::{PeerManager, RouteAlgoType},
-    },
-    proto::common::TunnelInfo,
-    tunnel::Tunnel,
+    peers::context::runtime_peer_manager_config,
     tunnel::common::tests::wait_for_condition,
 };
-use easytier_core::tunnel::ring::{RingTunnel, create_ring_socket_pair};
+use easytier_core::{
+    instance::{CoreInstanceConfig, PortableCoreInstanceConfig},
+    listener::transport::TransportListenerConfig,
+    peers::peer_manager::RouteAlgoType,
+    socket::tcp::TcpListenOptions,
+};
 
 struct Endpoint {
-    _peer: Arc<PeerManager>,
     core: Arc<RuntimeCoreInstance>,
+    _packet_receiver: tokio::sync::mpsc::Receiver<Vec<u8>>,
     ip: cidr::Ipv4Inet,
 }
 
-fn ring_tunnel_info(local: &str, remote: &str) -> TunnelInfo {
-    TunnelInfo {
-        tunnel_type: "ring".to_owned(),
-        local_addr: Some(local.parse::<url::Url>().unwrap().into()),
-        remote_addr: Some(remote.parse::<url::Url>().unwrap().into()),
-        resolved_remote_addr: Some(remote.parse::<url::Url>().unwrap().into()),
-    }
-}
-
-async fn connect_peer_manager(client: Arc<PeerManager>, server: Arc<PeerManager>) {
-    let (client_socket, server_socket) = create_ring_socket_pair(1024);
-    let client_tunnel: Box<dyn Tunnel> = Box::new(RingTunnel::new(
-        client_socket,
-        Some(ring_tunnel_info("ring://client", "ring://server")),
-    ));
-    let server_tunnel: Box<dyn Tunnel> = Box::new(RingTunnel::new(
-        server_socket,
-        Some(ring_tunnel_info("ring://server", "ring://client")),
-    ));
-    tokio::spawn(async move {
-        client
-            .core()
-            .add_client_tunnel(client_tunnel, false)
-            .await
-            .unwrap();
-    });
-    tokio::spawn(async move {
-        server
-            .core()
-            .add_tunnel_as_server(server_tunnel, true)
-            .await
-            .unwrap();
-    });
-}
-
 async fn setup_pair() -> (Endpoint, Endpoint) {
-    let create_peer = || {
-        let (packet_sender, _packet_receiver) = create_packet_recv_chan();
-        Arc::new(PeerManager::new(
-            RouteAlgoType::Ospf,
-            get_mock_global_ctx(),
-            packet_sender,
-        ))
-    };
-    let a = create_peer();
-    let b = create_peer();
-
     let a_ip: cidr::Ipv4Inet = "10.126.126.1/24".parse().unwrap();
     let b_ip: cidr::Ipv4Inet = "10.126.126.2/24".parse().unwrap();
-    a.get_global_ctx().set_ipv4(Some(a_ip));
-    b.get_global_ctx().set_ipv4(Some(b_ip));
-    a.refresh_runtime_config();
-    b.refresh_runtime_config();
+    let network = || {
+        Some(NetworkIdentity::new(
+            "gateway-data-plane".to_owned(),
+            "shared-secret".to_owned(),
+        ))
+    };
+    let global_a = get_mock_global_ctx_with_network(network());
+    let global_b = get_mock_global_ctx_with_network(network());
+    global_a.set_ipv4(Some(a_ip));
+    global_b.set_ipv4(Some(b_ip));
 
-    let core_a = Arc::new(
-        build_runtime_core_instance(a.get_global_ctx(), a.clone())
-            .expect("build first core instance"),
-    );
-    let core_b = Arc::new(
-        build_runtime_core_instance(b.get_global_ctx(), b.clone())
-            .expect("build second core instance"),
-    );
-    for (core, peer) in [(&core_a, &a), (&core_b, &b)] {
-        core.update_runtime_config(runtime_instance_config(&peer.get_global_ctx()))
-            .await
-            .unwrap();
-        core.start().await.unwrap();
-        core.start_gateway().await.unwrap();
-    }
+    let (packet_sink_a, packet_receiver_a) = tokio::sync::mpsc::channel(16);
+    let (packet_sink_b, packet_receiver_b) = tokio::sync::mpsc::channel(16);
+    let peer_a = runtime_peer_manager_config(&global_a, RouteAlgoType::Ospf);
+    let peer_b = runtime_peer_manager_config(&global_b, RouteAlgoType::Ospf);
+    let connectivity_a = CoreInstanceConfig {
+        initial_peers: Vec::new(),
+        listeners: vec![TransportListenerConfig::Tcp {
+            url: "tcp://127.0.0.1:0".parse().unwrap(),
+            options: TcpListenOptions::manual_connect("127.0.0.1:0".parse().unwrap()),
+            must_succeed: true,
+        }],
+        runtime: Default::default(),
+        stun: runtime_stun_server_config(&global_a),
+        endpoint_discovery: runtime_endpoint_discovery_config(&global_a),
+        manual: Default::default(),
+        direct: runtime_direct_options(&global_a, true),
+    };
+    let connectivity_b = CoreInstanceConfig {
+        initial_peers: Vec::new(),
+        listeners: Vec::new(),
+        runtime: Default::default(),
+        stun: runtime_stun_server_config(&global_b),
+        endpoint_discovery: runtime_endpoint_discovery_config(&global_b),
+        manual: Default::default(),
+        direct: runtime_direct_options(&global_b, true),
+    };
+    let core_a = RuntimeCoreInstance::new_portable(
+        runtime_core_instance_adapters(global_a),
+        PortableCoreInstanceConfig {
+            peer: peer_a,
+            connectivity: connectivity_a,
+        },
+        Arc::new(packet_sink_a),
+    )
+    .expect("build first core instance");
+    let core_b = RuntimeCoreInstance::new_portable(
+        runtime_core_instance_adapters(global_b),
+        PortableCoreInstanceConfig {
+            peer: peer_b,
+            connectivity: connectivity_b,
+        },
+        Arc::new(packet_sink_b),
+    )
+    .expect("build second core instance");
+    let core_a = Arc::new(core_a);
+    let core_b = Arc::new(core_b);
 
-    connect_peer_manager(a.clone(), b.clone()).await;
+    let (start_a, start_b) = tokio::join!(core_a.start(), core_b.start());
+    start_a.unwrap();
+    start_b.unwrap();
+    assert_ne!(core_a.peer_id(), core_b.peer_id());
+    let listener = core_a
+        .running_listeners()
+        .into_iter()
+        .find(|url| url.scheme() == "tcp")
+        .expect("second core instance should own a TCP listener");
+    core_b.add_connector(listener).unwrap();
+    let b_peer_id = core_b.peer_id();
     wait_for_condition(
-        || async {
-            a.core()
-                .get_route()
-                .get_peer_id_by_ipv4(&b_ip.address())
-                .await
-                .is_some()
+        || {
+            let core_a = core_a.clone();
+            async move {
+                core_a
+                    .route_snapshots()
+                    .await
+                    .iter()
+                    .any(|route| route.peer_id == b_peer_id && route.ipv4_addr == Some(b_ip.into()))
+            }
         },
         Duration::from_secs(10),
     )
     .await;
+    core_a.start_gateway().await.unwrap();
+    core_b.start_gateway().await.unwrap();
 
     (
         Endpoint {
-            _peer: a,
             core: core_a,
+            _packet_receiver: packet_receiver_a,
             ip: a_ip,
         },
         Endpoint {
-            _peer: b,
             core: core_b,
+            _packet_receiver: packet_receiver_b,
             ip: b_ip,
         },
     )
