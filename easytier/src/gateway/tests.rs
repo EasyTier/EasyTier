@@ -88,6 +88,8 @@ async fn setup_pair() -> (Endpoint, Endpoint) {
     let (start_a, start_b) = tokio::join!(core_a.start(), core_b.start());
     start_a.unwrap();
     start_b.unwrap();
+    core_a.start_gateway().await.unwrap();
+    core_b.start_gateway().await.unwrap();
     assert_ne!(core_a.peer_id(), core_b.peer_id());
     let listener = core_a
         .running_listeners()
@@ -110,8 +112,6 @@ async fn setup_pair() -> (Endpoint, Endpoint) {
         Duration::from_secs(10),
     )
     .await;
-    core_a.start_gateway().await.unwrap();
-    core_b.start_gateway().await.unwrap();
 
     (
         Endpoint {
