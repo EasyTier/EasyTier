@@ -366,6 +366,7 @@ impl
 mod tests {
     use std::{
         collections::VecDeque,
+        future::Future,
         sync::{
             Arc,
             atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -384,7 +385,6 @@ mod tests {
             rpc_impl::standalone::{runtime_udp_tunnel_dialer, runtime_udp_tunnel_listener},
         },
         rpc_service::remote_client::Storage as RemoteStorage,
-        tunnel::common::tests::wait_for_condition,
         web_client::{WebClient, run_web_client},
     };
     use serde_json::json;
@@ -395,6 +395,21 @@ mod tests {
     };
 
     const MANAGED_CONFIG_TOKEN: &str = "managed-config-token";
+
+    async fn wait_for_condition<F, Fut>(mut condition: F, timeout: Duration)
+    where
+        F: FnMut() -> Fut,
+        Fut: Future<Output = bool>,
+    {
+        let deadline = tokio::time::Instant::now() + timeout;
+        while !condition().await {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "condition timed out"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
 
     #[derive(Debug, Clone)]
     struct TestWebhookState {

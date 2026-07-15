@@ -271,7 +271,8 @@ pub fn bind<B: Bindable>(
 
 // endregion
 
-pub mod tests {
+#[cfg(test)]
+pub(crate) mod tests {
     use atomic_shim::AtomicU64;
     use std::{sync::Arc, time::Instant};
 
