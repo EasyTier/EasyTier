@@ -1,4 +1,4 @@
-use super::{FromUrl, IpVersion, Tunnel, TunnelError, common::wait_for_connect_futures};
+use super::{FromUrl, common::wait_for_connect_futures};
 use crate::tunnel::common::bind;
 use crate::{proto::common::TunnelInfo, socket::tcp::RuntimeTcpSocket};
 use easytier_core::{
@@ -7,7 +7,7 @@ use easytier_core::{
         websocket::{is_wss, map_from_ws_message, sink_from_zc_packet, upgrade_accepted},
     },
     socket::tcp::VirtualTcpSocket,
-    tunnel::wrapper::TunnelWrapper,
+    tunnel::{IpVersion, Tunnel, TunnelError, wrapper::TunnelWrapper},
 };
 use futures::{SinkExt, StreamExt, stream::FuturesUnordered};
 use std::{net::SocketAddr, sync::Arc, time::Duration};
@@ -147,7 +147,7 @@ impl WsTunnelConnector {
     async fn connect_with_default_bind(
         &self,
         addr: SocketAddr,
-    ) -> Result<Box<dyn Tunnel>, super::TunnelError> {
+    ) -> Result<Box<dyn Tunnel>, TunnelError> {
         let socket = if addr.is_ipv4() {
             TcpSocket::new_v4()?
         } else {
@@ -163,7 +163,7 @@ impl WsTunnelConnector {
     async fn connect_with_custom_bind(
         &self,
         addr: SocketAddr,
-    ) -> Result<Box<dyn Tunnel>, super::TunnelError> {
+    ) -> Result<Box<dyn Tunnel>, TunnelError> {
         let futures = FuturesUnordered::new();
 
         for bind_addr in self.bind_addrs.iter() {

@@ -16,12 +16,12 @@ use crate::{
     },
     instance::composition::NativeCoreInstance,
     instance::instance::HostPacketReceiver,
-    tunnel::{StreamItem, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream},
 };
 
 use easytier_core::{
     packet::{TAIL_RESERVED_SIZE, ZCPacket, ZCPacketType},
     tunnel::{
+        StreamItem, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream,
         framed::{FramedWriter, ZCPacketToBytes, reserve_buf},
         wrapper::TunnelWrapper,
     },

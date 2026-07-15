@@ -17,11 +17,14 @@ use tokio::{
     net::TcpStream,
 };
 
-use easytier_core::socket::tcp::VirtualTcpSocket;
+use easytier_core::{
+    socket::tcp::VirtualTcpSocket,
+    tunnel::{IpVersion, Tunnel, TunnelError},
+};
 
 use crate::{
     common::netns::NetNS,
-    tunnel::{FromUrl, IpVersion, Tunnel, TunnelError, fake_tcp::netfilter::create_tun},
+    tunnel::{FromUrl, fake_tcp::netfilter::create_tun},
 };
 
 use futures::Future;

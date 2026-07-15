@@ -2,14 +2,14 @@
 //!
 //! Checkout the `README.md` for guidance.
 
-use super::{FromUrl, IpVersion, Tunnel, TunnelError};
+use super::FromUrl;
 use crate::common::{global_ctx::ArcGlobalCtx, netns::NetNS};
 use crate::socket::{
     udp::{RuntimeUdpSessionSocketListener, new_runtime_udp_session_listener},
     udp_src,
 };
 use crate::tunnel::common::bind;
-use crate::tunnel::{TunnelInfo, TunnelUrl};
+use crate::{proto::common::TunnelInfo, tunnel::TunnelUrl};
 use anyhow::Context;
 use derivative::Derivative;
 use derive_more::{Deref, DerefMut};
@@ -23,6 +23,7 @@ use easytier_core::{
         UdpSessionProtocol, UdpSessionSocket, parse_quic_initial_dcid,
     },
     tunnel::{
+        IpVersion, Tunnel, TunnelError,
         framed::{FramedReader, FramedWriter},
         wrapper::TunnelWrapper,
     },

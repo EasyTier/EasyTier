@@ -2,14 +2,9 @@ use std::{collections::hash_map::DefaultHasher, hash::Hasher, net::SocketAddr};
 
 use crate::common::{dns::socket_addrs, error::Error};
 use derive_more::{From, TryInto};
+use easytier_core::tunnel::{IpVersion, TunnelError};
 use socket2::Protocol;
 use strum::{Display, EnumString, IntoStaticStr, VariantArray};
-
-pub use crate::proto::common::TunnelInfo;
-pub use easytier_core::tunnel::{
-    IpVersion, SinkError, SinkItem, SplitTunnel, StreamItem, StreamT, Tunnel, TunnelError,
-    ZCPacketSink, ZCPacketStream,
-};
 
 pub mod common;
 pub(crate) mod protocol;

@@ -11,7 +11,7 @@ use crate::{
         host::NativeInstanceHost,
     },
     instance_manager::{DaemonGuard, NetworkInstanceManager},
-    tunnel::{Tunnel, TunnelScheme},
+    tunnel::TunnelScheme,
 };
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
@@ -21,6 +21,7 @@ use easytier_core::{
         protocol::raw::TunnelDialer,
     },
     socket::IpVersion,
+    tunnel::Tunnel,
 };
 use tokio_util::task::AbortOnDropHandle;
 use url::Url;

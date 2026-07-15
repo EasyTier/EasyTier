@@ -16,8 +16,8 @@ use crate::{
             WebServerServiceClientFactory,
         },
     },
-    tunnel::Tunnel,
 };
+use easytier_core::tunnel::Tunnel;
 
 use super::controller::Controller;
 

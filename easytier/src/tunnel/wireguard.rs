@@ -8,13 +8,11 @@ use std::{
 
 use quanta::Instant;
 
-use super::{
-    FromUrl, IpVersion, Tunnel, TunnelError, TunnelInfo, ZCPacketSink, ZCPacketStream,
-    common::wait_for_connect_futures,
-};
+use super::{FromUrl, common::wait_for_connect_futures};
 use crate::tunnel::common::{BindDev, bind};
 use crate::{
     common::{netns::NetNS, shrink_dashmap},
+    proto::common::TunnelInfo,
     socket::udp::{
         RuntimeUdpSessionSocketListener, RuntimeUdpSocket, new_runtime_udp_session_listener,
     },
@@ -31,6 +29,7 @@ use bytes::BytesMut;
 use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
 use easytier_core::tunnel::ring::create_ring_tunnel_pair;
+use easytier_core::tunnel::{IpVersion, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream};
 use easytier_core::{
     connectivity::transport::ConnectedUdpSession,
     packet::{PEER_MANAGER_HEADER_SIZE, WG_TUNNEL_HEADER_SIZE, ZCPacket, ZCPacketType},
@@ -655,7 +654,7 @@ impl WgTunnelConnector {
         udp: UdpSocket,
         context: SocketContext,
         addr: SocketAddr,
-    ) -> Result<Box<dyn super::Tunnel>, super::TunnelError> {
+    ) -> Result<Box<dyn Tunnel>, TunnelError> {
         tracing::warn!("wg connect: {:?}", addr);
         let runtime_socket = Arc::new(RuntimeUdpSocket::new_with_context(Arc::new(udp), context));
         let layer = runtime_socket.udp_session_layer();

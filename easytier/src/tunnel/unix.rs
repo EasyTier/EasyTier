@@ -2,14 +2,13 @@ use std::path::Path;
 
 use async_trait::async_trait;
 use easytier_core::tunnel::{
+    Tunnel, TunnelError,
     framed::{FramedReader, FramedWriter},
     wrapper::TunnelWrapper,
 };
 use tokio::net::{UnixListener, UnixStream, unix::SocketAddr};
 
-use super::TunnelInfo;
-
-use super::{Tunnel, TunnelError};
+use crate::proto::common::TunnelInfo;
 
 const MAX_PACKET_SIZE: usize = 4096;
 

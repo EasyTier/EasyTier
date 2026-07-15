@@ -67,6 +67,11 @@ tested beside the core gateway runtime. Native gateway tests must cover real
 Host Adapters or concrete engines instead of rebuilding a portable core test
 through `GlobalCtx`.
 
+Native protocol engines also import the core `Tunnel`, split stream/sink,
+packet stream, error, and IP-version types directly. `easytier::tunnel` owns
+only native protocol modules plus URL/scheme and OS-resolution helpers; it is
+not a public forwarding namespace for the portable tunnel model.
+
 The obsolete native `tx_throughput` benchmark was removed with the manager
 facades it depended on. A replacement peer-graph or raw-transport benchmark
 must be owned by `easytier-core`; a native benchmark may measure only a public
@@ -189,6 +194,7 @@ easytier/src/tunnel/packet_def.rs
 easytier/src/common/idn.rs
 easytier/src/common/acl_processor.rs
 pub use easytier_core::tunnel::framed (native production)
+pub use easytier_core::tunnel::{ (native production)
 easytier/src/gateway/tests.rs
 easytier/benches/tx_throughput.rs
 ```

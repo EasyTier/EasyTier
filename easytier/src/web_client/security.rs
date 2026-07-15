@@ -4,16 +4,15 @@ use std::time::Duration;
 use easytier_core::{
     packet::{PacketType, ZCPacket, ZCPacketType},
     peers::secure_datagram::{SecureDatagramDirection, SecureDatagramSession},
-    tunnel::filter::{TunnelFilter, TunnelWithFilter},
+    tunnel::{
+        SplitTunnel, StreamItem, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream,
+        filter::{TunnelFilter, TunnelWithFilter},
+    },
 };
 use futures::{SinkExt, StreamExt};
 use snow::{Builder, params::NoiseParams};
 
-use crate::{
-    common::config::EncryptionAlgorithm,
-    proto::common::TunnelInfo,
-    tunnel::{SplitTunnel, StreamItem, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream},
-};
+use crate::{common::config::EncryptionAlgorithm, proto::common::TunnelInfo};
 
 const NOISE_MAGIC: &[u8] = b"ET_WEB_NOISE_V1:";
 const NOISE_PROLOGUE: &[u8] = b"easytier-webclient-noise-v1";

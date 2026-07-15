@@ -3,8 +3,8 @@ use futures::{Future, stream::FuturesUnordered};
 use network_interface::NetworkInterfaceConfig as _;
 use std::net::{IpAddr, SocketAddr};
 
-use super::TunnelError;
 use crate::common::netns::NetNS;
+use easytier_core::tunnel::TunnelError;
 use tokio::net::{TcpListener, TcpSocket, UdpSocket};
 use tokio_stream::StreamExt;
 
@@ -286,9 +286,9 @@ pub mod tests {
     use crate::common::netns::NetNS;
 
     #[cfg(test)]
-    use crate::tunnel::TunnelError;
-    #[cfg(test)]
     use easytier_core::packet::{PEER_MANAGER_HEADER_SIZE, TCP_TUNNEL_HEADER_SIZE};
+    #[cfg(test)]
+    use easytier_core::tunnel::TunnelError;
     #[cfg(test)]
     use easytier_core::tunnel::framed::FramedReader;
 
