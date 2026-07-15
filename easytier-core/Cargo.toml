@@ -102,5 +102,8 @@ proxy-smoltcp-stack = [
     "smoltcp/proto-ipv6",
     "smoltcp/async",
 ]
-test-utils = ["tokio/rt-multi-thread"]
+test-utils = []
 zstd = ["dep:zstd"]
+
+[target.'cfg(not(target_os = "wasi"))'.dev-dependencies]
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread"] }

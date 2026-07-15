@@ -2886,7 +2886,11 @@ mod tests {
         }
 
         #[cfg(feature = "test-utils")]
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[cfg_attr(
+            not(target_os = "wasi"),
+            tokio::test(flavor = "multi_thread", worker_threads = 2)
+        )]
+        #[cfg_attr(target_os = "wasi", tokio::test)]
         async fn concurrent_runtime_updates_keep_snapshot_and_derived_state_coherent() {
             let config = test_config("concurrent-runtime-update");
             let instance = build_instance(config.clone()).unwrap();
