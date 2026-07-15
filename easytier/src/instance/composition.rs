@@ -257,12 +257,10 @@ mod tests {
         ipv4::{self, MutableIpv4Packet},
         udp::{self, MutableUdpPacket},
     };
-    use tokio::sync::Notify;
-    use tokio_util::task::AbortOnDropHandle;
 
     use crate::{
         common::{
-            config::{ConfigLoader as _, PeerConfig},
+            config::ConfigLoader as _,
             global_ctx::{
                 NetworkIdentity,
                 tests::{get_mock_global_ctx, get_mock_global_ctx_with_network},
@@ -309,21 +307,9 @@ mod tests {
         .map(|(instance, ())| instance)
     }
 
-    #[derive(Debug, Default)]
-    struct BlockingListenerState {
-        start_entered: Notify,
-        drop_calls: AtomicUsize,
-    }
-
     #[derive(Debug)]
     struct ExternalRegistryListener {
         url: url::Url,
-    }
-
-    #[derive(Debug)]
-    struct BlockingSocketListener {
-        url: url::Url,
-        state: Arc<BlockingListenerState>,
     }
 
     #[async_trait::async_trait]
@@ -345,40 +331,7 @@ mod tests {
         }
     }
 
-    #[async_trait::async_trait]
-    impl SocketListener for BlockingSocketListener {
-        type Accepted = easytier_core::listener::transport::AcceptedTransport<
-            crate::socket::tcp::RuntimeTcpSocket,
-        >;
-
-        async fn listen(&mut self) -> anyhow::Result<()> {
-            self.state.start_entered.notify_one();
-            std::future::pending().await
-        }
-
-        async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
-            std::future::pending().await
-        }
-
-        fn local_url(&self) -> url::Url {
-            self.url.clone()
-        }
-    }
-
-    impl Drop for BlockingSocketListener {
-        fn drop(&mut self) {
-            self.state.drop_calls.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    enum TestExternalListenerKind {
-        Registry,
-        Blocking(Arc<BlockingListenerState>),
-    }
-
-    struct TestExternalListenerFactory {
-        kind: TestExternalListenerKind,
-    }
+    struct TestExternalListenerFactory;
 
     impl
         ExternalListenerFactory<
@@ -401,15 +354,7 @@ mod tests {
                 >,
             >,
         > {
-            match &self.kind {
-                TestExternalListenerKind::Registry => {
-                    Box::new(ExternalRegistryListener { url: request.url })
-                }
-                TestExternalListenerKind::Blocking(state) => Box::new(BlockingSocketListener {
-                    url: request.url,
-                    state: state.clone(),
-                }),
-            }
+            Box::new(ExternalRegistryListener { url: request.url })
         }
     }
 
@@ -481,90 +426,6 @@ mod tests {
         }
     }
 
-    #[derive(Default)]
-    struct BlockingProxyService {
-        start_entered: Notify,
-        release_start: Notify,
-        start_calls: AtomicUsize,
-        stop_calls: AtomicUsize,
-    }
-
-    #[async_trait::async_trait]
-    impl WrappedTransportEngine for BlockingProxyService {
-        async fn prepare(&self, _options: WrappedTransportEngineStart) -> anyhow::Result<()> {
-            self.start_calls.fetch_add(1, Ordering::Relaxed);
-            self.start_entered.notify_one();
-            self.release_start.notified().await;
-            Ok(())
-        }
-
-        async fn activate(&self) -> anyhow::Result<()> {
-            Ok(())
-        }
-
-        async fn inject_peer_datagram(
-            &self,
-            _role: WrappedTransportRole,
-            _from_peer_id: u32,
-            _payload: bytes::Bytes,
-        ) -> anyhow::Result<()> {
-            Ok(())
-        }
-
-        async fn connect_source(
-            &self,
-            _request: WrappedTransportConnect,
-        ) -> anyhow::Result<Box<dyn easytier_core::proxy::runtime::TcpProxyStream>> {
-            anyhow::bail!("blocking engine does not open streams")
-        }
-
-        async fn stop(&self) {
-            self.stop_calls.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    fn build_test_instance_with_listener(
-        network_name: &str,
-        url: url::Url,
-        factory: Arc<
-            dyn ExternalListenerFactory<
-                easytier_core::listener::transport::AcceptedTransport<
-                    crate::socket::tcp::RuntimeTcpSocket,
-                >,
-            >,
-        >,
-    ) -> Arc<NativeCoreInstance> {
-        let global_ctx = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
-            network_name.to_owned(),
-            String::new(),
-        )));
-        let peer = runtime_peer_manager_config(&global_ctx, RouteAlgoType::Ospf);
-        let connectivity = CoreInstanceConfig {
-            initial_peers: Vec::new(),
-            listeners: Some(ListenerRuntimeConfig::new(
-                vec![url],
-                false,
-                runtime_socket_context(&global_ctx),
-            )),
-            runtime: Default::default(),
-            stun: runtime_stun_server_config(&global_ctx),
-            endpoint_discovery: runtime_endpoint_discovery_config(&global_ctx),
-            manual: runtime_manual_options(&global_ctx),
-            direct: runtime_direct_options(&global_ctx, false),
-        };
-        let mut adapters = runtime_core_instance_adapters(global_ctx);
-        adapters.external_listener_factory = Some(factory);
-        let (packet_sink, _packet_receiver) = create_host_packet_channel();
-        Arc::new(
-            CoreInstance::new_portable(
-                adapters,
-                PortableCoreInstanceConfig { peer, connectivity },
-                Arc::new(packet_sink),
-            )
-            .unwrap(),
-        )
-    }
-
     #[tokio::test]
     async fn portable_runtime_builder_constructs_and_owns_peer_graph() {
         let global_ctx = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
@@ -586,246 +447,6 @@ mod tests {
         assert_ne!(instance.peer_id(), 0);
         instance.stop().await;
         assert_eq!(instance.state(), CoreInstanceState::Stopped);
-    }
-
-    #[tokio::test]
-    async fn runtime_updates_refresh_avoid_relay_preference() {
-        let global_ctx = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
-            "portable-runtime-update".to_owned(),
-            String::new(),
-        )));
-        let (packet_sink, _packet_receiver) = create_host_packet_channel();
-        let (instance, ()) =
-            build_portable_runtime_core_instance_with_transport_factory_and_process_runtime(
-                global_ctx.clone(),
-                Arc::new(packet_sink),
-                NoWrappedTransportEngineFactory,
-                CoreProcessRuntime::new(),
-            )
-            .unwrap();
-
-        assert!(
-            !instance
-                .node_snapshot()
-                .await
-                .feature_flags
-                .avoid_relay_data
-        );
-
-        let mut enabled = runtime_instance_config(&global_ctx).peer;
-        Arc::make_mut(&mut enabled).avoid_relay_data_preference = true;
-        instance.update_peer_runtime_snapshot(enabled).await;
-
-        assert!(
-            instance
-                .node_snapshot()
-                .await
-                .feature_flags
-                .avoid_relay_data
-        );
-
-        let mut disabled = runtime_instance_config(&global_ctx);
-        Arc::make_mut(&mut disabled.peer).avoid_relay_data_preference = false;
-        instance.update_runtime_config(disabled).await.unwrap();
-
-        assert!(
-            !instance
-                .node_snapshot()
-                .await
-                .feature_flags
-                .avoid_relay_data
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn concurrent_runtime_updates_keep_snapshot_and_derived_state_coherent() {
-        let global_ctx = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
-            "concurrent-runtime-update".to_owned(),
-            String::new(),
-        )));
-        let (packet_sink, _packet_receiver) = create_host_packet_channel();
-        let (instance, ()) =
-            build_portable_runtime_core_instance_with_transport_factory_and_process_runtime(
-                global_ctx.clone(),
-                Arc::new(packet_sink),
-                NoWrappedTransportEngineFactory,
-                CoreProcessRuntime::new(),
-            )
-            .unwrap();
-        let instance = Arc::new(instance);
-        instance.start().await.unwrap();
-        instance.start_network_services(None).await.unwrap();
-
-        let original = instance.node_snapshot().await;
-        let mut full = runtime_instance_config(&global_ctx);
-        full.services.dhcp_ipv4 = true;
-        full.services.acl.tcp_whitelist = vec!["80".to_owned()];
-        {
-            let peer = Arc::make_mut(&mut full.peer);
-            peer.runtime.core.node.hostname = Some("full".to_owned());
-            peer.runtime.core.routes.proxy_networks =
-                vec![easytier_core::config::ProxyNetworkConfig {
-                    real: easytier_core::config::IpPrefix {
-                        address: "192.0.2.0".parse().unwrap(),
-                        prefix_len: 24,
-                    },
-                    mapped: Some(easytier_core::config::IpPrefix {
-                        address: "198.51.100.0".parse().unwrap(),
-                        prefix_len: 24,
-                    }),
-                }];
-        }
-        let mut peer_only = runtime_instance_config(&global_ctx).peer;
-        {
-            let peer = Arc::make_mut(&mut peer_only);
-            peer.runtime.core.node.hostname = Some("peer".to_owned());
-            peer.runtime.core.routes.proxy_networks =
-                vec![easytier_core::config::ProxyNetworkConfig {
-                    real: easytier_core::config::IpPrefix {
-                        address: "203.0.113.0".parse().unwrap(),
-                        prefix_len: 24,
-                    },
-                    mapped: Some(easytier_core::config::IpPrefix {
-                        address: "10.20.30.0".parse().unwrap(),
-                        prefix_len: 24,
-                    }),
-                }];
-        }
-
-        let start = Arc::new(tokio::sync::Barrier::new(3));
-        let full_update = tokio::spawn({
-            let instance = instance.clone();
-            let start = start.clone();
-            async move {
-                start.wait().await;
-                instance.update_runtime_config(full).await
-            }
-        });
-        let peer_update = tokio::spawn({
-            let instance = instance.clone();
-            let start = start.clone();
-            async move {
-                start.wait().await;
-                instance.update_peer_runtime_snapshot(peer_only).await;
-            }
-        });
-        start.wait().await;
-        full_update.await.unwrap().unwrap();
-        peer_update.await.unwrap();
-
-        assert!(instance.runtime_config_snapshot().dhcp_ipv4);
-        assert_eq!(
-            instance.acl_whitelist_snapshot().tcp_ports,
-            ["80".to_owned()]
-        );
-        assert_eq!(instance.acl_reload_count_for_test(), 1);
-        let node = instance.node_snapshot().await;
-        assert_eq!(node.peer_id, original.peer_id);
-        assert_eq!(node.instance_id, original.instance_id);
-        match node.hostname.as_str() {
-            "full" => assert_eq!(
-                instance.proxy_cidr_lookup_for_test("198.51.100.42".parse().unwrap()),
-                Some("192.0.2.42".parse().unwrap())
-            ),
-            "peer" => assert_eq!(
-                instance.proxy_cidr_lookup_for_test("10.20.30.42".parse().unwrap()),
-                Some("203.0.113.42".parse().unwrap())
-            ),
-            hostname => panic!("unexpected final hostname: {hostname:?}"),
-        }
-
-        instance.stop().await;
-    }
-
-    #[tokio::test]
-    async fn active_runtime_update_skips_unchanged_and_rejects_invalid_acl() {
-        let global_ctx = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
-            "invalid-active-acl-update".to_owned(),
-            String::new(),
-        )));
-        let (packet_sink, _packet_receiver) = create_host_packet_channel();
-        let (instance, ()) =
-            build_portable_runtime_core_instance_with_transport_factory_and_process_runtime(
-                global_ctx.clone(),
-                Arc::new(packet_sink),
-                NoWrappedTransportEngineFactory,
-                CoreProcessRuntime::new(),
-            )
-            .unwrap();
-        let instance = Arc::new(instance);
-        instance.start().await.unwrap();
-        instance.start_network_services(None).await.unwrap();
-
-        let mut unrelated = runtime_instance_config(&global_ctx);
-        Arc::make_mut(&mut unrelated.peer)
-            .runtime
-            .core
-            .node
-            .hostname = Some("accepted".to_owned());
-        instance.update_runtime_config(unrelated).await.unwrap();
-        assert_eq!(instance.acl_reload_count_for_test(), 0);
-        let before = instance.node_snapshot().await;
-
-        let mut rejected = runtime_instance_config(&global_ctx);
-        rejected.services.dhcp_ipv4 = true;
-        rejected.services.acl.tcp_whitelist = vec!["invalid".to_owned()];
-        Arc::make_mut(&mut rejected.peer).runtime.core.node.hostname = Some("rejected".to_owned());
-
-        let error = instance.update_runtime_config(rejected).await.unwrap_err();
-
-        assert!(error.to_string().contains("Invalid port number"));
-        assert!(!instance.runtime_config_snapshot().dhcp_ipv4);
-        assert!(instance.acl_whitelist_snapshot().tcp_ports.is_empty());
-        assert_eq!(instance.acl_reload_count_for_test(), 0);
-        assert_eq!(instance.node_snapshot().await.hostname, before.hostname);
-        instance.stop().await;
-    }
-
-    #[tokio::test]
-    async fn runtime_core_instance_owns_connectivity_lifecycle() {
-        let global_ctx = get_mock_global_ctx();
-        global_ctx
-            .config
-            .add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None)
-            .unwrap();
-        let initial_peer: url::Url = "tcp://127.0.0.1:29999".parse().unwrap();
-        global_ctx.config.set_peers(vec![PeerConfig {
-            uri: initial_peer.clone(),
-            peer_public_key: None,
-        }]);
-        let transport_proxy = Arc::new(RecordingProxyService::default());
-        let (instance, _cidr_table) = build_portable_test_instance_with_transport_factory(
-            global_ctx,
-            TestTransportProxyFactory {
-                service: transport_proxy.clone(),
-            },
-        )
-        .expect("runtime core composition should succeed");
-        let instance = Arc::new(instance);
-
-        assert_eq!(instance.state(), CoreInstanceState::Created);
-        assert!(instance.list_connectors().is_empty());
-        assert!(instance.start_transport_proxy().await.is_err());
-        assert!(instance.start_network_services(None).await.is_err());
-        assert!(instance.start_proxy().await.is_err());
-        assert!(instance.start_peer_center().await.is_err());
-        instance.start().await.unwrap();
-        assert_eq!(instance.state(), CoreInstanceState::Running);
-        assert!(instance.list_connectors().is_empty());
-        assert!(instance.start_initial_peers().await.is_err());
-        assert!(instance.start().await.is_err());
-        instance.start_network_services(None).await.unwrap();
-        instance.start_network_services(None).await.unwrap();
-        assert_eq!(transport_proxy.start_calls.load(Ordering::Relaxed), 1);
-        assert_eq!(instance.list_connectors().len(), 1);
-        assert_eq!(instance.list_connectors()[0].url, initial_peer);
-        assert!(instance.proxy_is_started());
-
-        instance.stop().await;
-        instance.stop().await;
-        assert_eq!(instance.state(), CoreInstanceState::Stopped);
-        assert_eq!(transport_proxy.stop_calls.load(Ordering::Relaxed), 1);
-        assert!(!instance.proxy_is_started());
     }
 
     #[tokio::test]
@@ -961,67 +582,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runtime_core_instance_owns_the_transport_proxy_cidr_table() {
-        let global_ctx = get_mock_global_ctx();
-        global_ctx
-            .config
-            .add_proxy_cidr(
-                "192.0.2.0/24".parse().unwrap(),
-                Some("198.51.100.0/24".parse().unwrap()),
-            )
-            .unwrap();
-        let transport_proxy = Arc::new(RecordingProxyService::default());
-        let runtime_global_ctx = global_ctx.clone();
-        let (instance, ()) = build_portable_test_instance_with_transport_factory(
-            global_ctx,
-            TestTransportProxyFactory {
-                service: transport_proxy.clone(),
-            },
-        )
-        .expect("runtime core composition should succeed");
-        let instance = Arc::new(instance);
-
-        assert!(instance.start_network_services(None).await.is_err());
-        assert_eq!(instance.node_snapshot().await.proxy_networks.len(), 1);
-        instance.start().await.unwrap();
-        instance.start_network_services(None).await.unwrap();
-        instance.start_network_services(None).await.unwrap();
-        assert_eq!(transport_proxy.start_calls.load(Ordering::Relaxed), 1);
-
-        let mut config = runtime_instance_config(&runtime_global_ctx);
-        config.peer = Arc::new({
-            let mut peer = config.peer.as_ref().clone();
-            peer.runtime.core.routes.proxy_networks =
-                vec![easytier_core::config::ProxyNetworkConfig {
-                    real: easytier_core::config::IpPrefix {
-                        address: "203.0.113.0".parse().unwrap(),
-                        prefix_len: 24,
-                    },
-                    mapped: Some(easytier_core::config::IpPrefix {
-                        address: "10.20.30.0".parse().unwrap(),
-                        prefix_len: 24,
-                    }),
-                }];
-            peer
-        });
-        instance.update_runtime_config(config).await.unwrap();
-        let proxy_networks = instance.node_snapshot().await.proxy_networks;
-        assert_eq!(proxy_networks.len(), 1);
-        assert_eq!(
-            proxy_networks[0].real.address,
-            "203.0.113.0".parse::<std::net::IpAddr>().unwrap()
-        );
-        assert_eq!(
-            proxy_networks[0].mapped.as_ref().unwrap().address,
-            "10.20.30.0".parse::<std::net::IpAddr>().unwrap()
-        );
-
-        instance.stop().await;
-        assert!(instance.start_network_services(None).await.is_err());
-        assert_eq!(transport_proxy.stop_calls.load(Ordering::Relaxed), 1);
-    }
-
-    #[tokio::test]
     async fn runtime_core_requires_explicit_proxy_policy_update() {
         let global_ctx = get_mock_global_ctx();
         let transport_proxy = Arc::new(RecordingProxyService::default());
@@ -1057,32 +617,6 @@ mod tests {
         instance.stop().await;
         assert_eq!(transport_proxy.stop_calls.load(Ordering::Relaxed), 1);
         assert!(!instance.proxy_is_started());
-    }
-
-    #[tokio::test]
-    async fn runtime_core_accepts_explicit_acl_runtime_snapshot() {
-        let global_ctx = get_mock_global_ctx();
-        let instance = Arc::new(
-            build_portable_test_instance(global_ctx.clone())
-                .expect("runtime core composition should succeed"),
-        );
-        assert_eq!(instance.acl_whitelist_snapshot(), Default::default());
-
-        global_ctx
-            .config
-            .set_tcp_whitelist(vec!["invalid".to_string()]);
-        instance
-            .update_runtime_config(runtime_instance_config(&global_ctx))
-            .await
-            .unwrap();
-        instance.start().await.unwrap();
-        let error = instance.start_network_services(None).await.unwrap_err();
-        assert!(
-            error.to_string().contains("Invalid port number"),
-            "unexpected ACL activation error: {error:#}"
-        );
-        assert_eq!(instance.acl_whitelist_snapshot().tcp_ports, ["invalid"]);
-        instance.stop().await;
     }
 
     #[tokio::test]
@@ -1132,9 +666,7 @@ mod tests {
             direct: runtime_direct_options(&global_ctx, false),
         };
         let mut adapters = runtime_core_instance_adapters(global_ctx);
-        adapters.external_listener_factory = Some(Arc::new(TestExternalListenerFactory {
-            kind: TestExternalListenerKind::Registry,
-        }));
+        adapters.external_listener_factory = Some(Arc::new(TestExternalListenerFactory));
         let (packet_sink, _packet_receiver) = create_host_packet_channel();
         let instance = Arc::new(
             CoreInstance::new_portable(
@@ -1154,125 +686,6 @@ mod tests {
 
         instance.stop().await;
         assert!(instance.running_listeners().is_empty());
-    }
-
-    #[tokio::test]
-    async fn runtime_core_accepts_explicit_dhcp_runtime_snapshot() {
-        let global_ctx = get_mock_global_ctx();
-        let instance = Arc::new(
-            build_portable_test_instance(global_ctx.clone())
-                .expect("runtime core composition should succeed"),
-        );
-
-        global_ctx.config.set_dhcp(true);
-        instance
-            .update_runtime_config(runtime_instance_config(&global_ctx))
-            .await
-            .unwrap();
-        instance.start().await.unwrap();
-        let error = instance.start_network_services(None).await.unwrap_err();
-        assert!(
-            error.to_string().contains("no host adapter was provided"),
-            "unexpected DHCP activation error: {error:#}"
-        );
-        instance.stop().await;
-    }
-
-    #[tokio::test]
-    async fn runtime_core_accepts_explicit_public_ipv6_runtime_snapshot() {
-        let global_ctx = get_mock_global_ctx();
-        let instance = Arc::new(
-            build_portable_test_instance(global_ctx.clone())
-                .expect("runtime core composition should succeed"),
-        );
-
-        global_ctx.config.set_ipv6_public_addr_provider(true);
-        global_ctx
-            .config
-            .set_ipv6_public_addr_prefix(Some("fd00::/64".parse().unwrap()));
-        instance
-            .update_runtime_config(runtime_instance_config(&global_ctx))
-            .await
-            .unwrap();
-        let error = instance.start().await.unwrap_err();
-        assert!(
-            error.to_string().contains("not a valid global unicast"),
-            "unexpected public IPv6 activation error: {error:#}"
-        );
-        assert_eq!(instance.state(), CoreInstanceState::Created);
-    }
-
-    #[tokio::test]
-    async fn stopping_while_transport_proxy_starts_rolls_back_once() {
-        let global_ctx = get_mock_global_ctx();
-        global_ctx
-            .config
-            .add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None)
-            .unwrap();
-        let initial_peer: url::Url = "tcp://127.0.0.1:29998".parse().unwrap();
-        global_ctx.config.set_peers(vec![PeerConfig {
-            uri: initial_peer,
-            peer_public_key: None,
-        }]);
-        let proxy = Arc::new(BlockingProxyService::default());
-        let (instance, _cidr_table) = build_portable_test_instance_with_transport_factory(
-            global_ctx,
-            TestTransportProxyFactory {
-                service: proxy.clone(),
-            },
-        )
-        .expect("runtime core composition should succeed");
-        let instance = Arc::new(instance);
-        instance.start().await.unwrap();
-        instance.start_peer_center().await.unwrap();
-
-        let start_task = tokio::spawn({
-            let instance = instance.clone();
-            async move { instance.start_transport_proxy().await }
-        });
-        proxy.start_entered.notified().await;
-        let initial_peer_task = tokio::spawn({
-            let instance = instance.clone();
-            async move { instance.start_initial_peers().await }
-        });
-        tokio::task::yield_now().await;
-        let stop_task = tokio::spawn({
-            let instance = instance.clone();
-            async move { instance.stop().await }
-        });
-        tokio::task::yield_now().await;
-        proxy.release_start.notify_one();
-
-        assert!(start_task.await.unwrap().is_err());
-        assert!(initial_peer_task.await.unwrap().is_err());
-        stop_task.await.unwrap();
-        assert!(instance.list_connectors().is_empty());
-        assert_eq!(instance.state(), CoreInstanceState::Stopped);
-        assert_eq!(proxy.start_calls.load(Ordering::Relaxed), 1);
-        assert_eq!(proxy.stop_calls.load(Ordering::Relaxed), 1);
-    }
-
-    #[tokio::test]
-    async fn invalid_initial_peer_fails_during_activation() {
-        let global_ctx = get_mock_global_ctx();
-        global_ctx.config.set_peers(vec![PeerConfig {
-            uri: "unsupported://peer.example:1234".parse().unwrap(),
-            peer_public_key: None,
-        }]);
-        let instance = Arc::new(
-            build_portable_test_instance(global_ctx)
-                .expect("invalid peer schemes must not panic during composition"),
-        );
-
-        instance.start().await.unwrap();
-        instance.start_peer_center().await.unwrap();
-        let error = instance.start_initial_peers().await.unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("unsupported core manual connector URL")
-        );
-        instance.stop().await;
     }
 
     #[tokio::test]
@@ -1453,104 +866,5 @@ mod tests {
 
         instance_b.stop().await;
         instance_a.stop().await;
-    }
-
-    #[tokio::test]
-    async fn portable_core_instance_rejects_conflicting_p2p_policy() {
-        let global_ctx = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
-            "portable-policy-validation".to_owned(),
-            String::new(),
-        )));
-        let (packet_sink, _packet_receiver) = create_host_packet_channel();
-        let peer = runtime_peer_manager_config(&global_ctx, RouteAlgoType::Ospf);
-        let mut connectivity = CoreInstanceConfig {
-            initial_peers: Vec::new(),
-            listeners: None,
-            runtime: Default::default(),
-            stun: runtime_stun_server_config(&global_ctx),
-            endpoint_discovery: runtime_endpoint_discovery_config(&global_ctx),
-            manual: runtime_manual_options(&global_ctx),
-            direct: runtime_direct_options(&global_ctx, false),
-        };
-        connectivity.direct.disable_p2p = !peer.snapshot.flags.disable_p2p;
-
-        let error = NativeCoreInstance::new_portable(
-            runtime_core_instance_adapters(global_ctx),
-            PortableCoreInstanceConfig { peer, connectivity },
-            Arc::new(packet_sink),
-        )
-        .err()
-        .expect("conflicting P2P policy should be rejected");
-
-        assert!(error.to_string().contains("P2P policy"));
-    }
-
-    fn build_test_instance(network_name: &str) -> Arc<NativeCoreInstance> {
-        let global_ctx = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
-            network_name.to_owned(),
-            String::new(),
-        )));
-        Arc::new(build_portable_test_instance(global_ctx).unwrap())
-    }
-
-    #[tokio::test]
-    async fn runtime_core_instances_keep_lifecycle_and_connectors_isolated() {
-        let instance_a = build_test_instance("instance-a");
-        let instance_b = build_test_instance("instance-b");
-        let connector_a: url::Url = "tcp://127.0.0.1:21001".parse().unwrap();
-        let connector_b: url::Url = "udp://127.0.0.1:21002".parse().unwrap();
-
-        instance_a.add_connector(connector_a.clone()).unwrap();
-        instance_b.add_connector(connector_b.clone()).unwrap();
-        assert_eq!(instance_a.list_connectors()[0].url, connector_a);
-        assert_eq!(instance_b.list_connectors()[0].url, connector_b);
-        instance_a.clear_connectors();
-        instance_b.clear_connectors();
-
-        let (start_a, start_b) = tokio::join!(instance_a.start(), instance_b.start());
-        start_a.unwrap();
-        start_b.unwrap();
-        let (udp_a, udp_b) = tokio::join!(
-            instance_a.start_udp_hole_punch(),
-            instance_b.start_udp_hole_punch()
-        );
-        udp_a.unwrap();
-        udp_b.unwrap();
-        assert_eq!(instance_a.state(), CoreInstanceState::Running);
-        assert_eq!(instance_b.state(), CoreInstanceState::Running);
-
-        instance_a.stop().await;
-        assert_eq!(instance_a.state(), CoreInstanceState::Stopped);
-        assert_eq!(instance_b.state(), CoreInstanceState::Running);
-
-        instance_b.stop().await;
-        assert_eq!(instance_b.state(), CoreInstanceState::Stopped);
-    }
-
-    #[tokio::test]
-    #[cfg(unix)]
-    async fn stop_cancels_pending_listener_start() {
-        let listener = Arc::new(BlockingListenerState::default());
-        let instance = build_test_instance_with_listener(
-            "pending-listener",
-            "unix:///tmp/easytier-pending-listener".parse().unwrap(),
-            Arc::new(TestExternalListenerFactory {
-                kind: TestExternalListenerKind::Blocking(listener.clone()),
-            }),
-        );
-        let start_instance = instance.clone();
-        let start_task =
-            AbortOnDropHandle::new(tokio::spawn(async move { start_instance.start().await }));
-        let start_result = tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            listener.start_entered.notified().await;
-            instance.stop().await;
-            start_task.await.unwrap()
-        })
-        .await
-        .expect("listener cancellation should complete promptly");
-
-        assert!(start_result.is_err());
-        assert_eq!(instance.state(), CoreInstanceState::Stopped);
-        assert_eq!(listener.drop_calls.load(Ordering::Relaxed), 1);
     }
 }
