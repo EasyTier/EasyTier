@@ -98,7 +98,9 @@ jobs:
       - uses: taiki-e/install-action@nextest
 
       - name: Archive test
-        run: cargo nextest archive --archive-file tests.tar.zst --package easytier --features full
+        run: >-
+          cargo nextest archive --archive-file tests.tar.zst
+          --package easytier --package easytier-core --features full
 
       - uses: actions/upload-artifact@v5
         with:

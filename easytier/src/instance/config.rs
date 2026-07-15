@@ -371,7 +371,39 @@ pub(crate) fn runtime_peer_manager_host_adapters(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::global_ctx::tests::get_mock_global_ctx;
+    use crate::common::{config::PeerConfig, global_ctx::tests::get_mock_global_ctx};
+
+    #[test]
+    fn native_connectivity_config_maps_owned_runtime_inputs() {
+        let global_ctx = get_mock_global_ctx();
+        let peer_url = "tcp://127.0.0.1:29999".parse().unwrap();
+        let public_ipv6_prefix = "2001:db8:1::/64".parse().unwrap();
+        global_ctx.config.set_peers(vec![PeerConfig {
+            uri: peer_url.clone(),
+            peer_public_key: None,
+        }]);
+        global_ctx.config.set_dhcp(true);
+        global_ctx.config.set_tcp_whitelist(vec!["80".to_owned()]);
+        global_ctx.config.set_udp_whitelist(vec!["53".to_owned()]);
+        global_ctx.config.set_ipv6_public_addr_auto(true);
+        global_ctx.config.set_ipv6_public_addr_provider(true);
+        global_ctx
+            .config
+            .set_ipv6_public_addr_prefix(Some(public_ipv6_prefix));
+
+        let config = runtime_connectivity_config(&global_ctx);
+
+        assert_eq!(config.initial_peers, [peer_url]);
+        assert!(config.runtime.dhcp_ipv4);
+        assert_eq!(config.runtime.acl.tcp_whitelist, ["80"]);
+        assert_eq!(config.runtime.acl.udp_whitelist, ["53"]);
+        assert!(config.runtime.public_ipv6_auto);
+        assert!(config.runtime.public_ipv6_provider.provider_enabled);
+        assert_eq!(
+            config.runtime.public_ipv6_provider.configured_prefix,
+            Some(public_ipv6_prefix)
+        );
+    }
 
     #[test]
     fn runtime_stun_config_normalizes_native_server_selection() {
