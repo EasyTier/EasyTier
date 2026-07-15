@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeSet, HashSet},
-    net::{IpAddr, Ipv6Addr, SocketAddr},
+    net::{IpAddr, Ipv6Addr},
     sync::{Arc, Mutex},
 };
 
@@ -28,12 +28,10 @@ use crate::{
         peer_rpc::PeerGroupInfo,
     },
     rpc_service::protected_port,
-    tunnel::matches_protocol,
 };
 use crossbeam::atomic::AtomicCell;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
-use socket2::Protocol;
 
 #[derive(Debug, Clone, Copy)]
 struct FeatureFlagState {
@@ -115,7 +113,6 @@ pub struct GlobalCtx {
     #[cfg(test)]
     stun_info_collection: Arc<StunProviderSlot<RuntimeUdpSocket>>,
 
-    running_listeners: Mutex<Vec<url::Url>>,
     advertised_ipv6_public_addr_prefix: Mutex<Option<cidr::Ipv6Cidr>>,
     tun_device_name: Mutex<Option<String>>,
 
@@ -256,7 +253,6 @@ impl GlobalCtx {
             #[cfg(test)]
             stun_info_collection,
 
-            running_listeners: Mutex::new(Vec::new()),
             advertised_ipv6_public_addr_prefix: Mutex::new(None),
             tun_device_name: Mutex::new(None),
 
@@ -439,28 +435,6 @@ impl GlobalCtx {
         self.stun_info_collection.replace(arc_collector);
     }
 
-    pub fn get_running_listeners(&self) -> Vec<url::Url> {
-        let listeners = self.running_listeners.lock().unwrap();
-        let mut unique = Vec::with_capacity(listeners.len());
-        for listener in listeners.iter() {
-            if !unique.contains(listener) {
-                unique.push(listener.clone());
-            }
-        }
-        unique
-    }
-
-    pub fn add_running_listener(&self, url: url::Url) {
-        self.running_listeners.lock().unwrap().push(url);
-    }
-
-    pub fn remove_running_listener(&self, url: &url::Url) {
-        let mut listeners = self.running_listeners.lock().unwrap();
-        if let Some(index) = listeners.iter().position(|listener| listener == url) {
-            listeners.remove(index);
-        }
-    }
-
     pub fn get_vpn_portal_cidr(&self) -> Option<cidr::Ipv4Cidr> {
         self.config.get_vpn_portal_config().map(|x| x.client_cidr)
     }
@@ -579,14 +553,6 @@ impl GlobalCtx {
         flags.latency_first && !flags.p2p_only
     }
 
-    fn is_port_in_running_listeners(&self, port: u16, is_udp: bool) -> bool {
-        self.running_listeners
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|x| x.port() == Some(port) && matches_protocol!(x, Protocol::UDP) == is_udp)
-    }
-
     pub fn is_local_ip(&self, ip: &IpAddr) -> bool {
         let _guard = self.net_ns.guard();
         self.is_ip_local_virtual_ip(ip) || std::net::UdpSocket::bind(format!("{ip}:0")).is_ok()
@@ -594,21 +560,6 @@ impl GlobalCtx {
 
     pub fn is_protected_tcp_port(&self, port: u16) -> bool {
         protected_port::is_protected_tcp_port(port)
-    }
-
-    #[tracing::instrument(ret, skip(self))]
-    pub fn should_deny_proxy(&self, dst_addr: &SocketAddr, is_udp: bool) -> bool {
-        let ip = dst_addr.ip();
-        // this is an expensive operation, should be called sparingly
-        // 1. tcp/kcp/quic call this only after proxy conn is established
-        // 2. udp cache the result in nat entry
-        if self.is_local_ip(&ip) {
-            // if is local ip, make sure the port is not one of the listening ports
-            self.is_port_in_running_listeners(dst_addr.port(), is_udp)
-                || (!is_udp && self.is_protected_tcp_port(dst_addr.port()))
-        } else {
-            false
-        }
     }
 }
 
@@ -664,22 +615,6 @@ pub mod tests {
             held_provider.get_stun_info().udp_nat_type,
             NatType::PortRestricted as i32
         );
-    }
-
-    #[tokio::test]
-    async fn running_listener_projection_keeps_duplicate_registrations_alive() {
-        let global_ctx = GlobalCtx::new(TomlConfigLoader::default());
-        let listener: url::Url = "udp://127.0.0.1:11010".parse().unwrap();
-
-        global_ctx.add_running_listener(listener.clone());
-        global_ctx.add_running_listener(listener.clone());
-        assert_eq!(global_ctx.get_running_listeners(), vec![listener.clone()]);
-
-        global_ctx.remove_running_listener(&listener);
-        assert_eq!(global_ctx.get_running_listeners(), vec![listener.clone()]);
-
-        global_ctx.remove_running_listener(&listener);
-        assert!(global_ctx.get_running_listeners().is_empty());
     }
 
     #[tokio::test]
@@ -822,23 +757,6 @@ pub mod tests {
     }
 
     #[tokio::test]
-    async fn should_deny_proxy_for_process_wide_rpc_port() {
-        protected_port::clear_protected_tcp_ports_for_test();
-        protected_port::register_protected_tcp_port(15888);
-
-        let config = TomlConfigLoader::default();
-        let global_ctx = GlobalCtx::new(config);
-        let rpc_addr = SocketAddr::from(([127, 0, 0, 1], 15888));
-        let other_tcp_addr = SocketAddr::from(([127, 0, 0, 1], 15889));
-
-        assert!(global_ctx.should_deny_proxy(&rpc_addr, false));
-        assert!(!global_ctx.should_deny_proxy(&rpc_addr, true));
-        assert!(!global_ctx.should_deny_proxy(&other_tcp_addr, false));
-
-        protected_port::clear_protected_tcp_ports_for_test();
-    }
-
-    #[tokio::test]
     async fn virtual_ipv6_and_public_ipv6_lease_are_stored_separately() {
         let config = TomlConfigLoader::default();
         let global_ctx = GlobalCtx::new(config);
@@ -859,15 +777,11 @@ pub mod tests {
         let config = TomlConfigLoader::default();
         let global_ctx = GlobalCtx::new(config);
         let public_ipv6 = "2001:db8::2/64".parse().unwrap();
-        let listener: url::Url = "tcp://[2001:db8::2]:11010".parse().unwrap();
         global_ctx.set_public_ipv6_lease(Some(public_ipv6));
-        global_ctx.add_running_listener(listener);
 
         let ip = std::net::IpAddr::V6(public_ipv6.address());
-        let socket = SocketAddr::from((public_ipv6.address(), 11010));
 
         assert!(global_ctx.is_ip_local_virtual_ip(&ip));
-        assert!(global_ctx.should_deny_proxy(&socket, false));
 
         protected_port::clear_protected_tcp_ports_for_test();
     }

@@ -7,7 +7,7 @@ use easytier_core::proxy::{
 };
 
 use crate::{
-    connector::runtime::RuntimeConnectorHost,
+    instance::host::NativeInstanceHost,
     proto::{
         api::instance::{
             ListTcpProxyEntryRequest, ListTcpProxyEntryResponse, TcpProxyEntry, TcpProxyEntryState,
@@ -17,7 +17,7 @@ use crate::{
     },
 };
 
-pub type NatDstTcpConnector = TcpSocketProxyConnector<RuntimeConnectorHost>;
+pub type NatDstTcpConnector = TcpSocketProxyConnector<NativeInstanceHost>;
 
 fn tcp_entry_snapshot_to_pb(
     entry: TcpNatEntrySnapshot,
@@ -51,12 +51,12 @@ enum CoreTcpProxySource {
 
 #[derive(Clone)]
 pub struct CoreTcpProxyRpcService {
-    core_instance: Weak<crate::connector::core_instance::RuntimeCoreInstance>,
+    core_instance: Weak<crate::instance::composition::NativeCoreInstance>,
     source: CoreTcpProxySource,
 }
 
 impl CoreTcpProxyRpcService {
-    pub fn new(core_instance: &Arc<crate::connector::core_instance::RuntimeCoreInstance>) -> Self {
+    pub fn new(core_instance: &Arc<crate::instance::composition::NativeCoreInstance>) -> Self {
         Self {
             core_instance: Arc::downgrade(core_instance),
             source: CoreTcpProxySource::Tcp,
@@ -64,7 +64,7 @@ impl CoreTcpProxyRpcService {
     }
 
     pub fn new_wrapped(
-        core_instance: &Arc<crate::connector::core_instance::RuntimeCoreInstance>,
+        core_instance: &Arc<crate::instance::composition::NativeCoreInstance>,
         transport: WrappedTransportKind,
         role: WrappedTransportRole,
     ) -> Self {

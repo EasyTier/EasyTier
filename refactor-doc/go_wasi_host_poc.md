@@ -114,13 +114,15 @@ hide Go/native record-chunk differences behind a default resolver. Variable DNS
 results use a non-consuming size probe followed by one bounded owned copy, and
 rejected results are canceled explicitly.
 
-The host create schema is version 8 and submits one normalized peer snapshot,
+The host create schema is version 10 and submits one normalized peer snapshot,
 the UDP, TCP, and IPv6 UDP STUN server lists, and core-owned gateway runtime
 configuration in connectivity configuration.
 Connector route probes also receive the complete socket context. The Go
 environment does not construct or expose STUN state, NAT type, public endpoints,
 or UDP/TCP STUN mappings; `CoreInstance` builds and drives its portable STUN
 collector through the same host-created socket and DNS Interfaces.
+Version 10 removes host-submitted running listeners because every listener
+service now publishes into the core-owned registry.
 
 Packet egress uses a capacity-one Go queue. A successful import owns a complete
 packet copy, queue-full has no side effects, and core retries only after a

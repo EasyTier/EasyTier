@@ -5,7 +5,7 @@ use easytier_core::magic_dns::{
 };
 use tokio::task::JoinSet;
 
-use crate::connector::core_instance::RuntimeCoreInstance;
+use crate::instance::composition::NativeCoreInstance;
 use crate::proto::{
     api::instance::Route,
     common::Void,
@@ -21,7 +21,7 @@ use super::MAGIC_DNS_INSTANCE_ADDR;
 pub struct MagicDnsClientInstance {
     rpc_client: RuntimeRpcClient,
     rpc_stub: Option<Box<dyn MagicDnsServerRpc<Controller = BaseController> + Send>>,
-    route_source: Arc<RuntimeCoreInstance>,
+    route_source: Arc<NativeCoreInstance>,
     tasks: JoinSet<()>,
 }
 
@@ -70,7 +70,7 @@ impl MagicDnsRoutePublisher for RpcMagicDnsRoutePublisher {
 }
 
 impl MagicDnsClientInstance {
-    pub(crate) async fn new(route_source: Arc<RuntimeCoreInstance>) -> Result<Self, anyhow::Error> {
+    pub(crate) async fn new(route_source: Arc<NativeCoreInstance>) -> Result<Self, anyhow::Error> {
         let mut rpc_client = runtime_rpc_client(MAGIC_DNS_INSTANCE_ADDR.parse().unwrap());
         let rpc_stub = rpc_client
             .scoped_client::<MagicDnsServerRpcClientFactory<BaseController>>("".to_string())
@@ -84,7 +84,7 @@ impl MagicDnsClientInstance {
     }
 
     async fn update_dns_task(
-        route_source: Arc<RuntimeCoreInstance>,
+        route_source: Arc<NativeCoreInstance>,
         rpc_stub: Box<dyn MagicDnsServerRpc<Controller = BaseController> + Send>,
     ) -> Result<(), anyhow::Error> {
         let mut publisher = RpcMagicDnsRoutePublisher { rpc_stub };

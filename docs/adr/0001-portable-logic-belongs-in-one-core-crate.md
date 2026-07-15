@@ -61,6 +61,31 @@ The detailed ownership and deletion checks are recorded in
 [`tunnel_ownership_refactor.md`](../../refactor-doc/tunnel_ownership_refactor.md).
 Fine-grained feature slicing can now proceed without reopening this boundary.
 
+## Implementation update (2026-07-15)
+
+The second native orchestration center has been removed:
+
+- `easytier/src/connector`, `easytier/src/peers`, and the test-only native
+  `peer_center` facade are deleted;
+- native composition lives under `instance`, management projection under
+  `instance::management`, and concrete QUIC/WireGuard/WebSocket engines under
+  `tunnel`;
+- `Instance` delegates connector mutations directly to its core instance;
+  native no longer constructs a parallel manual/direct/hole-punch manager;
+- `ForeignNetworkManager`, credential, ACL, stats, STUN, listener registry,
+  UDP hole-punch runtime, portable proxy, and Ring state are constructed and
+  owned inside `easytier-core`;
+- portable tests no longer require native peer or connector facades. Native
+  tests are limited to configuration projection, Host Adapters, concrete
+  protocol engines, and vertical OS integration.
+
+Core now owns the only running-listener registry. Transport and external
+listeners publish into the same event sink; native may mirror events for UI
+presentation but never submits listener state back into core.
+
+The current ownership map and deletion gates are recorded in
+[`core_ownership_finalization.md`](../../refactor-doc/core_ownership_finalization.md).
+
 ## Rejected alternatives
 
 ### Multiple core crates now

@@ -10,7 +10,7 @@ use easytier_core::peers::context::PeerContext;
 use easytier_core::peers::context::{CorePeerContext, CorePeerContextAdapters, PeerStunInfoSource};
 use easytier_core::peers::context::{
     HostRoutingPolicy, NetworkIdentity as CoreNetworkIdentity, PeerCredentialEventSink, PeerEvent,
-    PeerEventSink, PeerPublicIpv6State, PeerRelayStateSink, PeerRuntimeConfig, PeerRuntimeSnapshot,
+    PeerEventSink, PeerPublicIpv6State, PeerRuntimeConfig, PeerRuntimeSnapshot,
 };
 use easytier_core::peers::peer_manager::{
     PeerManagerHostAdapters, PeerPublicIpv6HostAdapters, PortablePeerManagerConfig, RouteAlgoType,
@@ -107,7 +107,10 @@ pub(crate) fn runtime_peer_manager_config(
     };
     let mut snapshot = PeerRuntimeSnapshot::new(runtime, flags);
     snapshot.easytier_version = EASYTIER_VERSION.to_owned();
-    snapshot.avoid_relay_data_preference = global_ctx.get_avoid_relay_data_preference();
+    snapshot.avoid_relay_data_preference = global_ctx.get_avoid_relay_data_preference()
+        || global_ctx
+            .check_network_in_whitelist(&global_ctx.get_network_name())
+            .is_err();
     snapshot.vpn_portal_cidr = global_ctx.get_vpn_portal_cidr();
     snapshot.pinned_peers = global_ctx
         .config
@@ -129,21 +132,19 @@ pub(crate) fn runtime_peer_manager_config(
     }
 }
 
-pub(crate) fn initialize_runtime_peer_host_state(global_ctx: &ArcGlobalCtx) {
-    if global_ctx
-        .check_network_in_whitelist(&global_ctx.get_network_name())
-        .is_err()
-    {
-        // Preserve the legacy policy: a local network outside the relay
-        // whitelist should not relay TUN traffic when another route exists.
-        global_ctx.set_avoid_relay_data_preference(true);
-    }
-}
-
 #[cfg(test)]
 pub(crate) fn build_core_peer_context(
     global_ctx: &ArcGlobalCtx,
     config: &PortablePeerManagerConfig,
+) -> (CoreRuntimeConfigStore, Arc<CorePeerContext>) {
+    build_core_peer_context_with_stun(global_ctx, config, None)
+}
+
+#[cfg(test)]
+pub(crate) fn build_core_peer_context_with_stun(
+    global_ctx: &ArcGlobalCtx,
+    config: &PortablePeerManagerConfig,
+    stun_info_source: Option<Arc<dyn PeerStunInfoSource>>,
 ) -> (CoreRuntimeConfigStore, Arc<CorePeerContext>) {
     let runtime_config = CoreRuntimeConfigStore::new(
         CoreRuntimeConfig::default(),
@@ -151,7 +152,7 @@ pub(crate) fn build_core_peer_context(
     );
     let peer_context = Arc::new(CorePeerContext::new(
         runtime_config.clone(),
-        core_peer_context_adapters(global_ctx),
+        core_peer_context_adapters(global_ctx, stun_info_source),
     ));
     (runtime_config, peer_context)
 }
@@ -186,11 +187,14 @@ impl PeerCredentialEventSink for GlobalCtxPeerEventSink {
 }
 
 #[cfg(test)]
-pub(crate) fn core_peer_context_adapters(global_ctx: &ArcGlobalCtx) -> CorePeerContextAdapters {
+pub(crate) fn core_peer_context_adapters(
+    global_ctx: &ArcGlobalCtx,
+    stun_info_source: Option<Arc<dyn PeerStunInfoSource>>,
+) -> CorePeerContextAdapters {
     let event_sink = Arc::new(GlobalCtxPeerEventSink::new(global_ctx.clone()));
     CorePeerContextAdapters {
-        relay_state_sink: global_ctx.clone(),
-        stun_info_source: Some(global_ctx.clone()),
+        relay_state_sink: Arc::new(()),
+        stun_info_source,
         public_ipv6_state: global_ctx.clone(),
         event_sink: event_sink.clone(),
         credential_storage: runtime_credential_storage(global_ctx.config.get_credential_file()),
@@ -203,24 +207,11 @@ pub(crate) fn runtime_peer_manager_host_adapters(
 ) -> PeerManagerHostAdapters {
     let event_sink = Arc::new(GlobalCtxPeerEventSink::new(global_ctx.clone()));
     PeerManagerHostAdapters {
-        relay_state_sink: global_ctx.clone(),
+        relay_state_sink: Arc::new(()),
         event_sink: event_sink.clone(),
         credential_storage: runtime_credential_storage(global_ctx.config.get_credential_file()),
         credential_event_sink: event_sink,
         public_ipv6: Some(PeerPublicIpv6HostAdapters::new(global_ctx.clone())),
-    }
-}
-
-#[cfg(test)]
-impl PeerStunInfoSource for GlobalCtx {
-    fn stun_info(&self) -> crate::proto::common::StunInfo {
-        self.get_stun_info_collector().get_stun_info()
-    }
-}
-
-impl PeerRelayStateSink for GlobalCtx {
-    fn set_avoid_relay_data_preference(&self, avoid_relay_data: bool) {
-        GlobalCtx::set_avoid_relay_data_preference(self, avoid_relay_data);
     }
 }
 
@@ -336,10 +327,9 @@ mod tests {
         flags.relay_network_whitelist = "other-network".to_owned();
         global_ctx.set_flags(flags);
 
-        initialize_runtime_peer_host_state(&global_ctx);
         let config = runtime_peer_manager_config(&global_ctx, RouteAlgoType::Ospf);
 
-        assert!(global_ctx.get_avoid_relay_data_preference());
+        assert!(!global_ctx.get_avoid_relay_data_preference());
         assert!(config.snapshot.avoid_relay_data_preference);
     }
 
@@ -419,7 +409,6 @@ mod tests {
 
         context.set_avoid_relay_data_preference(true);
         assert!(context.feature_flags().avoid_relay_data);
-        assert!(global_ctx.get_avoid_relay_data_preference());
 
         config.update_peer(Arc::new(
             runtime_peer_manager_config(&global_ctx, RouteAlgoType::Ospf).snapshot,
@@ -442,28 +431,5 @@ mod tests {
             "after-group"
         );
         assert_eq!(context.peer_groups(7)[0].group_name, "after-group");
-    }
-
-    #[tokio::test]
-    async fn runtime_avoid_relay_preference_remains_reversible_after_refresh() {
-        let global_ctx = get_mock_global_ctx();
-        global_ctx.set_avoid_relay_data_preference(true);
-        let (config, context) = core_context_for_test(global_ctx.clone());
-
-        assert!(context.feature_flags().avoid_relay_data);
-        config.update_peer(Arc::new(
-            runtime_peer_manager_config(&global_ctx, RouteAlgoType::Ospf).snapshot,
-        ));
-        context.set_avoid_relay_data_preference(false);
-        assert!(!context.feature_flags().avoid_relay_data);
-        assert!(!global_ctx.get_avoid_relay_data_preference());
-
-        let mut flags = global_ctx.get_flags();
-        flags.disable_relay_data = true;
-        global_ctx.set_flags(flags);
-        config.update_peer(Arc::new(
-            runtime_peer_manager_config(&global_ctx, RouteAlgoType::Ospf).snapshot,
-        ));
-        assert!(context.feature_flags().avoid_relay_data);
     }
 }

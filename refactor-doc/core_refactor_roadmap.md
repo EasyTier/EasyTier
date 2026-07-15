@@ -92,10 +92,9 @@ Current closure status on 2026-07-14:
   and per-instance ring registry now have single authoritative owners;
 - the foreign-network ownership move is complete: core owns policy, state,
   lifecycle, snapshots, context/resource construction, and manager assembly;
-  native `foreign_network_manager.rs` contains only the generated
-  direct-connector RPC Adapter, RPC DTO conversion, and integration tests;
-- native `PeerManager` is limited to Host Adapter assembly, runtime-snapshot
-  submission, native resource/debug access, and protobuf presentation;
+  native management code only converts core snapshots to protobuf;
+- the native `PeerManager`, `connector`, `peers`, and test-only `peer_center`
+  facades are deleted;
 - `GlobalCtx` no longer implements `PeerContext`; peer configuration, events,
   credentials, trusted keys, relay preference, and runtime changes have
   explicit core owners and narrow capability seams;
@@ -104,9 +103,9 @@ Current closure status on 2026-07-14:
   protocol/session Modules, and VPN portal client state;
 - native gateway code contains concrete engines, real resources, composition,
   configuration/events, and presentation rather than a second policy owner.
-- process-level Host Adapters have one composition root, while
-  `RuntimeConnectorHost` is explicitly an instance-facts projection with a
-  private centralized constructor;
+- process-level Host Adapters have one composition root. Core's composite Host
+  Adapter pairs them with a narrow `NativeInstanceEnvironment` that has no
+  socket operations;
 - core STUN and process Host Runtime closure evidence is recorded in
   [`host_runtime_stun_refactor.md`](host_runtime_stun_refactor.md).
 
@@ -367,12 +366,9 @@ recorded as a quantitative race-instrumented initialization limit rather than an
 ownership regression.
 
 WireGuard portal Docker tests stop at their baseline ping before
-`run_vpn_portal`, so they do not exercise the migrated client registry. Three
-native TCP hole-punch tests remain blocked before their hole-punch path:
-the shared legacy ring-tunnel fixture in `easytier/src/peers/tests.rs` does not
-provide `TunnelInfo`, so peer admission fails with `tunnel info is not set`.
-These are recorded precondition/test-harness blockers rather than reasons to
-change production semantics during the ownership refactor.
+`run_vpn_portal`, so they do not exercise the migrated client registry. The
+legacy native ring/peer fixture and its TCP hole-punch wrappers are deleted;
+portable policy is tested in core and real socket coverage remains native.
 
 Quantitative latency/idle-resource baselines and hard-kill isolation remain
 production-readiness work for the selected Go/WASI ABI. They do not change the

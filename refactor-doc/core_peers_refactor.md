@@ -1,8 +1,8 @@
 # easytier-core Peers 重构第一阶段方案
 
-> 状态：历史迁移计划，主体已经实施。请使用
-> [`core_refactor_roadmap.md`](core_refactor_roadmap.md) 判断剩余工作，
-> 不要把本文的旧路径或阶段清单当作当前事实。
+> 状态：历史迁移计划，迁移已经完成。`easytier/src/peers` 已删除，
+> portable peer ownership 全部位于 `easytier-core::peers`。当前契约见
+> [`core_ownership_finalization.md`](core_ownership_finalization.md)。
 
 ## 背景
 

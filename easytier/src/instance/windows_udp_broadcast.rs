@@ -11,7 +11,7 @@ use pnet::packet::{
 use {
     crate::{
         common::global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
-        connector::core_instance::RuntimeCoreInstance,
+        instance::composition::NativeCoreInstance,
     },
     anyhow::Context,
     easytier_core::instance::UdpBroadcastRelayStats,
@@ -682,7 +682,7 @@ fn issue_start_result_event(
 
 #[cfg(any(windows, test))]
 async fn forward_normalized_packet(
-    core_instance: &RuntimeCoreInstance,
+    core_instance: &NativeCoreInstance,
     normalized: NormalizedPacket,
     stats: &UdpBroadcastRelayStats,
 ) {
@@ -749,7 +749,7 @@ async fn forward_normalized_packet(
 
 #[cfg(any(windows, test))]
 async fn capture_loop(
-    core_instance: Arc<RuntimeCoreInstance>,
+    core_instance: Arc<NativeCoreInstance>,
     config: BroadcastRelayConfig,
     mut socket: CaptureSocket,
     stats: UdpBroadcastRelayStats,
@@ -806,7 +806,7 @@ async fn capture_loop(
 
 #[cfg(any(windows, test))]
 pub(crate) fn start(
-    core_instance: Arc<RuntimeCoreInstance>,
+    core_instance: Arc<NativeCoreInstance>,
     global_ctx: ArcGlobalCtx,
     virtual_ipv4: Ipv4Inet,
 ) -> anyhow::Result<AbortOnDropHandle<()>> {

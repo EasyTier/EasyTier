@@ -199,10 +199,6 @@ where
         self.environment.mapped_listeners.clone()
     }
 
-    fn running_listeners(&self) -> Vec<Url> {
-        self.environment.running_listeners.clone()
-    }
-
     fn is_local_ip(&self, ip: &IpAddr) -> bool {
         self.environment.local_ips.contains(ip)
     }
@@ -461,7 +457,6 @@ mod tests {
             public_ipv6: Some("2001:db8::1".parse().unwrap()),
             interface_ipv6s: vec!["2001:db8::1".parse().unwrap()],
             mapped_listeners: vec!["tcp://192.0.2.1:11010".parse().unwrap()],
-            running_listeners: vec!["udp://192.0.2.1:11010".parse().unwrap()],
             local_ips: vec!["192.0.2.1".parse().unwrap()],
             protected_tcp_ports: vec![11010],
             managed_ipv6s: vec!["2001:db8::1".parse().unwrap()],
@@ -561,10 +556,7 @@ mod tests {
                 .into_iter()
                 .map(Url::from)
                 .collect::<Vec<_>>(),
-            vec![
-                "tcp://192.0.2.1:11010".parse::<Url>().unwrap(),
-                "udp://192.0.2.1:11010".parse::<Url>().unwrap(),
-            ]
+            vec!["tcp://192.0.2.1:11010".parse::<Url>().unwrap()]
         );
     }
 

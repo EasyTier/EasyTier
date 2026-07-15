@@ -1,5 +1,5 @@
 use std::{
-    net::{IpAddr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
+    net::{IpAddr, Ipv6Addr, SocketAddr},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -7,37 +7,28 @@ use std::{
 use async_trait::async_trait;
 use easytier_core::{
     connectivity::{
-        direct::DirectConnectorHost,
-        manual::{ManualConnectorHost, ManualInterfaceAddrs},
+        composite::{ConnectorEnvironment, ConnectorHostAdapter},
+        manual::ManualInterfaceAddrs,
         transport::ConnectedByteStream,
     },
-    socket::{
-        NetNamespace, SocketContext,
-        tcp::{
-            TcpConnectOptions, TcpListenOptions, VirtualTcpListenerFactory, VirtualTcpSocketFactory,
-        },
-        udp::{
-            PreferredIpv6Source, UdpBindOptions, UdpSessionControlHandler, VirtualUdpSocketFactory,
-        },
-    },
+    socket::{NetNamespace, SocketContext, udp::PreferredIpv6Source},
 };
 
 use crate::{
     common::{global_ctx::ArcGlobalCtx, network::CACHED_IP_LIST_TIMEOUT_SEC},
     host_runtime::{NativeHostRuntime, native_host_runtime},
     proto::peer_rpc::GetIpListResponse,
-    socket::{
-        tcp::{RuntimeTcpListener, RuntimeTcpSocket},
-        udp::RuntimeUdpSocket,
-    },
+    socket::tcp::RuntimeTcpSocket,
 };
 
-/// Instance-scoped connector facts projected onto the process-wide host runtime.
+pub(crate) type NativeInstanceHost =
+    ConnectorHostAdapter<NativeHostRuntime, NativeInstanceEnvironment>;
+
+/// Instance facts queried by portable connector policy.
 ///
-/// This is not an OS capability owner: all real socket operations delegate to
-/// [`NativeHostRuntime`]. `GlobalCtx` is retained only for instance facts such as
-/// current listeners, protected ports, and collected interface addresses.
-pub(crate) struct RuntimeConnectorHost {
+/// This Adapter never creates or operates sockets. Mechanical network I/O is
+/// owned by the process-wide [`NativeHostRuntime`] composed beside it.
+pub(crate) struct NativeInstanceEnvironment {
     global_ctx: ArcGlobalCtx,
     runtime: Arc<NativeHostRuntime>,
     foreign_interface_cache: tokio::sync::Mutex<Option<CachedInterfaceAddrs>>,
@@ -56,11 +47,11 @@ impl CachedInterfaceAddrs {
     }
 }
 
-impl RuntimeConnectorHost {
-    fn new(global_ctx: ArcGlobalCtx) -> Self {
+impl NativeInstanceEnvironment {
+    fn new(global_ctx: ArcGlobalCtx, runtime: Arc<NativeHostRuntime>) -> Self {
         Self {
             global_ctx,
-            runtime: native_host_runtime(),
+            runtime,
             foreign_interface_cache: tokio::sync::Mutex::new(None),
         }
     }
@@ -79,63 +70,26 @@ impl RuntimeConnectorHost {
         });
         response
     }
-}
 
-pub(crate) fn runtime_connector_host(global_ctx: ArcGlobalCtx) -> Arc<RuntimeConnectorHost> {
-    Arc::new(RuntimeConnectorHost::new(global_ctx))
-}
-
-#[async_trait]
-impl VirtualTcpListenerFactory for RuntimeConnectorHost {
-    type Listener = RuntimeTcpListener;
-
-    async fn bind_tcp(&self, options: TcpListenOptions) -> anyhow::Result<Arc<Self::Listener>> {
-        self.runtime.bind_tcp(options).await
+    fn valid_public_ipv6_candidate(ip: Ipv6Addr) -> bool {
+        !(ip.is_loopback()
+            || ip.is_unspecified()
+            || ip.is_unique_local()
+            || ip.is_unicast_link_local()
+            || ip.is_multicast())
     }
 }
 
-#[async_trait]
-impl VirtualTcpSocketFactory for RuntimeConnectorHost {
-    type Socket = RuntimeTcpSocket;
-
-    async fn connect_tcp(&self, options: TcpConnectOptions) -> anyhow::Result<Self::Socket> {
-        self.runtime.connect_tcp(options).await
-    }
+pub(crate) fn native_instance_host(global_ctx: ArcGlobalCtx) -> Arc<NativeInstanceHost> {
+    let runtime = native_host_runtime();
+    Arc::new(ConnectorHostAdapter::new(
+        runtime.clone(),
+        Arc::new(NativeInstanceEnvironment::new(global_ctx, runtime)),
+    ))
 }
 
 #[async_trait]
-impl VirtualUdpSocketFactory for RuntimeConnectorHost {
-    type Socket = RuntimeUdpSocket;
-
-    async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
-        self.runtime.bind_udp(options).await
-    }
-}
-
-#[async_trait]
-impl UdpSessionControlHandler<RuntimeUdpSocket> for RuntimeConnectorHost {
-    async fn send_v4_hole_punch(
-        &self,
-        socket: Arc<RuntimeUdpSocket>,
-        dst_addr: SocketAddrV4,
-    ) -> std::io::Result<usize> {
-        self.runtime.send_v4_hole_punch(socket, dst_addr).await
-    }
-
-    async fn send_v6_hole_punch(
-        &self,
-        socket: Arc<RuntimeUdpSocket>,
-        dst_addr: SocketAddrV6,
-        preferred_src: Option<PreferredIpv6Source>,
-    ) -> std::io::Result<usize> {
-        self.runtime
-            .send_v6_hole_punch(socket, dst_addr, preferred_src)
-            .await
-    }
-}
-
-#[async_trait]
-impl ManualConnectorHost for RuntimeConnectorHost {
+impl ConnectorEnvironment<RuntimeTcpSocket> for NativeInstanceEnvironment {
     async fn local_addr_for_remote(
         &self,
         remote_addr: SocketAddr,
@@ -169,12 +123,8 @@ impl ManualConnectorHost for RuntimeConnectorHost {
     ) -> anyhow::Result<ConnectedByteStream<RuntimeTcpSocket>> {
         self.runtime.connect_byte_stream(url).await
     }
-}
 
-#[async_trait]
-impl DirectConnectorHost for RuntimeConnectorHost {
-    async fn collect_ip_addrs(&self, context: &SocketContext) -> GetIpListResponse {
-        let _ = context;
+    async fn collect_ip_addrs(&self, _context: &SocketContext) -> GetIpListResponse {
         self.global_ctx.get_ip_collector().collect_ip_addrs().await
     }
 
@@ -188,10 +138,6 @@ impl DirectConnectorHost for RuntimeConnectorHost {
 
     fn mapped_listeners(&self) -> Vec<url::Url> {
         self.global_ctx.config.get_mapped_listeners()
-    }
-
-    fn running_listeners(&self) -> Vec<url::Url> {
-        self.global_ctx.get_running_listeners()
     }
 
     fn is_local_ip(&self, ip: &IpAddr) -> bool {
@@ -211,16 +157,9 @@ impl DirectConnectorHost for RuntimeConnectorHost {
         ip: Ipv6Addr,
         context: SocketContext,
     ) -> Option<PreferredIpv6Source> {
-        if self.is_easytier_managed_ipv6(&ip)
-            || ip.is_loopback()
-            || ip.is_unspecified()
-            || ip.is_unique_local()
-            || ip.is_unicast_link_local()
-            || ip.is_multicast()
-        {
+        if self.is_easytier_managed_ipv6(&ip) || !Self::valid_public_ipv6_candidate(ip) {
             return None;
         }
-
         self.runtime.preferred_ipv6_source(ip, context).await
     }
 
@@ -229,15 +168,9 @@ impl DirectConnectorHost for RuntimeConnectorHost {
         ip: Ipv6Addr,
         context: SocketContext,
     ) -> Option<PreferredIpv6Source> {
-        if ip.is_loopback()
-            || ip.is_unspecified()
-            || ip.is_unique_local()
-            || ip.is_unicast_link_local()
-            || ip.is_multicast()
-        {
+        if !Self::valid_public_ipv6_candidate(ip) {
             return None;
         }
-
         self.runtime.preferred_ipv6_source(ip, context).await
     }
 }
@@ -250,7 +183,7 @@ mod tests {
     };
 
     use easytier_core::{
-        connectivity::direct::DirectConnectorHost as _,
+        connectivity::composite::ConnectorEnvironment as _,
         socket::{NetNamespace, SocketContext},
     };
 
@@ -261,7 +194,7 @@ mod tests {
         proto::peer_rpc::GetIpListResponse,
     };
 
-    use super::{CachedInterfaceAddrs, runtime_connector_host};
+    use super::{CachedInterfaceAddrs, NativeInstanceEnvironment};
 
     #[test]
     fn foreign_interface_cache_is_keyed_by_netns_and_ttl() {
@@ -287,10 +220,13 @@ mod tests {
     #[tokio::test]
     async fn instance_address_view_does_not_populate_foreign_cache() {
         let global_ctx = Arc::new(GlobalCtx::new(TomlConfigLoader::default()));
-        let host = runtime_connector_host(global_ctx);
+        let runtime = crate::host_runtime::native_host_runtime();
+        let environment = NativeInstanceEnvironment::new(global_ctx, runtime);
 
-        host.collect_ip_addrs(&SocketContext::default()).await;
+        environment
+            .collect_ip_addrs(&SocketContext::default())
+            .await;
 
-        assert!(host.foreign_interface_cache.lock().await.is_none());
+        assert!(environment.foreign_interface_cache.lock().await.is_none());
     }
 }

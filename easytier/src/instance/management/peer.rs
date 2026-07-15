@@ -3,48 +3,90 @@ use std::{
     time::Duration,
 };
 
+use easytier_core::peers::context::TrustedKeySource;
+use easytier_core::peers::foreign_network_manager::ForeignNetworkEntryInfo;
+
 use crate::{
-    common::credential_manager::core_credential_info_to_api,
     common::global_ctx::GlobalCtx,
-    connector::core_instance::RuntimeCoreInstance,
+    instance::composition::NativeCoreInstance,
     proto::{
         api::instance::{
             AclManageRpc, CredentialManageRpc, DumpRouteRequest, DumpRouteResponse,
-            GenerateCredentialRequest, GenerateCredentialResponse, GetAclStatsRequest,
-            GetAclStatsResponse, GetForeignNetworkSummaryRequest, GetForeignNetworkSummaryResponse,
-            GetWhitelistRequest, GetWhitelistResponse, ListCredentialsRequest,
-            ListCredentialsResponse, ListForeignNetworkRequest, ListForeignNetworkResponse,
-            ListGlobalForeignNetworkRequest, ListGlobalForeignNetworkResponse, ListPeerRequest,
-            ListPeerResponse, ListPublicIpv6InfoRequest, ListPublicIpv6InfoResponse,
-            ListRouteRequest, ListRouteResponse, NodeInfo, PeerInfo, PeerManageRpc,
-            RevokeCredentialRequest, RevokeCredentialResponse, ShowNodeInfoRequest,
-            ShowNodeInfoResponse, list_global_foreign_network_response::OneForeignNetwork,
+            ForeignNetworkEntryPb, GenerateCredentialRequest, GenerateCredentialResponse,
+            GetAclStatsRequest, GetAclStatsResponse, GetForeignNetworkSummaryRequest,
+            GetForeignNetworkSummaryResponse, GetWhitelistRequest, GetWhitelistResponse,
+            ListCredentialsRequest, ListCredentialsResponse, ListForeignNetworkRequest,
+            ListForeignNetworkResponse, ListGlobalForeignNetworkRequest,
+            ListGlobalForeignNetworkResponse, ListPeerRequest, ListPeerResponse,
+            ListPublicIpv6InfoRequest, ListPublicIpv6InfoResponse, ListRouteRequest,
+            ListRouteResponse, NodeInfo, PeerInfo, PeerManageRpc, RevokeCredentialRequest,
+            RevokeCredentialResponse, ShowNodeInfoRequest, ShowNodeInfoResponse, TrustedKeyInfoPb,
+            TrustedKeySourcePb, list_global_foreign_network_response::OneForeignNetwork,
         },
         rpc_types::{self, controller::BaseController},
     },
     utils::weak_upgrade,
 };
 
-use super::foreign_network_manager::foreign_network_info_to_api;
-
-#[derive(Clone)]
-pub struct PeerManagerRpcService {
-    global_ctx: Weak<GlobalCtx>,
-    core_instance: Weak<RuntimeCoreInstance>,
+fn foreign_network_info_to_api(info: ForeignNetworkEntryInfo) -> ForeignNetworkEntryPb {
+    ForeignNetworkEntryPb {
+        network_secret_digest: info.network_secret_digest,
+        my_peer_id_for_this_network: info.my_peer_id_for_this_network,
+        peers: info
+            .peers
+            .into_iter()
+            .map(|peer| PeerInfo {
+                peer_id: peer.peer_id,
+                conns: peer.conns.into_iter().map(Into::into).collect(),
+                ..Default::default()
+            })
+            .collect(),
+        trusted_keys: info
+            .trusted_keys
+            .into_iter()
+            .map(|key| TrustedKeyInfoPb {
+                pubkey: key.pubkey,
+                source: match key.source {
+                    TrustedKeySource::OspfNode => TrustedKeySourcePb::OspfNode.into(),
+                    TrustedKeySource::OspfCredential => TrustedKeySourcePb::OspfCredential.into(),
+                },
+                expiry_unix: key.expiry_unix,
+            })
+            .collect(),
+    }
 }
 
-impl PeerManagerRpcService {
+fn credential_info_to_api(
+    info: easytier_core::peers::credential_manager::CredentialInfo,
+) -> crate::proto::api::instance::CredentialInfo {
+    crate::proto::api::instance::CredentialInfo {
+        credential_id: info.credential_id,
+        groups: info.groups,
+        allow_relay: info.allow_relay,
+        expiry_unix: info.expiry_unix,
+        allowed_proxy_cidrs: info.allowed_proxy_cidrs,
+        reusable: info.reusable,
+    }
+}
+
+#[derive(Clone)]
+pub struct InstancePeerManagementRpc {
+    global_ctx: Weak<GlobalCtx>,
+    core_instance: Weak<NativeCoreInstance>,
+}
+
+impl InstancePeerManagementRpc {
     pub(crate) fn new(
         global_ctx: &Arc<GlobalCtx>,
-        core_instance: &Arc<RuntimeCoreInstance>,
+        core_instance: &Arc<NativeCoreInstance>,
     ) -> Self {
-        PeerManagerRpcService {
+        InstancePeerManagementRpc {
             global_ctx: Arc::downgrade(global_ctx),
             core_instance: Arc::downgrade(core_instance),
         }
     }
 
-    async fn list_peers(core_instance: &RuntimeCoreInstance) -> Vec<PeerInfo> {
+    async fn list_peers(core_instance: &NativeCoreInstance) -> Vec<PeerInfo> {
         core_instance
             .peer_snapshots()
             .await
@@ -63,7 +105,7 @@ impl PeerManagerRpcService {
     }
 
     async fn list_global_foreign_network(
-        core_instance: &RuntimeCoreInstance,
+        core_instance: &NativeCoreInstance,
     ) -> ListGlobalForeignNetworkResponse {
         let mut response = ListGlobalForeignNetworkResponse::default();
         let route_infos = core_instance.foreign_network_route_infos().await;
@@ -84,7 +126,7 @@ impl PeerManagerRpcService {
     }
 
     async fn list_foreign_networks(
-        core_instance: &RuntimeCoreInstance,
+        core_instance: &NativeCoreInstance,
         include_trusted_keys: bool,
     ) -> ListForeignNetworkResponse {
         ListForeignNetworkResponse {
@@ -111,7 +153,7 @@ impl PeerManagerRpcService {
 }
 
 #[async_trait::async_trait]
-impl PeerManageRpc for PeerManagerRpcService {
+impl PeerManageRpc for InstancePeerManagementRpc {
     type Controller = BaseController;
     async fn list_peer(
         &self,
@@ -121,7 +163,7 @@ impl PeerManageRpc for PeerManagerRpcService {
         let mut reply = ListPeerResponse::default();
 
         let core_instance = weak_upgrade(&self.core_instance)?;
-        let peers = PeerManagerRpcService::list_peers(&core_instance).await;
+        let peers = InstancePeerManagementRpc::list_peers(&core_instance).await;
         for peer in peers {
             reply.peer_infos.push(peer);
         }
@@ -238,7 +280,7 @@ impl PeerManageRpc for PeerManagerRpcService {
 }
 
 #[async_trait::async_trait]
-impl AclManageRpc for PeerManagerRpcService {
+impl AclManageRpc for InstancePeerManagementRpc {
     type Controller = BaseController;
 
     async fn get_acl_stats(
@@ -271,7 +313,7 @@ impl AclManageRpc for PeerManagerRpcService {
 }
 
 #[async_trait::async_trait]
-impl CredentialManageRpc for PeerManagerRpcService {
+impl CredentialManageRpc for InstancePeerManagementRpc {
     type Controller = BaseController;
 
     async fn generate_credential(
@@ -325,7 +367,7 @@ impl CredentialManageRpc for PeerManagerRpcService {
             credentials: weak_upgrade(&self.core_instance)?
                 .credential_snapshots()
                 .into_iter()
-                .map(core_credential_info_to_api)
+                .map(credential_info_to_api)
                 .collect(),
         })
     }
@@ -339,7 +381,7 @@ mod tests {
 
     use crate::{
         common::{global_ctx::tests::get_mock_global_ctx, stun::MockStunInfoCollector},
-        connector::core_instance::build_portable_test_core_instance,
+        instance::composition::build_portable_test_core_instance,
         proto::common::NatType,
     };
 
@@ -356,7 +398,7 @@ mod tests {
             Arc::new(RingTunnelRegistry::default()),
         )
         .unwrap();
-        let service = PeerManagerRpcService::new(&global_ctx, &core_instance);
+        let service = InstancePeerManagementRpc::new(&global_ctx, &core_instance);
 
         let response = service
             .show_node_info(BaseController::default(), ShowNodeInfoRequest::default())

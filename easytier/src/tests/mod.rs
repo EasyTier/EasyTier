@@ -220,7 +220,7 @@ fn check_route_ex(
 }
 
 async fn wait_proxy_route_appear(
-    core: &std::sync::Arc<crate::connector::core_instance::RuntimeCoreInstance>,
+    core: &std::sync::Arc<crate::instance::composition::NativeCoreInstance>,
     ipv4: &str,
     dst_peer_id: PeerId,
     proxy_cidr: &str,

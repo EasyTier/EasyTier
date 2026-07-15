@@ -13,6 +13,7 @@ pub use easytier_core::tunnel::{
 
 pub mod common;
 pub mod packet_def;
+pub(crate) mod protocol;
 
 #[cfg(feature = "faketcp")]
 pub mod fake_tcp;
@@ -232,18 +233,3 @@ impl TryFrom<&url::Url> for TunnelScheme {
         })
     }
 }
-
-pub fn get_protocol_by_url(l: &url::Url) -> Result<Protocol, Error> {
-    let TunnelScheme::Ip(scheme) = l.try_into()? else {
-        return Err(Error::InvalidUrl(l.to_string()));
-    };
-    Ok(scheme.protocol())
-}
-
-macro_rules! __matches_protocol__ {
-    ($url:expr, $( $pattern:pat_param )|+ ) => {
-        matches!($crate::tunnel::get_protocol_by_url($url), Ok($( $pattern )|+))
-    };
-}
-
-pub(crate) use __matches_protocol__ as matches_protocol;

@@ -5,12 +5,12 @@ use crate::{
         MachineIdOptions, config::TomlConfigLoader, global_ctx::GlobalCtx, log,
         os_info::collect_device_os_info, resolve_machine_id,
     },
-    connector::{
-        core_instance::{
+    instance::{
+        composition::{
             runtime_core_instance_adapters_with_ring_registry, runtime_endpoint_discovery_config,
             runtime_manual_options,
         },
-        runtime::RuntimeConnectorHost,
+        host::NativeInstanceHost,
     },
     instance_manager::{DaemonGuard, NetworkInstanceManager},
     tunnel::{Tunnel, TunnelScheme},
@@ -67,7 +67,7 @@ pub struct WebClient {
 
 struct ConfigServerConnector {
     url: Url,
-    connector: ManualTunnelConnector<RuntimeConnectorHost>,
+    connector: ManualTunnelConnector<NativeInstanceHost>,
 }
 
 #[async_trait]

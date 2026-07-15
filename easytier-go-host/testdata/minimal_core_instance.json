@@ -1,5 +1,5 @@
 {
-  "version": 9,
+  "version": 10,
   "instance": {
     "peer": {
       "snapshot": {
@@ -225,7 +225,6 @@
     "public_ipv6": null,
     "interface_ipv6s": [],
     "mapped_listeners": [],
-    "running_listeners": [],
     "local_ips": [],
     "protected_tcp_ports": [],
     "managed_ipv6s": [],

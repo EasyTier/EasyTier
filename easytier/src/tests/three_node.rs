@@ -26,7 +26,7 @@ use crate::{
         config::{ConfigLoader, NetworkIdentity, PortForwardConfig, TomlConfigLoader},
         netns::{NetNS, ROOT_NETNS_NAME},
     },
-    connector::core_instance::runtime_instance_config,
+    instance::composition::runtime_instance_config,
     instance::instance::Instance,
     proto::{
         api::instance::TcpProxyEntryTransportType,
@@ -184,33 +184,21 @@ async fn init_three_node_ex_with_inst3<F: Fn(TomlConfigLoader) -> TomlConfigLoad
     inst3.run().await.unwrap();
 
     if proto == "tcp" {
-        inst1
-            .get_conn_manager()
-            .add_connector_url("tcp://10.1.1.2:11010".parse().unwrap());
+        inst1.add_connector_url("tcp://10.1.1.2:11010".parse().unwrap());
     } else if proto == "udp" {
-        inst1
-            .get_conn_manager()
-            .add_connector_url("udp://10.1.1.2:11010".parse().unwrap());
+        inst1.add_connector_url("udp://10.1.1.2:11010".parse().unwrap());
     } else if proto == "wg" {
         #[cfg(feature = "wireguard")]
-        inst1
-            .get_conn_manager()
-            .add_connector_url("wg://10.1.1.2:11011".parse().unwrap());
+        inst1.add_connector_url("wg://10.1.1.2:11011".parse().unwrap());
     } else if proto == "ws" {
         #[cfg(feature = "websocket")]
-        inst1
-            .get_conn_manager()
-            .add_connector_url("ws://10.1.1.2:11011".parse().unwrap());
+        inst1.add_connector_url("ws://10.1.1.2:11011".parse().unwrap());
     } else if proto == "wss" {
         #[cfg(feature = "websocket")]
-        inst1
-            .get_conn_manager()
-            .add_connector_url("wss://10.1.1.2:11012".parse().unwrap());
+        inst1.add_connector_url("wss://10.1.1.2:11012".parse().unwrap());
     }
 
-    inst3
-        .get_conn_manager()
-        .add_connector_url(format!("ring://{}", inst2.id()).parse().unwrap());
+    inst3.add_connector_url(format!("ring://{}", inst2.id()).parse().unwrap());
 
     // wait inst2 have two route.
     wait_for_condition(
@@ -292,102 +280,6 @@ pub async fn drop_insts(insts: Vec<Instance>) {
         });
     }
     while set.join_next().await.is_some() {}
-}
-
-mod direct_connector_mapped_listener_tests {
-    use std::sync::Arc;
-
-    use crate::{
-        common::{
-            config::{ConfigLoader, TomlConfigLoader},
-            global_ctx::GlobalCtx,
-            stun::MockStunInfoCollector,
-        },
-        connector::direct::runtime_direct_connector_manager,
-        instance::listeners::ListenerManager,
-        peers::{
-            create_packet_recv_chan,
-            peer_manager::{PeerManager, RouteAlgoType},
-            tests::{
-                connect_peer_manager, create_mock_peer_manager, wait_route_appear,
-                wait_route_appear_with_cost,
-            },
-        },
-        proto::{common::NatType, peer_rpc::GetIpListResponse},
-        tests::TestNetnsGuard,
-    };
-
-    async fn create_mock_peer_manager_in_netns(netns: &str) -> Arc<PeerManager> {
-        let (s, _r) = create_packet_recv_chan();
-        let config = TomlConfigLoader::default();
-        config.set_netns(Some(netns.to_owned()));
-        let global_ctx = Arc::new(GlobalCtx::new(config));
-        global_ctx.replace_stun_info_collector(Box::new(MockStunInfoCollector {
-            udp_nat_type: NatType::Unknown,
-        }));
-
-        let peer_mgr = Arc::new(PeerManager::new(RouteAlgoType::Ospf, global_ctx, s));
-        peer_mgr.core().run_for_test().await.unwrap();
-        peer_mgr
-    }
-
-    async fn run_direct_connector_mapped_listener_without_port_test(
-        mapped_listener: &str,
-        listener: &str,
-    ) {
-        let ns_name = "dmlp";
-        let mut _ns = TestNetnsGuard::new(ns_name, "10.199.0.2/24", "fd99::2/64");
-        _ns.set_host_ipv4("10.199.0.1/24");
-
-        let p_a = create_mock_peer_manager().await;
-        let p_b = create_mock_peer_manager().await;
-        let p_c = create_mock_peer_manager_in_netns(ns_name).await;
-        connect_peer_manager(p_a.clone(), p_b.clone()).await;
-        connect_peer_manager(p_b.clone(), p_c.clone()).await;
-
-        wait_route_appear(p_a.clone(), p_c.clone()).await.unwrap();
-
-        let mut f = p_a.get_global_ctx().get_flags();
-        f.bind_device = false;
-        p_a.get_global_ctx().set_flags(f);
-
-        p_c.get_global_ctx()
-            .config
-            .set_mapped_listeners(Some(vec![mapped_listener.parse().unwrap()]));
-
-        p_c.get_global_ctx()
-            .config
-            .set_listeners(vec![listener.parse().unwrap()]);
-        let mut lis_c = ListenerManager::new(p_c.get_global_ctx(), p_c.core());
-        lis_c.prepare_listeners().await.unwrap();
-        lis_c.run().await.unwrap();
-
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        let dm_a = runtime_direct_connector_manager(p_a.get_global_ctx(), p_a.clone(), true);
-        let mut ip_list = GetIpListResponse::default();
-        ip_list.listeners.push(mapped_listener.parse().unwrap());
-        dm_a.try_direct_connect_with_ip_list(p_c.my_peer_id(), ip_list)
-            .await
-            .unwrap();
-
-        wait_route_appear_with_cost(p_a.clone(), p_c.my_peer_id(), Some(1))
-            .await
-            .unwrap();
-    }
-
-    #[rstest::rstest]
-    #[tokio::test]
-    #[serial_test::serial]
-    async fn direct_connector_mapped_listener_without_port(
-        #[values(
-            ("tcp://10.199.0.2", "tcp://0.0.0.0:11010"),
-            ("ws://10.199.0.2", "ws://0.0.0.0:80"),
-            ("wss://10.199.0.2", "wss://0.0.0.0:443")
-        )]
-        case: (&str, &str),
-    ) {
-        run_direct_connector_mapped_listener_without_port_test(case.0, case.1).await;
-    }
 }
 
 async fn ping_test(from_netns: &str, target_ip: &str, payload_size: Option<usize>) -> bool {
@@ -781,9 +673,7 @@ async fn init_public_ipv6_two_node_with_topology(
     provider.run().await.unwrap();
     client.run().await.unwrap();
 
-    provider
-        .get_conn_manager()
-        .add_connector_url("tcp://10.1.1.2:11010".parse().unwrap());
+    provider.add_connector_url("tcp://10.1.1.2:11010".parse().unwrap());
 
     wait_for_condition(
         || async {
@@ -1034,9 +924,7 @@ pub async fn public_ipv6_auto_addr_reconnect_reuses_same_address() {
     client_cfg.set_ipv6_public_addr_auto(true);
     let mut client = Instance::new(client_cfg);
     client.run().await.unwrap();
-    provider
-        .get_conn_manager()
-        .add_connector_url("tcp://10.1.1.2:11010".parse().unwrap());
+    provider.add_connector_url("tcp://10.1.1.2:11010".parse().unwrap());
 
     wait_for_condition(
         || async {
@@ -1554,13 +1442,9 @@ pub async fn proxy_three_node_disconnect_test(#[values("tcp", "wg")] proto: &str
         "fd00::4/64",
     ));
     if proto == "tcp" {
-        inst4
-            .get_conn_manager()
-            .add_connector_url("tcp://10.1.2.3:11010".parse().unwrap());
+        inst4.add_connector_url("tcp://10.1.2.3:11010".parse().unwrap());
     } else if proto == "wg" {
-        inst4
-            .get_conn_manager()
-            .add_connector_url("wg://10.1.2.3:11011".parse().unwrap());
+        inst4.add_connector_url("wg://10.1.2.3:11011".parse().unwrap());
     } else {
         unreachable!("not support");
     }
@@ -1711,13 +1595,9 @@ pub async fn foreign_network_forward_nic_data() {
     assert_ne!(inst1.id(), center_inst.id());
     assert_ne!(inst2.id(), center_inst.id());
 
-    inst1
-        .get_conn_manager()
-        .add_connector_url(format!("ring://{}", center_inst.id()).parse().unwrap());
+    inst1.add_connector_url(format!("ring://{}", center_inst.id()).parse().unwrap());
 
-    inst2
-        .get_conn_manager()
-        .add_connector_url(format!("ring://{}", center_inst.id()).parse().unwrap());
+    inst2.add_connector_url(format!("ring://{}", center_inst.id()).parse().unwrap());
 
     wait_for_condition(
         || async {
@@ -1814,8 +1694,7 @@ pub async fn wireguard_vpn_portal(#[values(true, false)] test_v6: bool) {
     insts[2]
         .get_core_instance()
         .update_peer_runtime_snapshot(
-            crate::connector::core_instance::runtime_instance_config(&insts[2].get_global_ctx())
-                .peer,
+            crate::instance::composition::runtime_instance_config(&insts[2].get_global_ctx()).peer,
         )
         .await;
     insts[2].run_vpn_portal().await.unwrap();
@@ -1977,17 +1856,11 @@ pub async fn foreign_network_functional_cluster() {
     inst1.run().await.unwrap();
     inst2.run().await.unwrap();
 
-    center_inst1
-        .get_conn_manager()
-        .add_connector_url(format!("ring://{}", center_inst2.id()).parse().unwrap());
+    center_inst1.add_connector_url(format!("ring://{}", center_inst2.id()).parse().unwrap());
 
-    inst1
-        .get_conn_manager()
-        .add_connector_url(format!("ring://{}", center_inst1.id()).parse().unwrap());
+    inst1.add_connector_url(format!("ring://{}", center_inst1.id()).parse().unwrap());
 
-    inst2
-        .get_conn_manager()
-        .add_connector_url(format!("ring://{}", center_inst2.id()).parse().unwrap());
+    inst2.add_connector_url(format!("ring://{}", center_inst2.id()).parse().unwrap());
 
     println!(
         "inst1 peer map: {:?}",
@@ -2001,9 +1874,7 @@ pub async fn foreign_network_functional_cluster() {
     .await;
 
     // connect to two centers, ping should work
-    inst1
-        .get_conn_manager()
-        .add_connector_url(format!("ring://{}", center_inst2.id()).parse().unwrap());
+    inst1.add_connector_url(format!("ring://{}", center_inst2.id()).parse().unwrap());
     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
     wait_for_condition(
         || async { ping_test("net_c", "10.144.145.2", None).await },
@@ -2045,13 +1916,9 @@ pub async fn manual_reconnector(#[values(true, false)] is_foreign: bool) {
     assert_ne!(inst1.id(), center_inst.id());
     assert_ne!(inst2.id(), center_inst.id());
 
-    inst1
-        .get_conn_manager()
-        .add_connector_url(format!("ring://{}", center_inst.id()).parse().unwrap());
+    inst1.add_connector_url(format!("ring://{}", center_inst.id()).parse().unwrap());
 
-    inst2
-        .get_conn_manager()
-        .add_connector_url(format!("ring://{}", center_inst.id()).parse().unwrap());
+    inst2.add_connector_url(format!("ring://{}", center_inst.id()).parse().unwrap());
 
     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
 
@@ -2437,9 +2304,8 @@ async fn assert_peer_admission_blocked(inst: &Instance, url: url::Url) {
         .parse()
         .expect("test URL should have a literal IP");
     let target = std::net::SocketAddr::new(ip, url.port().expect("test URL should have a port"));
-    let host = crate::connector::runtime::runtime_connector_host(inst.get_global_ctx());
-    let protocol =
-        crate::connector::protocol::runtime_client_protocol_upgrader(inst.get_global_ctx());
+    let host = crate::instance::host::native_instance_host(inst.get_global_ctx());
+    let protocol = crate::tunnel::protocol::runtime_client_protocol_upgrader(inst.get_global_ctx());
     let core = inst.get_core_instance();
     let connect = async {
         let connected = match url.scheme() {
@@ -3048,9 +2914,7 @@ pub async fn p2p_only_test(
     .await;
 
     if has_p2p_conn {
-        insts[2]
-            .get_conn_manager()
-            .add_connector_url(format!("ring://{}", insts[0].id()).parse().unwrap());
+        insts[2].add_connector_url(format!("ring://{}", insts[0].id()).parse().unwrap());
         wait_route_cost(&insts[2], insts[0].peer_id(), 1, Duration::from_secs(5)).await;
     }
 

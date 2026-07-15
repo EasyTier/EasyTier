@@ -45,6 +45,7 @@ use crate::{
         stun::{default_tcp_stun_servers, default_udp_stun_servers, default_udp_v6_stun_servers},
     },
     host_runtime::native_host_runtime,
+    instance::config::{runtime_peer_manager_config, runtime_peer_manager_host_adapters},
     instance::listeners::{
         RuntimeExternalListenerFactory, runtime_accepted_tunnel_event_sink,
         runtime_listener_event_sink, runtime_listener_plan, runtime_transport_listener_configs,
@@ -53,20 +54,14 @@ use crate::{
     instance::public_ipv6_provider::{
         runtime_public_ipv6_provider_config, runtime_public_ipv6_provider_host,
     },
-    peers::context::{
-        initialize_runtime_peer_host_state, runtime_peer_manager_config,
-        runtime_peer_manager_host_adapters,
-    },
     tunnel::IpScheme,
     use_global_var,
 };
 
-use super::{
-    protocol::{runtime_client_protocol_upgrader, runtime_server_protocol_upgrader},
-    runtime::{RuntimeConnectorHost, runtime_connector_host},
-};
+use super::host::{NativeInstanceHost, native_instance_host};
+use crate::tunnel::protocol::{runtime_client_protocol_upgrader, runtime_server_protocol_upgrader};
 
-pub(crate) type RuntimeCoreInstance = CoreInstance<RuntimeConnectorHost>;
+pub(crate) type NativeCoreInstance = CoreInstance<NativeInstanceHost>;
 
 struct GlobalCtxManualConnectivityEventSink {
     global_ctx: ArcGlobalCtx,
@@ -264,7 +259,7 @@ pub(crate) fn runtime_stun_server_config(global_ctx: &ArcGlobalCtx) -> StunServe
 
 pub(crate) fn runtime_core_instance_adapters(
     global_ctx: ArcGlobalCtx,
-) -> CoreInstanceAdapters<RuntimeConnectorHost> {
+) -> CoreInstanceAdapters<NativeInstanceHost> {
     runtime_core_instance_adapters_with_ring_registry(
         global_ctx,
         Arc::new(RingTunnelRegistry::default()),
@@ -274,8 +269,8 @@ pub(crate) fn runtime_core_instance_adapters(
 pub(crate) fn runtime_core_instance_adapters_with_ring_registry(
     global_ctx: ArcGlobalCtx,
     ring_registry: Arc<RingTunnelRegistry>,
-) -> CoreInstanceAdapters<RuntimeConnectorHost> {
-    let host = runtime_connector_host(global_ctx.clone());
+) -> CoreInstanceAdapters<NativeInstanceHost> {
+    let host = native_instance_host(global_ctx.clone());
     let runtime_dns = native_host_runtime();
     let dns: Arc<dyn DnsResolver> = runtime_dns.clone();
     let dns_records: Arc<dyn DnsRecordResolver> = runtime_dns;
@@ -303,9 +298,9 @@ pub(crate) fn runtime_core_instance_adapters_with_ring_registry(
         listener_events: None,
         server_protocol: Some(runtime_server_protocol_upgrader(global_ctx.clone())),
         accepted_tunnel_events: Some(runtime_accepted_tunnel_event_sink(global_ctx.clone())),
-        udp_hole_punch_platform: Some(super::udp_hole_punch::runtime_udp_hole_punch_platform(
-            global_ctx.clone(),
-        )),
+        udp_hole_punch_platform: Some(
+            crate::instance::udp_hole_punch::runtime_udp_hole_punch_platform(global_ctx.clone()),
+        ),
         icmp_proxy_host: {
             #[cfg(test)]
             {
@@ -364,11 +359,10 @@ pub(crate) fn build_portable_runtime_core_instance_with_transport_factory_and_ri
     packet_sink: Arc<dyn PacketSink>,
     transport_proxy_factory: F,
     ring_registry: Arc<RingTunnelRegistry>,
-) -> anyhow::Result<(RuntimeCoreInstance, F::Attachment)>
+) -> anyhow::Result<(NativeCoreInstance, F::Attachment)>
 where
     F: WrappedTransportEngineFactory,
 {
-    initialize_runtime_peer_host_state(&global_ctx);
     let listener_plan = runtime_listener_plan(&global_ctx);
     let listener_configs =
         runtime_transport_listener_configs(&listener_plan, runtime_socket_context(&global_ctx));
@@ -399,7 +393,7 @@ pub(crate) fn build_portable_test_core_instance(
     global_ctx: ArcGlobalCtx,
     ring_registry: Arc<RingTunnelRegistry>,
 ) -> anyhow::Result<(
-    Arc<RuntimeCoreInstance>,
+    Arc<NativeCoreInstance>,
     tokio::sync::mpsc::Receiver<Vec<u8>>,
 )> {
     let (packet_sink, packet_receiver) = tokio::sync::mpsc::channel(16);
@@ -465,7 +459,7 @@ mod tests {
     fn build_portable_test_instance_with_transport_factory<F>(
         global_ctx: ArcGlobalCtx,
         transport_proxy_factory: F,
-    ) -> anyhow::Result<(RuntimeCoreInstance, F::Attachment)>
+    ) -> anyhow::Result<(NativeCoreInstance, F::Attachment)>
     where
         F: WrappedTransportEngineFactory,
     {
@@ -480,7 +474,7 @@ mod tests {
 
     fn build_portable_test_instance(
         global_ctx: ArcGlobalCtx,
-    ) -> anyhow::Result<RuntimeCoreInstance> {
+    ) -> anyhow::Result<NativeCoreInstance> {
         build_portable_test_instance_with_transport_factory(
             global_ctx,
             NoWrappedTransportEngineFactory,
@@ -619,12 +613,11 @@ mod tests {
     fn build_test_instance_with_listener(
         network_name: &str,
         listener: Arc<dyn ListenerService>,
-    ) -> Arc<RuntimeCoreInstance> {
+    ) -> Arc<NativeCoreInstance> {
         let global_ctx = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
             network_name.to_owned(),
             String::new(),
         )));
-        initialize_runtime_peer_host_state(&global_ctx);
         let peer = runtime_peer_manager_config(&global_ctx, RouteAlgoType::Ospf);
         let connectivity = CoreInstanceConfig {
             initial_peers: Vec::new(),
@@ -636,7 +629,8 @@ mod tests {
             direct: runtime_direct_options(&global_ctx, false),
         };
         let mut adapters = runtime_core_instance_adapters(global_ctx);
-        adapters.external_listener_factory = Some(Arc::new(move |_handler| listener.clone()));
+        adapters.external_listener_factory =
+            Some(Arc::new(move |_handler, _events| listener.clone()));
         let (packet_sink, _packet_receiver) = create_host_packet_channel();
         Arc::new(
             CoreInstance::new_portable(
@@ -1293,11 +1287,8 @@ mod tests {
                 .count(),
             1
         );
-        assert_eq!(global_ctx.get_running_listeners().len(), 2);
-
         instance.stop().await;
         assert!(instance.running_listeners().is_empty());
-        assert!(global_ctx.get_running_listeners().is_empty());
     }
 
     #[tokio::test]
@@ -1451,7 +1442,7 @@ mod tests {
             direct: runtime_direct_options(&global_ctx, false),
         };
         let instance = Arc::new(
-            RuntimeCoreInstance::new_portable(
+            NativeCoreInstance::new_portable(
                 runtime_core_instance_adapters(global_ctx),
                 PortableCoreInstanceConfig { peer, connectivity },
                 Arc::new(packet_sink),
@@ -1491,7 +1482,7 @@ mod tests {
         let peer_a = runtime_peer_manager_config(&global_a, RouteAlgoType::Ospf);
         let peer_b = runtime_peer_manager_config(&global_b, RouteAlgoType::Ospf);
         let instance_a = Arc::new(
-            RuntimeCoreInstance::new_portable(
+            NativeCoreInstance::new_portable(
                 runtime_core_instance_adapters(global_a.clone()),
                 PortableCoreInstanceConfig {
                     peer: peer_a,
@@ -1516,7 +1507,7 @@ mod tests {
             .unwrap(),
         );
         let instance_b = Arc::new(
-            RuntimeCoreInstance::new_portable(
+            NativeCoreInstance::new_portable(
                 runtime_core_instance_adapters(global_b.clone()),
                 PortableCoreInstanceConfig {
                     peer: peer_b,
@@ -1626,7 +1617,7 @@ mod tests {
         };
         connectivity.direct.disable_p2p = !peer.snapshot.flags.disable_p2p;
 
-        let error = RuntimeCoreInstance::new_portable(
+        let error = NativeCoreInstance::new_portable(
             runtime_core_instance_adapters(global_ctx),
             PortableCoreInstanceConfig { peer, connectivity },
             Arc::new(packet_sink),
@@ -1666,7 +1657,7 @@ mod tests {
 
         let mut adapters = runtime_core_instance_adapters(global_ctx);
         adapters.server_protocol = None;
-        let error = RuntimeCoreInstance::new_portable(
+        let error = NativeCoreInstance::new_portable(
             adapters,
             PortableCoreInstanceConfig { peer, connectivity },
             Arc::new(packet_sink),
@@ -1677,7 +1668,7 @@ mod tests {
         assert!(error.to_string().contains("server protocol upgrader"));
     }
 
-    fn build_test_instance(network_name: &str) -> Arc<RuntimeCoreInstance> {
+    fn build_test_instance(network_name: &str) -> Arc<NativeCoreInstance> {
         let global_ctx = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
             network_name.to_owned(),
             String::new(),

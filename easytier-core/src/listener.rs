@@ -113,33 +113,6 @@ pub trait RunningListenerProvider: Debug + Send + Sync + 'static {
     fn running_listeners(&self) -> Vec<Url>;
 }
 
-#[derive(Debug)]
-pub struct RunningListenerProviderGroup {
-    providers: Vec<Arc<dyn RunningListenerProvider>>,
-}
-
-impl RunningListenerProviderGroup {
-    pub fn new(providers: Vec<Arc<dyn RunningListenerProvider>>) -> Arc<Self> {
-        Arc::new(Self { providers })
-    }
-}
-
-impl RunningListenerProvider for RunningListenerProviderGroup {
-    fn running_listeners(&self) -> Vec<Url> {
-        let mut listeners = Vec::new();
-        for listener in self
-            .providers
-            .iter()
-            .flat_map(|provider| provider.running_listeners())
-        {
-            if !listeners.contains(&listener) {
-                listeners.push(listener);
-            }
-        }
-        listeners
-    }
-}
-
 #[derive(Debug, Default)]
 pub struct RunningListenerRegistry {
     listeners: std::sync::Mutex<Vec<(Url, usize)>>,
@@ -691,22 +664,6 @@ mod tests {
         assert_eq!(registry.running_listeners(), vec![url.clone()]);
         registry.emit(ListenerEvent::ListenerRemoved { url });
         assert!(registry.running_listeners().is_empty());
-    }
-
-    #[test]
-    fn running_listener_provider_group_deduplicates_urls() {
-        let first = Arc::new(RunningListenerRegistry::default());
-        let second = Arc::new(RunningListenerRegistry::default());
-        let url: Url = "tcp://127.0.0.1:11010".parse().unwrap();
-        for registry in [&first, &second] {
-            registry.emit(ListenerEvent::ListenerAdded {
-                url: url.clone(),
-                connection_counter: Arc::new(EmptyConnectionCounter),
-            });
-        }
-        let group = RunningListenerProviderGroup::new(vec![first, second]);
-
-        assert_eq!(group.running_listeners(), vec![url]);
     }
 
     #[tokio::test]

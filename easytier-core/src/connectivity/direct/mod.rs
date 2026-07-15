@@ -22,7 +22,7 @@ use crate::{
         transport::{self, ConnectedTransport, UdpSessionMode},
     },
     hole_punch::udp::{should_background_p2p_with_peer, should_try_p2p_with_peer},
-    listener::RunningListenerProvider,
+    listener::{RunningListenerProvider, RunningListenerRegistry},
     peers::{
         foreign_network_manager::ForeignNetworkRpcRegistrar, peer_conn::PeerConnId,
         peer_manager::PeerManagerCore, peer_rpc::PeerRpcManager,
@@ -75,8 +75,6 @@ pub trait DirectConnectorHost: ManualConnectorHost {
 
     fn mapped_listeners(&self) -> Vec<Url>;
 
-    fn running_listeners(&self) -> Vec<Url>;
-
     fn is_local_ip(&self, ip: &IpAddr) -> bool;
 
     fn is_protected_tcp_port(&self, port: u16) -> bool;
@@ -95,33 +93,6 @@ pub trait DirectConnectorHost: ManualConnectorHost {
         context: SocketContext,
     ) -> Option<PreferredIpv6Source> {
         self.preferred_ipv6_source(ip, context).await
-    }
-}
-
-struct HostRunningListenerProvider<H>
-where
-    H: DirectConnectorHost,
-{
-    host: Arc<H>,
-}
-
-impl<H> std::fmt::Debug for HostRunningListenerProvider<H>
-where
-    H: DirectConnectorHost,
-{
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("HostRunningListenerProvider")
-            .finish_non_exhaustive()
-    }
-}
-
-impl<H> RunningListenerProvider for HostRunningListenerProvider<H>
-where
-    H: DirectConnectorHost,
-{
-    fn running_listeners(&self) -> Vec<Url> {
-        self.host.running_listeners()
     }
 }
 
@@ -299,7 +270,7 @@ where
         >,
         options: DirectConnectorOptions,
     ) -> Self {
-        let running_listeners = Arc::new(HostRunningListenerProvider { host: host.clone() });
+        let running_listeners = Arc::new(RunningListenerRegistry::default());
         Self::new_with_running_listeners(
             peer_manager,
             host,
@@ -404,11 +375,19 @@ where
     }
 
     pub async fn local_address_observations(&self) -> GetIpListResponse {
+        let stun_info = self.data.stun.get_stun_info();
+        self.local_address_observations_with_stun(&stun_info).await
+    }
+
+    pub(crate) async fn local_address_observations_with_stun(
+        &self,
+        stun_info: &crate::proto::common::StunInfo,
+    ) -> GetIpListResponse {
         collect_address_observations(
             self.data.host.as_ref(),
             &self.data.options.udp_bind.context,
             false,
-            Some(self.data.stun.as_ref()),
+            Some(stun_info),
         )
         .await
     }
@@ -1037,7 +1016,7 @@ where
         socket_context: SocketContext,
         stun: Option<Arc<dyn StunInfoProvider>>,
     ) -> Self {
-        let running_listeners = Arc::new(HostRunningListenerProvider { host: host.clone() });
+        let running_listeners = Arc::new(RunningListenerRegistry::default());
         Self {
             host,
             running_listeners,
@@ -1056,7 +1035,7 @@ where
         socket_context: SocketContext,
         stun: Option<Arc<dyn StunInfoProvider>>,
     ) -> Self {
-        let running_listeners = Arc::new(HostRunningListenerProvider { host: host.clone() });
+        let running_listeners = Arc::new(RunningListenerRegistry::default());
         Self {
             host,
             running_listeners,
@@ -1094,7 +1073,7 @@ async fn collect_address_observations<H>(
     host: &H,
     socket_context: &SocketContext,
     foreign_network: bool,
-    stun: Option<&dyn StunInfoProvider>,
+    stun_info: Option<&crate::proto::common::StunInfo>,
 ) -> GetIpListResponse
 where
     H: DirectConnectorHost,
@@ -1104,8 +1083,8 @@ where
     } else {
         host.collect_ip_addrs(socket_context).await
     };
-    if let Some(stun) = stun {
-        for public_ip in stun.get_stun_info().public_ip {
+    if let Some(stun_info) = stun_info {
+        for public_ip in &stun_info.public_ip {
             match public_ip.parse::<IpAddr>() {
                 Ok(IpAddr::V4(ip)) => response.public_ipv4 = Some(ip.into()),
                 Ok(IpAddr::V6(ip)) => response.public_ipv6 = Some(ip.into()),
@@ -1185,7 +1164,10 @@ where
             self.host.as_ref(),
             &self.socket_context,
             self.foreign_network,
-            self.stun.as_deref(),
+            self.stun
+                .as_deref()
+                .map(StunInfoProvider::get_stun_info)
+                .as_ref(),
         )
         .await;
         response.listeners = self

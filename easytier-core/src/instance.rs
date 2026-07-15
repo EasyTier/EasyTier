@@ -42,7 +42,7 @@ use crate::{
     hole_punch::tcp::{TcpHolePunchConnector, TcpHolePunchHost},
     listener::{
         AcceptedSocketHandler, ListenerEventSink, ListenerEventSinkGroup, RunningListenerProvider,
-        RunningListenerProviderGroup, RunningListenerRegistry,
+        RunningListenerRegistry,
         transport::{
             AcceptedTransport, AcceptedTunnelEventSink, HostAcceptedTcpSocket,
             PeerAcceptedTunnelHandler, ProtocolAcceptedTransportHandler,
@@ -339,19 +339,30 @@ pub trait ExternalListenerFactory<Accepted>: Send + Sync + 'static
 where
     Accepted: Send + 'static,
 {
-    fn build(&self, handler: Arc<dyn AcceptedSocketHandler<Accepted>>) -> Arc<dyn ListenerService>;
+    fn build(
+        &self,
+        handler: Arc<dyn AcceptedSocketHandler<Accepted>>,
+        events: Arc<dyn ListenerEventSink>,
+    ) -> Arc<dyn ListenerService>;
 }
 
 impl<Accepted, F> ExternalListenerFactory<Accepted> for F
 where
     Accepted: Send + 'static,
-    F: Fn(Arc<dyn AcceptedSocketHandler<Accepted>>) -> Arc<dyn ListenerService>
+    F: Fn(
+            Arc<dyn AcceptedSocketHandler<Accepted>>,
+            Arc<dyn ListenerEventSink>,
+        ) -> Arc<dyn ListenerService>
         + Send
         + Sync
         + 'static,
 {
-    fn build(&self, handler: Arc<dyn AcceptedSocketHandler<Accepted>>) -> Arc<dyn ListenerService> {
-        self(handler)
+    fn build(
+        &self,
+        handler: Arc<dyn AcceptedSocketHandler<Accepted>>,
+        events: Arc<dyn ListenerEventSink>,
+    ) -> Arc<dyn ListenerService> {
+        self(handler, events)
     }
 }
 
@@ -383,25 +394,6 @@ struct CoreStunPeerInfoSource(Arc<dyn StunInfoProvider>);
 impl PeerStunInfoSource for CoreStunPeerInfoSource {
     fn stun_info(&self) -> crate::proto::common::StunInfo {
         self.0.get_stun_info()
-    }
-}
-
-struct HostRunningListenerProvider<H>(Arc<H>);
-
-impl<H> std::fmt::Debug for HostRunningListenerProvider<H> {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("HostRunningListenerProvider")
-            .finish_non_exhaustive()
-    }
-}
-
-impl<H> RunningListenerProvider for HostRunningListenerProvider<H>
-where
-    H: DirectConnectorHost,
-{
-    fn running_listeners(&self) -> Vec<Url> {
-        self.0.running_listeners()
     }
 }
 
@@ -800,41 +792,29 @@ where
             }
             None => Arc::new(RawAcceptedTransportHandler::new(&peer_manager)),
         };
+        let registry = Arc::new(RunningListenerRegistry::default());
+        let events: Arc<dyn ListenerEventSink> = match listener_events {
+            Some(listener_events) => {
+                ListenerEventSinkGroup::new(vec![registry.clone(), listener_events])
+            }
+            None => registry.clone(),
+        };
         let listener = external_listener_factory
-            .map(|factory| factory.build(accepted_transport_handler.clone()));
-        let has_external_listener = listener.is_some();
-        let (transport_listener, core_running_listeners): (
-            Option<Arc<dyn ListenerService>>,
-            Option<Arc<dyn RunningListenerProvider>>,
-        ) = if listeners.is_empty() {
-            (None, None)
+            .as_ref()
+            .map(|factory| factory.build(accepted_transport_handler.clone(), events.clone()));
+        let transport_listener: Option<Arc<dyn ListenerService>> = if listeners.is_empty() {
+            None
         } else {
-            let registry = Arc::new(RunningListenerRegistry::default());
-            let events: Arc<dyn ListenerEventSink> = match listener_events {
-                Some(listener_events) => {
-                    ListenerEventSinkGroup::new(vec![registry.clone(), listener_events])
-                }
-                None => registry.clone(),
-            };
-            let listener = Arc::new(TransportListenerService::new_with_events(
+            Some(Arc::new(TransportListenerService::new_with_events(
                 host.clone(),
                 listener_dns.unwrap_or_else(|| dns.clone()),
                 ring_registry.clone(),
                 listeners,
                 accepted_transport_handler,
                 events,
-            ));
-            (Some(listener), Some(registry))
+            )))
         };
-        let running_listeners: Arc<dyn RunningListenerProvider> =
-            match (core_running_listeners, has_external_listener) {
-                (Some(core), true) => RunningListenerProviderGroup::new(vec![
-                    core,
-                    Arc::new(HostRunningListenerProvider(host.clone())),
-                ]) as Arc<dyn RunningListenerProvider>,
-                (Some(core), false) => core,
-                (None, _) => Arc::new(HostRunningListenerProvider(host.clone())),
-            };
+        let running_listeners: Arc<dyn RunningListenerProvider> = registry;
         let listener = match (transport_listener, listener) {
             (Some(transport), Some(external)) => {
                 Some(ListenerServiceGroup::new(vec![transport, external])
@@ -1644,7 +1624,10 @@ where
             .peer_manager
             .node_snapshot(self.running_listeners())
             .await;
-        snapshot.ip_list = self.direct.local_address_observations().await;
+        snapshot.ip_list = self
+            .direct
+            .local_address_observations_with_stun(&snapshot.stun_info)
+            .await;
         snapshot
     }
 
@@ -2110,15 +2093,6 @@ mod tests {
         events: Arc<Mutex<Vec<String>>>,
     }
 
-    #[derive(Debug)]
-    struct StaticRunningListeners(Vec<Url>);
-
-    impl RunningListenerProvider for StaticRunningListeners {
-        fn running_listeners(&self) -> Vec<Url> {
-            self.0.clone()
-        }
-    }
-
     #[async_trait]
     impl ListenerService for RecordingListenerService {
         async fn start(&self) -> anyhow::Result<()> {
@@ -2191,25 +2165,6 @@ mod tests {
                 "start:external",
                 "stop:external",
                 "stop:transport",
-            ]
-        );
-    }
-
-    #[test]
-    fn running_listener_group_keeps_core_and_host_listeners() {
-        let core = Arc::new(StaticRunningListeners(vec![
-            "tcp://127.0.0.1:11010".parse().unwrap(),
-        ]));
-        let host = Arc::new(StaticRunningListeners(vec![
-            "udp://127.0.0.1:11010".parse().unwrap(),
-        ]));
-        let group = RunningListenerProviderGroup::new(vec![core, host]);
-
-        assert_eq!(
-            group.running_listeners(),
-            [
-                "tcp://127.0.0.1:11010".parse().unwrap(),
-                "udp://127.0.0.1:11010".parse().unwrap(),
             ]
         );
     }

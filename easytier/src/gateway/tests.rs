@@ -4,11 +4,11 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::{
     common::global_ctx::{NetworkIdentity, tests::get_mock_global_ctx_with_network},
-    connector::core_instance::{
-        RuntimeCoreInstance, runtime_core_instance_adapters, runtime_direct_options,
+    instance::composition::{
+        NativeCoreInstance, runtime_core_instance_adapters, runtime_direct_options,
         runtime_endpoint_discovery_config, runtime_stun_server_config,
     },
-    peers::context::runtime_peer_manager_config,
+    instance::config::runtime_peer_manager_config,
     tunnel::common::tests::wait_for_condition,
 };
 use easytier_core::{
@@ -19,7 +19,7 @@ use easytier_core::{
 };
 
 struct Endpoint {
-    core: Arc<RuntimeCoreInstance>,
+    core: Arc<NativeCoreInstance>,
     _packet_receiver: tokio::sync::mpsc::Receiver<Vec<u8>>,
     ip: cidr::Ipv4Inet,
 }
@@ -64,7 +64,7 @@ async fn setup_pair() -> (Endpoint, Endpoint) {
         manual: Default::default(),
         direct: runtime_direct_options(&global_b, true),
     };
-    let core_a = RuntimeCoreInstance::new_portable(
+    let core_a = NativeCoreInstance::new_portable(
         runtime_core_instance_adapters(global_a),
         PortableCoreInstanceConfig {
             peer: peer_a,
@@ -73,7 +73,7 @@ async fn setup_pair() -> (Endpoint, Endpoint) {
         Arc::new(packet_sink_a),
     )
     .expect("build first core instance");
-    let core_b = RuntimeCoreInstance::new_portable(
+    let core_b = NativeCoreInstance::new_portable(
         runtime_core_instance_adapters(global_b),
         PortableCoreInstanceConfig {
             peer: peer_b,

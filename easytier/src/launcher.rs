@@ -3,7 +3,7 @@ use crate::common::config::{
     process_secure_mode_cfg,
 };
 #[cfg(feature = "ffi-dataplane")]
-use crate::connector::core_instance::RuntimeCoreInstance;
+use crate::instance::composition::NativeCoreInstance;
 use crate::proto::api::{self, manage};
 use crate::proto::rpc_types::controller::BaseController;
 use crate::rpc_service::InstanceRpcService;
@@ -53,7 +53,7 @@ struct EasyTierData {
     event_subscriber: RwLock<broadcast::Sender<GlobalCtxEvent>>,
     instance_stop_notifier: Arc<tokio::sync::Notify>,
     #[cfg(feature = "ffi-dataplane")]
-    data_plane: tokio::sync::watch::Sender<Option<Arc<RuntimeCoreInstance>>>,
+    data_plane: tokio::sync::watch::Sender<Option<Arc<NativeCoreInstance>>>,
     #[cfg(feature = "ffi-dataplane")]
     runtime_handle: (
         parking_lot::Mutex<Option<tokio::runtime::Handle>>,
@@ -312,7 +312,7 @@ impl EasyTierLauncher {
     async fn wait_data_plane(
         &self,
         deadline: tokio::time::Instant,
-    ) -> Option<Arc<RuntimeCoreInstance>> {
+    ) -> Option<Arc<NativeCoreInstance>> {
         let mut rx = self.data.data_plane.subscribe();
         loop {
             if let Some(server) = rx.borrow_and_update().clone() {
@@ -555,7 +555,7 @@ impl NetworkInstance {
     async fn wait_data_plane(
         &self,
         timeout: std::time::Duration,
-    ) -> anyhow::Result<(Arc<RuntimeCoreInstance>, tokio::time::Instant)> {
+    ) -> anyhow::Result<(Arc<NativeCoreInstance>, tokio::time::Instant)> {
         let deadline = tokio::time::Instant::now() + timeout;
         let launcher = self
             .launcher

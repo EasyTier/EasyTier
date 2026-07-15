@@ -16,8 +16,8 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 use crate::common::global_ctx::{ArcGlobalCtx, tests::get_mock_global_ctx};
-use crate::connector::core_instance::{
-    RuntimeCoreInstance,
+use crate::instance::composition::{
+    NativeCoreInstance,
     build_portable_runtime_core_instance_with_transport_factory_and_ring_registry,
 };
 
@@ -32,14 +32,14 @@ use crate::proto::rpc_types::controller::{BaseController, Controller as _};
 pub async fn prepare_env(
     dns_name: &str,
     tun_ip: Ipv4Inet,
-) -> (ArcGlobalCtx, Arc<RuntimeCoreInstance>, NicCtx) {
+) -> (ArcGlobalCtx, Arc<NativeCoreInstance>, NicCtx) {
     prepare_env_with_tld_dns_zone(dns_name, tun_ip, None).await
 }
 
 async fn build_test_core(
     ctx: ArcGlobalCtx,
 ) -> (
-    Arc<RuntimeCoreInstance>,
+    Arc<NativeCoreInstance>,
     tokio::sync::mpsc::Receiver<Vec<u8>>,
 ) {
     let (packet_sink, packet_receiver) = tokio::sync::mpsc::channel(128);
@@ -60,7 +60,7 @@ pub async fn prepare_env_with_tld_dns_zone(
     dns_name: &str,
     tun_ip: Ipv4Inet,
     tld_dns_zone: Option<&str>,
-) -> (ArcGlobalCtx, Arc<RuntimeCoreInstance>, NicCtx) {
+) -> (ArcGlobalCtx, Arc<NativeCoreInstance>, NicCtx) {
     let ctx = get_mock_global_ctx();
     ctx.set_hostname(dns_name.to_owned());
     ctx.set_ipv4(Some(tun_ip));

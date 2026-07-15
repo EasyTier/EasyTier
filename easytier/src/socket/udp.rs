@@ -332,10 +332,7 @@ mod tests {
         },
     };
 
-    use crate::{
-        connector::udp_hole_punch::common::runtime_udp_hole_punch_runtime,
-        peers::tests::create_mock_peer_manager,
-    };
+    use crate::host_runtime::native_host_runtime;
 
     use super::*;
 
@@ -383,8 +380,7 @@ mod tests {
         listener.listen().await.unwrap();
 
         let receiver = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let peer_manager = create_mock_peer_manager().await;
-        let runtime = runtime_udp_hole_punch_runtime(&peer_manager);
+        let runtime = native_host_runtime();
         send_v4_hole_punch_control_packet(
             runtime.as_ref(),
             SocketContext::default(),
@@ -419,8 +415,7 @@ mod tests {
         listener.listen().await.unwrap();
 
         let receiver = UdpSocket::bind("[::]:0").await.unwrap();
-        let peer_manager = create_mock_peer_manager().await;
-        let runtime = runtime_udp_hole_punch_runtime(&peer_manager);
+        let runtime = native_host_runtime();
         send_v6_hole_punch_control_packet(
             runtime.as_ref(),
             SocketContext::default(),

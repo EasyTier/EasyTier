@@ -33,21 +33,19 @@ use crate::common::acl_processor::runtime_acl_config;
 use crate::common::config::ConfigLoader;
 use crate::common::error::Error;
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtx, GlobalCtxEvent};
-use crate::connector::core_instance::{
-    RuntimeCoreInstance,
-    build_portable_runtime_core_instance_with_transport_factory_and_ring_registry,
-    runtime_instance_config,
-};
-use crate::connector::manual::{ConnectorManagerRpcService, ManualConnectorManager};
 #[cfg(feature = "kcp")]
 use crate::gateway::kcp_proxy::KcpProxyService;
 #[cfg(feature = "quic")]
 use crate::gateway::quic_proxy::QuicProxyService;
 use crate::gateway::tcp_proxy::CoreTcpProxyRpcService;
+use crate::instance::composition::{
+    NativeCoreInstance,
+    build_portable_runtime_core_instance_with_transport_factory_and_ring_registry,
+    runtime_instance_config,
+};
+use crate::instance::management::connector::InstanceConnectorManagementRpc;
+use crate::instance::management::peer::InstancePeerManagementRpc;
 use crate::launcher::NetworkConfigExt;
-use crate::peer_center::instance::PeerCenterInstanceService;
-use crate::peers::peer_conn::PeerConnId;
-use crate::peers::rpc_service::PeerManagerRpcService;
 use crate::proto::api::config::{
     ConfigPatchAction, ConfigRpc, GetConfigRequest, GetConfigResponse, PatchConfigRequest,
     PatchConfigResponse, PortForwardPatch,
@@ -67,6 +65,8 @@ use crate::proto::rpc_types;
 use crate::proto::rpc_types::controller::BaseController;
 use crate::rpc_service::InstanceRpcService;
 use crate::utils::weak_upgrade;
+use easytier_core::peer_center::instance::PeerCenterInstanceService;
+use easytier_core::peers::peer_conn::PeerConnId;
 
 #[cfg(feature = "magic-dns")]
 use super::dns_server::{MAGIC_DNS_FAKE_IP, runner::DnsRunner};
@@ -268,7 +268,7 @@ struct ConfigOperation {
 #[derive(Clone)]
 pub struct InstanceConfigPatcher {
     global_ctx: Weak<GlobalCtx>,
-    core_instance: Weak<RuntimeCoreInstance>,
+    core_instance: Weak<NativeCoreInstance>,
     operation: Arc<ConfigOperation>,
 }
 
@@ -643,7 +643,7 @@ pub struct Instance {
     nic_ctx: ArcNicCtx,
 
     peer_packet_receiver: Arc<Mutex<HostPacketReceiver>>,
-    core_instance: Arc<RuntimeCoreInstance>,
+    core_instance: Arc<NativeCoreInstance>,
     config_operation: Arc<ConfigOperation>,
 
     transport_proxy: RuntimeTransportProxyAttachment,
@@ -660,7 +660,7 @@ struct RuntimeDhcpIpv4Host {
     peer_packet_receiver: Arc<Mutex<HostPacketReceiver>>,
     #[cfg(feature = "tun")]
     nic_closed_notifier: Arc<Notify>,
-    core_instance: Weak<RuntimeCoreInstance>,
+    core_instance: Weak<NativeCoreInstance>,
 }
 
 impl RuntimeDhcpIpv4Host {
@@ -856,10 +856,11 @@ impl Instance {
         }
     }
 
-    pub fn get_conn_manager(&self) -> Arc<ManualConnectorManager> {
-        Arc::new(ManualConnectorManager::new_with_core_instance(
-            self.core_instance.clone(),
-        ))
+    pub fn add_connector_url(&self, url: url::Url) {
+        tracing::info!(%url, "add_connector");
+        self.core_instance
+            .add_connector(url)
+            .expect("core manual connector URL should be valid");
     }
 
     #[cfg(feature = "tun")]
@@ -898,7 +899,7 @@ impl Instance {
     #[cfg(feature = "magic-dns")]
     fn create_magic_dns_runner(
         global_ctx: ArcGlobalCtx,
-        core_instance: Arc<RuntimeCoreInstance>,
+        core_instance: Arc<NativeCoreInstance>,
         tun_dev: Option<String>,
         tun_ip: Ipv4Inet,
     ) -> Option<DnsRunner> {
@@ -1088,7 +1089,7 @@ impl Instance {
     ) -> impl VpnPortalRpc<Controller = BaseController> + Clone + use<> {
         #[derive(Clone)]
         struct VpnPortalRpcService {
-            core_instance: Weak<RuntimeCoreInstance>,
+            core_instance: Weak<NativeCoreInstance>,
         }
 
         #[async_trait::async_trait]
@@ -1183,7 +1184,7 @@ impl Instance {
     fn get_stats_rpc_service(&self) -> impl StatsRpc<Controller = BaseController> + Clone + use<> {
         #[derive(Clone)]
         pub struct StatsRpcService {
-            core_instance: Weak<RuntimeCoreInstance>,
+            core_instance: Weak<NativeCoreInstance>,
         }
 
         #[async_trait::async_trait]
@@ -1301,7 +1302,7 @@ impl Instance {
             stats_rpc_service: G,
             config_rpc_service: H,
             peer_center_rpc_service: Arc<PeerCenterInstanceService>,
-            credential_manage_rpc_service: PeerManagerRpcService,
+            credential_manage_rpc_service: InstancePeerManagementRpc,
         }
 
         #[async_trait::async_trait]
@@ -1378,8 +1379,11 @@ impl Instance {
         }
 
         ApiRpcServiceImpl {
-            peer_mgr_rpc_service: PeerManagerRpcService::new(&self.global_ctx, &self.core_instance),
-            connector_mgr_rpc_service: ConnectorManagerRpcService::new(&self.core_instance),
+            peer_mgr_rpc_service: InstancePeerManagementRpc::new(
+                &self.global_ctx,
+                &self.core_instance,
+            ),
+            connector_mgr_rpc_service: InstanceConnectorManagementRpc::new(&self.core_instance),
             mapped_listener_mgr_rpc_service: self.get_mapped_listener_manager_rpc_service(),
             vpn_portal_rpc_service: self.get_vpn_portal_rpc_service(),
             tcp_proxy_rpc_services: {
@@ -1454,7 +1458,7 @@ impl Instance {
 
                 tcp_proxy_rpc_services
             },
-            acl_manage_rpc_service: PeerManagerRpcService::new(
+            acl_manage_rpc_service: InstancePeerManagementRpc::new(
                 &self.global_ctx,
                 &self.core_instance,
             ),
@@ -1462,7 +1466,7 @@ impl Instance {
             stats_rpc_service: self.get_stats_rpc_service(),
             config_rpc_service: self.get_config_service(),
             peer_center_rpc_service: Arc::new(self.core_instance.peer_center_rpc_service()),
-            credential_manage_rpc_service: PeerManagerRpcService::new(
+            credential_manage_rpc_service: InstancePeerManagementRpc::new(
                 &self.global_ctx,
                 &self.core_instance,
             ),
@@ -1482,7 +1486,7 @@ impl Instance {
         self.peer_packet_receiver.clone()
     }
 
-    pub(crate) fn get_core_instance(&self) -> Arc<RuntimeCoreInstance> {
+    pub(crate) fn get_core_instance(&self) -> Arc<NativeCoreInstance> {
         self.core_instance.clone()
     }
 
@@ -1490,7 +1494,7 @@ impl Instance {
     pub(crate) async fn setup_nic_ctx_for_mobile(
         nic_ctx: ArcNicCtx,
         global_ctx: ArcGlobalCtx,
-        core_instance: Arc<RuntimeCoreInstance>,
+        core_instance: Arc<NativeCoreInstance>,
         peer_packet_receiver: Arc<Mutex<HostPacketReceiver>>,
         fd: i32,
     ) -> Result<(), anyhow::Error> {

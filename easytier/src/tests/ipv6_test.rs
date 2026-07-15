@@ -3,7 +3,9 @@ use std::net::Ipv6Addr;
 use crate::{
     common::config::{ConfigLoader, TomlConfigLoader},
     common::global_ctx::tests::get_mock_global_ctx,
-    peers::{peer_manager::RouteAlgoType, peer_ospf_route::new_updated_self_route_peer_info},
+};
+use easytier_core::peers::{
+    peer_manager::RouteAlgoType, peer_ospf_route::new_updated_self_route_peer_info,
 };
 
 #[tokio::test]
@@ -37,33 +39,13 @@ async fn test_route_peer_info_ipv6() {
     global_ctx.set_ipv6(Some(ipv6_cidr));
 
     // Create RoutePeerInfo with IPv6 support
-    let config = crate::peers::context::runtime_peer_manager_config(
-        &global_ctx,
-        crate::peers::peer_manager::RouteAlgoType::Ospf,
-    );
-    let (_, peer_context) = crate::peers::context::build_core_peer_context(&global_ctx, &config);
+    let config =
+        crate::instance::config::runtime_peer_manager_config(&global_ctx, RouteAlgoType::Ospf);
+    let (_, peer_context) = crate::instance::config::build_core_peer_context(&global_ctx, &config);
     let updated_info = new_updated_self_route_peer_info(123, 456, peer_context.as_ref(), None);
 
     // Verify IPv6 address is included
     assert!(updated_info.ipv6_addr.is_some());
     let ipv6_addr: Ipv6Addr = updated_info.ipv6_addr.unwrap().address.unwrap().into();
     assert_eq!(ipv6_addr, ipv6_cidr.address());
-}
-
-#[tokio::test]
-async fn test_peer_manager_ipv6() {
-    let global_ctx = get_mock_global_ctx();
-    let (packet_sender, _packet_receiver) = tokio::sync::mpsc::channel(100);
-    let peer_mgr = crate::peers::peer_manager::PeerManager::new(
-        RouteAlgoType::Ospf,
-        global_ctx.clone(),
-        packet_sender,
-    );
-
-    // Test IPv6 address lookup for unknown address
-    let ipv6_addr = Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 2);
-    let (peers, _is_self) = peer_mgr.core().get_msg_dst_peer_ipv6(&ipv6_addr).await;
-
-    // Should return empty peers list for unknown IPv6
-    assert!(peers.is_empty());
 }

@@ -31,7 +31,6 @@ use tokio::time::timeout;
 
 use easytier::{
     common::{constants::EASYTIER_VERSION, stun::runtime_stun_info_collector},
-    peers,
     proto::{
         acl::AclStats,
         api::{
@@ -1403,8 +1402,12 @@ impl<'a> CommandHandler<'a> {
                     };
                 }
 
-                let a_is_public = a.hostname.starts_with(peers::PUBLIC_SERVER_HOSTNAME_PREFIX);
-                let b_is_public = b.hostname.starts_with(peers::PUBLIC_SERVER_HOSTNAME_PREFIX);
+                let a_is_public = a.hostname.starts_with(
+                    easytier_core::peers::foreign_network_manager::PUBLIC_SERVER_HOSTNAME_PREFIX,
+                );
+                let b_is_public = b.hostname.starts_with(
+                    easytier_core::peers::foreign_network_manager::PUBLIC_SERVER_HOSTNAME_PREFIX,
+                );
                 if a_is_public != b_is_public {
                     return if a_is_public {
                         std::cmp::Ordering::Less

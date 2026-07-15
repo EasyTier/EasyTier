@@ -72,16 +72,16 @@ worker sharing is disabled.
 
 ### Instance projection
 
-`RuntimeConnectorHost` is an instance facts projection, not an OS runtime. Its
-constructor is private and all native composition uses
-`runtime_connector_host(global_ctx)`. It retains `GlobalCtx` only for facts that
-are legitimately instance-specific:
+Core's `ConnectorHostAdapter` composes `NativeHostRuntime` with
+`NativeInstanceEnvironment`. The environment retains `GlobalCtx` only for facts
+that are legitimately instance-specific:
 
 - collected interface/public-address observations;
-- mapped and currently running listeners;
+- mapped listeners;
 - local, protected-port, and EasyTier-managed-address checks.
 
-All real connector socket operations delegate to `NativeHostRuntime`. Route
+It does not implement socket factories. All real connector socket operations
+are supplied separately by `NativeHostRuntime`. Route
 probes and preferred-source discovery receive the active request's
 `SocketContext`; they do not recover netns or mark from the retained
 `GlobalCtx`.
@@ -99,7 +99,7 @@ codec, probing state machine, retry policy, or NAT inference implementation.
 
 ## Go/WASM contract
 
-Host instance create schema version 9 submits one normalized peer snapshot,
+Host instance create schema version 10 submits one normalized peer snapshot,
 normalized STUN server configuration, and core-owned gateway runtime
 configuration, and uses:
 
@@ -111,6 +111,7 @@ configuration, and uses:
 - a route-probe environment request carrying the complete `SocketContext`;
 - no host-provided STUN state, NAT type, public endpoint, or UDP/TCP STUN mapping
   operation.
+- no host-provided running-listener state; core owns one listener registry.
 
 The Go host therefore supplies platform capabilities without reconstructing
 STUN or connectivity policy.
@@ -119,12 +120,10 @@ STUN or connectivity policy.
 
 The boundary is closed when all of these remain true:
 
-- production `RuntimeConnectorHost::new` calls exist only inside the centralized
-  helper;
+- `NativeInstanceEnvironment` has no socket factory or socket I/O implementation;
 - production `RuntimeDnsResolver::new` and `RuntimeUdpSocketFactory::new` calls
   exist only in `NativeHostRuntime`;
-- `RuntimeConnectorHost` contains no direct netns read, Unix connect, or raw
-  interface enumeration;
+- `GlobalCtx` contains no running-listener registry;
 - Go `ConnectorEnvironment` exposes only host facts such as
   `LocalAddrForRemote`, not STUN state or port mapping;
 - STUN production algorithms and mutable state live under

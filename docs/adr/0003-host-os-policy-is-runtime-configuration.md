@@ -51,9 +51,11 @@ the same context as the subsequent socket request. Linux namespace guards cover
 only synchronous resource creation and never cross `await`; Tokio continues
 asynchronous I/O after the guard is released.
 
-`RuntimeConnectorHost` remains an instance projection for listener, address,
-and protected-port facts. It is deliberately not the process runtime and does
-not execute real connector socket operations.
+Core's `ConnectorHostAdapter` composes that process runtime with a narrow native
+`NativeInstanceEnvironment`. The environment projects only instance address,
+mapped-listener, protected-port, and preferred-source facts. It cannot create
+or operate sockets. Running listeners are absent from this seam because the
+core listener registry is authoritative.
 
 ## Rejected alternatives
 

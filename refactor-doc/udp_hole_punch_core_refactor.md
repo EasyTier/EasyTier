@@ -1,8 +1,8 @@
 # UDP 打洞迁移到 easytier-core 重构计划
 
-> 状态：历史迁移计划。打洞逻辑已经大量进入 core，但最终
-> Socket-to-Tunnel seam 尚未闭合；当前范围见
-> [`core_refactor_roadmap.md`](core_refactor_roadmap.md)。
+> 状态：历史迁移计划，迁移已经完成。旧 native connector 目录已
+> 删除；portable UDP 打洞归 core，native 只保留 OS 端口映射 Adapter。
+> 当前契约见 [`core_ownership_finalization.md`](core_ownership_finalization.md)。
 
 ## 背景
 

@@ -14,7 +14,7 @@ use crate::{
         ifcfg::{IfConfiger, IfConfiguerTrait},
         log,
     },
-    connector::core_instance::RuntimeCoreInstance,
+    instance::composition::NativeCoreInstance,
     instance::instance::HostPacketReceiver,
     tunnel::{
         StreamItem, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream,
@@ -798,7 +798,7 @@ impl VirtualNic {
 
 pub struct NicCtx {
     global_ctx: ArcGlobalCtx,
-    core_instance: Weak<RuntimeCoreInstance>,
+    core_instance: Weak<NativeCoreInstance>,
     peer_packet_receiver: Arc<Mutex<HostPacketReceiver>>,
 
     close_notifier: Arc<Notify>,
@@ -813,7 +813,7 @@ pub struct NicCtx {
 impl NicCtx {
     pub(crate) fn new(
         global_ctx: ArcGlobalCtx,
-        core_instance: &Arc<RuntimeCoreInstance>,
+        core_instance: &Arc<NativeCoreInstance>,
         peer_packet_receiver: Arc<Mutex<HostPacketReceiver>>,
         close_notifier: Arc<Notify>,
     ) -> Self {
@@ -871,7 +871,7 @@ impl NicCtx {
         Ok(())
     }
 
-    async fn do_forward_nic_to_peers(ret: ZCPacket, core_instance: &RuntimeCoreInstance) {
+    async fn do_forward_nic_to_peers(ret: ZCPacket, core_instance: &NativeCoreInstance) {
         let payload = ret.payload();
         if payload.is_empty() {
             return;

@@ -3827,6 +3827,17 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unknown_ipv6_has_no_peer_destination() {
+        let core = build_portable_for_test(portable_runtime_config("ipv6-net", 77)).unwrap();
+        let unknown = "fd00::2".parse().unwrap();
+
+        let (peers, is_self) = core.get_msg_dst_peer_ipv6(&unknown).await;
+
+        assert!(peers.is_empty());
+        assert!(!is_self);
+    }
+
+    #[tokio::test]
     async fn foreign_network_stop_waits_for_inflight_admission() {
         let core = build_portable_for_test(portable_runtime_config("portable-net", 92)).unwrap();
         let manager = core.foreign_network_manager.clone();

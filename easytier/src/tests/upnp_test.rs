@@ -9,7 +9,6 @@ use std::{
 
 use anyhow::{Context, anyhow, bail};
 use easytier_core::{
-    hole_punch::udp::{UdpHolePunchRuntime, VirtualUdpSocket},
     stun::{StunInfoProvider, StunSocketMapper},
     tunnel::ring::RingTunnelRegistry,
 };
@@ -24,16 +23,11 @@ use crate::{
     common::{
         config::{ConfigLoader, TomlConfigLoader},
         error::Error,
-        global_ctx::{GlobalCtx, GlobalCtxEvent},
+        global_ctx::GlobalCtxEvent,
         netns::NetNS,
         stun::MockStunInfoCollector,
     },
-    connector::udp_hole_punch::common::runtime_udp_hole_punch_runtime,
     instance::instance::Instance,
-    peers::{
-        create_packet_recv_chan,
-        peer_manager::{PeerManager, RouteAlgoType},
-    },
     proto::common::{NatType, StunInfo},
     tunnel::common::tests::wait_for_condition,
 };
@@ -1381,30 +1375,6 @@ async fn mapping_exists(local_port: u16) -> bool {
         .is_ok()
 }
 
-async fn create_test_peer_manager(
-    inst_name: &str,
-    netns: Option<&str>,
-    disable_upnp: bool,
-    stun_collector: Box<dyn StunSocketMapper<crate::socket::udp::RuntimeUdpSocket>>,
-) -> Arc<PeerManager> {
-    let config = TomlConfigLoader::default();
-    config.set_inst_name(inst_name.to_owned());
-    config.set_netns(netns.map(ToOwned::to_owned));
-
-    let global_ctx = Arc::new(GlobalCtx::new(config));
-    if disable_upnp {
-        let mut flags = global_ctx.get_flags();
-        flags.disable_upnp = true;
-        global_ctx.set_flags(flags);
-    }
-    global_ctx.replace_stun_info_collector(stun_collector);
-
-    let (packet_tx, _packet_rx) = create_packet_recv_chan();
-    let peer_mgr = Arc::new(PeerManager::new(RouteAlgoType::Ospf, global_ctx, packet_tx));
-    peer_mgr.core().run_for_test().await.unwrap();
-    peer_mgr
-}
-
 fn create_test_instance_config(
     inst_name: &str,
     netns: Option<&str>,
@@ -1486,7 +1456,7 @@ where
 }
 
 async fn peer_has_udp_conn_to_remote_addr(
-    core: Arc<crate::connector::core_instance::RuntimeCoreInstance>,
+    core: Arc<crate::instance::composition::NativeCoreInstance>,
     peer_id: u32,
     expected_remote_addr: SocketAddr,
 ) -> bool {
@@ -1546,89 +1516,6 @@ async fn wait_instance_route(
 
 #[tokio::test]
 #[serial_test::serial(upnp)]
-async fn udp_hole_punch_listener_establishes_upnp_mapping() {
-    let _env = UpnpIntegrationEnv::new().await.unwrap();
-    let peer_mgr = create_test_peer_manager(
-        "upnp-test-listener",
-        Some(TEST_NS_A),
-        false,
-        Box::new(GatewayBackedStunCollector {
-            netns: TEST_NS_A,
-            client_ip: TEST_CLIENT_A_IP,
-            external_ip: TEST_EXTERNAL_IP,
-        }),
-    )
-    .await;
-    let mut event_rx = peer_mgr.get_global_ctx().subscribe();
-
-    let runtime = runtime_udp_hole_punch_runtime(&peer_mgr);
-    let listener = runtime.create_listener(true).await.unwrap();
-    let local_port = listener.socket.local_addr().unwrap().port();
-
-    let event = wait_for_port_mapping_event(&mut event_rx).await;
-    let mapped_addr = query_udp_mapping(TEST_NS_A, TEST_EXTERNAL_IP, TEST_CLIENT_A_IP, local_port)
-        .await
-        .unwrap();
-
-    match event {
-        GlobalCtxEvent::ListenerPortMappingEstablished {
-            local_listener,
-            mapped_listener,
-            backend,
-        } => {
-            let expected_external_ip = TEST_EXTERNAL_IP.to_string();
-            assert_eq!(backend, "igd");
-            assert_eq!(local_listener.scheme(), "udp");
-            assert_eq!(local_listener.port(), Some(local_port));
-            assert_eq!(mapped_listener.scheme(), "udp");
-            assert_eq!(
-                mapped_listener.host_str(),
-                Some(expected_external_ip.as_str())
-            );
-            assert_eq!(mapped_listener.port(), Some(mapped_addr.port()));
-        }
-        other => panic!("unexpected event: {other:?}"),
-    }
-
-    assert!(mapping_exists(local_port).await);
-
-    drop(listener);
-
-    wait_for_condition(
-        || async { !mapping_exists(local_port).await },
-        Duration::from_secs(10),
-    )
-    .await;
-}
-
-#[tokio::test]
-#[serial_test::serial(upnp)]
-async fn udp_hole_punch_listener_skips_upnp_when_disabled() {
-    let _env = UpnpIntegrationEnv::new().await.unwrap();
-    let peer_mgr = create_test_peer_manager(
-        "upnp-test-disabled",
-        Some(TEST_NS_A),
-        true,
-        Box::new(MockStunInfoCollector {
-            udp_nat_type: NatType::PortRestricted,
-        }),
-    )
-    .await;
-    let mut event_rx = peer_mgr.get_global_ctx().subscribe();
-
-    let runtime = runtime_udp_hole_punch_runtime(&peer_mgr);
-    let listener = runtime.create_listener(true).await.unwrap();
-    let local_port = listener.socket.local_addr().unwrap().port();
-
-    let event = tokio::time::timeout(Duration::from_secs(2), event_rx.recv()).await;
-    assert!(event.is_err(), "unexpected port mapping event: {event:?}");
-    assert!(!mapping_exists(local_port).await);
-
-    drop(listener);
-}
-
-#[tokio::test]
-#[serial_test::serial(upnp)]
 async fn instances_build_direct_connection_via_upnp_udp_hole_punch() {
     let _env = DualGatewayUpnpIntegrationEnv::new().await.unwrap();
     let ring_registry = Arc::new(RingTunnelRegistry::default());
@@ -1679,12 +1566,8 @@ async fn instances_build_direct_connection_via_upnp_udp_hole_punch() {
     inst_b.run().await.unwrap();
     inst_c.run().await.unwrap();
 
-    inst_a
-        .get_conn_manager()
-        .add_connector_url(format!("ring://{}", inst_b.id()).parse().unwrap());
-    inst_c
-        .get_conn_manager()
-        .add_connector_url(format!("ring://{}", inst_b.id()).parse().unwrap());
+    inst_a.add_connector_url(format!("ring://{}", inst_b.id()).parse().unwrap());
+    inst_c.add_connector_url(format!("ring://{}", inst_b.id()).parse().unwrap());
 
     timeout_stage(
         "wait_route_appear(inst_a, inst_c)",

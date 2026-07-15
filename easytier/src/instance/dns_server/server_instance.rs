@@ -17,7 +17,7 @@ use crate::{
         global_ctx::ArcGlobalCtx,
         ifcfg::{IfConfiger, IfConfiguerTrait},
     },
-    connector::core_instance::RuntimeCoreInstance,
+    instance::composition::NativeCoreInstance,
     instance::dns_server::{
         config::{Record, RecordBuilder, RecordType},
         server::build_authority,
@@ -358,7 +358,7 @@ fn get_system_config(
 
 impl MagicDnsServerInstance {
     pub(crate) async fn new(
-        core_instance: Arc<RuntimeCoreInstance>,
+        core_instance: Arc<NativeCoreInstance>,
         global_ctx: ArcGlobalCtx,
         tun_dev: Option<String>,
         tun_inet: Ipv4Inet,

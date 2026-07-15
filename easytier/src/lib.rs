@@ -16,15 +16,12 @@ mod arch;
 mod gateway;
 mod host_runtime;
 pub mod instance;
-mod peer_center;
 mod vpn_portal;
 
 pub mod common;
-pub mod connector;
 pub mod core;
 pub mod instance_manager;
 pub mod launcher;
-pub mod peers;
 pub mod proto;
 pub mod rpc_service;
 pub mod service_manager;

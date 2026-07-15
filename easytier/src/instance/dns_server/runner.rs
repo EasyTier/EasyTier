@@ -3,7 +3,7 @@ use tokio_util::sync::CancellationToken;
 
 use std::{net::Ipv4Addr, sync::Arc, time::Duration};
 
-use crate::{common::global_ctx::ArcGlobalCtx, connector::core_instance::RuntimeCoreInstance};
+use crate::{common::global_ctx::ArcGlobalCtx, instance::composition::NativeCoreInstance};
 
 use super::{client_instance::MagicDnsClientInstance, server_instance::MagicDnsServerInstance};
 
@@ -12,7 +12,7 @@ static DEFAULT_ET_DNS_ZONE: &str = "et.net.";
 pub struct DnsRunner {
     client: Option<MagicDnsClientInstance>,
     server: Option<MagicDnsServerInstance>,
-    core_instance: Arc<RuntimeCoreInstance>,
+    core_instance: Arc<NativeCoreInstance>,
     global_ctx: ArcGlobalCtx,
     tun_dev: Option<String>,
     tun_inet: Ipv4Inet,
@@ -21,7 +21,7 @@ pub struct DnsRunner {
 
 impl DnsRunner {
     pub(crate) fn new(
-        core_instance: Arc<RuntimeCoreInstance>,
+        core_instance: Arc<NativeCoreInstance>,
         global_ctx: ArcGlobalCtx,
         tun_dev: Option<String>,
         tun_inet: Ipv4Inet,
