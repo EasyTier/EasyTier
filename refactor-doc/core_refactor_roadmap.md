@@ -1,7 +1,7 @@
 # EasyTier Core Refactor Roadmap
 
 > Status: core ownership migration complete; feature slicing and production
-> hardening remain follow-up work. Updated 2026-07-14.
+> hardening remain follow-up work. Updated 2026-07-15.
 
 ## Outcome
 
@@ -65,9 +65,10 @@ Already established:
   collector construction, and per-instance lifecycle are core-owned and shared
   by manual, direct, TCP hole-punch, UDP hole-punch, peer, IP-collection, and
   UPnP composition; native `GlobalCtx` keeps only an empty live projection slot;
-- host create schema v8 passes route-probe socket context, normalized STUN
+- host create schema v11 passes route-probe socket context, normalized STUN
   server configuration, and core-owned gateway runtime configuration while
-  exposing no Go STUN state or mapping operations.
+  exposing no Go STUN state or mapping operations. Listener input is normalized
+  URLs plus IPv6 policy and `SocketContext`; core derives the internal plan.
 
 The ownership architecture is now closed. Deliberate follow-up boundaries are:
 
@@ -111,6 +112,9 @@ Current closure status on 2026-07-14:
 - `CoreProcessRuntime` hides shared portable process resources from native
   composition; the WASI module lifecycle creates the corresponding module-local
   runtime. Ring registry construction and access are core-local.
+- `CoreInstance` owns listener planning and one lifecycle manager for Ring,
+  TCP, UDP-session, Unix, and FakeTCP listeners. Native listener code is a
+  stateless Unix/FakeTCP resource Adapter and contains no plan or manager.
 
 ## Definition of done
 

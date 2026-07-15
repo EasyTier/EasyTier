@@ -1,227 +1,55 @@
 use std::{fmt::Debug, sync::Arc};
 
 use async_trait::async_trait;
-#[cfg(any(feature = "wireguard", feature = "quic"))]
-use easytier_core::socket::udp::UdpSessionProtocol;
 use easytier_core::{
-    instance::{ExternalListenerFactory, ListenerService},
+    instance::{ExternalListenerFactory, ExternalListenerRequest},
     listener::{
-        self as core_listener, plan as core_listener_plan,
-        transport::{
-            AcceptedTransport, AcceptedTunnelEvent, AcceptedTunnelEventSink,
-            TransportListenerConfig,
-        },
+        self as core_listener,
+        transport::{AcceptedTransport, AcceptedTunnelEvent, AcceptedTunnelEventSink},
     },
-    socket::{SocketContext, udp::UdpSessionAcceptKind},
 };
-use tokio::sync::Mutex;
 
 #[cfg(feature = "faketcp")]
 use crate::common::netns::NetNS;
 use crate::{
-    common::{
-        config::ConfigLoader as _,
-        global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
-    },
+    common::global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
     socket::tcp::RuntimeTcpSocket,
 };
 
-pub use easytier_core::listener::plan::{is_url_host_ipv6, is_url_host_unspecified};
-
-pub(crate) fn runtime_listener_plan(global_ctx: &ArcGlobalCtx) -> core_listener_plan::ListenerPlan {
-    core_listener_plan::plan_listeners(
-        core_listener_plan::ListenerPlanRequest::new(
-            global_ctx.get_id(),
-            global_ctx.config.get_listener_uris(),
-            global_ctx.config.get_flags().enable_ipv6,
-        ),
-        &listener_scheme_registry(),
-    )
-}
-
-pub(crate) fn runtime_transport_listener_configs(
-    plan: &core_listener_plan::ListenerPlan,
-    context: SocketContext,
-) -> Vec<TransportListenerConfig> {
-    plan.listeners
-        .iter()
-        .filter_map(|listener| match listener.kind {
-            core_listener_plan::ListenerKind::Ring => Some(TransportListenerConfig::Ring {
-                url: listener.url.clone(),
-                must_succeed: listener.must_succeed,
-            }),
-            core_listener_plan::ListenerKind::TcpStream if listener.url.scheme() != "faketcp" => {
-                Some(TransportListenerConfig::Tcp {
-                    url: listener.url.clone(),
-                    options: core_listener_plan::unresolved_tcp_listener_options(context.clone()),
-                    must_succeed: listener.must_succeed,
-                })
-            }
-            core_listener_plan::ListenerKind::UdpSession => {
-                let accept_kind = match listener.url.scheme() {
-                    "udp" => UdpSessionAcceptKind::EasyTierMux,
-                    #[cfg(feature = "wireguard")]
-                    "wg" => UdpSessionAcceptKind::Classified(UdpSessionProtocol::WireGuard),
-                    #[cfg(feature = "quic")]
-                    "quic" => UdpSessionAcceptKind::Classified(UdpSessionProtocol::Quic),
-                    _ => return None,
-                };
-                Some(TransportListenerConfig::Udp {
-                    url: listener.url.clone(),
-                    request: core_listener_plan::unresolved_udp_session_listen_request(
-                        &listener.url,
-                        context.clone(),
-                    ),
-                    accept_kind,
-                    must_succeed: listener.must_succeed,
-                })
-            }
-            _ => None,
-        })
-        .collect()
-}
-
-fn listener_scheme_registry() -> core_listener_plan::ListenerSchemeRegistry {
-    let mut registry = core_listener_plan::ListenerSchemeRegistry::new()
-        .support("tcp", core_listener_plan::ListenerKind::TcpStream)
-        .support("udp", core_listener_plan::ListenerKind::UdpSession);
-
-    #[cfg(feature = "wireguard")]
-    {
-        registry = registry.support("wg", core_listener_plan::ListenerKind::UdpSession);
-    }
-    #[cfg(feature = "quic")]
-    {
-        registry = registry
-            .support("quic", core_listener_plan::ListenerKind::UdpSession)
-            .disable_ipv6_shadow("quic");
-    }
-    #[cfg(feature = "websocket")]
-    {
-        registry = registry
-            .support("ws", core_listener_plan::ListenerKind::TcpStream)
-            .support("wss", core_listener_plan::ListenerKind::TcpStream);
-    }
-    #[cfg(feature = "faketcp")]
-    {
-        registry = registry
-            .support("faketcp", core_listener_plan::ListenerKind::TcpStream)
-            .disable_ipv6_shadow("faketcp");
-    }
-    #[cfg(unix)]
-    {
-        registry = registry.support("unix", core_listener_plan::ListenerKind::External);
-    }
-
-    registry
-}
-
-pub(crate) struct RuntimeListenerService {
-    manager: Mutex<
-        core_listener::ListenerManager<
-            AcceptedTransport<RuntimeTcpSocket>,
-            dyn core_listener::AcceptedSocketHandler<AcceptedTransport<RuntimeTcpSocket>>,
-        >,
-    >,
-    failures: Vec<core_listener_plan::ListenerPlanFailure>,
-    global_ctx: ArcGlobalCtx,
-}
-
-pub(crate) struct RuntimeExternalListenerFactory {
-    global_ctx: ArcGlobalCtx,
-    plan: core_listener_plan::ListenerPlan,
-}
+pub(crate) struct RuntimeExternalListenerFactory;
 
 impl RuntimeExternalListenerFactory {
-    pub(crate) fn new(
-        global_ctx: ArcGlobalCtx,
-        plan: core_listener_plan::ListenerPlan,
-    ) -> Arc<Self> {
-        Arc::new(Self { global_ctx, plan })
+    pub(crate) fn new() -> Arc<Self> {
+        Arc::new(Self)
     }
 }
 
 impl ExternalListenerFactory<AcceptedTransport<RuntimeTcpSocket>>
     for RuntimeExternalListenerFactory
 {
-    fn build(
+    fn supports_scheme(&self, scheme: &str) -> bool {
+        match scheme {
+            "faketcp" => cfg!(feature = "faketcp"),
+            "unix" => cfg!(unix),
+            _ => false,
+        }
+    }
+
+    fn create(
         &self,
-        handler: Arc<dyn core_listener::AcceptedSocketHandler<AcceptedTransport<RuntimeTcpSocket>>>,
-        events: Arc<dyn core_listener::ListenerEventSink>,
-    ) -> Arc<dyn ListenerService> {
-        Arc::new(RuntimeListenerService::new(
-            self.global_ctx.clone(),
-            handler,
-            &self.plan,
-            events,
-        ))
-    }
-}
-
-impl RuntimeListenerService {
-    pub(crate) fn new(
-        global_ctx: ArcGlobalCtx,
-        handler: Arc<dyn core_listener::AcceptedSocketHandler<AcceptedTransport<RuntimeTcpSocket>>>,
-        plan: &core_listener_plan::ListenerPlan,
-        events: Arc<dyn core_listener::ListenerEventSink>,
-    ) -> Self {
-        let mut manager = core_listener::ListenerManager::new_with_events(handler, events);
-        for listener in &plan.listeners {
-            match listener.kind {
-                #[cfg(feature = "faketcp")]
-                core_listener_plan::ListenerKind::TcpStream
-                    if listener.url.scheme() == "faketcp" =>
-                {
-                    let url = listener.url.clone();
-                    let net_ns = global_ctx.net_ns.clone();
-                    manager.add_listener(
-                        move || {
-                            Box::new(RuntimeFakeTcpSocketListener::new(
-                                url.clone(),
-                                net_ns.clone(),
-                            ))
-                        },
-                        listener.must_succeed,
-                    );
-                }
-                core_listener_plan::ListenerKind::External =>
-                {
-                    #[cfg(unix)]
-                    if listener.url.scheme() == "unix" {
-                        let url = listener.url.clone();
-                        manager.add_listener(
-                            move || Box::new(RuntimeUnixStreamListener::new(url.clone())),
-                            listener.must_succeed,
-                        );
-                    }
-                }
-                _ => {}
-            }
+        request: ExternalListenerRequest,
+    ) -> Box<dyn core_listener::SocketListener<Accepted = AcceptedTransport<RuntimeTcpSocket>>>
+    {
+        match request.url.scheme() {
+            #[cfg(feature = "faketcp")]
+            "faketcp" => Box::new(RuntimeFakeTcpSocketListener::new(
+                request.url,
+                NetNS::from_socket_context(&request.socket_context),
+            )),
+            #[cfg(unix)]
+            "unix" => Box::new(RuntimeUnixStreamListener::new(request.url)),
+            scheme => unreachable!("core requested unsupported external listener: {scheme}"),
         }
-        Self {
-            manager: Mutex::new(manager),
-            failures: plan.failures.clone(),
-            global_ctx,
-        }
-    }
-}
-
-#[async_trait]
-impl ListenerService for RuntimeListenerService {
-    async fn start(&self) -> anyhow::Result<()> {
-        for failure in &self.failures {
-            self.global_ctx
-                .issue_event(GlobalCtxEvent::ListenerAddFailed(
-                    failure.url.clone(),
-                    failure.message.clone(),
-                ));
-        }
-        self.manager.lock().await.run().await?;
-        Ok(())
-    }
-
-    async fn stop(&self) {
-        self.manager.lock().await.stop().await;
     }
 }
 
@@ -365,6 +193,10 @@ pub(crate) fn runtime_listener_event_sink(
 impl core_listener::ListenerEventSink for GlobalCtxListenerEventSink {
     fn emit(&self, event: core_listener::ListenerEvent) {
         match event {
+            core_listener::ListenerEvent::ListenerPlanFailed { url, error } => {
+                self.global_ctx
+                    .issue_event(GlobalCtxEvent::ListenerAddFailed(url, error));
+            }
             core_listener::ListenerEvent::ListenerAdded { url, .. } => {
                 self.global_ctx
                     .issue_event(GlobalCtxEvent::ListenerAdded(url));
@@ -429,36 +261,17 @@ impl AcceptedTunnelEventSink for GlobalCtxAcceptedTunnelEventSink {
 
 #[cfg(test)]
 mod tests {
-    use crate::common::{config::ConfigLoader, global_ctx::tests::get_mock_global_ctx};
-
     use super::*;
 
-    #[tokio::test]
-    async fn runtime_plan_routes_socket_transports_to_core() {
-        let global_ctx = get_mock_global_ctx();
-        global_ctx.config.set_listeners(vec![
-            "tcp://127.0.0.1:0".parse().unwrap(),
-            "udp://127.0.0.1:0".parse().unwrap(),
-        ]);
-        let plan = runtime_listener_plan(&global_ctx);
-        let configs = runtime_transport_listener_configs(
-            &plan,
-            SocketContext::default().with_socket_mark(Some(7)),
-        );
+    #[test]
+    fn external_listener_capabilities_follow_native_build() {
+        let factory = RuntimeExternalListenerFactory;
 
-        assert_eq!(configs.len(), 3);
-        assert!(matches!(&configs[0], TransportListenerConfig::Ring { .. }));
-        assert!(matches!(
-            &configs[1],
-            TransportListenerConfig::Tcp { options, .. }
-                if options.bind.local_addr.is_none()
-                    && options.bind.context.socket_mark == Some(7)
-        ));
-        assert!(matches!(
-            &configs[2],
-            TransportListenerConfig::Udp { request, .. }
-                if request.bind.local_addr.is_none()
-                    && request.bind.context.socket_mark == Some(7)
-        ));
+        assert_eq!(
+            factory.supports_scheme("faketcp"),
+            cfg!(feature = "faketcp")
+        );
+        assert_eq!(factory.supports_scheme("unix"), cfg!(unix));
+        assert!(!factory.supports_scheme("tcp"));
     }
 }

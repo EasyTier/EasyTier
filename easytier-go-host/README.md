@@ -15,7 +15,7 @@ egress. `Bridge` owns Go resources and host imports. `CoreModule` serializes all
 calls into one wazero module, and `CoreInstance` exposes create, start, bounded
 drive, stop, and drop.
 
-The normalized create payload currently uses schema version 10. Peer runtime
+The normalized create payload currently uses schema version 11. Peer runtime
 state, legacy flag semantics, and the defaults inherited by foreign-network
 contexts are submitted explicitly, while the connectivity snapshot carries the
 UDP, TCP, and IPv6 UDP STUN server lists.
@@ -24,6 +24,9 @@ and the complete `SocketContext`, allowing the host to apply the same netns,
 socket-mark, and IP-family policy as the subsequent socket request. Core builds
 the STUN collector from that configuration plus the injected socket and DNS
 Adapters. STUN state, NAT inference, and port mapping are not Go host APIs.
+Listener configuration is submitted as URLs, IPv6 policy, and `SocketContext`.
+Core derives Ring identity and the internal TCP/UDP listener plan; Go supplies
+only real listener creation and accept operations through `SocketFactory`.
 
 ```go
 bridge := corehost.NewBridge(corehost.BridgeConfig{

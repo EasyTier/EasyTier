@@ -6,7 +6,6 @@ use std::{
 
 use async_trait::async_trait;
 use rand::seq::SliceRandom as _;
-use serde::{Deserialize, Serialize};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use url::Url;
 
@@ -18,8 +17,8 @@ use crate::{
         },
     },
     listener::{
-        AcceptedSocketHandler, ListenerConnectionCounter, ListenerEventSink, ListenerManager,
-        SocketListener,
+        AcceptedSocketHandler, ListenerConnectionCounter, ListenerEvent, ListenerEventSink,
+        ListenerFactory, ListenerManager, SocketListener, plan::ListenerPlanFailure,
     },
     peers::peer_manager::PeerManagerCore,
     socket::{
@@ -310,8 +309,8 @@ where
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum TransportListenerConfig {
+#[derive(Debug, Clone)]
+pub(crate) enum TransportListenerConfig {
     Ring {
         url: Url,
         must_succeed: bool,
@@ -330,7 +329,7 @@ pub enum TransportListenerConfig {
 }
 
 impl TransportListenerConfig {
-    pub fn must_succeed(&self) -> bool {
+    pub(crate) fn must_succeed(&self) -> bool {
         match self {
             Self::Ring { must_succeed, .. }
             | Self::Tcp { must_succeed, .. }
@@ -338,13 +337,13 @@ impl TransportListenerConfig {
         }
     }
 
-    pub fn url(&self) -> &Url {
+    pub(crate) fn url(&self) -> &Url {
         match self {
             Self::Ring { url, .. } | Self::Tcp { url, .. } | Self::Udp { url, .. } => url,
         }
     }
 
-    pub fn supports_raw_handler(&self) -> bool {
+    pub(crate) fn supports_raw_handler(&self) -> bool {
         matches!(self, Self::Ring { url, .. } if url.scheme() == "ring")
             || matches!(self, Self::Tcp { url, .. } if url.scheme() == "tcp")
             || matches!(
@@ -499,6 +498,7 @@ where
             } else {
                 IpVersion::V6
             };
+            options.bind.only_v6 = local_addr.is_ipv6();
         }
         let mut inner =
             TcpSocketListener::new_with_options(self.url.clone(), options, self.host.clone());
@@ -624,6 +624,7 @@ where
             } else {
                 IpVersion::V6
             };
+            request.bind.only_v6 = local_addr.is_ipv6();
         }
         let mut inner = UdpSessionSocketListener::new_with_request(
             self.url.clone(),
@@ -709,17 +710,19 @@ type HostTransportListenerManager<H> = ListenerManager<
     dyn AcceptedSocketHandler<AcceptedTransport<HostAcceptedTcpSocket<H>>>,
 >;
 
-/// Owns core Ring listeners and TCP/UDP listeners built from host factories.
-pub struct TransportListenerService<H>
+/// Owns all listeners planned by core, including host-backed external sockets.
+pub(crate) struct CoreListenerRuntime<H>
 where
     H: VirtualTcpListenerFactory
         + VirtualUdpSocketFactory
         + UdpSessionControlHandler<<H as VirtualUdpSocketFactory>::Socket>,
 {
     manager: HostTransportListenerManager<H>,
+    plan_failures: Vec<ListenerPlanFailure>,
+    events: Option<Arc<dyn ListenerEventSink>>,
 }
 
-impl<H> TransportListenerService<H>
+impl<H> CoreListenerRuntime<H>
 where
     H: VirtualTcpListenerFactory
         + VirtualUdpSocketFactory
@@ -733,7 +736,16 @@ where
         configs: Vec<TransportListenerConfig>,
         handler: Arc<dyn AcceptedSocketHandler<AcceptedTransport<HostAcceptedTcpSocket<H>>>>,
     ) -> Self {
-        Self::build(host, dns, ring_registry, configs, handler, None)
+        Self::build(
+            host,
+            dns,
+            ring_registry,
+            configs,
+            Vec::new(),
+            Vec::new(),
+            handler,
+            None,
+        )
     }
 
     pub(crate) fn new_with_events(
@@ -741,10 +753,21 @@ where
         dns: Arc<dyn DnsResolver>,
         ring_registry: Arc<RingTunnelRegistry>,
         configs: Vec<TransportListenerConfig>,
+        external_factories: Vec<ListenerFactory<AcceptedTransport<HostAcceptedTcpSocket<H>>>>,
+        plan_failures: Vec<ListenerPlanFailure>,
         handler: Arc<dyn AcceptedSocketHandler<AcceptedTransport<HostAcceptedTcpSocket<H>>>>,
         events: Arc<dyn ListenerEventSink>,
     ) -> Self {
-        Self::build(host, dns, ring_registry, configs, handler, Some(events))
+        Self::build(
+            host,
+            dns,
+            ring_registry,
+            configs,
+            external_factories,
+            plan_failures,
+            handler,
+            Some(events),
+        )
     }
 
     fn build(
@@ -752,11 +775,13 @@ where
         dns: Arc<dyn DnsResolver>,
         ring_registry: Arc<RingTunnelRegistry>,
         configs: Vec<TransportListenerConfig>,
+        external_factories: Vec<ListenerFactory<AcceptedTransport<HostAcceptedTcpSocket<H>>>>,
+        plan_failures: Vec<ListenerPlanFailure>,
         handler: Arc<dyn AcceptedSocketHandler<AcceptedTransport<HostAcceptedTcpSocket<H>>>>,
         events: Option<Arc<dyn ListenerEventSink>>,
     ) -> Self {
-        let mut manager = match events {
-            Some(events) => ListenerManager::new_with_events(handler, events),
+        let mut manager = match &events {
+            Some(events) => ListenerManager::new_with_events(handler, events.clone()),
             None => ListenerManager::new(handler),
         };
 
@@ -814,14 +839,26 @@ where
             }
         }
 
-        Self { manager }
-    }
+        for factory in external_factories {
+            manager.add_factory(factory);
+        }
 
-    pub fn listener_count(&self) -> usize {
-        self.manager.listener_count()
+        Self {
+            manager,
+            plan_failures,
+            events,
+        }
     }
 
     pub async fn start(&self) -> anyhow::Result<()> {
+        if let Some(events) = &self.events {
+            for failure in &self.plan_failures {
+                events.emit(ListenerEvent::ListenerPlanFailed {
+                    url: failure.url.clone(),
+                    error: failure.message.clone(),
+                });
+            }
+        }
         self.manager.run().await
     }
 
@@ -1093,6 +1130,17 @@ mod tests {
         events: mpsc::UnboundedSender<AcceptedEvent>,
         blocked: Arc<Notify>,
         active: Arc<AtomicUsize>,
+    }
+
+    #[derive(Debug, Default)]
+    struct RecordingListenerEvents {
+        events: StdMutex<Vec<ListenerEvent>>,
+    }
+
+    impl ListenerEventSink for RecordingListenerEvents {
+        fn emit(&self, event: ListenerEvent) {
+            self.events.lock().unwrap().push(event);
+        }
     }
 
     struct QueueTunnelAcceptor {
@@ -1538,7 +1586,7 @@ mod tests {
             blocked: Arc::new(Notify::new()),
             active: active.clone(),
         });
-        let service = TransportListenerService::new(
+        let service = CoreListenerRuntime::new(
             host.clone(),
             Arc::new(MockDns),
             Arc::new(RingTunnelRegistry::default()),
@@ -1602,5 +1650,32 @@ mod tests {
             .await
             .expect("transport listener service did not stop");
         assert_eq!(active.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn runtime_publishes_plan_failures_before_starting_listeners() {
+        let events = Arc::new(RecordingListenerEvents::default());
+        let service = CoreListenerRuntime::new_with_events(
+            Arc::new(MockHost::new()),
+            Arc::new(MockDns),
+            Arc::new(RingTunnelRegistry::default()),
+            Vec::new(),
+            Vec::new(),
+            vec![ListenerPlanFailure {
+                url: "unsupported://listener".parse().unwrap(),
+                message: "unsupported listener".to_owned(),
+            }],
+            Arc::new(|_: AcceptedTransport<MockTcpSocket>| async { Ok(()) }),
+            events.clone(),
+        );
+
+        service.start().await.unwrap();
+        assert!(matches!(
+            events.events.lock().unwrap().as_slice(),
+            [ListenerEvent::ListenerPlanFailed { url, error }]
+                if url.as_str() == "unsupported://listener"
+                    && error == "unsupported listener"
+        ));
+        service.stop().await;
     }
 }

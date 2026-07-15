@@ -1,5 +1,5 @@
 {
-  "version": 10,
+  "version": 11,
   "instance": {
     "peer": {
       "snapshot": {
@@ -68,7 +68,7 @@
     },
     "connectivity": {
       "initial_peers": [],
-      "listeners": [],
+      "listeners": null,
       "runtime": {
         "acl": {
           "acl": null,

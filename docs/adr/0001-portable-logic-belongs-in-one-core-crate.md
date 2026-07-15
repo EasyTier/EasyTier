@@ -83,6 +83,15 @@ Core now owns the only running-listener registry. Transport and external
 listeners publish into the same event sink; native may mirror events for UI
 presentation but never submits listener state back into core.
 
+Listener ownership is complete: `CoreInstance` accepts normalized URLs and
+socket context, derives Ring identity from the final peer instance, classifies
+supported schemes from protocol and host capabilities, and owns one manager for
+Ring, TCP, UDP-session, Unix, and FakeTCP listeners. Native advertises and
+creates only the concrete Unix/FakeTCP `SocketListener`; it never receives the
+plan, accepted-socket handler, event sink, or lifecycle. The Go/WASI create
+schema version 11 likewise submits URL-level listener input rather than an
+internal transport plan.
+
 `GlobalCtx` no longer maintains a parallel peer-feature or ACL/secret-policy
 model. Native derives one normalized peer snapshot from product configuration;
 core owns subsequent policy state, while the host exposes only dynamic OS facts

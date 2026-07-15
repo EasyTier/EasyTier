@@ -98,6 +98,18 @@ classification and lifecycle, and Ring Tunnel/registry state. A native
 protocol engine may perform an unavoidable non-WASI handshake behind an
 upgrader Adapter, but it is not a second raw Tunnel owner.
 
+### Listener runtime
+
+The per-instance Module that turns normalized listener URLs into Ring, TCP,
+UDP-session, or external socket listeners. Core owns scheme classification,
+implicit Ring identity, IPv6 shadow policy, required-versus-optional startup,
+retry, accept scheduling, the running-listener registry, and orderly shutdown.
+
+The host supplies real TCP/UDP factories and, where needed, a narrow external
+listener factory for Unix or FakeTCP resources. That Adapter advertises resource
+capabilities and creates one requested `SocketListener`; it does not receive a
+listener plan, handler, event sink, or lifecycle responsibility.
+
 ### Connectivity
 
 The logic that decides how and when to obtain a socket for a peer. It includes
@@ -178,7 +190,7 @@ It must not reconstruct core routing or connectivity decisions.
 | Configuration | normalized state, validation, defaults independent of host OS | input parsing, persistence, host-OS default selection |
 | Peers | peer graph, admission, sessions, RPC dispatch, routing | presentation and external persistence |
 | Connectivity | candidates, retries, backoff, blacklists, hole-punch state, STUN protocol/state/NAT inference | DNS, real sockets, UPnP/NAT-PMP, platform policy and interface facts |
-| Socket | Interface, I/O scheduling, backpressure, requests, peer-scoped UDP session logic | creation policy, OS handles, syscalls, readiness mechanism |
+| Socket | Interface, I/O scheduling, backpressure, requests, listener planning/lifecycle, peer-scoped UDP session logic | creation policy, OS handles, syscalls, readiness mechanism, external Unix/FakeTCP listener resources |
 | Tunnel | portable framing and protocol logic | non-portable protocol engines only when unavoidable |
 | Packet plane | classification, transformation, proxy/NAT state | TUN/raw socket ingress and egress |
 | Gateway | wrapped destination policy, SOCKS protocol/session state, VPN portal client state | concrete engines, real listeners/sockets, netns, product events/configuration and RPC presentation |

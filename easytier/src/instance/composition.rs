@@ -18,6 +18,7 @@ use easytier_core::{
         CoreInstance, CoreInstanceAdapters, CoreInstanceConfig, PacketSink,
         PortableCoreInstanceConfig,
     },
+    listener::plan::ListenerRuntimeConfig,
     peers::peer_manager::RouteAlgoType,
     process_runtime::CoreProcessRuntime,
     proxy::{
@@ -48,7 +49,7 @@ use crate::{
     instance::config::{runtime_peer_manager_config, runtime_peer_manager_host_adapters},
     instance::listeners::{
         RuntimeExternalListenerFactory, runtime_accepted_tunnel_event_sink,
-        runtime_listener_event_sink, runtime_listener_plan, runtime_transport_listener_configs,
+        runtime_listener_event_sink,
     },
     instance::proxy_cidrs_monitor::runtime_proxy_cidr_monitor_host,
     instance::public_ipv6_provider::{
@@ -331,10 +332,7 @@ pub(crate) fn runtime_core_instance_adapters_with_process_runtime(
     }
 }
 
-fn runtime_connectivity_config(
-    global_ctx: &ArcGlobalCtx,
-    listeners: Vec<easytier_core::listener::transport::TransportListenerConfig>,
-) -> CoreInstanceConfig {
+fn runtime_connectivity_config(global_ctx: &ArcGlobalCtx) -> CoreInstanceConfig {
     CoreInstanceConfig {
         initial_peers: global_ctx
             .config
@@ -342,7 +340,11 @@ fn runtime_connectivity_config(
             .into_iter()
             .map(|peer| peer.uri)
             .collect(),
-        listeners,
+        listeners: Some(ListenerRuntimeConfig::new(
+            global_ctx.config.get_listener_uris(),
+            global_ctx.config.get_flags().enable_ipv6,
+            runtime_socket_context(global_ctx),
+        )),
         runtime: runtime_core_config(&global_ctx),
         stun: runtime_stun_server_config(&global_ctx),
         endpoint_discovery: runtime_endpoint_discovery_config(&global_ctx),
@@ -360,20 +362,14 @@ pub(crate) fn build_portable_runtime_core_instance_with_transport_factory_and_pr
 where
     F: WrappedTransportEngineFactory,
 {
-    let listener_plan = runtime_listener_plan(&global_ctx);
-    let listener_configs =
-        runtime_transport_listener_configs(&listener_plan, runtime_socket_context(&global_ctx));
     let config = PortableCoreInstanceConfig {
         peer: runtime_peer_manager_config(&global_ctx, RouteAlgoType::Ospf),
-        connectivity: runtime_connectivity_config(&global_ctx, listener_configs),
+        connectivity: runtime_connectivity_config(&global_ctx),
     };
     let mut adapters =
         runtime_core_instance_adapters_with_process_runtime(global_ctx.clone(), process_runtime);
     adapters.listener_events = Some(runtime_listener_event_sink(global_ctx.clone()));
-    adapters.external_listener_factory = Some(RuntimeExternalListenerFactory::new(
-        global_ctx.clone(),
-        listener_plan,
-    ));
+    adapters.external_listener_factory = Some(RuntimeExternalListenerFactory::new());
     CoreInstance::new_portable_with_peer_adapters_and_transport_factory(
         adapters,
         runtime_peer_manager_host_adapters(&global_ctx),
@@ -410,19 +406,15 @@ mod tests {
     };
 
     use easytier_core::{
-        instance::{CoreInstanceState, ListenerService, PortableCoreInstanceConfig},
-        listener::{
-            ListenerConnectionCounter, ListenerEvent, ListenerEventSink,
-            transport::TransportListenerConfig,
+        instance::{
+            CoreInstanceState, ExternalListenerFactory, ExternalListenerRequest,
+            PortableCoreInstanceConfig,
         },
+        listener::{SocketListener, plan::ListenerRuntimeConfig},
         proxy::wrapped_transport::{
             WrappedTransportAcceptedStream, WrappedTransportConnect,
             WrappedTransportDestinationIngress, WrappedTransportEngine,
             WrappedTransportEngineStart, WrappedTransportKind, WrappedTransportRole,
-        },
-        socket::{
-            tcp::TcpListenOptions,
-            udp::{UdpBindOptions, UdpSessionAcceptKind, UdpSessionListenRequest},
         },
     };
     use pnet::packet::{
@@ -480,53 +472,107 @@ mod tests {
         .map(|(instance, ())| instance)
     }
 
-    #[derive(Default)]
-    struct BlockingListenerService {
+    #[derive(Debug, Default)]
+    struct BlockingListenerState {
         start_entered: Notify,
-        stop_calls: AtomicUsize,
+        drop_calls: AtomicUsize,
     }
 
     #[derive(Debug)]
     struct ExternalRegistryListener {
         url: url::Url,
-        events: Arc<dyn ListenerEventSink>,
     }
 
     #[derive(Debug)]
-    struct NoConnections;
-
-    impl ListenerConnectionCounter for NoConnections {
-        fn get(&self) -> Option<u32> {
-            Some(0)
-        }
+    struct BlockingSocketListener {
+        url: url::Url,
+        state: Arc<BlockingListenerState>,
     }
 
     #[async_trait::async_trait]
-    impl ListenerService for ExternalRegistryListener {
-        async fn start(&self) -> anyhow::Result<()> {
-            self.events.emit(ListenerEvent::ListenerAdded {
-                url: self.url.clone(),
-                connection_counter: Arc::new(NoConnections),
-            });
+    impl SocketListener for ExternalRegistryListener {
+        type Accepted = easytier_core::listener::transport::AcceptedTransport<
+            crate::socket::tcp::RuntimeTcpSocket,
+        >;
+
+        async fn listen(&mut self) -> anyhow::Result<()> {
             Ok(())
         }
 
-        async fn stop(&self) {
-            self.events.emit(ListenerEvent::ListenerRemoved {
-                url: self.url.clone(),
-            });
+        async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
+            std::future::pending().await
+        }
+
+        fn local_url(&self) -> url::Url {
+            self.url.clone()
         }
     }
 
     #[async_trait::async_trait]
-    impl ListenerService for BlockingListenerService {
-        async fn start(&self) -> anyhow::Result<()> {
-            self.start_entered.notify_one();
+    impl SocketListener for BlockingSocketListener {
+        type Accepted = easytier_core::listener::transport::AcceptedTransport<
+            crate::socket::tcp::RuntimeTcpSocket,
+        >;
+
+        async fn listen(&mut self) -> anyhow::Result<()> {
+            self.state.start_entered.notify_one();
             std::future::pending().await
         }
 
-        async fn stop(&self) {
-            self.stop_calls.fetch_add(1, Ordering::Relaxed);
+        async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
+            std::future::pending().await
+        }
+
+        fn local_url(&self) -> url::Url {
+            self.url.clone()
+        }
+    }
+
+    impl Drop for BlockingSocketListener {
+        fn drop(&mut self) {
+            self.state.drop_calls.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    enum TestExternalListenerKind {
+        Registry,
+        Blocking(Arc<BlockingListenerState>),
+    }
+
+    struct TestExternalListenerFactory {
+        kind: TestExternalListenerKind,
+    }
+
+    impl
+        ExternalListenerFactory<
+            easytier_core::listener::transport::AcceptedTransport<
+                crate::socket::tcp::RuntimeTcpSocket,
+            >,
+        > for TestExternalListenerFactory
+    {
+        fn supports_scheme(&self, scheme: &str) -> bool {
+            scheme == "unix"
+        }
+
+        fn create(
+            &self,
+            request: ExternalListenerRequest,
+        ) -> Box<
+            dyn SocketListener<
+                Accepted = easytier_core::listener::transport::AcceptedTransport<
+                    crate::socket::tcp::RuntimeTcpSocket,
+                >,
+            >,
+        > {
+            match &self.kind {
+                TestExternalListenerKind::Registry => {
+                    Box::new(ExternalRegistryListener { url: request.url })
+                }
+                TestExternalListenerKind::Blocking(state) => Box::new(BlockingSocketListener {
+                    url: request.url,
+                    state: state.clone(),
+                }),
+            }
         }
     }
 
@@ -642,7 +688,14 @@ mod tests {
 
     fn build_test_instance_with_listener(
         network_name: &str,
-        listener: Arc<dyn ListenerService>,
+        url: url::Url,
+        factory: Arc<
+            dyn ExternalListenerFactory<
+                easytier_core::listener::transport::AcceptedTransport<
+                    crate::socket::tcp::RuntimeTcpSocket,
+                >,
+            >,
+        >,
     ) -> Arc<NativeCoreInstance> {
         let global_ctx = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
             network_name.to_owned(),
@@ -651,7 +704,11 @@ mod tests {
         let peer = runtime_peer_manager_config(&global_ctx, RouteAlgoType::Ospf);
         let connectivity = CoreInstanceConfig {
             initial_peers: Vec::new(),
-            listeners: Vec::new(),
+            listeners: Some(ListenerRuntimeConfig::new(
+                vec![url],
+                false,
+                runtime_socket_context(&global_ctx),
+            )),
             runtime: Default::default(),
             stun: runtime_stun_server_config(&global_ctx),
             endpoint_discovery: runtime_endpoint_discovery_config(&global_ctx),
@@ -659,8 +716,7 @@ mod tests {
             direct: runtime_direct_options(&global_ctx, false),
         };
         let mut adapters = runtime_core_instance_adapters(global_ctx);
-        adapters.external_listener_factory =
-            Some(Arc::new(move |_handler, _events| listener.clone()));
+        adapters.external_listener_factory = Some(factory);
         let (packet_sink, _packet_receiver) = create_host_packet_channel();
         Arc::new(
             CoreInstance::new_portable(
@@ -1319,6 +1375,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn external_listener_uses_core_running_listener_registry() {
         let global_ctx = get_mock_global_ctx();
         let external_url: url::Url = "unix:///tmp/easytier-external-listener-test"
@@ -1327,7 +1384,11 @@ mod tests {
         let peer = runtime_peer_manager_config(&global_ctx, RouteAlgoType::Ospf);
         let connectivity = CoreInstanceConfig {
             initial_peers: Vec::new(),
-            listeners: Vec::new(),
+            listeners: Some(ListenerRuntimeConfig::new(
+                vec![external_url.clone()],
+                false,
+                runtime_socket_context(&global_ctx),
+            )),
             runtime: Default::default(),
             stun: runtime_stun_server_config(&global_ctx),
             endpoint_discovery: runtime_endpoint_discovery_config(&global_ctx),
@@ -1335,12 +1396,8 @@ mod tests {
             direct: runtime_direct_options(&global_ctx, false),
         };
         let mut adapters = runtime_core_instance_adapters(global_ctx);
-        let service_url = external_url.clone();
-        adapters.external_listener_factory = Some(Arc::new(move |_handler, events| {
-            Arc::new(ExternalRegistryListener {
-                url: service_url.clone(),
-                events,
-            }) as Arc<dyn ListenerService>
+        adapters.external_listener_factory = Some(Arc::new(TestExternalListenerFactory {
+            kind: TestExternalListenerKind::Registry,
         }));
         let (packet_sink, _packet_receiver) = create_host_packet_channel();
         let instance = Arc::new(
@@ -1353,8 +1410,11 @@ mod tests {
         );
 
         instance.start().await.unwrap();
-        assert_eq!(instance.running_listeners(), vec![external_url.clone()]);
-        assert_eq!(instance.node_snapshot().await.listeners, vec![external_url]);
+        let running = instance.running_listeners();
+        assert_eq!(running.len(), 2);
+        assert!(running.iter().any(|url| url.scheme() == "ring"));
+        assert!(running.contains(&external_url));
+        assert_eq!(instance.node_snapshot().await.listeners, running);
 
         instance.stop().await;
         assert!(instance.running_listeners().is_empty());
@@ -1489,21 +1549,14 @@ mod tests {
         let peer = runtime_peer_manager_config(&global_ctx, RouteAlgoType::Ospf);
         let connectivity = CoreInstanceConfig {
             initial_peers: Vec::new(),
-            listeners: vec![
-                TransportListenerConfig::Tcp {
-                    url: "tcp://127.0.0.1:0".parse().unwrap(),
-                    options: TcpListenOptions::manual_connect("127.0.0.1:0".parse().unwrap()),
-                    must_succeed: true,
-                },
-                TransportListenerConfig::Udp {
-                    url: "udp://127.0.0.1:0".parse().unwrap(),
-                    request: UdpSessionListenRequest::new(UdpBindOptions::port_bound_listener(
-                        "127.0.0.1:0".parse().unwrap(),
-                    )),
-                    accept_kind: UdpSessionAcceptKind::EasyTierMux,
-                    must_succeed: true,
-                },
-            ],
+            listeners: Some(ListenerRuntimeConfig::new(
+                vec![
+                    "tcp://127.0.0.1:0".parse().unwrap(),
+                    "udp://127.0.0.1:0".parse().unwrap(),
+                ],
+                false,
+                runtime_socket_context(&global_ctx),
+            )),
             runtime: Default::default(),
             stun: runtime_stun_server_config(&global_ctx),
             endpoint_discovery: runtime_endpoint_discovery_config(&global_ctx),
@@ -1522,10 +1575,11 @@ mod tests {
         assert!(instance.running_listeners().is_empty());
         instance.start().await.unwrap();
         let running_listeners = instance.running_listeners();
-        assert_eq!(running_listeners.len(), 2);
+        assert_eq!(running_listeners.len(), 3);
         assert!(
             running_listeners
                 .iter()
+                .filter(|listener| matches!(listener.scheme(), "tcp" | "udp"))
                 .all(|listener| listener.port().is_some_and(|port| port != 0))
         );
         assert_eq!(instance.state(), CoreInstanceState::Running);
@@ -1557,13 +1611,11 @@ mod tests {
                     peer: peer_a,
                     connectivity: CoreInstanceConfig {
                         initial_peers: Vec::new(),
-                        listeners: vec![TransportListenerConfig::Tcp {
-                            url: "tcp://127.0.0.1:0".parse().unwrap(),
-                            options: TcpListenOptions::manual_connect(
-                                "127.0.0.1:0".parse().unwrap(),
-                            ),
-                            must_succeed: true,
-                        }],
+                        listeners: Some(ListenerRuntimeConfig::new(
+                            vec!["tcp://127.0.0.1:0".parse().unwrap()],
+                            false,
+                            runtime_socket_context(&global_a),
+                        )),
                         runtime: Default::default(),
                         stun: runtime_stun_server_config(&global_a),
                         endpoint_discovery: runtime_endpoint_discovery_config(&global_a),
@@ -1582,7 +1634,7 @@ mod tests {
                     peer: peer_b,
                     connectivity: CoreInstanceConfig {
                         initial_peers: Vec::new(),
-                        listeners: Vec::new(),
+                        listeners: None,
                         runtime: Default::default(),
                         stun: runtime_stun_server_config(&global_b),
                         endpoint_discovery: runtime_endpoint_discovery_config(&global_b),
@@ -1677,7 +1729,7 @@ mod tests {
         let peer = runtime_peer_manager_config(&global_ctx, RouteAlgoType::Ospf);
         let mut connectivity = CoreInstanceConfig {
             initial_peers: Vec::new(),
-            listeners: Vec::new(),
+            listeners: None,
             runtime: Default::default(),
             stun: runtime_stun_server_config(&global_ctx),
             endpoint_discovery: runtime_endpoint_discovery_config(&global_ctx),
@@ -1695,46 +1747,6 @@ mod tests {
         .expect("conflicting P2P policy should be rejected");
 
         assert!(error.to_string().contains("P2P policy"));
-    }
-
-    #[tokio::test]
-    async fn portable_core_instance_rejects_optional_listener_without_server_protocol() {
-        let global_ctx = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
-            "portable-listener-validation".to_owned(),
-            String::new(),
-        )));
-        let (packet_sink, _packet_receiver) = create_host_packet_channel();
-        let peer = runtime_peer_manager_config(&global_ctx, RouteAlgoType::Ospf);
-        let connectivity = CoreInstanceConfig {
-            initial_peers: Vec::new(),
-            listeners: vec![TransportListenerConfig::Udp {
-                url: "udp://127.0.0.1:0".parse().unwrap(),
-                request: UdpSessionListenRequest::new(UdpBindOptions::port_bound_listener(
-                    "127.0.0.1:0".parse().unwrap(),
-                )),
-                accept_kind: UdpSessionAcceptKind::Classified(
-                    easytier_core::socket::udp::UdpSessionProtocol::WireGuard,
-                ),
-                must_succeed: true,
-            }],
-            runtime: Default::default(),
-            stun: runtime_stun_server_config(&global_ctx),
-            endpoint_discovery: runtime_endpoint_discovery_config(&global_ctx),
-            manual: runtime_manual_options(&global_ctx),
-            direct: runtime_direct_options(&global_ctx, false),
-        };
-
-        let mut adapters = runtime_core_instance_adapters(global_ctx);
-        adapters.server_protocol = None;
-        let error = NativeCoreInstance::new_portable(
-            adapters,
-            PortableCoreInstanceConfig { peer, connectivity },
-            Arc::new(packet_sink),
-        )
-        .err()
-        .expect("optional listener without a handler should be rejected");
-
-        assert!(error.to_string().contains("server protocol upgrader"));
     }
 
     fn build_test_instance(network_name: &str) -> Arc<NativeCoreInstance> {
@@ -1780,9 +1792,16 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn stop_cancels_pending_listener_start() {
-        let listener = Arc::new(BlockingListenerService::default());
-        let instance = build_test_instance_with_listener("pending-listener", listener.clone());
+        let listener = Arc::new(BlockingListenerState::default());
+        let instance = build_test_instance_with_listener(
+            "pending-listener",
+            "unix:///tmp/easytier-pending-listener".parse().unwrap(),
+            Arc::new(TestExternalListenerFactory {
+                kind: TestExternalListenerKind::Blocking(listener.clone()),
+            }),
+        );
         let start_instance = instance.clone();
         let start_task =
             AbortOnDropHandle::new(tokio::spawn(async move { start_instance.start().await }));
@@ -1796,17 +1815,6 @@ mod tests {
 
         assert!(start_result.is_err());
         assert_eq!(instance.state(), CoreInstanceState::Stopped);
-        assert_eq!(listener.stop_calls.load(Ordering::Relaxed), 1);
-    }
-
-    #[tokio::test]
-    async fn stop_from_created_cleans_listener_service() {
-        let listener = Arc::new(BlockingListenerService::default());
-        let instance = build_test_instance_with_listener("created-listener", listener.clone());
-
-        instance.stop().await;
-
-        assert_eq!(instance.state(), CoreInstanceState::Stopped);
-        assert_eq!(listener.stop_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(listener.drop_calls.load(Ordering::Relaxed), 1);
     }
 }

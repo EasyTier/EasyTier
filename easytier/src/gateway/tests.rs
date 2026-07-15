@@ -6,16 +6,15 @@ use crate::{
     common::global_ctx::{NetworkIdentity, tests::get_mock_global_ctx_with_network},
     instance::composition::{
         NativeCoreInstance, runtime_core_instance_adapters, runtime_direct_options,
-        runtime_endpoint_discovery_config, runtime_stun_server_config,
+        runtime_endpoint_discovery_config, runtime_socket_context, runtime_stun_server_config,
     },
     instance::config::runtime_peer_manager_config,
     tunnel::common::tests::wait_for_condition,
 };
 use easytier_core::{
     instance::{CoreInstanceConfig, PortableCoreInstanceConfig},
-    listener::transport::TransportListenerConfig,
+    listener::plan::ListenerRuntimeConfig,
     peers::peer_manager::RouteAlgoType,
-    socket::tcp::TcpListenOptions,
 };
 
 struct Endpoint {
@@ -44,11 +43,11 @@ async fn setup_pair() -> (Endpoint, Endpoint) {
     let peer_b = runtime_peer_manager_config(&global_b, RouteAlgoType::Ospf);
     let connectivity_a = CoreInstanceConfig {
         initial_peers: Vec::new(),
-        listeners: vec![TransportListenerConfig::Tcp {
-            url: "tcp://127.0.0.1:0".parse().unwrap(),
-            options: TcpListenOptions::manual_connect("127.0.0.1:0".parse().unwrap()),
-            must_succeed: true,
-        }],
+        listeners: Some(ListenerRuntimeConfig::new(
+            vec!["tcp://127.0.0.1:0".parse().unwrap()],
+            false,
+            runtime_socket_context(&global_a),
+        )),
         runtime: Default::default(),
         stun: runtime_stun_server_config(&global_a),
         endpoint_discovery: runtime_endpoint_discovery_config(&global_a),
@@ -57,7 +56,7 @@ async fn setup_pair() -> (Endpoint, Endpoint) {
     };
     let connectivity_b = CoreInstanceConfig {
         initial_peers: Vec::new(),
-        listeners: Vec::new(),
+        listeners: None,
         runtime: Default::default(),
         stun: runtime_stun_server_config(&global_b),
         endpoint_discovery: runtime_endpoint_discovery_config(&global_b),

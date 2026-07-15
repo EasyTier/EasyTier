@@ -1380,6 +1380,10 @@ impl PeerManagerCore {
         snapshots
     }
 
+    pub(crate) fn instance_id(&self) -> uuid::Uuid {
+        self.context.instance_id()
+    }
+
     pub(crate) async fn node_snapshot(&self, listeners: Vec<Url>) -> NodeSnapshot {
         NodeSnapshot {
             peer_id: self.my_peer_id,

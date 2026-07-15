@@ -39,7 +39,7 @@ target.
 | normalized plan | `instance/config.rs` | Converts product config to immutable core snapshots |
 | process Host Adapter | `host_runtime.rs` | Process-wide socket/DNS implementation; no `GlobalCtx` |
 | instance environment | `instance/host.rs` | Instance facts only; no socket creation or I/O |
-| listener Adapter | `instance/listeners.rs` | External Unix/FakeTCP engines publish to core's event sink |
+| listener Adapter | `instance/listeners.rs` | Creates requested Unix/FakeTCP sockets; no plan or lifecycle |
 | management projection | `instance/management` | Converts core snapshots to protobuf; no domain manager construction |
 | protocol engines | `tunnel/protocol.rs` and engine Modules | Upgrade a core TCP stream or UDP session; no connector policy |
 | UDP port mapping | `instance/udp_hole_punch.rs` | UPnP/NAT-PMP lease Adapter only |
@@ -50,11 +50,17 @@ compatibility or test-only shells.
 
 ## Listener truth
 
-`CoreInstance` creates one `RunningListenerRegistry`. Both core transport
-listeners and native external listeners receive the same grouped event sink.
-Direct connectivity, node snapshots, and proxy loop prevention read this
-registry. `GlobalCtx` may emit presentation events, but it does not store or
-submit a second running-listener list.
+`CoreInstance` accepts normalized listener URLs, IPv6 policy, and one
+`SocketContext`. It derives the implicit Ring URL from the final peer instance,
+classifies schemes from protocol and external resource capabilities, and owns
+one `CoreListenerRuntime` for Ring, TCP, UDP-session, Unix, and FakeTCP
+listeners. Required listeners, optional IPv6 shadows, retries, accept tasks,
+rollback, events, and stop ordering therefore have one owner.
+
+That runtime creates the only `RunningListenerRegistry`. Direct connectivity,
+node snapshots, and proxy loop prevention read this registry. `GlobalCtx` may
+mirror core events for presentation, but it does not receive a plan, manage
+external listener tasks, or submit a second running-listener list.
 
 `GlobalCtx` is likewise not a peer-policy store. Native configuration is
 normalized once into `PeerRuntimeSnapshot`; core owns live relay preference,
@@ -62,7 +68,8 @@ feature-flag derivation, ACL groups and secret-proof behavior. The only dynamic
 peer fact retained by the native host is whether its OS public-IPv6 provider is
 active, exposed through the narrow `PeerPublicIpv6State` Adapter.
 
-The Go create schema is version 10 and therefore has no
+The Go create schema is version 11. It submits the same URL-level listener
+configuration as native and has no internal transport plan or
 `environment.running_listeners` field.
 
 ## Process-scoped portable state
@@ -113,6 +120,10 @@ RuntimeConnectorHost
 GlobalCtx.*running_listener
 get_conn_manager
 ManualConnectorManager (native facade)
+RuntimeListenerService
+ListenerServiceGroup
+runtime_listener_plan
+TransportListenerConfig (native production)
 ```
 
 Direct imports from `easytier_core` are preferred over shallow native

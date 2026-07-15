@@ -100,7 +100,7 @@ host completions, not a periodic drive tick. Functional socket, DNS,
 environment, packet, lifecycle, two-peer route, and packet-exchange gates pass;
 performance, repeated-failure, and hard-isolation gates are still outstanding.
 
-The host-driven create schema is version 10 as of 2026-07-15. Peer configuration
+The host-driven create schema is version 11 as of 2026-07-15. Peer configuration
 is submitted as one normalized runtime snapshot instead of separate runtime and
 legacy-flag objects. The connectivity snapshot also carries normalized UDP,
 TCP, and IPv6 UDP STUN server lists. Socket creation, DNS, and connector route
@@ -108,9 +108,10 @@ probes carry the complete core `SocketContext`, while the Go host exposes no
 STUN/NAT-state or STUN port-mapping API. `CoreInstance` constructs its STUN
 collector from those lists and the same host-created TCP/UDP sockets used by
 native core. The opaque completion model and Tokio ownership are unchanged.
-Version 10 removes host-submitted running-listener state: the core instance
-owns one registry fed by all listener services, so Go cannot create a second
-listener truth source.
+Version 11 accepts normalized listener URLs, IPv6 policy, and `SocketContext`.
+Core derives the implicit Ring listener and internal TCP/UDP transport requests;
+Go no longer serializes `TransportListenerConfig`. Host-submitted running
+listener state remains absent, so Go cannot create a second truth source.
 
 ## Phase 0 unresolved decisions
 

@@ -99,7 +99,7 @@ codec, probing state machine, retry policy, or NAT inference implementation.
 
 ## Go/WASM contract
 
-Host instance create schema version 10 submits one normalized peer snapshot,
+Host instance create schema version 11 submits one normalized peer snapshot,
 normalized STUN server configuration, and core-owned gateway runtime
 configuration, and uses:
 
@@ -112,6 +112,8 @@ configuration, and uses:
 - no host-provided STUN state, NAT type, public endpoint, or UDP/TCP STUN mapping
   operation.
 - no host-provided running-listener state; core owns one listener registry.
+- URL-level listener input replaces serialized internal transport plans; core
+  owns scheme classification and listener lifecycle.
 
 The Go host therefore supplies platform capabilities without reconstructing
 STUN or connectivity policy.

@@ -5,16 +5,17 @@ use std::{
 };
 
 use percent_encoding::percent_decode_str;
+use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::socket::{
-    IpVersion, SocketContext,
+    SocketContext,
     tcp::{TcpBindOptions, TcpListenOptions},
     udp::{UdpBindOptions, UdpSessionListenRequest},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ListenerKind {
+pub(crate) enum ListenerKind {
     Ring,
     TcpStream,
     UdpSession,
@@ -22,14 +23,14 @@ pub enum ListenerKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ListenerPlanSource {
+pub(crate) enum ListenerPlanSource {
     Ring,
     Configured,
     Ipv6Shadow { original: Url },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PlannedListener {
+pub(crate) struct PlannedListener {
     pub url: Url,
     pub kind: ListenerKind,
     pub must_succeed: bool,
@@ -37,39 +38,39 @@ pub struct PlannedListener {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ListenerPlanFailure {
+pub(crate) struct ListenerPlanFailure {
     pub url: Url,
     pub message: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ListenerPlan {
+pub(crate) struct ListenerPlan {
     pub listeners: Vec<PlannedListener>,
     pub failures: Vec<ListenerPlanFailure>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ListenerSchemeRegistry {
+pub(crate) struct ListenerSchemeRegistry {
     schemes: BTreeMap<String, ListenerKind>,
     no_ipv6_shadow: BTreeSet<String>,
 }
 
 impl ListenerSchemeRegistry {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
-    pub fn support(mut self, scheme: impl Into<String>, kind: ListenerKind) -> Self {
+    pub(crate) fn support(mut self, scheme: impl Into<String>, kind: ListenerKind) -> Self {
         self.schemes.insert(normalize_scheme(scheme), kind);
         self
     }
 
-    pub fn disable_ipv6_shadow(mut self, scheme: impl Into<String>) -> Self {
+    pub(crate) fn disable_ipv6_shadow(mut self, scheme: impl Into<String>) -> Self {
         self.no_ipv6_shadow.insert(normalize_scheme(scheme));
         self
     }
 
-    pub fn classify(&self, url: &Url) -> Option<ListenerKind> {
+    pub(crate) fn classify(&self, url: &Url) -> Option<ListenerKind> {
         self.schemes.get(url.scheme()).copied()
     }
 
@@ -79,14 +80,36 @@ impl ListenerSchemeRegistry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ListenerPlanRequest {
+pub(crate) struct ListenerPlanRequest {
     pub self_id: uuid::Uuid,
     pub listeners: Vec<Url>,
     pub enable_ipv6: bool,
 }
 
+/// Normalized listener inputs owned and planned by one core instance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListenerRuntimeConfig {
+    pub urls: Vec<Url>,
+    pub enable_ipv6: bool,
+    pub socket_context: SocketContext,
+}
+
+impl ListenerRuntimeConfig {
+    pub fn new(urls: Vec<Url>, enable_ipv6: bool, socket_context: SocketContext) -> Self {
+        Self {
+            urls,
+            enable_ipv6,
+            socket_context,
+        }
+    }
+
+    pub(crate) fn request(&self, self_id: uuid::Uuid) -> ListenerPlanRequest {
+        ListenerPlanRequest::new(self_id, self.urls.clone(), self.enable_ipv6)
+    }
+}
+
 impl ListenerPlanRequest {
-    pub fn new(self_id: uuid::Uuid, listeners: Vec<Url>, enable_ipv6: bool) -> Self {
+    pub(crate) fn new(self_id: uuid::Uuid, listeners: Vec<Url>, enable_ipv6: bool) -> Self {
         Self {
             self_id,
             listeners,
@@ -95,7 +118,7 @@ impl ListenerPlanRequest {
     }
 }
 
-pub fn plan_listeners(
+pub(crate) fn plan_listeners(
     request: ListenerPlanRequest,
     registry: &ListenerSchemeRegistry,
 ) -> ListenerPlan {
@@ -136,13 +159,13 @@ pub fn plan_listeners(
     plan
 }
 
-pub fn ring_listener_url(self_id: uuid::Uuid) -> Url {
+pub(crate) fn ring_listener_url(self_id: uuid::Uuid) -> Url {
     format!("ring://{self_id}")
         .parse()
         .expect("ring listener url should be valid")
 }
 
-pub fn listener_default_port(scheme: &str) -> Option<u16> {
+pub(crate) fn listener_default_port(scheme: &str) -> Option<u16> {
     match scheme {
         "tcp" | "udp" => Some(11010),
         "wg" => Some(11011),
@@ -154,7 +177,7 @@ pub fn listener_default_port(scheme: &str) -> Option<u16> {
     }
 }
 
-pub fn listener_url_bind_device(url: &Url) -> Option<String> {
+pub(crate) fn listener_url_bind_device(url: &Url) -> Option<String> {
     url.path().strip_prefix('/').and_then(|path| {
         if path.is_empty() {
             None
@@ -164,66 +187,28 @@ pub fn listener_url_bind_device(url: &Url) -> Option<String> {
     })
 }
 
-pub fn udp_session_listen_request(
-    url: &Url,
-    local_addr: std::net::SocketAddr,
-    context: SocketContext,
-) -> UdpSessionListenRequest {
-    let context = context.with_ip_version(if local_addr.is_ipv4() {
-        IpVersion::V4
-    } else {
-        IpVersion::V6
-    });
-    UdpSessionListenRequest::new(
-        UdpBindOptions::port_bound_listener(local_addr)
-            .with_only_v6(true)
-            .with_context(context)
-            .with_bind_device(listener_url_bind_device(url)),
-    )
-}
-
-pub fn unresolved_udp_session_listen_request(
+pub(crate) fn unresolved_udp_session_listen_request(
     url: &Url,
     context: SocketContext,
 ) -> UdpSessionListenRequest {
     UdpSessionListenRequest::new(
         UdpBindOptions::port_bound_listener("0.0.0.0:0".parse().unwrap())
             .with_local_addr(None)
-            .with_only_v6(true)
             .with_context(context)
             .with_bind_device(listener_url_bind_device(url)),
     )
 }
 
-pub fn tcp_listener_options(
-    local_addr: std::net::SocketAddr,
-    context: SocketContext,
-) -> TcpListenOptions {
-    let context = context.with_ip_version(if local_addr.is_ipv4() {
-        IpVersion::V4
-    } else {
-        IpVersion::V6
-    });
-    let bind = TcpBindOptions::default()
-        .with_local_addr(Some(local_addr))
-        .with_context(context)
-        .with_only_v6(true);
-    TcpListenOptions::direct_connect(local_addr).with_bind(bind)
+pub(crate) fn unresolved_tcp_listener_options(context: SocketContext) -> TcpListenOptions {
+    TcpListenOptions::direct_connect("0.0.0.0:0".parse().unwrap())
+        .with_bind(TcpBindOptions::default().with_context(context))
 }
 
-pub fn unresolved_tcp_listener_options(context: SocketContext) -> TcpListenOptions {
-    TcpListenOptions::direct_connect("0.0.0.0:0".parse().unwrap()).with_bind(
-        TcpBindOptions::default()
-            .with_context(context)
-            .with_only_v6(true),
-    )
-}
-
-pub fn is_url_host_ipv6(url: &Url) -> bool {
+pub(crate) fn is_url_host_ipv6(url: &Url) -> bool {
     url.host_str().is_some_and(|h| h.contains(':'))
 }
 
-pub fn is_url_host_unspecified(url: &Url) -> bool {
+pub(crate) fn is_url_host_unspecified(url: &Url) -> bool {
     if let Ok(ip) = IpAddr::from_str(url.host_str().unwrap_or_default()) {
         ip.is_unspecified()
     } else {
@@ -263,8 +248,6 @@ fn normalize_scheme(scheme: impl Into<String>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::net::SocketAddr;
-
     use super::*;
 
     fn registry() -> ListenerSchemeRegistry {
@@ -367,49 +350,5 @@ mod tests {
         let url = "udp://0.0.0.0:11010/eth%2Btest".parse().unwrap();
 
         assert_eq!(listener_url_bind_device(&url), Some("eth+test".to_owned()));
-    }
-
-    #[test]
-    fn udp_session_listen_request_uses_url_socket_options() {
-        let url = "udp://0.0.0.0:11010/eth0".parse().unwrap();
-        let local_addr: SocketAddr = "0.0.0.0:11010".parse().unwrap();
-
-        let request = udp_session_listen_request(
-            &url,
-            local_addr,
-            SocketContext::default().with_socket_mark(Some(7)),
-        );
-
-        assert_eq!(
-            request,
-            UdpSessionListenRequest::new(
-                UdpBindOptions::port_bound_listener(local_addr)
-                    .with_only_v6(true)
-                    .with_ip_version(IpVersion::V4)
-                    .with_socket_mark(Some(7))
-                    .with_bind_device(Some("eth0".to_owned()))
-            )
-        );
-    }
-
-    #[test]
-    fn tcp_listener_options_preserve_existing_listener_bind_options() {
-        let local_addr: std::net::SocketAddr = "0.0.0.0:11010".parse().unwrap();
-
-        let options = tcp_listener_options(
-            local_addr,
-            SocketContext::default().with_socket_mark(Some(7)),
-        );
-
-        assert_eq!(
-            options,
-            TcpListenOptions::direct_connect(local_addr).with_bind(
-                TcpBindOptions::default()
-                    .with_local_addr(Some(local_addr))
-                    .with_ip_version(IpVersion::V4)
-                    .with_socket_mark(Some(7))
-                    .with_only_v6(true)
-            )
-        );
     }
 }

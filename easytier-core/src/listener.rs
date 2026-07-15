@@ -60,6 +60,10 @@ where
 
 #[derive(Clone, Debug)]
 pub enum ListenerEvent {
+    ListenerPlanFailed {
+        url: Url,
+        error: String,
+    },
     ListenerAdded {
         url: Url,
         connection_counter: Arc<dyn ListenerConnectionCounter>,
@@ -167,13 +171,13 @@ type ListenerCreatorArc<Accepted> =
     Arc<dyn Fn() -> Box<dyn SocketListener<Accepted = Accepted>> + Send + Sync>;
 
 #[derive(Clone)]
-pub struct ListenerFactory<Accepted> {
+pub(crate) struct ListenerFactory<Accepted> {
     creator: ListenerCreatorArc<Accepted>,
     must_succeed: bool,
 }
 
 impl<Accepted> ListenerFactory<Accepted> {
-    pub fn new<C>(creator: C, must_succeed: bool) -> Self
+    pub(crate) fn new<C>(creator: C, must_succeed: bool) -> Self
     where
         C: Fn() -> Box<dyn SocketListener<Accepted = Accepted>> + Send + Sync + 'static,
     {
@@ -181,10 +185,6 @@ impl<Accepted> ListenerFactory<Accepted> {
             creator: Arc::new(creator),
             must_succeed,
         }
-    }
-
-    pub fn must_succeed(&self) -> bool {
-        self.must_succeed
     }
 }
 
@@ -286,12 +286,8 @@ where
             .push(ListenerFactory::new(creator, must_succeed));
     }
 
-    pub fn listener_count(&self) -> usize {
-        self.factories.len()
-    }
-
-    pub fn factories(&self) -> &[ListenerFactory<Accepted>] {
-        &self.factories
+    pub(crate) fn add_factory(&mut self, factory: ListenerFactory<Accepted>) {
+        self.factories.push(factory);
     }
 
     pub async fn run(&self) -> anyhow::Result<()> {

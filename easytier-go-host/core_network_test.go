@@ -380,26 +380,18 @@ func coreNetworkConfig(
 	url := fmt.Sprintf("tcp://127.0.0.1:%d", port)
 	if connect {
 		connectivity["initial_peers"] = []string{url}
-		connectivity["listeners"] = []any{}
+		connectivity["listeners"] = nil
 	} else {
 		connectivity["initial_peers"] = []any{}
-		connectivity["listeners"] = []any{map[string]any{
-			"Tcp": map[string]any{
-				"url": url,
-				"options": map[string]any{
-					"bind": map[string]any{
-						"local_addr":  url[len("tcp://"):],
-						"socket_mark": nil,
-						"bind_device": nil,
-						"reuse_addr":  nil,
-						"reuse_port":  false,
-						"only_v6":     false,
-					},
-					"purpose": "ManualConnect",
-				},
-				"must_succeed": true,
+		connectivity["listeners"] = map[string]any{
+			"urls":        []string{url},
+			"enable_ipv6": false,
+			"socket_context": map[string]any{
+				"ip_version":  "Both",
+				"socket_mark": nil,
+				"netns":       nil,
 			},
-		}}
+		}
 	}
 	encoded, err := json.Marshal(config)
 	if err != nil {

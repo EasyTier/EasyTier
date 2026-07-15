@@ -41,12 +41,16 @@ use crate::{
     dhcp::{DhcpIpv4Host, DhcpIpv4RouteSource, DhcpIpv4Service},
     hole_punch::tcp::{TcpHolePunchConnector, TcpHolePunchHost},
     listener::{
-        AcceptedSocketHandler, ListenerEventSink, ListenerEventSinkGroup, RunningListenerProvider,
-        RunningListenerRegistry,
+        AcceptedSocketHandler, ListenerEventSink, ListenerEventSinkGroup, ListenerFactory,
+        RunningListenerProvider, RunningListenerRegistry, SocketListener,
+        plan::{
+            ListenerKind, ListenerPlanFailure, ListenerRuntimeConfig, ListenerSchemeRegistry,
+            PlannedListener,
+        },
         transport::{
-            AcceptedTransport, AcceptedTunnelEventSink, HostAcceptedTcpSocket,
+            AcceptedTransport, AcceptedTunnelEventSink, CoreListenerRuntime, HostAcceptedTcpSocket,
             PeerAcceptedTunnelHandler, ProtocolAcceptedTransportHandler,
-            RawAcceptedTransportHandler, TransportListenerConfig, TransportListenerService,
+            RawAcceptedTransportHandler, TransportListenerConfig,
         },
     },
     magic_dns::{MagicDnsRouteSnapshot, MagicDnsRouteSource},
@@ -74,9 +78,10 @@ use crate::{
     },
     runtime_config::{CoreInstanceRuntimeConfig, CoreRuntimeConfig, CoreRuntimeConfigStore},
     socket::{
+        SocketContext,
         dns::{DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord},
         tcp::VirtualTcpSocketFactory,
-        udp::VirtualUdpSocketFactory,
+        udp::{UdpSessionAcceptKind, UdpSessionProtocol, VirtualUdpSocketFactory},
     },
     stats_manager::{CounterHandle, LabelSet, LabelType, MetricName, MetricSnapshot},
     stun::{
@@ -179,7 +184,7 @@ where
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoreInstanceConfig {
     pub initial_peers: Vec<Url>,
-    pub listeners: Vec<TransportListenerConfig>,
+    pub listeners: Option<ListenerRuntimeConfig>,
     pub runtime: CoreRuntimeConfig,
     pub stun: StunServerConfig,
     pub endpoint_discovery: ManualEndpointDiscoveryConfig,
@@ -191,7 +196,7 @@ impl Default for CoreInstanceConfig {
     fn default() -> Self {
         Self {
             initial_peers: Vec::new(),
-            listeners: Vec::new(),
+            listeners: None,
             runtime: CoreRuntimeConfig::default(),
             stun: StunServerConfig::default(),
             endpoint_discovery: ManualEndpointDiscoveryConfig::default(),
@@ -288,6 +293,97 @@ fn validate_listener_protocols(
     Ok(())
 }
 
+struct PreparedListenerPlan {
+    transports: Vec<TransportListenerConfig>,
+    external: Vec<(PlannedListener, SocketContext)>,
+    failures: Vec<ListenerPlanFailure>,
+}
+
+fn prepare_listener_plan<Accepted, TcpSocket: 'static>(
+    config: Option<&ListenerRuntimeConfig>,
+    self_id: uuid::Uuid,
+    server_protocol: Option<&dyn ServerProtocolUpgrader<TcpSocket>>,
+    external_factory: Option<&dyn ExternalListenerFactory<Accepted>>,
+) -> anyhow::Result<PreparedListenerPlan>
+where
+    Accepted: Send + 'static,
+{
+    let Some(config) = config else {
+        return Ok(PreparedListenerPlan {
+            transports: Vec::new(),
+            external: Vec::new(),
+            failures: Vec::new(),
+        });
+    };
+    let mut schemes = ListenerSchemeRegistry::new()
+        .support("tcp", ListenerKind::TcpStream)
+        .support("udp", ListenerKind::UdpSession);
+    for (scheme, kind) in [
+        ("ws", ListenerKind::TcpStream),
+        ("wss", ListenerKind::TcpStream),
+        ("wg", ListenerKind::UdpSession),
+        ("quic", ListenerKind::UdpSession),
+    ] {
+        if server_protocol.is_some_and(|protocol| protocol.supports_scheme(scheme)) {
+            schemes = schemes.support(scheme, kind);
+        }
+    }
+    schemes = schemes.disable_ipv6_shadow("quic");
+    for scheme in ["faketcp", "unix"] {
+        if server_protocol.is_some_and(|protocol| protocol.supports_scheme(scheme))
+            && external_factory.is_some_and(|factory| factory.supports_scheme(scheme))
+        {
+            schemes = schemes.support(scheme, ListenerKind::External);
+        }
+    }
+    schemes = schemes.disable_ipv6_shadow("faketcp");
+    let plan = crate::listener::plan::plan_listeners(config.request(self_id), &schemes);
+    let mut transports = Vec::new();
+    let mut external = Vec::new();
+    for listener in plan.listeners {
+        let must_succeed = listener.must_succeed;
+        match listener.kind {
+            ListenerKind::Ring => transports.push(TransportListenerConfig::Ring {
+                url: listener.url,
+                must_succeed,
+            }),
+            ListenerKind::TcpStream => transports.push(TransportListenerConfig::Tcp {
+                url: listener.url,
+                options: crate::listener::plan::unresolved_tcp_listener_options(
+                    config.socket_context.clone(),
+                ),
+                must_succeed,
+            }),
+            ListenerKind::UdpSession => {
+                let accept_kind = match listener.url.scheme() {
+                    "udp" => UdpSessionAcceptKind::EasyTierMux,
+                    "wg" => UdpSessionAcceptKind::Classified(UdpSessionProtocol::WireGuard),
+                    "quic" => UdpSessionAcceptKind::Classified(UdpSessionProtocol::Quic),
+                    scheme => {
+                        anyhow::bail!("listener scheme {scheme} cannot produce a core UDP session")
+                    }
+                };
+                let request = crate::listener::plan::unresolved_udp_session_listen_request(
+                    &listener.url,
+                    config.socket_context.clone(),
+                );
+                transports.push(TransportListenerConfig::Udp {
+                    url: listener.url,
+                    request,
+                    accept_kind,
+                    must_succeed,
+                });
+            }
+            ListenerKind::External => external.push((listener, config.socket_context.clone())),
+        }
+    }
+    Ok(PreparedListenerPlan {
+        transports,
+        external,
+        failures: plan.failures,
+    })
+}
+
 fn proxy_cidr_snapshot(config: &CoreInstanceRuntimeConfig) -> ProxyCidrSnapshot {
     ProxyCidrSnapshot::from_proxy_networks(&config.peer.runtime.core.routes.proxy_networks)
 }
@@ -339,31 +435,18 @@ pub trait ExternalListenerFactory<Accepted>: Send + Sync + 'static
 where
     Accepted: Send + 'static,
 {
-    fn build(
+    fn supports_scheme(&self, scheme: &str) -> bool;
+
+    fn create(
         &self,
-        handler: Arc<dyn AcceptedSocketHandler<Accepted>>,
-        events: Arc<dyn ListenerEventSink>,
-    ) -> Arc<dyn ListenerService>;
+        request: ExternalListenerRequest,
+    ) -> Box<dyn SocketListener<Accepted = Accepted>>;
 }
 
-impl<Accepted, F> ExternalListenerFactory<Accepted> for F
-where
-    Accepted: Send + 'static,
-    F: Fn(
-            Arc<dyn AcceptedSocketHandler<Accepted>>,
-            Arc<dyn ListenerEventSink>,
-        ) -> Arc<dyn ListenerService>
-        + Send
-        + Sync
-        + 'static,
-{
-    fn build(
-        &self,
-        handler: Arc<dyn AcceptedSocketHandler<Accepted>>,
-        events: Arc<dyn ListenerEventSink>,
-    ) -> Arc<dyn ListenerService> {
-        self(handler, events)
-    }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalListenerRequest {
+    pub url: Url,
+    pub socket_context: SocketContext,
 }
 
 struct CoreStunDnsAdapter {
@@ -395,18 +478,6 @@ impl PeerStunInfoSource for CoreStunPeerInfoSource {
     fn stun_info(&self) -> crate::proto::common::StunInfo {
         self.0.get_stun_info()
     }
-}
-
-#[async_trait]
-pub trait ListenerService: Send + Sync + 'static {
-    async fn start(&self) -> anyhow::Result<()>;
-    async fn stop(&self);
-}
-
-pub struct ListenerServiceGroup {
-    operation: Mutex<()>,
-    services: Vec<Arc<dyn ListenerService>>,
-    started_count: AtomicUsize,
 }
 
 /// Owns one Magic DNS resolver installed in the core NIC pipeline.
@@ -448,66 +519,6 @@ impl Drop for MagicDnsResolverRegistration {
     }
 }
 
-impl ListenerServiceGroup {
-    pub fn new(services: Vec<Arc<dyn ListenerService>>) -> Arc<Self> {
-        Arc::new(Self {
-            operation: Mutex::new(()),
-            services,
-            started_count: AtomicUsize::new(0),
-        })
-    }
-
-    async fn stop_started(&self) {
-        loop {
-            let started_count = self.started_count.load(Ordering::Acquire);
-            if started_count == 0 {
-                break;
-            }
-            self.services[started_count - 1].stop().await;
-            self.started_count
-                .store(started_count - 1, Ordering::Release);
-        }
-    }
-}
-
-#[async_trait]
-impl ListenerService for ListenerServiceGroup {
-    async fn start(&self) -> anyhow::Result<()> {
-        let _operation = self.operation.lock().await;
-        if self.started_count.load(Ordering::Acquire) != 0 {
-            return Ok(());
-        }
-
-        for (index, service) in self.services.iter().enumerate() {
-            self.started_count.store(index + 1, Ordering::Release);
-            if let Err(error) = service.start().await {
-                self.stop_started().await;
-                return Err(error);
-            }
-        }
-        Ok(())
-    }
-
-    async fn stop(&self) {
-        let _operation = self.operation.lock().await;
-        self.stop_started().await;
-    }
-}
-
-#[async_trait]
-impl<H> ListenerService for TransportListenerService<H>
-where
-    H: DirectConnectorHost + TcpHolePunchHost,
-{
-    async fn start(&self) -> anyhow::Result<()> {
-        TransportListenerService::start(self).await
-    }
-
-    async fn stop(&self) {
-        TransportListenerService::stop(self).await;
-    }
-}
-
 #[async_trait]
 pub trait ProxyService: Send + Sync + 'static {
     async fn start(&self) -> anyhow::Result<()>;
@@ -529,7 +540,7 @@ where
     manual: ManualConnectorManager<H>,
     direct: DirectConnectorManager<H>,
     tcp_hole_punch: TcpHolePunchConnector<H>,
-    listener: Option<Arc<dyn ListenerService>>,
+    listener: Option<Arc<CoreListenerRuntime<H>>>,
     udp_hole_punch: CoreUdpHolePunchService<H>,
     udp_hole_punch_started: AtomicBool,
     transport_proxy: Option<Arc<WrappedTransportProxyModule>>,
@@ -628,10 +639,6 @@ where
         F: WrappedTransportEngineFactory,
     {
         validate_portable_connectivity_config(&config)?;
-        validate_listener_protocols(
-            &config.connectivity.listeners,
-            adapters.server_protocol.is_some(),
-        )?;
         let network_name = &config.peer.snapshot.runtime.network_identity.network_name;
         if config.connectivity.direct.network_name != *network_name {
             anyhow::bail!(
@@ -698,7 +705,6 @@ where
         config: CoreInstanceConfig,
         runtime_config: CoreRuntimeConfigStore,
     ) -> anyhow::Result<Self> {
-        validate_listener_protocols(&config.listeners, adapters.server_protocol.is_some())?;
         let stun = Self::prepare_stun(&adapters, &config);
         Self::new_with_prepared_stun(
             peer_manager,
@@ -721,7 +727,6 @@ where
     where
         F: WrappedTransportEngineFactory,
     {
-        validate_listener_protocols(&config.listeners, adapters.server_protocol.is_some())?;
         let stun = Self::prepare_stun(&adapters, &config);
         Self::new_with_prepared_stun(
             peer_manager,
@@ -744,6 +749,16 @@ where
     where
         F: WrappedTransportEngineFactory,
     {
+        let listener_plan = prepare_listener_plan(
+            config.listeners.as_ref(),
+            peer_manager.instance_id(),
+            adapters.server_protocol.as_deref(),
+            adapters.external_listener_factory.as_deref(),
+        )?;
+        validate_listener_protocols(
+            &listener_plan.transports,
+            adapters.server_protocol.is_some(),
+        )?;
         let CoreInstanceAdapters {
             host,
             stun_projection: _,
@@ -770,7 +785,7 @@ where
         let ring_registry = process_runtime.ring_registry();
         let CoreInstanceConfig {
             initial_peers,
-            listeners,
+            listeners: _,
             runtime: initial_runtime_config,
             stun: _,
             endpoint_discovery,
@@ -800,31 +815,41 @@ where
             }
             None => registry.clone(),
         };
-        let listener = external_listener_factory
-            .as_ref()
-            .map(|factory| factory.build(accepted_transport_handler.clone(), events.clone()));
-        let transport_listener: Option<Arc<dyn ListenerService>> = if listeners.is_empty() {
-            None
-        } else {
-            Some(Arc::new(TransportListenerService::new_with_events(
+        let PreparedListenerPlan {
+            transports,
+            external,
+            failures,
+        } = listener_plan;
+        let mut external_factories = Vec::with_capacity(external.len());
+        if !external.is_empty() && external_listener_factory.is_none() {
+            anyhow::bail!("listener plan requires an external listener factory");
+        }
+        for (listener, socket_context) in external {
+            let factory = external_listener_factory.clone().unwrap();
+            let request = ExternalListenerRequest {
+                url: listener.url,
+                socket_context,
+            };
+            external_factories.push(ListenerFactory::new(
+                move || factory.create(request.clone()),
+                listener.must_succeed,
+            ));
+        }
+        let has_listener_work =
+            !transports.is_empty() || !external_factories.is_empty() || !failures.is_empty();
+        let listener = has_listener_work.then(|| {
+            Arc::new(CoreListenerRuntime::new_with_events(
                 host.clone(),
                 listener_dns.unwrap_or_else(|| dns.clone()),
                 ring_registry.clone(),
-                listeners,
+                transports,
+                external_factories,
+                failures,
                 accepted_transport_handler,
                 events,
-            )))
-        };
+            ))
+        });
         let running_listeners: Arc<dyn RunningListenerProvider> = registry;
-        let listener = match (transport_listener, listener) {
-            (Some(transport), Some(external)) => {
-                Some(ListenerServiceGroup::new(vec![transport, external])
-                    as Arc<dyn ListenerService>)
-            }
-            (Some(transport), None) => Some(transport),
-            (None, Some(external)) => Some(external),
-            (None, None) => None,
-        };
         let protocol = protocol.unwrap_or_else(|| {
             Arc::new(CoreClientProtocolUpgrader::new(
                 CoreClientProtocolConfig::default(),
@@ -1984,9 +2009,59 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
     use super::*;
+
+    struct TestServerProtocol;
+
+    #[async_trait]
+    impl ServerProtocolUpgrader<()> for TestServerProtocol {
+        fn supports_scheme(&self, scheme: &str) -> bool {
+            matches!(scheme, "ws" | "wss" | "wg" | "quic" | "faketcp" | "unix")
+        }
+
+        async fn upgrade_tcp(
+            &self,
+            _socket: (),
+            _local_url: Url,
+        ) -> anyhow::Result<crate::connectivity::protocol::ServerProtocolUpgrade> {
+            unreachable!()
+        }
+
+        async fn upgrade_udp(
+            &self,
+            _session: crate::socket::udp::UdpSession,
+            _local_url: Url,
+            _admission: Option<crate::connectivity::protocol::ServerProtocolAdmission>,
+        ) -> anyhow::Result<crate::connectivity::protocol::ServerProtocolUpgrade> {
+            unreachable!()
+        }
+
+        async fn upgrade_byte_stream(
+            &self,
+            _socket: (),
+            _local_url: Url,
+            _remote_url: Option<Url>,
+        ) -> anyhow::Result<crate::connectivity::protocol::ServerProtocolUpgrade> {
+            unreachable!()
+        }
+    }
+
+    struct TestExternalListenerFactory;
+
+    impl ExternalListenerFactory<()> for TestExternalListenerFactory {
+        fn supports_scheme(&self, scheme: &str) -> bool {
+            matches!(scheme, "faketcp" | "unix")
+        }
+
+        fn create(
+            &self,
+            _request: ExternalListenerRequest,
+        ) -> Box<dyn SocketListener<Accepted = ()>> {
+            unreachable!()
+        }
+    }
 
     #[test]
     fn runtime_updates_retain_core_owned_peer_identity() {
@@ -2001,6 +2076,77 @@ mod tests {
         assert_eq!(snapshot.runtime.core.node.instance_id, Some([2; 16]));
         assert_eq!(submitted.runtime.core.node.peer_id, Some(17));
         assert_eq!(submitted.runtime.core.node.instance_id, Some([1; 16]));
+    }
+
+    #[test]
+    fn core_plans_transport_and_external_listener_capabilities() {
+        let self_id = uuid::Uuid::new_v4();
+        let config = ListenerRuntimeConfig::new(
+            [
+                "tcp://127.0.0.1:1",
+                "udp://127.0.0.1:2",
+                "ws://127.0.0.1:3",
+                "wg://127.0.0.1:4",
+                "quic://127.0.0.1:5",
+                "faketcp://127.0.0.1:6",
+                "unix:///tmp/easytier-test",
+                "http://127.0.0.1:7",
+            ]
+            .into_iter()
+            .map(str::parse)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap(),
+            false,
+            SocketContext::default().with_socket_mark(Some(7)),
+        );
+
+        let plan = prepare_listener_plan::<(), ()>(
+            Some(&config),
+            self_id,
+            Some(&TestServerProtocol),
+            Some(&TestExternalListenerFactory),
+        )
+        .unwrap();
+
+        assert_eq!(plan.transports.len(), 6);
+        assert_eq!(plan.external.len(), 2);
+        assert_eq!(plan.failures.len(), 1);
+        assert_eq!(
+            plan.transports[0].url(),
+            &crate::listener::plan::ring_listener_url(self_id)
+        );
+        assert!(matches!(
+            &plan.transports[4],
+            TransportListenerConfig::Udp {
+                accept_kind: UdpSessionAcceptKind::Classified(UdpSessionProtocol::WireGuard),
+                ..
+            }
+        ));
+        assert!(matches!(
+            &plan.transports[5],
+            TransportListenerConfig::Udp {
+                accept_kind: UdpSessionAcceptKind::Classified(UdpSessionProtocol::Quic),
+                ..
+            }
+        ));
+        assert_eq!(plan.external[0].0.url.scheme(), "faketcp");
+        assert_eq!(plan.external[0].1.socket_mark, Some(7));
+    }
+
+    #[test]
+    fn unsupported_protocol_listener_becomes_a_plan_failure() {
+        let config = ListenerRuntimeConfig::new(
+            vec!["wg://127.0.0.1:11011".parse().unwrap()],
+            false,
+            SocketContext::default(),
+        );
+
+        let plan = prepare_listener_plan::<(), ()>(Some(&config), uuid::Uuid::new_v4(), None, None)
+            .unwrap();
+
+        assert_eq!(plan.transports.len(), 1);
+        assert!(plan.external.is_empty());
+        assert_eq!(plan.failures.len(), 1);
     }
 
     #[test]
@@ -2086,87 +2232,5 @@ mod tests {
         let error = validate_portable_connectivity_config(&config).unwrap_err();
 
         assert!(error.to_string().contains("Start port must be <= end port"));
-    }
-
-    struct RecordingListenerService {
-        name: &'static str,
-        fail_start: bool,
-        events: Arc<Mutex<Vec<String>>>,
-    }
-
-    #[async_trait]
-    impl ListenerService for RecordingListenerService {
-        async fn start(&self) -> anyhow::Result<()> {
-            self.events
-                .lock()
-                .unwrap()
-                .push(format!("start:{}", self.name));
-            if self.fail_start {
-                anyhow::bail!("{} start failed", self.name);
-            }
-            Ok(())
-        }
-
-        async fn stop(&self) {
-            self.events
-                .lock()
-                .unwrap()
-                .push(format!("stop:{}", self.name));
-        }
-    }
-
-    fn listener_service(
-        name: &'static str,
-        fail_start: bool,
-        events: &Arc<Mutex<Vec<String>>>,
-    ) -> Arc<dyn ListenerService> {
-        Arc::new(RecordingListenerService {
-            name,
-            fail_start,
-            events: events.clone(),
-        })
-    }
-
-    #[tokio::test]
-    async fn listener_group_starts_in_order_and_stops_in_reverse() {
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let group = ListenerServiceGroup::new(vec![
-            listener_service("transport", false, &events),
-            listener_service("external", false, &events),
-        ]);
-
-        group.start().await.unwrap();
-        group.stop().await;
-
-        assert_eq!(
-            *events.lock().unwrap(),
-            [
-                "start:transport",
-                "start:external",
-                "stop:external",
-                "stop:transport",
-            ]
-        );
-    }
-
-    #[tokio::test]
-    async fn listener_group_rolls_back_the_failing_service_and_predecessors() {
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let group = ListenerServiceGroup::new(vec![
-            listener_service("transport", false, &events),
-            listener_service("external", true, &events),
-        ]);
-
-        assert!(group.start().await.is_err());
-
-        assert_eq!(
-            *events.lock().unwrap(),
-            [
-                "start:transport",
-                "start:external",
-                "stop:external",
-                "stop:transport",
-            ]
-        );
     }
 }
