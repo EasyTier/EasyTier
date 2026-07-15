@@ -1,9 +1,6 @@
 pub mod icmp_proxy;
 pub mod tcp_proxy;
 
-#[cfg(all(test, feature = "socks5"))]
-mod tests;
-
 #[cfg(feature = "kcp")]
 pub mod kcp_proxy;
 

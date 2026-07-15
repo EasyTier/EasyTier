@@ -1357,12 +1357,17 @@ mod tests {
         ipv4::{self, MutableIpv4Packet},
         tcp::{self, MutableTcpPacket, TcpFlags},
     };
-    use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+    use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 
     use super::*;
     use crate::{
-        peers::context::PeerRuntimeSnapshot,
+        config::{IpPrefix, NetworkIdentity},
+        peers::{
+            PacketRecvChanReceiver, context::PeerRuntimeSnapshot, create_packet_recv_chan,
+            peer_manager::PortablePeerManagerConfig,
+        },
         socket::{dns::DnsQuery, tcp::TcpConnectOptions, udp::UdpBindOptions},
+        tunnel::ring::RingTunnelRegistry,
     };
 
     struct TestTcpSocket(tokio::io::DuplexStream);
@@ -1519,6 +1524,112 @@ mod tests {
         })
     }
 
+    struct DataPlaneEndpoint {
+        gateway: Arc<GatewayModule<TestHost>>,
+        peer_manager: Arc<PeerManagerCore>,
+        _packet_receiver: PacketRecvChanReceiver,
+        ip: cidr::Ipv4Inet,
+    }
+
+    fn data_plane_endpoint(
+        host: Arc<TestHost>,
+        peer_id: u32,
+        ip: cidr::Ipv4Inet,
+    ) -> DataPlaneEndpoint {
+        const NETWORK_NAME: &str = "gateway-data-plane";
+
+        let mut runtime = PeerRuntimeSnapshot::default().runtime;
+        runtime.core.node.peer_id = Some(peer_id);
+        runtime.core.node.network_name = NETWORK_NAME.to_owned();
+        runtime.core.routes.ipv4 = Some(
+            IpPrefix::new(IpAddr::V4(ip.address()), ip.network_length())
+                .expect("test IPv4 prefix should be valid"),
+        );
+        runtime.network_identity = NetworkIdentity {
+            network_name: NETWORK_NAME.to_owned(),
+            network_secret: Some("shared-secret".to_owned()),
+            network_secret_digest: None,
+        };
+        let peer_config = PortablePeerManagerConfig::new(runtime);
+        let runtime_config = CoreRuntimeConfigStore::new(
+            crate::runtime_config::CoreRuntimeConfig::default(),
+            Arc::new(peer_config.snapshot.clone()),
+        );
+        let (packet_sender, packet_receiver) = create_packet_recv_chan();
+        let dns = Arc::new(TestDns);
+        let peer_manager = Arc::new(
+            PeerManagerCore::new_portable(peer_config, dns.clone(), packet_sender)
+                .expect("build portable peer manager"),
+        );
+        let gateway = GatewayModule::new(
+            runtime_config,
+            peer_manager.clone(),
+            None,
+            host,
+            dns,
+            SocketContext::default(),
+            Arc::new(()),
+        );
+
+        DataPlaneEndpoint {
+            gateway,
+            peer_manager,
+            _packet_receiver: packet_receiver,
+            ip,
+        }
+    }
+
+    async fn setup_data_plane_pair() -> (DataPlaneEndpoint, DataPlaneEndpoint) {
+        let host = Arc::new(TestHost::default());
+        let a = data_plane_endpoint(host.clone(), 1, "10.126.126.1/24".parse().unwrap());
+        let b = data_plane_endpoint(host, 2, "10.126.126.2/24".parse().unwrap());
+
+        let (run_a, run_b) = tokio::join!(a.peer_manager.run(), b.peer_manager.run());
+        run_a.unwrap();
+        run_b.unwrap();
+        let (start_a, start_b) = tokio::join!(a.gateway.start(), b.gateway.start());
+        start_a.unwrap();
+        start_b.unwrap();
+
+        let registry = Arc::new(RingTunnelRegistry::default());
+        let listener_id = uuid::Uuid::new_v4();
+        let mut listener = registry.bind(listener_id).unwrap();
+        let client_tunnel = registry.connect(listener_id).unwrap().into_tunnel();
+        let server_tunnel = listener.accept().await.unwrap().into_tunnel();
+        let (client, server) = tokio::join!(
+            b.peer_manager.add_client_tunnel(client_tunnel, true),
+            a.peer_manager.add_tunnel_as_server(server_tunnel, true),
+        );
+        client.unwrap();
+        server.unwrap();
+
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if a.peer_manager
+                    .list_route_snapshots()
+                    .await
+                    .iter()
+                    .any(|route| route.peer_id == 2 && route.ipv4_addr == Some(b.ip.into()))
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("Ring peers did not exchange routes");
+
+        (a, b)
+    }
+
+    async fn stop_data_plane_pair(a: &DataPlaneEndpoint, b: &DataPlaneEndpoint) {
+        tokio::join!(a.gateway.stop(), b.gateway.stop());
+        tokio::join!(
+            a.peer_manager.clear_resources(),
+            b.peer_manager.clear_resources()
+        );
+    }
+
     fn build_tcp_packet(src: SocketAddr, dst: SocketAddr) -> Vec<u8> {
         let mut buf = vec![0u8; 40];
         let src_ip = match src.ip() {
@@ -1578,6 +1689,71 @@ mod tests {
         }
 
         buf
+    }
+
+    #[tokio::test]
+    async fn data_plane_tcp_pingpong() {
+        let (a, b) = setup_data_plane_pair().await;
+        let timeout = Duration::from_secs(10);
+        let mut listener = b.gateway.data_plane_tcp_bind(0, timeout).await.unwrap();
+        let listen_addr = SocketAddr::new(b.ip.address().into(), listener.local_addr().port());
+
+        let accept = tokio::spawn(async move {
+            let (mut stream, _peer) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4];
+            stream.read_exact(&mut buf).await.unwrap();
+            assert_eq!(&buf, b"ping");
+            stream.write_all(b"pong").await.unwrap();
+            stream.flush().await.unwrap();
+        });
+
+        let mut client = a
+            .gateway
+            .data_plane_tcp_connect(listen_addr, timeout)
+            .await
+            .unwrap();
+        client.write_all(b"ping").await.unwrap();
+        client.flush().await.unwrap();
+        let mut buf = [0u8; 4];
+        client.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"pong");
+        accept.await.unwrap();
+
+        stop_data_plane_pair(&a, &b).await;
+    }
+
+    #[tokio::test]
+    async fn data_plane_udp_pingpong() {
+        let (a, b) = setup_data_plane_pair().await;
+        let timeout = Duration::from_secs(10);
+        let socket_a = a.gateway.data_plane_udp_bind(0, timeout).await.unwrap();
+        let socket_b = b.gateway.data_plane_udp_bind(0, timeout).await.unwrap();
+        let addr_a = SocketAddr::new(a.ip.address().into(), socket_a.local_addr().port());
+        let addr_b = SocketAddr::new(b.ip.address().into(), socket_b.local_addr().port());
+
+        socket_b.send_to(b"warmup", addr_a).await.unwrap();
+        socket_a.send_to(b"ping", addr_b).await.unwrap();
+        let mut buf = [0u8; 16];
+        let (len, from) = tokio::time::timeout(timeout, socket_b.recv_from(&mut buf))
+            .await
+            .expect("receive ping timed out")
+            .unwrap();
+        assert_eq!(&buf[..len], b"ping");
+        assert_eq!(from, addr_a);
+
+        socket_b.send_to(b"pong", addr_a).await.unwrap();
+        loop {
+            let (len, from) = tokio::time::timeout(timeout, socket_a.recv_from(&mut buf))
+                .await
+                .expect("receive pong timed out")
+                .unwrap();
+            if &buf[..len] == b"pong" {
+                assert_eq!(from, addr_b);
+                break;
+            }
+        }
+
+        stop_data_plane_pair(&a, &b).await;
     }
 
     #[tokio::test]

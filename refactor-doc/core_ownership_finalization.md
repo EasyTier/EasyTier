@@ -55,6 +55,18 @@ Native utility facades are subject to the same rule. Packet types are imported
 directly from `easytier_core::packet`, and IDN normalization plus its tests live
 with core manual connectivity; native `tunnel/packet_def.rs` and
 `common/idn.rs` must not be recreated as re-export or test-only Modules.
+Portable tunnel framing is likewise imported directly from
+`easytier_core::tunnel::framed`; native `tunnel::common` contains only concrete
+socket behavior and native integration helpers. TCP/UDP data-plane behavior is
+tested beside the core gateway runtime. Native gateway tests must cover real
+Host Adapters or concrete engines instead of rebuilding a portable core test
+through `GlobalCtx`.
+
+The obsolete native `tx_throughput` benchmark was removed with the manager
+facades it depended on. A replacement peer-graph or raw-transport benchmark
+must be owned by `easytier-core`; a native benchmark may measure only a public
+host-facing API or a concrete native protocol engine. Benchmark code must not
+recover `PeerManager` or connector-manager access through `Instance`.
 
 ## Listener truth
 
@@ -166,6 +178,9 @@ GlobalCtx.public_ipv6_provider_active
 HostConnectorEnvironmentSnapshot.managed_ipv6s
 easytier/src/tunnel/packet_def.rs
 easytier/src/common/idn.rs
+pub use easytier_core::tunnel::framed (native production)
+easytier/src/gateway/tests.rs
+easytier/benches/tx_throughput.rs
 ```
 
 Direct imports from `easytier_core` are preferred over shallow native
