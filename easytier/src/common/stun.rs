@@ -1,18 +1,20 @@
 //! Native composition for the portable core STUN collector.
 
+#[cfg(test)]
 use std::{net::SocketAddr, sync::Arc};
 
+#[cfg(test)]
 use async_trait::async_trait;
+#[cfg(test)]
 use easytier_core::{
     proto::common::{NatType, StunInfo},
-    socket::SocketContext,
-    stun::{StunInfoCollector as CoreStunInfoCollector, StunInfoProvider, StunSocketMapper},
+    stun::{StunInfoProvider, StunSocketMapper},
 };
+use easytier_core::{socket::SocketContext, stun::StunInfoCollector as CoreStunInfoCollector};
 
-use crate::{
-    host_runtime::{NativeHostRuntime, native_host_runtime},
-    socket::udp::RuntimeUdpSocket,
-};
+use crate::host_runtime::{NativeHostRuntime, native_host_runtime};
+#[cfg(test)]
+use crate::socket::udp::RuntimeUdpSocket;
 
 pub type StunInfoCollector = CoreStunInfoCollector<NativeHostRuntime, NativeHostRuntime>;
 
@@ -40,10 +42,12 @@ pub fn default_udp_v6_stun_servers() -> Vec<String> {
     }
 }
 
+#[cfg(test)]
 pub struct MockStunInfoCollector {
     pub udp_nat_type: NatType,
 }
 
+#[cfg(test)]
 #[async_trait]
 impl StunInfoProvider for MockStunInfoCollector {
     fn get_stun_info(&self) -> StunInfo {
@@ -74,6 +78,7 @@ impl StunInfoProvider for MockStunInfoCollector {
     fn update_stun_info(&self) {}
 }
 
+#[cfg(test)]
 #[async_trait]
 impl StunSocketMapper<RuntimeUdpSocket> for MockStunInfoCollector {
     async fn get_udp_port_mapping_with_socket(
@@ -97,6 +102,7 @@ pub fn runtime_stun_info_collector(socket_context: SocketContext) -> StunInfoCol
     )
 }
 
+#[cfg(test)]
 fn unix_timestamp() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

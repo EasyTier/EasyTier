@@ -31,7 +31,7 @@ use dashmap::DashMap;
 use easytier_core::tunnel::ring::create_ring_tunnel_pair;
 use easytier_core::tunnel::{IpVersion, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream};
 use easytier_core::{
-    connectivity::transport::ConnectedUdpSession,
+    connectivity::{protocol::wireguard::WgConfig, transport::ConnectedUdpSession},
     packet::{PEER_MANAGER_HEADER_SIZE, WG_TUNNEL_HEADER_SIZE, ZCPacket, ZCPacketType},
     socket::{
         SocketContext,
@@ -51,8 +51,6 @@ use tokio::{
 };
 
 const MAX_PACKET: usize = 2048;
-
-pub use easytier_core::connectivity::protocol::wireguard::WgConfig;
 
 #[derive(Clone)]
 struct WgPeerData {
