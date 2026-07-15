@@ -509,32 +509,41 @@ mod tests {
 
     #[tokio::test]
     async fn faketcp_socket_pingpong() {
-        #[cfg(target_family = "unix")]
-        {
-            if unsafe { nix::libc::geteuid() } != 0 {
-                return;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            #[cfg(target_family = "unix")]
+            {
+                if unsafe { nix::libc::geteuid() } != 0 {
+                    return;
+                }
             }
-        }
 
-        let mut listener = FakeTcpSocketListener::new("faketcp://0.0.0.0:31011".parse().unwrap());
-        listener.listen().await.unwrap();
+            let mut listener =
+                FakeTcpSocketListener::new("faketcp://0.0.0.0:31011".parse().unwrap());
+            listener.listen().await.unwrap();
+            let (server_ready_tx, server_ready_rx) = tokio::sync::oneshot::channel();
 
-        let server = tokio::spawn(async move {
-            let mut socket = listener.accept().await.unwrap();
-            let mut request = [0; 4];
-            socket.read_exact(&mut request).await.unwrap();
-            assert_eq!(&request, b"ping");
-            socket.write_all(b"pong").await.unwrap();
-        });
+            let server = tokio::spawn(async move {
+                let mut socket = listener.accept().await.unwrap();
+                server_ready_tx.send(()).unwrap();
+                let mut request = [0; 4];
+                socket.read_exact(&mut request).await.unwrap();
+                assert_eq!(&request, b"ping");
+                socket.write_all(b"pong").await.unwrap();
+            });
 
-        let mut socket = connect_socket("127.0.0.1:31011".parse().unwrap(), None, NetNS::new(None))
-            .await
-            .unwrap();
-        socket.write_all(b"ping").await.unwrap();
-        let mut response = [0; 4];
-        socket.read_exact(&mut response).await.unwrap();
-        assert_eq!(&response, b"pong");
+            let mut socket =
+                connect_socket("127.0.0.1:31011".parse().unwrap(), None, NetNS::new(None))
+                    .await
+                    .unwrap();
+            server_ready_rx.await.unwrap();
+            socket.write_all(b"ping").await.unwrap();
+            let mut response = [0; 4];
+            socket.read_exact(&mut response).await.unwrap();
+            assert_eq!(&response, b"pong");
 
-        server.await.unwrap();
+            server.await.unwrap();
+        })
+        .await
+        .expect("FakeTCP socket ping-pong timed out");
     }
 }

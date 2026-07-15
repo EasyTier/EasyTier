@@ -384,10 +384,7 @@ where
     let local_addr = socket.local_addr()?;
     let resolved_remote_addr = socket.peer_addr()?;
     let scheme = requested_remote_addr.scheme().to_owned();
-    let tunnel_type = socket
-        .transport_label()
-        .unwrap_or(scheme.as_str())
-        .to_owned();
+    let tunnel_type = tcp_tunnel_type(&socket, &scheme)?;
     let info = connected_tunnel_info(
         &scheme,
         &tunnel_type,
@@ -432,10 +429,7 @@ where
     let scheme = local_url.scheme().to_owned();
     let remote_url = socket_url(&scheme, remote_addr);
     let info = TunnelInfo {
-        tunnel_type: socket
-            .transport_label()
-            .unwrap_or(scheme.as_str())
-            .to_owned(),
+        tunnel_type: tcp_tunnel_type(&socket, &scheme)?,
         local_addr: Some(local_url.into()),
         remote_addr: Some(remote_url.clone().into()),
         resolved_remote_addr: Some(remote_url.into()),
@@ -509,6 +503,16 @@ fn connected_tunnel_info(
         local_addr: Some(socket_url(scheme, local_addr).into()),
         remote_addr: Some(requested_remote_addr.into()),
         resolved_remote_addr: Some(socket_url(scheme, resolved_remote_addr).into()),
+    }
+}
+
+fn tcp_tunnel_type(socket: &impl VirtualTcpSocket, scheme: &str) -> Result<String, TunnelError> {
+    match socket.transport_label() {
+        Some(label) => Ok(label.to_owned()),
+        None if scheme == "faketcp" => Err(TunnelError::InternalError(
+            "FakeTCP upgrader received a socket without a FakeTCP transport label".to_owned(),
+        )),
+        None => Ok(scheme.to_owned()),
     }
 }
 
@@ -701,6 +705,26 @@ mod tests {
             accepted_info.remote_addr,
             accepted_info.resolved_remote_addr
         );
+    }
+
+    #[test]
+    fn faketcp_upgrader_rejects_socket_without_host_transport_label() {
+        let local_addr: SocketAddr = "192.0.2.1:10000".parse().unwrap();
+        let peer_addr: SocketAddr = "192.0.2.2:11013".parse().unwrap();
+
+        let connected_error = upgrade_connected_tcp(
+            MockTcpSocket::new(local_addr, peer_addr),
+            "faketcp://peer.example:11013".parse().unwrap(),
+        )
+        .unwrap_err();
+        assert!(matches!(connected_error, TunnelError::InternalError(_)));
+
+        let accepted_error = upgrade_accepted_tcp_with_local_url(
+            MockTcpSocket::new(local_addr, peer_addr),
+            "faketcp://0.0.0.0:11013".parse().unwrap(),
+        )
+        .unwrap_err();
+        assert!(matches!(accepted_error, TunnelError::InternalError(_)));
     }
 
     #[test]
