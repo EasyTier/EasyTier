@@ -1,7 +1,4 @@
-use std::{
-    net::{IpAddr, Ipv6Addr},
-    sync::Arc,
-};
+use std::{net::IpAddr, sync::Arc};
 
 use easytier_core::{
     connectivity::composite::{ConnectorEnvironment, ConnectorHostAdapter},
@@ -60,9 +57,5 @@ impl ConnectorEnvironment for NativeInstanceEnvironment {
 
     fn is_protected_tcp_port(&self, port: u16) -> bool {
         self.global_ctx.is_protected_tcp_port(port)
-    }
-
-    fn is_easytier_managed_ipv6(&self, ip: &Ipv6Addr) -> bool {
-        self.global_ctx.is_ip_easytier_managed_ipv6(ip)
     }
 }

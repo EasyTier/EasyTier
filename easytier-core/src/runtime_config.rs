@@ -20,6 +20,8 @@ pub struct CoreRuntimeConfig {
     pub dhcp_ipv4: bool,
     pub gateway: GatewayRuntimeConfig,
     pub proxy: ProxyRuntimeConfig,
+    #[serde(default)]
+    pub public_ipv6_auto: bool,
     pub public_ipv6_provider: PublicIpv6ProviderConfig,
 }
 
@@ -30,6 +32,7 @@ impl Default for CoreRuntimeConfig {
             dhcp_ipv4: false,
             gateway: GatewayRuntimeConfig::default(),
             proxy: ProxyRuntimeConfig::default(),
+            public_ipv6_auto: false,
             public_ipv6_provider: PublicIpv6ProviderConfig {
                 provider_enabled: false,
                 configured_prefix: None,

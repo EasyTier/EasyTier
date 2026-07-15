@@ -99,9 +99,9 @@ codec, probing state machine, retry policy, or NAT inference implementation.
 
 ## Go/WASM contract
 
-Host instance create schema version 11 submits one normalized peer snapshot,
-normalized STUN server configuration, and core-owned gateway runtime
-configuration, and uses:
+Host instance create schema version 12 submits one normalized peer snapshot,
+normalized STUN server configuration, plus core-owned gateway and public-IPv6
+runtime configuration. It uses:
 
 - Go-owned `SocketFactory`, `DNSResolver`, `ConnectorEnvironment`, and packet
   sink implementations;

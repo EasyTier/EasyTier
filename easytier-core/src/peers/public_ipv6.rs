@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     config::PeerId,
-    peers::peer_rpc::PeerRpcManager,
+    peers::{context::PeerPublicIpv6State, peer_rpc::PeerRpcManager},
     proto::{
         common::Void,
         peer_rpc::{
@@ -23,6 +23,7 @@ use crate::{
             controller::{BaseController, Controller},
         },
     },
+    runtime_config::CoreRuntimeConfigStore,
 };
 
 // Use a longer lease with an early renew window to reduce steady-state RPC
@@ -173,6 +174,24 @@ pub trait PublicIpv6SyncTrigger: Send + Sync {
 }
 
 #[async_trait::async_trait]
+pub trait PublicIpv6Host: Send + Sync {
+    async fn collect_reserved_public_ipv6_addrs(&self, prefix: Ipv6Cidr) -> HashSet<Ipv6Addr>;
+    fn public_ipv6_lease_changed(&self, old: Option<Ipv6Inet>, new: Option<Ipv6Inet>);
+    fn public_ipv6_routes_changed(&self, added: Vec<Ipv6Inet>, removed: Vec<Ipv6Inet>);
+}
+
+#[async_trait::async_trait]
+impl PublicIpv6Host for () {
+    async fn collect_reserved_public_ipv6_addrs(&self, _prefix: Ipv6Cidr) -> HashSet<Ipv6Addr> {
+        HashSet::new()
+    }
+
+    fn public_ipv6_lease_changed(&self, _old: Option<Ipv6Inet>, _new: Option<Ipv6Inet>) {}
+
+    fn public_ipv6_routes_changed(&self, _added: Vec<Ipv6Inet>, _removed: Vec<Ipv6Inet>) {}
+}
+
+#[async_trait::async_trait]
 #[auto_impl::auto_impl(Arc)]
 pub trait PublicIpv6Runtime: Send + Sync {
     fn ipv6_public_addr_auto(&self) -> bool;
@@ -181,12 +200,101 @@ pub trait PublicIpv6Runtime: Send + Sync {
     fn network_name(&self) -> String;
     async fn collect_reserved_public_ipv6_addrs(&self, prefix: Ipv6Cidr) -> HashSet<Ipv6Addr>;
     fn public_ipv6_lease_changed(&self, old: Option<Ipv6Inet>, new: Option<Ipv6Inet>);
-    fn public_ipv6_routes_changed(
-        &self,
-        routes: BTreeSet<Ipv6Inet>,
-        added: Vec<Ipv6Inet>,
-        removed: Vec<Ipv6Inet>,
-    );
+    fn public_ipv6_routes_changed(&self, added: Vec<Ipv6Inet>, removed: Vec<Ipv6Inet>);
+}
+
+pub struct CorePublicIpv6Runtime {
+    config: CoreRuntimeConfigStore,
+    host: Arc<dyn PublicIpv6Host>,
+    provider_prefix: std::sync::Mutex<Option<Ipv6Cidr>>,
+    lease: std::sync::Mutex<Option<Ipv6Inet>>,
+}
+
+impl CorePublicIpv6Runtime {
+    pub fn new(config: CoreRuntimeConfigStore, host: Arc<dyn PublicIpv6Host>) -> Arc<Self> {
+        Arc::new(Self {
+            config,
+            host,
+            provider_prefix: std::sync::Mutex::new(None),
+            lease: std::sync::Mutex::new(None),
+        })
+    }
+
+    pub fn set_provider_prefix(&self, prefix: Option<Ipv6Cidr>) -> bool {
+        let mut current = self.provider_prefix.lock().unwrap();
+        if *current == prefix {
+            return false;
+        }
+        *current = prefix;
+        true
+    }
+}
+
+impl PeerPublicIpv6State for CorePublicIpv6Runtime {
+    fn public_ipv6_lease_contains(&self, ip: &Ipv6Addr) -> bool {
+        self.lease
+            .lock()
+            .unwrap()
+            .is_some_and(|lease| lease.address() == *ip)
+    }
+
+    fn public_ipv6_provider_enabled(&self) -> bool {
+        self.provider_prefix.lock().unwrap().is_some()
+    }
+
+    fn advertised_ipv6_public_addr_prefix(&self) -> Option<Ipv6Cidr> {
+        *self.provider_prefix.lock().unwrap()
+    }
+}
+
+#[async_trait::async_trait]
+impl PublicIpv6Runtime for CorePublicIpv6Runtime {
+    fn ipv6_public_addr_auto(&self) -> bool {
+        self.config.snapshot().services.public_ipv6_auto
+    }
+
+    fn ipv6_public_addr_provider(&self) -> bool {
+        self.config
+            .snapshot()
+            .services
+            .public_ipv6_provider
+            .provider_enabled
+    }
+
+    fn instance_id(&self) -> uuid::Uuid {
+        self.config
+            .snapshot()
+            .peer
+            .runtime
+            .core
+            .node
+            .instance_id
+            .map(uuid::Uuid::from_bytes)
+            .expect("core peer identity must be finalized before public IPv6 starts")
+    }
+
+    fn network_name(&self) -> String {
+        self.config
+            .snapshot()
+            .peer
+            .runtime
+            .network_identity
+            .network_name
+            .clone()
+    }
+
+    async fn collect_reserved_public_ipv6_addrs(&self, prefix: Ipv6Cidr) -> HashSet<Ipv6Addr> {
+        self.host.collect_reserved_public_ipv6_addrs(prefix).await
+    }
+
+    fn public_ipv6_lease_changed(&self, old: Option<Ipv6Inet>, new: Option<Ipv6Inet>) {
+        *self.lease.lock().unwrap() = new;
+        self.host.public_ipv6_lease_changed(old, new);
+    }
+
+    fn public_ipv6_routes_changed(&self, added: Vec<Ipv6Inet>, removed: Vec<Ipv6Inet>) {
+        self.host.public_ipv6_routes_changed(added, removed);
+    }
 }
 
 pub(super) struct DisabledPublicIpv6Runtime {
@@ -227,13 +335,7 @@ impl PublicIpv6Runtime for DisabledPublicIpv6Runtime {
 
     fn public_ipv6_lease_changed(&self, _old: Option<Ipv6Inet>, _new: Option<Ipv6Inet>) {}
 
-    fn public_ipv6_routes_changed(
-        &self,
-        _routes: BTreeSet<Ipv6Inet>,
-        _added: Vec<Ipv6Inet>,
-        _removed: Vec<Ipv6Inet>,
-    ) {
-    }
+    fn public_ipv6_routes_changed(&self, _added: Vec<Ipv6Inet>, _removed: Vec<Ipv6Inet>) {}
 }
 
 pub struct PublicIpv6Service {
@@ -396,8 +498,7 @@ impl PublicIpv6Service {
                 .copied()
                 .collect::<Vec<_>>();
             *cached_routes = routes;
-            self.runtime
-                .public_ipv6_routes_changed(cached_routes.clone(), added, removed);
+            self.runtime.public_ipv6_routes_changed(added, removed);
         }
     }
 
@@ -988,18 +1089,23 @@ fn allocate_public_ipv6_leases(
 mod tests {
     use std::net::Ipv6Addr;
     use std::{
-        collections::{BTreeSet, HashMap, HashSet},
+        collections::{HashMap, HashSet},
         sync::{Arc, Mutex},
     };
 
     use cidr::{Ipv6Cidr, Ipv6Inet};
 
-    use crate::{config::PeerId, peers::peer_rpc::PeerRpcManager};
+    use crate::{
+        config::PeerId,
+        peers::{context::PeerPublicIpv6State, peer_rpc::PeerRpcManager},
+        runtime_config::{CoreRuntimeConfig, CoreRuntimeConfigStore},
+    };
 
     use super::{
-        PublicIpv6PeerRouteInfo, PublicIpv6ProviderConfig, PublicIpv6ProviderConfigError,
-        PublicIpv6ProviderResolution, PublicIpv6RouteControl, PublicIpv6Runtime, PublicIpv6Service,
-        PublicIpv6SyncTrigger, allocate_public_ipv6_leases, resolve_public_ipv6_provider,
+        CorePublicIpv6Runtime, PublicIpv6Host, PublicIpv6PeerRouteInfo, PublicIpv6ProviderConfig,
+        PublicIpv6ProviderConfigError, PublicIpv6ProviderResolution, PublicIpv6RouteControl,
+        PublicIpv6Runtime, PublicIpv6Service, PublicIpv6SyncTrigger, allocate_public_ipv6_leases,
+        resolve_public_ipv6_provider,
     };
 
     struct TestRouteControl {
@@ -1034,7 +1140,6 @@ mod tests {
         network_name: String,
         reserved: Mutex<HashSet<Ipv6Addr>>,
         lease: Mutex<Option<Ipv6Inet>>,
-        routes: Mutex<BTreeSet<Ipv6Inet>>,
     }
 
     impl TestRuntime {
@@ -1046,7 +1151,6 @@ mod tests {
                 network_name: "default".to_string(),
                 reserved: Mutex::new(HashSet::new()),
                 lease: Mutex::new(None),
-                routes: Mutex::new(BTreeSet::new()),
             }
         }
     }
@@ -1083,14 +1187,93 @@ mod tests {
             *self.lease.lock().unwrap() = new;
         }
 
-        fn public_ipv6_routes_changed(
-            &self,
-            routes: BTreeSet<Ipv6Inet>,
-            _added: Vec<Ipv6Inet>,
-            _removed: Vec<Ipv6Inet>,
-        ) {
-            *self.routes.lock().unwrap() = routes;
+        fn public_ipv6_routes_changed(&self, _added: Vec<Ipv6Inet>, _removed: Vec<Ipv6Inet>) {}
+    }
+
+    #[derive(Default)]
+    struct RecordingPublicIpv6Host {
+        reserved: Mutex<HashSet<Ipv6Addr>>,
+        leases: Mutex<Vec<(Option<Ipv6Inet>, Option<Ipv6Inet>)>>,
+        route_deltas: Mutex<Vec<(Vec<Ipv6Inet>, Vec<Ipv6Inet>)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl PublicIpv6Host for RecordingPublicIpv6Host {
+        async fn collect_reserved_public_ipv6_addrs(&self, prefix: Ipv6Cidr) -> HashSet<Ipv6Addr> {
+            self.reserved
+                .lock()
+                .unwrap()
+                .iter()
+                .copied()
+                .filter(|addr| prefix.contains(addr))
+                .collect()
         }
+
+        fn public_ipv6_lease_changed(&self, old: Option<Ipv6Inet>, new: Option<Ipv6Inet>) {
+            self.leases.lock().unwrap().push((old, new));
+        }
+
+        fn public_ipv6_routes_changed(&self, added: Vec<Ipv6Inet>, removed: Vec<Ipv6Inet>) {
+            self.route_deltas.lock().unwrap().push((added, removed));
+        }
+    }
+
+    #[tokio::test]
+    async fn core_runtime_owns_public_ipv6_state_and_projects_only_host_effects() {
+        let instance_id = uuid::Uuid::from_u128(42);
+        let mut peer = crate::peers::context::PeerRuntimeSnapshot::default();
+        peer.runtime.core.node.instance_id = Some(*instance_id.as_bytes());
+        peer.runtime.network_identity.network_name = "owned-by-core".to_owned();
+        let config = CoreRuntimeConfigStore::new(
+            CoreRuntimeConfig {
+                public_ipv6_auto: true,
+                public_ipv6_provider: PublicIpv6ProviderConfig {
+                    provider_enabled: true,
+                    configured_prefix: None,
+                    provider_supported: true,
+                },
+                ..Default::default()
+            },
+            Arc::new(peer),
+        );
+        let host = Arc::new(RecordingPublicIpv6Host::default());
+        let reserved = "2001:db8::10".parse().unwrap();
+        host.reserved.lock().unwrap().insert(reserved);
+        let runtime = CorePublicIpv6Runtime::new(config.clone(), host.clone());
+        let prefix = "2001:db8::/64".parse().unwrap();
+        let lease = "2001:db8::20/64".parse().unwrap();
+        let route = "2001:db8::30/128".parse().unwrap();
+
+        assert!(runtime.ipv6_public_addr_auto());
+        assert!(runtime.ipv6_public_addr_provider());
+        assert_eq!(runtime.instance_id(), instance_id);
+        assert_eq!(runtime.network_name(), "owned-by-core");
+        assert_eq!(
+            runtime.collect_reserved_public_ipv6_addrs(prefix).await,
+            HashSet::from([reserved])
+        );
+        assert!(runtime.set_provider_prefix(Some(prefix)));
+        assert!(!runtime.set_provider_prefix(Some(prefix)));
+        assert_eq!(runtime.advertised_ipv6_public_addr_prefix(), Some(prefix));
+
+        runtime.public_ipv6_lease_changed(None, Some(lease));
+        assert!(runtime.public_ipv6_lease_contains(&lease.address()));
+        runtime.public_ipv6_routes_changed(vec![route], Vec::new());
+        assert_eq!(
+            host.leases.lock().unwrap().as_slice(),
+            &[(None, Some(lease))]
+        );
+        assert_eq!(
+            host.route_deltas.lock().unwrap().as_slice(),
+            &[(vec![route], Vec::new())]
+        );
+
+        config.update_services(|services| {
+            services.public_ipv6_auto = false;
+            services.public_ipv6_provider.provider_enabled = false;
+        });
+        assert!(!runtime.ipv6_public_addr_auto());
+        assert!(!runtime.ipv6_public_addr_provider());
     }
 
     #[test]

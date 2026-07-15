@@ -4417,13 +4417,7 @@ mod tests {
 
         fn public_ipv6_lease_changed(&self, _old: Option<Ipv6Inet>, _new: Option<Ipv6Inet>) {}
 
-        fn public_ipv6_routes_changed(
-            &self,
-            _routes: BTreeSet<Ipv6Inet>,
-            _added: Vec<Ipv6Inet>,
-            _removed: Vec<Ipv6Inet>,
-        ) {
-        }
+        fn public_ipv6_routes_changed(&self, _added: Vec<Ipv6Inet>, _removed: Vec<Ipv6Inet>) {}
     }
 
     #[async_trait::async_trait]

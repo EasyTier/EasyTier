@@ -266,7 +266,6 @@ impl PeerPublicIpv6State for () {}
 pub struct CorePeerContextAdapters {
     pub relay_state_sink: Arc<dyn PeerRelayStateSink>,
     pub stun_info_source: Option<Arc<dyn PeerStunInfoSource>>,
-    pub public_ipv6_state: Arc<dyn PeerPublicIpv6State>,
     pub event_sink: Arc<dyn PeerEventSink>,
     pub credential_storage: Option<Arc<dyn CredentialStorage>>,
     pub credential_event_sink: Arc<dyn PeerCredentialEventSink>,
@@ -277,7 +276,6 @@ impl Default for CorePeerContextAdapters {
         Self {
             relay_state_sink: Arc::new(()),
             stun_info_source: None,
-            public_ipv6_state: Arc::new(()),
             event_sink: Arc::new(()),
             credential_storage: None,
             credential_event_sink: Arc::new(()),
@@ -303,8 +301,17 @@ pub struct CorePeerContext {
 }
 
 impl CorePeerContext {
-    pub fn new(config: CoreRuntimeConfigStore, adapters: CorePeerContextAdapters) -> Self {
-        Self::new_with_stats_manager(config, adapters, Arc::new(StatsManager::new()))
+    pub(crate) fn new(
+        config: CoreRuntimeConfigStore,
+        public_ipv6_state: Arc<dyn PeerPublicIpv6State>,
+        adapters: CorePeerContextAdapters,
+    ) -> Self {
+        Self::new_with_stats_manager(
+            config,
+            public_ipv6_state,
+            adapters,
+            Arc::new(StatsManager::new()),
+        )
     }
 
     /// Builds a foreign-network context that contributes to the same
@@ -315,11 +322,12 @@ impl CorePeerContext {
         adapters: CorePeerContextAdapters,
         parent: &CorePeerContext,
     ) -> Self {
-        Self::new_with_stats_manager(config, adapters, parent.stats_manager())
+        Self::new_with_stats_manager(config, Arc::new(()), adapters, parent.stats_manager())
     }
 
     fn new_with_stats_manager(
         config: CoreRuntimeConfigStore,
+        public_ipv6_state: Arc<dyn PeerPublicIpv6State>,
         adapters: CorePeerContextAdapters,
         stats_manager: Arc<StatsManager>,
     ) -> Self {
@@ -335,7 +343,7 @@ impl CorePeerContext {
             avoid_relay_data_preference,
             relay_state_sink: adapters.relay_state_sink,
             stun_info_source: adapters.stun_info_source,
-            public_ipv6_state: adapters.public_ipv6_state,
+            public_ipv6_state,
             limiter_state: Mutex::new(CoreLimiterState::default()),
             stats_manager,
             credentials,
@@ -1177,7 +1185,6 @@ mod tests {
         CorePeerContextAdapters {
             relay_state_sink: Arc::new(()),
             stun_info_source: Some(Arc::new(())),
-            public_ipv6_state: Arc::new(()),
             event_sink,
             credential_storage: None,
             credential_event_sink: Arc::new(()),
@@ -1213,6 +1220,7 @@ mod tests {
                 CoreRuntimeConfig::default(),
                 Arc::new(PeerRuntimeSnapshot::default()),
             ),
+            Arc::new(()),
             test_core_context_adapters(Arc::new(())),
         );
         let labels =
@@ -1296,8 +1304,11 @@ mod tests {
     #[test]
     fn core_peer_context_separates_config_versions_from_live_support() {
         let config = submitted_config(submitted_snapshot("before", false));
-        let context =
-            CorePeerContext::new(config.clone(), test_core_context_adapters(Arc::new(())));
+        let context = CorePeerContext::new(
+            config.clone(),
+            Arc::new(()),
+            test_core_context_adapters(Arc::new(())),
+        );
 
         assert_eq!(context.hostname(), "before");
         assert!(!context.feature_flags().avoid_relay_data);
@@ -1318,7 +1329,11 @@ mod tests {
     async fn core_peer_context_owns_events_and_projects_them_to_sink() {
         let config = submitted_config(submitted_snapshot("events", false));
         let sink = Arc::new(TestPeerEventSink::default());
-        let context = CorePeerContext::new(config, test_core_context_adapters(sink.clone()));
+        let context = CorePeerContext::new(
+            config,
+            Arc::new(()),
+            test_core_context_adapters(sink.clone()),
+        );
         let mut events = context.subscribe_peer_events().unwrap();
 
         context.issue_event(PeerEvent::PeerAdded(7));
@@ -1336,7 +1351,7 @@ mod tests {
         let credential_events = Arc::new(TestCredentialEventSink::default());
         let mut adapters = test_core_context_adapters(Arc::new(()));
         adapters.credential_event_sink = credential_events.clone();
-        let context = CorePeerContext::new(config, adapters);
+        let context = CorePeerContext::new(config, Arc::new(()), adapters);
         let public_key = vec![7; 32];
         let mut keys = TrustedKeyMap::new();
         keys.insert(
@@ -1360,7 +1375,11 @@ mod tests {
         let mut snapshot = submitted_snapshot("limiter", false);
         snapshot.runtime.core.traffic.foreign_relay_bps_limit = Some(1024);
         let config = submitted_config(snapshot);
-        let context = CorePeerContext::new(config, test_core_context_adapters(Arc::new(())));
+        let context = CorePeerContext::new(
+            config,
+            Arc::new(()),
+            test_core_context_adapters(Arc::new(())),
+        );
 
         let receive = context.recv_limiter("foreign", true).unwrap();
         let receive_again = context.recv_limiter("foreign", true).unwrap();
@@ -1376,7 +1395,11 @@ mod tests {
         snapshot.runtime.core.traffic.foreign_relay_bps_limit = None;
         snapshot.runtime.core.traffic.instance_recv_bps_limit = Some(1024);
         let config = submitted_config(snapshot);
-        let context = CorePeerContext::new(config, test_core_context_adapters(Arc::new(())));
+        let context = CorePeerContext::new(
+            config,
+            Arc::new(()),
+            test_core_context_adapters(Arc::new(())),
+        );
 
         assert!(context.recv_limiter("foreign", true).is_some());
         assert!(context.foreign_forward_limiter("foreign").is_none());
@@ -1603,10 +1626,10 @@ mod tests {
         let config = CoreRuntimeConfigStore::new(CoreRuntimeConfig::default(), Arc::new(snapshot));
         CorePeerContext::new(
             config,
+            Arc::new(()),
             CorePeerContextAdapters {
                 relay_state_sink: Arc::new(()),
                 stun_info_source,
-                public_ipv6_state: Arc::new(()),
                 event_sink: Arc::new(()),
                 credential_storage: None,
                 credential_event_sink: Arc::new(()),

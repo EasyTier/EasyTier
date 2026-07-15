@@ -207,10 +207,6 @@ where
         self.environment.protected_tcp_ports.contains(&port)
     }
 
-    fn is_easytier_managed_ipv6(&self, ip: &Ipv6Addr) -> bool {
-        self.environment.managed_ipv6s.contains(ip)
-    }
-
     async fn preferred_ipv6_source(
         &self,
         ip: Ipv6Addr,
@@ -459,7 +455,6 @@ mod tests {
             mapped_listeners: vec!["tcp://192.0.2.1:11010".parse().unwrap()],
             local_ips: vec!["192.0.2.1".parse().unwrap()],
             protected_tcp_ports: vec![11010],
-            managed_ipv6s: vec!["2001:db8::1".parse().unwrap()],
             preferred_ipv6_sources: vec![PreferredIpv6Source {
                 ip: "2001:db8::1".parse().unwrap(),
                 ifindex: 7,
@@ -522,7 +517,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn direct_rpc_projects_listeners_and_filters_managed_ipv6() {
+    async fn direct_rpc_projects_host_observations_without_instance_policy() {
         let host = Arc::new(HostConnectorAdapter::new(
             HostSocketRuntime::new(),
             Arc::new(UnsupportedBackend::default()),
@@ -544,12 +539,18 @@ mod tests {
             response.interface_ipv4s,
             vec![std::net::Ipv4Addr::new(192, 0, 2, 1).into()]
         );
-        assert!(response.interface_ipv6s.is_empty());
+        assert_eq!(
+            response.interface_ipv6s,
+            vec!["2001:db8::1".parse::<std::net::Ipv6Addr>().unwrap().into()]
+        );
         assert_eq!(
             response.public_ipv4,
             Some("198.51.100.7".parse::<std::net::Ipv4Addr>().unwrap().into())
         );
-        assert!(response.public_ipv6.is_none());
+        assert_eq!(
+            response.public_ipv6,
+            Some("2001:db8::1".parse::<std::net::Ipv6Addr>().unwrap().into())
+        );
         assert_eq!(
             response
                 .listeners

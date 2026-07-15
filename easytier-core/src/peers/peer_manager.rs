@@ -42,8 +42,8 @@ use super::{
     acl_filter::AclFilter,
     context::{
         ArcPeerContext, CorePeerContext, CorePeerContextAdapters, HostRoutingPolicy,
-        NetworkIdentity, PeerContext, PeerCredentialEventSink, PeerEventSink, PeerPublicIpv6State,
-        PeerRelayStateSink, PeerRuntimeConfig, PeerRuntimeSnapshot, PeerStunInfoSource,
+        NetworkIdentity, PeerContext, PeerCredentialEventSink, PeerEventSink, PeerRelayStateSink,
+        PeerRuntimeConfig, PeerRuntimeSnapshot, PeerStunInfoSource,
     },
     credential_manager::{CredentialManager, CredentialStorage},
     encrypt::{Encryptor, NullCipher, create_encryptor, derive_key_128, derive_key_256},
@@ -59,7 +59,7 @@ use super::{
     peer_ospf_route::PeerRoute,
     peer_rpc::PeerRpcManagerTransport,
     peer_session::PeerSessionStore,
-    public_ipv6::{DisabledPublicIpv6Runtime, PublicIpv6Runtime},
+    public_ipv6::{CorePublicIpv6Runtime, PublicIpv6Runtime},
     recv_packet_from_chan,
     relay_peer_map::RelayPeerMap,
     route_trait::{
@@ -248,28 +248,6 @@ pub struct PeerManagerHostAdapters {
     pub event_sink: Arc<dyn PeerEventSink>,
     pub credential_storage: Option<Arc<dyn CredentialStorage>>,
     pub credential_event_sink: Arc<dyn PeerCredentialEventSink>,
-    pub public_ipv6: Option<PeerPublicIpv6HostAdapters>,
-}
-
-/// One coherent public-IPv6 host capability.
-///
-/// State observations and OS mutations must come from the same host object so
-/// core cannot accidentally reconcile one provider while advertising another.
-pub struct PeerPublicIpv6HostAdapters {
-    state: Arc<dyn PeerPublicIpv6State>,
-    runtime: Arc<dyn PublicIpv6Runtime>,
-}
-
-impl PeerPublicIpv6HostAdapters {
-    pub fn new<T>(host: Arc<T>) -> Self
-    where
-        T: PeerPublicIpv6State + PublicIpv6Runtime + 'static,
-    {
-        Self {
-            state: host.clone(),
-            runtime: host,
-        }
-    }
 }
 
 impl Default for PeerManagerHostAdapters {
@@ -279,7 +257,6 @@ impl Default for PeerManagerHostAdapters {
             event_sink: Arc::new(()),
             credential_storage: None,
             credential_event_sink: Arc::new(()),
-            public_ipv6: None,
         }
     }
 }
@@ -878,6 +855,7 @@ impl PeerManagerCore {
         stun_info_source: Option<Arc<dyn PeerStunInfoSource>>,
         nic_channel: PacketRecvChan,
     ) -> anyhow::Result<Self> {
+        let public_ipv6_runtime = CorePublicIpv6Runtime::new(runtime_config.clone(), Arc::new(()));
         Self::new_portable_with_host_adapters(
             config,
             runtime_config,
@@ -885,6 +863,7 @@ impl PeerManagerCore {
             dns_context,
             stun_info_source,
             nic_channel,
+            public_ipv6_runtime,
             PeerManagerHostAdapters::default(),
             Arc::new(()),
         )
@@ -898,6 +877,7 @@ impl PeerManagerCore {
         dns_context: SocketContext,
         stun_info_source: Arc<dyn PeerStunInfoSource>,
         nic_channel: PacketRecvChan,
+        public_ipv6_runtime: Arc<CorePublicIpv6Runtime>,
         host_adapters: PeerManagerHostAdapters,
         foreign_rpc_registrar: Arc<dyn ForeignNetworkRpcRegistrar>,
     ) -> anyhow::Result<Self> {
@@ -908,6 +888,7 @@ impl PeerManagerCore {
             dns_context,
             Some(stun_info_source),
             nic_channel,
+            public_ipv6_runtime,
             host_adapters,
             foreign_rpc_registrar,
         )
@@ -921,6 +902,7 @@ impl PeerManagerCore {
         dns_context: SocketContext,
         stun_info_source: Option<Arc<dyn PeerStunInfoSource>>,
         nic_channel: PacketRecvChan,
+        public_ipv6_runtime: Arc<CorePublicIpv6Runtime>,
         host_adapters: PeerManagerHostAdapters,
         foreign_rpc_registrar: Arc<dyn ForeignNetworkRpcRegistrar>,
     ) -> anyhow::Result<Self> {
@@ -1016,24 +998,15 @@ impl PeerManagerCore {
             event_sink,
             credential_storage,
             credential_event_sink,
-            public_ipv6,
         } = host_adapters;
-        let (public_ipv6_state, public_ipv6_runtime): (
-            Arc<dyn PeerPublicIpv6State>,
-            Arc<dyn PublicIpv6Runtime>,
-        ) = match public_ipv6 {
-            Some(public_ipv6) => (public_ipv6.state, public_ipv6.runtime),
-            None => (
-                Arc::new(()),
-                Arc::new(DisabledPublicIpv6Runtime::new(instance_id, network_name)),
-            ),
-        };
+        let public_ipv6_state = public_ipv6_runtime.clone();
+        let public_ipv6_runtime: Arc<dyn PublicIpv6Runtime> = public_ipv6_runtime;
         let context = Arc::new(CorePeerContext::new(
             runtime_config,
+            public_ipv6_state,
             CorePeerContextAdapters {
                 relay_state_sink,
                 stun_info_source,
-                public_ipv6_state,
                 event_sink,
                 credential_storage,
                 credential_event_sink,
@@ -3878,6 +3851,7 @@ mod tests {
             CoreRuntimeConfig::default(),
             Arc::new(config.snapshot.clone()),
         );
+        let public_ipv6_runtime = CorePublicIpv6Runtime::new(runtime_config.clone(), Arc::new(()));
         let events = Arc::new(CountingPeerEventSink::default());
         let (packet_tx, _packet_rx) = create_packet_recv_chan();
 
@@ -3888,6 +3862,7 @@ mod tests {
             SocketContext::default(),
             Arc::new(()),
             packet_tx,
+            public_ipv6_runtime,
             PeerManagerHostAdapters {
                 event_sink: events.clone(),
                 ..Default::default()

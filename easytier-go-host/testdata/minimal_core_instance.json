@@ -1,5 +1,5 @@
 {
-  "version": 11,
+  "version": 12,
   "instance": {
     "peer": {
       "snapshot": {
@@ -89,6 +89,7 @@
           "icmp_failure_is_fatal": false,
           "udp_response_ipv4_mtu": 1280
         },
+        "public_ipv6_auto": false,
         "public_ipv6_provider": {
           "provider_enabled": false,
           "configured_prefix": null,
@@ -227,7 +228,6 @@
     "mapped_listeners": [],
     "local_ips": [],
     "protected_tcp_ports": [],
-    "managed_ipv6s": [],
     "preferred_ipv6_sources": []
   }
 }

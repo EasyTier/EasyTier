@@ -13,7 +13,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     peers::public_ipv6::{
-        PublicIpv6ProviderConfig, PublicIpv6ProviderResolution, resolve_public_ipv6_provider,
+        CorePublicIpv6Runtime, PublicIpv6ProviderConfig, PublicIpv6ProviderResolution,
+        resolve_public_ipv6_provider,
     },
     runtime_config::CoreRuntimeConfigStore,
 };
@@ -39,7 +40,7 @@ pub struct PublicIpv6NdpDesired {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PublicIpv6ProviderState {
+enum PublicIpv6ProviderState {
     Disabled,
     Pending(String),
     Active {
@@ -60,15 +61,11 @@ impl PublicIpv6ProviderState {
         }
     }
 
-    pub fn advertised_prefix(&self) -> Option<Ipv6Cidr> {
+    fn advertised_prefix(&self) -> Option<Ipv6Cidr> {
         match self {
             Self::Active { prefix, .. } => Some(*prefix),
             Self::Disabled | Self::Pending(_) => None,
         }
-    }
-
-    pub fn provider_active(&self) -> bool {
-        matches!(self, Self::Active { .. })
     }
 
     fn ndp_desired(&self) -> Option<PublicIpv6NdpDesired> {
@@ -94,20 +91,18 @@ pub enum PublicIpv6PlatformError {
 }
 
 #[async_trait]
-pub trait PublicIpv6ProviderHost: Send + Sync + 'static {
+pub trait PublicIpv6ProviderPlatform: Send + Sync + 'static {
     fn inspect(
         &self,
         config: PublicIpv6ProviderConfig,
     ) -> Result<PublicIpv6PlatformObservation, PublicIpv6PlatformError>;
-
-    fn publish(&self, state: &PublicIpv6ProviderState) -> Result<bool, PublicIpv6PlatformError>;
 
     fn sync_ndp(
         &self,
         desired: Option<PublicIpv6NdpDesired>,
     ) -> Result<(), PublicIpv6PlatformError>;
 
-    /// Waits for a host-side state change that requires an immediate retry.
+    /// Waits for a platform state change that requires an immediate retry.
     /// Returns `false` when the event source has closed.
     async fn wait_for_change(&self) -> bool;
 }
@@ -118,8 +113,9 @@ struct PublicIpv6ProviderTask {
 }
 
 pub struct PublicIpv6ProviderService {
-    host: Arc<dyn PublicIpv6ProviderHost>,
+    platform: Arc<dyn PublicIpv6ProviderPlatform>,
     runtime_config: CoreRuntimeConfigStore,
+    runtime: Arc<CorePublicIpv6Runtime>,
     reconcile_interval: Duration,
     reconcile: Mutex<()>,
     last_state: std::sync::Mutex<Option<PublicIpv6ProviderState>>,
@@ -129,20 +125,28 @@ pub struct PublicIpv6ProviderService {
 
 impl PublicIpv6ProviderService {
     pub fn new(
-        host: Arc<dyn PublicIpv6ProviderHost>,
+        platform: Arc<dyn PublicIpv6ProviderPlatform>,
         runtime_config: CoreRuntimeConfigStore,
+        runtime: Arc<CorePublicIpv6Runtime>,
     ) -> Arc<Self> {
-        Self::new_with_interval(host, runtime_config, DEFAULT_RECONCILE_INTERVAL)
+        Self::new_with_interval(
+            platform,
+            runtime_config,
+            runtime,
+            DEFAULT_RECONCILE_INTERVAL,
+        )
     }
 
     fn new_with_interval(
-        host: Arc<dyn PublicIpv6ProviderHost>,
+        platform: Arc<dyn PublicIpv6ProviderPlatform>,
         runtime_config: CoreRuntimeConfigStore,
+        runtime: Arc<CorePublicIpv6Runtime>,
         reconcile_interval: Duration,
     ) -> Arc<Self> {
         Arc::new(Self {
-            host,
+            platform,
             runtime_config,
+            runtime,
             reconcile_interval,
             reconcile: Mutex::new(()),
             last_state: std::sync::Mutex::new(None),
@@ -153,10 +157,13 @@ impl PublicIpv6ProviderService {
 
     pub async fn reconcile_now(&self) -> bool {
         let _reconcile = self.reconcile.lock().await;
+        if self.closing.load(Ordering::Acquire) {
+            return false;
+        }
         for attempt in 0..MAX_CONFIG_RETRIES {
             let config = self.runtime_config.snapshot().services.public_ipv6_provider;
             let observation = if config.provider_enabled && config.provider_supported {
-                match self.host.inspect(config) {
+                match self.platform.inspect(config) {
                     Ok(observation) => Ok(observation),
                     Err(PublicIpv6PlatformError::Unavailable) => return false,
                     Err(PublicIpv6PlatformError::Failed(error)) => Err(error),
@@ -182,15 +189,10 @@ impl PublicIpv6ProviderService {
                 continue;
             }
 
-            let changed = match self.host.publish(&next_state) {
-                Ok(changed) => changed,
-                Err(PublicIpv6PlatformError::Unavailable) => return false,
-                Err(PublicIpv6PlatformError::Failed(error)) => {
-                    tracing::warn!(%error, "failed to publish public IPv6 provider state");
-                    false
-                }
-            };
-            if let Err(error) = self.host.sync_ndp(next_state.ndp_desired()) {
+            let changed = self
+                .runtime
+                .set_provider_prefix(next_state.advertised_prefix());
+            if let Err(error) = self.platform.sync_ndp(next_state.ndp_desired()) {
                 match error {
                     PublicIpv6PlatformError::Unavailable => return false,
                     PublicIpv6PlatformError::Failed(error) => {
@@ -225,9 +227,9 @@ impl PublicIpv6ProviderService {
         let cancel = CancellationToken::new();
         let task_cancel = cancel.clone();
         let service = Arc::downgrade(self);
-        let host = self.host.clone();
+        let platform = self.platform.clone();
         let handle = tokio::spawn(async move {
-            Self::run(service, host, task_cancel).await;
+            Self::run(service, platform, task_cancel).await;
         });
         task.replace(PublicIpv6ProviderTask { cancel, handle });
     }
@@ -241,7 +243,8 @@ impl PublicIpv6ProviderService {
                 tracing::warn!(?error, "public IPv6 provider task failed during shutdown");
             }
         }
-        if let Err(error) = self.host.sync_ndp(None)
+        let _reconcile = self.reconcile.lock().await;
+        if let Err(error) = self.platform.sync_ndp(None)
             && !matches!(error, PublicIpv6PlatformError::Unavailable)
         {
             tracing::warn!(%error, "failed to clean public IPv6 NDP state during shutdown");
@@ -278,16 +281,16 @@ impl PublicIpv6ProviderService {
 
     async fn run(
         service: Weak<Self>,
-        host: Arc<dyn PublicIpv6ProviderHost>,
+        platform: Arc<dyn PublicIpv6ProviderPlatform>,
         cancel: CancellationToken,
     ) {
         loop {
             let Some(service) = service.upgrade() else {
-                let _ = host.sync_ndp(None);
+                let _ = platform.sync_ndp(None);
                 return;
             };
             if !service.reconcile_now().await {
-                let _ = service.host.sync_ndp(None);
+                let _ = service.platform.sync_ndp(None);
                 return;
             }
 
@@ -296,10 +299,10 @@ impl PublicIpv6ProviderService {
             let should_continue = tokio::select! {
                 _ = cancel.cancelled() => false,
                 _ = crate::runtime_time::sleep(interval) => true,
-                changed = host.wait_for_change() => changed,
+                changed = platform.wait_for_change() => changed,
             };
             if !should_continue {
-                let _ = host.sync_ndp(None);
+                let _ = platform.sync_ndp(None);
                 return;
             }
         }
@@ -317,14 +320,13 @@ mod tests {
 
     use super::*;
     use crate::{
-        peers::context::PeerRuntimeSnapshot,
+        peers::context::{PeerPublicIpv6State, PeerRuntimeSnapshot},
         runtime_config::{CoreRuntimeConfig, CoreRuntimeConfigStore},
     };
 
     struct RecordingHost {
         observation: StdMutex<Result<PublicIpv6PlatformObservation, PublicIpv6PlatformError>>,
         inspect_calls: AtomicUsize,
-        published: StdMutex<Vec<PublicIpv6ProviderState>>,
         ndp_desired: StdMutex<Vec<Option<PublicIpv6NdpDesired>>>,
         change: Notify,
     }
@@ -334,7 +336,6 @@ mod tests {
             Self {
                 observation: StdMutex::new(Ok(PublicIpv6PlatformObservation::default())),
                 inspect_calls: AtomicUsize::new(0),
-                published: StdMutex::new(Vec::new()),
                 ndp_desired: StdMutex::new(Vec::new()),
                 change: Notify::new(),
             }
@@ -342,23 +343,13 @@ mod tests {
     }
 
     #[async_trait]
-    impl PublicIpv6ProviderHost for RecordingHost {
+    impl PublicIpv6ProviderPlatform for RecordingHost {
         fn inspect(
             &self,
             _config: PublicIpv6ProviderConfig,
         ) -> Result<PublicIpv6PlatformObservation, PublicIpv6PlatformError> {
             self.inspect_calls.fetch_add(1, Ordering::AcqRel);
             self.observation.lock().unwrap().clone()
-        }
-
-        fn publish(
-            &self,
-            state: &PublicIpv6ProviderState,
-        ) -> Result<bool, PublicIpv6PlatformError> {
-            let mut published = self.published.lock().unwrap();
-            let changed = published.last() != Some(state);
-            published.push(state.clone());
-            Ok(changed)
         }
 
         async fn wait_for_change(&self) -> bool {
@@ -391,6 +382,14 @@ mod tests {
         CoreRuntimeConfigStore::new(services, Arc::new(PeerRuntimeSnapshot::default()))
     }
 
+    fn runtime(
+        config: PublicIpv6ProviderConfig,
+    ) -> (CoreRuntimeConfigStore, Arc<CorePublicIpv6Runtime>) {
+        let config = runtime_config(config);
+        let runtime = CorePublicIpv6Runtime::new(config.clone(), Arc::new(()));
+        (config, runtime)
+    }
+
     async fn wait_for_calls(counter: &AtomicUsize, expected: usize) {
         crate::runtime_time::timeout(Duration::from_secs(1), async {
             while counter.load(Ordering::Acquire) < expected {
@@ -404,10 +403,11 @@ mod tests {
     #[tokio::test]
     async fn starts_only_when_enabled_and_reacts_to_host_changes() {
         let host = Arc::new(RecordingHost::default());
-        let runtime_config = runtime_config(provider_config(false, None));
+        let (runtime_config, runtime) = runtime(provider_config(false, None));
         let service = PublicIpv6ProviderService::new_with_interval(
             host.clone(),
             runtime_config.clone(),
+            runtime,
             Duration::from_secs(60),
         );
 
@@ -428,18 +428,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn does_not_restart_after_stop() {
+    async fn does_not_reconcile_or_restart_after_stop() {
         let host = Arc::new(RecordingHost::default());
+        let (runtime_config, runtime) = runtime(provider_config(
+            true,
+            Some("2001:db8::/48".parse().unwrap()),
+        ));
         let service = PublicIpv6ProviderService::new_with_interval(
             host.clone(),
-            runtime_config(provider_config(
-                true,
-                Some("2001:db8::/48".parse().unwrap()),
-            )),
+            runtime_config,
+            runtime,
             Duration::from_secs(60),
         );
 
         service.stop().await;
+        assert!(!service.reconcile_now().await);
         service.start().await;
 
         assert_eq!(host.inspect_calls.load(Ordering::Acquire), 0);
@@ -457,20 +460,13 @@ mod tests {
             detected_prefix: Some(prefix),
             ndp_target: Some(target.clone()),
         });
-        let service = PublicIpv6ProviderService::new(
-            host.clone(),
-            runtime_config(provider_config(true, None)),
-        );
+        let (runtime_config, runtime) = runtime(provider_config(true, None));
+        let service = PublicIpv6ProviderService::new(host.clone(), runtime_config, runtime.clone());
 
         assert!(service.reconcile_now().await);
 
-        assert_eq!(
-            host.published.lock().unwrap().as_slice(),
-            &[PublicIpv6ProviderState::Active {
-                prefix,
-                ndp_target: Some(target.clone()),
-            }]
-        );
+        assert_eq!(runtime.advertised_ipv6_public_addr_prefix(), Some(prefix));
+        assert!(runtime.public_ipv6_provider_enabled());
         assert_eq!(
             host.ndp_desired.lock().unwrap().as_slice(),
             &[Some(PublicIpv6NdpDesired { prefix, target })]
@@ -483,19 +479,13 @@ mod tests {
         *host.observation.lock().unwrap() = Err(PublicIpv6PlatformError::Failed(
             "route query failed".to_owned(),
         ));
-        let service = PublicIpv6ProviderService::new(
-            host.clone(),
-            runtime_config(provider_config(true, None)),
-        );
+        let (runtime_config, runtime) = runtime(provider_config(true, None));
+        let service = PublicIpv6ProviderService::new(host.clone(), runtime_config, runtime.clone());
 
         assert!(service.reconcile_now().await);
 
-        assert_eq!(
-            host.published.lock().unwrap().as_slice(),
-            &[PublicIpv6ProviderState::Pending(
-                "route query failed".to_owned()
-            )]
-        );
+        assert_eq!(runtime.advertised_ipv6_public_addr_prefix(), None);
+        assert!(!runtime.public_ipv6_provider_enabled());
         assert_eq!(host.ndp_desired.lock().unwrap().as_slice(), &[None]);
     }
 
@@ -503,11 +493,10 @@ mod tests {
         runtime_config: CoreRuntimeConfigStore,
         replacement: PublicIpv6ProviderConfig,
         inspect_calls: AtomicUsize,
-        published: StdMutex<Vec<PublicIpv6ProviderState>>,
     }
 
     #[async_trait]
-    impl PublicIpv6ProviderHost for ReconfiguringHost {
+    impl PublicIpv6ProviderPlatform for ReconfiguringHost {
         fn inspect(
             &self,
             _config: PublicIpv6ProviderConfig,
@@ -518,14 +507,6 @@ mod tests {
                 });
             }
             Ok(PublicIpv6PlatformObservation::default())
-        }
-
-        fn publish(
-            &self,
-            state: &PublicIpv6ProviderState,
-        ) -> Result<bool, PublicIpv6PlatformError> {
-            self.published.lock().unwrap().push(state.clone());
-            Ok(true)
         }
 
         fn sync_ndp(
@@ -544,24 +525,20 @@ mod tests {
     async fn retries_when_config_changes_during_platform_inspection() {
         let first = provider_config(true, Some("2001:db8:1::/48".parse().unwrap()));
         let replacement = provider_config(true, Some("2001:db8:2::/48".parse().unwrap()));
-        let runtime_config = runtime_config(first);
+        let (runtime_config, runtime) = runtime(first);
         let host = Arc::new(ReconfiguringHost {
             runtime_config: runtime_config.clone(),
             replacement,
             inspect_calls: AtomicUsize::new(0),
-            published: StdMutex::new(Vec::new()),
         });
-        let service = PublicIpv6ProviderService::new(host.clone(), runtime_config);
+        let service = PublicIpv6ProviderService::new(host.clone(), runtime_config, runtime.clone());
 
         assert!(service.reconcile_now().await);
 
         assert_eq!(host.inspect_calls.load(Ordering::Acquire), 2);
         assert_eq!(
-            host.published.lock().unwrap().as_slice(),
-            &[PublicIpv6ProviderState::Active {
-                prefix: replacement.configured_prefix.unwrap(),
-                ndp_target: None,
-            }]
+            runtime.advertised_ipv6_public_addr_prefix(),
+            replacement.configured_prefix
         );
     }
 }

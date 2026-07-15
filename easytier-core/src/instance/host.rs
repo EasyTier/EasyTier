@@ -23,7 +23,7 @@ use crate::{
 
 use super::{CoreInstance, CoreInstanceAdapters, PortableCoreInstanceConfig};
 
-pub const HOST_CORE_INSTANCE_CONFIG_VERSION: u32 = 11;
+pub const HOST_CORE_INSTANCE_CONFIG_VERSION: u32 = 12;
 
 /// Versioned payload accepted by host-driven instance frontends.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,6 +110,7 @@ where
             #[cfg(feature = "proxy-packet")]
             icmp_proxy_host: None,
             proxy_cidr_monitor: None,
+            public_ipv6_host: None,
             public_ipv6_provider: None,
             vpn_portal: None,
             vpn_portal_events: None,

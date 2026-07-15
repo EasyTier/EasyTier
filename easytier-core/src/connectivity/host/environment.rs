@@ -25,7 +25,6 @@ pub struct HostConnectorEnvironmentSnapshot {
     pub mapped_listeners: Vec<Url>,
     pub local_ips: Vec<IpAddr>,
     pub protected_tcp_ports: Vec<u16>,
-    pub managed_ipv6s: Vec<Ipv6Addr>,
     pub preferred_ipv6_sources: Vec<PreferredIpv6Source>,
 }
 
@@ -59,8 +58,7 @@ impl HostConnectorEnvironmentSnapshot {
     }
 
     pub(super) fn preferred_ipv6_source(&self, ip: Ipv6Addr) -> Option<PreferredIpv6Source> {
-        if self.managed_ipv6s.contains(&ip)
-            || ip.is_loopback()
+        if ip.is_loopback()
             || ip.is_unspecified()
             || ip.is_unique_local()
             || ip.is_unicast_link_local()
@@ -98,7 +96,6 @@ mod tests {
             mapped_listeners: vec!["tcp://198.51.100.1:11010".parse().unwrap()],
             local_ips: vec!["192.0.2.1".parse().unwrap()],
             protected_tcp_ports: vec![11010],
-            managed_ipv6s: vec!["fd00::1".parse().unwrap()],
             preferred_ipv6_sources: vec![
                 PreferredIpv6Source {
                     ip: "2001:db8::2".parse().unwrap(),

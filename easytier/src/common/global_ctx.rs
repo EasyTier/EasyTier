@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, HashSet},
+    collections::HashSet,
     net::{IpAddr, Ipv6Addr},
     sync::{Arc, Mutex},
 };
@@ -7,7 +7,7 @@ use std::{
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use easytier_core::connectivity::composite::ConnectorRuntime as _;
-use easytier_core::peers::public_ipv6::PublicIpv6Runtime;
+use easytier_core::peers::public_ipv6::PublicIpv6Host;
 use easytier_core::socket::{NetNamespace, SocketContext};
 #[cfg(test)]
 use easytier_core::stun::{StunProviderSlot, StunSocketMapper};
@@ -92,8 +92,6 @@ pub struct GlobalCtx {
 
     cached_ipv4: AtomicCell<Option<cidr::Ipv4Inet>>,
     cached_ipv6: AtomicCell<Option<cidr::Ipv6Inet>>,
-    public_ipv6_lease: AtomicCell<Option<cidr::Ipv6Inet>>,
-    public_ipv6_routes: Mutex<BTreeSet<std::net::Ipv6Addr>>,
     cached_proxy_cidrs: AtomicCell<Option<Vec<ProxyNetworkConfig>>>,
 
     hostname: Mutex<String>,
@@ -101,12 +99,9 @@ pub struct GlobalCtx {
     #[cfg(test)]
     stun_info_collection: Arc<StunProviderSlot<RuntimeUdpSocket>>,
 
-    advertised_ipv6_public_addr_prefix: Mutex<Option<cidr::Ipv6Cidr>>,
     tun_device_name: Mutex<Option<String>>,
 
     flags: ArcSwap<Flags>,
-
-    public_ipv6_provider_active: AtomicCell<bool>,
 }
 
 impl std::fmt::Debug for GlobalCtx {
@@ -124,23 +119,7 @@ impl std::fmt::Debug for GlobalCtx {
 pub type ArcGlobalCtx = std::sync::Arc<GlobalCtx>;
 
 #[async_trait]
-impl PublicIpv6Runtime for GlobalCtx {
-    fn ipv6_public_addr_auto(&self) -> bool {
-        self.config.get_ipv6_public_addr_auto()
-    }
-
-    fn ipv6_public_addr_provider(&self) -> bool {
-        self.config.get_ipv6_public_addr_provider()
-    }
-
-    fn instance_id(&self) -> uuid::Uuid {
-        self.get_id()
-    }
-
-    fn network_name(&self) -> String {
-        self.get_network_name()
-    }
-
+impl PublicIpv6Host for GlobalCtx {
     async fn collect_reserved_public_ipv6_addrs(
         &self,
         prefix: cidr::Ipv6Cidr,
@@ -170,17 +149,10 @@ impl PublicIpv6Runtime for GlobalCtx {
     }
 
     fn public_ipv6_lease_changed(&self, old: Option<cidr::Ipv6Inet>, new: Option<cidr::Ipv6Inet>) {
-        self.set_public_ipv6_lease(new);
         self.issue_event(GlobalCtxEvent::PublicIpv6Changed(old, new));
     }
 
-    fn public_ipv6_routes_changed(
-        &self,
-        routes: BTreeSet<cidr::Ipv6Inet>,
-        added: Vec<cidr::Ipv6Inet>,
-        removed: Vec<cidr::Ipv6Inet>,
-    ) {
-        self.set_public_ipv6_routes(routes);
+    fn public_ipv6_routes_changed(&self, added: Vec<cidr::Ipv6Inet>, removed: Vec<cidr::Ipv6Inet>) {
         self.issue_event(GlobalCtxEvent::PublicIpv6RoutesUpdated(added, removed));
     }
 }
@@ -207,8 +179,6 @@ impl GlobalCtx {
             event_bus,
             cached_ipv4: AtomicCell::new(None),
             cached_ipv6: AtomicCell::new(None),
-            public_ipv6_lease: AtomicCell::new(None),
-            public_ipv6_routes: Mutex::new(BTreeSet::new()),
             cached_proxy_cidrs: AtomicCell::new(None),
 
             hostname: Mutex::new(hostname),
@@ -216,12 +186,9 @@ impl GlobalCtx {
             #[cfg(test)]
             stun_info_collection,
 
-            advertised_ipv6_public_addr_prefix: Mutex::new(None),
             tun_device_name: Mutex::new(None),
 
             flags: ArcSwap::new(Arc::new(flags)),
-
-            public_ipv6_provider_active: AtomicCell::new(false),
         }
     }
 
@@ -286,43 +253,8 @@ impl GlobalCtx {
         self.cached_ipv6.store(None);
     }
 
-    pub fn get_public_ipv6_lease(&self) -> Option<cidr::Ipv6Inet> {
-        self.public_ipv6_lease.load()
-    }
-
-    pub fn set_public_ipv6_lease(&self, addr: Option<cidr::Ipv6Inet>) {
-        self.public_ipv6_lease.store(addr);
-    }
-
-    pub fn set_public_ipv6_routes(&self, routes: BTreeSet<cidr::Ipv6Inet>) {
-        *self.public_ipv6_routes.lock().unwrap() =
-            routes.into_iter().map(|route| route.address()).collect();
-    }
-
     pub fn is_ip_local_ipv6(&self, ip: &std::net::Ipv6Addr) -> bool {
         self.get_ipv6().map(|x| x.address() == *ip).unwrap_or(false)
-            || self
-                .get_public_ipv6_lease()
-                .map(|x| x.address() == *ip)
-                .unwrap_or(false)
-    }
-
-    pub fn is_ip_easytier_managed_ipv6(&self, ip: &std::net::Ipv6Addr) -> bool {
-        self.is_ip_local_ipv6(ip) || self.public_ipv6_routes.lock().unwrap().contains(ip)
-    }
-
-    pub fn get_advertised_ipv6_public_addr_prefix(&self) -> Option<cidr::Ipv6Cidr> {
-        *self.advertised_ipv6_public_addr_prefix.lock().unwrap()
-    }
-
-    pub fn set_advertised_ipv6_public_addr_prefix(&self, prefix: Option<cidr::Ipv6Cidr>) -> bool {
-        let mut guard = self.advertised_ipv6_public_addr_prefix.lock().unwrap();
-        if *guard == prefix {
-            return false;
-        }
-
-        *guard = prefix;
-        true
     }
 
     pub fn get_id(&self) -> uuid::Uuid {
@@ -405,15 +337,6 @@ impl GlobalCtx {
 
     pub fn no_tun(&self) -> bool {
         self.flags.load().no_tun
-    }
-
-    pub(crate) fn set_public_ipv6_provider_active(&self, enabled: bool) -> bool {
-        let previous = self.public_ipv6_provider_active.swap(enabled);
-        previous != enabled
-    }
-
-    pub(crate) fn public_ipv6_provider_active(&self) -> bool {
-        self.public_ipv6_provider_active.load()
     }
 
     pub fn is_local_ip(&self, ip: &IpAddr) -> bool {
@@ -508,36 +431,6 @@ pub mod tests {
             subscriber.recv().await.unwrap(),
             GlobalCtxEvent::TunDeviceError("closed".to_string())
         );
-    }
-
-    #[tokio::test]
-    async fn virtual_ipv6_and_public_ipv6_lease_are_stored_separately() {
-        let config = TomlConfigLoader::default();
-        let global_ctx = GlobalCtx::new(config);
-        let virtual_ipv6 = "fd00::1/64".parse().unwrap();
-        let public_ipv6 = "2001:db8::2/64".parse().unwrap();
-
-        global_ctx.set_ipv6(Some(virtual_ipv6));
-        global_ctx.set_public_ipv6_lease(Some(public_ipv6));
-
-        assert_eq!(global_ctx.get_ipv6(), Some(virtual_ipv6));
-        assert_eq!(global_ctx.get_public_ipv6_lease(), Some(public_ipv6));
-    }
-
-    #[tokio::test]
-    async fn public_ipv6_lease_is_treated_as_local_ip() {
-        protected_port::clear_protected_tcp_ports_for_test();
-
-        let config = TomlConfigLoader::default();
-        let global_ctx = GlobalCtx::new(config);
-        let public_ipv6 = "2001:db8::2/64".parse().unwrap();
-        global_ctx.set_public_ipv6_lease(Some(public_ipv6));
-
-        let ip = std::net::IpAddr::V6(public_ipv6.address());
-
-        assert!(global_ctx.is_ip_local_virtual_ip(&ip));
-
-        protected_port::clear_protected_tcp_ports_for_test();
     }
 
     pub fn get_mock_global_ctx_with_network(

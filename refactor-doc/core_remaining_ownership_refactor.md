@@ -288,8 +288,9 @@ but no core Module receives it or a broad Interface implemented by it.
   from becoming a new broad runtime Interface.
 - The former broad `PeerRuntimeSupport` has been deleted. STUN observations use
   a separate read-only core Interface backed by the per-instance core collector;
-  public-IPv6 lease/provider state remains a Host Interface, and the advertised
-  EasyTier version is part of the submitted snapshot.
+  public-IPv6 lease/provider state is core-owned, while the host only observes
+  reserved addresses and receives event deltas. The advertised EasyTier version
+  is part of the submitted snapshot.
 - `GlobalCtx` no longer implements `PeerContext` and no longer carries a second
   peer-event broadcast bus. Native configuration is normalized explicitly into
   `PeerRuntimeSnapshot`; main, foreign, and test peer graphs all receive
@@ -316,10 +317,10 @@ but no core Module receives it or a broad Interface implemented by it.
 
 The capability split is complete as of 2026-07-14. `GlobalCtx` does not
 implement `PeerContext`; core receives normalized snapshots and named narrow
-capabilities for events, limiters, traffic export, public IPv6 state,
+capabilities for events, limiters, traffic export, public-IPv6 OS observation,
 credentials, and relay-state projection. Core owns STUN observations and
-lifecycle, credential, trusted-key, runtime-change, and base relay-preference
-state. Native
+lifecycle, public-IPv6 provider/lease/route policy, credential, trusted-key,
+runtime-change, and base relay-preference state. Native
 `GlobalCtx` remains a useful product composition object, but it is neither a
 core dependency nor an authoritative peer-domain store.
 

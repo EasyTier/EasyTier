@@ -7,7 +7,7 @@ use anyhow::Context;
 use cidr::{Ipv6Cidr, Ipv6Inet};
 use easytier_core::instance::public_ipv6_provider::{
     PublicIpv6NdpDesired, PublicIpv6NdpTarget, PublicIpv6PlatformError,
-    PublicIpv6PlatformObservation, PublicIpv6ProviderHost, PublicIpv6ProviderState,
+    PublicIpv6PlatformObservation, PublicIpv6ProviderPlatform,
 };
 use easytier_core::peers::public_ipv6::{
     PublicIpv6ProviderConfig, is_global_routable_public_ipv6_prefix,
@@ -668,14 +668,16 @@ fn sync_ndp_proxy_entries(
 }
 
 #[cfg(target_os = "linux")]
-fn cleanup_ndp_proxy_runtime(runtime: &mut NdpProxyRuntime, net_ns: &NetNS) {
-    if !runtime.clear_current_in_netns(net_ns) {
+fn cleanup_ndp_proxy_runtime(runtime: &mut NdpProxyRuntime, net_ns: &NetNS) -> bool {
+    let complete = runtime.clear_current_in_netns(net_ns);
+    if !complete {
         tracing::warn!(
             remaining_entries = runtime.applied.len(),
             wan_iface = ?runtime.wan_iface,
             "failed to clean all NDP proxy entries before stopping public IPv6 provider task"
         );
     }
+    complete
 }
 
 fn should_reconcile_immediately(event: &GlobalCtxEvent) -> bool {
@@ -727,7 +729,7 @@ impl RuntimePublicIpv6ProviderPlatform {
 }
 
 #[async_trait::async_trait]
-impl PublicIpv6ProviderHost for RuntimePublicIpv6ProviderPlatform {
+impl PublicIpv6ProviderPlatform for RuntimePublicIpv6ProviderPlatform {
     fn inspect(
         &self,
         config: PublicIpv6ProviderConfig,
@@ -775,16 +777,6 @@ impl PublicIpv6ProviderHost for RuntimePublicIpv6ProviderPlatform {
         }
     }
 
-    fn publish(&self, state: &PublicIpv6ProviderState) -> Result<bool, PublicIpv6PlatformError> {
-        let Some(global_ctx) = self.global_ctx.upgrade() else {
-            return Err(PublicIpv6PlatformError::Unavailable);
-        };
-        let prefix_changed =
-            global_ctx.set_advertised_ipv6_public_addr_prefix(state.advertised_prefix());
-        let feature_changed = global_ctx.set_public_ipv6_provider_active(state.provider_active());
-        Ok(prefix_changed || feature_changed)
-    }
-
     fn sync_ndp(
         &self,
         desired: Option<PublicIpv6NdpDesired>,
@@ -793,12 +785,24 @@ impl PublicIpv6ProviderHost for RuntimePublicIpv6ProviderPlatform {
         {
             let mut runtime = self.ndp_proxy.lock().unwrap();
             if let Some(global_ctx) = self.global_ctx.upgrade() {
-                let _ = runtime.reconcile(&global_ctx, desired.as_ref());
+                let cleanup_pending = runtime.reconcile(&global_ctx, desired.as_ref());
+                if desired.is_none() && cleanup_pending {
+                    return Err(PublicIpv6PlatformError::Failed(format!(
+                        "failed to clean all public IPv6 NDP proxy entries (remaining: {})",
+                        runtime.applied.len()
+                    )));
+                }
                 return Ok(());
             }
             if desired.is_none() {
-                cleanup_ndp_proxy_runtime(&mut runtime, &self.net_ns);
-                return Ok(());
+                return cleanup_ndp_proxy_runtime(&mut runtime, &self.net_ns)
+                    .then_some(())
+                    .ok_or_else(|| {
+                        PublicIpv6PlatformError::Failed(format!(
+                            "failed to clean all public IPv6 NDP proxy entries (remaining: {})",
+                            runtime.applied.len()
+                        ))
+                    });
             }
             Err(PublicIpv6PlatformError::Unavailable)
         }
@@ -818,7 +822,7 @@ impl PublicIpv6ProviderHost for RuntimePublicIpv6ProviderPlatform {
 
 pub(crate) fn runtime_public_ipv6_provider_platform(
     global_ctx: &ArcGlobalCtx,
-) -> Arc<dyn PublicIpv6ProviderHost> {
+) -> Arc<dyn PublicIpv6ProviderPlatform> {
     RuntimePublicIpv6ProviderPlatform::new(global_ctx)
 }
 
@@ -1466,7 +1470,10 @@ mod tests {
         super::ensure_linux_ndp_proxy_enabled(&wan_if).unwrap();
         crate::common::ifcfg::add_ipv6_ndp_proxy(&wan_if, addr).unwrap();
 
-        super::cleanup_ndp_proxy_runtime(&mut runtime, &crate::common::netns::NetNS::new(None));
+        assert!(super::cleanup_ndp_proxy_runtime(
+            &mut runtime,
+            &crate::common::netns::NetNS::new(None)
+        ));
         assert!(
             !crate::common::ifcfg::list_ipv6_ndp_proxy(&wan_if)
                 .unwrap()
@@ -1561,9 +1568,14 @@ mod tests {
             },
             Arc::new(easytier_core::peers::context::PeerRuntimeSnapshot::default()),
         );
+        let runtime = easytier_core::peers::public_ipv6::CorePublicIpv6Runtime::new(
+            runtime_config.clone(),
+            global_ctx.clone(),
+        );
         let service = easytier_core::instance::public_ipv6_provider::PublicIpv6ProviderService::new(
             platform,
             runtime_config,
+            runtime,
         );
         service.start().await;
         wait_for_ndp_proxy_entry(&wan_if, leased_addr, true).await;

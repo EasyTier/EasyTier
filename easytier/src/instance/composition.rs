@@ -120,6 +120,7 @@ pub(crate) fn runtime_core_config(global_ctx: &ArcGlobalCtx) -> CoreRuntimeConfi
             port_forwards: global_ctx.config.get_port_forwards(),
         },
         proxy: runtime_proxy_startup_context(global_ctx),
+        public_ipv6_auto: global_ctx.config.get_ipv6_public_addr_auto(),
         public_ipv6_provider: runtime_public_ipv6_provider_config(global_ctx),
     }
 }
@@ -310,6 +311,7 @@ pub(crate) fn runtime_core_instance_adapters_with_process_runtime(
             }
         },
         proxy_cidr_monitor: Some(runtime_proxy_cidr_monitor_host(global_ctx.clone())),
+        public_ipv6_host: Some(global_ctx.clone()),
         public_ipv6_provider: Some(runtime_public_ipv6_provider_platform(&global_ctx)),
         vpn_portal: {
             #[cfg(feature = "wireguard")]

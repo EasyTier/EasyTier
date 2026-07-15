@@ -64,6 +64,7 @@ use crate::{
         peer_manager::{
             PeerManagerCore, PeerManagerHostAdapters, PeerSnapshot, PortablePeerManagerConfig,
         },
+        public_ipv6::{CorePublicIpv6Runtime, PublicIpv6Host},
     },
     process_runtime::CoreProcessRuntime,
     proxy::{
@@ -94,7 +95,7 @@ use crate::{
 use crate::proxy::gateway::{GatewayEventSink, GatewayModule};
 
 use self::{
-    public_ipv6_provider::{PublicIpv6ProviderHost, PublicIpv6ProviderService},
+    public_ipv6_provider::{PublicIpv6ProviderPlatform, PublicIpv6ProviderService},
     udp_hole_punch::{CoreUdpHolePunchService, UdpHolePunchPlatform},
 };
 #[cfg(feature = "proxy-packet")]
@@ -425,7 +426,8 @@ where
     #[cfg(feature = "proxy-packet")]
     pub icmp_proxy_host: Option<Arc<dyn IcmpProxyHost>>,
     pub proxy_cidr_monitor: Option<Arc<dyn ProxyCidrMonitorHost>>,
-    pub public_ipv6_provider: Option<Arc<dyn PublicIpv6ProviderHost>>,
+    pub public_ipv6_host: Option<Arc<dyn PublicIpv6Host>>,
+    pub public_ipv6_provider: Option<Arc<dyn PublicIpv6ProviderPlatform>>,
     pub vpn_portal: Option<Arc<dyn VpnPortalHost>>,
     pub vpn_portal_events: Option<Arc<dyn VpnPortalEventSink>>,
     #[cfg(feature = "proxy-smoltcp-stack")]
@@ -630,7 +632,7 @@ where
     }
 
     pub fn new_portable_with_peer_adapters_and_transport_factory<F>(
-        adapters: CoreInstanceAdapters<H>,
+        mut adapters: CoreInstanceAdapters<H>,
         peer_adapters: PeerManagerHostAdapters,
         mut config: PortableCoreInstanceConfig,
         packet_sink: Arc<dyn PacketSink>,
@@ -658,6 +660,12 @@ where
             config.connectivity.runtime.clone(),
             Arc::new(config.peer.snapshot.clone()),
         );
+        let public_ipv6_host: Arc<dyn PublicIpv6Host> = adapters
+            .public_ipv6_host
+            .take()
+            .unwrap_or_else(|| Arc::new(()));
+        let public_ipv6_runtime =
+            CorePublicIpv6Runtime::new(runtime_config.clone(), public_ipv6_host);
         let stun = Self::prepare_stun(&adapters, &config.connectivity);
         let peer_stun: Arc<dyn StunInfoProvider> = stun.clone();
         let foreign_rpc_registrar = Arc::new(ForeignDirectConnectorRpcRegistrar::new(
@@ -672,6 +680,7 @@ where
                 dns_context,
                 Arc::new(CoreStunPeerInfoSource(peer_stun)),
                 packet_tx,
+                public_ipv6_runtime.clone(),
                 peer_adapters,
                 foreign_rpc_registrar,
             )?,
@@ -682,6 +691,7 @@ where
             config.connectivity,
             runtime_config,
             stun,
+            Some(public_ipv6_runtime),
             transport_proxy_factory,
         )?;
         instance.packet_egress = Some(PacketEgress::new(packet_rx, packet_sink));
@@ -713,6 +723,7 @@ where
             config,
             runtime_config,
             stun,
+            None,
             NoWrappedTransportEngineFactory,
         )
         .map(|(instance, ())| instance)
@@ -735,6 +746,7 @@ where
             config,
             runtime_config,
             stun,
+            None,
             transport_proxy_factory,
         )
     }
@@ -745,6 +757,7 @@ where
         config: CoreInstanceConfig,
         runtime_config: CoreRuntimeConfigStore,
         stun: Arc<StunProviderSlot<<H as VirtualUdpSocketFactory>::Socket>>,
+        public_ipv6_runtime: Option<Arc<CorePublicIpv6Runtime>>,
         transport_proxy_factory: F,
     ) -> anyhow::Result<(Self, F::Attachment)>
     where
@@ -777,6 +790,7 @@ where
             #[cfg(feature = "proxy-packet")]
             icmp_proxy_host,
             proxy_cidr_monitor,
+            public_ipv6_host: _,
             public_ipv6_provider,
             vpn_portal,
             vpn_portal_events,
@@ -963,8 +977,17 @@ where
             )),
         );
         let peer_center = Arc::new(PeerCenterInstance::new(peer_manager.clone()));
-        let public_ipv6_provider = public_ipv6_provider
-            .map(|host| PublicIpv6ProviderService::new(host, runtime_config.clone()));
+        let public_ipv6_provider = match (public_ipv6_provider, public_ipv6_runtime) {
+            (Some(host), Some(runtime)) => Some(PublicIpv6ProviderService::new(
+                host,
+                runtime_config.clone(),
+                runtime,
+            )),
+            (None, _) => None,
+            (Some(_), None) => {
+                anyhow::bail!("public IPv6 provider requires the portable core-owned peer runtime")
+            }
+        };
         let vpn_portal = VpnPortalModule::new(
             peer_manager.clone(),
             runtime_config.clone(),

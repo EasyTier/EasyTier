@@ -89,15 +89,16 @@ supported schemes from protocol and host capabilities, and owns one manager for
 Ring, TCP, UDP-session, Unix, and FakeTCP listeners. Native advertises and
 creates only the concrete Unix/FakeTCP `SocketListener`; it never receives the
 plan, accepted-socket handler, event sink, or lifecycle. The Go/WASI create
-schema version 11 likewise submits URL-level listener input rather than an
-internal transport plan.
+schema version 12 likewise submits URL-level listener input rather than an
+internal transport plan and cannot inject an EasyTier-managed IPv6 set.
 
 The public-IPv6 provider state machine is also core-owned. Core reads the
 submitted runtime snapshot, resolves provider state, retries stale config,
 derives desired NDP state and owns reconcile/cleanup lifecycle. Native exposes
 only Linux route/interface observations and concrete sysctl/netlink/NDP
-operations, plus a presentation projection; it does not construct a second
-provider manager.
+operations, plus lease/route delta events for native consumers. It stores no
+provider, lease, or route mirror and does not construct a second provider
+manager. Connector policy queries the core peer graph directly.
 
 `GlobalCtx` no longer maintains a parallel peer-feature or ACL/secret-policy
 model. Native derives one normalized peer snapshot from product configuration;

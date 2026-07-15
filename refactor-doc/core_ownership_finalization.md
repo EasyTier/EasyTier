@@ -67,13 +67,14 @@ external listener tasks, or submit a second running-listener list.
 
 `GlobalCtx` is likewise not a peer-policy store. Native configuration is
 normalized once into `PeerRuntimeSnapshot`; core owns live relay preference,
-feature-flag derivation, ACL groups and secret-proof behavior. The only dynamic
-peer fact retained by the native host is whether its OS public-IPv6 provider is
-active, exposed through the narrow `PeerPublicIpv6State` Adapter.
+feature-flag derivation, ACL groups, secret-proof behavior and public-IPv6
+provider/lease/route policy. `GlobalCtx` receives public-IPv6 delta events for
+native consumers but does not retain a queryable mirror of that state.
 
-The Go create schema is version 11. It submits the same URL-level listener
-configuration as native and has no internal transport plan or
-`environment.running_listeners` field.
+The Go create schema is version 12. It submits the same URL-level listener
+configuration and core public-IPv6 options as native. It has no internal
+transport plan, `environment.running_listeners`, or host-supplied
+`managed_ipv6s` policy field.
 
 ## Process-scoped portable state
 
@@ -118,14 +119,19 @@ changes halfway through a handshake.
 resolution, stale-configuration retries, Disabled/Pending/Active state,
 reconcile scheduling, state-change logging and shutdown cleanup. It derives an
 optional `PublicIpv6NdpDesired` value; native does not reconstruct that state
-machine.
+machine. The same core-created `CorePublicIpv6Runtime` supplies provider and
+lease state to the peer context and public-IPv6 service. It is passed as an
+internal core dependency, never as a Host Adapter.
 
 The native platform Adapter may inspect Linux forwarding, routes and
-interfaces, apply NDP proxy entries, and mirror the resolved state into
-`GlobalCtx` for existing presentation and peer projections. Its Interface has
-no start/stop, config retry, state resolution or policy methods. Tests for the
-portable state machine live in core; native retains only Linux selection,
-syscall/resource and vertical integration tests.
+interfaces and apply NDP proxy entries. A separate narrow host sink emits the
+existing lease and route delta events, without storing provider prefix, lease,
+route, or active state in `GlobalCtx`. Direct connectivity asks
+`PeerManagerCore` whether an IPv6 address is EasyTier-managed, so native and Go
+environment snapshots cannot become a second policy authority. The platform
+Interface has no start/stop, config retry, state resolution or policy methods.
+Tests for the portable state machine live in core; native retains only Linux
+selection, syscall/resource and vertical integration tests.
 
 ## Static deletion gates
 
@@ -145,6 +151,14 @@ TransportListenerConfig (native production)
 RuntimePublicIpv6ProviderHost
 PublicIpv6ProviderRuntimeState (native production)
 reconcile_public_ipv6_provider_runtime
+PeerPublicIpv6HostAdapters
+impl PeerPublicIpv6State for GlobalCtx
+impl PublicIpv6Runtime for GlobalCtx
+GlobalCtx.public_ipv6_lease
+GlobalCtx.public_ipv6_routes
+GlobalCtx.advertised_ipv6_public_addr_prefix
+GlobalCtx.public_ipv6_provider_active
+HostConnectorEnvironmentSnapshot.managed_ipv6s
 ```
 
 Direct imports from `easytier_core` are preferred over shallow native

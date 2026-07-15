@@ -360,10 +360,10 @@ mod tests {
         );
         let parent = Arc::new(CorePeerContext::new(
             parent_config.clone(),
+            Arc::new(()),
             CorePeerContextAdapters {
                 relay_state_sink: Arc::new(()),
                 stun_info_source: None,
-                public_ipv6_state: Arc::new(()),
                 event_sink: Arc::new(()),
                 credential_storage: None,
                 credential_event_sink: Arc::new(()),
@@ -643,7 +643,6 @@ fn build_foreign_context(
         CorePeerContextAdapters {
             relay_state_sink: Arc::new(()),
             stun_info_source: Some(Arc::new(ParentStunInfoSource(parent_context_dyn))),
-            public_ipv6_state: Arc::new(()),
             event_sink: Arc::new(()),
             credential_storage: None,
             credential_event_sink: Arc::new(()),

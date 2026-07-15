@@ -736,8 +736,10 @@ pub async fn public_ipv6_auto_addr_end_to_end() {
     wait_for_condition(
         || async {
             provider
-                .get_global_ctx()
-                .get_advertised_ipv6_public_addr_prefix()
+                .get_core_instance()
+                .node_snapshot()
+                .await
+                .ipv6_public_addr_prefix
                 == Some(PublicIpv6Lab::PROVIDER_PREFIX.parse().unwrap())
         },
         Duration::from_secs(10),
@@ -756,8 +758,10 @@ pub async fn public_ipv6_auto_addr_end_to_end() {
     );
     assert_eq!(
         provider
-            .get_global_ctx()
-            .get_advertised_ipv6_public_addr_prefix(),
+            .get_core_instance()
+            .node_snapshot()
+            .await
+            .ipv6_public_addr_prefix,
         Some(PublicIpv6Lab::PROVIDER_PREFIX.parse().unwrap())
     );
     let provider_prefix = PublicIpv6Lab::PROVIDER_PREFIX
@@ -856,8 +860,10 @@ pub async fn public_ipv6_auto_addr_on_link_ndp_proxy_end_to_end() {
     wait_for_condition(
         || async {
             provider
-                .get_global_ctx()
-                .get_advertised_ipv6_public_addr_prefix()
+                .get_core_instance()
+                .node_snapshot()
+                .await
+                .ipv6_public_addr_prefix
                 == Some(PublicIpv6Lab::PROVIDER_PREFIX.parse().unwrap())
         },
         Duration::from_secs(10),
@@ -3771,8 +3777,10 @@ pub async fn config_patch_test() {
     );
     assert_eq!(
         insts[1]
-            .get_global_ctx()
-            .get_advertised_ipv6_public_addr_prefix(),
+            .get_core_instance()
+            .node_snapshot()
+            .await
+            .ipv6_public_addr_prefix,
         Some(public_prefix.parse().unwrap())
     );
 

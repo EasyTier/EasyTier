@@ -2,7 +2,7 @@ use std::{
     collections::HashSet,
     hash::Hash,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
-    sync::Arc,
+    sync::{Arc, Weak},
     time::{Duration, Instant as StdInstant},
 };
 
@@ -78,8 +78,6 @@ pub trait DirectConnectorHost: ManualConnectorHost {
     fn is_local_ip(&self, ip: &IpAddr) -> bool;
 
     fn is_protected_tcp_port(&self, port: u16) -> bool;
-
-    fn is_easytier_managed_ipv6(&self, ip: &Ipv6Addr) -> bool;
 
     async fn preferred_ipv6_source(
         &self,
@@ -327,6 +325,7 @@ where
                 GeneratedDirectConnectorRpcServer::new(
                     DirectConnectorRpcHandler::new_with_running_listeners_and_stun(
                         self.data.host.clone(),
+                        Some(Arc::downgrade(&self.data.peer_manager)),
                         self.data.running_listeners.clone(),
                         self.data.options.udp_bind.context.clone(),
                         Some(self.data.stun.clone()),
@@ -351,6 +350,7 @@ where
                 GeneratedDirectConnectorRpcServer::new(
                     DirectConnectorRpcHandler::new_with_running_listeners_and_stun(
                         self.data.host.clone(),
+                        Some(Arc::downgrade(&self.data.peer_manager)),
                         self.data.running_listeners.clone(),
                         self.data.options.udp_bind.context.clone(),
                         Some(self.data.stun.clone()),
@@ -385,6 +385,7 @@ where
     ) -> GetIpListResponse {
         collect_address_observations(
             self.data.host.as_ref(),
+            Some(self.data.peer_manager.as_ref()),
             &self.data.options.udp_bind.context,
             false,
             Some(stun_info),
@@ -638,13 +639,17 @@ where
                 }
             }
             Some(SocketAddr::V6(socket_addr)) if socket_addr.ip().is_unspecified() => {
-                let candidates = ip_list
+                let mut candidates = HashSet::new();
+                for ip in ip_list
                     .interface_ipv6s
                     .iter()
                     .chain(ip_list.public_ipv6.iter())
                     .map(|ip| Ipv6Addr::from(*ip))
-                    .filter(|ip| self.is_usable_public_ipv6(ip))
-                    .collect::<HashSet<_>>();
+                {
+                    if self.is_usable_public_ipv6(&ip).await {
+                        candidates.insert(ip);
+                    }
+                }
                 for ip in candidates {
                     let target = SocketAddr::new(IpAddr::V6(ip), socket_addr.port());
                     if should_deny_target(&target) {
@@ -896,7 +901,7 @@ where
             .filter_map(|ip| ip.parse().ok())
         {
             if let IpAddr::V6(ip) = ip {
-                self.push_ipv6_candidate(&mut candidates, ip);
+                self.push_ipv6_candidate(&mut candidates, ip).await;
             }
         }
         let interface_addrs = self.host.interface_addrs().await?;
@@ -905,22 +910,22 @@ where
             .into_iter()
             .chain(interface_addrs.public_ipv6)
         {
-            self.push_ipv6_candidate(&mut candidates, ip);
+            self.push_ipv6_candidate(&mut candidates, ip).await;
         }
         Ok(candidates)
     }
 
-    fn push_ipv6_candidate(&self, candidates: &mut Vec<Ipv6Addr>, ip: Ipv6Addr) {
+    async fn push_ipv6_candidate(&self, candidates: &mut Vec<Ipv6Addr>, ip: Ipv6Addr) {
         if candidates.len() < MAX_IPV6_HOLE_PUNCH_CONNECTOR_ADDRS
-            && self.is_usable_public_ipv6(&ip)
+            && self.is_usable_public_ipv6(&ip).await
             && !candidates.contains(&ip)
         {
             candidates.push(ip);
         }
     }
 
-    fn is_usable_public_ipv6(&self, ip: &Ipv6Addr) -> bool {
-        !self.host.is_easytier_managed_ipv6(ip)
+    async fn is_usable_public_ipv6(&self, ip: &Ipv6Addr) -> bool {
+        !self.peer_manager.is_easytier_managed_ipv6(ip).await
             && (self.options.testing
                 || (!ip.is_loopback()
                     && !ip.is_unspecified()
@@ -982,6 +987,7 @@ where
     H: DirectConnectorHost,
 {
     host: Arc<H>,
+    peer_manager: Option<Weak<PeerManagerCore>>,
     running_listeners: Arc<dyn RunningListenerProvider>,
     socket_context: SocketContext,
     foreign_network: bool,
@@ -995,6 +1001,7 @@ where
     fn clone(&self) -> Self {
         Self {
             host: self.host.clone(),
+            peer_manager: self.peer_manager.clone(),
             running_listeners: self.running_listeners.clone(),
             socket_context: self.socket_context.clone(),
             foreign_network: self.foreign_network,
@@ -1019,6 +1026,7 @@ where
         let running_listeners = Arc::new(RunningListenerRegistry::default());
         Self {
             host,
+            peer_manager: None,
             running_listeners,
             socket_context,
             foreign_network: false,
@@ -1038,6 +1046,7 @@ where
         let running_listeners = Arc::new(RunningListenerRegistry::default());
         Self {
             host,
+            peer_manager: None,
             running_listeners,
             socket_context,
             foreign_network: true,
@@ -1050,17 +1059,25 @@ where
         running_listeners: Arc<dyn RunningListenerProvider>,
         socket_context: SocketContext,
     ) -> Self {
-        Self::new_with_running_listeners_and_stun(host, running_listeners, socket_context, None)
+        Self::new_with_running_listeners_and_stun(
+            host,
+            None,
+            running_listeners,
+            socket_context,
+            None,
+        )
     }
 
     fn new_with_running_listeners_and_stun(
         host: Arc<H>,
+        peer_manager: Option<Weak<PeerManagerCore>>,
         running_listeners: Arc<dyn RunningListenerProvider>,
         socket_context: SocketContext,
         stun: Option<Arc<dyn StunInfoProvider>>,
     ) -> Self {
         Self {
             host,
+            peer_manager,
             running_listeners,
             socket_context,
             foreign_network: false,
@@ -1071,6 +1088,7 @@ where
 
 async fn collect_address_observations<H>(
     host: &H,
+    peer_manager: Option<&PeerManagerCore>,
     socket_context: &SocketContext,
     foreign_network: bool,
     stun_info: Option<&crate::proto::common::StunInfo>,
@@ -1092,15 +1110,19 @@ where
             }
         }
     }
-    if !foreign_network {
-        response
-            .interface_ipv6s
-            .retain(|ip| !host.is_easytier_managed_ipv6(&Ipv6Addr::from(*ip)));
-        if response
-            .public_ipv6
-            .as_ref()
-            .map(|ip| Ipv6Addr::from(*ip))
-            .is_some_and(|ip| host.is_easytier_managed_ipv6(&ip))
+    if let Some(peer_manager) = peer_manager.filter(|_| !foreign_network) {
+        let mut interface_ipv6s = Vec::with_capacity(response.interface_ipv6s.len());
+        for ip in response.interface_ipv6s {
+            if !peer_manager
+                .is_easytier_managed_ipv6(&Ipv6Addr::from(ip))
+                .await
+            {
+                interface_ipv6s.push(ip);
+            }
+        }
+        response.interface_ipv6s = interface_ipv6s;
+        if let Some(ip) = response.public_ipv6.map(Ipv6Addr::from)
+            && peer_manager.is_easytier_managed_ipv6(&ip).await
         {
             response.public_ipv6 = None;
         }
@@ -1160,8 +1182,10 @@ where
         _: BaseController,
         _: GetIpListRequest,
     ) -> rpc_types::error::Result<GetIpListResponse> {
+        let peer_manager = self.peer_manager.as_ref().and_then(Weak::upgrade);
         let mut response = collect_address_observations(
             self.host.as_ref(),
+            peer_manager.as_deref(),
             &self.socket_context,
             self.foreign_network,
             self.stun
@@ -1187,12 +1211,17 @@ where
     ) -> rpc_types::error::Result<Void> {
         let (listener_port, connector_addrs, preferred_src_ipv6) =
             connector_addrs_from_request(request)?;
+        let peer_manager = self.peer_manager.as_ref().and_then(Weak::upgrade);
         let preferred_source = match preferred_src_ipv6.map(Ipv6Addr::from) {
             Some(ip) => {
                 if self.foreign_network {
                     self.host
                         .preferred_foreign_ipv6_source(ip, self.socket_context.clone())
                         .await
+                } else if let Some(peer_manager) = peer_manager.as_deref()
+                    && peer_manager.is_easytier_managed_ipv6(&ip).await
+                {
+                    None
                 } else {
                     self.host
                         .preferred_ipv6_source(ip, self.socket_context.clone())

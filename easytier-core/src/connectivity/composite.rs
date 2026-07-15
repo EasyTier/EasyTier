@@ -135,7 +135,6 @@ pub trait ConnectorEnvironment: Send + Sync + 'static {
     fn mapped_listeners(&self) -> Vec<Url>;
     fn is_local_ip(&self, ip: &IpAddr) -> bool;
     fn is_protected_tcp_port(&self, port: u16) -> bool;
-    fn is_easytier_managed_ipv6(&self, ip: &Ipv6Addr) -> bool;
 }
 
 /// Deep adapter that combines one socket runtime with one instance environment.
@@ -304,16 +303,12 @@ where
         self.environment.is_protected_tcp_port(port)
     }
 
-    fn is_easytier_managed_ipv6(&self, ip: &Ipv6Addr) -> bool {
-        self.environment.is_easytier_managed_ipv6(ip)
-    }
-
     async fn preferred_ipv6_source(
         &self,
         ip: Ipv6Addr,
         context: SocketContext,
     ) -> Option<PreferredIpv6Source> {
-        if self.environment.is_easytier_managed_ipv6(&ip) || !valid_public_ipv6_candidate(ip) {
+        if !valid_public_ipv6_candidate(ip) {
             return None;
         }
         self.sockets.preferred_ipv6_source(ip, context).await

@@ -6,11 +6,11 @@ use easytier_core::config::{
 };
 use easytier_core::peers::context::{
     HostRoutingPolicy, NetworkIdentity as CoreNetworkIdentity, PeerCredentialEventSink, PeerEvent,
-    PeerEventSink, PeerPublicIpv6State, PeerRuntimeConfig, PeerRuntimeSnapshot,
+    PeerEventSink, PeerRuntimeConfig, PeerRuntimeSnapshot,
 };
 use easytier_core::peers::foreign_network_manager::check_network_in_relay_whitelist;
 use easytier_core::peers::peer_manager::{
-    PeerManagerHostAdapters, PeerPublicIpv6HostAdapters, PortablePeerManagerConfig, RouteAlgoType,
+    PeerManagerHostAdapters, PortablePeerManagerConfig, RouteAlgoType,
 };
 
 use crate::{
@@ -18,7 +18,7 @@ use crate::{
         config::{ConfigLoader as _, Flags, TomlConfigLoader},
         constants::EASYTIER_VERSION,
         credential_manager::runtime_credential_storage,
-        global_ctx::{ArcGlobalCtx, GlobalCtx, GlobalCtxEvent},
+        global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
     },
     proto::common::PeerFeatureFlag,
     use_global_var,
@@ -182,22 +182,6 @@ pub(crate) fn runtime_peer_manager_host_adapters(
         event_sink: event_sink.clone(),
         credential_storage: runtime_credential_storage(global_ctx.config.get_credential_file()),
         credential_event_sink: event_sink,
-        public_ipv6: Some(PeerPublicIpv6HostAdapters::new(global_ctx.clone())),
-    }
-}
-
-impl PeerPublicIpv6State for GlobalCtx {
-    fn public_ipv6_lease_contains(&self, ip: &std::net::Ipv6Addr) -> bool {
-        self.get_public_ipv6_lease()
-            .is_some_and(|address| address.address() == *ip)
-    }
-
-    fn public_ipv6_provider_enabled(&self) -> bool {
-        self.public_ipv6_provider_active()
-    }
-
-    fn advertised_ipv6_public_addr_prefix(&self) -> Option<cidr::Ipv6Cidr> {
-        self.get_advertised_ipv6_public_addr_prefix()
     }
 }
 
