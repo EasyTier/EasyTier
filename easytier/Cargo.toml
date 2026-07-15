@@ -29,10 +29,6 @@ name = "easytier"
 path = "src/lib.rs"
 
 [[bench]]
-name = "tx_throughput"
-harness = false
-
-[[bench]]
 name = "packet_bytes_extraction"
 harness = false
 
