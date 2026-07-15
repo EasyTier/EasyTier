@@ -56,6 +56,12 @@ Direct connectivity, node snapshots, and proxy loop prevention read this
 registry. `GlobalCtx` may emit presentation events, but it does not store or
 submit a second running-listener list.
 
+`GlobalCtx` is likewise not a peer-policy store. Native configuration is
+normalized once into `PeerRuntimeSnapshot`; core owns live relay preference,
+feature-flag derivation, ACL groups and secret-proof behavior. The only dynamic
+peer fact retained by the native host is whether its OS public-IPv6 provider is
+active, exposed through the narrow `PeerPublicIpv6State` Adapter.
+
 The Go create schema is version 10 and therefore has no
 `environment.running_listeners` field.
 

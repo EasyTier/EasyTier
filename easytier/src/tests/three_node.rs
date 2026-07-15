@@ -3762,8 +3762,10 @@ pub async fn config_patch_test() {
     );
     assert!(
         insts[1]
-            .get_global_ctx()
-            .get_feature_flags()
+            .get_core_instance()
+            .node_snapshot()
+            .await
+            .feature_flags
             .ipv6_public_addr_provider
     );
     assert_eq!(
@@ -3830,8 +3832,10 @@ pub async fn config_patch_disable_relay_data_test() {
     assert!(!insts[1].get_global_ctx().get_flags().disable_relay_data);
     assert!(
         !insts[1]
-            .get_global_ctx()
-            .get_feature_flags()
+            .get_core_instance()
+            .node_snapshot()
+            .await
+            .feature_flags
             .avoid_relay_data
     );
 
@@ -3869,8 +3873,10 @@ pub async fn config_patch_disable_relay_data_test() {
     );
     assert!(
         insts[1]
-            .get_global_ctx()
-            .get_feature_flags()
+            .get_core_instance()
+            .node_snapshot()
+            .await
+            .feature_flags
             .avoid_relay_data
     );
 
@@ -3924,8 +3930,10 @@ pub async fn config_patch_disable_relay_data_test() {
     );
     assert!(
         !insts[1]
-            .get_global_ctx()
-            .get_feature_flags()
+            .get_core_instance()
+            .node_snapshot()
+            .await
+            .feature_flags
             .avoid_relay_data
     );
 

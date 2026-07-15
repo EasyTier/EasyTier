@@ -83,6 +83,11 @@ Core now owns the only running-listener registry. Transport and external
 listeners publish into the same event sink; native may mirror events for UI
 presentation but never submits listener state back into core.
 
+`GlobalCtx` no longer maintains a parallel peer-feature or ACL/secret-policy
+model. Native derives one normalized peer snapshot from product configuration;
+core owns subsequent policy state, while the host exposes only dynamic OS facts
+through narrow Adapters.
+
 The current ownership map and deletion gates are recorded in
 [`core_ownership_finalization.md`](../../refactor-doc/core_ownership_finalization.md).
 

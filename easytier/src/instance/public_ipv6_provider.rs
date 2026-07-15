@@ -571,8 +571,7 @@ fn apply_public_ipv6_provider_runtime_state(
     let prefix_changed = global_ctx.set_advertised_ipv6_public_addr_prefix(next_prefix);
 
     let next_provider_enabled = matches!(state, PublicIpv6ProviderRuntimeState::Active(_));
-    let feature_changed =
-        global_ctx.set_ipv6_public_addr_provider_feature_flag(next_provider_enabled);
+    let feature_changed = global_ctx.set_public_ipv6_provider_active(next_provider_enabled);
 
     prefix_changed || feature_changed
 }
@@ -590,7 +589,7 @@ fn current_public_ipv6_provider_runtime_state(
     global_ctx: &ArcGlobalCtx,
 ) -> PublicIpv6ProviderRuntimeState {
     match (
-        global_ctx.get_feature_flags().ipv6_public_addr_provider,
+        global_ctx.public_ipv6_provider_active(),
         global_ctx.get_advertised_ipv6_public_addr_prefix(),
     ) {
         (false, _) => PublicIpv6ProviderRuntimeState::Disabled,
@@ -1402,7 +1401,7 @@ mod tests {
 
         assert_eq!(changed, None);
         assert_eq!(global_ctx.get_advertised_ipv6_public_addr_prefix(), None);
-        assert!(!global_ctx.get_feature_flags().ipv6_public_addr_provider);
+        assert!(!global_ctx.public_ipv6_provider_active());
     }
 
     #[tokio::test]
@@ -1424,7 +1423,7 @@ mod tests {
             global_ctx.get_advertised_ipv6_public_addr_prefix(),
             Some(prefix)
         );
-        assert!(global_ctx.get_feature_flags().ipv6_public_addr_provider);
+        assert!(global_ctx.public_ipv6_provider_active());
     }
 
     #[cfg(target_os = "linux")]

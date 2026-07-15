@@ -706,10 +706,9 @@ mod tests {
                 .avoid_relay_data
         );
 
-        global_ctx.set_avoid_relay_data_preference(true);
-        instance
-            .update_peer_runtime_snapshot(runtime_instance_config(&global_ctx).peer)
-            .await;
+        let mut enabled = runtime_instance_config(&global_ctx).peer;
+        Arc::make_mut(&mut enabled).avoid_relay_data_preference = true;
+        instance.update_peer_runtime_snapshot(enabled).await;
 
         assert!(
             instance
@@ -719,11 +718,9 @@ mod tests {
                 .avoid_relay_data
         );
 
-        global_ctx.set_avoid_relay_data_preference(false);
-        instance
-            .update_runtime_config(runtime_instance_config(&global_ctx))
-            .await
-            .unwrap();
+        let mut disabled = runtime_instance_config(&global_ctx);
+        Arc::make_mut(&mut disabled.peer).avoid_relay_data_preference = false;
+        instance.update_runtime_config(disabled).await.unwrap();
 
         assert!(
             !instance

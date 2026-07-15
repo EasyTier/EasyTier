@@ -6,7 +6,6 @@ use std::{
 
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
-use easytier_core::peers::foreign_network_manager::check_network_in_relay_whitelist;
 use easytier_core::peers::public_ipv6::PublicIpv6Runtime;
 #[cfg(test)]
 use easytier_core::stun::{StunProviderSlot, StunSocketMapper};
@@ -22,22 +21,12 @@ use crate::socket::udp::RuntimeUdpSocket;
 use crate::{
     common::config::ProxyNetworkConfig,
     proto::{
-        acl::GroupIdentity,
         api::{config::InstanceConfigPatch, instance::PeerConnInfo},
-        common::{PeerFeatureFlag, PortForwardConfigPb},
-        peer_rpc::PeerGroupInfo,
+        common::PortForwardConfigPb,
     },
     rpc_service::protected_port,
 };
 use crossbeam::atomic::AtomicCell;
-use hmac::{Hmac, Mac};
-use sha2::Sha256;
-
-#[derive(Debug, Clone, Copy)]
-struct FeatureFlagState {
-    base: PeerFeatureFlag,
-    effective: PeerFeatureFlag,
-}
 
 pub type NetworkIdentity = crate::common::config::NetworkIdentity;
 
@@ -118,11 +107,7 @@ pub struct GlobalCtx {
 
     flags: ArcSwap<Flags>,
 
-    // Runtime/base advertised feature flags before config-owned fields are
-    // overlaid by set_flags. Keep this separate so config patches do not erase
-    // runtime state such as public-server role, IPv6 provider status, or the
-    // non-whitelist avoid-relay preference.
-    feature_flags: Mutex<FeatureFlagState>,
+    public_ipv6_provider_active: AtomicCell<bool>,
 }
 
 impl std::fmt::Debug for GlobalCtx {
@@ -197,27 +182,6 @@ impl PublicIpv6Runtime for GlobalCtx {
 }
 
 impl GlobalCtx {
-    fn apply_disable_relay_data_flag(
-        flags: &Flags,
-        mut feature_flags: PeerFeatureFlag,
-    ) -> PeerFeatureFlag {
-        if flags.disable_relay_data {
-            feature_flags.avoid_relay_data = true;
-        }
-        feature_flags
-    }
-
-    fn derive_feature_flags(flags: &Flags, mut feature_flags: PeerFeatureFlag) -> PeerFeatureFlag {
-        feature_flags.kcp_input = !flags.disable_kcp_input;
-        feature_flags.no_relay_kcp = flags.disable_relay_kcp;
-        feature_flags.support_conn_list_sync = true;
-        feature_flags.quic_input = !flags.disable_quic_input;
-        feature_flags.no_relay_quic = flags.disable_relay_quic;
-        feature_flags.need_p2p = flags.need_p2p;
-        feature_flags.disable_p2p = flags.disable_p2p;
-        Self::apply_disable_relay_data_flag(flags, feature_flags)
-    }
-
     pub fn new(config_fs: impl ConfigLoader + 'static) -> Self {
         let id = config_fs.get_id();
         let network = config_fs.get_network_identity();
@@ -228,9 +192,6 @@ impl GlobalCtx {
         let (event_bus, _) = tokio::sync::broadcast::channel(16);
         #[cfg(test)]
         let stun_info_collection = Arc::new(StunProviderSlot::empty());
-
-        let base_feature_flags = PeerFeatureFlag::default();
-        let feature_flags = Self::derive_feature_flags(&flags, base_feature_flags);
 
         GlobalCtx {
             inst_name: config_fs.get_inst_name(),
@@ -258,10 +219,7 @@ impl GlobalCtx {
 
             flags: ArcSwap::new(Arc::new(flags)),
 
-            feature_flags: Mutex::new(FeatureFlagState {
-                base: base_feature_flags,
-                effective: feature_flags,
-            }),
+            public_ipv6_provider_active: AtomicCell::new(false),
         }
     }
 
@@ -296,10 +254,6 @@ impl GlobalCtx {
 
     pub fn get_tun_device_name(&self) -> Option<String> {
         self.tun_device_name.lock().unwrap().clone()
-    }
-
-    pub fn check_network_in_whitelist(&self, network_name: &str) -> Result<(), anyhow::Error> {
-        check_network_in_relay_whitelist(&self.get_flags().relay_network_whitelist, network_name)
     }
 
     pub fn get_ipv4(&self) -> Option<cidr::Ipv4Inet> {
@@ -391,15 +345,6 @@ impl GlobalCtx {
         self.config.get_network_identity()
     }
 
-    pub fn get_secret_proof(&self, challenge: &[u8]) -> Option<Hmac<Sha256>> {
-        let network_secret = self.get_network_identity().network_secret?;
-        let key = network_secret.as_bytes();
-        let mut mac = Hmac::<Sha256>::new_from_slice(key).unwrap();
-        mac.update(b"easytier secret proof");
-        mac.update(challenge);
-        Some(mac)
-    }
-
     pub fn get_network_name(&self) -> String {
         self.get_network_identity().network_name
     }
@@ -444,9 +389,7 @@ impl GlobalCtx {
     }
 
     pub fn set_flags(&self, flags: Flags) {
-        let mut feature_flags = self.feature_flags.lock().unwrap();
         self.config.set_flags(flags.clone());
-        feature_flags.effective = Self::derive_feature_flags(&flags, feature_flags.base);
         self.flags.store(Arc::new(flags));
     }
 
@@ -466,91 +409,13 @@ impl GlobalCtx {
         self.flags.load().no_tun
     }
 
-    pub fn get_feature_flags(&self) -> PeerFeatureFlag {
-        self.feature_flags.lock().unwrap().effective
+    pub(crate) fn set_public_ipv6_provider_active(&self, enabled: bool) -> bool {
+        let previous = self.public_ipv6_provider_active.swap(enabled);
+        previous != enabled
     }
 
-    pub fn get_avoid_relay_data_preference(&self) -> bool {
-        self.feature_flags.lock().unwrap().base.avoid_relay_data
-    }
-
-    /// Replace the runtime/base advertised flags as a complete snapshot.
-    ///
-    /// This is intended for foreign scoped contexts that inherit an already
-    /// computed feature-flag snapshot from their parent. Most callers should use
-    /// a narrower setter so they do not accidentally overwrite unrelated runtime
-    /// state.
-    pub fn set_base_advertised_feature_flags(&self, feature_flags: PeerFeatureFlag) {
-        let mut state = self.feature_flags.lock().unwrap();
-        state.base = feature_flags;
-        let flags = self.flags.load();
-        state.effective = Self::apply_disable_relay_data_flag(flags.as_ref(), feature_flags);
-    }
-
-    /// Set the avoid-relay preference that is independent of disable_relay_data.
-    ///
-    /// disable_relay_data still forces the effective advertised flag to true,
-    /// but this base preference is preserved when that config flag is toggled.
-    pub fn set_avoid_relay_data_preference(&self, avoid_relay_data: bool) -> bool {
-        let mut state = self.feature_flags.lock().unwrap();
-        state.base.avoid_relay_data = avoid_relay_data;
-        let previous = state.effective.avoid_relay_data;
-        state.effective.avoid_relay_data = avoid_relay_data || self.flags.load().disable_relay_data;
-        previous != state.effective.avoid_relay_data
-    }
-
-    /// Set the runtime IPv6-provider advertised bit without touching
-    /// config-derived feature flags.
-    pub fn set_ipv6_public_addr_provider_feature_flag(&self, enabled: bool) -> bool {
-        let mut state = self.feature_flags.lock().unwrap();
-        state.base.ipv6_public_addr_provider = enabled;
-        if state.effective.ipv6_public_addr_provider == enabled {
-            return false;
-        }
-
-        state.effective.ipv6_public_addr_provider = enabled;
-        true
-    }
-
-    pub fn get_acl_groups(&self, peer_id: PeerId) -> Vec<PeerGroupInfo> {
-        use std::collections::HashSet;
-        self.config
-            .get_acl()
-            .and_then(|acl| acl.acl_v1)
-            .and_then(|acl_v1| acl_v1.group)
-            .map_or_else(Vec::new, |group| {
-                let memberships: HashSet<_> = group.members.iter().collect();
-                group
-                    .declares
-                    .iter()
-                    .filter(|g| memberships.contains(&g.group_name))
-                    .map(|g| {
-                        PeerGroupInfo::generate_with_proof(
-                            g.group_name.clone(),
-                            g.group_secret.clone(),
-                            peer_id,
-                        )
-                    })
-                    .collect()
-            })
-    }
-
-    pub fn get_acl_group_declarations(&self) -> Vec<GroupIdentity> {
-        self.config
-            .get_acl()
-            .and_then(|acl| acl.acl_v1)
-            .and_then(|acl_v1| acl_v1.group)
-            .map_or_else(Vec::new, |group| group.declares.to_vec())
-    }
-
-    pub fn p2p_only(&self) -> bool {
-        self.flags.load().p2p_only
-    }
-
-    pub fn latency_first(&self) -> bool {
-        // NOTICE: p2p only is conflict with latency first
-        let flags = self.flags.load();
-        flags.latency_first && !flags.p2p_only
+    pub(crate) fn public_ipv6_provider_active(&self) -> bool {
+        self.public_ipv6_provider_active.load()
     }
 
     pub fn is_local_ip(&self, ip: &IpAddr) -> bool {
@@ -645,115 +510,6 @@ pub mod tests {
             subscriber.recv().await.unwrap(),
             GlobalCtxEvent::TunDeviceError("closed".to_string())
         );
-    }
-
-    #[tokio::test]
-    async fn set_flags_keeps_derived_feature_flags_in_sync() {
-        let config = TomlConfigLoader::default();
-        let global_ctx = GlobalCtx::new(config);
-
-        let mut feature_flags = global_ctx.get_feature_flags();
-        feature_flags.avoid_relay_data = true;
-        feature_flags.is_public_server = true;
-        global_ctx.set_base_advertised_feature_flags(feature_flags);
-
-        let mut flags = global_ctx.get_flags().clone();
-        flags.disable_kcp_input = true;
-        flags.disable_relay_kcp = true;
-        flags.disable_quic_input = true;
-        flags.disable_relay_quic = true;
-        flags.need_p2p = true;
-        flags.disable_p2p = true;
-        global_ctx.set_flags(flags);
-
-        let feature_flags = global_ctx.get_feature_flags();
-        assert!(!feature_flags.kcp_input);
-        assert!(feature_flags.no_relay_kcp);
-        assert!(!feature_flags.quic_input);
-        assert!(feature_flags.no_relay_quic);
-        assert!(feature_flags.need_p2p);
-        assert!(feature_flags.disable_p2p);
-        assert!(feature_flags.support_conn_list_sync);
-        assert!(feature_flags.avoid_relay_data);
-        assert!(feature_flags.is_public_server);
-        assert!(!feature_flags.ipv6_public_addr_provider);
-    }
-
-    #[tokio::test]
-    async fn set_base_advertised_feature_flags_applies_current_values() {
-        let config = TomlConfigLoader::default();
-        let global_ctx = GlobalCtx::new(config);
-
-        let feature_flags = PeerFeatureFlag {
-            kcp_input: false,
-            no_relay_kcp: true,
-            quic_input: false,
-            no_relay_quic: true,
-            is_public_server: true,
-            ..Default::default()
-        };
-        global_ctx.set_base_advertised_feature_flags(feature_flags);
-
-        assert_eq!(global_ctx.get_feature_flags(), feature_flags);
-    }
-
-    #[tokio::test]
-    async fn set_base_advertised_feature_flags_keeps_disable_relay_data_effective() {
-        let config = TomlConfigLoader::default();
-        let global_ctx = GlobalCtx::new(config);
-
-        let mut flags = global_ctx.get_flags().clone();
-        flags.disable_relay_data = true;
-        global_ctx.set_flags(flags);
-
-        let mut feature_flags = global_ctx.get_feature_flags();
-        feature_flags.avoid_relay_data = false;
-        feature_flags.is_public_server = true;
-        global_ctx.set_base_advertised_feature_flags(feature_flags);
-
-        let advertised_feature_flags = global_ctx.get_feature_flags();
-        assert!(advertised_feature_flags.avoid_relay_data);
-        assert!(advertised_feature_flags.is_public_server);
-
-        let mut flags = global_ctx.get_flags().clone();
-        flags.disable_relay_data = false;
-        global_ctx.set_flags(flags);
-
-        let advertised_feature_flags = global_ctx.get_feature_flags();
-        assert!(!advertised_feature_flags.avoid_relay_data);
-        assert!(advertised_feature_flags.is_public_server);
-    }
-
-    #[tokio::test]
-    async fn disable_relay_data_sets_avoid_relay_feature_flag() {
-        let config = TomlConfigLoader::default();
-        let global_ctx = GlobalCtx::new(config);
-
-        let mut flags = global_ctx.get_flags().clone();
-        flags.disable_relay_data = true;
-        global_ctx.set_flags(flags);
-
-        assert!(global_ctx.get_feature_flags().avoid_relay_data);
-
-        let mut flags = global_ctx.get_flags().clone();
-        flags.disable_relay_data = false;
-        global_ctx.set_flags(flags);
-
-        assert!(!global_ctx.get_feature_flags().avoid_relay_data);
-
-        global_ctx.set_avoid_relay_data_preference(true);
-
-        let mut flags = global_ctx.get_flags().clone();
-        flags.disable_relay_data = true;
-        global_ctx.set_flags(flags);
-
-        assert!(global_ctx.get_feature_flags().avoid_relay_data);
-
-        let mut flags = global_ctx.get_flags().clone();
-        flags.disable_relay_data = false;
-        global_ctx.set_flags(flags);
-
-        assert!(global_ctx.get_feature_flags().avoid_relay_data);
     }
 
     #[tokio::test]

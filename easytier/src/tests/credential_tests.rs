@@ -5,7 +5,7 @@
 //! - Credential nodes use X25519 keypairs to authenticate without network_secret
 //! - Credentials can be revoked and propagate across the network
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use crate::{
     common::{
@@ -67,12 +67,11 @@ fn generate_credential_with_options(
 }
 
 async fn set_avoid_relay_data(inst: &Instance, avoid_relay_data: bool) {
-    inst.get_global_ctx()
-        .set_avoid_relay_data_preference(avoid_relay_data);
+    let mut snapshot =
+        crate::instance::composition::runtime_instance_config(&inst.get_global_ctx()).peer;
+    Arc::make_mut(&mut snapshot).avoid_relay_data_preference = avoid_relay_data;
     inst.get_core_instance()
-        .update_peer_runtime_snapshot(
-            crate::instance::composition::runtime_instance_config(&inst.get_global_ctx()).peer,
-        )
+        .update_peer_runtime_snapshot(snapshot)
         .await;
 }
 
