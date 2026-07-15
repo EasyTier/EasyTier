@@ -1,13 +1,13 @@
 use std::sync::{Arc, Weak};
 
+use easytier_core::connectivity::manual::ManualConnectorStatus;
+#[cfg(test)]
 use easytier_core::connectivity::manual::{
-    ManualConnectorManager as CoreManualConnectorManager, ManualConnectorStatus,
-    discovery::CoreManualEndpointResolver,
+    ManualConnectorManager as CoreManualConnectorManager, discovery::CoreManualEndpointResolver,
 };
 
 use crate::{
-    common::{error::Error, global_ctx::ArcGlobalCtx},
-    peers::peer_manager::PeerManager,
+    common::error::Error,
     proto::{
         api::instance::{
             Connector, ConnectorManageRpc, ConnectorStatus, ListConnectorRequest,
@@ -18,17 +18,24 @@ use crate::{
     utils::weak_upgrade,
 };
 
+#[cfg(test)]
+use crate::{common::global_ctx::ArcGlobalCtx, peers::peer_manager::PeerManager};
+
+use super::core_instance::RuntimeCoreInstance;
+#[cfg(test)]
 use super::{
     core_instance::{
-        RuntimeCoreInstance, runtime_core_instance_adapters_with_ring_registry,
-        runtime_endpoint_discovery_config, runtime_manual_options,
+        runtime_core_instance_adapters_with_ring_registry, runtime_endpoint_discovery_config,
+        runtime_manual_options,
     },
     runtime::RuntimeConnectorHost,
 };
 
+#[cfg(test)]
 type CoreConnectorManager = CoreManualConnectorManager<RuntimeConnectorHost>;
 
 enum PortableManualOwner {
+    #[cfg(test)]
     Standalone(Arc<CoreConnectorManager>),
     Instance(Arc<RuntimeCoreInstance>),
 }
@@ -36,6 +43,7 @@ enum PortableManualOwner {
 impl PortableManualOwner {
     fn add_connector(&self, url: url::Url) -> anyhow::Result<()> {
         match self {
+            #[cfg(test)]
             Self::Standalone(manager) => manager.add_connector(url),
             Self::Instance(instance) => instance.add_connector(url),
         }
@@ -43,6 +51,7 @@ impl PortableManualOwner {
 
     fn remove_connector(&self, url: &url::Url) -> bool {
         match self {
+            #[cfg(test)]
             Self::Standalone(manager) => manager.remove_connector(url),
             Self::Instance(instance) => instance.remove_connector(url),
         }
@@ -50,6 +59,7 @@ impl PortableManualOwner {
 
     fn clear_connectors(&self) {
         match self {
+            #[cfg(test)]
             Self::Standalone(manager) => manager.clear_connectors(),
             Self::Instance(instance) => instance.clear_connectors(),
         }
@@ -57,6 +67,7 @@ impl PortableManualOwner {
 
     fn list_connectors(&self) -> Vec<easytier_core::connectivity::manual::ManualConnectorSnapshot> {
         match self {
+            #[cfg(test)]
             Self::Standalone(manager) => manager.list_connectors(),
             Self::Instance(instance) => instance.list_connectors(),
         }
@@ -68,6 +79,7 @@ pub struct ManualConnectorManager {
 }
 
 impl ManualConnectorManager {
+    #[cfg(test)]
     pub fn new(global_ctx: ArcGlobalCtx, peer_manager: Arc<PeerManager>) -> Self {
         let adapters = runtime_core_instance_adapters_with_ring_registry(
             global_ctx.clone(),

@@ -67,6 +67,7 @@ pub mod peer_conn {
     }
 }
 pub(crate) mod context;
+#[cfg(test)]
 pub mod peer_manager;
 pub mod relay_peer_map {
     pub use easytier_core::peers::relay_peer_map::{

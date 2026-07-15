@@ -2,6 +2,8 @@ use std::{sync::Arc, time::Duration};
 
 #[cfg(feature = "smoltcp")]
 use easytier_core::proxy::gateway::{GatewayEvent, GatewayEventSink};
+#[cfg(test)]
+use easytier_core::proxy::wrapped_transport::NoWrappedTransportEngineFactory;
 #[cfg(feature = "wireguard")]
 use easytier_core::vpn_portal::VpnPortalHost;
 use easytier_core::{
@@ -16,10 +18,10 @@ use easytier_core::{
         CoreInstance, CoreInstanceAdapters, CoreInstanceConfig, PacketSink,
         PortableCoreInstanceConfig,
     },
+    peers::peer_manager::RouteAlgoType,
     proxy::{
-        ProxyRuntimeConfig,
-        gateway::GatewayRuntimeConfig,
-        wrapped_transport::{NoWrappedTransportEngineFactory, WrappedTransportEngineFactory},
+        ProxyRuntimeConfig, gateway::GatewayRuntimeConfig,
+        wrapped_transport::WrappedTransportEngineFactory,
     },
     runtime_config::{CoreInstanceRuntimeConfig, CoreRuntimeConfig},
     socket::{
@@ -51,16 +53,16 @@ use crate::{
     instance::public_ipv6_provider::{
         runtime_public_ipv6_provider_config, runtime_public_ipv6_provider_host,
     },
-    peers::{
-        context::{
-            initialize_runtime_peer_host_state, runtime_peer_manager_config,
-            runtime_peer_manager_host_adapters,
-        },
-        peer_manager::{PeerManager, RouteAlgoType},
+    peers::context::{
+        initialize_runtime_peer_host_state, runtime_peer_manager_config,
+        runtime_peer_manager_host_adapters,
     },
     tunnel::IpScheme,
     use_global_var,
 };
+
+#[cfg(test)]
+use crate::peers::peer_manager::PeerManager;
 
 use super::{
     protocol::{runtime_client_protocol_upgrader, runtime_server_protocol_upgrader},
@@ -331,6 +333,7 @@ pub(crate) fn runtime_core_instance_adapters_with_ring_registry(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn build_runtime_core_instance(
     global_ctx: ArcGlobalCtx,
     peer_manager: Arc<PeerManager>,
@@ -343,6 +346,7 @@ pub(crate) fn build_runtime_core_instance(
     .map(|(instance, ())| instance)
 }
 
+#[cfg(test)]
 pub(crate) fn build_runtime_core_instance_with_transport_factory<F>(
     global_ctx: ArcGlobalCtx,
     peer_manager: Arc<PeerManager>,
@@ -359,6 +363,7 @@ where
     )
 }
 
+#[cfg(test)]
 pub(crate) fn build_runtime_core_instance_with_transport_factory_and_ring_registry<F>(
     global_ctx: ArcGlobalCtx,
     peer_manager: Arc<PeerManager>,
