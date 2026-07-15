@@ -7,54 +7,17 @@ connected to any node in the local network.
 */
 use std::sync::Arc;
 
-use easytier_core::connectivity::direct::DirectConnectorRpcHandler;
 use easytier_core::peers::context::TrustedKeySource;
 use easytier_core::peers::foreign_network_manager as core_foreign_network_manager;
 
 #[cfg(test)]
 use crate::common::global_ctx::NetworkIdentity;
-use crate::{
-    common::global_ctx::ArcGlobalCtx,
-    connector::runtime::runtime_foreign_connector_host,
-    proto::{
-        api::instance::{ForeignNetworkEntryPb, PeerInfo, TrustedKeyInfoPb, TrustedKeySourcePb},
-        peer_rpc::DirectConnectorRpcServer,
-    },
+use crate::proto::api::instance::{
+    ForeignNetworkEntryPb, PeerInfo, TrustedKeyInfoPb, TrustedKeySourcePb,
 };
 
 #[cfg(test)]
 use super::create_packet_recv_chan;
-use super::peer_rpc::PeerRpcManager;
-
-pub(super) struct RuntimeForeignNetworkRpcRegistrar {
-    global_ctx: ArcGlobalCtx,
-}
-
-impl RuntimeForeignNetworkRpcRegistrar {
-    pub(super) fn new(global_ctx: ArcGlobalCtx) -> Self {
-        Self { global_ctx }
-    }
-}
-
-impl core_foreign_network_manager::ForeignNetworkRpcRegistrar
-    for RuntimeForeignNetworkRpcRegistrar
-{
-    fn register_peer_rpc_services(
-        &self,
-        peer_rpc: &Arc<PeerRpcManager>,
-        network_name: &str,
-        socket_context: easytier_core::socket::SocketContext,
-    ) {
-        peer_rpc.rpc_server().registry().register(
-            DirectConnectorRpcServer::new(DirectConnectorRpcHandler::new(
-                runtime_foreign_connector_host(self.global_ctx.clone()),
-                socket_context,
-            )),
-            network_name,
-        );
-    }
-}
-
 pub(crate) fn foreign_network_info_to_api(
     info: core_foreign_network_manager::ForeignNetworkEntryInfo,
 ) -> ForeignNetworkEntryPb {

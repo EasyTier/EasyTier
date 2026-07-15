@@ -24,7 +24,10 @@ use url::Url;
 
 use crate::{
     connectivity::{
-        direct::{DirectConnectorHost, DirectConnectorManager, DirectConnectorOptions},
+        direct::{
+            DirectConnectorHost, DirectConnectorManager, DirectConnectorOptions,
+            ForeignDirectConnectorRpcRegistrar,
+        },
         manual::{
             ManualConnectivityEventSink, ManualConnectorManager, ManualConnectorOptions,
             ManualConnectorSnapshot,
@@ -657,6 +660,9 @@ where
         );
         let stun = Self::prepare_stun(&adapters, &config.connectivity);
         let peer_stun: Arc<dyn StunInfoProvider> = stun.clone();
+        let foreign_rpc_registrar = Arc::new(ForeignDirectConnectorRpcRegistrar::new(
+            adapters.host.clone(),
+        ));
         let peer_manager = Arc::new(
             PeerManagerCore::new_portable_with_runtime_config_store_and_host_adapters(
                 config.peer,
@@ -666,6 +672,7 @@ where
                 Arc::new(CoreStunPeerInfoSource(peer_stun)),
                 packet_tx,
                 peer_adapters,
+                foreign_rpc_registrar,
             )?,
         );
         let (mut instance, attachment) = Self::new_with_prepared_stun(

@@ -248,7 +248,6 @@ pub struct PeerManagerHostAdapters {
     pub credential_storage: Option<Arc<dyn CredentialStorage>>,
     pub credential_event_sink: Arc<dyn PeerCredentialEventSink>,
     pub public_ipv6: Option<PeerPublicIpv6HostAdapters>,
-    pub foreign_rpc_registrar: Arc<dyn ForeignNetworkRpcRegistrar>,
 }
 
 /// One coherent public-IPv6 host capability.
@@ -280,7 +279,6 @@ impl Default for PeerManagerHostAdapters {
             credential_storage: None,
             credential_event_sink: Arc::new(()),
             public_ipv6: None,
-            foreign_rpc_registrar: Arc::new(()),
         }
     }
 }
@@ -887,6 +885,7 @@ impl PeerManagerCore {
             stun_info_source,
             nic_channel,
             PeerManagerHostAdapters::default(),
+            Arc::new(()),
         )
     }
 
@@ -899,6 +898,7 @@ impl PeerManagerCore {
         stun_info_source: Arc<dyn PeerStunInfoSource>,
         nic_channel: PacketRecvChan,
         host_adapters: PeerManagerHostAdapters,
+        foreign_rpc_registrar: Arc<dyn ForeignNetworkRpcRegistrar>,
     ) -> anyhow::Result<Self> {
         Self::new_portable_with_host_adapters(
             config,
@@ -908,6 +908,7 @@ impl PeerManagerCore {
             Some(stun_info_source),
             nic_channel,
             host_adapters,
+            foreign_rpc_registrar,
         )
     }
 
@@ -920,6 +921,7 @@ impl PeerManagerCore {
         stun_info_source: Option<Arc<dyn PeerStunInfoSource>>,
         nic_channel: PacketRecvChan,
         host_adapters: PeerManagerHostAdapters,
+        foreign_rpc_registrar: Arc<dyn ForeignNetworkRpcRegistrar>,
     ) -> anyhow::Result<Self> {
         let runtime = &mut config.snapshot.runtime;
         let flags = &config.snapshot.flags;
@@ -1014,7 +1016,6 @@ impl PeerManagerCore {
             credential_storage,
             credential_event_sink,
             public_ipv6,
-            foreign_rpc_registrar,
         } = host_adapters;
         let (public_ipv6_state, public_ipv6_runtime): (
             Arc<dyn PeerPublicIpv6State>,
@@ -3874,6 +3875,7 @@ mod tests {
                 event_sink: events.clone(),
                 ..Default::default()
             },
+            Arc::new(()),
         )
         .unwrap();
 

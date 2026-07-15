@@ -543,6 +543,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn foreign_direct_rpc_preserves_parent_managed_ipv6_addresses() {
+        let host = Arc::new(HostConnectorAdapter::new(
+            HostSocketRuntime::new(),
+            Arc::new(UnsupportedBackend::default()),
+            test_environment_snapshot(),
+            Arc::new(TestEnvironmentServices::default()),
+        ));
+        let handler = DirectConnectorRpcHandler::new_for_foreign_network(
+            host,
+            SocketContext::default().with_socket_mark(Some(7)),
+        );
+
+        let response = handler
+            .get_ip_list(BaseController::default(), GetIpListRequest {})
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.interface_ipv6s,
+            vec!["2001:db8::1".parse::<std::net::Ipv6Addr>().unwrap().into()]
+        );
+        assert_eq!(
+            response.public_ipv6,
+            Some("2001:db8::1".parse::<std::net::Ipv6Addr>().unwrap().into())
+        );
+    }
+
+    #[tokio::test]
     async fn core_builds_udp_hole_punch_packets_and_falls_back_without_source() {
         let runtime = HostSocketRuntime::new();
         let backend = Arc::new(UnsupportedBackend::default());

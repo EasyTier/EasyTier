@@ -1,10 +1,11 @@
 use crate::{
     common::{PeerId, credential_manager::CredentialManager, global_ctx::ArcGlobalCtx},
-    connector::core_instance::runtime_socket_context,
+    connector::{core_instance::runtime_socket_context, runtime::runtime_connector_host},
     host_runtime::native_host_runtime,
     proto::api::instance,
     tunnel::packet_def::compressor_algo_from_pb,
 };
+use easytier_core::connectivity::direct::ForeignDirectConnectorRpcRegistrar;
 use easytier_core::peers::encrypt::{derive_key_128, derive_key_256};
 pub use easytier_core::peers::peer_manager::RouteAlgoType;
 use easytier_core::peers::peer_manager::{DnsAddressResolver, PeerManagerCore};
@@ -26,7 +27,6 @@ use super::{
         build_core_peer_context, initialize_runtime_peer_host_state, runtime_peer_manager_config,
     },
     encrypt::NullCipher,
-    foreign_network_manager::RuntimeForeignNetworkRpcRegistrar,
 };
 
 pub struct PeerManager {
@@ -109,8 +109,9 @@ impl PeerManager {
             .expect("invalid data compress algo, maybe some features not enabled");
         let (runtime_config, peer_context) = build_core_peer_context(&global_ctx, &config);
 
-        let foreign_rpc_registrar =
-            Arc::new(RuntimeForeignNetworkRpcRegistrar::new(global_ctx.clone()));
+        let foreign_rpc_registrar = Arc::new(ForeignDirectConnectorRpcRegistrar::new(
+            runtime_connector_host(global_ctx.clone()),
+        ));
         let build_result = PeerManagerCore::new_with_foreign_rpc_registrar(
             config.route_algo,
             my_peer_id,

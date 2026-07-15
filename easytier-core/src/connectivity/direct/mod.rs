@@ -23,7 +23,10 @@ use crate::{
     },
     hole_punch::udp::{should_background_p2p_with_peer, should_try_p2p_with_peer},
     listener::RunningListenerProvider,
-    peers::{peer_conn::PeerConnId, peer_manager::PeerManagerCore},
+    peers::{
+        foreign_network_manager::ForeignNetworkRpcRegistrar, peer_conn::PeerConnId,
+        peer_manager::PeerManagerCore, peer_rpc::PeerRpcManager,
+    },
     proto::{
         common::Void,
         peer_rpc::{
@@ -66,6 +69,13 @@ const MAX_UDP_HOLE_PUNCH_CONNECTOR_ADDRS: usize = 16;
 pub trait DirectConnectorHost: ManualConnectorHost {
     async fn collect_ip_addrs(&self, context: &SocketContext) -> anyhow::Result<GetIpListResponse>;
 
+    async fn collect_foreign_ip_addrs(
+        &self,
+        context: &SocketContext,
+    ) -> anyhow::Result<GetIpListResponse> {
+        self.collect_ip_addrs(context).await
+    }
+
     fn mapped_listeners(&self) -> Vec<Url>;
 
     fn running_listeners(&self) -> Vec<Url>;
@@ -81,6 +91,14 @@ pub trait DirectConnectorHost: ManualConnectorHost {
         ip: Ipv6Addr,
         context: SocketContext,
     ) -> Option<PreferredIpv6Source>;
+
+    async fn preferred_foreign_ipv6_source(
+        &self,
+        ip: Ipv6Addr,
+        context: SocketContext,
+    ) -> Option<PreferredIpv6Source> {
+        self.preferred_ipv6_source(ip, context).await
+    }
 }
 
 struct HostRunningListenerProvider<H>
@@ -978,6 +996,7 @@ where
     host: Arc<H>,
     running_listeners: Arc<dyn RunningListenerProvider>,
     socket_context: SocketContext,
+    foreign_network: bool,
 }
 
 impl<H> Clone for DirectConnectorRpcHandler<H>
@@ -989,6 +1008,7 @@ where
             host: self.host.clone(),
             running_listeners: self.running_listeners.clone(),
             socket_context: self.socket_context.clone(),
+            foreign_network: self.foreign_network,
         }
     }
 }
@@ -1003,6 +1023,17 @@ where
             host,
             running_listeners,
             socket_context,
+            foreign_network: false,
+        }
+    }
+
+    pub fn new_for_foreign_network(host: Arc<H>, socket_context: SocketContext) -> Self {
+        let running_listeners = Arc::new(HostRunningListenerProvider { host: host.clone() });
+        Self {
+            host,
+            running_listeners,
+            socket_context,
+            foreign_network: true,
         }
     }
 
@@ -1015,7 +1046,46 @@ where
             host,
             running_listeners,
             socket_context,
+            foreign_network: false,
         }
+    }
+}
+
+pub struct ForeignDirectConnectorRpcRegistrar<H>
+where
+    H: DirectConnectorHost,
+{
+    host: Arc<H>,
+}
+
+impl<H> ForeignDirectConnectorRpcRegistrar<H>
+where
+    H: DirectConnectorHost,
+{
+    pub fn new(host: Arc<H>) -> Self {
+        Self { host }
+    }
+}
+
+impl<H> ForeignNetworkRpcRegistrar for ForeignDirectConnectorRpcRegistrar<H>
+where
+    H: DirectConnectorHost,
+{
+    fn register_peer_rpc_services(
+        &self,
+        peer_rpc: &Arc<PeerRpcManager>,
+        network_name: &str,
+        socket_context: SocketContext,
+    ) {
+        peer_rpc.rpc_server().registry().register(
+            GeneratedDirectConnectorRpcServer::new(
+                DirectConnectorRpcHandler::new_for_foreign_network(
+                    self.host.clone(),
+                    socket_context,
+                ),
+            ),
+            network_name,
+        );
     }
 }
 
@@ -1031,7 +1101,13 @@ where
         _: BaseController,
         _: GetIpListRequest,
     ) -> rpc_types::error::Result<GetIpListResponse> {
-        let mut response = self.host.collect_ip_addrs(&self.socket_context).await?;
+        let mut response = if self.foreign_network {
+            self.host
+                .collect_foreign_ip_addrs(&self.socket_context)
+                .await?
+        } else {
+            self.host.collect_ip_addrs(&self.socket_context).await?
+        };
         response.listeners = self
             .host
             .mapped_listeners()
@@ -1039,16 +1115,18 @@ where
             .chain(self.running_listeners.running_listeners())
             .map(Into::into)
             .collect();
-        response
-            .interface_ipv6s
-            .retain(|ip| !self.host.is_easytier_managed_ipv6(&Ipv6Addr::from(*ip)));
-        if response
-            .public_ipv6
-            .as_ref()
-            .map(|ip| Ipv6Addr::from(*ip))
-            .is_some_and(|ip| self.host.is_easytier_managed_ipv6(&ip))
-        {
-            response.public_ipv6 = None;
+        if !self.foreign_network {
+            response
+                .interface_ipv6s
+                .retain(|ip| !self.host.is_easytier_managed_ipv6(&Ipv6Addr::from(*ip)));
+            if response
+                .public_ipv6
+                .as_ref()
+                .map(|ip| Ipv6Addr::from(*ip))
+                .is_some_and(|ip| self.host.is_easytier_managed_ipv6(&ip))
+            {
+                response.public_ipv6 = None;
+            }
         }
         Ok(response)
     }
@@ -1062,9 +1140,15 @@ where
             connector_addrs_from_request(request)?;
         let preferred_source = match preferred_src_ipv6.map(Ipv6Addr::from) {
             Some(ip) => {
-                self.host
-                    .preferred_ipv6_source(ip, self.socket_context.clone())
-                    .await
+                if self.foreign_network {
+                    self.host
+                        .preferred_foreign_ipv6_source(ip, self.socket_context.clone())
+                        .await
+                } else {
+                    self.host
+                        .preferred_ipv6_source(ip, self.socket_context.clone())
+                        .await
+                }
             }
             None => None,
         };

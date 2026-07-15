@@ -40,14 +40,7 @@ use crate::{
 pub(crate) struct RuntimeConnectorHost {
     global_ctx: ArcGlobalCtx,
     runtime: Arc<NativeHostRuntime>,
-    scope: RuntimeConnectorScope,
     foreign_interface_cache: tokio::sync::Mutex<Option<CachedInterfaceAddrs>>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RuntimeConnectorScope {
-    Instance,
-    Foreign,
 }
 
 struct CachedInterfaceAddrs {
@@ -64,11 +57,10 @@ impl CachedInterfaceAddrs {
 }
 
 impl RuntimeConnectorHost {
-    fn new(global_ctx: ArcGlobalCtx, scope: RuntimeConnectorScope) -> Self {
+    fn new(global_ctx: ArcGlobalCtx) -> Self {
         Self {
             global_ctx,
             runtime: native_host_runtime(),
-            scope,
             foreign_interface_cache: tokio::sync::Mutex::new(None),
         }
     }
@@ -90,19 +82,7 @@ impl RuntimeConnectorHost {
 }
 
 pub(crate) fn runtime_connector_host(global_ctx: ArcGlobalCtx) -> Arc<RuntimeConnectorHost> {
-    Arc::new(RuntimeConnectorHost::new(
-        global_ctx,
-        RuntimeConnectorScope::Instance,
-    ))
-}
-
-pub(crate) fn runtime_foreign_connector_host(
-    global_ctx: ArcGlobalCtx,
-) -> Arc<RuntimeConnectorHost> {
-    Arc::new(RuntimeConnectorHost::new(
-        global_ctx,
-        RuntimeConnectorScope::Foreign,
-    ))
+    Arc::new(RuntimeConnectorHost::new(global_ctx))
 }
 
 #[async_trait]
@@ -194,12 +174,18 @@ impl ManualConnectorHost for RuntimeConnectorHost {
 #[async_trait]
 impl DirectConnectorHost for RuntimeConnectorHost {
     async fn collect_ip_addrs(&self, context: &SocketContext) -> anyhow::Result<GetIpListResponse> {
+        let _ = context;
+        Ok(self.global_ctx.get_ip_collector().collect_ip_addrs().await)
+    }
+
+    async fn collect_foreign_ip_addrs(
+        &self,
+        context: &SocketContext,
+    ) -> anyhow::Result<GetIpListResponse> {
         let mut response = self.global_ctx.get_ip_collector().collect_ip_addrs().await;
-        if self.scope == RuntimeConnectorScope::Foreign {
-            let local = self.collect_foreign_interface_addrs(context).await;
-            response.interface_ipv4s = local.interface_ipv4s;
-            response.interface_ipv6s = local.interface_ipv6s;
-        }
+        let local = self.collect_foreign_interface_addrs(context).await;
+        response.interface_ipv4s = local.interface_ipv4s;
+        response.interface_ipv6s = local.interface_ipv6s;
         Ok(response)
     }
 
@@ -220,8 +206,7 @@ impl DirectConnectorHost for RuntimeConnectorHost {
     }
 
     fn is_easytier_managed_ipv6(&self, ip: &Ipv6Addr) -> bool {
-        self.scope == RuntimeConnectorScope::Instance
-            && self.global_ctx.is_ip_easytier_managed_ipv6(ip)
+        self.global_ctx.is_ip_easytier_managed_ipv6(ip)
     }
 
     async fn preferred_ipv6_source(
@@ -231,6 +216,23 @@ impl DirectConnectorHost for RuntimeConnectorHost {
     ) -> Option<PreferredIpv6Source> {
         if self.is_easytier_managed_ipv6(&ip)
             || ip.is_loopback()
+            || ip.is_unspecified()
+            || ip.is_unique_local()
+            || ip.is_unicast_link_local()
+            || ip.is_multicast()
+        {
+            return None;
+        }
+
+        self.runtime.preferred_ipv6_source(ip, context).await
+    }
+
+    async fn preferred_foreign_ipv6_source(
+        &self,
+        ip: Ipv6Addr,
+        context: SocketContext,
+    ) -> Option<PreferredIpv6Source> {
+        if ip.is_loopback()
             || ip.is_unspecified()
             || ip.is_unique_local()
             || ip.is_unicast_link_local()
@@ -262,17 +264,7 @@ mod tests {
         proto::peer_rpc::GetIpListResponse,
     };
 
-    use super::{CachedInterfaceAddrs, runtime_connector_host, runtime_foreign_connector_host};
-
-    #[test]
-    fn foreign_address_view_does_not_inherit_parent_managed_ipv6() {
-        let global_ctx = Arc::new(GlobalCtx::new(TomlConfigLoader::default()));
-        let managed = "2001:db8::1".parse().unwrap();
-        global_ctx.set_public_ipv6_lease(Some("2001:db8::1/64".parse().unwrap()));
-
-        assert!(runtime_connector_host(global_ctx.clone()).is_easytier_managed_ipv6(&managed));
-        assert!(!runtime_foreign_connector_host(global_ctx).is_easytier_managed_ipv6(&managed));
-    }
+    use super::{CachedInterfaceAddrs, runtime_connector_host};
 
     #[test]
     fn foreign_interface_cache_is_keyed_by_netns_and_ttl() {
