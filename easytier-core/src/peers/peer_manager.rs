@@ -552,7 +552,8 @@ fn managed_peer_pipeline_entry(
         PipelineRegistrationGuard {
             active,
             release_filter: Arc::new(move || {
-                release_filter.write().take();
+                let filter = release_filter.write().take();
+                drop(filter);
             }),
         },
     )
@@ -572,7 +573,8 @@ fn managed_nic_pipeline_entry(
         PipelineRegistrationGuard {
             active,
             release_filter: Arc::new(move || {
-                release_filter.write().take();
+                let filter = release_filter.write().take();
+                drop(filter);
             }),
         },
     )
@@ -1634,11 +1636,8 @@ impl PeerManagerCore {
     pub async fn remove_nic_packet_process_pipeline(&self, id: String) -> Result<(), Error> {
         let mut pipelines = self.nic_packet_process_pipeline.write().await;
         if let Some(pos) = pipelines.iter().position(|pipeline| {
-            pipeline
-                .filter
-                .read()
-                .as_ref()
-                .is_some_and(|filter| filter.id() == id)
+            let filter = pipeline.filter.read().clone();
+            filter.is_some_and(|filter| filter.id() == id)
         }) {
             pipelines.remove(pos);
             Ok(())
