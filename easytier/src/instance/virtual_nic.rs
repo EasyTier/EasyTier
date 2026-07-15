@@ -16,15 +16,15 @@ use crate::{
     },
     instance::composition::NativeCoreInstance,
     instance::instance::HostPacketReceiver,
-    tunnel::{
-        StreamItem, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream,
-        common::{FramedWriter, ZCPacketToBytes, reserve_buf},
-    },
+    tunnel::{StreamItem, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream},
 };
 
 use easytier_core::{
     packet::{TAIL_RESERVED_SIZE, ZCPacket, ZCPacketType},
-    tunnel::wrapper::TunnelWrapper,
+    tunnel::{
+        framed::{FramedWriter, ZCPacketToBytes, reserve_buf},
+        wrapper::TunnelWrapper,
+    },
 };
 
 use byteorder::WriteBytesExt as _;

@@ -9,10 +9,7 @@ use crate::socket::{
     udp_src,
 };
 use crate::tunnel::common::bind;
-use crate::tunnel::{
-    TunnelInfo, TunnelUrl,
-    common::{FramedReader, FramedWriter},
-};
+use crate::tunnel::{TunnelInfo, TunnelUrl};
 use anyhow::Context;
 use derivative::Derivative;
 use derive_more::{Deref, DerefMut};
@@ -25,7 +22,10 @@ use easytier_core::{
         UdpBindOptions, UdpSession, UdpSessionAcceptKind, UdpSessionListenRequest,
         UdpSessionProtocol, UdpSessionSocket, parse_quic_initial_dcid,
     },
-    tunnel::wrapper::TunnelWrapper,
+    tunnel::{
+        framed::{FramedReader, FramedWriter},
+        wrapper::TunnelWrapper,
+    },
 };
 use parking_lot::RwLock;
 use quinn::{

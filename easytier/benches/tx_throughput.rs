@@ -10,12 +10,11 @@ use std::{
 
 use bytes::BytesMut;
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use easytier_core::process_runtime::CoreProcessRuntime;
+use easytier_core::{packet::ZCPacket, process_runtime::CoreProcessRuntime};
 
 use easytier::{
     common::config::{ConfigLoader, TomlConfigLoader},
     instance::instance::Instance,
-    tunnel::packet_def::ZCPacket,
 };
 
 const VIRTUAL_IP_A: &str = "10.144.144.1";

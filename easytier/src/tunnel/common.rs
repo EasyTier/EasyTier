@@ -8,10 +8,6 @@ use crate::common::netns::NetNS;
 use tokio::net::{TcpListener, TcpSocket, UdpSocket};
 use tokio_stream::StreamExt;
 
-pub use easytier_core::tunnel::framed::{
-    FramedReader, FramedWriter, TcpZCPacketToBytes, ZCPacketToBytes, reserve_buf,
-};
-
 pub(crate) fn get_interface_name_by_ip(local_ip: &IpAddr) -> Option<String> {
     if local_ip.is_unspecified() || local_ip.is_multicast() {
         return None;
@@ -293,6 +289,8 @@ pub mod tests {
     use crate::tunnel::TunnelError;
     #[cfg(test)]
     use easytier_core::packet::{PEER_MANAGER_HEADER_SIZE, TCP_TUNNEL_HEADER_SIZE};
+    #[cfg(test)]
+    use easytier_core::tunnel::framed::FramedReader;
 
     #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
     #[test]
@@ -372,7 +370,7 @@ pub mod tests {
         buf.put_u32_le((PEER_MANAGER_HEADER_SIZE - 1) as u32);
         buf.resize(TCP_TUNNEL_HEADER_SIZE + PEER_MANAGER_HEADER_SIZE - 1, 0);
 
-        let ret = super::FramedReader::<tokio::io::Empty>::extract_one_packet(&mut buf, 2000);
+        let ret = FramedReader::<tokio::io::Empty>::extract_one_packet(&mut buf, 2000);
 
         assert!(matches!(
             ret,
