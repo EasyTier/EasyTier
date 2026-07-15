@@ -146,15 +146,52 @@ mod tests {
         build_instance(Vec::new(), ring_registry).await
     }
 
-    async fn wait_peer_connected(client: Arc<RuntimeCoreInstance>, peer_id: u32) {
+    async fn wait_peer_connection_ready(
+        client: Arc<RuntimeCoreInstance>,
+        server: Arc<RuntimeCoreInstance>,
+    ) {
+        let client_peer_id = client.peer_id();
+        let server_peer_id = server.peer_id();
         wait_for_condition(
             || {
                 let client = client.clone();
-                async move { client.connected_peers().await.contains(&peer_id) }
+                let server = server.clone();
+                async move {
+                    client.connected_peers().await.contains(&server_peer_id)
+                        && server.connected_peers().await.contains(&client_peer_id)
+                        && client
+                            .route_snapshots()
+                            .await
+                            .iter()
+                            .any(|route| route.peer_id == server_peer_id)
+                        && server
+                            .route_snapshots()
+                            .await
+                            .iter()
+                            .any(|route| route.peer_id == client_peer_id)
+                }
             },
             Duration::from_secs(5),
         )
         .await;
+    }
+
+    async fn wait_connector_connected(manager: &ManualConnectorManager, url: &url::Url) {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if manager.list_connectors().await.iter().any(|connector| {
+                    connector.url.as_ref().is_some_and(|connector_url| {
+                        connector_url.url == url.as_str()
+                            && connector.status == ConnectorStatus::Connected as i32
+                    })
+                }) {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("manual connector should become connected");
     }
 
     async fn peer_snapshot(
@@ -205,7 +242,8 @@ mod tests {
             .unwrap();
 
         let server_peer_id = server.peer_id();
-        wait_peer_connected(client.clone(), server_peer_id).await;
+        wait_peer_connection_ready(client.clone(), server.clone()).await;
+        wait_connector_connected(&connector_manager, &listener_url).await;
         assert!(
             !peer_snapshot(&client, server_peer_id)
                 .await
@@ -234,18 +272,7 @@ mod tests {
         )
         .await;
 
-        assert!(
-            connector_manager
-                .list_connectors()
-                .await
-                .iter()
-                .any(|connector| {
-                    connector.url.as_ref().is_some_and(|url| {
-                        url.url == listener_url.as_str()
-                            && connector.status == ConnectorStatus::Connected as i32
-                    })
-                })
-        );
+        wait_connector_connected(&connector_manager, &listener_url).await;
         connector_manager
             .remove_connector(listener_url.clone())
             .await
@@ -309,7 +336,8 @@ mod tests {
             .unwrap();
 
         let server_peer_id = server.peer_id();
-        wait_peer_connected(client.clone(), server_peer_id).await;
+        wait_peer_connection_ready(client.clone(), server.clone()).await;
+        wait_connector_connected(&connector_manager, &listener_url).await;
         assert!(
             !peer_snapshot(&client, server_peer_id)
                 .await
@@ -344,7 +372,8 @@ mod tests {
             .unwrap();
 
         let server_peer_id = server.peer_id();
-        wait_peer_connected(client.clone(), server_peer_id).await;
+        wait_peer_connection_ready(client.clone(), server.clone()).await;
+        wait_connector_connected(&connector_manager, &listener_url).await;
         assert!(
             !peer_snapshot(&client, server_peer_id)
                 .await
@@ -392,7 +421,8 @@ mod tests {
             .unwrap();
 
         let server_peer_id = server.peer_id();
-        wait_peer_connected(client.clone(), server_peer_id).await;
+        wait_peer_connection_ready(client.clone(), server.clone()).await;
+        wait_connector_connected(&connector_manager, &discovery_url).await;
         assert!(
             !peer_snapshot(&client, server_peer_id)
                 .await
@@ -425,7 +455,8 @@ mod tests {
             .unwrap();
 
         let server_peer_id = server.peer_id();
-        wait_peer_connected(client.clone(), server_peer_id).await;
+        wait_peer_connection_ready(client.clone(), server.clone()).await;
+        wait_connector_connected(&connector_manager, &listener_url).await;
         assert!(
             !peer_snapshot(&client, server_peer_id)
                 .await
@@ -453,18 +484,7 @@ mod tests {
         )
         .await;
 
-        assert!(
-            connector_manager
-                .list_connectors()
-                .await
-                .iter()
-                .any(|connector| {
-                    connector.url.as_ref().is_some_and(|url| {
-                        url.url == listener_url.as_str()
-                            && connector.status == ConnectorStatus::Connected as i32
-                    })
-                })
-        );
+        wait_connector_connected(&connector_manager, &listener_url).await;
         connector_manager
             .remove_connector(listener_url.clone())
             .await
