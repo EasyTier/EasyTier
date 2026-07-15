@@ -832,6 +832,7 @@ mod tests {
             instance.acl_whitelist_snapshot().tcp_ports,
             ["80".to_owned()]
         );
+        assert_eq!(instance.acl_reload_count_for_test(), 1);
         let node = instance.node_snapshot().await;
         assert_eq!(node.peer_id, original.peer_id);
         assert_eq!(node.instance_id, original.instance_id);
@@ -851,7 +852,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn active_runtime_update_rejects_invalid_acl_before_publish() {
+    async fn active_runtime_update_skips_unchanged_and_rejects_invalid_acl() {
         let global_ctx = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
             "invalid-active-acl-update".to_owned(),
             String::new(),
@@ -868,6 +869,15 @@ mod tests {
         let instance = Arc::new(instance);
         instance.start().await.unwrap();
         instance.start_network_services(None).await.unwrap();
+
+        let mut unrelated = runtime_instance_config(&global_ctx);
+        Arc::make_mut(&mut unrelated.peer)
+            .runtime
+            .core
+            .node
+            .hostname = Some("accepted".to_owned());
+        instance.update_runtime_config(unrelated).await.unwrap();
+        assert_eq!(instance.acl_reload_count_for_test(), 0);
         let before = instance.node_snapshot().await;
 
         let mut rejected = runtime_instance_config(&global_ctx);
@@ -880,6 +890,7 @@ mod tests {
         assert!(error.to_string().contains("Invalid port number"));
         assert!(!instance.runtime_config_snapshot().dhcp_ipv4);
         assert!(instance.acl_whitelist_snapshot().tcp_ports.is_empty());
+        assert_eq!(instance.acl_reload_count_for_test(), 0);
         assert_eq!(instance.node_snapshot().await.hostname, before.hostname);
         instance.stop().await;
     }

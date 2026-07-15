@@ -558,6 +558,8 @@ where
     runtime_config: CoreRuntimeConfigStore,
     acl_whitelist: RwLock<AclWhitelistSnapshot>,
     initial_acl_loaded: AtomicBool,
+    #[cfg(feature = "test-utils")]
+    acl_reload_count: AtomicUsize,
 }
 
 impl<H> CoreInstance<H>
@@ -987,6 +989,8 @@ where
                 runtime_config,
                 acl_whitelist: RwLock::new(acl_whitelist),
                 initial_acl_loaded: AtomicBool::new(false),
+                #[cfg(feature = "test-utils")]
+                acl_reload_count: AtomicUsize::new(0),
             },
             transport_proxy_attachment,
         ))
@@ -1474,6 +1478,8 @@ where
         let acl = config.build()?;
         self.peer_manager.reload_acl(acl.as_ref());
         *self.acl_whitelist.write() = AclWhitelistSnapshot::from(config);
+        #[cfg(feature = "test-utils")]
+        self.acl_reload_count.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
@@ -1498,9 +1504,10 @@ where
         let refresh_acl_groups = current.peer.peer_group_memberships
             != config.peer.peer_group_memberships
             || current.peer.acl_group_declarations != config.peer.acl_group_declarations;
-        if self.initial_acl_loaded.load(Ordering::Acquire) {
+        let acl_loaded = self.initial_acl_loaded.load(Ordering::Acquire);
+        if acl_loaded && current.services.acl != config.services.acl {
             self.reload_acl_config_inner(&config.services.acl).await?;
-        } else {
+        } else if !acl_loaded {
             *self.acl_whitelist.write() = AclWhitelistSnapshot::from(&config.services.acl);
         }
         self.sync_peer_runtime_state(&config.peer);
@@ -1737,6 +1744,12 @@ where
         address: std::net::Ipv4Addr,
     ) -> Option<std::net::Ipv4Addr> {
         self.proxy_cidr_table.lookup_v4(address)
+    }
+
+    #[cfg(feature = "test-utils")]
+    #[doc(hidden)]
+    pub fn acl_reload_count_for_test(&self) -> usize {
+        self.acl_reload_count.load(Ordering::Relaxed)
     }
 
     pub async fn update_peer_runtime_snapshot(&self, mut snapshot: Arc<PeerRuntimeSnapshot>) {
