@@ -263,6 +263,10 @@ pub(crate) fn build_portable_test_core_instance(
 mod tests {
     use std::sync::Arc;
 
+    #[cfg(feature = "kcp")]
+    use easytier_core::proxy::wrapped_transport::{
+        WrappedTransportConnect, WrappedTransportEngine, WrappedTransportEngineBuild,
+    };
     use easytier_core::{
         instance::{CoreInstanceConfig, PortableCoreInstanceConfig},
         listener::plan::ListenerRuntimeConfig,
@@ -272,7 +276,11 @@ mod tests {
         ipv4::{self, MutableIpv4Packet},
         udp::{self, MutableUdpPacket},
     };
+    #[cfg(feature = "kcp")]
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+    #[cfg(feature = "kcp")]
+    use crate::gateway::kcp_proxy::KcpProxyService;
     use crate::{
         common::global_ctx::{NetworkIdentity, tests::get_mock_global_ctx_with_network},
         instance::config::{
@@ -287,6 +295,164 @@ mod tests {
         tokio::sync::mpsc::Receiver<Vec<u8>>,
     ) {
         tokio::sync::mpsc::channel(16)
+    }
+
+    #[cfg(feature = "kcp")]
+    struct KcpOnlyFactory;
+
+    #[cfg(feature = "kcp")]
+    impl WrappedTransportEngineFactory for KcpOnlyFactory {
+        type Attachment = Arc<KcpProxyService>;
+
+        fn build(self) -> anyhow::Result<WrappedTransportEngineBuild<Self::Attachment>> {
+            let service = Arc::new(KcpProxyService::new());
+            Ok(WrappedTransportEngineBuild {
+                kcp: Some(service.clone()),
+                quic: None,
+                attachment: service,
+            })
+        }
+    }
+
+    #[cfg(feature = "kcp")]
+    fn build_native_kcp_test_instance(
+        global_ctx: ArcGlobalCtx,
+        packet_sink: tokio::sync::mpsc::Sender<Vec<u8>>,
+        listeners: Option<ListenerRuntimeConfig>,
+    ) -> anyhow::Result<(Arc<NativeCoreInstance>, Arc<KcpProxyService>)> {
+        let mut adapters = runtime_core_instance_adapters_with_process_runtime(
+            global_ctx.clone(),
+            CoreProcessRuntime::new(),
+        );
+        adapters.proxy_cidr_monitor = None;
+
+        let mut connectivity = runtime_connectivity_config(&global_ctx);
+        connectivity.listeners = listeners;
+        connectivity.startup_plan.gateway = false;
+        connectivity.stun.udp_servers.clear();
+        connectivity.stun.tcp_servers.clear();
+        connectivity.stun.udp_v6_servers.clear();
+        connectivity.manual = Default::default();
+        connectivity.direct = runtime_direct_options(&global_ctx, true);
+
+        let (instance, service) =
+            NativeCoreInstance::new_portable_with_peer_adapters_and_transport_factory(
+                adapters,
+                runtime_peer_manager_host_adapters(&global_ctx),
+                PortableCoreInstanceConfig {
+                    peer: runtime_peer_manager_config(&global_ctx, RouteAlgoType::Ospf),
+                    connectivity,
+                },
+                Arc::new(packet_sink),
+                KcpOnlyFactory,
+            )?;
+        Ok((Arc::new(instance), service))
+    }
+
+    #[cfg(feature = "kcp")]
+    #[tokio::test]
+    async fn native_kcp_engine_round_trips_through_portable_cores() {
+        tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            const REQUEST: &[u8] = b"native-kcp-request";
+            const REPLY: &[u8] = b"native-kcp-reply";
+
+            let global_a = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
+                "native-kcp-round-trip".to_owned(),
+                "shared-secret".to_owned(),
+            )));
+            let global_b = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
+                "native-kcp-round-trip".to_owned(),
+                "shared-secret".to_owned(),
+            )));
+            global_a.set_ipv4(Some("10.250.0.1/24".parse().unwrap()));
+            global_b.set_ipv4(Some("10.250.0.2/24".parse().unwrap()));
+
+            let mut flags_a = global_a.get_flags();
+            flags_a.enable_kcp_proxy = true;
+            flags_a.disable_kcp_input = true;
+            flags_a.disable_tcp_hole_punching = true;
+            flags_a.disable_udp_hole_punching = true;
+            flags_a.disable_sym_hole_punching = true;
+            flags_a.disable_upnp = true;
+            global_a.set_flags(flags_a);
+
+            let mut flags_b = global_b.get_flags();
+            flags_b.enable_kcp_proxy = false;
+            flags_b.disable_kcp_input = false;
+            flags_b.disable_tcp_hole_punching = true;
+            flags_b.disable_udp_hole_punching = true;
+            flags_b.disable_sym_hole_punching = true;
+            flags_b.disable_upnp = true;
+            global_b.set_flags(flags_b);
+
+            let (packet_sink_a, _packet_receiver_a) = create_host_packet_channel();
+            let (packet_sink_b, _packet_receiver_b) = create_host_packet_channel();
+            let (instance_a, kcp_a) = build_native_kcp_test_instance(
+                global_a.clone(),
+                packet_sink_a,
+                Some(ListenerRuntimeConfig::new(
+                    vec!["tcp://127.0.0.1:0".parse().unwrap()],
+                    false,
+                    runtime_socket_context(&global_a),
+                )),
+            )
+            .unwrap();
+            let (instance_b, _kcp_b) =
+                build_native_kcp_test_instance(global_b, packet_sink_b, None).unwrap();
+
+            let (start_a, start_b) = tokio::join!(instance_a.start(), instance_b.start());
+            start_a.unwrap();
+            start_b.unwrap();
+            let (ready_a, ready_b) = tokio::join!(
+                instance_a.start_after_host_ready(None),
+                instance_b.start_after_host_ready(None)
+            );
+            ready_a.unwrap();
+            ready_b.unwrap();
+
+            let listener = instance_a.running_listeners().pop().unwrap();
+            instance_b.add_connector(listener).unwrap();
+            let peer_a_id = instance_a.peer_id();
+            let peer_b_id = instance_b.peer_id();
+            loop {
+                let a_peers = instance_a.connected_peers().await;
+                let b_peers = instance_b.connected_peers().await;
+                if a_peers.contains(&peer_b_id) && b_peers.contains(&peer_a_id) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+
+            let echo_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let echo_addr = echo_listener.local_addr().unwrap();
+            let responder = tokio::spawn(async move {
+                let (mut socket, _) = echo_listener.accept().await.unwrap();
+                let mut request = [0; REQUEST.len()];
+                socket.read_exact(&mut request).await.unwrap();
+                assert_eq!(&request, REQUEST);
+                socket.write_all(REPLY).await.unwrap();
+            });
+
+            let mut stream = kcp_a
+                .connect_source(WrappedTransportConnect {
+                    my_peer_id: peer_a_id,
+                    dst_peer_id: peer_b_id,
+                    src: "10.250.0.1:40000".parse().unwrap(),
+                    dst: echo_addr,
+                })
+                .await
+                .unwrap();
+            stream.write_all(REQUEST).await.unwrap();
+            let mut reply = [0; REPLY.len()];
+            stream.read_exact(&mut reply).await.unwrap();
+            assert_eq!(&reply, REPLY);
+            responder.await.unwrap();
+
+            instance_b.stop().await;
+            instance_a.stop().await;
+        })
+        .await
+        .expect("native KCP round trip timed out");
     }
 
     #[tokio::test]
