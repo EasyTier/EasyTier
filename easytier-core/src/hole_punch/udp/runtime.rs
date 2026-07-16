@@ -5,6 +5,8 @@ use std::{
 
 use async_trait::async_trait;
 
+use super::port_mapping::UdpPortMappingLease;
+
 use crate::{
     connectivity::{
         protocol::ClientProtocolUpgrader,
@@ -68,10 +70,6 @@ fn udp_url(addr: SocketAddr) -> url::Url {
 
 pub trait UdpPunchConnCounter: Send + Sync {
     fn get(&self) -> Option<u32>;
-}
-
-pub trait UdpPortMappingLease: Send + Sync + std::fmt::Debug {
-    fn public_addr_resolved(&self, _mapped_addr: SocketAddr) {}
 }
 
 pub struct UdpPunchListener<S> {

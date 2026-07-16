@@ -43,6 +43,7 @@ use crate::{
     },
     dhcp::{DhcpIpv4Host, DhcpIpv4RouteSource, DhcpIpv4Service},
     hole_punch::tcp::{TcpHolePunchConnector, TcpHolePunchHost},
+    hole_punch::udp::UdpPortMappingPlatform,
     listener::{
         AcceptedSocketHandler, ListenerEventSink, ListenerEventSinkGroup, ListenerFactory,
         RunningListenerProvider, RunningListenerRegistry, SocketListener,
@@ -99,7 +100,7 @@ use crate::proxy::gateway::{GatewayEventSink, GatewayModule};
 
 use self::{
     public_ipv6_provider::{PublicIpv6ProviderPlatform, PublicIpv6ProviderService},
-    udp_hole_punch::{CoreUdpHolePunchService, UdpHolePunchPlatform},
+    udp_hole_punch::CoreUdpHolePunchService,
 };
 #[cfg(feature = "proxy-packet")]
 use crate::proxy::wrapped_transport::{WrappedTransportKind, WrappedTransportRole};
@@ -430,7 +431,7 @@ where
     pub accepted_tunnel_events: Option<Arc<dyn AcceptedTunnelEventSink>>,
     /// Optional OS port-mapping adapter. STUN-only hole punching remains
     /// available when the host does not provide one.
-    pub udp_hole_punch_platform: Option<Arc<dyn UdpHolePunchPlatform>>,
+    pub udp_hole_punch_platform: Option<Arc<dyn UdpPortMappingPlatform>>,
     #[cfg(feature = "proxy-packet")]
     pub icmp_proxy_host: Option<Arc<dyn IcmpProxyHost>>,
     pub proxy_cidr_monitor: Option<Arc<dyn ProxyCidrMonitorHost>>,
@@ -911,7 +912,7 @@ where
             peer_manager.clone(),
             host.clone(),
             stun.clone(),
-            udp_hole_punch_platform.unwrap_or_else(|| Arc::new(())),
+            udp_hole_punch_platform,
             udp_hole_punch_socket_context,
             protocol.clone(),
         );

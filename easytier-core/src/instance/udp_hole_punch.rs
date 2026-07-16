@@ -15,9 +15,9 @@ use crate::{
     connectivity::{direct::DirectConnectorHost, protocol::ClientProtocolUpgrader},
     hole_punch::udp::{
         ProtocolUdpHolePunchTransportSink, UdpHolePunchConnector, UdpHolePunchPeerSource,
-        UdpHolePunchRuntime, UdpPortMappingLease, UdpPunchAcceptor, UdpPunchCandidate,
+        UdpHolePunchRuntime, UdpPortMappingPlatform, UdpPunchAcceptor, UdpPunchCandidate,
         UdpPunchConnCounter, UdpPunchListener, UdpPunchSocket, UdpResolvedPublicAddr,
-        UdpSymPunchLock,
+        UdpSymPunchLock, start_udp_port_mapping,
     },
     peers::peer_manager::PeerManagerCore,
     proto::peer_rpc::UdpHolePunchRpcServer,
@@ -75,22 +75,9 @@ impl UdpHolePunchPeerSource for PeerManagerCore {
     }
 }
 
-#[async_trait]
-pub trait UdpHolePunchPlatform: Send + Sync + 'static {
-    async fn start_udp_port_mapping(
-        &self,
-        _local_listener: &url::Url,
-    ) -> anyhow::Result<Option<Box<dyn UdpPortMappingLease>>> {
-        Ok(None)
-    }
-}
-
-#[async_trait]
-impl UdpHolePunchPlatform for () {}
-
 async fn resolve_public_addr_with_policy<S>(
     stun: &dyn StunSocketMapper<S>,
-    platform: &dyn UdpHolePunchPlatform,
+    platform: Option<Arc<dyn UdpPortMappingPlatform>>,
     socket: Arc<S>,
     local_listener: &url::Url,
     disable_upnp: bool,
@@ -100,8 +87,8 @@ where
 {
     let port_mapping_lease = if disable_upnp {
         None
-    } else {
-        match platform.start_udp_port_mapping(local_listener).await {
+    } else if let Some(platform) = platform {
+        match start_udp_port_mapping(platform, local_listener).await {
             Ok(lease) => lease,
             Err(error) => {
                 tracing::warn!(
@@ -112,6 +99,8 @@ where
                 None
             }
         }
+    } else {
+        None
     };
 
     let mapped_addr = stun
@@ -179,7 +168,7 @@ where
         peer_manager: Arc<PeerManagerCore>,
         host: Arc<H>,
         stun: Arc<StunProviderSlot<HostUdpSocket<H>>>,
-        platform: Arc<dyn UdpHolePunchPlatform>,
+        platform: Option<Arc<dyn UdpPortMappingPlatform>>,
         socket_context: SocketContext,
         protocol: Arc<dyn ClientProtocolUpgrader<HostTcpSocket<H>>>,
     ) -> Self {
@@ -321,7 +310,7 @@ where
     host: Arc<H>,
     peer_manager: Arc<PeerManagerCore>,
     stun: Arc<dyn StunSocketMapper<HostUdpSocket<H>>>,
-    platform: Arc<dyn UdpHolePunchPlatform>,
+    platform: Option<Arc<dyn UdpPortMappingPlatform>>,
     socket_context: SocketContext,
 }
 
@@ -334,7 +323,7 @@ where
         host: Arc<H>,
         peer_manager: Arc<PeerManagerCore>,
         stun: Arc<dyn StunSocketMapper<HostUdpSocket<H>>>,
-        platform: Arc<dyn UdpHolePunchPlatform>,
+        platform: Option<Arc<dyn UdpPortMappingPlatform>>,
         socket_context: SocketContext,
     ) -> Self {
         Self {
@@ -402,7 +391,7 @@ where
         let local_listener: url::Url = format!("udp://0.0.0.0:{local_port}").parse()?;
         resolve_public_addr_with_policy(
             self.stun.as_ref(),
-            self.platform.as_ref(),
+            self.platform.clone(),
             socket,
             &local_listener,
             self.peer_manager.p2p_policy_flags().disable_upnp,
@@ -599,24 +588,39 @@ mod tests {
     }
 
     #[derive(Debug)]
-    struct MockLease(Arc<LeaseState>);
-
-    impl UdpPortMappingLease for MockLease {
-        fn public_addr_resolved(&self, mapped_addr: SocketAddr) {
-            self.0.resolved.lock().unwrap().push(mapped_addr);
-        }
+    struct MockMapping {
+        state: Arc<LeaseState>,
+        backend: crate::hole_punch::udp::UdpPortMappingBackend,
     }
 
-    impl Drop for MockLease {
-        fn drop(&mut self) {
-            self.0.drops.fetch_add(1, Ordering::SeqCst);
+    #[async_trait]
+    impl crate::hole_punch::udp::ActiveUdpPortMapping for MockMapping {
+        fn backend(&self) -> crate::hole_punch::udp::UdpPortMappingBackend {
+            self.backend
+        }
+
+        fn local_addr(&self) -> SocketAddr {
+            "192.168.1.5:30123".parse().unwrap()
+        }
+
+        fn gateway_external_port(&self) -> u16 {
+            40123
+        }
+
+        async fn renew(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn remove(&self) -> anyhow::Result<()> {
+            self.state.drops.fetch_add(1, Ordering::SeqCst);
+            Ok(())
         }
     }
 
     struct MockPlatform {
         calls: AtomicUsize,
         fail: bool,
-        lease_state: Option<Arc<LeaseState>>,
+        lease_state: Arc<LeaseState>,
     }
 
     impl MockPlatform {
@@ -624,7 +628,7 @@ mod tests {
             Self {
                 calls: AtomicUsize::new(0),
                 fail: true,
-                lease_state: None,
+                lease_state: Arc::default(),
             }
         }
 
@@ -632,25 +636,46 @@ mod tests {
             Self {
                 calls: AtomicUsize::new(0),
                 fail: false,
-                lease_state: Some(lease_state),
+                lease_state,
             }
         }
     }
 
     #[async_trait]
-    impl UdpHolePunchPlatform for MockPlatform {
-        async fn start_udp_port_mapping(
+    impl UdpPortMappingPlatform for MockPlatform {
+        async fn establish_udp_port_mapping(
             &self,
+            backend: crate::hole_punch::udp::UdpPortMappingBackend,
             _local_listener: &url::Url,
-        ) -> anyhow::Result<Option<Box<dyn UdpPortMappingLease>>> {
+        ) -> Result<
+            Box<dyn crate::hole_punch::udp::ActiveUdpPortMapping>,
+            crate::hole_punch::udp::UdpPortMappingAttemptError,
+        > {
             self.calls.fetch_add(1, Ordering::SeqCst);
             if self.fail {
-                anyhow::bail!("mock port-mapping failure");
+                return Err(
+                    crate::hole_punch::udp::UdpPortMappingAttemptError::establishment(
+                        anyhow::anyhow!("mock port-mapping failure"),
+                    ),
+                );
             }
-            Ok(self
-                .lease_state
-                .as_ref()
-                .map(|state| Box::new(MockLease(state.clone())) as Box<dyn UdpPortMappingLease>))
+            Ok(Box::new(MockMapping {
+                state: self.lease_state.clone(),
+                backend,
+            }))
+        }
+
+        fn publish_udp_port_mapping_established(
+            &self,
+            event: crate::hole_punch::udp::UdpPortMappingEstablished,
+        ) {
+            let ip = event.mapped_listener.host_str().unwrap().parse().unwrap();
+            let port = event.mapped_listener.port().unwrap();
+            self.lease_state
+                .resolved
+                .lock()
+                .unwrap()
+                .push(SocketAddr::new(ip, port));
         }
     }
 
@@ -668,27 +693,32 @@ mod tests {
     async fn port_mapping_failure_falls_back_to_stun() {
         let mapped_addr = "198.51.100.8:40123".parse().unwrap();
         let stun = MockStun::succeeds_with(mapped_addr);
-        let platform = MockPlatform::failing();
+        let platform = Arc::new(MockPlatform::failing());
 
-        let resolved =
-            resolve_public_addr_with_policy(&stun, &platform, socket(), &listener_url(), false)
-                .await
-                .unwrap();
+        let resolved = resolve_public_addr_with_policy(
+            &stun,
+            Some(platform.clone()),
+            socket(),
+            &listener_url(),
+            false,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(resolved.mapped_addr, mapped_addr);
         assert!(resolved.port_mapping_lease.is_none());
-        assert_eq!(platform.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(platform.calls.load(Ordering::SeqCst), 2);
         assert_eq!(stun.calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
     async fn stun_failure_releases_mapping_without_notification() {
         let lease_state = Arc::new(LeaseState::default());
-        let platform = MockPlatform::with_lease(lease_state.clone());
+        let platform = Arc::new(MockPlatform::with_lease(lease_state.clone()));
 
         let result = resolve_public_addr_with_policy(
             &MockStun::failing(),
-            &platform,
+            Some(platform),
             socket(),
             &listener_url(),
             false,
@@ -696,6 +726,13 @@ mod tests {
         .await;
 
         assert!(result.is_err());
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while lease_state.drops.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
         assert_eq!(lease_state.drops.load(Ordering::SeqCst), 1);
         assert!(lease_state.resolved.lock().unwrap().is_empty());
     }
@@ -705,19 +742,29 @@ mod tests {
         let mapped_addr = "198.51.100.9:40124".parse().unwrap();
         let stun = MockStun::succeeds_with(mapped_addr);
         let lease_state = Arc::new(LeaseState::default());
-        let platform = MockPlatform::with_lease(lease_state);
+        let platform = Arc::new(MockPlatform::with_lease(lease_state));
 
-        let disabled =
-            resolve_public_addr_with_policy(&stun, &platform, socket(), &listener_url(), true)
-                .await
-                .unwrap();
+        let disabled = resolve_public_addr_with_policy(
+            &stun,
+            Some(platform.clone()),
+            socket(),
+            &listener_url(),
+            true,
+        )
+        .await
+        .unwrap();
         assert!(disabled.port_mapping_lease.is_none());
         assert_eq!(platform.calls.load(Ordering::SeqCst), 0);
 
-        let enabled =
-            resolve_public_addr_with_policy(&stun, &platform, socket(), &listener_url(), false)
-                .await
-                .unwrap();
+        let enabled = resolve_public_addr_with_policy(
+            &stun,
+            Some(platform.clone()),
+            socket(),
+            &listener_url(),
+            false,
+        )
+        .await
+        .unwrap();
         assert!(enabled.port_mapping_lease.is_some());
         assert_eq!(platform.calls.load(Ordering::SeqCst), 1);
     }
@@ -726,11 +773,11 @@ mod tests {
     async fn successful_mapping_is_notified_and_held_with_result() {
         let mapped_addr = "198.51.100.10:40125".parse().unwrap();
         let lease_state = Arc::new(LeaseState::default());
-        let platform = MockPlatform::with_lease(lease_state.clone());
+        let platform = Arc::new(MockPlatform::with_lease(lease_state.clone()));
 
         let resolved = resolve_public_addr_with_policy(
             &MockStun::succeeds_with(mapped_addr),
-            &platform,
+            Some(platform),
             socket(),
             &listener_url(),
             false,
@@ -741,6 +788,13 @@ mod tests {
         assert_eq!(*lease_state.resolved.lock().unwrap(), vec![mapped_addr]);
         assert_eq!(lease_state.drops.load(Ordering::SeqCst), 0);
         drop(resolved);
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while lease_state.drops.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
         assert_eq!(lease_state.drops.load(Ordering::SeqCst), 1);
     }
 
