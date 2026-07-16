@@ -21,9 +21,8 @@ use crate::{
             VirtualTcpListenerFactory, VirtualTcpSocket, VirtualTcpSocketFactory,
         },
         udp::{
-            UdpBindOptions, UdpSession, UdpSessionAcceptKind, UdpSessionControlHandler,
-            UdpSessionListenRequest, UdpSessionSocket, UdpSessionSocketListener,
-            VirtualUdpSocketFactory,
+            UdpBindOptions, UdpSession, UdpSessionAcceptKind, UdpSessionListenRequest,
+            UdpSessionSocket, UdpSessionSocketListener, VirtualUdpSocketFactory,
         },
     },
     tunnel::{Tunnel, TunnelError, tcp::TcpTunnelUpgrader, udp::UdpTunnelUpgrader},
@@ -182,7 +181,7 @@ where
 /// Core-owned raw UDP Tunnel connector over an injected socket factory.
 pub struct UdpTunnelDialer<H>
 where
-    H: VirtualUdpSocketFactory + UdpSessionControlHandler<<H as VirtualUdpSocketFactory>::Socket>,
+    H: VirtualUdpSocketFactory,
 {
     remote_url: Url,
     host: Arc<H>,
@@ -194,7 +193,7 @@ where
 
 impl<H> UdpTunnelDialer<H>
 where
-    H: VirtualUdpSocketFactory + UdpSessionControlHandler<<H as VirtualUdpSocketFactory>::Socket>,
+    H: VirtualUdpSocketFactory,
 {
     pub fn new(remote_url: Url, host: Arc<H>, dns: Arc<dyn DnsResolver>) -> Self {
         Self {
@@ -226,7 +225,7 @@ where
 #[async_trait]
 impl<H> TunnelDialer for UdpTunnelDialer<H>
 where
-    H: VirtualUdpSocketFactory + UdpSessionControlHandler<<H as VirtualUdpSocketFactory>::Socket>,
+    H: VirtualUdpSocketFactory,
 {
     async fn connect(&self) -> anyhow::Result<Box<dyn Tunnel>> {
         if self.remote_url.scheme() != "udp" {
@@ -262,24 +261,18 @@ where
 /// Core-owned raw UDP Tunnel listener over an injected socket factory.
 pub struct UdpTunnelListener<H>
 where
-    H: VirtualUdpSocketFactory + UdpSessionControlHandler<<H as VirtualUdpSocketFactory>::Socket>,
+    H: VirtualUdpSocketFactory,
 {
-    inner: UdpSessionSocketListener<H, H>,
+    inner: UdpSessionSocketListener<H>,
 }
 
 impl<H> UdpTunnelListener<H>
 where
-    H: VirtualUdpSocketFactory + UdpSessionControlHandler<<H as VirtualUdpSocketFactory>::Socket>,
+    H: VirtualUdpSocketFactory,
 {
     pub fn new(local_url: Url, local_addr: SocketAddr, host: Arc<H>) -> Self {
         Self {
-            inner: UdpSessionSocketListener::new_with_control_handler(
-                local_url,
-                local_addr,
-                UdpSessionAcceptKind::EasyTierMux,
-                host.clone(),
-                host,
-            ),
+            inner: UdpSessionSocketListener::new(local_url, local_addr, host),
         }
     }
 
@@ -293,7 +286,6 @@ where
                 local_url,
                 request,
                 UdpSessionAcceptKind::EasyTierMux,
-                host.clone(),
                 host,
             ),
         }
@@ -302,7 +294,7 @@ where
 
 impl<H> fmt::Debug for UdpTunnelListener<H>
 where
-    H: VirtualUdpSocketFactory + UdpSessionControlHandler<<H as VirtualUdpSocketFactory>::Socket>,
+    H: VirtualUdpSocketFactory,
 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -315,7 +307,7 @@ where
 #[async_trait]
 impl<H> SocketListener for UdpTunnelListener<H>
 where
-    H: VirtualUdpSocketFactory + UdpSessionControlHandler<<H as VirtualUdpSocketFactory>::Socket>,
+    H: VirtualUdpSocketFactory,
 {
     type Accepted = Box<dyn Tunnel>;
 

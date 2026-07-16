@@ -5,8 +5,7 @@ use futures::stream::FuturesUnordered;
 use crate::socket::{
     IpVersion,
     udp::{
-        UdpBindOptions, UdpSession, UdpSessionControlHandler, UdpSessionLayer, UdpSessionProtocol,
-        VirtualUdpSocketFactory,
+        UdpBindOptions, UdpSession, UdpSessionLayer, UdpSessionProtocol, VirtualUdpSocketFactory,
     },
 };
 
@@ -51,7 +50,7 @@ pub async fn connect_udp<H>(
     mode: UdpSessionMode,
 ) -> anyhow::Result<ConnectedUdpSession>
 where
-    H: VirtualUdpSocketFactory + UdpSessionControlHandler<<H as VirtualUdpSocketFactory>::Socket>,
+    H: VirtualUdpSocketFactory,
 {
     let ip_version = if remote_addr.is_ipv4() {
         IpVersion::V4
@@ -89,12 +88,10 @@ async fn bind_and_connect<H>(
     mode: UdpSessionMode,
 ) -> anyhow::Result<ConnectedUdpSession>
 where
-    H: VirtualUdpSocketFactory + UdpSessionControlHandler<<H as VirtualUdpSocketFactory>::Socket>,
+    H: VirtualUdpSocketFactory,
 {
     let socket = host.bind_udp(bind).await?;
-    let layer = Arc::new(
-        UdpSessionLayer::new_with_control_handler_and_stun_responder(socket, host.clone(), host),
-    );
+    let layer = Arc::new(UdpSessionLayer::new_with_stun_responder(socket, host));
     let session = match mode {
         UdpSessionMode::EasyTierMux => layer.connect(remote_addr).await?,
         UdpSessionMode::Classified(protocol) => {

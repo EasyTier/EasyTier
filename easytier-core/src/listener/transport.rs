@@ -26,8 +26,8 @@ use crate::{
         dns::DnsResolver,
         tcp::{TcpListenOptions, TcpSocketListener, VirtualTcpListener, VirtualTcpListenerFactory},
         udp::{
-            UdpSession, UdpSessionAcceptKind, UdpSessionControlHandler, UdpSessionListenRequest,
-            UdpSessionSocket, UdpSessionSocketListener, VirtualUdpSocketFactory,
+            UdpSession, UdpSessionAcceptKind, UdpSessionListenRequest, UdpSessionSocket,
+            UdpSessionSocketListener, VirtualUdpSocketFactory,
         },
     },
     tunnel::{Tunnel, ring::RingTunnelRegistry},
@@ -552,21 +552,21 @@ where
 
 struct UdpTransportListener<H, TcpSocket>
 where
-    H: VirtualUdpSocketFactory + UdpSessionControlHandler<H::Socket>,
+    H: VirtualUdpSocketFactory,
 {
     url: Url,
     request: UdpSessionListenRequest,
     accept_kind: UdpSessionAcceptKind,
     host: Arc<H>,
     dns: Arc<dyn DnsResolver>,
-    inner: Option<UdpSessionSocketListener<H, H>>,
+    inner: Option<UdpSessionSocketListener<H>>,
     protocol_admission: Option<ServerProtocolAdmissionController>,
     tcp_socket: PhantomData<fn() -> TcpSocket>,
 }
 
 impl<H, TcpSocket> UdpTransportListener<H, TcpSocket>
 where
-    H: VirtualUdpSocketFactory + UdpSessionControlHandler<H::Socket>,
+    H: VirtualUdpSocketFactory,
 {
     fn new(
         url: Url,
@@ -592,7 +592,7 @@ where
         }
     }
 
-    fn inner(&mut self) -> anyhow::Result<&mut UdpSessionSocketListener<H, H>> {
+    fn inner(&mut self) -> anyhow::Result<&mut UdpSessionSocketListener<H>> {
         self.inner
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("UDP transport listener is not started"))
@@ -601,7 +601,7 @@ where
 
 impl<H, TcpSocket> fmt::Debug for UdpTransportListener<H, TcpSocket>
 where
-    H: VirtualUdpSocketFactory + UdpSessionControlHandler<H::Socket>,
+    H: VirtualUdpSocketFactory,
 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -616,7 +616,7 @@ where
 #[async_trait]
 impl<H, TcpSocket> SocketListener for UdpTransportListener<H, TcpSocket>
 where
-    H: VirtualUdpSocketFactory + UdpSessionControlHandler<H::Socket>,
+    H: VirtualUdpSocketFactory,
     TcpSocket: Send + 'static,
 {
     type Accepted = AcceptedTransport<TcpSocket>;
@@ -644,7 +644,6 @@ where
             self.url.clone(),
             request,
             self.accept_kind,
-            self.host.clone(),
             self.host.clone(),
         );
         inner.listen().await?;
@@ -727,9 +726,7 @@ type HostTransportListenerManager<H> = ListenerManager<
 /// Owns all listeners planned by core, including host-backed external sockets.
 pub(crate) struct CoreListenerRuntime<H>
 where
-    H: VirtualTcpListenerFactory
-        + VirtualUdpSocketFactory
-        + UdpSessionControlHandler<<H as VirtualUdpSocketFactory>::Socket>,
+    H: VirtualTcpListenerFactory + VirtualUdpSocketFactory,
 {
     manager: HostTransportListenerManager<H>,
     plan_failures: Vec<ListenerPlanFailure>,
@@ -738,9 +735,7 @@ where
 
 impl<H> CoreListenerRuntime<H>
 where
-    H: VirtualTcpListenerFactory
-        + VirtualUdpSocketFactory
-        + UdpSessionControlHandler<<H as VirtualUdpSocketFactory>::Socket>,
+    H: VirtualTcpListenerFactory + VirtualUdpSocketFactory,
 {
     #[cfg(test)]
     pub(crate) fn new(
@@ -1135,9 +1130,6 @@ mod tests {
             Ok(socket)
         }
     }
-
-    #[async_trait]
-    impl UdpSessionControlHandler<MockUdpSocket> for MockHost {}
 
     #[derive(Debug, PartialEq, Eq)]
     enum AcceptedEvent {

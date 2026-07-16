@@ -12,7 +12,7 @@ use tokio::{
     task::JoinHandle,
 };
 
-use crate::packet::ZCPacket;
+use crate::{hole_punch::udp::new_hole_punch_packet, packet::ZCPacket};
 
 use super::{
     UDP_SESSION_CONNECT_TIMEOUT, UDP_SESSION_QUEUE_CAPACITY, UDP_SESSION_RESEND_INTERVAL,
@@ -32,16 +32,16 @@ use super::{
         dispatch_payload_to_session, udp_session_registry_entry,
     },
     virtual_socket::{
-        NoopUdpSessionControlHandler, NoopUdpSessionStunResponder, PreferredIpv6Source,
-        UdpSessionControlHandler, UdpSessionStunResponder, UdpSocketRecvMeta, VirtualUdpSocket,
-        VirtualUdpSocketFactory,
+        NoopUdpSessionStunResponder, PreferredIpv6Source, UdpSessionStunResponder,
+        UdpSocketRecvMeta, UdpSocketSendMeta, VirtualUdpSocket, VirtualUdpSocketFactory,
     },
 };
 
+pub(super) const UDP_SESSION_HOLE_PUNCH_PACKET_BODY_LEN: u16 = 32;
+
 #[derive(Debug)]
-pub struct UdpSessionLayer<S, H = NoopUdpSessionControlHandler, R = NoopUdpSessionStunResponder> {
+pub struct UdpSessionLayer<S, R = NoopUdpSessionStunResponder> {
     socket: Arc<S>,
-    _control_handler: Arc<H>,
     _stun_responder: Arc<R>,
     pub(super) sessions: Arc<UdpSessionRegistry>,
     classified_sessions: Arc<ClassifiedUdpSessionRegistry>,
@@ -74,39 +74,16 @@ where
     S: VirtualUdpSocket,
 {
     pub fn new(socket: Arc<S>) -> Self {
-        Self::new_with_control_handler_and_stun_responder(
-            socket,
-            Arc::new(NoopUdpSessionControlHandler),
-            Arc::new(NoopUdpSessionStunResponder),
-        )
+        Self::new_with_stun_responder(socket, Arc::new(NoopUdpSessionStunResponder))
     }
 }
 
-impl<S, H> UdpSessionLayer<S, H, H>
+impl<S, R> UdpSessionLayer<S, R>
 where
     S: VirtualUdpSocket,
-    H: UdpSessionControlHandler<S> + UdpSessionStunResponder<S>,
-{
-    pub fn new_with_control_handler(socket: Arc<S>, control_handler: Arc<H>) -> Self {
-        Self::new_with_control_handler_and_stun_responder(
-            socket,
-            control_handler.clone(),
-            control_handler,
-        )
-    }
-}
-
-impl<S, H, R> UdpSessionLayer<S, H, R>
-where
-    S: VirtualUdpSocket,
-    H: UdpSessionControlHandler<S>,
     R: UdpSessionStunResponder<S>,
 {
-    pub fn new_with_control_handler_and_stun_responder(
-        socket: Arc<S>,
-        control_handler: Arc<H>,
-        stun_responder: Arc<R>,
-    ) -> Self {
+    pub fn new_with_stun_responder(socket: Arc<S>, stun_responder: Arc<R>) -> Self {
         let sessions = Arc::new(DashMap::new());
         let classified_sessions = Arc::new(DashMap::new());
         let classified_accepts = create_classified_udp_session_accepts();
@@ -122,14 +99,12 @@ where
             pending_connects.clone(),
             mux_accepted_tx,
             control_tx,
-            control_handler.clone(),
             stun_responder.clone(),
             session_shutdown_tx.clone(),
         ));
 
         Self {
             socket,
-            _control_handler: control_handler,
             _stun_responder: stun_responder,
             sessions,
             classified_sessions,
@@ -382,7 +357,7 @@ where
     }
 }
 
-impl<S, H, R> Drop for UdpSessionLayer<S, H, R> {
+impl<S, R> Drop for UdpSessionLayer<S, R> {
     fn drop(&mut self) {
         let _ = self.session_shutdown_tx.send(true);
         self.pending_connects.clear();
@@ -461,7 +436,7 @@ fn move_pending_udp_session_sender(
     }
 }
 
-pub(super) async fn udp_session_layer_recv_task<S, H, R>(
+pub(super) async fn udp_session_layer_recv_task<S, R>(
     socket: Arc<S>,
     sessions: Arc<UdpSessionRegistry>,
     classified_sessions: Arc<ClassifiedUdpSessionRegistry>,
@@ -469,16 +444,14 @@ pub(super) async fn udp_session_layer_recv_task<S, H, R>(
     pending_connects: Arc<PendingUdpSessionConnects>,
     mux_accepted: mpsc::Sender<UdpSession>,
     control: mpsc::Sender<UdpSessionLayerControl>,
-    control_handler: Arc<H>,
     stun_responder: Arc<R>,
     session_shutdown_tx: watch::Sender<bool>,
 ) where
     S: VirtualUdpSocket,
-    H: UdpSessionControlHandler<S>,
     R: UdpSessionStunResponder<S>,
 {
     let mut buf = [0u8; 65535];
-    let control_handler_permits = Arc::new(Semaphore::new(UDP_SESSION_QUEUE_CAPACITY));
+    let control_permits = Arc::new(Semaphore::new(UDP_SESSION_QUEUE_CAPACITY));
     loop {
         let (len, remote_addr, recv_meta) = match socket.recv_from_with_meta(&mut buf).await {
             Ok(ret) => ret,
@@ -504,7 +477,7 @@ pub(super) async fn udp_session_layer_recv_task<S, H, R>(
                 spawn_stun_control_handler(
                     socket.clone(),
                     stun_responder.clone(),
-                    control_handler_permits.clone(),
+                    control_permits.clone(),
                     datagram_payload.clone(),
                     remote_addr,
                 );
@@ -542,8 +515,7 @@ pub(super) async fn udp_session_layer_recv_task<S, H, R>(
                     &pending_connects,
                     &mux_accepted,
                     &control,
-                    control_handler.clone(),
-                    control_handler_permits.clone(),
+                    control_permits.clone(),
                     remote_addr,
                     kind,
                     conn_id,
@@ -585,14 +557,13 @@ fn dispatch_existing_classified_udp_datagram(
     }
 }
 
-fn dispatch_easy_tier_udp_datagram<S, H>(
+fn dispatch_easy_tier_udp_datagram<S>(
     socket: Arc<S>,
     sessions: &Arc<UdpSessionRegistry>,
     pending_connects: &Arc<PendingUdpSessionConnects>,
     mux_accepted: &mpsc::Sender<UdpSession>,
     control: &mpsc::Sender<UdpSessionLayerControl>,
-    control_handler: Arc<H>,
-    control_handler_permits: Arc<Semaphore>,
+    control_permits: Arc<Semaphore>,
     remote_addr: SocketAddr,
     kind: EasyTierUdpPacketKind,
     conn_id: u32,
@@ -602,7 +573,6 @@ fn dispatch_easy_tier_udp_datagram<S, H>(
 ) -> bool
 where
     S: VirtualUdpSocket,
-    H: UdpSessionControlHandler<S>,
 {
     match kind {
         EasyTierUdpPacketKind::Data => {
@@ -623,22 +593,12 @@ where
         EasyTierUdpPacketKind::HolePunch => {
             dispatch_hole_punch_packet(pending_connects, remote_addr)
         }
-        EasyTierUdpPacketKind::V4HolePunch => dispatch_v4_hole_punch_control(
-            socket,
-            control_handler,
-            control_handler_permits,
-            control,
-            remote_addr,
-            packet,
-        ),
-        EasyTierUdpPacketKind::V6HolePunch => dispatch_v6_hole_punch_control(
-            socket,
-            control_handler,
-            control_handler_permits,
-            control,
-            remote_addr,
-            packet,
-        ),
+        EasyTierUdpPacketKind::V4HolePunch => {
+            dispatch_v4_hole_punch_control(socket, control_permits, control, remote_addr, packet)
+        }
+        EasyTierUdpPacketKind::V6HolePunch => {
+            dispatch_v6_hole_punch_control(socket, control_permits, control, remote_addr, packet)
+        }
     }
 }
 
@@ -963,15 +923,13 @@ fn spawn_stun_control_handler<S, H>(
     });
 }
 
-fn spawn_v4_hole_punch_control_handler<S, H>(
+fn spawn_v4_hole_punch_control_handler<S>(
     socket: Arc<S>,
-    control_handler: Arc<H>,
     permits: Arc<Semaphore>,
     remote_addr: SocketAddr,
     dst_addr: SocketAddrV4,
 ) where
     S: VirtualUdpSocket,
-    H: UdpSessionControlHandler<S>,
 {
     let Ok(permit) = permits.try_acquire_owned() else {
         tracing::debug!(?remote_addr, ?dst_addr, "udp control handler queue full");
@@ -979,7 +937,15 @@ fn spawn_v4_hole_punch_control_handler<S, H>(
     };
     tokio::spawn(async move {
         let _permit = permit;
-        if let Err(err) = control_handler.send_v4_hole_punch(socket, dst_addr).await {
+        let packet = new_hole_punch_packet(1, UDP_SESSION_HOLE_PUNCH_PACKET_BODY_LEN).into_bytes();
+        if let Err(err) = socket
+            .send_to_with_meta(
+                &packet,
+                SocketAddr::V4(dst_addr),
+                UdpSocketSendMeta::default(),
+            )
+            .await
+        {
             tracing::debug!(
                 ?err,
                 ?remote_addr,
@@ -990,16 +956,14 @@ fn spawn_v4_hole_punch_control_handler<S, H>(
     });
 }
 
-fn spawn_v6_hole_punch_control_handler<S, H>(
+fn spawn_v6_hole_punch_control_handler<S>(
     socket: Arc<S>,
-    control_handler: Arc<H>,
     permits: Arc<Semaphore>,
     remote_addr: SocketAddr,
     dst_addr: SocketAddrV6,
     preferred_src: Option<PreferredIpv6Source>,
 ) where
     S: VirtualUdpSocket,
-    H: UdpSessionControlHandler<S>,
 {
     let Ok(permit) = permits.try_acquire_owned() else {
         tracing::debug!(?remote_addr, ?dst_addr, "udp control handler queue full");
@@ -1007,8 +971,34 @@ fn spawn_v6_hole_punch_control_handler<S, H>(
     };
     tokio::spawn(async move {
         let _permit = permit;
-        if let Err(err) = control_handler
-            .send_v6_hole_punch(socket, dst_addr, preferred_src)
+        let packet = new_hole_punch_packet(1, UDP_SESSION_HOLE_PUNCH_PACKET_BODY_LEN).into_bytes();
+        if let Some(source) = preferred_src {
+            match socket
+                .send_to_with_meta(
+                    &packet,
+                    SocketAddr::V6(dst_addr),
+                    UdpSocketSendMeta {
+                        src_ip: Some(source.ip.into()),
+                        src_ifindex: Some(source.ifindex),
+                    },
+                )
+                .await
+            {
+                Ok(_) => return,
+                Err(error) => tracing::debug!(
+                    ?source,
+                    ?dst_addr,
+                    ?error,
+                    "udp preferred v6 source failed, falling back"
+                ),
+            }
+        }
+        if let Err(err) = socket
+            .send_to_with_meta(
+                &packet,
+                SocketAddr::V6(dst_addr),
+                UdpSocketSendMeta::default(),
+            )
             .await
         {
             tracing::debug!(
@@ -1022,9 +1012,8 @@ fn spawn_v6_hole_punch_control_handler<S, H>(
     });
 }
 
-pub(super) fn dispatch_v4_hole_punch_control<S, H>(
+pub(super) fn dispatch_v4_hole_punch_control<S>(
     socket: Arc<S>,
-    control_handler: Arc<H>,
     permits: Arc<Semaphore>,
     control: &mpsc::Sender<UdpSessionLayerControl>,
     remote_addr: SocketAddr,
@@ -1032,7 +1021,6 @@ pub(super) fn dispatch_v4_hole_punch_control<S, H>(
 ) -> bool
 where
     S: VirtualUdpSocket,
-    H: UdpSessionControlHandler<S>,
 {
     if !remote_addr.ip().is_loopback() {
         tracing::warn!(?remote_addr, "v4 hole punch packet should be from loopback");
@@ -1049,7 +1037,7 @@ where
         tracing::debug!(?remote_addr, "invalid v4 hole punch packet");
         return false;
     };
-    spawn_v4_hole_punch_control_handler(socket, control_handler, permits, remote_addr, dst_addr);
+    spawn_v4_hole_punch_control_handler(socket, permits, remote_addr, dst_addr);
     dispatch_control_packet(
         control,
         UdpSessionLayerControl::V4HolePunch {
@@ -1060,9 +1048,8 @@ where
     true
 }
 
-fn dispatch_v6_hole_punch_control<S, H>(
+fn dispatch_v6_hole_punch_control<S>(
     socket: Arc<S>,
-    control_handler: Arc<H>,
     permits: Arc<Semaphore>,
     control: &mpsc::Sender<UdpSessionLayerControl>,
     remote_addr: SocketAddr,
@@ -1070,7 +1057,6 @@ fn dispatch_v6_hole_punch_control<S, H>(
 ) -> bool
 where
     S: VirtualUdpSocket,
-    H: UdpSessionControlHandler<S>,
 {
     if !remote_addr.ip().is_loopback() {
         tracing::warn!(?remote_addr, "v6 hole punch packet should be from loopback");
@@ -1087,14 +1073,7 @@ where
         tracing::debug!(?remote_addr, "invalid v6 hole punch packet");
         return false;
     };
-    spawn_v6_hole_punch_control_handler(
-        socket,
-        control_handler,
-        permits,
-        remote_addr,
-        dst_addr,
-        preferred_src,
-    );
+    spawn_v6_hole_punch_control_handler(socket, permits, remote_addr, dst_addr, preferred_src);
     dispatch_control_packet(
         control,
         UdpSessionLayerControl::V6HolePunch {
@@ -1141,13 +1120,10 @@ where
         request: UdpSessionConnectRequest,
     ) -> anyhow::Result<Self::Session> {
         let socket = self.factory.bind_udp(request.bind).await?;
-        let layer = Arc::new(
-            UdpSessionLayer::new_with_control_handler_and_stun_responder(
-                socket,
-                Arc::new(NoopUdpSessionControlHandler),
-                self.factory.clone(),
-            ),
-        );
+        let layer = Arc::new(UdpSessionLayer::new_with_stun_responder(
+            socket,
+            self.factory.clone(),
+        ));
         let mut session = layer.open_classified_session(request.protocol, request.remote_addr)?;
         session._cleanup.layer_guard = Some(Box::new(layer));
         Ok(session)

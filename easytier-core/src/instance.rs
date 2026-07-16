@@ -2387,8 +2387,7 @@ mod tests {
                     VirtualTcpSocketFactory,
                 },
                 udp::{
-                    PreferredIpv6Source, UdpBindOptions, UdpSessionControlHandler,
-                    VirtualUdpSocket, VirtualUdpSocketFactory,
+                    PreferredIpv6Source, UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory,
                 },
             },
         };
@@ -2525,9 +2524,6 @@ mod tests {
                 Ok(Arc::new(TestUdpSocket(address)))
             }
         }
-
-        #[async_trait]
-        impl UdpSessionControlHandler<TestUdpSocket> for TestHost {}
 
         #[async_trait]
         impl ManualConnectorHost for TestHost {

@@ -89,9 +89,7 @@ mod tests {
             IpVersion, SocketContext,
             dns::DnsQuery,
             tcp::{TcpConnectOptions, VirtualTcpSocket},
-            udp::{
-                UdpBindOptions, UdpSessionControlHandler, VirtualUdpSocket, VirtualUdpSocketFactory,
-            },
+            udp::{UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory},
         },
     };
 
@@ -171,9 +169,6 @@ mod tests {
             anyhow::bail!("Ring connector must not use UDP")
         }
     }
-
-    #[async_trait]
-    impl UdpSessionControlHandler<TestUdpSocket> for TestHost {}
 
     #[async_trait]
     impl ManualConnectorHost for TestHost {

@@ -11,9 +11,8 @@ use url::Url;
 use crate::listener::{ListenerConnectionCounter, SocketListener};
 
 use super::{
-    NoopUdpSessionControlHandler, UdpBindOptions, UdpSession, UdpSessionControlHandler,
-    UdpSessionLayer, UdpSessionListenRequest, UdpSessionProtocol, UdpSessionStunResponder,
-    VirtualUdpSocket, VirtualUdpSocketFactory,
+    UdpBindOptions, UdpSession, UdpSessionLayer, UdpSessionListenRequest, UdpSessionProtocol,
+    UdpSessionStunResponder, VirtualUdpSocket, VirtualUdpSocketFactory,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -22,13 +21,12 @@ pub enum UdpSessionAcceptKind {
     Classified(UdpSessionProtocol),
 }
 
-pub async fn accept_udp_session<S, H, R>(
-    layer: &Arc<UdpSessionLayer<S, H, R>>,
+pub async fn accept_udp_session<S, R>(
+    layer: &Arc<UdpSessionLayer<S, R>>,
     accept_kind: UdpSessionAcceptKind,
 ) -> io::Result<UdpSession>
 where
     S: VirtualUdpSocket,
-    H: UdpSessionControlHandler<S>,
     R: UdpSessionStunResponder<S>,
 {
     match accept_kind {
@@ -39,54 +37,30 @@ where
     }
 }
 
-type Layer<F, H> = UdpSessionLayer<<F as VirtualUdpSocketFactory>::Socket, H, F>;
+type Layer<F> = UdpSessionLayer<<F as VirtualUdpSocketFactory>::Socket, F>;
 
-pub struct UdpSessionSocketListener<F, H = NoopUdpSessionControlHandler>
+pub struct UdpSessionSocketListener<F>
 where
     F: VirtualUdpSocketFactory,
-    H: UdpSessionControlHandler<F::Socket>,
 {
     url: Url,
     request: UdpSessionListenRequest,
     accept_kind: UdpSessionAcceptKind,
     factory: Arc<F>,
-    control_handler: Arc<H>,
     socket: Option<Arc<F::Socket>>,
-    layer: Option<Arc<Layer<F, H>>>,
-    layer_ref: Arc<StdMutex<Option<Weak<Layer<F, H>>>>>,
+    layer: Option<Arc<Layer<F>>>,
+    layer_ref: Arc<StdMutex<Option<Weak<Layer<F>>>>>,
 }
 
-impl<F> UdpSessionSocketListener<F, NoopUdpSessionControlHandler>
+impl<F> UdpSessionSocketListener<F>
 where
     F: VirtualUdpSocketFactory,
 {
     pub fn new(url: Url, local_addr: SocketAddr, factory: Arc<F>) -> Self {
-        Self::new_with_control_handler(
-            url,
-            local_addr,
-            UdpSessionAcceptKind::EasyTierMux,
-            factory,
-            Arc::new(NoopUdpSessionControlHandler),
-        )
-    }
-}
-
-impl<F, H> UdpSessionSocketListener<F, H>
-where
-    F: VirtualUdpSocketFactory,
-    H: UdpSessionControlHandler<F::Socket>,
-{
-    pub fn new_with_control_handler(
-        url: Url,
-        local_addr: SocketAddr,
-        accept_kind: UdpSessionAcceptKind,
-        factory: Arc<F>,
-        control_handler: Arc<H>,
-    ) -> Self {
         let request = UdpSessionListenRequest::new(
             UdpBindOptions::port_bound_listener(local_addr).with_only_v6(true),
         );
-        Self::new_with_request(url, request, accept_kind, factory, control_handler)
+        Self::new_with_request(url, request, UdpSessionAcceptKind::EasyTierMux, factory)
     }
 
     pub fn new_with_request(
@@ -94,21 +68,19 @@ where
         request: UdpSessionListenRequest,
         accept_kind: UdpSessionAcceptKind,
         factory: Arc<F>,
-        control_handler: Arc<H>,
     ) -> Self {
         Self {
             url,
             request,
             accept_kind,
             factory,
-            control_handler,
             socket: None,
             layer: None,
             layer_ref: Arc::new(StdMutex::new(None)),
         }
     }
 
-    fn layer(&self) -> anyhow::Result<Arc<Layer<F, H>>> {
+    fn layer(&self) -> anyhow::Result<Arc<Layer<F>>> {
         self.layer
             .clone()
             .ok_or_else(|| anyhow::anyhow!("udp session listener is not started"))
@@ -128,10 +100,9 @@ where
     }
 }
 
-impl<F, H> fmt::Debug for UdpSessionSocketListener<F, H>
+impl<F> fmt::Debug for UdpSessionSocketListener<F>
 where
     F: VirtualUdpSocketFactory,
-    H: UdpSessionControlHandler<F::Socket>,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("UdpSessionSocketListener")
@@ -144,10 +115,9 @@ where
 }
 
 #[async_trait]
-impl<F, H> SocketListener for UdpSessionSocketListener<F, H>
+impl<F> SocketListener for UdpSessionSocketListener<F>
 where
     F: VirtualUdpSocketFactory,
-    H: UdpSessionControlHandler<F::Socket>,
 {
     type Accepted = UdpSession;
 
@@ -162,13 +132,10 @@ where
             .set_port(Some(local_addr.port()))
             .map_err(|_| anyhow::anyhow!("failed to update udp listener port for {}", self.url))?;
 
-        let layer = Arc::new(
-            UdpSessionLayer::new_with_control_handler_and_stun_responder(
-                socket.clone(),
-                self.control_handler.clone(),
-                self.factory.clone(),
-            ),
-        );
+        let layer = Arc::new(UdpSessionLayer::new_with_stun_responder(
+            socket.clone(),
+            self.factory.clone(),
+        ));
         if let UdpSessionAcceptKind::Classified(protocol) = self.accept_kind {
             layer.enable_classified_accept(protocol)?;
         }
@@ -194,18 +161,16 @@ where
     }
 }
 
-struct UdpSessionConnectionCounter<F, H>
+struct UdpSessionConnectionCounter<F>
 where
     F: VirtualUdpSocketFactory,
-    H: UdpSessionControlHandler<F::Socket>,
 {
-    layer: Arc<StdMutex<Option<Weak<Layer<F, H>>>>>,
+    layer: Arc<StdMutex<Option<Weak<Layer<F>>>>>,
 }
 
-impl<F, H> fmt::Debug for UdpSessionConnectionCounter<F, H>
+impl<F> fmt::Debug for UdpSessionConnectionCounter<F>
 where
     F: VirtualUdpSocketFactory,
-    H: UdpSessionControlHandler<F::Socket>,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("UdpSessionConnectionCounter")
@@ -214,10 +179,9 @@ where
     }
 }
 
-impl<F, H> ListenerConnectionCounter for UdpSessionConnectionCounter<F, H>
+impl<F> ListenerConnectionCounter for UdpSessionConnectionCounter<F>
 where
     F: VirtualUdpSocketFactory,
-    H: UdpSessionControlHandler<F::Socket>,
 {
     fn get(&self) -> Option<u32> {
         let layer = self.layer.lock().unwrap();

@@ -563,9 +563,8 @@ mod tests {
     use futures::{SinkExt, StreamExt};
 
     use crate::{
-        common::netns::NetNS,
-        socket::udp::{RuntimeUdpSessionControlHandler, new_runtime_udp_session_listener},
-        tunnel::common::tests::_tunnel_echo_server,
+        common::netns::NetNS, host_runtime::native_host_runtime,
+        socket::udp::new_runtime_udp_session_listener, tunnel::common::tests::_tunnel_echo_server,
     };
 
     use super::*;
@@ -587,7 +586,7 @@ mod tests {
             let local_url = listener.local_url();
 
             let connected = connect_udp(
-                Arc::new(RuntimeUdpSessionControlHandler),
+                native_host_runtime(),
                 remote_addr,
                 Vec::new(),
                 UdpBindOptions::direct_connect(),

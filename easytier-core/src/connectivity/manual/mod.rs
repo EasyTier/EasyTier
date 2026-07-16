@@ -30,9 +30,7 @@ use crate::{
         IpVersion, SocketContext,
         dns::{DnsQuery, DnsResolver},
         tcp::{TcpBindOptions, TcpSocketPurpose, VirtualTcpSocketFactory},
-        udp::{
-            UdpBindOptions, UdpSessionControlHandler, UdpSessionProtocol, VirtualUdpSocketFactory,
-        },
+        udp::{UdpBindOptions, UdpSessionProtocol, VirtualUdpSocketFactory},
     },
     tunnel::{SplitTunnel, Tunnel, TunnelError},
 };
@@ -105,11 +103,7 @@ pub struct ManualInterfaceAddrs {
 }
 
 #[async_trait]
-pub trait ManualConnectorHost:
-    VirtualTcpSocketFactory
-    + VirtualUdpSocketFactory
-    + UdpSessionControlHandler<<Self as VirtualUdpSocketFactory>::Socket>
-{
+pub trait ManualConnectorHost: VirtualTcpSocketFactory + VirtualUdpSocketFactory {
     async fn local_addr_for_remote(
         &self,
         remote_addr: SocketAddr,

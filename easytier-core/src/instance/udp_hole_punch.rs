@@ -25,8 +25,8 @@ use crate::{
         IpVersion, SocketContext,
         tcp::VirtualTcpSocketFactory,
         udp::{
-            UdpBindOptions, UdpSessionControlHandler, UdpSessionLayer, UdpSessionSocket,
-            UdpSessionStunResponder, VirtualUdpSocket, VirtualUdpSocketFactory,
+            UdpBindOptions, UdpSessionLayer, UdpSessionSocket, UdpSessionStunResponder,
+            VirtualUdpSocket, VirtualUdpSocketFactory,
         },
     },
     stun::{StunInfoProvider, StunProviderSlot, StunSocketMapper},
@@ -138,7 +138,7 @@ fn managed_local_addr_error(
 
 type HostUdpSocket<H> = <H as VirtualUdpSocketFactory>::Socket;
 type HostTcpSocket<H> = <H as VirtualTcpSocketFactory>::Socket;
-type CoreUdpSessionLayer<H> = UdpSessionLayer<HostUdpSocket<H>, H, H>;
+type CoreUdpSessionLayer<H> = UdpSessionLayer<HostUdpSocket<H>, H>;
 type CoreUdpHolePunchTransportSink<H> =
     ProtocolUdpHolePunchTransportSink<HostTcpSocket<H>, PeerManagerCore>;
 type CoreUdpHolePunchConnector<H> = UdpHolePunchConnector<
@@ -256,12 +256,7 @@ where
 #[async_trait]
 impl<H> UdpPunchAcceptor for CoreUdpPunchAcceptor<H>
 where
-    H: VirtualUdpSocketFactory
-        + UdpSessionControlHandler<HostUdpSocket<H>>
-        + UdpSessionStunResponder<HostUdpSocket<H>>
-        + Send
-        + Sync
-        + 'static,
+    H: VirtualUdpSocketFactory + UdpSessionStunResponder<HostUdpSocket<H>> + Send + Sync + 'static,
     HostUdpSocket<H>: VirtualUdpSocket + 'static,
 {
     async fn accept(&mut self) -> anyhow::Result<UdpPunchSocket> {
@@ -285,12 +280,7 @@ where
 
 impl<H> UdpPunchConnCounter for CoreUdpPunchConnCounter<H>
 where
-    H: VirtualUdpSocketFactory
-        + UdpSessionControlHandler<HostUdpSocket<H>>
-        + UdpSessionStunResponder<HostUdpSocket<H>>
-        + Send
-        + Sync
-        + 'static,
+    H: VirtualUdpSocketFactory + UdpSessionStunResponder<HostUdpSocket<H>> + Send + Sync + 'static,
     HostUdpSocket<H>: VirtualUdpSocket + 'static,
 {
     fn get(&self) -> Option<u32> {
@@ -336,13 +326,10 @@ where
     }
 
     fn session_layer(&self, socket: Arc<HostUdpSocket<H>>) -> Arc<CoreUdpSessionLayer<H>> {
-        Arc::new(
-            UdpSessionLayer::new_with_control_handler_and_stun_responder(
-                socket,
-                self.host.clone(),
-                self.host.clone(),
-            ),
-        )
+        Arc::new(UdpSessionLayer::new_with_stun_responder(
+            socket,
+            self.host.clone(),
+        ))
     }
 
     async fn create_listener_with_mapping(

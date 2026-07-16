@@ -54,35 +54,6 @@ pub trait VirtualUdpSocket: Send + Sync + 'static {
 }
 
 #[async_trait]
-pub trait UdpSessionControlHandler<S>: Send + Sync + 'static
-where
-    S: VirtualUdpSocket,
-{
-    async fn send_v4_hole_punch(
-        &self,
-        _socket: Arc<S>,
-        _dst_addr: SocketAddrV4,
-    ) -> io::Result<usize> {
-        Ok(0)
-    }
-
-    async fn send_v6_hole_punch(
-        &self,
-        _socket: Arc<S>,
-        _dst_addr: SocketAddrV6,
-        _preferred_src: Option<PreferredIpv6Source>,
-    ) -> io::Result<usize> {
-        Ok(0)
-    }
-}
-
-#[derive(Debug, Default)]
-pub struct NoopUdpSessionControlHandler;
-
-#[async_trait]
-impl<S> UdpSessionControlHandler<S> for NoopUdpSessionControlHandler where S: VirtualUdpSocket {}
-
-#[async_trait]
 pub trait UdpSessionStunResponder<S>: Send + Sync + 'static
 where
     S: VirtualUdpSocket,

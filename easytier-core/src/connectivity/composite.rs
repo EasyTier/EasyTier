@@ -2,7 +2,7 @@
 
 use std::{
     future::Future,
-    net::{IpAddr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
+    net::{IpAddr, Ipv6Addr, SocketAddr},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -22,9 +22,7 @@ use crate::{
         tcp::{
             TcpConnectOptions, TcpListenOptions, VirtualTcpListenerFactory, VirtualTcpSocketFactory,
         },
-        udp::{
-            PreferredIpv6Source, UdpBindOptions, UdpSessionControlHandler, VirtualUdpSocketFactory,
-        },
+        udp::{PreferredIpv6Source, UdpBindOptions, VirtualUdpSocketFactory},
     },
 };
 
@@ -205,37 +203,9 @@ where
 }
 
 #[async_trait]
-impl<S, E> UdpSessionControlHandler<S::Socket> for ConnectorHostAdapter<S, E>
-where
-    S: VirtualUdpSocketFactory + UdpSessionControlHandler<S::Socket>,
-    E: Send + Sync + 'static,
-{
-    async fn send_v4_hole_punch(
-        &self,
-        socket: Arc<S::Socket>,
-        dst_addr: SocketAddrV4,
-    ) -> std::io::Result<usize> {
-        self.sockets.send_v4_hole_punch(socket, dst_addr).await
-    }
-
-    async fn send_v6_hole_punch(
-        &self,
-        socket: Arc<S::Socket>,
-        dst_addr: SocketAddrV6,
-        preferred_src: Option<PreferredIpv6Source>,
-    ) -> std::io::Result<usize> {
-        self.sockets
-            .send_v6_hole_punch(socket, dst_addr, preferred_src)
-            .await
-    }
-}
-
-#[async_trait]
 impl<S, E> ManualConnectorHost for ConnectorHostAdapter<S, E>
 where
-    S: ConnectorRuntime
-        + VirtualUdpSocketFactory
-        + UdpSessionControlHandler<<S as VirtualUdpSocketFactory>::Socket>,
+    S: ConnectorRuntime + VirtualUdpSocketFactory,
     E: ConnectorEnvironment,
 {
     async fn local_addr_for_remote(
@@ -278,9 +248,7 @@ where
 #[async_trait]
 impl<S, E> DirectConnectorHost for ConnectorHostAdapter<S, E>
 where
-    S: ConnectorRuntime
-        + VirtualUdpSocketFactory
-        + UdpSessionControlHandler<<S as VirtualUdpSocketFactory>::Socket>,
+    S: ConnectorRuntime + VirtualUdpSocketFactory,
     E: ConnectorEnvironment,
 {
     async fn collect_ip_addrs(&self, context: &SocketContext) -> GetIpListResponse {

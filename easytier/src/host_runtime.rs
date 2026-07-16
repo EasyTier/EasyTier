@@ -13,9 +13,7 @@ use easytier_core::{
             TcpConnectOptions, TcpListenOptions, TcpSocketPurpose, VirtualTcpListenerFactory,
             VirtualTcpSocketFactory,
         },
-        udp::{
-            PreferredIpv6Source, UdpBindOptions, UdpSessionControlHandler, VirtualUdpSocketFactory,
-        },
+        udp::{PreferredIpv6Source, UdpBindOptions, VirtualUdpSocketFactory},
     },
 };
 
@@ -196,28 +194,6 @@ impl VirtualUdpSocketFactory for NativeHostRuntime {
         #[cfg(target_os = "windows")]
         crate::arch::windows::disable_connection_reset(socket.socket().as_ref())?;
         Ok(socket)
-    }
-}
-
-#[async_trait]
-impl UdpSessionControlHandler<RuntimeUdpSocket> for NativeHostRuntime {
-    async fn send_v4_hole_punch(
-        &self,
-        socket: Arc<RuntimeUdpSocket>,
-        dst_addr: SocketAddrV4,
-    ) -> std::io::Result<usize> {
-        self.udp_sockets.send_v4_hole_punch(socket, dst_addr).await
-    }
-
-    async fn send_v6_hole_punch(
-        &self,
-        socket: Arc<RuntimeUdpSocket>,
-        dst_addr: SocketAddrV6,
-        preferred_src: Option<PreferredIpv6Source>,
-    ) -> std::io::Result<usize> {
-        self.udp_sockets
-            .send_v6_hole_punch(socket, dst_addr, preferred_src)
-            .await
     }
 }
 

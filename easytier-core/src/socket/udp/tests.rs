@@ -4,7 +4,7 @@ use std::{
     net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
     sync::{
         Arc, Mutex, Mutex as StdMutex,
-        atomic::{AtomicU16, Ordering},
+        atomic::{AtomicBool, AtomicU16, Ordering},
     },
     time::Duration,
 };
@@ -18,6 +18,7 @@ use stun_codec::{Message, MessageClass, MessageEncoder, rfc5389::methods::BINDIN
 use tokio::sync::{Semaphore, mpsc, watch};
 
 use crate::{
+    hole_punch::udp::hole_punch_packet_tid,
     listener::SocketListener,
     packet::{PacketType, UDP_TUNNEL_HEADER_SIZE, UdpPacketType, ZCPacket, ZCPacketType},
     socket::{IpVersion, NetNamespace, SocketContext, ring::RingSocketSendError},
@@ -303,6 +304,8 @@ struct MockVirtualUdpSocket {
     local_addr: SocketAddr,
     incoming: Mutex<VecDeque<(Vec<u8>, SocketAddr)>>,
     sent: Mutex<Vec<(Vec<u8>, SocketAddr)>>,
+    send_attempts: Mutex<Vec<(Vec<u8>, SocketAddr, UdpSocketSendMeta)>>,
+    reject_preferred_source: AtomicBool,
 }
 
 impl MockVirtualUdpSocket {
@@ -311,11 +314,17 @@ impl MockVirtualUdpSocket {
             local_addr,
             incoming: Mutex::new(incoming.into()),
             sent: Mutex::new(Vec::new()),
+            send_attempts: Mutex::new(Vec::new()),
+            reject_preferred_source: AtomicBool::new(false),
         }
     }
 
     fn sent(&self) -> Vec<(Vec<u8>, SocketAddr)> {
         self.sent.lock().unwrap().clone()
+    }
+
+    fn send_attempts(&self) -> Vec<(Vec<u8>, SocketAddr, UdpSocketSendMeta)> {
+        self.send_attempts.lock().unwrap().clone()
     }
 }
 
@@ -328,6 +337,25 @@ impl VirtualUdpSocket for MockVirtualUdpSocket {
     async fn send_to(&self, data: &[u8], addr: SocketAddr) -> io::Result<usize> {
         self.sent.lock().unwrap().push((data.to_vec(), addr));
         Ok(data.len())
+    }
+
+    async fn send_to_with_meta(
+        &self,
+        data: &[u8],
+        addr: SocketAddr,
+        meta: UdpSocketSendMeta,
+    ) -> io::Result<usize> {
+        self.send_attempts
+            .lock()
+            .unwrap()
+            .push((data.to_vec(), addr, meta));
+        if meta.src_ip.is_some() && self.reject_preferred_source.load(Ordering::Relaxed) {
+            return Err(io::Error::new(
+                io::ErrorKind::AddrNotAvailable,
+                "injected preferred source failure",
+            ));
+        }
+        self.send_to(data, addr).await
     }
 
     async fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
@@ -375,57 +403,13 @@ impl VirtualUdpSocket for FailingSendVirtualUdpSocket {
 }
 
 #[derive(Debug, Default)]
-struct RecordingUdpSessionControlHandler {
-    v4_hole_punches: Mutex<Vec<SocketAddrV4>>,
-    v6_hole_punches: Mutex<Vec<(SocketAddrV6, Option<PreferredIpv6Source>)>>,
-}
-
-impl RecordingUdpSessionControlHandler {
-    fn v4_hole_punches(&self) -> Vec<SocketAddrV4> {
-        self.v4_hole_punches.lock().unwrap().clone()
-    }
-
-    fn v6_hole_punches(&self) -> Vec<(SocketAddrV6, Option<PreferredIpv6Source>)> {
-        self.v6_hole_punches.lock().unwrap().clone()
-    }
-}
-
-#[async_trait]
-impl UdpSessionControlHandler<MockVirtualUdpSocket> for RecordingUdpSessionControlHandler {
-    async fn send_v4_hole_punch(
-        &self,
-        _socket: Arc<MockVirtualUdpSocket>,
-        dst_addr: SocketAddrV4,
-    ) -> io::Result<usize> {
-        self.v4_hole_punches.lock().unwrap().push(dst_addr);
-        Ok(1)
-    }
-
-    async fn send_v6_hole_punch(
-        &self,
-        _socket: Arc<MockVirtualUdpSocket>,
-        dst_addr: SocketAddrV6,
-        preferred_src: Option<PreferredIpv6Source>,
-    ) -> io::Result<usize> {
-        self.v6_hole_punches
-            .lock()
-            .unwrap()
-            .push((dst_addr, preferred_src));
-        Ok(1)
-    }
-}
-
-#[derive(Debug, Default)]
-struct BlockingUdpSessionControlHandler {
+struct BlockingUdpSessionStunResponder {
     started: tokio::sync::Notify,
     release: tokio::sync::Notify,
 }
 
 #[async_trait]
-impl UdpSessionControlHandler<MockVirtualUdpSocket> for BlockingUdpSessionControlHandler {}
-
-#[async_trait]
-impl UdpSessionStunResponder<MockVirtualUdpSocket> for BlockingUdpSessionControlHandler {
+impl UdpSessionStunResponder<MockVirtualUdpSocket> for BlockingUdpSessionStunResponder {
     async fn respond_stun(
         &self,
         _socket: Arc<MockVirtualUdpSocket>,
@@ -496,10 +480,7 @@ impl VirtualUdpSocket for AutoSackVirtualUdpSocket {
 }
 
 #[async_trait]
-impl UdpSessionControlHandler<AutoSackVirtualUdpSocket> for BlockingUdpSessionControlHandler {}
-
-#[async_trait]
-impl UdpSessionStunResponder<AutoSackVirtualUdpSocket> for BlockingUdpSessionControlHandler {
+impl UdpSessionStunResponder<AutoSackVirtualUdpSocket> for BlockingUdpSessionStunResponder {
     async fn respond_stun(
         &self,
         _socket: Arc<AutoSackVirtualUdpSocket>,
@@ -1212,7 +1193,6 @@ async fn udp_session_recv_loop_error_closes_registered_sessions() {
         pending_connects.clone(),
         mux_accepted_tx,
         control_tx,
-        Arc::new(NoopUdpSessionControlHandler),
         Arc::new(NoopUdpSessionStunResponder),
         session_shutdown_tx,
     )
@@ -1385,13 +1365,11 @@ async fn udp_session_layer_routes_stun_and_hole_punch_control_packets() {
             ),
         ],
     ));
-    let control_handler = Arc::new(RecordingUdpSessionControlHandler::default());
+    socket
+        .reject_preferred_source
+        .store(true, Ordering::Relaxed);
     let stun_responder = Arc::new(MockVirtualUdpSocketFactory::new(13000));
-    let layer = UdpSessionLayer::new_with_control_handler_and_stun_responder(
-        socket.clone(),
-        control_handler.clone(),
-        stun_responder.clone(),
-    );
+    let layer = UdpSessionLayer::new_with_stun_responder(socket.clone(), stun_responder.clone());
 
     let mut events = Vec::new();
     for _ in 0..4 {
@@ -1422,14 +1400,18 @@ async fn udp_session_layer_routes_stun_and_hole_punch_control_packets() {
     tokio::time::timeout(Duration::from_secs(1), async {
         loop {
             let responder_sockets = stun_responder.sockets();
+            let send_attempts = socket.send_attempts();
+            let hole_punch_attempts = send_attempts
+                .iter()
+                .filter(|attempt| {
+                    matches!(attempt.1, SocketAddr::V4(addr) if addr == dst_v4)
+                        || matches!(attempt.1, SocketAddr::V6(addr) if addr == dst_v6)
+                })
+                .count();
             if responder_sockets
                 .first()
                 .is_some_and(|socket| !socket.sent().is_empty())
-                && !socket.sent().is_empty()
-                && control_handler.v4_hole_punches().contains(&dst_v4)
-                && control_handler
-                    .v6_hole_punches()
-                    .contains(&(dst_v6, Some(preferred_src)))
+                && hole_punch_attempts == 3
             {
                 return;
             }
@@ -1453,21 +1435,48 @@ async fn udp_session_layer_routes_stun_and_hole_punch_control_packets() {
         change_stun_remote_addr,
         "ChangeRequest STUN responses should be sent through a fresh socket"
     );
-    assert_eq!(
-        socket.sent()[0].1,
-        stun_remote_addr,
-        "normal STUN responses should use the listener socket"
-    );
-    assert!(control_handler.v4_hole_punches().contains(&dst_v4));
+    let attempts = socket
+        .send_attempts()
+        .into_iter()
+        .filter(|attempt| {
+            matches!(attempt.1, SocketAddr::V4(addr) if addr == dst_v4)
+                || matches!(attempt.1, SocketAddr::V6(addr) if addr == dst_v6)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(attempts.len(), 3);
+    assert!(attempts.iter().all(|attempt| {
+        hole_punch_packet_tid(&attempt.0, UDP_SESSION_HOLE_PUNCH_PACKET_BODY_LEN) == Some(1)
+    }));
+    assert!(attempts.iter().any(|attempt| {
+        attempt.1 == SocketAddr::V4(dst_v4) && attempt.2 == UdpSocketSendMeta::default()
+    }));
+    let preferred_meta = UdpSocketSendMeta {
+        src_ip: Some(preferred_src.ip.into()),
+        src_ifindex: Some(preferred_src.ifindex),
+    };
+    let preferred_index = attempts
+        .iter()
+        .position(|attempt| attempt.1 == SocketAddr::V6(dst_v6) && attempt.2 == preferred_meta)
+        .unwrap();
+    let fallback_index = attempts
+        .iter()
+        .position(|attempt| {
+            attempt.1 == SocketAddr::V6(dst_v6) && attempt.2 == UdpSocketSendMeta::default()
+        })
+        .unwrap();
+    assert!(preferred_index < fallback_index);
+    assert_eq!(attempts[preferred_index].0, attempts[fallback_index].0);
     assert!(
-        control_handler
-            .v6_hole_punches()
-            .contains(&(dst_v6, Some(preferred_src)))
+        socket
+            .sent()
+            .iter()
+            .any(|(_, destination)| *destination == stun_remote_addr),
+        "normal STUN responses should use the listener socket"
     );
 }
 
 #[tokio::test]
-async fn udp_session_recv_loop_does_not_wait_for_control_handler() {
+async fn udp_session_recv_loop_does_not_wait_for_stun_responder() {
     let local_addr = SocketAddr::from(([127, 0, 0, 1], 12000));
     let stun_remote_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
     let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12002));
@@ -1497,7 +1506,7 @@ async fn udp_session_recv_loop_does_not_wait_for_control_handler() {
     let classified_accepts = create_classified_udp_session_accepts();
     let (mux_accepted_tx, _mux_accepted_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
     let (control_tx, _control_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
-    let control_handler = Arc::new(BlockingUdpSessionControlHandler::default());
+    let stun_responder = Arc::new(BlockingUdpSessionStunResponder::default());
     let (session_shutdown_tx, _) = watch::channel(false);
     let recv_task = tokio::spawn(udp_session_layer_recv_task(
         socket,
@@ -1507,12 +1516,11 @@ async fn udp_session_recv_loop_does_not_wait_for_control_handler() {
         pending_connects,
         mux_accepted_tx,
         control_tx,
-        control_handler.clone(),
-        control_handler.clone(),
+        stun_responder.clone(),
         session_shutdown_tx,
     ));
 
-    tokio::time::timeout(Duration::from_secs(1), control_handler.started.notified())
+    tokio::time::timeout(Duration::from_secs(1), stun_responder.started.notified())
         .await
         .unwrap();
 
@@ -1523,7 +1531,7 @@ async fn udp_session_recv_loop_does_not_wait_for_control_handler() {
         .unwrap();
     assert_eq!(&buf[..len], b"payload");
 
-    control_handler.release.notify_waiters();
+    stun_responder.release.notify_waiters();
     recv_task.abort();
     let _ = recv_task.await;
 }
@@ -1534,11 +1542,9 @@ async fn local_hole_punch_control_is_dispatched_to_control_queue() {
     let dst_addr = SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 10), 1234);
     let (control_tx, mut control_rx) = mpsc::channel(1);
     let socket = Arc::new(MockVirtualUdpSocket::new(remote_addr, vec![]));
-    let control_handler = Arc::new(RecordingUdpSessionControlHandler::default());
 
     dispatch_v4_hole_punch_control(
         socket,
-        control_handler,
         Arc::new(Semaphore::new(UDP_SESSION_QUEUE_CAPACITY)),
         &control_tx,
         remote_addr,
