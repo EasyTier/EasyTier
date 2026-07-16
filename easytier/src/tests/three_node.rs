@@ -147,7 +147,23 @@ pub fn get_inst_config(
 }
 
 pub async fn init_three_node(proto: &str) -> Vec<Instance> {
-    init_three_node_ex(proto, |cfg| cfg, false).await
+    init_three_node_with_process_runtime(proto, CoreProcessRuntime::new()).await
+}
+
+async fn init_three_node_with_process_runtime(
+    proto: &str,
+    process_runtime: Arc<CoreProcessRuntime>,
+) -> Vec<Instance> {
+    init_three_node_ex_with_inst3(
+        proto,
+        |cfg| cfg,
+        false,
+        "net_c",
+        "10.144.144.3",
+        "fd00::3/64",
+        process_runtime,
+    )
+    .await
 }
 
 async fn init_three_node_ex_with_inst3<F: Fn(TomlConfigLoader) -> TomlConfigLoader>(
@@ -157,9 +173,9 @@ async fn init_three_node_ex_with_inst3<F: Fn(TomlConfigLoader) -> TomlConfigLoad
     inst3_ns: &str,
     inst3_ipv4: &str,
     inst3_ipv6: &str,
+    process_runtime: Arc<CoreProcessRuntime>,
 ) -> Vec<Instance> {
     prepare_linux_namespaces();
-    let process_runtime = CoreProcessRuntime::new();
 
     let mut inst1 = Instance::new_with_process_runtime(
         cfg_cb(get_inst_config(
@@ -186,7 +202,7 @@ async fn init_three_node_ex_with_inst3<F: Fn(TomlConfigLoader) -> TomlConfigLoad
             inst3_ipv4,
             inst3_ipv6,
         )),
-        process_runtime,
+        process_runtime.clone(),
     );
 
     inst1.run().await.unwrap();
@@ -263,6 +279,7 @@ pub async fn init_three_node_ex<F: Fn(TomlConfigLoader) -> TomlConfigLoader>(
         "net_c",
         "10.144.144.3",
         "fd00::3/64",
+        CoreProcessRuntime::new(),
     )
     .await
 }
@@ -271,7 +288,16 @@ async fn init_lazy_p2p_three_node_ex<F: Fn(TomlConfigLoader) -> TomlConfigLoader
     proto: &str,
     cfg_cb: F,
 ) -> Vec<Instance> {
-    init_three_node_ex_with_inst3(proto, cfg_cb, false, "net_e", "10.144.144.3", "fd00::3/64").await
+    init_three_node_ex_with_inst3(
+        proto,
+        cfg_cb,
+        false,
+        "net_e",
+        "10.144.144.3",
+        "fd00::3/64",
+        CoreProcessRuntime::new(),
+    )
+    .await
 }
 
 pub async fn drop_insts(insts: Vec<Instance>) {
@@ -648,7 +674,7 @@ fn get_public_ipv6_config(
 
 async fn init_public_ipv6_two_node(
     client_inst_id: uuid::Uuid,
-) -> (PublicIpv6Lab, Instance, Instance) {
+) -> (PublicIpv6Lab, Arc<CoreProcessRuntime>, Instance, Instance) {
     init_public_ipv6_two_node_with_topology(client_inst_id, PublicIpv6LabTopology::DelegatedPrefix)
         .await
 }
@@ -656,8 +682,9 @@ async fn init_public_ipv6_two_node(
 async fn init_public_ipv6_two_node_with_topology(
     client_inst_id: uuid::Uuid,
     topology: PublicIpv6LabTopology,
-) -> (PublicIpv6Lab, Instance, Instance) {
+) -> (PublicIpv6Lab, Arc<CoreProcessRuntime>, Instance, Instance) {
     let lab = PublicIpv6Lab::setup_with_topology(topology);
+    let process_runtime = CoreProcessRuntime::new();
 
     let provider_cfg = get_public_ipv6_config(
         "provider_public_ipv6",
@@ -677,8 +704,8 @@ async fn init_public_ipv6_two_node_with_topology(
     );
     client_cfg.set_ipv6_public_addr_auto(true);
 
-    let mut provider = Instance::new(provider_cfg);
-    let mut client = Instance::new(client_cfg);
+    let mut provider = Instance::new_with_process_runtime(provider_cfg, process_runtime.clone());
+    let mut client = Instance::new_with_process_runtime(client_cfg, process_runtime.clone());
 
     provider.run().await.unwrap();
     client.run().await.unwrap();
@@ -694,7 +721,7 @@ async fn init_public_ipv6_two_node_with_topology(
     )
     .await;
 
-    (lab, provider, client)
+    (lab, process_runtime, provider, client)
 }
 
 async fn wait_for_public_ipv6_addr(inst: &Instance) -> cidr::Ipv6Inet {
@@ -740,7 +767,7 @@ fn ndp_proxy_exists_in_ns(ns: &str, dev: &str, addr: std::net::Ipv6Addr) -> bool
 #[serial_test::serial]
 pub async fn public_ipv6_auto_addr_end_to_end() {
     let client_id = uuid::Uuid::parse_str("22222222-2222-2222-2222-222222222222").unwrap();
-    let (_lab, provider, client) = init_public_ipv6_two_node(client_id).await;
+    let (_lab, _process_runtime, provider, client) = init_public_ipv6_two_node(client_id).await;
 
     wait_for_condition(
         || async {
@@ -862,7 +889,7 @@ pub async fn public_ipv6_auto_addr_end_to_end() {
 #[serial_test::serial]
 pub async fn public_ipv6_auto_addr_on_link_ndp_proxy_end_to_end() {
     let client_id = uuid::Uuid::parse_str("44444444-4444-4444-4444-444444444444").unwrap();
-    let (_lab, provider, client) =
+    let (_lab, _process_runtime, provider, client) =
         init_public_ipv6_two_node_with_topology(client_id, PublicIpv6LabTopology::OnLinkPrefix)
             .await;
 
@@ -925,7 +952,7 @@ pub async fn public_ipv6_auto_addr_on_link_ndp_proxy_end_to_end() {
 #[serial_test::serial]
 pub async fn public_ipv6_auto_addr_reconnect_reuses_same_address() {
     let client_id = uuid::Uuid::parse_str("33333333-3333-3333-3333-333333333333").unwrap();
-    let (_lab, provider, client) = init_public_ipv6_two_node(client_id).await;
+    let (_lab, process_runtime, provider, client) = init_public_ipv6_two_node(client_id).await;
     let first = wait_for_public_ipv6_addr(&client).await;
 
     drop_insts(vec![client]).await;
@@ -938,7 +965,7 @@ pub async fn public_ipv6_auto_addr_reconnect_reuses_same_address() {
         client_id,
     );
     client_cfg.set_ipv6_public_addr_auto(true);
-    let mut client = Instance::new(client_cfg);
+    let mut client = Instance::new_with_process_runtime(client_cfg, process_runtime.clone());
     client.run().await.unwrap();
     provider.add_connector_url("tcp://10.1.1.2:11010".parse().unwrap());
 
@@ -1450,13 +1477,12 @@ pub async fn data_compress(
 pub async fn proxy_three_node_disconnect_test(#[values("tcp", "wg")] proto: &str) {
     use tokio_util::task::AbortOnDropHandle;
 
-    let insts = init_three_node(proto).await;
-    let mut inst4 = Instance::new(get_inst_config(
-        "inst4",
-        Some("net_d"),
-        "10.144.144.4",
-        "fd00::4/64",
-    ));
+    let process_runtime = CoreProcessRuntime::new();
+    let insts = init_three_node_with_process_runtime(proto, process_runtime.clone()).await;
+    let mut inst4 = Instance::new_with_process_runtime(
+        get_inst_config("inst4", Some("net_d"), "10.144.144.4", "fd00::4/64"),
+        process_runtime.clone(),
+    );
     if proto == "tcp" {
         inst4.add_connector_url("tcp://10.1.2.3:11010".parse().unwrap());
     } else if proto == "wg" {

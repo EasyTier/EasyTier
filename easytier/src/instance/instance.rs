@@ -819,10 +819,6 @@ impl DhcpIpv4Host for RuntimeDhcpIpv4Host {
 }
 
 impl Instance {
-    pub fn new(config: impl ConfigLoader + 'static) -> Self {
-        Self::new_with_process_runtime(config, CoreProcessRuntime::new())
-    }
-
     pub fn new_with_process_runtime(
         config: impl ConfigLoader + 'static,
         process_runtime: Arc<CoreProcessRuntime>,
@@ -1624,6 +1620,7 @@ mod tests {
         instance::instance::{Instance, RuntimeDhcpIpv4Host},
     };
     use easytier_core::dhcp::DhcpIpv4Host as _;
+    use easytier_core::process_runtime::CoreProcessRuntime;
     #[cfg(any(feature = "kcp", feature = "quic"))]
     use easytier_core::proxy::wrapped_transport::{
         WrappedTransportDirections, WrappedTransportEngine as _, WrappedTransportEngineStart,
@@ -1649,7 +1646,7 @@ mod tests {
         let mut flags = config.get_flags();
         flags.no_tun = true;
         config.set_flags(flags);
-        let instance = Instance::new(config);
+        let instance = Instance::new_with_process_runtime(config, CoreProcessRuntime::new());
         let host = RuntimeDhcpIpv4Host::new(&instance);
         let requested = "10.20.30.7/24".parse().unwrap();
 
@@ -1689,7 +1686,10 @@ mod tests {
 
     #[tokio::test]
     async fn config_patches_serialize_host_and_core_acl_state() {
-        let mut instance = Instance::new(TomlConfigLoader::default());
+        let mut instance = Instance::new_with_process_runtime(
+            TomlConfigLoader::default(),
+            CoreProcessRuntime::new(),
+        );
         let patcher_a = instance.get_config_patcher();
         let patcher_b = instance.get_config_patcher();
         let (result_a, result_b) = tokio::join!(
@@ -1710,7 +1710,10 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_acl_patch_leaves_host_and_core_unchanged() {
-        let mut instance = Instance::new(TomlConfigLoader::default());
+        let mut instance = Instance::new_with_process_runtime(
+            TomlConfigLoader::default(),
+            CoreProcessRuntime::new(),
+        );
         let error = instance
             .get_config_patcher()
             .apply_patch(tcp_whitelist_patch("invalid"))
@@ -1730,7 +1733,10 @@ mod tests {
 
     #[tokio::test]
     async fn config_patch_preserves_ordered_partial_commit_semantics() {
-        let mut instance = Instance::new(TomlConfigLoader::default());
+        let mut instance = Instance::new_with_process_runtime(
+            TomlConfigLoader::default(),
+            CoreProcessRuntime::new(),
+        );
         let mut patch = tcp_whitelist_patch("invalid");
         patch.port_forwards.push(PortForwardPatch {
             action: ConfigPatchAction::Add.into(),
@@ -1761,7 +1767,10 @@ mod tests {
 
     #[tokio::test]
     async fn config_patch_rejects_live_changes_after_clear() {
-        let mut instance = Instance::new(TomlConfigLoader::default());
+        let mut instance = Instance::new_with_process_runtime(
+            TomlConfigLoader::default(),
+            CoreProcessRuntime::new(),
+        );
         let patcher = instance.get_config_patcher();
         instance.clear_resources().await;
 
@@ -1775,7 +1784,10 @@ mod tests {
 
     #[tokio::test]
     async fn partial_patch_failure_syncs_committed_proxy_policy_to_core() {
-        let mut instance = Instance::new(TomlConfigLoader::default());
+        let mut instance = Instance::new_with_process_runtime(
+            TomlConfigLoader::default(),
+            CoreProcessRuntime::new(),
+        );
         let patch = InstanceConfigPatch {
             proxy_networks: vec![ProxyNetworkPatch {
                 action: ConfigPatchAction::Add.into(),
@@ -1819,7 +1831,10 @@ mod tests {
 
     #[tokio::test]
     async fn drop_synchronously_rejects_retained_config_patcher() {
-        let instance = Instance::new(TomlConfigLoader::default());
+        let instance = Instance::new_with_process_runtime(
+            TomlConfigLoader::default(),
+            CoreProcessRuntime::new(),
+        );
         let patcher = instance.get_config_patcher();
         drop(instance);
 
@@ -1833,7 +1848,10 @@ mod tests {
     #[cfg(feature = "kcp")]
     #[tokio::test]
     async fn kcp_engine_uses_explicit_source_direction() {
-        let instance = Instance::new(TomlConfigLoader::default());
+        let instance = Instance::new_with_process_runtime(
+            TomlConfigLoader::default(),
+            CoreProcessRuntime::new(),
+        );
         let kcp = instance.transport_proxy.kcp();
         let (datagrams, _datagram_rx) = tokio::sync::mpsc::channel(16);
         kcp.prepare(WrappedTransportEngineStart {
@@ -1857,7 +1875,10 @@ mod tests {
     #[cfg(feature = "quic")]
     #[tokio::test]
     async fn quic_engine_uses_explicit_source_direction() {
-        let instance = Instance::new(TomlConfigLoader::default());
+        let instance = Instance::new_with_process_runtime(
+            TomlConfigLoader::default(),
+            CoreProcessRuntime::new(),
+        );
         let quic = instance.transport_proxy.quic();
         let (datagrams, _datagram_rx) = tokio::sync::mpsc::channel(16);
         quic.prepare(WrappedTransportEngineStart {
@@ -1879,7 +1900,10 @@ mod tests {
 
     #[tokio::test]
     async fn core_credential_commands_share_native_storage() {
-        let instance = Instance::new(TomlConfigLoader::default());
+        let instance = Instance::new_with_process_runtime(
+            TomlConfigLoader::default(),
+            CoreProcessRuntime::new(),
+        );
         let generated = instance
             .core_instance
             .generate_credential(easytier_core::instance::CredentialCreateOptions {

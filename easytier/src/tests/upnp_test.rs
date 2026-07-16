@@ -1390,25 +1390,6 @@ fn create_test_instance_config(
     config
 }
 
-fn create_test_instance(
-    inst_name: &str,
-    netns: Option<&str>,
-    ipv4: &str,
-    ipv6: &str,
-    stun_collector: Box<dyn StunSocketMapper<crate::socket::udp::RuntimeUdpSocket>>,
-    configure_flags: impl FnOnce(&mut crate::common::config::Flags),
-) -> Instance {
-    create_test_instance_with_process_runtime(
-        inst_name,
-        netns,
-        ipv4,
-        ipv6,
-        stun_collector,
-        configure_flags,
-        CoreProcessRuntime::new(),
-    )
-}
-
 fn create_test_instance_with_process_runtime(
     inst_name: &str,
     netns: Option<&str>,

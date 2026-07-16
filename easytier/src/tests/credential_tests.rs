@@ -7,6 +7,8 @@
 
 use std::{sync::Arc, time::Duration};
 
+use easytier_core::process_runtime::CoreProcessRuntime;
+
 use crate::{
     common::{
         config::{ConfigLoader, NetworkIdentity, TomlConfigLoader},
@@ -446,11 +448,16 @@ async fn credential_peers_p2p_to_need_p2p_admin_through_public_server(
     #[case] admin_listener_scheme: &str,
 ) {
     prepare_credential_network();
+    let process_runtime = CoreProcessRuntime::new();
 
-    let mut public_server_inst = Instance::new(create_public_server_config());
+    let mut public_server_inst =
+        Instance::new_with_process_runtime(create_public_server_config(), process_runtime.clone());
     public_server_inst.run().await.unwrap();
 
-    let mut admin_inst = Instance::new(create_need_p2p_admin_config(admin_listener_scheme));
+    let mut admin_inst = Instance::new_with_process_runtime(
+        create_need_p2p_admin_config(admin_listener_scheme),
+        process_runtime.clone(),
+    );
     admin_inst.run().await.unwrap();
     wait_running_listener(
         &admin_inst,
@@ -487,28 +494,34 @@ async fn credential_peers_p2p_to_need_p2p_admin_through_public_server(
 
     wait_foreign_network_count(&public_server_inst, 1, Duration::from_secs(10)).await;
 
-    let mut credential_a_inst = Instance::new(create_public_server_credential_config(
-        &credential_a_secret,
-        "credential-peer-a",
-        "credential-a",
-        "ns_c1",
-        "10.154.0.1",
-        "fd00::1/64",
-        11030,
-        11031,
-        &["10.1.0.0/24"],
-    ));
-    let mut credential_b_inst = Instance::new(create_public_server_credential_config(
-        &credential_b_secret,
-        "credential-peer-b",
-        "credential-b",
-        "ns_c2",
-        "10.154.0.2",
-        "fd00::2/64",
-        11040,
-        11041,
-        &[],
-    ));
+    let mut credential_a_inst = Instance::new_with_process_runtime(
+        create_public_server_credential_config(
+            &credential_a_secret,
+            "credential-peer-a",
+            "credential-a",
+            "ns_c1",
+            "10.154.0.1",
+            "fd00::1/64",
+            11030,
+            11031,
+            &["10.1.0.0/24"],
+        ),
+        process_runtime.clone(),
+    );
+    let mut credential_b_inst = Instance::new_with_process_runtime(
+        create_public_server_credential_config(
+            &credential_b_secret,
+            "credential-peer-b",
+            "credential-b",
+            "ns_c2",
+            "10.154.0.2",
+            "fd00::2/64",
+            11040,
+            11041,
+            &[],
+        ),
+        process_runtime.clone(),
+    );
     credential_a_inst.run().await.unwrap();
     credential_b_inst.run().await.unwrap();
 
@@ -751,10 +764,11 @@ async fn wait_stable_single_visible_peer_on_admins(
 #[serial_test::serial]
 async fn credential_basic_connectivity() {
     prepare_credential_network();
+    let process_runtime = CoreProcessRuntime::new();
 
     // Create admin node
     let admin_config = create_admin_config("admin", Some("ns_adm"), "10.144.144.1", "fd00::1/64");
-    let mut admin_inst = Instance::new(admin_config);
+    let mut admin_inst = Instance::new_with_process_runtime(admin_config, process_runtime.clone());
     admin_inst.run().await.unwrap();
 
     // Create credential node
@@ -766,7 +780,7 @@ async fn credential_basic_connectivity() {
         "fd00::2/64",
     )
     .await;
-    let mut cred_inst = Instance::new(cred_config);
+    let mut cred_inst = Instance::new_with_process_runtime(cred_config, process_runtime.clone());
     cred_inst.run().await.unwrap();
 
     // Credential connects to admin
@@ -845,10 +859,11 @@ async fn credential_basic_connectivity() {
 #[serial_test::serial]
 async fn credential_relay_capability(#[case] allow_relay: bool) {
     prepare_credential_network();
+    let process_runtime = CoreProcessRuntime::new();
 
     // Create admin node
     let admin_config = create_admin_config("admin", Some("ns_adm"), "10.144.144.1", "fd00::1/64");
-    let mut admin_inst = Instance::new(admin_config);
+    let mut admin_inst = Instance::new_with_process_runtime(admin_config, process_runtime.clone());
     // if cred c allow relay, we set admin inst avoid relay (if other same-cost path available, admin will not relay data)
     set_avoid_relay_data(&admin_inst, allow_relay).await;
     admin_inst.run().await.unwrap();
@@ -905,7 +920,8 @@ async fn credential_relay_capability(#[case] allow_relay: bool) {
         config.set_secure_mode(Some(generate_secure_mode_config_with_key(&private)));
         config
     };
-    let mut cred_a_inst = Instance::new(cred_a_config);
+    let mut cred_a_inst =
+        Instance::new_with_process_runtime(cred_a_config, process_runtime.clone());
     cred_a_inst.run().await.unwrap();
 
     // Create credential B on ns_c2
@@ -932,7 +948,8 @@ async fn credential_relay_capability(#[case] allow_relay: bool) {
         config.set_secure_mode(Some(generate_secure_mode_config_with_key(&private)));
         config
     };
-    let mut cred_b_inst = Instance::new(cred_b_config);
+    let mut cred_b_inst =
+        Instance::new_with_process_runtime(cred_b_config, process_runtime.clone());
     cred_b_inst.run().await.unwrap();
 
     // Create credential C on ns_c3 WITH listener (so A and B can connect to it)
@@ -961,7 +978,8 @@ async fn credential_relay_capability(#[case] allow_relay: bool) {
         config.set_secure_mode(Some(generate_secure_mode_config_with_key(&private)));
         config
     };
-    let mut cred_c_inst = Instance::new(cred_c_config);
+    let mut cred_c_inst =
+        Instance::new_with_process_runtime(cred_c_config, process_runtime.clone());
     cred_c_inst.run().await.unwrap();
 
     let cred_a_peer_id = cred_a_inst.peer_id();
@@ -1108,10 +1126,11 @@ async fn credential_relay_capability(#[case] allow_relay: bool) {
 #[serial_test::serial]
 async fn credential_two_credentials_communicate_tcp() {
     prepare_credential_network();
+    let process_runtime = CoreProcessRuntime::new();
 
     // Create admin node
     let admin_config = create_admin_config("admin", Some("ns_adm"), "10.144.144.1", "fd00::1/64");
-    let mut admin_inst = Instance::new(admin_config);
+    let mut admin_inst = Instance::new_with_process_runtime(admin_config, process_runtime.clone());
     admin_inst.run().await.unwrap();
 
     // Create credential1 on ns_c1
@@ -1123,7 +1142,7 @@ async fn credential_two_credentials_communicate_tcp() {
         "fd00::2/64",
     )
     .await;
-    let mut cred1_inst = Instance::new(cred1_config);
+    let mut cred1_inst = Instance::new_with_process_runtime(cred1_config, process_runtime.clone());
     cred1_inst.run().await.unwrap();
 
     // Create credential2 on ns_c2
@@ -1135,7 +1154,7 @@ async fn credential_two_credentials_communicate_tcp() {
         "fd00::3/64",
     )
     .await;
-    let mut cred2_inst = Instance::new(cred2_config);
+    let mut cred2_inst = Instance::new_with_process_runtime(cred2_config, process_runtime.clone());
     cred2_inst.run().await.unwrap();
 
     // Both credentials connect to admin
@@ -1179,10 +1198,11 @@ async fn credential_two_credentials_communicate_tcp() {
 #[serial_test::serial]
 async fn credential_revocation_propagates() {
     prepare_credential_network();
+    let process_runtime = CoreProcessRuntime::new();
 
     // Create admin on ns_adm (10.1.1.1)
     let admin_config = create_admin_config("admin", Some("ns_adm"), "10.144.144.1", "fd00::1/64");
-    let mut admin_inst = Instance::new(admin_config);
+    let mut admin_inst = Instance::new_with_process_runtime(admin_config, process_runtime.clone());
     admin_inst.run().await.unwrap();
 
     // Generate credential on admin
@@ -1221,7 +1241,7 @@ async fn credential_revocation_propagates() {
         config
     };
 
-    let mut cred_inst = Instance::new(cred_config);
+    let mut cred_inst = Instance::new_with_process_runtime(cred_config, process_runtime.clone());
     cred_inst.run().await.unwrap();
 
     // Credential connects to admin
@@ -1298,9 +1318,10 @@ async fn credential_revocation_propagates() {
 #[serial_test::serial]
 async fn credential_non_reusable_allows_only_one_peer() {
     prepare_credential_network();
+    let process_runtime = CoreProcessRuntime::new();
 
     let admin_config = create_admin_config("admin", Some("ns_adm"), "10.144.144.1", "fd00::1/64");
-    let mut admin_inst = Instance::new(admin_config);
+    let mut admin_inst = Instance::new_with_process_runtime(admin_config, process_runtime.clone());
     admin_inst.run().await.unwrap();
 
     let (_cred_id, cred_secret) = generate_credential_with_options(
@@ -1335,7 +1356,10 @@ async fn credential_non_reusable_allows_only_one_peer() {
         "fd00::3/64",
     );
 
-    let mut cred1_inst = Some(Instance::new(cred1_config));
+    let mut cred1_inst = Some(Instance::new_with_process_runtime(
+        cred1_config,
+        process_runtime.clone(),
+    ));
     cred1_inst.as_mut().unwrap().run().await.unwrap();
     cred1_inst
         .as_ref()
@@ -1357,7 +1381,10 @@ async fn credential_non_reusable_allows_only_one_peer() {
     .await;
     wait_ping_reachability("ns_adm", "10.144.144.2", true, Duration::from_secs(10)).await;
 
-    let mut cred2_inst = Some(Instance::new(cred2_config));
+    let mut cred2_inst = Some(Instance::new_with_process_runtime(
+        cred2_config,
+        process_runtime.clone(),
+    ));
     cred2_inst.as_mut().unwrap().run().await.unwrap();
     cred2_inst
         .as_ref()
@@ -1447,10 +1474,11 @@ async fn credential_non_reusable_allows_only_one_peer() {
 #[serial_test::serial]
 async fn credential_unknown_rejected() {
     prepare_credential_network();
+    let process_runtime = CoreProcessRuntime::new();
 
     // Create admin node
     let admin_config = create_admin_config("admin", Some("ns_adm"), "10.144.144.1", "fd00::1/64");
-    let mut admin_inst = Instance::new(admin_config);
+    let mut admin_inst = Instance::new_with_process_runtime(admin_config, process_runtime.clone());
     admin_inst.run().await.unwrap();
 
     // Create credential node with random key (not generated by admin)
@@ -1473,7 +1501,7 @@ async fn credential_unknown_rejected() {
         config
     };
 
-    let mut cred_inst = Instance::new(cred_config);
+    let mut cred_inst = Instance::new_with_process_runtime(cred_config, process_runtime.clone());
     cred_inst.run().await.unwrap();
 
     // Attempt to connect to admin
@@ -1509,20 +1537,24 @@ async fn credential_unknown_rejected() {
 #[serial_test::serial]
 async fn credential_unknown_via_shared_rejected(#[values(true, false)] test_revoke: bool) {
     prepare_credential_network();
+    let process_runtime = CoreProcessRuntime::new();
 
     let admin_a_config =
         create_admin_config("admin_a", Some("ns_adm"), "10.144.144.1", "fd00::1/64");
-    let mut admin_a_inst = Instance::new(admin_a_config);
+    let mut admin_a_inst =
+        Instance::new_with_process_runtime(admin_a_config, process_runtime.clone());
     admin_a_inst.run().await.unwrap();
 
     let shared_b_config =
         create_shared_config("shared_b", Some("ns_c1"), "10.144.144.2", "fd00::2/64");
-    let mut shared_b_inst = Instance::new(shared_b_config);
+    let mut shared_b_inst =
+        Instance::new_with_process_runtime(shared_b_config, process_runtime.clone());
     shared_b_inst.run().await.unwrap();
 
     let admin_c_config =
         create_admin_config("admin_c", Some("ns_c3"), "10.144.144.4", "fd00::4/64");
-    let mut admin_c_inst = Instance::new(admin_c_config);
+    let mut admin_c_inst =
+        Instance::new_with_process_runtime(admin_c_config, process_runtime.clone());
     admin_c_inst.run().await.unwrap();
 
     admin_a_inst.add_connector_url("tcp://10.1.1.2:11010".parse().unwrap());
@@ -1565,7 +1597,8 @@ async fn credential_unknown_via_shared_rejected(#[values(true, false)] test_revo
             None,
         )
     };
-    let mut unknown_inst = Instance::new(credential_config);
+    let mut unknown_inst =
+        Instance::new_with_process_runtime(credential_config, process_runtime.clone());
     unknown_inst.run().await.unwrap();
 
     unknown_inst.add_connector_url("tcp://10.1.1.2:11010".parse().unwrap());
@@ -1649,23 +1682,27 @@ async fn credential_admin_shared_admin_credential_connectivity(
     #[values(true, false)] connect_to_admin: bool,
 ) {
     prepare_credential_network();
+    let process_runtime = CoreProcessRuntime::new();
 
     // 10.1.1.1
     let admin_a_config =
         create_admin_config("admin_a", Some("ns_adm"), "10.144.144.1", "fd00::1/64");
-    let mut admin_a_inst = Instance::new(admin_a_config);
+    let mut admin_a_inst =
+        Instance::new_with_process_runtime(admin_a_config, process_runtime.clone());
     admin_a_inst.run().await.unwrap();
 
     // 10.1.1.2
     let shared_b_config =
         create_shared_config("shared_b", Some("ns_c1"), "10.144.144.2", "fd00::2/64");
-    let mut shared_b_inst = Instance::new(shared_b_config);
+    let mut shared_b_inst =
+        Instance::new_with_process_runtime(shared_b_config, process_runtime.clone());
     shared_b_inst.run().await.unwrap();
 
     // 10.1.1.4
     let admin_c_config =
         create_admin_config("admin_c", Some("ns_c3"), "10.144.144.4", "fd00::4/64");
-    let mut admin_c_inst = Instance::new(admin_c_config);
+    let mut admin_c_inst =
+        Instance::new_with_process_runtime(admin_c_config, process_runtime.clone());
     admin_c_inst.run().await.unwrap();
 
     admin_a_inst.add_connector_url("tcp://10.1.1.2:11010".parse().unwrap());
@@ -1705,7 +1742,8 @@ async fn credential_admin_shared_admin_credential_connectivity(
         .get_global_ctx()
         .issue_event(GlobalCtxEvent::CredentialChanged);
 
-    let mut cred_d_inst = Instance::new(cred_d_config);
+    let mut cred_d_inst =
+        Instance::new_with_process_runtime(cred_d_config, process_runtime.clone());
     cred_d_inst.run().await.unwrap();
     let cred_d_peer_id = cred_d_inst.peer_id();
 
@@ -1757,20 +1795,24 @@ async fn credential_admin_shared_admin_credential_connectivity(
 #[serial_test::serial]
 async fn credential_non_reusable_across_two_admins_allows_only_one_peer() {
     prepare_credential_network();
+    let process_runtime = CoreProcessRuntime::new();
 
     let admin_a_config =
         create_admin_config("admin_a", Some("ns_adm"), "10.144.144.1", "fd00::1/64");
-    let mut admin_a_inst = Instance::new(admin_a_config);
+    let mut admin_a_inst =
+        Instance::new_with_process_runtime(admin_a_config, process_runtime.clone());
     admin_a_inst.run().await.unwrap();
 
     let shared_b_config =
         create_shared_config("shared_b", Some("ns_c1"), "10.144.144.2", "fd00::2/64");
-    let mut shared_b_inst = Instance::new(shared_b_config);
+    let mut shared_b_inst =
+        Instance::new_with_process_runtime(shared_b_config, process_runtime.clone());
     shared_b_inst.run().await.unwrap();
 
     let admin_c_config =
         create_admin_config("admin_c", Some("ns_c3"), "10.144.144.4", "fd00::4/64");
-    let mut admin_c_inst = Instance::new(admin_c_config);
+    let mut admin_c_inst =
+        Instance::new_with_process_runtime(admin_c_config, process_runtime.clone());
     admin_c_inst.run().await.unwrap();
 
     admin_a_inst.add_connector_url("tcp://10.1.1.2:11010".parse().unwrap());
@@ -1823,14 +1865,20 @@ async fn credential_non_reusable_across_two_admins_allows_only_one_peer() {
         "fd00::6/64",
     );
 
-    let mut cred_left_inst = Some(Instance::new(cred_left_config));
+    let mut cred_left_inst = Some(Instance::new_with_process_runtime(
+        cred_left_config,
+        process_runtime.clone(),
+    ));
     cred_left_inst.as_mut().unwrap().run().await.unwrap();
     cred_left_inst
         .as_ref()
         .unwrap()
         .add_connector_url("tcp://10.1.1.1:11010".parse().unwrap());
 
-    let mut cred_right_inst = Some(Instance::new(cred_right_config));
+    let mut cred_right_inst = Some(Instance::new_with_process_runtime(
+        cred_right_config,
+        process_runtime.clone(),
+    ));
     cred_right_inst.as_mut().unwrap().run().await.unwrap();
     cred_right_inst
         .as_ref()
