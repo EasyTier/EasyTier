@@ -142,30 +142,10 @@ pub trait WrappedTransportEngine: Send + Sync + 'static {
     async fn stop(&self);
 }
 
-pub struct WrappedTransportEngineBuild<A> {
+#[derive(Default)]
+pub struct WrappedTransportEngines {
     pub kcp: Option<Arc<dyn WrappedTransportEngine>>,
     pub quic: Option<Arc<dyn WrappedTransportEngine>>,
-    pub attachment: A,
-}
-
-pub trait WrappedTransportEngineFactory: Send + 'static {
-    type Attachment: Send + Sync + 'static;
-
-    fn build(self) -> anyhow::Result<WrappedTransportEngineBuild<Self::Attachment>>;
-}
-
-pub struct NoWrappedTransportEngineFactory;
-
-impl WrappedTransportEngineFactory for NoWrappedTransportEngineFactory {
-    type Attachment = ();
-
-    fn build(self) -> anyhow::Result<WrappedTransportEngineBuild<Self::Attachment>> {
-        Ok(WrappedTransportEngineBuild {
-            kcp: None,
-            quic: None,
-            attachment: (),
-        })
-    }
 }
 
 #[cfg(feature = "proxy-packet")]

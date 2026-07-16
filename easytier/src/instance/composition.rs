@@ -3,19 +3,17 @@ use std::sync::Arc;
 #[cfg(feature = "smoltcp")]
 use easytier_core::proxy::gateway::{GatewayEvent, GatewayEventSink};
 #[cfg(test)]
-use easytier_core::proxy::wrapped_transport::NoWrappedTransportEngineFactory;
-#[cfg(test)]
-use easytier_core::stun::{StunProviderSlot, StunSocketMapper};
+use easytier_core::stun::StunSocketMapper;
 #[cfg(feature = "wireguard")]
 use easytier_core::vpn_portal::VpnPortalHost;
 use easytier_core::{
     connectivity::manual::{
         ManualConnectivityEvent, ManualConnectivityEventSink, ManualTunnelConnector,
     },
-    instance::{CoreInstance, CoreInstanceAdapters, PacketSink, PortableCoreInstanceConfig},
+    instance::{CoreHostAdapters, CoreInstance, CoreInstanceConfig, PacketSink},
     peers::peer_manager::RouteAlgoType,
     process_runtime::CoreProcessRuntime,
-    proxy::wrapped_transport::WrappedTransportEngineFactory,
+    proxy::wrapped_transport::WrappedTransportEngines,
     socket::dns::{DnsRecordResolver, DnsResolver},
     vpn_portal::{VpnPortalEvent, VpnPortalEventSink},
 };
@@ -38,7 +36,13 @@ use crate::{
 };
 
 use super::host::{NativeInstanceHost, native_instance_host};
+#[cfg(feature = "kcp")]
+use crate::gateway::kcp_proxy::KcpProxyService;
+#[cfg(feature = "quic")]
+use crate::gateway::quic_proxy::QuicProxyService;
 use crate::tunnel::protocol::{runtime_client_protocol_upgrader, runtime_server_protocol_upgrader};
+#[cfg(any(feature = "kcp", feature = "quic"))]
+use easytier_core::proxy::wrapped_transport::WrappedTransportEngine;
 
 pub(crate) type NativeCoreInstance = CoreInstance<NativeInstanceHost>;
 
@@ -102,75 +106,76 @@ impl ManualConnectivityEventSink for GlobalCtxManualConnectivityEventSink {
     }
 }
 
-pub(crate) fn runtime_core_instance_adapters_with_process_runtime(
+fn runtime_wrapped_transport_engines() -> WrappedTransportEngines {
+    #[cfg(feature = "kcp")]
+    let kcp = Some(Arc::new(KcpProxyService::new()) as Arc<dyn WrappedTransportEngine>);
+    #[cfg(not(feature = "kcp"))]
+    let kcp = None;
+    #[cfg(feature = "quic")]
+    let quic = Some(Arc::new(QuicProxyService::new()) as Arc<dyn WrappedTransportEngine>);
+    #[cfg(not(feature = "quic"))]
+    let quic = None;
+
+    WrappedTransportEngines { kcp, quic }
+}
+
+pub(crate) fn runtime_core_host_adapters(
     global_ctx: ArcGlobalCtx,
     process_runtime: Arc<CoreProcessRuntime>,
-) -> CoreInstanceAdapters<NativeInstanceHost> {
+    packet_sink: Arc<dyn PacketSink>,
+) -> CoreHostAdapters<NativeInstanceHost> {
     let host = native_instance_host(global_ctx.clone());
     let runtime_dns = native_host_runtime();
-    let dns: Arc<dyn DnsResolver> = runtime_dns.clone();
-    let dns_records: Arc<dyn DnsRecordResolver> = runtime_dns;
-    CoreInstanceAdapters {
-        host,
-        stun_projection: None,
-        dns,
-        listener_dns: None,
-        dns_records,
-        process_runtime,
-        protocol: Some(runtime_client_protocol_upgrader(global_ctx.clone())),
-        manual_events: Some(Arc::new(GlobalCtxManualConnectivityEventSink {
-            global_ctx: global_ctx.clone(),
-        })),
-        external_listener_factory: None,
-        listener_events: None,
-        server_protocol: Some(runtime_server_protocol_upgrader(global_ctx.clone())),
-        accepted_tunnel_events: Some(runtime_accepted_tunnel_event_sink(global_ctx.clone())),
-        udp_hole_punch_platform: Some(
-            crate::instance::udp_hole_punch::runtime_udp_hole_punch_platform(
-                global_ctx.net_ns.clone(),
-            ),
-        ),
-        udp_hole_punch_events: Some(
-            crate::instance::udp_hole_punch::runtime_udp_port_mapping_event_sink(
-                global_ctx.clone(),
-            ),
-        ),
-        icmp_proxy_host: {
-            #[cfg(test)]
-            {
-                None
-            }
-            #[cfg(not(test))]
-            {
-                Some(crate::gateway::icmp_proxy::runtime_icmp_proxy_host())
-            }
-        },
-        proxy_cidr_monitor: Some(runtime_proxy_cidr_monitor_host(global_ctx.clone())),
-        public_ipv6_host: Some(global_ctx.clone()),
-        public_ipv6_provider: Some(runtime_public_ipv6_provider_platform(&global_ctx)),
-        vpn_portal: {
-            #[cfg(feature = "wireguard")]
-            {
-                use crate::common::config::ConfigLoader as _;
+    let mut adapters = CoreHostAdapters::new(host, runtime_dns, packet_sink, process_runtime);
+    adapters.peer_adapters = runtime_peer_manager_host_adapters(&global_ctx);
+    adapters.wrapped_transports = runtime_wrapped_transport_engines();
+    adapters.protocol = Some(runtime_client_protocol_upgrader(global_ctx.clone()));
+    adapters.manual_events = Some(Arc::new(GlobalCtxManualConnectivityEventSink {
+        global_ctx: global_ctx.clone(),
+    }));
+    adapters.external_listener_factory = Some(RuntimeExternalListenerFactory::new());
+    adapters.listener_events = Some(runtime_listener_event_sink(global_ctx.clone()));
+    adapters.server_protocol = Some(runtime_server_protocol_upgrader(global_ctx.clone()));
+    adapters.accepted_tunnel_events = Some(runtime_accepted_tunnel_event_sink(global_ctx.clone()));
+    adapters.udp_hole_punch_platform = Some(
+        crate::instance::udp_hole_punch::runtime_udp_hole_punch_platform(global_ctx.net_ns.clone()),
+    );
+    adapters.udp_hole_punch_events = Some(
+        crate::instance::udp_hole_punch::runtime_udp_port_mapping_event_sink(global_ctx.clone()),
+    );
+    #[cfg(not(test))]
+    {
+        adapters.icmp_proxy_host = Some(crate::gateway::icmp_proxy::runtime_icmp_proxy_host());
+    }
+    adapters.proxy_cidr_monitor = Some(runtime_proxy_cidr_monitor_host(global_ctx.clone()));
+    adapters.public_ipv6_host = Some(global_ctx.clone());
+    adapters.public_ipv6_provider = Some(runtime_public_ipv6_provider_platform(&global_ctx));
+    #[cfg(feature = "wireguard")]
+    {
+        use crate::common::config::ConfigLoader as _;
 
-                Some(crate::vpn_portal::wireguard::WireGuardPortalHost::new(
-                    global_ctx.clone(),
-                    global_ctx
-                        .config
-                        .get_vpn_portal_config()
-                        .map(|config| config.wireguard_listen),
-                ) as Arc<dyn VpnPortalHost>)
-            }
-            #[cfg(not(feature = "wireguard"))]
-            {
-                None
-            }
-        },
-        vpn_portal_events: Some(Arc::new(GlobalCtxVpnPortalEventSink {
-            global_ctx: global_ctx.clone(),
-        })),
-        #[cfg(feature = "smoltcp")]
-        gateway_events: Some(Arc::new(GlobalCtxGatewayEventSink { global_ctx })),
+        adapters.vpn_portal = Some(crate::vpn_portal::wireguard::WireGuardPortalHost::new(
+            global_ctx.clone(),
+            global_ctx
+                .config
+                .get_vpn_portal_config()
+                .map(|config| config.wireguard_listen),
+        ) as Arc<dyn VpnPortalHost>);
+    }
+    adapters.vpn_portal_events = Some(Arc::new(GlobalCtxVpnPortalEventSink {
+        global_ctx: global_ctx.clone(),
+    }));
+    #[cfg(feature = "smoltcp")]
+    {
+        adapters.gateway_events = Some(Arc::new(GlobalCtxGatewayEventSink { global_ctx }));
+    }
+    adapters
+}
+
+pub(crate) fn runtime_core_instance_config(global_ctx: &ArcGlobalCtx) -> CoreInstanceConfig {
+    CoreInstanceConfig {
+        peer: runtime_peer_manager_config(global_ctx, RouteAlgoType::Ospf),
+        connectivity: runtime_connectivity_config(global_ctx),
     }
 }
 
@@ -193,51 +198,7 @@ pub(crate) fn runtime_one_shot_manual_connector(
 }
 
 #[cfg(test)]
-pub(crate) fn build_portable_runtime_core_instance_with_transport_factory_and_process_runtime<F>(
-    global_ctx: ArcGlobalCtx,
-    packet_sink: Arc<dyn PacketSink>,
-    transport_proxy_factory: F,
-    process_runtime: Arc<CoreProcessRuntime>,
-) -> anyhow::Result<(NativeCoreInstance, F::Attachment)>
-where
-    F: WrappedTransportEngineFactory,
-{
-    let adapters =
-        runtime_core_instance_adapters_with_process_runtime(global_ctx.clone(), process_runtime);
-    build_portable_runtime_core_instance_with_transport_factory_and_adapters(
-        global_ctx,
-        packet_sink,
-        transport_proxy_factory,
-        adapters,
-    )
-}
-
-pub(crate) fn build_portable_runtime_core_instance_with_transport_factory_and_adapters<F>(
-    global_ctx: ArcGlobalCtx,
-    packet_sink: Arc<dyn PacketSink>,
-    transport_proxy_factory: F,
-    mut adapters: CoreInstanceAdapters<NativeInstanceHost>,
-) -> anyhow::Result<(NativeCoreInstance, F::Attachment)>
-where
-    F: WrappedTransportEngineFactory,
-{
-    let config = PortableCoreInstanceConfig {
-        peer: runtime_peer_manager_config(&global_ctx, RouteAlgoType::Ospf),
-        connectivity: runtime_connectivity_config(&global_ctx),
-    };
-    adapters.listener_events = Some(runtime_listener_event_sink(global_ctx.clone()));
-    adapters.external_listener_factory = Some(RuntimeExternalListenerFactory::new());
-    CoreInstance::new_portable_with_peer_adapters_and_transport_factory(
-        adapters,
-        runtime_peer_manager_host_adapters(&global_ctx),
-        config,
-        packet_sink,
-        transport_proxy_factory,
-    )
-}
-
-#[cfg(test)]
-pub(crate) fn build_portable_test_core_instance(
+pub(crate) fn build_test_core_instance(
     global_ctx: ArcGlobalCtx,
     process_runtime: Arc<CoreProcessRuntime>,
     stun_collector: Box<dyn StunSocketMapper<RuntimeUdpSocket>>,
@@ -247,16 +208,11 @@ pub(crate) fn build_portable_test_core_instance(
 )> {
     let (packet_sink, packet_receiver) = tokio::sync::mpsc::channel(16);
     let mut adapters =
-        runtime_core_instance_adapters_with_process_runtime(global_ctx.clone(), process_runtime);
+        runtime_core_host_adapters(global_ctx.clone(), process_runtime, Arc::new(packet_sink));
     let provider: Arc<dyn StunSocketMapper<RuntimeUdpSocket>> = Arc::from(stun_collector);
-    adapters.stun_projection = Some(Arc::new(StunProviderSlot::new(provider)));
-    let (instance, ()) = build_portable_runtime_core_instance_with_transport_factory_and_adapters(
-        global_ctx,
-        Arc::new(packet_sink),
-        NoWrappedTransportEngineFactory,
-        adapters,
-    )?;
-    Ok((Arc::new(instance), packet_receiver))
+    adapters.replace_stun_provider(provider);
+    let instance = CoreInstance::new(runtime_core_instance_config(&global_ctx), adapters)?;
+    Ok((instance, packet_receiver))
 }
 
 #[cfg(test)]
@@ -265,10 +221,10 @@ mod tests {
 
     #[cfg(feature = "kcp")]
     use easytier_core::proxy::wrapped_transport::{
-        WrappedTransportConnect, WrappedTransportEngine, WrappedTransportEngineBuild,
+        WrappedTransportConnect, WrappedTransportEngine,
     };
     use easytier_core::{
-        instance::{CoreInstanceConfig, PortableCoreInstanceConfig},
+        instance::{CoreConnectivityConfig, CoreInstanceConfig},
         listener::plan::ListenerRuntimeConfig,
     };
     use pnet::packet::{
@@ -298,33 +254,22 @@ mod tests {
     }
 
     #[cfg(feature = "kcp")]
-    struct KcpOnlyFactory;
-
-    #[cfg(feature = "kcp")]
-    impl WrappedTransportEngineFactory for KcpOnlyFactory {
-        type Attachment = Arc<KcpProxyService>;
-
-        fn build(self) -> anyhow::Result<WrappedTransportEngineBuild<Self::Attachment>> {
-            let service = Arc::new(KcpProxyService::new());
-            Ok(WrappedTransportEngineBuild {
-                kcp: Some(service.clone()),
-                quic: None,
-                attachment: service,
-            })
-        }
-    }
-
-    #[cfg(feature = "kcp")]
     fn build_native_kcp_test_instance(
         global_ctx: ArcGlobalCtx,
         packet_sink: tokio::sync::mpsc::Sender<Vec<u8>>,
         listeners: Option<ListenerRuntimeConfig>,
     ) -> anyhow::Result<(Arc<NativeCoreInstance>, Arc<KcpProxyService>)> {
-        let mut adapters = runtime_core_instance_adapters_with_process_runtime(
+        let mut adapters = runtime_core_host_adapters(
             global_ctx.clone(),
             CoreProcessRuntime::new(),
+            Arc::new(packet_sink),
         );
         adapters.proxy_cidr_monitor = None;
+        let service = Arc::new(KcpProxyService::new());
+        adapters.wrapped_transports = WrappedTransportEngines {
+            kcp: Some(service.clone()),
+            quic: None,
+        };
 
         let mut connectivity = runtime_connectivity_config(&global_ctx);
         connectivity.listeners = listeners;
@@ -335,18 +280,14 @@ mod tests {
         connectivity.manual = Default::default();
         connectivity.direct = runtime_direct_options(&global_ctx, true);
 
-        let (instance, service) =
-            NativeCoreInstance::new_portable_with_peer_adapters_and_transport_factory(
-                adapters,
-                runtime_peer_manager_host_adapters(&global_ctx),
-                PortableCoreInstanceConfig {
-                    peer: runtime_peer_manager_config(&global_ctx, RouteAlgoType::Ospf),
-                    connectivity,
-                },
-                Arc::new(packet_sink),
-                KcpOnlyFactory,
-            )?;
-        Ok((Arc::new(instance), service))
+        let instance = NativeCoreInstance::new(
+            CoreInstanceConfig {
+                peer: runtime_peer_manager_config(&global_ctx, RouteAlgoType::Ospf),
+                connectivity,
+            },
+            adapters,
+        )?;
+        Ok((instance, service))
     }
 
     #[cfg(feature = "kcp")]
@@ -471,56 +412,52 @@ mod tests {
         let (packet_sink_b, mut packet_receiver_b) = create_host_packet_channel();
         let peer_a = runtime_peer_manager_config(&global_a, RouteAlgoType::Ospf);
         let peer_b = runtime_peer_manager_config(&global_b, RouteAlgoType::Ospf);
-        let instance_a = Arc::new(
-            NativeCoreInstance::new_portable(
-                runtime_core_instance_adapters_with_process_runtime(
-                    global_a.clone(),
-                    CoreProcessRuntime::new(),
-                ),
-                PortableCoreInstanceConfig {
-                    peer: peer_a,
-                    connectivity: CoreInstanceConfig {
-                        initial_peers: Vec::new(),
-                        listeners: Some(ListenerRuntimeConfig::new(
-                            vec!["tcp://127.0.0.1:0".parse().unwrap()],
-                            false,
-                            runtime_socket_context(&global_a),
-                        )),
-                        runtime: Default::default(),
-                        startup_plan: Default::default(),
-                        stun: runtime_stun_server_config(&global_a),
-                        endpoint_discovery: runtime_endpoint_discovery_config(&global_a),
-                        manual: Default::default(),
-                        direct: runtime_direct_options(&global_a, true),
-                    },
+        let instance_a = NativeCoreInstance::new(
+            CoreInstanceConfig {
+                peer: peer_a,
+                connectivity: CoreConnectivityConfig {
+                    initial_peers: Vec::new(),
+                    listeners: Some(ListenerRuntimeConfig::new(
+                        vec!["tcp://127.0.0.1:0".parse().unwrap()],
+                        false,
+                        runtime_socket_context(&global_a),
+                    )),
+                    runtime: Default::default(),
+                    startup_plan: Default::default(),
+                    stun: runtime_stun_server_config(&global_a),
+                    endpoint_discovery: runtime_endpoint_discovery_config(&global_a),
+                    manual: Default::default(),
+                    direct: runtime_direct_options(&global_a, true),
                 },
+            },
+            runtime_core_host_adapters(
+                global_a.clone(),
+                CoreProcessRuntime::new(),
                 Arc::new(packet_sink_a),
-            )
-            .unwrap(),
-        );
-        let instance_b = Arc::new(
-            NativeCoreInstance::new_portable(
-                runtime_core_instance_adapters_with_process_runtime(
-                    global_b.clone(),
-                    CoreProcessRuntime::new(),
-                ),
-                PortableCoreInstanceConfig {
-                    peer: peer_b,
-                    connectivity: CoreInstanceConfig {
-                        initial_peers: Vec::new(),
-                        listeners: None,
-                        runtime: Default::default(),
-                        startup_plan: Default::default(),
-                        stun: runtime_stun_server_config(&global_b),
-                        endpoint_discovery: runtime_endpoint_discovery_config(&global_b),
-                        manual: Default::default(),
-                        direct: runtime_direct_options(&global_b, true),
-                    },
+            ),
+        )
+        .unwrap();
+        let instance_b = NativeCoreInstance::new(
+            CoreInstanceConfig {
+                peer: peer_b,
+                connectivity: CoreConnectivityConfig {
+                    initial_peers: Vec::new(),
+                    listeners: None,
+                    runtime: Default::default(),
+                    startup_plan: Default::default(),
+                    stun: runtime_stun_server_config(&global_b),
+                    endpoint_discovery: runtime_endpoint_discovery_config(&global_b),
+                    manual: Default::default(),
+                    direct: runtime_direct_options(&global_b, true),
                 },
+            },
+            runtime_core_host_adapters(
+                global_b.clone(),
+                CoreProcessRuntime::new(),
                 Arc::new(packet_sink_b),
-            )
-            .unwrap(),
-        );
+            ),
+        )
+        .unwrap();
 
         let (start_a, start_b) = tokio::join!(instance_a.start(), instance_b.start());
         start_a.unwrap();

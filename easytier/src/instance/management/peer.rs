@@ -381,7 +381,7 @@ mod tests {
 
     use crate::{
         common::{global_ctx::tests::get_mock_global_ctx, stun::MockStunInfoCollector},
-        instance::composition::build_portable_test_core_instance,
+        instance::composition::build_test_core_instance,
         proto::common::NatType,
     };
 
@@ -390,7 +390,7 @@ mod tests {
     #[tokio::test]
     async fn node_info_uses_core_owned_stun_addresses() {
         let global_ctx = get_mock_global_ctx();
-        let (core_instance, _packet_receiver) = build_portable_test_core_instance(
+        let (core_instance, _packet_receiver) = build_test_core_instance(
             global_ctx.clone(),
             CoreProcessRuntime::new(),
             Box::new(MockStunInfoCollector {

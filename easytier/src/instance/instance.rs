@@ -14,11 +14,6 @@ use easytier_core::dhcp::{DhcpIpv4ApplyOutcome, DhcpIpv4ApplyPermit, DhcpIpv4Hos
 #[cfg(any(feature = "tun", feature = "magic-dns", mobile))]
 use easytier_core::instance::CorePacketPlane;
 use easytier_core::process_runtime::CoreProcessRuntime;
-#[cfg(any(feature = "kcp", feature = "quic"))]
-use easytier_core::proxy::wrapped_transport::WrappedTransportEngine;
-use easytier_core::proxy::wrapped_transport::{
-    WrappedTransportEngineBuild, WrappedTransportEngineFactory,
-};
 #[cfg(feature = "tun")]
 use futures::FutureExt;
 #[cfg(feature = "tun")]
@@ -35,19 +30,11 @@ use tokio_util::task::AbortOnDropHandle;
 use crate::common::config::ConfigLoader;
 use crate::common::error::Error;
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtx, GlobalCtxEvent};
-#[cfg(feature = "kcp")]
-use crate::gateway::kcp_proxy::KcpProxyService;
-#[cfg(feature = "quic")]
-use crate::gateway::quic_proxy::QuicProxyService;
 use crate::gateway::tcp_proxy::CoreTcpProxyRpcService;
 use crate::instance::management::connector::InstanceConnectorManagementRpc;
 use crate::instance::management::peer::InstancePeerManagementRpc;
 use crate::instance::{
-    composition::{
-        NativeCoreInstance,
-        build_portable_runtime_core_instance_with_transport_factory_and_adapters,
-        runtime_core_instance_adapters_with_process_runtime,
-    },
+    composition::{NativeCoreInstance, runtime_core_host_adapters, runtime_core_instance_config},
     config::{runtime_acl_config, runtime_instance_config},
 };
 use crate::launcher::NetworkConfigExt;
@@ -77,36 +64,6 @@ use super::dns_server::{MAGIC_DNS_FAKE_IP, runner::DnsRunner};
 use super::public_ipv6_provider::validate_public_ipv6_config_values;
 
 pub(crate) type HostPacketReceiver = mpsc::Receiver<Vec<u8>>;
-
-struct RuntimeTransportProxyFactory;
-
-impl RuntimeTransportProxyFactory {
-    fn new() -> Self {
-        Self
-    }
-}
-
-impl WrappedTransportEngineFactory for RuntimeTransportProxyFactory {
-    type Attachment = ();
-
-    fn build(self) -> anyhow::Result<WrappedTransportEngineBuild<Self::Attachment>> {
-        #[cfg(feature = "kcp")]
-        let kcp_engine = Some(Arc::new(KcpProxyService::new()) as Arc<dyn WrappedTransportEngine>);
-        #[cfg(not(feature = "kcp"))]
-        let kcp_engine = None;
-        #[cfg(feature = "quic")]
-        let quic_engine =
-            Some(Arc::new(QuicProxyService::new()) as Arc<dyn WrappedTransportEngine>);
-        #[cfg(not(feature = "quic"))]
-        let quic_engine = None;
-
-        Ok(WrappedTransportEngineBuild {
-            kcp: kcp_engine,
-            quic: quic_engine,
-            attachment: (),
-        })
-    }
-}
 
 #[cfg(feature = "tun")]
 type NicCtx = super::virtual_nic::NicCtx;
@@ -775,11 +732,7 @@ impl Instance {
         process_runtime: Arc<CoreProcessRuntime>,
     ) -> Self {
         let global_ctx = Arc::new(GlobalCtx::new(config));
-        let adapters = runtime_core_instance_adapters_with_process_runtime(
-            global_ctx.clone(),
-            process_runtime,
-        );
-        Self::new_with_runtime_adapters(global_ctx, adapters)
+        Self::compose(global_ctx, process_runtime, |_| {})
     }
 
     #[cfg(test)]
@@ -791,24 +744,22 @@ impl Instance {
         >,
     ) -> Self {
         let global_ctx = Arc::new(GlobalCtx::new(config));
-        let mut adapters = runtime_core_instance_adapters_with_process_runtime(
-            global_ctx.clone(),
-            process_runtime,
-        );
         let provider: Arc<
             dyn easytier_core::stun::StunSocketMapper<crate::socket::udp::RuntimeUdpSocket>,
         > = Arc::from(stun_provider);
-        adapters.stun_projection = Some(Arc::new(easytier_core::stun::StunProviderSlot::new(
-            provider,
-        )));
-        Self::new_with_runtime_adapters(global_ctx, adapters)
+        Self::compose(global_ctx, process_runtime, move |adapters| {
+            adapters.replace_stun_provider(provider);
+        })
     }
 
-    fn new_with_runtime_adapters(
+    fn compose(
         global_ctx: ArcGlobalCtx,
-        adapters: easytier_core::instance::CoreInstanceAdapters<
-            crate::instance::host::NativeInstanceHost,
-        >,
+        process_runtime: Arc<CoreProcessRuntime>,
+        customize_host: impl FnOnce(
+            &mut easytier_core::instance::CoreHostAdapters<
+                crate::instance::host::NativeInstanceHost,
+            >,
+        ),
     ) -> Self {
         tracing::info!(
             "[INIT] instance creating. config: {}",
@@ -816,16 +767,15 @@ impl Instance {
         );
 
         let (peer_packet_sender, peer_packet_receiver) = mpsc::channel(128);
-
-        let (core_instance, ()) =
-            build_portable_runtime_core_instance_with_transport_factory_and_adapters(
-                global_ctx.clone(),
-                Arc::new(peer_packet_sender),
-                RuntimeTransportProxyFactory::new(),
-                adapters,
-            )
-            .expect("runtime core instance composition should be valid");
-        let core_instance = Arc::new(core_instance);
+        let mut adapters = runtime_core_host_adapters(
+            global_ctx.clone(),
+            process_runtime,
+            Arc::new(peer_packet_sender),
+        );
+        customize_host(&mut adapters);
+        let core_instance =
+            NativeCoreInstance::new(runtime_core_instance_config(&global_ctx), adapters)
+                .expect("runtime core instance composition should be valid");
         let config_operation = Arc::new(ConfigOperation::default());
 
         Instance {

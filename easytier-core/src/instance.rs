@@ -1,6 +1,7 @@
 //! Lifecycle owner for the portable EasyTier runtime.
 
-pub mod host;
+#[cfg(any(test, target_os = "wasi"))]
+mod host;
 pub mod packet_io;
 pub mod packet_plane;
 pub mod public_ipv6_provider;
@@ -75,10 +76,7 @@ use crate::{
     proxy::{
         cidr_monitor::{ProxyCidrDiff, ProxyCidrMonitor, ProxyCidrMonitorHost},
         cidr_table::{ProxyCidrSnapshot, ProxyCidrTable},
-        wrapped_transport::{
-            NoWrappedTransportEngineFactory, WrappedTransportEngineBuild,
-            WrappedTransportEngineFactory, WrappedTransportProxyModule,
-        },
+        wrapped_transport::{WrappedTransportEngines, WrappedTransportProxyModule},
     },
     runtime_config::{CoreInstanceRuntimeConfig, CoreRuntimeConfig, CoreRuntimeConfigStore},
     socket::{
@@ -203,7 +201,7 @@ impl Default for CoreInstanceStartupPlan {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CoreInstanceConfig {
+pub struct CoreConnectivityConfig {
     pub initial_peers: Vec<Url>,
     pub listeners: Option<ListenerRuntimeConfig>,
     pub runtime: CoreRuntimeConfig,
@@ -215,7 +213,7 @@ pub struct CoreInstanceConfig {
     pub direct: DirectConnectorOptions,
 }
 
-impl Default for CoreInstanceConfig {
+impl Default for CoreConnectivityConfig {
     fn default() -> Self {
         Self {
             initial_peers: Vec::new(),
@@ -231,9 +229,9 @@ impl Default for CoreInstanceConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PortableCoreInstanceConfig {
+pub struct CoreInstanceConfig {
     pub peer: PortablePeerManagerConfig,
-    pub connectivity: CoreInstanceConfig,
+    pub connectivity: CoreConnectivityConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -280,9 +278,7 @@ impl UdpBroadcastRelayStats {
     }
 }
 
-fn validate_portable_connectivity_config(
-    config: &PortableCoreInstanceConfig,
-) -> anyhow::Result<()> {
+fn validate_core_instance_config(config: &CoreInstanceConfig) -> anyhow::Result<()> {
     let peer_flags = &config.peer.snapshot.flags;
     let direct = &config.connectivity.direct;
     if (direct.lazy_p2p, direct.disable_p2p, direct.need_p2p)
@@ -428,19 +424,25 @@ fn retain_core_peer_identity(
     peer.runtime.core.node.instance_id = instance_id;
 }
 
-pub struct CoreInstanceAdapters<H>
+/// Host Adapters and optional native capabilities for one core instance.
+///
+/// Callers provide this bundle and one normalized [`CoreInstanceConfig`] to
+/// [`CoreInstance::new`]. Core constructs and owns every portable runtime
+/// Module behind that seam.
+pub struct CoreHostAdapters<H>
 where
     H: DirectConnectorHost + TcpHolePunchHost,
 {
-    pub host: Arc<H>,
+    host: Arc<H>,
     /// Optional preinstalled stable slot for deterministic adapters and tests.
     /// Core installs its production collector only when the slot is empty.
-    pub stun_projection: Option<Arc<StunProviderSlot<<H as VirtualUdpSocketFactory>::Socket>>>,
-    pub dns: Arc<dyn DnsResolver>,
-    /// Optional listener-specific resolver. When absent, listeners share `dns` with connectors.
-    pub listener_dns: Option<Arc<dyn DnsResolver>>,
-    pub dns_records: Arc<dyn DnsRecordResolver>,
-    pub process_runtime: Arc<CoreProcessRuntime>,
+    stun_projection: Option<Arc<StunProviderSlot<<H as VirtualUdpSocketFactory>::Socket>>>,
+    dns: Arc<dyn DnsResolver>,
+    dns_records: Arc<dyn DnsRecordResolver>,
+    process_runtime: Arc<CoreProcessRuntime>,
+    packet_sink: Arc<dyn PacketSink>,
+    pub peer_adapters: PeerManagerHostAdapters,
+    pub wrapped_transports: WrappedTransportEngines,
     pub protocol: Option<Arc<dyn ClientProtocolUpgrader<<H as VirtualTcpSocketFactory>::Socket>>>,
     pub manual_events: Option<Arc<dyn ManualConnectivityEventSink>>,
     pub external_listener_factory:
@@ -462,6 +464,62 @@ where
     pub vpn_portal_events: Option<Arc<dyn VpnPortalEventSink>>,
     #[cfg(feature = "proxy-smoltcp-stack")]
     pub gateway_events: Option<Arc<dyn GatewayEventSink>>,
+}
+
+impl<H> CoreHostAdapters<H>
+where
+    H: DirectConnectorHost + TcpHolePunchHost,
+{
+    /// Creates the minimal host bundle. Optional native capabilities can be
+    /// installed on the returned value before constructing the instance.
+    pub fn new<D>(
+        host: Arc<H>,
+        dns: Arc<D>,
+        packet_sink: Arc<dyn PacketSink>,
+        process_runtime: Arc<CoreProcessRuntime>,
+    ) -> Self
+    where
+        D: DnsResolver + DnsRecordResolver,
+    {
+        let dns_addresses: Arc<dyn DnsResolver> = dns.clone();
+        let dns_records: Arc<dyn DnsRecordResolver> = dns;
+        Self {
+            host,
+            stun_projection: None,
+            dns: dns_addresses,
+            dns_records,
+            process_runtime,
+            packet_sink,
+            peer_adapters: PeerManagerHostAdapters::default(),
+            wrapped_transports: WrappedTransportEngines::default(),
+            protocol: None,
+            manual_events: None,
+            external_listener_factory: None,
+            listener_events: None,
+            server_protocol: None,
+            accepted_tunnel_events: None,
+            udp_hole_punch_platform: None,
+            udp_hole_punch_events: None,
+            #[cfg(feature = "proxy-packet")]
+            icmp_proxy_host: None,
+            proxy_cidr_monitor: None,
+            public_ipv6_host: None,
+            public_ipv6_provider: None,
+            vpn_portal: None,
+            vpn_portal_events: None,
+            #[cfg(feature = "proxy-smoltcp-stack")]
+            gateway_events: None,
+        }
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    #[doc(hidden)]
+    pub fn replace_stun_provider(
+        &mut self,
+        provider: Arc<dyn StunSocketMapper<<H as VirtualUdpSocketFactory>::Socket>>,
+    ) {
+        self.stun_projection = Some(Arc::new(StunProviderSlot::new(provider)));
+    }
 }
 
 pub trait ExternalListenerFactory<Accepted>: Send + Sync + 'static
@@ -608,8 +666,8 @@ where
     H: DirectConnectorHost + TcpHolePunchHost,
 {
     fn prepare_stun(
-        adapters: &CoreInstanceAdapters<H>,
-        config: &CoreInstanceConfig,
+        adapters: &CoreHostAdapters<H>,
+        config: &CoreConnectivityConfig,
     ) -> Arc<StunProviderSlot<<H as VirtualUdpSocketFactory>::Socket>> {
         let dns = Arc::new(CoreStunDnsAdapter {
             addresses: adapters.dns.clone(),
@@ -634,46 +692,16 @@ where
         }
     }
 
-    pub fn new_portable(
-        adapters: CoreInstanceAdapters<H>,
-        config: PortableCoreInstanceConfig,
-        packet_sink: Arc<dyn PacketSink>,
-    ) -> anyhow::Result<Self> {
-        Self::new_portable_with_peer_adapters(
-            adapters,
-            PeerManagerHostAdapters::default(),
-            config,
-            packet_sink,
-        )
-    }
-
-    pub fn new_portable_with_peer_adapters(
-        adapters: CoreInstanceAdapters<H>,
-        peer_adapters: PeerManagerHostAdapters,
-        config: PortableCoreInstanceConfig,
-        packet_sink: Arc<dyn PacketSink>,
-    ) -> anyhow::Result<Self> {
-        Self::new_portable_with_peer_adapters_and_transport_factory(
-            adapters,
-            peer_adapters,
-            config,
-            packet_sink,
-            NoWrappedTransportEngineFactory,
-        )
-        .map(|(instance, ())| instance)
-    }
-
-    pub fn new_portable_with_peer_adapters_and_transport_factory<F>(
-        mut adapters: CoreInstanceAdapters<H>,
-        peer_adapters: PeerManagerHostAdapters,
-        config: PortableCoreInstanceConfig,
-        packet_sink: Arc<dyn PacketSink>,
-        transport_proxy_factory: F,
-    ) -> anyhow::Result<(Self, F::Attachment)>
-    where
-        F: WrappedTransportEngineFactory,
-    {
-        validate_portable_connectivity_config(&config)?;
+    /// Constructs the complete portable runtime for one EasyTier instance.
+    ///
+    /// This is the only instance construction entry. The normalized config is
+    /// authoritative after creation; all platform behavior enters through the
+    /// supplied Host Adapters.
+    pub fn new(
+        config: CoreInstanceConfig,
+        mut adapters: CoreHostAdapters<H>,
+    ) -> anyhow::Result<Arc<Self>> {
+        validate_core_instance_config(&config)?;
         let network_name = &config.peer.snapshot.runtime.network_identity.network_name;
         if config.connectivity.direct.network_name != *network_name {
             anyhow::bail!(
@@ -709,88 +737,11 @@ where
                 Arc::new(CoreStunPeerInfoSource(peer_stun)),
                 packet_tx,
                 public_ipv6_runtime.clone(),
-                peer_adapters,
+                std::mem::take(&mut adapters.peer_adapters),
                 foreign_rpc_registrar,
             )?,
         );
-        let (mut instance, attachment) = Self::new_with_prepared_stun(
-            peer_manager,
-            adapters,
-            config.connectivity,
-            runtime_config,
-            stun,
-            Some(public_ipv6_runtime),
-            transport_proxy_factory,
-        )?;
-        instance.packet_egress = Some(PacketEgress::new(packet_rx, packet_sink));
-        Ok((instance, attachment))
-    }
-
-    pub fn new(
-        peer_manager: Arc<PeerManagerCore>,
-        adapters: CoreInstanceAdapters<H>,
-        config: CoreInstanceConfig,
-    ) -> anyhow::Result<Self> {
-        let runtime_config = CoreRuntimeConfigStore::new(
-            config.runtime.clone(),
-            Arc::new(PeerRuntimeSnapshot::default()),
-        );
-        Self::new_with_runtime_config_store(peer_manager, adapters, config, runtime_config)
-    }
-
-    pub fn new_with_runtime_config_store(
-        peer_manager: Arc<PeerManagerCore>,
-        adapters: CoreInstanceAdapters<H>,
-        config: CoreInstanceConfig,
-        runtime_config: CoreRuntimeConfigStore,
-    ) -> anyhow::Result<Self> {
-        let stun = Self::prepare_stun(&adapters, &config);
-        Self::new_with_prepared_stun(
-            peer_manager,
-            adapters,
-            config,
-            runtime_config,
-            stun,
-            None,
-            NoWrappedTransportEngineFactory,
-        )
-        .map(|(instance, ())| instance)
-    }
-
-    pub fn new_with_runtime_config_store_and_transport_factory<F>(
-        peer_manager: Arc<PeerManagerCore>,
-        adapters: CoreInstanceAdapters<H>,
-        config: CoreInstanceConfig,
-        runtime_config: CoreRuntimeConfigStore,
-        transport_proxy_factory: F,
-    ) -> anyhow::Result<(Self, F::Attachment)>
-    where
-        F: WrappedTransportEngineFactory,
-    {
-        let stun = Self::prepare_stun(&adapters, &config);
-        Self::new_with_prepared_stun(
-            peer_manager,
-            adapters,
-            config,
-            runtime_config,
-            stun,
-            None,
-            transport_proxy_factory,
-        )
-    }
-
-    fn new_with_prepared_stun<F>(
-        peer_manager: Arc<PeerManagerCore>,
-        adapters: CoreInstanceAdapters<H>,
-        config: CoreInstanceConfig,
-        runtime_config: CoreRuntimeConfigStore,
-        stun: Arc<StunProviderSlot<<H as VirtualUdpSocketFactory>::Socket>>,
-        public_ipv6_runtime: Option<Arc<CorePublicIpv6Runtime>>,
-        transport_proxy_factory: F,
-    ) -> anyhow::Result<(Self, F::Attachment)>
-    where
-        F: WrappedTransportEngineFactory,
-    {
+        let config = config.connectivity;
         let listener_plan = prepare_listener_plan(
             config.listeners.as_ref(),
             peer_manager.instance_id(),
@@ -801,13 +752,15 @@ where
             &listener_plan.transports,
             adapters.server_protocol.is_some(),
         )?;
-        let CoreInstanceAdapters {
+        let CoreHostAdapters {
             host,
             stun_projection: _,
             dns,
-            listener_dns,
             dns_records,
             process_runtime,
+            packet_sink,
+            peer_adapters: _,
+            wrapped_transports,
             protocol,
             manual_events,
             external_listener_factory,
@@ -827,7 +780,7 @@ where
             gateway_events,
         } = adapters;
         let ring_registry = process_runtime.ring_registry();
-        let CoreInstanceConfig {
+        let CoreConnectivityConfig {
             initial_peers,
             listeners: _,
             runtime: initial_runtime_config,
@@ -885,7 +838,7 @@ where
         let listener = has_listener_work.then(|| {
             Arc::new(CoreListenerRuntime::new_with_events(
                 host.clone(),
-                listener_dns.unwrap_or_else(|| dns.clone()),
+                dns.clone(),
                 ring_registry.clone(),
                 transports,
                 external_factories,
@@ -963,11 +916,7 @@ where
                 icmp_proxy_host,
             )
         };
-        let WrappedTransportEngineBuild {
-            kcp,
-            quic,
-            attachment: transport_proxy_attachment,
-        } = transport_proxy_factory.build()?;
+        let WrappedTransportEngines { kcp, quic } = wrapped_transports;
         let transport_proxy = WrappedTransportProxyModule::new(
             peer_manager.clone(),
             runtime_config.clone(),
@@ -1008,17 +957,9 @@ where
             )),
         );
         let peer_center = Arc::new(PeerCenterInstance::new(peer_manager.clone()));
-        let public_ipv6_provider = match (public_ipv6_provider, public_ipv6_runtime) {
-            (Some(host), Some(runtime)) => Some(PublicIpv6ProviderService::new(
-                host,
-                runtime_config.clone(),
-                runtime,
-            )),
-            (None, _) => None,
-            (Some(_), None) => {
-                anyhow::bail!("public IPv6 provider requires the portable core-owned peer runtime")
-            }
-        };
+        let public_ipv6_provider = public_ipv6_provider.map(|host| {
+            PublicIpv6ProviderService::new(host, runtime_config.clone(), public_ipv6_runtime)
+        });
         let vpn_portal = VpnPortalModule::new(
             peer_manager.clone(),
             runtime_config.clone(),
@@ -1031,46 +972,43 @@ where
             proxy_cidr_monitor.is_some(),
         ));
 
-        Ok((
-            Self {
-                state: AtomicU8::new(CoreInstanceState::Created as u8),
-                operation: Mutex::new(()),
-                cancel: CancellationToken::new(),
-                peer_manager,
-                packet_plane,
-                manual,
-                direct,
-                tcp_hole_punch,
-                listener,
-                udp_hole_punch,
-                udp_hole_punch_started: AtomicBool::new(false),
-                transport_proxy,
-                #[cfg(feature = "proxy-smoltcp-stack")]
-                gateway,
-                proxy_cidr_table,
-                #[cfg(feature = "proxy-packet")]
-                proxy,
-                #[cfg(feature = "proxy-packet")]
-                proxy_started: AtomicBool::new(false),
-                proxy_cidr_monitor,
-                proxy_cidr_monitor_task: Mutex::new(None),
-                dhcp_ipv4_task: Mutex::new(None),
-                packet_egress: None,
-                peer_center,
-                peer_center_started: AtomicBool::new(false),
-                public_ipv6_provider,
-                vpn_portal,
-                initial_peers,
-                initial_peers_started: AtomicBool::new(false),
-                startup_plan,
-                runtime_config,
-                acl_whitelist: RwLock::new(acl_whitelist),
-                initial_acl_loaded: AtomicBool::new(false),
-                #[cfg(feature = "test-utils")]
-                acl_reload_count: AtomicUsize::new(0),
-            },
-            transport_proxy_attachment,
-        ))
+        Ok(Arc::new(Self {
+            state: AtomicU8::new(CoreInstanceState::Created as u8),
+            operation: Mutex::new(()),
+            cancel: CancellationToken::new(),
+            peer_manager,
+            packet_plane,
+            manual,
+            direct,
+            tcp_hole_punch,
+            listener,
+            udp_hole_punch,
+            udp_hole_punch_started: AtomicBool::new(false),
+            transport_proxy,
+            #[cfg(feature = "proxy-smoltcp-stack")]
+            gateway,
+            proxy_cidr_table,
+            #[cfg(feature = "proxy-packet")]
+            proxy,
+            #[cfg(feature = "proxy-packet")]
+            proxy_started: AtomicBool::new(false),
+            proxy_cidr_monitor,
+            proxy_cidr_monitor_task: Mutex::new(None),
+            dhcp_ipv4_task: Mutex::new(None),
+            packet_egress: Some(PacketEgress::new(packet_rx, packet_sink)),
+            peer_center,
+            peer_center_started: AtomicBool::new(false),
+            public_ipv6_provider,
+            vpn_portal,
+            initial_peers,
+            initial_peers_started: AtomicBool::new(false),
+            startup_plan,
+            runtime_config,
+            acl_whitelist: RwLock::new(acl_whitelist),
+            initial_acl_loaded: AtomicBool::new(false),
+            #[cfg(feature = "test-utils")]
+            acl_reload_count: AtomicUsize::new(0),
+        }))
     }
 
     pub fn state(&self) -> CoreInstanceState {
@@ -2213,7 +2151,7 @@ mod tests {
     }
 
     #[test]
-    fn portable_instance_config_round_trips_as_normalized_json() {
+    fn core_instance_config_round_trips_as_normalized_json() {
         let mut core = crate::config::CoreConfig::default();
         core.peer_policy.encryption_required = false;
         core.peer_policy.p2p_enabled = false;
@@ -2231,9 +2169,9 @@ mod tests {
                 host_routing: crate::peers::context::HostRoutingPolicy::default(),
             },
         );
-        let config = PortableCoreInstanceConfig {
+        let config = CoreInstanceConfig {
             peer,
-            connectivity: CoreInstanceConfig::default(),
+            connectivity: CoreConnectivityConfig::default(),
         };
 
         let mut config = config;
@@ -2241,14 +2179,14 @@ mod tests {
         config.connectivity.direct.testing = true;
         let encoded = serde_json::to_value(&config).unwrap();
         assert!(encoded["connectivity"]["direct"].get("testing").is_none());
-        let decoded: PortableCoreInstanceConfig = serde_json::from_value(encoded.clone()).unwrap();
+        let decoded: CoreInstanceConfig = serde_json::from_value(encoded.clone()).unwrap();
 
         assert!(!decoded.connectivity.direct.testing);
         assert!(decoded.connectivity.startup_plan.gateway);
         assert_eq!(serde_json::to_value(&decoded).unwrap(), encoded);
 
-        let mut create = crate::instance::host::HostCoreInstanceCreateConfig {
-            version: crate::instance::host::HOST_CORE_INSTANCE_CONFIG_VERSION,
+        let mut create = crate::instance::host::WasiCoreInstanceCreateConfig {
+            version: crate::instance::host::WASI_CORE_INSTANCE_CONFIG_VERSION,
             instance: decoded,
             environment:
                 crate::connectivity::host::environment::HostConnectorEnvironmentSnapshot::default(),
@@ -2260,7 +2198,7 @@ mod tests {
             serde_json::to_value(&create).unwrap()
         );
         let create_json = serde_json::to_vec(&create).unwrap();
-        serde_json::from_slice::<crate::instance::host::HostCoreInstanceCreateConfig>(&create_json)
+        serde_json::from_slice::<crate::instance::host::WasiCoreInstanceCreateConfig>(&create_json)
             .unwrap()
             .validate()
             .unwrap();
@@ -2269,7 +2207,7 @@ mod tests {
     }
 
     #[test]
-    fn portable_config_validation_rejects_invalid_acl_whitelist() {
+    fn core_instance_config_validation_rejects_invalid_acl_whitelist() {
         let peer = crate::peers::peer_manager::PortablePeerManagerConfig::new(
             crate::peers::context::PeerRuntimeConfig {
                 core: crate::config::CoreConfig::default(),
@@ -2284,16 +2222,16 @@ mod tests {
                 host_routing: crate::peers::context::HostRoutingPolicy::default(),
             },
         );
-        let mut config = PortableCoreInstanceConfig {
+        let mut config = CoreInstanceConfig {
             peer,
-            connectivity: CoreInstanceConfig::default(),
+            connectivity: CoreConnectivityConfig::default(),
         };
         config.connectivity.direct.lazy_p2p = config.peer.snapshot.flags.lazy_p2p;
         config.connectivity.direct.disable_p2p = config.peer.snapshot.flags.disable_p2p;
         config.connectivity.direct.need_p2p = config.peer.snapshot.flags.need_p2p;
         config.connectivity.runtime.acl.tcp_whitelist = vec!["9000-8000".to_owned()];
 
-        let error = validate_portable_connectivity_config(&config).unwrap_err();
+        let error = validate_core_instance_config(&config).unwrap_err();
 
         assert!(error.to_string().contains("Start port must be <= end port"));
     }
@@ -2326,13 +2264,12 @@ mod tests {
             listener::transport::AcceptedTransport,
             peers::{
                 context::{HostRoutingPolicy, PeerRuntimeConfig},
-                peer_manager::{PeerManagerHostAdapters, PortablePeerManagerConfig},
+                peer_manager::PortablePeerManagerConfig,
             },
             proto::{common::StunInfo, peer_rpc::GetIpListResponse},
             proxy::wrapped_transport::{
-                NoWrappedTransportEngineFactory, WrappedTransportEngine,
-                WrappedTransportEngineBuild, WrappedTransportEngineFactory,
-                WrappedTransportEngineStart, WrappedTransportRole,
+                WrappedTransportEngine, WrappedTransportEngineStart, WrappedTransportEngines,
+                WrappedTransportRole,
             },
             runtime_config::CoreInstanceRuntimeConfig,
             socket::{
@@ -2554,7 +2491,7 @@ mod tests {
             }
         }
 
-        fn test_config(network_name: &str) -> PortableCoreInstanceConfig {
+        fn test_config(network_name: &str) -> CoreInstanceConfig {
             let mut core = CoreConfig::default();
             core.node.network_name = network_name.to_owned();
             core.peer_policy.encryption_required = false;
@@ -2570,15 +2507,15 @@ mod tests {
                 secure_mode: None,
                 host_routing: HostRoutingPolicy::default(),
             });
-            let mut connectivity = CoreInstanceConfig::default();
+            let mut connectivity = CoreConnectivityConfig::default();
             connectivity.direct.network_name = network_name.to_owned();
             connectivity.direct.lazy_p2p = peer.snapshot.flags.lazy_p2p;
             connectivity.direct.disable_p2p = peer.snapshot.flags.disable_p2p;
             connectivity.direct.need_p2p = peer.snapshot.flags.need_p2p;
-            PortableCoreInstanceConfig { peer, connectivity }
+            CoreInstanceConfig { peer, connectivity }
         }
 
-        fn runtime_snapshot(config: &PortableCoreInstanceConfig) -> CoreInstanceRuntimeConfig {
+        fn runtime_snapshot(config: &CoreInstanceConfig) -> CoreInstanceRuntimeConfig {
             CoreInstanceRuntimeConfig {
                 services: config.connectivity.runtime.clone(),
                 peer: Arc::new(config.peer.snapshot.clone()),
@@ -2604,8 +2541,13 @@ mod tests {
             external_listener_factory: Option<
                 Arc<dyn ExternalListenerFactory<AcceptedTransport<TestTcpSocket>>>,
             >,
-        ) -> CoreInstanceAdapters<TestHost> {
-            adapters_with_host(Arc::new(TestHost::default()), external_listener_factory)
+            packet_sink: Arc<dyn PacketSink>,
+        ) -> CoreHostAdapters<TestHost> {
+            adapters_with_host(
+                Arc::new(TestHost::default()),
+                external_listener_factory,
+                packet_sink,
+            )
         }
 
         fn adapters_with_host(
@@ -2613,71 +2555,39 @@ mod tests {
             external_listener_factory: Option<
                 Arc<dyn ExternalListenerFactory<AcceptedTransport<TestTcpSocket>>>,
             >,
-        ) -> CoreInstanceAdapters<TestHost> {
+            packet_sink: Arc<dyn PacketSink>,
+        ) -> CoreHostAdapters<TestHost> {
             let dns = Arc::new(TestDns);
-            CoreInstanceAdapters {
-                host,
-                stun_projection: None,
-                dns: dns.clone(),
-                listener_dns: None,
-                dns_records: dns,
-                process_runtime: CoreProcessRuntime::new(),
-                protocol: None,
-                manual_events: None,
-                external_listener_factory,
-                listener_events: None,
-                server_protocol: None,
-                accepted_tunnel_events: None,
-                udp_hole_punch_platform: None,
-                udp_hole_punch_events: None,
-                #[cfg(feature = "proxy-packet")]
-                icmp_proxy_host: None,
-                proxy_cidr_monitor: None,
-                public_ipv6_host: None,
-                public_ipv6_provider: None,
-                vpn_portal: None,
-                vpn_portal_events: None,
-                #[cfg(feature = "proxy-smoltcp-stack")]
-                gateway_events: None,
-            }
+            let mut adapters =
+                CoreHostAdapters::new(host, dns, packet_sink, CoreProcessRuntime::new());
+            adapters.external_listener_factory = external_listener_factory;
+            adapters
         }
 
-        fn build_with_factory<F>(
-            config: PortableCoreInstanceConfig,
-            factory: F,
-        ) -> anyhow::Result<(Arc<CoreInstance<TestHost>>, F::Attachment)>
-        where
-            F: WrappedTransportEngineFactory,
-        {
-            build_with_factory_and_listener(config, factory, None)
+        fn build_with_engines(
+            config: CoreInstanceConfig,
+            engines: WrappedTransportEngines,
+        ) -> anyhow::Result<Arc<CoreInstance<TestHost>>> {
+            build_with_engines_and_listener(config, engines, None)
         }
 
-        fn build_with_factory_and_listener<F>(
-            config: PortableCoreInstanceConfig,
-            factory: F,
+        fn build_with_engines_and_listener(
+            config: CoreInstanceConfig,
+            engines: WrappedTransportEngines,
             external_listener_factory: Option<
                 Arc<dyn ExternalListenerFactory<AcceptedTransport<TestTcpSocket>>>,
             >,
-        ) -> anyhow::Result<(Arc<CoreInstance<TestHost>>, F::Attachment)>
-        where
-            F: WrappedTransportEngineFactory,
-        {
+        ) -> anyhow::Result<Arc<CoreInstance<TestHost>>> {
             let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
-            CoreInstance::new_portable_with_peer_adapters_and_transport_factory(
-                adapters(external_listener_factory),
-                PeerManagerHostAdapters::default(),
-                config,
-                Arc::new(packet_sink),
-                factory,
-            )
-            .map(|(instance, attachment)| (Arc::new(instance), attachment))
+            let mut adapters = adapters(external_listener_factory, Arc::new(packet_sink));
+            adapters.wrapped_transports = engines;
+            CoreInstance::new(config, adapters)
         }
 
         fn build_instance(
-            config: PortableCoreInstanceConfig,
+            config: CoreInstanceConfig,
         ) -> anyhow::Result<Arc<CoreInstance<TestHost>>> {
-            build_with_factory(config, NoWrappedTransportEngineFactory)
-                .map(|(instance, ())| instance)
+            build_with_engines(config, WrappedTransportEngines::default())
         }
 
         #[tokio::test]
@@ -2770,22 +2680,6 @@ mod tests {
 
             async fn stop(&self) {
                 self.stop_calls.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-
-        struct TestTransportProxyFactory {
-            service: Arc<dyn WrappedTransportEngine>,
-        }
-
-        impl WrappedTransportEngineFactory for TestTransportProxyFactory {
-            type Attachment = ();
-
-            fn build(self) -> anyhow::Result<WrappedTransportEngineBuild<Self::Attachment>> {
-                Ok(WrappedTransportEngineBuild {
-                    kcp: Some(self.service),
-                    quic: None,
-                    attachment: (),
-                })
             }
         }
 
@@ -3030,10 +2924,11 @@ mod tests {
             let initial_peer: Url = "tcp://127.0.0.1:29999".parse().unwrap();
             config.connectivity.initial_peers = vec![initial_peer.clone()];
             let proxy = Arc::new(RecordingProxyService::default());
-            let (instance, ()) = build_with_factory(
+            let instance = build_with_engines(
                 config,
-                TestTransportProxyFactory {
-                    service: proxy.clone(),
+                WrappedTransportEngines {
+                    kcp: Some(proxy.clone()),
+                    quic: None,
                 },
             )
             .unwrap();
@@ -3066,20 +2961,14 @@ mod tests {
         #[cfg(feature = "proxy-smoltcp-stack")]
         #[tokio::test]
         async fn startup_plan_controls_gateway_for_initial_and_updated_config() {
-            fn build(config: PortableCoreInstanceConfig) -> Arc<CoreInstance<TestHost>> {
+            fn build(config: CoreInstanceConfig) -> Arc<CoreInstance<TestHost>> {
                 let host = Arc::new(TestHost {
                     reject_socks5_listener: true,
                     ..Default::default()
                 });
                 let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
-                Arc::new(
-                    CoreInstance::new_portable(
-                        adapters_with_host(host, None),
-                        config,
-                        Arc::new(packet_sink),
-                    )
-                    .unwrap(),
-                )
+                let adapters = adapters_with_host(host, None, Arc::new(packet_sink));
+                CoreInstance::new(config, adapters).unwrap()
             }
 
             let mut enabled_config = test_config("gateway-enabled-by-default");
@@ -3110,10 +2999,11 @@ mod tests {
             config.peer.snapshot.flags.enable_kcp_proxy = true;
             config.peer.snapshot.flags.disable_kcp_input = true;
             let engine = Arc::new(RecordingProxyService::default());
-            let (instance, ()) = build_with_factory(
+            let instance = build_with_engines(
                 config,
-                TestTransportProxyFactory {
-                    service: engine.clone(),
+                WrappedTransportEngines {
+                    kcp: Some(engine.clone()),
+                    quic: None,
                 },
             )
             .unwrap();
@@ -3154,18 +3044,12 @@ mod tests {
                 ..Default::default()
             });
             let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
-            let (instance, ()) =
-                CoreInstance::new_portable_with_peer_adapters_and_transport_factory(
-                    adapters_with_host(host, None),
-                    PeerManagerHostAdapters::default(),
-                    config,
-                    Arc::new(packet_sink),
-                    TestTransportProxyFactory {
-                        service: engine.clone(),
-                    },
-                )
-                .unwrap();
-            let instance = Arc::new(instance);
+            let mut adapters = adapters_with_host(host, None, Arc::new(packet_sink));
+            adapters.wrapped_transports = WrappedTransportEngines {
+                kcp: Some(engine.clone()),
+                quic: None,
+            };
+            let instance = CoreInstance::new(config, adapters).unwrap();
 
             instance.start().await.unwrap();
             instance.start_network_services(None).await.unwrap();
@@ -3298,10 +3182,11 @@ mod tests {
                 vec![proxy_network("192.0.2.0/24", Some("198.51.100.0/24"))];
             let mut updated = runtime_snapshot(&config);
             let proxy = Arc::new(RecordingProxyService::default());
-            let (instance, ()) = build_with_factory(
+            let instance = build_with_engines(
                 config,
-                TestTransportProxyFactory {
-                    service: proxy.clone(),
+                WrappedTransportEngines {
+                    kcp: Some(proxy.clone()),
+                    quic: None,
                 },
             )
             .unwrap();
@@ -3387,10 +3272,11 @@ mod tests {
                 vec![proxy_network("10.1.2.0/24", None)];
             config.connectivity.initial_peers = vec!["tcp://127.0.0.1:29998".parse().unwrap()];
             let (proxy, start_gate) = RecordingProxyService::blocking();
-            let (instance, ()) = build_with_factory(
+            let instance = build_with_engines(
                 config,
-                TestTransportProxyFactory {
-                    service: proxy.clone(),
+                WrappedTransportEngines {
+                    kcp: Some(proxy.clone()),
+                    quic: None,
                 },
             )
             .unwrap();
@@ -3442,7 +3328,7 @@ mod tests {
         }
 
         #[test]
-        fn portable_core_instance_rejects_conflicting_p2p_policy() {
+        fn core_instance_rejects_conflicting_p2p_policy() {
             let mut config = test_config("conflicting-p2p");
             config.connectivity.direct.disable_p2p = !config.peer.snapshot.flags.disable_p2p;
 
@@ -3450,6 +3336,17 @@ mod tests {
                 .err()
                 .expect("conflicting P2P policy should be rejected");
             assert!(error.to_string().contains("P2P policy"));
+        }
+
+        #[test]
+        fn core_instance_rejects_mismatched_connectivity_identity() {
+            let mut config = test_config("peer-network");
+            config.connectivity.direct.network_name = "connector-network".to_owned();
+
+            let error = build_instance(config)
+                .err()
+                .expect("mismatched network identity should be rejected");
+            assert!(error.to_string().contains("does not match peer identity"));
         }
 
         #[tokio::test]
@@ -3495,9 +3392,9 @@ mod tests {
                 false,
                 SocketContext::default(),
             ));
-            let (instance, ()) = build_with_factory_and_listener(
+            let instance = build_with_engines_and_listener(
                 config,
-                NoWrappedTransportEngineFactory,
+                WrappedTransportEngines::default(),
                 Some(Arc::new(BlockingExternalListenerFactory {
                     state: state.clone(),
                 })),
@@ -3530,9 +3427,9 @@ mod tests {
                 false,
                 SocketContext::default(),
             ));
-            let (instance, ()) = build_with_factory_and_listener(
+            let instance = build_with_engines_and_listener(
                 config,
-                NoWrappedTransportEngineFactory,
+                WrappedTransportEngines::default(),
                 Some(Arc::new(ReadyExternalListenerFactory)),
             )
             .unwrap();

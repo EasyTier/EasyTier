@@ -13,7 +13,7 @@ use easytier_core::{
         direct::DirectConnectorOptions,
         manual::{ManualConnectorOptions, discovery::ManualEndpointDiscoveryConfig},
     },
-    instance::{CoreInstanceConfig, CoreInstanceStartupPlan},
+    instance::{CoreConnectivityConfig, CoreInstanceStartupPlan},
     listener::plan::ListenerRuntimeConfig,
     peers::acl_config::AclRuleConfig,
     proxy::{ProxyRuntimeConfig, gateway::GatewayRuntimeConfig},
@@ -186,8 +186,8 @@ pub(crate) fn runtime_stun_server_config(global_ctx: &ArcGlobalCtx) -> StunServe
     }
 }
 
-pub(crate) fn runtime_connectivity_config(global_ctx: &ArcGlobalCtx) -> CoreInstanceConfig {
-    CoreInstanceConfig {
+pub(crate) fn runtime_connectivity_config(global_ctx: &ArcGlobalCtx) -> CoreConnectivityConfig {
+    CoreConnectivityConfig {
         initial_peers: global_ctx
             .config
             .get_peers()

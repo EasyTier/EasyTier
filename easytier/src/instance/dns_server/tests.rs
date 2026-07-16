@@ -4,10 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cidr::Ipv4Inet;
-use easytier_core::{
-    magic_dns::MagicDnsRoute, process_runtime::CoreProcessRuntime,
-    proxy::wrapped_transport::NoWrappedTransportEngineFactory,
-};
+use easytier_core::{magic_dns::MagicDnsRoute, process_runtime::CoreProcessRuntime};
 use hickory_client::client::{Client, ClientHandle as _};
 use hickory_proto::rr;
 use hickory_proto::runtime::TokioRuntimeProvider;
@@ -17,8 +14,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::common::global_ctx::{ArcGlobalCtx, tests::get_mock_global_ctx};
 use crate::instance::composition::{
-    NativeCoreInstance,
-    build_portable_runtime_core_instance_with_transport_factory_and_process_runtime,
+    NativeCoreInstance, runtime_core_host_adapters, runtime_core_instance_config,
 };
 
 use crate::instance::dns_server::runner::DnsRunner;
@@ -43,15 +39,13 @@ async fn build_test_core(
     tokio::sync::mpsc::Receiver<Vec<u8>>,
 ) {
     let (packet_sink, packet_receiver) = tokio::sync::mpsc::channel(128);
-    let (core_instance, ()) =
-        build_portable_runtime_core_instance_with_transport_factory_and_process_runtime(
-            ctx,
-            Arc::new(packet_sink),
-            NoWrappedTransportEngineFactory,
-            CoreProcessRuntime::new(),
-        )
-        .unwrap();
-    let core_instance = Arc::new(core_instance);
+    let adapters = runtime_core_host_adapters(
+        ctx.clone(),
+        CoreProcessRuntime::new(),
+        Arc::new(packet_sink),
+    );
+    let core_instance =
+        NativeCoreInstance::new(runtime_core_instance_config(&ctx), adapters).unwrap();
     core_instance.start().await.unwrap();
     (core_instance, packet_receiver)
 }

@@ -3,39 +3,25 @@
 #[cfg(target_os = "wasi")]
 pub mod wasi;
 
-use std::sync::Arc;
-
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    connectivity::host::{
-        HostConnectorAdapter, HostConnectorSocketBackend,
-        environment::{HostConnectorEnvironmentServices, HostConnectorEnvironmentSnapshot},
-    },
-    process_runtime::CoreProcessRuntime,
-    socket::host::{
-        HostSocketRuntime,
-        dns::{HostDnsIo, HostDnsResolver},
-        environment::{HostConnectorEnvironmentIo, HostConnectorEnvironmentServiceAdapter},
-        packet::{HostPacketIo, HostPacketSink, HostPacketSinkHandle},
-    },
-};
+use crate::connectivity::host::environment::HostConnectorEnvironmentSnapshot;
 
-use super::{CoreInstance, CoreInstanceAdapters, PortableCoreInstanceConfig};
+use super::CoreInstanceConfig;
 
-pub const HOST_CORE_INSTANCE_CONFIG_VERSION: u32 = 13;
+pub(super) const WASI_CORE_INSTANCE_CONFIG_VERSION: u32 = 13;
 
 /// Versioned payload accepted by host-driven instance frontends.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HostCoreInstanceCreateConfig {
+pub(super) struct WasiCoreInstanceCreateConfig {
     pub version: u32,
-    pub instance: PortableCoreInstanceConfig,
+    pub instance: CoreInstanceConfig,
     pub environment: HostConnectorEnvironmentSnapshot,
 }
 
-impl HostCoreInstanceCreateConfig {
+impl WasiCoreInstanceCreateConfig {
     pub fn validate(&self) -> anyhow::Result<()> {
-        if self.version != HOST_CORE_INSTANCE_CONFIG_VERSION {
+        if self.version != WASI_CORE_INSTANCE_CONFIG_VERSION {
             anyhow::bail!(
                 "unsupported host core instance config version: {}",
                 self.version
@@ -45,164 +31,81 @@ impl HostCoreInstanceCreateConfig {
     }
 }
 
-/// A portable core instance and the shared scheduler bridge for its host I/O.
-///
-/// Socket, listener, DNS, and packet adapters must use the same runtime so one
-/// host completion notification can wake every kind of pending core task.
-pub struct HostCoreInstance<B, E>
-where
-    B: HostConnectorSocketBackend,
-    E: HostConnectorEnvironmentServices,
-{
-    socket_runtime: HostSocketRuntime,
-    instance: Arc<CoreInstance<HostConnectorAdapter<B, E>>>,
-}
-
-impl<B, E> HostCoreInstance<B, E>
-where
-    B: HostConnectorSocketBackend,
-    E: HostConnectorEnvironmentServices,
-{
-    /// Composes adapters under a caller-provided completion runtime.
-    ///
-    /// Any asynchronous environment implementation must use this same runtime.
-    pub fn new_with_runtime<D, P>(
-        config: PortableCoreInstanceConfig,
-        process_runtime: Arc<CoreProcessRuntime>,
-        socket_runtime: HostSocketRuntime,
-        socket_backend: Arc<B>,
-        environment_snapshot: HostConnectorEnvironmentSnapshot,
-        environment_services: Arc<E>,
-        dns_io: Arc<D>,
-        packet_io: Arc<P>,
-        packet_sink: HostPacketSinkHandle,
-    ) -> anyhow::Result<Self>
-    where
-        D: HostDnsIo,
-        P: HostPacketIo,
-    {
-        let host = Arc::new(HostConnectorAdapter::new(
-            socket_runtime.clone(),
-            socket_backend,
-            environment_snapshot,
-            environment_services,
-        ));
-        let dns = Arc::new(HostDnsResolver::new(socket_runtime.clone(), dns_io));
-        let packet_sink = Arc::new(HostPacketSink::new(
-            socket_runtime.clone(),
-            packet_io,
-            packet_sink,
-        ));
-        let adapters = CoreInstanceAdapters {
-            host,
-            stun_projection: None,
-            dns: dns.clone(),
-            listener_dns: None,
-            dns_records: dns,
-            process_runtime,
-            protocol: None,
-            manual_events: None,
-            external_listener_factory: None,
-            listener_events: None,
-            server_protocol: None,
-            accepted_tunnel_events: None,
-            udp_hole_punch_platform: None,
-            udp_hole_punch_events: None,
-            #[cfg(feature = "proxy-packet")]
-            icmp_proxy_host: None,
-            proxy_cidr_monitor: None,
-            public_ipv6_host: None,
-            public_ipv6_provider: None,
-            vpn_portal: None,
-            vpn_portal_events: None,
-            #[cfg(feature = "proxy-smoltcp-stack")]
-            gateway_events: None,
-        };
-        let instance = Arc::new(CoreInstance::new_portable(adapters, config, packet_sink)?);
-
-        Ok(Self {
-            socket_runtime,
-            instance,
-        })
-    }
-
-    pub fn instance(&self) -> &Arc<CoreInstance<HostConnectorAdapter<B, E>>> {
-        &self.instance
-    }
-
-    pub fn notify_host_completions(&self) {
-        self.socket_runtime.notify_completions();
-    }
-}
-
-impl<B, I> HostCoreInstance<B, HostConnectorEnvironmentServiceAdapter<I>>
-where
-    B: HostConnectorSocketBackend,
-    I: HostConnectorEnvironmentIo,
-{
-    /// Composes environment operations with every other host adapter under one
-    /// completion runtime.
-    pub fn new_with_environment_io<D, P>(
-        config: PortableCoreInstanceConfig,
-        process_runtime: Arc<CoreProcessRuntime>,
-        socket_backend: Arc<B>,
-        environment_snapshot: HostConnectorEnvironmentSnapshot,
-        environment_io: Arc<I>,
-        dns_io: Arc<D>,
-        packet_io: Arc<P>,
-        packet_sink: HostPacketSinkHandle,
-    ) -> anyhow::Result<Self>
-    where
-        D: HostDnsIo,
-        P: HostPacketIo,
-    {
-        let socket_runtime = HostSocketRuntime::new();
-        let services = Arc::new(HostConnectorEnvironmentServiceAdapter::new(
-            socket_runtime.clone(),
-            environment_io,
-        ));
-        Self::new_with_runtime(
-            config,
-            process_runtime,
-            socket_runtime,
-            socket_backend,
-            environment_snapshot,
-            services,
-            dns_io,
-            packet_io,
-            packet_sink,
-        )
-    }
-}
-
 #[cfg(target_os = "wasi")]
-pub type WasiHostCoreInstance = HostCoreInstance<
-    crate::socket::host::wasi_backend::WasiHostSocketBackend,
-    HostConnectorEnvironmentServiceAdapter<
-        crate::socket::host::environment::wasi::WasiHostConnectorEnvironmentIo,
+pub(super) type WasiCore = super::CoreInstance<
+    crate::connectivity::host::HostConnectorAdapter<
+        crate::socket::host::wasi_backend::WasiHostSocketBackend,
+        crate::socket::host::environment::HostConnectorEnvironmentServiceAdapter<
+            crate::socket::host::environment::wasi::WasiHostConnectorEnvironmentIo,
+        >,
     >,
 >;
 
 #[cfg(target_os = "wasi")]
-pub fn new_wasi_host_core_instance(
-    config: PortableCoreInstanceConfig,
-    process_runtime: Arc<CoreProcessRuntime>,
+pub(super) struct WasiCoreRuntime {
+    socket_runtime: crate::socket::host::HostSocketRuntime,
+    core: std::sync::Arc<WasiCore>,
+}
+
+#[cfg(target_os = "wasi")]
+impl WasiCoreRuntime {
+    pub(super) fn core(&self) -> &std::sync::Arc<WasiCore> {
+        &self.core
+    }
+
+    pub(super) fn notify_host_completions(&self) {
+        self.socket_runtime.notify_completions();
+    }
+}
+
+#[cfg(target_os = "wasi")]
+pub(super) fn new_wasi_core_runtime(
+    config: CoreInstanceConfig,
+    process_runtime: std::sync::Arc<crate::process_runtime::CoreProcessRuntime>,
     environment_snapshot: HostConnectorEnvironmentSnapshot,
-    packet_sink: HostPacketSinkHandle,
-) -> anyhow::Result<WasiHostCoreInstance> {
+    packet_sink: crate::socket::host::packet::HostPacketSinkHandle,
+) -> anyhow::Result<WasiCoreRuntime> {
+    use std::sync::Arc;
+
     use crate::socket::host::{
-        dns::wasi::WasiHostDnsIo, environment::wasi::WasiHostConnectorEnvironmentIo,
-        packet::wasi::WasiHostPacketIo, wasi_backend::WasiHostSocketBackend,
+        HostSocketRuntime,
+        dns::{HostDnsResolver, wasi::WasiHostDnsIo},
+        environment::{
+            HostConnectorEnvironmentServiceAdapter, wasi::WasiHostConnectorEnvironmentIo,
+        },
+        packet::{HostPacketSink, wasi::WasiHostPacketIo},
+        wasi_backend::WasiHostSocketBackend,
+    };
+    use crate::{
+        connectivity::host::HostConnectorAdapter,
+        instance::{CoreHostAdapters, CoreInstance},
     };
 
-    HostCoreInstance::new_with_environment_io(
-        config,
-        process_runtime,
+    let socket_runtime = HostSocketRuntime::new();
+    let environment_services = Arc::new(HostConnectorEnvironmentServiceAdapter::new(
+        socket_runtime.clone(),
+        Arc::new(WasiHostConnectorEnvironmentIo),
+    ));
+    let host = Arc::new(HostConnectorAdapter::new(
+        socket_runtime.clone(),
         Arc::new(WasiHostSocketBackend::default()),
         environment_snapshot,
-        Arc::new(WasiHostConnectorEnvironmentIo),
+        environment_services,
+    ));
+    let dns = Arc::new(HostDnsResolver::new(
+        socket_runtime.clone(),
         Arc::new(WasiHostDnsIo),
+    ));
+    let packet_sink = Arc::new(HostPacketSink::new(
+        socket_runtime.clone(),
         Arc::new(WasiHostPacketIo),
         packet_sink,
-    )
+    ));
+    let adapters = CoreHostAdapters::new(host, dns, packet_sink, process_runtime);
+    let core = CoreInstance::new(config, adapters)?;
+
+    Ok(WasiCoreRuntime {
+        socket_runtime,
+        core,
+    })
 }

@@ -7,7 +7,7 @@ use tokio::{runtime::Builder, task::JoinHandle};
 use crate::{
     instance::{
         CoreInstanceState,
-        host::HostCoreInstanceCreateConfig,
+        host::WasiCoreInstanceCreateConfig,
         runtime_driver::{RuntimeDriveOutcome, RuntimeDriver},
     },
     process_runtime::CoreProcessRuntime,
@@ -15,7 +15,7 @@ use crate::{
     socket::host::packet::HostPacketSinkHandle,
 };
 
-use super::{WasiHostCoreInstance, new_wasi_host_core_instance};
+use super::{WasiCoreRuntime, new_wasi_core_runtime};
 
 const MAX_CREATE_CONFIG_LEN: usize = 16 * 1024 * 1024;
 const MAX_GUEST_BUFFER_LEN: usize = MAX_CREATE_CONFIG_LEN;
@@ -55,7 +55,7 @@ struct WasiInstanceEntry {
     runtime: tokio::runtime::Runtime,
     runtime_driver: RuntimeDriver,
     drive_again: bool,
-    instance: WasiHostCoreInstance,
+    core: WasiCoreRuntime,
     start_task: Option<JoinHandle<anyhow::Result<()>>>,
     stop_task: Option<JoinHandle<()>>,
     error: String,
@@ -119,11 +119,11 @@ impl WasiInstanceEntry {
     fn start(&mut self) -> anyhow::Result<()> {
         if self.start_task.is_some()
             || self.stop_task.is_some()
-            || self.instance.instance().state() != CoreInstanceState::Created
+            || self.core.core().state() != CoreInstanceState::Created
         {
             anyhow::bail!("core instance cannot schedule start from its current state");
         }
-        let instance = self.instance.instance().clone();
+        let instance = self.core.core().clone();
         self.start_task = Some(self.runtime.spawn(async move {
             instance.start().await?;
             instance.start_after_host_ready(None).await
@@ -132,12 +132,10 @@ impl WasiInstanceEntry {
     }
 
     fn stop(&mut self) {
-        if self.stop_task.is_some()
-            || self.instance.instance().state() == CoreInstanceState::Stopped
-        {
+        if self.stop_task.is_some() || self.core.core().state() == CoreInstanceState::Stopped {
             return;
         }
-        let instance = self.instance.instance().clone();
+        let instance = self.core.core().clone();
         self.stop_task = Some(self.runtime.spawn(async move {
             instance.stop().await;
         }));
@@ -145,7 +143,7 @@ impl WasiInstanceEntry {
 
     fn drive(&mut self, domain: u64) -> anyhow::Result<()> {
         let _domain = enter_domain(domain);
-        self.instance.notify_host_completions();
+        self.core.notify_host_completions();
         self.drive_again =
             self.runtime_driver.drive(&self.runtime) == RuntimeDriveOutcome::BudgetExhausted;
 
@@ -177,7 +175,7 @@ impl WasiInstanceEntry {
         if self.start_task.is_some() {
             return 1;
         }
-        match self.instance.instance().state() {
+        match self.core.core().state() {
             CoreInstanceState::Created => 0,
             CoreInstanceState::Starting => 1,
             CoreInstanceState::Running => 2,
@@ -195,11 +193,11 @@ impl WasiInstanceEntry {
     }
 }
 
-fn decode_create_config(encoded: &[u8]) -> anyhow::Result<HostCoreInstanceCreateConfig> {
+fn decode_create_config(encoded: &[u8]) -> anyhow::Result<WasiCoreInstanceCreateConfig> {
     if encoded.is_empty() || encoded.len() > MAX_CREATE_CONFIG_LEN {
         anyhow::bail!("invalid host core instance config buffer");
     }
-    let config: HostCoreInstanceCreateConfig = serde_json::from_slice(encoded)?;
+    let config: WasiCoreInstanceCreateConfig = serde_json::from_slice(encoded)?;
     config.validate()?;
     Ok(config)
 }
@@ -302,18 +300,18 @@ pub extern "C" fn easytier_instance_create(
     };
     let handle = INSTANCES.with_borrow_mut(WasiInstanceRegistry::allocate_handle);
     let process_runtime = INSTANCES.with_borrow(|registry| registry.process_runtime.clone());
-    let instance = {
+    let core = {
         let _domain = enter_domain(handle);
         let _runtime = runtime.enter();
-        new_wasi_host_core_instance(
+        new_wasi_core_runtime(
             config.instance,
             process_runtime,
             config.environment,
             HostPacketSinkHandle(packet_sink_handle),
         )
     };
-    let instance = match instance {
-        Ok(instance) => instance,
+    let core = match core {
+        Ok(core) => core,
         Err(error) => {
             clear_domain(handle);
             INSTANCES.with_borrow_mut(|registry| registry.set_error(error));
@@ -328,7 +326,7 @@ pub extern "C" fn easytier_instance_create(
                 runtime,
                 runtime_driver,
                 drive_again: false,
-                instance,
+                core,
                 start_task: None,
                 stop_task: None,
                 error: String::new(),
@@ -368,7 +366,7 @@ pub extern "C" fn easytier_instance_drive(handle: u64) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn easytier_instance_notify_completions(handle: u64) -> i32 {
     with_entry(handle, |entry| {
-        entry.instance.notify_host_completions();
+        entry.core.notify_host_completions();
         Ok(0)
     })
 }
@@ -413,7 +411,7 @@ pub extern "C" fn easytier_instance_send_packet(
                 return Ok(INVALID_INPUT);
             }
         };
-        let instance = entry.instance.instance().clone();
+        let instance = entry.core.core().clone();
         entry.runtime.spawn(async move {
             if let Err(error) = instance.send_ip_packet(packet).await {
                 tracing::warn!(?error, "host packet ingress failed");
