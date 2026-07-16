@@ -2305,18 +2305,15 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 name = "easytier"
 version = "2.6.4"
 dependencies = [
- "aes-gcm",
  "anyhow",
  "arc-swap",
  "ariadne",
  "async-recursion",
- "async-stream",
  "async-trait",
  "atomic-shim",
  "atomic_refcell",
  "auto_impl",
  "base64 0.22.1",
- "bitflags 2.8.0",
  "bon",
  "boringtun-easytier",
  "bytecodec",
@@ -2351,41 +2348,30 @@ dependencies = [
  "hickory-proto",
  "hickory-resolver",
  "hickory-server",
- "hmac",
  "http",
  "humansize",
  "humantime-serde",
- "idna 1.0.3",
  "igd-next",
  "indoc",
- "itertools 0.14.0",
  "kcp-sys",
  "machine-uid",
  "maplit",
  "mimalloc",
  "moka",
- "multimap",
  "natpmp",
  "netlink-packet-core",
  "netlink-packet-route 0.21.0",
- "netlink-packet-utils",
  "netlink-sys",
  "network-interface",
  "nix 0.29.0",
  "once_cell",
- "openssl",
- "ordered_hash_map",
  "parking_lot",
  "paste",
- "pbjson",
  "percent-encoding",
- "petgraph",
  "pin-project-lite",
  "pnet",
- "prefix-trie",
  "prost 0.14.3",
  "prost-reflect",
- "prost-wkt-types",
  "quanta",
  "quinn",
  "quinn-proto",
@@ -2401,7 +2387,6 @@ dependencies = [
  "serde_json",
  "serial_test",
  "service-manager",
- "sha2",
  "shellexpand",
  "socket2 0.5.10",
  "strum 0.27.2",
@@ -2419,7 +2404,6 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tokio-socks",
- "tokio-stream",
  "tokio-util",
  "tokio-websockets",
  "toml 0.8.19",
@@ -2436,7 +2420,6 @@ dependencies = [
  "winreg 0.52.0",
  "x25519-dalek",
  "zerocopy 0.7.35",
- "zstd",
 ]
 
 [[package]]
@@ -5310,9 +5293,6 @@ name = "multimap"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
-dependencies = [
- "serde",
-]
 
 [[package]]
 name = "nalgebra"
@@ -6069,15 +6049,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff011a302c396a5197692431fc1948019154afc178baf7d8e37367442a4601cf"
 
 [[package]]
-name = "openssl-src"
-version = "300.5.2+3.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d270b79e2926f5150189d475bc7e9d2c69f9c4697b185fa917d5a32b792d21b4"
-dependencies = [
- "cc",
-]
-
-[[package]]
 name = "openssl-sys"
 version = "0.9.103"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6085,7 +6056,6 @@ checksum = "7f9e8deee91df40a943c71b917e5874b951d32a802526c85721ce3b776c929d6"
 dependencies = [
  "cc",
  "libc",
- "openssl-src",
  "pkg-config",
  "vcpkg",
 ]

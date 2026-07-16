@@ -52,7 +52,6 @@ tracing-subscriber = { version = "0.3", features = [
 derive_more = { version = "2.1.1", features = ["full"] }
 console-subscriber = { version = "0.4.1", optional = true }
 indoc = "2.0.7"
-regex = "1.8"
 paste = "1.0"
 thiserror = "1.0"
 auto_impl = "1.1.0"
@@ -65,8 +64,6 @@ chrono = { version = "0.4.37", features = ["serde"] }
 guarden = "0.2"
 quanta = "0.12"
 
-itertools = "0.14.0"
-
 strum = { version = "0.27.2", features = ["derive"] }
 
 gethostname = "0.5.0"
@@ -74,10 +71,8 @@ gethostname = "0.5.0"
 futures = { version = "0.3", features = ["bilock", "unstable"] }
 
 tokio = { version = "1", features = ["full"] }
-tokio-stream = "0.1"
 tokio-util = { version = "0.7.9", features = ["codec", "net", "io", "rt"] }
 
-async-stream = "0.3.5"
 async-trait = "0.1.74"
 
 dashmap = "6.0"
@@ -138,15 +133,12 @@ once_cell = "1.18.0"
 # for rpc
 prost = "0.14.3"
 prost-reflect = { version = "0.16.4", default-features = false, features = ["derive", "serde"] }
-prost-wkt-types = "0.7.1"
-pbjson = "0.9.0"
 
 anyhow = "1.0"
 ariadne = "0.5"
 
 url = { version = "2.5", features = ["serde"] }
 percent-encoding = "2.3.1"
-idna = "1.0"
 
 # for tun packet
 byteorder = "1.5.0"
@@ -154,11 +146,8 @@ byteorder = "1.5.0"
 # for proxy
 cidr = { version = "0.3.1", features = ["serde"] }
 socket2 = { version = "0.5.10", features = ["all"] }
-prefix-trie = { version = "0.7.0", features = ["cidr"] }
 
 # for hole punching
-stun_codec = "0.3.4"
-bytecodec = "0.4.15"
 rand = "0.8.5"
 
 serde = { version = "1.0", features = ["derive"] }
@@ -179,19 +168,11 @@ async-recursion = "1.0.5"
 
 network-interface = "2.0"
 
-# for ospf route
-petgraph = "0.8.1"
-ordered_hash_map = "0.5.0"
-
 # for wireguard
 boringtun = { package = "boringtun-easytier", version = "0.6.1", optional = true }
 
 # for encryption
 ring = { version = "0.17", optional = true }
-bitflags = "2.5"
-aes-gcm = { version = "0.10.3", optional = true }
-openssl = { version = "0.10", optional = true, features = ["vendored"] }
-x25519-dalek = { version = "2.0", features = ["static_secrets"] }
 
 # for cli
 tabled = "0.16"
@@ -215,8 +196,6 @@ sys-locale = "0.3"
 
 service-manager = { git = "https://github.com/EasyTier/service-manager-rs.git", branch = "main" }
 
-zstd = { version = "0.13", optional = true }
-
 kcp-sys = { git = "https://github.com/EasyTier/kcp-sys", rev = "d7427c22d764deb1860a7d37acc446ed5033464c", optional = true }
 
 # for dns connector
@@ -232,9 +211,6 @@ hickory-server = { version = "0.25.2", features = [
 bon = "3.9.1"
 derive_builder = "0.20.2"
 humantime-serde = "1.1.1"
-multimap = "0.10.1"
-hmac = "0.12.1"
-sha2 = "0.10.8"
 shellexpand = "3.1.1"
 
 # for fake tcp
@@ -249,7 +225,6 @@ machine-uid = "0.5.3"
 netlink-sys = "0.8.7"
 netlink-packet-route = "0.21.0"
 netlink-packet-core = { version = "0.7.0" }
-netlink-packet-utils = "0.5.2"
 [target.'cfg(all(windows, any(target_arch = "x86_64", target_arch = "x86")))'.dependencies]
 windivert = { git = "https://github.com/EasyTier/windivert-rust.git", rev = "adcc56d1550f7b5377ec2b3429f413ee24a77375", features = [
     "static",
@@ -313,6 +288,9 @@ futures-util = "0.3.31"
 maplit = "1.0.2"
 tempfile = "3.22.0"
 ctor = "0.8.0"
+stun_codec = "0.3.4"
+bytecodec = "0.4.15"
+x25519-dalek = { version = "2.0", features = ["static_secrets"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 defguard_wireguard_rs = "0.4.2"
@@ -350,8 +328,8 @@ wireguard = ["dep:boringtun", "dep:ring", "easytier-core/aes-gcm", "easytier-cor
 quic = ["dep:quinn", "dep:quinn-proto", "dep:seahash", "dep:rustls", "easytier-proto/quic"]
 kcp = ["dep:kcp-sys"]
 mimalloc = ["dep:mimalloc"]
-aes-gcm = ["dep:aes-gcm", "easytier-core/aes-gcm"]
-openssl-crypto = ["dep:openssl", "easytier-core/aes-gcm", "easytier-core/chacha20"]
+aes-gcm = ["easytier-core/aes-gcm"]
+openssl-crypto = ["easytier-core/aes-gcm", "easytier-core/chacha20"]
 tun = ["dep:tun"]
 websocket = [
     "dep:tokio-websockets",
@@ -376,7 +354,7 @@ jemalloc-prof = [
 tracing = ["tokio/tracing", "dep:console-subscriber"]
 magic-dns = ["dep:hickory-client", "dep:hickory-server", "easytier-proto/magic-dns"]
 faketcp = ["dep:flume", "easytier-proto/faketcp"]
-zstd = ["dep:zstd", "easytier-core/zstd", "easytier-proto/zstd"]
+zstd = ["easytier-core/zstd", "easytier-proto/zstd"]
 # Deprecated: hotpath profiling has been removed. These feature aliases are
 # retained as no-ops so existing build scripts using `--features hotpath*`
 # continue to work without pulling in any dependencies.
