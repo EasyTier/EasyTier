@@ -1,24 +1,27 @@
 # EasyTier Core Refactor Documents
 
-> Status: authoritative index. Updated 2026-07-15.
+> Status: authoritative index. Updated 2026-07-16.
 
 This directory records the plan for moving portable EasyTier behaviour into the
 single `easytier-core` crate. When documents disagree, use the following order:
 
 1. [`CONTEXT.md`](../CONTEXT.md) defines domain language and ownership.
 2. Accepted records in [`docs/adr`](../docs/adr) define architectural decisions.
-3. [`core_refactor_roadmap.md`](core_refactor_roadmap.md) defines current order,
-   scope, and completion gates.
-4. The active phase design defines the next implementation slice. Phase 0 uses
+3. [`core_native_closeout.md`](core_native_closeout.md) is the active
+   ownership-closeout checklist.
+4. [`core_refactor_roadmap.md`](core_refactor_roadmap.md) defines the overall
+   order, scope, and completion gates.
+5. The active phase design defines the next implementation slice. Phase 0 uses
    [`go_wasi_host_poc.md`](go_wasi_host_poc.md).
-5. Older topic plans are historical input. Their code references and completion
+6. Older topic plans are historical input. Their code references and completion
    status may be stale.
 
 ## Current documents
 
 | Document | Status | Role |
 | --- | --- | --- |
-| [`core_refactor_roadmap.md`](core_refactor_roadmap.md) | Active | Overall migration order and gates |
+| [`core_native_closeout.md`](core_native_closeout.md) | Active | Remaining semantic ownership, deletion and verification checklist |
+| [`core_refactor_roadmap.md`](core_refactor_roadmap.md) | Active, corrected by closeout audit | Overall migration order and gates |
 | [`host_runtime_stun_refactor.md`](host_runtime_stun_refactor.md) | Complete | Process-level host runtime, request context, and core STUN closure record |
 | [`tunnel_ownership_refactor.md`](tunnel_ownership_refactor.md) | Complete | TCP/UDP/Ring Tunnel ownership and connector/listener closure record |
 | [`go_wasi_host_poc.md`](go_wasi_host_poc.md) | Deferred validation | Required before finalizing the Go/WASM socket ABI |

@@ -1,7 +1,13 @@
 # EasyTier Core Refactor Roadmap
 
-> Status: core ownership migration complete; feature slicing and production
-> hardening remain follow-up work. Updated 2026-07-15.
+> Status: first ownership milestone complete; semantic ownership closeout is
+> active. Updated 2026-07-16.
+
+The 2026-07-16 source audit found semantic ownership leaks that the earlier
+path-based deletion gates did not detect. The authoritative remaining work is
+tracked in [`core_native_closeout.md`](core_native_closeout.md). Statements
+below that call ownership complete describe the earlier milestone and must not
+be used as the final completion claim.
 
 ## Outcome
 
@@ -70,7 +76,8 @@ Already established:
   exposing no Go STUN state or mapping operations. Listener input is normalized
   URLs plus IPv6 policy and `SocketContext`; core derives the internal plan.
 
-The ownership architecture is now closed. Deliberate follow-up boundaries are:
+The first ownership milestone closed the old connector, peer facade and raw
+Tunnel paths. Deliberate follow-up boundaries at that milestone were:
 
 - Unix, FakeTCP, KCP/quinn, WireGuard, real socket/listener, TUN, netns, route,
   DNS, and product-presentation work remains in Host Adapters where it is a
@@ -145,9 +152,9 @@ The whole refactor is done only when all of these hold:
    key behaviours.
 8. Deprecated native ownership and compatibility forwarding paths are deleted.
 
-These ownership criteria are met. Phase 4 feature slicing and the quantitative
-production-hardening items below are separately tracked follow-up work; they
-do not reopen native ownership of portable state or decisions.
+The path-based criteria were met, but the semantic audit found remaining
+portable decisions and lifecycle in native. Feature slicing starts only after
+the active closeout checklist is complete.
 
 ## Phase 0: prove the Go/WASI socket and executor model
 
