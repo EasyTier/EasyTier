@@ -3,7 +3,6 @@ use std::{collections::hash_map::DefaultHasher, hash::Hasher, net::SocketAddr};
 use crate::common::{dns::socket_addrs, error::Error};
 use derive_more::{From, TryInto};
 use easytier_core::tunnel::{IpVersion, TunnelError};
-use socket2::Protocol;
 use strum::{Display, EnumString, IntoStaticStr, VariantArray};
 
 pub mod common;
@@ -74,15 +73,6 @@ impl FromUrl for SocketAddr {
     }
 }
 
-#[async_trait::async_trait]
-impl FromUrl for uuid::Uuid {
-    async fn from_url(url: url::Url, _ip_version: IpVersion) -> Result<Self, TunnelError> {
-        let o = url.host_str().unwrap();
-        let o = uuid::Uuid::parse_str(o).map_err(|e| TunnelError::InvalidAddr(e.to_string()))?;
-        Ok(o)
-    }
-}
-
 pub struct TunnelUrl {
     inner: url::Url,
 }
@@ -129,12 +119,6 @@ pub fn generate_digest_from_str(str1: &str, str2: &str, digest: &mut [u8]) {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct IpSchemeAttributes {
-    protocol: Protocol,
-    port_offset: u16,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Display, EnumString, IntoStaticStr, VariantArray)]
 #[strum(serialize_all = "lowercase")]
 pub enum IpScheme {
@@ -153,32 +137,20 @@ pub enum IpScheme {
 }
 
 impl IpScheme {
-    const fn attributes(self) -> IpSchemeAttributes {
-        let (protocol, port_offset) = match self {
-            Self::Tcp => (Protocol::TCP, 0),
-            Self::Udp => (Protocol::UDP, 0),
-            #[cfg(feature = "wireguard")]
-            Self::Wg => (Protocol::UDP, 1),
-            #[cfg(feature = "quic")]
-            Self::Quic => (Protocol::UDP, 2),
-            #[cfg(feature = "websocket")]
-            Self::Ws => (Protocol::TCP, 1),
-            #[cfg(feature = "websocket")]
-            Self::Wss => (Protocol::TCP, 2),
-            #[cfg(feature = "faketcp")]
-            Self::FakeTcp => (Protocol::TCP, 3),
-        };
-        IpSchemeAttributes {
-            protocol,
-            port_offset,
-        }
-    }
-    pub const fn protocol(self) -> Protocol {
-        self.attributes().protocol
-    }
-
     pub const fn port_offset(self) -> u16 {
-        self.attributes().port_offset
+        match self {
+            Self::Tcp | Self::Udp => 0,
+            #[cfg(feature = "wireguard")]
+            Self::Wg => 1,
+            #[cfg(feature = "quic")]
+            Self::Quic => 2,
+            #[cfg(feature = "websocket")]
+            Self::Ws => 1,
+            #[cfg(feature = "websocket")]
+            Self::Wss => 2,
+            #[cfg(feature = "faketcp")]
+            Self::FakeTcp => 3,
+        }
     }
 
     pub const fn default_port(self) -> u16 {

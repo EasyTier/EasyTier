@@ -1,5 +1,3 @@
-use std::{ops::Deref, sync::Arc};
-
 #[cfg(target_os = "windows")]
 use std::net::IpAddr;
 
@@ -10,16 +8,12 @@ use network_interface::{
 use pnet::datalink::NetworkInterface;
 #[cfg(target_os = "windows")]
 use pnet::{ipnetwork::IpNetwork, util::MacAddr};
-use tokio::{
-    sync::{Mutex, RwLock},
-    task::JoinSet,
-};
+#[cfg(all(target_os = "macos", not(feature = "macos-ne")))]
+use tokio::sync::Mutex;
 
 use crate::proto::peer_rpc::GetIpListResponse;
 
 use super::netns::NetNS;
-
-pub const CACHED_IP_LIST_TIMEOUT_SEC: u64 = 60;
 
 struct InterfaceFilter {
     iface: NetworkInterface,
@@ -201,253 +195,199 @@ pub async fn local_ipv6() -> std::io::Result<std::net::Ipv6Addr> {
     }
 }
 
-pub struct IPCollector {
-    cached_ip_list: Arc<RwLock<GetIpListResponse>>,
-    collect_ip_task: Mutex<JoinSet<()>>,
-    net_ns: NetNS,
+pub(crate) async fn collect_interfaces(net_ns: NetNS, filter: bool) -> Vec<NetworkInterface> {
+    #[cfg(target_os = "linux")]
+    {
+        return run_in_namespace(net_ns, move || async move {
+            collect_interfaces_in_current_namespace(filter).await
+        })
+        .await;
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _g = net_ns.guard();
+        collect_interfaces_in_current_namespace(filter).await
+    }
 }
 
-impl IPCollector {
-    pub fn new(net_ns: NetNS) -> Self {
-        Self {
-            cached_ip_list: Arc::new(RwLock::new(GetIpListResponse::default())),
-            collect_ip_task: Mutex::new(JoinSet::new()),
-            net_ns,
-        }
-    }
-
-    pub async fn collect_ip_addrs(&self) -> GetIpListResponse {
-        let mut task = self.collect_ip_task.lock().await;
-        Self::reap_finished_collectors(&mut task);
-        if task.is_empty() {
-            let cached_ip_list = self.cached_ip_list.clone();
-            *cached_ip_list.write().await = Self::collect_local_ip_addrs(self.net_ns.clone()).await;
-            let net_ns = self.net_ns.clone();
-            let cached_ip_list = self.cached_ip_list.clone();
-            task.spawn(async move {
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_secs(CACHED_IP_LIST_TIMEOUT_SEC))
-                        .await;
-                    let ifaces = Self::collect_local_ip_addrs(net_ns.clone()).await;
-                    *cached_ip_list.write().await = ifaces;
-                }
-            });
-        }
-
-        self.cached_ip_list.read().await.deref().clone()
-    }
-
-    fn reap_finished_collectors(tasks: &mut JoinSet<()>) -> bool {
-        let mut reaped = false;
-        while let Some(result) = tasks.try_join_next() {
-            reaped = true;
-            match result {
-                Ok(()) => tracing::warn!("IP address refresh task stopped unexpectedly"),
-                Err(error) => {
-                    tracing::error!(?error, "IP address refresh task failed; restarting")
-                }
-            }
-        }
-        reaped
-    }
-
-    pub async fn collect_interfaces(net_ns: NetNS, filter: bool) -> Vec<NetworkInterface> {
-        #[cfg(target_os = "linux")]
-        {
-            return Self::run_in_namespace(net_ns, move || async move {
-                Self::collect_interfaces_in_current_namespace(filter).await
-            })
-            .await;
-        }
-
-        #[cfg(not(target_os = "linux"))]
-        {
-            let _g = net_ns.guard();
-            Self::collect_interfaces_in_current_namespace(filter).await
-        }
-    }
-
-    async fn collect_interfaces_in_current_namespace(filter: bool) -> Vec<NetworkInterface> {
-        #[cfg(target_os = "windows")]
-        let ifaces = Self::collect_interfaces_windows();
-        #[cfg(not(target_os = "windows"))]
-        let ifaces = pnet::datalink::interfaces();
-        let mut ret = vec![];
-        for iface in ifaces {
-            let f = InterfaceFilter {
-                iface: iface.clone(),
-            };
-
-            if filter && !f.filter_iface().await {
-                continue;
-            }
-
-            ret.push(iface);
-        }
-
-        ret
-    }
-
-    #[cfg(target_os = "linux")]
-    async fn run_in_namespace<T, F, Fut>(net_ns: NetNS, operation: F) -> T
-    where
-        T: Send + 'static,
-        F: FnOnce() -> Fut + Send + 'static,
-        Fut: std::future::Future<Output = T> + 'static,
-    {
-        tokio::task::spawn_blocking(move || {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("build namespace-local runtime");
-            net_ns.run(|| runtime.block_on(operation()))
-        })
-        .await
-        .expect("namespace-local network operation panicked")
-    }
-
+async fn collect_interfaces_in_current_namespace(filter: bool) -> Vec<NetworkInterface> {
     #[cfg(target_os = "windows")]
-    fn collect_interfaces_windows() -> Vec<NetworkInterface> {
-        match SystemNetworkInterface::show() {
-            Ok(ifaces) => ifaces
-                .into_iter()
-                .map(Self::convert_windows_interface)
-                .collect(),
-            Err(e) => {
-                tracing::warn!(
-                    ?e,
-                    "failed to enumerate interfaces via network-interface, falling back to pnet"
-                );
-                match std::panic::catch_unwind(pnet::datalink::interfaces) {
-                    Ok(ifaces) => ifaces,
-                    Err(_) => {
-                        tracing::error!(
-                            "failed to enumerate interfaces via both network-interface and pnet"
-                        );
-                        Vec::new()
-                    }
+    let ifaces = collect_interfaces_windows();
+    #[cfg(not(target_os = "windows"))]
+    let ifaces = pnet::datalink::interfaces();
+    let mut ret = vec![];
+    for iface in ifaces {
+        let f = InterfaceFilter {
+            iface: iface.clone(),
+        };
+
+        if filter && !f.filter_iface().await {
+            continue;
+        }
+
+        ret.push(iface);
+    }
+
+    ret
+}
+
+#[cfg(target_os = "linux")]
+async fn run_in_namespace<T, F, Fut>(net_ns: NetNS, operation: F) -> T
+where
+    T: Send + 'static,
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = T> + 'static,
+{
+    tokio::task::spawn_blocking(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build namespace-local runtime");
+        net_ns.run(|| runtime.block_on(operation()))
+    })
+    .await
+    .expect("namespace-local network operation panicked")
+}
+
+#[cfg(target_os = "windows")]
+fn collect_interfaces_windows() -> Vec<NetworkInterface> {
+    match SystemNetworkInterface::show() {
+        Ok(ifaces) => ifaces.into_iter().map(convert_windows_interface).collect(),
+        Err(e) => {
+            tracing::warn!(
+                ?e,
+                "failed to enumerate interfaces via network-interface, falling back to pnet"
+            );
+            match std::panic::catch_unwind(pnet::datalink::interfaces) {
+                Ok(ifaces) => ifaces,
+                Err(_) => {
+                    tracing::error!(
+                        "failed to enumerate interfaces via both network-interface and pnet"
+                    );
+                    Vec::new()
                 }
             }
         }
     }
+}
 
-    #[cfg(target_os = "windows")]
-    fn convert_windows_interface(iface: SystemNetworkInterface) -> NetworkInterface {
-        let mac = iface.mac_addr.as_deref().and_then(|mac| {
-            mac.parse::<MacAddr>()
-                .map_err(|e| {
-                    tracing::debug!(iface = %iface.name, mac, ?e, "failed to parse interface mac")
-                })
+#[cfg(target_os = "windows")]
+fn convert_windows_interface(iface: SystemNetworkInterface) -> NetworkInterface {
+    let mac = iface.mac_addr.as_deref().and_then(|mac| {
+        mac.parse::<MacAddr>()
+            .map_err(
+                |e| tracing::debug!(iface = %iface.name, mac, ?e, "failed to parse interface mac"),
+            )
+            .ok()
+    });
+
+    let ips = iface
+        .addr
+        .into_iter()
+        .filter_map(convert_windows_interface_addr)
+        .collect();
+
+    NetworkInterface {
+        name: iface.name,
+        description: String::new(),
+        index: iface.index,
+        mac,
+        ips,
+        // pnet does not populate Windows flags either, so keep the existing semantics.
+        flags: 0,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn convert_windows_interface_addr(addr: SystemAddr) -> Option<IpNetwork> {
+    match addr {
+        SystemAddr::V4(addr) => {
+            let netmask = addr
+                .netmask
+                .map(IpAddr::V4)
+                .unwrap_or(IpAddr::V4(std::net::Ipv4Addr::new(255, 255, 255, 255)));
+            IpNetwork::with_netmask(IpAddr::V4(addr.ip), netmask)
+                .map_err(
+                    |e| tracing::debug!(ip = %addr.ip, ?addr.netmask, ?e, "failed to convert ipv4"),
+                )
                 .ok()
-        });
-
-        let ips = iface
-            .addr
-            .into_iter()
-            .filter_map(Self::convert_windows_interface_addr)
-            .collect();
-
-        NetworkInterface {
-            name: iface.name,
-            description: String::new(),
-            index: iface.index,
-            mac,
-            ips,
-            // pnet does not populate Windows flags either, so keep the existing semantics.
-            flags: 0,
+        }
+        SystemAddr::V6(addr) => {
+            let netmask = addr
+                .netmask
+                .map(IpAddr::V6)
+                .unwrap_or(IpAddr::V6(std::net::Ipv6Addr::from(u128::MAX)));
+            IpNetwork::with_netmask(IpAddr::V6(addr.ip), netmask)
+                .map_err(
+                    |e| tracing::debug!(ip = %addr.ip, ?addr.netmask, ?e, "failed to convert ipv6"),
+                )
+                .ok()
         }
     }
+}
 
-    #[cfg(target_os = "windows")]
-    fn convert_windows_interface_addr(addr: SystemAddr) -> Option<IpNetwork> {
-        match addr {
-            SystemAddr::V4(addr) => {
-                let netmask = addr
-                    .netmask
-                    .map(IpAddr::V4)
-                    .unwrap_or(IpAddr::V4(std::net::Ipv4Addr::new(255, 255, 255, 255)));
-                IpNetwork::with_netmask(IpAddr::V4(addr.ip), netmask)
-                    .map_err(|e| {
-                        tracing::debug!(ip = %addr.ip, ?addr.netmask, ?e, "failed to convert ipv4")
-                    })
-                    .ok()
-            }
-            SystemAddr::V6(addr) => {
-                let netmask = addr
-                    .netmask
-                    .map(IpAddr::V6)
-                    .unwrap_or(IpAddr::V6(std::net::Ipv6Addr::from(u128::MAX)));
-                IpNetwork::with_netmask(IpAddr::V6(addr.ip), netmask)
-                    .map_err(|e| {
-                        tracing::debug!(ip = %addr.ip, ?addr.netmask, ?e, "failed to convert ipv6")
-                    })
-                    .ok()
-            }
-        }
+#[tracing::instrument(skip(net_ns))]
+pub(crate) async fn collect_local_ip_addrs(net_ns: NetNS) -> GetIpListResponse {
+    #[cfg(target_os = "linux")]
+    {
+        return run_in_namespace(net_ns, || async {
+            collect_local_ip_addrs_in_current_namespace().await
+        })
+        .await;
     }
 
-    #[tracing::instrument(skip(net_ns))]
-    pub(crate) async fn collect_local_ip_addrs(net_ns: NetNS) -> GetIpListResponse {
-        #[cfg(target_os = "linux")]
-        {
-            return Self::run_in_namespace(net_ns, || async {
-                Self::collect_local_ip_addrs_in_current_namespace().await
-            })
-            .await;
-        }
-
-        #[cfg(not(target_os = "linux"))]
-        {
-            let _g = net_ns.guard();
-            Self::collect_local_ip_addrs_in_current_namespace().await
-        }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _g = net_ns.guard();
+        collect_local_ip_addrs_in_current_namespace().await
     }
+}
 
-    async fn collect_local_ip_addrs_in_current_namespace() -> GetIpListResponse {
-        let mut ret = GetIpListResponse::default();
+async fn collect_local_ip_addrs_in_current_namespace() -> GetIpListResponse {
+    let mut ret = GetIpListResponse::default();
 
-        let ifaces = Self::collect_interfaces_in_current_namespace(true).await;
-        for iface in ifaces {
-            for ip in iface.ips {
-                let ip: std::net::IpAddr = ip.ip();
-                if let std::net::IpAddr::V4(v4) = ip {
-                    if ip.is_loopback() || ip.is_multicast() {
-                        continue;
-                    }
-                    ret.interface_ipv4s.push(v4.into());
+    let ifaces = collect_interfaces_in_current_namespace(true).await;
+    for iface in ifaces {
+        for ip in iface.ips {
+            let ip: std::net::IpAddr = ip.ip();
+            if let std::net::IpAddr::V4(v4) = ip {
+                if ip.is_loopback() || ip.is_multicast() {
+                    continue;
                 }
+                ret.interface_ipv4s.push(v4.into());
             }
         }
-
-        let ifaces = Self::collect_interfaces_in_current_namespace(false).await;
-        for iface in ifaces {
-            for ip in iface.ips {
-                let ip: std::net::IpAddr = ip.ip();
-                if let std::net::IpAddr::V6(v6) = ip {
-                    if v6.is_multicast() || v6.is_loopback() || v6.is_unicast_link_local() {
-                        continue;
-                    }
-                    ret.interface_ipv6s.push(v6.into());
-                }
-            }
-        }
-
-        if let Ok(v4_addr) = local_ipv4().await {
-            tracing::trace!("got local ipv4: {}", v4_addr);
-            if !ret.interface_ipv4s.contains(&v4_addr.into()) {
-                ret.interface_ipv4s.push(v4_addr.into());
-            }
-        }
-
-        if let Ok(v6_addr) = local_ipv6().await {
-            tracing::trace!("got local ipv6: {}", v6_addr);
-            if !ret.interface_ipv6s.contains(&v6_addr.into()) {
-                ret.interface_ipv6s.push(v6_addr.into());
-            }
-        }
-
-        ret
     }
+
+    let ifaces = collect_interfaces_in_current_namespace(false).await;
+    for iface in ifaces {
+        for ip in iface.ips {
+            let ip: std::net::IpAddr = ip.ip();
+            if let std::net::IpAddr::V6(v6) = ip {
+                if v6.is_multicast() || v6.is_loopback() || v6.is_unicast_link_local() {
+                    continue;
+                }
+                ret.interface_ipv6s.push(v6.into());
+            }
+        }
+    }
+
+    if let Ok(v4_addr) = local_ipv4().await {
+        tracing::trace!("got local ipv4: {}", v4_addr);
+        if !ret.interface_ipv4s.contains(&v4_addr.into()) {
+            ret.interface_ipv4s.push(v4_addr.into());
+        }
+    }
+
+    if let Ok(v6_addr) = local_ipv6().await {
+        tracing::trace!("got local ipv6: {}", v6_addr);
+        if !ret.interface_ipv6s.contains(&v6_addr.into()) {
+            ret.interface_ipv6s.push(v6_addr.into());
+        }
+    }
+
+    ret
 }
 
 #[cfg(test)]
@@ -457,7 +397,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn namespace_operation_does_not_migrate_between_os_threads() {
-        let (before, after) = IPCollector::run_in_namespace(NetNS::new(None), || async {
+        let (before, after) = run_in_namespace(NetNS::new(None), || async {
             let before = std::thread::current().id();
             tokio::task::yield_now().await;
             (before, std::thread::current().id())
@@ -465,17 +405,5 @@ mod tests {
         .await;
 
         assert_eq!(before, after);
-    }
-
-    #[tokio::test]
-    async fn finished_address_collector_is_reaped_for_restart() {
-        let mut tasks = JoinSet::new();
-        tasks.spawn(async { panic!("simulated collector failure") });
-
-        while !IPCollector::reap_finished_collectors(&mut tasks) {
-            tokio::task::yield_now().await;
-        }
-
-        assert!(tasks.is_empty());
     }
 }

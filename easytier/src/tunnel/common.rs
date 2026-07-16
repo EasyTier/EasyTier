@@ -1,12 +1,10 @@
 use bon::builder;
-use futures::{Future, stream::FuturesUnordered};
 use network_interface::NetworkInterfaceConfig as _;
 use std::net::{IpAddr, SocketAddr};
 
 use crate::common::netns::NetNS;
 use easytier_core::tunnel::TunnelError;
 use tokio::net::{TcpListener, TcpSocket, UdpSocket};
-use tokio_stream::StreamExt;
 
 pub(crate) fn get_interface_name_by_ip(local_ip: &IpAddr) -> Option<String> {
     if local_ip.is_unspecified() || local_ip.is_multicast() {
@@ -23,27 +21,6 @@ pub(crate) fn get_interface_name_by_ip(local_ip: &IpAddr) -> Option<String> {
 
     tracing::error!(?local_ip, "can not find interface name by ip");
     None
-}
-
-pub(crate) async fn wait_for_connect_futures<Fut, Ret, E>(
-    mut futures: FuturesUnordered<Fut>,
-) -> Result<Ret, TunnelError>
-where
-    Fut: Future<Output = Result<Ret, E>> + Send,
-    E: std::error::Error + Into<TunnelError> + Send + 'static,
-{
-    // return last error
-    let mut last_err = None;
-
-    while let Some(ret) = futures.next().await {
-        if let Err(e) = ret {
-            last_err = Some(e.into());
-        } else {
-            return ret.map_err(|e| e.into());
-        }
-    }
-
-    Err(last_err.unwrap_or(TunnelError::Shutdown))
 }
 
 // region bind
@@ -286,13 +263,6 @@ pub(crate) mod tests {
 
     use crate::common::netns::NetNS;
 
-    #[cfg(test)]
-    use easytier_core::packet::{PEER_MANAGER_HEADER_SIZE, TCP_TUNNEL_HEADER_SIZE};
-    #[cfg(test)]
-    use easytier_core::tunnel::TunnelError;
-    #[cfg(test)]
-    use easytier_core::tunnel::framed::FramedReader;
-
     #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
     #[test]
     fn apply_socket_mark_none_is_noop_and_does_not_error() {
@@ -365,20 +335,6 @@ pub(crate) mod tests {
             .expect_err("custom device must not be skipped for unspecified bind addr");
     }
 
-    #[test]
-    fn framed_reader_rejects_short_peer_manager_body() {
-        let mut buf = BytesMut::new();
-        buf.put_u32_le((PEER_MANAGER_HEADER_SIZE - 1) as u32);
-        buf.resize(TCP_TUNNEL_HEADER_SIZE + PEER_MANAGER_HEADER_SIZE - 1, 0);
-
-        let ret = FramedReader::<tokio::io::Empty>::extract_one_packet(&mut buf, 2000);
-
-        assert!(matches!(
-            ret,
-            Some(Err(TunnelError::InvalidPacket(msg))) if msg == "body too short"
-        ));
-    }
-
     pub async fn _tunnel_echo_server(tunnel: Box<dyn Tunnel>, once: bool) {
         let (mut recv, mut send) = tunnel.split();
 
@@ -410,24 +366,6 @@ pub(crate) mod tests {
         let _ = send.close().await;
 
         tracing::warn!("echo server exit...");
-    }
-
-    pub(crate) async fn _tunnel_pingpong<L, C>(listener: L, connector: C)
-    where
-        L: SocketListener<Accepted = Box<dyn Tunnel>> + Sync + 'static,
-        C: TunnelDialer,
-    {
-        _tunnel_pingpong_netns_with_timeout(
-            listener,
-            connector,
-            NetNS::new(None),
-            NetNS::new(None),
-            "12345678abcdefg".as_bytes().to_vec(),
-            // only used by tunnel test, so set a long timeout
-            tokio::time::Duration::from_secs(5),
-        )
-        .await
-        .unwrap();
     }
 
     async fn _tunnel_pingpong_netns<L, C>(
@@ -531,14 +469,6 @@ pub(crate) mod tests {
             },
             Err(elapsed) => Err(elapsed.into()),
         }
-    }
-
-    pub(crate) async fn _tunnel_bench<L, C>(listener: L, connector: C)
-    where
-        L: SocketListener<Accepted = Box<dyn Tunnel>> + Sync + 'static,
-        C: TunnelDialer,
-    {
-        _tunnel_bench_netns(listener, connector, NetNS::new(None), NetNS::new(None)).await;
     }
 
     pub(crate) async fn _tunnel_bench_netns<L, C>(

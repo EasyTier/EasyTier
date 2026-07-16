@@ -20,7 +20,11 @@ use easytier_core::{
 };
 
 use crate::{
-    common::{dns::RuntimeDnsResolver, netns::NetNS, network::IPCollector},
+    common::{
+        dns::RuntimeDnsResolver,
+        netns::NetNS,
+        network::{collect_interfaces, collect_local_ip_addrs},
+    },
     proto::peer_rpc::GetIpListResponse,
     socket::{
         tcp::{RuntimeTcpListener, RuntimeTcpSocket},
@@ -135,7 +139,7 @@ impl ConnectorRuntime for NativeHostRuntime {
         ip: std::net::Ipv6Addr,
         context: SocketContext,
     ) -> Option<PreferredIpv6Source> {
-        IPCollector::collect_interfaces(NetNS::from_socket_context(&context), false)
+        collect_interfaces(NetNS::from_socket_context(&context), false)
             .await
             .into_iter()
             .find(|interface| {
@@ -151,7 +155,7 @@ impl ConnectorRuntime for NativeHostRuntime {
     }
 
     async fn collect_ip_addrs(&self, context: &SocketContext) -> GetIpListResponse {
-        IPCollector::collect_local_ip_addrs(NetNS::from_socket_context(context)).await
+        collect_local_ip_addrs(NetNS::from_socket_context(context)).await
     }
 }
 

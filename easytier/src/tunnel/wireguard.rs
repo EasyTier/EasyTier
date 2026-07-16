@@ -10,14 +10,11 @@ use std::{
 
 use quanta::Instant;
 
-use super::{FromUrl, common::wait_for_connect_futures};
-use crate::tunnel::common::{BindDev, bind};
+use super::FromUrl;
 use crate::{
     common::{netns::NetNS, shrink_dashmap},
     proto::common::TunnelInfo,
-    socket::udp::{
-        RuntimeUdpSessionSocketListener, RuntimeUdpSocket, new_runtime_udp_session_listener,
-    },
+    socket::udp::{RuntimeUdpSessionSocketListener, new_runtime_udp_session_listener},
     tunnel::{TunnelUrl, build_url_from_socket_addr},
 };
 use anyhow::Context;
@@ -35,19 +32,15 @@ use easytier_core::tunnel::{IpVersion, Tunnel, TunnelError, ZCPacketSink, ZCPack
 use easytier_core::{
     connectivity::transport::ConnectedUdpSession,
     packet::{PEER_MANAGER_HEADER_SIZE, WG_TUNNEL_HEADER_SIZE, ZCPacket, ZCPacketType},
-    socket::{
-        SocketContext,
-        udp::{
-            UdpBindOptions, UdpSession, UdpSessionAcceptKind, UdpSessionListenRequest,
-            UdpSessionProtocol, UdpSessionSocket,
-        },
+    socket::udp::{
+        UdpBindOptions, UdpSession, UdpSessionAcceptKind, UdpSessionListenRequest,
+        UdpSessionProtocol, UdpSessionSocket,
     },
     tunnel::wrapper::TunnelWrapper,
 };
-use futures::{SinkExt, StreamExt, stream::FuturesUnordered};
+use futures::{SinkExt, StreamExt};
 use rand::RngCore;
 use tokio::{
-    net::UdpSocket,
     sync::{Mutex, mpsc::unbounded_channel},
     task::JoinSet,
 };
@@ -713,69 +706,6 @@ impl easytier_core::listener::SocketListener for WgTunnelListener {
     }
 }
 
-#[derive(Clone)]
-pub struct WgTunnelConnector {
-    addr: url::Url,
-    config: WgConfig,
-
-    bind_addrs: Vec<SocketAddr>,
-    ip_version: IpVersion,
-    resolved_addr: Option<SocketAddr>,
-    socket_mark: Option<u32>,
-}
-
-impl Debug for WgTunnelConnector {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("WgTunnelConnector")
-            .field("addr", &self.addr)
-            .finish()
-    }
-}
-
-impl WgTunnelConnector {
-    pub fn new(addr: url::Url, config: WgConfig) -> Self {
-        WgTunnelConnector {
-            addr,
-            config,
-            bind_addrs: vec![],
-            ip_version: IpVersion::Both,
-            resolved_addr: None,
-            socket_mark: None,
-        }
-    }
-
-    pub fn set_bind_addrs(&mut self, addrs: Vec<SocketAddr>) {
-        self.bind_addrs = addrs;
-    }
-
-    pub fn set_ip_version(&mut self, ip_version: IpVersion) {
-        self.ip_version = ip_version;
-    }
-
-    pub fn set_resolved_addr(&mut self, addr: SocketAddr) {
-        self.resolved_addr = Some(addr);
-    }
-
-    pub fn set_socket_mark(&mut self, socket_mark: Option<u32>) {
-        self.socket_mark = socket_mark;
-    }
-
-    #[tracing::instrument(skip(config))]
-    async fn connect_with_socket(
-        addr_url: url::Url,
-        config: WgConfig,
-        udp: UdpSocket,
-        context: SocketContext,
-        addr: SocketAddr,
-    ) -> Result<Box<dyn Tunnel>, TunnelError> {
-        tracing::warn!("wg connect: {:?}", addr);
-        let runtime_socket = Arc::new(RuntimeUdpSocket::new_with_context(Arc::new(udp), context));
-        let layer = runtime_socket.udp_session_layer();
-        let session = layer.open_classified_session(UdpSessionProtocol::WireGuard, addr)?;
-        upgrade_connected(ConnectedUdpSession::new(session, layer), addr_url, config).await
-    }
-}
-
 pub(crate) async fn upgrade_connected(
     connected: ConnectedUdpSession,
     addr_url: url::Url,
@@ -850,228 +780,97 @@ pub(crate) fn upgrade_accepted(
     )))
 }
 
-impl WgTunnelConnector {
-    async fn connect_with_ipv6(&self, addr: SocketAddr) -> Result<Box<dyn Tunnel>, TunnelError> {
-        let socket = bind()
-            .addr("[::]:0".parse().unwrap())
-            .dev(BindDev::Disabled)
-            .only_v6(true)
-            .maybe_socket_mark(self.socket_mark)
-            .call()?;
-        let context = SocketContext::default()
-            .with_ip_version(IpVersion::V6)
-            .with_socket_mark(self.socket_mark);
-        Self::connect_with_socket(
-            self.addr.clone(),
-            self.config.clone(),
-            socket,
-            context,
-            addr,
-        )
-        .await
-    }
-
-    async fn connect_tunnel(&self) -> Result<Box<dyn Tunnel>, TunnelError> {
-        let addr = match self.resolved_addr {
-            Some(addr) => addr,
-            None => SocketAddr::from_url(self.addr.clone(), self.ip_version).await?,
-        };
-
-        if addr.is_ipv6() {
-            return self.connect_with_ipv6(addr).await;
-        }
-
-        let bind_addrs = if self.bind_addrs.is_empty() {
-            vec!["0.0.0.0:0".parse().unwrap()]
-        } else {
-            self.bind_addrs.clone()
-        };
-        let futures = FuturesUnordered::new();
-        for bind_addr in bind_addrs {
-            tracing::info!(?bind_addr, ?addr, "bind addr");
-            match bind()
-                .addr(bind_addr)
-                .only_v6(true)
-                .maybe_socket_mark(self.socket_mark)
-                .call()
-            {
-                Ok(socket) => futures.push(Self::connect_with_socket(
-                    self.addr.clone(),
-                    self.config.clone(),
-                    socket,
-                    SocketContext::default()
-                        .with_ip_version(IpVersion::V4)
-                        .with_socket_mark(self.socket_mark),
-                    addr,
-                )),
-                Err(error) => {
-                    tracing::error!(?error, ?bind_addr, ?addr, "bind addr fail");
-                    continue;
-                }
-            }
-        }
-
-        wait_for_connect_futures(futures).await
-    }
-}
-
-#[async_trait]
-impl easytier_core::connectivity::protocol::raw::TunnelDialer for WgTunnelConnector {
-    #[tracing::instrument]
-    async fn connect(&self) -> anyhow::Result<Box<dyn Tunnel>> {
-        Ok(self.connect_tunnel().await?)
-    }
-
-    fn remote_url(&self) -> url::Url {
-        self.addr.clone()
-    }
-}
-
 #[cfg(test)]
 pub mod tests {
     use super::*;
-    use crate::tunnel::common::tests::{_tunnel_bench, _tunnel_pingpong};
-    use boringtun::*;
-    use easytier_core::{connectivity::protocol::raw::TunnelDialer, listener::SocketListener};
+    use crate::{
+        common::global_ctx::tests::get_mock_global_ctx, host_runtime::native_host_runtime,
+        tunnel::protocol::runtime_client_protocol_upgrader,
+    };
+    use easytier_core::{
+        connectivity::transport::{ConnectedTransport, UdpSessionMode, connect_udp},
+        listener::SocketListener,
+        socket::udp::{UdpBindOptions, UdpSessionProtocol},
+    };
 
-    pub fn create_wg_config() -> (WgConfig, WgConfig) {
-        let my_secret_key = x25519::StaticSecret::random_from_rng(rand::thread_rng());
-
-        let their_secret_key = x25519::StaticSecret::random_from_rng(rand::thread_rng());
-
-        let server_cfg =
-            WgConfig::new_internal(*my_secret_key.as_bytes(), *their_secret_key.as_bytes());
-        let client_cfg =
-            WgConfig::new_internal(*their_secret_key.as_bytes(), *my_secret_key.as_bytes());
-
-        (server_cfg, client_cfg)
-    }
-
-    #[tokio::test]
-    async fn wg_pingpong() {
-        let (server_cfg, client_cfg) = create_wg_config();
-        let listener = WgTunnelListener::new("wg://0.0.0.0:5599".parse().unwrap(), server_cfg);
-        let connector = WgTunnelConnector::new("wg://127.0.0.1:5599".parse().unwrap(), client_cfg);
-        _tunnel_pingpong(listener, connector).await
-    }
-
-    #[tokio::test]
-    async fn wg_bench() {
-        let (server_cfg, client_cfg) = create_wg_config();
-        let listener = WgTunnelListener::new("wg://0.0.0.0:5598".parse().unwrap(), server_cfg);
-        let connector = WgTunnelConnector::new("wg://127.0.0.1:5598".parse().unwrap(), client_cfg);
-        _tunnel_bench(listener, connector).await
-    }
-
-    #[tokio::test]
-    async fn wg_bench_with_bind() {
-        let (server_cfg, client_cfg) = create_wg_config();
-        let listener = WgTunnelListener::new("wg://127.0.0.1:5597".parse().unwrap(), server_cfg);
-        let mut connector =
-            WgTunnelConnector::new("wg://127.0.0.1:5597".parse().unwrap(), client_cfg);
-        connector.set_bind_addrs(vec!["127.0.0.1:0".parse().unwrap()]);
-        _tunnel_pingpong(listener, connector).await
-    }
-
-    #[tokio::test]
-    #[should_panic]
-    async fn wg_bench_with_bind_fail() {
-        let (server_cfg, client_cfg) = create_wg_config();
-        let listener = WgTunnelListener::new("wg://127.0.0.1:5596".parse().unwrap(), server_cfg);
-        let mut connector =
-            WgTunnelConnector::new("wg://127.0.0.1:5596".parse().unwrap(), client_cfg);
-        connector.set_bind_addrs(vec!["10.0.0.1:0".parse().unwrap()]);
-        _tunnel_pingpong(listener, connector).await
+    fn test_wg_config() -> WgConfig {
+        WgConfig::new_from_network_identity("test", "secret")
     }
 
     #[tokio::test]
     async fn wg_server_erase_from_map_after_close() {
-        let (server_cfg, client_cfg) = create_wg_config();
-        let mut listener =
-            WgTunnelListener::new("wg://127.0.0.1:5595".parse().unwrap(), server_cfg);
+        let global_ctx = get_mock_global_ctx();
+        let identity = global_ctx.get_network_identity();
+        let server_cfg = WgConfig::new_from_network_identity(
+            &identity.network_name,
+            &identity.network_secret.unwrap_or_default(),
+        );
+        let client = runtime_client_protocol_upgrader(global_ctx);
+        let mut listener = WgTunnelListener::new("wg://127.0.0.1:0".parse().unwrap(), server_cfg);
         listener.listen().await.unwrap();
+        let remote_url = listener.local_url();
+        let remote_addr = remote_url.socket_addrs(|| None).unwrap()[0];
 
         const CONN_COUNT: usize = 10;
 
-        tokio::spawn(async move {
-            let mut tunnels = vec![];
+        let client_task = tokio::spawn(async move {
+            let mut tunnels = Vec::with_capacity(CONN_COUNT);
             for _ in 0..CONN_COUNT {
-                let connector = WgTunnelConnector::new(
-                    "wg://127.0.0.1:5595".parse().unwrap(),
-                    client_cfg.clone(),
-                );
-                let ret = connector.connect().await;
-                assert!(ret.is_ok());
-                let t = ret.unwrap();
-                let (_stream, mut sink) = t.split();
-                sink.send(ZCPacket::new_with_payload("payload".as_bytes()))
+                let connected = connect_udp(
+                    native_host_runtime(),
+                    remote_addr,
+                    Vec::new(),
+                    UdpBindOptions::direct_connect(),
+                    UdpSessionMode::Classified(UdpSessionProtocol::WireGuard),
+                )
+                .await
+                .unwrap();
+                let tunnel = client
+                    .upgrade_client(ConnectedTransport::Udp(connected), remote_url.clone())
                     .await
                     .unwrap();
-                tunnels.push(t);
+                let (_stream, mut sink) = tunnel.split();
+                sink.send(ZCPacket::new_with_payload(b"payload"))
+                    .await
+                    .unwrap();
+                tunnels.push(tunnel);
             }
-            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+            tokio::time::sleep(Duration::from_secs(1)).await;
         });
 
         for _ in 0..CONN_COUNT {
-            println!("accepting");
-            let conn = listener.accept().await;
-            let (mut stream, _sink) = conn.unwrap().split();
+            let tunnel = listener.accept().await.unwrap();
+            let (mut stream, _sink) = tunnel.split();
             let packet = stream.next().await.unwrap().unwrap();
-            assert_eq!("payload".as_bytes(), packet.payload());
-            println!("accepting drop");
+            assert_eq!(packet.payload(), b"payload");
         }
 
-        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-
-        assert_eq!(0, listener.wg_peer_map.len());
+        client_task.await.unwrap();
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        assert!(listener.wg_peer_map.is_empty());
     }
 
     #[tokio::test]
     async fn bind_same_port() {
-        let (server_cfg, _client_cfg) = create_wg_config();
+        let server_cfg = test_wg_config();
         let mut listener = WgTunnelListener::new("wg://[::1]:31015".parse().unwrap(), server_cfg);
-        let (server_cfg, _client_cfg) = create_wg_config();
+        let server_cfg = test_wg_config();
         let mut listener2 = WgTunnelListener::new("wg://[::1]:31015".parse().unwrap(), server_cfg);
         listener.listen().await.unwrap();
         listener2.listen().await.unwrap();
     }
 
     #[tokio::test]
-    async fn ipv6_pingpong() {
-        let (server_cfg, client_cfg) = create_wg_config();
-        let listener = WgTunnelListener::new("wg://[::1]:31015".parse().unwrap(), server_cfg);
-        let connector = WgTunnelConnector::new("wg://[::1]:31015".parse().unwrap(), client_cfg);
-        _tunnel_pingpong(listener, connector).await
-    }
-
-    #[tokio::test]
-    async fn ipv6_domain_pingpong() {
-        let (server_cfg, client_cfg) = create_wg_config();
-        let listener = WgTunnelListener::new("wg://[::1]:31016".parse().unwrap(), server_cfg);
-        let mut connector =
-            WgTunnelConnector::new("wg://test.easytier.top:31016".parse().unwrap(), client_cfg);
-        connector.set_ip_version(IpVersion::V6);
-        _tunnel_pingpong(listener, connector).await;
-
-        let (server_cfg, client_cfg) = create_wg_config();
-        let listener = WgTunnelListener::new("wg://127.0.0.1:31016".parse().unwrap(), server_cfg);
-        let mut connector =
-            WgTunnelConnector::new("wg://test.easytier.top:31016".parse().unwrap(), client_cfg);
-        connector.set_ip_version(IpVersion::V4);
-        _tunnel_pingpong(listener, connector).await;
-    }
-
-    #[tokio::test]
     async fn test_alloc_port() {
         // v4
-        let (server_cfg, _client_cfg) = create_wg_config();
+        let server_cfg = test_wg_config();
         let mut listener = WgTunnelListener::new("wg://0.0.0.0:0".parse().unwrap(), server_cfg);
         listener.listen().await.unwrap();
         let port = listener.local_url().port().unwrap();
         assert!(port > 0);
 
         // v6
-        let (server_cfg, _client_cfg) = create_wg_config();
+        let server_cfg = test_wg_config();
         let mut listener = WgTunnelListener::new("wg://[::]:0".parse().unwrap(), server_cfg);
         listener.listen().await.unwrap();
         let port = listener.local_url().port().unwrap();

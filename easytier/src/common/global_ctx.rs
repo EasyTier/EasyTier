@@ -314,7 +314,7 @@ impl GlobalCtx {
 
 #[cfg(test)]
 pub mod tests {
-    use crate::common::{config::TomlConfigLoader, new_peer_id};
+    use crate::common::config::TomlConfigLoader;
 
     use super::*;
 
@@ -324,7 +324,7 @@ pub mod tests {
         let global_ctx = GlobalCtx::new(config);
 
         let mut subscriber = global_ctx.subscribe();
-        let peer_id = new_peer_id();
+        let peer_id = rand::random();
         global_ctx.issue_event(GlobalCtxEvent::PeerAdded(peer_id));
         global_ctx.issue_event(GlobalCtxEvent::PeerRemoved(peer_id));
         global_ctx.issue_event(GlobalCtxEvent::PeerConnAdded(PeerConnInfo::default()));

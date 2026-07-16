@@ -348,6 +348,122 @@ mod tests {
         .unwrap();
     }
 
+    #[cfg(feature = "websocket")]
+    #[tokio::test]
+    async fn runtime_websocket_upgraders_reject_ws_client_for_wss_server() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server_url: url::Url = format!("wss://{addr}").parse().unwrap();
+        let client_url: url::Url = format!("ws://{addr}").parse().unwrap();
+        let global_ctx = get_mock_global_ctx();
+        let server = runtime_server_protocol_upgrader(global_ctx.clone());
+        let client = runtime_client_protocol_upgrader(global_ctx);
+
+        let server_task = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            assert!(
+                server
+                    .upgrade_tcp(RuntimeTcpSocket::new(socket), server_url)
+                    .await
+                    .is_err()
+            );
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let socket = tokio::net::TcpStream::connect(addr).await.unwrap();
+            assert!(
+                client
+                    .upgrade_client(
+                        ConnectedTransport::Tcp(RuntimeTcpSocket::new(socket)),
+                        client_url,
+                    )
+                    .await
+                    .is_err()
+            );
+            server_task.await.unwrap();
+        })
+        .await
+        .unwrap();
+    }
+
+    #[cfg(feature = "wireguard")]
+    #[rstest::rstest]
+    #[case("127.0.0.1:0")]
+    #[case("[::1]:0")]
+    #[tokio::test]
+    async fn runtime_wireguard_upgraders_consume_core_udp_sessions(#[case] bind_addr: &str) {
+        use crate::{
+            common::netns::NetNS, host_runtime::native_host_runtime,
+            socket::udp::new_runtime_udp_session_listener,
+        };
+        use easytier_core::{
+            connectivity::transport::{UdpSessionMode, connect_udp},
+            listener::SocketListener,
+            packet::ZCPacket,
+            socket::udp::{
+                UdpBindOptions, UdpSessionAcceptKind, UdpSessionListenRequest, UdpSessionProtocol,
+                VirtualUdpSocket,
+            },
+        };
+        use futures::{SinkExt, StreamExt};
+
+        let bind_addr = bind_addr.parse().unwrap();
+        let mut listener = new_runtime_udp_session_listener(
+            format!("wg://{bind_addr}").parse().unwrap(),
+            UdpSessionListenRequest::new(
+                UdpBindOptions::port_bound_listener(bind_addr).with_only_v6(bind_addr.is_ipv6()),
+            ),
+            UdpSessionAcceptKind::Classified(UdpSessionProtocol::WireGuard),
+            NetNS::new(None),
+        );
+        listener.listen().await.unwrap();
+        let remote_addr = listener.bound_socket().unwrap().local_addr().unwrap();
+        let remote_url: url::Url = format!("wg://{remote_addr}").parse().unwrap();
+
+        let global_ctx = get_mock_global_ctx();
+        let server = runtime_server_protocol_upgrader(global_ctx.clone());
+        let client = runtime_client_protocol_upgrader(global_ctx);
+        let server_url = remote_url.clone();
+        let server_task = tokio::spawn(async move {
+            let session = listener.accept().await.unwrap();
+            let ServerProtocolUpgrade::Tunnel(tunnel) =
+                server.upgrade_udp(session, server_url, None).await.unwrap()
+            else {
+                panic!("WireGuard must upgrade directly to a tunnel");
+            };
+            crate::tunnel::common::tests::_tunnel_echo_server(tunnel, false).await;
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let connected = connect_udp(
+                native_host_runtime(),
+                remote_addr,
+                Vec::new(),
+                UdpBindOptions::direct_connect(),
+                UdpSessionMode::Classified(UdpSessionProtocol::WireGuard),
+            )
+            .await
+            .unwrap();
+            let tunnel = client
+                .upgrade_client(ConnectedTransport::Udp(connected), remote_url)
+                .await
+                .unwrap();
+            let (mut recv, mut send) = tunnel.split();
+            send.send(ZCPacket::new_with_payload(b"runtime WireGuard seam"))
+                .await
+                .unwrap();
+            let packet = recv.next().await.unwrap().unwrap();
+            assert_eq!(packet.payload(), b"runtime WireGuard seam".as_slice());
+            let _ = send.close().await;
+            server_task.abort();
+            let _ = server_task.await;
+        })
+        .await
+        .unwrap();
+    }
+
     #[cfg(feature = "quic")]
     #[rstest::rstest]
     #[case("127.0.0.1:0")]

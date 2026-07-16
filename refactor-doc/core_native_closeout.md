@@ -49,27 +49,30 @@ presence is not evidence of a second raw Tunnel owner.
 
 ### Tunnel shells
 
-- [ ] Delete test-only `WsTunnelConnector`; retain the WS/WSS engine and
+- [x] Delete test-only `WsTunnelConnector`; retain the WS/WSS engine and
   `upgrade_connected`/`upgrade_accepted` implementation.
-- [ ] Delete test-only `WgTunnelConnector`; retain the BoringTun engine and
+- [x] Delete test-only `WgTunnelConnector`; retain the BoringTun engine and
   upgrade implementation.
-- [ ] Add a WireGuard client/server roundtrip through the formal core
+- [x] Add a WireGuard client/server roundtrip through the formal core
   stream/session and native protocol Adapter Seam before deleting its old
   connector tests.
-- [ ] Remove helpers used only by those connectors, including
+- [x] Remove helpers used only by those connectors, including
   `wait_for_connect_futures`, `_tunnel_pingpong` and `_tunnel_bench`.
-- [ ] Delete the native short-framed-body test already covered by core.
-- [ ] Remove unused `FromUrl for uuid::Uuid` and `IpScheme::protocol()` if the
+- [x] Delete the native short-framed-body test already covered by core.
+- [x] Remove unused `FromUrl for uuid::Uuid` and `IpScheme::protocol()` if the
   final caller audit remains empty.
 - [ ] Consolidate default protocol-port metadata under core without moving the
   concrete native engines.
 
 ### Dead native state and facades
 
-- [ ] Delete the unconstructed `IPCollector` cache/state machine; retain its
+- [x] Delete the unconstructed `IPCollector` cache/state machine; retain its
   OS interface-observation functions.
-- [ ] Delete unused `CancellableTask` and localize `HedgeExt` to the native
-  KCP/QUIC engine Module if that removes the generic utility Module.
+- [x] Delete unused `CancellableTask`.
+- [ ] Localize `HedgeExt` to the native KCP/QUIC engine Module if that removes
+  the generic utility Module.
+- [x] Delete the unused native `ErrorCollection` forwarding alias while
+  retaining the generic collection used by `HedgeExt`.
 - [ ] Remove the unused UDP session-control factory implementation after the
   protocol-packet Seam is switched.
 - [ ] Remove unused DNS convenience helpers and replace the mutable global DNS
@@ -287,3 +290,6 @@ Completion requires:
 - 2026-07-16: read-only closeout audit completed. The old connector/peers and
   raw TCP/UDP/Ring ownership are confirmed deleted, but the semantic ownership
   items above remain. No code was changed during the audit.
+- 2026-07-16: removed the test-only WS/WG connector shells, preserved WS/WSS
+  mismatch and WireGuard peer cleanup coverage on the production Adapter Seam,
+  and deleted the unused native IP collector cache and cancellable-task shell.

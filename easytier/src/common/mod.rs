@@ -42,10 +42,6 @@ pub fn get_logger_timer_rfc3339()
 
 pub use easytier_core::config::PeerId;
 
-pub fn new_peer_id() -> PeerId {
-    rand::random()
-}
-
 pub fn join_joinset_background<T: Debug + Send + Sync + 'static>(
     js: Arc<Mutex<JoinSet<T>>>,
     origin: String,
