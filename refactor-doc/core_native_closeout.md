@@ -268,6 +268,12 @@ another asynchronous Drop guard.
   and virtual-IP short-circuiting, but its final selected Docker matrix should
   also exercise an address that exists only inside an instance netns. This is
   a vertical Host Adapter coverage gap, not a second policy owner.
+- Native Linux listener and virtual-NIC paths contain pre-existing netns guards
+  that cross asynchronous suspension points. Linux `setns` is thread-local, so
+  restoration after a Tokio worker migration can target the wrong thread. Fix
+  this in a dedicated native Host Adapter correctness change by keeping the
+  namespace switch and affected operations on one non-migrating execution
+  context; do not mix it into core/native ownership migration.
 
 ## Execution discipline
 

@@ -89,10 +89,11 @@ Tunnel paths. Deliberate follow-up boundaries at that milestone were:
 - feature slicing intentionally starts only now that deep Module ownership is
   stable; it was not mixed into the ownership migration.
 
-The ownership migration and its closure evidence are recorded in
-[`core_remaining_ownership_refactor.md`](core_remaining_ownership_refactor.md).
-That document is now the authoritative closure record for native peer,
-`GlobalCtx`, foreign-network, and gateway ownership.
+The first ownership milestone and its evidence are preserved in
+[`core_remaining_ownership_refactor.md`](core_remaining_ownership_refactor.md)
+as a historical snapshot. The later semantic audit and final evidence are
+authoritative in
+[`core_native_closeout.md`](core_native_closeout.md).
 
 Final ownership status on 2026-07-16:
 

@@ -1,7 +1,7 @@
 # Remaining Core Ownership Refactor
 
-> Status: complete; authoritative closure record for the ownership migration.
-> Updated 2026-07-14.
+> Status: historical first-milestone closure record. Superseded by
+> [`core_native_closeout.md`](core_native_closeout.md). Updated 2026-07-16.
 
 ## Outcome
 
