@@ -188,7 +188,7 @@ another asynchronous Drop guard.
 ### One-shot Web connector
 
 - [x] Add a narrow one-shot connector composition Interface for the Web client.
-- [x] Stop constructing and disassembling the full `CoreInstanceAdapters`
+- [x] Stop constructing and disassembling the full `CoreHostAdapters`
   bundle merely to obtain host, DNS and protocol capabilities.
 
 ### Exit gate

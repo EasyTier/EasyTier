@@ -133,7 +133,7 @@ provider/lease/route policy. `GlobalCtx` receives public-IPv6 delta events for
 native consumers but does not retain a queryable mirror of that state.
 It also carries no STUN provider or projection: core constructs and owns the
 slot, while deterministic native integration tests inject a provider only at
-the `CoreInstanceAdapters` test seam.
+the hidden `CoreHostAdapters::replace_stun_provider` test seam.
 
 The Go create schema is version 13. It submits the same URL-level listener
 configuration and core public-IPv6 options as native. It has no internal

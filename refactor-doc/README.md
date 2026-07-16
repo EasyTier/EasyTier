@@ -7,19 +7,22 @@ single `easytier-core` crate. When documents disagree, use the following order:
 
 1. [`CONTEXT.md`](../CONTEXT.md) defines domain language and ownership.
 2. Accepted records in [`docs/adr`](../docs/adr) define architectural decisions.
-3. [`core_native_closeout.md`](core_native_closeout.md) is the authoritative
+3. [`core_instance_construction.md`](core_instance_construction.md) records the
+   final public construction Interface and composition boundary.
+4. [`core_native_closeout.md`](core_native_closeout.md) is the authoritative
    completed ownership-closeout record.
-4. [`core_refactor_roadmap.md`](core_refactor_roadmap.md) defines the overall
+5. [`core_refactor_roadmap.md`](core_refactor_roadmap.md) defines the overall
    order, scope, and completion gates.
-5. Follow-up production hardening uses
+6. Follow-up production hardening uses
    [`go_wasi_host_poc.md`](go_wasi_host_poc.md).
-6. Older topic plans are historical input. Their code references and completion
+7. Older topic plans are historical input. Their code references and completion
    status may be stale.
 
 ## Current documents
 
 | Document | Status | Role |
 | --- | --- | --- |
+| [`core_instance_construction.md`](core_instance_construction.md) | Complete | Single core construction Interface, Host Adapter input and composition closure |
 | [`core_native_closeout.md`](core_native_closeout.md) | Complete | Final semantic ownership, deletion and verification record |
 | [`core_refactor_roadmap.md`](core_refactor_roadmap.md) | Ownership complete; hardening remains | Overall migration order, completed ownership gates and production follow-up |
 | [`core_remaining_ownership_refactor.md`](core_remaining_ownership_refactor.md) | Historical milestone | First ownership-migration closure snapshot, superseded by the final closeout |

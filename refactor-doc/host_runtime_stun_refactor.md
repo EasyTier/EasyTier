@@ -17,7 +17,8 @@ The native and Go hosts now implement the same ownership boundary:
   server configuration plus socket and DNS Host Adapters;
 - native `GlobalCtx` contains no STUN provider, projection slot, or replacement
   API. Native integration tests that need a deterministic provider inject a
-  test-only slot directly into `CoreInstanceAdapters` before construction;
+  provider through the hidden test-only
+  `CoreHostAdapters::replace_stun_provider` seam before construction;
 - the Go host no longer implements a parallel STUN surface.
 
 This closes the process-vs-instance capability debt without making instance

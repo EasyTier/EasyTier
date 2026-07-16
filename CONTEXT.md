@@ -31,6 +31,13 @@ instance. A core instance is the authoritative owner of its peer graph,
 connectivity state, listener state, route state, proxy state, task lifecycle,
 and runtime configuration.
 
+`CoreInstance::new(CoreInstanceConfig, CoreHostAdapters)` is the sole public
+construction Interface. Hosts supply one normalized configuration and their
+platform capabilities; core validates them and constructs its peer graph,
+runtime store, STUN, listeners, packet plane, proxy state, and lifecycle
+Modules. Native and WASI composition roots must not construct or inject those
+portable managers through alternate instance entry points.
+
 Process-global registries must not contain instance-specific state.
 
 ### Host
@@ -236,6 +243,9 @@ It must not reconstruct core routing or connectivity decisions.
 14. The process-level socket/DNS Host Runtime contains no instance state.
     Instance-specific OS requests carry explicit context; instance projections
     contain facts and policy inputs but do not create connector resources.
+15. `CoreInstance::new(CoreInstanceConfig, CoreHostAdapters)` is the only public
+    core construction Interface. Hosts do not inject prebuilt peer graphs,
+    runtime stores, or other core-owned managers.
 
 ## Architecture vocabulary
 

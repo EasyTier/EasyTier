@@ -112,6 +112,32 @@ through narrow Adapters.
 The current ownership map and deletion gates are recorded in
 [`core_ownership_finalization.md`](../../refactor-doc/core_ownership_finalization.md).
 
+## Implementation update (2026-07-16)
+
+Core instance construction now has one public Interface:
+
+```rust
+CoreInstance::new(
+    CoreInstanceConfig,
+    CoreHostAdapters<H>,
+) -> anyhow::Result<Arc<CoreInstance<H>>>
+```
+
+Native, WASI, and core tests all provide the same complete normalized
+configuration and Host Adapter bundle. Core validates those inputs and
+constructs its runtime store, STUN collector, peer graph, listener runtime,
+connectivity, packet plane, proxy state, and lifecycle Modules.
+
+The old `new_portable*`, prebuilt-peer-manager, public `HostCoreInstance`, and
+wrapped-transport factory/attachment paths are deleted. WASI retains a private
+ownership bundle only to keep one completion runtime shared by socket, DNS,
+environment, and packet Adapters; schema version 13, the C ABI, and lifecycle
+ordering remain unchanged.
+
+The final Interface, ownership map, deletion checks, and verification evidence
+are recorded in
+[`core_instance_construction.md`](../../refactor-doc/core_instance_construction.md).
+
 ## Rejected alternatives
 
 ### Multiple core crates now
