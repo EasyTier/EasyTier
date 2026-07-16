@@ -2375,7 +2375,7 @@ mod tests {
             proxy::wrapped_transport::{
                 NoWrappedTransportEngineFactory, WrappedTransportEngine,
                 WrappedTransportEngineBuild, WrappedTransportEngineFactory,
-                WrappedTransportEngineStart, WrappedTransportKind, WrappedTransportRole,
+                WrappedTransportEngineStart, WrappedTransportRole,
             },
             runtime_config::CoreInstanceRuntimeConfig,
             socket::{
@@ -2391,6 +2391,9 @@ mod tests {
                 },
             },
         };
+
+        #[cfg(feature = "proxy-packet")]
+        use crate::proxy::wrapped_transport::WrappedTransportKind;
 
         struct TestTcpSocket(tokio::io::DuplexStream);
 

@@ -538,6 +538,7 @@ fn send_to_with_src_ipv4_mapped_v6(
     )
 }
 
+#[cfg(any(target_os = "linux", target_os = "android"))]
 fn send_to_with_src_ip_raw(
     socket: &UdpSocket,
     src_ip: IpAddr,

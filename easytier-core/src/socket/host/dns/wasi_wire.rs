@@ -6,6 +6,7 @@ use crate::socket::{
 };
 
 const DNS_WIRE_VERSION: u8 = 1;
+#[cfg(target_os = "wasi")]
 pub(super) const MAX_DNS_RESULT_LEN: usize = 1024 * 1024;
 
 pub(super) fn encode_query(query: &DnsQuery) -> io::Result<Vec<u8>> {

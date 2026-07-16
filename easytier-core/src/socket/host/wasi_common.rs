@@ -1,5 +1,6 @@
 use std::io;
 
+#[cfg(target_os = "wasi")]
 pub(super) fn status(operation: &str, result: i32) -> io::Result<()> {
     if result == 0 {
         Ok(())

@@ -174,6 +174,7 @@ fn encode_context(encoded: &mut Vec<u8>, context: &SocketContext) -> io::Result<
     Ok(())
 }
 
+#[cfg(target_os = "wasi")]
 pub(super) fn encode_socket_context(context: &SocketContext) -> io::Result<Vec<u8>> {
     let mut encoded = Vec::with_capacity(11 + context_variable_len(context));
     encode_context(&mut encoded, context)?;

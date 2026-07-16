@@ -1173,7 +1173,7 @@ mod tests {
         let sink = Arc::new(MockSink::default());
         let common = Arc::new(UdpHolePunchServerCommon::new(runtime, mock_stun(), sink));
 
-        common.start();
+        common.start().await;
         common.select_listener(false, false).await.unwrap();
         common.stop().await;
 

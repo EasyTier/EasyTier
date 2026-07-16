@@ -328,6 +328,7 @@ fn prepare_connected_tcp_socket(stream: &TcpStream, purpose: TcpSocketPurpose) -
 pub(crate) fn prepare_proxy_tcp_socket(stream: &TcpStream) -> io::Result<()> {
     const TCP_KEEPALIVE_TIME: std::time::Duration = std::time::Duration::from_secs(5);
     const TCP_KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+    #[cfg(not(target_os = "windows"))]
     const TCP_KEEPALIVE_RETRIES: u32 = 2;
 
     let keepalive = TcpKeepalive::new()

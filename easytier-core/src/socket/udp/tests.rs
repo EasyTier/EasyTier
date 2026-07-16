@@ -20,8 +20,8 @@ use tokio::sync::{Semaphore, mpsc, watch};
 use crate::{
     hole_punch::udp::hole_punch_packet_tid,
     listener::SocketListener,
-    packet::{PacketType, UDP_TUNNEL_HEADER_SIZE, UdpPacketType, ZCPacket, ZCPacketType},
-    socket::{IpVersion, NetNamespace, SocketContext, ring::RingSocketSendError},
+    packet::{UDP_TUNNEL_HEADER_SIZE, UdpPacketType},
+    socket::{IpVersion, NetNamespace, SocketContext},
     stun::{Attribute, ChangeRequest, u32_to_tid},
 };
 

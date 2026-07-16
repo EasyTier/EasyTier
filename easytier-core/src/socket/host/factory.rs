@@ -226,7 +226,7 @@ mod tests {
 
     use crate::socket::{
         tcp::{TcpBindOptions, TcpSocketPurpose, VirtualTcpSocket},
-        udp::{UdpSocketPurpose, UdpSocketRecvMeta, UdpSocketSendMeta, VirtualUdpSocket},
+        udp::{UdpSocketPurpose, UdpSocketSendMeta, VirtualUdpSocket},
     };
 
     use super::*;

@@ -360,12 +360,6 @@ impl VirtualNic {
         );
     }
 
-    /// For non-Linux systems, this is a no-op
-    #[cfg(not(target_os = "linux"))]
-    async fn ensure_tun_device_node() -> Result<(), Error> {
-        Ok(())
-    }
-
     /// FreeBSD specific: Rename a TUN interface
     #[cfg(target_os = "freebsd")]
     async fn rename_tun_interface(old_name: &str, new_name: &str) -> Result<(), Error> {

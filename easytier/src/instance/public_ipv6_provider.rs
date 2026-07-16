@@ -5,13 +5,15 @@ use std::sync::Arc;
 #[cfg(target_os = "linux")]
 use anyhow::Context;
 use cidr::{Ipv6Cidr, Ipv6Inet};
+#[cfg(target_os = "linux")]
+use easytier_core::instance::public_ipv6_provider::PublicIpv6NdpTarget;
 use easytier_core::instance::public_ipv6_provider::{
-    PublicIpv6NdpDesired, PublicIpv6NdpTarget, PublicIpv6PlatformError,
-    PublicIpv6PlatformObservation, PublicIpv6ProviderPlatform,
+    PublicIpv6NdpDesired, PublicIpv6PlatformError, PublicIpv6PlatformObservation,
+    PublicIpv6ProviderPlatform,
 };
-use easytier_core::peers::public_ipv6::{
-    PublicIpv6ProviderConfig, is_global_routable_public_ipv6_prefix,
-};
+use easytier_core::peers::public_ipv6::PublicIpv6ProviderConfig;
+#[cfg(target_os = "linux")]
+use easytier_core::peers::public_ipv6::is_global_routable_public_ipv6_prefix;
 #[cfg(target_os = "linux")]
 use netlink_packet_route::route::{RouteAddress, RouteAttribute, RouteMessage, RouteType};
 
@@ -20,10 +22,11 @@ use crate::common::ifcfg::{
     add_ipv6_ndp_proxy, get_interface_index, list_ipv6_ndp_proxy, list_ipv6_route_messages,
     remove_ipv6_ndp_proxy,
 };
+#[cfg(target_os = "linux")]
+use crate::common::netns::NetNS;
 use crate::common::{
     error::Error,
     global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
-    netns::NetNS,
 };
 
 pub(crate) fn runtime_public_ipv6_provider_config(
@@ -415,11 +418,6 @@ fn detect_public_ipv6_prefix_linux() -> Result<Option<DetectedPublicIpv6Prefix>,
 
     // Fallback for DHCPv6 IA_NA / SLAAC — see https://github.com/EasyTier/EasyTier/issues/2333
     Ok(detect_public_ipv6_prefix_from_interfaces(&routes))
-}
-
-#[cfg(not(target_os = "linux"))]
-fn detect_public_ipv6_prefix_linux() -> Result<Option<Ipv6Cidr>, Error> {
-    Ok(None)
 }
 
 #[cfg(target_os = "linux")]

@@ -126,7 +126,6 @@ impl InterfaceControl {
 }
 
 pub struct WindowsDNSManager {
-    tun_dev_name: String,
     interface_control: InterfaceControl,
 }
 
@@ -134,7 +133,6 @@ impl WindowsDNSManager {
     pub fn new(tun_dev_name: &str) -> io::Result<Self> {
         let interface_guid = RegistryManager::find_interface_guid(tun_dev_name)?;
         Ok(WindowsDNSManager {
-            tun_dev_name: tun_dev_name.to_string(),
             interface_control: InterfaceControl::new(&interface_guid),
         })
     }

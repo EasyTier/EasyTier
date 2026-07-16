@@ -53,6 +53,7 @@ mod tracked {
         TimerDomainGuard(CURRENT_DOMAIN.replace(Some(domain)))
     }
 
+    #[cfg(target_os = "wasi")]
     pub(crate) fn clear_domain(domain: u64) {
         DEADLINES.with_borrow_mut(|registry| {
             registry
@@ -251,8 +252,10 @@ pub use tracked::{
     sleep_until, timeout, timeout_at,
 };
 
+#[cfg(target_os = "wasi")]
+pub(crate) use tracked::clear_domain;
 #[cfg(any(test, target_os = "wasi"))]
-pub(crate) use tracked::{clear_domain, enter_domain, next_deadline_millis};
+pub(crate) use tracked::{enter_domain, next_deadline_millis};
 
 #[cfg(test)]
 mod tests {
