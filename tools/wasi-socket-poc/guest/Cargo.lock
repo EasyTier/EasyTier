@@ -584,6 +584,7 @@ dependencies = [
  "url",
  "uuid",
  "webpki-roots 0.26.11",
+ "wildmatch",
  "x25519-dalek",
  "zerocopy 0.7.35",
 ]
@@ -2867,6 +2868,12 @@ checksum = "bf85cb06032201fa7c6f829d7db5a7e5aa45bcc0655327713065f6f0576731bf"
 dependencies = [
  "rustls-pki-types",
 ]
+
+[[package]]
+name = "wildmatch"
+version = "2.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "29333c3ea1ba8b17211763463ff24ee84e41c78224c16b001cd907e663a38c68"
 
 [[package]]
 name = "winapi"
