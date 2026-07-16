@@ -1,13 +1,13 @@
 # EasyTier Core Refactor Roadmap
 
-> Status: first ownership milestone complete; semantic ownership closeout is
-> active. Updated 2026-07-16.
+> Status: ownership refactor complete; quantitative Go/WASI production
+> hardening remains. Updated 2026-07-16.
 
 The 2026-07-16 source audit found semantic ownership leaks that the earlier
-path-based deletion gates did not detect. The authoritative remaining work is
-tracked in [`core_native_closeout.md`](core_native_closeout.md). Statements
-below that call ownership complete describe the earlier milestone and must not
-be used as the final completion claim.
+path-based deletion gates did not detect. They were closed through the
+authoritative [`core_native_closeout.md`](core_native_closeout.md) checklist.
+The ownership boundary described here is now complete; explicitly recorded
+resource and production-hardening debt remains follow-up work.
 
 ## Outcome
 
@@ -94,7 +94,7 @@ The ownership migration and its closure evidence are recorded in
 That document is now the authoritative closure record for native peer,
 `GlobalCtx`, foreign-network, and gateway ownership.
 
-Current closure status on 2026-07-14:
+Final ownership status on 2026-07-16:
 
 - the Core instance, native and Go completion domains, runtime configuration,
   and process-scoped Ring registry now have single authoritative owners;
@@ -111,6 +111,15 @@ Current closure status on 2026-07-14:
   protocol/session Modules, and VPN portal client state;
 - native gateway code contains concrete engines, real resources, composition,
   configuration/events, and presentation rather than a second policy owner.
+- `CorePacketPlane` is the narrow packet/route projection used by DHCP, NIC,
+  Magic DNS, Windows broadcast relay and mobile setup. These adapters neither
+  retain nor call through the full core lifecycle root.
+- UDP port-mapping operation adapters hold only platform resources and request
+  data; presentation events use a separate sink. Core owns fallback, lease and
+  renewal policy.
+- core owns one post-host lifecycle entry. Public-IPv6 reconciliation ensures
+  its own lifecycle start, and native no longer starts the VPN portal through
+  a second path.
 - process-level Host Adapters have one composition root. Core's composite Host
   Adapter pairs them with a narrow `NativeInstanceEnvironment` that has no
   socket operations;
@@ -152,9 +161,9 @@ The whole refactor is done only when all of these hold:
    key behaviours.
 8. Deprecated native ownership and compatibility forwarding paths are deleted.
 
-The path-based criteria were met, but the semantic audit found remaining
-portable decisions and lifecycle in native. Feature slicing starts only after
-the active closeout checklist is complete.
+The path-based criteria and the semantic ownership audit are complete. Feature
+slicing may now proceed as a separate phase without reopening the core/native
+ownership boundary.
 
 ## Phase 0: prove the Go/WASI socket and executor model
 
@@ -361,27 +370,27 @@ Do not preserve old public Rust paths merely to make a migration appear less
 disruptive. Do preserve wire compatibility when it is an explicit protocol
 requirement; that is separate from Rust source compatibility.
 
-## Validation snapshot (2026-07-14)
+## Validation snapshot (2026-07-16)
 
-The completed ownership milestone passes:
+The completed ownership refactor passes:
 
-- native `easytier-core` default, no-default, and all-feature checks;
-- `wasm32-wasip1` no-default and all-feature checks, with the established
-  default/no-default/all-feature guest test artifacts retained;
-- 482 native `easytier-core` all-feature tests;
-- all 31 `easytier-go-host` tests, including the real two-instance route and
-  packet exchange, plus `go build` and `go vet`;
-- four focused race-enabled Go bridge close, cancellation, and lifecycle
-  tests;
-- four focused native SOCKS gateway tests;
-- core-trait WS/WSS, QUIC, WireGuard, Unix, and root FakeTCP tunnel tests;
-- core UDP listener/session tests and native IPv4/IPv6 hole-punch forwarding
-  tests after deletion of the native UDP Tunnel module;
-- three root/netns Docker SOCKS portal scenarios;
-- root/netns wrapped-TCP port-forward scenarios for the baseline, DHCP, and
-  QUIC paths. A one-second DHCP/QUIC completion window timed out once in each
-  variant and both passed unchanged on rerun, so no production or test
-  semantics were altered.
+- 618 native `easytier-core --all-features` tests;
+- `easytier-core --all-features` compilation for `wasm32-wasip1`, together
+  with retained default/no-default/all-feature guest test artifacts;
+- native all-feature test-target compilation with no warnings, plus targeted
+  default, no-default, Windows and Android checks for the final ownership
+  slices;
+- the normal `easytier-go-host` suite against a release WASM build, including
+  real two-instance raw-TCP formation and IPv4 packet exchange; `go build`,
+  `go vet`, and four focused race-enabled bridge lifecycle tests also pass;
+- focused WS/WSS, WireGuard and QUIC production-Seam coverage, plus a
+  deterministic real native KCP engine round trip across two portable core
+  instances and the core peer datagram path;
+- selected Docker TCP, UDP, WS, WSS and WireGuard three-node scenarios,
+  real-TCP composition, core raw-UDP/native runtime endpoint, QUIC
+  UDP-session-to-native upgrade, SOCKS portal and wrapped-TCP scenarios;
+- formatting, diff checks and static ownership searches showing no legacy
+  native connector/peer/raw-Tunnel owner or forbidden real-OS call in core.
 
 The source audit finds no direct real-OS network, DNS, filesystem, process, or
 platform syscall in `easytier-core`. Address-only uses of `std::net` and the
@@ -395,8 +404,11 @@ ownership regression.
 
 WireGuard portal Docker tests stop at their baseline ping before
 `run_vpn_portal`, so they do not exercise the migrated client registry. The
-legacy native ring/peer fixture and its TCP hole-punch wrappers are deleted;
-portable policy is tested in core and real socket coverage remains native.
+selected KCP-only and QUIC-only mapped-subnet cases likewise stop at their
+mapped-CIDR ICMP prerequisite before either engine runs; the KCP failure was
+reproduced with a pre-closeout binary. These environment baselines are recorded
+without hiding them behind production changes. Portable policy is tested in
+core, while deterministic real-engine and real-socket coverage remains native.
 
 Quantitative latency/idle-resource baselines and hard-kill isolation remain
 production-readiness work for the selected Go/WASI ABI. They do not change the

@@ -1,12 +1,12 @@
 # EasyTier Core/Native Ownership Closeout
 
-> Status: active implementation checklist. Created 2026-07-16.
+> Status: complete. Created and closed 2026-07-16.
 
-This is the only active ownership-closeout checklist after the first core
+This is the authoritative ownership-closeout record after the first core
 migration milestone. [`CONTEXT.md`](../CONTEXT.md) and the accepted ADRs remain
-the architectural authority. Older documents that describe ownership as
-complete are historical snapshots; completion now means every item and exit
-gate in this document is closed.
+the architectural authority. Earlier completion claims are historical
+snapshots; final completion means every item and exit gate in this document is
+closed.
 
 ## Goal
 
@@ -288,19 +288,32 @@ and are not repaired opportunistically.
 
 ## Final verification
 
-Completion requires:
+All completion gates are closed:
 
-1. every checkbox above is closed or explicitly removed by an accepted ADR;
-2. focused native engine coverage for WS/WSS, WireGuard, QUIC and KCP;
-3. all `easytier-core` tests with all features;
-4. `easytier-core` all-feature compilation for `wasm32-wasip1`;
-5. native all-feature test compilation and selected Docker TCP/UDP/protocol
-   integration scenarios;
-6. normal Go-host tests, focused race lifecycle tests and two-core WASM packet
-   exchange;
-7. static searches show no second portable owner or forbidden OS call in core;
-8. final full-diff review finds no architecture regression, business-semantic
-   change, concurrency/lifecycle leak, or accidental broad coupling.
+1. [x] Every ownership checkbox above is closed.
+2. [x] Focused native engine coverage exists for WS/WSS, WireGuard, QUIC and
+   KCP. The KCP case uses the real native engine across two portable core
+   instances and verifies bidirectional bytes through the core peer dataplane.
+3. [x] `easytier-core --all-features`: 618 tests passed.
+4. [x] `easytier-core` compiles for `wasm32-wasip1 --all-features`.
+5. [x] Native all-feature test targets compile without warnings. Selected
+   Docker TCP, UDP, WS, WSS and WireGuard three-node paths passed, together
+   with real-TCP composition, raw-UDP runtime and QUIC UDP-session upgrade
+   cases.
+6. [x] The normal Go-host suite passed against a release WASM build, including
+   two-core raw-TCP formation and IPv4 packet exchange. Four focused
+   race-enabled bridge cancellation and lifecycle tests passed.
+7. [x] Static searches find no legacy native connector/peer/raw-Tunnel owner,
+   no crate-wide dead-code exemption, no full core-instance dependency in the
+   migrated packet-plane adapters, and no direct real-OS call in core.
+8. [x] Incremental reviews and the final full-range review found no remaining
+   in-scope architecture, behaviour, concurrency, state or coupling defect.
+
+The selected KCP-only and QUIC-only mapped-subnet Docker cases stop at their
+mapped-CIDR ICMP prerequisite before either protocol engine runs. The KCP
+failure was reproduced with a pre-closeout binary, so it is not used as an
+ownership-regression signal. Deterministic concrete-engine coverage now closes
+the KCP verification gap without depending on that environment.
 
 ## Progress log
 
@@ -348,3 +361,14 @@ Completion requires:
   `CoreProcessRuntime`. Native Web composition now supplies only Host/DNS,
   protocol and normalized discovery inputs; a TXT-to-Ring test covers the deep
   core factory path and process namespace.
+- 2026-07-16: split UDP port-mapping operations from presentation events,
+  made public-IPv6 reconciliation start its core lifecycle owner, and removed
+  the duplicate native VPN-portal start path.
+- 2026-07-16: introduced `CorePacketPlane` as the concrete packet/route
+  projection used by DHCP, NIC, Magic DNS, Windows relay and mobile setup.
+  Native dataplane tasks no longer retain or depend on the full core lifecycle
+  root; shutdown joins static-IP handoff before tearing down NIC and core.
+- 2026-07-16: added a deterministic two-core native KCP round trip using the
+  real `KcpProxyService`, `KcpEndpoint`, core peer datagrams and native TCP
+  destination ingress. Final Rust, WASI, native, Go-host, static and review
+  gates passed, closing this checklist.
