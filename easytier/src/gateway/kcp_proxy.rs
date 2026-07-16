@@ -24,8 +24,8 @@ use easytier_core::{
     },
 };
 
+use super::hedge::HedgeExt;
 use crate::proto::peer_rpc::KcpConnData;
-use crate::utils::task::HedgeExt;
 
 fn create_kcp_endpoint() -> KcpEndpoint {
     let mut kcp_endpoint = KcpEndpoint::new();

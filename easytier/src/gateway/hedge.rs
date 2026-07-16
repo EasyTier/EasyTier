@@ -1,13 +1,46 @@
-use crate::utils::error::ErrorCollection;
-use futures::StreamExt;
-use futures::stream::FuturesUnordered;
-use std::future::Future;
-use std::time::Duration;
+use std::{
+    fmt::{self, Display},
+    future::Future,
+    time::Duration,
+};
+
+use futures::{StreamExt, stream::FuturesUnordered};
 use tokio::time::sleep;
 
-// region HedgeExt
+#[derive(Debug)]
+pub(super) struct ErrorCollection<E> {
+    errors: Vec<E>,
+}
 
-pub(crate) trait HedgeExt: Iterator + Sized {
+impl<E> ErrorCollection<E> {
+    fn new() -> Self {
+        Self { errors: Vec::new() }
+    }
+
+    fn push(&mut self, error: E) {
+        self.errors.push(error);
+    }
+}
+
+impl<E: Display> Display for ErrorCollection<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.errors.is_empty() {
+            return write!(f, "No errors");
+        }
+
+        write!(f, "{} error(s) occurred:", self.errors.len())?;
+        for (i, err) in self.errors.iter().enumerate() {
+            writeln!(f)?;
+            write!(f, "  {}. {}", i + 1, err)?;
+        }
+
+        Ok(())
+    }
+}
+
+impl<E: fmt::Debug + Display> std::error::Error for ErrorCollection<E> {}
+
+pub(super) trait HedgeExt: Iterator + Sized {
     async fn hedge<T, E>(self, delay: Duration) -> Result<T, ErrorCollection<E>>
     where
         Self::Item: Future<Output = Result<T, E>>;
@@ -60,5 +93,3 @@ where
         Err(errors)
     }
 }
-
-// endregion

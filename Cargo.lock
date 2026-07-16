@@ -2346,8 +2346,6 @@ dependencies = [
  "dashmap",
  "dbus",
  "defguard_wireguard_rs",
- "delegate",
- "derivative",
  "derive_builder",
  "derive_more 2.1.1",
  "easytier-core",

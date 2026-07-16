@@ -49,7 +49,6 @@ tracing-subscriber = { version = "0.3", features = [
     "local-time",
     "time",
 ] }
-derivative = "2.2.0"
 derive_more = { version = "2.1.1", features = ["full"] }
 console-subscriber = { version = "0.4.1", optional = true }
 indoc = "2.0.7"
@@ -65,8 +64,6 @@ chrono = { version = "0.4.37", features = ["serde"] }
 
 guarden = "0.2"
 quanta = "0.12"
-
-delegate = "0.13.5"
 
 itertools = "0.14.0"
 

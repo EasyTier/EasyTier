@@ -1,7 +1,7 @@
+use super::hedge::HedgeExt;
 use crate::common::PeerId;
 use crate::proto::peer_rpc::KcpConnData as QuicConnData;
 use crate::tunnel::quic::{client_config, endpoint_config, server_config};
-use crate::utils::task::HedgeExt;
 use anyhow::{Context, Error, anyhow, ensure};
 use atomic_refcell::AtomicRefCell;
 use bytes::{BufMut, Bytes, BytesMut};
