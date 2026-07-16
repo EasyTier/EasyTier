@@ -513,7 +513,9 @@ async fn capture_loop(
                 }
                 let normalized = match normalize_udp_broadcast_packet(packet, &config) {
                     Ok(normalized) => {
-                        log_normalized_udp_packet(packet, &config, &normalized);
+                        if tracing::enabled!(tracing::Level::DEBUG) {
+                            log_normalized_udp_packet(packet, &config, &normalized);
+                        }
                         Some(normalized)
                     }
                     Err(rejection) => {
