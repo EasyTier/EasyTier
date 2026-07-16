@@ -28,7 +28,6 @@ use tokio_util::sync::CancellationToken;
 #[cfg(feature = "magic-dns")]
 use tokio_util::task::AbortOnDropHandle;
 
-use crate::common::PeerId;
 use crate::common::config::ConfigLoader;
 use crate::common::error::Error;
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtx, GlobalCtxEvent};
@@ -68,7 +67,6 @@ use crate::proto::rpc_types::controller::BaseController;
 use crate::rpc_service::InstanceRpcService;
 use crate::utils::weak_upgrade;
 use easytier_core::peer_center::instance::PeerCenterInstanceService;
-use easytier_core::peers::peer_conn::PeerConnId;
 
 #[cfg(feature = "magic-dns")]
 use super::dns_server::{MAGIC_DNS_FAKE_IP, runner::DnsRunner};
@@ -84,66 +82,24 @@ impl RuntimeTransportProxyFactory {
     }
 }
 
-struct RuntimeTransportProxyAttachment {
-    #[cfg(feature = "kcp")]
-    kcp: Weak<KcpProxyService>,
-    #[cfg(feature = "quic")]
-    quic: Weak<QuicProxyService>,
-}
-
-impl RuntimeTransportProxyAttachment {
-    #[cfg(feature = "kcp")]
-    fn kcp(&self) -> Arc<KcpProxyService> {
-        self.kcp
-            .upgrade()
-            .expect("core must retain the KCP proxy lifecycle")
-    }
-
-    #[cfg(feature = "quic")]
-    fn quic(&self) -> Arc<QuicProxyService> {
-        self.quic
-            .upgrade()
-            .expect("core must retain the QUIC proxy lifecycle")
-    }
-}
-
 impl WrappedTransportEngineFactory for RuntimeTransportProxyFactory {
-    type Attachment = RuntimeTransportProxyAttachment;
+    type Attachment = ();
 
     fn build(self) -> anyhow::Result<WrappedTransportEngineBuild<Self::Attachment>> {
-        #[cfg(any(feature = "kcp", feature = "quic"))]
-        let (kcp_engine, quic_engine, attachment) = {
-            #[cfg(feature = "kcp")]
-            let kcp = Arc::new(KcpProxyService::new());
-            #[cfg(feature = "quic")]
-            let quic = Arc::new(QuicProxyService::new());
-            (
-                #[cfg(feature = "kcp")]
-                Some(kcp.clone() as Arc<dyn WrappedTransportEngine>),
-                #[cfg(not(feature = "kcp"))]
-                None,
-                #[cfg(feature = "quic")]
-                Some(quic.clone() as Arc<dyn WrappedTransportEngine>),
-                #[cfg(not(feature = "quic"))]
-                None,
-                RuntimeTransportProxyAttachment {
-                    #[cfg(feature = "kcp")]
-                    kcp: Arc::downgrade(&kcp),
-                    #[cfg(feature = "quic")]
-                    quic: Arc::downgrade(&quic),
-                },
-            )
-        };
-        #[cfg(not(any(feature = "kcp", feature = "quic")))]
-        let (kcp_engine, quic_engine, attachment) = {
-            let _ = self;
-            (None, None, RuntimeTransportProxyAttachment {})
-        };
+        #[cfg(feature = "kcp")]
+        let kcp_engine = Some(Arc::new(KcpProxyService::new()) as Arc<dyn WrappedTransportEngine>);
+        #[cfg(not(feature = "kcp"))]
+        let kcp_engine = None;
+        #[cfg(feature = "quic")]
+        let quic_engine =
+            Some(Arc::new(QuicProxyService::new()) as Arc<dyn WrappedTransportEngine>);
+        #[cfg(not(feature = "quic"))]
+        let quic_engine = None;
 
         Ok(WrappedTransportEngineBuild {
             kcp: kcp_engine,
             quic: quic_engine,
-            attachment,
+            attachment: (),
         })
     }
 }
@@ -160,7 +116,7 @@ struct MagicDnsContainer {
 // nic container will be cleared when dhcp ip changed
 #[cfg(feature = "tun")]
 pub struct NicCtxContainer {
-    nic_ctx: Option<Box<dyn Any + 'static + Send>>,
+    _nic_ctx: Option<Box<dyn Any + 'static + Send>>,
     #[cfg(feature = "magic-dns")]
     magic_dns: Option<MagicDnsContainer>,
 }
@@ -170,7 +126,7 @@ impl NicCtxContainer {
     #[cfg(not(feature = "magic-dns"))]
     fn new(nic_ctx: NicCtx) -> Self {
         Self {
-            nic_ctx: Some(Box::new(nic_ctx)),
+            _nic_ctx: Some(Box::new(nic_ctx)),
         }
     }
 
@@ -183,7 +139,7 @@ impl NicCtxContainer {
                 let _ = dns_runner.run(token_clone).await;
             });
             Self {
-                nic_ctx: Some(Box::new(nic_ctx)),
+                _nic_ctx: Some(Box::new(nic_ctx)),
                 magic_dns: Some(MagicDnsContainer {
                     dns_runner_task: AbortOnDropHandle::new(task),
                     dns_runner_cancel_token: token,
@@ -191,7 +147,7 @@ impl NicCtxContainer {
             }
         } else {
             Self {
-                nic_ctx: Some(Box::new(nic_ctx)),
+                _nic_ctx: Some(Box::new(nic_ctx)),
                 magic_dns: None,
             }
         }
@@ -199,7 +155,7 @@ impl NicCtxContainer {
 
     fn new_with_any<T: 'static + Send>(ctx: T) -> Self {
         Self {
-            nic_ctx: Some(Box::new(ctx)),
+            _nic_ctx: Some(Box::new(ctx)),
             #[cfg(feature = "magic-dns")]
             magic_dns: None,
         }
@@ -637,18 +593,12 @@ impl InstanceConfigPatcher {
 }
 
 pub struct Instance {
-    inst_name: String,
-
-    id: uuid::Uuid,
-
     #[cfg(feature = "tun")]
     nic_ctx: ArcNicCtx,
 
     peer_packet_receiver: Arc<Mutex<HostPacketReceiver>>,
     core_instance: Arc<NativeCoreInstance>,
     config_operation: Arc<ConfigOperation>,
-
-    transport_proxy: RuntimeTransportProxyAttachment,
 
     global_ctx: ArcGlobalCtx,
 }
@@ -866,9 +816,7 @@ impl Instance {
 
         let (peer_packet_sender, peer_packet_receiver) = mpsc::channel(128);
 
-        let id = global_ctx.get_id();
-
-        let (core_instance, transport_proxy) =
+        let (core_instance, ()) =
             build_portable_runtime_core_instance_with_transport_factory_and_adapters(
                 global_ctx.clone(),
                 Arc::new(peer_packet_sender),
@@ -880,9 +828,6 @@ impl Instance {
         let config_operation = Arc::new(ConfigOperation::default());
 
         Instance {
-            inst_name: global_ctx.inst_name.clone(),
-            id,
-
             peer_packet_receiver: Arc::new(Mutex::new(peer_packet_receiver)),
             #[cfg(feature = "tun")]
             nic_ctx: Arc::new(Mutex::new(None)),
@@ -890,17 +835,8 @@ impl Instance {
             core_instance,
             config_operation,
 
-            transport_proxy,
-
             global_ctx,
         }
-    }
-
-    pub fn add_connector_url(&self, url: url::Url) {
-        tracing::info!(%url, "add_connector");
-        self.core_instance
-            .add_connector(url)
-            .expect("core manual connector URL should be valid");
     }
 
     #[cfg(feature = "tun")]
@@ -1095,30 +1031,6 @@ impl Instance {
         }
         self.core_instance.start_vpn_portal().await?;
         Ok(())
-    }
-
-    pub async fn close_peer_conn(
-        &mut self,
-        peer_id: PeerId,
-        conn_id: &PeerConnId,
-    ) -> Result<(), Error> {
-        self.core_instance
-            .close_peer_conn(peer_id, conn_id)
-            .await
-            .map_err(Error::from)?;
-        Ok(())
-    }
-
-    pub async fn wait(&self) {
-        self.core_instance.wait().await;
-    }
-
-    pub fn id(&self) -> uuid::Uuid {
-        self.id
-    }
-
-    pub fn peer_id(&self) -> PeerId {
-        self.core_instance.peer_id()
     }
 
     fn get_vpn_portal_rpc_service(
@@ -1523,6 +1435,7 @@ impl Instance {
         self.peer_packet_receiver.clone()
     }
 
+    #[cfg(any(mobile, feature = "ffi-dataplane", test))]
     pub(crate) fn get_core_instance(&self) -> Arc<NativeCoreInstance> {
         self.core_instance.clone()
     }
@@ -1621,10 +1534,6 @@ mod tests {
     };
     use easytier_core::dhcp::DhcpIpv4Host as _;
     use easytier_core::process_runtime::CoreProcessRuntime;
-    #[cfg(any(feature = "kcp", feature = "quic"))]
-    use easytier_core::proxy::wrapped_transport::{
-        WrappedTransportDirections, WrappedTransportEngine as _, WrappedTransportEngineStart,
-    };
 
     fn tcp_whitelist_patch(port: &str) -> InstanceConfigPatch {
         InstanceConfigPatch {
@@ -1671,7 +1580,7 @@ mod tests {
             let _ = cleaned_tx.send(());
         });
         let nic_ctx = Arc::new(Mutex::new(Some(NicCtxContainer {
-            nic_ctx: None,
+            _nic_ctx: None,
             magic_dns: Some(MagicDnsContainer {
                 dns_runner_task: AbortOnDropHandle::new(task),
                 dns_runner_cancel_token: cancel,
@@ -1843,59 +1752,6 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("instance is closing"));
-    }
-
-    #[cfg(feature = "kcp")]
-    #[tokio::test]
-    async fn kcp_engine_uses_explicit_source_direction() {
-        let instance = Instance::new_with_process_runtime(
-            TomlConfigLoader::default(),
-            CoreProcessRuntime::new(),
-        );
-        let kcp = instance.transport_proxy.kcp();
-        let (datagrams, _datagram_rx) = tokio::sync::mpsc::channel(16);
-        kcp.prepare(WrappedTransportEngineStart {
-            directions: WrappedTransportDirections {
-                source: true,
-                destination: false,
-            },
-            my_peer_id: instance.core_instance.peer_id(),
-            datagrams,
-            destination_ingress: None,
-        })
-        .await
-        .unwrap();
-        kcp.activate().await.unwrap();
-
-        assert!(kcp.source_is_prepared().await);
-        kcp.stop().await;
-        assert!(!kcp.source_is_prepared().await);
-    }
-
-    #[cfg(feature = "quic")]
-    #[tokio::test]
-    async fn quic_engine_uses_explicit_source_direction() {
-        let instance = Instance::new_with_process_runtime(
-            TomlConfigLoader::default(),
-            CoreProcessRuntime::new(),
-        );
-        let quic = instance.transport_proxy.quic();
-        let (datagrams, _datagram_rx) = tokio::sync::mpsc::channel(16);
-        quic.prepare(WrappedTransportEngineStart {
-            directions: WrappedTransportDirections {
-                source: true,
-                destination: false,
-            },
-            my_peer_id: instance.core_instance.peer_id(),
-            datagrams,
-            destination_ingress: None,
-        })
-        .await
-        .unwrap();
-        quic.activate().await.unwrap();
-        assert!(quic.source_is_prepared().await);
-        quic.stop().await;
-        assert!(!quic.source_is_prepared().await);
     }
 
     #[tokio::test]

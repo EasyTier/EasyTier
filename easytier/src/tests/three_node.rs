@@ -224,7 +224,7 @@ async fn init_three_node_ex_with_inst3<F: Fn(TomlConfigLoader) -> TomlConfigLoad
         inst1.add_connector_url("wss://10.1.1.2:11012".parse().unwrap());
     }
 
-    inst3.add_connector_url(format!("ring://{}", inst2.id()).parse().unwrap());
+    inst3.add_connector_url(inst2.ring_listener_url());
 
     // wait inst2 have two route.
     wait_for_condition(
@@ -1634,12 +1634,12 @@ pub async fn foreign_network_forward_nic_data() {
     inst1.run().await.unwrap();
     inst2.run().await.unwrap();
 
-    assert_ne!(inst1.id(), center_inst.id());
-    assert_ne!(inst2.id(), center_inst.id());
+    assert_ne!(inst1.ring_listener_url(), center_inst.ring_listener_url());
+    assert_ne!(inst2.ring_listener_url(), center_inst.ring_listener_url());
 
-    inst1.add_connector_url(format!("ring://{}", center_inst.id()).parse().unwrap());
+    inst1.add_connector_url(center_inst.ring_listener_url());
 
-    inst2.add_connector_url(format!("ring://{}", center_inst.id()).parse().unwrap());
+    inst2.add_connector_url(center_inst.ring_listener_url());
 
     wait_for_condition(
         || async {
@@ -1901,11 +1901,11 @@ pub async fn foreign_network_functional_cluster() {
         set_foreign_network_refresh_interval(instance, 1).await;
     }
 
-    center_inst1.add_connector_url(format!("ring://{}", center_inst2.id()).parse().unwrap());
+    center_inst1.add_connector_url(center_inst2.ring_listener_url());
 
-    inst1.add_connector_url(format!("ring://{}", center_inst1.id()).parse().unwrap());
+    inst1.add_connector_url(center_inst1.ring_listener_url());
 
-    inst2.add_connector_url(format!("ring://{}", center_inst2.id()).parse().unwrap());
+    inst2.add_connector_url(center_inst2.ring_listener_url());
 
     println!(
         "inst1 peer map: {:?}",
@@ -1919,7 +1919,7 @@ pub async fn foreign_network_functional_cluster() {
     .await;
 
     // connect to two centers, ping should work
-    inst1.add_connector_url(format!("ring://{}", center_inst2.id()).parse().unwrap());
+    inst1.add_connector_url(center_inst2.ring_listener_url());
     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
     wait_for_condition(
         || async { ping_test("net_c", "10.144.145.2", None).await },
@@ -1958,12 +1958,12 @@ pub async fn manual_reconnector(#[values(true, false)] is_foreign: bool) {
     inst1.run().await.unwrap();
     inst2.run().await.unwrap();
 
-    assert_ne!(inst1.id(), center_inst.id());
-    assert_ne!(inst2.id(), center_inst.id());
+    assert_ne!(inst1.ring_listener_url(), center_inst.ring_listener_url());
+    assert_ne!(inst2.ring_listener_url(), center_inst.ring_listener_url());
 
-    inst1.add_connector_url(format!("ring://{}", center_inst.id()).parse().unwrap());
+    inst1.add_connector_url(center_inst.ring_listener_url());
 
-    inst2.add_connector_url(format!("ring://{}", center_inst.id()).parse().unwrap());
+    inst2.add_connector_url(center_inst.ring_listener_url());
 
     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
 
@@ -2959,7 +2959,7 @@ pub async fn p2p_only_test(
     .await;
 
     if has_p2p_conn {
-        insts[2].add_connector_url(format!("ring://{}", insts[0].id()).parse().unwrap());
+        insts[2].add_connector_url(insts[0].ring_listener_url());
         wait_route_cost(&insts[2], insts[0].peer_id(), 1, Duration::from_secs(5)).await;
     }
 

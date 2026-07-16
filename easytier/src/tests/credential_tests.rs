@@ -19,7 +19,9 @@ use crate::{
     tunnel::common::tests::wait_for_condition,
 };
 
-use super::{add_ns_to_bridge, create_netns, del_netns, drop_insts, ping_test};
+use super::{
+    InstanceTestExt as _, add_ns_to_bridge, create_netns, del_netns, drop_insts, ping_test,
+};
 
 use rstest::rstest;
 

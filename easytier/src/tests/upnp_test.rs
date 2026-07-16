@@ -18,7 +18,9 @@ use igd_next::{
 };
 use tempfile::TempDir;
 
-use super::{create_netns, del_netns, drop_insts, get_host_veth_name, ping_test};
+use super::{
+    InstanceTestExt as _, create_netns, del_netns, drop_insts, get_host_veth_name, ping_test,
+};
 use crate::{
     common::{
         config::{ConfigLoader, TomlConfigLoader},
@@ -1543,8 +1545,8 @@ async fn instances_build_direct_connection_via_upnp_udp_hole_punch() {
     inst_b.run().await.unwrap();
     inst_c.run().await.unwrap();
 
-    inst_a.add_connector_url(format!("ring://{}", inst_b.id()).parse().unwrap());
-    inst_c.add_connector_url(format!("ring://{}", inst_b.id()).parse().unwrap());
+    inst_a.add_connector_url(inst_b.ring_listener_url());
+    inst_c.add_connector_url(inst_b.ring_listener_url());
 
     timeout_stage(
         "wait_route_appear(inst_a, inst_c)",

@@ -9,7 +9,35 @@ mod credential_tests;
 #[cfg(target_os = "linux")]
 mod upnp_test;
 
-use crate::common::PeerId;
+use crate::{common::PeerId, instance::instance::Instance};
+
+trait InstanceTestExt {
+    fn add_connector_url(&self, url: url::Url);
+
+    fn peer_id(&self) -> PeerId;
+
+    fn ring_listener_url(&self) -> url::Url;
+}
+
+impl InstanceTestExt for Instance {
+    fn add_connector_url(&self, url: url::Url) {
+        self.get_core_instance()
+            .add_connector(url)
+            .expect("test connector URL should be supported");
+    }
+
+    fn peer_id(&self) -> PeerId {
+        self.get_core_instance().peer_id()
+    }
+
+    fn ring_listener_url(&self) -> url::Url {
+        self.get_core_instance()
+            .running_listeners()
+            .into_iter()
+            .find(|url| url.scheme() == "ring")
+            .expect("test instance has no running Ring listener")
+    }
+}
 
 pub fn set_env_var<K: AsRef<std::ffi::OsStr>, V: AsRef<std::ffi::OsStr>>(key: K, value: V) {
     unsafe { std::env::set_var(key, value) }
