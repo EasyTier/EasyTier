@@ -13,7 +13,7 @@ use easytier_core::{
         direct::DirectConnectorOptions,
         manual::{ManualConnectorOptions, discovery::ManualEndpointDiscoveryConfig},
     },
-    instance::CoreInstanceConfig,
+    instance::{CoreInstanceConfig, CoreInstanceStartupPlan},
     listener::plan::ListenerRuntimeConfig,
     peers::acl_config::AclRuleConfig,
     proxy::{ProxyRuntimeConfig, gateway::GatewayRuntimeConfig},
@@ -200,6 +200,9 @@ pub(crate) fn runtime_connectivity_config(global_ctx: &ArcGlobalCtx) -> CoreInst
             runtime_socket_context(global_ctx),
         )),
         runtime: runtime_core_config(global_ctx),
+        startup_plan: CoreInstanceStartupPlan {
+            gateway: cfg!(feature = "socks5"),
+        },
         stun: runtime_stun_server_config(global_ctx),
         endpoint_discovery: runtime_endpoint_discovery_config(global_ctx),
         manual: runtime_manual_options(global_ctx),
@@ -356,6 +359,7 @@ mod tests {
         assert!(config.runtime.dhcp_ipv4);
         assert_eq!(config.runtime.acl.tcp_whitelist, ["80"]);
         assert_eq!(config.runtime.acl.udp_whitelist, ["53"]);
+        assert_eq!(config.startup_plan.gateway, cfg!(feature = "socks5"));
         assert!(config.runtime.public_ipv6_auto);
         assert!(config.runtime.public_ipv6_provider.provider_enabled);
         assert_eq!(

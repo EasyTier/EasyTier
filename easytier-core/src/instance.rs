@@ -186,11 +186,30 @@ where
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CoreInstanceStartupPlan {
+    pub gateway: bool,
+}
+
+impl CoreInstanceStartupPlan {
+    fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+impl Default for CoreInstanceStartupPlan {
+    fn default() -> Self {
+        Self { gateway: true }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoreInstanceConfig {
     pub initial_peers: Vec<Url>,
     pub listeners: Option<ListenerRuntimeConfig>,
     pub runtime: CoreRuntimeConfig,
+    #[serde(default, skip_serializing_if = "CoreInstanceStartupPlan::is_default")]
+    pub startup_plan: CoreInstanceStartupPlan,
     pub stun: StunServerConfig,
     pub endpoint_discovery: ManualEndpointDiscoveryConfig,
     pub manual: ManualConnectorOptions,
@@ -203,6 +222,7 @@ impl Default for CoreInstanceConfig {
             initial_peers: Vec::new(),
             listeners: None,
             runtime: CoreRuntimeConfig::default(),
+            startup_plan: CoreInstanceStartupPlan::default(),
             stun: StunServerConfig::default(),
             endpoint_discovery: ManualEndpointDiscoveryConfig::default(),
             manual: ManualConnectorOptions::default(),
@@ -573,6 +593,7 @@ where
     vpn_portal: Arc<VpnPortalModule>,
     initial_peers: Vec<Url>,
     initial_peers_started: AtomicBool,
+    startup_plan: CoreInstanceStartupPlan,
     runtime_config: CoreRuntimeConfigStore,
     acl_whitelist: RwLock<AclWhitelistSnapshot>,
     initial_acl_loaded: AtomicBool,
@@ -807,6 +828,7 @@ where
             initial_peers,
             listeners: _,
             runtime: initial_runtime_config,
+            startup_plan,
             stun: _,
             endpoint_discovery,
             manual: manual_options,
@@ -1030,6 +1052,7 @@ where
                 vpn_portal,
                 initial_peers,
                 initial_peers_started: AtomicBool::new(false),
+                startup_plan,
                 runtime_config,
                 acl_whitelist: RwLock::new(acl_whitelist),
                 initial_acl_loaded: AtomicBool::new(false),
@@ -1404,7 +1427,10 @@ where
     ) -> anyhow::Result<()> {
         let result = async {
             self.start_network_services(dhcp_ipv4_host).await?;
-            self.start_gateway().await
+            if self.startup_plan.gateway {
+                self.start_gateway().await?;
+            }
+            Ok(())
         }
         .await;
         if let Err(error) = result {
@@ -2261,6 +2287,7 @@ mod tests {
         let decoded: PortableCoreInstanceConfig = serde_json::from_value(encoded.clone()).unwrap();
 
         assert!(!decoded.connectivity.direct.testing);
+        assert!(decoded.connectivity.startup_plan.gateway);
         assert_eq!(serde_json::to_value(&decoded).unwrap(), encoded);
 
         let mut create = crate::instance::host::HostCoreInstanceCreateConfig {
@@ -2355,8 +2382,9 @@ mod tests {
                 SocketContext,
                 dns::{DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord},
                 tcp::{
-                    TcpConnectOptions, TcpListenOptions, TcpSocketPurpose, VirtualTcpListener,
-                    VirtualTcpListenerFactory, VirtualTcpSocket, VirtualTcpSocketFactory,
+                    TcpConnectOptions, TcpListenOptions, TcpListenPurpose, TcpSocketPurpose,
+                    VirtualTcpListener, VirtualTcpListenerFactory, VirtualTcpSocket,
+                    VirtualTcpSocketFactory,
                 },
                 udp::{
                     PreferredIpv6Source, UdpBindOptions, UdpSessionControlHandler,
@@ -2441,6 +2469,7 @@ mod tests {
         struct TestHost {
             proxy_nat_connections:
                 Option<tokio::sync::mpsc::UnboundedSender<(SocketAddr, tokio::io::DuplexStream)>>,
+            reject_socks5_listener: bool,
         }
 
         #[async_trait]
@@ -2474,6 +2503,9 @@ mod tests {
                 &self,
                 options: TcpListenOptions,
             ) -> anyhow::Result<Arc<Self::Listener>> {
+                if self.reject_socks5_listener && options.purpose == TcpListenPurpose::Socks5 {
+                    anyhow::bail!("test host rejected SOCKS5 listener");
+                }
                 let address = options
                     .bind
                     .local_addr
@@ -3062,6 +3094,46 @@ mod tests {
             assert!(!instance.proxy_is_started());
         }
 
+        #[cfg(feature = "proxy-smoltcp-stack")]
+        #[tokio::test]
+        async fn startup_plan_controls_gateway_for_initial_and_updated_config() {
+            fn build(config: PortableCoreInstanceConfig) -> Arc<CoreInstance<TestHost>> {
+                let host = Arc::new(TestHost {
+                    reject_socks5_listener: true,
+                    ..Default::default()
+                });
+                let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+                Arc::new(
+                    CoreInstance::new_portable(
+                        adapters_with_host(host, None),
+                        config,
+                        Arc::new(packet_sink),
+                    )
+                    .unwrap(),
+                )
+            }
+
+            let mut enabled_config = test_config("gateway-enabled-by-default");
+            enabled_config.connectivity.runtime.gateway.socks5_bind =
+                Some("127.0.0.1:1080".parse().unwrap());
+            let enabled = build(enabled_config);
+            enabled.start().await.unwrap();
+            let error = enabled.start_after_host_ready(None).await.unwrap_err();
+            assert!(error.to_string().contains("rejected SOCKS5 listener"));
+            assert_eq!(enabled.state(), CoreInstanceState::Stopped);
+
+            let mut disabled_config = test_config("gateway-disabled-by-plan");
+            disabled_config.connectivity.startup_plan.gateway = false;
+            let disabled = build(disabled_config.clone());
+            let mut updated = runtime_snapshot(&disabled_config);
+            updated.services.gateway.socks5_bind = Some("127.0.0.1:1080".parse().unwrap());
+            disabled.update_runtime_config(updated).await.unwrap();
+            disabled.start().await.unwrap();
+            disabled.start_after_host_ready(None).await.unwrap();
+            assert_eq!(disabled.state(), CoreInstanceState::Running);
+            disabled.stop().await;
+        }
+
         #[cfg(feature = "proxy-packet")]
         #[tokio::test]
         async fn runtime_core_instance_owns_wrapped_transport_source_nat() {
@@ -3110,6 +3182,7 @@ mod tests {
             let (connections, mut connection_receiver) = tokio::sync::mpsc::unbounded_channel();
             let host = Arc::new(TestHost {
                 proxy_nat_connections: Some(connections),
+                ..Default::default()
             });
             let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
             let (instance, ()) =
