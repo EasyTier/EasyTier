@@ -75,7 +75,7 @@ impl fmt::Display for UdpPortMappingAttemptError {
 
 impl std::error::Error for UdpPortMappingAttemptError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.source.source()
+        Some(self.source.as_ref())
     }
 }
 
@@ -214,12 +214,12 @@ async fn discover_udp_port_mapping(
     };
     match igd_error.phase() {
         UdpPortMappingAttemptPhase::Discovery => tracing::debug!(
-            error = ?igd_error.source(),
+            igd_err = ?igd_error.source(),
             %local_listener,
             "igd gateway discovery failed, retry with nat-pmp"
         ),
         UdpPortMappingAttemptPhase::Establishment => tracing::debug!(
-            error = ?igd_error.source(),
+            igd_err = ?igd_error.source(),
             %local_listener,
             "igd udp port mapping failed, retry with nat-pmp"
         ),
@@ -268,7 +268,7 @@ async fn run_udp_port_mapping_lifecycle(
             _ = tokio::time::sleep(UPNP_RENEW_INTERVAL) => {
                 if let Err(error) = mapping.renew().await {
                     tracing::warn!(
-                        ?error,
+                        err = ?error,
                         %local_listener,
                         backend = mapping.backend().name(),
                         gateway_external_port = mapping.gateway_external_port(),
@@ -282,7 +282,7 @@ async fn run_udp_port_mapping_lifecycle(
 
     if let Err(error) = mapping.remove().await {
         tracing::debug!(
-            ?error,
+            err = ?error,
             %local_listener,
             backend = mapping.backend().name(),
             gateway_external_port = mapping.gateway_external_port(),
