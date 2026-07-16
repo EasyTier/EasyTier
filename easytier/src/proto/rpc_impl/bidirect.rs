@@ -163,7 +163,6 @@ impl BidirectRpcManager {
                     if let Err(e) = server_tx.send(o).await {
                         tracing::error!(error = ?e, "send rpc request to server failed");
                         e_clone.lock().unwrap().replace(Error::from(e));
-                        r_clone.store(false, std::sync::atomic::Ordering::Relaxed);
                         break;
                     }
                     continue;
@@ -171,7 +170,6 @@ impl BidirectRpcManager {
                     if let Err(e) = client_tx.send(o).await {
                         tracing::error!(error = ?e, "send rpc response to client failed");
                         e_clone.lock().unwrap().replace(Error::from(e));
-                        r_clone.store(false, std::sync::atomic::Ordering::Relaxed);
                         break;
                     }
                     continue;
