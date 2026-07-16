@@ -2,6 +2,7 @@
 
 pub mod host;
 pub mod packet_io;
+pub mod packet_plane;
 pub mod public_ipv6_provider;
 pub mod udp_hole_punch;
 
@@ -72,9 +73,7 @@ use crate::{
     },
     process_runtime::CoreProcessRuntime,
     proxy::{
-        cidr_monitor::{
-            ProxyCidrDiff, ProxyCidrMonitor, ProxyCidrMonitorHost, collect_proxy_cidr_diff,
-        },
+        cidr_monitor::{ProxyCidrDiff, ProxyCidrMonitor, ProxyCidrMonitorHost},
         cidr_table::{ProxyCidrSnapshot, ProxyCidrTable},
         wrapped_transport::{
             NoWrappedTransportEngineFactory, WrappedTransportEngineBuild,
@@ -88,7 +87,7 @@ use crate::{
         tcp::VirtualTcpSocketFactory,
         udp::{UdpSessionAcceptKind, UdpSessionProtocol, VirtualUdpSocketFactory},
     },
-    stats_manager::{CounterHandle, LabelSet, LabelType, MetricName, MetricSnapshot},
+    stats_manager::{CounterHandle, MetricSnapshot},
     stun::{
         StunInfoCollector, StunInfoProvider, StunProviderSlot, StunServerConfig, StunSocketMapper,
     },
@@ -103,17 +102,17 @@ use self::{
     udp_hole_punch::CoreUdpHolePunchService,
 };
 #[cfg(feature = "proxy-packet")]
+use crate::magic_dns::MagicDnsQueryResolver;
+#[cfg(feature = "proxy-packet")]
+use crate::peers::peer_manager::PipelineRegistrationGuard;
+#[cfg(feature = "proxy-packet")]
 use crate::proxy::wrapped_transport::{WrappedTransportKind, WrappedTransportRole};
 #[cfg(feature = "proxy-packet")]
 use crate::proxy::{runtime::IcmpProxyHost, service::CoreProxyModule};
-#[cfg(feature = "proxy-packet")]
-use crate::{
-    magic_dns::{MagicDnsQueryResolver, magic_dns_packet_filter},
-    peers::peer_manager::PipelineRegistrationGuard,
-};
 
+use packet_io::PacketEgress;
 pub use packet_io::PacketSink;
-use packet_io::{PacketEgress, parse_ip_packet};
+pub use packet_plane::CorePacketPlane;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -571,6 +570,7 @@ where
     operation: Mutex<()>,
     cancel: CancellationToken,
     peer_manager: Arc<PeerManagerCore>,
+    packet_plane: Arc<CorePacketPlane>,
     manual: ManualConnectorManager<H>,
     direct: DirectConnectorManager<H>,
     tcp_hole_punch: TcpHolePunchConnector<H>,
@@ -1025,6 +1025,11 @@ where
             vpn_portal,
             vpn_portal_events.unwrap_or_else(|| Arc::new(())),
         );
+        let packet_plane = Arc::new(CorePacketPlane::new(
+            peer_manager.clone(),
+            runtime_config.clone(),
+            proxy_cidr_monitor.is_some(),
+        ));
 
         Ok((
             Self {
@@ -1032,6 +1037,7 @@ where
                 operation: Mutex::new(()),
                 cancel: CancellationToken::new(),
                 peer_manager,
+                packet_plane,
                 manual,
                 direct,
                 tcp_hole_punch,
@@ -1702,6 +1708,10 @@ where
         self.peer_manager.my_peer_id()
     }
 
+    pub fn packet_plane(&self) -> Arc<CorePacketPlane> {
+        self.packet_plane.clone()
+    }
+
     pub fn peer_center_rpc_service(&self) -> PeerCenterInstanceService {
         self.peer_center.get_rpc_service()
     }
@@ -1788,11 +1798,11 @@ where
     }
 
     pub async fn public_ipv6_routes(&self) -> BTreeSet<cidr::Ipv6Inet> {
-        self.peer_manager.list_public_ipv6_routes().await
+        self.packet_plane.public_ipv6_routes().await
     }
 
     pub async fn public_ipv6_addr(&self) -> Option<cidr::Ipv6Inet> {
-        self.peer_manager.public_ipv6_addr().await
+        self.packet_plane.public_ipv6_addr().await
     }
 
     pub async fn dump_route(&self) -> String {
@@ -1974,28 +1984,7 @@ where
     }
 
     pub fn udp_broadcast_relay_stats(&self) -> UdpBroadcastRelayStats {
-        let network_name = self
-            .runtime_config
-            .snapshot()
-            .peer
-            .runtime
-            .network_identity
-            .network_name
-            .clone();
-        let labels = LabelSet::new().with_label_type(LabelType::NetworkName(network_name));
-        let stats = self.peer_manager.stats_manager();
-        UdpBroadcastRelayStats {
-            packets_captured: stats
-                .get_counter(MetricName::UdpBroadcastRelayPacketsCaptured, labels.clone()),
-            packets_ignored: stats
-                .get_counter(MetricName::UdpBroadcastRelayPacketsIgnored, labels.clone()),
-            packets_forwarded: stats.get_counter(
-                MetricName::UdpBroadcastRelayPacketsForwarded,
-                labels.clone(),
-            ),
-            packets_forward_failed: stats
-                .get_counter(MetricName::UdpBroadcastRelayPacketsForwardFailed, labels),
-        }
+        self.packet_plane.udp_broadcast_relay_stats()
     }
 
     #[cfg(feature = "proxy-packet")]
@@ -2004,20 +1993,9 @@ where
         fake_ip: std::net::Ipv4Addr,
         resolver: Arc<dyn MagicDnsQueryResolver>,
     ) -> MagicDnsResolverRegistration {
-        let runtime = tokio::runtime::Handle::current();
-        let pipeline = self
-            .peer_manager
-            .add_managed_nic_packet_process_pipeline(magic_dns_packet_filter(
-                fake_ip,
-                self.peer_id(),
-                resolver,
-            ))
-            .await;
-        MagicDnsResolverRegistration {
-            peer_manager: Arc::downgrade(&self.peer_manager),
-            pipeline,
-            runtime,
-        }
+        self.packet_plane
+            .register_magic_dns_resolver(fake_ip, resolver)
+            .await
     }
 
     pub async fn close_peer_conn(
@@ -2044,39 +2022,15 @@ where
         &self,
         previous: &BTreeSet<cidr::Ipv4Cidr>,
     ) -> Option<ProxyCidrDiff> {
-        self.proxy_cidr_monitor.as_ref()?;
-        Some(
-            collect_proxy_cidr_diff(self.peer_manager.as_ref(), &self.runtime_config, previous)
-                .await,
-        )
+        self.packet_plane.proxy_cidr_diff(previous).await
     }
 
     pub async fn send_ip_packet(&self, packet: Vec<u8>) -> anyhow::Result<()> {
-        let meta = parse_ip_packet(&packet)?;
-        let source_is_local = self.peer_manager.is_local_virtual_ip(&meta.source);
-        if matches!(meta.source, IpAddr::V6(ip) if ip.is_unicast_link_local()) && !source_is_local {
-            return Ok(());
-        }
-        self.peer_manager
-            .send_msg_by_ip(
-                crate::packet::ZCPacket::new_with_payload(&packet),
-                meta.destination,
-                source_is_local,
-            )
-            .await
-            .map_err(Into::into)
+        self.packet_plane.send_ip_packet(packet).await
     }
 
     pub async fn send_local_ip_packet(&self, packet: Vec<u8>) -> anyhow::Result<()> {
-        let destination = parse_ip_packet(&packet)?.destination;
-        self.peer_manager
-            .send_msg_by_ip(
-                crate::packet::ZCPacket::new_with_payload(&packet),
-                destination,
-                true,
-            )
-            .await
-            .map_err(Into::into)
+        self.packet_plane.send_local_ip_packet(packet).await
     }
 }
 
@@ -2086,11 +2040,11 @@ where
     H: DirectConnectorHost + TcpHolePunchHost,
 {
     async fn snapshot(&self) -> MagicDnsRouteSnapshot {
-        MagicDnsRouteSource::snapshot(self.peer_manager.as_ref()).await
+        MagicDnsRouteSource::snapshot(self.packet_plane.as_ref()).await
     }
 
     async fn revision(&self) -> quanta::Instant {
-        MagicDnsRouteSource::revision(self.peer_manager.as_ref()).await
+        MagicDnsRouteSource::revision(self.packet_plane.as_ref()).await
     }
 }
 
@@ -2724,6 +2678,18 @@ mod tests {
         ) -> anyhow::Result<Arc<CoreInstance<TestHost>>> {
             build_with_factory(config, NoWrappedTransportEngineFactory)
                 .map(|(instance, ())| instance)
+        }
+
+        #[tokio::test]
+        async fn packet_plane_does_not_retain_core_instance() {
+            let instance = build_instance(test_config("packet-plane-ownership")).unwrap();
+            let weak = Arc::downgrade(&instance);
+            let packet_plane = instance.packet_plane();
+
+            drop(instance);
+
+            assert!(weak.upgrade().is_none());
+            drop(packet_plane);
         }
 
         #[derive(Default)]

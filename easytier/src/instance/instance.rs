@@ -11,6 +11,8 @@ use std::time::Duration;
 use anyhow::Context;
 use cidr::{IpCidr, Ipv4Inet};
 use easytier_core::dhcp::{DhcpIpv4ApplyOutcome, DhcpIpv4ApplyPermit, DhcpIpv4Host};
+#[cfg(any(feature = "tun", feature = "magic-dns", mobile))]
+use easytier_core::instance::CorePacketPlane;
 use easytier_core::process_runtime::CoreProcessRuntime;
 #[cfg(any(feature = "kcp", feature = "quic"))]
 use easytier_core::proxy::wrapped_transport::WrappedTransportEngine;
@@ -23,7 +25,9 @@ use futures::FutureExt;
 use tokio::sync::Notify;
 use tokio::sync::{Mutex, mpsc};
 #[cfg(feature = "tun")]
-use tokio::{sync::oneshot, task::JoinSet};
+use tokio::task::JoinSet;
+#[cfg(all(not(mobile), feature = "tun"))]
+use tokio::{sync::oneshot, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 #[cfg(feature = "magic-dns")]
 use tokio_util::task::AbortOnDropHandle;
@@ -594,6 +598,8 @@ impl InstanceConfigPatcher {
 pub struct Instance {
     #[cfg(feature = "tun")]
     nic_ctx: ArcNicCtx,
+    #[cfg(all(not(mobile), feature = "tun"))]
+    static_ip_task: Option<JoinHandle<()>>,
 
     peer_packet_receiver: Arc<Mutex<HostPacketReceiver>>,
     core_instance: Arc<NativeCoreInstance>,
@@ -612,7 +618,7 @@ struct RuntimeDhcpIpv4Host {
     #[cfg(feature = "tun")]
     nic_closed_notifier: Arc<Notify>,
     #[cfg(all(not(mobile), feature = "tun"))]
-    nic_core_instance: Weak<NativeCoreInstance>,
+    packet_plane: Arc<CorePacketPlane>,
 }
 
 impl RuntimeDhcpIpv4Host {
@@ -627,7 +633,7 @@ impl RuntimeDhcpIpv4Host {
             #[cfg(feature = "tun")]
             nic_closed_notifier: Arc::new(Notify::new()),
             #[cfg(all(not(mobile), feature = "tun"))]
-            nic_core_instance: Arc::downgrade(&instance.core_instance),
+            packet_plane: instance.core_instance.packet_plane(),
         })
     }
 
@@ -672,13 +678,9 @@ impl RuntimeDhcpIpv4Host {
 
         #[cfg(all(not(mobile), feature = "tun"))]
         {
-            let core_instance = self
-                .nic_core_instance
-                .upgrade()
-                .context("core packet-pump resource is gone during DHCP IPv4 apply")?;
             let mut new_nic_ctx = NicCtx::new(
                 self.global_ctx.clone(),
-                &core_instance,
+                self.packet_plane.clone(),
                 self.peer_packet_receiver.clone(),
                 self.nic_closed_notifier.clone(),
             );
@@ -713,7 +715,7 @@ impl RuntimeDhcpIpv4Host {
                     #[cfg(feature = "magic-dns")]
                     Instance::create_magic_dns_runner(
                         self.global_ctx.clone(),
-                        core_instance,
+                        self.packet_plane.clone(),
                         ifname,
                         ip,
                     ),
@@ -830,6 +832,8 @@ impl Instance {
             peer_packet_receiver: Arc::new(Mutex::new(peer_packet_receiver)),
             #[cfg(feature = "tun")]
             nic_ctx: Arc::new(Mutex::new(None)),
+            #[cfg(all(not(mobile), feature = "tun"))]
+            static_ip_task: None,
 
             core_instance,
             config_operation,
@@ -874,7 +878,7 @@ impl Instance {
     #[cfg(feature = "magic-dns")]
     fn create_magic_dns_runner(
         global_ctx: ArcGlobalCtx,
-        core_instance: Arc<NativeCoreInstance>,
+        packet_plane: Arc<CorePacketPlane>,
         tun_dev: Option<String>,
         tun_ip: Ipv4Inet,
     ) -> Option<DnsRunner> {
@@ -883,7 +887,7 @@ impl Instance {
         }
 
         let runner = DnsRunner::new(
-            core_instance,
+            packet_plane,
             global_ctx,
             tun_dev,
             tun_ip,
@@ -909,7 +913,19 @@ impl Instance {
     }
 
     #[cfg(all(not(mobile), feature = "tun"))]
-    fn check_for_static_ip(&self, first_round_output: oneshot::Sender<Result<(), Error>>) {
+    fn report_static_ip_setup_cancelled(
+        output_tx: &mut Option<oneshot::Sender<Result<(), Error>>>,
+    ) {
+        if let Some(output_tx) = output_tx.take() {
+            let _ = output_tx.send(Err(anyhow::anyhow!(
+                "instance is closing; static IP setup cancelled"
+            )
+            .into()));
+        }
+    }
+
+    #[cfg(all(not(mobile), feature = "tun"))]
+    fn check_for_static_ip(&mut self, first_round_output: oneshot::Sender<Result<(), Error>>) {
         let ipv4_addr = self.global_ctx.get_ipv4();
         let ipv6_addr = self.global_ctx.get_ipv6();
 
@@ -920,37 +936,47 @@ impl Instance {
         }
 
         let nic_ctx = self.nic_ctx.clone();
-        let core_instance = Arc::downgrade(&self.core_instance);
+        let packet_plane = self.core_instance.packet_plane();
+        let cancel = self.config_operation.cancel.clone();
         let global_ctx = self.global_ctx.clone();
         let peer_packet_receiver = self.peer_packet_receiver.clone();
 
-        tokio::spawn(async move {
+        debug_assert!(self.static_ip_task.is_none());
+        self.static_ip_task = Some(tokio::spawn(async move {
             let mut output_tx = Some(first_round_output);
             loop {
+                if cancel.is_cancelled() {
+                    Self::report_static_ip_setup_cancelled(&mut output_tx);
+                    return;
+                }
                 let close_notifier = Arc::new(Notify::new());
                 {
-                    let Some(core_instance) = core_instance.upgrade() else {
-                        tracing::warn!("core instance is dropped, stop static IP check.");
-                        if let Some(output_tx) = output_tx.take() {
-                            let _ = output_tx.send(Err(Error::Unknown));
-                        }
-                        return;
-                    };
-
                     let mut new_nic_ctx = NicCtx::new(
                         global_ctx.clone(),
-                        &core_instance,
+                        packet_plane.clone(),
                         peer_packet_receiver.clone(),
                         close_notifier.clone(),
                     );
 
-                    if let Err(e) = new_nic_ctx.run(ipv4_addr, ipv6_addr).await {
+                    let run_result = tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => {
+                            Self::report_static_ip_setup_cancelled(&mut output_tx);
+                            return;
+                        }
+                        result = new_nic_ctx.run(ipv4_addr, ipv6_addr) => result,
+                    };
+                    if let Err(e) = run_result {
                         if let Some(output_tx) = output_tx.take() {
                             let _ = output_tx.send(Err(e));
                             return;
                         }
                         tracing::error!("failed to create new nic ctx, err: {:?}", e);
-                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        tokio::select! {
+                            biased;
+                            _ = cancel.cancelled() => return,
+                            _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+                        }
                         continue;
                     }
 
@@ -961,7 +987,7 @@ impl Instance {
                         let dns_runner = if let Some(ipv4) = ipv4_addr {
                             Self::create_magic_dns_runner(
                                 global_ctx.clone(),
-                                core_instance.clone(),
+                                packet_plane.clone(),
                                 ifname,
                                 ipv4,
                             )
@@ -978,16 +1004,13 @@ impl Instance {
                     let _ = output_tx.send(Ok(()));
                 }
 
-                // NOTICE: make sure we do not hold the core instance here.
-                while close_notifier.notified().now_or_never().is_none() {
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                    if core_instance.strong_count() == 0 {
-                        tracing::warn!("core instance is dropped, stop static IP check.");
-                        return;
-                    }
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => return,
+                    _ = close_notifier.notified() => {}
                 }
             }
-        });
+        }));
     }
 
     pub async fn run(&mut self) -> Result<(), Error> {
@@ -1426,16 +1449,21 @@ impl Instance {
         self.peer_packet_receiver.clone()
     }
 
-    #[cfg(any(mobile, feature = "ffi-dataplane", test))]
+    #[cfg(any(feature = "ffi-dataplane", test))]
     pub(crate) fn get_core_instance(&self) -> Arc<NativeCoreInstance> {
         self.core_instance.clone()
+    }
+
+    #[cfg(mobile)]
+    pub(crate) fn get_packet_plane(&self) -> Arc<CorePacketPlane> {
+        self.core_instance.packet_plane()
     }
 
     #[cfg(mobile)]
     pub(crate) async fn setup_nic_ctx_for_mobile(
         nic_ctx: ArcNicCtx,
         global_ctx: ArcGlobalCtx,
-        core_instance: Arc<NativeCoreInstance>,
+        packet_plane: Arc<CorePacketPlane>,
         peer_packet_receiver: Arc<Mutex<HostPacketReceiver>>,
         fd: i32,
     ) -> Result<(), anyhow::Error> {
@@ -1447,7 +1475,7 @@ impl Instance {
         let close_notifier = Arc::new(Notify::new());
         let mut new_nic_ctx = NicCtx::new(
             global_ctx.clone(),
-            &core_instance,
+            packet_plane.clone(),
             peer_packet_receiver.clone(),
             close_notifier.clone(),
         );
@@ -1457,7 +1485,7 @@ impl Instance {
             .with_context(|| "add ip failed")?;
 
         let magic_dns_runner = if let Some(ipv4) = global_ctx.get_ipv4() {
-            Self::create_magic_dns_runner(global_ctx.clone(), core_instance.clone(), None, ipv4)
+            Self::create_magic_dns_runner(global_ctx.clone(), packet_plane, None, ipv4)
         } else {
             None
         };
@@ -1469,6 +1497,10 @@ impl Instance {
         self.config_operation.closing.store(true, Ordering::Release);
         self.config_operation.cancel.cancel();
         let _config_operation = self.config_operation.operation.lock().await;
+        #[cfg(all(not(mobile), feature = "tun"))]
+        if let Some(task) = self.static_ip_task.take() {
+            let _ = task.await;
+        }
         #[cfg(feature = "tun")]
         Self::stop_nic_ctx(&self.nic_ctx).await;
         self.core_instance.stop().await;
@@ -1481,10 +1513,16 @@ impl Drop for Instance {
         let config_operation = self.config_operation.clone();
         config_operation.closing.store(true, Ordering::Release);
         config_operation.cancel.cancel();
+        #[cfg(all(not(mobile), feature = "tun"))]
+        let static_ip_task = self.static_ip_task.take();
         #[cfg(feature = "tun")]
         let nic_ctx = self.nic_ctx.clone();
         tokio::spawn(async move {
             let _config_operation = config_operation.operation.lock().await;
+            #[cfg(all(not(mobile), feature = "tun"))]
+            if let Some(task) = static_ip_task {
+                let _ = task.await;
+            }
             #[cfg(feature = "tun")]
             Self::stop_nic_ctx(&nic_ctx).await;
             core_instance.stop().await;
@@ -1496,7 +1534,7 @@ impl Drop for Instance {
 #[cfg(test)]
 mod tests {
     use std::net::SocketAddr;
-    #[cfg(all(feature = "tun", feature = "magic-dns"))]
+    #[cfg(feature = "tun")]
     use std::sync::Arc;
 
     #[cfg(all(feature = "tun", feature = "magic-dns"))]
@@ -1505,7 +1543,9 @@ mod tests {
     use tokio_util::{sync::CancellationToken, task::AbortOnDropHandle};
 
     #[cfg(all(feature = "tun", feature = "magic-dns"))]
-    use crate::instance::instance::{MagicDnsContainer, NicCtxContainer};
+    use crate::instance::instance::MagicDnsContainer;
+    #[cfg(feature = "tun")]
+    use crate::instance::instance::NicCtxContainer;
     use crate::{
         common::config::ConfigLoader,
         common::global_ctx::tests::get_mock_global_ctx,
@@ -1558,6 +1598,67 @@ mod tests {
         assert!(instance.config_operation.operation.try_lock().is_err());
         drop(outcome);
         assert!(instance.config_operation.operation.try_lock().is_ok());
+    }
+
+    #[cfg(all(not(mobile), feature = "tun"))]
+    #[tokio::test]
+    async fn static_ip_first_round_cancel_reports_error() {
+        let (output_tx, output_rx) = tokio::sync::oneshot::channel();
+        let mut output_tx = Some(output_tx);
+
+        Instance::report_static_ip_setup_cancelled(&mut output_tx);
+
+        let error = output_rx.await.unwrap().unwrap_err();
+        assert!(output_tx.is_none());
+        match error {
+            crate::common::error::Error::AnyhowError(error) => assert_eq!(
+                error.to_string(),
+                "instance is closing; static IP setup cancelled"
+            ),
+            error => panic!("unexpected static IP cancellation error: {error:?}"),
+        }
+    }
+
+    #[cfg(all(not(mobile), feature = "tun"))]
+    #[tokio::test]
+    async fn clearing_waits_for_static_ip_handoff_before_stopping_nic() {
+        let mut instance = Instance::new_with_process_runtime(
+            TomlConfigLoader::default(),
+            CoreProcessRuntime::new(),
+        );
+        let cancel = instance.config_operation.cancel.clone();
+        let nic_ctx = instance.nic_ctx.clone();
+        let handoff_entered = Arc::new(tokio::sync::Notify::new());
+        let handoff_release = Arc::new(tokio::sync::Notify::new());
+        instance.static_ip_task = Some(tokio::spawn({
+            let handoff_entered = handoff_entered.clone();
+            let handoff_release = handoff_release.clone();
+            async move {
+                cancel.cancelled().await;
+                handoff_entered.notify_one();
+                handoff_release.notified().await;
+                nic_ctx
+                    .lock()
+                    .await
+                    .replace(NicCtxContainer::new_with_any(()));
+            }
+        }));
+
+        let clear_task = tokio::spawn(async move {
+            instance.clear_resources().await;
+            instance
+        });
+        handoff_entered.notified().await;
+        tokio::task::yield_now().await;
+        assert!(!clear_task.is_finished());
+
+        handoff_release.notify_one();
+        let instance = tokio::time::timeout(std::time::Duration::from_secs(5), clear_task)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(instance.nic_ctx.lock().await.is_none());
     }
 
     #[cfg(all(feature = "tun", feature = "magic-dns"))]

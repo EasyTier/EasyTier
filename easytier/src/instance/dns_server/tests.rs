@@ -78,7 +78,7 @@ pub async fn prepare_env_with_tld_dns_zone(
     let host_packet_rx = Arc::new(tokio::sync::Mutex::new(host_packet_rx));
     let mut virtual_nic = NicCtx::new(
         ctx.clone(),
-        &core_instance,
+        core_instance.packet_plane(),
         host_packet_rx,
         Arc::new(Notify::new()),
     );
@@ -122,10 +122,15 @@ async fn test_magic_dns_server_instance() {
     let (global_ctx, core_instance, virtual_nic) = prepare_env("test1", tun_ip).await;
     let tun_name = virtual_nic.ifname().await.unwrap();
     let fake_ip = Ipv4Addr::from_str("100.100.100.101").unwrap();
-    let dns_server_inst =
-        MagicDnsServerInstance::new(core_instance, global_ctx, Some(tun_name), tun_ip, fake_ip)
-            .await
-            .unwrap();
+    let dns_server_inst = MagicDnsServerInstance::new(
+        core_instance.packet_plane(),
+        global_ctx,
+        Some(tun_name),
+        tun_ip,
+        fake_ip,
+    )
+    .await
+    .unwrap();
 
     let routes = [
         MagicDnsRoute {
@@ -159,8 +164,13 @@ async fn test_magic_dns_runner() {
         let (global_ctx, core_instance, virtual_nic) = prepare_env("test1", tun_ip).await;
         let tun_name = virtual_nic.ifname().await.unwrap();
         let fake_ip = Ipv4Addr::from_str(MAGIC_DNS_FAKE_IP).unwrap();
-        let mut dns_runner =
-            DnsRunner::new(core_instance, global_ctx, Some(tun_name), tun_ip, fake_ip);
+        let mut dns_runner = DnsRunner::new(
+            core_instance.packet_plane(),
+            global_ctx,
+            Some(tun_name),
+            tun_ip,
+            fake_ip,
+        );
 
         let cancel_token = CancellationToken::new();
         let cancel_token_clone = cancel_token.clone();
@@ -188,8 +198,13 @@ async fn test_magic_dns_runner() {
             prepare_env_with_tld_dns_zone("test2", tun_ip, Some(custom_tld_zone)).await;
         let tun_name = virtual_nic.ifname().await.unwrap();
         let fake_ip = Ipv4Addr::from_str(MAGIC_DNS_FAKE_IP).unwrap();
-        let mut dns_runner =
-            DnsRunner::new(core_instance, global_ctx, Some(tun_name), tun_ip, fake_ip);
+        let mut dns_runner = DnsRunner::new(
+            core_instance.packet_plane(),
+            global_ctx,
+            Some(tun_name),
+            tun_ip,
+            fake_ip,
+        );
 
         let cancel_token = CancellationToken::new();
         let cancel_token_clone = cancel_token.clone();
@@ -216,9 +231,10 @@ async fn test_magic_dns_update_replaces_records_for_same_client() {
     let (core_instance, _packet_receiver) = build_test_core(ctx.clone()).await;
 
     let fake_ip = Ipv4Addr::from_str(MAGIC_DNS_FAKE_IP).unwrap();
-    let dns_server_inst = MagicDnsServerInstance::new(core_instance, ctx, None, tun_ip, fake_ip)
-        .await
-        .unwrap();
+    let dns_server_inst =
+        MagicDnsServerInstance::new(core_instance.packet_plane(), ctx, None, tun_ip, fake_ip)
+            .await
+            .unwrap();
 
     let mut ctrl = BaseController::default();
     ctrl.set_tunnel_info(Some(crate::proto::common::TunnelInfo {

@@ -184,7 +184,7 @@ mod tests {
         println!("dev_name: {}", tun_name);
         let fake_ip = Ipv4Addr::from_str("100.100.100.101").unwrap();
         let mut dns_runner = DnsRunner::new(
-            core_instance,
+            core_instance.packet_plane(),
             global_ctx,
             Some(tun_name.clone()),
             tun_ip,

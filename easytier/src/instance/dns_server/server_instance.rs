@@ -17,7 +17,6 @@ use crate::{
         global_ctx::ArcGlobalCtx,
         ifcfg::{IfConfiger, IfConfiguerTrait},
     },
-    instance::composition::NativeCoreInstance,
     instance::dns_server::{
         config::{Record, RecordBuilder, RecordType},
         server::build_authority,
@@ -37,7 +36,7 @@ use crate::{
 };
 use anyhow::Context;
 use cidr::Ipv4Inet;
-use easytier_core::instance::MagicDnsResolverRegistration;
+use easytier_core::instance::{CorePacketPlane, MagicDnsResolverRegistration};
 use easytier_core::magic_dns::{
     MagicDnsQuery, MagicDnsQueryResolver, MagicDnsRecordStore, MagicDnsRoute,
 };
@@ -357,7 +356,7 @@ fn get_system_config(
 
 impl MagicDnsServerInstance {
     pub(crate) async fn new(
-        core_instance: Arc<NativeCoreInstance>,
+        packet_plane: Arc<CorePacketPlane>,
         global_ctx: ArcGlobalCtx,
         tun_dev: Option<String>,
         tun_inet: Ipv4Inet,
@@ -418,7 +417,7 @@ impl MagicDnsServerInstance {
         // Install the resolver only after all fallible initialization has
         // completed, so construction failure cannot leave a managed pipeline
         // registration that never reaches async cleanup.
-        let packet_filter = core_instance
+        let packet_filter = packet_plane
             .register_magic_dns_resolver(fake_ip, data.clone())
             .await;
 

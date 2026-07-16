@@ -11,12 +11,9 @@ use easytier_core::packet::udp_broadcast::{
 
 #[cfg(all(windows, feature = "tun"))]
 use {
-    crate::{
-        common::global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
-        instance::composition::NativeCoreInstance,
-    },
+    crate::common::global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
     anyhow::Context,
-    easytier_core::instance::UdpBroadcastRelayStats,
+    easytier_core::instance::{CorePacketPlane, UdpBroadcastRelayStats},
     network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig},
     socket2::{Domain, Protocol, SockAddr, Socket, Type},
     std::{
@@ -482,11 +479,11 @@ fn issue_start_result_event(
 
 #[cfg(all(windows, feature = "tun"))]
 async fn forward_normalized_packet(
-    core_instance: &NativeCoreInstance,
+    packet_plane: &CorePacketPlane,
     normalized: NormalizedPacket,
     stats: &UdpBroadcastRelayStats,
 ) {
-    let ret = core_instance
+    let ret = packet_plane
         .send_local_ip_packet(normalized.packet.clone())
         .await;
 
@@ -549,7 +546,7 @@ async fn forward_normalized_packet(
 
 #[cfg(all(windows, feature = "tun"))]
 async fn capture_loop(
-    core_instance: Arc<NativeCoreInstance>,
+    packet_plane: Arc<CorePacketPlane>,
     config: BroadcastRelayConfig,
     mut socket: CaptureSocket,
     stats: UdpBroadcastRelayStats,
@@ -612,14 +609,14 @@ async fn capture_loop(
         };
 
         if let Some(normalized) = normalized {
-            forward_normalized_packet(&core_instance, normalized, &stats).await;
+            forward_normalized_packet(&packet_plane, normalized, &stats).await;
         }
     }
 }
 
 #[cfg(all(windows, feature = "tun"))]
 pub(crate) fn start(
-    core_instance: Arc<NativeCoreInstance>,
+    packet_plane: Arc<CorePacketPlane>,
     global_ctx: ArcGlobalCtx,
     virtual_ipv4: Ipv4Inet,
 ) -> anyhow::Result<AbortOnDropHandle<()>> {
@@ -654,8 +651,8 @@ pub(crate) fn start(
         "starting Windows UDP broadcast relay"
     );
 
-    let stats = core_instance.udp_broadcast_relay_stats();
-    let task = tokio::spawn(capture_loop(core_instance, config, socket, stats));
+    let stats = packet_plane.udp_broadcast_relay_stats();
+    let task = tokio::spawn(capture_loop(packet_plane, config, socket, stats));
     Ok(AbortOnDropHandle::new(task))
 }
 

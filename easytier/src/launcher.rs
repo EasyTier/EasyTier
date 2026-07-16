@@ -127,7 +127,7 @@ impl EasyTierLauncher {
         tasks: &mut JoinSet<()>,
     ) {
         let global_ctx = instance.get_global_ctx();
-        let core_instance = instance.get_core_instance();
+        let packet_plane = instance.get_packet_plane();
         let nic_ctx = instance.get_nic_ctx();
         let peer_packet_receiver = instance.get_peer_packet_receiver();
         let mut tun_fd_receiver = data.tun_fd.1.lock().unwrap().take().unwrap();
@@ -140,7 +140,7 @@ impl EasyTierLauncher {
                 let res = Instance::setup_nic_ctx_for_mobile(
                     nic_ctx.clone(),
                     global_ctx.clone(),
-                    core_instance.clone(),
+                    packet_plane.clone(),
                     peer_packet_receiver.clone(),
                     tun_fd,
                 )

@@ -3,7 +3,7 @@ use std::{
     io,
     net::{Ipv4Addr, Ipv6Addr},
     pin::Pin,
-    sync::{Arc, Weak},
+    sync::Arc,
     task::{Context, Poll},
 };
 
@@ -14,11 +14,11 @@ use crate::{
         ifcfg::{IfConfiger, IfConfiguerTrait},
         log,
     },
-    instance::composition::NativeCoreInstance,
     instance::instance::HostPacketReceiver,
 };
 
 use easytier_core::{
+    instance::CorePacketPlane,
     packet::{TAIL_RESERVED_SIZE, ZCPacket, ZCPacketType},
     tunnel::{
         StreamItem, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream,
@@ -794,7 +794,7 @@ impl VirtualNic {
 
 pub struct NicCtx {
     global_ctx: ArcGlobalCtx,
-    core_instance: Weak<NativeCoreInstance>,
+    packet_plane: Arc<CorePacketPlane>,
     peer_packet_receiver: Arc<Mutex<HostPacketReceiver>>,
 
     close_notifier: Arc<Notify>,
@@ -809,13 +809,13 @@ pub struct NicCtx {
 impl NicCtx {
     pub(crate) fn new(
         global_ctx: ArcGlobalCtx,
-        core_instance: &Arc<NativeCoreInstance>,
+        packet_plane: Arc<CorePacketPlane>,
         peer_packet_receiver: Arc<Mutex<HostPacketReceiver>>,
         close_notifier: Arc<Notify>,
     ) -> Self {
         NicCtx {
             global_ctx: global_ctx.clone(),
-            core_instance: Arc::downgrade(core_instance),
+            packet_plane,
             peer_packet_receiver,
 
             close_notifier,
@@ -867,7 +867,7 @@ impl NicCtx {
         Ok(())
     }
 
-    async fn do_forward_nic_to_peers(ret: ZCPacket, core_instance: &NativeCoreInstance) {
+    async fn do_forward_nic_to_peers(ret: ZCPacket, packet_plane: &CorePacketPlane) {
         let payload = ret.payload();
         if payload.is_empty() {
             return;
@@ -876,7 +876,7 @@ impl NicCtx {
             ?ret,
             "[USER_PACKET] recv new packet from tun device and forward to peers."
         );
-        if let Err(error) = core_instance.send_ip_packet(payload.to_vec()).await {
+        if let Err(error) = packet_plane.send_ip_packet(payload.to_vec()).await {
             tracing::trace!(?error, "[USER_PACKET] send_msg failed");
         }
     }
@@ -886,9 +886,7 @@ impl NicCtx {
         mut stream: Pin<Box<dyn ZCPacketStream>>,
     ) -> Result<(), Error> {
         // read from nic and write to corresponding tunnel
-        let Some(core_instance) = self.core_instance.upgrade() else {
-            return Err(anyhow::anyhow!("core instance not available").into());
-        };
+        let packet_plane = self.packet_plane.clone();
         let close_notifier = self.close_notifier.clone();
         self.tasks.spawn(async move {
             while let Some(ret) = stream.next().await {
@@ -896,7 +894,7 @@ impl NicCtx {
                     tracing::error!("read from nic failed: {:?}", ret);
                     break;
                 }
-                Self::do_forward_nic_to_peers(ret.unwrap(), core_instance.as_ref()).await;
+                Self::do_forward_nic_to_peers(ret.unwrap(), packet_plane.as_ref()).await;
             }
             close_notifier.notify_one();
             tracing::error!("nic closed when recving from it");
@@ -932,13 +930,8 @@ impl NicCtx {
             return;
         }
 
-        let Some(core_instance) = self.core_instance.upgrade() else {
-            tracing::warn!("core instance is dropped, skip Windows UDP broadcast relay");
-            return;
-        };
-
         match super::windows_udp_broadcast::start(
-            core_instance,
+            self.packet_plane.clone(),
             self.global_ctx.clone(),
             virtual_ipv4,
         ) {
@@ -1045,9 +1038,7 @@ impl NicCtx {
     }
 
     async fn run_proxy_cidrs_route_updater(&mut self) -> Result<(), Error> {
-        let Some(core_instance) = self.core_instance.upgrade() else {
-            return Err(anyhow::anyhow!("core instance not available").into());
-        };
+        let packet_plane = self.packet_plane.clone();
         let global_ctx = self.global_ctx.clone();
         let net_ns = self.global_ctx.net_ns.clone();
         let nic = self.nic.lock().await;
@@ -1059,7 +1050,7 @@ impl NicCtx {
             let mut cur_proxy_cidrs = BTreeSet::<cidr::Ipv4Cidr>::new();
 
             // Initial sync: get current proxy_cidrs state and apply routes
-            let Some(diff) = core_instance.proxy_cidr_diff(&cur_proxy_cidrs).await else {
+            let Some(diff) = packet_plane.proxy_cidr_diff(&cur_proxy_cidrs).await else {
                 tracing::error!("proxy CIDR monitor host is unavailable");
                 return;
             };
@@ -1086,7 +1077,7 @@ impl NicCtx {
                         );
                         event_receiver = event_receiver.resubscribe();
                         // Full sync after lagged to recover consistent state
-                        let Some(diff) = core_instance.proxy_cidr_diff(&cur_proxy_cidrs).await
+                        let Some(diff) = packet_plane.proxy_cidr_diff(&cur_proxy_cidrs).await
                         else {
                             tracing::error!("proxy CIDR monitor host is unavailable");
                             return;
@@ -1117,9 +1108,7 @@ impl NicCtx {
     }
 
     async fn run_public_ipv6_route_updater(&mut self) -> Result<(), Error> {
-        let Some(core_instance) = self.core_instance.upgrade() else {
-            return Err(anyhow::anyhow!("core instance not available").into());
-        };
+        let packet_plane = self.packet_plane.clone();
         let global_ctx = self.global_ctx.clone();
         let net_ns = self.global_ctx.net_ns.clone();
         let nic = self.nic.lock().await;
@@ -1129,7 +1118,7 @@ impl NicCtx {
 
         self.tasks.spawn(async move {
             let mut cur_routes = BTreeSet::<cidr::Ipv6Inet>::new();
-            let initial_routes = core_instance.public_ipv6_routes().await;
+            let initial_routes = packet_plane.public_ipv6_routes().await;
             let initial_added = initial_routes.iter().copied().collect::<Vec<_>>();
             Self::apply_public_ipv6_route_changes(
                 &ifcfg,
@@ -1147,7 +1136,7 @@ impl NicCtx {
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                         event_receiver = event_receiver.resubscribe();
-                        let latest = core_instance.public_ipv6_routes().await;
+                        let latest = packet_plane.public_ipv6_routes().await;
                         let added = latest.difference(&cur_routes).copied().collect::<Vec<_>>();
                         let removed = cur_routes.difference(&latest).copied().collect::<Vec<_>>();
                         GlobalCtxEvent::PublicIpv6RoutesUpdated(added, removed)
@@ -1175,15 +1164,13 @@ impl NicCtx {
     }
 
     async fn run_public_ipv6_addr_updater(&mut self) -> Result<(), Error> {
-        let Some(core_instance) = self.core_instance.upgrade() else {
-            return Err(anyhow::anyhow!("core instance not available").into());
-        };
+        let packet_plane = self.packet_plane.clone();
         let global_ctx = self.global_ctx.clone();
         let nic = self.nic.clone();
         let mut event_receiver = global_ctx.subscribe();
 
         self.tasks.spawn(async move {
-            let mut current_addr = core_instance.public_ipv6_addr().await;
+            let mut current_addr = packet_plane.public_ipv6_addr().await;
             if let Some(addr) = current_addr {
                 let nic = nic.lock().await;
                 if let Err(err) = nic.link_up().await {
@@ -1206,7 +1193,7 @@ impl NicCtx {
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                         event_receiver = event_receiver.resubscribe();
-                        let latest = core_instance.public_ipv6_addr().await;
+                        let latest = packet_plane.public_ipv6_addr().await;
                         GlobalCtxEvent::PublicIpv6Changed(current_addr, latest)
                     }
                 };

@@ -3,14 +3,16 @@ use tokio_util::sync::CancellationToken;
 
 use std::{net::Ipv4Addr, sync::Arc, time::Duration};
 
-use crate::{common::global_ctx::ArcGlobalCtx, instance::composition::NativeCoreInstance};
+use easytier_core::instance::CorePacketPlane;
+
+use crate::common::global_ctx::ArcGlobalCtx;
 
 use super::{client_instance::MagicDnsClientInstance, server_instance::MagicDnsServerInstance};
 
 pub struct DnsRunner {
     client: Option<MagicDnsClientInstance>,
     server: Option<MagicDnsServerInstance>,
-    core_instance: Arc<NativeCoreInstance>,
+    packet_plane: Arc<CorePacketPlane>,
     global_ctx: ArcGlobalCtx,
     tun_dev: Option<String>,
     tun_inet: Ipv4Inet,
@@ -19,7 +21,7 @@ pub struct DnsRunner {
 
 impl DnsRunner {
     pub(crate) fn new(
-        core_instance: Arc<NativeCoreInstance>,
+        packet_plane: Arc<CorePacketPlane>,
         global_ctx: ArcGlobalCtx,
         tun_dev: Option<String>,
         tun_inet: Ipv4Inet,
@@ -28,7 +30,7 @@ impl DnsRunner {
         Self {
             client: None,
             server: None,
-            core_instance,
+            packet_plane,
             global_ctx,
             tun_dev,
             tun_inet,
@@ -46,7 +48,7 @@ impl DnsRunner {
     async fn run_once(&mut self) -> anyhow::Result<()> {
         // try server first
         match MagicDnsServerInstance::new(
-            self.core_instance.clone(),
+            self.packet_plane.clone(),
             self.global_ctx.clone(),
             self.tun_dev.clone(),
             self.tun_inet,
@@ -64,7 +66,7 @@ impl DnsRunner {
         }
 
         // every runner must run a client
-        let client = MagicDnsClientInstance::new(self.core_instance.clone()).await?;
+        let client = MagicDnsClientInstance::new(self.packet_plane.clone()).await?;
         self.client = Some(client);
         self.client.as_mut().unwrap().run_and_wait().await;
 
