@@ -10,10 +10,6 @@ mod server;
 mod socket_array;
 mod task;
 
-pub use crate::config::P2pPolicyFlags;
-pub use crate::socket::udp::{
-    UdpBindOptions, UdpSocketPurpose, VirtualUdpSocket, VirtualUdpSocketFactory,
-};
 pub use client::{
     UdpBothEasySymPunchClient, UdpHolePunchClientError, UdpHolePunchClientResult,
     UdpSymToConePunchClient, apply_peer_easy_sym_port_offset, punch_cone_to_cone,

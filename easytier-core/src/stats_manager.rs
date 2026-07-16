@@ -475,14 +475,6 @@ impl MetricData {
         }
     }
 
-    #[allow(dead_code)]
-    fn new_with_value(initial: u64) -> Self {
-        Self {
-            counter: UnsafeCounter::new_with_value(initial),
-            last_updated: UnsafeCell::new(Instant::now()),
-        }
-    }
-
     /// Update the last_updated timestamp
     /// # Safety
     /// This method is unsafe because it uses UnsafeCell. The caller must ensure

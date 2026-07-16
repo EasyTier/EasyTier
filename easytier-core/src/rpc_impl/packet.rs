@@ -13,46 +13,15 @@ use super::RpcTransactId;
 
 const RPC_PACKET_UDP_PAYLOAD_BUDGET: usize = 1300;
 
-async fn compress_raw(data: &[u8], compress_algo: CompressorAlgo) -> Result<Vec<u8>, Error> {
-    match compress_algo {
-        #[cfg(feature = "zstd")]
-        CompressorAlgo::ZstdDefault => {
-            zstd::bulk::compress(data, 0).map_err(|e| Error::from(anyhow::Error::from(e)))
-        }
-        CompressorAlgo::None => Ok(data.to_vec()),
-    }
-}
-
-async fn decompress_raw(data: &[u8], compress_algo: CompressorAlgo) -> Result<Vec<u8>, Error> {
-    match compress_algo {
-        #[cfg(feature = "zstd")]
-        CompressorAlgo::ZstdDefault => {
-            for i in 1..=5 {
-                let mut len = data.len() * 2usize.pow(i);
-                if i == 5 && len < 64 * 1024 {
-                    len = 64 * 1024;
-                }
-                match zstd::bulk::decompress(data, len) {
-                    Ok(buf) => return Ok(buf),
-                    Err(e) if e.to_string().contains("buffer is too small") => continue,
-                    Err(e) => return Err(Error::from(anyhow::Error::from(e))),
-                }
-            }
-            Err(Error::from(anyhow::anyhow!(
-                "failed to decompress data with algorithm: {:?}",
-                compress_algo
-            )))
-        }
-        CompressorAlgo::None => Ok(data.to_vec()),
-    }
-}
-
 pub async fn compress_packet(
     accepted_compression_algo: CompressionAlgoPb,
     content: &[u8],
 ) -> Result<(Vec<u8>, CompressionAlgoPb), Error> {
     let algo = CompressorAlgo::try_from(accepted_compression_algo).unwrap_or(CompressorAlgo::None);
-    let compressed = compress_raw(content, algo).await?;
+    let compressed = crate::compressor::DefaultCompressor::new()
+        .compress_raw(content, algo)
+        .await
+        .map_err(Error::from)?;
     if compressed.len() >= content.len() {
         Ok((content.to_vec(), CompressionAlgoPb::None))
     } else {
@@ -68,7 +37,10 @@ pub async fn decompress_packet(
     content: &[u8],
 ) -> Result<Vec<u8>, Error> {
     let algo = CompressorAlgo::try_from(compression_algo).map_err(anyhow::Error::from)?;
-    decompress_raw(content, algo).await
+    crate::compressor::DefaultCompressor::new()
+        .decompress_raw(content, algo)
+        .await
+        .map_err(Error::from)
 }
 
 pub(crate) struct PacketMerger {

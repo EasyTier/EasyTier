@@ -610,12 +610,6 @@ impl Drop for MagicDnsResolverRegistration {
     }
 }
 
-#[async_trait]
-pub trait ProxyService: Send + Sync + 'static {
-    async fn start(&self) -> anyhow::Result<()>;
-    async fn stop(&self);
-}
-
 /// Owns the portable peer and connectivity runtime for one EasyTier instance.
 ///
 /// An instance is intentionally one-shot: after it is stopped, construct a new

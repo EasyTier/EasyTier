@@ -35,11 +35,6 @@ use crate::{
     tunnel::{SplitTunnel, Tunnel, TunnelError},
 };
 
-pub use crate::connectivity::protocol::raw::{
-    upgrade_accepted_tcp as upgrade_accepted_socket,
-    upgrade_accepted_udp as upgrade_accepted_session,
-};
-
 const MANUAL_PREFLIGHT_DEFAULT_PORT: u16 = 1000;
 const MAX_MANUAL_ENDPOINT_HOPS: usize = 16;
 

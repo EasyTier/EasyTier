@@ -801,12 +801,6 @@ fn new_route_peer_info_with_version(easytier_version: String) -> RoutePeerInfo {
     }
 }
 
-#[cfg(test)]
-#[allow(dead_code)]
-fn new_route_peer_info() -> RoutePeerInfo {
-    new_route_peer_info_with_version(env!("CARGO_PKG_VERSION").to_string())
-}
-
 /// Creates a new `RoutePeerInfo` instance with updated information from the given context.
 pub fn new_updated_self_route_peer_info(
     my_peer_id: PeerId,

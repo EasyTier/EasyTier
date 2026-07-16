@@ -15,15 +15,14 @@ use tokio::{
 };
 
 use crate::{
-    config::PeerId,
+    config::{P2pPolicyFlags, PeerId},
     proto::common::NatType,
     stun::StunInfoProvider,
     task::{ExternalTaskSignal, PeerTaskLauncher, PeerTaskManager},
 };
 
 use super::{
-    BLACKLIST_TIMEOUT_SEC, BackOff, P2pPolicyFlags, UdpBothEasySymPunchClient,
-    UdpHolePunchClientError, UdpHolePunchPeerSource, UdpHolePunchRuntime, UdpHolePunchSignaling,
+    BLACKLIST_TIMEOUT_SEC, BackOff, UdpBothEasySymPunchClient, UdpHolePunchClientError, UdpHolePunchPeerSource, UdpHolePunchRuntime, UdpHolePunchSignaling,
     UdpHolePunchTransportSink, UdpNatType, UdpPunchClientMethod, UdpPunchSocket, UdpPunchTaskInfo,
     UdpSymToConePunchClient, collect_udp_punch_tasks, punch_cone_to_cone,
     should_blacklist_signal_error,

@@ -144,11 +144,6 @@ pub struct AclResult {
 }
 
 impl AclResult {
-    /// Get matched rule as string (lazy evaluation)
-    pub fn matched_rule_string(&self) -> Option<String> {
-        self.matched_rule.as_ref().map(|r| r.to_string_cached())
-    }
-
     /// Get matched rule as string reference for logging (compatibility method)
     pub fn matched_rule_str(&self) -> Option<String> {
         self.matched_rule.as_ref().map(|r| r.as_str())
@@ -950,21 +945,6 @@ impl AclProcessor {
     }
 }
 
-// 新增辅助函数
-#[allow(dead_code)]
-fn parse_port_start(port_strs: &[String]) -> Option<u16> {
-    port_strs
-        .iter()
-        .filter_map(|s| parse_port_range(s).map(|(start, _)| start))
-        .min()
-}
-#[allow(dead_code)]
-fn parse_port_end(port_strs: &[String]) -> Option<u16> {
-    port_strs
-        .iter()
-        .filter_map(|s| parse_port_range(s).map(|(_, end)| end))
-        .max()
-}
 fn parse_port_range(s: &str) -> Option<(u16, u16)> {
     if let Some((start, end)) = s.split_once('-') {
         let start = start.trim().parse().ok()?;

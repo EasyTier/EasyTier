@@ -12,13 +12,17 @@ use rand::Rng;
 use tokio::sync::RwLock;
 use tokio_util::task::AbortOnDropHandle;
 
-use crate::{config::PeerId, stun::StunInfoProvider};
+use crate::{
+    config::PeerId,
+    socket::udp::{UdpBindOptions, VirtualUdpSocketFactory},
+    stun::StunInfoProvider,
+};
 
 use super::{
     HOLE_PUNCH_PACKET_BODY_LEN, SelectPunchListener, SendPunchPacketBothEasySym,
-    SendPunchPacketCone, SendPunchPacketEasySym, SendPunchPacketHardSym, UdpBindOptions,
-    UdpHolePunchRuntime, UdpHolePunchSignalError, UdpHolePunchSignaling, UdpNatType,
-    UdpPunchSocket, UdpSocketArray, VirtualUdpSocketFactory, new_hole_punch_packet,
+    SendPunchPacketCone, SendPunchPacketEasySym, SendPunchPacketHardSym, UdpHolePunchRuntime,
+    UdpHolePunchSignalError, UdpHolePunchSignaling, UdpNatType, UdpPunchSocket, UdpSocketArray,
+    new_hole_punch_packet,
 };
 
 #[derive(Debug, thiserror::Error)]

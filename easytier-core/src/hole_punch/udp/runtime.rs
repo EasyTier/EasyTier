@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use super::port_mapping::UdpPortMappingLease;
 
 use crate::{
+    config::P2pPolicyFlags,
     connectivity::{
         protocol::ClientProtocolUpgrader,
         transport::{ConnectedTransport, ConnectedUdpSession},
@@ -297,7 +298,7 @@ where
 pub trait UdpHolePunchPeerSource: Send + Sync {
     fn local_peer_id(&self) -> crate::config::PeerId;
     fn network_name(&self) -> &str;
-    fn p2p_policy_flags(&self) -> super::P2pPolicyFlags;
+    fn p2p_policy_flags(&self) -> P2pPolicyFlags;
 
     async fn candidates(&self) -> Vec<super::UdpPunchCandidate>;
 }

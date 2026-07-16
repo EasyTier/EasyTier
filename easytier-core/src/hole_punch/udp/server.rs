@@ -17,6 +17,7 @@ use tokio::{
 };
 use tokio_util::task::AbortOnDropHandle;
 
+use crate::socket::udp::VirtualUdpSocket;
 use crate::stun::StunInfoProvider;
 
 use super::{
@@ -25,7 +26,7 @@ use super::{
     SendPunchPacketBothEasySymResponse, SendPunchPacketCone, SendPunchPacketEasySym,
     SendPunchPacketHardSym, SendPunchPacketHardSymResponse, UdpHolePunchInbound,
     UdpHolePunchRuntime, UdpHolePunchSignalError, UdpHolePunchTransportSink, UdpPortMappingLease,
-    UdpPunchConnCounter, UdpPunchListener, UdpSocketArray, UdpSymPunchLock, VirtualUdpSocket,
+    UdpPunchConnCounter, UdpPunchListener, UdpSocketArray, UdpSymPunchLock,
     can_reuse_port_mapping_listener, can_reuse_public_listener, new_hole_punch_packet,
     select_reusable_port_mapping_listener_idx, select_reusable_public_listener_idx,
     should_create_public_listener, should_retry_public_listener_selection,

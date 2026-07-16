@@ -8,11 +8,11 @@ use dashmap::{DashMap, DashSet};
 use tokio::task::JoinSet;
 use tracing::{Instrument, Level, instrument};
 
-use super::{
-    HOLE_PUNCH_PACKET_BODY_LEN, UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory,
-    hole_punch_packet_tid,
+use super::{HOLE_PUNCH_PACKET_BODY_LEN, hole_punch_packet_tid};
+use crate::socket::{
+    IpVersion, SocketContext,
+    udp::{UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory},
 };
-use crate::socket::{IpVersion, SocketContext};
 
 pub struct PunchedUdpSocket<S> {
     pub socket: Arc<S>,

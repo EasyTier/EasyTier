@@ -99,16 +99,6 @@ struct PeerSessionTunnelFilter {
 }
 
 impl PeerSessionTunnelFilter {
-    #[allow(dead_code)]
-    fn new(enabled: bool) -> Self {
-        Self {
-            enabled,
-            my_peer_id: Arc::new(AtomicCell::new(PeerId::default())),
-            peer_id: Arc::new(AtomicCell::new(None)),
-            session: Arc::new(ArcSwapOption::empty()),
-        }
-    }
-
     fn new_with_peer(my_peer_id: PeerId, enabled: bool) -> Self {
         Self {
             enabled,
@@ -1000,23 +990,6 @@ impl PeerConn {
         };
 
         Ok(msg)
-    }
-
-    #[allow(dead_code)]
-    async fn read_next_message_with_timeout(
-        &mut self,
-        read_timeout: Duration,
-    ) -> Result<ZCPacket, Error> {
-        timeout(read_timeout, async {
-            let mut locked = self.recv.lock().await;
-            let recv = locked.as_mut().unwrap();
-            Ok(recv
-                .next()
-                .await
-                .ok_or(Error::WaitRespError("read next message failed".to_owned()))??)
-        })
-        .await
-        .map_err(|e| Error::WaitRespError(format!("read next message timeout: {e:?}")))?
     }
 
     async fn do_noise_handshake_as_server<Fn>(
