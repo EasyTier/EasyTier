@@ -314,7 +314,7 @@ full = [
     "websocket",
     "wireguard",
     "aes-gcm",
-    "openssl-crypto", # need openssl-dev libs
+    "openssl-crypto",
     "smoltcp",
     "tun",
     "socks5",
