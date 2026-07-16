@@ -29,7 +29,7 @@ struct ReceivedDatagram {
 }
 
 pub(crate) struct QuicUdpSessionSocket {
-    session: Arc<dyn UdpSessionSocket>,
+    _session: Arc<dyn UdpSessionSocket>,
     local_addr: std::net::SocketAddr,
     peer_addr: std::net::SocketAddr,
     incoming: Mutex<Receiver<io::Result<ReceivedDatagram>>>,
@@ -119,7 +119,7 @@ impl QuicUdpSessionSocket {
         }));
 
         Ok(Self {
-            session,
+            _session: session,
             local_addr,
             peer_addr,
             incoming: Mutex::new(incoming),

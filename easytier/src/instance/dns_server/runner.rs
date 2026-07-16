@@ -7,8 +7,6 @@ use crate::{common::global_ctx::ArcGlobalCtx, instance::composition::NativeCoreI
 
 use super::{client_instance::MagicDnsClientInstance, server_instance::MagicDnsServerInstance};
 
-static DEFAULT_ET_DNS_ZONE: &str = "et.net.";
-
 pub struct DnsRunner {
     client: Option<MagicDnsClientInstance>,
     server: Option<MagicDnsServerInstance>,

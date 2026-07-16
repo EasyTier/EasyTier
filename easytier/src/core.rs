@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::{
     ShellType,
     common::{
@@ -49,6 +47,7 @@ fn set_prof_active(_active: bool) {
     }
 }
 
+#[cfg(feature = "jemalloc-prof")]
 fn get_dump_profile_path(cur_allocated: usize, suffix: &str) -> String {
     format!(
         "profile-{}-{}.{}",

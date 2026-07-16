@@ -27,9 +27,11 @@ use netlink_packet_route::{
     },
 };
 use netlink_sys::{Socket, SocketAddr, protocols::NETLINK_ROUTE};
+#[cfg(test)]
+use nix::libc::SIOCGIFMTU;
 use nix::{
     ifaddrs::getifaddrs,
-    libc::{self, Ioctl, SIOCGIFFLAGS, SIOCGIFMTU, SIOCSIFFLAGS, SIOCSIFMTU, ifreq, ioctl},
+    libc::{self, Ioctl, SIOCGIFFLAGS, SIOCSIFFLAGS, SIOCSIFMTU, ifreq, ioctl},
     net::if_::InterfaceFlags,
     sys::socket::SockaddrLike as _,
 };
@@ -249,6 +251,7 @@ impl NetlinkIfConfiger {
         Ok(unsafe { ifr.ifr_ifru.ifru_mtu as u32 })
     }
 
+    #[cfg(test)]
     fn mtu(name: &str) -> Result<u32, Error> {
         Self::mtu_op(name, SIOCGIFMTU, 0)
     }

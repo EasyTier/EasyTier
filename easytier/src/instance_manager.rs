@@ -337,10 +337,6 @@ impl NetworkInstanceManager {
         }
     }
 
-    pub(crate) fn notify_stop_check(&self) {
-        self.stop_check_notifier.notify_one();
-    }
-
     pub async fn wait(&self) {
         loop {
             let local_instance_running = self

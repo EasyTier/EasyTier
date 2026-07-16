@@ -58,8 +58,4 @@ impl Controller {
     pub fn register_api_rpc_service(&self, registry: &ServiceRegistry) {
         register_api_rpc_service(&self.manager, registry, Some(self.hooks.clone()));
     }
-
-    pub(super) fn notify_manager_stopping(&self) {
-        self.manager.notify_stop_check();
-    }
 }

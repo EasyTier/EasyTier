@@ -163,11 +163,6 @@ impl FakeTcpSocketListener {
 
         let interface_name = &accept_result.interface_name;
 
-        let (local_ip, local_ip6) = match local_socket_addr.ip() {
-            IpAddr::V4(ip) => (Some(ip), None),
-            IpAddr::V6(ip) => (None, Some(ip)),
-        };
-
         if let Some(entry) = self.stack_map.get(interface_name) {
             let stack = entry.clone();
             drop(entry);
@@ -195,12 +190,7 @@ impl FakeTcpSocketListener {
             "create new stack with interface_name: {:?}",
             interface_name
         );
-        let stack = Arc::new(stack::Stack::new(
-            tun,
-            local_ip.unwrap_or(Ipv4Addr::UNSPECIFIED),
-            local_ip6,
-            accept_result.mac,
-        ));
+        let stack = Arc::new(stack::Stack::new(tun, accept_result.mac));
         self.stack_map
             .insert(interface_name.to_string(), stack.clone());
 
@@ -432,7 +422,7 @@ async fn connect_socket_with_cache(
     ip_to_if_name: &IpToIfNameCache,
     net_ns: NetNS,
 ) -> Result<FakeTcpSocket, TunnelError> {
-    let (local_ip, local_addr, interface_name, mac, os_socket) = net_ns.run(|| {
+    let (local_addr, interface_name, mac, os_socket) = net_ns.run(|| {
         let local_ip = get_local_ip_for_destination(remote_addr.ip())
             .ok_or(TunnelError::InternalError("Failed to get local ip".into()))?;
 
@@ -452,17 +442,11 @@ async fn connect_socket_with_cache(
                 .ok_or(TunnelError::InternalError(
                     "Failed to get interface name".into(),
                 ))?;
-        Ok::<_, TunnelError>((local_ip, local_addr, interface_name, mac, os_socket))
+        Ok::<_, TunnelError>((local_addr, interface_name, mac, os_socket))
     })?;
 
-    let (local_ip, local_ip6) = match local_ip {
-        IpAddr::V4(ip) => (Some(ip), None),
-        IpAddr::V6(ip) => (None, Some(ip)),
-    };
-
     let tun = create_tun_off_runtime(interface_name, Some(remote_addr), local_addr, net_ns).await?;
-    let local_ip = local_ip.unwrap_or(Ipv4Addr::UNSPECIFIED);
-    let stack = stack::Stack::new(tun, local_ip, local_ip6, mac);
+    let stack = stack::Stack::new(tun, mac);
     let transport_label = faketcp_transport_label(stack.driver_type());
 
     let socket = stack

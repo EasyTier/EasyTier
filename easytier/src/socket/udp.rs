@@ -1,15 +1,15 @@
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
-    sync::{Arc, Mutex as StdMutex, Weak},
+    sync::Arc,
 };
 
 use async_trait::async_trait;
 use easytier_core::socket::{
     NetNamespace, SocketContext,
     udp::{
-        UdpBindOptions, UdpSessionAcceptKind, UdpSessionLayer, UdpSessionListenRequest,
-        UdpSessionSocketListener, UdpSocketPurpose, UdpSocketRecvMeta, UdpSocketSendMeta,
-        VirtualUdpSocket, VirtualUdpSocketFactory,
+        UdpBindOptions, UdpSessionAcceptKind, UdpSessionListenRequest, UdpSessionSocketListener,
+        UdpSocketPurpose, UdpSocketRecvMeta, UdpSocketSendMeta, VirtualUdpSocket,
+        VirtualUdpSocketFactory,
     },
 };
 use tokio::net::UdpSocket;
@@ -21,8 +21,6 @@ use crate::{
 };
 
 use super::udp_src;
-
-pub(crate) type RuntimeUdpSessionLayer = UdpSessionLayer<RuntimeUdpSocket, NativeHostRuntime>;
 
 pub(crate) type RuntimeUdpSessionSocketListener = UdpSessionSocketListener<NativeHostRuntime>;
 
@@ -40,11 +38,11 @@ pub(crate) fn new_runtime_udp_session_listener(
 pub struct RuntimeUdpSocket {
     socket: Arc<UdpSocket>,
     context: SocketContext,
-    udp_session_layer: StdMutex<Option<Weak<RuntimeUdpSessionLayer>>>,
 }
 
 impl RuntimeUdpSocket {
-    pub(crate) fn new(socket: Arc<UdpSocket>) -> Self {
+    #[cfg(test)]
+    fn new(socket: Arc<UdpSocket>) -> Self {
         Self::new_with_context(socket, SocketContext::default())
     }
 
@@ -52,30 +50,12 @@ impl RuntimeUdpSocket {
         if let Err(err) = udp_src::enable_recv_pktinfo(&socket) {
             tracing::debug!(?err, "enable udp pktinfo failed");
         }
-        Self {
-            socket,
-            context,
-            udp_session_layer: StdMutex::new(None),
-        }
+        Self { socket, context }
     }
 
+    #[cfg(any(windows, test))]
     pub(crate) fn socket(&self) -> Arc<UdpSocket> {
         self.socket.clone()
-    }
-
-    pub(crate) fn udp_session_layer(self: &Arc<Self>) -> Arc<RuntimeUdpSessionLayer> {
-        let mut weak_layer = self.udp_session_layer.lock().unwrap();
-        if let Some(layer) = weak_layer.as_ref().and_then(Weak::upgrade) {
-            return layer;
-        }
-
-        let runtime = native_host_runtime();
-        let layer = Arc::new(UdpSessionLayer::new_with_stun_responder(
-            self.clone(),
-            runtime,
-        ));
-        *weak_layer = Some(Arc::downgrade(&layer));
-        layer
     }
 }
 
@@ -126,12 +106,6 @@ impl VirtualUdpSocket for RuntimeUdpSocket {
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct RuntimeUdpSocketFactory;
 
-#[derive(Clone, Copy)]
-enum UdpBindPolicy {
-    PurposeDefaults,
-    ExplicitOptions,
-}
-
 impl RuntimeUdpSocketFactory {
     pub(crate) fn new() -> Self {
         Self
@@ -164,29 +138,13 @@ impl RuntimeUdpSocketFactory {
             ) && !cfg!(target_os = "windows"))
     }
 
-    fn bind_udp_with_policy(
-        &self,
-        options: UdpBindOptions,
-        policy: UdpBindPolicy,
-    ) -> anyhow::Result<Arc<RuntimeUdpSocket>> {
+    fn bind_udp_socket(&self, options: UdpBindOptions) -> anyhow::Result<Arc<RuntimeUdpSocket>> {
         let context = options.context.clone();
         let bind_addr = options
             .local_addr
             .unwrap_or_else(|| SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)));
-        let bind_device = if matches!(policy, UdpBindPolicy::PurposeDefaults) {
-            self.bind_device_for(&options)
-        } else {
-            options
-                .bind_device
-                .as_deref()
-                .map(BindDev::from)
-                .unwrap_or(BindDev::Disabled)
-        };
-        let reuse_addr = if matches!(policy, UdpBindPolicy::PurposeDefaults) {
-            self.reuse_addr_for(&options)
-        } else {
-            options.reuse_addr
-        };
+        let bind_device = self.bind_device_for(&options);
+        let reuse_addr = self.reuse_addr_for(&options);
         let socket = bind::<UdpSocket>()
             .addr(bind_addr)
             .dev(bind_device)
@@ -201,13 +159,6 @@ impl RuntimeUdpSocketFactory {
             context,
         )))
     }
-
-    pub(crate) fn bind_udp_with_explicit_options(
-        &self,
-        options: UdpBindOptions,
-    ) -> anyhow::Result<Arc<RuntimeUdpSocket>> {
-        self.bind_udp_with_policy(options, UdpBindPolicy::ExplicitOptions)
-    }
 }
 
 #[async_trait]
@@ -215,7 +166,7 @@ impl VirtualUdpSocketFactory for RuntimeUdpSocketFactory {
     type Socket = RuntimeUdpSocket;
 
     async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
-        self.bind_udp_with_policy(options, UdpBindPolicy::PurposeDefaults)
+        self.bind_udp_socket(options)
     }
 }
 
@@ -232,17 +183,6 @@ mod tests {
     use crate::host_runtime::native_host_runtime;
 
     use super::*;
-
-    #[tokio::test]
-    async fn runtime_udp_socket_reuses_session_layer() {
-        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
-        let runtime_socket = Arc::new(RuntimeUdpSocket::new(socket));
-
-        let first = runtime_socket.udp_session_layer();
-        let second = runtime_socket.udp_session_layer();
-
-        assert!(Arc::ptr_eq(&first, &second));
-    }
 
     #[cfg(any(target_os = "linux", target_os = "android"))]
     #[tokio::test]

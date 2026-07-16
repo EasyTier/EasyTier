@@ -113,7 +113,7 @@ enum PacketProtocol {
     #[default]
     IPv4,
     IPv6,
-    Other(u8),
+    Other,
 }
 
 // Note: the protocol in the packet information header is platform dependent.
@@ -124,7 +124,7 @@ impl PacketProtocol {
         match self {
             PacketProtocol::IPv4 => Ok(libc::ETH_P_IP as u16),
             PacketProtocol::IPv6 => Ok(libc::ETH_P_IPV6 as u16),
-            PacketProtocol::Other(_) => Err(io::Error::other("neither an IPv4 nor IPv6 packet")),
+            PacketProtocol::Other => Err(io::Error::other("neither an IPv4 nor IPv6 packet")),
         }
     }
 
@@ -134,7 +134,7 @@ impl PacketProtocol {
         match self {
             PacketProtocol::IPv4 => Ok(libc::PF_INET as u16),
             PacketProtocol::IPv6 => Ok(libc::PF_INET6 as u16),
-            PacketProtocol::Other(_) => Err(io::Error::other("neither an IPv4 nor IPv6 packet")),
+            PacketProtocol::Other => Err(io::Error::other("neither an IPv4 nor IPv6 packet")),
         }
     }
 
@@ -149,7 +149,7 @@ fn infer_proto(buf: &[u8]) -> PacketProtocol {
     match buf[0] >> 4 {
         4 => PacketProtocol::IPv4,
         6 => PacketProtocol::IPv6,
-        p => PacketProtocol::Other(p),
+        _ => PacketProtocol::Other,
     }
 }
 

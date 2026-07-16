@@ -16,6 +16,10 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 
 use async_trait::async_trait;
 use cidr::{Ipv4Inet, Ipv6Inet};
+#[cfg(any(
+    all(target_os = "macos", not(feature = "macos-ne")),
+    target_os = "freebsd"
+))]
 use tokio::process::Command;
 
 use super::error::Error;
@@ -89,6 +93,10 @@ pub trait IfConfiguerTrait: Send + Sync {
     }
 }
 
+#[cfg(any(
+    all(target_os = "macos", not(feature = "macos-ne")),
+    target_os = "freebsd"
+))]
 fn cidr_to_subnet_mask(prefix_length: u8) -> Ipv4Addr {
     if prefix_length > 32 {
         panic!("Invalid CIDR prefix length");
@@ -105,6 +113,10 @@ fn cidr_to_subnet_mask(prefix_length: u8) -> Ipv4Addr {
     )
 }
 
+#[cfg(any(
+    all(target_os = "macos", not(feature = "macos-ne")),
+    target_os = "freebsd"
+))]
 async fn run_shell_cmd(cmd: &str) -> Result<(), Error> {
     let cmd_out: std::process::Output;
     let stdout: String;

@@ -267,14 +267,6 @@ impl KcpProxyService {
             state: Mutex::new(None),
         }
     }
-
-    pub async fn source_is_prepared(&self) -> bool {
-        self.state
-            .lock()
-            .await
-            .as_ref()
-            .is_some_and(|state| state.src.is_some())
-    }
 }
 
 #[async_trait::async_trait]

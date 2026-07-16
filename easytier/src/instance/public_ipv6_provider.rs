@@ -51,6 +51,7 @@ pub(super) fn validate_public_ipv6_config_values(
     .map_err(|error| anyhow::Error::new(error).into())
 }
 
+#[cfg(test)]
 fn ensure_public_ipv6_provider_supported() -> Result<(), Error> {
     PublicIpv6ProviderConfig {
         provider_enabled: true,

@@ -50,9 +50,9 @@ pub mod session;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub struct WebClient {
-    controller: Arc<controller::Controller>,
-    tasks: AbortOnDropHandle<()>,
-    manager_guard: DaemonGuard,
+    _controller: Arc<controller::Controller>,
+    _tasks: AbortOnDropHandle<()>,
+    _manager_guard: DaemonGuard,
     connected: Arc<AtomicBool>,
 }
 
@@ -109,9 +109,9 @@ impl WebClient {
         }));
 
         WebClient {
-            controller,
-            tasks,
-            manager_guard,
+            _controller: controller,
+            _tasks: tasks,
+            _manager_guard: manager_guard,
             connected,
         }
     }

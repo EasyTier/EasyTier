@@ -162,18 +162,6 @@ impl NativeHostRuntime {
         NetNS::from_socket_context(context)
             .run(|| std::net::UdpSocket::bind(format!("{ip}:0")).is_ok())
     }
-
-    pub(crate) fn bind_udp_with_explicit_options(
-        &self,
-        options: UdpBindOptions,
-    ) -> anyhow::Result<Arc<RuntimeUdpSocket>> {
-        // UDP hole punching historically used the request fields verbatim.
-        // Keep that policy while centralizing the actual OS socket creation.
-        let socket = self.udp_sockets.bind_udp_with_explicit_options(options)?;
-        #[cfg(target_os = "windows")]
-        crate::arch::windows::disable_connection_reset(socket.socket().as_ref())?;
-        Ok(socket)
-    }
 }
 
 #[async_trait]

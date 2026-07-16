@@ -51,7 +51,6 @@ use std::{collections::BTreeMap, io, net::Ipv4Addr, str::FromStr, sync::Arc, tim
 pub(super) struct MagicDnsServerInstanceData {
     dns_server: Server,
     tun_dev: Option<String>,
-    tun_ip: Ipv4Addr,
     fake_ip: Ipv4Addr,
     route_store: MagicDnsRecordStore,
     record_apply: tokio::sync::Mutex<()>,
@@ -330,7 +329,7 @@ impl RpcServerHook for MagicDnsServerInstanceData {
 }
 
 pub struct MagicDnsServerInstance {
-    rpc_server: StandAloneServer<RuntimeRpcListener>,
+    _rpc_server: StandAloneServer<RuntimeRpcListener>,
     pub(super) data: Arc<MagicDnsServerInstanceData>,
     packet_filter: MagicDnsResolverRegistration,
     tun_inet: Ipv4Inet,
@@ -392,7 +391,6 @@ impl MagicDnsServerInstance {
         let data = Arc::new(MagicDnsServerInstanceData {
             dns_server,
             tun_dev: tun_dev.clone(),
-            tun_ip: tun_inet.address(),
             fake_ip,
             route_store: MagicDnsRecordStore::default(),
             record_apply: tokio::sync::Mutex::new(()),
@@ -425,7 +423,7 @@ impl MagicDnsServerInstance {
             .await;
 
         Ok(Self {
-            rpc_server,
+            _rpc_server: rpc_server,
             data,
             packet_filter,
             tun_inet,
