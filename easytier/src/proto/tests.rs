@@ -372,54 +372,6 @@ async fn rpc_tunnel_stuck_test() {
 }
 
 #[tokio::test]
-async fn standalone_rpc_test() {
-    use crate::proto::rpc_impl::standalone::{
-        StandAloneServer, runtime_rpc_client, runtime_rpc_listener,
-    };
-
-    let mut server = StandAloneServer::new(runtime_rpc_listener("0.0.0.0:33455".parse().unwrap()));
-    let service = GreetingServer::new(GreetingService {
-        delay_ms: 0,
-        prefix: "Hello".to_string(),
-    });
-    server.registry().register(service, "test");
-    server.serve().await.unwrap();
-
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-    let mut client = runtime_rpc_client("tcp://127.0.0.1:33455".parse().unwrap());
-
-    let out = client
-        .scoped_client::<GreetingClientFactory<RpcController>>("test".to_string())
-        .await
-        .unwrap();
-
-    let ctrl = RpcController::default();
-    let input = SayHelloRequest {
-        name: "world".to_string(),
-    };
-    let ret = out.say_hello(ctrl, input).await;
-    assert_eq!(ret.unwrap().greeting, "Hello world!");
-
-    let out = client
-        .scoped_client::<GreetingClientFactory<RpcController>>("test".to_string())
-        .await
-        .unwrap();
-
-    let ctrl = RpcController::default();
-    let input = SayGoodbyeRequest {
-        name: "world".to_string(),
-    };
-    let ret = out.say_goodbye(ctrl, input).await;
-    assert_eq!(ret.unwrap().greeting, "Goodbye, world!");
-
-    drop(client);
-
-    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-    assert_eq!(0, server.inflight_server());
-}
-
-#[tokio::test]
 async fn test_bidirect_rpc_manager() {
     use crate::proto::rpc_impl::bidirect::BidirectRpcManager;
     use crate::proto::rpc_impl::standalone::{runtime_rpc_dialer, runtime_rpc_listener};

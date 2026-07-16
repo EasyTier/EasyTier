@@ -219,7 +219,7 @@ mod tests {
     use std::{
         fmt,
         sync::{
-            Arc,
+            Arc, Mutex,
             atomic::{AtomicU32, Ordering},
         },
         time::Duration,
@@ -228,10 +228,19 @@ mod tests {
     use tokio::sync::mpsc;
     use url::Url;
 
-    use super::{RpcServerHook, StandAloneServer};
+    use super::{RpcServerHook, StandAloneClient, StandAloneServer};
     use crate::{
+        connectivity::protocol::raw::TunnelDialer,
         listener::SocketListener,
-        proto::common::TunnelInfo,
+        proto::{
+            common::TunnelInfo,
+            peer_rpc::{
+                GetGlobalPeerMapRequest, GetGlobalPeerMapResponse, PeerCenterRpc,
+                PeerCenterRpcClientFactory, PeerCenterRpcServer, ReportPeersRequest,
+                ReportPeersResponse,
+            },
+            rpc_types::{controller::BaseController, error},
+        },
         runtime_time::{sleep, timeout},
         tunnel::{Tunnel, ring::create_ring_tunnel_pair},
     };
@@ -295,6 +304,56 @@ mod tests {
 
         fn local_url(&self) -> Url {
             "ring://standalone-rpc".parse().unwrap()
+        }
+    }
+
+    struct TestDialer {
+        accepted: Arc<Mutex<mpsc::Sender<Box<dyn Tunnel>>>>,
+        connections: Arc<AtomicU32>,
+    }
+
+    #[async_trait::async_trait]
+    impl TunnelDialer for TestDialer {
+        async fn connect(&self) -> anyhow::Result<Box<dyn Tunnel>> {
+            let (client, accepted) = create_ring_tunnel_pair();
+            let sender = self.accepted.lock().unwrap().clone();
+            sender
+                .send(accepted)
+                .await
+                .map_err(|_| anyhow::anyhow!("test listener closed"))?;
+            self.connections.fetch_add(1, Ordering::Relaxed);
+            Ok(client)
+        }
+
+        fn remote_url(&self) -> Url {
+            "ring://standalone-rpc".parse().unwrap()
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    struct TestRpcService;
+
+    #[async_trait::async_trait]
+    impl PeerCenterRpc for TestRpcService {
+        type Controller = BaseController;
+
+        async fn report_peers(
+            &self,
+            _controller: BaseController,
+            _request: ReportPeersRequest,
+        ) -> error::Result<ReportPeersResponse> {
+            Ok(ReportPeersResponse::default())
+        }
+
+        async fn get_global_peer_map(
+            &self,
+            _controller: BaseController,
+            _request: GetGlobalPeerMapRequest,
+        ) -> error::Result<GetGlobalPeerMapResponse> {
+            Ok(GetGlobalPeerMapResponse {
+                digest: Some(42),
+                ..Default::default()
+            })
         }
     }
 
@@ -385,5 +444,78 @@ mod tests {
 
         assert_eq!(tracker.started.load(Ordering::Relaxed), 2);
         assert_eq!(tracker.cancelled.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn client_reuses_connection_and_reconnects_after_disconnect() {
+        let (sender, receiver) = mpsc::channel(2);
+        let accepted = Arc::new(Mutex::new(sender));
+        let connections = Arc::new(AtomicU32::new(0));
+        let dialer = TestDialer {
+            accepted: accepted.clone(),
+            connections: connections.clone(),
+        };
+        let mut server = StandAloneServer::new(TestListener {
+            accepted: receiver,
+            accept_tracker: None,
+        });
+        server
+            .registry()
+            .register(PeerCenterRpcServer::new(TestRpcService), "test");
+        server.serve().await.unwrap();
+
+        let mut client = StandAloneClient::new(dialer);
+        let rpc = client
+            .scoped_client::<PeerCenterRpcClientFactory<BaseController>>("test".to_string())
+            .await
+            .unwrap();
+        let response = rpc
+            .get_global_peer_map(
+                BaseController::default(),
+                GetGlobalPeerMapRequest::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.digest, Some(42));
+
+        client
+            .scoped_client::<PeerCenterRpcClientFactory<BaseController>>("test".to_string())
+            .await
+            .unwrap();
+        assert_eq!(connections.load(Ordering::Relaxed), 1);
+
+        drop(server);
+        let (sender, receiver) = mpsc::channel(2);
+        *accepted.lock().unwrap() = sender;
+        let mut restarted_server = StandAloneServer::new(TestListener {
+            accepted: receiver,
+            accept_tracker: None,
+        });
+        restarted_server
+            .registry()
+            .register(PeerCenterRpcServer::new(TestRpcService), "test");
+        restarted_server.serve().await.unwrap();
+
+        let rpc = timeout(Duration::from_secs(1), async {
+            loop {
+                let rpc = client
+                    .scoped_client::<PeerCenterRpcClientFactory<BaseController>>("test".to_string())
+                    .await
+                    .unwrap();
+                if connections.load(Ordering::Relaxed) == 2 {
+                    break rpc;
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        rpc.get_global_peer_map(
+            BaseController::default(),
+            GetGlobalPeerMapRequest::default(),
+        )
+        .await
+        .unwrap();
     }
 }
