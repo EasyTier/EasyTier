@@ -80,34 +80,39 @@ where
         let mut client_tasks = JoinSet::new();
 
         loop {
-            tokio::select! {
-                accepted = listener.accept() => {
-                    let tunnel = accepted?;
-                    let tunnel_info = tunnel.info();
-                    let registry = registry.clone();
-                    let inflight_server = inflight.clone();
-                    let hook = hook.clone();
-
-                    let tunnel_info = match hook.on_new_client(tunnel_info).await {
-                        Ok(info) => info,
-                        Err(error) => {
-                            tracing::warn!(?error, "standalone hook.on_new_client failed");
-                            continue;
-                        }
-                    };
-
-                    inflight_server.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    client_tasks.spawn(async move {
-                        let server = BidirectRpcManager::new().set_rx_timeout(rx_timeout);
-                        server.rpc_server().registry().replace_registry(&registry);
-                        server.run_with_tunnel(tunnel);
-                        server.wait().await;
-                        hook.on_client_disconnected(tunnel_info).await;
-                        inflight_server.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                    });
+            let accepted = {
+                let accept = listener.accept();
+                tokio::pin!(accept);
+                loop {
+                    tokio::select! {
+                        accepted = &mut accept => break accepted,
+                        _ = client_tasks.join_next(), if !client_tasks.is_empty() => {}
+                    }
                 }
-                _ = client_tasks.join_next(), if !client_tasks.is_empty() => {}
-            }
+            };
+            let tunnel = accepted?;
+            let tunnel_info = tunnel.info();
+            let registry = registry.clone();
+            let inflight_server = inflight.clone();
+            let hook = hook.clone();
+
+            let tunnel_info = match hook.on_new_client(tunnel_info).await {
+                Ok(info) => info,
+                Err(error) => {
+                    tracing::warn!(?error, "standalone hook.on_new_client failed");
+                    continue;
+                }
+            };
+
+            inflight_server.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            client_tasks.spawn(async move {
+                let server = BidirectRpcManager::new().set_rx_timeout(rx_timeout);
+                server.rpc_server().registry().replace_registry(&registry);
+                server.run_with_tunnel(tunnel);
+                server.wait().await;
+                hook.on_client_disconnected(tunnel_info).await;
+                inflight_server.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+            });
         }
     }
 
@@ -233,6 +238,26 @@ mod tests {
 
     struct TestListener {
         accepted: mpsc::Receiver<Box<dyn Tunnel>>,
+        accept_tracker: Option<Arc<AcceptTracker>>,
+    }
+
+    #[derive(Default)]
+    struct AcceptTracker {
+        started: AtomicU32,
+        cancelled: AtomicU32,
+    }
+
+    struct AcceptAttempt {
+        tracker: Arc<AcceptTracker>,
+        completed: bool,
+    }
+
+    impl Drop for AcceptAttempt {
+        fn drop(&mut self) {
+            if !self.completed {
+                self.tracker.cancelled.fetch_add(1, Ordering::Relaxed);
+            }
+        }
     }
 
     impl fmt::Debug for TestListener {
@@ -250,10 +275,22 @@ mod tests {
         }
 
         async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
-            self.accepted
+            let mut attempt = self.accept_tracker.as_ref().map(|tracker| {
+                tracker.started.fetch_add(1, Ordering::Relaxed);
+                AcceptAttempt {
+                    tracker: tracker.clone(),
+                    completed: false,
+                }
+            });
+            let result = self
+                .accepted
                 .recv()
                 .await
-                .ok_or_else(|| anyhow::anyhow!("test listener closed"))
+                .ok_or_else(|| anyhow::anyhow!("test listener closed"));
+            if let Some(attempt) = attempt.as_mut() {
+                attempt.completed = true;
+            }
+            result
         }
 
         fn local_url(&self) -> Url {
@@ -286,7 +323,10 @@ mod tests {
     async fn server_owns_accepted_client_lifecycle() {
         let (sender, receiver) = mpsc::channel(1);
         let hook = Arc::new(CountingHook::default());
-        let mut server = StandAloneServer::new(TestListener { accepted: receiver });
+        let mut server = StandAloneServer::new(TestListener {
+            accepted: receiver,
+            accept_tracker: None,
+        });
         server.set_hook(hook.clone());
         server.serve().await.unwrap();
 
@@ -311,5 +351,39 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(hook.disconnected.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn reaping_clients_does_not_cancel_an_in_progress_accept() {
+        let (sender, receiver) = mpsc::channel(1);
+        let tracker = Arc::new(AcceptTracker::default());
+        let mut server = StandAloneServer::new(TestListener {
+            accepted: receiver,
+            accept_tracker: Some(tracker.clone()),
+        });
+        server.serve().await.unwrap();
+
+        let (client, accepted) = create_ring_tunnel_pair();
+        sender.send(accepted).await.unwrap();
+        timeout(Duration::from_secs(1), async {
+            while tracker.started.load(Ordering::Relaxed) < 2 {
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        drop(client);
+        timeout(Duration::from_secs(1), async {
+            while server.inflight_server() != 0 {
+                sleep(Duration::from_millis(10)).await;
+            }
+            sleep(Duration::from_millis(20)).await;
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(tracker.started.load(Ordering::Relaxed), 2);
+        assert_eq!(tracker.cancelled.load(Ordering::Relaxed), 0);
     }
 }
