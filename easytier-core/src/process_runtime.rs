@@ -5,13 +5,17 @@ use std::sync::Arc;
 use crate::{
     connectivity::{
         manual::{
-            ManualConnectorHost, ManualConnectorOptions, ManualEndpointResolver,
-            ManualTunnelConnector,
+            ManualConnectorHost, ManualConnectorOptions, ManualTunnelConnector,
+            discovery::{CoreManualEndpointResolver, ManualEndpointDiscoveryConfig},
         },
         protocol::ClientProtocolUpgrader,
     },
     listener::SocketListener,
-    socket::{dns::DnsResolver, ring::RingSocketId, tcp::VirtualTcpSocketFactory},
+    socket::{
+        dns::{DnsRecordResolver, DnsResolver},
+        ring::RingSocketId,
+        tcp::VirtualTcpSocketFactory,
+    },
     tunnel::{Tunnel, ring::RingTunnelRegistry},
 };
 
@@ -53,13 +57,20 @@ impl CoreProcessRuntime {
         &self,
         host: Arc<H>,
         dns: Arc<dyn DnsResolver>,
-        endpoint_resolver: Arc<dyn ManualEndpointResolver>,
+        dns_records: Arc<dyn DnsRecordResolver>,
         protocol: Arc<dyn ClientProtocolUpgrader<<H as VirtualTcpSocketFactory>::Socket>>,
+        endpoint_discovery: ManualEndpointDiscoveryConfig,
         options: ManualConnectorOptions,
     ) -> ManualTunnelConnector<H>
     where
         H: ManualConnectorHost,
     {
+        let endpoint_resolver = Arc::new(CoreManualEndpointResolver::new(
+            host.clone(),
+            dns.clone(),
+            dns_records,
+            endpoint_discovery,
+        ));
         ManualTunnelConnector::new(host, dns, endpoint_resolver, protocol, options)
             .with_ring_registry(self.ring_registry())
     }
@@ -87,7 +98,7 @@ mod tests {
         packet::ZCPacket,
         socket::{
             IpVersion, SocketContext,
-            dns::DnsQuery,
+            dns::{DnsQuery, DnsRecordResolver, DnsSrvRecord},
             tcp::{TcpConnectOptions, VirtualTcpSocket},
             udp::{UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory},
         },
@@ -194,12 +205,14 @@ mod tests {
         }
     }
 
-    struct TestEndpointResolver;
-
     #[async_trait]
-    impl ManualEndpointResolver for TestEndpointResolver {
-        async fn resolve_endpoint(&self, _url: &url::Url) -> anyhow::Result<url::Url> {
-            anyhow::bail!("Ring connector must not resolve endpoint indirection")
+    impl DnsRecordResolver for TestDns {
+        async fn resolve_txt(&self, _query: DnsQuery) -> anyhow::Result<String> {
+            anyhow::bail!("Ring connector must not resolve TXT records")
+        }
+
+        async fn resolve_srv(&self, _query: DnsQuery) -> anyhow::Result<Vec<DnsSrvRecord>> {
+            anyhow::bail!("Ring connector must not resolve SRV records")
         }
     }
 
@@ -207,10 +220,11 @@ mod tests {
         runtime.manual_connector(
             Arc::new(TestHost),
             Arc::new(TestDns),
-            Arc::new(TestEndpointResolver),
+            Arc::new(TestDns),
             Arc::new(CoreClientProtocolUpgrader::<TestTcpSocket>::new(
                 CoreClientProtocolConfig::default(),
             )),
+            ManualEndpointDiscoveryConfig::default(),
             ManualConnectorOptions::default(),
         )
     }

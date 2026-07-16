@@ -11,7 +11,6 @@ use easytier_core::vpn_portal::VpnPortalHost;
 use easytier_core::{
     connectivity::manual::{
         ManualConnectivityEvent, ManualConnectivityEventSink, ManualTunnelConnector,
-        discovery::CoreManualEndpointResolver,
     },
     instance::{CoreInstance, CoreInstanceAdapters, PacketSink, PortableCoreInstanceConfig},
     peers::peer_manager::RouteAlgoType,
@@ -176,18 +175,12 @@ pub(crate) fn runtime_one_shot_manual_connector(
     let runtime_dns = native_host_runtime();
     let dns: Arc<dyn DnsResolver> = runtime_dns.clone();
     let dns_records: Arc<dyn DnsRecordResolver> = runtime_dns;
-    let endpoint_resolver = Arc::new(CoreManualEndpointResolver::new(
-        host.clone(),
-        dns.clone(),
-        dns_records,
-        runtime_endpoint_discovery_config(&global_ctx),
-    ));
-
     process_runtime.manual_connector(
         host,
         dns,
-        endpoint_resolver,
+        dns_records,
         runtime_client_protocol_upgrader(global_ctx.clone()),
+        runtime_endpoint_discovery_config(&global_ctx),
         runtime_manual_options(&global_ctx),
     )
 }
