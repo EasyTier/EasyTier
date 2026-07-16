@@ -550,7 +550,6 @@ dependencies = [
  "crossbeam",
  "dashmap",
  "easytier-proto",
- "forwarded-header-value",
  "futures",
  "guarden",
  "hmac",
@@ -569,7 +568,6 @@ dependencies = [
  "prost-wkt-types",
  "quanta",
  "rand 0.8.7",
- "rcgen",
  "rustls",
  "serde",
  "serde_json",
@@ -733,16 +731,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
 dependencies = [
  "percent-encoding",
-]
-
-[[package]]
-name = "forwarded-header-value"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8835f84f38484cc86f110a805655697908257fb9a7af005234060891557198e9"
-dependencies = [
- "nonempty",
- "thiserror",
 ]
 
 [[package]]
@@ -1412,12 +1400,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nonempty"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e9e591e719385e6ebaeb5ce5d3887f7d5676fceca6411d1925ccc95745f3d6f7"
-
-[[package]]
 name = "num-conv"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1558,16 +1540,6 @@ checksum = "f8ed6a7761f76e3b9f92dfb0a60a6a6477c61024b775147ff0973a02653abaf2"
 dependencies = [
  "digest",
  "hmac",
-]
-
-[[package]]
-name = "pem"
-version = "3.0.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d30c53c26bc5b31a98cd02d20f25a7c8567146caf63ed593a9d87b2775291be"
-dependencies = [
- "base64",
- "serde_core",
 ]
 
 [[package]]
@@ -1929,18 +1901,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "498cd0dc59d73224351ee52a95fee0f1a617a2eae0e7d9d720cc622c73a54186"
 dependencies = [
  "bitflags",
-]
-
-[[package]]
-name = "rcgen"
-version = "0.12.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "48406db8ac1f3cbc7dcdb56ec355343817958a356ff430259bb07baf7607e1e1"
-dependencies = [
- "pem",
- "ring",
- "time",
- "yasna",
 ]
 
 [[package]]
@@ -3080,15 +3040,6 @@ dependencies = [
  "rand_core 0.6.4",
  "serde",
  "zeroize",
-]
-
-[[package]]
-name = "yasna"
-version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e17bb3549cc1321ae1296b9cdc2698e2b6cb1992adfa19a8c72e5b7a738f44cd"
-dependencies = [
- "time",
 ]
 
 [[package]]

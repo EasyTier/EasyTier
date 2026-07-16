@@ -116,29 +116,6 @@ pub async fn check_dns_record(fake_ip: &Ipv4Addr, domain: &str, expected_ip: &st
     );
 }
 
-pub async fn check_dns_record_missing(fake_ip: &Ipv4Addr, domain: &str) {
-    let stream = UdpClientStream::builder(
-        SocketAddr::new((*fake_ip).into(), 53),
-        TokioRuntimeProvider::default(),
-    )
-    .build();
-    let (mut client, background) = Client::connect(stream).await.unwrap();
-    let background_task = tokio::spawn(background);
-    let response = client
-        .query(
-            rr::Name::from_str(domain).unwrap(),
-            rr::DNSClass::IN,
-            rr::RecordType::A,
-        )
-        .await
-        .unwrap_or_else(|e| {
-            panic!("DNS query for missing record failed unexpectedly for domain '{domain}': {e}")
-        });
-    background_task.abort();
-    let _ = background_task.await;
-    assert!(response.answers().is_empty(), "{:?}", response.answers());
-}
-
 #[tokio::test]
 async fn test_magic_dns_server_instance() {
     let tun_ip = Ipv4Inet::from_str("10.144.144.10/24").unwrap();

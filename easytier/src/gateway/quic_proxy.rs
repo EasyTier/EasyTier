@@ -745,16 +745,6 @@ impl QuicProxyService {
             state: Mutex::new(None),
         }
     }
-
-    #[cfg(test)]
-    pub async fn source_is_prepared(&self) -> bool {
-        self.state
-            .lock()
-            .await
-            .as_ref()
-            .and_then(|proxy| proxy.source_connector.as_ref())
-            .is_some()
-    }
 }
 
 #[async_trait::async_trait]

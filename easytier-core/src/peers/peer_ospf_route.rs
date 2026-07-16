@@ -719,18 +719,6 @@ impl OspfRouteTable {
             .map(|(cidr, _)| *cidr)
             .collect()
     }
-
-    #[doc(hidden)]
-    pub fn replace_next_hops_for_testing<I>(&self, version: Version, next_hops: I)
-    where
-        I: IntoIterator<Item = (PeerId, OspfNextHopInfo)>,
-    {
-        self.next_hop_map.clear();
-        for (peer_id, next_hop) in next_hops {
-            self.next_hop_map.insert(peer_id, next_hop);
-        }
-        self.next_hop_map_version.set(version);
-    }
 }
 
 static UPDATE_PEER_INFO_PERIOD: Duration = Duration::from_secs(3600);

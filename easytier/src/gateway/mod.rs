@@ -1,6 +1,7 @@
 #[cfg(any(feature = "kcp", feature = "quic"))]
 mod hedge;
 
+#[cfg(not(test))]
 pub mod icmp_proxy;
 pub mod tcp_proxy;
 

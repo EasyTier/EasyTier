@@ -143,7 +143,7 @@ use crate::proto::rpc_impl::server::Server;
 struct TestContext {
     client: Client,
     server: Server,
-    tasks: Arc<Mutex<JoinSet<()>>>,
+    _tasks: Arc<Mutex<JoinSet<()>>>,
 }
 
 impl TestContext {
@@ -185,7 +185,7 @@ impl TestContext {
         Self {
             client,
             server: rpc_server,
-            tasks,
+            _tasks: tasks,
         }
     }
 }

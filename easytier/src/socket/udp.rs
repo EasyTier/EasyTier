@@ -60,7 +60,7 @@ impl RuntimeUdpSocket {
         Self { socket, context }
     }
 
-    #[cfg(any(windows, test))]
+    #[cfg(target_os = "windows")]
     pub(crate) fn socket(&self) -> Arc<UdpSocket> {
         self.socket.clone()
     }

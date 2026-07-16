@@ -724,34 +724,6 @@ impl RelayPeerMap {
         self.states.contains_key(&peer_id)
     }
 
-    pub fn failure_count(&self, peer_id: PeerId) -> Option<u32> {
-        self.states.get(&peer_id).map(|v| v.failure_count)
-    }
-
-    pub fn pending_packet_count(&self, peer_id: PeerId) -> usize {
-        self.pending_packets
-            .get(&peer_id)
-            .map(|packets| packets.len())
-            .unwrap_or(0)
-    }
-
-    #[doc(hidden)]
-    pub fn buffer_pending_packet_for_testing(
-        &self,
-        dst_peer_id: PeerId,
-        pkt: ZCPacket,
-        policy: NextHopPolicy,
-    ) {
-        self.buffer_pending_packet(dst_peer_id, pkt, policy);
-    }
-
-    pub fn is_backoff_active(&self, peer_id: PeerId) -> bool {
-        self.states
-            .get(&peer_id)
-            .and_then(|v| v.next_retry_at)
-            .is_some_and(|ts| Instant::now() < ts)
-    }
-
     /// Remove relay-specific state for a specific peer.
     /// This does NOT remove the session from PeerSessionStore, because the
     /// session lifecycle is independent of any particular connection type

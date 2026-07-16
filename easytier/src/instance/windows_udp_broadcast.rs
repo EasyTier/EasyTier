@@ -1,12 +1,15 @@
 use std::net::Ipv4Addr;
 
+#[cfg(all(windows, feature = "tun"))]
 use cidr::Ipv4Inet;
+use easytier_core::packet::udp_broadcast::PhysicalInterface;
+#[cfg(all(windows, feature = "tun"))]
 use easytier_core::packet::udp_broadcast::{
-    BroadcastRelayConfig, NormalizedPacket, PhysicalInterface, UdpBroadcastPacketRejection,
-    UdpPacketSummary, normalize_udp_broadcast_packet,
+    BroadcastRelayConfig, NormalizedPacket, UdpBroadcastPacketRejection, UdpPacketSummary,
+    normalize_udp_broadcast_packet,
 };
 
-#[cfg(any(windows, test))]
+#[cfg(all(windows, feature = "tun"))]
 use {
     crate::{
         common::global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
@@ -24,7 +27,11 @@ use {
     tokio_util::task::AbortOnDropHandle,
 };
 
-#[cfg(all(windows, any(target_arch = "x86_64", target_arch = "x86")))]
+#[cfg(all(
+    windows,
+    feature = "tun",
+    any(target_arch = "x86_64", target_arch = "x86")
+))]
 use windivert::{
     WinDivert,
     error::WinDivertError,
@@ -33,6 +40,7 @@ use windivert::{
     prelude::{WinDivertFlags, WinDivertShutdownMode},
 };
 
+#[cfg(all(windows, feature = "tun"))]
 fn log_ignored_udp_packet(packet: &[u8], rejection: UdpBroadcastPacketRejection) {
     let reason = rejection.reason();
     if let Some(summary) = UdpPacketSummary::parse(packet) {
@@ -56,6 +64,7 @@ fn log_ignored_udp_packet(packet: &[u8], rejection: UdpBroadcastPacketRejection)
     }
 }
 
+#[cfg(all(windows, feature = "tun"))]
 fn log_normalized_udp_packet(
     packet: &[u8],
     config: &BroadcastRelayConfig,
@@ -79,7 +88,7 @@ fn log_normalized_udp_packet(
     );
 }
 
-#[cfg(any(windows, test))]
+#[cfg(all(windows, feature = "tun"))]
 fn log_captured_udp_packet(packet: &[u8]) {
     if let Some(summary) = UdpPacketSummary::parse(packet) {
         tracing::debug!(
@@ -100,7 +109,7 @@ fn log_captured_udp_packet(packet: &[u8]) {
     }
 }
 
-#[cfg(any(windows, test))]
+#[cfg(all(windows, feature = "tun"))]
 fn collect_physical_interfaces(virtual_ipv4: Ipv4Inet) -> anyhow::Result<Vec<PhysicalInterface>> {
     let mut ret = Vec::new();
     for iface in NetworkInterface::show().context("failed to list Windows network interfaces")? {
@@ -132,7 +141,14 @@ fn collect_physical_interfaces(virtual_ipv4: Ipv4Inet) -> anyhow::Result<Vec<Phy
     Ok(ret)
 }
 
-#[cfg(any(windows, test))]
+#[cfg(any(
+    test,
+    all(
+        windows,
+        feature = "tun",
+        any(target_arch = "x86_64", target_arch = "x86")
+    )
+))]
 fn join_addr_equals(field: &str, addrs: &[Ipv4Addr]) -> String {
     addrs
         .iter()
@@ -141,7 +157,14 @@ fn join_addr_equals(field: &str, addrs: &[Ipv4Addr]) -> String {
         .join(" or ")
 }
 
-#[cfg(any(windows, test))]
+#[cfg(any(
+    test,
+    all(
+        windows,
+        feature = "tun",
+        any(target_arch = "x86_64", target_arch = "x86")
+    )
+))]
 fn build_windivert_udp_filter(physical_interfaces: &[PhysicalInterface]) -> String {
     let mut src_addrs = Vec::new();
     let mut directed_broadcasts = Vec::new();
@@ -173,7 +196,7 @@ fn build_windivert_udp_filter(physical_interfaces: &[PhysicalInterface]) -> Stri
     )
 }
 
-#[cfg(any(windows, test))]
+#[cfg(all(windows, feature = "tun"))]
 fn open_raw_udp_socket() -> io::Result<Socket> {
     let socket = Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::UDP))?;
     // Match ubihazard/broadcast: use one raw UDP listener on loopback, then
@@ -183,7 +206,7 @@ fn open_raw_udp_socket() -> io::Result<Socket> {
     Ok(socket)
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, feature = "tun"))]
 fn socket2_into_udp_socket(socket: Socket) -> StdUdpSocket {
     use std::os::windows::io::{FromRawSocket, IntoRawSocket};
 
@@ -191,21 +214,13 @@ fn socket2_into_udp_socket(socket: Socket) -> StdUdpSocket {
     unsafe { StdUdpSocket::from_raw_socket(socket.into_raw_socket()) }
 }
 
-#[cfg(all(not(windows), unix))]
-fn socket2_into_udp_socket(socket: Socket) -> StdUdpSocket {
-    use std::os::fd::{FromRawFd, IntoRawFd};
-
-    // The raw socket fd came from socket2 and is transferred exactly once.
-    unsafe { StdUdpSocket::from_raw_fd(socket.into_raw_fd()) }
-}
-
-#[cfg(any(windows, test))]
+#[cfg(all(windows, feature = "tun"))]
 struct RawUdpCaptureSocket {
     socket: tokio::net::UdpSocket,
     buf: Vec<u8>,
 }
 
-#[cfg(any(windows, test))]
+#[cfg(all(windows, feature = "tun"))]
 impl RawUdpCaptureSocket {
     const MAX_PACKET_LEN: usize = 65_535;
 
@@ -229,18 +244,34 @@ impl RawUdpCaptureSocket {
     }
 }
 
-#[cfg(all(windows, any(target_arch = "x86_64", target_arch = "x86")))]
+#[cfg(all(
+    windows,
+    feature = "tun",
+    any(target_arch = "x86_64", target_arch = "x86")
+))]
 struct WinDivertCaptureReader {
     inner: std::cell::UnsafeCell<WinDivert<layer::NetworkLayer>>,
 }
 
-#[cfg(all(windows, any(target_arch = "x86_64", target_arch = "x86")))]
+#[cfg(all(
+    windows,
+    feature = "tun",
+    any(target_arch = "x86_64", target_arch = "x86")
+))]
 unsafe impl Send for WinDivertCaptureReader {}
 
-#[cfg(all(windows, any(target_arch = "x86_64", target_arch = "x86")))]
+#[cfg(all(
+    windows,
+    feature = "tun",
+    any(target_arch = "x86_64", target_arch = "x86")
+))]
 unsafe impl Sync for WinDivertCaptureReader {}
 
-#[cfg(all(windows, any(target_arch = "x86_64", target_arch = "x86")))]
+#[cfg(all(
+    windows,
+    feature = "tun",
+    any(target_arch = "x86_64", target_arch = "x86")
+))]
 impl WinDivertCaptureReader {
     fn new(inner: WinDivert<layer::NetworkLayer>) -> Self {
         Self {
@@ -273,7 +304,11 @@ impl WinDivertCaptureReader {
     }
 }
 
-#[cfg(all(windows, any(target_arch = "x86_64", target_arch = "x86")))]
+#[cfg(all(
+    windows,
+    feature = "tun",
+    any(target_arch = "x86_64", target_arch = "x86")
+))]
 impl Drop for WinDivertCaptureReader {
     fn drop(&mut self) {
         if let Err(err) = self.close() {
@@ -282,14 +317,22 @@ impl Drop for WinDivertCaptureReader {
     }
 }
 
-#[cfg(all(windows, any(target_arch = "x86_64", target_arch = "x86")))]
+#[cfg(all(
+    windows,
+    feature = "tun",
+    any(target_arch = "x86_64", target_arch = "x86")
+))]
 struct WinDivertCaptureSocket {
     rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
     reader: Arc<WinDivertCaptureReader>,
     buf: Vec<u8>,
 }
 
-#[cfg(all(windows, any(target_arch = "x86_64", target_arch = "x86")))]
+#[cfg(all(
+    windows,
+    feature = "tun",
+    any(target_arch = "x86_64", target_arch = "x86")
+))]
 impl WinDivertCaptureSocket {
     const CHANNEL_CAPACITY: usize = 1024;
     const MAX_PACKET_LEN: usize = 65_535;
@@ -347,7 +390,11 @@ impl WinDivertCaptureSocket {
     }
 }
 
-#[cfg(all(windows, any(target_arch = "x86_64", target_arch = "x86")))]
+#[cfg(all(
+    windows,
+    feature = "tun",
+    any(target_arch = "x86_64", target_arch = "x86")
+))]
 impl Drop for WinDivertCaptureSocket {
     fn drop(&mut self) {
         if let Err(err) = self.reader.shutdown() {
@@ -356,14 +403,14 @@ impl Drop for WinDivertCaptureSocket {
     }
 }
 
-#[cfg(any(windows, test))]
+#[cfg(all(windows, feature = "tun"))]
 enum CaptureSocket {
     Raw(RawUdpCaptureSocket),
     #[cfg(all(windows, any(target_arch = "x86_64", target_arch = "x86")))]
     WinDivert(WinDivertCaptureSocket),
 }
 
-#[cfg(any(windows, test))]
+#[cfg(all(windows, feature = "tun"))]
 impl CaptureSocket {
     async fn recv(&mut self) -> io::Result<&[u8]> {
         match self {
@@ -394,7 +441,11 @@ impl CaptureSocket {
     }
 }
 
-#[cfg(all(windows, any(target_arch = "x86_64", target_arch = "x86")))]
+#[cfg(all(
+    windows,
+    feature = "tun",
+    any(target_arch = "x86_64", target_arch = "x86")
+))]
 fn open_capture_socket(config: &BroadcastRelayConfig) -> anyhow::Result<CaptureSocket> {
     match WinDivertCaptureSocket::open(config) {
         Ok(socket) => Ok(CaptureSocket::WinDivert(socket)),
@@ -409,14 +460,15 @@ fn open_capture_socket(config: &BroadcastRelayConfig) -> anyhow::Result<CaptureS
 }
 
 #[cfg(all(
-    any(windows, test),
-    not(all(windows, any(target_arch = "x86_64", target_arch = "x86")))
+    windows,
+    feature = "tun",
+    not(any(target_arch = "x86_64", target_arch = "x86"))
 ))]
 fn open_capture_socket(_config: &BroadcastRelayConfig) -> anyhow::Result<CaptureSocket> {
     RawUdpCaptureSocket::open().map(CaptureSocket::Raw)
 }
 
-#[cfg(any(windows, test))]
+#[cfg(all(windows, feature = "tun"))]
 fn issue_start_result_event(
     global_ctx: &ArcGlobalCtx,
     capture_backend: Option<&str>,
@@ -428,7 +480,7 @@ fn issue_start_result_event(
     });
 }
 
-#[cfg(any(windows, test))]
+#[cfg(all(windows, feature = "tun"))]
 async fn forward_normalized_packet(
     core_instance: &NativeCoreInstance,
     normalized: NormalizedPacket,
@@ -495,7 +547,7 @@ async fn forward_normalized_packet(
     }
 }
 
-#[cfg(any(windows, test))]
+#[cfg(all(windows, feature = "tun"))]
 async fn capture_loop(
     core_instance: Arc<NativeCoreInstance>,
     config: BroadcastRelayConfig,
@@ -565,7 +617,7 @@ async fn capture_loop(
     }
 }
 
-#[cfg(any(windows, test))]
+#[cfg(all(windows, feature = "tun"))]
 pub(crate) fn start(
     core_instance: Arc<NativeCoreInstance>,
     global_ctx: ArcGlobalCtx,
