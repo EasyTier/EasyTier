@@ -1087,11 +1087,8 @@ impl Instance {
 
         // run after tun device created, so listener can bind to tun device, which may be required by win 10
         self.core_instance
-            .start_network_services(Some(RuntimeDhcpIpv4Host::new(self)))
+            .start_after_host_ready(Some(RuntimeDhcpIpv4Host::new(self)))
             .await?;
-
-        #[cfg(feature = "socks5")]
-        self.core_instance.start_gateway().await?;
 
         Ok(())
     }

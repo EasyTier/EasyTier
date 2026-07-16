@@ -1374,7 +1374,7 @@ where
 
     /// Starts the core-owned services that run after the host has prepared its
     /// packet interface.
-    pub async fn start_network_services(
+    async fn start_network_services(
         self: &Arc<Self>,
         dhcp_ipv4_host: Option<Arc<dyn DhcpIpv4Host>>,
     ) -> anyhow::Result<()> {
@@ -1393,6 +1393,24 @@ where
         self.start_initial_peers().await?;
         self.start_proxy_cidr_monitor().await?;
         self.start_vpn_portal().await?;
+        Ok(())
+    }
+
+    /// Completes startup after the host packet interface is ready. Core owns
+    /// the service order and rolls back the whole instance on partial failure.
+    pub async fn start_after_host_ready(
+        self: &Arc<Self>,
+        dhcp_ipv4_host: Option<Arc<dyn DhcpIpv4Host>>,
+    ) -> anyhow::Result<()> {
+        let result = async {
+            self.start_network_services(dhcp_ipv4_host).await?;
+            self.start_gateway().await
+        }
+        .await;
+        if let Err(error) = result {
+            self.stop().await;
+            return Err(error);
+        }
         Ok(())
     }
 
@@ -1429,7 +1447,7 @@ where
     }
 
     #[cfg(feature = "proxy-smoltcp-stack")]
-    pub async fn start_gateway(self: &Arc<Self>) -> anyhow::Result<()> {
+    async fn start_gateway(self: &Arc<Self>) -> anyhow::Result<()> {
         let _operation = self.operation.lock().await;
         let state = self.state();
         if state != CoreInstanceState::Running {
@@ -1458,7 +1476,7 @@ where
     }
 
     #[cfg(not(feature = "proxy-smoltcp-stack"))]
-    pub async fn start_gateway(self: &Arc<Self>) -> anyhow::Result<()> {
+    async fn start_gateway(self: &Arc<Self>) -> anyhow::Result<()> {
         let state = self.state();
         if state != CoreInstanceState::Running {
             anyhow::bail!("gateway cannot start from core instance state {state:?}");
@@ -3030,8 +3048,8 @@ mod tests {
             assert!(instance.list_connectors().is_empty());
             assert!(instance.start_initial_peers().await.is_err());
             assert!(instance.start().await.is_err());
-            instance.start_network_services(None).await.unwrap();
-            instance.start_network_services(None).await.unwrap();
+            instance.start_after_host_ready(None).await.unwrap();
+            instance.start_after_host_ready(None).await.unwrap();
             assert_eq!(proxy.start_calls.load(Ordering::Relaxed), 1);
             assert_eq!(instance.list_connectors().len(), 1);
             assert_eq!(instance.list_connectors()[0].url, initial_peer);
@@ -3299,9 +3317,9 @@ mod tests {
             updated.services.dhcp_ipv4 = true;
             instance.update_runtime_config(updated).await.unwrap();
             instance.start().await.unwrap();
-            let error = instance.start_network_services(None).await.unwrap_err();
+            let error = instance.start_after_host_ready(None).await.unwrap_err();
             assert!(error.to_string().contains("no host adapter was provided"));
-            instance.stop().await;
+            assert_eq!(instance.state(), CoreInstanceState::Stopped);
         }
 
         #[tokio::test]

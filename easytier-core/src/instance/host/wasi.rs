@@ -126,15 +126,7 @@ impl WasiInstanceEntry {
         let instance = self.instance.instance().clone();
         self.start_task = Some(self.runtime.spawn(async move {
             instance.start().await?;
-            if let Err(error) = instance.start_network_services(None).await {
-                instance.stop().await;
-                return Err(error);
-            }
-            if let Err(error) = instance.start_gateway().await {
-                instance.stop().await;
-                return Err(error);
-            }
-            Ok(())
+            instance.start_after_host_ready(None).await
         }));
         Ok(())
     }
