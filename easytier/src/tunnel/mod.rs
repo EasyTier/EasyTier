@@ -1,7 +1,10 @@
 use std::{collections::hash_map::DefaultHasher, hash::Hasher, net::SocketAddr};
 
-use crate::common::{dns::socket_addrs, error::Error};
+#[cfg(any(feature = "faketcp", feature = "websocket", feature = "wireguard"))]
+use crate::common::dns::socket_addrs;
+use crate::common::error::Error;
 use derive_more::{From, TryInto};
+#[cfg(any(feature = "faketcp", feature = "websocket", feature = "wireguard"))]
 use easytier_core::tunnel::{IpVersion, TunnelError};
 use strum::{Display, EnumString, IntoStaticStr, VariantArray};
 
@@ -31,6 +34,7 @@ pub fn build_url_from_socket_addr(addr: &String, scheme: &str) -> url::Url {
 }
 
 #[async_trait::async_trait]
+#[cfg(any(feature = "faketcp", feature = "websocket", feature = "wireguard"))]
 pub(crate) trait FromUrl {
     async fn from_url(url: url::Url, ip_version: IpVersion) -> Result<Self, TunnelError>
     where
@@ -38,6 +42,7 @@ pub(crate) trait FromUrl {
 }
 
 #[async_trait::async_trait]
+#[cfg(any(feature = "faketcp", feature = "websocket", feature = "wireguard"))]
 impl FromUrl for SocketAddr {
     async fn from_url(url: url::Url, ip_version: IpVersion) -> Result<Self, TunnelError> {
         let addrs = socket_addrs(&url, || {

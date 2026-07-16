@@ -4,26 +4,33 @@ use std::{
 };
 
 use async_trait::async_trait;
+#[cfg(any(feature = "wireguard", test))]
 use easytier_core::socket::{
-    NetNamespace, SocketContext,
+    NetNamespace,
+    udp::{UdpSessionAcceptKind, UdpSessionListenRequest, UdpSessionSocketListener},
+};
+use easytier_core::socket::{
+    SocketContext,
     udp::{
-        UdpBindOptions, UdpSessionAcceptKind, UdpSessionListenRequest, UdpSessionSocketListener,
-        UdpSocketPurpose, UdpSocketRecvMeta, UdpSocketSendMeta, VirtualUdpSocket,
+        UdpBindOptions, UdpSocketPurpose, UdpSocketRecvMeta, UdpSocketSendMeta, VirtualUdpSocket,
         VirtualUdpSocketFactory,
     },
 };
 use tokio::net::UdpSocket;
 
+#[cfg(any(feature = "wireguard", test))]
+use crate::host_runtime::{NativeHostRuntime, native_host_runtime};
 use crate::{
     common::netns::NetNS,
-    host_runtime::{NativeHostRuntime, native_host_runtime},
     tunnel::common::{BindDev, bind},
 };
 
 use super::udp_src;
 
+#[cfg(any(feature = "wireguard", test))]
 pub(crate) type RuntimeUdpSessionSocketListener = UdpSessionSocketListener<NativeHostRuntime>;
 
+#[cfg(any(feature = "wireguard", test))]
 pub(crate) fn new_runtime_udp_session_listener(
     url: url::Url,
     mut request: UdpSessionListenRequest,

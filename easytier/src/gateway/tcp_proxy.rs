@@ -1,9 +1,10 @@
 use std::sync::{Arc, Weak};
 
-use easytier_core::proxy::{
-    tcp_proxy_engine::{TcpNatEntrySnapshot, TcpNatEntryState as CoreTcpNatEntryState},
-    wrapped_transport::{WrappedTransportKind, WrappedTransportRole},
+use easytier_core::proxy::tcp_proxy_engine::{
+    TcpNatEntrySnapshot, TcpNatEntryState as CoreTcpNatEntryState,
 };
+#[cfg(any(feature = "kcp", feature = "quic"))]
+use easytier_core::proxy::wrapped_transport::{WrappedTransportKind, WrappedTransportRole};
 
 use crate::proto::{
     api::instance::{
@@ -40,6 +41,7 @@ fn tcp_entry_state_to_pb(state: CoreTcpNatEntryState) -> TcpProxyEntryState {
 #[derive(Clone, Copy)]
 enum CoreTcpProxySource {
     Tcp,
+    #[cfg(any(feature = "kcp", feature = "quic"))]
     Wrapped(WrappedTransportKind, WrappedTransportRole),
 }
 
@@ -57,6 +59,7 @@ impl CoreTcpProxyRpcService {
         }
     }
 
+    #[cfg(any(feature = "kcp", feature = "quic"))]
     pub fn new_wrapped(
         core_instance: &Arc<crate::instance::composition::NativeCoreInstance>,
         transport: WrappedTransportKind,
@@ -84,10 +87,12 @@ impl TcpProxyRpc for CoreTcpProxyRpcService {
                     core.tcp_proxy_entry_snapshots(),
                     TcpProxyEntryTransportType::Tcp,
                 ),
+                #[cfg(any(feature = "kcp", feature = "quic"))]
                 CoreTcpProxySource::Wrapped(WrappedTransportKind::Kcp, role) => (
                     core.wrapped_tcp_proxy_entry_snapshots(WrappedTransportKind::Kcp, role),
                     TcpProxyEntryTransportType::Kcp,
                 ),
+                #[cfg(any(feature = "kcp", feature = "quic"))]
                 CoreTcpProxySource::Wrapped(WrappedTransportKind::Quic, role) => (
                     core.wrapped_tcp_proxy_entry_snapshots(WrappedTransportKind::Quic, role),
                     TcpProxyEntryTransportType::Quic,

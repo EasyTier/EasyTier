@@ -189,15 +189,18 @@ impl GlobalCtx {
         }
     }
 
+    #[cfg(any(feature = "tun", test))]
     fn set_tun_device_name(&self, name: Option<String>) {
         *self.tun_device_name.lock().unwrap() = name;
     }
 
+    #[cfg(any(feature = "tun", test))]
     pub(crate) fn set_tun_device_ready(&self, name: String) {
         self.set_tun_device_name(Some(name.clone()));
         self.issue_event(GlobalCtxEvent::TunDeviceReady(name));
     }
 
+    #[cfg(any(feature = "tun", test))]
     pub(crate) fn set_tun_device_error(&self, error: String) {
         self.set_tun_device_name(None);
         self.issue_event(GlobalCtxEvent::TunDeviceError(error));

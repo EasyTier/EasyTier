@@ -234,7 +234,6 @@ bon = "3.9.1"
 derive_builder = "0.20.2"
 humantime-serde = "1.1.1"
 multimap = "0.10.1"
-version-compare = "0.2.0"
 hmac = "0.12.1"
 sha2 = "0.10.8"
 shellexpand = "3.1.1"
@@ -252,11 +251,6 @@ netlink-sys = "0.8.7"
 netlink-packet-route = "0.21.0"
 netlink-packet-core = { version = "0.7.0" }
 netlink-packet-utils = "0.5.2"
-# for magic dns
-resolv-conf = "0.7.3"
-dbus = { version = "0.9.7", features = ["vendored"] }
-which = "7.0.3"
-
 [target.'cfg(all(windows, any(target_arch = "x86_64", target_arch = "x86")))'.dependencies]
 windivert = { git = "https://github.com/EasyTier/windivert-rust.git", rev = "adcc56d1550f7b5377ec2b3429f413ee24a77375", features = [
     "static",
