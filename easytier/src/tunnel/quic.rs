@@ -1986,12 +1986,13 @@ mod tests {
     use crate::socket::udp::RuntimeUdpSessionControlHandler;
     use crate::tunnel::common::tests::{_tunnel_bench, _tunnel_pingpong};
     use easytier_core::{
-        connectivity::protocol::raw::TunnelDialer,
+        connectivity::protocol::{ServerProtocolAdmissionController, raw::TunnelDialer},
         connectivity::transport::{UdpSessionMode, connect_udp},
         listener::SocketListener,
-        socket::udp::UdpBindOptions,
+        packet::ZCPacket,
+        socket::udp::{UdpBindOptions, VirtualUdpSocket},
     };
-    use futures::future::poll_fn;
+    use futures::{SinkExt, StreamExt, future::poll_fn};
     use std::io::IoSliceMut;
     use std::sync::LazyLock;
     use tokio::runtime::{Builder, Runtime};
@@ -2067,6 +2068,103 @@ mod tests {
             };
             _tunnel_pingpong(listener, connector).await;
         })
+    }
+
+    #[test]
+    fn accepted_udp_session_supports_multiple_quic_connections() {
+        RUNTIME.block_on(async {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let bind_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+                let mut listener = new_runtime_udp_session_listener(
+                    format!("quic://{bind_addr}").parse().unwrap(),
+                    UdpSessionListenRequest::new(
+                        UdpBindOptions::port_bound_listener(bind_addr).with_only_v6(false),
+                    ),
+                    UdpSessionAcceptKind::Classified(UdpSessionProtocol::Quic),
+                    NetNS::new(None),
+                );
+                listener.listen().await.unwrap();
+                let remote_addr = listener.bound_socket().unwrap().local_addr().unwrap();
+                let local_url = listener.local_url();
+
+                let connected = connect_udp(
+                    Arc::new(RuntimeUdpSessionControlHandler),
+                    remote_addr,
+                    Vec::new(),
+                    UdpBindOptions::direct_connect(),
+                    UdpSessionMode::Classified(UdpSessionProtocol::Quic),
+                )
+                .await
+                .unwrap();
+                let socket = Arc::new(QuicUdpSessionSocket::new(connected).unwrap());
+                let runtime = default_runtime().unwrap();
+                let mut endpoint =
+                    Endpoint::new_with_abstract_socket(endpoint_config(), None, socket, runtime)
+                        .unwrap();
+                endpoint.set_default_client_config(client_config());
+
+                let server_task = tokio::spawn(async move {
+                    let session = listener.accept().await.unwrap();
+                    let admission = ServerProtocolAdmissionController::new(1, 2)
+                        .try_admit()
+                        .unwrap();
+                    let mut accepted =
+                        QuicAcceptedSession::new(session, local_url, admission).unwrap();
+                    let first = accepted.accept().await.unwrap();
+                    let second = accepted.accept().await.unwrap();
+                    assert!(
+                        tokio::time::timeout(Duration::from_millis(50), listener.accept())
+                            .await
+                            .is_err(),
+                        "both QUIC connections must use the first accepted UDP session"
+                    );
+                    (first, second)
+                });
+
+                let first_connection = endpoint
+                    .connect(remote_addr, "localhost")
+                    .unwrap()
+                    .await
+                    .unwrap();
+                let (first_write, first_read) = first_connection.open_bi().await.unwrap();
+                let mut first_send = FramedWriter::new(first_write);
+                first_send
+                    .send(ZCPacket::new_with_payload(b"first QUIC connection"))
+                    .await
+                    .unwrap();
+                let second_connection = endpoint
+                    .connect(remote_addr, "localhost")
+                    .unwrap()
+                    .await
+                    .unwrap();
+                let (second_write, second_read) = second_connection.open_bi().await.unwrap();
+                let mut second_send = FramedWriter::new(second_write);
+                second_send
+                    .send(ZCPacket::new_with_payload(b"second QUIC connection"))
+                    .await
+                    .unwrap();
+                let (first_server, second_server) = server_task.await.unwrap();
+
+                drop(first_send);
+                drop(first_read);
+                drop(first_server);
+                first_connection.close(0u32.into(), b"first connection done");
+
+                let echo_task = tokio::spawn(crate::tunnel::common::tests::_tunnel_echo_server(
+                    second_server,
+                    true,
+                ));
+                let mut recv = FramedReader::new(second_read, 4500);
+                let packet = recv.next().await.unwrap().unwrap();
+                assert_eq!(packet.payload(), b"second QUIC connection".as_slice());
+                let _ = second_send.close().await;
+                echo_task.await.unwrap();
+                second_connection.close(0u32.into(), b"second connection done");
+                endpoint.close(0u32.into(), b"test done");
+            })
+            .await
+            .unwrap();
+        });
     }
 
     #[test]

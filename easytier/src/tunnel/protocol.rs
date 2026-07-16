@@ -347,4 +347,88 @@ mod tests {
         .await
         .unwrap();
     }
+
+    #[cfg(feature = "quic")]
+    #[rstest::rstest]
+    #[case("127.0.0.1:0")]
+    #[case("[::1]:0")]
+    #[tokio::test]
+    async fn runtime_quic_upgraders_consume_core_udp_sessions(#[case] bind_addr: &str) {
+        use crate::{
+            common::netns::NetNS, host_runtime::native_host_runtime,
+            socket::udp::new_runtime_udp_session_listener,
+        };
+        use easytier_core::{
+            connectivity::{
+                protocol::ServerProtocolAdmissionController,
+                transport::{UdpSessionMode, connect_udp},
+            },
+            listener::SocketListener,
+            packet::ZCPacket,
+            socket::udp::{
+                UdpBindOptions, UdpSessionAcceptKind, UdpSessionListenRequest, UdpSessionProtocol,
+                VirtualUdpSocket,
+            },
+        };
+        use futures::{SinkExt, StreamExt};
+
+        let bind_addr = bind_addr.parse().unwrap();
+        let mut listener = new_runtime_udp_session_listener(
+            format!("quic://{bind_addr}").parse().unwrap(),
+            UdpSessionListenRequest::new(
+                UdpBindOptions::port_bound_listener(bind_addr).with_only_v6(bind_addr.is_ipv6()),
+            ),
+            UdpSessionAcceptKind::Classified(UdpSessionProtocol::Quic),
+            NetNS::new(None),
+        );
+        listener.listen().await.unwrap();
+        let remote_addr = listener.bound_socket().unwrap().local_addr().unwrap();
+        let remote_url: url::Url = format!("quic://{remote_addr}").parse().unwrap();
+
+        let global_ctx = get_mock_global_ctx();
+        let server = runtime_server_protocol_upgrader(global_ctx.clone());
+        let client = runtime_client_protocol_upgrader(global_ctx);
+        let server_url = remote_url.clone();
+        let server_task = tokio::spawn(async move {
+            let session = listener.accept().await.unwrap();
+            let admission = ServerProtocolAdmissionController::quic()
+                .try_admit()
+                .unwrap();
+            let ServerProtocolUpgrade::Acceptor(mut accepted) = server
+                .upgrade_udp(session, server_url, Some(admission))
+                .await
+                .unwrap()
+            else {
+                panic!("QUIC must keep accepting connections from its UDP session");
+            };
+            let tunnel = accepted.accept().await.unwrap();
+            crate::tunnel::common::tests::_tunnel_echo_server(tunnel, false).await;
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let connected = connect_udp(
+                native_host_runtime(),
+                remote_addr,
+                Vec::new(),
+                UdpBindOptions::direct_connect(),
+                UdpSessionMode::Classified(UdpSessionProtocol::Quic),
+            )
+            .await
+            .unwrap();
+            let tunnel = client
+                .upgrade_client(ConnectedTransport::Udp(connected), remote_url)
+                .await
+                .unwrap();
+            let (mut recv, mut send) = tunnel.split();
+            send.send(ZCPacket::new_with_payload(b"runtime QUIC seam"))
+                .await
+                .unwrap();
+            let packet = recv.next().await.unwrap().unwrap();
+            assert_eq!(packet.payload(), b"runtime QUIC seam".as_slice());
+            let _ = send.close().await;
+            server_task.await.unwrap();
+        })
+        .await
+        .unwrap();
+    }
 }
