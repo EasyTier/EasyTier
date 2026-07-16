@@ -31,6 +31,7 @@ use crate::{
     },
     peers::{
         credential_manager::{CredentialManager, CredentialStorage},
+        foreign_network_manager::check_network_in_relay_whitelist,
         util::shrink_dashmap,
     },
     runtime_config::CoreRuntimeConfigStore,
@@ -106,6 +107,29 @@ pub struct PeerRuntimeConfig {
     pub host_routing: HostRoutingPolicy,
 }
 
+/// Normalized product and host inputs used to derive one peer runtime version.
+///
+/// The host owns platform-specific normalization of node, route, identity, and
+/// capability values. Peer policy remains derived in core from the submitted
+/// flags and ACL.
+#[derive(Debug, Clone)]
+pub struct PeerRuntimeSnapshotInput {
+    pub node: NodeConfig,
+    pub routes: RouteConfig,
+    pub network_identity: NetworkIdentity,
+    pub stun_info: StunInfo,
+    pub flags: FlagsInConfig,
+    pub secure_mode: Option<SecureModeConfig>,
+    pub host_routing: HostRoutingPolicy,
+    pub acl: Option<Acl>,
+    pub easytier_version: String,
+    pub vpn_portal_cidr: Option<Ipv4Cidr>,
+    pub pinned_peers: Vec<(url::Url, Option<String>)>,
+    pub ospf_update_my_foreign_network_interval_sec: u64,
+    pub max_direct_conns_per_peer_in_foreign_network: usize,
+    pub hmac_secret_digest: bool,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostRoutingPolicy {
     /// Route otherwise-unreachable external IPv4 traffic through this node and
@@ -161,6 +185,84 @@ impl PeerTrafficLimits {
 }
 
 impl PeerRuntimeSnapshot {
+    pub fn from_host_input(input: PeerRuntimeSnapshotInput) -> Self {
+        let PeerRuntimeSnapshotInput {
+            node,
+            routes,
+            network_identity,
+            stun_info,
+            flags,
+            secure_mode,
+            host_routing,
+            acl,
+            easytier_version,
+            vpn_portal_cidr,
+            pinned_peers,
+            ospf_update_my_foreign_network_interval_sec,
+            max_direct_conns_per_peer_in_foreign_network,
+            hmac_secret_digest,
+        } = input;
+        let feature_flags = PeerFeatureFlag {
+            kcp_input: !flags.disable_kcp_input,
+            no_relay_kcp: flags.disable_relay_kcp,
+            support_conn_list_sync: true,
+            quic_input: !flags.disable_quic_input,
+            no_relay_quic: flags.disable_relay_quic,
+            need_p2p: flags.need_p2p,
+            disable_p2p: flags.disable_p2p,
+            avoid_relay_data: flags.disable_relay_data,
+            ..Default::default()
+        };
+        let peer_policy = PeerPolicyConfig {
+            p2p_enabled: !flags.disable_p2p,
+            relay_peer_rpc: flags.relay_all_peer_rpc,
+            relay_data: !flags.disable_relay_data,
+            latency_first: flags.latency_first,
+            encryption_required: flags.enable_encryption,
+        };
+        let traffic = TrafficConfig {
+            mtu: u16::try_from(flags.mtu)
+                .ok()
+                .filter(|configured| *configured != 0),
+            instance_recv_bps_limit: (flags.instance_recv_bps_limit != u64::MAX)
+                .then_some(flags.instance_recv_bps_limit),
+            foreign_relay_bps_limit: (flags.foreign_relay_bps_limit != u64::MAX)
+                .then_some(flags.foreign_relay_bps_limit),
+        };
+        let avoid_relay_data_preference = check_network_in_relay_whitelist(
+            &flags.relay_network_whitelist,
+            &network_identity.network_name,
+        )
+        .is_err();
+        let (acl_group_declarations, peer_group_memberships) = peer_acl_groups(acl.as_ref());
+
+        Self {
+            runtime: PeerRuntimeConfig {
+                core: CoreConfig {
+                    node,
+                    routes,
+                    peer_policy,
+                    traffic,
+                },
+                network_identity,
+                stun_info,
+                feature_flags,
+                secure_mode,
+                host_routing,
+            },
+            easytier_version,
+            avoid_relay_data_preference,
+            flags,
+            vpn_portal_cidr,
+            pinned_peers,
+            peer_group_memberships,
+            acl_group_declarations,
+            ospf_update_my_foreign_network_interval_sec,
+            max_direct_conns_per_peer_in_foreign_network,
+            hmac_secret_digest,
+        }
+    }
+
     pub fn new(runtime: PeerRuntimeConfig, flags: FlagsInConfig) -> Self {
         let avoid_relay_data_preference = runtime.feature_flags.avoid_relay_data;
         Self {
@@ -182,32 +284,38 @@ impl PeerRuntimeSnapshot {
         PeerTrafficLimits::from_portable(&self.runtime, &self.flags)
     }
 
-    pub fn set_acl_groups(&mut self, acl: Option<&Acl>) {
-        let group = acl
-            .and_then(|acl| acl.acl_v1.as_ref())
-            .and_then(|acl| acl.group.as_ref());
-        self.acl_group_declarations = group.map_or_else(Vec::new, |group| {
-            group
-                .declares
-                .iter()
-                .map(|identity| PeerGroupIdentity {
-                    group_name: identity.group_name.clone(),
-                    group_secret: identity.group_secret.clone(),
-                })
-                .collect()
-        });
-        self.peer_group_memberships = group.map_or_else(Vec::new, |group| {
-            group
-                .declares
-                .iter()
-                .filter(|identity| group.members.contains(&identity.group_name))
-                .map(|identity| PeerGroupIdentity {
-                    group_name: identity.group_name.clone(),
-                    group_secret: identity.group_secret.clone(),
-                })
-                .collect()
-        });
+    #[cfg(test)]
+    pub(crate) fn set_acl_groups(&mut self, acl: Option<&Acl>) {
+        (self.acl_group_declarations, self.peer_group_memberships) = peer_acl_groups(acl);
     }
+}
+
+fn peer_acl_groups(acl: Option<&Acl>) -> (Vec<PeerGroupIdentity>, Vec<PeerGroupIdentity>) {
+    let group = acl
+        .and_then(|acl| acl.acl_v1.as_ref())
+        .and_then(|acl| acl.group.as_ref());
+    let declarations = group.map_or_else(Vec::new, |group| {
+        group
+            .declares
+            .iter()
+            .map(|identity| PeerGroupIdentity {
+                group_name: identity.group_name.clone(),
+                group_secret: identity.group_secret.clone(),
+            })
+            .collect()
+    });
+    let memberships = group.map_or_else(Vec::new, |group| {
+        group
+            .declares
+            .iter()
+            .filter(|identity| group.members.contains(&identity.group_name))
+            .map(|identity| PeerGroupIdentity {
+                group_name: identity.group_name.clone(),
+                group_secret: identity.group_secret.clone(),
+            })
+            .collect()
+    });
+    (declarations, memberships)
 }
 
 impl Default for PeerRuntimeSnapshot {
@@ -1211,6 +1319,144 @@ mod tests {
             },
             flags,
         )
+    }
+
+    fn host_snapshot_input(flags: FlagsInConfig, acl: Option<Acl>) -> PeerRuntimeSnapshotInput {
+        PeerRuntimeSnapshotInput {
+            node: NodeConfig {
+                peer_id: None,
+                instance_id: Some([7; 16]),
+                hostname: Some("host-node".to_owned()),
+                network_name: "host-network".to_owned(),
+            },
+            routes: RouteConfig {
+                ipv4: Some(IpPrefix::new("10.20.0.7".parse().unwrap(), 16).unwrap()),
+                ..Default::default()
+            },
+            network_identity: NetworkIdentity::new("host-network".to_owned(), "secret".to_owned()),
+            stun_info: StunInfo::default(),
+            flags,
+            secure_mode: None,
+            host_routing: HostRoutingPolicy {
+                local_exit_node_fallback: true,
+            },
+            acl,
+            easytier_version: "host-version".to_owned(),
+            vpn_portal_cidr: Some("10.30.0.0/24".parse().unwrap()),
+            pinned_peers: vec![(
+                "tcp://192.0.2.10:11010".parse().unwrap(),
+                Some("peer-key".to_owned()),
+            )],
+            ospf_update_my_foreign_network_interval_sec: 17,
+            max_direct_conns_per_peer_in_foreign_network: 5,
+            hmac_secret_digest: true,
+        }
+    }
+
+    #[test]
+    fn host_input_derives_peer_policy_features_and_traffic() {
+        let mut flags = FlagsInConfig::default();
+        flags.disable_p2p = true;
+        flags.need_p2p = true;
+        flags.relay_all_peer_rpc = true;
+        flags.disable_relay_data = true;
+        flags.latency_first = true;
+        flags.enable_encryption = false;
+        flags.disable_kcp_input = true;
+        flags.disable_relay_kcp = true;
+        flags.disable_quic_input = true;
+        flags.disable_relay_quic = true;
+        flags.mtu = 1400;
+        flags.instance_recv_bps_limit = 0;
+        flags.foreign_relay_bps_limit = u64::MAX;
+        flags.relay_network_whitelist = "host-network".to_owned();
+
+        let snapshot =
+            PeerRuntimeSnapshot::from_host_input(host_snapshot_input(flags.clone(), None));
+        let runtime = &snapshot.runtime;
+
+        assert_eq!(snapshot.flags, flags);
+        assert!(!runtime.core.peer_policy.p2p_enabled);
+        assert!(runtime.core.peer_policy.relay_peer_rpc);
+        assert!(!runtime.core.peer_policy.relay_data);
+        assert!(runtime.core.peer_policy.latency_first);
+        assert!(!runtime.core.peer_policy.encryption_required);
+        assert_eq!(runtime.core.traffic.mtu, Some(1400));
+        assert_eq!(runtime.core.traffic.instance_recv_bps_limit, Some(0));
+        assert_eq!(runtime.core.traffic.foreign_relay_bps_limit, None);
+        assert!(!runtime.feature_flags.kcp_input);
+        assert!(runtime.feature_flags.no_relay_kcp);
+        assert!(runtime.feature_flags.support_conn_list_sync);
+        assert!(!runtime.feature_flags.quic_input);
+        assert!(runtime.feature_flags.no_relay_quic);
+        assert!(runtime.feature_flags.need_p2p);
+        assert!(runtime.feature_flags.disable_p2p);
+        assert!(runtime.feature_flags.avoid_relay_data);
+        assert!(!snapshot.avoid_relay_data_preference);
+    }
+
+    #[test]
+    fn host_input_derives_acl_groups_and_preserves_explicit_inputs() {
+        let acl = Acl {
+            acl_v1: Some(easytier_proto::acl::AclV1 {
+                chains: Vec::new(),
+                group: Some(easytier_proto::acl::GroupInfo {
+                    declares: vec![
+                        easytier_proto::acl::GroupIdentity {
+                            group_name: "ops".to_owned(),
+                            group_secret: "ops-secret".to_owned(),
+                        },
+                        easytier_proto::acl::GroupIdentity {
+                            group_name: "audit".to_owned(),
+                            group_secret: "audit-secret".to_owned(),
+                        },
+                    ],
+                    members: vec!["ops".to_owned(), "undeclared".to_owned()],
+                }),
+            }),
+        };
+        let mut flags = FlagsInConfig::default();
+        flags.relay_network_whitelist = "other-network".to_owned();
+
+        let snapshot = PeerRuntimeSnapshot::from_host_input(host_snapshot_input(flags, Some(acl)));
+
+        assert!(snapshot.avoid_relay_data_preference);
+        assert_eq!(snapshot.easytier_version, "host-version");
+        assert_eq!(
+            snapshot.vpn_portal_cidr,
+            Some("10.30.0.0/24".parse().unwrap())
+        );
+        assert_eq!(
+            snapshot.pinned_peers,
+            vec![(
+                "tcp://192.0.2.10:11010".parse().unwrap(),
+                Some("peer-key".to_owned())
+            )]
+        );
+        assert_eq!(snapshot.ospf_update_my_foreign_network_interval_sec, 17);
+        assert_eq!(snapshot.max_direct_conns_per_peer_in_foreign_network, 5);
+        assert!(snapshot.hmac_secret_digest);
+        assert!(snapshot.runtime.host_routing.local_exit_node_fallback);
+        assert_eq!(
+            snapshot.acl_group_declarations,
+            vec![
+                PeerGroupIdentity {
+                    group_name: "ops".to_owned(),
+                    group_secret: "ops-secret".to_owned(),
+                },
+                PeerGroupIdentity {
+                    group_name: "audit".to_owned(),
+                    group_secret: "audit-secret".to_owned(),
+                },
+            ]
+        );
+        assert_eq!(
+            snapshot.peer_group_memberships,
+            vec![PeerGroupIdentity {
+                group_name: "ops".to_owned(),
+                group_secret: "ops-secret".to_owned(),
+            }]
+        );
     }
 
     #[test]

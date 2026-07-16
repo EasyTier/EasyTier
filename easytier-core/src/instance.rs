@@ -642,7 +642,7 @@ where
     pub fn new_portable_with_peer_adapters_and_transport_factory<F>(
         mut adapters: CoreInstanceAdapters<H>,
         peer_adapters: PeerManagerHostAdapters,
-        mut config: PortableCoreInstanceConfig,
+        config: PortableCoreInstanceConfig,
         packet_sink: Arc<dyn PacketSink>,
         transport_proxy_factory: F,
     ) -> anyhow::Result<(Self, F::Attachment)>
@@ -660,10 +660,6 @@ where
         }
         let (packet_tx, packet_rx) = create_packet_recv_chan();
         let dns_context = config.connectivity.direct.tcp_bind.context.clone();
-        config
-            .peer
-            .snapshot
-            .set_acl_groups(config.connectivity.runtime.acl.acl.as_ref());
         let runtime_config = CoreRuntimeConfigStore::new(
             config.connectivity.runtime.clone(),
             Arc::new(config.peer.snapshot.clone()),
@@ -1603,7 +1599,7 @@ where
         }
 
         let route_source: Arc<dyn DhcpIpv4RouteSource> = self.peer_manager.clone();
-        task.replace(DhcpIpv4Service::new(route_source, host).start());
+        task.replace(DhcpIpv4Service::new(route_source, self.runtime_config.clone(), host).start());
         if self.cancel.is_cancelled() {
             task.take();
             anyhow::bail!("DHCP IPv4 start cancelled");

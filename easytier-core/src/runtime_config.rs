@@ -111,6 +111,14 @@ impl CoreRuntimeConfigStore {
         self.inner.peer_changes.send_modify(|version| *version += 1);
     }
 
+    pub(crate) fn update_peer_with(&self, update: impl FnOnce(&mut PeerRuntimeSnapshot)) {
+        let _update = self.inner.update.lock();
+        let mut config = self.inner.snapshot.load_full().as_ref().clone();
+        update(Arc::make_mut(&mut config.peer));
+        self.inner.snapshot.store(Arc::new(config));
+        self.inner.peer_changes.send_modify(|version| *version += 1);
+    }
+
     pub fn subscribe_peer_runtime_changes(&self) -> tokio::sync::watch::Receiver<u64> {
         self.inner.peer_changes.subscribe()
     }
@@ -196,6 +204,41 @@ mod tests {
         store.update_peer(Arc::new(peer));
 
         assert!(!changes.has_changed().unwrap());
+    }
+
+    #[test]
+    fn peer_in_place_update_preserves_the_rest_of_the_atomic_snapshot() {
+        let mut services = CoreRuntimeConfig::default();
+        services.dhcp_ipv4 = true;
+        let mut peer = PeerRuntimeSnapshot::default();
+        peer.runtime.core.node.hostname = Some("preserved".to_owned());
+        let store = CoreRuntimeConfigStore::new(services, Arc::new(peer));
+
+        store.update_peer_with(|peer| {
+            peer.runtime.core.routes.ipv4 = Some(crate::config::IpPrefix {
+                address: "10.20.30.7".parse().unwrap(),
+                prefix_len: 24,
+            });
+        });
+
+        let snapshot = store.snapshot();
+        assert!(snapshot.services.dhcp_ipv4);
+        assert_eq!(
+            snapshot.peer.runtime.core.node.hostname.as_deref(),
+            Some("preserved")
+        );
+        assert_eq!(
+            snapshot
+                .peer
+                .runtime
+                .core
+                .routes
+                .ipv4
+                .as_ref()
+                .unwrap()
+                .address,
+            "10.20.30.7".parse::<std::net::IpAddr>().unwrap()
+        );
     }
 
     #[test]

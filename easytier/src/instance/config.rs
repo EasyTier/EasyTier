@@ -2,17 +2,13 @@ use std::{sync::Arc, time::Duration};
 
 use easytier_core::peers::context::{
     HostRoutingPolicy, NetworkIdentity as CoreNetworkIdentity, PeerCredentialEventSink, PeerEvent,
-    PeerEventSink, PeerRuntimeConfig, PeerRuntimeSnapshot,
+    PeerEventSink, PeerRuntimeSnapshot, PeerRuntimeSnapshotInput,
 };
-use easytier_core::peers::foreign_network_manager::check_network_in_relay_whitelist;
 use easytier_core::peers::peer_manager::{
     PeerManagerHostAdapters, PortablePeerManagerConfig, RouteAlgoType,
 };
 use easytier_core::{
-    config::{
-        CoreConfig, IpPrefix, NodeConfig, PeerPolicyConfig, ProxyNetworkConfig, RouteConfig,
-        TrafficConfig,
-    },
+    config::{IpPrefix, NodeConfig, ProxyNetworkConfig, RouteConfig},
     connectivity::{
         direct::DirectConnectorOptions,
         manual::{ManualConnectorOptions, discovery::ManualEndpointDiscoveryConfig},
@@ -29,14 +25,13 @@ use easytier_core::{
 use crate::{
     VERSION,
     common::{
-        config::{ConfigLoader as _, Flags, TomlConfigLoader},
+        config::{ConfigLoader as _, TomlConfigLoader},
         constants::EASYTIER_VERSION,
         credential_manager::runtime_credential_storage,
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
         stun::{default_tcp_stun_servers, default_udp_stun_servers, default_udp_v6_stun_servers},
     },
     instance::public_ipv6_provider::runtime_public_ipv6_provider_config,
-    proto::common::PeerFeatureFlag,
     tunnel::IpScheme,
     use_global_var,
 };
@@ -211,20 +206,6 @@ pub(crate) fn runtime_connectivity_config(global_ctx: &ArcGlobalCtx) -> CoreInst
     }
 }
 
-fn runtime_peer_feature_flags(flags: &Flags) -> PeerFeatureFlag {
-    PeerFeatureFlag {
-        kcp_input: !flags.disable_kcp_input,
-        no_relay_kcp: flags.disable_relay_kcp,
-        support_conn_list_sync: true,
-        quic_input: !flags.disable_quic_input,
-        no_relay_quic: flags.disable_relay_quic,
-        need_p2p: flags.need_p2p,
-        disable_p2p: flags.disable_p2p,
-        avoid_relay_data: flags.disable_relay_data,
-        ..Default::default()
-    }
-}
-
 /// Normalizes one native configuration version for the core peer graph.
 pub(crate) fn runtime_peer_manager_config(
     global_ctx: &ArcGlobalCtx,
@@ -252,73 +233,49 @@ pub(crate) fn runtime_peer_manager_config(
         .collect();
     // Public-IPv6 provider state is live host state projected through
     // `PeerPublicIpv6State`, not submitted config.
-    let feature_flags = runtime_peer_feature_flags(&flags);
-    let runtime = PeerRuntimeConfig {
-        core: CoreConfig {
-            node: NodeConfig {
-                peer_id: None,
-                instance_id: Some(*global_ctx.get_id().as_bytes()),
-                hostname: (!hostname.is_empty()).then_some(hostname),
-                network_name: network_identity.network_name.clone(),
-            },
-            routes: RouteConfig {
-                ipv4: global_ctx.get_ipv4().map(|value| IpPrefix {
-                    address: value.address().into(),
-                    prefix_len: value.network_length(),
-                }),
-                ipv6: global_ctx.get_ipv6().map(|value| IpPrefix {
-                    address: value.address().into(),
-                    prefix_len: value.network_length(),
-                }),
-                proxy_networks,
-                ..Default::default()
-            },
-            peer_policy: PeerPolicyConfig {
-                p2p_enabled: !flags.disable_p2p,
-                relay_peer_rpc: flags.relay_all_peer_rpc,
-                relay_data: !flags.disable_relay_data,
-                latency_first: flags.latency_first,
-                encryption_required: flags.enable_encryption,
-            },
-            traffic: TrafficConfig {
-                mtu: u16::try_from(flags.mtu)
-                    .ok()
-                    .filter(|configured| *configured != 0),
-                instance_recv_bps_limit: (flags.instance_recv_bps_limit != u64::MAX)
-                    .then_some(flags.instance_recv_bps_limit),
-                foreign_relay_bps_limit: (flags.foreign_relay_bps_limit != u64::MAX)
-                    .then_some(flags.foreign_relay_bps_limit),
-            },
+    let snapshot = PeerRuntimeSnapshot::from_host_input(PeerRuntimeSnapshotInput {
+        node: NodeConfig {
+            peer_id: None,
+            instance_id: Some(*global_ctx.get_id().as_bytes()),
+            hostname: (!hostname.is_empty()).then_some(hostname),
+            network_name: network_identity.network_name.clone(),
+        },
+        routes: RouteConfig {
+            ipv4: global_ctx.get_ipv4().map(|value| IpPrefix {
+                address: value.address().into(),
+                prefix_len: value.network_length(),
+            }),
+            ipv6: global_ctx.get_ipv6().map(|value| IpPrefix {
+                address: value.address().into(),
+                prefix_len: value.network_length(),
+            }),
+            proxy_networks,
+            ..Default::default()
         },
         network_identity,
         stun_info: Default::default(),
-        feature_flags,
+        flags,
         secure_mode: global_ctx.config.get_secure_mode(),
         host_routing: HostRoutingPolicy {
             local_exit_node_fallback: cfg!(target_env = "ohos"),
         },
-    };
-    let avoid_relay_data_preference = check_network_in_relay_whitelist(
-        &flags.relay_network_whitelist,
-        &global_ctx.get_network_name(),
-    )
-    .is_err();
-    let mut snapshot = PeerRuntimeSnapshot::new(runtime, flags);
-    snapshot.easytier_version = EASYTIER_VERSION.to_owned();
-    snapshot.avoid_relay_data_preference = avoid_relay_data_preference;
-    snapshot.vpn_portal_cidr = global_ctx.get_vpn_portal_cidr();
-    snapshot.pinned_peers = global_ctx
-        .config
-        .get_peers()
-        .into_iter()
-        .map(|peer| (peer.uri, peer.peer_public_key))
-        .collect();
-    snapshot.ospf_update_my_foreign_network_interval_sec =
-        use_global_var!(OSPF_UPDATE_MY_GLOBAL_FOREIGN_NETWORK_INTERVAL_SEC);
-    snapshot.max_direct_conns_per_peer_in_foreign_network =
-        use_global_var!(MAX_DIRECT_CONNS_PER_PEER_IN_FOREIGN_NETWORK) as usize;
-    snapshot.hmac_secret_digest = use_global_var!(HMAC_SECRET_DIGEST);
-    snapshot.set_acl_groups(acl.as_ref());
+        acl,
+        easytier_version: EASYTIER_VERSION.to_owned(),
+        vpn_portal_cidr: global_ctx.get_vpn_portal_cidr(),
+        pinned_peers: global_ctx
+            .config
+            .get_peers()
+            .into_iter()
+            .map(|peer| (peer.uri, peer.peer_public_key))
+            .collect(),
+        ospf_update_my_foreign_network_interval_sec: use_global_var!(
+            OSPF_UPDATE_MY_GLOBAL_FOREIGN_NETWORK_INTERVAL_SEC
+        ),
+        max_direct_conns_per_peer_in_foreign_network: use_global_var!(
+            MAX_DIRECT_CONNS_PER_PEER_IN_FOREIGN_NETWORK
+        ) as usize,
+        hmac_secret_digest: use_global_var!(HMAC_SECRET_DIGEST),
+    });
     PortablePeerManagerConfig {
         snapshot,
         route_algo,
@@ -371,7 +328,10 @@ pub(crate) fn runtime_peer_manager_host_adapters(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::{config::PeerConfig, global_ctx::tests::get_mock_global_ctx};
+    use crate::common::{
+        config::{PeerConfig, VpnPortalConfig},
+        global_ctx::tests::get_mock_global_ctx,
+    };
 
     #[test]
     fn native_connectivity_config_maps_owned_runtime_inputs() {
@@ -473,17 +433,21 @@ mod tests {
     }
 
     #[test]
-    fn native_peer_config_submits_one_complete_snapshot() {
+    fn native_peer_config_submits_host_inputs_and_manager_settings() {
         let global_ctx = get_mock_global_ctx();
+        let peer_url: url::Url = "tcp://127.0.0.1:29999".parse().unwrap();
+        global_ctx.config.set_peers(vec![PeerConfig {
+            uri: peer_url.clone(),
+            peer_public_key: Some("peer-key".to_owned()),
+        }]);
+        global_ctx.config.set_vpn_portal_config(VpnPortalConfig {
+            client_cidr: "10.30.0.0/24".parse().unwrap(),
+            wireguard_listen: "127.0.0.1:11010".parse().unwrap(),
+        });
+        global_ctx.set_hostname("native-host".to_owned());
+        global_ctx.set_ipv4(Some("10.20.0.7/16".parse().unwrap()));
         let mut flags = global_ctx.get_flags();
-        flags.disable_p2p = true;
-        flags.relay_all_peer_rpc = true;
-        flags.disable_relay_data = true;
-        flags.latency_first = true;
-        flags.enable_encryption = false;
-        flags.mtu = 1400;
-        flags.instance_recv_bps_limit = 0;
-        flags.foreign_relay_bps_limit = u64::MAX;
+        flags.relay_network_whitelist = "*".to_owned();
         global_ctx.set_flags(flags.clone());
         let exit_node = "192.0.2.9".parse().unwrap();
         global_ctx.config.set_exit_nodes(vec![exit_node]);
@@ -498,35 +462,31 @@ mod tests {
             config.foreign_context_default_flags,
             TomlConfigLoader::default().get_flags()
         );
-        assert!(!runtime.core.peer_policy.p2p_enabled);
-        assert!(runtime.core.peer_policy.relay_peer_rpc);
-        assert!(!runtime.core.peer_policy.relay_data);
-        assert!(runtime.core.peer_policy.latency_first);
-        assert!(!runtime.core.peer_policy.encryption_required);
-        assert_eq!(runtime.core.traffic.mtu, Some(1400));
-        assert_eq!(runtime.core.traffic.instance_recv_bps_limit, Some(0));
-        assert_eq!(runtime.core.traffic.foreign_relay_bps_limit, None);
-        assert_eq!(config.snapshot.easytier_version, EASYTIER_VERSION);
-        assert!(!config.snapshot.avoid_relay_data_preference);
-        assert_eq!(runtime.feature_flags.kcp_input, !flags.disable_kcp_input);
-        assert_eq!(runtime.feature_flags.no_relay_kcp, flags.disable_relay_kcp);
-        assert_eq!(runtime.feature_flags.quic_input, !flags.disable_quic_input);
         assert_eq!(
-            runtime.feature_flags.no_relay_quic,
-            flags.disable_relay_quic
+            runtime.core.node.instance_id,
+            Some(*global_ctx.get_id().as_bytes())
         );
-        assert!(runtime.feature_flags.support_conn_list_sync);
-    }
-
-    #[test]
-    fn relay_whitelist_initialization_precedes_portable_snapshot() {
-        let global_ctx = get_mock_global_ctx();
-        let mut flags = global_ctx.get_flags();
-        flags.relay_network_whitelist = "other-network".to_owned();
-        global_ctx.set_flags(flags);
-
-        let config = runtime_peer_manager_config(&global_ctx, RouteAlgoType::Ospf);
-
-        assert!(config.snapshot.avoid_relay_data_preference);
+        assert_eq!(runtime.core.node.hostname.as_deref(), Some("native-host"));
+        assert_eq!(
+            runtime.core.node.network_name,
+            global_ctx.get_network_name()
+        );
+        assert_eq!(
+            runtime.core.routes.ipv4,
+            Some(IpPrefix::new("10.20.0.7".parse().unwrap(), 16).unwrap())
+        );
+        assert_eq!(config.snapshot.easytier_version, EASYTIER_VERSION);
+        assert_eq!(
+            config.snapshot.vpn_portal_cidr,
+            Some("10.30.0.0/24".parse().unwrap())
+        );
+        assert_eq!(
+            config.snapshot.pinned_peers,
+            vec![(peer_url, Some("peer-key".to_owned()))]
+        );
+        assert_eq!(
+            runtime.host_routing.local_exit_node_fallback,
+            cfg!(target_env = "ohos")
+        );
     }
 }

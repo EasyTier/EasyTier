@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use cidr::{IpCidr, Ipv4Inet};
-use easytier_core::dhcp::DhcpIpv4Host;
+use easytier_core::dhcp::{DhcpIpv4ApplyOutcome, DhcpIpv4Host};
 use easytier_core::process_runtime::CoreProcessRuntime;
 #[cfg(any(feature = "kcp", feature = "quic"))]
 use easytier_core::proxy::wrapped_transport::WrappedTransportEngine;
@@ -662,7 +662,8 @@ struct RuntimeDhcpIpv4Host {
     peer_packet_receiver: Arc<Mutex<HostPacketReceiver>>,
     #[cfg(feature = "tun")]
     nic_closed_notifier: Arc<Notify>,
-    core_instance: Weak<NativeCoreInstance>,
+    #[cfg(all(not(mobile), feature = "tun"))]
+    nic_core_instance: Weak<NativeCoreInstance>,
 }
 
 impl RuntimeDhcpIpv4Host {
@@ -676,7 +677,8 @@ impl RuntimeDhcpIpv4Host {
             peer_packet_receiver: instance.peer_packet_receiver.clone(),
             #[cfg(feature = "tun")]
             nic_closed_notifier: Arc::new(Notify::new()),
-            core_instance: Arc::downgrade(&instance.core_instance),
+            #[cfg(all(not(mobile), feature = "tun"))]
+            nic_core_instance: Arc::downgrade(&instance.core_instance),
         })
     }
 
@@ -689,31 +691,10 @@ impl RuntimeDhcpIpv4Host {
         Ok(())
     }
 
-    async fn refresh_peer_runtime_config(&self) {
-        if let Some(core_instance) = self.core_instance.upgrade() {
-            core_instance
-                .update_peer_runtime_snapshot(runtime_instance_config(&self.global_ctx).peer)
-                .await;
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl DhcpIpv4Host for RuntimeDhcpIpv4Host {
-    fn take_interface_closed(&self) -> bool {
-        #[cfg(feature = "tun")]
-        {
-            return self.nic_closed_notifier.notified().now_or_never().is_some();
-        }
-        #[cfg(not(feature = "tun"))]
-        false
-    }
-
-    async fn apply_dhcp_ipv4(
+    async fn apply_dhcp_ipv4_effects(
         &self,
-        previous: Option<Ipv4Inet>,
         next: Option<Ipv4Inet>,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<Option<Ipv4Inet>> {
         let _config_operation = self.config_operation.operation.lock().await;
         self.ensure_config_open()?;
         #[cfg(feature = "tun")]
@@ -732,27 +713,21 @@ impl DhcpIpv4Host for RuntimeDhcpIpv4Host {
         let Some(ip) = next else {
             self.ensure_config_open()?;
             self.global_ctx.set_ipv4(None);
-            self.refresh_peer_runtime_config().await;
-            self.global_ctx
-                .issue_event(GlobalCtxEvent::DhcpIpv4Conflicted(previous));
-            return Ok(());
+            return Ok(None);
         };
 
         if self.global_ctx.no_tun() {
             self.ensure_config_open()?;
             self.global_ctx.set_ipv4(Some(ip));
-            self.refresh_peer_runtime_config().await;
-            self.global_ctx
-                .issue_event(GlobalCtxEvent::DhcpIpv4Changed(previous, Some(ip)));
-            return Ok(());
+            return Ok(Some(ip));
         }
 
         #[cfg(all(not(mobile), feature = "tun"))]
         {
             let core_instance = self
-                .core_instance
+                .nic_core_instance
                 .upgrade()
-                .context("core instance is gone during DHCP IPv4 apply")?;
+                .context("core packet-pump resource is gone during DHCP IPv4 apply")?;
             let mut new_nic_ctx = NicCtx::new(
                 self.global_ctx.clone(),
                 &core_instance,
@@ -769,9 +744,6 @@ impl DhcpIpv4Host for RuntimeDhcpIpv4Host {
             if let Err(err) = run_result {
                 self.ensure_config_open()?;
                 self.global_ctx.set_ipv4(None);
-                core_instance
-                    .update_peer_runtime_snapshot(runtime_instance_config(&self.global_ctx).peer)
-                    .await;
                 return Err(err.into());
             }
             #[cfg(feature = "magic-dns")]
@@ -803,10 +775,45 @@ impl DhcpIpv4Host for RuntimeDhcpIpv4Host {
 
         self.ensure_config_open()?;
         self.global_ctx.set_ipv4(Some(ip));
-        self.refresh_peer_runtime_config().await;
-        self.global_ctx
-            .issue_event(GlobalCtxEvent::DhcpIpv4Changed(previous, Some(ip)));
-        Ok(())
+        Ok(Some(ip))
+    }
+}
+
+#[async_trait::async_trait]
+impl DhcpIpv4Host for RuntimeDhcpIpv4Host {
+    fn take_interface_closed(&self) -> bool {
+        #[cfg(feature = "tun")]
+        {
+            return self.nic_closed_notifier.notified().now_or_never().is_some();
+        }
+        #[cfg(not(feature = "tun"))]
+        false
+    }
+
+    async fn apply_dhcp_ipv4(
+        &self,
+        _previous: Option<Ipv4Inet>,
+        next: Option<Ipv4Inet>,
+    ) -> DhcpIpv4ApplyOutcome {
+        match self.apply_dhcp_ipv4_effects(next).await {
+            Ok(actual) => DhcpIpv4ApplyOutcome::applied(actual),
+            Err(error) => DhcpIpv4ApplyOutcome::failed(self.global_ctx.get_ipv4(), error),
+        }
+    }
+
+    fn publish_dhcp_ipv4(
+        &self,
+        previous: Option<Ipv4Inet>,
+        requested: Option<Ipv4Inet>,
+        actual: Option<Ipv4Inet>,
+    ) {
+        if requested.is_none() {
+            self.global_ctx
+                .issue_event(GlobalCtxEvent::DhcpIpv4Conflicted(previous));
+        } else {
+            self.global_ctx
+                .issue_event(GlobalCtxEvent::DhcpIpv4Changed(previous, actual));
+        }
     }
 }
 
@@ -1614,7 +1621,11 @@ mod tests {
             rpc_impl::standalone::RpcServerHook,
         },
     };
-    use crate::{common::config::TomlConfigLoader, instance::instance::Instance};
+    use crate::{
+        common::config::TomlConfigLoader,
+        instance::instance::{Instance, RuntimeDhcpIpv4Host},
+    };
+    use easytier_core::dhcp::DhcpIpv4Host as _;
     #[cfg(any(feature = "kcp", feature = "quic"))]
     use easytier_core::proxy::wrapped_transport::{
         WrappedTransportDirections, WrappedTransportEngine as _, WrappedTransportEngineStart,
@@ -1632,6 +1643,23 @@ mod tests {
             }),
             ..Default::default()
         }
+    }
+
+    #[tokio::test]
+    async fn runtime_dhcp_host_reports_the_no_tun_address_as_actual() {
+        let config = TomlConfigLoader::default();
+        let mut flags = config.get_flags();
+        flags.no_tun = true;
+        config.set_flags(flags);
+        let instance = Instance::new(config);
+        let host = RuntimeDhcpIpv4Host::new(&instance);
+        let requested = "10.20.30.7/24".parse().unwrap();
+
+        let outcome = host.apply_dhcp_ipv4(None, Some(requested)).await;
+
+        assert!(outcome.result.is_ok());
+        assert_eq!(outcome.actual, Some(requested));
+        assert_eq!(instance.global_ctx.get_ipv4(), Some(requested));
     }
 
     #[cfg(all(feature = "tun", feature = "magic-dns"))]
