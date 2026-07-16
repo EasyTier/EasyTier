@@ -82,6 +82,7 @@ mod tests {
         io,
         net::SocketAddr,
         pin::Pin,
+        sync::Mutex,
         task::{Context, Poll},
     };
 
@@ -97,7 +98,7 @@ mod tests {
         },
         packet::ZCPacket,
         socket::{
-            IpVersion, SocketContext,
+            IpVersion, NetNamespace, SocketContext,
             dns::{DnsQuery, DnsRecordResolver, DnsSrvRecord},
             tcp::{TcpConnectOptions, VirtualTcpSocket},
             udp::{UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory},
@@ -216,6 +217,23 @@ mod tests {
         }
     }
 
+    struct RecordingDnsRecords {
+        endpoint: String,
+        queries: Arc<Mutex<Vec<DnsQuery>>>,
+    }
+
+    #[async_trait]
+    impl DnsRecordResolver for RecordingDnsRecords {
+        async fn resolve_txt(&self, query: DnsQuery) -> anyhow::Result<String> {
+            self.queries.lock().unwrap().push(query);
+            Ok(self.endpoint.clone())
+        }
+
+        async fn resolve_srv(&self, _query: DnsQuery) -> anyhow::Result<Vec<DnsSrvRecord>> {
+            anyhow::bail!("TXT discovery must not resolve SRV records")
+        }
+    }
+
     fn manual_connector(runtime: &Arc<CoreProcessRuntime>) -> ManualTunnelConnector<TestHost> {
         runtime.manual_connector(
             Arc::new(TestHost),
@@ -273,6 +291,55 @@ mod tests {
         assert_eq!(
             server_stream.next().await.unwrap().unwrap().payload(),
             b"process-runtime"
+        );
+    }
+
+    #[tokio::test]
+    async fn one_shot_connector_owns_endpoint_discovery_wiring() {
+        let runtime = CoreProcessRuntime::new();
+        let listener_id = uuid::Uuid::new_v4();
+        let mut listener = runtime.bind_ring_tunnel(listener_id).unwrap();
+        let queries = Arc::new(Mutex::new(Vec::new()));
+        let dns_context = SocketContext::new()
+            .with_ip_version(IpVersion::V6)
+            .with_socket_mark(Some(42))
+            .with_netns(Some(NetNamespace::new("discovery-netns")));
+        let connector = runtime.manual_connector(
+            Arc::new(TestHost),
+            Arc::new(TestDns),
+            Arc::new(RecordingDnsRecords {
+                endpoint: format!("ring://{listener_id}"),
+                queries: queries.clone(),
+            }),
+            Arc::new(CoreClientProtocolUpgrader::<TestTcpSocket>::new(
+                CoreClientProtocolConfig::default(),
+            )),
+            ManualEndpointDiscoveryConfig {
+                dns_record_context: dns_context.clone(),
+                ..Default::default()
+            },
+            ManualConnectorOptions::default(),
+        );
+
+        let client = connector
+            .connect("txt://bootstrap.example".parse().unwrap(), IpVersion::Both)
+            .await
+            .unwrap();
+        let server = listener.accept().await.unwrap();
+
+        assert_eq!(
+            *queries.lock().unwrap(),
+            vec![DnsQuery::new("bootstrap.example", dns_context)]
+        );
+        let (_client_stream, mut client_sink) = client.split();
+        let (mut server_stream, _server_sink) = server.split();
+        client_sink
+            .send(ZCPacket::new_with_payload(b"endpoint-discovery"))
+            .await
+            .unwrap();
+        assert_eq!(
+            server_stream.next().await.unwrap().unwrap().payload(),
+            b"endpoint-discovery"
         );
     }
 }
