@@ -160,10 +160,20 @@ impl BidirectRpcManager {
                     continue;
                 };
                 if peer_manager_header.packet_type == PacketType::RpcReq as u8 {
-                    server_tx.send(o).await.unwrap();
+                    if let Err(e) = server_tx.send(o).await {
+                        tracing::error!(error = ?e, "send rpc request to server failed");
+                        e_clone.lock().unwrap().replace(Error::from(e));
+                        r_clone.store(false, std::sync::atomic::Ordering::Relaxed);
+                        break;
+                    }
                     continue;
                 } else if peer_manager_header.packet_type == PacketType::RpcResp as u8 {
-                    client_tx.send(o).await.unwrap();
+                    if let Err(e) = client_tx.send(o).await {
+                        tracing::error!(error = ?e, "send rpc response to client failed");
+                        e_clone.lock().unwrap().replace(Error::from(e));
+                        r_clone.store(false, std::sync::atomic::Ordering::Relaxed);
+                        break;
+                    }
                     continue;
                 }
             }
