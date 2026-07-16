@@ -9,7 +9,10 @@ use easytier_core::stun::{StunProviderSlot, StunSocketMapper};
 #[cfg(feature = "wireguard")]
 use easytier_core::vpn_portal::VpnPortalHost;
 use easytier_core::{
-    connectivity::manual::{ManualConnectivityEvent, ManualConnectivityEventSink},
+    connectivity::manual::{
+        ManualConnectivityEvent, ManualConnectivityEventSink, ManualTunnelConnector,
+        discovery::CoreManualEndpointResolver,
+    },
     instance::{CoreInstance, CoreInstanceAdapters, PacketSink, PortableCoreInstanceConfig},
     peers::peer_manager::RouteAlgoType,
     process_runtime::CoreProcessRuntime,
@@ -24,8 +27,8 @@ use crate::{
     common::global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
     host_runtime::native_host_runtime,
     instance::config::{
-        runtime_connectivity_config, runtime_peer_manager_config,
-        runtime_peer_manager_host_adapters,
+        runtime_connectivity_config, runtime_endpoint_discovery_config, runtime_manual_options,
+        runtime_peer_manager_config, runtime_peer_manager_host_adapters,
     },
     instance::listeners::{
         RuntimeExternalListenerFactory, runtime_accepted_tunnel_event_sink,
@@ -142,10 +145,15 @@ pub(crate) fn runtime_core_instance_adapters_with_process_runtime(
         vpn_portal: {
             #[cfg(feature = "wireguard")]
             {
-                Some(
-                    crate::vpn_portal::wireguard::WireGuardPortalHost::new(global_ctx.clone())
-                        as Arc<dyn VpnPortalHost>,
-                )
+                use crate::common::config::ConfigLoader as _;
+
+                Some(crate::vpn_portal::wireguard::WireGuardPortalHost::new(
+                    global_ctx.clone(),
+                    global_ctx
+                        .config
+                        .get_vpn_portal_config()
+                        .map(|config| config.wireguard_listen),
+                ) as Arc<dyn VpnPortalHost>)
             }
             #[cfg(not(feature = "wireguard"))]
             {
@@ -158,6 +166,30 @@ pub(crate) fn runtime_core_instance_adapters_with_process_runtime(
         #[cfg(feature = "smoltcp")]
         gateway_events: Some(Arc::new(GlobalCtxGatewayEventSink { global_ctx })),
     }
+}
+
+pub(crate) fn runtime_one_shot_manual_connector(
+    global_ctx: ArcGlobalCtx,
+    process_runtime: Arc<CoreProcessRuntime>,
+) -> ManualTunnelConnector<NativeInstanceHost> {
+    let host = native_instance_host(global_ctx.clone());
+    let runtime_dns = native_host_runtime();
+    let dns: Arc<dyn DnsResolver> = runtime_dns.clone();
+    let dns_records: Arc<dyn DnsRecordResolver> = runtime_dns;
+    let endpoint_resolver = Arc::new(CoreManualEndpointResolver::new(
+        host.clone(),
+        dns.clone(),
+        dns_records,
+        runtime_endpoint_discovery_config(&global_ctx),
+    ));
+
+    process_runtime.manual_connector(
+        host,
+        dns,
+        endpoint_resolver,
+        runtime_client_protocol_upgrader(global_ctx.clone()),
+        runtime_manual_options(&global_ctx),
+    )
 }
 
 #[cfg(test)]

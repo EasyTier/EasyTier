@@ -31,13 +31,15 @@ fn listener_endpoint(listener_url: &url::Url) -> &str {
 pub struct WireGuardPortalHost {
     global_ctx: ArcGlobalCtx,
     wg_config: WgConfig,
+    listener_addr: Option<SocketAddr>,
 }
 
 impl WireGuardPortalHost {
-    pub fn new(global_ctx: ArcGlobalCtx) -> Arc<Self> {
+    pub fn new(global_ctx: ArcGlobalCtx, listener_addr: Option<SocketAddr>) -> Arc<Self> {
         Arc::new(Self {
             wg_config: get_wg_config_for_portal(&global_ctx.get_network_identity()),
             global_ctx,
+            listener_addr,
         })
     }
 
@@ -60,12 +62,7 @@ impl WireGuardPortalHost {
 #[async_trait::async_trait]
 impl VpnPortalHost for WireGuardPortalHost {
     async fn start_listeners(&self) -> anyhow::Result<Vec<VpnPortalListener>> {
-        let listener_addr = self
-            .global_ctx
-            .config
-            .get_vpn_portal_config()
-            .context("VPN portal config is not set")?
-            .wireguard_listen;
+        let listener_addr = self.listener_addr.context("VPN portal config is not set")?;
         let mut listeners = vec![self.start_listener(listener_addr).await?];
         if let SocketAddr::V4(v4) = listener_addr
             && v4.ip().is_unspecified()

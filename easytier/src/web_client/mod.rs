@@ -5,21 +5,14 @@ use crate::{
         MachineIdOptions, config::TomlConfigLoader, global_ctx::GlobalCtx, log,
         os_info::collect_device_os_info, resolve_machine_id,
     },
-    instance::{
-        composition::runtime_core_instance_adapters_with_process_runtime,
-        config::{runtime_endpoint_discovery_config, runtime_manual_options},
-        host::NativeInstanceHost,
-    },
+    instance::{composition::runtime_one_shot_manual_connector, host::NativeInstanceHost},
     instance_manager::{DaemonGuard, NetworkInstanceManager},
     tunnel::TunnelScheme,
 };
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
 use easytier_core::{
-    connectivity::{
-        manual::{ManualTunnelConnector, discovery::CoreManualEndpointResolver},
-        protocol::raw::TunnelDialer,
-    },
+    connectivity::{manual::ManualTunnelConnector, protocol::raw::TunnelDialer},
     socket::IpVersion,
     tunnel::{Tunnel, web_security},
 };
@@ -288,25 +281,7 @@ pub async fn run_web_client(
         Some(hostname) => hostname,
     };
     let process_runtime = manager.process_runtime();
-    let adapters = runtime_core_instance_adapters_with_process_runtime(
-        global_ctx.clone(),
-        process_runtime.clone(),
-    );
-    let endpoint_resolver = Arc::new(CoreManualEndpointResolver::new(
-        adapters.host.clone(),
-        adapters.dns.clone(),
-        adapters.dns_records.clone(),
-        runtime_endpoint_discovery_config(&global_ctx),
-    ));
-    let connector = process_runtime.manual_connector(
-        adapters.host,
-        adapters.dns,
-        endpoint_resolver,
-        adapters
-            .protocol
-            .expect("native runtime should provide protocol upgrades"),
-        runtime_manual_options(&global_ctx),
-    );
+    let connector = runtime_one_shot_manual_connector(global_ctx, process_runtime);
     Ok(WebClient::new(
         ConfigServerConnector {
             url: c_url,
