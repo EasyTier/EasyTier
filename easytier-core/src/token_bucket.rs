@@ -246,14 +246,6 @@ impl TokenBucketManager {
             .clone()
     }
 
-    pub fn len(&self) -> usize {
-        self.buckets.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.buckets.is_empty()
-    }
-
     pub async fn stop(&self) {
         let retain_task = self.retain_task.lock().unwrap().take();
         if let Some(retain_task) = retain_task {

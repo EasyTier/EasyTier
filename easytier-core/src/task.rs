@@ -83,10 +83,6 @@ where
     T: Send + 'static,
     L: PeerTaskLauncher<Data = D, CollectPeerItem = C, TaskRet = T> + 'static,
 {
-    pub fn new(launcher: L, peer_mgr: Arc<L::PeerManager>) -> Self {
-        Self::new_with_external_signal(launcher, peer_mgr, None)
-    }
-
     pub fn new_with_external_signal(
         launcher: L,
         peer_mgr: Arc<L::PeerManager>,
@@ -288,11 +284,12 @@ mod tests {
     #[tokio::test]
     async fn peer_task_manager_is_cold_and_joins_children_on_stop() {
         let active_tasks = Arc::new(AtomicUsize::new(0));
-        let manager = PeerTaskManager::new(
+        let manager = PeerTaskManager::new_with_external_signal(
             TestLauncher {
                 active_tasks: active_tasks.clone(),
             },
             Arc::new(()),
+            None,
         );
 
         tokio::task::yield_now().await;

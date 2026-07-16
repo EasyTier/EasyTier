@@ -165,7 +165,7 @@ pub fn add_ns_to_bridge(br_name: &str, ns_name: &str) {
 fn check_route(
     ipv4: &str,
     dst_peer_id: PeerId,
-    routes: Vec<easytier_core::proto::core_peer::peer::Route>,
+    routes: Vec<easytier_proto::core_peer::peer::Route>,
 ) {
     let mut found = false;
     for r in routes.iter() {
@@ -182,9 +182,9 @@ fn check_route(
 }
 
 fn check_route_ex(
-    routes: Vec<easytier_core::proto::core_peer::peer::Route>,
+    routes: Vec<easytier_proto::core_peer::peer::Route>,
     peer_id: PeerId,
-    checker: impl Fn(&easytier_core::proto::core_peer::peer::Route) -> bool,
+    checker: impl Fn(&easytier_proto::core_peer::peer::Route) -> bool,
 ) {
     let mut found = false;
     for r in routes.iter() {

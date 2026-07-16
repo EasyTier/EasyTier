@@ -6,11 +6,10 @@ use std::{net::SocketAddr, sync::Arc};
 #[cfg(test)]
 use async_trait::async_trait;
 #[cfg(test)]
-use easytier_core::{
-    proto::common::{NatType, StunInfo},
-    stun::{StunInfoProvider, StunSocketMapper},
-};
+use easytier_core::stun::{StunInfoProvider, StunSocketMapper};
 use easytier_core::{socket::SocketContext, stun::StunInfoCollector as CoreStunInfoCollector};
+#[cfg(test)]
+use easytier_proto::common::{NatType, StunInfo};
 
 use crate::host_runtime::{NativeHostRuntime, native_host_runtime};
 #[cfg(test)]

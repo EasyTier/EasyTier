@@ -1,4 +1,4 @@
-pub mod compressor;
+pub(crate) mod compressor;
 pub mod config;
 pub mod connectivity;
 pub mod dhcp;
@@ -13,13 +13,13 @@ pub mod process_runtime;
 pub mod proxy;
 pub mod rpc_impl;
 pub mod runtime_config;
-pub mod runtime_time;
+pub(crate) mod runtime_time;
 pub mod socket;
 pub mod stats_manager;
 pub mod stun;
-pub mod task;
-pub mod token_bucket;
+pub(crate) mod task;
+pub(crate) mod token_bucket;
 pub mod tunnel;
 pub mod vpn_portal;
 
-pub use easytier_proto as proto;
+pub(crate) use easytier_proto as proto;

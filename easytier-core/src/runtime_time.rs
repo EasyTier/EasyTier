@@ -1,10 +1,7 @@
 //! Tokio time facade with deadline visibility for externally driven runtimes.
 
 #[cfg(not(any(test, target_os = "wasi")))]
-pub use tokio::time::{
-    Duration, Instant, Interval, MissedTickBehavior, Sleep, error, interval, interval_at, sleep,
-    sleep_until, timeout, timeout_at,
-};
+pub use tokio::time::{Duration, Instant, Interval, error, interval, sleep, timeout};
 
 #[cfg(any(test, target_os = "wasi"))]
 mod tracked {
@@ -130,10 +127,6 @@ mod tracked {
     }
 
     impl Sleep {
-        pub fn deadline(&self) -> Instant {
-            self.inner.deadline()
-        }
-
         pub fn reset(mut self: Pin<&mut Self>, deadline: Instant) {
             let this = self.as_mut().get_mut();
             this.inner.as_mut().reset(deadline);
@@ -189,10 +182,6 @@ mod tracked {
             self.registration.reset(self.next_deadline);
             tick
         }
-
-        pub fn set_missed_tick_behavior(&mut self, behavior: MissedTickBehavior) {
-            self.missed_tick_behavior = behavior;
-        }
     }
 
     pub(super) fn next_interval_deadline(
@@ -247,10 +236,7 @@ mod tracked {
 }
 
 #[cfg(any(test, target_os = "wasi"))]
-pub use tracked::{
-    Duration, Instant, Interval, MissedTickBehavior, Sleep, error, interval, interval_at, sleep,
-    sleep_until, timeout, timeout_at,
-};
+pub use tracked::{Duration, Instant, Interval, error, interval, sleep, timeout};
 
 #[cfg(target_os = "wasi")]
 pub(crate) use tracked::clear_domain;
@@ -259,6 +245,7 @@ pub(crate) use tracked::{enter_domain, next_deadline_millis};
 
 #[cfg(test)]
 mod tests {
+    use super::tracked::MissedTickBehavior;
     use super::*;
 
     #[tokio::test]
