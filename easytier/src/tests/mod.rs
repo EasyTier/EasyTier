@@ -9,7 +9,8 @@ mod credential_tests;
 #[cfg(target_os = "linux")]
 mod upnp_test;
 
-use crate::{common::PeerId, instance::instance::Instance};
+use crate::instance::instance::Instance;
+use easytier_core::config::PeerId;
 
 trait InstanceTestExt {
     fn add_connector_url(&self, url: url::Url);

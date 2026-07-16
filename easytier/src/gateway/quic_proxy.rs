@@ -1,5 +1,5 @@
 use super::hedge::HedgeExt;
-use crate::common::PeerId;
+use easytier_core::config::PeerId;
 use crate::proto::peer_rpc::KcpConnData as QuicConnData;
 use crate::tunnel::quic::{client_config, endpoint_config, server_config};
 use anyhow::{Context, Error, anyhow, ensure};

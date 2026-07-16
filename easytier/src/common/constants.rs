@@ -9,8 +9,6 @@ pub const DIRECT_CONNECT_TO_PUBLIC_SERVER: bool = true;
 // must make it true in future.
 pub const HMAC_SECRET_DIGEST: bool = false;
 
-pub const UDP_HOLE_PUNCH_CONNECTOR_SERVICE_ID: u32 = 2;
-
 pub const WIN_SERVICE_WORK_DIR_REG_KEY: &str = "SOFTWARE\\EasyTier\\Service\\WorkDir";
 
 pub const EASYTIER_VERSION: &str = git_version::git_version!(

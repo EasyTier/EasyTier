@@ -238,7 +238,7 @@ mod tests {
     #[cfg(feature = "kcp")]
     use crate::gateway::kcp_proxy::KcpProxyService;
     use crate::{
-        common::global_ctx::{NetworkIdentity, tests::get_mock_global_ctx_with_network},
+        common::{config::NetworkIdentity, global_ctx::tests::get_mock_global_ctx_with_network},
         instance::config::{
             runtime_direct_options, runtime_socket_context, runtime_stun_server_config,
         },

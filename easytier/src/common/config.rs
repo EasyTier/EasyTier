@@ -291,7 +291,7 @@ pub trait LoggingConfigLoader {
     fn get_console_logger_config(&self) -> ConsoleLoggerConfig;
 }
 
-pub use easytier_core::config::NetworkSecretDigest;
+use easytier_core::config::NetworkSecretDigest;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct NetworkIdentity {

@@ -33,8 +33,6 @@ pub fn get_logger_timer_rfc3339()
     get_logger_timer(time::format_description::well_known::Rfc3339)
 }
 
-pub use easytier_core::config::PeerId;
-
 pub fn shrink_dashmap<K: Eq + std::hash::Hash, V>(
     map: &dashmap::DashMap<K, V>,
     threshold: Option<usize>,

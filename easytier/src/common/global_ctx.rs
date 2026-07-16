@@ -6,13 +6,13 @@ use std::{
 
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
+use easytier_core::config::PeerId;
 use easytier_core::connectivity::composite::ConnectorRuntime as _;
 use easytier_core::peers::public_ipv6::PublicIpv6Host;
 use easytier_core::socket::{NetNamespace, SocketContext};
 
 use super::{
-    PeerId,
-    config::{ConfigLoader, Flags},
+    config::{ConfigLoader, Flags, NetworkIdentity},
     netns::NetNS,
 };
 use crate::{
@@ -23,8 +23,6 @@ use crate::{
     rpc_service::protected_port,
 };
 use crossbeam::atomic::AtomicCell;
-
-pub type NetworkIdentity = crate::common::config::NetworkIdentity;
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum GlobalCtxEvent {

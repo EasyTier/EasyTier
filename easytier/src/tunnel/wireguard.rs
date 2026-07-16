@@ -1,7 +1,5 @@
 use std::{
-    collections::hash_map::DefaultHasher,
     fmt::{Debug, Formatter},
-    hash::Hasher,
     net::SocketAddr,
     pin::Pin,
     sync::{Arc, atomic::AtomicBool},
@@ -65,7 +63,7 @@ pub struct WgConfig {
 impl WgConfig {
     pub fn new_from_network_identity(network_name: &str, network_secret: &str) -> Self {
         let mut secret = [0u8; 32];
-        generate_digest_from_str(network_name, network_secret, &mut secret);
+        super::generate_digest_from_str(network_name, network_secret, &mut secret);
         Self::new_internal(secret, secret)
     }
 
@@ -113,20 +111,6 @@ impl WgConfig {
 
     pub fn is_internal(&self) -> bool {
         self.wg_type == WgType::InternalUse
-    }
-}
-
-fn generate_digest_from_str(str1: &str, str2: &str, digest: &mut [u8]) {
-    let mut hasher = DefaultHasher::new();
-    hasher.write(str1.as_bytes());
-    hasher.write(str2.as_bytes());
-
-    assert_eq!(digest.len() % 8, 0, "digest length must be multiple of 8");
-
-    let shard_count = digest.len() / 8;
-    for i in 0..shard_count {
-        digest[i * 8..(i + 1) * 8].copy_from_slice(&hasher.finish().to_be_bytes());
-        hasher.write(&digest[..(i + 1) * 8]);
     }
 }
 

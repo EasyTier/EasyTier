@@ -36,8 +36,6 @@ use tokio::{
     task::JoinSet,
 };
 
-pub type MyNodeInfo = crate::proto::api::manage::MyNodeInfo;
-
 type ArcMutApiService = Arc<RwLock<Option<Arc<dyn InstanceRpcService>>>>;
 type TunFd = Option<i32>;
 
@@ -443,7 +441,7 @@ impl NetworkInstance {
 
         Ok(NetworkInstanceRunningInfo {
             dev_name,
-            my_node_info: Some(MyNodeInfo {
+            my_node_info: Some(crate::proto::api::manage::MyNodeInfo {
                 virtual_ipv4: my_info
                     .ipv4_addr
                     .parse::<cidr::Ipv4Inet>()

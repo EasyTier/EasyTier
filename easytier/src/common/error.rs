@@ -1,9 +1,8 @@
 use std::{io, result};
 use thiserror::Error;
 
+use easytier_core::config::PeerId;
 use easytier_core::tunnel::TunnelError;
-
-use super::PeerId;
 
 #[derive(Error, Debug)]
 pub enum Error {
