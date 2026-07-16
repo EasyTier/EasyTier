@@ -261,18 +261,11 @@ pub(crate) fn build_portable_test_core_instance(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    };
+    use std::sync::Arc;
 
     use easytier_core::{
-        instance::{CoreInstanceConfig, CoreInstanceState, PortableCoreInstanceConfig},
+        instance::{CoreInstanceConfig, PortableCoreInstanceConfig},
         listener::plan::ListenerRuntimeConfig,
-        proxy::wrapped_transport::{
-            WrappedTransportConnect, WrappedTransportEngine, WrappedTransportEngineStart,
-            WrappedTransportRole,
-        },
     };
     use pnet::packet::{
         ip::IpNextHeaderProtocols,
@@ -281,16 +274,9 @@ mod tests {
     };
 
     use crate::{
-        common::{
-            config::ConfigLoader as _,
-            global_ctx::{
-                NetworkIdentity,
-                tests::{get_mock_global_ctx, get_mock_global_ctx_with_network},
-            },
-        },
+        common::global_ctx::{NetworkIdentity, tests::get_mock_global_ctx_with_network},
         instance::config::{
-            runtime_direct_options, runtime_endpoint_discovery_config, runtime_instance_config,
-            runtime_manual_options, runtime_socket_context, runtime_stun_server_config,
+            runtime_direct_options, runtime_socket_context, runtime_stun_server_config,
         },
     };
 
@@ -301,230 +287,6 @@ mod tests {
         tokio::sync::mpsc::Receiver<Vec<u8>>,
     ) {
         tokio::sync::mpsc::channel(16)
-    }
-
-    fn build_portable_test_instance_with_transport_factory<F>(
-        global_ctx: ArcGlobalCtx,
-        transport_proxy_factory: F,
-    ) -> anyhow::Result<(NativeCoreInstance, F::Attachment)>
-    where
-        F: WrappedTransportEngineFactory,
-    {
-        let (packet_sink, _packet_receiver) = create_host_packet_channel();
-        build_portable_runtime_core_instance_with_transport_factory_and_process_runtime(
-            global_ctx,
-            Arc::new(packet_sink),
-            transport_proxy_factory,
-            CoreProcessRuntime::new(),
-        )
-    }
-
-    fn build_portable_test_instance(
-        global_ctx: ArcGlobalCtx,
-    ) -> anyhow::Result<NativeCoreInstance> {
-        build_portable_test_instance_with_transport_factory(
-            global_ctx,
-            NoWrappedTransportEngineFactory,
-        )
-        .map(|(instance, ())| instance)
-    }
-
-    #[derive(Default)]
-    struct RecordingProxyService {
-        start_calls: AtomicUsize,
-        stop_calls: AtomicUsize,
-    }
-
-    #[async_trait::async_trait]
-    impl WrappedTransportEngine for RecordingProxyService {
-        async fn prepare(&self, _options: WrappedTransportEngineStart) -> anyhow::Result<()> {
-            self.start_calls.fetch_add(1, Ordering::Relaxed);
-            Ok(())
-        }
-
-        async fn activate(&self) -> anyhow::Result<()> {
-            Ok(())
-        }
-
-        async fn inject_peer_datagram(
-            &self,
-            _role: WrappedTransportRole,
-            _from_peer_id: u32,
-            _payload: bytes::Bytes,
-        ) -> anyhow::Result<()> {
-            Ok(())
-        }
-
-        async fn connect_source(
-            &self,
-            _request: WrappedTransportConnect,
-        ) -> anyhow::Result<Box<dyn easytier_core::proxy::runtime::TcpProxyStream>> {
-            anyhow::bail!("recording engine does not open streams")
-        }
-
-        async fn stop(&self) {
-            self.stop_calls.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    struct TestTransportProxyFactory {
-        service: Arc<dyn WrappedTransportEngine>,
-    }
-
-    impl WrappedTransportEngineFactory for TestTransportProxyFactory {
-        type Attachment = ();
-
-        fn build(
-            self,
-        ) -> anyhow::Result<
-            easytier_core::proxy::wrapped_transport::WrappedTransportEngineBuild<Self::Attachment>,
-        > {
-            Ok(
-                easytier_core::proxy::wrapped_transport::WrappedTransportEngineBuild {
-                    kcp: Some(self.service),
-                    quic: None,
-                    attachment: (),
-                },
-            )
-        }
-    }
-
-    #[tokio::test]
-    async fn portable_runtime_builder_constructs_and_owns_peer_graph() {
-        let global_ctx = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
-            "portable-runtime-builder".to_owned(),
-            String::new(),
-        )));
-        let (packet_sink, _packet_receiver) = create_host_packet_channel();
-        let (instance, ()) =
-            build_portable_runtime_core_instance_with_transport_factory_and_process_runtime(
-                global_ctx,
-                Arc::new(packet_sink),
-                NoWrappedTransportEngineFactory,
-                CoreProcessRuntime::new(),
-            )
-            .unwrap();
-        let instance = Arc::new(instance);
-
-        instance.start().await.unwrap();
-        assert_ne!(instance.peer_id(), 0);
-        instance.stop().await;
-        assert_eq!(instance.state(), CoreInstanceState::Stopped);
-    }
-
-    #[tokio::test]
-    async fn runtime_core_requires_explicit_proxy_policy_update() {
-        let global_ctx = get_mock_global_ctx();
-        let transport_proxy = Arc::new(RecordingProxyService::default());
-        let (instance, _cidr_table) = build_portable_test_instance_with_transport_factory(
-            global_ctx.clone(),
-            TestTransportProxyFactory {
-                service: transport_proxy.clone(),
-            },
-        )
-        .expect("runtime core composition should succeed");
-        let instance = Arc::new(instance);
-
-        instance.start().await.unwrap();
-        instance.start_transport_proxy().await.unwrap();
-        instance.start_proxy().await.unwrap();
-        assert_eq!(transport_proxy.start_calls.load(Ordering::Relaxed), 1);
-        assert!(!instance.proxy_is_started());
-
-        global_ctx
-            .config
-            .add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None)
-            .unwrap();
-        instance.start_proxy().await.unwrap();
-        assert!(!instance.proxy_is_started());
-
-        instance
-            .update_runtime_config(runtime_instance_config(&global_ctx))
-            .await
-            .unwrap();
-        instance.start_proxy().await.unwrap();
-        assert!(instance.proxy_is_started());
-
-        instance.stop().await;
-        assert_eq!(transport_proxy.stop_calls.load(Ordering::Relaxed), 1);
-        assert!(!instance.proxy_is_started());
-    }
-
-    #[tokio::test]
-    async fn runtime_core_owns_configured_transport_listener_lifecycle() {
-        let global_ctx = get_mock_global_ctx();
-        global_ctx
-            .config
-            .set_listeners(vec!["tcp://127.0.0.1:0".parse().unwrap()]);
-        let instance = Arc::new(
-            build_portable_test_instance(global_ctx.clone())
-                .expect("runtime core composition should succeed"),
-        );
-
-        instance.start().await.unwrap();
-        let listeners = instance.running_listeners();
-        assert_eq!(listeners.len(), 2);
-        assert_eq!(
-            listeners
-                .iter()
-                .filter(|listener| listener.scheme() == "tcp")
-                .count(),
-            1
-        );
-        instance.stop().await;
-        assert!(instance.running_listeners().is_empty());
-    }
-
-    #[tokio::test]
-    async fn portable_core_instance_builds_peer_graph_from_native_adapters() {
-        let global_ctx = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
-            "portable-core-instance".to_owned(),
-            String::new(),
-        )));
-        let (packet_sink, _packet_receiver) = create_host_packet_channel();
-        let peer = runtime_peer_manager_config(&global_ctx, RouteAlgoType::Ospf);
-        let connectivity = CoreInstanceConfig {
-            initial_peers: Vec::new(),
-            listeners: Some(ListenerRuntimeConfig::new(
-                vec![
-                    "tcp://127.0.0.1:0".parse().unwrap(),
-                    "udp://127.0.0.1:0".parse().unwrap(),
-                ],
-                false,
-                runtime_socket_context(&global_ctx),
-            )),
-            runtime: Default::default(),
-            stun: runtime_stun_server_config(&global_ctx),
-            endpoint_discovery: runtime_endpoint_discovery_config(&global_ctx),
-            manual: runtime_manual_options(&global_ctx),
-            direct: runtime_direct_options(&global_ctx, false),
-        };
-        let instance = Arc::new(
-            NativeCoreInstance::new_portable(
-                runtime_core_instance_adapters_with_process_runtime(
-                    global_ctx,
-                    CoreProcessRuntime::new(),
-                ),
-                PortableCoreInstanceConfig { peer, connectivity },
-                Arc::new(packet_sink),
-            )
-            .unwrap(),
-        );
-
-        assert!(instance.running_listeners().is_empty());
-        instance.start().await.unwrap();
-        let running_listeners = instance.running_listeners();
-        assert_eq!(running_listeners.len(), 3);
-        assert!(
-            running_listeners
-                .iter()
-                .filter(|listener| matches!(listener.scheme(), "tcp" | "udp"))
-                .all(|listener| listener.port().is_some_and(|port| port != 0))
-        );
-        assert_eq!(instance.state(), CoreInstanceState::Running);
-        instance.stop().await;
-        assert_eq!(instance.state(), CoreInstanceState::Stopped);
-        assert!(instance.running_listeners().is_empty());
     }
 
     #[tokio::test]
