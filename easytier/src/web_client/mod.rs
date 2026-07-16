@@ -21,7 +21,7 @@ use easytier_core::{
         protocol::raw::TunnelDialer,
     },
     socket::IpVersion,
-    tunnel::Tunnel,
+    tunnel::{Tunnel, web_security},
 };
 use tokio_util::task::AbortOnDropHandle;
 use url::Url;
@@ -52,7 +52,6 @@ pub struct DefaultHooks;
 impl WebClientHooks for DefaultHooks {}
 
 pub mod controller;
-pub mod security;
 pub mod session;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -162,7 +161,7 @@ impl WebClient {
                 }
             };
 
-            if support_encryption && security::web_secure_tunnel_supported() {
+            if support_encryption && web_security::web_secure_tunnel_supported() {
                 log::info!("Server supports encryption, reconnecting with secure tunnel");
                 drop(session);
 
@@ -177,7 +176,7 @@ impl WebClient {
                     }
                 };
 
-                let conn = match security::upgrade_client_tunnel(conn).await {
+                let conn = match web_security::upgrade_client_tunnel(conn).await {
                     Ok(conn) => conn,
                     Err(error) => {
                         connected.store(false, Ordering::Release);

@@ -229,11 +229,7 @@ pub(crate) fn runtime_peer_manager_config(
     let acl = global_ctx.config.get_acl();
     let flags = global_ctx.get_flags();
     let identity = global_ctx.get_network_identity();
-    let network_identity = CoreNetworkIdentity {
-        network_name: identity.network_name,
-        network_secret: identity.network_secret,
-        network_secret_digest: identity.network_secret_digest,
-    };
+    let network_identity = CoreNetworkIdentity::from(identity);
     let hostname = global_ctx.get_hostname();
     let proxy_networks = global_ctx
         .config

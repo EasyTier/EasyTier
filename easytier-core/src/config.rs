@@ -19,6 +19,22 @@ pub struct NetworkIdentity {
 }
 
 impl NetworkIdentity {
+    pub fn new(network_name: String, network_secret: String) -> Self {
+        Self {
+            network_secret_digest: Some(network_secret_digest(&network_name, &network_secret)),
+            network_name,
+            network_secret: Some(network_secret),
+        }
+    }
+
+    pub fn new_credential(network_name: String) -> Self {
+        Self {
+            network_name,
+            network_secret: None,
+            network_secret_digest: None,
+        }
+    }
+
     pub fn secret_digest(&self) -> Option<NetworkSecretDigest> {
         if self.network_secret_digest.is_some() {
             self.network_secret_digest
@@ -61,6 +77,12 @@ fn generate_digest_from_str(str1: &str, str2: &str, digest: &mut [u8]) {
     }
 }
 
+fn network_secret_digest(network_name: &str, network_secret: &str) -> NetworkSecretDigest {
+    let mut digest = [0u8; 32];
+    generate_digest_from_str(network_name, network_secret, &mut digest);
+    digest
+}
+
 impl From<NetworkIdentity> for NetworkIdentityWithOnlyDigest {
     fn from(identity: NetworkIdentity) -> Self {
         Self {
@@ -89,11 +111,7 @@ impl Hash for NetworkIdentity {
 
 impl Default for NetworkIdentity {
     fn default() -> Self {
-        Self {
-            network_name: "default".to_string(),
-            network_secret: None,
-            network_secret_digest: Some([0u8; 32]),
-        }
+        Self::new("default".to_string(), "".to_string())
     }
 }
 
@@ -540,8 +558,11 @@ mod tests {
     }
 
     #[test]
-    fn network_identity_default_keeps_existing_digest_semantics() {
-        assert_eq!(NetworkIdentity::default().secret_digest(), Some([0u8; 32]));
+    fn network_identity_default_matches_native_default_network() {
+        assert_eq!(
+            NetworkIdentity::default(),
+            NetworkIdentity::new("default".to_string(), "".to_string())
+        );
     }
 
     #[test]

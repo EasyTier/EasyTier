@@ -114,26 +114,26 @@ presence is not evidence of a second raw Tunnel owner.
 
 ### Web secure tunnel
 
-- [ ] Move Noise handshake, framing, cipher session, timeout and fallback
+- [x] Move Noise handshake, framing, cipher session, timeout and fallback
   lifecycle from `easytier/src/web_client/security.rs` into one core Module.
-- [ ] Use core runtime-time facilities and keep the Web client as presentation
+- [x] Use core runtime-time facilities and keep the Web client as presentation
   and composition only.
-- [ ] Move the Ring/in-memory protocol tests with the Module.
+- [x] Move the Ring/in-memory protocol tests with the Module.
 
 ### Standalone RPC lifecycle
 
-- [ ] Move generic listener accept, task ownership, retry and client reconnect
+- [x] Move generic listener accept, task ownership, retry and client reconnect
   lifecycle from native `proto/rpc_impl/standalone.rs` into core.
-- [ ] Keep generated aliases and native socket factories in native.
-- [ ] Use core runtime-time rather than native `tokio::time` policy.
+- [x] Keep generated aliases and native socket factories in native.
+- [x] Use core runtime-time rather than native `tokio::time` policy.
 
 ### Network identity and validation
 
-- [ ] Make the core `NetworkIdentity` type authoritative for equality, hash,
+- [x] Make the core `NetworkIdentity` type authoritative for equality, hash,
   digest and default semantics.
-- [ ] Keep native serde/input DTOs only where necessary and normalize them once
+- [x] Keep native serde/input DTOs only where necessary and normalize them once
   at composition.
-- [ ] Remove the divergent native default and duplicate conversion logic.
+- [x] Remove the divergent native default and duplicate conversion logic.
 - [ ] Move mapped-listener validation and secure-mode key consistency/generation
   rules into core; keep TOML/CLI parsing, dump, permissions and persistence in
   native.
@@ -293,3 +293,6 @@ Completion requires:
 - 2026-07-16: removed the test-only WS/WG connector shells, preserved WS/WSS
   mismatch and WireGuard peer cleanup coverage on the production Adapter Seam,
   and deleted the unused native IP collector cache and cancellable-task shell.
+- 2026-07-16: moved the Web Noise tunnel and standalone RPC lifecycle into
+  core, made core authoritative for network-identity semantics, and retained
+  only native socket factories and serde input at the native Seam.

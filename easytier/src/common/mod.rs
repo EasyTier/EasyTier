@@ -1,11 +1,4 @@
-use std::{
-    fmt::Debug,
-    future,
-    sync::{Arc, Mutex},
-};
 use time::util::refresh_tz;
-use tokio::{task::JoinSet, time::timeout};
-use tracing::Instrument;
 
 pub mod config;
 pub mod constants;
@@ -42,51 +35,6 @@ pub fn get_logger_timer_rfc3339()
 
 pub use easytier_core::config::PeerId;
 
-pub fn join_joinset_background<T: Debug + Send + Sync + 'static>(
-    js: Arc<Mutex<JoinSet<T>>>,
-    origin: String,
-) {
-    let js = Arc::downgrade(&js);
-    let o = origin.clone();
-    tokio::spawn(
-        async move {
-            while js.strong_count() > 0 {
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-
-                let fut = future::poll_fn(|cx| {
-                    let Some(js) = js.upgrade() else {
-                        return std::task::Poll::Ready(());
-                    };
-
-                    let mut js = js.lock().unwrap();
-                    while !js.is_empty() {
-                        let ret = js.poll_join_next(cx);
-                        match ret {
-                            std::task::Poll::Ready(Some(_)) => {
-                                continue;
-                            }
-                            std::task::Poll::Ready(None) => {
-                                break;
-                            }
-                            std::task::Poll::Pending => {
-                                return std::task::Poll::Pending;
-                            }
-                        }
-                    }
-                    std::task::Poll::Ready(())
-                });
-
-                let _ = timeout(std::time::Duration::from_secs(5), fut).await;
-            }
-            tracing::debug!(?o, "joinset task exit");
-        }
-        .instrument(tracing::info_span!(
-            "join_joinset_background",
-            origin = origin
-        )),
-    );
-}
-
 pub fn shrink_dashmap<K: Eq + std::hash::Hash, V>(
     map: &dashmap::DashMap<K, V>,
     threshold: Option<usize>,
@@ -94,46 +42,5 @@ pub fn shrink_dashmap<K: Eq + std::hash::Hash, V>(
     let threshold = threshold.unwrap_or(16);
     if map.capacity() - map.len() > threshold {
         map.shrink_to_fit();
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn test_join_joinset_backgroud() {
-        let js = Arc::new(Mutex::new(JoinSet::<()>::new()));
-        join_joinset_background(js.clone(), "TEST".to_owned());
-        js.try_lock().unwrap().spawn(async {
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        });
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        assert!(js.try_lock().unwrap().is_empty());
-
-        for _ in 0..5 {
-            js.try_lock().unwrap().spawn(async {
-                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-            });
-            tokio::task::yield_now().await;
-        }
-
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-
-        for _ in 0..5 {
-            js.try_lock().unwrap().spawn(async {
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            });
-            tokio::task::yield_now().await;
-        }
-
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        assert!(js.try_lock().unwrap().is_empty());
-
-        let weak_js = Arc::downgrade(&js);
-        drop(js);
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        assert_eq!(weak_js.weak_count(), 0);
-        assert_eq!(weak_js.strong_count(), 0);
     }
 }

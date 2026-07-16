@@ -15,9 +15,11 @@ use easytier::{
         api::manage::WebClientService, rpc_types::controller::BaseController, web::HeartbeatRequest,
     },
     rpc_service::remote_client::{self, RemoteClientManager},
-    web_client::security,
 };
-use easytier_core::{listener::SocketListener, tunnel::Tunnel};
+use easytier_core::{
+    listener::SocketListener,
+    tunnel::{Tunnel, web_security},
+};
 use maxminddb::geoip2;
 use session::{Location, Session};
 use storage::{Storage, StorageToken};
@@ -121,7 +123,11 @@ impl ClientManager {
         let webhook_config = self.webhook_config.clone();
         self.tasks.spawn(async move {
             while let Ok(tunnel) = listener.accept().await {
-                let (tunnel, secure) = match security::accept_or_upgrade_server_tunnel(tunnel).await {
+                let (tunnel, secure) = match web_security::accept_or_upgrade_server_tunnel(
+                    tunnel,
+                )
+                .await
+                {
                     Ok(v) => v,
                     Err(error) => {
                         tracing::warn!(%error, "failed to accept secure tunnel, dropping connection");

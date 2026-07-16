@@ -13,6 +13,7 @@ pub mod ring;
 pub mod stats;
 pub mod tcp;
 pub mod udp;
+pub mod web_security;
 pub mod wrapper;
 
 #[derive(Debug, thiserror::Error)]

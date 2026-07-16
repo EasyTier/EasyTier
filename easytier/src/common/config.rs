@@ -1,5 +1,4 @@
 use std::{
-    hash::Hasher,
     net::{IpAddr, SocketAddr},
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -25,7 +24,7 @@ use crate::{
         api::manage::ConfigSource as RpcConfigSource,
         common::{CompressionAlgoPb, SecureModeConfig},
     },
-    tunnel::{IpScheme, TunnelScheme, generate_digest_from_str},
+    tunnel::{IpScheme, TunnelScheme},
 };
 
 use super::env_parser;
@@ -315,7 +314,7 @@ pub trait LoggingConfigLoader {
     fn get_console_logger_config(&self) -> ConsoleLoggerConfig;
 }
 
-pub type NetworkSecretDigest = [u8; 32];
+pub use easytier_core::config::NetworkSecretDigest;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct NetworkIdentity {
@@ -327,6 +326,26 @@ pub struct NetworkIdentity {
 
 impl From<easytier_core::config::NetworkIdentity> for NetworkIdentity {
     fn from(value: easytier_core::config::NetworkIdentity) -> Self {
+        Self {
+            network_name: value.network_name,
+            network_secret: value.network_secret,
+            network_secret_digest: value.network_secret_digest,
+        }
+    }
+}
+
+impl From<&NetworkIdentity> for easytier_core::config::NetworkIdentity {
+    fn from(value: &NetworkIdentity) -> Self {
+        Self {
+            network_name: value.network_name.clone(),
+            network_secret: value.network_secret.clone(),
+            network_secret_digest: value.network_secret_digest,
+        }
+    }
+}
+
+impl From<NetworkIdentity> for easytier_core::config::NetworkIdentity {
+    fn from(value: NetworkIdentity) -> Self {
         Self {
             network_name: value.network_name,
             network_secret: value.network_secret,
@@ -384,82 +403,36 @@ struct ConfigSourceConfig {
     source: ConfigSource,
 }
 
-#[derive(Eq, PartialEq, Hash)]
-struct NetworkIdentityWithOnlyDigest {
-    network_name: String,
-    network_secret_digest: Option<NetworkSecretDigest>,
-}
-
-impl From<NetworkIdentity> for NetworkIdentityWithOnlyDigest {
-    fn from(identity: NetworkIdentity) -> Self {
-        if identity.network_secret_digest.is_some() {
-            Self {
-                network_name: identity.network_name,
-                network_secret_digest: identity.network_secret_digest,
-            }
-        } else if identity.network_secret.is_some() {
-            let mut network_secret_digest = [0u8; 32];
-            generate_digest_from_str(
-                &identity.network_name,
-                identity.network_secret.as_ref().unwrap(),
-                &mut network_secret_digest,
-            );
-            Self {
-                network_name: identity.network_name,
-                network_secret_digest: Some(network_secret_digest),
-            }
-        } else {
-            Self {
-                network_name: identity.network_name,
-                network_secret_digest: None,
-            }
-        }
-    }
-}
-
 impl PartialEq for NetworkIdentity {
     fn eq(&self, other: &Self) -> bool {
-        let self_with_digest = NetworkIdentityWithOnlyDigest::from(self.clone());
-        let other_with_digest = NetworkIdentityWithOnlyDigest::from(other.clone());
-        self_with_digest == other_with_digest
+        easytier_core::config::NetworkIdentity::from(self)
+            == easytier_core::config::NetworkIdentity::from(other)
     }
 }
 
 impl Eq for NetworkIdentity {}
 
 impl std::hash::Hash for NetworkIdentity {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        let self_with_digest = NetworkIdentityWithOnlyDigest::from(self.clone());
-        self_with_digest.hash(state);
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::hash::Hash::hash(&easytier_core::config::NetworkIdentity::from(self), state);
     }
 }
 
 impl NetworkIdentity {
     pub fn new(network_name: String, network_secret: String) -> Self {
-        let mut network_secret_digest = [0u8; 32];
-        generate_digest_from_str(&network_name, &network_secret, &mut network_secret_digest);
-
-        NetworkIdentity {
-            network_name,
-            network_secret: Some(network_secret),
-            network_secret_digest: Some(network_secret_digest),
-        }
+        easytier_core::config::NetworkIdentity::new(network_name, network_secret).into()
     }
 
     /// Create a NetworkIdentity for a credential node (no network_secret).
     /// The node identifies by network_name only and authenticates via credential keypair.
     pub fn new_credential(network_name: String) -> Self {
-        NetworkIdentity {
-            network_name,
-            network_secret: None,
-            network_secret_digest: None,
-        }
+        easytier_core::config::NetworkIdentity::new_credential(network_name).into()
     }
 }
 
 impl Default for NetworkIdentity {
     fn default() -> Self {
-        Self::new("default".to_string(), "".to_string())
+        easytier_core::config::NetworkIdentity::default().into()
     }
 }
 

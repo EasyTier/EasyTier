@@ -1,18 +1,18 @@
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
-use easytier_core::{
+use futures::{SinkExt, StreamExt};
+use snow::{Builder, params::NoiseParams};
+
+use crate::{
     packet::{PacketType, ZCPacket, ZCPacketType},
     peers::secure_datagram::{SecureDatagramDirection, SecureDatagramSession},
+    proto::common::TunnelInfo,
+    runtime_time::{Duration, timeout},
     tunnel::{
         SplitTunnel, StreamItem, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream,
         filter::{TunnelFilter, TunnelWithFilter},
     },
 };
-use futures::{SinkExt, StreamExt};
-use snow::{Builder, params::NoiseParams};
-
-use crate::{common::config::EncryptionAlgorithm, proto::common::TunnelInfo};
 
 const NOISE_MAGIC: &[u8] = b"ET_WEB_NOISE_V1:";
 const NOISE_PROLOGUE: &[u8] = b"easytier-webclient-noise-v1";
@@ -158,9 +158,7 @@ fn decode_noise_payload(payload: &[u8]) -> Option<&[u8]> {
 }
 
 pub fn web_secure_tunnel_supported() -> bool {
-    WEB_SECURE_CIPHER_ALGORITHM
-        .parse::<EncryptionAlgorithm>()
-        .is_ok()
+    cfg!(feature = "aes-gcm")
 }
 
 fn web_secure_cipher_algorithm() -> Result<&'static str, TunnelError> {
@@ -222,8 +220,7 @@ pub async fn upgrade_client_tunnel(
     )))
     .await?;
 
-    let msg2_packet = match tokio::time::timeout(WEB_SECURE_HANDSHAKE_TIMEOUT, stream.next()).await
-    {
+    let msg2_packet = match timeout(WEB_SECURE_HANDSHAKE_TIMEOUT, stream.next()).await {
         Ok(Some(Ok(packet))) => packet,
         Ok(Some(Err(error))) => return Err(error),
         Ok(None) => return Err(TunnelError::Shutdown),
@@ -259,7 +256,7 @@ pub async fn accept_or_upgrade_server_tunnel(
     let mut stream = stream;
     let mut sink = sink;
 
-    let first_packet = match tokio::time::timeout(WEB_SECURE_ACCEPT_TIMEOUT, stream.next()).await {
+    let first_packet = match timeout(WEB_SECURE_ACCEPT_TIMEOUT, stream.next()).await {
         Ok(Some(Ok(packet))) => packet,
         Ok(Some(Err(error))) => return Err(error),
         Ok(None) => return Err(TunnelError::Shutdown),
@@ -318,9 +315,11 @@ pub async fn accept_or_upgrade_server_tunnel(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use bytes::BytesMut;
-    use easytier_core::tunnel::ring::create_ring_tunnel_pair;
+
+    use crate::{runtime_time::sleep, tunnel::ring::create_ring_tunnel_pair};
+
+    use super::*;
 
     #[test]
     fn web_secure_cipher_algorithm_matches_support_flag() {
@@ -349,6 +348,10 @@ mod tests {
 
     #[tokio::test]
     async fn upgrade_client_tunnel_times_out_when_server_never_replies() {
+        if !web_secure_tunnel_supported() {
+            return;
+        }
+
         let (server_tunnel, client_tunnel) = create_ring_tunnel_pair();
         let _server_tunnel = server_tunnel;
 
@@ -380,12 +383,16 @@ mod tests {
 
     #[tokio::test]
     async fn accept_secure_tunnel_after_short_client_delay() {
+        if !web_secure_tunnel_supported() {
+            return;
+        }
+
         let (server_tunnel, client_tunnel) = create_ring_tunnel_pair();
 
         let server_task =
             tokio::spawn(async move { accept_or_upgrade_server_tunnel(server_tunnel).await });
 
-        tokio::time::sleep(Duration::from_millis(1500)).await;
+        sleep(Duration::from_millis(1500)).await;
 
         let client_task = tokio::spawn(async move { upgrade_client_tunnel(client_tunnel).await });
 
