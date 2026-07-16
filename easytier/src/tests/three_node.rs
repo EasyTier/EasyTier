@@ -1716,7 +1716,7 @@ fn run_wireguard_client(
 #[tokio::test]
 #[serial_test::serial]
 pub async fn wireguard_vpn_portal(#[values(true, false)] test_v6: bool) {
-    let mut insts = init_three_node_ex(
+    let insts = init_three_node_ex(
         "tcp",
         |config| {
             if config.get_inst_name() == "inst3" {
@@ -1736,10 +1736,6 @@ pub async fn wireguard_vpn_portal(#[values(true, false)] test_v6: bool) {
     } else {
         ping_test("net_d", "10.1.2.3", None).await;
     }
-
-    let net_ns = NetNS::new(Some("net_d".into()));
-    let _g = net_ns.guard();
-    insts[2].run_vpn_portal().await.unwrap();
 
     let dst_socket_addr = if test_v6 {
         "[fd12::3]:22121".parse().unwrap()

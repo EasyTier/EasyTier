@@ -30,8 +30,9 @@ pub use packet::{HOLE_PUNCH_PACKET_BODY_LEN, hole_punch_packet_tid, new_hole_pun
 pub use policy::{should_background_p2p_with_peer, should_try_p2p_with_peer};
 pub use port_mapping::{
     ActiveUdpPortMapping, UdpPortMappingAttemptError, UdpPortMappingAttemptPhase,
-    UdpPortMappingBackend, UdpPortMappingEstablished, UdpPortMappingLease, UdpPortMappingLifecycle,
-    UdpPortMappingPlatform, should_map_udp_listener, start_udp_port_mapping,
+    UdpPortMappingBackend, UdpPortMappingEstablished, UdpPortMappingEventSink, UdpPortMappingLease,
+    UdpPortMappingLifecycle, UdpPortMappingPlatform, should_map_udp_listener,
+    start_udp_port_mapping,
 };
 pub use runtime::{
     ProtocolUdpHolePunchTransportSink, SelectPunchListener, SelectPunchListenerResponse,

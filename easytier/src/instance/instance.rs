@@ -354,7 +354,6 @@ impl InstanceConfigPatcher {
 
         if provider_config_changed {
             core_instance.reconcile_public_ipv6_provider().await;
-            core_instance.start_public_ipv6_provider().await;
         }
 
         Ok(())
@@ -1022,14 +1021,6 @@ impl Instance {
             .start_after_host_ready(Some(RuntimeDhcpIpv4Host::new(self)))
             .await?;
 
-        Ok(())
-    }
-
-    pub async fn run_vpn_portal(&mut self) -> Result<(), Error> {
-        if self.global_ctx.get_vpn_portal_cidr().is_none() {
-            return Err(anyhow::anyhow!("vpn portal cidr not set.").into());
-        }
-        self.core_instance.start_vpn_portal().await?;
         Ok(())
     }
 

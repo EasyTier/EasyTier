@@ -107,6 +107,7 @@ where
             server_protocol: None,
             accepted_tunnel_events: None,
             udp_hole_punch_platform: None,
+            udp_hole_punch_events: None,
             #[cfg(feature = "proxy-packet")]
             icmp_proxy_host: None,
             proxy_cidr_monitor: None,

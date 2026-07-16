@@ -116,12 +116,16 @@ pub trait UdpPortMappingPlatform: Send + Sync + 'static {
     ) {
         tokio::spawn(lifecycle);
     }
+}
 
+pub trait UdpPortMappingEventSink: Send + Sync + 'static {
     fn publish_udp_port_mapping_established(&self, _event: UdpPortMappingEstablished) {}
 }
 
+impl UdpPortMappingEventSink for () {}
+
 struct ManagedUdpPortMappingLease {
-    platform: Arc<dyn UdpPortMappingPlatform>,
+    events: Arc<dyn UdpPortMappingEventSink>,
     local_listener: url::Url,
     backend: UdpPortMappingBackend,
     gateway_external_port: u16,
@@ -147,7 +151,7 @@ impl Drop for ManagedUdpPortMappingLease {
 
 impl UdpPortMappingLease for ManagedUdpPortMappingLease {
     fn public_addr_resolved(&self, mapped_addr: SocketAddr) {
-        self.platform
+        self.events
             .publish_udp_port_mapping_established(UdpPortMappingEstablished {
                 local_listener: self.local_listener.clone(),
                 mapped_listener: udp_url(mapped_addr),
@@ -165,6 +169,7 @@ impl UdpPortMappingLease for ManagedUdpPortMappingLease {
 
 pub async fn start_udp_port_mapping(
     platform: Arc<dyn UdpPortMappingPlatform>,
+    events: Arc<dyn UdpPortMappingEventSink>,
     local_listener: &url::Url,
 ) -> anyhow::Result<Option<Box<dyn UdpPortMappingLease>>> {
     if !should_map_udp_listener(local_listener) {
@@ -193,7 +198,7 @@ pub async fn start_udp_port_mapping(
     );
 
     Ok(Some(Box::new(ManagedUdpPortMappingLease {
-        platform,
+        events,
         local_listener: local_listener.clone(),
         backend,
         gateway_external_port,
@@ -420,11 +425,14 @@ mod tests {
             removals: removals.clone(),
         });
 
-        let lease =
-            start_udp_port_mapping(platform.clone(), &"udp://0.0.0.0:11010".parse().unwrap())
-                .await
-                .unwrap()
-                .unwrap();
+        let lease = start_udp_port_mapping(
+            platform.clone(),
+            Arc::new(()),
+            &"udp://0.0.0.0:11010".parse().unwrap(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
         assert_eq!(
             *platform.attempts.lock().unwrap(),
             vec![UdpPortMappingBackend::Igd, UdpPortMappingBackend::NatPmp]

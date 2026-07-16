@@ -43,7 +43,7 @@ use crate::{
     },
     dhcp::{DhcpIpv4Host, DhcpIpv4RouteSource, DhcpIpv4Service},
     hole_punch::tcp::{TcpHolePunchConnector, TcpHolePunchHost},
-    hole_punch::udp::UdpPortMappingPlatform,
+    hole_punch::udp::{UdpPortMappingEventSink, UdpPortMappingPlatform},
     listener::{
         AcceptedSocketHandler, ListenerEventSink, ListenerEventSinkGroup, ListenerFactory,
         RunningListenerProvider, RunningListenerRegistry, SocketListener,
@@ -452,6 +452,8 @@ where
     /// Optional OS port-mapping adapter. STUN-only hole punching remains
     /// available when the host does not provide one.
     pub udp_hole_punch_platform: Option<Arc<dyn UdpPortMappingPlatform>>,
+    /// Optional presentation sink for successful UDP port mappings.
+    pub udp_hole_punch_events: Option<Arc<dyn UdpPortMappingEventSink>>,
     #[cfg(feature = "proxy-packet")]
     pub icmp_proxy_host: Option<Arc<dyn IcmpProxyHost>>,
     pub proxy_cidr_monitor: Option<Arc<dyn ProxyCidrMonitorHost>>,
@@ -813,6 +815,7 @@ where
             server_protocol,
             accepted_tunnel_events,
             udp_hole_punch_platform,
+            udp_hole_punch_events,
             #[cfg(feature = "proxy-packet")]
             icmp_proxy_host,
             proxy_cidr_monitor,
@@ -935,6 +938,7 @@ where
             host.clone(),
             stun.clone(),
             udp_hole_punch_platform,
+            udp_hole_punch_events.unwrap_or_else(|| Arc::new(())),
             udp_hole_punch_socket_context,
             protocol.clone(),
         );
@@ -1187,7 +1191,7 @@ where
         Ok(())
     }
 
-    pub async fn start_udp_hole_punch(self: &Arc<Self>) -> anyhow::Result<()> {
+    async fn start_udp_hole_punch(self: &Arc<Self>) -> anyhow::Result<()> {
         let _operation = self.operation.lock().await;
         let state = self.state();
         if state != CoreInstanceState::Running {
@@ -1215,7 +1219,7 @@ where
         Ok(())
     }
 
-    pub async fn start_peer_center(self: &Arc<Self>) -> anyhow::Result<()> {
+    async fn start_peer_center(self: &Arc<Self>) -> anyhow::Result<()> {
         let _operation = self.operation.lock().await;
         let state = self.state();
         if state != CoreInstanceState::Running {
@@ -1237,7 +1241,7 @@ where
         Ok(())
     }
 
-    pub async fn start_initial_peers(self: &Arc<Self>) -> anyhow::Result<()> {
+    async fn start_initial_peers(self: &Arc<Self>) -> anyhow::Result<()> {
         let _operation = self.operation.lock().await;
         let state = self.state();
         if state != CoreInstanceState::Running {
@@ -1266,7 +1270,7 @@ where
         Ok(())
     }
 
-    pub async fn start_transport_proxy(self: &Arc<Self>) -> anyhow::Result<()> {
+    async fn start_transport_proxy(self: &Arc<Self>) -> anyhow::Result<()> {
         let _operation = self.operation.lock().await;
         let state = self.state();
         if state != CoreInstanceState::Running {
@@ -1300,10 +1304,12 @@ where
         let Some(public_ipv6_provider) = &self.public_ipv6_provider else {
             return false;
         };
-        public_ipv6_provider.apply_config().await
+        let applied = public_ipv6_provider.apply_config().await;
+        public_ipv6_provider.start().await;
+        applied
     }
 
-    pub async fn start_public_ipv6_provider(&self) {
+    async fn start_public_ipv6_provider(&self) {
         let Some(public_ipv6_provider) = &self.public_ipv6_provider else {
             return;
         };
@@ -1312,7 +1318,7 @@ where
 
     /// Starts proxy services after the host has prepared its packet interface.
     #[cfg(feature = "proxy-packet")]
-    pub async fn start_proxy(self: &Arc<Self>) -> anyhow::Result<()> {
+    async fn start_proxy(self: &Arc<Self>) -> anyhow::Result<()> {
         let _operation = self.operation.lock().await;
         let state = self.state();
         if state != CoreInstanceState::Running {
@@ -1354,7 +1360,7 @@ where
 
     /// Validates proxy lifecycle ordering when packet proxy support is absent.
     #[cfg(not(feature = "proxy-packet"))]
-    pub async fn start_proxy(self: &Arc<Self>) -> anyhow::Result<()> {
+    async fn start_proxy(self: &Arc<Self>) -> anyhow::Result<()> {
         let _operation = self.operation.lock().await;
         let state = self.state();
         if state != CoreInstanceState::Running {
@@ -1363,7 +1369,7 @@ where
         Ok(())
     }
 
-    pub async fn start_proxy_cidr_monitor(self: &Arc<Self>) -> anyhow::Result<()> {
+    async fn start_proxy_cidr_monitor(self: &Arc<Self>) -> anyhow::Result<()> {
         let _operation = self.operation.lock().await;
         let state = self.state();
         if state != CoreInstanceState::Running {
@@ -1440,7 +1446,7 @@ where
         Ok(())
     }
 
-    pub async fn start_vpn_portal(self: &Arc<Self>) -> anyhow::Result<()> {
+    async fn start_vpn_portal(self: &Arc<Self>) -> anyhow::Result<()> {
         let _operation = self.operation.lock().await;
         let state = self.state();
         if state != CoreInstanceState::Running {
@@ -1626,10 +1632,7 @@ where
         Ok(())
     }
 
-    pub async fn start_dhcp_ipv4(
-        self: &Arc<Self>,
-        host: Arc<dyn DhcpIpv4Host>,
-    ) -> anyhow::Result<()> {
+    async fn start_dhcp_ipv4(self: &Arc<Self>, host: Arc<dyn DhcpIpv4Host>) -> anyhow::Result<()> {
         let _operation = self.operation.lock().await;
         let state = self.state();
         if state != CoreInstanceState::Running {
@@ -2672,6 +2675,7 @@ mod tests {
                 server_protocol: None,
                 accepted_tunnel_events: None,
                 udp_hole_punch_platform: None,
+                udp_hole_punch_events: None,
                 #[cfg(feature = "proxy-packet")]
                 icmp_proxy_host: None,
                 proxy_cidr_monitor: None,

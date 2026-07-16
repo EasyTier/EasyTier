@@ -15,9 +15,9 @@ use crate::{
     connectivity::{direct::DirectConnectorHost, protocol::ClientProtocolUpgrader},
     hole_punch::udp::{
         ProtocolUdpHolePunchTransportSink, UdpHolePunchConnector, UdpHolePunchPeerSource,
-        UdpHolePunchRuntime, UdpPortMappingPlatform, UdpPunchAcceptor, UdpPunchCandidate,
-        UdpPunchConnCounter, UdpPunchListener, UdpPunchSocket, UdpResolvedPublicAddr,
-        UdpSymPunchLock, start_udp_port_mapping,
+        UdpHolePunchRuntime, UdpPortMappingEventSink, UdpPortMappingPlatform, UdpPunchAcceptor,
+        UdpPunchCandidate, UdpPunchConnCounter, UdpPunchListener, UdpPunchSocket,
+        UdpResolvedPublicAddr, UdpSymPunchLock, start_udp_port_mapping,
     },
     peers::peer_manager::PeerManagerCore,
     proto::peer_rpc::UdpHolePunchRpcServer,
@@ -78,6 +78,7 @@ impl UdpHolePunchPeerSource for PeerManagerCore {
 async fn resolve_public_addr_with_policy<S>(
     stun: &dyn StunSocketMapper<S>,
     platform: Option<Arc<dyn UdpPortMappingPlatform>>,
+    events: Arc<dyn UdpPortMappingEventSink>,
     socket: Arc<S>,
     local_listener: &url::Url,
     disable_upnp: bool,
@@ -88,7 +89,7 @@ where
     let port_mapping_lease = if disable_upnp {
         None
     } else if let Some(platform) = platform {
-        match start_udp_port_mapping(platform, local_listener).await {
+        match start_udp_port_mapping(platform, events, local_listener).await {
             Ok(lease) => lease,
             Err(error) => {
                 tracing::warn!(
@@ -169,6 +170,7 @@ where
         host: Arc<H>,
         stun: Arc<StunProviderSlot<HostUdpSocket<H>>>,
         platform: Option<Arc<dyn UdpPortMappingPlatform>>,
+        events: Arc<dyn UdpPortMappingEventSink>,
         socket_context: SocketContext,
         protocol: Arc<dyn ClientProtocolUpgrader<HostTcpSocket<H>>>,
     ) -> Self {
@@ -183,6 +185,7 @@ where
             peer_manager.clone(),
             stun_mapper,
             platform,
+            events,
             socket_context,
         ));
         let sym_punch_lock = UdpSymPunchLock::default();
@@ -301,6 +304,7 @@ where
     peer_manager: Arc<PeerManagerCore>,
     stun: Arc<dyn StunSocketMapper<HostUdpSocket<H>>>,
     platform: Option<Arc<dyn UdpPortMappingPlatform>>,
+    events: Arc<dyn UdpPortMappingEventSink>,
     socket_context: SocketContext,
 }
 
@@ -314,6 +318,7 @@ where
         peer_manager: Arc<PeerManagerCore>,
         stun: Arc<dyn StunSocketMapper<HostUdpSocket<H>>>,
         platform: Option<Arc<dyn UdpPortMappingPlatform>>,
+        events: Arc<dyn UdpPortMappingEventSink>,
         socket_context: SocketContext,
     ) -> Self {
         Self {
@@ -321,6 +326,7 @@ where
             peer_manager,
             stun,
             platform,
+            events,
             socket_context,
         }
     }
@@ -379,6 +385,7 @@ where
         resolve_public_addr_with_policy(
             self.stun.as_ref(),
             self.platform.clone(),
+            self.events.clone(),
             socket,
             &local_listener,
             self.peer_manager.p2p_policy_flags().disable_upnp,
@@ -571,7 +578,20 @@ mod tests {
     #[derive(Debug, Default)]
     struct LeaseState {
         drops: AtomicUsize,
-        resolved: Mutex<Vec<SocketAddr>>,
+    }
+
+    #[derive(Default)]
+    struct MockEvents {
+        established: Mutex<Vec<crate::hole_punch::udp::UdpPortMappingEstablished>>,
+    }
+
+    impl UdpPortMappingEventSink for MockEvents {
+        fn publish_udp_port_mapping_established(
+            &self,
+            event: crate::hole_punch::udp::UdpPortMappingEstablished,
+        ) {
+            self.established.lock().unwrap().push(event);
+        }
     }
 
     #[derive(Debug)]
@@ -651,19 +671,6 @@ mod tests {
                 backend,
             }))
         }
-
-        fn publish_udp_port_mapping_established(
-            &self,
-            event: crate::hole_punch::udp::UdpPortMappingEstablished,
-        ) {
-            let ip = event.mapped_listener.host_str().unwrap().parse().unwrap();
-            let port = event.mapped_listener.port().unwrap();
-            self.lease_state
-                .resolved
-                .lock()
-                .unwrap()
-                .push(SocketAddr::new(ip, port));
-        }
     }
 
     fn socket() -> Arc<MockSocket> {
@@ -685,6 +692,7 @@ mod tests {
         let resolved = resolve_public_addr_with_policy(
             &stun,
             Some(platform.clone()),
+            Arc::new(()),
             socket(),
             &listener_url(),
             false,
@@ -702,10 +710,12 @@ mod tests {
     async fn stun_failure_releases_mapping_without_notification() {
         let lease_state = Arc::new(LeaseState::default());
         let platform = Arc::new(MockPlatform::with_lease(lease_state.clone()));
+        let events = Arc::new(MockEvents::default());
 
         let result = resolve_public_addr_with_policy(
             &MockStun::failing(),
             Some(platform),
+            events.clone(),
             socket(),
             &listener_url(),
             false,
@@ -721,7 +731,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(lease_state.drops.load(Ordering::SeqCst), 1);
-        assert!(lease_state.resolved.lock().unwrap().is_empty());
+        assert!(events.established.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -734,6 +744,7 @@ mod tests {
         let disabled = resolve_public_addr_with_policy(
             &stun,
             Some(platform.clone()),
+            Arc::new(()),
             socket(),
             &listener_url(),
             true,
@@ -746,6 +757,7 @@ mod tests {
         let enabled = resolve_public_addr_with_policy(
             &stun,
             Some(platform.clone()),
+            Arc::new(()),
             socket(),
             &listener_url(),
             false,
@@ -761,10 +773,12 @@ mod tests {
         let mapped_addr = "198.51.100.10:40125".parse().unwrap();
         let lease_state = Arc::new(LeaseState::default());
         let platform = Arc::new(MockPlatform::with_lease(lease_state.clone()));
+        let events = Arc::new(MockEvents::default());
 
         let resolved = resolve_public_addr_with_policy(
             &MockStun::succeeds_with(mapped_addr),
             Some(platform),
+            events.clone(),
             socket(),
             &listener_url(),
             false,
@@ -772,7 +786,14 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(*lease_state.resolved.lock().unwrap(), vec![mapped_addr]);
+        assert_eq!(
+            *events.established.lock().unwrap(),
+            vec![crate::hole_punch::udp::UdpPortMappingEstablished {
+                local_listener: listener_url(),
+                mapped_listener: "udp://198.51.100.10:40125".parse().unwrap(),
+                backend: crate::hole_punch::udp::UdpPortMappingBackend::Igd,
+            }]
+        );
         assert_eq!(lease_state.drops.load(Ordering::SeqCst), 0);
         drop(resolved);
         tokio::time::timeout(std::time::Duration::from_secs(1), async {

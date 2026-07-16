@@ -126,7 +126,14 @@ pub(crate) fn runtime_core_instance_adapters_with_process_runtime(
         server_protocol: Some(runtime_server_protocol_upgrader(global_ctx.clone())),
         accepted_tunnel_events: Some(runtime_accepted_tunnel_event_sink(global_ctx.clone())),
         udp_hole_punch_platform: Some(
-            crate::instance::udp_hole_punch::runtime_udp_hole_punch_platform(global_ctx.clone()),
+            crate::instance::udp_hole_punch::runtime_udp_hole_punch_platform(
+                global_ctx.net_ns.clone(),
+            ),
+        ),
+        udp_hole_punch_events: Some(
+            crate::instance::udp_hole_punch::runtime_udp_port_mapping_event_sink(
+                global_ctx.clone(),
+            ),
         ),
         icmp_proxy_host: {
             #[cfg(test)]

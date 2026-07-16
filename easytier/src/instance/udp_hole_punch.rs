@@ -8,16 +8,18 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use easytier_core::hole_punch::udp::{
     ActiveUdpPortMapping, UdpPortMappingAttemptError, UdpPortMappingBackend,
-    UdpPortMappingEstablished, UdpPortMappingLifecycle, UdpPortMappingPlatform,
+    UdpPortMappingEstablished, UdpPortMappingEventSink, UdpPortMappingLifecycle,
+    UdpPortMappingPlatform,
 };
 
 use crate::common::{
     global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
+    netns::NetNS,
     upnp,
 };
 
 struct RuntimeUdpHolePunchPlatform {
-    global_ctx: ArcGlobalCtx,
+    net_ns: NetNS,
 }
 
 #[async_trait]
@@ -27,8 +29,7 @@ impl UdpPortMappingPlatform for RuntimeUdpHolePunchPlatform {
         backend: UdpPortMappingBackend,
         local_listener: &url::Url,
     ) -> Result<Box<dyn ActiveUdpPortMapping>, UdpPortMappingAttemptError> {
-        upnp::establish_udp_port_mapping(self.global_ctx.clone(), backend, local_listener.clone())
-            .await
+        upnp::establish_udp_port_mapping(self.net_ns.clone(), backend, local_listener.clone()).await
     }
 
     fn spawn_udp_port_mapping_lifecycle(
@@ -36,9 +37,15 @@ impl UdpPortMappingPlatform for RuntimeUdpHolePunchPlatform {
         local_listener: url::Url,
         lifecycle: UdpPortMappingLifecycle,
     ) {
-        upnp::spawn_udp_port_mapping_lifecycle(self.global_ctx.clone(), local_listener, lifecycle);
+        upnp::spawn_udp_port_mapping_lifecycle(self.net_ns.clone(), local_listener, lifecycle);
     }
+}
 
+struct GlobalCtxUdpPortMappingEventSink {
+    global_ctx: ArcGlobalCtx,
+}
+
+impl UdpPortMappingEventSink for GlobalCtxUdpPortMappingEventSink {
     fn publish_udp_port_mapping_established(&self, event: UdpPortMappingEstablished) {
         self.global_ctx
             .issue_event(GlobalCtxEvent::ListenerPortMappingEstablished {
@@ -49,8 +56,12 @@ impl UdpPortMappingPlatform for RuntimeUdpHolePunchPlatform {
     }
 }
 
-pub(crate) fn runtime_udp_hole_punch_platform(
+pub(crate) fn runtime_udp_hole_punch_platform(net_ns: NetNS) -> Arc<dyn UdpPortMappingPlatform> {
+    Arc::new(RuntimeUdpHolePunchPlatform { net_ns })
+}
+
+pub(crate) fn runtime_udp_port_mapping_event_sink(
     global_ctx: ArcGlobalCtx,
-) -> Arc<dyn UdpPortMappingPlatform> {
-    Arc::new(RuntimeUdpHolePunchPlatform { global_ctx })
+) -> Arc<dyn UdpPortMappingEventSink> {
+    Arc::new(GlobalCtxUdpPortMappingEventSink { global_ctx })
 }
