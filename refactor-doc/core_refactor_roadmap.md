@@ -231,6 +231,13 @@ native protocol-upgrade Adapter until the dependency can build its protocol and
 abstract-socket runtime without the OS socket implementation. Core continues to
 own protocol selection and the UDP-session seam.
 
+Known resource debt: the current QUIC Adapter creates one Quinn `Endpoint` for
+each client-side `ConnectedUdpSession` and one for each server-side accepted
+peer session. This round deliberately preserves that per-session ownership. A
+later benchmark must quantify Endpoint memory and runtime-resource cost, then
+evaluate pooling by compatible address family and transport domain before
+changing lifecycle or sharing semantics.
+
 WireGuard configuration, key derivation and the BoringTun engine form one
 native Module. `boringtun-easytier` 0.6.1 fails on `wasm32-wasip1` because its
 monotonic-clock implementation only selects Windows or Unix. Its mock-clock

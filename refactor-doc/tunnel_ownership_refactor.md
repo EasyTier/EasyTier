@@ -48,11 +48,12 @@ creation with protocol upgrade or peer admission.
 | FakeTCP and Unix | native socket resources | Host Adapters produce a virtual TCP socket or byte stream; core owns portable framing |
 | Go-owned sockets, DNS and host policy | `easytier-go-host` | opaque handles implement the same core Host Adapter requests; core/Tokio initiates I/O |
 
-Native protocol-specific standalone dialers/listeners may remain for tests,
-the web entry point, or VPN portal composition. They implement the core
-`TunnelDialer` / `SocketListener` contracts and reuse the same protocol
-upgrade helpers. They are not a second manual/direct/hole-punch orchestrator
-and do not own raw TCP, UDP, or Ring Tunnel implementations.
+Native protocol-specific entry points reuse the same protocol engine helpers;
+they do not require a parallel peer-connectivity connector/listener path.
+Protocol tests should enter through the core socket/session Seam and the
+runtime protocol Adapters. Non-peer web or VPN portal entry points may call
+engine-specific helpers but do not own raw TCP, UDP, or Ring Tunnel
+implementations.
 
 ## Deleted Native Ownership
 
@@ -65,6 +66,8 @@ The closure removed:
 - `easytier::tunnel::TunnelListener`;
 - `easytier::tunnel::TunnelConnCounter`;
 - test-only `CoreTunnelDialer` / `CoreTunnelListener` wrappers;
+- the standalone QUIC endpoint pool, connector, listener and duplicate UDP
+  session/DCID lifecycle;
 - the `easytier-web` legacy listener wrapper.
 
 Rust source compatibility for these paths is intentionally not retained.
