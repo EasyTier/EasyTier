@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use cidr::{IpCidr, Ipv4Inet};
-use easytier_core::dhcp::{DhcpIpv4ApplyOutcome, DhcpIpv4Host};
+use easytier_core::dhcp::{DhcpIpv4ApplyOutcome, DhcpIpv4ApplyPermit, DhcpIpv4Host};
 use easytier_core::process_runtime::CoreProcessRuntime;
 #[cfg(any(feature = "kcp", feature = "quic"))]
 use easytier_core::proxy::wrapped_transport::WrappedTransportEngine;
@@ -263,7 +263,7 @@ impl RpcServerHook for InstanceRpcServerHook {
 #[derive(Default)]
 struct ConfigOperation {
     closing: AtomicBool,
-    operation: Mutex<()>,
+    operation: Arc<Mutex<()>>,
     cancel: CancellationToken,
 }
 
@@ -695,7 +695,6 @@ impl RuntimeDhcpIpv4Host {
         &self,
         next: Option<Ipv4Inet>,
     ) -> anyhow::Result<Option<Ipv4Inet>> {
-        let _config_operation = self.config_operation.operation.lock().await;
         self.ensure_config_open()?;
         #[cfg(feature = "tun")]
         tokio::select! {
@@ -795,10 +794,12 @@ impl DhcpIpv4Host for RuntimeDhcpIpv4Host {
         _previous: Option<Ipv4Inet>,
         next: Option<Ipv4Inet>,
     ) -> DhcpIpv4ApplyOutcome {
-        match self.apply_dhcp_ipv4_effects(next).await {
+        let permit = self.config_operation.operation.clone().lock_owned().await;
+        let outcome = match self.apply_dhcp_ipv4_effects(next).await {
             Ok(actual) => DhcpIpv4ApplyOutcome::applied(actual),
             Err(error) => DhcpIpv4ApplyOutcome::failed(self.global_ctx.get_ipv4(), error),
-        }
+        };
+        outcome.with_permit(DhcpIpv4ApplyPermit::new(permit))
     }
 
     fn publish_dhcp_ipv4(
@@ -1660,6 +1661,9 @@ mod tests {
         assert!(outcome.result.is_ok());
         assert_eq!(outcome.actual, Some(requested));
         assert_eq!(instance.global_ctx.get_ipv4(), Some(requested));
+        assert!(instance.config_operation.operation.try_lock().is_err());
+        drop(outcome);
+        assert!(instance.config_operation.operation.try_lock().is_ok());
     }
 
     #[cfg(all(feature = "tun", feature = "magic-dns"))]

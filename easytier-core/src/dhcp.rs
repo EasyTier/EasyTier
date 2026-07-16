@@ -126,9 +126,22 @@ pub trait DhcpIpv4Host: Send + Sync + 'static {
     }
 }
 
+pub struct DhcpIpv4ApplyPermit {
+    _guard: Box<dyn Send>,
+}
+
+impl DhcpIpv4ApplyPermit {
+    pub fn new(guard: impl Send + 'static) -> Self {
+        Self {
+            _guard: Box::new(guard),
+        }
+    }
+}
+
 pub struct DhcpIpv4ApplyOutcome {
     pub actual: Option<Ipv4Inet>,
     pub result: anyhow::Result<()>,
+    permit: Option<DhcpIpv4ApplyPermit>,
 }
 
 impl DhcpIpv4ApplyOutcome {
@@ -136,6 +149,7 @@ impl DhcpIpv4ApplyOutcome {
         Self {
             actual,
             result: Ok(()),
+            permit: None,
         }
     }
 
@@ -143,7 +157,13 @@ impl DhcpIpv4ApplyOutcome {
         Self {
             actual,
             result: Err(error.into()),
+            permit: None,
         }
+    }
+
+    pub fn with_permit(mut self, permit: DhcpIpv4ApplyPermit) -> Self {
+        self.permit = Some(permit);
+        self
     }
 }
 
@@ -191,27 +211,27 @@ impl DhcpIpv4Service {
         };
         tracing::debug!(?previous, ?next, "DHCP IPv4 reconciliation applying change");
         let outcome = self.host.apply_dhcp_ipv4(previous, next).await;
+        let DhcpIpv4ApplyOutcome {
+            actual,
+            result,
+            permit,
+        } = outcome;
         self.runtime_config.update_peer_with(|peer| {
-            peer.runtime.core.routes.ipv4 = outcome.actual.map(|actual| IpPrefix {
+            peer.runtime.core.routes.ipv4 = actual.map(|actual| IpPrefix {
                 address: actual.address().into(),
                 prefix_len: actual.network_length(),
             });
         });
-        match outcome.result {
+        match result {
             Ok(()) => {
-                self.allocator.lock().unwrap().commit(outcome.actual);
-                self.host.publish_dhcp_ipv4(previous, next, outcome.actual);
+                self.allocator.lock().unwrap().commit(actual);
+                self.host.publish_dhcp_ipv4(previous, next, actual);
             }
             Err(err) => {
-                tracing::error!(
-                    ?previous,
-                    ?next,
-                    actual = ?outcome.actual,
-                    ?err,
-                    "DHCP IPv4 apply failed"
-                );
+                tracing::error!(?previous, ?next, ?actual, ?err, "DHCP IPv4 apply failed");
             }
         }
+        drop(permit);
         snapshot.has_routes
     }
 
@@ -255,8 +275,21 @@ mod tests {
     struct RecordingHost {
         interface_closed: AtomicBool,
         fail_apply: AtomicBool,
+        hold_apply_permit: AtomicBool,
+        permit_held: Arc<AtomicBool>,
+        published_with_permit: AtomicBool,
+        runtime_config: Mutex<Option<CoreRuntimeConfigStore>>,
+        published_runtime_ipv4: Mutex<Vec<Option<IpPrefix>>>,
         changes: Mutex<Vec<(Option<Ipv4Inet>, Option<Ipv4Inet>)>>,
         published: Mutex<Vec<(Option<Ipv4Inet>, Option<Ipv4Inet>, Option<Ipv4Inet>)>>,
+    }
+
+    struct RecordingPermit(Arc<AtomicBool>);
+
+    impl Drop for RecordingPermit {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::Release);
+        }
     }
 
     #[async_trait]
@@ -271,10 +304,18 @@ mod tests {
             next: Option<Ipv4Inet>,
         ) -> DhcpIpv4ApplyOutcome {
             self.changes.lock().unwrap().push((previous, next));
-            if self.fail_apply.load(Ordering::Acquire) {
-                return DhcpIpv4ApplyOutcome::failed(None, anyhow::anyhow!("apply failed"));
+            let mut outcome = if self.fail_apply.load(Ordering::Acquire) {
+                DhcpIpv4ApplyOutcome::failed(None, anyhow::anyhow!("apply failed"))
+            } else {
+                DhcpIpv4ApplyOutcome::applied(next)
+            };
+            if self.hold_apply_permit.load(Ordering::Acquire) {
+                assert!(!self.permit_held.swap(true, Ordering::AcqRel));
+                outcome = outcome.with_permit(DhcpIpv4ApplyPermit::new(RecordingPermit(
+                    self.permit_held.clone(),
+                )));
             }
-            DhcpIpv4ApplyOutcome::applied(next)
+            outcome
         }
 
         fn publish_dhcp_ipv4(
@@ -283,6 +324,20 @@ mod tests {
             requested: Option<Ipv4Inet>,
             actual: Option<Ipv4Inet>,
         ) {
+            self.published_with_permit
+                .store(self.permit_held.load(Ordering::Acquire), Ordering::Release);
+            if let Some(runtime_config) = self.runtime_config.lock().unwrap().as_ref() {
+                self.published_runtime_ipv4.lock().unwrap().push(
+                    runtime_config
+                        .snapshot()
+                        .peer
+                        .runtime
+                        .core
+                        .routes
+                        .ipv4
+                        .clone(),
+                );
+            }
             self.published
                 .lock()
                 .unwrap()
@@ -298,6 +353,7 @@ mod tests {
             crate::runtime_config::CoreRuntimeConfig::default(),
             Arc::new(crate::peers::context::PeerRuntimeSnapshot::default()),
         );
+        *host.runtime_config.lock().unwrap() = Some(runtime_config.clone());
         let service = DhcpIpv4Service::new(
             Arc::new(StaticRouteSource {
                 snapshot: Mutex::new(snapshot),
@@ -398,6 +454,29 @@ mod tests {
                 Some("10.126.126.1/24".parse().unwrap())
             )]
         );
+    }
+
+    #[tokio::test]
+    async fn service_holds_host_permit_through_store_and_event_commit() {
+        let host = Arc::new(RecordingHost::default());
+        host.hold_apply_permit.store(true, Ordering::Release);
+        let (service, _runtime_config) = service(
+            DhcpIpv4RouteSnapshot {
+                has_routes: true,
+                used_ipv4: HashSet::new(),
+            },
+            host.clone(),
+        );
+
+        service.reconcile_once().await;
+
+        let expected = Some(IpPrefix::new("10.126.126.1".parse().unwrap(), 24).unwrap());
+        assert!(host.published_with_permit.load(Ordering::Acquire));
+        assert_eq!(
+            host.published_runtime_ipv4.lock().unwrap().as_slice(),
+            &[expected]
+        );
+        assert!(!host.permit_held.load(Ordering::Acquire));
     }
 
     #[tokio::test]
