@@ -29,9 +29,11 @@ use crate::{
     tunnel::{Tunnel, TunnelError, tcp::TcpTunnelUpgrader, udp::UdpTunnelUpgrader},
 };
 
+use super::protocol_default_port;
+
 const BYTE_STREAM_MAX_PACKET_SIZE: usize = 4096;
-const TCP_DEFAULT_PORT: u16 = 11010;
-const UDP_DEFAULT_PORT: u16 = 11010;
+const TCP_DEFAULT_PORT: u16 = protocol_default_port("tcp").expect("tcp must have a default port");
+const UDP_DEFAULT_PORT: u16 = protocol_default_port("udp").expect("udp must have a default port");
 
 #[async_trait]
 #[auto_impl::auto_impl(Box, Arc)]

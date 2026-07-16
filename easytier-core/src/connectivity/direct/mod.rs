@@ -1295,19 +1295,8 @@ fn connector_addrs_from_request(
 }
 
 fn mapped_listener_port(url: &Url) -> Option<u16> {
-    url.port().or_else(|| default_port(url.scheme()))
-}
-
-fn default_port(scheme: &str) -> Option<u16> {
-    match scheme {
-        "tcp" | "udp" => Some(11010),
-        "wg" => Some(11011),
-        "quic" => Some(11012),
-        "ws" => Some(80),
-        "wss" => Some(443),
-        "faketcp" => Some(11013),
-        _ => None,
-    }
+    url.port()
+        .or_else(|| crate::connectivity::protocol::protocol_default_port(url.scheme()))
 }
 
 fn is_udp_protocol(scheme: &str) -> bool {
