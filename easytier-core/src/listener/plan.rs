@@ -166,15 +166,7 @@ pub(crate) fn ring_listener_url(self_id: uuid::Uuid) -> Url {
 }
 
 pub(crate) fn listener_default_port(scheme: &str) -> Option<u16> {
-    match scheme {
-        "tcp" | "udp" => Some(11010),
-        "wg" => Some(11011),
-        "quic" => Some(11012),
-        "ws" => Some(80),
-        "wss" => Some(443),
-        "faketcp" => Some(11013),
-        _ => None,
-    }
+    crate::connectivity::protocol::protocol_default_port(scheme)
 }
 
 pub(crate) fn listener_url_bind_device(url: &Url) -> Option<String> {

@@ -7,7 +7,6 @@ use crate::{
             ConfigFileControl, ConfigLoader, ConsoleLoggerConfig, EncryptionAlgorithm,
             FileLoggerConfig, LoggingConfigLoader, NetworkIdentity, PeerConfig, PortForwardConfig,
             TomlConfigLoader, VpnPortalConfig, load_config_from_file, parse_mapped_listener_urls,
-            process_secure_mode_cfg,
         },
         constants::EASYTIER_VERSION,
         log,
@@ -22,6 +21,7 @@ use crate::{
 use anyhow::Context;
 use cidr::IpCidr;
 use clap::{CommandFactory, Parser};
+use easytier_core::config::normalize_secure_mode_config;
 use guarden::defer;
 use rust_i18n::t;
 use std::{
@@ -1075,7 +1075,7 @@ impl NetworkOptions {
                 local_private_key: Some(credential_secret.clone()),
                 local_public_key: None,
             };
-            cfg.set_secure_mode(Some(process_secure_mode_cfg(c)?));
+            cfg.set_secure_mode(Some(normalize_secure_mode_config(c)?));
         } else if let Some(secure_mode) = self.secure_mode
             && secure_mode
         {
@@ -1084,7 +1084,7 @@ impl NetworkOptions {
                 local_private_key: self.local_private_key.clone(),
                 local_public_key: self.local_public_key.clone(),
             };
-            cfg.set_secure_mode(Some(process_secure_mode_cfg(c)?));
+            cfg.set_secure_mode(Some(normalize_secure_mode_config(c)?));
         }
 
         let mut f = cfg.get_flags();

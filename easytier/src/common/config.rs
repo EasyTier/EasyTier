@@ -6,7 +6,6 @@ use std::{
 
 use anyhow::Context;
 use ariadne::{CharSet, Config as AriadneConfig, IndexType, Label, Report, ReportKind, Source};
-use base64::{Engine as _, prelude::BASE64_STANDARD};
 use clap::ValueEnum;
 use clap::builder::PossibleValue;
 use prost_reflect::{DynamicMessage, ReflectMessage, SerializeOptions};
@@ -14,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString, VariantArray};
 use tokio::io::AsyncReadExt as _;
 
+use easytier_core::config::MappedListenerPolicy;
 pub use easytier_core::proxy::gateway::PortForwardConfig;
 
 use crate::{
@@ -24,7 +24,7 @@ use crate::{
         api::manage::ConfigSource as RpcConfigSource,
         common::{CompressionAlgoPb, SecureModeConfig},
     },
-    tunnel::{IpScheme, TunnelScheme},
+    tunnel::IpScheme,
 };
 
 use super::env_parser;
@@ -128,34 +128,11 @@ fn flags_diff_from_default(flags: &Flags) -> serde_json::Map<String, serde_json:
         .collect()
 }
 
-fn mapped_listener_allows_implicit_port(url: &url::Url) -> bool {
-    TunnelScheme::try_from(url)
-        .ok()
-        .and_then(|scheme| IpScheme::try_from(scheme).ok())
-        .is_some()
-}
-
-pub fn validate_mapped_listener_url(url: &url::Url) -> Result<(), anyhow::Error> {
-    if url.port().is_none() && !mapped_listener_allows_implicit_port(url) {
-        anyhow::bail!("mapped listener port is missing: {}", url);
-    }
-
-    Ok(())
-}
-
 pub fn parse_mapped_listener_urls(
     mapped_listeners: &[String],
 ) -> Result<Vec<url::Url>, anyhow::Error> {
-    mapped_listeners
-        .iter()
-        .map(|s| {
-            let url: url::Url = s
-                .parse()
-                .with_context(|| format!("mapped listener is not a valid url: {}", s))?;
-            validate_mapped_listener_url(&url)?;
-            Ok(url)
-        })
-        .collect()
+    MappedListenerPolicy::new(IpScheme::VARIANTS.iter().map(ToString::to_string))
+        .parse_urls(mapped_listeners)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Display, EnumString, VariantArray)]
@@ -485,42 +462,6 @@ impl LoggingConfigLoader for &LoggingConfig {
 pub struct VpnPortalConfig {
     pub client_cidr: cidr::Ipv4Cidr,
     pub wireguard_listen: SocketAddr,
-}
-
-pub fn process_secure_mode_cfg(mut user_cfg: SecureModeConfig) -> anyhow::Result<SecureModeConfig> {
-    if !user_cfg.enabled {
-        return Ok(user_cfg);
-    }
-
-    let private_key = if user_cfg.local_private_key.is_none() {
-        // if no private key, generate random one
-        let private = x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng);
-        user_cfg.local_private_key = Some(BASE64_STANDARD.encode(private.clone().as_bytes()));
-        private
-    } else {
-        // check if private key is valid
-        user_cfg.private_key()?
-    };
-
-    let public = x25519_dalek::PublicKey::from(&private_key);
-
-    match user_cfg.local_public_key {
-        None => {
-            user_cfg.local_public_key = Some(BASE64_STANDARD.encode(public.as_bytes()));
-        }
-        Some(ref user_pub) => {
-            let public = user_cfg.public_key()?;
-            if *user_pub != BASE64_STANDARD.encode(public.as_bytes()) {
-                return Err(anyhow::anyhow!(
-                    "local public key {} does not match generated public key {}",
-                    user_pub,
-                    BASE64_STANDARD.encode(public.as_bytes())
-                ));
-            }
-        }
-    }
-
-    Ok(user_cfg)
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -1568,37 +1509,6 @@ enabled = true
         assert_eq!(identity.network_name, "default");
         assert_eq!(identity.network_secret.as_deref(), Some(""));
         assert!(identity.network_secret_digest.is_some());
-    }
-
-    #[test]
-    fn test_parse_mapped_listener_urls_allows_ws_without_port() {
-        let parsed = parse_mapped_listener_urls(&[
-            "ws://example.com".to_string(),
-            "wss://example.com/path".to_string(),
-        ])
-        .unwrap();
-
-        assert_eq!(parsed.len(), 2);
-        assert_eq!(parsed[0].scheme(), "ws");
-        assert_eq!(parsed[0].port(), None);
-        assert_eq!(parsed[1].scheme(), "wss");
-        assert_eq!(parsed[1].port(), None);
-    }
-
-    #[test]
-    fn test_parse_mapped_listener_urls_allows_tcp_without_port() {
-        let parsed = parse_mapped_listener_urls(&["tcp://127.0.0.1".to_string()]).unwrap();
-
-        assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0].scheme(), "tcp");
-        assert_eq!(parsed[0].port(), None);
-    }
-
-    #[test]
-    fn test_parse_mapped_listener_urls_requires_port_for_non_ip_scheme() {
-        let err = parse_mapped_listener_urls(&["ring://peer-id".to_string()]).unwrap_err();
-
-        assert!(err.to_string().contains("mapped listener port is missing"));
     }
 
     #[test]

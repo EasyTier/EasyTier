@@ -137,30 +137,16 @@ pub enum IpScheme {
 }
 
 impl IpScheme {
-    pub const fn port_offset(self) -> u16 {
-        match self {
-            Self::Tcp | Self::Udp => 0,
-            #[cfg(feature = "wireguard")]
-            Self::Wg => 1,
-            #[cfg(feature = "quic")]
-            Self::Quic => 2,
-            #[cfg(feature = "websocket")]
-            Self::Ws => 1,
-            #[cfg(feature = "websocket")]
-            Self::Wss => 2,
-            #[cfg(feature = "faketcp")]
-            Self::FakeTcp => 3,
-        }
+    pub fn port_offset(self) -> u16 {
+        let scheme: &'static str = self.into();
+        easytier_core::connectivity::protocol::protocol_port_offset(scheme)
+            .expect("IpScheme must have core protocol metadata")
     }
 
-    pub const fn default_port(self) -> u16 {
-        match self {
-            #[cfg(feature = "websocket")]
-            Self::Ws => 80,
-            #[cfg(feature = "websocket")]
-            Self::Wss => 443,
-            _ => 11010 + self.port_offset(),
-        }
+    pub fn default_port(self) -> u16 {
+        let scheme: &'static str = self.into();
+        easytier_core::connectivity::protocol::protocol_default_port(scheme)
+            .expect("IpScheme must have core protocol metadata")
     }
 }
 

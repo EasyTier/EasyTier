@@ -42,19 +42,11 @@ pub use crate::connectivity::protocol::raw::{
     upgrade_accepted_udp as upgrade_accepted_session,
 };
 
-const MANUAL_DEFAULT_PORT: u16 = 11010;
 const MANUAL_PREFLIGHT_DEFAULT_PORT: u16 = 1000;
 const MAX_MANUAL_ENDPOINT_HOPS: usize = 16;
 
 fn manual_default_port(url: &Url) -> u16 {
-    match url.scheme() {
-        "ws" => 80,
-        "wss" => 443,
-        "wg" => 11011,
-        "quic" => 11012,
-        "faketcp" => 11013,
-        _ => MANUAL_DEFAULT_PORT,
-    }
+    crate::connectivity::protocol::protocol_default_port(url.scheme()).unwrap_or(11010)
 }
 
 fn is_manual_endpoint_scheme(scheme: &str) -> bool {
@@ -1360,7 +1352,7 @@ mod tests {
 
         let addrs = resolve_url_addrs(
             &url,
-            MANUAL_DEFAULT_PORT,
+            crate::connectivity::protocol::protocol_default_port("tcp").unwrap(),
             SocketContext::default()
                 .with_ip_version(IpVersion::V6)
                 .with_socket_mark(Some(7)),

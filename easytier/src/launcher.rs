@@ -1,6 +1,5 @@
 use crate::common::config::{
     ConfigFileControl, ConfigSource, PortForwardConfig, parse_mapped_listener_urls,
-    process_secure_mode_cfg,
 };
 #[cfg(feature = "ffi-dataplane")]
 use crate::instance::composition::NativeCoreInstance;
@@ -21,6 +20,7 @@ use crate::{
 };
 use anyhow::Context;
 use chrono::{DateTime, Local};
+use easytier_core::config::normalize_secure_mode_config;
 use easytier_core::process_runtime::CoreProcessRuntime;
 #[cfg(feature = "ffi-dataplane")]
 pub use easytier_core::proxy::gateway::{
@@ -886,7 +886,7 @@ impl NetworkConfigExt for NetworkConfig {
         }
 
         if let Some(credential_secret) = credential_secret {
-            cfg.set_secure_mode(Some(process_secure_mode_cfg(
+            cfg.set_secure_mode(Some(normalize_secure_mode_config(
                 crate::proto::common::SecureModeConfig {
                     enabled: true,
                     local_private_key: Some(credential_secret),
@@ -897,7 +897,7 @@ impl NetworkConfigExt for NetworkConfig {
             cfg.set_secure_mode(
                 self.secure_mode
                     .clone()
-                    .map(process_secure_mode_cfg)
+                    .map(normalize_secure_mode_config)
                     .transpose()?,
             );
         }
@@ -1251,11 +1251,12 @@ impl NetworkConfigExt for NetworkConfig {
 mod tests {
     use super::{EasyTierLauncher, NetworkInstance};
     use crate::{
-        common::config::{ConfigLoader, process_secure_mode_cfg},
+        common::config::ConfigLoader,
         launcher::NetworkConfigExt,
         proto::common::{CompressionAlgoPb, SecureModeConfig},
     };
     use base64::prelude::{BASE64_STANDARD, Engine as _};
+    use easytier_core::config::normalize_secure_mode_config;
     use easytier_core::process_runtime::CoreProcessRuntime;
     use rand::Rng;
     use std::{
@@ -1603,7 +1604,7 @@ mod tests {
             }
 
             if let Some(secure_mode) = config.get_secure_mode() {
-                config.set_secure_mode(Some(process_secure_mode_cfg(secure_mode)?));
+                config.set_secure_mode(Some(normalize_secure_mode_config(secure_mode)?));
             }
 
             let network_config = super::NetworkConfig::new_from_config(&config)?;

@@ -13,6 +13,30 @@ use super::transport::ConnectedTransport;
 
 pub mod raw;
 
+/// Returns the listener-port offset used when expanding a single base port
+/// into EasyTier's protocol-specific listener set.
+pub const fn protocol_port_offset(scheme: &str) -> Option<u16> {
+    match scheme.as_bytes() {
+        b"tcp" | b"udp" => Some(0),
+        b"wg" | b"ws" => Some(1),
+        b"quic" | b"wss" => Some(2),
+        b"faketcp" => Some(3),
+        _ => None,
+    }
+}
+
+/// Returns the default port for a concrete EasyTier IP protocol.
+pub const fn protocol_default_port(scheme: &str) -> Option<u16> {
+    match scheme.as_bytes() {
+        b"ws" => Some(80),
+        b"wss" => Some(443),
+        _ => match protocol_port_offset(scheme) {
+            Some(offset) => Some(11010 + offset),
+            None => None,
+        },
+    }
+}
+
 #[async_trait]
 pub trait ClientProtocolUpgrader<TcpSocket>: Send + Sync + 'static {
     fn supports_scheme(&self, scheme: &str) -> bool;
@@ -422,6 +446,25 @@ mod tests {
 
     use super::*;
     use crate::socket::udp::{UdpSessionKind, VirtualUdpSocket};
+
+    #[test]
+    fn protocol_port_metadata_is_authoritative_for_all_ip_protocols() {
+        let cases = [
+            ("tcp", 0, 11010),
+            ("udp", 0, 11010),
+            ("wg", 1, 11011),
+            ("quic", 2, 11012),
+            ("ws", 1, 80),
+            ("wss", 2, 443),
+            ("faketcp", 3, 11013),
+        ];
+
+        for (scheme, offset, port) in cases {
+            assert_eq!(protocol_port_offset(scheme), Some(offset));
+            assert_eq!(protocol_default_port(scheme), Some(port));
+        }
+        assert_eq!(protocol_default_port("ring"), None);
+    }
 
     struct MockTcpSocket;
 

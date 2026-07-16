@@ -1,15 +1,97 @@
 use std::{
-    collections::hash_map::DefaultHasher,
+    collections::{BTreeSet, hash_map::DefaultHasher},
     hash::{Hash, Hasher},
     net::IpAddr,
 };
 
+use anyhow::Context as _;
+use base64::{Engine as _, prelude::BASE64_STANDARD};
 use easytier_proto::{common as common_pb, core_config as pb};
 use serde::{Deserialize, Serialize};
+use url::Url;
 
 pub type PeerId = u32;
 
 pub type NetworkSecretDigest = [u8; 32];
+
+/// Host capabilities used by the portable mapped-listener validation rule.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MappedListenerPolicy {
+    implicit_port_schemes: BTreeSet<String>,
+}
+
+impl MappedListenerPolicy {
+    pub fn new<I, S>(implicit_port_schemes: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self {
+            implicit_port_schemes: implicit_port_schemes
+                .into_iter()
+                .map(Into::into)
+                .map(|scheme: String| scheme.to_ascii_lowercase())
+                .collect(),
+        }
+    }
+
+    pub fn validate(&self, url: &Url) -> anyhow::Result<()> {
+        if url.port().is_none() && !self.implicit_port_schemes.contains(url.scheme()) {
+            anyhow::bail!("mapped listener port is missing: {}", url);
+        }
+
+        Ok(())
+    }
+
+    pub fn parse_urls(&self, mapped_listeners: &[String]) -> anyhow::Result<Vec<Url>> {
+        mapped_listeners
+            .iter()
+            .map(|value| {
+                let url: Url = value
+                    .parse()
+                    .with_context(|| format!("mapped listener is not a valid url: {}", value))?;
+                self.validate(&url)?;
+                Ok(url)
+            })
+            .collect()
+    }
+}
+
+/// Completes and validates the portable secure-mode key configuration.
+pub fn normalize_secure_mode_config(
+    mut config: common_pb::SecureModeConfig,
+) -> anyhow::Result<common_pb::SecureModeConfig> {
+    if !config.enabled {
+        return Ok(config);
+    }
+
+    let private_key = if config.local_private_key.is_none() {
+        let private = x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng);
+        config.local_private_key = Some(BASE64_STANDARD.encode(private.as_bytes()));
+        private
+    } else {
+        config.private_key()?
+    };
+    let generated_public_key = x25519_dalek::PublicKey::from(&private_key);
+    let generated_public_key = BASE64_STANDARD.encode(generated_public_key.as_bytes());
+
+    match config.local_public_key.as_ref() {
+        None => config.local_public_key = Some(generated_public_key),
+        Some(configured_public_key) => {
+            let public_key = config.public_key()?;
+            let canonical_public_key = BASE64_STANDARD.encode(public_key.as_bytes());
+            if configured_public_key != &canonical_public_key {
+                anyhow::bail!(
+                    "local public key {} does not match generated public key {}",
+                    configured_public_key,
+                    canonical_public_key
+                );
+            }
+        }
+    }
+
+    Ok(config)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkIdentity {
@@ -486,6 +568,8 @@ fn uuid_from_bytes(bytes: [u8; 16]) -> common_pb::Uuid {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::prelude::BASE64_STANDARD;
+    use x25519_dalek::{PublicKey, StaticSecret};
 
     fn digest(network_name: &str, network_secret: &str) -> NetworkSecretDigest {
         let mut digest = [0u8; 32];
@@ -562,6 +646,78 @@ mod tests {
         assert_eq!(
             NetworkIdentity::default(),
             NetworkIdentity::new("default".to_string(), "".to_string())
+        );
+    }
+
+    #[test]
+    fn mapped_listener_policy_uses_explicit_host_capabilities() {
+        let policy = MappedListenerPolicy::new(["tcp", "ws", "wss"]);
+        let parsed = policy
+            .parse_urls(&[
+                "tcp://127.0.0.1".to_string(),
+                "ws://example.com".to_string(),
+                "wss://example.com/path".to_string(),
+                "ring://peer-id:1000".to_string(),
+            ])
+            .unwrap();
+
+        assert_eq!(parsed.len(), 4);
+        assert_eq!(parsed[0].scheme(), "tcp");
+        assert_eq!(parsed[1].scheme(), "ws");
+        assert_eq!(parsed[2].scheme(), "wss");
+        assert_eq!(parsed[3].port(), Some(1000));
+
+        let error = policy
+            .parse_urls(&["ring://peer-id".to_string()])
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("mapped listener port is missing")
+        );
+    }
+
+    #[test]
+    fn secure_mode_normalization_generates_missing_key_pair() {
+        let normalized = normalize_secure_mode_config(common_pb::SecureModeConfig {
+            enabled: true,
+            local_private_key: None,
+            local_public_key: None,
+        })
+        .unwrap();
+
+        let private_key = normalized.private_key().unwrap();
+        let public_key = normalized.public_key().unwrap();
+        assert_eq!(public_key, PublicKey::from(&private_key));
+    }
+
+    #[test]
+    fn secure_mode_normalization_preserves_existing_key_configuration() {
+        let private_key = StaticSecret::from([7; 32]);
+        let public_key = PublicKey::from(&private_key);
+        let config = common_pb::SecureModeConfig {
+            enabled: true,
+            local_private_key: Some(BASE64_STANDARD.encode(private_key.as_bytes())),
+            local_public_key: Some(BASE64_STANDARD.encode(public_key.as_bytes())),
+        };
+
+        assert_eq!(
+            normalize_secure_mode_config(config.clone()).unwrap(),
+            config
+        );
+    }
+
+    #[test]
+    fn disabled_secure_mode_does_not_validate_keys() {
+        let config = common_pb::SecureModeConfig {
+            enabled: false,
+            local_private_key: Some("not-base64".to_string()),
+            local_public_key: Some("not-base64".to_string()),
+        };
+
+        assert_eq!(
+            normalize_secure_mode_config(config.clone()).unwrap(),
+            config
         );
     }
 
