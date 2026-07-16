@@ -89,6 +89,15 @@ async fn reload_instance_acl(inst: &Instance, acl: Option<&crate::proto::acl::Ac
         .unwrap();
 }
 
+async fn set_foreign_network_refresh_interval(inst: &Instance, seconds: u64) {
+    let mut config = runtime_instance_config(&inst.get_global_ctx());
+    Arc::make_mut(&mut config.peer).ospf_update_my_foreign_network_interval_sec = seconds;
+    inst.get_core_instance()
+        .update_runtime_config(config)
+        .await
+        .unwrap();
+}
+
 #[cfg(feature = "wireguard")]
 use crate::{common::config::VpnPortalConfig, vpn_portal::wireguard::get_wg_config_for_portal};
 
@@ -1681,7 +1690,20 @@ fn run_wireguard_client(
 #[tokio::test]
 #[serial_test::serial]
 pub async fn wireguard_vpn_portal(#[values(true, false)] test_v6: bool) {
-    let mut insts = init_three_node("tcp").await;
+    let mut insts = init_three_node_ex(
+        "tcp",
+        |config| {
+            if config.get_inst_name() == "inst3" {
+                config.set_vpn_portal_config(VpnPortalConfig {
+                    wireguard_listen: "0.0.0.0:22121".parse().unwrap(),
+                    client_cidr: "10.14.14.0/24".parse().unwrap(),
+                });
+            }
+            config
+        },
+        false,
+    )
+    .await;
 
     if test_v6 {
         ping6_test("net_d", "fd12::3", None).await;
@@ -1691,19 +1713,6 @@ pub async fn wireguard_vpn_portal(#[values(true, false)] test_v6: bool) {
 
     let net_ns = NetNS::new(Some("net_d".into()));
     let _g = net_ns.guard();
-    insts[2]
-        .get_global_ctx()
-        .config
-        .set_vpn_portal_config(VpnPortalConfig {
-            wireguard_listen: "0.0.0.0:22121".parse().unwrap(),
-            client_cidr: "10.14.14.0/24".parse().unwrap(),
-        });
-    insts[2]
-        .get_core_instance()
-        .update_peer_runtime_snapshot(
-            crate::instance::config::runtime_instance_config(&insts[2].get_global_ctx()).peer,
-        )
-        .await;
     insts[2].run_vpn_portal().await.unwrap();
 
     let dst_socket_addr = if test_v6 {
@@ -1833,7 +1842,6 @@ pub async fn socks5_vpn_portal(
 #[tokio::test]
 #[serial_test::serial]
 pub async fn foreign_network_functional_cluster() {
-    crate::set_global_var!(OSPF_UPDATE_MY_GLOBAL_FOREIGN_NETWORK_INTERVAL_SEC, 1);
     prepare_linux_namespaces();
     let process_runtime = CoreProcessRuntime::new();
 
@@ -1862,6 +1870,10 @@ pub async fn foreign_network_functional_cluster() {
     center_inst2.run().await.unwrap();
     inst1.run().await.unwrap();
     inst2.run().await.unwrap();
+
+    for instance in [&center_inst1, &center_inst2, &inst1, &inst2] {
+        set_foreign_network_refresh_interval(instance, 1).await;
+    }
 
     center_inst1.add_connector_url(format!("ring://{}", center_inst2.id()).parse().unwrap());
 

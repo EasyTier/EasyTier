@@ -3,7 +3,7 @@ use std::{
     io,
     net::{IpAddr, SocketAddr, ToSocketAddrs as _},
     pin::Pin,
-    sync::{Arc, atomic::AtomicBool},
+    sync::Arc,
     time::Duration,
 };
 
@@ -39,8 +39,6 @@ pub fn get_default_resolver_config() -> ResolverConfig {
     default_resolve_config
 }
 
-pub static ALLOW_USE_SYSTEM_DNS_RESOLVER: Lazy<AtomicBool> = Lazy::new(|| AtomicBool::new(true));
-
 fn resolver_config() -> (ResolverConfig, ResolverOpts) {
     let system_cfg = read_system_conf();
     let mut config = get_default_resolver_config();
@@ -55,14 +53,12 @@ fn resolver_config() -> (ResolverConfig, ResolverOpts) {
     (config, options)
 }
 
-pub static RESOLVER: Lazy<Arc<Resolver<GenericConnector<TokioRuntimeProvider>>>> =
-    Lazy::new(|| {
-        let (config, options) = resolver_config();
-        let builder =
-            TokioResolver::builder_with_config(config, TokioConnectionProvider::default())
-                .with_options(options);
-        Arc::new(builder.build())
-    });
+static RESOLVER: Lazy<Arc<Resolver<GenericConnector<TokioRuntimeProvider>>>> = Lazy::new(|| {
+    let (config, options) = resolver_config();
+    let builder = TokioResolver::builder_with_config(config, TokioConnectionProvider::default())
+        .with_options(options);
+    Arc::new(builder.build())
+});
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct RuntimeDnsIoContext {
@@ -214,9 +210,7 @@ impl RuntimeDnsResolver {
         context: RuntimeDnsIoContext,
         host: String,
     ) -> anyhow::Result<Vec<IpAddr>> {
-        if context.socket_mark.is_none()
-            && ALLOW_USE_SYSTEM_DNS_RESOLVER.load(std::sync::atomic::Ordering::Relaxed)
-        {
+        if context.socket_mark.is_none() {
             // libc DNS cannot attach SO_MARK. It remains usable for a
             // namespace-only context when confined to one blocking thread.
             let lookup_host = host.clone();
@@ -301,7 +295,7 @@ impl DnsRecordResolver for RuntimeDnsResolver {
     }
 }
 
-pub async fn resolve_txt_record(domain_name: &str) -> Result<String, Error> {
+async fn resolve_txt_record(domain_name: &str) -> Result<String, Error> {
     let r = RESOLVER.clone();
     let response = r
         .txt_lookup(domain_name)
@@ -323,6 +317,14 @@ pub async fn socket_addrs(
     url: &url::Url,
     default_port_number: impl Fn() -> Option<u16>,
 ) -> Result<Vec<SocketAddr>, Error> {
+    socket_addrs_with_system_resolver(url, default_port_number, true).await
+}
+
+async fn socket_addrs_with_system_resolver(
+    url: &url::Url,
+    default_port_number: impl Fn() -> Option<u16>,
+    allow_system_resolver: bool,
+) -> Result<Vec<SocketAddr>, Error> {
     let host = url.host().ok_or(Error::InvalidUrl(url.to_string()))?;
     let port = url
         .port()
@@ -337,7 +339,7 @@ pub async fn socket_addrs(
     }
     let host = host.to_string();
 
-    if ALLOW_USE_SYSTEM_DNS_RESOLVER.load(std::sync::atomic::Ordering::Relaxed) {
+    if allow_system_resolver {
         let socket_addr = format!("{}:{}", host, port);
         match lookup_host(socket_addr).await {
             Ok(a) => {
@@ -364,17 +366,15 @@ pub async fn socket_addrs(
         .collect::<Vec<_>>())
 }
 
-pub async fn resolve_ips(host: &str) -> Result<Vec<IpAddr>, Error> {
-    if ALLOW_USE_SYSTEM_DNS_RESOLVER.load(std::sync::atomic::Ordering::Relaxed) {
-        match lookup_host((host, 0)).await {
-            Ok(a) => {
-                let a = a.map(|addr| addr.ip()).collect();
-                tracing::debug!(?a, "system dns lookup done");
-                return Ok(a);
-            }
-            Err(e) => {
-                tracing::error!(?e, "system dns lookup failed");
-            }
+async fn resolve_ips(host: &str) -> Result<Vec<IpAddr>, Error> {
+    match lookup_host((host, 0)).await {
+        Ok(a) => {
+            let a = a.map(|addr| addr.ip()).collect();
+            tracing::debug!(?a, "system dns lookup done");
+            return Ok(a);
+        }
+        Err(e) => {
+            tracing::error!(?e, "system dns lookup failed");
         }
     }
 
@@ -388,7 +388,6 @@ pub async fn resolve_ips(host: &str) -> Result<Vec<IpAddr>, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use guarden::defer;
 
     #[test]
     fn runtime_dns_context_preserves_process_routing_inputs() {
@@ -412,11 +411,9 @@ mod tests {
         assert_eq!(2, addrs.len(), "addrs: {:?}", addrs);
         println!("addrs: {:?}", addrs);
 
-        ALLOW_USE_SYSTEM_DNS_RESOLVER.store(false, std::sync::atomic::Ordering::Relaxed);
-        defer!(
-            ALLOW_USE_SYSTEM_DNS_RESOLVER.store(true, std::sync::atomic::Ordering::Relaxed);
-        );
-        let addrs = socket_addrs(&url, || Some(80)).await.unwrap();
+        let addrs = socket_addrs_with_system_resolver(&url, || Some(80), false)
+            .await
+            .unwrap();
         assert_eq!(2, addrs.len(), "addrs: {:?}", addrs);
         println!("addrs2: {:?}", addrs);
     }

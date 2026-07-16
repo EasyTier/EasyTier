@@ -26,14 +26,17 @@ use crate::{
     VERSION,
     common::{
         config::{ConfigLoader as _, TomlConfigLoader},
-        constants::EASYTIER_VERSION,
+        constants::{
+            DIRECT_CONNECT_TO_PUBLIC_SERVER, EASYTIER_VERSION, HMAC_SECRET_DIGEST,
+            MANUAL_CONNECTOR_RECONNECT_INTERVAL_MS, MAX_DIRECT_CONNS_PER_PEER_IN_FOREIGN_NETWORK,
+            OSPF_UPDATE_MY_GLOBAL_FOREIGN_NETWORK_INTERVAL_SEC,
+        },
         credential_manager::runtime_credential_storage,
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
         stun::{default_tcp_stun_servers, default_udp_stun_servers, default_udp_v6_stun_servers},
     },
     instance::public_ipv6_provider::runtime_public_ipv6_provider_config,
     tunnel::IpScheme,
-    use_global_var,
 };
 use strum::VariantArray as _;
 
@@ -107,9 +110,7 @@ pub(crate) fn runtime_manual_options(global_ctx: &ArcGlobalCtx) -> ManualConnect
     let flags = global_ctx.config.get_flags();
     let socket_context = runtime_socket_context(global_ctx);
     ManualConnectorOptions {
-        reconnect_interval: Duration::from_millis(use_global_var!(
-            MANUAL_CONNECTOR_RECONNECT_INTERVAL_MS
-        )),
+        reconnect_interval: Duration::from_millis(MANUAL_CONNECTOR_RECONNECT_INTERVAL_MS),
         connect_timeout: Duration::from_secs(2),
         endpoint_discovery_timeout: Duration::from_secs(20),
         bind_device: flags.bind_device,
@@ -148,7 +149,7 @@ pub(crate) fn runtime_direct_options(
         network_name: global_ctx.get_network_name(),
         default_protocol: flags.default_protocol,
         enable_ipv6: flags.enable_ipv6,
-        allow_public_server: use_global_var!(DIRECT_CONNECT_TO_PUBLIC_SERVER),
+        allow_public_server: DIRECT_CONNECT_TO_PUBLIC_SERVER,
         lazy_p2p: flags.lazy_p2p,
         disable_p2p: flags.disable_p2p,
         need_p2p: flags.need_p2p,
@@ -268,13 +269,11 @@ pub(crate) fn runtime_peer_manager_config(
             .into_iter()
             .map(|peer| (peer.uri, peer.peer_public_key))
             .collect(),
-        ospf_update_my_foreign_network_interval_sec: use_global_var!(
-            OSPF_UPDATE_MY_GLOBAL_FOREIGN_NETWORK_INTERVAL_SEC
-        ),
-        max_direct_conns_per_peer_in_foreign_network: use_global_var!(
-            MAX_DIRECT_CONNS_PER_PEER_IN_FOREIGN_NETWORK
-        ) as usize,
-        hmac_secret_digest: use_global_var!(HMAC_SECRET_DIGEST),
+        ospf_update_my_foreign_network_interval_sec:
+            OSPF_UPDATE_MY_GLOBAL_FOREIGN_NETWORK_INTERVAL_SEC,
+        max_direct_conns_per_peer_in_foreign_network: MAX_DIRECT_CONNS_PER_PEER_IN_FOREIGN_NETWORK
+            as usize,
+        hmac_secret_digest: HMAC_SECRET_DIGEST,
     });
     PortablePeerManagerConfig {
         snapshot,
