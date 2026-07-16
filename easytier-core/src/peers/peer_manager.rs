@@ -3548,7 +3548,9 @@ mod tests {
         proto::common::{PeerFeatureFlag, StunInfo},
     };
 
-    struct SameNetworkContext;
+    struct SameNetworkContext {
+        contains_every_address: bool,
+    }
 
     impl PeerContext for SameNetworkContext {
         fn network_identity(&self) -> NetworkIdentity {
@@ -3560,7 +3562,8 @@ mod tests {
         }
 
         fn is_ip_in_same_network(&self, ip: &IpAddr) -> bool {
-            matches!(ip, IpAddr::V4(ip) if ip.octets()[0..2] == [10, 144])
+            self.contains_every_address
+                || matches!(ip, IpAddr::V4(ip) if ip.octets()[0..2] == [10, 144])
         }
     }
 
@@ -4232,7 +4235,9 @@ mod tests {
 
     #[tokio::test]
     async fn remote_addr_check_rejects_resolved_virtual_network_ip() {
-        let context: ArcPeerContext = Arc::new(SameNetworkContext);
+        let context: ArcPeerContext = Arc::new(SameNetworkContext {
+            contains_every_address: false,
+        });
         let resolver = StaticAddressResolver(AddressResolution::IpAddrs(vec![
             SocketAddr::from(([127, 0, 0, 1], 1234)),
             SocketAddr::from(([10, 144, 0, 2], 1234)),
@@ -4246,10 +4251,39 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn remote_addr_check_skips_unavailable_resolution() {
-        let context: ArcPeerContext = Arc::new(SameNetworkContext);
-        let resolver = StaticAddressResolver(AddressResolution::Unavailable);
+    async fn remote_addr_check_allows_non_network_and_unresolved_sources() {
+        let context: ArcPeerContext = Arc::new(SameNetworkContext {
+            contains_every_address: false,
+        });
         let url = Url::parse("tcp://example.test:1234").unwrap();
+
+        for resolution in [
+            AddressResolution::IpAddrs(vec![SocketAddr::from(([192, 0, 2, 10], 1234))]),
+            AddressResolution::NotIpBased,
+            AddressResolution::Unavailable,
+        ] {
+            let resolver = StaticAddressResolver(resolution);
+            let ret = check_resolved_remote_addr_not_from_virtual_network(
+                &context,
+                &resolver,
+                url.clone(),
+            )
+            .await;
+
+            assert!(ret.is_ok());
+        }
+    }
+
+    #[tokio::test]
+    async fn remote_addr_check_allows_loopback_inside_virtual_network() {
+        let context: ArcPeerContext = Arc::new(SameNetworkContext {
+            contains_every_address: true,
+        });
+        let resolver = StaticAddressResolver(AddressResolution::IpAddrs(vec![
+            SocketAddr::from(([127, 0, 0, 1], 1234)),
+            SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 1234),
+        ]));
+        let url = Url::parse("tcp://localhost:1234").unwrap();
 
         let ret =
             check_resolved_remote_addr_not_from_virtual_network(&context, &resolver, url).await;
