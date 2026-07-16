@@ -81,12 +81,12 @@ presence is not evidence of a second raw Tunnel owner.
   per-instance runtime configuration.
 - [x] Remove default process-runtime constructors that can silently create an
   isolated Ring registry. Tests must pass a runtime explicitly.
-- [ ] Remove production `Instance` methods and fields that only expose core
+- [x] Remove production `Instance` methods and fields that only expose core
   internals to tests (`transport_proxy`, connector convenience, wait/close/id
   accessors) after callers move to the correct test Interface.
-- [ ] Remove unused crate-root re-exports, empty public namespaces and shallow
+- [x] Remove unused crate-root re-exports, empty public namespaces and shallow
   forwarding aliases. Keep real cross-crate presentation Interfaces.
-- [ ] Remove or narrow crate-wide `#![allow(dead_code)]` only after the above
+- [x] Remove or narrow crate-wide `#![allow(dead_code)]` only after the above
   facades are gone.
 
 ### Test ownership
@@ -96,7 +96,7 @@ presence is not evidence of a second raw Tunnel owner.
   smoke test.
 - [x] Move peer feature and relay-policy derivation tests from native config
   tests into core.
-- [ ] Move portable peer-admission helpers from `three_node.rs` into core;
+- [x] Move portable peer-admission helpers from `three_node.rs` into core;
   retain native netns/TUN/protocol-engine scenarios.
 - [x] Move generic core RPC client/server tests into core; retain real native
   TCP/UDP vertical RPC tests.
@@ -331,3 +331,20 @@ Completion requires:
 - 2026-07-16: preserved the native `socks5` feature boundary through an
   immutable core startup plan; portable and WASI composition retain their
   previous default gateway capability.
+- 2026-07-16: removed the production `Instance` transport attachment, cached
+  identity and test-only core forwarding methods. Native tests now use a
+  test-only extension and discover the actual Ring listener URL.
+- 2026-07-16: audited peer admission ownership. The reusable address policy is
+  covered at its core owner for external, non-IP, unavailable, loopback and
+  virtual-network inputs. The remaining `three_node` helper was retained
+  because it is a real native netns/TUN/TCP/UDP/protocol-upgrade scenario, not
+  a portable helper.
+- 2026-07-16: removed the native crate-wide dead-code exemption, narrowed
+  listener namespaces and feature/platform `cfg`s, deleted unconnected DNS,
+  UDP, FakeTCP and Windows helper paths, and removed their direct dependencies.
+  Native default, no-default and Windows cross-target library checks and the
+  core test build are warning-free.
+- 2026-07-16: moved one-shot manual endpoint-resolver construction into
+  `CoreProcessRuntime`. Native Web composition now supplies only Host/DNS,
+  protocol and normalized discovery inputs; a TXT-to-Ring test covers the deep
+  core factory path and process namespace.
