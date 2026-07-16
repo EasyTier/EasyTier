@@ -156,11 +156,11 @@ presence is not evidence of a second raw Tunnel owner.
 
 ### Proxy CIDR
 
-- [ ] Make the core runtime store the sole source for manual routes and VPN
+- [x] Make the core runtime store the sole source for manual routes and VPN
   portal CIDR.
-- [ ] Remove `ProxyCidrMonitorHost::config_snapshot()` and split configuration
+- [x] Remove `ProxyCidrMonitorHost::config_snapshot()` and split configuration
   input from the native presentation/route-application sink.
-- [ ] Prevent a core -> `GlobalCtx` -> core-style state feedback loop.
+- [x] Prevent a core -> `GlobalCtx` -> core-style state feedback loop.
 
 ### DHCP and VPN portal
 
@@ -296,3 +296,6 @@ Completion requires:
 - 2026-07-16: moved the Web Noise tunnel and standalone RPC lifecycle into
   core, made core authoritative for network-identity semantics, and retained
   only native socket factories and serde input at the native Seam.
+- 2026-07-16: made the core runtime store authoritative for manual proxy routes
+  and VPN portal CIDR; the native Proxy CIDR Adapter now emits presentation
+  events only and no longer serves configuration back to core.

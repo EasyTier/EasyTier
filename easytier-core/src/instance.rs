@@ -1360,7 +1360,14 @@ where
             anyhow::bail!("proxy CIDR monitor start cancelled");
         }
 
-        task.replace(ProxyCidrMonitor::new(&self.peer_manager, host.clone()).start());
+        task.replace(
+            ProxyCidrMonitor::new(
+                &self.peer_manager,
+                self.runtime_config.clone(),
+                host.clone(),
+            )
+            .start(),
+        );
         if self.cancel.is_cancelled() {
             task.take();
             anyhow::bail!("proxy CIDR monitor start cancelled");
@@ -1993,8 +2000,11 @@ where
         &self,
         previous: &BTreeSet<cidr::Ipv4Cidr>,
     ) -> Option<ProxyCidrDiff> {
-        let host = self.proxy_cidr_monitor.as_ref()?;
-        Some(collect_proxy_cidr_diff(self.peer_manager.as_ref(), host.as_ref(), previous).await)
+        self.proxy_cidr_monitor.as_ref()?;
+        Some(
+            collect_proxy_cidr_diff(self.peer_manager.as_ref(), &self.runtime_config, previous)
+                .await,
+        )
     }
 
     pub async fn send_ip_packet(&self, packet: Vec<u8>) -> anyhow::Result<()> {

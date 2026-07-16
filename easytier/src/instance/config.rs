@@ -67,6 +67,10 @@ pub(crate) fn runtime_core_config(global_ctx: &ArcGlobalCtx) -> CoreRuntimeConfi
             }),
             port_forwards: global_ctx.config.get_port_forwards(),
         },
+        manual_routes: global_ctx
+            .config
+            .get_routes()
+            .map(|routes| routes.into_iter().collect()),
         proxy: runtime_proxy_startup_context(global_ctx),
         public_ipv6_auto: global_ctx.config.get_ipv6_public_addr_auto(),
         public_ipv6_provider: runtime_public_ipv6_provider_config(global_ctx),

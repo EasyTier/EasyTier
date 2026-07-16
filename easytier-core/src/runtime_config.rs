@@ -1,8 +1,9 @@
 //! Atomic runtime configuration owned by one core instance.
 
-use std::sync::Arc;
+use std::{collections::BTreeSet, sync::Arc};
 
 use arc_swap::ArcSwap;
+use cidr::Ipv4Cidr;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
@@ -19,6 +20,8 @@ pub struct CoreRuntimeConfig {
     pub acl: AclRuleConfig,
     pub dhcp_ipv4: bool,
     pub gateway: GatewayRuntimeConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manual_routes: Option<BTreeSet<Ipv4Cidr>>,
     pub proxy: ProxyRuntimeConfig,
     #[serde(default)]
     pub public_ipv6_auto: bool,
@@ -31,6 +34,7 @@ impl Default for CoreRuntimeConfig {
             acl: AclRuleConfig::default(),
             dhcp_ipv4: false,
             gateway: GatewayRuntimeConfig::default(),
+            manual_routes: None,
             proxy: ProxyRuntimeConfig::default(),
             public_ipv6_auto: false,
             public_ipv6_provider: PublicIpv6ProviderConfig {
@@ -192,5 +196,14 @@ mod tests {
         store.update_peer(Arc::new(peer));
 
         assert!(!changes.has_changed().unwrap());
+    }
+
+    #[test]
+    fn missing_manual_routes_preserves_portable_config_compatibility() {
+        let encoded = serde_json::to_value(CoreRuntimeConfig::default()).unwrap();
+        assert!(encoded.get("manual_routes").is_none());
+
+        let decoded: CoreRuntimeConfig = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded.manual_routes, None);
     }
 }
