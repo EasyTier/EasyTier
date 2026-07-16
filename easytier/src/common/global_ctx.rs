@@ -302,11 +302,6 @@ impl GlobalCtx {
         self.flags.load().no_tun
     }
 
-    pub fn is_local_ip(&self, ip: &IpAddr) -> bool {
-        let _guard = self.net_ns.guard();
-        self.is_ip_local_virtual_ip(ip) || std::net::UdpSocket::bind(format!("{ip}:0")).is_ok()
-    }
-
     pub fn is_protected_tcp_port(&self, port: u16) -> bool {
         protected_port::is_protected_tcp_port(port)
     }

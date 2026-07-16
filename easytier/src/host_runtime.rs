@@ -160,6 +160,11 @@ impl ConnectorRuntime for NativeHostRuntime {
 }
 
 impl NativeHostRuntime {
+    pub(crate) fn is_local_ip(&self, ip: &IpAddr, context: &SocketContext) -> bool {
+        NetNS::from_socket_context(context)
+            .run(|| std::net::UdpSocket::bind(format!("{ip}:0")).is_ok())
+    }
+
     pub(crate) fn bind_udp_with_explicit_options(
         &self,
         options: UdpBindOptions,
@@ -241,6 +246,14 @@ mod tests {
     #[test]
     fn native_host_runtime_is_process_wide() {
         assert!(Arc::ptr_eq(&native_host_runtime(), &native_host_runtime()));
+    }
+
+    #[test]
+    fn native_local_ip_probe_uses_process_runtime() {
+        assert!(native_host_runtime().is_local_ip(
+            &IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            &SocketContext::default(),
+        ));
     }
 
     #[tokio::test]

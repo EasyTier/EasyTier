@@ -19,16 +19,18 @@ pub(crate) type NativeInstanceHost =
 /// owned by the process-wide [`NativeHostRuntime`] composed beside it.
 pub(crate) struct NativeInstanceEnvironment {
     global_ctx: ArcGlobalCtx,
+    runtime: Arc<NativeHostRuntime>,
     socket_context: SocketContext,
 }
 
 impl NativeInstanceEnvironment {
-    fn new(global_ctx: ArcGlobalCtx) -> Self {
+    fn new(global_ctx: ArcGlobalCtx, runtime: Arc<NativeHostRuntime>) -> Self {
         let socket_context = SocketContext::default()
             .with_socket_mark(global_ctx.config.get_flags().socket_mark)
             .with_netns(global_ctx.net_ns.name().map(NetNamespace::new));
         Self {
             global_ctx,
+            runtime,
             socket_context,
         }
     }
@@ -37,8 +39,8 @@ impl NativeInstanceEnvironment {
 pub(crate) fn native_instance_host(global_ctx: ArcGlobalCtx) -> Arc<NativeInstanceHost> {
     let runtime = native_host_runtime();
     Arc::new(ConnectorHostAdapter::new(
-        runtime,
-        Arc::new(NativeInstanceEnvironment::new(global_ctx)),
+        runtime.clone(),
+        Arc::new(NativeInstanceEnvironment::new(global_ctx, runtime)),
     ))
 }
 
@@ -52,7 +54,8 @@ impl ConnectorEnvironment for NativeInstanceEnvironment {
     }
 
     fn is_local_ip(&self, ip: &IpAddr) -> bool {
-        self.global_ctx.is_local_ip(ip)
+        self.global_ctx.is_ip_local_virtual_ip(ip)
+            || self.runtime.is_local_ip(ip, &self.socket_context)
     }
 
     fn is_protected_tcp_port(&self, port: u16) -> bool {
