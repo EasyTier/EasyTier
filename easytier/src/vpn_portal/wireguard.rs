@@ -6,14 +6,13 @@ use std::{
 use anyhow::Context;
 use base64::{Engine, prelude::BASE64_STANDARD};
 use easytier_core::{
-    connectivity::protocol::wireguard::WgConfig,
     listener::SocketListener,
     vpn_portal::{VpnPortalClientConfigPlan, VpnPortalHost, VpnPortalListener},
 };
 
 use crate::{
     common::{config::NetworkIdentity, global_ctx::ArcGlobalCtx},
-    tunnel::wireguard::WgTunnelListener,
+    tunnel::wireguard::{WgConfig, WgTunnelListener},
 };
 
 pub(crate) fn get_wg_config_for_portal(nid: &NetworkIdentity) -> WgConfig {

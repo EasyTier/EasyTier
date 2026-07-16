@@ -127,8 +127,8 @@ TCP/UDP listener requests. Host-submitted running listeners remain absent
 because every listener publishes into the core-owned registry. EasyTier-managed
 IPv6 addresses are likewise core policy rather than a host environment field.
 The long endpoint-discovery budget is named `endpoint_discovery_timeout`.
-WS/WSS and QUIC remain native-only protocol engines and are not Go/WASI core
-capabilities.
+WS/WSS, QUIC and WireGuard remain native-only protocol engines and are not
+Go/WASI core capabilities.
 
 Packet egress uses a capacity-one Go queue. A successful import owns a complete
 packet copy, queue-full has no side effects, and core retries only after a

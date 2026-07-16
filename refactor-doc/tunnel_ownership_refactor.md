@@ -44,8 +44,7 @@ creation with protocol upgrade or peer admission.
 | Network manual/direct/hole-punch orchestration | `easytier-core` | returns `ConnectedTransport`; protocol selection and admission remain core-owned |
 | Network listener lifecycle and admission orchestration | `easytier-core` | accepts `AcceptedTransport`; Host Adapters only realize requested resources |
 | Real Tokio TCP/UDP/Unix/FakeTCP resources | native `easytier` | `RuntimeTcpSocket`, `RuntimeUdpSocket`, factories and platform bind helpers implement core socket Interfaces |
-| QUIC and WS/WSS protocol engines | native `easytier` | narrow protocol-upgrade Adapters consume established streams or core UDP sessions |
-| WireGuard protocol engine | migration from native to `easytier-core` | target ownership is core; the native engine recorded by this snapshot is temporary debt |
+| QUIC, WS/WSS and WireGuard protocol engines | native `easytier` | narrow protocol-upgrade Adapters consume established streams or core UDP sessions |
 | FakeTCP and Unix | native socket resources | Host Adapters produce a virtual TCP socket or byte stream; core owns portable framing |
 | Go-owned sockets, DNS and host policy | `easytier-go-host` | opaque handles implement the same core Host Adapter requests; core/Tokio initiates I/O |
 
@@ -80,8 +79,8 @@ Rust source compatibility for these paths is intentionally not retained.
    stream or UDP session. A protocol upgrader is the only layer that creates a
    network protocol Tunnel. Ring is core-local and directly creates a core
    Ring Tunnel.
-4. Native QUIC/WS/WSS engines do not move surrounding connectivity policy back
-   into `easytier`; WireGuard's target owner is core.
+4. Native QUIC/WS/WSS/WireGuard engines do not move surrounding connectivity
+   policy back into `easytier`.
 5. Listener and session workers are cancelled with their owning listener; an
    accepted UDP session keeps its core layer alive only for its own lifetime.
 6. Host-OS choices such as reuse, marks, devices and netns are request data and
@@ -109,7 +108,6 @@ TCP/UDP multi-node scenarios. The final validation matrix remains the one in
 
 Feature slicing and dependency-size work may now remove optional protocol
 engines, but it must not recreate native raw Tunnel owners or compatibility
-traits. QUIC and WS/WSS remain behind narrow native upgrade Adapters to preserve
-their current dependencies and wire behaviour. WireGuard is explicitly being
-migrated to core; FakeTCP and Unix remain Host socket transports rather than
-protocol engines.
+traits. QUIC, WS/WSS and WireGuard remain behind narrow native upgrade Adapters
+to preserve their current dependencies and wire behaviour. FakeTCP and Unix
+remain Host socket transports rather than protocol engines.

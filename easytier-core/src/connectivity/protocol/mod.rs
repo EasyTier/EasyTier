@@ -12,7 +12,6 @@ use crate::{
 use super::transport::ConnectedTransport;
 
 pub mod raw;
-pub mod wireguard;
 
 #[async_trait]
 pub trait ClientProtocolUpgrader<TcpSocket>: Send + Sync + 'static {

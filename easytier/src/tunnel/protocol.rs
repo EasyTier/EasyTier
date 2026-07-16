@@ -3,7 +3,6 @@ use std::{num::NonZeroUsize, sync::Arc};
 use async_trait::async_trait;
 use easytier_core::{
     connectivity::{
-        protocol::wireguard::WgConfig,
         protocol::{
             ClientProtocolUpgrader, CoreClientProtocolConfig, CoreClientProtocolUpgrader,
             CoreServerProtocolConfig, CoreServerProtocolUpgrader, ServerProtocolAdmission,
@@ -15,28 +14,21 @@ use easytier_core::{
     tunnel::Tunnel,
 };
 
+#[cfg(feature = "wireguard")]
+use crate::tunnel::wireguard::WgConfig;
 use crate::{common::global_ctx::ArcGlobalCtx, socket::tcp::RuntimeTcpSocket};
 
 pub(crate) struct RuntimeClientProtocolUpgrader {
+    #[cfg(feature = "wireguard")]
     wireguard: WgConfig,
 }
 
 pub(crate) struct RuntimeServerProtocolUpgrader {
+    #[cfg(feature = "wireguard")]
     wireguard: WgConfig,
 }
 
-impl RuntimeServerProtocolUpgrader {
-    pub(crate) fn new(wireguard: WgConfig) -> Self {
-        Self { wireguard }
-    }
-}
-
-impl RuntimeClientProtocolUpgrader {
-    pub(crate) fn new(wireguard: WgConfig) -> Self {
-        Self { wireguard }
-    }
-}
-
+#[cfg(feature = "wireguard")]
 fn runtime_wireguard_config(global_ctx: &ArcGlobalCtx) -> WgConfig {
     let identity = global_ctx.get_network_identity();
     WgConfig::new_from_network_identity(
@@ -45,30 +37,46 @@ fn runtime_wireguard_config(global_ctx: &ArcGlobalCtx) -> WgConfig {
     )
 }
 
+fn runtime_client_protocol_adapter(global_ctx: &ArcGlobalCtx) -> RuntimeClientProtocolUpgrader {
+    #[cfg(not(feature = "wireguard"))]
+    let _ = global_ctx;
+    RuntimeClientProtocolUpgrader {
+        #[cfg(feature = "wireguard")]
+        wireguard: runtime_wireguard_config(global_ctx),
+    }
+}
+
+fn runtime_server_protocol_adapter(global_ctx: &ArcGlobalCtx) -> RuntimeServerProtocolUpgrader {
+    #[cfg(not(feature = "wireguard"))]
+    let _ = global_ctx;
+    RuntimeServerProtocolUpgrader {
+        #[cfg(feature = "wireguard")]
+        wireguard: runtime_wireguard_config(global_ctx),
+    }
+}
+
 pub(crate) fn runtime_client_protocol_upgrader(
     global_ctx: ArcGlobalCtx,
 ) -> Arc<dyn ClientProtocolUpgrader<RuntimeTcpSocket>> {
-    let wireguard = runtime_wireguard_config(&global_ctx);
     Arc::new(CoreClientProtocolUpgrader::with_external(
         CoreClientProtocolConfig {
             unix: cfg!(unix),
             faketcp: cfg!(feature = "faketcp"),
         },
-        Arc::new(RuntimeClientProtocolUpgrader::new(wireguard)),
+        Arc::new(runtime_client_protocol_adapter(&global_ctx)),
     ))
 }
 
 pub(crate) fn runtime_server_protocol_upgrader(
     global_ctx: ArcGlobalCtx,
 ) -> Arc<dyn ServerProtocolUpgrader<RuntimeTcpSocket>> {
-    let wireguard = runtime_wireguard_config(&global_ctx);
     Arc::new(CoreServerProtocolUpgrader::with_external(
         CoreServerProtocolConfig {
             unix: cfg!(unix),
             faketcp: cfg!(feature = "faketcp"),
             ..Default::default()
         },
-        Arc::new(RuntimeServerProtocolUpgrader::new(wireguard)),
+        Arc::new(runtime_server_protocol_adapter(&global_ctx)),
     ))
 }
 
@@ -230,7 +238,7 @@ mod tests {
     #[tokio::test]
     async fn protocol_capabilities_follow_enabled_features() {
         let global_ctx = get_mock_global_ctx();
-        let external = RuntimeClientProtocolUpgrader::new(runtime_wireguard_config(&global_ctx));
+        let external = runtime_client_protocol_adapter(&global_ctx);
 
         assert!(!external.supports_scheme("tcp"));
         assert!(!external.supports_scheme("faketcp"));
@@ -254,8 +262,7 @@ mod tests {
             cfg!(feature = "faketcp")
         );
 
-        let server_external =
-            RuntimeServerProtocolUpgrader::new(runtime_wireguard_config(&global_ctx));
+        let server_external = runtime_server_protocol_adapter(&global_ctx);
         assert!(!server_external.supports_scheme("tcp"));
         assert!(!server_external.supports_scheme("udp"));
         assert!(!server_external.supports_scheme("ring"));

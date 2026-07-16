@@ -113,8 +113,8 @@ Core derives the implicit Ring listener and internal TCP/UDP transport requests;
 Go no longer serializes `TransportListenerConfig`. Host-submitted running
 listener state remains absent, so Go cannot create a second truth source.
 It names the long endpoint-discovery budget `endpoint_discovery_timeout`.
-WS/WSS and QUIC remain native-only protocol engines and are not advertised by
-the Go/WASI core artifact.
+WS/WSS, QUIC and WireGuard remain native-only protocol engines and are not
+advertised by the Go/WASI core artifact.
 
 ## Phase 0 unresolved decisions
 

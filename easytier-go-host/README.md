@@ -30,8 +30,8 @@ Listener configuration is submitted as URLs, IPv6 policy, and `SocketContext`.
 Core derives Ring identity and the internal TCP/UDP listener plan; Go supplies
 only real listener creation and accept operations through `SocketFactory`.
 Version 13 names the long endpoint-discovery budget
-`endpoint_discovery_timeout`. WS/WSS and QUIC are native-only protocol engines
-and are not advertised by the Go/WASI core artifact.
+`endpoint_discovery_timeout`. WS/WSS, QUIC and WireGuard are native-only
+protocol engines and are not advertised by the Go/WASI core artifact.
 
 ```go
 bridge := corehost.NewBridge(corehost.BridgeConfig{

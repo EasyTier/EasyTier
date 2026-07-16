@@ -101,13 +101,13 @@ upgrader Adapter, but it is not a second raw Tunnel owner.
 Each concrete Tunnel protocol is an atomic Module: its client and server
 upgrade, handshake, framing, protocol configuration, lifecycle and protocol
 tests belong to one crate. Splitting those responsibilities between core and
-native is forbidden. The target ownership is TCP, UDP, Ring and WireGuard in
-core, with WebSocket/WSS and QUIC in native because their current dependencies
-cannot provide the required WASI client implementation without changing wire
-behaviour or maintaining a fork. The refactor must describe any temporary split
-as migration debt rather than as completed ownership. FakeTCP and Unix are Host
-socket transports rather than distinct EasyTier Tunnel Modules: they produce a
-virtual TCP socket or byte stream that core wraps with its portable framing.
+native is forbidden. The target ownership is TCP, UDP and Ring in core, with
+WebSocket/WSS, QUIC and WireGuard in native because their current dependencies
+cannot provide the required WASI implementation without changing wire
+behaviour or modifying third-party protocol engines during this refactor.
+FakeTCP and Unix are Host socket transports rather than distinct EasyTier
+Tunnel Modules: they produce a virtual TCP socket or byte stream that core
+wraps with its portable framing.
 
 ### Listener runtime
 

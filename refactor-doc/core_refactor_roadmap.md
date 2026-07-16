@@ -231,13 +231,14 @@ native protocol-upgrade Adapter until the dependency can build its protocol and
 abstract-socket runtime without the OS socket implementation. Core continues to
 own protocol selection and the UDP-session seam.
 
-WireGuard configuration and key derivation are core-owned. The current
-`boringtun-easytier` 0.6.1 protocol engine fails on `wasm32-wasip1` because its
+WireGuard configuration, key derivation and the BoringTun engine form one
+native Module. `boringtun-easytier` 0.6.1 fails on `wasm32-wasip1` because its
 monotonic-clock implementation only selects Windows or Unix. Its mock-clock
 feature is not a production substitute because timers advance only when a test
-drives them. Keep the BoringTun engine behind the narrow native
-protocol-upgrade Adapter until the dependency supplies a real WASI clock; do
-not freeze protocol timers or hide the engine with a guest-target `cfg`.
+drives them. Keep the complete Module behind the narrow native
+protocol-upgrade Adapter. Reconsider the third-party dependency after this
+refactor rather than freezing timers, hiding half the engine with a guest-target
+`cfg`, or exposing its configuration from core.
 
 Exit gate:
 

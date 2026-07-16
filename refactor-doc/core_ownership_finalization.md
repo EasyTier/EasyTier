@@ -28,8 +28,7 @@ The native `easytier` crate owns only:
 - product configuration parsing and normalization into core snapshots;
 - process-wide OS capabilities (`NativeHostRuntime`) and narrow instance Host
   Adapter facts (`NativeInstanceEnvironment`);
-- concrete native protocol engines such as QUIC and WebSocket, plus temporary
-  WireGuard migration debt;
+- concrete native protocol engines such as QUIC, WebSocket and WireGuard;
 - FakeTCP and Unix socket resources below core-owned portable framing;
 - composition, management protobuf projection, UI/RPC presentation and real OS
   integration.
@@ -76,10 +75,11 @@ Native protocol engines also import the core `Tunnel`, split stream/sink,
 packet stream, error, and IP-version types directly. `easytier::tunnel` owns
 only native protocol modules plus URL/scheme and OS-resolution helpers; it is
 not a public forwarding namespace for the portable tunnel model.
-WireGuard consumers likewise import the core `WgConfig` directly rather than
-publishing it through the native engine module. Native tunnel ping-pong and
-benchmark helpers compile only for the crate test target and are not a
-cross-crate production utility API.
+WireGuard configuration and key derivation live beside its native engine.
+Runtime and VPN portal consumers import `WgConfig` from that Module rather than
+making core expose a protocol configuration it cannot implement. Native tunnel
+ping-pong and benchmark helpers compile only for the crate test target and are
+not a cross-crate production utility Interface.
 
 Native composition has no default process-runtime facade. Production roots
 pass their process-scoped `CoreProcessRuntime` explicitly, and tests that need
@@ -140,8 +140,8 @@ configuration and core public-IPv6 options as native. It has no internal
 transport plan, `environment.running_listeners`, or host-supplied
 `managed_ipv6s` policy field.
 The normalized long endpoint-discovery budget is
-`endpoint_discovery_timeout`; native-only WS/WSS and QUIC engines are not
-advertised by the Go/WASI core artifact.
+`endpoint_discovery_timeout`; native-only WS/WSS, QUIC and WireGuard engines
+are not advertised by the Go/WASI core artifact.
 
 ## Process-scoped portable state
 
@@ -165,9 +165,8 @@ convenient.
 The host creates TCP, UDP and listener resources. Core/Tokio drives their
 read/write/accept scheduling. Connector and listener Modules produce only a
 raw core TCP stream, UDP session, or Ring transport. Native protocol engines
-upgrade those values only for native-owned protocols such as QUIC and
-WebSocket. WireGuard's temporary native engine is migration debt; FakeTCP and
-Unix stop at the socket seam.
+upgrade those values only for native-owned protocols such as QUIC, WebSocket
+and WireGuard. FakeTCP and Unix stop at the socket seam.
 
 `ConnectorRuntime` is the process capability Interface for external byte
 streams, route probes, interface observations and preferred IPv6 source
@@ -177,9 +176,9 @@ The runtime performs fresh interface observation. Core's per-instance
 `ConnectorHostAdapter` owns the bounded observation cache, keys it by the full
 socket context and coalesces concurrent refreshes only within that context.
 
-While WireGuard remains in transition, its native protocol Adapter receives an
-immutable configuration at composition time. It does not retain `GlobalCtx`
-and cannot observe identity changes halfway through a handshake.
+The native WireGuard Module derives one immutable configuration at composition
+time. Its protocol Adapter does not retain `GlobalCtx` and cannot observe
+identity changes halfway through a handshake.
 
 ## Public IPv6 provider seam
 
