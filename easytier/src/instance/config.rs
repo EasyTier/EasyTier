@@ -15,10 +15,10 @@ use easytier_core::{
         direct::DirectConnectorOptions,
         manual::{ManualConnectorOptions, discovery::ManualEndpointDiscoveryConfig},
     },
+    gateway::{GatewayRuntimeConfig, proxy::ProxyRuntimeConfig},
     instance::{CoreConnectivityConfig, CoreInstanceStartupPlan},
     listener::plan::ListenerRuntimeConfig,
     peers::acl_config::AclRuleConfig,
-    proxy::{ProxyRuntimeConfig, gateway::GatewayRuntimeConfig},
     socket::{IpVersion, NetNamespace, SocketContext, tcp::TcpBindOptions, udp::UdpBindOptions},
 };
 

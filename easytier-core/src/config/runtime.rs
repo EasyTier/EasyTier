@@ -8,11 +8,11 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    gateway::{GatewayRuntimeConfig, proxy::ProxyRuntimeConfig},
     peers::{
         acl_config::AclRuleConfig, context::PeerRuntimeSnapshot,
         public_ipv6::PublicIpv6ProviderConfig,
     },
-    proxy::{ProxyRuntimeConfig, gateway::GatewayRuntimeConfig},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

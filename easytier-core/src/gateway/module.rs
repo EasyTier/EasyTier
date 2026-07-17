@@ -27,27 +27,30 @@ use tokio::{
 
 use crate::{
     config::runtime::CoreRuntimeConfigStore,
+    gateway::{
+        proxy::{
+            runtime::TcpProxyStream,
+            wrapped_transport::{WrappedTransportKind, WrappedTransportProxyModule},
+        },
+        socks5::{
+            Socks5Entry, Socks5EntryKind, Socks5EntryTable, Socks5PeerPacketRoute,
+            Socks5TcpConnectPlan, Socks5TcpRoute,
+            protocol::{
+                Result as SocksResult, SocksError,
+                runtime::{HostSocks5ServerRuntime, HostSocks5TcpConnector},
+                server::{
+                    AcceptAuthentication, AsyncTcpConnector, Config, Socks5ServerRuntime,
+                    Socks5Socket,
+                },
+            },
+        },
+        tokio_smoltcp::{self, BufferSize, Net, NetConfig, channel_device},
+    },
     host::dns::DnsResolver,
     packet::{PacketType, ZCPacket},
     peers::{
         PeerPacketFilter,
         peer_manager::{PeerManagerCore, PipelineRegistrationGuard},
-    },
-    proxy::{
-        runtime::TcpProxyStream,
-        socks5::{
-            Socks5Entry, Socks5EntryKind, Socks5EntryTable, Socks5PeerPacketRoute,
-            Socks5TcpConnectPlan, Socks5TcpRoute,
-        },
-        socks5_protocol::{
-            Result as SocksResult, SocksError,
-            runtime::{HostSocks5ServerRuntime, HostSocks5TcpConnector},
-            server::{
-                AcceptAuthentication, AsyncTcpConnector, Config, Socks5ServerRuntime, Socks5Socket,
-            },
-        },
-        tokio_smoltcp::{self, BufferSize, Net, NetConfig, channel_device},
-        wrapped_transport::{WrappedTransportKind, WrappedTransportProxyModule},
     },
     socket::{
         SocketContext,

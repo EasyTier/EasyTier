@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtxEvent};
-use easytier_core::proxy::cidr_monitor::ProxyCidrMonitorHost;
+use easytier_core::gateway::proxy::cidr_monitor::ProxyCidrMonitorHost;
 
 struct RuntimeProxyCidrMonitorHost {
     global_ctx: ArcGlobalCtx,

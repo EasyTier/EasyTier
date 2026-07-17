@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use cidr::{IpCidr, Ipv4Inet};
-use easytier_core::dhcp::{DhcpIpv4ApplyOutcome, DhcpIpv4ApplyPermit, DhcpIpv4Host};
+use easytier_core::gateway::dhcp::{DhcpIpv4ApplyOutcome, DhcpIpv4ApplyPermit, DhcpIpv4Host};
 #[cfg(any(feature = "tun", feature = "magic-dns", mobile))]
 use easytier_core::instance::CorePacketPlane;
 use easytier_core::process_runtime::CoreProcessRuntime;
@@ -1315,60 +1315,60 @@ impl Instance {
                 );
                 #[cfg(feature = "kcp")]
                 if self.core_instance.wrapped_transport_is_started(
-                    easytier_core::proxy::wrapped_transport::WrappedTransportKind::Kcp,
-                    easytier_core::proxy::wrapped_transport::WrappedTransportRole::Source,
+                    easytier_core::gateway::proxy::wrapped_transport::WrappedTransportKind::Kcp,
+                    easytier_core::gateway::proxy::wrapped_transport::WrappedTransportRole::Source,
                 ) {
                     tcp_proxy_rpc_services.insert(
                         "kcp_src".to_string(),
                         Arc::new(CoreTcpProxyRpcService::new_wrapped(
                             &self.core_instance,
-                            easytier_core::proxy::wrapped_transport::WrappedTransportKind::Kcp,
-                            easytier_core::proxy::wrapped_transport::WrappedTransportRole::Source,
+                            easytier_core::gateway::proxy::wrapped_transport::WrappedTransportKind::Kcp,
+                            easytier_core::gateway::proxy::wrapped_transport::WrappedTransportRole::Source,
                         )),
                     );
                 }
 
                 #[cfg(feature = "kcp")]
                 if self.core_instance.wrapped_transport_is_started(
-                    easytier_core::proxy::wrapped_transport::WrappedTransportKind::Kcp,
-                    easytier_core::proxy::wrapped_transport::WrappedTransportRole::Destination,
+                    easytier_core::gateway::proxy::wrapped_transport::WrappedTransportKind::Kcp,
+                    easytier_core::gateway::proxy::wrapped_transport::WrappedTransportRole::Destination,
                 ) {
                     tcp_proxy_rpc_services.insert(
                         "kcp_dst".to_string(),
                         Arc::new(CoreTcpProxyRpcService::new_wrapped(
                             &self.core_instance,
-                            easytier_core::proxy::wrapped_transport::WrappedTransportKind::Kcp,
-                            easytier_core::proxy::wrapped_transport::WrappedTransportRole::Destination,
+                            easytier_core::gateway::proxy::wrapped_transport::WrappedTransportKind::Kcp,
+                            easytier_core::gateway::proxy::wrapped_transport::WrappedTransportRole::Destination,
                         )),
                     );
                 }
 
                 #[cfg(feature = "quic")]
                 if self.core_instance.wrapped_transport_is_started(
-                    easytier_core::proxy::wrapped_transport::WrappedTransportKind::Quic,
-                    easytier_core::proxy::wrapped_transport::WrappedTransportRole::Source,
+                    easytier_core::gateway::proxy::wrapped_transport::WrappedTransportKind::Quic,
+                    easytier_core::gateway::proxy::wrapped_transport::WrappedTransportRole::Source,
                 ) {
                     tcp_proxy_rpc_services.insert(
                         "quic_src".to_string(),
                         Arc::new(CoreTcpProxyRpcService::new_wrapped(
                             &self.core_instance,
-                            easytier_core::proxy::wrapped_transport::WrappedTransportKind::Quic,
-                            easytier_core::proxy::wrapped_transport::WrappedTransportRole::Source,
+                            easytier_core::gateway::proxy::wrapped_transport::WrappedTransportKind::Quic,
+                            easytier_core::gateway::proxy::wrapped_transport::WrappedTransportRole::Source,
                         )),
                     );
                 }
 
                 #[cfg(feature = "quic")]
                 if self.core_instance.wrapped_transport_is_started(
-                    easytier_core::proxy::wrapped_transport::WrappedTransportKind::Quic,
-                    easytier_core::proxy::wrapped_transport::WrappedTransportRole::Destination,
+                    easytier_core::gateway::proxy::wrapped_transport::WrappedTransportKind::Quic,
+                    easytier_core::gateway::proxy::wrapped_transport::WrappedTransportRole::Destination,
                 ) {
                     tcp_proxy_rpc_services.insert(
                         "quic_dst".to_string(),
                         Arc::new(CoreTcpProxyRpcService::new_wrapped(
                             &self.core_instance,
-                            easytier_core::proxy::wrapped_transport::WrappedTransportKind::Quic,
-                            easytier_core::proxy::wrapped_transport::WrappedTransportRole::Destination,
+                            easytier_core::gateway::proxy::wrapped_transport::WrappedTransportKind::Quic,
+                            easytier_core::gateway::proxy::wrapped_transport::WrappedTransportRole::Destination,
                         )),
                     );
                 }
@@ -1517,7 +1517,7 @@ mod tests {
         common::config::TomlConfigLoader,
         instance::instance::{Instance, RuntimeDhcpIpv4Host},
     };
-    use easytier_core::dhcp::DhcpIpv4Host as _;
+    use easytier_core::gateway::dhcp::DhcpIpv4Host as _;
     use easytier_core::process_runtime::CoreProcessRuntime;
 
     fn tcp_whitelist_patch(port: &str) -> InstanceConfigPatch {

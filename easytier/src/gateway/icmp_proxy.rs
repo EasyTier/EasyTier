@@ -5,7 +5,7 @@ use std::{
 };
 
 use easytier_core::{
-    proxy::runtime::{IcmpProxyHost, IcmpProxySocket, ProxyRuntimeError},
+    gateway::proxy::runtime::{IcmpProxyHost, IcmpProxySocket, ProxyRuntimeError},
     socket::SocketContext,
 };
 use socket2::Socket;

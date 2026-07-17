@@ -14,7 +14,7 @@ use strum::{Display, EnumString, VariantArray};
 use tokio::io::AsyncReadExt as _;
 
 use easytier_core::config::MappedListenerPolicy;
-pub use easytier_core::proxy::gateway::PortForwardConfig;
+pub use easytier_core::gateway::PortForwardConfig;
 
 use crate::{
     common::stun::{default_udp_stun_servers, default_udp_v6_stun_servers},

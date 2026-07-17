@@ -48,8 +48,16 @@ use crate::{
             CoreServerProtocolConfig, CoreServerProtocolUpgrader, ServerProtocolUpgrader,
         },
     },
-    dhcp::{DhcpIpv4Host, DhcpIpv4RouteSource, DhcpIpv4Service},
     foundation::stats::{CounterHandle, MetricSnapshot},
+    gateway::dhcp::{DhcpIpv4Host, DhcpIpv4RouteSource, DhcpIpv4Service},
+    gateway::proxy::{
+        cidr_monitor::{ProxyCidrMonitor, ProxyCidrMonitorHost},
+        cidr_table::{ProxyCidrSnapshot, ProxyCidrTable},
+        wrapped_transport::{WrappedTransportEngines, WrappedTransportProxyModule},
+    },
+    gateway::vpn_portal::{
+        VpnPortalEventSink, VpnPortalHost, VpnPortalInfoSnapshot, VpnPortalModule,
+    },
     host::dns::{DnsRecordResolver, DnsResolver},
     listener::{
         AcceptedSocketHandler, ListenerEventSink, ListenerEventSinkGroup, ListenerFactory,
@@ -77,29 +85,23 @@ use crate::{
         public_ipv6::{CorePublicIpv6Runtime, PublicIpv6Host},
     },
     process_runtime::CoreProcessRuntime,
-    proxy::{
-        cidr_monitor::{ProxyCidrMonitor, ProxyCidrMonitorHost},
-        cidr_table::{ProxyCidrSnapshot, ProxyCidrTable},
-        wrapped_transport::{WrappedTransportEngines, WrappedTransportProxyModule},
-    },
     socket::{
         SocketContext,
         tcp::VirtualTcpSocketFactory,
         udp::{UdpSessionAcceptKind, UdpSessionProtocol, VirtualUdpSocketFactory},
     },
-    vpn_portal::{VpnPortalEventSink, VpnPortalHost, VpnPortalInfoSnapshot, VpnPortalModule},
 };
 
 #[cfg(feature = "proxy-smoltcp-stack")]
-use crate::proxy::gateway::{GatewayEventSink, GatewayModule};
+use crate::gateway::{GatewayEventSink, GatewayModule};
 
+#[cfg(feature = "proxy-packet")]
+use crate::gateway::proxy::wrapped_transport::{WrappedTransportKind, WrappedTransportRole};
+#[cfg(feature = "proxy-packet")]
+use crate::gateway::proxy::{runtime::IcmpProxyHost, service::CoreProxyModule};
 #[cfg(feature = "proxy-packet")]
 use crate::peers::peer_manager::PipelineRegistrationGuard;
 use crate::peers::public_ipv6::provider::{PublicIpv6ProviderPlatform, PublicIpv6ProviderService};
-#[cfg(feature = "proxy-packet")]
-use crate::proxy::wrapped_transport::{WrappedTransportKind, WrappedTransportRole};
-#[cfg(feature = "proxy-packet")]
-use crate::proxy::{runtime::IcmpProxyHost, service::CoreProxyModule};
 
 use crate::host::packet::PacketSink;
 use packet_io::PacketEgress;
@@ -1404,7 +1406,7 @@ where
         &self,
         dst_addr: std::net::SocketAddr,
         timeout: Duration,
-    ) -> anyhow::Result<crate::proxy::gateway::DataPlaneTcpStream> {
+    ) -> anyhow::Result<crate::gateway::DataPlaneTcpStream> {
         self.gateway.data_plane_tcp_connect(dst_addr, timeout).await
     }
 
@@ -1413,7 +1415,7 @@ where
         &self,
         local_port: u16,
         timeout: Duration,
-    ) -> anyhow::Result<crate::proxy::gateway::DataPlaneTcpListener> {
+    ) -> anyhow::Result<crate::gateway::DataPlaneTcpListener> {
         self.gateway.data_plane_tcp_bind(local_port, timeout).await
     }
 
@@ -1422,7 +1424,7 @@ where
         &self,
         local_port: u16,
         timeout: Duration,
-    ) -> anyhow::Result<crate::proxy::gateway::DataPlaneUdpSocket> {
+    ) -> anyhow::Result<crate::gateway::DataPlaneUdpSocket> {
         self.gateway.data_plane_udp_bind(local_port, timeout).await
     }
 
@@ -1655,7 +1657,7 @@ where
     #[cfg(feature = "proxy-packet")]
     pub fn tcp_proxy_entry_snapshots(
         &self,
-    ) -> Vec<crate::proxy::tcp_proxy_engine::TcpNatEntrySnapshot> {
+    ) -> Vec<crate::gateway::proxy::tcp_proxy_engine::TcpNatEntrySnapshot> {
         self.proxy.tcp_entry_snapshots()
     }
 
@@ -1664,7 +1666,7 @@ where
         &self,
         transport: WrappedTransportKind,
         role: WrappedTransportRole,
-    ) -> Vec<crate::proxy::tcp_proxy_engine::TcpNatEntrySnapshot> {
+    ) -> Vec<crate::gateway::proxy::tcp_proxy_engine::TcpNatEntrySnapshot> {
         self.transport_proxy
             .as_ref()
             .map_or_else(Vec::new, |proxy| match role {
@@ -2115,6 +2117,10 @@ mod tests {
             config::runtime::CoreInstanceRuntimeConfig,
             config::{CoreConfig, IpPrefix, NetworkIdentity, ProxyNetworkConfig},
             connectivity::manual::{ManualConnectorHost, ManualInterfaceAddrs},
+            gateway::proxy::wrapped_transport::{
+                WrappedTransportEngine, WrappedTransportEngineStart, WrappedTransportEngines,
+                WrappedTransportRole,
+            },
             host::dns::{DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord},
             listener::transport::AcceptedTransport,
             peers::{
@@ -2122,10 +2128,6 @@ mod tests {
                 peer_manager::PortablePeerManagerConfig,
             },
             proto::{common::StunInfo, peer_rpc::GetIpListResponse},
-            proxy::wrapped_transport::{
-                WrappedTransportEngine, WrappedTransportEngineStart, WrappedTransportEngines,
-                WrappedTransportRole,
-            },
             socket::{
                 SocketContext,
                 tcp::{
@@ -2140,7 +2142,7 @@ mod tests {
         };
 
         #[cfg(feature = "proxy-packet")]
-        use crate::proxy::wrapped_transport::WrappedTransportKind;
+        use crate::gateway::proxy::wrapped_transport::WrappedTransportKind;
 
         struct TestTcpSocket(tokio::io::DuplexStream);
 
@@ -2462,7 +2464,9 @@ mod tests {
             start_gate: Option<Arc<ProxyStartGate>>,
             #[cfg(feature = "proxy-packet")]
             destination_ingress: StdMutex<
-                Option<crate::proxy::wrapped_transport::WrappedTransportDestinationIngress>,
+                Option<
+                    crate::gateway::proxy::wrapped_transport::WrappedTransportDestinationIngress,
+                >,
             >,
         }
 
@@ -2487,7 +2491,7 @@ mod tests {
             #[cfg(feature = "proxy-packet")]
             fn destination_ingress(
                 &self,
-            ) -> Option<crate::proxy::wrapped_transport::WrappedTransportDestinationIngress>
+            ) -> Option<crate::gateway::proxy::wrapped_transport::WrappedTransportDestinationIngress>
             {
                 self.destination_ingress.lock().unwrap().clone()
             }
@@ -2526,8 +2530,9 @@ mod tests {
             #[cfg(feature = "proxy-packet")]
             async fn connect_source(
                 &self,
-                _request: crate::proxy::wrapped_transport::WrappedTransportConnect,
-            ) -> anyhow::Result<Box<dyn crate::proxy::runtime::TcpProxyStream>> {
+                _request: crate::gateway::proxy::wrapped_transport::WrappedTransportConnect,
+            ) -> anyhow::Result<Box<dyn crate::gateway::proxy::runtime::TcpProxyStream>>
+            {
                 anyhow::bail!("recording engine does not open streams")
             }
 
@@ -2927,7 +2932,7 @@ mod tests {
             let (core_stream, peer_stream) = tokio::io::duplex(1024);
             ingress
                 .submit(
-                    crate::proxy::wrapped_transport::WrappedTransportAcceptedStream {
+                    crate::gateway::proxy::wrapped_transport::WrappedTransportAcceptedStream {
                         src: "10.0.0.2:40000".parse().unwrap(),
                         dst: destination,
                         initial_acl_packet_size: 16,
@@ -2951,7 +2956,7 @@ mod tests {
                         WrappedTransportRole::Destination,
                     );
                     if entries.iter().any(|entry| {
-                        entry.state == crate::proxy::tcp_proxy_engine::TcpNatEntryState::Connected
+                        entry.state == crate::gateway::proxy::tcp_proxy_engine::TcpNatEntryState::Connected
                     }) {
                         break;
                     }
@@ -2980,7 +2985,7 @@ mod tests {
             let (core_stream, _blocked_peer_stream) = tokio::io::duplex(1024);
             ingress
                 .submit(
-                    crate::proxy::wrapped_transport::WrappedTransportAcceptedStream {
+                    crate::gateway::proxy::wrapped_transport::WrappedTransportAcceptedStream {
                         src: "10.0.0.2:40001".parse().unwrap(),
                         dst: destination,
                         initial_acl_packet_size: 16,
@@ -3025,7 +3030,7 @@ mod tests {
             assert!(
                 ingress
                     .submit(
-                        crate::proxy::wrapped_transport::WrappedTransportAcceptedStream {
+                        crate::gateway::proxy::wrapped_transport::WrappedTransportAcceptedStream {
                             src: "10.0.0.2:40002".parse().unwrap(),
                             dst: destination,
                             initial_acl_packet_size: 16,

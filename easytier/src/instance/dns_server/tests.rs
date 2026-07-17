@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cidr::Ipv4Inet;
-use easytier_core::{magic_dns::MagicDnsRoute, process_runtime::CoreProcessRuntime};
+use easytier_core::{gateway::magic_dns::MagicDnsRoute, process_runtime::CoreProcessRuntime};
 use hickory_client::client::{Client, ClientHandle as _};
 use hickory_proto::rr;
 use hickory_proto::runtime::TokioRuntimeProvider;

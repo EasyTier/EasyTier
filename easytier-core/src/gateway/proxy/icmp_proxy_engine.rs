@@ -274,7 +274,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::proxy::cidr_table::{ProxyCidrRule, ProxyCidrSnapshot};
+    use crate::gateway::proxy::cidr_table::{ProxyCidrRule, ProxyCidrSnapshot};
 
     fn echo_request_with_payload(
         source: Ipv4Addr,

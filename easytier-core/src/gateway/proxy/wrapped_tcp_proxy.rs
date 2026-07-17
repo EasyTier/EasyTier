@@ -8,12 +8,12 @@ use easytier_proto::acl::{ChainType, Protocol};
 use smoltcp::wire::{IpProtocol, Ipv4Packet, TcpPacket};
 
 use crate::{
-    packet::{PacketType, ZCPacket},
-    peers::{acl_filter::AclFilter, acl_processor::PacketInfo, route_trait::Route},
-    proxy::{
+    gateway::proxy::{
         cidr_table::ProxyCidrTable, proxy_acl::ProxyAclHandler,
         runtime::WrappedTcpDestinationRuntime,
     },
+    packet::{PacketType, ZCPacket},
+    peers::{acl_filter::AclFilter, acl_processor::PacketInfo, route_trait::Route},
 };
 
 #[async_trait::async_trait]
@@ -198,7 +198,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proxy::cidr_table::{ProxyCidrRule, ProxyCidrSnapshot};
+    use crate::gateway::proxy::cidr_table::{ProxyCidrRule, ProxyCidrSnapshot};
     use smoltcp::wire::{IpAddress, IpProtocol, Ipv4Packet, TcpPacket};
 
     struct TestDestinationRuntime {

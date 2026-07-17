@@ -33,8 +33,8 @@ use tokio_util::sync::{CancellationToken, PollSender};
 use tracing::{debug, error, info, instrument, trace, warn};
 
 use easytier_core::{
-    proxy::runtime::TcpProxyStream,
-    proxy::wrapped_transport::{
+    gateway::proxy::runtime::TcpProxyStream,
+    gateway::proxy::wrapped_transport::{
         WrappedTransportAcceptedStream, WrappedTransportConnect, WrappedTransportDatagram,
         WrappedTransportDatagramBuffer, WrappedTransportDestinationIngress, WrappedTransportEngine,
         WrappedTransportEngineStart, WrappedTransportKind, WrappedTransportRole,

@@ -1,3 +1,5 @@
+pub(crate) mod protocol;
+
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::{
@@ -14,7 +16,7 @@ use pnet_packet::{
 };
 
 #[cfg(feature = "proxy-packet")]
-use super::ip_reassembler::{IpReassembler, SmolIpv4Packet};
+use crate::gateway::proxy::ip_reassembler::{IpReassembler, SmolIpv4Packet};
 #[cfg(feature = "proxy-packet")]
 use crate::packet::{PacketType, ZCPacket};
 

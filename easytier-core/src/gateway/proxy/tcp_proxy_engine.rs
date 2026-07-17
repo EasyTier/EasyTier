@@ -448,8 +448,8 @@ impl TcpProxyEngine {
 mod tests {
     use super::*;
     use crate::{
+        gateway::proxy::cidr_table::{ProxyCidrRule, ProxyCidrSnapshot},
         packet::PeerManagerHeader,
-        proxy::cidr_table::{ProxyCidrRule, ProxyCidrSnapshot},
     };
     use smoltcp::wire::{IpAddress, TcpPacket};
 

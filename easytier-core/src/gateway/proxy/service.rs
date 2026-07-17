@@ -417,8 +417,8 @@ mod tests {
     use crate::{
         config::runtime::{CoreInstanceRuntimeConfig, CoreRuntimeConfig},
         config::{CoreConfig, IpPrefix, PeerPolicyConfig, ProxyNetworkConfig, RouteConfig},
+        gateway::proxy::ProxyRuntimeConfig,
         peers::context::{PeerRuntimeConfig, PeerRuntimeSnapshot},
-        proxy::ProxyRuntimeConfig,
     };
 
     use super::*;

@@ -1,6 +1,3 @@
-#[cfg(feature = "proxy-packet")]
-pub mod udp_broadcast;
-
 use bytes::Buf;
 use bytes::Bytes;
 use bytes::BytesMut;

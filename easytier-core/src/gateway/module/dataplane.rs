@@ -29,9 +29,8 @@ use quanta::Instant;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
-    proxy::{
-        socks5::{Socks5Entry, Socks5EntryGuard},
-        socks5_protocol::server::AsyncTcpConnector,
+    gateway::{
+        socks5::{Socks5Entry, Socks5EntryGuard, protocol::server::AsyncTcpConnector},
         tokio_smoltcp::{Net, TcpListener},
     },
     socket::{

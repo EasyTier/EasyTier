@@ -1,20 +1,20 @@
 use std::sync::Arc;
 
-#[cfg(feature = "smoltcp")]
-use easytier_core::proxy::gateway::{GatewayEvent, GatewayEventSink};
 #[cfg(feature = "wireguard")]
-use easytier_core::vpn_portal::VpnPortalHost;
+use easytier_core::gateway::vpn_portal::VpnPortalHost;
+#[cfg(feature = "smoltcp")]
+use easytier_core::gateway::{GatewayEvent, GatewayEventSink};
 use easytier_core::{
     connectivity::manual::{
         ManualConnectivityEvent, ManualConnectivityEventSink, ManualTunnelConnector,
     },
+    gateway::proxy::wrapped_transport::WrappedTransportEngines,
+    gateway::vpn_portal::{VpnPortalEvent, VpnPortalEventSink},
     host::dns::{DnsRecordResolver, DnsResolver},
     host::packet::PacketSink,
     instance::{CoreHostAdapters, CoreInstance, CoreInstanceConfig},
     peers::peer_manager::RouteAlgoType,
     process_runtime::CoreProcessRuntime,
-    proxy::wrapped_transport::WrappedTransportEngines,
-    vpn_portal::{VpnPortalEvent, VpnPortalEventSink},
 };
 
 use crate::{
@@ -36,7 +36,7 @@ use crate::gateway::kcp_proxy::KcpProxyService;
 use crate::gateway::quic_proxy::QuicProxyService;
 use crate::tunnel::protocol::{runtime_client_protocol_upgrader, runtime_server_protocol_upgrader};
 #[cfg(any(feature = "kcp", feature = "quic"))]
-use easytier_core::proxy::wrapped_transport::WrappedTransportEngine;
+use easytier_core::gateway::proxy::wrapped_transport::WrappedTransportEngine;
 
 pub(crate) type NativeCoreInstance = CoreInstance<NativeInstanceHost>;
 
@@ -197,7 +197,7 @@ mod tests {
     use std::sync::Arc;
 
     #[cfg(feature = "kcp")]
-    use easytier_core::proxy::wrapped_transport::{
+    use easytier_core::gateway::proxy::wrapped_transport::{
         WrappedTransportConnect, WrappedTransportEngine,
     };
     use easytier_core::{

@@ -268,7 +268,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::proxy::runtime::{IcmpProxySocket, ProxyRuntimeInfo, ProxyRuntimeSnapshot};
+    use crate::gateway::proxy::runtime::{IcmpProxySocket, ProxyRuntimeInfo, ProxyRuntimeSnapshot};
 
     #[derive(Default)]
     struct PartialStartRuntime {

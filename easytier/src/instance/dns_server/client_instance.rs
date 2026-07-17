@@ -1,9 +1,9 @@
 use std::{sync::Arc, time::Duration};
 
-use easytier_core::instance::CorePacketPlane;
-use easytier_core::magic_dns::{
+use easytier_core::gateway::magic_dns::{
     MagicDnsRoutePublisher, MagicDnsRouteSnapshot, run_magic_dns_route_publisher,
 };
+use easytier_core::instance::CorePacketPlane;
 use tokio::task::JoinSet;
 
 use crate::proto::{

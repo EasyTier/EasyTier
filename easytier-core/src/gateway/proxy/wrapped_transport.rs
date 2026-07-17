@@ -12,25 +12,25 @@ use crate::{
     config::runtime::CoreRuntimeConfigStore,
     connectivity::direct::DirectConnectorHost,
     connectivity::hole_punch::tcp::TcpHolePunchHost,
+    gateway::proxy::cidr_table::ProxyCidrTable,
     listener::RunningListenerRegistry,
     packet::{PacketType, ZCPacket, ZCPacketType},
     peers::{
         PeerPacketFilter,
         peer_manager::{PeerManagerCore, PipelineRegistrationGuard},
     },
-    proxy::cidr_table::ProxyCidrTable,
     socket::SocketContext,
 };
 
 #[cfg(feature = "proxy-packet")]
-pub use crate::proxy::wrapped_transport_destination::WrappedTransportDestinationIngress;
+pub use crate::gateway::proxy::wrapped_transport_destination::WrappedTransportDestinationIngress;
 #[cfg(feature = "proxy-packet")]
-use crate::proxy::wrapped_transport_destination::{
+use crate::gateway::proxy::wrapped_transport_destination::{
     WrappedTransportDestinationIngresses, WrappedTransportDestinationLifecycle,
     WrappedTransportDestinationModule,
 };
 #[cfg(feature = "proxy-packet")]
-use crate::proxy::{
+use crate::gateway::proxy::{
     runtime::{ProxyRuntimeInfo, TcpProxyDestinationConnector, TcpProxyStream},
     service::CoreProxyRuntime,
     tcp_proxy_engine::{TcpNatEntrySnapshot, TcpProxyMode, TcpProxyNicContext},

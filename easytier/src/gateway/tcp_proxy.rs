@@ -1,10 +1,12 @@
 use std::sync::{Arc, Weak};
 
-use easytier_core::proxy::tcp_proxy_engine::{
+use easytier_core::gateway::proxy::tcp_proxy_engine::{
     TcpNatEntrySnapshot, TcpNatEntryState as CoreTcpNatEntryState,
 };
 #[cfg(any(feature = "kcp", feature = "quic"))]
-use easytier_core::proxy::wrapped_transport::{WrappedTransportKind, WrappedTransportRole};
+use easytier_core::gateway::proxy::wrapped_transport::{
+    WrappedTransportKind, WrappedTransportRole,
+};
 
 use crate::proto::{
     api::instance::{

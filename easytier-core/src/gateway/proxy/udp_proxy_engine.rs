@@ -399,7 +399,7 @@ fn compose_udp_ipv4_response(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proxy::{
+    use crate::gateway::proxy::{
         cidr_table::{ProxyCidrRule, ProxyCidrSnapshot},
         runtime::{
             ProxyRuntimeError, ProxyRuntimeInfo, ProxyRuntimeSnapshot, UdpProxyResponseSink,

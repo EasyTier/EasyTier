@@ -26,12 +26,12 @@ use super::runtime::{
     ProxyRuntimeError, TcpProxyConnectContext, TcpProxyDestinationConnector, TcpProxyRuntime,
     TcpProxyStream,
 };
-#[cfg(feature = "proxy-smoltcp-stack")]
-use super::smoltcp_stack::{SmolTcpStack, output_dst_ip};
 use super::tcp_proxy_engine::{
     TcpNatEntry, TcpNatEntryState, TcpProxyEngine, TcpProxyMode, TcpProxyNicContext,
     TcpProxyPacketAction, TcpProxyPeerContext,
 };
+#[cfg(feature = "proxy-smoltcp-stack")]
+use crate::gateway::stack::{SmolTcpStack, output_dst_ip};
 
 fn spawn_tcp_proxy_task(
     lifecycle: &AtomicU64,

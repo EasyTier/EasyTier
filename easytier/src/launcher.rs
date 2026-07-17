@@ -21,11 +21,9 @@ use crate::{
 use anyhow::Context;
 use chrono::{DateTime, Local};
 use easytier_core::config::normalize_secure_mode_config;
-use easytier_core::process_runtime::CoreProcessRuntime;
 #[cfg(feature = "ffi-dataplane")]
-pub use easytier_core::proxy::gateway::{
-    DataPlaneTcpListener, DataPlaneTcpStream, DataPlaneUdpSocket,
-};
+pub use easytier_core::gateway::{DataPlaneTcpListener, DataPlaneTcpStream, DataPlaneUdpSocket};
+use easytier_core::process_runtime::CoreProcessRuntime;
 use std::{
     collections::VecDeque,
     net::SocketAddr,

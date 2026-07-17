@@ -2,9 +2,9 @@ use std::net::Ipv4Addr;
 
 #[cfg(all(windows, feature = "tun"))]
 use cidr::Ipv4Inet;
-use easytier_core::packet::udp_broadcast::PhysicalInterface;
+use easytier_core::gateway::udp_broadcast::PhysicalInterface;
 #[cfg(all(windows, feature = "tun"))]
-use easytier_core::packet::udp_broadcast::{
+use easytier_core::gateway::udp_broadcast::{
     BroadcastRelayConfig, NormalizedPacket, UdpBroadcastPacketRejection, UdpPacketSummary,
     normalize_udp_broadcast_packet,
 };

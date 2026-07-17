@@ -5,13 +5,13 @@ use async_trait::async_trait;
 use crate::{
     config::runtime::CoreRuntimeConfigStore,
     foundation::stats::{LabelSet, LabelType, MetricName},
-    magic_dns::{MagicDnsRouteSnapshot, MagicDnsRouteSource},
+    gateway::magic_dns::{MagicDnsRouteSnapshot, MagicDnsRouteSource},
+    gateway::proxy::cidr_monitor::{ProxyCidrDiff, collect_proxy_cidr_diff},
     peers::peer_manager::PeerManagerCore,
-    proxy::cidr_monitor::{ProxyCidrDiff, collect_proxy_cidr_diff},
 };
 
 #[cfg(feature = "proxy-packet")]
-use crate::magic_dns::{MagicDnsQueryResolver, magic_dns_packet_filter};
+use crate::gateway::magic_dns::{MagicDnsQueryResolver, magic_dns_packet_filter};
 
 #[cfg(feature = "proxy-packet")]
 use super::MagicDnsResolverRegistration;

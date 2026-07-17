@@ -9,8 +9,8 @@ use crate::{
     packet::ZCPacket,
 };
 
-use super::runtime::TcpProxyStream;
 use super::tokio_smoltcp::{BufferSize, Net, NetConfig, channel_device};
+use crate::gateway::proxy::runtime::TcpProxyStream;
 
 type SmolTcpAcceptResult = anyhow::Result<(super::tokio_smoltcp::TcpStream, SocketAddr)>;
 

@@ -2,17 +2,12 @@ use serde::{Deserialize, Serialize};
 
 pub mod cidr_monitor;
 pub(crate) mod cidr_table;
-pub mod gateway;
 #[cfg(feature = "proxy-packet")]
 pub(crate) mod proxy_acl;
 #[cfg(feature = "proxy-packet")]
 pub mod runtime;
 #[cfg(feature = "proxy-packet")]
 pub(crate) mod service;
-#[cfg(feature = "proxy-smoltcp-stack")]
-pub(crate) mod socks5;
-#[cfg(feature = "proxy-smoltcp-stack")]
-pub(crate) mod socks5_protocol;
 pub mod wrapped_transport;
 
 #[cfg(feature = "proxy-packet")]
@@ -21,16 +16,12 @@ pub(crate) mod icmp_proxy_engine;
 pub(crate) mod icmp_proxy_service;
 #[cfg(feature = "proxy-packet")]
 pub(crate) mod ip_reassembler;
-#[cfg(feature = "proxy-smoltcp-stack")]
-pub(crate) mod smoltcp_stack;
 #[cfg(feature = "proxy-packet")]
 pub mod tcp_proxy_engine;
 #[cfg(feature = "proxy-packet")]
 pub(crate) mod tcp_proxy_service;
 #[cfg(feature = "proxy-packet")]
 pub(crate) mod tcp_socket_connector;
-#[cfg(feature = "proxy-smoltcp-stack")]
-pub(crate) mod tokio_smoltcp;
 #[cfg(feature = "proxy-packet")]
 pub(crate) mod udp_proxy_engine;
 #[cfg(feature = "proxy-packet")]
