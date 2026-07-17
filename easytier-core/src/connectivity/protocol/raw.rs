@@ -9,11 +9,11 @@ use crate::{
         manual::resolve_url_addrs,
         transport::{self, ConnectedByteStream, ConnectedUdpSession, UdpSessionMode},
     },
+    host::dns::DnsResolver,
     listener::{ListenerConnectionCounter, SocketListener},
     proto::common::TunnelInfo,
     socket::{
         IpVersion,
-        dns::DnsResolver,
         tcp::{
             TcpBindOptions, TcpListenOptions, TcpSocketListener, TcpSocketPurpose,
             VirtualTcpListenerFactory, VirtualTcpSocket, VirtualTcpSocketFactory,

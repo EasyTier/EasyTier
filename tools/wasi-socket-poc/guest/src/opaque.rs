@@ -10,9 +10,9 @@ use std::{
 use easytier_core::{
     connectivity::host::environment::HostConnectorEnvironmentServices,
     instance::PacketSink,
-    socket::{
+    host::dns::{DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord}, socket::{
         IpVersion, NetNamespace, SocketContext,
-        dns::{DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord},
+        
         host::{
             HostSocketHandle, HostSocketRuntime,
             dns::{HostDnsResolver, wasi::WasiHostDnsIo},
@@ -82,7 +82,7 @@ fn tcp_stream(
     sockets: &HostSocketRuntime,
     io: Arc<WasiHostTcpIo>,
     handle: u64,
-) -> easytier_core::socket::host::HostTcpStream {
+) -> easytier_core::host::HostTcpStream {
     sockets.tcp_stream(
         io,
         HostSocketHandle(handle),

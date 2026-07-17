@@ -23,6 +23,7 @@ use crate::{
     },
     foundation::task::{PeerTaskLauncher, PeerTaskManager},
     hole_punch::udp::{should_background_p2p_with_peer, should_try_p2p_with_peer},
+    host::dns::DnsResolver,
     listener::RunningListenerRegistry,
     peers::{
         foreign_network_manager::ForeignNetworkRpcRegistrar, peer_conn::PeerConnId,
@@ -39,7 +40,6 @@ use crate::{
     },
     socket::{
         IpVersion, SocketContext,
-        dns::DnsResolver,
         tcp::{TcpBindOptions, TcpSocketPurpose},
         udp::{
             PreferredIpv6Source, UdpBindOptions, UdpSessionProtocol, VirtualUdpSocket,

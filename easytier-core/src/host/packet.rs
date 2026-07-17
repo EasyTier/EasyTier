@@ -2,13 +2,31 @@ use std::{io, sync::Arc, task::Poll};
 
 use async_trait::async_trait;
 use futures::future::poll_fn;
-
-use crate::instance::PacketSink;
+use tokio::sync::mpsc;
 
 use super::{HostOperationId, HostSocketRuntime};
 
 #[cfg(target_os = "wasi")]
 pub mod wasi;
+
+/// Receives raw IP packet bytes leaving the EasyTier peer graph.
+///
+/// The host decides whether packets go to a TUN device, a Go callback, or a
+/// different packet backend. Core's internal packet headers never cross this
+/// boundary, and core never performs platform I/O directly.
+#[async_trait]
+pub trait PacketSink: Send + Sync + 'static {
+    async fn write_packet(&self, packet: Vec<u8>) -> anyhow::Result<()>;
+}
+
+#[async_trait]
+impl PacketSink for mpsc::Sender<Vec<u8>> {
+    async fn write_packet(&self, packet: Vec<u8>) -> anyhow::Result<()> {
+        self.send(packet)
+            .await
+            .map_err(|_| anyhow::anyhow!("packet sink channel is closed"))
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct HostPacketSinkHandle(pub u64);

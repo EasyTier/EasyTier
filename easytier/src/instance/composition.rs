@@ -8,11 +8,12 @@ use easytier_core::{
     connectivity::manual::{
         ManualConnectivityEvent, ManualConnectivityEventSink, ManualTunnelConnector,
     },
-    instance::{CoreHostAdapters, CoreInstance, CoreInstanceConfig, PacketSink},
+    host::dns::{DnsRecordResolver, DnsResolver},
+    host::packet::PacketSink,
+    instance::{CoreHostAdapters, CoreInstance, CoreInstanceConfig},
     peers::peer_manager::RouteAlgoType,
     process_runtime::CoreProcessRuntime,
     proxy::wrapped_transport::WrappedTransportEngines,
-    socket::dns::{DnsRecordResolver, DnsResolver},
     vpn_portal::{VpnPortalEvent, VpnPortalEventSink},
 };
 

@@ -25,14 +25,12 @@ use crate::{
     config::{P2pPolicyFlags, PeerId, ProxyNetworkConfig},
     foundation::compressor::{Compressor as _, DefaultCompressor},
     foundation::task::ExternalTaskSignal,
+    host::dns::{DnsQuery, DnsResolver},
     magic_dns::{MagicDnsRouteAdvertisement, MagicDnsRouteSnapshot, MagicDnsRouteSource},
     packet::{CompressorAlgo, PacketType, ZCPacket},
     proto::common::{FlagsInConfig, PeerFeatureFlag, StunInfo},
     proto::core_peer::peer::{ListPublicIpv6InfoResponse, PeerConnInfo, Route as CoreRoute},
-    socket::{
-        SocketContext,
-        dns::{DnsQuery, DnsResolver},
-    },
+    socket::SocketContext,
     tunnel::Tunnel,
 };
 

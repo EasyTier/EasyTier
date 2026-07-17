@@ -15,9 +15,9 @@ use url::Url;
 
 use crate::{
     connectivity::transport,
+    host::dns::{DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord},
     socket::{
         IpVersion, SocketContext,
-        dns::{DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord},
         tcp::{TcpBindOptions, TcpSocketPurpose, VirtualTcpSocketFactory},
     },
 };

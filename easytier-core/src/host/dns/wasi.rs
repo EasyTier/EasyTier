@@ -1,12 +1,12 @@
 use std::{io, net::IpAddr, task::Poll};
 
-use crate::socket::dns::{DnsQuery, DnsSrvRecord};
+use crate::host::dns::{DnsQuery, DnsSrvRecord};
 
 use super::{
     HostDnsIo,
     wasi_wire::{MAX_DNS_RESULT_LEN, decode_addresses, decode_srv, decode_txt, encode_query},
 };
-use crate::socket::host::{HostOperationId, wasi_common::host_error};
+use crate::host::{HostOperationId, wasi_common::host_error};
 
 const HOST_PENDING: i32 = -1;
 

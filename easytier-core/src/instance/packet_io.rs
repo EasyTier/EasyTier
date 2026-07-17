@@ -3,9 +3,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use async_trait::async_trait;
 use tokio::{sync::mpsc, task::JoinHandle};
 
+use crate::host::packet::PacketSink;
 use crate::packet::ZCPacket;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,25 +62,6 @@ fn parse_ipv6_packet(packet: &[u8]) -> anyhow::Result<IpPacketMeta> {
             <[u8; 16]>::try_from(&packet[24..40]).expect("checked IPv6 header length"),
         )),
     })
-}
-
-/// Receives raw IP packet bytes leaving the EasyTier peer graph.
-///
-/// The host decides whether packets go to a TUN device, a Go callback, or a
-/// different packet backend. Core's internal packet headers never cross this
-/// boundary, and core never performs platform I/O directly.
-#[async_trait]
-pub trait PacketSink: Send + Sync + 'static {
-    async fn write_packet(&self, packet: Vec<u8>) -> anyhow::Result<()>;
-}
-
-#[async_trait]
-impl PacketSink for mpsc::Sender<Vec<u8>> {
-    async fn write_packet(&self, packet: Vec<u8>) -> anyhow::Result<()> {
-        self.send(packet)
-            .await
-            .map_err(|_| anyhow::anyhow!("packet sink channel is closed"))
-    }
 }
 
 pub(crate) struct PacketEgress {

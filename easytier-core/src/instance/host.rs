@@ -34,16 +34,16 @@ impl WasiCoreInstanceCreateConfig {
 #[cfg(target_os = "wasi")]
 pub(super) type WasiCore = super::CoreInstance<
     crate::connectivity::host::HostConnectorAdapter<
-        crate::socket::host::wasi_backend::WasiHostSocketBackend,
-        crate::socket::host::environment::HostConnectorEnvironmentServiceAdapter<
-            crate::socket::host::environment::wasi::WasiHostConnectorEnvironmentIo,
+        crate::host::wasi_backend::WasiHostSocketBackend,
+        crate::host::environment::HostConnectorEnvironmentServiceAdapter<
+            crate::host::environment::wasi::WasiHostConnectorEnvironmentIo,
         >,
     >,
 >;
 
 #[cfg(target_os = "wasi")]
 pub(super) struct WasiCoreRuntime {
-    socket_runtime: crate::socket::host::HostSocketRuntime,
+    socket_runtime: crate::host::HostSocketRuntime,
     core: std::sync::Arc<WasiCore>,
 }
 
@@ -63,11 +63,11 @@ pub(super) fn new_wasi_core_runtime(
     config: CoreInstanceConfig,
     process_runtime: std::sync::Arc<crate::process_runtime::CoreProcessRuntime>,
     environment_snapshot: HostConnectorEnvironmentSnapshot,
-    packet_sink: crate::socket::host::packet::HostPacketSinkHandle,
+    packet_sink: crate::host::packet::HostPacketSinkHandle,
 ) -> anyhow::Result<WasiCoreRuntime> {
     use std::sync::Arc;
 
-    use crate::socket::host::{
+    use crate::host::{
         HostSocketRuntime,
         dns::{HostDnsResolver, wasi::WasiHostDnsIo},
         environment::{

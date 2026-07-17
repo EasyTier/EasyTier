@@ -1,15 +1,14 @@
 //! Host network facts and slow operations used by connector orchestration.
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::{
     connectivity::manual::ManualInterfaceAddrs,
     proto::peer_rpc::GetIpListResponse,
-    socket::{SocketContext, udp::PreferredIpv6Source},
+    socket::udp::PreferredIpv6Source,
 };
 
 /// Host-observed facts consumed by core connector policy.
@@ -71,16 +70,6 @@ impl HostConnectorEnvironmentSnapshot {
             .find(|source| source.ip == ip)
             .copied()
     }
-}
-
-/// Slow or socket-specific system operations below connector policy.
-#[async_trait]
-pub trait HostConnectorEnvironmentServices: Send + Sync + 'static {
-    async fn local_addr_for_remote(
-        &self,
-        remote_addr: SocketAddr,
-        context: SocketContext,
-    ) -> anyhow::Result<SocketAddr>;
 }
 
 #[cfg(test)]

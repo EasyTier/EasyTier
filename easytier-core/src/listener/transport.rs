@@ -16,6 +16,7 @@ use crate::{
             ServerProtocolAdmissionController, ServerProtocolUpgrade, ServerProtocolUpgrader, raw,
         },
     },
+    host::dns::DnsResolver,
     listener::{
         AcceptedSocketHandler, ListenerConnectionCounter, ListenerEvent, ListenerEventSink,
         ListenerFactory, ListenerManager, SocketListener, plan::ListenerPlanFailure,
@@ -23,7 +24,6 @@ use crate::{
     peers::peer_manager::PeerManagerCore,
     socket::{
         IpVersion, SocketContext,
-        dns::DnsResolver,
         tcp::{TcpListenOptions, TcpSocketListener, VirtualTcpListener, VirtualTcpListenerFactory},
         udp::{
             UdpSession, UdpSessionAcceptKind, UdpSessionListenRequest, UdpSessionSocket,
@@ -851,9 +851,9 @@ mod tests {
     use super::*;
     use crate::{
         connectivity::protocol::{CoreServerProtocolUpgrader, ServerTunnelAcceptor},
+        host::dns::{DnsQuery, DnsResolver},
         packet::ZCPacket,
         socket::{
-            dns::{DnsQuery, DnsResolver},
             tcp::{VirtualTcpListener, VirtualTcpSocket},
             udp::{
                 UdpBindOptions, UdpSessionKind, UdpSessionProtocol, UdpSessionSocket,

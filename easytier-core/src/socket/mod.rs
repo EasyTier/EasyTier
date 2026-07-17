@@ -2,10 +2,10 @@
 //!
 //! This Module is below [`crate::tunnel`]. Sockets represent established or
 //! bindable communication endpoints; tunnels are produced later by runtime
-//! upgraders and can be handed to peers.
+//! upgraders and can be handed to peers. Host capability seams (DNS, packet
+//! egress, environment facts, and the WASI mechanism backend) live in
+//! [`crate::host`].
 
-pub mod dns;
-pub mod host;
 pub mod ring;
 pub mod tcp;
 pub mod udp;

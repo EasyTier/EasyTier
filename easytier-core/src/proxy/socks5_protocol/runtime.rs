@@ -7,9 +7,9 @@ use std::{
 
 use crate::{
     foundation::time::timeout,
+    host::dns::{DnsQuery, DnsResolver},
     socket::{
         IpVersion, SocketContext,
-        dns::{DnsQuery, DnsResolver},
         tcp::{TcpBindOptions, TcpConnectOptions, TcpSocketPurpose, VirtualTcpSocketFactory},
         udp::{UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory},
     },

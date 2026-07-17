@@ -1,9 +1,7 @@
 use std::{io, net::IpAddr};
 
-use crate::socket::{
-    IpVersion,
-    dns::{DnsQuery, DnsSrvRecord},
-};
+use crate::host::dns::{DnsQuery, DnsSrvRecord};
+use crate::socket::IpVersion;
 
 const DNS_WIRE_VERSION: u8 = 1;
 #[cfg(target_os = "wasi")]

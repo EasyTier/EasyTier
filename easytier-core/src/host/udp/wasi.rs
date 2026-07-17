@@ -3,7 +3,7 @@ use std::{collections::HashMap, io, sync::Mutex, task::Poll};
 use crate::socket::udp::{UdpSocketRecvMeta, UdpSocketSendMeta};
 
 use super::{HostUdpDatagram, HostUdpIo};
-use crate::socket::host::{
+use crate::host::{
     HostOperationId, HostSocketHandle, HostSocketIo,
     wasi_common::{host_error, status},
     wasi_wire::{UDP_METADATA_LEN, decode_udp_metadata, encode_udp_metadata},
@@ -41,7 +41,7 @@ pub struct WasiHostUdpIo {
 }
 
 impl WasiHostUdpIo {
-    pub(in crate::socket::host) fn forget_operation(&self, operation: HostOperationId) {
+    pub(in crate::host) fn forget_operation(&self, operation: HostOperationId) {
         self.recv_buffers
             .lock()
             .expect("WASI UDP receive buffer registry poisoned")

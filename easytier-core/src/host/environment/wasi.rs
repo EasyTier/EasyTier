@@ -2,15 +2,13 @@
 
 use std::{io, net::SocketAddr, task::Poll};
 
-use crate::socket::{
-    SocketContext,
-    host::{
-        HostOperationId,
-        wasi_common::{host_error, status},
-        wasi_options::encode_socket_context,
-        wasi_wire::{SOCKET_ADDRESS_LEN, decode_socket_address, encode_socket_address},
-    },
+use crate::host::{
+    HostOperationId,
+    wasi_common::{host_error, status},
+    wasi_options::encode_socket_context,
+    wasi_wire::{SOCKET_ADDRESS_LEN, decode_socket_address, encode_socket_address},
 };
+use crate::socket::SocketContext;
 
 use super::HostConnectorEnvironmentIo;
 

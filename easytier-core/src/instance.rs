@@ -48,6 +48,7 @@ use crate::{
     foundation::stats::{CounterHandle, MetricSnapshot},
     hole_punch::tcp::{TcpHolePunchConnector, TcpHolePunchHost},
     hole_punch::udp::{UdpPortMappingEventSink, UdpPortMappingPlatform},
+    host::dns::{DnsRecordResolver, DnsResolver},
     listener::{
         AcceptedSocketHandler, ListenerEventSink, ListenerEventSinkGroup, ListenerFactory,
         RunningListenerRegistry, SocketListener,
@@ -81,7 +82,6 @@ use crate::{
     },
     socket::{
         SocketContext,
-        dns::{DnsRecordResolver, DnsResolver},
         tcp::VirtualTcpSocketFactory,
         udp::{UdpSessionAcceptKind, UdpSessionProtocol, VirtualUdpSocketFactory},
     },
@@ -105,8 +105,8 @@ use crate::proxy::wrapped_transport::{WrappedTransportKind, WrappedTransportRole
 #[cfg(feature = "proxy-packet")]
 use crate::proxy::{runtime::IcmpProxyHost, service::CoreProxyModule};
 
+use crate::host::packet::PacketSink;
 use packet_io::PacketEgress;
-pub use packet_io::PacketSink;
 pub use packet_plane::CorePacketPlane;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2119,6 +2119,7 @@ mod tests {
             config::runtime::CoreInstanceRuntimeConfig,
             config::{CoreConfig, IpPrefix, NetworkIdentity, ProxyNetworkConfig},
             connectivity::manual::{ManualConnectorHost, ManualInterfaceAddrs},
+            host::dns::{DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord},
             listener::transport::AcceptedTransport,
             peers::{
                 context::{HostRoutingPolicy, PeerRuntimeConfig},
@@ -2131,7 +2132,6 @@ mod tests {
             },
             socket::{
                 SocketContext,
-                dns::{DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord},
                 tcp::{
                     TcpConnectOptions, TcpListenOptions, TcpListenPurpose, TcpSocketPurpose,
                     VirtualTcpListener, VirtualTcpListenerFactory, VirtualTcpSocket,

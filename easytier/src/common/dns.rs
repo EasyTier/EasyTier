@@ -9,10 +9,8 @@ use std::{
 
 use anyhow::Context;
 use async_trait::async_trait;
-use easytier_core::socket::{
-    SocketContext,
-    dns::{DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord},
-};
+use easytier_core::host::dns::{DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord};
+use easytier_core::socket::SocketContext;
 use hickory_proto::runtime::{RuntimeProvider, TokioRuntimeProvider, iocompat::AsyncIoTokioAsStd};
 use hickory_proto::xfer::Protocol;
 use hickory_resolver::config::{LookupIpStrategy, NameServerConfig, ResolverConfig, ResolverOpts};

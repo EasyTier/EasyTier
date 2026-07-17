@@ -10,12 +10,9 @@ use crate::{
         },
         protocol::ClientProtocolUpgrader,
     },
+    host::dns::{DnsRecordResolver, DnsResolver},
     listener::SocketListener,
-    socket::{
-        dns::{DnsRecordResolver, DnsResolver},
-        ring::RingSocketId,
-        tcp::VirtualTcpSocketFactory,
-    },
+    socket::{ring::RingSocketId, tcp::VirtualTcpSocketFactory},
     tunnel::{Tunnel, ring::RingTunnelRegistry},
 };
 
@@ -96,10 +93,10 @@ mod tests {
             manual::ManualInterfaceAddrs,
             protocol::{CoreClientProtocolConfig, CoreClientProtocolUpgrader},
         },
+        host::dns::{DnsQuery, DnsRecordResolver, DnsSrvRecord},
         packet::ZCPacket,
         socket::{
             IpVersion, NetNamespace, SocketContext,
-            dns::{DnsQuery, DnsRecordResolver, DnsSrvRecord},
             tcp::{TcpConnectOptions, VirtualTcpSocket},
             udp::{UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory},
         },

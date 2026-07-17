@@ -13,18 +13,19 @@ use url::Url;
 use crate::{
     connectivity::{
         direct::DirectConnectorHost,
-        host::environment::{HostConnectorEnvironmentServices, HostConnectorEnvironmentSnapshot},
+        host::environment::HostConnectorEnvironmentSnapshot,
         manual::{ManualConnectorHost, ManualInterfaceAddrs},
+    },
+    host::environment::HostConnectorEnvironmentServices,
+    host::{
+        HostSocketRuntime, HostTcpStream,
+        factory::{HostSocketBackend, HostSocketFactory},
+        listener::{HostTcpListener, HostTcpListenerBackend, HostTcpListenerFactory},
+        udp::HostUdpSocket,
     },
     proto::peer_rpc::GetIpListResponse,
     socket::{
         SocketContext,
-        host::{
-            HostSocketRuntime, HostTcpStream,
-            factory::{HostSocketBackend, HostSocketFactory},
-            listener::{HostTcpListener, HostTcpListenerBackend, HostTcpListenerFactory},
-            udp::HostUdpSocket,
-        },
         tcp::{
             TcpConnectOptions, TcpListenOptions, VirtualTcpListenerFactory, VirtualTcpSocketFactory,
         },
@@ -177,20 +178,18 @@ mod tests {
     use crate::{
         connectivity::direct::DirectConnectorRpcHandler,
         hole_punch::tcp::TcpHolePunchHost,
+        host::{
+            HostOperationId, HostSocketHandle, HostSocketIo, HostTcpIo,
+            factory::{HostSocketFactoryIo, HostTcpConnectResult, HostUdpBindResult},
+            listener::{HostTcpBindResult, HostTcpListenerIo},
+            udp::{HostUdpDatagram, HostUdpIo},
+        },
         proto::{
             common::StunInfo,
             peer_rpc::{DirectConnectorRpc as _, GetIpListRequest},
             rpc_types::controller::BaseController,
         },
-        socket::{
-            host::{
-                HostOperationId, HostSocketHandle, HostSocketIo, HostTcpIo,
-                factory::{HostSocketFactoryIo, HostTcpConnectResult, HostUdpBindResult},
-                listener::{HostTcpBindResult, HostTcpListenerIo},
-                udp::{HostUdpDatagram, HostUdpIo},
-            },
-            udp::UdpSocketSendMeta,
-        },
+        socket::udp::UdpSocketSendMeta,
         stun::StunInfoProvider,
     };
 

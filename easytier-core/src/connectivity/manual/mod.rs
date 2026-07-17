@@ -24,11 +24,11 @@ use crate::{
         protocol::ClientProtocolUpgrader,
         transport::{self, ConnectedByteStream, ConnectedTransport, UdpSessionMode},
     },
+    host::dns::{DnsQuery, DnsResolver},
     peers::peer_manager::PeerManagerCore,
     proto::common::TunnelInfo,
     socket::{
         IpVersion, SocketContext,
-        dns::{DnsQuery, DnsResolver},
         tcp::{TcpBindOptions, TcpSocketPurpose, VirtualTcpSocketFactory},
         udp::{UdpBindOptions, UdpSessionProtocol, VirtualUdpSocketFactory},
     },

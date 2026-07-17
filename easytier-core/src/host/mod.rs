@@ -12,7 +12,7 @@ use std::{
 
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
-use super::tcp::VirtualTcpSocket;
+use crate::socket::tcp::VirtualTcpSocket;
 
 pub mod dns;
 pub mod environment;

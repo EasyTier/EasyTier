@@ -3,6 +3,7 @@ pub mod connectivity;
 pub mod dhcp;
 pub mod foundation;
 pub mod hole_punch;
+pub mod host;
 pub mod instance;
 pub mod listener;
 pub mod magic_dns;

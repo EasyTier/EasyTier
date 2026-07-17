@@ -20,10 +20,10 @@ use tokio::{
 use tracing::{Instrument as _, Level};
 
 use crate::{
+    host::dns::{DnsQuery, DnsRecordResolver, DnsResolver},
     proto::common::NatType,
     socket::{
         IpVersion, SocketContext,
-        dns::{DnsQuery, DnsRecordResolver, DnsResolver},
         tcp::{TcpBindOptions, TcpConnectOptions, VirtualTcpSocket, VirtualTcpSocketFactory},
         udp::{UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory},
     },
@@ -950,7 +950,7 @@ where
 mod tests {
     use async_trait::async_trait;
 
-    use crate::socket::dns::{DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord};
+    use crate::host::dns::{DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord};
 
     use super::*;
 

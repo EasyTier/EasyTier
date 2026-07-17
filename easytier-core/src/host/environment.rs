@@ -5,14 +5,22 @@ use std::{io, net::SocketAddr, sync::Arc, task::Poll};
 use async_trait::async_trait;
 use futures::future::poll_fn;
 
-use crate::{
-    connectivity::host::environment::HostConnectorEnvironmentServices, socket::SocketContext,
-};
+use crate::socket::SocketContext;
 
 use super::{HostOperationId, HostSocketRuntime};
 
 #[cfg(target_os = "wasi")]
 pub mod wasi;
+
+/// Slow or socket-specific system operations below connector policy.
+#[async_trait]
+pub trait HostConnectorEnvironmentServices: Send + Sync + 'static {
+    async fn local_addr_for_remote(
+        &self,
+        remote_addr: SocketAddr,
+        context: SocketContext,
+    ) -> anyhow::Result<SocketAddr>;
+}
 
 /// Mechanical asynchronous environment operations below connector policy.
 ///

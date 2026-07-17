@@ -963,12 +963,12 @@ mod tests {
     use crate::{
         config::runtime::CoreRuntimeConfig,
         config::{CoreConfig, NetworkIdentity, NodeConfig},
+        host::dns::{DnsQuery, DnsResolver},
         peers::{
             context::{HostRoutingPolicy, PeerRuntimeConfig, PeerRuntimeSnapshot},
             create_packet_recv_chan,
             peer_manager::PortablePeerManagerConfig,
         },
-        socket::dns::{DnsQuery, DnsResolver},
     };
 
     use super::*;

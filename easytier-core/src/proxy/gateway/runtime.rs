@@ -27,6 +27,7 @@ use tokio::{
 
 use crate::{
     config::runtime::CoreRuntimeConfigStore,
+    host::dns::DnsResolver,
     packet::{PacketType, ZCPacket},
     peers::{
         PeerPacketFilter,
@@ -50,7 +51,6 @@ use crate::{
     },
     socket::{
         SocketContext,
-        dns::DnsResolver,
         tcp::{
             TcpListenOptions, TcpSocketPurpose, VirtualTcpListener, VirtualTcpListenerFactory,
             VirtualTcpSocket, VirtualTcpSocketFactory,
@@ -1362,11 +1362,12 @@ mod tests {
     use super::*;
     use crate::{
         config::{IpPrefix, NetworkIdentity},
+        host::dns::DnsQuery,
         peers::{
             PacketRecvChanReceiver, context::PeerRuntimeSnapshot, create_packet_recv_chan,
             peer_manager::PortablePeerManagerConfig,
         },
-        socket::{dns::DnsQuery, tcp::TcpConnectOptions, udp::UdpBindOptions},
+        socket::{tcp::TcpConnectOptions, udp::UdpBindOptions},
         tunnel::ring::RingTunnelRegistry,
     };
 

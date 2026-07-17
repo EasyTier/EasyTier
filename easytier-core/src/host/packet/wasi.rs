@@ -1,6 +1,6 @@
 use std::{io, task::Poll};
 
-use crate::socket::host::{
+use crate::host::{
     HostOperationId,
     wasi_common::{host_error, status},
 };

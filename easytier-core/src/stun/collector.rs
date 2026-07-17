@@ -579,9 +579,9 @@ mod tests {
     use bytecodec::{DecodeExt as _, EncodeExt as _};
     use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
+    use crate::host::dns::{DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord};
     use crate::socket::{
         NetNamespace,
-        dns::{DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord},
         tcp::{TcpConnectOptions, VirtualTcpSocket, VirtualTcpSocketFactory},
         udp::{UdpBindOptions, UdpSocketPurpose},
     };

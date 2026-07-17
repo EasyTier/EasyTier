@@ -6,13 +6,13 @@ use tokio::{runtime::Builder, task::JoinHandle};
 
 use crate::{
     foundation::time::{clear_domain, enter_domain, next_deadline_millis},
+    host::packet::HostPacketSinkHandle,
     instance::{
         CoreInstanceState,
         host::WasiCoreInstanceCreateConfig,
         runtime_driver::{RuntimeDriveOutcome, RuntimeDriver},
     },
     process_runtime::CoreProcessRuntime,
-    socket::host::packet::HostPacketSinkHandle,
 };
 
 use super::{WasiCoreRuntime, new_wasi_core_runtime};
