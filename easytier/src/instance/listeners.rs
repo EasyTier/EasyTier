@@ -1,12 +1,9 @@
 use std::fmt::Debug;
 
 use async_trait::async_trait;
-use easytier_core::{
-    instance::{ExternalListenerFactory, ExternalListenerRequest},
-    listener::{
-        self as core_listener,
-        transport::{AcceptedTransport, AcceptedTunnelEvent, AcceptedTunnelEventSink},
-    },
+use easytier_core::listener::{
+    self as core_listener, ExternalListenerFactory, ExternalListenerRequest,
+    transport::{AcceptedTransport, AcceptedTunnelEvent, AcceptedTunnelEventSink},
 };
 
 #[cfg(feature = "faketcp")]

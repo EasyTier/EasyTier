@@ -8,11 +8,16 @@ use percent_encoding::percent_decode_str;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::socket::{
-    SocketContext,
-    tcp::{TcpBindOptions, TcpListenOptions},
-    udp::{UdpBindOptions, UdpSessionListenRequest},
+use crate::{
+    connectivity::protocol::ServerProtocolUpgrader,
+    socket::{
+        SocketContext,
+        tcp::{TcpBindOptions, TcpListenOptions},
+        udp::{UdpBindOptions, UdpSessionAcceptKind, UdpSessionListenRequest, UdpSessionProtocol},
+    },
 };
+
+use super::{ExternalListenerFactory, transport::TransportListenerConfig};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ListenerKind {
@@ -106,6 +111,123 @@ impl ListenerRuntimeConfig {
     pub(crate) fn request(&self, self_id: uuid::Uuid) -> ListenerPlanRequest {
         ListenerPlanRequest::new(self_id, self.urls.clone(), self.enable_ipv6)
     }
+}
+
+pub(crate) struct PreparedListenerPlan {
+    pub transports: Vec<TransportListenerConfig>,
+    pub external: Vec<(PlannedListener, SocketContext)>,
+    pub failures: Vec<ListenerPlanFailure>,
+}
+
+pub(crate) fn prepare_listener_plan<Accepted, TcpSocket: 'static>(
+    config: Option<&ListenerRuntimeConfig>,
+    self_id: uuid::Uuid,
+    server_protocol: Option<&dyn ServerProtocolUpgrader<TcpSocket>>,
+    external_factory: Option<&dyn ExternalListenerFactory<Accepted>>,
+) -> anyhow::Result<PreparedListenerPlan>
+where
+    Accepted: Send + 'static,
+{
+    let Some(config) = config else {
+        return Ok(PreparedListenerPlan {
+            transports: Vec::new(),
+            external: Vec::new(),
+            failures: Vec::new(),
+        });
+    };
+    let mut schemes = ListenerSchemeRegistry::new()
+        .support("tcp", ListenerKind::TcpStream)
+        .support("udp", ListenerKind::UdpSession);
+    for (scheme, kind) in [
+        ("ws", ListenerKind::TcpStream),
+        ("wss", ListenerKind::TcpStream),
+        ("wg", ListenerKind::UdpSession),
+        ("quic", ListenerKind::UdpSession),
+    ] {
+        if server_protocol.is_some_and(|protocol| protocol.supports_scheme(scheme)) {
+            schemes = schemes.support(scheme, kind);
+        }
+    }
+    schemes = schemes.disable_ipv6_shadow("quic");
+    if server_protocol.is_some_and(|protocol| protocol.supports_scheme("faketcp"))
+        && external_factory.is_some_and(|factory| factory.supports_scheme("faketcp"))
+    {
+        schemes = schemes.support("faketcp", ListenerKind::External);
+    }
+    if external_factory.is_some_and(|factory| factory.supports_scheme("unix")) {
+        schemes = schemes.support("unix", ListenerKind::External);
+    }
+    schemes = schemes.disable_ipv6_shadow("faketcp");
+
+    let plan = plan_listeners(config.request(self_id), &schemes);
+    let mut transports = Vec::new();
+    let mut external = Vec::new();
+    for listener in plan.listeners {
+        let must_succeed = listener.must_succeed;
+        match listener.kind {
+            ListenerKind::Ring => transports.push(TransportListenerConfig::Ring {
+                url: listener.url,
+                must_succeed,
+            }),
+            ListenerKind::TcpStream => {
+                let max_pending_upgrades = server_protocol
+                    .and_then(|protocol| protocol.max_pending_tcp_upgrades(listener.url.scheme()));
+                transports.push(TransportListenerConfig::Tcp {
+                    url: listener.url,
+                    options: unresolved_tcp_listener_options(config.socket_context.clone()),
+                    max_pending_upgrades,
+                    must_succeed,
+                });
+            }
+            ListenerKind::UdpSession => {
+                let accept_kind = match listener.url.scheme() {
+                    "udp" => UdpSessionAcceptKind::EasyTierMux,
+                    "wg" => UdpSessionAcceptKind::Classified(UdpSessionProtocol::WireGuard),
+                    "quic" => UdpSessionAcceptKind::Classified(UdpSessionProtocol::Quic),
+                    scheme => {
+                        anyhow::bail!("listener scheme {scheme} cannot produce a core UDP session")
+                    }
+                };
+                let request = unresolved_udp_session_listen_request(
+                    &listener.url,
+                    config.socket_context.clone(),
+                );
+                transports.push(TransportListenerConfig::Udp {
+                    url: listener.url,
+                    request,
+                    accept_kind,
+                    must_succeed,
+                });
+            }
+            ListenerKind::External => external.push((listener, config.socket_context.clone())),
+        }
+    }
+    validate_listener_protocols(&transports, server_protocol.is_some())?;
+
+    Ok(PreparedListenerPlan {
+        transports,
+        external,
+        failures: plan.failures,
+    })
+}
+
+fn validate_listener_protocols(
+    listeners: &[TransportListenerConfig],
+    has_server_protocol: bool,
+) -> anyhow::Result<()> {
+    if has_server_protocol {
+        return Ok(());
+    }
+    if let Some(listener) = listeners
+        .iter()
+        .find(|listener| !listener.supports_raw_handler())
+    {
+        anyhow::bail!(
+            "listener {} requires a server protocol upgrader",
+            listener.url()
+        );
+    }
+    Ok(())
 }
 
 impl ListenerPlanRequest {

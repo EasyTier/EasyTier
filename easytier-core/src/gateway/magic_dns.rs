@@ -35,6 +35,57 @@ pub trait MagicDnsQueryResolver: Send + Sync + 'static {
     async fn resolve(&self, query: MagicDnsQuery) -> Option<Vec<u8>>;
 }
 
+/// Owns one Magic DNS resolver installed in the core NIC pipeline.
+///
+/// `close` waits until readers that may already be invoking the resolver have
+/// finished, then removes the entry so the resolver can be dropped promptly.
+#[cfg(feature = "proxy-packet")]
+pub struct MagicDnsResolverRegistration {
+    peer_manager: std::sync::Weak<crate::peers::peer_manager::PeerManagerCore>,
+    pipeline: crate::peers::peer_manager::PipelineRegistrationGuard,
+    runtime: tokio::runtime::Handle,
+}
+
+#[cfg(feature = "proxy-packet")]
+impl MagicDnsResolverRegistration {
+    pub(crate) fn new(
+        peer_manager: std::sync::Weak<crate::peers::peer_manager::PeerManagerCore>,
+        pipeline: crate::peers::peer_manager::PipelineRegistrationGuard,
+        runtime: tokio::runtime::Handle,
+    ) -> Self {
+        Self {
+            peer_manager,
+            pipeline,
+            runtime,
+        }
+    }
+
+    pub async fn close(&self) {
+        self.pipeline.close();
+        if let Some(peer_manager) = self.peer_manager.upgrade() {
+            peer_manager
+                .remove_managed_nic_packet_process_pipeline(&self.pipeline)
+                .await;
+        }
+    }
+}
+
+#[cfg(feature = "proxy-packet")]
+impl Drop for MagicDnsResolverRegistration {
+    fn drop(&mut self) {
+        self.pipeline.close();
+        let Some(peer_manager) = self.peer_manager.upgrade() else {
+            return;
+        };
+        let pipeline = self.pipeline.clone();
+        self.runtime.spawn(async move {
+            peer_manager
+                .remove_managed_nic_packet_process_pipeline(&pipeline)
+                .await;
+        });
+    }
+}
+
 #[cfg(feature = "proxy-packet")]
 struct MagicDnsPacketFilter {
     fake_ip: Ipv4Addr,

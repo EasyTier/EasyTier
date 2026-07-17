@@ -13,7 +13,7 @@ use easytier_core::gateway::udp_broadcast::{
 use {
     crate::common::global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
     anyhow::Context,
-    easytier_core::instance::{CorePacketPlane, UdpBroadcastRelayStats},
+    easytier_core::{gateway::UdpBroadcastRelayStats, instance::CorePacketPlane},
     network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig},
     socket2::{Domain, Protocol, SockAddr, Socket, Type},
     std::{

@@ -11,6 +11,21 @@ pub struct AclRuleConfig {
     pub whitelist_priority: Option<u32>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AclWhitelistSnapshot {
+    pub tcp_ports: Vec<String>,
+    pub udp_ports: Vec<String>,
+}
+
+impl From<&AclRuleConfig> for AclWhitelistSnapshot {
+    fn from(config: &AclRuleConfig) -> Self {
+        Self {
+            tcp_ports: config.tcp_whitelist.clone(),
+            udp_ports: config.udp_whitelist.clone(),
+        }
+    }
+}
+
 impl AclRuleConfig {
     fn parse_port_list(port_list: &[String]) -> anyhow::Result<Vec<String>> {
         let mut ports = Vec::new();

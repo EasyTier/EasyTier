@@ -4,6 +4,7 @@ use std::{
 };
 
 use easytier_core::peers::context::TrustedKeySource;
+use easytier_core::peers::credential_manager::CredentialCreateOptions;
 use easytier_core::peers::foreign_network_manager::ForeignNetworkEntryInfo;
 
 use crate::{
@@ -330,7 +331,7 @@ impl CredentialManageRpc for InstancePeerManagementRpc {
         };
 
         let generated = weak_upgrade(&self.core_instance)?
-            .generate_credential(easytier_core::instance::CredentialCreateOptions {
+            .generate_credential(CredentialCreateOptions {
                 groups: request.groups,
                 allow_relay: request.allow_relay,
                 allowed_proxy_cidrs: request.allowed_proxy_cidrs,

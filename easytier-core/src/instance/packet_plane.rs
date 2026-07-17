@@ -5,17 +5,20 @@ use async_trait::async_trait;
 use crate::{
     config::runtime::CoreRuntimeConfigStore,
     foundation::stats::{LabelSet, LabelType, MetricName},
-    gateway::magic_dns::{MagicDnsRouteSnapshot, MagicDnsRouteSource},
     gateway::proxy::cidr_monitor::{ProxyCidrDiff, collect_proxy_cidr_diff},
+    gateway::{
+        UdpBroadcastRelayStats,
+        magic_dns::{MagicDnsRouteSnapshot, MagicDnsRouteSource},
+    },
     peers::peer_manager::PeerManagerCore,
 };
 
 #[cfg(feature = "proxy-packet")]
-use crate::gateway::magic_dns::{MagicDnsQueryResolver, magic_dns_packet_filter};
+use crate::gateway::magic_dns::{
+    MagicDnsQueryResolver, MagicDnsResolverRegistration, magic_dns_packet_filter,
+};
 
-#[cfg(feature = "proxy-packet")]
-use super::MagicDnsResolverRegistration;
-use super::{UdpBroadcastRelayStats, packet_io::parse_ip_packet};
+use super::packet_io::parse_ip_packet;
 
 /// Stable packet- and route-plane projection for platform integrations.
 pub struct CorePacketPlane {
@@ -97,18 +100,15 @@ impl CorePacketPlane {
             .clone();
         let labels = LabelSet::new().with_label_type(LabelType::NetworkName(network_name));
         let stats = self.peer_manager.stats_manager();
-        UdpBroadcastRelayStats {
-            packets_captured: stats
-                .get_counter(MetricName::UdpBroadcastRelayPacketsCaptured, labels.clone()),
-            packets_ignored: stats
-                .get_counter(MetricName::UdpBroadcastRelayPacketsIgnored, labels.clone()),
-            packets_forwarded: stats.get_counter(
+        UdpBroadcastRelayStats::new(
+            stats.get_counter(MetricName::UdpBroadcastRelayPacketsCaptured, labels.clone()),
+            stats.get_counter(MetricName::UdpBroadcastRelayPacketsIgnored, labels.clone()),
+            stats.get_counter(
                 MetricName::UdpBroadcastRelayPacketsForwarded,
                 labels.clone(),
             ),
-            packets_forward_failed: stats
-                .get_counter(MetricName::UdpBroadcastRelayPacketsForwardFailed, labels),
-        }
+            stats.get_counter(MetricName::UdpBroadcastRelayPacketsForwardFailed, labels),
+        )
     }
 
     #[cfg(feature = "proxy-packet")]
@@ -126,11 +126,7 @@ impl CorePacketPlane {
                 resolver,
             ))
             .await;
-        MagicDnsResolverRegistration {
-            peer_manager: Arc::downgrade(&self.peer_manager),
-            pipeline,
-            runtime,
-        }
+        MagicDnsResolverRegistration::new(Arc::downgrade(&self.peer_manager), pipeline, runtime)
     }
 }
 

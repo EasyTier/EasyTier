@@ -9,6 +9,8 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
+use crate::socket::SocketContext;
+
 pub mod plan;
 pub mod transport;
 
@@ -39,6 +41,24 @@ pub trait SocketListener: Debug + Send {
     fn connection_counter(&self) -> Arc<dyn ListenerConnectionCounter> {
         Arc::new(EmptyConnectionCounter)
     }
+}
+
+pub trait ExternalListenerFactory<Accepted>: Send + Sync + 'static
+where
+    Accepted: Send + 'static,
+{
+    fn supports_scheme(&self, scheme: &str) -> bool;
+
+    fn create(
+        &self,
+        request: ExternalListenerRequest,
+    ) -> Box<dyn SocketListener<Accepted = Accepted>>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalListenerRequest {
+    pub url: Url,
+    pub socket_context: SocketContext,
 }
 
 #[async_trait]

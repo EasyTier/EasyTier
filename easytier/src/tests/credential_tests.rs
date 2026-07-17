@@ -7,6 +7,7 @@
 
 use std::{sync::Arc, time::Duration};
 
+use easytier_core::peers::credential_manager::CredentialCreateOptions;
 use easytier_core::process_runtime::CoreProcessRuntime;
 
 use crate::{
@@ -58,7 +59,7 @@ fn generate_credential_with_options(
 ) -> (String, String) {
     let generated = admin
         .get_core_instance()
-        .generate_credential(easytier_core::instance::CredentialCreateOptions {
+        .generate_credential(CredentialCreateOptions {
             groups,
             allow_relay,
             allowed_proxy_cidrs,

@@ -21,6 +21,16 @@ fn current_unix_timestamp() -> i64 {
         .as_secs() as i64
 }
 
+#[derive(Debug, Clone)]
+pub struct CredentialCreateOptions {
+    pub groups: Vec<String>,
+    pub allow_relay: bool,
+    pub allowed_proxy_cidrs: Vec<String>,
+    pub ttl: Duration,
+    pub credential_id: Option<String>,
+    pub reusable: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct CredentialEntry {
     pubkey: String,

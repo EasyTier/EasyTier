@@ -1518,6 +1518,7 @@ mod tests {
         instance::instance::{Instance, RuntimeDhcpIpv4Host},
     };
     use easytier_core::gateway::dhcp::DhcpIpv4Host as _;
+    use easytier_core::peers::credential_manager::CredentialCreateOptions;
     use easytier_core::process_runtime::CoreProcessRuntime;
 
     fn tcp_whitelist_patch(port: &str) -> InstanceConfigPatch {
@@ -1808,7 +1809,7 @@ mod tests {
         );
         let generated = instance
             .core_instance
-            .generate_credential(easytier_core::instance::CredentialCreateOptions {
+            .generate_credential(CredentialCreateOptions {
                 groups: vec!["guest".to_owned()],
                 allow_relay: false,
                 allowed_proxy_cidrs: Vec::new(),
