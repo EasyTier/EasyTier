@@ -8,25 +8,25 @@ use std::{
 };
 
 use easytier_core::{
-    connectivity::host::environment::HostConnectorEnvironmentServices,
-    instance::PacketSink,
-    host::dns::{DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord}, socket::{
-        IpVersion, NetNamespace, SocketContext,
-        
-        host::{
-            HostSocketHandle, HostSocketRuntime,
-            dns::{HostDnsResolver, wasi::WasiHostDnsIo},
-            environment::{
-                HostConnectorEnvironmentServiceAdapter,
-                wasi::WasiHostConnectorEnvironmentIo,
-            },
-            factory::HostSocketFactory,
-            listener::HostTcpListenerFactory,
-            packet::{HostPacketSink, HostPacketSinkHandle, wasi::WasiHostPacketIo},
-            udp::wasi::WasiHostUdpIo,
-            wasi::WasiHostTcpIo,
-            wasi_backend::WasiHostSocketBackend,
+    host::{
+        HostSocketHandle, HostSocketRuntime,
+        dns::{
+            DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord, HostDnsResolver,
+            wasi::WasiHostDnsIo,
         },
+        environment::{
+            HostConnectorEnvironmentServiceAdapter, HostConnectorEnvironmentServices,
+            wasi::WasiHostConnectorEnvironmentIo,
+        },
+        factory::HostSocketFactory,
+        listener::HostTcpListenerFactory,
+        packet::{HostPacketSink, HostPacketSinkHandle, PacketSink, wasi::WasiHostPacketIo},
+        udp::wasi::WasiHostUdpIo,
+        wasi::WasiHostTcpIo,
+        wasi_backend::WasiHostSocketBackend,
+    },
+    socket::{
+        IpVersion, NetNamespace, SocketContext,
         tcp::{
             TcpConnectOptions, TcpListenOptions, VirtualTcpListener, VirtualTcpListenerFactory,
             VirtualTcpSocketFactory,
