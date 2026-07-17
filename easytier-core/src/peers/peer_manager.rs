@@ -27,7 +27,7 @@ use crate::{
     packet::{CompressorAlgo, PacketType, ZCPacket},
     proto::common::{FlagsInConfig, PeerFeatureFlag, StunInfo},
     proto::core_peer::peer::{ListPublicIpv6InfoResponse, PeerConnInfo, Route as CoreRoute},
-    runtime_config::{CoreRuntimeConfig, CoreRuntimeConfigStore},
+    runtime_config::CoreRuntimeConfigStore,
     socket::{
         SocketContext,
         dns::{DnsQuery, DnsResolver},
@@ -630,10 +630,6 @@ pub(crate) struct PeerManagerTrafficCounters {
     pub compress_tx_bytes_after: CounterHandle,
 }
 
-pub(crate) struct PeerManagerCoreBuildResult {
-    pub core: PeerManagerCore,
-}
-
 pub struct PeerManagerCore {
     my_peer_id: PeerId,
     tasks: Mutex<JoinSet<()>>,
@@ -780,66 +776,8 @@ async fn check_resolved_remote_addr_not_from_virtual_network(
 }
 
 impl PeerManagerCore {
-    /// Builds the portable same-network peer graph from normalized config and
-    /// the two host capabilities needed by the packet plane at construction.
-    /// Optional foreign-network and public-IPv6 policy are disabled until their
-    /// runtime configuration moves behind this composition seam.
-    pub fn new_portable(
-        config: PortablePeerManagerConfig,
-        dns: Arc<dyn DnsResolver>,
-        nic_channel: PacketRecvChan,
-    ) -> anyhow::Result<Self> {
-        Self::new_portable_with_dns_context(config, dns, SocketContext::default(), nic_channel)
-    }
-
-    pub fn new_portable_with_dns_context(
-        config: PortablePeerManagerConfig,
-        dns: Arc<dyn DnsResolver>,
-        dns_context: SocketContext,
-        nic_channel: PacketRecvChan,
-    ) -> anyhow::Result<Self> {
-        let runtime_config = Self::portable_runtime_config_store(&config);
-        Self::new_portable_with_optional_stun_info_source(
-            config,
-            runtime_config,
-            dns,
-            dns_context,
-            None,
-            nic_channel,
-        )
-    }
-
-    fn portable_runtime_config_store(config: &PortablePeerManagerConfig) -> CoreRuntimeConfigStore {
-        CoreRuntimeConfigStore::new(
-            CoreRuntimeConfig::default(),
-            Arc::new(config.snapshot.clone()),
-        )
-    }
-
-    fn new_portable_with_optional_stun_info_source(
-        config: PortablePeerManagerConfig,
-        runtime_config: CoreRuntimeConfigStore,
-        dns: Arc<dyn DnsResolver>,
-        dns_context: SocketContext,
-        stun_info_source: Option<Arc<dyn PeerStunInfoSource>>,
-        nic_channel: PacketRecvChan,
-    ) -> anyhow::Result<Self> {
-        let public_ipv6_runtime = CorePublicIpv6Runtime::new(runtime_config.clone(), Arc::new(()));
-        Self::new_portable_with_host_adapters(
-            config,
-            runtime_config,
-            dns,
-            dns_context,
-            stun_info_source,
-            nic_channel,
-            public_ipv6_runtime,
-            PeerManagerHostAdapters::default(),
-            Arc::new(()),
-        )
-    }
-
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new_portable_with_runtime_config_store_and_host_adapters(
+    pub(crate) fn new(
         config: PortablePeerManagerConfig,
         runtime_config: CoreRuntimeConfigStore,
         dns: Arc<dyn DnsResolver>,
@@ -850,7 +788,7 @@ impl PeerManagerCore {
         host_adapters: PeerManagerHostAdapters,
         foreign_rpc_registrar: Arc<dyn ForeignNetworkRpcRegistrar>,
     ) -> anyhow::Result<Self> {
-        Self::new_portable_with_host_adapters(
+        Self::build(
             config,
             runtime_config,
             dns,
@@ -864,7 +802,7 @@ impl PeerManagerCore {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn new_portable_with_host_adapters(
+    fn build(
         mut config: PortablePeerManagerConfig,
         runtime_config: CoreRuntimeConfigStore,
         dns: Arc<dyn DnsResolver>,
@@ -983,7 +921,7 @@ impl PeerManagerCore {
         ));
         let address_resolver = Arc::new(DnsAddressResolver::new(dns).with_context(dns_context));
 
-        let result = Self::new_with_default_components(
+        let mut core = Self::assemble(
             config.route_algo,
             my_peer_id,
             context,
@@ -997,13 +935,12 @@ impl PeerManagerCore {
             config.foreign_context_default_flags,
             foreign_rpc_registrar,
         );
-        let mut core = result.core;
         core.owns_maintenance_tasks = true;
         Ok(core)
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new_with_default_components(
+    fn assemble(
         route_algo: RouteAlgoType,
         my_peer_id: PeerId,
         core_context: Arc<CorePeerContext>,
@@ -1016,7 +953,7 @@ impl PeerManagerCore {
         address_resolver: Arc<dyn AddressResolver>,
         foreign_context_default_flags: FlagsInConfig,
         foreign_rpc_registrar: Arc<dyn ForeignNetworkRpcRegistrar>,
-    ) -> PeerManagerCoreBuildResult {
+    ) -> Self {
         let stats_manager = core_context.stats_manager();
         let credential_manager = core_context.credential_manager();
         let acl_filter = Arc::new(AclFilter::new());
@@ -1192,43 +1129,41 @@ impl PeerManagerCore {
         let foreign_network_closer: Arc<dyn ForeignPeerConnectionCloser> =
             foreign_network_manager.clone();
 
-        PeerManagerCoreBuildResult {
-            core: PeerManagerCore {
-                my_peer_id,
-                tasks: Mutex::new(JoinSet::new()),
-                packet_recv: Arc::new(Mutex::new(Some(packet_recv))),
-                peers,
-                peer_rpc_mgr,
-                peer_rpc_tspt: rpc_tspt,
-                peer_packet_process_pipeline,
-                nic_packet_process_pipeline,
-                nic_channel,
-                route_algo_inst,
-                foreign_network_client,
-                foreign_network_handler,
-                foreign_network_provider,
-                foreign_network_info_provider,
-                foreign_network_closer,
-                foreign_network_manager: foreign_network_manager.clone(),
-                relay_peer_map,
-                peer_connection_admission,
-                outbound_packet_router,
-                recent_traffic,
-                peer_session_store,
-                encryptor,
-                data_compress_algo,
-                exit_nodes,
-                acl_filter,
-                credential_manager,
-                context: core_context,
-                is_secure_mode_enabled,
-                route,
-                traffic_metrics,
-                stats_manager,
-                network_name,
-                counters: self_tx_counters,
-                owns_maintenance_tasks: false,
-            },
+        Self {
+            my_peer_id,
+            tasks: Mutex::new(JoinSet::new()),
+            packet_recv: Arc::new(Mutex::new(Some(packet_recv))),
+            peers,
+            peer_rpc_mgr,
+            peer_rpc_tspt: rpc_tspt,
+            peer_packet_process_pipeline,
+            nic_packet_process_pipeline,
+            nic_channel,
+            route_algo_inst,
+            foreign_network_client,
+            foreign_network_handler,
+            foreign_network_provider,
+            foreign_network_info_provider,
+            foreign_network_closer,
+            foreign_network_manager: foreign_network_manager.clone(),
+            relay_peer_map,
+            peer_connection_admission,
+            outbound_packet_router,
+            recent_traffic,
+            peer_session_store,
+            encryptor,
+            data_compress_algo,
+            exit_nodes,
+            acl_filter,
+            credential_manager,
+            context: core_context,
+            is_secure_mode_enabled,
+            route,
+            traffic_metrics,
+            stats_manager,
+            network_name,
+            counters: self_tx_counters,
+            owns_maintenance_tasks: false,
         }
     }
 
@@ -3474,7 +3409,34 @@ mod tests {
             create_packet_recv_chan,
         },
         proto::common::{PeerFeatureFlag, StunInfo},
+        runtime_config::CoreRuntimeConfig,
     };
+
+    impl PeerManagerCore {
+        pub(crate) fn new_portable_for_test(
+            config: PortablePeerManagerConfig,
+            dns: Arc<dyn DnsResolver>,
+            nic_channel: PacketRecvChan,
+        ) -> anyhow::Result<Self> {
+            let runtime_config = CoreRuntimeConfigStore::new(
+                CoreRuntimeConfig::default(),
+                Arc::new(config.snapshot.clone()),
+            );
+            let public_ipv6_runtime =
+                CorePublicIpv6Runtime::new(runtime_config.clone(), Arc::new(()));
+            Self::build(
+                config,
+                runtime_config,
+                dns,
+                SocketContext::default(),
+                None,
+                nic_channel,
+                public_ipv6_runtime,
+                PeerManagerHostAdapters::default(),
+                Arc::new(()),
+            )
+        }
+    }
 
     struct SameNetworkContext {
         contains_every_address: bool,
@@ -3697,7 +3659,7 @@ mod tests {
         config: PortablePeerManagerConfig,
     ) -> anyhow::Result<PeerManagerCore> {
         let (packet_tx, _packet_rx) = create_packet_recv_chan();
-        PeerManagerCore::new_portable(config, Arc::new(PanicDnsResolver), packet_tx)
+        PeerManagerCore::new_portable_for_test(config, Arc::new(PanicDnsResolver), packet_tx)
     }
 
     #[tokio::test]
@@ -3786,7 +3748,7 @@ mod tests {
         let events = Arc::new(CountingPeerEventSink::default());
         let (packet_tx, _packet_rx) = create_packet_recv_chan();
 
-        let core = PeerManagerCore::new_portable_with_runtime_config_store_and_host_adapters(
+        let core = PeerManagerCore::new(
             config,
             runtime_config,
             Arc::new(PanicDnsResolver),
@@ -3824,21 +3786,11 @@ mod tests {
             }),
         };
         config.snapshot.set_acl_groups(Some(&acl));
-        let runtime_config = CoreRuntimeConfigStore::new(
-            CoreRuntimeConfig::default(),
-            Arc::new(config.snapshot.clone()),
-        );
         let (packet_tx, _packet_rx) = create_packet_recv_chan();
 
-        let core = PeerManagerCore::new_portable_with_optional_stun_info_source(
-            config,
-            runtime_config,
-            Arc::new(PanicDnsResolver),
-            SocketContext::default(),
-            None,
-            packet_tx,
-        )
-        .unwrap();
+        let core =
+            PeerManagerCore::new_portable_for_test(config, Arc::new(PanicDnsResolver), packet_tx)
+                .unwrap();
 
         let groups = core.context.peer_groups(86);
         assert_eq!(groups.len(), 1);
@@ -3999,7 +3951,7 @@ mod tests {
         runtime.core.node.network_name = "node-net".to_owned();
         let (packet_tx, _packet_rx) = create_packet_recv_chan();
 
-        let result = PeerManagerCore::new_portable(
+        let result = PeerManagerCore::new_portable_for_test(
             PortablePeerManagerConfig::new(runtime),
             Arc::new(PanicDnsResolver),
             packet_tx,

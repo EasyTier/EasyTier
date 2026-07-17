@@ -1257,7 +1257,7 @@ mod tests {
     fn wrapped_transport_peer_manager() -> Arc<PeerManagerCore> {
         let (packet_tx, _packet_rx) = create_packet_recv_chan();
         Arc::new(
-            PeerManagerCore::new_portable(
+            PeerManagerCore::new_portable_for_test(
                 PortablePeerManagerConfig::new(PeerRuntimeConfig {
                     core: CoreConfig {
                         node: NodeConfig {

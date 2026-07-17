@@ -710,19 +710,17 @@ where
             adapters.host.clone(),
             stun.clone(),
         ));
-        let peer_manager = Arc::new(
-            PeerManagerCore::new_portable_with_runtime_config_store_and_host_adapters(
-                config.peer,
-                runtime_config.clone(),
-                adapters.dns.clone(),
-                dns_context,
-                Arc::new(CoreStunPeerInfoSource(peer_stun)),
-                packet_tx,
-                public_ipv6_runtime.clone(),
-                std::mem::take(&mut adapters.peer_adapters),
-                foreign_rpc_registrar,
-            )?,
-        );
+        let peer_manager = Arc::new(PeerManagerCore::new(
+            config.peer,
+            runtime_config.clone(),
+            adapters.dns.clone(),
+            dns_context,
+            Arc::new(CoreStunPeerInfoSource(peer_stun)),
+            packet_tx,
+            public_ipv6_runtime.clone(),
+            std::mem::take(&mut adapters.peer_adapters),
+            foreign_rpc_registrar,
+        )?);
         let config = config.connectivity;
         let listener_plan = prepare_listener_plan(
             config.listeners.as_ref(),

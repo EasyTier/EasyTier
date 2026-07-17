@@ -1558,7 +1558,7 @@ mod tests {
         let (packet_sender, packet_receiver) = create_packet_recv_chan();
         let dns = Arc::new(TestDns);
         let peer_manager = Arc::new(
-            PeerManagerCore::new_portable(peer_config, dns.clone(), packet_sender)
+            PeerManagerCore::new_portable_for_test(peer_config, dns.clone(), packet_sender)
                 .expect("build portable peer manager"),
         );
         let gateway = GatewayModule::new(
