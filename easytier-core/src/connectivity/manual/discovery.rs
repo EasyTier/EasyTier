@@ -28,7 +28,7 @@ const HTTP_DEFAULT_PORT: u16 = 80;
 const HTTPS_DEFAULT_PORT: u16 = 443;
 
 #[derive(Debug, Clone)]
-pub struct HttpDiscoveryRequest {
+pub(crate) struct HttpDiscoveryRequest {
     pub url: Url,
     pub user_agent: String,
     pub network_name: String,
@@ -62,7 +62,7 @@ impl Default for ManualEndpointDiscoveryConfig {
     }
 }
 
-pub struct CoreManualEndpointResolver<H>
+pub(crate) struct CoreManualEndpointResolver<H>
 where
     H: VirtualTcpSocketFactory,
 {
@@ -145,7 +145,7 @@ fn endpoint_host(url: &Url) -> anyhow::Result<&str> {
         .ok_or_else(|| anyhow::anyhow!("host should not be empty in {url}"))
 }
 
-pub async fn fetch_http_discovery<H>(
+pub(crate) async fn fetch_http_discovery<H>(
     host: Arc<H>,
     dns: &dyn DnsResolver,
     request: HttpDiscoveryRequest,
@@ -290,21 +290,21 @@ where
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HttpEndpointSource {
+pub(crate) enum HttpEndpointSource {
     RedirectQuery,
     RedirectUrl,
     ResponseBody,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HttpDiscoveryResponse {
+pub(crate) struct HttpDiscoveryResponse {
     pub status_code: u16,
     pub location: Option<String>,
     pub body: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResolvedHttpEndpoint {
+pub(crate) struct ResolvedHttpEndpoint {
     pub url: Url,
     pub source: HttpEndpointSource,
 }
@@ -361,7 +361,7 @@ fn resolve_http_body(body: &str) -> anyhow::Result<ResolvedHttpEndpoint> {
     anyhow::bail!("no valid connector URL found in response body {body:?}")
 }
 
-pub fn resolve_http_endpoint(
+pub(crate) fn resolve_http_endpoint(
     response: HttpDiscoveryResponse,
 ) -> anyhow::Result<ResolvedHttpEndpoint> {
     match response.status_code {
@@ -394,7 +394,7 @@ fn choose_weighted<T>(options: &[(T, u64)]) -> Option<&T> {
     None
 }
 
-pub async fn resolve_txt_endpoint(
+pub(crate) async fn resolve_txt_endpoint(
     resolver: &dyn DnsRecordResolver,
     domain_name: &str,
     context: SocketContext,
@@ -435,7 +435,7 @@ fn deduplicate_srv_candidates(candidates: Vec<(Url, u64)>) -> Vec<(Url, u64)> {
         .collect()
 }
 
-pub async fn resolve_srv_endpoint(
+pub(crate) async fn resolve_srv_endpoint(
     resolver: &dyn DnsRecordResolver,
     domain_name: &str,
     supported_protocols: &[String],

@@ -35,6 +35,9 @@ use super::{
 const MAX_K1_FOR_RANDOM_HARD_SYM: u32 = 180;
 
 pub struct SelectedUdpPunchListener<S> {
+    /// Kept for listener-selection side effects and tests; production callers
+    /// only consume `mapped_addr`.
+    #[allow(dead_code)]
     pub socket: Arc<S>,
     pub mapped_addr: SocketAddr,
 }
@@ -799,13 +802,6 @@ where
         Self {
             common,
             task: Mutex::new(None),
-        }
-    }
-
-    pub async fn is_busy(&self) -> bool {
-        match self.task.try_lock() {
-            Ok(locked_task) => locked_task.as_ref().is_some_and(|task| !task.is_finished()),
-            Err(_) => true,
         }
     }
 

@@ -58,11 +58,11 @@ impl UdpPortMappingAttemptError {
         }
     }
 
-    pub fn phase(&self) -> UdpPortMappingAttemptPhase {
+    pub(crate) fn phase(&self) -> UdpPortMappingAttemptPhase {
         self.phase
     }
 
-    pub fn source(&self) -> &anyhow::Error {
+    pub(crate) fn source(&self) -> &anyhow::Error {
         &self.source
     }
 }

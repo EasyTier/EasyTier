@@ -15,7 +15,7 @@ use tokio::{
 };
 
 use crate::{
-    config::{P2pPolicyFlags, PeerId},
+    config::PeerId,
     proto::common::NatType,
     stun::StunInfoProvider,
     task::{ExternalTaskSignal, PeerTaskLauncher, PeerTaskManager},
@@ -144,14 +144,6 @@ where
                 parts.stun.clone(),
             ),
         })
-    }
-
-    pub fn set_try_cone_before_sym(&self, enabled: bool) {
-        self.try_cone_before_sym.store(enabled, Ordering::Relaxed);
-    }
-
-    pub fn is_blacklisted(&self, peer_id: PeerId) -> bool {
-        self.blacklist.contains(peer_id)
     }
 
     fn should_skip_blacklisted(&self, peer_id: PeerId) -> bool {
@@ -469,7 +461,6 @@ where
     R: UdpHolePunchRuntime,
 {
     client: PeerTaskManager<UdpHolePunchPeerTaskLauncher<P, S, T, R>>,
-    parts: Arc<UdpHolePunchConnectorParts<P, S, T, R>>,
 }
 
 impl<P, S, T, R> UdpHolePunchConnector<P, S, T, R>
@@ -500,19 +491,14 @@ where
         Self {
             client: PeerTaskManager::new_with_external_signal(
                 UdpHolePunchPeerTaskLauncher(PhantomData),
-                parts.clone(),
+                parts,
                 external_signal,
             ),
-            parts,
         }
     }
 
     pub fn run_as_client(&self) {
         self.client.start();
-    }
-
-    pub async fn run_immediately(&self) {
-        self.client.run_immediately().await;
     }
 
     pub async fn stop(&self) {
@@ -522,21 +508,6 @@ where
             .sym_to_cone_client
             .clear_udp_array()
             .await;
-    }
-
-    pub fn data(&self) -> Arc<UdpHolePunchConnectorData<P, S, T, R>> {
-        self.client.data()
-    }
-
-    pub fn set_try_cone_before_sym(&self, enabled: bool) {
-        self.parts
-            .try_cone_before_sym
-            .store(enabled, Ordering::Relaxed);
-        self.client.data().set_try_cone_before_sym(enabled);
-    }
-
-    pub fn p2p_policy_flags(&self) -> P2pPolicyFlags {
-        self.parts.peer_source.p2p_policy_flags()
     }
 }
 

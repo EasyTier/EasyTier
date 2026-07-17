@@ -116,6 +116,7 @@ where
         }
     }
 
+    #[cfg(test)]
     pub fn empty() -> Self {
         Self {
             provider: RwLock::new(None),
@@ -133,6 +134,7 @@ where
         true
     }
 
+    #[cfg(test)]
     pub fn replace(&self, provider: Arc<dyn StunSocketMapper<S>>) {
         *self.provider.write().unwrap() = Some(provider);
     }

@@ -116,7 +116,7 @@ pub trait ManualConnectorHost: VirtualTcpSocketFactory + VirtualUdpSocketFactory
 }
 
 #[async_trait]
-pub trait ManualEndpointResolver: Send + Sync + 'static {
+pub(crate) trait ManualEndpointResolver: Send + Sync + 'static {
     async fn resolve_endpoint(&self, url: &Url) -> anyhow::Result<Url>;
 }
 
@@ -141,7 +141,7 @@ impl<H> ManualTunnelConnector<H>
 where
     H: ManualConnectorHost,
 {
-    pub fn new(
+    pub(crate) fn new(
         host: Arc<H>,
         dns: Arc<dyn DnsResolver>,
         endpoint_resolver: Arc<dyn ManualEndpointResolver>,
@@ -360,7 +360,7 @@ where
     options: ManualConnectorOptions,
 }
 
-pub struct ManualConnectorManager<H>
+pub(crate) struct ManualConnectorManager<H>
 where
     H: ManualConnectorHost,
 {

@@ -402,7 +402,7 @@ where
     }
 }
 
-pub async fn upgrade_accepted_tcp<TcpSocket>(
+pub(crate) async fn upgrade_accepted_tcp<TcpSocket>(
     socket: TcpSocket,
     local_url: Url,
     config: CoreServerProtocolConfig,
@@ -419,7 +419,7 @@ where
     }
 }
 
-pub fn upgrade_accepted_udp(
+pub(crate) fn upgrade_accepted_udp(
     session: UdpSession,
     local_url: &Url,
 ) -> anyhow::Result<Box<dyn Tunnel>> {

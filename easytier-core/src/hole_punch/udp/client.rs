@@ -201,16 +201,9 @@ where
         }
     }
 
+    #[cfg(test)]
     pub fn set_try_direct_connect(&self, enabled: bool) {
         self.try_direct_connect.store(enabled, Ordering::Relaxed);
-    }
-
-    pub fn set_punch_predictably(&self, enabled: bool) {
-        self.punch_predictably.store(enabled, Ordering::Relaxed);
-    }
-
-    pub async fn has_udp_array(&self) -> bool {
-        self.udp_array.read().await.is_some()
     }
 
     pub async fn clear_udp_array(&self) {

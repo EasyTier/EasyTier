@@ -226,10 +226,6 @@ where
         }
     }
 
-    pub async fn run_immediately(&self) {
-        self.run_signal.notify_one();
-    }
-
     pub fn data(&self) -> D {
         self.data.clone()
     }

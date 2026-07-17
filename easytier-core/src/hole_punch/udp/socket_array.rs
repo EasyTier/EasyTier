@@ -47,6 +47,7 @@ impl<R> UdpSocketArray<R>
 where
     R: VirtualUdpSocketFactory,
 {
+    #[cfg(test)]
     pub fn new(max_socket_count: usize, socket_factory: Arc<R>) -> Self {
         Self::new_with_context(max_socket_count, socket_factory, SocketContext::default())
     }

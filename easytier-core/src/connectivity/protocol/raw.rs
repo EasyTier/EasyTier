@@ -7,9 +7,7 @@ use url::Url;
 use crate::{
     connectivity::{
         manual::resolve_url_addrs,
-        transport::{
-            self, ConnectedByteStream, ConnectedTransport, ConnectedUdpSession, UdpSessionMode,
-        },
+        transport::{self, ConnectedByteStream, ConnectedUdpSession, UdpSessionMode},
     },
     listener::{ListenerConnectionCounter, SocketListener},
     proto::common::TunnelInfo,
@@ -336,21 +334,7 @@ where
     }
 }
 
-pub fn upgrade_connected<S>(
-    connected: ConnectedTransport<S>,
-    requested_remote_addr: Url,
-) -> Result<Box<dyn Tunnel>, TunnelError>
-where
-    S: VirtualTcpSocket,
-{
-    match connected {
-        ConnectedTransport::Tcp(socket) => upgrade_connected_tcp(socket, requested_remote_addr),
-        ConnectedTransport::Udp(session) => upgrade_connected_udp(session, requested_remote_addr),
-        ConnectedTransport::ByteStream(stream) => upgrade_connected_byte_stream(stream),
-    }
-}
-
-pub fn upgrade_connected_byte_stream<S>(
+pub(crate) fn upgrade_connected_byte_stream<S>(
     connected: ConnectedByteStream<S>,
 ) -> Result<Box<dyn Tunnel>, TunnelError>
 where
@@ -368,7 +352,7 @@ where
         .upgrade(socket)
 }
 
-pub fn upgrade_connected_tcp<S>(
+pub(crate) fn upgrade_connected_tcp<S>(
     socket: S,
     requested_remote_addr: Url,
 ) -> Result<Box<dyn Tunnel>, TunnelError>
@@ -389,7 +373,7 @@ where
     TcpTunnelUpgrader::new(info).upgrade(socket)
 }
 
-pub fn upgrade_connected_udp(
+pub(crate) fn upgrade_connected_udp(
     connected: ConnectedUdpSession,
     requested_remote_addr: Url,
 ) -> Result<Box<dyn Tunnel>, TunnelError> {
@@ -404,7 +388,8 @@ pub fn upgrade_connected_udp(
     UdpTunnelUpgrader::with_keep_alive(info, layer).upgrade(session)
 }
 
-pub fn upgrade_accepted_tcp<S>(socket: S) -> Result<Box<dyn Tunnel>, TunnelError>
+#[cfg(test)]
+pub(crate) fn upgrade_accepted_tcp<S>(socket: S) -> Result<Box<dyn Tunnel>, TunnelError>
 where
     S: VirtualTcpSocket,
 {
@@ -412,7 +397,7 @@ where
     upgrade_accepted_tcp_with_local_url(socket, socket_url("tcp", local_addr))
 }
 
-pub fn upgrade_accepted_tcp_with_local_url<S>(
+pub(crate) fn upgrade_accepted_tcp_with_local_url<S>(
     socket: S,
     local_url: Url,
 ) -> Result<Box<dyn Tunnel>, TunnelError>
@@ -431,7 +416,7 @@ where
     TcpTunnelUpgrader::new(info).upgrade(socket)
 }
 
-pub fn upgrade_accepted_byte_stream<S>(
+pub(crate) fn upgrade_accepted_byte_stream<S>(
     socket: S,
     local_url: Url,
     remote_url: Option<Url>,
@@ -450,12 +435,13 @@ where
         .upgrade(socket)
 }
 
-pub fn upgrade_accepted_udp(session: UdpSession) -> Result<Box<dyn Tunnel>, TunnelError> {
+#[cfg(test)]
+pub(crate) fn upgrade_accepted_udp(session: UdpSession) -> Result<Box<dyn Tunnel>, TunnelError> {
     let local_url = socket_url("udp", session.local_addr()?);
     upgrade_accepted_udp_with_local_url(session, local_url)
 }
 
-pub fn upgrade_accepted_udp_with_local_url(
+pub(crate) fn upgrade_accepted_udp_with_local_url(
     session: UdpSession,
     local_url: Url,
 ) -> Result<Box<dyn Tunnel>, TunnelError> {

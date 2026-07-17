@@ -3,10 +3,10 @@ mod codec;
 mod collector;
 
 pub use client::{
-    StunDnsRuntime, StunNatTypeDetectResult, StunSocketRuntime, StunTransport, TcpNatTypeDetector,
+    StunDnsRuntime, StunNatTypeDetectResult, StunSocketRuntime, TcpNatTypeDetector,
     UdpNatTypeDetector,
 };
-pub use codec::*;
-pub use collector::{
-    StunInfoCollector, StunInfoProvider, StunProviderSlot, StunServerConfig, StunSocketMapper,
-};
+pub use codec::Attribute;
+pub(crate) use codec::{ChangeRequest, respond_stun_packet, tid_to_u32, u32_to_tid};
+pub(crate) use collector::StunProviderSlot;
+pub use collector::{StunInfoCollector, StunInfoProvider, StunServerConfig, StunSocketMapper};

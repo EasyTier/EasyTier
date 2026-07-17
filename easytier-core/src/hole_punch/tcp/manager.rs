@@ -543,7 +543,6 @@ where
 {
     server: Arc<TcpHolePunchServer<H>>,
     client: PeerTaskManager<TcpHolePunchPeerTaskLauncher<H>>,
-    data: Arc<TcpHolePunchConnectorData<H>>,
     peer_manager: Arc<PeerManagerCore>,
 }
 
@@ -580,7 +579,6 @@ where
                 peer_manager.clone(),
                 Some(peer_manager.p2p_demand_notify()),
             ),
-            data,
             peer_manager,
         }
     }
@@ -602,10 +600,6 @@ where
         self.client.start();
     }
 
-    pub async fn run_immediately(&self) {
-        self.client.run_immediately().await;
-    }
-
     pub async fn stop(&self) {
         self.client.stop().await;
         self.server.begin_stop();
@@ -618,10 +612,6 @@ where
                 self.peer_manager.network_name(),
             );
         self.server.stop().await;
-    }
-
-    pub async fn collect_peers_need_task(&self) -> Vec<PeerId> {
-        self.data.collect_peers_need_task().await
     }
 }
 

@@ -246,7 +246,7 @@ where
     }
 }
 
-pub struct DirectConnectorManager<H>
+pub(crate) struct DirectConnectorManager<H>
 where
     H: DirectConnectorHost,
 {
@@ -258,28 +258,6 @@ impl<H> DirectConnectorManager<H>
 where
     H: DirectConnectorHost,
 {
-    pub fn new(
-        peer_manager: Arc<PeerManagerCore>,
-        host: Arc<H>,
-        stun: Arc<dyn StunSocketMapper<<H as VirtualUdpSocketFactory>::Socket>>,
-        dns: Arc<dyn DnsResolver>,
-        protocol: Arc<
-            dyn ClientProtocolUpgrader<<H as crate::socket::tcp::VirtualTcpSocketFactory>::Socket>,
-        >,
-        options: DirectConnectorOptions,
-    ) -> Self {
-        let running_listeners = Arc::new(RunningListenerRegistry::default());
-        Self::new_with_running_listeners(
-            peer_manager,
-            host,
-            stun,
-            running_listeners,
-            dns,
-            protocol,
-            options,
-        )
-    }
-
     pub fn new_with_running_listeners(
         peer_manager: Arc<PeerManagerCore>,
         host: Arc<H>,
@@ -360,23 +338,8 @@ where
             );
     }
 
-    pub async fn try_direct_connect_with_ip_list(
-        &self,
-        dst_peer_id: PeerId,
-        ip_list: GetIpListResponse,
-    ) -> anyhow::Result<()> {
-        self.data
-            .try_direct_connect_with_ip_list(dst_peer_id, ip_list)
-            .await
-    }
-
     pub fn running_listeners(&self) -> Vec<Url> {
         self.data.running_listeners.running_listeners()
-    }
-
-    pub async fn local_address_observations(&self) -> GetIpListResponse {
-        let stun_info = self.data.stun.get_stun_info();
-        self.local_address_observations_with_stun(&stun_info).await
     }
 
     pub(crate) async fn local_address_observations_with_stun(
@@ -982,7 +945,7 @@ where
     }
 }
 
-pub struct DirectConnectorRpcHandler<H>
+pub(crate) struct DirectConnectorRpcHandler<H>
 where
     H: DirectConnectorHost,
 {
@@ -1014,10 +977,7 @@ impl<H> DirectConnectorRpcHandler<H>
 where
     H: DirectConnectorHost,
 {
-    pub fn new(host: Arc<H>, socket_context: SocketContext) -> Self {
-        Self::new_with_stun(host, socket_context, None)
-    }
-
+    #[cfg(test)]
     pub fn new_with_stun(
         host: Arc<H>,
         socket_context: SocketContext,
@@ -1034,10 +994,6 @@ where
         }
     }
 
-    pub fn new_for_foreign_network(host: Arc<H>, socket_context: SocketContext) -> Self {
-        Self::new_for_foreign_network_with_stun(host, socket_context, None)
-    }
-
     pub fn new_for_foreign_network_with_stun(
         host: Arc<H>,
         socket_context: SocketContext,
@@ -1052,20 +1008,6 @@ where
             foreign_network: true,
             stun,
         }
-    }
-
-    pub fn new_with_running_listeners(
-        host: Arc<H>,
-        running_listeners: Arc<dyn RunningListenerProvider>,
-        socket_context: SocketContext,
-    ) -> Self {
-        Self::new_with_running_listeners_and_stun(
-            host,
-            None,
-            running_listeners,
-            socket_context,
-            None,
-        )
     }
 
     fn new_with_running_listeners_and_stun(
@@ -1130,7 +1072,7 @@ where
     response
 }
 
-pub struct ForeignDirectConnectorRpcRegistrar<H>
+pub(crate) struct ForeignDirectConnectorRpcRegistrar<H>
 where
     H: DirectConnectorHost,
 {

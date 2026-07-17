@@ -297,6 +297,9 @@ where
 #[async_trait]
 pub trait UdpHolePunchPeerSource: Send + Sync {
     fn local_peer_id(&self) -> crate::config::PeerId;
+    // Part of the peer-source contract implemented outside this module; no
+    // in-crate caller remains after the connector surface converged.
+    #[allow(dead_code)]
     fn network_name(&self) -> &str;
     fn p2p_policy_flags(&self) -> P2pPolicyFlags;
 
