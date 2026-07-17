@@ -24,6 +24,33 @@ Core may use `cfg` for guest-target capabilities. Host-OS policy must arrive as
 configuration because a wasm guest sees `target_os = "wasi"`, not the OS that
 runs the Go host.
 
+### Module layers
+
+Inside the crate, modules are grouped into layers that may only depend
+downward:
+
+`foundation <- config/packet <- socket <- host <- tunnel <-
+listener/connectivity <- peers/rpc <- gateway <- instance`
+
+- `foundation/` holds infrastructure with no domain dependency (task
+  supervision, time facade, rate limiting, compression, stats).
+- `config/` holds the static configuration schema and the live runtime
+  configuration store.
+- `host/` is the single home of every Host capability seam; `socket/`
+  keeps only socket primitives.
+- `connectivity/` contains the whole connectivity domain, including STUN
+  and hole punching.
+- `peers/` contains the peer graph, the peer center, and public IPv6.
+- `rpc/` is the peer-flavoured RPC transport plus the management-plane
+  standalone server.
+- `gateway/` contains the Gateway dataplane and the other packet-plane
+  features.
+- `instance/` is the slim composition root.
+
+Modules are `pub(crate)` by default; each layer's `mod.rs` declares its
+outward surface. The full layout and migration series are recorded in
+[`refactor-doc/core_module_layout.md`](refactor-doc/core_module_layout.md).
+
 ### Core instance
 
 One independently configured and independently stopped EasyTier network
@@ -55,6 +82,10 @@ Host capabilities include DNS, real TCP and UDP socket creation and system
 calls, TUN or packet ingress and egress, platform route changes, persistent
 storage, clock/random facilities when not supplied by WASI, and platform-policy
 discovery.
+
+Inside core, every Host capability seam lives in the `host/` module: DNS,
+connector environment, packet sink, socket factories, and the WASI mechanism
+backend.
 
 ### Host Adapter
 
@@ -186,6 +217,10 @@ A native channel or smoltcp pump that only composes these core Interfaces with
 real resources is Adapter glue, not a second policy owner. Do not move it
 behind a shallow wrapper merely to relocate lines.
 
+The `gateway/` module also hosts the other instance-level packet-plane
+features: DHCP IPv4 allocation, magic DNS, the VPN portal server Module, and
+UDP broadcast relay normalization.
+
 ### Runtime configuration
 
 The normalized configuration consumed by core. Native TOML, CLI flags, web
@@ -246,6 +281,8 @@ It must not reconstruct core routing or connectivity decisions.
 15. `CoreInstance::new(CoreInstanceConfig, CoreHostAdapters)` is the only public
     core construction Interface. Hosts do not inject prebuilt peer graphs,
     runtime stores, or other core-owned managers.
+16. Core modules respect the layer order in "Module layers". A new upward
+    edge requires updating that section and the layout plan first.
 
 ## Architecture vocabulary
 
