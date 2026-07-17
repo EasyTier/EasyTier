@@ -1779,25 +1779,6 @@ where
         self.acl_whitelist.read().clone()
     }
 
-    pub fn runtime_config_snapshot(&self) -> CoreRuntimeConfig {
-        self.runtime_config.snapshot().services.clone()
-    }
-
-    #[cfg(feature = "test-utils")]
-    #[doc(hidden)]
-    pub fn proxy_cidr_lookup_for_test(
-        &self,
-        address: std::net::Ipv4Addr,
-    ) -> Option<std::net::Ipv4Addr> {
-        self.proxy_cidr_table.lookup_v4(address)
-    }
-
-    #[cfg(feature = "test-utils")]
-    #[doc(hidden)]
-    pub fn acl_reload_count_for_test(&self) -> usize {
-        self.acl_reload_count.load(Ordering::Relaxed)
-    }
-
     pub async fn update_peer_runtime_snapshot(&self, mut snapshot: Arc<PeerRuntimeSnapshot>) {
         let _operation = self.operation.lock().await;
         let current = self.runtime_config.snapshot();
@@ -1815,17 +1796,6 @@ where
             .update_snapshot(proxy_cidr_snapshot(self.runtime_config.snapshot().as_ref()));
         if refresh_acl_groups {
             self.refresh_acl_groups().await;
-        }
-    }
-
-    pub fn proxy_is_started(&self) -> bool {
-        #[cfg(feature = "proxy-packet")]
-        {
-            self.proxy_started.load(Ordering::Acquire)
-        }
-        #[cfg(not(feature = "proxy-packet"))]
-        {
-            false
         }
     }
 
@@ -2855,19 +2825,23 @@ mod tests {
             full_update.await.unwrap().unwrap();
             peer_update.await.unwrap();
 
-            assert!(instance.runtime_config_snapshot().dhcp_ipv4);
+            assert!(instance.runtime_config.snapshot().services.dhcp_ipv4);
             assert_eq!(instance.acl_whitelist_snapshot().tcp_ports, ["80"]);
-            assert_eq!(instance.acl_reload_count_for_test(), 1);
+            assert_eq!(instance.acl_reload_count.load(Ordering::Relaxed), 1);
             let node = instance.node_snapshot().await;
             assert_eq!(node.peer_id, original.peer_id);
             assert_eq!(node.instance_id, original.instance_id);
             match node.hostname.as_str() {
                 "full" => assert_eq!(
-                    instance.proxy_cidr_lookup_for_test("198.51.100.42".parse().unwrap()),
+                    instance
+                        .proxy_cidr_table
+                        .lookup_v4("198.51.100.42".parse().unwrap()),
                     Some("192.0.2.42".parse().unwrap())
                 ),
                 "peer" => assert_eq!(
-                    instance.proxy_cidr_lookup_for_test("10.20.30.42".parse().unwrap()),
+                    instance
+                        .proxy_cidr_table
+                        .lookup_v4("10.20.30.42".parse().unwrap()),
                     Some("203.0.113.42".parse().unwrap())
                 ),
                 hostname => panic!("unexpected final hostname: {hostname:?}"),
@@ -2891,7 +2865,7 @@ mod tests {
                 .node
                 .hostname = Some("accepted".to_owned());
             instance.update_runtime_config(unrelated).await.unwrap();
-            assert_eq!(instance.acl_reload_count_for_test(), 0);
+            assert_eq!(instance.acl_reload_count.load(Ordering::Relaxed), 0);
             let before = instance.node_snapshot().await;
 
             let mut rejected = runtime_snapshot(&config);
@@ -2902,9 +2876,9 @@ mod tests {
 
             let error = instance.update_runtime_config(rejected).await.unwrap_err();
             assert!(error.to_string().contains("Invalid port number"));
-            assert!(!instance.runtime_config_snapshot().dhcp_ipv4);
+            assert!(!instance.runtime_config.snapshot().services.dhcp_ipv4);
             assert!(instance.acl_whitelist_snapshot().tcp_ports.is_empty());
-            assert_eq!(instance.acl_reload_count_for_test(), 0);
+            assert_eq!(instance.acl_reload_count.load(Ordering::Relaxed), 0);
             assert_eq!(instance.node_snapshot().await.hostname, before.hostname);
             instance.stop().await;
         }
@@ -2943,13 +2917,13 @@ mod tests {
             assert_eq!(proxy.start_calls.load(Ordering::Relaxed), 1);
             assert_eq!(instance.list_connectors().len(), 1);
             assert_eq!(instance.list_connectors()[0].url, initial_peer);
-            assert!(instance.proxy_is_started());
+            assert!(instance.proxy_started.load(Ordering::Acquire));
 
             instance.stop().await;
             instance.stop().await;
             assert_eq!(instance.state(), CoreInstanceState::Stopped);
             assert_eq!(proxy.stop_calls.load(Ordering::Relaxed), 1);
-            assert!(!instance.proxy_is_started());
+            assert!(!instance.proxy_started.load(Ordering::Acquire));
         }
 
         #[cfg(feature = "proxy-smoltcp-stack")]

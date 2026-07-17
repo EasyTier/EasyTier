@@ -1745,12 +1745,6 @@ impl PeerManagerCore {
 
         Ok(())
     }
-
-    #[cfg(feature = "test-utils")]
-    #[doc(hidden)]
-    pub async fn run_for_test(&self) -> Result<(), Error> {
-        self.run().await
-    }
 }
 
 #[async_trait::async_trait]

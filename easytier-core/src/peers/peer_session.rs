@@ -2,22 +2,17 @@ use std::sync::{
     Arc, RwLock,
     atomic::{AtomicBool, Ordering},
 };
-use std::{hash::Hash, time::Duration};
+use std::time::{Duration, Instant};
 
 use anyhow::anyhow;
 use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
-use std::time::Instant;
 
-use super::secure_datagram::{SecureDatagramDirection, SecureDatagramSession};
+use super::{
+    secure_datagram::{SecureDatagramDirection, SecureDatagramSession},
+    util::shrink_dashmap,
+};
 use crate::{config::PeerId, packet::ZCPacket};
-
-fn shrink_dashmap<K: Eq + Hash, V>(map: &DashMap<K, V>, threshold: Option<usize>) {
-    let threshold = threshold.unwrap_or(16);
-    if map.capacity() - map.len() > threshold {
-        map.shrink_to_fit();
-    }
-}
 
 const SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -280,9 +275,6 @@ impl std::fmt::Debug for PeerSession {
 }
 
 impl PeerSession {
-    #[cfg(test)]
-    const SYNC_RX_GRACE_AFTER_MS: u64 = SecureDatagramSession::SYNC_RX_GRACE_AFTER_MS;
-
     pub fn new(
         peer_id: PeerId,
         root_key: [u8; 32],
@@ -462,14 +454,6 @@ mod tests {
         sb.encrypt_payload(b, a, &mut pkt2).unwrap();
         sa.decrypt_payload(b, a, &mut pkt2).unwrap();
         assert_eq!(pkt2.payload(), plaintext2);
-    }
-
-    #[test]
-    fn sync_root_key_preserves_generic_grace_window_constant() {
-        assert_eq!(
-            PeerSession::SYNC_RX_GRACE_AFTER_MS,
-            SecureDatagramSession::SYNC_RX_GRACE_AFTER_MS
-        );
     }
 
     #[test]

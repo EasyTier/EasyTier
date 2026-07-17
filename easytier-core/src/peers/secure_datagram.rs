@@ -686,21 +686,6 @@ impl SecureDatagramSession {
         accepted
     }
 
-    #[cfg(test)]
-    fn check_replay(
-        &self,
-        epoch: u32,
-        seq: u64,
-        dir: SecureDatagramDirection,
-        now_ms: u64,
-    ) -> bool {
-        if self.precheck_replay(epoch, seq, dir, now_ms) {
-            return self.commit_replay(epoch, seq, dir, now_ms);
-        }
-
-        false
-    }
-
     pub fn encrypt_payload(
         &self,
         dir: SecureDatagramDirection,
@@ -757,17 +742,6 @@ impl SecureDatagramSession {
 
         Ok(())
     }
-
-    #[cfg(test)]
-    fn check_replay_for_test(
-        &self,
-        epoch: u32,
-        seq: u64,
-        dir: SecureDatagramDirection,
-        now_ms: u64,
-    ) -> bool {
-        self.check_replay(epoch, seq, dir, now_ms)
-    }
 }
 
 fn now_ms() -> u64 {
@@ -782,6 +756,22 @@ mod tests {
     use super::*;
     #[cfg(all(feature = "aes-gcm", feature = "chacha20"))]
     use crate::packet::PacketType;
+
+    impl SecureDatagramSession {
+        fn check_replay_for_test(
+            &self,
+            epoch: u32,
+            seq: u64,
+            dir: SecureDatagramDirection,
+            now_ms: u64,
+        ) -> bool {
+            if self.precheck_replay(epoch, seq, dir, now_ms) {
+                return self.commit_replay(epoch, seq, dir, now_ms);
+            }
+
+            false
+        }
+    }
 
     #[test]
     #[cfg(all(feature = "aes-gcm", feature = "chacha20"))]

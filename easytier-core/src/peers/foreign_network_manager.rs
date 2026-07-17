@@ -183,20 +183,48 @@ mod tests {
     use easytier_proto::common::{FlagsInConfig, PeerFeatureFlag};
 
     use super::{
-        ForeignNetworkContextSpec, abort_and_join_persistent_tasks, build_foreign_context,
-        check_network_in_relay_whitelist, desired_foreign_avoid_relay_data,
+        ForeignNetworkContextSpec, ForeignNetworkManager, abort_and_join_persistent_tasks,
+        build_foreign_context, check_network_in_relay_whitelist, desired_foreign_avoid_relay_data,
         sync_foreign_avoid_relay_data,
     };
 
     use crate::{
-        peers::context::{
-            ArcPeerContext, CorePeerContext, CorePeerContextAdapters, NetworkIdentity, PeerContext,
-            PeerRuntimeSnapshot,
+        peers::{
+            context::{
+                ArcPeerContext, CorePeerContext, CorePeerContextAdapters, NetworkIdentity,
+                PeerContext, PeerRuntimeSnapshot,
+            },
+            error::Error,
         },
         proto::common::StunInfo,
         runtime_config::{CoreRuntimeConfig, CoreRuntimeConfigStore},
         stats_manager::{LabelSet, LabelType, MetricName},
     };
+
+    impl ForeignNetworkManager {
+        pub(crate) async fn is_stopped_for_test(&self) -> bool {
+            *self.lifecycle.read().await == super::ForeignNetworkManagerState::Stopped
+                && self.task_reaper.lock().await.is_none()
+                && self.tasks.lock().unwrap().is_empty()
+                && self.data.network_peer_maps.is_empty()
+                && self.data.peer_network_map.is_empty()
+        }
+
+        pub(crate) async fn admission_is_open_for_test(&self) -> bool {
+            self.admission_guard().await.is_ok()
+        }
+
+        pub(crate) async fn hold_admission_for_test(
+            &self,
+            entered: Arc<tokio::sync::Notify>,
+            release: Arc<tokio::sync::Notify>,
+        ) -> Result<(), Error> {
+            let _admission = self.admission_guard().await?;
+            entered.notify_one();
+            release.notified().await;
+            Ok(())
+        }
+    }
 
     #[tokio::test]
     async fn cancelled_join_wait_keeps_persistent_task_ownership() {
@@ -1288,32 +1316,6 @@ impl ForeignNetworkManager {
         self.data.network_peer_maps.clear();
         self.data.network_peer_last_update.clear();
         *lifecycle = ForeignNetworkManagerState::Stopped;
-    }
-
-    #[cfg(test)]
-    pub async fn is_stopped_for_test(&self) -> bool {
-        *self.lifecycle.read().await == ForeignNetworkManagerState::Stopped
-            && self.task_reaper.lock().await.is_none()
-            && self.tasks.lock().unwrap().is_empty()
-            && self.data.network_peer_maps.is_empty()
-            && self.data.peer_network_map.is_empty()
-    }
-
-    #[cfg(test)]
-    pub async fn admission_is_open_for_test(&self) -> bool {
-        self.admission_guard().await.is_ok()
-    }
-
-    #[cfg(test)]
-    pub async fn hold_admission_for_test(
-        &self,
-        entered: Arc<tokio::sync::Notify>,
-        release: Arc<tokio::sync::Notify>,
-    ) -> Result<(), Error> {
-        let _admission = self.admission_guard().await?;
-        entered.notify_one();
-        release.notified().await;
-        Ok(())
     }
 
     pub fn get_network_peer_id(&self, network_name: &str) -> Option<PeerId> {
