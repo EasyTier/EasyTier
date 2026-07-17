@@ -167,12 +167,6 @@ impl PeerStunInfoSource for ParentStunInfoSource {
     }
 }
 
-#[async_trait::async_trait]
-#[auto_impl::auto_impl(&, Box, Arc)]
-pub(crate) trait GlobalForeignNetworkAccessor: Send + Sync + 'static {
-    async fn list_global_foreign_peer(&self, network_identity: &NetworkIdentity) -> Vec<PeerId>;
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::{
@@ -468,47 +462,11 @@ pub(crate) struct ForeignNetworkRouteInfo {
     pub my_peer_id_for_this_network: PeerId,
 }
 
-#[async_trait::async_trait]
-#[auto_impl::auto_impl(&, Arc)]
-pub(crate) trait ForeignNetworkRouteInfoProvider: Send + Sync + 'static {
-    async fn list_foreign_network_route_infos(&self) -> Vec<ForeignNetworkRouteInfo>;
-
-    fn get_foreign_network_last_update(&self, _network_name: &str) -> Option<SystemTime> {
-        None
-    }
-}
-
-pub(crate) fn peer_map_foreign_network_accessor(
-    peer_map: Weak<PeerMap>,
-) -> Box<dyn GlobalForeignNetworkAccessor> {
-    struct PeerMapForeignNetworkAccessor {
-        peer_map: Weak<PeerMap>,
-    }
-
-    #[async_trait::async_trait]
-    impl GlobalForeignNetworkAccessor for PeerMapForeignNetworkAccessor {
-        async fn list_global_foreign_peer(
-            &self,
-            network_identity: &NetworkIdentity,
-        ) -> Vec<PeerId> {
-            let Some(peer_map) = self.peer_map.upgrade() else {
-                return vec![];
-            };
-
-            peer_map
-                .list_peers_own_foreign_network(network_identity)
-                .await
-        }
-    }
-
-    Box::new(PeerMapForeignNetworkAccessor { peer_map })
-}
-
 pub(crate) struct ForeignNetworkRouteInterface {
     my_peer_id: PeerId,
     peer_map: Weak<PeerMap>,
     network_identity: NetworkIdentity,
-    accessor: Box<dyn GlobalForeignNetworkAccessor>,
+    global_peer_map: Weak<PeerMap>,
 }
 
 impl ForeignNetworkRouteInterface {
@@ -516,13 +474,13 @@ impl ForeignNetworkRouteInterface {
         my_peer_id: PeerId,
         peer_map: Weak<PeerMap>,
         network_identity: NetworkIdentity,
-        accessor: Box<dyn GlobalForeignNetworkAccessor>,
+        global_peer_map: Weak<PeerMap>,
     ) -> Self {
         Self {
             my_peer_id,
             peer_map,
             network_identity,
-            accessor,
+            global_peer_map,
         }
     }
 }
@@ -534,10 +492,13 @@ impl RouteInterface for ForeignNetworkRouteInterface {
             return vec![];
         };
 
-        let mut global = self
-            .accessor
-            .list_global_foreign_peer(&self.network_identity)
-            .await;
+        let mut global = if let Some(global_peer_map) = self.global_peer_map.upgrade() {
+            global_peer_map
+                .list_peers_own_foreign_network(&self.network_identity)
+                .await
+        } else {
+            vec![]
+        };
         let local = peer_map.list_peers_with_conn().await;
         global.extend(local.iter().cloned());
         global
@@ -575,13 +536,13 @@ pub(crate) fn foreign_network_route_interface(
     my_peer_id: PeerId,
     peer_map: Weak<PeerMap>,
     network_identity: NetworkIdentity,
-    accessor: Box<dyn GlobalForeignNetworkAccessor>,
+    global_peer_map: Weak<PeerMap>,
 ) -> RouteInterfaceBox {
     Box::new(ForeignNetworkRouteInterface::new(
         my_peer_id,
         peer_map,
         network_identity,
-        accessor,
+        global_peer_map,
     ))
 }
 
@@ -708,15 +669,6 @@ pub struct ForeignNetworkEntryInfo {
     pub my_peer_id_for_this_network: PeerId,
     pub peers: Vec<ForeignNetworkPeerInfo>,
     pub trusted_keys: Vec<ForeignNetworkTrustedKeyInfo>,
-}
-
-#[async_trait::async_trait]
-#[auto_impl::auto_impl(&, Arc)]
-pub(crate) trait ForeignNetworkInfoProvider: Send + Sync + 'static {
-    async fn list_foreign_network_infos(
-        &self,
-        include_trusted_keys: bool,
-    ) -> std::collections::HashMap<String, ForeignNetworkEntryInfo>;
 }
 
 #[auto_impl::auto_impl(&, Arc)]
@@ -948,7 +900,7 @@ impl ForeignNetworkEntry {
         }
     }
 
-    async fn prepare_route(&self, accessor: Box<dyn GlobalForeignNetworkAccessor>) {
+    async fn prepare_route(&self, global_peer_map: Weak<PeerMap>) {
         let route = PeerRoute::new(
             self.my_peer_id,
             self.foreign_context.peer_context.clone(),
@@ -960,7 +912,7 @@ impl ForeignNetworkEntry {
                 self.my_peer_id,
                 Arc::downgrade(&self.peer_map),
                 self.network.clone(),
-                accessor,
+                global_peer_map,
             ))
             .await
             .unwrap();
@@ -1023,8 +975,8 @@ impl ForeignNetworkEntry {
         });
     }
 
-    async fn prepare(&self, accessor: Box<dyn GlobalForeignNetworkAccessor>) {
-        self.prepare_route(accessor).await;
+    async fn prepare(&self, global_peer_map: Weak<PeerMap>) {
+        self.prepare_route(global_peer_map).await;
         self.start_packet_recv().await;
         self.run_relay_session_gc_routine().await;
         self.run_parent_feature_flag_sync_routine().await;
@@ -1062,7 +1014,7 @@ struct ForeignNetworkManagerData {
     network_peer_maps: DashMap<String, Arc<ForeignNetworkEntry>>,
     peer_network_map: DashMap<PeerId, DashSet<String>>,
     network_peer_last_update: DashMap<String, SystemTime>,
-    accessor: Arc<Box<dyn GlobalForeignNetworkAccessor>>,
+    global_peer_map: Weak<PeerMap>,
     lock: std::sync::Mutex<()>,
 }
 
@@ -1181,7 +1133,7 @@ impl ForeignNetworkManagerData {
         drop(l);
 
         if new_added {
-            entry.prepare(Box::new(self.accessor.clone())).await;
+            entry.prepare(self.global_peer_map.clone()).await;
         }
 
         (entry, new_added)
@@ -1244,13 +1196,13 @@ impl ForeignNetworkManager {
         stats_mgr: Arc<StatsManager>,
         peer_session_store: Arc<PeerSessionStore>,
         packet_sender_to_mgr: PacketRecvChan,
-        accessor: Box<dyn GlobalForeignNetworkAccessor>,
+        global_peer_map: Weak<PeerMap>,
     ) -> Self {
         let data = Arc::new(ForeignNetworkManagerData {
             network_peer_maps: DashMap::new(),
             peer_network_map: DashMap::new(),
             network_peer_last_update: DashMap::new(),
-            accessor: Arc::new(accessor),
+            global_peer_map,
             lock: std::sync::Mutex::new(()),
         });
 
@@ -1556,6 +1508,19 @@ impl ForeignNetworkManager {
         ret
     }
 
+    pub async fn list_foreign_network_route_infos(&self) -> Vec<ForeignNetworkRouteInfo> {
+        self.list_foreign_network_infos(false)
+            .await
+            .into_iter()
+            .map(|(network_name, info)| ForeignNetworkRouteInfo {
+                network_name,
+                peer_ids: info.peers.into_iter().map(|peer| peer.peer_id).collect(),
+                network_secret_digest: info.network_secret_digest,
+                my_peer_id_for_this_network: info.my_peer_id_for_this_network,
+            })
+            .collect()
+    }
+
     pub fn get_foreign_network_last_update(&self, network_name: &str) -> Option<SystemTime> {
         self.data
             .network_peer_last_update
@@ -1606,84 +1571,6 @@ impl ForeignNetworkManager {
             }
         }
         Err(Error::NotFound)
-    }
-}
-
-#[async_trait::async_trait]
-impl ForeignNetworkInfoProvider for ForeignNetworkManager {
-    async fn list_foreign_network_infos(
-        &self,
-        include_trusted_keys: bool,
-    ) -> std::collections::HashMap<String, ForeignNetworkEntryInfo> {
-        ForeignNetworkManager::list_foreign_network_infos(self, include_trusted_keys).await
-    }
-}
-
-#[async_trait::async_trait]
-impl ForeignNetworkRouteInfoProvider for ForeignNetworkManager {
-    async fn list_foreign_network_route_infos(&self) -> Vec<ForeignNetworkRouteInfo> {
-        self.list_foreign_network_infos(false)
-            .await
-            .into_iter()
-            .map(|(network_name, info)| ForeignNetworkRouteInfo {
-                network_name,
-                peer_ids: info.peers.into_iter().map(|peer| peer.peer_id).collect(),
-                network_secret_digest: info.network_secret_digest,
-                my_peer_id_for_this_network: info.my_peer_id_for_this_network,
-            })
-            .collect()
-    }
-
-    fn get_foreign_network_last_update(&self, network_name: &str) -> Option<SystemTime> {
-        ForeignNetworkManager::get_foreign_network_last_update(self, network_name)
-    }
-}
-
-#[async_trait::async_trait]
-impl super::peer_manager::ForeignNetworkPacketHandler for ForeignNetworkManager {
-    fn get_network_peer_id(&self, network_name: &str) -> Option<PeerId> {
-        ForeignNetworkManager::get_network_peer_id(self, network_name)
-    }
-
-    async fn forward_foreign_network_packet(
-        &self,
-        network_name: &str,
-        dst_peer_id: PeerId,
-        msg: ZCPacket,
-    ) -> anyhow::Result<()> {
-        ForeignNetworkManager::forward_foreign_network_packet(self, network_name, dst_peer_id, msg)
-            .await
-            .map_err(Into::into)
-    }
-}
-
-#[async_trait::async_trait]
-impl super::peer_manager::ForeignNetworkConnectionAdmission for ForeignNetworkManager {
-    fn get_network_peer_id(&self, network_name: &str) -> Option<PeerId> {
-        ForeignNetworkManager::get_network_peer_id(self, network_name)
-    }
-
-    fn is_existing_credential_pubkey_trusted(
-        &self,
-        network_name: &str,
-        remote_static_pubkey: &[u8],
-    ) -> bool {
-        ForeignNetworkManager::is_existing_credential_pubkey_trusted(
-            self,
-            network_name,
-            remote_static_pubkey,
-        )
-    }
-
-    async fn add_peer_conn(&self, peer_conn: PeerConn) -> Result<(), Error> {
-        ForeignNetworkManager::add_peer_conn(self, peer_conn).await
-    }
-}
-
-#[async_trait::async_trait]
-impl super::peer_manager::ForeignPeerConnectionCloser for ForeignNetworkManager {
-    async fn close_peer_conn(&self, peer_id: PeerId, conn_id: &PeerConnId) -> Result<(), Error> {
-        ForeignNetworkManager::close_peer_conn(self, peer_id, conn_id).await
     }
 }
 

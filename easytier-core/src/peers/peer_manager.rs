@@ -50,9 +50,7 @@ use super::{
     error::Error,
     foreign_network_client::ForeignNetworkClient,
     foreign_network_manager::{
-        ForeignNetworkEntryInfo, ForeignNetworkInfoProvider, ForeignNetworkManager,
-        ForeignNetworkRouteInfoProvider, ForeignNetworkRpcRegistrar,
-        peer_map_foreign_network_accessor,
+        ForeignNetworkEntryInfo, ForeignNetworkManager, ForeignNetworkRpcRegistrar,
     },
     peer_conn::{PeerConn, PeerConnId},
     peer_map::PeerMap,
@@ -597,7 +595,7 @@ async fn add_route<T>(
     peer_packet_process_pipeline: &RwLock<Vec<Arc<PeerPipelineEntry>>>,
     peers: Arc<PeerMap>,
     foreign_network_client: Arc<ForeignNetworkClient>,
-    foreign_network_provider: Arc<dyn ForeignNetworkRouteInfoProvider>,
+    foreign_network_manager: Arc<ForeignNetworkManager>,
     my_peer_id: PeerId,
     route: Arc<T>,
 ) where
@@ -614,7 +612,7 @@ async fn add_route<T>(
             my_peer_id,
             Arc::downgrade(&peers),
             Arc::downgrade(&foreign_network_client),
-            Arc::downgrade(&foreign_network_provider),
+            Arc::downgrade(&foreign_network_manager),
         ))
         .await
         .unwrap();
@@ -642,10 +640,6 @@ pub struct PeerManagerCore {
     nic_channel: PacketRecvChan,
     route_algo_inst: RouteAlgoInst,
     foreign_network_client: Arc<ForeignNetworkClient>,
-    foreign_network_handler: Arc<dyn ForeignNetworkPacketHandler>,
-    foreign_network_provider: Arc<dyn ForeignNetworkRouteInfoProvider>,
-    foreign_network_info_provider: Arc<dyn ForeignNetworkInfoProvider>,
-    foreign_network_closer: Arc<dyn ForeignPeerConnectionCloser>,
     foreign_network_manager: Arc<ForeignNetworkManager>,
     relay_peer_map: Arc<RelayPeerMap>,
     peer_connection_admission: PeerConnectionAdmission,
@@ -992,7 +986,7 @@ impl PeerManagerCore {
             stats_manager.clone(),
             peer_session_store.clone(),
             packet_send.clone(),
-            peer_map_foreign_network_accessor(Arc::downgrade(&peers)),
+            Arc::downgrade(&peers),
         ));
         let foreign_network_client = Arc::new(ForeignNetworkClient::new(
             context.clone(),
@@ -1120,15 +1114,6 @@ impl PeerManagerCore {
             self_tx_counters.compress_tx_bytes_after.clone(),
         );
 
-        let foreign_network_handler: Arc<dyn ForeignNetworkPacketHandler> =
-            foreign_network_manager.clone();
-        let foreign_network_provider: Arc<dyn ForeignNetworkRouteInfoProvider> =
-            foreign_network_manager.clone();
-        let foreign_network_info_provider: Arc<dyn ForeignNetworkInfoProvider> =
-            foreign_network_manager.clone();
-        let foreign_network_closer: Arc<dyn ForeignPeerConnectionCloser> =
-            foreign_network_manager.clone();
-
         Self {
             my_peer_id,
             tasks: Mutex::new(JoinSet::new()),
@@ -1141,11 +1126,7 @@ impl PeerManagerCore {
             nic_channel,
             route_algo_inst,
             foreign_network_client,
-            foreign_network_handler,
-            foreign_network_provider,
-            foreign_network_info_provider,
-            foreign_network_closer,
-            foreign_network_manager: foreign_network_manager.clone(),
+            foreign_network_manager,
             relay_peer_map,
             peer_connection_admission,
             outbound_packet_router,
@@ -1274,7 +1255,7 @@ impl PeerManagerCore {
         &self,
         include_trusted_keys: bool,
     ) -> std::collections::HashMap<String, ForeignNetworkEntryInfo> {
-        self.foreign_network_info_provider
+        self.foreign_network_manager
             .list_foreign_network_infos(include_trusted_keys)
             .await
     }
@@ -1480,7 +1461,7 @@ impl PeerManagerCore {
             self.peer_packet_process_pipeline.as_ref(),
             self.peers.clone(),
             self.foreign_network_client.clone(),
-            self.foreign_network_provider.clone(),
+            self.foreign_network_manager.clone(),
             self.my_peer_id,
             route,
         )
@@ -1602,7 +1583,7 @@ impl PeerManagerCore {
         close_peer_conn(
             self.peers.as_ref(),
             &self.foreign_network_client,
-            self.foreign_network_closer.as_ref(),
+            &self.foreign_network_manager,
             peer_id,
             conn_id,
         )
@@ -1620,7 +1601,7 @@ impl PeerManagerCore {
             self.peer_packet_process_pipeline.clone(),
             self.foreign_network_client.clone(),
             self.relay_peer_map.clone(),
-            self.foreign_network_handler.clone(),
+            self.foreign_network_manager.clone(),
             self.encryptor.clone(),
             self.data_compress_algo,
             self.acl_filter.clone(),
@@ -1740,16 +1721,10 @@ impl crate::hole_punch::tcp::TcpHolePunchTunnelSink for PeerManagerCore {
     }
 }
 
-#[async_trait::async_trait]
-#[auto_impl::auto_impl(&, Arc)]
-pub(crate) trait ForeignPeerConnectionCloser: Send + Sync {
-    async fn close_peer_conn(&self, peer_id: PeerId, conn_id: &PeerConnId) -> Result<(), Error>;
-}
-
 pub(crate) async fn close_peer_conn(
     peers: &PeerMap,
     foreign_network_client: &ForeignNetworkClient,
-    foreign_network_manager: &(dyn ForeignPeerConnectionCloser + Send + Sync),
+    foreign_network_manager: &ForeignNetworkManager,
     peer_id: PeerId,
     conn_id: &PeerConnId,
 ) -> Result<(), Error> {
@@ -1775,30 +1750,12 @@ pub(crate) async fn close_peer_conn(
     ret
 }
 
-#[async_trait::async_trait]
-#[auto_impl::auto_impl(&, Arc)]
-pub(crate) trait ForeignNetworkConnectionAdmission: Send + Sync {
-    fn allow_client_foreign_network(&self) -> bool {
-        true
-    }
-
-    fn get_network_peer_id(&self, network_name: &str) -> Option<PeerId>;
-
-    fn is_existing_credential_pubkey_trusted(
-        &self,
-        network_name: &str,
-        remote_static_pubkey: &[u8],
-    ) -> bool;
-
-    async fn add_peer_conn(&self, peer_conn: PeerConn) -> Result<(), Error>;
-}
-
 pub(crate) struct PeerConnectionAdmission {
     my_peer_id: PeerId,
     context: ArcPeerContext,
     peers: Arc<PeerMap>,
     foreign_network_client: Arc<ForeignNetworkClient>,
-    foreign_network_admission: Arc<dyn ForeignNetworkConnectionAdmission>,
+    foreign_network_manager: Arc<ForeignNetworkManager>,
     peer_session_store: Arc<PeerSessionStore>,
     recent_traffic: RecentTrafficTracker,
     reserved_my_peer_id_map: DashMap<String, PeerId>,
@@ -1811,7 +1768,7 @@ impl PeerConnectionAdmission {
         context: ArcPeerContext,
         peers: Arc<PeerMap>,
         foreign_network_client: Arc<ForeignNetworkClient>,
-        foreign_network_admission: Arc<dyn ForeignNetworkConnectionAdmission>,
+        foreign_network_manager: Arc<ForeignNetworkManager>,
         peer_session_store: Arc<PeerSessionStore>,
         recent_traffic: RecentTrafficTracker,
         address_resolver: Arc<dyn AddressResolver>,
@@ -1821,7 +1778,7 @@ impl PeerConnectionAdmission {
             context,
             peers,
             foreign_network_client,
-            foreign_network_admission,
+            foreign_network_manager,
             peer_session_store,
             recent_traffic,
             reserved_my_peer_id_map: DashMap::new(),
@@ -1872,15 +1829,6 @@ impl PeerConnectionAdmission {
             .await?;
             self.recent_traffic.clear(peer_id);
         } else {
-            if !self
-                .foreign_network_admission
-                .allow_client_foreign_network()
-            {
-                return Err(anyhow::anyhow!(
-                    "foreign network client connections are disabled for this core instance"
-                )
-                .into());
-            }
             self.foreign_network_client.add_new_peer_conn(peer).await?;
         }
         Ok((peer_id, conn_id))
@@ -1936,7 +1884,7 @@ impl PeerConnectionAdmission {
                 }
 
                 let mut peer_id = self
-                    .foreign_network_admission
+                    .foreign_network_manager
                     .get_network_peer_id(network_name);
                 if peer_id.is_none() {
                     reserved_peer_id_network_name = Some(network_name.to_string());
@@ -1975,7 +1923,7 @@ impl PeerConnectionAdmission {
         let trusted_foreign_credential =
             matches!(conn.get_peer_identity_type(), PeerIdentityType::Credential)
                 && self
-                    .foreign_network_admission
+                    .foreign_network_manager
                     .is_existing_credential_pubkey_trusted(
                         &peer_network_name,
                         &conn.get_conn_info().noise_remote_static_pubkey,
@@ -2014,7 +1962,7 @@ impl PeerConnectionAdmission {
                 Err(err) => Err(err),
             }
         } else {
-            self.foreign_network_admission.add_peer_conn(conn).await
+            self.foreign_network_manager.add_peer_conn(conn).await
         };
 
         if let Err(err) = add_peer_ret {
@@ -2780,7 +2728,7 @@ pub(crate) struct PeerPacketRouter {
     peer_packet_process_pipeline: Arc<RwLock<Vec<Arc<PeerPipelineEntry>>>>,
     foreign_client: Arc<ForeignNetworkClient>,
     relay_peer_map: Arc<RelayPeerMap>,
-    foreign_network_handler: Arc<dyn ForeignNetworkPacketHandler>,
+    foreign_network_manager: Arc<ForeignNetworkManager>,
     encryptor: Arc<dyn Encryptor>,
     compress_algo: CompressorAlgo,
     acl_filter: Arc<AclFilter>,
@@ -2802,7 +2750,7 @@ impl PeerPacketRouter {
         peer_packet_process_pipeline: Arc<RwLock<Vec<Arc<PeerPipelineEntry>>>>,
         foreign_client: Arc<ForeignNetworkClient>,
         relay_peer_map: Arc<RelayPeerMap>,
-        foreign_network_handler: Arc<dyn ForeignNetworkPacketHandler>,
+        foreign_network_manager: Arc<ForeignNetworkManager>,
         encryptor: Arc<dyn Encryptor>,
         compress_algo: CompressorAlgo,
         acl_filter: Arc<AclFilter>,
@@ -2826,7 +2774,7 @@ impl PeerPacketRouter {
             peer_packet_process_pipeline,
             foreign_client,
             relay_peer_map,
-            foreign_network_handler,
+            foreign_network_manager,
             encryptor,
             compress_algo,
             acl_filter,
@@ -2871,7 +2819,7 @@ impl PeerPacketRouter {
                 ret,
                 self.my_peer_id,
                 &self.peers,
-                self.foreign_network_handler.as_ref(),
+                &self.foreign_network_manager,
                 self.stats_mgr.as_ref(),
                 disable_relay_data,
             )
@@ -3063,19 +3011,6 @@ impl PeerPacketRouter {
     }
 }
 
-#[async_trait::async_trait]
-#[auto_impl::auto_impl(&, Arc)]
-pub(crate) trait ForeignNetworkPacketHandler: Send + Sync + 'static {
-    fn get_network_peer_id(&self, network_name: &str) -> Option<PeerId>;
-
-    async fn forward_foreign_network_packet(
-        &self,
-        network_name: &str,
-        dst_peer_id: PeerId,
-        msg: ZCPacket,
-    ) -> anyhow::Result<()>;
-}
-
 pub(crate) fn is_relay_data_packet(packet_type: u8) -> bool {
     super::traffic_metrics::is_relay_data_packet_type(packet_type)
 }
@@ -3099,17 +3034,14 @@ pub(crate) fn is_relay_data_zc_packet(packet: &ZCPacket) -> bool {
     is_relay_data_packet(hdr.packet_type)
 }
 
-pub(crate) async fn try_handle_foreign_network_packet<H>(
+pub(crate) async fn try_handle_foreign_network_packet(
     mut packet: ZCPacket,
     my_peer_id: PeerId,
     peer_map: &PeerMap,
-    foreign_network_handler: &H,
+    foreign_network_manager: &ForeignNetworkManager,
     stats_manager: &StatsManager,
     disable_relay_data: bool,
-) -> Result<(), ZCPacket>
-where
-    H: ForeignNetworkPacketHandler + ?Sized,
-{
+) -> Result<(), ZCPacket> {
     let pm_header = packet.peer_manager_header().unwrap();
     if pm_header.packet_type != PacketType::ForeignNetworkPacket as u8 {
         return Err(packet);
@@ -3133,7 +3065,7 @@ where
     let foreign_peer_id = foreign_hdr.get_dst_peer_id();
 
     let foreign_network_my_peer_id =
-        foreign_network_handler.get_network_peer_id(&foreign_network_name);
+        foreign_network_manager.get_network_peer_id(&foreign_network_name);
 
     let buf_len = packet.buf_len();
     let label_set =
@@ -3152,7 +3084,7 @@ where
             MetricName::TrafficBytesForeignForwardRx,
             MetricName::TrafficPacketsForeignForwardRx,
         );
-        if let Err(e) = foreign_network_handler
+        if let Err(e) = foreign_network_manager
             .forward_foreign_network_packet(
                 &foreign_network_name,
                 foreign_peer_id,
@@ -3220,7 +3152,7 @@ pub(crate) struct PeerManagerRouteInterface {
     my_peer_id: PeerId,
     peers: Weak<PeerMap>,
     foreign_network_client: Weak<ForeignNetworkClient>,
-    foreign_network_provider: Weak<dyn ForeignNetworkRouteInfoProvider>,
+    foreign_network_manager: Weak<ForeignNetworkManager>,
 }
 
 impl PeerManagerRouteInterface {
@@ -3228,13 +3160,13 @@ impl PeerManagerRouteInterface {
         my_peer_id: PeerId,
         peers: Weak<PeerMap>,
         foreign_network_client: Weak<ForeignNetworkClient>,
-        foreign_network_provider: Weak<dyn ForeignNetworkRouteInfoProvider>,
+        foreign_network_manager: Weak<ForeignNetworkManager>,
     ) -> Self {
         Self {
             my_peer_id,
             peers,
             foreign_network_client,
-            foreign_network_provider,
+            foreign_network_manager,
         }
     }
 }
@@ -3281,17 +3213,19 @@ impl RouteInterface for PeerManagerRouteInterface {
 
     async fn list_foreign_networks(&self) -> ForeignNetworkRouteInfoMap {
         let ret = ForeignNetworkRouteInfoMap::new();
-        let Some(provider) = self.foreign_network_provider.upgrade() else {
+        let Some(foreign_network_manager) = self.foreign_network_manager.upgrade() else {
             return ret;
         };
 
-        let networks = provider.list_foreign_network_route_infos().await;
+        let networks = foreign_network_manager
+            .list_foreign_network_route_infos()
+            .await;
         for info in networks {
             if info.peer_ids.is_empty() {
                 continue;
             }
 
-            let last_update = provider
+            let last_update = foreign_network_manager
                 .get_foreign_network_last_update(&info.network_name)
                 .unwrap_or(SystemTime::now());
             ret.insert(
@@ -3316,13 +3250,13 @@ pub(crate) fn peer_manager_route_interface(
     my_peer_id: PeerId,
     peers: Weak<PeerMap>,
     foreign_network_client: Weak<ForeignNetworkClient>,
-    foreign_network_provider: Weak<dyn ForeignNetworkRouteInfoProvider>,
+    foreign_network_manager: Weak<ForeignNetworkManager>,
 ) -> RouteInterfaceBox {
     Box::new(PeerManagerRouteInterface::new(
         my_peer_id,
         peers,
         foreign_network_client,
-        foreign_network_provider,
+        foreign_network_manager,
     ))
 }
 
@@ -3671,11 +3605,6 @@ mod tests {
         assert_eq!(core.context.network_name(), "portable-net");
         assert_ne!(core.context.instance_id(), uuid::Uuid::nil());
         assert_eq!(core.data_compress_algo, CompressorAlgo::None);
-        assert!(
-            core.peer_connection_admission
-                .foreign_network_admission
-                .allow_client_foreign_network()
-        );
         assert!(core.list_foreign_network_infos(false).await.is_empty());
 
         core.run().await.unwrap();
