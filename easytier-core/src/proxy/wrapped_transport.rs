@@ -11,7 +11,7 @@ use tokio::{sync::Mutex, task::JoinSet};
 use crate::{
     connectivity::direct::DirectConnectorHost,
     hole_punch::tcp::TcpHolePunchHost,
-    listener::RunningListenerProvider,
+    listener::RunningListenerRegistry,
     packet::{PacketType, ZCPacket, ZCPacketType},
     peers::{
         PeerPacketFilter,
@@ -229,7 +229,7 @@ where
     fn new(
         peer_manager: Arc<PeerManagerCore>,
         host: Arc<H>,
-        running_listeners: Arc<dyn RunningListenerProvider>,
+        running_listeners: Arc<RunningListenerRegistry>,
         runtime_config: CoreRuntimeConfigStore,
         cidr_table: Arc<ProxyCidrTable>,
         socket_context: SocketContext,
@@ -543,7 +543,7 @@ impl WrappedTransportProxyModule {
         kcp: Option<Arc<dyn WrappedTransportEngine>>,
         quic: Option<Arc<dyn WrappedTransportEngine>>,
         host: Arc<H>,
-        running_listeners: Arc<dyn RunningListenerProvider>,
+        running_listeners: Arc<RunningListenerRegistry>,
         cidr_table: Arc<ProxyCidrTable>,
         socket_context: SocketContext,
     ) -> Option<Arc<Self>>

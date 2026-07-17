@@ -113,17 +113,13 @@ impl ListenerEventSink for ListenerEventSinkGroup {
     }
 }
 
-pub trait RunningListenerProvider: Debug + Send + Sync + 'static {
-    fn running_listeners(&self) -> Vec<Url>;
-}
-
 #[derive(Debug, Default)]
-pub struct RunningListenerRegistry {
+pub(crate) struct RunningListenerRegistry {
     listeners: std::sync::Mutex<Vec<(Url, usize)>>,
 }
 
-impl RunningListenerProvider for RunningListenerRegistry {
-    fn running_listeners(&self) -> Vec<Url> {
+impl RunningListenerRegistry {
+    pub(crate) fn running_listeners(&self) -> Vec<Url> {
         self.listeners
             .lock()
             .unwrap()

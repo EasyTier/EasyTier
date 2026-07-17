@@ -62,7 +62,6 @@ use super::{
     relay_peer_map::RelayPeerMap,
     route_trait::{
         ArcRoute, DisabledRoute, ForeignNetworkRouteInfoMap, NextHopPolicy, Route, RouteInterface,
-        RouteInterfaceBox,
     },
     traffic_metrics::{
         InstanceLabelKind, LogicalTrafficMetrics, TrafficKind, TrafficMetricRecorder,
@@ -107,7 +106,7 @@ fn magic_dns_route_advertisement(route: CoreRoute) -> MagicDnsRouteAdvertisement
     }
 }
 
-pub(crate) struct RpcTransport {
+struct RpcTransport {
     my_peer_id: PeerId,
     peers: Weak<PeerMap>,
 
@@ -599,12 +598,12 @@ async fn add_route<T>(
         .push(permanent_peer_pipeline_entry(Box::new(route.clone())));
 
     let _route_id = route
-        .open(peer_manager_route_interface(
+        .open(Box::new(PeerManagerRouteInterface {
             my_peer_id,
-            Arc::downgrade(&peers),
-            Arc::downgrade(&foreign_network_client),
-            Arc::downgrade(&foreign_network_manager),
-        ))
+            peers: Arc::downgrade(&peers),
+            foreign_network_client: Arc::downgrade(&foreign_network_client),
+            foreign_network_manager: Arc::downgrade(&foreign_network_manager),
+        }))
         .await
         .unwrap();
 
@@ -641,12 +640,10 @@ pub struct PeerManagerCore {
     data_compress_algo: CompressorAlgo,
     exit_nodes: Arc<RwLock<Vec<IpAddr>>>,
     acl_filter: Arc<AclFilter>,
-    credential_manager: Arc<CredentialManager>,
     context: Arc<CorePeerContext>,
     is_secure_mode_enabled: bool,
     route: ArcRoute,
     traffic_metrics: Arc<TrafficMetricRecorder>,
-    stats_manager: Arc<StatsManager>,
     network_name: String,
     counters: PeerManagerTrafficCounters,
 }
@@ -935,7 +932,6 @@ impl PeerManagerCore {
         foreign_rpc_registrar: Arc<dyn ForeignNetworkRpcRegistrar>,
     ) -> Self {
         let stats_manager = core_context.stats_manager();
-        let credential_manager = core_context.credential_manager();
         let acl_filter = Arc::new(AclFilter::new());
         let context: ArcPeerContext = core_context.clone();
         let (packet_send, packet_recv) = super::create_packet_recv_chan();
@@ -969,7 +965,6 @@ impl PeerManagerCore {
             foreign_rpc_registrar,
             core_context.clone(),
             foreign_context_default_flags,
-            stats_manager.clone(),
             peer_session_store.clone(),
             packet_send.clone(),
             Arc::downgrade(&peers),
@@ -1121,12 +1116,10 @@ impl PeerManagerCore {
             data_compress_algo,
             exit_nodes,
             acl_filter,
-            credential_manager,
             context: core_context,
             is_secure_mode_enabled,
             route,
             traffic_metrics,
-            stats_manager,
             network_name,
             counters: self_tx_counters,
         }
@@ -1137,11 +1130,11 @@ impl PeerManagerCore {
     }
 
     pub(crate) fn credential_manager(&self) -> Arc<CredentialManager> {
-        self.credential_manager.clone()
+        self.context.credential_manager()
     }
 
     pub fn stats_manager(&self) -> Arc<StatsManager> {
-        self.stats_manager.clone()
+        self.context.stats_manager()
     }
 
     pub fn can_manage_credentials(&self) -> bool {
@@ -1543,7 +1536,7 @@ impl PeerManagerCore {
         self.route.close().await;
         self.peer_rpc_mgr.stop().await;
         self.context.stop().await;
-        self.stats_manager.stop_cleanup_task().await;
+        self.context.stats_manager().stop_cleanup_task().await;
         self.acl_filter.stop_cleanup_task().await;
     }
 
@@ -1592,7 +1585,7 @@ impl PeerManagerCore {
             self.route.clone(),
             is_credential_node,
             self.traffic_metrics.clone(),
-            self.stats_manager.clone(),
+            self.context.stats_manager(),
             self.network_name.clone(),
             self.counters.self_tx_packets.clone(),
             self.counters.self_tx_bytes.clone(),
@@ -1604,7 +1597,7 @@ impl PeerManagerCore {
     }
 
     pub(crate) async fn run(&self) -> Result<(), Error> {
-        self.stats_manager.start_cleanup_task();
+        self.context.stats_manager().start_cleanup_task();
 
         if let Some(route) = self.route_algo_inst.ospf_route() {
             self.add_route(route).await;
@@ -3122,27 +3115,11 @@ pub(crate) async fn try_handle_foreign_network_packet(
     }
 }
 
-pub(crate) struct PeerManagerRouteInterface {
+struct PeerManagerRouteInterface {
     my_peer_id: PeerId,
     peers: Weak<PeerMap>,
     foreign_network_client: Weak<ForeignNetworkClient>,
     foreign_network_manager: Weak<ForeignNetworkManager>,
-}
-
-impl PeerManagerRouteInterface {
-    pub fn new(
-        my_peer_id: PeerId,
-        peers: Weak<PeerMap>,
-        foreign_network_client: Weak<ForeignNetworkClient>,
-        foreign_network_manager: Weak<ForeignNetworkManager>,
-    ) -> Self {
-        Self {
-            my_peer_id,
-            peers,
-            foreign_network_client,
-            foreign_network_manager,
-        }
-    }
 }
 
 #[async_trait::async_trait]
@@ -3218,20 +3195,6 @@ impl RouteInterface for PeerManagerRouteInterface {
         }
         ret
     }
-}
-
-pub(crate) fn peer_manager_route_interface(
-    my_peer_id: PeerId,
-    peers: Weak<PeerMap>,
-    foreign_network_client: Weak<ForeignNetworkClient>,
-    foreign_network_manager: Weak<ForeignNetworkManager>,
-) -> RouteInterfaceBox {
-    Box::new(PeerManagerRouteInterface::new(
-        my_peer_id,
-        peers,
-        foreign_network_client,
-        foreign_network_manager,
-    ))
 }
 
 pub(crate) async fn send_msg_internal(
@@ -3584,11 +3547,11 @@ mod tests {
         core.run().await.unwrap();
         let route = core.route_algo_inst.ospf_route().unwrap();
         assert!(route.task_count() > 0);
-        assert!(!core.stats_manager.cleanup_task_is_stopped());
+        assert!(!core.stats_manager().cleanup_task_is_stopped());
         assert!(!core.acl_filter.cleanup_task_is_stopped());
         core.clear_resources().await;
         assert_eq!(route.task_count(), 0);
-        assert!(core.stats_manager.cleanup_task_is_stopped());
+        assert!(core.stats_manager().cleanup_task_is_stopped());
         assert!(core.acl_filter.cleanup_task_is_stopped());
         assert!(core.foreign_network_manager.is_stopped_for_test().await);
         assert!(

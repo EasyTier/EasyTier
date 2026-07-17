@@ -22,7 +22,7 @@ use crate::{
         transport::{self, ConnectedTransport, UdpSessionMode},
     },
     hole_punch::udp::{should_background_p2p_with_peer, should_try_p2p_with_peer},
-    listener::{RunningListenerProvider, RunningListenerRegistry},
+    listener::RunningListenerRegistry,
     peers::{
         foreign_network_manager::ForeignNetworkRpcRegistrar, peer_conn::PeerConnId,
         peer_manager::PeerManagerCore, peer_rpc::PeerRpcManager,
@@ -225,7 +225,7 @@ where
     peer_manager: Arc<PeerManagerCore>,
     host: Arc<H>,
     stun: Arc<dyn StunSocketMapper<<H as VirtualUdpSocketFactory>::Socket>>,
-    running_listeners: Arc<dyn RunningListenerProvider>,
+    running_listeners: Arc<RunningListenerRegistry>,
     dns: Arc<dyn DnsResolver>,
     protocol:
         Arc<dyn ClientProtocolUpgrader<<H as crate::socket::tcp::VirtualTcpSocketFactory>::Socket>>,
@@ -262,7 +262,7 @@ where
         peer_manager: Arc<PeerManagerCore>,
         host: Arc<H>,
         stun: Arc<dyn StunSocketMapper<<H as VirtualUdpSocketFactory>::Socket>>,
-        running_listeners: Arc<dyn RunningListenerProvider>,
+        running_listeners: Arc<RunningListenerRegistry>,
         dns: Arc<dyn DnsResolver>,
         protocol: Arc<
             dyn ClientProtocolUpgrader<<H as crate::socket::tcp::VirtualTcpSocketFactory>::Socket>,
@@ -336,10 +336,6 @@ where
                 ),
                 &self.data.options.network_name,
             );
-    }
-
-    pub fn running_listeners(&self) -> Vec<Url> {
-        self.data.running_listeners.running_listeners()
     }
 
     pub(crate) async fn local_address_observations_with_stun(
@@ -951,7 +947,7 @@ where
 {
     host: Arc<H>,
     peer_manager: Option<Weak<PeerManagerCore>>,
-    running_listeners: Arc<dyn RunningListenerProvider>,
+    running_listeners: Arc<RunningListenerRegistry>,
     socket_context: SocketContext,
     foreign_network: bool,
     stun: Option<Arc<dyn StunInfoProvider>>,
@@ -996,7 +992,7 @@ where
     fn new_with_running_listeners_and_stun(
         host: Arc<H>,
         peer_manager: Option<Weak<PeerManagerCore>>,
-        running_listeners: Arc<dyn RunningListenerProvider>,
+        running_listeners: Arc<RunningListenerRegistry>,
         socket_context: SocketContext,
         stun: Option<Arc<dyn StunInfoProvider>>,
     ) -> Self {

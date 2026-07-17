@@ -48,7 +48,7 @@ use crate::{
     hole_punch::udp::{UdpPortMappingEventSink, UdpPortMappingPlatform},
     listener::{
         AcceptedSocketHandler, ListenerEventSink, ListenerEventSinkGroup, ListenerFactory,
-        RunningListenerProvider, RunningListenerRegistry, SocketListener,
+        RunningListenerRegistry, SocketListener,
         plan::{
             ListenerKind, ListenerPlanFailure, ListenerRuntimeConfig, ListenerSchemeRegistry,
             PlannedListener,
@@ -615,6 +615,7 @@ where
     direct: DirectConnectorManager<H>,
     tcp_hole_punch: TcpHolePunchConnector<H>,
     listener: Option<Arc<CoreListenerRuntime<H>>>,
+    running_listeners: Arc<RunningListenerRegistry>,
     udp_hole_punch: CoreUdpHolePunchService<H>,
     udp_hole_punch_started: AtomicBool,
     transport_proxy: Option<Arc<WrappedTransportProxyModule>>,
@@ -786,12 +787,12 @@ where
             }
             None => Arc::new(RawAcceptedTransportHandler::new(&peer_manager)),
         };
-        let registry = Arc::new(RunningListenerRegistry::default());
+        let running_listeners = Arc::new(RunningListenerRegistry::default());
         let events: Arc<dyn ListenerEventSink> = match listener_events {
             Some(listener_events) => {
-                ListenerEventSinkGroup::new(vec![registry.clone(), listener_events])
+                ListenerEventSinkGroup::new(vec![running_listeners.clone(), listener_events])
             }
-            None => registry.clone(),
+            None => running_listeners.clone(),
         };
         let PreparedListenerPlan {
             transports,
@@ -827,7 +828,6 @@ where
                 events,
             ))
         });
-        let running_listeners: Arc<dyn RunningListenerProvider> = registry;
         let protocol = protocol.unwrap_or_else(|| {
             Arc::new(CoreClientProtocolUpgrader::new(
                 CoreClientProtocolConfig::default(),
@@ -840,7 +840,6 @@ where
             endpoint_discovery,
         ));
         let acl_whitelist = AclWhitelistSnapshot::from(&initial_runtime_config.acl);
-        runtime_config.update_services(|services| *services = initial_runtime_config.clone());
         let manual = match manual_events {
             Some(events) => ManualConnectorManager::new_with_events(
                 peer_manager.clone(),
@@ -921,7 +920,7 @@ where
             peer_manager.clone(),
             host.clone(),
             stun.clone(),
-            running_listeners,
+            running_listeners.clone(),
             dns,
             protocol,
             direct_options,
@@ -962,6 +961,7 @@ where
             direct,
             tcp_hole_punch,
             listener,
+            running_listeners,
             udp_hole_punch,
             udp_hole_punch_started: AtomicBool::new(false),
             transport_proxy,
@@ -1619,7 +1619,7 @@ where
     }
 
     pub fn running_listeners(&self) -> Vec<Url> {
-        self.direct.running_listeners()
+        self.running_listeners.running_listeners()
     }
 
     pub fn peer_id(&self) -> crate::config::PeerId {

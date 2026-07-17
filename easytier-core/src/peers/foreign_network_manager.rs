@@ -40,7 +40,7 @@ use super::{
     peer_session::PeerSessionStore,
     public_ipv6::{DisabledPublicIpv6Runtime, PublicIpv6Runtime},
     relay_peer_map::RelayPeerMap,
-    route_trait::{NextHopPolicy, Route, RouteInterface, RouteInterfaceBox},
+    route_trait::{NextHopPolicy, Route, RouteInterface},
     traffic_metrics::{
         TrafficKind, TrafficMetricRecorder, is_relay_data_packet_type, traffic_kind,
     },
@@ -461,27 +461,11 @@ pub(crate) struct ForeignNetworkRouteInfo {
     pub my_peer_id_for_this_network: PeerId,
 }
 
-pub(crate) struct ForeignNetworkRouteInterface {
+struct ForeignNetworkRouteInterface {
     my_peer_id: PeerId,
     peer_map: Weak<PeerMap>,
     network_identity: NetworkIdentity,
     global_peer_map: Weak<PeerMap>,
-}
-
-impl ForeignNetworkRouteInterface {
-    pub fn new(
-        my_peer_id: PeerId,
-        peer_map: Weak<PeerMap>,
-        network_identity: NetworkIdentity,
-        global_peer_map: Weak<PeerMap>,
-    ) -> Self {
-        Self {
-            my_peer_id,
-            peer_map,
-            network_identity,
-            global_peer_map,
-        }
-    }
 }
 
 #[async_trait::async_trait]
@@ -531,39 +515,11 @@ impl RouteInterface for ForeignNetworkRouteInterface {
     }
 }
 
-pub(crate) fn foreign_network_route_interface(
-    my_peer_id: PeerId,
-    peer_map: Weak<PeerMap>,
-    network_identity: NetworkIdentity,
-    global_peer_map: Weak<PeerMap>,
-) -> RouteInterfaceBox {
-    Box::new(ForeignNetworkRouteInterface::new(
-        my_peer_id,
-        peer_map,
-        network_identity,
-        global_peer_map,
-    ))
-}
-
-pub(crate) struct RpcTransport {
+struct RpcTransport {
     my_peer_id: PeerId,
     peer_map: Weak<PeerMap>,
 
     packet_recv: Mutex<UnboundedReceiver<ZCPacket>>,
-}
-
-impl RpcTransport {
-    pub fn new(my_peer_id: PeerId, peer_map: Weak<PeerMap>) -> (Self, UnboundedSender<ZCPacket>) {
-        let (rpc_transport_sender, packet_recv) = mpsc::unbounded_channel();
-        (
-            Self {
-                my_peer_id,
-                peer_map,
-                packet_recv: Mutex::new(packet_recv),
-            },
-            rpc_transport_sender,
-        )
-    }
 }
 
 #[async_trait::async_trait]
@@ -604,14 +560,6 @@ impl Drop for RpcTransport {
             self.my_peer_id
         );
     }
-}
-
-pub(crate) fn build_rpc_transport(
-    my_peer_id: PeerId,
-    peer_map: Weak<PeerMap>,
-) -> (Arc<PeerRpcManager>, UnboundedSender<ZCPacket>) {
-    let (transport, sender) = RpcTransport::new(my_peer_id, peer_map);
-    (Arc::new(PeerRpcManager::new(transport)), sender)
 }
 
 #[derive(Clone)]
@@ -750,7 +698,6 @@ struct ForeignNetworkEntry {
 
     peer_center: Arc<PeerCenterInstance>,
 
-    stats_mgr: Arc<StatsManager>,
     traffic_metrics: Arc<TrafficMetricRecorder>,
     event_handler_started: AtomicBool,
 
@@ -766,7 +713,6 @@ impl ForeignNetworkEntry {
         rpc_registrar: Arc<dyn ForeignNetworkRpcRegistrar>,
         parent_context: Arc<CorePeerContext>,
         foreign_context_default_flags: FlagsInConfig,
-        stats_mgr: Arc<StatsManager>,
         relay_data: bool,
         peer_session_store: Arc<PeerSessionStore>,
         pm_packet_sender: PacketRecvChan,
@@ -779,6 +725,7 @@ impl ForeignNetworkEntry {
             foreign_context_default_flags,
         );
         let foreign_context = build_foreign_context(&spec, &parent_context);
+        let stats_mgr = foreign_context.peer_context.stats_manager();
         let network_name = network.network_name.clone();
 
         let (packet_sender, packet_recv) = super::create_packet_recv_chan();
@@ -849,8 +796,12 @@ impl ForeignNetworkEntry {
             peer_session_store.clone(),
         );
 
-        let (peer_rpc, rpc_transport_sender) =
-            build_rpc_transport(my_peer_id, Arc::downgrade(&peer_map));
+        let (rpc_transport_sender, rpc_packet_recv) = mpsc::unbounded_channel();
+        let peer_rpc = Arc::new(PeerRpcManager::new(RpcTransport {
+            my_peer_id,
+            peer_map: Arc::downgrade(&peer_map),
+            packet_recv: Mutex::new(rpc_packet_recv),
+        }));
 
         rpc_registrar.register_peer_rpc_services(
             &peer_rpc,
@@ -886,7 +837,6 @@ impl ForeignNetworkEntry {
 
             bps_limiter,
 
-            stats_mgr,
             traffic_metrics,
             event_handler_started: AtomicBool::new(false),
 
@@ -906,12 +856,12 @@ impl ForeignNetworkEntry {
             self.peer_rpc.clone(),
         );
         route
-            .open(foreign_network_route_interface(
-                self.my_peer_id,
-                Arc::downgrade(&self.peer_map),
-                self.network.clone(),
+            .open(Box::new(ForeignNetworkRouteInterface {
+                my_peer_id: self.my_peer_id,
+                peer_map: Arc::downgrade(&self.peer_map),
+                network_identity: self.network.clone(),
                 global_peer_map,
-            ))
+            }))
             .await
             .unwrap();
 
@@ -937,7 +887,7 @@ impl ForeignNetworkEntry {
             pm_sender,
             self.network.network_name.clone(),
             self.bps_limiter.clone(),
-            self.stats_mgr.clone(),
+            self.foreign_context.peer_context.stats_manager(),
         );
 
         self.tasks.lock().await.spawn(router.run());
@@ -1094,7 +1044,6 @@ impl ForeignNetworkManagerData {
         rpc_registrar: Arc<dyn ForeignNetworkRpcRegistrar>,
         parent_context: Arc<CorePeerContext>,
         foreign_context_default_flags: FlagsInConfig,
-        stats_mgr: Arc<StatsManager>,
         peer_session_store: Arc<PeerSessionStore>,
         pm_packet_sender: &PacketRecvChan,
     ) -> (Arc<ForeignNetworkEntry>, bool) {
@@ -1112,7 +1061,6 @@ impl ForeignNetworkManagerData {
                     rpc_registrar,
                     parent_context,
                     foreign_context_default_flags,
-                    stats_mgr,
                     relay_data,
                     peer_session_store,
                     pm_packet_sender.clone(),
@@ -1149,7 +1097,6 @@ pub(crate) struct ForeignNetworkManager {
     rpc_registrar: Arc<dyn ForeignNetworkRpcRegistrar>,
     parent_context: Arc<CorePeerContext>,
     foreign_context_default_flags: FlagsInConfig,
-    stats_mgr: Arc<StatsManager>,
     peer_session_store: Arc<PeerSessionStore>,
     packet_sender_to_mgr: PacketRecvChan,
 
@@ -1191,7 +1138,6 @@ impl ForeignNetworkManager {
         rpc_registrar: Arc<dyn ForeignNetworkRpcRegistrar>,
         parent_context: Arc<CorePeerContext>,
         foreign_context_default_flags: FlagsInConfig,
-        stats_mgr: Arc<StatsManager>,
         peer_session_store: Arc<PeerSessionStore>,
         packet_sender_to_mgr: PacketRecvChan,
         global_peer_map: Weak<PeerMap>,
@@ -1211,7 +1157,6 @@ impl ForeignNetworkManager {
             rpc_registrar,
             parent_context,
             foreign_context_default_flags,
-            stats_mgr,
             peer_session_store,
             packet_sender_to_mgr,
             data,
@@ -1324,7 +1269,6 @@ impl ForeignNetworkManager {
                 self.rpc_registrar.clone(),
                 self.parent_context.clone(),
                 self.foreign_context_default_flags.clone(),
-                self.stats_mgr.clone(),
                 self.peer_session_store.clone(),
                 &self.packet_sender_to_mgr,
             )

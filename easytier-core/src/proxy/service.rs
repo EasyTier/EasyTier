@@ -14,7 +14,7 @@ use crate::{
     config::IpPrefix,
     connectivity::direct::DirectConnectorHost,
     hole_punch::tcp::TcpHolePunchHost,
-    listener::RunningListenerProvider,
+    listener::RunningListenerRegistry,
     peers::peer_manager::PeerManagerCore,
     runtime_config::{CoreInstanceRuntimeConfig, CoreRuntimeConfigStore},
     socket::{IpVersion, SocketContext, udp::UdpBindOptions},
@@ -87,7 +87,7 @@ where
 {
     peer_manager: Arc<PeerManagerCore>,
     host: Arc<H>,
-    running_listeners: Arc<dyn RunningListenerProvider>,
+    running_listeners: Arc<RunningListenerRegistry>,
     config: CoreRuntimeConfigStore,
     stats: Arc<StatsManager>,
     protocol_label: &'static str,
@@ -101,7 +101,7 @@ where
     pub(crate) fn new(
         peer_manager: Arc<PeerManagerCore>,
         host: Arc<H>,
-        running_listeners: Arc<dyn RunningListenerProvider>,
+        running_listeners: Arc<RunningListenerRegistry>,
         config: CoreRuntimeConfigStore,
         protocol_label: &'static str,
     ) -> Arc<Self> {
@@ -282,7 +282,7 @@ where
     pub(crate) fn new(
         peer_manager: Arc<PeerManagerCore>,
         host: Arc<H>,
-        running_listeners: Arc<dyn RunningListenerProvider>,
+        running_listeners: Arc<RunningListenerRegistry>,
         config: CoreRuntimeConfigStore,
         cidr_table: Arc<ProxyCidrTable>,
         tcp_socket_context: SocketContext,

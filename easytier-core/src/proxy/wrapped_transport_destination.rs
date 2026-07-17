@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     connectivity::direct::DirectConnectorHost, hole_punch::tcp::TcpHolePunchHost,
-    listener::RunningListenerProvider, peers::peer_manager::PeerManagerCore,
+    listener::RunningListenerRegistry, peers::peer_manager::PeerManagerCore,
     runtime_config::CoreRuntimeConfigStore, socket::SocketContext,
 };
 
@@ -159,7 +159,7 @@ where
     pub(crate) fn new(
         peer_manager: Arc<PeerManagerCore>,
         host: Arc<H>,
-        running_listeners: Arc<dyn RunningListenerProvider>,
+        running_listeners: Arc<RunningListenerRegistry>,
         runtime_config: CoreRuntimeConfigStore,
         cidr_table: Arc<ProxyCidrTable>,
         socket_context: SocketContext,
