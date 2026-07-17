@@ -30,8 +30,8 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
     gateway::{
+        smoltcp::{Net, TcpListener},
         socks5::{Socks5Entry, Socks5EntryGuard, protocol::server::AsyncTcpConnector},
-        tokio_smoltcp::{Net, TcpListener},
     },
     socket::{
         tcp::{TcpSocketPurpose, VirtualTcpListenerFactory, VirtualTcpSocketFactory},

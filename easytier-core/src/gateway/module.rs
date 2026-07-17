@@ -32,6 +32,7 @@ use crate::{
             runtime::TcpProxyStream,
             wrapped_transport::{WrappedTransportKind, WrappedTransportProxyModule},
         },
+        smoltcp::{BufferSize, Net, NetConfig, UdpSocket, channel_device},
         socks5::{
             Socks5Entry, Socks5EntryKind, Socks5EntryTable, Socks5PeerPacketRoute,
             Socks5TcpConnectPlan, Socks5TcpRoute,
@@ -44,7 +45,6 @@ use crate::{
                 },
             },
         },
-        tokio_smoltcp::{self, BufferSize, Net, NetConfig, channel_device},
     },
     host::dns::DnsResolver,
     packet::{PacketType, ZCPacket},
@@ -70,7 +70,7 @@ pub use dataplane::{DataPlaneTcpListener, DataPlaneTcpStream, DataPlaneUdpSocket
 
 enum GatewayUdpSocket {
     Host(Arc<dyn VirtualUdpSocket>),
-    SmolUdpSocket(tokio_smoltcp::UdpSocket),
+    SmolUdpSocket(UdpSocket),
 }
 
 impl GatewayUdpSocket {

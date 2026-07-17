@@ -1,6 +1,7 @@
 # EasyTier Core Module Layout
 
-> Status: accepted plan. Created 2026-07-17.
+> Status: implemented through S11 on 2026-07-18. Strict layer convergence
+> remains incremental; residual edges are recorded below.
 
 This document records the accepted re-plan of the `easytier-core` module
 tree. The ownership refactor closed the core/native boundary; it did not
@@ -78,12 +79,15 @@ easytier-core/src
 │   ├── task.rs               <- task.rs (PeerTaskManager)
 │   ├── time.rs               <- runtime_time.rs
 │   ├── token_bucket.rs       <- token_bucket.rs
-│   ├── compressor.rs         <- compressor.rs
 │   └── stats.rs              <- stats_manager.rs
 ├── config/                   L1 configuration
 │   ├── mod.rs                <- config.rs (static schema)
+│   ├── gateway.rs            gateway and proxy runtime configuration
 │   └── runtime.rs            <- runtime_config.rs (live store)
-├── packet/                   L1 wire format (<- packet.rs; udp_broadcast moves out)
+├── packet/                   L1 wire format
+│   ├── mod.rs                <- packet.rs; udp_broadcast moves out
+│   ├── compressor.rs         compression beside packet tail types
+│   └── hole_punch.rs         UDP hole-punch wire codec
 ├── socket/                   L2 pure socket primitives: tcp/udp/ring/virtual + SocketContext
 ├── host/                     L2 Host Adapter seams (CONTEXT.md "Host capability")
 │   ├── dns.rs                <- socket/dns.rs + socket/host/dns/
@@ -102,12 +106,14 @@ easytier-core/src
 ├── peers/                    L5 peer graph domain (files move unchanged)
 │   ├── peer_center/          <- peer_center/ folded in (breaks the peers<->peer_center cycle)
 │   └── public_ipv6/          <- three split locations gathered
-├── rpc/                      L5 <- rpc_impl/ renamed; transport (client/server/bidirect/registry/packet/metrics)
+├── rpc/                      L5 <- rpc_impl/ renamed; transport (client/server/bidirect/registry/packet)
 │   └── standalone.rs           management-plane submodule
 ├── gateway/                  L6 packet-plane features (CONTEXT.md "Gateway dataplane", broadened)
 │   ├── proxy/...             engines+services, cidr_*, wrapped_*; the four "runtime"s settle
 │   ├── socks5/               <- socks5.rs + socks5_protocol/ merged
-│   ├── smoltcp/              <- tokio_smoltcp leaves business code (or easytier/third_party) + smoltcp_stack
+│   ├── smoltcp/              private smoltcp implementation subtree
+│   │   ├── stack.rs          <- smoltcp_stack
+│   │   └── tokio_smoltcp/    vendored async wrapper
 │   ├── magic_dns.rs  dhcp.rs  vpn_portal.rs  udp_broadcast.rs
 ├── instance/                 L7 slimmed composition root
 │   ├── mod.rs                construction + lifecycle (foreign types return to their owners)
@@ -124,25 +130,49 @@ foundation <- config/packet <- socket <- host <- tunnel
            <- listener/connectivity <- peers/rpc <- gateway <- instance
 ```
 
-Modules may only depend downward. Current counter-examples are converged
-by this plan rather than denied:
+Modules should depend downward. The migration closed these scoped
+counter-examples rather than hiding them behind compatibility re-exports:
 
 | Current violation | Resolved by |
 | --- | --- |
 | `socket -> instance::PacketSink` | S3: PacketSink moves to `host/packet.rs` |
 | `peers <-> peer_center` | S6: fold peer_center into `peers/` |
-| `socket -> stun/listener/hole_punch` | S10: `SocketListener` trait sinks to `socket/`; codec edges narrowed |
-| `hole_punch <-> peers` | S10: `impl TunnelSink for PeerManagerCore` moves to the hole_punch side |
+| `socket -> stun/listener/hole_punch` | S10-S11: `SocketListener` sinks to `socket/`, the STUN adapter stays in connectivity, and the hole-punch wire codec moves to `packet/` |
+| peer tunnel-sink implementation in `peers` | S10: `impl TunnelSink for PeerManagerCore` moves to the hole-punch adapter side |
 | `connectivity/protocol/raw <-> listener/transport` | S10: raw dialer/listener settle at the tunnel/listener layer |
 | peer admission impl in `listener/transport.rs` | S10: moves to the peers side |
 | `foundation/compressor -> packet` | S10: compressor tail types or the module settle at the packet layer |
 | `foundation/stats -> rpc_impl::metrics` | S10: the RpcMetrics trait settles in `foundation` |
 | `foundation/token_bucket -> peers::context::ByteLimiter` | S10: the ByteLimiter trait settles in `foundation` |
 
-Enforcement is by convention plus CI: `pub(crate)` by default with each
-layer's `mod.rs` declaring its outward surface, and a static grep gate in
-the style of the existing ownership searches. Rust has no package-level
-visibility; the compiler is not expected to enforce layers.
+Enforcement is by convention plus
+[`script/check-core-module-boundaries.sh`](../script/check-core-module-boundaries.sh):
+`pub(crate)` by default with each layer's `mod.rs` declaring its outward
+surface, and a source gate for the boundaries that have converged. Rust has
+no package-level visibility; the compiler is not expected to enforce layers.
+
+### Enforcement scope and residual edges
+
+The S11 gate checks the clean foundation and packet layers, production socket
+code, the host seam, the resolved config/listener/peers/gateway directions,
+obsolete module paths, and the required physical layout. It is intentionally
+conservative rather than pretending a regular expression is a complete Rust
+dependency parser.
+
+The following pre-existing upward edges remain explicit architecture debt and
+are not presented as solved by this layout series:
+
+- `config/runtime.rs -> peers` for peer runtime snapshots and peer-owned
+  service configuration types;
+- `tunnel/web_security.rs -> peers/secure_datagram.rs`;
+- connectivity orchestration adapters in `direct`, `manual`, and
+  `hole_punch` that still name `PeerManagerCore` or peer RPC implementations.
+
+Removing those edges requires separate Interface extraction and composition
+work, not visibility edits. A new upward edge still requires updating
+`CONTEXT.md` and this plan first. Likewise, S11 does not mechanically rewrite
+the crate-wide backlog of unreachable member-level `pub` declarations; it
+narrows the moved module boundaries and keeps that larger cleanup separate.
 
 ## Migration series
 
@@ -161,8 +191,11 @@ crates update their `use` paths inside the same series.
 | S7 | `rpc/` rename + standalone submodule | rpc_impl mixing |
 | S8 | `gateway/` domain: proxy cleanup, socks5 merge, tokio_smoltcp out, features gathered | four runtimes, vendored crate, flat features |
 | S9 | `instance/` slimming: management.rs, foreign types home, listener planning returned | god module |
-| S10 | remaining cycle breaking | remaining reverse edges |
-| S11 | visibility hygiene + CI dependency gate + docs | asymmetric pub, unreachable pub |
+| S10 | scoped cycle breaking | reverse edges listed above |
+| S11 | boundary visibility, physical layout, CI gate, and docs | asymmetric module visibility and regression prevention |
+
+S1-S11 are implemented. The residual edges above are deliberately excluded
+from that completion claim and require their own architecture series.
 
 Each series runs the relevant rows of the validation matrix in
 [`core_refactor_roadmap.md`](core_refactor_roadmap.md): native unit tests,

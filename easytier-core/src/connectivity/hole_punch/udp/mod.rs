@@ -2,7 +2,6 @@ mod binding;
 mod client;
 mod common;
 mod connector;
-mod packet;
 mod punch_listener;
 mod rpc;
 mod runtime;
@@ -16,7 +15,6 @@ pub(crate) use client::{
 };
 pub(crate) use common::{BLACKLIST_TIMEOUT_SEC, UdpNatType, UdpPunchClientMethod};
 pub(crate) use connector::{UdpHolePunchConnector, UdpSymPunchLock};
-pub(crate) use packet::{HOLE_PUNCH_PACKET_BODY_LEN, hole_punch_packet_tid, new_hole_punch_packet};
 pub(crate) use punch_listener::{
     MAX_PUBLIC_UDP_HOLE_PUNCH_LISTENERS, ReusableUdpPunchListener, can_reuse_port_mapping_listener,
     can_reuse_public_listener, select_reusable_port_mapping_listener_idx,

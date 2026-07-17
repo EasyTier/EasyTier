@@ -15,14 +15,14 @@ use tokio_util::task::AbortOnDropHandle;
 use crate::{
     config::PeerId,
     connectivity::stun::StunInfoProvider,
+    packet::{HOLE_PUNCH_PACKET_BODY_LEN, new_hole_punch_packet},
     socket::udp::{UdpBindOptions, VirtualUdpSocketFactory},
 };
 
 use super::{
-    HOLE_PUNCH_PACKET_BODY_LEN, SelectPunchListener, SendPunchPacketBothEasySym,
-    SendPunchPacketCone, SendPunchPacketEasySym, SendPunchPacketHardSym, UdpHolePunchRuntime,
-    UdpHolePunchSignalError, UdpHolePunchSignaling, UdpNatType, UdpPunchSocket, UdpSocketArray,
-    new_hole_punch_packet,
+    SelectPunchListener, SendPunchPacketBothEasySym, SendPunchPacketCone, SendPunchPacketEasySym,
+    SendPunchPacketHardSym, UdpHolePunchRuntime, UdpHolePunchSignalError, UdpHolePunchSignaling,
+    UdpNatType, UdpPunchSocket, UdpSocketArray,
 };
 
 #[derive(Debug, thiserror::Error)]

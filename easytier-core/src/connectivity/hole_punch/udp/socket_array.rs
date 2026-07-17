@@ -8,10 +8,12 @@ use dashmap::{DashMap, DashSet};
 use tokio::task::JoinSet;
 use tracing::{Instrument, Level, instrument};
 
-use super::{HOLE_PUNCH_PACKET_BODY_LEN, hole_punch_packet_tid};
-use crate::socket::{
-    IpVersion, SocketContext,
-    udp::{UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory},
+use crate::{
+    packet::{HOLE_PUNCH_PACKET_BODY_LEN, hole_punch_packet_tid},
+    socket::{
+        IpVersion, SocketContext,
+        udp::{UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory},
+    },
 };
 
 pub struct PunchedUdpSocket<S> {
@@ -264,7 +266,7 @@ mod tests {
     use tokio::sync::Mutex as TokioMutex;
 
     use super::*;
-    use crate::{connectivity::hole_punch::udp::new_hole_punch_packet, socket::NetNamespace};
+    use crate::{packet::new_hole_punch_packet, socket::NetNamespace};
 
     impl<R> UdpSocketArray<R>
     where

@@ -31,7 +31,7 @@ use super::tcp_proxy_engine::{
     TcpProxyPacketAction, TcpProxyPeerContext,
 };
 #[cfg(feature = "proxy-smoltcp-stack")]
-use crate::gateway::stack::{SmolTcpStack, output_dst_ip};
+use crate::gateway::smoltcp::{SmolTcpStack, output_dst_ip};
 
 fn spawn_tcp_proxy_task(
     lifecycle: &AtomicU64,

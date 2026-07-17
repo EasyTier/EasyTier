@@ -5,14 +5,12 @@
 pub mod dhcp;
 pub mod magic_dns;
 #[cfg(feature = "proxy-smoltcp-stack")]
-pub(crate) mod module;
+mod module;
 pub mod proxy;
 #[cfg(feature = "proxy-smoltcp-stack")]
-pub(crate) mod socks5;
+mod smoltcp;
 #[cfg(feature = "proxy-smoltcp-stack")]
-pub(crate) mod stack;
-#[cfg(feature = "proxy-smoltcp-stack")]
-pub(crate) mod tokio_smoltcp;
+mod socks5;
 #[cfg(feature = "proxy-packet")]
 pub mod udp_broadcast;
 pub mod vpn_portal;

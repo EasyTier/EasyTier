@@ -33,7 +33,8 @@ downward:
 listener/connectivity <- peers/rpc <- gateway <- instance`
 
 - `foundation/` holds infrastructure with no domain dependency (task
-  supervision, time facade, rate limiting, compression, stats).
+  supervision, time facade, rate limiting, and stats).
+- `packet/` owns wire types plus packet compression and control-packet codecs.
 - `config/` holds the static configuration schema and the live runtime
   configuration store.
 - `host/` is the single home of every Host capability seam; `socket/`
@@ -50,6 +51,9 @@ listener/connectivity <- peers/rpc <- gateway <- instance`
 Modules are `pub(crate)` by default; each layer's `mod.rs` declares its
 outward surface. The full layout and migration series are recorded in
 [`refactor-doc/core_module_layout.md`](refactor-doc/core_module_layout.md).
+The layer order is the target direction. CI enforces the boundaries already
+converged by the layout series; explicitly recorded residual upward edges are
+architecture debt, not patterns for new dependencies.
 
 ### Core instance
 

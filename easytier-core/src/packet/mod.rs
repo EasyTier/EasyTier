@@ -1,4 +1,9 @@
 pub(crate) mod compressor;
+mod hole_punch;
+
+pub(crate) use hole_punch::{
+    HOLE_PUNCH_PACKET_BODY_LEN, hole_punch_packet_tid, new_hole_punch_packet,
+};
 
 use bytes::Buf;
 use bytes::Bytes;

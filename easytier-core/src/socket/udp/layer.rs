@@ -12,7 +12,7 @@ use tokio::{
     task::JoinHandle,
 };
 
-use crate::{connectivity::hole_punch::udp::new_hole_punch_packet, packet::ZCPacket};
+use crate::packet::{ZCPacket, new_hole_punch_packet};
 
 use super::{
     UDP_SESSION_CONNECT_TIMEOUT, UDP_SESSION_QUEUE_CAPACITY, UDP_SESSION_RESEND_INTERVAL,
