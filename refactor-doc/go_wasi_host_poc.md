@@ -134,9 +134,9 @@ Packet egress uses a capacity-one Go queue. A successful import owns a complete
 packet copy, queue-full has no side effects, and core retries only after a
 writable-readiness completion. The deterministic probe proves FIFO delivery,
 backpressure, and waiter cleanup without moving packet parsing or routing into
-Go. Packet ingress already enters portable logic through
-`CoreInstance::send_ip_packet`; exporting the serialized instance command is a
-later composition step.
+Go. Packet ingress already enters portable logic through the instance-owned
+`CorePacketPlane::send_ip_packet`; exporting the serialized instance command
+is a later composition step.
 
 The probe uses two `net.Pipe` connections, so success does not depend on an OS
 descriptor. One read remains permanently pending while the second connection

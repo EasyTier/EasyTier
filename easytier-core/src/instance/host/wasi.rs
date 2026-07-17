@@ -411,9 +411,9 @@ pub extern "C" fn easytier_instance_send_packet(
                 return Ok(INVALID_INPUT);
             }
         };
-        let instance = entry.core.core().clone();
+        let packet_plane = entry.core.core().packet_plane();
         entry.runtime.spawn(async move {
-            if let Err(error) = instance.send_ip_packet(packet).await {
+            if let Err(error) = packet_plane.send_ip_packet(packet).await {
                 tracing::warn!(?error, "host packet ingress failed");
             }
         });

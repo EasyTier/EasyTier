@@ -2,10 +2,10 @@
 
 #[cfg(any(test, target_os = "wasi"))]
 mod host;
-pub mod packet_io;
-pub mod packet_plane;
+mod packet_io;
+mod packet_plane;
 pub mod public_ipv6_provider;
-pub mod udp_hole_punch;
+mod udp_hole_punch;
 
 #[cfg(any(test, target_os = "wasi"))]
 mod runtime_driver;
@@ -17,7 +17,7 @@ use std::sync::{
 
 #[cfg(feature = "test-utils")]
 use std::sync::atomic::AtomicUsize;
-use std::{collections::BTreeSet, net::IpAddr, time::Duration};
+use std::{net::IpAddr, time::Duration};
 
 use async_trait::async_trait;
 use parking_lot::RwLock;
@@ -59,7 +59,6 @@ use crate::{
             RawAcceptedTransportHandler, TransportListenerConfig,
         },
     },
-    magic_dns::{MagicDnsRouteSnapshot, MagicDnsRouteSource},
     peer_center::instance::{PeerCenterInstance, PeerCenterInstanceService},
     peers::{
         acl_config::AclRuleConfig,
@@ -74,7 +73,7 @@ use crate::{
     },
     process_runtime::CoreProcessRuntime,
     proxy::{
-        cidr_monitor::{ProxyCidrDiff, ProxyCidrMonitor, ProxyCidrMonitorHost},
+        cidr_monitor::{ProxyCidrMonitor, ProxyCidrMonitorHost},
         cidr_table::{ProxyCidrSnapshot, ProxyCidrTable},
         wrapped_transport::{WrappedTransportEngines, WrappedTransportProxyModule},
     },
@@ -99,8 +98,6 @@ use self::{
     public_ipv6_provider::{PublicIpv6ProviderPlatform, PublicIpv6ProviderService},
     udp_hole_punch::CoreUdpHolePunchService,
 };
-#[cfg(feature = "proxy-packet")]
-use crate::magic_dns::MagicDnsQueryResolver;
 #[cfg(feature = "proxy-packet")]
 use crate::peers::peer_manager::PipelineRegistrationGuard;
 #[cfg(feature = "proxy-packet")]
@@ -1729,14 +1726,6 @@ where
             .evict_unused_sessions_idle(idle);
     }
 
-    pub async fn public_ipv6_routes(&self) -> BTreeSet<cidr::Ipv6Inet> {
-        self.packet_plane.public_ipv6_routes().await
-    }
-
-    pub async fn public_ipv6_addr(&self) -> Option<cidr::Ipv6Inet> {
-        self.packet_plane.public_ipv6_addr().await
-    }
-
     pub async fn dump_route(&self) -> String {
         self.peer_manager.dump_route().await
     }
@@ -1885,21 +1874,6 @@ where
         self.peer_manager.stats_manager().export_prometheus()
     }
 
-    pub fn udp_broadcast_relay_stats(&self) -> UdpBroadcastRelayStats {
-        self.packet_plane.udp_broadcast_relay_stats()
-    }
-
-    #[cfg(feature = "proxy-packet")]
-    pub async fn register_magic_dns_resolver(
-        &self,
-        fake_ip: std::net::Ipv4Addr,
-        resolver: Arc<dyn MagicDnsQueryResolver>,
-    ) -> MagicDnsResolverRegistration {
-        self.packet_plane
-            .register_magic_dns_resolver(fake_ip, resolver)
-            .await
-    }
-
     pub async fn close_peer_conn(
         &self,
         peer_id: crate::config::PeerId,
@@ -1918,35 +1892,6 @@ where
 
     pub async fn refresh_acl_groups(&self) {
         self.peer_manager.get_route().refresh_acl_groups().await;
-    }
-
-    pub async fn proxy_cidr_diff(
-        &self,
-        previous: &BTreeSet<cidr::Ipv4Cidr>,
-    ) -> Option<ProxyCidrDiff> {
-        self.packet_plane.proxy_cidr_diff(previous).await
-    }
-
-    pub async fn send_ip_packet(&self, packet: Vec<u8>) -> anyhow::Result<()> {
-        self.packet_plane.send_ip_packet(packet).await
-    }
-
-    pub async fn send_local_ip_packet(&self, packet: Vec<u8>) -> anyhow::Result<()> {
-        self.packet_plane.send_local_ip_packet(packet).await
-    }
-}
-
-#[async_trait]
-impl<H> MagicDnsRouteSource for CoreInstance<H>
-where
-    H: DirectConnectorHost + TcpHolePunchHost,
-{
-    async fn snapshot(&self) -> MagicDnsRouteSnapshot {
-        MagicDnsRouteSource::snapshot(self.packet_plane.as_ref()).await
-    }
-
-    async fn revision(&self) -> quanta::Instant {
-        MagicDnsRouteSource::revision(self.packet_plane.as_ref()).await
     }
 }
 

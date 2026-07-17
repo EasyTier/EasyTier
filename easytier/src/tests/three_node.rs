@@ -726,17 +726,28 @@ async fn init_public_ipv6_two_node_with_topology(
 
 async fn wait_for_public_ipv6_addr(inst: &Instance) -> cidr::Ipv6Inet {
     wait_for_condition(
-        || async { inst.get_core_instance().public_ipv6_addr().await.is_some() },
+        || async {
+            inst.get_core_instance()
+                .packet_plane()
+                .public_ipv6_addr()
+                .await
+                .is_some()
+        },
         Duration::from_secs(10),
     )
     .await;
-    inst.get_core_instance().public_ipv6_addr().await.unwrap()
+    inst.get_core_instance()
+        .packet_plane()
+        .public_ipv6_addr()
+        .await
+        .unwrap()
 }
 
 async fn wait_for_public_ipv6_route(inst: &Instance, target: cidr::Ipv6Inet) {
     wait_for_condition(
         || async {
             inst.get_core_instance()
+                .packet_plane()
                 .public_ipv6_routes()
                 .await
                 .contains(&target)

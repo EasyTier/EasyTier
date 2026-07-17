@@ -510,7 +510,11 @@ mod tests {
         }
         let received = tokio::time::timeout(std::time::Duration::from_secs(10), async {
             loop {
-                instance_a.send_ip_packet(ip_packet.clone()).await.unwrap();
+                instance_a
+                    .packet_plane()
+                    .send_ip_packet(ip_packet.clone())
+                    .await
+                    .unwrap();
                 match tokio::time::timeout(
                     std::time::Duration::from_millis(100),
                     packet_receiver_b.recv(),
