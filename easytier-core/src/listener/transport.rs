@@ -730,7 +730,7 @@ where
 {
     manager: HostTransportListenerManager<H>,
     plan_failures: Vec<ListenerPlanFailure>,
-    events: Option<Arc<dyn ListenerEventSink>>,
+    events: Arc<dyn ListenerEventSink>,
 }
 
 impl<H> CoreListenerRuntime<H>
@@ -747,32 +747,7 @@ where
         handler: Arc<dyn AcceptedSocketHandler<AcceptedTransport<HostAcceptedTcpSocket<H>>>>,
         events: Arc<dyn ListenerEventSink>,
     ) -> Self {
-        Self::build(
-            host,
-            dns,
-            ring_registry,
-            configs,
-            external_factories,
-            plan_failures,
-            handler,
-            Some(events),
-        )
-    }
-
-    fn build(
-        host: Arc<H>,
-        dns: Arc<dyn DnsResolver>,
-        ring_registry: Arc<RingTunnelRegistry>,
-        configs: Vec<TransportListenerConfig>,
-        external_factories: Vec<ListenerFactory<AcceptedTransport<HostAcceptedTcpSocket<H>>>>,
-        plan_failures: Vec<ListenerPlanFailure>,
-        handler: Arc<dyn AcceptedSocketHandler<AcceptedTransport<HostAcceptedTcpSocket<H>>>>,
-        events: Option<Arc<dyn ListenerEventSink>>,
-    ) -> Self {
-        let mut manager = match &events {
-            Some(events) => ListenerManager::new_with_events(handler, events.clone()),
-            None => ListenerManager::new(handler),
-        };
+        let mut manager = ListenerManager::new_with_events(handler, events.clone());
 
         for config in configs {
             let must_succeed = config.must_succeed();
@@ -846,13 +821,11 @@ where
     }
 
     pub async fn start(&self) -> anyhow::Result<()> {
-        if let Some(events) = &self.events {
-            for failure in &self.plan_failures {
-                events.emit(ListenerEvent::ListenerPlanFailed {
-                    url: failure.url.clone(),
-                    error: failure.message.clone(),
-                });
-            }
+        for failure in &self.plan_failures {
+            self.events.emit(ListenerEvent::ListenerPlanFailed {
+                url: failure.url.clone(),
+                error: failure.message.clone(),
+            });
         }
         self.manager.run().await
     }
@@ -896,30 +869,6 @@ mod tests {
             },
         },
     };
-
-    impl<H> CoreListenerRuntime<H>
-    where
-        H: VirtualTcpListenerFactory + VirtualUdpSocketFactory,
-    {
-        fn new(
-            host: Arc<H>,
-            dns: Arc<dyn DnsResolver>,
-            ring_registry: Arc<RingTunnelRegistry>,
-            configs: Vec<TransportListenerConfig>,
-            handler: Arc<dyn AcceptedSocketHandler<AcceptedTransport<HostAcceptedTcpSocket<H>>>>,
-        ) -> Self {
-            Self::build(
-                host,
-                dns,
-                ring_registry,
-                configs,
-                Vec::new(),
-                Vec::new(),
-                handler,
-                None,
-            )
-        }
-    }
 
     struct MockDns;
 
@@ -1672,7 +1621,7 @@ mod tests {
             blocked: Arc::new(Notify::new()),
             active: active.clone(),
         });
-        let service = CoreListenerRuntime::new(
+        let service = CoreListenerRuntime::new_with_events(
             host.clone(),
             Arc::new(MockDns),
             Arc::new(RingTunnelRegistry::default()),
@@ -1700,7 +1649,10 @@ mod tests {
                     must_succeed: true,
                 },
             ],
+            Vec::new(),
+            Vec::new(),
             handler,
+            Arc::new(RecordingListenerEvents::default()),
         );
 
         service.start().await.unwrap();

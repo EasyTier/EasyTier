@@ -2,8 +2,6 @@ use std::sync::Arc;
 
 #[cfg(feature = "smoltcp")]
 use easytier_core::proxy::gateway::{GatewayEvent, GatewayEventSink};
-#[cfg(test)]
-use easytier_core::stun::StunSocketMapper;
 #[cfg(feature = "wireguard")]
 use easytier_core::vpn_portal::VpnPortalHost;
 use easytier_core::{
@@ -18,8 +16,6 @@ use easytier_core::{
     vpn_portal::{VpnPortalEvent, VpnPortalEventSink},
 };
 
-#[cfg(test)]
-use crate::socket::udp::RuntimeUdpSocket;
 use crate::{
     common::global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
     host_runtime::native_host_runtime,
@@ -27,10 +23,7 @@ use crate::{
         runtime_connectivity_config, runtime_endpoint_discovery_config, runtime_manual_options,
         runtime_peer_manager_config, runtime_peer_manager_host_adapters,
     },
-    instance::listeners::{
-        RuntimeExternalListenerFactory, runtime_accepted_tunnel_event_sink,
-        runtime_listener_event_sink,
-    },
+    instance::listeners::{GlobalCtxListenerEvents, RuntimeExternalListenerFactory},
     instance::proxy_cidrs_monitor::runtime_proxy_cidr_monitor_host,
     instance::public_ipv6_provider::runtime_public_ipv6_provider_platform,
 };
@@ -133,10 +126,11 @@ pub(crate) fn runtime_core_host_adapters(
     adapters.manual_events = Some(Arc::new(GlobalCtxManualConnectivityEventSink {
         global_ctx: global_ctx.clone(),
     }));
-    adapters.external_listener_factory = Some(RuntimeExternalListenerFactory::new());
-    adapters.listener_events = Some(runtime_listener_event_sink(global_ctx.clone()));
+    let listener_events = Arc::new(GlobalCtxListenerEvents::new(global_ctx.clone()));
+    adapters.external_listener_factory = Some(Arc::new(RuntimeExternalListenerFactory));
+    adapters.listener_events = Some(listener_events.clone());
     adapters.server_protocol = Some(runtime_server_protocol_upgrader(global_ctx.clone()));
-    adapters.accepted_tunnel_events = Some(runtime_accepted_tunnel_event_sink(global_ctx.clone()));
+    adapters.accepted_tunnel_events = Some(listener_events);
     adapters.udp_hole_punch_platform = Some(
         crate::instance::udp_hole_punch::runtime_udp_hole_punch_platform(global_ctx.net_ns.clone()),
     );
@@ -195,24 +189,6 @@ pub(crate) fn runtime_one_shot_manual_connector(
         runtime_endpoint_discovery_config(&global_ctx),
         runtime_manual_options(&global_ctx),
     )
-}
-
-#[cfg(test)]
-pub(crate) fn build_test_core_instance(
-    global_ctx: ArcGlobalCtx,
-    process_runtime: Arc<CoreProcessRuntime>,
-    stun_collector: Box<dyn StunSocketMapper<RuntimeUdpSocket>>,
-) -> anyhow::Result<(
-    Arc<NativeCoreInstance>,
-    tokio::sync::mpsc::Receiver<Vec<u8>>,
-)> {
-    let (packet_sink, packet_receiver) = tokio::sync::mpsc::channel(16);
-    let mut adapters =
-        runtime_core_host_adapters(global_ctx.clone(), process_runtime, Arc::new(packet_sink));
-    let provider: Arc<dyn StunSocketMapper<RuntimeUdpSocket>> = Arc::from(stun_collector);
-    adapters.replace_stun_provider(provider);
-    let instance = CoreInstance::new(runtime_core_instance_config(&global_ctx), adapters)?;
-    Ok((instance, packet_receiver))
 }
 
 #[cfg(test)]

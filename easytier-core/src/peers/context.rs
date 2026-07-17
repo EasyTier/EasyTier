@@ -329,15 +329,6 @@ impl Default for PeerRuntimeSnapshot {
     }
 }
 
-/// Projects core-owned relay preference to host-facing feature state.
-pub trait PeerRelayStateSink: Send + Sync {
-    fn set_avoid_relay_data_preference(&self, avoid_relay_data: bool);
-}
-
-impl PeerRelayStateSink for () {
-    fn set_avoid_relay_data_preference(&self, _avoid_relay_data: bool) {}
-}
-
 /// Supplies the instance's current STUN observation.
 pub(crate) trait PeerStunInfoSource: Send + Sync {
     fn stun_info(&self) -> StunInfo {
@@ -367,23 +358,10 @@ impl PeerPublicIpv6State for () {}
 /// Host adapters used to assemble the core-owned peer context. Each field stays
 /// narrow so peer modules cannot reach unrelated host state after construction.
 pub(crate) struct CorePeerContextAdapters {
-    pub relay_state_sink: Arc<dyn PeerRelayStateSink>,
     pub stun_info_source: Option<Arc<dyn PeerStunInfoSource>>,
     pub event_sink: Arc<dyn PeerEventSink>,
     pub credential_storage: Option<Arc<dyn CredentialStorage>>,
     pub credential_event_sink: Arc<dyn PeerCredentialEventSink>,
-}
-
-impl Default for CorePeerContextAdapters {
-    fn default() -> Self {
-        Self {
-            relay_state_sink: Arc::new(()),
-            stun_info_source: None,
-            event_sink: Arc::new(()),
-            credential_storage: None,
-            credential_event_sink: Arc::new(()),
-        }
-    }
 }
 
 /// Peer context backed by one core-owned submitted snapshot and its instance
@@ -391,7 +369,6 @@ impl Default for CorePeerContextAdapters {
 pub(crate) struct CorePeerContext {
     config: CoreRuntimeConfigStore,
     avoid_relay_data_preference: AtomicBool,
-    relay_state_sink: Arc<dyn PeerRelayStateSink>,
     stun_info_source: Option<Arc<dyn PeerStunInfoSource>>,
     public_ipv6_state: Arc<dyn PeerPublicIpv6State>,
     limiter_state: Mutex<CoreLimiterState>,
@@ -444,7 +421,6 @@ impl CorePeerContext {
         Self {
             config,
             avoid_relay_data_preference,
-            relay_state_sink: adapters.relay_state_sink,
             stun_info_source: adapters.stun_info_source,
             public_ipv6_state,
             limiter_state: Mutex::new(CoreLimiterState::default()),
@@ -970,13 +946,8 @@ impl PeerContext for CorePeerContext {
 
     fn set_avoid_relay_data_preference(&self, avoid_relay_data: bool) -> bool {
         let before = self.feature_flags().avoid_relay_data;
-        let previous = self
-            .avoid_relay_data_preference
-            .swap(avoid_relay_data, Ordering::AcqRel);
-        if previous != avoid_relay_data {
-            self.relay_state_sink
-                .set_avoid_relay_data_preference(avoid_relay_data);
-        }
+        self.avoid_relay_data_preference
+            .store(avoid_relay_data, Ordering::Release);
         before != self.feature_flags().avoid_relay_data
     }
 
@@ -1290,7 +1261,6 @@ pub(crate) mod tests {
 
     fn test_core_context_adapters(event_sink: Arc<dyn PeerEventSink>) -> CorePeerContextAdapters {
         CorePeerContextAdapters {
-            relay_state_sink: Arc::new(()),
             stun_info_source: Some(Arc::new(())),
             event_sink,
             credential_storage: None,
@@ -1875,7 +1845,6 @@ pub(crate) mod tests {
             config,
             Arc::new(()),
             CorePeerContextAdapters {
-                relay_state_sink: Arc::new(()),
                 stun_info_source,
                 event_sink: Arc::new(()),
                 credential_storage: None,

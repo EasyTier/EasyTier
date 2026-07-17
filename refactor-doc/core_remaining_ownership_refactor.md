@@ -309,8 +309,8 @@ but no core Module receives it or a broad Interface implemented by it.
   core-local version change. Foreign relay synchronization no longer observes
   native `GlobalCtxEvent` merely to discover portable configuration updates.
 - Base avoid-relay preference is core-owned state initialized by the submitted
-  snapshot. `PeerRelayStateSink` projects changes one-way to native advertised
-  feature flags; `GlobalCtx` is no longer the relay-state authority.
+  snapshot and maintained directly by the core peer context; `GlobalCtx` is no
+  longer the relay-state authority.
 
 ### Exit criteria
 
@@ -327,9 +327,9 @@ but no core Module receives it or a broad Interface implemented by it.
 The capability split is complete as of 2026-07-14. `GlobalCtx` does not
 implement `PeerContext`; core receives normalized snapshots and named narrow
 capabilities for events, limiters, traffic export, public-IPv6 OS observation,
-credentials, and relay-state projection. Core owns STUN observations and
-lifecycle, public-IPv6 provider/lease/route policy, credential, trusted-key,
-runtime-change, and base relay-preference state. Native
+and credentials. Core owns STUN observations and lifecycle, public-IPv6
+provider/lease/route policy, credential, trusted-key, runtime-change, and base
+relay-preference state in the peer context. Native
 `GlobalCtx` remains a useful product composition object, but it is neither a
 core dependency nor an authoritative peer-domain store.
 

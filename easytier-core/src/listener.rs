@@ -160,13 +160,6 @@ impl ListenerEventSink for RunningListenerRegistry {
     }
 }
 
-#[derive(Debug)]
-struct NoopListenerEventSink;
-
-impl ListenerEventSink for NoopListenerEventSink {
-    fn emit(&self, _event: ListenerEvent) {}
-}
-
 type ListenerCreatorArc<Accepted> =
     Arc<dyn Fn() -> Box<dyn SocketListener<Accepted = Accepted>> + Send + Sync>;
 
@@ -246,14 +239,6 @@ where
     Accepted: Send + 'static,
     H: AcceptedSocketHandler<Accepted> + ?Sized + 'static,
 {
-    pub fn new(handler: Arc<H>) -> Self {
-        Self::new_with_options(
-            handler,
-            Arc::new(NoopListenerEventSink),
-            ListenerManagerOptions::default(),
-        )
-    }
-
     pub fn new_with_events(handler: Arc<H>, events: Arc<dyn ListenerEventSink>) -> Self {
         Self::new_with_options(handler, events, ListenerManagerOptions::default())
     }
@@ -959,9 +944,12 @@ mod tests {
     #[tokio::test]
     async fn stop_interrupts_required_listener_startup() {
         let started = Arc::new(tokio::sync::Notify::new());
-        let mut manager = ListenerManager::new(Arc::new(MockHandler {
-            accepted: Mutex::new(Vec::new()),
-        }));
+        let mut manager = ListenerManager::new_with_events(
+            Arc::new(MockHandler {
+                accepted: Mutex::new(Vec::new()),
+            }),
+            Arc::new(Events::default()),
+        );
         let listener_started = started.clone();
         manager.add_listener(
             move || {

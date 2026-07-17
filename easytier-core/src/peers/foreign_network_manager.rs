@@ -387,7 +387,6 @@ mod tests {
             parent_config.clone(),
             Arc::new(()),
             CorePeerContextAdapters {
-                relay_state_sink: Arc::new(()),
                 stun_info_source: None,
                 event_sink: Arc::new(()),
                 credential_storage: None,
@@ -633,7 +632,6 @@ fn build_foreign_context(
     let peer_context = Arc::new(CorePeerContext::new_foreign(
         runtime_config,
         CorePeerContextAdapters {
-            relay_state_sink: Arc::new(()),
             stun_info_source: Some(Arc::new(ParentStunInfoSource(parent_context_dyn))),
             event_sink: Arc::new(()),
             credential_storage: None,

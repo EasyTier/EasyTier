@@ -42,8 +42,8 @@ use super::{
     acl_filter::AclFilter,
     context::{
         ArcPeerContext, CorePeerContext, CorePeerContextAdapters, HostRoutingPolicy,
-        NetworkIdentity, PeerContext, PeerCredentialEventSink, PeerEventSink, PeerRelayStateSink,
-        PeerRuntimeConfig, PeerRuntimeSnapshot, PeerStunInfoSource,
+        NetworkIdentity, PeerContext, PeerCredentialEventSink, PeerEventSink, PeerRuntimeConfig,
+        PeerRuntimeSnapshot, PeerStunInfoSource,
     },
     credential_manager::{CredentialManager, CredentialStorage},
     encrypt::{Encryptor, NullCipher, create_encryptor, derive_key_128, derive_key_256},
@@ -235,7 +235,6 @@ impl PortablePeerManagerConfig {
 /// Every field is a narrow projection or resource adapter. The peer graph and
 /// all of its portable state remain constructed and owned by core.
 pub struct PeerManagerHostAdapters {
-    pub relay_state_sink: Arc<dyn PeerRelayStateSink>,
     pub event_sink: Arc<dyn PeerEventSink>,
     pub credential_storage: Option<Arc<dyn CredentialStorage>>,
     pub credential_event_sink: Arc<dyn PeerCredentialEventSink>,
@@ -244,7 +243,6 @@ pub struct PeerManagerHostAdapters {
 impl Default for PeerManagerHostAdapters {
     fn default() -> Self {
         Self {
-            relay_state_sink: Arc::new(()),
             event_sink: Arc::new(()),
             credential_storage: None,
             credential_event_sink: Arc::new(()),
@@ -887,7 +885,6 @@ impl PeerManagerCore {
         runtime.feature_flags.avoid_relay_data |= flags.disable_relay_data;
         runtime_config.update_peer(Arc::new(config.snapshot.clone()));
         let PeerManagerHostAdapters {
-            relay_state_sink,
             event_sink,
             credential_storage,
             credential_event_sink,
@@ -898,7 +895,6 @@ impl PeerManagerCore {
             runtime_config,
             public_ipv6_state,
             CorePeerContextAdapters {
-                relay_state_sink,
                 stun_info_source,
                 event_sink,
                 credential_storage,

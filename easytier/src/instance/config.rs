@@ -320,7 +320,6 @@ pub(crate) fn runtime_peer_manager_host_adapters(
 ) -> PeerManagerHostAdapters {
     let event_sink = Arc::new(GlobalCtxPeerEventSink::new(global_ctx.clone()));
     PeerManagerHostAdapters {
-        relay_state_sink: Arc::new(()),
         event_sink: event_sink.clone(),
         credential_storage: runtime_credential_storage(global_ctx.config.get_credential_file()),
         credential_event_sink: event_sink,

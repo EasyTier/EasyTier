@@ -1,4 +1,4 @@
-use std::{fmt::Debug, sync::Arc};
+use std::fmt::Debug;
 
 use async_trait::async_trait;
 use easytier_core::{
@@ -17,12 +17,6 @@ use crate::{
 };
 
 pub(crate) struct RuntimeExternalListenerFactory;
-
-impl RuntimeExternalListenerFactory {
-    pub(crate) fn new() -> Arc<Self> {
-        Arc::new(Self)
-    }
-}
 
 impl ExternalListenerFactory<AcceptedTransport<RuntimeTcpSocket>>
     for RuntimeExternalListenerFactory
@@ -180,17 +174,17 @@ impl core_listener::SocketListener for RuntimeFakeTcpSocketListener {
 }
 
 #[derive(Debug)]
-pub(crate) struct GlobalCtxListenerEventSink {
+pub(crate) struct GlobalCtxListenerEvents {
     global_ctx: ArcGlobalCtx,
 }
 
-pub(crate) fn runtime_listener_event_sink(
-    global_ctx: ArcGlobalCtx,
-) -> Arc<dyn core_listener::ListenerEventSink> {
-    Arc::new(GlobalCtxListenerEventSink { global_ctx })
+impl GlobalCtxListenerEvents {
+    pub(crate) fn new(global_ctx: ArcGlobalCtx) -> Self {
+        Self { global_ctx }
+    }
 }
 
-impl core_listener::ListenerEventSink for GlobalCtxListenerEventSink {
+impl core_listener::ListenerEventSink for GlobalCtxListenerEvents {
     fn emit(&self, event: core_listener::ListenerEvent) {
         match event {
             core_listener::ListenerEvent::ListenerPlanFailed { url, error } => {
@@ -231,18 +225,7 @@ impl core_listener::ListenerEventSink for GlobalCtxListenerEventSink {
     }
 }
 
-#[derive(Debug)]
-struct GlobalCtxAcceptedTunnelEventSink {
-    global_ctx: ArcGlobalCtx,
-}
-
-pub(crate) fn runtime_accepted_tunnel_event_sink(
-    global_ctx: ArcGlobalCtx,
-) -> Arc<dyn AcceptedTunnelEventSink> {
-    Arc::new(GlobalCtxAcceptedTunnelEventSink { global_ctx })
-}
-
-impl AcceptedTunnelEventSink for GlobalCtxAcceptedTunnelEventSink {
+impl AcceptedTunnelEventSink for GlobalCtxListenerEvents {
     fn emit(&self, event: AcceptedTunnelEvent) {
         let event = match event {
             AcceptedTunnelEvent::Accepted {

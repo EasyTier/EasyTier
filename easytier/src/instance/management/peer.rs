@@ -375,13 +375,16 @@ impl CredentialManageRpc for InstancePeerManagementRpc {
 
 #[cfg(test)]
 mod tests {
-    use std::net::{Ipv4Addr, Ipv6Addr};
+    use std::{
+        net::{Ipv4Addr, Ipv6Addr},
+        sync::Arc,
+    };
 
-    use easytier_core::process_runtime::CoreProcessRuntime;
+    use easytier_core::{instance::CoreInstance, process_runtime::CoreProcessRuntime};
 
     use crate::{
         common::{global_ctx::tests::get_mock_global_ctx, stun::MockStunInfoCollector},
-        instance::composition::build_test_core_instance,
+        instance::composition::{runtime_core_host_adapters, runtime_core_instance_config},
         proto::common::NatType,
     };
 
@@ -390,14 +393,17 @@ mod tests {
     #[tokio::test]
     async fn node_info_uses_core_owned_stun_addresses() {
         let global_ctx = get_mock_global_ctx();
-        let (core_instance, _packet_receiver) = build_test_core_instance(
+        let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+        let mut adapters = runtime_core_host_adapters(
             global_ctx.clone(),
             CoreProcessRuntime::new(),
-            Box::new(MockStunInfoCollector {
-                udp_nat_type: NatType::Symmetric,
-            }),
-        )
-        .unwrap();
+            Arc::new(packet_sink),
+        );
+        adapters.replace_stun_provider(Arc::new(MockStunInfoCollector {
+            udp_nat_type: NatType::Symmetric,
+        }));
+        let core_instance =
+            CoreInstance::new(runtime_core_instance_config(&global_ctx), adapters).unwrap();
         let service = InstancePeerManagementRpc::new(&global_ctx, &core_instance);
 
         let response = service
