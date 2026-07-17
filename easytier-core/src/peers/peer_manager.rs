@@ -651,7 +651,6 @@ pub struct PeerManagerCore {
     stats_manager: Arc<StatsManager>,
     network_name: String,
     counters: PeerManagerTrafficCounters,
-    owns_maintenance_tasks: bool,
 }
 
 pub(crate) enum AddressResolution {
@@ -908,7 +907,7 @@ impl PeerManagerCore {
         ));
         let address_resolver = Arc::new(DnsAddressResolver::new(dns).with_context(dns_context));
 
-        let mut core = Self::assemble(
+        Ok(Self::assemble(
             config.route_algo,
             my_peer_id,
             context,
@@ -921,9 +920,7 @@ impl PeerManagerCore {
             address_resolver,
             config.foreign_context_default_flags,
             foreign_rpc_registrar,
-        );
-        core.owns_maintenance_tasks = true;
-        Ok(core)
+        ))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1136,7 +1133,6 @@ impl PeerManagerCore {
             stats_manager,
             network_name,
             counters: self_tx_counters,
-            owns_maintenance_tasks: false,
         }
     }
 
@@ -1551,10 +1547,8 @@ impl PeerManagerCore {
         self.route.close().await;
         self.peer_rpc_mgr.stop().await;
         self.context.stop().await;
-        if self.owns_maintenance_tasks {
-            self.stats_manager.stop_cleanup_task().await;
-            self.acl_filter.stop_cleanup_task().await;
-        }
+        self.stats_manager.stop_cleanup_task().await;
+        self.acl_filter.stop_cleanup_task().await;
     }
 
     pub(crate) async fn clear_resources(&self) {
