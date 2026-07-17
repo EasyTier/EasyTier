@@ -7,4 +7,4 @@ pub use easytier_proto::magic_dns;
 #[cfg(test)]
 pub mod tests;
 
-pub mod rpc_impl;
+pub mod rpc;

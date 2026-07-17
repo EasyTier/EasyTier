@@ -10,7 +10,7 @@ pub mod packet;
 pub mod peers;
 pub mod process_runtime;
 pub mod proxy;
-pub mod rpc_impl;
+pub mod rpc;
 pub mod socket;
 pub mod tunnel;
 pub mod vpn_portal;

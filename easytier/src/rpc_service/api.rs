@@ -19,7 +19,7 @@ use crate::{
             manage::WebClientServiceServer,
         },
         peer_rpc::PeerCenterRpcServer,
-        rpc_impl::{
+        rpc::{
             service_registry::ServiceRegistry,
             standalone::{RuntimeRpcListener, StandAloneServer, runtime_rpc_listener},
         },

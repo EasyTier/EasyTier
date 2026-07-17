@@ -3,7 +3,7 @@ use easytier_core::{
         TcpTunnelDialer, TcpTunnelListener, TunnelDialer, UdpTunnelDialer, UdpTunnelListener,
     },
     listener::SocketListener,
-    rpc_impl::standalone::StandAloneClient,
+    rpc::standalone::StandAloneClient,
     socket::udp::{UdpBindOptions, UdpSessionListenRequest},
     tunnel::Tunnel,
 };
@@ -13,7 +13,7 @@ use crate::{
     tunnel::TunnelUrl,
 };
 
-pub use easytier_core::rpc_impl::standalone::{RpcServerHook, StandAloneServer};
+pub use easytier_core::rpc::standalone::{RpcServerHook, StandAloneServer};
 
 pub type RuntimeRpcDialer = TcpTunnelDialer<NativeHostRuntime>;
 pub type RuntimeRpcListener = TcpTunnelListener<NativeHostRuntime>;
@@ -55,7 +55,7 @@ mod tests {
         connectivity::protocol::raw::TunnelDialer as _, listener::SocketListener as _,
     };
 
-    use crate::proto::rpc_impl::standalone::{
+    use crate::proto::rpc::standalone::{
         StandAloneServer, runtime_rpc_dialer, runtime_rpc_listener, runtime_udp_tunnel_dialer,
         runtime_udp_tunnel_listener,
     };

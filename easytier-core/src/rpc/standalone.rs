@@ -13,7 +13,7 @@ use crate::{
         common::TunnelInfo,
         rpc_types::{__rt::RpcClientFactory, error::Error},
     },
-    rpc_impl::{bidirect::BidirectRpcManager, service_registry::ServiceRegistry},
+    rpc::{bidirect::BidirectRpcManager, service_registry::ServiceRegistry},
     tunnel::Tunnel,
 };
 

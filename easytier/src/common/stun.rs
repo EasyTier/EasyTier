@@ -130,7 +130,7 @@ mod tests {
     use tokio_util::task::AbortOnDropHandle;
 
     use crate::{
-        host_runtime::native_host_runtime, proto::rpc_impl::standalone::runtime_udp_tunnel_listener,
+        host_runtime::native_host_runtime, proto::rpc::standalone::runtime_udp_tunnel_listener,
     };
 
     use super::*;

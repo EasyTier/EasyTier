@@ -52,7 +52,7 @@ use crate::proto::api::instance::{
 use crate::proto::api::manage::NetworkConfig;
 use crate::proto::common::{PortForwardConfigPb, TunnelInfo};
 use crate::proto::peer_rpc::PeerCenterRpc;
-use crate::proto::rpc_impl::standalone::RpcServerHook;
+use crate::proto::rpc::standalone::RpcServerHook;
 use crate::proto::rpc_types;
 use crate::proto::rpc_types::controller::BaseController;
 use crate::rpc_service::InstanceRpcService;
@@ -1510,7 +1510,7 @@ mod tests {
                 ProxyNetworkPatch, StringPatch, UrlPatch,
             },
             common::{PortForwardConfigPb, SocketType},
-            rpc_impl::standalone::RpcServerHook,
+            rpc::standalone::RpcServerHook,
         },
     };
     use crate::{

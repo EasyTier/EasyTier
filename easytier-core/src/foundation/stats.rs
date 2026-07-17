@@ -1,4 +1,4 @@
-use crate::rpc_impl::metrics::{RpcMetricLabels, RpcMetricStatus, RpcMetrics};
+use crate::rpc::metrics::{RpcMetricLabels, RpcMetricStatus, RpcMetrics};
 use dashmap::DashMap;
 use quanta::Instant;
 use serde::{Deserialize, Serialize};

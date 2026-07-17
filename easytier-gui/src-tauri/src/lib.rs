@@ -22,7 +22,7 @@ use easytier::{
     },
     instance_manager::NetworkInstanceManager,
     launcher::{NetworkConfig, NetworkConfigExt},
-    proto::rpc_impl::standalone::{runtime_rpc_dialer, runtime_rpc_listener},
+    proto::rpc::standalone::{runtime_rpc_dialer, runtime_rpc_listener},
     rpc_service::ApiRpcServer,
     utils::panic::setup_panic_handler,
 };
@@ -624,7 +624,7 @@ mod manager {
     use easytier::launcher::{NetworkConfig, NetworkConfigExt};
     use easytier::proto::api::logger::{LoggerRpc, LoggerRpcClientFactory, SetLoggerConfigRequest};
     use easytier::proto::api::manage::RunNetworkInstanceRequest;
-    use easytier::proto::rpc_impl::bidirect::BidirectRpcManager;
+    use easytier::proto::rpc::bidirect::BidirectRpcManager;
     use easytier::proto::rpc_types::controller::BaseController;
     use easytier::rpc_service::logger::LoggerRpcService;
     use easytier::rpc_service::remote_client::PersistentConfig;

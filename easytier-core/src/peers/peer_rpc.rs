@@ -6,7 +6,7 @@ use tokio::task::JoinSet;
 use crate::{
     config::PeerId,
     packet::ZCPacket,
-    rpc_impl::{
+    rpc::{
         self,
         bidirect::BidirectRpcManager,
         metrics::{ArcRpcMetrics, RpcMetricsProvider},
@@ -96,11 +96,11 @@ impl PeerRpcManager {
         while tasks.join_next().await.is_some() {}
     }
 
-    pub fn rpc_client(&self) -> &rpc_impl::client::Client {
+    pub fn rpc_client(&self) -> &rpc::client::Client {
         self.bidirect_rpc.rpc_client()
     }
 
-    pub fn rpc_server(&self) -> &rpc_impl::server::Server {
+    pub fn rpc_server(&self) -> &rpc::server::Server {
         self.bidirect_rpc.rpc_server()
     }
 

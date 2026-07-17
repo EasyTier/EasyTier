@@ -70,7 +70,7 @@ use easytier::{
         },
         common::{NatType, PortForwardConfigPb, SocketType},
         peer_rpc::{GetGlobalPeerMapRequest, PeerCenterRpc, PeerCenterRpcClientFactory},
-        rpc_impl::standalone::{RuntimeRpcClient, runtime_rpc_client},
+        rpc::standalone::{RuntimeRpcClient, runtime_rpc_client},
         rpc_types::{controller::BaseController, error::Error as RpcError},
     },
     tunnel::TunnelScheme,

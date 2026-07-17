@@ -12,7 +12,7 @@ use crate::proto::{
     magic_dns::{
         HandshakeRequest, MagicDnsServerRpc, MagicDnsServerRpcClientFactory, UpdateDnsRecordRequest,
     },
-    rpc_impl::standalone::{RuntimeRpcClient, runtime_rpc_client},
+    rpc::standalone::{RuntimeRpcClient, runtime_rpc_client},
     rpc_types::controller::BaseController,
 };
 

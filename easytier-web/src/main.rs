@@ -16,7 +16,7 @@ use easytier::{
         log,
         network::{local_ipv4, local_ipv6},
     },
-    proto::rpc_impl::standalone::{runtime_rpc_listener, runtime_udp_tunnel_listener},
+    proto::rpc::standalone::{runtime_rpc_listener, runtime_udp_tunnel_listener},
     utils::panic::setup_panic_handler,
 };
 use easytier_core::{listener::SocketListener, tunnel::Tunnel};

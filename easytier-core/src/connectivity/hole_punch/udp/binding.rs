@@ -585,7 +585,8 @@ mod tests {
 
     #[derive(Default)]
     struct MockEvents {
-        established: Mutex<Vec<crate::connectivity::hole_punch::port_mapping::UdpPortMappingEstablished>>,
+        established:
+            Mutex<Vec<crate::connectivity::hole_punch::port_mapping::UdpPortMappingEstablished>>,
     }
 
     impl UdpPortMappingEventSink for MockEvents {
@@ -795,7 +796,8 @@ mod tests {
                 crate::connectivity::hole_punch::port_mapping::UdpPortMappingEstablished {
                     local_listener: listener_url(),
                     mapped_listener: "udp://198.51.100.10:40125".parse().unwrap(),
-                    backend: crate::connectivity::hole_punch::port_mapping::UdpPortMappingBackend::Igd,
+                    backend:
+                        crate::connectivity::hole_punch::port_mapping::UdpPortMappingBackend::Igd,
                 }
             ]
         );

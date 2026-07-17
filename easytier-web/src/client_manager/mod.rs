@@ -388,7 +388,7 @@ mod tests {
         proto::{
             api::manage::{NetworkConfig, NetworkingMethod, PortForwardConfig},
             common::CompressionAlgoPb,
-            rpc_impl::standalone::{runtime_udp_tunnel_dialer, runtime_udp_tunnel_listener},
+            rpc::standalone::{runtime_udp_tunnel_dialer, runtime_udp_tunnel_listener},
         },
         rpc_service::remote_client::Storage as RemoteStorage,
         web_client::{WebClient, run_web_client},

@@ -28,7 +28,7 @@ use crate::{
             HandshakeResponse, MagicDnsServerRpc, MagicDnsServerRpcServer, UpdateDnsRecordRequest,
             dns_record::{self},
         },
-        rpc_impl::standalone::{
+        rpc::standalone::{
             RpcServerHook, RuntimeRpcListener, StandAloneServer, runtime_rpc_listener,
         },
         rpc_types::controller::{BaseController, Controller},

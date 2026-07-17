@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use futures::StreamExt as _;
 use tokio::task::JoinSet;
 
-use super::rpc_impl::RpcController;
+use super::rpc::RpcController;
 
 #[derive(Clone, Default)]
 struct GreetingJsonCallHandler;
@@ -137,8 +137,8 @@ impl Greeting for GreetingService {
 }
 
 use crate::proto::common::{CompressionAlgoPb, RpcCompressionInfo};
-use crate::proto::rpc_impl::client::Client;
-use crate::proto::rpc_impl::server::Server;
+use crate::proto::rpc::client::Client;
+use crate::proto::rpc::server::Server;
 
 struct TestContext {
     client: Client,
@@ -373,8 +373,8 @@ async fn rpc_tunnel_stuck_test() {
 
 #[tokio::test]
 async fn test_bidirect_rpc_manager() {
-    use crate::proto::rpc_impl::bidirect::BidirectRpcManager;
-    use crate::proto::rpc_impl::standalone::{runtime_rpc_dialer, runtime_rpc_listener};
+    use crate::proto::rpc::bidirect::BidirectRpcManager;
+    use crate::proto::rpc::standalone::{runtime_rpc_dialer, runtime_rpc_listener};
     use easytier_core::{connectivity::protocol::raw::TunnelDialer, listener::SocketListener};
     use tokio::sync::Notify;
     use tokio_util::task::AbortOnDropHandle;

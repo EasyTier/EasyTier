@@ -32,7 +32,7 @@ use crate::{
     proto::{
         api::instance::TcpProxyEntryTransportType,
         common::{CompressionAlgoPb, SecureModeConfig},
-        rpc_impl::standalone::{
+        rpc::standalone::{
             RuntimeRpcDialer, RuntimeRpcListener, runtime_rpc_dialer, runtime_rpc_listener,
             runtime_udp_tunnel_dialer, runtime_udp_tunnel_listener,
         },

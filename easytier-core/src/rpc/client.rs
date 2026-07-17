@@ -26,7 +26,7 @@ use crate::{
         rpc_types::error::{Error, Result},
         rpc_types::{__rt::RpcClientFactory, descriptor::ServiceDescriptor, handler::Handler},
     },
-    rpc_impl::packet::{
+    rpc::packet::{
         BuildRpcPacketArgs, PacketMerger, build_rpc_packet, compress_packet, decompress_packet,
     },
     tunnel::{

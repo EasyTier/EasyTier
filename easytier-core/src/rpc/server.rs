@@ -22,7 +22,7 @@ use crate::{
         },
         rpc_types::{controller::Controller, error::Result},
     },
-    rpc_impl::packet::BuildRpcPacketArgs,
+    rpc::packet::BuildRpcPacketArgs,
     tunnel::{
         Tunnel, ZCPacketStream,
         mpsc::{MpscTunnel, MpscTunnelSender},

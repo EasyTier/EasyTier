@@ -9,7 +9,7 @@ use tokio::{
 use crate::{
     common::constants::EASYTIER_VERSION,
     proto::{
-        rpc_impl::bidirect::BidirectRpcManager,
+        rpc::bidirect::BidirectRpcManager,
         rpc_types::controller::BaseController,
         web::{
             GetFeatureRequest, GetFeatureResponse, HeartbeatRequest, HeartbeatResponse,
