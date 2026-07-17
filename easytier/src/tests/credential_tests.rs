@@ -71,12 +71,12 @@ fn generate_credential_with_options(
 }
 
 async fn set_avoid_relay_data(inst: &Instance, avoid_relay_data: bool) {
-    let mut snapshot =
-        crate::instance::config::runtime_instance_config(&inst.get_global_ctx()).peer;
-    Arc::make_mut(&mut snapshot).avoid_relay_data_preference = avoid_relay_data;
+    let mut config = crate::instance::config::runtime_instance_config(&inst.get_global_ctx());
+    Arc::make_mut(&mut config.peer).avoid_relay_data_preference = avoid_relay_data;
     inst.get_core_instance()
-        .update_peer_runtime_snapshot(snapshot)
-        .await;
+        .update_runtime_config(config)
+        .await
+        .unwrap();
 }
 
 /// Prepare network namespaces for credential tests

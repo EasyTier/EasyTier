@@ -21,7 +21,6 @@ use std::{net::IpAddr, time::Duration};
 
 #[cfg(test)]
 use async_trait::async_trait;
-use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -610,7 +609,6 @@ where
     initial_peers_started: AtomicBool,
     startup_plan: CoreInstanceStartupPlan,
     runtime_config: CoreRuntimeConfigStore,
-    acl_whitelist: RwLock<AclWhitelistSnapshot>,
     initial_acl_loaded: AtomicBool,
     #[cfg(feature = "test-utils")]
     acl_reload_count: AtomicUsize,
@@ -731,7 +729,7 @@ where
         let CoreConnectivityConfig {
             initial_peers,
             listeners: _,
-            runtime: initial_runtime_config,
+            runtime: _,
             startup_plan,
             stun: _,
             endpoint_discovery,
@@ -806,7 +804,6 @@ where
             dns_records,
             endpoint_discovery,
         ));
-        let acl_whitelist = AclWhitelistSnapshot::from(&initial_runtime_config.acl);
         let manual = match manual_events {
             Some(events) => ManualConnectorManager::new_with_events(
                 peer_manager.clone(),
@@ -951,7 +948,6 @@ where
             initial_peers_started: AtomicBool::new(false),
             startup_plan,
             runtime_config,
-            acl_whitelist: RwLock::new(acl_whitelist),
             initial_acl_loaded: AtomicBool::new(false),
             #[cfg(feature = "test-utils")]
             acl_reload_count: AtomicUsize::new(0),
@@ -1459,7 +1455,6 @@ where
         }
 
         let config = self.runtime_config.snapshot().services.acl.clone();
-        *self.acl_whitelist.write() = AclWhitelistSnapshot::from(&config);
         let acl = config.build()?;
         self.peer_manager.reload_acl(acl.as_ref());
         self.initial_acl_loaded.store(true, Ordering::Release);
@@ -1469,7 +1464,6 @@ where
     async fn reload_acl_config_inner(&self, config: &AclRuleConfig) -> anyhow::Result<()> {
         let acl = config.build()?;
         self.peer_manager.reload_acl(acl.as_ref());
-        *self.acl_whitelist.write() = AclWhitelistSnapshot::from(config);
         #[cfg(feature = "test-utils")]
         self.acl_reload_count.fetch_add(1, Ordering::Relaxed);
         Ok(())
@@ -1499,8 +1493,6 @@ where
         let acl_loaded = self.initial_acl_loaded.load(Ordering::Acquire);
         if acl_loaded && current.services.acl != config.services.acl {
             self.reload_acl_config_inner(&config.services.acl).await?;
-        } else if !acl_loaded {
-            *self.acl_whitelist.write() = AclWhitelistSnapshot::from(&config.services.acl);
         }
         self.sync_peer_runtime_state(&config.peer);
         self.runtime_config.replace(config);
@@ -1660,7 +1652,8 @@ where
     }
 
     pub fn acl_whitelist_snapshot(&self) -> AclWhitelistSnapshot {
-        self.acl_whitelist.read().clone()
+        let config = self.runtime_config.snapshot();
+        AclWhitelistSnapshot::from(&config.services.acl)
     }
 
     #[cfg(feature = "proxy-packet")]
@@ -1846,27 +1839,6 @@ mod test_utils {
             self.peer_manager
                 .get_peer_session_store()
                 .evict_unused_sessions_idle(idle);
-        }
-
-        #[doc(hidden)]
-        pub async fn update_peer_runtime_snapshot(&self, mut snapshot: Arc<PeerRuntimeSnapshot>) {
-            let _operation = self.operation.lock().await;
-            let current = self.runtime_config.snapshot();
-            retain_core_peer_identity(
-                &mut snapshot,
-                self.peer_id(),
-                current.peer.runtime.core.node.instance_id,
-            );
-            let refresh_acl_groups = current.peer.peer_group_memberships
-                != snapshot.peer_group_memberships
-                || current.peer.acl_group_declarations != snapshot.acl_group_declarations;
-            self.sync_peer_runtime_state(&snapshot);
-            self.runtime_config.update_peer(snapshot);
-            self.proxy_cidr_table
-                .update_snapshot(proxy_cidr_snapshot(self.runtime_config.snapshot().as_ref()));
-            if refresh_acl_groups {
-                self.refresh_acl_groups().await;
-            }
         }
     }
 }
@@ -2672,9 +2644,9 @@ mod tests {
                     .avoid_relay_data
             );
 
-            let mut enabled = Arc::new(config.peer.snapshot.clone());
-            Arc::make_mut(&mut enabled).avoid_relay_data_preference = true;
-            instance.update_peer_runtime_snapshot(enabled).await;
+            let mut enabled = runtime_snapshot(&config);
+            Arc::make_mut(&mut enabled.peer).avoid_relay_data_preference = true;
+            instance.update_runtime_config(enabled).await.unwrap();
             assert!(
                 instance
                     .node_snapshot()
@@ -2717,9 +2689,9 @@ mod tests {
                 peer.runtime.core.routes.proxy_networks =
                     vec![proxy_network("192.0.2.0/24", Some("198.51.100.0/24"))];
             }
-            let mut peer_only = Arc::new(config.peer.snapshot.clone());
+            let mut peer_update = full.clone();
             {
-                let peer = Arc::make_mut(&mut peer_only);
+                let peer = Arc::make_mut(&mut peer_update.peer);
                 peer.runtime.core.node.hostname = Some("peer".to_owned());
                 peer.runtime.core.routes.proxy_networks =
                     vec![proxy_network("203.0.113.0/24", Some("10.20.30.0/24"))];
@@ -2739,19 +2711,24 @@ mod tests {
                 let start = start.clone();
                 async move {
                     start.wait().await;
-                    instance.update_peer_runtime_snapshot(peer_only).await;
+                    instance.update_runtime_config(peer_update).await
                 }
             });
             start.wait().await;
             full_update.await.unwrap().unwrap();
-            peer_update.await.unwrap();
+            peer_update.await.unwrap().unwrap();
 
-            assert!(instance.runtime_config.snapshot().services.dhcp_ipv4);
+            let final_config = instance.runtime_config.snapshot();
+            assert!(final_config.services.dhcp_ipv4);
             assert_eq!(instance.acl_whitelist_snapshot().tcp_ports, ["80"]);
             assert_eq!(instance.acl_reload_count.load(Ordering::Relaxed), 1);
             let node = instance.node_snapshot().await;
             assert_eq!(node.peer_id, original.peer_id);
             assert_eq!(node.instance_id, original.instance_id);
+            assert_eq!(
+                final_config.peer.runtime.core.node.hostname.as_deref(),
+                Some(node.hostname.as_str())
+            );
             match node.hostname.as_str() {
                 "full" => assert_eq!(
                     instance

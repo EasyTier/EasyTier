@@ -648,43 +648,30 @@ pub struct PeerManagerCore {
     counters: PeerManagerTrafficCounters,
 }
 
-pub(crate) enum AddressResolution {
+enum AddressResolution {
     IpAddrs(Vec<SocketAddr>),
     NotIpBased,
     Unavailable,
 }
 
-#[async_trait::async_trait]
-#[auto_impl::auto_impl(&, Arc)]
-pub(crate) trait AddressResolver: Send + Sync {
-    async fn resolve_remote(
-        &self,
-        remote_addr: &Url,
-        default_port: Option<u16>,
-    ) -> AddressResolution;
-}
-
-pub(crate) struct DnsAddressResolver {
+struct DnsAddressResolver {
     dns: Arc<dyn DnsResolver>,
     context: SocketContext,
 }
 
 impl DnsAddressResolver {
-    pub fn new(dns: Arc<dyn DnsResolver>) -> Self {
+    fn new(dns: Arc<dyn DnsResolver>) -> Self {
         Self {
             dns,
             context: SocketContext::default(),
         }
     }
 
-    pub fn with_context(mut self, context: SocketContext) -> Self {
+    fn with_context(mut self, context: SocketContext) -> Self {
         self.context = context;
         self
     }
-}
 
-#[async_trait::async_trait]
-impl AddressResolver for DnsAddressResolver {
     async fn resolve_remote(
         &self,
         remote_addr: &Url,
@@ -732,7 +719,7 @@ impl AddressResolver for DnsAddressResolver {
 
 async fn check_resolved_remote_addr_not_from_virtual_network(
     context: &ArcPeerContext,
-    address_resolver: &dyn AddressResolver,
+    address_resolver: &DnsAddressResolver,
     src: Url,
 ) -> Result<(), Error> {
     let addrs = match address_resolver.resolve_remote(&src, Some(1)).await {
@@ -759,36 +746,11 @@ async fn check_resolved_remote_addr_not_from_virtual_network(
 impl PeerManagerCore {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        config: PortablePeerManagerConfig,
-        runtime_config: CoreRuntimeConfigStore,
-        dns: Arc<dyn DnsResolver>,
-        dns_context: SocketContext,
-        stun_info_source: Arc<dyn PeerStunInfoSource>,
-        nic_channel: PacketRecvChan,
-        public_ipv6_runtime: Arc<CorePublicIpv6Runtime>,
-        host_adapters: PeerManagerHostAdapters,
-        foreign_rpc_registrar: Arc<dyn ForeignNetworkRpcRegistrar>,
-    ) -> anyhow::Result<Self> {
-        Self::build(
-            config,
-            runtime_config,
-            dns,
-            dns_context,
-            Some(stun_info_source),
-            nic_channel,
-            public_ipv6_runtime,
-            host_adapters,
-            foreign_rpc_registrar,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn build(
         mut config: PortablePeerManagerConfig,
         runtime_config: CoreRuntimeConfigStore,
         dns: Arc<dyn DnsResolver>,
         dns_context: SocketContext,
-        stun_info_source: Option<Arc<dyn PeerStunInfoSource>>,
+        stun_info_source: Arc<dyn PeerStunInfoSource>,
         nic_channel: PacketRecvChan,
         public_ipv6_runtime: Arc<CorePublicIpv6Runtime>,
         host_adapters: PeerManagerHostAdapters,
@@ -892,13 +854,13 @@ impl PeerManagerCore {
             runtime_config,
             public_ipv6_state,
             CorePeerContextAdapters {
-                stun_info_source,
+                stun_info_source: Some(stun_info_source),
                 event_sink,
                 credential_storage,
                 credential_event_sink,
             },
         ));
-        let address_resolver = Arc::new(DnsAddressResolver::new(dns).with_context(dns_context));
+        let address_resolver = DnsAddressResolver::new(dns).with_context(dns_context);
 
         Ok(Self::assemble(
             config.route_algo,
@@ -927,7 +889,7 @@ impl PeerManagerCore {
         is_secure_mode_enabled: bool,
         data_compress_algo: CompressorAlgo,
         exit_nodes: Vec<IpAddr>,
-        address_resolver: Arc<dyn AddressResolver>,
+        address_resolver: DnsAddressResolver,
         foreign_context_default_flags: FlagsInConfig,
         foreign_rpc_registrar: Arc<dyn ForeignNetworkRpcRegistrar>,
     ) -> Self {
@@ -1726,11 +1688,11 @@ pub(crate) struct PeerConnectionAdmission {
     peer_session_store: Arc<PeerSessionStore>,
     recent_traffic: RecentTrafficTracker,
     reserved_my_peer_id_map: DashMap<String, PeerId>,
-    address_resolver: Arc<dyn AddressResolver>,
+    address_resolver: DnsAddressResolver,
 }
 
 impl PeerConnectionAdmission {
-    pub fn new(
+    fn new(
         my_peer_id: PeerId,
         context: ArcPeerContext,
         peers: Arc<PeerMap>,
@@ -1738,7 +1700,7 @@ impl PeerConnectionAdmission {
         foreign_network_manager: Arc<ForeignNetworkManager>,
         peer_session_store: Arc<PeerSessionStore>,
         recent_traffic: RecentTrafficTracker,
-        address_resolver: Arc<dyn AddressResolver>,
+        address_resolver: DnsAddressResolver,
     ) -> Self {
         Self {
             my_peer_id,
@@ -1815,7 +1777,7 @@ impl PeerConnectionAdmission {
         tracing::info!("check remote addr not from virtual network");
         check_resolved_remote_addr_not_from_virtual_network(
             &self.context,
-            self.address_resolver.as_ref(),
+            &self.address_resolver,
             src,
         )
         .await
@@ -3295,17 +3257,26 @@ mod tests {
             );
             let public_ipv6_runtime =
                 CorePublicIpv6Runtime::new(runtime_config.clone(), Arc::new(()));
-            Self::build(
+            let stun_info_source = Arc::new(RuntimeConfigStunInfoSource(runtime_config.clone()));
+            Self::new(
                 config,
                 runtime_config,
                 dns,
                 SocketContext::default(),
-                None,
+                stun_info_source,
                 nic_channel,
                 public_ipv6_runtime,
                 PeerManagerHostAdapters::default(),
                 Arc::new(()),
             )
+        }
+    }
+
+    struct RuntimeConfigStunInfoSource(CoreRuntimeConfigStore);
+
+    impl PeerStunInfoSource for RuntimeConfigStunInfoSource {
+        fn stun_info(&self) -> StunInfo {
+            self.0.snapshot().peer.runtime.stun_info.clone()
         }
     }
 
@@ -3325,23 +3296,6 @@ mod tests {
         fn is_ip_in_same_network(&self, ip: &IpAddr) -> bool {
             self.contains_every_address
                 || matches!(ip, IpAddr::V4(ip) if ip.octets()[0..2] == [10, 144])
-        }
-    }
-
-    struct StaticAddressResolver(AddressResolution);
-
-    #[async_trait::async_trait]
-    impl AddressResolver for StaticAddressResolver {
-        async fn resolve_remote(
-            &self,
-            _remote_addr: &Url,
-            _default_port: Option<u16>,
-        ) -> AddressResolution {
-            match &self.0 {
-                AddressResolution::IpAddrs(addrs) => AddressResolution::IpAddrs(addrs.clone()),
-                AddressResolution::NotIpBased => AddressResolution::NotIpBased,
-                AddressResolution::Unavailable => AddressResolution::Unavailable,
-            }
         }
     }
 
@@ -3367,6 +3321,24 @@ mod tests {
     impl DnsResolver for PanicDnsResolver {
         async fn resolve(&self, _query: DnsQuery) -> anyhow::Result<Vec<IpAddr>> {
             panic!("IP literals must not invoke DNS")
+        }
+    }
+
+    struct FixedDnsResolver(Vec<IpAddr>);
+
+    #[async_trait::async_trait]
+    impl DnsResolver for FixedDnsResolver {
+        async fn resolve(&self, _query: DnsQuery) -> anyhow::Result<Vec<IpAddr>> {
+            Ok(self.0.clone())
+        }
+    }
+
+    struct FailingDnsResolver;
+
+    #[async_trait::async_trait]
+    impl DnsResolver for FailingDnsResolver {
+        async fn resolve(&self, _query: DnsQuery) -> anyhow::Result<Vec<IpAddr>> {
+            anyhow::bail!("test DNS failure")
         }
     }
 
@@ -3984,10 +3956,10 @@ mod tests {
         let context: ArcPeerContext = Arc::new(SameNetworkContext {
             contains_every_address: false,
         });
-        let resolver = StaticAddressResolver(AddressResolution::IpAddrs(vec![
-            SocketAddr::from(([127, 0, 0, 1], 1234)),
-            SocketAddr::from(([10, 144, 0, 2], 1234)),
-        ]));
+        let resolver = DnsAddressResolver::new(Arc::new(FixedDnsResolver(vec![
+            IpAddr::from([127, 0, 0, 1]),
+            IpAddr::from([10, 144, 0, 2]),
+        ])));
         let url = Url::parse("tcp://example.test:1234").unwrap();
 
         let err =
@@ -4001,23 +3973,42 @@ mod tests {
         let context: ArcPeerContext = Arc::new(SameNetworkContext {
             contains_every_address: false,
         });
-        let url = Url::parse("tcp://example.test:1234").unwrap();
-
-        for resolution in [
-            AddressResolution::IpAddrs(vec![SocketAddr::from(([192, 0, 2, 10], 1234))]),
-            AddressResolution::NotIpBased,
-            AddressResolution::Unavailable,
-        ] {
-            let resolver = StaticAddressResolver(resolution);
-            let ret = check_resolved_remote_addr_not_from_virtual_network(
+        let resolver = DnsAddressResolver::new(Arc::new(FixedDnsResolver(vec![IpAddr::from([
+            192, 0, 2, 10,
+        ])])));
+        assert!(
+            check_resolved_remote_addr_not_from_virtual_network(
                 &context,
                 &resolver,
-                url.clone(),
+                Url::parse("tcp://example.test:1234").unwrap(),
             )
-            .await;
+            .await
+            .is_ok()
+        );
 
-            assert!(ret.is_ok());
+        let resolver = DnsAddressResolver::new(Arc::new(PanicDnsResolver));
+        for url in ["ring://peer", "unix:///tmp/easytier.sock"] {
+            assert!(
+                check_resolved_remote_addr_not_from_virtual_network(
+                    &context,
+                    &resolver,
+                    Url::parse(url).unwrap(),
+                )
+                .await
+                .is_ok()
+            );
         }
+
+        let resolver = DnsAddressResolver::new(Arc::new(FailingDnsResolver));
+        assert!(
+            check_resolved_remote_addr_not_from_virtual_network(
+                &context,
+                &resolver,
+                Url::parse("tcp://unavailable.test:1234").unwrap(),
+            )
+            .await
+            .is_ok()
+        );
     }
 
     #[tokio::test]
@@ -4025,10 +4016,10 @@ mod tests {
         let context: ArcPeerContext = Arc::new(SameNetworkContext {
             contains_every_address: true,
         });
-        let resolver = StaticAddressResolver(AddressResolution::IpAddrs(vec![
-            SocketAddr::from(([127, 0, 0, 1], 1234)),
-            SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 1234),
-        ]));
+        let resolver = DnsAddressResolver::new(Arc::new(FixedDnsResolver(vec![
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            IpAddr::V6(Ipv6Addr::LOCALHOST),
+        ])));
         let url = Url::parse("tcp://localhost:1234").unwrap();
 
         let ret =
