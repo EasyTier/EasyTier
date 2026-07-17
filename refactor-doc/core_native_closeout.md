@@ -1,6 +1,6 @@
 # EasyTier Core/Native Ownership Closeout
 
-> Status: complete. Created and closed 2026-07-16.
+> Status: complete. Created and closed 2026-07-16. Updated 2026-07-17.
 
 This is the authoritative ownership-closeout record after the first core
 migration milestone. [`CONTEXT.md`](../CONTEXT.md) and the accepted ADRs remain
@@ -292,9 +292,9 @@ Docker and full-workspace validation once after coherent milestones and at the
 final gate. Review findings outside the current commit are recorded separately
 and are not repaired opportunistically.
 
-## Final verification
+## Final verification (2026-07-16 snapshot)
 
-All completion gates are closed:
+At the 2026-07-16 closeout, all completion gates were closed:
 
 1. [x] Every ownership checkbox above is closed.
 2. [x] Focused native engine coverage exists for WS/WSS, WireGuard, QUIC and
@@ -320,6 +320,23 @@ mapped-CIDR ICMP prerequisite before either protocol engine runs. The KCP
 failure was reproduced with a pre-closeout binary, so it is not used as an
 ownership-regression signal. Deterministic concrete-engine coverage now closes
 the KCP verification gap without depending on that environment.
+
+## Validation delta (2026-07-17)
+
+This section records only evidence added after the dated closeout snapshot. The
+post-closeout simplification passes:
+
+- all 615 `easytier-core --all-features` library tests; the three-test reduction
+  from the previous count is the deliberate deletion of redundant tests;
+- the native `easytier --all-targets` check and the final
+  `wasm32-wasip1 --all-features` core check;
+- the Docker `foreign_network_forward_nic_data` and
+  `foreign_network_functional_cluster` three-node scenarios; and
+- formatting, diff checks, static deletion searches, and focused review of
+  every code commit with no P0-P3 findings.
+
+The 2026-07-16 verification counts and results above remain a dated snapshot;
+this delta does not rewrite them.
 
 ## Progress log
 
@@ -378,3 +395,24 @@ the KCP verification gap without depending on that environment.
   real `KcpProxyService`, `KcpEndpoint`, core peer datagrams and native TCP
   destination ingress. Final Rust, WASI, native, Go-host, static and review
   gates passed, closing this checklist.
+- 2026-07-17: narrowed the proxy surface to the types consumed by
+  `CoreInstance` and native Adapters, made implementation Modules
+  crate-private, and removed zero-caller proxy helpers and state.
+- 2026-07-17: localized unit-test-only constructors, inspectors, fixtures and
+  doubles in their owning test Modules. Cross-crate support remains behind
+  explicit `test_utils` Modules and the `test-utils` feature gate.
+- 2026-07-17: made `CorePacketPlane` the single packet/route projection and
+  deleted the corresponding `CoreInstance` forwarding methods. Production
+  callers and complete-instance tests now use the owned packet-plane handle.
+- 2026-07-17: collapsed `PeerManagerCore` production construction to one
+  crate-private `new` whose only production caller is `CoreInstance`. The
+  portable test builder is local to the peer-manager unit tests, and the
+  single-field `PeerManagerCoreBuildResult` wrapper is deleted.
+- 2026-07-17: removed the six single-implementation foreign-network projection
+  seams: `GlobalForeignNetworkAccessor`, `ForeignNetworkRouteInfoProvider`,
+  `ForeignNetworkInfoProvider`, `ForeignNetworkPacketHandler`,
+  `ForeignNetworkConnectionAdmission`, and `ForeignPeerConnectionCloser`.
+  `ForeignNetworkRpcRegistrar` remains the real cross-host boundary.
+- 2026-07-17: completed the cleanup by deleting write-only peer, ACL and
+  handshake state together with zero-call foreign-client RPC, route and
+  connection helpers. Runtime owners and lifecycle values remain intact.

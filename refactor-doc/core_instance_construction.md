@@ -1,6 +1,6 @@
 # Core Instance Construction Closure
 
-> Status: complete. Updated 2026-07-16.
+> Status: complete. Updated 2026-07-17.
 
 ## Outcome
 
@@ -14,10 +14,10 @@ CoreInstance::new(
 ) -> anyhow::Result<Arc<CoreInstance<H>>>
 ```
 
-Native EasyTier, the Go/WASI Adapter, and core tests all use this entry. The
-caller supplies normalized configuration and platform capabilities; core
-validates the configuration and constructs every portable runtime Module it
-owns. The returned `Arc` is the lifecycle owner required by `start`,
+Native EasyTier, the Go/WASI Adapter, and complete-instance core tests use this
+entry. The caller supplies normalized configuration and platform capabilities;
+core validates the configuration and constructs every portable runtime Module
+it owns. The returned `Arc` is the lifecycle owner required by `start`,
 post-host-ready startup, and `stop`.
 
 This closes a migration seam that previously exposed six `CoreInstance`
@@ -79,6 +79,11 @@ need deterministic STUN use the hidden test-only
 `CoreHostAdapters::replace_stun_provider` seam and still construct the instance
 through the production entry.
 
+`PeerManagerCore` has one production constructor, the crate-private `new`, and
+`CoreInstance` is its only production caller. Standalone peer-manager unit
+tests use a builder local to their test Module rather than widening the
+production Interface.
+
 ## Composition roots
 
 ### Native
@@ -116,8 +121,9 @@ instance.
 The following are intentionally deleted rather than retained as compatibility
 wrappers:
 
-- `new_portable*` and prebuilt-peer `new_with_runtime_config_store*`
-  constructors;
+- production `new_portable*` and prebuilt-peer
+  `new_with_runtime_config_store*` constructors;
+- the single-field `PeerManagerCoreBuildResult` wrapper;
 - public `HostCoreInstance` construction helpers;
 - `WrappedTransportEngineFactory`, attachment return values, and the no-op
   factory;
@@ -125,6 +131,10 @@ wrappers:
   construction models;
 - native helpers that assembled and disassembled a complete instance bundle
   for one-shot operations.
+
+The similarly named `new_portable_for_test` remains only inside the
+peer-manager unit-test Module. It is a local test builder, not a production
+Interface.
 
 Rust source compatibility with these migration APIs is not required by
 ADR-0001. The WASI JSON shape, schema version 13, exported ABI, wire protocols,
@@ -135,7 +145,7 @@ and lifecycle semantics are unchanged.
 The construction boundary is closed when all of the following remain true:
 
 - `CoreInstance` has exactly one public constructor;
-- native, WASI, and tests all call that constructor;
+- native, WASI, and complete-instance tests call that constructor;
 - no caller supplies `PeerManagerCore`, a core runtime store, or another
   portable manager;
 - the WASI runtime wrapper is private and owns one shared completion runtime;

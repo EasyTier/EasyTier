@@ -110,7 +110,7 @@ core owns subsequent policy state, while the host exposes only dynamic OS facts
 through narrow Adapters.
 
 The current ownership map and deletion gates are recorded in
-[`core_ownership_finalization.md`](../../refactor-doc/core_ownership_finalization.md).
+[`core_native_closeout.md`](../../refactor-doc/core_native_closeout.md).
 
 ## Implementation update (2026-07-16)
 

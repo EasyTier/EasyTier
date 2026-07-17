@@ -1,7 +1,7 @@
 # EasyTier Core Refactor Roadmap
 
 > Status: ownership refactor complete; quantitative Go/WASI production
-> hardening remains. Updated 2026-07-16.
+> hardening remains. Updated 2026-07-17.
 
 The 2026-07-16 source audit found semantic ownership leaks that the earlier
 path-based deletion gates did not detect. They were closed through the
@@ -75,6 +75,12 @@ Already established:
   server configuration, and core-owned gateway runtime configuration while
   exposing no Go STUN state or mapping operations. Listener input is normalized
   URLs plus IPv6 policy and `SocketContext`; core derives the internal plan.
+
+Post-closeout simplification on 2026-07-17 narrowed proxy and packet-plane
+surfaces, localized unit-test support, collapsed peer-manager construction and
+foreign-network projections, and removed remaining zero-call or write-only
+state. The cleanup record is in
+[`core_native_closeout.md`](core_native_closeout.md).
 
 The first ownership milestone closed the old connector, peer facade and raw
 Tunnel paths. Deliberate follow-up boundaries at that milestone were:
@@ -309,6 +315,12 @@ Exit gate:
 - repeated start/stop and partial-start failure leave no tasks or handles;
 - native and Go hosts exercise the same Core instance lifecycle Interface.
 
+The ownership portion of this phase is complete. The single construction and
+composition boundary is recorded in
+[`core_instance_construction.md`](core_instance_construction.md), with final
+semantic ownership evidence in
+[`core_native_closeout.md`](core_native_closeout.md).
+
 ## Phase 3: migrate the remaining portable logic
 
 With the two major seams stable, move the remaining logic by vertical slice.
@@ -334,6 +346,12 @@ Each slice exits only after:
 - the old native ownership is deleted;
 - direct OS dependencies remain outside `easytier-core`.
 
+The ownership portion of this phase is complete. The first milestone inventory
+is preserved in
+[`core_remaining_ownership_refactor.md`](core_remaining_ownership_refactor.md),
+and the later semantic completion is recorded in
+[`core_native_closeout.md`](core_native_closeout.md).
+
 ## Phase 4: simplify and slice features
 
 Feature work starts after Modules and ownership are stable.
@@ -347,6 +365,10 @@ Feature work starts after Modules and ownership are stable.
    Interface or create a combinatorial test matrix without meaningful savings.
 5. Test default, no-default, selected feature profiles, all-features, native,
    and `wasm32-wasip1` builds.
+
+Interface and dead-code simplification started on 2026-07-17, and this
+post-closeout cleanup round is complete. Feature slicing and dependency or
+binary-size measurement are not yet complete.
 
 Exit gate:
 

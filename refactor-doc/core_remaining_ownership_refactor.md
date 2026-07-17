@@ -1,7 +1,7 @@
 # Remaining Core Ownership Refactor
 
 > Status: historical first-milestone closure record. Superseded by
-> [`core_native_closeout.md`](core_native_closeout.md). Updated 2026-07-16.
+> [`core_native_closeout.md`](core_native_closeout.md). Updated 2026-07-17.
 
 ## Outcome
 
@@ -42,7 +42,7 @@ The following decisions are already accepted and are not reopened here:
 8. Fine-grained feature slicing follows ownership closure; it is not mixed
    into these migrations.
 
-## Current inventory
+## Milestone inventory (2026-07-14)
 
 Raw native source size is not the ownership measure, because integration tests
 and unavoidable platform implementations are intentionally large. The relevant
@@ -154,6 +154,14 @@ STUN, normalized host-routing policy, and control metrics. Some legacy
 ring-based foreign tests still stop at the pre-existing missing-`TunnelInfo`
 fixture documented in the verification discipline; that fixture is not part
 of the ownership move.
+
+Post-milestone simplification on 2026-07-17 removed six single-implementation
+projection seams: `GlobalForeignNetworkAccessor`,
+`ForeignNetworkRouteInfoProvider`, `ForeignNetworkInfoProvider`,
+`ForeignNetworkPacketHandler`, `ForeignNetworkConnectionAdmission`, and
+`ForeignPeerConnectionCloser`. Core now uses `ForeignNetworkManager` directly
+for those internal roles. `ForeignNetworkRpcRegistrar` remains the real
+cross-host seam for native generated RPC registration.
 
 ## Slice 2: reduce the Native peer facade
 

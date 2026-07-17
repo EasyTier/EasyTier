@@ -1,6 +1,6 @@
 # EasyTier Core Refactor Documents
 
-> Status: authoritative index. Updated 2026-07-16.
+> Status: authoritative index. Updated 2026-07-17.
 
 This directory records the plan for moving portable EasyTier behaviour into the
 single `easytier-core` crate. When documents disagree, use the following order:
@@ -23,9 +23,10 @@ single `easytier-core` crate. When documents disagree, use the following order:
 | Document | Status | Role |
 | --- | --- | --- |
 | [`core_instance_construction.md`](core_instance_construction.md) | Complete | Single core construction Interface, Host Adapter input and composition closure |
-| [`core_native_closeout.md`](core_native_closeout.md) | Complete | Final semantic ownership, deletion and verification record |
+| [`core_native_closeout.md`](core_native_closeout.md) | Complete | Final semantic ownership and 2026-07-16 verification record, plus the 2026-07-17 cleanup |
 | [`core_refactor_roadmap.md`](core_refactor_roadmap.md) | Ownership complete; hardening remains | Overall migration order, completed ownership gates and production follow-up |
 | [`core_remaining_ownership_refactor.md`](core_remaining_ownership_refactor.md) | Historical milestone | First ownership-migration closure snapshot, superseded by the final closeout |
+| [`core_ownership_finalization.md`](core_ownership_finalization.md) | Historical transition snapshot | Dated ownership map, deletion gates and validation evidence, superseded by the final closeout |
 | [`host_runtime_stun_refactor.md`](host_runtime_stun_refactor.md) | Complete | Process-level host runtime, request context, and core STUN closure record |
 | [`tunnel_ownership_refactor.md`](tunnel_ownership_refactor.md) | Complete | TCP/UDP/Ring Tunnel ownership and connector/listener closure record |
 | [`go_wasi_host_poc.md`](go_wasi_host_poc.md) | Functional gate passed; hardening active | Selected opaque Model B and remaining quantitative production gates |

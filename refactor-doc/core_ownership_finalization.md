@@ -1,8 +1,11 @@
 # EasyTier Core Ownership Finalization
 
-> Status: transition snapshot recorded before concrete Tunnel ownership was
-> finalized. [`CONTEXT.md`](../CONTEXT.md) is the authoritative target when this
-> snapshot or older paths disagree with it.
+> Status: historical transition snapshot, superseded by
+> [`core_native_closeout.md`](core_native_closeout.md) and
+> [`core_instance_construction.md`](core_instance_construction.md). The paths,
+> static deletion gates, and validation numbers below are dated evidence, not
+> current acceptance gates. [`CONTEXT.md`](../CONTEXT.md) remains the
+> architectural authority. Updated 2026-07-17.
 
 This document records the core-ownership baseline reached during the
 portable-core refactor. It remains useful implementation history, but it is not
