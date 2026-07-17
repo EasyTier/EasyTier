@@ -124,8 +124,8 @@ foundation <- config/packet <- socket <- host <- tunnel
            <- listener/connectivity <- peers/rpc <- gateway <- instance
 ```
 
-Modules may only depend downward. Six current counter-examples are
-converged by this plan rather than denied:
+Modules may only depend downward. Current counter-examples are converged
+by this plan rather than denied:
 
 | Current violation | Resolved by |
 | --- | --- |
@@ -135,6 +135,9 @@ converged by this plan rather than denied:
 | `hole_punch <-> peers` | S10: `impl TunnelSink for PeerManagerCore` moves to the hole_punch side |
 | `connectivity/protocol/raw <-> listener/transport` | S10: raw dialer/listener settle at the tunnel/listener layer |
 | peer admission impl in `listener/transport.rs` | S10: moves to the peers side |
+| `foundation/compressor -> packet` | S10: compressor tail types or the module settle at the packet layer |
+| `foundation/stats -> rpc_impl::metrics` | S10: the RpcMetrics trait settles in `foundation` |
+| `foundation/token_bucket -> peers::context::ByteLimiter` | S10: the ByteLimiter trait settles in `foundation` |
 
 Enforcement is by convention plus CI: `pub(crate)` by default with each
 layer's `mod.rs` declaring its outward surface, and a static grep gate in
