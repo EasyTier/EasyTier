@@ -2,9 +2,6 @@ use crate::packet::ZCPacket;
 
 use super::{Encryptor, Error};
 
-// XOR 加密不需要额外的尾部数据，因为它是对称的
-pub const XOR_ENCRYPTION_RESERVED: usize = 0;
-
 #[derive(Clone)]
 pub struct XorCipher {
     pub(crate) key: Vec<u8>,

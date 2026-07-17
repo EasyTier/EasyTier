@@ -127,7 +127,7 @@ pub fn new_relay_peer_map(
 }
 
 impl RelayPeerMap {
-    pub fn new(
+    pub(crate) fn new(
         route_transport: Arc<dyn RelayRouteTransport>,
         context: ArcPeerContext,
         my_peer_id: PeerId,

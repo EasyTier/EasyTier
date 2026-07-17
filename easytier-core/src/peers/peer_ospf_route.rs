@@ -117,10 +117,6 @@ impl AtomicVersion {
         self.0.load(Ordering::Relaxed)
     }
 
-    pub fn set(&self, version: Version) {
-        self.0.store(version, Ordering::Relaxed);
-    }
-
     pub fn inc(&self) -> Version {
         self.0.fetch_add(1, Ordering::Relaxed) + 1
     }
@@ -147,7 +143,6 @@ pub struct OspfPeerInfo {
 pub struct OspfPeerConnInfo {
     pub peer_id: PeerId,
     pub connected_peers: BTreeSet<PeerId>,
-    pub version: Version,
 }
 
 #[derive(Debug, Clone)]
@@ -264,10 +259,6 @@ impl OspfRouteTable {
 
     pub fn topology_peer_reachable(&self, peer_id: PeerId) -> bool {
         self.get_topology_next_hop(peer_id).is_some()
-    }
-
-    pub fn contains_peer_info(&self, peer_id: PeerId) -> bool {
-        self.peer_infos.contains_key(&peer_id)
     }
 
     pub fn get_udp_nat_type(&self, peer_id: PeerId) -> Option<NatType> {
@@ -1258,7 +1249,6 @@ impl SyncedRouteInfo {
                 .map(|(peer_id, info)| OspfPeerConnInfo {
                     peer_id: *peer_id,
                     connected_peers: info.connected_peers.clone(),
-                    version: info.version.get(),
                 })
                 .collect(),
             suppressed_peer_ids: self
@@ -4446,7 +4436,6 @@ mod tests {
         OspfPeerConnInfo {
             peer_id,
             connected_peers: connected_peers.into_iter().collect(),
-            version: 1,
         }
     }
 

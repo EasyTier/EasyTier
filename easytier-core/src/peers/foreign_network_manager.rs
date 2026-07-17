@@ -50,7 +50,7 @@ use crate::proto::peer_rpc::PeerIdentityType;
 
 pub const PUBLIC_SERVER_HOSTNAME_PREFIX: &str = "PublicServer_";
 
-pub fn check_network_in_relay_whitelist(
+pub(crate) fn check_network_in_relay_whitelist(
     relay_network_whitelist: &str,
     network_name: &str,
 ) -> Result<(), anyhow::Error> {
@@ -65,11 +65,14 @@ pub fn check_network_in_relay_whitelist(
     }
 }
 
-pub fn desired_foreign_avoid_relay_data(parent_context: &ArcPeerContext, relay_data: bool) -> bool {
+pub(crate) fn desired_foreign_avoid_relay_data(
+    parent_context: &ArcPeerContext,
+    relay_data: bool,
+) -> bool {
     !relay_data || parent_context.feature_flags().avoid_relay_data
 }
 
-pub fn sync_foreign_avoid_relay_data(
+pub(crate) fn sync_foreign_avoid_relay_data(
     parent_context: &ArcPeerContext,
     foreign_context: &ArcPeerContext,
     relay_data: bool,
@@ -166,7 +169,7 @@ impl PeerStunInfoSource for ParentStunInfoSource {
 
 #[async_trait::async_trait]
 #[auto_impl::auto_impl(&, Box, Arc)]
-pub trait GlobalForeignNetworkAccessor: Send + Sync + 'static {
+pub(crate) trait GlobalForeignNetworkAccessor: Send + Sync + 'static {
     async fn list_global_foreign_peer(&self, network_identity: &NetworkIdentity) -> Vec<PeerId>;
 }
 
@@ -430,7 +433,7 @@ mod tests {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct ForeignNetworkRouteInfo {
+pub(crate) struct ForeignNetworkRouteInfo {
     pub network_name: String,
     pub peer_ids: Vec<PeerId>,
     pub network_secret_digest: Vec<u8>,
@@ -439,7 +442,7 @@ pub struct ForeignNetworkRouteInfo {
 
 #[async_trait::async_trait]
 #[auto_impl::auto_impl(&, Arc)]
-pub trait ForeignNetworkRouteInfoProvider: Send + Sync + 'static {
+pub(crate) trait ForeignNetworkRouteInfoProvider: Send + Sync + 'static {
     async fn list_foreign_network_route_infos(&self) -> Vec<ForeignNetworkRouteInfo>;
 
     fn get_foreign_network_last_update(&self, _network_name: &str) -> Option<SystemTime> {
@@ -447,7 +450,7 @@ pub trait ForeignNetworkRouteInfoProvider: Send + Sync + 'static {
     }
 }
 
-pub fn peer_map_foreign_network_accessor(
+pub(crate) fn peer_map_foreign_network_accessor(
     peer_map: Weak<PeerMap>,
 ) -> Box<dyn GlobalForeignNetworkAccessor> {
     struct PeerMapForeignNetworkAccessor {
@@ -473,7 +476,7 @@ pub fn peer_map_foreign_network_accessor(
     Box::new(PeerMapForeignNetworkAccessor { peer_map })
 }
 
-pub struct ForeignNetworkRouteInterface {
+pub(crate) struct ForeignNetworkRouteInterface {
     my_peer_id: PeerId,
     peer_map: Weak<PeerMap>,
     network_identity: NetworkIdentity,
@@ -540,7 +543,7 @@ impl RouteInterface for ForeignNetworkRouteInterface {
     }
 }
 
-pub fn foreign_network_route_interface(
+pub(crate) fn foreign_network_route_interface(
     my_peer_id: PeerId,
     peer_map: Weak<PeerMap>,
     network_identity: NetworkIdentity,
@@ -554,7 +557,7 @@ pub fn foreign_network_route_interface(
     ))
 }
 
-pub struct RpcTransport {
+pub(crate) struct RpcTransport {
     my_peer_id: PeerId,
     peer_map: Weak<PeerMap>,
 
@@ -615,7 +618,7 @@ impl Drop for RpcTransport {
     }
 }
 
-pub fn build_rpc_transport(
+pub(crate) fn build_rpc_transport(
     my_peer_id: PeerId,
     peer_map: Weak<PeerMap>,
 ) -> (Arc<PeerRpcManager>, UnboundedSender<ZCPacket>) {
@@ -681,7 +684,7 @@ pub struct ForeignNetworkEntryInfo {
 
 #[async_trait::async_trait]
 #[auto_impl::auto_impl(&, Arc)]
-pub trait ForeignNetworkInfoProvider: Send + Sync + 'static {
+pub(crate) trait ForeignNetworkInfoProvider: Send + Sync + 'static {
     async fn list_foreign_network_infos(
         &self,
         include_trusted_keys: bool,
@@ -689,7 +692,7 @@ pub trait ForeignNetworkInfoProvider: Send + Sync + 'static {
 }
 
 #[auto_impl::auto_impl(&, Arc)]
-pub trait ForeignNetworkRpcRegistrar: Send + Sync + 'static {
+pub(crate) trait ForeignNetworkRpcRegistrar: Send + Sync + 'static {
     fn register_peer_rpc_services(
         &self,
         _peer_rpc: &Arc<PeerRpcManager>,
@@ -1159,8 +1162,6 @@ impl ForeignNetworkManagerData {
     }
 }
 
-pub const FOREIGN_NETWORK_SERVICE_ID: u32 = 1;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ForeignNetworkManagerState {
     Running,
@@ -1168,7 +1169,7 @@ enum ForeignNetworkManagerState {
     Stopped,
 }
 
-pub struct ForeignNetworkManager {
+pub(crate) struct ForeignNetworkManager {
     rpc_registrar: Arc<dyn ForeignNetworkRpcRegistrar>,
     parent_context: Arc<CorePeerContext>,
     foreign_context_default_flags: FlagsInConfig,
@@ -1293,7 +1294,7 @@ impl ForeignNetworkManager {
         *lifecycle = ForeignNetworkManagerState::Stopped;
     }
 
-    #[cfg(any(test, feature = "test-utils"))]
+    #[cfg(test)]
     pub async fn is_stopped_for_test(&self) -> bool {
         *self.lifecycle.read().await == ForeignNetworkManagerState::Stopped
             && self.task_reaper.lock().await.is_none()
@@ -1302,12 +1303,12 @@ impl ForeignNetworkManager {
             && self.data.peer_network_map.is_empty()
     }
 
-    #[cfg(any(test, feature = "test-utils"))]
+    #[cfg(test)]
     pub async fn admission_is_open_for_test(&self) -> bool {
         self.admission_guard().await.is_ok()
     }
 
-    #[cfg(any(test, feature = "test-utils"))]
+    #[cfg(test)]
     pub async fn hold_admission_for_test(
         &self,
         entered: Arc<tokio::sync::Notify>,
@@ -1319,28 +1320,11 @@ impl ForeignNetworkManager {
         Ok(())
     }
 
-    #[cfg(any(test, feature = "test-utils"))]
-    pub fn fail_next_add_peer_conn_after_entry_insert(&self) {
-        self.data
-            .fail_next_add_peer_conn_after_entry_insert
-            .store(true, Ordering::Release);
-    }
-
     pub fn get_network_peer_id(&self, network_name: &str) -> Option<PeerId> {
         self.data
             .network_peer_maps
             .get(network_name)
             .map(|v| v.my_peer_id)
-    }
-
-    #[cfg(any(test, feature = "test-utils"))]
-    pub fn foreign_peer_context_for_test(
-        &self,
-        network_name: &str,
-    ) -> Option<Arc<CorePeerContext>> {
-        self.data
-            .get_network_entry(network_name)
-            .map(|entry| entry.foreign_context.peer_context.clone())
     }
 
     pub fn is_existing_credential_pubkey_trusted(
@@ -1593,35 +1577,6 @@ impl ForeignNetworkManager {
             .map(|v| *v)
     }
 
-    #[cfg(any(test, feature = "test-utils"))]
-    pub async fn record_rx_traffic_for_test(
-        &self,
-        network_name: &str,
-        peer_id: PeerId,
-        packet_type: u8,
-        bytes: u64,
-    ) -> bool {
-        let Some(entry) = self.data.get_network_entry(network_name) else {
-            return false;
-        };
-        entry
-            .traffic_metrics
-            .record_rx(peer_id, packet_type, bytes)
-            .await;
-        true
-    }
-
-    #[cfg(any(test, feature = "test-utils"))]
-    pub fn contains_traffic_metric_peer_cache_for_test(
-        &self,
-        network_name: &str,
-        peer_id: PeerId,
-    ) -> bool {
-        self.data
-            .get_network_entry(network_name)
-            .is_some_and(|entry| entry.traffic_metrics.contains_peer_cache(peer_id))
-    }
-
     pub async fn forward_foreign_network_packet(
         &self,
         network_name: &str,
@@ -1768,7 +1723,7 @@ struct ForeignNetworkForwardCounters {
     rx_packets: CounterHandle,
 }
 
-pub struct ForeignNetworkPacketRouter {
+pub(crate) struct ForeignNetworkPacketRouter {
     my_node_id: PeerId,
     packet_recv: PacketRecvChanReceiver,
     rpc_sender: UnboundedSender<ZCPacket>,

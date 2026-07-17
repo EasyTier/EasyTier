@@ -72,13 +72,13 @@ pub enum PublicIpv6ProviderConfigError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PublicIpv6ProviderResolution {
+pub(crate) enum PublicIpv6ProviderResolution {
     Disabled,
     Pending(String),
     Active(Ipv6Cidr),
 }
 
-pub fn resolve_public_ipv6_provider(
+pub(crate) fn resolve_public_ipv6_provider(
     config: PublicIpv6ProviderConfig,
     detected_prefix: Result<Option<Ipv6Cidr>, String>,
 ) -> PublicIpv6ProviderResolution {
@@ -125,14 +125,14 @@ pub fn is_global_routable_public_ipv6_prefix(prefix: Ipv6Cidr) -> bool {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PublicIpv6Provider {
+pub(crate) struct PublicIpv6Provider {
     pub peer_id: PeerId,
     pub inst_id: uuid::Uuid,
     pub prefix: Ipv6Cidr,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PublicIpv6ProviderLease {
+pub(crate) struct PublicIpv6ProviderLease {
     pub peer_id: PeerId,
     pub inst_id: uuid::Uuid,
     pub addr: Ipv6Inet,
@@ -154,7 +154,7 @@ struct PublicIpv6ClientState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PublicIpv6PeerRouteInfo {
+pub(crate) struct PublicIpv6PeerRouteInfo {
     pub peer_id: PeerId,
     pub inst_id: Option<uuid::Uuid>,
     pub is_provider: bool,
@@ -163,13 +163,13 @@ pub struct PublicIpv6PeerRouteInfo {
     pub reachable: bool,
 }
 
-pub trait PublicIpv6RouteControl: Send + Sync {
+pub(crate) trait PublicIpv6RouteControl: Send + Sync {
     fn my_peer_id(&self) -> PeerId;
     fn peer_route_snapshot(&self) -> Vec<PublicIpv6PeerRouteInfo>;
     fn publish_self_public_ipv6_lease(&self, lease: Option<Ipv6Inet>) -> bool;
 }
 
-pub trait PublicIpv6SyncTrigger: Send + Sync {
+pub(crate) trait PublicIpv6SyncTrigger: Send + Sync {
     fn sync_now(&self, reason: &str);
 }
 
@@ -193,7 +193,7 @@ impl PublicIpv6Host for () {
 
 #[async_trait::async_trait]
 #[auto_impl::auto_impl(Arc)]
-pub trait PublicIpv6Runtime: Send + Sync {
+pub(crate) trait PublicIpv6Runtime: Send + Sync {
     fn ipv6_public_addr_auto(&self) -> bool;
     fn ipv6_public_addr_provider(&self) -> bool;
     fn instance_id(&self) -> uuid::Uuid;
@@ -338,7 +338,7 @@ impl PublicIpv6Runtime for DisabledPublicIpv6Runtime {
     fn public_ipv6_routes_changed(&self, _added: Vec<Ipv6Inet>, _removed: Vec<Ipv6Inet>) {}
 }
 
-pub struct PublicIpv6Service {
+pub(crate) struct PublicIpv6Service {
     runtime: Arc<dyn PublicIpv6Runtime>,
     peer_rpc: Weak<PeerRpcManager>,
     route_control: Arc<dyn PublicIpv6RouteControl>,
@@ -901,7 +901,7 @@ impl PublicIpv6Service {
 }
 
 #[derive(Clone)]
-pub struct PublicIpv6AddrRpcServerImpl {
+pub(crate) struct PublicIpv6AddrRpcServerImpl {
     service: Weak<PublicIpv6Service>,
 }
 

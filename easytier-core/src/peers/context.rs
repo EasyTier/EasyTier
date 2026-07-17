@@ -39,11 +39,11 @@ use crate::{
     token_bucket::TokenBucketManager,
 };
 
-pub const SECRET_PROOF_PREFIX: &[u8] = b"easytier secret proof";
+pub(crate) const SECRET_PROOF_PREFIX: &[u8] = b"easytier secret proof";
 const PEER_EVENT_CAPACITY: usize = 100;
 
 #[async_trait]
-pub trait ByteLimiter: Send + Sync {
+pub(crate) trait ByteLimiter: Send + Sync {
     async fn consume(&self, bytes: u64);
 
     fn try_consume(&self, bytes: u64) -> bool;
@@ -58,7 +58,7 @@ impl ByteLimiter for () {
     }
 }
 
-pub type ArcByteLimiter = Arc<dyn ByteLimiter>;
+pub(crate) type ArcByteLimiter = Arc<dyn ByteLimiter>;
 
 /// Projects credential-store changes without exposing the store itself.
 pub trait PeerCredentialEventSink: Send + Sync {
@@ -78,14 +78,14 @@ pub enum PeerEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PeerContextEvent {
+pub(crate) enum PeerContextEvent {
     PeerAdded(PeerId),
     PeerRemoved(PeerId),
     PeerConnAdded,
     PeerConnRemoved,
 }
 
-pub type PeerContextEventSubscriber = tokio::sync::broadcast::Receiver<PeerContextEvent>;
+pub(crate) type PeerContextEventSubscriber = tokio::sync::broadcast::Receiver<PeerContextEvent>;
 
 /// Projects peer-domain events without exposing the peer event stream or any
 /// other runtime capability to the receiver.
@@ -344,7 +344,7 @@ impl PeerRelayStateSink for () {
 }
 
 /// Supplies the instance's current STUN observation.
-pub trait PeerStunInfoSource: Send + Sync {
+pub(crate) trait PeerStunInfoSource: Send + Sync {
     fn stun_info(&self) -> StunInfo {
         StunInfo::default()
     }
@@ -353,7 +353,7 @@ pub trait PeerStunInfoSource: Send + Sync {
 impl PeerStunInfoSource for () {}
 
 /// Supplies public-IPv6 state observed or leased by the host.
-pub trait PeerPublicIpv6State: Send + Sync {
+pub(crate) trait PeerPublicIpv6State: Send + Sync {
     fn public_ipv6_lease_contains(&self, _ip: &std::net::Ipv6Addr) -> bool {
         false
     }
@@ -371,7 +371,7 @@ impl PeerPublicIpv6State for () {}
 
 /// Host adapters used to assemble the core-owned peer context. Each field stays
 /// narrow so peer modules cannot reach unrelated host state after construction.
-pub struct CorePeerContextAdapters {
+pub(crate) struct CorePeerContextAdapters {
     pub relay_state_sink: Arc<dyn PeerRelayStateSink>,
     pub stun_info_source: Option<Arc<dyn PeerStunInfoSource>>,
     pub event_sink: Arc<dyn PeerEventSink>,
@@ -393,7 +393,7 @@ impl Default for CorePeerContextAdapters {
 
 /// Peer context backed by one core-owned submitted snapshot and its instance
 /// runtime resources.
-pub struct CorePeerContext {
+pub(crate) struct CorePeerContext {
     config: CoreRuntimeConfigStore,
     avoid_relay_data_preference: AtomicBool,
     relay_state_sink: Arc<dyn PeerRelayStateSink>,
@@ -474,6 +474,7 @@ impl CorePeerContext {
         self.credentials.clone()
     }
 
+    #[cfg(test)]
     pub fn trusted_key_manager(&self) -> Arc<TrustedKeyMapManager> {
         self.trusted_keys.clone()
     }
@@ -551,11 +552,13 @@ fn config_ipv6(value: &IpPrefix) -> Option<Ipv6Inet> {
     Ipv6Inet::new(address, value.prefix_len).ok()
 }
 
+#[cfg(test)]
 fn ipv4_inet_to_config(value: Ipv4Inet) -> IpPrefix {
     IpPrefix::new(IpAddr::V4(value.address()), value.network_length())
         .expect("Ipv4Inet should always have a valid IPv4 prefix length")
 }
 
+#[cfg(test)]
 fn ipv6_inet_to_config(value: Ipv6Inet) -> IpPrefix {
     IpPrefix::new(IpAddr::V6(value.address()), value.network_length())
         .expect("Ipv6Inet should always have a valid IPv6 prefix length")
@@ -575,7 +578,7 @@ pub enum TrustedKeySource {
 }
 
 #[derive(Debug, Clone)]
-pub struct TrustedKeyMetadata {
+pub(crate) struct TrustedKeyMetadata {
     pub source: TrustedKeySource,
     pub expiry_unix: Option<i64>,
 }
@@ -593,9 +596,9 @@ impl TrustedKeyMetadata {
     }
 }
 
-pub type TrustedKeyMap = HashMap<Vec<u8>, TrustedKeyMetadata>;
+pub(crate) type TrustedKeyMap = HashMap<Vec<u8>, TrustedKeyMetadata>;
 
-pub struct TrustedKeyMapManager {
+pub(crate) struct TrustedKeyMapManager {
     network_trusted_keys: DashMap<String, ArcSwap<TrustedKeyMap>>,
 }
 
@@ -681,7 +684,8 @@ impl Default for TrustedKeyMapManager {
 /// `PeerContext` is intentionally scoped to `easytier-core::peers`; other core
 /// modules should depend on their own narrow DTOs or traits instead of treating
 /// this as a core-wide global context.
-pub trait PeerContext: Send + Sync {
+pub(crate) trait PeerContext: Send + Sync {
+    #[cfg(test)]
     fn runtime_config(&self) -> PeerRuntimeConfig {
         let network_identity = self.network_identity();
         let hostname = self.hostname();
@@ -904,15 +908,17 @@ pub trait PeerContext: Send + Sync {
     }
 }
 
-pub type ArcPeerContext = Arc<dyn PeerContext>;
+pub(crate) type ArcPeerContext = Arc<dyn PeerContext>;
 
+#[cfg(test)]
 #[derive(Debug, Clone)]
-pub struct NoopPeerContext {
+pub(crate) struct NoopPeerContext {
     network_identity: NetworkIdentity,
     flags: FlagsInConfig,
     secure_mode: Option<SecureModeConfig>,
 }
 
+#[cfg(test)]
 impl NoopPeerContext {
     pub fn new(network_identity: NetworkIdentity) -> Self {
         Self {
@@ -921,31 +927,23 @@ impl NoopPeerContext {
             secure_mode: None,
         }
     }
-
-    pub fn with_flags(mut self, flags: FlagsInConfig) -> Self {
-        self.flags = flags;
-        self
-    }
-
-    pub fn with_secure_mode(mut self, secure_mode: Option<SecureModeConfig>) -> Self {
-        self.secure_mode = secure_mode;
-        self
-    }
 }
 
+#[cfg(test)]
 impl Default for NoopPeerContext {
     fn default() -> Self {
         Self::new(NetworkIdentity::default())
     }
 }
 
-pub fn secret_proof_from_secret(secret: &str, challenge: &[u8]) -> Option<Hmac<Sha256>> {
+pub(crate) fn secret_proof_from_secret(secret: &str, challenge: &[u8]) -> Option<Hmac<Sha256>> {
     let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).ok()?;
     mac.update(SECRET_PROOF_PREFIX);
     mac.update(challenge);
     Some(mac)
 }
 
+#[cfg(test)]
 impl PeerContext for NoopPeerContext {
     fn network_identity(&self) -> NetworkIdentity {
         self.network_identity.clone()
@@ -966,6 +964,7 @@ impl PeerContext for NoopPeerContext {
 }
 
 impl PeerContext for CorePeerContext {
+    #[cfg(test)]
     fn runtime_config(&self) -> PeerRuntimeConfig {
         let mut runtime = self.snapshot().runtime.clone();
         runtime.stun_info = self.stun_info();

@@ -19,7 +19,7 @@ pub struct ForeignNetworkClient {
 }
 
 impl ForeignNetworkClient {
-    pub fn new(
+    pub(crate) fn new(
         context: ArcPeerContext,
         packet_sender_to_mgr: PacketRecvChan,
         peer_rpc: Arc<PeerRpcManager>,

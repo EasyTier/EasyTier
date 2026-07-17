@@ -11,13 +11,13 @@ pub mod xor;
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error("packet is too short. len: {0}")]
+    #[cfg(any(feature = "aes-gcm", feature = "chacha20"))]
     PacketTooShort(usize),
     #[error("decryption failed")]
     DecryptionFailed,
     #[error("encryption failed")]
+    #[cfg(any(feature = "aes-gcm", feature = "chacha20"))]
     EncryptionFailed,
-    #[error("invalid tag. tag: {0:?}")]
-    InvalidTag(Vec<u8>),
 }
 
 pub trait Encryptor: Send + Sync + 'static {

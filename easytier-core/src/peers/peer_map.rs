@@ -41,7 +41,11 @@ pub struct PeerMap {
 }
 
 impl PeerMap {
-    pub fn new(packet_send: PacketRecvChan, context: ArcPeerContext, my_peer_id: PeerId) -> Self {
+    pub(crate) fn new(
+        packet_send: PacketRecvChan,
+        context: ArcPeerContext,
+        my_peer_id: PeerId,
+    ) -> Self {
         PeerMap {
             context,
             my_peer_id,
@@ -405,10 +409,6 @@ impl PeerMap {
 
     pub fn my_peer_id(&self) -> PeerId {
         self.my_peer_id
-    }
-
-    pub fn context(&self) -> ArcPeerContext {
-        self.context.clone()
     }
 }
 

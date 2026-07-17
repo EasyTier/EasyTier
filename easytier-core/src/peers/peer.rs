@@ -46,7 +46,7 @@ pub struct Peer {
 }
 
 impl Peer {
-    pub fn new(
+    pub(crate) fn new(
         peer_node_id: PeerId,
         packet_recv_chan: PacketRecvChan,
         context: ArcPeerContext,

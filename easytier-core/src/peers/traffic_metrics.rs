@@ -31,55 +31,6 @@ impl TrafficCounters {
 }
 
 #[derive(Clone)]
-pub struct AggregateTrafficMetrics {
-    tx: TrafficCounters,
-    rx: TrafficCounters,
-}
-
-impl AggregateTrafficMetrics {
-    pub fn control(stats_mgr: Arc<StatsManager>, network_name: String) -> Self {
-        Self::new(
-            stats_mgr,
-            network_name,
-            MetricName::TrafficControlBytesTx,
-            MetricName::TrafficControlPacketsTx,
-            MetricName::TrafficControlBytesRx,
-            MetricName::TrafficControlPacketsRx,
-        )
-    }
-
-    fn new(
-        stats_mgr: Arc<StatsManager>,
-        network_name: String,
-        tx_bytes_metric: MetricName,
-        tx_packets_metric: MetricName,
-        rx_bytes_metric: MetricName,
-        rx_packets_metric: MetricName,
-    ) -> Self {
-        let label_set =
-            LabelSet::new().with_label_type(LabelType::NetworkName(network_name.clone()));
-        Self {
-            tx: TrafficCounters {
-                bytes: stats_mgr.get_counter(tx_bytes_metric, label_set.clone()),
-                packets: stats_mgr.get_counter(tx_packets_metric, label_set.clone()),
-            },
-            rx: TrafficCounters {
-                bytes: stats_mgr.get_counter(rx_bytes_metric, label_set.clone()),
-                packets: stats_mgr.get_counter(rx_packets_metric, label_set),
-            },
-        }
-    }
-
-    pub fn record_tx(&self, bytes: u64) {
-        self.tx.add_sample(bytes);
-    }
-
-    pub fn record_rx(&self, bytes: u64) {
-        self.rx.add_sample(bytes);
-    }
-}
-
-#[derive(Clone)]
 enum CachedPeerTrafficCounters {
     Unknown(TrafficCounters),
     Resolved(TrafficCounters),

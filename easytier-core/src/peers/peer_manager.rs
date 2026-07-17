@@ -109,7 +109,7 @@ fn magic_dns_route_advertisement(route: CoreRoute) -> MagicDnsRouteAdvertisement
     }
 }
 
-pub struct RpcTransport {
+pub(crate) struct RpcTransport {
     my_peer_id: PeerId,
     peers: Weak<PeerMap>,
     // TODO: this seems can be removed
@@ -187,7 +187,7 @@ impl PeerRpcManagerTransport for RpcTransport {
     }
 }
 
-pub fn get_next_hop_policy(is_latency_first: bool) -> NextHopPolicy {
+pub(crate) fn get_next_hop_policy(is_latency_first: bool) -> NextHopPolicy {
     if is_latency_first {
         NextHopPolicy::LeastCost
     } else {
@@ -297,7 +297,7 @@ fn validate_portable_routes(routes: &crate::config::RouteConfig) -> anyhow::Resu
     Ok(())
 }
 
-pub enum RouteAlgoInst {
+pub(crate) enum RouteAlgoInst {
     Ospf(Arc<PeerRoute>),
     None,
 }
@@ -352,7 +352,7 @@ fn network_secret_digest_is_empty(network: &NetworkIdentity) -> bool {
         .is_none_or(|d| d.iter().all(|b| *b == 0))
 }
 
-pub async fn add_new_peer_conn(
+pub(crate) async fn add_new_peer_conn(
     peer_map: &PeerMap,
     local_identity: &NetworkIdentity,
     local_secure_mode: bool,
@@ -391,7 +391,7 @@ pub async fn add_new_peer_conn(
     Ok(peer_id)
 }
 
-pub async fn close_untrusted_credential_peers<F>(
+pub(crate) async fn close_untrusted_credential_peers<F>(
     peer_map: &PeerMap,
     network_name: &str,
     mut is_pubkey_trusted: F,
@@ -482,7 +482,7 @@ pub(crate) struct NicPipelineEntry {
 }
 
 #[derive(Clone)]
-pub struct PipelineRegistrationGuard {
+pub(crate) struct PipelineRegistrationGuard {
     active: Arc<AtomicBool>,
     release_filter: Arc<dyn Fn() + Send + Sync>,
 }
@@ -535,6 +535,7 @@ fn managed_peer_pipeline_entry(
     )
 }
 
+#[cfg(any(feature = "proxy-packet", test))]
 fn managed_nic_pipeline_entry(
     filter: BoxNicPacketFilter,
 ) -> (Arc<NicPipelineEntry>, PipelineRegistrationGuard) {
@@ -622,16 +623,15 @@ async fn add_route<T>(
     peers.add_route(arc_route).await;
 }
 
-pub struct PeerManagerTrafficCounters {
+pub(crate) struct PeerManagerTrafficCounters {
     pub self_tx_packets: CounterHandle,
     pub self_tx_bytes: CounterHandle,
     pub compress_tx_bytes_before: CounterHandle,
     pub compress_tx_bytes_after: CounterHandle,
 }
 
-pub struct PeerManagerCoreBuildResult {
+pub(crate) struct PeerManagerCoreBuildResult {
     pub core: PeerManagerCore,
-    pub foreign_network_manager: Arc<ForeignNetworkManager>,
 }
 
 pub struct PeerManagerCore {
@@ -671,7 +671,7 @@ pub struct PeerManagerCore {
     owns_maintenance_tasks: bool,
 }
 
-pub enum AddressResolution {
+pub(crate) enum AddressResolution {
     IpAddrs(Vec<SocketAddr>),
     NotIpBased,
     Unavailable,
@@ -679,7 +679,7 @@ pub enum AddressResolution {
 
 #[async_trait::async_trait]
 #[auto_impl::auto_impl(&, Arc)]
-pub trait AddressResolver: Send + Sync {
+pub(crate) trait AddressResolver: Send + Sync {
     async fn resolve_remote(
         &self,
         remote_addr: &Url,
@@ -687,20 +687,7 @@ pub trait AddressResolver: Send + Sync {
     ) -> AddressResolution;
 }
 
-pub struct NoopAddressResolver;
-
-#[async_trait::async_trait]
-impl AddressResolver for NoopAddressResolver {
-    async fn resolve_remote(
-        &self,
-        _remote_addr: &Url,
-        _default_port: Option<u16>,
-    ) -> AddressResolution {
-        AddressResolution::Unavailable
-    }
-}
-
-pub struct DnsAddressResolver {
+pub(crate) struct DnsAddressResolver {
     dns: Arc<dyn DnsResolver>,
     context: SocketContext,
 }
@@ -818,24 +805,6 @@ impl PeerManagerCore {
             dns,
             dns_context,
             None,
-            nic_channel,
-        )
-    }
-
-    pub fn new_portable_with_dns_context_and_stun_info_source(
-        config: PortablePeerManagerConfig,
-        dns: Arc<dyn DnsResolver>,
-        dns_context: SocketContext,
-        stun_info_source: Arc<dyn PeerStunInfoSource>,
-        nic_channel: PacketRecvChan,
-    ) -> anyhow::Result<Self> {
-        let runtime_config = Self::portable_runtime_config_store(&config);
-        Self::new_portable_with_optional_stun_info_source(
-            config,
-            runtime_config,
-            dns,
-            dns_context,
-            Some(stun_info_source),
             nic_channel,
         )
     }
@@ -1031,41 +1000,6 @@ impl PeerManagerCore {
         let mut core = result.core;
         core.owns_maintenance_tasks = true;
         Ok(core)
-    }
-
-    /// Builds the default peer control-plane graph with an optional host RPC
-    /// registrar. Foreign contexts and their lifecycle remain core-owned.
-    #[allow(clippy::too_many_arguments)]
-    pub fn new_with_foreign_rpc_registrar(
-        route_algo: RouteAlgoType,
-        my_peer_id: PeerId,
-        context: Arc<CorePeerContext>,
-        public_ipv6_runtime: Arc<dyn PublicIpv6Runtime>,
-        nic_channel: PacketRecvChan,
-        encryptor: Arc<dyn Encryptor + 'static>,
-        is_secure_mode_enabled: bool,
-        data_compress_algo: CompressorAlgo,
-        exit_nodes: Vec<IpAddr>,
-        address_resolver: Arc<dyn AddressResolver>,
-        foreign_context_default_flags: FlagsInConfig,
-        foreign_rpc_registrar: Arc<dyn ForeignNetworkRpcRegistrar>,
-    ) -> PeerManagerCoreBuildResult {
-        let mut result = Self::new_with_default_components(
-            route_algo,
-            my_peer_id,
-            context,
-            public_ipv6_runtime,
-            nic_channel,
-            encryptor,
-            is_secure_mode_enabled,
-            data_compress_algo,
-            exit_nodes,
-            address_resolver,
-            foreign_context_default_flags,
-            foreign_rpc_registrar,
-        );
-        result.core.owns_maintenance_tasks = true;
-        result
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1295,7 +1229,6 @@ impl PeerManagerCore {
                 counters: self_tx_counters,
                 owns_maintenance_tasks: false,
             },
-            foreign_network_manager,
         }
     }
 
@@ -1303,7 +1236,7 @@ impl PeerManagerCore {
         self.my_peer_id
     }
 
-    pub fn credential_manager(&self) -> Arc<CredentialManager> {
+    pub(crate) fn credential_manager(&self) -> Arc<CredentialManager> {
         self.credential_manager.clone()
     }
 
@@ -1573,7 +1506,7 @@ impl PeerManagerCore {
             .push(permanent_nic_pipeline_entry(pipeline));
     }
 
-    pub async fn add_managed_packet_process_pipeline(
+    pub(crate) async fn add_managed_packet_process_pipeline(
         &self,
         pipeline: BoxPeerPacketFilter,
     ) -> PipelineRegistrationGuard {
@@ -1584,7 +1517,8 @@ impl PeerManagerCore {
         guard
     }
 
-    pub async fn add_managed_nic_packet_process_pipeline(
+    #[cfg(feature = "proxy-packet")]
+    pub(crate) async fn add_managed_nic_packet_process_pipeline(
         &self,
         pipeline: BoxNicPacketFilter,
     ) -> PipelineRegistrationGuard {
@@ -1879,11 +1813,11 @@ impl crate::hole_punch::tcp::TcpHolePunchTunnelSink for PeerManagerCore {
 
 #[async_trait::async_trait]
 #[auto_impl::auto_impl(&, Arc)]
-pub trait ForeignPeerConnectionCloser: Send + Sync {
+pub(crate) trait ForeignPeerConnectionCloser: Send + Sync {
     async fn close_peer_conn(&self, peer_id: PeerId, conn_id: &PeerConnId) -> Result<(), Error>;
 }
 
-pub async fn close_peer_conn(
+pub(crate) async fn close_peer_conn(
     peers: &PeerMap,
     foreign_network_client: &ForeignNetworkClient,
     foreign_network_manager: &(dyn ForeignPeerConnectionCloser + Send + Sync),
@@ -1914,7 +1848,7 @@ pub async fn close_peer_conn(
 
 #[async_trait::async_trait]
 #[auto_impl::auto_impl(&, Arc)]
-pub trait ForeignNetworkConnectionAdmission: Send + Sync {
+pub(crate) trait ForeignNetworkConnectionAdmission: Send + Sync {
     fn allow_client_foreign_network(&self) -> bool {
         true
     }
@@ -1930,7 +1864,7 @@ pub trait ForeignNetworkConnectionAdmission: Send + Sync {
     async fn add_peer_conn(&self, peer_conn: PeerConn) -> Result<(), Error>;
 }
 
-pub struct PeerConnectionAdmission {
+pub(crate) struct PeerConnectionAdmission {
     my_peer_id: PeerId,
     context: ArcPeerContext,
     peers: Arc<PeerMap>,
@@ -2168,9 +2102,9 @@ impl PeerConnectionAdmission {
 
 // Keep lazy-p2p demand alive across the 5s task rescan interval and a full on-demand
 // connect attempt, without retaining extra per-task state in the hot path.
-pub const RECENT_HAVE_TRAFFIC_TTL: Duration = Duration::from_secs(30);
+pub(crate) const RECENT_HAVE_TRAFFIC_TTL: Duration = Duration::from_secs(30);
 
-pub fn should_mark_recent_traffic_for_fanout(total_dst_peers: usize) -> bool {
+pub(crate) fn should_mark_recent_traffic_for_fanout(total_dst_peers: usize) -> bool {
     total_dst_peers <= 1
 }
 
@@ -2199,7 +2133,7 @@ fn gc_recent_traffic_entries<F>(
 }
 
 #[derive(Clone)]
-pub struct RecentTrafficTracker {
+pub(crate) struct RecentTrafficTracker {
     my_peer_id: PeerId,
     recent_have_traffic: Arc<DashMap<PeerId, Instant>>,
     p2p_demand_notify: Arc<ExternalTaskSignal>,
@@ -2278,7 +2212,7 @@ impl RecentTrafficTracker {
     }
 }
 
-pub struct PeerMaintenanceTasks {
+pub(crate) struct PeerMaintenanceTasks {
     peer_map: Arc<PeerMap>,
     relay_peer_map: Arc<RelayPeerMap>,
     recent_traffic: RecentTrafficTracker,
@@ -2420,7 +2354,7 @@ impl PeerMaintenanceTasks {
     }
 }
 
-pub async fn try_compress_and_encrypt(
+pub(crate) async fn try_compress_and_encrypt(
     compress_algo: CompressorAlgo,
     encryptor: &Arc<dyn Encryptor + 'static>,
     msg: &mut ZCPacket,
@@ -2444,7 +2378,7 @@ struct PeerOutboundPacketRouterCounters {
     compress_tx_bytes_after: CounterHandle,
 }
 
-pub struct PeerOutboundPacketRouter {
+pub(crate) struct PeerOutboundPacketRouter {
     my_peer_id: PeerId,
     context: ArcPeerContext,
     host_routing: HostRoutingPolicy,
@@ -2910,7 +2844,7 @@ struct PeerPacketRouterCounters {
     compress_rx_bytes_after: CounterHandle,
 }
 
-pub struct PeerPacketRouter {
+pub(crate) struct PeerPacketRouter {
     packet_recv: PacketRecvChanReceiver,
     my_peer_id: PeerId,
     peers: Arc<PeerMap>,
@@ -3202,7 +3136,7 @@ impl PeerPacketRouter {
 
 #[async_trait::async_trait]
 #[auto_impl::auto_impl(&, Arc)]
-pub trait ForeignNetworkPacketHandler: Send + Sync + 'static {
+pub(crate) trait ForeignNetworkPacketHandler: Send + Sync + 'static {
     fn get_network_peer_id(&self, network_name: &str) -> Option<PeerId>;
 
     async fn forward_foreign_network_packet(
@@ -3213,11 +3147,11 @@ pub trait ForeignNetworkPacketHandler: Send + Sync + 'static {
     ) -> anyhow::Result<()>;
 }
 
-pub fn is_relay_data_packet(packet_type: u8) -> bool {
+pub(crate) fn is_relay_data_packet(packet_type: u8) -> bool {
     super::traffic_metrics::is_relay_data_packet_type(packet_type)
 }
 
-pub fn is_relay_data_zc_packet(packet: &ZCPacket) -> bool {
+pub(crate) fn is_relay_data_zc_packet(packet: &ZCPacket) -> bool {
     let Some(hdr) = packet.peer_manager_header() else {
         return false;
     };
@@ -3236,7 +3170,7 @@ pub fn is_relay_data_zc_packet(packet: &ZCPacket) -> bool {
     is_relay_data_packet(hdr.packet_type)
 }
 
-pub async fn try_handle_foreign_network_packet<H>(
+pub(crate) async fn try_handle_foreign_network_packet<H>(
     mut packet: ZCPacket,
     my_peer_id: PeerId,
     peer_map: &PeerMap,
@@ -3353,7 +3287,7 @@ where
     }
 }
 
-pub struct PeerManagerRouteInterface {
+pub(crate) struct PeerManagerRouteInterface {
     my_peer_id: PeerId,
     peers: Weak<PeerMap>,
     foreign_network_client: Weak<ForeignNetworkClient>,
@@ -3449,7 +3383,7 @@ impl RouteInterface for PeerManagerRouteInterface {
     }
 }
 
-pub fn peer_manager_route_interface(
+pub(crate) fn peer_manager_route_interface(
     my_peer_id: PeerId,
     peers: Weak<PeerMap>,
     foreign_network_client: Weak<ForeignNetworkClient>,
@@ -3463,7 +3397,7 @@ pub fn peer_manager_route_interface(
     ))
 }
 
-pub async fn send_msg_internal(
+pub(crate) async fn send_msg_internal(
     peers: &PeerMap,
     foreign_network_client: &Arc<ForeignNetworkClient>,
     relay_peer_map: &Arc<RelayPeerMap>,

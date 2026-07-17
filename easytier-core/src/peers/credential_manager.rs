@@ -22,7 +22,7 @@ fn current_unix_timestamp() -> i64 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CredentialEntry {
+pub(crate) struct CredentialEntry {
     pubkey: String,
     #[serde(default)]
     secret: String,
@@ -85,7 +85,7 @@ pub trait CredentialStorage: Send + Sync + 'static {
     fn store(&self, serialized_credentials: &str) -> anyhow::Result<()>;
 }
 
-pub struct CredentialManager {
+pub(crate) struct CredentialManager {
     credentials: Mutex<HashMap<String, CredentialEntry>>,
     storage: Option<Arc<dyn CredentialStorage>>,
     storage_write: Mutex<()>,
@@ -101,14 +101,6 @@ impl CredentialManager {
     pub fn new() -> Self {
         Self {
             credentials: Mutex::new(HashMap::new()),
-            storage: None,
-            storage_write: Mutex::new(()),
-        }
-    }
-
-    pub fn from_entries(credentials: HashMap<String, CredentialEntry>) -> Self {
-        Self {
-            credentials: Mutex::new(credentials),
             storage: None,
             storage_write: Mutex::new(()),
         }
@@ -138,6 +130,7 @@ impl CredentialManager {
         f(&credentials)
     }
 
+    #[cfg(test)]
     pub fn generate_credential(
         &self,
         groups: Vec<String>,
@@ -155,6 +148,7 @@ impl CredentialManager {
         )
     }
 
+    #[cfg(test)]
     pub fn generate_credential_with_id(
         &self,
         groups: Vec<String>,

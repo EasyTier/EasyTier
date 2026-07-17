@@ -316,7 +316,7 @@ impl Debug for PeerConn {
 }
 
 impl PeerConn {
-    pub fn new(
+    pub(crate) fn new(
         my_peer_id: PeerId,
         context: ArcPeerContext,
         tunnel: Box<dyn Tunnel>,
@@ -325,7 +325,7 @@ impl PeerConn {
         Self::new_with_peer_id_hint(my_peer_id, context, tunnel, None, peer_session_store)
     }
 
-    pub fn new_with_peer_id_hint(
+    pub(crate) fn new_with_peer_id_hint(
         my_peer_id: PeerId,
         context: ArcPeerContext,
         tunnel: Box<dyn Tunnel>,
