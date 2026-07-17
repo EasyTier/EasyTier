@@ -34,7 +34,7 @@ jobs:
           # All of these options are optional, so you can remove them if you are happy with the defaults
           concurrent_skipping: 'never'
           skip_after_successful_duplicate: 'true'
-          paths: '["Cargo.toml", "Cargo.lock", "easytier/**", "easytier-core/**", "easytier-proto/**", "easytier-web/**", "easytier-gui/src-tauri/**", "easytier-contrib/**", "script/check-core-module-boundaries.sh", ".github/workflows/test.yml", ".github/actions/**"]'
+          paths: '["Cargo.toml", "Cargo.lock", "easytier/**", "easytier-core/**", "easytier-proto/**", "easytier-web/**", "easytier-gui/src-tauri/**", "easytier-contrib/**", "script/check-core-module-boundaries.py", ".github/workflows/test.yml", ".github/actions/**"]'
 
   check:
     name: Run linters & check
@@ -45,7 +45,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Check core module boundaries
-        run: ./script/check-core-module-boundaries.sh
+        run: python3 ./script/check-core-module-boundaries.py
 
       - name: Prepare build environment
         uses: ./.github/actions/prepare-build

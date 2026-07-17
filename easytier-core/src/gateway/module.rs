@@ -26,7 +26,7 @@ use tokio::{
 };
 
 use crate::{
-    config::runtime::CoreRuntimeConfigStore,
+    config::{gateway::PortForwardConfig, runtime::CoreRuntimeConfigStore},
     gateway::{
         proxy::{
             runtime::TcpProxyStream,
@@ -62,7 +62,7 @@ use crate::{
     },
 };
 
-use super::{GatewayEvent, GatewayEventSink, PortForwardConfig};
+use super::{GatewayEvent, GatewayEventSink};
 
 mod dataplane;
 

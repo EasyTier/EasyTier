@@ -146,7 +146,7 @@ counter-examples rather than hiding them behind compatibility re-exports:
 | `foundation/token_bucket -> peers::context::ByteLimiter` | S10: the ByteLimiter trait settles in `foundation` |
 
 Enforcement is by convention plus
-[`script/check-core-module-boundaries.sh`](../script/check-core-module-boundaries.sh):
+[`script/check-core-module-boundaries.py`](../script/check-core-module-boundaries.py):
 `pub(crate)` by default with each layer's `mod.rs` declaring its outward
 surface, and a source gate for the boundaries that have converged. Rust has
 no package-level visibility; the compiler is not expected to enforce layers.
@@ -155,9 +155,10 @@ no package-level visibility; the compiler is not expected to enforce layers.
 
 The S11 gate checks the clean foundation and packet layers, production socket
 code, the host seam, the resolved config/listener/peers/gateway directions,
-obsolete module paths, and the required physical layout. It is intentionally
-conservative rather than pretending a regular expression is a complete Rust
-dependency parser.
+obsolete module paths, and the required physical layout. Its dependency-free
+scanner ignores comments and literals, expands Rust `use` trees, and resolves
+explicit `crate`/`self`/`super` paths. It remains a source gate rather than a
+compiler-resolved dependency graph.
 
 The following pre-existing upward edges remain explicit architecture debt and
 are not presented as solved by this layout series:

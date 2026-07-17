@@ -34,12 +34,23 @@ impl SmolTcpStack {
         let (ingress_tx, mut ingress_rx) = mpsc::channel::<ZCPacket>(1000);
         tasks.lock().unwrap().spawn(async move {
             while let Some(packet) = ingress_rx.recv().await {
-                tracing::trace!(?packet, "receive from peer send to smoltcp packet");
+                tracing::trace!(
+                    target: "easytier_core::gateway::stack",
+                    ?packet,
+                    "receive from peer send to smoltcp packet"
+                );
                 if let Err(err) = stack_sink.send(Ok(packet.payload().to_vec())).await {
-                    tracing::error!(?err, "send to smoltcp stack failed");
+                    tracing::error!(
+                        target: "easytier_core::gateway::stack",
+                        ?err,
+                        "send to smoltcp stack failed"
+                    );
                 }
             }
-            tracing::error!("smoltcp stack sink exited");
+            tracing::error!(
+                target: "easytier_core::gateway::stack",
+                "smoltcp stack sink exited"
+            );
         });
 
         let interface_config = smoltcp::iface::Config::new(smoltcp::wire::HardwareAddress::Ip);
@@ -105,10 +116,16 @@ impl SmolTcpStack {
                         anyhow::anyhow!("smol tcp listener accept failed: {:?}", err)
                     }));
             } else {
-                tracing::error!("smol tcp listener accept timeout");
+                tracing::error!(
+                    target: "easytier_core::gateway::stack",
+                    "smol tcp listener accept timeout"
+                );
             }
         });
-        tracing::info!("smol tcp listener added");
+        tracing::info!(
+            target: "easytier_core::gateway::stack",
+            "smol tcp listener added"
+        );
     }
 
     pub async fn accept(&self) -> anyhow::Result<(SocketAddr, Box<dyn TcpProxyStream>)> {
@@ -119,7 +136,11 @@ impl SmolTcpStack {
             .recv()
             .await
             .ok_or_else(|| anyhow::anyhow!("smoltcp listener closed"))??;
-        tracing::info!(?src, "smol tcp listener accepted");
+        tracing::info!(
+            target: "easytier_core::gateway::stack",
+            ?src,
+            "smol tcp listener accepted"
+        );
         Ok((src, Box::new(stream)))
     }
 }
