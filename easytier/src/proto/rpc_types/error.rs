@@ -9,11 +9,11 @@ pub enum Error {
     #[error("Rust error: {0}")]
     ExecutionError(#[from] anyhow::Error),
 
-    #[error("Decode error: {0}")]
-    DecodeError(#[from] prost::DecodeError),
+    #[error("Decode error")]
+    DecodeError,
 
-    #[error("Encode error: {0}")]
-    EncodeError(#[from] prost::EncodeError),
+    #[error("Encode error")]
+    EncodeError,
 
     #[error("Invalid method index: {0}, service: {1}")]
     InvalidMethodIndex(u8, String),
@@ -32,6 +32,18 @@ pub enum Error {
 
     #[error("Shutdown")]
     Shutdown,
+}
+
+impl From<prost::DecodeError> for Error {
+    fn from(_: prost::DecodeError) -> Self {
+        Error::DecodeError
+    }
+}
+
+impl From<prost::EncodeError> for Error {
+    fn from(_: prost::EncodeError) -> Self {
+        Error::EncodeError
+    }
 }
 
 pub type Result<T> = result::Result<T, Error>;

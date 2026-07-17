@@ -41,8 +41,8 @@ runs:
         pnpm -r install
         if [ -n "${{ inputs.build-filter }}" ]; then
           echo "Building with filter: ${{ inputs.build-filter }}"
-          pnpm -r --filter "${{ inputs.build-filter }}" build
+          pnpm -r --workspace-concurrency=1 --filter "${{ inputs.build-filter }}" build
         else
           echo "No build filter provided, building all packages"
-          pnpm -r build
+          pnpm -r --workspace-concurrency=1 build
         fi

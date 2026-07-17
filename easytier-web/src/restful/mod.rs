@@ -307,7 +307,7 @@ impl RestfulServer {
     async fn handle_list_all_sessions_internal(
         State(client_mgr): AppState,
     ) -> Result<Json<ListSessionJsonResp>, HttpHandleError> {
-        let ret = client_mgr.list_sessions().await;
+        let ret = client_mgr.list_all_sessions().await;
         Ok(ListSessionJsonResp(ret).into())
     }
 

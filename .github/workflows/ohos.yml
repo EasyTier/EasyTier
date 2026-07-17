@@ -35,6 +35,7 @@ jobs:
         with:
           gui: false
           pnpm: false
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
@@ -243,4 +244,3 @@ jobs:
              ohpm publish easytier-release.har
           fi
           curl --header "Content-Type: application/json" --request POST --data "{}" ${{ secrets.CODEARTS_WEBHOOKS }}
-

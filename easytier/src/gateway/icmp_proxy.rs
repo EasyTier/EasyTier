@@ -13,6 +13,7 @@ use pnet::packet::{
     ip::IpNextHeaderProtocols,
     ipv4::Ipv4Packet,
 };
+use quanta::Instant;
 use socket2::Socket;
 use tokio::{
     sync::{Mutex, mpsc::UnboundedSender},
@@ -45,7 +46,7 @@ struct IcmpNatEntry {
     src_peer_id: PeerId,
     my_peer_id: PeerId,
     src_ip: IpAddr,
-    start_time: std::time::Instant,
+    start_time: Instant,
     mapped_dst_ip: std::net::Ipv4Addr,
 }
 
@@ -60,7 +61,7 @@ impl IcmpNatEntry {
             src_peer_id,
             my_peer_id,
             src_ip,
-            start_time: std::time::Instant::now(),
+            start_time: Instant::now(),
             mapped_dst_ip,
         })
     }

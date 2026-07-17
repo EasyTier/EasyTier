@@ -5,6 +5,10 @@ pub(crate) fn init_config_store(root_dir: String) -> bool {
     config::repository::init_config_store(root_dir)
 }
 
+pub(crate) fn reset_config_store() -> bool {
+    config::repository::reset_config_store()
+}
+
 pub(crate) fn list_configs() -> String {
     config::repository::list_config_meta_json()
 }

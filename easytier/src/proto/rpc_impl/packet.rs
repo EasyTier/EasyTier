@@ -1,5 +1,7 @@
 use prost::{Message as _, length_delimiter_len};
 
+use quanta::Instant;
+
 use crate::{
     common::{PeerId, compressor::DefaultCompressor},
     proto::{
@@ -42,10 +44,10 @@ pub async fn decompress_packet(
     Ok(decompressed)
 }
 
-pub struct PacketMerger {
+pub(crate) struct PacketMerger {
     first_piece: Option<RpcPacket>,
     pieces: Vec<RpcPacket>,
-    last_updated: std::time::Instant,
+    last_updated: Instant,
 }
 
 impl Default for PacketMerger {
@@ -59,7 +61,7 @@ impl PacketMerger {
         Self {
             first_piece: None,
             pieces: Vec::new(),
-            last_updated: std::time::Instant::now(),
+            last_updated: Instant::now(),
         }
     }
 
@@ -132,12 +134,12 @@ impl PacketMerger {
             .resize(total_pieces as usize, Default::default());
         self.pieces[piece_idx as usize] = rpc_packet;
 
-        self.last_updated = std::time::Instant::now();
+        self.last_updated = Instant::now();
 
         Ok(self.try_merge_pieces())
     }
 
-    pub fn last_updated(&self) -> std::time::Instant {
+    pub(crate) fn last_updated(&self) -> Instant {
         self.last_updated
     }
 }

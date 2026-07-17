@@ -5,6 +5,11 @@ use std::io;
 use clap::Command;
 use clap_complete::{Generator, Shell};
 
+// Re-export `Instant` at the crate root so public APIs that expose it
+// (e.g. `Route::get_peer_info_last_update_time`) reference a deliberate
+// public type rather than leaking an inaccessible one.
+pub use quanta::Instant;
+
 mod arch;
 mod gateway;
 pub mod instance;

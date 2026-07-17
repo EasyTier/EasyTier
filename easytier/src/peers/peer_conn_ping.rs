@@ -6,6 +6,7 @@ use std::{
     time::Duration,
 };
 
+use quanta::Instant;
 use rand::{Rng, thread_rng};
 use tokio::{
     sync::broadcast,
@@ -177,7 +178,7 @@ impl PeerConnPinger {
         sink.send(req).await?;
         control_metrics.record_tx(req_len);
 
-        let now = std::time::Instant::now();
+        let now = Instant::now();
         // wait until we get a pong packet in ctrl_resp_receiver
         let resp = timeout(Duration::from_secs(2), async {
             loop {

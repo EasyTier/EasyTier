@@ -477,6 +477,12 @@ struct PublicIpv6Lab {
     extra_bridges: [&'static str; 2],
 }
 
+#[derive(Clone, Copy)]
+enum PublicIpv6LabTopology {
+    DelegatedPrefix,
+    OnLinkPrefix,
+}
+
 impl PublicIpv6Lab {
     const PROVIDER_NS: &'static str = "net_a";
     const CLIENT_NS: &'static str = "net_b";
@@ -490,11 +496,13 @@ impl PublicIpv6Lab {
     const PROVIDER_DEFAULT_FROM: &'static str = "2001:db8:100::/64";
     const PROVIDER_WAN_ADDR: &'static str = "2001:db8:ffff:1::2/64";
     const UPSTREAM_WAN_ADDR: &'static str = "2001:db8:ffff:1::1/64";
+    const ON_LINK_PROVIDER_WAN_ADDR: &'static str = "2001:db8:100::2/64";
+    const ON_LINK_UPSTREAM_WAN_ADDR: &'static str = "2001:db8:100::1/64";
     const UPSTREAM_SERVER_ADDR: &'static str = "2001:db8:ffff:2::1/64";
     const SERVER_ADDR: &'static str = "2001:db8:ffff:2::100/64";
     const SERVER_IP: &'static str = "2001:db8:ffff:2::100";
 
-    fn setup() -> Self {
+    fn setup_with_topology(topology: PublicIpv6LabTopology) -> Self {
         prepare_linux_namespaces();
 
         del_netns(Self::UPSTREAM_NS);
@@ -544,13 +552,23 @@ impl PublicIpv6Lab {
             Self::SERVER_BRIDGE,
         );
 
+        let (provider_wan_addr, upstream_wan_addr) = match topology {
+            PublicIpv6LabTopology::DelegatedPrefix => {
+                (Self::PROVIDER_WAN_ADDR, Self::UPSTREAM_WAN_ADDR)
+            }
+            PublicIpv6LabTopology::OnLinkPrefix => (
+                Self::ON_LINK_PROVIDER_WAN_ADDR,
+                Self::ON_LINK_UPSTREAM_WAN_ADDR,
+            ),
+        };
+
         run_ip_in_ns(
             Self::PROVIDER_NS,
-            &["addr", "add", Self::PROVIDER_WAN_ADDR, "dev", "pubwan0"],
+            &["addr", "add", provider_wan_addr, "dev", "pubwan0"],
         );
         run_ip_in_ns(
             Self::UPSTREAM_NS,
-            &["addr", "add", Self::UPSTREAM_WAN_ADDR, "dev", "upwan0"],
+            &["addr", "add", upstream_wan_addr, "dev", "upwan0"],
         );
         run_ip_in_ns(
             Self::UPSTREAM_NS,
@@ -561,37 +579,56 @@ impl PublicIpv6Lab {
             &["addr", "add", Self::SERVER_ADDR, "dev", "srv0"],
         );
 
-        run_ip_in_ns(
-            Self::PROVIDER_NS,
-            &["link", "add", "pubprefix0", "type", "dummy"],
-        );
-        run_ip_in_ns(Self::PROVIDER_NS, &["link", "set", "pubprefix0", "up"]);
-        run_ip_in_ns(
-            Self::PROVIDER_NS,
-            &[
-                "-6",
-                "route",
-                "add",
-                Self::PROVIDER_PREFIX,
-                "dev",
-                "pubprefix0",
-            ],
-        );
-        run_ip_in_ns(
-            Self::PROVIDER_NS,
-            &[
-                "-6",
-                "route",
-                "add",
-                "default",
-                "from",
-                Self::PROVIDER_DEFAULT_FROM,
-                "via",
-                "2001:db8:ffff:1::1",
-                "dev",
-                "pubwan0",
-            ],
-        );
+        match topology {
+            PublicIpv6LabTopology::DelegatedPrefix => {
+                run_ip_in_ns(
+                    Self::PROVIDER_NS,
+                    &["link", "add", "pubprefix0", "type", "dummy"],
+                );
+                run_ip_in_ns(Self::PROVIDER_NS, &["link", "set", "pubprefix0", "up"]);
+                run_ip_in_ns(
+                    Self::PROVIDER_NS,
+                    &[
+                        "-6",
+                        "route",
+                        "add",
+                        Self::PROVIDER_PREFIX,
+                        "dev",
+                        "pubprefix0",
+                    ],
+                );
+                run_ip_in_ns(
+                    Self::PROVIDER_NS,
+                    &[
+                        "-6",
+                        "route",
+                        "add",
+                        "default",
+                        "from",
+                        Self::PROVIDER_DEFAULT_FROM,
+                        "via",
+                        "2001:db8:ffff:1::1",
+                        "dev",
+                        "pubwan0",
+                    ],
+                );
+            }
+            PublicIpv6LabTopology::OnLinkPrefix => {
+                run_ip_in_ns(
+                    Self::PROVIDER_NS,
+                    &[
+                        "-6",
+                        "route",
+                        "add",
+                        "default",
+                        "via",
+                        "2001:db8:100::1",
+                        "dev",
+                        "pubwan0",
+                    ],
+                );
+            }
+        }
 
         run_ip_in_ns(
             Self::SERVER_NS,
@@ -606,19 +643,21 @@ impl PublicIpv6Lab {
                 "srv0",
             ],
         );
-        run_ip_in_ns(
-            Self::UPSTREAM_NS,
-            &[
-                "-6",
-                "route",
-                "add",
-                Self::PROVIDER_PREFIX,
-                "via",
-                "2001:db8:ffff:1::2",
-                "dev",
-                "upwan0",
-            ],
-        );
+        if matches!(topology, PublicIpv6LabTopology::DelegatedPrefix) {
+            run_ip_in_ns(
+                Self::UPSTREAM_NS,
+                &[
+                    "-6",
+                    "route",
+                    "add",
+                    Self::PROVIDER_PREFIX,
+                    "via",
+                    "2001:db8:ffff:1::2",
+                    "dev",
+                    "upwan0",
+                ],
+            );
+        }
 
         run_sysctl_in_ns(Self::PROVIDER_NS, "net.ipv6.conf.all.forwarding=1");
         run_sysctl_in_ns(Self::UPSTREAM_NS, "net.ipv6.conf.all.forwarding=1");
@@ -672,7 +711,15 @@ fn get_public_ipv6_config(
 async fn init_public_ipv6_two_node(
     client_inst_id: uuid::Uuid,
 ) -> (PublicIpv6Lab, Instance, Instance) {
-    let lab = PublicIpv6Lab::setup();
+    init_public_ipv6_two_node_with_topology(client_inst_id, PublicIpv6LabTopology::DelegatedPrefix)
+        .await
+}
+
+async fn init_public_ipv6_two_node_with_topology(
+    client_inst_id: uuid::Uuid,
+    topology: PublicIpv6LabTopology,
+) -> (PublicIpv6Lab, Instance, Instance) {
+    let lab = PublicIpv6Lab::setup_with_topology(topology);
 
     let provider_cfg = get_public_ipv6_config(
         "provider_public_ipv6",
@@ -754,6 +801,13 @@ fn route_exists_in_ns(ns: &str, needle: &str) -> bool {
 
 fn addr_exists_in_ns(ns: &str, dev: &str, needle: &str) -> bool {
     run_ip_in_ns_output(ns, &["-6", "addr", "show", "dev", dev]).contains(needle)
+}
+
+fn ndp_proxy_exists_in_ns(ns: &str, dev: &str, addr: std::net::Ipv6Addr) -> bool {
+    let addr = addr.to_string();
+    run_ip_in_ns_output(ns, &["-6", "neigh", "show", "proxy", "dev", dev])
+        .lines()
+        .any(|line| line.split_whitespace().next() == Some(addr.as_str()))
 }
 
 #[tokio::test]
@@ -872,6 +926,67 @@ pub async fn public_ipv6_auto_addr_end_to_end() {
             .await
         },
         Duration::from_secs(10),
+    )
+    .await;
+
+    drop_insts(vec![provider, client]).await;
+}
+
+#[tokio::test]
+#[serial_test::serial]
+pub async fn public_ipv6_auto_addr_on_link_ndp_proxy_end_to_end() {
+    let client_id = uuid::Uuid::parse_str("44444444-4444-4444-4444-444444444444").unwrap();
+    let (_lab, provider, client) =
+        init_public_ipv6_two_node_with_topology(client_id, PublicIpv6LabTopology::OnLinkPrefix)
+            .await;
+
+    wait_for_condition(
+        || async {
+            provider
+                .get_global_ctx()
+                .get_advertised_ipv6_public_addr_prefix()
+                == Some(PublicIpv6Lab::PROVIDER_PREFIX.parse().unwrap())
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    let leased = wait_for_public_ipv6_addr(&client).await;
+    wait_for_public_ipv6_route(&provider, leased).await;
+
+    wait_for_condition(
+        || async {
+            addr_exists_in_ns(
+                PublicIpv6Lab::CLIENT_NS,
+                PublicIpv6Lab::CLIENT_TUN,
+                &leased.to_string(),
+            ) && route_exists_in_ns(
+                PublicIpv6Lab::PROVIDER_NS,
+                &format!("{} dev {}", leased.address(), PublicIpv6Lab::PROVIDER_TUN),
+            )
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    wait_for_condition(
+        || async {
+            ndp_proxy_exists_in_ns(PublicIpv6Lab::PROVIDER_NS, "pubwan0", leased.address())
+        },
+        Duration::from_secs(20),
+    )
+    .await;
+
+    wait_for_condition(
+        || async {
+            ping6_test(
+                PublicIpv6Lab::SERVER_NS,
+                leased.address().to_string().as_str(),
+                None,
+            )
+            .await
+        },
+        Duration::from_secs(20),
     )
     .await;
 
@@ -2119,6 +2234,124 @@ pub async fn port_forward_test(
     .unwrap();
 
     drop_insts(_insts).await;
+}
+
+#[rstest::rstest]
+#[case(false, false)]
+#[case(true, false)]
+#[case(true, true)]
+#[serial_test::serial]
+#[tokio::test]
+pub async fn port_forward_with_inbound_default_drop_acl_test(
+    #[case] dhcp: bool,
+    #[case] enable_quic_proxy: bool,
+) {
+    use crate::proto::acl::*;
+
+    let acl = Acl {
+        acl_v1: Some(AclV1 {
+            chains: vec![Chain {
+                name: "drop_unsolicited_inbound".to_string(),
+                chain_type: ChainType::Inbound as i32,
+                enabled: true,
+                default_action: Action::Drop as i32,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+    };
+
+    let insts = init_three_node_ex(
+        "udp",
+        |cfg| {
+            if cfg.get_inst_name() == "inst1" {
+                if dhcp {
+                    cfg.set_ipv4(None);
+                    cfg.set_dhcp(true);
+                }
+                cfg.set_acl(Some(acl.clone()));
+                cfg.set_port_forwards(vec![
+                    PortForwardConfig {
+                        bind_addr: "0.0.0.0:23456".parse().unwrap(),
+                        dst_addr: "10.144.144.3:23456".parse().unwrap(),
+                        proto: "tcp".to_string(),
+                    },
+                    PortForwardConfig {
+                        bind_addr: "0.0.0.0:23457".parse().unwrap(),
+                        dst_addr: "10.1.2.4:23457".parse().unwrap(),
+                        proto: "tcp".to_string(),
+                    },
+                ]);
+
+                let mut flags = cfg.get_flags();
+                flags.no_tun = true;
+                flags.enable_kcp_proxy = false;
+                flags.enable_quic_proxy = enable_quic_proxy;
+                cfg.set_flags(flags);
+            } else if cfg.get_inst_name() == "inst3" {
+                cfg.add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None)
+                    .unwrap();
+
+                let mut flags = cfg.get_flags();
+                flags.disable_kcp_input = true;
+                flags.disable_quic_input = !enable_quic_proxy;
+                cfg.set_flags(flags);
+            } else if cfg.get_inst_name() == "inst2" {
+                let mut flags = cfg.get_flags();
+                flags.disable_relay_kcp = true;
+                cfg.set_flags(flags);
+            }
+
+            cfg
+        },
+        false,
+    )
+    .await;
+
+    if dhcp {
+        wait_for_condition(
+            || async { insts[0].get_global_ctx().get_ipv4().is_some() },
+            Duration::from_secs(5),
+        )
+        .await;
+    }
+
+    for (bind_port, server_ns) in [(23456, "net_c"), (23457, "net_d")] {
+        let tcp_listener =
+            TcpTunnelListener::new(format!("tcp://0.0.0.0:{bind_port}").parse().unwrap());
+        let tcp_connector =
+            TcpTunnelConnector::new(format!("tcp://127.0.0.1:{bind_port}").parse().unwrap());
+
+        let mut buf = vec![0; 64];
+        rand::thread_rng().fill(&mut buf[..]);
+
+        let result = _tunnel_pingpong_netns_with_timeout(
+            tcp_listener,
+            tcp_connector,
+            NetNS::new(Some(server_ns.into())),
+            NetNS::new(Some("net_a".into())),
+            buf,
+            Duration::from_secs(1),
+        )
+        .await;
+
+        let stats = insts[0].get_global_ctx().get_acl_filter().get_stats();
+        println!(
+            "port forward source bind_port={} dhcp={} enable_quic_proxy={} ACL stats: {}",
+            bind_port, dhcp, enable_quic_proxy, stats
+        );
+
+        assert!(
+            result.is_ok(),
+            "port-forward TCP should complete through outbound ACL state, bind_port={}, dhcp={}, enable_quic_proxy={}; stats: {}",
+            bind_port,
+            dhcp,
+            enable_quic_proxy,
+            stats,
+        );
+    }
+
+    drop_insts(insts).await;
 }
 
 #[rstest::rstest]
@@ -3653,6 +3886,25 @@ pub async fn config_patch_test() {
             true
         },
     );
+    let patch = InstanceConfigPatch {
+        proxy_networks: vec![ProxyNetworkPatch {
+            action: ConfigPatchAction::Clear as i32,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    insts[1]
+        .get_config_patcher()
+        .apply_patch(patch)
+        .await
+        .unwrap();
+    assert!(
+        insts[1]
+            .get_global_ctx()
+            .config
+            .get_proxy_cidrs()
+            .is_empty()
+    );
 
     // 测试1.1：修改公网 IPv6 provider 相关配置
     let public_prefix = "2001:db8:100::/64";
@@ -4203,7 +4455,7 @@ pub async fn relay_peer_session_cleanup() {
     insts[0]
         .get_peer_manager()
         .get_peer_session_store()
-        .evict_unused_sessions();
+        .evict_unused_sessions_idle(Duration::from_millis(0));
 
     wait_for_condition(
         || async { !relay_map_1.has_session(inst3_peer_id) },

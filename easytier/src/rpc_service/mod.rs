@@ -2,6 +2,7 @@ mod acl_manage;
 mod config;
 mod connector_manage;
 mod credential_manage;
+mod json_rpc;
 mod mapped_listener_manage;
 mod peer_center;
 mod peer_manage;
@@ -17,6 +18,7 @@ pub mod logger;
 pub mod remote_client;
 
 pub type ApiRpcServer<T> = self::api::ApiRpcServer<T>;
+pub use json_rpc::call_json_rpc;
 
 pub trait InstanceRpcService: Sync + Send {
     fn get_peer_manage_service(

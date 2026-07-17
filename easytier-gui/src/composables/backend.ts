@@ -1,12 +1,11 @@
 import { invoke } from '@tauri-apps/api/core'
 import { Api, NetworkTypes } from 'easytier-frontend-lib'
 import { GetNetworkMetasResponse } from 'node_modules/easytier-frontend-lib/dist/modules/api'
-
+import { type ConfigSource, normalizeConfigSource } from './config_source'
 
 type NetworkConfig = NetworkTypes.NetworkConfig
 type ValidateConfigResponse = Api.ValidateConfigResponse
 type ListNetworkInstanceIdResponse = Api.ListNetworkInstanceIdResponse
-type ConfigSource = 'user' | 'webhook' | 'legacy'
 interface ServiceOptions {
   config_dir: string
   rpc_portal: string
@@ -32,14 +31,14 @@ function parseStoredConfigs(raw: string | null): StoredGuiConfig[] {
     if (entry && typeof entry === 'object' && 'config' in entry) {
       const { config, source } = entry as {
         config?: NetworkConfig
-        source?: ConfigSource
+        source?: unknown
       }
       if (!config) {
         return []
       }
       return [{
         config: NetworkTypes.normalizeNetworkConfig(config),
-        source: source === 'user' || source === 'webhook' ? source : 'legacy',
+        source: normalizeConfigSource(source),
       }]
     }
 

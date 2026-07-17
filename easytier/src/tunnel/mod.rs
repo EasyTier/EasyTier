@@ -25,6 +25,7 @@ pub mod ring;
 pub mod stats;
 pub mod tcp;
 pub mod udp;
+pub(crate) mod udp_src;
 
 #[cfg(feature = "faketcp")]
 pub mod fake_tcp;

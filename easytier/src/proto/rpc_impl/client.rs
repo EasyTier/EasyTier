@@ -6,6 +6,7 @@ use bytes::Bytes;
 use dashmap::DashMap;
 use guarden::defer;
 use prost::Message;
+use quanta::Instant;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
@@ -52,7 +53,7 @@ struct InflightRequestKey {
 struct InflightRequest {
     sender: RpcPacketSender,
     merger: PacketMerger,
-    start_time: std::time::Instant,
+    start_time: Instant,
 }
 
 impl std::fmt::Debug for InflightRequest {
@@ -65,14 +66,14 @@ impl std::fmt::Debug for InflightRequest {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct PeerInfo {
+pub(crate) struct PeerInfo {
     pub peer_id: PeerId,
     pub compression_info: RpcCompressionInfo,
-    pub last_active: Option<std::time::Instant>,
+    pub last_active: Option<Instant>,
 }
 
 type InflightRequestTable = Arc<DashMap<InflightRequestKey, InflightRequest>>;
-pub type PeerInfoTable = Arc<DashMap<PeerId, PeerInfo>>;
+pub(crate) type PeerInfoTable = Arc<DashMap<PeerId, PeerInfo>>;
 
 pub struct Client {
     mpsc: Mutex<MpscTunnel<Box<dyn Tunnel>>>,
@@ -123,7 +124,7 @@ impl Client {
         tasks.spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-                let now = std::time::Instant::now();
+                let now = Instant::now();
                 peer_infos.retain(|_, v| {
                     if let Some(last_active) = v.last_active {
                         return now.duration_since(last_active)
@@ -230,7 +231,7 @@ impl Client {
                 method: <Self::Descriptor as ServiceDescriptor>::Method,
                 input: bytes::Bytes,
             ) -> Result<bytes::Bytes> {
-                let start_time = std::time::Instant::now();
+                let start_time = Instant::now();
                 let transaction_id = CUR_TID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let (tx, mut rx) = mpsc::unbounded_channel();
                 let key = InflightRequestKey {
@@ -314,7 +315,7 @@ impl Client {
                         PeerInfo {
                             peer_id: self.to_peer_id,
                             compression_info,
-                            last_active: Some(std::time::Instant::now()),
+                            last_active: Some(Instant::now()),
                         },
                     );
 
@@ -385,7 +386,7 @@ impl Client {
         self.inflight_requests.len()
     }
 
-    pub fn peer_info_table(&self) -> PeerInfoTable {
+    pub(crate) fn peer_info_table(&self) -> PeerInfoTable {
         self.peer_info.clone()
     }
 }

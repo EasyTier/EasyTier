@@ -5,6 +5,7 @@ use sha2::Sha256;
 use crate::common::PeerId;
 
 include!(concat!(env!("OUT_DIR"), "/peer_rpc.rs"));
+include!(concat!(env!("OUT_DIR"), "/peer_rpc.serde.rs"));
 
 impl PeerGroupInfo {
     pub fn generate_with_proof(group_name: String, group_secret: String, peer_id: PeerId) -> Self {

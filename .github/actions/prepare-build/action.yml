@@ -33,6 +33,19 @@ runs:
         sudo apt-get install -qqy build-essential mold musl-tools
       shell: bash
 
+    - name: Setup protoc
+      uses: arduino/setup-protoc@v3
+      with:
+        version: '35.1'
+        # GitHub repo token to use to avoid rate limiter
+        repo-token: ${{ inputs.token }}
+
+    - name: Verify protoc version
+      run: |
+        version="$(protoc --version | tr -d '\r')"
+        test "$version" = "libprotoc 35.1"
+      shell: bash
+
     - name: Setup Frontend Environment
       if: ${{ inputs.pnpm == 'true' }}
       uses: ./.github/actions/prepare-pnpm
@@ -82,9 +95,3 @@ runs:
         ar x libgcc.a _ctzsi2.o _clz.o _bswapsi2.o
         ar rcs libctz.a _ctzsi2.o _clz.o _bswapsi2.o
       shell: bash
-
-    - name: Setup protoc
-      uses: arduino/setup-protoc@v3
-      with:
-        # GitHub repo token to use to avoid rate limiter
-        repo-token: ${{ inputs.token }}

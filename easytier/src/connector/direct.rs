@@ -8,8 +8,10 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
+
+use quanta::Instant;
 
 use crate::{
     common::{
@@ -48,6 +50,7 @@ use url::Host;
 
 pub const DIRECT_CONNECTOR_SERVICE_ID: u32 = 1;
 pub const DIRECT_CONNECTOR_BLACKLIST_TIMEOUT_SEC: u64 = 300;
+const MAX_IPV6_HOLE_PUNCH_CONNECTOR_ADDRS: usize = 16;
 
 static TESTING: AtomicBool = AtomicBool::new(false);
 
@@ -80,6 +83,56 @@ fn is_usable_public_ipv6_candidate_with_mode(
                 && !ip.is_unique_local()
                 && !ip.is_unicast_link_local()
                 && !ip.is_multicast()))
+}
+
+fn push_ipv6_hole_punch_candidate(
+    candidates: &mut Vec<Ipv6Addr>,
+    ip: Ipv6Addr,
+    global_ctx: &ArcGlobalCtx,
+    limit: usize,
+) {
+    if candidates.len() >= limit
+        || !is_usable_public_ipv6_candidate(&ip, global_ctx)
+        || candidates.contains(&ip)
+    {
+        return;
+    }
+    candidates.push(ip);
+}
+
+async fn collect_ipv6_hole_punch_candidates(global_ctx: &ArcGlobalCtx) -> Vec<Ipv6Addr> {
+    let mut candidates = Vec::new();
+    for ip in global_ctx
+        .get_stun_info_collector()
+        .get_stun_info()
+        .public_ip
+        .iter()
+        .filter_map(|ip| ip.parse::<Ipv6Addr>().ok())
+    {
+        push_ipv6_hole_punch_candidate(
+            &mut candidates,
+            ip,
+            global_ctx,
+            MAX_IPV6_HOLE_PUNCH_CONNECTOR_ADDRS,
+        );
+    }
+
+    let ip_list = global_ctx.get_ip_collector().collect_ip_addrs().await;
+    for ip in ip_list
+        .interface_ipv6s
+        .iter()
+        .chain(ip_list.public_ipv6.iter())
+        .map(|ip| Ipv6Addr::from(*ip))
+    {
+        push_ipv6_hole_punch_candidate(
+            &mut candidates,
+            ip,
+            global_ctx,
+            MAX_IPV6_HOLE_PUNCH_CONNECTOR_ADDRS,
+        );
+    }
+
+    candidates
 }
 
 #[async_trait::async_trait]
@@ -151,7 +204,8 @@ impl DirectConnectorManagerData {
     async fn remote_send_udp_hole_punch_packet(
         &self,
         dst_peer_id: PeerId,
-        connector_addr: SocketAddr,
+        connector_addrs: Vec<SocketAddr>,
+        preferred_src_ipv6: Option<Ipv6Addr>,
         remote_url: &url::Url,
     ) -> Result<(), Error> {
         if !matches_scheme!(remote_url, TunnelScheme::Ip(IpScheme::Udp)) {
@@ -182,15 +236,17 @@ impl DirectConnectorManagerData {
             .send_udp_hole_punch_packet(
                 BaseController::default(),
                 SendUdpHolePunchPacketRequest {
+                    connector_addr: connector_addrs.first().copied().map(Into::into),
                     listener_port: listener_port as u32,
-                    connector_addr: Some(connector_addr.into()),
+                    preferred_src_ipv6: preferred_src_ipv6.map(Into::into),
+                    connector_addrs: connector_addrs.into_iter().map(Into::into).collect(),
                 },
             )
             .await
             .with_context(|| {
                 format!(
-                    "do rpc, send udp hole punch packet to peer {} at {}",
-                    dst_peer_id, remote_url
+                    "do rpc, send udp hole punch packet to peer {} at {} with preferred source {:?}",
+                    dst_peer_id, remote_url, preferred_src_ipv6
                 )
             })?;
 
@@ -207,23 +263,41 @@ impl DirectConnectorManagerData {
                 .await
                 .with_context(|| format!("failed to bind local socket for {}", remote_url))?,
         );
-        let connector_ip = self
-            .global_ctx
-            .get_stun_info_collector()
-            .get_stun_info()
-            .public_ip
-            .iter()
-            .filter_map(|ip| ip.parse::<Ipv6Addr>().ok())
-            .find(|ip| !self.global_ctx.is_ip_easytier_managed_ipv6(ip));
+        let connector_ips = collect_ipv6_hole_punch_candidates(&self.global_ctx).await;
 
         // ask remote to send v6 hole punch packet
         // and no matter what the result is, continue to connect
-        if let Some(connector_ip) = connector_ip {
-            let connector_addr =
-                SocketAddr::new(IpAddr::V6(connector_ip), local_socket.local_addr()?.port());
-            let _ = self
-                .remote_send_udp_hole_punch_packet(dst_peer_id, connector_addr, remote_url)
-                .await;
+        if !connector_ips.is_empty() {
+            let local_port = local_socket.local_addr()?.port();
+            let connector_addrs = connector_ips
+                .into_iter()
+                .map(|ip| SocketAddr::new(IpAddr::V6(ip), local_port))
+                .collect::<Vec<_>>();
+            let preferred_src_ipv6 = match remote_url.host() {
+                Some(Host::Ipv6(ip)) => Some(ip),
+                _ => None,
+            };
+            tracing::debug!(
+                ?connector_addrs,
+                ?preferred_src_ipv6,
+                ?remote_url,
+                "request remote IPv6 hole-punch packets"
+            );
+            if let Err(err) = self
+                .remote_send_udp_hole_punch_packet(
+                    dst_peer_id,
+                    connector_addrs,
+                    preferred_src_ipv6,
+                    remote_url,
+                )
+                .await
+            {
+                tracing::debug!(
+                    ?err,
+                    ?remote_url,
+                    "remote IPv6 hole-punch packet request failed"
+                );
+            }
         } else {
             tracing::debug!(
                 ?remote_url,
@@ -265,7 +339,7 @@ impl DirectConnectorManagerData {
             .with_context(|| format!("failed to get udp port mapping for {}", remote_url))?;
 
         let _ = self
-            .remote_send_udp_hole_punch_packet(dst_peer_id, connector_addr, remote_url)
+            .remote_send_udp_hole_punch_packet(dst_peer_id, vec![connector_addr], None, remote_url)
             .await;
 
         let udp_connector = UdpTunnelConnector::new(remote_url.clone());
@@ -816,7 +890,7 @@ mod tests {
         tunnel::{IpScheme, TunnelScheme, matches_scheme},
     };
 
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
     use super::{TESTING, mapped_listener_port, resolve_mapped_listener_addrs};
 
@@ -836,6 +910,27 @@ mod tests {
             &global_ctx,
             true,
         ));
+    }
+
+    #[tokio::test]
+    async fn ipv6_hole_punch_candidates_are_deduped_filtered_and_capped() {
+        let global_ctx = get_mock_global_ctx();
+        let managed_ipv6: cidr::Ipv6Inet = "2001:db8::2/128".parse().unwrap();
+        global_ctx.set_public_ipv6_routes(BTreeSet::from([managed_ipv6]));
+
+        let first: Ipv6Addr = "2001:db8::1".parse().unwrap();
+        let managed = managed_ipv6.address();
+        let second: Ipv6Addr = "2001:db8::3".parse().unwrap();
+        let third: Ipv6Addr = "2001:db8::4".parse().unwrap();
+        let mut candidates = Vec::new();
+
+        super::push_ipv6_hole_punch_candidate(&mut candidates, first, &global_ctx, 2);
+        super::push_ipv6_hole_punch_candidate(&mut candidates, first, &global_ctx, 2);
+        super::push_ipv6_hole_punch_candidate(&mut candidates, managed, &global_ctx, 2);
+        super::push_ipv6_hole_punch_candidate(&mut candidates, second, &global_ctx, 2);
+        super::push_ipv6_hole_punch_candidate(&mut candidates, third, &global_ctx, 2);
+
+        assert_eq!(candidates, vec![first, second]);
     }
 
     #[test]

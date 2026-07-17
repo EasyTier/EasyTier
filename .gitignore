@@ -34,6 +34,7 @@ easytier-panic.log
 
 # web
 node_modules
+easytier-web/frontend-lib/src/generated/
 
 .vite
 
@@ -43,3 +44,6 @@ easytier-gui/src-tauri/*.sys
 
 .direnv
 .flake-profile
+
+# contrib
+go.sum

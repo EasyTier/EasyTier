@@ -1,5 +1,4 @@
 use crate::config::storage::config_meta::get_config_meta;
-use ohos_hilog_binding::hilog_error;
 use std::path::PathBuf;
 
 use super::validation;
@@ -10,7 +9,7 @@ pub(super) fn legacy_config_file_path(
     config_id: &str,
 ) -> Option<PathBuf> {
     if !validation::is_valid_config_id(config_id) {
-        hilog_error!("[Rust] invalid legacy config_id {}", config_id);
+        ohrs_log_error!("[Rust] invalid legacy config_id {}", config_id);
         return None;
     }
     root_dir.as_ref().map(|root| {
@@ -41,7 +40,7 @@ pub(super) fn migrate_legacy_file_if_needed(
     save_config_record(config_id.to_string(), display_name, raw)?;
 
     if let Err(e) = std::fs::remove_file(&legacy_path) {
-        hilog_error!(
+        ohrs_log_error!(
             "[Rust] failed to remove legacy config file {}: {}",
             legacy_path.display(),
             e

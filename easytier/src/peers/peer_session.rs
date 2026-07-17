@@ -2,15 +2,20 @@ use std::sync::{
     Arc, RwLock,
     atomic::{AtomicBool, Ordering},
 };
+use std::time::Duration;
 
 use anyhow::anyhow;
+use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
+use quanta::Instant;
 
 use super::secure_datagram::{SecureDatagramDirection, SecureDatagramSession};
 use crate::{
     common::{PeerId, shrink_dashmap},
     tunnel::packet_def::ZCPacket,
 };
+
+const SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub struct UpsertResponderSessionReturn {
     pub session: Arc<PeerSession>,
@@ -44,7 +49,25 @@ impl SessionKey {
 
 #[derive(Clone)]
 pub struct PeerSessionStore {
-    sessions: Arc<DashMap<SessionKey, Arc<PeerSession>>>,
+    sessions: Arc<DashMap<SessionKey, PeerSessionEntry>>,
+}
+
+struct PeerSessionEntry {
+    session: Arc<PeerSession>,
+    last_used_at: AtomicCell<Instant>,
+}
+
+impl PeerSessionEntry {
+    fn new(session: Arc<PeerSession>) -> Self {
+        Self {
+            session,
+            last_used_at: AtomicCell::new(Instant::now()),
+        }
+    }
+
+    fn touch(&self) {
+        self.last_used_at.store(Instant::now());
+    }
 }
 
 impl Default for PeerSessionStore {
@@ -61,7 +84,11 @@ impl PeerSessionStore {
     }
 
     pub fn get(&self, key: &SessionKey) -> Option<Arc<PeerSession>> {
-        let session = self.sessions.get(key)?.clone();
+        let session = {
+            let entry = self.sessions.get(key)?;
+            entry.touch();
+            entry.session.clone()
+        };
         if session.is_valid() {
             Some(session)
         } else {
@@ -75,12 +102,20 @@ impl PeerSessionStore {
     }
 
     pub fn insert_session(&self, key: SessionKey, session: Arc<PeerSession>) {
-        self.sessions.insert(key, session);
+        self.sessions.insert(key, PeerSessionEntry::new(session));
     }
 
     pub fn evict_unused_sessions(&self) {
-        self.sessions
-            .retain(|_key, session| Arc::strong_count(session) > 1);
+        self.evict_unused_sessions_idle(SESSION_IDLE_TIMEOUT);
+    }
+
+    pub fn evict_unused_sessions_idle(&self, idle: Duration) {
+        let now = Instant::now();
+        self.sessions.retain(|_key, entry| {
+            entry.session.is_valid()
+                && (Arc::strong_count(&entry.session) > 1
+                    || now.saturating_duration_since(entry.last_used_at.load()) < idle)
+        });
         shrink_dashmap(&self.sessions, None);
     }
 
@@ -93,11 +128,14 @@ impl PeerSessionStore {
         recv_algorithm: String,
         peer_static_pubkey: Option<[u8; 32]>,
     ) -> Result<UpsertResponderSessionReturn, anyhow::Error> {
-        tracing::event!(tracing::Level::INFO, "upsert_responder_session {:?}", key);
+        tracing::event!(tracing::Level::INFO, ?key, "upsert_responder_session");
         let existing = self
             .sessions
             .get(key)
-            .map(|v| v.clone())
+            .map(|v| {
+                v.touch();
+                v.session.clone()
+            })
             .filter(|s| s.is_valid());
         match existing {
             None => {
@@ -113,7 +151,8 @@ impl PeerSessionStore {
                     recv_algorithm,
                     peer_static_pubkey,
                 ));
-                self.sessions.insert(key.clone(), session.clone());
+                self.sessions
+                    .insert(key.clone(), PeerSessionEntry::new(session.clone()));
                 Ok(UpsertResponderSessionReturn {
                     session,
                     action: PeerSessionAction::Create,
@@ -178,16 +217,14 @@ impl PeerSessionStore {
             PeerSessionAction::Sync | PeerSessionAction::Create => {
                 let root_key = root_key_32.ok_or_else(|| anyhow!("missing root_key"))?;
                 if let Some(existing) = self.sessions.get(key)
-                    && !existing.is_valid()
+                    && !existing.session.is_valid()
                 {
                     drop(existing);
                     self.sessions.remove(key);
                 }
-                let session = self
-                    .sessions
-                    .entry(key.clone())
-                    .or_insert_with(|| {
-                        Arc::new(PeerSession::new(
+                let session = {
+                    let entry = self.sessions.entry(key.clone()).or_insert_with(|| {
+                        PeerSessionEntry::new(Arc::new(PeerSession::new(
                             key.peer_id,
                             root_key,
                             b_session_generation,
@@ -195,9 +232,11 @@ impl PeerSessionStore {
                             send_algorithm.clone(),
                             recv_algorithm.clone(),
                             peer_static_pubkey,
-                        ))
-                    })
-                    .clone();
+                        )))
+                    });
+                    entry.touch();
+                    entry.session.clone()
+                };
                 session.check_encrypt_algo_same(&send_algorithm, &recv_algorithm)?;
                 session.check_or_set_peer_static_pubkey(peer_static_pubkey)?;
                 session.sync_root_key(
@@ -417,6 +456,79 @@ mod tests {
         assert_eq!(
             PeerSession::SYNC_RX_GRACE_AFTER_MS,
             SecureDatagramSession::SYNC_RX_GRACE_AFTER_MS
+        );
+    }
+
+    #[test]
+    fn peer_session_store_keeps_recent_session_without_external_refs() {
+        let store = PeerSessionStore::new();
+        let key = SessionKey::new("net".to_string(), 20);
+        let session = Arc::new(PeerSession::new(
+            20,
+            PeerSession::new_root_key(),
+            1,
+            0,
+            "aes-gcm".to_string(),
+            "aes-gcm".to_string(),
+            None,
+        ));
+        store.insert_session(key.clone(), session);
+
+        assert!(store.get(&key).is_some());
+        store.evict_unused_sessions();
+
+        assert!(
+            store.get(&key).is_some(),
+            "recent relay sessions should survive the periodic GC"
+        );
+    }
+
+    #[test]
+    fn peer_session_store_evicts_idle_session_without_external_refs() {
+        let store = PeerSessionStore::new();
+        let key = SessionKey::new("net".to_string(), 20);
+        let session = Arc::new(PeerSession::new(
+            20,
+            PeerSession::new_root_key(),
+            1,
+            0,
+            "aes-gcm".to_string(),
+            "aes-gcm".to_string(),
+            None,
+        ));
+        store.insert_session(key.clone(), session);
+
+        store.evict_unused_sessions_idle(Duration::from_millis(0));
+
+        assert!(
+            store.get(&key).is_none(),
+            "idle sessions without external users should still be collected"
+        );
+    }
+
+    #[test]
+    fn peer_session_store_evicts_invalid_recent_session() {
+        let store = PeerSessionStore::new();
+        let key = SessionKey::new("net".to_string(), 20);
+        let session = Arc::new(PeerSession::new(
+            20,
+            PeerSession::new_root_key(),
+            1,
+            0,
+            "aes-gcm".to_string(),
+            "aes-gcm".to_string(),
+            None,
+        ));
+        store.insert_session(key.clone(), session);
+
+        let session = store.get(&key).unwrap();
+        session.invalidate();
+        drop(session);
+        store.evict_unused_sessions();
+
+        assert!(
+            !store.sessions.contains_key(&key),
+            "invalid sessions should not be kept by recent activity"
         );
     }
 }

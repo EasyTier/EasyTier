@@ -189,6 +189,8 @@ message GetIpListResponse {
 message SendUdpHolePunchPacketRequest {
   common.SocketAddr connector_addr = 1;
   uint32 listener_port = 2;
+  common.Ipv6Addr preferred_src_ipv6 = 3;
+  repeated common.SocketAddr connector_addrs = 4;
 }
 
 service DirectConnectorRpc {

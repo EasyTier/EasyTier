@@ -2,6 +2,10 @@ use crate::common::config::{
     ConfigFileControl, ConfigSource, PortForwardConfig, parse_mapped_listener_urls,
     process_secure_mode_cfg,
 };
+#[cfg(feature = "ffi-dataplane")]
+use crate::gateway::socks5::Socks5Server;
+#[cfg(feature = "ffi-dataplane")]
+pub use crate::gateway::socks5::{DataPlaneTcpListener, DataPlaneTcpStream, DataPlaneUdpSocket};
 use crate::proto::api::{self, manage};
 use crate::proto::rpc_types::controller::BaseController;
 use crate::rpc_service::InstanceRpcService;
@@ -45,6 +49,13 @@ struct EasyTierData {
     tun_fd: (mpsc::Sender<TunFd>, Mutex<Option<mpsc::Receiver<TunFd>>>),
     event_subscriber: RwLock<broadcast::Sender<GlobalCtxEvent>>,
     instance_stop_notifier: Arc<tokio::sync::Notify>,
+    #[cfg(feature = "ffi-dataplane")]
+    data_plane: tokio::sync::watch::Sender<Option<Arc<Socks5Server>>>,
+    #[cfg(feature = "ffi-dataplane")]
+    runtime_handle: (
+        parking_lot::Mutex<Option<tokio::runtime::Handle>>,
+        parking_lot::Condvar,
+    ),
 }
 
 impl Default for EasyTierData {
@@ -56,6 +67,10 @@ impl Default for EasyTierData {
             events: RwLock::new(VecDeque::new()),
             tun_fd: (sender, Mutex::new(Some(receiver))),
             instance_stop_notifier: Arc::new(tokio::sync::Notify::new()),
+            #[cfg(feature = "ffi-dataplane")]
+            data_plane: tokio::sync::watch::channel(None).0,
+            #[cfg(feature = "ffi-dataplane")]
+            runtime_handle: (parking_lot::Mutex::new(None), parking_lot::Condvar::new()),
         }
     }
 }
@@ -158,7 +173,16 @@ impl EasyTierLauncher {
         #[cfg(mobile)]
         Self::run_routine_for_mobile(&instance, &data, &mut tasks).await;
 
-        instance.run().await?;
+        if let Err(err) = instance.run().await {
+            tasks.abort_all();
+            drop(tasks);
+            instance.clear_resources().await;
+            return Err(err.into());
+        }
+
+        #[cfg(feature = "ffi-dataplane")]
+        data.data_plane
+            .send_replace(Some(instance.get_socks5_server()));
 
         api_service
             .write()
@@ -214,6 +238,13 @@ impl EasyTierLauncher {
             }
             .unwrap();
 
+            #[cfg(feature = "ffi-dataplane")]
+            {
+                let (lock, cvar) = &data.runtime_handle;
+                *lock.lock() = Some(rt.handle().clone());
+                cvar.notify_all();
+            }
+
             let stop_notifier = Arc::new(tokio::sync::Notify::new());
 
             let stop_notifier_clone = stop_notifier.clone();
@@ -262,6 +293,43 @@ impl EasyTierLauncher {
                 None
             }
         }
+    }
+
+    #[cfg(feature = "ffi-dataplane")]
+    pub fn get_data_plane(&self) -> Option<Arc<Socks5Server>> {
+        self.data.data_plane.borrow().clone()
+    }
+
+    /// Waits up to `deadline` for the data-plane server to be published.
+    #[cfg(feature = "ffi-dataplane")]
+    pub async fn wait_data_plane(
+        &self,
+        deadline: tokio::time::Instant,
+    ) -> Option<Arc<Socks5Server>> {
+        let mut rx = self.data.data_plane.subscribe();
+        loop {
+            if let Some(server) = rx.borrow_and_update().clone() {
+                return Some(server);
+            }
+            if tokio::time::timeout_at(deadline, rx.changed())
+                .await
+                .is_err()
+            {
+                return None;
+            }
+        }
+    }
+
+    /// Blocks up to `timeout` for the runtime handle to be published.
+    #[cfg(feature = "ffi-dataplane")]
+    pub fn wait_runtime_handle(
+        &self,
+        timeout: std::time::Duration,
+    ) -> Option<tokio::runtime::Handle> {
+        let (lock, cvar) = &self.data.runtime_handle;
+        let mut guard = lock.lock();
+        cvar.wait_while_for(&mut guard, |h| h.is_none(), timeout);
+        guard.clone()
     }
 }
 
@@ -437,6 +505,10 @@ impl NetworkInstance {
         &self.config_file_control
     }
 
+    pub fn get_config(&self) -> TomlConfigLoader {
+        self.config.clone()
+    }
+
     pub fn get_network_config_source(&self) -> ConfigSource {
         self.config.get_network_config_source()
     }
@@ -453,6 +525,75 @@ impl NetworkInstance {
         self.launcher
             .as_ref()
             .and_then(|launcher| launcher.get_api_service())
+    }
+
+    /// Waits up to `timeout` for the data-plane server to come up, returning it
+    /// together with the deadline so the caller can spend the remaining budget
+    /// on the actual operation.
+    #[cfg(feature = "ffi-dataplane")]
+    async fn wait_data_plane(
+        &self,
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<(Arc<Socks5Server>, tokio::time::Instant)> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        let launcher = self
+            .launcher
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("data plane is not ready"))?;
+        let server = launcher
+            .wait_data_plane(deadline)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("data plane is not ready"))?;
+        Ok((server, deadline))
+    }
+
+    #[cfg(feature = "ffi-dataplane")]
+    pub async fn data_plane_tcp_connect(
+        &self,
+        dst_addr: SocketAddr,
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<DataPlaneTcpStream> {
+        let (server, deadline) = self.wait_data_plane(timeout).await?;
+        server
+            .data_plane_tcp_connect(dst_addr, deadline - tokio::time::Instant::now())
+            .await
+            .map_err(Into::into)
+    }
+
+    #[cfg(feature = "ffi-dataplane")]
+    pub async fn data_plane_tcp_bind(
+        &self,
+        local_port: u16,
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<DataPlaneTcpListener> {
+        let (server, deadline) = self.wait_data_plane(timeout).await?;
+        server
+            .data_plane_tcp_bind(local_port, deadline - tokio::time::Instant::now())
+            .await
+            .map_err(Into::into)
+    }
+
+    #[cfg(feature = "ffi-dataplane")]
+    pub async fn data_plane_udp_bind(
+        &self,
+        local_port: u16,
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<DataPlaneUdpSocket> {
+        let (server, deadline) = self.wait_data_plane(timeout).await?;
+        server
+            .data_plane_udp_bind(local_port, deadline - tokio::time::Instant::now())
+            .await
+            .map_err(Into::into)
+    }
+
+    #[cfg(feature = "ffi-dataplane")]
+    pub fn wait_runtime_handle(
+        &self,
+        timeout: std::time::Duration,
+    ) -> Option<tokio::runtime::Handle> {
+        self.launcher
+            .as_ref()
+            .and_then(|launcher| launcher.wait_runtime_handle(timeout))
     }
 }
 
@@ -490,6 +631,47 @@ pub type NetworkingMethod = crate::proto::api::manage::NetworkingMethod;
 pub type NetworkConfig = crate::proto::api::manage::NetworkConfig;
 
 impl NetworkConfig {
+    fn parse_peer(peer: &manage::NetworkPeerConfig) -> Result<Option<PeerConfig>, anyhow::Error> {
+        let uri = peer.uri.trim();
+        if uri.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some(PeerConfig {
+            uri: uri
+                .parse()
+                .with_context(|| format!("failed to parse peer uri: {}", uri))?,
+            peer_public_key: peer.peer_public_key.clone(),
+        }))
+    }
+
+    fn parse_peers(peers: &[manage::NetworkPeerConfig]) -> Result<Vec<PeerConfig>, anyhow::Error> {
+        let mut ret = Vec::new();
+        for peer in peers {
+            if let Some(peer) = Self::parse_peer(peer)? {
+                ret.push(peer);
+            }
+        }
+        Ok(ret)
+    }
+
+    fn parse_peer_urls(peer_urls: &[String]) -> Result<Vec<PeerConfig>, anyhow::Error> {
+        let mut peers = vec![];
+        for peer_url in peer_urls.iter() {
+            let peer_url = peer_url.trim();
+            if peer_url.is_empty() {
+                continue;
+            }
+            peers.push(PeerConfig {
+                uri: peer_url
+                    .parse()
+                    .with_context(|| format!("failed to parse peer uri: {}", peer_url))?,
+                peer_public_key: None,
+            });
+        }
+        Ok(peers)
+    }
+
     pub fn gen_config(&self) -> Result<TomlConfigLoader, anyhow::Error> {
         let cfg = TomlConfigLoader::default();
         cfg.set_id(
@@ -545,26 +727,23 @@ impl NetworkConfig {
             .unwrap_or_default()
         {
             NetworkingMethod::PublicServer => {
-                let public_server_url = self.public_server_url.clone().unwrap_or_default();
-                cfg.set_peers(vec![PeerConfig {
-                    uri: public_server_url.parse().with_context(|| {
-                        format!("failed to parse public server uri: {}", public_server_url)
-                    })?,
-                    peer_public_key: None,
-                }]);
+                let peers = Self::parse_peers(&self.peers)?;
+                if peers.is_empty() {
+                    let public_server_url = self.public_server_url.clone().unwrap_or_default();
+                    cfg.set_peers(vec![PeerConfig {
+                        uri: public_server_url.parse().with_context(|| {
+                            format!("failed to parse public server uri: {}", public_server_url)
+                        })?,
+                        peer_public_key: None,
+                    }]);
+                } else {
+                    cfg.set_peers(peers);
+                }
             }
             NetworkingMethod::Manual => {
-                let mut peers = vec![];
-                for peer_url in self.peer_urls.iter() {
-                    if peer_url.is_empty() {
-                        continue;
-                    }
-                    peers.push(PeerConfig {
-                        uri: peer_url
-                            .parse()
-                            .with_context(|| format!("failed to parse peer uri: {}", peer_url))?,
-                        peer_public_key: None,
-                    });
+                let mut peers = Self::parse_peers(&self.peers)?;
+                if peers.is_empty() {
+                    peers = Self::parse_peer_urls(&self.peer_urls)?;
                 }
                 if !peers.is_empty() {
                     cfg.set_peers(peers);
@@ -908,6 +1087,13 @@ impl NetworkConfig {
         result.networking_method = Some(NetworkingMethod::Manual as i32);
         if !peers.is_empty() {
             result.peer_urls = peers.iter().map(|p| p.uri.to_string()).collect();
+            result.peers = peers
+                .iter()
+                .map(|p| manage::NetworkPeerConfig {
+                    uri: p.uri.to_string(),
+                    peer_public_key: p.peer_public_key.clone(),
+                })
+                .collect();
         }
 
         result.listener_urls = config
@@ -980,6 +1166,7 @@ impl NetworkConfig {
             .get_credential_file()
             .map(|path| path.to_string_lossy().into_owned());
         let flags = config.get_flags();
+        let default_flags = default_config.get_flags();
         result.latency_first = Some(flags.latency_first);
         result.dev_name = Some(flags.dev_name.clone());
         result.use_smoltcp = Some(flags.use_smoltcp);
@@ -1008,6 +1195,11 @@ impl NetworkConfig {
         result.disable_sym_hole_punching = Some(flags.disable_sym_hole_punching);
         result.enable_magic_dns = Some(flags.accept_dns);
         result.mtu = Some(flags.mtu as i32);
+        result.data_compress_algo = (flags.data_compress_algo != default_flags.data_compress_algo)
+            .then_some(flags.data_compress_algo);
+        result.encryption_algorithm = (flags.encryption_algorithm
+            != default_flags.encryption_algorithm)
+            .then_some(flags.encryption_algorithm.clone());
         result.instance_recv_bps_limit =
             (flags.instance_recv_bps_limit != u64::MAX).then_some(flags.instance_recv_bps_limit);
         result.enable_private_mode = Some(flags.private_mode);
@@ -1037,7 +1229,7 @@ impl NetworkConfig {
 mod tests {
     use crate::{
         common::config::{ConfigLoader, process_secure_mode_cfg},
-        proto::common::SecureModeConfig,
+        proto::common::{CompressionAlgoPb, SecureModeConfig},
     };
     use base64::prelude::{BASE64_STANDARD, Engine as _};
     use rand::Rng;
@@ -1071,6 +1263,80 @@ mod tests {
             generated_config_str,
             serde_json::to_string(&network_config).unwrap()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn network_config_dump_preserves_web_flags() -> Result<(), anyhow::Error> {
+        let network_config = super::NetworkConfig {
+            instance_id: Some(uuid::Uuid::new_v4().to_string()),
+            dhcp: Some(true),
+            network_name: Some("demo".to_string()),
+            network_secret: Some("secret".to_string()),
+            networking_method: Some(crate::proto::api::manage::NetworkingMethod::Manual as i32),
+            peer_urls: vec!["tcp://1.2.3.4:11010".to_string()],
+            listener_urls: vec!["tcp://0.0.0.0:11010".to_string()],
+            dev_name: Some("et_test".to_string()),
+            enable_quic_proxy: Some(true),
+            disable_tcp_hole_punching: Some(true),
+            disable_sym_hole_punching: Some(true),
+            ..Default::default()
+        };
+
+        let dumped = network_config.gen_config()?.dump();
+
+        assert!(dumped.contains("dev_name = \"et_test\""));
+        assert!(dumped.contains("enable_quic_proxy = true"));
+        assert!(dumped.contains("disable_tcp_hole_punching = true"));
+        assert!(dumped.contains("disable_sym_hole_punching = true"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_network_config_conversion_preserves_peer_public_key() -> Result<(), anyhow::Error> {
+        let peer_url = "tcp://1.2.3.4:11010";
+        let peer_public_key = BASE64_STANDARD.encode([9u8; 32]);
+        let config = gen_default_config();
+        config.set_peers(vec![crate::common::config::PeerConfig {
+            uri: peer_url.parse()?,
+            peer_public_key: Some(peer_public_key.clone()),
+        }]);
+
+        let network_config = super::NetworkConfig::new_from_config(&config)?;
+
+        assert_eq!(network_config.peer_urls, vec![peer_url.to_string()]);
+        assert_eq!(network_config.peers.len(), 1);
+        assert_eq!(network_config.peers[0].uri, peer_url);
+        assert_eq!(
+            network_config.peers[0].peer_public_key.as_deref(),
+            Some(peer_public_key.as_str())
+        );
+
+        let generated_config = network_config.gen_config()?;
+        assert_eq!(generated_config.get_peers(), config.get_peers());
+        Ok(())
+    }
+
+    #[test]
+    fn network_config_gen_config_trims_legacy_peer_urls() -> Result<(), anyhow::Error> {
+        let network_config = super::NetworkConfig {
+            instance_id: Some(uuid::Uuid::new_v4().to_string()),
+            dhcp: Some(true),
+            networking_method: Some(crate::proto::api::manage::NetworkingMethod::Manual as i32),
+            peer_urls: vec![
+                " tcp://1.2.3.4:11010 ".to_string(),
+                "  ".to_string(),
+                "\tudp://5.6.7.8:11010\n".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        let generated_config = network_config.gen_config()?;
+        let peers = generated_config.get_peers();
+
+        assert_eq!(peers.len(), 2);
+        assert_eq!(peers[0].uri.as_str(), "tcp://1.2.3.4:11010");
+        assert_eq!(peers[1].uri.as_str(), "udp://5.6.7.8:11010");
         Ok(())
     }
 
@@ -1368,6 +1634,39 @@ mod tests {
                 .get_secure_mode()
                 .and_then(|mode| mode.local_private_key),
             Some(credential_secret)
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_network_config_conversion_preserves_runtime_algorithm_flags()
+    -> Result<(), anyhow::Error> {
+        let config = gen_default_config();
+        let mut flags = config.get_flags();
+        flags.data_compress_algo = CompressionAlgoPb::Zstd.into();
+        flags.encryption_algorithm = "managed-test-algo".to_string();
+        config.set_flags(flags.clone());
+
+        let network_config = super::NetworkConfig::new_from_config(&config)?;
+
+        assert_eq!(
+            network_config.data_compress_algo,
+            Some(CompressionAlgoPb::Zstd as i32)
+        );
+        assert_eq!(
+            network_config.encryption_algorithm.as_deref(),
+            Some("managed-test-algo")
+        );
+
+        let generated_config = network_config.gen_config()?;
+        assert_eq!(
+            generated_config.get_flags().data_compress_algo,
+            flags.data_compress_algo
+        );
+        assert_eq!(
+            generated_config.get_flags().encryption_algorithm,
+            flags.encryption_algorithm
         );
 
         Ok(())

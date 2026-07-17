@@ -6,6 +6,8 @@ use std::{
     time::Duration,
 };
 
+use quanta::Instant;
+
 use super::{
     FromUrl, IpVersion, Tunnel, TunnelError, TunnelInfo, TunnelListener, TunnelUrl, ZCPacketSink,
     ZCPacketStream,
@@ -35,7 +37,11 @@ use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
 use futures::{SinkExt, StreamExt, stream::FuturesUnordered};
 use rand::RngCore;
-use tokio::{net::UdpSocket, sync::Mutex, task::JoinSet};
+use tokio::{
+    net::UdpSocket,
+    sync::{Mutex, mpsc::unbounded_channel},
+    task::JoinSet,
+};
 
 const MAX_PACKET: usize = 2048;
 
@@ -346,7 +352,7 @@ struct WgPeer {
     data: Option<WgPeerData>,
     tasks: JoinSet<()>,
 
-    access_time: AtomicCell<std::time::Instant>,
+    access_time: AtomicCell<Instant>,
 }
 
 impl WgPeer {
@@ -369,7 +375,7 @@ impl WgPeer {
             data: None,
             tasks: JoinSet::new(),
 
-            access_time: AtomicCell::new(std::time::Instant::now()),
+            access_time: AtomicCell::new(Instant::now()),
         }
     }
 
@@ -385,7 +391,7 @@ impl WgPeer {
     }
 
     async fn handle_packet_from_peer(&self, packet: &[u8]) {
-        self.access_time.store(std::time::Instant::now());
+        self.access_time.store(Instant::now());
         tracing::trace!("Received {} bytes from peer", packet.len());
         let data = self.data.as_ref().unwrap();
         // TODO: improve this
@@ -468,7 +474,7 @@ pub struct WgTunnelListener {
 
 impl WgTunnelListener {
     pub fn new(addr: url::Url, config: WgConfig) -> Self {
-        let (conn_send, conn_recv) = tokio::sync::mpsc::unbounded_channel();
+        let (conn_send, conn_recv) = unbounded_channel();
         WgTunnelListener {
             addr,
             config,

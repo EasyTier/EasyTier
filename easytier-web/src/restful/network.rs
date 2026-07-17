@@ -3,6 +3,7 @@ use axum::http::StatusCode;
 use axum::routing::{delete, post};
 use axum::{Json, Router, extract::State, routing::get};
 use axum_login::AuthUser;
+use easytier::common::config::ConfigSource as RuntimeConfigSource;
 use easytier::launcher::NetworkConfig;
 use easytier::proto::common::Void;
 use easytier::proto::{api::manage::*, web::*};
@@ -60,6 +61,7 @@ struct SaveNetworkJsonReq {
 struct RunNetworkJsonReq {
     config: NetworkConfig,
     save: bool,
+    source: Option<i32>,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -80,6 +82,19 @@ struct GetNetworkMetasJsonReq {
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct RemoveNetworkJsonReq {
     inst_ids: Vec<uuid::Uuid>,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct ManagedNetworkConfigJson {
+    instance_id: uuid::Uuid,
+    network_config: serde_json::Value,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct ReconcileManagedNetworkConfigsJsonReq {
+    managed_network_configs: Vec<ManagedNetworkConfigJson>,
+    config_revision: Option<String>,
+    expected_config_revision: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -130,10 +145,11 @@ impl NetworkApi {
         Json(payload): Json<RunNetworkJsonReq>,
     ) -> Result<Json<Void>, HttpHandleError> {
         client_mgr
-            .handle_run_network_instance(
+            .handle_run_network_instance_with_source(
                 (Self::get_user_id(&auth_session)?, machine_id),
                 payload.config,
                 payload.save,
+                RuntimeConfigSource::Web,
             )
             .await
             .map_err(convert_error)?;
@@ -274,10 +290,11 @@ impl NetworkApi {
             ));
         }
         client_mgr
-            .handle_save_network_config(
+            .handle_save_network_config_with_source(
                 (Self::get_user_id(&auth_session)?, machine_id),
                 inst_id,
                 payload.config,
+                RuntimeConfigSource::Web,
             )
             .await
             .map_err(convert_error)
@@ -302,8 +319,17 @@ impl NetworkApi {
         Path((user_id, machine_id)): Path<(UserIdInDb, uuid::Uuid)>,
         Json(payload): Json<RunNetworkJsonReq>,
     ) -> Result<Json<Void>, HttpHandleError> {
+        let source = payload
+            .source
+            .and_then(RuntimeConfigSource::from_rpc)
+            .unwrap_or(RuntimeConfigSource::Web);
         client_mgr
-            .handle_run_network_instance((user_id, machine_id), payload.config, payload.save)
+            .handle_run_network_instance_with_source(
+                (user_id, machine_id),
+                payload.config,
+                payload.save,
+                source,
+            )
             .await
             .map_err(convert_error)?;
         Ok(Void::default().into())
@@ -317,6 +343,39 @@ impl NetworkApi {
             .handle_remove_network_instances((user_id, machine_id), vec![inst_id])
             .await
             .map_err(convert_error)
+    }
+
+    async fn handle_reconcile_managed_network_configs_internal(
+        State(client_mgr): AppState,
+        Path((user_id, machine_id)): Path<(UserIdInDb, uuid::Uuid)>,
+        Json(payload): Json<ReconcileManagedNetworkConfigsJsonReq>,
+    ) -> Result<Json<Void>, HttpHandleError> {
+        let desired = payload
+            .managed_network_configs
+            .into_iter()
+            .map(|item| crate::webhook::ManagedNetworkConfig {
+                instance_id: item.instance_id.to_string(),
+                network_config: item.network_config,
+            })
+            .collect();
+        client_mgr
+            .reconcile_managed_network_configs(
+                user_id,
+                machine_id,
+                desired,
+                payload.config_revision,
+                payload.expected_config_revision,
+            )
+            .await
+            .map_err(|err| {
+                let status = if crate::client_manager::is_managed_config_revision_conflict(&err) {
+                    StatusCode::CONFLICT
+                } else {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                };
+                (status, other_error(err.to_string()).into())
+            })?;
+        Ok(Void::default().into())
     }
 
     async fn handle_list_network_instance_ids_internal(
@@ -347,6 +406,7 @@ impl NetworkApi {
             .route(
                 "/api/internal/users/:user-id/machines/:machine-id/networks",
                 post(Self::handle_run_network_instance_internal)
+                    .put(Self::handle_reconcile_managed_network_configs_internal)
                     .get(Self::handle_list_network_instance_ids_internal),
             )
             .route(

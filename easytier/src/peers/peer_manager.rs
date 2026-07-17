@@ -2,19 +2,18 @@ use anyhow::Context;
 use async_trait::async_trait;
 use cidr::{Ipv4Cidr, Ipv6Cidr};
 use dashmap::DashMap;
+use quanta::Instant;
 use std::collections::BTreeSet;
 use std::{
     fmt::Debug,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     sync::{Arc, Weak, atomic::AtomicBool},
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, SystemTime},
 };
 
+use tokio::sync::{Mutex, RwLock};
 use tokio::{
-    sync::{
-        Mutex, RwLock,
-        mpsc::{self, UnboundedReceiver, UnboundedSender},
-    },
+    sync::mpsc::{self, UnboundedReceiver, UnboundedSender},
     task::JoinSet,
 };
 
@@ -501,6 +500,33 @@ impl PeerManager {
         Self::gc_recent_traffic_entries(&self.recent_have_traffic, Instant::now(), |peer_id| {
             self.has_directly_connected_conn(peer_id)
         });
+    }
+
+    async fn close_untrusted_credential_peers(peer_map: &Arc<PeerMap>, global_ctx: &ArcGlobalCtx) {
+        let network_name = global_ctx.get_network_name();
+        for peer_id in peer_map.list_peers() {
+            if !matches!(
+                peer_map.get_peer_identity_type(peer_id),
+                Some(PeerIdentityType::Credential)
+            ) {
+                continue;
+            }
+            let Some(peer) = peer_map.get_peer_by_id(peer_id) else {
+                continue;
+            };
+            let Some(pubkey) = peer.get_peer_public_key() else {
+                continue;
+            };
+
+            if global_ctx.is_pubkey_trusted(&pubkey, &network_name) {
+                continue;
+            }
+
+            tracing::warn!(?peer_id, "closing untrusted credential peer");
+            if let Err(e) = peer_map.close_peer(peer_id).await {
+                tracing::warn!(?e, ?peer_id, "failed to close untrusted credential peer");
+            }
+        }
     }
 
     fn build_foreign_network_manager_accessor(
@@ -1397,7 +1423,7 @@ impl PeerManager {
             let f = OneForeignNetwork {
                 network_name: info.key.as_ref().unwrap().network_name.clone(),
                 peer_ids: route_info.foreign_peer_ids.clone(),
-                last_updated: format!("{}", route_info.last_update.unwrap()),
+                last_updated: serde_json::to_string(&route_info.last_update.unwrap()).unwrap(),
                 version: route_info.version,
             };
 
@@ -1506,9 +1532,22 @@ impl PeerManager {
     ) -> Result<(), Error> {
         let policy =
             Self::get_next_hop_policy(msg.peer_manager_header().unwrap().is_latency_first());
+        let is_latency_first = msg.peer_manager_header().unwrap().is_latency_first();
         let packet_type = msg.peer_manager_header().unwrap().packet_type;
         let msg_len = msg.buf_len() as u64;
-        let send_result = if peers.has_peer(dst_peer_id) {
+        let latency_first_gateway = if is_latency_first {
+            peers
+                .get_gateway_peer_id(dst_peer_id, policy.clone())
+                .await
+                .filter(|gateway| *gateway != dst_peer_id)
+        } else {
+            None
+        };
+        let send_result = if let Some(gateway) = latency_first_gateway
+            && (peers.has_peer(gateway) || foreign_network_client.has_next_hop(gateway))
+        {
+            relay_peer_map.send_msg(msg, dst_peer_id, policy).await
+        } else if peers.has_peer(dst_peer_id) {
             peers.send_msg_directly(msg, dst_peer_id).await
         } else if foreign_network_client.has_next_hop(dst_peer_id) {
             foreign_network_client.send_msg(msg, dst_peer_id).await
@@ -1849,6 +1888,26 @@ impl PeerManager {
         });
     }
 
+    async fn run_credential_gc_routine(&self) {
+        let global_ctx = self.global_ctx.clone();
+        let peer_map = self.peers.clone();
+        self.tasks.lock().await.spawn(async move {
+            loop {
+                if global_ctx.get_network_identity().network_secret.is_some() {
+                    if global_ctx
+                        .get_credential_manager()
+                        .remove_expired_credentials()
+                    {
+                        global_ctx.issue_event(GlobalCtxEvent::CredentialChanged);
+                    }
+
+                    Self::close_untrusted_credential_peers(&peer_map, &global_ctx).await;
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+        });
+    }
+
     async fn run_traffic_metrics_gc_routine(&self) {
         let mut event_receiver = self.global_ctx.subscribe();
         let traffic_metrics = self.traffic_metrics.clone();
@@ -1897,6 +1956,7 @@ impl PeerManager {
         self.run_relay_session_gc_routine().await;
         self.run_recent_traffic_gc_routine().await;
         self.run_peer_session_gc_routine().await;
+        self.run_credential_gc_routine().await;
         self.run_traffic_metrics_gc_routine().await;
 
         self.run_foriegn_network().await;
@@ -2135,14 +2195,14 @@ impl PeerManager {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        fmt::Debug,
-        sync::Arc,
-        time::{Duration, Instant},
-    };
+    use base64::Engine;
+    use std::{collections::HashMap, fmt::Debug, sync::Arc, time::Duration};
+
+    use quanta::Instant;
 
     use crate::{
         common::{
+            PeerId,
             config::Flags,
             global_ctx::{NetworkIdentity, tests::get_mock_global_ctx},
             stats_manager::{LabelSet, LabelType, MetricName},
@@ -2157,14 +2217,14 @@ mod tests {
             peer_conn::tests::set_secure_mode_cfg,
             peer_manager::RouteAlgoType,
             peer_rpc::tests::register_service,
-            route_trait::NextHopPolicy,
+            route_trait::{NextHopPolicy, RouteCostCalculatorInterface},
             tests::{
                 connect_peer_manager, create_mock_peer_manager_with_name, wait_route_appear,
                 wait_route_appear_with_cost,
             },
         },
         proto::{
-            common::{CompressionAlgoPb, NatType},
+            common::{CompressionAlgoPb, NatType, SecureModeConfig},
             peer_rpc::SecureAuthLevel,
         },
         tunnel::{
@@ -2199,6 +2259,16 @@ mod tests {
         LabelSet::new().with_label_type(LabelType::NetworkName(
             peer_mgr.get_global_ctx().get_network_name(),
         ))
+    }
+
+    struct TestCostCalculator {
+        costs: HashMap<(PeerId, PeerId), i32>,
+    }
+
+    impl RouteCostCalculatorInterface for TestCostCalculator {
+        fn calculate_cost(&self, src: PeerId, dst: PeerId) -> i32 {
+            *self.costs.get(&(src, dst)).unwrap_or(&1)
+        }
     }
 
     #[test]
@@ -2601,6 +2671,109 @@ mod tests {
                         >= a_data_tx_before + pkt_len
                         && metric_value(&peer_mgr_b, MetricName::TrafficBytesRx, &b_network_labels)
                             >= b_data_rx_before + pkt_len
+                }
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn send_msg_internal_uses_latency_first_gateway_for_direct_peer() {
+        let peer_mgr_a = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+        let peer_mgr_b = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+        let peer_mgr_c = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+
+        connect_peer_manager(peer_mgr_a.clone(), peer_mgr_b.clone()).await;
+        connect_peer_manager(peer_mgr_b.clone(), peer_mgr_c.clone()).await;
+        connect_peer_manager(peer_mgr_a.clone(), peer_mgr_c.clone()).await;
+        wait_route_appear(peer_mgr_a.clone(), peer_mgr_b.clone())
+            .await
+            .unwrap();
+        wait_route_appear(peer_mgr_b.clone(), peer_mgr_c.clone())
+            .await
+            .unwrap();
+        wait_route_appear(peer_mgr_a.clone(), peer_mgr_c.clone())
+            .await
+            .unwrap();
+
+        peer_mgr_a
+            .get_route()
+            .set_route_cost_fn(Box::new(TestCostCalculator {
+                costs: HashMap::from([
+                    ((peer_mgr_a.my_peer_id(), peer_mgr_c.my_peer_id()), 100),
+                    ((peer_mgr_a.my_peer_id(), peer_mgr_b.my_peer_id()), 1),
+                    ((peer_mgr_b.my_peer_id(), peer_mgr_c.my_peer_id()), 1),
+                ]),
+            }))
+            .await;
+
+        wait_for_condition(
+            || {
+                let peer_mgr_a = peer_mgr_a.clone();
+                let peer_mgr_b = peer_mgr_b.clone();
+                let peer_mgr_c = peer_mgr_c.clone();
+                async move {
+                    peer_mgr_a
+                        .get_route()
+                        .get_next_hop_with_policy(peer_mgr_c.my_peer_id(), NextHopPolicy::LeastCost)
+                        .await
+                        == Some(peer_mgr_b.my_peer_id())
+                }
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+
+        let b_network_labels = network_labels(&peer_mgr_b);
+        let forwarded_bytes_before = metric_value(
+            &peer_mgr_b,
+            MetricName::TrafficBytesForwarded,
+            &b_network_labels,
+        );
+        let forwarded_packets_before = metric_value(
+            &peer_mgr_b,
+            MetricName::TrafficPacketsForwarded,
+            &b_network_labels,
+        );
+
+        let mut pkt = ZCPacket::new_with_payload(b"latency-first");
+        pkt.fill_peer_manager_hdr(
+            peer_mgr_a.my_peer_id(),
+            peer_mgr_c.my_peer_id(),
+            PacketType::Data as u8,
+        );
+        pkt.mut_peer_manager_header()
+            .unwrap()
+            .set_latency_first(true);
+        let pkt_len = pkt.buf_len() as u64;
+
+        PeerManager::send_msg_internal(
+            &peer_mgr_a.peers,
+            &peer_mgr_a.foreign_network_client,
+            &peer_mgr_a.relay_peer_map,
+            Some(&peer_mgr_a.traffic_metrics),
+            pkt,
+            peer_mgr_c.my_peer_id(),
+        )
+        .await
+        .unwrap();
+
+        wait_for_condition(
+            || {
+                let peer_mgr_b = peer_mgr_b.clone();
+                let b_network_labels = b_network_labels.clone();
+                async move {
+                    metric_value(
+                        &peer_mgr_b,
+                        MetricName::TrafficBytesForwarded,
+                        &b_network_labels,
+                    ) >= forwarded_bytes_before + pkt_len
+                        && metric_value(
+                            &peer_mgr_b,
+                            MetricName::TrafficPacketsForwarded,
+                            &b_network_labels,
+                        ) > forwarded_packets_before
                 }
             },
             Duration::from_secs(5),
@@ -3404,6 +3577,92 @@ mod tests {
         )
         .await;
         // a is client, b is server
+    }
+
+    #[tokio::test]
+    async fn expired_credential_peer_conn_is_closed_without_ospf() {
+        let (admin_ch, _admin_rx) = create_packet_recv_chan();
+        let admin_ctx = get_mock_global_ctx();
+        admin_ctx.config.set_network_identity(NetworkIdentity::new(
+            "net1".to_string(),
+            "secret".to_string(),
+        ));
+        set_secure_mode_cfg(&admin_ctx, true);
+        let admin = Arc::new(PeerManager::new(
+            RouteAlgoType::None,
+            admin_ctx.clone(),
+            admin_ch,
+        ));
+        admin.run().await.unwrap();
+
+        let (_cred_id, cred_secret) = admin_ctx.get_credential_manager().generate_credential(
+            vec![],
+            false,
+            vec![],
+            Duration::from_secs(1),
+        );
+        let privkey_bytes: [u8; 32] = base64::engine::general_purpose::STANDARD
+            .decode(&cred_secret)
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let private = x25519_dalek::StaticSecret::from(privkey_bytes);
+        let public = x25519_dalek::PublicKey::from(&private);
+        let (credential_ch, _credential_rx) = create_packet_recv_chan();
+        let credential_ctx = get_mock_global_ctx();
+        credential_ctx
+            .config
+            .set_network_identity(NetworkIdentity::new_credential("net1".to_string()));
+        credential_ctx
+            .config
+            .set_secure_mode(Some(SecureModeConfig {
+                enabled: true,
+                local_private_key: Some(
+                    base64::engine::general_purpose::STANDARD.encode(private.as_bytes()),
+                ),
+                local_public_key: Some(
+                    base64::engine::general_purpose::STANDARD.encode(public.as_bytes()),
+                ),
+            }));
+        let credential = Arc::new(PeerManager::new(
+            RouteAlgoType::None,
+            credential_ctx,
+            credential_ch,
+        ));
+        credential.run().await.unwrap();
+        let credential_peer_id = credential.my_peer_id();
+
+        connect_peer_manager(credential.clone(), admin.clone()).await;
+
+        wait_for_condition(
+            || {
+                let admin = admin.clone();
+                async move {
+                    admin
+                        .get_peer_map()
+                        .list_peer_conns(credential_peer_id)
+                        .await
+                        .is_some_and(|conns| !conns.is_empty())
+                }
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+
+        wait_for_condition(
+            || {
+                let admin = admin.clone();
+                async move {
+                    admin
+                        .get_peer_map()
+                        .list_peer_conns(credential_peer_id)
+                        .await
+                        .is_none_or(|conns| conns.is_empty())
+                }
+            },
+            Duration::from_secs(5),
+        )
+        .await;
     }
 
     #[tokio::test]

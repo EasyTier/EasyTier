@@ -1,10 +1,11 @@
 use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     sync::Arc,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use anyhow::{Context, Error};
+use quanta::Instant;
 use rand::Rng as _;
 use tokio::task::JoinSet;
 

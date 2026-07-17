@@ -1,6 +1,6 @@
 use std::{
     sync::{Arc, atomic::AtomicBool},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use anyhow::{Context, Error};
@@ -9,6 +9,7 @@ use common::{PunchHoleServerCommon, UdpNatType, UdpPunchClientMethod};
 use cone::{PunchConeHoleClient, PunchConeHoleServer};
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
+use quanta::Instant;
 use sym_to_cone::{PunchSymToConeHoleClient, PunchSymToConeHoleServer};
 use tokio::{sync::Mutex, task::JoinHandle};
 

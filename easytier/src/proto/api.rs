@@ -1,5 +1,7 @@
 pub mod config {
     include!(concat!(env!("OUT_DIR"), "/api.config.rs"));
+    include!(concat!(env!("OUT_DIR"), "/api.config.serde.rs"));
+
     pub struct Patchable<T> {
         pub action: Option<ConfigPatchAction>,
         pub value: Option<T>,
@@ -77,6 +79,7 @@ pub mod config {
 
 pub mod instance {
     include!(concat!(env!("OUT_DIR"), "/api.instance.rs"));
+    include!(concat!(env!("OUT_DIR"), "/api.instance.serde.rs"));
 
     impl PeerRoutePair {
         pub fn get_latency_ms(&self) -> Option<f64> {
@@ -229,10 +232,12 @@ pub mod instance {
 
 pub mod logger {
     include!(concat!(env!("OUT_DIR"), "/api.logger.rs"));
+    include!(concat!(env!("OUT_DIR"), "/api.logger.serde.rs"));
 }
 
 pub mod manage {
     include!(concat!(env!("OUT_DIR"), "/api.manage.rs"));
+    include!(concat!(env!("OUT_DIR"), "/api.manage.serde.rs"));
 }
 
 #[cfg(test)]

@@ -2,8 +2,9 @@ use dashmap::DashMap;
 use pnet::packet::Packet;
 use pnet::packet::ip::IpNextHeaderProtocol;
 use pnet::packet::ipv4::{self, Ipv4Flags, Ipv4Packet, MutableIpv4Packet};
+use quanta::Instant;
 use std::net::Ipv4Addr;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::common::error::Error;
 

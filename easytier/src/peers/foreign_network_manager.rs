@@ -14,7 +14,7 @@ use std::{
 };
 
 use dashmap::{DashMap, DashSet};
-use guarden::defer;
+use guarden::{Guard, defer};
 use tokio::{
     sync::{
         Mutex,

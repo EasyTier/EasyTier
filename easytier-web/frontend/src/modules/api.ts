@@ -218,7 +218,7 @@ class WebRemoteClient implements Api.RemoteClient {
     }
     async get_network_info(inst_id: string): Promise<NetworkTypes.NetworkInstanceRunningInfo | undefined> {
         const response = await this.client.get<any, Api.CollectNetworkInfoResponse>('/machines/' + this.machine_id + '/networks/info/' + inst_id);
-        return response.info.map[inst_id];
+        return response.info?.map?.[inst_id];
     }
     async list_network_instance_ids(): Promise<Api.ListNetworkInstanceIdResponse> {
         const response = await this.client.get<any, ListNetworkInstanceIdResponse>('/machines/' + this.machine_id + '/networks');

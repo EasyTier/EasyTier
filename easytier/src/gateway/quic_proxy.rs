@@ -133,7 +133,7 @@ impl AsyncUdpSocket for QuicSocket {
                     unsafe {
                         copy_nonoverlapping(
                             chunk.as_ptr(),
-                            payload.as_mut_ptr().add(self.margins.header),
+                            payload.chunk_mut().as_mut_ptr().add(self.margins.header),
                             len,
                         );
                         payload.advance_mut(len + self.margins.len());
@@ -1018,6 +1018,7 @@ impl TcpProxyRpc for QuicProxyDstRpcService {
 mod tests {
     use super::*;
     use bytes::Buf;
+    use quanta::Instant;
 
     /// Helper function: Create a pair of interconnected QuicSockets.
     /// Data sent by socket_a will enter socket_b's rx, and vice versa.
@@ -1197,7 +1198,7 @@ mod tests {
                 // Accept unidirectional stream
                 let mut recv = connection.accept_uni().await.unwrap();
 
-                let start = std::time::Instant::now();
+                let start = Instant::now();
                 let mut received = 0;
 
                 // Loop read until the stream ends
@@ -1234,7 +1235,7 @@ mod tests {
         let bytes_data = Bytes::from(data_chunk); // Use Bytes to avoid repeated allocation
 
         println!("Client: Start sending {} MB...", TOTAL_SIZE / 1024 / 1024);
-        let start_send = std::time::Instant::now();
+        let start_send = Instant::now();
 
         let chunks = TOTAL_SIZE / CHUNK_SIZE;
         for _ in 0..chunks {
@@ -1276,7 +1277,7 @@ mod tests {
                 println!("Server: Accepted connection");
 
                 let mut stream_handles = Vec::new();
-                let start = std::time::Instant::now();
+                let start = Instant::now();
 
                 // Accept an expected number of streams
                 for i in 0..STREAM_COUNT {
@@ -1346,7 +1347,7 @@ mod tests {
             STREAM_COUNT
         );
 
-        let start_send = std::time::Instant::now();
+        let start_send = Instant::now();
         let mut client_tasks = Vec::new();
 
         // Start sending tasks concurrently
@@ -1382,5 +1383,57 @@ mod tests {
         let _ = tokio::time::timeout(Duration::from_secs(10), server_handle).await;
 
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_gso() {
+        let margins = PacketMargins {
+            header: 20,
+            trailer: 25,
+        };
+        let (tx, rx) = channel(10);
+
+        let socket = QuicSocket {
+            addr: "127.0.0.1:0".parse().unwrap(),
+            rx: AtomicRefCell::new(rx),
+            tx,
+            margins,
+        };
+
+        let total_len = 3000;
+        let segment_size = 1000;
+        let mut contents = Vec::with_capacity(total_len);
+
+        contents.extend(vec![1u8; 1000]);
+        contents.extend(vec![2u8; 1000]);
+        contents.extend(vec![3u8; 1000]);
+
+        let transmit = Transmit {
+            destination: "127.0.0.1:8000".parse().unwrap(),
+            ecn: None,
+            contents: &contents,
+            segment_size: Some(segment_size),
+            src_ip: None,
+        };
+
+        socket.try_send(&transmit).unwrap();
+
+        let mut rx = socket.rx.into_inner();
+        let packet = rx.recv().await.unwrap();
+
+        let actual_segment_size = segment_size + margins.len();
+        let payload = packet.payload;
+
+        let chunk1_start = margins.header;
+        let chunk1_data = &payload[chunk1_start..chunk1_start + segment_size];
+        assert_eq!(chunk1_data[0], 1u8, "Chunk 1 corrupted");
+
+        let chunk2_start = actual_segment_size + margins.header;
+        let chunk2_data = &payload[chunk2_start..chunk2_start + segment_size];
+        assert_eq!(chunk2_data[0], 2u8, "Chunk 2 corrupted");
+
+        let chunk3_start = actual_segment_size * 2 + margins.header;
+        let chunk3_data = &payload[chunk3_start..chunk3_start + segment_size];
+        assert_eq!(chunk3_data[0], 3u8, "Chunk 3 corrupted");
     }
 }

@@ -13,12 +13,18 @@
     "./*.css": "./dist/*.css"
   },
   "scripts": {
-    "dev": "vite",
-    "build": "vue-tsc -b && vite build",
+    "codegen:proto": "node scripts/codegen-proto.mjs",
+    "dev": "pnpm codegen:proto && vite",
+    "build": "pnpm codegen:proto && vue-tsc -b && vite build",
+    "test": "pnpm test:config-ui && pnpm test:network-config",
+    "test:config-ui": "pnpm codegen:proto && vitest run --config vitest.config.ts",
+    "test:network-config": "pnpm build && node scripts/test-network-config.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
     "@primeuix/themes": "^1.2.3",
+    "@protobuf-ts/runtime": "2.11.1",
+    "@protobuf-ts/runtime-rpc": "2.11.1",
     "@vueuse/core": "^11.1.0",
     "axios": "^1.13.5",
     "chart.js": "^4.5.0",
@@ -33,9 +39,13 @@
   },
   "devDependencies": {
     "@modyfi/vite-plugin-yaml": "^1.1.0",
+    "@protobuf-ts/plugin": "2.11.1",
+    "@protobuf-ts/protoc": "2.11.1",
     "@types/node": "^22.8.6",
     "@vitejs/plugin-vue": "^5.1.4",
+    "@vue/test-utils": "^2.4.11",
     "autoprefixer": "^10.4.20",
+    "happy-dom": "16.8.1",
     "postcss": "^8.4.47",
     "postcss-import": "^16.1.0",
     "postcss-nested": "^7.0.2",
@@ -43,10 +53,11 @@
     "typescript": "~5.6.3",
     "vite": "^5.4.21",
     "vite-plugin-dts": "^4.3.0",
+    "vitest": "^2.1.9",
     "vue-tsc": "^2.1.10"
   },
   "peerDependencies": {
-    "vue": "^3.5.12",
-    "primevue": "^4.3.9"
+    "primevue": "^4.3.9",
+    "vue": "^3.5.12"
   }
 }

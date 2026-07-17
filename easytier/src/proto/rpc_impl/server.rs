@@ -6,6 +6,7 @@ use std::{
 use bytes::Bytes;
 use dashmap::DashMap;
 use prost::Message;
+use quanta::Instant;
 use tokio::{task::JoinSet, time::timeout};
 use tokio_stream::StreamExt;
 
@@ -233,7 +234,7 @@ impl Server {
         }
 
         let mut resp_msg = RpcResponse::default();
-        let now = std::time::Instant::now();
+        let now = Instant::now();
 
         let compression_info = packet.compression_info;
         let resp_bytes = Self::handle_rpc_request(packet, reg, tunnel_info).await;

@@ -7,6 +7,7 @@ use std::{
 use crossbeam::atomic::AtomicCell;
 use dashmap::{DashMap, DashSet};
 use guarden::defer;
+use quanta::Instant;
 use rand::seq::SliceRandom as _;
 use tokio::{net::UdpSocket, sync::Mutex, task::JoinSet};
 use tracing::{Instrument, Level, instrument};
@@ -356,9 +357,9 @@ pub(crate) struct UdpHolePunchListener {
     _port_mapping_lease: Option<upnp::UdpPortMappingLease>,
     conn_counter: Arc<Box<dyn TunnelConnCounter>>,
 
-    listen_time: std::time::Instant,
-    last_select_time: AtomicCell<std::time::Instant>,
-    last_active_time: Arc<AtomicCell<std::time::Instant>>,
+    listen_time: Instant,
+    last_select_time: AtomicCell<Instant>,
+    last_active_time: Arc<AtomicCell<Instant>>,
 }
 
 impl UdpHolePunchListener {
@@ -421,14 +422,14 @@ impl UdpHolePunchListener {
             running_clone.store(false);
         });
 
-        let last_active_time = Arc::new(AtomicCell::new(std::time::Instant::now()));
+        let last_active_time = Arc::new(AtomicCell::new(Instant::now()));
         let conn_counter_clone = conn_counter.clone();
         let last_active_time_clone = last_active_time.clone();
         tasks.spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 if conn_counter_clone.get().unwrap_or(0) != 0 {
-                    last_active_time_clone.store(std::time::Instant::now());
+                    last_active_time_clone.store(Instant::now());
                 }
             }
         });
@@ -444,14 +445,14 @@ impl UdpHolePunchListener {
             _port_mapping_lease: port_mapping_lease,
             conn_counter,
 
-            listen_time: std::time::Instant::now(),
-            last_select_time: AtomicCell::new(std::time::Instant::now()),
+            listen_time: Instant::now(),
+            last_select_time: AtomicCell::new(Instant::now()),
             last_active_time,
         })
     }
 
     pub async fn get_socket(&self) -> Arc<UdpSocket> {
-        self.last_select_time.store(std::time::Instant::now());
+        self.last_select_time.store(Instant::now());
         self.socket.clone()
     }
 

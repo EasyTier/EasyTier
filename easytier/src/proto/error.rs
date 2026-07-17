@@ -1,10 +1,9 @@
 #![allow(clippy::module_inception)]
 
-use prost::DecodeError;
-
 use super::rpc_types;
 
 include!(concat!(env!("OUT_DIR"), "/error.rs"));
+include!(concat!(env!("OUT_DIR"), "/error.serde.rs"));
 
 impl From<&rpc_types::error::Error> for Error {
     fn from(e: &rpc_types::error::Error) -> Self {
@@ -15,10 +14,10 @@ impl From<&rpc_types::error::Error> for Error {
                     error_message: format!("{:?}", e),
                 })),
             },
-            rpc_types::error::Error::DecodeError(_) => Self {
+            rpc_types::error::Error::DecodeError => Self {
                 error_kind: Some(ProtoError::ProstDecodeError(ProstDecodeError {})),
             },
-            rpc_types::error::Error::EncodeError(_) => Self {
+            rpc_types::error::Error::EncodeError => Self {
                 error_kind: Some(ProtoError::ProstEncodeError(ProstEncodeError {})),
             },
             rpc_types::error::Error::InvalidMethodIndex(m, s) => Self {
@@ -59,12 +58,8 @@ impl From<&Error> for rpc_types::error::Error {
             Some(ProtoError::ExecuteError(e)) => {
                 Self::ExecutionError(anyhow::anyhow!(e.error_message.clone()))
             }
-            Some(ProtoError::ProstDecodeError(_)) => {
-                Self::DecodeError(DecodeError::new("decode error"))
-            }
-            Some(ProtoError::ProstEncodeError(_)) => {
-                Self::DecodeError(DecodeError::new("encode error"))
-            }
+            Some(ProtoError::ProstDecodeError(_)) => Self::DecodeError,
+            Some(ProtoError::ProstEncodeError(_)) => Self::EncodeError,
             Some(ProtoError::InvalidMethodIndex(e)) => {
                 Self::InvalidMethodIndex(e.method_index as u8, e.service_name.clone())
             }

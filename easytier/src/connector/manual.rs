@@ -2,10 +2,11 @@ use std::{
     collections::BTreeSet,
     future::Future,
     sync::{Arc, Weak},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use dashmap::DashSet;
+use quanta::Instant;
 use tokio::{sync::mpsc, task::JoinSet, time::timeout};
 
 use crate::{

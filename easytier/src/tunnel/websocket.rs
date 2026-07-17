@@ -118,6 +118,7 @@ impl WsTunnelListener {
 
         let (request, stream) = ServerBuilder::new()
             .limits(Limits::unlimited())
+            .max_headers(128)
             .accept(stream)
             .await?;
 
@@ -252,7 +253,8 @@ impl WsTunnelConnector {
             ),
         };
 
-        let c = ClientBuilder::from_uri(http::Uri::try_from(addr.to_string()).unwrap());
+        let c = ClientBuilder::from_uri(http::Uri::try_from(addr.to_string()).unwrap())
+            .max_headers(128);
         let stream: MaybeTlsStream<TcpStream> = if is_wss {
             init_crypto_provider();
             let tls_conn =

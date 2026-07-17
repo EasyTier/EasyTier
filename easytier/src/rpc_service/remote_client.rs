@@ -53,6 +53,17 @@ where
         config: NetworkConfig,
         save: bool,
     ) -> Result<(), RemoteClientError<E>> {
+        self.handle_run_network_instance_with_source(identify, config, save, ConfigSource::User)
+            .await
+    }
+
+    async fn handle_run_network_instance_with_source(
+        &self,
+        identify: T,
+        config: NetworkConfig,
+        save: bool,
+        source: ConfigSource,
+    ) -> Result<(), RemoteClientError<E>> {
         let client = self
             .get_rpc_client(identify.clone())
             .ok_or(RemoteClientError::ClientNotFound)?;
@@ -63,7 +74,7 @@ where
                     inst_id: None,
                     config: Some(config.clone()),
                     overwrite: true,
-                    source: ConfigSource::User.to_rpc(),
+                    source: source.to_rpc(),
                 },
             )
             .await?;
@@ -74,7 +85,7 @@ where
                     identify,
                     resp.inst_id.unwrap_or_default().into(),
                     config,
-                    ConfigSource::User,
+                    source,
                 )
                 .await
                 .map_err(RemoteClientError::PersistentError)?;
@@ -274,13 +285,19 @@ where
         inst_id: uuid::Uuid,
         config: NetworkConfig,
     ) -> Result<(), RemoteClientError<E>> {
+        self.handle_save_network_config_with_source(identify, inst_id, config, ConfigSource::User)
+            .await
+    }
+
+    async fn handle_save_network_config_with_source(
+        &self,
+        identify: T,
+        inst_id: uuid::Uuid,
+        config: NetworkConfig,
+        source: ConfigSource,
+    ) -> Result<(), RemoteClientError<E>> {
         self.get_storage()
-            .insert_or_update_user_network_config(
-                identify.clone(),
-                inst_id,
-                config,
-                ConfigSource::User,
-            )
+            .insert_or_update_user_network_config(identify.clone(), inst_id, config, source)
             .await
             .map_err(RemoteClientError::PersistentError)?;
         self.get_storage()

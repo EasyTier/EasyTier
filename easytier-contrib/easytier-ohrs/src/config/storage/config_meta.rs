@@ -1,14 +1,48 @@
 use crate::config::types::stored_config::{
     SnapshotImportResult, StoredConfigList, StoredConfigMeta,
 };
-use ohos_hilog_binding::{hilog_debug, hilog_error};
+use once_cell::sync::Lazy;
 use rusqlite::{Connection, OptionalExtension, params};
+use std::collections::HashSet;
+use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 static CONFIG_DB_PATH: Mutex<Option<PathBuf>> = Mutex::new(None);
+static CONFIG_DB_CONNECTION: Lazy<Mutex<Option<CachedConfigDb>>> = Lazy::new(|| Mutex::new(None));
 const CONFIG_DB_FILE_NAME: &str = "easytier-config-store.db";
+
+struct CachedConfigDb {
+    path: PathBuf,
+    conn: Connection,
+}
+
+pub(crate) struct ConfigDbGuard<'a> {
+    guard: MutexGuard<'a, Option<CachedConfigDb>>,
+}
+
+impl Deref for ConfigDbGuard<'_> {
+    type Target = Connection;
+
+    fn deref(&self) -> &Self::Target {
+        &self
+            .guard
+            .as_ref()
+            .expect("config db connection guard must contain a connection")
+            .conn
+    }
+}
+
+impl DerefMut for ConfigDbGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self
+            .guard
+            .as_mut()
+            .expect("config db connection guard must contain a connection")
+            .conn
+    }
+}
 
 #[derive(Debug, Clone)]
 struct StoredConfigMetaRecord {
@@ -79,29 +113,174 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
          );
          CREATE INDEX IF NOT EXISTS idx_stored_config_fields_config_id
              ON stored_config_fields(config_id);",
-    )
+    )?;
+
+    ensure_column(
+        conn,
+        "stored_configs",
+        "favorite",
+        "ALTER TABLE stored_configs ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0;",
+    )?;
+    ensure_column(
+        conn,
+        "stored_configs",
+        "temporary",
+        "ALTER TABLE stored_configs ADD COLUMN temporary INTEGER NOT NULL DEFAULT 0;",
+    )?;
+    ensure_column(
+        conn,
+        "stored_config_fields",
+        "updated_at",
+        "ALTER TABLE stored_config_fields ADD COLUMN updated_at TEXT NOT NULL DEFAULT '0';",
+    )?;
+
+    if !validate_store_schema(conn)? {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+
+    conn.execute_batch("PRAGMA user_version = 1;")
 }
 
-pub(crate) fn open_db() -> Option<Connection> {
-    let path = db_file_path()?;
-    let conn = match Connection::open(&path) {
+fn table_columns(conn: &Connection, table_name: &str) -> rusqlite::Result<HashSet<String>> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({})", table_name))?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    let mut columns = HashSet::new();
+    for row in rows {
+        columns.insert(row?);
+    }
+    Ok(columns)
+}
+
+fn ensure_column(
+    conn: &Connection,
+    table_name: &str,
+    column_name: &str,
+    alter_sql: &str,
+) -> rusqlite::Result<()> {
+    let columns = table_columns(conn, table_name)?;
+    if !columns.contains(column_name) {
+        conn.execute_batch(alter_sql)?;
+    }
+    Ok(())
+}
+
+fn validate_store_schema(conn: &Connection) -> rusqlite::Result<bool> {
+    let meta_columns = table_columns(conn, "stored_configs")?;
+    let field_columns = table_columns(conn, "stored_config_fields")?;
+    let required_meta = [
+        "config_id",
+        "display_name",
+        "created_at",
+        "updated_at",
+        "favorite",
+        "temporary",
+    ];
+    let required_fields = ["config_id", "field_name", "field_json", "updated_at"];
+
+    Ok(required_meta
+        .iter()
+        .all(|column| meta_columns.contains(*column))
+        && required_fields
+            .iter()
+            .all(|column| field_columns.contains(*column)))
+}
+
+fn move_db_file_if_exists(path: &Path) -> bool {
+    if !path.exists() {
+        return true;
+    }
+    let target = PathBuf::from(format!(
+        "{}.corrupt.{}",
+        path.to_string_lossy(),
+        now_ts_string()
+    ));
+    match std::fs::rename(path, &target) {
+        Ok(_) => true,
+        Err(e) => {
+            ohrs_log_error!(
+                "[Rust] failed to move corrupt config db {} to {}: {}",
+                path.display(),
+                target.display(),
+                e
+            );
+            false
+        }
+    }
+}
+
+fn recover_config_db_files(path: &Path) -> bool {
+    let main_ok = move_db_file_if_exists(path);
+    let wal_ok = move_db_file_if_exists(Path::new(&format!("{}-wal", path.to_string_lossy())));
+    let shm_ok = move_db_file_if_exists(Path::new(&format!("{}-shm", path.to_string_lossy())));
+    main_ok && wal_ok && shm_ok
+}
+
+fn open_connection(path: &Path) -> Option<Connection> {
+    let conn = match Connection::open(path) {
         Ok(conn) => conn,
         Err(e) => {
-            hilog_error!("[Rust] failed to open config db {}: {}", path.display(), e);
+            ohrs_log_error!("[Rust] failed to open config db {}: {}", path.display(), e);
             return None;
         }
     };
 
     if let Err(e) = init_schema(&conn) {
-        hilog_error!(
+        ohrs_log_error!(
             "[Rust] failed to initialize config db {}: {}",
             path.display(),
             e
         );
-        return None;
+        drop(conn);
+        if !recover_config_db_files(path) {
+            return None;
+        }
+
+        let recovered = match Connection::open(path) {
+            Ok(conn) => conn,
+            Err(e) => {
+                ohrs_log_error!(
+                    "[Rust] failed to open recovered config db {}: {}",
+                    path.display(),
+                    e
+                );
+                return None;
+            }
+        };
+        if let Err(e) = init_schema(&recovered) {
+            ohrs_log_error!(
+                "[Rust] failed to initialize recovered config db {}: {}",
+                path.display(),
+                e
+            );
+            return None;
+        }
+        return Some(recovered);
     }
 
     Some(conn)
+}
+
+pub(crate) fn open_db() -> Option<ConfigDbGuard<'static>> {
+    let path = db_file_path()?;
+    let mut guard = match CONFIG_DB_CONNECTION.lock() {
+        Ok(guard) => guard,
+        Err(e) => {
+            ohrs_log_error!("[Rust] failed to lock config db connection: {}", e);
+            return None;
+        }
+    };
+
+    let should_open = guard
+        .as_ref()
+        .map(|cached| cached.path != path || !cached.path.exists())
+        .unwrap_or(true);
+    if should_open {
+        let conn = open_connection(&path)?;
+
+        *guard = Some(CachedConfigDb { path, conn });
+    }
+
+    Some(ConfigDbGuard { guard })
 }
 
 fn row_to_meta(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredConfigMetaRecord> {
@@ -250,7 +429,7 @@ fn ensure_parent_dir(path: &Path) -> bool {
         Some(parent) => match std::fs::create_dir_all(parent) {
             Ok(_) => true,
             Err(e) => {
-                hilog_error!(
+                ohrs_log_error!(
                     "[Rust] failed to create snapshot parent {}: {}",
                     parent.display(),
                     e
@@ -276,7 +455,7 @@ fn to_meta(record: StoredConfigMetaRecord) -> StoredConfigMeta {
 pub fn init_config_meta_store(root_dir: String) -> bool {
     let root = PathBuf::from(root_dir);
     if let Err(e) = std::fs::create_dir_all(&root) {
-        hilog_error!(
+        ohrs_log_error!(
             "[Rust] failed to create config db dir {}: {}",
             root.display(),
             e
@@ -290,7 +469,7 @@ pub fn init_config_meta_store(root_dir: String) -> bool {
             *guard = Some(db_path.clone());
         }
         Err(e) => {
-            hilog_error!("[Rust] failed to lock config db path: {}", e);
+            ohrs_log_error!("[Rust] failed to lock config db path: {}", e);
             return false;
         }
     }
@@ -299,7 +478,7 @@ pub fn init_config_meta_store(root_dir: String) -> bool {
         return false;
     }
 
-    hilog_debug!("[Rust] initialized config db at {}", db_path.display());
+    ohrs_log_debug!("[Rust] initialized config db at {}", db_path.display());
     true
 }
 
@@ -314,7 +493,7 @@ pub fn export_config_store_snapshot(target_path: String) -> bool {
     let mut dst = match Connection::open(&target) {
         Ok(conn) => conn,
         Err(e) => {
-            hilog_error!(
+            ohrs_log_error!(
                 "[Rust] failed to open snapshot target {}: {}",
                 target.display(),
                 e
@@ -323,7 +502,7 @@ pub fn export_config_store_snapshot(target_path: String) -> bool {
         }
     };
     if let Err(e) = init_schema(&dst) {
-        hilog_error!(
+        ohrs_log_error!(
             "[Rust] failed to init snapshot schema {}: {}",
             target.display(),
             e
@@ -333,7 +512,7 @@ pub fn export_config_store_snapshot(target_path: String) -> bool {
     match copy_snapshot_tables(&src, &mut dst) {
         Ok(_) => true,
         Err(e) => {
-            hilog_error!(
+            ohrs_log_error!(
                 "[Rust] failed to export snapshot {}: {}",
                 target.display(),
                 e
@@ -348,7 +527,7 @@ pub fn import_config_store_snapshot_with_result(source_path: String) -> Snapshot
     let src = match Connection::open(&source) {
         Ok(conn) => conn,
         Err(e) => {
-            hilog_error!(
+            ohrs_log_error!(
                 "[Rust] failed to open snapshot source {}: {}",
                 source.display(),
                 e
@@ -357,7 +536,7 @@ pub fn import_config_store_snapshot_with_result(source_path: String) -> Snapshot
         }
     };
     if !validate_snapshot_schema(&src) {
-        hilog_error!("[Rust] invalid snapshot schema {}", source.display());
+        ohrs_log_error!("[Rust] invalid snapshot schema {}", source.display());
         return snapshot_import_err(
             "invalid_snapshot_schema",
             format!("invalid snapshot schema: {}", source.display()),
@@ -367,7 +546,7 @@ pub fn import_config_store_snapshot_with_result(source_path: String) -> Snapshot
     let (meta_rows, field_rows) = match read_snapshot_tables(&src) {
         Ok(rows) => rows,
         Err(e) => {
-            hilog_error!(
+            ohrs_log_error!(
                 "[Rust] failed to read snapshot source {}: {}",
                 source.display(),
                 e
@@ -385,7 +564,7 @@ pub fn import_config_store_snapshot_with_result(source_path: String) -> Snapshot
     match write_snapshot_tables(&mut dst, meta_rows, field_rows) {
         Ok(_) => snapshot_import_ok(),
         Err(e) => {
-            hilog_error!(
+            ohrs_log_error!(
                 "[Rust] failed to import snapshot {}: {}",
                 source.display(),
                 e
@@ -397,6 +576,41 @@ pub fn import_config_store_snapshot_with_result(source_path: String) -> Snapshot
 
 pub fn import_config_store_snapshot(source_path: String) -> bool {
     import_config_store_snapshot_with_result(source_path).ok
+}
+
+pub fn reset_config_meta_store() -> bool {
+    let Some(conn) = open_db() else {
+        return false;
+    };
+    let tx = match conn.unchecked_transaction() {
+        Ok(tx) => tx,
+        Err(e) => {
+            ohrs_log_error!(
+                "[Rust] failed to start config store reset transaction: {}",
+                e
+            );
+            return false;
+        }
+    };
+
+    if let Err(e) = tx.execute("DELETE FROM stored_config_fields", []) {
+        ohrs_log_error!("[Rust] failed to reset config fields: {}", e);
+        let _ = tx.rollback();
+        return false;
+    }
+    if let Err(e) = tx.execute("DELETE FROM stored_configs", []) {
+        ohrs_log_error!("[Rust] failed to reset config meta: {}", e);
+        let _ = tx.rollback();
+        return false;
+    }
+
+    match tx.commit() {
+        Ok(_) => true,
+        Err(e) => {
+            ohrs_log_error!("[Rust] failed to commit config store reset: {}", e);
+            false
+        }
+    }
 }
 
 pub fn list_config_meta_entries() -> StoredConfigList {
@@ -411,7 +625,7 @@ pub fn list_config_meta_entries() -> StoredConfigList {
     ) {
         Ok(stmt) => stmt,
         Err(e) => {
-            hilog_error!("[Rust] failed to prepare list meta query: {}", e);
+            ohrs_log_error!("[Rust] failed to prepare list meta query: {}", e);
             return StoredConfigList { configs: vec![] };
         }
     };
@@ -419,7 +633,7 @@ pub fn list_config_meta_entries() -> StoredConfigList {
     let rows = match stmt.query_map([], row_to_meta) {
         Ok(rows) => rows,
         Err(e) => {
-            hilog_error!("[Rust] failed to list config meta rows: {}", e);
+            ohrs_log_error!("[Rust] failed to list config meta rows: {}", e);
             return StoredConfigList { configs: vec![] };
         }
     };
@@ -436,59 +650,6 @@ pub fn get_config_display_name(config_id: &str) -> Option<String> {
 pub fn get_config_meta(config_id: &str) -> Option<StoredConfigMeta> {
     let conn = open_db()?;
     load_meta_record(&conn, config_id).map(to_meta)
-}
-
-pub fn upsert_config_meta(
-    config_id: String,
-    display_name: String,
-    favorite: bool,
-    temporary: bool,
-) -> StoredConfigMeta {
-    let now = now_ts_string();
-    let Some(conn) = open_db() else {
-        return StoredConfigMeta {
-            config_id,
-            display_name,
-            created_at: now.clone(),
-            updated_at: now,
-            favorite,
-            temporary,
-        };
-    };
-
-    let created_at = load_meta_record(&conn, &config_id)
-        .map(|record| record.created_at)
-        .unwrap_or_else(|| now.clone());
-
-    if let Err(e) = conn.execute(
-        "INSERT INTO stored_configs (
-             config_id, display_name, created_at, updated_at, favorite, temporary
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-         ON CONFLICT(config_id) DO UPDATE SET
-             display_name = excluded.display_name,
-             updated_at = excluded.updated_at,
-             favorite = excluded.favorite,
-             temporary = excluded.temporary",
-        params![
-            config_id,
-            display_name,
-            created_at,
-            now,
-            if favorite { 1 } else { 0 },
-            if temporary { 1 } else { 0 }
-        ],
-    ) {
-        hilog_error!("[Rust] failed to upsert config meta: {}", e);
-    }
-
-    get_config_meta(&config_id).unwrap_or(StoredConfigMeta {
-        config_id,
-        display_name,
-        created_at,
-        updated_at: now,
-        favorite,
-        temporary,
-    })
 }
 
 pub(crate) fn upsert_config_meta_in_tx(
@@ -613,21 +774,4 @@ pub fn set_config_favorite(config_id: String, favorite: bool) -> Option<StoredCo
         .map(to_meta)?;
     tx.commit().ok()?;
     Some(meta)
-}
-
-pub fn delete_config_meta(config_id: &str) -> bool {
-    let Some(conn) = open_db() else {
-        return false;
-    };
-
-    match conn.execute(
-        "DELETE FROM stored_configs WHERE config_id = ?1",
-        params![config_id],
-    ) {
-        Ok(rows) => rows > 0,
-        Err(e) => {
-            hilog_error!("[Rust] failed to delete config meta {}: {}", config_id, e);
-            false
-        }
-    }
 }

@@ -2,12 +2,13 @@ use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::proto::common::{NatType, StunInfo};
 use anyhow::Context;
 use chrono::Local;
 use crossbeam::atomic::AtomicCell;
+use quanta::Instant;
 use rand::seq::IteratorRandom;
 use socket2::{SockAddr, SockRef};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1312,7 +1313,7 @@ impl StunInfoCollectorTrait for MockStunInfoCollector {
         StunInfo {
             udp_nat_type: self.udp_nat_type as i32,
             tcp_nat_type: NatType::Unknown as i32,
-            last_update_time: std::time::Instant::now().elapsed().as_secs() as i64,
+            last_update_time: Local::now().timestamp(),
             min_port: 100,
             max_port: 200,
             public_ip: vec!["127.0.0.1".to_string(), "::1".to_string()],

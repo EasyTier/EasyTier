@@ -127,6 +127,8 @@ impl CredentialManager {
         credential_id: Option<String>,
         reusable: bool,
     ) -> (String, String) {
+        self.remove_expired_credentials();
+
         let mut credentials = self.credentials.lock().unwrap();
         let id = if let Some(id) = credential_id
             .map(|x| x.trim().to_string())
@@ -191,6 +193,25 @@ impl CredentialManager {
         if removed {
             self.save_to_disk();
         }
+        removed
+    }
+
+    pub fn remove_expired_credentials(&self) -> bool {
+        self.remove_expired_credentials_at(current_unix_timestamp())
+    }
+
+    fn remove_expired_credentials_at(&self, now: i64) -> bool {
+        let removed = {
+            let mut credentials = self.credentials.lock().unwrap();
+            let before = credentials.len();
+            credentials.retain(|_, entry| entry.is_active_at(now));
+            before != credentials.len()
+        };
+
+        if removed {
+            self.save_to_disk();
+        }
+
         removed
     }
 
@@ -497,6 +518,35 @@ mod tests {
     }
 
     #[test]
+    fn test_remove_expired_credentials_removes_and_persists() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("creds.json");
+        let mgr = CredentialManager::new(Some(path.clone()));
+        mgr.generate_credential_with_id(
+            vec!["active".to_string()],
+            false,
+            vec![],
+            Duration::from_secs(3600),
+            Some("active-id".to_string()),
+        );
+        mgr.generate_credential_with_id(
+            vec!["expired".to_string()],
+            false,
+            vec![],
+            Duration::from_secs(0),
+            Some("expired-id".to_string()),
+        );
+
+        assert!(mgr.remove_expired_credentials());
+        assert_eq!(mgr.list_credentials().len(), 1);
+
+        let reloaded = CredentialManager::new(Some(path));
+        let list = reloaded.list_credentials();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].credential_id, "active-id");
+    }
+
+    #[test]
     fn test_generate_with_specified_id_reuses_existing_result() {
         let mgr = CredentialManager::new(None);
         let fixed_id = "fixed-credential-id".to_string();
@@ -526,6 +576,37 @@ mod tests {
         assert!(!list[0].allow_relay);
         assert_eq!(list[0].allowed_proxy_cidrs, vec!["10.0.0.0/24".to_string()]);
         assert_eq!(list[0].reusable, Some(true));
+    }
+
+    #[test]
+    fn test_generate_with_specified_id_replaces_expired_existing_result() {
+        let mgr = CredentialManager::new(None);
+        let fixed_id = "fixed-credential-id".to_string();
+        let (id1, secret1) = mgr.generate_credential_with_id(
+            vec!["expired".to_string()],
+            false,
+            vec![],
+            Duration::from_secs(0),
+            Some(fixed_id.clone()),
+        );
+        let (id2, secret2) = mgr.generate_credential_with_id(
+            vec!["fresh".to_string()],
+            true,
+            vec!["10.0.0.0/24".to_string()],
+            Duration::from_secs(3600),
+            Some(fixed_id.clone()),
+        );
+
+        assert_eq!(id1, fixed_id);
+        assert_eq!(id2, fixed_id);
+        assert_ne!(secret1, secret2);
+
+        let list = mgr.list_credentials();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].credential_id, fixed_id);
+        assert_eq!(list[0].groups, vec!["fresh".to_string()]);
+        assert!(list[0].allow_relay);
+        assert_eq!(list[0].allowed_proxy_cidrs, vec!["10.0.0.0/24".to_string()]);
     }
 
     #[test]

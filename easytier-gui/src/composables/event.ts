@@ -2,10 +2,11 @@ import { Event, listen } from "@tauri-apps/api/event";
 import { type } from "@tauri-apps/plugin-os";
 import { NetworkTypes } from "easytier-frontend-lib"
 import { Utils } from "easytier-frontend-lib";
+import { normalizeConfigSource } from './config_source'
 
 interface StoredGuiConfig {
     config: NetworkTypes.NetworkConfig
-    source?: 'user' | 'webhook' | 'legacy'
+    source?: unknown
 }
 
 const EVENTS = Object.freeze({
@@ -24,7 +25,7 @@ function onSaveConfigs(event: Event<StoredGuiConfig[]>) {
         'networkList',
         JSON.stringify(event.payload.map(({ config, source }) => ({
             config: NetworkTypes.normalizeNetworkConfig(config),
-            source: source ?? 'legacy',
+            source: normalizeConfigSource(source),
         }))),
     );
 }

@@ -65,9 +65,9 @@ use crate::vpn_portal::{self, VpnPortal};
 use super::dns_server::{MAGIC_DNS_FAKE_IP, runner::DnsRunner};
 use super::listeners::ListenerManager;
 use super::public_ipv6_provider::{
-    reconcile_public_ipv6_provider_runtime, run_public_ipv6_provider_reconcile_task,
-    should_run_public_ipv6_provider_reconcile, validate_public_ipv6_config,
-    validate_public_ipv6_config_values,
+    PublicIpv6ProviderReconcileTask, reconcile_public_ipv6_provider_runtime,
+    run_public_ipv6_provider_reconcile_task, should_run_public_ipv6_provider_reconcile,
+    validate_public_ipv6_config, validate_public_ipv6_config_values,
 };
 
 #[cfg(feature = "socks5")]
@@ -194,6 +194,44 @@ impl NicCtxContainer {
 
 #[cfg(feature = "tun")]
 type ArcNicCtx = Arc<Mutex<Option<NicCtxContainer>>>;
+type ArcPublicIpv6ProviderTaskSlot = Arc<PublicIpv6ProviderTaskSlot>;
+
+struct PublicIpv6ProviderTaskSlot {
+    task: Mutex<Option<PublicIpv6ProviderReconcileTask>>,
+    closing: AtomicBool,
+}
+
+impl PublicIpv6ProviderTaskSlot {
+    fn new() -> Self {
+        Self {
+            task: Mutex::new(None),
+            closing: AtomicBool::new(false),
+        }
+    }
+
+    async fn ensure_started(&self, global_ctx: &ArcGlobalCtx) {
+        let mut task = self.task.lock().await;
+        if self.closing.load(Ordering::Acquire) || task.is_some() {
+            return;
+        }
+        *task = run_public_ipv6_provider_reconcile_task(global_ctx);
+    }
+
+    async fn shutdown(&self) {
+        self.closing.store(true, Ordering::Release);
+        let task = self.task.lock().await.take();
+        if let Some(task) = task {
+            task.shutdown().await;
+        }
+    }
+}
+
+async fn ensure_public_ipv6_provider_reconcile_task(
+    global_ctx: &ArcGlobalCtx,
+    task_slot: &ArcPublicIpv6ProviderTaskSlot,
+) {
+    task_slot.ensure_started(global_ctx).await;
+}
 
 pub struct InstanceRpcServerHook {
     rpc_portal_whitelist: Vec<IpCidr>,
@@ -254,6 +292,7 @@ pub struct InstanceConfigPatcher {
     socks5_server: Weak<Socks5Server>,
     peer_manager: Weak<PeerManager>,
     conn_manager: Weak<ManualConnectorManager>,
+    public_ipv6_provider_task: ArcPublicIpv6ProviderTaskSlot,
 }
 
 impl InstanceConfigPatcher {
@@ -324,7 +363,6 @@ impl InstanceConfigPatcher {
         self.patch_mapped_listeners(patch.mapped_listeners).await?;
         self.patch_connector(patch.connectors).await?;
 
-        let provider_reconcile_was_running = should_run_public_ipv6_provider_reconcile(&global_ctx);
         let mut provider_config_changed = false;
         if let Some(hostname) = patch.hostname {
             global_ctx.set_hostname(hostname.clone());
@@ -362,10 +400,12 @@ impl InstanceConfigPatcher {
         if provider_config_changed {
             reconcile_public_ipv6_provider_runtime(&global_ctx).await;
 
-            let provider_reconcile_should_run =
-                should_run_public_ipv6_provider_reconcile(&global_ctx);
-            if !provider_reconcile_was_running && provider_reconcile_should_run {
-                run_public_ipv6_provider_reconcile_task(&global_ctx);
+            if should_run_public_ipv6_provider_reconcile(&global_ctx) {
+                ensure_public_ipv6_provider_reconcile_task(
+                    &global_ctx,
+                    &self.public_ipv6_provider_task,
+                )
+                .await;
             }
         }
 
@@ -483,18 +523,22 @@ impl InstanceConfigPatcher {
         }
         let global_ctx = weak_upgrade(&self.global_ctx)?;
         for proxy_network_patch in proxy_networks {
-            let Some(cidr) = proxy_network_patch.cidr.map(|c| c.into()) else {
-                tracing::warn!("Proxy network cidr is None, skipping.");
-                continue;
-            };
-            let mapped_cidr: Option<cidr::Ipv4Cidr> =
-                proxy_network_patch.mapped_cidr.map(|s| s.into());
             match ConfigPatchAction::try_from(proxy_network_patch.action) {
                 Ok(ConfigPatchAction::Add) => {
+                    let Some(cidr) = proxy_network_patch.cidr.map(|c| c.into()) else {
+                        tracing::warn!("Proxy network cidr is None, skipping add.");
+                        continue;
+                    };
+                    let mapped_cidr: Option<cidr::Ipv4Cidr> =
+                        proxy_network_patch.mapped_cidr.map(|s| s.into());
                     tracing::info!("Proxy network added: {}", cidr);
                     global_ctx.config.add_proxy_cidr(cidr, mapped_cidr)?;
                 }
                 Ok(ConfigPatchAction::Remove) => {
+                    let Some(cidr) = proxy_network_patch.cidr.map(|c| c.into()) else {
+                        tracing::warn!("Proxy network cidr is None, skipping remove.");
+                        continue;
+                    };
                     tracing::info!("Proxy network removed: {}", cidr);
                     global_ctx.config.remove_proxy_cidr(cidr);
                 }
@@ -643,6 +687,7 @@ pub struct Instance {
     socks5_server: Arc<Socks5Server>,
 
     proxy_cidrs_monitor: Option<AbortOnDropHandle<()>>,
+    public_ipv6_provider_task: ArcPublicIpv6ProviderTaskSlot,
 
     global_ctx: ArcGlobalCtx,
 }
@@ -730,6 +775,7 @@ impl Instance {
             socks5_server,
 
             proxy_cidrs_monitor: None,
+            public_ipv6_provider_task: Arc::new(PublicIpv6ProviderTaskSlot::new()),
 
             global_ctx,
         }
@@ -1030,7 +1076,11 @@ impl Instance {
             .await?;
         self.listener_manager.lock().await.run().await?;
         self.peer_manager.run().await?;
-        run_public_ipv6_provider_reconcile_task(&self.global_ctx);
+        ensure_public_ipv6_provider_reconcile_task(
+            &self.global_ctx,
+            &self.public_ipv6_provider_task,
+        )
+        .await;
 
         #[cfg(feature = "tun")]
         {
@@ -1141,6 +1191,11 @@ impl Instance {
 
     pub fn get_peer_manager(&self) -> Arc<PeerManager> {
         self.peer_manager.clone()
+    }
+
+    #[cfg(feature = "ffi-dataplane")]
+    pub fn get_socks5_server(&self) -> Arc<Socks5Server> {
+        self.socks5_server.clone()
     }
 
     pub async fn close_peer_conn(
@@ -1338,6 +1393,7 @@ impl Instance {
             socks5_server: Arc::downgrade(&self.socks5_server),
             peer_manager: Arc::downgrade(&self.peer_manager),
             conn_manager: Arc::downgrade(&self.conn_manager),
+            public_ipv6_provider_task: self.public_ipv6_provider_task.clone(),
         }
     }
 
@@ -1593,6 +1649,7 @@ impl Instance {
     }
 
     pub async fn clear_resources(&mut self) {
+        self.public_ipv6_provider_task.shutdown().await;
         self.peer_manager.clear_resources().await;
         #[cfg(feature = "tun")]
         let _ = self.nic_ctx.lock().await.take();
@@ -1776,6 +1833,21 @@ mod tests {
             err.to_string()
                 .contains("not a valid global unicast IPv6 prefix")
         );
+    }
+
+    #[tokio::test]
+    async fn public_ipv6_provider_task_slot_does_not_restart_after_shutdown() {
+        let global_ctx = get_mock_global_ctx();
+        let slot = std::sync::Arc::new(super::PublicIpv6ProviderTaskSlot::new());
+        global_ctx.config.set_ipv6_public_addr_provider(true);
+        global_ctx
+            .config
+            .set_ipv6_public_addr_prefix(Some("2001:db8::/48".parse().unwrap()));
+
+        slot.shutdown().await;
+        super::ensure_public_ipv6_provider_reconcile_task(&global_ctx, &slot).await;
+
+        assert!(slot.task.lock().await.is_none());
     }
 
     #[tokio::test]

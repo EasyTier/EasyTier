@@ -1,9 +1,7 @@
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{sync::Arc, time::Duration};
 
 use anyhow::Context;
+use quanta::Instant;
 use tokio::net::UdpSocket;
 use tokio_util::task::AbortOnDropHandle;
 

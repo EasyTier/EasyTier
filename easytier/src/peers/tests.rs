@@ -1220,9 +1220,6 @@ async fn credential_expiry_disconnects_from_all_admins() {
     .await;
 
     tokio::time::sleep(Duration::from_secs(3)).await;
-    admin_a
-        .get_global_ctx()
-        .issue_event(crate::common::global_ctx::GlobalCtxEvent::CredentialChanged);
 
     wait_for_condition(
         || {

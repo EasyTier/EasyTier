@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     ffi::CString,
     fmt::Debug,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
@@ -16,6 +17,10 @@ use netlink_packet_core::{
 use netlink_packet_route::{
     AddressFamily, RouteNetlinkMessage,
     address::{AddressAttribute, AddressMessage},
+    neighbour::{
+        NeighbourAddress, NeighbourAttribute, NeighbourFlags, NeighbourHeader, NeighbourMessage,
+        NeighbourState,
+    },
     route::{
         RouteAddress, RouteAttribute, RouteHeader, RouteMessage, RouteProtocol, RouteScope,
         RouteType,
@@ -374,6 +379,105 @@ impl NetlinkIfConfiger {
 
     pub(crate) fn list_ipv6_route_messages() -> Result<Vec<RouteMessage>, Error> {
         Self::list_route_messages(AddressFamily::Inet6)
+    }
+
+    fn ipv6_ndp_proxy_message(name: &str, address: Ipv6Addr) -> Result<NeighbourMessage, Error> {
+        let mut message = NeighbourMessage::default();
+        message.header = NeighbourHeader {
+            family: AddressFamily::Inet6,
+            ifindex: Self::get_interface_index(name)?,
+            state: NeighbourState::Permanent,
+            flags: NeighbourFlags::Proxy,
+            kind: RouteType::Unicast,
+        };
+        message
+            .attributes
+            .push(NeighbourAttribute::Destination(NeighbourAddress::Inet6(
+                address,
+            )));
+        Ok(message)
+    }
+
+    pub(crate) fn add_ipv6_ndp_proxy(name: &str, address: Ipv6Addr) -> Result<(), Error> {
+        send_netlink_req_and_wait_one_resp(
+            RouteNetlinkMessage::NewNeighbour(Self::ipv6_ndp_proxy_message(name, address)?),
+            false,
+        )
+    }
+
+    pub(crate) fn remove_ipv6_ndp_proxy(name: &str, address: Ipv6Addr) -> Result<(), Error> {
+        send_netlink_req_and_wait_one_resp(
+            RouteNetlinkMessage::DelNeighbour(Self::ipv6_ndp_proxy_message(name, address)?),
+            true,
+        )
+    }
+
+    fn list_neighbour_messages(
+        address_family: AddressFamily,
+    ) -> Result<Vec<NeighbourMessage>, Error> {
+        let mut message = NeighbourMessage::default();
+        message.header.family = address_family;
+        message.header.flags = NeighbourFlags::Proxy;
+
+        let s = send_netlink_req(
+            RouteNetlinkMessage::GetNeighbour(message),
+            NLM_F_REQUEST | NLM_F_DUMP,
+        )?;
+
+        let mut ret_vec = vec![];
+        let mut resp = Vec::<u8>::new();
+        loop {
+            if resp.is_empty() {
+                let (new_resp, _) = s.recv_from_full()?;
+                resp = new_resp;
+            }
+
+            let ret = NetlinkMessage::<RouteNetlinkMessage>::deserialize(&resp)
+                .with_context(|| "Failed to deserialize netlink neighbour message")?;
+            resp = resp.split_off(ret.buffer_len());
+
+            tracing::debug!("net link response <<< {:?}", ret);
+
+            match ret.payload {
+                NetlinkPayload::Error(e) => {
+                    if e.code == NonZero::new(0) {
+                        continue;
+                    } else {
+                        return Err(e.to_io().into());
+                    }
+                }
+                NetlinkPayload::InnerMessage(RouteNetlinkMessage::NewNeighbour(m)) => {
+                    ret_vec.push(m);
+                }
+                NetlinkPayload::Done(_) => {
+                    break;
+                }
+                p => {
+                    tracing::error!("Unexpected netlink response: {:?}", p);
+                    return Err(anyhow::anyhow!("Unexpected netlink response").into());
+                }
+            }
+        }
+
+        Ok(ret_vec)
+    }
+
+    pub(crate) fn list_ipv6_ndp_proxy(name: &str) -> Result<BTreeSet<Ipv6Addr>, Error> {
+        let ifindex = Self::get_interface_index(name)?;
+
+        Ok(Self::list_neighbour_messages(AddressFamily::Inet6)?
+            .into_iter()
+            .filter(|message| {
+                message.header.ifindex == ifindex
+                    && message.header.flags.contains(NeighbourFlags::Proxy)
+            })
+            .filter_map(|message| {
+                message.attributes.into_iter().find_map(|attr| match attr {
+                    NeighbourAttribute::Destination(NeighbourAddress::Inet6(addr)) => Some(addr),
+                    _ => None,
+                })
+            })
+            .collect())
     }
 }
 

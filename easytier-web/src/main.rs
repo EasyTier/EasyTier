@@ -3,8 +3,8 @@
 #[macro_use]
 extern crate rust_i18n;
 
-use std::net::IpAddr;
 use std::sync::Arc;
+use std::{net::IpAddr, time::Duration};
 
 use clap::Parser;
 use easytier::tunnel::websocket::WsTunnelListener;
@@ -112,6 +112,14 @@ struct Cli {
         help = t!("cli.geoip_db").to_string(),
     )]
     geoip_db: Option<String>,
+
+    #[arg(
+        long,
+        env = "ET_HEARTBEAT_MIN_RESPONSE_MS",
+        default_value = "0",
+        help = t!("cli.heartbeat_min_response_ms").to_string(),
+    )]
+    heartbeat_min_response_ms: u64,
 
     #[cfg(feature = "embed")]
     #[arg(
@@ -312,6 +320,7 @@ async fn main() {
     let mut mgr = client_manager::ClientManager::new(
         db.clone(),
         cli.geoip_db,
+        Duration::from_millis(cli.heartbeat_min_response_ms),
         feature_flags.clone(),
         webhook_config.clone(),
     );

@@ -1,6 +1,7 @@
 use cidr::Ipv6Inet;
 use cidr::{Ipv4Cidr, Ipv6Cidr};
 use dashmap::DashMap;
+use quanta::Instant;
 use std::{
     collections::BTreeSet,
     net::{Ipv4Addr, Ipv6Addr},
@@ -157,7 +158,7 @@ pub trait Route {
 
     async fn get_peer_info(&self, peer_id: PeerId) -> Option<RoutePeerInfo>;
 
-    async fn get_peer_info_last_update_time(&self) -> std::time::Instant;
+    async fn get_peer_info_last_update_time(&self) -> Instant;
 
     fn get_peer_groups(&self, peer_id: PeerId) -> Arc<Vec<String>>;
 
@@ -226,7 +227,7 @@ impl Route for MockRoute {
         panic!("mock route")
     }
 
-    async fn get_peer_info_last_update_time(&self) -> std::time::Instant {
+    async fn get_peer_info_last_update_time(&self) -> Instant {
         panic!("mock route")
     }
 

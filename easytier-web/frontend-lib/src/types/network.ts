@@ -1,166 +1,80 @@
 import { v4 as uuidv4 } from 'uuid'
+import {
+  NetworkConfig as NetworkConfigPb,
+  NetworkingMethod,
+  type NetworkPeerConfig,
+  type NetworkConfig as ProtoNetworkConfig,
+  type PortForwardConfig,
+} from '../generated/proto/api_manage'
+import {
+  Action as AclAction,
+  ChainType as AclChainType,
+  Protocol as AclProtocol,
+  type Acl,
+  type AclV1,
+  type Chain as AclChain,
+  type GroupIdentity,
+  type GroupInfo,
+  type Rule as AclRule,
+} from '../generated/proto/acl'
+import {
+  CompressionAlgoPb,
+  NatType,
+  type PeerFeatureFlag,
+  type SecureModeConfig,
+} from '../generated/proto/common'
+import { prepareNetworkConfigForProtoJson } from './networkCompat'
 
-export enum NetworkingMethod {
-  PublicServer = 0,
-  Manual = 1,
-  Standalone = 2,
-}
+export { AclAction, AclChainType, AclProtocol, CompressionAlgoPb, NatType, NetworkingMethod }
+export type { Acl, AclChain, AclRule, AclV1, GroupIdentity, GroupInfo, NetworkPeerConfig, PeerFeatureFlag, PortForwardConfig, SecureModeConfig }
 
-export interface SecureModeConfig {
-  enabled: boolean
-  // Keep protocol compatibility with backend/import-export flows even though the GUI
-  // does not render secure-mode or credential inputs.
-  local_private_key?: string
-  local_public_key?: string
-}
-
-export enum AclProtocol {
-  Unspecified = 0,
-  TCP = 1,
-  UDP = 2,
-  ICMP = 3,
-  ICMPv6 = 4,
-  Any = 5,
-}
-
-export enum AclAction {
-  Noop = 0,
-  Allow = 1,
-  Drop = 2,
-}
-
-export enum AclChainType {
-  UnspecifiedChain = 0,
-  Inbound = 1,
-  Outbound = 2,
-  Forward = 3,
-}
-
-export interface AclRule {
-  name: string
-  description: string
-  priority: number
-  enabled: boolean
-  protocol: AclProtocol
-  ports: string[]
-  source_ips: string[]
-  destination_ips: string[]
-  source_ports: string[]
-  action: AclAction
-  rate_limit: number
-  burst_limit: number
-  stateful: boolean
-  source_groups: string[]
-  destination_groups: string[]
-}
-
-export interface AclChain {
-  name: string
-  chain_type: AclChainType
-  description: string
-  enabled: boolean
-  rules: AclRule[]
-  default_action: AclAction
-}
-
-export interface GroupIdentity {
-  group_name: string
-  group_secret: string
-}
-
-export interface GroupInfo {
-  declares: GroupIdentity[]
-  members: string[]
-}
-
-export interface AclV1 {
-  chains: AclChain[]
-  group?: GroupInfo
-}
-
-export interface Acl {
-  acl_v1?: AclV1
-}
-
-export interface NetworkConfig {
+export type NetworkConfig = Omit<
+  ProtoNetworkConfig,
+  'instance_id' | 'instance_recv_bps_limit' | 'mtu' | 'networking_method'
+> & {
   instance_id: string
-
-  dhcp: boolean
-  virtual_ipv4: string
-  network_length: number
-  hostname?: string
-  network_name: string
-  network_secret?: string
-  credential_file?: string
-  secure_mode?: SecureModeConfig
-
-  networking_method: NetworkingMethod
-
-  public_server_url: string
-  peer_urls: string[]
-
-  proxy_cidrs: string[]
-
-  enable_vpn_portal: boolean
-  vpn_portal_listen_port: number
-  vpn_portal_client_network_addr: string
-  vpn_portal_client_network_len: number
-
-  advanced_settings: boolean
-
-  listener_urls: string[]
-  latency_first: boolean
-
-  dev_name: string
-
-  use_smoltcp?: boolean
-  disable_ipv6?: boolean
-  ipv6_public_addr_auto?: boolean
-  enable_kcp_proxy?: boolean
-  disable_kcp_input?: boolean
-  enable_quic_proxy?: boolean
-  disable_quic_input?: boolean
-  disable_p2p?: boolean
-  p2p_only?: boolean
-  lazy_p2p?: boolean
-  bind_device?: boolean
-  no_tun?: boolean
-  enable_exit_node?: boolean
-  relay_all_peer_rpc?: boolean
-  need_p2p?: boolean
-  multi_thread?: boolean
-  proxy_forward_by_system?: boolean
-  disable_encryption?: boolean
-  disable_tcp_hole_punching?: boolean
-  disable_udp_hole_punching?: boolean
-  disable_upnp?: boolean
-  enable_udp_broadcast_relay?: boolean
-  disable_sym_hole_punching?: boolean
-
-  enable_relay_network_whitelist?: boolean
-  relay_network_whitelist: string[]
-
-  enable_manual_routes: boolean
-  routes: string[]
-
-  exit_nodes: string[]
-
-  enable_socks5?: boolean
-  socks5_port: number
-
   mtu: number | null
-  instance_recv_bps_limit: number | null
-  mapped_listeners: string[]
+  instance_recv_bps_limit: number | string | null
+  networking_method: NetworkingMethod | string
+}
 
-  enable_magic_dns?: boolean
-  enable_private_mode?: boolean
+export type NormalizedAclV1 = AclV1 & {
+  group: GroupInfo
+}
 
-  port_forwards: PortForwardConfig[]
-  acl?: Acl
+const UINT64_MAX = (1n << 64n) - 1n
+
+interface NetworkingConfigFields {
+  peer_urls: string[]
+  peers?: NetworkPeerConfig[]
+  public_server_url?: string
+  networking_method?: NetworkingMethod | string
+}
+
+interface NetworkingMethodOptions {
+  fillPeerUrlsFromPeers?: boolean
+}
+
+function emptyGroupInfo(): GroupInfo {
+  return {
+    declares: [],
+    members: [],
+  }
+}
+
+function emptyAcl(): Acl {
+  return {
+    acl_v1: {
+      group: emptyGroupInfo(),
+      chains: [],
+    },
+  }
 }
 
 export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
   return {
+    ...NetworkConfigPb.create(),
+
     instance_id: uuidv4(),
 
     dhcp: true,
@@ -227,15 +141,7 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     enable_magic_dns: false,
     enable_private_mode: false,
     port_forwards: [],
-    acl: {
-      acl_v1: {
-        group: {
-          declares: [],
-          members: [],
-        },
-        chains: [],
-      },
-    },
+    acl: emptyAcl(),
   }
 }
 
@@ -243,33 +149,185 @@ function cleanPeerUrls(urls: string[] | undefined): string[] {
   return (urls ?? []).map((url) => url.trim()).filter((url) => url.length > 0)
 }
 
-export function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
-  const normalized: NetworkConfig = {
-    ...config,
-    peer_urls: cleanPeerUrls(config.peer_urls),
+function cleanNetworkPeers(peers: NetworkPeerConfig[] | undefined): NetworkPeerConfig[] {
+  return (peers ?? [])
+    .map((peer) => ({
+      ...peer,
+      uri: peer.uri.trim(),
+    }))
+    .filter((peer) => peer.uri.length > 0)
+}
+
+function peersFromUrls(urls: string[], existingPeers: NetworkPeerConfig[]): NetworkPeerConfig[] {
+  const peersByUri = new Map<string, NetworkPeerConfig>()
+  for (const peer of existingPeers) {
+    if (!peersByUri.has(peer.uri)) {
+      peersByUri.set(peer.uri, peer)
+    }
   }
 
-  const publicServerUrl = normalized.public_server_url?.trim() ?? ''
+  return urls.map((uri) => ({
+    ...(peersByUri.get(uri) ?? {}),
+    uri,
+  }))
+}
 
-  switch (normalized.networking_method) {
+export function ensureAclRuleLists(rule: AclRule): AclRule {
+  rule.ports ??= []
+  rule.source_ips ??= []
+  rule.destination_ips ??= []
+  rule.source_ports ??= []
+  rule.source_groups ??= []
+  rule.destination_groups ??= []
+  return rule
+}
+
+export function ensureAclChain(chain: AclChain): AclChain {
+  chain.rules ??= []
+  chain.rules.forEach(ensureAclRuleLists)
+  return chain
+}
+
+export function ensureGroupInfo(group: GroupInfo): GroupInfo {
+  group.declares ??= []
+  group.members ??= []
+  return group
+}
+
+export function ensureAclV1(acl: Acl): NormalizedAclV1 {
+  acl.acl_v1 ??= { chains: [], group: emptyGroupInfo() }
+  acl.acl_v1.chains ??= []
+  acl.acl_v1.chains.forEach(ensureAclChain)
+  acl.acl_v1.group = ensureGroupInfo(acl.acl_v1.group ?? emptyGroupInfo())
+  return acl.acl_v1 as NormalizedAclV1
+}
+
+function normalizeAcl(acl: Acl | undefined): Acl {
+  const source = acl ?? emptyAcl()
+  const aclV1 = source.acl_v1 ?? { chains: [], group: emptyGroupInfo() }
+  return {
+    ...source,
+    acl_v1: {
+      ...aclV1,
+      chains: (aclV1.chains ?? []).map((chain) => ({
+        ...chain,
+        rules: (chain.rules ?? []).map((rule) => ({ ...ensureAclRuleLists({ ...rule }) })),
+      })),
+      group: ensureGroupInfo({
+        ...(aclV1.group ?? emptyGroupInfo()),
+        declares: aclV1.group?.declares ?? [],
+        members: aclV1.group?.members ?? [],
+      }),
+    },
+  }
+}
+
+function isGroupInfoEmpty(group: GroupInfo | undefined): boolean {
+  return (group?.declares?.length ?? 0) === 0 && (group?.members?.length ?? 0) === 0
+}
+
+function isAclEmpty(acl: Acl | undefined): boolean {
+  const aclV1 = acl?.acl_v1
+  return !aclV1 || ((aclV1.chains?.length ?? 0) === 0 && isGroupInfoEmpty(aclV1.group))
+}
+
+function normalizeUint64ForInput(v: bigint | number | string | null | undefined): number | string | null {
+  if (v == null) return null
+
+  try {
+    const n = typeof v === 'bigint' ? v : BigInt(v)
+    if (n === 0n || n > UINT64_MAX) return null
+    return n <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(n) : n.toString()
+  } catch {
+    return null
+  }
+}
+
+function normalizeNumberForInput(v: number | string | null | undefined): number | null {
+  if (v == null) return null
+  const n = Number(v)
+  return Number.isFinite(n) ? n : null
+}
+
+function toBackendUint64(v: number | bigint | string | null | undefined): bigint | undefined {
+  if (v == null || v === '') return undefined
+  try {
+    const n = typeof v === 'bigint' ? v : BigInt(v)
+    return n > 0n && n <= UINT64_MAX ? n : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function applyNetworkingMethod(
+  config: NetworkingConfigFields,
+  options: NetworkingMethodOptions = {},
+): void {
+  const existingPeers = cleanNetworkPeers(config.peers)
+  config.peer_urls = cleanPeerUrls(config.peer_urls)
+  if (options.fillPeerUrlsFromPeers && config.peer_urls.length === 0 && existingPeers.length > 0) {
+    config.peer_urls = existingPeers.map((peer) => peer.uri)
+  }
+
+  const publicServerUrl = config.public_server_url?.trim() ?? ''
+  const networkingMethod = config.networking_method ?? NetworkingMethod.Manual
+
+  switch (networkingMethod) {
     case NetworkingMethod.PublicServer:
-      normalized.peer_urls = publicServerUrl ? [publicServerUrl] : []
+      config.peer_urls = publicServerUrl
+        ? [publicServerUrl]
+        : (options.fillPeerUrlsFromPeers ? existingPeers.map((peer) => peer.uri) : [])
       break
     case NetworkingMethod.Manual:
       break
     case NetworkingMethod.Standalone:
     default:
-      normalized.peer_urls = []
+      config.peer_urls = []
       break
   }
 
-  normalized.networking_method = NetworkingMethod.Manual
-  normalized.public_server_url = ''
+  config.networking_method = NetworkingMethod.Manual
+  config.public_server_url = ''
+  config.peers = peersFromUrls(config.peer_urls, existingPeers)
+}
+
+export function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
+  const normalized = NetworkConfigPb.fromJson(prepareNetworkConfigForProtoJson(config) as any, {
+    ignoreUnknownFields: true,
+  }) as unknown as NetworkConfig
+
+  applyNetworkingMethod(normalized, { fillPeerUrlsFromPeers: true })
+  normalized.mtu = normalizeNumberForInput(normalized.mtu)
+  normalized.instance_recv_bps_limit = normalizeUint64ForInput(
+    normalized.instance_recv_bps_limit as any,
+  )
+  normalized.proxy_cidrs ??= []
+  normalized.listener_urls ??= []
+  normalized.relay_network_whitelist ??= []
+  normalized.routes ??= []
+  normalized.exit_nodes ??= []
+  normalized.mapped_listeners ??= []
+  normalized.port_forwards ??= []
+  normalized.acl = config.acl === undefined ? undefined : normalizeAcl(normalized.acl)
+
   return normalized
 }
 
 export function toBackendNetworkConfig(config: NetworkConfig): NetworkConfig {
-  return normalizeNetworkConfig(config)
+  const backend = NetworkConfigPb.fromJson(prepareNetworkConfigForProtoJson(config) as any, {
+    ignoreUnknownFields: true,
+  })
+
+  applyNetworkingMethod(backend)
+  backend.mtu = normalizeNumberForInput(config.mtu) ?? undefined
+  backend.instance_recv_bps_limit = toBackendUint64(config.instance_recv_bps_limit)
+  if (config.acl === undefined || isAclEmpty(config.acl)) {
+    backend.acl = undefined
+  }
+
+  return NetworkConfigPb.toJson(backend, {
+    useProtoFieldName: true,
+  }) as unknown as NetworkConfig
 }
 
 export interface NetworkInstance {
@@ -354,6 +412,7 @@ export interface Route {
   proxy_cidrs: string[]
   hostname: string
   stun_info?: StunInfo
+  feature_flag?: PeerFeatureFlag
   inst_id: string
   version: string
 }
@@ -361,6 +420,7 @@ export interface Route {
 export interface PeerInfo {
   peer_id: number
   conns: PeerConnInfo[]
+  default_conn_id?: CommonUuid
 }
 
 export interface PeerConnInfo {
@@ -371,7 +431,7 @@ export interface PeerConnInfo {
   features: string[]
   tunnel?: TunnelInfo
   stats?: PeerConnStats
-  loss_rate: number
+  loss_rate?: number | string
 }
 
 export interface PeerRoutePair {
@@ -390,19 +450,18 @@ export interface TunnelInfo {
 }
 
 export interface PeerConnStats {
-  rx_bytes: number
-  tx_bytes: number
-  rx_packets: number
-  tx_packets: number
-  latency_us: number
+  rx_bytes: number | string
+  tx_bytes: number | string
+  rx_packets: number | string
+  tx_packets: number | string
+  latency_us: number | string
 }
 
-export interface PortForwardConfig {
-  bind_ip: string,
-  bind_port: number,
-  dst_ip: string,
-  dst_port: number,
-  proto: string
+export interface CommonUuid {
+  part1?: number
+  part2?: number
+  part3?: number
+  part4?: number
 }
 
 // 添加新行

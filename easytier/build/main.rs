@@ -2,7 +2,6 @@ mod rpc;
 
 use crate::rpc::ServiceGenerator;
 use cfg_aliases::cfg_aliases;
-use prost_wkt_build::{FileDescriptorSet, Message as _};
 #[cfg(target_os = "windows")]
 use std::io::Cursor;
 use std::{env, path::PathBuf};
@@ -174,32 +173,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("cargo:rerun-if-changed={proto_file}");
     }
 
-    let out = PathBuf::from(env::var("OUT_DIR").unwrap());
-    let descriptor_file = out.join("descriptors.bin");
+    let out = PathBuf::from(env::var("OUT_DIR")?);
+    let descriptor = out.join("descriptors.bin");
 
     let mut config = prost_build::Config::new();
     config
-        .type_attribute(".", "#[derive(serde::Serialize,serde::Deserialize)]")
         .extern_path(".google.protobuf.Any", "::prost_wkt_types::Any")
         .extern_path(".google.protobuf.Timestamp", "::prost_wkt_types::Timestamp")
         .extern_path(".google.protobuf.Value", "::prost_wkt_types::Value")
-        .file_descriptor_set_path(&descriptor_file)
-        .protoc_arg("--experimental_allow_proto3_optional")
-        .type_attribute("peer_rpc.DirectConnectedPeerInfo", "#[derive(Hash)]")
-        .type_attribute("peer_rpc.PeerInfoForGlobalMap", "#[derive(Hash)]")
-        .type_attribute("peer_rpc.ForeignNetworkRouteInfoKey", "#[derive(Hash, Eq)]")
-        .type_attribute(
-            "peer_rpc.RouteForeignNetworkSummary.Info",
-            "#[derive(Hash, Eq)]",
-        )
-        .type_attribute("peer_rpc.RouteForeignNetworkSummary", "#[derive(Hash, Eq)]")
-        .type_attribute("common.RpcDescriptor", "#[derive(Hash, Eq)]")
-        .type_attribute("acl.Acl", "#[serde(default)]")
-        .type_attribute("acl.AclV1", "#[serde(default)]")
-        .type_attribute("acl.Chain", "#[serde(default)]")
-        .type_attribute("acl.Rule", "#[serde(default)]")
-        .type_attribute("acl.GroupInfo", "#[serde(default)]")
-        .field_attribute(".api.manage.NetworkConfig", "#[serde(default)]")
+        .file_descriptor_set_path(&descriptor)
         .service_generator(Box::new(ServiceGenerator::default()))
         .btree_map(["."])
         .skip_debug([".common.Ipv4Addr", ".common.Ipv6Addr", ".common.UUID"]);
@@ -210,9 +192,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .file_descriptor_set_bytes("crate::proto::DESCRIPTOR_POOL_BYTES")
         .compile_protos_with_config(config, &proto_files_reflect, &["src/proto/"])?;
 
-    let descriptor_bytes = std::fs::read(descriptor_file).unwrap();
-    let descriptor = FileDescriptorSet::decode(&descriptor_bytes[..]).unwrap();
-    prost_wkt_build::add_serde(out, descriptor);
+    let descriptor = std::fs::read(descriptor)?;
+    pbjson_build::Builder::new()
+        .register_descriptors(&descriptor)?
+        .preserve_proto_field_names()
+        .btree_map(["."])
+        .build(&["."])?;
 
     check_locale();
     Ok(())

@@ -1,9 +1,10 @@
 use dashmap::DashMap;
+use quanta::Instant;
 use serde::{Deserialize, Serialize};
 use std::cell::UnsafeCell;
 use std::fmt;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::time::interval;
 use tokio_util::task::AbortOnDropHandle;
 
