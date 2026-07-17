@@ -343,10 +343,6 @@ impl Server {
         }
     }
 
-    pub fn inflight_count(&self) -> usize {
-        self.packet_mergers.len()
-    }
-
     pub fn close(&self) {
         self.transport.lock().unwrap().close();
     }
@@ -366,5 +362,17 @@ impl Server {
         handler_tasks.abort_all();
         while tasks.join_next().await.is_some() {}
         while handler_tasks.join_next().await.is_some() {}
+    }
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+mod test_utils {
+    use super::Server;
+
+    impl Server {
+        #[doc(hidden)]
+        pub fn inflight_count(&self) -> usize {
+            self.packet_mergers.len()
+        }
     }
 }

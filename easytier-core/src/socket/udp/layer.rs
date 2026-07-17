@@ -48,7 +48,7 @@ pub struct UdpSessionLayer<S, R = NoopUdpSessionStunResponder> {
     pub(super) classified_accepts: Arc<ClassifiedUdpSessionAccepts>,
     pub(super) pending_connects: Arc<PendingUdpSessionConnects>,
     mux_accepted_rx: TokioMutex<mpsc::Receiver<UdpSession>>,
-    control_rx: TokioMutex<mpsc::Receiver<UdpSessionLayerControl>>,
+    _control_rx: TokioMutex<mpsc::Receiver<UdpSessionLayerControl>>,
     session_shutdown_tx: watch::Sender<bool>,
     recv_task: JoinHandle<()>,
 }
@@ -111,7 +111,7 @@ where
             classified_accepts,
             pending_connects,
             mux_accepted_rx: TokioMutex::new(mux_accepted_rx),
-            control_rx: TokioMutex::new(control_rx),
+            _control_rx: TokioMutex::new(control_rx),
             session_shutdown_tx,
             recv_task,
         }
@@ -287,14 +287,6 @@ where
                 format!("{protocol:?} udp listener closed"),
             )
         })
-    }
-
-    pub async fn recv_control(&self) -> io::Result<UdpSessionLayerControl> {
-        let mut control_rx = self.control_rx.lock().await;
-        control_rx
-            .recv()
-            .await
-            .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "udp listener closed"))
     }
 
     async fn connect_with_registered_attempt(
@@ -1127,5 +1119,24 @@ where
         let mut session = layer.open_classified_session(request.protocol, request.remote_addr)?;
         session._cleanup.layer_guard = Some(Box::new(layer));
         Ok(session)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    impl<S, R> UdpSessionLayer<S, R>
+    where
+        S: VirtualUdpSocket,
+        R: UdpSessionStunResponder<S>,
+    {
+        pub(crate) async fn recv_control(&self) -> io::Result<UdpSessionLayerControl> {
+            let mut control_rx = self._control_rx.lock().await;
+            control_rx
+                .recv()
+                .await
+                .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "udp listener closed"))
+        }
     }
 }

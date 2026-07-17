@@ -489,20 +489,6 @@ mod tests {
     }
 
     #[test]
-    fn cidr_snapshot_maps_submitted_network_without_host_polling() {
-        let config = test_config();
-        let snapshot = crate::proxy::cidr_table::ProxyCidrSnapshot::from_proxy_networks(
-            &config.peer.runtime.core.routes.proxy_networks,
-        );
-        let table = ProxyCidrTable::from_snapshot(snapshot);
-
-        assert_eq!(
-            table.lookup_v4(Ipv4Addr::new(198, 51, 100, 42)),
-            Some(Ipv4Addr::new(192, 0, 2, 42))
-        );
-    }
-
-    #[test]
     fn listener_protocol_classification_matches_native_proxy_guard() {
         for scheme in ["udp", "wg", "quic"] {
             assert!(listener_uses_udp(

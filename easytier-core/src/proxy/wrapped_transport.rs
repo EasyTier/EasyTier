@@ -492,50 +492,6 @@ struct WrappedTransportPeerFilter {
     role: WrappedTransportRole,
 }
 
-#[cfg(all(test, feature = "proxy-packet"))]
-#[derive(Default)]
-struct TestWrappedTransportDestination {
-    active: std::sync::atomic::AtomicBool,
-    enabled: std::sync::atomic::AtomicU8,
-}
-
-#[cfg(all(test, feature = "proxy-packet"))]
-#[async_trait]
-impl WrappedTransportDestinationLifecycle for TestWrappedTransportDestination {
-    async fn start(
-        self: Arc<Self>,
-        kcp: bool,
-        quic: bool,
-    ) -> anyhow::Result<WrappedTransportDestinationIngresses> {
-        self.active
-            .store(true, std::sync::atomic::Ordering::Release);
-        self.enabled.store(
-            (kcp as u8) | ((quic as u8) << 1),
-            std::sync::atomic::Ordering::Release,
-        );
-        Ok(WrappedTransportDestinationIngresses::default())
-    }
-
-    async fn stop(&self) {
-        self.active
-            .store(false, std::sync::atomic::Ordering::Release);
-        self.enabled.store(0, std::sync::atomic::Ordering::Release);
-    }
-
-    fn entry_snapshots(&self, _transport: WrappedTransportKind) -> Vec<TcpNatEntrySnapshot> {
-        Vec::new()
-    }
-
-    fn is_started(&self, transport: WrappedTransportKind) -> bool {
-        let mask = match transport {
-            WrappedTransportKind::Kcp => 1,
-            WrappedTransportKind::Quic => 2,
-        };
-        self.active.load(std::sync::atomic::Ordering::Acquire)
-            && self.enabled.load(std::sync::atomic::Ordering::Acquire) & mask != 0
-    }
-}
-
 #[async_trait]
 impl PeerPacketFilter for WrappedTransportPeerFilter {
     async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
@@ -650,31 +606,6 @@ impl WrappedTransportProxyModule {
             quic_source,
             #[cfg(feature = "proxy-packet")]
             destination,
-            state: Mutex::new(WrappedTransportProxyState::default()),
-        }))
-    }
-
-    #[cfg(test)]
-    fn new_without_sources(
-        peer_manager: Arc<PeerManagerCore>,
-        runtime_config: CoreRuntimeConfigStore,
-        kcp: Option<Arc<dyn WrappedTransportEngine>>,
-        quic: Option<Arc<dyn WrappedTransportEngine>>,
-    ) -> Option<Arc<Self>> {
-        if kcp.is_none() && quic.is_none() {
-            return None;
-        }
-        Some(Arc::new(Self {
-            peer_manager,
-            runtime_config,
-            kcp,
-            quic,
-            #[cfg(feature = "proxy-packet")]
-            kcp_source: None,
-            #[cfg(feature = "proxy-packet")]
-            quic_source: None,
-            #[cfg(feature = "proxy-packet")]
-            destination: Some(Arc::new(TestWrappedTransportDestination::default())),
             state: Mutex::new(WrappedTransportProxyState::default()),
         }))
     }
@@ -1041,6 +972,76 @@ mod tests {
     };
 
     use super::*;
+
+    #[cfg(feature = "proxy-packet")]
+    #[derive(Default)]
+    struct TestWrappedTransportDestination {
+        active: std::sync::atomic::AtomicBool,
+        enabled: std::sync::atomic::AtomicU8,
+    }
+
+    #[cfg(feature = "proxy-packet")]
+    #[async_trait]
+    impl WrappedTransportDestinationLifecycle for TestWrappedTransportDestination {
+        async fn start(
+            self: Arc<Self>,
+            kcp: bool,
+            quic: bool,
+        ) -> anyhow::Result<WrappedTransportDestinationIngresses> {
+            self.active
+                .store(true, std::sync::atomic::Ordering::Release);
+            self.enabled.store(
+                (kcp as u8) | ((quic as u8) << 1),
+                std::sync::atomic::Ordering::Release,
+            );
+            Ok(WrappedTransportDestinationIngresses::default())
+        }
+
+        async fn stop(&self) {
+            self.active
+                .store(false, std::sync::atomic::Ordering::Release);
+            self.enabled.store(0, std::sync::atomic::Ordering::Release);
+        }
+
+        fn entry_snapshots(&self, _transport: WrappedTransportKind) -> Vec<TcpNatEntrySnapshot> {
+            Vec::new()
+        }
+
+        fn is_started(&self, transport: WrappedTransportKind) -> bool {
+            let mask = match transport {
+                WrappedTransportKind::Kcp => 1,
+                WrappedTransportKind::Quic => 2,
+            };
+            self.active.load(std::sync::atomic::Ordering::Acquire)
+                && self.enabled.load(std::sync::atomic::Ordering::Acquire) & mask != 0
+        }
+    }
+
+    impl WrappedTransportProxyModule {
+        fn new_without_sources(
+            peer_manager: Arc<PeerManagerCore>,
+            runtime_config: CoreRuntimeConfigStore,
+            kcp: Option<Arc<dyn WrappedTransportEngine>>,
+            quic: Option<Arc<dyn WrappedTransportEngine>>,
+        ) -> Option<Arc<Self>> {
+            if kcp.is_none() && quic.is_none() {
+                return None;
+            }
+            Some(Arc::new(Self {
+                peer_manager,
+                runtime_config,
+                kcp,
+                quic,
+                #[cfg(feature = "proxy-packet")]
+                kcp_source: None,
+                #[cfg(feature = "proxy-packet")]
+                quic_source: None,
+                #[cfg(feature = "proxy-packet")]
+                destination: Some(Arc::new(TestWrappedTransportDestination::default())),
+                state: tokio::sync::Mutex::new(WrappedTransportProxyState::default()),
+            }))
+        }
+    }
 
     struct RecordingWrappedTransportEngine {
         name: &'static str,

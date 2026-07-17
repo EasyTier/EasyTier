@@ -388,15 +388,6 @@ pub(crate) fn upgrade_connected_udp(
     UdpTunnelUpgrader::with_keep_alive(info, layer).upgrade(session)
 }
 
-#[cfg(test)]
-pub(crate) fn upgrade_accepted_tcp<S>(socket: S) -> Result<Box<dyn Tunnel>, TunnelError>
-where
-    S: VirtualTcpSocket,
-{
-    let local_addr = socket.local_addr()?;
-    upgrade_accepted_tcp_with_local_url(socket, socket_url("tcp", local_addr))
-}
-
 pub(crate) fn upgrade_accepted_tcp_with_local_url<S>(
     socket: S,
     local_url: Url,
@@ -433,12 +424,6 @@ where
     TcpTunnelUpgrader::new(info)
         .with_max_packet_size(BYTE_STREAM_MAX_PACKET_SIZE)
         .upgrade(socket)
-}
-
-#[cfg(test)]
-pub(crate) fn upgrade_accepted_udp(session: UdpSession) -> Result<Box<dyn Tunnel>, TunnelError> {
-    let local_url = socket_url("udp", session.local_addr()?);
-    upgrade_accepted_udp_with_local_url(session, local_url)
 }
 
 pub(crate) fn upgrade_accepted_udp_with_local_url(
@@ -507,7 +492,7 @@ fn socket_url(scheme: &str, addr: SocketAddr) -> Url {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::{
         io,
         pin::Pin,
@@ -523,6 +508,21 @@ mod tests {
     };
 
     use super::*;
+
+    pub(crate) fn upgrade_accepted_tcp<S>(socket: S) -> Result<Box<dyn Tunnel>, TunnelError>
+    where
+        S: VirtualTcpSocket,
+    {
+        let local_addr = socket.local_addr()?;
+        upgrade_accepted_tcp_with_local_url(socket, socket_url("tcp", local_addr))
+    }
+
+    pub(crate) fn upgrade_accepted_udp(
+        session: UdpSession,
+    ) -> Result<Box<dyn Tunnel>, TunnelError> {
+        let local_url = socket_url("udp", session.local_addr()?);
+        upgrade_accepted_udp_with_local_url(session, local_url)
+    }
 
     struct MockTcpSocket {
         stream: DuplexStream,

@@ -221,18 +221,10 @@ impl PeerManagerHeader {
         self
     }
 
-    pub fn is_kcp_src_modified(&self) -> bool {
-        self.packet_type == PacketType::DataWithKcpSrcModified as u8
-    }
-
     pub fn mark_quic_src_modified(&mut self) -> &mut Self {
         assert_eq!(self.packet_type, PacketType::Data as u8);
         self.packet_type = PacketType::DataWithQuicSrcModified as u8;
         self
-    }
-
-    pub fn is_quic_src_modified(&self) -> bool {
-        self.packet_type == PacketType::DataWithQuicSrcModified as u8
     }
 
     pub fn set_not_send_to_tun(&mut self, not_send_to_tun: bool) -> &mut Self {
@@ -634,15 +626,6 @@ impl ZCPacket {
         PeerManagerHeader::ref_from_prefix(bytes)
     }
 
-    pub fn tcp_tunnel_header(&self) -> Option<&TCPTunnelHeader> {
-        let offset = self
-            .packet_type
-            .get_packet_offsets()
-            .tcp_tunnel_header_offset;
-        let bytes = self.bytes_from_offset(offset)?;
-        TCPTunnelHeader::ref_from_prefix(bytes)
-    }
-
     pub fn udp_tunnel_header(&self) -> Option<&UDPTunnelHeader> {
         let offset = self
             .packet_type
@@ -805,6 +788,28 @@ impl ZCPacket {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "proxy-packet")]
+    impl PeerManagerHeader {
+        pub(crate) fn is_kcp_src_modified(&self) -> bool {
+            self.packet_type == PacketType::DataWithKcpSrcModified as u8
+        }
+
+        pub(crate) fn is_quic_src_modified(&self) -> bool {
+            self.packet_type == PacketType::DataWithQuicSrcModified as u8
+        }
+    }
+
+    impl ZCPacket {
+        fn tcp_tunnel_header(&self) -> Option<&TCPTunnelHeader> {
+            let offset = self
+                .packet_type
+                .get_packet_offsets()
+                .tcp_tunnel_header_offset;
+            let bytes = self.bytes_from_offset(offset)?;
+            TCPTunnelHeader::ref_from_prefix(bytes)
+        }
+    }
 
     #[test]
     fn test_zc_packet() {

@@ -142,11 +142,6 @@ impl LogicalTrafficMetrics {
         shrink_dashmap(&self.per_peer, None);
     }
 
-    #[cfg(test)]
-    fn peer_cache_size(&self) -> usize {
-        self.per_peer.len()
-    }
-
     fn contains_peer_cache(&self, peer_id: PeerId) -> bool {
         self.per_peer.contains_key(&peer_id)
     }
@@ -308,6 +303,13 @@ pub fn route_peer_info_instance_id(route_peer_info: &RoutePeerInfo) -> Option<St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    impl LogicalTrafficMetrics {
+        fn peer_cache_size(&self) -> usize {
+            self.per_peer.len()
+        }
+    }
+
     fn network_labels(network_name: &str) -> LabelSet {
         LabelSet::new().with_label_type(LabelType::NetworkName(network_name.to_string()))
     }

@@ -201,11 +201,6 @@ where
         }
     }
 
-    #[cfg(test)]
-    pub fn set_try_direct_connect(&self, enabled: bool) {
-        self.try_direct_connect.store(enabled, Ordering::Relaxed);
-    }
-
     pub async fn clear_udp_array(&self) {
         let mut wlocked = self.udp_array.write().await;
         wlocked.take();
@@ -607,6 +602,16 @@ mod tests {
         proto::common::{NatType, StunInfo},
         socket::udp::VirtualUdpSocket,
     };
+
+    impl<R, S> UdpSymToConePunchClient<R, S>
+    where
+        R: UdpHolePunchRuntime,
+        S: UdpHolePunchSignaling + 'static,
+    {
+        fn set_try_direct_connect(&self, enabled: bool) {
+            self.try_direct_connect.store(enabled, Ordering::Relaxed);
+        }
+    }
 
     struct MockSocket {
         local_addr: SocketAddr,

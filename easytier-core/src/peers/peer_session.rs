@@ -96,19 +96,8 @@ impl PeerSessionStore {
         }
     }
 
-    #[cfg(feature = "test-utils")]
-    pub(crate) fn contains_valid(&self, key: &SessionKey) -> bool {
-        self.sessions
-            .get(key)
-            .is_some_and(|entry| entry.session.is_valid())
-    }
-
     pub fn remove(&self, key: &SessionKey) {
         self.sessions.remove(key);
-    }
-
-    pub fn insert_session(&self, key: SessionKey, session: Arc<PeerSession>) {
-        self.sessions.insert(key, PeerSessionEntry::new(session));
     }
 
     pub fn evict_unused_sessions(&self) {
@@ -409,9 +398,29 @@ impl PeerSession {
     }
 }
 
+#[cfg(any(test, feature = "test-utils"))]
+mod test_utils {
+    use super::*;
+
+    impl PeerSessionStore {
+        #[doc(hidden)]
+        pub(crate) fn contains_valid(&self, key: &SessionKey) -> bool {
+            self.sessions
+                .get(key)
+                .is_some_and(|entry| entry.session.is_valid())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    impl PeerSessionStore {
+        fn insert_session(&self, key: SessionKey, session: Arc<PeerSession>) {
+            self.sessions.insert(key, PeerSessionEntry::new(session));
+        }
+    }
 
     #[test]
     #[cfg(all(feature = "aes-gcm", feature = "chacha20"))]

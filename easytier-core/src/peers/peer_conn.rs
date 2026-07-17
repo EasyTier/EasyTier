@@ -1237,11 +1237,6 @@ impl PeerConn {
     }
 
     #[tracing::instrument]
-    pub async fn do_handshake_as_server(&mut self) -> Result<(), Error> {
-        self.do_handshake_as_server_ext(|_, _| Ok(())).await
-    }
-
-    #[tracing::instrument]
     pub async fn do_handshake_as_client(&mut self) -> Result<(), Error> {
         if self.is_secure_mode_enabled() {
             let noise = self.do_noise_handshake_as_client().await?;

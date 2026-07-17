@@ -423,14 +423,6 @@ impl Client {
         })
     }
 
-    pub fn inflight_count(&self) -> usize {
-        self.inflight_requests.len()
-    }
-
-    pub fn peer_info_table(&self) -> PeerInfoTable {
-        self.peer_info.clone()
-    }
-
     pub async fn stop(&self) {
         self.transport.lock().unwrap().close();
         let mut tasks = {
@@ -439,5 +431,22 @@ impl Client {
         };
         tasks.abort_all();
         while tasks.join_next().await.is_some() {}
+    }
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+mod test_utils {
+    use super::{Client, PeerInfoTable};
+
+    impl Client {
+        #[doc(hidden)]
+        pub fn inflight_count(&self) -> usize {
+            self.inflight_requests.len()
+        }
+
+        #[doc(hidden)]
+        pub fn peer_info_table(&self) -> PeerInfoTable {
+            self.peer_info.clone()
+        }
     }
 }

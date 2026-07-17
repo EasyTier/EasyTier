@@ -922,27 +922,6 @@ impl AclProcessor {
             conn_track.remove(&key);
         }
     }
-
-    /// Get cache hit rate
-    pub fn get_cache_hit_rate(&self) -> f64 {
-        let cache_hits = self
-            .stats
-            .get(&AclStatKey::CacheHits)
-            .map(|v| *v.value())
-            .unwrap_or(0);
-        let total_requests = cache_hits
-            + self
-                .stats
-                .get(&AclStatKey::RuleMatches)
-                .map(|v| *v.value())
-                .unwrap_or(0);
-
-        if total_requests == 0 {
-            0.0
-        } else {
-            cache_hits as f64 / total_requests as f64
-        }
-    }
 }
 
 fn parse_port_range(s: &str) -> Option<(u16, u16)> {
@@ -1038,6 +1017,28 @@ mod tests {
     use super::*;
     use std::hash::{Hash, Hasher};
     use std::net::{IpAddr, Ipv4Addr};
+
+    impl AclProcessor {
+        fn get_cache_hit_rate(&self) -> f64 {
+            let cache_hits = self
+                .stats
+                .get(&AclStatKey::CacheHits)
+                .map(|v| *v.value())
+                .unwrap_or(0);
+            let total_requests = cache_hits
+                + self
+                    .stats
+                    .get(&AclStatKey::RuleMatches)
+                    .map(|v| *v.value())
+                    .unwrap_or(0);
+
+            if total_requests == 0 {
+                0.0
+            } else {
+                cache_hits as f64 / total_requests as f64
+            }
+        }
+    }
 
     #[tokio::test]
     async fn test_group_based_acl_rules() {

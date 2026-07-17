@@ -295,14 +295,6 @@ pub(super) struct UdpSessionClose {
 }
 
 impl UdpSessionClose {
-    #[cfg(test)]
-    fn signal_only(close: watch::Sender<bool>) -> Self {
-        Self {
-            close,
-            target: UdpSessionCloseTarget::SignalOnly,
-        }
-    }
-
     pub(super) fn easy_tier(
         key: UdpSessionKey,
         close: watch::Sender<bool>,
@@ -373,42 +365,6 @@ impl Drop for UdpSessionCleanup {
 }
 
 impl UdpSession {
-    #[cfg(test)]
-    pub(crate) fn identity_standalone<S>(
-        socket: Arc<S>,
-        peer_addr: SocketAddr,
-        kind: UdpSessionKind,
-    ) -> io::Result<Self>
-    where
-        S: VirtualUdpSocket,
-    {
-        let local_addr = socket.local_addr()?;
-        let rings = create_udp_session_rings();
-        let (shutdown_tx, _) = watch::channel(false);
-        let close = UdpSessionClose::signal_only(rings.close_tx.clone());
-        let recv_socket = socket.clone();
-        let recv_task = tokio::spawn(forward_identity_socket_to_udp_session(
-            recv_socket,
-            peer_addr,
-            rings.session_recv_tx.clone(),
-            shutdown_tx.subscribe(),
-            close.clone(),
-        ));
-        let mut session = Self::new(
-            socket.clone(),
-            local_addr,
-            peer_addr,
-            kind,
-            UdpSessionCodec::Identity,
-            rings,
-            close,
-            shutdown_tx.subscribe(),
-        );
-        session._cleanup.shutdown = Some(shutdown_tx);
-        session._cleanup.tasks.push(recv_task);
-        Ok(session)
-    }
-
     pub(super) fn new<S>(
         socket: Arc<S>,
         local_addr: SocketAddr,
@@ -711,49 +667,6 @@ async fn forward_udp_session_to_socket<S>(
     }
 }
 
-#[cfg(test)]
-async fn forward_identity_socket_to_udp_session<S>(
-    socket: Arc<S>,
-    peer_addr: SocketAddr,
-    incoming: Arc<StdMutex<RingSocketSender<UdpSessionDatagram>>>,
-    mut shutdown: watch::Receiver<bool>,
-    close: UdpSessionClose,
-) where
-    S: VirtualUdpSocket,
-{
-    let mut buf = [0u8; 65535];
-    loop {
-        tokio::select! {
-            biased;
-            _ = shutdown.changed() => {
-                close.close();
-                break;
-            }
-            ret = socket.recv_from(&mut buf) => {
-                let (len, remote_addr) = match ret {
-                    Ok(ret) => ret,
-                    Err(err) => {
-                        tracing::debug!(?err, ?peer_addr, "identity udp session recv error");
-                        close.close();
-                        break;
-                    }
-                };
-                if remote_addr != peer_addr {
-                    continue;
-                }
-                if !dispatch_payload_to_session(
-                    &incoming,
-                    BytesMut::from(&buf[..len]),
-                    UdpSessionEnqueuePolicy::Reliable,
-                ) {
-                    close.close();
-                    break;
-                }
-            }
-        }
-    }
-}
-
 pub(super) fn dispatch_payload_to_session(
     incoming: &Arc<StdMutex<RingSocketSender<UdpSessionDatagram>>>,
     payload: impl Into<UdpSessionDatagram>,
@@ -774,5 +687,98 @@ pub(super) fn dispatch_payload_to_session(
             true
         }
         Err(RingSocketSendError::Closed(_)) => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    impl UdpSessionClose {
+        fn signal_only(close: watch::Sender<bool>) -> Self {
+            Self {
+                close,
+                target: UdpSessionCloseTarget::SignalOnly,
+            }
+        }
+    }
+
+    impl UdpSession {
+        pub(crate) fn identity_standalone<S>(
+            socket: Arc<S>,
+            peer_addr: SocketAddr,
+            kind: UdpSessionKind,
+        ) -> io::Result<Self>
+        where
+            S: VirtualUdpSocket,
+        {
+            let local_addr = socket.local_addr()?;
+            let rings = create_udp_session_rings();
+            let (shutdown_tx, _) = watch::channel(false);
+            let close = UdpSessionClose::signal_only(rings.close_tx.clone());
+            let recv_socket = socket.clone();
+            let recv_task = tokio::spawn(forward_identity_socket_to_udp_session(
+                recv_socket,
+                peer_addr,
+                rings.session_recv_tx.clone(),
+                shutdown_tx.subscribe(),
+                close.clone(),
+            ));
+            let mut session = Self::new(
+                socket.clone(),
+                local_addr,
+                peer_addr,
+                kind,
+                UdpSessionCodec::Identity,
+                rings,
+                close,
+                shutdown_tx.subscribe(),
+            );
+            session._cleanup.shutdown = Some(shutdown_tx);
+            session._cleanup.tasks.push(recv_task);
+            Ok(session)
+        }
+    }
+
+    async fn forward_identity_socket_to_udp_session<S>(
+        socket: Arc<S>,
+        peer_addr: SocketAddr,
+        incoming: Arc<StdMutex<RingSocketSender<UdpSessionDatagram>>>,
+        mut shutdown: watch::Receiver<bool>,
+        close: UdpSessionClose,
+    ) where
+        S: VirtualUdpSocket,
+    {
+        let mut buf = [0u8; 65535];
+        loop {
+            tokio::select! {
+                biased;
+                _ = shutdown.changed() => {
+                    close.close();
+                    break;
+                }
+                ret = socket.recv_from(&mut buf) => {
+                    let (len, remote_addr) = match ret {
+                        Ok(ret) => ret,
+                        Err(err) => {
+                            tracing::debug!(?err, ?peer_addr, "identity udp session recv error");
+                            close.close();
+                            break;
+                        }
+                    };
+                    if remote_addr != peer_addr {
+                        continue;
+                    }
+                    if !dispatch_payload_to_session(
+                        &incoming,
+                        BytesMut::from(&buf[..len]),
+                        UdpSessionEnqueuePolicy::Reliable,
+                    ) {
+                        close.close();
+                        break;
+                    }
+                }
+            }
+        }
     }
 }

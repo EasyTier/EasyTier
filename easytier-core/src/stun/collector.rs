@@ -116,13 +116,6 @@ where
         }
     }
 
-    #[cfg(test)]
-    pub fn empty() -> Self {
-        Self {
-            provider: RwLock::new(None),
-        }
-    }
-
     /// Installs the production provider without overwriting an explicitly
     /// preinstalled test provider.
     pub fn install_if_empty(&self, provider: Arc<dyn StunSocketMapper<S>>) -> bool {
@@ -132,11 +125,6 @@ where
         }
         *current = Some(provider);
         true
-    }
-
-    #[cfg(test)]
-    pub fn replace(&self, provider: Arc<dyn StunSocketMapper<S>>) {
-        *self.provider.write().unwrap() = Some(provider);
     }
 
     fn current(&self) -> Option<Arc<dyn StunSocketMapper<S>>> {
@@ -685,6 +673,21 @@ mod tests {
     use stun_codec::{Message, MessageClass, MessageDecoder, MessageEncoder};
 
     use super::*;
+
+    impl<S> StunProviderSlot<S>
+    where
+        S: VirtualUdpSocket,
+    {
+        fn empty() -> Self {
+            Self {
+                provider: RwLock::new(None),
+            }
+        }
+
+        fn replace(&self, provider: Arc<dyn StunSocketMapper<S>>) {
+            *self.provider.write().unwrap() = Some(provider);
+        }
+    }
 
     struct MockUdpSocket {
         local_addr: SocketAddr,

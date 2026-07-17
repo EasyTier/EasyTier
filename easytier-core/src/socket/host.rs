@@ -106,11 +106,6 @@ impl WakerRegistry {
             waker.wake();
         }
     }
-
-    #[cfg(test)]
-    fn len(&self) -> usize {
-        self.wakers.lock().unwrap().len()
-    }
 }
 
 struct HostSocketRuntimeInner {
@@ -419,6 +414,12 @@ mod tests {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     use super::*;
+
+    impl WakerRegistry {
+        pub(crate) fn len(&self) -> usize {
+            self.wakers.lock().unwrap().len()
+        }
+    }
 
     enum TestOperation {
         Read(Option<io::Result<Vec<u8>>>),

@@ -249,7 +249,7 @@ pub struct UdpBroadcastRelayStats {
     packets_forward_failed: CounterHandle,
 }
 
-#[cfg(feature = "test-utils")]
+#[cfg(any(test, feature = "test-utils"))]
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PeerRelaySessionSnapshot {
@@ -507,15 +507,6 @@ where
             #[cfg(feature = "proxy-smoltcp-stack")]
             gateway_events: None,
         }
-    }
-
-    #[cfg(any(test, feature = "test-utils"))]
-    #[doc(hidden)]
-    pub fn replace_stun_provider(
-        &mut self,
-        provider: Arc<dyn StunSocketMapper<<H as VirtualUdpSocketFactory>::Socket>>,
-    ) {
-        self.stun_projection = Some(Arc::new(StunProviderSlot::new(provider)));
     }
 }
 
@@ -1645,25 +1636,6 @@ where
         self.peer_center.get_rpc_service()
     }
 
-    pub async fn connected_peers(&self) -> Vec<crate::config::PeerId> {
-        self.peer_manager
-            .get_peer_map()
-            .list_peers_with_conn()
-            .await
-    }
-
-    #[cfg(feature = "test-utils")]
-    #[doc(hidden)]
-    pub async fn admit_client_tunnel_for_test(
-        &self,
-        tunnel: Box<dyn crate::tunnel::Tunnel>,
-        is_directly_connected: bool,
-    ) -> Result<(crate::config::PeerId, PeerConnId), crate::peers::error::Error> {
-        self.peer_manager
-            .add_client_tunnel(tunnel, is_directly_connected)
-            .await
-    }
-
     pub async fn peer_snapshots(&self) -> Vec<PeerSnapshot> {
         self.peer_manager.list_peer_snapshots().await
     }
@@ -1682,48 +1654,6 @@ where
 
     pub async fn route_snapshots(&self) -> Vec<crate::proto::core_peer::peer::Route> {
         self.peer_manager.list_route_snapshots().await
-    }
-
-    #[cfg(feature = "test-utils")]
-    #[doc(hidden)]
-    pub async fn relay_route_has_static_key_for_test(
-        &self,
-        peer_id: crate::config::PeerId,
-    ) -> bool {
-        self.peer_manager
-            .get_peer_map()
-            .get_route_peer_info(peer_id)
-            .await
-            .is_some_and(|info| !info.noise_static_pubkey.is_empty())
-    }
-
-    #[cfg(feature = "test-utils")]
-    #[doc(hidden)]
-    pub fn relay_session_snapshot_for_test(
-        &self,
-        peer_id: crate::config::PeerId,
-    ) -> PeerRelaySessionSnapshot {
-        let relay = self.peer_manager.get_relay_peer_map();
-        PeerRelaySessionSnapshot {
-            has_state: relay.has_state(peer_id),
-            has_session: relay.has_session_without_touch(peer_id),
-        }
-    }
-
-    #[cfg(feature = "test-utils")]
-    #[doc(hidden)]
-    pub fn evict_idle_relay_sessions_for_test(&self, idle: Duration) {
-        self.peer_manager
-            .get_relay_peer_map()
-            .evict_idle_sessions(idle);
-    }
-
-    #[cfg(feature = "test-utils")]
-    #[doc(hidden)]
-    pub fn evict_unused_peer_sessions_for_test(&self, idle: Duration) {
-        self.peer_manager
-            .get_peer_session_store()
-            .evict_unused_sessions_idle(idle);
     }
 
     pub async fn dump_route(&self) -> String {
@@ -1766,26 +1696,6 @@ where
 
     pub fn acl_whitelist_snapshot(&self) -> AclWhitelistSnapshot {
         self.acl_whitelist.read().clone()
-    }
-
-    pub async fn update_peer_runtime_snapshot(&self, mut snapshot: Arc<PeerRuntimeSnapshot>) {
-        let _operation = self.operation.lock().await;
-        let current = self.runtime_config.snapshot();
-        retain_core_peer_identity(
-            &mut snapshot,
-            self.peer_id(),
-            current.peer.runtime.core.node.instance_id,
-        );
-        let refresh_acl_groups = current.peer.peer_group_memberships
-            != snapshot.peer_group_memberships
-            || current.peer.acl_group_declarations != snapshot.acl_group_declarations;
-        self.sync_peer_runtime_state(&snapshot);
-        self.runtime_config.update_peer(snapshot);
-        self.proxy_cidr_table
-            .update_snapshot(proxy_cidr_snapshot(self.runtime_config.snapshot().as_ref()));
-        if refresh_acl_groups {
-            self.refresh_acl_groups().await;
-        }
     }
 
     #[cfg(feature = "proxy-packet")]
@@ -1892,6 +1802,107 @@ where
 
     pub async fn refresh_acl_groups(&self) {
         self.peer_manager.get_route().refresh_acl_groups().await;
+    }
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+mod test_utils {
+    use super::*;
+
+    impl<H> CoreHostAdapters<H>
+    where
+        H: DirectConnectorHost + TcpHolePunchHost,
+    {
+        #[doc(hidden)]
+        pub fn replace_stun_provider(
+            &mut self,
+            provider: Arc<dyn StunSocketMapper<<H as VirtualUdpSocketFactory>::Socket>>,
+        ) {
+            self.stun_projection = Some(Arc::new(StunProviderSlot::new(provider)));
+        }
+    }
+
+    impl<H> CoreInstance<H>
+    where
+        H: DirectConnectorHost + TcpHolePunchHost,
+    {
+        #[doc(hidden)]
+        pub async fn connected_peers(&self) -> Vec<crate::config::PeerId> {
+            self.peer_manager
+                .get_peer_map()
+                .list_peers_with_conn()
+                .await
+        }
+
+        #[doc(hidden)]
+        pub async fn admit_client_tunnel_for_test(
+            &self,
+            tunnel: Box<dyn crate::tunnel::Tunnel>,
+            is_directly_connected: bool,
+        ) -> Result<(crate::config::PeerId, PeerConnId), crate::peers::error::Error> {
+            self.peer_manager
+                .add_client_tunnel(tunnel, is_directly_connected)
+                .await
+        }
+
+        #[doc(hidden)]
+        pub async fn relay_route_has_static_key_for_test(
+            &self,
+            peer_id: crate::config::PeerId,
+        ) -> bool {
+            self.peer_manager
+                .get_peer_map()
+                .get_route_peer_info(peer_id)
+                .await
+                .is_some_and(|info| !info.noise_static_pubkey.is_empty())
+        }
+
+        #[doc(hidden)]
+        pub fn relay_session_snapshot_for_test(
+            &self,
+            peer_id: crate::config::PeerId,
+        ) -> PeerRelaySessionSnapshot {
+            let relay = self.peer_manager.get_relay_peer_map();
+            PeerRelaySessionSnapshot {
+                has_state: relay.has_state(peer_id),
+                has_session: relay.has_session_without_touch(peer_id),
+            }
+        }
+
+        #[doc(hidden)]
+        pub fn evict_idle_relay_sessions_for_test(&self, idle: Duration) {
+            self.peer_manager
+                .get_relay_peer_map()
+                .evict_idle_sessions(idle);
+        }
+
+        #[doc(hidden)]
+        pub fn evict_unused_peer_sessions_for_test(&self, idle: Duration) {
+            self.peer_manager
+                .get_peer_session_store()
+                .evict_unused_sessions_idle(idle);
+        }
+
+        #[doc(hidden)]
+        pub async fn update_peer_runtime_snapshot(&self, mut snapshot: Arc<PeerRuntimeSnapshot>) {
+            let _operation = self.operation.lock().await;
+            let current = self.runtime_config.snapshot();
+            retain_core_peer_identity(
+                &mut snapshot,
+                self.peer_id(),
+                current.peer.runtime.core.node.instance_id,
+            );
+            let refresh_acl_groups = current.peer.peer_group_memberships
+                != snapshot.peer_group_memberships
+                || current.peer.acl_group_declarations != snapshot.acl_group_declarations;
+            self.sync_peer_runtime_state(&snapshot);
+            self.runtime_config.update_peer(snapshot);
+            self.proxy_cidr_table
+                .update_snapshot(proxy_cidr_snapshot(self.runtime_config.snapshot().as_ref()));
+            if refresh_acl_groups {
+                self.refresh_acl_groups().await;
+            }
+        }
     }
 }
 

@@ -47,11 +47,6 @@ impl<R> UdpSocketArray<R>
 where
     R: VirtualUdpSocketFactory,
 {
-    #[cfg(test)]
-    pub fn new(max_socket_count: usize, socket_factory: Arc<R>) -> Self {
-        Self::new_with_context(max_socket_count, socket_factory, SocketContext::default())
-    }
-
     pub fn new_with_context(
         max_socket_count: usize,
         socket_factory: Arc<R>,
@@ -269,6 +264,15 @@ mod tests {
 
     use super::*;
     use crate::{hole_punch::udp::new_hole_punch_packet, socket::NetNamespace};
+
+    impl<R> UdpSocketArray<R>
+    where
+        R: VirtualUdpSocketFactory,
+    {
+        fn new(max_socket_count: usize, socket_factory: Arc<R>) -> Self {
+            Self::new_with_context(max_socket_count, socket_factory, SocketContext::default())
+        }
+    }
 
     struct MockSocket {
         local_addr: SocketAddr,

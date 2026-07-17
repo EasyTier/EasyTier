@@ -130,43 +130,6 @@ impl CredentialManager {
         f(&credentials)
     }
 
-    #[cfg(test)]
-    pub fn generate_credential(
-        &self,
-        groups: Vec<String>,
-        allow_relay: bool,
-        allowed_proxy_cidrs: Vec<String>,
-        ttl: Duration,
-    ) -> GeneratedCredential {
-        self.generate_credential_with_options(
-            groups,
-            allow_relay,
-            allowed_proxy_cidrs,
-            ttl,
-            None,
-            true,
-        )
-    }
-
-    #[cfg(test)]
-    pub fn generate_credential_with_id(
-        &self,
-        groups: Vec<String>,
-        allow_relay: bool,
-        allowed_proxy_cidrs: Vec<String>,
-        ttl: Duration,
-        credential_id: Option<String>,
-    ) -> GeneratedCredential {
-        self.generate_credential_with_options(
-            groups,
-            allow_relay,
-            allowed_proxy_cidrs,
-            ttl,
-            credential_id,
-            true,
-        )
-    }
-
     pub fn generate_credential_with_options(
         &self,
         groups: Vec<String>,
@@ -357,6 +320,43 @@ impl CredentialManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    impl CredentialManager {
+        pub(crate) fn generate_credential(
+            &self,
+            groups: Vec<String>,
+            allow_relay: bool,
+            allowed_proxy_cidrs: Vec<String>,
+            ttl: Duration,
+        ) -> GeneratedCredential {
+            self.generate_credential_with_options(
+                groups,
+                allow_relay,
+                allowed_proxy_cidrs,
+                ttl,
+                None,
+                true,
+            )
+        }
+
+        fn generate_credential_with_id(
+            &self,
+            groups: Vec<String>,
+            allow_relay: bool,
+            allowed_proxy_cidrs: Vec<String>,
+            ttl: Duration,
+            credential_id: Option<String>,
+        ) -> GeneratedCredential {
+            self.generate_credential_with_options(
+                groups,
+                allow_relay,
+                allowed_proxy_cidrs,
+                ttl,
+                credential_id,
+                true,
+            )
+        }
+    }
 
     #[derive(Default)]
     struct MemoryCredentialStorage {

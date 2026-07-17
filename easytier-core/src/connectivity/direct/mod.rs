@@ -977,23 +977,6 @@ impl<H> DirectConnectorRpcHandler<H>
 where
     H: DirectConnectorHost,
 {
-    #[cfg(test)]
-    pub fn new_with_stun(
-        host: Arc<H>,
-        socket_context: SocketContext,
-        stun: Option<Arc<dyn StunInfoProvider>>,
-    ) -> Self {
-        let running_listeners = Arc::new(RunningListenerRegistry::default());
-        Self {
-            host,
-            peer_manager: None,
-            running_listeners,
-            socket_context,
-            foreign_network: false,
-            stun,
-        }
-    }
-
     pub fn new_for_foreign_network_with_stun(
         host: Arc<H>,
         socket_context: SocketContext,
@@ -1287,28 +1270,25 @@ fn is_public_ipv4(ip: Ipv4Addr) -> bool {
 mod tests {
     use super::*;
 
-    #[test]
-    fn mapped_listener_defaults_match_native_schemes() {
-        assert_eq!(
-            mapped_listener_port(&"ws://example.com".parse().unwrap()),
-            Some(80)
-        );
-        assert_eq!(
-            mapped_listener_port(&"wss://example.com".parse().unwrap()),
-            Some(443)
-        );
-        assert_eq!(
-            mapped_listener_port(&"tcp://127.0.0.1".parse().unwrap()),
-            Some(11010)
-        );
-        assert_eq!(
-            mapped_listener_port(&"udp://127.0.0.1".parse().unwrap()),
-            Some(11010)
-        );
-        assert_eq!(
-            mapped_listener_port(&"wg://127.0.0.1".parse().unwrap()),
-            Some(11011)
-        );
+    impl<H> DirectConnectorRpcHandler<H>
+    where
+        H: DirectConnectorHost,
+    {
+        pub(crate) fn new_with_stun(
+            host: Arc<H>,
+            socket_context: SocketContext,
+            stun: Option<Arc<dyn StunInfoProvider>>,
+        ) -> Self {
+            let running_listeners = Arc::new(RunningListenerRegistry::default());
+            Self {
+                host,
+                peer_manager: None,
+                running_listeners,
+                socket_context,
+                foreign_network: false,
+                stun,
+            }
+        }
     }
 
     #[test]

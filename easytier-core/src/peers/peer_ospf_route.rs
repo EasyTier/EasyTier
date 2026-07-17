@@ -2313,11 +2313,6 @@ impl PeerRouteServiceImpl {
         ni.network_secret_digest.map(|d| d.to_vec())
     }
 
-    #[cfg(test)]
-    fn is_active_non_reusable_credential_peer(&self, peer_id: PeerId) -> bool {
-        peer_id == self.my_peer_id || self.route_table.topology_peer_reachable(peer_id)
-    }
-
     fn is_credential_node(&self) -> bool {
         self.context.network_identity().network_secret.is_none()
             && self
@@ -2408,15 +2403,6 @@ impl PeerRouteServiceImpl {
     async fn list_peers_from_interface_snapshot(&self) -> (u64, BTreeSet<PeerId>) {
         let snapshot = self.interface_peer_snapshot().await;
         (snapshot.generation, snapshot.peers.clone())
-    }
-
-    async fn list_peers_from_interface<T: FromIterator<PeerId>>(&self) -> T {
-        self.interface_peer_snapshot()
-            .await
-            .peers
-            .iter()
-            .copied()
-            .collect()
     }
 
     async fn get_peer_identity_type_from_interface(
@@ -4060,18 +4046,6 @@ impl PeerRoute {
 
         *self.service_impl.interface.lock().await = None;
     }
-
-    #[cfg(test)]
-    pub(crate) fn task_count(&self) -> usize {
-        let route_tasks = self.tasks.lock().unwrap().len();
-        let session_tasks = self
-            .service_impl
-            .sessions
-            .iter()
-            .filter(|session| session.task.is_running())
-            .count();
-        route_tasks + session_tasks
-    }
 }
 
 impl Drop for PeerRoute {
@@ -4310,11 +4284,35 @@ impl PeerPacketFilter for PeerRoute {}
 mod tests {
     use super::*;
     use crate::packet::ZCPacket;
-    use crate::peers::context::NoopPeerContext;
+    use crate::peers::context::tests::NoopPeerContext;
     use crate::peers::peer_rpc::PeerRpcManagerTransport;
     use crate::peers::route_trait::{DefaultRouteCostCalculator, RouteInterface};
     use parking_lot::Mutex;
     use tokio::sync::Notify;
+
+    impl PeerRouteServiceImpl {
+        pub(crate) async fn list_peers_from_interface<T: FromIterator<PeerId>>(&self) -> T {
+            self.interface_peer_snapshot()
+                .await
+                .peers
+                .iter()
+                .copied()
+                .collect()
+        }
+    }
+
+    impl PeerRoute {
+        pub(crate) fn task_count(&self) -> usize {
+            let route_tasks = self.tasks.lock().unwrap().len();
+            let session_tasks = self
+                .service_impl
+                .sessions
+                .iter()
+                .filter(|session| session.task.is_running())
+                .count();
+            route_tasks + session_tasks
+        }
+    }
 
     struct CountingInterface {
         my_peer_id: PeerId,

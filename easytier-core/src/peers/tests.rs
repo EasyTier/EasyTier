@@ -5,14 +5,22 @@ use crate::runtime_time::{Duration, timeout};
 use crate::{
     packet::{PacketType, ZCPacket},
     peers::{
-        context::{NetworkIdentity, NoopPeerContext},
+        context::{NetworkIdentity, tests::NoopPeerContext},
         create_packet_recv_chan,
+        error::Error,
         peer_conn::PeerConn,
         peer_map::PeerMap,
         peer_session::PeerSessionStore,
     },
     tunnel::ring::create_ring_tunnel_pair,
 };
+
+impl PeerConn {
+    #[tracing::instrument]
+    async fn do_handshake_as_server(&mut self) -> Result<(), Error> {
+        self.do_handshake_as_server_ext(|_, _| Ok(())).await
+    }
+}
 
 #[tokio::test]
 async fn peer_conn_handshake_over_memory_tunnel() {

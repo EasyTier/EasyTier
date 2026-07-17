@@ -283,11 +283,6 @@ impl PeerRuntimeSnapshot {
     fn traffic_limits(&self) -> PeerTrafficLimits {
         PeerTrafficLimits::from_portable(&self.runtime, &self.flags)
     }
-
-    #[cfg(test)]
-    pub(crate) fn set_acl_groups(&mut self, acl: Option<&Acl>) {
-        (self.acl_group_declarations, self.peer_group_memberships) = peer_acl_groups(acl);
-    }
 }
 
 fn peer_acl_groups(acl: Option<&Acl>) -> (Vec<PeerGroupIdentity>, Vec<PeerGroupIdentity>) {
@@ -474,11 +469,6 @@ impl CorePeerContext {
         self.credentials.clone()
     }
 
-    #[cfg(test)]
-    pub fn trusted_key_manager(&self) -> Arc<TrustedKeyMapManager> {
-        self.trusted_keys.clone()
-    }
-
     fn record_control_metric(
         &self,
         network_name: &str,
@@ -550,18 +540,6 @@ fn config_ipv6(value: &IpPrefix) -> Option<Ipv6Inet> {
         return None;
     };
     Ipv6Inet::new(address, value.prefix_len).ok()
-}
-
-#[cfg(test)]
-fn ipv4_inet_to_config(value: Ipv4Inet) -> IpPrefix {
-    IpPrefix::new(IpAddr::V4(value.address()), value.network_length())
-        .expect("Ipv4Inet should always have a valid IPv4 prefix length")
-}
-
-#[cfg(test)]
-fn ipv6_inet_to_config(value: Ipv6Inet) -> IpPrefix {
-    IpPrefix::new(IpAddr::V6(value.address()), value.network_length())
-        .expect("Ipv6Inet should always have a valid IPv6 prefix length")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -685,34 +663,6 @@ impl Default for TrustedKeyMapManager {
 /// modules should depend on their own narrow DTOs or traits instead of treating
 /// this as a core-wide global context.
 pub(crate) trait PeerContext: Send + Sync {
-    #[cfg(test)]
-    fn runtime_config(&self) -> PeerRuntimeConfig {
-        let network_identity = self.network_identity();
-        let hostname = self.hostname();
-        PeerRuntimeConfig {
-            core: CoreConfig {
-                node: NodeConfig {
-                    peer_id: None,
-                    instance_id: Some(*self.instance_id().as_bytes()),
-                    hostname: (!hostname.is_empty()).then_some(hostname),
-                    network_name: network_identity.network_name.clone(),
-                },
-                routes: RouteConfig {
-                    ipv4: self.ipv4().map(ipv4_inet_to_config),
-                    ipv6: self.ipv6().map(ipv6_inet_to_config),
-                    ..Default::default()
-                },
-                peer_policy: PeerPolicyConfig::default(),
-                traffic: TrafficConfig::default(),
-            },
-            network_identity,
-            stun_info: self.stun_info(),
-            feature_flags: self.feature_flags(),
-            secure_mode: self.secure_mode(),
-            host_routing: self.host_routing_policy(),
-        }
-    }
-
     fn host_routing_policy(&self) -> HostRoutingPolicy {
         HostRoutingPolicy::default()
     }
@@ -910,32 +860,6 @@ pub(crate) trait PeerContext: Send + Sync {
 
 pub(crate) type ArcPeerContext = Arc<dyn PeerContext>;
 
-#[cfg(test)]
-#[derive(Debug, Clone)]
-pub(crate) struct NoopPeerContext {
-    network_identity: NetworkIdentity,
-    flags: FlagsInConfig,
-    secure_mode: Option<SecureModeConfig>,
-}
-
-#[cfg(test)]
-impl NoopPeerContext {
-    pub fn new(network_identity: NetworkIdentity) -> Self {
-        Self {
-            network_identity,
-            flags: FlagsInConfig::default(),
-            secure_mode: None,
-        }
-    }
-}
-
-#[cfg(test)]
-impl Default for NoopPeerContext {
-    fn default() -> Self {
-        Self::new(NetworkIdentity::default())
-    }
-}
-
 pub(crate) fn secret_proof_from_secret(secret: &str, challenge: &[u8]) -> Option<Hmac<Sha256>> {
     let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).ok()?;
     mac.update(SECRET_PROOF_PREFIX);
@@ -943,34 +867,7 @@ pub(crate) fn secret_proof_from_secret(secret: &str, challenge: &[u8]) -> Option
     Some(mac)
 }
 
-#[cfg(test)]
-impl PeerContext for NoopPeerContext {
-    fn network_identity(&self) -> NetworkIdentity {
-        self.network_identity.clone()
-    }
-
-    fn flags(&self) -> FlagsInConfig {
-        self.flags.clone()
-    }
-
-    fn secure_mode(&self) -> Option<SecureModeConfig> {
-        self.secure_mode.clone()
-    }
-
-    fn secret_proof(&self, challenge: &[u8]) -> Option<Hmac<Sha256>> {
-        let secret = self.network_identity.network_secret.as_ref()?;
-        secret_proof_from_secret(secret, challenge)
-    }
-}
-
 impl PeerContext for CorePeerContext {
-    #[cfg(test)]
-    fn runtime_config(&self) -> PeerRuntimeConfig {
-        let mut runtime = self.snapshot().runtime.clone();
-        runtime.stun_info = self.stun_info();
-        runtime
-    }
-
     fn max_direct_conns_per_peer_in_foreign_network(&self) -> usize {
         self.snapshot().max_direct_conns_per_peer_in_foreign_network
     }
@@ -1261,10 +1158,113 @@ impl PeerContext for CorePeerContext {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::runtime_config::{CoreRuntimeConfig, CoreRuntimeConfigStore};
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    pub(crate) trait PeerContextTestExt: PeerContext {
+        fn runtime_config(&self) -> PeerRuntimeConfig {
+            let network_identity = self.network_identity();
+            let hostname = self.hostname();
+            PeerRuntimeConfig {
+                core: CoreConfig {
+                    node: NodeConfig {
+                        peer_id: None,
+                        instance_id: Some(*self.instance_id().as_bytes()),
+                        hostname: (!hostname.is_empty()).then_some(hostname),
+                        network_name: network_identity.network_name.clone(),
+                    },
+                    routes: RouteConfig {
+                        ipv4: self.ipv4().map(ipv4_inet_to_config),
+                        ipv6: self.ipv6().map(ipv6_inet_to_config),
+                        ..Default::default()
+                    },
+                    peer_policy: PeerPolicyConfig::default(),
+                    traffic: TrafficConfig::default(),
+                },
+                network_identity,
+                stun_info: self.stun_info(),
+                feature_flags: self.feature_flags(),
+                secure_mode: self.secure_mode(),
+                host_routing: self.host_routing_policy(),
+            }
+        }
+    }
+
+    fn ipv4_inet_to_config(value: Ipv4Inet) -> IpPrefix {
+        IpPrefix::new(IpAddr::V4(value.address()), value.network_length())
+            .expect("Ipv4Inet should always have a valid IPv4 prefix length")
+    }
+
+    fn ipv6_inet_to_config(value: Ipv6Inet) -> IpPrefix {
+        IpPrefix::new(IpAddr::V6(value.address()), value.network_length())
+            .expect("Ipv6Inet should always have a valid IPv6 prefix length")
+    }
+
+    impl PeerRuntimeSnapshot {
+        pub(crate) fn set_acl_groups(&mut self, acl: Option<&Acl>) {
+            (self.acl_group_declarations, self.peer_group_memberships) = peer_acl_groups(acl);
+        }
+    }
+
+    impl CorePeerContext {
+        pub(crate) fn trusted_key_manager(&self) -> Arc<TrustedKeyMapManager> {
+            self.trusted_keys.clone()
+        }
+    }
+
+    impl PeerContextTestExt for CorePeerContext {
+        fn runtime_config(&self) -> PeerRuntimeConfig {
+            let mut runtime = self.snapshot().runtime.clone();
+            runtime.stun_info = self.stun_info();
+            runtime
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    pub(crate) struct NoopPeerContext {
+        network_identity: NetworkIdentity,
+        flags: FlagsInConfig,
+        secure_mode: Option<SecureModeConfig>,
+    }
+
+    impl NoopPeerContext {
+        pub(crate) fn new(network_identity: NetworkIdentity) -> Self {
+            Self {
+                network_identity,
+                flags: FlagsInConfig::default(),
+                secure_mode: None,
+            }
+        }
+    }
+
+    impl Default for NoopPeerContext {
+        fn default() -> Self {
+            Self::new(NetworkIdentity::default())
+        }
+    }
+
+    impl PeerContext for NoopPeerContext {
+        fn network_identity(&self) -> NetworkIdentity {
+            self.network_identity.clone()
+        }
+
+        fn flags(&self) -> FlagsInConfig {
+            self.flags.clone()
+        }
+
+        fn secure_mode(&self) -> Option<SecureModeConfig> {
+            self.secure_mode.clone()
+        }
+
+        fn secret_proof(&self, challenge: &[u8]) -> Option<Hmac<Sha256>> {
+            let secret = self.network_identity.network_secret.as_ref()?;
+            secret_proof_from_secret(secret, challenge)
+        }
+    }
+
+    impl PeerContextTestExt for NoopPeerContext {}
 
     #[derive(Default)]
     struct TestPeerEventSink {
@@ -1703,6 +1703,8 @@ mod tests {
             "node-a".to_string()
         }
     }
+
+    impl PeerContextTestExt for RuntimeConfigContext {}
 
     #[test]
     fn runtime_config_preserves_peer_context_snapshot() {

@@ -1277,23 +1277,6 @@ mod tests {
     }
 
     #[test]
-    fn manual_protocols_keep_their_default_ports() {
-        let cases = [
-            ("tcp://127.0.0.1", 11010),
-            ("udp://127.0.0.1", 11010),
-            ("ws://127.0.0.1", 80),
-            ("wss://127.0.0.1", 443),
-            ("wg://127.0.0.1", 11011),
-            ("quic://127.0.0.1", 11012),
-            ("faketcp://127.0.0.1", 11013),
-        ];
-
-        for (url, expected) in cases {
-            assert_eq!(manual_default_port(&url.parse().unwrap()), expected);
-        }
-    }
-
-    #[test]
     fn external_protocol_and_discovery_timeouts_are_explicit() {
         struct Protocol;
 

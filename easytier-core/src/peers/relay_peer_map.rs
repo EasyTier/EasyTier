@@ -288,14 +288,6 @@ impl RelayPeerMap {
             .is_some()
     }
 
-    #[cfg(feature = "test-utils")]
-    pub(crate) fn has_session_without_touch(&self, dst_peer_id: PeerId) -> bool {
-        self.peer_session_store.contains_valid(&SessionKey::new(
-            self.context.network_identity().network_name,
-            dst_peer_id,
-        ))
-    }
-
     pub async fn ensure_session(
         self: &Arc<Self>,
         dst_peer_id: PeerId,
@@ -740,5 +732,20 @@ impl RelayPeerMap {
         shrink_dashmap(&self.pending_packets, None);
 
         tracing::debug!(?peer_id, "RelayPeerMap removed peer relay state");
+    }
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+mod test_utils {
+    use super::*;
+
+    impl RelayPeerMap {
+        #[doc(hidden)]
+        pub(crate) fn has_session_without_touch(&self, dst_peer_id: PeerId) -> bool {
+            self.peer_session_store.contains_valid(&SessionKey::new(
+                self.context.network_identity().network_name,
+                dst_peer_id,
+            ))
+        }
     }
 }

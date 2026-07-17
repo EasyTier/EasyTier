@@ -737,26 +737,6 @@ impl<H> CoreListenerRuntime<H>
 where
     H: VirtualTcpListenerFactory + VirtualUdpSocketFactory,
 {
-    #[cfg(test)]
-    pub(crate) fn new(
-        host: Arc<H>,
-        dns: Arc<dyn DnsResolver>,
-        ring_registry: Arc<RingTunnelRegistry>,
-        configs: Vec<TransportListenerConfig>,
-        handler: Arc<dyn AcceptedSocketHandler<AcceptedTransport<HostAcceptedTcpSocket<H>>>>,
-    ) -> Self {
-        Self::build(
-            host,
-            dns,
-            ring_registry,
-            configs,
-            Vec::new(),
-            Vec::new(),
-            handler,
-            None,
-        )
-    }
-
     pub(crate) fn new_with_events(
         host: Arc<H>,
         dns: Arc<dyn DnsResolver>,
@@ -916,6 +896,30 @@ mod tests {
             },
         },
     };
+
+    impl<H> CoreListenerRuntime<H>
+    where
+        H: VirtualTcpListenerFactory + VirtualUdpSocketFactory,
+    {
+        fn new(
+            host: Arc<H>,
+            dns: Arc<dyn DnsResolver>,
+            ring_registry: Arc<RingTunnelRegistry>,
+            configs: Vec<TransportListenerConfig>,
+            handler: Arc<dyn AcceptedSocketHandler<AcceptedTransport<HostAcceptedTcpSocket<H>>>>,
+        ) -> Self {
+            Self::build(
+                host,
+                dns,
+                ring_registry,
+                configs,
+                Vec::new(),
+                Vec::new(),
+                handler,
+                None,
+            )
+        }
+    }
 
     struct MockDns;
 
@@ -1210,9 +1214,9 @@ mod tests {
             _local_url: Url,
         ) -> anyhow::Result<ServerProtocolUpgrade> {
             self.tcp_calls.fetch_add(1, Ordering::Relaxed);
-            let first = raw::upgrade_accepted_tcp(socket)?;
+            let first = raw::tests::upgrade_accepted_tcp(socket)?;
             let (stream, _remote) = tokio::io::duplex(64);
-            let second = raw::upgrade_accepted_tcp(MockTcpSocket {
+            let second = raw::tests::upgrade_accepted_tcp(MockTcpSocket {
                 stream,
                 local_addr: "127.0.0.1:21001".parse().unwrap(),
                 peer_addr: "127.0.0.1:31001".parse().unwrap(),
@@ -1231,9 +1235,9 @@ mod tests {
             _admission: Option<crate::connectivity::protocol::ServerProtocolAdmission>,
         ) -> anyhow::Result<ServerProtocolUpgrade> {
             self.udp_calls.fetch_add(1, Ordering::Relaxed);
-            Ok(ServerProtocolUpgrade::Tunnel(raw::upgrade_accepted_udp(
-                session,
-            )?))
+            Ok(ServerProtocolUpgrade::Tunnel(
+                raw::tests::upgrade_accepted_udp(session)?,
+            ))
         }
 
         async fn upgrade_byte_stream(

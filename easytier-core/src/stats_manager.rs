@@ -652,11 +652,6 @@ impl StatsManager {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn cleanup_task_is_stopped(&self) -> bool {
-        self.cleanup_task.lock().unwrap().is_none()
-    }
-
     /// Get or create a counter with the given name and labels
     pub fn get_counter(&self, name: MetricName, labels: LabelSet) -> CounterHandle {
         let key = MetricKey::new(name, labels);
@@ -668,11 +663,6 @@ impl StatsManager {
             .clone();
 
         CounterHandle::new(metric_data, key)
-    }
-
-    /// Get a counter with no labels
-    pub fn get_simple_counter(&self, name: MetricName) -> CounterHandle {
-        self.get_counter(name, LabelSet::new())
     }
 
     /// Get all metric snapshots
@@ -703,38 +693,9 @@ impl StatsManager {
         metrics
     }
 
-    /// Get metrics filtered by name prefix
-    pub fn get_metrics_by_prefix(&self, prefix: &str) -> Vec<MetricSnapshot> {
-        self.get_all_metrics()
-            .into_iter()
-            .filter(|m| m.name.to_string().starts_with(prefix))
-            .collect()
-    }
-
-    /// Get a specific metric by name and labels
-    pub fn get_metric(&self, name: MetricName, labels: &LabelSet) -> Option<MetricSnapshot> {
-        let key = MetricKey::new(name, labels.clone());
-
-        if let Some(metric_data) = self.counters.get(&key) {
-            let value = unsafe { metric_data.counter.get() };
-            Some(MetricSnapshot {
-                name,
-                labels: labels.clone(),
-                value,
-            })
-        } else {
-            None
-        }
-    }
-
     /// Clear all metrics
     pub fn clear(&self) {
         self.counters.clear();
-    }
-
-    /// Get the number of tracked metrics
-    pub fn metric_count(&self) -> usize {
-        self.counters.len()
     }
 
     /// Export metrics in Prometheus format
@@ -933,6 +894,46 @@ impl RpcMetrics for StatsManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    impl StatsManager {
+        pub(crate) fn cleanup_task_is_stopped(&self) -> bool {
+            self.cleanup_task.lock().unwrap().is_none()
+        }
+
+        fn get_simple_counter(&self, name: MetricName) -> CounterHandle {
+            self.get_counter(name, LabelSet::new())
+        }
+
+        fn get_metrics_by_prefix(&self, prefix: &str) -> Vec<MetricSnapshot> {
+            self.get_all_metrics()
+                .into_iter()
+                .filter(|m| m.name.to_string().starts_with(prefix))
+                .collect()
+        }
+
+        pub(crate) fn get_metric(
+            &self,
+            name: MetricName,
+            labels: &LabelSet,
+        ) -> Option<MetricSnapshot> {
+            let key = MetricKey::new(name, labels.clone());
+
+            if let Some(metric_data) = self.counters.get(&key) {
+                let value = unsafe { metric_data.counter.get() };
+                Some(MetricSnapshot {
+                    name,
+                    labels: labels.clone(),
+                    value,
+                })
+            } else {
+                None
+            }
+        }
+
+        fn metric_count(&self) -> usize {
+            self.counters.len()
+        }
+    }
 
     #[test]
     fn cleanup_task_can_start_after_sync_construction() {

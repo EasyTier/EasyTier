@@ -186,11 +186,6 @@ impl AclFilter {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn cleanup_task_is_stopped(&self) -> bool {
-        self.clean_task.lock().unwrap().is_none()
-    }
-
     /// Hot reload ACL rules by creating a new processor instance
     /// Preserves connection tracking and rate limiting state across reloads
     /// Now lock-free and doesn't require &mut self!
@@ -456,6 +451,12 @@ mod tests {
         AclFilter, IP_PROTO_ICMP, IP_PROTO_TCP, IP_PROTO_UDP, OutboundAllowRecord, acl_protocol,
         parse_ip_packet, parse_transport_ports,
     };
+
+    impl AclFilter {
+        pub(crate) fn cleanup_task_is_stopped(&self) -> bool {
+            self.clean_task.lock().unwrap().is_none()
+        }
+    }
 
     fn packet_info(dst_ip: IpAddr) -> PacketInfo {
         PacketInfo {

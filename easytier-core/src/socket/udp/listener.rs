@@ -86,12 +86,6 @@ where
             .ok_or_else(|| anyhow::anyhow!("udp session listener is not started"))
     }
 
-    pub fn bound_socket(&self) -> anyhow::Result<Arc<F::Socket>> {
-        self.socket
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("udp session listener is not started"))
-    }
-
     pub async fn accept_session(&self) -> anyhow::Result<UdpSession> {
         let layer = self.layer()?;
         let mut session = accept_udp_session(&layer, self.accept_kind).await?;
@@ -190,5 +184,22 @@ where
         };
         let active = layer.active_session_count() + layer.active_classified_session_count();
         Some(active as u32)
+    }
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+mod test_utils {
+    use super::*;
+
+    impl<F> UdpSessionSocketListener<F>
+    where
+        F: VirtualUdpSocketFactory,
+    {
+        #[doc(hidden)]
+        pub fn bound_socket(&self) -> anyhow::Result<Arc<F::Socket>> {
+            self.socket
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("udp session listener is not started"))
+        }
     }
 }
