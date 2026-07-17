@@ -37,9 +37,10 @@ Core owns:
 - production construction of `StunInfoCollector` from `StunServerConfig`, the
   Host socket runtime, separate UDP/TCP `SocketContext` values, and combined
   address/record DNS capabilities;
-- `StunInfoProvider`, `StunSocketMapper`, and installation into the stable
-  per-instance `StunProviderSlot` used by peer state, direct connectivity, TCP
-  hole punching, UDP hole punching, IP collection, and native UPnP composition;
+- selection of one per-instance `Arc<dyn StunSocketMapper<_>>`: deterministic
+  tests may provide it before construction, otherwise core constructs the
+  collector. Peer state, direct connectivity, TCP hole punching, UDP hole
+  punching, IP collection, and native UPnP composition share that same Arc;
 - the normalized socket request model, including IP family, `Option<u32>` socket
   mark semantics (where `Some(0)` is distinct from `None`), and an opaque netns
   token;
@@ -146,7 +147,8 @@ The 2026-07-14 closure run passes:
 - all 31 `easytier-go-host` tests, including guest rebuild, lifecycle, DNS,
   socket, environment, two-instance route, and packet exchange paths;
 - focused native process-runtime and UDP/TCP STUN/connectivity checks run
-  during the migration; provider-slot identity is covered directly in core.
+  during the migration; construction-time override and shared-provider
+  identity are covered directly in core.
 
 Known pre-existing integration-test limitations were not repaired in this
 ownership refactor: legacy Ring test helpers without `TunnelInfo` block several

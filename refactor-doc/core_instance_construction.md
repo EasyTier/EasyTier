@@ -67,7 +67,8 @@ process/module scope without becoming host-visible mutable instance state.
 `CoreInstance::new` constructs and connects:
 
 - the authoritative runtime configuration store;
-- the production STUN collector and stable per-instance provider slot;
+- one per-instance STUN provider, selected from a test-only construction
+  override or a core-constructed production collector;
 - `PeerManagerCore`, including foreign-network and peer-graph state;
 - listener planning, the running-listener registry, accept handling, and
   manual/direct/hole-punch connectivity;

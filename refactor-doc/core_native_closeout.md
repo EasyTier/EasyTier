@@ -326,8 +326,8 @@ the KCP verification gap without depending on that environment.
 This section records only evidence added after the dated closeout snapshot. The
 post-closeout simplification passes:
 
-- all 615 `easytier-core --all-features` library tests; the three-test reduction
-  from the previous count is the deliberate deletion of redundant tests;
+- all 612 `easytier-core --all-features` library tests; the reduced count is
+  the deliberate deletion or consolidation of redundant migration tests;
 - the native `easytier --all-targets` check and the final
   `wasm32-wasip1 --all-features` core check;
 - the Docker `foreign_network_forward_nic_data` and
@@ -416,3 +416,15 @@ this delta does not rewrite them.
 - 2026-07-17: completed the cleanup by deleting write-only peer, ACL and
   handshake state together with zero-call foreign-client RPC, route and
   connection helpers. Runtime owners and lifecycle values remain intact.
+- 2026-07-17: made the concrete running-listener registry the sole authority,
+  removed duplicate credential/statistics owners, and inlined single-call
+  route and RPC construction left by the ownership move.
+- 2026-07-17: deleted the obsolete replaceable STUN slot, the DNS split-and-
+  recombine Adapter, and both foreign-context migration envelopes. Tests may
+  select a provider before construction; all runtime consumers share it
+  directly. Review also closed the concurrent foreign socket-mark snapshot
+  mismatch without changing policy.
+- 2026-07-17: removed the test-driven peer-constructor branch, the single-
+  implementation address resolver, the duplicate ACL whitelist mirror, and
+  the peer-only configuration update test API. Tests now exercise complete
+  runtime versions through the production configuration entry.
