@@ -75,7 +75,6 @@ struct NoiseHandshakeResult {
     session: Arc<PeerSession>,
     local_static_pubkey: Vec<u8>,
     remote_static_pubkey: Vec<u8>,
-    handshake_hash: Vec<u8>,
     secure_auth_level: SecureAuthLevel,
     peer_identity_type: PeerIdentityType,
     remote_network_name: String,
@@ -85,9 +84,6 @@ struct NoiseHandshakeResult {
     // foreign network manager use this to verify peer.
     // the challenge will be sent to authorized peer and compare the proof against it.
     client_secret_proof: Option<SecretProof>,
-
-    my_encrypt_algo: String,
-    remote_encrypt_algo: String,
 }
 
 #[derive(Clone)]
@@ -904,8 +900,6 @@ impl PeerConn {
             true,
         );
 
-        let handshake_hash = hs.get_handshake_hash().to_vec();
-
         let algo = self.context.flags().encryption_algorithm.clone();
         let root_key = msg2_pb
             .root_key_32
@@ -937,16 +931,12 @@ impl PeerConn {
             session,
             local_static_pubkey: local_static_pubkey.to_vec(),
             remote_static_pubkey: remote_static,
-            handshake_hash,
             secure_auth_level,
             peer_identity_type,
             remote_network_name,
             // we have authorized the peer with noise handshake, so just set secret digest same as us even remote is a shared node.
             secret_digest,
             client_secret_proof: None,
-
-            my_encrypt_algo: self.my_encrypt_algo.clone(),
-            remote_encrypt_algo: msg2_pb.server_encryption_algorithm.clone(),
         })
     }
 
@@ -1144,14 +1134,11 @@ impl PeerConn {
             false,
         );
 
-        let handshake_hash = hs.get_handshake_hash().to_vec();
-
         Ok(NoiseHandshakeResult {
             peer_id: remote_peer_id,
             session,
             local_static_pubkey: local_static_pubkey.to_vec(),
             remote_static_pubkey: remote_static,
-            handshake_hash,
             secure_auth_level,
             peer_identity_type,
             remote_network_name,
@@ -1160,9 +1147,6 @@ impl PeerConn {
                 challenge: handshake_hash_for_proof,
                 proof: p.clone(),
             }),
-
-            my_encrypt_algo: self.my_encrypt_algo.clone(),
-            remote_encrypt_algo: msg1_pb.client_encryption_algorithm.clone(),
         })
     }
 
@@ -1264,10 +1248,6 @@ impl PeerConn {
         } else {
             Ok(())
         }
-    }
-
-    pub fn handshake_done(&self) -> bool {
-        self.info.is_some()
     }
 
     fn record_control_tx(&self, network_name: &str, bytes: u64) {

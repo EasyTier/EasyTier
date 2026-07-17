@@ -107,16 +107,13 @@ impl AclCacheKey {
 }
 
 // Cache entry with timestamp for LRU cleanup
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub(crate) struct AclCacheEntry {
-    pub action: Action,
     pub matched_rule: RuleId,
     pub last_access: Instant,
     // New fields to track rule characteristics for proper cache behavior
     pub conn_track_key: Option<String>,
     pub rate_limit_keys: Vec<RateLimitKey>,
-    pub chain_type: ChainType,
     pub acl_result: Option<AclResult>,
     pub rule_stats_vec: Vec<Arc<RuleStats>>,
 }
@@ -509,12 +506,10 @@ impl AclProcessor {
         };
 
         let mut cache_entry = AclCacheEntry {
-            action: Action::Allow,
             matched_rule: RuleId::Default,
             last_access: Instant::now(),
             conn_track_key: None,
             rate_limit_keys: vec![],
-            chain_type,
             acl_result: None,
             rule_stats_vec: vec![],
         };

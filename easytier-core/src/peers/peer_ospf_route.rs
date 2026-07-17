@@ -1175,11 +1175,6 @@ impl SyncedRouteInfo {
         true
     }
 
-    fn is_route_suppressed(&self, peer_id: PeerId) -> bool {
-        self.suppressed_non_reusable_credential_peers
-            .contains_key(&peer_id)
-    }
-
     fn update_credential_groups(
         &self,
         peer_infos: &OrderedHashMap<PeerId, RoutePeerInfo>,
@@ -2306,11 +2301,6 @@ impl PeerRouteServiceImpl {
 
             peer_info_last_update: AtomicCell::new(Instant::now()),
         }
-    }
-
-    fn get_my_secret_digest(&self) -> Option<Vec<u8>> {
-        let ni = self.context.network_identity();
-        ni.network_secret_digest.map(|d| d.to_vec())
     }
 
     fn is_credential_node(&self) -> bool {

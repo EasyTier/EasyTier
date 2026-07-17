@@ -6,14 +6,9 @@ use crate::{config::PeerId, packet::ZCPacket};
 
 use super::{
     PacketRecvChan, context::ArcPeerContext, error::Error, peer_conn::PeerConn, peer_map::PeerMap,
-    peer_rpc::PeerRpcManager,
 };
 
 pub struct ForeignNetworkClient {
-    _context: ArcPeerContext,
-    _peer_rpc: Arc<PeerRpcManager>,
-    _my_peer_id: PeerId,
-
     peer_map: Arc<PeerMap>,
     task: Mutex<Option<AbortOnDropHandle<()>>>,
 }
@@ -22,7 +17,6 @@ impl ForeignNetworkClient {
     pub(crate) fn new(
         context: ArcPeerContext,
         packet_sender_to_mgr: PacketRecvChan,
-        peer_rpc: Arc<PeerRpcManager>,
         my_peer_id: PeerId,
     ) -> Self {
         let peer_map = Arc::new(PeerMap::new(
@@ -31,10 +25,6 @@ impl ForeignNetworkClient {
             my_peer_id,
         ));
         Self {
-            _context: context,
-            _peer_rpc: peer_rpc,
-            _my_peer_id: my_peer_id,
-
             peer_map,
             task: Mutex::new(None),
         }

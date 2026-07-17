@@ -110,8 +110,6 @@ fn magic_dns_route_advertisement(route: CoreRoute) -> MagicDnsRouteAdvertisement
 pub(crate) struct RpcTransport {
     my_peer_id: PeerId,
     peers: Weak<PeerMap>,
-    // TODO: this seems can be removed
-    foreign_peers: Mutex<Option<Weak<ForeignNetworkClient>>>,
 
     packet_recv: Mutex<UnboundedReceiver<ZCPacket>>,
     peer_rpc_tspt_sender: UnboundedSender<ZCPacket>,
@@ -131,7 +129,6 @@ impl RpcTransport {
         Arc::new(Self {
             my_peer_id,
             peers,
-            foreign_peers: Mutex::new(None),
             packet_recv: Mutex::new(peer_rpc_tspt_recv),
             peer_rpc_tspt_sender,
             encryptor,
@@ -141,10 +138,6 @@ impl RpcTransport {
 
     pub fn packet_sender(&self) -> UnboundedSender<ZCPacket> {
         self.peer_rpc_tspt_sender.clone()
-    }
-
-    pub async fn set_foreign_peers(&self, foreign_peers: Option<Weak<ForeignNetworkClient>>) {
-        *self.foreign_peers.lock().await = foreign_peers;
     }
 }
 
@@ -991,7 +984,6 @@ impl PeerManagerCore {
         let foreign_network_client = Arc::new(ForeignNetworkClient::new(
             context.clone(),
             packet_send,
-            peer_rpc_mgr.clone(),
             my_peer_id,
         ));
 
@@ -1621,14 +1613,6 @@ impl PeerManagerCore {
         self.tasks.lock().await.spawn(router.run());
     }
 
-    async fn run_foreign_network(&self) {
-        self.peer_rpc_tspt
-            .set_foreign_peers(Some(Arc::downgrade(&self.foreign_network_client)))
-            .await;
-
-        self.foreign_network_client.run().await;
-    }
-
     pub(crate) async fn run(&self) -> Result<(), Error> {
         self.stats_manager.start_cleanup_task();
 
@@ -1657,7 +1641,7 @@ impl PeerManagerCore {
         .spawn_into(&self.tasks)
         .await;
 
-        self.run_foreign_network().await;
+        self.foreign_network_client.run().await;
 
         Ok(())
     }
