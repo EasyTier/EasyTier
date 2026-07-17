@@ -15,9 +15,9 @@ use device::BufferDevice;
 use reactor::Reactor;
 pub use smoltcp;
 use smoltcp::{
-    iface::{Config, Interface, Routes},
-    time::{Duration, Instant},
-    wire::{HardwareAddress, IpAddress, IpCidr},
+    iface::{Config, Interface},
+    time::Instant,
+    wire::{IpAddress, IpCidr},
 };
 pub use socket::{TcpListener, TcpStream, UdpSocket};
 pub use socket_allocator::BufferSize;
@@ -30,17 +30,6 @@ pub mod device;
 mod reactor;
 mod socket;
 mod socket_allocator;
-
-/// Can be used to create a forever timestamp in neighbor.
-// The 60_000 is the same as NeighborCache::ENTRY_LIFETIME.
-pub const FOREVER: Instant =
-    Instant::from_micros_const(i64::MAX - Duration::from_millis(60_000).micros() as i64);
-
-pub struct Neighbor {
-    pub protocol_addr: IpAddress,
-    pub hardware_addr: HardwareAddress,
-    pub timestamp: Instant,
-}
 
 /// A config for a `Net`.
 ///
@@ -185,27 +174,6 @@ impl Net {
         let mut iface: parking_lot::lock_api::MutexGuard<'_, parking_lot::RawMutex, Interface> =
             iface.lock();
         iface.set_any_ip(any_ip);
-    }
-
-    /// Get whether AnyIP is enabled.
-    pub fn any_ip(&self) -> bool {
-        let iface = self.reactor.iface().clone();
-        let iface = iface.lock();
-        iface.any_ip()
-    }
-
-    pub fn routes<F: FnOnce(&Routes)>(&self, f: F) {
-        let iface = self.reactor.iface().clone();
-        let iface = iface.lock();
-        let routes = iface.routes();
-        f(routes)
-    }
-
-    pub fn routes_mut<F: FnOnce(&mut Routes)>(&self, f: F) {
-        let iface = self.reactor.iface().clone();
-        let mut iface = iface.lock();
-        let routes = iface.routes_mut();
-        f(routes)
     }
 }
 

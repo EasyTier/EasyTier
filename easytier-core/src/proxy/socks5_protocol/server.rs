@@ -6,7 +6,6 @@ use std::io;
 use std::net::IpAddr;
 use std::net::Ipv4Addr;
 use std::net::SocketAddr;
-use std::ops::Deref;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Poll;
@@ -55,42 +54,6 @@ pub trait Authentication: Send + Sync {
     async fn authenticate(&self, credentials: Option<(String, String)>) -> Option<Self::Item>;
 }
 
-/// Basic user/pass auth method provided.
-pub struct SimpleUserPassword {
-    pub username: String,
-    pub password: String,
-}
-
-/// The struct returned when the user has successfully authenticated
-pub struct AuthSucceeded {
-    pub username: String,
-}
-
-/// This is an example to auth via simple credentials.
-/// If the auth succeed, we return the username authenticated with, for further uses.
-#[async_trait::async_trait]
-impl Authentication for SimpleUserPassword {
-    type Item = AuthSucceeded;
-
-    async fn authenticate(&self, credentials: Option<(String, String)>) -> Option<Self::Item> {
-        if let Some((username, password)) = credentials {
-            // Client has supplied credentials
-            if username == self.username && password == self.password {
-                // Some() will allow the authentication and the credentials
-                // will be forwarded to the socket
-                Some(AuthSucceeded { username })
-            } else {
-                // Credentials incorrect, we deny the auth
-                None
-            }
-        } else {
-            // The client hasn't supplied any credentials, which only happens
-            // when `Config::allow_no_auth()` is set as `true`
-            None
-        }
-    }
-}
-
 /// This will simply return Option::None, which denies the authentication
 #[derive(Copy, Clone, Default)]
 pub struct DenyAuthentication {}
@@ -132,43 +95,10 @@ impl<A: Authentication> Config<A> {
         self
     }
 
-    /// Enable authentication
-    /// 'static lifetime for Authentication avoid us to use `dyn Authentication`
-    /// and set the Arc before calling the function.
-    pub fn with_authentication<T: Authentication + 'static>(self, authentication: T) -> Config<T> {
-        Config {
-            request_timeout: self.request_timeout,
-            skip_auth: self.skip_auth,
-            dns_resolve: self.dns_resolve,
-            execute_command: self.execute_command,
-            allow_udp: self.allow_udp,
-            allow_no_auth: self.allow_no_auth,
-            auth: Some(Arc::new(authentication)),
-        }
-    }
-
     /// For some complex scenarios, we may want to either accept Username/Password configuration
     /// or IP Whitelisting, in case the client send only 2 auth methods rather than 3 (with auth)
     pub fn set_allow_no_auth(&mut self, value: bool) -> &mut Self {
         self.allow_no_auth = value;
-        self
-    }
-
-    /// Set whether or not to execute commands
-    pub fn set_execute_command(&mut self, value: bool) -> &mut Self {
-        self.execute_command = value;
-        self
-    }
-
-    /// Will the server perform dns resolve
-    pub fn set_dns_resolve(&mut self, value: bool) -> &mut Self {
-        self.dns_resolve = value;
-        self
-    }
-
-    /// Set whether or not to allow udp traffic
-    pub fn set_udp_support(&mut self, value: bool) -> &mut Self {
-        self.allow_udp = value;
         self
     }
 }
@@ -199,14 +129,10 @@ pub struct Socks5Socket<T: AsyncRead + AsyncWrite + Unpin, A: Authentication, C:
 {
     inner: T,
     config: Arc<Config<A>>,
-    auth: AuthenticationMethod,
     target_addr: Option<TargetAddr>,
     cmd: Option<Socks5Command>,
     /// Socket address which will be used in the reply message.
     reply_ip: Option<IpAddr>,
-    /// If the client has been authenticated, that's where we store his credentials
-    /// to be accessed from the socket
-    credentials: Option<A::Item>,
     tcp_connector: C,
     runtime: Arc<dyn Socks5ServerRuntime>,
 }
@@ -223,29 +149,12 @@ impl<T: AsyncRead + AsyncWrite + Unpin, A: Authentication, C: AsyncTcpConnector>
         Socks5Socket {
             inner: socket,
             config,
-            auth: AuthenticationMethod::None,
             target_addr: None,
             cmd: None,
             reply_ip: None,
-            credentials: None,
             tcp_connector,
             runtime,
         }
-    }
-
-    /// Set the bind IP address in Socks5Reply.
-    ///
-    /// Only the inner socket owner knows the correct reply bind addr, so leave this field to be
-    /// populated. For those strict clients, users can use this function to set the correct IP
-    /// address.
-    ///
-    /// Most popular SOCKS5 clients [1] [2] ignore BND.ADDR and BND.PORT the reply of command
-    /// CONNECT, but this field could be useful in some other command, such as UDP ASSOCIATE.
-    ///
-    /// [1]: https://github.com/chromium/chromium/blob/bd2c7a8b65ec42d806277dd30f138a673dec233a/net/socket/socks5_client_socket.cc#L481
-    /// [2]: https://github.com/curl/curl/blob/d15692ebbad5e9cfb871b0f7f51a73e43762cee2/lib/socks.c#L978
-    pub fn set_reply_ip(&mut self, addr: IpAddr) {
-        self.reply_ip = Some(addr);
     }
 
     /// Process clients SOCKS requests
@@ -260,8 +169,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin, A: Authentication, C: AsyncTcpConnector>
             let auth_method = self.can_accept_method(methods).await?;
 
             if self.config.auth.is_some() {
-                let credentials = self.authenticate(auth_method).await?;
-                self.credentials = Some(credentials);
+                self.authenticate(auth_method).await?;
             }
         } else {
             debug!("skipping auth");
@@ -279,11 +187,6 @@ impl<T: AsyncRead + AsyncWrite + Unpin, A: Authentication, C: AsyncTcpConnector>
         };
 
         Ok(self)
-    }
-
-    /// Consumes the `Socks5Socket`, returning the wrapped stream.
-    pub fn into_inner(self) -> T {
-        self.inner
     }
 
     /// Read the authentication method provided by the client.
@@ -694,35 +597,6 @@ impl<T: AsyncRead + AsyncWrite + Unpin, A: Authentication, C: AsyncTcpConnector>
 
         Ok(())
     }
-
-    pub fn target_addr(&self) -> Option<&TargetAddr> {
-        self.target_addr.as_ref()
-    }
-
-    pub fn auth(&self) -> &AuthenticationMethod {
-        &self.auth
-    }
-
-    pub fn cmd(&self) -> &Option<Socks5Command> {
-        &self.cmd
-    }
-
-    /// Borrow the credentials of the user has authenticated with
-    pub fn get_credentials(&self) -> Option<&<<A as Authentication>::Item as Deref>::Target>
-    where
-        <A as Authentication>::Item: Deref,
-    {
-        self.credentials.as_deref()
-    }
-
-    /// Get the credentials of the user has authenticated with
-    pub fn take_credentials(&mut self) -> Option<A::Item> {
-        self.credentials.take()
-    }
-
-    pub fn tcp_connector(&self) -> &C {
-        &self.tcp_connector
-    }
 }
 
 /// Copy data between two peers
@@ -825,6 +699,38 @@ mod tests {
 
     use super::*;
 
+    struct SimpleUserPassword {
+        username: String,
+        password: String,
+    }
+
+    #[async_trait::async_trait]
+    impl Authentication for SimpleUserPassword {
+        type Item = ();
+
+        async fn authenticate(&self, credentials: Option<(String, String)>) -> Option<Self::Item> {
+            credentials
+                .filter(|(username, password)| {
+                    username == &self.username && password == &self.password
+                })
+                .map(|_| ())
+        }
+    }
+
+    impl<A: Authentication> Config<A> {
+        fn with_authentication<T: Authentication + 'static>(self, authentication: T) -> Config<T> {
+            Config {
+                request_timeout: self.request_timeout,
+                skip_auth: self.skip_auth,
+                dns_resolve: self.dns_resolve,
+                execute_command: self.execute_command,
+                allow_udp: self.allow_udp,
+                allow_no_auth: self.allow_no_auth,
+                auth: Some(Arc::new(authentication)),
+            }
+        }
+    }
+
     struct TestConnector {
         outbound: Mutex<Option<DuplexStream>>,
     }
@@ -852,9 +758,10 @@ mod tests {
         }
 
         async fn bind_udp_association(&self) -> Result<Box<dyn Socks5UdpAssociation>> {
-            Err(SocksError::ArgumentInputError(
+            Err(SocksError::Io(io::Error::new(
+                io::ErrorKind::Unsupported,
                 "UDP is not used by this test runtime",
-            ))
+            )))
         }
     }
 

@@ -155,10 +155,6 @@ impl UdpProxyEngine {
         }
     }
 
-    pub fn nat_entry_count(&self) -> usize {
-        self.nat_table.len()
-    }
-
     pub fn entry_ids(&self) -> Vec<UdpNatEntryId> {
         self.nat_ids.iter().map(|entry| *entry.key()).collect()
     }

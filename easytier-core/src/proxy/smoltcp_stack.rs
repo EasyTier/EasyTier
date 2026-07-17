@@ -21,7 +21,6 @@ pub struct SmolTcpStack {
     listener_tx: mpsc::UnboundedSender<SmolTcpAcceptResult>,
     listener_rx: Mutex<mpsc::UnboundedReceiver<SmolTcpAcceptResult>>,
     tasks: Arc<std::sync::Mutex<JoinSet<()>>>,
-    local_ip: Ipv4Addr,
 }
 
 impl SmolTcpStack {
@@ -67,16 +66,11 @@ impl SmolTcpStack {
             listener_tx,
             listener_rx: Mutex::new(listener_rx),
             tasks,
-            local_ip,
         }))
     }
 
     pub fn local_port(&self) -> u16 {
         8899
-    }
-
-    pub fn local_ip(&self) -> Ipv4Addr {
-        self.local_ip
     }
 
     pub async fn send_ingress(&self, packet: ZCPacket) -> anyhow::Result<()> {

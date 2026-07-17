@@ -71,23 +71,6 @@ pub struct TcpProxyService<
 impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDestinationConnector>
     TcpProxyService<R, F, C>
 {
-    pub fn new(
-        peer_manager: Arc<PeerManagerCore>,
-        runtime: Arc<R>,
-        listener_factory: Arc<F>,
-        connector: Arc<C>,
-        cidr_table: Arc<ProxyCidrTable>,
-    ) -> Arc<Self> {
-        Self::new_with_socket_context(
-            peer_manager,
-            runtime,
-            listener_factory,
-            connector,
-            cidr_table,
-            SocketContext::default(),
-        )
-    }
-
     pub fn new_with_socket_context(
         peer_manager: Arc<PeerManagerCore>,
         runtime: Arc<R>,
@@ -412,7 +395,6 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
         }
 
         let ctx = TcpProxyConnectContext {
-            entry_id: entry.id(),
             src: entry.src(),
             real_dst: entry.real_dst(),
             mapped_dst: entry.mapped_dst(),

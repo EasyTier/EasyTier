@@ -99,15 +99,6 @@ impl<V> Socks5EntryGuard<V> {
             active: true,
         })
     }
-
-    pub fn entry(&self) -> &Socks5Entry {
-        &self.entry
-    }
-
-    pub fn remove(mut self) -> Socks5EntryRemoval {
-        self.active = false;
-        self.table.remove(&self.entry)
-    }
 }
 
 impl<V> Drop for Socks5EntryGuard<V> {
@@ -491,6 +482,13 @@ mod tests {
         net::{IpAddr, Ipv4Addr, SocketAddr},
         sync::Arc,
     };
+
+    impl<V> Socks5EntryGuard<V> {
+        fn remove(mut self) -> super::Socks5EntryRemoval {
+            self.active = false;
+            self.table.remove(&self.entry)
+        }
+    }
 
     #[test]
     fn entry_kind_values_preserve_native_table_identity() {

@@ -9,7 +9,7 @@ use crate::{
 };
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ProxyCidrConfigSnapshot {
+pub(crate) struct ProxyCidrConfigSnapshot {
     pub manual_routes: Option<BTreeSet<Ipv4Cidr>>,
     pub vpn_portal_cidr: Option<Ipv4Cidr>,
 }
@@ -34,7 +34,7 @@ pub struct ProxyCidrDiff {
     pub removed: Vec<Ipv4Cidr>,
 }
 
-pub fn resolve_proxy_cidrs(
+pub(crate) fn resolve_proxy_cidrs(
     mut peer_routes: BTreeSet<Ipv4Cidr>,
     config: ProxyCidrConfigSnapshot,
 ) -> BTreeSet<Ipv4Cidr> {
@@ -47,7 +47,7 @@ pub fn resolve_proxy_cidrs(
     peer_routes
 }
 
-pub fn diff_proxy_cidrs(
+pub(crate) fn diff_proxy_cidrs(
     previous: &BTreeSet<Ipv4Cidr>,
     current: BTreeSet<Ipv4Cidr>,
 ) -> ProxyCidrDiff {
@@ -60,7 +60,7 @@ pub fn diff_proxy_cidrs(
     }
 }
 
-pub async fn collect_proxy_cidrs(
+pub(crate) async fn collect_proxy_cidrs(
     peer_manager: &PeerManagerCore,
     config: &CoreInstanceRuntimeConfig,
 ) -> BTreeSet<Ipv4Cidr> {
@@ -75,7 +75,7 @@ fn resolve_proxy_cidrs_from_runtime(
     resolve_proxy_cidrs(peer_routes, config.into())
 }
 
-pub async fn collect_proxy_cidr_diff(
+pub(crate) async fn collect_proxy_cidr_diff(
     peer_manager: &PeerManagerCore,
     runtime_config: &CoreRuntimeConfigStore,
     previous: &BTreeSet<Ipv4Cidr>,
@@ -93,14 +93,14 @@ async fn collect_proxy_cidr_diff_from_snapshot(
     diff_proxy_cidrs(previous, current)
 }
 
-pub struct ProxyCidrMonitor {
+pub(crate) struct ProxyCidrMonitor {
     peer_manager: std::sync::Weak<PeerManagerCore>,
     runtime_config: CoreRuntimeConfigStore,
     host: Arc<dyn ProxyCidrMonitorHost>,
 }
 
 impl ProxyCidrMonitor {
-    pub fn new(
+    pub(crate) fn new(
         peer_manager: &Arc<PeerManagerCore>,
         runtime_config: CoreRuntimeConfigStore,
         host: Arc<dyn ProxyCidrMonitorHost>,
@@ -112,7 +112,7 @@ impl ProxyCidrMonitor {
         }
     }
 
-    pub fn start(self) -> AbortOnDropHandle<()> {
+    pub(crate) fn start(self) -> AbortOnDropHandle<()> {
         AbortOnDropHandle::new(tokio::spawn(async move {
             let mut current = BTreeSet::new();
             let mut last_update = None;

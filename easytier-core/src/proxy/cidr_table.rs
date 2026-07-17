@@ -1,4 +1,6 @@
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::IpAddr;
+#[cfg(any(test, feature = "proxy-packet"))]
+use std::net::Ipv4Addr;
 
 use parking_lot::RwLock;
 
@@ -71,10 +73,12 @@ impl ProxyCidrTable {
         *self.entries.write() = entries;
     }
 
+    #[cfg(feature = "proxy-packet")]
     pub fn is_empty(&self) -> bool {
         self.entries.read().is_empty()
     }
 
+    #[cfg(any(test, feature = "proxy-packet"))]
     pub fn lookup_v4(&self, ipv4: Ipv4Addr) -> Option<Ipv4Addr> {
         self.entries
             .read()
@@ -84,6 +88,7 @@ impl ProxyCidrTable {
 }
 
 impl ProxyCidrEntry {
+    #[cfg(any(test, feature = "proxy-packet"))]
     fn lookup_v4(&self, ipv4: Ipv4Addr) -> Option<Ipv4Addr> {
         if !self.mapped_cidr.contains(&ipv4) {
             return None;

@@ -1,6 +1,5 @@
 use super::{reactor::Reactor, socket_allocator::SocketHandle};
 use futures::future::{self, poll_fn};
-use futures::{Stream, ready};
 pub use smoltcp::socket::tcp;
 use smoltcp::socket::udp;
 use smoltcp::wire::{IpAddress, IpEndpoint};
@@ -59,34 +58,8 @@ impl TcpListener {
     pub async fn accept(&mut self) -> io::Result<(TcpStream, SocketAddr)> {
         poll_fn(|cx| self.poll_accept(cx)).await
     }
-    pub fn incoming(self) -> Incoming {
-        Incoming(self)
-    }
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
         Ok(self.local_addr)
-    }
-
-    pub fn relisten(&self) {
-        let mut socket = self.reactor.get_socket::<tcp::Socket>(*self.handle);
-        let local_endpoint = socket.local_endpoint().unwrap();
-        socket.abort();
-        socket.listen(local_endpoint).unwrap();
-        self.reactor.notify();
-    }
-
-    pub fn is_listening(&self) -> bool {
-        let socket = self.reactor.get_socket::<tcp::Socket>(*self.handle);
-        socket.is_listening()
-    }
-}
-
-pub struct Incoming(TcpListener);
-
-impl Stream for Incoming {
-    type Item = io::Result<TcpStream>;
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let (tcp, _) = ready!(self.0.poll_accept(cx))?;
-        Poll::Ready(Some(Ok(tcp)))
     }
 }
 
@@ -111,7 +84,6 @@ pub struct TcpStream {
     handle: SocketHandle,
     reactor: Arc<Reactor>,
     local_addr: SocketAddr,
-    peer_addr: SocketAddr,
 }
 
 impl TcpStream {
@@ -137,12 +109,10 @@ impl TcpStream {
         connect_result.map_err(map_err)?;
 
         let local_addr = ep2sa(&local_endpoint);
-        let peer_addr = ep2sa(&remote_endpoint);
         let tcp = TcpStream {
             handle,
             reactor,
             local_addr,
-            peer_addr,
         };
 
         tcp.reactor.notify();
@@ -177,7 +147,6 @@ impl TcpStream {
                 handle: replace(&mut listener.handle, new_handle),
                 reactor,
                 local_addr,
-                peer_addr,
             },
             peer_addr,
         ))
@@ -185,9 +154,6 @@ impl TcpStream {
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
         Ok(self.local_addr)
-    }
-    pub fn peer_addr(&self) -> io::Result<SocketAddr> {
-        Ok(self.peer_addr)
     }
     pub fn poll_connected(&self, cx: &Context<'_>) -> Poll<io::Result<()>> {
         let mut socket = self.reactor.get_socket::<tcp::Socket>(*self.handle);

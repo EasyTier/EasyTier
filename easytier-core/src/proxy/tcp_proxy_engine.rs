@@ -16,10 +16,10 @@ use crate::packet::{PacketType, ZCPacket};
 
 use super::cidr_table::ProxyCidrTable;
 
-pub type TcpNatEntryId = uuid::Uuid;
+pub(crate) type TcpNatEntryId = uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TcpProxyMode {
+pub(crate) enum TcpProxyMode {
     Tcp,
     KcpSrc,
     QuicSrc,
@@ -45,7 +45,7 @@ pub struct TcpNatEntrySnapshot {
 }
 
 #[derive(Debug)]
-pub struct TcpNatEntry {
+pub(crate) struct TcpNatEntry {
     id: TcpNatEntryId,
     src: SocketAddr,
     real_dst: SocketAddr,
@@ -107,7 +107,7 @@ impl TcpNatEntry {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct TcpProxyPeerContext {
+pub(crate) struct TcpProxyPeerContext {
     pub local_inet: Option<Ipv4Inet>,
     pub virtual_ipv4: Option<Ipv4Addr>,
     pub local_port: u16,
@@ -117,7 +117,7 @@ pub struct TcpProxyPeerContext {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct TcpProxyNicContext {
+pub(crate) struct TcpProxyNicContext {
     pub local_inet: Option<Ipv4Inet>,
     pub local_port: u16,
     pub my_peer_id: u32,
@@ -125,13 +125,13 @@ pub struct TcpProxyNicContext {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TcpProxyPacketAction {
+pub(crate) enum TcpProxyPacketAction {
     Handled { new_syn: bool },
     Pass,
 }
 
 #[derive(Debug)]
-pub struct TcpProxyEngine {
+pub(crate) struct TcpProxyEngine {
     cidr_table: Arc<ProxyCidrTable>,
     local_port: AtomicU16,
     syn_map: DashMap<SocketAddr, Arc<TcpNatEntry>>,

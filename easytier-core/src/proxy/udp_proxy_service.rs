@@ -47,10 +47,6 @@ impl<R: UdpProxyRuntime + 'static> UdpProxyService<R> {
         })
     }
 
-    pub fn engine(&self) -> Arc<UdpProxyEngine> {
-        self.engine.clone()
-    }
-
     pub async fn start(self: &Arc<Self>) {
         if self.started.swap(true, Ordering::AcqRel) {
             return;

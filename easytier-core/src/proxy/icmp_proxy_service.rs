@@ -78,10 +78,6 @@ impl<R: IcmpProxyRuntime + 'static> IcmpProxyService<R> {
         })
     }
 
-    pub fn engine(&self) -> Arc<IcmpProxyEngine> {
-        self.engine.clone()
-    }
-
     pub async fn start(self: &Arc<Self>) -> Result<(), ProxyRuntimeError> {
         if self.started.swap(true, Ordering::AcqRel) {
             return Ok(());
