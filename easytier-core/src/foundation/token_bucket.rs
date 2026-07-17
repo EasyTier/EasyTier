@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 use tokio_util::task::AbortOnDropHandle;
 
-use crate::{peers::context::ByteLimiter, runtime_time as time};
+use crate::{foundation::time, peers::context::ByteLimiter};
 use easytier_proto::common::LimiterConfig;
 
 /// Token Bucket rate limiter using atomic operations

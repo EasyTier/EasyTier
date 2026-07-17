@@ -26,7 +26,7 @@ use zerocopy::AsBytes;
 
 use snow::{HandshakeState, params::NoiseParams};
 
-use crate::runtime_time::{Duration, timeout};
+use crate::foundation::time::{Duration, timeout};
 
 use super::{
     PacketRecvChan,

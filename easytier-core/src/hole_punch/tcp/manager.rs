@@ -16,6 +16,7 @@ use tokio_util::task::AbortOnDropHandle;
 use crate::{
     config::PeerId,
     connectivity::protocol::{ClientProtocolUpgrader, ServerProtocolUpgrader},
+    foundation::task::{PeerTaskLauncher, PeerTaskManager},
     hole_punch::udp::{BackOff, should_background_p2p_with_peer, should_try_p2p_with_peer},
     peers::peer_manager::PeerManagerCore,
     proto::{
@@ -31,7 +32,6 @@ use crate::{
         tcp::{TcpBindOptions, TcpListenOptions, VirtualTcpListener},
     },
     stun::StunInfoProvider,
-    task::{PeerTaskLauncher, PeerTaskManager},
 };
 
 use super::{
@@ -112,7 +112,7 @@ fn join_joinset_background(tasks: Arc<Mutex<JoinSet<()>>>) -> AbortOnDropHandle<
     let tasks = Arc::downgrade(&tasks);
     AbortOnDropHandle::new(tokio::spawn(async move {
         while tasks.strong_count() > 0 {
-            crate::runtime_time::sleep(Duration::from_secs(1)).await;
+            crate::foundation::time::sleep(Duration::from_secs(1)).await;
             let Some(tasks) = tasks.upgrade() else {
                 break;
             };
@@ -403,7 +403,7 @@ where
             "tcp hole punch initiator listening"
         );
 
-        crate::runtime_time::timeout(
+        crate::foundation::time::timeout(
             Duration::from_secs(10),
             accept_connections(listener, self.transport_sink.clone(), dst_peer_id),
         )

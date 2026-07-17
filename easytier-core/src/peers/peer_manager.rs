@@ -21,8 +21,9 @@ use tokio::task::JoinSet;
 use url::Url;
 
 use crate::{
-    compressor::{Compressor as _, DefaultCompressor},
     config::{P2pPolicyFlags, PeerId, ProxyNetworkConfig},
+    foundation::compressor::{Compressor as _, DefaultCompressor},
+    foundation::task::ExternalTaskSignal,
     magic_dns::{MagicDnsRouteAdvertisement, MagicDnsRouteSnapshot, MagicDnsRouteSource},
     packet::{CompressorAlgo, PacketType, ZCPacket},
     proto::common::{FlagsInConfig, PeerFeatureFlag, StunInfo},
@@ -32,7 +33,6 @@ use crate::{
         SocketContext,
         dns::{DnsQuery, DnsResolver},
     },
-    task::ExternalTaskSignal,
     tunnel::Tunnel,
 };
 
@@ -69,11 +69,11 @@ use super::{
     },
     util::shrink_dashmap,
 };
+use crate::foundation::stats::{CounterHandle, LabelSet, LabelType, MetricName, StatsManager};
 use crate::proto::peer_rpc::{
     ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey, GetIpListResponse, PeerIdentityType,
     RouteForeignNetworkInfos, RouteForeignNetworkSummary,
 };
-use crate::stats_manager::{CounterHandle, LabelSet, LabelType, MetricName, StatsManager};
 
 #[derive(Debug, Clone)]
 pub struct PeerSnapshot {
@@ -1483,7 +1483,7 @@ impl PeerManagerCore {
 
     pub async fn wait(&self) {
         while !self.tasks.lock().await.is_empty() {
-            crate::runtime_time::sleep(std::time::Duration::from_secs(1)).await;
+            crate::foundation::time::sleep(std::time::Duration::from_secs(1)).await;
         }
     }
 
@@ -2063,7 +2063,7 @@ impl PeerMaintenanceTasks {
         tasks.lock().await.spawn(async move {
             loop {
                 peer_map.clean_peer_without_conn().await;
-                crate::runtime_time::sleep(std::time::Duration::from_secs(3)).await;
+                crate::foundation::time::sleep(std::time::Duration::from_secs(3)).await;
             }
         });
     }
@@ -2073,7 +2073,7 @@ impl PeerMaintenanceTasks {
         tasks.lock().await.spawn(async move {
             loop {
                 relay_peer_map.evict_idle_sessions(std::time::Duration::from_secs(60));
-                crate::runtime_time::sleep(std::time::Duration::from_secs(30)).await;
+                crate::foundation::time::sleep(std::time::Duration::from_secs(30)).await;
             }
         });
     }
@@ -2091,7 +2091,7 @@ impl PeerMaintenanceTasks {
                         foreign_network_client.get_peer_map().has_peer(peer_id)
                     }
                 });
-                crate::runtime_time::sleep(std::time::Duration::from_secs(30)).await;
+                crate::foundation::time::sleep(std::time::Duration::from_secs(30)).await;
             }
         });
     }
@@ -2100,7 +2100,7 @@ impl PeerMaintenanceTasks {
         let peer_session_store = self.peer_session_store.clone();
         tasks.lock().await.spawn(async move {
             loop {
-                crate::runtime_time::sleep(std::time::Duration::from_secs(60)).await;
+                crate::foundation::time::sleep(std::time::Duration::from_secs(60)).await;
                 peer_session_store.evict_unused_sessions();
             }
         });
@@ -2124,7 +2124,7 @@ impl PeerMaintenanceTasks {
                     )
                     .await;
                 }
-                crate::runtime_time::sleep(std::time::Duration::from_secs(1)).await;
+                crate::foundation::time::sleep(std::time::Duration::from_secs(1)).await;
             }
         });
     }

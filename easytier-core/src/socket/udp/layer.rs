@@ -300,8 +300,8 @@ where
         let syn_packet = new_syn_packet(conn_id, magic).into_bytes();
         self.socket.send_to(&syn_packet, remote_addr).await?;
 
-        let timeout = crate::runtime_time::sleep(UDP_SESSION_CONNECT_TIMEOUT);
-        let resend_sleep = crate::runtime_time::sleep(UDP_SESSION_RESEND_INTERVAL);
+        let timeout = crate::foundation::time::sleep(UDP_SESSION_CONNECT_TIMEOUT);
+        let resend_sleep = crate::foundation::time::sleep(UDP_SESSION_RESEND_INTERVAL);
         tokio::pin!(timeout);
         tokio::pin!(resend_sleep);
 
@@ -327,7 +327,7 @@ where
                     self.socket.send_to(&syn_packet, remote_addr).await?;
                     resend_sleep
                         .as_mut()
-                        .reset(crate::runtime_time::Instant::now() + UDP_SESSION_RESEND_INTERVAL);
+                        .reset(crate::foundation::time::Instant::now() + UDP_SESSION_RESEND_INTERVAL);
                 }
                 control = control_rx.recv() => {
                     match control {

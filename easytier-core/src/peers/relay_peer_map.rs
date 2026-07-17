@@ -8,6 +8,7 @@ use tokio::sync::{Mutex, OwnedMutexGuard, oneshot};
 
 use crate::{
     config::PeerId,
+    foundation::time::{Duration, timeout},
     packet::{PacketType, ZCPacket},
     peers::{
         context::ArcPeerContext,
@@ -20,7 +21,6 @@ use crate::{
     },
     proto::peer_rpc::RoutePeerInfo,
     proto::peer_rpc::{PeerConnSessionActionPb, RelayNoiseMsg1Pb, RelayNoiseMsg2Pb},
-    runtime_time::{Duration, timeout},
 };
 
 const RELAY_NOISE_VERSION: u32 = 1;
@@ -352,7 +352,7 @@ impl RelayPeerMap {
                     self.register_handshake_failure(dst_peer_id, attempt);
                     if attempt + 1 < HANDSHAKE_MAX_ATTEMPTS {
                         let backoff = HANDSHAKE_RETRY_BASE_MS.saturating_mul(1 << attempt);
-                        crate::runtime_time::sleep(Duration::from_millis(backoff)).await;
+                        crate::foundation::time::sleep(Duration::from_millis(backoff)).await;
                     }
                 }
             }

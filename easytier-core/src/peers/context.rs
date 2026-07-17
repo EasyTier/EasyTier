@@ -29,14 +29,14 @@ use crate::{
         CoreConfig, IpPrefix, NodeConfig, PeerId, PeerPolicyConfig, ProxyNetworkConfig,
         RouteConfig, TrafficConfig,
     },
+    foundation::stats::{LabelSet, LabelType, MetricName, StatsManager},
+    foundation::token_bucket::TokenBucketManager,
     peers::{
         credential_manager::{CredentialManager, CredentialStorage},
         foreign_network_manager::check_network_in_relay_whitelist,
         util::shrink_dashmap,
     },
     runtime_config::CoreRuntimeConfigStore,
-    stats_manager::{LabelSet, LabelType, MetricName, StatsManager},
-    token_bucket::TokenBucketManager,
 };
 
 pub(crate) const SECRET_PROOF_PREFIX: &[u8] = b"easytier secret proof";

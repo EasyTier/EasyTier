@@ -6,7 +6,7 @@ use std::{
 };
 
 use crate::{
-    runtime_time::timeout,
+    foundation::time::timeout,
     socket::{
         IpVersion, SocketContext,
         dns::{DnsQuery, DnsResolver},

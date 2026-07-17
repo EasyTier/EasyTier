@@ -12,9 +12,9 @@ use tracing::Instrument;
 
 use crate::{
     config::PeerId,
+    foundation::time::{Interval, interval, timeout},
     packet::{PacketType, ZCPacket},
     peers::{context::ArcPeerContext, error::Error},
-    runtime_time::{Interval, interval, timeout},
     tunnel::{
         TunnelError,
         mpsc::MpscTunnelSender,

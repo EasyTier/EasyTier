@@ -1410,12 +1410,12 @@ mod tests {
 
         let first = listener.accept().await?;
         assert!(
-            crate::runtime_time::timeout(Duration::from_millis(50), listener.accept())
+            crate::foundation::time::timeout(Duration::from_millis(50), listener.accept())
                 .await
                 .is_err()
         );
         drop(first);
-        crate::runtime_time::timeout(Duration::from_secs(1), listener.accept()).await??;
+        crate::foundation::time::timeout(Duration::from_secs(1), listener.accept()).await??;
         Ok(())
     }
 
@@ -1447,7 +1447,7 @@ mod tests {
 
         tunnel_handler.entered.notified().await;
         let next_permit =
-            crate::runtime_time::timeout(Duration::from_secs(1), upgrade_slots.acquire_owned())
+            crate::foundation::time::timeout(Duration::from_secs(1), upgrade_slots.acquire_owned())
                 .await??;
         drop(next_permit);
         tunnel_handler.release.notify_one();
@@ -1473,7 +1473,7 @@ mod tests {
 
         socket.receive_from(quic_initial_packet(1), "127.0.0.1:32001".parse()?);
         let first =
-            crate::runtime_time::timeout(Duration::from_secs(1), listener.accept()).await??;
+            crate::foundation::time::timeout(Duration::from_secs(1), listener.accept()).await??;
         assert!(matches!(
             &first,
             AcceptedTransport::Udp {
@@ -1484,7 +1484,7 @@ mod tests {
 
         socket.receive_from(quic_initial_packet(2), "127.0.0.1:32002".parse()?);
         assert!(
-            crate::runtime_time::timeout(Duration::from_millis(100), listener.accept())
+            crate::foundation::time::timeout(Duration::from_millis(100), listener.accept())
                 .await
                 .is_err()
         );
@@ -1492,7 +1492,7 @@ mod tests {
         drop(first);
         socket.receive_from(quic_initial_packet(3), "127.0.0.1:32003".parse()?);
         let third =
-            crate::runtime_time::timeout(Duration::from_secs(1), listener.accept()).await??;
+            crate::foundation::time::timeout(Duration::from_secs(1), listener.accept()).await??;
         assert!(matches!(
             third,
             AcceptedTransport::Udp {
@@ -1660,7 +1660,7 @@ mod tests {
         let mut events = Vec::new();
         for _ in 0..3 {
             events.push(
-                crate::runtime_time::timeout(Duration::from_secs(1), event_rx.recv())
+                crate::foundation::time::timeout(Duration::from_secs(1), event_rx.recv())
                     .await
                     .expect("accepted transport was not handled")
                     .expect("accepted transport event channel closed"),
@@ -1677,7 +1677,7 @@ mod tests {
         }));
         assert_eq!(active.load(Ordering::Relaxed), 3);
 
-        crate::runtime_time::timeout(Duration::from_secs(1), service.stop())
+        crate::foundation::time::timeout(Duration::from_secs(1), service.stop())
             .await
             .expect("transport listener service did not stop");
         assert_eq!(active.load(Ordering::Relaxed), 0);

@@ -240,7 +240,7 @@ impl DhcpIpv4Service {
         AbortOnDropHandle::new(tokio::spawn(async move {
             let mut next_sleep = Duration::ZERO;
             loop {
-                crate::runtime_time::sleep(next_sleep).await;
+                crate::foundation::time::sleep(next_sleep).await;
                 next_sleep = if service.reconcile_once().await {
                     Duration::from_secs(rand::thread_rng().gen_range(5..10))
                 } else {

@@ -9,12 +9,12 @@ use tokio::io::{AsyncWriteExt, copy};
 use tokio::task::JoinSet;
 
 use crate::{
+    foundation::time::timeout,
     packet::ZCPacket,
     peers::{
         NicPacketFilter, PeerPacketFilter,
         peer_manager::{PeerManagerCore, PipelineRegistrationGuard},
     },
-    runtime_time::timeout,
     socket::{
         SocketContext,
         tcp::{TcpBindOptions, TcpListenOptions, VirtualTcpListener, VirtualTcpListenerFactory},
@@ -224,7 +224,7 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
         let service = Arc::downgrade(self);
         let _ = spawn_tcp_proxy_task(&self.lifecycle, generation, &self.tasks, async move {
             loop {
-                crate::runtime_time::sleep(Duration::from_secs(10)).await;
+                crate::foundation::time::sleep(Duration::from_secs(10)).await;
                 let Some(service) = service.upgrade() else {
                     break;
                 };
@@ -434,7 +434,7 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
         drop(dst_stream);
 
         entry.set_state(TcpNatEntryState::Closed);
-        crate::runtime_time::sleep(Duration::from_secs(10)).await;
+        crate::foundation::time::sleep(Duration::from_secs(10)).await;
         service.engine.remove_entry(entry.id());
     }
 

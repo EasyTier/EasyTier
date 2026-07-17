@@ -137,7 +137,7 @@ impl Drop for PacketEgress {
 
 #[cfg(test)]
 mod tests {
-    use crate::runtime_time::{Duration, timeout};
+    use crate::foundation::time::{Duration, timeout};
 
     use super::*;
 

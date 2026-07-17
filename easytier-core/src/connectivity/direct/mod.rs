@@ -21,6 +21,7 @@ use crate::{
         protocol::ClientProtocolUpgrader,
         transport::{self, ConnectedTransport, UdpSessionMode},
     },
+    foundation::task::{PeerTaskLauncher, PeerTaskManager},
     hole_punch::udp::{should_background_p2p_with_peer, should_try_p2p_with_peer},
     listener::RunningListenerRegistry,
     peers::{
@@ -47,7 +48,6 @@ use crate::{
         },
     },
     stun::{StunInfoProvider, StunSocketMapper},
-    task::{PeerTaskLauncher, PeerTaskManager},
     tunnel::Tunnel,
 };
 
@@ -440,7 +440,8 @@ where
                 anyhow::bail!("peer {dst_peer_id} is blacklisted");
             }
             if attempt > 0 {
-                crate::runtime_time::sleep(Duration::from_millis(backoffs_ms[backoff_index])).await;
+                crate::foundation::time::sleep(Duration::from_millis(backoffs_ms[backoff_index]))
+                    .await;
                 backoff_index = (backoff_index + 1).min(backoffs_ms.len() - 1);
             }
             attempt += 1;
@@ -679,7 +680,7 @@ where
                 let mut rng = rand::thread_rng();
                 base + rng.gen_range(-delta..delta)
             };
-            crate::runtime_time::sleep(Duration::from_millis(delay_ms as u64)).await;
+            crate::foundation::time::sleep(Duration::from_millis(delay_ms as u64)).await;
         }
         unreachable!("direct URL retry loop must return")
     }
@@ -743,7 +744,7 @@ where
         } else {
             Vec::new()
         };
-        crate::runtime_time::timeout(DIRECT_CONNECT_TIMEOUT, async {
+        crate::foundation::time::timeout(DIRECT_CONNECT_TIMEOUT, async {
             let connected = match transport {
                 DirectTransport::Tcp(purpose) => ConnectedTransport::Tcp(
                     transport::connect_tcp(
@@ -1179,7 +1180,7 @@ where
                     tracing::debug!(?error, ?connector_addr, "send UDP punch packet failed");
                 }
             }
-            crate::runtime_time::sleep(Duration::from_millis(30)).await;
+            crate::foundation::time::sleep(Duration::from_millis(30)).await;
         }
         Ok(Void::default())
     }

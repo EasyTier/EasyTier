@@ -206,7 +206,7 @@ impl PeerCenterBase {
                 loop {
                     let Some(center_peer) = Self::select_center_peer(&peer_mgr).await else {
                         tracing::trace!("no center peer found, sleep 1 second");
-                        crate::runtime_time::sleep(Duration::from_secs(1)).await;
+                        crate::foundation::time::sleep(Duration::from_secs(1)).await;
                         continue;
                     };
                     let Some(rpc_mgr) = peer_mgr.get_rpc_mgr().upgrade() else {
@@ -229,12 +229,12 @@ impl PeerCenterBase {
 
                     let Ok(sleep_time_ms) = ret else {
                         tracing::error!("periodic job to center server rpc failed: {:?}", ret);
-                        crate::runtime_time::sleep(Duration::from_secs(3)).await;
+                        crate::foundation::time::sleep(Duration::from_secs(3)).await;
                         continue;
                     };
 
                     if sleep_time_ms > 0 {
-                        crate::runtime_time::sleep(Duration::from_millis(sleep_time_ms as u64))
+                        crate::foundation::time::sleep(Duration::from_millis(sleep_time_ms as u64))
                             .await;
                     }
                 }

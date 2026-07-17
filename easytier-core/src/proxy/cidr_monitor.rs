@@ -119,7 +119,7 @@ impl ProxyCidrMonitor {
             let mut last_runtime_config: Option<Arc<CoreInstanceRuntimeConfig>> = None;
 
             loop {
-                crate::runtime_time::sleep(Duration::from_secs(1)).await;
+                crate::foundation::time::sleep(Duration::from_secs(1)).await;
                 let Some(peer_manager) = self.peer_manager.upgrade() else {
                     break;
                 };

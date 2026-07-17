@@ -80,7 +80,8 @@ impl ForeignNetworkClient {
         let peer_map = Arc::downgrade(&self.peer_map);
         *self.task.lock().unwrap() = Some(AbortOnDropHandle::new(tokio::spawn(async move {
             loop {
-                crate::runtime_time::sleep(crate::runtime_time::Duration::from_secs(1)).await;
+                crate::foundation::time::sleep(crate::foundation::time::Duration::from_secs(1))
+                    .await;
                 let Some(peer_map) = peer_map.upgrade() else {
                     break;
                 };

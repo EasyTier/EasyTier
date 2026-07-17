@@ -109,7 +109,7 @@ impl Peer {
         let default_conn_id_copy = default_conn_id.clone();
         let default_conn_id_clear_task = AbortOnDropHandle::new(tokio::spawn(async move {
             loop {
-                crate::runtime_time::sleep(std::time::Duration::from_secs(5)).await;
+                crate::foundation::time::sleep(std::time::Duration::from_secs(5)).await;
                 if conns_copy.len() > 1 {
                     default_conn_id_copy.store(PeerConnId::default());
                 }

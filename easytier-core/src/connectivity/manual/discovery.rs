@@ -154,7 +154,7 @@ where
     H: VirtualTcpSocketFactory,
 {
     let timeout = request.timeout;
-    crate::runtime_time::timeout(timeout, fetch_http_discovery_inner(host, dns, request))
+    crate::foundation::time::timeout(timeout, fetch_http_discovery_inner(host, dns, request))
         .await
         .map_err(|_| anyhow::anyhow!("HTTP discovery timed out after {timeout:?}"))?
 }
@@ -630,7 +630,7 @@ mod tests {
         )
         .await
         .unwrap();
-        crate::runtime_time::timeout(Duration::from_secs(1), server_task)
+        crate::foundation::time::timeout(Duration::from_secs(1), server_task)
             .await
             .expect("HTTP fetch test server did not finish")
             .unwrap();
@@ -858,7 +858,7 @@ mod tests {
             .resolve_endpoint(&"http://discovery.example:18081/endpoint".parse().unwrap())
             .await
             .unwrap_err();
-        crate::runtime_time::timeout(Duration::from_secs(1), server_task)
+        crate::foundation::time::timeout(Duration::from_secs(1), server_task)
             .await
             .expect("HTTP facade test server did not finish")
             .unwrap();

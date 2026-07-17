@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio_util::task::AbortOnDropHandle;
 
-use crate::runtime_time::interval;
+use crate::foundation::time::interval;
 
 /// Predefined metric names for type safety
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

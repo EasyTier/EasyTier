@@ -24,8 +24,8 @@ impl From<snow::Error> for Error {
     }
 }
 
-impl From<crate::runtime_time::error::Elapsed> for Error {
-    fn from(value: crate::runtime_time::error::Elapsed) -> Self {
+impl From<crate::foundation::time::error::Elapsed> for Error {
+    fn from(value: crate::foundation::time::error::Elapsed) -> Self {
         Self::WaitRespError(value.to_string())
     }
 }

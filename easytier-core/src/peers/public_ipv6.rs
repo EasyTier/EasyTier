@@ -858,7 +858,7 @@ impl PublicIpv6Service {
             return;
         }
         loop {
-            crate::runtime_time::sleep(Duration::from_secs(15)).await;
+            crate::foundation::time::sleep(Duration::from_secs(15)).await;
             self.gc_provider_leases().await;
         }
     }
@@ -868,7 +868,7 @@ impl PublicIpv6Service {
             if self.sync_client_state().await {
                 self.sync_trigger.sync_now("sync_public_ipv6_client_state");
             }
-            crate::runtime_time::sleep(Duration::from_secs(5)).await;
+            crate::foundation::time::sleep(Duration::from_secs(5)).await;
         }
     }
 

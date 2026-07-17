@@ -2,7 +2,7 @@ use std::{fmt::Debug, pin::Pin};
 
 use futures::{Sink, Stream};
 
-use crate::{packet::ZCPacket, proto::common::TunnelInfo, runtime_time::error::Elapsed};
+use crate::{foundation::time::error::Elapsed, packet::ZCPacket, proto::common::TunnelInfo};
 
 pub use crate::socket::IpVersion;
 

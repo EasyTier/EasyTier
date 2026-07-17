@@ -13,12 +13,12 @@ use tokio::sync::Mutex;
 use crate::{
     config::IpPrefix,
     connectivity::direct::DirectConnectorHost,
+    foundation::stats::{LabelSet, LabelType, MetricName, StatsManager},
     hole_punch::tcp::TcpHolePunchHost,
     listener::RunningListenerRegistry,
     peers::peer_manager::PeerManagerCore,
     runtime_config::{CoreInstanceRuntimeConfig, CoreRuntimeConfigStore},
     socket::{IpVersion, SocketContext, udp::UdpBindOptions},
-    stats_manager::{LabelSet, LabelType, MetricName, StatsManager},
 };
 
 use super::{

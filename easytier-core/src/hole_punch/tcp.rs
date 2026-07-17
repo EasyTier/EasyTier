@@ -219,7 +219,7 @@ where
     });
     let requested_url: url::Url = format!("tcp://{remote_mapped_addr}").parse().unwrap();
 
-    let start = crate::runtime_time::Instant::now();
+    let start = crate::foundation::time::Instant::now();
     let mut attempts = 0_u32;
     while start.elapsed() < Duration::from_secs(10) && attempts < max_attempts {
         attempts = attempts.wrapping_add(1);
@@ -230,7 +230,8 @@ where
         let options =
             TcpConnectOptions::hole_punch(remote_mapped_addr, Some(bind_addr)).with_bind(bind);
         if let Ok(Ok(socket)) =
-            crate::runtime_time::timeout(Duration::from_secs(3), host.connect_tcp(options)).await
+            crate::foundation::time::timeout(Duration::from_secs(3), host.connect_tcp(options))
+                .await
         {
             let admission_result = transport_sink
                 .add_connected_transport(socket, requested_url.clone(), admission)
@@ -266,7 +267,7 @@ where
             "tcp hole punch server connect attempt failed"
         );
         let sleep_ms = rand::thread_rng().gen_range(10..100);
-        crate::runtime_time::sleep(Duration::from_millis(sleep_ms)).await;
+        crate::foundation::time::sleep(Duration::from_millis(sleep_ms)).await;
     }
 
     tracing::warn!(

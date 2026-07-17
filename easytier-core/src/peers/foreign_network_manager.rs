@@ -16,14 +16,14 @@ use tokio::task::JoinSet;
 
 use crate::{
     config::{CoreConfig, NodeConfig, PeerId},
+    foundation::stats::{CounterHandle, LabelSet, LabelType, MetricName, StatsManager},
+    foundation::time::timeout,
     packet::{PacketType, ZCPacket},
     peer_center::instance::{PeerCenterInstance, PeerMapWithPeerRpcManager},
     peers::{PacketRecvChan, PacketRecvChanReceiver, recv_packet_from_chan},
     proto::core_peer::peer::PeerConnInfo,
     runtime_config::{CoreRuntimeConfig, CoreRuntimeConfigStore},
-    runtime_time::timeout,
     socket::SocketContext,
-    stats_manager::{CounterHandle, LabelSet, LabelType, MetricName, StatsManager},
 };
 
 use super::{
@@ -173,6 +173,7 @@ mod tests {
     };
 
     use crate::{
+        foundation::stats::{LabelSet, LabelType, MetricName},
         peers::{
             context::{
                 ArcPeerContext, CorePeerContext, CorePeerContextAdapters, NetworkIdentity,
@@ -182,7 +183,6 @@ mod tests {
         },
         proto::common::StunInfo,
         runtime_config::{CoreRuntimeConfig, CoreRuntimeConfigStore},
-        stats_manager::{LabelSet, LabelType, MetricName},
     };
 
     impl ForeignNetworkManager {
@@ -554,7 +554,7 @@ fn join_joinset_background(
     let js = Arc::downgrade(&js);
     tokio::spawn(async move {
         while js.strong_count() > 0 {
-            crate::runtime_time::sleep(std::time::Duration::from_secs(1)).await;
+            crate::foundation::time::sleep(std::time::Duration::from_secs(1)).await;
 
             let fut = future::poll_fn(|cx| {
                 let Some(js) = js.upgrade() else {
@@ -820,7 +820,7 @@ impl ForeignNetworkEntry {
         self.tasks.lock().await.spawn(async move {
             loop {
                 relay_peer_map.evict_idle_sessions(std::time::Duration::from_secs(60));
-                crate::runtime_time::sleep(std::time::Duration::from_secs(30)).await;
+                crate::foundation::time::sleep(std::time::Duration::from_secs(30)).await;
             }
         });
     }

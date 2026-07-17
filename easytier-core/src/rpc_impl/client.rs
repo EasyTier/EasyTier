@@ -15,6 +15,7 @@ use tokio::{sync::mpsc, task::JoinSet};
 
 use crate::{
     config::PeerId,
+    foundation::time::timeout,
     proto::{
         common::{
             CompressionAlgoPb, RpcCompressionInfo, RpcDescriptor, RpcPacket, RpcRequest,
@@ -28,7 +29,6 @@ use crate::{
     rpc_impl::packet::{
         BuildRpcPacketArgs, PacketMerger, build_rpc_packet, compress_packet, decompress_packet,
     },
-    runtime_time::timeout,
     tunnel::{
         Tunnel, TunnelError, ZCPacketStream,
         mpsc::{MpscTunnel, MpscTunnelSender},
@@ -149,7 +149,7 @@ impl Client {
         let peer_infos = self.peer_info.clone();
         tasks.spawn(async move {
             loop {
-                crate::runtime_time::sleep(std::time::Duration::from_secs(30)).await;
+                crate::foundation::time::sleep(std::time::Duration::from_secs(30)).await;
                 let now = std::time::Instant::now();
                 peer_infos.retain(|_, v| {
                     if let Some(last_active) = v.last_active {

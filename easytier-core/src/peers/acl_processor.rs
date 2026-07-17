@@ -8,7 +8,7 @@ use std::{
 
 use quanta::Instant;
 
-use crate::token_bucket::TokenBucket;
+use crate::foundation::token_bucket::TokenBucket;
 use dashmap::DashMap;
 use easytier_proto::acl::*;
 use tokio::task::JoinSet;
@@ -368,7 +368,7 @@ impl AclProcessor {
         let cleanup_interval = self.cache_cleanup_interval;
 
         self.tasks.spawn(async move {
-            let mut interval = crate::runtime_time::interval(cleanup_interval);
+            let mut interval = crate::foundation::time::interval(cleanup_interval);
             loop {
                 interval.tick().await;
                 Self::cleanup_cache(&rule_cache, cache_max_size);
@@ -381,7 +381,7 @@ impl AclProcessor {
 
         let conn_track = self.conn_track.clone();
         self.tasks.spawn(async move {
-            let mut interval = crate::runtime_time::interval(cleanup_interval);
+            let mut interval = crate::foundation::time::interval(cleanup_interval);
             loop {
                 interval.tick().await;
                 Self::cleanup_expired_connections(conn_track.clone(), 60);

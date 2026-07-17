@@ -14,6 +14,7 @@ use prost::Message;
 use tokio::task::JoinSet;
 
 use crate::{
+    foundation::time::timeout,
     proto::{
         common::{
             self, CompressionAlgoPb, RpcCompressionInfo, RpcPacket, RpcRequest, RpcResponse,
@@ -22,7 +23,6 @@ use crate::{
         rpc_types::{controller::Controller, error::Result},
     },
     rpc_impl::packet::BuildRpcPacketArgs,
-    runtime_time::timeout,
     tunnel::{
         Tunnel, ZCPacketStream,
         mpsc::{MpscTunnel, MpscTunnelSender},
@@ -44,7 +44,7 @@ async fn join_joinset_background(
 ) {
     let js = Arc::downgrade(&js);
     while js.strong_count() > 0 && !stopped.load(Ordering::Relaxed) {
-        crate::runtime_time::sleep(std::time::Duration::from_secs(1)).await;
+        crate::foundation::time::sleep(std::time::Duration::from_secs(1)).await;
 
         let fut = future::poll_fn(|cx| {
             let Some(js) = js.upgrade() else {
@@ -226,7 +226,8 @@ impl Server {
         let packet_mergers = self.packet_mergers.clone();
         self.tasks.lock().unwrap().spawn(async move {
             loop {
-                crate::runtime_time::sleep(crate::runtime_time::Duration::from_secs(5)).await;
+                crate::foundation::time::sleep(crate::foundation::time::Duration::from_secs(5))
+                    .await;
                 packet_mergers.retain(|_, v| v.last_updated().elapsed().as_secs() < 10);
                 packet_mergers.shrink_to_fit();
             }

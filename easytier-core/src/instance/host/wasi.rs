@@ -5,13 +5,13 @@ use std::{cell::RefCell, collections::BTreeMap};
 use tokio::{runtime::Builder, task::JoinHandle};
 
 use crate::{
+    foundation::time::{clear_domain, enter_domain, next_deadline_millis},
     instance::{
         CoreInstanceState,
         host::WasiCoreInstanceCreateConfig,
         runtime_driver::{RuntimeDriveOutcome, RuntimeDriver},
     },
     process_runtime::CoreProcessRuntime,
-    runtime_time::{clear_domain, enter_domain, next_deadline_millis},
     socket::host::packet::HostPacketSinkHandle,
 };
 

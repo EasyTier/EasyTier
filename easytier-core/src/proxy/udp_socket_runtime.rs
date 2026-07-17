@@ -13,7 +13,7 @@ use tokio::sync::Notify;
 use tokio_util::task::AbortOnDropHandle;
 
 use crate::{
-    runtime_time,
+    foundation::time,
     socket::udp::{UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory},
 };
 
@@ -196,7 +196,7 @@ where
             loop {
                 let mut buffer = vec![0; UDP_PROXY_RECEIVE_BUFFER_SIZE];
                 let (length, source) =
-                    match runtime_time::timeout(receive_timeout, socket.recv_from(&mut buffer))
+                    match time::timeout(receive_timeout, socket.recv_from(&mut buffer))
                         .await
                     {
                         Ok(Ok(received)) => received,
@@ -638,7 +638,7 @@ mod tests {
         factory.bind_started.notified().await;
         factory.release_bind.notify_one();
 
-        runtime_time::timeout(Duration::from_secs(1), retry)
+        time::timeout(Duration::from_secs(1), retry)
             .await
             .unwrap()
             .unwrap()

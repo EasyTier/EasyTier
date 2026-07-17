@@ -4,10 +4,10 @@ use dashmap::DashMap;
 use futures::future::BoxFuture;
 
 use crate::config::PeerId;
+use crate::foundation::stats::{CounterHandle, LabelSet, LabelType, MetricName, StatsManager};
 use crate::packet::PacketType;
 use crate::peers::util::shrink_dashmap;
 use crate::proto::peer_rpc::RoutePeerInfo;
-use crate::stats_manager::{CounterHandle, LabelSet, LabelType, MetricName, StatsManager};
 
 pub const UNKNOWN_INSTANCE_ID: &str = "unknown";
 

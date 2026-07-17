@@ -375,7 +375,7 @@ where
         let retiring = self.retiring.clone();
         task_slot.replace(AbortOnDropHandle::new(tokio::spawn(async move {
             loop {
-                crate::runtime_time::sleep(Duration::from_secs(5)).await;
+                crate::foundation::time::sleep(Duration::from_secs(5)).await;
                 {
                     let mut retiring = retiring.lock().await;
                     let mut listeners = listeners.lock().await;
@@ -631,7 +631,7 @@ where
         let last_active_time_clone = last_active_time.clone();
         tasks.spawn(async move {
             loop {
-                crate::runtime_time::sleep(Duration::from_secs(5)).await;
+                crate::foundation::time::sleep(Duration::from_secs(5)).await;
                 if conn_counter_clone.get().unwrap_or(0) != 0 {
                     last_active_time_clone.store(Instant::now());
                 }
@@ -747,7 +747,8 @@ where
                 tracing::error!(?err, "failed to send hole punch packet to dest addr");
             }
         }
-        crate::runtime_time::sleep(Duration::from_millis(request.packet_interval_ms as u64)).await;
+        crate::foundation::time::sleep(Duration::from_millis(request.packet_interval_ms as u64))
+            .await;
     }
 
     Ok(())
@@ -779,7 +780,7 @@ where
             sent_packets += 1;
         }
         cur_port_idx = cur_port_idx.wrapping_add(1);
-        crate::runtime_time::sleep(Duration::from_millis(1)).await;
+        crate::foundation::time::sleep(Duration::from_millis(1)).await;
     }
     Ok(cur_port_idx % ports.len())
 }
@@ -874,7 +875,7 @@ where
                     break;
                 }
 
-                crate::runtime_time::sleep(Duration::from_millis(100)).await;
+                crate::foundation::time::sleep(Duration::from_millis(100)).await;
 
                 if let Some(s) = udp_array.try_fetch_punched_socket(transaction_id) {
                     tracing::info!(?s, ?transaction_id, "got punched socket in both easy sym");

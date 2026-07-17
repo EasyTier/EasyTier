@@ -3,7 +3,7 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 use anyhow::Context;
 
 use crate::{
-    runtime_time::timeout,
+    foundation::time::timeout,
     socket::{
         SocketContext,
         tcp::{TcpConnectOptions, VirtualTcpSocketFactory},

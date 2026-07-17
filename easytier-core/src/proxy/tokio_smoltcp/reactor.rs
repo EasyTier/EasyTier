@@ -12,7 +12,7 @@ use smoltcp::{
 use std::{collections::VecDeque, future::Future, io, sync::Arc};
 use tokio::{pin, select, sync::Notify};
 
-use crate::runtime_time::sleep;
+use crate::foundation::time::sleep;
 
 pub(crate) type BufferInterface = Arc<Mutex<Interface>>;
 const MAX_BURST_SIZE: usize = 100;
@@ -66,7 +66,7 @@ async fn run(
 
             timer
                 .as_mut()
-                .reset(crate::runtime_time::Instant::now() + deadline.into());
+                .reset(crate::foundation::time::Instant::now() + deadline.into());
             select! {
                 _ = &mut timer => {},
                 _ = receive(&mut async_iface,&mut recv_buf) => {}

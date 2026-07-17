@@ -148,7 +148,7 @@ where
                     println!("standalone serve_loop exit unexpectedly: {error:?}");
                 }
 
-                crate::runtime_time::sleep(Duration::from_secs(1)).await;
+                crate::foundation::time::sleep(Duration::from_secs(1)).await;
             }
         });
 
@@ -231,6 +231,7 @@ mod tests {
     use super::{RpcServerHook, StandAloneClient, StandAloneServer};
     use crate::{
         connectivity::protocol::raw::TunnelDialer,
+        foundation::time::{sleep, timeout},
         listener::SocketListener,
         proto::{
             common::TunnelInfo,
@@ -241,7 +242,6 @@ mod tests {
             },
             rpc_types::{controller::BaseController, error},
         },
-        runtime_time::{sleep, timeout},
         tunnel::{Tunnel, ring::create_ring_tunnel_pair},
     };
 

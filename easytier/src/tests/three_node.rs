@@ -9,9 +9,9 @@ use std::{
 
 use easytier_core::{
     connectivity::protocol::raw::TunnelDialer,
+    foundation::stats::{LabelSet, LabelType, MetricName, MetricSnapshot},
     listener::SocketListener,
     process_runtime::CoreProcessRuntime,
-    stats_manager::{LabelSet, LabelType, MetricName, MetricSnapshot},
     tunnel::Tunnel,
 };
 use rand::{Rng, rngs::OsRng};

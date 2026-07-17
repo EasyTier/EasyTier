@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::runtime_time::{Duration, timeout};
+use crate::foundation::time::{Duration, timeout};
 
 use crate::{
     packet::{PacketType, ZCPacket},

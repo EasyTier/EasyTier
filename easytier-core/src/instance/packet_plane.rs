@@ -3,11 +3,11 @@ use std::{collections::BTreeSet, net::IpAddr, sync::Arc};
 use async_trait::async_trait;
 
 use crate::{
+    foundation::stats::{LabelSet, LabelType, MetricName},
     magic_dns::{MagicDnsRouteSnapshot, MagicDnsRouteSource},
     peers::peer_manager::PeerManagerCore,
     proxy::cidr_monitor::{ProxyCidrDiff, collect_proxy_cidr_diff},
     runtime_config::CoreRuntimeConfigStore,
-    stats_manager::{LabelSet, LabelType, MetricName},
 };
 
 #[cfg(feature = "proxy-packet")]

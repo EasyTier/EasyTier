@@ -7,9 +7,9 @@ use futures::{SinkExt as _, StreamExt};
 use tokio::task::JoinSet;
 
 use crate::{
+    foundation::time::timeout,
     packet::PacketType,
     proto::rpc_types::error::Error,
-    runtime_time::timeout,
     tunnel::{Tunnel, ring::create_ring_tunnel_pair},
 };
 

@@ -5,8 +5,8 @@ use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinSet;
 
 use crate::{
+    foundation::time::{Duration, timeout},
     packet::ZCPacket,
-    runtime_time::{Duration, timeout},
 };
 
 use super::runtime::TcpProxyStream;

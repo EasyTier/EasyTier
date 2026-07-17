@@ -16,9 +16,9 @@ use tokio::{
 
 use crate::{
     config::PeerId,
+    foundation::task::{ExternalTaskSignal, PeerTaskLauncher, PeerTaskManager},
     proto::common::NatType,
     stun::StunInfoProvider,
-    task::{ExternalTaskSignal, PeerTaskLauncher, PeerTaskManager},
 };
 
 use super::{

@@ -44,6 +44,7 @@ use crate::{
         },
     },
     dhcp::{DhcpIpv4Host, DhcpIpv4RouteSource, DhcpIpv4Service},
+    foundation::stats::{CounterHandle, MetricSnapshot},
     hole_punch::tcp::{TcpHolePunchConnector, TcpHolePunchHost},
     hole_punch::udp::{UdpPortMappingEventSink, UdpPortMappingPlatform},
     listener::{
@@ -84,7 +85,6 @@ use crate::{
         tcp::VirtualTcpSocketFactory,
         udp::{UdpSessionAcceptKind, UdpSessionProtocol, VirtualUdpSocketFactory},
     },
-    stats_manager::{CounterHandle, MetricSnapshot},
     stun::{
         StunDnsRuntime, StunInfoCollector, StunInfoProvider, StunServerConfig, StunSocketMapper,
     },

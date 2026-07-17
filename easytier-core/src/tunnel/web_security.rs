@@ -4,10 +4,10 @@ use futures::{SinkExt, StreamExt};
 use snow::{Builder, params::NoiseParams};
 
 use crate::{
+    foundation::time::{Duration, timeout},
     packet::{PacketType, ZCPacket, ZCPacketType},
     peers::secure_datagram::{SecureDatagramDirection, SecureDatagramSession},
     proto::common::TunnelInfo,
-    runtime_time::{Duration, timeout},
     tunnel::{
         SplitTunnel, StreamItem, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream,
         filter::{TunnelFilter, TunnelWithFilter},
@@ -317,7 +317,7 @@ pub async fn accept_or_upgrade_server_tunnel(
 mod tests {
     use bytes::BytesMut;
 
-    use crate::{runtime_time::sleep, tunnel::ring::create_ring_tunnel_pair};
+    use crate::{foundation::time::sleep, tunnel::ring::create_ring_tunnel_pair};
 
     use super::*;
 

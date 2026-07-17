@@ -7,9 +7,9 @@ use tokio::{
 };
 
 use crate::{
+    foundation::time::timeout,
     packet::ZCPacket,
     proto::common::TunnelInfo,
-    runtime_time::timeout,
     tunnel::{Tunnel, TunnelError, ZCPacketSink, ZCPacketStream},
 };
 
