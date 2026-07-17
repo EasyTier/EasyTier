@@ -40,7 +40,7 @@ pub trait StunDnsRuntime: DnsResolver + DnsRecordResolver {}
 
 impl<T> StunDnsRuntime for T where T: DnsResolver + DnsRecordResolver {}
 
-pub(super) struct HostResolverIter<D> {
+pub(super) struct HostResolverIter<D: ?Sized> {
     dns: Arc<D>,
     context: SocketContext,
     hostnames: Vec<String>,
@@ -51,7 +51,7 @@ pub(super) struct HostResolverIter<D> {
 
 impl<D> HostResolverIter<D>
 where
-    D: StunDnsRuntime,
+    D: StunDnsRuntime + ?Sized,
 {
     pub(super) fn new(
         dns: Arc<D>,
@@ -574,7 +574,7 @@ impl StunNatTypeDetectResult {
     }
 }
 
-pub struct UdpNatTypeDetector<R, D> {
+pub struct UdpNatTypeDetector<R, D: ?Sized> {
     runtime: Arc<R>,
     dns: Arc<D>,
     socket_context: SocketContext,
@@ -585,7 +585,7 @@ pub struct UdpNatTypeDetector<R, D> {
 impl<R, D> UdpNatTypeDetector<R, D>
 where
     R: StunSocketRuntime,
-    D: StunDnsRuntime,
+    D: StunDnsRuntime + ?Sized,
 {
     pub fn new(
         runtime: Arc<R>,
@@ -867,7 +867,7 @@ where
         .await
 }
 
-pub struct TcpNatTypeDetector<R, D> {
+pub struct TcpNatTypeDetector<R, D: ?Sized> {
     runtime: Arc<R>,
     dns: Arc<D>,
     socket_context: SocketContext,
@@ -878,7 +878,7 @@ pub struct TcpNatTypeDetector<R, D> {
 impl<R, D> TcpNatTypeDetector<R, D>
 where
     R: StunSocketRuntime,
-    D: StunDnsRuntime,
+    D: StunDnsRuntime + ?Sized,
 {
     pub fn new(
         runtime: Arc<R>,

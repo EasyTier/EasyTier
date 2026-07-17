@@ -15,10 +15,6 @@ use crate::common::netns::NetNS;
 #[derive(Debug, Default)]
 pub(crate) struct RuntimeIcmpProxyHost;
 
-pub(crate) fn runtime_icmp_proxy_host() -> Arc<dyn IcmpProxyHost> {
-    Arc::new(RuntimeIcmpProxyHost)
-}
-
 impl RuntimeIcmpProxyHost {
     fn create_raw_socket(context: &SocketContext) -> Result<Socket, std::io::Error> {
         let _guard = NetNS::from_socket_context(context).guard();

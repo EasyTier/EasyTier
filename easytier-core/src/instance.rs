@@ -19,6 +19,7 @@ use std::sync::{
 use std::sync::atomic::AtomicUsize;
 use std::{net::IpAddr, time::Duration};
 
+#[cfg(test)]
 use async_trait::async_trait;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
@@ -80,13 +81,13 @@ use crate::{
     runtime_config::{CoreInstanceRuntimeConfig, CoreRuntimeConfig, CoreRuntimeConfigStore},
     socket::{
         SocketContext,
-        dns::{DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord},
+        dns::{DnsRecordResolver, DnsResolver},
         tcp::VirtualTcpSocketFactory,
         udp::{UdpSessionAcceptKind, UdpSessionProtocol, VirtualUdpSocketFactory},
     },
     stats_manager::{CounterHandle, MetricSnapshot},
     stun::{
-        StunInfoCollector, StunInfoProvider, StunProviderSlot, StunServerConfig, StunSocketMapper,
+        StunDnsRuntime, StunInfoCollector, StunInfoProvider, StunServerConfig, StunSocketMapper,
     },
     vpn_portal::{VpnPortalEventSink, VpnPortalHost, VpnPortalInfoSnapshot, VpnPortalModule},
 };
@@ -431,11 +432,10 @@ where
     H: DirectConnectorHost + TcpHolePunchHost,
 {
     host: Arc<H>,
-    /// Optional preinstalled stable slot for deterministic adapters and tests.
-    /// Core installs its production collector only when the slot is empty.
-    stun_projection: Option<Arc<StunProviderSlot<<H as VirtualUdpSocketFactory>::Socket>>>,
-    dns: Arc<dyn DnsResolver>,
-    dns_records: Arc<dyn DnsRecordResolver>,
+    #[cfg(any(test, feature = "test-utils"))]
+    /// Optional construction-time STUN provider used by deterministic tests.
+    stun_override: Option<Arc<dyn StunSocketMapper<<H as VirtualUdpSocketFactory>::Socket>>>,
+    dns: Arc<dyn StunDnsRuntime>,
     process_runtime: Arc<CoreProcessRuntime>,
     packet_sink: Arc<dyn PacketSink>,
     pub peer_adapters: PeerManagerHostAdapters,
@@ -469,22 +469,17 @@ where
 {
     /// Creates the minimal host bundle. Optional native capabilities can be
     /// installed on the returned value before constructing the instance.
-    pub fn new<D>(
+    pub fn new(
         host: Arc<H>,
-        dns: Arc<D>,
+        dns: Arc<dyn StunDnsRuntime>,
         packet_sink: Arc<dyn PacketSink>,
         process_runtime: Arc<CoreProcessRuntime>,
-    ) -> Self
-    where
-        D: DnsResolver + DnsRecordResolver,
-    {
-        let dns_addresses: Arc<dyn DnsResolver> = dns.clone();
-        let dns_records: Arc<dyn DnsRecordResolver> = dns;
+    ) -> Self {
         Self {
             host,
-            stun_projection: None,
-            dns: dns_addresses,
-            dns_records,
+            #[cfg(any(test, feature = "test-utils"))]
+            stun_override: None,
+            dns,
             process_runtime,
             packet_sink,
             peer_adapters: PeerManagerHostAdapters::default(),
@@ -526,29 +521,6 @@ where
 pub struct ExternalListenerRequest {
     pub url: Url,
     pub socket_context: SocketContext,
-}
-
-struct CoreStunDnsAdapter {
-    addresses: Arc<dyn DnsResolver>,
-    records: Arc<dyn DnsRecordResolver>,
-}
-
-#[async_trait]
-impl DnsResolver for CoreStunDnsAdapter {
-    async fn resolve(&self, query: DnsQuery) -> anyhow::Result<Vec<IpAddr>> {
-        self.addresses.resolve(query).await
-    }
-}
-
-#[async_trait]
-impl DnsRecordResolver for CoreStunDnsAdapter {
-    async fn resolve_txt(&self, query: DnsQuery) -> anyhow::Result<String> {
-        self.records.resolve_txt(query).await
-    }
-
-    async fn resolve_srv(&self, query: DnsQuery) -> anyhow::Result<Vec<DnsSrvRecord>> {
-        self.records.resolve_srv(query).await
-    }
 }
 
 struct CoreStunPeerInfoSource(Arc<dyn StunInfoProvider>);
@@ -651,28 +623,20 @@ where
     fn prepare_stun(
         adapters: &CoreHostAdapters<H>,
         config: &CoreConnectivityConfig,
-    ) -> Arc<StunProviderSlot<<H as VirtualUdpSocketFactory>::Socket>> {
-        let dns = Arc::new(CoreStunDnsAdapter {
-            addresses: adapters.dns.clone(),
-            records: adapters.dns_records.clone(),
-        });
-        let collector: Arc<dyn StunSocketMapper<<H as VirtualUdpSocketFactory>::Socket>> =
-            Arc::new(StunInfoCollector::new_with_socket_contexts(
-                adapters.host.clone(),
-                dns,
-                config.direct.udp_bind.context.clone(),
-                config.direct.tcp_bind.context.clone(),
-                config.stun.udp_servers.clone(),
-                config.stun.tcp_servers.clone(),
-                config.stun.udp_v6_servers.clone(),
-            ));
-        match &adapters.stun_projection {
-            Some(projection) => {
-                projection.install_if_empty(collector);
-                projection.clone()
-            }
-            None => Arc::new(StunProviderSlot::new(collector)),
+    ) -> Arc<dyn StunSocketMapper<<H as VirtualUdpSocketFactory>::Socket>> {
+        #[cfg(any(test, feature = "test-utils"))]
+        if let Some(stun_override) = &adapters.stun_override {
+            return stun_override.clone();
         }
+        Arc::new(StunInfoCollector::new_with_socket_contexts(
+            adapters.host.clone(),
+            adapters.dns.clone(),
+            config.direct.udp_bind.context.clone(),
+            config.direct.tcp_bind.context.clone(),
+            config.stun.udp_servers.clone(),
+            config.stun.tcp_servers.clone(),
+            config.stun.udp_v6_servers.clone(),
+        ))
     }
 
     /// Constructs the complete portable runtime for one EasyTier instance.
@@ -695,6 +659,7 @@ where
         }
         let (packet_tx, packet_rx) = create_packet_recv_chan();
         let dns_context = config.connectivity.direct.tcp_bind.context.clone();
+        let peer_dns: Arc<dyn DnsResolver> = adapters.dns.clone();
         let runtime_config = CoreRuntimeConfigStore::new(
             config.connectivity.runtime.clone(),
             Arc::new(config.peer.snapshot.clone()),
@@ -714,7 +679,7 @@ where
         let peer_manager = Arc::new(PeerManagerCore::new(
             config.peer,
             runtime_config.clone(),
-            adapters.dns.clone(),
+            peer_dns,
             dns_context,
             Arc::new(CoreStunPeerInfoSource(peer_stun)),
             packet_tx,
@@ -735,9 +700,9 @@ where
         )?;
         let CoreHostAdapters {
             host,
-            stun_projection: _,
+            #[cfg(any(test, feature = "test-utils"))]
+                stun_override: _,
             dns,
-            dns_records,
             process_runtime,
             packet_sink,
             peer_adapters: _,
@@ -760,6 +725,8 @@ where
             #[cfg(feature = "proxy-smoltcp-stack")]
             gateway_events,
         } = adapters;
+        let dns_records: Arc<dyn DnsRecordResolver> = dns.clone();
+        let dns: Arc<dyn DnsResolver> = dns;
         let ring_registry = process_runtime.ring_registry();
         let CoreConnectivityConfig {
             initial_peers,
@@ -1816,7 +1783,7 @@ mod test_utils {
             &mut self,
             provider: Arc<dyn StunSocketMapper<<H as VirtualUdpSocketFactory>::Socket>>,
         ) {
-            self.stun_projection = Some(Arc::new(StunProviderSlot::new(provider)));
+            self.stun_override = Some(provider);
         }
     }
 

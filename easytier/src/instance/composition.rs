@@ -139,7 +139,7 @@ pub(crate) fn runtime_core_host_adapters(
     );
     #[cfg(not(test))]
     {
-        adapters.icmp_proxy_host = Some(crate::gateway::icmp_proxy::runtime_icmp_proxy_host());
+        adapters.icmp_proxy_host = Some(Arc::new(crate::gateway::icmp_proxy::RuntimeIcmpProxyHost));
     }
     adapters.proxy_cidr_monitor = Some(runtime_proxy_cidr_monitor_host(global_ctx.clone()));
     adapters.public_ipv6_host = Some(global_ctx.clone());

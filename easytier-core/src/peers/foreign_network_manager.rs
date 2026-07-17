@@ -6,7 +6,7 @@ use std::{
 };
 
 use dashmap::{DashMap, DashSet};
-use easytier_proto::common::{FlagsInConfig, PeerFeatureFlag, SecureModeConfig};
+use easytier_proto::common::FlagsInConfig;
 use guarden::{Guard, defer};
 use tokio::sync::{
     Mutex, RwLock, RwLockReadGuard,
@@ -84,79 +84,69 @@ pub(crate) fn sync_foreign_avoid_relay_data(
     foreign_context.set_avoid_relay_data_preference(desired)
 }
 
-#[derive(Clone, Debug)]
-struct ForeignNetworkContextSpec {
-    network: NetworkIdentity,
-    hostname: String,
-    secure_mode: Option<SecureModeConfig>,
-    flags: FlagsInConfig,
-    feature_flags: PeerFeatureFlag,
-}
+fn build_foreign_peer_context(
+    network: &NetworkIdentity,
+    parent_context: &Arc<CorePeerContext>,
+    relay_data: bool,
+    mut flags: FlagsInConfig,
+) -> Arc<CorePeerContext> {
+    let parent_context_dyn: ArcPeerContext = parent_context.clone();
+    let parent_flags = parent_context_dyn.flags();
+    flags.disable_relay_kcp = !parent_flags.enable_relay_foreign_network_kcp;
+    flags.disable_relay_quic = !parent_flags.enable_relay_foreign_network_quic;
+    flags.socket_mark = parent_flags.socket_mark;
 
-impl ForeignNetworkContextSpec {
-    fn from_parent(
-        network: NetworkIdentity,
-        parent_context: &ArcPeerContext,
-        relay_data: bool,
-        mut flags: FlagsInConfig,
-    ) -> Self {
-        let parent_flags = parent_context.flags();
-        flags.disable_relay_kcp = !parent_flags.enable_relay_foreign_network_kcp;
-        flags.disable_relay_quic = !parent_flags.enable_relay_foreign_network_quic;
-        flags.socket_mark = parent_flags.socket_mark;
+    let mut feature_flags = parent_context_dyn.feature_flags();
+    feature_flags.is_public_server = true;
+    feature_flags.avoid_relay_data =
+        desired_foreign_avoid_relay_data(&parent_context_dyn, relay_data);
+    feature_flags.kcp_input = !flags.disable_kcp_input;
+    feature_flags.no_relay_kcp = flags.disable_relay_kcp;
+    feature_flags.support_conn_list_sync = true;
+    feature_flags.quic_input = !flags.disable_quic_input;
+    feature_flags.no_relay_quic = flags.disable_relay_quic;
+    feature_flags.need_p2p = flags.need_p2p;
+    feature_flags.disable_p2p = flags.disable_p2p;
+    feature_flags.ipv6_public_addr_provider = false;
 
-        let mut feature_flags = parent_context.feature_flags();
-        feature_flags.is_public_server = true;
-        feature_flags.avoid_relay_data =
-            desired_foreign_avoid_relay_data(parent_context, relay_data);
-        feature_flags.kcp_input = !flags.disable_kcp_input;
-        feature_flags.no_relay_kcp = flags.disable_relay_kcp;
-        feature_flags.support_conn_list_sync = true;
-        feature_flags.quic_input = !flags.disable_quic_input;
-        feature_flags.no_relay_quic = flags.disable_relay_quic;
-        feature_flags.need_p2p = flags.need_p2p;
-        feature_flags.disable_p2p = flags.disable_p2p;
-        feature_flags.ipv6_public_addr_provider = false;
-
-        Self {
-            network,
-            hostname: format!(
-                "{PUBLIC_SERVER_HOSTNAME_PREFIX}{}",
-                parent_context.hostname()
-            ),
-            secure_mode: parent_context.secure_mode(),
-            flags,
-            feature_flags,
-        }
-    }
-
-    fn peer_snapshot(&self, parent_context: &ArcPeerContext) -> PeerRuntimeSnapshot {
-        let instance_id = uuid::Uuid::new_v4();
-        let runtime = PeerRuntimeConfig {
-            core: CoreConfig {
-                node: NodeConfig {
-                    instance_id: Some(*instance_id.as_bytes()),
-                    hostname: Some(self.hostname.clone()),
-                    network_name: self.network.network_name.clone(),
-                    ..Default::default()
-                },
+    let instance_id = uuid::Uuid::new_v4();
+    let runtime = PeerRuntimeConfig {
+        core: CoreConfig {
+            node: NodeConfig {
+                instance_id: Some(*instance_id.as_bytes()),
+                hostname: Some(format!(
+                    "{PUBLIC_SERVER_HOSTNAME_PREFIX}{}",
+                    parent_context_dyn.hostname()
+                )),
+                network_name: network.network_name.clone(),
                 ..Default::default()
             },
-            network_identity: self.network.clone(),
-            stun_info: parent_context.stun_info(),
-            feature_flags: self.feature_flags,
-            secure_mode: self.secure_mode.clone(),
-            host_routing: parent_context.host_routing_policy(),
-        };
-        let mut snapshot = PeerRuntimeSnapshot::new(runtime, self.flags.clone());
-        snapshot.easytier_version = parent_context.easytier_version();
-        snapshot.ospf_update_my_foreign_network_interval_sec =
-            parent_context.ospf_update_my_foreign_network_interval_sec();
-        snapshot.max_direct_conns_per_peer_in_foreign_network =
-            parent_context.max_direct_conns_per_peer_in_foreign_network();
-        snapshot.hmac_secret_digest = parent_context.hmac_secret_digest();
-        snapshot
-    }
+            ..Default::default()
+        },
+        network_identity: network.clone(),
+        stun_info: parent_context_dyn.stun_info(),
+        feature_flags,
+        secure_mode: parent_context_dyn.secure_mode(),
+        host_routing: parent_context_dyn.host_routing_policy(),
+    };
+    let mut snapshot = PeerRuntimeSnapshot::new(runtime, flags);
+    snapshot.easytier_version = parent_context_dyn.easytier_version();
+    snapshot.ospf_update_my_foreign_network_interval_sec =
+        parent_context_dyn.ospf_update_my_foreign_network_interval_sec();
+    snapshot.max_direct_conns_per_peer_in_foreign_network =
+        parent_context_dyn.max_direct_conns_per_peer_in_foreign_network();
+    snapshot.hmac_secret_digest = parent_context_dyn.hmac_secret_digest();
+
+    Arc::new(CorePeerContext::new_foreign(
+        CoreRuntimeConfigStore::new(CoreRuntimeConfig::default(), Arc::new(snapshot)),
+        CorePeerContextAdapters {
+            stun_info_source: Some(Arc::new(ParentStunInfoSource(parent_context_dyn))),
+            event_sink: Arc::new(()),
+            credential_storage: None,
+            credential_event_sink: Arc::new(()),
+        },
+        parent_context,
+    ))
 }
 
 struct ParentStunInfoSource(ArcPeerContext);
@@ -177,8 +167,8 @@ mod tests {
     use easytier_proto::common::{FlagsInConfig, PeerFeatureFlag};
 
     use super::{
-        ForeignNetworkContextSpec, ForeignNetworkManager, abort_and_join_persistent_tasks,
-        build_foreign_context, check_network_in_relay_whitelist, desired_foreign_avoid_relay_data,
+        ForeignNetworkManager, abort_and_join_persistent_tasks, build_foreign_peer_context,
+        check_network_in_relay_whitelist, desired_foreign_avoid_relay_data,
         sync_foreign_avoid_relay_data,
     };
 
@@ -332,41 +322,6 @@ mod tests {
     }
 
     #[test]
-    fn foreign_context_spec_is_derived_in_core() {
-        let mut parent_flags = FlagsInConfig::default();
-        parent_flags.enable_relay_foreign_network_kcp = true;
-        parent_flags.enable_relay_foreign_network_quic = false;
-        parent_flags.socket_mark = Some(7);
-        let parent: ArcPeerContext = Arc::new(FeatureContext {
-            avoid_relay_data: AtomicBool::new(false),
-            flags: parent_flags,
-            hostname: "parent".to_owned(),
-        });
-        let mut defaults = FlagsInConfig::default();
-        defaults.mtu = 1400;
-        defaults.relay_network_whitelist = "baseline".to_owned();
-        let network = NetworkIdentity {
-            network_name: "foreign".to_owned(),
-            network_secret: Some("secret".to_owned()),
-            network_secret_digest: None,
-        };
-
-        let spec =
-            ForeignNetworkContextSpec::from_parent(network.clone(), &parent, false, defaults);
-
-        assert_eq!(spec.network, network);
-        assert_eq!(spec.hostname, "PublicServer_parent");
-        assert!(spec.secure_mode.is_none());
-        assert!(!spec.flags.disable_relay_kcp);
-        assert!(spec.flags.disable_relay_quic);
-        assert_eq!(spec.flags.socket_mark, Some(7));
-        assert_eq!(spec.flags.mtu, 1400);
-        assert_eq!(spec.flags.relay_network_whitelist, "baseline");
-        assert!(spec.feature_flags.is_public_server);
-        assert!(spec.feature_flags.avoid_relay_data);
-    }
-
-    #[test]
     fn foreign_context_resources_are_assembled_in_core() {
         let mut parent_snapshot = PeerRuntimeSnapshot::default();
         parent_snapshot.runtime.core.node.hostname = Some("parent".to_owned());
@@ -378,6 +333,9 @@ mod tests {
             .runtime
             .host_routing
             .local_exit_node_fallback = true;
+        parent_snapshot.flags.enable_relay_foreign_network_kcp = true;
+        parent_snapshot.flags.enable_relay_foreign_network_quic = false;
+        parent_snapshot.flags.socket_mark = Some(7);
         parent_snapshot.hmac_secret_digest = true;
         let parent_config = CoreRuntimeConfigStore::new(
             CoreRuntimeConfig::default(),
@@ -393,54 +351,47 @@ mod tests {
                 credential_event_sink: Arc::new(()),
             },
         ));
-        let parent_dyn: ArcPeerContext = parent.clone();
-        let spec = ForeignNetworkContextSpec::from_parent(
-            NetworkIdentity {
-                network_name: "foreign".to_owned(),
-                network_secret: Some("secret".to_owned()),
-                network_secret_digest: None,
-            },
-            &parent_dyn,
-            true,
-            FlagsInConfig::default(),
-        );
-
-        let foreign = build_foreign_context(&spec, &parent);
+        let network = NetworkIdentity {
+            network_name: "foreign".to_owned(),
+            network_secret: Some("secret".to_owned()),
+            network_secret_digest: None,
+        };
+        let mut defaults = FlagsInConfig::default();
+        defaults.mtu = 1400;
+        defaults.relay_network_whitelist = "baseline".to_owned();
+        let foreign = build_foreign_peer_context(&network, &parent, false, defaults);
 
         assert!(Arc::ptr_eq(
             &parent.stats_manager(),
-            &foreign.peer_context.stats_manager(),
+            &foreign.stats_manager(),
         ));
         assert!(!Arc::ptr_eq(
             &parent.credential_manager(),
-            &foreign.peer_context.credential_manager(),
+            &foreign.credential_manager(),
         ));
         assert!(!Arc::ptr_eq(
             &parent.trusted_key_manager(),
-            &foreign.peer_context.trusted_key_manager(),
+            &foreign.trusted_key_manager(),
         ));
-        assert_eq!(foreign.peer_context.network_name(), "foreign");
-        assert_eq!(foreign.peer_context.hostname(), "PublicServer_parent");
-        assert_eq!(
-            foreign.peer_context.stun_info().public_ip,
-            vec!["198.51.100.1"]
-        );
-        assert!(
-            foreign
-                .peer_context
-                .host_routing_policy()
-                .local_exit_node_fallback
-        );
-        assert!(foreign.peer_context.hmac_secret_digest());
+        assert_eq!(foreign.network_name(), "foreign");
+        assert_eq!(foreign.hostname(), "PublicServer_parent");
+        assert!(foreign.secure_mode().is_none());
+        assert!(!foreign.flags().disable_relay_kcp);
+        assert!(foreign.flags().disable_relay_quic);
+        assert_eq!(foreign.flags().socket_mark, Some(7));
+        assert_eq!(foreign.flags().mtu, 1400);
+        assert_eq!(foreign.flags().relay_network_whitelist, "baseline");
+        assert!(foreign.feature_flags().is_public_server);
+        assert!(foreign.feature_flags().avoid_relay_data);
+        assert_eq!(foreign.stun_info().public_ip, vec!["198.51.100.1"]);
+        assert!(foreign.host_routing_policy().local_exit_node_fallback);
+        assert!(foreign.hmac_secret_digest());
 
         parent_snapshot.runtime.stun_info.public_ip = vec!["203.0.113.2".to_owned()];
         parent_config.update_peer(Arc::new(parent_snapshot));
-        assert_eq!(
-            foreign.peer_context.stun_info().public_ip,
-            vec!["203.0.113.2"]
-        );
+        assert_eq!(foreign.stun_info().public_ip, vec!["203.0.113.2"]);
 
-        foreign.peer_context.record_control_tx("foreign", 64);
+        foreign.record_control_tx("foreign", 64);
         let labels = LabelSet::new().with_label_type(LabelType::NetworkName("foreign".to_owned()));
         assert_eq!(
             parent
@@ -562,40 +513,6 @@ impl Drop for RpcTransport {
     }
 }
 
-#[derive(Clone)]
-struct ForeignNetworkContext {
-    peer_context: Arc<CorePeerContext>,
-    public_ipv6_runtime: Arc<dyn PublicIpv6Runtime>,
-}
-
-fn build_foreign_context(
-    spec: &ForeignNetworkContextSpec,
-    parent_context: &Arc<CorePeerContext>,
-) -> ForeignNetworkContext {
-    let parent_context_dyn: ArcPeerContext = parent_context.clone();
-    let runtime_config = CoreRuntimeConfigStore::new(
-        CoreRuntimeConfig::default(),
-        Arc::new(spec.peer_snapshot(&parent_context_dyn)),
-    );
-    let peer_context = Arc::new(CorePeerContext::new_foreign(
-        runtime_config,
-        CorePeerContextAdapters {
-            stun_info_source: Some(Arc::new(ParentStunInfoSource(parent_context_dyn))),
-            event_sink: Arc::new(()),
-            credential_storage: None,
-            credential_event_sink: Arc::new(()),
-        },
-        parent_context,
-    ));
-    ForeignNetworkContext {
-        public_ipv6_runtime: Arc::new(DisabledPublicIpv6Runtime::new(
-            peer_context.instance_id(),
-            spec.network.network_name.clone(),
-        )),
-        peer_context,
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct ForeignNetworkTrustedKeyInfo {
     pub pubkey: Vec<u8>,
@@ -682,7 +599,7 @@ struct ForeignNetworkEntry {
     my_peer_id: PeerId,
 
     parent_context: ArcPeerContext,
-    foreign_context: ForeignNetworkContext,
+    peer_context: Arc<CorePeerContext>,
     network: NetworkIdentity,
     peer_map: Arc<PeerMap>,
     relay_peer_map: Arc<RelayPeerMap>,
@@ -718,21 +635,21 @@ impl ForeignNetworkEntry {
         pm_packet_sender: PacketRecvChan,
     ) -> Self {
         let parent_context_dyn: ArcPeerContext = parent_context.clone();
-        let spec = ForeignNetworkContextSpec::from_parent(
-            network.clone(),
-            &parent_context_dyn,
+        let socket_mark = parent_context_dyn.flags().socket_mark;
+        let peer_context = build_foreign_peer_context(
+            &network,
+            &parent_context,
             relay_data,
             foreign_context_default_flags,
         );
-        let foreign_context = build_foreign_context(&spec, &parent_context);
-        let stats_mgr = foreign_context.peer_context.stats_manager();
+        let stats_mgr = peer_context.stats_manager();
         let network_name = network.network_name.clone();
 
         let (packet_sender, packet_recv) = super::create_packet_recv_chan();
 
         let peer_map = Arc::new(PeerMap::new(
             packet_sender,
-            foreign_context.peer_context.clone(),
+            peer_context.clone(),
             my_peer_id,
         ));
         let traffic_metrics = Arc::new(TrafficMetricRecorder::new(
@@ -791,7 +708,7 @@ impl ForeignNetworkEntry {
         let relay_peer_map = super::relay_peer_map::new_relay_peer_map(
             peer_map.clone(),
             None,
-            foreign_context.peer_context.clone(),
+            peer_context.clone(),
             my_peer_id,
             peer_session_store.clone(),
         );
@@ -806,7 +723,7 @@ impl ForeignNetworkEntry {
         rpc_registrar.register_peer_rpc_services(
             &peer_rpc,
             &network.network_name,
-            SocketContext::default().with_socket_mark(spec.flags.socket_mark),
+            SocketContext::default().with_socket_mark(socket_mark),
         );
 
         let bps_limiter = parent_context.foreign_forward_limiter(&network.network_name);
@@ -815,7 +732,7 @@ impl ForeignNetworkEntry {
             PeerMapWithPeerRpcManager {
                 peer_map: peer_map.clone(),
                 rpc_mgr: peer_rpc.clone(),
-                network_name: foreign_context.peer_context.network_name(),
+                network_name: peer_context.network_name(),
             },
         )));
 
@@ -823,7 +740,7 @@ impl ForeignNetworkEntry {
             my_peer_id,
 
             parent_context: parent_context_dyn,
-            foreign_context,
+            peer_context,
             network,
             peer_map,
             relay_peer_map,
@@ -849,10 +766,15 @@ impl ForeignNetworkEntry {
     }
 
     async fn prepare_route(&self, global_peer_map: Weak<PeerMap>) {
+        let public_ipv6_runtime: Arc<dyn PublicIpv6Runtime> =
+            Arc::new(DisabledPublicIpv6Runtime::new(
+                self.peer_context.instance_id(),
+                self.network.network_name.clone(),
+            ));
         let route = PeerRoute::new(
             self.my_peer_id,
-            self.foreign_context.peer_context.clone(),
-            self.foreign_context.public_ipv6_runtime.clone(),
+            self.peer_context.clone(),
+            public_ipv6_runtime,
             self.peer_rpc.clone(),
         );
         route
@@ -887,7 +809,7 @@ impl ForeignNetworkEntry {
             pm_sender,
             self.network.network_name.clone(),
             self.bps_limiter.clone(),
-            self.foreign_context.peer_context.stats_manager(),
+            self.peer_context.stats_manager(),
         );
 
         self.tasks.lock().await.spawn(router.run());
@@ -905,8 +827,7 @@ impl ForeignNetworkEntry {
 
     async fn run_parent_feature_flag_sync_routine(&self) {
         let parent_context = self.parent_context.clone();
-        let foreign_context = self.foreign_context.clone();
-        let foreign_peer_context: ArcPeerContext = foreign_context.peer_context.clone();
+        let foreign_peer_context: ArcPeerContext = self.peer_context.clone();
         let relay_data = self.relay_data;
         let runtime_changes = parent_context.subscribe_runtime_changes();
         sync_foreign_avoid_relay_data(&parent_context, &foreign_peer_context, relay_data);
@@ -940,7 +861,7 @@ impl ForeignNetworkEntry {
         self.peer_center.stop().await;
         self.peer_rpc.stop().await;
         self.peer_map.clear_resources().await;
-        self.foreign_context.peer_context.stop().await;
+        self.peer_context.stop().await;
     }
 }
 
@@ -950,8 +871,7 @@ impl Drop for ForeignNetworkEntry {
             .rpc_server()
             .registry()
             .unregister_by_domain(&self.network.network_name);
-        self.foreign_context
-            .peer_context
+        self.peer_context
             .remove_trusted_keys(&self.network.network_name);
 
         tracing::debug!(self.my_peer_id, ?self.network, "drop foreign network entry");
@@ -1124,14 +1044,11 @@ impl ForeignNetworkManager {
         remote_static_pubkey: &[u8],
     ) -> bool {
         remote_static_pubkey.len() == 32
-            && entry
-                .foreign_context
-                .peer_context
-                .is_pubkey_trusted_with_source(
-                    remote_static_pubkey,
-                    &entry.network.network_name,
-                    TrustedKeySource::OspfCredential,
-                )
+            && entry.peer_context.is_pubkey_trusted_with_source(
+                remote_static_pubkey,
+                &entry.network.network_name,
+                TrustedKeySource::OspfCredential,
+            )
     }
 
     pub fn new(
@@ -1353,7 +1270,7 @@ impl ForeignNetworkManager {
             return;
         }
 
-        let Some(mut s) = entry.foreign_context.peer_context.subscribe_peer_events() else {
+        let Some(mut s) = entry.peer_context.subscribe_peer_events() else {
             return;
         };
         let data = self.data.clone();
@@ -1423,8 +1340,7 @@ impl ForeignNetworkManager {
                 my_peer_id_for_this_network: item.my_peer_id,
                 peers: Default::default(),
                 trusted_keys: if include_trusted_keys {
-                    item.foreign_context
-                        .peer_context
+                    item.peer_context
                         .list_trusted_keys(&item.network.network_name)
                         .into_iter()
                         .map(|(pubkey, metadata)| ForeignNetworkTrustedKeyInfo {

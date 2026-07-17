@@ -95,89 +95,7 @@ where
     async fn get_udp_port_mapping_with_socket(&self, socket: Arc<S>) -> anyhow::Result<SocketAddr>;
 }
 
-/// Stable per-instance handle whose underlying STUN provider can be replaced.
-///
-/// Each async operation snapshots the current provider before awaiting so a
-/// replacement never holds the slot lock across host I/O.
-pub struct StunProviderSlot<S>
-where
-    S: VirtualUdpSocket,
-{
-    provider: RwLock<Option<Arc<dyn StunSocketMapper<S>>>>,
-}
-
-impl<S> StunProviderSlot<S>
-where
-    S: VirtualUdpSocket,
-{
-    pub fn new(provider: Arc<dyn StunSocketMapper<S>>) -> Self {
-        Self {
-            provider: RwLock::new(Some(provider)),
-        }
-    }
-
-    /// Installs the production provider without overwriting an explicitly
-    /// preinstalled test provider.
-    pub fn install_if_empty(&self, provider: Arc<dyn StunSocketMapper<S>>) -> bool {
-        let mut current = self.provider.write().unwrap();
-        if current.is_some() {
-            return false;
-        }
-        *current = Some(provider);
-        true
-    }
-
-    fn current(&self) -> Option<Arc<dyn StunSocketMapper<S>>> {
-        self.provider.read().unwrap().clone()
-    }
-}
-
-#[async_trait]
-impl<S> StunInfoProvider for StunProviderSlot<S>
-where
-    S: VirtualUdpSocket + 'static,
-{
-    fn get_stun_info(&self) -> StunInfo {
-        self.current()
-            .map(|provider| provider.get_stun_info())
-            .unwrap_or_default()
-    }
-
-    async fn get_udp_port_mapping(&self, local_port: u16) -> anyhow::Result<SocketAddr> {
-        let provider = self
-            .current()
-            .ok_or_else(|| anyhow::anyhow!("STUN provider is not installed"))?;
-        provider.get_udp_port_mapping(local_port).await
-    }
-
-    async fn get_tcp_port_mapping(&self, local_port: u16) -> anyhow::Result<SocketAddr> {
-        let provider = self
-            .current()
-            .ok_or_else(|| anyhow::anyhow!("STUN provider is not installed"))?;
-        provider.get_tcp_port_mapping(local_port).await
-    }
-
-    fn update_stun_info(&self) {
-        if let Some(provider) = self.current() {
-            provider.update_stun_info();
-        }
-    }
-}
-
-#[async_trait]
-impl<S> StunSocketMapper<S> for StunProviderSlot<S>
-where
-    S: VirtualUdpSocket + 'static,
-{
-    async fn get_udp_port_mapping_with_socket(&self, socket: Arc<S>) -> anyhow::Result<SocketAddr> {
-        let provider = self
-            .current()
-            .ok_or_else(|| anyhow::anyhow!("STUN provider is not installed"))?;
-        provider.get_udp_port_mapping_with_socket(socket).await
-    }
-}
-
-pub struct StunInfoCollector<R, D>
+pub struct StunInfoCollector<R, D: ?Sized>
 where
     R: StunSocketRuntime,
     D: StunDnsRuntime,
@@ -201,7 +119,7 @@ where
 impl<R, D> StunInfoCollector<R, D>
 where
     R: StunSocketRuntime,
-    D: StunDnsRuntime,
+    D: StunDnsRuntime + ?Sized,
 {
     pub fn new(
         runtime: Arc<R>,
@@ -474,7 +392,7 @@ where
 impl<R, D> StunInfoProvider for StunInfoCollector<R, D>
 where
     R: StunSocketRuntime,
-    D: StunDnsRuntime,
+    D: StunDnsRuntime + ?Sized,
 {
     fn get_stun_info(&self) -> StunInfo {
         self.start_stun_routine();
@@ -587,7 +505,7 @@ where
 impl<R, D> StunSocketMapper<<R as VirtualUdpSocketFactory>::Socket> for StunInfoCollector<R, D>
 where
     R: StunSocketRuntime,
-    D: StunDnsRuntime,
+    D: StunDnsRuntime + ?Sized,
 {
     async fn get_udp_port_mapping_with_socket(
         &self,
@@ -673,21 +591,6 @@ mod tests {
     use stun_codec::{Message, MessageClass, MessageDecoder, MessageEncoder};
 
     use super::*;
-
-    impl<S> StunProviderSlot<S>
-    where
-        S: VirtualUdpSocket,
-    {
-        fn empty() -> Self {
-            Self {
-                provider: RwLock::new(None),
-            }
-        }
-
-        fn replace(&self, provider: Arc<dyn StunSocketMapper<S>>) {
-            *self.provider.write().unwrap() = Some(provider);
-        }
-    }
 
     struct MockUdpSocket {
         local_addr: SocketAddr,
@@ -821,74 +724,6 @@ mod tests {
         async fn resolve_srv(&self, _query: DnsQuery) -> anyhow::Result<Vec<DnsSrvRecord>> {
             Ok(Vec::new())
         }
-    }
-
-    struct FixedStunProvider(u16);
-
-    #[async_trait]
-    impl StunInfoProvider for FixedStunProvider {
-        fn get_stun_info(&self) -> StunInfo {
-            StunInfo {
-                min_port: self.0 as u32,
-                max_port: self.0 as u32,
-                ..Default::default()
-            }
-        }
-
-        async fn get_udp_port_mapping(&self, _local_port: u16) -> anyhow::Result<SocketAddr> {
-            Ok(SocketAddr::from(([127, 0, 0, 1], self.0)))
-        }
-
-        async fn get_tcp_port_mapping(&self, _local_port: u16) -> anyhow::Result<SocketAddr> {
-            Ok(SocketAddr::from(([127, 0, 0, 1], self.0)))
-        }
-
-        fn update_stun_info(&self) {}
-    }
-
-    #[async_trait]
-    impl StunSocketMapper<MockUdpSocket> for FixedStunProvider {
-        async fn get_udp_port_mapping_with_socket(
-            &self,
-            _socket: Arc<MockUdpSocket>,
-        ) -> anyhow::Result<SocketAddr> {
-            self.get_udp_port_mapping(0).await
-        }
-    }
-
-    #[tokio::test]
-    async fn empty_provider_slot_has_explicit_pre_install_behavior() {
-        let slot = StunProviderSlot::<MockUdpSocket>::empty();
-
-        assert_eq!(slot.get_stun_info(), StunInfo::default());
-        assert_eq!(
-            slot.get_udp_port_mapping(0).await.unwrap_err().to_string(),
-            "STUN provider is not installed"
-        );
-        assert_eq!(
-            slot.get_tcp_port_mapping(0).await.unwrap_err().to_string(),
-            "STUN provider is not installed"
-        );
-        slot.update_stun_info();
-    }
-
-    #[tokio::test]
-    async fn provider_slot_installs_once_and_replaces_live_view() {
-        let slot = StunProviderSlot::<MockUdpSocket>::empty();
-        let first: Arc<dyn StunSocketMapper<MockUdpSocket>> = Arc::new(FixedStunProvider(11001));
-        let second: Arc<dyn StunSocketMapper<MockUdpSocket>> = Arc::new(FixedStunProvider(11002));
-
-        assert!(slot.install_if_empty(first));
-        assert_eq!(slot.get_stun_info().min_port, 11001);
-        assert!(!slot.install_if_empty(second.clone()));
-        assert_eq!(slot.get_stun_info().min_port, 11001);
-
-        slot.replace(second);
-        assert_eq!(slot.get_stun_info().min_port, 11002);
-        assert_eq!(
-            slot.get_udp_port_mapping(0).await.unwrap(),
-            SocketAddr::from(([127, 0, 0, 1], 11002))
-        );
     }
 
     #[test]

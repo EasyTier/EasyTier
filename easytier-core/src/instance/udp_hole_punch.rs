@@ -29,7 +29,7 @@ use crate::{
             VirtualUdpSocket, VirtualUdpSocketFactory,
         },
     },
-    stun::{StunInfoProvider, StunProviderSlot, StunSocketMapper},
+    stun::{StunInfoProvider, StunSocketMapper},
 };
 
 use self::rpc::{PeerRpcUdpHolePunchSignaling, UdpHolePunchRpcEndpoint};
@@ -168,13 +168,13 @@ where
     pub(crate) fn new(
         peer_manager: Arc<PeerManagerCore>,
         host: Arc<H>,
-        stun: Arc<StunProviderSlot<HostUdpSocket<H>>>,
+        stun: Arc<dyn StunSocketMapper<HostUdpSocket<H>>>,
         platform: Option<Arc<dyn UdpPortMappingPlatform>>,
         events: Arc<dyn UdpPortMappingEventSink>,
         socket_context: SocketContext,
         protocol: Arc<dyn ClientProtocolUpgrader<HostTcpSocket<H>>>,
     ) -> Self {
-        let stun_mapper: Arc<dyn StunSocketMapper<HostUdpSocket<H>>> = stun.clone();
+        let stun_mapper = stun.clone();
         let stun_info: Arc<dyn StunInfoProvider> = stun;
         let transport_sink = Arc::new(ProtocolUdpHolePunchTransportSink::new(
             protocol,

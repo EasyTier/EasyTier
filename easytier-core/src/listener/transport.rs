@@ -165,14 +165,6 @@ impl AcceptedTunnelHandler for PeerAcceptedTunnelHandler {
     }
 }
 
-#[async_trait]
-impl AcceptedTunnelHandler for PeerManagerCore {
-    async fn handle_tunnel(&self, tunnel: Box<dyn crate::tunnel::Tunnel>) -> anyhow::Result<()> {
-        self.add_tunnel_as_server(tunnel, true).await?;
-        Ok(())
-    }
-}
-
 /// Upgrades accepted sockets or sessions in core before peer admission.
 pub struct ProtocolAcceptedTransportHandler<TcpSocket, H> {
     tunnel_handler: Arc<H>,
