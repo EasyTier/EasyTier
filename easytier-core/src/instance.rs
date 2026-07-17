@@ -4,7 +4,6 @@
 mod host;
 mod packet_io;
 mod packet_plane;
-pub mod public_ipv6_provider;
 
 #[cfg(any(test, target_os = "wasi"))]
 mod runtime_driver;
@@ -65,7 +64,7 @@ use crate::{
             RawAcceptedTransportHandler, TransportListenerConfig,
         },
     },
-    peer_center::instance::{PeerCenterInstance, PeerCenterInstanceService},
+    peers::peer_center::instance::{PeerCenterInstance, PeerCenterInstanceService},
     peers::{
         acl_config::AclRuleConfig,
         context::{PeerRuntimeSnapshot, PeerStunInfoSource},
@@ -94,9 +93,9 @@ use crate::{
 #[cfg(feature = "proxy-smoltcp-stack")]
 use crate::proxy::gateway::{GatewayEventSink, GatewayModule};
 
-use self::public_ipv6_provider::{PublicIpv6ProviderPlatform, PublicIpv6ProviderService};
 #[cfg(feature = "proxy-packet")]
 use crate::peers::peer_manager::PipelineRegistrationGuard;
+use crate::peers::public_ipv6::provider::{PublicIpv6ProviderPlatform, PublicIpv6ProviderService};
 #[cfg(feature = "proxy-packet")]
 use crate::proxy::wrapped_transport::{WrappedTransportKind, WrappedTransportRole};
 #[cfg(feature = "proxy-packet")]

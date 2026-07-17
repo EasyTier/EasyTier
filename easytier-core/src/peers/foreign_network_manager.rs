@@ -20,7 +20,7 @@ use crate::{
     foundation::stats::{CounterHandle, LabelSet, LabelType, MetricName, StatsManager},
     foundation::time::timeout,
     packet::{PacketType, ZCPacket},
-    peer_center::instance::{PeerCenterInstance, PeerMapWithPeerRpcManager},
+    peers::peer_center::instance::{PeerCenterInstance, PeerMapWithPeerRpcManager},
     peers::{PacketRecvChan, PacketRecvChanReceiver, recv_packet_from_chan},
     proto::core_peer::peer::PeerConnInfo,
     socket::SocketContext,

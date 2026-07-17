@@ -9,6 +9,7 @@ pub(crate) mod foreign_network_client;
 pub mod foreign_network_manager;
 pub(crate) mod graph_algo;
 pub(crate) mod peer;
+pub mod peer_center;
 pub(crate) mod peer_conn;
 pub(crate) mod peer_conn_ping;
 pub mod peer_manager;

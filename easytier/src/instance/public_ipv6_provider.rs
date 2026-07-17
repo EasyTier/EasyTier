@@ -5,15 +5,15 @@ use std::sync::Arc;
 #[cfg(target_os = "linux")]
 use anyhow::Context;
 use cidr::{Ipv6Cidr, Ipv6Inet};
-#[cfg(target_os = "linux")]
-use easytier_core::instance::public_ipv6_provider::PublicIpv6NdpTarget;
-use easytier_core::instance::public_ipv6_provider::{
-    PublicIpv6NdpDesired, PublicIpv6PlatformError, PublicIpv6PlatformObservation,
-    PublicIpv6ProviderPlatform,
-};
 use easytier_core::peers::public_ipv6::PublicIpv6ProviderConfig;
 #[cfg(target_os = "linux")]
 use easytier_core::peers::public_ipv6::is_global_routable_public_ipv6_prefix;
+#[cfg(target_os = "linux")]
+use easytier_core::peers::public_ipv6::provider::PublicIpv6NdpTarget;
+use easytier_core::peers::public_ipv6::provider::{
+    PublicIpv6NdpDesired, PublicIpv6PlatformError, PublicIpv6PlatformObservation,
+    PublicIpv6ProviderPlatform,
+};
 #[cfg(target_os = "linux")]
 use netlink_packet_route::route::{RouteAddress, RouteAttribute, RouteMessage, RouteType};
 
@@ -1571,7 +1571,7 @@ mod tests {
             runtime_config.clone(),
             global_ctx.clone(),
         );
-        let service = easytier_core::instance::public_ipv6_provider::PublicIpv6ProviderService::new(
+        let service = easytier_core::peers::public_ipv6::provider::PublicIpv6ProviderService::new(
             platform,
             runtime_config,
             runtime,

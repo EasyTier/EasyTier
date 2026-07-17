@@ -57,7 +57,7 @@ use crate::proto::rpc_types;
 use crate::proto::rpc_types::controller::BaseController;
 use crate::rpc_service::InstanceRpcService;
 use crate::utils::weak_upgrade;
-use easytier_core::peer_center::instance::PeerCenterInstanceService;
+use easytier_core::peers::peer_center::instance::PeerCenterInstanceService;
 
 #[cfg(feature = "magic-dns")]
 use super::dns_server::{MAGIC_DNS_FAKE_IP, runner::DnsRunner};

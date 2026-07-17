@@ -1,3 +1,5 @@
+pub mod provider;
+
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     net::Ipv6Addr,
