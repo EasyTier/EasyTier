@@ -9,6 +9,7 @@ use bytes::{Bytes, BytesMut};
 use tokio::{sync::Mutex, task::JoinSet};
 
 use crate::{
+    config::runtime::CoreRuntimeConfigStore,
     connectivity::direct::DirectConnectorHost,
     hole_punch::tcp::TcpHolePunchHost,
     listener::RunningListenerRegistry,
@@ -18,7 +19,6 @@ use crate::{
         peer_manager::{PeerManagerCore, PipelineRegistrationGuard},
     },
     proxy::cidr_table::ProxyCidrTable,
-    runtime_config::CoreRuntimeConfigStore,
     socket::SocketContext,
 };
 
@@ -961,13 +961,13 @@ mod tests {
     use tokio::sync::Notify;
 
     use crate::{
+        config::runtime::CoreRuntimeConfig,
         config::{CoreConfig, NetworkIdentity, NodeConfig},
         peers::{
             context::{HostRoutingPolicy, PeerRuntimeConfig, PeerRuntimeSnapshot},
             create_packet_recv_chan,
             peer_manager::PortablePeerManagerConfig,
         },
-        runtime_config::CoreRuntimeConfig,
         socket::dns::{DnsQuery, DnsResolver},
     };
 

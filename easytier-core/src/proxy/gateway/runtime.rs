@@ -26,6 +26,7 @@ use tokio::{
 };
 
 use crate::{
+    config::runtime::CoreRuntimeConfigStore,
     packet::{PacketType, ZCPacket},
     peers::{
         PeerPacketFilter,
@@ -47,7 +48,6 @@ use crate::{
         tokio_smoltcp::{self, BufferSize, Net, NetConfig, channel_device},
         wrapped_transport::{WrappedTransportKind, WrappedTransportProxyModule},
     },
-    runtime_config::CoreRuntimeConfigStore,
     socket::{
         SocketContext,
         dns::DnsResolver,
@@ -1489,7 +1489,7 @@ mod tests {
 
     fn test_gateway() -> Arc<GatewayModule<TestHost>> {
         let runtime_config = CoreRuntimeConfigStore::new(
-            crate::runtime_config::CoreRuntimeConfig::default(),
+            crate::config::runtime::CoreRuntimeConfig::default(),
             Arc::new(PeerRuntimeSnapshot::default()),
         );
         let host = Arc::new(TestHost::default());
@@ -1552,7 +1552,7 @@ mod tests {
         };
         let peer_config = PortablePeerManagerConfig::new(runtime);
         let runtime_config = CoreRuntimeConfigStore::new(
-            crate::runtime_config::CoreRuntimeConfig::default(),
+            crate::config::runtime::CoreRuntimeConfig::default(),
             Arc::new(peer_config.snapshot.clone()),
         );
         let (packet_sender, packet_receiver) = create_packet_recv_chan();

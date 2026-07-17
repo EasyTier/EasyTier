@@ -25,6 +25,7 @@ use sha2::Sha256;
 
 pub use crate::config::{NetworkIdentity, NetworkSecretDigest};
 use crate::{
+    config::runtime::CoreRuntimeConfigStore,
     config::{
         CoreConfig, IpPrefix, NodeConfig, PeerId, PeerPolicyConfig, ProxyNetworkConfig,
         RouteConfig, TrafficConfig,
@@ -36,7 +37,6 @@ use crate::{
         foreign_network_manager::check_network_in_relay_whitelist,
         util::shrink_dashmap,
     },
-    runtime_config::CoreRuntimeConfigStore,
 };
 
 pub(crate) const SECRET_PROOF_PREFIX: &[u8] = b"easytier secret proof";
@@ -1131,7 +1131,7 @@ impl PeerContext for CorePeerContext {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::runtime_config::{CoreRuntimeConfig, CoreRuntimeConfigStore};
+    use crate::config::runtime::{CoreRuntimeConfig, CoreRuntimeConfigStore};
     use std::sync::atomic::{AtomicBool, Ordering};
 
     pub(crate) trait PeerContextTestExt: PeerContext {

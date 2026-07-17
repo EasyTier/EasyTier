@@ -28,6 +28,7 @@ use tokio_util::task::AbortOnDropHandle;
 use url::Url;
 
 use crate::{
+    config::runtime::{CoreInstanceRuntimeConfig, CoreRuntimeConfig, CoreRuntimeConfigStore},
     connectivity::{
         direct::{
             DirectConnectorHost, DirectConnectorManager, DirectConnectorOptions,
@@ -78,7 +79,6 @@ use crate::{
         cidr_table::{ProxyCidrSnapshot, ProxyCidrTable},
         wrapped_transport::{WrappedTransportEngines, WrappedTransportProxyModule},
     },
-    runtime_config::{CoreInstanceRuntimeConfig, CoreRuntimeConfig, CoreRuntimeConfigStore},
     socket::{
         SocketContext,
         dns::{DnsRecordResolver, DnsResolver},
@@ -2116,6 +2116,7 @@ mod tests {
 
         use super::*;
         use crate::{
+            config::runtime::CoreInstanceRuntimeConfig,
             config::{CoreConfig, IpPrefix, NetworkIdentity, ProxyNetworkConfig},
             connectivity::manual::{ManualConnectorHost, ManualInterfaceAddrs},
             listener::transport::AcceptedTransport,
@@ -2128,7 +2129,6 @@ mod tests {
                 WrappedTransportEngine, WrappedTransportEngineStart, WrappedTransportEngines,
                 WrappedTransportRole,
             },
-            runtime_config::CoreInstanceRuntimeConfig,
             socket::{
                 SocketContext,
                 dns::{DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord},

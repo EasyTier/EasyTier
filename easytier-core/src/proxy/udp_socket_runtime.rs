@@ -196,9 +196,7 @@ where
             loop {
                 let mut buffer = vec![0; UDP_PROXY_RECEIVE_BUFFER_SIZE];
                 let (length, source) =
-                    match time::timeout(receive_timeout, socket.recv_from(&mut buffer))
-                        .await
-                    {
+                    match time::timeout(receive_timeout, socket.recv_from(&mut buffer)).await {
                         Ok(Ok(received)) => received,
                         Ok(Err(error)) => {
                             tracing::error!(?error, ?entry_id, "UDP proxy receive failed");

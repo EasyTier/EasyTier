@@ -15,6 +15,7 @@ use tokio::sync::{
 use tokio::task::JoinSet;
 
 use crate::{
+    config::runtime::{CoreRuntimeConfig, CoreRuntimeConfigStore},
     config::{CoreConfig, NodeConfig, PeerId},
     foundation::stats::{CounterHandle, LabelSet, LabelType, MetricName, StatsManager},
     foundation::time::timeout,
@@ -22,7 +23,6 @@ use crate::{
     peer_center::instance::{PeerCenterInstance, PeerMapWithPeerRpcManager},
     peers::{PacketRecvChan, PacketRecvChanReceiver, recv_packet_from_chan},
     proto::core_peer::peer::PeerConnInfo,
-    runtime_config::{CoreRuntimeConfig, CoreRuntimeConfigStore},
     socket::SocketContext,
 };
 
@@ -173,6 +173,7 @@ mod tests {
     };
 
     use crate::{
+        config::runtime::{CoreRuntimeConfig, CoreRuntimeConfigStore},
         foundation::stats::{LabelSet, LabelType, MetricName},
         peers::{
             context::{
@@ -182,7 +183,6 @@ mod tests {
             error::Error,
         },
         proto::common::StunInfo,
-        runtime_config::{CoreRuntimeConfig, CoreRuntimeConfigStore},
     };
 
     impl ForeignNetworkManager {

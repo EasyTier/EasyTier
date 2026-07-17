@@ -12,12 +12,12 @@ use tokio::sync::Mutex;
 
 use crate::{
     config::IpPrefix,
+    config::runtime::{CoreInstanceRuntimeConfig, CoreRuntimeConfigStore},
     connectivity::direct::DirectConnectorHost,
     foundation::stats::{LabelSet, LabelType, MetricName, StatsManager},
     hole_punch::tcp::TcpHolePunchHost,
     listener::RunningListenerRegistry,
     peers::peer_manager::PeerManagerCore,
-    runtime_config::{CoreInstanceRuntimeConfig, CoreRuntimeConfigStore},
     socket::{IpVersion, SocketContext, udp::UdpBindOptions},
 };
 
@@ -415,10 +415,10 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
 
     use crate::{
+        config::runtime::{CoreInstanceRuntimeConfig, CoreRuntimeConfig},
         config::{CoreConfig, IpPrefix, PeerPolicyConfig, ProxyNetworkConfig, RouteConfig},
         peers::context::{PeerRuntimeConfig, PeerRuntimeSnapshot},
         proxy::ProxyRuntimeConfig,
-        runtime_config::{CoreInstanceRuntimeConfig, CoreRuntimeConfig},
     };
 
     use super::*;

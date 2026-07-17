@@ -13,9 +13,9 @@ use tokio::{sync::Mutex, task::JoinSet};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    connectivity::direct::DirectConnectorHost, hole_punch::tcp::TcpHolePunchHost,
-    listener::RunningListenerRegistry, peers::peer_manager::PeerManagerCore,
-    runtime_config::CoreRuntimeConfigStore, socket::SocketContext,
+    config::runtime::CoreRuntimeConfigStore, connectivity::direct::DirectConnectorHost,
+    hole_punch::tcp::TcpHolePunchHost, listener::RunningListenerRegistry,
+    peers::peer_manager::PeerManagerCore, socket::SocketContext,
 };
 
 use super::{

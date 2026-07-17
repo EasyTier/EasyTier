@@ -1,3 +1,7 @@
+//! Static configuration schema plus the live runtime configuration store.
+
+pub mod runtime;
+
 use std::{
     collections::{BTreeSet, hash_map::DefaultHasher},
     hash::{Hash, Hasher},

@@ -21,6 +21,7 @@ use tokio::task::JoinSet;
 use url::Url;
 
 use crate::{
+    config::runtime::CoreRuntimeConfigStore,
     config::{P2pPolicyFlags, PeerId, ProxyNetworkConfig},
     foundation::compressor::{Compressor as _, DefaultCompressor},
     foundation::task::ExternalTaskSignal,
@@ -28,7 +29,6 @@ use crate::{
     packet::{CompressorAlgo, PacketType, ZCPacket},
     proto::common::{FlagsInConfig, PeerFeatureFlag, StunInfo},
     proto::core_peer::peer::{ListPublicIpv6InfoResponse, PeerConnInfo, Route as CoreRoute},
-    runtime_config::CoreRuntimeConfigStore,
     socket::{
         SocketContext,
         dns::{DnsQuery, DnsResolver},
@@ -3236,13 +3236,13 @@ mod tests {
 
     use super::*;
     use crate::{
+        config::runtime::CoreRuntimeConfig,
         config::{CoreConfig, IpPrefix, NetworkIdentity, NodeConfig, ProxyNetworkConfig},
         peers::{
             context::{PeerContext, PeerEvent},
             create_packet_recv_chan,
         },
         proto::common::{PeerFeatureFlag, StunInfo},
-        runtime_config::CoreRuntimeConfig,
     };
 
     impl PeerManagerCore {

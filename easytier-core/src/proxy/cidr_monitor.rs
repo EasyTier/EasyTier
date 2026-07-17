@@ -4,8 +4,8 @@ use cidr::Ipv4Cidr;
 use tokio_util::task::AbortOnDropHandle;
 
 use crate::{
+    config::runtime::{CoreInstanceRuntimeConfig, CoreRuntimeConfigStore},
     peers::peer_manager::PeerManagerCore,
-    runtime_config::{CoreInstanceRuntimeConfig, CoreRuntimeConfigStore},
 };
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -157,8 +157,8 @@ impl ProxyCidrMonitor {
 mod tests {
     use super::*;
     use crate::{
+        config::runtime::{CoreInstanceRuntimeConfig, CoreRuntimeConfig},
         peers::context::PeerRuntimeSnapshot,
-        runtime_config::{CoreInstanceRuntimeConfig, CoreRuntimeConfig},
     };
 
     fn cidrs(values: &[&str]) -> BTreeSet<Ipv4Cidr> {

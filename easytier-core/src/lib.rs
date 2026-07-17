@@ -12,7 +12,6 @@ pub mod peers;
 pub mod process_runtime;
 pub mod proxy;
 pub mod rpc_impl;
-pub mod runtime_config;
 pub mod socket;
 pub mod stun;
 pub mod tunnel;

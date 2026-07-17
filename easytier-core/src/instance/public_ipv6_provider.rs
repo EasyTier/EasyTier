@@ -12,11 +12,11 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
+    config::runtime::CoreRuntimeConfigStore,
     peers::public_ipv6::{
         CorePublicIpv6Runtime, PublicIpv6ProviderConfig, PublicIpv6ProviderResolution,
         resolve_public_ipv6_provider,
     },
-    runtime_config::CoreRuntimeConfigStore,
 };
 
 const DEFAULT_RECONCILE_INTERVAL: Duration = Duration::from_secs(5);
@@ -320,8 +320,8 @@ mod tests {
 
     use super::*;
     use crate::{
+        config::runtime::{CoreRuntimeConfig, CoreRuntimeConfigStore},
         peers::context::{PeerPublicIpv6State, PeerRuntimeSnapshot},
-        runtime_config::{CoreRuntimeConfig, CoreRuntimeConfigStore},
     };
 
     struct RecordingHost {

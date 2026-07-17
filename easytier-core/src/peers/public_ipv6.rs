@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     config::PeerId,
+    config::runtime::CoreRuntimeConfigStore,
     peers::{context::PeerPublicIpv6State, peer_rpc::PeerRpcManager},
     proto::{
         common::Void,
@@ -23,7 +24,6 @@ use crate::{
             controller::{BaseController, Controller},
         },
     },
-    runtime_config::CoreRuntimeConfigStore,
 };
 
 // Use a longer lease with an early renew window to reduce steady-state RPC
@@ -1097,8 +1097,8 @@ mod tests {
 
     use crate::{
         config::PeerId,
+        config::runtime::{CoreRuntimeConfig, CoreRuntimeConfigStore},
         peers::{context::PeerPublicIpv6State, peer_rpc::PeerRpcManager},
-        runtime_config::{CoreRuntimeConfig, CoreRuntimeConfigStore},
     };
 
     use super::{

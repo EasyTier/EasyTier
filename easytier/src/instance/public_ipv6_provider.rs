@@ -1560,8 +1560,8 @@ mod tests {
         global_ctx.set_tun_device_ready(tun_if);
 
         let platform = super::RuntimePublicIpv6ProviderPlatform::new(&global_ctx);
-        let runtime_config = easytier_core::runtime_config::CoreRuntimeConfigStore::new(
-            easytier_core::runtime_config::CoreRuntimeConfig {
+        let runtime_config = easytier_core::config::runtime::CoreRuntimeConfigStore::new(
+            easytier_core::config::runtime::CoreRuntimeConfig {
                 public_ipv6_provider: runtime_public_ipv6_provider_config(&global_ctx),
                 ..Default::default()
             },

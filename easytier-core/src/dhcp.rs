@@ -6,7 +6,7 @@ use rand::Rng;
 use tokio_util::task::AbortOnDropHandle;
 
 use crate::{
-    config::IpPrefix, peers::peer_manager::PeerManagerCore, runtime_config::CoreRuntimeConfigStore,
+    config::IpPrefix, config::runtime::CoreRuntimeConfigStore, peers::peer_manager::PeerManagerCore,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -350,7 +350,7 @@ mod tests {
         host: Arc<RecordingHost>,
     ) -> (Arc<DhcpIpv4Service>, CoreRuntimeConfigStore) {
         let runtime_config = CoreRuntimeConfigStore::new(
-            crate::runtime_config::CoreRuntimeConfig::default(),
+            crate::config::runtime::CoreRuntimeConfig::default(),
             Arc::new(crate::peers::context::PeerRuntimeSnapshot::default()),
         );
         *host.runtime_config.lock().unwrap() = Some(runtime_config.clone());
