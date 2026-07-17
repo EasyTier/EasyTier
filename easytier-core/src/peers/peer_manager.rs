@@ -3610,13 +3610,14 @@ mod tests {
         assert!(snapshot.public_ipv6_addr.is_none());
         assert!(snapshot.ipv6_public_addr_prefix.is_none());
 
-        let dns_snapshot = crate::gateway::magic_dns::MagicDnsRouteSource::snapshot(&core).await;
+        let dns_identity = core.dns_route_identity();
         assert_eq!(
-            dns_snapshot.routes.last(),
-            Some(&crate::gateway::magic_dns::MagicDnsRouteAdvertisement {
-                hostname: "portable-node".to_owned(),
-                ipv4_addr: Some("10.20.0.91/16".parse::<cidr::Ipv4Inet>().unwrap().into()),
-            })
+            dns_identity,
+            (
+                "portable-node".to_owned(),
+                Some("10.20.0.91/16".parse::<cidr::Ipv4Inet>().unwrap().into()),
+                String::new(),
+            )
         );
     }
 

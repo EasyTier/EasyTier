@@ -19,7 +19,7 @@ use easytier::{
     proto::rpc::standalone::{runtime_rpc_listener, runtime_udp_tunnel_listener},
     utils::panic::setup_panic_handler,
 };
-use easytier_core::{listener::SocketListener, tunnel::Tunnel};
+use easytier_core::{socket::SocketListener, tunnel::Tunnel};
 
 use easytier::tunnel::IpScheme;
 use mimalloc::MiMalloc;

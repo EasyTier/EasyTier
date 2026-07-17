@@ -27,8 +27,8 @@ use easytier::{
     utils::panic::setup_panic_handler,
 };
 use easytier_core::{
-    connectivity::protocol::raw::TunnelDialer as _, listener::SocketListener,
-    process_runtime::CoreProcessRuntime, tunnel::Tunnel,
+    connectivity::protocol::raw::TunnelDialer as _, process_runtime::CoreProcessRuntime,
+    socket::SocketListener, tunnel::Tunnel,
 };
 use std::ops::Deref;
 use std::sync::Arc;

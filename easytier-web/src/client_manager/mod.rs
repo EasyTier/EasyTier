@@ -17,7 +17,7 @@ use easytier::{
     rpc_service::remote_client::{self, RemoteClientManager},
 };
 use easytier_core::{
-    listener::SocketListener,
+    socket::SocketListener,
     tunnel::{Tunnel, web_security},
 };
 use maxminddb::geoip2;

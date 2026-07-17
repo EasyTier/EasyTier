@@ -313,26 +313,36 @@ fn magic_dns_route_advertisement(
     }
 }
 
+fn magic_dns_route_snapshot(
+    revision: Instant,
+    routes: Vec<crate::proto::core_peer::peer::Route>,
+    local_identity: (String, Option<crate::proto::common::Ipv4Inet>, String),
+) -> MagicDnsRouteSnapshot {
+    let mut routes = routes
+        .into_iter()
+        .map(magic_dns_route_advertisement)
+        .collect::<Vec<_>>();
+    let (hostname, ipv4_addr, zone) = local_identity;
+    routes.push(MagicDnsRouteAdvertisement {
+        hostname,
+        ipv4_addr,
+    });
+    MagicDnsRouteSnapshot {
+        revision,
+        routes,
+        zone,
+    }
+}
+
 #[async_trait]
 impl MagicDnsRouteSource for PeerManagerCore {
     async fn snapshot(&self) -> MagicDnsRouteSnapshot {
         let revision = self.get_route().get_peer_info_last_update_time().await;
-        let mut routes = self
-            .list_route_snapshots()
-            .await
-            .into_iter()
-            .map(magic_dns_route_advertisement)
-            .collect::<Vec<_>>();
-        let (hostname, ipv4_addr, zone) = self.dns_route_identity();
-        routes.push(MagicDnsRouteAdvertisement {
-            hostname,
-            ipv4_addr,
-        });
-        MagicDnsRouteSnapshot {
+        magic_dns_route_snapshot(
             revision,
-            routes,
-            zone,
-        }
+            self.list_route_snapshots().await,
+            self.dns_route_identity(),
+        )
     }
 
     async fn revision(&self) -> Instant {
@@ -470,6 +480,30 @@ mod tests {
         });
 
         assert_eq!(advertisement.ipv4_addr, Some(ipv4_addr));
+    }
+
+    #[test]
+    fn route_snapshot_appends_local_identity() {
+        let ipv4_addr: crate::proto::common::Ipv4Inet =
+            "10.20.0.91/16".parse::<cidr::Ipv4Inet>().unwrap().into();
+        let snapshot = magic_dns_route_snapshot(
+            Instant::now(),
+            Vec::new(),
+            (
+                "portable-node".to_owned(),
+                Some(ipv4_addr.clone()),
+                "et.net.".to_owned(),
+            ),
+        );
+
+        assert_eq!(snapshot.zone, "et.net.");
+        assert_eq!(
+            snapshot.routes,
+            [MagicDnsRouteAdvertisement {
+                hostname: "portable-node".to_owned(),
+                ipv4_addr: Some(ipv4_addr),
+            }]
+        );
     }
 
     struct TestRouteSource {
