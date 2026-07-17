@@ -78,12 +78,12 @@ pub struct UdpPunchListener<S> {
     pub mapped_addr: SocketAddr,
     pub conn_counter: Arc<dyn UdpPunchConnCounter>,
     pub acceptor: Box<dyn UdpPunchAcceptor>,
-    pub port_mapping_lease: Option<Box<dyn UdpPortMappingLease>>,
+    pub(crate) port_mapping_lease: Option<Box<dyn UdpPortMappingLease>>,
 }
 
 pub struct UdpResolvedPublicAddr {
     pub mapped_addr: SocketAddr,
-    pub port_mapping_lease: Option<Box<dyn UdpPortMappingLease>>,
+    pub(crate) port_mapping_lease: Option<Box<dyn UdpPortMappingLease>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

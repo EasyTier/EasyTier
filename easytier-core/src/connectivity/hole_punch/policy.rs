@@ -68,6 +68,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn backoff_saturates_and_can_rollback() {
+        let mut backoff = BackOff::new(vec![10, 20]);
+
+        assert_eq!(backoff.next_backoff(), 10);
+        assert_eq!(backoff.next_backoff(), 20);
+        assert_eq!(backoff.next_backoff(), 20);
+        backoff.rollback();
+        assert_eq!(backoff.next_backoff(), 10);
+    }
+
+    #[test]
     fn lazy_background_p2p_requires_need_p2p() {
         let no_need_p2p = PeerFeatureFlag {
             need_p2p: false,

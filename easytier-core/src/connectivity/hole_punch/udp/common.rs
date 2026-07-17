@@ -246,15 +246,4 @@ mod tests {
         assert!(easy_sym.can_punch_hole_as_client(easy_sym, 1, 2, false));
         assert!(!easy_sym.can_punch_hole_as_client(easy_sym, 2, 1, false));
     }
-
-    #[test]
-    fn backoff_saturates_and_can_rollback() {
-        let mut backoff = BackOff::new(vec![10, 20]);
-
-        assert_eq!(backoff.next_backoff(), 10);
-        assert_eq!(backoff.next_backoff(), 20);
-        assert_eq!(backoff.next_backoff(), 20);
-        backoff.rollback();
-        assert_eq!(backoff.next_backoff(), 10);
-    }
 }

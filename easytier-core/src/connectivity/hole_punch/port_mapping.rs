@@ -12,7 +12,7 @@ use tokio::sync::oneshot;
 
 const UPNP_RENEW_INTERVAL: Duration = Duration::from_secs(240);
 
-pub trait UdpPortMappingLease: Send + Sync + fmt::Debug {
+pub(crate) trait UdpPortMappingLease: Send + Sync + fmt::Debug {
     fn public_addr_resolved(&self, _mapped_addr: SocketAddr) {}
 }
 
@@ -167,7 +167,7 @@ impl UdpPortMappingLease for ManagedUdpPortMappingLease {
     }
 }
 
-pub async fn start_udp_port_mapping(
+pub(crate) async fn start_udp_port_mapping(
     platform: Arc<dyn UdpPortMappingPlatform>,
     events: Arc<dyn UdpPortMappingEventSink>,
     local_listener: &url::Url,
@@ -296,7 +296,7 @@ async fn run_udp_port_mapping_lifecycle(
     }
 }
 
-pub fn should_map_udp_listener(local_listener: &url::Url) -> bool {
+pub(crate) fn should_map_udp_listener(local_listener: &url::Url) -> bool {
     if local_listener.scheme() != "udp" {
         return false;
     }
