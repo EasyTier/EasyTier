@@ -1036,8 +1036,6 @@ struct ForeignNetworkManagerData {
     network_peer_last_update: DashMap<String, SystemTime>,
     accessor: Arc<Box<dyn GlobalForeignNetworkAccessor>>,
     lock: std::sync::Mutex<()>,
-    #[cfg(any(test, feature = "test-utils"))]
-    fail_next_add_peer_conn_after_entry_insert: AtomicBool,
 }
 
 impl ForeignNetworkManagerData {
@@ -1226,8 +1224,6 @@ impl ForeignNetworkManager {
             network_peer_last_update: DashMap::new(),
             accessor: Arc::new(accessor),
             lock: std::sync::Mutex::new(()),
-            #[cfg(any(test, feature = "test-utils"))]
-            fail_next_add_peer_conn_after_entry_insert: AtomicBool::new(false),
         });
 
         let tasks = Arc::new(std::sync::Mutex::new(JoinSet::new()));
@@ -1396,18 +1392,6 @@ impl ForeignNetworkManager {
                 data.remove_peer(peer_id, &network_name);
             }
         });
-
-        #[cfg(any(test, feature = "test-utils"))]
-        if self
-            .data
-            .fail_next_add_peer_conn_after_entry_insert
-            .swap(false, Ordering::AcqRel)
-        {
-            return Err(anyhow::anyhow!(
-                "injected add_peer_conn failure after foreign network entry insert"
-            )
-            .into());
-        }
 
         self.ensure_event_handler_started(&entry);
 
