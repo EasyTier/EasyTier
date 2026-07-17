@@ -13,12 +13,12 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     config::runtime::CoreRuntimeConfigStore,
-    listener::SocketListener,
     packet::{PacketType, ZCPacket, ZCPacketType},
     peers::{
         PeerPacketFilter,
         peer_manager::{PeerManagerCore, PipelineRegistrationGuard},
     },
+    socket::SocketListener,
     tunnel::{Tunnel, mpsc::MpscTunnel, mpsc::MpscTunnelSender},
 };
 

@@ -17,8 +17,11 @@ use tokio::task::JoinSet;
 use crate::{
     config::runtime::{CoreRuntimeConfig, CoreRuntimeConfigStore},
     config::{CoreConfig, NodeConfig, PeerId},
-    foundation::stats::{CounterHandle, LabelSet, LabelType, MetricName, StatsManager},
     foundation::time::timeout,
+    foundation::{
+        stats::{CounterHandle, LabelSet, LabelType, MetricName, StatsManager},
+        token_bucket::ArcByteLimiter,
+    },
     packet::{PacketType, ZCPacket},
     peers::peer_center::instance::{PeerCenterInstance, PeerMapWithPeerRpcManager},
     peers::{PacketRecvChan, PacketRecvChanReceiver, recv_packet_from_chan},
@@ -28,8 +31,8 @@ use crate::{
 
 use super::{
     context::{
-        ArcByteLimiter, ArcPeerContext, CorePeerContext, CorePeerContextAdapters, NetworkIdentity,
-        PeerContext, PeerContextEvent, PeerRuntimeConfig, PeerRuntimeSnapshot, PeerStunInfoSource,
+        ArcPeerContext, CorePeerContext, CorePeerContextAdapters, NetworkIdentity, PeerContext,
+        PeerContextEvent, PeerRuntimeConfig, PeerRuntimeSnapshot, PeerStunInfoSource,
         TrustedKeySource,
     },
     error::Error,

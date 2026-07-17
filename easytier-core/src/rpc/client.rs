@@ -15,7 +15,10 @@ use tokio::{sync::mpsc, task::JoinSet};
 
 use crate::{
     config::PeerId,
-    foundation::time::timeout,
+    foundation::{
+        stats::{ArcRpcMetrics, RpcMetricLabels, RpcMetricsProvider},
+        time::timeout,
+    },
     proto::{
         common::{
             CompressionAlgoPb, RpcCompressionInfo, RpcDescriptor, RpcPacket, RpcRequest,
@@ -36,10 +39,7 @@ use crate::{
     },
 };
 
-use super::{
-    RpcTransactId, Transport,
-    metrics::{ArcRpcMetrics, RpcMetricLabels, RpcMetricsProvider},
-};
+use super::{RpcTransactId, Transport};
 
 static CUR_TID: LazyLock<AtomicI64> = LazyLock::new(|| AtomicI64::new(rand::random()));
 

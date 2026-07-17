@@ -415,9 +415,9 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
 
     use crate::{
+        config::gateway::ProxyRuntimeConfig,
         config::runtime::{CoreInstanceRuntimeConfig, CoreRuntimeConfig},
         config::{CoreConfig, IpPrefix, PeerPolicyConfig, ProxyNetworkConfig, RouteConfig},
-        gateway::proxy::ProxyRuntimeConfig,
         peers::context::{PeerRuntimeConfig, PeerRuntimeSnapshot},
     };
 

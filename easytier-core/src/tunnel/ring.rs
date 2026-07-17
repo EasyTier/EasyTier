@@ -13,11 +13,13 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::{
-    listener::SocketListener,
     proto::common::TunnelInfo,
-    socket::ring::{
-        RING_SOCKET_CAPACITY, RingSocket, RingSocketId, RingSocketReceiver, RingSocketSendError,
-        RingSocketSender,
+    socket::{
+        SocketListener,
+        ring::{
+            RING_SOCKET_CAPACITY, RingSocket, RingSocketId, RingSocketReceiver,
+            RingSocketSendError, RingSocketSender,
+        },
     },
     tunnel::{SinkError, SinkItem, StreamItem, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream},
 };

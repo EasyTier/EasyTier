@@ -23,11 +23,12 @@ use url::Url;
 use crate::{
     config::runtime::CoreRuntimeConfigStore,
     config::{P2pPolicyFlags, PeerId, ProxyNetworkConfig},
-    foundation::compressor::{Compressor as _, DefaultCompressor},
     foundation::task::ExternalTaskSignal,
-    gateway::magic_dns::{MagicDnsRouteAdvertisement, MagicDnsRouteSnapshot, MagicDnsRouteSource},
     host::dns::{DnsQuery, DnsResolver},
-    packet::{CompressorAlgo, PacketType, ZCPacket},
+    packet::{
+        CompressorAlgo, PacketType, ZCPacket,
+        compressor::{Compressor as _, DefaultCompressor},
+    },
     proto::common::{FlagsInConfig, PeerFeatureFlag, StunInfo},
     proto::core_peer::peer::{ListPublicIpv6InfoResponse, PeerConnInfo, Route as CoreRoute},
     socket::SocketContext,
@@ -95,13 +96,6 @@ pub struct NodeSnapshot {
     pub ip_list: GetIpListResponse,
     pub public_ipv6_addr: Option<cidr::Ipv6Inet>,
     pub ipv6_public_addr_prefix: Option<cidr::Ipv6Inet>,
-}
-
-fn magic_dns_route_advertisement(route: CoreRoute) -> MagicDnsRouteAdvertisement {
-    MagicDnsRouteAdvertisement {
-        hostname: route.hostname,
-        ipv4_addr: route.ipv4_addr,
-    }
 }
 
 struct RpcTransport {
@@ -1213,6 +1207,16 @@ impl PeerManagerCore {
         &self.network_name
     }
 
+    pub(crate) fn dns_route_identity(
+        &self,
+    ) -> (String, Option<crate::proto::common::Ipv4Inet>, String) {
+        (
+            self.context.hostname(),
+            self.context.ipv4().map(Into::into),
+            self.context.flags().tld_dns_zone,
+        )
+    }
+
     pub fn p2p_policy_flags(&self) -> P2pPolicyFlags {
         let flags = self.context.flags();
         P2pPolicyFlags {
@@ -1587,64 +1591,6 @@ impl PeerManagerCore {
         self.foreign_network_client.run().await;
 
         Ok(())
-    }
-}
-
-#[async_trait::async_trait]
-impl MagicDnsRouteSource for PeerManagerCore {
-    async fn snapshot(&self) -> MagicDnsRouteSnapshot {
-        let revision = self.get_route().get_peer_info_last_update_time().await;
-        let mut routes = self
-            .list_route_snapshots()
-            .await
-            .into_iter()
-            .map(magic_dns_route_advertisement)
-            .collect::<Vec<_>>();
-        routes.push(MagicDnsRouteAdvertisement {
-            hostname: self.context.hostname(),
-            ipv4_addr: self.context.ipv4().map(Into::into),
-        });
-        MagicDnsRouteSnapshot {
-            revision,
-            routes,
-            zone: self.context.flags().tld_dns_zone,
-        }
-    }
-
-    async fn revision(&self) -> Instant {
-        self.get_route().get_peer_info_last_update_time().await
-    }
-}
-
-#[async_trait::async_trait]
-impl crate::connectivity::hole_punch::udp::UdpHolePunchTunnelSink for PeerManagerCore {
-    async fn add_client_tunnel(&self, tunnel: Box<dyn Tunnel>) -> anyhow::Result<()> {
-        PeerManagerCore::add_client_tunnel(self, tunnel, false)
-            .await
-            .map(|_| ())
-            .map_err(anyhow::Error::from)
-    }
-
-    async fn add_server_tunnel(&self, tunnel: Box<dyn Tunnel>) -> anyhow::Result<()> {
-        PeerManagerCore::add_tunnel_as_server(self, tunnel, false)
-            .await
-            .map_err(anyhow::Error::from)
-    }
-}
-
-#[async_trait::async_trait]
-impl crate::connectivity::hole_punch::tcp::TcpHolePunchTunnelSink for PeerManagerCore {
-    async fn add_client_tunnel(&self, tunnel: Box<dyn Tunnel>) -> anyhow::Result<()> {
-        PeerManagerCore::add_client_tunnel(self, tunnel, false)
-            .await
-            .map(|_| ())
-            .map_err(anyhow::Error::from)
-    }
-
-    async fn add_server_tunnel(&self, tunnel: Box<dyn Tunnel>) -> anyhow::Result<()> {
-        PeerManagerCore::add_tunnel_as_server(self, tunnel, false)
-            .await
-            .map_err(anyhow::Error::from)
     }
 }
 
@@ -3664,30 +3610,14 @@ mod tests {
         assert!(snapshot.public_ipv6_addr.is_none());
         assert!(snapshot.ipv6_public_addr_prefix.is_none());
 
-        let dns_snapshot = MagicDnsRouteSource::snapshot(&core).await;
+        let dns_snapshot = crate::gateway::magic_dns::MagicDnsRouteSource::snapshot(&core).await;
         assert_eq!(
             dns_snapshot.routes.last(),
-            Some(&MagicDnsRouteAdvertisement {
+            Some(&crate::gateway::magic_dns::MagicDnsRouteAdvertisement {
                 hostname: "portable-node".to_owned(),
                 ipv4_addr: Some("10.20.0.91/16".parse::<cidr::Ipv4Inet>().unwrap().into()),
             })
         );
-    }
-
-    #[test]
-    fn magic_dns_advertisement_preserves_untrusted_prefix_without_parsing() {
-        let ipv4_addr = crate::proto::common::Ipv4Inet {
-            address: Some("192.0.2.1".parse::<std::net::Ipv4Addr>().unwrap().into()),
-            network_length: 33,
-        };
-
-        let advertisement = magic_dns_route_advertisement(CoreRoute {
-            hostname: "remote".to_owned(),
-            ipv4_addr: Some(ipv4_addr.clone()),
-            ..Default::default()
-        });
-
-        assert_eq!(advertisement.ipv4_addr, Some(ipv4_addr));
     }
 
     #[tokio::test]

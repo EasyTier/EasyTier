@@ -10,10 +10,9 @@ use crate::{
         transport::{self, ConnectedByteStream, ConnectedUdpSession, UdpSessionMode},
     },
     host::dns::DnsResolver,
-    listener::{ListenerConnectionCounter, SocketListener},
     proto::common::TunnelInfo,
     socket::{
-        IpVersion,
+        IpVersion, ListenerConnectionCounter, SocketListener,
         tcp::{
             TcpBindOptions, TcpListenOptions, TcpSocketListener, TcpSocketPurpose,
             VirtualTcpListenerFactory, VirtualTcpSocket, VirtualTcpSocketFactory,

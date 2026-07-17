@@ -1,6 +1,7 @@
 pub mod acl_config;
 pub(crate) mod acl_filter;
 pub(crate) mod acl_processor;
+pub(crate) mod admission;
 pub mod context;
 pub mod credential_manager;
 pub(crate) mod encrypt;

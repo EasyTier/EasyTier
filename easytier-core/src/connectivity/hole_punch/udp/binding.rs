@@ -7,7 +7,6 @@ use std::{
 
 use anyhow::Context as _;
 use async_trait::async_trait;
-use quanta::Instant;
 
 use crate::{
     connectivity::{
@@ -31,52 +30,11 @@ use crate::{
 };
 
 use super::{
-    ProtocolUdpHolePunchTransportSink, UdpHolePunchConnector, UdpHolePunchPeerSource,
-    UdpHolePunchRuntime, UdpPunchAcceptor, UdpPunchCandidate, UdpPunchConnCounter,
-    UdpPunchListener, UdpPunchSocket, UdpResolvedPublicAddr, UdpSymPunchLock,
+    ProtocolUdpHolePunchTransportSink, UdpHolePunchConnector, UdpHolePunchRuntime,
+    UdpPunchAcceptor, UdpPunchConnCounter, UdpPunchListener, UdpPunchSocket, UdpResolvedPublicAddr,
+    UdpSymPunchLock,
     rpc::{PeerRpcUdpHolePunchSignaling, UdpHolePunchRpcEndpoint},
 };
-
-#[async_trait]
-impl UdpHolePunchPeerSource for PeerManagerCore {
-    fn local_peer_id(&self) -> crate::config::PeerId {
-        PeerManagerCore::my_peer_id(self)
-    }
-
-    fn network_name(&self) -> &str {
-        PeerManagerCore::network_name(self)
-    }
-
-    fn p2p_policy_flags(&self) -> crate::config::P2pPolicyFlags {
-        PeerManagerCore::p2p_policy_flags(self)
-    }
-
-    async fn candidates(&self) -> Vec<UdpPunchCandidate> {
-        let now = Instant::now();
-        let peer_map = self.get_peer_map();
-        self.list_route_snapshots()
-            .await
-            .into_iter()
-            .filter_map(|route| {
-                let udp_nat_type = route
-                    .stun_info
-                    .as_ref()
-                    .map(|info| info.udp_nat_type)
-                    .unwrap_or_default();
-                let Ok(udp_nat_type) = crate::proto::common::NatType::try_from(udp_nat_type) else {
-                    return None;
-                };
-                Some(UdpPunchCandidate {
-                    peer_id: route.peer_id,
-                    udp_nat_type,
-                    feature_flag: route.feature_flag,
-                    has_direct_connection: peer_map.has_peer(route.peer_id),
-                    has_recent_traffic: self.has_recent_traffic(route.peer_id, now),
-                })
-            })
-            .collect()
-    }
-}
 
 async fn resolve_public_addr_with_policy<S>(
     stun: &dyn StunSocketMapper<S>,

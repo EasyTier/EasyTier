@@ -17,6 +17,7 @@ use std::sync::{
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "test-utils")]
 use std::sync::atomic::AtomicUsize;
+#[cfg(feature = "proxy-smoltcp-stack")]
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -61,13 +62,13 @@ use crate::{
         plan::{ListenerRuntimeConfig, PreparedListenerPlan, prepare_listener_plan},
         transport::{
             AcceptedTransport, AcceptedTunnelEventSink, CoreListenerRuntime, HostAcceptedTcpSocket,
-            PeerAcceptedTunnelHandler, ProtocolAcceptedTransportHandler,
-            RawAcceptedTransportHandler,
+            ProtocolAcceptedTransportHandler,
         },
     },
     peers::peer_center::instance::PeerCenterInstance,
     peers::{
         acl_config::AclRuleConfig,
+        admission::{PeerAcceptedTunnelHandler, RawAcceptedTransportHandler},
         context::{PeerRuntimeSnapshot, PeerStunInfoSource},
         create_packet_recv_chan,
         peer_manager::{PeerManagerCore, PeerManagerHostAdapters, PortablePeerManagerConfig},

@@ -6,8 +6,26 @@ use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 use tokio_util::task::AbortOnDropHandle;
 
-use crate::{foundation::time, peers::context::ByteLimiter};
+use crate::foundation::time;
 use easytier_proto::common::LimiterConfig;
+
+#[async_trait::async_trait]
+pub(crate) trait ByteLimiter: Send + Sync {
+    async fn consume(&self, bytes: u64);
+
+    fn try_consume(&self, bytes: u64) -> bool;
+}
+
+#[async_trait::async_trait]
+impl ByteLimiter for () {
+    async fn consume(&self, _bytes: u64) {}
+
+    fn try_consume(&self, _bytes: u64) -> bool {
+        true
+    }
+}
+
+pub(crate) type ArcByteLimiter = Arc<dyn ByteLimiter>;
 
 /// Token Bucket rate limiter using atomic operations
 pub struct TokenBucket {

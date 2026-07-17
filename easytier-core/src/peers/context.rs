@@ -9,7 +9,6 @@ use std::{
 };
 
 use arc_swap::ArcSwap;
-use async_trait::async_trait;
 use cidr::{Ipv4Cidr, Ipv4Inet, Ipv6Cidr, Ipv6Inet};
 use dashmap::DashMap;
 use easytier_proto::{
@@ -31,7 +30,7 @@ use crate::{
         RouteConfig, TrafficConfig,
     },
     foundation::stats::{LabelSet, LabelType, MetricName, StatsManager},
-    foundation::token_bucket::TokenBucketManager,
+    foundation::token_bucket::{ArcByteLimiter, TokenBucketManager},
     peers::{
         credential_manager::{CredentialManager, CredentialStorage},
         foreign_network_manager::check_network_in_relay_whitelist,
@@ -41,24 +40,6 @@ use crate::{
 
 pub(crate) const SECRET_PROOF_PREFIX: &[u8] = b"easytier secret proof";
 const PEER_EVENT_CAPACITY: usize = 100;
-
-#[async_trait]
-pub(crate) trait ByteLimiter: Send + Sync {
-    async fn consume(&self, bytes: u64);
-
-    fn try_consume(&self, bytes: u64) -> bool;
-}
-
-#[async_trait]
-impl ByteLimiter for () {
-    async fn consume(&self, _bytes: u64) {}
-
-    fn try_consume(&self, _bytes: u64) -> bool {
-        true
-    }
-}
-
-pub(crate) type ArcByteLimiter = Arc<dyn ByteLimiter>;
 
 /// Projects credential-store changes without exposing the store itself.
 pub trait PeerCredentialEventSink: Send + Sync {

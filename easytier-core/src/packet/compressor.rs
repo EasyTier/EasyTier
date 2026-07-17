@@ -9,7 +9,7 @@ use zstd::bulk;
 
 use zerocopy::{AsBytes as _, FromBytes as _};
 
-use crate::packet::{COMPRESSOR_TAIL_SIZE, CompressorAlgo, CompressorTail, ZCPacket};
+use super::{COMPRESSOR_TAIL_SIZE, CompressorAlgo, CompressorTail, ZCPacket};
 
 type Error = anyhow::Error;
 

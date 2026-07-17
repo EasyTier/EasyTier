@@ -7,13 +7,11 @@ use cidr::Ipv4Cidr;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    gateway::{GatewayRuntimeConfig, proxy::ProxyRuntimeConfig},
-    peers::{
-        acl_config::AclRuleConfig, context::PeerRuntimeSnapshot,
-        public_ipv6::PublicIpv6ProviderConfig,
-    },
+use crate::peers::{
+    acl_config::AclRuleConfig, context::PeerRuntimeSnapshot, public_ipv6::PublicIpv6ProviderConfig,
 };
+
+use super::gateway::{GatewayRuntimeConfig, ProxyRuntimeConfig};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoreRuntimeConfig {

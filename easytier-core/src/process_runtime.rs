@@ -11,7 +11,7 @@ use crate::{
         protocol::ClientProtocolUpgrader,
     },
     host::dns::{DnsRecordResolver, DnsResolver},
-    listener::SocketListener,
+    socket::SocketListener,
     socket::{ring::RingSocketId, tcp::VirtualTcpSocketFactory},
     tunnel::{Tunnel, ring::RingTunnelRegistry},
 };

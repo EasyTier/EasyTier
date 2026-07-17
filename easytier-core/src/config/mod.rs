@@ -1,5 +1,6 @@
 //! Static configuration schema plus the live runtime configuration store.
 
+pub mod gateway;
 pub mod runtime;
 
 use std::{

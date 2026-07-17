@@ -257,7 +257,7 @@ pub(crate) mod tests {
     use tokio_util::bytes::{BufMut, Bytes, BytesMut};
 
     use easytier_core::{
-        connectivity::protocol::raw::TunnelDialer, listener::SocketListener, packet::ZCPacket,
+        connectivity::protocol::raw::TunnelDialer, packet::ZCPacket, socket::SocketListener,
         tunnel::Tunnel,
     };
 

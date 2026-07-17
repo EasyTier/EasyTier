@@ -360,7 +360,7 @@ pub fn build_stun_response(addr: SocketAddr, req_buf: &[u8]) -> anyhow::Result<S
     })
 }
 
-pub async fn respond_stun_packet<S, F>(
+async fn respond_stun_packet<S, F>(
     socket: Arc<S>,
     factory: &F,
     addr: SocketAddr,
@@ -397,6 +397,24 @@ where
 
     tracing::debug!(?addr, "udp respond stun packet done");
     Ok(())
+}
+
+#[async_trait::async_trait]
+impl<S, F> crate::socket::udp::UdpSessionStunResponder<S> for F
+where
+    S: VirtualUdpSocket,
+    F: VirtualUdpSocketFactory<Socket = S>,
+{
+    async fn respond_stun(
+        &self,
+        socket: Arc<S>,
+        datagram: &[u8],
+        remote_addr: SocketAddr,
+    ) -> std::io::Result<()> {
+        respond_stun_packet(socket, self, remote_addr, datagram)
+            .await
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error.to_string()))
+    }
 }
 
 #[cfg(test)]

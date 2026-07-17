@@ -10,8 +10,8 @@ use std::{
 use easytier_core::{
     connectivity::protocol::raw::TunnelDialer,
     foundation::stats::{LabelSet, LabelType, MetricName, MetricSnapshot},
-    listener::SocketListener,
     process_runtime::CoreProcessRuntime,
+    socket::SocketListener,
     tunnel::Tunnel,
 };
 use rand::{Rng, rngs::OsRng};

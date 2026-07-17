@@ -5,6 +5,7 @@ use easytier_core::listener::{
     self as core_listener, ExternalListenerFactory, ExternalListenerRequest,
     transport::{AcceptedTransport, AcceptedTunnelEvent, AcceptedTunnelEventSink},
 };
+use easytier_core::socket::SocketListener;
 
 #[cfg(feature = "faketcp")]
 use crate::common::netns::NetNS;
@@ -29,8 +30,7 @@ impl ExternalListenerFactory<AcceptedTransport<RuntimeTcpSocket>>
     fn create(
         &self,
         request: ExternalListenerRequest,
-    ) -> Box<dyn core_listener::SocketListener<Accepted = AcceptedTransport<RuntimeTcpSocket>>>
-    {
+    ) -> Box<dyn SocketListener<Accepted = AcceptedTransport<RuntimeTcpSocket>>> {
         match request.url.scheme() {
             #[cfg(feature = "faketcp")]
             "faketcp" => Box::new(RuntimeFakeTcpSocketListener::new(
@@ -79,7 +79,7 @@ impl Debug for RuntimeUnixStreamListener {
 
 #[cfg(unix)]
 #[async_trait]
-impl core_listener::SocketListener for RuntimeUnixStreamListener {
+impl SocketListener for RuntimeUnixStreamListener {
     type Accepted = AcceptedTransport<RuntimeTcpSocket>;
 
     async fn listen(&mut self) -> anyhow::Result<()> {
@@ -136,27 +136,24 @@ impl Debug for RuntimeFakeTcpSocketListener {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("RuntimeFakeTcpSocketListener")
-            .field(
-                "url",
-                &core_listener::SocketListener::local_url(&self.inner),
-            )
+            .field("url", &SocketListener::local_url(&self.inner))
             .finish()
     }
 }
 
 #[cfg(feature = "faketcp")]
 #[async_trait]
-impl core_listener::SocketListener for RuntimeFakeTcpSocketListener {
+impl SocketListener for RuntimeFakeTcpSocketListener {
     type Accepted = AcceptedTransport<RuntimeTcpSocket>;
 
     async fn listen(&mut self) -> anyhow::Result<()> {
         let _guard = self.net_ns.guard();
-        core_listener::SocketListener::listen(&mut self.inner).await?;
+        SocketListener::listen(&mut self.inner).await?;
         Ok(())
     }
 
     async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
-        let local_url = core_listener::SocketListener::local_url(&self.inner);
+        let local_url = SocketListener::local_url(&self.inner);
         let socket = self.inner.accept_socket().await?;
         Ok(AcceptedTransport::Tcp {
             socket: RuntimeTcpSocket::from_fake_tcp(socket),
@@ -166,7 +163,7 @@ impl core_listener::SocketListener for RuntimeFakeTcpSocketListener {
     }
 
     fn local_url(&self) -> url::Url {
-        core_listener::SocketListener::local_url(&self.inner)
+        SocketListener::local_url(&self.inner)
     }
 }
 
@@ -265,13 +262,11 @@ mod tests {
         let path = directory.path().join("easytier.sock");
         let url: url::Url = format!("unix://{}", path.display()).parse().unwrap();
         let mut listener = RuntimeUnixStreamListener::new(url.clone());
-        core_listener::SocketListener::listen(&mut listener)
-            .await
-            .unwrap();
+        SocketListener::listen(&mut listener).await.unwrap();
 
         let runtime = crate::host_runtime::native_host_runtime();
         let (accepted, connected) = tokio::join!(
-            core_listener::SocketListener::accept(&mut listener),
+            SocketListener::accept(&mut listener),
             runtime.connect_byte_stream(&url),
         );
         let AcceptedTransport::ByteStream {

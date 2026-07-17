@@ -8,6 +8,7 @@ use easytier_core::peers::peer_manager::{
     PeerManagerHostAdapters, PortablePeerManagerConfig, RouteAlgoType,
 };
 use easytier_core::{
+    config::gateway::{GatewayRuntimeConfig, ProxyRuntimeConfig},
     config::runtime::{CoreInstanceRuntimeConfig, CoreRuntimeConfig},
     config::{IpPrefix, NodeConfig, ProxyNetworkConfig, RouteConfig},
     connectivity::stun::StunServerConfig,
@@ -15,7 +16,6 @@ use easytier_core::{
         direct::DirectConnectorOptions,
         manual::{ManualConnectorOptions, discovery::ManualEndpointDiscoveryConfig},
     },
-    gateway::{GatewayRuntimeConfig, proxy::ProxyRuntimeConfig},
     instance::{CoreConnectivityConfig, CoreInstanceStartupPlan},
     listener::plan::ListenerRuntimeConfig,
     peers::acl_config::AclRuleConfig,

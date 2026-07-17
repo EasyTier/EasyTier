@@ -3,6 +3,8 @@ use std::{collections::BTreeMap, net::Ipv4Addr, sync::Mutex, time::Duration};
 use async_trait::async_trait;
 use quanta::Instant;
 
+use crate::peers::peer_manager::PeerManagerCore;
+
 #[cfg(feature = "proxy-packet")]
 use std::future::Future;
 
@@ -302,6 +304,42 @@ pub trait MagicDnsRouteSource: Send + Sync {
     async fn revision(&self) -> Instant;
 }
 
+fn magic_dns_route_advertisement(
+    route: crate::proto::core_peer::peer::Route,
+) -> MagicDnsRouteAdvertisement {
+    MagicDnsRouteAdvertisement {
+        hostname: route.hostname,
+        ipv4_addr: route.ipv4_addr,
+    }
+}
+
+#[async_trait]
+impl MagicDnsRouteSource for PeerManagerCore {
+    async fn snapshot(&self) -> MagicDnsRouteSnapshot {
+        let revision = self.get_route().get_peer_info_last_update_time().await;
+        let mut routes = self
+            .list_route_snapshots()
+            .await
+            .into_iter()
+            .map(magic_dns_route_advertisement)
+            .collect::<Vec<_>>();
+        let (hostname, ipv4_addr, zone) = self.dns_route_identity();
+        routes.push(MagicDnsRouteAdvertisement {
+            hostname,
+            ipv4_addr,
+        });
+        MagicDnsRouteSnapshot {
+            revision,
+            routes,
+            zone,
+        }
+    }
+
+    async fn revision(&self) -> Instant {
+        self.get_route().get_peer_info_last_update_time().await
+    }
+}
+
 #[async_trait]
 pub trait MagicDnsRoutePublisher: Send {
     async fn handshake(&mut self) -> anyhow::Result<()>;
@@ -417,6 +455,22 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+
+    #[test]
+    fn route_advertisement_preserves_untrusted_prefix_without_parsing() {
+        let ipv4_addr = crate::proto::common::Ipv4Inet {
+            address: Some("192.0.2.1".parse::<std::net::Ipv4Addr>().unwrap().into()),
+            network_length: 33,
+        };
+
+        let advertisement = magic_dns_route_advertisement(crate::proto::core_peer::peer::Route {
+            hostname: "remote".to_owned(),
+            ipv4_addr: Some(ipv4_addr.clone()),
+            ..Default::default()
+        });
+
+        assert_eq!(advertisement.ipv4_addr, Some(ipv4_addr));
+    }
 
     struct TestRouteSource {
         revision: Mutex<Instant>,

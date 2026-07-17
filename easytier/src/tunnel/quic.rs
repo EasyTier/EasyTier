@@ -553,8 +553,8 @@ mod tests {
             protocol::ServerProtocolAdmissionController,
             transport::{UdpSessionMode, connect_udp},
         },
-        listener::SocketListener,
         packet::ZCPacket,
+        socket::SocketListener,
         socket::udp::{
             UdpBindOptions, UdpSessionAcceptKind, UdpSessionListenRequest, UdpSessionProtocol,
             VirtualUdpSocket,

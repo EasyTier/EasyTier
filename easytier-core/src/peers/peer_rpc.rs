@@ -5,12 +5,9 @@ use tokio::task::JoinSet;
 
 use crate::{
     config::PeerId,
+    foundation::stats::{ArcRpcMetrics, RpcMetricsProvider},
     packet::ZCPacket,
-    rpc::{
-        self,
-        bidirect::BidirectRpcManager,
-        metrics::{ArcRpcMetrics, RpcMetricsProvider},
-    },
+    rpc::{self, bidirect::BidirectRpcManager},
 };
 
 #[async_trait::async_trait]

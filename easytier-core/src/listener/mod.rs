@@ -9,39 +9,10 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
-use crate::socket::SocketContext;
+use crate::socket::{ListenerConnectionCounter, SocketContext, SocketListener};
 
 pub mod plan;
 pub mod transport;
-
-pub trait ListenerConnectionCounter: Debug + Send + Sync {
-    fn get(&self) -> Option<u32>;
-}
-
-#[derive(Debug)]
-struct EmptyConnectionCounter;
-
-impl ListenerConnectionCounter for EmptyConnectionCounter {
-    fn get(&self) -> Option<u32> {
-        None
-    }
-}
-
-#[async_trait]
-#[auto_impl::auto_impl(Box)]
-pub trait SocketListener: Debug + Send {
-    type Accepted: Send + 'static;
-
-    async fn listen(&mut self) -> anyhow::Result<()>;
-
-    async fn accept(&mut self) -> anyhow::Result<Self::Accepted>;
-
-    fn local_url(&self) -> Url;
-
-    fn connection_counter(&self) -> Arc<dyn ListenerConnectionCounter> {
-        Arc::new(EmptyConnectionCounter)
-    }
-}
 
 pub trait ExternalListenerFactory<Accepted>: Send + Sync + 'static
 where
@@ -645,6 +616,15 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct TestConnectionCounter;
+
+    impl ListenerConnectionCounter for TestConnectionCounter {
+        fn get(&self) -> Option<u32> {
+            None
+        }
+    }
+
     #[test]
     fn running_listener_registry_reference_counts_duplicate_urls() {
         let registry = RunningListenerRegistry::default();
@@ -652,7 +632,7 @@ mod tests {
         for _ in 0..2 {
             registry.emit(ListenerEvent::ListenerAdded {
                 url: url.clone(),
-                connection_counter: Arc::new(EmptyConnectionCounter),
+                connection_counter: Arc::new(TestConnectionCounter),
             });
         }
         assert_eq!(registry.running_listeners(), vec![url.clone()]);

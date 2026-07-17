@@ -20,9 +20,8 @@ use tokio::sync::{Semaphore, mpsc, watch};
 use crate::{
     connectivity::hole_punch::udp::hole_punch_packet_tid,
     connectivity::stun::{Attribute, ChangeRequest, u32_to_tid},
-    listener::SocketListener,
     packet::{UDP_TUNNEL_HEADER_SIZE, UdpPacketType},
-    socket::{IpVersion, NetNamespace, SocketContext},
+    socket::{IpVersion, NetNamespace, SocketContext, SocketListener},
 };
 
 use super::{layer::*, packet::*, session::*, virtual_socket::*, *};

@@ -10,7 +10,40 @@ pub mod ring;
 pub mod tcp;
 pub mod udp;
 
+use std::{fmt::Debug, sync::Arc};
+
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use url::Url;
+
+pub trait ListenerConnectionCounter: Debug + Send + Sync {
+    fn get(&self) -> Option<u32>;
+}
+
+#[derive(Debug)]
+struct EmptyConnectionCounter;
+
+impl ListenerConnectionCounter for EmptyConnectionCounter {
+    fn get(&self) -> Option<u32> {
+        None
+    }
+}
+
+#[async_trait]
+#[auto_impl::auto_impl(Box)]
+pub trait SocketListener: Debug + Send {
+    type Accepted: Send + 'static;
+
+    async fn listen(&mut self) -> anyhow::Result<()>;
+
+    async fn accept(&mut self) -> anyhow::Result<Self::Accepted>;
+
+    fn local_url(&self) -> Url;
+
+    fn connection_counter(&self) -> Arc<dyn ListenerConnectionCounter> {
+        Arc::new(EmptyConnectionCounter)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum IpVersion {

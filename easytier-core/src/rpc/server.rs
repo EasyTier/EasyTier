@@ -14,7 +14,10 @@ use prost::Message;
 use tokio::task::JoinSet;
 
 use crate::{
-    foundation::time::timeout,
+    foundation::{
+        stats::{ArcRpcMetrics, RpcMetricLabels, RpcMetricsProvider},
+        time::timeout,
+    },
     proto::{
         common::{
             self, CompressionAlgoPb, RpcCompressionInfo, RpcPacket, RpcRequest, RpcResponse,
@@ -32,7 +35,6 @@ use crate::{
 
 use super::{
     RpcController, Transport,
-    metrics::{ArcRpcMetrics, RpcMetricLabels, RpcMetricsProvider},
     packet::{PacketMerger, build_rpc_packet, compress_packet, decompress_packet},
     service_registry::ServiceRegistry,
 };

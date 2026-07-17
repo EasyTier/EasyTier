@@ -647,7 +647,7 @@ impl WgTunnelListener {
             UdpSessionAcceptKind::Classified(UdpSessionProtocol::WireGuard),
             NetNS::new(None),
         );
-        easytier_core::listener::SocketListener::listen(&mut session_listener).await?;
+        easytier_core::socket::SocketListener::listen(&mut session_listener).await?;
         let session_listener = Arc::new(session_listener);
 
         self.tasks.spawn(Self::accept_udp_sessions(
@@ -671,7 +671,7 @@ impl WgTunnelListener {
 }
 
 #[async_trait]
-impl easytier_core::listener::SocketListener for WgTunnelListener {
+impl easytier_core::socket::SocketListener for WgTunnelListener {
     type Accepted = Box<dyn Tunnel>;
 
     async fn listen(&mut self) -> anyhow::Result<()> {
@@ -685,7 +685,7 @@ impl easytier_core::listener::SocketListener for WgTunnelListener {
     fn local_url(&self) -> url::Url {
         self.session_listener
             .as_ref()
-            .map(|listener| easytier_core::listener::SocketListener::local_url(listener.as_ref()))
+            .map(|listener| easytier_core::socket::SocketListener::local_url(listener.as_ref()))
             .unwrap_or_else(|| self.addr.clone())
     }
 }
@@ -773,7 +773,7 @@ pub mod tests {
     };
     use easytier_core::{
         connectivity::transport::{ConnectedTransport, UdpSessionMode, connect_udp},
-        listener::SocketListener,
+        socket::SocketListener,
         socket::udp::{UdpBindOptions, UdpSessionProtocol},
     };
 

@@ -2,7 +2,7 @@ use std::{net::SocketAddr, sync::Arc};
 
 use anyhow::Context;
 use cidr::IpCidr;
-use easytier_core::{listener::SocketListener, tunnel::Tunnel};
+use easytier_core::{socket::SocketListener, tunnel::Tunnel};
 
 use crate::{
     instance::instance::InstanceRpcServerHook,

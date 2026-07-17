@@ -1,3 +1,5 @@
+pub(crate) mod compressor;
+
 use bytes::Buf;
 use bytes::Bytes;
 use bytes::BytesMut;

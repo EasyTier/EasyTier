@@ -18,7 +18,7 @@ pub async fn compress_packet(
     content: &[u8],
 ) -> Result<(Vec<u8>, CompressionAlgoPb), Error> {
     let algo = CompressorAlgo::try_from(accepted_compression_algo).unwrap_or(CompressorAlgo::None);
-    let compressed = crate::foundation::compressor::DefaultCompressor::new()
+    let compressed = crate::packet::compressor::DefaultCompressor::new()
         .compress_raw(content, algo)
         .await
         .map_err(Error::from)?;
@@ -37,7 +37,7 @@ pub async fn decompress_packet(
     content: &[u8],
 ) -> Result<Vec<u8>, Error> {
     let algo = CompressorAlgo::try_from(compression_algo).map_err(anyhow::Error::from)?;
-    crate::foundation::compressor::DefaultCompressor::new()
+    crate::packet::compressor::DefaultCompressor::new()
         .decompress_raw(content, algo)
         .await
         .map_err(Error::from)

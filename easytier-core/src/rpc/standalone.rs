@@ -8,12 +8,12 @@ use tokio::task::JoinSet;
 
 use crate::{
     connectivity::protocol::raw::TunnelDialer,
-    listener::SocketListener,
     proto::{
         common::TunnelInfo,
         rpc_types::{__rt::RpcClientFactory, error::Error},
     },
     rpc::{bidirect::BidirectRpcManager, service_registry::ServiceRegistry},
+    socket::SocketListener,
     tunnel::Tunnel,
 };
 
@@ -232,7 +232,6 @@ mod tests {
     use crate::{
         connectivity::protocol::raw::TunnelDialer,
         foundation::time::{sleep, timeout},
-        listener::SocketListener,
         proto::{
             common::TunnelInfo,
             peer_rpc::{
@@ -242,6 +241,7 @@ mod tests {
             },
             rpc_types::{controller::BaseController, error},
         },
+        socket::SocketListener,
         tunnel::{Tunnel, ring::create_ring_tunnel_pair},
     };
 

@@ -375,7 +375,7 @@ async fn rpc_tunnel_stuck_test() {
 async fn test_bidirect_rpc_manager() {
     use crate::proto::rpc::bidirect::BidirectRpcManager;
     use crate::proto::rpc::standalone::{runtime_rpc_dialer, runtime_rpc_listener};
-    use easytier_core::{connectivity::protocol::raw::TunnelDialer, listener::SocketListener};
+    use easytier_core::{connectivity::protocol::raw::TunnelDialer, socket::SocketListener};
     use tokio::sync::Notify;
     use tokio_util::task::AbortOnDropHandle;
 

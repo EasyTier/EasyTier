@@ -7,7 +7,7 @@ use anyhow::Context;
 use base64::{Engine, prelude::BASE64_STANDARD};
 use easytier_core::{
     gateway::vpn_portal::{VpnPortalClientConfigPlan, VpnPortalHost, VpnPortalListener},
-    listener::SocketListener,
+    socket::SocketListener,
 };
 
 use crate::{

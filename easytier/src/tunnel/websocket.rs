@@ -307,7 +307,7 @@ impl WsTunnelListener {
 }
 
 #[async_trait::async_trait]
-impl easytier_core::listener::SocketListener for WsTunnelListener {
+impl easytier_core::socket::SocketListener for WsTunnelListener {
     type Accepted = Box<dyn Tunnel>;
 
     async fn listen(&mut self) -> anyhow::Result<()> {
@@ -375,7 +375,7 @@ where
 #[cfg(test)]
 pub mod tests {
     use super::*;
-    use easytier_core::listener::SocketListener;
+    use easytier_core::socket::SocketListener;
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpSocket,

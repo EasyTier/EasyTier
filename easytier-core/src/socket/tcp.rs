@@ -4,10 +4,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::{
-    listener::SocketListener,
-    socket::{IpVersion, SocketContext},
-};
+use crate::socket::{IpVersion, SocketContext, SocketListener};
 
 /// A core-visible TCP stream endpoint.
 ///

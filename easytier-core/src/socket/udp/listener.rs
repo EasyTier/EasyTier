@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::listener::{ListenerConnectionCounter, SocketListener};
+use crate::socket::{ListenerConnectionCounter, SocketListener};
 
 use super::{
     UdpBindOptions, UdpSession, UdpSessionLayer, UdpSessionListenRequest, UdpSessionProtocol,

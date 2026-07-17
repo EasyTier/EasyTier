@@ -381,7 +381,7 @@ impl FakeTcpSocketListener {
 }
 
 #[async_trait::async_trait]
-impl easytier_core::listener::SocketListener for FakeTcpSocketListener {
+impl easytier_core::socket::SocketListener for FakeTcpSocketListener {
     type Accepted = FakeTcpSocket;
 
     async fn listen(&mut self) -> anyhow::Result<()> {
@@ -486,7 +486,7 @@ pub(crate) async fn connect_socket(
 
 #[cfg(test)]
 mod tests {
-    use easytier_core::listener::SocketListener;
+    use easytier_core::socket::SocketListener;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::*;

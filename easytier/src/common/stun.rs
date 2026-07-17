@@ -118,7 +118,7 @@ mod tests {
     use bytecodec::{DecodeExt as _, EncodeExt as _};
     use easytier_core::{
         connectivity::stun::{Attribute, TcpNatTypeDetector, UdpNatTypeDetector},
-        listener::SocketListener,
+        socket::SocketListener,
         socket::{NetNamespace, udp::VirtualUdpSocketFactory},
     };
     use stun_codec::rfc5389::{attributes::XorMappedAddress, methods::BINDING};

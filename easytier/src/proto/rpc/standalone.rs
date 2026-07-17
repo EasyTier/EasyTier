@@ -2,8 +2,8 @@ use easytier_core::{
     connectivity::protocol::raw::{
         TcpTunnelDialer, TcpTunnelListener, TunnelDialer, UdpTunnelDialer, UdpTunnelListener,
     },
-    listener::SocketListener,
     rpc::standalone::StandAloneClient,
+    socket::SocketListener,
     socket::udp::{UdpBindOptions, UdpSessionListenRequest},
     tunnel::Tunnel,
 };
@@ -52,7 +52,7 @@ pub fn runtime_udp_tunnel_listener(
 #[cfg(test)]
 mod tests {
     use easytier_core::{
-        connectivity::protocol::raw::TunnelDialer as _, listener::SocketListener as _,
+        connectivity::protocol::raw::TunnelDialer as _, socket::SocketListener as _,
     };
 
     use crate::proto::rpc::standalone::{

@@ -74,24 +74,6 @@ pub struct NoopUdpSessionStunResponder;
 #[async_trait]
 impl<S> UdpSessionStunResponder<S> for NoopUdpSessionStunResponder where S: VirtualUdpSocket {}
 
-#[async_trait]
-impl<S, F> UdpSessionStunResponder<S> for F
-where
-    S: VirtualUdpSocket,
-    F: VirtualUdpSocketFactory<Socket = S>,
-{
-    async fn respond_stun(
-        &self,
-        socket: Arc<S>,
-        datagram: &[u8],
-        remote_addr: SocketAddr,
-    ) -> io::Result<()> {
-        crate::connectivity::stun::respond_stun_packet(socket, self, remote_addr, datagram)
-            .await
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))
-    }
-}
-
 pub async fn send_v4_hole_punch_control_packet<F>(
     factory: &F,
     context: SocketContext,

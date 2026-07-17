@@ -7,18 +7,16 @@ use futures::{SinkExt as _, StreamExt};
 use tokio::task::JoinSet;
 
 use crate::{
-    foundation::time::timeout,
+    foundation::{
+        stats::{ArcRpcMetrics, RpcMetricsProvider},
+        time::timeout,
+    },
     packet::PacketType,
     proto::rpc_types::error::Error,
     tunnel::{Tunnel, ring::create_ring_tunnel_pair},
 };
 
-use super::{
-    client::Client,
-    metrics::{ArcRpcMetrics, RpcMetricsProvider},
-    server::Server,
-    service_registry::ServiceRegistry,
-};
+use super::{client::Client, server::Server, service_registry::ServiceRegistry};
 
 pub struct BidirectRpcManager {
     rpc_client: Client,

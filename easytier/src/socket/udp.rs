@@ -180,7 +180,7 @@ impl VirtualUdpSocketFactory for RuntimeUdpSocketFactory {
 #[cfg(test)]
 mod tests {
     use easytier_core::{
-        listener::SocketListener,
+        socket::SocketListener,
         socket::udp::{
             UdpSessionListenRequest, send_v4_hole_punch_control_packet,
             send_v6_hole_punch_control_packet,
