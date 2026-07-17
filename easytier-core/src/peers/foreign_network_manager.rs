@@ -635,13 +635,13 @@ impl ForeignNetworkEntry {
         pm_packet_sender: PacketRecvChan,
     ) -> Self {
         let parent_context_dyn: ArcPeerContext = parent_context.clone();
-        let socket_mark = parent_context_dyn.flags().socket_mark;
         let peer_context = build_foreign_peer_context(
             &network,
             &parent_context,
             relay_data,
             foreign_context_default_flags,
         );
+        let socket_mark = peer_context.flags().socket_mark;
         let stats_mgr = peer_context.stats_manager();
         let network_name = network.network_name.clone();
 
