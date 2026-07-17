@@ -5,7 +5,6 @@ mod host;
 mod packet_io;
 mod packet_plane;
 pub mod public_ipv6_provider;
-mod udp_hole_punch;
 
 #[cfg(any(test, target_os = "wasi"))]
 mod runtime_driver;
@@ -29,11 +28,17 @@ use url::Url;
 
 use crate::{
     config::runtime::{CoreInstanceRuntimeConfig, CoreRuntimeConfig, CoreRuntimeConfigStore},
+    connectivity::hole_punch::port_mapping::{UdpPortMappingEventSink, UdpPortMappingPlatform},
+    connectivity::hole_punch::tcp::{TcpHolePunchConnector, TcpHolePunchHost},
+    connectivity::stun::{
+        StunDnsRuntime, StunInfoCollector, StunInfoProvider, StunServerConfig, StunSocketMapper,
+    },
     connectivity::{
         direct::{
             DirectConnectorHost, DirectConnectorManager, DirectConnectorOptions,
             ForeignDirectConnectorRpcRegistrar,
         },
+        hole_punch::udp::CoreUdpHolePunchService,
         manual::{
             ManualConnectivityEventSink, ManualConnectorManager, ManualConnectorOptions,
             ManualConnectorSnapshot,
@@ -46,8 +51,6 @@ use crate::{
     },
     dhcp::{DhcpIpv4Host, DhcpIpv4RouteSource, DhcpIpv4Service},
     foundation::stats::{CounterHandle, MetricSnapshot},
-    hole_punch::tcp::{TcpHolePunchConnector, TcpHolePunchHost},
-    hole_punch::udp::{UdpPortMappingEventSink, UdpPortMappingPlatform},
     host::dns::{DnsRecordResolver, DnsResolver},
     listener::{
         AcceptedSocketHandler, ListenerEventSink, ListenerEventSinkGroup, ListenerFactory,
@@ -85,19 +88,13 @@ use crate::{
         tcp::VirtualTcpSocketFactory,
         udp::{UdpSessionAcceptKind, UdpSessionProtocol, VirtualUdpSocketFactory},
     },
-    stun::{
-        StunDnsRuntime, StunInfoCollector, StunInfoProvider, StunServerConfig, StunSocketMapper,
-    },
     vpn_portal::{VpnPortalEventSink, VpnPortalHost, VpnPortalInfoSnapshot, VpnPortalModule},
 };
 
 #[cfg(feature = "proxy-smoltcp-stack")]
 use crate::proxy::gateway::{GatewayEventSink, GatewayModule};
 
-use self::{
-    public_ipv6_provider::{PublicIpv6ProviderPlatform, PublicIpv6ProviderService},
-    udp_hole_punch::CoreUdpHolePunchService,
-};
+use self::public_ipv6_provider::{PublicIpv6ProviderPlatform, PublicIpv6ProviderService};
 #[cfg(feature = "proxy-packet")]
 use crate::peers::peer_manager::PipelineRegistrationGuard;
 #[cfg(feature = "proxy-packet")]

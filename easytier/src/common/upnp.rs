@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::{Context, anyhow, bail};
 use async_trait::async_trait;
-use easytier_core::hole_punch::udp::{
+use easytier_core::connectivity::hole_punch::port_mapping::{
     ActiveUdpPortMapping as CoreActiveUdpPortMapping, UdpPortMappingAttemptError,
     UdpPortMappingBackend, UdpPortMappingLifecycle,
 };

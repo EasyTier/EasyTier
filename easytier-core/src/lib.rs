@@ -2,7 +2,6 @@ pub mod config;
 pub mod connectivity;
 pub mod dhcp;
 pub mod foundation;
-pub mod hole_punch;
 pub mod host;
 pub mod instance;
 pub mod listener;
@@ -14,7 +13,6 @@ pub mod process_runtime;
 pub mod proxy;
 pub mod rpc_impl;
 pub mod socket;
-pub mod stun;
 pub mod tunnel;
 pub mod vpn_portal;
 

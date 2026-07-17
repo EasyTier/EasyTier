@@ -17,12 +17,13 @@ use url::{Host, Url};
 
 use crate::{
     config::PeerId,
+    connectivity::hole_punch::policy::{should_background_p2p_with_peer, should_try_p2p_with_peer},
+    connectivity::stun::{StunInfoProvider, StunSocketMapper},
     connectivity::{
         protocol::ClientProtocolUpgrader,
         transport::{self, ConnectedTransport, UdpSessionMode},
     },
     foundation::task::{PeerTaskLauncher, PeerTaskManager},
-    hole_punch::udp::{should_background_p2p_with_peer, should_try_p2p_with_peer},
     host::dns::DnsResolver,
     listener::RunningListenerRegistry,
     peers::{
@@ -47,7 +48,6 @@ use crate::{
             send_v6_hole_punch_control_packet,
         },
     },
-    stun::{StunInfoProvider, StunSocketMapper},
     tunnel::Tunnel,
 };
 

@@ -17,19 +17,20 @@ use tokio::{
 };
 use tokio_util::task::AbortOnDropHandle;
 
+use crate::connectivity::hole_punch::port_mapping::UdpPortMappingLease;
+use crate::connectivity::stun::StunInfoProvider;
 use crate::socket::udp::VirtualUdpSocket;
-use crate::stun::StunInfoProvider;
 
 use super::{
     HOLE_PUNCH_PACKET_BODY_LEN, MAX_PUBLIC_UDP_HOLE_PUNCH_LISTENERS, ReusableUdpPunchListener,
     SelectPunchListener, SelectPunchListenerResponse, SendPunchPacketBothEasySym,
     SendPunchPacketBothEasySymResponse, SendPunchPacketCone, SendPunchPacketEasySym,
     SendPunchPacketHardSym, SendPunchPacketHardSymResponse, UdpHolePunchInbound,
-    UdpHolePunchRuntime, UdpHolePunchSignalError, UdpHolePunchTransportSink, UdpPortMappingLease,
-    UdpPunchConnCounter, UdpPunchListener, UdpSocketArray, UdpSymPunchLock,
-    can_reuse_port_mapping_listener, can_reuse_public_listener, new_hole_punch_packet,
-    select_reusable_port_mapping_listener_idx, select_reusable_public_listener_idx,
-    should_create_public_listener, should_retry_public_listener_selection,
+    UdpHolePunchRuntime, UdpHolePunchSignalError, UdpHolePunchTransportSink, UdpPunchConnCounter,
+    UdpPunchListener, UdpSocketArray, UdpSymPunchLock, can_reuse_port_mapping_listener,
+    can_reuse_public_listener, new_hole_punch_packet, select_reusable_port_mapping_listener_idx,
+    select_reusable_public_listener_idx, should_create_public_listener,
+    should_retry_public_listener_selection,
 };
 
 const MAX_K1_FOR_RANDOM_HARD_SYM: u32 = 180;
@@ -958,7 +959,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        hole_punch::udp::{
+        connectivity::hole_punch::udp::{
             UdpPunchAcceptor, UdpPunchConnCounter, UdpPunchSocket, UdpResolvedPublicAddr,
         },
         proto::common::StunInfo,

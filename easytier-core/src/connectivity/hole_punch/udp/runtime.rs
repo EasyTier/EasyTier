@@ -5,7 +5,7 @@ use std::{
 
 use async_trait::async_trait;
 
-use super::port_mapping::UdpPortMappingLease;
+use super::super::port_mapping::UdpPortMappingLease;
 
 use crate::{
     config::P2pPolicyFlags,

@@ -14,8 +14,8 @@ use tokio_util::task::AbortOnDropHandle;
 
 use crate::{
     config::PeerId,
+    connectivity::stun::StunInfoProvider,
     socket::udp::{UdpBindOptions, VirtualUdpSocketFactory},
-    stun::StunInfoProvider,
 };
 
 use super::{

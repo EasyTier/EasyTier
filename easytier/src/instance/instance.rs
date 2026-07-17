@@ -740,12 +740,16 @@ impl Instance {
         config: impl ConfigLoader + 'static,
         process_runtime: Arc<CoreProcessRuntime>,
         stun_provider: Box<
-            dyn easytier_core::stun::StunSocketMapper<crate::socket::udp::RuntimeUdpSocket>,
+            dyn easytier_core::connectivity::stun::StunSocketMapper<
+                    crate::socket::udp::RuntimeUdpSocket,
+                >,
         >,
     ) -> Self {
         let global_ctx = Arc::new(GlobalCtx::new(config));
         let provider: Arc<
-            dyn easytier_core::stun::StunSocketMapper<crate::socket::udp::RuntimeUdpSocket>,
+            dyn easytier_core::connectivity::stun::StunSocketMapper<
+                    crate::socket::udp::RuntimeUdpSocket,
+                >,
         > = Arc::from(stun_provider);
         Self::compose(global_ctx, process_runtime, move |adapters| {
             adapters.replace_stun_provider(provider);

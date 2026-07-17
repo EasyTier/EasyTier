@@ -4,7 +4,7 @@ use async_trait::async_trait;
 
 use crate::{
     config::PeerId,
-    hole_punch::udp::{
+    connectivity::hole_punch::udp::{
         SelectPunchListener, SelectPunchListenerResponse as CoreSelectPunchListenerResponse,
         SendPunchPacketBothEasySym,
         SendPunchPacketBothEasySymResponse as CoreSendPunchPacketBothEasySymResponse,
@@ -13,6 +13,7 @@ use crate::{
         UdpHolePunchRuntime, UdpHolePunchServer as CoreUdpHolePunchServer, UdpHolePunchSignalError,
         UdpHolePunchSignaling, UdpHolePunchTransportSink, UdpSymPunchLock,
     },
+    connectivity::stun::StunInfoProvider,
     peers::peer_manager::PeerManagerCore,
     proto::{
         common::Void,
@@ -25,7 +26,6 @@ use crate::{
         },
         rpc_types::{self, controller::BaseController},
     },
-    stun::StunInfoProvider,
 };
 
 const CONE_RPC_TIMEOUT_MS: i32 = 4000;

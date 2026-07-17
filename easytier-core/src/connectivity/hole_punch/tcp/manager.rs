@@ -15,9 +15,12 @@ use tokio_util::task::AbortOnDropHandle;
 
 use crate::{
     config::PeerId,
+    connectivity::hole_punch::policy::{
+        BackOff, should_background_p2p_with_peer, should_try_p2p_with_peer,
+    },
     connectivity::protocol::{ClientProtocolUpgrader, ServerProtocolUpgrader},
+    connectivity::stun::StunInfoProvider,
     foundation::task::{PeerTaskLauncher, PeerTaskManager},
-    hole_punch::udp::{BackOff, should_background_p2p_with_peer, should_try_p2p_with_peer},
     peers::peer_manager::PeerManagerCore,
     proto::{
         common::NatType,
@@ -31,7 +34,6 @@ use crate::{
         IpVersion, SocketContext,
         tcp::{TcpBindOptions, TcpListenOptions, VirtualTcpListener},
     },
-    stun::StunInfoProvider,
 };
 
 use super::{

@@ -6,8 +6,7 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::{
-    connectivity::manual::ManualInterfaceAddrs,
-    proto::peer_rpc::GetIpListResponse,
+    connectivity::manual::ManualInterfaceAddrs, proto::peer_rpc::GetIpListResponse,
     socket::udp::PreferredIpv6Source,
 };
 

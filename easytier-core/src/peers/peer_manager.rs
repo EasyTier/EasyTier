@@ -1617,7 +1617,7 @@ impl MagicDnsRouteSource for PeerManagerCore {
 }
 
 #[async_trait::async_trait]
-impl crate::hole_punch::udp::UdpHolePunchTunnelSink for PeerManagerCore {
+impl crate::connectivity::hole_punch::udp::UdpHolePunchTunnelSink for PeerManagerCore {
     async fn add_client_tunnel(&self, tunnel: Box<dyn Tunnel>) -> anyhow::Result<()> {
         PeerManagerCore::add_client_tunnel(self, tunnel, false)
             .await
@@ -1633,7 +1633,7 @@ impl crate::hole_punch::udp::UdpHolePunchTunnelSink for PeerManagerCore {
 }
 
 #[async_trait::async_trait]
-impl crate::hole_punch::tcp::TcpHolePunchTunnelSink for PeerManagerCore {
+impl crate::connectivity::hole_punch::tcp::TcpHolePunchTunnelSink for PeerManagerCore {
     async fn add_client_tunnel(&self, tunnel: Box<dyn Tunnel>) -> anyhow::Result<()> {
         PeerManagerCore::add_client_tunnel(self, tunnel, false)
             .await

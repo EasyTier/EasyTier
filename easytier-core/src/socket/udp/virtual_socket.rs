@@ -86,7 +86,7 @@ where
         datagram: &[u8],
         remote_addr: SocketAddr,
     ) -> io::Result<()> {
-        crate::stun::respond_stun_packet(socket, self, remote_addr, datagram)
+        crate::connectivity::stun::respond_stun_packet(socket, self, remote_addr, datagram)
             .await
             .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))
     }

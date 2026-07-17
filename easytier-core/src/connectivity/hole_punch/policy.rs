@@ -1,5 +1,38 @@
 use crate::proto::common::PeerFeatureFlag;
 
+#[derive(Debug)]
+pub struct BackOff {
+    backoffs_ms: Vec<u64>,
+    current_idx: usize,
+}
+
+impl BackOff {
+    pub fn new(backoffs_ms: Vec<u64>) -> Self {
+        Self {
+            backoffs_ms,
+            current_idx: 0,
+        }
+    }
+
+    pub fn next_backoff(&mut self) -> u64 {
+        let backoff = self.backoffs_ms[self.current_idx];
+        self.current_idx = (self.current_idx + 1).min(self.backoffs_ms.len() - 1);
+        backoff
+    }
+
+    pub fn rollback(&mut self) {
+        self.current_idx = self.current_idx.saturating_sub(1);
+    }
+
+    pub async fn sleep_for_next_backoff(&mut self) {
+        let backoff = self.next_backoff();
+        if backoff > 0 {
+            crate::foundation::time::sleep(crate::foundation::time::Duration::from_millis(backoff))
+                .await;
+        }
+    }
+}
+
 pub fn should_try_p2p_with_peer(
     feature_flag: Option<&PeerFeatureFlag>,
     allow_public_server: bool,

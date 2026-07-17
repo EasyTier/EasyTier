@@ -18,11 +18,11 @@ use stun_codec::{Message, MessageClass, MessageEncoder, rfc5389::methods::BINDIN
 use tokio::sync::{Semaphore, mpsc, watch};
 
 use crate::{
-    hole_punch::udp::hole_punch_packet_tid,
+    connectivity::hole_punch::udp::hole_punch_packet_tid,
+    connectivity::stun::{Attribute, ChangeRequest, u32_to_tid},
     listener::SocketListener,
     packet::{UDP_TUNNEL_HEADER_SIZE, UdpPacketType},
     socket::{IpVersion, NetNamespace, SocketContext},
-    stun::{Attribute, ChangeRequest, u32_to_tid},
 };
 
 use super::{layer::*, packet::*, session::*, virtual_socket::*, *};

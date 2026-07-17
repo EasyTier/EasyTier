@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     config::runtime::CoreRuntimeConfigStore, connectivity::direct::DirectConnectorHost,
-    hole_punch::tcp::TcpHolePunchHost, listener::RunningListenerRegistry,
+    connectivity::hole_punch::tcp::TcpHolePunchHost, listener::RunningListenerRegistry,
     peers::peer_manager::PeerManagerCore, socket::SocketContext,
 };
 

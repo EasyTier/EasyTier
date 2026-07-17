@@ -6,8 +6,10 @@ use std::{net::SocketAddr, sync::Arc};
 #[cfg(test)]
 use async_trait::async_trait;
 #[cfg(test)]
-use easytier_core::stun::{StunInfoProvider, StunSocketMapper};
-use easytier_core::{socket::SocketContext, stun::StunInfoCollector as CoreStunInfoCollector};
+use easytier_core::connectivity::stun::{StunInfoProvider, StunSocketMapper};
+use easytier_core::{
+    connectivity::stun::StunInfoCollector as CoreStunInfoCollector, socket::SocketContext,
+};
 #[cfg(test)]
 use easytier_proto::common::{NatType, StunInfo};
 
@@ -115,9 +117,9 @@ mod tests {
 
     use bytecodec::{DecodeExt as _, EncodeExt as _};
     use easytier_core::{
+        connectivity::stun::{Attribute, TcpNatTypeDetector, UdpNatTypeDetector},
         listener::SocketListener,
         socket::{NetNamespace, udp::VirtualUdpSocketFactory},
-        stun::{Attribute, TcpNatTypeDetector, UdpNatTypeDetector},
     };
     use stun_codec::rfc5389::{attributes::XorMappedAddress, methods::BINDING};
     use stun_codec::{Message, MessageClass, MessageDecoder, MessageEncoder};

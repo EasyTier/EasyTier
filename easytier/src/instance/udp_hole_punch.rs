@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use easytier_core::hole_punch::udp::{
+use easytier_core::connectivity::hole_punch::port_mapping::{
     ActiveUdpPortMapping, UdpPortMappingAttemptError, UdpPortMappingBackend,
     UdpPortMappingEstablished, UdpPortMappingEventSink, UdpPortMappingLifecycle,
     UdpPortMappingPlatform,

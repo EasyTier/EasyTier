@@ -10,6 +10,7 @@ use easytier_core::peers::peer_manager::{
 use easytier_core::{
     config::runtime::{CoreInstanceRuntimeConfig, CoreRuntimeConfig},
     config::{IpPrefix, NodeConfig, ProxyNetworkConfig, RouteConfig},
+    connectivity::stun::StunServerConfig,
     connectivity::{
         direct::DirectConnectorOptions,
         manual::{ManualConnectorOptions, discovery::ManualEndpointDiscoveryConfig},
@@ -19,7 +20,6 @@ use easytier_core::{
     peers::acl_config::AclRuleConfig,
     proxy::{ProxyRuntimeConfig, gateway::GatewayRuntimeConfig},
     socket::{IpVersion, NetNamespace, SocketContext, tcp::TcpBindOptions, udp::UdpBindOptions},
-    stun::StunServerConfig,
 };
 
 use crate::{

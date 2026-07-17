@@ -177,7 +177,8 @@ mod tests {
 
     use crate::{
         connectivity::direct::DirectConnectorRpcHandler,
-        hole_punch::tcp::TcpHolePunchHost,
+        connectivity::hole_punch::tcp::TcpHolePunchHost,
+        connectivity::stun::StunInfoProvider,
         host::{
             HostOperationId, HostSocketHandle, HostSocketIo, HostTcpIo,
             factory::{HostSocketFactoryIo, HostTcpConnectResult, HostUdpBindResult},
@@ -190,7 +191,6 @@ mod tests {
             rpc_types::controller::BaseController,
         },
         socket::udp::UdpSocketSendMeta,
-        stun::StunInfoProvider,
     };
 
     use super::*;

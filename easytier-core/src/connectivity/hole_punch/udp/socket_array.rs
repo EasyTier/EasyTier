@@ -264,7 +264,7 @@ mod tests {
     use tokio::sync::Mutex as TokioMutex;
 
     use super::*;
-    use crate::{hole_punch::udp::new_hole_punch_packet, socket::NetNamespace};
+    use crate::{connectivity::hole_punch::udp::new_hole_punch_packet, socket::NetNamespace};
 
     impl<R> UdpSocketArray<R>
     where

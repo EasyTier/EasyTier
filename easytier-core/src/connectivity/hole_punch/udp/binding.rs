@@ -1,7 +1,5 @@
 //! Core-owned UDP hole-punch socket/session runtime.
 
-mod rpc;
-
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
     sync::{Arc, Weak},
@@ -12,12 +10,13 @@ use async_trait::async_trait;
 use quanta::Instant;
 
 use crate::{
-    connectivity::{direct::DirectConnectorHost, protocol::ClientProtocolUpgrader},
-    hole_punch::udp::{
-        ProtocolUdpHolePunchTransportSink, UdpHolePunchConnector, UdpHolePunchPeerSource,
-        UdpHolePunchRuntime, UdpPortMappingEventSink, UdpPortMappingPlatform, UdpPunchAcceptor,
-        UdpPunchCandidate, UdpPunchConnCounter, UdpPunchListener, UdpPunchSocket,
-        UdpResolvedPublicAddr, UdpSymPunchLock, start_udp_port_mapping,
+    connectivity::{
+        direct::DirectConnectorHost,
+        hole_punch::port_mapping::{
+            UdpPortMappingEventSink, UdpPortMappingPlatform, start_udp_port_mapping,
+        },
+        protocol::ClientProtocolUpgrader,
+        stun::{StunInfoProvider, StunSocketMapper},
     },
     peers::peer_manager::PeerManagerCore,
     proto::peer_rpc::UdpHolePunchRpcServer,
@@ -29,10 +28,14 @@ use crate::{
             VirtualUdpSocket, VirtualUdpSocketFactory,
         },
     },
-    stun::{StunInfoProvider, StunSocketMapper},
 };
 
-use self::rpc::{PeerRpcUdpHolePunchSignaling, UdpHolePunchRpcEndpoint};
+use super::{
+    ProtocolUdpHolePunchTransportSink, UdpHolePunchConnector, UdpHolePunchPeerSource,
+    UdpHolePunchRuntime, UdpPunchAcceptor, UdpPunchCandidate, UdpPunchConnCounter,
+    UdpPunchListener, UdpPunchSocket, UdpResolvedPublicAddr, UdpSymPunchLock,
+    rpc::{PeerRpcUdpHolePunchSignaling, UdpHolePunchRpcEndpoint},
+};
 
 #[async_trait]
 impl UdpHolePunchPeerSource for PeerManagerCore {
@@ -496,7 +499,7 @@ mod tests {
         },
     };
 
-    use crate::{proto::common::StunInfo, stun::StunInfoProvider};
+    use crate::{connectivity::stun::StunInfoProvider, proto::common::StunInfo};
 
     use super::*;
 
@@ -582,13 +585,13 @@ mod tests {
 
     #[derive(Default)]
     struct MockEvents {
-        established: Mutex<Vec<crate::hole_punch::udp::UdpPortMappingEstablished>>,
+        established: Mutex<Vec<crate::connectivity::hole_punch::udp::UdpPortMappingEstablished>>,
     }
 
     impl UdpPortMappingEventSink for MockEvents {
         fn publish_udp_port_mapping_established(
             &self,
-            event: crate::hole_punch::udp::UdpPortMappingEstablished,
+            event: crate::connectivity::hole_punch::udp::UdpPortMappingEstablished,
         ) {
             self.established.lock().unwrap().push(event);
         }
@@ -597,12 +600,12 @@ mod tests {
     #[derive(Debug)]
     struct MockMapping {
         state: Arc<LeaseState>,
-        backend: crate::hole_punch::udp::UdpPortMappingBackend,
+        backend: crate::connectivity::hole_punch::udp::UdpPortMappingBackend,
     }
 
     #[async_trait]
-    impl crate::hole_punch::udp::ActiveUdpPortMapping for MockMapping {
-        fn backend(&self) -> crate::hole_punch::udp::UdpPortMappingBackend {
+    impl crate::connectivity::hole_punch::udp::ActiveUdpPortMapping for MockMapping {
+        fn backend(&self) -> crate::connectivity::hole_punch::udp::UdpPortMappingBackend {
             self.backend
         }
 
@@ -652,16 +655,16 @@ mod tests {
     impl UdpPortMappingPlatform for MockPlatform {
         async fn establish_udp_port_mapping(
             &self,
-            backend: crate::hole_punch::udp::UdpPortMappingBackend,
+            backend: crate::connectivity::hole_punch::udp::UdpPortMappingBackend,
             _local_listener: &url::Url,
         ) -> Result<
-            Box<dyn crate::hole_punch::udp::ActiveUdpPortMapping>,
-            crate::hole_punch::udp::UdpPortMappingAttemptError,
+            Box<dyn crate::connectivity::hole_punch::udp::ActiveUdpPortMapping>,
+            crate::connectivity::hole_punch::udp::UdpPortMappingAttemptError,
         > {
             self.calls.fetch_add(1, Ordering::SeqCst);
             if self.fail {
                 return Err(
-                    crate::hole_punch::udp::UdpPortMappingAttemptError::establishment(
+                    crate::connectivity::hole_punch::udp::UdpPortMappingAttemptError::establishment(
                         anyhow::anyhow!("mock port-mapping failure"),
                     ),
                 );
@@ -788,11 +791,13 @@ mod tests {
 
         assert_eq!(
             *events.established.lock().unwrap(),
-            vec![crate::hole_punch::udp::UdpPortMappingEstablished {
-                local_listener: listener_url(),
-                mapped_listener: "udp://198.51.100.10:40125".parse().unwrap(),
-                backend: crate::hole_punch::udp::UdpPortMappingBackend::Igd,
-            }]
+            vec![
+                crate::connectivity::hole_punch::udp::UdpPortMappingEstablished {
+                    local_listener: listener_url(),
+                    mapped_listener: "udp://198.51.100.10:40125".parse().unwrap(),
+                    backend: crate::connectivity::hole_punch::udp::UdpPortMappingBackend::Igd,
+                }
+            ]
         );
         assert_eq!(lease_state.drops.load(Ordering::SeqCst), 0);
         drop(resolved);

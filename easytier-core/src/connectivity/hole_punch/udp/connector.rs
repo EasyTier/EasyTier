@@ -16,13 +16,15 @@ use tokio::{
 
 use crate::{
     config::PeerId,
+    connectivity::stun::StunInfoProvider,
     foundation::task::{ExternalTaskSignal, PeerTaskLauncher, PeerTaskManager},
     proto::common::NatType,
-    stun::StunInfoProvider,
 };
 
+use crate::connectivity::hole_punch::policy::BackOff;
+
 use super::{
-    BLACKLIST_TIMEOUT_SEC, BackOff, UdpBothEasySymPunchClient, UdpHolePunchClientError,
+    BLACKLIST_TIMEOUT_SEC, UdpBothEasySymPunchClient, UdpHolePunchClientError,
     UdpHolePunchPeerSource, UdpHolePunchRuntime, UdpHolePunchSignaling, UdpHolePunchTransportSink,
     UdpNatType, UdpPunchClientMethod, UdpPunchSocket, UdpPunchTaskInfo, UdpSymToConePunchClient,
     collect_udp_punch_tasks, punch_cone_to_cone, should_blacklist_signal_error,

@@ -18,7 +18,7 @@ use cidr::Ipv4Inet;
 use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand, builder::BoolishValueParser};
 use dashmap::DashMap;
 use easytier::ShellType;
-use easytier_core::stun::StunInfoProvider as _;
+use easytier_core::connectivity::stun::StunInfoProvider as _;
 use humansize::format_size;
 use rust_i18n::t;
 use service_manager::*;

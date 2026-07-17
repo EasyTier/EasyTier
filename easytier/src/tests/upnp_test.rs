@@ -9,8 +9,8 @@ use std::{
 
 use anyhow::{Context, anyhow, bail};
 use easytier_core::{
+    connectivity::stun::{StunInfoProvider, StunSocketMapper},
     process_runtime::CoreProcessRuntime,
-    stun::{StunInfoProvider, StunSocketMapper},
 };
 use igd_next::{
     GetGenericPortMappingEntryError, PortMappingEntry, PortMappingProtocol, SearchOptions,

@@ -3,7 +3,10 @@ use crate::{
     proto::common::{NatType, PeerFeatureFlag},
 };
 
-use super::{UdpNatType, should_background_p2p_with_peer, should_try_p2p_with_peer};
+use super::{
+    super::policy::{should_background_p2p_with_peer, should_try_p2p_with_peer},
+    UdpNatType,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UdpPunchCandidate {

@@ -11,7 +11,7 @@ use tokio::{sync::Mutex, task::JoinSet};
 use crate::{
     config::runtime::CoreRuntimeConfigStore,
     connectivity::direct::DirectConnectorHost,
-    hole_punch::tcp::TcpHolePunchHost,
+    connectivity::hole_punch::tcp::TcpHolePunchHost,
     listener::RunningListenerRegistry,
     packet::{PacketType, ZCPacket, ZCPacketType},
     peers::{
