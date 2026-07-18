@@ -14,7 +14,7 @@ use axum::response::Response;
 use axum::routing::{delete, post};
 use axum::{Extension, Json, Router, extract::State, routing::get};
 use axum_login::tower_sessions::{ExpiredDeletion, SessionManagerLayer};
-use axum_login::{AuthManagerLayerBuilder, AuthUser, AuthzBackend, login_required};
+use axum_login::{AuthManagerLayerBuilder, AuthUser, login_required};
 use axum_messages::MessagesManagerLayer;
 use easytier::common::config::{ConfigLoader, TomlConfigLoader};
 use easytier::launcher::NetworkConfig;
@@ -131,13 +131,10 @@ impl RestfulServer {
         auth_session: AuthSession,
         State(client_mgr): AppState,
     ) -> Result<Json<ListSessionJsonResp>, HttpHandleError> {
-        let perms = auth_session
-            .backend
-            .get_group_permissions(auth_session.user.as_ref().unwrap())
-            .await
-            .unwrap();
-        println!("{:?}", perms);
-        let ret = client_mgr.list_sessions().await;
+        let Some(user) = auth_session.user else {
+            return Err((StatusCode::UNAUTHORIZED, other_error("No such user").into()));
+        };
+        let ret = client_mgr.list_sessions_by_user_id(user.id()).await;
         Ok(ListSessionJsonResp(ret).into())
     }
 

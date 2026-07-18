@@ -161,6 +161,10 @@ impl ClientManager {
         self.storage.list_clients()
     }
 
+    pub async fn list_sessions_by_user_id(&self, user_id: UserIdInDb) -> Vec<StorageToken> {
+        self.storage.list_user_client_tokens(user_id)
+    }
+
     pub async fn list_all_sessions(&self) -> Vec<StorageToken> {
         self.storage.list_all_clients()
     }
