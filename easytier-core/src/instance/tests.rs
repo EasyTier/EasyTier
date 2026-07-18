@@ -262,6 +262,7 @@ mod portable_runtime {
             atomic::{AtomicUsize, Ordering},
         },
         task::{Context, Poll},
+        time::Duration,
     };
 
     use tokio::{
