@@ -1,3 +1,11 @@
+//! Shared tunnel contract and per-transport tunnel implementations.
+//!
+//! This root file declares the shared tunnel contract: [`TunnelError`], the
+//! [`Tunnel`] trait, and the [`ZCPacket`] stream/sink aliases that tunnels
+//! carry. The sibling files in this directory hold the per-transport tunnel
+//! implementations (TCP, UDP, ring, mpsc) and the filters and wrappers
+//! layered on top of them.
+
 use std::{fmt::Debug, pin::Pin};
 
 use futures::{Sink, Stream};

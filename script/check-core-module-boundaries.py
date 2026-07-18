@@ -424,6 +424,8 @@ def legacy_reason(parts: tuple[str, ...]) -> str | None:
         ("gateway", "stack"),
         ("gateway", "tokio_smoltcp"),
         ("socket", "host"),
+        ("connectivity", "host"),
+        ("hole_punch", "tcp", "manager"),
     )
     for expected in exact:
         if contains(parts, expected):

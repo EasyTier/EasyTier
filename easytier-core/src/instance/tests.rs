@@ -204,8 +204,7 @@ fn core_instance_config_round_trips_as_normalized_json() {
     let mut create = crate::instance::wasi::WasiCoreInstanceCreateConfig {
         version: crate::instance::wasi::WASI_CORE_INSTANCE_CONFIG_VERSION,
         instance: decoded,
-        environment:
-            crate::connectivity::host::environment::HostConnectorEnvironmentSnapshot::default(),
+        environment: crate::connectivity::connector_host::HostConnectorEnvironmentSnapshot::default(),
     };
     create.validate().unwrap();
     let fixture = include_bytes!("../../../easytier-go-host/testdata/minimal_core_instance.json");

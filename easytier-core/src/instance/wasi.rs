@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::connectivity::host::environment::HostConnectorEnvironmentSnapshot;
+use crate::connectivity::connector_host::HostConnectorEnvironmentSnapshot;
 
 use super::CoreInstanceConfig;
 
@@ -30,7 +30,7 @@ impl WasiCoreInstanceCreateConfig {
 
 #[cfg(target_os = "wasi")]
 pub(super) type WasiCore = super::CoreInstance<
-    crate::connectivity::host::HostConnectorAdapter<
+    crate::connectivity::connector_host::ConnectorHost<
         crate::host::wasi_backend::WasiHostSocketBackend,
         crate::host::environment::HostConnectorEnvironmentServiceAdapter<
             crate::host::environment::wasi::WasiHostConnectorEnvironmentIo,
@@ -74,7 +74,7 @@ pub(super) fn new_wasi_core_runtime(
         wasi_backend::WasiHostSocketBackend,
     };
     use crate::{
-        connectivity::host::HostConnectorAdapter,
+        connectivity::connector_host::ConnectorHost,
         instance::{CoreHostAdapters, CoreInstance},
     };
 
@@ -83,7 +83,7 @@ pub(super) fn new_wasi_core_runtime(
         socket_runtime.clone(),
         Arc::new(WasiHostConnectorEnvironmentIo),
     ));
-    let host = Arc::new(HostConnectorAdapter::new(
+    let host = Arc::new(ConnectorHost::new(
         socket_runtime.clone(),
         Arc::new(WasiHostSocketBackend::default()),
         environment_snapshot,
