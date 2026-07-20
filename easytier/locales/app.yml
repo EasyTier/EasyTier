@@ -5,10 +5,12 @@ core_clap:
     en: |+
       config server address, allow format:
       full url: --config-server udp://127.0.0.1:22020/admin, 'udp' can be replaced with tcp, ws, wss (when config server ws is proxied to wss)
+      short link: --config-server https://example.com/easytier/admin, the HTTP(S) response should redirect to the full config server URL
       only user name: --config-server admin, will use official server
     zh-CN: |+
       配置服务器地址。允许格式：
       完整URL：--config-server udp://127.0.0.1:22020/admin，udp可以根据配置服务器替换为 tcp，ws，wss(配置服务器ws被代理为wss时)
+      短链接：--config-server https://example.com/easytier/admin，HTTP(S) 响应应重定向到完整配置服务器 URL
       仅用户名：--config-server admin，将使用官方的服务器
   machine_id:
     en: |+

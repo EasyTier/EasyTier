@@ -82,6 +82,22 @@ impl TunnelConnector for ConfigServerConnector {
     }
 }
 
+fn parse_config_server_input(config_server_url_s: &str) -> Result<Url> {
+    match Url::parse(config_server_url_s) {
+        Ok(u) => Ok(u),
+        Err(_) => format!(
+            "udp://config-server.easytier.cn:22020/{}",
+            config_server_url_s
+        )
+        .parse()
+        .with_context(|| "failed to parse config server URL"),
+    }
+}
+
+fn is_config_server_http_short_link(url: &Url) -> bool {
+    matches!(url.scheme(), "http" | "https")
+}
+
 impl WebClient {
     pub fn new<T: TunnelConnector + 'static, S: ToString, H: ToString>(
         connector: T,
@@ -244,15 +260,7 @@ pub async fn run_web_client(
 ) -> Result<WebClient> {
     let machine_id = resolve_machine_id(&machine_id_opts)
         .with_context(|| "failed to resolve machine id for web client")?;
-    let config_server_url = match Url::parse(config_server_url_s) {
-        Ok(u) => u,
-        Err(_) => format!(
-            "udp://config-server.easytier.cn:22020/{}",
-            config_server_url_s
-        )
-        .parse()
-        .with_context(|| "failed to parse config server URL")?,
-    };
+    let config_server_url = parse_config_server_input(config_server_url_s)?;
 
     TunnelScheme::try_from(&config_server_url).map_err(|_| {
         anyhow::anyhow!(
@@ -262,7 +270,8 @@ pub async fn run_web_client(
     })?;
 
     let mut c_url = config_server_url.clone();
-    if !matches!(c_url.scheme(), "ws" | "wss") {
+    // Keep HTTP(S) paths so HttpTunnelConnector can request short links and handle their redirects.
+    if !matches!(c_url.scheme(), "ws" | "wss") && !is_config_server_http_short_link(&c_url) {
         c_url.set_path("");
     }
     let token = config_server_url
@@ -309,7 +318,15 @@ pub async fn run_web_client(
 mod tests {
     use std::sync::{Arc, atomic::AtomicBool};
 
-    use crate::{common::MachineIdOptions, instance_manager::NetworkInstanceManager};
+    use crate::{
+        common::{MachineIdOptions, config::TomlConfigLoader, global_ctx::GlobalCtx},
+        instance_manager::NetworkInstanceManager,
+        tunnel::TunnelConnector,
+    };
+    use tokio::{
+        io::{AsyncReadExt as _, AsyncWriteExt as _},
+        net::TcpListener,
+    };
 
     #[tokio::test]
     async fn test_manager_wait() {
@@ -366,5 +383,48 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         assert!(!client.is_connected());
         drop(client);
+    }
+
+    #[tokio::test]
+    async fn config_server_short_link_uses_existing_http_redirect_connector() {
+        let target_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target_addr = target_listener.local_addr().unwrap();
+        let target_task = tokio::spawn(async move {
+            let _ = target_listener.accept().await.unwrap();
+        });
+
+        let http_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let http_addr = http_listener.local_addr().unwrap();
+        let http_task = tokio::spawn(async move {
+            let (mut stream, _) = http_listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let n = stream.read(&mut buf).await.unwrap();
+            let req = String::from_utf8_lossy(&buf[..n]).to_string();
+            let resp = format!(
+                "HTTP/1.1 302 Found\r\nLocation: tcp://{}\r\nContent-Length: 0\r\n\r\n",
+                target_addr
+            );
+            stream.write_all(resp.as_bytes()).await.unwrap();
+            req
+        });
+
+        let config = TomlConfigLoader::default();
+        let global_ctx = Arc::new(GlobalCtx::new(config));
+        let mut flags = global_ctx.get_flags();
+        flags.bind_device = false;
+        global_ctx.set_flags(flags);
+        let url: url::Url = format!("http://{}/short-token", http_addr).parse().unwrap();
+        let mut connector = super::ConfigServerConnector { url, global_ctx };
+
+        let tunnel = connector.connect().await.unwrap();
+
+        let req = http_task.await.unwrap();
+        assert!(req.starts_with("GET /short-token "));
+        let info = tunnel.info().unwrap();
+        assert_eq!(
+            info.resolved_remote_addr.unwrap().url,
+            format!("tcp://{}", target_addr)
+        );
+        target_task.await.unwrap();
     }
 }
