@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fmt::Debug,
+    mem::discriminant,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     sync::{
         Arc, Weak,
@@ -93,29 +94,27 @@ static REMOVE_UNREACHABLE_PEER_INFO_AFTER: Duration = Duration::from_secs(90);
 
 type Version = u32;
 
-/// Check if `child` CIDR is a subset of `parent` CIDR.
-/// Returns true if `child` is contained within `parent`, or if they are equal.
-fn cidr_is_subset(child: &IpCidr, parent: &IpCidr) -> bool {
-    match (child, parent) {
-        (IpCidr::V4(c), IpCidr::V4(p)) => {
-            p.first_address() <= c.first_address() && c.last_address() <= p.last_address()
-        }
-        (IpCidr::V6(c), IpCidr::V6(p)) => {
-            p.first_address() <= c.first_address() && c.last_address() <= p.last_address()
-        }
-        _ => false, // mixed v4/v6
+pub trait IpCidrExt {
+    fn covers(&self, other: &Self) -> bool;
+}
+
+impl IpCidrExt for IpCidr {
+    #[inline]
+    fn covers(&self, other: &Self) -> bool {
+        discriminant(other) == discriminant(self)
+            && self.first_address() <= other.first_address()
+            && other.last_address() <= self.last_address()
     }
 }
 
-/// Check if `child` CIDR is a subset of `parent` CIDR (both as string representations).
-fn cidr_is_subset_str(child: &str, parent: &str) -> bool {
-    let Ok(child_cidr) = child.parse::<IpCidr>() else {
-        return false;
-    };
-    let Ok(parent_cidr) = parent.parse::<IpCidr>() else {
-        return false;
-    };
-    cidr_is_subset(&child_cidr, &parent_cidr)
+impl IpCidrExt for str {
+    #[inline]
+    fn covers(&self, other: &Self) -> bool {
+        matches!(
+            (self.parse::<IpCidr>(), other.parse::<IpCidr>()),
+            (Ok(this), Ok(other)) if this.covers(&other)
+        )
+    }
 }
 
 /// Patch specific fields in a raw DynamicMessage from a decoded RoutePeerInfo,
@@ -1738,14 +1737,14 @@ impl RouteTable {
                 if *peer_id != my_peer_id
                     && local_proxy_cidrs
                         .iter()
-                        .any(|local_cidr| cidr_is_subset(&cidr, local_cidr))
+                        .any(|local_cidr| cidr.covers(local_cidr))
                 {
                     tracing::debug!(
                         ?peer_id,
                         ?my_peer_id,
                         ?local_proxy_cidrs,
                         ?cidr,
-                        "skip remote proxy cidr covered by local announced proxy cidr while building route table"
+                        "skip remote proxy cidr covering local announced proxy cidr while building route table"
                     );
                     continue;
                 }
@@ -3535,11 +3534,8 @@ impl RouteSessionManager {
         let allowed_cidrs = &credential.allowed_proxy_cidrs;
         // Filter proxy_cidrs to only those allowed by credential
         if !allowed_cidrs.is_empty() {
-            info.proxy_cidrs.retain(|cidr| {
-                allowed_cidrs
-                    .iter()
-                    .any(|allowed| cidr_is_subset_str(cidr, allowed))
-            });
+            info.proxy_cidrs
+                .retain(|cidr| allowed_cidrs.iter().any(|allowed| allowed.covers(cidr)));
         } else {
             // No allowed_proxy_cidrs → no proxy_cidrs allowed
             info.proxy_cidrs.clear();
@@ -7061,6 +7057,13 @@ mod tests {
             .config
             .add_proxy_cidr("10.10.0.0/16".parse().unwrap(), None)
             .unwrap();
+        route
+            .service_impl
+            .global_ctx
+            .config
+            .add_proxy_cidr("10.11.0.0/24".parse().unwrap(), None)
+            .unwrap();
+
         assert!(route.service_impl.update_my_peer_info());
 
         let mut sender_info = RoutePeerInfo::new();
@@ -7103,21 +7106,26 @@ mod tests {
         assert_eq!(stored.proxy_cidrs, sender_info.proxy_cidrs);
         drop(guard);
 
-        // Route-table filtering: local announced /16 should dominate remote equal/subset.
+        assert_eq!(
+            route
+                .service_impl
+                .route_table
+                .get_peer_id_for_proxy(&"10.10.0.1".parse::<IpAddr>().unwrap()),
+            Some(peer_mgr.my_peer_id())
+        );
         assert_eq!(
             route
                 .service_impl
                 .route_table
                 .get_peer_id_for_proxy(&"10.10.1.1".parse::<IpAddr>().unwrap()),
-            Some(peer_mgr.my_peer_id())
+            Some(from_peer_id)
         );
-        // Non-overlapped remote prefix should still route to remote.
         assert_eq!(
             route
                 .service_impl
                 .route_table
                 .get_peer_id_for_proxy(&"10.11.0.1".parse::<IpAddr>().unwrap()),
-            Some(from_peer_id)
+            Some(peer_mgr.my_peer_id())
         );
     }
 }
