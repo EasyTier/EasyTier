@@ -1,3 +1,4 @@
+use bytes::BytesMut;
 use futures::{Sink, Stream};
 use smoltcp::phy::DeviceCapabilities;
 use std::{
@@ -12,15 +13,15 @@ use super::device::AsyncDevice;
 
 /// A device that send and receive packets using a channel.
 pub struct ChannelDevice {
-    recv: Receiver<io::Result<Vec<u8>>>,
-    send: PollSender<Vec<u8>>,
+    recv: Receiver<io::Result<BytesMut>>,
+    send: PollSender<BytesMut>,
     caps: DeviceCapabilities,
 }
 
 pub type ChannelDeviceNewRet = (
     ChannelDevice,
-    Sender<io::Result<Vec<u8>>>,
-    Receiver<Vec<u8>>,
+    Sender<io::Result<BytesMut>>,
+    Receiver<BytesMut>,
 );
 
 impl ChannelDevice {
@@ -43,25 +44,25 @@ impl ChannelDevice {
 }
 
 impl Stream for ChannelDevice {
-    type Item = io::Result<Vec<u8>>;
+    type Item = io::Result<BytesMut>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.recv.poll_recv(cx)
     }
 }
 
-fn map_err(e: PollSendError<Vec<u8>>) -> io::Error {
+fn map_err(e: PollSendError<BytesMut>) -> io::Error {
     io::Error::other(e)
 }
 
-impl Sink<Vec<u8>> for ChannelDevice {
+impl Sink<BytesMut> for ChannelDevice {
     type Error = io::Error;
 
     fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.send.poll_reserve(cx).map_err(map_err)
     }
 
-    fn start_send(mut self: Pin<&mut Self>, item: Vec<u8>) -> Result<(), Self::Error> {
+    fn start_send(mut self: Pin<&mut Self>, item: BytesMut) -> Result<(), Self::Error> {
         self.send.send_item(item).map_err(map_err)
     }
 

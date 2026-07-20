@@ -51,6 +51,7 @@ pub struct NetConfig {
     pub ip_addr: IpCidr,
     pub gateway: Vec<IpAddress>,
     pub buffer_size: BufferSize,
+    pub(crate) packet_tx_headroom: usize,
 }
 
 impl NetConfig {
@@ -65,7 +66,13 @@ impl NetConfig {
             ip_addr,
             gateway,
             buffer_size: buffer_size.unwrap_or_default(),
+            packet_tx_headroom: 0,
         }
+    }
+
+    pub fn with_packet_tx_headroom(mut self, packet_tx_headroom: usize) -> Self {
+        self.packet_tx_headroom = packet_tx_headroom;
+        self
     }
 }
 
@@ -97,7 +104,8 @@ impl Net {
     }
 
     fn new2<D: device::AsyncDevice + 'static>(device: D, config: NetConfig) -> Net {
-        let mut buffer_device = BufferDevice::new(device.capabilities().clone());
+        let mut buffer_device =
+            BufferDevice::new(device.capabilities().clone(), config.packet_tx_headroom);
         let mut iface = Interface::new(config.interface_config, &mut buffer_device, Instant::now());
         let ip_addr = config.ip_addr;
         iface.update_ip_addrs(|ip_addrs| {

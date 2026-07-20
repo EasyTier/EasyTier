@@ -772,6 +772,7 @@ impl ZCPacket {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{hint::black_box, time::Instant};
 
     #[test]
     fn test_zc_packet() {
@@ -816,5 +817,69 @@ mod tests {
         let mut packet = ZCPacket::new_from_buf(BytesMut::from(&b"\x01"[..]), ZCPacketType::UDP);
 
         assert!(packet.mut_wg_tunnel_header().is_none());
+    }
+
+    fn bench_smoltcp_zcpacket_construct(payload_len: usize, iterations: usize) {
+        let nic_offset = ZCPacketType::NIC.get_packet_offsets().payload_offset;
+
+        // Correctness check (outside the timed section): both construction paths
+        // must yield equivalent payloads for the perf comparison to be meaningful.
+        {
+            let data = vec![7u8; payload_len];
+            let p_copy = ZCPacket::new_with_payload(&data);
+
+            let mut buf = BytesMut::with_capacity(nic_offset + payload_len);
+            buf.resize(nic_offset + payload_len, 0);
+            buf[nic_offset..].fill(7);
+            let p_zero = ZCPacket::new_from_buf(buf, ZCPacketType::NIC);
+
+            assert_eq!(p_copy.payload(), p_zero.payload());
+        }
+
+        // copy path: smoltcp emits a bare payload buf; socks5/tcp_proxy copy it
+        // via ZCPacket::new_with_payload (pre-f5ce0848 behavior).
+        let now = Instant::now();
+        let mut checksum = 0usize;
+        for _ in 0..iterations {
+            let data = vec![7u8; payload_len];
+            let p = ZCPacket::new_with_payload(black_box(&data));
+            // black_box forces the side-effect-free construction to be emitted;
+            // payload_len is stable per run so it cannot skew the numbers.
+            checksum = checksum.wrapping_add(black_box(&p).payload_len());
+        }
+        let copy_elapsed = now.elapsed().as_secs_f64();
+
+        // zerocopy path: device reserves NIC headroom in the buf; socks5/tcp_proxy
+        // wrap it zero-copy via ZCPacket::new_from_buf (f5ce0848 behavior).
+        let now = Instant::now();
+        let mut checksum2 = 0usize;
+        for _ in 0..iterations {
+            let mut buf = BytesMut::with_capacity(nic_offset + payload_len);
+            buf.resize(nic_offset + payload_len, 0);
+            buf[nic_offset..].fill(7);
+            let p = ZCPacket::new_from_buf(black_box(buf), ZCPacketType::NIC);
+            checksum2 = checksum2.wrapping_add(black_box(&p).payload_len());
+        }
+        let zerocopy_elapsed = now.elapsed().as_secs_f64();
+
+        println!(
+            "smoltcp_zcpacket payload_len={} iterations={} copy_pps={:.0} copy_bytes_per_sec={:.0} zerocopy_pps={:.0} zerocopy_bytes_per_sec={:.0} speedup={:.2}x checksums={}/{}",
+            payload_len,
+            iterations,
+            iterations as f64 / copy_elapsed,
+            (payload_len * iterations) as f64 / copy_elapsed,
+            iterations as f64 / zerocopy_elapsed,
+            (payload_len * iterations) as f64 / zerocopy_elapsed,
+            copy_elapsed / zerocopy_elapsed,
+            checksum,
+            checksum2
+        );
+    }
+
+    #[test]
+    #[ignore = "benchmark helper; run with --ignored --nocapture"]
+    fn smoltcp_zcpacket_construct_bench() {
+        bench_smoltcp_zcpacket_construct(1280, 1_000_000);
+        bench_smoltcp_zcpacket_construct(4096, 500_000);
     }
 }

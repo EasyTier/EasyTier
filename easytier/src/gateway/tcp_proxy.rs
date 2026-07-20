@@ -40,6 +40,8 @@ use super::CidrSet;
 
 #[cfg(feature = "smoltcp")]
 use super::tokio_smoltcp::{self, Net, NetConfig, channel_device};
+#[cfg(feature = "smoltcp")]
+use crate::tunnel::packet_def::ZCPacketType;
 
 #[async_trait::async_trait]
 pub(crate) trait NatDstConnector: Send + Sync + Clone + 'static {
@@ -562,7 +564,10 @@ impl<C: NatDstConnector> TcpProxy<C> {
             self.tasks.lock().unwrap().spawn(async move {
                 while let Some(packet) = smoltcp_stack_receiver.recv().await {
                     tracing::trace!(?packet, "receive from peer send to smoltcp packet");
-                    if let Err(e) = stack_sink.send(Ok(packet.payload().to_vec())).await {
+                    if let Err(e) = stack_sink
+                        .send(Ok(bytes::BytesMut::from(packet.payload())))
+                        .await
+                    {
                         tracing::error!("send to smoltcp stack failed: {:?}", e);
                     }
                 }
@@ -576,13 +581,16 @@ impl<C: NatDstConnector> TcpProxy<C> {
                         ?data,
                         "receive from smoltcp stack and send to peer mgr packet"
                     );
-                    let Some(ipv4) = Ipv4Packet::new(&data) else {
-                        tracing::error!(?data, "smoltcp stack stream get non ipv4 packet");
+                    let packet = ZCPacket::new_from_buf(data, ZCPacketType::NIC);
+                    let Some(ipv4) = Ipv4Packet::new(packet.payload()) else {
+                        tracing::error!(
+                            payload_len = packet.payload_len(),
+                            "smoltcp stack stream get non ipv4 packet"
+                        );
                         continue;
                     };
 
                     let dst = ipv4.get_destination();
-                    let packet = ZCPacket::new_with_payload(&data);
                     let Some(peer_mgr) = peer_mgr.upgrade() else {
                         tracing::warn!("peer manager is gone, smoltcp sender exited");
                         return;
@@ -611,7 +619,8 @@ impl<C: NatDstConnector> TcpProxy<C> {
                         tcp_tx_size: 1024 * 16,
                         ..Default::default()
                     }),
-                ),
+                )
+                .with_packet_tx_headroom(ZCPacketType::NIC.get_packet_offsets().payload_offset),
             );
             net.set_any_ip(true);
             self.smoltcp_net.lock().await.replace(net);
