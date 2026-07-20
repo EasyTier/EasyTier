@@ -2,6 +2,7 @@ use bytes::Bytes;
 use bytes::BytesMut;
 use nix::libc;
 use std::ffi::CString;
+use std::fs;
 use std::io;
 use std::mem;
 use std::net::IpAddr;
@@ -19,9 +20,11 @@ const ETH_TYPE_OFFSET: u32 = 12;
 const ETHERTYPE_IPV4: u32 = 0x0800;
 const ETHERTYPE_IPV6: u32 = 0x86DD;
 const IPPROTO_TCP_U32: u32 = 6;
+const ARPHRD_PPP: i32 = 512;
 
 const BPF_LD: u16 = 0x00;
 const BPF_LDX: u16 = 0x01;
+const BPF_ALU: u16 = 0x04;
 const BPF_JMP: u16 = 0x05;
 const BPF_RET: u16 = 0x06;
 
@@ -36,12 +39,28 @@ const BPF_MSH: u16 = 0xa0;
 const BPF_JA: u16 = 0x00;
 const BPF_JEQ: u16 = 0x10;
 
+const BPF_AND: u16 = 0x50;
 const BPF_K: u16 = 0x00;
 
 const SOL_PACKET: i32 = 263;
 const PACKET_STATISTICS: i32 = 6;
 
 const DEFAULT_RCVBUF_BYTES: i32 = 32 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LinkMode {
+    EthernetRaw,
+    RawIp,
+}
+
+impl LinkMode {
+    fn from_arphrd(arphrd: i32) -> Self {
+        match arphrd {
+            ARPHRD_PPP => Self::RawIp,
+            _ => Self::EthernetRaw,
+        }
+    }
+}
 
 fn stmt(code: u16, k: u32) -> libc::sock_filter {
     libc::sock_filter {
@@ -178,10 +197,7 @@ impl BpfBuilder {
     }
 }
 
-fn build_tcp_filter(
-    src_addr: Option<SocketAddr>,
-    dst_addr: SocketAddr,
-) -> io::Result<Vec<libc::sock_filter>> {
+fn validate_addr_family(src_addr: Option<SocketAddr>, dst_addr: SocketAddr) -> io::Result<()> {
     if let Some(src) = src_addr
         && src.is_ipv4() != dst_addr.is_ipv4()
     {
@@ -190,6 +206,131 @@ fn build_tcp_filter(
             "src/dst addr family mismatch",
         ));
     }
+    Ok(())
+}
+
+fn build_tcp_filter_ip(
+    src_addr: Option<SocketAddr>,
+    dst_addr: SocketAddr,
+) -> io::Result<Vec<libc::sock_filter>> {
+    validate_addr_family(src_addr, dst_addr)?;
+
+    let mut b = BpfBuilder::new();
+    let l_accept = b.new_label();
+    let l_reject = b.new_label();
+
+    if dst_addr.is_ipv4() {
+        let l_v4_version_ok = b.new_label();
+        b.push(stmt(BPF_LD | BPF_B | BPF_ABS, 0));
+        b.push(stmt(BPF_ALU | BPF_AND | BPF_K, 0xF0));
+        b.push_jeq(0x40, l_v4_version_ok, l_reject);
+
+        b.set_label(l_v4_version_ok);
+        let l_v4_proto_ok = b.new_label();
+        b.push(stmt(BPF_LD | BPF_B | BPF_ABS, 9));
+        b.push_jeq(IPPROTO_TCP_U32, l_v4_proto_ok, l_reject);
+
+        b.set_label(l_v4_proto_ok);
+        let dst_ip = match dst_addr.ip() {
+            IpAddr::V4(ip) => u32::from(ip),
+            _ => unreachable!(),
+        };
+        let l_v4_dstip_ok = b.new_label();
+        b.push(stmt(BPF_LD | BPF_W | BPF_ABS, 16));
+        b.push_jeq(dst_ip, l_v4_dstip_ok, l_reject);
+
+        b.set_label(l_v4_dstip_ok);
+        if let Some(src) = src_addr {
+            let src_ip = match src.ip() {
+                IpAddr::V4(ip) => u32::from(ip),
+                _ => unreachable!(),
+            };
+            let l_v4_srcip_ok = b.new_label();
+            b.push(stmt(BPF_LD | BPF_W | BPF_ABS, 12));
+            b.push_jeq(src_ip, l_v4_srcip_ok, l_reject);
+            b.set_label(l_v4_srcip_ok);
+        }
+
+        b.push(stmt(BPF_LDX | BPF_B | BPF_MSH, 0));
+
+        let l_v4_dstport_ok = b.new_label();
+        b.push(stmt(BPF_LD | BPF_H | BPF_IND, 2));
+        b.push_jeq(dst_addr.port() as u32, l_v4_dstport_ok, l_reject);
+
+        b.set_label(l_v4_dstport_ok);
+        if let Some(src) = src_addr {
+            b.push(stmt(BPF_LD | BPF_H | BPF_IND, 0));
+            b.push_jeq(src.port() as u32, l_accept, l_reject);
+        } else {
+            b.push_ja(l_accept);
+        }
+    } else {
+        let l_v6_version_ok = b.new_label();
+        b.push(stmt(BPF_LD | BPF_B | BPF_ABS, 0));
+        b.push(stmt(BPF_ALU | BPF_AND | BPF_K, 0xF0));
+        b.push_jeq(0x60, l_v6_version_ok, l_reject);
+
+        b.set_label(l_v6_version_ok);
+        let l_v6_proto_ok = b.new_label();
+        b.push(stmt(BPF_LD | BPF_B | BPF_ABS, 6));
+        b.push_jeq(IPPROTO_TCP_U32, l_v6_proto_ok, l_reject);
+
+        b.set_label(l_v6_proto_ok);
+        let dst_ip = match dst_addr.ip() {
+            IpAddr::V6(ip) => ip.octets(),
+            _ => unreachable!(),
+        };
+        for (i, chunk) in dst_ip.chunks_exact(4).enumerate() {
+            let off = 24 + (i * 4);
+            let v = u32::from_be_bytes(chunk.try_into().unwrap());
+            let l_v6_dstip_word_ok = b.new_label();
+            b.push(stmt(BPF_LD | BPF_W | BPF_ABS, off as u32));
+            b.push_jeq(v, l_v6_dstip_word_ok, l_reject);
+            b.set_label(l_v6_dstip_word_ok);
+        }
+
+        if let Some(src) = src_addr {
+            let src_ip = match src.ip() {
+                IpAddr::V6(ip) => ip.octets(),
+                _ => unreachable!(),
+            };
+            for (i, chunk) in src_ip.chunks_exact(4).enumerate() {
+                let off = 8 + (i * 4);
+                let v = u32::from_be_bytes(chunk.try_into().unwrap());
+                let l_v6_srcip_word_ok = b.new_label();
+                b.push(stmt(BPF_LD | BPF_W | BPF_ABS, off as u32));
+                b.push_jeq(v, l_v6_srcip_word_ok, l_reject);
+                b.set_label(l_v6_srcip_word_ok);
+            }
+        }
+
+        let l_v6_dstport_ok = b.new_label();
+        b.push(stmt(BPF_LD | BPF_H | BPF_ABS, 40 + 2));
+        b.push_jeq(dst_addr.port() as u32, l_v6_dstport_ok, l_reject);
+
+        b.set_label(l_v6_dstport_ok);
+        if let Some(src) = src_addr {
+            b.push(stmt(BPF_LD | BPF_H | BPF_ABS, 40));
+            b.push_jeq(src.port() as u32, l_accept, l_reject);
+        } else {
+            b.push_ja(l_accept);
+        }
+    }
+
+    b.set_label(l_accept);
+    b.push(stmt(BPF_RET | BPF_K, 0xFFFF));
+
+    b.set_label(l_reject);
+    b.push(stmt(BPF_RET | BPF_K, 0));
+
+    b.finish()
+}
+
+fn build_tcp_filter_ethernet(
+    src_addr: Option<SocketAddr>,
+    dst_addr: SocketAddr,
+) -> io::Result<Vec<libc::sock_filter>> {
+    validate_addr_family(src_addr, dst_addr)?;
 
     let mut b = BpfBuilder::new();
     let l_check_ipv6 = b.new_label();
@@ -309,6 +450,100 @@ fn build_tcp_filter(
     b.finish()
 }
 
+fn build_tcp_filter(
+    src_addr: Option<SocketAddr>,
+    dst_addr: SocketAddr,
+    link_mode: LinkMode,
+) -> io::Result<Vec<libc::sock_filter>> {
+    match link_mode {
+        LinkMode::EthernetRaw => build_tcp_filter_ethernet(src_addr, dst_addr),
+        LinkMode::RawIp => build_tcp_filter_ip(src_addr, dst_addr),
+    }
+}
+
+fn detect_link_mode(interface_name: &str) -> io::Result<(i32, LinkMode)> {
+    let path = format!("/sys/class/net/{interface_name}/type");
+    let arphrd_text = fs::read_to_string(path)?;
+    let arphrd = arphrd_text.trim().parse::<i32>().map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid interface type: {e}"),
+        )
+    })?;
+    Ok((arphrd, LinkMode::from_arphrd(arphrd)))
+}
+
+fn ether_type_from_ip_packet(ip: &[u8]) -> Option<u16> {
+    match ip.first().map(|b| b >> 4) {
+        Some(4) => Some(ETHERTYPE_IPV4 as u16),
+        Some(6) => Some(ETHERTYPE_IPV6 as u16),
+        _ => None,
+    }
+}
+
+fn wrap_ip_with_ethernet(ip: &[u8]) -> io::Result<Vec<u8>> {
+    let ether_type = ether_type_from_ip_packet(ip).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidData, "invalid raw IP packet version")
+    })?;
+    let mut out = vec![0u8; ETH_HDR_LEN + ip.len()];
+    out[12..14].copy_from_slice(&ether_type.to_be_bytes());
+    out[ETH_HDR_LEN..].copy_from_slice(ip);
+    Ok(out)
+}
+
+fn normalize_rx_packet(link_mode: LinkMode, packet: &[u8]) -> io::Result<Vec<u8>> {
+    match link_mode {
+        LinkMode::EthernetRaw => Ok(packet.to_vec()),
+        LinkMode::RawIp => wrap_ip_with_ethernet(packet),
+    }
+}
+
+struct TxPacket<'a> {
+    payload: &'a [u8],
+    protocol: u16,
+    halen: u8,
+    addr: [u8; 8],
+}
+
+fn encode_tx_packet(link_mode: LinkMode, packet: &[u8]) -> io::Result<TxPacket<'_>> {
+    match link_mode {
+        LinkMode::EthernetRaw => {
+            if packet.len() < 6 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "packet too short",
+                ));
+            }
+            let mut addr = [0u8; 8];
+            addr[..6].copy_from_slice(&packet[..6]);
+            Ok(TxPacket {
+                payload: packet,
+                protocol: (libc::ETH_P_ALL as u16).to_be(),
+                halen: 6,
+                addr,
+            })
+        }
+        LinkMode::RawIp => {
+            if packet.len() < ETH_HDR_LEN {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "packet too short",
+                ));
+            }
+            let payload = &packet[ETH_HDR_LEN..];
+            let ether_type = ether_type_from_ip_packet(payload).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "invalid raw IP packet version")
+            })?;
+            Ok(TxPacket {
+                payload,
+                protocol: ether_type.to_be(),
+                halen: 0,
+                addr: [0u8; 8],
+            })
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 struct PacketSocketStats {
@@ -369,6 +604,7 @@ fn read_packet_socket_stats(fd: i32) -> io::Result<PacketSocketStats> {
 pub struct LinuxBpfTun {
     fd: Arc<OwnedFd>,
     ifindex: i32,
+    link_mode: LinkMode,
     stop: Arc<AtomicBool>,
     worker: Option<std::thread::JoinHandle<()>>,
     recv_queue: Mutex<tokio::sync::mpsc::Receiver<Vec<u8>>>,
@@ -389,6 +625,7 @@ impl LinuxBpfTun {
                 "interface not found",
             ));
         }
+        let (arphrd, link_mode) = detect_link_mode(interface_name)?;
 
         let proto: i32 = (libc::ETH_P_ALL as u16).to_be() as i32;
         let fd = unsafe { libc::socket(libc::AF_PACKET, libc::SOCK_RAW, proto) };
@@ -415,7 +652,7 @@ impl LinuxBpfTun {
 
         let actual_rcvbuf = set_socket_rcvbuf(fd.as_ref().as_raw_fd(), DEFAULT_RCVBUF_BYTES)?;
 
-        let filter = build_tcp_filter(src_addr, dst_addr)?;
+        let filter = build_tcp_filter(src_addr, dst_addr, link_mode)?;
         let mut prog = libc::sock_fprog {
             len: filter
                 .len()
@@ -456,11 +693,13 @@ impl LinuxBpfTun {
         let read_fd = fd.as_ref().as_raw_fd();
         let fd_guard = fd.clone();
         let interface_name_for_worker = interface_name.to_string();
+        let worker_link_mode = link_mode;
 
         let worker = std::thread::spawn(move || {
             // Keep the packet socket alive until the detached worker actually exits.
             let _fd_guard = fd_guard;
             let mut buf = vec![0u8; 65536];
+            let mut wrap_fail_logs_left = 5u32;
             let mut stats_enabled = true;
             let mut total_packets: u64 = 0;
             let mut total_drops: u64 = 0;
@@ -484,7 +723,22 @@ impl LinuxBpfTun {
                 if n == 0 {
                     continue;
                 }
-                let data = buf[..(n as usize)].to_vec();
+                let data = match normalize_rx_packet(worker_link_mode, &buf[..(n as usize)]) {
+                    Ok(data) => data,
+                    Err(err) => {
+                        if wrap_fail_logs_left > 0 {
+                            wrap_fail_logs_left -= 1;
+                            tracing::warn!(
+                                ?err,
+                                interface_name = interface_name_for_worker,
+                                link_mode = ?worker_link_mode,
+                                packet_len = n,
+                                "LinuxBpfTun failed to normalize packet"
+                            );
+                        }
+                        continue;
+                    }
+                };
                 total_bytes = total_bytes.wrapping_add(n as u64);
                 match tx.try_send(data) {
                     Ok(()) => {}
@@ -546,6 +800,8 @@ impl LinuxBpfTun {
         tracing::info!(
             interface_name,
             ifindex,
+            arphrd,
+            link_mode = ?link_mode,
             desired_rcvbuf = DEFAULT_RCVBUF_BYTES,
             actual_rcvbuf,
             "LinuxBpfTun created with filter {:?}",
@@ -555,6 +811,7 @@ impl LinuxBpfTun {
         Ok(Self {
             fd,
             ifindex,
+            link_mode,
             stop,
             worker: Some(worker),
             recv_queue: Mutex::new(rx),
@@ -591,25 +848,20 @@ impl stack::Tun for LinuxBpfTun {
     }
 
     fn try_send(&self, packet: &Bytes) -> Result<(), std::io::Error> {
-        if packet.len() < 6 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "packet too short",
-            ));
-        }
+        let tx_packet = encode_tx_packet(self.link_mode, packet)?;
 
         let mut addr: libc::sockaddr_ll = unsafe { mem::zeroed() };
         addr.sll_family = libc::AF_PACKET as u16;
-        addr.sll_protocol = (libc::ETH_P_ALL as u16).to_be();
+        addr.sll_protocol = tx_packet.protocol;
         addr.sll_ifindex = self.ifindex;
-        addr.sll_halen = 6;
-        addr.sll_addr[..6].copy_from_slice(&packet[..6]);
+        addr.sll_halen = tx_packet.halen;
+        addr.sll_addr.copy_from_slice(&tx_packet.addr);
 
         let ret = unsafe {
             libc::sendto(
                 self.fd.as_ref().as_raw_fd(),
-                packet.as_ptr() as *const libc::c_void,
-                packet.len(),
+                tx_packet.payload.as_ptr() as *const libc::c_void,
+                tx_packet.payload.len(),
                 0,
                 &addr as *const _ as *const libc::sockaddr,
                 mem::size_of::<libc::sockaddr_ll>() as u32,
@@ -636,7 +888,7 @@ mod tests {
     use pnet::packet::tcp::TcpFlags;
     use pnet::util::MacAddr;
     use rand::Rng;
-    use std::net::{IpAddr, Ipv4Addr};
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use tokio::time::{Duration, timeout};
 
     fn is_root() -> bool {
@@ -659,6 +911,135 @@ mod tests {
             return Some((iface.name, ipv4, mac));
         }
         None
+    }
+
+    fn test_frame(src_addr: SocketAddr, dst_addr: SocketAddr) -> Bytes {
+        build_tcp_packet(
+            MacAddr::new(0x02, 0, 0, 0, 0, 1),
+            MacAddr::new(0x02, 0, 0, 0, 0, 2),
+            src_addr,
+            dst_addr,
+            1,
+            0,
+            TcpFlags::SYN,
+            Some(b"test"),
+        )
+    }
+
+    #[test]
+    fn link_mode_maps_ppp_to_raw_ip() {
+        assert_eq!(LinkMode::from_arphrd(ARPHRD_PPP), LinkMode::RawIp);
+        assert_eq!(LinkMode::from_arphrd(1), LinkMode::EthernetRaw);
+    }
+
+    #[test]
+    fn raw_ip_recv_wraps_ipv4_and_ipv6_with_fake_ethernet() {
+        let frame4 = test_frame(
+            "192.0.2.1:12345".parse().unwrap(),
+            "198.51.100.2:23456".parse().unwrap(),
+        );
+        let raw4 = &frame4[ETH_HDR_LEN..];
+        let normalized4 = normalize_rx_packet(LinkMode::RawIp, raw4).unwrap();
+
+        assert!(normalized4[..12].iter().all(|b| *b == 0));
+        assert_eq!(&normalized4[12..14], &(ETHERTYPE_IPV4 as u16).to_be_bytes());
+        assert_eq!(&normalized4[ETH_HDR_LEN..], raw4);
+
+        let frame6 = test_frame(
+            "[2001:db8::1]:12345".parse().unwrap(),
+            "[2001:db8::2]:23456".parse().unwrap(),
+        );
+        let raw6 = &frame6[ETH_HDR_LEN..];
+        let normalized6 = normalize_rx_packet(LinkMode::RawIp, raw6).unwrap();
+
+        assert!(normalized6[..12].iter().all(|b| *b == 0));
+        assert_eq!(&normalized6[12..14], &(ETHERTYPE_IPV6 as u16).to_be_bytes());
+        assert_eq!(&normalized6[ETH_HDR_LEN..], raw6);
+    }
+
+    #[test]
+    fn raw_ip_recv_rejects_empty_and_unknown_ip_version() {
+        let err = normalize_rx_packet(LinkMode::RawIp, &[]).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+
+        let err = normalize_rx_packet(LinkMode::RawIp, &[0x70, 0, 0, 0]).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn raw_ip_encode_tx_strips_fake_ethernet_header_and_sets_protocol() {
+        let frame4 = test_frame(
+            "192.0.2.1:12345".parse().unwrap(),
+            "198.51.100.2:23456".parse().unwrap(),
+        );
+        let tx4 = encode_tx_packet(LinkMode::RawIp, &frame4).unwrap();
+
+        assert_eq!(tx4.payload, &frame4[ETH_HDR_LEN..]);
+        assert_eq!(tx4.protocol, (ETHERTYPE_IPV4 as u16).to_be());
+        assert_eq!(tx4.halen, 0);
+        assert_eq!(tx4.addr, [0u8; 8]);
+
+        let frame6 = test_frame(
+            "[2001:db8::1]:12345".parse().unwrap(),
+            "[2001:db8::2]:23456".parse().unwrap(),
+        );
+        let tx6 = encode_tx_packet(LinkMode::RawIp, &frame6).unwrap();
+
+        assert_eq!(tx6.payload, &frame6[ETH_HDR_LEN..]);
+        assert_eq!(tx6.protocol, (ETHERTYPE_IPV6 as u16).to_be());
+        assert_eq!(tx6.halen, 0);
+        assert_eq!(tx6.addr, [0u8; 8]);
+    }
+
+    #[test]
+    fn ethernet_raw_encode_tx_keeps_frame_and_mac_address() {
+        let frame = test_frame(
+            "192.0.2.1:12345".parse().unwrap(),
+            "198.51.100.2:23456".parse().unwrap(),
+        );
+        let tx = encode_tx_packet(LinkMode::EthernetRaw, &frame).unwrap();
+
+        assert_eq!(tx.payload, &frame[..]);
+        assert_eq!(tx.protocol, (libc::ETH_P_ALL as u16).to_be());
+        assert_eq!(tx.halen, 6);
+        assert_eq!(&tx.addr[..6], &frame[..6]);
+    }
+
+    #[test]
+    fn ethernet_raw_filter_keeps_ethertype_check() {
+        let dst_addr = "198.51.100.2:23456".parse().unwrap();
+        let filter = build_tcp_filter(None, dst_addr, LinkMode::EthernetRaw).unwrap();
+        let load_ethertype = BPF_LD | BPF_H | BPF_ABS;
+
+        assert!(
+            filter
+                .iter()
+                .any(|insn| insn.code == load_ethertype && insn.k == ETH_TYPE_OFFSET)
+        );
+    }
+
+    #[test]
+    fn raw_ip_filter_reads_ip_header_without_ethernet_ethertype() {
+        let dst_addr = "198.51.100.2:23456".parse().unwrap();
+        let filter = build_tcp_filter(None, dst_addr, LinkMode::RawIp).unwrap();
+        let load_ethertype = BPF_LD | BPF_H | BPF_ABS;
+        let load_byte_abs = BPF_LD | BPF_B | BPF_ABS;
+
+        assert!(
+            !filter
+                .iter()
+                .any(|insn| insn.code == load_ethertype && insn.k == ETH_TYPE_OFFSET)
+        );
+        assert!(
+            filter
+                .iter()
+                .any(|insn| insn.code == load_byte_abs && insn.k == 9)
+        );
+        assert!(
+            !filter
+                .iter()
+                .any(|insn| insn.code == load_byte_abs && insn.k == (ETH_HDR_LEN + 9) as u32)
+        );
     }
 
     fn send_raw_frame(interface_name: &str, frame: &[u8]) -> io::Result<()> {
