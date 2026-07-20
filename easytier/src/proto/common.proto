@@ -84,6 +84,9 @@ message FlagsInConfig {
   // applied via setsockopt. Requires CAP_NET_ADMIN; silently ignored on
   // non-Linux platforms.
   optional uint32 socket_mark = 43;
+
+  // skip TCP simultaneous open attempt in hole punching, go directly to SC (listen) mode
+  bool disable_tcp_simultaneous_open = 44;
 }
 
 message RpcDescriptor {

@@ -1,6 +1,7 @@
 name: EasyTier Test
 
 on:
+  workflow_dispatch:
   push:
     branches: [ "develop", "main" ]
   pull_request:
