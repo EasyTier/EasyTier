@@ -15,6 +15,10 @@ use tokio_util::task::AbortOnDropHandle;
 
 use futures::SinkExt;
 
+const MPSC_TUNNEL_CHANNEL_SIZE: usize = 32;
+// Keep each timed forward round bounded even when producers never let rx become empty.
+const MPSC_TUNNEL_FORWARD_BATCH_SIZE: usize = MPSC_TUNNEL_CHANNEL_SIZE;
+
 #[derive(Clone)]
 pub struct MpscTunnelSender(Sender<ZCPacket>);
 
@@ -43,7 +47,7 @@ pub struct MpscTunnel<T> {
 
 impl<T: Tunnel> MpscTunnel<T> {
     pub fn new(tunnel: T, send_timeout: Option<Duration>) -> Self {
-        let (tx, mut rx) = channel(32);
+        let (tx, mut rx) = channel(MPSC_TUNNEL_CHANNEL_SIZE);
         let (stream, mut sink) = tunnel.split();
 
         let task = tokio::spawn(async move {
@@ -86,7 +90,10 @@ impl<T: Tunnel> MpscTunnel<T> {
     ) -> Result<(), TunnelError> {
         sink.feed(initial_item).await?;
 
-        while let Ok(item) = rx.try_recv() {
+        for _ in 1..MPSC_TUNNEL_FORWARD_BATCH_SIZE {
+            let Ok(item) = rx.try_recv() else {
+                break;
+            };
             if let Err(e) = sink.feed(item).await {
                 tracing::error!(?e, "feed error");
                 return Err(e);
@@ -139,15 +146,128 @@ impl<T: Tunnel> MpscTunnel<T> {
 
 #[cfg(test)]
 mod tests {
-    use futures::StreamExt;
+    use std::{
+        future::Future,
+        pin::Pin,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        task::{Context, Poll},
+    };
+
+    use futures::{Sink, StreamExt};
+    use tokio::task::JoinSet;
 
     use crate::tunnel::{
-        TunnelConnector, TunnelListener,
+        SinkItem, StreamItem, TunnelConnector, TunnelListener,
+        common::TunnelWrapper,
         ring::{RING_TUNNEL_CAP, create_ring_tunnel_pair},
         tcp::{TcpTunnelConnector, TcpTunnelListener},
     };
 
     use super::*;
+
+    struct ProgressSink {
+        delay: Duration,
+        sleep: Pin<Box<tokio::time::Sleep>>,
+        waiting: bool,
+        sent: Arc<AtomicUsize>,
+    }
+
+    impl ProgressSink {
+        fn new(delay: Duration, sent: Arc<AtomicUsize>) -> Self {
+            Self {
+                delay,
+                sleep: Box::pin(tokio::time::sleep(Duration::ZERO)),
+                waiting: false,
+                sent,
+            }
+        }
+    }
+
+    impl Sink<SinkItem> for ProgressSink {
+        type Error = TunnelError;
+
+        fn poll_ready(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            if !self.waiting {
+                return Poll::Ready(Ok(()));
+            }
+
+            match self.sleep.as_mut().poll(cx) {
+                Poll::Ready(()) => {
+                    self.waiting = false;
+                    Poll::Ready(Ok(()))
+                }
+                Poll::Pending => Poll::Pending,
+            }
+        }
+
+        fn start_send(mut self: Pin<&mut Self>, _item: SinkItem) -> Result<(), Self::Error> {
+            let wake_at = tokio::time::Instant::now() + self.delay;
+            self.sleep.as_mut().reset(wake_at);
+            self.waiting = true;
+            self.sent.fetch_add(1, Ordering::Release);
+            Ok(())
+        }
+
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_close(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn mpsc_continuous_progress_does_not_timeout() {
+        let sent = Arc::new(AtomicUsize::new(0));
+        let tunnel = TunnelWrapper::new(
+            futures::stream::pending::<StreamItem>(),
+            ProgressSink::new(Duration::from_millis(1), sent.clone()),
+            None,
+        );
+        let mpsc_tunnel = MpscTunnel::new(tunnel, Some(Duration::from_millis(200)));
+        let sink = mpsc_tunnel.get_sink();
+
+        let producer_count = 4;
+        let packets_per_producer = 256;
+        let total_packets = producer_count * packets_per_producer;
+        let mut tasks = JoinSet::new();
+        for _ in 0..producer_count {
+            let sink = sink.clone();
+            tasks.spawn(async move {
+                for _ in 0..packets_per_producer {
+                    sink.send(ZCPacket::new_with_payload(&[0; 64])).await?;
+                }
+                Ok::<(), TunnelError>(())
+            });
+        }
+
+        while let Some(ret) = tasks.join_next().await {
+            ret.expect("producer task panicked")
+                .expect("producer send failed");
+        }
+
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while sent.load(Ordering::Acquire) < total_packets {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("forward task stopped while the sink was making progress");
+    }
+
     // test slow send lock in framed tunnel
     #[tokio::test]
     async fn mpsc_slow_receiver() {
