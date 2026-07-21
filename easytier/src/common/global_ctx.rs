@@ -289,6 +289,7 @@ impl GlobalCtx {
         let (event_bus, _) = tokio::sync::broadcast::channel(16);
 
         let stun_info_collector = StunInfoCollector::new_with_default_servers();
+        stun_info_collector.set_bind_device(config_fs.get_flags().bind_device);
 
         if let Some(stun_servers) = config_fs.get_stun_servers() {
             stun_info_collector.set_stun_servers(stun_servers);
@@ -1072,6 +1073,12 @@ pub mod tests {
         let config_fs = TomlConfigLoader::default();
         config_fs.set_inst_name(format!("test_{}", config_fs.get_id()));
         config_fs.set_network_identity(network_identy.unwrap_or_default());
+
+        // tests talk over loopback; binding sockets to the physical
+        // default-route interface (macOS) would break them
+        let mut flags = config_fs.get_flags();
+        flags.bind_device = false;
+        config_fs.set_flags(flags);
 
         let ctx = Arc::new(GlobalCtx::new(config_fs));
         ctx.replace_stun_info_collector(Box::new(MockStunInfoCollector {

@@ -448,25 +448,29 @@ fn setup_socket2_ext(
     // #[cfg(all(unix, not(target_os = "solaris"), not(target_os = "illumos")))]
     // socket2_socket.set_reuse_port(true)?;
 
-    if bind_addr.ip().is_unspecified() {
-        return Ok(());
-    }
-
     // linux/mac does not use interface of bind_addr to send packet, so we need to bind device
     // win can handle this with bind correctly
+    // NOTE: unlike the linux branch below, this runs even for wildcard bind_addr —
+    // underlay sockets rely on it to escape TUN routes (see bind_underlay_udp_socket).
     #[cfg(any(target_os = "ios", target_os = "macos"))]
     if let Some(dev_name) = bind_dev {
         // use IP_BOUND_IF to bind device
-        unsafe {
-            let dev_idx = nix::libc::if_nametoindex(dev_name.as_str().as_ptr() as *const i8);
-            tracing::warn!(?dev_idx, ?dev_name, "bind device");
-            if bind_addr.is_ipv4() {
-                socket2_socket.bind_device_by_index_v4(std::num::NonZeroU32::new(dev_idx))?;
-            } else {
-                socket2_socket.bind_device_by_index_v6(std::num::NonZeroU32::new(dev_idx))?;
-            }
-            tracing::warn!(?dev_idx, ?dev_name, "bind device doen");
+        let dev_idx = std::ffi::CString::new(dev_name.as_str())
+            .ok()
+            .map(|name| unsafe { nix::libc::if_nametoindex(name.as_ptr()) })
+            .unwrap_or(0);
+        tracing::debug!(?dev_idx, ?dev_name, "bind device");
+        if dev_idx == 0 {
+            tracing::warn!(?dev_name, "bind device failed, interface not found");
+        } else if bind_addr.is_ipv4() {
+            socket2_socket.bind_device_by_index_v4(std::num::NonZeroU32::new(dev_idx))?;
+        } else {
+            socket2_socket.bind_device_by_index_v6(std::num::NonZeroU32::new(dev_idx))?;
         }
+    }
+
+    if bind_addr.ip().is_unspecified() {
+        return Ok(());
     }
 
     #[cfg(any(
@@ -572,6 +576,75 @@ pub fn bind<B: Bindable>(
     let socket = socket2::Socket::new(socket2::Domain::for_address(addr), B::TYPE, B::PROTOCOL)?;
     setup_socket2_ext(&socket, &addr, dev, only_v6, socket_mark)?;
     B::finalize(socket)
+}
+
+/// Binds a UDP socket carrying underlay (tunnel transport) traffic, e.g. hole
+/// punch sockets and direct-connect probes.
+///
+/// On macOS a wildcard-bound socket follows the routing table, so when broad
+/// routes point at a TUN device (easytier full tunnel or another VPN), the
+/// tunnel's own packets would be captured by that TUN and loop back into
+/// easytier. When `bind_device` is enabled, bind the socket to the physical
+/// default-route interface via IP_BOUND_IF to keep underlay traffic on the
+/// physical network. Falls back to a plain bind if no physical default route
+/// is found or the device bind fails.
+pub async fn bind_underlay_udp_socket(
+    addr: SocketAddr,
+    #[allow(unused_variables)] bind_device: bool,
+) -> Result<UdpSocket, TunnelError> {
+    #[cfg(target_os = "macos")]
+    if bind_device && addr.is_ipv4() {
+        if let Some(route) = crate::arch::macos::get_default_route_v4() {
+            match bind::<UdpSocket>()
+                .addr(addr)
+                .dev(BindDev::Custom(route.iface.clone()))
+                .call()
+            {
+                Ok(socket) => return Ok(socket),
+                Err(e) => {
+                    tracing::warn!(
+                        ?e,
+                        iface = %route.iface,
+                        "bind underlay udp socket to default route iface failed, fallback to unbound"
+                    );
+                }
+            }
+        }
+    }
+
+    Ok(UdpSocket::bind(addr).await?)
+}
+
+/// Apply the underlay device binding (IP_BOUND_IF to the physical
+/// default-route interface) to a raw socket2 socket before it is bound or
+/// connected. No-op on non-macOS platforms, when `bind_device` is disabled,
+/// or when no physical default route is found.
+pub fn bind_socket2_to_underlay_device(
+    socket2_socket: &socket2::Socket,
+    is_ipv4: bool,
+    bind_device: bool,
+) {
+    #[cfg(target_os = "macos")]
+    if bind_device && is_ipv4 {
+        let Some(route) = crate::arch::macos::get_default_route_v4() else {
+            return;
+        };
+        let dev_idx = std::ffi::CString::new(route.iface.as_str())
+            .ok()
+            .map(|name| unsafe { nix::libc::if_nametoindex(name.as_ptr()) })
+            .unwrap_or(0);
+        let Some(idx) = std::num::NonZeroU32::new(dev_idx) else {
+            tracing::warn!(iface = %route.iface, "bind underlay device failed, interface not found");
+            return;
+        };
+        if let Err(e) = socket2_socket.bind_device_by_index_v4(Some(idx)) {
+            tracing::warn!(?e, iface = %route.iface, "bind underlay device failed");
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (socket2_socket, is_ipv4, bind_device);
+    }
 }
 
 pub fn reserve_buf(buf: &mut BytesMut, min_size: usize, max_size: usize) {

@@ -325,9 +325,12 @@ impl DirectConnectorManagerData {
         let local_socket = {
             let _g = self.global_ctx.net_ns.guard();
             Arc::new(
-                UdpSocket::bind("0.0.0.0:0")
-                    .await
-                    .with_context(|| format!("failed to bind local socket for {}", remote_url))?,
+                crate::tunnel::common::bind_underlay_udp_socket(
+                    "0.0.0.0:0".parse().unwrap(),
+                    self.global_ctx.config.get_flags().bind_device,
+                )
+                .await
+                .with_context(|| format!("failed to bind local socket for {}", remote_url))?,
             )
         };
         let connector_addr = self

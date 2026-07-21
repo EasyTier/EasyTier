@@ -22,6 +22,7 @@ use stun_codec::rfc5389::methods::BINDING;
 use stun_codec::{Message, MessageClass, MessageDecoder, MessageEncoder};
 
 use crate::common::error::Error;
+use crate::tunnel::common::bind_underlay_udp_socket;
 
 use super::dns::resolve_txt_record;
 use super::stun_codec_ext::*;
@@ -602,13 +603,15 @@ impl StunNatTypeDetectResult {
 pub struct UdpNatTypeDetector {
     stun_server_hosts: Vec<String>,
     max_ip_per_domain: u32,
+    bind_device: bool,
 }
 
 impl UdpNatTypeDetector {
-    pub fn new(stun_server_hosts: Vec<String>, max_ip_per_domain: u32) -> Self {
+    pub fn new(stun_server_hosts: Vec<String>, max_ip_per_domain: u32, bind_device: bool) -> Self {
         Self {
             stun_server_hosts,
             max_ip_per_domain,
+            bind_device,
         }
     }
 
@@ -617,7 +620,13 @@ impl UdpNatTypeDetector {
         source_port: u16,
         stun_server: SocketAddr,
     ) -> Result<BindRequestResponse, Error> {
-        let udp = Arc::new(UdpSocket::bind(format!("0.0.0.0:{}", source_port)).await?);
+        let udp = Arc::new(
+            bind_underlay_udp_socket(
+                format!("0.0.0.0:{}", source_port).parse().unwrap(),
+                self.bind_device,
+            )
+            .await?,
+        );
         let client_builder = StunClientBuilder::new(udp.clone());
         client_builder
             .new_stun_client(stun_server)
@@ -629,7 +638,17 @@ impl UdpNatTypeDetector {
         &self,
         source_port: u16,
     ) -> Result<StunNatTypeDetectResult, Error> {
-        let udp = Arc::new(UdpSocket::bind(format!("0.0.0.0:{}", source_port)).await?);
+        // NAT detection results (nat type + public ip) are announced to peers
+        // and drive hole-punch strategy, so the probe sockets must take the
+        // same physical path as the punch sockets — a probe captured by a
+        // full-tunnel TUN route would report the exit node's address instead
+        let udp = Arc::new(
+            bind_underlay_udp_socket(
+                format!("0.0.0.0:{}", source_port).parse().unwrap(),
+                self.bind_device,
+            )
+            .await?,
+        );
         self.detect_nat_type_with_socket(udp).await
     }
 
@@ -690,15 +709,17 @@ struct TcpStunClient {
     conn_timeout: Duration,
     io_timeout: Duration,
     source_port: u16,
+    bind_device: bool,
 }
 
 impl TcpStunClient {
-    pub fn new(stun_server: SocketAddr, source_port: u16) -> Self {
+    pub fn new(stun_server: SocketAddr, source_port: u16, bind_device: bool) -> Self {
         Self {
             stun_server,
             conn_timeout: Duration::from_millis(1500),
             io_timeout: Duration::from_millis(3000),
             source_port,
+            bind_device,
         }
     }
 
@@ -794,6 +815,12 @@ impl TcpStunClient {
             let _ = socket2_socket.set_reuse_port(true);
         }
 
+        crate::tunnel::common::bind_socket2_to_underlay_device(
+            &socket2_socket,
+            bind_addr.is_ipv4(),
+            self.bind_device,
+        );
+
         socket2_socket.bind(&SockAddr::from(bind_addr))?;
 
         let socket = tokio::net::TcpSocket::from_std_stream(socket2_socket.into());
@@ -848,13 +875,15 @@ impl TcpStunClient {
 pub struct TcpNatTypeDetector {
     stun_server_hosts: Vec<String>,
     max_ip_per_domain: u32,
+    bind_device: bool,
 }
 
 impl TcpNatTypeDetector {
-    pub fn new(stun_server_hosts: Vec<String>, max_ip_per_domain: u32) -> Self {
+    pub fn new(stun_server_hosts: Vec<String>, max_ip_per_domain: u32, bind_device: bool) -> Self {
         Self {
             stun_server_hosts,
             max_ip_per_domain,
+            bind_device,
         }
     }
 
@@ -881,9 +910,13 @@ impl TcpNatTypeDetector {
             Some(source_port)
         };
         for server in stun_servers.iter() {
-            let resp = TcpStunClient::new(*server, selected_source_port.unwrap_or(0))
-                .bind_request()
-                .await;
+            let resp = TcpStunClient::new(
+                *server,
+                selected_source_port.unwrap_or(0),
+                self.bind_device,
+            )
+            .bind_request()
+            .await;
             if let Ok(resp) = resp {
                 if selected_source_port.is_none() {
                     selected_source_port = Some(resp.local_addr.port());
@@ -930,6 +963,7 @@ pub struct StunInfoCollector {
     redetect_notify: Arc<tokio::sync::Notify>,
     tasks: std::sync::Mutex<JoinSet<()>>,
     started: AtomicBool,
+    bind_device: AtomicBool,
 }
 
 #[async_trait::async_trait]
@@ -979,7 +1013,13 @@ impl StunInfoCollectorTrait for StunInfoCollector {
     }
 
     async fn get_udp_port_mapping(&self, local_port: u16) -> Result<SocketAddr, Error> {
-        let udp = Arc::new(UdpSocket::bind(format!("0.0.0.0:{}", local_port)).await?);
+        let udp = Arc::new(
+            bind_underlay_udp_socket(
+                format!("0.0.0.0:{}", local_port).parse().unwrap(),
+                self.bind_device(),
+            )
+            .await?,
+        );
         self.get_udp_port_mapping_with_socket(udp).await
     }
 
@@ -1060,7 +1100,10 @@ impl StunInfoCollectorTrait for StunInfoCollector {
         }
 
         for server in stun_servers.iter() {
-            let Ok(ret) = TcpStunClient::new(*server, local_port).bind_request().await else {
+            let Ok(ret) = TcpStunClient::new(*server, local_port, self.bind_device())
+                .bind_request()
+                .await
+            else {
                 tracing::warn!(?server, "tcp stun bind request failed");
                 continue;
             };
@@ -1091,7 +1134,22 @@ impl StunInfoCollector {
             redetect_notify: Arc::new(tokio::sync::Notify::new()),
             tasks: std::sync::Mutex::new(JoinSet::new()),
             started: AtomicBool::new(false),
+            // default off under cfg(test) so unit tests talking to loopback
+            // mock stun servers are not scoped to the physical interface
+            bind_device: AtomicBool::new(!cfg!(test)),
         }
+    }
+
+    /// Whether probe sockets should be bound to the physical default-route
+    /// interface (see bind_underlay_udp_socket). Synced from the instance
+    /// `bind_device` flag at GlobalCtx construction.
+    pub fn set_bind_device(&self, bind_device: bool) {
+        self.bind_device
+            .store(bind_device, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn bind_device(&self) -> bool {
+        self.bind_device.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub fn new_with_default_servers() -> Self {
@@ -1183,6 +1241,7 @@ impl StunInfoCollector {
         let udp_nat_test_result = self.udp_nat_test_result.clone();
         let nat_test_time = self.nat_test_result_time.clone();
         let redetect_notify = self.redetect_notify.clone();
+        let bind_device = self.bind_device();
         self.tasks.lock().unwrap().spawn(async move {
             loop {
                 let udp_servers = stun_servers.read().unwrap().clone();
@@ -1193,7 +1252,7 @@ impl StunInfoCollector {
                     .map(|x| x.to_string())
                     .collect();
 
-                let udp_detector = UdpNatTypeDetector::new(udp_servers, 1);
+                let udp_detector = UdpNatTypeDetector::new(udp_servers, 1, bind_device);
                 let mut udp_ret = udp_detector.detect_nat_type(0).await;
                 tracing::debug!(?udp_ret, "finish udp nat type detect");
 
@@ -1243,6 +1302,7 @@ impl StunInfoCollector {
         let tcp_nat_test_result = self.tcp_nat_test_result.clone();
         let nat_test_time = self.nat_test_result_time.clone();
         let redetect_notify = self.redetect_notify.clone();
+        let bind_device = self.bind_device();
         self.tasks.lock().unwrap().spawn(async move {
             loop {
                 let tcp_servers = tcp_stun_servers.read().unwrap().clone();
@@ -1253,7 +1313,7 @@ impl StunInfoCollector {
                     .map(|x| x.to_string())
                     .collect();
 
-                let tcp_detector = TcpNatTypeDetector::new(tcp_servers, 1);
+                let tcp_detector = TcpNatTypeDetector::new(tcp_servers, 1, bind_device);
                 let tcp_ret = tcp_detector.detect_nat_type(0).await;
                 tracing::debug!(?tcp_ret, "finish tcp nat type detect");
 
@@ -1394,7 +1454,7 @@ mod tests {
         });
 
         let stun_servers = vec!["127.0.0.1:55555".to_string(), "127.0.0.1:55535".to_string()];
-        let detector = UdpNatTypeDetector::new(stun_servers, 1);
+        let detector = UdpNatTypeDetector::new(stun_servers, 1, false);
         let ret = detector.detect_nat_type(0).await;
         println!("{:#?}, {:?}", ret, ret.as_ref().unwrap().nat_type());
         assert_eq!(ret.unwrap().nat_type(), NatType::Restricted);
@@ -1403,7 +1463,7 @@ mod tests {
     #[tokio::test]
     async fn test_txt_public_stun_server() {
         let stun_servers = vec!["txt:stun.easytier.cn".to_string()];
-        let detector = UdpNatTypeDetector::new(stun_servers, 1);
+        let detector = UdpNatTypeDetector::new(stun_servers, 1, false);
         timeout(Duration::from_secs(30), async {
             loop {
                 let ret = detector.detect_nat_type(0).await;
@@ -1427,7 +1487,7 @@ mod tests {
             "stun.fitauto.ru".to_string(),
             "stun.hot-chilli.net".to_string(),
         ];
-        let detector = TcpNatTypeDetector::new(stun_servers, 3);
+        let detector = TcpNatTypeDetector::new(stun_servers, 3, false);
         let ret = detector.detect_nat_type(0).await;
         println!("{:#?}, {:?}", ret, ret.as_ref().map(|x| x.nat_type()));
         if let Ok(resp) = ret {
@@ -1471,7 +1531,7 @@ mod tests {
         let (server2, _t2) = spawn_tcp_stun_server().await;
 
         let stun_servers = vec![server1.to_string(), server2.to_string()];
-        let detector = TcpNatTypeDetector::new(stun_servers, 1);
+        let detector = TcpNatTypeDetector::new(stun_servers, 1, false);
 
         let ret = detector.detect_nat_type(0).await.unwrap();
         assert!(ret.stun_resps.len() >= 2);
@@ -1546,7 +1606,7 @@ mod tests {
         });
         let stun_servers = vec!["127.0.0.1:55355".to_string()];
 
-        let detector = UdpNatTypeDetector::new(stun_servers, 1);
+        let detector = UdpNatTypeDetector::new(stun_servers, 1, false);
         let ret = detector.detect_nat_type(0).await;
         println!("{:#?}, {:?}", ret, ret.as_ref().unwrap().nat_type());
         assert_eq!(ret.unwrap().nat_type(), NatType::Restricted);

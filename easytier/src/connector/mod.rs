@@ -71,6 +71,9 @@ async fn set_bind_addr_for_peer_connector(
     if is_ipv4 {
         let mut bind_addrs = vec![];
         for ipv4 in ips.interface_ipv4s {
+            if is_local_ip_on_tun_iface(std::net::IpAddr::V4(ipv4.into())) {
+                continue;
+            }
             let socket_addr = SocketAddrV4::new(ipv4.into(), 0).into();
             bind_addrs.push(socket_addr);
         }
@@ -82,12 +85,39 @@ async fn set_bind_addr_for_peer_connector(
             if global_ctx.is_ip_easytier_managed_ipv6(&ipv6) {
                 continue;
             }
+            if is_local_ip_on_tun_iface(std::net::IpAddr::V6(ipv6)) {
+                continue;
+            }
             let socket_addr = SocketAddrV6::new(ipv6, 0, 0, 0).into();
             bind_addrs.push(socket_addr);
         }
         connector.set_bind_addrs(bind_addrs);
     }
     let _ = connector;
+}
+
+/// On macOS, connectors race a connection from every local interface IP and
+/// keep the first that succeeds. IPs owned by utun devices (other VPNs, or a
+/// stale easytier tun) must not join that race: connecting through another
+/// tunnel adds an extra detour at best and a routing loop at worst.
+fn is_local_ip_on_tun_iface(#[allow(unused_variables)] ip: std::net::IpAddr) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        use network_interface::NetworkInterfaceConfig;
+        let Ok(ifaces) = network_interface::NetworkInterface::show() else {
+            return false;
+        };
+        for iface in ifaces {
+            if !iface.name.starts_with("utun") {
+                continue;
+            }
+            if iface.addr.iter().any(|addr| addr.ip() == ip) {
+                tracing::debug!(?ip, iface = %iface.name, "skip TUN-owned local ip for peer connector bind");
+                return true;
+            }
+        }
+    }
+    false
 }
 
 struct ResolvedConnectorAddr {

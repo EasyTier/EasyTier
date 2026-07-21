@@ -77,8 +77,11 @@ impl PunchBothEasySymHoleServer {
             .ok_or(anyhow::anyhow!("public_ip is required"))?;
         let transaction_id = request.transaction_id;
 
-        let udp_array =
-            UdpSocketArray::new(socket_count, self.common.get_global_ctx().net_ns.clone());
+        let udp_array = UdpSocketArray::new(
+            socket_count,
+            self.common.get_global_ctx().net_ns.clone(),
+            self.common.get_global_ctx().config.get_flags().bind_device,
+        );
         udp_array.start().await?;
         udp_array.add_intreast_tid(transaction_id);
         let peer_mgr = self.common.get_peer_mgr();
@@ -207,6 +210,7 @@ impl PunchBothEasySymHoleClient {
         let udp_array = UdpSocketArray::new(
             UDP_ARRAY_SIZE_FOR_BOTH_EASY_SYM,
             self.peer_mgr.get_global_ctx().net_ns.clone(),
+            self.peer_mgr.get_global_ctx().config.get_flags().bind_device,
         );
         udp_array.start().await?;
 
