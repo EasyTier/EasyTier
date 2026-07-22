@@ -195,6 +195,13 @@ const instanceRecvBpsLimitInput = computed<string>({
     }
   },
 })
+
+const secureModeEnabled = computed<boolean>({
+  get: () => curNetwork.value.secure_mode?.enabled ?? false,
+  set: (value) => {
+    curNetwork.value.secure_mode = { ...(curNetwork.value.secure_mode ?? {}), enabled: value }
+  },
+})
 </script>
 
 <template>
@@ -269,6 +276,12 @@ const instanceRecvBpsLimitInput = computed<string>({
                       <Checkbox v-model="curNetwork[flag.field]" :input-id="flag.field" :binary="true" />
                       <label :for="flag.field" class="ml-2"> {{ t(flag.field) }} </label>
                       <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t(flag.help)"></span>
+                    </div>
+
+                    <div class="basis-[20rem] flex items-center">
+                      <Checkbox v-model="secureModeEnabled" input-id="secure_mode" :binary="true" />
+                      <label for="secure_mode" class="ml-2"> {{ t('secure_mode') }} </label>
+                      <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('secure_mode_help')"></span>
                     </div>
 
                   </div>

@@ -15,6 +15,8 @@ virtual_ipv4: Virtual IPv4
 virtual_ipv4_dhcp: DHCP
 network_name: Network Name
 network_secret: Network Secret
+secure_mode: Secure Mode
+secure_mode_help: Authenticated end-to-end encryption using a per-node X25519 key pair (peers are verified by public key) — a stronger scheme than the default network-secret encryption. Unlike "Disable Encryption", which only turns the default traffic encryption on or off, Secure Mode upgrades how peers authenticate and exchange keys. All peers in the network must use the same setting or the connection is rejected. Same as the --secure-mode CLI flag.
 public_server_url: Public Server URL
 peer_urls: Peer URLs
 proxy_cidrs: Subnet Proxy CIDRs

@@ -83,6 +83,7 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     network_name: 'easytier',
     network_secret: '',
     credential_file: '',
+    secure_mode: { enabled: false },
 
     networking_method: NetworkingMethod.Manual,
     public_server_url: '',
