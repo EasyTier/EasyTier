@@ -20,8 +20,13 @@ pub struct MpscTunnelSender(Sender<ZCPacket>);
 
 impl MpscTunnelSender {
     pub async fn send(&self, item: ZCPacket) -> Result<(), TunnelError> {
-        self.0.send(item).await.with_context(|| "send error")?;
-        Ok(())
+        match self.0.try_send(item) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(item)) => {
+                Err(TrySendError::Closed(item)) => {
+                    self.0.send(item).await.with_context(|| "send error")?;
+                    Ok(())
+                },
     }
 
     pub fn try_send(&self, item: ZCPacket) -> Result<(), TunnelError> {
