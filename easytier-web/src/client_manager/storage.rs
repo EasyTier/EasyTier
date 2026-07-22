@@ -143,6 +143,21 @@ impl Storage {
         self.list_clients_with_auth(true)
     }
 
+    /// List authorized client sessions that belong to a single user only.
+    pub fn list_user_client_tokens(&self, user_id: UserIdInDb) -> Vec<StorageToken> {
+        self.0
+            .user_clients_map
+            .get(&user_id)
+            .map(|info_map| {
+                info_map
+                    .iter()
+                    .filter(|info| info.value().authorized)
+                    .map(|info| info.value().storage_token.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     pub fn list_all_clients(&self) -> Vec<StorageToken> {
         self.list_clients_with_auth(false)
     }
