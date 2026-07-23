@@ -236,8 +236,21 @@ INIT() {
     exit 1
   fi
 
-  # Create default blank file config
-  cat >$INSTALL_PATH/config/default.conf <<EOF
+  # Write a default example config, but never overwrite an existing one so a
+  # re-run keeps the user's edits (and their network_secret). The node is NOT
+  # started automatically; see the message printed at the end.
+  if [ ! -f "$INSTALL_PATH/config/default.conf" ]; then
+    # Generate a unique random network secret so this node forms its own private
+    # network by default instead of silently joining the shared public "default"
+    # network (see issue #1539). Replace network_name / network_secret with your
+    # own values before starting the service.
+    if [ -r /proc/sys/kernel/random/uuid ]; then
+      NETWORK_SECRET="$(cat /proc/sys/kernel/random/uuid)"
+    else
+      NETWORK_SECRET="$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+    fi
+
+    cat >$INSTALL_PATH/config/default.conf <<EOF
 instance_name = "default"
 dhcp = true
 listeners = [
@@ -255,7 +268,7 @@ uri = "tcp://public.easytier.top:11010"
 
 [network_identity]
 network_name = "default"
-network_secret = "default"
+network_secret = "$NETWORK_SECRET"
 
 [flags]
 default_protocol = "udp"
@@ -267,7 +280,7 @@ latency_first = false
 enable_exit_node = false
 no_tun = false
 use_smoltcp = false
-foreign_network_whitelist = "*"
+relay_network_whitelist = "*"
 disable_p2p = false
 p2p_only = false
 relay_all_peer_rpc = false
@@ -275,6 +288,7 @@ disable_tcp_hole_punching = false
 disable_udp_hole_punching = false
 
 EOF
+  fi
 
   # Create init script
   if [ "$INIT_SYSTEM" = "openrc" ]; then
@@ -325,14 +339,12 @@ EOF
 # $INSTALL_PATH/easytier-core
 # EOF
 
-  # Startup
+  # Reload systemd so the service unit is available, but do NOT enable or start
+  # anything automatically. Joining a network is left to the user, who must
+  # review the config and start the service manually (see the message below and
+  # issue #1539). The openrc init script is created above but left inactive.
   if [ "$INIT_SYSTEM" = "systemd" ]; then
     systemctl daemon-reload
-    systemctl enable easytier@default >/dev/null 2>&1
-    systemctl start easytier@default
-  else
-    rc-update add easytier default
-    rc-service easytier start
   fi
 
   # For issues from the previous version
@@ -349,7 +361,13 @@ SUCCESS() {
   clear
   echo " Install EasyTier successfully!"
   echo -e "\r\nDefault Port: ${GREEN_COLOR}11010(UDP+TCP)${RES}, Notice allowing in firewall!\r\n"
-  echo -e "Default Network Name: ${GREEN_COLOR}default${RES}, Please change it to your own network name!\r\n"
+
+  echo -e "${GREEN_COLOR}NOTE:${RES} EasyTier is installed but ${GREEN_COLOR}NOT started${RES}."
+  echo -e "An example config was written to ${GREEN_COLOR}${INSTALL_PATH}/config/default.conf${RES} with a"
+  echo -e "unique random network secret, so this node is its own private network and will not"
+  echo -e "join any shared network until you configure it. Edit the file and set your own"
+  echo -e "${GREEN_COLOR}network_name${RES} / ${GREEN_COLOR}network_secret${RES} (and peers), then start the service yourself."
+  echo
 
   echo -e "Now EasyTier supports multiple config files. You can create config files in the ${GREEN_COLOR}${INSTALL_PATH}/config/${RES} folder"
   echo -e "For more information, please check the documents in official site"
@@ -357,13 +375,13 @@ SUCCESS() {
 
   echo
   if [ "$INIT_SYSTEM" = "systemd" ]; then
+    echo -e "Start: ${GREEN_COLOR}systemctl enable --now easytier@default${RES}"
     echo -e "Status: ${GREEN_COLOR}systemctl status easytier@default${RES}"
-    echo -e "Start: ${GREEN_COLOR}systemctl start easytier@default${RES}"
     echo -e "Restart: ${GREEN_COLOR}systemctl restart easytier@default${RES}"
     echo -e "Stop: ${GREEN_COLOR}systemctl stop easytier@default${RES}"
   else
+    echo -e "Start: ${GREEN_COLOR}rc-update add easytier default && rc-service easytier start${RES}"
     echo -e "Status: ${GREEN_COLOR}rc-service easytier status${RES}"
-    echo -e "Start: ${GREEN_COLOR}rc-service easytier start${RES}"
     echo -e "Restart: ${GREEN_COLOR}rc-service easytier restart${RES}"
     echo -e "Stop: ${GREEN_COLOR}rc-service easytier stop${RES}"
   fi

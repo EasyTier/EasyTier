@@ -273,6 +273,12 @@ pub trait ConfigLoader: Send + Sync {
     fn get_socks5_portal(&self) -> Option<url::Url>;
     fn set_socks5_portal(&self, addr: Option<url::Url>);
 
+    fn get_rpc_portal(&self) -> Option<String>;
+    fn set_rpc_portal(&self, addr: Option<String>);
+
+    fn get_rpc_portal_whitelist(&self) -> Option<Vec<cidr::IpCidr>>;
+    fn set_rpc_portal_whitelist(&self, whitelist: Option<Vec<cidr::IpCidr>>);
+
     fn get_port_forwards(&self) -> Vec<PortForwardConfig>;
     fn set_port_forwards(&self, forwards: Vec<PortForwardConfig>);
 
@@ -589,6 +595,9 @@ struct Config {
     listeners: Option<Vec<url::Url>>,
     mapped_listeners: Option<Vec<url::Url>>,
     exit_nodes: Option<Vec<IpAddr>>,
+
+    rpc_portal: Option<String>,
+    rpc_portal_whitelist: Option<Vec<cidr::IpCidr>>,
 
     peer: Option<Vec<PeerConfig>>,
     proxy_network: Option<Vec<ProxyNetworkConfig>>,
@@ -1043,6 +1052,22 @@ impl ConfigLoader for TomlConfigLoader {
 
     fn set_socks5_portal(&self, addr: Option<url::Url>) {
         self.config.lock().unwrap().socks5_proxy = addr;
+    }
+
+    fn get_rpc_portal(&self) -> Option<String> {
+        self.config.lock().unwrap().rpc_portal.clone()
+    }
+
+    fn set_rpc_portal(&self, addr: Option<String>) {
+        self.config.lock().unwrap().rpc_portal = addr;
+    }
+
+    fn get_rpc_portal_whitelist(&self) -> Option<Vec<cidr::IpCidr>> {
+        self.config.lock().unwrap().rpc_portal_whitelist.clone()
+    }
+
+    fn set_rpc_portal_whitelist(&self, whitelist: Option<Vec<cidr::IpCidr>>) {
+        self.config.lock().unwrap().rpc_portal_whitelist = whitelist;
     }
 
     fn get_port_forwards(&self) -> Vec<PortForwardConfig> {
@@ -1579,6 +1604,69 @@ stun_servers = [
 
         let loaded = TomlConfigLoader::new_from_str(&dumped).unwrap();
         assert_eq!(loaded.get_network_config_source(), ConfigSource::Web);
+    }
+
+    #[test]
+    fn test_rpc_portal_config_roundtrip() {
+        // Default config has no rpc_portal and omits it from the dump.
+        let config = TomlConfigLoader::default();
+        assert!(config.get_rpc_portal().is_none());
+        assert!(!config.dump().contains("rpc_portal"));
+
+        // rpc_portal set in the TOML is parsed and preserved through a dump.
+        let config = TomlConfigLoader::new_from_str(
+            r#"
+instance_name = "test"
+rpc_portal = "127.0.0.1:15888"
+"#,
+        )
+        .unwrap();
+        assert_eq!(config.get_rpc_portal().as_deref(), Some("127.0.0.1:15888"));
+
+        let dumped = config.dump();
+        assert!(dumped.contains("rpc_portal = \"127.0.0.1:15888\""));
+        let loaded = TomlConfigLoader::new_from_str(&dumped).unwrap();
+        assert_eq!(loaded.get_rpc_portal().as_deref(), Some("127.0.0.1:15888"));
+
+        // The setter updates the value.
+        config.set_rpc_portal(Some("0.0.0.0:0".to_string()));
+        assert_eq!(config.get_rpc_portal().as_deref(), Some("0.0.0.0:0"));
+    }
+
+    #[test]
+    fn test_rpc_portal_whitelist_config_roundtrip() {
+        // Default config has no whitelist and omits it from the dump.
+        let config = TomlConfigLoader::default();
+        assert!(config.get_rpc_portal_whitelist().is_none());
+        assert!(!config.dump().contains("rpc_portal_whitelist"));
+
+        // A whitelist set in the TOML is parsed and preserved through a dump.
+        let config = TomlConfigLoader::new_from_str(
+            r#"
+instance_name = "test"
+rpc_portal_whitelist = ["127.0.0.0/8", "::1/128"]
+"#,
+        )
+        .unwrap();
+        let whitelist = config.get_rpc_portal_whitelist().unwrap();
+        assert_eq!(
+            whitelist,
+            vec![
+                "127.0.0.0/8".parse::<cidr::IpCidr>().unwrap(),
+                "::1/128".parse::<cidr::IpCidr>().unwrap(),
+            ]
+        );
+
+        let dumped = config.dump();
+        let loaded = TomlConfigLoader::new_from_str(&dumped).unwrap();
+        assert_eq!(loaded.get_rpc_portal_whitelist().unwrap(), whitelist);
+
+        // The setter updates the value.
+        config.set_rpc_portal_whitelist(Some(vec!["10.0.0.0/24".parse::<cidr::IpCidr>().unwrap()]));
+        assert_eq!(
+            config.get_rpc_portal_whitelist().unwrap(),
+            vec!["10.0.0.0/24".parse::<cidr::IpCidr>().unwrap()]
+        );
     }
 
     #[test]
