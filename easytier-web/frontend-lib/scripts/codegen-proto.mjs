@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 
 const require = createRequire(import.meta.url)
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const protoRoot = resolve(root, '../../easytier-proto/src')
+const protoRoot = resolve(root, '../../easytier-proto/proto')
 const generatedRoot = resolve(root, 'src/generated')
 const outDir = resolve(generatedRoot, 'proto')
 const nodeBinDir = resolve(root, 'node_modules/.bin')

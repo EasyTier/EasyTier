@@ -85,20 +85,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "windows")]
     ensure_protoc_for_windows();
 
-    let proto_files_reflect = ["src/peer_rpc.proto", "src/common.proto"];
+    let proto_files_reflect = ["proto/peer_rpc.proto", "proto/common.proto"];
 
     let proto_files = [
-        "src/core_peer.proto",
-        "src/core_config.proto",
-        "src/error.proto",
-        "src/tests.proto",
-        "src/api_instance.proto",
-        "src/api_logger.proto",
-        "src/api_config.proto",
-        "src/api_manage.proto",
-        "src/web.proto",
-        "src/magic_dns.proto",
-        "src/acl.proto",
+        "proto/core_peer.proto",
+        "proto/core_config.proto",
+        "proto/error.proto",
+        "proto/tests.proto",
+        "proto/api_instance.proto",
+        "proto/api_logger.proto",
+        "proto/api_config.proto",
+        "proto/api_manage.proto",
+        "proto/web.proto",
+        "proto/magic_dns.proto",
+        "proto/acl.proto",
     ];
 
     for proto_file in proto_files.iter().chain(proto_files_reflect.iter()) {
@@ -126,10 +126,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .btree_map(["."])
         .skip_debug([".common.Ipv4Addr", ".common.Ipv6Addr", ".common.UUID"]);
 
-    config.compile_protos(&proto_files, &["src/"])?;
+    config.compile_protos(&proto_files, &["proto/"])?;
 
     config.file_descriptor_set_path(out.join("file_descriptor_set.bin"));
-    config.compile_protos(&proto_files_reflect, &["src/"])?;
+    config.compile_protos(&proto_files_reflect, &["proto/"])?;
 
     let descriptor = std::fs::read(descriptor)?;
     pbjson_build::Builder::new()
