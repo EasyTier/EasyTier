@@ -877,6 +877,7 @@ impl Instance {
         tokio::spawn(async move {
             let default_ipv4_addr = Ipv4Inet::new(Ipv4Addr::new(10, 126, 126, 0), 24).unwrap();
             let mut current_dhcp_ip: Option<Ipv4Inet> = None;
+            let mut nic_needs_recreate = false;
             let mut next_sleep_time = 0;
             let nic_closed_notifier = Arc::new(Notify::new());
             loop {
@@ -888,8 +889,11 @@ impl Instance {
                 };
 
                 if nic_closed_notifier.notified().now_or_never().is_some() {
-                    tracing::debug!("nic ctx is closed, try recreate it");
-                    current_dhcp_ip = None;
+                    tracing::info!(
+                        ?current_dhcp_ip,
+                        "nic ctx is closed, recreate it while preserving dhcp ip if possible"
+                    );
+                    nic_needs_recreate = true;
                 }
 
                 // do not allocate ip if no peer connected
@@ -902,7 +906,12 @@ impl Instance {
                 }
 
                 let mut used_ipv4 = HashSet::new();
+                let my_peer_id = peer_manager_c.my_peer_id();
                 for route in routes {
+                    if route.peer_id == my_peer_id {
+                        continue;
+                    }
+
                     let Some(peer_ipv4_addr) = route.ipv4_addr else {
                         continue;
                     };
@@ -910,12 +919,36 @@ impl Instance {
                     used_ipv4.insert(peer_ipv4_addr.into());
                 }
 
-                let dhcp_inet = used_ipv4.iter().next().unwrap_or(&default_ipv4_addr);
+                let dhcp_inet = used_ipv4
+                    .iter()
+                    .next()
+                    .or(current_dhcp_ip.as_ref())
+                    .unwrap_or(&default_ipv4_addr);
                 // if old ip is already in this subnet and not conflicted, use it
                 if let Some(ip) = current_dhcp_ip
                     && ip.network() == dhcp_inet.network()
                     && !used_ipv4.contains(&ip)
                 {
+                    if !nic_needs_recreate {
+                        continue;
+                    }
+                    tracing::info!(?ip, "recreating nic with existing dhcp ip");
+                    let candidate_ipv4_addr = Some(ip);
+
+                    Self::recreate_nic_for_dhcp(
+                        &global_ctx_c,
+                        &peer_manager_c,
+                        #[cfg(feature = "tun")]
+                        nic_ctx.clone(),
+                        #[cfg(feature = "tun")]
+                        _peer_packet_receiver.clone(),
+                        #[cfg(feature = "tun")]
+                        nic_closed_notifier.clone(),
+                        &mut current_dhcp_ip,
+                        &mut nic_needs_recreate,
+                        candidate_ipv4_addr,
+                    )
+                    .await;
                     continue;
                 }
 
@@ -930,65 +963,127 @@ impl Instance {
                     continue;
                 }
 
-                let last_ip = current_dhcp_ip;
-                tracing::debug!(
-                    ?current_dhcp_ip,
-                    ?candidate_ipv4_addr,
-                    "dhcp start changing ip"
-                );
-
-                #[cfg(feature = "tun")]
-                Self::clear_nic_ctx(nic_ctx.clone(), _peer_packet_receiver.clone()).await;
-
-                if let Some(ip) = candidate_ipv4_addr {
-                    if global_ctx_c.no_tun() {
-                        current_dhcp_ip = Some(ip);
-                        global_ctx_c.set_ipv4(Some(ip));
-                        global_ctx_c
-                            .issue_event(GlobalCtxEvent::DhcpIpv4Changed(last_ip, Some(ip)));
-                        continue;
-                    }
-
-                    #[cfg(all(not(mobile), feature = "tun"))]
-                    {
-                        let mut new_nic_ctx = NicCtx::new(
-                            global_ctx_c.clone(),
-                            &peer_manager_c,
-                            _peer_packet_receiver.clone(),
-                            nic_closed_notifier.clone(),
-                        );
-                        if let Err(e) = new_nic_ctx.run(Some(ip), global_ctx_c.get_ipv6()).await {
-                            tracing::error!(
-                                ?current_dhcp_ip,
-                                ?candidate_ipv4_addr,
-                                ?e,
-                                "add ip failed"
-                            );
-                            global_ctx_c.set_ipv4(None);
-                            continue;
-                        }
-                        #[cfg(feature = "magic-dns")]
-                        let ifname = new_nic_ctx.ifname().await;
-                        Self::use_new_nic_ctx(
-                            nic_ctx.clone(),
-                            new_nic_ctx,
-                            #[cfg(feature = "magic-dns")]
-                            Self::create_magic_dns_runner(peer_manager_c.clone(), ifname, ip),
-                        )
-                        .await;
-                    }
-
-                    current_dhcp_ip = Some(ip);
-                    global_ctx_c.set_ipv4(Some(ip));
-                    global_ctx_c.issue_event(GlobalCtxEvent::DhcpIpv4Changed(last_ip, Some(ip)));
-                } else {
-                    current_dhcp_ip = None;
-                    global_ctx_c.set_ipv4(None);
-                    global_ctx_c.issue_event(GlobalCtxEvent::DhcpIpv4Conflicted(last_ip));
-                }
+                Self::recreate_nic_for_dhcp(
+                    &global_ctx_c,
+                    &peer_manager_c,
+                    #[cfg(feature = "tun")]
+                    nic_ctx.clone(),
+                    #[cfg(feature = "tun")]
+                    _peer_packet_receiver.clone(),
+                    #[cfg(feature = "tun")]
+                    nic_closed_notifier.clone(),
+                    &mut current_dhcp_ip,
+                    &mut nic_needs_recreate,
+                    candidate_ipv4_addr,
+                )
+                .await;
             }
         });
     }
+
+    #[cfg(all(target_os = "macos", feature = "tun"))]
+    async fn reset_peer_connections_after_macos_tun_recreate(peer_manager: &Arc<PeerManager>) {
+        let peer_map = peer_manager.get_peer_map();
+        let peer_ids = peer_map.list_peers_with_conn().await;
+        if peer_ids.is_empty() {
+            return;
+        }
+
+        tracing::warn!(
+            ?peer_ids,
+            "macOS tun device was recreated, closing peer connections to force reconnect"
+        );
+
+        for peer_id in peer_ids {
+            if let Err(err) = peer_map.close_peer(peer_id).await {
+                tracing::warn!(
+                    ?peer_id,
+                    ?err,
+                    "failed to close peer after macOS tun recreate"
+                );
+            }
+        }
+    }
+
+    async fn recreate_nic_for_dhcp(
+        global_ctx_c: &ArcGlobalCtx,
+        peer_manager_c: &Arc<PeerManager>,
+        #[cfg(feature = "tun")] nic_ctx: ArcNicCtx,
+        #[cfg(feature = "tun")] peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
+        #[cfg(feature = "tun")] nic_closed_notifier: Arc<Notify>,
+        current_dhcp_ip: &mut Option<Ipv4Inet>,
+        nic_needs_recreate: &mut bool,
+        candidate_ipv4_addr: Option<Ipv4Inet>,
+    ) {
+        let last_ip = *current_dhcp_ip;
+        #[allow(unused_variables)]
+        let should_reset_peer_connections = *nic_needs_recreate;
+        tracing::debug!(
+            ?current_dhcp_ip,
+            ?candidate_ipv4_addr,
+            "dhcp start changing ip"
+        );
+
+        #[cfg(feature = "tun")]
+        Self::clear_nic_ctx(nic_ctx.clone(), peer_packet_receiver.clone()).await;
+
+        if let Some(ip) = candidate_ipv4_addr {
+            if global_ctx_c.no_tun() {
+                *current_dhcp_ip = Some(ip);
+                global_ctx_c.set_ipv4(Some(ip));
+                global_ctx_c.issue_event(GlobalCtxEvent::DhcpIpv4Changed(last_ip, Some(ip)));
+                *nic_needs_recreate = false;
+                return;
+            }
+
+            #[cfg(all(not(mobile), feature = "tun"))]
+            {
+                let mut new_nic_ctx = NicCtx::new(
+                    global_ctx_c.clone(),
+                    peer_manager_c,
+                    peer_packet_receiver.clone(),
+                    nic_closed_notifier.clone(),
+                );
+                if let Err(e) = new_nic_ctx.run(Some(ip), global_ctx_c.get_ipv6()).await {
+                    tracing::error!(?current_dhcp_ip, ?candidate_ipv4_addr, ?e, "add ip failed");
+                    global_ctx_c.set_ipv4(None);
+                    return;
+                }
+                #[cfg(feature = "magic-dns")]
+                let ifname = new_nic_ctx.ifname().await;
+                Self::use_new_nic_ctx(
+                    nic_ctx.clone(),
+                    new_nic_ctx,
+                    #[cfg(feature = "magic-dns")]
+                    Self::create_magic_dns_runner(Arc::clone(peer_manager_c), ifname, ip),
+                )
+                .await;
+            }
+
+            *current_dhcp_ip = Some(ip);
+            global_ctx_c.set_ipv4(Some(ip));
+            global_ctx_c.issue_event(GlobalCtxEvent::DhcpIpv4Changed(last_ip, Some(ip)));
+            *nic_needs_recreate = false;
+        } else {
+            *current_dhcp_ip = None;
+            global_ctx_c.set_ipv4(None);
+            global_ctx_c.issue_event(GlobalCtxEvent::DhcpIpv4Conflicted(last_ip));
+            *nic_needs_recreate = false;
+        }
+
+        #[cfg(all(target_os = "macos", feature = "tun"))]
+        if should_reset_peer_connections {
+            Self::reset_peer_connections_after_macos_tun_recreate(peer_manager_c).await;
+        }
+    }
+
+    #[cfg(all(target_os = "macos", feature = "tun"))]
+    fn finish_static_ip_first_round(first_round: &mut bool) {
+        *first_round = false;
+    }
+
+    #[cfg(not(all(target_os = "macos", feature = "tun")))]
+    fn finish_static_ip_first_round(_first_round: &mut bool) {}
 
     #[cfg(all(not(mobile), feature = "tun"))]
     fn check_for_static_ip(&self, first_round_output: oneshot::Sender<Result<(), Error>>) {
@@ -1007,6 +1102,8 @@ impl Instance {
 
         tokio::spawn(async move {
             let mut output_tx = Some(first_round_output);
+            #[allow(unused_variables)]
+            let mut first_round = true;
             loop {
                 let close_notifier = Arc::new(Notify::new());
                 {
@@ -1018,6 +1115,8 @@ impl Instance {
                         }
                         return;
                     };
+
+                    Self::clear_nic_ctx(nic_ctx.clone(), peer_packet_receiver.clone()).await;
 
                     let mut new_nic_ctx = NicCtx::new(
                         peer_mgr.get_global_ctx(),
@@ -1041,7 +1140,7 @@ impl Instance {
                     {
                         let ifname = new_nic_ctx.ifname().await;
                         let dns_runner = if let Some(ipv4) = ipv4_addr {
-                            Self::create_magic_dns_runner(peer_mgr, ifname, ipv4)
+                            Self::create_magic_dns_runner(Arc::clone(&peer_mgr), ifname, ipv4)
                         } else {
                             None
                         };
@@ -1049,11 +1148,17 @@ impl Instance {
                     }
                     #[cfg(not(feature = "magic-dns"))]
                     Self::use_new_nic_ctx(nic_ctx.clone(), new_nic_ctx).await;
+
+                    #[cfg(all(target_os = "macos", feature = "tun"))]
+                    if !first_round {
+                        Self::reset_peer_connections_after_macos_tun_recreate(&peer_mgr).await;
+                    }
                 }
 
                 if let Some(output_tx) = output_tx.take() {
                     let _ = output_tx.send(Ok(()));
                 }
+                Self::finish_static_ip_first_round(&mut first_round);
 
                 // NOTICE: make sure we do not hold the peer manager here,
                 while close_notifier.notified().now_or_never().is_none() {

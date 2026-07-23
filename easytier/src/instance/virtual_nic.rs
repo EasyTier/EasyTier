@@ -1007,6 +1007,7 @@ impl NicCtx {
                 let ret = sink.send(packet).await;
                 if ret.is_err() {
                     tracing::error!(?ret, "do_forward_tunnel_to_nic sink error");
+                    break;
                 }
             }
             close_notifier.notify_one();
@@ -1037,6 +1038,41 @@ impl NicCtx {
                 );
             }
         }
+    }
+
+    #[cfg(all(target_os = "macos", not(feature = "macos-ne")))]
+    fn run_macos_sleep_wake_recreate_watcher(&mut self) {
+        const CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+        const WAKE_GAP_THRESHOLD: std::time::Duration = std::time::Duration::from_secs(20);
+        const NETWORK_SETTLE_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
+
+        let close_notifier = self.close_notifier.clone();
+        self.tasks.spawn(async move {
+            let mut last_wall = std::time::SystemTime::now();
+            loop {
+                tokio::time::sleep(CHECK_INTERVAL).await;
+
+                let now = std::time::SystemTime::now();
+                match now.duration_since(last_wall) {
+                    Ok(elapsed) if elapsed > WAKE_GAP_THRESHOLD => {
+                        tracing::warn!(
+                            ?elapsed,
+                            "detected macOS sleep/wake gap, recreating tun device"
+                        );
+                        tokio::time::sleep(NETWORK_SETTLE_DELAY).await;
+                        close_notifier.notify_one();
+                        return;
+                    }
+                    Ok(_) => {
+                        last_wall = now;
+                    }
+                    Err(err) => {
+                        tracing::warn!(?err, "system time moved backwards in macOS wake watcher");
+                        last_wall = now;
+                    }
+                }
+            }
+        });
     }
 
     async fn apply_route_changes(
@@ -1376,6 +1412,8 @@ impl NicCtx {
 
         self.do_forward_nic_to_peers_task(stream)?;
         self.do_forward_peers_to_nic(sink);
+        #[cfg(all(target_os = "macos", not(feature = "macos-ne")))]
+        self.run_macos_sleep_wake_recreate_watcher();
 
         // Assign IPv4 address if provided
         if let Some(ipv4_addr) = ipv4_addr {
