@@ -1,41 +1,40 @@
+#![cfg_attr(
+    not(any(feature = "public-ipv6-provider", feature = "tun")),
+    allow(dead_code)
+)]
+
 use std::{
     collections::BTreeSet,
     ffi::CString,
     fmt::Debug,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
-    num::NonZero,
     os::fd::AsRawFd,
 };
 
 use anyhow::Context;
 use async_trait::async_trait;
 use cidr::{IpInet, Ipv4Inet, Ipv6Inet};
-use netlink_packet_core::{
-    NLM_F_ACK, NLM_F_CREATE, NLM_F_DUMP, NLM_F_EXCL, NLM_F_REQUEST, NetlinkDeserializable,
-    NetlinkHeader, NetlinkMessage, NetlinkPayload, NetlinkSerializable,
-};
-use netlink_packet_route::{
-    AddressFamily, RouteNetlinkMessage,
-    address::{AddressAttribute, AddressMessage},
-    neighbour::{
-        NeighbourAddress, NeighbourAttribute, NeighbourFlags, NeighbourHeader, NeighbourMessage,
-        NeighbourState,
-    },
-    route::{
-        RouteAddress, RouteAttribute, RouteHeader, RouteMessage, RouteProtocol, RouteScope,
-        RouteType,
-    },
-};
 use netlink_sys::{Socket, SocketAddr, protocols::NETLINK_ROUTE};
+#[cfg(test)]
+use nix::libc::SIOCGIFMTU;
 use nix::{
     ifaddrs::getifaddrs,
-    libc::{self, Ioctl, SIOCGIFFLAGS, SIOCGIFMTU, SIOCSIFFLAGS, SIOCSIFMTU, ifreq, ioctl},
+    libc::{self, Ioctl, SIOCGIFFLAGS, SIOCSIFFLAGS, SIOCSIFMTU, ifreq, ioctl},
     net::if_::InterfaceFlags,
     sys::socket::SockaddrLike as _,
 };
 use pnet::ipnetwork::ip_mask_to_prefix;
 
-use super::{Error, IfConfiguerTrait, route::Route};
+use super::{
+    Error, IfConfiguerTrait,
+    netlink_wire::{
+        AddressMessage, MessageBuilder, MessageIter, NLM_F_ACK, NLM_F_CREATE, NLM_F_DUMP,
+        NLM_F_DUMP_INTR, NLM_F_EXCL, NLM_F_REQUEST, NLMSG_DONE, NLMSG_ERROR, NeighborMessage,
+        NetlinkDecode, NetlinkEncode, RTM_DELADDR, RTM_DELNEIGH, RTM_DELROUTE, RTM_GETNEIGH,
+        RTM_GETROUTE, RTM_NEWADDR, RTM_NEWNEIGH, RTM_NEWROUTE, RouteMessage, RouteMessageBuilder,
+        RouteType, netlink_error_code,
+    },
+};
 
 pub(crate) fn dummy_socket() -> Result<std::net::UdpSocket, Error> {
     Ok(std::net::UdpSocket::bind("0:0")?)
@@ -51,115 +50,88 @@ fn build_ifreq(name: &str) -> ifreq {
     ifr
 }
 
-fn send_netlink_req<T: NetlinkDeserializable + NetlinkSerializable + Debug>(
-    req: T,
-    flags: u16,
-) -> Result<Socket, Error> {
+fn send_netlink_req(builder: MessageBuilder) -> Result<Socket, Error> {
     let mut socket = Socket::new(NETLINK_ROUTE)?;
     socket.bind_auto()?;
     socket.connect(&SocketAddr::new(0, 0))?;
 
-    let mut req: NetlinkMessage<T> =
-        NetlinkMessage::new(NetlinkHeader::default(), NetlinkPayload::InnerMessage(req));
-    req.header.flags = flags;
-
-    req.finalize();
-    let mut buf = vec![0; req.header.length as _];
-    req.serialize(&mut buf);
-
-    tracing::debug!("net link request >>> {:?}", req);
+    let buf = builder.finish()?;
+    tracing::debug!(request_len = buf.len(), "sending netlink request");
     socket.send(&buf, 0)?;
 
     Ok(socket)
 }
 
-fn send_netlink_req_and_wait_one_resp<T: NetlinkDeserializable + NetlinkSerializable + Debug>(
-    req: T,
-    is_remove: bool,
-) -> Result<(), Error> {
-    let socket = send_netlink_req(
-        req,
-        NLM_F_ACK | NLM_F_CREATE | NLM_F_REQUEST | if !is_remove { NLM_F_EXCL } else { 0 },
-    )?;
-    let resp = socket.recv_from_full()?;
-    let ret = NetlinkMessage::<T>::deserialize(&resp.0)
-        .with_context(|| "Failed to deserialize netlink message")?;
-
-    tracing::debug!("net link response <<< {:?}", ret);
-
-    match ret.payload {
-        NetlinkPayload::Error(e) => {
-            if e.code == NonZero::new(0) {
-                Ok(())
-            } else {
-                Err(e.to_io().into())
+fn send_netlink_req_and_wait_ack(builder: MessageBuilder) -> Result<(), Error> {
+    let socket = send_netlink_req(builder)?;
+    loop {
+        let (response, _) = socket.recv_from_full()?;
+        for frame in MessageIter::new(&response) {
+            let (header, payload) = frame?;
+            if header.message_type == NLMSG_ERROR {
+                return match netlink_error_code(payload)? {
+                    0 => Ok(()),
+                    errno => Err(std::io::Error::from_raw_os_error(errno.abs()).into()),
+                };
             }
-        }
-        p => {
-            tracing::error!("Unexpected netlink response: {:?}", p);
-            Err(anyhow::anyhow!("Unexpected netlink response").into())
+            if header.message_type == NLMSG_DONE {
+                return Ok(());
+            }
         }
     }
 }
 
-fn addr_to_ip(addr: RouteAddress) -> Option<IpAddr> {
-    match addr {
-        RouteAddress::Inet(addr) => Some(addr.into()),
-        RouteAddress::Inet6(addr) => Some(addr.into()),
-        _ => None,
+fn message_request<T: NetlinkEncode>(
+    message_type: u16,
+    flags: u16,
+    message: &T,
+) -> Result<MessageBuilder, Error> {
+    let mut builder = MessageBuilder::new(message_type, flags);
+    let mut message_bytes = Vec::new();
+    message.write_to(&mut message_bytes)?;
+    builder.append_bytes(&message_bytes);
+    Ok(builder)
+}
+
+fn receive_netlink_dump<T: NetlinkDecode>(builder: MessageBuilder) -> Result<Vec<T>, Error> {
+    let socket = send_netlink_req(builder)?;
+    let mut messages = Vec::new();
+
+    loop {
+        let (response, _) = socket.recv_from_full()?;
+        for frame in MessageIter::new(&response) {
+            let (header, payload) = frame?;
+            if header.flags & NLM_F_DUMP_INTR != 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    "netlink dump was interrupted",
+                )
+                .into());
+            }
+            if header.message_type == NLMSG_DONE {
+                return Ok(messages);
+            }
+            if header.message_type == NLMSG_ERROR {
+                let error = netlink_error_code(payload)?;
+                if error == 0 {
+                    continue;
+                }
+                return Err(std::io::Error::from_raw_os_error(error.abs()).into());
+            }
+            if header.message_type == T::MESSAGE_TYPE {
+                messages.push(T::from_bytes(payload)?);
+            }
+        }
     }
 }
 
-impl From<RouteMessage> for Route {
-    fn from(msg: RouteMessage) -> Self {
-        let mut gateway = None;
-        let mut source = None;
-        let mut source_hint = None;
-        let mut destination = None;
-        let mut ifindex = None;
-        let mut metric = None;
-
-        for attr in msg.attributes {
-            match attr {
-                RouteAttribute::Source(addr) => {
-                    source = addr_to_ip(addr);
-                }
-                RouteAttribute::PrefSource(addr) => {
-                    source_hint = addr_to_ip(addr);
-                }
-                RouteAttribute::Destination(addr) => {
-                    destination = addr_to_ip(addr);
-                }
-                RouteAttribute::Gateway(addr) => {
-                    gateway = addr_to_ip(addr);
-                }
-                RouteAttribute::Oif(i) => {
-                    ifindex = Some(i);
-                }
-                RouteAttribute::Priority(priority) => {
-                    metric = Some(priority);
-                }
-                _ => {}
-            }
-        }
-        // rtnetlink gives None instead of 0.0.0.0 for the default route, but we'll convert to 0 here to make it match the other platforms
-        let destination = destination.unwrap_or_else(|| match msg.header.address_family {
-            AddressFamily::Inet => Ipv4Addr::UNSPECIFIED.into(),
-            AddressFamily::Inet6 => Ipv6Addr::UNSPECIFIED.into(),
-            _ => panic!("invalid destination family"),
-        });
-        Self {
-            destination,
-            prefix: msg.header.destination_prefix_length,
-            source,
-            source_prefix: msg.header.source_prefix_length,
-            source_hint,
-            gateway,
-            ifindex,
-            table: msg.header.table,
-            metric,
-        }
-    }
+fn dump_netlink_messages<T: NetlinkDecode>(
+    message_type: u16,
+    dump_header: &[u8],
+) -> Result<Vec<T>, Error> {
+    let mut builder = MessageBuilder::new(message_type, NLM_F_REQUEST | NLM_F_DUMP);
+    builder.append_bytes(dump_header);
+    receive_netlink_dump(builder)
 }
 
 pub struct NetlinkIfConfiger {}
@@ -184,19 +156,14 @@ impl NetlinkIfConfiger {
     }
 
     fn remove_one_ip(name: &str, ip: Ipv4Addr, prefix_len: u8) -> Result<(), Error> {
-        let mut message = AddressMessage::default();
-        message.header.prefix_len = prefix_len;
-        message.header.index = NetlinkIfConfiger::get_interface_index(name)?;
-        message.header.family = AddressFamily::Inet;
-
-        message
-            .attributes
-            .push(AddressAttribute::Address(std::net::IpAddr::V4(ip)));
-
-        send_netlink_req_and_wait_one_resp::<RouteNetlinkMessage>(
-            RouteNetlinkMessage::DelAddress(message),
-            true,
-        )
+        let message = AddressMessage::new(
+            libc::AF_INET as u8,
+            Self::get_interface_index(name)?,
+            prefix_len,
+            IpAddr::V4(ip),
+        );
+        let request = message_request(RTM_DELADDR, NLM_F_ACK | NLM_F_REQUEST, &message)?;
+        send_netlink_req_and_wait_ack(request)
     }
 
     fn get_prefix_len_ipv6(name: &str, ip: Ipv6Addr) -> Result<u8, Error> {
@@ -210,19 +177,14 @@ impl NetlinkIfConfiger {
     }
 
     fn remove_one_ipv6(name: &str, ip: Ipv6Addr, prefix_len: u8) -> Result<(), Error> {
-        let mut message = AddressMessage::default();
-        message.header.prefix_len = prefix_len;
-        message.header.index = NetlinkIfConfiger::get_interface_index(name)?;
-        message.header.family = AddressFamily::Inet6;
-
-        message
-            .attributes
-            .push(AddressAttribute::Address(std::net::IpAddr::V6(ip)));
-
-        send_netlink_req_and_wait_one_resp::<RouteNetlinkMessage>(
-            RouteNetlinkMessage::DelAddress(message),
-            true,
-        )
+        let message = AddressMessage::new(
+            libc::AF_INET6 as u8,
+            Self::get_interface_index(name)?,
+            prefix_len,
+            IpAddr::V6(ip),
+        );
+        let request = message_request(RTM_DELADDR, NLM_F_ACK | NLM_F_REQUEST, &message)?;
+        send_netlink_req_and_wait_ack(request)
     }
 
     pub(crate) fn mtu_op<T: TryInto<Ioctl>>(
@@ -249,6 +211,7 @@ impl NetlinkIfConfiger {
         Ok(unsafe { ifr.ifr_ifru.ifru_mtu as u32 })
     }
 
+    #[cfg(test)]
     fn mtu(name: &str) -> Result<u32, Error> {
         Self::mtu_op(name, SIOCGIFMTU, 0)
     }
@@ -316,166 +279,60 @@ impl NetlinkIfConfiger {
         Self::set_flags_op(name, SIOCGIFFLAGS, InterfaceFlags::empty())
     }
 
-    fn list_route_messages(address_family: AddressFamily) -> Result<Vec<RouteMessage>, Error> {
-        let mut message = RouteMessage::default();
-
-        message.header.table = RouteHeader::RT_TABLE_UNSPEC;
-        message.header.protocol = RouteProtocol::Unspec;
-
-        message.header.scope = RouteScope::Universe;
-        message.header.kind = RouteType::Unicast;
-
-        message.header.address_family = address_family;
-        message.header.destination_prefix_length = 0;
-        message.header.source_prefix_length = 0;
-
-        let s = send_netlink_req(
-            RouteNetlinkMessage::GetRoute(message),
-            NLM_F_REQUEST | NLM_F_DUMP,
-        )?;
-
-        let mut ret_vec = vec![];
-
-        let mut resp = Vec::<u8>::new();
-        loop {
-            if resp.is_empty() {
-                let (new_resp, _) = s.recv_from_full()?;
-                resp = new_resp;
-            }
-            let ret = NetlinkMessage::<RouteNetlinkMessage>::deserialize(&resp)
-                .with_context(|| "Failed to deserialize netlink message")?;
-            resp = resp.split_off(ret.buffer_len());
-
-            tracing::debug!("net link response <<< {:?}", ret);
-
-            match ret.payload {
-                NetlinkPayload::Error(e) => {
-                    if e.code == NonZero::new(0) {
-                        continue;
-                    } else {
-                        return Err(e.to_io().into());
-                    }
-                }
-                NetlinkPayload::InnerMessage(RouteNetlinkMessage::NewRoute(m)) => {
-                    tracing::debug!("net link response <<< {:?}", m);
-                    ret_vec.push(m);
-                }
-                NetlinkPayload::Done(_) => {
-                    break;
-                }
-                p => {
-                    tracing::error!("Unexpected netlink response: {:?}", p);
-                    return Err(anyhow::anyhow!("Unexpected netlink response").into());
-                }
-            }
-        }
-
-        Ok(ret_vec)
+    fn list_route_messages(address_family: u8) -> Result<Vec<RouteMessage>, Error> {
+        Ok(
+            dump_netlink_messages::<RouteMessage>(RTM_GETROUTE, &RouteMessage::dump_header())?
+                .into_iter()
+                .filter(|message| message.family() == address_family)
+                .collect(),
+        )
     }
 
     fn list_routes() -> Result<Vec<RouteMessage>, Error> {
-        Self::list_route_messages(AddressFamily::Inet)
+        Self::list_route_messages(libc::AF_INET as u8)
     }
 
     pub(crate) fn list_ipv6_route_messages() -> Result<Vec<RouteMessage>, Error> {
-        Self::list_route_messages(AddressFamily::Inet6)
+        Self::list_route_messages(libc::AF_INET6 as u8)
     }
 
-    fn ipv6_ndp_proxy_message(name: &str, address: Ipv6Addr) -> Result<NeighbourMessage, Error> {
-        let mut message = NeighbourMessage::default();
-        message.header = NeighbourHeader {
-            family: AddressFamily::Inet6,
-            ifindex: Self::get_interface_index(name)?,
-            state: NeighbourState::Permanent,
-            flags: NeighbourFlags::Proxy,
-            kind: RouteType::Unicast,
-        };
-        message
-            .attributes
-            .push(NeighbourAttribute::Destination(NeighbourAddress::Inet6(
-                address,
-            )));
-        Ok(message)
+    fn ipv6_ndp_proxy_message(name: &str, address: Ipv6Addr) -> Result<NeighborMessage, Error> {
+        Ok(NeighborMessage::proxy(
+            Self::get_interface_index(name)?,
+            address,
+        ))
     }
 
     pub(crate) fn add_ipv6_ndp_proxy(name: &str, address: Ipv6Addr) -> Result<(), Error> {
-        send_netlink_req_and_wait_one_resp(
-            RouteNetlinkMessage::NewNeighbour(Self::ipv6_ndp_proxy_message(name, address)?),
-            false,
-        )
+        let message = Self::ipv6_ndp_proxy_message(name, address)?;
+        let request = message_request(
+            RTM_NEWNEIGH,
+            NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL | NLM_F_REQUEST,
+            &message,
+        )?;
+        send_netlink_req_and_wait_ack(request)
     }
 
     pub(crate) fn remove_ipv6_ndp_proxy(name: &str, address: Ipv6Addr) -> Result<(), Error> {
-        send_netlink_req_and_wait_one_resp(
-            RouteNetlinkMessage::DelNeighbour(Self::ipv6_ndp_proxy_message(name, address)?),
-            true,
-        )
+        let message = Self::ipv6_ndp_proxy_message(name, address)?;
+        let request = message_request(RTM_DELNEIGH, NLM_F_ACK | NLM_F_REQUEST, &message)?;
+        send_netlink_req_and_wait_ack(request)
     }
 
-    fn list_neighbour_messages(
-        address_family: AddressFamily,
-    ) -> Result<Vec<NeighbourMessage>, Error> {
-        let mut message = NeighbourMessage::default();
-        message.header.family = address_family;
-        message.header.flags = NeighbourFlags::Proxy;
-
-        let s = send_netlink_req(
-            RouteNetlinkMessage::GetNeighbour(message),
-            NLM_F_REQUEST | NLM_F_DUMP,
-        )?;
-
-        let mut ret_vec = vec![];
-        let mut resp = Vec::<u8>::new();
-        loop {
-            if resp.is_empty() {
-                let (new_resp, _) = s.recv_from_full()?;
-                resp = new_resp;
-            }
-
-            let ret = NetlinkMessage::<RouteNetlinkMessage>::deserialize(&resp)
-                .with_context(|| "Failed to deserialize netlink neighbour message")?;
-            resp = resp.split_off(ret.buffer_len());
-
-            tracing::debug!("net link response <<< {:?}", ret);
-
-            match ret.payload {
-                NetlinkPayload::Error(e) => {
-                    if e.code == NonZero::new(0) {
-                        continue;
-                    } else {
-                        return Err(e.to_io().into());
-                    }
-                }
-                NetlinkPayload::InnerMessage(RouteNetlinkMessage::NewNeighbour(m)) => {
-                    ret_vec.push(m);
-                }
-                NetlinkPayload::Done(_) => {
-                    break;
-                }
-                p => {
-                    tracing::error!("Unexpected netlink response: {:?}", p);
-                    return Err(anyhow::anyhow!("Unexpected netlink response").into());
-                }
-            }
-        }
-
-        Ok(ret_vec)
+    fn list_neighbour_messages(address_family: u8) -> Result<Vec<NeighborMessage>, Error> {
+        let mut builder = MessageBuilder::new(RTM_GETNEIGH, NLM_F_REQUEST | NLM_F_DUMP);
+        builder.append_bytes(&NeighborMessage::proxy_dump_header(address_family));
+        receive_netlink_dump(builder)
     }
 
     pub(crate) fn list_ipv6_ndp_proxy(name: &str) -> Result<BTreeSet<Ipv6Addr>, Error> {
         let ifindex = Self::get_interface_index(name)?;
-
-        Ok(Self::list_neighbour_messages(AddressFamily::Inet6)?
+        Ok(Self::list_neighbour_messages(libc::AF_INET6 as u8)?
             .into_iter()
-            .filter(|message| {
-                message.header.ifindex == ifindex
-                    && message.header.flags.contains(NeighbourFlags::Proxy)
-            })
-            .filter_map(|message| {
-                message.attributes.into_iter().find_map(|attr| match attr {
-                    NeighbourAttribute::Destination(NeighbourAddress::Inet6(addr)) => Some(addr),
-                    _ => None,
-                })
+            .filter(|message| message.ifindex() == ifindex && message.is_proxy())
+            .filter_map(|message| match message.destination() {
+                Some(IpAddr::V6(address)) => Some(*address),
+                _ => None,
             })
             .collect())
     }
@@ -490,30 +347,21 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
         cidr_prefix: u8,
         cost: Option<i32>,
     ) -> Result<(), Error> {
-        let mut message = RouteMessage::default();
-
-        message.header.table = RouteHeader::RT_TABLE_MAIN;
-        message.header.protocol = RouteProtocol::Static;
-        message.header.scope = RouteScope::Universe;
-        message.header.kind = RouteType::Unicast;
-        message.header.address_family = AddressFamily::Inet;
-        // metric
-        message
-            .attributes
-            .push(RouteAttribute::Priority(cost.unwrap_or(65535) as u32));
-        // output interface
-        message
-            .attributes
-            .push(RouteAttribute::Oif(NetlinkIfConfiger::get_interface_index(
-                name,
-            )?));
-        // source address
-        message.header.destination_prefix_length = cidr_prefix;
-        message
-            .attributes
-            .push(RouteAttribute::Destination(RouteAddress::Inet(address)));
-
-        send_netlink_req_and_wait_one_resp(RouteNetlinkMessage::NewRoute(message), false)
+        let message = RouteMessageBuilder::new(libc::AF_INET as u8)
+            .destination(IpAddr::V4(address), cidr_prefix)
+            .oif(Self::get_interface_index(name)?)
+            .priority(cost.unwrap_or(65535) as u32)
+            .table(libc::RT_TABLE_MAIN.into())
+            .static_protocol()
+            .universe_scope()
+            .route_type(RouteType::Unicast)
+            .build();
+        let request = message_request(
+            RTM_NEWROUTE,
+            NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL | NLM_F_REQUEST,
+            &message,
+        )?;
+        send_netlink_req_and_wait_ack(request)
     }
 
     async fn remove_ipv4_route(
@@ -526,12 +374,16 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
         let ifidx = NetlinkIfConfiger::get_interface_index(name)?;
 
         for msg in routes {
-            let other_route: Route = msg.clone().into();
-            if other_route.destination == std::net::IpAddr::V4(address)
-                && other_route.prefix == cidr_prefix
-                && other_route.ifindex == Some(ifidx)
+            let destination = msg
+                .destination()
+                .copied()
+                .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+            if destination == IpAddr::V4(address)
+                && msg.dst_len() == cidr_prefix
+                && msg.oif() == Some(ifidx)
             {
-                send_netlink_req_and_wait_one_resp(RouteNetlinkMessage::DelRoute(msg), true)?;
+                let request = message_request(RTM_DELROUTE, NLM_F_ACK | NLM_F_REQUEST, &msg)?;
+                send_netlink_req_and_wait_ack(request)?;
                 return Ok(());
             }
         }
@@ -545,37 +397,26 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
         address: Ipv4Addr,
         cidr_prefix: u8,
     ) -> Result<(), Error> {
-        let mut message = AddressMessage::default();
-
-        message.header.prefix_len = cidr_prefix;
-        message.header.index = NetlinkIfConfiger::get_interface_index(name)?;
-        message.header.family = AddressFamily::Inet;
-
-        message
-            .attributes
-            .push(AddressAttribute::Address(std::net::IpAddr::V4(address)));
-
-        // for IPv4 the IFA_LOCAL address can be set to the same value as
-        // IFA_ADDRESS
-        message
-            .attributes
-            .push(AddressAttribute::Local(std::net::IpAddr::V4(address)));
-
-        // set the IFA_BROADCAST address as well
-        if cidr_prefix == 32 {
-            message
-                .attributes
-                .push(AddressAttribute::Broadcast(address));
+        let broadcast = if cidr_prefix == 32 {
+            address
         } else {
             let ip_addr = u32::from(address);
-            let brd = Ipv4Addr::from((0xffff_ffff_u32) >> u32::from(cidr_prefix) | ip_addr);
-            message.attributes.push(AddressAttribute::Broadcast(brd));
+            Ipv4Addr::from((0xffff_ffff_u32) >> u32::from(cidr_prefix) | ip_addr)
         };
-
-        send_netlink_req_and_wait_one_resp::<RouteNetlinkMessage>(
-            RouteNetlinkMessage::NewAddress(message),
-            false,
+        let message = AddressMessage::new(
+            libc::AF_INET as u8,
+            Self::get_interface_index(name)?,
+            cidr_prefix,
+            IpAddr::V4(address),
         )
+        .local(IpAddr::V4(address))
+        .broadcast(broadcast);
+        let request = message_request(
+            RTM_NEWADDR,
+            NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL | NLM_F_REQUEST,
+            &message,
+        )?;
+        send_netlink_req_and_wait_ack(request)
     }
 
     async fn set_link_status(&self, name: &str, up: bool) -> Result<(), Error> {
@@ -613,21 +454,18 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
         address: std::net::Ipv6Addr,
         cidr_prefix: u8,
     ) -> Result<(), Error> {
-        let mut message = AddressMessage::default();
-
-        message.header.prefix_len = cidr_prefix;
-        message.header.index = NetlinkIfConfiger::get_interface_index(name)?;
-        message.header.family = AddressFamily::Inet6;
-
-        message
-            .attributes
-            .push(AddressAttribute::Address(std::net::IpAddr::V6(address)));
-
-        // For IPv6, we don't need IFA_LOCAL or IFA_BROADCAST
-        send_netlink_req_and_wait_one_resp::<RouteNetlinkMessage>(
-            RouteNetlinkMessage::NewAddress(message),
-            false,
-        )
+        let message = AddressMessage::new(
+            libc::AF_INET6 as u8,
+            Self::get_interface_index(name)?,
+            cidr_prefix,
+            IpAddr::V6(address),
+        );
+        let request = message_request(
+            RTM_NEWADDR,
+            NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL | NLM_F_REQUEST,
+            &message,
+        )?;
+        send_netlink_req_and_wait_ack(request)
     }
 
     async fn remove_ipv6(&self, name: &str, ip: Option<Ipv6Inet>) -> Result<(), Error> {
@@ -654,32 +492,23 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
         cidr_prefix: u8,
         cost: Option<i32>,
     ) -> Result<(), Error> {
-        let mut message = RouteMessage::default();
-
-        message.header.address_family = AddressFamily::Inet6;
-        message.header.destination_prefix_length = cidr_prefix;
-        message.header.table = RouteHeader::RT_TABLE_MAIN;
-        message.header.protocol = RouteProtocol::Static;
-        message.header.scope = RouteScope::Universe;
-        message.header.kind = RouteType::Unicast;
-
-        message
-            .attributes
-            .push(RouteAttribute::Priority(cost.unwrap_or(65535) as u32));
-
-        message
-            .attributes
-            .push(RouteAttribute::Oif(NetlinkIfConfiger::get_interface_index(
-                name,
-            )?));
-
+        let mut builder = RouteMessageBuilder::new(libc::AF_INET6 as u8)
+            .oif(Self::get_interface_index(name)?)
+            .priority(cost.unwrap_or(65535) as u32)
+            .table(libc::RT_TABLE_MAIN.into())
+            .static_protocol()
+            .universe_scope()
+            .route_type(RouteType::Unicast);
         if cidr_prefix != 0 {
-            message
-                .attributes
-                .push(RouteAttribute::Destination(RouteAddress::Inet6(address)));
+            builder = builder.destination(IpAddr::V6(address), cidr_prefix);
         }
-
-        send_netlink_req_and_wait_one_resp(RouteNetlinkMessage::NewRoute(message), false)
+        let message = builder.build();
+        let request = message_request(
+            RTM_NEWROUTE,
+            NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL | NLM_F_REQUEST,
+            &message,
+        )?;
+        send_netlink_req_and_wait_ack(request)
     }
 
     async fn remove_ipv6_route(
@@ -688,16 +517,20 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
         address: std::net::Ipv6Addr,
         cidr_prefix: u8,
     ) -> Result<(), Error> {
-        let routes = Self::list_route_messages(AddressFamily::Inet6)?;
+        let routes = Self::list_route_messages(libc::AF_INET6 as u8)?;
         let ifidx = NetlinkIfConfiger::get_interface_index(name)?;
 
         for msg in routes {
-            let other_route: Route = msg.clone().into();
-            if other_route.destination == std::net::IpAddr::V6(address)
-                && other_route.prefix == cidr_prefix
-                && other_route.ifindex == Some(ifidx)
+            let destination = msg
+                .destination()
+                .copied()
+                .unwrap_or(IpAddr::V6(Ipv6Addr::UNSPECIFIED));
+            if destination == IpAddr::V6(address)
+                && msg.dst_len() == cidr_prefix
+                && msg.oif() == Some(ifidx)
             {
-                send_netlink_req_and_wait_one_resp(RouteNetlinkMessage::DelRoute(msg), true)?;
+                let request = message_request(RTM_DELROUTE, NLM_F_ACK | NLM_F_REQUEST, &msg)?;
+                send_netlink_req_and_wait_ack(request)?;
                 return Ok(());
             }
         }
@@ -848,8 +681,7 @@ mod tests {
         let routes = NetlinkIfConfiger::list_routes()
             .unwrap()
             .into_iter()
-            .map(Route::from)
-            .map(|x| x.destination)
+            .filter_map(|route| route.destination().copied())
             .collect::<Vec<_>>();
         assert!(routes.contains(&IpAddr::V4("10.5.5.0".parse().unwrap())));
 
@@ -860,8 +692,7 @@ mod tests {
         let routes = NetlinkIfConfiger::list_routes()
             .unwrap()
             .into_iter()
-            .map(Route::from)
-            .map(|x| x.destination)
+            .filter_map(|route| route.destination().copied())
             .collect::<Vec<_>>();
         assert!(!routes.contains(&IpAddr::V4("10.5.5.0".parse().unwrap())));
     }
@@ -912,39 +743,24 @@ mod tests {
         let routes = NetlinkIfConfiger::list_ipv6_route_messages().unwrap();
 
         assert!(routes.iter().any(|route| {
-            route.header.kind == RouteType::Unicast
-                && route.header.source_prefix_length == 56
-                && route.attributes.iter().any(|attr| {
-                    matches!(
-                        attr,
-                        RouteAttribute::Source(RouteAddress::Inet6(addr))
-                            if *addr == "2001:db8:100::".parse::<std::net::Ipv6Addr>().unwrap()
-                    )
-                })
-                && route
-                    .attributes
-                    .iter()
-                    .any(|attr| matches!(attr, RouteAttribute::Oif(index) if *index == wan_ifindex))
-                && !route
-                    .attributes
-                    .iter()
-                    .any(|attr| matches!(attr, RouteAttribute::Destination(_)))
+            route.route_type() == RouteType::Unicast
+                && route.src_len() == 56
+                && route.source()
+                    == Some(&IpAddr::V6(
+                        "2001:db8:100::".parse::<std::net::Ipv6Addr>().unwrap(),
+                    ))
+                && route.oif() == Some(wan_ifindex)
+                && route.destination().is_none()
         }));
 
         assert!(routes.iter().any(|route| {
-            route.header.kind == RouteType::Unicast
-                && route.header.destination_prefix_length == 56
-                && route.attributes.iter().any(|attr| {
-                    matches!(
-                        attr,
-                        RouteAttribute::Destination(RouteAddress::Inet6(addr))
-                            if *addr == "2001:db8:100::".parse::<std::net::Ipv6Addr>().unwrap()
-                    )
-                })
-                && route
-                    .attributes
-                    .iter()
-                    .any(|attr| matches!(attr, RouteAttribute::Oif(index) if *index == lan_ifindex))
+            route.route_type() == RouteType::Unicast
+                && route.dst_len() == 56
+                && route.destination()
+                    == Some(&IpAddr::V6(
+                        "2001:db8:100::".parse::<std::net::Ipv6Addr>().unwrap(),
+                    ))
+                && route.oif() == Some(lan_ifindex)
         }));
     }
 
@@ -964,17 +780,9 @@ mod tests {
         let ifindex = NetlinkIfConfiger::get_interface_index(&iface).unwrap();
         let has_route = |routes: &[RouteMessage]| {
             routes.iter().any(|route| {
-                route.header.destination_prefix_length == 56
-                    && route.attributes.iter().any(|attr| {
-                        matches!(
-                            attr,
-                            RouteAttribute::Destination(RouteAddress::Inet6(addr)) if *addr == route_addr
-                        )
-                    })
-                    && route
-                        .attributes
-                        .iter()
-                        .any(|attr| matches!(attr, RouteAttribute::Oif(index) if *index == ifindex))
+                route.dst_len() == 56
+                    && route.destination() == Some(&IpAddr::V6(route_addr))
+                    && route.oif() == Some(ifindex)
             })
         };
 

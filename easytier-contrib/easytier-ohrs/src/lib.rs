@@ -58,7 +58,10 @@ use easytier::common::{
     MachineIdOptions,
     config::{ConfigFileControl, ConfigLoader, TomlConfigLoader},
 };
-use easytier::instance_manager::NetworkInstanceManager;
+use easytier::instance::factory::{
+    NativeInstanceSet, native_instance_set_with_runtime,
+};
+use easytier::common::config::NetworkConfigExt;
 use easytier::proto::api::manage::NetworkConfig;
 use easytier::proto::api::manage::NetworkingMethod;
 use easytier::web_client::{WebClient, WebClientHooks, run_web_client};
@@ -74,14 +77,18 @@ use std::sync::{Arc, Mutex};
 use tokio::runtime::{Builder, Runtime};
 use uuid::Uuid;
 
-pub(crate) static INSTANCE_MANAGER: once_cell::sync::Lazy<Arc<NetworkInstanceManager>> =
-    once_cell::sync::Lazy::new(|| Arc::new(NetworkInstanceManager::new()));
 static ASYNC_RUNTIME: once_cell::sync::Lazy<Runtime> = once_cell::sync::Lazy::new(|| {
     Builder::new_multi_thread()
         .enable_all()
         .build()
         .expect("tokio runtime for easytier-ohrs")
 });
+pub(crate) static INSTANCE_MANAGER: once_cell::sync::Lazy<Arc<NativeInstanceSet>> =
+    once_cell::sync::Lazy::new(|| {
+        Arc::new(native_instance_set_with_runtime(
+            ASYNC_RUNTIME.handle().clone(),
+        ))
+    });
 static WEB_CLIENTS: once_cell::sync::Lazy<Mutex<HashMap<String, ManagedWebClient>>> =
     once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
 
@@ -151,8 +158,8 @@ fn stop_web_client(config_id: &str) -> bool {
         return true;
     }
 
-    let ret = INSTANCE_MANAGER
-        .delete_network_instance(tracked_ids)
+    let ret = ASYNC_RUNTIME
+        .block_on(INSTANCE_MANAGER.delete_network_instance(tracked_ids))
         .map(|_| true)
         .unwrap_or_else(|err| {
             ohrs_log_error!(

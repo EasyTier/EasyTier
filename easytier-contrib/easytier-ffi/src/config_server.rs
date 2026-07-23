@@ -13,18 +13,14 @@ use easytier::{
         MachineIdOptions,
         config::{ConfigLoader as _, TomlConfigLoader},
     },
-    tunnel::TunnelScheme,
-    web_client::{WebClient, WebClientHooks, run_web_client},
+    web_client::{WebClient, WebClientHooks, parse_config_server_endpoint, run_web_client},
 };
 use uuid::Uuid;
 
 use crate::{
     data_plane::remove_data_plane_handles_by_instance_ids,
     error::set_error_msg,
-    state::{
-        ASYNC_RUNTIME, INSTANCE_MANAGER, INSTANCE_MUTATION_LOCK, INSTANCE_NAME_ID_MAP,
-        lock_remote_instance_mutation, remove_instance_name_ids,
-    },
+    state::{ffi_context, resolve_instance_id_by_name},
     strings::{c_str_to_string, optional_c_str_to_string},
     types::ConfigServerEventCallback,
 };
@@ -76,37 +72,9 @@ pub fn validate_config_server_client_options(
         return Err("machine_id is empty".to_string());
     }
 
-    let config_server_url = match url::Url::parse(config_server_url_s) {
-        Ok(url) => url,
-        Err(_) => format!(
-            "udp://config-server.easytier.cn:22020/{}",
-            config_server_url_s
-        )
-        .parse()
-        .map_err(|err| format!("failed to parse config server URL: {}", err))?,
-    };
-
-    TunnelScheme::try_from(&config_server_url).map_err(|_| {
-        format!(
-            "unsupported config server scheme: {}",
-            config_server_url.scheme()
-        )
-    })?;
-
-    let token = config_server_url
-        .path_segments()
-        .and_then(|mut segments| segments.next_back())
-        .map(|segment| percent_encoding::percent_decode_str(segment).decode_utf8())
-        .transpose()
-        .map_err(|err| format!("failed to decode config server token: {}", err))?
-        .map(|token| token.to_string())
-        .unwrap_or_default();
-
-    if token.is_empty() {
-        return Err("empty token".to_string());
-    }
-
-    Ok(())
+    parse_config_server_endpoint(config_server_url_s)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 struct ManagedConfigServerClient {
@@ -150,19 +118,13 @@ impl ManagedConfigServerClientHooks {
     }
 
     fn validate_instance_name(&self, inst_name: &str, inst_id: Uuid) -> Result<(), String> {
-        if let Some(existing_id) = INSTANCE_NAME_ID_MAP.get(inst_name).map(|id| *id)
+        if let Some(existing_id) =
+            resolve_instance_id_by_name(inst_name).map_err(|error| error.to_string())?
             && existing_id != inst_id
         {
             return Err(format!("instance name {} already exists", inst_name));
         }
 
-        Ok(())
-    }
-
-    fn commit_instance_name(&self, inst_name: String, inst_id: Uuid) -> Result<(), String> {
-        INSTANCE_NAME_ID_MAP.retain(|_, existing_id| *existing_id != inst_id);
-        self.validate_instance_name(&inst_name, inst_id)?;
-        INSTANCE_NAME_ID_MAP.insert(inst_name, inst_id);
         Ok(())
     }
 
@@ -199,10 +161,12 @@ impl ManagedConfigServerClientHooks {
         let Some(callback) = self.callback else {
             return Ok(());
         };
-        let instance_name = INSTANCE_MANAGER
+        let instance_name = ffi_context()
+            .manager
             .get_instance_name(&instance_id)
             .unwrap_or_default();
-        let network_name = INSTANCE_MANAGER
+        let network_name = ffi_context()
+            .manager
             .get_network_name(&instance_id)
             .unwrap_or_default();
         let event_json = serde_json::json!({
@@ -263,72 +227,20 @@ impl WebClientHooks for ManagedConfigServerClientHooks {
             .callback_delivery
             .lock()
             .map_err(|err| err.to_string())?;
-        let Some(inst_name) = INSTANCE_MANAGER.get_instance_name(id) else {
-            if !self.stopping.load(Ordering::Acquire) {
-                return Err(format!("instance {} not found after start", id));
-            }
-            return Ok(());
+        if self.stopping.load(Ordering::Acquire) {
+            return Err("config server client is stopping".to_string());
+        }
+        let Some(inst_name) = ffi_context().manager.get_instance_name(id) else {
+            return Err(format!("instance {} not found after start", id));
         };
 
-        {
-            let _mutation_guard = INSTANCE_MUTATION_LOCK
-                .lock()
-                .map_err(|err| err.to_string())?;
-            if INSTANCE_MANAGER.get_instance_name(id).is_none() {
-                if !self.stopping.load(Ordering::Acquire) {
-                    return Err(format!("instance {} not found after start", id));
-                }
-                return Ok(());
-            }
-
-            let should_delete = {
-                let mut guard = self.instance_ids.lock().map_err(|err| err.to_string())?;
-                if self.stopping.load(Ordering::Acquire) {
-                    true
-                } else {
-                    guard.insert(*id);
-                    false
-                }
-            };
-
-            if should_delete {
-                if let Err(err) = INSTANCE_MANAGER.delete_network_instance(vec![*id]) {
-                    return Err(err.to_string());
-                }
-                remove_instance_name_ids(&[*id]);
-                return Ok(());
-            }
-
-            if self.stopping.load(Ordering::Acquire) {
-                self.remove_tracked_instance_ids(&[*id])?;
-                remove_instance_name_ids(&[*id]);
-                return Ok(());
-            }
-
-            if let Err(err) = self.commit_instance_name(inst_name.clone(), *id) {
-                self.remove_tracked_instance_ids(&[*id])?;
-                if let Err(delete_err) = INSTANCE_MANAGER.delete_network_instance(vec![*id]) {
-                    return Err(format!(
-                        "{}; failed to delete duplicate instance: {}",
-                        err, delete_err
-                    ));
-                }
-                return Err(err);
-            }
-
-            if self.stopping.load(Ordering::Acquire) {
-                self.remove_tracked_instance_ids(&[*id])?;
-                remove_instance_name_ids(&[*id]);
-                return Ok(());
-            }
-            if INSTANCE_MANAGER.get_instance_name(id).is_none() {
-                self.remove_tracked_instance_ids(&[*id])?;
-                remove_instance_name_ids(&[*id]);
-                return Err(format!(
-                    "instance {} was removed before post-run completed",
-                    id
-                ));
-            }
+        self.instance_ids
+            .lock()
+            .map_err(|err| err.to_string())?
+            .insert(*id);
+        if let Err(error) = self.validate_instance_name(&inst_name, *id) {
+            self.remove_tracked_instance_ids(&[*id])?;
+            return Err(error);
         }
 
         remove_data_plane_handles_by_instance_ids(&[*id]);
@@ -340,15 +252,8 @@ impl WebClientHooks for ManagedConfigServerClientHooks {
     }
 
     async fn post_remove_network_instances(&self, ids: &[Uuid]) -> Result<(), String> {
-        let removed_ids = {
-            let _mutation_guard = INSTANCE_MUTATION_LOCK
-                .lock()
-                .map_err(|err| err.to_string())?;
-            let removed_ids = self.remove_tracked_instance_ids(ids)?;
-            remove_instance_name_ids(ids);
-            remove_data_plane_handles_by_instance_ids(&removed_ids);
-            removed_ids
-        };
+        let removed_ids = self.remove_tracked_instance_ids(ids)?;
+        remove_data_plane_handles_by_instance_ids(&removed_ids);
 
         for id in removed_ids {
             if let Err(err) = self.emit_event("delete_network_instance", id) {
@@ -485,12 +390,12 @@ pub(crate) unsafe fn start_config_server_client(
     drop(data_plane_usage_guard);
 
     let hooks = Arc::new(ManagedConfigServerClientHooks::new(callback, user_data));
-    let client = match ASYNC_RUNTIME.block_on(run_web_client(
+    let client = match ffi_context().runtime.block_on(run_web_client(
         &config_server_url,
         config_server_machine_id_options(machine_id),
         hostname,
         secure_mode,
-        INSTANCE_MANAGER.clone(),
+        ffi_context().manager.clone(),
         Some(hooks.clone()),
     )) {
         Ok(client) => client,
@@ -511,7 +416,7 @@ pub(crate) fn stop_config_server_client() -> c_int {
         return -1;
     }
 
-    let mut guard = match CONFIG_SERVER_CLIENT.lock() {
+    let guard = match CONFIG_SERVER_CLIENT.lock() {
         Ok(guard) => guard,
         Err(err) => {
             set_error_msg(&format!("failed to lock config server client: {}", err));
@@ -528,29 +433,25 @@ pub(crate) fn stop_config_server_client() -> c_int {
         return -1;
     }
     let hooks = managed.hooks.clone();
-    let managed = guard.take().expect("config server client exists");
+    // Keep the client discoverable until the canonical transaction drains its
+    // tracking. Earlier removals must still retire IDs from these same hooks.
     drop(guard);
 
-    let _remote_mutation_guard = lock_remote_instance_mutation();
-    let tracked_ids = hooks.start_stopping();
-    drop(managed);
-
-    let _mutation_guard = match INSTANCE_MUTATION_LOCK.lock() {
-        Ok(guard) => guard,
+    let delete_result = ffi_context().runtime.block_on(
+        ffi_context()
+            .process_management
+            .delete_owned_network_instances_selected_by(|| hooks.start_stopping()),
+    );
+    let managed = match CONFIG_SERVER_CLIENT.lock() {
+        Ok(mut guard) => guard.take(),
         Err(err) => {
             hooks.wait_for_callback_delivery();
             CONFIG_SERVER_CLIENT_ACTIVE.store(false, Ordering::Release);
-            CONFIG_SERVER_CLIENT_STOPPING.store(false, Ordering::Release);
-            set_error_msg(&format!("failed to lock instance mutation: {}", err));
+            set_error_msg(&format!("failed to lock config server client: {err}"));
             return -1;
         }
     };
-    let delete_result = INSTANCE_MANAGER.delete_network_instance(tracked_ids.clone());
-    if delete_result.is_ok() {
-        remove_instance_name_ids(&tracked_ids);
-        remove_data_plane_handles_by_instance_ids(&tracked_ids);
-    }
-    drop(_mutation_guard);
+    drop(managed);
     hooks.wait_for_callback_delivery();
     CONFIG_SERVER_CLIENT_ACTIVE.store(false, Ordering::Release);
     CONFIG_SERVER_CLIENT_STOPPING.store(false, Ordering::Release);

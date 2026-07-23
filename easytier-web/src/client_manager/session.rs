@@ -6,18 +6,16 @@ use std::{
 };
 
 use anyhow::Context;
-use easytier::{
-    proto::{
-        api::{
-            config::{ConfigRpc, ConfigRpcClientFactory},
-            manage::{WebClientService, WebClientServiceClientFactory},
-        },
-        rpc_impl::bidirect::BidirectRpcManager,
-        rpc_types::{self, controller::BaseController},
-        web::{HeartbeatRequest, HeartbeatResponse, WebServerService, WebServerServiceServer},
+use easytier::proto::{
+    api::{
+        config::{ConfigRpc, ConfigRpcClientFactory},
+        manage::{WebClientService, WebClientServiceClientFactory},
     },
-    tunnel::Tunnel,
+    rpc::bidirect::BidirectRpcManager,
+    rpc_types::{self, controller::BaseController},
+    web::{HeartbeatRequest, HeartbeatResponse, WebServerService, WebServerServiceServer},
 };
+use easytier_core::tunnel::Tunnel;
 use tokio::sync::{Notify, RwLock, broadcast};
 use tokio_util::task::AbortOnDropHandle;
 
@@ -565,7 +563,7 @@ impl WebServerService for SessionRpcService {
         _: easytier::proto::web::GetFeatureRequest,
     ) -> rpc_types::error::Result<easytier::proto::web::GetFeatureResponse> {
         Ok(easytier::proto::web::GetFeatureResponse {
-            support_encryption: easytier::web_client::security::web_secure_tunnel_supported(),
+            support_encryption: easytier_core::tunnel::web_security::web_secure_tunnel_supported(),
         })
     }
 }

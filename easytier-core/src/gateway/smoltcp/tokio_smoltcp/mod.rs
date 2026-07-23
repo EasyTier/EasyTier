@@ -1,0 +1,191 @@
+// most code is copied from https://github.com/spacemeowx2/tokio-smoltcp
+
+//! An asynchronous wrapper for smoltcp.
+
+use std::{
+    io,
+    net::{IpAddr, SocketAddr},
+    sync::{
+        Arc,
+        atomic::{AtomicU16, Ordering},
+    },
+};
+
+use device::BufferDevice;
+use reactor::Reactor;
+pub use smoltcp;
+use smoltcp::{
+    iface::{Config, Interface},
+    time::Instant,
+    wire::{IpAddress, IpCidr},
+};
+pub use socket::{TcpListener, TcpStream, UdpSocket};
+pub use socket_allocator::BufferSize;
+use tokio::sync::Notify;
+use tokio_util::task::AbortOnDropHandle;
+
+/// The async devices.
+pub mod channel_device;
+pub mod device;
+mod reactor;
+mod socket;
+mod socket_allocator;
+
+/// A config for a `Net`.
+///
+/// This is used to configure the `Net`.
+#[non_exhaustive]
+pub struct NetConfig {
+    pub interface_config: Config,
+    pub ip_addr: IpCidr,
+    pub gateway: Vec<IpAddress>,
+    pub buffer_size: BufferSize,
+}
+
+impl NetConfig {
+    pub fn new(
+        interface_config: Config,
+        ip_addr: IpCidr,
+        gateway: Vec<IpAddress>,
+        buffer_size: Option<BufferSize>,
+    ) -> Self {
+        Self {
+            interface_config,
+            ip_addr,
+            gateway,
+            buffer_size: buffer_size.unwrap_or_default(),
+        }
+    }
+}
+
+/// `Net` is the main interface to the network stack.
+/// Socket creation and configuration is done through the `Net` interface.
+///
+/// When `Net` is dropped, all sockets are closed and the network stack is stopped.
+pub struct Net {
+    reactor: Arc<Reactor>,
+    ip_addr: IpCidr,
+    from_port: AtomicU16,
+    stopper: Arc<Notify>,
+    _fut: AbortOnDropHandle<io::Result<()>>,
+}
+
+impl std::fmt::Debug for Net {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Net")
+            .field("ip_addr", &self.ip_addr)
+            .field("from_port", &self.from_port)
+            .finish()
+    }
+}
+
+impl Net {
+    /// Creates a new `Net` instance. It panics if the medium is not supported.
+    pub fn new<D: device::AsyncDevice + 'static>(device: D, config: NetConfig) -> Net {
+        Self::new2(device, config)
+    }
+
+    fn new2<D: device::AsyncDevice + 'static>(device: D, config: NetConfig) -> Net {
+        let mut buffer_device = BufferDevice::new(device.capabilities().clone());
+        let mut iface = Interface::new(config.interface_config, &mut buffer_device, Instant::now());
+        let ip_addr = config.ip_addr;
+        iface.update_ip_addrs(|ip_addrs| {
+            ip_addrs.push(ip_addr).unwrap();
+        });
+        for gateway in config.gateway {
+            match gateway {
+                IpAddress::Ipv4(v4) => {
+                    iface.routes_mut().add_default_ipv4_route(v4).unwrap();
+                }
+                IpAddress::Ipv6(v6) => {
+                    iface.routes_mut().add_default_ipv6_route(v6).unwrap();
+                }
+                #[allow(unreachable_patterns)]
+                _ => panic!("Unsupported address"),
+            };
+        }
+
+        let stopper = Arc::new(Notify::new());
+        let (reactor, fut) = Reactor::new(
+            device,
+            iface,
+            buffer_device,
+            config.buffer_size,
+            stopper.clone(),
+        );
+
+        Net {
+            reactor: Arc::new(reactor),
+            ip_addr: config.ip_addr,
+            from_port: AtomicU16::new(10001),
+            stopper,
+            _fut: AbortOnDropHandle::new(tokio::spawn(fut)),
+        }
+    }
+    pub fn get_address(&self) -> IpAddr {
+        self.ip_addr.address().into()
+    }
+    pub fn get_port(&self) -> u16 {
+        self.from_port
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |x| {
+                Some(if x > 60000 { 10000 } else { x + 1 })
+            })
+            .unwrap()
+    }
+    /// Creates a new TcpListener, which will be bound to the specified address.
+    pub async fn tcp_bind(&self, addr: SocketAddr) -> io::Result<TcpListener> {
+        let addr = self.set_address(addr);
+        TcpListener::new(self.reactor.clone(), socket_addr_to_endpoint(addr)).await
+    }
+    /// Opens a TCP connection to a remote host.
+    pub async fn tcp_connect(&self, addr: SocketAddr, local_port: u16) -> io::Result<TcpStream> {
+        TcpStream::connect(
+            self.reactor.clone(),
+            (self.ip_addr.address(), local_port).into(),
+            socket_addr_to_endpoint(addr),
+        )
+        .await
+    }
+
+    /// This function will create a new UDP socket and attempt to bind it to the `addr` provided.
+    pub async fn udp_bind(&self, addr: SocketAddr) -> io::Result<UdpSocket> {
+        let addr = self.set_address(addr);
+        UdpSocket::new(self.reactor.clone(), socket_addr_to_endpoint(addr)).await
+    }
+
+    fn set_address(&self, mut addr: SocketAddr) -> SocketAddr {
+        if addr.ip().is_unspecified() {
+            addr.set_ip(match self.ip_addr.address() {
+                IpAddress::Ipv4(ip) => ip.into(),
+                IpAddress::Ipv6(ip) => ip.into(),
+                #[allow(unreachable_patterns)]
+                _ => panic!("address must not be unspecified"),
+            });
+        }
+        if addr.port() == 0 {
+            addr.set_port(self.get_port());
+        }
+        addr
+    }
+
+    /// Enable or disable the AnyIP capability.
+    pub fn set_any_ip(&self, any_ip: bool) {
+        let iface = self.reactor.iface().clone();
+        let mut iface: parking_lot::lock_api::MutexGuard<'_, parking_lot::RawMutex, Interface> =
+            iface.lock();
+        iface.set_any_ip(any_ip);
+    }
+}
+
+fn socket_addr_to_endpoint(addr: SocketAddr) -> smoltcp::wire::IpEndpoint {
+    match addr {
+        SocketAddr::V4(addr) => addr.into(),
+        SocketAddr::V6(addr) => addr.into(),
+    }
+}
+
+impl Drop for Net {
+    fn drop(&mut self) {
+        self.stopper.notify_waiters()
+    }
+}

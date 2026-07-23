@@ -2,10 +2,7 @@ use crate::{
     config_server::{
         ConfigServerCallbackScope, ManagedConfigServerClientHooks, set_active_for_test,
     },
-    state::{
-        INSTANCE_MANAGER, INSTANCE_NAME_ID_MAP, find_instance_id_by_name,
-        lock_remote_instance_mutation, remove_instance_name_ids,
-    },
+    state::{ffi_context, find_instance_id_by_name},
     *,
 };
 use easytier::{
@@ -101,10 +98,10 @@ fn list_instance_returns_instance_names_and_ids() {
     let cfg = TomlConfigLoader::default();
     cfg.set_id(instance_id);
     cfg.set_inst_name(instance_name.clone());
-    INSTANCE_MANAGER
+    ffi_context()
+        .manager
         .run_network_instance(cfg, false, ConfigFileControl::STATIC_CONFIG)
         .unwrap();
-    INSTANCE_NAME_ID_MAP.insert(instance_name.clone(), instance_id);
 
     let mut infos = vec![
         KeyValuePair {
@@ -127,10 +124,14 @@ fn list_instance_returns_instance_names_and_ids() {
     }
 
     free_key_value_pairs(&infos[..count as usize]);
-    INSTANCE_MANAGER
-        .delete_network_instance(vec![instance_id])
+    ffi_context()
+        .runtime
+        .block_on(
+            ffi_context()
+                .manager
+                .delete_network_instance(vec![instance_id]),
+        )
         .unwrap();
-    remove_instance_name_ids(&[instance_id]);
     assert!(found);
 }
 
@@ -261,7 +262,8 @@ async fn config_server_hooks_emit_run_event() {
     let inst_name = format!("test-{}", instance_id);
     cfg.set_inst_name(inst_name.clone());
     hooks.pre_run_network_instance(&cfg).await.unwrap();
-    INSTANCE_MANAGER
+    ffi_context()
+        .manager
         .run_network_instance(cfg, false, ConfigFileControl::STATIC_CONFIG)
         .unwrap();
 
@@ -278,17 +280,18 @@ async fn config_server_hooks_emit_run_event() {
     );
 
     assert_eq!(hooks.tracked_instance_ids(), vec![instance_id]);
-    let events = events.lock().unwrap();
+    let events = events.lock().unwrap().clone();
     assert_eq!(events.len(), 1);
     let event: Value = serde_json::from_str(&events[0]).unwrap();
     assert_eq!(event["event"], "run_network_instance");
     assert_eq!(event["success"], true);
     assert_eq!(event["instance_id"], instance_id.to_string());
     assert!(event["error"].is_null());
-    INSTANCE_MANAGER
+    ffi_context()
+        .manager
         .delete_network_instance(vec![instance_id])
+        .await
         .unwrap();
-    remove_instance_name_ids(&[instance_id]);
 }
 
 #[tokio::test]
@@ -306,7 +309,8 @@ async fn config_server_hooks_emit_delete_events_for_tracked_instances() {
         cfg.set_id(id);
         cfg.set_inst_name(format!("test-{}", id));
         hooks.pre_run_network_instance(&cfg).await.unwrap();
-        INSTANCE_MANAGER
+        ffi_context()
+            .manager
             .run_network_instance(cfg, false, ConfigFileControl::STATIC_CONFIG)
             .unwrap();
     }
@@ -327,7 +331,7 @@ async fn config_server_hooks_emit_delete_events_for_tracked_instances() {
         .unwrap();
 
     assert!(hooks.tracked_instance_ids().is_empty());
-    let events = events.lock().unwrap();
+    let events = events.lock().unwrap().clone();
     assert_eq!(events.len(), 2);
     let event_ids = events
         .iter()
@@ -343,29 +347,27 @@ async fn config_server_hooks_emit_delete_events_for_tracked_instances() {
         event_ids,
         HashSet::from([instance_id_1.to_string(), instance_id_2.to_string()])
     );
-    INSTANCE_MANAGER
+    ffi_context()
+        .manager
         .delete_network_instance(vec![instance_id_1, instance_id_2])
+        .await
         .unwrap();
-    remove_instance_name_ids(&[instance_id_1, instance_id_2]);
 }
 
 #[tokio::test]
-async fn config_server_hooks_remove_untracked_name_mapping_without_event() {
+async fn config_server_hooks_ignore_untracked_instance_without_event() {
     let events: Mutex<Vec<String>> = Mutex::new(Vec::new());
     let hooks = ManagedConfigServerClientHooks::new(
         Some(record_config_server_event),
         &events as *const _ as *mut c_void,
     );
     let local_id = Uuid::new_v4();
-    let inst_name = format!("local-{}", local_id);
-    INSTANCE_NAME_ID_MAP.insert(inst_name.clone(), local_id);
 
     hooks
         .post_remove_network_instances(&[local_id])
         .await
         .unwrap();
 
-    assert!(INSTANCE_NAME_ID_MAP.get(&inst_name).is_none());
     assert!(events.lock().unwrap().is_empty());
 }
 
@@ -375,15 +377,25 @@ async fn config_server_hooks_reject_duplicate_instance_name() {
     let inst_name = format!("test-{}", Uuid::new_v4());
     let existing_id = Uuid::new_v4();
     let new_id = Uuid::new_v4();
-    INSTANCE_NAME_ID_MAP.insert(inst_name.clone(), existing_id);
+    let existing_cfg = TomlConfigLoader::default();
+    existing_cfg.set_inst_name(inst_name.clone());
+    existing_cfg.set_id(existing_id);
+    ffi_context()
+        .manager
+        .run_network_instance(existing_cfg, false, ConfigFileControl::STATIC_CONFIG)
+        .unwrap();
 
     let cfg = TomlConfigLoader::default();
     cfg.set_inst_name(inst_name.clone());
     cfg.set_id(new_id);
 
     assert!(hooks.pre_run_network_instance(&cfg).await.is_err());
-    assert_eq!(*INSTANCE_NAME_ID_MAP.get(&inst_name).unwrap(), existing_id);
-    INSTANCE_NAME_ID_MAP.remove(&inst_name);
+    assert_eq!(find_instance_id_by_name(&inst_name), Some(existing_id));
+    ffi_context()
+        .manager
+        .delete_network_instance(vec![existing_id])
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -398,8 +410,23 @@ async fn config_server_hooks_remove_overwritten_id_before_duplicate_name_error()
     let overwritten_id = Uuid::new_v4();
     let duplicate_id = Uuid::new_v4();
     hooks.instance_ids.lock().unwrap().insert(overwritten_id);
-    INSTANCE_NAME_ID_MAP.insert(old_name.clone(), overwritten_id);
-    INSTANCE_NAME_ID_MAP.insert(duplicate_name.clone(), duplicate_id);
+    for (id, name) in [
+        (overwritten_id, old_name.clone()),
+        (duplicate_id, duplicate_name.clone()),
+    ] {
+        let cfg = TomlConfigLoader::default();
+        cfg.set_id(id);
+        cfg.set_inst_name(name);
+        ffi_context()
+            .manager
+            .run_network_instance(cfg, false, ConfigFileControl::STATIC_CONFIG)
+            .unwrap();
+    }
+    ffi_context()
+        .manager
+        .delete_network_instance(vec![overwritten_id])
+        .await
+        .unwrap();
 
     hooks
         .post_remove_network_instances(&[overwritten_id])
@@ -412,13 +439,17 @@ async fn config_server_hooks_remove_overwritten_id_before_duplicate_name_error()
 
     assert!(hooks.pre_run_network_instance(&cfg).await.is_err());
     assert!(hooks.tracked_instance_ids().is_empty());
-    assert!(INSTANCE_NAME_ID_MAP.get(&old_name).is_none());
+    assert!(find_instance_id_by_name(&old_name).is_none());
     assert_eq!(
-        *INSTANCE_NAME_ID_MAP.get(&duplicate_name).unwrap(),
-        duplicate_id
+        find_instance_id_by_name(&duplicate_name),
+        Some(duplicate_id)
     );
     assert_eq!(events.lock().unwrap().len(), 1);
-    INSTANCE_NAME_ID_MAP.remove(&duplicate_name);
+    ffi_context()
+        .manager
+        .delete_network_instance(vec![duplicate_id])
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -427,11 +458,19 @@ async fn config_server_hooks_remove_tracked_state_before_overwrite_retry() {
     let inst_name = format!("test-{}", Uuid::new_v4());
     let instance_id = Uuid::new_v4();
     hooks.instance_ids.lock().unwrap().insert(instance_id);
-    INSTANCE_NAME_ID_MAP.insert(inst_name.clone(), instance_id);
 
     let cfg = TomlConfigLoader::default();
     cfg.set_inst_name(inst_name.clone());
     cfg.set_id(instance_id);
+    ffi_context()
+        .manager
+        .run_network_instance(cfg.clone(), false, ConfigFileControl::STATIC_CONFIG)
+        .unwrap();
+    ffi_context()
+        .manager
+        .delete_network_instance(vec![instance_id])
+        .await
+        .unwrap();
 
     hooks
         .post_remove_network_instances(&[instance_id])
@@ -440,7 +479,7 @@ async fn config_server_hooks_remove_tracked_state_before_overwrite_retry() {
     hooks.pre_run_network_instance(&cfg).await.unwrap();
 
     assert!(hooks.tracked_instance_ids().is_empty());
-    assert!(INSTANCE_NAME_ID_MAP.get(&inst_name).is_none());
+    assert!(find_instance_id_by_name(&inst_name).is_none());
 }
 
 #[tokio::test]
@@ -451,11 +490,14 @@ async fn config_server_hooks_reject_post_run_after_external_delete() {
     cfg.set_id(instance_id);
     cfg.set_inst_name(format!("test-{}", instance_id));
     hooks.pre_run_network_instance(&cfg).await.unwrap();
-    INSTANCE_MANAGER
+    ffi_context()
+        .manager
         .run_network_instance(cfg, false, ConfigFileControl::STATIC_CONFIG)
         .unwrap();
-    INSTANCE_MANAGER
+    ffi_context()
+        .manager
         .delete_network_instance(vec![instance_id])
+        .await
         .unwrap();
 
     assert!(hooks.post_run_network_instance(&instance_id).await.is_err());
@@ -468,15 +510,20 @@ fn find_instance_id_by_name_resolves_uncommitted_manager_instance_name() {
     let cfg = TomlConfigLoader::default();
     cfg.set_id(instance_id);
     cfg.set_inst_name(inst_name.clone());
-    INSTANCE_MANAGER
+    ffi_context()
+        .manager
         .run_network_instance(cfg, false, ConfigFileControl::STATIC_CONFIG)
         .unwrap();
 
     assert_eq!(find_instance_id_by_name(&inst_name), Some(instance_id));
-    INSTANCE_MANAGER
-        .delete_network_instance(vec![instance_id])
+    ffi_context()
+        .runtime
+        .block_on(
+            ffi_context()
+                .manager
+                .delete_network_instance(vec![instance_id]),
+        )
         .unwrap();
-    remove_instance_name_ids(&[instance_id]);
 }
 
 #[test]
@@ -493,10 +540,10 @@ fn delete_network_instance_removes_only_named_instances() {
         let cfg = TomlConfigLoader::default();
         cfg.set_id(id);
         cfg.set_inst_name(name.clone());
-        INSTANCE_MANAGER
+        ffi_context()
+            .manager
             .run_network_instance(cfg, false, ConfigFileControl::STATIC_CONFIG)
             .unwrap();
-        INSTANCE_NAME_ID_MAP.insert(name, id);
     }
 
     let delete_name = CString::new(delete_name.clone()).unwrap();
@@ -509,10 +556,10 @@ fn delete_network_instance_removes_only_named_instances() {
     assert_eq!(find_instance_id_by_name(&keep_name), Some(keep_id));
     assert!(find_instance_id_by_name(delete_name.to_str().unwrap()).is_none());
 
-    INSTANCE_MANAGER
-        .delete_network_instance(vec![keep_id])
+    ffi_context()
+        .runtime
+        .block_on(ffi_context().manager.delete_network_instance(vec![keep_id]))
         .unwrap();
-    remove_instance_name_ids(&[keep_id]);
 }
 
 #[test]
@@ -532,13 +579,18 @@ fn retain_and_delete_network_instance_reject_invalid_name_pointers() {
 }
 
 #[test]
-fn ffi_remote_mutation_lock_uses_manager_lock() {
-    let manager_guard = INSTANCE_MANAGER
-        .remote_mutation_lock()
-        .blocking_lock_owned();
+fn ffi_process_management_uses_manager_mutation_lock() {
+    let manager_guard = ffi_context().manager.mutation_lock().blocking_lock_owned();
     let (done_tx, done_rx) = mpsc::channel();
     let waiter = std::thread::spawn(move || {
-        let _ffi_guard = lock_remote_instance_mutation();
+        ffi_context()
+            .runtime
+            .block_on(
+                ffi_context()
+                    .process_management
+                    .delete_owned_network_instances(Vec::new()),
+            )
+            .unwrap();
         done_tx.send(()).unwrap();
     });
 
@@ -549,7 +601,7 @@ fn ffi_remote_mutation_lock_uses_manager_lock() {
 }
 
 #[tokio::test]
-async fn config_server_hooks_suppress_late_run_events_while_stopping() {
+async fn config_server_hooks_reject_late_runs_for_core_rollback() {
     let events: Mutex<Vec<String>> = Mutex::new(Vec::new());
     let hooks = ManagedConfigServerClientHooks::new(
         Some(record_config_server_event),
@@ -557,13 +609,58 @@ async fn config_server_hooks_suppress_late_run_events_while_stopping() {
     );
     hooks.start_stopping();
 
-    hooks
-        .post_run_network_instance(&Uuid::new_v4())
-        .await
-        .unwrap();
+    assert!(
+        hooks
+            .post_run_network_instance(&Uuid::new_v4())
+            .await
+            .is_err()
+    );
 
     assert!(hooks.tracked_instance_ids().is_empty());
     assert!(events.lock().unwrap().is_empty());
+}
+
+#[test]
+fn delete_network_instance_rejects_an_ambiguous_name() {
+    let duplicate_name = format!("duplicate-{}", Uuid::new_v4());
+    let instance_ids = [Uuid::new_v4(), Uuid::new_v4()];
+    for instance_id in instance_ids {
+        let config = TomlConfigLoader::default();
+        config.set_id(instance_id);
+        config.set_inst_name(duplicate_name.clone());
+        ffi_context()
+            .manager
+            .run_network_instance(config, false, ConfigFileControl::STATIC_CONFIG)
+            .unwrap();
+    }
+
+    #[cfg(feature = "ffi-dataplane")]
+    {
+        assert!(crate::data_plane::get_instance_id(&duplicate_name).is_none());
+        assert!(take_last_error().unwrap().contains("2 instances match"));
+    }
+
+    let duplicate_name = CString::new(duplicate_name).unwrap();
+    let names = [duplicate_name.as_ptr()];
+    assert_eq!(
+        unsafe { delete_network_instance(names.as_ptr(), names.len()) },
+        -1
+    );
+    assert!(take_last_error().unwrap().contains("2 instances match"));
+    assert!(
+        instance_ids
+            .iter()
+            .all(|id| ffi_context().manager.get_instance(id).is_some())
+    );
+
+    ffi_context()
+        .runtime
+        .block_on(
+            ffi_context()
+                .process_management
+                .delete_owned_network_instances(instance_ids.to_vec()),
+        )
+        .unwrap();
 }
 
 #[test]

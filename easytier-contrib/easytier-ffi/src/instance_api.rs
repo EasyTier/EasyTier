@@ -1,18 +1,11 @@
 use std::ffi::{CString, c_char, c_int};
 
-use easytier::common::config::{ConfigFileControl, ConfigLoader as _, TomlConfigLoader};
+use easytier::common::config::{ConfigFileControl, TomlConfigLoader};
 
 use crate::{
-    config_server::{
-        in_config_server_callback, remove_config_server_tracked_instance_ids,
-        wait_for_config_server_delivery,
-    },
-    data_plane::remove_data_plane_handles_by_instance_ids,
+    config_server::{in_config_server_callback, wait_for_config_server_delivery},
     error::set_error_msg,
-    state::{
-        INSTANCE_MANAGER, INSTANCE_MUTATION_LOCK, INSTANCE_NAME_ID_MAP, instance_name_exists,
-        lock_remote_instance_mutation,
-    },
+    state::{ffi_context, resolve_instance_id_by_name},
     types::KeyValuePair,
 };
 
@@ -25,17 +18,19 @@ pub(crate) unsafe fn set_tun_fd(inst_name: *const c_char, fd: c_int) -> c_int {
             .to_string_lossy()
             .into_owned()
     };
-    if !INSTANCE_NAME_ID_MAP.contains_key(&inst_name) {
-        return -1;
-    }
+    let inst_id = match resolve_instance_id_by_name(&inst_name) {
+        Ok(Some(instance_id)) => instance_id,
+        Ok(None) => {
+            set_error_msg("instance not found");
+            return -1;
+        }
+        Err(error) => {
+            set_error_msg(&error.to_string());
+            return -1;
+        }
+    };
 
-    let inst_id = *INSTANCE_NAME_ID_MAP
-        .get(&inst_name)
-        .as_ref()
-        .unwrap()
-        .value();
-
-    match INSTANCE_MANAGER.set_tun_fd(&inst_id, fd) {
+    match ffi_context().manager.set_tun_fd(&inst_id, fd) {
         Ok(_) => 0,
         Err(_) => -1,
     }
@@ -81,33 +76,15 @@ pub(crate) unsafe fn run_network_instance(cfg_str: *const std::ffi::c_char) -> s
         }
     };
 
-    let inst_name = cfg.get_inst_name();
-
     wait_for_config_server_delivery();
-    let _remote_mutation_guard = lock_remote_instance_mutation();
-    let _mutation_guard = match INSTANCE_MUTATION_LOCK.lock() {
-        Ok(guard) => guard,
-        Err(err) => {
-            set_error_msg(&format!("failed to lock instance mutation: {}", err));
-            return -1;
-        }
-    };
-
-    if instance_name_exists(&inst_name) {
-        set_error_msg("instance already exists");
+    if let Err(e) = ffi_context().runtime.block_on(
+        ffi_context()
+            .process_management
+            .run_owned_network_instance(cfg, ConfigFileControl::STATIC_CONFIG),
+    ) {
+        set_error_msg(&format!("failed to start instance: {}", e));
         return -1;
     }
-
-    let instance_id =
-        match INSTANCE_MANAGER.run_network_instance(cfg, false, ConfigFileControl::STATIC_CONFIG) {
-            Ok(id) => id,
-            Err(e) => {
-                set_error_msg(&format!("failed to start instance: {}", e));
-                return -1;
-            }
-        };
-
-    INSTANCE_NAME_ID_MAP.insert(inst_name, instance_id);
 
     0
 }
@@ -152,49 +129,23 @@ pub(crate) unsafe fn retain_network_instance(
     }
 
     wait_for_config_server_delivery();
-    let _remote_mutation_guard = lock_remote_instance_mutation();
-    let _mutation_guard = match INSTANCE_MUTATION_LOCK.lock() {
-        Ok(guard) => guard,
-        Err(err) => {
-            set_error_msg(&format!("failed to lock instance mutation: {}", err));
+    let retained_names = if length == 0 {
+        Vec::new()
+    } else {
+        let Some(inst_names) = (unsafe { parse_instance_names(inst_names, length) }) else {
             return -1;
-        }
+        };
+        inst_names
     };
 
-    if length == 0 {
-        let removed_ids = INSTANCE_MANAGER.list_network_instance_ids();
-        if let Err(e) = INSTANCE_MANAGER.delete_network_instance(removed_ids.clone()) {
-            set_error_msg(&format!("failed to delete instances: {}", e));
-            return -1;
-        }
-        remove_config_server_tracked_instance_ids(&removed_ids);
-        remove_data_plane_handles_by_instance_ids(&removed_ids);
-        INSTANCE_NAME_ID_MAP.clear();
-        return 0;
-    }
-
-    let Some(inst_names) = (unsafe { parse_instance_names(inst_names, length) }) else {
-        return -1;
-    };
-
-    let removed_ids = INSTANCE_MANAGER
-        .list_network_instance_ids()
-        .into_iter()
-        .filter(|id| {
-            INSTANCE_MANAGER
-                .get_instance_name(id)
-                .is_none_or(|name| !inst_names.contains(&name))
-        })
-        .collect::<Vec<_>>();
-
-    if let Err(e) = INSTANCE_MANAGER.delete_network_instance(removed_ids.clone()) {
-        set_error_msg(&format!("failed to delete instances: {}", e));
+    if let Err(error) = ffi_context().runtime.block_on(
+        ffi_context()
+            .process_management
+            .retain_owned_network_instances_by_name(retained_names),
+    ) {
+        set_error_msg(&format!("failed to retain instances: {error}"));
         return -1;
     }
-
-    remove_config_server_tracked_instance_ids(&removed_ids);
-    remove_data_plane_handles_by_instance_ids(&removed_ids);
-    INSTANCE_NAME_ID_MAP.retain(|k, _| inst_names.contains(k));
 
     0
 }
@@ -211,15 +162,6 @@ pub(crate) unsafe fn delete_network_instance(
     }
 
     wait_for_config_server_delivery();
-    let _remote_mutation_guard = lock_remote_instance_mutation();
-    let _mutation_guard = match INSTANCE_MUTATION_LOCK.lock() {
-        Ok(guard) => guard,
-        Err(err) => {
-            set_error_msg(&format!("failed to lock instance mutation: {}", err));
-            return -1;
-        }
-    };
-
     if length == 0 {
         return 0;
     }
@@ -228,20 +170,13 @@ pub(crate) unsafe fn delete_network_instance(
         return -1;
     };
 
-    let removed_ids = inst_names
-        .iter()
-        .filter_map(|name| INSTANCE_NAME_ID_MAP.get(name).map(|id| *id.value()))
-        .collect::<Vec<_>>();
-
-    if let Err(e) = INSTANCE_MANAGER.delete_network_instance(removed_ids.clone()) {
-        set_error_msg(&format!("failed to delete instances: {}", e));
+    if let Err(error) = ffi_context().runtime.block_on(
+        ffi_context()
+            .process_management
+            .delete_owned_network_instances_by_name(inst_names),
+    ) {
+        set_error_msg(&format!("failed to delete instances: {error}"));
         return -1;
-    }
-
-    remove_config_server_tracked_instance_ids(&removed_ids);
-    remove_data_plane_handles_by_instance_ids(&removed_ids);
-    for name in inst_names {
-        INSTANCE_NAME_ID_MAP.remove(&name);
     }
 
     0
@@ -267,7 +202,7 @@ pub(crate) unsafe fn collect_network_infos(
         std::slice::from_raw_parts_mut(infos, max_length)
     };
 
-    let collected_infos = match INSTANCE_MANAGER.collect_network_infos_sync() {
+    let collected_infos = match ffi_context().manager.collect_network_infos_sync() {
         Ok(infos) => infos,
         Err(e) => {
             set_error_msg(&format!("failed to collect network infos: {}", e));
@@ -280,7 +215,7 @@ pub(crate) unsafe fn collect_network_infos(
         if index >= max_length {
             break;
         }
-        let Some(key) = INSTANCE_MANAGER.get_instance_name(instance_id) else {
+        let Some(key) = ffi_context().manager.get_instance_name(instance_id) else {
             continue;
         };
         // convert value to json string
@@ -320,11 +255,13 @@ pub(crate) unsafe fn list_instance(infos: *mut KeyValuePair, max_length: usize) 
     }
 
     let infos = unsafe { std::slice::from_raw_parts_mut(infos, max_length) };
-    let mut instances = INSTANCE_MANAGER
+    let mut instances = ffi_context()
+        .manager
         .list_network_instance_ids()
         .into_iter()
         .filter_map(|id| {
-            INSTANCE_MANAGER
+            ffi_context()
+                .manager
                 .get_instance_name(&id)
                 .map(|name| (name, id))
         })

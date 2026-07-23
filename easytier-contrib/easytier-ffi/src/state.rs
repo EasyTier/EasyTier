@@ -1,54 +1,64 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use dashmap::DashMap;
-use easytier::instance_manager::NetworkInstanceManager;
+use easytier::instance::factory::{
+    NativeInstanceSet, NativeProcessManagement, native_instance_set_with_runtime,
+    native_process_management,
+};
 use tokio::runtime::{Builder, Runtime};
-use uuid::Uuid;
 
-pub(crate) static INSTANCE_NAME_ID_MAP: once_cell::sync::Lazy<DashMap<String, Uuid>> =
-    once_cell::sync::Lazy::new(DashMap::new);
-pub(crate) static INSTANCE_MANAGER: once_cell::sync::Lazy<Arc<NetworkInstanceManager>> =
-    once_cell::sync::Lazy::new(|| Arc::new(NetworkInstanceManager::new()));
-pub(crate) static ASYNC_RUNTIME: once_cell::sync::Lazy<Runtime> =
-    once_cell::sync::Lazy::new(|| {
-        Builder::new_multi_thread()
+struct FfiOwnedInstanceHooks;
+
+#[async_trait::async_trait]
+impl easytier_core::management::InstanceMutationHooks for FfiOwnedInstanceHooks {
+    async fn post_remove_network_instances(
+        &self,
+        instance_ids: &[uuid::Uuid],
+    ) -> Result<(), String> {
+        crate::config_server::remove_config_server_tracked_instance_ids(instance_ids);
+        crate::data_plane::remove_data_plane_handles_by_instance_ids(instance_ids);
+        Ok(())
+    }
+}
+
+pub(crate) struct FfiContext {
+    pub(crate) runtime: Runtime,
+    pub(crate) manager: Arc<NativeInstanceSet>,
+    pub(crate) process_management: NativeProcessManagement,
+}
+
+impl FfiContext {
+    fn new() -> Self {
+        let runtime = Builder::new_multi_thread()
             .enable_all()
             .build()
-            .expect("tokio runtime for easytier-ffi")
-    });
-pub(crate) static INSTANCE_MUTATION_LOCK: once_cell::sync::Lazy<Mutex<()>> =
-    once_cell::sync::Lazy::new(|| Mutex::new(()));
-
-pub(crate) fn remove_instance_name_ids(ids: &[Uuid]) {
-    if ids.is_empty() {
-        return;
+            .expect("tokio runtime for easytier-ffi");
+        let manager = Arc::new(native_instance_set_with_runtime(runtime.handle().clone()));
+        let process_management =
+            native_process_management(manager.clone(), Arc::new(FfiOwnedInstanceHooks));
+        Self {
+            runtime,
+            manager,
+            process_management,
+        }
     }
-
-    INSTANCE_NAME_ID_MAP.retain(|_, instance_id| !ids.contains(instance_id));
 }
 
-pub(crate) fn lock_remote_instance_mutation() -> tokio::sync::OwnedMutexGuard<()> {
-    INSTANCE_MANAGER
-        .remote_mutation_lock()
-        .blocking_lock_owned()
+static FFI_CONTEXT: once_cell::sync::Lazy<FfiContext> = once_cell::sync::Lazy::new(FfiContext::new);
+
+pub(crate) fn ffi_context() -> &'static FfiContext {
+    &FFI_CONTEXT
 }
 
-pub(crate) fn instance_name_exists(inst_name: &str) -> bool {
-    find_instance_id_by_name(inst_name).is_some()
+pub(crate) fn resolve_instance_id_by_name(inst_name: &str) -> Result<Option<uuid::Uuid>, String> {
+    easytier_core::management::resolve_optional_instance_by_name(
+        ffi_context().manager.manager().as_ref(),
+        inst_name,
+    )
+    .map(|instance| instance.map(|instance| instance.instance_id()))
+    .map_err(|error| error.to_string())
 }
 
-pub(crate) fn find_instance_id_by_name(inst_name: &str) -> Option<Uuid> {
-    INSTANCE_NAME_ID_MAP
-        .get(inst_name)
-        .map(|id| *id)
-        .or_else(|| {
-            INSTANCE_MANAGER
-                .list_network_instance_ids()
-                .into_iter()
-                .find(|id| {
-                    INSTANCE_MANAGER
-                        .get_instance_name(id)
-                        .is_some_and(|name| name == inst_name)
-                })
-        })
+#[cfg(test)]
+pub(crate) fn find_instance_id_by_name(inst_name: &str) -> Option<uuid::Uuid> {
+    resolve_instance_id_by_name(inst_name).ok().flatten()
 }

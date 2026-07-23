@@ -1,21 +1,30 @@
+#![cfg_attr(
+    not(any(feature = "public-ipv6-provider", feature = "tun")),
+    allow(dead_code)
+)]
+
 #[cfg(any(
     all(target_os = "macos", not(feature = "macos-ne")),
     target_os = "freebsd"
 ))]
 mod darwin;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
 mod netlink;
+#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+mod netlink_wire;
 #[cfg(target_os = "windows")]
 mod win;
 #[cfg(target_os = "windows")]
 mod windows;
 
-mod route;
-
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use async_trait::async_trait;
 use cidr::{Ipv4Inet, Ipv6Inet};
+#[cfg(any(
+    all(target_os = "macos", not(feature = "macos-ne")),
+    target_os = "freebsd"
+))]
 use tokio::process::Command;
 
 use super::error::Error;
@@ -89,6 +98,10 @@ pub trait IfConfiguerTrait: Send + Sync {
     }
 }
 
+#[cfg(any(
+    all(target_os = "macos", not(feature = "macos-ne")),
+    target_os = "freebsd"
+))]
 fn cidr_to_subnet_mask(prefix_length: u8) -> Ipv4Addr {
     if prefix_length > 32 {
         panic!("Invalid CIDR prefix length");
@@ -105,6 +118,10 @@ fn cidr_to_subnet_mask(prefix_length: u8) -> Ipv4Addr {
     )
 }
 
+#[cfg(any(
+    all(target_os = "macos", not(feature = "macos-ne")),
+    target_os = "freebsd"
+))]
 async fn run_shell_cmd(cmd: &str) -> Result<(), Error> {
     let cmd_out: std::process::Output;
     let stdout: String;
@@ -144,8 +161,10 @@ pub struct DummyIfConfiger {}
 #[async_trait]
 impl IfConfiguerTrait for DummyIfConfiger {}
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
 pub type IfConfiger = netlink::NetlinkIfConfiger;
+#[cfg(all(target_os = "linux", not(feature = "linux-netlink")))]
+pub type IfConfiger = DummyIfConfiger;
 
 #[cfg(any(
     all(target_os = "macos", not(feature = "macos-ne")),
@@ -167,28 +186,36 @@ pub type IfConfiger = DummyIfConfiger;
 #[cfg(target_os = "windows")]
 pub use windows::RegistryManager;
 
-#[cfg(target_os = "linux")]
-pub(crate) fn list_ipv6_route_messages()
--> Result<Vec<netlink_packet_route::route::RouteMessage>, Error> {
+#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+pub(crate) use netlink_wire::RouteMessage;
+#[cfg(all(
+    target_os = "linux",
+    feature = "linux-netlink",
+    feature = "public-ipv6-provider"
+))]
+pub(crate) use netlink_wire::RouteType;
+
+#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+pub(crate) fn list_ipv6_route_messages() -> Result<Vec<RouteMessage>, Error> {
     netlink::NetlinkIfConfiger::list_ipv6_route_messages()
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
 pub(crate) fn get_interface_index(name: &str) -> Result<u32, Error> {
     netlink::NetlinkIfConfiger::get_interface_index(name)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
 pub(crate) fn add_ipv6_ndp_proxy(name: &str, address: Ipv6Addr) -> Result<(), Error> {
     netlink::NetlinkIfConfiger::add_ipv6_ndp_proxy(name, address)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
 pub(crate) fn remove_ipv6_ndp_proxy(name: &str, address: Ipv6Addr) -> Result<(), Error> {
     netlink::NetlinkIfConfiger::remove_ipv6_ndp_proxy(name, address)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
 pub(crate) fn list_ipv6_ndp_proxy(
     name: &str,
 ) -> Result<std::collections::BTreeSet<Ipv6Addr>, Error> {

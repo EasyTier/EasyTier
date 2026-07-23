@@ -1,0 +1,680 @@
+//! Host-operation Adapter for the shared connector composition.
+//!
+//! This module was previously named `host`, which collided with the
+//! top-level [`crate::host`] layer, and one concept was split across two
+//! same-named `environment.rs` files. The ownership split is:
+//!
+//! - The host capability seam trait [`HostConnectorEnvironmentServices`]
+//!   lives in [`crate::host::environment`].
+//! - [`HostConnectorRuntime`] adapts host socket/listener factories and an
+//!   injected environment snapshot to the shared connector runtime and
+//!   environment traits.
+//! - [`HostConnectorEnvironmentSnapshot`] is connectivity's captured view of
+//!   the host environment.
+
+use std::{
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    sync::Arc,
+};
+
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+use url::Url;
+
+use crate::{
+    connectivity::{
+        composite::{ConnectorEnvironment, ConnectorHostAdapter, ConnectorRuntime},
+        transport::ConnectedByteStream,
+    },
+    host::environment::HostConnectorEnvironmentServices,
+    host::socket::{
+        HostSocketRuntime, HostTcpStream,
+        factory::{HostSocketBackend, HostSocketFactory},
+        listener::{HostTcpListener, HostTcpListenerBackend, HostTcpListenerFactory},
+        udp::HostUdpSocket,
+    },
+    proto::peer_rpc::GetIpListResponse,
+    socket::{
+        SocketContext,
+        tcp::{
+            TcpConnectOptions, TcpListenOptions, VirtualTcpListenerFactory, VirtualTcpSocketFactory,
+        },
+        udp::{PreferredIpv6Source, UdpBindOptions, VirtualUdpSocketFactory},
+    },
+};
+
+/// Host-observed facts consumed by core connector policy.
+///
+/// The host normalizes this snapshot before constructing an instance. Core
+/// owns all selection and connection policy applied to these facts.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostConnectorEnvironmentSnapshot {
+    pub public_ipv4: Option<Ipv4Addr>,
+    pub interface_ipv4s: Vec<Ipv4Addr>,
+    pub public_ipv6: Option<Ipv6Addr>,
+    pub interface_ipv6s: Vec<Ipv6Addr>,
+    pub mapped_listeners: Vec<Url>,
+    pub local_ips: Vec<IpAddr>,
+    pub protected_tcp_ports: Vec<u16>,
+    pub preferred_ipv6_sources: Vec<PreferredIpv6Source>,
+}
+
+impl HostConnectorEnvironmentSnapshot {
+    fn ip_list(&self) -> GetIpListResponse {
+        GetIpListResponse {
+            public_ipv4: self.public_ipv4.map(Into::into),
+            interface_ipv4s: self
+                .interface_ipv4s
+                .iter()
+                .copied()
+                .map(Into::into)
+                .collect(),
+            public_ipv6: self.public_ipv6.map(Into::into),
+            interface_ipv6s: self
+                .interface_ipv6s
+                .iter()
+                .copied()
+                .map(Into::into)
+                .collect(),
+            listeners: Default::default(),
+        }
+    }
+
+    fn preferred_ipv6_source(&self, ip: Ipv6Addr) -> Option<PreferredIpv6Source> {
+        if ip.is_loopback()
+            || ip.is_unspecified()
+            || ip.is_unique_local()
+            || ip.is_unicast_link_local()
+            || ip.is_multicast()
+        {
+            return None;
+        }
+        self.preferred_ipv6_sources
+            .iter()
+            .find(|source| source.ip == ip)
+            .copied()
+    }
+}
+
+/// One host handle domain capable of creating and operating connector sockets.
+pub trait ConnectorHostSocketBackend: HostSocketBackend + HostTcpListenerBackend {}
+
+impl<T> ConnectorHostSocketBackend for T where T: HostSocketBackend + HostTcpListenerBackend {}
+
+/// Adapts mechanical host sockets and captured environment state to the
+/// shared connector composition.
+pub struct HostConnectorRuntime<B, E>
+where
+    B: ConnectorHostSocketBackend,
+    E: HostConnectorEnvironmentServices,
+{
+    sockets: HostSocketFactory<B>,
+    listeners: HostTcpListenerFactory<B>,
+    environment: Arc<HostConnectorEnvironmentSnapshot>,
+    environment_services: Arc<E>,
+}
+
+impl<B, E> HostConnectorRuntime<B, E>
+where
+    B: ConnectorHostSocketBackend,
+    E: HostConnectorEnvironmentServices,
+{
+    pub fn new(
+        runtime: HostSocketRuntime,
+        backend: Arc<B>,
+        environment: HostConnectorEnvironmentSnapshot,
+        environment_services: Arc<E>,
+    ) -> Self {
+        Self {
+            sockets: HostSocketFactory::new(runtime.clone(), backend.clone()),
+            listeners: HostTcpListenerFactory::new(runtime, backend),
+            environment: Arc::new(environment),
+            environment_services,
+        }
+    }
+}
+
+#[async_trait]
+impl<B, E> VirtualTcpSocketFactory for HostConnectorRuntime<B, E>
+where
+    B: ConnectorHostSocketBackend,
+    E: HostConnectorEnvironmentServices,
+{
+    type Socket = HostTcpStream;
+
+    async fn connect_tcp(&self, options: TcpConnectOptions) -> anyhow::Result<Self::Socket> {
+        self.sockets.connect_tcp(options).await
+    }
+}
+
+#[async_trait]
+impl<B, E> VirtualUdpSocketFactory for HostConnectorRuntime<B, E>
+where
+    B: ConnectorHostSocketBackend,
+    E: HostConnectorEnvironmentServices,
+{
+    type Socket = HostUdpSocket;
+
+    async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
+        self.sockets.bind_udp(options).await
+    }
+}
+
+#[async_trait]
+impl<B, E> VirtualTcpListenerFactory for HostConnectorRuntime<B, E>
+where
+    B: ConnectorHostSocketBackend,
+    E: HostConnectorEnvironmentServices,
+{
+    type Listener = HostTcpListener<B>;
+
+    async fn bind_tcp(&self, options: TcpListenOptions) -> anyhow::Result<Arc<Self::Listener>> {
+        self.listeners.bind_tcp(options).await
+    }
+}
+
+#[async_trait]
+impl<B, E> ConnectorRuntime for HostConnectorRuntime<B, E>
+where
+    B: ConnectorHostSocketBackend,
+    E: HostConnectorEnvironmentServices,
+{
+    async fn connect_byte_stream(
+        &self,
+        url: &Url,
+    ) -> anyhow::Result<ConnectedByteStream<Self::Socket>> {
+        anyhow::bail!("host does not support external byte stream: {url}")
+    }
+
+    async fn local_addr_for_remote(
+        &self,
+        remote_addr: SocketAddr,
+        context: SocketContext,
+    ) -> anyhow::Result<SocketAddr> {
+        self.environment_services
+            .local_addr_for_remote(remote_addr, context)
+            .await
+    }
+
+    async fn collect_ip_addrs(&self, _context: &SocketContext) -> GetIpListResponse {
+        self.environment.ip_list()
+    }
+
+    async fn preferred_ipv6_source(
+        &self,
+        ip: Ipv6Addr,
+        _context: SocketContext,
+    ) -> Option<PreferredIpv6Source> {
+        self.environment.preferred_ipv6_source(ip)
+    }
+}
+
+impl<B, E> ConnectorEnvironment for HostConnectorRuntime<B, E>
+where
+    B: ConnectorHostSocketBackend,
+    E: HostConnectorEnvironmentServices,
+{
+    fn socket_context(&self) -> SocketContext {
+        SocketContext::default()
+    }
+
+    fn mapped_listeners(&self) -> Vec<Url> {
+        self.environment.mapped_listeners.clone()
+    }
+
+    fn is_local_ip(&self, ip: &IpAddr) -> bool {
+        self.environment.local_ips.contains(ip)
+    }
+}
+
+/// Shared connector policy composed with a host-operation runtime.
+pub type ConnectorHost<B, E> =
+    ConnectorHostAdapter<HostConnectorRuntime<B, E>, HostConnectorRuntime<B, E>>;
+
+/// Builds the shared connector host over one host-operation backend.
+pub fn new_connector_host<B, E>(
+    socket_runtime: HostSocketRuntime,
+    backend: Arc<B>,
+    environment: HostConnectorEnvironmentSnapshot,
+    environment_services: Arc<E>,
+) -> ConnectorHost<B, E>
+where
+    B: ConnectorHostSocketBackend,
+    E: HostConnectorEnvironmentServices,
+{
+    let runtime = Arc::new(HostConnectorRuntime::new(
+        socket_runtime,
+        backend,
+        environment,
+        environment_services,
+    ));
+    ConnectorHostAdapter::new(runtime.clone(), runtime)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        io,
+        sync::{
+            Mutex,
+            atomic::{AtomicBool, Ordering},
+        },
+        task::Poll,
+    };
+
+    use crate::{
+        connectivity::{
+            direct::{DirectConnectorHost, DirectConnectorRpcHandler},
+            hole_punch::tcp::TcpHolePunchHost,
+            manual::ManualConnectorHost,
+            stun::StunInfoProvider,
+        },
+        host::socket::{
+            HostOperationId, HostSocketHandle, HostSocketIo, HostTcpIo,
+            factory::{HostSocketFactoryIo, HostTcpConnectResult, HostUdpBindResult},
+            listener::{HostTcpBindResult, HostTcpListenerIo},
+            udp::{HostUdpDatagram, HostUdpIo},
+        },
+        proto::{
+            common::StunInfo,
+            peer_rpc::{DirectConnectorRpc as _, GetIpListRequest},
+            rpc_types::controller::BaseController,
+        },
+        socket::udp::UdpSocketSendMeta,
+    };
+
+    use super::*;
+
+    #[derive(Default)]
+    struct UnsupportedBackend {
+        udp_send_attempts: Mutex<Vec<(Vec<u8>, SocketAddr, UdpSocketSendMeta)>>,
+        reject_preferred_source: AtomicBool,
+    }
+
+    struct FixedStunProvider;
+
+    #[async_trait]
+    impl StunInfoProvider for FixedStunProvider {
+        fn get_stun_info(&self) -> StunInfo {
+            StunInfo {
+                public_ip: vec!["198.51.100.7".to_owned(), "2001:db8::1".to_owned()],
+                ..Default::default()
+            }
+        }
+
+        async fn get_udp_port_mapping(&self, _local_port: u16) -> anyhow::Result<SocketAddr> {
+            anyhow::bail!("unused by direct RPC projection test")
+        }
+
+        async fn get_tcp_port_mapping(&self, _local_port: u16) -> anyhow::Result<SocketAddr> {
+            anyhow::bail!("unused by direct RPC projection test")
+        }
+
+        fn update_stun_info(&self) {}
+    }
+
+    fn unsupported<T>() -> io::Result<T> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
+
+    impl HostSocketIo for UnsupportedBackend {
+        fn cancel_operation(&self, _operation: HostOperationId) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn close(&self, _handle: HostSocketHandle) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl HostTcpIo for UnsupportedBackend {
+        fn submit_read(
+            &self,
+            _handle: HostSocketHandle,
+            _operation: HostOperationId,
+            _capacity: usize,
+        ) -> io::Result<()> {
+            unsupported()
+        }
+
+        fn take_read(&self, _operation: HostOperationId) -> Poll<io::Result<Vec<u8>>> {
+            Poll::Ready(unsupported())
+        }
+
+        fn submit_write(
+            &self,
+            _handle: HostSocketHandle,
+            _operation: HostOperationId,
+            _source: &[u8],
+        ) -> io::Result<()> {
+            unsupported()
+        }
+
+        fn take_write(&self, _operation: HostOperationId) -> Poll<io::Result<()>> {
+            Poll::Ready(unsupported())
+        }
+    }
+
+    impl HostUdpIo for UnsupportedBackend {
+        fn submit_recv(
+            &self,
+            _handle: HostSocketHandle,
+            _operation: HostOperationId,
+            _capacity: usize,
+        ) -> io::Result<()> {
+            unsupported()
+        }
+
+        fn take_recv(&self, _operation: HostOperationId) -> Poll<io::Result<HostUdpDatagram>> {
+            Poll::Ready(unsupported())
+        }
+
+        fn try_send(
+            &self,
+            _handle: HostSocketHandle,
+            source: &[u8],
+            peer_addr: SocketAddr,
+            meta: UdpSocketSendMeta,
+        ) -> io::Result<()> {
+            self.udp_send_attempts
+                .lock()
+                .unwrap()
+                .push((source.to_vec(), peer_addr, meta));
+            if self.reject_preferred_source.load(Ordering::Relaxed) && meta.src_ip.is_some() {
+                return Err(io::ErrorKind::AddrNotAvailable.into());
+            }
+            Ok(())
+        }
+
+        fn submit_send_ready(
+            &self,
+            _handle: HostSocketHandle,
+            _operation: HostOperationId,
+        ) -> io::Result<()> {
+            unsupported()
+        }
+
+        fn take_send_ready(&self, _operation: HostOperationId) -> Poll<io::Result<()>> {
+            Poll::Ready(unsupported())
+        }
+    }
+
+    impl HostSocketFactoryIo for UnsupportedBackend {
+        fn submit_tcp_connect(
+            &self,
+            _operation: HostOperationId,
+            _options: &TcpConnectOptions,
+        ) -> io::Result<()> {
+            unsupported()
+        }
+
+        fn take_tcp_connect(
+            &self,
+            _operation: HostOperationId,
+        ) -> Poll<io::Result<HostTcpConnectResult>> {
+            Poll::Ready(unsupported())
+        }
+
+        fn submit_udp_bind(
+            &self,
+            _operation: HostOperationId,
+            _options: &UdpBindOptions,
+        ) -> io::Result<()> {
+            unsupported()
+        }
+
+        fn take_udp_bind(
+            &self,
+            _operation: HostOperationId,
+        ) -> Poll<io::Result<HostUdpBindResult>> {
+            Poll::Ready(unsupported())
+        }
+    }
+
+    impl HostTcpListenerIo for UnsupportedBackend {
+        fn submit_tcp_bind(
+            &self,
+            _operation: HostOperationId,
+            _options: &TcpListenOptions,
+        ) -> io::Result<()> {
+            unsupported()
+        }
+
+        fn take_tcp_bind(
+            &self,
+            _operation: HostOperationId,
+        ) -> Poll<io::Result<HostTcpBindResult>> {
+            Poll::Ready(unsupported())
+        }
+
+        fn submit_tcp_accept(
+            &self,
+            _handle: HostSocketHandle,
+            _operation: HostOperationId,
+        ) -> io::Result<()> {
+            unsupported()
+        }
+
+        fn take_tcp_accept(
+            &self,
+            _operation: HostOperationId,
+        ) -> Poll<io::Result<HostTcpConnectResult>> {
+            Poll::Ready(unsupported())
+        }
+    }
+
+    #[derive(Default)]
+    struct TestEnvironmentServices {
+        local_requests: Mutex<Vec<(SocketAddr, SocketContext)>>,
+    }
+
+    #[async_trait]
+    impl HostConnectorEnvironmentServices for TestEnvironmentServices {
+        async fn local_addr_for_remote(
+            &self,
+            remote_addr: SocketAddr,
+            context: SocketContext,
+        ) -> anyhow::Result<SocketAddr> {
+            self.local_requests
+                .lock()
+                .unwrap()
+                .push((remote_addr, context));
+            Ok("192.0.2.1:40100".parse().unwrap())
+        }
+    }
+
+    fn test_environment_snapshot() -> HostConnectorEnvironmentSnapshot {
+        HostConnectorEnvironmentSnapshot {
+            interface_ipv4s: vec!["192.0.2.1".parse().unwrap()],
+            public_ipv6: Some("2001:db8::1".parse().unwrap()),
+            interface_ipv6s: vec!["2001:db8::1".parse().unwrap()],
+            mapped_listeners: vec!["tcp://192.0.2.1:11010".parse().unwrap()],
+            local_ips: vec!["192.0.2.1".parse().unwrap()],
+            protected_tcp_ports: vec![11010],
+            preferred_ipv6_sources: vec![PreferredIpv6Source {
+                ip: "2001:db8::1".parse().unwrap(),
+                ifindex: 7,
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn assert_core_host<H>()
+    where
+        H: DirectConnectorHost + TcpHolePunchHost,
+    {
+    }
+
+    #[tokio::test]
+    async fn delegates_connector_environment_without_owning_policy() {
+        type TestHost = ConnectorHost<UnsupportedBackend, TestEnvironmentServices>;
+        assert_core_host::<TestHost>();
+
+        let services = Arc::new(TestEnvironmentServices::default());
+        let host = new_connector_host(
+            HostSocketRuntime::new(),
+            Arc::new(UnsupportedBackend::default()),
+            test_environment_snapshot(),
+            services.clone(),
+        );
+        let remote = "203.0.113.1:11010".parse().unwrap();
+        let context = SocketContext::default().with_socket_mark(Some(7));
+        let local = ManualConnectorHost::local_addr_for_remote(&host, remote, context.clone())
+            .await
+            .unwrap();
+        assert_eq!(local, "192.0.2.1:40100".parse().unwrap());
+        assert_eq!(
+            *services.local_requests.lock().unwrap(),
+            vec![(remote, context)]
+        );
+        assert_eq!(
+            ManualConnectorHost::interface_addrs(&host)
+                .await
+                .unwrap()
+                .public_ipv6,
+            Some("2001:db8::1".parse().unwrap())
+        );
+        let byte_stream_error =
+            match ManualConnectorHost::connect_byte_stream(&host, &"ring://42".parse().unwrap())
+                .await
+            {
+                Ok(_) => panic!("test environment should reject byte streams"),
+                Err(error) => error,
+            };
+        assert_eq!(
+            byte_stream_error.to_string(),
+            "host does not support external byte stream: ring://42"
+        );
+        assert_eq!(
+            DirectConnectorHost::mapped_listeners(&host),
+            vec!["tcp://192.0.2.1:11010".parse::<Url>().unwrap()]
+        );
+    }
+
+    #[tokio::test]
+    async fn direct_rpc_projects_host_observations_without_instance_policy() {
+        let host = Arc::new(new_connector_host(
+            HostSocketRuntime::new(),
+            Arc::new(UnsupportedBackend::default()),
+            test_environment_snapshot(),
+            Arc::new(TestEnvironmentServices::default()),
+        ));
+        let handler = DirectConnectorRpcHandler::new_with_stun(
+            host,
+            SocketContext::default().with_socket_mark(Some(7)),
+            Some(Arc::new(FixedStunProvider)),
+        );
+
+        let response = handler
+            .get_ip_list(BaseController::default(), GetIpListRequest {})
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.interface_ipv4s,
+            vec![std::net::Ipv4Addr::new(192, 0, 2, 1).into()]
+        );
+        assert_eq!(
+            response.interface_ipv6s,
+            vec!["2001:db8::1".parse::<std::net::Ipv6Addr>().unwrap().into()]
+        );
+        assert_eq!(
+            response.public_ipv4,
+            Some("198.51.100.7".parse::<std::net::Ipv4Addr>().unwrap().into())
+        );
+        assert_eq!(
+            response.public_ipv6,
+            Some("2001:db8::1".parse::<std::net::Ipv6Addr>().unwrap().into())
+        );
+        assert_eq!(
+            response
+                .listeners
+                .into_iter()
+                .map(Url::from)
+                .collect::<Vec<_>>(),
+            vec!["tcp://192.0.2.1:11010".parse::<Url>().unwrap()]
+        );
+    }
+
+    #[tokio::test]
+    async fn foreign_direct_rpc_preserves_parent_managed_ipv6_addresses() {
+        let host = Arc::new(new_connector_host(
+            HostSocketRuntime::new(),
+            Arc::new(UnsupportedBackend::default()),
+            test_environment_snapshot(),
+            Arc::new(TestEnvironmentServices::default()),
+        ));
+        let handler = DirectConnectorRpcHandler::new_for_foreign_network_with_stun(
+            host,
+            SocketContext::default().with_socket_mark(Some(7)),
+            Some(Arc::new(FixedStunProvider)),
+        );
+
+        let response = handler
+            .get_ip_list(BaseController::default(), GetIpListRequest {})
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.interface_ipv6s,
+            vec!["2001:db8::1".parse::<std::net::Ipv6Addr>().unwrap().into()]
+        );
+        assert_eq!(
+            response.public_ipv6,
+            Some("2001:db8::1".parse::<std::net::Ipv6Addr>().unwrap().into())
+        );
+        assert_eq!(
+            response.public_ipv4,
+            Some("198.51.100.7".parse::<std::net::Ipv4Addr>().unwrap().into())
+        );
+    }
+
+    fn snapshot() -> HostConnectorEnvironmentSnapshot {
+        HostConnectorEnvironmentSnapshot {
+            public_ipv4: Some("198.51.100.1".parse().unwrap()),
+            interface_ipv4s: vec!["192.0.2.1".parse().unwrap()],
+            public_ipv6: Some("2001:db8::1".parse().unwrap()),
+            interface_ipv6s: vec!["2001:db8::2".parse().unwrap()],
+            mapped_listeners: vec!["tcp://198.51.100.1:11010".parse().unwrap()],
+            local_ips: vec!["192.0.2.1".parse().unwrap()],
+            protected_tcp_ports: vec![11010],
+            preferred_ipv6_sources: vec![
+                PreferredIpv6Source {
+                    ip: "2001:db8::2".parse().unwrap(),
+                    ifindex: 7,
+                },
+                PreferredIpv6Source {
+                    ip: "fd00::1".parse().unwrap(),
+                    ifindex: 8,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn projects_normalized_snapshot() {
+        let snapshot = snapshot();
+        assert_eq!(
+            serde_json::from_slice::<HostConnectorEnvironmentSnapshot>(
+                &serde_json::to_vec(&snapshot).unwrap()
+            )
+            .unwrap(),
+            snapshot
+        );
+        assert_eq!(
+            snapshot.ip_list().interface_ipv4s,
+            vec![Ipv4Addr::new(192, 0, 2, 1).into()]
+        );
+        assert_eq!(
+            snapshot.preferred_ipv6_source("2001:db8::2".parse().unwrap()),
+            Some(PreferredIpv6Source {
+                ip: "2001:db8::2".parse().unwrap(),
+                ifindex: 7,
+            })
+        );
+        assert_eq!(
+            snapshot.preferred_ipv6_source("fd00::1".parse().unwrap()),
+            None
+        );
+    }
+}

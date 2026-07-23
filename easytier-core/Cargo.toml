@@ -1,0 +1,133 @@
+[package]
+name = "easytier-core"
+description = "EasyTier OS-free control-plane core primitives."
+homepage = "https://github.com/EasyTier/EasyTier"
+repository = "https://github.com/EasyTier/EasyTier"
+version = "2.6.4"
+edition.workspace = true
+rust-version.workspace = true
+authors = ["kkrainbow"]
+keywords = ["vpn", "p2p", "network", "easytier"]
+categories = ["network-programming"]
+license-file = "../LICENSE"
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+anyhow = "1.0"
+ariadne = { version = "0.5", optional = true }
+arc-swap = "1.7"
+async-ringbuf = "0.3.1"
+async-trait = "0.1.74"
+auto_impl = "1.1.0"
+base64 = "0.22"
+bitflags = "2.5"
+bytecodec = "0.4.15"
+bytes = "1.5.0"
+chrono = { version = "0.4.37", features = ["clock"] }
+cidr = { version = "0.3.1", features = ["serde"] }
+crossbeam = "0.8.4"
+dashmap = "6.0"
+derive_builder = "0.20.2"
+easytier-proto = { path = "../easytier-proto", default-features = false, features = ["core"] }
+futures = "0.3"
+guarden = "0.2"
+hmac = "0.12.1"
+http-body-util = { version = "0.1", optional = true }
+hyper = { version = "1", default-features = false, features = ["client", "http1"], optional = true }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio"], optional = true }
+idna = "1.0"
+atomic-shim = "0.2.0"
+ordered_hash_map = "0.5.0"
+parking_lot = "0.12.1"
+percent-encoding = "2.3.1"
+petgraph = "0.8.1"
+pin-project-lite = "0.2.13"
+pnet_packet = { version = "0.35.0", optional = true }
+prefix-trie = { version = "0.7.0", features = ["cidr"] }
+prost = "0.14.3"
+prost-types = "0.14.3"
+rand = "0.8.5"
+quanta = "0.12"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"], optional = true }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10.8"
+smoltcp = { git = "https://github.com/smoltcp-rs/smoltcp.git", rev = "0a926767a68bc88d5512afefa7529c5ecdade4ea", optional = true, default-features = false }
+snow = "0.10.0"
+stun_codec = "0.3.4"
+thiserror = "1.0"
+tracing = "0.1"
+strum = { version = "0.27.2", features = ["derive"] }
+toml = "0.8.12"
+tokio = { version = "1", default-features = false, features = [
+    "rt",
+    "time",
+    "sync",
+    "macros",
+    "io-util",
+] }
+tokio-util = { version = "0.7", features = ["io", "rt"] }
+tokio-rustls = { version = "0.26", default-features = false, optional = true }
+url = { version = "2.5", features = ["serde"] }
+wildmatch = "2.3.4"
+uuid = { version = "1.5.0", features = ["v4", "fast-rng", "serde"] }
+webpki-roots = { version = "0.26", optional = true }
+x25519-dalek = { version = "2.0", features = ["static_secrets"] }
+zerocopy = { version = "0.7.32", features = ["derive", "simd"] }
+zstd = { version = "0.13", optional = true }
+aes-gcm = { version = "0.10.3", optional = true }
+chacha20poly1305 = { version = "0.10.1", optional = true }
+
+[features]
+default = ["endpoint-discovery", "extended-services", "management", "tcp-hole-punch"]
+aes-gcm = ["dep:aes-gcm"]
+chacha20 = ["dep:chacha20poly1305"]
+config-write = []
+endpoint-discovery = [
+    "dep:http-body-util",
+    "dep:hyper",
+    "dep:hyper-util",
+    "dep:rustls",
+    "dep:tokio-rustls",
+    "dep:webpki-roots",
+]
+dhcp-ipv4 = []
+public-ipv6-provider = []
+vpn-portal = []
+wrapped-transport = []
+extended-services = [
+    "dhcp-ipv4",
+    "public-ipv6-provider",
+    "vpn-portal",
+    "wrapped-transport",
+    "proxy-cidr-monitor",
+]
+management = ["management-rpc", "config-write", "extended-services", "rich-config-errors", "easytier-proto/json-rpc"]
+management-rpc = ["easytier-proto/api"]
+proxy-cidr-monitor = []
+rich-config-errors = ["dep:ariadne"]
+tcp-hole-punch = []
+proxy-packet = [
+    "wrapped-transport",
+    "dep:pnet_packet",
+    "dep:smoltcp",
+    "smoltcp/std",
+    "smoltcp/proto-ipv4",
+    "smoltcp/proto-ipv4-fragmentation",
+]
+proxy-smoltcp-stack = [
+    "proxy-packet",
+    "smoltcp/medium-ip",
+    "smoltcp/socket-tcp",
+    "smoltcp/socket-udp",
+    "smoltcp/proto-ipv6",
+    "smoltcp/async",
+]
+test-utils = []
+tracing-log = ["tracing/log"]
+zstd = ["dep:zstd"]
+
+[target.'cfg(not(target_os = "wasi"))'.dev-dependencies]
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread"] }

@@ -1,7 +1,8 @@
 use anyhow::Context as _;
 use easytier::{
     common::config::{
-        ConfigLoader, EncryptionAlgorithm, PortForwardConfig as RuntimePortForwardConfig,
+        ConfigLoader, EncryptionAlgorithm, NetworkConfigExt,
+        PortForwardConfig as RuntimePortForwardConfig,
     },
     proto::{
         acl::Acl,
@@ -802,8 +803,7 @@ mod tests {
         let current = config_with_port_forwards(vec![port_forward(23000, 5174)]);
         let mut desired =
             config_with_port_forwards(vec![port_forward(23000, 5174), port_forward(23007, 3389)]);
-        desired.hostname =
-            Some(easytier::common::config::TomlConfigLoader::default().get_hostname());
+        desired.hostname = Some("desired-host".to_string());
 
         let patch = web_source_runtime_patch(&current, &desired).expect("build patch");
 

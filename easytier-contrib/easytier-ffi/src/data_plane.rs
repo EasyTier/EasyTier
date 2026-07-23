@@ -12,7 +12,7 @@ use std::{
 #[cfg(feature = "ffi-dataplane")]
 use dashmap::DashMap;
 #[cfg(feature = "ffi-dataplane")]
-use easytier::launcher::{DataPlaneTcpListener, DataPlaneTcpStream, DataPlaneUdpSocket};
+use easytier_core::gateway::{DataPlaneTcpListener, DataPlaneTcpStream, DataPlaneUdpSocket};
 #[cfg(feature = "ffi-dataplane")]
 use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf};
 #[cfg(feature = "ffi-dataplane")]
@@ -24,7 +24,7 @@ use uuid::Uuid;
 use crate::{
     config_server::{in_config_server_callback, is_config_server_active_or_stopping},
     error::{free_string, set_error_msg},
-    state::{INSTANCE_MANAGER, INSTANCE_NAME_ID_MAP},
+    state::{ffi_context, resolve_instance_id_by_name},
 };
 
 #[cfg(feature = "ffi-dataplane")]
@@ -85,7 +85,17 @@ pub(crate) unsafe fn cstr_to_string(ptr: *const std::ffi::c_char, name: &str) ->
 
 #[cfg(feature = "ffi-dataplane")]
 pub(crate) fn get_instance_id(inst_name: &str) -> Option<uuid::Uuid> {
-    INSTANCE_NAME_ID_MAP.get(inst_name).map(|id| *id.value())
+    match resolve_instance_id_by_name(inst_name) {
+        Ok(Some(instance_id)) => Some(instance_id),
+        Ok(None) => {
+            set_error_msg("instance not found");
+            None
+        }
+        Err(error) => {
+            set_error_msg(&error.to_string());
+            None
+        }
+    }
 }
 
 #[cfg(feature = "ffi-dataplane")]
@@ -119,7 +129,10 @@ pub(crate) fn get_runtime_handle(
     deadline: std::time::Instant,
 ) -> Option<tokio::runtime::Handle> {
     let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-    let Some(rt) = INSTANCE_MANAGER.data_plane_wait_runtime_handle(inst_id, remaining) else {
+    let Some(rt) = ffi_context()
+        .manager
+        .data_plane_wait_runtime_handle(inst_id, remaining)
+    else {
         set_error_msg("instance runtime is not ready");
         return None;
     };
@@ -413,7 +426,6 @@ pub(crate) unsafe fn data_plane_tcp_connect(
         return 0;
     };
     let Some(inst_id) = get_instance_id(&inst_name) else {
-        set_error_msg("instance not found");
         return 0;
     };
     let Some(dst_addr) = parse_socket_addr(&dst_ip, dst_port) else {
@@ -425,8 +437,11 @@ pub(crate) unsafe fn data_plane_tcp_connect(
     };
 
     let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-    let result =
-        runtime.block_on(INSTANCE_MANAGER.data_plane_tcp_connect(&inst_id, dst_addr, remaining));
+    let result = runtime.block_on(
+        ffi_context()
+            .manager
+            .data_plane_tcp_connect(&inst_id, dst_addr, remaining),
+    );
     match result {
         Ok(stream) => {
             let local_addr = stream.local_addr();
@@ -471,7 +486,6 @@ pub(crate) unsafe fn data_plane_tcp_bind(
         return 0;
     };
     let Some(inst_id) = get_instance_id(&inst_name) else {
-        set_error_msg("instance not found");
         return 0;
     };
     let deadline = std::time::Instant::now() + timeout_duration(timeout_ms);
@@ -480,8 +494,11 @@ pub(crate) unsafe fn data_plane_tcp_bind(
     };
 
     let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-    let result =
-        runtime.block_on(INSTANCE_MANAGER.data_plane_tcp_bind(&inst_id, local_port, remaining));
+    let result = runtime.block_on(
+        ffi_context()
+            .manager
+            .data_plane_tcp_bind(&inst_id, local_port, remaining),
+    );
     match result {
         Ok(listener) => {
             let local_addr = listener.local_addr();
@@ -734,7 +751,6 @@ pub(crate) unsafe fn data_plane_udp_bind(
         return 0;
     };
     let Some(inst_id) = get_instance_id(&inst_name) else {
-        set_error_msg("instance not found");
         return 0;
     };
     let deadline = std::time::Instant::now() + timeout_duration(timeout_ms);
@@ -743,8 +759,11 @@ pub(crate) unsafe fn data_plane_udp_bind(
     };
 
     let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-    let result =
-        runtime.block_on(INSTANCE_MANAGER.data_plane_udp_bind(&inst_id, local_port, remaining));
+    let result = runtime.block_on(
+        ffi_context()
+            .manager
+            .data_plane_udp_bind(&inst_id, local_port, remaining),
+    );
     match result {
         Ok(socket) => {
             let local_addr = socket.local_addr();

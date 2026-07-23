@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 
-use easytier::tunnel::packet_def::ZCPacket;
+use easytier_core::packet::ZCPacket;
 
 const PAYLOAD_SIZES: &[usize] = &[1280, 4096];
 
