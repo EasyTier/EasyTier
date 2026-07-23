@@ -126,7 +126,6 @@ impl InterfaceControl {
 }
 
 pub struct WindowsDNSManager {
-    tun_dev_name: String,
     interface_control: InterfaceControl,
 }
 
@@ -134,7 +133,6 @@ impl WindowsDNSManager {
     pub fn new(tun_dev_name: &str) -> io::Result<Self> {
         let interface_guid = RegistryManager::find_interface_guid(tun_dev_name)?;
         Ok(WindowsDNSManager {
-            tun_dev_name: tun_dev_name.to_string(),
             interface_control: InterfaceControl::new(&interface_guid),
         })
     }
@@ -180,12 +178,18 @@ mod tests {
         };
 
         let tun_ip = Ipv4Inet::from_str("10.144.144.10/24").unwrap();
-        let (peer_mgr, virtual_nic) = prepare_env("test1", tun_ip).await;
+        let (global_ctx, core_instance, virtual_nic) = prepare_env("test1", tun_ip).await;
         let tun_name = virtual_nic.ifname().await.unwrap();
 
         println!("dev_name: {}", tun_name);
         let fake_ip = Ipv4Addr::from_str("100.100.100.101").unwrap();
-        let mut dns_runner = DnsRunner::new(peer_mgr, Some(tun_name.clone()), tun_ip, fake_ip);
+        let mut dns_runner = DnsRunner::new(
+            core_instance.packet_plane(),
+            global_ctx,
+            Some(tun_name.clone()),
+            tun_ip,
+            fake_ip,
+        );
 
         let cancel_token = CancellationToken::new();
         let cancel_token_clone = cancel_token.clone();

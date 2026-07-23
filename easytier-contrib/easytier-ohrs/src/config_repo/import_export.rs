@@ -1,5 +1,6 @@
 use crate::config::types::stored_config::{ExportTomlResult, StoredConfigRecord};
 use easytier::common::config::{ConfigLoader, TomlConfigLoader};
+use easytier::common::config::NetworkConfigExt;
 use easytier::proto::api::manage::NetworkConfig;
 
 pub(super) fn export_config_toml_from_record(
