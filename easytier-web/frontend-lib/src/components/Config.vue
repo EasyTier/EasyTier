@@ -21,8 +21,7 @@ const props = defineProps<{
 
 defineEmits(['runNetwork'])
 
-const curNetwork = defineModel('curNetwork', {
-  type: Object as () => NetworkConfig,
+const curNetwork = defineModel<NetworkConfig>('curNetwork', {
   default: DEFAULT_NETWORK_CONFIG,
 })
 
@@ -41,6 +40,19 @@ const protos: { [proto: string]: number } = {
   txt: 0,
   srv: 0,
 }
+
+const listenerProtos: { [proto: string]: number } = {
+  ...protos,
+  tcp: 0,
+  udp: 0,
+  wg: 0,
+  ws: 0,
+  wss: 0,
+  quic: 0,
+  faketcp: 0,
+}
+
+const portlessProtos = ['txt', 'srv']
 
 const inetSuggestions = ref([''])
 
@@ -320,8 +332,8 @@ const instanceRecvBpsLimitInput = computed<string>({
               <div class="flex flex-row gap-x-9 flex-wrap">
                 <div class="flex flex-col gap-2 grow p-fluid">
                   <label for="listener_urls">{{ t('listener_urls') }}</label>
-                  <UrlListInput v-model="curNetwork.listener_urls" :protos="protos" :add-label="t('add_listener_url')"
-                    placeholder="0.0.0.0" />
+                  <UrlListInput v-model="curNetwork.listener_urls" :protos="listenerProtos"
+                    :portless-protos="portlessProtos" :add-label="t('add_listener_url')" placeholder="0.0.0.0" />
                 </div>
               </div>
 
