@@ -34,7 +34,7 @@ jobs:
           # All of these options are optional, so you can remove them if you are happy with the defaults
           concurrent_skipping: 'never'
           skip_after_successful_duplicate: 'true'
-          paths: '["Cargo.toml", "Cargo.lock", "easytier/**", ".github/workflows/test.yml", ".github/actions/**"]'
+          paths: '["Cargo.toml", "Cargo.lock", "easytier/**", "easytier-core/**", "easytier-proto/**", "easytier-web/**", "easytier-gui/src-tauri/**", "easytier-contrib/**", ".github/workflows/test.yml", ".github/actions/**"]'
 
   check:
     name: Run linters & check
@@ -98,7 +98,9 @@ jobs:
       - uses: taiki-e/install-action@nextest
 
       - name: Archive test
-        run: cargo nextest archive --archive-file tests.tar.zst --package easytier --features full
+        run: >-
+          cargo nextest archive --archive-file tests.tar.zst
+          --package easytier --package easytier-core --features full
 
       - uses: actions/upload-artifact@v5
         with:

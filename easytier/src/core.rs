@@ -1,19 +1,16 @@
-#![allow(dead_code)]
-
 use crate::{
     ShellType,
     common::{
         config::{
             ConfigFileControl, ConfigLoader, ConsoleLoggerConfig, EncryptionAlgorithm,
             FileLoggerConfig, LoggingConfigLoader, NetworkIdentity, PeerConfig, PortForwardConfig,
-            TomlConfigLoader, VpnPortalConfig, load_config_from_file, parse_mapped_listener_urls,
-            process_secure_mode_cfg,
+            TomlConfigLoader, VpnPortalConfig, add_proxy_network_to_config, load_config_from_file,
+            load_toml_config_from_path, parse_mapped_listener_urls,
         },
         constants::EASYTIER_VERSION,
         log,
     },
-    instance_manager::NetworkInstanceManager,
-    launcher::add_proxy_network_to_config,
+    instance::factory::native_instance_set,
     proto::common::{CompressionAlgoPb, SecureModeConfig},
     rpc_service::ApiRpcServer,
     utils::panic::setup_panic_handler,
@@ -22,6 +19,7 @@ use crate::{
 use anyhow::Context;
 use cidr::IpCidr;
 use clap::{CommandFactory, Parser};
+use easytier_core::config::normalize_secure_mode_config;
 use guarden::defer;
 use rust_i18n::t;
 use std::{
@@ -49,6 +47,7 @@ fn set_prof_active(_active: bool) {
     }
 }
 
+#[cfg(feature = "jemalloc-prof")]
 fn get_dump_profile_path(cur_allocated: usize, suffix: &str) -> String {
     format!(
         "profile-{}-{}.{}",
@@ -303,7 +302,7 @@ struct NetworkOptions {
         long,
         env = "ET_ENCRYPTION_ALGORITHM",
         help = t!("core_clap.encryption_algorithm").to_string(),
-        value_enum,
+        value_parser = crate::common::config::parse_encryption_algorithm,
     )]
     encryption_algorithm: Option<EncryptionAlgorithm>,
 
@@ -1075,7 +1074,7 @@ impl NetworkOptions {
                 local_private_key: Some(credential_secret.clone()),
                 local_public_key: None,
             };
-            cfg.set_secure_mode(Some(process_secure_mode_cfg(c)?));
+            cfg.set_secure_mode(Some(normalize_secure_mode_config(c)?));
         } else if let Some(secure_mode) = self.secure_mode
             && secure_mode
         {
@@ -1084,7 +1083,7 @@ impl NetworkOptions {
                 local_private_key: self.local_private_key.clone(),
                 local_public_key: self.local_public_key.clone(),
             };
-            cfg.set_secure_mode(Some(process_secure_mode_cfg(c)?));
+            cfg.set_secure_mode(Some(normalize_secure_mode_config(c)?));
         }
 
         let mut f = cfg.get_flags();
@@ -1353,7 +1352,7 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
     defer!(dump_profile(0););
     log::init(&cli.logging_options, true)?;
 
-    let manager = Arc::new(NetworkInstanceManager::new().with_config_path(cli.config_dir.clone()));
+    let manager = Arc::new(native_instance_set().with_config_path(cli.config_dir.clone()));
 
     let _rpc_server = ApiRpcServer::new(
         cli.rpc_portal_options.rpc_portal,
@@ -1650,7 +1649,7 @@ async fn validate_config(cli: &Cli) -> anyhow::Result<()> {
                 .context("failed to read config from stdin")?;
             TomlConfigLoader::new_from_str_with_source("stdin", stdin.as_str())?;
         } else {
-            TomlConfigLoader::new(config_file)?;
+            load_toml_config_from_path(config_file)?;
         };
     }
 

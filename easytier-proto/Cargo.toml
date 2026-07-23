@@ -1,0 +1,111 @@
+[package]
+name = "easytier-proto"
+description = "EasyTier protobuf and generated RPC types."
+homepage = "https://github.com/EasyTier/EasyTier"
+repository = "https://github.com/EasyTier/EasyTier"
+version = "2.6.4"
+edition.workspace = true
+rust-version.workspace = true
+authors = ["kkrainbow"]
+keywords = ["vpn", "p2p", "network", "easytier"]
+categories = ["network-programming"]
+license-file = "../LICENSE"
+build = "build/main.rs"
+
+[dependencies]
+anyhow = { version = "1.0", optional = true }
+async-trait = { version = "0.1.74", optional = true }
+auto_impl = { version = "1.1.0", optional = true }
+base64 = { version = "0.22", optional = true }
+bytes = { version = "1.5.0", optional = true }
+chrono = { version = "0.4.37", features = ["serde"], optional = true }
+cidr = { version = "0.3.1", features = ["serde"], optional = true }
+delegate = { version = "0.13.5", optional = true }
+derivative = { version = "2.2.0", optional = true }
+derive_more = { version = "2.1.1", features = ["full"], optional = true }
+hmac = { version = "0.12.1", optional = true }
+prost = { version = "0.14.3", optional = true }
+prost-types = { version = "0.14.3", optional = true }
+prost-wkt-types = { version = "0.7.1", optional = true }
+pbjson = { version = "0.9.0", optional = true }
+serde = { version = "1.0", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+sha2 = { version = "0.10.8", optional = true }
+thiserror = { version = "1.0", optional = true }
+tokio = { version = "1", default-features = false, features = ["time"], optional = true }
+url = { version = "2.5", features = ["serde"], optional = true }
+uuid = { version = "1.5.0", features = ["serde"], optional = true }
+x25519-dalek = { version = "2.0", features = ["static_secrets"], optional = true }
+
+[build-dependencies]
+indoc = "2.0"
+pbjson-build = "0.9.0"
+proc-macro2 = "1"
+prost-build = "0.14.3"
+quote = "1"
+
+[target.'cfg(windows)'.build-dependencies]
+reqwest = { version = "0.12.12", features = ["blocking"] }
+zip = "4.0.0"
+
+[dev-dependencies]
+tokio = { version = "1", default-features = false, features = [
+    "macros",
+    "rt",
+] }
+uuid = { version = "1.5.0", features = [
+    "v4",
+    "fast-rng",
+] }
+
+[features]
+default = ["full"]
+full = [
+    "api",
+    "core",
+    "faketcp",
+    "magic-dns",
+    "quic",
+    "utils",
+    "websocket",
+    "wireguard",
+    "zstd",
+    "json-rpc",
+]
+api = ["core"]
+core = [
+    "dep:anyhow",
+    "dep:async-trait",
+    "dep:auto_impl",
+    "dep:base64",
+    "dep:bytes",
+    "dep:chrono",
+    "dep:cidr",
+    "dep:hmac",
+    "dep:pbjson",
+    "dep:prost",
+    "dep:prost-types",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:sha2",
+    "dep:thiserror",
+    "dep:tokio",
+    "dep:url",
+    "dep:uuid",
+    "dep:x25519-dalek",
+]
+faketcp = []
+magic-dns = []
+quic = []
+utils = [
+    "dep:delegate",
+    "dep:derivative",
+    "dep:derive_more",
+    "dep:prost",
+    "dep:serde",
+    "dep:sha2",
+]
+websocket = []
+wireguard = []
+zstd = []
+json-rpc = ["dep:prost-wkt-types"]

@@ -1,9 +1,12 @@
-use std::ffi::{CString, c_char, c_int};
+use std::{
+    ffi::{CString, c_char, c_int},
+    sync::Arc,
+};
 
 use crate::{
     config_server::in_config_server_callback,
     error::set_error_msg,
-    state::{ASYNC_RUNTIME, INSTANCE_MANAGER},
+    state::ffi_context,
     strings::{c_str_to_string, optional_c_str_to_string},
 };
 
@@ -65,19 +68,23 @@ pub(crate) unsafe fn call_json_rpc(
         }
     };
 
-    let response = match ASYNC_RUNTIME.block_on(easytier::rpc_service::call_json_rpc(
-        &INSTANCE_MANAGER,
-        &service_name,
-        &method_name,
-        domain_name.as_deref(),
-        payload,
-    )) {
-        Ok(value) => value,
-        Err(err) => {
-            set_error_msg(&format!("RPC Error: {}", err));
-            return -1;
-        }
-    };
+    let response =
+        match ffi_context()
+            .runtime
+            .block_on(easytier_core::management::call_management_json_rpc(
+                &ffi_context().manager.manager(),
+                Arc::new(easytier::rpc_service::logger::NativeLoggerControl),
+                &service_name,
+                &method_name,
+                domain_name.as_deref(),
+                payload,
+            )) {
+            Ok(value) => value,
+            Err(err) => {
+                set_error_msg(&format!("RPC Error: {}", err));
+                return -1;
+            }
+        };
     let response_json = match serde_json::to_string(&response) {
         Ok(value) => value,
         Err(err) => {

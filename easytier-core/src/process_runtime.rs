@@ -1,0 +1,414 @@
+#![cfg_attr(
+    not(any(feature = "management", test, target_os = "wasi")),
+    allow(dead_code)
+)]
+
+//! Host-domain portable resources shared by core instances.
+
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
+
+use crate::{
+    connectivity::{
+        manual::{
+            ManualConnectorHost, ManualConnectorOptions, ManualTunnelConnector,
+            discovery::{CoreManualEndpointResolver, ManualEndpointDiscoveryConfig},
+        },
+        protocol::ClientProtocolUpgrader,
+    },
+    host::dns::{DnsRecordResolver, DnsResolver},
+    socket::SocketListener,
+    socket::{ring::RingSocketId, tcp::VirtualTcpSocketFactory},
+    tunnel::{Tunnel, ring::RingTunnelRegistry},
+};
+
+/// Owns portable resources whose identity is shared across core instances in
+/// one native process or one instantiated WASI module.
+///
+/// Native composition roots pass this handle around. The WASI lifecycle keeps
+/// it module-local and never exposes it through the Go ABI. Neither host can
+/// receive the internal managers it owns.
+#[derive(Default)]
+pub struct CoreProcessRuntime {
+    ring_registry: Arc<RingTunnelRegistry>,
+    protected_tcp_ports: Arc<ProtectedTcpPortRegistry>,
+}
+
+#[derive(Default)]
+pub(crate) struct ProtectedTcpPortRegistry {
+    ports: Mutex<HashMap<u16, usize>>,
+}
+
+impl ProtectedTcpPortRegistry {
+    fn protect(self: &Arc<Self>, port: u16) -> ProtectedTcpPortLease {
+        let mut ports = self.ports.lock().unwrap();
+        *ports.entry(port).or_default() += 1;
+        ProtectedTcpPortLease {
+            registry: self.clone(),
+            port,
+        }
+    }
+
+    pub(crate) fn contains(&self, port: u16) -> bool {
+        self.ports.lock().unwrap().contains_key(&port)
+    }
+}
+
+pub(crate) struct ProtectedTcpPortLease {
+    registry: Arc<ProtectedTcpPortRegistry>,
+    port: u16,
+}
+
+impl Drop for ProtectedTcpPortLease {
+    fn drop(&mut self) {
+        let mut ports = self.registry.ports.lock().unwrap();
+        let ref_count = ports
+            .get_mut(&self.port)
+            .expect("protected TCP port lease must have a registry entry");
+        *ref_count -= 1;
+        if *ref_count == 0 {
+            ports.remove(&self.port);
+        }
+    }
+}
+
+impl CoreProcessRuntime {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    pub(crate) fn ring_registry(&self) -> Arc<RingTunnelRegistry> {
+        self.ring_registry.clone()
+    }
+
+    pub(crate) fn protected_tcp_ports(&self) -> Arc<ProtectedTcpPortRegistry> {
+        self.protected_tcp_ports.clone()
+    }
+
+    pub(crate) fn protect_tcp_port(&self, port: u16) -> ProtectedTcpPortLease {
+        self.protected_tcp_ports.protect(port)
+    }
+
+    /// Binds an application-level Ring listener without exposing the registry
+    /// that owns its process namespace.
+    pub fn bind_ring_tunnel(
+        &self,
+        local_id: RingSocketId,
+    ) -> anyhow::Result<Box<dyn SocketListener<Accepted = Box<dyn Tunnel>>>> {
+        Ok(Box::new(self.ring_registry.bind(local_id)?))
+    }
+
+    /// Connects an application-level Ring tunnel in this runtime's namespace.
+    pub fn connect_ring_tunnel(&self, remote_id: RingSocketId) -> anyhow::Result<Box<dyn Tunnel>> {
+        Ok(self.ring_registry.connect(remote_id)?.into_tunnel())
+    }
+
+    pub fn manual_connector<H>(
+        &self,
+        host: Arc<H>,
+        dns: Arc<dyn DnsResolver>,
+        dns_records: Arc<dyn DnsRecordResolver>,
+        protocol: Arc<dyn ClientProtocolUpgrader<<H as VirtualTcpSocketFactory>::Socket>>,
+        endpoint_discovery: ManualEndpointDiscoveryConfig,
+        options: ManualConnectorOptions,
+    ) -> ManualTunnelConnector<H>
+    where
+        H: ManualConnectorHost,
+    {
+        let endpoint_resolver = Arc::new(CoreManualEndpointResolver::new(
+            host.clone(),
+            dns.clone(),
+            dns_records,
+            endpoint_discovery,
+        ));
+        ManualTunnelConnector::new(host, dns, endpoint_resolver, protocol, options)
+            .with_ring_registry(self.ring_registry())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        io,
+        net::SocketAddr,
+        pin::Pin,
+        sync::Mutex,
+        task::{Context, Poll},
+    };
+
+    use async_trait::async_trait;
+    use futures::{SinkExt, StreamExt};
+    use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+
+    use super::*;
+    use crate::{
+        connectivity::{
+            manual::ManualInterfaceAddrs,
+            protocol::{CoreClientProtocolConfig, CoreClientProtocolUpgrader},
+        },
+        host::dns::{DnsQuery, DnsRecordResolver, DnsSrvRecord},
+        packet::ZCPacket,
+        socket::{
+            IpVersion, NetNamespace, SocketContext,
+            tcp::{TcpConnectOptions, VirtualTcpSocket},
+            udp::{UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory},
+        },
+    };
+
+    struct TestTcpSocket;
+
+    #[test]
+    fn protected_tcp_port_leases_are_ref_counted_and_runtime_scoped() {
+        let runtime = CoreProcessRuntime::new();
+        let other_runtime = CoreProcessRuntime::new();
+
+        let first = runtime.protect_tcp_port(15888);
+        let second = runtime.protect_tcp_port(15888);
+        assert!(runtime.protected_tcp_ports().contains(15888));
+        assert!(!other_runtime.protected_tcp_ports().contains(15888));
+
+        drop(first);
+        assert!(runtime.protected_tcp_ports().contains(15888));
+
+        drop(second);
+        assert!(!runtime.protected_tcp_ports().contains(15888));
+    }
+
+    impl AsyncRead for TestTcpSocket {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Poll::Pending
+        }
+    }
+
+    impl AsyncWrite for TestTcpSocket {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Pending
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    impl VirtualTcpSocket for TestTcpSocket {
+        fn local_addr(&self) -> io::Result<SocketAddr> {
+            Ok("127.0.0.1:1".parse().unwrap())
+        }
+
+        fn peer_addr(&self) -> io::Result<SocketAddr> {
+            Ok("127.0.0.1:2".parse().unwrap())
+        }
+    }
+
+    struct TestUdpSocket;
+
+    #[async_trait]
+    impl VirtualUdpSocket for TestUdpSocket {
+        fn local_addr(&self) -> io::Result<SocketAddr> {
+            Ok("127.0.0.1:1".parse().unwrap())
+        }
+
+        async fn send_to(&self, _data: &[u8], _addr: SocketAddr) -> io::Result<usize> {
+            unreachable!("Ring connector must not use UDP")
+        }
+
+        async fn recv_from(&self, _buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
+            unreachable!("Ring connector must not use UDP")
+        }
+    }
+
+    struct TestHost;
+
+    #[async_trait]
+    impl VirtualTcpSocketFactory for TestHost {
+        type Socket = TestTcpSocket;
+
+        async fn connect_tcp(&self, _options: TcpConnectOptions) -> anyhow::Result<Self::Socket> {
+            anyhow::bail!("Ring connector must not use TCP")
+        }
+    }
+
+    #[async_trait]
+    impl VirtualUdpSocketFactory for TestHost {
+        type Socket = TestUdpSocket;
+
+        async fn bind_udp(&self, _options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
+            anyhow::bail!("Ring connector must not use UDP")
+        }
+    }
+
+    #[async_trait]
+    impl ManualConnectorHost for TestHost {
+        async fn local_addr_for_remote(
+            &self,
+            _remote_addr: SocketAddr,
+            _context: SocketContext,
+        ) -> anyhow::Result<SocketAddr> {
+            anyhow::bail!("Ring connector must not probe routes")
+        }
+
+        async fn interface_addrs(&self) -> anyhow::Result<ManualInterfaceAddrs> {
+            anyhow::bail!("Ring connector must not collect interfaces")
+        }
+    }
+
+    struct TestDns;
+
+    #[async_trait]
+    impl DnsResolver for TestDns {
+        async fn resolve(&self, _query: DnsQuery) -> anyhow::Result<Vec<std::net::IpAddr>> {
+            anyhow::bail!("Ring connector must not resolve DNS")
+        }
+    }
+
+    #[async_trait]
+    impl DnsRecordResolver for TestDns {
+        async fn resolve_txt(&self, _query: DnsQuery) -> anyhow::Result<String> {
+            anyhow::bail!("Ring connector must not resolve TXT records")
+        }
+
+        async fn resolve_srv(&self, _query: DnsQuery) -> anyhow::Result<Vec<DnsSrvRecord>> {
+            anyhow::bail!("Ring connector must not resolve SRV records")
+        }
+    }
+
+    struct RecordingDnsRecords {
+        endpoint: String,
+        queries: Arc<Mutex<Vec<DnsQuery>>>,
+    }
+
+    #[async_trait]
+    impl DnsRecordResolver for RecordingDnsRecords {
+        async fn resolve_txt(&self, query: DnsQuery) -> anyhow::Result<String> {
+            self.queries.lock().unwrap().push(query);
+            Ok(self.endpoint.clone())
+        }
+
+        async fn resolve_srv(&self, _query: DnsQuery) -> anyhow::Result<Vec<DnsSrvRecord>> {
+            anyhow::bail!("TXT discovery must not resolve SRV records")
+        }
+    }
+
+    fn manual_connector(runtime: &Arc<CoreProcessRuntime>) -> ManualTunnelConnector<TestHost> {
+        runtime.manual_connector(
+            Arc::new(TestHost),
+            Arc::new(TestDns),
+            Arc::new(TestDns),
+            Arc::new(CoreClientProtocolUpgrader::<TestTcpSocket>::new(
+                CoreClientProtocolConfig::default(),
+            )),
+            ManualEndpointDiscoveryConfig::default(),
+            ManualConnectorOptions::default(),
+        )
+    }
+
+    #[test]
+    fn instances_share_ring_state_only_through_the_process_runtime() {
+        let runtime = CoreProcessRuntime::new();
+
+        assert!(Arc::ptr_eq(
+            &runtime.ring_registry(),
+            &runtime.ring_registry()
+        ));
+        assert!(!Arc::ptr_eq(
+            &runtime.ring_registry(),
+            &CoreProcessRuntime::new().ring_registry()
+        ));
+    }
+
+    #[tokio::test]
+    async fn one_shot_ring_connector_uses_its_process_runtime_namespace() {
+        let runtime = CoreProcessRuntime::new();
+        let isolated = CoreProcessRuntime::new();
+        let listener_id = uuid::Uuid::new_v4();
+        let mut listener = runtime.bind_ring_tunnel(listener_id).unwrap();
+        let url: url::Url = format!("ring://{listener_id}").parse().unwrap();
+
+        assert!(
+            manual_connector(&isolated)
+                .connect(url.clone(), IpVersion::Both)
+                .await
+                .is_err()
+        );
+
+        let client = manual_connector(&runtime)
+            .connect(url, IpVersion::Both)
+            .await
+            .unwrap();
+        let server = listener.accept().await.unwrap();
+        let (_client_stream, mut client_sink) = client.split();
+        let (mut server_stream, _server_sink) = server.split();
+        client_sink
+            .send(ZCPacket::new_with_payload(b"process-runtime"))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            server_stream.next().await.unwrap().unwrap().payload(),
+            b"process-runtime"
+        );
+    }
+
+    #[tokio::test]
+    async fn one_shot_connector_owns_endpoint_discovery_wiring() {
+        let runtime = CoreProcessRuntime::new();
+        let listener_id = uuid::Uuid::new_v4();
+        let mut listener = runtime.bind_ring_tunnel(listener_id).unwrap();
+        let queries = Arc::new(Mutex::new(Vec::new()));
+        let dns_context = SocketContext::new()
+            .with_ip_version(IpVersion::V6)
+            .with_socket_mark(Some(42))
+            .with_netns(Some(NetNamespace::new("discovery-netns")));
+        let connector = runtime.manual_connector(
+            Arc::new(TestHost),
+            Arc::new(TestDns),
+            Arc::new(RecordingDnsRecords {
+                endpoint: format!("ring://{listener_id}"),
+                queries: queries.clone(),
+            }),
+            Arc::new(CoreClientProtocolUpgrader::<TestTcpSocket>::new(
+                CoreClientProtocolConfig::default(),
+            )),
+            ManualEndpointDiscoveryConfig {
+                dns_record_context: dns_context.clone(),
+                ..Default::default()
+            },
+            ManualConnectorOptions::default(),
+        );
+
+        let client = connector
+            .connect("txt://bootstrap.example".parse().unwrap(), IpVersion::Both)
+            .await
+            .unwrap();
+        let server = listener.accept().await.unwrap();
+
+        assert_eq!(
+            *queries.lock().unwrap(),
+            vec![DnsQuery::new("bootstrap.example", dns_context)]
+        );
+        let (_client_stream, mut client_sink) = client.split();
+        let (mut server_stream, _server_sink) = server.split();
+        client_sink
+            .send(ZCPacket::new_with_payload(b"endpoint-discovery"))
+            .await
+            .unwrap();
+        assert_eq!(
+            server_stream.next().await.unwrap().unwrap().payload(),
+            b"endpoint-discovery"
+        );
+    }
+}

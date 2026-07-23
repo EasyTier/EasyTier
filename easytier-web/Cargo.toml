@@ -6,7 +6,8 @@ description = "Config server for easytier. easytier-core gets config from this a
 
 [dependencies]
 easytier = { path = "../easytier" }
-tracing = { version = "0.1", features = ["log"] }
+easytier-core = { path = "../easytier-core" }
+tracing = "0.1"
 anyhow = { version = "1.0" }
 thiserror = "1.0"
 tokio = { version = "1", features = ["full"] }

@@ -254,7 +254,7 @@ pub unsafe extern "C" fn call_json_rpc(
 /// Start the managed config-server client.
 ///
 /// The client reuses EasyTier's web-client path and applies remote config
-/// changes through the shared `NetworkInstanceManager`. Successful remote run
+/// changes through the shared `NativeInstanceSet`. Successful remote run
 /// and delete operations are delivered to `callback` as JSON event strings, one
 /// callback per affected instance. The event string is valid only for the
 /// duration of the callback; callers must copy it if they need to keep it.

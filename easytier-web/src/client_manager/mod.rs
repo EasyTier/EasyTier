@@ -10,13 +10,13 @@ use std::sync::{
 use std::time::Duration;
 
 use dashmap::DashMap;
-use easytier::{
-    proto::{
-        api::manage::WebClientService, rpc_types::controller::BaseController, web::HeartbeatRequest,
-    },
-    rpc_service::remote_client::{self, RemoteClientManager},
-    tunnel::TunnelListener,
-    web_client::security,
+use easytier::proto::{
+    api::manage::WebClientService, rpc_types::controller::BaseController, web::HeartbeatRequest,
+};
+use easytier_core::{
+    management::remote_client::{self, RemoteClientManager},
+    socket::SocketListener,
+    tunnel::{Tunnel, web_security},
 };
 use maxminddb::geoip2;
 use session::{Location, Session};
@@ -105,11 +105,12 @@ impl ClientManager {
         }
     }
 
-    pub async fn add_listener<L: TunnelListener + 'static>(
+    pub async fn add_listener<L: SocketListener<Accepted = Box<dyn Tunnel>> + 'static>(
         &mut self,
         mut listener: L,
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result<url::Url, anyhow::Error> {
         listener.listen().await?;
+        let local_url = listener.local_url();
         self.listeners_cnt.fetch_add(1, Ordering::Relaxed);
         let sessions = self.client_sessions.clone();
         let storage = self.storage.weak_ref();
@@ -120,7 +121,11 @@ impl ClientManager {
         let webhook_config = self.webhook_config.clone();
         self.tasks.spawn(async move {
             while let Ok(tunnel) = listener.accept().await {
-                let (tunnel, secure) = match security::accept_or_upgrade_server_tunnel(tunnel).await {
+                let (tunnel, secure) = match web_security::accept_or_upgrade_server_tunnel(
+                    tunnel,
+                )
+                .await
+                {
                     Ok(v) => v,
                     Err(error) => {
                         tracing::warn!(%error, "failed to accept secure tunnel, dropping connection");
@@ -150,7 +155,7 @@ impl ClientManager {
             listeners_cnt.fetch_sub(1, Ordering::Relaxed);
         });
 
-        Ok(())
+        Ok(local_url)
     }
 
     pub fn is_running(&self) -> bool {
@@ -365,6 +370,7 @@ impl
 mod tests {
     use std::{
         collections::VecDeque,
+        future::Future,
         sync::{
             Arc,
             atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -374,28 +380,39 @@ mod tests {
 
     use axum::{Json, Router, extract::State, routing::post};
     use easytier::{
-        common::MachineIdOptions,
-        instance_manager::NetworkInstanceManager,
+        common::{MachineIdOptions, config::NetworkConfigExt},
+        instance::factory::{NativeInstanceSet, native_instance_set},
         proto::{
             api::manage::{NetworkConfig, NetworkingMethod, PortForwardConfig},
             common::CompressionAlgoPb,
-        },
-        rpc_service::remote_client::Storage as RemoteStorage,
-        tunnel::{
-            common::tests::wait_for_condition,
-            udp::{UdpTunnelConnector, UdpTunnelListener},
+            rpc::standalone::{runtime_udp_tunnel_dialer, runtime_udp_tunnel_listener},
         },
         web_client::{WebClient, run_web_client},
     };
+    use easytier_core::management::remote_client::Storage as RemoteStorage;
     use serde_json::json;
     use sqlx::Executor;
-    use tokio::net::UdpSocket;
 
     use crate::{
         FeatureFlags, client_manager::ClientManager, db::Db, webhook::ManagedNetworkConfig,
     };
 
     const MANAGED_CONFIG_TOKEN: &str = "managed-config-token";
+
+    async fn wait_for_condition<F, Fut>(mut condition: F, timeout: Duration)
+    where
+        F: FnMut() -> Fut,
+        Fut: Future<Output = bool>,
+    {
+        let deadline = tokio::time::Instant::now() + timeout;
+        while !condition().await {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "condition timed out"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
 
     #[derive(Debug, Clone)]
     struct TestWebhookState {
@@ -506,12 +523,15 @@ mod tests {
     }
 
     async fn add_random_udp_listener(mgr: &mut ClientManager) -> std::net::SocketAddr {
-        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
-        let addr = socket.local_addr().unwrap();
-        let listener =
-            UdpTunnelListener::new_with_socket(format!("udp://{addr}").parse().unwrap(), socket);
-        mgr.add_listener(listener).await.unwrap();
-        addr
+        let local_url = "udp://127.0.0.1:0".parse().unwrap();
+        let listener = runtime_udp_tunnel_listener(local_url, "127.0.0.1:0".parse().unwrap());
+        let local_url = mgr.add_listener(listener).await.unwrap();
+        local_url
+            .socket_addrs(|| None)
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap()
     }
 
     async fn wait_for_validated_user(mgr: &ClientManager, machine_id: uuid::Uuid) -> i32 {
@@ -571,7 +591,7 @@ mod tests {
     }
 
     async fn wait_for_runtime_config(
-        manager: &NetworkInstanceManager,
+        manager: &NativeInstanceSet,
         inst_id: uuid::Uuid,
         predicate: impl Fn(&NetworkConfig) -> bool,
     ) -> NetworkConfig {
@@ -594,7 +614,7 @@ mod tests {
     async fn start_web_client_for_test(
         config_server_addr: std::net::SocketAddr,
         machine_id: uuid::Uuid,
-        manager: Arc<NetworkInstanceManager>,
+        manager: Arc<NativeInstanceSet>,
     ) -> WebClient {
         run_web_client(
             &format!("udp://{config_server_addr}/{MANAGED_CONFIG_TOKEN}"),
@@ -809,7 +829,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_client() {
-        let listener = UdpTunnelListener::new("udp://0.0.0.0:54333".parse().unwrap());
+        let listener = runtime_udp_tunnel_listener(
+            "udp://127.0.0.1:0".parse().unwrap(),
+            "127.0.0.1:0".parse().unwrap(),
+        );
         let mut mgr = ClientManager::new(
             Db::memory_db().await,
             None,
@@ -819,7 +842,7 @@ mod tests {
                 None, None, None, None, None,
             )),
         );
-        mgr.add_listener(Box::new(listener)).await.unwrap();
+        let listener_url = mgr.add_listener(listener).await.unwrap();
 
         mgr.db()
             .inner()
@@ -827,14 +850,14 @@ mod tests {
             .await
             .unwrap();
 
-        let connector = UdpTunnelConnector::new("udp://127.0.0.1:54333".parse().unwrap());
+        let connector = runtime_udp_tunnel_dialer(listener_url);
         let _c = WebClient::new(
             connector,
             "test",
             uuid::Uuid::new_v4(),
             "test",
             false,
-            Arc::new(NetworkInstanceManager::new()),
+            Arc::new(native_instance_set()),
             None,
         );
 
@@ -888,7 +911,7 @@ mod tests {
 
         let machine_id = uuid::Uuid::new_v4();
         let instance_id = uuid::Uuid::new_v4();
-        let core_manager = Arc::new(NetworkInstanceManager::new());
+        let core_manager = Arc::new(native_instance_set());
         let client =
             start_web_client_for_test(config_server_addr, machine_id, core_manager.clone()).await;
 
@@ -1014,7 +1037,7 @@ mod tests {
         // Reconnect path: a fresh core manager has no local runtime state, so
         // the new session must replay the managed config persisted in web DB.
         drop(client);
-        let reconnected_core_manager = Arc::new(NetworkInstanceManager::new());
+        let reconnected_core_manager = Arc::new(native_instance_set());
         let _reconnected_client = start_web_client_for_test(
             config_server_addr,
             machine_id,
@@ -1051,7 +1074,7 @@ mod tests {
         );
         let config_server_addr = add_random_udp_listener(&mut mgr).await;
         let machine_id = uuid::Uuid::new_v4();
-        let core_manager = Arc::new(NetworkInstanceManager::new());
+        let core_manager = Arc::new(native_instance_set());
         let client =
             start_web_client_for_test(config_server_addr, machine_id, core_manager.clone()).await;
 

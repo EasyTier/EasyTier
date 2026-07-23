@@ -1,0 +1,1486 @@
+use std::path::Path;
+use std::sync::Arc;
+
+use super::wait_for_public_ipv6_provider_reconcile_event;
+
+use crate::common::ifcfg::{
+    RouteMessage, RouteType, add_ipv6_ndp_proxy, get_interface_index, list_ipv6_ndp_proxy,
+    list_ipv6_route_messages, remove_ipv6_ndp_proxy,
+};
+use crate::common::netns::NetNS;
+use crate::common::{
+    error::Error,
+    global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
+};
+use anyhow::Context;
+use cidr::{Ipv6Cidr, Ipv6Inet};
+use easytier_core::config::peers::PublicIpv6ProviderConfig;
+use easytier_core::peers::public_ipv6::is_global_routable_public_ipv6_prefix;
+use easytier_core::peers::public_ipv6::provider::PublicIpv6NdpTarget;
+use easytier_core::peers::public_ipv6::provider::{
+    PublicIpv6NdpDesired, PublicIpv6PlatformError, PublicIpv6PlatformObservation,
+    PublicIpv6ProviderPlatform,
+};
+
+#[cfg(test)]
+fn ensure_public_ipv6_provider_supported() -> Result<(), Error> {
+    PublicIpv6ProviderConfig {
+        provider_enabled: true,
+        configured_prefix: None,
+        provider_supported: cfg!(target_os = "linux"),
+    }
+    .validate()
+    .map_err(|error| anyhow::Error::new(error).into())
+}
+
+fn read_linux_proc_bool(path: &Path) -> Result<bool, Error> {
+    let value = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    match value.trim() {
+        "0" => Ok(false),
+        "1" => Ok(true),
+        other => Err(anyhow::anyhow!("unexpected value '{}' in {}", other, path.display()).into()),
+    }
+}
+
+fn write_linux_proc_bool(path: &Path, enabled: bool) -> Result<(), Error> {
+    let value = if enabled { "1\n" } else { "0\n" };
+    std::fs::write(path, value).with_context(|| format!("failed to write {}", path.display()))?;
+    Ok(())
+}
+
+fn ensure_linux_ipv6_forwarding_at_paths(
+    all_path: &Path,
+    default_path: &Path,
+) -> Result<bool, Error> {
+    let all_enabled = read_linux_proc_bool(all_path)?;
+    let default_enabled = read_linux_proc_bool(default_path)?;
+    let mut changed = false;
+
+    if !all_enabled {
+        write_linux_proc_bool(all_path, true)?;
+        changed = true;
+    }
+
+    if !default_enabled {
+        write_linux_proc_bool(default_path, true)?;
+        changed = true;
+    }
+
+    if !read_linux_proc_bool(all_path)? || !read_linux_proc_bool(default_path)? {
+        return Err(anyhow::anyhow!(
+            "failed to enable Linux IPv6 forwarding in {} and {}",
+            all_path.display(),
+            default_path.display()
+        )
+        .into());
+    }
+
+    Ok(changed)
+}
+
+fn ensure_linux_ipv6_forwarding() -> Result<bool, Error> {
+    let all_path = Path::new("/proc/sys/net/ipv6/conf/all/forwarding");
+    let default_path = Path::new("/proc/sys/net/ipv6/conf/default/forwarding");
+
+    ensure_linux_ipv6_forwarding_at_paths(all_path, default_path).map_err(|err| {
+        anyhow::anyhow!(
+            "public IPv6 provider requires Linux IPv6 forwarding; failed to enable net.ipv6.conf.all.forwarding=1 and net.ipv6.conf.default.forwarding=1 automatically: {}. run with sufficient privileges or set them manually",
+            err
+        )
+        .into()
+    })
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DetectedIpv6Route {
+    dst: Option<Ipv6Cidr>,
+    src: Option<Ipv6Cidr>,
+    ifindex: Option<u32>,
+    kind: RouteType,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DetectedPublicIpv6Prefix {
+    prefix: Ipv6Cidr,
+    ndp_target: Option<PublicIpv6NdpTarget>,
+}
+
+fn ipv6_cidr_from_route_addr(addr: &std::net::IpAddr, prefix_len: u8) -> Option<Ipv6Cidr> {
+    match addr {
+        std::net::IpAddr::V6(addr) => Ipv6Cidr::new(*addr, prefix_len).ok(),
+        _ => None,
+    }
+}
+
+impl TryFrom<RouteMessage> for DetectedIpv6Route {
+    type Error = Error;
+
+    fn try_from(message: RouteMessage) -> Result<Self, Self::Error> {
+        let dst = message
+            .destination()
+            .and_then(|addr| ipv6_cidr_from_route_addr(addr, message.dst_len()));
+        let src = message
+            .source()
+            .and_then(|addr| ipv6_cidr_from_route_addr(addr, message.src_len()));
+
+        Ok(Self {
+            dst,
+            src,
+            ifindex: message.oif(),
+            kind: message.route_type(),
+        })
+    }
+}
+
+fn is_ipv6_default_route(dst: Option<Ipv6Cidr>) -> bool {
+    dst.is_none() || dst == Some(Ipv6Cidr::new(std::net::Ipv6Addr::UNSPECIFIED, 0).unwrap())
+}
+
+fn detect_public_ipv6_prefix_from_routes(
+    routes: &[DetectedIpv6Route],
+    loopback_ifindex: u32,
+) -> Option<DetectedPublicIpv6Prefix> {
+    routes
+        .iter()
+        .filter_map(|route| {
+            if !is_ipv6_default_route(route.dst) || route.kind != RouteType::Unicast {
+                return None;
+            }
+
+            let prefix = route.src?;
+            let wan_ifindex = route.ifindex?;
+            if !is_global_routable_public_ipv6_prefix(prefix) {
+                return None;
+            }
+
+            let delegated = routes.iter().any(|candidate| {
+                candidate.dst == Some(prefix)
+                    && candidate.ifindex.is_some()
+                    && candidate.ifindex != Some(wan_ifindex)
+                    && candidate.ifindex != Some(loopback_ifindex)
+                    && candidate.kind == RouteType::Unicast
+            });
+
+            delegated.then_some(DetectedPublicIpv6Prefix {
+                prefix,
+                ndp_target: None,
+            })
+        })
+        .min_by_key(|detected| detected.prefix.network_length())
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DetectedDefaultRouteIpv6Interface {
+    interface_name: String,
+    ifindex: u32,
+    address: std::net::Ipv6Addr,
+    prefix: Ipv6Cidr,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DefaultRouteIpv6InterfaceCandidate {
+    interface_name: String,
+    ifindex: u32,
+    address: std::net::Ipv6Addr,
+    prefix_len: u8,
+}
+
+fn default_route_ifindices(routes: &[DetectedIpv6Route]) -> std::collections::BTreeSet<u32> {
+    routes
+        .iter()
+        .filter(|route| is_ipv6_default_route(route.dst) && route.kind == RouteType::Unicast)
+        .filter_map(|route| route.ifindex)
+        .collect()
+}
+
+fn select_default_route_ipv6_interfaces(
+    candidates: impl IntoIterator<Item = DefaultRouteIpv6InterfaceCandidate>,
+    wan_ifindices: &std::collections::BTreeSet<u32>,
+    max_prefix_len: u8,
+) -> Vec<DetectedDefaultRouteIpv6Interface> {
+    candidates
+        .into_iter()
+        .filter_map(|candidate| {
+            if !wan_ifindices.contains(&candidate.ifindex) {
+                return None;
+            }
+
+            if candidate.address.is_loopback()
+                || candidate.address.is_multicast()
+                || candidate.address.is_unicast_link_local()
+                || candidate.address.is_unique_local()
+                || candidate.address.is_unspecified()
+            {
+                return None;
+            }
+
+            if candidate.prefix_len == 0 || candidate.prefix_len > max_prefix_len {
+                return None;
+            }
+
+            let prefix = Ipv6Inet::new(candidate.address, candidate.prefix_len)
+                .ok()
+                .map(|inet| inet.network())?;
+
+            Some(DetectedDefaultRouteIpv6Interface {
+                interface_name: candidate.interface_name,
+                ifindex: candidate.ifindex,
+                address: candidate.address,
+                prefix,
+            })
+        })
+        .collect()
+}
+
+fn detect_default_route_ipv6_interfaces(
+    routes: &[DetectedIpv6Route],
+    max_prefix_len: u8,
+) -> Vec<DetectedDefaultRouteIpv6Interface> {
+    use nix::ifaddrs::getifaddrs;
+    use nix::sys::socket::SockaddrLike;
+    use pnet::ipnetwork::ip_mask_to_prefix;
+
+    let wan_ifindices = default_route_ifindices(routes);
+    if wan_ifindices.is_empty() {
+        return Vec::new();
+    }
+
+    let Ok(interfaces) = getifaddrs() else {
+        return Vec::new();
+    };
+
+    let candidates = interfaces
+        .filter_map(|iface| {
+            let address = iface.address?;
+            let netmask = iface.netmask?;
+            let ifindex = get_interface_index(&iface.interface_name).ok()?;
+
+            if address.family()? != nix::sys::socket::AddressFamily::Inet6 {
+                return None;
+            }
+
+            let ipv6_addr = address.as_sockaddr_in6()?.ip();
+            let netmask_ip = netmask.as_sockaddr_in6()?.ip();
+            let prefix_len = ip_mask_to_prefix(std::net::IpAddr::V6(netmask_ip)).ok()?;
+
+            Some(DefaultRouteIpv6InterfaceCandidate {
+                interface_name: iface.interface_name,
+                ifindex,
+                address: ipv6_addr,
+                prefix_len,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    select_default_route_ipv6_interfaces(candidates, &wan_ifindices, max_prefix_len)
+}
+
+fn select_public_ipv6_prefix_from_default_route_interfaces(
+    candidates: impl IntoIterator<Item = DetectedDefaultRouteIpv6Interface>,
+) -> Option<DetectedPublicIpv6Prefix> {
+    let iface = candidates
+        .into_iter()
+        .min_by_key(|iface| (iface.prefix.network_length(), iface.ifindex))?;
+    Some(DetectedPublicIpv6Prefix {
+        prefix: iface.prefix,
+        ndp_target: Some(PublicIpv6NdpTarget {
+            wan_interface: iface.interface_name,
+        }),
+    })
+}
+
+fn detect_public_ipv6_prefix_from_interfaces(
+    routes: &[DetectedIpv6Route],
+) -> Option<DetectedPublicIpv6Prefix> {
+    select_public_ipv6_prefix_from_default_route_interfaces(detect_default_route_ipv6_interfaces(
+        routes, 64,
+    ))
+}
+
+fn ipv6_cidr_contains_cidr(outer: Ipv6Cidr, inner: Ipv6Cidr) -> bool {
+    outer.contains(&inner.first_address()) && outer.contains(&inner.last_address())
+}
+
+fn detect_configured_prefix_ndp_proxy_target(
+    routes: &[DetectedIpv6Route],
+    prefix: Ipv6Cidr,
+) -> Option<PublicIpv6NdpTarget> {
+    let wan_ifindices = default_route_ifindices(routes);
+    if wan_ifindices.is_empty() {
+        return None;
+    }
+
+    let loopback_ifindex = get_interface_index("lo").ok();
+    let routed = routes.iter().any(|route| {
+        route.dst == Some(prefix)
+            && route.kind == RouteType::Unicast
+            && route.ifindex.is_some_and(|ifindex| {
+                !wan_ifindices.contains(&ifindex) && Some(ifindex) != loopback_ifindex
+            })
+    });
+    if routed {
+        return None;
+    }
+
+    detect_default_route_ipv6_interfaces(routes, 128)
+        .into_iter()
+        .filter(|iface| {
+            ipv6_cidr_contains_cidr(iface.prefix, prefix)
+                || (iface.prefix.network_length() == 128 && prefix.contains(&iface.address))
+        })
+        .min_by_key(|iface| (iface.prefix.network_length(), iface.ifindex))
+        .map(|iface| PublicIpv6NdpTarget {
+            wan_interface: iface.interface_name,
+        })
+}
+
+fn list_detected_ipv6_routes() -> Result<Vec<DetectedIpv6Route>, Error> {
+    let routes = list_ipv6_route_messages().with_context(|| "failed to query linux ipv6 routes")?;
+    routes
+        .iter()
+        .cloned()
+        .map(DetectedIpv6Route::try_from)
+        .collect::<Result<Vec<_>, _>>()
+}
+
+fn detect_public_ipv6_prefix_linux() -> Result<Option<DetectedPublicIpv6Prefix>, Error> {
+    let routes = list_detected_ipv6_routes()?;
+    let loopback_ifindex =
+        get_interface_index("lo").with_context(|| "failed to resolve linux loopback ifindex")?;
+
+    if let Some(prefix) = detect_public_ipv6_prefix_from_routes(&routes, loopback_ifindex) {
+        return Ok(Some(prefix));
+    }
+
+    // Fallback for DHCPv6 IA_NA / SLAAC — see https://github.com/EasyTier/EasyTier/issues/2333
+    Ok(detect_public_ipv6_prefix_from_interfaces(&routes))
+}
+
+#[derive(Default)]
+struct NdpProxyRuntime {
+    wan_iface: Option<String>,
+    applied: std::collections::BTreeSet<std::net::Ipv6Addr>,
+}
+
+impl NdpProxyRuntime {
+    fn reconcile(
+        &mut self,
+        global_ctx: &ArcGlobalCtx,
+        desired: Option<&PublicIpv6NdpDesired>,
+    ) -> bool {
+        let Some(desired) = desired else {
+            return !self.clear_current(global_ctx);
+        };
+
+        let Some(tun_iface) = global_ctx.get_tun_device_name() else {
+            self.clear_current(global_ctx);
+            tracing::debug!("waiting for tun device before syncing NDP proxy entries");
+            return self.cleanup_pending();
+        };
+
+        let _g = global_ctx.net_ns.guard();
+
+        if self.wan_iface.as_deref() != Some(desired.target.wan_interface.as_str()) {
+            if !self.clear_current_locked() {
+                tracing::warn!(
+                    old_wan_iface = ?self.wan_iface,
+                    new_wan_iface = %desired.target.wan_interface,
+                    remaining_entries = self.applied.len(),
+                    "waiting to remove old NDP proxy entries before switching WAN interface"
+                );
+                return true;
+            }
+            self.wan_iface = Some(desired.target.wan_interface.clone());
+        }
+
+        if let Err(err) = sync_ndp_proxy_entries(
+            desired.target.wan_interface.as_str(),
+            tun_iface.as_str(),
+            desired.prefix,
+            &mut self.applied,
+        ) {
+            tracing::warn!(
+                wan_iface = %desired.target.wan_interface,
+                tun_iface = %tun_iface,
+                ?err,
+                "failed to sync NDP proxy entries"
+            );
+        }
+        self.cleanup_pending()
+    }
+
+    fn clear_current(&mut self, global_ctx: &ArcGlobalCtx) -> bool {
+        self.clear_current_in_netns(&global_ctx.net_ns)
+    }
+
+    fn clear_current_in_netns(&mut self, net_ns: &NetNS) -> bool {
+        let _g = net_ns.guard();
+        self.clear_current_locked()
+    }
+
+    fn clear_current_locked(&mut self) -> bool {
+        let Some(wan_iface) = self.wan_iface.clone() else {
+            return self.applied.is_empty();
+        };
+
+        match list_ipv6_ndp_proxy(wan_iface.as_str()) {
+            Ok(current) => {
+                let candidates = self.applied.iter().copied().collect::<Vec<_>>();
+                clear_owned_ndp_proxy_entries(
+                    wan_iface.as_str(),
+                    &current,
+                    &mut self.applied,
+                    candidates,
+                );
+            }
+            Err(err) if is_linux_missing_netlink_object_error(&err) => {
+                tracing::trace!(
+                    wan_iface = %wan_iface,
+                    ?err,
+                    "forgetting NDP proxy ownership because WAN interface is gone"
+                );
+                self.applied.clear();
+            }
+            Err(err) => {
+                tracing::trace!(
+                    wan_iface = %wan_iface,
+                    ?err,
+                    "failed to list NDP proxy entries before cleanup"
+                );
+            }
+        }
+
+        if self.applied.is_empty() {
+            self.wan_iface = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn cleanup_pending(&self) -> bool {
+        self.wan_iface.is_some() && !self.applied.is_empty()
+    }
+}
+
+fn is_linux_missing_netlink_object_error(err: &Error) -> bool {
+    match err {
+        Error::IOError(err) => {
+            err.kind() == std::io::ErrorKind::NotFound
+                || matches!(
+                    err.raw_os_error(),
+                    Some(nix::libc::ESRCH | nix::libc::ENODEV | nix::libc::ENXIO)
+                )
+        }
+        _ => false,
+    }
+}
+
+fn clear_owned_ndp_proxy_entries(
+    wan_iface: &str,
+    current: &std::collections::BTreeSet<std::net::Ipv6Addr>,
+    applied: &mut std::collections::BTreeSet<std::net::Ipv6Addr>,
+    candidates: Vec<std::net::Ipv6Addr>,
+) -> Option<Error> {
+    let mut first_err = None;
+    for addr in candidates {
+        if !current.contains(&addr) {
+            applied.remove(&addr);
+            continue;
+        }
+
+        if let Err(err) = remove_ipv6_ndp_proxy(wan_iface, addr) {
+            if is_linux_missing_netlink_object_error(&err) {
+                applied.remove(&addr);
+            } else {
+                tracing::trace!(
+                    wan_iface = %wan_iface,
+                    addr = %addr,
+                    ?err,
+                    "failed to remove NDP proxy entry"
+                );
+                first_err.get_or_insert(err);
+            }
+        } else {
+            applied.remove(&addr);
+        }
+    }
+    first_err
+}
+
+fn ensure_linux_ndp_proxy_enabled(wan_iface: &str) -> Result<(), Error> {
+    let path = Path::new("/proc/sys/net/ipv6/conf")
+        .join(wan_iface)
+        .join("proxy_ndp");
+    if !read_linux_proc_bool(&path)? {
+        write_linux_proc_bool(&path, true)?;
+        tracing::info!(wan_iface = %wan_iface, "enabled Linux NDP proxy");
+    }
+    Ok(())
+}
+
+fn collect_public_ipv6_tun_routes(
+    tun_iface: &str,
+    prefix: Ipv6Cidr,
+) -> Result<std::collections::BTreeSet<std::net::Ipv6Addr>, Error> {
+    let tun_ifindex = match get_interface_index(tun_iface) {
+        Ok(ifindex) => ifindex,
+        Err(err) if is_linux_missing_netlink_object_error(&err) => {
+            tracing::debug!(
+                tun_iface = %tun_iface,
+                ?err,
+                "treating missing tun interface as empty public IPv6 route set"
+            );
+            return Ok(Default::default());
+        }
+        Err(err) => return Err(err),
+    };
+    Ok(list_ipv6_route_messages()?
+        .into_iter()
+        .filter(|route| route.dst_len() == 128 && route.route_type() == RouteType::Unicast)
+        .filter(|route| route.oif() == Some(tun_ifindex))
+        .filter_map(|route| match route.destination() {
+            Some(std::net::IpAddr::V6(addr)) => Some(*addr),
+            _ => None,
+        })
+        .filter(|addr| !addr.is_unicast_link_local() && prefix.contains(addr))
+        .collect())
+}
+
+fn sync_ndp_proxy_entries(
+    wan_iface: &str,
+    tun_iface: &str,
+    prefix: Ipv6Cidr,
+    applied: &mut std::collections::BTreeSet<std::net::Ipv6Addr>,
+) -> Result<(), Error> {
+    ensure_linux_ndp_proxy_enabled(wan_iface)?;
+
+    let wanted = collect_public_ipv6_tun_routes(tun_iface, prefix)?;
+    let current = list_ipv6_ndp_proxy(wan_iface)?;
+
+    let mut first_err = None;
+    for addr in wanted.difference(&current) {
+        if let Err(err) = add_ipv6_ndp_proxy(wan_iface, *addr) {
+            first_err.get_or_insert(err);
+        } else {
+            applied.insert(*addr);
+            tracing::debug!(wan_iface = %wan_iface, addr = %addr, "added NDP proxy entry");
+        }
+    }
+
+    let stale = applied.difference(&wanted).copied().collect::<Vec<_>>();
+    let stale_cleanup_err =
+        clear_owned_ndp_proxy_entries(wan_iface, &current, applied, stale.clone());
+    if !stale.is_empty() {
+        tracing::debug!(
+            wan_iface = %wan_iface,
+            stale_count = stale.len(),
+            remaining_count = stale.iter().filter(|addr| applied.contains(addr)).count(),
+            "synced stale NDP proxy entries"
+        );
+    }
+    if let Some(err) = first_err.or(stale_cleanup_err) {
+        return Err(err);
+    }
+
+    Ok(())
+}
+
+fn cleanup_ndp_proxy_runtime(runtime: &mut NdpProxyRuntime, net_ns: &NetNS) -> bool {
+    let complete = runtime.clear_current_in_netns(net_ns);
+    if !complete {
+        tracing::warn!(
+            remaining_entries = runtime.applied.len(),
+            wan_iface = ?runtime.wan_iface,
+            "failed to clean all NDP proxy entries before stopping public IPv6 provider task"
+        );
+    }
+    complete
+}
+
+pub(super) struct RuntimePublicIpv6ProviderPlatform {
+    global_ctx: std::sync::Weak<crate::common::global_ctx::GlobalCtx>,
+    net_ns: NetNS,
+    event_receiver: tokio::sync::Mutex<tokio::sync::broadcast::Receiver<GlobalCtxEvent>>,
+    ndp_proxy: std::sync::Mutex<NdpProxyRuntime>,
+}
+
+impl RuntimePublicIpv6ProviderPlatform {
+    pub(super) fn new(global_ctx: &ArcGlobalCtx) -> Arc<Self> {
+        Arc::new(Self {
+            global_ctx: Arc::downgrade(global_ctx),
+            net_ns: global_ctx.net_ns.clone(),
+            event_receiver: tokio::sync::Mutex::new(global_ctx.subscribe()),
+            ndp_proxy: std::sync::Mutex::new(NdpProxyRuntime::default()),
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl PublicIpv6ProviderPlatform for RuntimePublicIpv6ProviderPlatform {
+    fn inspect(
+        &self,
+        config: PublicIpv6ProviderConfig,
+    ) -> Result<PublicIpv6PlatformObservation, PublicIpv6PlatformError> {
+        let Some(global_ctx) = self.global_ctx.upgrade() else {
+            return Err(PublicIpv6PlatformError::Unavailable);
+        };
+
+        let _guard = global_ctx.net_ns.guard();
+        ensure_linux_ipv6_forwarding()
+            .map_err(|error| PublicIpv6PlatformError::Failed(error.to_string()))?;
+
+        if let Some(prefix) = config.configured_prefix {
+            let ndp_target = match list_detected_ipv6_routes() {
+                Ok(routes) => detect_configured_prefix_ndp_proxy_target(&routes, prefix),
+                Err(error) => {
+                    tracing::warn!(
+                        %prefix,
+                        ?error,
+                        "failed to detect NDP proxy target for configured public IPv6 prefix"
+                    );
+                    None
+                }
+            };
+            return Ok(PublicIpv6PlatformObservation {
+                detected_prefix: None,
+                ndp_target,
+            });
+        }
+
+        detect_public_ipv6_prefix_linux()
+            .map(|detected| PublicIpv6PlatformObservation {
+                detected_prefix: detected.as_ref().map(|detected| detected.prefix),
+                ndp_target: detected.and_then(|detected| detected.ndp_target),
+            })
+            .map_err(|error| PublicIpv6PlatformError::Failed(error.to_string()))
+    }
+
+    fn sync_ndp(
+        &self,
+        desired: Option<PublicIpv6NdpDesired>,
+    ) -> Result<(), PublicIpv6PlatformError> {
+        let mut runtime = self.ndp_proxy.lock().unwrap();
+        if let Some(global_ctx) = self.global_ctx.upgrade() {
+            let cleanup_pending = runtime.reconcile(&global_ctx, desired.as_ref());
+            if desired.is_none() && cleanup_pending {
+                return Err(PublicIpv6PlatformError::Failed(format!(
+                    "failed to clean all public IPv6 NDP proxy entries (remaining: {})",
+                    runtime.applied.len()
+                )));
+            }
+            return Ok(());
+        }
+        if desired.is_none() {
+            return cleanup_ndp_proxy_runtime(&mut runtime, &self.net_ns)
+                .then_some(())
+                .ok_or_else(|| {
+                    PublicIpv6PlatformError::Failed(format!(
+                        "failed to clean all public IPv6 NDP proxy entries (remaining: {})",
+                        runtime.applied.len()
+                    ))
+                });
+        }
+        Err(PublicIpv6PlatformError::Unavailable)
+    }
+
+    async fn wait_for_change(&self) -> bool {
+        let mut event_receiver = self.event_receiver.lock().await;
+        wait_for_public_ipv6_provider_reconcile_event(&mut event_receiver).await
+    }
+}
+
+pub(crate) fn runtime_public_ipv6_provider_platform(
+    global_ctx: &ArcGlobalCtx,
+) -> Arc<dyn PublicIpv6ProviderPlatform> {
+    RuntimePublicIpv6ProviderPlatform::new(global_ctx)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+    use std::process::Command;
+    use std::sync::Arc;
+
+    use crate::common::ifcfg::RouteType;
+
+    use super::{
+        DefaultRouteIpv6InterfaceCandidate, DetectedIpv6Route,
+        detect_public_ipv6_prefix_from_interfaces, detect_public_ipv6_prefix_from_routes,
+        detect_public_ipv6_prefix_linux, ensure_linux_ipv6_forwarding_at_paths,
+        ensure_public_ipv6_provider_supported, select_default_route_ipv6_interfaces,
+        select_public_ipv6_prefix_from_default_route_interfaces, sync_ndp_proxy_entries,
+    };
+
+    use super::PublicIpv6ProviderConfig;
+    use crate::common::{
+        config::{ConfigLoader, TomlConfigLoader},
+        error::Error,
+        global_ctx::GlobalCtx,
+    };
+    use crate::instance::config::test_core_instance_config;
+
+    fn run_ip(args: &[&str]) {
+        let output = Command::new("ip")
+            .args(args)
+            .output()
+            .expect("failed to execute ip process");
+        assert!(
+            output.status.success(),
+            "ip command failed: {:?}\nstdout: {}\nstderr: {}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    fn test_iface_name(tag: &str) -> String {
+        format!("et{}{:x}", tag, std::process::id() & 0xffff)
+    }
+
+    struct ScopedDummyLink {
+        name: String,
+    }
+
+    impl ScopedDummyLink {
+        fn new(name: &str) -> Self {
+            let _ = Command::new("ip").args(["link", "del", name]).output();
+            run_ip(&["link", "add", name, "type", "dummy"]);
+            run_ip(&["link", "set", name, "up"]);
+            Self {
+                name: name.to_string(),
+            }
+        }
+    }
+
+    impl Drop for ScopedDummyLink {
+        fn drop(&mut self) {
+            let _ = Command::new("ip")
+                .args(["link", "del", &self.name])
+                .output();
+        }
+    }
+
+    fn temp_forwarding_paths(
+        all_value: &str,
+        default_value: &str,
+    ) -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let all_path = dir.path().join("all_forwarding");
+        let default_path = dir.path().join("default_forwarding");
+        fs::write(&all_path, all_value).unwrap();
+        fs::write(&default_path, default_value).unwrap();
+        (dir, all_path, default_path)
+    }
+
+    fn route(
+        dst: Option<&str>,
+        src: Option<&str>,
+        ifindex: Option<u32>,
+        kind: RouteType,
+    ) -> DetectedIpv6Route {
+        DetectedIpv6Route {
+            dst: dst.map(|cidr| cidr.parse().unwrap()),
+            src: src.map(|cidr| cidr.parse().unwrap()),
+            ifindex,
+            kind,
+        }
+    }
+
+    fn detected_prefix(
+        detected: Option<super::DetectedPublicIpv6Prefix>,
+    ) -> Option<cidr::Ipv6Cidr> {
+        detected.map(|detected| detected.prefix)
+    }
+
+    fn iface_candidate(
+        interface_name: &str,
+        ifindex: u32,
+        address: &str,
+        prefix_len: u8,
+    ) -> DefaultRouteIpv6InterfaceCandidate {
+        DefaultRouteIpv6InterfaceCandidate {
+            interface_name: interface_name.to_string(),
+            ifindex,
+            address: address.parse().unwrap(),
+            prefix_len,
+        }
+    }
+
+    #[test]
+    fn test_detect_public_ipv6_prefix_from_routes_selects_delegated_prefix() {
+        let routes = vec![
+            route(None, Some("2001:db8:1::/56"), Some(2), RouteType::Unicast),
+            route(Some("2001:db8:1::/56"), None, Some(3), RouteType::Unicast),
+        ];
+
+        assert_eq!(
+            detected_prefix(detect_public_ipv6_prefix_from_routes(&routes, 1)),
+            Some("2001:db8:1::/56".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn test_detect_public_ipv6_prefix_from_routes_rejects_non_public_prefixes() {
+        let routes = vec![
+            route(Some("::/0"), Some("fd00::/48"), Some(2), RouteType::Unicast),
+            route(Some("fd00::/48"), None, Some(3), RouteType::Unicast),
+            route(None, Some("fe80::/64"), Some(4), RouteType::Unicast),
+            route(Some("fe80::/64"), None, Some(5), RouteType::Unicast),
+            route(None, Some("ff00::/8"), Some(6), RouteType::Unicast),
+            route(Some("ff00::/8"), None, Some(7), RouteType::Unicast),
+            route(None, Some("::/0"), Some(8), RouteType::Unicast),
+            route(Some("::/0"), None, Some(9), RouteType::Unicast),
+        ];
+
+        assert_eq!(
+            detected_prefix(detect_public_ipv6_prefix_from_routes(&routes, 1)),
+            None
+        );
+    }
+
+    #[test]
+    fn test_detect_public_ipv6_prefix_from_routes_requires_delegated_route() {
+        let routes = vec![route(
+            None,
+            Some("2001:db8:1::/56"),
+            Some(2),
+            RouteType::Unicast,
+        )];
+
+        assert_eq!(
+            detected_prefix(detect_public_ipv6_prefix_from_routes(&routes, 1)),
+            None
+        );
+    }
+
+    #[test]
+    fn test_detect_public_ipv6_prefix_from_routes_rejects_non_unicast_default_route() {
+        let routes = vec![
+            route(None, Some("2001:db8:1::/56"), Some(2), RouteType::Blackhole),
+            route(Some("2001:db8:1::/56"), None, Some(3), RouteType::Unicast),
+        ];
+
+        assert_eq!(
+            detected_prefix(detect_public_ipv6_prefix_from_routes(&routes, 1)),
+            None
+        );
+    }
+
+    #[test]
+    fn test_detect_public_ipv6_prefix_from_routes_rejects_loopback_delegation() {
+        let routes = vec![
+            route(None, Some("2001:db8:1::/56"), Some(2), RouteType::Unicast),
+            route(Some("2001:db8:1::/56"), None, Some(1), RouteType::Unicast),
+        ];
+
+        assert_eq!(
+            detected_prefix(detect_public_ipv6_prefix_from_routes(&routes, 1)),
+            None
+        );
+    }
+
+    #[test]
+    fn test_detect_public_ipv6_prefix_from_routes_prefers_shortest_prefix() {
+        let routes = vec![
+            route(None, Some("2001:db8:1::/56"), Some(2), RouteType::Unicast),
+            route(Some("2001:db8:1::/56"), None, Some(3), RouteType::Unicast),
+            route(None, Some("2001:db8::/48"), Some(4), RouteType::Unicast),
+            route(Some("2001:db8::/48"), None, Some(5), RouteType::Unicast),
+        ];
+
+        assert_eq!(
+            detected_prefix(detect_public_ipv6_prefix_from_routes(&routes, 1)),
+            Some("2001:db8::/48".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn test_detect_public_ipv6_prefix_from_routes_rejects_non_unicast_delegation() {
+        let routes = vec![
+            route(None, Some("2001:db8:1::/56"), Some(2), RouteType::Unicast),
+            route(Some("2001:db8:1::/56"), None, Some(3), RouteType::Blackhole),
+        ];
+
+        assert_eq!(
+            detected_prefix(detect_public_ipv6_prefix_from_routes(&routes, 1)),
+            None
+        );
+    }
+
+    fn test_global_ctx() -> Arc<GlobalCtx> {
+        Arc::new(GlobalCtx::new(TomlConfigLoader::default()))
+    }
+
+    #[tokio::test]
+    async fn test_runtime_public_ipv6_provider_config_reads_provider_fields() {
+        let global_ctx = test_global_ctx();
+        let prefix = "2001:db8::/48".parse().unwrap();
+        global_ctx.config.set_ipv6_public_addr_provider(true);
+        global_ctx.config.set_ipv6_public_addr_prefix(Some(prefix));
+
+        assert_eq!(
+            test_core_instance_config(&global_ctx)
+                .connectivity
+                .runtime
+                .public_ipv6_provider,
+            PublicIpv6ProviderConfig {
+                provider_enabled: true,
+                configured_prefix: Some(prefix),
+                provider_supported: cfg!(target_os = "linux"),
+            }
+        );
+    }
+
+    #[test]
+    fn test_public_ipv6_provider_platform_check_accepts_linux() {
+        assert!(ensure_public_ipv6_provider_supported().is_ok());
+    }
+
+    #[test]
+    fn test_ensure_linux_ipv6_forwarding_enables_all_and_default() {
+        let (_dir, all_path, default_path) = temp_forwarding_paths("0\n", "0\n");
+
+        let changed = ensure_linux_ipv6_forwarding_at_paths(&all_path, &default_path).unwrap();
+
+        assert!(changed);
+        assert_eq!(fs::read_to_string(&all_path).unwrap(), "1\n");
+        assert_eq!(fs::read_to_string(&default_path).unwrap(), "1\n");
+    }
+
+    #[test]
+    fn test_ensure_linux_ipv6_forwarding_is_noop_when_already_enabled() {
+        let (_dir, all_path, default_path) = temp_forwarding_paths("1\n", "1\n");
+
+        let changed = ensure_linux_ipv6_forwarding_at_paths(&all_path, &default_path).unwrap();
+
+        assert!(!changed);
+        assert_eq!(fs::read_to_string(&all_path).unwrap(), "1\n");
+        assert_eq!(fs::read_to_string(&default_path).unwrap(), "1\n");
+    }
+
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn test_detect_public_ipv6_prefix_linux_reads_netlink_routes_from_kernel() {
+        let wan_if = test_iface_name("dw");
+        let lan_if = test_iface_name("dl");
+        let _wan = ScopedDummyLink::new(&wan_if);
+        let _lan = ScopedDummyLink::new(&lan_if);
+
+        run_ip(&[
+            "-6",
+            "addr",
+            "add",
+            "2001:db8:100:ffff::1/64",
+            "dev",
+            &wan_if,
+        ]);
+        run_ip(&[
+            "-6",
+            "route",
+            "add",
+            "default",
+            "from",
+            "2001:db8:100::/56",
+            "dev",
+            &wan_if,
+        ]);
+        run_ip(&["-6", "route", "add", "2001:db8:100::/56", "dev", &lan_if]);
+
+        assert_eq!(
+            detected_prefix(detect_public_ipv6_prefix_linux().unwrap()),
+            Some("2001:db8:100::/56".parse().unwrap())
+        );
+    }
+
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn test_detect_public_ipv6_prefix_linux_dhcpv6_ia_na_fallback() {
+        // DHCPv6 IA_NA scenario: prefix is directly on the WAN interface,
+        // with no delegated route on a LAN interface.
+        // The route-based detection should fail, and the interface-scanning
+        // fallback should pick up the prefix from the WAN address.
+        let wan_if = test_iface_name("ia");
+        let _wan = ScopedDummyLink::new(&wan_if);
+
+        run_ip(&[
+            "-6",
+            "addr",
+            "add",
+            "2001:db8:aaaa:ffff::1/64",
+            "dev",
+            &wan_if,
+        ]);
+        run_ip(&[
+            "-6",
+            "route",
+            "add",
+            "default",
+            "from",
+            "2001:db8:aaaa::/64",
+            "dev",
+            &wan_if,
+        ]);
+        // Also add a /48 address+route pair to verify shortest-prefix preference
+        run_ip(&["-6", "addr", "add", "2001:db8:bbbb::1/48", "dev", &wan_if]);
+        run_ip(&[
+            "-6",
+            "route",
+            "add",
+            "default",
+            "from",
+            "2001:db8::/48",
+            "dev",
+            &wan_if,
+        ]);
+
+        // NO delegated route on a LAN interface — this is the IA_NA case
+        // The fallback should find both prefixes via interface scanning and
+        // prefer the shorter /48.
+        let detected = detect_public_ipv6_prefix_linux().unwrap().unwrap();
+        assert_eq!(detected.prefix, "2001:db8:bbbb::/48".parse().unwrap());
+        assert_eq!(detected.ndp_target.unwrap().wan_interface, wan_if);
+    }
+
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn test_detect_public_ipv6_prefix_from_interfaces_uses_default_route_iface() {
+        let wan_if = test_iface_name("dw");
+        let other_if = test_iface_name("do");
+        let _wan = ScopedDummyLink::new(&wan_if);
+        let _other = ScopedDummyLink::new(&other_if);
+
+        run_ip(&["-6", "addr", "add", "2001:db8:dddd::1/64", "dev", &wan_if]);
+        run_ip(&["-6", "addr", "add", "2001:db8::1/48", "dev", &other_if]);
+
+        let wan_ifindex = crate::common::ifcfg::get_interface_index(&wan_if).unwrap();
+        let other_ifindex = crate::common::ifcfg::get_interface_index(&other_if).unwrap();
+        let routes = vec![
+            route(None, None, Some(wan_ifindex), RouteType::Unicast),
+            route(
+                Some("2001:db8::/48"),
+                None,
+                Some(other_ifindex),
+                RouteType::Unicast,
+            ),
+        ];
+
+        let detected = detect_public_ipv6_prefix_from_interfaces(&routes)
+            .expect("fallback should select the default-route interface");
+        assert_eq!(detected.prefix, "2001:db8:dddd::/64".parse().unwrap());
+        assert_eq!(detected.ndp_target.unwrap().wan_interface, wan_if);
+    }
+
+    #[test]
+    fn test_select_default_route_ipv6_interfaces_filters_candidates() {
+        let wan_ifindices = [2u32].into_iter().collect();
+        let candidates = vec![
+            iface_candidate("wan0", 2, "2001:db8:100::1", 64),
+            iface_candidate("nonwan0", 9, "2001:db8:200::1", 64),
+            iface_candidate("loopback0", 2, "::1", 128),
+            iface_candidate("linklocal0", 2, "fe80::1", 64),
+            iface_candidate("ula0", 2, "fd00::1", 64),
+            iface_candidate("multicast0", 2, "ff02::1", 64),
+            iface_candidate("unspecified0", 2, "::", 64),
+            iface_candidate("empty0", 2, "2001:db8:300::1", 0),
+            iface_candidate("host0", 2, "2001:db8:400::1", 128),
+        ];
+
+        let selected = select_default_route_ipv6_interfaces(candidates, &wan_ifindices, 64);
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].interface_name, "wan0");
+        assert_eq!(selected[0].prefix, "2001:db8:100::/64".parse().unwrap());
+    }
+
+    #[test]
+    fn test_select_default_route_ipv6_interfaces_strips_host_bits() {
+        let wan_ifindices = [2u32].into_iter().collect();
+        let candidates = vec![iface_candidate("wan0", 2, "2001:db8:aaaa::abcd", 64)];
+
+        let selected = select_default_route_ipv6_interfaces(candidates, &wan_ifindices, 64);
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].prefix, "2001:db8:aaaa::/64".parse().unwrap());
+    }
+
+    #[test]
+    fn test_select_public_ipv6_prefix_tie_breaks_by_lowest_ifindex() {
+        let wan_ifindices = [2u32, 3, 5].into_iter().collect();
+        let candidates = vec![
+            iface_candidate("wan5", 5, "2001:db8:5555::1", 48),
+            iface_candidate("wan64", 3, "2001:db8:3333::1", 64),
+            iface_candidate("wan2", 2, "2001:db9:2222::1", 48),
+        ];
+        let interfaces = select_default_route_ipv6_interfaces(candidates, &wan_ifindices, 64);
+
+        let detected = select_public_ipv6_prefix_from_default_route_interfaces(interfaces)
+            .expect("default-route public IPv6 prefix should be selected");
+
+        assert_eq!(detected.prefix, "2001:db9:2222::/48".parse().unwrap());
+        assert_eq!(detected.ndp_target.unwrap().wan_interface, "wan2");
+    }
+
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn test_configured_prefix_on_default_iface_gets_ndp_proxy_target() {
+        let wan_if = test_iface_name("cp");
+        let _wan = ScopedDummyLink::new(&wan_if);
+        let configured_prefix = "2001:db8:feed::/64".parse().unwrap();
+
+        run_ip(&["-6", "addr", "add", "2001:db8:feed::1/128", "dev", &wan_if]);
+
+        let ifindex = crate::common::ifcfg::get_interface_index(&wan_if).unwrap();
+        let routes = vec![route(None, None, Some(ifindex), RouteType::Unicast)];
+
+        let target = super::detect_configured_prefix_ndp_proxy_target(&routes, configured_prefix)
+            .expect("configured on-link prefix should require NDP proxy");
+        assert_eq!(target.wan_interface, wan_if);
+    }
+
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn test_configured_prefix_broader_than_default_iface_does_not_get_ndp_proxy_target() {
+        let wan_if = test_iface_name("cb");
+        let _wan = ScopedDummyLink::new(&wan_if);
+        let configured_prefix = "2001:db8:beef::/48".parse().unwrap();
+
+        run_ip(&["-6", "addr", "add", "2001:db8:beef:1::1/64", "dev", &wan_if]);
+
+        let ifindex = crate::common::ifcfg::get_interface_index(&wan_if).unwrap();
+        let routes = vec![route(None, None, Some(ifindex), RouteType::Unicast)];
+
+        assert_eq!(
+            super::detect_configured_prefix_ndp_proxy_target(&routes, configured_prefix),
+            None
+        );
+    }
+
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn test_detect_public_ipv6_prefix_linux_dhcpv6_ia_na_single_prefix() {
+        // DHCPv6 IA_NA: the WAN interface has a global prefix with a
+        // default route. Use a /48 dummy prefix so the fallback prefers it
+        // over any real /64 on the test machine.
+        let wan_if = test_iface_name("ib");
+        let _wan = ScopedDummyLink::new(&wan_if);
+
+        run_ip(&["-6", "addr", "add", "2001:db8:cccc::1/48", "dev", &wan_if]);
+        run_ip(&["-6", "route", "add", "default", "dev", &wan_if]);
+
+        let detected = detect_public_ipv6_prefix_linux().unwrap().unwrap();
+        assert_eq!(detected.prefix, "2001:db8:cccc::/48".parse().unwrap());
+        assert_eq!(detected.ndp_target.unwrap().wan_interface, wan_if);
+    }
+
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn test_detect_public_ipv6_prefix_from_interfaces_skips_non_global() {
+        // Create a dummy interface with only a link-local address.
+        // The interface fallback should return None because there is no
+        // global unicast address.
+        let iface = test_iface_name("ng");
+        let _link = ScopedDummyLink::new(&iface);
+
+        // Bring up the interface so it auto-configures a link-local address
+        run_ip(&["link", "set", &iface, "up"]);
+        let ifindex = crate::common::ifcfg::get_interface_index(&iface).unwrap();
+        let routes = vec![route(None, None, Some(ifindex), RouteType::Unicast)];
+
+        // No global address added — only link-local should be present
+        let result = detect_public_ipv6_prefix_from_interfaces(&routes);
+        assert_eq!(detected_prefix(result), None);
+    }
+
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn test_ndp_proxy_sync_uses_configured_tun_iface_without_shell_neigh() {
+        let wan_if = test_iface_name("nw");
+        let tun_if = test_iface_name("nt");
+        let _wan = ScopedDummyLink::new(&wan_if);
+        let _tun = ScopedDummyLink::new(&tun_if);
+        let addr = "2001:db8:abcd::123".parse::<std::net::Ipv6Addr>().unwrap();
+        let prefix = "2001:db8:abcd::/64".parse().unwrap();
+        let mut applied = std::collections::BTreeSet::new();
+
+        run_ip(&["-6", "route", "add", &format!("{addr}/128"), "dev", &tun_if]);
+
+        sync_ndp_proxy_entries(&wan_if, &tun_if, prefix, &mut applied).unwrap();
+        assert!(
+            crate::common::ifcfg::list_ipv6_ndp_proxy(&wan_if)
+                .unwrap()
+                .contains(&addr)
+        );
+        assert!(applied.contains(&addr));
+
+        run_ip(&["-6", "route", "del", &format!("{addr}/128"), "dev", &tun_if]);
+        sync_ndp_proxy_entries(&wan_if, &tun_if, prefix, &mut applied).unwrap();
+        assert!(
+            !crate::common::ifcfg::list_ipv6_ndp_proxy(&wan_if)
+                .unwrap()
+                .contains(&addr)
+        );
+        assert!(!applied.contains(&addr));
+    }
+
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn test_ndp_proxy_sync_does_not_delete_preexisting_proxy_entry() {
+        let wan_if = test_iface_name("pw");
+        let tun_if = test_iface_name("pt");
+        let _wan = ScopedDummyLink::new(&wan_if);
+        let _tun = ScopedDummyLink::new(&tun_if);
+        let addr = "2001:db8:beef::123".parse::<std::net::Ipv6Addr>().unwrap();
+        let prefix = "2001:db8:beef::/64".parse().unwrap();
+        let mut applied = std::collections::BTreeSet::new();
+
+        super::ensure_linux_ndp_proxy_enabled(&wan_if).unwrap();
+        crate::common::ifcfg::add_ipv6_ndp_proxy(&wan_if, addr).unwrap();
+        run_ip(&["-6", "route", "add", &format!("{addr}/128"), "dev", &tun_if]);
+
+        sync_ndp_proxy_entries(&wan_if, &tun_if, prefix, &mut applied).unwrap();
+        assert!(
+            crate::common::ifcfg::list_ipv6_ndp_proxy(&wan_if)
+                .unwrap()
+                .contains(&addr)
+        );
+        assert!(!applied.contains(&addr));
+
+        run_ip(&["-6", "route", "del", &format!("{addr}/128"), "dev", &tun_if]);
+        sync_ndp_proxy_entries(&wan_if, &tun_if, prefix, &mut applied).unwrap();
+        assert!(
+            crate::common::ifcfg::list_ipv6_ndp_proxy(&wan_if)
+                .unwrap()
+                .contains(&addr)
+        );
+        assert!(!applied.contains(&addr));
+
+        crate::common::ifcfg::remove_ipv6_ndp_proxy(&wan_if, addr).unwrap();
+    }
+
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn test_ndp_proxy_sync_removes_owned_entry_when_tun_iface_is_gone() {
+        let wan_if = test_iface_name("gw");
+        let _wan = ScopedDummyLink::new(&wan_if);
+        let addr = "2001:db8:face::123".parse::<std::net::Ipv6Addr>().unwrap();
+        let prefix = "2001:db8:face::/64".parse().unwrap();
+        let mut applied = std::collections::BTreeSet::from([addr]);
+
+        super::ensure_linux_ndp_proxy_enabled(&wan_if).unwrap();
+        crate::common::ifcfg::add_ipv6_ndp_proxy(&wan_if, addr).unwrap();
+
+        sync_ndp_proxy_entries(&wan_if, "missing-easytier-tun", prefix, &mut applied).unwrap();
+        assert!(
+            !crate::common::ifcfg::list_ipv6_ndp_proxy(&wan_if)
+                .unwrap()
+                .contains(&addr)
+        );
+        assert!(applied.is_empty());
+    }
+
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn test_cleanup_ndp_proxy_runtime_removes_owned_entry_on_task_exit() {
+        let wan_if = test_iface_name("cw");
+        let _wan = ScopedDummyLink::new(&wan_if);
+        let addr = "2001:db8:cafe::123".parse::<std::net::Ipv6Addr>().unwrap();
+        let mut runtime = super::NdpProxyRuntime {
+            wan_iface: Some(wan_if.clone()),
+            applied: std::collections::BTreeSet::from([addr]),
+        };
+
+        super::ensure_linux_ndp_proxy_enabled(&wan_if).unwrap();
+        crate::common::ifcfg::add_ipv6_ndp_proxy(&wan_if, addr).unwrap();
+
+        assert!(super::cleanup_ndp_proxy_runtime(
+            &mut runtime,
+            &crate::common::netns::NetNS::new(None)
+        ));
+        assert!(
+            !crate::common::ifcfg::list_ipv6_ndp_proxy(&wan_if)
+                .unwrap()
+                .contains(&addr)
+        );
+        assert!(!runtime.cleanup_pending());
+    }
+
+    async fn wait_for_ndp_proxy_entry(wan_if: &str, addr: std::net::Ipv6Addr, present: bool) {
+        for _ in 0..50 {
+            let current = crate::common::ifcfg::list_ipv6_ndp_proxy(wan_if).unwrap();
+            if current.contains(&addr) == present {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        let current = crate::common::ifcfg::list_ipv6_ndp_proxy(wan_if).unwrap();
+        assert_eq!(current.contains(&addr), present);
+    }
+
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn test_reconcile_task_shutdown_removes_owned_ndp_proxy_entry() {
+        let wan_if = test_iface_name("tw");
+        let tun_if = test_iface_name("tt");
+        let _wan = ScopedDummyLink::new(&wan_if);
+        let _tun = ScopedDummyLink::new(&tun_if);
+        let prefix = "2001:db8:fade::/64".parse().unwrap();
+        let wan_addr = "2001:db8:fade::1";
+        let leased_addr = "2001:db8:fade::123".parse::<std::net::Ipv6Addr>().unwrap();
+        let global_ctx = test_global_ctx();
+
+        run_ip(&[
+            "-6",
+            "addr",
+            "add",
+            &format!("{wan_addr}/128"),
+            "dev",
+            &wan_if,
+        ]);
+        run_ip(&["-6", "route", "add", "default", "dev", &wan_if]);
+        run_ip(&[
+            "-6",
+            "route",
+            "add",
+            &format!("{leased_addr}/128"),
+            "dev",
+            &tun_if,
+        ]);
+
+        global_ctx.config.set_ipv6_public_addr_provider(true);
+        global_ctx.config.set_ipv6_public_addr_prefix(Some(prefix));
+        global_ctx.set_tun_device_ready(tun_if);
+
+        let platform = super::RuntimePublicIpv6ProviderPlatform::new(&global_ctx);
+        let runtime_config = easytier_core::config::runtime::CoreRuntimeConfigStore::new(
+            easytier_core::config::runtime::CoreRuntimeConfig {
+                public_ipv6_provider: test_core_instance_config(&global_ctx)
+                    .connectivity
+                    .runtime
+                    .public_ipv6_provider,
+                ..Default::default()
+            },
+            Arc::new(easytier_core::config::peers::PeerRuntimeSnapshot::default()),
+        );
+        let runtime = easytier_core::peers::public_ipv6::CorePublicIpv6Runtime::new(
+            runtime_config.clone(),
+            global_ctx.clone(),
+        );
+        let service = easytier_core::peers::public_ipv6::provider::PublicIpv6ProviderService::new(
+            platform,
+            runtime_config,
+            runtime,
+        );
+        service.start().await;
+        wait_for_ndp_proxy_entry(&wan_if, leased_addr, true).await;
+
+        service.stop().await;
+        wait_for_ndp_proxy_entry(&wan_if, leased_addr, false).await;
+    }
+
+    #[test]
+    fn test_missing_netlink_object_errors_release_ndp_ownership() {
+        for errno in [
+            nix::libc::ENOENT,
+            nix::libc::ESRCH,
+            nix::libc::ENODEV,
+            nix::libc::ENXIO,
+        ] {
+            let err = Error::IOError(std::io::Error::from_raw_os_error(errno));
+            assert!(super::is_linux_missing_netlink_object_error(&err));
+        }
+    }
+
+    #[test]
+    fn test_clear_owned_ndp_proxy_entries_forgets_already_absent_entry() {
+        let addr = "2001:db8:dead::111".parse::<std::net::Ipv6Addr>().unwrap();
+        let mut applied = std::collections::BTreeSet::from([addr]);
+        let current = std::collections::BTreeSet::new();
+
+        assert!(
+            super::clear_owned_ndp_proxy_entries("missing", &current, &mut applied, vec![addr],)
+                .is_none()
+        );
+        assert!(!applied.contains(&addr));
+    }
+
+    #[test]
+    fn test_ndp_proxy_runtime_forgets_entries_when_wan_interface_is_gone() {
+        let addr = "2001:db8:dead::123".parse::<std::net::Ipv6Addr>().unwrap();
+        let mut runtime = super::NdpProxyRuntime {
+            wan_iface: Some(test_iface_name("missing")),
+            applied: std::collections::BTreeSet::from([addr]),
+        };
+
+        assert!(runtime.clear_current_locked());
+        assert!(runtime.wan_iface.is_none());
+        assert!(runtime.applied.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_ndp_proxy_runtime_finishes_cleanup_when_wan_interface_is_gone_after_disable() {
+        let addr = "2001:db8:dead::456".parse::<std::net::Ipv6Addr>().unwrap();
+        let global_ctx = test_global_ctx();
+        let mut runtime = super::NdpProxyRuntime {
+            wan_iface: Some(test_iface_name("missing")),
+            applied: std::collections::BTreeSet::from([addr]),
+        };
+
+        assert!(!runtime.reconcile(&global_ctx, None));
+        assert!(!runtime.cleanup_pending());
+    }
+
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn test_detect_public_ipv6_prefix_linux_prefers_shortest_prefix_from_kernel() {
+        let wan_if_1 = test_iface_name("sw1");
+        let lan_if_1 = test_iface_name("sl1");
+        let wan_if_2 = test_iface_name("sw2");
+        let lan_if_2 = test_iface_name("sl2");
+        let _wan_1 = ScopedDummyLink::new(&wan_if_1);
+        let _lan_1 = ScopedDummyLink::new(&lan_if_1);
+        let _wan_2 = ScopedDummyLink::new(&wan_if_2);
+        let _lan_2 = ScopedDummyLink::new(&lan_if_2);
+
+        run_ip(&[
+            "-6",
+            "addr",
+            "add",
+            "2001:db8:3000:ffff::1/64",
+            "dev",
+            &wan_if_1,
+        ]);
+        run_ip(&[
+            "-6",
+            "route",
+            "add",
+            "default",
+            "from",
+            "2001:db8:3000::/56",
+            "dev",
+            &wan_if_1,
+        ]);
+        run_ip(&["-6", "route", "add", "2001:db8:3000::/56", "dev", &lan_if_1]);
+
+        run_ip(&["-6", "addr", "add", "2001:db9:ffff::1/64", "dev", &wan_if_2]);
+        run_ip(&[
+            "-6",
+            "route",
+            "add",
+            "default",
+            "from",
+            "2001:db9::/48",
+            "dev",
+            &wan_if_2,
+        ]);
+        run_ip(&["-6", "route", "add", "2001:db9::/48", "dev", &lan_if_2]);
+
+        assert_eq!(
+            detected_prefix(detect_public_ipv6_prefix_linux().unwrap()),
+            Some("2001:db9::/48".parse().unwrap())
+        );
+    }
+}

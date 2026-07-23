@@ -18,6 +18,7 @@ use cidr::Ipv4Inet;
 use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand, builder::BoolishValueParser};
 use dashmap::DashMap;
 use easytier::ShellType;
+use easytier_core::connectivity::stun::StunInfoProvider as _;
 use humansize::format_size;
 use rust_i18n::t;
 use service_manager::*;
@@ -29,11 +30,7 @@ use easytier::service_manager::{Service, ServiceInstallOptions};
 use tokio::time::timeout;
 
 use easytier::{
-    common::{
-        constants::EASYTIER_VERSION,
-        stun::{StunInfoCollector, StunInfoCollectorTrait},
-    },
-    peers,
+    common::{constants::EASYTIER_VERSION, stun::runtime_stun_info_collector},
     proto::{
         acl::AclStats,
         api::{
@@ -73,10 +70,10 @@ use easytier::{
         },
         common::{NatType, PortForwardConfigPb, SocketType},
         peer_rpc::{GetGlobalPeerMapRequest, PeerCenterRpc, PeerCenterRpcClientFactory},
-        rpc_impl::standalone::StandAloneClient,
+        rpc::standalone::{RuntimeRpcClient, runtime_rpc_client},
         rpc_types::{controller::BaseController, error::Error as RpcError},
     },
-    tunnel::{TunnelScheme, tcp::TcpTunnelConnector},
+    tunnel::TunnelScheme,
     utils::{PeerRoutePair, string::cost_to_str},
 };
 
@@ -535,7 +532,7 @@ struct CommandHandler<'a> {
     resolved_target: Option<InstanceTarget>,
 }
 
-type RpcClient = StandAloneClient<TcpTunnelConnector>;
+type RpcClient = RuntimeRpcClient;
 type LocalBoxFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, Error>> + 'a>>;
 type ForeignNetworkMap = BTreeMap<String, ForeignNetworkEntryPb>;
 type GlobalForeignNetworkMap = BTreeMap<u32, list_global_foreign_network_response::ForeignNetworks>;
@@ -1405,8 +1402,12 @@ impl<'a> CommandHandler<'a> {
                     };
                 }
 
-                let a_is_public = a.hostname.starts_with(peers::PUBLIC_SERVER_HOSTNAME_PREFIX);
-                let b_is_public = b.hostname.starts_with(peers::PUBLIC_SERVER_HOSTNAME_PREFIX);
+                let a_is_public = a.hostname.starts_with(
+                    easytier_core::peers::foreign_network::PUBLIC_SERVER_HOSTNAME_PREFIX,
+                );
+                let b_is_public = b.hostname.starts_with(
+                    easytier_core::peers::foreign_network::PUBLIC_SERVER_HOSTNAME_PREFIX,
+                );
                 if a_is_public != b_is_public {
                     return if a_is_public {
                         std::cmp::Ordering::Less
@@ -2863,11 +2864,11 @@ async fn main() -> Result<(), Error> {
     rust_i18n::set_locale(&locale);
     let cli = Cli::parse();
 
-    let client = RpcClient::new(TcpTunnelConnector::new(
+    let client = runtime_rpc_client(
         format!("tcp://{}:{}", cli.rpc_portal.ip(), cli.rpc_portal.port())
             .parse()
             .unwrap(),
-    ));
+    );
     let handler = CommandHandler {
         client: Arc::new(tokio::sync::Mutex::new(client)),
         verbose: cli.verbose,
@@ -2941,7 +2942,7 @@ async fn main() -> Result<(), Error> {
         },
         SubCommand::Stun => {
             timeout(Duration::from_secs(25), async move {
-                let collector = StunInfoCollector::new_with_default_servers();
+                let collector = runtime_stun_info_collector(Default::default());
                 loop {
                     let ret = collector.get_stun_info();
                     if ret.udp_nat_type != NatType::Unknown as i32

@@ -1944,17 +1944,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "575f75dfd25738df5b91b8e43e14d44bda14637a58fae779fd2b064f8bf3e010"
 
 [[package]]
-name = "dbus"
-version = "0.9.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1bb21987b9fb1613058ba3843121dd18b163b254d8a6e797e144cbac14d96d1b"
-dependencies = [
- "libc",
- "libdbus-sys",
- "winapi",
-]
-
-[[package]]
 name = "defguard_wireguard_rs"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1965,7 +1954,7 @@ dependencies = [
  "log",
  "netlink-packet-core",
  "netlink-packet-generic",
- "netlink-packet-route 0.17.1",
+ "netlink-packet-route",
  "netlink-packet-utils",
  "netlink-packet-wireguard",
  "netlink-sys",
@@ -2316,19 +2305,14 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 name = "easytier"
 version = "2.6.4"
 dependencies = [
- "aes-gcm",
  "anyhow",
  "arc-swap",
- "ariadne",
  "async-recursion",
- "async-ringbuf",
- "async-stream",
  "async-trait",
  "atomic-shim",
  "atomic_refcell",
  "auto_impl",
  "base64 0.22.1",
- "bitflags 2.8.0",
  "bon",
  "boringtun-easytier",
  "bytecodec",
@@ -2345,12 +2329,11 @@ dependencies = [
  "crossbeam",
  "ctor 0.8.0",
  "dashmap",
- "dbus",
  "defguard_wireguard_rs",
- "delegate",
- "derivative",
  "derive_builder",
  "derive_more 2.1.1",
+ "easytier-core",
+ "easytier-proto",
  "encoding",
  "flume 0.12.0",
  "forwarded-header-value",
@@ -2364,57 +2347,35 @@ dependencies = [
  "hickory-proto",
  "hickory-resolver",
  "hickory-server",
- "hmac",
  "http",
- "http_req",
  "humansize",
  "humantime-serde",
- "idna 1.0.3",
  "igd-next",
  "indoc",
- "itertools 0.14.0",
  "kcp-sys",
+ "log",
  "machine-uid",
  "maplit",
  "mimalloc",
  "moka",
- "multimap",
  "natpmp",
- "netlink-packet-core",
- "netlink-packet-route 0.21.0",
- "netlink-packet-utils",
  "netlink-sys",
  "network-interface",
  "nix 0.29.0",
  "once_cell",
- "openssl",
- "ordered_hash_map",
  "parking_lot",
  "paste",
- "pbjson",
- "pbjson-build",
  "percent-encoding",
- "petgraph",
  "pin-project-lite",
  "pnet",
- "prefix-trie",
- "proc-macro2",
  "prost 0.14.3",
- "prost-build",
- "prost-reflect",
- "prost-reflect-build",
- "prost-wkt-types",
  "quanta",
  "quinn",
  "quinn-proto",
- "quote",
  "rand 0.8.5",
  "rcgen",
  "regex",
- "reqwest 0.12.12",
- "resolv-conf",
  "ring",
- "ringbuf",
  "rstest",
  "rust-i18n",
  "rustls",
@@ -2423,10 +2384,7 @@ dependencies = [
  "serde_json",
  "serial_test",
  "service-manager",
- "sha2",
  "shellexpand",
- "smoltcp",
- "snow",
  "socket2 0.5.10",
  "strum 0.27.2",
  "stun_codec",
@@ -2439,12 +2397,9 @@ dependencies = [
  "tikv-jemalloc-ctl",
  "tikv-jemalloc-sys",
  "tikv-jemallocator",
- "time",
- "timedmap",
  "tokio",
  "tokio-rustls",
  "tokio-socks",
- "tokio-stream",
  "tokio-util",
  "tokio-websockets",
  "toml 0.8.19",
@@ -2454,9 +2409,6 @@ dependencies = [
  "unicode-width 0.1.11",
  "url",
  "uuid",
- "version-compare",
- "which 7.0.3",
- "wildmatch",
  "winapi",
  "windivert",
  "windows 0.62.2",
@@ -2464,8 +2416,6 @@ dependencies = [
  "winreg 0.52.0",
  "x25519-dalek",
  "zerocopy 0.7.35",
- "zip",
- "zstd",
 ]
 
 [[package]]
@@ -2483,20 +2433,83 @@ dependencies = [
 ]
 
 [[package]]
+name = "easytier-core"
+version = "2.6.4"
+dependencies = [
+ "aes-gcm",
+ "anyhow",
+ "arc-swap",
+ "ariadne",
+ "async-ringbuf",
+ "async-trait",
+ "atomic-shim",
+ "auto_impl",
+ "base64 0.22.1",
+ "bitflags 2.8.0",
+ "bytecodec",
+ "bytes",
+ "chacha20poly1305",
+ "chrono",
+ "cidr",
+ "crossbeam",
+ "dashmap",
+ "derive_builder",
+ "easytier-proto",
+ "futures",
+ "guarden 0.2.0",
+ "hmac",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "idna 1.0.3",
+ "ordered_hash_map",
+ "parking_lot",
+ "percent-encoding",
+ "petgraph",
+ "pin-project-lite",
+ "pnet_packet",
+ "prefix-trie",
+ "prost 0.14.3",
+ "prost-types 0.14.3",
+ "quanta",
+ "rand 0.8.5",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2",
+ "smoltcp",
+ "snow",
+ "strum 0.27.2",
+ "stun_codec",
+ "thiserror 1.0.63",
+ "tokio",
+ "tokio-rustls",
+ "tokio-util",
+ "toml 0.8.19",
+ "tracing",
+ "url",
+ "uuid",
+ "webpki-roots 0.26.3",
+ "wildmatch",
+ "x25519-dalek",
+ "zerocopy 0.7.35",
+ "zstd",
+]
+
+[[package]]
 name = "easytier-ffi"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "dashmap",
  "easytier",
+ "easytier-core",
  "log",
  "once_cell",
- "percent-encoding",
  "serde",
  "serde_json",
  "tokio",
  "tokio-util",
- "url",
  "uuid",
 ]
 
@@ -2510,6 +2523,7 @@ dependencies = [
  "dashmap",
  "dunce",
  "easytier",
+ "easytier-core",
  "gethostname 1.1.0",
  "libc",
  "once_cell",
@@ -2531,6 +2545,42 @@ dependencies = [
  "uuid",
  "winapi",
  "windows 0.52.0",
+]
+
+[[package]]
+name = "easytier-proto"
+version = "2.6.4"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "auto_impl",
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "cidr",
+ "delegate",
+ "derivative",
+ "derive_more 2.1.1",
+ "hmac",
+ "indoc",
+ "pbjson",
+ "pbjson-build",
+ "proc-macro2",
+ "prost 0.14.3",
+ "prost-build",
+ "prost-types 0.14.3",
+ "prost-wkt-types",
+ "quote",
+ "reqwest 0.12.12",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 1.0.63",
+ "tokio",
+ "url",
+ "uuid",
+ "x25519-dalek",
+ "zip",
 ]
 
 [[package]]
@@ -2588,6 +2638,7 @@ dependencies = [
  "clap",
  "dashmap",
  "easytier",
+ "easytier-core",
  "image 0.24.9",
  "imageproc",
  "maxminddb",
@@ -2835,12 +2886,6 @@ dependencies = [
  "quote",
  "syn 2.0.117",
 ]
-
-[[package]]
-name = "env_home"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c7f84e12ccf0a7ddc17a6c41c93326024c42920d7ee630d04950e6926645c0fe"
 
 [[package]]
 name = "env_logger"
@@ -4012,22 +4057,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "http_req"
-version = "0.13.1"
-source = "git+https://github.com/EasyTier/http_req.git#b10aa9fc0db3067cc3d2174683a87250b80a1ea9"
-dependencies = [
- "base64 0.22.1",
- "rand 0.8.5",
- "rustls",
- "rustls-pemfile",
- "rustls-pki-types",
- "unicase",
- "webpki",
- "webpki-roots 0.26.3",
- "zeroize",
-]
-
-[[package]]
 name = "httparse"
 version = "1.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4835,16 +4864,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 
 [[package]]
-name = "libdbus-sys"
-version = "0.2.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "06085512b750d640299b79be4bad3d2fa90a9c00b1fd9e1b46364f66f0485c72"
-dependencies = [
- "cc",
- "pkg-config",
-]
-
-[[package]]
 name = "libloading"
 version = "0.7.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5272,9 +5291,6 @@ name = "multimap"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
-dependencies = [
- "serde",
-]
 
 [[package]]
 name = "nalgebra"
@@ -5360,7 +5376,7 @@ dependencies = [
  "ipnet",
  "libc",
  "netlink-packet-core",
- "netlink-packet-route 0.17.1",
+ "netlink-packet-route",
  "netlink-sys",
  "once_cell",
  "system-configuration",
@@ -5400,21 +5416,6 @@ dependencies = [
  "bitflags 1.3.2",
  "byteorder",
  "libc",
- "netlink-packet-core",
- "netlink-packet-utils",
-]
-
-[[package]]
-name = "netlink-packet-route"
-version = "0.21.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "483325d4bfef65699214858f097d504eb812c38ce7077d165f301ec406c3066e"
-dependencies = [
- "anyhow",
- "bitflags 2.8.0",
- "byteorder",
- "libc",
- "log",
  "netlink-packet-core",
  "netlink-packet-utils",
 ]
@@ -5705,15 +5706,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
-]
-
-[[package]]
-name = "num_threads"
-version = "0.1.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c7398b9c8b70908f6371f47ed36737907c87c52af34c268fed0bf0ceb92ead9"
-dependencies = [
- "libc",
 ]
 
 [[package]]
@@ -6031,15 +6023,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff011a302c396a5197692431fc1948019154afc178baf7d8e37367442a4601cf"
 
 [[package]]
-name = "openssl-src"
-version = "300.5.2+3.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d270b79e2926f5150189d475bc7e9d2c69f9c4697b185fa917d5a32b792d21b4"
-dependencies = [
- "cc",
-]
-
-[[package]]
 name = "openssl-sys"
 version = "0.9.103"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6047,7 +6030,6 @@ checksum = "7f9e8deee91df40a943c71b917e5874b951d32a802526c85721ce3b776c929d6"
 dependencies = [
  "cc",
  "libc",
- "openssl-src",
  "pkg-config",
  "vcpkg",
 ]
@@ -7008,41 +6990,6 @@ checksum = "27c6023962132f4b30eb4c172c91ce92d933da334c59c23cddee82358ddafb0b"
 dependencies = [
  "anyhow",
  "itertools 0.14.0",
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
-
-[[package]]
-name = "prost-reflect"
-version = "0.16.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "590aa145fee8f7a26b5a6055365e7c5e89a5c1caae9869de76ec0ee73181a2f9"
-dependencies = [
- "base64 0.22.1",
- "prost 0.14.3",
- "prost-reflect-derive",
- "prost-types 0.14.3",
- "serde",
- "serde-value",
-]
-
-[[package]]
-name = "prost-reflect-build"
-version = "0.16.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8214ae2c30bbac390db0134d08300e770ef89b6d4e5abf855e8d300eded87e28"
-dependencies = [
- "prost-build",
- "prost-reflect",
-]
-
-[[package]]
-name = "prost-reflect-derive"
-version = "0.16.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b6d90e29fa6c0d13c2c19ba5e4b3fb0efbf5975d27bcf4e260b7b15455bcabe"
-dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -8658,7 +8605,7 @@ dependencies = [
  "encoding_rs",
  "plist",
  "sys-info",
- "which 4.4.2",
+ "which",
  "xml-rs",
 ]
 
@@ -9944,9 +9891,7 @@ checksum = "743bd48c283afc0388f9b8827b976905fb217ad9e647fae3a379a9283c4def2c"
 dependencies = [
  "deranged",
  "itoa",
- "libc",
  "num-conv",
- "num_threads",
  "powerfmt",
  "serde_core",
  "time-core",
@@ -9968,12 +9913,6 @@ dependencies = [
  "num-conv",
  "time-core",
 ]
-
-[[package]]
-name = "timedmap"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "825f6c8a18bc36d56a62f66af7296385b628c9c5543a8663d4c217fc920bfefd"
 
 [[package]]
 name = "tinystr"
@@ -10501,7 +10440,6 @@ dependencies = [
  "sharded-slab",
  "smallvec",
  "thread_local",
- "time",
  "tracing",
  "tracing-core",
  "tracing-log",
@@ -11234,16 +11172,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "webpki"
-version = "0.22.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed63aea5ce73d0ff405984102c42de94fc55a6b75765d621c65262469b3c9b53"
-dependencies = [
- "ring",
- "untrusted",
-]
-
-[[package]]
 name = "webpki-root-certs"
 version = "0.26.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11331,18 +11259,6 @@ dependencies = [
  "home",
  "once_cell",
  "rustix 0.38.34",
-]
-
-[[package]]
-name = "which"
-version = "7.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "24d643ce3fd3e5b54854602a080f34fb10ab75e0b813ee32d00ca2b44fa74762"
-dependencies = [
- "either",
- "env_home",
- "rustix 1.0.7",
- "winsafe",
 ]
 
 [[package]]
@@ -12127,12 +12043,6 @@ dependencies = [
  "cfg-if",
  "windows-sys 0.59.0",
 ]
-
-[[package]]
-name = "winsafe"
-version = "0.0.19"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d135d17ab770252ad95e9a872d365cf3090e3be864a34ab46f48555993efc904"
 
 [[package]]
 name = "wintun"

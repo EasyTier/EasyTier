@@ -12,7 +12,7 @@ use std::{
 #[cfg(feature = "ffi-dataplane")]
 use dashmap::DashMap;
 #[cfg(feature = "ffi-dataplane")]
-use easytier::launcher::{DataPlaneTcpListener, DataPlaneTcpStream, DataPlaneUdpSocket};
+use easytier_core::gateway::{DataPlaneTcpListener, DataPlaneTcpStream, DataPlaneUdpSocket};
 #[cfg(feature = "ffi-dataplane")]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 #[cfg(feature = "ffi-dataplane")]
@@ -29,7 +29,7 @@ use crate::{
         timeout_duration,
     },
     error::{free_string, set_error_msg},
-    state::{ASYNC_RUNTIME, INSTANCE_MANAGER},
+    state::ffi_context,
 };
 
 #[cfg(feature = "ffi-dataplane")]
@@ -227,7 +227,7 @@ fn spawn_instance_runtime_op<Fut, F>(
     F: FnOnce(tokio::runtime::Handle, Duration) -> Fut + Send + 'static,
 {
     let deadline = Instant::now() + timeout_duration(timeout_ms);
-    ASYNC_RUNTIME.spawn_blocking(move || {
+    ffi_context().runtime.spawn_blocking(move || {
         let runtime = loop {
             if op.cancel_token.is_cancelled() {
                 complete_op(&op, Err("data plane async op canceled".to_string()));
@@ -236,8 +236,9 @@ fn spawn_instance_runtime_op<Fut, F>(
 
             let remaining = deadline.saturating_duration_since(Instant::now());
             let wait_for = remaining.min(Duration::from_millis(50));
-            if let Some(runtime) =
-                INSTANCE_MANAGER.data_plane_wait_runtime_handle(&instance_id, wait_for)
+            if let Some(runtime) = ffi_context()
+                .manager
+                .data_plane_wait_runtime_handle(&instance_id, wait_for)
             {
                 break runtime;
             }
@@ -522,7 +523,6 @@ pub(crate) unsafe fn data_plane_tcp_connect_start(
         return 0;
     };
     let Some(instance_id) = get_instance_id(&inst_name) else {
-        set_error_msg("instance not found");
         return 0;
     };
     let Some(dst_addr) = parse_socket_addr(&dst_ip, dst_port) else {
@@ -539,7 +539,9 @@ pub(crate) unsafe fn data_plane_tcp_connect_start(
             run_with_cancel(
                 &op_for_task.cancel_token,
                 "failed to connect tcp data plane",
-                INSTANCE_MANAGER.data_plane_tcp_connect(&instance_id, dst_addr, remaining),
+                ffi_context()
+                    .manager
+                    .data_plane_tcp_connect(&instance_id, dst_addr, remaining),
             )
             .await
             .map(|stream| {
@@ -603,7 +605,6 @@ pub(crate) unsafe fn data_plane_tcp_bind_start(
         return 0;
     };
     let Some(instance_id) = get_instance_id(&inst_name) else {
-        set_error_msg("instance not found");
         return 0;
     };
 
@@ -617,7 +618,9 @@ pub(crate) unsafe fn data_plane_tcp_bind_start(
             run_with_cancel(
                 &op_for_task.cancel_token,
                 "failed to bind tcp data plane",
-                INSTANCE_MANAGER.data_plane_tcp_bind(&instance_id, local_port, remaining),
+                ffi_context()
+                    .manager
+                    .data_plane_tcp_bind(&instance_id, local_port, remaining),
             )
             .await
             .map(|listener| {
@@ -911,7 +914,6 @@ pub(crate) unsafe fn data_plane_udp_bind_start(
         return 0;
     };
     let Some(instance_id) = get_instance_id(&inst_name) else {
-        set_error_msg("instance not found");
         return 0;
     };
 
@@ -925,7 +927,9 @@ pub(crate) unsafe fn data_plane_udp_bind_start(
             run_with_cancel(
                 &op_for_task.cancel_token,
                 "failed to bind udp data plane",
-                INSTANCE_MANAGER.data_plane_udp_bind(&instance_id, local_port, remaining),
+                ffi_context()
+                    .manager
+                    .data_plane_udp_bind(&instance_id, local_port, remaining),
             )
             .await
             .map(|socket| {

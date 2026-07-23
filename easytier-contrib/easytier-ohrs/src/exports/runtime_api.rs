@@ -36,8 +36,8 @@ pub(crate) fn stop_kernel(
         return false;
     };
 
-    let ret = INSTANCE_MANAGER
-        .delete_network_instance(vec![instance_id])
+    let ret = ASYNC_RUNTIME
+        .block_on(INSTANCE_MANAGER.delete_network_instance(vec![instance_id]))
         .map(|_| true)
         .unwrap_or_else(|err| {
             ohrs_log_error!("[Rust] stop_kernel failed {}: {}", config_id, err);

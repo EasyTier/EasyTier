@@ -103,13 +103,11 @@ fn shrink_hash_set_if_sparse<T: Eq + Hash>(set: &mut HashSet<T>) {
 
 fn sync_tun_event_receivers(receivers: &mut HashMap<String, EventBusSubscriber>) {
     let mut active_instance_ids = HashSet::new();
-    for instance in INSTANCE_MANAGER.iter() {
-        let instance_id = instance.key().to_string();
+    for instance in INSTANCE_MANAGER.list_instances() {
+        let instance_id = instance.instance_id().to_string();
         active_instance_ids.insert(instance_id.clone());
-        if !receivers.contains_key(&instance_id)
-            && let Some(receiver) = instance.value().subscribe_event()
-        {
-            receivers.insert(instance_id, receiver);
+        if !receivers.contains_key(&instance_id) {
+            receivers.insert(instance_id, instance.subscribe_event());
         }
     }
     receivers.retain(|instance_id, _| active_instance_ids.contains(instance_id));
@@ -227,12 +225,12 @@ fn tun_candidate_ids(snapshot: &RuntimeAggregateState) -> HashSet<String> {
 
 fn collect_traffic_stats() -> TrafficStatsPayload {
     let services = INSTANCE_MANAGER
-        .iter()
+        .list_instances()
+        .into_iter()
         .filter_map(|instance| {
             instance
-                .value()
                 .get_api_service()
-                .map(|api_service| (instance.key().to_string(), api_service))
+                .map(|api_service| (instance.instance_id().to_string(), api_service))
         })
         .collect::<Vec<_>>();
 

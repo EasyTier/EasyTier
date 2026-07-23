@@ -1,336 +1,10 @@
 use bon::builder;
-use futures::{Future, Sink, Stream, stream::FuturesUnordered};
 use network_interface::NetworkInterfaceConfig as _;
-use pin_project_lite::pin_project;
-use std::{
-    any::Any,
-    net::{IpAddr, SocketAddr},
-    pin::Pin,
-    sync::{Arc, Mutex},
-    task::{Poll, ready},
-};
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use std::net::{IpAddr, SocketAddr};
 
-use super::TunnelInfo;
-use super::{
-    SinkItem, StreamItem, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream,
-    buf::BufList,
-    packet_def::{TCP_TUNNEL_HEADER_SIZE, TCPTunnelHeader, ZCPacketType},
-};
 use crate::common::netns::NetNS;
-use crate::tunnel::packet_def::{PEER_MANAGER_HEADER_SIZE, ZCPacket};
-use bytes::{Buf, BufMut, Bytes, BytesMut};
+use easytier_core::tunnel::TunnelError;
 use tokio::net::{TcpListener, TcpSocket, UdpSocket};
-use tokio_stream::StreamExt;
-use tokio_util::io::poll_write_buf;
-use zerocopy::FromBytes as _;
-
-pub struct TunnelWrapper<R, W> {
-    reader: Arc<Mutex<Option<R>>>,
-    writer: Arc<Mutex<Option<W>>>,
-    info: Option<TunnelInfo>,
-    associate_data: Option<Box<dyn Any + Send + 'static>>,
-}
-
-impl<R, W> TunnelWrapper<R, W> {
-    pub fn new(reader: R, writer: W, info: Option<TunnelInfo>) -> Self {
-        Self::new_with_associate_data(reader, writer, info, None)
-    }
-
-    pub fn new_with_associate_data(
-        reader: R,
-        writer: W,
-        info: Option<TunnelInfo>,
-        associate_data: Option<Box<dyn Any + Send + 'static>>,
-    ) -> Self {
-        TunnelWrapper {
-            reader: Arc::new(Mutex::new(Some(reader))),
-            writer: Arc::new(Mutex::new(Some(writer))),
-            info,
-            associate_data,
-        }
-    }
-}
-
-impl<R, W> Tunnel for TunnelWrapper<R, W>
-where
-    R: ZCPacketStream + Send + 'static,
-    W: ZCPacketSink + Send + 'static,
-{
-    fn split(&self) -> (Pin<Box<dyn ZCPacketStream>>, Pin<Box<dyn ZCPacketSink>>) {
-        let reader = self.reader.lock().unwrap().take().unwrap();
-        let writer = self.writer.lock().unwrap().take().unwrap();
-        (Box::pin(reader), Box::pin(writer))
-    }
-
-    fn info(&self) -> Option<TunnelInfo> {
-        self.info.clone()
-    }
-}
-
-// a length delimited codec for async reader
-pin_project! {
-    pub struct FramedReader<R> {
-        #[pin]
-        reader: R,
-        buf: BytesMut,
-        max_packet_size: usize,
-        associate_data: Option<Box<dyn Any + Send + 'static>>,
-        error: Option<TunnelError>,
-    }
-}
-
-impl<R> FramedReader<R> {
-    pub fn new(reader: R, max_packet_size: usize) -> Self {
-        Self::new_with_associate_data(reader, max_packet_size, None)
-    }
-
-    pub fn new_with_associate_data(
-        reader: R,
-        max_packet_size: usize,
-        associate_data: Option<Box<dyn Any + Send + 'static>>,
-    ) -> Self {
-        FramedReader {
-            reader,
-            buf: BytesMut::with_capacity(max_packet_size),
-            max_packet_size,
-            associate_data,
-            error: None,
-        }
-    }
-
-    fn extract_one_packet(
-        buf: &mut BytesMut,
-        max_packet_size: usize,
-    ) -> Option<Result<ZCPacket, TunnelError>> {
-        if buf.len() < TCP_TUNNEL_HEADER_SIZE {
-            // header is not complete
-            return None;
-        }
-
-        let header = TCPTunnelHeader::ref_from_prefix(&buf[..]).unwrap();
-        let body_len = header.len.get() as usize;
-        if body_len > max_packet_size {
-            // body is too long
-            return Some(Err(TunnelError::InvalidPacket("body too long".to_string())));
-        }
-
-        if body_len < PEER_MANAGER_HEADER_SIZE {
-            return Some(Err(TunnelError::InvalidPacket(
-                "body too short".to_string(),
-            )));
-        }
-
-        if buf.len() < TCP_TUNNEL_HEADER_SIZE + body_len {
-            // body is not complete
-            return None;
-        }
-
-        // extract one packet
-        let packet_buf = buf.split_to(TCP_TUNNEL_HEADER_SIZE + body_len);
-        Some(Ok(ZCPacket::new_from_buf(packet_buf, ZCPacketType::TCP)))
-    }
-}
-
-impl<R> Stream for FramedReader<R>
-where
-    R: AsyncRead + Send + 'static + Unpin,
-{
-    type Item = StreamItem;
-
-    fn poll_next(
-        self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        let mut self_mut = self.project();
-
-        loop {
-            if let Some(e) = self_mut.error.as_ref() {
-                tracing::warn!("poll_next on a failed FramedReader, {:?}", e);
-                return Poll::Ready(None);
-            }
-
-            if let Some(packet) = Self::extract_one_packet(self_mut.buf, *self_mut.max_packet_size)
-            {
-                if let Err(TunnelError::InvalidPacket(msg)) = packet.as_ref() {
-                    self_mut
-                        .error
-                        .replace(TunnelError::InvalidPacket(msg.clone()));
-                }
-                return Poll::Ready(Some(packet));
-            }
-
-            reserve_buf(
-                self_mut.buf,
-                *self_mut.max_packet_size,
-                *self_mut.max_packet_size * 2,
-            );
-
-            let cap = self_mut.buf.capacity() - self_mut.buf.len();
-            let buf = self_mut.buf.chunk_mut().as_mut_ptr();
-            let buf = unsafe { std::slice::from_raw_parts_mut(buf, cap) };
-            let mut buf = ReadBuf::new(buf);
-
-            let ret = ready!(self_mut.reader.as_mut().poll_read(cx, &mut buf));
-            let len = buf.filled().len();
-            unsafe { self_mut.buf.advance_mut(len) };
-
-            match ret {
-                Ok(_) => {
-                    if len == 0 {
-                        return Poll::Ready(None);
-                    }
-                }
-                Err(e) => {
-                    return Poll::Ready(Some(Err(TunnelError::IOError(e))));
-                }
-            }
-        }
-    }
-}
-
-pub trait ZCPacketToBytes {
-    fn zcpacket_into_bytes(&self, zc_packet: ZCPacket) -> Result<Bytes, TunnelError>;
-}
-
-pub struct TcpZCPacketToBytes;
-impl ZCPacketToBytes for TcpZCPacketToBytes {
-    fn zcpacket_into_bytes(&self, item: ZCPacket) -> Result<Bytes, TunnelError> {
-        let mut item = item.convert_type(ZCPacketType::TCP);
-
-        let tcp_len = PEER_MANAGER_HEADER_SIZE + item.payload_len();
-        let Some(header) = item.mut_tcp_tunnel_header() else {
-            return Err(TunnelError::InvalidPacket("packet too short".to_string()));
-        };
-        header.len.set(tcp_len.try_into().unwrap());
-
-        Ok(item.into_bytes())
-    }
-}
-
-pin_project! {
-    pub struct FramedWriter<W, C> {
-        #[pin]
-        writer: W,
-        sending_bufs: BufList<Bytes>,
-        associate_data: Option<Box<dyn Any + Send + 'static>>,
-
-        converter: C,
-    }
-}
-
-impl<W, C> FramedWriter<W, C> {
-    fn max_buffer_count(&self) -> usize {
-        64
-    }
-}
-
-impl<W> FramedWriter<W, TcpZCPacketToBytes> {
-    pub fn new(writer: W) -> Self {
-        Self::new_with_associate_data(writer, None)
-    }
-
-    pub fn new_with_associate_data(
-        writer: W,
-        associate_data: Option<Box<dyn Any + Send + 'static>>,
-    ) -> Self {
-        FramedWriter {
-            writer,
-            sending_bufs: BufList::new(),
-            associate_data,
-            converter: TcpZCPacketToBytes {},
-        }
-    }
-}
-
-impl<W, C: ZCPacketToBytes + Send + 'static> FramedWriter<W, C> {
-    pub fn new_with_converter(writer: W, converter: C) -> Self {
-        Self::new_with_converter_and_associate_data(writer, converter, None)
-    }
-
-    pub fn new_with_converter_and_associate_data(
-        writer: W,
-        converter: C,
-        associate_data: Option<Box<dyn Any + Send + 'static>>,
-    ) -> Self {
-        FramedWriter {
-            writer,
-            sending_bufs: BufList::new(),
-            associate_data,
-            converter,
-        }
-    }
-}
-
-impl<W, C> Sink<SinkItem> for FramedWriter<W, C>
-where
-    W: AsyncWrite + Send + 'static,
-    C: ZCPacketToBytes + Send + 'static,
-{
-    type Error = TunnelError;
-
-    fn poll_ready(
-        mut self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), Self::Error>> {
-        let max_buffer_count = self.max_buffer_count();
-        if self.sending_bufs.bufs_cnt() >= max_buffer_count {
-            self.as_mut().poll_flush(cx)
-        } else {
-            tracing::trace!(bufs_cnt = self.sending_bufs.bufs_cnt(), "ready to send");
-            Poll::Ready(Ok(()))
-        }
-    }
-
-    fn start_send(self: Pin<&mut Self>, item: ZCPacket) -> Result<(), Self::Error> {
-        let pinned = self.project();
-        pinned
-            .sending_bufs
-            .push(pinned.converter.zcpacket_into_bytes(item)?);
-
-        Ok(())
-    }
-
-    fn poll_flush(
-        self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> Poll<Result<(), Self::Error>> {
-        let mut pinned = self.project();
-        let mut remaining = pinned.sending_bufs.remaining();
-        while remaining != 0 {
-            let n = ready!(poll_write_buf(
-                pinned.writer.as_mut(),
-                cx,
-                pinned.sending_bufs
-            ))?;
-            if n == 0 {
-                return Poll::Ready(Err(TunnelError::IOError(std::io::Error::new(
-                    std::io::ErrorKind::WriteZero,
-                    "failed to \
-                     write frame to transport",
-                ))));
-            }
-            remaining -= n;
-        }
-
-        tracing::trace!(?remaining, "flushed");
-
-        // Try flushing the underlying IO
-        ready!(pinned.writer.poll_flush(cx))?;
-
-        Poll::Ready(Ok(()))
-    }
-
-    fn poll_close(
-        mut self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> Poll<Result<(), Self::Error>> {
-        ready!(self.as_mut().poll_flush(cx))?;
-        ready!(self.project().writer.poll_shutdown(cx))?;
-
-        Poll::Ready(Ok(()))
-    }
-}
 
 pub(crate) fn get_interface_name_by_ip(local_ip: &IpAddr) -> Option<String> {
     if local_ip.is_unspecified() || local_ip.is_multicast() {
@@ -347,27 +21,6 @@ pub(crate) fn get_interface_name_by_ip(local_ip: &IpAddr) -> Option<String> {
 
     tracing::error!(?local_ip, "can not find interface name by ip");
     None
-}
-
-pub(crate) async fn wait_for_connect_futures<Fut, Ret, E>(
-    mut futures: FuturesUnordered<Fut>,
-) -> Result<Ret, TunnelError>
-where
-    Fut: Future<Output = Result<Ret, E>> + Send,
-    E: std::error::Error + Into<TunnelError> + Send + 'static,
-{
-    // return last error
-    let mut last_err = None;
-
-    while let Some(ret) = futures.next().await {
-        if let Err(e) = ret {
-            last_err = Some(e.into());
-        } else {
-            return ret.map_err(|e| e.into());
-        }
-    }
-
-    Err(last_err.unwrap_or(TunnelError::Shutdown))
 }
 
 // region bind
@@ -417,6 +70,8 @@ fn setup_socket2_ext(
     bind_addr: &SocketAddr,
     #[allow(unused_variables)] bind_dev: Option<String>,
     only_v6: bool,
+    reuse_addr: bool,
+    reuse_port: bool,
     socket_mark: Option<u32>,
 ) -> Result<(), TunnelError> {
     #[cfg(target_os = "windows")]
@@ -430,7 +85,15 @@ fn setup_socket2_ext(
     }
 
     socket2_socket.set_nonblocking(true)?;
-    socket2_socket.set_reuse_address(!cfg!(target_os = "windows"))?;
+    socket2_socket.set_reuse_address(reuse_addr)?;
+    #[cfg(all(unix, not(target_os = "solaris"), not(target_os = "illumos")))]
+    if reuse_port {
+        socket2_socket.set_reuse_port(true)?;
+    }
+    #[cfg(not(all(unix, not(target_os = "solaris"), not(target_os = "illumos"))))]
+    {
+        let _ = reuse_port;
+    }
 
     // SO_MARK must be set before bind() so the kernel applies the mark to
     // any source-address selection bind() triggers on unspecified binds.
@@ -445,28 +108,27 @@ fn setup_socket2_ext(
         }
     }
 
-    // #[cfg(all(unix, not(target_os = "solaris"), not(target_os = "illumos")))]
-    // socket2_socket.set_reuse_port(true)?;
-
-    if bind_addr.ip().is_unspecified() {
-        return Ok(());
-    }
-
     // linux/mac does not use interface of bind_addr to send packet, so we need to bind device
     // win can handle this with bind correctly
     #[cfg(any(target_os = "ios", target_os = "macos"))]
     if let Some(dev_name) = bind_dev {
         // use IP_BOUND_IF to bind device
-        unsafe {
-            let dev_idx = nix::libc::if_nametoindex(dev_name.as_str().as_ptr() as *const i8);
-            tracing::warn!(?dev_idx, ?dev_name, "bind device");
-            if bind_addr.is_ipv4() {
-                socket2_socket.bind_device_by_index_v4(std::num::NonZeroU32::new(dev_idx))?;
-            } else {
-                socket2_socket.bind_device_by_index_v6(std::num::NonZeroU32::new(dev_idx))?;
-            }
-            tracing::warn!(?dev_idx, ?dev_name, "bind device doen");
+        let c_dev_name = std::ffi::CString::new(dev_name.clone()).map_err(|err| {
+            TunnelError::InvalidAddr(format!("invalid interface name {dev_name}: {err}"))
+        })?;
+        let dev_idx = unsafe { nix::libc::if_nametoindex(c_dev_name.as_ptr()) };
+        let Some(dev_idx) = std::num::NonZeroU32::new(dev_idx) else {
+            return Err(TunnelError::InvalidAddr(format!(
+                "network interface not found: {dev_name}"
+            )));
+        };
+        tracing::warn!(?dev_idx, ?dev_name, "bind device");
+        if bind_addr.is_ipv4() {
+            socket2_socket.bind_device_by_index_v4(Some(dev_idx))?;
+        } else {
+            socket2_socket.bind_device_by_index_v6(Some(dev_idx))?;
         }
+        tracing::warn!(?dev_idx, ?dev_name, "bind device done");
     }
 
     #[cfg(any(
@@ -559,6 +221,8 @@ pub fn bind<B: Bindable>(
     #[builder(default, into)] dev: BindDev,
     net_ns: Option<NetNS>,
     #[builder(default)] only_v6: bool,
+    #[builder(default = !cfg!(target_os = "windows"))] reuse_addr: bool,
+    #[builder(default)] reuse_port: bool,
     /// Linux SO_MARK (fwmark) to apply to the socket. `None` leaves SO_MARK
     /// untouched; `Some(mark)` applies that exact value, including `Some(0)`.
     socket_mark: Option<u32>,
@@ -570,35 +234,34 @@ pub fn bind<B: Bindable>(
         BindDev::Custom(s) => Some(s),
     };
     let socket = socket2::Socket::new(socket2::Domain::for_address(addr), B::TYPE, B::PROTOCOL)?;
-    setup_socket2_ext(&socket, &addr, dev, only_v6, socket_mark)?;
+    setup_socket2_ext(
+        &socket,
+        &addr,
+        dev,
+        only_v6,
+        reuse_addr,
+        reuse_port,
+        socket_mark,
+    )?;
     B::finalize(socket)
-}
-
-pub fn reserve_buf(buf: &mut BytesMut, min_size: usize, max_size: usize) {
-    if buf.capacity() < min_size {
-        buf.reserve(max_size);
-    }
 }
 
 // endregion
 
-pub mod tests {
+#[cfg(test)]
+pub(crate) mod tests {
     use atomic_shim::AtomicU64;
     use std::{sync::Arc, time::Instant};
 
     use futures::{Future, SinkExt, StreamExt};
     use tokio_util::bytes::{BufMut, Bytes, BytesMut};
 
-    use crate::{
-        common::netns::NetNS,
-        tunnel::{TunnelConnector, TunnelListener, packet_def::ZCPacket},
+    use easytier_core::{
+        connectivity::protocol::raw::TunnelDialer, packet::ZCPacket, socket::SocketListener,
+        tunnel::Tunnel,
     };
 
-    #[cfg(test)]
-    use crate::tunnel::{
-        TunnelError,
-        packet_def::{PEER_MANAGER_HEADER_SIZE, TCP_TUNNEL_HEADER_SIZE},
-    };
+    use crate::common::netns::NetNS;
 
     #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
     #[test]
@@ -653,21 +316,26 @@ pub mod tests {
         assert_eq!(read_so_mark(&socket), 0);
     }
 
+    #[cfg(any(
+        target_os = "android",
+        target_os = "fuchsia",
+        target_os = "linux",
+        target_env = "ohos"
+    ))]
     #[test]
-    fn framed_reader_rejects_short_peer_manager_body() {
-        let mut buf = BytesMut::new();
-        buf.put_u32_le((PEER_MANAGER_HEADER_SIZE - 1) as u32);
-        buf.resize(TCP_TUNNEL_HEADER_SIZE + PEER_MANAGER_HEADER_SIZE - 1, 0);
+    fn bind_custom_device_is_applied_for_unspecified_addr() {
+        use std::net::SocketAddr;
+        use tokio::net::UdpSocket;
 
-        let ret = super::FramedReader::<tokio::io::Empty>::extract_one_packet(&mut buf, 2000);
-
-        assert!(matches!(
-            ret,
-            Some(Err(TunnelError::InvalidPacket(msg))) if msg == "body too short"
-        ));
+        let addr: SocketAddr = "0.0.0.0:0".parse().unwrap();
+        let _err = super::bind::<UdpSocket>()
+            .addr(addr)
+            .dev("et/invalid-device-name")
+            .call()
+            .expect_err("custom device must not be skipped for unspecified bind addr");
     }
 
-    pub async fn _tunnel_echo_server(tunnel: Box<dyn super::Tunnel>, once: bool) {
+    pub async fn _tunnel_echo_server(tunnel: Box<dyn Tunnel>, once: bool) {
         let (mut recv, mut send) = tunnel.split();
 
         if !once {
@@ -700,33 +368,15 @@ pub mod tests {
         tracing::warn!("echo server exit...");
     }
 
-    pub(crate) async fn _tunnel_pingpong<L, C>(listener: L, connector: C)
-    where
-        L: TunnelListener + Send + Sync + 'static,
-        C: TunnelConnector + Send + Sync + 'static,
-    {
-        _tunnel_pingpong_netns_with_timeout(
-            listener,
-            connector,
-            NetNS::new(None),
-            NetNS::new(None),
-            "12345678abcdefg".as_bytes().to_vec(),
-            // only used by tunnel test, so set a long timeout
-            tokio::time::Duration::from_secs(5),
-        )
-        .await
-        .unwrap();
-    }
-
     async fn _tunnel_pingpong_netns<L, C>(
         mut listener: L,
-        mut connector: C,
+        connector: C,
         l_netns: NetNS,
         c_netns: NetNS,
         buf: Vec<u8>,
     ) where
-        L: TunnelListener + Send + Sync + 'static,
-        C: TunnelConnector + Send + Sync + 'static,
+        L: SocketListener<Accepted = Box<dyn Tunnel>> + Sync + 'static,
+        C: TunnelDialer,
     {
         l_netns
             .run_async(|| async {
@@ -791,8 +441,8 @@ pub mod tests {
         timeout: std::time::Duration,
     ) -> Result<(), anyhow::Error>
     where
-        L: TunnelListener + Send + Sync + 'static,
-        C: TunnelConnector + Send + Sync + 'static,
+        L: SocketListener<Accepted = Box<dyn Tunnel>> + Sync + 'static,
+        C: TunnelDialer,
     {
         let handle = tokio::spawn(async move {
             _tunnel_pingpong_netns(listener, connector, l_netns, c_netns, buf).await;
@@ -821,23 +471,15 @@ pub mod tests {
         }
     }
 
-    pub(crate) async fn _tunnel_bench<L, C>(listener: L, connector: C)
-    where
-        L: TunnelListener + Send + Sync + 'static,
-        C: TunnelConnector + Send + Sync + 'static,
-    {
-        _tunnel_bench_netns(listener, connector, NetNS::new(None), NetNS::new(None)).await;
-    }
-
     pub(crate) async fn _tunnel_bench_netns<L, C>(
         mut listener: L,
-        mut connector: C,
+        connector: C,
         netns_l: NetNS,
         netns_c: NetNS,
     ) -> usize
     where
-        L: TunnelListener + Send + Sync + 'static,
-        C: TunnelConnector + Send + Sync + 'static,
+        L: SocketListener<Accepted = Box<dyn Tunnel>> + Sync + 'static,
+        C: TunnelDialer,
     {
         {
             let _g = netns_l.guard();

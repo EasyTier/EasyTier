@@ -11,7 +11,10 @@ use easytier::{
         api::manage::{ConfigSource as RpcConfigSource, NetworkConfig, NetworkMeta},
         common::Uuid as RpcUuid,
     },
-    rpc_service::remote_client::{ListNetworkProps, PersistentConfig as _, Storage as _},
+};
+use easytier_core::management::config_source_from_rpc;
+use easytier_core::management::remote_client::{
+    ListNetworkProps, PersistentConfig as _, Storage as _,
 };
 
 use super::storage::Storage;
@@ -469,7 +472,7 @@ pub(super) async fn sync_running_config_sources(
             continue;
         };
 
-        let Some(running_source) = ConfigSource::from_rpc(meta.source) else {
+        let Some(running_source) = config_source_from_rpc(meta.source) else {
             continue;
         };
         let local_source = PersistedConfigSource::from_db(&local_cfg.source);
@@ -503,9 +506,11 @@ mod tests {
     use std::collections::HashSet;
 
     use easytier::{
-        common::config::{ConfigLoader as _, ConfigSource},
+        common::config::{ConfigLoader as _, ConfigSource, NetworkConfigExt},
         proto::api::manage::{ConfigSource as RpcConfigSource, NetworkConfig, NetworkMeta},
-        rpc_service::remote_client::{ListNetworkProps, PersistentConfig as _, Storage as _},
+    };
+    use easytier_core::management::remote_client::{
+        ListNetworkProps, PersistentConfig as _, Storage as _,
     };
     use serde_json::json;
 
