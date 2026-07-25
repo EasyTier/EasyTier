@@ -22,8 +22,9 @@ use crate::{
         IpVersion, ListenerConnectionCounter, SocketContext, SocketListener,
         tcp::{TcpListenOptions, TcpSocketListener, VirtualTcpListener, VirtualTcpListenerFactory},
         udp::{
-            UdpSession, UdpSessionAcceptKind, UdpSessionListenRequest, UdpSessionSocket,
-            UdpSessionSocketListener, VirtualUdpSocketFactory,
+            RoutedUdpSession, UdpSession, UdpSessionAcceptKind, UdpSessionListenRequest,
+            UdpSessionRouteSet, UdpSessionSocket, UdpSessionSocketListener,
+            VirtualUdpSocketFactory,
         },
     },
     tunnel::{Tunnel, ring::RingTunnelRegistry},
@@ -104,10 +105,12 @@ where
     async fn handle_upgrade(&self, upgrade: ServerProtocolUpgrade) -> anyhow::Result<()> {
         match upgrade {
             ServerProtocolUpgrade::Tunnel(tunnel) => self.handle_tunnel(tunnel).await,
-            ServerProtocolUpgrade::Acceptor(mut acceptor) => loop {
-                let tunnel = acceptor.accept().await?;
-                let _ = self.handle_tunnel(tunnel).await;
-            },
+            ServerProtocolUpgrade::Acceptor(mut acceptor) => {
+                while let Some(tunnel) = acceptor.accept().await? {
+                    let _ = self.handle_tunnel(tunnel).await;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -184,7 +187,7 @@ pub(crate) enum TransportListenerConfig {
     Udp {
         url: Url,
         request: UdpSessionListenRequest,
-        accept_kind: UdpSessionAcceptKind,
+        routes: UdpSessionRouteSet,
         must_succeed: bool,
     },
 }
@@ -211,9 +214,11 @@ impl TransportListenerConfig {
                 self,
                 Self::Udp {
                     url,
-                    accept_kind: UdpSessionAcceptKind::EasyTierMux,
+                    routes,
                     ..
                 } if url.scheme() == "udp"
+                    && routes.len() == 1
+                    && routes.contains(UdpSessionAcceptKind::EasyTierMux)
             )
     }
 }
@@ -408,7 +413,7 @@ where
 {
     url: Url,
     request: UdpSessionListenRequest,
-    accept_kind: UdpSessionAcceptKind,
+    routes: UdpSessionRouteSet,
     host: Arc<H>,
     dns: Arc<dyn DnsResolver>,
     inner: Option<UdpSessionSocketListener<H>>,
@@ -423,19 +428,19 @@ where
     fn new(
         url: Url,
         request: UdpSessionListenRequest,
-        accept_kind: UdpSessionAcceptKind,
+        routes: UdpSessionRouteSet,
         host: Arc<H>,
         dns: Arc<dyn DnsResolver>,
     ) -> Self {
-        let protocol_admission = matches!(
-            accept_kind,
-            UdpSessionAcceptKind::Classified(crate::socket::udp::UdpSessionProtocol::Quic)
-        )
-        .then(ServerProtocolAdmissionController::quic);
+        let protocol_admission = routes
+            .contains(UdpSessionAcceptKind::Classified(
+                crate::socket::udp::UdpSessionProtocol::Quic,
+            ))
+            .then(ServerProtocolAdmissionController::quic);
         Self {
             url,
             request,
-            accept_kind,
+            routes,
             host,
             dns,
             inner: None,
@@ -459,7 +464,7 @@ where
         formatter
             .debug_struct("UdpTransportListener")
             .field("url", &self.url)
-            .field("accept_kind", &self.accept_kind)
+            .field("routes", &self.routes)
             .field("listening", &self.inner.is_some())
             .finish()
     }
@@ -492,10 +497,10 @@ where
             };
             request.bind.only_v6 = local_addr.is_ipv6();
         }
-        let mut inner = UdpSessionSocketListener::new_with_request(
+        let mut inner = UdpSessionSocketListener::new_with_routes(
             self.url.clone(),
             request,
-            self.accept_kind,
+            self.routes,
             self.host.clone(),
         );
         inner.listen().await?;
@@ -505,9 +510,12 @@ where
 
     async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
         loop {
-            let session = self.inner()?.accept().await?;
-            let admission = match &self.protocol_admission {
-                Some(controller) => match controller.try_admit() {
+            let RoutedUdpSession { session, route } = self.inner()?.accept_routed_session().await?;
+            let admission = match (&self.protocol_admission, route) {
+                (
+                    Some(controller),
+                    UdpSessionAcceptKind::Classified(crate::socket::udp::UdpSessionProtocol::Quic),
+                ) => match controller.try_admit() {
                     Some(admission) => Some(admission),
                     None => {
                         tracing::debug!(
@@ -517,11 +525,11 @@ where
                         continue;
                     }
                 },
-                None => None,
+                _ => None,
             };
             return Ok(AcceptedTransport::Udp {
                 session,
-                local_url: self.local_url(),
+                local_url: udp_route_url(&self.local_url(), route),
                 admission,
             });
         }
@@ -534,12 +542,32 @@ where
             .unwrap_or_else(|| self.url.clone())
     }
 
+    fn advertised_urls(&self) -> Vec<Url> {
+        let local_url = self.local_url();
+        self.routes
+            .iter()
+            .map(|route| udp_route_url(&local_url, route))
+            .collect()
+    }
+
+    fn accepted_url(&self, accepted: &Self::Accepted) -> Url {
+        accepted.local_url().clone()
+    }
+
     fn connection_counter(&self) -> Arc<dyn ListenerConnectionCounter> {
         self.inner
             .as_ref()
             .map(SocketListener::connection_counter)
             .unwrap_or_else(|| Arc::new(EmptyTransportConnectionCounter))
     }
+}
+
+fn udp_route_url(physical_url: &Url, route: UdpSessionAcceptKind) -> Url {
+    let mut logical_url = physical_url.clone();
+    logical_url
+        .set_scheme(route.scheme())
+        .expect("UDP route schemes must be valid URL schemes");
+    logical_url
 }
 
 #[derive(Debug)]
@@ -647,7 +675,7 @@ where
                 TransportListenerConfig::Udp {
                     url,
                     request,
-                    accept_kind,
+                    routes,
                     ..
                 } => {
                     let host = host.clone();
@@ -657,7 +685,7 @@ where
                             Box::new(UdpTransportListener::new(
                                 url.clone(),
                                 request.clone(),
-                                accept_kind,
+                                routes,
                                 host.clone(),
                                 dns.clone(),
                             ))
@@ -987,10 +1015,8 @@ mod tests {
 
     #[async_trait]
     impl ServerTunnelAcceptor for QueueTunnelAcceptor {
-        async fn accept(&mut self) -> anyhow::Result<Box<dyn crate::tunnel::Tunnel>> {
-            self.tunnels
-                .pop_front()
-                .ok_or_else(|| anyhow::anyhow!("server tunnel acceptor finished"))
+        async fn accept(&mut self) -> anyhow::Result<Option<Box<dyn crate::tunnel::Tunnel>>> {
+            Ok(self.tunnels.pop_front())
         }
     }
 
@@ -1220,7 +1246,9 @@ mod tests {
                 &"wg://listener.example".parse()?,
                 SocketContext::default().with_socket_mark(Some(7)),
             ),
-            UdpSessionAcceptKind::Classified(UdpSessionProtocol::WireGuard),
+            UdpSessionRouteSet::singleton(UdpSessionAcceptKind::Classified(
+                UdpSessionProtocol::WireGuard,
+            )),
             host.clone(),
             Arc::new(MockDns),
         );
@@ -1250,13 +1278,113 @@ mod tests {
                 &udp_v6_url,
                 SocketContext::default(),
             ),
-            UdpSessionAcceptKind::EasyTierMux,
+            UdpSessionRouteSet::singleton(UdpSessionAcceptKind::EasyTierMux),
             host.clone(),
             Arc::new(MockDns),
         );
         udp_v6.listen().await?;
         assert_eq!(host.udp_bind_options(1).context.ip_version, IpVersion::V6);
         assert!(host.udp_bind_options(1).only_v6);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn umbrella_udp_listener_binds_once_and_routes_all_protocols() -> anyhow::Result<()> {
+        let host = Arc::new(MockHost::new());
+        let routes = UdpSessionRouteSet::new([
+            UdpSessionAcceptKind::EasyTierMux,
+            UdpSessionAcceptKind::Classified(UdpSessionProtocol::WireGuard),
+            UdpSessionAcceptKind::Classified(UdpSessionProtocol::Quic),
+        ]);
+        let mut listener = UdpTransportListener::<MockHost, MockTcpSocket>::new(
+            "udp://127.0.0.1:0".parse()?,
+            UdpSessionListenRequest::new(UdpBindOptions::port_bound_listener(
+                "127.0.0.1:0".parse()?,
+            )),
+            routes,
+            host.clone(),
+            Arc::new(MockDns),
+        );
+        listener.listen().await?;
+
+        assert_eq!(host.udp_bind_options.lock().unwrap().len(), 1);
+        assert_eq!(
+            listener
+                .advertised_urls()
+                .into_iter()
+                .map(|url| url.to_string())
+                .collect::<Vec<_>>(),
+            vec![
+                "udp://127.0.0.1:22000",
+                "wg://127.0.0.1:22000",
+                "quic://127.0.0.1:22000",
+            ]
+        );
+
+        let socket = host.udp_socket(0);
+        socket.receive_from(wireguard_packet(), "127.0.0.1:32001".parse()?);
+        let wireguard =
+            crate::foundation::time::timeout(Duration::from_secs(1), listener.accept()).await??;
+        assert_eq!(wireguard.local_url().scheme(), "wg");
+
+        socket.receive_from(
+            new_syn_packet(1, 2).into_bytes().to_vec(),
+            "127.0.0.1:32002".parse()?,
+        );
+        let udp =
+            crate::foundation::time::timeout(Duration::from_secs(1), listener.accept()).await??;
+        assert_eq!(udp.local_url().scheme(), "udp");
+
+        socket.receive_from(quic_initial_packet(3), "127.0.0.1:32003".parse()?);
+        let quic =
+            crate::foundation::time::timeout(Duration::from_secs(1), listener.accept()).await??;
+        assert_eq!(quic.local_url().scheme(), "quic");
+        assert!(matches!(
+            quic,
+            AcceptedTransport::Udp {
+                admission: Some(_),
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn umbrella_udp_listener_accepts_only_selected_routes() -> anyhow::Result<()> {
+        let host = Arc::new(MockHost::new());
+        let routes = UdpSessionRouteSet::singleton(UdpSessionAcceptKind::Classified(
+            UdpSessionProtocol::WireGuard,
+        ));
+        let mut listener = UdpTransportListener::<MockHost, MockTcpSocket>::new(
+            "udp://127.0.0.1:0".parse()?,
+            UdpSessionListenRequest::new(UdpBindOptions::port_bound_listener(
+                "127.0.0.1:0".parse()?,
+            )),
+            routes,
+            host.clone(),
+            Arc::new(MockDns),
+        );
+        listener.listen().await?;
+        assert_eq!(
+            listener.advertised_urls(),
+            vec!["wg://127.0.0.1:22000".parse()?]
+        );
+
+        let socket = host.udp_socket(0);
+        socket.receive_from(
+            new_syn_packet(1, 2).into_bytes().to_vec(),
+            "127.0.0.1:32001".parse()?,
+        );
+        assert!(
+            crate::foundation::time::timeout(Duration::from_millis(50), listener.accept())
+                .await
+                .is_err()
+        );
+
+        socket.receive_from(wireguard_packet(), "127.0.0.1:32002".parse()?);
+        let accepted =
+            crate::foundation::time::timeout(Duration::from_secs(1), listener.accept()).await??;
+        assert_eq!(accepted.local_url().scheme(), "wg");
         Ok(())
     }
 
@@ -1330,7 +1458,9 @@ mod tests {
             UdpSessionListenRequest::new(UdpBindOptions::port_bound_listener(
                 "127.0.0.1:0".parse()?,
             )),
-            UdpSessionAcceptKind::Classified(UdpSessionProtocol::Quic),
+            UdpSessionRouteSet::singleton(UdpSessionAcceptKind::Classified(
+                UdpSessionProtocol::Quic,
+            )),
             host.clone(),
             Arc::new(MockDns),
         );
@@ -1380,7 +1510,7 @@ mod tests {
         let handler = ProtocolAcceptedTransportHandler::new(&tunnel_handler, protocol.clone());
 
         let (stream, _remote) = tokio::io::duplex(64);
-        let tcp_result = handler
+        handler
             .handle_accepted_socket(AcceptedTransport::Tcp {
                 socket: MockTcpSocket {
                     stream,
@@ -1390,9 +1520,7 @@ mod tests {
                 local_url: "tcp://127.0.0.1:21000".parse().unwrap(),
                 upgrade_permit: None,
             })
-            .await
-            .unwrap_err();
-        assert_eq!(tcp_result.to_string(), "server tunnel acceptor finished");
+            .await?;
         assert_eq!(protocol.tcp_calls.load(Ordering::Relaxed), 1);
         assert_eq!(tunnel_handler.calls.load(Ordering::Relaxed), 2);
 
@@ -1496,7 +1624,7 @@ mod tests {
                     request: UdpSessionListenRequest::new(UdpBindOptions::port_bound_listener(
                         "127.0.0.1:0".parse().unwrap(),
                     )),
-                    accept_kind: UdpSessionAcceptKind::EasyTierMux,
+                    routes: UdpSessionRouteSet::singleton(UdpSessionAcceptKind::EasyTierMux),
                     must_succeed: true,
                 },
                 TransportListenerConfig::Udp {
@@ -1504,7 +1632,9 @@ mod tests {
                     request: UdpSessionListenRequest::new(UdpBindOptions::port_bound_listener(
                         "127.0.0.1:0".parse().unwrap(),
                     )),
-                    accept_kind: UdpSessionAcceptKind::Classified(UdpSessionProtocol::WireGuard),
+                    routes: UdpSessionRouteSet::singleton(UdpSessionAcceptKind::Classified(
+                        UdpSessionProtocol::WireGuard,
+                    )),
                     must_succeed: true,
                 },
             ],

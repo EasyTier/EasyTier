@@ -453,6 +453,7 @@ struct AutoSackVirtualUdpSocket {
     local_addr: SocketAddr,
     incoming: Mutex<VecDeque<(Vec<u8>, SocketAddr)>>,
     sent: Mutex<Vec<(Vec<u8>, SocketAddr)>>,
+    send_meta_attempts: Mutex<Vec<UdpSocketSendMeta>>,
     incoming_notify: tokio::sync::Notify,
 }
 
@@ -462,12 +463,17 @@ impl AutoSackVirtualUdpSocket {
             local_addr,
             incoming: Mutex::new(VecDeque::new()),
             sent: Mutex::new(Vec::new()),
+            send_meta_attempts: Mutex::new(Vec::new()),
             incoming_notify: tokio::sync::Notify::new(),
         }
     }
 
     fn sent(&self) -> Vec<(Vec<u8>, SocketAddr)> {
         self.sent.lock().unwrap().clone()
+    }
+
+    fn send_meta_attempts(&self) -> Vec<UdpSocketSendMeta> {
+        self.send_meta_attempts.lock().unwrap().clone()
     }
 }
 
@@ -492,6 +498,16 @@ impl VirtualUdpSocket for AutoSackVirtualUdpSocket {
             }
         }
         Ok(data.len())
+    }
+
+    async fn send_to_with_meta(
+        &self,
+        data: &[u8],
+        addr: SocketAddr,
+        meta: UdpSocketSendMeta,
+    ) -> io::Result<usize> {
+        self.send_meta_attempts.lock().unwrap().push(meta);
+        self.send_to(data, addr).await
     }
 
     async fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
@@ -562,6 +578,34 @@ where
     )
 }
 
+fn create_test_classified_session<S>(
+    socket: Arc<S>,
+    key: ClassifiedUdpSessionKey,
+    sessions: Arc<ClassifiedUdpSessionRegistry>,
+) -> (UdpSession, watch::Sender<bool>)
+where
+    S: VirtualUdpSocket,
+{
+    let local_addr = socket.local_addr().unwrap();
+    let rings = create_udp_session_rings();
+    sessions.insert(key, udp_session_registry_entry(&rings));
+    let close = UdpSessionClose::classified(key, rings.close_tx.clone(), sessions);
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    (
+        UdpSession::new(
+            socket,
+            local_addr,
+            key.peer_addr,
+            key.protocol.session_kind(),
+            UdpSessionCodec::Identity,
+            rings,
+            close,
+            shutdown_rx,
+        ),
+        shutdown_tx,
+    )
+}
+
 async fn wait_for_sent<F>(mut sent: F, min_len: usize) -> Vec<(Vec<u8>, SocketAddr)>
 where
     F: FnMut() -> Vec<(Vec<u8>, SocketAddr)>,
@@ -596,6 +640,80 @@ fn wireguard_packet_with_easy_tier_data_header(payload: &[u8]) -> Vec<u8> {
     packet
 }
 
+fn quic_initial_packet(dcid: u8) -> Vec<u8> {
+    let mut packet = vec![0; 1200];
+    packet[0] = 0xc0;
+    packet[4] = 1;
+    packet[5] = 1;
+    packet[6] = dcid;
+    packet[7] = 0;
+    packet[8] = 0;
+    packet[9] = 1;
+    packet
+}
+
+#[tokio::test]
+async fn udp_layer_remote_tuple_is_owned_by_one_protocol_at_a_time() {
+    let local_addr = SocketAddr::from(([127, 0, 0, 1], 12000));
+    let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
+    let socket = Arc::new(AutoSackVirtualUdpSocket::new(local_addr));
+    let routes = UdpSessionRouteSet::new([
+        UdpSessionAcceptKind::EasyTierMux,
+        UdpSessionAcceptKind::Classified(UdpSessionProtocol::WireGuard),
+        UdpSessionAcceptKind::Classified(UdpSessionProtocol::Quic),
+    ]);
+    let layer = Arc::new(UdpSessionLayer::new_with_stun_responder_and_routes(
+        socket.clone(),
+        Arc::new(NoopUdpSessionStunResponder),
+        routes,
+    ));
+
+    socket
+        .incoming
+        .lock()
+        .unwrap()
+        .push_back((wireguard_transport_packet(b"owner"), peer_addr));
+    socket.incoming_notify.notify_one();
+    let wireguard = tokio::time::timeout(
+        Duration::from_secs(1),
+        layer.accept_classified_session(UdpSessionProtocol::WireGuard),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+
+    socket
+        .incoming
+        .lock()
+        .unwrap()
+        .push_back((quic_initial_packet(1), peer_addr));
+    socket.incoming_notify.notify_one();
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            layer.accept_classified_session(UdpSessionProtocol::Quic)
+        )
+        .await
+        .is_err()
+    );
+
+    drop(wireguard);
+    socket
+        .incoming
+        .lock()
+        .unwrap()
+        .push_back((quic_initial_packet(2), peer_addr));
+    socket.incoming_notify.notify_one();
+    let quic = tokio::time::timeout(
+        Duration::from_secs(1),
+        layer.accept_classified_session(UdpSessionProtocol::Quic),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(quic.kind(), UdpSessionKind::Quic);
+}
+
 #[tokio::test]
 async fn wireguard_udp_session_sends_to_peer_addr() {
     let local_addr = SocketAddr::from(([127, 0, 0, 1], 12000));
@@ -612,6 +730,27 @@ async fn wireguard_udp_session_sends_to_peer_addr() {
 
     let sent = wait_for_sent(|| socket.sent(), 1).await;
     assert_eq!(sent, vec![(b"hello".to_vec(), peer_addr)]);
+    assert!(socket.send_meta_attempts().is_empty());
+}
+
+#[tokio::test]
+async fn quic_udp_session_forwards_send_source_ip() {
+    let local_addr = SocketAddr::from(([0, 0, 0, 0], 12000));
+    let peer_addr = SocketAddr::from(([192, 0, 2, 2], 12001));
+    let source_ip = Ipv4Addr::new(192, 0, 2, 1).into();
+    let socket = Arc::new(MockVirtualUdpSocket::new(local_addr, Vec::new()));
+    let session =
+        UdpSession::identity_standalone(socket.clone(), peer_addr, UdpSessionKind::Quic).unwrap();
+    let meta = UdpSocketSendMeta {
+        src_ip: Some(source_ip),
+        src_ifindex: None,
+    };
+
+    assert_eq!(session.send_with_meta(b"hello", meta).await.unwrap(), 5);
+    assert_eq!(
+        socket.send_attempts(),
+        vec![(b"hello".to_vec(), peer_addr, meta)]
+    );
 }
 
 #[tokio::test]
@@ -1138,6 +1277,32 @@ async fn easy_tier_mux_udp_session_send_failure_closes_session() {
 }
 
 #[tokio::test]
+async fn stale_classified_session_cleanup_does_not_close_replacement() {
+    let local_addr = SocketAddr::from(([127, 0, 0, 1], 12000));
+    let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
+    let key = ClassifiedUdpSessionKey::new(UdpSessionProtocol::Quic, peer_addr);
+    let socket = Arc::new(MockVirtualUdpSocket::new(local_addr, Vec::new()));
+    let sessions = Arc::new(DashMap::new());
+    let (old_session, _old_shutdown_tx) =
+        create_test_classified_session(socket.clone(), key, sessions.clone());
+
+    old_session.close();
+    assert!(!sessions.contains_key(&key));
+
+    let (replacement, _replacement_shutdown_tx) =
+        create_test_classified_session(socket, key, sessions.clone());
+    drop(old_session);
+
+    assert!(sessions.contains_key(&key));
+    let mut buf = [0; 1];
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), replacement.recv(&mut buf))
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
 async fn easy_tier_mux_udp_session_receives_only_peer_data_payloads() {
     let local_addr = SocketAddr::from(([127, 0, 0, 1], 12000));
     let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
@@ -1285,7 +1450,9 @@ async fn udp_session_recv_loop_error_closes_registered_sessions() {
     );
     let pending_connects = Arc::new(DashMap::new());
     let classified_sessions = Arc::new(DashMap::new());
-    let classified_accepts = create_classified_udp_session_accepts();
+    let tuple_owners = Arc::new(DashMap::new());
+    let routes = UdpSessionRouteSet::singleton(UdpSessionAcceptKind::EasyTierMux);
+    let classified_accepts = create_classified_udp_session_accepts(routes);
     let (mux_accepted_tx, _mux_accepted_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
     let (control_tx, _control_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
 
@@ -1293,12 +1460,14 @@ async fn udp_session_recv_loop_error_closes_registered_sessions() {
         socket,
         sessions.clone(),
         classified_sessions.clone(),
+        tuple_owners,
         classified_accepts,
         pending_connects.clone(),
         mux_accepted_tx,
         control_tx,
         Arc::new(NoopUdpSessionStunResponder),
         session_shutdown_tx,
+        true,
     )
     .await;
 
@@ -1340,6 +1509,7 @@ async fn udp_session_layer_accepts_syn_and_sends_sack() {
     handle_new_easy_tier_mux_connect(
         socket.clone(),
         sessions.clone(),
+        Arc::new(DashMap::new()),
         mux_accepted_tx,
         peer_addr,
         conn_id,
@@ -1383,6 +1553,7 @@ async fn duplicate_syn_sack_send_failure_closes_existing_session() {
     handle_new_easy_tier_mux_connect(
         socket,
         sessions.clone(),
+        Arc::new(DashMap::new()),
         mux_accepted_tx,
         peer_addr,
         conn_id,
@@ -1420,6 +1591,7 @@ async fn full_accept_queue_does_not_block_udp_session_recv_loop() {
     handle_new_easy_tier_mux_connect(
         socket.clone(),
         sessions.clone(),
+        Arc::new(DashMap::new()),
         mux_accepted_tx,
         peer_addr,
         conn_id,
@@ -1607,7 +1779,9 @@ async fn udp_session_recv_loop_does_not_wait_for_stun_responder() {
     );
     let pending_connects = Arc::new(DashMap::new());
     let classified_sessions = Arc::new(DashMap::new());
-    let classified_accepts = create_classified_udp_session_accepts();
+    let tuple_owners = Arc::new(DashMap::new());
+    let routes = UdpSessionRouteSet::singleton(UdpSessionAcceptKind::EasyTierMux);
+    let classified_accepts = create_classified_udp_session_accepts(routes);
     let (mux_accepted_tx, _mux_accepted_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
     let (control_tx, _control_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
     let stun_responder = Arc::new(BlockingUdpSessionStunResponder::default());
@@ -1616,12 +1790,14 @@ async fn udp_session_recv_loop_does_not_wait_for_stun_responder() {
         socket,
         sessions,
         classified_sessions,
+        tuple_owners,
         classified_accepts,
         pending_connects,
         mux_accepted_tx,
         control_tx,
         stun_responder.clone(),
         session_shutdown_tx,
+        true,
     ));
 
     tokio::time::timeout(Duration::from_secs(1), stun_responder.started.notified())

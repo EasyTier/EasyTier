@@ -80,7 +80,7 @@ pub trait ClientProtocolUpgrader<TcpSocket>: Send + Sync + 'static {
 
 #[async_trait]
 pub trait ServerTunnelAcceptor: Send + 'static {
-    async fn accept(&mut self) -> anyhow::Result<Box<dyn Tunnel>>;
+    async fn accept(&mut self) -> anyhow::Result<Option<Box<dyn Tunnel>>>;
 }
 
 pub enum ServerProtocolUpgrade {
