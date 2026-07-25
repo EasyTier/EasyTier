@@ -130,8 +130,11 @@ WASI DataPlane Adapter
         v
 DataPlaneSession
   - ResourceTable
-  - OperationBroker
-  - CompletionQueue
+  - data-plane operation metadata and quotas
+        |
+        +-- foundation::OperationBroker
+              - operation lifecycle
+              - CompletionQueue
         |
         +----------------------- calls DataPlaneRuntime
 ```
@@ -428,13 +431,20 @@ Each core instance owns a `DataPlaneSession`:
 ```text
 DataPlaneSession
   ResourceTable
-  OperationBroker
-  CompletionQueue
+  data-plane operation metadata and quotas
+  foundation::OperationBroker
   CompletionNotifier
 ```
 
 The native C ABI may still require process-global opaque session handles, but
 the actual resource and operation namespaces are instance scoped.
+
+The crate-private foundation broker is a concrete Module rather than an
+Adapter trait. It owns ID allocation, terminal-operation arbitration, retained
+outcomes, and completion queue transitions without depending on data-plane
+types. `DataPlaneSession` composes it under the session's existing lock so
+resource creation, quota settlement, and completion publication remain one
+atomic transition.
 
 Resource handles identify:
 

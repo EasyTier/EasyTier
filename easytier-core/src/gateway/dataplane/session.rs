@@ -1,7 +1,7 @@
 //! Instance-scoped data-plane resources, operations, and completion delivery.
 
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet},
     future::Future,
     net::SocketAddr,
     sync::{Arc, Condvar, Mutex, MutexGuard, Weak},
@@ -14,9 +14,14 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::socket::{
-    tcp::{VirtualTcpListenerFactory, VirtualTcpSocketFactory},
-    udp::VirtualUdpSocketFactory,
+use crate::{
+    foundation::operation_broker::{
+        AccessError as OperationAccessError, AdmissionError, OperationBroker,
+    },
+    socket::{
+        tcp::{VirtualTcpListenerFactory, VirtualTcpSocketFactory},
+        udp::VirtualUdpSocketFactory,
+    },
 };
 
 use super::{
@@ -77,21 +82,21 @@ struct ResourceEntry {
     pending_operations: HashSet<DataPlaneOperationId>,
 }
 
-enum OperationSlotState {
-    Pending,
-    Queued(DataPlaneOperationOutcome),
-    Drained(DataPlaneOperationOutcome),
-    Discarding,
+#[derive(Default)]
+struct ResourceTable {
+    next_resource_id: u64,
+    entries: HashMap<DataPlaneResourceId, ResourceEntry>,
+    reserved: usize,
 }
 
-struct OperationSlot {
-    kind: DataPlaneOperationKind,
+struct OperationMetadata {
     target: Option<DataPlaneResourceId>,
-    cancel: CancellationToken,
     reserved_result_bytes: usize,
     reserves_resource: bool,
-    state: OperationSlotState,
 }
+
+type DataPlaneOperationBroker =
+    OperationBroker<DataPlaneOperationKind, DataPlaneOperationOutcome, OperationMetadata>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SessionLifecycle {
@@ -102,28 +107,21 @@ enum SessionLifecycle {
 
 struct SessionState {
     lifecycle: SessionLifecycle,
-    next_operation_id: u64,
-    next_resource_id: u64,
-    resources: HashMap<DataPlaneResourceId, ResourceEntry>,
-    operations: HashMap<DataPlaneOperationId, OperationSlot>,
-    completions: VecDeque<DataPlaneCompletionDescriptor>,
-    reserved_resources: usize,
+    resources: ResourceTable,
+    broker: DataPlaneOperationBroker,
     retained_result_bytes: usize,
-    wake_generation: u64,
 }
 
-impl Default for SessionState {
-    fn default() -> Self {
+impl SessionState {
+    fn new(max_operations: usize) -> Self {
         Self {
             lifecycle: SessionLifecycle::Created,
-            next_operation_id: 1,
-            next_resource_id: 1,
-            resources: HashMap::new(),
-            operations: HashMap::new(),
-            completions: VecDeque::new(),
-            reserved_resources: 0,
+            resources: ResourceTable {
+                next_resource_id: 1,
+                ..ResourceTable::default()
+            },
+            broker: OperationBroker::new(max_operations),
             retained_result_bytes: 0,
-            wake_generation: 0,
         }
     }
 }
@@ -180,7 +178,7 @@ where
             runtime,
             consumer_lease: Mutex::new(None),
             limits,
-            state: Mutex::new(SessionState::default()),
+            state: Mutex::new(SessionState::new(limits.max_operations)),
             completion_condvar: Condvar::new(),
             completion_notify: tokio::sync::Notify::new(),
         })
@@ -241,35 +239,20 @@ where
         self.limits
     }
 
-    fn next_operation_id(state: &mut SessionState) -> DataPlaneResult<DataPlaneOperationId> {
-        let id = DataPlaneOperationId::from_raw(state.next_operation_id).ok_or_else(|| {
-            Self::error(
-                DataPlaneErrorKind::ResourceLimit,
-                "data-plane operation ID space is exhausted",
-            )
-        })?;
-        state.next_operation_id = state.next_operation_id.checked_add(1).ok_or_else(|| {
-            Self::error(
-                DataPlaneErrorKind::ResourceLimit,
-                "data-plane operation ID space is exhausted",
-            )
-        })?;
-        Ok(id)
-    }
-
-    fn next_resource_id(state: &mut SessionState) -> DataPlaneResult<DataPlaneResourceId> {
-        let id = DataPlaneResourceId::from_raw(state.next_resource_id).ok_or_else(|| {
+    fn next_resource_id(resources: &mut ResourceTable) -> DataPlaneResult<DataPlaneResourceId> {
+        let id = DataPlaneResourceId::from_raw(resources.next_resource_id).ok_or_else(|| {
             Self::error(
                 DataPlaneErrorKind::ResourceLimit,
                 "data-plane resource ID space is exhausted",
             )
         })?;
-        state.next_resource_id = state.next_resource_id.checked_add(1).ok_or_else(|| {
-            Self::error(
-                DataPlaneErrorKind::ResourceLimit,
-                "data-plane resource ID space is exhausted",
-            )
-        })?;
+        resources.next_resource_id =
+            resources.next_resource_id.checked_add(1).ok_or_else(|| {
+                Self::error(
+                    DataPlaneErrorKind::ResourceLimit,
+                    "data-plane resource ID space is exhausted",
+                )
+            })?;
         Ok(id)
     }
 
@@ -285,12 +268,6 @@ where
             return Err(Self::error(
                 DataPlaneErrorKind::InstanceStopped,
                 "data-plane session is not running",
-            ));
-        }
-        if state.operations.len() >= self.limits.max_operations {
-            return Err(Self::error(
-                DataPlaneErrorKind::ResourceLimit,
-                "too many outstanding data-plane operations",
             ));
         }
         let retained_result_bytes = state
@@ -311,8 +288,9 @@ where
         if reserves_resource {
             let resource_usage = state
                 .resources
+                .entries
                 .len()
-                .checked_add(state.reserved_resources)
+                .checked_add(state.resources.reserved)
                 .ok_or_else(|| {
                     Self::error(
                         DataPlaneErrorKind::ResourceLimit,
@@ -327,32 +305,41 @@ where
             }
         }
 
-        let operation_id = Self::next_operation_id(state)?;
-        let cancel = CancellationToken::new();
+        let admission = state
+            .broker
+            .admit(
+                kind,
+                OperationMetadata {
+                    target,
+                    reserved_result_bytes,
+                    reserves_resource,
+                },
+            )
+            .map_err(|error| match error {
+                AdmissionError::AtCapacity => Self::error(
+                    DataPlaneErrorKind::ResourceLimit,
+                    "too many outstanding data-plane operations",
+                ),
+                AdmissionError::IdExhausted => Self::error(
+                    DataPlaneErrorKind::ResourceLimit,
+                    "data-plane operation ID space is exhausted",
+                ),
+            })?;
+        let operation_id = DataPlaneOperationId::from_broker(admission.id);
         state.retained_result_bytes = retained_result_bytes;
         if reserves_resource {
-            state.reserved_resources += 1;
+            state.resources.reserved += 1;
         }
-        state.operations.insert(
-            operation_id,
-            OperationSlot {
-                kind,
-                target,
-                cancel: cancel.clone(),
-                reserved_result_bytes,
-                reserves_resource,
-                state: OperationSlotState::Pending,
-            },
-        );
         if let Some(resource_id) = target {
             state
                 .resources
+                .entries
                 .get_mut(&resource_id)
                 .expect("target resource was validated before admission")
                 .pending_operations
                 .insert(operation_id);
         }
-        Ok((operation_id, cancel))
+        Ok((operation_id, admission.cancellation))
     }
 
     fn require_read_size(&self, max_len: usize) -> DataPlaneResult<()> {
@@ -371,6 +358,7 @@ where
     ) -> DataPlaneResult<ResourceIo> {
         state
             .resources
+            .entries
             .get(&resource_id)
             .map(|resource| resource.io.clone())
             .ok_or_else(|| {
@@ -700,38 +688,43 @@ where
     }
 
     fn unlink_target_locked(
-        state: &mut SessionState,
+        resources: &mut ResourceTable,
         operation_id: DataPlaneOperationId,
         target: Option<DataPlaneResourceId>,
     ) {
         if let Some(resource_id) = target
-            && let Some(resource) = state.resources.get_mut(&resource_id)
+            && let Some(resource) = resources.entries.get_mut(&resource_id)
         {
             resource.pending_operations.remove(&operation_id);
         }
     }
 
-    fn release_result_reservation_locked(state: &mut SessionState, slot: &mut OperationSlot) {
-        state.retained_result_bytes = state
-            .retained_result_bytes
-            .saturating_sub(slot.reserved_result_bytes);
-        slot.reserved_result_bytes = 0;
+    fn release_result_reservation_locked(
+        retained_result_bytes: &mut usize,
+        metadata: &mut OperationMetadata,
+    ) {
+        *retained_result_bytes =
+            retained_result_bytes.saturating_sub(metadata.reserved_result_bytes);
+        metadata.reserved_result_bytes = 0;
     }
 
-    fn release_resource_reservation_locked(state: &mut SessionState, slot: &mut OperationSlot) {
-        if slot.reserves_resource {
-            state.reserved_resources = state.reserved_resources.saturating_sub(1);
-            slot.reserves_resource = false;
+    fn release_resource_reservation_locked(
+        resources: &mut ResourceTable,
+        metadata: &mut OperationMetadata,
+    ) {
+        if metadata.reserves_resource {
+            resources.reserved = resources.reserved.saturating_sub(1);
+            metadata.reserves_resource = false;
         }
     }
 
     fn insert_tcp_resource_locked(
-        state: &mut SessionState,
+        resources: &mut ResourceTable,
         stream: DataPlaneTcpStream,
     ) -> DataPlaneResult<DataPlaneResourceId> {
-        let resource_id = Self::next_resource_id(state)?;
+        let resource_id = Self::next_resource_id(resources)?;
         let (read, write) = tokio::io::split(stream);
-        state.resources.insert(
+        resources.entries.insert(
             resource_id,
             ResourceEntry {
                 io: ResourceIo::Tcp(Arc::new(TcpResource {
@@ -745,11 +738,11 @@ where
     }
 
     fn insert_listener_resource_locked(
-        state: &mut SessionState,
+        resources: &mut ResourceTable,
         listener: DataPlaneTcpListener,
     ) -> DataPlaneResult<DataPlaneResourceId> {
-        let resource_id = Self::next_resource_id(state)?;
-        state.resources.insert(
+        let resource_id = Self::next_resource_id(resources)?;
+        resources.entries.insert(
             resource_id,
             ResourceEntry {
                 io: ResourceIo::TcpListener(Arc::new(AsyncMutex::new(listener))),
@@ -760,11 +753,11 @@ where
     }
 
     fn insert_udp_resource_locked(
-        state: &mut SessionState,
+        resources: &mut ResourceTable,
         socket: DataPlaneUdpSocket,
     ) -> DataPlaneResult<DataPlaneResourceId> {
-        let resource_id = Self::next_resource_id(state)?;
-        state.resources.insert(
+        let resource_id = Self::next_resource_id(resources)?;
+        resources.entries.insert(
             resource_id,
             ResourceEntry {
                 io: ResourceIo::Udp(Arc::new(UdpResource {
@@ -779,14 +772,15 @@ where
     }
 
     fn finalize_success_locked(
-        state: &mut SessionState,
-        slot: &mut OperationSlot,
+        resources: &mut ResourceTable,
+        retained_result_bytes: &mut usize,
+        metadata: &mut OperationMetadata,
         result: PendingOperationResult,
     ) -> DataPlaneResult<DataPlaneOperationResult> {
         let result = match result {
             PendingOperationResult::TcpConnected { stream, peer_addr } => {
                 let local_addr = stream.local_addr();
-                let stream = Self::insert_tcp_resource_locked(state, stream)?;
+                let stream = Self::insert_tcp_resource_locked(resources, stream)?;
                 DataPlaneOperationResult::TcpConnected {
                     stream,
                     local_addr,
@@ -795,7 +789,7 @@ where
             }
             PendingOperationResult::TcpBound(listener) => {
                 let local_addr = listener.local_addr();
-                let listener = Self::insert_listener_resource_locked(state, listener)?;
+                let listener = Self::insert_listener_resource_locked(resources, listener)?;
                 DataPlaneOperationResult::TcpBound {
                     listener,
                     local_addr,
@@ -803,7 +797,7 @@ where
             }
             PendingOperationResult::TcpAccepted { stream, peer_addr } => {
                 let local_addr = stream.local_addr();
-                let stream = Self::insert_tcp_resource_locked(state, stream)?;
+                let stream = Self::insert_tcp_resource_locked(resources, stream)?;
                 DataPlaneOperationResult::TcpAccepted {
                     stream,
                     local_addr,
@@ -816,7 +810,7 @@ where
             PendingOperationResult::TcpWritten(len) => DataPlaneOperationResult::TcpWritten { len },
             PendingOperationResult::UdpBound(socket) => {
                 let local_addr = socket.local_addr();
-                let socket = Self::insert_udp_resource_locked(state, socket)?;
+                let socket = Self::insert_udp_resource_locked(resources, socket)?;
                 DataPlaneOperationResult::UdpBound { socket, local_addr }
             }
             PendingOperationResult::UdpReceived {
@@ -832,36 +826,16 @@ where
         };
 
         let retained_bytes = result.retained_bytes();
-        if retained_bytes > slot.reserved_result_bytes {
+        if retained_bytes > metadata.reserved_result_bytes {
             return Err(Self::error(
                 DataPlaneErrorKind::ResourceLimit,
                 "data-plane operation exceeded its reserved result bytes",
             ));
         }
-        state.retained_result_bytes -= slot.reserved_result_bytes - retained_bytes;
-        slot.reserved_result_bytes = retained_bytes;
-        Self::release_resource_reservation_locked(state, slot);
+        *retained_result_bytes -= metadata.reserved_result_bytes - retained_bytes;
+        metadata.reserved_result_bytes = retained_bytes;
+        Self::release_resource_reservation_locked(resources, metadata);
         Ok(result)
-    }
-
-    fn enqueue_outcome_locked(
-        state: &mut SessionState,
-        operation_id: DataPlaneOperationId,
-        slot: &mut OperationSlot,
-        outcome: DataPlaneOperationOutcome,
-    ) -> bool {
-        let status = match &outcome {
-            Ok(_) => DataPlaneCompletionStatus::Success,
-            Err(kind) => DataPlaneCompletionStatus::Error(*kind),
-        };
-        let notify = state.completions.is_empty();
-        state.completions.push_back(DataPlaneCompletionDescriptor {
-            operation_id,
-            kind: slot.kind,
-            status,
-        });
-        slot.state = OperationSlotState::Queued(outcome);
-        notify
     }
 
     fn complete_operation(
@@ -870,48 +844,41 @@ where
         result: DataPlaneResult<PendingOperationResult>,
     ) {
         let mut state = self.lock_state();
-        let Some(mut slot) = state.operations.remove(&operation_id) else {
-            return;
-        };
-        let slot_state = std::mem::replace(&mut slot.state, OperationSlotState::Discarding);
-        let notify = match slot_state {
-            OperationSlotState::Pending => {
-                Self::unlink_target_locked(&mut state, operation_id, slot.target);
-                let outcome = match result {
-                    Ok(result) => {
-                        match Self::finalize_success_locked(&mut state, &mut slot, result) {
-                            Ok(result) => Ok(result),
-                            Err(error) => {
-                                Self::release_result_reservation_locked(&mut state, &mut slot);
-                                Self::release_resource_reservation_locked(&mut state, &mut slot);
-                                Err(error.kind())
-                            }
-                        }
-                    }
+        let SessionState {
+            resources,
+            broker,
+            retained_result_bytes,
+            ..
+        } = &mut *state;
+        let notify = broker.complete_with(operation_id.broker_id(), |kind, metadata| {
+            Self::unlink_target_locked(resources, operation_id, metadata.target);
+            match result {
+                Ok(result) => match Self::finalize_success_locked(
+                    resources,
+                    retained_result_bytes,
+                    metadata,
+                    result,
+                ) {
+                    Ok(result) => Ok(result),
                     Err(error) => {
-                        tracing::debug!(
-                            ?operation_id,
-                            kind = ?slot.kind,
-                            error = %error,
-                            "data-plane operation failed"
-                        );
-                        Self::release_result_reservation_locked(&mut state, &mut slot);
-                        Self::release_resource_reservation_locked(&mut state, &mut slot);
+                        Self::release_result_reservation_locked(retained_result_bytes, metadata);
+                        Self::release_resource_reservation_locked(resources, metadata);
                         Err(error.kind())
                     }
-                };
-                let notify =
-                    Self::enqueue_outcome_locked(&mut state, operation_id, &mut slot, outcome);
-                state.operations.insert(operation_id, slot);
-                notify
+                },
+                Err(error) => {
+                    tracing::debug!(
+                        ?operation_id,
+                        ?kind,
+                        error = %error,
+                        "data-plane operation failed"
+                    );
+                    Self::release_result_reservation_locked(retained_result_bytes, metadata);
+                    Self::release_resource_reservation_locked(resources, metadata);
+                    Err(error.kind())
+                }
             }
-            OperationSlotState::Discarding => false,
-            other @ (OperationSlotState::Queued(_) | OperationSlotState::Drained(_)) => {
-                slot.state = other;
-                state.operations.insert(operation_id, slot);
-                false
-            }
-        };
+        });
         drop(state);
         if notify {
             self.notify_completion();
@@ -921,22 +888,20 @@ where
     fn queue_error_locked(
         state: &mut SessionState,
         operation_id: DataPlaneOperationId,
-        kind: DataPlaneErrorKind,
+        error_kind: DataPlaneErrorKind,
     ) -> bool {
-        let Some(mut slot) = state.operations.remove(&operation_id) else {
-            return false;
-        };
-        if !matches!(slot.state, OperationSlotState::Pending) {
-            state.operations.insert(operation_id, slot);
-            return false;
-        }
-        slot.cancel.cancel();
-        Self::unlink_target_locked(state, operation_id, slot.target);
-        Self::release_result_reservation_locked(state, &mut slot);
-        Self::release_resource_reservation_locked(state, &mut slot);
-        let notify = Self::enqueue_outcome_locked(state, operation_id, &mut slot, Err(kind));
-        state.operations.insert(operation_id, slot);
-        notify
+        let SessionState {
+            resources,
+            broker,
+            retained_result_bytes,
+            ..
+        } = state;
+        broker.cancel_with(operation_id.broker_id(), |_, metadata| {
+            Self::unlink_target_locked(resources, operation_id, metadata.target);
+            Self::release_result_reservation_locked(retained_result_bytes, metadata);
+            Self::release_resource_reservation_locked(resources, metadata);
+            Err(error_kind)
+        })
     }
 
     fn close_resource_locked(
@@ -944,7 +909,7 @@ where
         resource_id: DataPlaneResourceId,
         pending_kind: DataPlaneErrorKind,
     ) -> bool {
-        let Some(resource) = state.resources.remove(&resource_id) else {
+        let Some(resource) = state.resources.entries.remove(&resource_id) else {
             return false;
         };
         let mut notify = false;
@@ -983,37 +948,18 @@ where
 
     pub fn free_operation(&self, operation_id: DataPlaneOperationId) {
         let mut state = self.lock_state();
-        let Some(mut slot) = state.operations.remove(&operation_id) else {
+        let Some(mut released) = state.broker.free(operation_id.broker_id()) else {
             return;
         };
-        let slot_state = std::mem::replace(&mut slot.state, OperationSlotState::Discarding);
-        let notify = match slot_state {
-            OperationSlotState::Pending => {
-                slot.cancel.cancel();
-                Self::unlink_target_locked(&mut state, operation_id, slot.target);
-                Self::release_result_reservation_locked(&mut state, &mut slot);
-                Self::release_resource_reservation_locked(&mut state, &mut slot);
-                slot.state = OperationSlotState::Discarding;
-                state.operations.insert(operation_id, slot);
-                false
-            }
-            OperationSlotState::Queued(outcome) => {
-                state
-                    .completions
-                    .retain(|completion| completion.operation_id != operation_id);
-                Self::release_result_reservation_locked(&mut state, &mut slot);
-                Self::discard_outcome_locked(&mut state, outcome)
-            }
-            OperationSlotState::Drained(outcome) => {
-                Self::release_result_reservation_locked(&mut state, &mut slot);
-                Self::discard_outcome_locked(&mut state, outcome)
-            }
-            OperationSlotState::Discarding => {
-                slot.state = OperationSlotState::Discarding;
-                state.operations.insert(operation_id, slot);
-                false
-            }
-        };
+        Self::unlink_target_locked(&mut state.resources, operation_id, released.metadata.target);
+        Self::release_result_reservation_locked(
+            &mut state.retained_result_bytes,
+            &mut released.metadata,
+        );
+        Self::release_resource_reservation_locked(&mut state.resources, &mut released.metadata);
+        let notify = released
+            .outcome
+            .is_some_and(|outcome| Self::discard_outcome_locked(&mut state, outcome));
         drop(state);
         if notify {
             self.notify_completion();
@@ -1032,30 +978,23 @@ where
 
     pub fn drain_completions(&self, max_count: usize) -> Vec<DataPlaneCompletionDescriptor> {
         let mut state = self.lock_state();
-        let mut completions = Vec::with_capacity(max_count.min(state.completions.len()));
-        while completions.len() < max_count {
-            let Some(completion) = state.completions.pop_front() else {
-                break;
-            };
-            let Some(slot) = state.operations.get_mut(&completion.operation_id) else {
-                continue;
-            };
-            let old_state = std::mem::replace(&mut slot.state, OperationSlotState::Discarding);
-            match old_state {
-                OperationSlotState::Queued(outcome) => {
-                    slot.state = OperationSlotState::Drained(outcome);
-                    completions.push(completion);
-                }
-                other => {
-                    slot.state = other;
-                }
-            }
-        }
-        completions
+        state
+            .broker
+            .drain(max_count, |outcome| match outcome {
+                Ok(_) => DataPlaneCompletionStatus::Success,
+                Err(kind) => DataPlaneCompletionStatus::Error(*kind),
+            })
+            .into_iter()
+            .map(|completion| DataPlaneCompletionDescriptor {
+                operation_id: DataPlaneOperationId::from_broker(completion.operation_id),
+                kind: completion.kind,
+                status: completion.status,
+            })
+            .collect()
     }
 
     pub fn has_completions(&self) -> bool {
-        !self.lock_state().completions.is_empty()
+        self.lock_state().broker.has_completions()
     }
 
     pub fn completion_wait(&self, timeout: Option<Duration>) -> bool {
@@ -1064,22 +1003,22 @@ where
 
     fn completion_wait_after_ready(&self, timeout: Option<Duration>, ready: impl FnOnce()) -> bool {
         let state = self.lock_state();
-        if !state.completions.is_empty() {
+        if state.broker.has_completions() {
             return true;
         }
         if state.lifecycle == SessionLifecycle::Stopped {
             return false;
         }
-        let wake_generation = state.wake_generation;
+        let wake_generation = state.broker.wake_generation();
         ready();
 
         let state = match timeout {
             Some(timeout) => {
                 self.completion_condvar
                     .wait_timeout_while(state, timeout, |state| {
-                        state.completions.is_empty()
+                        !state.broker.has_completions()
                             && state.lifecycle != SessionLifecycle::Stopped
-                            && state.wake_generation == wake_generation
+                            && state.broker.wake_generation() == wake_generation
                     })
                     .unwrap_or_else(|error| error.into_inner())
                     .0
@@ -1087,26 +1026,21 @@ where
             None => self
                 .completion_condvar
                 .wait_while(state, |state| {
-                    state.completions.is_empty()
+                    !state.broker.has_completions()
                         && state.lifecycle != SessionLifecycle::Stopped
-                        && state.wake_generation == wake_generation
+                        && state.broker.wake_generation() == wake_generation
                 })
                 .unwrap_or_else(|error| error.into_inner()),
         };
-        !state.completions.is_empty()
+        state.broker.has_completions()
     }
 
     pub fn discard_all(&self) {
         let mut state = self.lock_state();
-        for slot in state.operations.values() {
-            slot.cancel.cancel();
-        }
-        state.operations.clear();
-        state.completions.clear();
-        state.resources.clear();
-        state.reserved_resources = 0;
+        state.broker.discard_all();
+        state.resources.entries.clear();
+        state.resources.reserved = 0;
         state.retained_result_bytes = 0;
-        state.wake_generation = state.wake_generation.wrapping_add(1);
         drop(state);
         self.completion_condvar.notify_all();
         self.completion_notify.notify_one();
@@ -1132,21 +1066,12 @@ where
         operation_id: DataPlaneOperationId,
     ) -> DataPlaneResult<usize> {
         let state = self.lock_state();
-        let slot = state.operations.get(&operation_id).ok_or_else(|| {
-            Self::error(
-                DataPlaneErrorKind::HandleClosed,
-                "data-plane operation result is unavailable",
-            )
-        })?;
-        match slot.state {
-            OperationSlotState::Drained(_) => Ok(slot.reserved_result_bytes),
-            OperationSlotState::Pending
-            | OperationSlotState::Queued(_)
-            | OperationSlotState::Discarding => Err(Self::error(
-                DataPlaneErrorKind::PathNotReady,
-                "data-plane operation result has not been drained",
-            )),
-        }
+        state
+            .broker
+            .with_drained(operation_id.broker_id(), |_, metadata, _| {
+                metadata.reserved_result_bytes
+            })
+            .map_err(Self::operation_access_error)
     }
 
     pub fn result_payload_bytes(
@@ -1154,22 +1079,13 @@ where
         operation_id: DataPlaneOperationId,
     ) -> DataPlaneResult<usize> {
         let state = self.lock_state();
-        let slot = state.operations.get(&operation_id).ok_or_else(|| {
-            Self::error(
-                DataPlaneErrorKind::HandleClosed,
-                "data-plane operation result is unavailable",
-            )
-        })?;
-        match &slot.state {
-            OperationSlotState::Drained(Ok(result)) => Ok(result.payload_bytes()),
-            OperationSlotState::Drained(Err(_)) => Ok(0),
-            OperationSlotState::Pending
-            | OperationSlotState::Queued(_)
-            | OperationSlotState::Discarding => Err(Self::error(
-                DataPlaneErrorKind::PathNotReady,
-                "data-plane operation result has not been drained",
-            )),
-        }
+        state
+            .broker
+            .with_drained(operation_id.broker_id(), |_, _, outcome| match outcome {
+                Ok(result) => result.payload_bytes(),
+                Err(_) => 0,
+            })
+            .map_err(Self::operation_access_error)
     }
 
     pub fn operation_kind(
@@ -1177,21 +1093,10 @@ where
         operation_id: DataPlaneOperationId,
     ) -> DataPlaneResult<DataPlaneOperationKind> {
         let state = self.lock_state();
-        let slot = state.operations.get(&operation_id).ok_or_else(|| {
-            Self::error(
-                DataPlaneErrorKind::HandleClosed,
-                "data-plane operation result is unavailable",
-            )
-        })?;
-        match slot.state {
-            OperationSlotState::Drained(_) => Ok(slot.kind),
-            OperationSlotState::Pending
-            | OperationSlotState::Queued(_)
-            | OperationSlotState::Discarding => Err(Self::error(
-                DataPlaneErrorKind::PathNotReady,
-                "data-plane operation result has not been drained",
-            )),
-        }
+        state
+            .broker
+            .with_drained(operation_id.broker_id(), |kind, _, _| kind)
+            .map_err(Self::operation_access_error)
     }
 
     pub fn take_result_with<R>(
@@ -1200,31 +1105,31 @@ where
         take: impl FnOnce(&DataPlaneOperationOutcome) -> Option<R>,
     ) -> DataPlaneResult<Option<R>> {
         let mut state = self.lock_state();
-        let Some(mut slot) = state.operations.remove(&operation_id) else {
-            return Err(Self::error(
-                DataPlaneErrorKind::HandleClosed,
-                "data-plane operation result is unavailable",
-            ));
-        };
-        let slot_state = std::mem::replace(&mut slot.state, OperationSlotState::Discarding);
-        let outcome = match slot_state {
-            OperationSlotState::Drained(outcome) => outcome,
-            other => {
-                slot.state = other;
-                state.operations.insert(operation_id, slot);
-                return Err(Self::error(
-                    DataPlaneErrorKind::PathNotReady,
-                    "data-plane operation result has not been drained",
-                ));
-            }
-        };
-        let Some(result) = take(&outcome) else {
-            slot.state = OperationSlotState::Drained(outcome);
-            state.operations.insert(operation_id, slot);
+        let taken = state
+            .broker
+            .take_with(operation_id.broker_id(), take)
+            .map_err(Self::operation_access_error)?;
+        let Some(mut taken) = taken else {
             return Ok(None);
         };
-        Self::release_result_reservation_locked(&mut state, &mut slot);
-        Ok(Some(result))
+        Self::release_result_reservation_locked(
+            &mut state.retained_result_bytes,
+            &mut taken.metadata,
+        );
+        Ok(Some(taken.value))
+    }
+
+    fn operation_access_error(error: OperationAccessError) -> DataPlaneError {
+        match error {
+            OperationAccessError::Missing => Self::error(
+                DataPlaneErrorKind::HandleClosed,
+                "data-plane operation result is unavailable",
+            ),
+            OperationAccessError::NotDrained => Self::error(
+                DataPlaneErrorKind::PathNotReady,
+                "data-plane operation result has not been drained",
+            ),
+        }
     }
 
     pub(crate) fn stop(&self) {
@@ -1233,23 +1138,17 @@ where
             return;
         }
         state.lifecycle = SessionLifecycle::Stopped;
-        state.wake_generation = state.wake_generation.wrapping_add(1);
-        let pending = state
-            .operations
-            .iter()
-            .filter_map(|(operation_id, slot)| {
-                matches!(slot.state, OperationSlotState::Pending).then_some(*operation_id)
-            })
-            .collect::<Vec<_>>();
+        state.broker.invalidate_waiters();
+        let pending = state.broker.pending_ids();
         let mut notify = false;
         for operation_id in pending {
             notify |= Self::queue_error_locked(
                 &mut state,
-                operation_id,
+                DataPlaneOperationId::from_broker(operation_id),
                 DataPlaneErrorKind::InstanceStopped,
             );
         }
-        state.resources.clear();
+        state.resources.entries.clear();
         drop(state);
         self.consumer_lease
             .lock()
@@ -1302,10 +1201,8 @@ where
             .state
             .get_mut()
             .unwrap_or_else(|error| error.into_inner());
-        for slot in state.operations.values() {
-            slot.cancel.cancel();
-        }
-        state.resources.clear();
+        state.broker.discard_all();
+        state.resources.entries.clear();
     }
 }
 
@@ -1379,7 +1276,7 @@ mod tests {
         session.complete_test_operation(operation_id, successful_write(3));
 
         assert!(session.drain_completions(8).is_empty());
-        assert_eq!(session.lock_state().operations.len(), 0);
+        assert_eq!(session.lock_state().broker.len(), 0);
     }
 
     #[test]
@@ -1393,7 +1290,7 @@ mod tests {
         session.free_operation(operation_id);
 
         assert!(session.drain_completions(8).is_empty());
-        assert_eq!(session.lock_state().operations.len(), 0);
+        assert_eq!(session.lock_state().broker.len(), 0);
     }
 
     #[test]

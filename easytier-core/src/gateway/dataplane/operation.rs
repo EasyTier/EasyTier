@@ -2,18 +2,28 @@
 
 use std::net::SocketAddr;
 
+use crate::foundation::operation_broker::OperationId;
+
 use super::DataPlaneErrorKind;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[repr(transparent)]
-pub struct DataPlaneOperationId(u64);
+pub struct DataPlaneOperationId(OperationId);
 
 impl DataPlaneOperationId {
     pub fn from_raw(value: u64) -> Option<Self> {
-        (value != 0).then_some(Self(value))
+        OperationId::from_raw(value).map(Self)
     }
 
     pub fn get(self) -> u64 {
+        self.0.get()
+    }
+
+    pub(super) fn from_broker(operation_id: OperationId) -> Self {
+        Self(operation_id)
+    }
+
+    pub(super) fn broker_id(self) -> OperationId {
         self.0
     }
 }

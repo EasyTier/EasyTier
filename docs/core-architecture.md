@@ -144,8 +144,11 @@ it is not an additional portable domain layer.
 
 ### Foundation
 
-`foundation/` contains task supervision, the time facade, rate limiting, and
-statistics primitives. It must not depend on a domain layer.
+`foundation/` contains task supervision, the time facade, rate limiting,
+statistics primitives, and the domain-neutral external operation broker. The
+broker owns asynchronous operation lifecycle and completion storage while the
+calling domain owns operation kinds, outcomes, resources, and errors.
+Foundation must not depend on a domain layer.
 
 ### Configuration and packets
 
@@ -282,6 +285,12 @@ Optional gateway capabilities are selected by cohesive Modules. Disabled
 implementations retain stable lifecycle calls and report unsupported
 configuration where a stable interface is required; they do not duplicate
 portable policy.
+
+The instance-scoped `DataPlaneSession` composes the foundation operation broker
+under the same session lock as its resource and quota state. The broker owns
+generic completion, cancellation, free, drain, and take transitions. The data
+plane retains TCP/UDP resource ownership, operation metadata, route deadlines,
+and error semantics.
 
 The proposed restructuring of the smoltcp data plane, SOCKS5 and port-forward
 Adapters, portable KCP engine, event-driven FFI/WASI completion model, and Go
