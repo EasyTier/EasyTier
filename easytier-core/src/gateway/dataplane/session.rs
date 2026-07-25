@@ -947,12 +947,11 @@ where
         let Some(resource) = state.resources.remove(&resource_id) else {
             return false;
         };
-        resource
-            .pending_operations
-            .into_iter()
-            .fold(false, |notify, operation_id| {
-                Self::queue_error_locked(state, operation_id, pending_kind) || notify
-            })
+        let mut notify = false;
+        for operation_id in resource.pending_operations {
+            notify |= Self::queue_error_locked(state, operation_id, pending_kind);
+        }
+        notify
     }
 
     fn discard_outcome_locked(

@@ -43,6 +43,7 @@ pub(crate) const SECRET_PROOF_PREFIX: &[u8] = b"easytier secret proof";
 const PEER_EVENT_CAPACITY: usize = 100;
 
 #[derive(Debug, Clone)]
+#[allow(clippy::enum_variant_names)]
 pub(crate) enum PeerEvent {
     PeerAdded(PeerId),
     PeerRemoved(PeerId),

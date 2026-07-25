@@ -100,9 +100,18 @@ impl BidirectRpcManager {
     }
 
     pub fn run_with_tunnel(&self, inner: Box<dyn Tunnel>) {
+        let tunnel_info = inner.info();
+        self.run_with_tunnel_info(inner, tunnel_info);
+    }
+
+    pub(crate) fn run_with_tunnel_info(
+        &self,
+        inner: Box<dyn Tunnel>,
+        tunnel_info: Option<crate::proto::common::TunnelInfo>,
+    ) {
         let mut tasks = JoinSet::new();
         self.rpc_client.run();
-        self.rpc_server.run();
+        self.rpc_server.run_with_tunnel_info(tunnel_info);
         self.running.store(true, Ordering::Relaxed);
 
         let (server_tx, mut server_rx) = (

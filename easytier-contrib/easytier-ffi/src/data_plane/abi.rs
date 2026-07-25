@@ -113,6 +113,11 @@ fn write_operation(
     }
 }
 
+/// # Safety
+///
+/// If non-null, `inst_name` must point to a valid NUL-terminated string.
+/// `out_session` must be null or point to writable, properly aligned storage
+/// for one `u64`.
 #[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
 pub unsafe extern "C" fn data_plane_session_open(
     inst_name: *const c_char,
@@ -144,6 +149,10 @@ pub extern "C" fn data_plane_session_close(session: u64) -> c_int {
     status(super::session::close(session))
 }
 
+/// # Safety
+///
+/// `out_operation` must be null or point to writable, properly aligned
+/// storage for one `u64`.
 #[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
 pub unsafe extern "C" fn data_plane_tcp_connect_submit(
     session: u64,
@@ -160,6 +169,10 @@ pub unsafe extern "C" fn data_plane_tcp_connect_submit(
     })
 }
 
+/// # Safety
+///
+/// `out_operation` must be null or point to writable, properly aligned
+/// storage for one `u64`.
 #[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
 pub unsafe extern "C" fn data_plane_tcp_bind_submit(
     session: u64,
@@ -172,6 +185,10 @@ pub unsafe extern "C" fn data_plane_tcp_bind_submit(
     })
 }
 
+/// # Safety
+///
+/// `out_operation` must be null or point to writable, properly aligned
+/// storage for one `u64`.
 #[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
 pub unsafe extern "C" fn data_plane_tcp_accept_submit(
     session: u64,
@@ -184,6 +201,10 @@ pub unsafe extern "C" fn data_plane_tcp_accept_submit(
     })
 }
 
+/// # Safety
+///
+/// `out_operation` must be null or point to writable, properly aligned
+/// storage for one `u64`.
 #[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
 pub unsafe extern "C" fn data_plane_tcp_read_submit(
     session: u64,
@@ -197,6 +218,11 @@ pub unsafe extern "C" fn data_plane_tcp_read_submit(
     })
 }
 
+/// # Safety
+///
+/// When `len` is nonzero, `data` must point to `len` readable bytes.
+/// `out_operation` must be null or point to writable, properly aligned
+/// storage for one `u64`.
 #[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
 pub unsafe extern "C" fn data_plane_tcp_write_submit(
     session: u64,
@@ -215,6 +241,10 @@ pub unsafe extern "C" fn data_plane_tcp_write_submit(
     })
 }
 
+/// # Safety
+///
+/// `out_operation` must be null or point to writable, properly aligned
+/// storage for one `u64`.
 #[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
 pub unsafe extern "C" fn data_plane_udp_bind_submit(
     session: u64,
@@ -227,6 +257,10 @@ pub unsafe extern "C" fn data_plane_udp_bind_submit(
     })
 }
 
+/// # Safety
+///
+/// `out_operation` must be null or point to writable, properly aligned
+/// storage for one `u64`.
 #[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
 pub unsafe extern "C" fn data_plane_udp_receive_submit(
     session: u64,
@@ -240,6 +274,11 @@ pub unsafe extern "C" fn data_plane_udp_receive_submit(
     })
 }
 
+/// # Safety
+///
+/// When `len` is nonzero, `data` must point to `len` readable bytes.
+/// `out_operation` must be null or point to writable, properly aligned
+/// storage for one `u64`.
 #[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
 pub unsafe extern "C" fn data_plane_udp_send_submit(
     session: u64,
@@ -287,6 +326,10 @@ pub extern "C" fn data_plane_completion_wait(session: u64, timeout_ms: u64) -> c
     }
 }
 
+/// # Safety
+///
+/// When `capacity` is nonzero, `completions` must point to writable, properly
+/// aligned storage for `capacity` consecutive [`DataPlaneCompletion`] values.
 #[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
 pub unsafe extern "C" fn data_plane_completion_drain(
     session: u64,
@@ -315,6 +358,10 @@ pub unsafe extern "C" fn data_plane_completion_drain(
     drained.len() as c_int
 }
 
+/// # Safety
+///
+/// `out_size` must be null or point to writable, properly aligned storage for
+/// one `u32`.
 #[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
 pub unsafe extern "C" fn data_plane_result_size(
     session: u64,
@@ -338,6 +385,10 @@ pub unsafe extern "C" fn data_plane_result_size(
     }
 }
 
+/// # Safety
+///
+/// Each output pointer must be null or point to writable, properly aligned
+/// storage for its pointee type. Non-null output locations must not overlap.
 #[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
 pub unsafe extern "C" fn data_plane_tcp_connect_result_take(
     session: u64,
@@ -362,6 +413,10 @@ pub unsafe extern "C" fn data_plane_tcp_connect_result_take(
     }
 }
 
+/// # Safety
+///
+/// Each output pointer must be null or point to writable, properly aligned
+/// storage for its pointee type. Non-null output locations must not overlap.
 #[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
 pub unsafe extern "C" fn data_plane_tcp_bind_result_take(
     session: u64,
@@ -384,6 +439,10 @@ pub unsafe extern "C" fn data_plane_tcp_bind_result_take(
     }
 }
 
+/// # Safety
+///
+/// Each output pointer must be null or point to writable, properly aligned
+/// storage for its pointee type. Non-null output locations must not overlap.
 #[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
 pub unsafe extern "C" fn data_plane_tcp_accept_result_take(
     session: u64,
@@ -408,6 +467,12 @@ pub unsafe extern "C" fn data_plane_tcp_accept_result_take(
     }
 }
 
+/// # Safety
+///
+/// When `capacity` is nonzero, `data` must point to `capacity` writable bytes.
+/// Each scalar output pointer must be null or point to writable, properly
+/// aligned storage for its pointee type. Non-null output ranges must not
+/// overlap.
 #[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
 pub unsafe extern "C" fn data_plane_tcp_read_result_take(
     session: u64,
@@ -436,6 +501,10 @@ pub unsafe extern "C" fn data_plane_tcp_read_result_take(
     }
 }
 
+/// # Safety
+///
+/// `out_len` must be null or point to writable, properly aligned storage for
+/// one `u32`.
 #[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
 pub unsafe extern "C" fn data_plane_tcp_write_result_take(
     session: u64,
@@ -459,6 +528,10 @@ pub unsafe extern "C" fn data_plane_tcp_write_result_take(
     }
 }
 
+/// # Safety
+///
+/// Each output pointer must be null or point to writable, properly aligned
+/// storage for its pointee type. Non-null output locations must not overlap.
 #[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
 pub unsafe extern "C" fn data_plane_udp_bind_result_take(
     session: u64,
@@ -481,6 +554,12 @@ pub unsafe extern "C" fn data_plane_udp_bind_result_take(
     }
 }
 
+/// # Safety
+///
+/// When `capacity` is nonzero, `data` must point to `capacity` writable bytes.
+/// Each scalar output pointer must be null or point to writable, properly
+/// aligned storage for its pointee type. Non-null output ranges must not
+/// overlap.
 #[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
 pub unsafe extern "C" fn data_plane_udp_receive_result_take(
     session: u64,
@@ -511,6 +590,10 @@ pub unsafe extern "C" fn data_plane_udp_receive_result_take(
     }
 }
 
+/// # Safety
+///
+/// `out_len` must be null or point to writable, properly aligned storage for
+/// one `u32`.
 #[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
 pub unsafe extern "C" fn data_plane_udp_send_result_take(
     session: u64,

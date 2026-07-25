@@ -178,7 +178,7 @@ pub(crate) fn runtime_core_host_adapters(
             ),
         );
     }
-    #[cfg(all(not(test), feature = "icmp-proxy"))]
+    #[cfg(feature = "icmp-proxy")]
     {
         adapters.icmp_proxy_host = Some(Arc::new(crate::gateway::icmp_proxy::RuntimeIcmpProxyHost));
     }

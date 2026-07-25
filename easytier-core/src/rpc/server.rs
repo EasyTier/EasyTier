@@ -116,6 +116,10 @@ impl Server {
     }
 
     pub fn run(&self) {
+        self.run_with_tunnel_info(None);
+    }
+
+    pub(crate) fn run_with_tunnel_info(&self, tunnel_info: Option<TunnelInfo>) {
         self.stopped.store(false, Ordering::Relaxed);
         let handler_tasks = self.handler_tasks.clone();
         self.tasks.lock().unwrap().spawn(reap_joinset_background(
@@ -127,7 +131,7 @@ impl Server {
 
         let packet_merges = self.packet_mergers.clone();
         let reg = self.registry.clone();
-        let tunnel_info = mpsc.tunnel_info();
+        let tunnel_info = tunnel_info.or_else(|| mpsc.tunnel_info());
         let metrics = self.metrics.clone();
         let handler_tasks_weak = Arc::downgrade(&handler_tasks);
         let stopped = self.stopped.clone();

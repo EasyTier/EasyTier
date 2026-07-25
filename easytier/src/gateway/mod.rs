@@ -1,7 +1,7 @@
 #[cfg(any(feature = "kcp", feature = "quic"))]
 mod hedge;
 
-#[cfg(all(not(test), feature = "icmp-proxy"))]
+#[cfg(feature = "icmp-proxy")]
 pub mod icmp_proxy;
 
 #[cfg(feature = "kcp")]

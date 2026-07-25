@@ -19,10 +19,12 @@ build = "build/main.rs"
 name = "easytier-core"
 path = "src/easytier-core.rs"
 test = false
+required-features = ["management"]
 
 [[bin]]
 name = "easytier-cli"
 path = "src/easytier-cli.rs"
+required-features = ["management"]
 
 [lib]
 name = "easytier"

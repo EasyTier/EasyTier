@@ -200,8 +200,7 @@ where
         let fragment_len = next_fragment_offset - fragment_offset;
         let packet_len = fragment_len + smoltcp::wire::IPV4_HEADER_LEN;
         let mut ipv4_packet =
-            Ipv4Packet::new_checked(&mut args.buf[buf_offset..buf_offset + packet_len])
-                .map_err(|_| anyhow::anyhow!("invalid ipv4 output buffer"))?;
+            Ipv4Packet::new_unchecked(&mut args.buf[buf_offset..buf_offset + packet_len]);
         ipv4_packet.set_version(4);
         ipv4_packet.set_header_len(smoltcp::wire::IPV4_HEADER_LEN as u8);
         ipv4_packet.set_total_len(packet_len as u16);
@@ -236,6 +235,48 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compose_ipv4_packet_fragments_arbitrary_payload() {
+        let payload_len = 1932;
+        let payload_mtu = 1256;
+        let mut buffer = vec![0xff; smoltcp::wire::IPV4_HEADER_LEN + payload_len];
+        let expected_payload = buffer[smoltcp::wire::IPV4_HEADER_LEN..].to_vec();
+        let mut fragments = Vec::new();
+
+        compose_ipv4_packet(
+            ComposeIpv4PacketArgs {
+                buf: &mut buffer,
+                src_v4: &Ipv4Addr::new(10, 1, 2, 3),
+                dst_v4: &Ipv4Addr::new(10, 1, 2, 4),
+                next_protocol: IpProtocol::Udp,
+                payload_len,
+                payload_mtu,
+                ip_id: 42,
+            },
+            |fragment| {
+                fragments.push(fragment.to_vec());
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(fragments.len(), 2);
+        let first = Ipv4Packet::new_checked(fragments[0].as_slice()).unwrap();
+        let second = Ipv4Packet::new_checked(fragments[1].as_slice()).unwrap();
+        assert!(first.more_frags());
+        assert_eq!(first.frag_offset(), 0);
+        assert!(!second.more_frags());
+        assert_eq!(second.frag_offset(), payload_mtu as u16);
+
+        let reassembled = first
+            .payload()
+            .iter()
+            .chain(second.payload())
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(reassembled, expected_payload);
+    }
 
     #[test]
     fn reassembler() {

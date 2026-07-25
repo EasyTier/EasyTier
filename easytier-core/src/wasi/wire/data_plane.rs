@@ -104,6 +104,43 @@ mod tests {
     }
 
     #[test]
+    fn operation_result_records_have_stable_layouts() {
+        let local_addr = "192.0.2.1:1234".parse().unwrap();
+        let peer_addr = "198.51.100.2:4321".parse().unwrap();
+        let resource = 0x0102_0304_0506_0708;
+
+        let resource_and_address = encode_resource_and_address(resource, local_addr);
+        assert_eq!(resource_and_address.len(), UDP_BIND_RESULT_LEN);
+        assert_eq!(&resource_and_address[..8], &resource.to_be_bytes());
+        assert_eq!(
+            &resource_and_address[8..],
+            &encode_socket_address(local_addr)
+        );
+
+        let stream_addresses = encode_stream_addresses(resource, local_addr, peer_addr);
+        assert_eq!(stream_addresses.len(), TCP_ACCEPT_RESULT_LEN);
+        assert_eq!(&stream_addresses[..8], &resource.to_be_bytes());
+        assert_eq!(
+            &stream_addresses[8..8 + SOCKET_ADDRESS_LEN],
+            &encode_socket_address(local_addr)
+        );
+        assert_eq!(
+            &stream_addresses[8 + SOCKET_ADDRESS_LEN..],
+            &encode_socket_address(peer_addr)
+        );
+
+        assert_eq!(encode_tcp_read_metadata(false), [0]);
+        assert_eq!(encode_tcp_read_metadata(true), [1]);
+
+        let udp_metadata = encode_udp_receive_metadata(peer_addr, true);
+        assert_eq!(
+            &udp_metadata[..SOCKET_ADDRESS_LEN],
+            &encode_socket_address(peer_addr)
+        );
+        assert_eq!(udp_metadata[SOCKET_ADDRESS_LEN], 1);
+    }
+
+    #[test]
     fn public_address_decoder_rejects_ipv6() {
         let address = "[2001:db8::1]:80".parse().unwrap();
         let error = decode_ipv4_socket_address(&encode_socket_address(address)).unwrap_err();

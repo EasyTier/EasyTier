@@ -71,11 +71,11 @@ pub(crate) fn test_core_instance_config(
 
     let config = TomlConfig::new_from_str(&global_ctx.config.dump())
         .expect("test configuration should round-trip through TOML");
-    easytier_core::instance::CoreInstanceConfig::from_toml_with_host(
-        &config,
-        &runtime_core_host_config(),
-    )
-    .expect("test configuration should normalize")
+    let mut host = runtime_core_host_config();
+    let hostname = global_ctx.get_hostname();
+    host.hostname_fallback = (!hostname.is_empty()).then_some(hostname);
+    easytier_core::instance::CoreInstanceConfig::from_toml_with_host(&config, &host)
+        .expect("test configuration should normalize")
 }
 
 #[cfg(test)]
@@ -142,6 +142,19 @@ mod tests {
         assert_eq!(
             cleared.peer.snapshot.runtime.core.node.hostname.as_deref(),
             host.hostname_fallback.as_deref()
+        );
+    }
+
+    #[test]
+    fn test_config_uses_current_global_context_hostname_as_fallback() {
+        let global_ctx = get_mock_global_ctx();
+        global_ctx.set_hostname("test-hostname".to_owned());
+
+        let config = test_core_instance_config(&global_ctx);
+
+        assert_eq!(
+            config.peer.snapshot.runtime.core.node.hostname.as_deref(),
+            Some("test-hostname")
         );
     }
 

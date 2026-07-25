@@ -753,18 +753,19 @@ mod tests {
         .await
         .unwrap();
 
-        let established = events.established.lock().unwrap();
-        assert!(matches!(
-            established.as_slice(),
-            [crate::events::CoreEvent::UdpPortMappingEstablished {
-                local_listener,
-                mapped_listener,
-                backend,
-            }] if local_listener == &listener_url()
-                && mapped_listener.as_str() == "udp://198.51.100.10:40125"
-                && backend == "igd"
-        ));
-        drop(established);
+        {
+            let established = events.established.lock().unwrap();
+            assert!(matches!(
+                established.as_slice(),
+                [crate::events::CoreEvent::UdpPortMappingEstablished {
+                    local_listener,
+                    mapped_listener,
+                    backend,
+                }] if local_listener == &listener_url()
+                    && mapped_listener.as_str() == "udp://198.51.100.10:40125"
+                    && backend == "igd"
+            ));
+        }
         assert_eq!(lease_state.drops.load(Ordering::SeqCst), 0);
         drop(resolved);
         tokio::time::timeout(std::time::Duration::from_secs(1), async {

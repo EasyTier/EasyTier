@@ -114,7 +114,7 @@ where
             client_tasks.spawn(async move {
                 let server = BidirectRpcManager::new().set_rx_timeout(rx_timeout);
                 server.rpc_server().registry().replace_registry(&registry);
-                server.run_with_tunnel(tunnel);
+                server.run_with_tunnel_info(tunnel, tunnel_info.clone());
                 server.wait().await;
                 hook.on_client_disconnected(tunnel_info).await;
                 inflight_server.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
@@ -295,10 +295,16 @@ mod tests {
                 PeerCenterRpcClientFactory, PeerCenterRpcServer, ReportPeersRequest,
                 ReportPeersResponse,
             },
-            rpc_types::{controller::BaseController, error},
+            rpc_types::{
+                controller::{BaseController, Controller as _},
+                error,
+            },
         },
         socket::SocketListener,
-        tunnel::{Tunnel, ring::create_ring_tunnel_pair},
+        tunnel::{
+            Tunnel,
+            ring::{RING_TUNNEL_CAP, RingTunnel, create_ring_socket_pair, create_ring_tunnel_pair},
+        },
     };
 
     struct TestListener {
@@ -432,7 +438,19 @@ mod tests {
     #[async_trait::async_trait]
     impl TunnelDialer for TestDialer {
         async fn connect(&self) -> anyhow::Result<Box<dyn Tunnel>> {
-            let (client, accepted) = create_ring_tunnel_pair();
+            let (client_socket, accepted_socket) = create_ring_socket_pair(RING_TUNNEL_CAP);
+            let client = Box::new(RingTunnel::new(client_socket, None));
+            let accepted = Box::new(RingTunnel::new(
+                accepted_socket,
+                Some(TunnelInfo {
+                    tunnel_type: "tcp".to_owned(),
+                    local_addr: Some("tcp://127.0.0.1:15888".parse::<Url>().unwrap().into()),
+                    remote_addr: Some("tcp://127.0.0.1:40000".parse::<Url>().unwrap().into()),
+                    resolved_remote_addr: Some(
+                        "tcp://127.0.0.1:40000".parse::<Url>().unwrap().into(),
+                    ),
+                }),
+            ));
             let sender = self.accepted.lock().unwrap().clone();
             sender
                 .send(accepted)
@@ -464,9 +482,15 @@ mod tests {
 
         async fn get_global_peer_map(
             &self,
-            _controller: BaseController,
+            controller: BaseController,
             _request: GetGlobalPeerMapRequest,
         ) -> error::Result<GetGlobalPeerMapResponse> {
+            assert_eq!(
+                controller
+                    .get_tunnel_info()
+                    .map(|info| info.tunnel_type.as_str()),
+                Some("tcp")
+            );
             Ok(GetGlobalPeerMapResponse {
                 digest: Some(42),
                 ..Default::default()

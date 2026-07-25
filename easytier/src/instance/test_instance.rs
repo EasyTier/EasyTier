@@ -3,9 +3,7 @@
 use std::sync::Arc;
 
 use easytier_core::{
-    config::toml::{ConfigLoader, TomlConfig},
-    connectivity::stun::StunSocketMapper,
-    instance::CoreInstance,
+    config::toml::TomlConfig, connectivity::stun::StunSocketMapper, instance::CoreInstance,
     process_runtime::CoreProcessRuntime,
 };
 
@@ -25,14 +23,14 @@ pub(crate) struct TestInstance {
 
 impl TestInstance {
     pub fn new_with_process_runtime(
-        config: impl ConfigLoader + 'static,
+        config: TomlConfig,
         process_runtime: Arc<CoreProcessRuntime>,
     ) -> Self {
         Self::compose(config, process_runtime, |_| {})
     }
 
     pub fn new_with_process_runtime_and_stun_provider(
-        config: impl ConfigLoader + 'static,
+        config: TomlConfig,
         process_runtime: Arc<CoreProcessRuntime>,
         provider: Box<dyn StunSocketMapper<RuntimeUdpSocket>>,
     ) -> Self {
@@ -43,7 +41,7 @@ impl TestInstance {
     }
 
     fn compose(
-        config: impl ConfigLoader + 'static,
+        config: TomlConfig,
         process_runtime: Arc<CoreProcessRuntime>,
         customize: impl FnOnce(
             &mut easytier_core::instance::CoreHostAdapters<
@@ -51,8 +49,6 @@ impl TestInstance {
             >,
         ),
     ) -> Self {
-        let config = TomlConfig::new_from_str(&config.dump())
-            .expect("test configuration should round-trip through TOML");
         let global_ctx = Arc::new(GlobalCtx::new(config.clone()));
         let (packet_sender, packet_receiver) = tokio::sync::mpsc::channel(128);
         let mut adapters = runtime_core_host_adapters(
@@ -101,5 +97,39 @@ impl TestConfigPatcher {
         patch: crate::proto::api::config::InstanceConfigPatch,
     ) -> anyhow::Result<()> {
         easytier_core::management::apply_config_patch(&self.core, patch).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use easytier_core::config::{
+        normalize_secure_mode_config,
+        toml::{ConfigLoader as _, TomlConfig},
+    };
+
+    use super::*;
+
+    #[tokio::test]
+    async fn composition_preserves_secure_admin_identity() {
+        let config = TomlConfig::default();
+        config.set_secure_mode(Some(
+            normalize_secure_mode_config(crate::proto::common::SecureModeConfig {
+                enabled: true,
+                ..Default::default()
+            })
+            .unwrap(),
+        ));
+
+        let instance = TestInstance::new_with_process_runtime(config, CoreProcessRuntime::new());
+
+        assert_eq!(
+            instance
+                .get_global_ctx()
+                .config
+                .get_network_identity()
+                .network_secret
+                .as_deref(),
+            Some("")
+        );
     }
 }

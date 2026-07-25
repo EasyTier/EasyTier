@@ -3,9 +3,10 @@ use std::{fmt, str::FromStr};
 use strum::VariantArray;
 
 /// Stable configuration vocabulary for every known encryption algorithm.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, VariantArray)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, VariantArray)]
 pub enum EncryptionAlgorithm {
     Xor,
+    #[default]
     AesGcm,
     Aes256Gcm,
     ChaCha20,
@@ -22,12 +23,6 @@ impl EncryptionAlgorithm {
     }
 }
 
-impl Default for EncryptionAlgorithm {
-    fn default() -> Self {
-        Self::AesGcm
-    }
-}
-
 impl fmt::Display for EncryptionAlgorithm {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.as_str())
@@ -40,9 +35,9 @@ impl FromStr for EncryptionAlgorithm {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.to_ascii_lowercase().as_str() {
             "xor" => Ok(Self::Xor),
-            "aes-gcm" => Ok(Self::AesGcm),
-            "aes-256-gcm" => Ok(Self::Aes256Gcm),
-            "chacha20" | "chacha20-poly1305" => Ok(Self::ChaCha20),
+            "aes-gcm" | "openssl-aes-gcm" => Ok(Self::AesGcm),
+            "aes-256-gcm" | "openssl-aes-256-gcm" => Ok(Self::Aes256Gcm),
+            "chacha20" | "chacha20-poly1305" | "openssl-chacha20" => Ok(Self::ChaCha20),
             _ => Err(()),
         }
     }
@@ -60,6 +55,9 @@ mod tests {
             ("aes-256-gcm", EncryptionAlgorithm::Aes256Gcm),
             ("chacha20", EncryptionAlgorithm::ChaCha20),
             ("chacha20-poly1305", EncryptionAlgorithm::ChaCha20),
+            ("openssl-aes-gcm", EncryptionAlgorithm::AesGcm),
+            ("openssl-aes-256-gcm", EncryptionAlgorithm::Aes256Gcm),
+            ("openssl-chacha20", EncryptionAlgorithm::ChaCha20),
         ];
 
         for (name, expected) in cases {
