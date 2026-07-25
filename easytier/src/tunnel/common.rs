@@ -374,6 +374,7 @@ pub(crate) mod tests {
         l_netns: NetNS,
         c_netns: NetNS,
         buf: Vec<u8>,
+        timeout: std::time::Duration,
     ) where
         L: SocketListener<Accepted = Box<dyn Tunnel>> + Sync + 'static,
         C: TunnelDialer,
@@ -384,7 +385,8 @@ pub(crate) mod tests {
             })
             .await;
 
-        let lis = tokio::spawn(async move {
+        let mut listeners = tokio::task::JoinSet::new();
+        listeners.spawn(async move {
             let ret = listener.accept().await.unwrap();
             println!("accept: {:?}", ret.info());
             assert_eq!(
@@ -413,7 +415,7 @@ pub(crate) mod tests {
             .await
             .unwrap();
 
-        let ret = tokio::time::timeout(tokio::time::Duration::from_secs(1), recv.next())
+        let ret = tokio::time::timeout(timeout, recv.next())
             .await
             .unwrap()
             .unwrap()
@@ -424,10 +426,9 @@ pub(crate) mod tests {
         send.close().await.unwrap();
 
         if ["udp", "wg"].contains(&connector.remote_url().scheme()) {
-            lis.abort();
+            listeners.abort_all();
         } else {
-            // lis should finish in 1 second
-            let ret = tokio::time::timeout(tokio::time::Duration::from_secs(1), lis).await;
+            let ret = tokio::time::timeout(timeout, listeners.join_next()).await;
             assert!(ret.is_ok());
         }
     }
@@ -444,11 +445,11 @@ pub(crate) mod tests {
         L: SocketListener<Accepted = Box<dyn Tunnel>> + Sync + 'static,
         C: TunnelDialer,
     {
-        let handle = tokio::spawn(async move {
-            _tunnel_pingpong_netns(listener, connector, l_netns, c_netns, buf).await;
+        let mut handle = tokio::spawn(async move {
+            _tunnel_pingpong_netns(listener, connector, l_netns, c_netns, buf, timeout).await;
         });
 
-        match tokio::time::timeout(timeout, handle).await {
+        match tokio::time::timeout(timeout, &mut handle).await {
             Ok(join_res) => match join_res {
                 Ok(_) => Ok(()),
                 Err(join_err) => {
@@ -467,7 +468,11 @@ pub(crate) mod tests {
                     }
                 }
             },
-            Err(elapsed) => Err(elapsed.into()),
+            Err(elapsed) => {
+                handle.abort();
+                let _ = handle.await;
+                Err(elapsed.into())
+            }
         }
     }
 

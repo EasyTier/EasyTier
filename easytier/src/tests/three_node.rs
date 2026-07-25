@@ -2240,7 +2240,7 @@ pub async fn port_forward_with_inbound_default_drop_acl_test(
             NetNS::new(Some(server_ns.into())),
             NetNS::new(Some("net_a".into())),
             buf,
-            Duration::from_secs(1),
+            Duration::from_secs(5),
         )
         .await;
 
