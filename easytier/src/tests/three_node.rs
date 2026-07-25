@@ -1334,6 +1334,10 @@ pub async fn subnet_proxy_three_node_test(
                     "public".to_string(),
                     "public".to_string(),
                 ));
+                let mut flags = cfg.get_flags();
+                flags.enable_relay_foreign_network_kcp = true;
+                flags.enable_relay_foreign_network_quic = true;
+                cfg.set_flags(flags);
             }
 
             if cfg.get_inst_name() == "inst1" {
