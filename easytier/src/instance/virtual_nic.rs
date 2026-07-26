@@ -1,25 +1,25 @@
 use std::{
     collections::BTreeSet,
     io,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr},
+    net::{Ipv4Addr, Ipv6Addr},
     pin::Pin,
-    sync::{Arc, Weak},
+    sync::Arc,
     task::{Context, Poll},
 };
 
-use crate::{
-    common::{
-        error::Error,
-        global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
-        ifcfg::{IfConfiger, IfConfiguerTrait},
-        log,
-    },
-    instance::proxy_cidrs_monitor::ProxyCidrsMonitor,
-    peers::{PacketRecvChanReceiver, peer_manager::PeerManager, recv_packet_from_chan},
+use crate::common::{
+    error::Error,
+    global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
+    ifcfg::{IfConfiger, IfConfiguerTrait},
+};
+
+use easytier_core::{
+    instance::CorePacketPlane,
+    packet::{TAIL_RESERVED_SIZE, ZCPacket, ZCPacketType},
     tunnel::{
         StreamItem, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream,
-        common::{FramedWriter, TunnelWrapper, ZCPacketToBytes, reserve_buf},
-        packet_def::{TAIL_RESERVED_SIZE, ZCPacket, ZCPacketType},
+        framed::{FramedWriter, ZCPacketToBytes, reserve_buf},
+        wrapper::TunnelWrapper,
     },
 };
 
@@ -28,7 +28,6 @@ use bytes::{Buf, BufMut, BytesMut};
 use cidr::{Ipv4Inet, Ipv6Inet};
 use futures::{SinkExt, Stream, StreamExt, lock::BiLock, ready};
 use pin_project_lite::pin_project;
-use pnet::packet::{ipv4::Ipv4Packet, ipv6::Ipv6Packet};
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     sync::{Mutex, Notify},
@@ -42,6 +41,8 @@ use zerocopy::{NativeEndian, NetworkEndian};
 
 #[cfg(target_os = "windows")]
 use crate::common::ifcfg::RegistryManager;
+
+type HostPacketReceiver = tokio::sync::mpsc::Receiver<Vec<u8>>;
 
 pin_project! {
     pub struct TunStream {
@@ -98,7 +99,7 @@ impl Stream for TunStream {
         match ret {
             Ok(_) => Poll::Ready(Some(Ok(ZCPacket::new_from_buf(ret_buf, ZCPacketType::NIC)))),
             Err(err) => {
-                log::error!("tun stream error: {:?}", err);
+                tracing::error!("tun stream error: {:?}", err);
                 Poll::Ready(None)
             }
         }
@@ -110,7 +111,7 @@ enum PacketProtocol {
     #[default]
     IPv4,
     IPv6,
-    Other(u8),
+    Other,
 }
 
 // Note: the protocol in the packet information header is platform dependent.
@@ -121,7 +122,7 @@ impl PacketProtocol {
         match self {
             PacketProtocol::IPv4 => Ok(libc::ETH_P_IP as u16),
             PacketProtocol::IPv6 => Ok(libc::ETH_P_IPV6 as u16),
-            PacketProtocol::Other(_) => Err(io::Error::other("neither an IPv4 nor IPv6 packet")),
+            PacketProtocol::Other => Err(io::Error::other("neither an IPv4 nor IPv6 packet")),
         }
     }
 
@@ -131,7 +132,7 @@ impl PacketProtocol {
         match self {
             PacketProtocol::IPv4 => Ok(libc::PF_INET as u16),
             PacketProtocol::IPv6 => Ok(libc::PF_INET6 as u16),
-            PacketProtocol::Other(_) => Err(io::Error::other("neither an IPv4 nor IPv6 packet")),
+            PacketProtocol::Other => Err(io::Error::other("neither an IPv4 nor IPv6 packet")),
         }
     }
 
@@ -146,7 +147,7 @@ fn infer_proto(buf: &[u8]) -> PacketProtocol {
     match buf[0] >> 4 {
         4 => PacketProtocol::IPv4,
         6 => PacketProtocol::IPv6,
-        p => PacketProtocol::Other(p),
+        _ => PacketProtocol::Other,
     }
 }
 
@@ -254,7 +255,7 @@ impl Drop for VirtualNic {
             if let Some(ref ifname) = self.ifname {
                 // Try to clean up firewall rules, but don't panic in destructor
                 if let Err(error) = crate::arch::windows::remove_interface_firewall_rules(ifname) {
-                    log::warn!(
+                    tracing::warn!(
                         %error,
                         "failed to remove firewall rules for interface {}",
                         ifname
@@ -298,19 +299,19 @@ impl VirtualNic {
                 .unwrap_or(false);
 
         if !tun_module_available {
-            log::warn!("TUN kernel module may not be available.");
-            log::warn!("\tYou may need to load it with: sudo modprobe tun.");
+            tracing::warn!("TUN kernel module may not be available.");
+            tracing::warn!("\tYou may need to load it with: sudo modprobe tun.");
         }
 
         // Try to create /dev/net directory if it doesn't exist
         if tokio::fs::metadata(TUN_DIR_PATH).await.is_err() {
             if let Err(error) = tokio::fs::create_dir_all(TUN_DIR_PATH).await {
-                log::warn!(
+                tracing::warn!(
                     ?error,
                     "Failed to create directory {}. TUN device creation may fail. Continuing anyway.",
                     TUN_DIR_PATH
                 );
-                log::warn!(
+                tracing::warn!(
                     "\tYou may need to run with root privileges or manually create the TUN device."
                 );
                 Self::print_troubleshooting_info();
@@ -330,7 +331,7 @@ impl VirtualNic {
             dev_node,
         ) {
             Ok(_) => {
-                log::info!("Successfully created TUN device node {}", TUN_DEV_PATH);
+                tracing::info!("Successfully created TUN device node {}", TUN_DEV_PATH);
             }
             Err(error) => {
                 tracing::warn!(
@@ -346,7 +347,7 @@ impl VirtualNic {
     /// Print troubleshooting information for TUN device issues
     #[cfg(target_os = "linux")]
     fn print_troubleshooting_info() {
-        log::info!(
+        tracing::info!(
             "Possible solutions:\
             \n\t1. Run with root privileges: sudo ./easytier-core [options]\
             \n\t2. Manually create TUN device: sudo mkdir -p /dev/net && sudo mknod /dev/net/tun c 10 200\
@@ -355,12 +356,6 @@ impl VirtualNic {
             \n\t5. Check if your system/container supports TUN devices\
             \nNote: TUN functionality may still work if the kernel supports dynamic device creation."
         );
-    }
-
-    /// For non-Linux systems, this is a no-op
-    #[cfg(not(target_os = "linux"))]
-    async fn ensure_tun_device_node() -> Result<(), Error> {
-        Ok(())
     }
 
     /// FreeBSD specific: Rename a TUN interface
@@ -532,8 +527,8 @@ impl VirtualNic {
             match crate::arch::windows::add_self_to_firewall_allowlist() {
                 Ok(_) => tracing::info!("add_self_to_firewall_allowlist successful!"),
                 Err(error) => {
-                    log::warn!(%error, "Failed to add Easytier to firewall allowlist, Subnet proxy and KCP proxy may not work properly.");
-                    log::warn!(
+                    tracing::warn!(%error, "Failed to add Easytier to firewall allowlist, Subnet proxy and KCP proxy may not work properly.");
+                    tracing::warn!(
                         "You can add firewall rules manually, or use --use-smoltcp to run with user-space TCP/IP stack."
                     );
                 }
@@ -585,7 +580,7 @@ impl VirtualNic {
         &mut self,
         tun_fd: std::os::fd::RawFd,
     ) -> Result<Box<dyn Tunnel>, Error> {
-        log::debug!(%tun_fd);
+        tracing::debug!(%tun_fd);
         let mut config = Configuration::default();
         config.layer(Layer::L3);
 
@@ -708,7 +703,7 @@ impl VirtualNic {
                     );
                 }
                 Err(error) => {
-                    log::warn!(%error, "Failed to configure Windows Firewall for interface {}\
+                    tracing::warn!(%error, "Failed to configure Windows Firewall for interface {}\
                     \n\tThis may cause connectivity issues with ping and other network functions.\
                     \n\tPlease run as Administrator or manually configure Windows Firewall.\
                     \n\tAlternatively, you can disable Windows Firewall for testing purposes.", ifname);
@@ -797,8 +792,8 @@ impl VirtualNic {
 
 pub struct NicCtx {
     global_ctx: ArcGlobalCtx,
-    peer_mgr: Weak<PeerManager>,
-    peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
+    packet_plane: Arc<CorePacketPlane>,
+    peer_packet_receiver: Arc<Mutex<HostPacketReceiver>>,
 
     close_notifier: Arc<Notify>,
 
@@ -810,15 +805,15 @@ pub struct NicCtx {
 }
 
 impl NicCtx {
-    pub fn new(
+    pub(crate) fn new(
         global_ctx: ArcGlobalCtx,
-        peer_manager: &Arc<PeerManager>,
-        peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
+        packet_plane: Arc<CorePacketPlane>,
+        peer_packet_receiver: Arc<Mutex<HostPacketReceiver>>,
         close_notifier: Arc<Notify>,
     ) -> Self {
         NicCtx {
             global_ctx: global_ctx.clone(),
-            peer_mgr: Arc::downgrade(peer_manager),
+            packet_plane,
             peer_packet_receiver,
 
             close_notifier,
@@ -870,102 +865,17 @@ impl NicCtx {
         Ok(())
     }
 
-    async fn do_forward_nic_to_peers_ipv4(ret: ZCPacket, mgr: &PeerManager) {
-        if let Some(ipv4) = Ipv4Packet::new(ret.payload()) {
-            if ipv4.get_version() != 4 {
-                tracing::info!("[USER_PACKET] not ipv4 packet: {:?}", ipv4);
-                return;
-            }
-            let dst_ipv4 = ipv4.get_destination();
-            let src_ipv4 = ipv4.get_source();
-            let my_ipv4 = mgr.get_global_ctx().get_ipv4().map(|x| x.address());
-            tracing::trace!(
-                ?ret,
-                ?src_ipv4,
-                ?dst_ipv4,
-                "[USER_PACKET] recv new packet from tun device and forward to peers."
-            );
-
-            // Subnet A is proxied as 10.0.0.0/24, and Subnet B is also proxied as 10.0.0.0/24.
-            //
-            // Subnet A has received a route advertised by Subnet B. As a result, A can reach
-            // the physical subnet 10.0.0.0/24 directly and has also added a virtual route for
-            // the same subnet 10.0.0.0/24. However, the physical route has a higher priority
-            // (lower metric) than the virtual one.
-            //
-            // When A sends a UDP packet to a non-existent IP within this subnet, the packet
-            // cannot be delivered on the physical network and is instead routed to the virtual
-            // network interface.
-            //
-            // The virtual interface receives the packet and forwards it to itself, which triggers
-            // the subnet proxy logic. The subnet proxy then attempts to send another packet to
-            // the same destination address, causing the same process to repeat and creating an
-            // infinite loop. Therefore, we must avoid re-sending packets back to ourselves
-            // when the subnet proxy itself is the originator of the packet.
-            //
-            // However, there is a special scenario to consider: when A acts as a gateway,
-            // packets from devices behind A may be forwarded by the OS to the ET (e.g., an
-            // eBPF or tunneling component), which happens to proxy the subnet. In this case,
-            // the packet’s source IP is not A’s own IP, and we must allow such packets to be
-            // sent to the virtual interface (i.e., "sent to ourselves") to maintain correct
-            // forwarding behavior. Thus, loop prevention should only apply when the source IP
-            // belongs to the local host.
-            let send_ret = mgr
-                .send_msg_by_ip(ret, IpAddr::V4(dst_ipv4), Some(src_ipv4) == my_ipv4)
-                .await;
-            if send_ret.is_err() {
-                tracing::trace!(?send_ret, "[USER_PACKET] send_msg failed")
-            }
-        } else {
-            tracing::warn!(?ret, "[USER_PACKET] not ipv4 packet");
-        }
-    }
-
-    async fn do_forward_nic_to_peers_ipv6(ret: ZCPacket, mgr: &PeerManager) {
-        if let Some(ipv6) = Ipv6Packet::new(ret.payload()) {
-            if ipv6.get_version() != 6 {
-                tracing::info!("[USER_PACKET] not ipv6 packet: {:?}", ipv6);
-                return;
-            }
-            let src_ipv6 = ipv6.get_source();
-            let dst_ipv6 = ipv6.get_destination();
-            let is_local_src = mgr.get_global_ctx().is_ip_local_ipv6(&src_ipv6);
-            tracing::trace!(
-                ?ret,
-                ?src_ipv6,
-                ?dst_ipv6,
-                "[USER_PACKET] recv new packet from tun device and forward to peers."
-            );
-
-            if src_ipv6.is_unicast_link_local() && !is_local_src {
-                // do not route link local packet to other nodes unless the address is assigned by user
-                return;
-            }
-
-            // TODO: use zero-copy
-            let send_ret = mgr
-                .send_msg_by_ip(ret, IpAddr::V6(dst_ipv6), is_local_src)
-                .await;
-            if send_ret.is_err() {
-                tracing::trace!(?send_ret, "[USER_PACKET] send_msg failed")
-            }
-        } else {
-            tracing::warn!(?ret, "[USER_PACKET] not ipv6 packet");
-        }
-    }
-
-    async fn do_forward_nic_to_peers(ret: ZCPacket, mgr: &PeerManager) {
+    async fn do_forward_nic_to_peers(ret: ZCPacket, packet_plane: &CorePacketPlane) {
         let payload = ret.payload();
         if payload.is_empty() {
             return;
         }
-
-        match payload[0] >> 4 {
-            4 => Self::do_forward_nic_to_peers_ipv4(ret, mgr).await,
-            6 => Self::do_forward_nic_to_peers_ipv6(ret, mgr).await,
-            _ => {
-                tracing::warn!(?ret, "[USER_PACKET] unknown IP version");
-            }
+        tracing::trace!(
+            ?ret,
+            "[USER_PACKET] recv new packet from tun device and forward to peers."
+        );
+        if let Err(error) = packet_plane.send_ip_packet(payload.to_vec()).await {
+            tracing::trace!(?error, "[USER_PACKET] send_msg failed");
         }
     }
 
@@ -974,9 +884,7 @@ impl NicCtx {
         mut stream: Pin<Box<dyn ZCPacketStream>>,
     ) -> Result<(), Error> {
         // read from nic and write to corresponding tunnel
-        let Some(mgr) = self.peer_mgr.upgrade() else {
-            return Err(anyhow::anyhow!("peer manager not available").into());
-        };
+        let packet_plane = self.packet_plane.clone();
         let close_notifier = self.close_notifier.clone();
         self.tasks.spawn(async move {
             while let Some(ret) = stream.next().await {
@@ -984,7 +892,7 @@ impl NicCtx {
                     tracing::error!("read from nic failed: {:?}", ret);
                     break;
                 }
-                Self::do_forward_nic_to_peers(ret.unwrap(), mgr.as_ref()).await;
+                Self::do_forward_nic_to_peers(ret.unwrap(), packet_plane.as_ref()).await;
             }
             close_notifier.notify_one();
             tracing::error!("nic closed when recving from it");
@@ -999,12 +907,12 @@ impl NicCtx {
         self.tasks.spawn(async move {
             // unlock until coroutine finished
             let mut channel = channel.lock().await;
-            while let Ok(packet) = recv_packet_from_chan(&mut channel).await {
+            while let Some(packet) = channel.recv().await {
                 tracing::trace!(
                     "[USER_PACKET] forward packet from peers to nic. packet: {:?}",
                     packet
                 );
-                let ret = sink.send(packet).await;
+                let ret = sink.send(ZCPacket::new_with_payload(&packet)).await;
                 if ret.is_err() {
                     tracing::error!(?ret, "do_forward_tunnel_to_nic sink error");
                 }
@@ -1020,12 +928,11 @@ impl NicCtx {
             return;
         }
 
-        let Some(peer_manager) = self.peer_mgr.upgrade() else {
-            tracing::warn!("peer manager is dropped, skip Windows UDP broadcast relay");
-            return;
-        };
-
-        match super::windows_udp_broadcast::start(peer_manager, virtual_ipv4) {
+        match super::windows_udp_broadcast::start(
+            self.packet_plane.clone(),
+            self.global_ctx.clone(),
+            virtual_ipv4,
+        ) {
             Ok(handle) => {
                 self.windows_udp_broadcast_relay = Some(handle);
                 tracing::info!("Windows UDP broadcast relay started");
@@ -1129,9 +1036,7 @@ impl NicCtx {
     }
 
     async fn run_proxy_cidrs_route_updater(&mut self) -> Result<(), Error> {
-        let Some(peer_mgr) = self.peer_mgr.upgrade() else {
-            return Err(anyhow::anyhow!("peer manager not available").into());
-        };
+        let packet_plane = self.packet_plane.clone();
         let global_ctx = self.global_ctx.clone();
         let net_ns = self.global_ctx.net_ns.clone();
         let nic = self.nic.lock().await;
@@ -1143,19 +1048,17 @@ impl NicCtx {
             let mut cur_proxy_cidrs = BTreeSet::<cidr::Ipv4Cidr>::new();
 
             // Initial sync: get current proxy_cidrs state and apply routes
-            let (_, added, removed) = ProxyCidrsMonitor::diff_proxy_cidrs(
-                peer_mgr.as_ref(),
-                &global_ctx,
-                &cur_proxy_cidrs,
-            )
-            .await;
+            let Some(diff) = packet_plane.proxy_cidr_diff(&cur_proxy_cidrs).await else {
+                tracing::error!("proxy CIDR monitor host is unavailable");
+                return;
+            };
             Self::apply_route_changes(
                 &ifcfg,
                 &ifname,
                 &net_ns,
                 &mut cur_proxy_cidrs,
-                added,
-                removed,
+                diff.added,
+                diff.removed,
             )
             .await;
 
@@ -1172,13 +1075,12 @@ impl NicCtx {
                         );
                         event_receiver = event_receiver.resubscribe();
                         // Full sync after lagged to recover consistent state
-                        let (_, added, removed) = ProxyCidrsMonitor::diff_proxy_cidrs(
-                            peer_mgr.as_ref(),
-                            &global_ctx,
-                            &cur_proxy_cidrs,
-                        )
-                        .await;
-                        GlobalCtxEvent::ProxyCidrsUpdated(added, removed)
+                        let Some(diff) = packet_plane.proxy_cidr_diff(&cur_proxy_cidrs).await
+                        else {
+                            tracing::error!("proxy CIDR monitor host is unavailable");
+                            return;
+                        };
+                        GlobalCtxEvent::ProxyCidrsUpdated(diff.added, diff.removed)
                     }
                 };
 
@@ -1204,9 +1106,7 @@ impl NicCtx {
     }
 
     async fn run_public_ipv6_route_updater(&mut self) -> Result<(), Error> {
-        let Some(peer_mgr) = self.peer_mgr.upgrade() else {
-            return Err(anyhow::anyhow!("peer manager not available").into());
-        };
+        let packet_plane = self.packet_plane.clone();
         let global_ctx = self.global_ctx.clone();
         let net_ns = self.global_ctx.net_ns.clone();
         let nic = self.nic.lock().await;
@@ -1216,7 +1116,7 @@ impl NicCtx {
 
         self.tasks.spawn(async move {
             let mut cur_routes = BTreeSet::<cidr::Ipv6Inet>::new();
-            let initial_routes = peer_mgr.list_public_ipv6_routes().await;
+            let initial_routes = packet_plane.public_ipv6_routes().await;
             let initial_added = initial_routes.iter().copied().collect::<Vec<_>>();
             Self::apply_public_ipv6_route_changes(
                 &ifcfg,
@@ -1234,7 +1134,7 @@ impl NicCtx {
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                         event_receiver = event_receiver.resubscribe();
-                        let latest = peer_mgr.list_public_ipv6_routes().await;
+                        let latest = packet_plane.public_ipv6_routes().await;
                         let added = latest.difference(&cur_routes).copied().collect::<Vec<_>>();
                         let removed = cur_routes.difference(&latest).copied().collect::<Vec<_>>();
                         GlobalCtxEvent::PublicIpv6RoutesUpdated(added, removed)
@@ -1262,15 +1162,13 @@ impl NicCtx {
     }
 
     async fn run_public_ipv6_addr_updater(&mut self) -> Result<(), Error> {
-        let Some(peer_mgr) = self.peer_mgr.upgrade() else {
-            return Err(anyhow::anyhow!("peer manager not available").into());
-        };
+        let packet_plane = self.packet_plane.clone();
         let global_ctx = self.global_ctx.clone();
         let nic = self.nic.clone();
         let mut event_receiver = global_ctx.subscribe();
 
         self.tasks.spawn(async move {
-            let mut current_addr = peer_mgr.get_my_public_ipv6_addr().await;
+            let mut current_addr = packet_plane.public_ipv6_addr().await;
             if let Some(addr) = current_addr {
                 let nic = nic.lock().await;
                 if let Err(err) = nic.link_up().await {
@@ -1293,7 +1191,7 @@ impl NicCtx {
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                         event_receiver = event_receiver.resubscribe();
-                        let latest = peer_mgr.get_my_public_ipv6_addr().await;
+                        let latest = packet_plane.public_ipv6_addr().await;
                         GlobalCtxEvent::PublicIpv6Changed(current_addr, latest)
                     }
                 };

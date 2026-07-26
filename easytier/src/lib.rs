@@ -1,32 +1,26 @@
-#![allow(dead_code)]
-
 use std::io;
 
 use clap::Command;
 use clap_complete::{Generator, Shell};
 
-// Re-export `Instant` at the crate root so public APIs that expose it
-// (e.g. `Route::get_peer_info_last_update_time`) reference a deliberate
-// public type rather than leaking an inaccessible one.
-pub use quanta::Instant;
-
 mod arch;
 mod gateway;
+mod host_runtime;
 pub mod instance;
-mod peer_center;
 mod vpn_portal;
 
 pub mod common;
-pub mod connector;
+#[cfg(feature = "management")]
 pub mod core;
-pub mod instance_manager;
-pub mod launcher;
-pub mod peers;
 pub mod proto;
+#[cfg(feature = "management-rpc")]
 pub mod rpc_service;
+#[cfg(feature = "management")]
 pub mod service_manager;
+pub(crate) mod socket;
 pub mod tunnel;
 pub mod utils;
+#[cfg(feature = "management")]
 pub mod web_client;
 
 #[cfg(test)]
