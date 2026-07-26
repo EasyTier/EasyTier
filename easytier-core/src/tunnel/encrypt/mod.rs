@@ -15,7 +15,7 @@ pub mod aes_gcm;
 pub mod chacha20;
 #[cfg(feature = "openssl-crypto")]
 mod openssl;
-#[cfg(feature = "ring-crypto")]
+#[cfg(all(feature = "ring-crypto", any(not(feature = "openssl-crypto"), test)))]
 mod ring;
 
 pub mod xor;
@@ -160,7 +160,7 @@ fn is_aead_algorithm(algorithm: EncryptionAlgorithm) -> bool {
 enum AeadBackend {
     #[cfg(feature = "openssl-crypto")]
     OpenSsl,
-    #[cfg(feature = "ring-crypto")]
+    #[cfg(all(not(feature = "openssl-crypto"), feature = "ring-crypto"))]
     Ring,
     #[cfg(all(
         not(feature = "openssl-crypto"),
@@ -205,7 +205,7 @@ fn create_aes_128(key: [u8; 16]) -> Arc<dyn Encryptor> {
     match preferred_aead_backend(EncryptionAlgorithm::AesGcm) {
         #[cfg(feature = "openssl-crypto")]
         Some(AeadBackend::OpenSsl) => Arc::new(openssl::OpenSslCipher::new_aes128_gcm(key)),
-        #[cfg(feature = "ring-crypto")]
+        #[cfg(all(not(feature = "openssl-crypto"), feature = "ring-crypto"))]
         Some(AeadBackend::Ring) => Arc::new(ring::RingCipher::new_aes128_gcm(key)),
         #[cfg(all(
             not(feature = "openssl-crypto"),
@@ -222,7 +222,7 @@ fn create_aes_256(key: [u8; 32]) -> Arc<dyn Encryptor> {
     match preferred_aead_backend(EncryptionAlgorithm::Aes256Gcm) {
         #[cfg(feature = "openssl-crypto")]
         Some(AeadBackend::OpenSsl) => Arc::new(openssl::OpenSslCipher::new_aes256_gcm(key)),
-        #[cfg(feature = "ring-crypto")]
+        #[cfg(all(not(feature = "openssl-crypto"), feature = "ring-crypto"))]
         Some(AeadBackend::Ring) => Arc::new(ring::RingCipher::new_aes256_gcm(key)),
         #[cfg(all(
             not(feature = "openssl-crypto"),
@@ -239,7 +239,7 @@ fn create_chacha20(key: [u8; 32]) -> Arc<dyn Encryptor> {
     match preferred_aead_backend(EncryptionAlgorithm::ChaCha20) {
         #[cfg(feature = "openssl-crypto")]
         Some(AeadBackend::OpenSsl) => Arc::new(openssl::OpenSslCipher::new_chacha20(key)),
-        #[cfg(feature = "ring-crypto")]
+        #[cfg(all(not(feature = "openssl-crypto"), feature = "ring-crypto"))]
         Some(AeadBackend::Ring) => Arc::new(ring::RingCipher::new_chacha20(key)),
         #[cfg(all(
             not(feature = "openssl-crypto"),

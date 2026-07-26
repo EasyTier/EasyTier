@@ -462,7 +462,7 @@ mod tests {
         config::peers::{HostRoutingPolicy, PeerRuntimeConfig, PeerRuntimeSnapshot},
         config::runtime::CoreRuntimeConfig,
         config::{CoreConfig, NetworkIdentity, NodeConfig},
-        peers::{create_packet_recv_chan, peer_manager::PortablePeerManagerConfig},
+        peers::peer_manager::PortablePeerManagerConfig,
     };
 
     use super::*;

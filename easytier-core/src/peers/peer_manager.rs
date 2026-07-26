@@ -3202,10 +3202,7 @@ mod tests {
         config::runtime::CoreRuntimeConfig,
         config::{CoreConfig, IpPrefix, NetworkIdentity, NodeConfig, ProxyNetworkConfig},
         host::packet::{HostPacketSender, host_packet_channel},
-        peers::{
-            context::{PeerContext, PeerEvent},
-            create_packet_recv_chan,
-        },
+        peers::context::{PeerContext, PeerEvent},
         proto::common::{PeerFeatureFlag, StunInfo},
     };
 

@@ -1122,26 +1122,35 @@ async fn easy_tier_mux_udp_session_receives_only_peer_data_payloads() {
         sessions.clone(),
     );
 
-    dispatch_data_packet(
-        &sessions,
-        unexpected_addr,
-        conn_id,
-        new_data_packet(conn_id, b"wrong-peer").unwrap(),
-        Default::default(),
+    assert!(
+        dispatch_data_packet(
+            &sessions,
+            unexpected_addr,
+            conn_id,
+            new_data_packet(conn_id, b"wrong-peer").unwrap(),
+            Default::default(),
+        )
+        .is_err()
     );
-    dispatch_data_packet(
-        &sessions,
-        peer_addr,
-        conn_id + 1,
-        new_data_packet(conn_id + 1, b"wrong-conn").unwrap(),
-        Default::default(),
+    assert!(
+        dispatch_data_packet(
+            &sessions,
+            peer_addr,
+            conn_id + 1,
+            new_data_packet(conn_id + 1, b"wrong-conn").unwrap(),
+            Default::default(),
+        )
+        .is_err()
     );
-    dispatch_data_packet(
-        &sessions,
-        peer_addr,
-        conn_id,
-        new_data_packet(conn_id, b"payload").unwrap(),
-        Default::default(),
+    assert!(
+        dispatch_data_packet(
+            &sessions,
+            peer_addr,
+            conn_id,
+            new_data_packet(conn_id, b"payload").unwrap(),
+            Default::default(),
+        )
+        .is_ok()
     );
 
     let mut buf = [0; 16];
@@ -1659,12 +1668,15 @@ async fn sack_from_actual_remote_rekeys_pending_session_before_data_dispatch() {
         },
     );
 
-    dispatch_data_packet(
-        &sessions,
-        expected_addr,
-        conn_id,
-        new_data_packet(conn_id, b"pre-sack").unwrap(),
-        Default::default(),
+    assert!(
+        dispatch_data_packet(
+            &sessions,
+            expected_addr,
+            conn_id,
+            new_data_packet(conn_id, b"pre-sack").unwrap(),
+            Default::default(),
+        )
+        .is_err()
     );
     dispatch_sack_packet(
         &sessions,
@@ -1673,12 +1685,15 @@ async fn sack_from_actual_remote_rekeys_pending_session_before_data_dispatch() {
         conn_id,
         &new_sack_packet(conn_id, magic),
     );
-    dispatch_data_packet(
-        &sessions,
-        actual_addr,
-        conn_id,
-        new_data_packet(conn_id, b"payload").unwrap(),
-        Default::default(),
+    assert!(
+        dispatch_data_packet(
+            &sessions,
+            actual_addr,
+            conn_id,
+            new_data_packet(conn_id, b"payload").unwrap(),
+            Default::default(),
+        )
+        .is_ok()
     );
 
     assert!(sessions.contains_key(&actual_key));
