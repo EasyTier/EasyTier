@@ -33,8 +33,9 @@ use super::{
         dispatch_payload_to_session, udp_session_registry_entry,
     },
     virtual_socket::{
-        NoopUdpSessionStunResponder, PreferredIpv6Source, UdpSessionStunResponder,
-        UdpSocketRecvMeta, UdpSocketSendMeta, VirtualUdpSocket, VirtualUdpSocketFactory,
+        MAX_UDP_SESSION_DATAGRAM_SIZE, NoopUdpSessionStunResponder, PreferredIpv6Source,
+        UdpSessionStunResponder, UdpSocketRecvMeta, UdpSocketSendMeta, VirtualUdpSocket,
+        VirtualUdpSocketFactory,
     },
 };
 
@@ -460,6 +461,15 @@ pub(super) async fn udp_session_layer_recv_task<S, R>(
         let payload = datagram.payload;
         let remote_addr = datagram.remote_addr;
         let recv_meta = datagram.meta;
+        if payload.len() > MAX_UDP_SESSION_DATAGRAM_SIZE {
+            tracing::debug!(
+                datagram_len = payload.len(),
+                max_datagram_len = MAX_UDP_SESSION_DATAGRAM_SIZE,
+                ?remote_addr,
+                "dropping oversized udp session datagram"
+            );
+            continue;
+        }
         let quic_key = ClassifiedUdpSessionKey::new(UdpSessionProtocol::Quic, remote_addr);
         if classified_sessions.contains_key(&quic_key) {
             dispatch_existing_classified_udp_datagram(

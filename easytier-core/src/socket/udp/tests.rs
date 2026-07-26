@@ -946,6 +946,30 @@ async fn udp_layer_routes_quic_like_easytier_packet_to_existing_quic_session() {
 }
 
 #[tokio::test]
+async fn udp_layer_drops_oversized_datagram_without_stopping_portable_socket() {
+    let local_addr = SocketAddr::from(([127, 0, 0, 1], 12000));
+    let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
+    let socket = Arc::new(AutoSackVirtualUdpSocket::new(local_addr));
+    let layer = UdpSessionLayer::new(socket.clone());
+    let session = layer
+        .open_classified_session(UdpSessionProtocol::Quic, peer_addr)
+        .unwrap();
+    socket.incoming.lock().unwrap().extend([
+        (vec![0xAA; MAX_UDP_SESSION_DATAGRAM_SIZE + 1], peer_addr),
+        (b"after-oversized".to_vec(), peer_addr),
+    ]);
+    socket.incoming_notify.notify_one();
+
+    let mut buf = [0; 32];
+    let len = tokio::time::timeout(Duration::from_secs(1), session.recv(&mut buf))
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(&buf[..len], b"after-oversized");
+}
+
+#[tokio::test]
 async fn udp_layer_keeps_easy_tier_syn_out_of_wireguard_session() {
     let local_addr = SocketAddr::from(([127, 0, 0, 1], 12000));
     let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12001));

@@ -23,15 +23,15 @@ pub struct UdpSocketSendMeta {
     pub src_ifindex: Option<u32>,
 }
 
+/// Largest UDP datagram that portable socket implementations must receive.
+pub const MAX_UDP_DATAGRAM_SIZE: usize = u16::MAX as usize;
+
 /// Largest datagram accepted by the UDP session/multiplexer data plane.
 ///
 /// EasyTier, WireGuard, and QUIC datagrams are bounded by their transport MTU.
 /// Keeping this capacity explicit avoids allocating the theoretical UDP maximum
-/// for every received packet.
+/// for every packet on native hosts that can detect truncation.
 pub const MAX_UDP_SESSION_DATAGRAM_SIZE: usize = 8 * 1024;
-
-/// Backwards-compatible name for the UDP session datagram limit.
-pub const MAX_UDP_DATAGRAM_SIZE: usize = MAX_UDP_SESSION_DATAGRAM_SIZE;
 
 #[derive(Debug)]
 pub struct UdpSocketDatagram {
@@ -77,7 +77,7 @@ pub trait VirtualUdpSocket: Send + Sync + 'static {
     /// avoiding a second allocation and copy at the Host boundary.
     async fn recv_datagram(&self) -> std::io::Result<UdpSocketDatagram> {
         let mut payload = BytesMut::new();
-        payload.resize(MAX_UDP_SESSION_DATAGRAM_SIZE, 0);
+        payload.resize(MAX_UDP_DATAGRAM_SIZE, 0);
         let (len, remote_addr, meta) = self.recv_from_with_meta(&mut payload).await?;
         payload.truncate(len);
         Ok(UdpSocketDatagram {
