@@ -763,7 +763,8 @@ impl PeerContext for CorePeerContext {
     }
 
     fn packet_policy(&self) -> PeerPacketPolicy {
-        PeerPacketPolicy::from_flags(&self.snapshot().flags)
+        self.config
+            .with_snapshot(|snapshot| PeerPacketPolicy::from_flags(&snapshot.peer.flags))
     }
 
     fn host_routing_policy(&self) -> HostRoutingPolicy {
@@ -792,13 +793,16 @@ impl PeerContext for CorePeerContext {
     }
 
     fn ipv4(&self) -> Option<Ipv4Inet> {
-        self.snapshot()
-            .runtime
-            .core
-            .routes
-            .ipv4
-            .as_ref()
-            .and_then(config_ipv4)
+        self.config.with_snapshot(|snapshot| {
+            snapshot
+                .peer
+                .runtime
+                .core
+                .routes
+                .ipv4
+                .as_ref()
+                .and_then(config_ipv4)
+        })
     }
 
     fn ipv6(&self) -> Option<Ipv6Inet> {

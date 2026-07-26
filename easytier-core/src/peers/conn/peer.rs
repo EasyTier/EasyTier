@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use arc_swap::ArcSwapOption;
 use crossbeam::atomic::AtomicCell;
 use dashmap::{DashMap, DashSet};
 use parking_lot::RwLock;
@@ -38,11 +39,11 @@ pub struct Peer {
 
     shutdown_notifier: Arc<tokio::sync::Notify>,
 
-    default_conn_id: Arc<AtomicCell<PeerConnId>>,
+    default_conn: Arc<ArcSwapOption<PeerConn>>,
     peer_identity_type: Arc<AtomicCell<Option<PeerIdentityType>>>,
     peer_public_key: Arc<RwLock<Option<Vec<u8>>>>,
     #[allow(dead_code)]
-    default_conn_id_clear_task: AbortOnDropHandle<()>,
+    default_conn_clear_task: AbortOnDropHandle<()>,
 }
 
 impl Peer {
@@ -58,10 +59,12 @@ impl Peer {
         let peer_identity_type_copy = peer_identity_type.clone();
         let peer_public_key = Arc::new(RwLock::new(None));
         let peer_public_key_copy = peer_public_key.clone();
+        let default_conn = Arc::new(ArcSwapOption::empty());
 
         let conns_copy = conns.clone();
         let shutdown_notifier_copy = shutdown_notifier.clone();
         let context_copy = context.clone();
+        let default_conn_copy = default_conn.clone();
         let close_event_listener = AbortOnDropHandle::new(tokio::spawn(
             async move {
                 loop {
@@ -78,6 +81,13 @@ impl Peer {
                             );
 
                             if let Some((_, conn)) = conns_copy.remove(&ret) {
+                                let cached_conn = default_conn_copy.load();
+                                if cached_conn
+                                    .as_ref()
+                                    .is_some_and(|cached| Arc::ptr_eq(cached, &conn))
+                                {
+                                    default_conn_copy.store(None);
+                                }
                                 context_copy.issue_event(PeerEvent::PeerConnRemoved(
                                     conn.get_conn_info(),
                                 ));
@@ -103,15 +113,13 @@ impl Peer {
             )),
         ));
 
-        let default_conn_id = Arc::new(AtomicCell::new(PeerConnId::default()));
-
         let conns_copy = conns.clone();
-        let default_conn_id_copy = default_conn_id.clone();
-        let default_conn_id_clear_task = AbortOnDropHandle::new(tokio::spawn(async move {
+        let default_conn_copy = default_conn.clone();
+        let default_conn_clear_task = AbortOnDropHandle::new(tokio::spawn(async move {
             loop {
                 crate::foundation::time::sleep(std::time::Duration::from_secs(5)).await;
                 if conns_copy.len() > 1 {
-                    default_conn_id_copy.store(PeerConnId::default());
+                    default_conn_copy.store(None);
                 }
             }
         }));
@@ -126,10 +134,10 @@ impl Peer {
             close_event_listener,
 
             shutdown_notifier,
-            default_conn_id,
+            default_conn,
             peer_identity_type,
             peer_public_key,
-            default_conn_id_clear_task,
+            default_conn_clear_task,
         }
     }
 
@@ -186,29 +194,33 @@ impl Peer {
         Ok(())
     }
 
-    async fn select_conn(&self) -> Option<ArcPeerConn> {
-        let default_conn_id = self.default_conn_id.load();
-        if let Some(conn) = self.conns.get(&default_conn_id) {
-            return Some(conn.clone());
-        }
-
+    fn select_conn(&self) -> Option<ArcPeerConn> {
         // find a conn with the smallest latency
         let mut min_latency = u64::MAX;
+        let mut selected = None;
         for conn in self.conns.iter() {
             let latency = conn.value().get_stats().latency_us;
             if latency < min_latency {
                 min_latency = latency;
-                self.default_conn_id.store(conn.get_conn_id());
+                selected = Some(conn.value().clone());
             }
         }
 
-        self.conns
-            .get(&self.default_conn_id.load())
-            .map(|conn| conn.clone())
+        if let Some(conn) = selected.as_ref() {
+            self.default_conn.store(Some(conn.clone()));
+        }
+        selected
     }
 
     pub async fn send_msg(&self, msg: ZCPacket) -> Result<(), Error> {
-        let Some(conn) = self.select_conn().await else {
+        let default_conn = self.default_conn.load();
+        if let Some(conn) = default_conn.as_ref() {
+            conn.send_msg(msg).await?;
+            return Ok(());
+        }
+        drop(default_conn);
+
+        let Some(conn) = self.select_conn() else {
             return Err(Error::PeerNoConnectionError(self.peer_node_id));
         };
         conn.send_msg(msg).await?;
@@ -264,7 +276,11 @@ impl Peer {
     }
 
     pub fn get_default_conn_id(&self) -> PeerConnId {
-        self.default_conn_id.load()
+        self.default_conn
+            .load()
+            .as_ref()
+            .map(|conn| conn.get_conn_id())
+            .unwrap_or_default()
     }
 
     pub fn get_peer_identity_type(&self) -> Option<PeerIdentityType> {

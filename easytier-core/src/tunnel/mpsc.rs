@@ -18,7 +18,13 @@ pub struct MpscTunnelSender(Sender<ZCPacket>);
 
 impl MpscTunnelSender {
     pub async fn send(&self, item: ZCPacket) -> Result<(), TunnelError> {
-        self.0.send(item).await.map_err(|_| TunnelError::Shutdown)
+        match self.0.try_send(item) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(item)) => {
+                self.0.send(item).await.map_err(|_| TunnelError::Shutdown)
+            }
+            Err(TrySendError::Closed(_)) => Err(TunnelError::Shutdown),
+        }
     }
 
     pub fn try_send(&self, item: ZCPacket) -> Result<(), TunnelError> {
@@ -135,5 +141,35 @@ impl<T: Tunnel> MpscTunnel<T> {
 impl<T> Drop for MpscTunnel<T> {
     fn drop(&mut self) {
         self.task.abort();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn sender_falls_back_to_waiting_when_channel_is_full() {
+        let (tx, mut rx) = channel(1);
+        let sender = MpscTunnelSender(tx);
+        sender
+            .send(ZCPacket::new_with_payload(b"first"))
+            .await
+            .unwrap();
+
+        let blocked_send = sender.send(ZCPacket::new_with_payload(b"second"));
+        tokio::pin!(blocked_send);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut blocked_send)
+                .await
+                .is_err()
+        );
+
+        assert_eq!(rx.recv().await.unwrap().payload(), b"first");
+        tokio::time::timeout(Duration::from_secs(1), &mut blocked_send)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(rx.recv().await.unwrap().payload(), b"second");
     }
 }
