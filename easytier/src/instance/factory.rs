@@ -29,6 +29,15 @@ pub fn native_instance_manager() -> NativeInstanceManager {
     native_instance_manager_with_optional_runtime(None)
 }
 
+#[cfg(feature = "management")]
+pub fn native_cli_instance_manager() -> NativeInstanceManager {
+    let process_runtime = CoreProcessRuntime::new();
+    InstanceManager::new(
+        NativeInstanceFactory::new(process_runtime).with_cli_event_logging(),
+        None,
+    )
+}
+
 pub fn create_native_instance(config: TomlConfig) -> anyhow::Result<Arc<NativeCoreInstance>> {
     NativeInstanceFactory::new(CoreProcessRuntime::new()).create(config, ())
 }
@@ -76,6 +85,8 @@ fn native_instance_manager_with_optional_runtime(
 pub struct NativeInstanceFactory {
     process_runtime: Arc<CoreProcessRuntime>,
     runtime_handle: Option<tokio::runtime::Handle>,
+    #[cfg(feature = "management")]
+    log_cli_events: bool,
 }
 
 impl NativeInstanceFactory {
@@ -83,7 +94,15 @@ impl NativeInstanceFactory {
         Self {
             process_runtime,
             runtime_handle: None,
+            #[cfg(feature = "management")]
+            log_cli_events: false,
         }
+    }
+
+    #[cfg(feature = "management")]
+    fn with_cli_event_logging(mut self) -> Self {
+        self.log_cli_events = true;
+        self
     }
 
     #[cfg(feature = "management-rpc")]
@@ -107,7 +126,14 @@ impl InstanceFactory for NativeInstanceFactory {
             .runtime_handle
             .as_ref()
             .map(tokio::runtime::Handle::enter);
-        compose_native_core_instance(config, self.process_runtime.clone())
+        let instance = compose_native_core_instance(config, self.process_runtime.clone())?;
+        #[cfg(feature = "management")]
+        if self.log_cli_events {
+            let events = subscribe_native_instance_event(&instance)
+                .ok_or_else(|| anyhow::anyhow!("native instance runtime host is unavailable"))?;
+            super::cli_event_logger::spawn(instance.instance_id(), events);
+        }
+        Ok(instance)
     }
 }
 
