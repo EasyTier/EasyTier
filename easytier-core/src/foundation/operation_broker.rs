@@ -163,7 +163,12 @@ where
                 self.completions.push_back(operation_id);
                 notify
             }
-            OperationState::Discarding => false,
+            OperationState::Discarding => {
+                if cancel {
+                    self.operations.insert(operation_id, operation);
+                }
+                false
+            }
             OperationState::Queued(_) | OperationState::Drained(_) => {
                 self.operations.insert(operation_id, operation);
                 false
@@ -430,6 +435,24 @@ mod tests {
         ));
 
         broker.complete_with(admission.id, |_, _| ());
+        broker.admit(Kind::Write, ()).unwrap();
+    }
+
+    #[test]
+    fn cancellation_keeps_discarding_tombstone_until_completion() {
+        let mut broker: OperationBroker<Kind, (), ()> = OperationBroker::new(1);
+        let admission = broker.admit(Kind::Read, ()).unwrap();
+        broker.free(admission.id);
+
+        assert!(!broker.cancel_with(admission.id, |_, _| ()));
+        assert_eq!(broker.len(), 1);
+        assert!(matches!(
+            broker.admit(Kind::Write, ()),
+            Err(AdmissionError::AtCapacity)
+        ));
+
+        assert!(!broker.complete_with(admission.id, |_, _| ()));
+        assert_eq!(broker.len(), 0);
         broker.admit(Kind::Write, ()).unwrap();
     }
 
