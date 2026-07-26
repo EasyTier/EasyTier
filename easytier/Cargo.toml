@@ -172,9 +172,6 @@ network-interface = "2.0"
 # for wireguard
 boringtun = { package = "boringtun-easytier", version = "0.6.1", optional = true }
 
-# for encryption
-ring = { version = "0.17", optional = true }
-
 # for cli
 tabled = "0.16"
 humansize = "2.1.3"
@@ -336,12 +333,13 @@ full = [
     "extended-services",
     "tcp-hole-punch",
 ]
-wireguard = ["vpn-portal", "dep:boringtun", "dep:ring", "easytier-core/aes-gcm", "easytier-core/chacha20", "easytier-proto/wireguard"]
+wireguard = ["vpn-portal", "dep:boringtun", "ring-crypto", "easytier-proto/wireguard"]
 quic = ["wrapped-transport", "easytier-core/proxy-packet", "dep:quinn", "dep:quinn-proto", "dep:seahash", "dep:rustls", "easytier-proto/quic"]
 kcp = ["wrapped-transport", "easytier-core/proxy-packet", "dep:kcp-sys"]
 mimalloc = ["dep:mimalloc"]
 aes-gcm = ["easytier-core/aes-gcm"]
-openssl-crypto = ["easytier-core/aes-gcm", "easytier-core/chacha20"]
+openssl-crypto = ["easytier-core/openssl-crypto"]
+ring-crypto = ["easytier-core/ring-crypto"]
 tun = ["dep:tun", "linux-netlink"]
 linux-netlink = ["dep:netlink-sys"]
 proxy-cidr-monitor = ["easytier-core/proxy-cidr-monitor"]

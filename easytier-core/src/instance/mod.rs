@@ -60,7 +60,10 @@ use crate::{
     },
     events::CoreEventSink,
     gateway::dhcp::DhcpIpv4Host,
-    host::dns::{DnsRecordResolver, DnsResolver},
+    host::{
+        dns::{DnsRecordResolver, DnsResolver},
+        packet::{HostPacketReceiver, PacketSink, host_packet_channel},
+    },
     listener::{
         AcceptedSocketHandler, ExternalListenerFactory, ExternalListenerRequest, ListenerFactory,
         RunningListenerRegistry,
@@ -74,7 +77,6 @@ use crate::{
     peers::{
         admission::{PeerAcceptedTunnelHandler, RawAcceptedTransportHandler},
         context::PeerStunInfoSource,
-        create_packet_recv_chan,
         credential_manager::CredentialStorage,
         peer_manager::{PeerManagerCore, PortablePeerManagerConfig},
         public_ipv6::{CorePublicIpv6Runtime, PublicIpv6Host},
@@ -108,12 +110,12 @@ use crate::gateway::vpn_portal::VpnPortalModule;
 use crate::gateway::{
     DataPlaneRuntime, DataPlaneSession, PortForwardAdapter, Socks5GatewayAdapter,
 };
-use crate::host::packet::PacketSink;
 #[cfg(feature = "public-ipv6-provider")]
 use crate::peers::public_ipv6::provider::PublicIpv6ProviderRuntime;
 pub use config::CoreInstanceHostConfig;
 use management_state::ManagementState;
-use packet_io::PacketEgress;
+pub use packet_io::PacketEgressHost;
+use packet_io::PacketSinkEgress;
 pub use packet_plane::CorePacketPlane;
 
 /// Complete Host capability set required by one portable core instance.
@@ -277,7 +279,7 @@ where
     stun_override: Option<Arc<dyn StunSocketMapper<<H as VirtualUdpSocketFactory>::Socket>>>,
     dns: Arc<dyn StunDnsRuntime>,
     process_runtime: Arc<CoreProcessRuntime>,
-    packet_sink: Arc<dyn PacketSink>,
+    pub packet_egress: Arc<dyn PacketEgressHost>,
     pub instance_runtime: Arc<dyn InstanceRuntimeHost>,
     pub events: Arc<dyn CoreEventSink>,
     pub credential_storage: Option<Arc<dyn CredentialStorage>>,
@@ -314,6 +316,22 @@ where
         packet_sink: Arc<dyn PacketSink>,
         process_runtime: Arc<CoreProcessRuntime>,
     ) -> Self {
+        Self::new_with_packet_egress(
+            host,
+            dns,
+            Arc::new(PacketSinkEgress::new(packet_sink)),
+            process_runtime,
+        )
+    }
+
+    /// Creates a host bundle whose packet runtime owns the core's single
+    /// bounded egress receiver directly.
+    pub fn new_with_packet_egress(
+        host: Arc<H>,
+        dns: Arc<dyn StunDnsRuntime>,
+        packet_egress: Arc<dyn PacketEgressHost>,
+        process_runtime: Arc<CoreProcessRuntime>,
+    ) -> Self {
         Self {
             host,
             config: CoreInstanceHostConfig::default(),
@@ -321,7 +339,7 @@ where
             stun_override: None,
             dns,
             process_runtime,
-            packet_sink,
+            packet_egress,
             instance_runtime: Arc::new(()),
             events: Arc::new(()),
             credential_storage: None,
@@ -395,7 +413,8 @@ where
     proxy_cidr_monitor: ProxyCidrMonitorRuntime,
     #[cfg(feature = "dhcp-ipv4")]
     dhcp_ipv4: DhcpIpv4Runtime,
-    pub(super) packet_egress: Option<PacketEgress>,
+    pub(super) packet_egress: Arc<dyn PacketEgressHost>,
+    pub(super) packet_receiver: Mutex<Option<HostPacketReceiver>>,
     pub(super) peer_center: Arc<PeerCenterInstance>,
     #[cfg(feature = "public-ipv6-provider")]
     public_ipv6_provider: PublicIpv6ProviderRuntime,
@@ -463,7 +482,7 @@ where
     ) -> anyhow::Result<Arc<Self>> {
         let initial_acl = validate_core_instance_config(&config)?;
         let instance_name = config.instance_name;
-        let (packet_tx, packet_rx) = create_packet_recv_chan();
+        let (packet_tx, packet_rx) = host_packet_channel();
         let runtime_config = CoreRuntimeConfigStore::new(
             config.connectivity.runtime.clone(),
             Arc::new(config.peer.snapshot.clone()),
@@ -516,7 +535,7 @@ where
                 stun_override: _,
             dns,
             process_runtime,
-            packet_sink,
+            packet_egress,
             instance_runtime,
             events,
             credential_storage: _,
@@ -779,7 +798,8 @@ where
             proxy_cidr_monitor,
             #[cfg(feature = "dhcp-ipv4")]
             dhcp_ipv4: DhcpIpv4Runtime::new(),
-            packet_egress: Some(PacketEgress::new(packet_rx, packet_sink)),
+            packet_egress,
+            packet_receiver: Mutex::new(Some(packet_rx)),
             peer_center,
             #[cfg(feature = "public-ipv6-provider")]
             public_ipv6_provider,
@@ -887,6 +907,7 @@ where
     fn drop(&mut self) {
         self.cancel.cancel();
         self.instance_runtime.request_shutdown();
+        self.packet_egress.request_stop();
     }
 }
 

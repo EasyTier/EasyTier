@@ -103,9 +103,13 @@ where
             .await;
 
         self.start_listener().await?;
-        if let Some(packet_egress) = &self.packet_egress {
-            packet_egress.start()?;
-        }
+        let packet_receiver = self
+            .packet_receiver
+            .lock()
+            .await
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("packet egress is one-shot and already started"))?;
+        self.packet_egress.start(packet_receiver).await?;
         self.peer_manager.run().await.map_err(anyhow::Error::from)?;
         self.direct.run();
         #[cfg(feature = "tcp-hole-punch")]
@@ -184,9 +188,7 @@ where
         // before clearing PeerManager resources.
         self.instance_runtime.shutdown().await;
         self.peer_manager.clear_resources().await;
-        if let Some(packet_egress) = &self.packet_egress {
-            packet_egress.stop().await;
-        }
+        self.packet_egress.stop().await;
     }
 
     /// Starts the complete instance through one serial composition path.

@@ -3,12 +3,12 @@ use std::sync::Arc;
 use cidr::Ipv4Inet;
 use easytier_core::{
     gateway::dhcp::{DhcpIpv4ApplyOutcome, DhcpIpv4ApplyPermit, DhcpIpv4Host},
+    host::packet::HostPacketReceiver,
     instance::CorePacketPlane,
 };
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-use super::HostPacketReceiver;
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtxEvent};
 
 pub(super) struct NativeTunRuntime {
@@ -17,13 +17,16 @@ pub(super) struct NativeTunRuntime {
 }
 
 impl NativeTunRuntime {
-    pub(super) fn new(
-        global_ctx: ArcGlobalCtx,
-        cancel: CancellationToken,
-        peer_packet_receiver: HostPacketReceiver,
-    ) -> Self {
-        drop(peer_packet_receiver);
+    pub(super) fn new(global_ctx: ArcGlobalCtx, cancel: CancellationToken) -> Self {
         Self { global_ctx, cancel }
+    }
+
+    pub(super) fn install_packet_receiver(
+        &self,
+        receiver: HostPacketReceiver,
+    ) -> anyhow::Result<()> {
+        drop(receiver);
+        Ok(())
     }
 
     pub(super) async fn prepare(&self, _packet_plane: Arc<CorePacketPlane>) -> anyhow::Result<()> {

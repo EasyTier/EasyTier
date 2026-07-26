@@ -528,6 +528,27 @@ impl Default for TrustedKeyMapManager {
 /// `PeerContext` is intentionally scoped to `easytier-core::peers`; other core
 /// modules should depend on their own narrow DTOs or traits instead of treating
 /// this as a core-wide global context.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct PeerPacketPolicy {
+    pub(crate) disable_relay_data: bool,
+    pub(crate) p2p_only: bool,
+    pub(crate) latency_first: bool,
+    pub(crate) disable_p2p: bool,
+    pub(crate) lazy_p2p: bool,
+}
+
+impl PeerPacketPolicy {
+    fn from_flags(flags: &FlagsInConfig) -> Self {
+        Self {
+            disable_relay_data: flags.disable_relay_data,
+            p2p_only: flags.p2p_only,
+            latency_first: flags.latency_first && !flags.p2p_only,
+            disable_p2p: flags.disable_p2p,
+            lazy_p2p: flags.lazy_p2p,
+        }
+    }
+}
+
 pub(crate) trait PeerContext: Send + Sync {
     fn host_routing_policy(&self) -> HostRoutingPolicy {
         HostRoutingPolicy::default()
@@ -543,8 +564,12 @@ pub(crate) trait PeerContext: Send + Sync {
         FlagsInConfig::default()
     }
 
+    fn packet_policy(&self) -> PeerPacketPolicy {
+        PeerPacketPolicy::from_flags(&self.flags())
+    }
+
     fn disable_relay_data(&self) -> bool {
-        self.flags().disable_relay_data
+        self.packet_policy().disable_relay_data
     }
 
     fn secure_mode(&self) -> Option<SecureModeConfig> {
@@ -581,15 +606,6 @@ pub(crate) trait PeerContext: Send + Sync {
                 .unwrap_or(false),
             IpAddr::V6(v6) => self.is_ip_local_ipv6(v6),
         }
-    }
-
-    fn p2p_only(&self) -> bool {
-        self.flags().p2p_only
-    }
-
-    fn latency_first(&self) -> bool {
-        let flags = self.flags();
-        flags.latency_first && !flags.p2p_only
     }
 
     fn proxy_cidrs(&self) -> Vec<Ipv4Cidr> {
@@ -744,6 +760,10 @@ impl PeerContext for CorePeerContext {
 
     fn flags(&self) -> FlagsInConfig {
         self.snapshot().flags.clone()
+    }
+
+    fn packet_policy(&self) -> PeerPacketPolicy {
+        PeerPacketPolicy::from_flags(&self.snapshot().flags)
     }
 
     fn host_routing_policy(&self) -> HostRoutingPolicy {

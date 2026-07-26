@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
-use easytier_core::{gateway::dhcp::DhcpIpv4Host, instance::CorePacketPlane};
-use tokio::sync::{Mutex, mpsc};
+use easytier_core::{
+    gateway::dhcp::DhcpIpv4Host, host::packet::HostPacketReceiver, instance::CorePacketPlane,
+};
+use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::common::global_ctx::ArcGlobalCtx;
@@ -27,8 +29,6 @@ use event_journal::EventJournal;
 use magic_dns::MagicDnsRuntime;
 use tun_runtime::NativeTunRuntime;
 
-pub(super) type HostPacketReceiver = mpsc::Receiver<Vec<u8>>;
-
 pub(crate) struct NativeInstanceRuntimeHost {
     global_ctx: ArcGlobalCtx,
     operation: Arc<Mutex<()>>,
@@ -38,12 +38,9 @@ pub(crate) struct NativeInstanceRuntimeHost {
 }
 
 impl NativeInstanceRuntimeHost {
-    pub(crate) fn new(
-        global_ctx: ArcGlobalCtx,
-        peer_packet_receiver: HostPacketReceiver,
-    ) -> Arc<Self> {
+    pub(crate) fn new(global_ctx: ArcGlobalCtx) -> Arc<Self> {
         let cancel = CancellationToken::new();
-        let tun = NativeTunRuntime::new(global_ctx.clone(), cancel.clone(), peer_packet_receiver);
+        let tun = NativeTunRuntime::new(global_ctx.clone(), cancel.clone());
         let event_journal = EventJournal::new(&global_ctx);
         Arc::new(Self {
             global_ctx,
@@ -87,6 +84,10 @@ impl NativeInstanceRuntimeHost {
     fn attach_runtime_tun_fd(&self, fd: i32) -> anyhow::Result<()> {
         self.tun.attach_fd(fd)
     }
+
+    fn install_packet_receiver(&self, receiver: HostPacketReceiver) -> anyhow::Result<()> {
+        self.tun.install_packet_receiver(receiver)
+    }
 }
 
 #[cfg(test)]
@@ -100,8 +101,7 @@ mod tests {
     #[test]
     fn runtime_host_owns_event_subscription_context() {
         let global_ctx = Arc::new(GlobalCtx::new(TomlConfig::default()));
-        let (_packet_sender, packet_receiver) = mpsc::channel(1);
-        let runtime_host = NativeInstanceRuntimeHost::new(global_ctx.clone(), packet_receiver);
+        let runtime_host = NativeInstanceRuntimeHost::new(global_ctx.clone());
         let mut events = runtime_host.subscribe_event();
 
         global_ctx.issue_event(GlobalCtxEvent::CredentialChanged);

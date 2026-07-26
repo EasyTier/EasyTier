@@ -6,7 +6,7 @@ use std::{
 
 use bytes::BytesMut;
 use futures::{Sink, Stream};
-use tokio::sync::{oneshot, watch};
+use tokio::sync::watch;
 
 use crate::{
     packet::{UDP_TUNNEL_HEADER_SIZE, UdpPacketType, ZCPacket, ZCPacketType},
@@ -76,7 +76,10 @@ impl Stream for UdpTunnelStream {
         Poll::Ready(ret.map(|payload| {
             payload
                 .map_err(ring_socket_error_to_tunnel)
-                .and_then(|datagram| zcpacket_from_udp_session_payload(&datagram.payload))
+                .and_then(|datagram| match datagram.into_tunnel_packet() {
+                    Ok(packet) => Ok(packet),
+                    Err(payload) => zcpacket_from_udp_session_payload(&payload),
+                })
         }))
     }
 }
@@ -114,15 +117,10 @@ impl Sink<SinkItem> for UdpTunnelSink {
         }
 
         let packet = item.convert_type(ZCPacketType::UDP);
-        let payload = BytesMut::from(packet.udp_payload());
         this.codec
-            .validate_payload(&payload)
+            .validate_payload(packet.udp_payload())
             .map_err(TunnelError::IOError)?;
-        let (completion, _sent) = oneshot::channel();
-        let outbound = UdpSessionOutbound {
-            payload,
-            completion,
-        };
+        let outbound = UdpSessionOutbound::TunnelPacket(packet);
         this.session_send_tx
             .force_send(outbound)
             .map_err(ring_send_error_to_tunnel)

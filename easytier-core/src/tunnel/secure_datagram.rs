@@ -755,7 +755,18 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(all(feature = "aes-gcm", feature = "chacha20"))]
+    #[cfg(all(
+        any(
+            feature = "aes-gcm",
+            feature = "openssl-crypto",
+            feature = "ring-crypto"
+        ),
+        any(
+            feature = "chacha20",
+            feature = "openssl-crypto",
+            feature = "ring-crypto"
+        )
+    ))]
     use crate::packet::PacketType;
 
     impl SecureDatagramSession {
@@ -775,7 +786,18 @@ mod tests {
     }
 
     #[test]
-    #[cfg(all(feature = "aes-gcm", feature = "chacha20"))]
+    #[cfg(all(
+        any(
+            feature = "aes-gcm",
+            feature = "openssl-crypto",
+            feature = "ring-crypto"
+        ),
+        any(
+            feature = "chacha20",
+            feature = "openssl-crypto",
+            feature = "ring-crypto"
+        )
+    ))]
     fn secure_datagram_supports_asymmetric_algorithms() {
         let root_key = SecureDatagramSession::new_root_key();
         let generation = 1u32;
@@ -837,7 +859,11 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "aes-gcm")]
+    #[cfg(any(
+        feature = "aes-gcm",
+        feature = "openssl-crypto",
+        feature = "ring-crypto"
+    ))]
     fn failed_decrypt_does_not_poison_replay_window() {
         use crate::packet::PacketType;
 

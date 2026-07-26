@@ -663,6 +663,16 @@ impl ZCPacket {
             + UDP_TUNNEL_HEADER_SIZE..]
     }
 
+    pub fn udp_payload_bytes(mut self) -> BytesMut {
+        self.inner.advance(
+            self.packet_type
+                .get_packet_offsets()
+                .udp_tunnel_header_offset
+                + UDP_TUNNEL_HEADER_SIZE,
+        );
+        self.inner
+    }
+
     pub fn payload_len(&self) -> usize {
         self.inner.len() - self.payload_offset()
     }
