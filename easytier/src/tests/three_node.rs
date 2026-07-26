@@ -1334,10 +1334,6 @@ pub async fn subnet_proxy_three_node_test(
                     "public".to_string(),
                     "public".to_string(),
                 ));
-                let mut flags = cfg.get_flags();
-                flags.enable_relay_foreign_network_kcp = true;
-                flags.enable_relay_foreign_network_quic = true;
-                cfg.set_flags(flags);
             }
 
             if cfg.get_inst_name() == "inst1" {
@@ -2240,7 +2236,7 @@ pub async fn port_forward_with_inbound_default_drop_acl_test(
             NetNS::new(Some(server_ns.into())),
             NetNS::new(Some("net_a".into())),
             buf,
-            Duration::from_secs(5),
+            Duration::from_secs(1),
         )
         .await;
 
