@@ -3,7 +3,10 @@
 use std::sync::Arc;
 
 use easytier_core::{
-    config::toml::TomlConfig, connectivity::stun::StunSocketMapper, instance::CoreInstance,
+    config::toml::TomlConfig,
+    connectivity::stun::StunSocketMapper,
+    host::packet::{HostPacket, HostPacketChannelSink},
+    instance::CoreInstance,
     process_runtime::CoreProcessRuntime,
 };
 
@@ -50,11 +53,11 @@ impl TestInstance {
         ),
     ) -> Self {
         let global_ctx = Arc::new(GlobalCtx::new(config.clone()));
-        let (packet_sender, packet_receiver) = tokio::sync::mpsc::channel(128);
+        let (packet_sender, packet_receiver) = tokio::sync::mpsc::channel::<HostPacket>(128);
         let mut adapters = runtime_core_host_adapters(
             global_ctx.clone(),
             process_runtime,
-            Arc::new(packet_sender),
+            Arc::new(HostPacketChannelSink::new(packet_sender)),
         );
         customize(&mut adapters);
         adapters.instance_runtime =

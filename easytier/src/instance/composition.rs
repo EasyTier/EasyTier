@@ -12,7 +12,7 @@ use easytier_core::{
 };
 use easytier_core::{
     events::{CoreEvent, CoreEventSink},
-    host::packet::PacketSink,
+    host::packet::{HostPacket, HostPacketChannelSink, PacketSink},
     instance::{CoreHostAdapters, CoreInstance},
     process_runtime::CoreProcessRuntime,
 };
@@ -45,9 +45,12 @@ pub(crate) fn compose_native_core_instance(
     process_runtime: Arc<CoreProcessRuntime>,
 ) -> anyhow::Result<Arc<NativeCoreInstance>> {
     let global_ctx = Arc::new(GlobalCtx::new(config.clone()));
-    let (packet_sender, packet_receiver) = tokio::sync::mpsc::channel(128);
-    let mut adapters =
-        runtime_core_host_adapters(global_ctx.clone(), process_runtime, Arc::new(packet_sender));
+    let (packet_sender, packet_receiver) = tokio::sync::mpsc::channel::<HostPacket>(128);
+    let mut adapters = runtime_core_host_adapters(
+        global_ctx.clone(),
+        process_runtime,
+        Arc::new(HostPacketChannelSink::new(packet_sender)),
+    );
     adapters.instance_runtime = NativeInstanceRuntimeHost::new(global_ctx.clone(), packet_receiver);
     NativeCoreInstance::from_toml(config, adapters)
 }
@@ -504,7 +507,7 @@ mod tests {
             loop {
                 instance_a
                     .packet_plane()
-                    .send_ip_packet(ip_packet.clone())
+                    .send_ip_packet(HostPacket::copy_from_payload(&ip_packet))
                     .await
                     .unwrap();
                 match tokio::time::timeout(

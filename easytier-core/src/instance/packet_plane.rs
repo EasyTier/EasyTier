@@ -6,6 +6,7 @@ use crate::{
     config::runtime::CoreRuntimeConfigStore,
     gateway::magic_dns::{MagicDnsRouteSnapshot, MagicDnsRouteSource},
     gateway::proxy::cidr_monitor::{ProxyCidrDiff, collect_proxy_cidr_diff},
+    host::packet::HostPacket,
     peers::peer_manager::PeerManagerCore,
 };
 
@@ -40,30 +41,22 @@ impl CorePacketPlane {
         }
     }
 
-    pub async fn send_ip_packet(&self, packet: Vec<u8>) -> anyhow::Result<()> {
-        let meta = parse_ip_packet(&packet)?;
+    pub async fn send_ip_packet(&self, packet: HostPacket) -> anyhow::Result<()> {
+        let meta = parse_ip_packet(packet.payload())?;
         let source_is_local = self.peer_manager.is_local_virtual_ip(&meta.source);
         if matches!(meta.source, IpAddr::V6(ip) if ip.is_unicast_link_local()) && !source_is_local {
             return Ok(());
         }
         self.peer_manager
-            .send_msg_by_ip(
-                crate::packet::ZCPacket::new_with_payload(&packet),
-                meta.destination,
-                source_is_local,
-            )
+            .send_msg_by_ip(packet.into_core_packet(), meta.destination, source_is_local)
             .await
             .map_err(Into::into)
     }
 
-    pub async fn send_local_ip_packet(&self, packet: Vec<u8>) -> anyhow::Result<()> {
-        let destination = parse_ip_packet(&packet)?.destination;
+    pub async fn send_local_ip_packet(&self, packet: HostPacket) -> anyhow::Result<()> {
+        let destination = parse_ip_packet(packet.payload())?.destination;
         self.peer_manager
-            .send_msg_by_ip(
-                crate::packet::ZCPacket::new_with_payload(&packet),
-                destination,
-                true,
-            )
+            .send_msg_by_ip(packet.into_core_packet(), destination, true)
             .await
             .map_err(Into::into)
     }

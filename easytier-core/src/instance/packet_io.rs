@@ -5,7 +5,7 @@ use std::{
 
 use tokio::{sync::mpsc, task::JoinHandle};
 
-use crate::host::packet::PacketSink;
+use crate::host::packet::{HostPacket, PacketSink};
 use crate::packet::ZCPacket;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,7 +89,10 @@ impl PacketEgress {
         let sink = self.sink.clone();
         let task = tokio::spawn(async move {
             while let Some(packet) = receiver.recv().await {
-                if let Err(error) = sink.write_packet(packet.payload().to_vec()).await {
+                if let Err(error) = sink
+                    .write_packet(HostPacket::from_core_packet(packet))
+                    .await
+                {
                     tracing::warn!(?error, "host packet sink rejected an egress packet");
                 }
             }

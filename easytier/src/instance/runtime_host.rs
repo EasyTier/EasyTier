@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use easytier_core::{gateway::dhcp::DhcpIpv4Host, instance::CorePacketPlane};
+use easytier_core::{
+    gateway::dhcp::DhcpIpv4Host, host::packet::HostPacket, instance::CorePacketPlane,
+};
 use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
 
@@ -27,7 +29,7 @@ use event_journal::EventJournal;
 use magic_dns::MagicDnsRuntime;
 use tun_runtime::NativeTunRuntime;
 
-pub(super) type HostPacketReceiver = mpsc::Receiver<Vec<u8>>;
+pub(super) type HostPacketReceiver = mpsc::Receiver<HostPacket>;
 
 pub(crate) struct NativeInstanceRuntimeHost {
     global_ctx: ArcGlobalCtx,
