@@ -117,12 +117,91 @@ jobs:
               find "./easytier/third_party/${ARCH_DIR}" -maxdepth 1 -type f \( -name "*.dll" -o -name "*.sys" \) -exec cp {} ./easytier-gui/src-tauri/ \;
           fi
 
+      - name: Validate macOS signing secrets
+        if: ${{ contains(matrix.GUI_TARGET, 'darwin') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          missing=()
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            if [[ -z "${!name}" ]]; then
+              missing+=("$name")
+            fi
+          done
+          if (( ${#missing[@]} )); then
+            printf 'Missing macOS signing secret(s): %s\n' "${missing[*]}" >&2
+            exit 1
+          fi
+
       - name: Build GUI
-        if: ${{ matrix.GUI_TARGET != '' }}
+        if: ${{ matrix.GUI_TARGET != '' && (!contains(matrix.GUI_TARGET, 'darwin') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) }}
         uses: tauri-apps/tauri-action@v0
         with:
           projectPath: ./easytier-gui
           args: --verbose --target ${{ matrix.GUI_TARGET }}
+
+      - name: Build GUI (signed and notarized)
+        if: ${{ contains(matrix.GUI_TARGET, 'darwin') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        timeout-minutes: 60
+        uses: tauri-apps/tauri-action@v0
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          projectPath: ./easytier-gui
+          args: --verbose --target ${{ matrix.GUI_TARGET }}
+
+      - name: Notarize and staple macOS DMG
+        if: ${{ contains(matrix.GUI_TARGET, 'darwin') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        timeout-minutes: 45
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+
+          dmg_dir="./target/$GUI_TARGET/release/bundle/dmg"
+          if [[ ! -d "$dmg_dir" ]]; then
+            printf 'macOS DMG directory not found: %s\n' "$dmg_dir" >&2
+            exit 1
+          fi
+
+          dmgs=()
+          while IFS= read -r dmg; do
+            dmgs+=("$dmg")
+          done < <(find "$dmg_dir" -maxdepth 1 -type f -name "*.dmg" | sort)
+          if (( ${#dmgs[@]} == 0 )); then
+            printf 'No macOS DMG found in %s\n' "$dmg_dir" >&2
+            exit 1
+          fi
+
+          for dmg in "${dmgs[@]}"; do
+            printf 'Verifying signed DMG: %s\n' "$dmg"
+            codesign --verify --verbose=4 "$dmg"
+            codesign -dv --verbose=4 "$dmg"
+
+            printf 'Notarizing DMG: %s\n' "$dmg"
+            xcrun notarytool submit "$dmg" \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" \
+              --wait \
+              --timeout 40m
+
+            printf 'Stapling DMG: %s\n' "$dmg"
+            xcrun stapler staple "$dmg"
+            xcrun stapler validate "$dmg"
+          done
 
       - name: Collect artifact
         run: |
