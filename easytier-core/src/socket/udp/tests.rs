@@ -1021,11 +1021,35 @@ async fn easy_tier_mux_udp_session_rejects_oversized_payload_before_enqueue() {
         sessions,
     );
 
-    let payload = vec![0; u16::MAX as usize + 1];
+    let payload = vec![0; MAX_UDP_SESSION_DATAGRAM_SIZE - UDP_TUNNEL_HEADER_SIZE + 1];
     let err = session.send(&payload).await.unwrap_err();
 
     assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
     assert!(socket.sent().is_empty());
+}
+
+#[test]
+fn udp_session_codecs_enforce_datagram_boundary() {
+    let identity = UdpSessionCodec::Identity;
+    assert!(
+        identity
+            .validate_payload(&vec![0; MAX_UDP_SESSION_DATAGRAM_SIZE])
+            .is_ok()
+    );
+    let err = identity
+        .validate_payload(&vec![0; MAX_UDP_SESSION_DATAGRAM_SIZE + 1])
+        .unwrap_err();
+    assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+
+    let easy_tier = UdpSessionCodec::EasyTierData {
+        conn_id: 0x1122_3344,
+    };
+    let max_payload = MAX_UDP_SESSION_DATAGRAM_SIZE - UDP_TUNNEL_HEADER_SIZE;
+    assert!(easy_tier.validate_payload(&vec![0; max_payload]).is_ok());
+    let err = easy_tier
+        .validate_payload(&vec![0; max_payload + 1])
+        .unwrap_err();
+    assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
 }
 
 #[tokio::test]
@@ -1161,6 +1185,26 @@ async fn dropping_udp_session_layer_closes_session_recv() {
         .unwrap_err();
 
     assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+}
+
+#[tokio::test]
+async fn idle_udp_session_closes_when_shutdown_is_signaled() {
+    let local_addr = SocketAddr::from(([127, 0, 0, 1], 12000));
+    let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
+    let key = UdpSessionKey::new(peer_addr, 0x1122_3344);
+    let socket = Arc::new(MockVirtualUdpSocket::new(local_addr, Vec::new()));
+    let sessions = Arc::new(DashMap::new());
+    let (session, shutdown_tx) = create_test_easy_tier_mux_session(socket, key, sessions.clone());
+
+    shutdown_tx.send(true).unwrap();
+
+    let mut buf = [0; 16];
+    let err = tokio::time::timeout(Duration::from_secs(1), session.recv(&mut buf))
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+    assert!(!sessions.contains_key(&key));
 }
 
 #[tokio::test]

@@ -52,7 +52,7 @@ use super::{
     },
     context::{
         ArcPeerContext, CorePeerContext, CorePeerContextAdapters, NetworkIdentity, PeerContext,
-        PeerStunInfoSource,
+        PeerPacketPolicy, PeerStunInfoSource,
     },
     credential_manager::{CredentialManager, CredentialStorage},
     error::Error,
@@ -2226,12 +2226,17 @@ impl PeerOutboundPacketRouter {
         }
     }
 
-    fn mark_recent_traffic(&self, dst_peer_id: PeerId) {
-        let flags = self.context.flags();
-        self.recent_traffic
-            .mark(dst_peer_id, flags.disable_p2p, flags.lazy_p2p, |peer_id| {
-                self.has_directly_connected_conn(peer_id)
-            });
+    fn mark_recent_traffic_with_policy(
+        &self,
+        dst_peer_id: PeerId,
+        packet_policy: PeerPacketPolicy,
+    ) {
+        self.recent_traffic.mark(
+            dst_peer_id,
+            packet_policy.disable_p2p,
+            packet_policy.lazy_p2p,
+            |peer_id| self.has_directly_connected_conn(peer_id),
+        );
     }
 
     async fn run_nic_packet_process_pipeline(&self, data: &mut ZCPacket) -> bool {
@@ -2256,8 +2261,12 @@ impl PeerOutboundPacketRouter {
         true
     }
 
-    fn check_p2p_only_before_send(&self, dst_peer_id: PeerId) -> Result<(), Error> {
-        if self.context.p2p_only() && !self.peers.has_peer(dst_peer_id) {
+    fn check_p2p_only_before_send(
+        &self,
+        dst_peer_id: PeerId,
+        packet_policy: PeerPacketPolicy,
+    ) -> Result<(), Error> {
+        if packet_policy.p2p_only && !self.peers.has_peer(dst_peer_id) {
             return Err(Error::RouteError(None));
         }
         Ok(())
@@ -2330,8 +2339,9 @@ impl PeerOutboundPacketRouter {
         mut msg: ZCPacket,
         dst_peer_id: PeerId,
     ) -> Result<(), Error> {
-        self.mark_recent_traffic(dst_peer_id);
-        self.check_p2p_only_before_send(dst_peer_id)?;
+        let packet_policy = self.context.packet_policy();
+        self.mark_recent_traffic_with_policy(dst_peer_id, packet_policy);
+        self.check_p2p_only_before_send(dst_peer_id, packet_policy)?;
 
         self.counters
             .compress_tx_bytes_before
@@ -2492,9 +2502,10 @@ impl PeerOutboundPacketRouter {
         if !self.run_nic_packet_process_pipeline(&mut msg).await {
             return Ok(());
         }
+        let packet_policy = self.context.packet_policy();
         let cur_to_peer_id = msg.peer_manager_header().unwrap().to_peer_id.into();
         if cur_to_peer_id != 0 {
-            self.mark_recent_traffic(cur_to_peer_id);
+            self.mark_recent_traffic_with_policy(cur_to_peer_id, packet_policy);
             return send_msg_internal(
                 self.peers.as_ref(),
                 &self.foreign_network_client,
@@ -2532,10 +2543,9 @@ impl PeerOutboundPacketRouter {
             .compress_tx_bytes_after
             .add(msg.buf_len() as u64);
 
-        let is_latency_first = self.context.latency_first();
         msg.mut_peer_manager_header()
             .unwrap()
-            .set_latency_first(is_latency_first)
+            .set_latency_first(packet_policy.latency_first)
             .set_exit_node(is_exit_node);
 
         let mut errs: Vec<Error> = vec![];
@@ -2544,9 +2554,9 @@ impl PeerOutboundPacketRouter {
         let should_mark_recent_traffic = should_mark_recent_traffic_for_fanout(total_dst_peers);
         for (i, peer_id) in dst_peers.iter().enumerate() {
             if should_mark_recent_traffic {
-                self.mark_recent_traffic(*peer_id);
+                self.mark_recent_traffic_with_policy(*peer_id, packet_policy);
             }
-            if let Err(e) = self.check_p2p_only_before_send(*peer_id) {
+            if let Err(e) = self.check_p2p_only_before_send(*peer_id, packet_policy) {
                 errs.push(e);
                 continue;
             }

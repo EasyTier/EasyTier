@@ -70,8 +70,9 @@ pub(crate) async fn recv_from_with_dst_ip(
 
 pub(crate) async fn recv_datagram_with_dst_ip(
     socket: &UdpSocket,
+    capacity: usize,
 ) -> io::Result<(BytesMut, SocketAddr, Option<IpAddr>)> {
-    let mut payload = BytesMut::with_capacity(u16::MAX as usize);
+    let mut payload = BytesMut::with_capacity(capacity);
     let (len, remote_addr, dst_ip) = socket
         .async_io(tokio::io::Interest::READABLE, || {
             loop {
@@ -80,7 +81,13 @@ pub(crate) async fn recv_datagram_with_dst_ip(
                 };
                 match ret {
                     Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
-                    ret => break ret,
+                    Ok((_len, _remote_addr, _dst_ip, true)) => {
+                        tracing::debug!(capacity, "dropping oversized udp session datagram");
+                    }
+                    Ok((len, remote_addr, dst_ip, false)) => {
+                        break Ok((len, remote_addr, dst_ip));
+                    }
+                    Err(err) => break Err(err),
                 }
             }
         })
@@ -105,13 +112,14 @@ fn recv_from_with_dst_ip_once(
     buf: &mut [u8],
 ) -> io::Result<(usize, SocketAddr, Option<IpAddr>)> {
     unsafe { recv_from_with_dst_ip_raw(socket, buf.as_mut_ptr(), buf.len()) }
+        .map(|(len, remote_addr, dst_ip, _truncated)| (len, remote_addr, dst_ip))
 }
 
 unsafe fn recv_from_with_dst_ip_raw(
     socket: &UdpSocket,
     buf_ptr: *mut u8,
     buf_len: usize,
-) -> io::Result<(usize, SocketAddr, Option<IpAddr>)> {
+) -> io::Result<(usize, SocketAddr, Option<IpAddr>, bool)> {
     use std::{mem, os::fd::AsRawFd};
 
     use nix::libc;
@@ -216,7 +224,8 @@ unsafe fn recv_from_with_dst_ip_raw(
         }
     }
 
-    Ok((len as usize, remote_addr, dst_ip))
+    let truncated = msg.msg_flags & libc::MSG_TRUNC != 0;
+    Ok((len as usize, remote_addr, dst_ip, truncated))
 }
 
 #[cfg(any(target_os = "linux", target_os = "android"))]

@@ -2,8 +2,16 @@ use crate::{config::EncryptionAlgorithm, packet::ZCPacket};
 use std::{collections::hash_map::DefaultHasher, hash::Hasher, sync::Arc};
 
 #[cfg(feature = "aes-gcm")]
+#[cfg_attr(
+    any(feature = "openssl-crypto", feature = "ring-crypto"),
+    allow(dead_code)
+)]
 pub mod aes_gcm;
 #[cfg(feature = "chacha20")]
+#[cfg_attr(
+    any(feature = "openssl-crypto", feature = "ring-crypto"),
+    allow(dead_code)
+)]
 pub mod chacha20;
 #[cfg(feature = "openssl-crypto")]
 mod openssl;
@@ -154,7 +162,11 @@ enum AeadBackend {
     OpenSsl,
     #[cfg(feature = "ring-crypto")]
     Ring,
-    #[cfg(any(feature = "aes-gcm", feature = "chacha20"))]
+    #[cfg(all(
+        not(feature = "openssl-crypto"),
+        not(feature = "ring-crypto"),
+        any(feature = "aes-gcm", feature = "chacha20")
+    ))]
     RustCrypto,
 }
 
@@ -195,7 +207,11 @@ fn create_aes_128(key: [u8; 16]) -> Arc<dyn Encryptor> {
         Some(AeadBackend::OpenSsl) => Arc::new(openssl::OpenSslCipher::new_aes128_gcm(key)),
         #[cfg(feature = "ring-crypto")]
         Some(AeadBackend::Ring) => Arc::new(ring::RingCipher::new_aes128_gcm(key)),
-        #[cfg(feature = "aes-gcm")]
+        #[cfg(all(
+            not(feature = "openssl-crypto"),
+            not(feature = "ring-crypto"),
+            feature = "aes-gcm"
+        ))]
         Some(AeadBackend::RustCrypto) => Arc::new(aes_gcm::AesGcmCipher::new_128(key)),
         _ => unavailable_encryptor("aes-gcm"),
     }
@@ -208,7 +224,11 @@ fn create_aes_256(key: [u8; 32]) -> Arc<dyn Encryptor> {
         Some(AeadBackend::OpenSsl) => Arc::new(openssl::OpenSslCipher::new_aes256_gcm(key)),
         #[cfg(feature = "ring-crypto")]
         Some(AeadBackend::Ring) => Arc::new(ring::RingCipher::new_aes256_gcm(key)),
-        #[cfg(feature = "aes-gcm")]
+        #[cfg(all(
+            not(feature = "openssl-crypto"),
+            not(feature = "ring-crypto"),
+            feature = "aes-gcm"
+        ))]
         Some(AeadBackend::RustCrypto) => Arc::new(aes_gcm::AesGcmCipher::new_256(key)),
         _ => unavailable_encryptor("aes-256-gcm"),
     }
@@ -221,7 +241,11 @@ fn create_chacha20(key: [u8; 32]) -> Arc<dyn Encryptor> {
         Some(AeadBackend::OpenSsl) => Arc::new(openssl::OpenSslCipher::new_chacha20(key)),
         #[cfg(feature = "ring-crypto")]
         Some(AeadBackend::Ring) => Arc::new(ring::RingCipher::new_chacha20(key)),
-        #[cfg(feature = "chacha20")]
+        #[cfg(all(
+            not(feature = "openssl-crypto"),
+            not(feature = "ring-crypto"),
+            feature = "chacha20"
+        ))]
         Some(AeadBackend::RustCrypto) => Arc::new(chacha20::ChaCha20Cipher::new(key)),
         _ => unavailable_encryptor("chacha20"),
     }

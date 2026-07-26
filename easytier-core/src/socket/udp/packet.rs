@@ -161,7 +161,6 @@ pub(super) enum UdpDatagramClassification {
         kind: EasyTierUdpPacketKind,
         conn_id: u32,
         packet: ZCPacket,
-        fallback: UdpSessionPacketKind,
     },
     SessionPacket {
         kind: UdpSessionPacketKind,
@@ -216,7 +215,7 @@ pub(super) enum EasyTierUdpDatagramInspectError {
     },
 }
 
-fn classify_session_udp_datagram(data: &[u8]) -> UdpSessionPacketKind {
+pub(super) fn classify_session_udp_datagram(data: &[u8]) -> UdpSessionPacketKind {
     if is_wireguard_packet(data) {
         UdpSessionPacketKind::Classified(UdpSessionProtocol::WireGuard)
     } else if is_quic_packet(data) {
@@ -335,12 +334,11 @@ pub(super) fn classify_udp_datagram(datagram: BytesMut) -> UdpDatagramClassifica
         return UdpDatagramClassification::Stun(datagram);
     }
 
-    let fallback = classify_session_udp_datagram(&datagram);
     let easytier = match inspect_easytier_udp_datagram(&datagram) {
         Ok(Some(easytier)) => easytier,
         Ok(None) => {
             return UdpDatagramClassification::SessionPacket {
-                kind: fallback,
+                kind: classify_session_udp_datagram(&datagram),
                 datagram,
             };
         }
@@ -361,7 +359,7 @@ pub(super) fn classify_udp_datagram(datagram: BytesMut) -> UdpDatagramClassifica
                 }
             }
             return UdpDatagramClassification::SessionPacket {
-                kind: fallback,
+                kind: classify_session_udp_datagram(&datagram),
                 datagram,
             };
         }
@@ -372,7 +370,6 @@ pub(super) fn classify_udp_datagram(datagram: BytesMut) -> UdpDatagramClassifica
         kind: easytier.kind,
         conn_id: easytier.conn_id,
         packet,
-        fallback,
     }
 }
 

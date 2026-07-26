@@ -12,8 +12,8 @@ use easytier_core::socket::{
 use easytier_core::socket::{
     SocketContext,
     udp::{
-        UdpBindOptions, UdpSocketDatagram, UdpSocketPurpose, UdpSocketRecvMeta, UdpSocketSendMeta,
-        VirtualUdpSocket, VirtualUdpSocketFactory,
+        MAX_UDP_SESSION_DATAGRAM_SIZE, UdpBindOptions, UdpSocketDatagram, UdpSocketPurpose,
+        UdpSocketRecvMeta, UdpSocketSendMeta, VirtualUdpSocket, VirtualUdpSocketFactory,
     },
 };
 use tokio::net::UdpSocket;
@@ -112,7 +112,7 @@ impl VirtualUdpSocket for RuntimeUdpSocket {
     #[cfg(unix)]
     async fn recv_datagram(&self) -> std::io::Result<UdpSocketDatagram> {
         let (payload, remote_addr, dst_ip) =
-            udp_src::recv_datagram_with_dst_ip(&self.socket).await?;
+            udp_src::recv_datagram_with_dst_ip(&self.socket, MAX_UDP_SESSION_DATAGRAM_SIZE).await?;
         Ok(UdpSocketDatagram {
             payload,
             remote_addr,
@@ -244,6 +244,34 @@ mod tests {
             datagram.meta.dst_ip,
             Some(std::net::IpAddr::V4(Ipv4Addr::LOCALHOST))
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn runtime_udp_socket_drops_truncated_datagrams() {
+        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let runtime_socket = RuntimeUdpSocket::new(socket.clone());
+        let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let server_addr = socket.local_addr().unwrap();
+
+        client
+            .send_to(&vec![0xAA; MAX_UDP_SESSION_DATAGRAM_SIZE + 1], server_addr)
+            .await
+            .unwrap();
+        client
+            .send_to(b"after-oversized", server_addr)
+            .await
+            .unwrap();
+
+        let datagram = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            runtime_socket.recv_datagram(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(datagram.payload, b"after-oversized".as_slice());
     }
 
     #[tokio::test]

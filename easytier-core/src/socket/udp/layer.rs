@@ -18,8 +18,9 @@ use super::{
     UDP_SESSION_CONNECT_TIMEOUT, UDP_SESSION_QUEUE_CAPACITY, UDP_SESSION_RESEND_INTERVAL,
     packet::{
         EasyTierUdpPacketKind, UdpDatagramClassification, UdpSessionPacketKind,
-        classify_udp_datagram, extract_dst_addr_from_v4_hole_punch_packet,
-        extract_v6_hole_punch_packet, new_sack_packet, new_syn_packet,
+        classify_session_udp_datagram, classify_udp_datagram,
+        extract_dst_addr_from_v4_hole_punch_packet, extract_v6_hole_punch_packet, new_sack_packet,
+        new_syn_packet,
     },
     session::{
         ClassifiedUdpSessionAccept, ClassifiedUdpSessionAccepts, ClassifiedUdpSessionKey,
@@ -503,23 +504,24 @@ pub(super) async fn udp_session_layer_recv_task<S, R>(
                 kind,
                 conn_id,
                 packet,
-                fallback,
             } => {
                 let unconsumed = dispatch_easy_tier_udp_datagram(
-                    socket.clone(),
+                    &socket,
                     &sessions,
                     &pending_connects,
                     &mux_accepted,
                     &control,
-                    control_permits.clone(),
+                    &control_permits,
                     remote_addr,
                     kind,
                     conn_id,
                     packet,
                     recv_meta,
-                    session_shutdown_tx.subscribe(),
+                    &session_shutdown_tx,
                 );
                 if let Some(packet) = unconsumed {
+                    let datagram = BytesMut::from(packet.into_bytes());
+                    let fallback = classify_session_udp_datagram(&datagram);
                     dispatch_session_udp_datagram(
                         socket.clone(),
                         &classified_sessions,
@@ -527,7 +529,7 @@ pub(super) async fn udp_session_layer_recv_task<S, R>(
                         session_shutdown_tx.subscribe(),
                         remote_addr,
                         fallback,
-                        UdpSessionDatagram::new(packet.into_bytes().into(), recv_meta),
+                        UdpSessionDatagram::new(datagram, recv_meta),
                     );
                 }
             }
@@ -540,14 +542,14 @@ fn dispatch_existing_classified_udp_datagram(
     key: ClassifiedUdpSessionKey,
     datagram: UdpSessionDatagram,
 ) {
-    let Some(entry) = classified_sessions
-        .get(&key)
-        .map(|entry| entry.value().clone())
-    else {
+    let Some(entry) = classified_sessions.get(&key) else {
         return;
     };
 
-    if !dispatch_payload_to_session(&entry.incoming, datagram, UdpSessionEnqueuePolicy::Reliable) {
+    let dispatched =
+        dispatch_payload_to_session(&entry.incoming, datagram, UdpSessionEnqueuePolicy::Reliable);
+    drop(entry);
+    if !dispatched {
         close_classified_udp_session(classified_sessions, key);
         tracing::debug!(?key, "classified udp session data queue closed");
     }
@@ -555,18 +557,18 @@ fn dispatch_existing_classified_udp_datagram(
 
 #[allow(clippy::too_many_arguments)]
 fn dispatch_easy_tier_udp_datagram<S>(
-    socket: Arc<S>,
+    socket: &Arc<S>,
     sessions: &Arc<UdpSessionRegistry>,
     pending_connects: &Arc<PendingUdpSessionConnects>,
     mux_accepted: &mpsc::Sender<UdpSession>,
     control: &mpsc::Sender<UdpSessionLayerControl>,
-    control_permits: Arc<Semaphore>,
+    control_permits: &Arc<Semaphore>,
     remote_addr: SocketAddr,
     kind: EasyTierUdpPacketKind,
     conn_id: u32,
     packet: ZCPacket,
     recv_meta: UdpSocketRecvMeta,
-    session_shutdown: watch::Receiver<bool>,
+    session_shutdown: &watch::Sender<bool>,
 ) -> Option<ZCPacket>
 where
     S: VirtualUdpSocket,
@@ -576,13 +578,13 @@ where
             return dispatch_data_packet(sessions, remote_addr, conn_id, packet, recv_meta).err();
         }
         EasyTierUdpPacketKind::Syn => handle_new_easy_tier_mux_connect(
-            socket,
+            socket.clone(),
             sessions.clone(),
             mux_accepted.clone(),
             remote_addr,
             conn_id,
             &packet,
-            session_shutdown,
+            session_shutdown.subscribe(),
         ),
         EasyTierUdpPacketKind::Sack => {
             dispatch_sack_packet(sessions, pending_connects, remote_addr, conn_id, &packet)
@@ -590,12 +592,20 @@ where
         EasyTierUdpPacketKind::HolePunch => {
             dispatch_hole_punch_packet(pending_connects, remote_addr)
         }
-        EasyTierUdpPacketKind::V4HolePunch => {
-            dispatch_v4_hole_punch_control(socket, control_permits, control, remote_addr, &packet)
-        }
-        EasyTierUdpPacketKind::V6HolePunch => {
-            dispatch_v6_hole_punch_control(socket, control_permits, control, remote_addr, &packet)
-        }
+        EasyTierUdpPacketKind::V4HolePunch => dispatch_v4_hole_punch_control(
+            socket.clone(),
+            control_permits.clone(),
+            control,
+            remote_addr,
+            &packet,
+        ),
+        EasyTierUdpPacketKind::V6HolePunch => dispatch_v6_hole_punch_control(
+            socket.clone(),
+            control_permits.clone(),
+            control,
+            remote_addr,
+            &packet,
+        ),
     };
     if consumed { None } else { Some(packet) }
 }
@@ -608,7 +618,7 @@ pub(super) fn dispatch_data_packet(
     recv_meta: UdpSocketRecvMeta,
 ) -> Result<(), ZCPacket> {
     let key = UdpSessionKey::new(peer_addr, conn_id);
-    let Some(entry) = sessions.get(&key).map(|entry| entry.value().clone()) else {
+    let Some(entry) = sessions.get(&key) else {
         return Err(packet);
     };
 
@@ -618,7 +628,9 @@ pub(super) fn dispatch_data_packet(
         UdpSessionEnqueuePolicy::Reliable
     };
     let payload = UdpSessionDatagram::from_easytier_packet(packet, recv_meta);
-    if !dispatch_payload_to_session(&entry.incoming, payload, policy) {
+    let dispatched = dispatch_payload_to_session(&entry.incoming, payload, policy);
+    drop(entry);
+    if !dispatched {
         close_udp_session(sessions, key);
         tracing::debug!(?key, "udp session data queue closed");
     }
@@ -664,15 +676,14 @@ fn dispatch_classified_udp_datagram<S>(
     S: VirtualUdpSocket,
 {
     let key = ClassifiedUdpSessionKey::new(protocol, remote_addr);
-    if let Some(entry) = classified_sessions
-        .get(&key)
-        .map(|entry| entry.value().clone())
-    {
-        if !dispatch_payload_to_session(
+    if let Some(entry) = classified_sessions.get(&key) {
+        let dispatched = dispatch_payload_to_session(
             &entry.incoming,
             datagram,
             UdpSessionEnqueuePolicy::Reliable,
-        ) {
+        );
+        drop(entry);
+        if !dispatched {
             close_classified_udp_session(classified_sessions, key);
             tracing::debug!(?key, "classified udp session data queue closed");
         }
@@ -716,11 +727,12 @@ fn dispatch_classified_udp_datagram<S>(
         }
         dashmap::mapref::entry::Entry::Occupied(entry) => {
             let entry = entry.get().clone();
-            if !dispatch_payload_to_session(
+            let dispatched = dispatch_payload_to_session(
                 &entry.incoming,
                 datagram,
                 UdpSessionEnqueuePolicy::Reliable,
-            ) {
+            );
+            if !dispatched {
                 close_classified_udp_session(classified_sessions, key);
                 tracing::debug!(?key, "classified udp session data queue closed");
             }
