@@ -53,15 +53,13 @@ use config::services::share_link_service::{
 };
 use config::storage::config_meta::get_config_display_name;
 use config::types::stored_config::{KeyValuePair, SharedConfigLinkPayload, SnapshotImportResult};
+use easytier::common::config::NetworkConfigExt;
 use easytier::common::constants::EASYTIER_VERSION;
 use easytier::common::{
     MachineIdOptions,
     config::{ConfigFileControl, ConfigLoader, TomlConfigLoader},
 };
-use easytier::instance::factory::{
-    NativeInstanceManager, native_instance_manager_with_runtime,
-};
-use easytier::common::config::NetworkConfigExt;
+use easytier::instance::factory::{NativeInstanceManager, native_instance_manager_with_runtime};
 use easytier::proto::api::manage::NetworkConfig;
 use easytier::proto::api::manage::NetworkingMethod;
 use easytier::web_client::{WebClient, WebClientHooks, run_web_client};
@@ -189,12 +187,7 @@ fn maybe_stop_local_socket_server() {
 }
 
 fn run_config_server_instance(config_id: &str, config: &NetworkConfig) -> bool {
-    if INSTANCE_MANAGER
-        .instance_ids()
-        .iter()
-        .next()
-        .is_some()
-    {
+    if INSTANCE_MANAGER.instance_ids().iter().next().is_some() {
         ohrs_log_error!("[Rust] there is a running instance!");
         return false;
     }
@@ -310,10 +303,7 @@ pub(crate) fn run_network_instance_from_json(cfg_json: &str) -> bool {
     }
 
     let inst_id = cfg.get_id();
-    if INSTANCE_MANAGER
-        .instance_ids()
-        .contains(&inst_id)
-    {
+    if INSTANCE_MANAGER.instance_ids().contains(&inst_id) {
         ohrs_log_error!("[Rust] instance {} already exists", inst_id);
         return false;
     }
