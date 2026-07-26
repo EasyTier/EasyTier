@@ -14,7 +14,7 @@ use crate::common::{
 };
 
 use easytier_core::{
-    host::packet::HostPacket,
+    host::packet::{HostPacket, HostPacketReceiver},
     instance::CorePacketPlane,
     packet::{TAIL_RESERVED_SIZE, ZCPacket, ZCPacketType},
     tunnel::{
@@ -42,8 +42,6 @@ use zerocopy::{NativeEndian, NetworkEndian};
 
 #[cfg(target_os = "windows")]
 use crate::common::ifcfg::RegistryManager;
-
-type HostPacketReceiver = tokio::sync::mpsc::Receiver<HostPacket>;
 
 pin_project! {
     pub struct TunStream {

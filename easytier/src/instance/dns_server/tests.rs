@@ -6,7 +6,7 @@ use std::time::Duration;
 use cidr::Ipv4Inet;
 use easytier_core::{
     gateway::magic_dns::MagicDnsRoute,
-    host::packet::{HostPacket, HostPacketChannelSink},
+    host::packet::{HostPacket, HostPacketChannelSink, HostPacketReceiver},
     process_runtime::CoreProcessRuntime,
 };
 use hickory_client::client::{Client, ClientHandle as _};
@@ -37,12 +37,7 @@ pub async fn prepare_env(
     prepare_env_with_tld_dns_zone(dns_name, tun_ip, None).await
 }
 
-async fn build_test_core(
-    ctx: ArcGlobalCtx,
-) -> (
-    Arc<NativeCoreInstance>,
-    tokio::sync::mpsc::Receiver<HostPacket>,
-) {
+async fn build_test_core(ctx: ArcGlobalCtx) -> (Arc<NativeCoreInstance>, HostPacketReceiver) {
     let (packet_sink, packet_receiver) = tokio::sync::mpsc::channel::<HostPacket>(128);
     let adapters = runtime_core_host_adapters(
         ctx.clone(),
@@ -51,7 +46,7 @@ async fn build_test_core(
     );
     let core_instance = NativeCoreInstance::new(test_core_instance_config(&ctx), adapters).unwrap();
     core_instance.start().await.unwrap();
-    (core_instance, packet_receiver)
+    (core_instance, HostPacketReceiver::new(packet_receiver))
 }
 
 pub async fn prepare_env_with_tld_dns_zone(

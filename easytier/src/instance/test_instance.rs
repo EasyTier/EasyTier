@@ -3,17 +3,14 @@
 use std::sync::Arc;
 
 use easytier_core::{
-    config::toml::TomlConfig,
-    connectivity::stun::StunSocketMapper,
-    host::packet::{HostPacket, HostPacketChannelSink},
-    instance::CoreInstance,
+    config::toml::TomlConfig, connectivity::stun::StunSocketMapper, instance::CoreInstance,
     process_runtime::CoreProcessRuntime,
 };
 
 use crate::{
     common::global_ctx::{ArcGlobalCtx, GlobalCtx},
     instance::{
-        composition::{NativeCoreInstance, runtime_core_host_adapters},
+        composition::{NativeCoreInstance, runtime_core_host_adapters_with_packet_egress},
         runtime_host::NativeInstanceRuntimeHost,
     },
     socket::udp::RuntimeUdpSocket,
@@ -53,15 +50,14 @@ impl TestInstance {
         ),
     ) -> Self {
         let global_ctx = Arc::new(GlobalCtx::new(config.clone()));
-        let (packet_sender, packet_receiver) = tokio::sync::mpsc::channel::<HostPacket>(128);
-        let mut adapters = runtime_core_host_adapters(
+        let runtime_host = NativeInstanceRuntimeHost::new(global_ctx.clone());
+        let mut adapters = runtime_core_host_adapters_with_packet_egress(
             global_ctx.clone(),
             process_runtime,
-            Arc::new(HostPacketChannelSink::new(packet_sender)),
+            runtime_host.clone(),
         );
         customize(&mut adapters);
-        adapters.instance_runtime =
-            NativeInstanceRuntimeHost::new(global_ctx.clone(), packet_receiver);
+        adapters.instance_runtime = runtime_host;
         let core = CoreInstance::from_toml(config, adapters)
             .expect("test CoreInstance composition should be valid");
         Self { core, global_ctx }

@@ -16,6 +16,36 @@ pub struct HostPacket {
     inner: ZCPacket,
 }
 
+pub(crate) type HostPacketSender = mpsc::Sender<HostPacket>;
+
+/// The single bounded receive side for packets leaving a core instance.
+///
+/// Hosts own this receiver for the instance lifetime. Keeping the channel
+/// opaque prevents platform adapters from depending on core packet headers or
+/// replacing the bounded backpressure contract.
+pub struct HostPacketReceiver {
+    receiver: mpsc::Receiver<HostPacket>,
+}
+
+impl HostPacketReceiver {
+    /// Wraps a Host-owned bounded packet channel.
+    ///
+    /// This is intended for native adapters that already receive owned
+    /// [`HostPacket`] values from an in-process packet sink.
+    pub fn new(receiver: mpsc::Receiver<HostPacket>) -> Self {
+        Self { receiver }
+    }
+
+    pub async fn recv(&mut self) -> Option<HostPacket> {
+        self.receiver.recv().await
+    }
+}
+
+pub(crate) fn host_packet_channel() -> (HostPacketSender, HostPacketReceiver) {
+    let (sender, receiver) = mpsc::channel(128);
+    (sender, HostPacketReceiver::new(receiver))
+}
+
 impl HostPacket {
     /// Copies raw IP bytes into core-owned packet storage.
     ///

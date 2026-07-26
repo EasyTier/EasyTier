@@ -4,13 +4,14 @@ use anyhow::Context as _;
 use cidr::Ipv4Inet;
 use easytier_core::{
     gateway::dhcp::{DhcpIpv4ApplyOutcome, DhcpIpv4ApplyPermit, DhcpIpv4Host},
+    host::packet::HostPacketReceiver,
     instance::CorePacketPlane,
 };
 use futures::FutureExt as _;
 use tokio::sync::{Mutex, Notify, mpsc};
 use tokio_util::sync::CancellationToken;
 
-use super::{HostPacketReceiver, MagicDnsRuntime, tun_common::TunNicState};
+use super::{MagicDnsRuntime, tun_common::TunNicState};
 use crate::{
     common::global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
     instance::virtual_nic::NicCtx,
@@ -26,20 +27,23 @@ pub(super) struct NativeTunRuntime {
 }
 
 impl NativeTunRuntime {
-    pub(super) fn new(
-        global_ctx: ArcGlobalCtx,
-        cancel: CancellationToken,
-        peer_packet_receiver: HostPacketReceiver,
-    ) -> Self {
+    pub(super) fn new(global_ctx: ArcGlobalCtx, cancel: CancellationToken) -> Self {
         let (tun_fd, tun_fd_receiver) = mpsc::channel(16);
         Self {
             global_ctx,
             cancel,
-            nic: TunNicState::new(peer_packet_receiver),
+            nic: TunNicState::empty(),
             tun_fd,
             tun_fd_receiver: Mutex::new(Some(tun_fd_receiver)),
             task: Mutex::new(None),
         }
+    }
+
+    pub(super) fn install_packet_receiver(
+        &self,
+        receiver: HostPacketReceiver,
+    ) -> anyhow::Result<()> {
+        self.nic.install_receiver(receiver)
     }
 
     async fn install_mobile_tun(

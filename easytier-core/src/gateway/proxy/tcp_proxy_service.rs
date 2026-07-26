@@ -471,7 +471,12 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
 
             #[cfg(not(feature = "proxy-smoltcp-stack"))]
             tracing::error!("smoltcp packet received but proxy-smoltcp-stack is disabled");
-        } else if let Err(err) = self.peer_manager.get_nic_channel().send(packet).await {
+        } else if let Err(err) = self
+            .peer_manager
+            .get_nic_channel()
+            .send(crate::host::packet::HostPacket::from_core_packet(packet))
+            .await
+        {
             tracing::error!(?err, "send to nic failed");
         }
 

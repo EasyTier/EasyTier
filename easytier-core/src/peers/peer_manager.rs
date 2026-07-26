@@ -26,6 +26,7 @@ use crate::{
     config::{P2pPolicyFlags, PeerId, ProxyNetworkConfig},
     events::CoreEventSink,
     foundation::task::ExternalTaskSignal,
+    host::packet::{HostPacket, HostPacketSender},
     packet::{
         CompressorAlgo, PacketType, ZCPacket,
         compressor::{Compressor as _, DefaultCompressor},
@@ -42,8 +43,7 @@ use crate::{
 };
 
 use super::{
-    BoxNicPacketFilter, BoxPeerPacketFilter, PacketRecvChan, PacketRecvChanReceiver,
-    PeerPacketFilter,
+    BoxNicPacketFilter, BoxPeerPacketFilter, PacketRecvChanReceiver, PeerPacketFilter,
     acl::AclFilter,
     conn::{
         peer_conn::{PeerConn, PeerConnId},
@@ -401,7 +401,7 @@ pub(crate) async fn close_untrusted_credential_peers<F>(
 }
 
 struct NicPacketProcessor {
-    nic_channel: PacketRecvChan,
+    nic_channel: HostPacketSender,
 }
 
 #[async_trait::async_trait]
@@ -420,7 +420,10 @@ impl PeerPacketFilter for NicPacketProcessor {
                 return None;
             }
             tracing::trace!(?packet, "send packet to nic channel");
-            let _ = self.nic_channel.send(packet).await;
+            let _ = self
+                .nic_channel
+                .send(HostPacket::from_core_packet(packet))
+                .await;
             None
         } else {
             Some(packet)
@@ -638,7 +641,7 @@ fn append_nic_pipeline(pipeline: &NicPacketPipeline, entry: NicPipelineEntry) {
 
 async fn init_packet_process_pipeline(
     peer_packet_process_pipeline: &PeerPacketPipeline,
-    nic_channel: PacketRecvChan,
+    nic_channel: HostPacketSender,
     peer_rpc_tspt_sender: UnboundedSender<ZCPacket>,
 ) {
     // for tun/tap ip/eth packet.
@@ -702,7 +705,7 @@ pub struct PeerManagerCore {
     peer_rpc_tspt: Arc<RpcTransport>,
     peer_packet_process_pipeline: PeerPacketPipeline,
     nic_packet_process_pipeline: NicPacketPipeline,
-    nic_channel: PacketRecvChan,
+    nic_channel: HostPacketSender,
     route_algo_inst: RouteAlgoInst,
     foreign_network_client: Arc<ForeignNetworkClient>,
     foreign_network_manager: Arc<ForeignNetworkManager>,
@@ -757,7 +760,7 @@ impl PeerManagerCore {
         mut config: PortablePeerManagerConfig,
         runtime_config: CoreRuntimeConfigStore,
         stun_info_source: Arc<dyn PeerStunInfoSource>,
-        nic_channel: PacketRecvChan,
+        nic_channel: HostPacketSender,
         public_ipv6_runtime: Arc<CorePublicIpv6Runtime>,
         events: Arc<dyn CoreEventSink>,
         credential_storage: Option<Arc<dyn CredentialStorage>>,
@@ -886,7 +889,7 @@ impl PeerManagerCore {
         my_peer_id: PeerId,
         core_context: Arc<CorePeerContext>,
         public_ipv6_runtime: Arc<dyn PublicIpv6Runtime>,
-        nic_channel: PacketRecvChan,
+        nic_channel: HostPacketSender,
         encryptor: Arc<dyn Encryptor + 'static>,
         is_secure_mode_enabled: bool,
         data_compress_algo: CompressorAlgo,
@@ -1257,7 +1260,7 @@ impl PeerManagerCore {
         self.peer_session_store.clone()
     }
 
-    pub fn get_nic_channel(&self) -> PacketRecvChan {
+    pub(crate) fn get_nic_channel(&self) -> HostPacketSender {
         self.nic_channel.clone()
     }
 
@@ -3188,6 +3191,7 @@ mod tests {
     use crate::{
         config::runtime::CoreRuntimeConfig,
         config::{CoreConfig, IpPrefix, NetworkIdentity, NodeConfig, ProxyNetworkConfig},
+        host::packet::{HostPacketSender, host_packet_channel},
         peers::{
             context::{PeerContext, PeerEvent},
             create_packet_recv_chan,
@@ -3198,7 +3202,7 @@ mod tests {
     impl PeerManagerCore {
         pub(crate) fn new_portable_for_test(
             config: PortablePeerManagerConfig,
-            nic_channel: PacketRecvChan,
+            nic_channel: HostPacketSender,
         ) -> anyhow::Result<Self> {
             let runtime_config = CoreRuntimeConfigStore::new(
                 CoreRuntimeConfig::default(),
@@ -3342,7 +3346,7 @@ mod tests {
     fn build_portable_config_for_test(
         config: PortablePeerManagerConfig,
     ) -> anyhow::Result<PeerManagerCore> {
-        let (packet_tx, _packet_rx) = create_packet_recv_chan();
+        let (packet_tx, _packet_rx) = host_packet_channel();
         PeerManagerCore::new_portable_for_test(config, packet_tx)
     }
 
@@ -3466,7 +3470,7 @@ mod tests {
         let public_ipv6_runtime =
             CorePublicIpv6Runtime::new(runtime_config.clone(), Arc::new(()), Arc::new(()));
         let events = Arc::new(CountingPeerEventSink::default());
-        let (packet_tx, _packet_rx) = create_packet_recv_chan();
+        let (packet_tx, _packet_rx) = host_packet_channel();
 
         let core = PeerManagerCore::new(
             config,
@@ -3501,7 +3505,7 @@ mod tests {
             }),
         };
         config.snapshot.set_acl_groups(Some(&acl));
-        let (packet_tx, _packet_rx) = create_packet_recv_chan();
+        let (packet_tx, _packet_rx) = host_packet_channel();
 
         let core = PeerManagerCore::new_portable_for_test(config, packet_tx).unwrap();
 
@@ -3647,7 +3651,7 @@ mod tests {
     async fn portable_peer_manager_rejects_inconsistent_network_names() {
         let mut runtime = portable_runtime_config("identity-net");
         runtime.core.node.network_name = "node-net".to_owned();
-        let (packet_tx, _packet_rx) = create_packet_recv_chan();
+        let (packet_tx, _packet_rx) = host_packet_channel();
 
         let result = PeerManagerCore::new_portable_for_test(
             PortablePeerManagerConfig::new(runtime),
