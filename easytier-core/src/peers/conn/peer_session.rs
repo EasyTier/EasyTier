@@ -421,7 +421,18 @@ mod tests {
     }
 
     #[test]
-    #[cfg(all(feature = "aes-gcm", feature = "chacha20"))]
+    #[cfg(all(
+        any(
+            feature = "aes-gcm",
+            feature = "openssl-crypto",
+            feature = "ring-crypto"
+        ),
+        any(
+            feature = "chacha20",
+            feature = "openssl-crypto",
+            feature = "ring-crypto"
+        )
+    ))]
     fn peer_session_supports_asymmetric_algorithms() {
         let a: PeerId = 10;
         let b: PeerId = 20;

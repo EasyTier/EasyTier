@@ -3393,7 +3393,11 @@ mod tests {
         );
     }
 
-    #[cfg(not(feature = "aes-gcm"))]
+    #[cfg(not(any(
+        feature = "aes-gcm",
+        feature = "openssl-crypto",
+        feature = "ring-crypto"
+    )))]
     #[tokio::test]
     async fn portable_peer_manager_rejects_requested_unavailable_aes() {
         let mut config = PortablePeerManagerConfig::new(portable_runtime_config("portable-net"));

@@ -158,7 +158,7 @@ fn decode_noise_payload(payload: &[u8]) -> Option<&[u8]> {
 }
 
 pub fn web_secure_tunnel_supported() -> bool {
-    cfg!(feature = "aes-gcm")
+    crate::tunnel::encrypt::algorithm_is_available(crate::config::EncryptionAlgorithm::AesGcm)
 }
 
 fn web_secure_cipher_algorithm() -> Result<&'static str, TunnelError> {
