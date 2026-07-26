@@ -34,7 +34,7 @@ where
             .unwrap()
             .take()
             .expect("TcpTunnel can only be split once");
-        let (reader, writer) = tokio::io::split(socket);
+        let (reader, writer) = socket.into_split();
         (
             Box::pin(FramedReader::new(reader, self.max_packet_size)),
             Box::pin(FramedWriter::new(writer)),

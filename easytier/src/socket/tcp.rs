@@ -9,7 +9,7 @@ use std::{
 use easytier_core::{
     socket::tcp::{
         TcpBindOptions, TcpConnectOptions, TcpListenOptions, TcpListenPurpose, TcpSocketPurpose,
-        VirtualTcpListener, VirtualTcpSocket,
+        VirtualTcpListener, VirtualTcpSocket, VirtualTcpSplit,
     },
     tunnel::TunnelError,
 };
@@ -123,6 +123,25 @@ impl AsyncWrite for RuntimeTcpSocket {
 }
 
 impl VirtualTcpSocket for RuntimeTcpSocket {
+    fn into_split(self) -> VirtualTcpSplit {
+        match self.inner {
+            RuntimeTcpSocketInner::Tcp(stream) => {
+                let (reader, writer) = stream.into_split();
+                (Box::new(reader), Box::new(writer))
+            }
+            #[cfg(unix)]
+            RuntimeTcpSocketInner::Unix(stream) => {
+                let (reader, writer) = stream.into_split();
+                (Box::new(reader), Box::new(writer))
+            }
+            #[cfg(feature = "faketcp")]
+            RuntimeTcpSocketInner::FakeTcp(socket) => {
+                let (reader, writer) = tokio::io::split(socket);
+                (Box::new(reader), Box::new(writer))
+            }
+        }
+    }
+
     fn local_addr(&self) -> io::Result<SocketAddr> {
         match &self.inner {
             RuntimeTcpSocketInner::Tcp(stream) => stream.local_addr(),
@@ -349,7 +368,33 @@ pub(crate) fn prepare_proxy_tcp_socket(stream: &TcpStream) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
     use super::*;
+
+    #[tokio::test]
+    async fn runtime_tcp_owned_split_preserves_full_duplex_and_shutdown() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (client, accepted) = tokio::join!(TcpStream::connect(address), listener.accept());
+        let client = client.unwrap();
+        let (mut server, _) = accepted.unwrap();
+        let (mut reader, mut writer) = RuntimeTcpSocket::new(client).into_split();
+
+        writer.write_all(b"client-to-server").await.unwrap();
+        let mut from_client = [0; 16];
+        server.read_exact(&mut from_client).await.unwrap();
+        assert_eq!(&from_client, b"client-to-server");
+
+        server.write_all(b"server-to-client").await.unwrap();
+        let mut from_server = [0; 16];
+        reader.read_exact(&mut from_server).await.unwrap();
+        assert_eq!(&from_server, b"server-to-client");
+
+        writer.shutdown().await.unwrap();
+        let mut after_shutdown = [0; 1];
+        assert_eq!(server.read(&mut after_shutdown).await.unwrap(), 0);
+    }
 
     #[test]
     fn tcp_connect_binds_when_socket_option_requires_pre_connect_setup() {
