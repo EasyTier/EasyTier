@@ -459,10 +459,13 @@ pub(super) async fn udp_session_layer_recv_task<S, R>(
         };
 
         let payload = BytesMut::from(&buf[..len]);
-        let datagram = UdpSessionDatagram::new(payload.clone(), recv_meta);
         let quic_key = ClassifiedUdpSessionKey::new(UdpSessionProtocol::Quic, remote_addr);
         if classified_sessions.contains_key(&quic_key) {
-            dispatch_existing_classified_udp_datagram(&classified_sessions, quic_key, datagram);
+            dispatch_existing_classified_udp_datagram(
+                &classified_sessions,
+                quic_key,
+                UdpSessionDatagram::new(payload, recv_meta),
+            );
             continue;
         }
         match classify_udp_datagram(payload) {
@@ -502,7 +505,7 @@ pub(super) async fn udp_session_layer_recv_task<S, R>(
                 packet,
                 fallback,
             } => {
-                let consumed = dispatch_easy_tier_udp_datagram(
+                let unconsumed = dispatch_easy_tier_udp_datagram(
                     socket.clone(),
                     &sessions,
                     &pending_connects,
@@ -512,11 +515,11 @@ pub(super) async fn udp_session_layer_recv_task<S, R>(
                     remote_addr,
                     kind,
                     conn_id,
-                    &packet,
+                    packet,
                     recv_meta,
                     session_shutdown_tx.subscribe(),
                 );
-                if !consumed {
+                if let Some(packet) = unconsumed {
                     dispatch_session_udp_datagram(
                         socket.clone(),
                         &classified_sessions,
@@ -561,16 +564,16 @@ fn dispatch_easy_tier_udp_datagram<S>(
     remote_addr: SocketAddr,
     kind: EasyTierUdpPacketKind,
     conn_id: u32,
-    packet: &ZCPacket,
+    packet: ZCPacket,
     recv_meta: UdpSocketRecvMeta,
     session_shutdown: watch::Receiver<bool>,
-) -> bool
+) -> Option<ZCPacket>
 where
     S: VirtualUdpSocket,
 {
-    match kind {
+    let consumed = match kind {
         EasyTierUdpPacketKind::Data => {
-            dispatch_data_packet(sessions, remote_addr, conn_id, packet, recv_meta)
+            return dispatch_data_packet(sessions, remote_addr, conn_id, packet, recv_meta).err();
         }
         EasyTierUdpPacketKind::Syn => handle_new_easy_tier_mux_connect(
             socket,
@@ -578,47 +581,48 @@ where
             mux_accepted.clone(),
             remote_addr,
             conn_id,
-            packet,
+            &packet,
             session_shutdown,
         ),
         EasyTierUdpPacketKind::Sack => {
-            dispatch_sack_packet(sessions, pending_connects, remote_addr, conn_id, packet)
+            dispatch_sack_packet(sessions, pending_connects, remote_addr, conn_id, &packet)
         }
         EasyTierUdpPacketKind::HolePunch => {
             dispatch_hole_punch_packet(pending_connects, remote_addr)
         }
         EasyTierUdpPacketKind::V4HolePunch => {
-            dispatch_v4_hole_punch_control(socket, control_permits, control, remote_addr, packet)
+            dispatch_v4_hole_punch_control(socket, control_permits, control, remote_addr, &packet)
         }
         EasyTierUdpPacketKind::V6HolePunch => {
-            dispatch_v6_hole_punch_control(socket, control_permits, control, remote_addr, packet)
+            dispatch_v6_hole_punch_control(socket, control_permits, control, remote_addr, &packet)
         }
-    }
+    };
+    if consumed { None } else { Some(packet) }
 }
 
 pub(super) fn dispatch_data_packet(
     sessions: &UdpSessionRegistry,
     peer_addr: SocketAddr,
     conn_id: u32,
-    packet: &ZCPacket,
+    packet: ZCPacket,
     recv_meta: UdpSocketRecvMeta,
-) -> bool {
+) -> Result<(), ZCPacket> {
     let key = UdpSessionKey::new(peer_addr, conn_id);
     let Some(entry) = sessions.get(&key).map(|entry| entry.value().clone()) else {
-        return false;
+        return Err(packet);
     };
 
-    let payload = UdpSessionDatagram::new(BytesMut::from(packet.udp_payload()), recv_meta);
     let policy = if packet.is_lossy() {
         UdpSessionEnqueuePolicy::Lossy
     } else {
         UdpSessionEnqueuePolicy::Reliable
     };
+    let payload = UdpSessionDatagram::from_easytier_packet(packet, recv_meta);
     if !dispatch_payload_to_session(&entry.incoming, payload, policy) {
         close_udp_session(sessions, key);
         tracing::debug!(?key, "udp session data queue closed");
     }
-    true
+    Ok(())
 }
 
 fn dispatch_session_udp_datagram<S>(
