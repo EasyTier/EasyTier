@@ -41,12 +41,14 @@ impl RuntimeDriver {
         }
     }
 
-    pub(super) fn drive(&self, runtime: &Runtime) -> RuntimeDriveOutcome {
-        // First give the timer driver a non-blocking turn. The quiescence hook
-        // stays disabled here so an expired timer can wake its task.
-        runtime.block_on(async {
-            tokio::time::sleep(Duration::ZERO).await;
-        });
+    pub(super) fn drive(&self, runtime: &Runtime, advance_timers: bool) -> RuntimeDriveOutcome {
+        if advance_timers {
+            // Give the timer driver a turn before enabling the quiescence hook
+            // so an expired timer can wake its task.
+            runtime.block_on(async {
+                tokio::time::sleep(Duration::ZERO).await;
+            });
+        }
 
         let _active = RuntimeDriverGuard::activate(self.state.as_ref());
         runtime.block_on(async {
@@ -101,9 +103,10 @@ impl Drop for RuntimeDriverGuard<'_> {
 mod tests {
     use std::{future::poll_fn, sync::Arc, task::Poll};
 
-    use tokio::{runtime::Builder, sync::Notify};
+    use tokio::{runtime::Builder, sync::Notify, time::Duration};
 
     use super::{RuntimeDriveOutcome, RuntimeDriver};
+    use crate::wasi::time::{enter_domain, next_deadline_millis};
 
     fn runtime(driver: &RuntimeDriver) -> tokio::runtime::Runtime {
         let park_driver = driver.clone();
@@ -124,10 +127,13 @@ mod tests {
             Poll::<()>::Pending
         }));
 
-        assert_eq!(driver.drive(&runtime), RuntimeDriveOutcome::BudgetExhausted);
+        assert_eq!(
+            driver.drive(&runtime, false),
+            RuntimeDriveOutcome::BudgetExhausted
+        );
 
         task.abort();
-        while driver.drive(&runtime) == RuntimeDriveOutcome::BudgetExhausted {}
+        while driver.drive(&runtime, false) == RuntimeDriveOutcome::BudgetExhausted {}
         assert!(task.is_finished());
     }
 
@@ -141,11 +147,56 @@ mod tests {
             task_notify.notified().await;
         });
 
-        assert_eq!(driver.drive(&runtime), RuntimeDriveOutcome::Quiescent);
+        assert_eq!(
+            driver.drive(&runtime, false),
+            RuntimeDriveOutcome::Quiescent
+        );
         assert!(!task.is_finished());
 
         notify.notify_one();
-        while driver.drive(&runtime) == RuntimeDriveOutcome::BudgetExhausted {}
+        while driver.drive(&runtime, false) == RuntimeDriveOutcome::BudgetExhausted {}
         assert!(task.is_finished());
+    }
+
+    #[test]
+    fn advances_expired_timers_only_when_requested() {
+        let driver = RuntimeDriver::default();
+        let runtime = runtime(&driver);
+        let task = runtime.spawn(async {
+            tokio::time::sleep(Duration::ZERO).await;
+        });
+
+        assert_eq!(
+            driver.drive(&runtime, false),
+            RuntimeDriveOutcome::Quiescent
+        );
+        assert!(!task.is_finished());
+
+        assert_eq!(driver.drive(&runtime, true), RuntimeDriveOutcome::Quiescent);
+        assert!(task.is_finished());
+    }
+
+    #[test]
+    fn tracked_expired_timer_requests_advancement() {
+        let _domain = enter_domain(7);
+        let driver = RuntimeDriver::default();
+        let runtime = runtime(&driver);
+        let task = runtime.spawn(async {
+            crate::foundation::time::sleep(Duration::ZERO).await;
+        });
+
+        assert_eq!(
+            driver.drive(&runtime, false),
+            RuntimeDriveOutcome::Quiescent
+        );
+        assert_eq!(next_deadline_millis(7), Some(0));
+
+        let advance_timers = next_deadline_millis(7) == Some(0);
+        assert_eq!(
+            driver.drive(&runtime, advance_timers),
+            RuntimeDriveOutcome::Quiescent
+        );
+        assert!(task.is_finished());
+        assert_eq!(next_deadline_millis(7), None);
     }
 }

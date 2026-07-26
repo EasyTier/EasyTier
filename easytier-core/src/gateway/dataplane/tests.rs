@@ -308,11 +308,9 @@ async fn data_plane_sessions_complete_tcp_operations_end_to_end() {
         .unwrap()
         .unwrap();
 
-    let read = session_b
-        .submit_tcp_read(server, 16, Some(Duration::from_secs(10)))
-        .unwrap();
+    let read = session_b.submit_tcp_read(server, 16).unwrap();
     let write = session_a
-        .submit_tcp_write(client, b"ping".to_vec(), Some(Duration::from_secs(10)))
+        .submit_tcp_write(client, b"ping".to_vec())
         .unwrap();
     let (write_completion, read_completion) = tokio::join!(
         wait_for_session_completion(&session_a),
@@ -337,7 +335,7 @@ async fn data_plane_sessions_complete_tcp_operations_end_to_end() {
     assert_eq!(written, 4);
     assert_eq!(received, b"ping");
 
-    let blocked_read = session_b.submit_tcp_read(server, 16, None).unwrap();
+    let blocked_read = session_b.submit_tcp_read(server, 16).unwrap();
     session_b.close_resource(server);
     let close_completion = wait_for_session_completion(&session_b).await;
     assert_eq!(close_completion.operation_id, blocked_read);
@@ -351,7 +349,7 @@ async fn data_plane_sessions_complete_tcp_operations_end_to_end() {
         .unwrap();
     assert_eq!(close_error, DataPlaneErrorKind::HandleClosed);
 
-    let stopped_read = session_a.submit_tcp_read(client, 16, None).unwrap();
+    let stopped_read = session_a.submit_tcp_read(client, 16).unwrap();
     session_a.stop();
     let stop_completion = wait_for_session_completion(&session_a).await;
     assert_eq!(stop_completion.operation_id, stopped_read);
@@ -402,7 +400,7 @@ async fn data_plane_sessions_report_udp_truncation() {
         .unwrap();
 
     let warmup = session_b
-        .submit_udp_send(socket_b, addr_a, b"warmup".to_vec(), None)
+        .submit_udp_send(socket_b, addr_a, b"warmup".to_vec())
         .unwrap();
     wait_for_session_completion(&session_b).await;
     session_b
@@ -413,16 +411,9 @@ async fn data_plane_sessions_report_udp_truncation() {
         .unwrap()
         .unwrap();
 
-    let receive = session_b
-        .submit_udp_receive(socket_b, 2, Some(Duration::from_secs(10)))
-        .unwrap();
+    let receive = session_b.submit_udp_receive(socket_b, 2).unwrap();
     let send = session_a
-        .submit_udp_send(
-            socket_a,
-            addr_b,
-            b"ping".to_vec(),
-            Some(Duration::from_secs(10)),
-        )
+        .submit_udp_send(socket_a, addr_b, b"ping".to_vec())
         .unwrap();
     let (send_completion, receive_completion) = tokio::join!(
         wait_for_session_completion(&session_a),

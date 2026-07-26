@@ -76,16 +76,36 @@ pub trait VirtualUdpSocket: Send + Sync + 'static {
     /// override it when their socket API can write directly into owned storage,
     /// avoiding a second allocation and copy at the Host boundary.
     async fn recv_datagram(&self) -> std::io::Result<UdpSocketDatagram> {
-        let mut payload = BytesMut::new();
-        payload.resize(MAX_UDP_DATAGRAM_SIZE, 0);
-        let (len, remote_addr, meta) = self.recv_from_with_meta(&mut payload).await?;
-        payload.truncate(len);
-        Ok(UdpSocketDatagram {
-            payload,
-            remote_addr,
-            meta,
-        })
+        recv_portable_datagram(self, MAX_UDP_DATAGRAM_SIZE).await
     }
+
+    /// Receives one datagram for the UDP session/multiplexer data plane.
+    ///
+    /// Portable hosts receive one byte past the session limit so a truncated
+    /// oversized datagram remains distinguishable from a valid maximum-sized
+    /// datagram. Native hosts may override this when they can detect truncation
+    /// without the extra byte.
+    async fn recv_session_datagram(&self) -> std::io::Result<UdpSocketDatagram> {
+        recv_portable_datagram(self, MAX_UDP_SESSION_DATAGRAM_SIZE + 1).await
+    }
+}
+
+async fn recv_portable_datagram<S>(
+    socket: &S,
+    capacity: usize,
+) -> std::io::Result<UdpSocketDatagram>
+where
+    S: VirtualUdpSocket + ?Sized,
+{
+    let mut payload = BytesMut::new();
+    payload.resize(capacity, 0);
+    let (len, remote_addr, meta) = socket.recv_from_with_meta(&mut payload).await?;
+    payload.truncate(len);
+    Ok(UdpSocketDatagram {
+        payload,
+        remote_addr,
+        meta,
+    })
 }
 
 #[async_trait]

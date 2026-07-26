@@ -64,15 +64,17 @@ async fn run(
                     .unwrap_or(default_timeout)
             };
 
-            timer
-                .as_mut()
-                .reset(crate::foundation::time::Instant::now() + deadline.into());
-            select! {
-                _ = &mut timer => {},
-                _ = receive(&mut async_iface,&mut recv_buf) => {}
-                _ = notify.notified() => {}
-                _ = stopper.notified() => break,
-            };
+            if deadline != Duration::ZERO {
+                timer
+                    .as_mut()
+                    .reset(crate::foundation::time::Instant::now() + deadline.into());
+                select! {
+                    _ = &mut timer => {},
+                    _ = receive(&mut async_iface,&mut recv_buf) => {}
+                    _ = notify.notified() => {}
+                    _ = stopper.notified() => break,
+                };
+            }
 
             while let (true, Some(Ok(p))) = (
                 recv_buf.len() < max_burst_size,

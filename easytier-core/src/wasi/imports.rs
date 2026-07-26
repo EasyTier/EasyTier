@@ -9,6 +9,57 @@ pub(crate) const HOST_WOULD_BLOCK: i32 = -5;
 
 #[link(wasm_import_module = "easytier_host")]
 unsafe extern "C" {
+    /// Emits one best-effort instance event after the host copies both strings.
+    ///
+    /// The host must not block the guest. A non-zero status drops this event
+    /// without affecting core execution.
+    pub(crate) fn emit_event(
+        handle: u64,
+        kind: u32,
+        kind_len: u32,
+        message: u32,
+        message_len: u32,
+    ) -> i32;
+
+    /// Encrypts `text_len` bytes in place and writes the AEAD tag immediately
+    /// after them.
+    ///
+    /// The guest reserves the algorithm's tag size in linear memory before
+    /// calling. Every non-zero result except
+    /// [`crate::wasi::abi::HOST_CRYPTO_AUTH_FAILED`] must leave the buffer
+    /// unchanged so the guest can use its built-in implementation.
+    #[cfg(feature = "wasi-crypto-offload")]
+    pub(crate) fn crypto_aead_seal(
+        algorithm: u32,
+        key: u32,
+        key_len: u32,
+        nonce: u32,
+        nonce_len: u32,
+        aad: u32,
+        aad_len: u32,
+        buffer: u32,
+        text_len: u32,
+    ) -> i32;
+
+    /// Authenticates and decrypts `text_len` bytes in place using the AEAD tag
+    /// immediately after them.
+    ///
+    /// Authentication failure may change the buffer and must return
+    /// [`crate::wasi::abi::HOST_CRYPTO_AUTH_FAILED`]. Every other non-zero
+    /// result must leave the buffer unchanged so the guest can fall back.
+    #[cfg(feature = "wasi-crypto-offload")]
+    pub(crate) fn crypto_aead_open(
+        algorithm: u32,
+        key: u32,
+        key_len: u32,
+        nonce: u32,
+        nonce_len: u32,
+        aad: u32,
+        aad_len: u32,
+        buffer: u32,
+        text_len: u32,
+    ) -> i32;
+
     /// Starts one TCP read into a host-owned pending operation.
     ///
     /// The host records at most `capacity` bytes for `operation` and must not

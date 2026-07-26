@@ -31,20 +31,18 @@ pub(super) fn new_wasi_core_runtime(
     process_runtime: std::sync::Arc<crate::process_runtime::CoreProcessRuntime>,
     environment_snapshot: HostConnectorEnvironmentSnapshot,
     packet_sink: crate::host::packet::HostPacketSinkHandle,
+    event_sink: u64,
 ) -> anyhow::Result<WasiCoreRuntime> {
     use std::sync::Arc;
 
-    use crate::host::{
-        dns::HostDnsResolver,
-        packet::{HostPacket, HostPacketSink},
-        socket::HostSocketRuntime,
-    };
+    use crate::host::{dns::HostDnsResolver, packet::HostPacketSink, socket::HostSocketRuntime};
     use crate::{
         connectivity::connector_host::new_connector_host,
         instance::{CoreHostAdapters, CoreInstance},
         wasi::adapter::{
             dns::WasiHostDnsIo, environment::WasiHostConnectorEnvironmentIo,
-            packet::WasiHostPacketIo, socket::backend::WasiHostSocketBackend,
+            event::WasiHostEventSink, packet::WasiHostPacketIo,
+            socket::backend::WasiHostSocketBackend,
         },
     };
 
@@ -64,7 +62,8 @@ pub(super) fn new_wasi_core_runtime(
         Arc::new(WasiHostPacketIo),
         packet_sink,
     ));
-    let adapters = CoreHostAdapters::new(host, dns, packet_sink, process_runtime);
+    let mut adapters = CoreHostAdapters::new(host, dns, packet_sink, process_runtime);
+    adapters.events = Arc::new(WasiHostEventSink::new(event_sink));
     let core = CoreInstance::from_toml(config, adapters)?;
 
     Ok(WasiCoreRuntime {
@@ -85,7 +84,7 @@ mod abi {
     use crate::{
         config::toml::{ConfigLoader as _, TomlConfig},
         foundation::time::{clear_domain, enter_domain, next_deadline_millis},
-        host::packet::HostPacketSinkHandle,
+        host::packet::{HostPacket, HostPacketSinkHandle},
         instance::{
             CoreInstanceState,
             manager::{InstanceFactory, ManagedInstance},
@@ -164,6 +163,7 @@ mod abi {
         domain: u64,
         environment: crate::connectivity::connector_host::HostConnectorEnvironmentSnapshot,
         packet_sink: HostPacketSinkHandle,
+        event_sink: u64,
     }
 
     struct WasiInstance {
@@ -220,6 +220,7 @@ mod abi {
                     self.process_runtime.clone(),
                     context.environment,
                     context.packet_sink,
+                    context.event_sink,
                 )?
             };
 
@@ -348,8 +349,11 @@ mod abi {
 
         fn drive(&self) -> anyhow::Result<()> {
             let _domain = enter_domain(self.domain);
+            let advance_timers = next_deadline_millis(self.domain) == Some(0);
             let mut execution = self.execution.lock().unwrap();
-            execution.drive_again = execution.runtime_driver.drive(&execution.runtime)
+            execution.drive_again = execution
+                .runtime_driver
+                .drive(&execution.runtime, advance_timers)
                 == RuntimeDriveOutcome::BudgetExhausted;
 
             if execution
@@ -561,13 +565,15 @@ mod abi {
     #[unsafe(no_mangle)]
     /// Creates one core instance from a versioned envelope containing TOML.
     ///
-    /// `config_pointer` must name a live ABI buffer and `packet_sink_handle`
-    /// identifies the host sink used for locally delivered raw IP packets.
+    /// `config_pointer` must name a live ABI buffer. `packet_sink_handle` and
+    /// `event_sink_handle` identify the host sinks used for locally delivered
+    /// raw IP packets and best-effort instance events.
     /// Returns zero on failure; retrieve the reason through the error exports.
     pub extern "C" fn easytier_instance_create(
         config_pointer: u32,
         config_length: u32,
         packet_sink_handle: u64,
+        event_sink_handle: u64,
     ) -> u64 {
         let encoded = match read_guest_buffer(config_pointer, config_length, MAX_CREATE_CONFIG_LEN)
         {
@@ -601,6 +607,7 @@ mod abi {
                 domain: handle,
                 environment: create_config.environment,
                 packet_sink: HostPacketSinkHandle(packet_sink_handle),
+                event_sink: event_sink_handle,
             },
         );
         let instance = match instance {

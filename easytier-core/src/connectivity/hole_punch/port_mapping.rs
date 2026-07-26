@@ -258,7 +258,7 @@ async fn run_udp_port_mapping_lifecycle(
 ) {
     loop {
         tokio::select! {
-            _ = tokio::time::sleep(UPNP_RENEW_INTERVAL) => {
+            _ = crate::foundation::time::sleep(UPNP_RENEW_INTERVAL) => {
                 if let Err(error) = mapping.renew().await {
                     tracing::warn!(
                         err = ?error,

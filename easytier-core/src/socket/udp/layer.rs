@@ -447,7 +447,7 @@ pub(super) async fn udp_session_layer_recv_task<S, R>(
 {
     let control_permits = Arc::new(Semaphore::new(UDP_SESSION_QUEUE_CAPACITY));
     loop {
-        let datagram = match socket.recv_datagram().await {
+        let datagram = match socket.recv_session_datagram().await {
             Ok(datagram) => datagram,
             Err(err) => {
                 tracing::debug!(?err, "udp session recv loop stopped");

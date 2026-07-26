@@ -172,4 +172,23 @@ mod tests {
         round_trip(RingCipher::new_aes256_gcm([2; 32]));
         round_trip(RingCipher::new_chacha20([3; 32]));
     }
+
+    #[test]
+    fn aes128_gcm_matches_standard_vector() {
+        let cipher = RingCipher::new_aes128_gcm([0; 16]);
+        let mut packet = ZCPacket::new_with_payload(&[0; 16]);
+        packet.fill_peer_manager_hdr(0, 0, 0);
+        cipher
+            .encrypt_with_nonce(&mut packet, Some(&[0; 12]))
+            .unwrap();
+
+        assert_eq!(
+            packet.payload(),
+            &[
+                0x03, 0x88, 0xda, 0xce, 0x60, 0xb6, 0xa3, 0x92, 0xf3, 0x28, 0xc2, 0xb9, 0x71, 0xb2,
+                0xfe, 0x78, 0xab, 0x6e, 0x47, 0xd4, 0x2c, 0xec, 0x13, 0xbd, 0xf5, 0x3a, 0x67, 0xb2,
+                0x12, 0x57, 0xbd, 0xdf, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ]
+        );
+    }
 }

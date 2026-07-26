@@ -17,6 +17,8 @@ pub mod chacha20;
 mod openssl;
 #[cfg(all(feature = "ring-crypto", any(not(feature = "openssl-crypto"), test)))]
 mod ring;
+#[cfg(all(target_os = "wasi", feature = "wasi-crypto-offload"))]
+mod wasi_host;
 
 pub mod xor;
 
@@ -202,7 +204,7 @@ fn preferred_aead_backend(_algorithm: EncryptionAlgorithm) -> Option<AeadBackend
 
 #[allow(unreachable_patterns)]
 fn create_aes_128(key: [u8; 16]) -> Arc<dyn Encryptor> {
-    match preferred_aead_backend(EncryptionAlgorithm::AesGcm) {
+    let fallback = match preferred_aead_backend(EncryptionAlgorithm::AesGcm) {
         #[cfg(feature = "openssl-crypto")]
         Some(AeadBackend::OpenSsl) => Arc::new(openssl::OpenSslCipher::new_aes128_gcm(key)),
         #[cfg(all(not(feature = "openssl-crypto"), feature = "ring-crypto"))]
@@ -214,12 +216,13 @@ fn create_aes_128(key: [u8; 16]) -> Arc<dyn Encryptor> {
         ))]
         Some(AeadBackend::RustCrypto) => Arc::new(aes_gcm::AesGcmCipher::new_128(key)),
         _ => unavailable_encryptor("aes-gcm"),
-    }
+    };
+    maybe_offload_aead(EncryptionAlgorithm::AesGcm, &key, fallback)
 }
 
 #[allow(unreachable_patterns)]
 fn create_aes_256(key: [u8; 32]) -> Arc<dyn Encryptor> {
-    match preferred_aead_backend(EncryptionAlgorithm::Aes256Gcm) {
+    let fallback = match preferred_aead_backend(EncryptionAlgorithm::Aes256Gcm) {
         #[cfg(feature = "openssl-crypto")]
         Some(AeadBackend::OpenSsl) => Arc::new(openssl::OpenSslCipher::new_aes256_gcm(key)),
         #[cfg(all(not(feature = "openssl-crypto"), feature = "ring-crypto"))]
@@ -231,12 +234,13 @@ fn create_aes_256(key: [u8; 32]) -> Arc<dyn Encryptor> {
         ))]
         Some(AeadBackend::RustCrypto) => Arc::new(aes_gcm::AesGcmCipher::new_256(key)),
         _ => unavailable_encryptor("aes-256-gcm"),
-    }
+    };
+    maybe_offload_aead(EncryptionAlgorithm::Aes256Gcm, &key, fallback)
 }
 
 #[allow(unreachable_patterns)]
 fn create_chacha20(key: [u8; 32]) -> Arc<dyn Encryptor> {
-    match preferred_aead_backend(EncryptionAlgorithm::ChaCha20) {
+    let fallback = match preferred_aead_backend(EncryptionAlgorithm::ChaCha20) {
         #[cfg(feature = "openssl-crypto")]
         Some(AeadBackend::OpenSsl) => Arc::new(openssl::OpenSslCipher::new_chacha20(key)),
         #[cfg(all(not(feature = "openssl-crypto"), feature = "ring-crypto"))]
@@ -248,7 +252,26 @@ fn create_chacha20(key: [u8; 32]) -> Arc<dyn Encryptor> {
         ))]
         Some(AeadBackend::RustCrypto) => Arc::new(chacha20::ChaCha20Cipher::new(key)),
         _ => unavailable_encryptor("chacha20"),
-    }
+    };
+    maybe_offload_aead(EncryptionAlgorithm::ChaCha20, &key, fallback)
+}
+
+#[cfg(all(target_os = "wasi", feature = "wasi-crypto-offload"))]
+fn maybe_offload_aead(
+    algorithm: EncryptionAlgorithm,
+    key: &[u8],
+    fallback: Arc<dyn Encryptor>,
+) -> Arc<dyn Encryptor> {
+    Arc::new(wasi_host::WasiHostAead::new(algorithm, key, fallback))
+}
+
+#[cfg(not(all(target_os = "wasi", feature = "wasi-crypto-offload")))]
+fn maybe_offload_aead(
+    _algorithm: EncryptionAlgorithm,
+    _key: &[u8],
+    fallback: Arc<dyn Encryptor>,
+) -> Arc<dyn Encryptor> {
+    fallback
 }
 
 pub(crate) fn validate_algorithm(algorithm: &str) -> Result<(), Error> {

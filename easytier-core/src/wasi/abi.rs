@@ -15,11 +15,22 @@
 /// WebAssembly import module a WASI runtime must implement.
 pub const HOST_IMPORT_MODULE: &str = "easytier_host";
 
+/// AEAD algorithm identifiers accepted by the optional crypto imports.
+pub const AEAD_AES_128_GCM: u32 = 1;
+pub const AEAD_AES_256_GCM: u32 = 2;
+pub const AEAD_CHACHA20_POLY1305: u32 = 3;
+
+/// The Host could not authenticate an AEAD record.
+///
+/// Unlike other non-zero crypto statuses, this must not fall back to the
+/// built-in implementation because an in-place open may have changed bytes.
+pub const HOST_CRYPTO_AUTH_FAILED: i32 = -10;
+
 /// Version of the JSON document accepted by `easytier_instance_create`.
 pub const CORE_INSTANCE_CONFIG_VERSION: u32 = 14;
 
 /// Version of the public data-plane guest export contract.
-pub const DATA_PLANE_ABI_VERSION: u32 = 2;
+pub const DATA_PLANE_ABI_VERSION: u32 = 3;
 
 /// The guest exposes an instance-scoped data-plane operation broker.
 pub const DATA_PLANE_CAPABILITY: u64 = 1 << 0;
@@ -27,6 +38,10 @@ pub const DATA_PLANE_CAPABILITY: u64 = 1 << 0;
 pub const DATA_PLANE_TCP_CAPABILITY: u64 = 1 << 1;
 /// The guest data plane supports UDP sockets.
 pub const DATA_PLANE_UDP_CAPABILITY: u64 = 1 << 2;
+/// Update the read deadline in `easytier_data_plane_resource_deadline_set`.
+pub const DATA_PLANE_DEADLINE_READ: u32 = 1 << 0;
+/// Update the write deadline in `easytier_data_plane_resource_deadline_set`.
+pub const DATA_PLANE_DEADLINE_WRITE: u32 = 1 << 1;
 
 /// Guest exports a WASI runtime calls to manage a core instance.
 ///
@@ -68,6 +83,7 @@ pub const DATA_PLANE_GUEST_EXPORTS: &[&str] = &[
     "easytier_data_plane_udp_bind_submit",
     "easytier_data_plane_udp_receive_submit",
     "easytier_data_plane_udp_send_submit",
+    "easytier_data_plane_resource_deadline_set",
     // Completion, result, and resource lifecycle.
     "easytier_data_plane_completion_drain",
     "easytier_data_plane_result_size",

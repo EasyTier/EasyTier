@@ -14,6 +14,7 @@
 use std::{
     collections::HashMap,
     fmt, io,
+    io::IoSlice,
     net::SocketAddr,
     pin::Pin,
     sync::{Arc, LazyLock, Mutex, atomic::Ordering},
@@ -296,6 +297,8 @@ pub struct HostTcpStream {
     closed: bool,
 }
 
+const HOST_TCP_READ_CAPACITY: usize = 64 * 1024;
+
 impl HostTcpStream {
     fn close(&mut self) -> io::Result<()> {
         if self.closed {
@@ -352,6 +355,40 @@ impl HostTcpStream {
             }
         }
     }
+
+    fn poll_submit_write(
+        &mut self,
+        context: &mut Context<'_>,
+        buffer: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        if self.closed {
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "host TCP stream is closed",
+            )));
+        }
+        if buffer.is_empty() {
+            return Poll::Ready(Ok(0));
+        }
+
+        match self.poll_write_completion(context) {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+            Poll::Ready(Ok(())) => {}
+        }
+
+        let operation = self.runtime.next_operation();
+        if let Err(error) = self.io.submit_write(self.handle, operation, buffer) {
+            return Poll::Ready(Err(error));
+        }
+        self.write_operation = Some(PendingHostOperation::new(
+            self.runtime.clone(),
+            self.io.clone(),
+            operation,
+            |io, operation| io.cancel_operation(operation),
+        ));
+        Poll::Ready(Ok(buffer.len()))
+    }
 }
 
 impl fmt::Debug for HostTcpStream {
@@ -383,10 +420,11 @@ impl AsyncRead for HostTcpStream {
         loop {
             if self.read_operation.is_none() {
                 let operation = self.runtime.next_operation();
-                if let Err(error) = self
-                    .io
-                    .submit_read(self.handle, operation, buffer.remaining())
-                {
+                if let Err(error) = self.io.submit_read(
+                    self.handle,
+                    operation,
+                    buffer.remaining().max(HOST_TCP_READ_CAPACITY),
+                ) {
                     return Poll::Ready(Err(error));
                 }
                 self.read_operation = Some(PendingHostOperation::new(
@@ -431,33 +469,31 @@ impl AsyncWrite for HostTcpStream {
         context: &mut Context<'_>,
         buffer: &[u8],
     ) -> Poll<io::Result<usize>> {
-        if self.closed {
-            return Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "host TCP stream is closed",
-            )));
+        self.poll_submit_write(context, buffer)
+    }
+
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffers: &[IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        if buffers.len() == 1 {
+            return self.poll_submit_write(context, &buffers[0]);
         }
-        if buffer.is_empty() {
-            return Poll::Ready(Ok(0));
+        let length = buffers.iter().map(|buffer| buffer.len()).sum();
+        if length == 0 {
+            return self.poll_submit_write(context, &[]);
         }
 
-        match self.poll_write_completion(context) {
-            Poll::Pending => return Poll::Pending,
-            Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
-            Poll::Ready(Ok(())) => {}
+        let mut combined = Vec::with_capacity(length);
+        for buffer in buffers {
+            combined.extend_from_slice(buffer);
         }
+        self.poll_submit_write(context, &combined)
+    }
 
-        let operation = self.runtime.next_operation();
-        if let Err(error) = self.io.submit_write(self.handle, operation, buffer) {
-            return Poll::Ready(Err(error));
-        }
-        self.write_operation = Some(PendingHostOperation::new(
-            self.runtime.clone(),
-            self.io.clone(),
-            operation,
-            |io, operation| io.cancel_operation(operation),
-        ));
-        Poll::Ready(Ok(buffer.len()))
+    fn is_write_vectored(&self) -> bool {
+        true
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -513,7 +549,10 @@ mod tests {
     }
 
     enum TestOperation {
-        Read(Option<io::Result<Vec<u8>>>),
+        Read {
+            capacity: usize,
+            result: Option<io::Result<Vec<u8>>>,
+        },
         Write {
             source: Vec<u8>,
             result: Option<io::Result<()>>,
@@ -536,7 +575,7 @@ mod tests {
                 .unwrap()
                 .iter()
                 .find_map(|(id, operation)| match (read, operation) {
-                    (true, TestOperation::Read(_)) | (false, TestOperation::Write { .. }) => {
+                    (true, TestOperation::Read { .. }) | (false, TestOperation::Write { .. }) => {
                         Some(*id)
                     }
                     _ => None,
@@ -552,9 +591,17 @@ mod tests {
             source.clone()
         }
 
+        fn read_capacity(&self, operation: HostOperationId) -> usize {
+            let operations = self.operations.lock().unwrap();
+            let TestOperation::Read { capacity, .. } = operations.get(&operation).unwrap() else {
+                panic!("operation is not a read");
+            };
+            *capacity
+        }
+
         fn complete_read(&self, operation: HostOperationId, data: Vec<u8>) {
             let mut operations = self.operations.lock().unwrap();
-            let TestOperation::Read(result) = operations.get_mut(&operation).unwrap() else {
+            let TestOperation::Read { result, .. } = operations.get_mut(&operation).unwrap() else {
                 panic!("operation is not a read");
             };
             *result = Some(Ok(data));
@@ -597,12 +644,15 @@ mod tests {
             &self,
             _handle: HostSocketHandle,
             operation: HostOperationId,
-            _capacity: usize,
+            capacity: usize,
         ) -> io::Result<()> {
-            self.operations
-                .lock()
-                .unwrap()
-                .insert(operation, TestOperation::Read(None));
+            self.operations.lock().unwrap().insert(
+                operation,
+                TestOperation::Read {
+                    capacity,
+                    result: None,
+                },
+            );
             Ok(())
         }
 
@@ -617,7 +667,7 @@ mod tests {
                 return Poll::Pending;
             }
             let mut operations = self.operations.lock().unwrap();
-            let Some(TestOperation::Read(result)) = operations.get_mut(&operation) else {
+            let Some(TestOperation::Read { result, .. }) = operations.get_mut(&operation) else {
                 return Poll::Ready(Err(io::Error::new(
                     io::ErrorKind::NotFound,
                     "read operation is missing",
@@ -712,6 +762,42 @@ mod tests {
         write_task.await.unwrap();
 
         assert!(io.closed.lock().unwrap().contains(&HostSocketHandle(7)));
+    }
+
+    #[tokio::test]
+    async fn small_reads_submit_one_bounded_read_ahead_operation() {
+        let io = Arc::new(TestHostIo::default());
+        let (runtime, mut stream) = test_stream(io.clone());
+        let mut first = [0_u8; 1];
+        let mut read = Box::pin(stream.read(&mut first));
+        assert!(futures::poll!(&mut read).is_pending());
+
+        let operation = io.operation(true);
+        assert_eq!(io.read_capacity(operation), HOST_TCP_READ_CAPACITY);
+        io.complete_read(operation, b"abc".to_vec());
+        runtime.notify_completions();
+        assert_eq!(read.await.unwrap(), 1);
+        assert_eq!(&first, b"a");
+
+        let mut remainder = [0_u8; 2];
+        stream.read_exact(&mut remainder).await.unwrap();
+        assert_eq!(&remainder, b"bc");
+    }
+
+    #[tokio::test]
+    async fn vectored_write_submits_one_ordered_host_operation() {
+        let io = Arc::new(TestHostIo::default());
+        let (runtime, mut stream) = test_stream(io.clone());
+        assert!(stream.is_write_vectored());
+
+        let buffers = [IoSlice::new(b"one"), IoSlice::new(b"two")];
+        assert_eq!(stream.write_vectored(&buffers).await.unwrap(), 6);
+        let operation = io.operation(false);
+        assert_eq!(io.write_source(operation), b"onetwo");
+
+        io.complete_write(operation);
+        runtime.notify_completions();
+        stream.shutdown().await.unwrap();
     }
 
     #[tokio::test]

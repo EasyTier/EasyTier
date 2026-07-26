@@ -218,13 +218,14 @@ where
         tids: &[u32],
         stun_host: &SocketAddr,
     ) -> anyhow::Result<(Message<Attribute>, SocketAddr)> {
-        let mut now = tokio::time::Instant::now();
+        let mut now = crate::foundation::time::Instant::now();
         let deadline = now + self.resp_timeout;
 
         while now < deadline {
             let mut receiver = self.stun_packet_receiver.lock().await;
-            let packet = tokio::time::timeout(deadline - now, receiver.recv()).await??;
-            now = tokio::time::Instant::now();
+            let packet =
+                crate::foundation::time::timeout(deadline - now, receiver.recv()).await??;
+            now = crate::foundation::time::Instant::now();
 
             if packet.data.len() < 20 {
                 continue;
@@ -773,12 +774,12 @@ where
         S: AsyncRead + Unpin,
     {
         let mut header = [0u8; 20];
-        tokio::time::timeout(timeout, stream.read_exact(&mut header)).await??;
+        crate::foundation::time::timeout(timeout, stream.read_exact(&mut header)).await??;
         let total_size = Self::message_size_from_header(&header)?;
         let mut buf = vec![0u8; total_size];
         buf[..20].copy_from_slice(&header);
         if total_size > 20 {
-            tokio::time::timeout(timeout, stream.read_exact(&mut buf[20..])).await??;
+            crate::foundation::time::timeout(timeout, stream.read_exact(&mut buf[20..])).await??;
         }
 
         let mut decoder = MessageDecoder::<Attribute>::new();
@@ -808,7 +809,7 @@ where
             .with_reuse_addr(true)
             .with_reuse_port(true)
             .with_only_v6(bind_addr.is_ipv6());
-        tokio::time::timeout(
+        crate::foundation::time::timeout(
             self.conn_timeout,
             self.runtime.connect_tcp(
                 TcpConnectOptions::stun_probe(self.stun_server, bind_addr).with_bind(bind),
@@ -827,7 +828,7 @@ where
         let bytes = MessageEncoder::new()
             .encode_into_bytes(message)
             .with_context(|| "encode tcp stun message")?;
-        tokio::time::timeout(self.io_timeout, stream.write_all(&bytes)).await??;
+        crate::foundation::time::timeout(self.io_timeout, stream.write_all(&bytes)).await??;
 
         let now = Instant::now();
         let message = Self::tcp_read_stun_message(&mut stream, self.io_timeout).await?;

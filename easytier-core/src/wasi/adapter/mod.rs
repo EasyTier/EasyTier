@@ -2,5 +2,6 @@
 
 pub mod dns;
 pub mod environment;
+pub mod event;
 pub mod packet;
 pub mod socket;
