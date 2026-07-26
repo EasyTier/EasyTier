@@ -3871,6 +3871,7 @@ impl PeerRoute {
         session_mgr: RouteSessionManager,
     ) {
         let mut peer_event_receiver = service_impl.context.subscribe_peer_events();
+        let mut runtime_change_receiver = service_impl.context.subscribe_runtime_changes();
         service_impl.mark_interface_peers_dirty();
         loop {
             if service_impl.update_my_infos().await {
@@ -3886,13 +3887,21 @@ impl PeerRoute {
                 }
             }
 
-            if let Some(receiver) = peer_event_receiver.as_mut() {
-                let event = select! {
-                    ev = receiver.recv() => Some(ev),
-                    _ = crate::foundation::time::sleep(Duration::from_secs(1)) => None,
-                };
+            let peer_event = async {
+                match peer_event_receiver.as_mut() {
+                    Some(receiver) => Some(receiver.recv().await),
+                    None => std::future::pending().await,
+                }
+            };
+            let runtime_change = async {
+                match runtime_change_receiver.as_mut() {
+                    Some(receiver) => Some(receiver.changed().await),
+                    None => std::future::pending().await,
+                }
+            };
 
-                if let Some(ev) = event {
+            select! {
+                Some(ev) = peer_event => {
                     if let Ok(ev_ref) = &ev {
                         service_impl.handle_peer_context_event(ev_ref);
                     } else {
@@ -3904,8 +3913,13 @@ impl PeerRoute {
                         "peer context event received in update_my_peer_info_routine"
                     );
                 }
-            } else {
-                crate::foundation::time::sleep(Duration::from_secs(1)).await;
+                Some(change) = runtime_change => {
+                    if change.is_err() {
+                        runtime_change_receiver =
+                            service_impl.context.subscribe_runtime_changes();
+                    }
+                }
+                _ = crate::foundation::time::sleep(Duration::from_secs(1)) => {}
             }
         }
     }
