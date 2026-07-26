@@ -4,10 +4,11 @@ use std::{
     net::{IpAddr, SocketAddr},
     sync::{
         Arc,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicUsize, Ordering},
     },
 };
 
+use atomic_shim::AtomicU64;
 use dashmap::{DashMap, mapref::entry::Entry};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
