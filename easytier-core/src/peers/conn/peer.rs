@@ -3,7 +3,7 @@ use std::sync::Arc;
 use arc_swap::ArcSwapOption;
 use crossbeam::atomic::AtomicCell;
 use dashmap::{DashMap, DashSet};
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 
 use tokio::{select, sync::mpsc};
 
@@ -40,6 +40,7 @@ pub struct Peer {
     shutdown_notifier: Arc<tokio::sync::Notify>,
 
     default_conn: Arc<ArcSwapOption<PeerConn>>,
+    default_conn_update_lock: Arc<Mutex<()>>,
     peer_identity_type: Arc<AtomicCell<Option<PeerIdentityType>>>,
     peer_public_key: Arc<RwLock<Option<Vec<u8>>>>,
     #[allow(dead_code)]
@@ -60,11 +61,13 @@ impl Peer {
         let peer_public_key = Arc::new(RwLock::new(None));
         let peer_public_key_copy = peer_public_key.clone();
         let default_conn = Arc::new(ArcSwapOption::empty());
+        let default_conn_update_lock = Arc::new(Mutex::new(()));
 
         let conns_copy = conns.clone();
         let shutdown_notifier_copy = shutdown_notifier.clone();
         let context_copy = context.clone();
         let default_conn_copy = default_conn.clone();
+        let default_conn_update_lock_copy = default_conn_update_lock.clone();
         let close_event_listener = AbortOnDropHandle::new(tokio::spawn(
             async move {
                 loop {
@@ -80,14 +83,22 @@ impl Peer {
                                 "notified that peer conn is closed",
                             );
 
-                            if let Some((_, conn)) = conns_copy.remove(&ret) {
-                                let cached_conn = default_conn_copy.load();
-                                if cached_conn
-                                    .as_ref()
-                                    .is_some_and(|cached| Arc::ptr_eq(cached, &conn))
-                                {
-                                    default_conn_copy.store(None);
+                            let removed_conn = {
+                                let _update_guard = default_conn_update_lock_copy.lock();
+                                let removed_conn = conns_copy.remove(&ret);
+                                if let Some((_, conn)) = removed_conn.as_ref() {
+                                    let cached_conn = default_conn_copy.load();
+                                    if cached_conn
+                                        .as_ref()
+                                        .is_some_and(|cached| Arc::ptr_eq(cached, conn))
+                                    {
+                                        default_conn_copy.store(None);
+                                    }
                                 }
+                                removed_conn
+                            };
+
+                            if let Some((_, conn)) = removed_conn {
                                 context_copy.issue_event(PeerEvent::PeerConnRemoved(
                                     conn.get_conn_info(),
                                 ));
@@ -135,6 +146,7 @@ impl Peer {
 
             shutdown_notifier,
             default_conn,
+            default_conn_update_lock,
             peer_identity_type,
             peer_public_key,
             default_conn_clear_task,
@@ -195,6 +207,11 @@ impl Peer {
     }
 
     fn select_conn(&self) -> Option<ArcPeerConn> {
+        let _update_guard = self.default_conn_update_lock.lock();
+        if let Some(conn) = self.default_conn.load_full() {
+            return Some(conn);
+        }
+
         // find a conn with the smallest latency
         let mut min_latency = u64::MAX;
         let mut selected = None;
