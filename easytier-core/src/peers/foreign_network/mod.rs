@@ -95,14 +95,6 @@ fn build_foreign_peer_context(
     feature_flags.is_public_server = true;
     feature_flags.avoid_relay_data =
         desired_foreign_avoid_relay_data(&parent_context_dyn, relay_data);
-    feature_flags.kcp_input = !flags.disable_kcp_input;
-    feature_flags.no_relay_kcp = flags.disable_relay_kcp;
-    feature_flags.support_conn_list_sync = true;
-    feature_flags.quic_input = !flags.disable_quic_input;
-    feature_flags.no_relay_quic = flags.disable_relay_quic;
-    feature_flags.need_p2p = flags.need_p2p;
-    feature_flags.disable_p2p = flags.disable_p2p;
-    feature_flags.ipv6_public_addr_provider = false;
 
     let instance_id = uuid::Uuid::new_v4();
     let runtime = PeerRuntimeConfig {
@@ -1615,6 +1607,17 @@ mod tests {
         parent_snapshot.flags.enable_relay_foreign_network_quic = false;
         parent_snapshot.flags.socket_mark = Some(7);
         parent_snapshot.hmac_secret_digest = true;
+        parent_snapshot.runtime.feature_flags = PeerFeatureFlag {
+            kcp_input: false,
+            no_relay_kcp: false,
+            support_conn_list_sync: false,
+            quic_input: false,
+            no_relay_quic: false,
+            need_p2p: true,
+            disable_p2p: true,
+            ipv6_public_addr_provider: true,
+            ..Default::default()
+        };
         let parent_config = CoreRuntimeConfigStore::new(
             CoreRuntimeConfig::default(),
             Arc::new(parent_snapshot.clone()),
@@ -1660,6 +1663,14 @@ mod tests {
         assert_eq!(foreign.flags().relay_network_whitelist, "baseline");
         assert!(foreign.feature_flags().is_public_server);
         assert!(foreign.feature_flags().avoid_relay_data);
+        assert!(!foreign.feature_flags().kcp_input);
+        assert!(!foreign.feature_flags().no_relay_kcp);
+        assert!(!foreign.feature_flags().support_conn_list_sync);
+        assert!(!foreign.feature_flags().quic_input);
+        assert!(!foreign.feature_flags().no_relay_quic);
+        assert!(foreign.feature_flags().need_p2p);
+        assert!(foreign.feature_flags().disable_p2p);
+        assert!(foreign.feature_flags().ipv6_public_addr_provider);
         assert_eq!(foreign.stun_info().public_ip, vec!["198.51.100.1"]);
         assert!(foreign.host_routing_policy().local_exit_node_fallback);
         assert!(foreign.hmac_secret_digest());
