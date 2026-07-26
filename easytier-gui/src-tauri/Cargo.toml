@@ -25,6 +25,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 easytier = { path = "../../easytier" }
+easytier-core = { path = "../../easytier-core" }
 tokio = { version = "1", features = ["full"] }
 anyhow = "1.0"
 chrono = { version = "0.4.37", features = ["serde"] }

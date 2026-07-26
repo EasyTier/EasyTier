@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cidr::Ipv4Inet;
+use easytier_core::{gateway::magic_dns::MagicDnsRoute, process_runtime::CoreProcessRuntime};
 use hickory_client::client::{Client, ClientHandle as _};
 use hickory_proto::rr;
 use hickory_proto::runtime::TokioRuntimeProvider;
@@ -11,30 +12,49 @@ use hickory_proto::udp::UdpClientStream;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
-use crate::common::global_ctx::tests::get_mock_global_ctx;
-use crate::connector::udp_hole_punch::tests::replace_stun_info_collector;
+use crate::common::global_ctx::{ArcGlobalCtx, tests::get_mock_global_ctx};
+use crate::instance::{
+    composition::{NativeCoreInstance, runtime_core_host_adapters},
+    config::test_core_instance_config,
+};
 
 use crate::instance::dns_server::runner::DnsRunner;
 use crate::instance::dns_server::server_instance::MagicDnsServerInstance;
 use crate::instance::dns_server::{DEFAULT_ET_DNS_ZONE, MAGIC_DNS_FAKE_IP};
 use crate::instance::virtual_nic::NicCtx;
-use crate::peers::peer_manager::{PeerManager, RouteAlgoType};
-
-use crate::peers::create_packet_recv_chan;
 use crate::proto::api::instance::Route;
-use crate::proto::common::NatType;
 use crate::proto::magic_dns::{MagicDnsServerRpc as _, UpdateDnsRecordRequest};
 use crate::proto::rpc_types::controller::{BaseController, Controller as _};
 
-pub async fn prepare_env(dns_name: &str, tun_ip: Ipv4Inet) -> (Arc<PeerManager>, NicCtx) {
+pub async fn prepare_env(
+    dns_name: &str,
+    tun_ip: Ipv4Inet,
+) -> (ArcGlobalCtx, Arc<NativeCoreInstance>, NicCtx) {
     prepare_env_with_tld_dns_zone(dns_name, tun_ip, None).await
+}
+
+async fn build_test_core(
+    ctx: ArcGlobalCtx,
+) -> (
+    Arc<NativeCoreInstance>,
+    tokio::sync::mpsc::Receiver<Vec<u8>>,
+) {
+    let (packet_sink, packet_receiver) = tokio::sync::mpsc::channel(128);
+    let adapters = runtime_core_host_adapters(
+        ctx.clone(),
+        CoreProcessRuntime::new(),
+        Arc::new(packet_sink),
+    );
+    let core_instance = NativeCoreInstance::new(test_core_instance_config(&ctx), adapters).unwrap();
+    core_instance.start().await.unwrap();
+    (core_instance, packet_receiver)
 }
 
 pub async fn prepare_env_with_tld_dns_zone(
     dns_name: &str,
     tun_ip: Ipv4Inet,
     tld_dns_zone: Option<&str>,
-) -> (Arc<PeerManager>, NicCtx) {
+) -> (ArcGlobalCtx, Arc<NativeCoreInstance>, NicCtx) {
     let ctx = get_mock_global_ctx();
     ctx.set_hostname(dns_name.to_owned());
     ctx.set_ipv4(Some(tun_ip));
@@ -48,21 +68,17 @@ pub async fn prepare_env_with_tld_dns_zone(
         ctx.set_flags(flags);
     }
 
-    let (s, r) = create_packet_recv_chan();
-    let peer_mgr = Arc::new(PeerManager::new(RouteAlgoType::Ospf, ctx, s));
-    peer_mgr.run().await.unwrap();
-    replace_stun_info_collector(peer_mgr.clone(), NatType::PortRestricted);
-
-    let r = Arc::new(tokio::sync::Mutex::new(r));
+    let (core_instance, host_packet_rx) = build_test_core(ctx.clone()).await;
+    let host_packet_rx = Arc::new(tokio::sync::Mutex::new(host_packet_rx));
     let mut virtual_nic = NicCtx::new(
-        peer_mgr.get_global_ctx(),
-        &peer_mgr,
-        r,
+        ctx.clone(),
+        core_instance.packet_plane(),
+        host_packet_rx,
         Arc::new(Notify::new()),
     );
     virtual_nic.run(Some(tun_ip), None).await.unwrap();
 
-    (peer_mgr, virtual_nic)
+    (ctx, core_instance, virtual_nic)
 }
 
 pub async fn check_dns_record(fake_ip: &Ipv4Addr, domain: &str, expected_ip: &str) {
@@ -94,55 +110,34 @@ pub async fn check_dns_record(fake_ip: &Ipv4Addr, domain: &str, expected_ip: &st
     );
 }
 
-pub async fn check_dns_record_missing(fake_ip: &Ipv4Addr, domain: &str) {
-    let stream = UdpClientStream::builder(
-        SocketAddr::new((*fake_ip).into(), 53),
-        TokioRuntimeProvider::default(),
-    )
-    .build();
-    let (mut client, background) = Client::connect(stream).await.unwrap();
-    let background_task = tokio::spawn(background);
-    let response = client
-        .query(
-            rr::Name::from_str(domain).unwrap(),
-            rr::DNSClass::IN,
-            rr::RecordType::A,
-        )
-        .await
-        .unwrap_or_else(|e| {
-            panic!("DNS query for missing record failed unexpectedly for domain '{domain}': {e}")
-        });
-    background_task.abort();
-    let _ = background_task.await;
-    assert!(response.answers().is_empty(), "{:?}", response.answers());
-}
-
 #[tokio::test]
 async fn test_magic_dns_server_instance() {
     let tun_ip = Ipv4Inet::from_str("10.144.144.10/24").unwrap();
-    let (peer_mgr, virtual_nic) = prepare_env("test1", tun_ip).await;
+    let (global_ctx, core_instance, virtual_nic) = prepare_env("test1", tun_ip).await;
     let tun_name = virtual_nic.ifname().await.unwrap();
     let fake_ip = Ipv4Addr::from_str("100.100.100.101").unwrap();
-    let dns_server_inst =
-        MagicDnsServerInstance::new(peer_mgr.clone(), Some(tun_name), tun_ip, fake_ip)
-            .await
-            .unwrap();
+    let dns_server_inst = MagicDnsServerInstance::new(
+        core_instance.packet_plane(),
+        global_ctx,
+        Some(tun_name),
+        tun_ip,
+        fake_ip,
+    )
+    .await
+    .unwrap();
 
     let routes = [
-        Route {
+        MagicDnsRoute {
             hostname: "test1".to_string(),
-            ipv4_addr: Some(Ipv4Inet::from_str("8.8.8.8/24").unwrap().into()),
-            ..Default::default()
+            ipv4_addr: Some("8.8.8.8".parse().unwrap()),
         },
-        Route {
+        MagicDnsRoute {
             hostname: "中文".to_string(),
-            ipv4_addr: Some(Ipv4Inet::from_str("8.8.8.8/24").unwrap().into()),
-            ..Default::default()
+            ipv4_addr: Some("8.8.8.8".parse().unwrap()),
         },
-        Route {
+        MagicDnsRoute {
             hostname: ".invalid".to_string(),
-            ipv4_addr: Some(Ipv4Inet::from_str("8.8.8.8/24").unwrap().into()),
-            ..Default::default()
+            ipv4_addr: Some("8.8.8.8".parse().unwrap()),
         },
     ];
     dns_server_inst
@@ -160,10 +155,16 @@ async fn test_magic_dns_runner() {
     // Test first runner with default DNS settings
     {
         let tun_ip = Ipv4Inet::from_str("10.144.144.10/24").unwrap();
-        let (peer_mgr, virtual_nic) = prepare_env("test1", tun_ip).await;
+        let (global_ctx, core_instance, virtual_nic) = prepare_env("test1", tun_ip).await;
         let tun_name = virtual_nic.ifname().await.unwrap();
         let fake_ip = Ipv4Addr::from_str(MAGIC_DNS_FAKE_IP).unwrap();
-        let mut dns_runner = DnsRunner::new(peer_mgr, Some(tun_name), tun_ip, fake_ip);
+        let mut dns_runner = DnsRunner::new(
+            core_instance.packet_plane(),
+            global_ctx,
+            Some(tun_name),
+            tun_ip,
+            fake_ip,
+        );
 
         let cancel_token = CancellationToken::new();
         let cancel_token_clone = cancel_token.clone();
@@ -187,11 +188,17 @@ async fn test_magic_dns_runner() {
         let tun_ip = Ipv4Inet::from_str("10.144.144.20/24").unwrap();
         // NOTE: Using same fake IP to avoid system DNS configuration conflicts
         let custom_tld_zone = "custom.local."; // Different TLD zone is safer
-        let (peer_mgr, virtual_nic) =
+        let (global_ctx, core_instance, virtual_nic) =
             prepare_env_with_tld_dns_zone("test2", tun_ip, Some(custom_tld_zone)).await;
         let tun_name = virtual_nic.ifname().await.unwrap();
         let fake_ip = Ipv4Addr::from_str(MAGIC_DNS_FAKE_IP).unwrap();
-        let mut dns_runner = DnsRunner::new(peer_mgr, Some(tun_name), tun_ip, fake_ip);
+        let mut dns_runner = DnsRunner::new(
+            core_instance.packet_plane(),
+            global_ctx,
+            Some(tun_name),
+            tun_ip,
+            fake_ip,
+        );
 
         let cancel_token = CancellationToken::new();
         let cancel_token_clone = cancel_token.clone();
@@ -215,15 +222,13 @@ async fn test_magic_dns_update_replaces_records_for_same_client() {
     ctx.set_hostname("test1".to_string());
     ctx.set_ipv4(Some(tun_ip));
 
-    let (s, _r) = create_packet_recv_chan();
-    let peer_mgr = Arc::new(PeerManager::new(RouteAlgoType::Ospf, ctx, s));
-    peer_mgr.run().await.unwrap();
-    replace_stun_info_collector(peer_mgr.clone(), NatType::PortRestricted);
+    let (core_instance, _packet_receiver) = build_test_core(ctx.clone()).await;
 
     let fake_ip = Ipv4Addr::from_str(MAGIC_DNS_FAKE_IP).unwrap();
-    let dns_server_inst = MagicDnsServerInstance::new(peer_mgr.clone(), None, tun_ip, fake_ip)
-        .await
-        .unwrap();
+    let dns_server_inst =
+        MagicDnsServerInstance::new(core_instance.packet_plane(), ctx, None, tun_ip, fake_ip)
+            .await
+            .unwrap();
 
     let mut ctrl = BaseController::default();
     ctrl.set_tunnel_info(Some(crate::proto::common::TunnelInfo {

@@ -9,8 +9,7 @@ use crate::runtime::state::runtime_state::{
 };
 use crate::{ASYNC_RUNTIME, INSTANCE_MANAGER};
 use easytier::common::global_ctx::{EventBusSubscriber, GlobalCtxEvent};
-use easytier::proto::api::instance::ListPeerRequest;
-use easytier::proto::rpc_types::controller::BaseController;
+use easytier::instance::factory::subscribe_native_instance_event;
 use once_cell::sync::Lazy;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -103,11 +102,11 @@ fn shrink_hash_set_if_sparse<T: Eq + Hash>(set: &mut HashSet<T>) {
 
 fn sync_tun_event_receivers(receivers: &mut HashMap<String, EventBusSubscriber>) {
     let mut active_instance_ids = HashSet::new();
-    for instance in INSTANCE_MANAGER.iter() {
-        let instance_id = instance.key().to_string();
+    for instance in INSTANCE_MANAGER.instances() {
+        let instance_id = instance.instance_id().to_string();
         active_instance_ids.insert(instance_id.clone());
         if !receivers.contains_key(&instance_id)
-            && let Some(receiver) = instance.value().subscribe_event()
+            && let Some(receiver) = subscribe_native_instance_event(&instance)
         {
             receivers.insert(instance_id, receiver);
         }
@@ -226,34 +225,17 @@ fn tun_candidate_ids(snapshot: &RuntimeAggregateState) -> HashSet<String> {
 }
 
 fn collect_traffic_stats() -> TrafficStatsPayload {
-    let services = INSTANCE_MANAGER
-        .iter()
-        .filter_map(|instance| {
-            instance
-                .value()
-                .get_api_service()
-                .map(|api_service| (instance.key().to_string(), api_service))
-        })
+    let running_instances = INSTANCE_MANAGER
+        .instances()
+        .into_iter()
+        .filter(|instance| instance.is_ready())
         .collect::<Vec<_>>();
 
     let instances = ASYNC_RUNTIME.block_on(async {
         let mut instances = Vec::new();
-        for (instance_id, api_service) in services {
-            let peers = match api_service
-                .get_peer_manage_service()
-                .list_peer(BaseController::default(), ListPeerRequest::default())
-                .await
-            {
-                Ok(response) => response.peer_infos,
-                Err(err) => {
-                    ohrs_log_debug!(
-                        "[Rust] collect traffic stats list_peer failed instance={}: {}",
-                        instance_id,
-                        err
-                    );
-                    continue;
-                }
-            };
+        for instance in running_instances {
+            let instance_id = instance.instance_id().to_string();
+            let peers = instance.peer_snapshots().await;
 
             let mut instance_rx_bytes = 0i64;
             let mut instance_tx_bytes = 0i64;

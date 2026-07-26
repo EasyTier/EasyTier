@@ -53,12 +53,13 @@ use config::services::share_link_service::{
 };
 use config::storage::config_meta::get_config_display_name;
 use config::types::stored_config::{KeyValuePair, SharedConfigLinkPayload, SnapshotImportResult};
+use easytier::common::config::NetworkConfigExt;
 use easytier::common::constants::EASYTIER_VERSION;
 use easytier::common::{
     MachineIdOptions,
     config::{ConfigFileControl, ConfigLoader, TomlConfigLoader},
 };
-use easytier::instance_manager::NetworkInstanceManager;
+use easytier::instance::factory::{NativeInstanceManager, native_instance_manager_with_runtime};
 use easytier::proto::api::manage::NetworkConfig;
 use easytier::proto::api::manage::NetworkingMethod;
 use easytier::web_client::{WebClient, WebClientHooks, run_web_client};
@@ -74,14 +75,18 @@ use std::sync::{Arc, Mutex};
 use tokio::runtime::{Builder, Runtime};
 use uuid::Uuid;
 
-pub(crate) static INSTANCE_MANAGER: once_cell::sync::Lazy<Arc<NetworkInstanceManager>> =
-    once_cell::sync::Lazy::new(|| Arc::new(NetworkInstanceManager::new()));
 static ASYNC_RUNTIME: once_cell::sync::Lazy<Runtime> = once_cell::sync::Lazy::new(|| {
     Builder::new_multi_thread()
         .enable_all()
         .build()
         .expect("tokio runtime for easytier-ohrs")
 });
+pub(crate) static INSTANCE_MANAGER: once_cell::sync::Lazy<Arc<NativeInstanceManager>> =
+    once_cell::sync::Lazy::new(|| {
+        Arc::new(native_instance_manager_with_runtime(
+            ASYNC_RUNTIME.handle().clone(),
+        ))
+    });
 static WEB_CLIENTS: once_cell::sync::Lazy<Mutex<HashMap<String, ManagedWebClient>>> =
     once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
 
@@ -151,8 +156,8 @@ fn stop_web_client(config_id: &str) -> bool {
         return true;
     }
 
-    let ret = INSTANCE_MANAGER
-        .delete_network_instance(tracked_ids)
+    let ret = ASYNC_RUNTIME
+        .block_on(INSTANCE_MANAGER.delete_network_instances(tracked_ids))
         .map(|_| true)
         .unwrap_or_else(|err| {
             ohrs_log_error!(
@@ -171,7 +176,7 @@ fn ensure_local_socket_server_started() -> bool {
 }
 
 fn maybe_stop_local_socket_server() {
-    let no_local_instances = INSTANCE_MANAGER.list_network_instance_ids().is_empty();
+    let no_local_instances = INSTANCE_MANAGER.instance_ids().is_empty();
     let no_web_clients = WEB_CLIENTS
         .lock()
         .map(|guard| guard.is_empty())
@@ -182,12 +187,7 @@ fn maybe_stop_local_socket_server() {
 }
 
 fn run_config_server_instance(config_id: &str, config: &NetworkConfig) -> bool {
-    if INSTANCE_MANAGER
-        .list_network_instance_ids()
-        .iter()
-        .next()
-        .is_some()
-    {
+    if INSTANCE_MANAGER.instance_ids().iter().next().is_some() {
         ohrs_log_error!("[Rust] there is a running instance!");
         return false;
     }
@@ -293,7 +293,7 @@ pub(crate) fn run_network_instance_from_json(cfg_json: &str) -> bool {
         }
     };
 
-    if !INSTANCE_MANAGER.list_network_instance_ids().is_empty() {
+    if !INSTANCE_MANAGER.instance_ids().is_empty() {
         ohrs_log_error!("[Rust] there is a running instance!");
         return false;
     }
@@ -303,15 +303,12 @@ pub(crate) fn run_network_instance_from_json(cfg_json: &str) -> bool {
     }
 
     let inst_id = cfg.get_id();
-    if INSTANCE_MANAGER
-        .list_network_instance_ids()
-        .contains(&inst_id)
-    {
+    if INSTANCE_MANAGER.instance_ids().contains(&inst_id) {
         ohrs_log_error!("[Rust] instance {} already exists", inst_id);
         return false;
     }
 
-    match INSTANCE_MANAGER.run_network_instance(cfg, false, ConfigFileControl::STATIC_CONFIG) {
+    match INSTANCE_MANAGER.run_network_instance(cfg, ConfigFileControl::STATIC_CONFIG) {
         Ok(_) => {
             cache_runtime_config_snapshot(inst_id.to_string(), inst_id.to_string(), config);
             true
