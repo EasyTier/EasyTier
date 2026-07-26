@@ -208,8 +208,7 @@ where
     H: VirtualTcpSocketFactory + VirtualTcpListenerFactory + VirtualUdpSocketFactory,
 {
     async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
-        let entry_count = self.entries.count();
-        if entry_count == 0 && self.entries.is_empty() {
+        if self.entries.is_idle() {
             if tracing::enabled!(tracing::Level::TRACE)
                 && let Some(hdr) = packet.peer_manager_header()
                 && matches!(
@@ -244,7 +243,7 @@ where
                         ?tcp_src_port,
                         ?tcp_dst_port,
                         ?tcp_flags,
-                        entry_count,
+                        entry_count = 0,
                         "data plane fast gate passed packet from peer"
                     );
                 } else {
@@ -252,7 +251,7 @@ where
                         packet_type = hdr.packet_type,
                         from_peer_id = hdr.from_peer_id.get(),
                         to_peer_id = hdr.to_peer_id.get(),
-                        entry_count,
+                        entry_count = 0,
                         "data plane fast gate passed non-ipv4 packet from peer"
                     );
                 }

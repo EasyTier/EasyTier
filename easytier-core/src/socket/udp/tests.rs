@@ -946,6 +946,30 @@ async fn udp_layer_routes_quic_like_easytier_packet_to_existing_quic_session() {
 }
 
 #[tokio::test]
+async fn udp_layer_drops_oversized_datagram_without_stopping_portable_socket() {
+    let local_addr = SocketAddr::from(([127, 0, 0, 1], 12000));
+    let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
+    let socket = Arc::new(AutoSackVirtualUdpSocket::new(local_addr));
+    let layer = UdpSessionLayer::new(socket.clone());
+    let session = layer
+        .open_classified_session(UdpSessionProtocol::Quic, peer_addr)
+        .unwrap();
+    socket.incoming.lock().unwrap().extend([
+        (vec![0xAA; MAX_UDP_SESSION_DATAGRAM_SIZE + 1], peer_addr),
+        (b"after-oversized".to_vec(), peer_addr),
+    ]);
+    socket.incoming_notify.notify_one();
+
+    let mut buf = [0; 32];
+    let len = tokio::time::timeout(Duration::from_secs(1), session.recv(&mut buf))
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(&buf[..len], b"after-oversized");
+}
+
+#[tokio::test]
 async fn udp_layer_keeps_easy_tier_syn_out_of_wireguard_session() {
     let local_addr = SocketAddr::from(([127, 0, 0, 1], 12000));
     let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
@@ -1021,11 +1045,35 @@ async fn easy_tier_mux_udp_session_rejects_oversized_payload_before_enqueue() {
         sessions,
     );
 
-    let payload = vec![0; u16::MAX as usize + 1];
+    let payload = vec![0; MAX_UDP_SESSION_DATAGRAM_SIZE - UDP_TUNNEL_HEADER_SIZE + 1];
     let err = session.send(&payload).await.unwrap_err();
 
     assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
     assert!(socket.sent().is_empty());
+}
+
+#[test]
+fn udp_session_codecs_enforce_datagram_boundary() {
+    let identity = UdpSessionCodec::Identity;
+    assert!(
+        identity
+            .validate_payload(&vec![0; MAX_UDP_SESSION_DATAGRAM_SIZE])
+            .is_ok()
+    );
+    let err = identity
+        .validate_payload(&vec![0; MAX_UDP_SESSION_DATAGRAM_SIZE + 1])
+        .unwrap_err();
+    assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+
+    let easy_tier = UdpSessionCodec::EasyTierData {
+        conn_id: 0x1122_3344,
+    };
+    let max_payload = MAX_UDP_SESSION_DATAGRAM_SIZE - UDP_TUNNEL_HEADER_SIZE;
+    assert!(easy_tier.validate_payload(&vec![0; max_payload]).is_ok());
+    let err = easy_tier
+        .validate_payload(&vec![0; max_payload + 1])
+        .unwrap_err();
+    assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
 }
 
 #[tokio::test]
@@ -1074,26 +1122,35 @@ async fn easy_tier_mux_udp_session_receives_only_peer_data_payloads() {
         sessions.clone(),
     );
 
-    dispatch_data_packet(
-        &sessions,
-        unexpected_addr,
-        conn_id,
-        &new_data_packet(conn_id, b"wrong-peer").unwrap(),
-        Default::default(),
+    assert!(
+        dispatch_data_packet(
+            &sessions,
+            unexpected_addr,
+            conn_id,
+            new_data_packet(conn_id, b"wrong-peer").unwrap(),
+            Default::default(),
+        )
+        .is_err()
     );
-    dispatch_data_packet(
-        &sessions,
-        peer_addr,
-        conn_id + 1,
-        &new_data_packet(conn_id + 1, b"wrong-conn").unwrap(),
-        Default::default(),
+    assert!(
+        dispatch_data_packet(
+            &sessions,
+            peer_addr,
+            conn_id + 1,
+            new_data_packet(conn_id + 1, b"wrong-conn").unwrap(),
+            Default::default(),
+        )
+        .is_err()
     );
-    dispatch_data_packet(
-        &sessions,
-        peer_addr,
-        conn_id,
-        &new_data_packet(conn_id, b"payload").unwrap(),
-        Default::default(),
+    assert!(
+        dispatch_data_packet(
+            &sessions,
+            peer_addr,
+            conn_id,
+            new_data_packet(conn_id, b"payload").unwrap(),
+            Default::default(),
+        )
+        .is_ok()
     );
 
     let mut buf = [0; 16];
@@ -1161,6 +1218,26 @@ async fn dropping_udp_session_layer_closes_session_recv() {
         .unwrap_err();
 
     assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+}
+
+#[tokio::test]
+async fn idle_udp_session_closes_when_shutdown_is_signaled() {
+    let local_addr = SocketAddr::from(([127, 0, 0, 1], 12000));
+    let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
+    let key = UdpSessionKey::new(peer_addr, 0x1122_3344);
+    let socket = Arc::new(MockVirtualUdpSocket::new(local_addr, Vec::new()));
+    let sessions = Arc::new(DashMap::new());
+    let (session, shutdown_tx) = create_test_easy_tier_mux_session(socket, key, sessions.clone());
+
+    shutdown_tx.send(true).unwrap();
+
+    let mut buf = [0; 16];
+    let err = tokio::time::timeout(Duration::from_secs(1), session.recv(&mut buf))
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+    assert!(!sessions.contains_key(&key));
 }
 
 #[tokio::test]
@@ -1591,12 +1668,15 @@ async fn sack_from_actual_remote_rekeys_pending_session_before_data_dispatch() {
         },
     );
 
-    dispatch_data_packet(
-        &sessions,
-        expected_addr,
-        conn_id,
-        &new_data_packet(conn_id, b"pre-sack").unwrap(),
-        Default::default(),
+    assert!(
+        dispatch_data_packet(
+            &sessions,
+            expected_addr,
+            conn_id,
+            new_data_packet(conn_id, b"pre-sack").unwrap(),
+            Default::default(),
+        )
+        .is_err()
     );
     dispatch_sack_packet(
         &sessions,
@@ -1605,12 +1685,15 @@ async fn sack_from_actual_remote_rekeys_pending_session_before_data_dispatch() {
         conn_id,
         &new_sack_packet(conn_id, magic),
     );
-    dispatch_data_packet(
-        &sessions,
-        actual_addr,
-        conn_id,
-        &new_data_packet(conn_id, b"payload").unwrap(),
-        Default::default(),
+    assert!(
+        dispatch_data_packet(
+            &sessions,
+            actual_addr,
+            conn_id,
+            new_data_packet(conn_id, b"payload").unwrap(),
+            Default::default(),
+        )
+        .is_ok()
     );
 
     assert!(sessions.contains_key(&actual_key));
@@ -1624,7 +1707,7 @@ async fn sack_from_actual_remote_rekeys_pending_session_before_data_dispatch() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(payload.payload, BytesMut::from(&b"payload"[..]));
+    assert_eq!(payload.payload(), b"payload");
 }
 
 #[tokio::test]

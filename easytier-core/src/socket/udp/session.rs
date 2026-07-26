@@ -14,25 +14,55 @@ use tokio::{
     task::JoinHandle,
 };
 
-use crate::socket::ring::{RingSocket, RingSocketReceiver, RingSocketSendError, RingSocketSender};
+use crate::{
+    packet::{UdpPacketType, ZCPacket, ZCPacketType},
+    socket::ring::{RingSocket, RingSocketReceiver, RingSocketSendError, RingSocketSender},
+};
 
 use super::{
-    UDP_SESSION_QUEUE_CAPACITY,
+    MAX_UDP_SESSION_DATAGRAM_SIZE, UDP_SESSION_QUEUE_CAPACITY,
     packet::{new_data_packet, udp_session_payload_len},
     virtual_socket::{PreferredIpv6Source, UdpBindOptions, UdpSocketRecvMeta, VirtualUdpSocket},
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) struct UdpSessionDatagram {
-    pub(crate) payload: BytesMut,
+    payload: UdpSessionDatagramPayload,
     pub(crate) dst_ip: Option<IpAddr>,
+}
+
+#[derive(Debug)]
+enum UdpSessionDatagramPayload {
+    Bytes(BytesMut),
+    EasyTierPacket(ZCPacket),
 }
 
 impl UdpSessionDatagram {
     pub(crate) fn new(payload: BytesMut, meta: UdpSocketRecvMeta) -> Self {
         Self {
-            payload,
+            payload: UdpSessionDatagramPayload::Bytes(payload),
             dst_ip: meta.dst_ip,
+        }
+    }
+
+    pub(crate) fn from_easytier_packet(packet: ZCPacket, meta: UdpSocketRecvMeta) -> Self {
+        Self {
+            payload: UdpSessionDatagramPayload::EasyTierPacket(packet),
+            dst_ip: meta.dst_ip,
+        }
+    }
+
+    pub(crate) fn payload(&self) -> &[u8] {
+        match &self.payload {
+            UdpSessionDatagramPayload::Bytes(payload) => payload,
+            UdpSessionDatagramPayload::EasyTierPacket(packet) => packet.udp_payload(),
+        }
+    }
+
+    pub(crate) fn into_tunnel_packet(self) -> Result<ZCPacket, BytesMut> {
+        match self.payload {
+            UdpSessionDatagramPayload::Bytes(payload) => Err(payload),
+            UdpSessionDatagramPayload::EasyTierPacket(packet) => Ok(packet),
         }
     }
 }
@@ -40,7 +70,7 @@ impl UdpSessionDatagram {
 impl From<BytesMut> for UdpSessionDatagram {
     fn from(payload: BytesMut) -> Self {
         Self {
-            payload,
+            payload: UdpSessionDatagramPayload::Bytes(payload),
             dst_ip: None,
         }
     }
@@ -245,9 +275,12 @@ pub struct UdpSession {
     pub(super) _cleanup: UdpSessionCleanup,
 }
 
-pub(crate) struct UdpSessionOutbound {
-    pub(crate) payload: BytesMut,
-    pub(crate) completion: oneshot::Sender<io::Result<usize>>,
+pub(crate) enum UdpSessionOutbound {
+    Datagram {
+        payload: BytesMut,
+        completion: oneshot::Sender<io::Result<usize>>,
+    },
+    TunnelPacket(ZCPacket),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -258,18 +291,60 @@ pub(crate) enum UdpSessionCodec {
 
 impl UdpSessionCodec {
     pub(crate) fn validate_payload(&self, payload: &[u8]) -> io::Result<()> {
+        self.validate_datagram_size(payload.len())?;
         if matches!(self, Self::EasyTierData { .. }) {
             udp_session_payload_len(payload)?;
         }
         Ok(())
     }
 
+    fn validate_datagram_size(&self, payload_len: usize) -> io::Result<()> {
+        let header_len = match self {
+            Self::EasyTierData { .. } => crate::packet::UDP_TUNNEL_HEADER_SIZE,
+            Self::Identity => 0,
+        };
+        let datagram_len = payload_len.checked_add(header_len).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "udp session datagram size overflow",
+            )
+        })?;
+        if datagram_len > MAX_UDP_SESSION_DATAGRAM_SIZE {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "udp session datagram too large: {datagram_len}, max: \
+                     {MAX_UDP_SESSION_DATAGRAM_SIZE}"
+                ),
+            ));
+        }
+        Ok(())
+    }
+
     fn encode(&self, payload: &[u8]) -> io::Result<BytesMut> {
+        self.validate_payload(payload)?;
         match self {
             Self::EasyTierData { conn_id } => {
                 Ok(new_data_packet(*conn_id, payload)?.into_bytes().into())
             }
             Self::Identity => Ok(BytesMut::from(payload)),
+        }
+    }
+
+    fn encode_tunnel_packet(&self, packet: ZCPacket) -> io::Result<bytes::Bytes> {
+        let mut packet = packet.convert_type(ZCPacketType::UDP);
+        self.validate_datagram_size(packet.udp_payload().len())?;
+        match self {
+            Self::EasyTierData { conn_id } => {
+                let payload_len = udp_session_payload_len(packet.udp_payload())?;
+                let header = packet.mut_udp_tunnel_header().unwrap();
+                header.conn_id.set(*conn_id);
+                header.msg_type = UdpPacketType::Data as u8;
+                header.padding = 0;
+                header.len.set(payload_len);
+                Ok(packet.into_bytes())
+            }
+            Self::Identity => Ok(packet.udp_payload_bytes().freeze()),
         }
     }
 }
@@ -387,8 +462,12 @@ impl UdpSession {
             peer_addr,
             codec,
             rings.session_send_rx,
+            close.clone(),
+        ));
+        let shutdown_task = tokio::spawn(close_udp_session_on_shutdown(
             shutdown,
             close.clone(),
+            send_task.abort_handle(),
         ));
 
         Self {
@@ -402,7 +481,7 @@ impl UdpSession {
             _cleanup: UdpSessionCleanup {
                 session_close: Some(close),
                 shutdown: None,
-                tasks: vec![send_task],
+                tasks: vec![send_task, shutdown_task],
                 layer_guard: None,
             },
         }
@@ -471,7 +550,7 @@ impl UdpSessionSocket for UdpSession {
             return Err(udp_session_closed_error());
         }
         let (completion, sent) = oneshot::channel();
-        let outbound = UdpSessionOutbound {
+        let outbound = UdpSessionOutbound::Datagram {
             payload: BytesMut::from(data),
             completion,
         };
@@ -508,8 +587,8 @@ impl UdpSessionSocket for UdpSession {
                 .ok_or_else(udp_session_closed_error)?
                 .map_err(ring_socket_error_to_io)?,
         };
-        let len = payload.payload.len().min(buf.len());
-        buf[..len].copy_from_slice(&payload.payload[..len]);
+        let len = payload.payload().len().min(buf.len());
+        buf[..len].copy_from_slice(&payload.payload()[..len]);
         Ok((
             len,
             UdpSessionRecvMeta {
@@ -618,54 +697,84 @@ async fn forward_udp_session_to_socket<S>(
     peer_addr: SocketAddr,
     codec: UdpSessionCodec,
     mut outgoing: RingSocketReceiver<UdpSessionOutbound>,
-    mut shutdown: watch::Receiver<bool>,
     close: UdpSessionClose,
 ) where
     S: VirtualUdpSocket,
 {
     loop {
-        tokio::select! {
-            biased;
-            _ = shutdown.changed() => {
+        let Some(outbound) = outgoing.next().await else {
+            break;
+        };
+        let outbound = match outbound {
+            Ok(outbound) => outbound,
+            Err(err) => {
+                tracing::debug!(?err, ?peer_addr, "udp session outgoing ring closed");
                 close.close();
                 break;
             }
-            outbound = outgoing.next() => {
-                let Some(outbound) = outbound else {
-                    break;
-                };
-                let outbound = match outbound {
-                    Ok(outbound) => outbound,
+        };
+        let (datagram, completion) = match outbound {
+            UdpSessionOutbound::Datagram {
+                payload,
+                completion,
+            } => {
+                let payload_len = payload.len();
+                let datagram = match codec.encode(&payload) {
+                    Ok(datagram) => datagram.freeze(),
                     Err(err) => {
-                        tracing::debug!(?err, ?peer_addr, "udp session outgoing ring closed");
+                        tracing::debug!(
+                            ?err,
+                            ?peer_addr,
+                            ?codec,
+                            "udp session datagram encode error"
+                        );
+                        let _ = completion.send(Err(err));
                         close.close();
                         break;
                     }
                 };
-                let payload_len = outbound.payload.len();
-                let datagram = match codec.encode(&outbound.payload) {
+                (datagram, Some((completion, payload_len)))
+            }
+            UdpSessionOutbound::TunnelPacket(packet) => {
+                let datagram = match codec.encode_tunnel_packet(packet) {
                     Ok(datagram) => datagram,
                     Err(err) => {
-                        tracing::debug!(?err, ?peer_addr, ?codec, "udp session datagram encode error");
-                        let _ = outbound.completion.send(Err(err));
+                        tracing::debug!(?err, ?peer_addr, ?codec, "udp tunnel packet encode error");
                         close.close();
                         break;
                     }
                 };
-                match socket.send_to(&datagram, peer_addr).await {
-                    Ok(_) => {
-                        let _ = outbound.completion.send(Ok(payload_len));
-                    }
-                    Err(err) => {
-                        tracing::debug!(?err, ?peer_addr, "udp session send error");
-                        let _ = outbound.completion.send(Err(err));
-                        close.close();
-                        break;
-                    }
+                (datagram, None)
+            }
+        };
+        match socket.send_to(&datagram, peer_addr).await {
+            Ok(_) => {
+                if let Some((completion, payload_len)) = completion {
+                    let _ = completion.send(Ok(payload_len));
                 }
+            }
+            Err(err) => {
+                tracing::debug!(?err, ?peer_addr, "udp session send error");
+                if let Some((completion, _)) = completion {
+                    let _ = completion.send(Err(err));
+                }
+                close.close();
+                break;
             }
         }
     }
+}
+
+async fn close_udp_session_on_shutdown(
+    mut shutdown: watch::Receiver<bool>,
+    close: UdpSessionClose,
+    send_task: tokio::task::AbortHandle,
+) {
+    if !*shutdown.borrow() {
+        let _ = shutdown.changed().await;
+    }
+    close.close();
+    send_task.abort();
 }
 
 pub(super) fn dispatch_payload_to_session(

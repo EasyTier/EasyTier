@@ -14,6 +14,7 @@ use crate::common::{
 };
 
 use easytier_core::{
+    host::packet::{HostPacket, HostPacketReceiver},
     instance::CorePacketPlane,
     packet::{TAIL_RESERVED_SIZE, ZCPacket, ZCPacketType},
     tunnel::{
@@ -41,8 +42,6 @@ use zerocopy::{NativeEndian, NetworkEndian};
 
 #[cfg(target_os = "windows")]
 use crate::common::ifcfg::RegistryManager;
-
-type HostPacketReceiver = tokio::sync::mpsc::Receiver<Vec<u8>>;
 
 pin_project! {
     pub struct TunStream {
@@ -866,15 +865,17 @@ impl NicCtx {
     }
 
     async fn do_forward_nic_to_peers(ret: ZCPacket, packet_plane: &CorePacketPlane) {
-        let payload = ret.payload();
-        if payload.is_empty() {
+        if ret.payload().is_empty() {
             return;
         }
         tracing::trace!(
             ?ret,
             "[USER_PACKET] recv new packet from tun device and forward to peers."
         );
-        if let Err(error) = packet_plane.send_ip_packet(payload.to_vec()).await {
+        if let Err(error) = packet_plane
+            .send_ip_packet(HostPacket::from_tun_packet(ret))
+            .await
+        {
             tracing::trace!(?error, "[USER_PACKET] send_msg failed");
         }
     }
@@ -912,7 +913,7 @@ impl NicCtx {
                     "[USER_PACKET] forward packet from peers to nic. packet: {:?}",
                     packet
                 );
-                let ret = sink.send(ZCPacket::new_with_payload(&packet)).await;
+                let ret = sink.send(packet.into_tun_packet()).await;
                 if ret.is_err() {
                     tracing::error!(?ret, "do_forward_tunnel_to_nic sink error");
                 }

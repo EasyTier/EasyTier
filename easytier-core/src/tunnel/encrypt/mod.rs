@@ -2,9 +2,21 @@ use crate::{config::EncryptionAlgorithm, packet::ZCPacket};
 use std::{collections::hash_map::DefaultHasher, hash::Hasher, sync::Arc};
 
 #[cfg(feature = "aes-gcm")]
+#[cfg_attr(
+    any(feature = "openssl-crypto", feature = "ring-crypto"),
+    allow(dead_code)
+)]
 pub mod aes_gcm;
 #[cfg(feature = "chacha20")]
+#[cfg_attr(
+    any(feature = "openssl-crypto", feature = "ring-crypto"),
+    allow(dead_code)
+)]
 pub mod chacha20;
+#[cfg(feature = "openssl-crypto")]
+mod openssl;
+#[cfg(all(feature = "ring-crypto", any(not(feature = "openssl-crypto"), test)))]
+mod ring;
 
 pub mod xor;
 
@@ -119,47 +131,123 @@ fn unavailable_encryptor(algorithm: &str) -> Arc<dyn Encryptor> {
     })
 }
 
-fn algorithm_is_available(algorithm: EncryptionAlgorithm) -> bool {
+pub(crate) fn algorithm_is_available(algorithm: EncryptionAlgorithm) -> bool {
     match algorithm {
         EncryptionAlgorithm::Xor => true,
-        EncryptionAlgorithm::AesGcm | EncryptionAlgorithm::Aes256Gcm => cfg!(feature = "aes-gcm"),
-        EncryptionAlgorithm::ChaCha20 => cfg!(feature = "chacha20"),
+        EncryptionAlgorithm::AesGcm | EncryptionAlgorithm::Aes256Gcm => cfg!(any(
+            feature = "aes-gcm",
+            feature = "openssl-crypto",
+            feature = "ring-crypto"
+        )),
+        EncryptionAlgorithm::ChaCha20 => cfg!(any(
+            feature = "chacha20",
+            feature = "openssl-crypto",
+            feature = "ring-crypto"
+        )),
     }
 }
 
+fn is_aead_algorithm(algorithm: EncryptionAlgorithm) -> bool {
+    matches!(
+        algorithm,
+        EncryptionAlgorithm::AesGcm
+            | EncryptionAlgorithm::Aes256Gcm
+            | EncryptionAlgorithm::ChaCha20
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AeadBackend {
+    #[cfg(feature = "openssl-crypto")]
+    OpenSsl,
+    #[cfg(all(not(feature = "openssl-crypto"), feature = "ring-crypto"))]
+    Ring,
+    #[cfg(all(
+        not(feature = "openssl-crypto"),
+        not(feature = "ring-crypto"),
+        any(feature = "aes-gcm", feature = "chacha20")
+    ))]
+    RustCrypto,
+}
+
+#[cfg(feature = "openssl-crypto")]
+fn preferred_aead_backend(algorithm: EncryptionAlgorithm) -> Option<AeadBackend> {
+    is_aead_algorithm(algorithm).then_some(AeadBackend::OpenSsl)
+}
+
+#[cfg(all(not(feature = "openssl-crypto"), feature = "ring-crypto"))]
+fn preferred_aead_backend(algorithm: EncryptionAlgorithm) -> Option<AeadBackend> {
+    is_aead_algorithm(algorithm).then_some(AeadBackend::Ring)
+}
+
+#[cfg(all(
+    not(feature = "openssl-crypto"),
+    not(feature = "ring-crypto"),
+    any(feature = "aes-gcm", feature = "chacha20")
+))]
+fn preferred_aead_backend(algorithm: EncryptionAlgorithm) -> Option<AeadBackend> {
+    (is_aead_algorithm(algorithm) && algorithm_is_available(algorithm))
+        .then_some(AeadBackend::RustCrypto)
+}
+
+#[cfg(not(any(
+    feature = "openssl-crypto",
+    feature = "ring-crypto",
+    feature = "aes-gcm",
+    feature = "chacha20"
+)))]
+fn preferred_aead_backend(_algorithm: EncryptionAlgorithm) -> Option<AeadBackend> {
+    None
+}
+
+#[allow(unreachable_patterns)]
 fn create_aes_128(key: [u8; 16]) -> Arc<dyn Encryptor> {
-    #[cfg(feature = "aes-gcm")]
-    {
-        Arc::new(aes_gcm::AesGcmCipher::new_128(key))
-    }
-    #[cfg(not(feature = "aes-gcm"))]
-    {
-        let _ = key;
-        unavailable_encryptor("aes-gcm")
+    match preferred_aead_backend(EncryptionAlgorithm::AesGcm) {
+        #[cfg(feature = "openssl-crypto")]
+        Some(AeadBackend::OpenSsl) => Arc::new(openssl::OpenSslCipher::new_aes128_gcm(key)),
+        #[cfg(all(not(feature = "openssl-crypto"), feature = "ring-crypto"))]
+        Some(AeadBackend::Ring) => Arc::new(ring::RingCipher::new_aes128_gcm(key)),
+        #[cfg(all(
+            not(feature = "openssl-crypto"),
+            not(feature = "ring-crypto"),
+            feature = "aes-gcm"
+        ))]
+        Some(AeadBackend::RustCrypto) => Arc::new(aes_gcm::AesGcmCipher::new_128(key)),
+        _ => unavailable_encryptor("aes-gcm"),
     }
 }
 
+#[allow(unreachable_patterns)]
 fn create_aes_256(key: [u8; 32]) -> Arc<dyn Encryptor> {
-    #[cfg(feature = "aes-gcm")]
-    {
-        Arc::new(aes_gcm::AesGcmCipher::new_256(key))
-    }
-    #[cfg(not(feature = "aes-gcm"))]
-    {
-        let _ = key;
-        unavailable_encryptor("aes-256-gcm")
+    match preferred_aead_backend(EncryptionAlgorithm::Aes256Gcm) {
+        #[cfg(feature = "openssl-crypto")]
+        Some(AeadBackend::OpenSsl) => Arc::new(openssl::OpenSslCipher::new_aes256_gcm(key)),
+        #[cfg(all(not(feature = "openssl-crypto"), feature = "ring-crypto"))]
+        Some(AeadBackend::Ring) => Arc::new(ring::RingCipher::new_aes256_gcm(key)),
+        #[cfg(all(
+            not(feature = "openssl-crypto"),
+            not(feature = "ring-crypto"),
+            feature = "aes-gcm"
+        ))]
+        Some(AeadBackend::RustCrypto) => Arc::new(aes_gcm::AesGcmCipher::new_256(key)),
+        _ => unavailable_encryptor("aes-256-gcm"),
     }
 }
 
+#[allow(unreachable_patterns)]
 fn create_chacha20(key: [u8; 32]) -> Arc<dyn Encryptor> {
-    #[cfg(feature = "chacha20")]
-    {
-        Arc::new(chacha20::ChaCha20Cipher::new(key))
-    }
-    #[cfg(not(feature = "chacha20"))]
-    {
-        let _ = key;
-        unavailable_encryptor("chacha20")
+    match preferred_aead_backend(EncryptionAlgorithm::ChaCha20) {
+        #[cfg(feature = "openssl-crypto")]
+        Some(AeadBackend::OpenSsl) => Arc::new(openssl::OpenSslCipher::new_chacha20(key)),
+        #[cfg(all(not(feature = "openssl-crypto"), feature = "ring-crypto"))]
+        Some(AeadBackend::Ring) => Arc::new(ring::RingCipher::new_chacha20(key)),
+        #[cfg(all(
+            not(feature = "openssl-crypto"),
+            not(feature = "ring-crypto"),
+            feature = "chacha20"
+        ))]
+        Some(AeadBackend::RustCrypto) => Arc::new(chacha20::ChaCha20Cipher::new(key)),
+        _ => unavailable_encryptor("chacha20"),
     }
 }
 
@@ -203,6 +291,28 @@ pub fn create_encryptor(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::packet::{StandardAeadTail, ZCPacket};
+
+    fn assert_interoperable(left: &dyn Encryptor, right: &dyn Encryptor) {
+        let plaintext = b"cross-backend compatibility";
+        let nonce = [9; StandardAeadTail::NONCE_SIZE];
+        let mut left_packet = ZCPacket::new_with_payload(plaintext);
+        left_packet.fill_peer_manager_hdr(1, 2, 1);
+        let mut right_packet = ZCPacket::new_with_payload(plaintext);
+        right_packet.fill_peer_manager_hdr(1, 2, 1);
+
+        left.encrypt_with_nonce(&mut left_packet, Some(&nonce))
+            .unwrap();
+        right
+            .encrypt_with_nonce(&mut right_packet, Some(&nonce))
+            .unwrap();
+        assert_eq!(left_packet.payload(), right_packet.payload());
+
+        left.decrypt(&mut right_packet).unwrap();
+        right.decrypt(&mut left_packet).unwrap();
+        assert_eq!(left_packet.payload(), plaintext);
+        assert_eq!(right_packet.payload(), plaintext);
+    }
 
     #[test]
     fn network_secret_key_derivation_is_stable() {
@@ -229,7 +339,11 @@ mod tests {
         assert!(!effective_algorithm_uses_xor("aes-gcm"));
     }
 
-    #[cfg(not(feature = "aes-gcm"))]
+    #[cfg(not(any(
+        feature = "aes-gcm",
+        feature = "openssl-crypto",
+        feature = "ring-crypto"
+    )))]
     #[test]
     fn unavailable_aes_is_known_but_rejected() {
         assert_eq!(
@@ -238,14 +352,22 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "aes-gcm")]
+    #[cfg(any(
+        feature = "aes-gcm",
+        feature = "openssl-crypto",
+        feature = "ring-crypto"
+    ))]
     #[test]
     fn compiled_aes_is_available() {
         validate_algorithm("aes-gcm").unwrap();
         validate_algorithm("aes-256-gcm").unwrap();
     }
 
-    #[cfg(not(feature = "chacha20"))]
+    #[cfg(not(any(
+        feature = "chacha20",
+        feature = "openssl-crypto",
+        feature = "ring-crypto"
+    )))]
     #[test]
     fn unavailable_chacha20_is_known_but_rejected() {
         assert_eq!(
@@ -256,10 +378,100 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "chacha20")]
+    #[cfg(any(
+        feature = "chacha20",
+        feature = "openssl-crypto",
+        feature = "ring-crypto"
+    ))]
     #[test]
     fn compiled_chacha20_is_available() {
         validate_algorithm("chacha20").unwrap();
+    }
+
+    #[test]
+    fn accelerated_backends_take_precedence_over_rustcrypto() {
+        #[cfg(feature = "openssl-crypto")]
+        assert_eq!(
+            preferred_aead_backend(EncryptionAlgorithm::AesGcm),
+            Some(AeadBackend::OpenSsl)
+        );
+
+        #[cfg(all(not(feature = "openssl-crypto"), feature = "ring-crypto"))]
+        assert_eq!(
+            preferred_aead_backend(EncryptionAlgorithm::AesGcm),
+            Some(AeadBackend::Ring)
+        );
+
+        #[cfg(all(
+            not(feature = "openssl-crypto"),
+            not(feature = "ring-crypto"),
+            feature = "aes-gcm"
+        ))]
+        assert_eq!(
+            preferred_aead_backend(EncryptionAlgorithm::AesGcm),
+            Some(AeadBackend::RustCrypto)
+        );
+    }
+
+    #[cfg(all(feature = "ring-crypto", feature = "aes-gcm"))]
+    #[test]
+    fn ring_and_rustcrypto_aes_are_interoperable() {
+        assert_interoperable(
+            &ring::RingCipher::new_aes128_gcm([1; 16]),
+            &aes_gcm::AesGcmCipher::new_128([1; 16]),
+        );
+        assert_interoperable(
+            &ring::RingCipher::new_aes256_gcm([2; 32]),
+            &aes_gcm::AesGcmCipher::new_256([2; 32]),
+        );
+    }
+
+    #[cfg(all(feature = "ring-crypto", feature = "chacha20"))]
+    #[test]
+    fn ring_and_rustcrypto_chacha20_are_interoperable() {
+        assert_interoperable(
+            &ring::RingCipher::new_chacha20([3; 32]),
+            &chacha20::ChaCha20Cipher::new([3; 32]),
+        );
+    }
+
+    #[cfg(all(feature = "openssl-crypto", feature = "aes-gcm"))]
+    #[test]
+    fn openssl_and_rustcrypto_aes_are_interoperable() {
+        assert_interoperable(
+            &openssl::OpenSslCipher::new_aes128_gcm([1; 16]),
+            &aes_gcm::AesGcmCipher::new_128([1; 16]),
+        );
+        assert_interoperable(
+            &openssl::OpenSslCipher::new_aes256_gcm([2; 32]),
+            &aes_gcm::AesGcmCipher::new_256([2; 32]),
+        );
+    }
+
+    #[cfg(all(feature = "openssl-crypto", feature = "chacha20"))]
+    #[test]
+    fn openssl_and_rustcrypto_chacha20_are_interoperable() {
+        assert_interoperable(
+            &openssl::OpenSslCipher::new_chacha20([3; 32]),
+            &chacha20::ChaCha20Cipher::new([3; 32]),
+        );
+    }
+
+    #[cfg(all(feature = "openssl-crypto", feature = "ring-crypto"))]
+    #[test]
+    fn openssl_and_ring_algorithms_are_interoperable() {
+        assert_interoperable(
+            &openssl::OpenSslCipher::new_aes128_gcm([1; 16]),
+            &ring::RingCipher::new_aes128_gcm([1; 16]),
+        );
+        assert_interoperable(
+            &openssl::OpenSslCipher::new_aes256_gcm([2; 32]),
+            &ring::RingCipher::new_aes256_gcm([2; 32]),
+        );
+        assert_interoperable(
+            &openssl::OpenSslCipher::new_chacha20([3; 32]),
+            &ring::RingCipher::new_chacha20([3; 32]),
+        );
     }
 
     #[test]

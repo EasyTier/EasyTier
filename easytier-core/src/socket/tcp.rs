@@ -6,12 +6,28 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::socket::{IpVersion, SocketContext, SocketListener};
 
+pub type VirtualTcpReadHalf = Box<dyn AsyncRead + Unpin + Send + 'static>;
+pub type VirtualTcpWriteHalf = Box<dyn AsyncWrite + Unpin + Send + 'static>;
+pub type VirtualTcpSplit = (VirtualTcpReadHalf, VirtualTcpWriteHalf);
+
 /// A core-visible TCP stream endpoint.
 ///
 /// Implementations are runtime adapters over concrete TCP stream types. This
 /// trait deliberately stays below tunnel framing: it only exposes stream I/O and
 /// socket addresses.
 pub trait VirtualTcpSocket: AsyncRead + AsyncWrite + Unpin + Send + 'static {
+    /// Consumes the stream into independently owned read and write halves.
+    ///
+    /// Portable adapters may use the generic shared split. Native adapters
+    /// should override this when their runtime provides lock-free owned halves.
+    fn into_split(self) -> VirtualTcpSplit
+    where
+        Self: Sized,
+    {
+        let (reader, writer) = tokio::io::split(self);
+        (Box::new(reader), Box::new(writer))
+    }
+
     fn local_addr(&self) -> io::Result<SocketAddr>;
 
     fn peer_addr(&self) -> io::Result<SocketAddr>;

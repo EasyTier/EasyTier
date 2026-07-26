@@ -10,7 +10,10 @@ use easytier_core::gateway::udp_broadcast::{
 use {
     crate::common::global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
     anyhow::Context,
-    easytier_core::{gateway::udp_broadcast::UdpBroadcastRelayStats, instance::CorePacketPlane},
+    easytier_core::{
+        gateway::udp_broadcast::UdpBroadcastRelayStats, host::packet::HostPacket,
+        instance::CorePacketPlane,
+    },
     network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig},
     socket2::{Domain, Protocol, SockAddr, Socket, Type},
     std::{
@@ -188,7 +191,7 @@ async fn forward_normalized_packet(
     stats: &UdpBroadcastRelayStats,
 ) {
     let ret = packet_plane
-        .send_local_ip_packet(normalized.packet.clone())
+        .send_local_ip_packet(HostPacket::copy_from_payload(&normalized.packet))
         .await;
 
     let summary = UdpPacketSummary::parse(&normalized.packet);

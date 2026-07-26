@@ -1,8 +1,12 @@
-use std::{any::Any, sync::Arc};
+use std::{
+    any::Any,
+    sync::{Arc, OnceLock},
+};
 
+use easytier_core::host::packet::HostPacketReceiver;
 use tokio::{sync::Mutex, task::JoinSet};
 
-use super::{HostPacketReceiver, MagicDnsRuntime};
+use super::MagicDnsRuntime;
 use crate::instance::virtual_nic::NicCtx;
 
 struct NicCtxContainer {
@@ -29,19 +33,28 @@ impl NicCtxContainer {
 #[derive(Clone)]
 pub(super) struct TunNicState {
     nic_ctx: Arc<Mutex<Option<NicCtxContainer>>>,
-    receiver: Arc<Mutex<HostPacketReceiver>>,
+    receiver: Arc<OnceLock<Arc<Mutex<HostPacketReceiver>>>>,
 }
 
 impl TunNicState {
-    pub(super) fn new(receiver: HostPacketReceiver) -> Self {
+    pub(super) fn empty() -> Self {
         Self {
             nic_ctx: Arc::new(Mutex::new(None)),
-            receiver: Arc::new(Mutex::new(receiver)),
+            receiver: Arc::new(OnceLock::new()),
         }
     }
 
+    pub(super) fn install_receiver(&self, receiver: HostPacketReceiver) -> anyhow::Result<()> {
+        self.receiver
+            .set(Arc::new(Mutex::new(receiver)))
+            .map_err(|_| anyhow::anyhow!("native packet receiver is already installed"))
+    }
+
     pub(super) fn receiver(&self) -> Arc<Mutex<HostPacketReceiver>> {
-        self.receiver.clone()
+        self.receiver
+            .get()
+            .expect("packet receiver must be installed before preparing TUN")
+            .clone()
     }
 
     pub(super) async fn stop(&self) {
@@ -54,7 +67,7 @@ impl TunNicState {
 
     pub(super) async fn drain(&self) {
         self.stop().await;
-        let receiver = self.receiver.clone();
+        let receiver = self.receiver();
         let mut tasks = JoinSet::new();
         tasks.spawn(async move {
             let mut receiver = receiver.lock().await;

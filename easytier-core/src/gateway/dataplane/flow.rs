@@ -117,10 +117,21 @@ impl<V> FlowTable<V> {
         self.count.load(Ordering::Relaxed)
     }
 
+    /// Returns whether no flow is visible or being published.
+    ///
+    /// New entries reserve their count before they become visible, while
+    /// removals release their count after the entry is gone. Consequently a
+    /// zero observed here is a safe fast-path signal without inspecting every
+    /// DashMap shard.
+    pub fn is_idle(&self) -> bool {
+        self.count.load(Ordering::Acquire) == 0
+    }
+
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
@@ -241,13 +252,13 @@ impl<V> FlowTable<V> {
     fn increment_count(&self) -> FlowCountChange {
         let previous = self
             .count
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 count.checked_add(1)
             })
-            .unwrap_or_else(|count| count);
+            .expect("flow count overflow");
         FlowCountChange {
             previous,
-            current: previous.saturating_add(1),
+            current: previous + 1,
         }
     }
 
@@ -283,13 +294,13 @@ impl<V> FlowTable<V> {
 
         let previous = self
             .count
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
-                Some(count.saturating_sub(delta))
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                count.checked_sub(delta)
             })
-            .unwrap_or_else(|count| count);
+            .expect("flow count underflow");
         FlowCountChange {
             previous,
-            current: previous.saturating_sub(delta),
+            current: previous - delta,
         }
     }
 }
@@ -334,6 +345,7 @@ mod tests {
         assert!(!inserted.replaced);
         assert_eq!(inserted.count.previous, 0);
         assert_eq!(inserted.count.current, 1);
+        assert!(!table.is_idle());
         assert_eq!(table.with_entry(&entry, |value| *value), Some("first"));
 
         let replaced = table.insert(entry.clone(), "second");
@@ -346,6 +358,7 @@ mod tests {
         assert!(removed.removed);
         assert_eq!(removed.count.previous, 1);
         assert_eq!(removed.count.current, 0);
+        assert!(table.is_idle());
 
         let missing = table.remove(&entry);
         assert!(!missing.removed);

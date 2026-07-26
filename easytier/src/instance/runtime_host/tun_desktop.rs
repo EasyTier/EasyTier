@@ -4,6 +4,7 @@ use anyhow::Context as _;
 use cidr::Ipv4Inet;
 use easytier_core::{
     gateway::dhcp::{DhcpIpv4ApplyOutcome, DhcpIpv4ApplyPermit, DhcpIpv4Host},
+    host::packet::HostPacketReceiver,
     instance::CorePacketPlane,
 };
 use futures::FutureExt as _;
@@ -13,7 +14,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use super::{HostPacketReceiver, MagicDnsRuntime, tun_common::TunNicState};
+use super::{MagicDnsRuntime, tun_common::TunNicState};
 use crate::{
     common::{
         config::ConfigLoader as _,
@@ -31,17 +32,20 @@ pub(super) struct NativeTunRuntime {
 }
 
 impl NativeTunRuntime {
-    pub(super) fn new(
-        global_ctx: ArcGlobalCtx,
-        cancel: CancellationToken,
-        peer_packet_receiver: HostPacketReceiver,
-    ) -> Self {
+    pub(super) fn new(global_ctx: ArcGlobalCtx, cancel: CancellationToken) -> Self {
         Self {
             global_ctx,
             cancel,
-            nic: TunNicState::new(peer_packet_receiver),
+            nic: TunNicState::empty(),
             static_ip_task: Mutex::new(None),
         }
+    }
+
+    pub(super) fn install_packet_receiver(
+        &self,
+        receiver: HostPacketReceiver,
+    ) -> anyhow::Result<()> {
+        self.nic.install_receiver(receiver)
     }
 
     fn report_static_ip_cancelled(output: &mut Option<oneshot::Sender<Result<(), Error>>>) {

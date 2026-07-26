@@ -4,6 +4,8 @@ use std::sync::Arc;
 use easytier_core::gateway::proxy::wrapped_transport::WrappedTransportEngines;
 #[cfg(feature = "wireguard")]
 use easytier_core::gateway::vpn_portal::VpnPortalHost;
+#[cfg(test)]
+use easytier_core::host::packet::{HostPacket, PacketSink};
 #[cfg(feature = "management")]
 use easytier_core::{
     connectivity::manual::ManualTunnelConnector,
@@ -12,8 +14,7 @@ use easytier_core::{
 };
 use easytier_core::{
     events::{CoreEvent, CoreEventSink},
-    host::packet::PacketSink,
-    instance::{CoreHostAdapters, CoreInstance},
+    instance::{CoreHostAdapters, CoreInstance, PacketEgressHost},
     process_runtime::CoreProcessRuntime,
 };
 
@@ -45,10 +46,13 @@ pub(crate) fn compose_native_core_instance(
     process_runtime: Arc<CoreProcessRuntime>,
 ) -> anyhow::Result<Arc<NativeCoreInstance>> {
     let global_ctx = Arc::new(GlobalCtx::new(config.clone()));
-    let (packet_sender, packet_receiver) = tokio::sync::mpsc::channel(128);
-    let mut adapters =
-        runtime_core_host_adapters(global_ctx.clone(), process_runtime, Arc::new(packet_sender));
-    adapters.instance_runtime = NativeInstanceRuntimeHost::new(global_ctx.clone(), packet_receiver);
+    let runtime_host = NativeInstanceRuntimeHost::new(global_ctx.clone());
+    let mut adapters = runtime_core_host_adapters_with_packet_egress(
+        global_ctx.clone(),
+        process_runtime,
+        runtime_host.clone(),
+    );
+    adapters.instance_runtime = runtime_host;
     NativeCoreInstance::from_toml(config, adapters)
 }
 
@@ -148,6 +152,7 @@ fn runtime_wrapped_transport_engines() -> WrappedTransportEngines {
     WrappedTransportEngines { kcp, quic }
 }
 
+#[cfg(test)]
 pub(crate) fn runtime_core_host_adapters(
     global_ctx: ArcGlobalCtx,
     process_runtime: Arc<CoreProcessRuntime>,
@@ -155,7 +160,26 @@ pub(crate) fn runtime_core_host_adapters(
 ) -> CoreHostAdapters<NativeInstanceHost> {
     let host = native_instance_host(global_ctx.clone());
     let runtime_dns = native_host_runtime();
-    let mut adapters = CoreHostAdapters::new(host, runtime_dns, packet_sink, process_runtime);
+    let adapters = CoreHostAdapters::new(host, runtime_dns, packet_sink, process_runtime);
+    configure_runtime_core_host_adapters(global_ctx, adapters)
+}
+
+pub(crate) fn runtime_core_host_adapters_with_packet_egress(
+    global_ctx: ArcGlobalCtx,
+    process_runtime: Arc<CoreProcessRuntime>,
+    packet_egress: Arc<dyn PacketEgressHost>,
+) -> CoreHostAdapters<NativeInstanceHost> {
+    let host = native_instance_host(global_ctx.clone());
+    let runtime_dns = native_host_runtime();
+    let adapters =
+        CoreHostAdapters::new_with_packet_egress(host, runtime_dns, packet_egress, process_runtime);
+    configure_runtime_core_host_adapters(global_ctx, adapters)
+}
+
+fn configure_runtime_core_host_adapters(
+    global_ctx: ArcGlobalCtx,
+    mut adapters: CoreHostAdapters<NativeInstanceHost>,
+) -> CoreHostAdapters<NativeInstanceHost> {
     #[cfg(test)]
     adapters.replace_stun_provider(Arc::new(crate::common::stun::MockStunInfoCollector {
         udp_nat_type: crate::proto::common::NatType::Unknown,
@@ -504,7 +528,7 @@ mod tests {
             loop {
                 instance_a
                     .packet_plane()
-                    .send_ip_packet(ip_packet.clone())
+                    .send_ip_packet(HostPacket::copy_from_payload(&ip_packet))
                     .await
                     .unwrap();
                 match tokio::time::timeout(

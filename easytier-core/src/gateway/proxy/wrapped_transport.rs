@@ -462,7 +462,7 @@ mod tests {
         config::peers::{HostRoutingPolicy, PeerRuntimeConfig, PeerRuntimeSnapshot},
         config::runtime::CoreRuntimeConfig,
         config::{CoreConfig, NetworkIdentity, NodeConfig},
-        peers::{create_packet_recv_chan, peer_manager::PortablePeerManagerConfig},
+        peers::peer_manager::PortablePeerManagerConfig,
     };
 
     use super::*;
@@ -745,7 +745,7 @@ mod tests {
     }
 
     fn wrapped_transport_peer_manager() -> Arc<PeerManagerCore> {
-        let (packet_tx, _packet_rx) = create_packet_recv_chan();
+        let (packet_tx, _packet_rx) = crate::host::packet::host_packet_channel();
         Arc::new(
             PeerManagerCore::new_portable_for_test(
                 PortablePeerManagerConfig::new(PeerRuntimeConfig {

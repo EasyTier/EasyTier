@@ -12,10 +12,11 @@ use super::*;
 use crate::{
     config::peers::PeerRuntimeSnapshot,
     config::{IpPrefix, NetworkIdentity},
-    host::testkit::TestHost,
-    peers::{
-        PacketRecvChanReceiver, create_packet_recv_chan, peer_manager::PortablePeerManagerConfig,
+    host::{
+        packet::{HostPacketReceiver, host_packet_channel},
+        testkit::TestHost,
     },
+    peers::peer_manager::PortablePeerManagerConfig,
     tunnel::ring::RingTunnelRegistry,
 };
 
@@ -49,7 +50,7 @@ fn test_gateway() -> Arc<DataPlaneRuntime<TestHost>> {
 struct DataPlaneEndpoint {
     gateway: Arc<DataPlaneRuntime<TestHost>>,
     peer_manager: Arc<PeerManagerCore>,
-    _packet_receiver: PacketRecvChanReceiver,
+    _packet_receiver: HostPacketReceiver,
     ip: cidr::Ipv4Inet,
 }
 
@@ -73,7 +74,7 @@ fn data_plane_endpoint(host: Arc<TestHost>, ip: cidr::Ipv4Inet) -> DataPlaneEndp
         crate::config::runtime::CoreRuntimeConfig::default(),
         Arc::new(peer_config.snapshot.clone()),
     );
-    let (packet_sender, packet_receiver) = create_packet_recv_chan();
+    let (packet_sender, packet_receiver) = host_packet_channel();
     let peer_manager = Arc::new(
         PeerManagerCore::new_portable_for_test(peer_config, packet_sender)
             .expect("build portable peer manager"),

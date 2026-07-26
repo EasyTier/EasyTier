@@ -34,7 +34,11 @@ pub(super) fn new_wasi_core_runtime(
 ) -> anyhow::Result<WasiCoreRuntime> {
     use std::sync::Arc;
 
-    use crate::host::{dns::HostDnsResolver, packet::HostPacketSink, socket::HostSocketRuntime};
+    use crate::host::{
+        dns::HostDnsResolver,
+        packet::{HostPacket, HostPacketSink},
+        socket::HostSocketRuntime,
+    };
     use crate::{
         connectivity::connector_host::new_connector_host,
         instance::{CoreHostAdapters, CoreInstance},
@@ -402,7 +406,10 @@ mod abi {
         fn send_packet(&self, packet: Vec<u8>) {
             let packet_plane = self.core.core().packet_plane();
             self.execution.lock().unwrap().runtime.spawn(async move {
-                if let Err(error) = packet_plane.send_ip_packet(packet).await {
+                if let Err(error) = packet_plane
+                    .send_ip_packet(HostPacket::copy_from_payload(&packet))
+                    .await
+                {
                     tracing::warn!(?error, "host packet ingress failed");
                 }
             });

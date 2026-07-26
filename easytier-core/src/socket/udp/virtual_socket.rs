@@ -5,6 +5,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use bytes::BytesMut;
 use serde::{Deserialize, Serialize};
 
 use crate::socket::{IpVersion, SocketContext};
@@ -20,6 +21,23 @@ pub struct UdpSocketRecvMeta {
 pub struct UdpSocketSendMeta {
     pub src_ip: Option<IpAddr>,
     pub src_ifindex: Option<u32>,
+}
+
+/// Largest UDP datagram that portable socket implementations must receive.
+pub const MAX_UDP_DATAGRAM_SIZE: usize = u16::MAX as usize;
+
+/// Largest datagram accepted by the UDP session/multiplexer data plane.
+///
+/// EasyTier, WireGuard, and QUIC datagrams are bounded by their transport MTU.
+/// Keeping this capacity explicit avoids allocating the theoretical UDP maximum
+/// for every packet on native hosts that can detect truncation.
+pub const MAX_UDP_SESSION_DATAGRAM_SIZE: usize = 8 * 1024;
+
+#[derive(Debug)]
+pub struct UdpSocketDatagram {
+    pub payload: BytesMut,
+    pub remote_addr: SocketAddr,
+    pub meta: UdpSocketRecvMeta,
 }
 
 #[async_trait]
@@ -50,6 +68,23 @@ pub trait VirtualUdpSocket: Send + Sync + 'static {
     ) -> std::io::Result<(usize, SocketAddr, UdpSocketRecvMeta)> {
         let (len, addr) = self.recv_from(buf).await?;
         Ok((len, addr, UdpSocketRecvMeta::default()))
+    }
+
+    /// Receives one datagram into an owned buffer.
+    ///
+    /// Portable hosts can use this default implementation. Native hosts should
+    /// override it when their socket API can write directly into owned storage,
+    /// avoiding a second allocation and copy at the Host boundary.
+    async fn recv_datagram(&self) -> std::io::Result<UdpSocketDatagram> {
+        let mut payload = BytesMut::new();
+        payload.resize(MAX_UDP_DATAGRAM_SIZE, 0);
+        let (len, remote_addr, meta) = self.recv_from_with_meta(&mut payload).await?;
+        payload.truncate(len);
+        Ok(UdpSocketDatagram {
+            payload,
+            remote_addr,
+            meta,
+        })
     }
 }
 

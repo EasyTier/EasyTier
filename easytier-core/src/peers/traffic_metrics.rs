@@ -37,6 +37,13 @@ enum CachedPeerTrafficCounters {
 }
 
 impl CachedPeerTrafficCounters {
+    fn add_sample(&self, bytes: u64) {
+        match self {
+            CachedPeerTrafficCounters::Unknown(counters)
+            | CachedPeerTrafficCounters::Resolved(counters) => counters.add_sample(bytes),
+        }
+    }
+
     fn counters(&self) -> TrafficCounters {
         match self {
             CachedPeerTrafficCounters::Unknown(counters)
@@ -95,7 +102,7 @@ impl LogicalTrafficMetrics {
         if let Some(entry) = self.per_peer.get(&peer_id)
             && entry.value().is_resolved()
         {
-            entry.value().counters().add_sample(bytes);
+            entry.value().add_sample(bytes);
             return;
         }
 
