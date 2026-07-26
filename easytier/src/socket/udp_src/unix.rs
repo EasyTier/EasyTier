@@ -3,6 +3,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
 };
 
+use bytes::BytesMut;
 use tokio::net::UdpSocket;
 
 pub(crate) fn enable_recv_pktinfo(socket: &UdpSocket) -> io::Result<()> {
@@ -67,6 +68,29 @@ pub(crate) async fn recv_from_with_dst_ip(
         .await
 }
 
+pub(crate) async fn recv_datagram_with_dst_ip(
+    socket: &UdpSocket,
+) -> io::Result<(BytesMut, SocketAddr, Option<IpAddr>)> {
+    let mut payload = BytesMut::with_capacity(u16::MAX as usize);
+    let (len, remote_addr, dst_ip) = socket
+        .async_io(tokio::io::Interest::READABLE, || {
+            loop {
+                let ret = unsafe {
+                    recv_from_with_dst_ip_raw(socket, payload.as_mut_ptr(), payload.capacity())
+                };
+                match ret {
+                    Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+                    ret => break ret,
+                }
+            }
+        })
+        .await?;
+    unsafe {
+        payload.set_len(len);
+    }
+    Ok((payload, remote_addr, dst_ip))
+}
+
 #[cfg(not(any(unix, windows)))]
 pub(crate) async fn recv_from_with_dst_ip(
     socket: &UdpSocket,
@@ -79,6 +103,14 @@ pub(crate) async fn recv_from_with_dst_ip(
 fn recv_from_with_dst_ip_once(
     socket: &UdpSocket,
     buf: &mut [u8],
+) -> io::Result<(usize, SocketAddr, Option<IpAddr>)> {
+    unsafe { recv_from_with_dst_ip_raw(socket, buf.as_mut_ptr(), buf.len()) }
+}
+
+unsafe fn recv_from_with_dst_ip_raw(
+    socket: &UdpSocket,
+    buf_ptr: *mut u8,
+    buf_len: usize,
 ) -> io::Result<(usize, SocketAddr, Option<IpAddr>)> {
     use std::{mem, os::fd::AsRawFd};
 
@@ -129,8 +161,8 @@ fn recv_from_with_dst_ip_once(
     }
 
     let mut iov = libc::iovec {
-        iov_base: buf.as_mut_ptr() as *mut libc::c_void,
-        iov_len: buf.len(),
+        iov_base: buf_ptr as *mut libc::c_void,
+        iov_len: buf_len,
     };
     let mut name = unsafe { mem::zeroed::<libc::sockaddr_storage>() };
     let mut control = ControlBuffer([0u8; 256]);
