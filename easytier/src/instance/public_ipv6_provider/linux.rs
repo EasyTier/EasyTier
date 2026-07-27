@@ -237,9 +237,9 @@ fn detect_default_route_ipv6_interfaces(
     routes: &[DetectedIpv6Route],
     max_prefix_len: u8,
 ) -> Vec<DetectedDefaultRouteIpv6Interface> {
+    use crate::common::network::ip_mask_to_prefix;
     use nix::ifaddrs::getifaddrs;
     use nix::sys::socket::SockaddrLike;
-    use pnet::ipnetwork::ip_mask_to_prefix;
 
     let wan_ifindices = default_route_ifindices(routes);
     if wan_ifindices.is_empty() {
