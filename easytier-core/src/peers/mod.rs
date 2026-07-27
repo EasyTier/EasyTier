@@ -21,12 +21,24 @@ pub(crate) mod test_support;
 mod tests;
 
 use crate::packet::ZCPacket;
+use tokio::sync::mpsc::error::{SendError, TrySendError};
 
 pub type PacketRecvChan = tokio::sync::mpsc::Sender<ZCPacket>;
 pub type PacketRecvChanReceiver = tokio::sync::mpsc::Receiver<ZCPacket>;
 
 pub fn create_packet_recv_chan() -> (PacketRecvChan, PacketRecvChanReceiver) {
     tokio::sync::mpsc::channel(128)
+}
+
+pub(crate) async fn send_packet_to_chan(
+    sender: &PacketRecvChan,
+    packet: ZCPacket,
+) -> Result<(), SendError<ZCPacket>> {
+    match sender.try_send(packet) {
+        Ok(()) => Ok(()),
+        Err(TrySendError::Full(packet)) => sender.send(packet).await,
+        Err(TrySendError::Closed(packet)) => Err(SendError(packet)),
+    }
 }
 
 pub async fn recv_packet_from_chan(

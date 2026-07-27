@@ -1,13 +1,18 @@
 use dashmap::DashMap;
-use quanta::Instant;
 use serde::{Deserialize, Serialize};
 use std::cell::UnsafeCell;
 use std::fmt;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicU32, Ordering},
+};
 use std::time::Duration;
 use tokio_util::task::AbortOnDropHandle;
 
 use crate::foundation::time::interval;
+
+const METRIC_CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
+const METRIC_RETENTION_EPOCHS: u32 = 3;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RpcMetricLabels {
@@ -535,41 +540,42 @@ impl UnsafeCounter {
 unsafe impl Send for UnsafeCounter {}
 unsafe impl Sync for UnsafeCounter {}
 
-/// MetricData contains both the counter and last update timestamp
-/// Uses UnsafeCell for lock-free access
+/// MetricData contains both the counter and its last active cleanup epoch.
 #[derive(Debug)]
 struct MetricData {
     counter: UnsafeCounter,
-    last_updated: UnsafeCell<Instant>,
+    activity_epoch: Arc<AtomicU32>,
+    last_updated_epoch: AtomicU32,
 }
 
 impl MetricData {
-    fn new() -> Self {
+    fn new(activity_epoch: Arc<AtomicU32>) -> Self {
+        let last_updated_epoch = activity_epoch.load(Ordering::Relaxed);
         Self {
             counter: UnsafeCounter::new(),
-            last_updated: UnsafeCell::new(Instant::now()),
+            activity_epoch,
+            last_updated_epoch: AtomicU32::new(last_updated_epoch),
         }
     }
 
-    /// Update the last_updated timestamp
-    /// # Safety
-    /// This method is unsafe because it uses UnsafeCell. The caller must ensure
-    /// that no other thread is accessing this timestamp simultaneously.
-    unsafe fn touch(&self) {
-        let ptr = self.last_updated.get();
-        unsafe {
-            *ptr = Instant::now();
-        }
+    fn touch(&self) {
+        let current_epoch = self.activity_epoch.load(Ordering::Relaxed);
+        self.last_updated_epoch
+            .store(current_epoch, Ordering::Relaxed);
     }
 
-    /// Get the last updated timestamp
-    /// # Safety
-    /// This method is unsafe because it uses UnsafeCell. The caller must ensure
-    /// that no other thread is modifying this timestamp simultaneously.
-    unsafe fn get_last_updated(&self) -> Instant {
-        let ptr = self.last_updated.get();
-        unsafe { *ptr }
+    fn last_updated_epoch(&self) -> u32 {
+        self.last_updated_epoch.load(Ordering::Relaxed)
     }
+}
+
+fn cleanup_metrics(counters: &DashMap<MetricKey, Arc<MetricData>>, current_epoch: u32) {
+    counters.retain(|_, metric_data| {
+        Arc::strong_count(metric_data) > 1
+            || current_epoch.saturating_sub(metric_data.last_updated_epoch())
+                <= METRIC_RETENTION_EPOCHS
+    });
+    counters.shrink_to_fit();
 }
 
 // MetricData is Send + Sync because the safety is guaranteed by the caller
@@ -620,16 +626,16 @@ impl CounterHandle {
     pub fn add(&self, delta: u64) {
         unsafe {
             self.metric_data.counter.add(delta);
-            self.metric_data.touch();
         }
+        self.metric_data.touch();
     }
 
     /// Increment the counter by 1
     pub fn inc(&self) {
         unsafe {
             self.metric_data.counter.inc();
-            self.metric_data.touch();
         }
+        self.metric_data.touch();
     }
 
     /// Get the current value of the counter
@@ -641,16 +647,16 @@ impl CounterHandle {
     pub fn reset(&self) {
         unsafe {
             self.metric_data.counter.reset();
-            self.metric_data.touch();
         }
+        self.metric_data.touch();
     }
 
     /// Set the counter to a specific value
     pub fn set(&self, value: u64) {
         unsafe {
             self.metric_data.counter.set(value);
-            self.metric_data.touch();
         }
+        self.metric_data.touch();
     }
 }
 
@@ -671,6 +677,7 @@ impl MetricSnapshot {
 /// StatsManager manages global statistics with high performance counters
 pub struct StatsManager {
     counters: Arc<DashMap<MetricKey, Arc<MetricData>>>,
+    activity_epoch: Arc<AtomicU32>,
     cleanup_task: Mutex<Option<AbortOnDropHandle<()>>>,
 }
 
@@ -679,6 +686,7 @@ impl StatsManager {
     pub fn new() -> Self {
         let manager = Self {
             counters: Arc::new(DashMap::new()),
+            activity_epoch: Arc::new(AtomicU32::new(0)),
             cleanup_task: Mutex::new(None),
         };
         manager.start_cleanup_task();
@@ -698,24 +706,19 @@ impl StatsManager {
             return;
         };
         let counters = Arc::downgrade(&self.counters);
+        let activity_epoch = Arc::clone(&self.activity_epoch);
         *cleanup_task = Some(AbortOnDropHandle::new(runtime.spawn(async move {
-            let mut interval = interval(Duration::from_secs(60)); // Check every minute
+            let mut interval = interval(METRIC_CLEANUP_INTERVAL);
             loop {
                 interval.tick().await;
 
-                let Some(cutoff_time) = Instant::now().checked_sub(Duration::from_secs(180)) else {
-                    continue;
-                };
+                let current_epoch = activity_epoch.fetch_add(1, Ordering::Relaxed) + 1;
 
                 let Some(counters) = counters.upgrade() else {
                     break;
                 };
 
-                counters.retain(|_, metric_data: &mut Arc<MetricData>| {
-                    Arc::strong_count(metric_data) > 1
-                        || unsafe { metric_data.get_last_updated() > cutoff_time }
-                });
-                counters.shrink_to_fit();
+                cleanup_metrics(&counters, current_epoch);
             }
         })));
     }
@@ -735,7 +738,7 @@ impl StatsManager {
         let metric_data = self
             .counters
             .entry(key.clone())
-            .or_insert_with(|| Arc::new(MetricData::new()))
+            .or_insert_with(|| Arc::new(MetricData::new(Arc::clone(&self.activity_epoch))))
             .clone();
 
         CounterHandle::new(metric_data, key)
@@ -1245,27 +1248,37 @@ mod tests {
     #[tokio::test]
     async fn test_cleanup_keeps_metrics_with_live_handles() {
         let stats = StatsManager::new();
+        stats.stop_cleanup_task().await;
+        stats.activity_epoch.store(0, Ordering::Relaxed);
+
         let counter = stats.get_simple_counter(MetricName::TrafficBytesForwarded);
         counter.set(1);
 
-        let cutoff_time = Instant::now().checked_add(Duration::from_secs(1)).unwrap();
-        stats
-            .counters
-            .retain(|_, metric_data: &mut Arc<MetricData>| {
-                Arc::strong_count(metric_data) > 1
-                    || unsafe { metric_data.get_last_updated() > cutoff_time }
-            });
+        let expired_epoch = METRIC_RETENTION_EPOCHS + 1;
+        cleanup_metrics(&stats.counters, expired_epoch);
 
         assert_eq!(stats.metric_count(), 1);
         assert_eq!(stats.get_all_metrics().len(), 1);
 
         drop(counter);
-        stats
-            .counters
-            .retain(|_, metric_data: &mut Arc<MetricData>| {
-                Arc::strong_count(metric_data) > 1
-                    || unsafe { metric_data.get_last_updated() > cutoff_time }
-            });
+        cleanup_metrics(&stats.counters, expired_epoch);
+        assert_eq!(stats.metric_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_retains_recently_updated_metrics_for_three_epochs() {
+        let stats = StatsManager::new();
+        stats.stop_cleanup_task().await;
+        stats.activity_epoch.store(0, Ordering::Relaxed);
+
+        let counter = stats.get_simple_counter(MetricName::TrafficBytesForwarded);
+        counter.set(1);
+        drop(counter);
+
+        cleanup_metrics(&stats.counters, METRIC_RETENTION_EPOCHS);
+        assert_eq!(stats.metric_count(), 1);
+
+        cleanup_metrics(&stats.counters, METRIC_RETENTION_EPOCHS + 1);
         assert_eq!(stats.metric_count(), 0);
     }
 
