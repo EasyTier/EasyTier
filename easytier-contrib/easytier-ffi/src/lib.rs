@@ -312,8 +312,9 @@ pub extern "C" fn is_config_server_client_connected() -> c_int {
 
 #[cfg(feature = "ffi-dataplane")]
 pub use data_plane::{
-    data_plane_completion_drain, data_plane_completion_wait, data_plane_operation_cancel,
-    data_plane_operation_free, data_plane_resource_close, data_plane_result_size,
+    DATA_PLANE_DEADLINE_READ, DATA_PLANE_DEADLINE_WRITE, data_plane_completion_drain,
+    data_plane_completion_wait, data_plane_operation_cancel, data_plane_operation_free,
+    data_plane_resource_close, data_plane_resource_deadline_set, data_plane_result_size,
     data_plane_session_close, data_plane_session_open, data_plane_tcp_accept_result_take,
     data_plane_tcp_accept_submit, data_plane_tcp_bind_result_take, data_plane_tcp_bind_submit,
     data_plane_tcp_connect_result_take, data_plane_tcp_connect_submit,

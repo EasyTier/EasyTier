@@ -13,6 +13,9 @@ use crate::{
     types::{DataPlaneCompletion, DataPlaneSocketAddr},
 };
 
+pub const DATA_PLANE_DEADLINE_READ: u32 = 1 << 0;
+pub const DATA_PLANE_DEADLINE_WRITE: u32 = 1 << 1;
+
 fn failure(error: NativeDataPlaneError) -> c_int {
     set_error_msg(&error.message);
     -(error.kind as c_int)
@@ -43,7 +46,7 @@ fn socket_addr(address: DataPlaneSocketAddr) -> NativeDataPlaneResult<SocketAddr
         6 => {
             return Err(NativeDataPlaneError {
                 kind: DataPlaneErrorKind::AddressFamilyUnsupported,
-                message: "IPv6 is not supported by data-plane ABI v2".to_string(),
+                message: "IPv6 is not supported by data-plane ABI v3".to_string(),
             });
         }
         family => {
@@ -210,11 +213,10 @@ pub unsafe extern "C" fn data_plane_tcp_read_submit(
     session: u64,
     stream: u64,
     max_len: u32,
-    timeout_ms: u64,
     out_operation: *mut u64,
 ) -> c_int {
     write_operation(out_operation, || {
-        super::session::submit_tcp_read(session, stream, max_len, timeout_ms)
+        super::session::submit_tcp_read(session, stream, max_len)
     })
 }
 
@@ -229,7 +231,6 @@ pub unsafe extern "C" fn data_plane_tcp_write_submit(
     stream: u64,
     data: *const c_uchar,
     len: u32,
-    timeout_ms: u64,
     out_operation: *mut u64,
 ) -> c_int {
     let data = match unsafe { copy_input(data, len) } {
@@ -237,7 +238,7 @@ pub unsafe extern "C" fn data_plane_tcp_write_submit(
         Err(error) => return failure(error),
     };
     write_operation(out_operation, || {
-        super::session::submit_tcp_write(session, stream, data, timeout_ms)
+        super::session::submit_tcp_write(session, stream, data)
     })
 }
 
@@ -266,11 +267,10 @@ pub unsafe extern "C" fn data_plane_udp_receive_submit(
     session: u64,
     socket: u64,
     max_len: u32,
-    timeout_ms: u64,
     out_operation: *mut u64,
 ) -> c_int {
     write_operation(out_operation, || {
-        super::session::submit_udp_receive(session, socket, max_len, timeout_ms)
+        super::session::submit_udp_receive(session, socket, max_len)
     })
 }
 
@@ -286,7 +286,6 @@ pub unsafe extern "C" fn data_plane_udp_send_submit(
     peer_addr: DataPlaneSocketAddr,
     data: *const c_uchar,
     len: u32,
-    timeout_ms: u64,
     out_operation: *mut u64,
 ) -> c_int {
     let peer_addr = match socket_addr(peer_addr) {
@@ -298,8 +297,25 @@ pub unsafe extern "C" fn data_plane_udp_send_submit(
         Err(error) => return failure(error),
     };
     write_operation(out_operation, || {
-        super::session::submit_udp_send(session, socket, peer_addr, data, timeout_ms)
+        super::session::submit_udp_send(session, socket, peer_addr, data)
     })
+}
+
+#[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
+pub extern "C" fn data_plane_resource_deadline_set(
+    session: u64,
+    resource: u64,
+    direction: u32,
+    timeout_ms: u64,
+) -> c_int {
+    let read = direction & DATA_PLANE_DEADLINE_READ != 0;
+    let write = direction & DATA_PLANE_DEADLINE_WRITE != 0;
+    if direction == 0 || direction & !(DATA_PLANE_DEADLINE_READ | DATA_PLANE_DEADLINE_WRITE) != 0 {
+        return failure(invalid(format!("invalid deadline direction {direction}")));
+    }
+    status(super::session::set_resource_deadline(
+        session, resource, read, write, timeout_ms,
+    ))
 }
 
 #[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
@@ -628,7 +644,7 @@ mod tests {
     }
 
     #[test]
-    fn ipv6_is_rejected_by_v2() {
+    fn ipv6_is_rejected_by_v3() {
         let error = socket_addr(ffi_socket_addr(
             "[2001:db8::1]:4321".parse::<SocketAddr>().unwrap(),
         ))
@@ -644,6 +660,13 @@ mod tests {
         })
         .unwrap_err();
         assert_eq!(error.kind, DataPlaneErrorKind::AddressFamilyUnsupported);
+    }
+
+    #[test]
+    fn invalid_deadline_direction_is_rejected_before_session_lookup() {
+        let invalid = -(DataPlaneErrorKind::Io as c_int);
+        assert_eq!(data_plane_resource_deadline_set(u64::MAX, 1, 0, 0), invalid);
+        assert_eq!(data_plane_resource_deadline_set(u64::MAX, 1, 4, 0), invalid);
     }
 
     #[test]
