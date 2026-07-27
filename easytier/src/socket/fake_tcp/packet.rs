@@ -166,6 +166,9 @@ pub fn parse_ip_packet(buf: &Bytes) -> Option<(MacAddr, MacAddr, IPPacket<'_>, T
     match ethertype {
         EthernetProtocol::Ipv4 => {
             let v4 = Ipv4Packet::new_checked(ip_payload).ok()?;
+            if usize::from(v4.header_len()) < IPV4_HEADER_LEN {
+                return None;
+            }
             if v4.next_header() != IpProtocol::Tcp {
                 return None;
             }
@@ -275,6 +278,26 @@ mod tests {
             Bytes::copy_from_slice(&packet[..ETHERNET_HEADER_LEN + IPV4_HEADER_LEN + 10]);
 
         assert!(parse_ip_packet(&truncated).is_none());
+    }
+
+    #[test]
+    fn parse_rejects_ipv4_header_shorter_than_minimum() {
+        let packet = build_tcp_packet(
+            MacAddr::from_bytes(&[0x02, 0, 0, 0, 0, 5]),
+            MacAddr::from_bytes(&[0x02, 0, 0, 0, 0, 6]),
+            "192.0.2.10:1111".parse().unwrap(),
+            "198.51.100.20:2222".parse().unwrap(),
+            1,
+            0x5000_0000,
+            TCP_FLAG_ACK,
+            None,
+        );
+        let mut malformed = BytesMut::from(packet.as_ref());
+        Ipv4Packet::new_unchecked(&mut malformed[ETHERNET_HEADER_LEN..])
+            .set_header_len((IPV4_HEADER_LEN - 4) as u8);
+        let malformed = malformed.freeze();
+
+        assert!(parse_ip_packet(&malformed).is_none());
     }
 
     #[test]
