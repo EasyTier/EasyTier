@@ -61,7 +61,7 @@ jobs:
           concurrent_skipping: "same_content_newer"
           skip_after_successful_duplicate: "true"
           cancel_others: "true"
-          paths: '["Cargo.toml", "Cargo.lock", "easytier/**", "easytier-contrib/easytier-ohrs/**", ".github/workflows/ohos.yml", ".github/actions/**"]'
+          paths: '["Cargo.toml", "Cargo.lock", "easytier/**", "easytier-core/**", "easytier-contrib/easytier-ohrs/**", ".github/workflows/ohos.yml", ".github/actions/**"]'
 
   build-ohos:
     runs-on: ubuntu-latest
