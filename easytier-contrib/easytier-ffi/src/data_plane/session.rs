@@ -112,10 +112,10 @@ impl NativeDataPlaneSession {
         self.core.discard_all();
     }
 
-    fn submit(
+    fn call<T>(
         &self,
-        submit: impl FnOnce(&Arc<CoreDataPlaneSession>) -> Result<DataPlaneOperationId, DataPlaneError>,
-    ) -> NativeDataPlaneResult<u64> {
+        call: impl FnOnce(&Arc<CoreDataPlaneSession>) -> Result<T, DataPlaneError>,
+    ) -> NativeDataPlaneResult<T> {
         let _gate = self
             .submit_gate
             .lock()
@@ -126,9 +126,14 @@ impl NativeDataPlaneSession {
             ));
         }
         let _runtime = self.runtime.enter();
-        submit(&self.core)
-            .map(DataPlaneOperationId::get)
-            .map_err(Into::into)
+        call(&self.core).map_err(Into::into)
+    }
+
+    fn submit(
+        &self,
+        submit: impl FnOnce(&Arc<CoreDataPlaneSession>) -> Result<DataPlaneOperationId, DataPlaneError>,
+    ) -> NativeDataPlaneResult<u64> {
+        self.call(submit).map(DataPlaneOperationId::get)
     }
 }
 
@@ -287,21 +292,18 @@ pub(super) fn submit_tcp_read(
     session: u64,
     stream: u64,
     max_len: u32,
-    timeout_ms: u64,
 ) -> NativeDataPlaneResult<u64> {
     let stream = resource_id(stream)?;
-    get_session(session)?
-        .submit(|core| core.submit_tcp_read(stream, max_len as usize, timeout(timeout_ms)))
+    get_session(session)?.submit(|core| core.submit_tcp_read(stream, max_len as usize))
 }
 
 pub(super) fn submit_tcp_write(
     session: u64,
     stream: u64,
     data: Vec<u8>,
-    timeout_ms: u64,
 ) -> NativeDataPlaneResult<u64> {
     let stream = resource_id(stream)?;
-    get_session(session)?.submit(|core| core.submit_tcp_write(stream, data, timeout(timeout_ms)))
+    get_session(session)?.submit(|core| core.submit_tcp_write(stream, data))
 }
 
 pub(super) fn submit_udp_bind(
@@ -316,11 +318,9 @@ pub(super) fn submit_udp_receive(
     session: u64,
     socket: u64,
     max_len: u32,
-    timeout_ms: u64,
 ) -> NativeDataPlaneResult<u64> {
     let socket = resource_id(socket)?;
-    get_session(session)?
-        .submit(|core| core.submit_udp_receive(socket, max_len as usize, timeout(timeout_ms)))
+    get_session(session)?.submit(|core| core.submit_udp_receive(socket, max_len as usize))
 }
 
 pub(super) fn submit_udp_send(
@@ -328,11 +328,21 @@ pub(super) fn submit_udp_send(
     socket: u64,
     peer_addr: SocketAddr,
     data: Vec<u8>,
-    timeout_ms: u64,
 ) -> NativeDataPlaneResult<u64> {
     let socket = resource_id(socket)?;
+    get_session(session)?.submit(|core| core.submit_udp_send(socket, peer_addr, data))
+}
+
+pub(super) fn set_resource_deadline(
+    session: u64,
+    resource: u64,
+    read: bool,
+    write: bool,
+    timeout_ms: u64,
+) -> NativeDataPlaneResult<()> {
+    let resource = resource_id(resource)?;
     get_session(session)?
-        .submit(|core| core.submit_udp_send(socket, peer_addr, data, timeout(timeout_ms)))
+        .call(|core| core.set_resource_deadline(resource, read, write, timeout(timeout_ms)))
 }
 
 pub(super) fn cancel_operation(session: u64, operation: u64) -> NativeDataPlaneResult<()> {

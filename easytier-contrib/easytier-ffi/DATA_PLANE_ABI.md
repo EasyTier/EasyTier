@@ -1,4 +1,4 @@
-# Native data-plane ABI v2
+# Native data-plane ABI v3
 
 The native data-plane ABI is a thin adapter over the instance-owned
 `DataPlaneSession`. It does not own sockets, operation state, completion
@@ -13,12 +13,18 @@ queues, routing policy, or timeouts.
 - `data_plane_completion_drain` returns a non-negative descriptor count or a
   negative error value.
 - Handle zero is invalid.
-- `timeout_ms == UINT64_MAX` means no deadline. Every other timeout starts when
-  submission is accepted, including time spent waiting for an I/O direction
-  lock.
+- `timeout_ms == UINT64_MAX` means no deadline.
+- TCP connect/bind/accept and UDP bind timeouts start when submission is
+  accepted.
+- TCP streams and UDP sockets have persistent read and write deadlines.
+  `data_plane_resource_deadline_set` replaces the selected directions'
+  deadlines immediately, including for active operations. An expired deadline
+  remains expired until it is replaced or cleared with `UINT64_MAX`.
+- Deadline direction `1` selects reads, `2` selects writes, and `3` selects
+  both.
 - Request and write bytes are copied before a submit call returns.
 - Socket-address fields use native-endian integers. Address bytes are in
-  network order. ABI v2 accepts IPv4 only.
+  network order. ABI v3 accepts IPv4 only.
 
 `DataPlaneSocketAddr` is:
 
@@ -46,6 +52,7 @@ One native session may be open for an EasyTier instance at a time:
 
 ```text
 data_plane_session_open
+  -> set resource deadlines
   -> submit operations
   -> completion_wait
   -> completion_drain
@@ -92,6 +99,7 @@ The exported function families are:
 
 - `data_plane_tcp_*_submit`
 - `data_plane_udp_*_submit`
+- `data_plane_resource_deadline_set`
 - `data_plane_completion_wait`
 - `data_plane_completion_drain`
 - `data_plane_*_result_take`

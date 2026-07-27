@@ -25,9 +25,9 @@ use crate::{
 };
 
 use super::{
-    DataPlaneConsumerLease, DataPlaneDeadline, DataPlaneError, DataPlaneErrorKind, DataPlaneResult,
-    DataPlaneRuntime, DataPlaneTcpConnectOptions, DataPlaneTcpListener, DataPlaneTcpStream,
-    DataPlaneUdpSocket,
+    DataPlaneConsumerLease, DataPlaneDeadline, DataPlaneError, DataPlaneErrorKind,
+    DataPlaneIoDeadline, DataPlaneResult, DataPlaneRuntime, DataPlaneTcpConnectOptions,
+    DataPlaneTcpListener, DataPlaneTcpStream, DataPlaneUdpSocket,
     operation::{
         DataPlaneCompletionDescriptor, DataPlaneCompletionStatus, DataPlaneOperationId,
         DataPlaneOperationKind, DataPlaneOperationOutcome, DataPlaneOperationResult,
@@ -62,12 +62,39 @@ impl Default for DataPlaneSessionLimits {
 struct TcpResource {
     read: AsyncMutex<ReadHalf<DataPlaneTcpStream>>,
     write: AsyncMutex<WriteHalf<DataPlaneTcpStream>>,
+    read_deadline: DataPlaneIoDeadline,
+    write_deadline: DataPlaneIoDeadline,
 }
 
 struct UdpResource {
     socket: Arc<DataPlaneUdpSocket>,
     read: AsyncMutex<()>,
     write: AsyncMutex<()>,
+    read_deadline: DataPlaneIoDeadline,
+    write_deadline: DataPlaneIoDeadline,
+}
+
+async fn write_tcp_payload(
+    writer: &mut (impl tokio::io::AsyncWrite + Unpin),
+    data: &[u8],
+    cancel: &CancellationToken,
+    deadline: &DataPlaneIoDeadline,
+) -> DataPlaneResult<usize> {
+    let mut written = 0;
+    while written < data.len() {
+        let result = deadline
+            .run(cancel.clone(), writer.write(&data[written..]))
+            .await;
+        match result {
+            Ok(0) if written == 0 => {
+                return Err(std::io::Error::from(std::io::ErrorKind::WriteZero).into());
+            }
+            Ok(0) | Err(_) if written > 0 => return Ok(written),
+            Ok(len) => written += len,
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(written)
 }
 
 #[derive(Clone)]
@@ -525,11 +552,9 @@ where
         self: &Arc<Self>,
         stream_id: DataPlaneResourceId,
         max_len: usize,
-        timeout: Option<Duration>,
     ) -> DataPlaneResult<DataPlaneOperationId> {
         Self::ensure_executor()?;
         self.require_read_size(max_len)?;
-        let deadline = DataPlaneDeadline::from_optional_timeout(timeout);
         let (stream, operation_id, cancel) = {
             let mut state = self.lock_state();
             let stream = Self::require_tcp(&state, stream_id)?;
@@ -553,13 +578,15 @@ where
             return Ok(operation_id);
         }
         self.spawn_operation(operation_id, async move {
-            let (data, eof) = Self::run_operation(cancel, deadline, async move {
-                let mut data = vec![0u8; max_len];
-                let len = stream.read.lock().await.read(&mut data).await?;
-                data.truncate(len);
-                Ok::<_, std::io::Error>((data, len == 0))
-            })
-            .await?;
+            let (data, eof) = stream
+                .read_deadline
+                .run(cancel, async {
+                    let mut data = vec![0u8; max_len];
+                    let len = stream.read.lock().await.read(&mut data).await?;
+                    data.truncate(len);
+                    Ok::<_, std::io::Error>((data, len == 0))
+                })
+                .await?;
             Ok(PendingOperationResult::TcpRead { data, eof })
         });
         Ok(operation_id)
@@ -569,10 +596,8 @@ where
         self: &Arc<Self>,
         stream_id: DataPlaneResourceId,
         data: Vec<u8>,
-        timeout: Option<Duration>,
     ) -> DataPlaneResult<DataPlaneOperationId> {
         Self::ensure_executor()?;
-        let deadline = DataPlaneDeadline::from_optional_timeout(timeout);
         let (stream, operation_id, cancel) = {
             let mut state = self.lock_state();
             let stream = Self::require_tcp(&state, stream_id)?;
@@ -586,10 +611,14 @@ where
             (stream, operation_id, cancel)
         };
         self.spawn_operation(operation_id, async move {
-            let len = Self::run_operation(cancel, deadline, async move {
-                stream.write.lock().await.write(&data).await
-            })
-            .await?;
+            let mut writer = stream
+                .write_deadline
+                .run(cancel.clone(), async {
+                    Ok::<_, DataPlaneError>(stream.write.lock().await)
+                })
+                .await?;
+            let len =
+                write_tcp_payload(&mut *writer, &data, &cancel, &stream.write_deadline).await?;
             Ok(PendingOperationResult::TcpWritten(len))
         });
         Ok(operation_id)
@@ -623,11 +652,9 @@ where
         self: &Arc<Self>,
         socket_id: DataPlaneResourceId,
         max_len: usize,
-        timeout: Option<Duration>,
     ) -> DataPlaneResult<DataPlaneOperationId> {
         Self::ensure_executor()?;
         self.require_read_size(max_len)?;
-        let deadline = DataPlaneDeadline::from_optional_timeout(timeout);
         let (socket, operation_id, cancel) = {
             let mut state = self.lock_state();
             let socket = Self::require_udp(&state, socket_id)?;
@@ -641,11 +668,13 @@ where
             (socket, operation_id, cancel)
         };
         self.spawn_operation(operation_id, async move {
-            let (data, peer_addr, truncated) = Self::run_operation(cancel, deadline, async move {
-                let _read = socket.read.lock().await;
-                socket.socket.recv_from_limited(max_len).await
-            })
-            .await?;
+            let (data, peer_addr, truncated) = socket
+                .read_deadline
+                .run(cancel, async {
+                    let _read = socket.read.lock().await;
+                    socket.socket.recv_from_limited(max_len).await
+                })
+                .await?;
             Ok(PendingOperationResult::UdpReceived {
                 data,
                 peer_addr,
@@ -660,10 +689,8 @@ where
         socket_id: DataPlaneResourceId,
         peer_addr: SocketAddr,
         data: Vec<u8>,
-        timeout: Option<Duration>,
     ) -> DataPlaneResult<DataPlaneOperationId> {
         Self::ensure_executor()?;
-        let deadline = DataPlaneDeadline::from_optional_timeout(timeout);
         let (socket, operation_id, cancel) = {
             let mut state = self.lock_state();
             let socket = Self::require_udp(&state, socket_id)?;
@@ -677,14 +704,55 @@ where
             (socket, operation_id, cancel)
         };
         self.spawn_operation(operation_id, async move {
-            let len = Self::run_operation(cancel, deadline, async move {
-                let _write = socket.write.lock().await;
-                socket.socket.send_to(&data, peer_addr).await
-            })
-            .await?;
+            let len = socket
+                .write_deadline
+                .run(cancel, async {
+                    let _write = socket.write.lock().await;
+                    socket.socket.send_to(&data, peer_addr).await
+                })
+                .await?;
             Ok(PendingOperationResult::UdpSent(len))
         });
         Ok(operation_id)
+    }
+
+    pub fn set_resource_deadline(
+        &self,
+        resource_id: DataPlaneResourceId,
+        read: bool,
+        write: bool,
+        timeout: Option<Duration>,
+    ) -> DataPlaneResult<()> {
+        Self::ensure_executor()?;
+        let resource = {
+            let state = self.lock_state();
+            Self::resource_io(&state, resource_id)?
+        };
+        match resource {
+            ResourceIo::Tcp(resource) => {
+                if read {
+                    resource.read_deadline.set_timeout(timeout);
+                }
+                if write {
+                    resource.write_deadline.set_timeout(timeout);
+                }
+            }
+            ResourceIo::Udp(resource) => {
+                if read {
+                    resource.read_deadline.set_timeout(timeout);
+                }
+                if write {
+                    resource.write_deadline.set_timeout(timeout);
+                }
+            }
+            ResourceIo::TcpListener(_) => {
+                return Err(Self::error(
+                    DataPlaneErrorKind::HandleClosed,
+                    "data-plane resource does not support I/O deadlines",
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn unlink_target_locked(
@@ -730,6 +798,8 @@ where
                 io: ResourceIo::Tcp(Arc::new(TcpResource {
                     read: AsyncMutex::new(read),
                     write: AsyncMutex::new(write),
+                    read_deadline: DataPlaneIoDeadline::default(),
+                    write_deadline: DataPlaneIoDeadline::default(),
                 })),
                 pending_operations: HashSet::new(),
             },
@@ -764,6 +834,8 @@ where
                     socket: Arc::new(socket),
                     read: AsyncMutex::new(()),
                     write: AsyncMutex::new(()),
+                    read_deadline: DataPlaneIoDeadline::default(),
+                    write_deadline: DataPlaneIoDeadline::default(),
                 })),
                 pending_operations: HashSet::new(),
             },
@@ -938,8 +1010,14 @@ where
 
     pub fn cancel_operation(&self, operation_id: DataPlaneOperationId) {
         let mut state = self.lock_state();
+        let broker_id = operation_id.broker_id();
         let notify =
-            Self::queue_error_locked(&mut state, operation_id, DataPlaneErrorKind::Cancelled);
+            if state.broker.pending_kind(broker_id) == Some(DataPlaneOperationKind::TcpWrite) {
+                state.broker.request_cancellation(broker_id);
+                false
+            } else {
+                Self::queue_error_locked(&mut state, operation_id, DataPlaneErrorKind::Cancelled)
+            };
         drop(state);
         if notify {
             self.notify_completion();
@@ -1209,9 +1287,13 @@ where
 #[cfg(test)]
 mod tests {
     use std::{
+        pin::Pin,
         sync::{Arc, Barrier},
+        task::{Context, Poll},
         thread,
     };
+
+    use tokio::io::AsyncWrite;
 
     use crate::host::testkit::TestHost;
 
@@ -1229,6 +1311,118 @@ mod tests {
 
     fn successful_write(len: usize) -> DataPlaneResult<PendingOperationResult> {
         Ok(PendingOperationResult::TcpWritten(len))
+    }
+
+    #[tokio::test]
+    async fn tcp_write_payload_waits_for_the_full_buffer() {
+        let expected = b"larger than the duplex capacity".to_vec();
+        let (mut writer, mut reader) = tokio::io::duplex(4);
+        let payload = expected.clone();
+        let write = tokio::spawn(async move {
+            let deadline = DataPlaneIoDeadline::default();
+            write_tcp_payload(&mut writer, &payload, &CancellationToken::new(), &deadline)
+                .await
+                .unwrap()
+        });
+        let mut received = Vec::new();
+
+        reader.read_to_end(&mut received).await.unwrap();
+
+        assert_eq!(write.await.unwrap(), expected.len());
+        assert_eq!(received, expected);
+    }
+
+    struct PrefixThenPendingWriter {
+        first_write: Option<tokio::sync::oneshot::Sender<()>>,
+        prefix_len: usize,
+    }
+
+    impl AsyncWrite for PrefixThenPendingWriter {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+            data: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            let Some(first_write) = self.first_write.take() else {
+                return Poll::Pending;
+            };
+            let len = self.prefix_len.min(data.len());
+            let _ = first_write.send(());
+            Poll::Ready(Ok(len))
+        }
+
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn tcp_write_payload_reports_progress_when_cancelled() {
+        let (first_write_tx, first_write_rx) = tokio::sync::oneshot::channel();
+        let mut writer = PrefixThenPendingWriter {
+            first_write: Some(first_write_tx),
+            prefix_len: 4,
+        };
+        let cancel = CancellationToken::new();
+        let write_cancel = cancel.clone();
+        let write = tokio::spawn(async move {
+            let deadline = DataPlaneIoDeadline::default();
+            write_tcp_payload(&mut writer, b"partial payload", &write_cancel, &deadline).await
+        });
+
+        first_write_rx.await.unwrap();
+        cancel.cancel();
+
+        assert_eq!(write.await.unwrap().unwrap(), 4);
+    }
+
+    #[tokio::test]
+    async fn tcp_write_payload_reports_progress_when_deadline_expires() {
+        let (first_write_tx, first_write_rx) = tokio::sync::oneshot::channel();
+        let mut writer = PrefixThenPendingWriter {
+            first_write: Some(first_write_tx),
+            prefix_len: 5,
+        };
+        let write = tokio::spawn(async move {
+            let deadline = DataPlaneIoDeadline::default();
+            deadline.set_timeout(Some(Duration::from_millis(10)));
+            write_tcp_payload(
+                &mut writer,
+                b"partial payload",
+                &CancellationToken::new(),
+                &deadline,
+            )
+            .await
+        });
+
+        first_write_rx.await.unwrap();
+
+        assert_eq!(write.await.unwrap().unwrap(), 5);
+    }
+
+    #[test]
+    fn tcp_write_cancellation_waits_for_the_progress_outcome() {
+        let session = session();
+        let operation_id = session
+            .admit_test_operation(DataPlaneOperationKind::TcpWrite, 0)
+            .unwrap();
+
+        session.cancel_operation(operation_id);
+        assert!(session.drain_completions(1).is_empty());
+
+        session.complete_test_operation(operation_id, successful_write(4));
+        let completion = session.drain_completions(1).pop().unwrap();
+        assert_eq!(completion.status, DataPlaneCompletionStatus::Success);
     }
 
     #[test]

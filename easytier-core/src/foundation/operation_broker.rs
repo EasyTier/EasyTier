@@ -251,6 +251,23 @@ where
         !self.completions.is_empty()
     }
 
+    pub(crate) fn pending_kind(&self, operation_id: OperationId) -> Option<K> {
+        self.operations.get(&operation_id).and_then(|operation| {
+            matches!(operation.state, OperationState::Pending).then_some(operation.kind)
+        })
+    }
+
+    pub(crate) fn request_cancellation(&self, operation_id: OperationId) -> bool {
+        let Some(operation) = self.operations.get(&operation_id) else {
+            return false;
+        };
+        if !matches!(operation.state, OperationState::Pending) {
+            return false;
+        }
+        operation.cancellation.cancel();
+        true
+    }
+
     pub(crate) fn with_drained<T>(
         &self,
         operation_id: OperationId,
@@ -406,6 +423,21 @@ mod tests {
         let completions = completed_first.drain(4, |outcome| outcome.is_ok());
         assert_eq!(completions.len(), 1);
         assert!(completions[0].status);
+    }
+
+    #[test]
+    fn requested_cancellation_stays_pending_until_operation_completes() {
+        let mut broker = OperationBroker::new(4);
+        let admission = broker.admit(Kind::Write, "metadata").unwrap();
+
+        assert_eq!(broker.pending_kind(admission.id), Some(Kind::Write));
+        assert!(broker.request_cancellation(admission.id));
+        assert!(admission.cancellation.is_cancelled());
+        assert!(!broker.has_completions());
+
+        assert!(broker.complete_with(admission.id, |_, _| Ok::<_, &'static str>(7)));
+        assert!(broker.has_completions());
+        assert_eq!(broker.pending_kind(admission.id), None);
     }
 
     #[test]

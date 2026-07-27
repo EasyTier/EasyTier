@@ -95,6 +95,8 @@ impl SmoltcpPlane {
                 Some(BufferSize {
                     tcp_rx_size: 1024 * 128,
                     tcp_tx_size: 1024 * 128,
+                    udp_rx_size: 1024 * 128,
+                    udp_rx_meta_size: 128,
                     ..Default::default()
                 }),
             ),

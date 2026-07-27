@@ -71,7 +71,7 @@ mod tests;
 mod udp;
 
 use self::{
-    deadline::DataPlaneDeadline,
+    deadline::{DataPlaneDeadline, DataPlaneIoDeadline},
     error::DataPlaneResult,
     flow::{FlowKey, FlowKind, FlowLease, FlowTable},
     packet::PeerPacketRoute,

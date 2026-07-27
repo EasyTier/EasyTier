@@ -288,7 +288,7 @@ where
 
                 tokio::select! {
                     _ = redetect_notify.notified() => {}
-                    _ = tokio::time::sleep(Duration::from_secs(sleep_sec)) => {}
+                    _ = crate::foundation::time::sleep(Duration::from_secs(sleep_sec)) => {}
                 }
             }
         });
@@ -325,7 +325,7 @@ where
 
                 tokio::select! {
                     _ = redetect_notify.notified() => {}
-                    _ = tokio::time::sleep(Duration::from_secs(sleep_sec)) => {}
+                    _ = crate::foundation::time::sleep(Duration::from_secs(sleep_sec)) => {}
                 }
             }
         });
@@ -357,7 +357,7 @@ where
                 };
                 tokio::select! {
                     _ = redetect_notify.notified() => {}
-                    _ = tokio::time::sleep(Duration::from_secs(sleep_sec)) => {}
+                    _ = crate::foundation::time::sleep(Duration::from_secs(sleep_sec)) => {}
                 }
             }
         });

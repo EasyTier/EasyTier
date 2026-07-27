@@ -739,4 +739,8 @@ fn data_plane_invalid_handle_errors_are_stable() {
     assert_eq!(data_plane_operation_cancel(u64::MAX, 1), closed);
     assert_eq!(data_plane_operation_free(u64::MAX, 1), closed);
     assert_eq!(data_plane_resource_close(u64::MAX, 1), closed);
+    assert_eq!(
+        data_plane_resource_deadline_set(u64::MAX, 1, DATA_PLANE_DEADLINE_READ, 0),
+        closed
+    );
 }

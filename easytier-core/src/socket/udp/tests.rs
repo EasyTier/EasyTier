@@ -301,6 +301,7 @@ async fn udp_session_listener_reports_bound_local_addr_before_accept() {
 struct MockVirtualUdpSocket {
     local_addr: SocketAddr,
     incoming: Mutex<VecDeque<(Vec<u8>, SocketAddr)>>,
+    recv_capacities: Mutex<Vec<usize>>,
     sent: Mutex<Vec<(Vec<u8>, SocketAddr)>>,
     send_attempts: Mutex<Vec<(Vec<u8>, SocketAddr, UdpSocketSendMeta)>>,
     reject_preferred_source: AtomicBool,
@@ -311,6 +312,7 @@ impl MockVirtualUdpSocket {
         Self {
             local_addr,
             incoming: Mutex::new(incoming.into()),
+            recv_capacities: Mutex::new(Vec::new()),
             sent: Mutex::new(Vec::new()),
             send_attempts: Mutex::new(Vec::new()),
             reject_preferred_source: AtomicBool::new(false),
@@ -357,6 +359,7 @@ impl VirtualUdpSocket for MockVirtualUdpSocket {
     }
 
     async fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
+        self.recv_capacities.lock().unwrap().push(buf.len());
         let (data, remote_addr) =
             self.incoming.lock().unwrap().pop_front().ok_or_else(|| {
                 io::Error::new(io::ErrorKind::UnexpectedEof, "no incoming datagram")
@@ -365,6 +368,32 @@ impl VirtualUdpSocket for MockVirtualUdpSocket {
         buf[..len].copy_from_slice(&data[..len]);
         Ok((len, remote_addr))
     }
+}
+
+#[tokio::test]
+async fn portable_udp_receive_keeps_general_and_session_capacities_separate() {
+    let local_addr = SocketAddr::from(([127, 0, 0, 1], 12000));
+    let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
+    let socket = MockVirtualUdpSocket::new(
+        local_addr,
+        vec![
+            (b"session".to_vec(), peer_addr),
+            (b"general".to_vec(), peer_addr),
+        ],
+    );
+
+    assert_eq!(
+        socket.recv_session_datagram().await.unwrap().payload,
+        b"session".as_slice()
+    );
+    assert_eq!(
+        socket.recv_datagram().await.unwrap().payload,
+        b"general".as_slice()
+    );
+    assert_eq!(
+        *socket.recv_capacities.lock().unwrap(),
+        [MAX_UDP_SESSION_DATAGRAM_SIZE + 1, MAX_UDP_DATAGRAM_SIZE]
+    );
 }
 
 fn easytier_stun_request(change_ip: bool, change_port: bool) -> Vec<u8> {

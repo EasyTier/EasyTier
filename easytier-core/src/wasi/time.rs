@@ -230,7 +230,7 @@ mod tracked {
     }
 }
 
-pub use tracked::{Duration, Instant, Interval, error, interval, sleep, timeout};
+pub use tracked::{Duration, Instant, Interval, error, interval, sleep, sleep_until, timeout};
 
 pub(crate) use tracked::{clear_domain, enter_domain, next_deadline_millis};
 

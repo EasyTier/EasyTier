@@ -12,8 +12,9 @@ use easytier_core::socket::{
 use easytier_core::socket::{
     SocketContext,
     udp::{
-        MAX_UDP_SESSION_DATAGRAM_SIZE, UdpBindOptions, UdpSocketDatagram, UdpSocketPurpose,
-        UdpSocketRecvMeta, UdpSocketSendMeta, VirtualUdpSocket, VirtualUdpSocketFactory,
+        MAX_UDP_DATAGRAM_SIZE, MAX_UDP_SESSION_DATAGRAM_SIZE, UdpBindOptions, UdpSocketDatagram,
+        UdpSocketPurpose, UdpSocketRecvMeta, UdpSocketSendMeta, VirtualUdpSocket,
+        VirtualUdpSocketFactory,
     },
 };
 use tokio::net::UdpSocket;
@@ -111,6 +112,17 @@ impl VirtualUdpSocket for RuntimeUdpSocket {
 
     #[cfg(unix)]
     async fn recv_datagram(&self) -> std::io::Result<UdpSocketDatagram> {
+        let (payload, remote_addr, dst_ip) =
+            udp_src::recv_datagram_with_dst_ip(&self.socket, MAX_UDP_DATAGRAM_SIZE).await?;
+        Ok(UdpSocketDatagram {
+            payload,
+            remote_addr,
+            meta: UdpSocketRecvMeta { dst_ip },
+        })
+    }
+
+    #[cfg(unix)]
+    async fn recv_session_datagram(&self) -> std::io::Result<UdpSocketDatagram> {
         let (payload, remote_addr, dst_ip) =
             udp_src::recv_datagram_with_dst_ip(&self.socket, MAX_UDP_SESSION_DATAGRAM_SIZE).await?;
         Ok(UdpSocketDatagram {
@@ -265,7 +277,7 @@ mod tests {
 
         let datagram = tokio::time::timeout(
             std::time::Duration::from_secs(1),
-            runtime_socket.recv_datagram(),
+            runtime_socket.recv_session_datagram(),
         )
         .await
         .unwrap()

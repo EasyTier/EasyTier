@@ -10,12 +10,13 @@ use easytier_proto::{
         WebServerServiceClientFactory,
     },
 };
-use tokio::{sync::Mutex, task::JoinSet, time::interval};
+use tokio::{sync::Mutex, task::JoinSet};
 use tokio_util::task::AbortOnDropHandle;
 use url::Url;
 
 use crate::{
     connectivity::protocol::raw::TunnelDialer,
+    foundation::time,
     instance::{CoreInstance, CoreInstanceHost, manager::InstanceFactory},
     rpc::{bidirect::BidirectRpcManager, service_registry::ServiceRegistry},
     tunnel::{Tunnel, web_security},
@@ -171,7 +172,7 @@ where
                 Ok(connection) => connection,
                 Err(error) => {
                     tracing::warn!(%error, "failed to connect to config server; retrying");
-                    tokio::time::sleep(RETRY_INTERVAL).await;
+                    time::sleep(RETRY_INTERVAL).await;
                     continue;
                 }
             };
@@ -180,7 +181,7 @@ where
             tracing::info!(?connection, "connected to config server");
             let mut session = WebClientSession::new(connection, controller.clone());
             let support_encryption =
-                match tokio::time::timeout(FEATURE_TIMEOUT, session.get_feature()).await {
+                match time::timeout(FEATURE_TIMEOUT, session.get_feature()).await {
                     Ok(Ok(feature)) => feature.support_encryption,
                     Ok(Err(error)) => {
                         tracing::warn!(%error, "GetFeature RPC failed; using legacy tunnel");
@@ -199,7 +200,7 @@ where
                     Err(error) => {
                         connected.store(false, Ordering::Release);
                         tracing::warn!(%error, "failed to reconnect secure config-server tunnel");
-                        tokio::time::sleep(RETRY_INTERVAL).await;
+                        time::sleep(RETRY_INTERVAL).await;
                         continue;
                     }
                 };
@@ -208,7 +209,7 @@ where
                     Err(error) => {
                         connected.store(false, Ordering::Release);
                         tracing::warn!(%error, "config-server secure handshake failed");
-                        tokio::time::sleep(RETRY_INTERVAL).await;
+                        time::sleep(RETRY_INTERVAL).await;
                         continue;
                     }
                 };
@@ -225,7 +226,7 @@ where
                     tracing::warn!(
                         "secure mode requires web secure-tunnel support in the local build"
                     );
-                    tokio::time::sleep(RETRY_INTERVAL).await;
+                    time::sleep(RETRY_INTERVAL).await;
                     continue;
                 }
                 tracing::warn!(
@@ -235,7 +236,7 @@ where
             if controller.config.secure_mode {
                 connected.store(false, Ordering::Release);
                 tracing::warn!("secure mode requires config-server encryption support");
-                tokio::time::sleep(RETRY_INTERVAL).await;
+                time::sleep(RETRY_INTERVAL).await;
                 continue;
             }
 
@@ -302,7 +303,7 @@ where
         let client = rpc
             .rpc_client()
             .scoped_client::<WebServerServiceClientFactory<BaseController>>(1, 1, String::new());
-        let mut tick = interval(std::time::Duration::from_secs(1));
+        let mut tick = time::interval(std::time::Duration::from_secs(1));
 
         tasks.spawn(async move {
             loop {

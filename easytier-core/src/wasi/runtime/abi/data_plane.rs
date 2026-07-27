@@ -9,8 +9,8 @@ use crate::{
     },
     wasi::{
         abi::{
-            DATA_PLANE_ABI_VERSION, DATA_PLANE_CAPABILITY, DATA_PLANE_TCP_CAPABILITY,
-            DATA_PLANE_UDP_CAPABILITY,
+            DATA_PLANE_ABI_VERSION, DATA_PLANE_CAPABILITY, DATA_PLANE_DEADLINE_READ,
+            DATA_PLANE_DEADLINE_WRITE, DATA_PLANE_TCP_CAPABILITY, DATA_PLANE_UDP_CAPABILITY,
         },
         wire::{
             data_plane::{
@@ -42,12 +42,10 @@ impl WasiInstance {
         self.core.core().data_plane_session()
     }
 
-    fn submit_data_plane(
+    fn submit_data_plane<T>(
         &self,
-        submit: impl FnOnce(
-            &std::sync::Arc<WasiDataPlaneSession>,
-        ) -> Result<DataPlaneOperationId, DataPlaneError>,
-    ) -> Result<DataPlaneOperationId, DataPlaneError> {
+        submit: impl FnOnce(&std::sync::Arc<WasiDataPlaneSession>) -> Result<T, DataPlaneError>,
+    ) -> Result<T, DataPlaneError> {
         let execution = self.execution.lock().unwrap();
         let _domain = crate::foundation::time::enter_domain(self.domain);
         let _runtime = execution.runtime.enter();
@@ -316,7 +314,6 @@ pub extern "C" fn easytier_data_plane_tcp_read_submit(
     handle: u64,
     stream: u64,
     max_len: u32,
-    timeout_ms: u64,
     output_operation: u32,
 ) -> i32 {
     let stream = match resource_id(stream) {
@@ -327,9 +324,7 @@ pub extern "C" fn easytier_data_plane_tcp_read_submit(
         }
     };
     submit_operation(handle, output_operation, |instance| {
-        instance.submit_data_plane(|session| {
-            session.submit_tcp_read(stream, max_len as usize, timeout(timeout_ms))
-        })
+        instance.submit_data_plane(|session| session.submit_tcp_read(stream, max_len as usize))
     })
 }
 
@@ -339,7 +334,6 @@ pub extern "C" fn easytier_data_plane_tcp_write_submit(
     stream: u64,
     data_pointer: u32,
     data_length: u32,
-    timeout_ms: u64,
     output_operation: u32,
 ) -> i32 {
     let stream = match resource_id(stream) {
@@ -357,9 +351,7 @@ pub extern "C" fn easytier_data_plane_tcp_write_submit(
         }
     };
     submit_operation(handle, output_operation, |instance| {
-        instance.submit_data_plane(|session| {
-            session.submit_tcp_write(stream, data, timeout(timeout_ms))
-        })
+        instance.submit_data_plane(|session| session.submit_tcp_write(stream, data))
     })
 }
 
@@ -388,7 +380,6 @@ pub extern "C" fn easytier_data_plane_udp_receive_submit(
     handle: u64,
     socket: u64,
     max_len: u32,
-    timeout_ms: u64,
     output_operation: u32,
 ) -> i32 {
     let socket = match resource_id(socket) {
@@ -399,9 +390,7 @@ pub extern "C" fn easytier_data_plane_udp_receive_submit(
         }
     };
     submit_operation(handle, output_operation, |instance| {
-        instance.submit_data_plane(|session| {
-            session.submit_udp_receive(socket, max_len as usize, timeout(timeout_ms))
-        })
+        instance.submit_data_plane(|session| session.submit_udp_receive(socket, max_len as usize))
     })
 }
 
@@ -412,7 +401,6 @@ pub extern "C" fn easytier_data_plane_udp_send_submit(
     peer_address: u32,
     data_pointer: u32,
     data_length: u32,
-    timeout_ms: u64,
     output_operation: u32,
 ) -> i32 {
     let socket = match resource_id(socket) {
@@ -437,9 +425,36 @@ pub extern "C" fn easytier_data_plane_udp_send_submit(
         }
     };
     submit_operation(handle, output_operation, |instance| {
+        instance.submit_data_plane(|session| session.submit_udp_send(socket, peer_address, data))
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn easytier_data_plane_resource_deadline_set(
+    handle: u64,
+    resource: u64,
+    direction: u32,
+    timeout_ms: u64,
+) -> i32 {
+    let resource = match resource_id(resource) {
+        Ok(resource) => resource,
+        Err(error) => {
+            set_instance_error(handle, error.message());
+            return error_status(error.kind());
+        }
+    };
+    let read = direction & DATA_PLANE_DEADLINE_READ != 0;
+    let write = direction & DATA_PLANE_DEADLINE_WRITE != 0;
+    if direction == 0 || direction & !(DATA_PLANE_DEADLINE_READ | DATA_PLANE_DEADLINE_WRITE) != 0 {
+        let error = invalid_input(format!("invalid deadline direction {direction}"));
+        set_instance_error(handle, error.message());
+        return error_status(error.kind());
+    }
+    data_plane_call(handle, |instance| {
         instance.submit_data_plane(|session| {
-            session.submit_udp_send(socket, peer_address, data, timeout(timeout_ms))
-        })
+            session.set_resource_deadline(resource, read, write, timeout(timeout_ms))
+        })?;
+        Ok(0)
     })
 }
 
