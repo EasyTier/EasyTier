@@ -81,6 +81,11 @@ impl CoreRuntimeConfigStore {
         self.inner.snapshot.load_full()
     }
 
+    pub(crate) fn with_snapshot<T>(&self, read: impl FnOnce(&CoreInstanceRuntimeConfig) -> T) -> T {
+        let snapshot = self.inner.snapshot.load();
+        read(&snapshot)
+    }
+
     pub fn replace(&self, config: CoreInstanceRuntimeConfig) {
         let _update = self.inner.update.lock();
         self.inner.snapshot.store(Arc::new(config));

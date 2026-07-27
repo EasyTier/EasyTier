@@ -35,6 +35,7 @@ use super::{
 use crate::peers::{
     PacketRecvChan,
     context::{ArcPeerContext, NetworkIdentity, NetworkSecretDigest},
+    send_packet_to_chan,
 };
 use crate::{
     config::PeerId,
@@ -1310,7 +1311,7 @@ impl PeerConn {
                         if let Err(e) = ctrl_sender.send(zc_packet) {
                             tracing::error!(?e, "peer conn send ctrl resp error");
                         }
-                    } else if sender.send(zc_packet).await.is_err() {
+                    } else if send_packet_to_chan(&sender, zc_packet).await.is_err() {
                         break;
                     }
 
