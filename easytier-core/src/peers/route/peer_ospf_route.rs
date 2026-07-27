@@ -2131,6 +2131,15 @@ impl SyncRouteSession {
         }
     }
 
+    fn clear_dst_initiator_if_session_unchanged(&self, expected_dst_session_id: SessionId) -> bool {
+        if self.dst_session_id.load(Ordering::Relaxed) != expected_dst_session_id {
+            return false;
+        }
+
+        self.dst_is_initiator.store(false, Ordering::Relaxed);
+        true
+    }
+
     fn clean_dst_saved_map(&self) {
         self.dst_saved_peer_info_versions
             .retain(|_, v| !v.is_expired());
@@ -3028,6 +3037,7 @@ impl PeerRouteServiceImpl {
 
         let next_last_sync_succ_timestamp =
             self.synced_route_info.get_next_last_sync_succ_timestamp();
+        let expected_dst_session_id = session.dst_session_id.load(Ordering::Relaxed);
         let (peer_infos, conn_info, foreign_network) =
             self.build_sync_request(&session, dst_peer_id);
         if peer_infos.is_none()
@@ -3115,7 +3125,16 @@ impl PeerRouteServiceImpl {
             }
             Ok(resp) => {
                 if let Some(err) = resp.error {
-                    if err == Error::DuplicatePeerId as i32 {
+                    if err == Error::Stopped as i32 && !sync_route_info_req.is_initiator {
+                        let cleared = session
+                            .clear_dst_initiator_if_session_unchanged(expected_dst_session_id);
+                        tracing::debug!(
+                            ?my_peer_id,
+                            ?dst_peer_id,
+                            ?cleared,
+                            "stale non-initiator route sync rejected"
+                        );
+                    } else if err == Error::DuplicatePeerId as i32 {
                         if !self.context.feature_flags().is_public_server {
                             panic!("duplicate peer id");
                         }
@@ -3573,7 +3592,17 @@ impl RouteSessionManager {
         }
 
         let my_peer_id = service_impl.my_peer_id;
-        let session = self.get_or_start_session(from_peer_id)?;
+        let session = if let Some(session) = service_impl.get_session(from_peer_id) {
+            session
+        } else if is_initiator {
+            self.get_or_start_session(from_peer_id)?
+        } else {
+            tracing::debug!(
+                ?from_peer_id,
+                "ignore stale route sync from non-initiator without a session"
+            );
+            return Err(Error::Stopped);
+        };
 
         let from_identity_type = service_impl
             .get_peer_identity_type_from_interface(from_peer_id)
@@ -4522,6 +4551,60 @@ mod tests {
         assert_eq!(get_peer_identity_type_calls.load(Ordering::Relaxed), 4);
     }
 
+    #[test]
+    fn stopped_sync_clears_matching_remote_initiator() {
+        let session = SyncRouteSession::new(1, 2);
+        session.dst_session_id.store(10, Ordering::Relaxed);
+        session.dst_is_initiator.store(true, Ordering::Relaxed);
+
+        assert!(session.clear_dst_initiator_if_session_unchanged(10));
+        assert!(!session.dst_is_initiator.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn stopped_sync_preserves_newer_remote_initiator() {
+        let session = SyncRouteSession::new(1, 2);
+        session.dst_session_id.store(10, Ordering::Relaxed);
+        session.dst_is_initiator.store(true, Ordering::Relaxed);
+
+        session.update_dst_session_id(11);
+        session.dst_is_initiator.store(true, Ordering::Relaxed);
+
+        assert!(!session.clear_dst_initiator_if_session_unchanged(10));
+        assert!(session.dst_is_initiator.load(Ordering::Relaxed));
+    }
+
+    #[tokio::test]
+    async fn stale_non_initiator_sync_does_not_create_session() {
+        let peer_rpc = Arc::new(PeerRpcManager::new(TestPeerRpcTransport));
+        let route = PeerRoute::new(
+            1,
+            Arc::new(NoopPeerContext::default()),
+            Arc::new(TestPublicIpv6Runtime),
+            peer_rpc,
+        );
+        let peers = Arc::new(Mutex::new(vec![2]));
+        *route.service_impl.interface.lock().await = Some(Box::new(CountingInterface {
+            my_peer_id: 1,
+            peers,
+            peer_identity_types: Arc::new(Mutex::new(HashMap::from([(
+                2,
+                Some(PeerIdentityType::Admin),
+            )]))),
+            list_peers_calls: Arc::new(AtomicU32::new(0)),
+            get_peer_identity_type_calls: Arc::new(AtomicU32::new(0)),
+        }));
+
+        let result = route
+            .session_mgr
+            .do_sync_route_info(2, 1, false, None, None, None, None)
+            .await;
+
+        assert!(matches!(result, Err(Error::Stopped)));
+        assert!(route.service_impl.sessions.is_empty());
+        assert_eq!(route.task_count(), 0);
+    }
+
     #[tokio::test]
     async fn stop_waits_for_in_flight_route_sync_before_draining_sessions() {
         let peer_rpc = Arc::new(PeerRpcManager::new(TestPeerRpcTransport));
@@ -4542,7 +4625,7 @@ mod tests {
             let session_mgr = route.session_mgr.clone();
             async move {
                 session_mgr
-                    .do_sync_route_info(2, 1, false, None, None, None, None)
+                    .do_sync_route_info(2, 1, true, None, None, None, None)
                     .await
             }
         });
