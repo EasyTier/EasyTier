@@ -13,16 +13,17 @@ struct InterfaceState {
     is_point_to_point: bool,
     is_loopback: bool,
     is_up: bool,
+    #[cfg(target_os = "linux")]
     is_lower_up: bool,
 }
 
+#[cfg(any(
+    all(target_os = "linux", not(target_env = "ohos")),
+    all(target_os = "macos", not(feature = "macos-ne")),
+    target_os = "freebsd"
+))]
 fn collect_interface_states() -> HashMap<String, InterfaceState> {
     let mut states = HashMap::new();
-    #[cfg(any(
-        all(target_os = "linux", not(target_env = "ohos")),
-        all(target_os = "macos", not(feature = "macos-ne")),
-        target_os = "freebsd"
-    ))]
     if let Ok(interfaces) = nix::ifaddrs::getifaddrs() {
         use nix::net::if_::InterfaceFlags;
 
@@ -30,20 +31,28 @@ fn collect_interface_states() -> HashMap<String, InterfaceState> {
             let flags = interface.flags;
             #[cfg(target_os = "linux")]
             let is_lower_up = flags.contains(InterfaceFlags::IFF_LOWER_UP);
-            #[cfg(not(target_os = "linux"))]
-            let is_lower_up = true;
             states.insert(
                 interface.interface_name,
                 InterfaceState {
                     is_point_to_point: flags.contains(InterfaceFlags::IFF_POINTOPOINT),
                     is_loopback: flags.contains(InterfaceFlags::IFF_LOOPBACK),
                     is_up: flags.contains(InterfaceFlags::IFF_UP),
+                    #[cfg(target_os = "linux")]
                     is_lower_up,
                 },
             );
         }
     }
     states
+}
+
+#[cfg(not(any(
+    all(target_os = "linux", not(target_env = "ohos")),
+    all(target_os = "macos", not(feature = "macos-ne")),
+    target_os = "freebsd"
+)))]
+fn collect_interface_states() -> HashMap<String, InterfaceState> {
+    HashMap::new()
 }
 
 #[cfg(any(target_os = "freebsd", target_os = "windows"))]
@@ -102,6 +111,7 @@ fn interface_state(
     states.get(&iface.name).copied().unwrap_or(InterfaceState {
         is_loopback: iface.internal,
         is_up: true,
+        #[cfg(target_os = "linux")]
         is_lower_up: true,
         ..Default::default()
     })
