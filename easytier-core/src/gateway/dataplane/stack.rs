@@ -5,7 +5,7 @@ use std::{
     sync::{Arc, Weak},
 };
 
-use pnet_packet::ipv4::Ipv4Packet;
+use smoltcp::wire::Ipv4Packet;
 use tokio::{
     sync::{Mutex, mpsc},
     task::JoinSet,
@@ -54,11 +54,11 @@ impl SmoltcpPlane {
 
         forward_tasks.spawn(async move {
             while let Some(data) = stack_stream.recv().await {
-                let Some(ipv4) = Ipv4Packet::new(&data) else {
+                let Ok(ipv4) = Ipv4Packet::new_checked(&data) else {
                     tracing::error!(?data, "smoltcp emitted a non-IPv4 packet");
                     continue;
                 };
-                let destination = ipv4.get_destination();
+                let destination = ipv4.dst_addr();
                 let Some(peer_manager) = peer_manager.upgrade() else {
                     tracing::debug!("smoltcp-to-peer bridge lost PeerManager");
                     return;

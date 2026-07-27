@@ -2445,7 +2445,6 @@ dependencies = [
  "percent-encoding",
  "petgraph",
  "pin-project-lite",
- "pnet_packet",
  "prefix-trie",
  "prost 0.14.3",
  "prost-types 0.14.3",
