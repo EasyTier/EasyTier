@@ -33,15 +33,26 @@ pub(super) mod full;
 pub(super) mod packet_proxy;
 mod projection;
 
-/// One process-level implementation for Instance-targeted management RPC.
-pub struct InstanceManagementRpc<F>
+#[doc(hidden)]
+pub trait ReadOnlyInstanceResolver: Clone + Send + Sync + 'static {
+    type Host: CoreInstanceHost;
+
+    fn resolve(
+        &self,
+        identifier: Option<&easytier_proto::api::instance::InstanceIdentifier>,
+    ) -> rpc_types::error::Result<Arc<CoreInstance<Self::Host>>>;
+}
+
+/// Resolver used by the public process-level management RPC type.
+#[doc(hidden)]
+pub struct ManagerInstanceResolver<F>
 where
     F: InstanceFactory,
 {
     manager: Arc<InstanceManager<F>>,
 }
 
-impl<F> Clone for InstanceManagementRpc<F>
+impl<F> Clone for ManagerInstanceResolver<F>
 where
     F: InstanceFactory,
 {
@@ -52,21 +63,144 @@ where
     }
 }
 
-impl<F, H> InstanceManagementRpc<F>
+impl<F, H> ReadOnlyInstanceResolver for ManagerInstanceResolver<F>
+where
+    F: InstanceFactory<Instance = CoreInstance<H>>,
+    H: CoreInstanceHost,
+{
+    type Host = H;
+
+    fn resolve(
+        &self,
+        identifier: Option<&easytier_proto::api::instance::InstanceIdentifier>,
+    ) -> rpc_types::error::Result<Arc<CoreInstance<Self::Host>>> {
+        resolve_instance(&self.manager, identifier).map_err(Into::into)
+    }
+}
+
+#[cfg(target_os = "wasi")]
+pub(super) struct BoundInstanceResolver<H>
+where
+    H: CoreInstanceHost,
+{
+    instance: Arc<CoreInstance<H>>,
+}
+
+#[cfg(target_os = "wasi")]
+impl<H> Clone for BoundInstanceResolver<H>
+where
+    H: CoreInstanceHost,
+{
+    fn clone(&self) -> Self {
+        Self {
+            instance: self.instance.clone(),
+        }
+    }
+}
+
+#[cfg(target_os = "wasi")]
+impl<H> ReadOnlyInstanceResolver for BoundInstanceResolver<H>
+where
+    H: CoreInstanceHost,
+{
+    type Host = H;
+
+    fn resolve(
+        &self,
+        identifier: Option<&easytier_proto::api::instance::InstanceIdentifier>,
+    ) -> rpc_types::error::Result<Arc<CoreInstance<Self::Host>>> {
+        validate_bound_identifier(
+            identifier,
+            self.instance.instance_id(),
+            self.instance.instance_name(),
+        )?;
+        Ok(self.instance.clone())
+    }
+}
+
+/// Instance-targeted management RPC backed by a selector resolver.
+#[doc(hidden)]
+pub struct ResolvedInstanceManagementRpc<R> {
+    resolver: R,
+}
+
+impl<R> Clone for ResolvedInstanceManagementRpc<R>
+where
+    R: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            resolver: self.resolver.clone(),
+        }
+    }
+}
+
+impl<R> ResolvedInstanceManagementRpc<R>
+where
+    R: ReadOnlyInstanceResolver,
+{
+    fn instance(
+        &self,
+        identifier: Option<&easytier_proto::api::instance::InstanceIdentifier>,
+    ) -> rpc_types::error::Result<Arc<CoreInstance<R::Host>>> {
+        self.resolver.resolve(identifier)
+    }
+}
+
+/// One process-level implementation for Instance-targeted management RPC.
+pub type InstanceManagementRpc<F> = ResolvedInstanceManagementRpc<ManagerInstanceResolver<F>>;
+
+impl<F, H> ResolvedInstanceManagementRpc<ManagerInstanceResolver<F>>
 where
     F: InstanceFactory<Instance = CoreInstance<H>>,
     H: CoreInstanceHost,
 {
     pub fn new(manager: Arc<InstanceManager<F>>) -> Self {
-        Self { manager }
+        Self {
+            resolver: ManagerInstanceResolver { manager },
+        }
     }
 
-    fn instance(
-        &self,
-        identifier: Option<&easytier_proto::api::instance::InstanceIdentifier>,
-    ) -> rpc_types::error::Result<Arc<CoreInstance<H>>> {
-        resolve_instance(&self.manager, identifier).map_err(Into::into)
+    #[cfg(feature = "management")]
+    pub(super) fn manager(&self) -> &Arc<InstanceManager<F>> {
+        &self.resolver.manager
     }
+}
+
+#[cfg(target_os = "wasi")]
+pub(super) fn bound_rpc<H>(
+    instance: Arc<CoreInstance<H>>,
+) -> ResolvedInstanceManagementRpc<BoundInstanceResolver<H>>
+where
+    H: CoreInstanceHost,
+{
+    ResolvedInstanceManagementRpc {
+        resolver: BoundInstanceResolver { instance },
+    }
+}
+
+#[cfg(any(test, target_os = "wasi"))]
+fn validate_bound_identifier(
+    identifier: Option<&easytier_proto::api::instance::InstanceIdentifier>,
+    instance_id: uuid::Uuid,
+    instance_name: &str,
+) -> anyhow::Result<()> {
+    use easytier_proto::api::instance::instance_identifier::Selector;
+
+    let matches = match identifier.and_then(|identifier| identifier.selector.as_ref()) {
+        None
+        | Some(Selector::InstanceSelector(
+            easytier_proto::api::instance::instance_identifier::InstanceSelector { name: None },
+        )) => true,
+        Some(Selector::Id(selected)) => uuid::Uuid::from(*selected) == instance_id,
+        Some(Selector::InstanceSelector(selector)) => {
+            selector.name.as_deref() == Some(instance_name)
+        }
+    };
+    if !matches {
+        anyhow::bail!("instance selector does not match the bound WASM instance");
+    }
+    Ok(())
 }
 
 fn foreign_network_info_to_api(info: ForeignNetworkEntryInfo) -> ForeignNetworkEntryPb {
@@ -129,10 +263,9 @@ fn connector_snapshots_to_api(snapshots: Vec<ManualConnectorSnapshot>) -> Vec<Co
 }
 
 #[async_trait::async_trait]
-impl<F, H> PeerManageRpc for InstanceManagementRpc<F>
+impl<R> PeerManageRpc for ResolvedInstanceManagementRpc<R>
 where
-    F: InstanceFactory<Instance = CoreInstance<H>>,
-    H: CoreInstanceHost,
+    R: ReadOnlyInstanceResolver,
 {
     type Controller = BaseController;
 
@@ -306,10 +439,9 @@ where
 }
 
 #[async_trait::async_trait]
-impl<F, H> ConnectorManageRpc for InstanceManagementRpc<F>
+impl<R> ConnectorManageRpc for ResolvedInstanceManagementRpc<R>
 where
-    F: InstanceFactory<Instance = CoreInstance<H>>,
-    H: CoreInstanceHost,
+    R: ReadOnlyInstanceResolver,
 {
     type Controller = BaseController;
 
@@ -323,5 +455,46 @@ where
                 self.instance(request.instance.as_ref())?.list_connectors(),
             ),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use easytier_proto::{
+        api::instance::{
+            InstanceIdentifier,
+            instance_identifier::{InstanceSelector, Selector},
+        },
+        common::Uuid as UuidPb,
+    };
+
+    use super::validate_bound_identifier;
+
+    #[test]
+    fn bound_identifier_accepts_only_the_current_instance() {
+        let instance_id = uuid::Uuid::new_v4();
+        let by_id = |id| InstanceIdentifier {
+            selector: Some(Selector::Id(UuidPb::from(id))),
+        };
+        let by_name = |name: &str| InstanceIdentifier {
+            selector: Some(Selector::InstanceSelector(InstanceSelector {
+                name: Some(name.to_owned()),
+            })),
+        };
+
+        assert!(validate_bound_identifier(None, instance_id, "current").is_ok());
+        assert!(
+            validate_bound_identifier(Some(&by_id(instance_id)), instance_id, "current").is_ok()
+        );
+        assert!(
+            validate_bound_identifier(Some(&by_name("current")), instance_id, "current").is_ok()
+        );
+        assert!(
+            validate_bound_identifier(Some(&by_id(uuid::Uuid::new_v4())), instance_id, "current")
+                .is_err()
+        );
+        assert!(
+            validate_bound_identifier(Some(&by_name("other")), instance_id, "current").is_err()
+        );
     }
 }

@@ -35,7 +35,7 @@ use crate::{
     peers::credential_manager::{CredentialCreateOptions, CredentialInfo as CoreCredentialInfo},
 };
 
-use super::InstanceManagementRpc;
+use super::{InstanceManagementRpc, ReadOnlyInstanceResolver, ResolvedInstanceManagementRpc};
 use crate::management::{
     full::{apply_config_patch, packet_proxy},
     resolve_instance,
@@ -347,7 +347,7 @@ where
         _: BaseController,
         _: GetGlobalPeerMapRequest,
     ) -> rpc_types::error::Result<GetGlobalPeerMapResponse> {
-        let instance = resolve_instance(&self.manager, None).map_err(|error| {
+        let instance = resolve_instance(self.manager(), None).map_err(|error| {
             if error.to_string().contains("please specify the instance ID") {
                 anyhow::anyhow!(
                     "PeerCenter management RPC cannot select an instance automatically when \
@@ -371,10 +371,9 @@ where
 }
 
 #[async_trait::async_trait]
-impl<F, H> ConfigRpc for InstanceManagementRpc<F>
+impl<R> ConfigRpc for ResolvedInstanceManagementRpc<R>
 where
-    F: InstanceFactory<Instance = CoreInstance<H>>,
-    H: CoreInstanceHost,
+    R: ReadOnlyInstanceResolver,
 {
     type Controller = BaseController;
 
@@ -401,6 +400,7 @@ where
             .ok_or_else(|| anyhow::anyhow!("shared TOML configuration is not available"))?;
         Ok(GetConfigResponse {
             config: Some(network_config_from_toml(&config)),
+            toml_config: config.dump(),
         })
     }
 }

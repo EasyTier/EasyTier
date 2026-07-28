@@ -29,8 +29,20 @@ pub const HOST_CRYPTO_AUTH_FAILED: i32 = -10;
 /// Version of the JSON document accepted by `easytier_instance_create`.
 pub const CORE_INSTANCE_CONFIG_VERSION: u32 = 14;
 
+/// Version of the JSON document accepted by `easytier_web_client_create`.
+#[cfg(feature = "management")]
+pub const WEB_CLIENT_CONFIG_VERSION: u32 = 1;
+
 /// Version of the public data-plane guest export contract.
 pub const DATA_PLANE_ABI_VERSION: u32 = 3;
+
+/// Version of the protobuf RPC guest export contract.
+#[cfg(feature = "management-rpc")]
+pub const RPC_ABI_VERSION: u32 = 2;
+
+/// `easytier_rpc_response_take` has not completed yet.
+#[cfg(feature = "management-rpc")]
+pub const RPC_STATUS_PENDING: i32 = -6;
 
 /// The guest exposes an instance-scoped data-plane operation broker.
 pub const DATA_PLANE_CAPABILITY: u64 = 1 << 0;
@@ -66,6 +78,38 @@ pub const GUEST_EXPORTS: &[&str] = &[
     "easytier_instance_drop",
     "easytier_instance_error_len",
     "easytier_instance_error_copy",
+];
+
+/// Guest exports present when process-level WebClient management is enabled.
+#[cfg(feature = "management")]
+pub const WEB_CLIENT_GUEST_EXPORTS: &[&str] = &[
+    "easytier_web_client_create",
+    "easytier_web_client_drive",
+    "easytier_web_client_notify_completions",
+    "easytier_web_client_next_deadline_millis",
+    "easytier_web_client_is_connected",
+    "easytier_web_client_drop",
+];
+
+/// Guest exports present when protobuf management RPC is enabled.
+///
+/// `easytier_rpc_request_submit` accepts a serialized
+/// `common.DirectRpcRequest`. Its `full_method_name` uses the canonical
+/// protobuf reflection name, and `request` contains the serialized protobuf
+/// input. An absent `timeout_ms` means the dispatcher has no timeout.
+/// `easytier_rpc_response_take` returns a serialized `common.RpcResponse`,
+/// including any method error.
+/// Submit writes an opaque big-endian `u64` operation ID. A response take
+/// returns [`RPC_STATUS_PENDING`] while running; `(output, capacity) == (0,
+/// 0)` probes the size, and an undersized buffer returns the required size
+/// without consuming the response. Free cancels pending work and discards
+/// any retained result.
+#[cfg(feature = "management-rpc")]
+pub const RPC_GUEST_EXPORTS: &[&str] = &[
+    "easytier_rpc_abi_version",
+    "easytier_rpc_request_submit",
+    "easytier_rpc_response_take",
+    "easytier_rpc_operation_free",
 ];
 
 /// Guest exports present when the core is built with the smoltcp data plane.

@@ -40,6 +40,8 @@ pub use process_rpc::{
     ConfigFileStorage, InstanceMutationHooks, InstanceMutationResult, ProcessManagement,
     ProcessManagementRpc, UnsupportedConfigFileStorage,
 };
+#[cfg(target_os = "wasi")]
+pub(crate) use web_client::WebClientBackend;
 pub use web_client::{ConfigServerEndpoint, WebClient, WebClientConfig};
 
 pub use super::instance_rpc::full::call_instance_json_rpc;

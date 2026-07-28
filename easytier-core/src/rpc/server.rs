@@ -16,14 +16,10 @@ use crate::{
     foundation::{
         stats::{ArcRpcMetrics, RpcMetricLabels, RpcMetricsProvider},
         task::reap_joinset_background,
-        time::timeout,
     },
     proto::{
-        common::{
-            self, CompressionAlgoPb, RpcCompressionInfo, RpcPacket, RpcRequest, RpcResponse,
-            TunnelInfo,
-        },
-        rpc_types::{controller::Controller, error::Result},
+        common::{self, RpcCompressionInfo, RpcPacket, RpcRequest, RpcResponse, TunnelInfo},
+        rpc_types::error::Result,
     },
     rpc::packet::BuildRpcPacketArgs,
     tunnel::{
@@ -34,8 +30,12 @@ use crate::{
 };
 
 use super::{
-    RpcController, Transport,
-    packet::{PacketMerger, build_rpc_packet, compress_packet, decompress_packet},
+    Transport,
+    dispatch::dispatch_request,
+    packet::{
+        PacketMerger, accepted_compression_algo, build_rpc_packet, compress_packet,
+        decompress_packet,
+    },
     service_registry::ServiceRegistry,
 };
 
@@ -209,6 +209,7 @@ impl Server {
 
     async fn handle_rpc_request(
         packet: RpcPacket,
+        descriptor: common::RpcDescriptor,
         reg: Arc<ServiceRegistry>,
         tunnel_info: Option<TunnelInfo>,
     ) -> Result<Bytes> {
@@ -222,21 +223,7 @@ impl Server {
             packet.body
         };
         let rpc_request = RpcRequest::decode(Bytes::from(body))?;
-        let timeout_duration = std::time::Duration::from_millis(rpc_request.timeout_ms as u64);
-        let mut ctrl = RpcController::default();
-        let raw_req = Bytes::from(rpc_request.request);
-        ctrl.set_raw_input(raw_req.clone());
-        ctrl.set_tunnel_info(tunnel_info);
-        let ret = timeout(
-            timeout_duration,
-            reg.call_method(packet.descriptor.unwrap(), ctrl.clone(), raw_req),
-        )
-        .await??;
-        if let Some(raw_output) = ctrl.get_raw_output() {
-            Ok(raw_output)
-        } else {
-            Ok(ret)
-        }
+        dispatch_request(reg.as_ref(), descriptor, rpc_request, tunnel_info).await
     }
 
     async fn handle_rpc(
@@ -250,7 +237,10 @@ impl Server {
         let to_peer = packet.to_peer;
         let transaction_id = packet.transaction_id;
         let trace_id = packet.trace_id;
-        let desc = packet.descriptor.clone().unwrap();
+        let Some(desc) = packet.descriptor.clone() else {
+            tracing::warn!("received RPC request without a descriptor");
+            return;
+        };
         let method_name = reg.get_method_name(&desc).unwrap_or("<Nil>".to_owned());
         let labels = RpcMetricLabels {
             network_name: desc.domain_name.clone(),
@@ -268,7 +258,7 @@ impl Server {
         let now = std::time::Instant::now();
 
         let compression_info = packet.compression_info;
-        let resp_bytes = Self::handle_rpc_request(packet, reg, tunnel_info).await;
+        let resp_bytes = Self::handle_rpc_request(packet, desc.clone(), reg, tunnel_info).await;
 
         match &resp_bytes {
             Ok(r) => {
@@ -307,7 +297,7 @@ impl Server {
             trace_id,
             compression_info: RpcCompressionInfo {
                 algo: algo.into(),
-                accepted_algo: CompressionAlgoPb::Zstd.into(),
+                accepted_algo: accepted_compression_algo().into(),
             },
         });
         for packet in packets {

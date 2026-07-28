@@ -12,7 +12,11 @@ use std::{
 use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
 use quanta::Instant;
-use tokio::{select, sync::Mutex, task::JoinSet};
+use tokio::{
+    select,
+    sync::{Mutex, OwnedSemaphorePermit, Semaphore},
+    task::JoinSet,
+};
 use tokio_util::{
     sync::{CancellationToken, DropGuard},
     task::AbortOnDropHandle,
@@ -35,6 +39,12 @@ use crate::{
         udp::{UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory},
     },
 };
+
+const MAX_UDP_PAYLOAD_SIZE: usize = 65_507;
+// A remote flow owns roughly 320 KiB of smoltcp and response buffers.
+// Keep the per-instance worst case near 80 MiB instead of allowing a
+// source-port flood to grow the WASM heap without bound.
+const MAX_ACTIVE_UDP_CLIENTS: usize = 256;
 
 #[derive(Debug, Eq, PartialEq, Hash, Clone)]
 struct UdpClientKey {
@@ -75,6 +85,7 @@ where
 {
     flow: Arc<PortForwardUdpFlow<H>>,
     last_active: AtomicCell<Instant>,
+    _slot: Arc<OwnedSemaphorePermit>,
 }
 
 pub(crate) struct PortForwardAdapter<H>
@@ -92,6 +103,7 @@ where
     cancel_tokens: Arc<DashMap<PortForwardConfig, DropGuard>>,
     udp_clients: Arc<DashMap<UdpClientKey, Arc<UdpClientInfo<H>>>>,
     udp_response_tasks: Arc<DashMap<UdpClientKey, AbortOnDropHandle<()>>>,
+    udp_client_slots: Arc<Semaphore>,
     consumer_lease: Mutex<Option<DataPlaneConsumerLease>>,
 }
 
@@ -118,6 +130,7 @@ where
             cancel_tokens: Arc::new(DashMap::new()),
             udp_clients: Arc::new(DashMap::new()),
             udp_response_tasks: Arc::new(DashMap::new()),
+            udp_client_slots: Arc::new(Semaphore::new(MAX_ACTIVE_UDP_CLIENTS)),
             consumer_lease: Mutex::new(None),
         })
     }
@@ -281,14 +294,15 @@ where
         let socket_context = self.socket_context.clone();
         let udp_clients = self.udp_clients.clone();
         let response_tasks = self.udp_response_tasks.clone();
+        let client_slots = self.udp_client_slots.clone();
         self.tasks.lock().unwrap().spawn(async move {
             let adapter = UdpFlowFactory {
                 data_plane,
                 host,
                 socket_context,
             };
+            let mut buf = vec![0u8; MAX_UDP_PAYLOAD_SIZE];
             loop {
-                let mut buf = vec![0u8; 8192];
                 let (len, client_addr) = select! {
                     biased;
                     _ = cancel.cancelled() => break,
@@ -307,6 +321,20 @@ where
                 let flow = match udp_clients.get(&key) {
                     Some(client) => client.clone(),
                     None => {
+                        let Some(slot) = reserve_udp_client_slot(
+                            &cancel,
+                            &client_slots,
+                            &udp_clients,
+                            &response_tasks,
+                        )
+                        .await
+                        else {
+                            tracing::trace!(
+                                ?client_addr,
+                                "UDP port-forward client limit remains full"
+                            );
+                            continue;
+                        };
                         let flow = match adapter.open(dst_addr).await {
                             Ok(flow) => flow,
                             Err(error) => {
@@ -318,20 +346,24 @@ where
                                 continue;
                             }
                         };
+                        let slot = Arc::new(slot);
                         let client = Arc::new(UdpClientInfo {
                             flow: flow.clone(),
                             last_active: AtomicCell::new(Instant::now()),
+                            _slot: slot.clone(),
                         });
                         udp_clients.insert(key.clone(), client.clone());
 
                         let inbound = socket.clone();
                         let response_flow = flow.clone();
                         let response_client = client_addr;
+                        let response_slot = slot;
                         response_tasks.insert(
                             key.clone(),
                             AbortOnDropHandle::new(tokio::spawn(async move {
+                                let _slot = response_slot;
+                                let mut buf = vec![0u8; MAX_UDP_PAYLOAD_SIZE];
                                 loop {
-                                    let mut buf = vec![0u8; 8192];
                                     match response_flow.recv_from(&mut buf).await {
                                         Ok((len, remote)) => {
                                             tracing::trace!(
@@ -404,6 +436,32 @@ where
     }
 }
 
+async fn reserve_udp_client_slot<H>(
+    cancel: &CancellationToken,
+    slots: &Arc<Semaphore>,
+    clients: &DashMap<UdpClientKey, Arc<UdpClientInfo<H>>>,
+    response_tasks: &DashMap<UdpClientKey, AbortOnDropHandle<()>>,
+) -> Option<OwnedSemaphorePermit>
+where
+    H: VirtualUdpSocketFactory,
+{
+    if let Ok(slot) = slots.clone().try_acquire_owned() {
+        return Some(slot);
+    }
+
+    let oldest = clients
+        .iter()
+        .min_by_key(|entry| entry.value().last_active.load())
+        .map(|entry| entry.key().clone())?;
+    drop(response_tasks.remove(&oldest));
+    drop(clients.remove(&oldest));
+    select! {
+        biased;
+        _ = cancel.cancelled() => None,
+        slot = slots.clone().acquire_owned() => slot.ok(),
+    }
+}
+
 struct UdpFlowFactory<H>
 where
     H: VirtualTcpSocketFactory + VirtualTcpListenerFactory + VirtualUdpSocketFactory,
@@ -449,5 +507,80 @@ where
             "port-forward connection finished"
         ),
         Err(error) => tracing::error!(?error, ?dst_addr, "port-forward connection failed"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::host::testkit::{TestHost, TestUdpSocket};
+
+    fn udp_client_key(port: u16) -> UdpClientKey {
+        UdpClientKey {
+            client_addr: SocketAddr::from(([127, 0, 0, 1], port)),
+            forward: PortForwardConfig {
+                bind_addr: "127.0.0.1:5202".parse().unwrap(),
+                dst_addr: "10.144.0.20:5201".parse().unwrap(),
+                proto: "udp".to_owned(),
+            },
+        }
+    }
+
+    fn udp_client(slots: &Arc<Semaphore>, last_active: Instant) -> Arc<UdpClientInfo<TestHost>> {
+        let flow: Arc<PortForwardUdpFlow<TestHost>> = Arc::new(PortForwardUdpFlow::Host(Arc::new(
+            TestUdpSocket("127.0.0.1:20002".parse().unwrap()),
+        )));
+        Arc::new(UdpClientInfo {
+            flow,
+            last_active: AtomicCell::new(last_active),
+            _slot: Arc::new(slots.clone().try_acquire_owned().unwrap()),
+        })
+    }
+
+    fn pending_response_task(slot: Arc<OwnedSemaphorePermit>) -> AbortOnDropHandle<()> {
+        AbortOnDropHandle::new(tokio::spawn(async move {
+            let _slot = slot;
+            std::future::pending().await
+        }))
+    }
+
+    #[tokio::test]
+    async fn udp_client_capacity_evicts_least_recently_active_flow() {
+        let slots = Arc::new(Semaphore::new(2));
+        let clients: DashMap<UdpClientKey, Arc<UdpClientInfo<TestHost>>> = DashMap::new();
+        let response_tasks: DashMap<UdpClientKey, AbortOnDropHandle<()>> = DashMap::new();
+        let oldest = udp_client_key(40001);
+        let newest = udp_client_key(40002);
+        let now = Instant::now();
+        let oldest_client = udp_client(&slots, now - Duration::from_secs(2));
+        let newest_client = udp_client(&slots, now - Duration::from_secs(1));
+        response_tasks.insert(
+            oldest.clone(),
+            pending_response_task(oldest_client._slot.clone()),
+        );
+        response_tasks.insert(
+            newest.clone(),
+            pending_response_task(newest_client._slot.clone()),
+        );
+        clients.insert(oldest.clone(), oldest_client);
+        clients.insert(newest.clone(), newest_client);
+        assert_eq!(slots.available_permits(), 0);
+
+        let replacement =
+            reserve_udp_client_slot(&CancellationToken::new(), &slots, &clients, &response_tasks)
+                .await
+                .unwrap();
+
+        assert!(!clients.contains_key(&oldest));
+        assert!(!response_tasks.contains_key(&oldest));
+        assert!(clients.contains_key(&newest));
+        assert!(response_tasks.contains_key(&newest));
+        assert_eq!(slots.available_permits(), 0);
+
+        drop(replacement);
+        response_tasks.clear();
+        clients.clear();
+        tokio::task::yield_now().await;
+        assert_eq!(slots.available_permits(), 2);
     }
 }

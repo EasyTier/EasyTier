@@ -9,6 +9,8 @@
 
 pub mod dns;
 pub mod environment;
+#[cfg(feature = "management")]
+pub mod management;
 pub mod packet;
 pub mod socket;
 #[cfg(test)]

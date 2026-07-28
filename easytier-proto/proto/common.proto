@@ -102,6 +102,24 @@ message RpcRequest {
   int32 timeout_ms = 3;
 }
 
+// One transport-neutral RPC invocation submitted through a direct ABI.
+//
+// full_method_name uses the protobuf reflection form:
+// "<package>.<service>.<method>" or "<service>.<method>" for an empty package.
+message DirectRpcRequest {
+  string full_method_name = 1;
+  bytes request = 2;
+  optional uint64 timeout_ms = 3;
+}
+
+// One process-level management call delegated by the WASI WebClient to its host.
+message HostManagementRequest {
+  DirectRpcRequest rpc = 1;
+  optional string prepared_config = 2;
+  // Runtime identity paired with prepared_config without rewriting rpc.request.
+  UUID prepared_instance_id = 3;
+}
+
 message RpcResponse {
   bytes response = 1;
   error.Error error = 2;

@@ -18,17 +18,15 @@ use crate::{
         time::timeout,
     },
     proto::{
-        common::{
-            CompressionAlgoPb, RpcCompressionInfo, RpcDescriptor, RpcPacket, RpcRequest,
-            RpcResponse,
-        },
+        common::{RpcCompressionInfo, RpcDescriptor, RpcPacket, RpcRequest, RpcResponse},
         rpc_types::controller::Controller,
         rpc_types::descriptor::MethodDescriptor,
         rpc_types::error::{Error, Result},
         rpc_types::{__rt::RpcClientFactory, descriptor::ServiceDescriptor, handler::Handler},
     },
     rpc::packet::{
-        BuildRpcPacketArgs, PacketMerger, build_rpc_packet, compress_packet, decompress_packet,
+        BuildRpcPacketArgs, PacketMerger, accepted_compression_algo, build_rpc_packet,
+        compress_packet, decompress_packet,
     },
     tunnel::{
         Tunnel, TunnelError, ZCPacketStream,
@@ -339,7 +337,7 @@ impl Client {
                     trace_id: ctrl.trace_id(),
                     compression_info: RpcCompressionInfo {
                         algo: c_algo.into(),
-                        accepted_algo: CompressionAlgoPb::Zstd.into(),
+                        accepted_algo: accepted_compression_algo().into(),
                     },
                 });
                 let timeout_dur = std::time::Duration::from_millis(ctrl.timeout_ms() as u64);

@@ -3,6 +3,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
+use async_trait::async_trait;
 use easytier_proto::{
     rpc_types::controller::BaseController,
     web::{
@@ -93,24 +94,31 @@ pub struct WebClientConfig {
     pub secure_mode: bool,
 }
 
-struct WebClientController<F>
+#[async_trait]
+pub(crate) trait WebClientBackend: Send + Sync + 'static {
+    fn register(&self, registry: &ServiceRegistry);
+
+    async fn instance_ids(&self) -> anyhow::Result<Vec<uuid::Uuid>>;
+}
+
+struct NativeWebClientBackend<F>
 where
     F: InstanceFactory,
 {
-    config: WebClientConfig,
     instances: Arc<InstanceManager<F>>,
     hooks: Arc<dyn InstanceMutationHooks>,
     storage: Arc<dyn ConfigFileStorage>,
     logger: Arc<dyn LoggerControl>,
 }
 
-impl<F, H> WebClientController<F>
+#[async_trait]
+impl<F, H> WebClientBackend for NativeWebClientBackend<F>
 where
     F: InstanceFactory<Instance = CoreInstance<H>, CreateContext = ()>,
     F::Error: std::fmt::Debug + std::fmt::Display + Send + Sync + 'static,
     H: CoreInstanceHost,
 {
-    fn register_management_entry(&self, registry: &ServiceRegistry) {
+    fn register(&self, registry: &ServiceRegistry) {
         register_management_rpc(
             self.instances.clone(),
             registry,
@@ -119,17 +127,24 @@ where
             self.logger.clone(),
         );
     }
+
+    async fn instance_ids(&self) -> anyhow::Result<Vec<uuid::Uuid>> {
+        Ok(self.instances.instance_ids())
+    }
+}
+
+struct WebClientController {
+    config: WebClientConfig,
+    backend: Arc<dyn WebClientBackend>,
 }
 
 /// Portable config-server client. Hosts only supply identity and adapters.
-pub struct WebClient<F>
-where
-    F: InstanceFactory,
-{
-    _controller: Arc<WebClientController<F>>,
+pub struct WebClient<F> {
+    _controller: Arc<WebClientController>,
     _tasks: AbortOnDropHandle<()>,
-    _manager_guard: DaemonGuard,
+    _manager_guard: Option<DaemonGuard>,
     connected: Arc<AtomicBool>,
+    _factory: std::marker::PhantomData<F>,
 }
 
 impl<F, H> WebClient<F>
@@ -147,15 +162,37 @@ where
         logger: Arc<dyn LoggerControl>,
     ) -> Self {
         let manager_guard = instances.register_daemon();
-        let controller = Arc::new(WebClientController {
-            config,
+        let backend = Arc::new(NativeWebClientBackend {
             instances,
             hooks,
             storage,
             logger,
         });
+        Self::start(connector, config, backend, Some(manager_guard))
+    }
+}
+
+#[cfg(target_os = "wasi")]
+impl WebClient<()> {
+    pub(crate) fn with_backend<T: TunnelDialer + 'static>(
+        connector: T,
+        config: WebClientConfig,
+        backend: Arc<dyn WebClientBackend>,
+    ) -> Self {
+        Self::start(connector, config, backend, None)
+    }
+}
+
+impl<F> WebClient<F> {
+    fn start<T: TunnelDialer + 'static>(
+        connector: T,
+        config: WebClientConfig,
+        backend: Arc<dyn WebClientBackend>,
+        manager_guard: Option<DaemonGuard>,
+    ) -> Self {
+        let controller = Arc::new(WebClientController { config, backend });
         let connected = Arc::new(AtomicBool::new(false));
-        let tasks = AbortOnDropHandle::new(tokio::spawn(Self::routine(
+        let tasks = AbortOnDropHandle::new(tokio::spawn(web_client_routine(
             controller.clone(),
             connected.clone(),
             Box::new(connector),
@@ -166,93 +203,7 @@ where
             _tasks: tasks,
             _manager_guard: manager_guard,
             connected,
-        }
-    }
-
-    async fn routine(
-        controller: Arc<WebClientController<F>>,
-        connected: Arc<AtomicBool>,
-        connector: Box<dyn TunnelDialer>,
-    ) {
-        loop {
-            let connection = match connect_config_server(connector.as_ref(), CONNECT_TIMEOUT).await
-            {
-                Ok(connection) => connection,
-                Err(error) => {
-                    tracing::warn!(%error, "failed to connect to config server; retrying");
-                    time::sleep(RETRY_INTERVAL).await;
-                    continue;
-                }
-            };
-
-            connected.store(true, Ordering::Release);
-            tracing::info!(?connection, "connected to config server");
-            let mut session = WebClientSession::new(connection, controller.clone());
-            let support_encryption =
-                match time::timeout(FEATURE_TIMEOUT, session.get_feature()).await {
-                    Ok(Ok(feature)) => feature.support_encryption,
-                    Ok(Err(error)) => {
-                        tracing::warn!(%error, "GetFeature RPC failed; using legacy tunnel");
-                        false
-                    }
-                    Err(_) => {
-                        tracing::warn!("GetFeature RPC timed out; using legacy tunnel");
-                        false
-                    }
-                };
-
-            if support_encryption && web_security::web_secure_tunnel_supported() {
-                drop(session);
-                let connection = match connect_config_server(connector.as_ref(), CONNECT_TIMEOUT)
-                    .await
-                {
-                    Ok(connection) => connection,
-                    Err(error) => {
-                        connected.store(false, Ordering::Release);
-                        tracing::warn!(%error, "failed to reconnect secure config-server tunnel");
-                        time::sleep(RETRY_INTERVAL).await;
-                        continue;
-                    }
-                };
-                let connection = match web_security::upgrade_client_tunnel(connection).await {
-                    Ok(connection) => connection,
-                    Err(error) => {
-                        connected.store(false, Ordering::Release);
-                        tracing::warn!(%error, "config-server secure handshake failed");
-                        time::sleep(RETRY_INTERVAL).await;
-                        continue;
-                    }
-                };
-                let mut session = WebClientSession::new(connection, controller.clone());
-                session.start_heartbeat().await;
-                session.wait().await;
-                connected.store(false, Ordering::Release);
-                continue;
-            }
-
-            if support_encryption {
-                if controller.config.secure_mode {
-                    connected.store(false, Ordering::Release);
-                    tracing::warn!(
-                        "secure mode requires web secure-tunnel support in the local build"
-                    );
-                    time::sleep(RETRY_INTERVAL).await;
-                    continue;
-                }
-                tracing::warn!(
-                    "server supports encryption but the local build is using a legacy tunnel"
-                );
-            }
-            if controller.config.secure_mode {
-                connected.store(false, Ordering::Release);
-                tracing::warn!("secure mode requires config-server encryption support");
-                time::sleep(RETRY_INTERVAL).await;
-                continue;
-            }
-
-            session.start_heartbeat().await;
-            session.wait().await;
-            connected.store(false, Ordering::Release);
+            _factory: std::marker::PhantomData,
         }
     }
 
@@ -261,26 +212,100 @@ where
     }
 }
 
-struct WebClientSession<F>
-where
-    F: InstanceFactory,
-{
+async fn web_client_routine(
+    controller: Arc<WebClientController>,
+    connected: Arc<AtomicBool>,
+    connector: Box<dyn TunnelDialer>,
+) {
+    loop {
+        let connection = match connect_config_server(connector.as_ref(), CONNECT_TIMEOUT).await {
+            Ok(connection) => connection,
+            Err(error) => {
+                tracing::warn!(%error, "failed to connect to config server; retrying");
+                time::sleep(RETRY_INTERVAL).await;
+                continue;
+            }
+        };
+
+        connected.store(true, Ordering::Release);
+        tracing::info!(?connection, "connected to config server");
+        let mut session = WebClientSession::new(connection, controller.clone());
+        let support_encryption = match time::timeout(FEATURE_TIMEOUT, session.get_feature()).await {
+            Ok(Ok(feature)) => feature.support_encryption,
+            Ok(Err(error)) => {
+                tracing::warn!(%error, "GetFeature RPC failed; using legacy tunnel");
+                false
+            }
+            Err(_) => {
+                tracing::warn!("GetFeature RPC timed out; using legacy tunnel");
+                false
+            }
+        };
+
+        if support_encryption && web_security::web_secure_tunnel_supported() {
+            drop(session);
+            let connection = match connect_config_server(connector.as_ref(), CONNECT_TIMEOUT).await
+            {
+                Ok(connection) => connection,
+                Err(error) => {
+                    connected.store(false, Ordering::Release);
+                    tracing::warn!(%error, "failed to reconnect secure config-server tunnel");
+                    time::sleep(RETRY_INTERVAL).await;
+                    continue;
+                }
+            };
+            let connection = match web_security::upgrade_client_tunnel(connection).await {
+                Ok(connection) => connection,
+                Err(error) => {
+                    connected.store(false, Ordering::Release);
+                    tracing::warn!(%error, "config-server secure handshake failed");
+                    time::sleep(RETRY_INTERVAL).await;
+                    continue;
+                }
+            };
+            let mut session = WebClientSession::new(connection, controller.clone());
+            session.start_heartbeat().await;
+            session.wait().await;
+            connected.store(false, Ordering::Release);
+            continue;
+        }
+
+        if support_encryption {
+            if controller.config.secure_mode {
+                connected.store(false, Ordering::Release);
+                tracing::warn!("secure mode requires web secure-tunnel support in the local build");
+                time::sleep(RETRY_INTERVAL).await;
+                continue;
+            }
+            tracing::warn!(
+                "server supports encryption but the local build is using a legacy tunnel"
+            );
+        }
+        if controller.config.secure_mode {
+            connected.store(false, Ordering::Release);
+            tracing::warn!("secure mode requires config-server encryption support");
+            time::sleep(RETRY_INTERVAL).await;
+            continue;
+        }
+
+        session.start_heartbeat().await;
+        session.wait().await;
+        connected.store(false, Ordering::Release);
+    }
+}
+
+struct WebClientSession {
     rpc: BidirectRpcManager,
-    controller: Arc<WebClientController<F>>,
+    controller: Arc<WebClientController>,
     heartbeat_started: AtomicBool,
     tasks: Mutex<JoinSet<()>>,
 }
 
-impl<F, H> WebClientSession<F>
-where
-    F: InstanceFactory<Instance = CoreInstance<H>, CreateContext = ()>,
-    F::Error: std::fmt::Debug + std::fmt::Display + Send + Sync + 'static,
-    H: CoreInstanceHost,
-{
-    fn new(tunnel: Box<dyn Tunnel>, controller: Arc<WebClientController<F>>) -> Self {
+impl WebClientSession {
+    fn new(tunnel: Box<dyn Tunnel>, controller: Arc<WebClientController>) -> Self {
         let rpc = BidirectRpcManager::new();
         rpc.run_with_tunnel(tunnel);
-        controller.register_management_entry(rpc.rpc_server().registry());
+        controller.backend.register(rpc.rpc_server().registry());
         Self {
             rpc,
             controller,
@@ -299,7 +324,7 @@ where
 
     fn heartbeat_routine(
         rpc: &BidirectRpcManager,
-        controller: Weak<WebClientController<F>>,
+        controller: Weak<WebClientController>,
         tasks: &mut JoinSet<()>,
     ) {
         let controller = controller.upgrade().expect("web client controller");
@@ -321,6 +346,13 @@ where
                 let Some(controller) = controller.upgrade() else {
                     break;
                 };
+                let running_network_instances = match controller.backend.instance_ids().await {
+                    Ok(instance_ids) => instance_ids.into_iter().map(Into::into).collect(),
+                    Err(error) => {
+                        tracing::error!(%error, "failed to list config-server instances");
+                        break;
+                    }
+                };
                 let request = HeartbeatRequest {
                     machine_id: Some(machine_id.into()),
                     inst_id: Some(session_id.into()),
@@ -330,12 +362,7 @@ where
                     report_time: chrono::Local::now().to_rfc3339(),
                     device_os: Some(device_os.clone()),
                     support_config_source: true,
-                    running_network_instances: controller
-                        .instances
-                        .instance_ids()
-                        .into_iter()
-                        .map(Into::into)
-                        .collect(),
+                    running_network_instances,
                 };
 
                 match client.heartbeat(BaseController::default(), request).await {

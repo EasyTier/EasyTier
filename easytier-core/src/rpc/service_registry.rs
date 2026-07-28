@@ -4,6 +4,8 @@ use dashmap::DashMap;
 
 use crate::proto::common::RpcDescriptor;
 use crate::proto::rpc_types;
+#[cfg(all(feature = "management-rpc", any(test, target_os = "wasi")))]
+use crate::proto::rpc_types::descriptor::MethodDescriptor;
 use crate::proto::rpc_types::descriptor::ServiceDescriptor;
 use crate::proto::rpc_types::handler::{Handler, HandlerExt};
 
@@ -29,12 +31,35 @@ impl From<&RpcDescriptor> for ServiceKey {
 #[derive(Clone)]
 struct ServiceEntry {
     service: Arc<Box<dyn HandlerExt<Controller = RpcController>>>,
+    #[cfg(all(feature = "management-rpc", any(test, target_os = "wasi")))]
+    methods: Arc<[(String, u8)]>,
 }
 
 impl ServiceEntry {
     fn new<H: Handler<Controller = RpcController>>(h: H) -> Self {
+        #[cfg(all(feature = "management-rpc", any(test, target_os = "wasi")))]
+        let descriptor = h.service_descriptor();
+        #[cfg(all(feature = "management-rpc", any(test, target_os = "wasi")))]
+        let service_name = match descriptor.package() {
+            "" => descriptor.proto_name().to_owned(),
+            package => format!("{package}.{}", descriptor.proto_name()),
+        };
+        #[cfg(all(feature = "management-rpc", any(test, target_os = "wasi")))]
+        let methods = descriptor
+            .methods()
+            .iter()
+            .map(|method| {
+                (
+                    format!("{service_name}.{}", method.proto_name()),
+                    method.index(),
+                )
+            })
+            .collect::<Vec<_>>()
+            .into();
         Self {
             service: Arc::new(Box::new(h)),
+            #[cfg(all(feature = "management-rpc", any(test, target_os = "wasi")))]
+            methods,
         }
     }
 
@@ -90,6 +115,30 @@ impl ServiceRegistry {
         let method_index = rpc_desc.method_index as u8;
         let method_name = entry.service.get_method_name(method_index).ok()?;
         Some(method_name)
+    }
+
+    #[cfg(all(feature = "management-rpc", any(test, target_os = "wasi")))]
+    pub(crate) fn resolve_method(
+        &self,
+        domain_name: &str,
+        full_method_name: &str,
+    ) -> Option<RpcDescriptor> {
+        self.table.iter().find_map(|entry| {
+            if entry.key().domain_name != domain_name {
+                return None;
+            }
+            let method_index = entry
+                .value()
+                .methods
+                .iter()
+                .find_map(|(name, index)| (name == full_method_name).then_some(*index))?;
+            Some(RpcDescriptor {
+                domain_name: domain_name.to_owned(),
+                proto_name: entry.key().proto_name.clone(),
+                service_name: entry.key().service_name.clone(),
+                method_index: method_index.into(),
+            })
+        })
     }
 
     pub fn unregister<H: Handler<Controller = RpcController>>(

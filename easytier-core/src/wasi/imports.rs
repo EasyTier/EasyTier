@@ -168,6 +168,14 @@ unsafe extern "C" {
     /// Copies the resolved local socket address into the fixed-size `result` buffer.
     pub(crate) fn take_local_addr_for_remote(operation: u64, result: u32, result_len: u32) -> i32;
 
+    /// Starts one process-level WebClient management call after copying its request.
+    #[cfg(feature = "management")]
+    pub(crate) fn start_management_call(operation: u64, request: u32, request_len: u32) -> i32;
+
+    /// Probes or copies the process-level management response for `operation`.
+    #[cfg(feature = "management")]
+    pub(crate) fn take_management_call(operation: u64, result: u32, result_capacity: u32) -> i32;
+
     /// Attempts to deliver one raw IP packet to a host packet sink.
     ///
     /// On success the host owns a complete copy. [`HOST_WOULD_BLOCK`] leaves
