@@ -1921,6 +1921,13 @@ impl VersionAndTouchTime {
     }
 }
 
+// A responder session sends no keepalives when there is no new route data,
+// so the only sign that the initiator still owns the session is its
+// periodic inbound syncs (forced at least every ~10s by session_task).
+// Treat a longer silence as the initiator having lost this session (e.g.
+// restarted) without telling us.
+const INITIATOR_SESSION_LIVENESS_TIMEOUT: Duration = Duration::from_secs(45);
+
 // if we need to sync route info with one peer, we create a SyncRouteSession with that peer.
 #[derive(Debug)]
 #[allow(dead_code)]
@@ -1936,6 +1943,11 @@ struct SyncRouteSession {
     unreachable_peers_for_conn_info: parking_lot::Mutex<BTreeMap<PeerId, Version>>,
 
     last_sync_succ_timestamp: AtomicCell<Option<SystemTime>>,
+
+    // Last time any sync interaction (inbound request or successful
+    // response) confirmed the peer still holds this session. Drives the
+    // responder liveness timeout; initialized at session creation.
+    last_contact_instant: AtomicCell<Instant>,
 
     my_session_id: AtomicSessionId,
     dst_session_id: AtomicSessionId,
@@ -1967,6 +1979,8 @@ impl SyncRouteSession {
             unreachable_peers_for_conn_info: parking_lot::Mutex::new(BTreeMap::new()),
 
             last_sync_succ_timestamp: AtomicCell::new(None),
+
+            last_contact_instant: AtomicCell::new(Instant::now()),
 
             my_session_id: AtomicSessionId::new(rand::random()),
             dst_session_id: AtomicSessionId::new(0),
@@ -2133,6 +2147,28 @@ impl SyncRouteSession {
 
     fn clear_dst_initiator_if_session_unchanged(&self, expected_dst_session_id: SessionId) -> bool {
         if self.dst_session_id.load(Ordering::Relaxed) != expected_dst_session_id {
+            return false;
+        }
+
+        self.dst_is_initiator.store(false, Ordering::Relaxed);
+        true
+    }
+
+    // Responder sessions have no outbound keepalive, so the only sign that
+    // the initiator still owns the session is its periodic inbound syncs.
+    // If no sync interaction arrived within INITIATOR_SESSION_LIVENESS_TIMEOUT,
+    // assume the initiator lost this session without telling us and clear the
+    // stale role so the election loop can re-establish the edge. Only the
+    // flag is cleared; the election loop takes over from there. Returns true
+    // if the initiator role was cleared.
+    fn clear_stale_dst_initiator(&self) -> bool {
+        if !self.dst_is_initiator.load(Ordering::Relaxed)
+            || self.we_are_initiator.load(Ordering::Relaxed)
+        {
+            return false;
+        }
+
+        if self.last_contact_instant.load().elapsed() < INITIATOR_SESSION_LIVENESS_TIMEOUT {
             return false;
         }
 
@@ -3146,6 +3182,7 @@ impl PeerRouteServiceImpl {
                     }
                 } else {
                     session.rpc_tx_count.fetch_add(1, Ordering::Relaxed);
+                    session.last_contact_instant.store(Instant::now());
 
                     session
                         .dst_is_initiator
@@ -3418,6 +3455,23 @@ impl RouteSessionManager {
                 }
             }
 
+            // Detect responder sessions whose initiator silently lost the
+            // session (e.g. restarted and elected someone else). Without
+            // this, a responder with no new route data could wait forever
+            // for an initiator that no longer syncs with us. Clearing the
+            // stale role makes the peer an initiator candidate again below.
+            for peer_id in session_peers.iter() {
+                if let Some(session) = service_impl.get_session(*peer_id)
+                    && session.clear_stale_dst_initiator()
+                {
+                    tracing::warn!(
+                        ?peer_id,
+                        my_peer_id = ?service_impl.my_peer_id,
+                        "initiator route sync liveness timeout, clearing stale initiator role"
+                    );
+                }
+            }
+
             // find peer_ids that are not initiators.
             let mut initiator_candidates = Vec::new();
             for peer_id in peers.iter().copied() {
@@ -3629,6 +3683,7 @@ impl RouteSessionManager {
         let _session_lock = session.lock.lock();
 
         session.rpc_rx_count.fetch_add(1, Ordering::Relaxed);
+        session.last_contact_instant.store(Instant::now());
 
         session.update_dst_session_id(from_session_id);
 
@@ -4572,6 +4627,82 @@ mod tests {
 
         assert!(!session.clear_dst_initiator_if_session_unchanged(10));
         assert!(session.dst_is_initiator.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn stale_responder_session_clears_initiator_after_liveness_timeout() {
+        let session = SyncRouteSession::new(1, 2);
+        session.dst_is_initiator.store(true, Ordering::Relaxed);
+        session.last_contact_instant.store(
+            Instant::now() - INITIATOR_SESSION_LIVENESS_TIMEOUT - Duration::from_secs(1),
+        );
+
+        assert!(session.clear_stale_dst_initiator());
+        assert!(!session.dst_is_initiator.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn healthy_responder_session_keeps_initiator() {
+        let session = SyncRouteSession::new(1, 2);
+        session.dst_is_initiator.store(true, Ordering::Relaxed);
+
+        assert!(!session.clear_stale_dst_initiator());
+        assert!(session.dst_is_initiator.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn initiator_session_ignores_liveness_timeout() {
+        let session = SyncRouteSession::new(1, 2);
+        session.we_are_initiator.store(true, Ordering::Relaxed);
+        session.dst_is_initiator.store(true, Ordering::Relaxed);
+        session.last_contact_instant.store(
+            Instant::now() - INITIATOR_SESSION_LIVENESS_TIMEOUT - Duration::from_secs(1),
+        );
+
+        assert!(!session.clear_stale_dst_initiator());
+        assert!(session.dst_is_initiator.load(Ordering::Relaxed));
+    }
+
+    #[tokio::test]
+    async fn initiator_sync_creates_session_and_marks_contact() {
+        let peer_rpc = Arc::new(PeerRpcManager::new(TestPeerRpcTransport));
+        let route = PeerRoute::new(
+            1,
+            Arc::new(NoopPeerContext::default()),
+            Arc::new(TestPublicIpv6Runtime),
+            peer_rpc,
+        );
+        let peers = Arc::new(Mutex::new(vec![2]));
+        *route.service_impl.interface.lock().await = Some(Box::new(CountingInterface {
+            my_peer_id: 1,
+            peers,
+            peer_identity_types: Arc::new(Mutex::new(HashMap::from([(
+                2,
+                Some(PeerIdentityType::Admin),
+            )]))),
+            list_peers_calls: Arc::new(AtomicU32::new(0)),
+            get_peer_identity_type_calls: Arc::new(AtomicU32::new(0)),
+        }));
+
+        route
+            .session_mgr
+            .do_sync_route_info(2, 1, true, None, None, None, None)
+            .await
+            .expect("initiator sync should succeed");
+
+        let session = route
+            .service_impl
+            .get_session(2)
+            .expect("initiator sync should create the session");
+        assert!(session.dst_is_initiator.load(Ordering::Relaxed));
+        assert!(
+            session.last_contact_instant.load().elapsed() < Duration::from_secs(5),
+            "inbound sync should refresh the liveness timestamp"
+        );
+
+        route.stop().await;
+        assert!(route.service_impl.sessions.is_empty());
+        assert_eq!(route.task_count(), 0);
     }
 
     #[tokio::test]
