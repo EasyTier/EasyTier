@@ -13,9 +13,7 @@ use cidr::{Ipv4Cidr, Ipv4Inet, Ipv6Cidr, Ipv6Inet};
 use dashmap::DashMap;
 use easytier_proto::{
     acl::Acl,
-    common::{
-        FlagsInConfig, LimiterConfig, PeerFeatureFlag, SecureModeConfig, StunInfo, TunnelInfo,
-    },
+    common::{FlagsInConfig, PeerFeatureFlag, SecureModeConfig, StunInfo, TunnelInfo},
     peer_rpc::{PeerGroupInfo, TrustedCredentialPubkeyProof},
 };
 use hmac::{Hmac, Mac};
@@ -31,7 +29,7 @@ use crate::{
     },
     events::{CoreEvent, CoreEventSink},
     foundation::stats::{LabelSet, LabelType, MetricName, StatsManager},
-    foundation::token_bucket::{ArcByteLimiter, TokenBucketManager},
+    foundation::token_bucket::{ArcByteLimiter, BucketConfig, TokenBucketManager},
     peers::{
         credential_manager::{CredentialManager, CredentialStorage},
         util::shrink_dashmap,
@@ -362,17 +360,7 @@ impl CorePeerContext {
             return None;
         }
         let manager = state.manager.get_or_insert_with(TokenBucketManager::new);
-        Some(
-            manager.get_or_create(
-                key,
-                LimiterConfig {
-                    burst_rate: None,
-                    bps: Some(bps),
-                    fill_duration_ms: None,
-                }
-                .into(),
-            ),
-        )
+        Some(manager.get_or_create(key, BucketConfig::with_default_capacity(bps)))
     }
 
     pub(crate) async fn stop(&self) {

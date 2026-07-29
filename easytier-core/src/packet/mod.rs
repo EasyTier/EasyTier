@@ -569,11 +569,7 @@ impl ZCPacket {
         ret.mut_payload()[foreign_network_hdr.get_header_len()..]
             .copy_from_slice(foreign_zc_packet.tunnel_payload());
 
-        let hdr = ret.mut_peer_manager_header().unwrap();
-        hdr.from_peer_id = 0.into();
-        hdr.to_peer_id = 0.into();
-        hdr.packet_type = PacketType::ForeignNetworkPacket as u8;
-        hdr.len.set(total_payload_len as u32);
+        ret.fill_peer_manager_hdr(0, 0, PacketType::ForeignNetworkPacket as u8);
 
         ret
     }
@@ -689,6 +685,7 @@ impl ZCPacket {
         hdr.packet_type = packet_type;
         hdr.flags = 0;
         hdr.forward_counter = 1;
+        hdr.reserved = 0;
         hdr.len.set(payload_len as u32);
     }
 
@@ -783,6 +780,11 @@ impl ZCPacket {
     }
 
     pub fn foreign_network_inner_packet_type(&self) -> Option<u8> {
+        self.foreign_network_inner_packet_info()
+            .map(|(hdr, _)| hdr.packet_type)
+    }
+
+    pub fn foreign_network_inner_packet_info(&self) -> Option<(&PeerManagerHeader, usize)> {
         if self.peer_manager_header()?.packet_type != PacketType::ForeignNetworkPacket as u8 {
             return None;
         }
@@ -790,7 +792,9 @@ impl ZCPacket {
         let payload = self.payload();
         let hdr = ForeignNetworkPacketHeader::ref_from_prefix(payload)?;
         let inner_packet = payload.get(hdr.get_header_len()..)?;
-        PeerManagerHeader::ref_from_prefix(inner_packet).map(|hdr| hdr.packet_type)
+        let peer_manager_header = PeerManagerHeader::ref_from_prefix(inner_packet)?;
+        let payload_len = inner_packet.len() - PEER_MANAGER_HEADER_SIZE;
+        Some((peer_manager_header, payload_len))
     }
 
     pub fn foreign_network_packet(mut self) -> Self {
