@@ -2486,6 +2486,7 @@ dependencies = [
  "once_cell",
  "serde",
  "serde_json",
+ "thunk-rs",
  "tokio",
  "uuid",
 ]

@@ -174,7 +174,7 @@ clap_complete_nushell = { version = "4.5.10" }
 
 async-recursion = "1.0.5"
 
-network-interface = "2.0"
+network-interface = "2.0.5"
 
 # for wireguard
 boringtun = { package = "boringtun-easytier", version = "0.6.1", optional = true }

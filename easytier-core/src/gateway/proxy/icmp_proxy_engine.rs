@@ -2,7 +2,7 @@ use std::{net::Ipv4Addr, sync::Arc, time::Duration};
 
 use dashmap::DashMap;
 use quanta::Instant;
-use smoltcp::wire::{Icmpv4Message, Icmpv4Packet, Ipv4Packet};
+use smoltcp::wire::{IPV4_HEADER_LEN, Icmpv4Message, Icmpv4Packet, Ipv4Packet};
 
 use crate::packet::{PacketType, ZCPacket};
 
@@ -82,7 +82,10 @@ impl IcmpProxyEngine {
         let Ok(ipv4) = Ipv4Packet::new_checked(packet.payload()) else {
             return IcmpProxyAction::Pass;
         };
-        if ipv4.version() != 4 || ipv4.next_header() != IpProtocol::Icmp {
+        if ipv4.version() != 4
+            || usize::from(ipv4.header_len()) < IPV4_HEADER_LEN
+            || ipv4.next_header() != IpProtocol::Icmp
+        {
             return IcmpProxyAction::Pass;
         }
 
@@ -148,7 +151,9 @@ impl IcmpProxyEngine {
         let Ok(ipv4) = Ipv4Packet::new_checked(&*packet) else {
             return Vec::new();
         };
-        if ipv4.payload().len() < ICMP_ECHO_HEADER_LEN {
+        if usize::from(ipv4.header_len()) < IPV4_HEADER_LEN
+            || ipv4.payload().len() < ICMP_ECHO_HEADER_LEN
+        {
             return Vec::new();
         }
         let reply = Icmpv4Packet::new_unchecked(ipv4.payload());
@@ -345,6 +350,25 @@ mod tests {
     }
 
     #[test]
+    fn peer_packet_rejects_ipv4_header_shorter_than_minimum() {
+        let engine = engine(None);
+        let mut packet = echo_request("10.0.0.2".parse().unwrap(), "8.0.0.1".parse().unwrap());
+        Ipv4Packet::new_unchecked(packet.mut_payload()).set_header_len(16);
+
+        assert!(matches!(
+            engine.handle_peer_packet(
+                &packet,
+                IcmpProxyContext {
+                    virtual_ipv4: Some("8.0.0.1".parse().unwrap()),
+                    no_tun: true,
+                    ..Default::default()
+                }
+            ),
+            IcmpProxyAction::Pass
+        ));
+    }
+
+    #[test]
     fn mapped_request_and_socket_reply_round_trip() {
         let engine = engine(Some(ProxyCidrRule {
             cidr: "127.0.0.0/24".parse().unwrap(),
@@ -391,6 +415,51 @@ mod tests {
         let ipv4 = Ipv4Packet::new_checked(reply.payload()).unwrap();
         assert_eq!(ipv4.src_addr(), "10.10.10.42".parse::<Ipv4Addr>().unwrap());
         assert_eq!(ipv4.dst_addr(), "10.0.0.2".parse::<Ipv4Addr>().unwrap());
+    }
+
+    #[test]
+    fn socket_response_rejects_ipv4_header_shorter_than_minimum() {
+        let engine = engine(Some(ProxyCidrRule {
+            cidr: "127.0.0.0/24".parse().unwrap(),
+            mapped_cidr: Some("10.10.10.0/24".parse().unwrap()),
+        }));
+        let destination = "127.0.0.42".parse().unwrap();
+        let request = echo_request("10.0.0.2".parse().unwrap(), "10.10.10.42".parse().unwrap());
+        assert!(matches!(
+            engine.handle_peer_packet(
+                &request,
+                IcmpProxyContext {
+                    virtual_ipv4: Some("10.0.0.1".parse().unwrap()),
+                    ..Default::default()
+                },
+            ),
+            IcmpProxyAction::SendToSocket { .. }
+        ));
+
+        let key = IcmpNatKey {
+            real_destination: destination,
+            identifier: 7,
+            sequence: 11,
+        };
+        let mut response = echo_request(destination, "10.0.0.1".parse().unwrap())
+            .payload()
+            .to_vec();
+        {
+            let mut ipv4 = Ipv4Packet::new_unchecked(&mut response);
+            ipv4.set_header_len(16);
+            let mut reply = Icmpv4Packet::new_unchecked(ipv4.payload_mut());
+            reply.set_msg_type(Icmpv4Message::EchoReply);
+            reply.set_msg_code(0);
+            reply.set_echo_ident(7);
+            reply.set_echo_seq_no(11);
+        }
+
+        assert!(
+            engine
+                .handle_socket_response(destination, &mut response)
+                .is_empty()
+        );
+        assert!(engine.nat_table.contains_key(&key));
     }
 
     #[test]

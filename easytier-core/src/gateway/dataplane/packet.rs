@@ -2,7 +2,7 @@
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-use smoltcp::wire::{IpProtocol, Ipv4Packet, TcpPacket, UdpPacket};
+use smoltcp::wire::{IPV4_HEADER_LEN, IpProtocol, Ipv4Packet, TcpPacket, UdpPacket};
 
 use crate::{
     gateway::proxy::ip_reassembler::IpReassembler,
@@ -46,7 +46,7 @@ fn classify_peer_ipv4_payload(payload: &[u8]) -> ClassifiedPeerPacket {
     let Ok(ipv4) = Ipv4Packet::new_checked(payload) else {
         return ClassifiedPeerPacket::Unsupported;
     };
-    if ipv4.version() != 4 {
+    if ipv4.version() != 4 || usize::from(ipv4.header_len()) < IPV4_HEADER_LEN {
         return ClassifiedPeerPacket::Unsupported;
     }
 
@@ -246,6 +246,22 @@ mod tests {
         );
         assert_eq!(
             classify_peer_ipv4_payload(&ipv4_packet(IpProtocol::Icmp, 8)),
+            ClassifiedPeerPacket::Unsupported
+        );
+    }
+
+    #[test]
+    fn rejects_ipv4_header_shorter_than_minimum() {
+        let mut packet = ipv4_packet(IpProtocol::Tcp, 20);
+        let mut ipv4 = Ipv4Packet::new_unchecked(&mut packet);
+        ipv4.set_header_len(16);
+        let mut tcp = TcpPacket::new_unchecked(ipv4.payload_mut());
+        tcp.set_src_port(1234);
+        tcp.set_dst_port(4321);
+        tcp.set_header_len(20);
+
+        assert_eq!(
+            classify_peer_ipv4_payload(&packet),
             ClassifiedPeerPacket::Unsupported
         );
     }
