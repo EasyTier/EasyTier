@@ -858,6 +858,26 @@ impl NetworkConfig {
             }
         }
 
+        // Apply the GUI-passthrough [dns] section, if any. dns_config_toml is a valid
+        // Config document (a [dns] section), so parsing it with the same loader used by
+        // `easytier-core -c` yields a DnsConfig identical to what was originally edited.
+        #[cfg(feature = "magic-dns")]
+        {
+            use crate::dns::config::DnsConfigLoaderExt;
+            if let Some(dns_toml) = &self.dns_config_toml
+                && !dns_toml.trim().is_empty()
+            {
+                match crate::common::config::TomlConfigLoader::new_from_str(dns_toml) {
+                    Ok(parsed) => {
+                        cfg.set_dns(parsed.get_dns());
+                    }
+                    Err(e) => {
+                        tracing::warn!("failed to parse dns_config_toml: {}", e);
+                    }
+                }
+            }
+        }
+
         cfg.set_flags(flags);
         Ok(cfg)
     }
@@ -1019,6 +1039,35 @@ impl NetworkConfig {
             }
         }
 
+        // Serialize the [dns] section into NetworkConfig so the GUI's "edit as file"
+        // mode can round-trip dns config (including [[dns.zone]]) without losing it.
+        // The DnsConfig type is not modeled as structured NetworkConfig fields, so we
+        // store it as a TOML substring. Wrapping it under a `dns` key makes the output
+        // byte-for-byte identical to the [dns] section produced by dump(), which means
+        // TomlConfigLoader::new_from_str() can parse it back on the reverse path.
+        #[cfg(feature = "magic-dns")]
+        {
+            use crate::dns::config::DnsConfig;
+            let dns_config = config.get_dns();
+            // Only persist when the user actually configured dns, so configs that do
+            // not use dns are not polluted with a default [dns] section.
+            if dns_config != DnsConfig::default() {
+                // into_raw() (consuming) is the public accessor; the getset `raw()`
+                // getter is private. Wrapping under a `dns` key reproduces the exact
+                // [dns] section that dump() emits, so new_from_str() can parse it back.
+                let dns_raw = dns_config.into_raw();
+                let mut dns_map = std::collections::BTreeMap::new();
+                dns_map.insert("dns", &dns_raw);
+                match toml::to_string_pretty(&dns_map) {
+                    Ok(toml_str) if !toml_str.trim().is_empty() => {
+                        result.dns_config_toml = Some(toml_str);
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!("failed to serialize dns config to toml: {}", e),
+                }
+            }
+        }
+
         Ok(result)
     }
 }
@@ -1060,6 +1109,41 @@ mod tests {
             config_str,
             generated_config_str,
             serde_json::to_string(&network_config).unwrap()
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "magic-dns")]
+    #[test]
+    fn dns_config_roundtrip() -> Result<(), anyhow::Error> {
+        use crate::dns::config::DnsConfigLoaderExt;
+
+        let toml_str = r#"
+[network_identity]
+network_name = "test"
+
+[[dns.zone]]
+origin = "vvj.lol"
+records = ["* IN A 192.168.5.77"]
+"#;
+
+        // Parse a config containing a [dns] section, then convert it to NetworkConfig.
+        let config = crate::common::config::TomlConfigLoader::new_from_str(toml_str)?;
+        let network_config = super::NetworkConfig::new_from_config(&config)?;
+
+        // The [dns] section must be preserved in dns_config_toml (the bug being fixed:
+        // previously dns was silently dropped in the NetworkConfig round-trip).
+        assert!(
+            network_config.dns_config_toml.is_some(),
+            "dns_config_toml should be populated for a config with a [dns] section"
+        );
+
+        // Round-trip back to a config loader; the dns zone must survive intact.
+        let config2 = network_config.gen_config()?;
+        let dns = config2.get_dns();
+        assert!(
+            !dns.into_parsed().zones.is_empty(),
+            "dns zones were lost in the NetworkConfig round-trip"
         );
         Ok(())
     }
