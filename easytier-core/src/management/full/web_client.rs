@@ -39,12 +39,8 @@ pub struct ConfigServerEndpoint {
 
 impl ConfigServerEndpoint {
     pub fn parse(input: &str, supports_scheme: impl FnOnce(&Url) -> bool) -> anyhow::Result<Self> {
-        let endpoint = match Url::parse(input) {
-            Ok(endpoint) => endpoint,
-            Err(_) => format!("udp://config-server.easytier.cn:22020/{input}")
-                .parse()
-                .map_err(|error| anyhow::anyhow!("failed to parse config server URL: {error}"))?,
-        };
+        let endpoint = Url::parse(input)
+            .map_err(|error| anyhow::anyhow!("failed to parse config server URL: {error}"))?;
         if !supports_scheme(&endpoint) {
             anyhow::bail!("unsupported config server scheme: {}", endpoint.scheme());
         }
@@ -371,12 +367,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn endpoint_normalizes_shorthand_and_non_websocket_paths() {
-        let endpoint = ConfigServerEndpoint::parse("team%2Ftoken", |_| true).unwrap();
+    fn endpoint_normalizes_non_websocket_paths() {
+        let endpoint =
+            ConfigServerEndpoint::parse("udp://example.com/team%2Ftoken", |_| true).unwrap();
         assert_eq!(endpoint.token(), "team/token");
-        assert_eq!(
-            endpoint.connect_url().as_str(),
-            "udp://config-server.easytier.cn:22020"
+        assert_eq!(endpoint.connect_url().as_str(), "udp://example.com");
+    }
+
+    #[test]
+    fn endpoint_rejects_token_shorthand() {
+        let error = ConfigServerEndpoint::parse("team%2Ftoken", |_| true).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("failed to parse config server URL")
         );
     }
 
