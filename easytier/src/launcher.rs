@@ -1049,6 +1049,15 @@ impl NetworkConfig {
         {
             use crate::dns::config::DnsConfig;
             let dns_config = config.get_dns();
+            // Drive the mobile VPN frontend signal: `enable_magic_dns` is no longer
+            // a user-facing knob (the [dns] block replaces it), so repurpose it as a
+            // derived, read-only flag telling the Android/iOS VPN builder whether to
+            // point the system resolver at the magic DNS address. gen_config() never
+            // reads this field, so it does not leak into the TOML round-trip.
+            #[allow(deprecated)] // intentionally repurposed as a derived signal
+            {
+                result.enable_magic_dns = Some(!dns_config.disabled);
+            }
             // Only persist when the user actually configured dns, so configs that do
             // not use dns are not polluted with a default [dns] section.
             if dns_config != DnsConfig::default() {

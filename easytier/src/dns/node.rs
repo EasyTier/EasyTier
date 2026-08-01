@@ -78,6 +78,16 @@ impl DnsNodeRuntime {
                 self.nic_ctx.clone(),
             ));
             server.register(&rpc);
+
+            // Attach the DnsServer as a NicPacketFilter so DNS/ICMP queries to the
+            // hijack addresses are answered from the packet pipeline. Dormant where
+            // the address is bound to the TUN (desktop); essential on read-only-TUN
+            // platforms (Android) where socket-based serving cannot bind port 53.
+            #[cfg(feature = "tun")]
+            self.peer_mgr
+                .add_nic_packet_process_pipeline(Box::new(server.clone()))
+                .await;
+
             server.run(token.child_token()).await;
 
             tracing::warn!("DnsServer exited, will retry election");

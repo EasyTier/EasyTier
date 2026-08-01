@@ -4,30 +4,56 @@ use crate::dns::system;
 use crate::dns::utils::addr::NameServerAddr;
 #[cfg(feature = "tun")]
 use crate::instance::instance::{ArcNicCtx, NicCtx};
+#[cfg(feature = "tun")]
+use crate::peers::NicPacketFilter;
 use crate::peers::peer_manager::PeerManager;
 use crate::proto::dns::DnsNodeMgrRpcServer;
 use crate::proto::rpc_impl::standalone::StandAloneServer;
 use crate::tunnel::common::bind;
+#[cfg(feature = "tun")]
+use crate::tunnel::packet_def::ZCPacket;
 use crate::tunnel::tcp::TcpTunnelListener;
 use crate::utils::task::CancellableTask;
 use anyhow::Context;
 use derivative::Derivative;
+#[cfg(feature = "tun")]
+use futures::StreamExt;
 use guarden::guarded;
+#[cfg(feature = "tun")]
+use hickory_net::BufDnsStreamHandle;
 use hickory_net::runtime::Time;
+#[cfg(feature = "tun")]
+use hickory_net::runtime::TokioTime;
 use hickory_net::xfer::Protocol;
 use hickory_server::{
     Server,
-    server::{Request, RequestHandler, ResponseHandler, ResponseInfo},
+    server::{Request, RequestHandler, ResponseHandle, ResponseHandler, ResponseInfo},
     zone_handler::Catalog,
 };
 use itertools::chain;
+#[cfg(feature = "tun")]
+use pnet::packet::{
+    MutablePacket, Packet,
+    icmp::{self, IcmpCode, IcmpPacket, IcmpTypes, MutableIcmpPacket},
+    ip::IpNextHeaderProtocol,
+    ipv4::{self, Ipv4Packet, MutableIpv4Packet},
+    udp::{self, MutableUdpPacket, UdpPacket},
+};
 use parking_lot::RwLock;
 use std::collections::HashSet;
 use std::net::IpAddr;
+#[cfg(feature = "tun")]
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, instrument};
+
+/// IANA protocol numbers used by the NicPacketFilter data plane.
+#[cfg(feature = "tun")]
+const IPPROTO_ICMP: u8 = 1;
+#[cfg(feature = "tun")]
+const IPPROTO_UDP: u8 = 17;
 
 #[derive(Clone)]
 struct DynamicCatalog {
@@ -363,14 +389,185 @@ impl DnsServer {
     }
 }
 
+// ─── NicPacketFilter data plane ─────────────────────────────────────────────
+//
+// On platforms whose TUN device cannot be assigned the DNS IP (notably Android,
+// where Rust only receives a read-only fd), `rebind()` cannot listen on the
+// hijack address, so socket-based serving is impossible. Instead `DnsServer`
+// attaches as a `NicPacketFilter` and answers DNS/ICMP straight from the packet
+// pipeline: the query read from the TUN is resolved via the catalog and the
+// response is re-injected into the NIC channel so the local app receives it.
+//
+// On desktop (Windows/Linux/macOS) the hijack IP is bound to the TUN, queries
+// are answered by the bound socket and never enter this path, so the filter is
+// dormant there and existing behavior is unchanged.
+
+#[cfg(feature = "tun")]
+impl DnsServer {
+    /// Answer a UDP DNS query addressed to one of our hijack addresses.
+    async fn handle_dns_query(&self, ip: &Ipv4Packet<'_>) {
+        let Some(udp) = UdpPacket::new(ip.payload()) else {
+            return;
+        };
+        if udp.get_destination() != 53 {
+            return;
+        }
+
+        let src = SocketAddr::from(SocketAddrV4::new(ip.get_source(), udp.get_source()));
+        let Ok(request) = Request::from_bytes(udp.payload().to_vec(), src, Protocol::Udp) else {
+            return;
+        };
+
+        // Obtain the wire-format response the same way hickory does: drive the
+        // catalog's request handler through a public `ResponseHandle` backed by a
+        // `BufDnsStreamHandle`, then read the serialized bytes back. (`encode` is
+        // pub(crate), so this is the supported path to response bytes off-crate.)
+        let (stream_handle, mut stream_receiver) = BufDnsStreamHandle::new(src);
+        let _ = self
+            .catalog
+            .handle_request::<ResponseHandle, TokioTime>(
+                &request,
+                ResponseHandle::new(src, stream_handle, Protocol::Udp),
+            )
+            .await;
+        let Some(serial) = stream_receiver.next().await else {
+            return;
+        };
+        let response = serial.into_parts().0;
+
+        // Swap src/dst: the reply originates from the hijack address:53 and
+        // returns to whoever issued the query.
+        let packet = build_ipv4_udp(
+            ip.get_destination(),
+            ip.get_source(),
+            udp.get_destination(),
+            udp.get_source(),
+            &response,
+        );
+        let _ = self
+            .peer_mgr
+            .get_nic_channel()
+            .send(ZCPacket::new_with_payload(&packet))
+            .await;
+    }
+
+    /// Rewrite an ICMP Echo Request as an Echo Reply so the hijack address is pingable.
+    async fn handle_icmp_echo(&self, ip: &Ipv4Packet<'_>) {
+        let Some(icmp) = IcmpPacket::new(ip.payload()) else {
+            return;
+        };
+        if icmp.get_icmp_type() != IcmpTypes::EchoRequest {
+            return;
+        }
+
+        let mut buf = ip.payload().to_vec();
+        if let Some(mut reply) = MutableIcmpPacket::new(&mut buf) {
+            reply.set_icmp_type(IcmpTypes::EchoReply);
+            reply.set_icmp_code(IcmpCode::new(0));
+            reply.set_checksum(icmp::checksum(&reply.to_immutable()));
+        }
+
+        let packet = build_ipv4(
+            ip.get_destination(),
+            ip.get_source(),
+            IpNextHeaderProtocol(IPPROTO_ICMP),
+            &buf,
+        );
+        let _ = self
+            .peer_mgr
+            .get_nic_channel()
+            .send(ZCPacket::new_with_payload(&packet))
+            .await;
+    }
+}
+
+#[cfg(feature = "tun")]
+#[async_trait::async_trait]
+impl NicPacketFilter for DnsServer {
+    async fn try_process_packet_from_nic(&self, data: &mut ZCPacket) -> bool {
+        let Some(ip) = Ipv4Packet::new(data.payload()) else {
+            return false;
+        };
+        if ip.get_version() != 4 {
+            return false;
+        }
+
+        let dst = ip.get_destination();
+        let is_hijack = self
+            .addresses
+            .read()
+            .iter()
+            .any(|addr| addr.addr.ip() == IpAddr::V4(dst));
+        if !is_hijack {
+            return false;
+        }
+
+        match ip.get_next_level_protocol().0 {
+            IPPROTO_UDP => self.handle_dns_query(&ip).await,
+            IPPROTO_ICMP => self.handle_icmp_echo(&ip).await,
+            _ => {}
+        }
+        // The pipeline discards this return value. The original query keeps
+        // flowing to the route lookup, which drops it (no peer owns the hijack
+        // IP); the response was already re-injected into the NIC channel above.
+        true
+    }
+}
+
+/// Build a raw IPv4 packet carrying `l4_payload`.
+#[cfg(feature = "tun")]
+fn build_ipv4(
+    src: Ipv4Addr,
+    dst: Ipv4Addr,
+    protocol: IpNextHeaderProtocol,
+    l4_payload: &[u8],
+) -> Vec<u8> {
+    let ip_header_len = 20usize;
+    let total_len = ip_header_len + l4_payload.len();
+    let mut buf = vec![0u8; total_len];
+    let mut ip = MutableIpv4Packet::new(&mut buf).unwrap();
+    ip.set_version(4);
+    ip.set_header_length(5); // 20 bytes
+    ip.set_total_length(total_len as u16);
+    ip.set_ttl(64);
+    ip.set_next_level_protocol(protocol);
+    ip.set_source(src);
+    ip.set_destination(dst);
+    ip.payload_mut().copy_from_slice(l4_payload);
+    ip.set_checksum(ipv4::checksum(&ip.to_immutable()));
+    buf
+}
+
+/// Build a UDP/IPv4 packet carrying `payload`, with corrected UDP checksum.
+#[cfg(feature = "tun")]
+fn build_ipv4_udp(
+    src_ip: Ipv4Addr,
+    dst_ip: Ipv4Addr,
+    src_port: u16,
+    dst_port: u16,
+    payload: &[u8],
+) -> Vec<u8> {
+    let udp_len = 8 + payload.len();
+    let mut udp_buf = vec![0u8; udp_len];
+    {
+        let mut udp = MutableUdpPacket::new(&mut udp_buf).unwrap();
+        udp.set_source(src_port);
+        udp.set_destination(dst_port);
+        udp.set_length(udp_len as u16);
+        udp.payload_mut().copy_from_slice(payload);
+        udp.set_checksum(udp::ipv4_checksum(&udp.to_immutable(), &src_ip, &dst_ip));
+    }
+    build_ipv4(src_ip, dst_ip, IpNextHeaderProtocol(IPPROTO_UDP), &udp_buf)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::peers::tests::create_mock_peer_manager;
+    use crate::peers::tests::{create_mock_peer_manager, create_mock_peer_manager_with_recv};
     use hickory_net::client::{Client, ClientHandle};
     use hickory_net::runtime::TokioRuntimeProvider;
     use hickory_net::udp::UdpClientStream;
-    use hickory_proto::op::{Message, MessageType, OpCode, Query};
+    use hickory_proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
     use hickory_proto::rr::{DNSClass, Name, RData, Record, RecordType, rdata};
     use hickory_proto::serialize::binary::BinEncodable;
     use hickory_server::store::in_memory::InMemoryZoneHandler;
@@ -379,7 +576,7 @@ mod tests {
     use pnet::packet::icmp::{IcmpTypes, MutableIcmpPacket};
     use pnet::packet::ipv4::MutableIpv4Packet;
     use pnet::packet::udp::MutableUdpPacket;
-    use pnet::packet::{MutablePacket, icmp, ipv4, udp};
+    use pnet::packet::{MutablePacket, Packet, icmp, ipv4, udp};
     use std::net::Ipv4Addr;
     use std::str::FromStr;
     use std::time::Duration;
@@ -426,6 +623,72 @@ mod tests {
             #[cfg(feature = "tun")]
             ArcNicCtx::default(),
         ))
+    }
+
+    /// The NicPacketFilter answers a UDP DNS query addressed to a hijack address
+    /// (e.g. 100.100.100.101) by resolving it via the catalog and re-injecting the
+    /// response into the NIC channel — the Android data plane.
+    #[cfg(feature = "tun")]
+    #[tokio::test]
+    async fn nic_filter_answers_dns_query_to_hijack_address() {
+        let (peer_mgr, mut nic_recv) = create_mock_peer_manager_with_recv().await;
+        let global_ctx = peer_mgr.get_global_ctx();
+        let server = Arc::new(DnsServer::new(
+            peer_mgr,
+            global_ctx,
+            ArcNicCtx::default(),
+        ));
+        server.catalog.replace(build_test_catalog()).await;
+        server
+            .addresses
+            .write()
+            .insert(NameServerAddr {
+                protocol: Protocol::Udp,
+                addr: "100.100.100.101:53".parse().unwrap(),
+            });
+
+        // Query: test.example.com A, from 10.0.0.2:12345 -> 100.100.100.101:53
+        let query = build_dns_query_bytes("test.example.com");
+        let udp = build_udp_packet(
+            12345,
+            53,
+            &query,
+            "10.0.0.2".parse().unwrap(),
+            "100.100.100.101".parse().unwrap(),
+        );
+        let pkt = build_ipv4_packet(
+            "10.0.0.2".parse().unwrap(),
+            "100.100.100.101".parse().unwrap(),
+            IpNextHeaderProtocol(17),
+            &udp,
+        );
+        let mut zc = ZCPacket::new_with_payload(&pkt);
+
+        // Feed it through the filter (the pipeline call site).
+        server.try_process_packet_from_nic(&mut zc).await;
+
+        // The response must have been re-injected into the NIC channel.
+        let resp = tokio::time::timeout(Duration::from_secs(2), nic_recv.recv())
+            .await
+            .expect("timed out waiting for DNS response")
+            .expect("nic channel closed");
+
+        let ip = Ipv4Packet::new(resp.payload()).unwrap();
+        assert_eq!(ip.get_source(), Ipv4Addr::new(100, 100, 100, 101));
+        assert_eq!(ip.get_destination(), Ipv4Addr::new(10, 0, 0, 2));
+        let udp_resp = UdpPacket::new(ip.payload()).unwrap();
+        assert_eq!(udp_resp.get_source(), 53);
+        assert_eq!(udp_resp.get_destination(), 12345);
+
+        let msg = Message::from_vec(udp_resp.payload()).unwrap();
+        assert_eq!(msg.response_code, ResponseCode::NoError);
+        assert!(!msg.answers.is_empty(), "expected an A record answer");
+        let a_record = &msg.answers[0];
+        if let RData::A(a) = a_record.data {
+            assert_eq!(a.0, Ipv4Addr::new(1, 2, 3, 4));
+        } else {
+            panic!("expected A record, got {:?}", a_record.data);
+        }
     }
 
     /// Build a raw IPv4 packet (as `Vec<u8>`) carrying the given L4 payload bytes.
