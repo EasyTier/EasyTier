@@ -899,6 +899,9 @@ struct SyncedRouteInfo {
     foreign_network: DashMap<ForeignNetworkRouteInfoKey, ForeignNetworkRouteInfoEntry>,
     group_trust_map: DashMap<PeerId, HashMap<String, Vec<u8>>>,
     group_trust_map_cache: DashMap<PeerId, Arc<Vec<String>>>, // cache for group trust map, should sync with group_trust_map
+    // Serializes every read-modify-write of the derived group maps. Both
+    // proof verification and credential grants update these maps.
+    group_trust_update_lock: parking_lot::Mutex<()>,
 
     // Aggregated trusted credential pubkeys from all admin nodes
     // Maps pubkey bytes -> TrustedCredentialPubkey
@@ -928,7 +931,8 @@ impl Debug for SyncedRouteInfo {
 
 #[allow(dead_code)]
 impl SyncedRouteInfo {
-    fn set_peer_groups(&self, peer_id: PeerId, groups: HashMap<String, Vec<u8>>) {
+    // Must be called with group_trust_update_lock held.
+    fn set_peer_groups_locked(&self, peer_id: PeerId, groups: HashMap<String, Vec<u8>>) {
         if groups.is_empty() {
             self.group_trust_map.remove(&peer_id);
             self.group_trust_map_cache.remove(&peer_id);
@@ -941,7 +945,8 @@ impl SyncedRouteInfo {
             .insert(peer_id, Arc::new(group_names));
     }
 
-    fn get_proof_groups(&self, peer_id: PeerId) -> HashMap<String, Vec<u8>> {
+    // Must be called with group_trust_update_lock held.
+    fn get_proof_groups_locked(&self, peer_id: PeerId) -> HashMap<String, Vec<u8>> {
         self.group_trust_map
             .get(&peer_id)
             .map(|groups| {
@@ -1161,6 +1166,7 @@ impl SyncedRouteInfo {
         peer_infos: &OrderedHashMap<PeerId, RoutePeerInfo>,
         all_trusted: &HashMap<Vec<u8>, TrustedCredentialPubkey>,
     ) {
+        let _group_trust_lock = self.group_trust_update_lock.lock();
         for (_, info) in peer_infos.iter() {
             if info.noise_static_pubkey.is_empty() {
                 continue;
@@ -1169,11 +1175,11 @@ impl SyncedRouteInfo {
             let Some(credential) = all_trusted.get(&info.noise_static_pubkey) else {
                 continue;
             };
-            let mut group_map = self.get_proof_groups(info.peer_id);
+            let mut group_map = self.get_proof_groups_locked(info.peer_id);
             for group in &credential.groups {
                 group_map.entry(group.clone()).or_default();
             }
-            self.set_peer_groups(info.peer_id, group_map);
+            self.set_peer_groups_locked(info.peer_id, group_map);
         }
     }
 
@@ -1262,19 +1268,23 @@ impl SyncedRouteInfo {
             }
         }
 
+        {
+            let _group_trust_lock = self.group_trust_update_lock.lock();
+            for peer_id in &peer_ids {
+                self.group_trust_map.remove(peer_id);
+                self.group_trust_map_cache.remove(peer_id);
+            }
+            shrink_dashmap(&self.group_trust_map, None);
+            shrink_dashmap(&self.group_trust_map_cache, None);
+        }
         for peer_id in &peer_ids {
             self.raw_peer_infos.remove(peer_id);
-            self.group_trust_map.remove(peer_id);
-            self.group_trust_map_cache.remove(peer_id);
         }
         self.foreign_network
             .retain(|k, _| !peer_ids.contains(&k.peer_id));
 
         shrink_dashmap(&self.raw_peer_infos, None);
         shrink_dashmap(&self.foreign_network, None);
-        shrink_dashmap(&self.group_trust_map, None);
-        shrink_dashmap(&self.group_trust_map_cache, None);
-
         self.version.inc();
     }
 
@@ -1652,6 +1662,7 @@ impl SyncedRouteInfo {
         local_group_declarations: &[PeerGroupIdentity],
         trust_admin_groups_without_proof: bool,
     ) {
+        let _group_trust_lock = self.group_trust_update_lock.lock();
         let local_group_declarations = local_group_declarations
             .iter()
             .map(|g| (g.group_name.as_str(), g.group_secret.as_str()))
@@ -1719,14 +1730,59 @@ impl SyncedRouteInfo {
         }
     }
 
+    fn verify_and_update_current_group_trusts(
+        &self,
+        received_peer_infos: &[RoutePeerInfo],
+        local_group_declarations: &[PeerGroupIdentity],
+        trust_admin_groups_without_proof: bool,
+    ) {
+        let peer_ids: HashSet<_> = received_peer_infos
+            .iter()
+            .map(|info| info.peer_id)
+            .collect();
+        let peer_infos_guard = self.peer_infos.read();
+        let current_peer_infos: Vec<_> = peer_ids
+            .iter()
+            .filter_map(|peer_id| peer_infos_guard.get(peer_id).cloned())
+            .collect();
+        self.verify_and_update_group_trusts(
+            &current_peer_infos,
+            local_group_declarations,
+            trust_admin_groups_without_proof,
+        );
+        // Keep the authoritative peer-info snapshot locked until its derived
+        // ACL cache has been updated, so another sync cannot interleave a
+        // newer peer version and then be overwritten by this one.
+        drop(peer_infos_guard);
+    }
+
+    fn verify_and_update_all_current_group_trusts(
+        &self,
+        local_group_declarations: &[PeerGroupIdentity],
+        trust_admin_groups_without_proof: bool,
+    ) {
+        let peer_infos_guard = self.peer_infos.read();
+        let current_peer_infos: Vec<_> = peer_infos_guard
+            .iter()
+            .map(|(_, info)| info.clone())
+            .collect();
+        self.verify_and_update_group_trusts(
+            &current_peer_infos,
+            local_group_declarations,
+            trust_admin_groups_without_proof,
+        );
+        drop(peer_infos_guard);
+    }
+
     fn update_my_group_trusts(&self, my_peer_id: PeerId, groups: &[PeerGroupInfo]) {
+        let _group_trust_lock = self.group_trust_update_lock.lock();
         let mut my_group_map = HashMap::new();
 
         for group in groups.iter() {
             my_group_map.insert(group.group_name.clone(), group.group_proof.clone());
         }
 
-        self.set_peer_groups(my_peer_id, my_group_map);
+        self.set_peer_groups_locked(my_peer_id, my_group_map);
     }
 
     /// Collect trusted credential pubkeys from admin nodes (network_secret holders)
@@ -1835,6 +1891,13 @@ type SessionId = u64;
 
 type AtomicSessionId = atomic_shim::AtomicU64;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SyncRequestSnapshot {
+    my_session_id: SessionId,
+    state_revision: u64,
+    is_initiator: bool,
+}
+
 struct SessionTask {
     my_peer_id: PeerId,
     task: Arc<std::sync::Mutex<Option<JoinHandle<()>>>>,
@@ -1921,6 +1984,13 @@ impl VersionAndTouchTime {
     }
 }
 
+// A responder session sends no keepalives when there is no new route data,
+// so the only sign that the initiator still owns the session is its
+// periodic inbound syncs (forced at least every ~10s by session_task).
+// Treat a longer silence as the initiator having lost this session (e.g.
+// restarted) without telling us.
+const INITIATOR_SESSION_LIVENESS_TIMEOUT: Duration = Duration::from_secs(45);
+
 // if we need to sync route info with one peer, we create a SyncRouteSession with that peer.
 #[derive(Debug)]
 #[allow(dead_code)]
@@ -1937,12 +2007,22 @@ struct SyncRouteSession {
 
     last_sync_succ_timestamp: AtomicCell<Option<SystemTime>>,
 
+    // Last time any sync interaction (inbound request or successful
+    // response) confirmed the peer still holds this session. Drives the
+    // responder liveness timeout; initialized at session creation.
+    last_contact_instant: AtomicCell<Instant>,
+
     my_session_id: AtomicSessionId,
     dst_session_id: AtomicSessionId,
 
     // every node should have exactly one initator session to one other non-initiator peer.
     we_are_initiator: AtomicBool,
     dst_is_initiator: AtomicBool,
+
+    // Serializes the compound session state observed by an outbound RPC.
+    // A response may only commit while this revision still matches the
+    // request snapshot captured before the await.
+    state_revision: AtomicU64,
 
     need_sync_initiator_info: AtomicBool,
 
@@ -1968,11 +2048,14 @@ impl SyncRouteSession {
 
             last_sync_succ_timestamp: AtomicCell::new(None),
 
+            last_contact_instant: AtomicCell::new(Instant::now()),
+
             my_session_id: AtomicSessionId::new(rand::random()),
             dst_session_id: AtomicSessionId::new(0),
 
             we_are_initiator: AtomicBool::new(false),
             dst_is_initiator: AtomicBool::new(false),
+            state_revision: AtomicU64::new(0),
 
             need_sync_initiator_info: AtomicBool::new(false),
 
@@ -2111,24 +2194,117 @@ impl SyncRouteSession {
     }
 
     fn update_initiator_flag(&self, is_initiator: bool) {
-        self.we_are_initiator.store(is_initiator, Ordering::Relaxed);
+        let _session_lock = self.lock.lock();
+        if self.we_are_initiator.load(Ordering::Relaxed) != is_initiator {
+            self.we_are_initiator.store(is_initiator, Ordering::Relaxed);
+            self.state_revision.fetch_add(1, Ordering::Relaxed);
+        }
         self.need_sync_initiator_info.store(true, Ordering::Relaxed);
     }
 
-    // return whether session id is updated
-    fn update_dst_session_id(&self, session_id: SessionId) {
-        if session_id != self.dst_session_id.load(Ordering::Relaxed) {
+    // Must be called with the session lock held.
+    fn update_remote_state_locked(&self, session_id: SessionId, is_initiator: bool) {
+        let session_id_changed = session_id != self.dst_session_id.load(Ordering::Relaxed);
+        let initiator_changed = is_initiator != self.dst_is_initiator.load(Ordering::Relaxed);
+
+        if session_id_changed {
             tracing::warn!(?self, ?session_id, "session id mismatch, clear saved info.");
             self.dst_session_id.store(session_id, Ordering::Relaxed);
             self.dst_saved_conn_info_version.clear();
             self.dst_saved_peer_info_versions.clear();
+            self.dst_saved_foreign_network_versions.clear();
 
-            // update_dst_session_id is always called with session lock held, so clear
-            // last_sync_succ_timestamp and unreachable_peers non-atomic is safe.
             self.last_sync_succ_timestamp.store(None);
             self.unreachable_peers_for_peer_info.lock().clear();
             self.unreachable_peers_for_conn_info.lock().clear();
         }
+
+        if initiator_changed {
+            self.dst_is_initiator.store(is_initiator, Ordering::Relaxed);
+        }
+
+        if session_id_changed || initiator_changed {
+            self.state_revision.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    // Must be called with the session lock held. A different generation may
+    // only take over through an initiator request after the previous remote
+    // initiator role has been relinquished or expired.
+    fn admit_inbound_locked(&self, session_id: SessionId, is_initiator: bool) -> bool {
+        let current_session_id = self.dst_session_id.load(Ordering::Relaxed);
+        if session_id == current_session_id {
+            self.update_remote_state_locked(session_id, is_initiator);
+            return true;
+        }
+
+        if current_session_id == 0 && !is_initiator && self.we_are_initiator.load(Ordering::Relaxed)
+        {
+            // The responder can send its first reverse sync before our
+            // initiating RPC response arrives and teaches us its session ID.
+            self.update_remote_state_locked(session_id, false);
+            return true;
+        }
+
+        if !is_initiator || self.dst_is_initiator.load(Ordering::Relaxed) {
+            return false;
+        }
+
+        self.update_remote_state_locked(session_id, true);
+        true
+    }
+
+    // Must be called with the session lock held.
+    fn request_snapshot_locked(&self) -> SyncRequestSnapshot {
+        SyncRequestSnapshot {
+            my_session_id: self.my_session_id.load(Ordering::Relaxed),
+            state_revision: self.state_revision.load(Ordering::Relaxed),
+            is_initiator: self.we_are_initiator.load(Ordering::Relaxed),
+        }
+    }
+
+    // Must be called with the session lock held.
+    fn request_is_current_locked(&self, snapshot: SyncRequestSnapshot) -> bool {
+        snapshot.my_session_id == self.my_session_id.load(Ordering::Relaxed)
+            && snapshot.state_revision == self.state_revision.load(Ordering::Relaxed)
+            && snapshot.is_initiator == self.we_are_initiator.load(Ordering::Relaxed)
+    }
+
+    // Must be called with the session lock held.
+    fn clear_dst_initiator_if_session_unchanged_locked(
+        &self,
+        expected_dst_session_id: SessionId,
+    ) -> bool {
+        if self.dst_session_id.load(Ordering::Relaxed) != expected_dst_session_id {
+            return false;
+        }
+
+        self.update_remote_state_locked(expected_dst_session_id, false);
+        true
+    }
+
+    // Responder sessions have no outbound keepalive, so the only sign that
+    // the initiator still owns the session is its periodic inbound syncs.
+    // If no sync interaction arrived within INITIATOR_SESSION_LIVENESS_TIMEOUT,
+    // assume the initiator lost this session without telling us and clear the
+    // stale role so the election loop can re-establish the edge. Only the
+    // flag is cleared; the election loop takes over from there. Returns true
+    // if the initiator role was cleared.
+    fn clear_stale_dst_initiator(&self) -> bool {
+        let _session_lock = self.lock.lock();
+        if !self.dst_is_initiator.load(Ordering::Relaxed)
+            || self.we_are_initiator.load(Ordering::Relaxed)
+        {
+            return false;
+        }
+
+        if self.last_contact_instant.load().elapsed() < INITIATOR_SESSION_LIVENESS_TIMEOUT {
+            return false;
+        }
+
+        let session_id = self.dst_session_id.load(Ordering::Relaxed);
+        self.update_remote_state_locked(session_id, false);
+        true
     }
 
     fn clean_dst_saved_map(&self) {
@@ -2256,6 +2432,7 @@ impl PeerRouteServiceImpl {
                 foreign_network: DashMap::new(),
                 group_trust_map: DashMap::new(),
                 group_trust_map_cache: DashMap::new(),
+                group_trust_update_lock: parking_lot::Mutex::new(()),
                 trusted_credential_pubkeys: DashMap::new(),
                 non_reusable_credential_owners: DashMap::new(),
                 suppressed_non_reusable_credential_peers: DashMap::new(),
@@ -2312,8 +2489,32 @@ impl PeerRouteServiceImpl {
         self.sessions.get(&dst_peer_id).map(|x| x.value().clone())
     }
 
+    fn is_current_session(&self, dst_peer_id: PeerId, expected: &Arc<SyncRouteSession>) -> bool {
+        self.sessions
+            .get(&dst_peer_id)
+            .is_some_and(|current| Arc::ptr_eq(current.value(), expected))
+    }
+
+    // Must be called with the expected session lock held. remove_session
+    // takes the same lock before changing the map, so this check remains
+    // valid until the caller finishes committing the RPC result.
+    fn sync_request_is_current_locked(
+        &self,
+        dst_peer_id: PeerId,
+        expected: &Arc<SyncRouteSession>,
+        snapshot: SyncRequestSnapshot,
+    ) -> bool {
+        self.is_current_session(dst_peer_id, expected)
+            && expected.request_is_current_locked(snapshot)
+    }
+
     fn remove_session(&self, dst_peer_id: PeerId) {
-        self.sessions.remove(&dst_peer_id);
+        let Some(session) = self.get_session(dst_peer_id) else {
+            return;
+        };
+        let _session_lock = session.lock.lock();
+        self.sessions
+            .remove_if(&dst_peer_id, |_, current| Arc::ptr_eq(current, &session));
         shrink_dashmap(&self.sessions, None);
     }
 
@@ -2804,18 +3005,11 @@ impl PeerRouteServiceImpl {
         let trust_admin_groups_without_proof =
             self.context.network_identity().network_secret.is_none();
 
-        let peer_infos: Vec<_> = self
-            .synced_route_info
-            .peer_infos
-            .read()
-            .iter()
-            .map(|(_, info)| info.clone())
-            .collect();
-        self.synced_route_info.verify_and_update_group_trusts(
-            &peer_infos,
-            &self.context.acl_group_declarations(),
-            trust_admin_groups_without_proof,
-        );
+        self.synced_route_info
+            .verify_and_update_all_current_group_trusts(
+                &self.context.acl_group_declarations(),
+                trust_admin_groups_without_proof,
+            );
 
         let untrusted = self.refresh_credential_trusts_with_current_topology();
         self.disconnect_untrusted_peers(&untrusted).await;
@@ -3028,6 +3222,8 @@ impl PeerRouteServiceImpl {
 
         let next_last_sync_succ_timestamp =
             self.synced_route_info.get_next_last_sync_succ_timestamp();
+        let request_snapshot = session.request_snapshot_locked();
+        let expected_dst_session_id = session.dst_session_id.load(Ordering::Relaxed);
         let (peer_infos, conn_info, foreign_network) =
             self.build_sync_request(&session, dst_peer_id);
         if peer_infos.is_none()
@@ -3064,8 +3260,8 @@ impl PeerRouteServiceImpl {
 
         let sync_route_info_req = SyncRouteInfoRequest {
             my_peer_id,
-            my_session_id: session.my_session_id.load(Ordering::Relaxed),
-            is_initiator: session.we_are_initiator.load(Ordering::Relaxed),
+            my_session_id: request_snapshot.my_session_id,
+            is_initiator: request_snapshot.is_initiator,
             peer_infos: peer_infos.clone().map(|x| RoutePeerInfos { items: x }),
             conn_info: conn_info.clone(),
             foreign_network_infos: foreign_network.clone(),
@@ -3100,6 +3296,16 @@ impl PeerRouteServiceImpl {
             next_last_sync_succ_timestamp
         );
 
+        if !self.sync_request_is_current_locked(dst_peer_id, &session, request_snapshot) {
+            tracing::debug!(
+                ?my_peer_id,
+                ?dst_peer_id,
+                ?request_snapshot,
+                "discard stale route sync response"
+            );
+            return false;
+        }
+
         match ret.as_ref() {
             Err(e) => {
                 tracing::error!(
@@ -3115,7 +3321,17 @@ impl PeerRouteServiceImpl {
             }
             Ok(resp) => {
                 if let Some(err) = resp.error {
-                    if err == Error::DuplicatePeerId as i32 {
+                    if err == Error::Stopped as i32 && !sync_route_info_req.is_initiator {
+                        let cleared = session.clear_dst_initiator_if_session_unchanged_locked(
+                            expected_dst_session_id,
+                        );
+                        tracing::debug!(
+                            ?my_peer_id,
+                            ?dst_peer_id,
+                            ?cleared,
+                            "stale non-initiator route sync rejected"
+                        );
+                    } else if err == Error::DuplicatePeerId as i32 {
                         if !self.context.feature_flags().is_public_server {
                             panic!("duplicate peer id");
                         }
@@ -3127,12 +3343,9 @@ impl PeerRouteServiceImpl {
                     }
                 } else {
                     session.rpc_tx_count.fetch_add(1, Ordering::Relaxed);
+                    session.last_contact_instant.store(Instant::now());
 
-                    session
-                        .dst_is_initiator
-                        .store(resp.is_initiator, Ordering::Relaxed);
-
-                    session.update_dst_session_id(resp.session_id);
+                    session.update_remote_state_locked(resp.session_id, resp.is_initiator);
 
                     if let Some(peer_infos) = &peer_infos {
                         session.update_dst_saved_peer_info_version(peer_infos, dst_peer_id);
@@ -3399,6 +3612,23 @@ impl RouteSessionManager {
                 }
             }
 
+            // Detect responder sessions whose initiator silently lost the
+            // session (e.g. restarted and elected someone else). Without
+            // this, a responder with no new route data could wait forever
+            // for an initiator that no longer syncs with us. Clearing the
+            // stale role makes the peer an initiator candidate again below.
+            for peer_id in session_peers.iter() {
+                if let Some(session) = service_impl.get_session(*peer_id)
+                    && session.clear_stale_dst_initiator()
+                {
+                    tracing::warn!(
+                        ?peer_id,
+                        my_peer_id = ?service_impl.my_peer_id,
+                        "initiator route sync liveness timeout, clearing stale initiator role"
+                    );
+                }
+            }
+
             // find peer_ids that are not initiators.
             let mut initiator_candidates = Vec::new();
             for peer_id in peers.iter().copied() {
@@ -3573,7 +3803,17 @@ impl RouteSessionManager {
         }
 
         let my_peer_id = service_impl.my_peer_id;
-        let session = self.get_or_start_session(from_peer_id)?;
+        let session = if let Some(session) = service_impl.get_session(from_peer_id) {
+            session
+        } else if is_initiator {
+            self.get_or_start_session(from_peer_id)?
+        } else {
+            tracing::debug!(
+                ?from_peer_id,
+                "ignore stale route sync from non-initiator without a session"
+            );
+            return Err(Error::Stopped);
+        };
 
         let from_identity_type = service_impl
             .get_peer_identity_type_from_interface(from_peer_id)
@@ -3599,9 +3839,20 @@ impl RouteSessionManager {
 
         let _session_lock = session.lock.lock();
 
-        session.rpc_rx_count.fetch_add(1, Ordering::Relaxed);
+        if !service_impl.is_current_session(from_peer_id, &session)
+            || !session.admit_inbound_locked(from_session_id, is_initiator)
+        {
+            tracing::debug!(
+                ?from_peer_id,
+                ?from_session_id,
+                ?is_initiator,
+                "ignore route sync from a stale session generation"
+            );
+            return Err(Error::Stopped);
+        }
 
-        session.update_dst_session_id(from_session_id);
+        session.rpc_rx_count.fetch_add(1, Ordering::Relaxed);
+        session.last_contact_instant.store(Instant::now());
 
         let mut need_update_route_table = false;
         let mut untrusted_peers = Vec::new();
@@ -3637,7 +3888,7 @@ impl RouteSessionManager {
                 )?;
                 service_impl
                     .synced_route_info
-                    .verify_and_update_group_trusts(
+                    .verify_and_update_current_group_trusts(
                         pi,
                         &service_impl.context.acl_group_declarations(),
                         trust_admin_groups_without_proof,
@@ -3694,9 +3945,6 @@ impl RouteSessionManager {
             service_impl.route_table
         );
 
-        session
-            .dst_is_initiator
-            .store(is_initiator, Ordering::Relaxed);
         let is_initiator = session.we_are_initiator.load(Ordering::Relaxed);
         let session_id = session.my_session_id.load(Ordering::Relaxed);
 
@@ -4385,6 +4633,29 @@ mod tests {
         PeerRouteServiceImpl::new(my_peer_id, Arc::new(NoopPeerContext::default()))
     }
 
+    async fn test_route_with_admin_peer(
+        context: ArcPeerContext,
+    ) -> (Arc<PeerRoute>, Arc<PeerRpcManager>) {
+        let peer_rpc = Arc::new(PeerRpcManager::new(TestPeerRpcTransport));
+        let route = PeerRoute::new(
+            1,
+            context,
+            Arc::new(TestPublicIpv6Runtime),
+            peer_rpc.clone(),
+        );
+        *route.service_impl.interface.lock().await = Some(Box::new(CountingInterface {
+            my_peer_id: 1,
+            peers: Arc::new(Mutex::new(vec![2])),
+            peer_identity_types: Arc::new(Mutex::new(HashMap::from([(
+                2,
+                Some(PeerIdentityType::Admin),
+            )]))),
+            list_peers_calls: Arc::new(AtomicU32::new(0)),
+            get_peer_identity_type_calls: Arc::new(AtomicU32::new(0)),
+        }));
+        (route, peer_rpc)
+    }
+
     fn peer(peer_id: PeerId) -> OspfPeerInfo {
         OspfPeerInfo {
             peer_id,
@@ -4522,6 +4793,381 @@ mod tests {
         assert_eq!(get_peer_identity_type_calls.load(Ordering::Relaxed), 4);
     }
 
+    #[test]
+    fn stopped_sync_clears_matching_remote_initiator() {
+        let session = SyncRouteSession::new(1, 2);
+        let _session_lock = session.lock.lock();
+        session.update_remote_state_locked(10, true);
+
+        assert!(session.clear_dst_initiator_if_session_unchanged_locked(10));
+        assert!(!session.dst_is_initiator.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn stopped_sync_preserves_newer_remote_initiator() {
+        let session = SyncRouteSession::new(1, 2);
+        let _session_lock = session.lock.lock();
+        session.update_remote_state_locked(10, true);
+
+        session.update_remote_state_locked(11, true);
+
+        assert!(!session.clear_dst_initiator_if_session_unchanged_locked(10));
+        assert!(session.dst_is_initiator.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn remote_state_change_invalidates_outbound_snapshot() {
+        let service_impl = Arc::new(test_service_impl(1));
+        let session = service_impl.get_or_create_session(2);
+        let _session_lock = session.lock.lock();
+        session.update_remote_state_locked(10, false);
+        let snapshot = session.request_snapshot_locked();
+
+        assert!(session.admit_inbound_locked(20, true));
+        assert!(!service_impl.sync_request_is_current_locked(2, &session, snapshot));
+        assert_eq!(session.dst_session_id.load(Ordering::Relaxed), 20);
+        assert!(session.dst_is_initiator.load(Ordering::Relaxed));
+        assert_eq!(session.rpc_tx_count.load(Ordering::Relaxed), 0);
+        assert!(session.dst_saved_peer_info_versions.is_empty());
+    }
+
+    #[test]
+    fn replaced_session_invalidates_outbound_snapshot() {
+        let service_impl = Arc::new(test_service_impl(1));
+        let old_session = service_impl.get_or_create_session(2);
+        let snapshot = {
+            let _session_lock = old_session.lock.lock();
+            old_session.request_snapshot_locked()
+        };
+
+        service_impl.remove_session(2);
+        let new_session = service_impl.get_or_create_session(2);
+        let _old_session_lock = old_session.lock.lock();
+
+        assert!(!Arc::ptr_eq(&old_session, &new_session));
+        assert!(!service_impl.sync_request_is_current_locked(2, &old_session, snapshot));
+    }
+
+    #[test]
+    fn active_remote_initiator_rejects_different_generation() {
+        let session = SyncRouteSession::new(1, 2);
+        {
+            let _session_lock = session.lock.lock();
+            assert!(session.admit_inbound_locked(20, true));
+            assert!(!session.admit_inbound_locked(10, true));
+            assert_eq!(session.dst_session_id.load(Ordering::Relaxed), 20);
+        }
+
+        session
+            .last_contact_instant
+            .store(Instant::now() - INITIATOR_SESSION_LIVENESS_TIMEOUT - Duration::from_secs(1));
+        assert!(session.clear_stale_dst_initiator());
+
+        let _session_lock = session.lock.lock();
+        assert!(session.admit_inbound_locked(10, true));
+        assert_eq!(session.dst_session_id.load(Ordering::Relaxed), 10);
+    }
+
+    #[test]
+    fn local_initiator_accepts_initial_responder_generation() {
+        let session = SyncRouteSession::new(1, 2);
+        session.update_initiator_flag(true);
+
+        let _session_lock = session.lock.lock();
+        assert!(session.admit_inbound_locked(20, false));
+        assert_eq!(session.dst_session_id.load(Ordering::Relaxed), 20);
+        assert!(!session.dst_is_initiator.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn stale_responder_session_clears_initiator_after_liveness_timeout() {
+        let session = SyncRouteSession::new(1, 2);
+        {
+            let _session_lock = session.lock.lock();
+            session.update_remote_state_locked(10, true);
+        }
+        session
+            .last_contact_instant
+            .store(Instant::now() - INITIATOR_SESSION_LIVENESS_TIMEOUT - Duration::from_secs(1));
+
+        assert!(session.clear_stale_dst_initiator());
+        assert!(!session.dst_is_initiator.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn healthy_responder_session_keeps_initiator() {
+        let session = SyncRouteSession::new(1, 2);
+        {
+            let _session_lock = session.lock.lock();
+            session.update_remote_state_locked(10, true);
+        }
+
+        assert!(!session.clear_stale_dst_initiator());
+        assert!(session.dst_is_initiator.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn initiator_session_ignores_liveness_timeout() {
+        let session = SyncRouteSession::new(1, 2);
+        session.update_initiator_flag(true);
+        {
+            let _session_lock = session.lock.lock();
+            session.update_remote_state_locked(10, true);
+        }
+        session
+            .last_contact_instant
+            .store(Instant::now() - INITIATOR_SESSION_LIVENESS_TIMEOUT - Duration::from_secs(1));
+
+        assert!(!session.clear_stale_dst_initiator());
+        assert!(session.dst_is_initiator.load(Ordering::Relaxed));
+    }
+
+    #[tokio::test]
+    async fn initiator_sync_creates_session_and_marks_contact() {
+        let peer_rpc = Arc::new(PeerRpcManager::new(TestPeerRpcTransport));
+        let route = PeerRoute::new(
+            1,
+            Arc::new(NoopPeerContext::default()),
+            Arc::new(TestPublicIpv6Runtime),
+            peer_rpc,
+        );
+        let peers = Arc::new(Mutex::new(vec![2]));
+        *route.service_impl.interface.lock().await = Some(Box::new(CountingInterface {
+            my_peer_id: 1,
+            peers,
+            peer_identity_types: Arc::new(Mutex::new(HashMap::from([(
+                2,
+                Some(PeerIdentityType::Admin),
+            )]))),
+            list_peers_calls: Arc::new(AtomicU32::new(0)),
+            get_peer_identity_type_calls: Arc::new(AtomicU32::new(0)),
+        }));
+
+        route
+            .session_mgr
+            .do_sync_route_info(2, 1, true, None, None, None, None)
+            .await
+            .expect("initiator sync should succeed");
+
+        let session = route
+            .service_impl
+            .get_session(2)
+            .expect("initiator sync should create the session");
+        assert!(session.dst_is_initiator.load(Ordering::Relaxed));
+        assert!(
+            session.last_contact_instant.load().elapsed() < Duration::from_secs(5),
+            "inbound sync should refresh the liveness timestamp"
+        );
+
+        route.stop().await;
+        assert!(route.service_impl.sessions.is_empty());
+        assert_eq!(route.task_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn stale_non_initiator_sync_does_not_create_session() {
+        let peer_rpc = Arc::new(PeerRpcManager::new(TestPeerRpcTransport));
+        let route = PeerRoute::new(
+            1,
+            Arc::new(NoopPeerContext::default()),
+            Arc::new(TestPublicIpv6Runtime),
+            peer_rpc,
+        );
+        let peers = Arc::new(Mutex::new(vec![2]));
+        *route.service_impl.interface.lock().await = Some(Box::new(CountingInterface {
+            my_peer_id: 1,
+            peers,
+            peer_identity_types: Arc::new(Mutex::new(HashMap::from([(
+                2,
+                Some(PeerIdentityType::Admin),
+            )]))),
+            list_peers_calls: Arc::new(AtomicU32::new(0)),
+            get_peer_identity_type_calls: Arc::new(AtomicU32::new(0)),
+        }));
+
+        let result = route
+            .session_mgr
+            .do_sync_route_info(2, 1, false, None, None, None, None)
+            .await;
+
+        assert!(matches!(result, Err(Error::Stopped)));
+        assert!(route.service_impl.sessions.is_empty());
+        assert_eq!(route.task_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn stale_non_initiator_sync_preserves_newer_session_generation() {
+        let (route, _peer_rpc) =
+            test_route_with_admin_peer(Arc::new(NoopPeerContext::default())).await;
+        let session = route.service_impl.get_or_create_session(2);
+
+        route
+            .session_mgr
+            .do_sync_route_info(2, 22, true, None, None, None, None)
+            .await
+            .expect("new initiator generation should be accepted");
+        let contact = session.last_contact_instant.load();
+        let rx_count = session.rpc_rx_count.load(Ordering::Relaxed);
+
+        let stale_peer_info = RoutePeerInfo {
+            peer_id: 3,
+            version: 1,
+            ..Default::default()
+        };
+        let result = route
+            .session_mgr
+            .do_sync_route_info(
+                2,
+                11,
+                false,
+                Some(vec![stale_peer_info.clone()]),
+                Some(vec![raw_route_peer_info(&stale_peer_info)]),
+                None,
+                None,
+            )
+            .await;
+
+        assert!(matches!(result, Err(Error::Stopped)));
+        assert_eq!(session.dst_session_id.load(Ordering::Relaxed), 22);
+        assert!(session.dst_is_initiator.load(Ordering::Relaxed));
+        assert_eq!(session.last_contact_instant.load(), contact);
+        assert_eq!(session.rpc_rx_count.load(Ordering::Relaxed), rx_count);
+        assert!(
+            !route
+                .service_impl
+                .synced_route_info
+                .peer_infos
+                .read()
+                .contains_key(&3)
+        );
+
+        route.stop().await;
+    }
+
+    #[tokio::test]
+    async fn stale_peer_info_does_not_restore_removed_acl_group() {
+        let context = Arc::new(NoopPeerContext::new(CoreNetworkIdentity::new_credential(
+            "default".to_owned(),
+        )));
+        let (route, _peer_rpc) = test_route_with_admin_peer(context).await;
+        route.service_impl.get_or_create_session(2);
+
+        let peer_info = |version, groups| RoutePeerInfo {
+            peer_id: 3,
+            peer_route_id: 30,
+            version,
+            groups,
+            ..Default::default()
+        };
+        let sync_peer_info = |info: RoutePeerInfo| {
+            let raw = raw_route_peer_info(&info);
+            (Some(vec![info]), Some(vec![raw]))
+        };
+
+        let v1 = peer_info(
+            1,
+            vec![PeerGroupInfo {
+                group_name: "legacy".to_owned(),
+                group_proof: Vec::new(),
+            }],
+        );
+        let (peer_infos, raw_peer_infos) = sync_peer_info(v1.clone());
+        route
+            .session_mgr
+            .do_sync_route_info(2, 22, true, peer_infos, raw_peer_infos, None, None)
+            .await
+            .expect("v1 peer info should be accepted");
+        assert_eq!(route.service_impl.get_peer_groups(3).as_ref(), &["legacy"]);
+
+        let v2 = peer_info(2, Vec::new());
+        let (peer_infos, raw_peer_infos) = sync_peer_info(v2);
+        route
+            .session_mgr
+            .do_sync_route_info(2, 22, true, peer_infos, raw_peer_infos, None, None)
+            .await
+            .expect("v2 peer info should be accepted");
+        assert!(route.service_impl.get_peer_groups(3).is_empty());
+
+        let (peer_infos, raw_peer_infos) = sync_peer_info(v1);
+        route
+            .session_mgr
+            .do_sync_route_info(2, 22, true, peer_infos, raw_peer_infos, None, None)
+            .await
+            .expect("stale peer info should be ignored");
+
+        assert_eq!(
+            route
+                .service_impl
+                .synced_route_info
+                .peer_infos
+                .read()
+                .get(&3)
+                .expect("peer info should remain present")
+                .version,
+            2
+        );
+        assert!(route.service_impl.get_peer_groups(3).is_empty());
+
+        route.stop().await;
+    }
+
+    #[test]
+    fn credential_group_refresh_does_not_restore_removed_proof_group() {
+        let service_impl = Arc::new(test_service_impl(1));
+        let mut peer_infos = OrderedHashMap::new();
+        peer_infos.insert(
+            3,
+            RoutePeerInfo {
+                peer_id: 3,
+                version: 3,
+                noise_static_pubkey: vec![3; 32],
+                ..Default::default()
+            },
+        );
+        let all_trusted = HashMap::from([(
+            vec![3; 32],
+            TrustedCredentialPubkey {
+                groups: vec!["credential".to_owned()],
+                ..Default::default()
+            },
+        )]);
+
+        let group_trust_lock = service_impl
+            .synced_route_info
+            .group_trust_update_lock
+            .lock();
+        service_impl
+            .synced_route_info
+            .set_peer_groups_locked(3, HashMap::from([("legacy".to_owned(), vec![1])]));
+
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let credential_refresh = std::thread::spawn({
+            let service_impl = service_impl.clone();
+            move || {
+                started_tx.send(()).unwrap();
+                service_impl
+                    .synced_route_info
+                    .update_credential_groups(&peer_infos, &all_trusted);
+            }
+        });
+        started_rx.recv().unwrap();
+
+        service_impl
+            .synced_route_info
+            .set_peer_groups_locked(3, HashMap::new());
+        drop(group_trust_lock);
+        credential_refresh.join().unwrap();
+
+        assert_eq!(
+            service_impl
+                .synced_route_info
+                .group_trust_map
+                .get(&3)
+                .as_deref(),
+            Some(&HashMap::from([("credential".to_owned(), Vec::new())]))
+        );
+    }
+
     #[tokio::test]
     async fn stop_waits_for_in_flight_route_sync_before_draining_sessions() {
         let peer_rpc = Arc::new(PeerRpcManager::new(TestPeerRpcTransport));
@@ -4542,7 +5188,7 @@ mod tests {
             let session_mgr = route.session_mgr.clone();
             async move {
                 session_mgr
-                    .do_sync_route_info(2, 1, false, None, None, None, None)
+                    .do_sync_route_info(2, 1, true, None, None, None, None)
                     .await
             }
         });

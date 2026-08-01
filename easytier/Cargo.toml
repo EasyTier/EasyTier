@@ -152,7 +152,14 @@ socket2 = { version = "0.5.10", features = ["all"] }
 rand = "0.8.5"
 
 serde = { version = "1.0", features = ["derive"] }
-pnet = { version = "0.35.0", features = ["serde"] }
+pnet_datalink = { version = "0.35.0", optional = true }
+smoltcp = { git = "https://github.com/smoltcp-rs/smoltcp.git", rev = "0a926767a68bc88d5512afefa7529c5ecdade4ea", optional = true, default-features = false, features = [
+    "std",
+    "medium-ethernet",
+    "proto-ipv4",
+    "proto-ipv6",
+    "socket-raw",
+] }
 serde_json = "1"
 
 clap = { version = "4.5.30", features = [
@@ -167,7 +174,7 @@ clap_complete_nushell = { version = "4.5.10" }
 
 async-recursion = "1.0.5"
 
-network-interface = "2.0"
+network-interface = "2.0.5"
 
 # for wireguard
 boringtun = { package = "boringtun-easytier", version = "0.6.1", optional = true }
@@ -287,6 +294,13 @@ ctor = "0.8.0"
 stun_codec = "0.3.4"
 bytecodec = "0.4.15"
 x25519-dalek = { version = "2.0", features = ["static_secrets"] }
+smoltcp = { git = "https://github.com/smoltcp-rs/smoltcp.git", rev = "0a926767a68bc88d5512afefa7529c5ecdade4ea", default-features = false, features = [
+    "std",
+    "medium-ethernet",
+    "proto-ipv4",
+    "proto-ipv6",
+    "socket-raw",
+] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 defguard_wireguard_rs = "0.4.2"
@@ -375,7 +389,12 @@ magic-dns = [
     "easytier-core/proxy-packet",
     "easytier-proto/magic-dns",
 ]
-faketcp = ["dep:flume", "easytier-proto/faketcp"]
+faketcp = [
+    "dep:flume",
+    "dep:pnet_datalink",
+    "dep:smoltcp",
+    "easytier-proto/faketcp",
+]
 zstd = ["easytier-core/zstd", "easytier-proto/zstd"]
 upnp = ["dep:igd-next", "dep:natpmp"]
 endpoint-discovery = [

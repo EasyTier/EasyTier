@@ -10,9 +10,9 @@ use std::{
 use bytes::{Bytes, BytesMut};
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
-use pnet::{
-    datalink::{self, DataLinkSender, NetworkInterface},
-    packet::{ethernet::EtherTypes, ip::IpNextHeaderProtocols, ipv6::Ipv6Packet},
+use pnet_datalink::{self as datalink, DataLinkSender, NetworkInterface};
+use smoltcp::wire::{
+    EthernetFrame, EthernetProtocol, IpProtocol, Ipv4Packet, Ipv6Packet, TcpPacket,
 };
 #[cfg(target_os = "linux")]
 use std::os::unix::fs::MetadataExt;
@@ -27,49 +27,38 @@ fn filter_tcp_packet(
     src_addr: Option<&SocketAddr>,
     dst_addr: Option<&SocketAddr>,
 ) -> bool {
-    use pnet::packet::Packet;
-    use pnet::packet::ethernet::EthernetPacket;
-    use pnet::packet::ipv4::Ipv4Packet;
-    use pnet::packet::tcp::TcpPacket;
-
-    let ethernet = if let Some(ethernet) = EthernetPacket::new(packet) {
-        ethernet
-    } else {
+    let Ok(ethernet) = EthernetFrame::new_checked(packet) else {
         return false;
     };
 
-    match ethernet.get_ethertype() {
-        EtherTypes::Ipv4 => {
-            let ipv4 = if let Some(ipv4) = Ipv4Packet::new(ethernet.payload()) {
-                ipv4
-            } else {
+    match ethernet.ethertype() {
+        EthernetProtocol::Ipv4 => {
+            let Ok(ipv4) = Ipv4Packet::new_checked(ethernet.payload()) else {
                 return false;
             };
 
-            if ipv4.get_next_level_protocol() != IpNextHeaderProtocols::Tcp {
+            if ipv4.next_header() != IpProtocol::Tcp {
                 return false;
             }
 
-            let tcp = if let Some(tcp) = TcpPacket::new(ipv4.payload()) {
-                tcp
-            } else {
+            let Ok(tcp) = TcpPacket::new_checked(ipv4.payload()) else {
                 return false;
             };
 
             if let Some(src_addr) = src_addr {
-                if IpAddr::V4(ipv4.get_source()) != src_addr.ip() {
+                if IpAddr::V4(ipv4.src_addr()) != src_addr.ip() {
                     return false;
                 }
-                if tcp.get_source() != src_addr.port() {
+                if tcp.src_port() != src_addr.port() {
                     return false;
                 }
             }
 
             if let Some(dst_addr) = dst_addr {
-                if IpAddr::V4(ipv4.get_destination()) != dst_addr.ip() {
+                if IpAddr::V4(ipv4.dst_addr()) != dst_addr.ip() {
                     return false;
                 }
-                if tcp.get_destination() != dst_addr.port() {
+                if tcp.dst_port() != dst_addr.port() {
                     return false;
                 }
             }
@@ -79,43 +68,39 @@ fn filter_tcp_packet(
                 "FakeTcpSocketListener packet matched filter, dispatching, src_addr: {:?}, dst_addr: {:?}, packet_src_ip: {:?}, packet_dst_ip: {:?}, packet_src_port: {:?}, packet_dst_port: {:?}",
                 src_addr,
                 dst_addr,
-                ipv4.get_source(),
-                ipv4.get_destination(),
-                tcp.get_source(),
-                tcp.get_destination(),
+                ipv4.src_addr(),
+                ipv4.dst_addr(),
+                tcp.src_port(),
+                tcp.dst_port(),
             );
         }
-        EtherTypes::Ipv6 => {
-            let ipv6 = if let Some(ipv6) = Ipv6Packet::new(ethernet.payload()) {
-                ipv6
-            } else {
+        EthernetProtocol::Ipv6 => {
+            let Ok(ipv6) = Ipv6Packet::new_checked(ethernet.payload()) else {
                 return false;
             };
 
-            if ipv6.get_next_header() != IpNextHeaderProtocols::Tcp {
+            if ipv6.next_header() != IpProtocol::Tcp {
                 return false;
             }
 
-            let tcp = if let Some(tcp) = TcpPacket::new(ipv6.payload()) {
-                tcp
-            } else {
+            let Ok(tcp) = TcpPacket::new_checked(ipv6.payload()) else {
                 return false;
             };
 
             if let Some(src_addr) = src_addr {
-                if IpAddr::V6(ipv6.get_source()) != src_addr.ip() {
+                if IpAddr::V6(ipv6.src_addr()) != src_addr.ip() {
                     return false;
                 }
-                if tcp.get_source() != src_addr.port() {
+                if tcp.src_port() != src_addr.port() {
                     return false;
                 }
             }
 
             if let Some(dst_addr) = dst_addr {
-                if IpAddr::V6(ipv6.get_destination()) != dst_addr.ip() {
+                if IpAddr::V6(ipv6.dst_addr()) != dst_addr.ip() {
                     return false;
                 }
-                if tcp.get_destination() != dst_addr.port() {
+                if tcp.dst_port() != dst_addr.port() {
                     return false;
                 }
             }
@@ -150,7 +135,7 @@ struct InterfaceWorker {
 impl InterfaceWorker {
     fn new(interface: NetworkInterface) -> io::Result<Arc<Self>> {
         let (tx, mut rx) = match datalink::channel(&interface, Default::default()) {
-            Ok(pnet::datalink::Channel::Ethernet(tx, rx)) => (tx, rx),
+            Ok(datalink::Channel::Ethernet(tx, rx)) => (tx, rx),
             Ok(_) => return Err(io::Error::other("Unhandled channel type")),
             Err(e) => return Err(io::Error::other(e)),
         };

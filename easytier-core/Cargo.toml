@@ -44,7 +44,6 @@ parking_lot = "0.12.1"
 percent-encoding = "2.3.1"
 petgraph = "0.8.1"
 pin-project-lite = "0.2.13"
-pnet_packet = { version = "0.35.0", optional = true }
 prefix-trie = { version = "0.7.0", features = ["cidr"] }
 prost = "0.14.3"
 prost-types = "0.14.3"
@@ -116,7 +115,6 @@ rich-config-errors = ["dep:ariadne"]
 tcp-hole-punch = []
 proxy-packet = [
     "wrapped-transport",
-    "dep:pnet_packet",
     "dep:smoltcp",
     "smoltcp/std",
     "smoltcp/proto-ipv4",

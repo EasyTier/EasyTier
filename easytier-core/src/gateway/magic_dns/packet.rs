@@ -1,12 +1,9 @@
 use std::{future::Future, net::Ipv4Addr};
 
 use async_trait::async_trait;
-use pnet_packet::{
-    MutablePacket, Packet,
-    icmp::{self, IcmpPacket, IcmpTypes, MutableIcmpPacket},
-    ip::IpNextHeaderProtocols,
-    ipv4::{self, Ipv4Flags, Ipv4Packet, MutableIpv4Packet},
-    udp::{self, MutableUdpPacket, UdpPacket},
+use smoltcp::wire::{
+    IPV4_HEADER_LEN, Icmpv4Message, Icmpv4Packet, IpAddress, IpProtocol, Ipv4Packet,
+    UDP_HEADER_LEN, UdpPacket,
 };
 
 use crate::{
@@ -119,43 +116,45 @@ where
     if packet.peer_manager_header().is_none() {
         return false;
     }
-    let Some(ip_packet) = Ipv4Packet::new(packet.payload()) else {
+    if packet.payload().len() < IPV4_HEADER_LEN {
         return false;
-    };
-    if ip_packet.get_version() != 4 || ip_packet.get_destination() != fake_ip {
+    }
+    let ip_packet = Ipv4Packet::new_unchecked(packet.payload());
+    if ip_packet.version() != 4 || ip_packet.dst_addr() != fake_ip {
         return false;
     }
 
-    let ip_header_length = ip_packet.get_header_length() as usize * 4;
-    let ip_total_length = ip_packet.get_total_length() as usize;
-    if ip_header_length < MutableIpv4Packet::minimum_packet_size()
+    let ip_header_length = ip_packet.header_len() as usize;
+    let ip_total_length = ip_packet.total_len() as usize;
+    if ip_header_length < IPV4_HEADER_LEN
         || ip_header_length > ip_total_length
         || ip_total_length != packet.payload().len()
-        || ip_packet.get_fragment_offset() != 0
-        || ip_packet.get_flags() & Ipv4Flags::MoreFragments != 0
+        || ip_packet.frag_offset() != 0
+        || ip_packet.more_frags()
     {
         return false;
     }
 
-    let protocol = ip_packet.get_next_level_protocol();
-    let source_ip = ip_packet.get_source();
-    let destination_ip = ip_packet.get_destination();
+    let protocol = ip_packet.next_header();
+    let source_ip = ip_packet.src_addr();
+    let destination_ip = ip_packet.dst_addr();
 
     match protocol {
-        IpNextHeaderProtocols::Udp => {
+        IpProtocol::Udp => {
             let ip_payload = &packet.payload()[ip_header_length..ip_total_length];
-            let Some(udp_packet) = UdpPacket::new(ip_payload) else {
-                return false;
-            };
-            let udp_length = udp_packet.get_length() as usize;
-            if udp_length != ip_payload.len() || udp_length < UdpPacket::minimum_packet_size() {
+            if ip_payload.len() < UDP_HEADER_LEN {
                 return false;
             }
-            if udp_packet.get_destination() != 53 {
+            let udp_packet = UdpPacket::new_unchecked(ip_payload);
+            let udp_length = udp_packet.len() as usize;
+            if udp_length != ip_payload.len() || udp_length < UDP_HEADER_LEN {
                 return false;
             }
-            let source_port = udp_packet.get_source();
-            let destination_port = udp_packet.get_destination();
+            if udp_packet.dst_port() != 53 {
+                return false;
+            }
+            let source_port = udp_packet.src_port();
+            let destination_port = udp_packet.dst_port();
             let query = MagicDnsQuery {
                 source: std::net::SocketAddr::from((source_ip, source_port)),
                 payload: udp_packet.payload().to_vec(),
@@ -175,30 +174,26 @@ where
                 return false;
             }
         }
-        IpNextHeaderProtocols::Icmp => {
-            let Some(icmp_packet) = IcmpPacket::new(&packet.payload()[ip_header_length..]) else {
-                return false;
-            };
-            if icmp_packet.get_icmp_type() != IcmpTypes::EchoRequest {
-                return false;
-            }
-            let Some(mut icmp_packet) =
-                MutableIcmpPacket::new(&mut packet.mut_payload()[ip_header_length..])
+        IpProtocol::Icmp => {
+            let Ok(icmp_packet) = Icmpv4Packet::new_checked(&packet.payload()[ip_header_length..])
             else {
                 return false;
             };
-            icmp_packet.set_icmp_type(IcmpTypes::EchoReply);
-            icmp_packet.set_checksum(icmp::checksum(&icmp_packet.to_immutable()));
+            if icmp_packet.msg_type() != Icmpv4Message::EchoRequest {
+                return false;
+            }
+            let mut icmp_packet =
+                Icmpv4Packet::new_unchecked(&mut packet.mut_payload()[ip_header_length..]);
+            icmp_packet.set_msg_type(Icmpv4Message::EchoReply);
+            icmp_packet.fill_checksum();
         }
         _ => return false,
     }
 
-    let Some(mut ip_packet) = MutableIpv4Packet::new(packet.mut_payload()) else {
-        return false;
-    };
-    ip_packet.set_source(destination_ip);
-    ip_packet.set_destination(source_ip);
-    ip_packet.set_checksum(ipv4::checksum(&ip_packet.to_immutable()));
+    let mut ip_packet = Ipv4Packet::new_unchecked(packet.mut_payload());
+    ip_packet.set_src_addr(destination_ip);
+    ip_packet.set_dst_addr(source_ip);
+    ip_packet.fill_checksum();
     let payload_length = packet.payload().len() as u32;
     let Some(header) = packet.mut_peer_manager_header() else {
         return false;
@@ -218,7 +213,7 @@ fn apply_udp_response(
     ip_header_length: usize,
     response: &[u8],
 ) -> bool {
-    let Some(udp_length) = UdpPacket::minimum_packet_size().checked_add(response.len()) else {
+    let Some(udp_length) = UDP_HEADER_LEN.checked_add(response.len()) else {
         return false;
     };
     let Some(ip_length) = ip_header_length.checked_add(udp_length) else {
@@ -237,26 +232,21 @@ fn apply_udp_response(
     if packet.mut_inner().capacity() < inner_length {
         packet
             .mut_inner()
-            .truncate(header_length + ip_header_length + UdpPacket::minimum_packet_size());
+            .truncate(header_length + ip_header_length + UDP_HEADER_LEN);
     }
     packet.mut_inner().resize(inner_length, 0);
 
-    let Some(mut ip_packet) = MutableIpv4Packet::new(packet.mut_payload()) else {
-        return false;
-    };
-    ip_packet.set_total_length(ip_length as u16);
-    let Some(mut udp_packet) = MutableUdpPacket::new(ip_packet.payload_mut()) else {
-        return false;
-    };
-    udp_packet.set_length(udp_length as u16);
-    udp_packet.set_source(destination_port);
-    udp_packet.set_destination(source_port);
+    let mut ip_packet = Ipv4Packet::new_unchecked(packet.mut_payload());
+    ip_packet.set_total_len(ip_length as u16);
+    let mut udp_packet = UdpPacket::new_unchecked(ip_packet.payload_mut());
+    udp_packet.set_len(udp_length as u16);
+    udp_packet.set_src_port(destination_port);
+    udp_packet.set_dst_port(source_port);
     udp_packet.payload_mut().copy_from_slice(response);
-    udp_packet.set_checksum(udp::ipv4_checksum(
-        &udp_packet.to_immutable(),
-        &destination_ip,
-        &source_ip,
-    ));
+    udp_packet.fill_checksum(
+        &IpAddress::Ipv4(destination_ip),
+        &IpAddress::Ipv4(source_ip),
+    );
     true
 }
 
@@ -267,17 +257,17 @@ mod tests {
     fn udp_query(payload: &[u8], destination_port: u16) -> ZCPacket {
         let mut bytes = vec![0; 20 + 8 + payload.len()];
         {
-            let mut ip = MutableIpv4Packet::new(&mut bytes).unwrap();
+            let mut ip = Ipv4Packet::new_unchecked(&mut bytes);
             ip.set_version(4);
-            ip.set_header_length(5);
-            ip.set_total_length((20 + 8 + payload.len()) as u16);
-            ip.set_next_level_protocol(IpNextHeaderProtocols::Udp);
-            ip.set_source("10.0.0.2".parse().unwrap());
-            ip.set_destination("100.100.100.101".parse().unwrap());
-            let mut udp = MutableUdpPacket::new(ip.payload_mut()).unwrap();
-            udp.set_source(53000);
-            udp.set_destination(destination_port);
-            udp.set_length((8 + payload.len()) as u16);
+            ip.set_header_len(20);
+            ip.set_total_len((20 + 8 + payload.len()) as u16);
+            ip.set_next_header(IpProtocol::Udp);
+            ip.set_src_addr("10.0.0.2".parse().unwrap());
+            ip.set_dst_addr("100.100.100.101".parse().unwrap());
+            let mut udp = UdpPacket::new_unchecked(ip.payload_mut());
+            udp.set_src_port(53000);
+            udp.set_dst_port(destination_port);
+            udp.set_len((8 + payload.len()) as u16);
             udp.payload_mut().copy_from_slice(payload);
         }
         ZCPacket::new_with_payload(&bytes)
@@ -286,15 +276,15 @@ mod tests {
     fn icmp_echo_request() -> ZCPacket {
         let mut bytes = vec![0; 20 + 8];
         {
-            let mut ip = MutableIpv4Packet::new(&mut bytes).unwrap();
+            let mut ip = Ipv4Packet::new_unchecked(&mut bytes);
             ip.set_version(4);
-            ip.set_header_length(5);
-            ip.set_total_length(28);
-            ip.set_next_level_protocol(IpNextHeaderProtocols::Icmp);
-            ip.set_source("10.0.0.2".parse().unwrap());
-            ip.set_destination("100.100.100.101".parse().unwrap());
-            let mut icmp = MutableIcmpPacket::new(ip.payload_mut()).unwrap();
-            icmp.set_icmp_type(IcmpTypes::EchoRequest);
+            ip.set_header_len(20);
+            ip.set_total_len(28);
+            ip.set_next_header(IpProtocol::Icmp);
+            ip.set_src_addr("10.0.0.2".parse().unwrap());
+            ip.set_dst_addr("100.100.100.101".parse().unwrap());
+            let mut icmp = Icmpv4Packet::new_unchecked(ip.payload_mut());
+            icmp.set_msg_type(Icmpv4Message::EchoRequest);
         }
         ZCPacket::new_with_payload(&bytes)
     }
@@ -314,18 +304,15 @@ mod tests {
         .await;
 
         assert!(handled);
-        let ip = Ipv4Packet::new(packet.payload()).unwrap();
+        let ip = Ipv4Packet::new_checked(packet.payload()).unwrap();
         assert_eq!(
-            ip.get_source(),
+            ip.src_addr(),
             "100.100.100.101".parse::<Ipv4Addr>().unwrap()
         );
-        assert_eq!(
-            ip.get_destination(),
-            "10.0.0.2".parse::<Ipv4Addr>().unwrap()
-        );
-        let udp = UdpPacket::new(ip.payload()).unwrap();
-        assert_eq!(udp.get_source(), 53);
-        assert_eq!(udp.get_destination(), 53000);
+        assert_eq!(ip.dst_addr(), "10.0.0.2".parse::<Ipv4Addr>().unwrap());
+        let udp = UdpPacket::new_checked(ip.payload()).unwrap();
+        assert_eq!(udp.src_port(), 53);
+        assert_eq!(udp.dst_port(), 53000);
         assert_eq!(udp.payload(), b"response");
         assert_eq!(packet.get_dst_peer_id(), Some(42));
         assert_eq!(
@@ -337,9 +324,7 @@ mod tests {
     #[tokio::test]
     async fn packet_engine_rejects_invalid_ipv4_header_without_mutation() {
         let mut packet = udp_query(b"query", 53);
-        MutableIpv4Packet::new(packet.mut_payload())
-            .unwrap()
-            .set_header_length(15);
+        Ipv4Packet::new_unchecked(packet.mut_payload()).set_header_len(60);
         let original = packet.payload().to_vec();
 
         assert!(
@@ -373,10 +358,8 @@ mod tests {
     #[tokio::test]
     async fn packet_engine_rejects_inconsistent_udp_length_without_mutation() {
         let mut packet = udp_query(b"query", 53);
-        let mut ip = MutableIpv4Packet::new(packet.mut_payload()).unwrap();
-        MutableUdpPacket::new(ip.payload_mut())
-            .unwrap()
-            .set_length(8);
+        let mut ip = Ipv4Packet::new_unchecked(packet.mut_payload());
+        UdpPacket::new_unchecked(ip.payload_mut()).set_len(8);
         let original = packet.payload().to_vec();
 
         assert!(
@@ -394,9 +377,7 @@ mod tests {
     #[tokio::test]
     async fn packet_engine_rejects_fragmented_packets_without_mutation() {
         let mut packet = udp_query(b"query", 53);
-        MutableIpv4Packet::new(packet.mut_payload())
-            .unwrap()
-            .set_flags(Ipv4Flags::MoreFragments);
+        Ipv4Packet::new_unchecked(packet.mut_payload()).set_more_frags(true);
         let original = packet.payload().to_vec();
 
         assert!(
@@ -442,13 +423,13 @@ mod tests {
         .await;
 
         assert!(handled);
-        let ip = Ipv4Packet::new(packet.payload()).unwrap();
+        let ip = Ipv4Packet::new_checked(packet.payload()).unwrap();
         assert_eq!(
-            ip.get_source(),
+            ip.src_addr(),
             "100.100.100.101".parse::<Ipv4Addr>().unwrap()
         );
-        let icmp = pnet_packet::icmp::IcmpPacket::new(ip.payload()).unwrap();
-        assert_eq!(icmp.get_icmp_type(), IcmpTypes::EchoReply);
+        let icmp = Icmpv4Packet::new_checked(ip.payload()).unwrap();
+        assert_eq!(icmp.msg_type(), Icmpv4Message::EchoReply);
         assert_eq!(packet.get_dst_peer_id(), Some(7));
     }
 

@@ -41,9 +41,6 @@
 use super::packet::*;
 use bytes::{Bytes, BytesMut};
 use crossbeam::atomic::AtomicCell;
-use pnet::packet::tcp::TcpOptionNumbers;
-use pnet::packet::{Packet, tcp};
-use pnet::util::MacAddr;
 use std::collections::HashMap;
 use std::fmt;
 #[cfg(test)]
@@ -60,6 +57,47 @@ use tracing::{error, info, trace, warn};
 
 const TIMEOUT: time::Duration = time::Duration::from_secs(1);
 const MPMC_BUFFER_LEN: usize = 512;
+const TCP_OPTION_END: u8 = 0;
+const TCP_OPTION_NOP: u8 = 1;
+const TCP_OPTION_SACK: u8 = 5;
+
+struct TcpOptionIter<'a> {
+    remaining: &'a [u8],
+}
+
+impl<'a> TcpOptionIter<'a> {
+    fn new(options: &'a [u8]) -> Self {
+        Self { remaining: options }
+    }
+}
+
+impl<'a> Iterator for TcpOptionIter<'a> {
+    type Item = (u8, &'a [u8]);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let kind = *self.remaining.first()?;
+        if kind == TCP_OPTION_END {
+            self.remaining = &[];
+            return None;
+        }
+        if kind == TCP_OPTION_NOP {
+            self.remaining = &self.remaining[1..];
+            return Some((kind, &[]));
+        }
+        let Some(&length) = self.remaining.get(1) else {
+            self.remaining = &[];
+            return None;
+        };
+        let length = usize::from(length);
+        if length < 2 || length > self.remaining.len() {
+            self.remaining = &[];
+            return None;
+        }
+        let payload = &self.remaining[2..length];
+        self.remaining = &self.remaining[length..];
+        Some((kind, payload))
+    }
+}
 
 #[async_trait::async_trait]
 pub trait Tun: Send + Sync + 'static {
@@ -181,7 +219,7 @@ impl Socket {
 
         build_tcp_packet(
             self.local_mac,
-            self.remote_mac.load().unwrap_or(MacAddr::zero()),
+            self.remote_mac.load().unwrap_or_default(),
             self.local_addr,
             self.remote_addr,
             self.seq.load(Ordering::Relaxed),
@@ -201,7 +239,7 @@ impl Socket {
     pub fn try_send(&self, payload: &[u8]) -> Option<()> {
         match self.state.load() {
             State::Established => {
-                let buf = self.build_tcp_packet(tcp::TcpFlags::ACK, Some(payload));
+                let buf = self.build_tcp_packet(TCP_FLAG_ACK, Some(payload));
                 self.seq.fetch_add(payload.len() as u32, Ordering::Relaxed);
                 self.tun.try_send(&buf).ok().and(Some(()))
             }
@@ -211,7 +249,7 @@ impl Socket {
 
     pub fn close(&self) {
         if self.state.load() != State::Idle {
-            let buf = self.build_tcp_packet(tcp::TcpFlags::RST, None);
+            let buf = self.build_tcp_packet(TCP_FLAG_RST, None);
             let _ = self.tun.try_send(&buf);
             self.state.store(State::Idle);
         }
@@ -256,32 +294,30 @@ impl Socket {
 
                     self.remote_mac.store(Some(src_mac));
 
-                    if (tcp_packet.get_flags() & tcp::TcpFlags::RST) != 0 {
+                    if tcp_packet.rst() {
                         info!("Connection {} reset by peer", self);
                         return None;
                     }
 
-                    if (tcp_packet.get_flags() & tcp::TcpFlags::ACK) != 0
-                        && tcp_packet.payload().is_empty()
-                    {
+                    if tcp_packet.ack() && tcp_packet.payload().is_empty() {
                         self.seq
-                            .store(tcp_packet.get_acknowledgement(), Ordering::Relaxed);
+                            .store(tcp_packet.ack_number().0 as u32, Ordering::Relaxed);
                     }
 
                     let payload = tcp_packet.payload();
 
-                    let new_ack = tcp_packet.get_sequence().wrapping_add(payload.len() as u32);
+                    let new_ack =
+                        (tcp_packet.seq_number().0 as u32).wrapping_add(payload.len() as u32);
                     self.ack.store(new_ack, Ordering::Relaxed);
 
-                    for opt in tcp_packet.get_options_iter() {
-                        if opt.get_number() == TcpOptionNumbers::SACK {
+                    for (kind, option_payload) in TcpOptionIter::new(tcp_packet.options()) {
+                        if kind == TCP_OPTION_SACK {
                             // SACK 选项类型为 5
-                            let payload = opt.payload();
-                            for chunk in payload.chunks(8) {
+                            for chunk in option_payload.chunks(8) {
                                 if chunk.len() != 8 {
                                     continue;
                                 }
-                                let left = tcp_packet.get_acknowledgement();
+                                let left = tcp_packet.ack_number().0 as u32;
                                 let right = u32::from_be_bytes(chunk[0..4].try_into().unwrap());
                                 let len = right.wrapping_sub(left);
 
@@ -295,12 +331,12 @@ impl Socket {
 
                                 let buf = build_tcp_packet(
                                     self.local_mac,
-                                    self.remote_mac.load().unwrap_or(MacAddr::zero()),
+                                    self.remote_mac.load().unwrap_or_default(),
                                     self.local_addr,
                                     self.remote_addr,
                                     left,
                                     self.ack.load(Ordering::Relaxed),
-                                    tcp::TcpFlags::ACK,
+                                    TCP_FLAG_ACK,
                                     Some(&data),
                                 );
 
@@ -332,18 +368,19 @@ impl Socket {
                         continue;
                     };
 
-                    if (tcp_packet.get_flags() & tcp::TcpFlags::RST) != 0 {
+                    if tcp_packet.rst() {
                         tracing::trace!("Connection {} reset by peer", self);
                         return None;
                     }
 
-                    let expected_flag = tcp::TcpFlags::SYN | tcp::TcpFlags::ACK;
-                    if (tcp_packet.get_flags() & expected_flag) == expected_flag {
+                    if tcp_packet.syn() && tcp_packet.ack() {
                         // found our SYN + ACK
                         self.seq
-                            .store(tcp_packet.get_acknowledgement(), Ordering::Relaxed);
-                        self.ack
-                            .store(tcp_packet.get_sequence() + 1, Ordering::Relaxed);
+                            .store(tcp_packet.ack_number().0 as u32, Ordering::Relaxed);
+                        self.ack.store(
+                            (tcp_packet.seq_number().0 as u32).wrapping_add(1),
+                            Ordering::Relaxed,
+                        );
                         self.remote_mac.store(Some(src_mac));
                         self.state.store(State::Established);
                         return Some(0);
@@ -385,12 +422,12 @@ impl Drop for Socket {
 
         let buf = build_tcp_packet(
             self.local_mac,
-            self.remote_mac.load().unwrap_or(MacAddr::zero()),
+            self.remote_mac.load().unwrap_or_default(),
             self.local_addr,
             self.remote_addr,
             self.seq.load(Ordering::Relaxed),
             0,
-            tcp::TcpFlags::RST,
+            TCP_FLAG_RST,
             None,
         );
         if let Err(e) = self.tun.try_send(&buf) {
@@ -434,7 +471,7 @@ impl Stack {
 
         Stack {
             shared,
-            local_mac: local_mac.unwrap_or(MacAddr::zero()),
+            local_mac: local_mac.unwrap_or_default(),
             reader_task: AbortOnDropHandle::new(t),
         }
     }
@@ -514,11 +551,11 @@ impl Stack {
                         Some((_src_mac, _dst_mac, ip_packet, tcp_packet)) => {
                             let local_addr = SocketAddr::new(
                                 ip_packet.get_destination(),
-                                tcp_packet.get_destination(),
+                                tcp_packet.dst_port(),
                             );
                             let remote_addr = SocketAddr::new(
                                 ip_packet.get_source(),
-                                tcp_packet.get_source(),
+                                tcp_packet.src_port(),
                             );
 
                             let tuple = AddrTuple::new(local_addr, remote_addr);
@@ -548,7 +585,7 @@ impl Stack {
                                 }
                             }
 
-                            if (tcp_packet.get_flags() & tcp::TcpFlags::RST) != 0 {
+                            if tcp_packet.rst() {
                                 info!("Unknown RST TCP packet from {}, ignoring", remote_addr);
                                 continue;
                             } else {
@@ -603,6 +640,43 @@ mod tests {
         sync::Notify,
         time::{Duration, timeout},
     };
+
+    #[test]
+    fn tcp_option_iterator_preserves_all_sack_blocks() {
+        for block_count in 1..=4_u32 {
+            let mut options = vec![TCP_OPTION_NOP, TCP_OPTION_SACK, (2 + block_count * 8) as u8];
+            for block in 0..block_count {
+                options.extend_from_slice(&(100 + block * 10).to_be_bytes());
+                options.extend_from_slice(&(110 + block * 10).to_be_bytes());
+            }
+            options.push(TCP_OPTION_END);
+
+            let parsed = TcpOptionIter::new(&options).collect::<Vec<_>>();
+            assert_eq!(parsed[0], (TCP_OPTION_NOP, &[][..]));
+            assert_eq!(parsed[1].0, TCP_OPTION_SACK);
+            assert_eq!(parsed[1].1.len(), block_count as usize * 8);
+            let last = parsed[1].1.len() - 8;
+            assert_eq!(
+                u32::from_be_bytes(parsed[1].1[last..last + 4].try_into().unwrap()),
+                100 + (block_count - 1) * 10
+            );
+            assert_eq!(
+                u32::from_be_bytes(parsed[1].1[last + 4..last + 8].try_into().unwrap()),
+                110 + (block_count - 1) * 10
+            );
+        }
+    }
+
+    #[test]
+    fn tcp_option_iterator_stops_at_end_or_malformed_length() {
+        assert_eq!(
+            TcpOptionIter::new(&[TCP_OPTION_END, TCP_OPTION_SACK, 2]).count(),
+            0
+        );
+        assert_eq!(TcpOptionIter::new(&[TCP_OPTION_SACK]).count(), 0);
+        assert_eq!(TcpOptionIter::new(&[TCP_OPTION_SACK, 1]).count(), 0);
+        assert_eq!(TcpOptionIter::new(&[TCP_OPTION_SACK, 10, 0, 0]).count(), 0);
+    }
 
     #[derive(Default)]
     struct FailingTun {
