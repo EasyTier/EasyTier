@@ -23,7 +23,7 @@ use std::{
     time::Duration,
 };
 
-use pnet_packet::{Packet, ip::IpNextHeaderProtocols, ipv4::Ipv4Packet, tcp::TcpPacket};
+use smoltcp::wire::{IpProtocol, Ipv4Packet, TcpPacket};
 use tokio::{
     select,
     sync::{Mutex, mpsc},
@@ -74,7 +74,7 @@ use self::{
     deadline::{DataPlaneDeadline, DataPlaneIoDeadline},
     error::DataPlaneResult,
     flow::{FlowKey, FlowKind, FlowLease, FlowTable},
-    packet::PeerPacketRoute,
+    packet::{PeerPacketRoute, tcp_flags},
     resource::{DataPlaneConsumers, DataPlaneIoGuard, DataPlaneLease},
     route::{
         DataPlaneRoutePolicy, DataPlaneTcpRoute, DataPlaneTcpRouteInput,
@@ -218,15 +218,16 @@ where
                         || x == PacketType::DataWithQuicSrcModified as u8
                 )
             {
-                if let Some(ipv4) = Ipv4Packet::new(packet.payload()) {
+                if let Ok(ipv4) = Ipv4Packet::new_checked(packet.payload()) {
                     let (tcp_src_port, tcp_dst_port, tcp_flags) =
-                        if ipv4.get_next_level_protocol() == IpNextHeaderProtocols::Tcp {
-                            TcpPacket::new(ipv4.payload())
+                        if ipv4.next_header() == IpProtocol::Tcp {
+                            TcpPacket::new_checked(ipv4.payload())
+                                .ok()
                                 .map(|tcp| {
                                     (
-                                        Some(tcp.get_source()),
-                                        Some(tcp.get_destination()),
-                                        Some(tcp.get_flags()),
+                                        Some(tcp.src_port()),
+                                        Some(tcp.dst_port()),
+                                        Some(tcp_flags(&tcp)),
                                     )
                                 })
                                 .unwrap_or((None, None, None))
@@ -237,9 +238,9 @@ where
                         packet_type = hdr.packet_type,
                         from_peer_id = hdr.from_peer_id.get(),
                         to_peer_id = hdr.to_peer_id.get(),
-                        ipv4_src = %ipv4.get_source(),
-                        ipv4_dst = %ipv4.get_destination(),
-                        next_protocol = ?ipv4.get_next_level_protocol(),
+                        ipv4_src = %ipv4.src_addr(),
+                        ipv4_dst = %ipv4.dst_addr(),
+                        next_protocol = ?ipv4.next_header(),
                         ?tcp_src_port,
                         ?tcp_dst_port,
                         ?tcp_flags,

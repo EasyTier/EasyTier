@@ -4,7 +4,6 @@ mod stack;
 
 use bytes::BytesMut;
 use network_interface::NetworkInterfaceConfig;
-use pnet::util::MacAddr;
 use std::{
     io,
     net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
@@ -25,6 +24,7 @@ use easytier_core::{
 use crate::{common::netns::NetNS, tunnel::FromUrl};
 
 use self::netfilter::create_tun;
+use self::packet::MacAddr;
 
 use futures::Future;
 use tokio_util::task::AbortOnDropHandle;
@@ -33,6 +33,15 @@ use dashmap::DashMap;
 
 struct IpToIfNameCache {
     ip_to_ifname: DashMap<IpAddr, (String, Option<MacAddr>)>,
+}
+
+fn parse_mac_addr(value: &str) -> Option<MacAddr> {
+    let mut bytes = [0; 6];
+    let mut octets = value.split([':', '-']);
+    for byte in &mut bytes {
+        *byte = u8::from_str_radix(octets.next()?, 16).ok()?;
+    }
+    octets.next().is_none().then(|| MacAddr::from_bytes(&bytes))
 }
 
 impl IpToIfNameCache {
@@ -50,9 +59,10 @@ impl IpToIfNameCache {
         };
         for iface in interfaces {
             let mac = iface.mac_addr.as_deref().and_then(|mac| {
-                mac.parse::<MacAddr>().map_err(|e| {
-                    tracing::debug!(iface = %iface.name, mac, ?e, "failed to parse interface mac")
-                }).ok()
+                parse_mac_addr(mac).or_else(|| {
+                    tracing::debug!(iface = %iface.name, mac, "failed to parse interface mac");
+                    None
+                })
             });
             for ip in iface.addr.iter() {
                 self.ip_to_ifname.insert(ip.ip(), (iface.name.clone(), mac));

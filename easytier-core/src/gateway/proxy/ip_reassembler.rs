@@ -4,8 +4,8 @@ use std::{
 };
 
 use dashmap::DashMap;
+pub use smoltcp::wire::IpProtocol;
 use smoltcp::wire::Ipv4Packet;
-pub use smoltcp::wire::{IpProtocol, Ipv4Packet as SmolIpv4Packet};
 
 #[derive(Debug, Hash, PartialEq, Eq, Clone)]
 struct IpReassemblerKey {
