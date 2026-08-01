@@ -5,7 +5,7 @@ use crate::dns::utils::addr::NameServerAddr;
 #[cfg(feature = "tun")]
 use crate::instance::instance::{ArcNicCtx, NicCtx};
 #[cfg(feature = "tun")]
-use crate::peers::NicPacketFilter;
+use crate::peers::{NicPacketFilter, PacketRecvChan};
 use crate::peers::peer_manager::PeerManager;
 use crate::proto::dns::DnsNodeMgrRpcServer;
 use crate::proto::rpc_impl::standalone::StandAloneServer;
@@ -404,8 +404,13 @@ impl DnsServer {
 
 #[cfg(feature = "tun")]
 impl DnsServer {
-    /// Answer a UDP DNS query addressed to one of our hijack addresses.
-    async fn handle_dns_query(&self, ip: &Ipv4Packet<'_>) {
+    /// Kick off async DNS resolution for a UDP query addressed to a hijack address.
+    ///
+    /// Returns immediately. The resolution (which may hit slow or unreachable
+    /// forwarders) runs in a detached task so it can never stall the serial NIC
+    /// packet pipeline; the response is re-injected into the NIC channel once
+    /// ready.
+    fn spawn_dns_query(&self, ip: &Ipv4Packet<'_>) {
         let Some(udp) = UdpPacket::new(ip.payload()) else {
             return;
         };
@@ -413,42 +418,25 @@ impl DnsServer {
             return;
         }
 
-        let src = SocketAddr::from(SocketAddrV4::new(ip.get_source(), udp.get_source()));
-        let Ok(request) = Request::from_bytes(udp.payload().to_vec(), src, Protocol::Udp) else {
-            return;
-        };
-
-        // Obtain the wire-format response the same way hickory does: drive the
-        // catalog's request handler through a public `ResponseHandle` backed by a
-        // `BufDnsStreamHandle`, then read the serialized bytes back. (`encode` is
-        // pub(crate), so this is the supported path to response bytes off-crate.)
-        let (stream_handle, mut stream_receiver) = BufDnsStreamHandle::new(src);
-        let _ = self
-            .catalog
-            .handle_request::<ResponseHandle, TokioTime>(
-                &request,
-                ResponseHandle::new(src, stream_handle, Protocol::Udp),
+        let catalog = self.catalog.clone();
+        let nic_channel = self.peer_mgr.get_nic_channel();
+        let req_src_ip = ip.get_source();
+        let req_dst_ip = ip.get_destination();
+        let req_src_port = udp.get_source();
+        let req_dst_port = udp.get_destination();
+        let query = udp.payload().to_vec();
+        tokio::spawn(async move {
+            resolve_dns_and_inject(
+                catalog,
+                nic_channel,
+                req_src_ip,
+                req_dst_ip,
+                req_src_port,
+                req_dst_port,
+                query,
             )
             .await;
-        let Some(serial) = stream_receiver.next().await else {
-            return;
-        };
-        let response = serial.into_parts().0;
-
-        // Swap src/dst: the reply originates from the hijack address:53 and
-        // returns to whoever issued the query.
-        let packet = build_ipv4_udp(
-            ip.get_destination(),
-            ip.get_source(),
-            udp.get_destination(),
-            udp.get_source(),
-            &response,
-        );
-        let _ = self
-            .peer_mgr
-            .get_nic_channel()
-            .send(ZCPacket::new_with_payload(&packet))
-            .await;
+        });
     }
 
     /// Rewrite an ICMP Echo Request as an Echo Reply so the hijack address is pingable.
@@ -481,6 +469,44 @@ impl DnsServer {
     }
 }
 
+/// Resolve a DNS query via the catalog and re-inject the response into the NIC.
+///
+/// Runs detached (spawned by `spawn_dns_query`) so a slow/unreachable forwarder
+/// cannot block the NIC packet pipeline. The reply is built with src/dst swapped:
+/// it originates from the hijack address:53 and returns to the original client.
+#[cfg(feature = "tun")]
+async fn resolve_dns_and_inject(
+    catalog: DynamicCatalog,
+    nic_channel: PacketRecvChan,
+    req_src_ip: Ipv4Addr,
+    req_dst_ip: Ipv4Addr,
+    req_src_port: u16,
+    req_dst_port: u16,
+    query: Vec<u8>,
+) {
+    let src = SocketAddr::from(SocketAddrV4::new(req_src_ip, req_src_port));
+    let Ok(request) = Request::from_bytes(query, src, Protocol::Udp) else {
+        return;
+    };
+
+    // Drive the catalog through a public `ResponseHandle` + `BufDnsStreamHandle`
+    // (hickory's own path) to obtain wire-format response bytes off-crate.
+    let (stream_handle, mut stream_receiver) = BufDnsStreamHandle::new(src);
+    let _ = catalog
+        .handle_request::<ResponseHandle, TokioTime>(
+            &request,
+            ResponseHandle::new(src, stream_handle, Protocol::Udp),
+        )
+        .await;
+    let Some(serial) = stream_receiver.next().await else {
+        return;
+    };
+    let response = serial.into_parts().0;
+
+    let packet = build_ipv4_udp(req_dst_ip, req_src_ip, req_dst_port, req_src_port, &response);
+    let _ = nic_channel.send(ZCPacket::new_with_payload(&packet)).await;
+}
+
 #[cfg(feature = "tun")]
 #[async_trait::async_trait]
 impl NicPacketFilter for DnsServer {
@@ -503,7 +529,7 @@ impl NicPacketFilter for DnsServer {
         }
 
         match ip.get_next_level_protocol().0 {
-            IPPROTO_UDP => self.handle_dns_query(&ip).await,
+            IPPROTO_UDP => self.spawn_dns_query(&ip),
             IPPROTO_ICMP => self.handle_icmp_echo(&ip).await,
             _ => {}
         }
