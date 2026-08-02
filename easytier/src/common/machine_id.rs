@@ -6,6 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(target_os = "linux")]
 use crate::utils::hostname;
 use anyhow::Context as _;
 #[cfg(unix)]
