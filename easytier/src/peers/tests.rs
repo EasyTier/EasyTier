@@ -22,6 +22,7 @@ use crate::{
 };
 
 use super::{
+    PacketRecvChanReceiver,
     create_packet_recv_chan,
     peer_conn::tests::set_secure_mode_cfg,
     peer_manager::{PeerManager, RouteAlgoType},
@@ -40,6 +41,19 @@ pub async fn create_mock_peer_manager() -> Arc<PeerManager> {
     ));
     peer_mgr.run().await.unwrap();
     peer_mgr
+}
+
+/// Like [`create_mock_peer_manager`], but also returns the NIC channel receiver so
+/// callers can observe packets forwarded to the local NIC (e.g. DNS hijack replies).
+pub async fn create_mock_peer_manager_with_recv() -> (Arc<PeerManager>, PacketRecvChanReceiver) {
+    let (s, r) = create_packet_recv_chan();
+    let peer_mgr = Arc::new(PeerManager::new(
+        RouteAlgoType::Ospf,
+        get_mock_global_ctx(),
+        s,
+    ));
+    peer_mgr.run().await.unwrap();
+    (peer_mgr, r)
 }
 
 pub async fn create_mock_peer_manager_with_name(network_name: String) -> Arc<PeerManager> {

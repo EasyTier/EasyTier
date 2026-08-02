@@ -101,6 +101,12 @@ message NetworkConfig {
   optional string ipv6_public_addr_prefix = 64;
   optional bool disable_relay_data = 65;
   optional bool enable_udp_broadcast_relay = 66;
+
+  // Preserves the [dns] section (including [[dns.zone]]) edited via the GUI's
+  // "edit as file" mode. The DnsConfig type is too complex to model as protobuf
+  // fields, so the [dns] section is serialized to a TOML substring and stored here,
+  // letting the GUI round-trip dns config without losing fields not modeled above.
+  optional string dns_config_toml = 67;
 }
 
 message PortForwardConfig {
