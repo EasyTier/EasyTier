@@ -45,16 +45,7 @@ use hickory_proto::rr::LowerName;
 use hickory_proto::serialize::binary::{BinDecodable, BinEncoder};
 use hickory_server::authority::{MessageRequest, MessageResponse};
 use hickory_server::server::{Request, RequestHandler, ResponseHandler, ResponseInfo};
-use std::process::Command;
 use tokio::net::UdpSocket;
-use pnet::packet::ipv4::Ipv4Packet;
-use pnet::packet::udp::UdpPacket;
-use pnet::packet::{
-    MutablePacket, Packet, icmp,
-    ip::IpNextHeaderProtocols,
-    ipv4::{self, MutableIpv4Packet},
-    udp::{self, MutableUdpPacket},
-};
 use std::net::{SocketAddr, SocketAddrV4};
 use std::sync::Mutex;
 use std::{collections::BTreeMap, io, net::Ipv4Addr, str::FromStr, sync::Arc, time::Duration};
@@ -155,6 +146,7 @@ impl MagicDnsServerInstanceData {
                 nameservers: vec![self.fake_ip.to_string()],
                 search_domains: vec![zone.to_string()],
                 match_domains: vec![zone.to_string()],
+                interface_name: self.tun_dev.clone(),
             })?;
         }
         Ok(())
@@ -363,6 +355,12 @@ fn get_system_config(
         return Ok(Some(Box::new(DarwinConfigurator::new())));
     }
 
+    #[cfg(target_os = "linux")]
+    {
+        use super::system_config::linux::LinuxSystemConfig;
+        return Ok(Some(Box::new(LinuxSystemConfig::new())));
+    }
+
     #[allow(unreachable_code)]
     Ok(None)
 }
@@ -435,40 +433,12 @@ impl MagicDnsServerInstance {
             .register_magic_dns_resolver(fake_ip, data.clone())
             .await;
 
-        // systemd-resolved DNS config — Linux stub never took effect;
-        // configure DNS server and search domain directly via resolvectl.
-        if let Some(ref tun_name) = tun_dev {
-            let dns_ok = Command::new("/usr/bin/resolvectl")
-                .args(["dns", tun_name, &fake_ip.to_string()])
-                .status();
-            if let Ok(status) = dns_ok {
-                if status.success() {
-                    tracing::info!("resolvectl dns {} set to {}", tun_name, fake_ip);
-                }
-            }
-            let domain_str = tld_dns_zone_clone.trim_end_matches('.');
-            let domain_ok = Command::new("/usr/bin/resolvectl")
-                .args(["domain", tun_name, &format!("~{}", domain_str)])
-                .status();
-            if let Ok(status) = domain_ok {
-                if status.success() {
-                    tracing::info!(
-                        "resolvectl domain {} set to ~{}",
-                        tun_name, domain_str
-                    );
-                }
-            }
-        }
-
         // Add fake_ip to lo so the kernel routes packets to us, and set up a UDP listener
         // for DNS queries. This avoids relying on the NIC packet pipeline's self-send path,
         // which cannot deliver responses back to the local TUN device.
-        let lo_add = Command::new("/usr/sbin/ip")
-            .args(["addr", "add", &format!("{}/32", fake_ip), "dev", "lo"])
-            .status()
-            .context("Failed to add fake_ip to lo")?;
-        if !lo_add.success() {
-            tracing::warn!("ip addr add {}/32 dev lo failed (exit: {:?}), continuing", fake_ip, lo_add.code());
+        let ifcfg = IfConfiger {};
+        if let Err(e) = ifcfg.add_ipv4_ip("lo", fake_ip, 32).await {
+            tracing::warn!("add {}/32 to lo failed: {:?}, continuing", fake_ip, e);
         } else {
             tracing::info!("Added {}/32 to lo for MagicDNS", fake_ip);
         }
@@ -573,9 +543,12 @@ impl MagicDnsServerInstance {
         self.packet_filter.close().await;
 
         // Remove fake_ip from lo
-        let _ = Command::new("/usr/sbin/ip")
-            .args(["addr", "del", &format!("{}/32", self.data.fake_ip), "dev", "lo"])
-            .status();
+        let ifcfg = IfConfiger {};
+        let inet = cidr::Ipv4Inet::new(self.data.fake_ip, 32)
+            .expect("fake_ip/32 is always a valid CIDR");
+        if let Err(e) = ifcfg.remove_ip("lo", Some(inet)).await {
+            tracing::warn!("remove {}/32 from lo failed: {:?}", self.data.fake_ip, e);
+        }
     }
 }
 
