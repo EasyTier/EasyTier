@@ -133,6 +133,48 @@ fn core_plans_transport_and_external_listener_capabilities() {
     assert_eq!(plan.external[0].1.socket_mark, Some(7));
 }
 
+#[test]
+fn same_udp_endpoint_combines_protocol_routes() {
+    let config = ListenerRuntimeConfig::new(
+        [
+            "udp://127.0.0.1:11010?accept=udp",
+            "wg://127.0.0.1",
+            "quic://127.0.0.1:11010",
+        ]
+        .into_iter()
+        .map(str::parse)
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap(),
+        false,
+        SocketContext::default(),
+    );
+
+    let plan = prepare_listener_plan::<(), ()>(
+        Some(&config),
+        uuid::Uuid::new_v4(),
+        Some(&TestServerProtocol),
+        None,
+    )
+    .unwrap();
+    let udp = plan
+        .transports
+        .iter()
+        .filter(|transport| matches!(transport, TransportListenerConfig::Udp { .. }))
+        .collect::<Vec<_>>();
+
+    assert_eq!(udp.len(), 1);
+    assert!(matches!(
+        udp[0],
+        TransportListenerConfig::Udp {
+            url,
+            routes,
+            must_succeed: true,
+            ..
+        } if url.as_str() == "udp://127.0.0.1:11010"
+            && routes.iter().eq(UdpSessionAcceptKind::ALL)
+    ));
+}
+
 fn planned_udp_listener(
     listener: &str,
     server_protocol: Option<&dyn ServerProtocolUpgrader<()>>,

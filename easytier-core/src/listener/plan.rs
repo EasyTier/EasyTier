@@ -185,6 +185,22 @@ where
             ListenerKind::UdpSession => {
                 let mut url = listener.url;
                 let routes = udp_listener_routes(&mut url, server_protocol)?;
+                normalize_udp_listener_url(&mut url)?;
+                let existing = transports.iter_mut().find_map(|transport| match transport {
+                    TransportListenerConfig::Udp {
+                        url: existing_url,
+                        routes: existing_routes,
+                        must_succeed: existing_must_succeed,
+                        ..
+                    } if existing_url == &url => Some((existing_routes, existing_must_succeed)),
+                    _ => None,
+                });
+                if let Some((existing_routes, existing_must_succeed)) = existing {
+                    *existing_routes =
+                        UdpSessionRouteSet::new(existing_routes.iter().chain(routes.iter()));
+                    *existing_must_succeed |= must_succeed;
+                    continue;
+                }
                 let request =
                     unresolved_udp_session_listen_request(&url, config.socket_context.clone());
                 transports.push(TransportListenerConfig::Udp {
@@ -272,6 +288,18 @@ fn udp_listener_routes<TcpSocket: 'static>(
         selected.push(route);
     }
     Ok(UdpSessionRouteSet::new(selected))
+}
+
+fn normalize_udp_listener_url(url: &mut Url) -> anyhow::Result<()> {
+    if url.port().is_none() {
+        let default_port = listener_default_port(url.scheme())
+            .ok_or_else(|| anyhow::anyhow!("listener has no default port: {url}"))?;
+        url.set_port(Some(default_port))
+            .map_err(|_| anyhow::anyhow!("listener cannot use a port: {url}"))?;
+    }
+    url.set_scheme("udp")
+        .map_err(|_| anyhow::anyhow!("failed to normalize UDP listener URL: {url}"))?;
+    Ok(())
 }
 
 fn udp_route_supported<TcpSocket: 'static>(
