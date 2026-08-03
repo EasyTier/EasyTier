@@ -314,14 +314,19 @@ impl ManualConnectorOptions {
     }
 }
 
-struct ManualConnectorData<H>
-where
-    H: ManualConnectorHost,
-{
+#[derive(Default)]
+struct ManualConnectorState {
     connectors: DashSet<Url>,
     reconnecting: DashSet<Url>,
     removed: DashSet<Url>,
     state_lock: Mutex<()>,
+}
+
+struct ManualConnectorData<H>
+where
+    H: ManualConnectorHost,
+{
+    state: Arc<ManualConnectorState>,
     peer_manager: Weak<PeerManagerCore>,
     host: Arc<H>,
     dns: Arc<dyn DnsResolver>,
@@ -345,6 +350,30 @@ struct ManualConnectorTask {
     handle: AbortOnDropHandle<()>,
 }
 
+struct ReconnectReservation {
+    state: Arc<ManualConnectorState>,
+    url: Url,
+}
+
+impl ReconnectReservation {
+    fn new(state: Arc<ManualConnectorState>, url: Url) -> Self {
+        Self { state, url }
+    }
+}
+
+impl Drop for ReconnectReservation {
+    fn drop(&mut self) {
+        let _state_guard = self
+            .state
+            .state_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if finish_reconnect_attempt(&self.state, &self.url) {
+            tracing::warn!(url = %self.url, "manual connector removed after reconnect");
+        }
+    }
+}
+
 impl<H> ManualConnectorManager<H>
 where
     H: ManualConnectorHost,
@@ -361,10 +390,7 @@ where
         events: Arc<dyn CoreEventSink>,
     ) -> Self {
         let data = Arc::new(ManualConnectorData {
-            connectors: DashSet::new(),
-            reconnecting: DashSet::new(),
-            removed: DashSet::new(),
-            state_lock: Mutex::new(()),
+            state: Arc::new(ManualConnectorState::default()),
             peer_manager: Arc::downgrade(&peer_manager),
             host,
             dns,
@@ -404,50 +430,47 @@ where
             task.cancel.cancel();
             let _ = task.handle.await;
         }
-        let _state_guard = self.data.state_lock.lock().unwrap();
-        restore_interrupted_connectors(
-            &self.data.connectors,
-            &self.data.reconnecting,
-            &self.data.removed,
-        );
+        let _state_guard = self.data.state.state_lock.lock().unwrap();
+        restore_interrupted_connectors(&self.data.state);
     }
 
     pub fn add_connector(&self, url: Url) -> anyhow::Result<()> {
         validate_manual_url(&url)?;
-        let _state_guard = self.data.state_lock.lock().unwrap();
-        self.data.removed.remove(&url);
-        if !self.data.reconnecting.contains(&url) {
-            self.data.connectors.insert(url);
+        let _state_guard = self.data.state.state_lock.lock().unwrap();
+        self.data.state.removed.remove(&url);
+        if !self.data.state.reconnecting.contains(&url) {
+            self.data.state.connectors.insert(url);
         }
         Ok(())
     }
 
     pub fn remove_connector(&self, url: &Url) -> bool {
-        let _state_guard = self.data.state_lock.lock().unwrap();
-        if self.data.connectors.remove(url).is_some() {
+        let _state_guard = self.data.state.state_lock.lock().unwrap();
+        if self.data.state.connectors.remove(url).is_some() {
             tracing::warn!(%url, "manual connector removed");
             return true;
         }
-        if self.data.reconnecting.contains(url) {
-            self.data.removed.insert(url.clone());
+        if self.data.state.reconnecting.contains(url) {
+            self.data.state.removed.insert(url.clone());
             return true;
         }
         false
     }
 
     pub fn clear_connectors(&self) {
-        let _state_guard = self.data.state_lock.lock().unwrap();
-        self.data.connectors.clear();
-        for url in self.data.reconnecting.iter() {
-            self.data.removed.insert(url.key().clone());
+        let _state_guard = self.data.state.state_lock.lock().unwrap();
+        self.data.state.connectors.clear();
+        for url in self.data.state.reconnecting.iter() {
+            self.data.state.removed.insert(url.key().clone());
         }
     }
 
     pub fn list_connectors(&self) -> Vec<ManualConnectorSnapshot> {
-        let _state_guard = self.data.state_lock.lock().unwrap();
+        let _state_guard = self.data.state.state_lock.lock().unwrap();
         let peer_manager = self.data.peer_manager.upgrade();
         let mut snapshots = self
             .data
+            .state
             .connectors
             .iter()
             .map(|entry| {
@@ -465,15 +488,12 @@ where
                 }
             })
             .collect::<Vec<_>>();
-        snapshots.extend(
-            self.data
-                .reconnecting
-                .iter()
-                .map(|entry| ManualConnectorSnapshot {
-                    url: entry.key().clone(),
-                    status: ManualConnectorStatus::Connecting,
-                }),
-        );
+        snapshots.extend(self.data.state.reconnecting.iter().map(|entry| {
+            ManualConnectorSnapshot {
+                url: entry.key().clone(),
+                status: ManualConnectorStatus::Connecting,
+            }
+        }));
         snapshots
     }
 
@@ -487,8 +507,11 @@ where
                 _ = interval.tick() => {
                     for url in take_dead_connectors_for_reconnect(&data) {
                         let task_data = data.clone();
+                        let reservation =
+                            ReconnectReservation::new(data.state.clone(), url.clone());
                         reconnect_tasks.spawn(async move {
                             let result = reconnect(task_data, url.clone()).await;
+                            drop(reservation);
                             (url, result)
                         });
                     }
@@ -500,13 +523,6 @@ where
                     match result {
                         Ok((url, reconnect_result)) => {
                             tracing::warn!(?url, ?reconnect_result, "manual reconnect task done");
-                            let _state_guard = data.state_lock.lock().unwrap();
-                            data.reconnecting.remove(&url);
-                            if data.removed.remove(&url).is_some() {
-                                tracing::warn!(%url, "manual connector removed after reconnect");
-                            } else {
-                                data.connectors.insert(url);
-                            }
                         }
                         Err(error) => {
                             tracing::error!(?error, "manual reconnect task failed");
@@ -519,25 +535,30 @@ where
         reconnect_tasks.abort_all();
         while reconnect_tasks.join_next().await.is_some() {}
 
-        let _state_guard = data.state_lock.lock().unwrap();
-        restore_interrupted_connectors(&data.connectors, &data.reconnecting, &data.removed);
+        let _state_guard = data.state.state_lock.lock().unwrap();
+        restore_interrupted_connectors(&data.state);
     }
 }
 
-fn restore_interrupted_connectors(
-    connectors: &DashSet<Url>,
-    reconnecting: &DashSet<Url>,
-    removed: &DashSet<Url>,
-) {
-    let interrupted = reconnecting
+fn finish_reconnect_attempt(state: &ManualConnectorState, url: &Url) -> bool {
+    if state.reconnecting.remove(url).is_none() {
+        return false;
+    }
+    if state.removed.remove(url).is_some() {
+        return true;
+    }
+    state.connectors.insert(url.clone());
+    false
+}
+
+fn restore_interrupted_connectors(state: &ManualConnectorState) {
+    let interrupted = state
+        .reconnecting
         .iter()
         .map(|entry| entry.key().clone())
         .collect::<Vec<_>>();
     for url in interrupted {
-        reconnecting.remove(&url);
-        if removed.remove(&url).is_none() {
-            connectors.insert(url);
-        }
+        finish_reconnect_attempt(state, &url);
     }
 }
 
@@ -545,12 +566,13 @@ fn take_dead_connectors_for_reconnect<H>(data: &ManualConnectorData<H>) -> BTree
 where
     H: ManualConnectorHost,
 {
-    let _state_guard = data.state_lock.lock().unwrap();
+    let _state_guard = data.state.state_lock.lock().unwrap();
     let Some(peer_manager) = data.peer_manager.upgrade() else {
         tracing::warn!("peer manager is gone, skip manual reconnect");
         return BTreeSet::new();
     };
     let dead_connectors = data
+        .state
         .connectors
         .iter()
         .filter_map(|entry| {
@@ -559,9 +581,9 @@ where
         })
         .collect::<BTreeSet<_>>();
     for url in &dead_connectors {
-        let removed = data.connectors.remove(url);
+        let removed = data.state.connectors.remove(url);
         debug_assert!(removed.is_some());
-        let inserted = data.reconnecting.insert(url.clone());
+        let inserted = data.state.reconnecting.insert(url.clone());
         debug_assert!(inserted);
     }
     dead_connectors
@@ -1040,6 +1062,22 @@ mod tests {
 
     use super::*;
 
+    fn reserve_pending_connector(
+        state: &Arc<ManualConnectorState>,
+        url: &Url,
+    ) -> ReconnectReservation {
+        let _state_guard = state.state_lock.lock().unwrap();
+        assert!(state.connectors.remove(url).is_some());
+        assert!(state.reconnecting.insert(url.clone()));
+        ReconnectReservation::new(state.clone(), url.clone())
+    }
+
+    fn assert_connector_is_pending(state: &ManualConnectorState, url: &Url) {
+        assert!(state.connectors.contains(url));
+        assert!(!state.reconnecting.contains(url));
+        assert!(!state.removed.contains(url));
+    }
+
     #[test]
     fn idn_normalization_covers_connector_schemes_and_url_round_trips() {
         let cases = [
@@ -1316,21 +1354,92 @@ mod tests {
 
     #[test]
     fn interrupted_reconnects_return_to_the_pending_set_unless_removed() {
-        let connectors = DashSet::new();
-        let reconnecting = DashSet::new();
-        let removed = DashSet::new();
+        let state = ManualConnectorState::default();
         let retained: Url = "tcp://127.0.0.1:11010".parse().unwrap();
         let deleted: Url = "udp://127.0.0.1:11010".parse().unwrap();
-        reconnecting.insert(retained.clone());
-        reconnecting.insert(deleted.clone());
-        removed.insert(deleted.clone());
+        state.reconnecting.insert(retained.clone());
+        state.reconnecting.insert(deleted.clone());
+        state.removed.insert(deleted.clone());
 
-        restore_interrupted_connectors(&connectors, &reconnecting, &removed);
-        restore_interrupted_connectors(&connectors, &reconnecting, &removed);
+        restore_interrupted_connectors(&state);
+        restore_interrupted_connectors(&state);
 
-        assert!(connectors.contains(&retained));
-        assert!(!connectors.contains(&deleted));
-        assert!(reconnecting.is_empty());
-        assert!(removed.is_empty());
+        assert!(state.connectors.contains(&retained));
+        assert!(!state.connectors.contains(&deleted));
+        assert!(state.reconnecting.is_empty());
+        assert!(state.removed.is_empty());
+    }
+
+    #[test]
+    fn reconnect_reservation_restores_connector_on_normal_drop() {
+        let state = Arc::new(ManualConnectorState::default());
+        let url: Url = "tcp://127.0.0.1:11010".parse().unwrap();
+        state.connectors.insert(url.clone());
+
+        let reservation = reserve_pending_connector(&state, &url);
+        assert!(!state.connectors.contains(&url));
+        assert!(state.reconnecting.contains(&url));
+
+        drop(reservation);
+
+        assert_connector_is_pending(&state, &url);
+    }
+
+    #[tokio::test]
+    async fn reconnect_reservation_restores_connector_after_attempt_panic() {
+        let state = Arc::new(ManualConnectorState::default());
+        let url: Url = "tcp://127.0.0.1:11010".parse().unwrap();
+        state.connectors.insert(url.clone());
+        let reservation = reserve_pending_connector(&state, &url);
+
+        let task = tokio::spawn(async move {
+            let _reservation = reservation;
+            panic!("reconnect attempt panic");
+        });
+        assert!(task.await.unwrap_err().is_panic());
+        assert_connector_is_pending(&state, &url);
+
+        let retry_reservation = reserve_pending_connector(&state, &url);
+        drop(retry_reservation);
+        assert_connector_is_pending(&state, &url);
+    }
+
+    #[tokio::test]
+    async fn reconnect_reservation_restores_connector_after_attempt_abort() {
+        let state = Arc::new(ManualConnectorState::default());
+        let url: Url = "tcp://127.0.0.1:11010".parse().unwrap();
+        state.connectors.insert(url.clone());
+        let reservation = reserve_pending_connector(&state, &url);
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+
+        let task = tokio::spawn(async move {
+            let _reservation = reservation;
+            let _ = started_tx.send(());
+            std::future::pending::<()>().await;
+        });
+        started_rx.await.unwrap();
+        task.abort();
+
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert_connector_is_pending(&state, &url);
+
+        let retry_reservation = reserve_pending_connector(&state, &url);
+        drop(retry_reservation);
+        assert_connector_is_pending(&state, &url);
+    }
+
+    #[test]
+    fn reconnect_reservation_does_not_restore_removed_connector() {
+        let state = Arc::new(ManualConnectorState::default());
+        let url: Url = "tcp://127.0.0.1:11010".parse().unwrap();
+        state.connectors.insert(url.clone());
+        let reservation = reserve_pending_connector(&state, &url);
+        state.removed.insert(url.clone());
+
+        drop(reservation);
+
+        assert!(!state.connectors.contains(&url));
+        assert!(!state.reconnecting.contains(&url));
+        assert!(!state.removed.contains(&url));
     }
 }

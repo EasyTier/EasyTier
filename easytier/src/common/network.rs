@@ -1,13 +1,6 @@
-#[cfg(target_os = "windows")]
-use std::net::IpAddr;
+use std::{collections::HashMap, net::IpAddr};
 
-#[cfg(target_os = "windows")]
-use network_interface::{
-    Addr as SystemAddr, NetworkInterface as SystemNetworkInterface, NetworkInterfaceConfig,
-};
-use pnet::datalink::NetworkInterface;
-#[cfg(target_os = "windows")]
-use pnet::{ipnetwork::IpNetwork, util::MacAddr};
+use network_interface::{NetworkInterface, NetworkInterfaceConfig};
 #[cfg(all(target_os = "macos", not(feature = "macos-ne")))]
 use tokio::sync::Mutex;
 
@@ -15,8 +8,113 @@ use crate::proto::peer_rpc::GetIpListResponse;
 
 use super::netns::NetNS;
 
+#[derive(Clone, Copy, Debug, Default)]
+struct InterfaceState {
+    is_point_to_point: bool,
+    is_loopback: bool,
+    is_up: bool,
+    #[cfg(target_os = "linux")]
+    is_lower_up: bool,
+}
+
+#[cfg(any(
+    all(target_os = "linux", not(target_env = "ohos")),
+    all(target_os = "macos", not(feature = "macos-ne")),
+    target_os = "freebsd"
+))]
+fn collect_interface_states() -> HashMap<String, InterfaceState> {
+    let mut states = HashMap::new();
+    if let Ok(interfaces) = nix::ifaddrs::getifaddrs() {
+        use nix::net::if_::InterfaceFlags;
+
+        for interface in interfaces {
+            let flags = interface.flags;
+            #[cfg(target_os = "linux")]
+            let is_lower_up = flags.contains(InterfaceFlags::IFF_LOWER_UP);
+            states.insert(
+                interface.interface_name,
+                InterfaceState {
+                    is_point_to_point: flags.contains(InterfaceFlags::IFF_POINTOPOINT),
+                    is_loopback: flags.contains(InterfaceFlags::IFF_LOOPBACK),
+                    is_up: flags.contains(InterfaceFlags::IFF_UP),
+                    #[cfg(target_os = "linux")]
+                    is_lower_up,
+                },
+            );
+        }
+    }
+    states
+}
+
+#[cfg(not(any(
+    all(target_os = "linux", not(target_env = "ohos")),
+    all(target_os = "macos", not(feature = "macos-ne")),
+    target_os = "freebsd"
+)))]
+fn collect_interface_states() -> HashMap<String, InterfaceState> {
+    HashMap::new()
+}
+
+#[cfg(any(target_os = "freebsd", target_os = "windows"))]
+fn has_nonzero_mac(iface: &NetworkInterface) -> bool {
+    iface.mac_addr.as_deref().is_some_and(|mac| {
+        let mut octets = mac.split([':', '-']);
+        let mut nonzero = false;
+        for _ in 0..6 {
+            let Some(value) = octets
+                .next()
+                .and_then(|octet| u8::from_str_radix(octet, 16).ok())
+            else {
+                return false;
+            };
+            nonzero |= value != 0;
+        }
+        octets.next().is_none() && nonzero
+    })
+}
+
+#[allow(dead_code)]
+pub(crate) fn ip_mask_to_prefix(mask: IpAddr) -> Result<u8, ()> {
+    match mask {
+        IpAddr::V4(mask) => {
+            let raw = u32::from(mask);
+            let prefix = raw.leading_ones() as u8;
+            let expected = if prefix == 0 {
+                0
+            } else {
+                u32::MAX << (32 - prefix)
+            };
+            (raw == expected).then_some(prefix).ok_or(())
+        }
+        IpAddr::V6(mask) => {
+            let raw = u128::from(mask);
+            let prefix = raw.leading_ones() as u8;
+            let expected = if prefix == 0 {
+                0
+            } else {
+                u128::MAX << (128 - prefix)
+            };
+            (raw == expected).then_some(prefix).ok_or(())
+        }
+    }
+}
+
 struct InterfaceFilter {
     iface: NetworkInterface,
+    state: InterfaceState,
+}
+
+fn interface_state(
+    iface: &NetworkInterface,
+    states: &HashMap<String, InterfaceState>,
+) -> InterfaceState {
+    states.get(&iface.name).copied().unwrap_or(InterfaceState {
+        is_loopback: iface.internal,
+        is_up: true,
+        #[cfg(target_os = "linux")]
+        is_lower_up: true,
+        ..Default::default()
+    })
 }
 
 #[cfg(any(
@@ -40,7 +138,7 @@ impl InterfaceFilter {
 
     async fn has_valid_ip(&self) -> bool {
         self.iface
-            .ips
+            .addr
             .iter()
             .map(|ip| ip.ip())
             .any(|ip| !ip.is_loopback() && !ip.is_unspecified() && !ip.is_multicast())
@@ -50,18 +148,18 @@ impl InterfaceFilter {
         tracing::trace!(
             "filter linux iface: {:?}, is_point_to_point: {}, is_loopback: {}, is_up: {}, is_lower_up: {}, is_tun: {}, has_valid_ip: {}",
             self.iface,
-            self.iface.is_point_to_point(),
-            self.iface.is_loopback(),
-            self.iface.is_up(),
-            self.iface.is_lower_up(),
+            self.state.is_point_to_point,
+            self.state.is_loopback,
+            self.state.is_up,
+            self.state.is_lower_up,
             self.is_tun_tap_device().await,
             self.has_valid_ip().await
         );
 
-        !self.iface.is_point_to_point()
-            && !self.iface.is_loopback()
-            && self.iface.is_up()
-            && self.iface.is_lower_up()
+        !self.state.is_point_to_point
+            && !self.state.is_loopback
+            && self.state.is_up
+            && self.state.is_lower_up
             && !self.is_tun_tap_device().await
             && self.has_valid_ip().await
     }
@@ -134,13 +232,13 @@ impl InterfaceFilter {
     #[cfg(target_os = "freebsd")]
     async fn is_interface_physical(&self) -> bool {
         // if mac addr is not zero, then it's physical interface
-        self.iface.mac.map(|mac| !mac.is_zero()).unwrap_or(false)
+        has_nonzero_mac(&self.iface)
     }
 
     async fn filter_iface(&self) -> bool {
-        !self.iface.is_point_to_point()
-            && !self.iface.is_loopback()
-            && self.iface.is_up()
+        !self.state.is_point_to_point
+            && !self.state.is_loopback
+            && self.state.is_up
             && self.is_interface_physical().await
     }
 }
@@ -151,19 +249,19 @@ impl InterfaceFilter {
         tracing::debug!(
             "iface_name: {:?}, p2p: {:?}, is_up: {:?}, iface: {:?}",
             self.iface.name,
-            self.iface.is_point_to_point(),
-            self.iface.is_up(),
+            self.state.is_point_to_point,
+            self.state.is_up,
             self.iface
         );
-        !self.iface.is_point_to_point()
-            && !self.iface.is_loopback()
+        !self.state.is_point_to_point
+            && !self.state.is_loopback
             && self
                 .iface
-                .ips
+                .addr
                 .iter()
                 .map(|ip| ip.ip())
                 .any(|ip| !ip.is_loopback() && !ip.is_unspecified() && !ip.is_multicast())
-            && self.iface.mac.map(|mac| !mac.is_zero()).unwrap_or(false)
+            && has_nonzero_mac(&self.iface)
     }
 }
 
@@ -211,15 +309,66 @@ pub(crate) async fn collect_interfaces(net_ns: NetNS, filter: bool) -> Vec<Netwo
     }
 }
 
+#[cfg(feature = "faketcp")]
+fn convert_pnet_interface(iface: pnet_datalink::NetworkInterface) -> NetworkInterface {
+    let internal = iface.is_loopback();
+    let addr = iface
+        .ips
+        .into_iter()
+        .filter_map(|network| match (network.ip(), network.mask()) {
+            (IpAddr::V4(ip), IpAddr::V4(netmask)) => {
+                Some(network_interface::Addr::V4(network_interface::V4IfAddr {
+                    ip,
+                    broadcast: None,
+                    netmask: Some(netmask),
+                }))
+            }
+            (IpAddr::V6(ip), IpAddr::V6(netmask)) => {
+                Some(network_interface::Addr::V6(network_interface::V6IfAddr {
+                    ip,
+                    broadcast: None,
+                    netmask: Some(netmask),
+                }))
+            }
+            _ => None,
+        })
+        .collect();
+    NetworkInterface {
+        name: iface.name,
+        addr,
+        mac_addr: iface.mac.map(|mac| mac.to_string()),
+        index: iface.index,
+        internal,
+    }
+}
+
 async fn collect_interfaces_in_current_namespace(filter: bool) -> Vec<NetworkInterface> {
-    #[cfg(target_os = "windows")]
-    let ifaces = collect_interfaces_windows();
-    #[cfg(not(target_os = "windows"))]
-    let ifaces = pnet::datalink::interfaces();
+    let ifaces = match NetworkInterface::show() {
+        Ok(ifaces) => ifaces,
+        Err(error) => {
+            tracing::warn!(?error, "failed to enumerate network interfaces");
+            #[cfg(feature = "faketcp")]
+            {
+                match std::panic::catch_unwind(pnet_datalink::interfaces) {
+                    Ok(ifaces) => ifaces.into_iter().map(convert_pnet_interface).collect(),
+                    Err(_) => {
+                        tracing::error!(
+                            "failed to enumerate network interfaces via network-interface and pnet"
+                        );
+                        return Vec::new();
+                    }
+                }
+            }
+            #[cfg(not(feature = "faketcp"))]
+            return Vec::new();
+        }
+    };
+    let states = collect_interface_states();
     let mut ret = vec![];
     for iface in ifaces {
         let f = InterfaceFilter {
             iface: iface.clone(),
+            state: interface_state(&iface, &states),
         };
 
         if filter && !f.filter_iface().await {
@@ -250,83 +399,6 @@ where
     .expect("namespace-local network operation panicked")
 }
 
-#[cfg(target_os = "windows")]
-fn collect_interfaces_windows() -> Vec<NetworkInterface> {
-    match SystemNetworkInterface::show() {
-        Ok(ifaces) => ifaces.into_iter().map(convert_windows_interface).collect(),
-        Err(e) => {
-            tracing::warn!(
-                ?e,
-                "failed to enumerate interfaces via network-interface, falling back to pnet"
-            );
-            match std::panic::catch_unwind(pnet::datalink::interfaces) {
-                Ok(ifaces) => ifaces,
-                Err(_) => {
-                    tracing::error!(
-                        "failed to enumerate interfaces via both network-interface and pnet"
-                    );
-                    Vec::new()
-                }
-            }
-        }
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn convert_windows_interface(iface: SystemNetworkInterface) -> NetworkInterface {
-    let mac = iface.mac_addr.as_deref().and_then(|mac| {
-        mac.parse::<MacAddr>()
-            .map_err(
-                |e| tracing::debug!(iface = %iface.name, mac, ?e, "failed to parse interface mac"),
-            )
-            .ok()
-    });
-
-    let ips = iface
-        .addr
-        .into_iter()
-        .filter_map(convert_windows_interface_addr)
-        .collect();
-
-    NetworkInterface {
-        name: iface.name,
-        description: String::new(),
-        index: iface.index,
-        mac,
-        ips,
-        // pnet does not populate Windows flags either, so keep the existing semantics.
-        flags: 0,
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn convert_windows_interface_addr(addr: SystemAddr) -> Option<IpNetwork> {
-    match addr {
-        SystemAddr::V4(addr) => {
-            let netmask = addr
-                .netmask
-                .map(IpAddr::V4)
-                .unwrap_or(IpAddr::V4(std::net::Ipv4Addr::new(255, 255, 255, 255)));
-            IpNetwork::with_netmask(IpAddr::V4(addr.ip), netmask)
-                .map_err(
-                    |e| tracing::debug!(ip = %addr.ip, ?addr.netmask, ?e, "failed to convert ipv4"),
-                )
-                .ok()
-        }
-        SystemAddr::V6(addr) => {
-            let netmask = addr
-                .netmask
-                .map(IpAddr::V6)
-                .unwrap_or(IpAddr::V6(std::net::Ipv6Addr::from(u128::MAX)));
-            IpNetwork::with_netmask(IpAddr::V6(addr.ip), netmask)
-                .map_err(
-                    |e| tracing::debug!(ip = %addr.ip, ?addr.netmask, ?e, "failed to convert ipv6"),
-                )
-                .ok()
-        }
-    }
-}
-
 #[tracing::instrument(skip(net_ns))]
 pub(crate) async fn collect_local_ip_addrs(net_ns: NetNS) -> GetIpListResponse {
     #[cfg(target_os = "linux")]
@@ -349,7 +421,7 @@ async fn collect_local_ip_addrs_in_current_namespace() -> GetIpListResponse {
 
     let ifaces = collect_interfaces_in_current_namespace(true).await;
     for iface in ifaces {
-        for ip in iface.ips {
+        for ip in iface.addr {
             let ip: std::net::IpAddr = ip.ip();
             if let std::net::IpAddr::V4(v4) = ip {
                 if ip.is_loopback() || ip.is_multicast() {
@@ -362,7 +434,7 @@ async fn collect_local_ip_addrs_in_current_namespace() -> GetIpListResponse {
 
     let ifaces = collect_interfaces_in_current_namespace(false).await;
     for iface in ifaces {
-        for ip in iface.ips {
+        for ip in iface.addr {
             let ip: std::net::IpAddr = ip.ip();
             if let std::net::IpAddr::V6(v6) = ip {
                 if v6.is_multicast() || v6.is_loopback() || v6.is_unicast_link_local() {
@@ -393,6 +465,22 @@ async fn collect_local_ip_addrs_in_current_namespace() -> GetIpListResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn converts_contiguous_ip_masks_to_prefixes() {
+        assert_eq!(
+            ip_mask_to_prefix(IpAddr::V4("255.255.254.0".parse().unwrap())),
+            Ok(23)
+        );
+        assert_eq!(
+            ip_mask_to_prefix(IpAddr::V6("ffff:ffff:ffff:ffff::".parse().unwrap())),
+            Ok(64)
+        );
+        assert_eq!(
+            ip_mask_to_prefix(IpAddr::V4("255.0.255.0".parse().unwrap())),
+            Err(())
+        );
+    }
 
     #[cfg(target_os = "linux")]
     #[tokio::test]

@@ -1,10 +1,8 @@
 use std::net::Ipv4Addr;
 
 use cidr::Ipv4Inet;
-use pnet_packet::{
-    ip::IpNextHeaderProtocols,
-    ipv4::{self, Ipv4Flags, Ipv4Packet, MutableIpv4Packet},
-    udp::{self, MutableUdpPacket, UdpPacket},
+use smoltcp::wire::{
+    IPV4_HEADER_LEN, IpAddress, IpProtocol, Ipv4Packet, UDP_HEADER_LEN, UdpPacket,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -128,36 +126,37 @@ pub struct UdpPacketSummary {
 
 impl UdpPacketSummary {
     pub fn parse(packet: &[u8]) -> Option<Self> {
-        let ipv4_packet = Ipv4Packet::new(packet)?;
-        if ipv4_packet.get_version() != 4
-            || ipv4_packet.get_next_level_protocol() != IpNextHeaderProtocols::Udp
-        {
+        if packet.len() < IPV4_HEADER_LEN {
+            return None;
+        }
+        let ipv4_packet = Ipv4Packet::new_unchecked(packet);
+        if ipv4_packet.version() != 4 || ipv4_packet.next_header() != IpProtocol::Udp {
             return None;
         }
 
-        let header_len = usize::from(ipv4_packet.get_header_length()) * 4;
-        let total_len = usize::from(ipv4_packet.get_total_length());
-        if header_len < Ipv4Packet::minimum_packet_size()
-            || total_len < header_len + UdpPacket::minimum_packet_size()
+        let header_len = usize::from(ipv4_packet.header_len());
+        let total_len = usize::from(ipv4_packet.total_len());
+        if header_len < IPV4_HEADER_LEN
+            || total_len < header_len + UDP_HEADER_LEN
             || total_len > packet.len()
         {
             return None;
         }
 
-        let udp_packet = UdpPacket::new(&packet[header_len..total_len])?;
-        let udp_len = usize::from(udp_packet.get_length());
-        if udp_len < UdpPacket::minimum_packet_size() || header_len + udp_len != total_len {
+        let udp_packet = UdpPacket::new_unchecked(&packet[header_len..total_len]);
+        let udp_len = usize::from(udp_packet.len());
+        if udp_len < UDP_HEADER_LEN || header_len + udp_len != total_len {
             return None;
         }
 
         Some(Self {
-            src: ipv4_packet.get_source(),
-            dst: ipv4_packet.get_destination(),
-            src_port: udp_packet.get_source(),
-            dst_port: udp_packet.get_destination(),
+            src: ipv4_packet.src_addr(),
+            dst: ipv4_packet.dst_addr(),
+            src_port: udp_packet.src_port(),
+            dst_port: udp_packet.dst_port(),
             ip_len: total_len,
             udp_len,
-            payload_len: udp_len - UdpPacket::minimum_packet_size(),
+            payload_len: udp_len - UDP_HEADER_LEN,
         })
     }
 }
@@ -234,30 +233,29 @@ fn parse_udp_broadcast(
     packet: &[u8],
     config: &BroadcastRelayConfig,
 ) -> Result<ParsedUdpBroadcastPacket, UdpBroadcastPacketRejection> {
-    let ipv4_packet = Ipv4Packet::new(packet).ok_or(UdpBroadcastPacketRejection::MalformedIpv4)?;
-    if ipv4_packet.get_version() != 4
-        || ipv4_packet.get_next_level_protocol() != IpNextHeaderProtocols::Udp
-    {
+    if packet.len() < IPV4_HEADER_LEN {
+        return Err(UdpBroadcastPacketRejection::MalformedIpv4);
+    }
+    let ipv4_packet = Ipv4Packet::new_unchecked(packet);
+    if ipv4_packet.version() != 4 || ipv4_packet.next_header() != IpProtocol::Udp {
         return Err(UdpBroadcastPacketRejection::NotUdpIpv4);
     }
 
-    if ipv4_packet.get_fragment_offset() != 0
-        || ipv4_packet.get_flags() & Ipv4Flags::MoreFragments != 0
-    {
+    if ipv4_packet.frag_offset() != 0 || ipv4_packet.more_frags() {
         return Err(UdpBroadcastPacketRejection::Fragmented);
     }
 
-    let header_len = usize::from(ipv4_packet.get_header_length()) * 4;
-    let total_len = usize::from(ipv4_packet.get_total_length());
-    if header_len < Ipv4Packet::minimum_packet_size()
-        || total_len < header_len + UdpPacket::minimum_packet_size()
+    let header_len = usize::from(ipv4_packet.header_len());
+    let total_len = usize::from(ipv4_packet.total_len());
+    if header_len < IPV4_HEADER_LEN
+        || total_len < header_len + UDP_HEADER_LEN
         || total_len > packet.len()
     {
         return Err(UdpBroadcastPacketRejection::BadIpv4Length);
     }
 
-    let src = ipv4_packet.get_source();
-    let dst = ipv4_packet.get_destination();
+    let src = ipv4_packet.src_addr();
+    let dst = ipv4_packet.dst_addr();
     if should_ignore_interface_addr(src) {
         return Err(UdpBroadcastPacketRejection::IgnoredSource);
     }
@@ -275,10 +273,9 @@ fn parse_udp_broadcast(
         return Err(UdpBroadcastPacketRejection::LoopbackDestination);
     }
 
-    let udp_packet = UdpPacket::new(&packet[header_len..total_len])
-        .ok_or(UdpBroadcastPacketRejection::MalformedUdp)?;
-    let udp_len = usize::from(udp_packet.get_length());
-    if udp_len < UdpPacket::minimum_packet_size() || header_len + udp_len != total_len {
+    let udp_packet = UdpPacket::new_unchecked(&packet[header_len..total_len]);
+    let udp_len = usize::from(udp_packet.len());
+    if udp_len < UDP_HEADER_LEN || header_len + udp_len != total_len {
         return Err(UdpBroadcastPacketRejection::BadUdpLength);
     }
 
@@ -301,27 +298,23 @@ pub fn normalize_udp_broadcast_packet(
     let mut normalized = packet[..packet_len].to_vec();
 
     {
-        let mut ipv4_packet = MutableIpv4Packet::new(&mut normalized)
-            .ok_or(UdpBroadcastPacketRejection::MalformedIpv4)?;
-        ipv4_packet.set_source(virtual_ipv4);
-        ipv4_packet.set_destination(destination);
-        ipv4_packet.set_total_length(packet_len as u16);
+        let mut ipv4_packet = Ipv4Packet::new_unchecked(&mut normalized);
+        ipv4_packet.set_src_addr(virtual_ipv4);
+        ipv4_packet.set_dst_addr(destination);
+        ipv4_packet.set_total_len(packet_len as u16);
         ipv4_packet.set_checksum(0);
     }
 
     {
-        let mut udp_packet = MutableUdpPacket::new(&mut normalized[header_len..packet_len])
-            .ok_or(UdpBroadcastPacketRejection::MalformedUdp)?;
-        udp_packet.set_checksum(0);
-        let checksum = udp::ipv4_checksum(&udp_packet.to_immutable(), &virtual_ipv4, &destination);
-        udp_packet.set_checksum(checksum);
+        let mut udp_packet = UdpPacket::new_unchecked(&mut normalized[header_len..packet_len]);
+        udp_packet.fill_checksum(
+            &IpAddress::Ipv4(virtual_ipv4),
+            &IpAddress::Ipv4(destination),
+        );
     }
 
     {
-        let mut ipv4_packet = MutableIpv4Packet::new(&mut normalized)
-            .ok_or(UdpBroadcastPacketRejection::MalformedIpv4)?;
-        let checksum = ipv4::checksum(&ipv4_packet.to_immutable());
-        ipv4_packet.set_checksum(checksum);
+        Ipv4Packet::new_unchecked(&mut normalized).fill_checksum();
     }
 
     Ok(NormalizedPacket {
@@ -373,7 +366,6 @@ impl UdpBroadcastRelayStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pnet_packet::{MutablePacket, Packet};
 
     fn config() -> BroadcastRelayConfig {
         BroadcastRelayConfig::new(
@@ -385,47 +377,38 @@ mod tests {
     fn build_udp_packet(src: Ipv4Addr, dst: Ipv4Addr, payload: &[u8]) -> Vec<u8> {
         let mut packet = vec![0; 20 + 8 + payload.len()];
         {
-            let mut ipv4_packet = MutableIpv4Packet::new(&mut packet).unwrap();
+            let mut ipv4_packet = Ipv4Packet::new_unchecked(&mut packet);
             ipv4_packet.set_version(4);
-            ipv4_packet.set_header_length(5);
-            ipv4_packet.set_total_length((20 + 8 + payload.len()) as u16);
-            ipv4_packet.set_ttl(64);
-            ipv4_packet.set_next_level_protocol(IpNextHeaderProtocols::Udp);
-            ipv4_packet.set_source(src);
-            ipv4_packet.set_destination(dst);
+            ipv4_packet.set_header_len(20);
+            ipv4_packet.set_total_len((20 + 8 + payload.len()) as u16);
+            ipv4_packet.set_hop_limit(64);
+            ipv4_packet.set_next_header(IpProtocol::Udp);
+            ipv4_packet.set_src_addr(src);
+            ipv4_packet.set_dst_addr(dst);
         }
 
         {
-            let mut udp_packet = MutableUdpPacket::new(&mut packet[20..]).unwrap();
-            udp_packet.set_source(12345);
-            udp_packet.set_destination(37020);
-            udp_packet.set_length((8 + payload.len()) as u16);
+            let mut udp_packet = UdpPacket::new_unchecked(&mut packet[20..]);
+            udp_packet.set_src_port(12345);
+            udp_packet.set_dst_port(37020);
+            udp_packet.set_len((8 + payload.len()) as u16);
             udp_packet.payload_mut().copy_from_slice(payload);
-            let checksum = udp::ipv4_checksum(&udp_packet.to_immutable(), &src, &dst);
-            udp_packet.set_checksum(checksum);
+            udp_packet.fill_checksum(&IpAddress::Ipv4(src), &IpAddress::Ipv4(dst));
         }
 
-        {
-            let mut ipv4_packet = MutableIpv4Packet::new(&mut packet).unwrap();
-            let checksum = ipv4::checksum(&ipv4_packet.to_immutable());
-            ipv4_packet.set_checksum(checksum);
-        }
+        Ipv4Packet::new_unchecked(&mut packet).fill_checksum();
 
         packet
     }
 
     fn assert_valid_checksums(packet: &[u8]) {
-        let ipv4_packet = Ipv4Packet::new(packet).unwrap();
-        assert_eq!(ipv4::checksum(&ipv4_packet), ipv4_packet.get_checksum());
-        let udp_packet = UdpPacket::new(ipv4_packet.payload()).unwrap();
-        assert_eq!(
-            udp::ipv4_checksum(
-                &udp_packet,
-                &ipv4_packet.get_source(),
-                &ipv4_packet.get_destination()
-            ),
-            udp_packet.get_checksum()
-        );
+        let ipv4_packet = Ipv4Packet::new_checked(packet).unwrap();
+        assert!(ipv4_packet.verify_checksum());
+        let udp_packet = UdpPacket::new_checked(ipv4_packet.payload()).unwrap();
+        assert!(udp_packet.verify_checksum(
+            &IpAddress::Ipv4(ipv4_packet.src_addr()),
+            &IpAddress::Ipv4(ipv4_packet.dst_addr()),
+        ));
     }
 
     #[test]
@@ -433,11 +416,11 @@ mod tests {
         let packet = build_udp_packet(Ipv4Addr::new(192, 168, 1, 7), Ipv4Addr::BROADCAST, b"hello");
 
         let normalized = normalize_udp_broadcast_packet(&packet, &config()).unwrap();
-        let ipv4_packet = Ipv4Packet::new(&normalized.packet).unwrap();
+        let ipv4_packet = Ipv4Packet::new_checked(&normalized.packet).unwrap();
 
         assert_eq!(normalized.destination, Ipv4Addr::BROADCAST);
-        assert_eq!(ipv4_packet.get_source(), Ipv4Addr::new(10, 144, 144, 1));
-        assert_eq!(ipv4_packet.get_destination(), Ipv4Addr::BROADCAST);
+        assert_eq!(ipv4_packet.src_addr(), Ipv4Addr::new(10, 144, 144, 1));
+        assert_eq!(ipv4_packet.dst_addr(), Ipv4Addr::BROADCAST);
         assert_eq!(&ipv4_packet.payload()[8..], b"hello");
         assert_valid_checksums(&normalized.packet);
     }
@@ -451,14 +434,11 @@ mod tests {
         );
 
         let normalized = normalize_udp_broadcast_packet(&packet, &config()).unwrap();
-        let ipv4_packet = Ipv4Packet::new(&normalized.packet).unwrap();
+        let ipv4_packet = Ipv4Packet::new_checked(&normalized.packet).unwrap();
 
         assert_eq!(normalized.destination, Ipv4Addr::new(10, 144, 144, 255));
-        assert_eq!(ipv4_packet.get_source(), Ipv4Addr::new(10, 144, 144, 1));
-        assert_eq!(
-            ipv4_packet.get_destination(),
-            Ipv4Addr::new(10, 144, 144, 255)
-        );
+        assert_eq!(ipv4_packet.src_addr(), Ipv4Addr::new(10, 144, 144, 1));
+        assert_eq!(ipv4_packet.dst_addr(), Ipv4Addr::new(10, 144, 144, 255));
         assert_eq!(&ipv4_packet.payload()[8..], b"directed");
         assert_valid_checksums(&normalized.packet);
     }
@@ -469,11 +449,11 @@ mod tests {
         let packet = build_udp_packet(Ipv4Addr::new(192, 168, 1, 7), multicast, b"multicast");
 
         let normalized = normalize_udp_broadcast_packet(&packet, &config()).unwrap();
-        let ipv4_packet = Ipv4Packet::new(&normalized.packet).unwrap();
+        let ipv4_packet = Ipv4Packet::new_checked(&normalized.packet).unwrap();
 
         assert_eq!(normalized.destination, multicast);
-        assert_eq!(ipv4_packet.get_source(), Ipv4Addr::new(10, 144, 144, 1));
-        assert_eq!(ipv4_packet.get_destination(), multicast);
+        assert_eq!(ipv4_packet.src_addr(), Ipv4Addr::new(10, 144, 144, 1));
+        assert_eq!(ipv4_packet.dst_addr(), multicast);
         assert_eq!(&ipv4_packet.payload()[8..], b"multicast");
         assert_valid_checksums(&normalized.packet);
     }
@@ -502,8 +482,8 @@ mod tests {
             b"fragment",
         );
         {
-            let mut ipv4_packet = MutableIpv4Packet::new(&mut packet).unwrap();
-            ipv4_packet.set_flags(Ipv4Flags::MoreFragments);
+            let mut ipv4_packet = Ipv4Packet::new_unchecked(&mut packet);
+            ipv4_packet.set_more_frags(true);
         }
 
         assert_eq!(
@@ -540,9 +520,7 @@ mod tests {
     fn rejects_non_udp_ipv4_packets() {
         let mut packet =
             build_udp_packet(Ipv4Addr::new(192, 168, 1, 7), Ipv4Addr::BROADCAST, b"tcp");
-        MutableIpv4Packet::new(&mut packet)
-            .unwrap()
-            .set_next_level_protocol(IpNextHeaderProtocols::Tcp);
+        Ipv4Packet::new_unchecked(&mut packet).set_next_header(IpProtocol::Tcp);
 
         assert_eq!(
             normalize_udp_broadcast_packet(&packet, &config()),

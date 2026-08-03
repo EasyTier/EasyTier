@@ -11,6 +11,17 @@ use std::{
     os::fd::AsRawFd,
 };
 
+use super::{
+    Error, IfConfiguerTrait,
+    netlink_wire::{
+        AddressMessage, MessageBuilder, MessageIter, NLM_F_ACK, NLM_F_CREATE, NLM_F_DUMP,
+        NLM_F_DUMP_INTR, NLM_F_EXCL, NLM_F_REQUEST, NLMSG_DONE, NLMSG_ERROR, NeighborMessage,
+        NetlinkDecode, NetlinkEncode, RTM_DELADDR, RTM_DELNEIGH, RTM_DELROUTE, RTM_GETNEIGH,
+        RTM_GETROUTE, RTM_NEWADDR, RTM_NEWNEIGH, RTM_NEWROUTE, RouteMessage, RouteMessageBuilder,
+        RouteType, netlink_error_code,
+    },
+};
+use crate::common::network::ip_mask_to_prefix;
 use anyhow::Context;
 use async_trait::async_trait;
 use cidr::{IpInet, Ipv4Inet, Ipv6Inet};
@@ -22,18 +33,6 @@ use nix::{
     libc::{self, Ioctl, SIOCGIFFLAGS, SIOCSIFFLAGS, SIOCSIFMTU, ifreq, ioctl},
     net::if_::InterfaceFlags,
     sys::socket::SockaddrLike as _,
-};
-use pnet::ipnetwork::ip_mask_to_prefix;
-
-use super::{
-    Error, IfConfiguerTrait,
-    netlink_wire::{
-        AddressMessage, MessageBuilder, MessageIter, NLM_F_ACK, NLM_F_CREATE, NLM_F_DUMP,
-        NLM_F_DUMP_INTR, NLM_F_EXCL, NLM_F_REQUEST, NLMSG_DONE, NLMSG_ERROR, NeighborMessage,
-        NetlinkDecode, NetlinkEncode, RTM_DELADDR, RTM_DELNEIGH, RTM_DELROUTE, RTM_GETNEIGH,
-        RTM_GETROUTE, RTM_NEWADDR, RTM_NEWNEIGH, RTM_NEWROUTE, RouteMessage, RouteMessageBuilder,
-        RouteType, netlink_error_code,
-    },
 };
 
 pub(crate) fn dummy_socket() -> Result<std::net::UdpSocket, Error> {

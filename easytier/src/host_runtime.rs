@@ -142,7 +142,7 @@ impl ConnectorRuntime for NativeHostRuntime {
             .into_iter()
             .find(|interface| {
                 interface
-                    .ips
+                    .addr
                     .iter()
                     .any(|local| matches!(local.ip(), IpAddr::V6(local_ip) if local_ip == ip))
             })

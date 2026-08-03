@@ -2,12 +2,10 @@
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-use pnet_packet::{
-    Packet, ip::IpNextHeaderProtocols, ipv4::Ipv4Packet, tcp::TcpPacket, udp::UdpPacket,
-};
+use smoltcp::wire::{IPV4_HEADER_LEN, IpProtocol, Ipv4Packet, TcpPacket, UdpPacket};
 
 use crate::{
-    gateway::proxy::ip_reassembler::{IpReassembler, SmolIpv4Packet},
+    gateway::proxy::ip_reassembler::IpReassembler,
     packet::{PacketType, ZCPacket},
 };
 
@@ -45,21 +43,21 @@ pub(crate) enum PeerPacketRoute {
     },
 }
 fn classify_peer_ipv4_payload(payload: &[u8]) -> ClassifiedPeerPacket {
-    let Some(ipv4) = Ipv4Packet::new(payload) else {
+    let Ok(ipv4) = Ipv4Packet::new_checked(payload) else {
         return ClassifiedPeerPacket::Unsupported;
     };
-    if ipv4.get_version() != 4 {
+    if ipv4.version() != 4 || usize::from(ipv4.header_len()) < IPV4_HEADER_LEN {
         return ClassifiedPeerPacket::Unsupported;
     }
 
-    match ipv4.get_next_level_protocol() {
-        IpNextHeaderProtocols::Tcp => {
-            let Some(tcp) = TcpPacket::new(ipv4.payload()) else {
+    match ipv4.next_header() {
+        IpProtocol::Tcp => {
+            let Ok(tcp) = TcpPacket::new_checked(ipv4.payload()) else {
                 return ClassifiedPeerPacket::Unsupported;
             };
             let entry = FlowKey {
-                dst: SocketAddr::new(ipv4.get_source().into(), tcp.get_source()),
-                src: SocketAddr::new(ipv4.get_destination().into(), tcp.get_destination()),
+                dst: SocketAddr::new(ipv4.src_addr().into(), tcp.src_port()),
+                src: SocketAddr::new(ipv4.dst_addr().into(), tcp.dst_port()),
                 kind: FlowKind::Tcp,
             };
             let listen_entry = FlowKey {
@@ -70,29 +68,39 @@ fn classify_peer_ipv4_payload(payload: &[u8]) -> ClassifiedPeerPacket {
             ClassifiedPeerPacket::Tcp {
                 entry,
                 listen_entry,
-                flags: tcp.get_flags(),
+                flags: tcp_flags(&tcp),
             }
         }
-        IpNextHeaderProtocols::Udp => {
-            let smol_ipv4 = SmolIpv4Packet::new_unchecked(ipv4.packet());
-            if IpReassembler::is_packet_fragmented(&smol_ipv4) {
+        IpProtocol::Udp => {
+            if IpReassembler::is_packet_fragmented(&ipv4) {
                 return ClassifiedPeerPacket::FragmentedUdp {
-                    source: ipv4.get_source(),
+                    source: ipv4.src_addr(),
                 };
             }
-            let Some(udp) = UdpPacket::new(ipv4.payload()) else {
+            let Ok(udp) = UdpPacket::new_checked(ipv4.payload()) else {
                 return ClassifiedPeerPacket::Unsupported;
             };
             ClassifiedPeerPacket::Udp {
                 entry: FlowKey {
-                    dst: SocketAddr::new(ipv4.get_source().into(), udp.get_source()),
-                    src: SocketAddr::new(ipv4.get_destination().into(), udp.get_destination()),
+                    dst: SocketAddr::new(ipv4.src_addr().into(), udp.src_port()),
+                    src: SocketAddr::new(ipv4.dst_addr().into(), udp.dst_port()),
                     kind: FlowKind::Udp,
                 },
             }
         }
         _ => ClassifiedPeerPacket::Unsupported,
     }
+}
+
+pub(super) fn tcp_flags<T: AsRef<[u8]>>(tcp: &TcpPacket<T>) -> u8 {
+    u8::from(tcp.fin())
+        | (u8::from(tcp.syn()) << 1)
+        | (u8::from(tcp.rst()) << 2)
+        | (u8::from(tcp.psh()) << 3)
+        | (u8::from(tcp.ack()) << 4)
+        | (u8::from(tcp.urg()) << 5)
+        | (u8::from(tcp.ece()) << 6)
+        | (u8::from(tcp.cwr()) << 7)
 }
 impl<V> FlowTable<V> {
     pub fn route_peer_packet(
@@ -158,37 +166,32 @@ impl<V> FlowTable<V> {
 mod tests {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-    use pnet_packet::{
-        MutablePacket,
-        ip::IpNextHeaderProtocols,
-        ipv4::MutableIpv4Packet,
-        tcp::{MutableTcpPacket, TcpFlags},
-        udp::MutableUdpPacket,
-    };
-
     use super::*;
     use crate::packet::{PacketType, ZCPacket};
 
-    fn ipv4_packet(protocol: pnet_packet::ip::IpNextHeaderProtocol, payload_len: usize) -> Vec<u8> {
+    const TCP_SYN: u8 = 0x02;
+
+    fn ipv4_packet(protocol: IpProtocol, payload_len: usize) -> Vec<u8> {
         let mut packet = vec![0; 20 + payload_len];
         let packet_len = packet.len() as u16;
-        let mut ipv4 = MutableIpv4Packet::new(&mut packet).unwrap();
+        let mut ipv4 = Ipv4Packet::new_unchecked(&mut packet);
         ipv4.set_version(4);
-        ipv4.set_header_length(5);
-        ipv4.set_total_length(packet_len);
-        ipv4.set_source(Ipv4Addr::new(10, 1, 1, 2));
-        ipv4.set_destination(Ipv4Addr::new(10, 2, 2, 3));
-        ipv4.set_next_level_protocol(protocol);
+        ipv4.set_header_len(20);
+        ipv4.set_total_len(packet_len);
+        ipv4.set_src_addr(Ipv4Addr::new(10, 1, 1, 2));
+        ipv4.set_dst_addr(Ipv4Addr::new(10, 2, 2, 3));
+        ipv4.set_next_header(protocol);
         packet
     }
     #[test]
     fn classifies_tcp_and_listen_keys() {
-        let mut packet = ipv4_packet(IpNextHeaderProtocols::Tcp, 20);
-        let mut ipv4 = MutableIpv4Packet::new(&mut packet).unwrap();
-        let mut tcp = MutableTcpPacket::new(ipv4.payload_mut()).unwrap();
-        tcp.set_source(1234);
-        tcp.set_destination(4321);
-        tcp.set_flags(TcpFlags::SYN);
+        let mut packet = ipv4_packet(IpProtocol::Tcp, 20);
+        let mut ipv4 = Ipv4Packet::new_unchecked(&mut packet);
+        let mut tcp = TcpPacket::new_unchecked(ipv4.payload_mut());
+        tcp.set_src_port(1234);
+        tcp.set_dst_port(4321);
+        tcp.set_header_len(20);
+        tcp.set_syn(true);
 
         assert_eq!(
             classify_peer_ipv4_payload(&packet),
@@ -203,17 +206,18 @@ mod tests {
                     dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
                     kind: FlowKind::TcpListen,
                 },
-                flags: TcpFlags::SYN,
+                flags: TCP_SYN,
             }
         );
     }
     #[test]
     fn classifies_udp_and_fragmented_udp() {
-        let mut packet = ipv4_packet(IpNextHeaderProtocols::Udp, 8);
-        let mut ipv4 = MutableIpv4Packet::new(&mut packet).unwrap();
-        let mut udp = MutableUdpPacket::new(ipv4.payload_mut()).unwrap();
-        udp.set_source(1234);
-        udp.set_destination(4321);
+        let mut packet = ipv4_packet(IpProtocol::Udp, 8);
+        let mut ipv4 = Ipv4Packet::new_unchecked(&mut packet);
+        let mut udp = UdpPacket::new_unchecked(ipv4.payload_mut());
+        udp.set_src_port(1234);
+        udp.set_dst_port(4321);
+        udp.set_len(8);
         assert_eq!(
             classify_peer_ipv4_payload(&packet),
             ClassifiedPeerPacket::Udp {
@@ -225,10 +229,8 @@ mod tests {
             }
         );
 
-        let mut fragmented = ipv4_packet(IpNextHeaderProtocols::Udp, 8);
-        MutableIpv4Packet::new(&mut fragmented)
-            .unwrap()
-            .set_fragment_offset(1);
+        let mut fragmented = ipv4_packet(IpProtocol::Udp, 8);
+        Ipv4Packet::new_unchecked(&mut fragmented).set_frag_offset(8);
         assert_eq!(
             classify_peer_ipv4_payload(&fragmented),
             ClassifiedPeerPacket::FragmentedUdp {
@@ -243,18 +245,35 @@ mod tests {
             ClassifiedPeerPacket::Unsupported
         );
         assert_eq!(
-            classify_peer_ipv4_payload(&ipv4_packet(IpNextHeaderProtocols::Icmp, 8)),
+            classify_peer_ipv4_payload(&ipv4_packet(IpProtocol::Icmp, 8)),
+            ClassifiedPeerPacket::Unsupported
+        );
+    }
+
+    #[test]
+    fn rejects_ipv4_header_shorter_than_minimum() {
+        let mut packet = ipv4_packet(IpProtocol::Tcp, 20);
+        let mut ipv4 = Ipv4Packet::new_unchecked(&mut packet);
+        ipv4.set_header_len(16);
+        let mut tcp = TcpPacket::new_unchecked(ipv4.payload_mut());
+        tcp.set_src_port(1234);
+        tcp.set_dst_port(4321);
+        tcp.set_header_len(20);
+
+        assert_eq!(
+            classify_peer_ipv4_payload(&packet),
             ClassifiedPeerPacket::Unsupported
         );
     }
     #[test]
     fn flow_table_routes_tcp_exact_and_listen_fallback() {
-        let mut packet = ipv4_packet(IpNextHeaderProtocols::Tcp, 20);
-        let mut ipv4 = MutableIpv4Packet::new(&mut packet).unwrap();
-        let mut tcp = MutableTcpPacket::new(ipv4.payload_mut()).unwrap();
-        tcp.set_source(1234);
-        tcp.set_destination(4321);
-        tcp.set_flags(TcpFlags::SYN);
+        let mut packet = ipv4_packet(IpProtocol::Tcp, 20);
+        let mut ipv4 = Ipv4Packet::new_unchecked(&mut packet);
+        let mut tcp = TcpPacket::new_unchecked(ipv4.payload_mut());
+        tcp.set_src_port(1234);
+        tcp.set_dst_port(4321);
+        tcp.set_header_len(20);
+        tcp.set_syn(true);
 
         let exact = FlowKey {
             src: "10.2.2.3:4321".parse().unwrap(),
@@ -272,7 +291,7 @@ mod tests {
             table.route_peer_ipv4_payload(&packet, false),
             PeerPacketRoute::Unmatched {
                 entry: exact.clone(),
-                tcp_flags: Some(TcpFlags::SYN),
+                tcp_flags: Some(TCP_SYN),
             }
         );
 
@@ -281,7 +300,7 @@ mod tests {
             table.route_peer_ipv4_payload(&packet, true),
             PeerPacketRoute::Deliver {
                 entry: listen,
-                tcp_flags: Some(TcpFlags::SYN),
+                tcp_flags: Some(TCP_SYN),
             }
         );
 
@@ -290,16 +309,14 @@ mod tests {
             table.route_peer_ipv4_payload(&packet, true),
             PeerPacketRoute::Deliver {
                 entry: exact,
-                tcp_flags: Some(TcpFlags::SYN),
+                tcp_flags: Some(TCP_SYN),
             }
         );
     }
     #[test]
     fn flow_table_routes_fragmented_udp_by_source_ip() {
-        let mut packet = ipv4_packet(IpNextHeaderProtocols::Udp, 8);
-        MutableIpv4Packet::new(&mut packet)
-            .unwrap()
-            .set_fragment_offset(1);
+        let mut packet = ipv4_packet(IpProtocol::Udp, 8);
+        Ipv4Packet::new_unchecked(&mut packet).set_frag_offset(8);
         let table = FlowTable::default();
 
         assert_eq!(
@@ -328,11 +345,12 @@ mod tests {
     }
     #[test]
     fn flow_table_routes_loopback_modified_source_packets() {
-        let mut payload = ipv4_packet(IpNextHeaderProtocols::Tcp, 20);
-        let mut ipv4 = MutableIpv4Packet::new(&mut payload).unwrap();
-        let mut tcp = MutableTcpPacket::new(ipv4.payload_mut()).unwrap();
-        tcp.set_source(1234);
-        tcp.set_destination(4321);
+        let mut payload = ipv4_packet(IpProtocol::Tcp, 20);
+        let mut ipv4 = Ipv4Packet::new_unchecked(&mut payload);
+        let mut tcp = TcpPacket::new_unchecked(ipv4.payload_mut());
+        tcp.set_src_port(1234);
+        tcp.set_dst_port(4321);
+        tcp.set_header_len(20);
         let entry = FlowKey {
             src: "10.2.2.3:4321".parse().unwrap(),
             dst: "10.1.1.2:1234".parse().unwrap(),
@@ -359,8 +377,7 @@ mod tests {
     #[test]
     fn flow_table_passes_non_loopback_or_malformed_modified_source_packets() {
         let table = FlowTable::<()>::default();
-        let mut non_loopback =
-            ZCPacket::new_with_payload(&ipv4_packet(IpNextHeaderProtocols::Tcp, 20));
+        let mut non_loopback = ZCPacket::new_with_payload(&ipv4_packet(IpProtocol::Tcp, 20));
         non_loopback.fill_peer_manager_hdr(7, 8, PacketType::DataWithKcpSrcModified as u8);
         assert_eq!(
             table.route_peer_packet(&non_loopback, false),

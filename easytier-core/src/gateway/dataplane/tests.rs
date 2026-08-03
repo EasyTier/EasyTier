@@ -1,11 +1,6 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-use pnet_packet::{
-    MutablePacket,
-    ip::IpNextHeaderProtocols,
-    ipv4::{self, MutableIpv4Packet},
-    tcp::{self, MutableTcpPacket, TcpFlags},
-};
+use smoltcp::wire::{IpAddress, IpProtocol, Ipv4Packet, TcpPacket};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::*;
@@ -177,28 +172,25 @@ fn build_tcp_packet(src: SocketAddr, dst: SocketAddr) -> Vec<u8> {
     };
 
     {
-        let mut ip_packet = MutableIpv4Packet::new(&mut buf).unwrap();
+        let mut ip_packet = Ipv4Packet::new_unchecked(&mut buf);
         ip_packet.set_version(4);
-        ip_packet.set_header_length(5);
-        ip_packet.set_total_length(40);
-        ip_packet.set_ttl(64);
-        ip_packet.set_next_level_protocol(IpNextHeaderProtocols::Tcp);
-        ip_packet.set_source(src_ip);
-        ip_packet.set_destination(dst_ip);
+        ip_packet.set_header_len(20);
+        ip_packet.set_total_len(40);
+        ip_packet.set_hop_limit(64);
+        ip_packet.set_next_header(IpProtocol::Tcp);
+        ip_packet.set_src_addr(src_ip);
+        ip_packet.set_dst_addr(dst_ip);
 
-        let mut tcp_packet = MutableTcpPacket::new(ip_packet.payload_mut()).unwrap();
-        tcp_packet.set_source(src.port());
-        tcp_packet.set_destination(dst.port());
-        tcp_packet.set_data_offset(5);
-        tcp_packet.set_flags(TcpFlags::SYN | TcpFlags::ACK);
-        tcp_packet.set_window(65535);
-        tcp_packet.set_checksum(tcp::ipv4_checksum(
-            &tcp_packet.to_immutable(),
-            &src_ip,
-            &dst_ip,
-        ));
+        let mut tcp_packet = TcpPacket::new_unchecked(ip_packet.payload_mut());
+        tcp_packet.set_src_port(src.port());
+        tcp_packet.set_dst_port(dst.port());
+        tcp_packet.set_header_len(20);
+        tcp_packet.set_syn(true);
+        tcp_packet.set_ack(true);
+        tcp_packet.set_window_len(65535);
+        tcp_packet.fill_checksum(&IpAddress::Ipv4(src_ip), &IpAddress::Ipv4(dst_ip));
 
-        ip_packet.set_checksum(ipv4::checksum(&ip_packet.to_immutable()));
+        ip_packet.fill_checksum();
     }
 
     buf
@@ -207,20 +199,20 @@ fn build_tcp_packet(src: SocketAddr, dst: SocketAddr) -> Vec<u8> {
 fn build_udp_followup_fragment(src: Ipv4Addr, dst: Ipv4Addr) -> Vec<u8> {
     let mut buf = vec![0u8; 28];
     {
-        let mut ip_packet = MutableIpv4Packet::new(&mut buf).unwrap();
+        let mut ip_packet = Ipv4Packet::new_unchecked(&mut buf);
         ip_packet.set_version(4);
-        ip_packet.set_header_length(5);
-        ip_packet.set_total_length(28);
-        ip_packet.set_ttl(64);
-        ip_packet.set_next_level_protocol(IpNextHeaderProtocols::Udp);
-        ip_packet.set_fragment_offset(1);
-        ip_packet.set_source(src);
-        ip_packet.set_destination(dst);
+        ip_packet.set_header_len(20);
+        ip_packet.set_total_len(28);
+        ip_packet.set_hop_limit(64);
+        ip_packet.set_next_header(IpProtocol::Udp);
+        ip_packet.set_frag_offset(8);
+        ip_packet.set_src_addr(src);
+        ip_packet.set_dst_addr(dst);
         ip_packet
             .payload_mut()
             .copy_from_slice(&[0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe, 0xba, 0xbe]);
 
-        ip_packet.set_checksum(ipv4::checksum(&ip_packet.to_immutable()));
+        ip_packet.fill_checksum();
     }
 
     buf
