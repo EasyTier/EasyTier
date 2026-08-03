@@ -630,11 +630,9 @@ impl stack::Tun for LinuxBpfTun {
 mod tests {
     use super::*;
 
-    use crate::socket::fake_tcp::packet::build_tcp_packet;
+    use crate::socket::fake_tcp::packet::{MacAddr, TCP_FLAG_SYN, build_tcp_packet};
     use crate::socket::fake_tcp::stack::Tun;
-    use pnet::datalink;
-    use pnet::packet::tcp::TcpFlags;
-    use pnet::util::MacAddr;
+    use pnet_datalink as datalink;
     use rand::Rng;
     use std::net::{IpAddr, Ipv4Addr};
     use tokio::time::{Duration, timeout};
@@ -656,7 +654,7 @@ mod tests {
                 IpAddr::V4(ip) => Some(ip),
                 IpAddr::V6(_) => None,
             })?;
-            return Some((iface.name, ipv4, mac));
+            return Some((iface.name, ipv4, MacAddr::from_bytes(&mac.octets())));
         }
         None
     }
@@ -741,7 +739,7 @@ mod tests {
             dst_addr,
             1,
             0,
-            TcpFlags::SYN,
+            TCP_FLAG_SYN,
             Some(b"ping"),
         );
 
@@ -794,7 +792,7 @@ mod tests {
             non_matching_dst,
             1,
             0,
-            TcpFlags::SYN,
+            TCP_FLAG_SYN,
             Some(b"nope"),
         );
         send_raw_frame(&ifname, &non_matching).unwrap();
@@ -819,7 +817,7 @@ mod tests {
             dst_addr,
             2,
             0,
-            TcpFlags::SYN,
+            TCP_FLAG_SYN,
             Some(b"ok"),
         );
         send_raw_frame(&ifname, &matching).unwrap();

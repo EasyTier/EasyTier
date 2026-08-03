@@ -260,11 +260,7 @@ mod tests {
         WrappedTransportConnect, WrappedTransportEngine,
     };
     use easytier_core::listener::plan::ListenerRuntimeConfig;
-    use pnet::packet::{
-        ip::IpNextHeaderProtocols,
-        ipv4::{self, MutableIpv4Packet},
-        udp::{self, MutableUdpPacket},
-    };
+    use smoltcp::wire::{IpAddress, IpProtocol, Ipv4Packet, UdpPacket};
     #[cfg(feature = "kcp")]
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -500,30 +496,26 @@ mod tests {
         let destination_ip = "10.250.0.2".parse().unwrap();
         let mut ip_packet = vec![0u8; 28];
         {
-            let mut ipv4 = MutableIpv4Packet::new(&mut ip_packet).unwrap();
+            let mut ipv4 = Ipv4Packet::new_unchecked(&mut ip_packet);
             ipv4.set_version(4);
-            ipv4.set_header_length(5);
-            ipv4.set_total_length(28);
-            ipv4.set_ttl(64);
-            ipv4.set_next_level_protocol(IpNextHeaderProtocols::Udp);
-            ipv4.set_source(source_ip);
-            ipv4.set_destination(destination_ip);
+            ipv4.set_header_len(20);
+            ipv4.set_total_len(28);
+            ipv4.set_hop_limit(64);
+            ipv4.set_next_header(IpProtocol::Udp);
+            ipv4.set_src_addr(source_ip);
+            ipv4.set_dst_addr(destination_ip);
         }
         {
-            let mut udp = MutableUdpPacket::new(&mut ip_packet[20..]).unwrap();
-            udp.set_source(10000);
-            udp.set_destination(10001);
-            udp.set_length(8);
-            udp.set_checksum(udp::ipv4_checksum(
-                &udp.to_immutable(),
-                &source_ip,
-                &destination_ip,
-            ));
+            let mut udp = UdpPacket::new_unchecked(&mut ip_packet[20..]);
+            udp.set_src_port(10000);
+            udp.set_dst_port(10001);
+            udp.set_len(8);
+            udp.fill_checksum(
+                &IpAddress::Ipv4(source_ip),
+                &IpAddress::Ipv4(destination_ip),
+            );
         }
-        {
-            let mut ipv4 = MutableIpv4Packet::new(&mut ip_packet).unwrap();
-            ipv4.set_checksum(ipv4::checksum(&ipv4.to_immutable()));
-        }
+        Ipv4Packet::new_unchecked(&mut ip_packet).fill_checksum();
         let received = tokio::time::timeout(std::time::Duration::from_secs(10), async {
             loop {
                 instance_a
