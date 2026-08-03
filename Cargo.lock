@@ -2393,6 +2393,7 @@ dependencies = [
  "windows-service",
  "winreg 0.52.0",
  "x25519-dalek",
+ "zbus",
  "zerocopy 0.7.35",
 ]
 
