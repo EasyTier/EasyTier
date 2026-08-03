@@ -124,6 +124,7 @@ mod tests {
             nameservers: vec!["8.8.8.8".into()],
             search_domains: vec!["example.com".into()],
             match_domains: vec!["test.local".into()],
+            interface_name: None,
         };
         let configurator = DarwinConfigurator::new();
 

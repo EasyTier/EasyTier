@@ -231,6 +231,7 @@ machine-uid = "0.5.3"
 
 [target.'cfg(any(target_os = "linux"))'.dependencies]
 netlink-sys = { version = "0.8.7", optional = true }
+zbus = { version = "5.12", optional = true, features = ["blocking"] }
 [target.'cfg(all(windows, any(target_arch = "x86_64", target_arch = "x86")))'.dependencies]
 windivert = { git = "https://github.com/EasyTier/windivert-rust.git", rev = "adcc56d1550f7b5377ec2b3429f413ee24a77375", features = [
     "static",
@@ -389,6 +390,7 @@ magic-dns = [
     "dns-resolver",
     "dep:hickory-client",
     "dep:hickory-server",
+    "dep:zbus",
     "easytier-core/proxy-packet",
     "easytier-proto/magic-dns",
 ]
