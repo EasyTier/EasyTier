@@ -16,6 +16,7 @@ use easytier_core::{
         wrapper::TunnelWrapper,
     },
 };
+use futures::FutureExt as _;
 use quinn::{
     AsyncUdpSocket, ClientConfig, Connecting, Connection, Endpoint, EndpointConfig, Incoming,
     ServerConfig, TransportConfig, congestion::BbrConfig, default_runtime,
@@ -469,6 +470,10 @@ impl Drop for QuicAcceptedSessionLease {
     }
 }
 
+fn try_accept_ready(endpoint: &Endpoint) -> Option<Incoming> {
+    endpoint.accept().now_or_never().flatten()
+}
+
 async fn run_quic_accepted_session(
     endpoint: Endpoint,
     local_url: url::Url,
@@ -486,7 +491,11 @@ async fn run_quic_accepted_session(
     loop {
         let no_handshake = pending_incoming.is_none() && complete_tasks.is_empty();
         if ever_connected && no_handshake && activity.active() == 0 {
-            break;
+            // A connection drop can become visible alongside a queued replacement Initial.
+            let Some(incoming) = try_accept_ready(&endpoint) else {
+                break;
+            };
+            pending_incoming = Some(incoming);
         }
 
         tokio::select! {
@@ -715,6 +724,65 @@ mod tests {
                 .unwrap()
                 .unwrap();
             assert_eq!(fresh.peer_addr().unwrap(), client_addr);
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ready_quic_initial_is_taken_before_idle_retirement() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let bind_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+            let mut listener = new_runtime_udp_session_listener(
+                format!("quic://{bind_addr}").parse().unwrap(),
+                UdpSessionListenRequest::new(
+                    UdpBindOptions::port_bound_listener(bind_addr).with_only_v6(false),
+                ),
+                UdpSessionAcceptKind::Classified(UdpSessionProtocol::Quic),
+                NetNS::new(None),
+            );
+            listener.listen().await.unwrap();
+            let remote_addr = listener.bound_socket().unwrap().local_addr().unwrap();
+
+            let connected = connect_udp(
+                native_host_runtime(),
+                remote_addr,
+                Vec::new(),
+                UdpBindOptions::direct_connect(),
+                UdpSessionMode::Classified(UdpSessionProtocol::Quic),
+            )
+            .await
+            .unwrap();
+            let socket = Arc::new(QuicUdpSessionSocket::new(connected).unwrap());
+            let runtime = default_runtime().unwrap();
+            let mut client_endpoint =
+                Endpoint::new_with_abstract_socket(endpoint_config(), None, socket, runtime)
+                    .unwrap();
+            client_endpoint.set_default_client_config(client_config());
+            let connecting = client_endpoint.connect(remote_addr, "localhost").unwrap();
+            let connect_task = tokio::spawn(connecting);
+
+            let session = Arc::new(listener.accept().await.unwrap());
+            let socket = Arc::new(QuicUdpSessionSocket::from_accepted(session).unwrap());
+            let runtime = default_runtime().unwrap();
+            let endpoint = Endpoint::new_with_abstract_socket(
+                endpoint_config(),
+                Some(server_config()),
+                socket,
+                runtime,
+            )
+            .unwrap();
+
+            loop {
+                if let Some(incoming) = try_accept_ready(&endpoint) {
+                    drop(incoming);
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+            endpoint.close(0u32.into(), b"server test done");
+            client_endpoint.close(0u32.into(), b"client test done");
+            connect_task.abort();
         })
         .await
         .unwrap();

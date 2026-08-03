@@ -1718,6 +1718,17 @@ mod tests {
                 .all(|listener| !listener.starts_with("wg://") && !listener.starts_with("quic://"))
         );
 
+        #[cfg(feature = "wireguard")]
+        assert_eq!(
+            Cli::parse_listeners(false, vec!["wg".to_string()]).unwrap(),
+            vec!["wg://0.0.0.0:11010"]
+        );
+        #[cfg(feature = "quic")]
+        assert_eq!(
+            Cli::parse_listeners(false, vec!["quic".to_string()]).unwrap(),
+            vec!["quic://0.0.0.0:11010"]
+        );
+
         let cli = Cli::try_parse_from([
             "easytier-core",
             "--listeners",

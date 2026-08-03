@@ -1253,7 +1253,7 @@ mod tests {
             Arc::new(MockDns),
         );
         udp.listen().await?;
-        assert_eq!(host.udp_socket(0).local_addr()?.port(), 11011);
+        assert_eq!(host.udp_socket(0).local_addr()?.port(), 11010);
         assert_eq!(host.udp_bind_options(0).context.ip_version, IpVersion::V4);
         assert!(!host.udp_bind_options(0).only_v6);
 
