@@ -297,6 +297,10 @@ fn normalize_udp_listener_url(url: &mut Url) -> anyhow::Result<()> {
         url.set_port(Some(default_port))
             .map_err(|_| anyhow::anyhow!("listener cannot use a port: {url}"))?;
     }
+    match listener_url_bind_device(url) {
+        Some(bind_device) => url.set_path(&format!("/{bind_device}")),
+        None => url.set_path(""),
+    }
     url.set_scheme("udp")
         .map_err(|_| anyhow::anyhow!("failed to normalize UDP listener URL: {url}"))?;
     Ok(())
@@ -582,5 +586,16 @@ mod tests {
         let url = "udp://0.0.0.0:11010/eth%2Btest".parse().unwrap();
 
         assert_eq!(listener_url_bind_device(&url), Some("eth+test".to_owned()));
+    }
+
+    #[test]
+    fn udp_listener_normalization_uses_effective_bind_device() {
+        let mut encoded = "wg://0.0.0.0/eth%2Btest".parse().unwrap();
+        let mut plain = "quic://0.0.0.0:11010/eth+test".parse().unwrap();
+
+        normalize_udp_listener_url(&mut encoded).unwrap();
+        normalize_udp_listener_url(&mut plain).unwrap();
+
+        assert_eq!(encoded, plain);
     }
 }

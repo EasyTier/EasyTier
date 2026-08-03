@@ -137,7 +137,7 @@ fn core_plans_transport_and_external_listener_capabilities() {
 fn same_udp_endpoint_combines_protocol_routes() {
     let config = ListenerRuntimeConfig::new(
         [
-            "udp://127.0.0.1:11010?accept=udp",
+            "udp://127.0.0.1:11010/?accept=udp",
             "wg://127.0.0.1",
             "quic://127.0.0.1:11010",
         ]
