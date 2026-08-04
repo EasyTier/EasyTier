@@ -2296,13 +2296,7 @@ pub async fn relay_bps_limit_test(#[values(100, 200, 400, 800)] bps_limit: u64) 
     println!("bps: {}", bps);
 
     let bps = bps as u64 / 1024;
-    // allow 50kb jitter
-    assert!(
-        bps >= bps_limit - 50 && bps <= bps_limit + 50,
-        "bps: {}, bps_limit: {}",
-        bps,
-        bps_limit
-    );
+    assert_limited_payload_bps(bps, bps_limit);
 
     drop_insts(insts).await;
 }
@@ -2339,14 +2333,23 @@ pub async fn instance_recv_bps_limit_test(#[values(100, 800)] bps_limit: u64) {
     println!("bps: {}", bps);
 
     let bps = bps as u64 / 1024;
-    assert!(
-        bps >= bps_limit - 50 && bps <= bps_limit + 50,
-        "bps: {}, bps_limit: {}",
-        bps,
-        bps_limit
-    );
+    assert_limited_payload_bps(bps, bps_limit);
 
     drop_insts(insts).await;
+}
+
+fn assert_limited_payload_bps(bps: u64, bps_limit: u64) {
+    // The benchmark measures TCP application payload while the limiter counts
+    // EasyTier data payload, including the inner IP and transport headers.
+    let min_bps = bps_limit.saturating_sub((bps_limit / 10).max(50));
+    let max_bps = bps_limit + 50;
+    assert!(
+        bps >= min_bps && bps <= max_bps,
+        "bps: {}, expected: {}..={}",
+        bps,
+        min_bps,
+        max_bps
+    );
 }
 
 async fn assert_peer_admission_blocked(inst: &Instance, url: url::Url) {
