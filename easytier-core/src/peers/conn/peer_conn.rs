@@ -36,6 +36,7 @@ use crate::peers::{
     PacketRecvChan,
     context::{ArcPeerContext, NetworkIdentity, NetworkSecretDigest},
     send_packet_to_chan,
+    traffic_metrics::data_packet_payload_len,
 };
 use crate::{
     config::PeerId,
@@ -1290,6 +1291,7 @@ impl PeerConn {
 
                     let mut zc_packet = ret.unwrap();
                     let buf_len = zc_packet.buf_len() as u64;
+                    let limited_payload_len = data_packet_payload_len(&zc_packet);
                     let Some(peer_mgr_hdr) = zc_packet.mut_peer_manager_header() else {
                         tracing::error!(
                             "unexpected packet: {:?}, cannot decode peer manager hdr",
@@ -1315,8 +1317,10 @@ impl PeerConn {
                         break;
                     }
 
-                    if let Some(limiter) = recv_limiter.as_ref() {
-                        limiter.consume(buf_len).await;
+                    if let Some(payload_len) = limited_payload_len
+                        && let Some(limiter) = recv_limiter.as_ref()
+                    {
+                        limiter.consume(payload_len).await;
                     }
                 }
 
