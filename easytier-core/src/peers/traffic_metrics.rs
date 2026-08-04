@@ -5,7 +5,7 @@ use futures::future::BoxFuture;
 
 use crate::config::PeerId;
 use crate::foundation::stats::{CounterHandle, LabelSet, LabelType, MetricName, StatsManager};
-use crate::packet::PacketType;
+use crate::packet::{PacketType, ZCPacket};
 use crate::peers::util::shrink_dashmap;
 use crate::proto::peer_rpc::RoutePeerInfo;
 
@@ -200,6 +200,26 @@ pub fn is_relay_data_packet_type(packet_type: u8) -> bool {
         || packet_type == PacketType::ForeignNetworkPacket as u8
 }
 
+pub(crate) fn data_packet_payload_len(packet: &ZCPacket) -> Option<u64> {
+    let header = packet.peer_manager_header()?;
+    if header.packet_type == PacketType::ForeignNetworkPacket as u8 {
+        if header.is_encrypted() {
+            return Some(packet.payload_len() as u64);
+        }
+        return match packet.foreign_network_inner_packet_info() {
+            Some((inner_header, payload_len))
+                if traffic_kind(inner_header.packet_type) == TrafficKind::Data =>
+            {
+                Some(payload_len as u64)
+            }
+            Some(_) => None,
+            None => Some(packet.payload_len() as u64),
+        };
+    }
+
+    (traffic_kind(header.packet_type) == TrafficKind::Data).then(|| packet.payload_len() as u64)
+}
+
 #[derive(Clone)]
 struct TrafficMetricGroup {
     data: Arc<LogicalTrafficMetrics>,
@@ -325,6 +345,86 @@ mod tests {
         LabelSet::new()
             .with_label_type(LabelType::NetworkName(network_name.to_string()))
             .with_label_type(LabelType::ToInstanceId(instance_id.to_string()))
+    }
+
+    #[test]
+    fn relay_limiter_classifies_only_data_packets() {
+        for packet_type in [
+            PacketType::Data,
+            PacketType::KcpSrc,
+            PacketType::KcpDst,
+            PacketType::QuicSrc,
+            PacketType::QuicDst,
+            PacketType::DataWithKcpSrcModified,
+            PacketType::DataWithQuicSrcModified,
+            PacketType::ForeignNetworkPacket,
+        ] {
+            assert!(is_relay_data_packet_type(packet_type as u8));
+        }
+
+        for packet_type in [
+            PacketType::Ping,
+            PacketType::Pong,
+            PacketType::RpcReq,
+            PacketType::RpcResp,
+            PacketType::RelayHandshake,
+            PacketType::RelayHandshakeAck,
+        ] {
+            assert!(!is_relay_data_packet_type(packet_type as u8));
+        }
+    }
+
+    fn packet_with_type(packet_type: PacketType, payload_len: usize) -> ZCPacket {
+        let mut packet = ZCPacket::new_with_payload(&vec![0; payload_len]);
+        packet.fill_peer_manager_hdr(1, 2, packet_type as u8);
+        packet
+    }
+
+    #[test]
+    fn data_packet_payload_len_uses_easytier_payload() {
+        let mut data_packet = packet_with_type(PacketType::Data, 1_024);
+        data_packet.mut_peer_manager_header().unwrap().len.set(0);
+        assert_eq!(data_packet_payload_len(&data_packet), Some(1_024));
+
+        let control_packet = packet_with_type(PacketType::RpcReq, 128);
+        assert_eq!(data_packet_payload_len(&control_packet), None);
+    }
+
+    #[test]
+    fn data_packet_payload_len_unwraps_foreign_network_packet() {
+        let network_name = "foreign".to_string();
+        let mut inner_data = packet_with_type(PacketType::Data, 1_024);
+        inner_data.mut_peer_manager_header().unwrap().len.set(0);
+        let foreign_data = ZCPacket::new_for_foreign_network(&network_name, 2, &inner_data);
+        assert!(!foreign_data.peer_manager_header().unwrap().is_encrypted());
+        assert_eq!(data_packet_payload_len(&foreign_data), Some(1_024));
+
+        let inner_control = packet_with_type(PacketType::RpcReq, 128);
+        let foreign_control = ZCPacket::new_for_foreign_network(&network_name, 2, &inner_control);
+        assert_eq!(data_packet_payload_len(&foreign_control), None);
+
+        let malformed_foreign = packet_with_type(PacketType::ForeignNetworkPacket, 7);
+        assert_eq!(
+            data_packet_payload_len(&malformed_foreign),
+            Some(malformed_foreign.payload_len() as u64)
+        );
+    }
+
+    #[test]
+    fn data_packet_payload_len_charges_encrypted_foreign_payload() {
+        let network_name = "foreign".to_string();
+        let inner_control = packet_with_type(PacketType::RpcReq, 128);
+        let mut encrypted_foreign =
+            ZCPacket::new_for_foreign_network(&network_name, 2, &inner_control);
+        encrypted_foreign
+            .mut_peer_manager_header()
+            .unwrap()
+            .set_encrypted(true);
+
+        assert_eq!(
+            data_packet_payload_len(&encrypted_foreign),
+            Some(encrypted_foreign.payload_len() as u64)
+        );
     }
 
     #[tokio::test]

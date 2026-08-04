@@ -51,7 +51,8 @@ use super::{
     relay_peer_map::RelayPeerMap,
     route::{NextHopPolicy, Route, RouteInterface, peer_ospf_route::PeerRoute},
     traffic_metrics::{
-        TrafficKind, TrafficMetricRecorder, is_relay_data_packet_type, traffic_kind,
+        TrafficKind, TrafficMetricRecorder, data_packet_payload_len, is_relay_data_packet_type,
+        traffic_kind,
     },
     util::shrink_dashmap,
     whitelist::check_network_in_relay_whitelist,
@@ -1347,8 +1348,9 @@ impl ForeignNetworkPacketRouter {
                         );
                         continue;
                     }
-                    if let Some(bps_limiter) = bps_limiter.as_ref()
-                        && !bps_limiter.try_consume(len.into())
+                    if let Some(payload_len) = data_packet_payload_len(&zc_packet)
+                        && let Some(bps_limiter) = bps_limiter.as_ref()
+                        && !bps_limiter.try_consume(payload_len)
                     {
                         continue;
                     }

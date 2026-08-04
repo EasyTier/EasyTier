@@ -1,13 +1,14 @@
-use atomic_shim::AtomicU64;
 use dashmap::DashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::{
+    Arc, Mutex as StdMutex,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 use tokio_util::task::AbortOnDropHandle;
 
 use crate::foundation::time;
-use easytier_proto::common::LimiterConfig;
 
 #[async_trait::async_trait]
 pub(crate) trait ByteLimiter: Send + Sync {
@@ -27,49 +28,46 @@ impl ByteLimiter for () {
 
 pub(crate) type ArcByteLimiter = Arc<dyn ByteLimiter>;
 
-/// Token Bucket rate limiter using atomic operations
-pub struct TokenBucket {
-    available_tokens: AtomicU64, // Current token count (atomic)
-    last_refill_time: AtomicU64, // Last refill time as micros since epoch
-    config: BucketConfig,        // Immutable configuration
-    refill_task: Mutex<Option<AbortOnDropHandle<()>>>, // Background refill task
-    start_time: Instant,         // Bucket creation time
+const MIN_FILL_RATE: u64 = 8_196;
+const NANOS_PER_SECOND: u128 = 1_000_000_000;
 
-    refill_notifier: Arc<Notify>,
+/// Token Bucket rate limiter with on-demand refill.
+pub struct TokenBucket {
+    state: Mutex<BucketState>,
+    config: BucketConfig,
+    stop_notifier: Notify,
     stopped: AtomicBool,
+}
+
+struct BucketState {
+    available_tokens: u64,
+    last_refill: Instant,
+    refill_remainder: u64,
 }
 
 #[derive(Clone, Copy)]
 pub struct BucketConfig {
-    capacity: u64,             // Maximum token capacity
-    fill_rate: u64,            // Tokens added per second
-    refill_interval: Duration, // Time between refill operations
+    capacity: u64,
+    fill_rate: u64,
 }
 
-impl From<LimiterConfig> for BucketConfig {
-    fn from(cfg: LimiterConfig) -> Self {
-        let burst_rate = 1.max(cfg.burst_rate.unwrap_or(1));
-        let fill_rate = 8196.max(cfg.bps.unwrap_or(u64::MAX / burst_rate));
-        let refill_interval = cfg
-            .fill_duration_ms
-            .map(|x| Duration::from_millis(1.max(x)))
-            .unwrap_or(Duration::from_millis(10));
-        BucketConfig {
-            capacity: burst_rate * fill_rate,
+impl BucketConfig {
+    pub fn new(capacity: u64, fill_rate: u64) -> Self {
+        Self {
+            capacity,
             fill_rate,
-            refill_interval,
         }
+    }
+
+    pub fn with_default_capacity(fill_rate: u64) -> Self {
+        let fill_rate = fill_rate.max(MIN_FILL_RATE);
+        Self::new(fill_rate, fill_rate)
     }
 }
 
 impl TokenBucket {
-    pub fn new(capacity: u64, bps: u64, refill_interval: Duration) -> Arc<Self> {
-        let config = BucketConfig {
-            capacity,
-            fill_rate: bps,
-            refill_interval,
-        };
-        Self::new_from_cfg(config)
+    pub fn new(capacity: u64, bps: u64) -> Arc<Self> {
+        Self::new_from_cfg(BucketConfig::new(capacity, bps))
     }
 
     /// Creates a new Token Bucket rate limiter
@@ -77,79 +75,50 @@ impl TokenBucket {
     /// # Arguments
     /// * `capacity` - Bucket capacity in bytes
     /// * `bps` - Bandwidth limit in bytes per second
-    /// * `refill_interval` - Refill interval (recommended 10-50ms)
-    pub fn new_from_cfg(config: BucketConfig) -> Arc<Self> {
-        // Create Arc instance with placeholder task
-        let arc_self = Arc::new(Self {
-            available_tokens: AtomicU64::new(config.capacity),
-            last_refill_time: AtomicU64::new(0),
+    pub fn new_from_cfg(mut config: BucketConfig) -> Arc<Self> {
+        config.capacity = config.capacity.max(1);
+        config.fill_rate = config.fill_rate.max(1);
+
+        Arc::new(Self {
+            state: Mutex::new(BucketState {
+                available_tokens: config.capacity,
+                last_refill: Instant::now(),
+                refill_remainder: 0,
+            }),
             config,
-            refill_task: Mutex::new(None),
-            start_time: std::time::Instant::now(),
-            refill_notifier: Arc::new(Notify::new()),
+            stop_notifier: Notify::new(),
             stopped: AtomicBool::new(false),
-        });
-
-        // Start background refill task
-        let weak_bucket = Arc::downgrade(&arc_self);
-        let refill_interval = arc_self.config.refill_interval;
-        let refill_notifer = arc_self.refill_notifier.clone();
-        let refill_task = tokio::spawn(async move {
-            let mut interval = time::interval(refill_interval);
-            loop {
-                interval.tick().await;
-                let Some(bucket) = weak_bucket.upgrade() else {
-                    break;
-                };
-                bucket.refill();
-                refill_notifer.notify_waiters();
-            }
-        });
-
-        // Replace placeholder task with actual one
-        arc_self
-            .refill_task
-            .lock()
-            .unwrap()
-            .replace(AbortOnDropHandle::new(refill_task));
-        arc_self
+        })
     }
 
-    /// Internal refill method (called only by background task)
-    fn refill(&self) {
-        let now_micros = self.elapsed_micros();
-        let prev_time = self.last_refill_time.swap(now_micros, Ordering::Acquire);
-
-        // Calculate elapsed time in seconds
-        let elapsed_secs = (now_micros.saturating_sub(prev_time)) as f64 / 1_000_000.0;
-
-        // Calculate tokens to add
-        let tokens_to_add = (self.config.fill_rate as f64 * elapsed_secs) as u64;
-        if tokens_to_add == 0 {
+    /// Refill tokens based on elapsed time since last refill.
+    /// Called while holding the bucket state lock.
+    fn refill(&self, state: &mut BucketState, now: Instant) {
+        let elapsed_nanos = now.saturating_duration_since(state.last_refill).as_nanos();
+        if elapsed_nanos == 0 {
             return;
         }
 
-        // Add tokens without exceeding capacity
-        let mut current = self.available_tokens.load(Ordering::Relaxed);
-        loop {
-            let new = current
-                .saturating_add(tokens_to_add)
-                .min(self.config.capacity);
-            match self.available_tokens.compare_exchange_weak(
-                current,
-                new,
-                Ordering::Release,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => break,
-                Err(actual) => current = actual,
-            }
+        state.last_refill = now;
+        if state.available_tokens == self.config.capacity {
+            state.refill_remainder = 0;
+            return;
         }
-    }
 
-    /// Calculate microseconds since bucket creation
-    fn elapsed_micros(&self) -> u64 {
-        self.start_time.elapsed().as_micros() as u64
+        let generated = (self.config.fill_rate as u128)
+            .saturating_mul(elapsed_nanos)
+            .saturating_add(state.refill_remainder as u128);
+        let tokens_to_add = generated / NANOS_PER_SECOND;
+        let refill_remainder = generated % NANOS_PER_SECOND;
+        let available_capacity = self.config.capacity - state.available_tokens;
+
+        if tokens_to_add >= available_capacity as u128 {
+            state.available_tokens = self.config.capacity;
+            state.refill_remainder = 0;
+        } else {
+            state.available_tokens += tokens_to_add as u64;
+            state.refill_remainder = refill_remainder as u64;
+        }
     }
 
     /// Attempt to consume tokens without blocking
@@ -165,44 +134,63 @@ impl TokenBucket {
             return false;
         }
 
-        let mut current = self.available_tokens.load(Ordering::Relaxed);
-        loop {
-            if current < tokens {
-                return false;
-            }
+        let mut state = self.state.lock();
+        self.refill(&mut state, Instant::now());
+        if state.available_tokens < tokens {
+            return false;
+        }
 
-            let new = current - tokens;
-            match self.available_tokens.compare_exchange_weak(
-                current,
-                new,
-                Ordering::AcqRel,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => return true,
-                Err(actual) => current = actual,
+        state.available_tokens -= tokens;
+        true
+    }
+
+    /// Consume tokens, sleeping until they become available.
+    pub async fn consume(&self, tokens: u64) {
+        let mut remaining = tokens;
+        while remaining > 0 {
+            if self.stopped.load(Ordering::Acquire) {
+                return;
             }
+            let chunk = remaining.min(self.config.capacity);
+            self.consume_chunk(chunk).await;
+            remaining -= chunk;
         }
     }
 
-    /// Consume tokens, blocking if not available
-    pub async fn consume(&self, tokens: u64) {
+    async fn consume_chunk(&self, tokens: u64) {
         loop {
-            let notified = self.refill_notifier.notified();
-            if self.try_consume(tokens) {
+            let stopped = self.stop_notifier.notified();
+            if self.stopped.load(Ordering::Acquire) {
                 return;
             }
-            notified.await;
+
+            let sleep_dur = {
+                let mut state = self.state.lock();
+                self.refill(&mut state, Instant::now());
+                if state.available_tokens >= tokens {
+                    state.available_tokens -= tokens;
+                    return;
+                }
+
+                let deficit = tokens - state.available_tokens;
+                let required = deficit as u128 * NANOS_PER_SECOND;
+                let remaining = required - state.refill_remainder as u128;
+                let sleep_nanos = remaining
+                    .div_ceil(self.config.fill_rate as u128)
+                    .min(u64::MAX as u128) as u64;
+                Duration::from_nanos(sleep_nanos.max(1_000_000))
+            };
+
+            tokio::select! {
+                _ = time::sleep(sleep_dur) => {}
+                _ = stopped => {}
+            }
         }
     }
 
     async fn stop(&self) {
         self.stopped.store(true, Ordering::Release);
-        self.refill_notifier.notify_waiters();
-        let task = self.refill_task.lock().unwrap().take();
-        if let Some(task) = task {
-            task.abort();
-            let _ = task.await;
-        }
+        self.stop_notifier.notify_waiters();
     }
 }
 
@@ -219,7 +207,7 @@ impl ByteLimiter for TokenBucket {
 
 pub struct TokenBucketManager {
     buckets: Arc<DashMap<String, Arc<TokenBucket>>>,
-    retain_task: Mutex<Option<AbortOnDropHandle<()>>>,
+    retain_task: StdMutex<Option<AbortOnDropHandle<()>>>,
 }
 
 impl Default for TokenBucketManager {
@@ -252,7 +240,7 @@ impl TokenBucketManager {
 
         Self {
             buckets,
-            retain_task: Mutex::new(Some(AbortOnDropHandle::new(retain_task))),
+            retain_task: StdMutex::new(Some(AbortOnDropHandle::new(retain_task))),
         }
     }
 
@@ -285,12 +273,36 @@ impl TokenBucketManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::time::{Duration, sleep};
+    use tokio::time::{Duration, sleep, timeout};
+
+    #[test]
+    fn bucket_config_uses_one_second_default_capacity() {
+        let config = BucketConfig::with_default_capacity(100_000);
+
+        assert_eq!(config.capacity, 100_000);
+        assert_eq!(config.fill_rate, 100_000);
+    }
+
+    #[test]
+    fn bucket_config_default_capacity_fits_regular_packets() {
+        let config = BucketConfig::with_default_capacity(8_196);
+
+        assert_eq!(config.capacity, 8_196);
+        assert_eq!(config.fill_rate, 8_196);
+    }
+
+    #[test]
+    fn bucket_config_preserves_explicit_capacity() {
+        let config = BucketConfig::new(200_000, 100_000);
+
+        assert_eq!(config.capacity, 200_000);
+        assert_eq!(config.fill_rate, 100_000);
+    }
 
     /// Test initial state after creation
     #[tokio::test]
     async fn test_initial_state() {
-        let bucket = TokenBucket::new(1000, 1000, Duration::from_millis(10));
+        let bucket = TokenBucket::new(1000, 1000);
 
         // Should have full capacity initially
         assert!(bucket.try_consume(1000));
@@ -300,7 +312,7 @@ mod tests {
     /// Test token consumption behavior
     #[tokio::test]
     async fn test_consumption() {
-        let bucket = TokenBucket::new(1500, 1000, Duration::from_millis(10));
+        let bucket = TokenBucket::new(1500, 1000);
 
         // First packet should succeed
         assert!(bucket.try_consume(1000));
@@ -314,7 +326,7 @@ mod tests {
 
     #[tokio::test]
     async fn stop_releases_waiting_consumers() {
-        let bucket = TokenBucket::new(1, 1, Duration::from_secs(60));
+        let bucket = TokenBucket::new(1, 1);
         assert!(bucket.try_consume(1));
         let waiting = tokio::spawn({
             let bucket = bucket.clone();
@@ -332,27 +344,85 @@ mod tests {
         assert!(bucket.try_consume(u64::MAX));
     }
 
-    /// Test background refill functionality
+    /// Test lazy refill functionality
     #[tokio::test]
     async fn test_refill() {
-        let bucket = TokenBucket::new(1000, 1000, Duration::from_millis(10));
+        let bucket = TokenBucket::new(1_000_000, 10_000);
 
         // Drain the bucket
-        assert!(bucket.try_consume(1000));
-        assert!(!bucket.try_consume(1));
+        assert!(bucket.try_consume(1_000_000));
 
-        // Wait for refill (1 refill interval + buffer)
+        // Wait for time to pass (tokens accumulate lazily on next consume)
         sleep(Duration::from_millis(25)).await;
+        let tokens = {
+            let mut state = bucket.state.lock();
+            bucket.refill(&mut state, Instant::now());
+            state.available_tokens
+        };
+        assert!(tokens > 0, "Expected some refilled tokens");
+        assert!(
+            tokens < bucket.config.capacity,
+            "Bucket unexpectedly refilled to capacity: {}",
+            tokens
+        );
+    }
 
-        // Should have approximately 20 tokens (1000 tokens/s * 0.02s)
-        assert!(bucket.try_consume(15));
-        assert!(!bucket.try_consume(10)); // But not full capacity
+    #[test]
+    fn test_refill_preserves_fractional_tokens() {
+        let bucket = TokenBucket::new(100, 100);
+        let start = Instant::now();
+        let mut state = bucket.state.lock();
+        state.available_tokens = 0;
+        state.last_refill = start;
+        state.refill_remainder = 0;
+
+        for step in 1..=10 {
+            bucket.refill(&mut state, start + Duration::from_millis(step * 15));
+        }
+
+        assert_eq!(state.available_tokens, 15);
+        assert_eq!(state.refill_remainder, 0);
+    }
+
+    #[test]
+    fn test_refill_preserves_submicrosecond_time() {
+        let bucket = TokenBucket::new(100, 1_000_000);
+        let start = Instant::now();
+        let mut state = bucket.state.lock();
+        state.available_tokens = 0;
+        state.last_refill = start;
+        state.refill_remainder = 0;
+
+        for step in 1..=10 {
+            bucket.refill(&mut state, start + Duration::from_nanos(step * 1_500));
+        }
+
+        assert_eq!(state.available_tokens, 15);
+        assert_eq!(state.refill_remainder, 0);
+    }
+
+    #[test]
+    fn test_refill_discards_excess_credit_at_capacity() {
+        let bucket = TokenBucket::new(10, 10);
+        let start = Instant::now();
+        let mut state = bucket.state.lock();
+        state.available_tokens = 0;
+        state.last_refill = start;
+
+        let refill_time = start + Duration::from_secs(2);
+        bucket.refill(&mut state, refill_time);
+        assert_eq!(state.available_tokens, 10);
+        assert_eq!(state.refill_remainder, 0);
+
+        state.available_tokens = 0;
+        bucket.refill(&mut state, refill_time);
+        assert_eq!(state.available_tokens, 0);
     }
 
     /// Test capacity enforcement
     #[tokio::test]
     async fn test_capacity_limit() {
-        let bucket = TokenBucket::new(500, 1000, Duration::from_millis(10));
+        let bucket = TokenBucket::new(500, 1000);
 
         // Wait longer than refill interval
         sleep(Duration::from_millis(50)).await;
@@ -363,39 +433,39 @@ mod tests {
     }
 
     /// Test high load with concurrent access
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn test_concurrent_access() {
-        let bucket = TokenBucket::new(10_000, 1_000_000, Duration::from_millis(10));
+        let bucket = TokenBucket::new(10_000, 1);
         let mut handles = vec![];
 
         // Spawn 100 tasks to consume tokens concurrently
         for _ in 0..100 {
             let bucket = bucket.clone();
             handles.push(tokio::spawn(async move {
+                let mut consumed = 0;
                 for _ in 0..100 {
-                    let _ = bucket.try_consume(10);
+                    if bucket.try_consume(10) {
+                        consumed += 10;
+                    }
                 }
+                consumed
             }));
         }
 
         // Wait for all tasks to complete
+        let mut consumed = 0;
         for handle in handles {
-            handle.await.unwrap();
+            consumed += handle.await.unwrap();
         }
 
-        // Verify we didn't exceed capacity
-        let tokens_left = bucket.available_tokens.load(Ordering::Relaxed);
-        assert!(
-            tokens_left <= 10_000,
-            "Tokens exceeded capacity: {}",
-            tokens_left
-        );
+        assert_eq!(consumed, 10_000);
+        assert_eq!(bucket.state.lock().available_tokens, 0);
     }
 
     /// Test behavior when packet size exceeds capacity
     #[tokio::test]
     async fn test_oversized_packet() {
-        let bucket = TokenBucket::new(1500, 1000, Duration::from_millis(10));
+        let bucket = TokenBucket::new(1500, 1000);
 
         // Packet larger than capacity should be rejected
         assert!(!bucket.try_consume(1600));
@@ -404,23 +474,35 @@ mod tests {
         assert!(bucket.try_consume(1000));
     }
 
-    /// Test refill precision with small intervals
     #[tokio::test]
-    async fn test_refill_precision() {
-        let bucket = TokenBucket::new(10_000, 10_000, Duration::from_micros(100)); // 100μs interval
+    async fn test_zero_fill_rate_is_normalized() {
+        let bucket = TokenBucket::new(1000, 0);
 
-        // Drain most tokens
-        assert!(bucket.try_consume(9900));
+        assert_eq!(bucket.config.fill_rate, 1);
+    }
 
-        // Wait for multiple refills
-        sleep(Duration::from_millis(1)).await;
+    #[tokio::test]
+    async fn test_consume_oversized_packet_in_chunks() {
+        let bucket = TokenBucket::new(10, 1_000_000);
 
-        // Should have accumulated about 100 tokens (10,000 tokens/s * 0.001s)
-        let tokens = bucket.available_tokens.load(Ordering::Relaxed);
-        assert!(
-            (100..=200).contains(&tokens),
-            "Unexpected token count: {}",
-            tokens
-        );
+        timeout(Duration::from_millis(100), bucket.consume(25))
+            .await
+            .expect("oversized consume should be split into capacity-sized chunks");
+    }
+
+    /// Test refill precision after elapsed time.
+    #[test]
+    fn test_refill_precision() {
+        let bucket = TokenBucket::new(10_000, 10_000);
+        let start = Instant::now();
+        let mut state = bucket.state.lock();
+        state.available_tokens = 100;
+        state.last_refill = start;
+        state.refill_remainder = 0;
+
+        bucket.refill(&mut state, start + Duration::from_micros(1_234));
+
+        assert_eq!(state.available_tokens, 112);
+        assert_eq!(state.refill_remainder, 340_000_000);
     }
 }
