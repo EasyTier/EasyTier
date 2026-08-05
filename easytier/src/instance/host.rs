@@ -25,7 +25,7 @@ pub struct NativeInstanceEnvironment {
 impl NativeInstanceEnvironment {
     fn new(global_ctx: ArcGlobalCtx, runtime: Arc<NativeHostRuntime>) -> Self {
         let socket_context = SocketContext::default()
-            .with_socket_mark(global_ctx.config.get_flags().socket_mark)
+            .with_socket_mark(global_ctx.get_flags().socket_mark)
             .with_netns(global_ctx.net_ns.name().map(NetNamespace::new));
         Self {
             global_ctx,
@@ -49,7 +49,7 @@ impl ConnectorEnvironment for NativeInstanceEnvironment {
     }
 
     fn mapped_listeners(&self) -> Vec<url::Url> {
-        self.global_ctx.config.get_mapped_listeners()
+        self.global_ctx.runtime_mapped_listeners()
     }
 
     fn is_local_ip(&self, ip: &IpAddr) -> bool {

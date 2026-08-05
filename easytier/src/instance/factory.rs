@@ -58,6 +58,19 @@ pub fn native_instance_manager_with_runtime(
     native_instance_manager_with_optional_runtime(Some(runtime_handle))
 }
 
+#[cfg(feature = "management-rpc")]
+pub fn native_compact_instance_manager_with_runtime(
+    runtime_handle: tokio::runtime::Handle,
+) -> NativeInstanceManager {
+    let process_runtime = CoreProcessRuntime::new();
+    InstanceManager::new(
+        NativeInstanceFactory::new(process_runtime)
+            .with_runtime_handle(Some(runtime_handle.clone()))
+            .with_compact_runtime(),
+        Some(runtime_handle),
+    )
+}
+
 #[cfg(feature = "management")]
 pub fn native_process_management(
     instances: Arc<NativeInstanceManager>,
@@ -85,6 +98,7 @@ fn native_instance_manager_with_optional_runtime(
 pub struct NativeInstanceFactory {
     process_runtime: Arc<CoreProcessRuntime>,
     runtime_handle: Option<tokio::runtime::Handle>,
+    compact_runtime: bool,
     #[cfg(feature = "management")]
     log_cli_events: bool,
 }
@@ -94,6 +108,7 @@ impl NativeInstanceFactory {
         Self {
             process_runtime,
             runtime_handle: None,
+            compact_runtime: false,
             #[cfg(feature = "management")]
             log_cli_events: false,
         }
@@ -108,6 +123,11 @@ impl NativeInstanceFactory {
     #[cfg(feature = "management-rpc")]
     fn with_runtime_handle(mut self, runtime_handle: Option<tokio::runtime::Handle>) -> Self {
         self.runtime_handle = runtime_handle;
+        self
+    }
+
+    fn with_compact_runtime(mut self) -> Self {
+        self.compact_runtime = true;
         self
     }
 }
@@ -126,7 +146,11 @@ impl InstanceFactory for NativeInstanceFactory {
             .runtime_handle
             .as_ref()
             .map(tokio::runtime::Handle::enter);
-        let instance = compose_native_core_instance(config, self.process_runtime.clone())?;
+        let instance = compose_native_core_instance(
+            config,
+            self.process_runtime.clone(),
+            self.compact_runtime,
+        )?;
         #[cfg(feature = "management")]
         if self.log_cli_events {
             let events = subscribe_native_instance_event(&instance)

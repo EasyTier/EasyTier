@@ -663,7 +663,7 @@ impl VirtualNic {
 
         let dev = AsyncDevice::new(dev)?;
 
-        let flags = self.global_ctx.config.get_flags();
+        let flags = self.global_ctx.get_flags();
         let mut mtu_in_config = flags.mtu;
         if flags.enable_encryption {
             mtu_in_config -= 20;

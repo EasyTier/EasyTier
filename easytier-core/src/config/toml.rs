@@ -624,7 +624,7 @@ impl TomlConfig {
     }
 }
 
-#[cfg(feature = "management")]
+#[cfg(feature = "web-client")]
 mod snapshot;
 
 impl ConfigLoader for TomlConfig {

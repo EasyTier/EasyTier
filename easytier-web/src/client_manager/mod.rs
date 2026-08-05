@@ -385,7 +385,10 @@ mod tests {
     use axum::{Json, Router, extract::State, routing::post};
     use easytier::{
         common::{MachineIdOptions, config::NetworkConfigExt},
-        instance::factory::{NativeInstanceManager, native_instance_manager},
+        instance::factory::{
+            NativeInstanceManager, native_compact_instance_manager_with_runtime,
+            native_instance_manager,
+        },
         proto::{
             api::manage::{NetworkConfig, NetworkingMethod, PortForwardConfig},
             common::CompressionAlgoPb,
@@ -899,6 +902,72 @@ mod tests {
         .unwrap();
         println!("{:?}", req);
         println!("{:?}", mgr);
+    }
+
+    #[tokio::test]
+    async fn compact_runtime_preserves_unsupported_web_config_during_hot_patch() {
+        let (webhook_config, webhook_server, _) = test_webhook_config().await;
+        let mut mgr = ClientManager::new(
+            Db::memory_db().await,
+            None,
+            Duration::ZERO,
+            Arc::new(FeatureFlags::default()),
+            webhook_config,
+        );
+        let config_server_addr = add_random_udp_listener(&mut mgr).await;
+
+        let machine_id = uuid::Uuid::new_v4();
+        let instance_id = uuid::Uuid::new_v4();
+        let core_manager = Arc::new(native_compact_instance_manager_with_runtime(
+            tokio::runtime::Handle::current(),
+        ));
+        let _client =
+            start_web_client_for_test(config_server_addr, machine_id, core_manager.clone()).await;
+        let user_id = wait_for_validated_user(&mgr, machine_id).await;
+
+        let desired = updated_managed_network_config(instance_id);
+        let mut initial = desired.clone();
+        initial["port_forwards"] = json!([]);
+        mgr.reconcile_managed_network_configs(
+            user_id,
+            machine_id,
+            vec![managed_config(instance_id, initial)],
+            Some("compact-initial".to_string()),
+            None,
+        )
+        .await
+        .unwrap();
+        wait_for_runtime_config(&core_manager, instance_id, |config| {
+            config.network_name.as_deref() == Some("managed-updated")
+                && config.port_forwards.is_empty()
+        })
+        .await;
+
+        mgr.reconcile_managed_network_configs(
+            user_id,
+            machine_id,
+            vec![managed_config(instance_id, desired)],
+            Some("compact-patched".to_string()),
+            Some("compact-initial".to_string()),
+        )
+        .await
+        .unwrap();
+        let patched = wait_for_runtime_config(&core_manager, instance_id, |config| {
+            config.network_name.as_deref() == Some("managed-updated")
+                && config.port_forwards.len() == 1
+        })
+        .await;
+
+        assert_updated_runtime_config(&patched, instance_id);
+        assert_eq!(
+            mgr.db()
+                .get_managed_config_revision((user_id, machine_id))
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("compact-patched")
+        );
+        webhook_server.abort();
     }
 
     #[tokio::test]

@@ -6,15 +6,14 @@ use easytier_core::gateway::proxy::wrapped_transport::WrappedTransportEngines;
 use easytier_core::gateway::vpn_portal::VpnPortalHost;
 #[cfg(test)]
 use easytier_core::host::packet::{HostPacket, PacketSink};
-#[cfg(feature = "management")]
+#[cfg(feature = "web-client")]
 use easytier_core::{
     connectivity::manual::ManualTunnelConnector,
     host::dns::{DnsRecordResolver, DnsResolver},
-    instance::CoreInstanceConfig,
 };
 use easytier_core::{
     events::{CoreEvent, CoreEventSink},
-    instance::{CoreHostAdapters, CoreInstance, PacketEgressHost},
+    instance::{CoreHostAdapters, CoreInstance, CoreInstanceConfig, PacketEgressHost},
     process_runtime::CoreProcessRuntime,
 };
 
@@ -25,7 +24,9 @@ use crate::{
     common::global_ctx::ArcGlobalCtx,
     common::{config::TomlConfig, global_ctx::GlobalCtx},
     host_runtime::native_host_runtime,
-    instance::config::{runtime_core_host_config, runtime_peer_credential_storage},
+    instance::config::{
+        compact_runtime_core_host_config, runtime_core_host_config, runtime_peer_credential_storage,
+    },
     instance::listeners::RuntimeExternalListenerFactory,
     instance::runtime_host::NativeInstanceRuntimeHost,
 };
@@ -42,18 +43,30 @@ use easytier_core::gateway::proxy::wrapped_transport::WrappedTransportEngine;
 pub(crate) type NativeCoreInstance = CoreInstance<NativeInstanceHost>;
 
 pub(crate) fn compose_native_core_instance(
-    config: TomlConfig,
+    toml_config: TomlConfig,
     process_runtime: Arc<CoreProcessRuntime>,
+    compact_runtime: bool,
 ) -> anyhow::Result<Arc<NativeCoreInstance>> {
-    let global_ctx = Arc::new(GlobalCtx::new(config.clone()));
+    let host_config = if compact_runtime {
+        compact_runtime_core_host_config()
+    } else {
+        runtime_core_host_config()
+    };
+    let normalized = CoreInstanceConfig::from_toml_with_host(&toml_config, &host_config)?;
+    let global_ctx = Arc::new(GlobalCtx::new_with_runtime_config(
+        toml_config.clone(),
+        &normalized,
+        &host_config,
+    ));
     let runtime_host = NativeInstanceRuntimeHost::new(global_ctx.clone());
-    let mut adapters = runtime_core_host_adapters_with_packet_egress(
+    let mut adapters = runtime_core_host_adapters_with_packet_egress_and_config(
         global_ctx.clone(),
         process_runtime,
         runtime_host.clone(),
+        host_config,
     );
     adapters.instance_runtime = runtime_host;
-    NativeCoreInstance::from_toml(config, adapters)
+    NativeCoreInstance::from_toml(toml_config, adapters)
 }
 
 impl CoreEventSink for GlobalCtx {
@@ -139,13 +152,19 @@ impl CoreEventSink for GlobalCtx {
 }
 
 #[cfg(feature = "wrapped-transport")]
-fn runtime_wrapped_transport_engines() -> WrappedTransportEngines {
+fn runtime_wrapped_transport_engines(
+    config: &easytier_core::instance::CoreInstanceHostConfig,
+) -> WrappedTransportEngines {
     #[cfg(feature = "kcp")]
-    let kcp = Some(Arc::new(KcpProxyService::new()) as Arc<dyn WrappedTransportEngine>);
+    let kcp = config
+        .kcp_enabled
+        .then(|| Arc::new(KcpProxyService::new()) as Arc<dyn WrappedTransportEngine>);
     #[cfg(not(feature = "kcp"))]
     let kcp = None;
     #[cfg(feature = "quic")]
-    let quic = Some(Arc::new(QuicProxyService::new()) as Arc<dyn WrappedTransportEngine>);
+    let quic = config
+        .quic_enabled
+        .then(|| Arc::new(QuicProxyService::new()) as Arc<dyn WrappedTransportEngine>);
     #[cfg(not(feature = "quic"))]
     let quic = None;
 
@@ -161,9 +180,10 @@ pub(crate) fn runtime_core_host_adapters(
     let host = native_instance_host(global_ctx.clone());
     let runtime_dns = native_host_runtime();
     let adapters = CoreHostAdapters::new(host, runtime_dns, packet_sink, process_runtime);
-    configure_runtime_core_host_adapters(global_ctx, adapters)
+    configure_runtime_core_host_adapters(global_ctx, adapters, runtime_core_host_config())
 }
 
+#[cfg(test)]
 pub(crate) fn runtime_core_host_adapters_with_packet_egress(
     global_ctx: ArcGlobalCtx,
     process_runtime: Arc<CoreProcessRuntime>,
@@ -173,29 +193,45 @@ pub(crate) fn runtime_core_host_adapters_with_packet_egress(
     let runtime_dns = native_host_runtime();
     let adapters =
         CoreHostAdapters::new_with_packet_egress(host, runtime_dns, packet_egress, process_runtime);
-    configure_runtime_core_host_adapters(global_ctx, adapters)
+    configure_runtime_core_host_adapters(global_ctx, adapters, runtime_core_host_config())
+}
+
+fn runtime_core_host_adapters_with_packet_egress_and_config(
+    global_ctx: ArcGlobalCtx,
+    process_runtime: Arc<CoreProcessRuntime>,
+    packet_egress: Arc<dyn PacketEgressHost>,
+    host_config: easytier_core::instance::CoreInstanceHostConfig,
+) -> CoreHostAdapters<NativeInstanceHost> {
+    let host = native_instance_host(global_ctx.clone());
+    let runtime_dns = native_host_runtime();
+    let adapters =
+        CoreHostAdapters::new_with_packet_egress(host, runtime_dns, packet_egress, process_runtime);
+    configure_runtime_core_host_adapters(global_ctx, adapters, host_config)
 }
 
 fn configure_runtime_core_host_adapters(
     global_ctx: ArcGlobalCtx,
     mut adapters: CoreHostAdapters<NativeInstanceHost>,
+    host_config: easytier_core::instance::CoreInstanceHostConfig,
 ) -> CoreHostAdapters<NativeInstanceHost> {
     #[cfg(test)]
     adapters.replace_stun_provider(Arc::new(crate::common::stun::MockStunInfoCollector {
         udp_nat_type: crate::proto::common::NatType::Unknown,
     }));
-    adapters.config = runtime_core_host_config();
-    adapters.credential_storage = runtime_peer_credential_storage(&global_ctx);
+    adapters.config = host_config.clone();
+    adapters.credential_storage = (!host_config.ignore_unsupported_config)
+        .then(|| runtime_peer_credential_storage(&global_ctx))
+        .flatten();
     adapters.events = global_ctx.clone();
     #[cfg(feature = "wrapped-transport")]
     {
-        adapters.wrapped_transports = runtime_wrapped_transport_engines();
+        adapters.wrapped_transports = runtime_wrapped_transport_engines(&host_config);
     }
     adapters.protocol = Some(runtime_client_protocol_upgrader(global_ctx.clone()));
     adapters.external_listener_factory = Some(Arc::new(RuntimeExternalListenerFactory));
     adapters.server_protocol = Some(runtime_server_protocol_upgrader(global_ctx.clone()));
     #[cfg(feature = "upnp")]
-    {
+    if host_config.upnp_enabled {
         adapters.udp_hole_punch_platform = Some(
             crate::instance::udp_hole_punch::runtime_udp_hole_punch_platform(
                 global_ctx.net_ns.clone(),
@@ -211,12 +247,12 @@ fn configure_runtime_core_host_adapters(
         adapters.proxy_cidr_monitor_enabled = true;
     }
     #[cfg(feature = "public-ipv6-provider")]
-    {
+    if host_config.public_ipv6_provider_supported {
         adapters.public_ipv6_host = Some(global_ctx.clone());
         adapters.public_ipv6_provider = Some(runtime_public_ipv6_provider_platform(&global_ctx));
     }
     #[cfg(feature = "wireguard")]
-    {
+    if host_config.vpn_portal_enabled {
         use crate::common::config::ConfigLoader as _;
 
         adapters.vpn_portal = Some(crate::vpn_portal::wireguard::WireGuardPortalHost::new(
@@ -230,7 +266,7 @@ fn configure_runtime_core_host_adapters(
     adapters
 }
 
-#[cfg(feature = "management")]
+#[cfg(feature = "web-client")]
 pub(crate) fn runtime_one_shot_manual_connector(
     global_ctx: ArcGlobalCtx,
     config: &TomlConfig,
