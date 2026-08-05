@@ -19,10 +19,7 @@ use crate::{
         time::timeout,
     },
     proto::{
-        common::{
-            self, CompressionAlgoPb, RpcCompressionInfo, RpcPacket, RpcRequest, RpcResponse,
-            TunnelInfo,
-        },
+        common::{self, RpcCompressionInfo, RpcPacket, RpcRequest, RpcResponse, TunnelInfo},
         rpc_types::{controller::Controller, error::Result},
     },
     rpc::packet::BuildRpcPacketArgs,
@@ -35,7 +32,10 @@ use crate::{
 
 use super::{
     RpcController, Transport,
-    packet::{PacketMerger, build_rpc_packet, compress_packet, decompress_packet},
+    packet::{
+        PacketMerger, build_rpc_packet, compress_packet, decompress_packet,
+        preferred_compression_algo,
+    },
     service_registry::ServiceRegistry,
 };
 
@@ -307,7 +307,7 @@ impl Server {
             trace_id,
             compression_info: RpcCompressionInfo {
                 algo: algo.into(),
-                accepted_algo: CompressionAlgoPb::Zstd.into(),
+                accepted_algo: preferred_compression_algo().into(),
             },
         });
         for packet in packets {
