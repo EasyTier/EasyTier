@@ -15,5 +15,6 @@ easytier = { path = "../../easytier", version = "2.6.4", default-features = fals
     "management-rpc",
     "proxy-cidr-monitor",
     "tun",
+    "web-client",
 ] }
 tokio = { version = "1", default-features = false, features = ["macros", "rt", "signal"] }

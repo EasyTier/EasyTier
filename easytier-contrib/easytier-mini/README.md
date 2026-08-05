@@ -18,16 +18,14 @@ For the static size target used by this POC:
 cargo build --profile mini --target x86_64-unknown-linux-musl -p easytier-mini
 ```
 
-MIPS targets use the repository's existing musl-cross toolchains and build the
-standard library from source:
+MIPS targets use the repository's existing musl-cross toolchains. The helper
+builds the standard library for size, applies immediate-abort only to the mini
+MIPS target graph, and can build either or both byte orders:
 
 ```sh
-RUSTC_BOOTSTRAP=1 cargo build --profile mini \
-  --target mips-unknown-linux-musl \
-  -Z build-std=std,panic_abort -p easytier-mini
-RUSTC_BOOTSTRAP=1 cargo build --profile mini \
-  --target mipsel-unknown-linux-musl \
-  -Z build-std=std,panic_abort -p easytier-mini
+./easytier-contrib/easytier-mini/build-mips.sh all
+./easytier-contrib/easytier-mini/build-mips.sh mips
+./easytier-contrib/easytier-mini/build-mips.sh mipsel
 ```
 
 The `mini` profile derives from `release` and applies `opt-level=z` to the
@@ -35,8 +33,9 @@ entire compact binary dependency graph. Full EasyTier release builds retain
 their normal `opt-level=3` profile. The musl builds use a mini-only static
 linker policy to stay below 5,000,000 bytes without UPX or another executable
 compressor. The compact x86-64 linker policy retains static PIE, packs relative
-relocations and folds identical code. Because compact builds use
-`panic=abort`, the x86-64 and MIPS linker policies omit unwind tables.
+relocations and folds identical code. MIPS builds omit standard-library
+backtrace support and use immediate abort; normal workspace MIPS builds are not
+affected. Compact linker policies omit unwind tables.
 
 Start it with a normal EasyTier TOML file:
 
@@ -45,6 +44,20 @@ easytier-mini --config mini.toml
 ```
 
 `-c` is accepted as the short form of `--config`.
+
+Start it as an EasyTier Web managed node with either a complete config-server
+URL or a token shorthand:
+
+```sh
+easytier-mini --config-server udp://config-server.easytier.cn:22020/TOKEN
+easytier-mini -w TOKEN
+```
+
+`--machine-id`, `--hostname`, and `--secure-mode` match the full client's Web
+identity and transport options. `--config` and `--config-server` may be used
+together: the local instance remains static while Web-owned instances are
+created, updated, retained, and deleted independently.
+
 The node also exposes the native EasyTier management RPC protocol on
 `127.0.0.1:15888`, so the full `easytier-cli` can inspect it:
 
@@ -70,19 +83,29 @@ network_secret = "change-me"
 uri = "tcp://example.net:11010"
 ```
 
-Only `tcp://` and `udp://` listener, mapped-listener and peer URLs are
-accepted. The binary has no UPnP/NAT-PMP adapter and forces `disable_upnp`.
-It rejects VPN Portal, SOCKS, port forwarding, proxy networks, smoltcp/gateway,
-Magic DNS, KCP, QUIC and UDP broadcast relay configuration.
+Local TOML files accept only `tcp://` and `udp://` listener, mapped-listener
+and peer URLs. They reject unsupported VPN Portal, SOCKS, port forwarding,
+proxy networks, smoltcp/gateway, Magic DNS, KCP, QUIC, compression, ChaCha20,
+socket mark and UDP broadcast relay settings.
 
-The mini feature set keeps STUN collection and UDP hole punching, but omits
-TCP hole punching, endpoint discovery (`http://`, `https://`, `txt://` and
-`srv://` peers), protobuf reflection, and the writable or web-facing parts of
-the management API. Its compact RPC surface supports read-only node, peer,
-route and connector queries; configuration updates, logger control and web
-management are not registered. OSPF route messages keep their original
-protobuf wire data, so fields added by future EasyTier versions are forwarded
-without requiring `prost-reflect`.
+Web configuration is deliberately handled differently. The complete
+authoritative configuration is retained without feature stripping and returned
+canonically through the Web management/config RPCs so easytier-web consistency
+checks can converge.
+Unsupported capabilities are disabled only in a detached runtime projection,
+with a warning logged once for each suppressed capability category. This also
+applies to hot patches: for example, a Web port-forward patch remains visible
+to the controller while no port-forward service is started by mini. ChaCha20
+is projected to AES-GCM rather than plaintext.
+
+The mini feature set keeps STUN collection, UDP hole punching, Web heartbeats,
+Web instance lifecycle management and the config hot-patch RPC. It omits TCP
+hole punching, endpoint discovery (`http://`, `https://`, `txt://` and
+`srv://` peers), protobuf reflection, logger control and the rest of the full
+management surface. Its local RPC surface remains read-only for node, peer,
+route and connector queries. OSPF route messages keep their original protobuf
+wire data, so fields added by future EasyTier versions are forwarded without
+requiring `prost-reflect`.
 
 For size, this POC reads one file directly and does not support configuration
 from stdin or `${VAR}` expansion. It also omits the tracing subscriber and the

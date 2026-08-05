@@ -22,10 +22,11 @@ use crate::{
     tunnel::{Tunnel, web_security},
 };
 
-use super::{
-    ConfigFileStorage, DaemonGuard, InstanceManager, InstanceMutationHooks, LoggerControl,
-    register_management_rpc,
-};
+#[cfg(not(feature = "management"))]
+use super::register_web_client_rpc;
+use super::{ConfigFileStorage, DaemonGuard, InstanceManager, InstanceMutationHooks};
+#[cfg(feature = "management")]
+use super::{LoggerControl, register_management_rpc};
 
 const RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 // Keep retry ownership in this loop when transport or protocol handshakes stall.
@@ -101,6 +102,7 @@ where
     instances: Arc<InstanceManager<F>>,
     hooks: Arc<dyn InstanceMutationHooks>,
     storage: Arc<dyn ConfigFileStorage>,
+    #[cfg(feature = "management")]
     logger: Arc<dyn LoggerControl>,
 }
 
@@ -111,12 +113,20 @@ where
     H: CoreInstanceHost,
 {
     fn register_management_entry(&self, registry: &ServiceRegistry) {
+        #[cfg(feature = "management")]
         register_management_rpc(
             self.instances.clone(),
             registry,
             self.hooks.clone(),
             self.storage.clone(),
             self.logger.clone(),
+        );
+        #[cfg(not(feature = "management"))]
+        register_web_client_rpc(
+            self.instances.clone(),
+            registry,
+            self.hooks.clone(),
+            self.storage.clone(),
         );
     }
 }
@@ -144,7 +154,7 @@ where
         instances: Arc<InstanceManager<F>>,
         hooks: Arc<dyn InstanceMutationHooks>,
         storage: Arc<dyn ConfigFileStorage>,
-        logger: Arc<dyn LoggerControl>,
+        #[cfg(feature = "management")] logger: Arc<dyn LoggerControl>,
     ) -> Self {
         let manager_guard = instances.register_daemon();
         let controller = Arc::new(WebClientController {
@@ -152,6 +162,7 @@ where
             instances,
             hooks,
             storage,
+            #[cfg(feature = "management")]
             logger,
         });
         let connected = Arc::new(AtomicBool::new(false));

@@ -1,22 +1,16 @@
 use std::{sync::Arc, time::Duration};
 
 use easytier_proto::{
-    api::{
-        config::{
-            ConfigRpc, GetConfigRequest, GetConfigResponse, PatchConfigRequest, PatchConfigResponse,
-        },
-        instance::{
-            AclManageRpc, ConnectorManageRpc, CredentialInfo, CredentialManageRpc,
-            GenerateCredentialRequest, GenerateCredentialResponse, GetAclStatsRequest,
-            GetAclStatsResponse, GetPrometheusStatsRequest, GetPrometheusStatsResponse,
-            GetStatsRequest, GetStatsResponse, GetVpnPortalInfoRequest, GetVpnPortalInfoResponse,
-            GetWhitelistRequest, GetWhitelistResponse, ListCredentialsRequest,
-            ListCredentialsResponse, ListMappedListenerRequest, ListMappedListenerResponse,
-            ListPortForwardRequest, ListPortForwardResponse, MappedListener,
-            MappedListenerManageRpc, MetricSnapshot, PeerManageRpc, PortForwardManageRpc,
-            RevokeCredentialRequest, RevokeCredentialResponse, StatsRpc, VpnPortalInfo,
-            VpnPortalRpc,
-        },
+    api::instance::{
+        AclManageRpc, ConnectorManageRpc, CredentialInfo, CredentialManageRpc,
+        GenerateCredentialRequest, GenerateCredentialResponse, GetAclStatsRequest,
+        GetAclStatsResponse, GetPrometheusStatsRequest, GetPrometheusStatsResponse,
+        GetStatsRequest, GetStatsResponse, GetVpnPortalInfoRequest, GetVpnPortalInfoResponse,
+        GetWhitelistRequest, GetWhitelistResponse, ListCredentialsRequest, ListCredentialsResponse,
+        ListMappedListenerRequest, ListMappedListenerResponse, ListPortForwardRequest,
+        ListPortForwardResponse, MappedListener, MappedListenerManageRpc, MetricSnapshot,
+        PeerManageRpc, PortForwardManageRpc, RevokeCredentialRequest, RevokeCredentialResponse,
+        StatsRpc, VpnPortalInfo, VpnPortalRpc,
     },
     common::PortForwardConfigPb,
     peer_rpc::{
@@ -27,7 +21,7 @@ use easytier_proto::{
 };
 
 use crate::{
-    config::{api::network_config_from_toml, toml::ConfigLoader as _},
+    config::toml::ConfigLoader as _,
     instance::{
         CoreInstance, CoreInstanceHost,
         manager::{InstanceFactory, InstanceManager},
@@ -36,10 +30,7 @@ use crate::{
 };
 
 use super::InstanceManagementRpc;
-use crate::management::{
-    full::{apply_config_patch, packet_proxy},
-    resolve_instance,
-};
+use crate::management::{full::packet_proxy, resolve_instance};
 
 /// Dispatches the JSON form of an Instance-targeted management RPC without
 /// introducing a second, Host-owned set of service implementations.
@@ -93,7 +84,13 @@ where
             CredentialManageRpc::json_call_method(&rpc, ctrl, method_name, payload).await
         }
         "api.config.ConfigRpcService" => {
-            ConfigRpc::json_call_method(&rpc, ctrl, method_name, payload).await
+            easytier_proto::api::config::ConfigRpc::json_call_method(
+                &rpc,
+                ctrl,
+                method_name,
+                payload,
+            )
+            .await
         }
         _ => Err(rpc_types::error::Error::InvalidServiceKey(
             service_name.to_owned(),
@@ -367,40 +364,5 @@ where
         _: ReportPeersRequest,
     ) -> rpc_types::error::Result<ReportPeersResponse> {
         Err(anyhow::anyhow!("not implemented for management API").into())
-    }
-}
-
-#[async_trait::async_trait]
-impl<F, H> ConfigRpc for InstanceManagementRpc<F>
-where
-    F: InstanceFactory<Instance = CoreInstance<H>>,
-    H: CoreInstanceHost,
-{
-    type Controller = BaseController;
-
-    async fn patch_config(
-        &self,
-        _: BaseController,
-        request: PatchConfigRequest,
-    ) -> rpc_types::error::Result<PatchConfigResponse> {
-        let instance = self.instance(request.instance.as_ref())?;
-        if let Some(patch) = request.patch {
-            apply_config_patch(&instance, patch).await?;
-        }
-        Ok(PatchConfigResponse::default())
-    }
-
-    async fn get_config(
-        &self,
-        _: BaseController,
-        request: GetConfigRequest,
-    ) -> rpc_types::error::Result<GetConfigResponse> {
-        let config = self
-            .instance(request.instance.as_ref())?
-            .toml_config()
-            .ok_or_else(|| anyhow::anyhow!("shared TOML configuration is not available"))?;
-        Ok(GetConfigResponse {
-            config: Some(network_config_from_toml(&config)),
-        })
     }
 }

@@ -6,16 +6,17 @@ use easytier_core::gateway::proxy::wrapped_transport::WrappedTransportEngines;
 use easytier_core::gateway::vpn_portal::VpnPortalHost;
 #[cfg(test)]
 use easytier_core::host::packet::{HostPacket, PacketSink};
-#[cfg(feature = "management")]
+use easytier_core::{
+    config::toml::ConfigLoader as _,
+    events::{CoreEvent, CoreEventSink},
+    instance::{CoreHostAdapters, CoreInstance, PacketEgressHost, RuntimeConfigProjector},
+    process_runtime::CoreProcessRuntime,
+};
+#[cfg(feature = "web-client")]
 use easytier_core::{
     connectivity::manual::ManualTunnelConnector,
     host::dns::{DnsRecordResolver, DnsResolver},
     instance::CoreInstanceConfig,
-};
-use easytier_core::{
-    events::{CoreEvent, CoreEventSink},
-    instance::{CoreHostAdapters, CoreInstance, PacketEgressHost},
-    process_runtime::CoreProcessRuntime,
 };
 
 use crate::common::global_ctx::GlobalCtxEvent;
@@ -41,11 +42,14 @@ use easytier_core::gateway::proxy::wrapped_transport::WrappedTransportEngine;
 
 pub(crate) type NativeCoreInstance = CoreInstance<NativeInstanceHost>;
 
-pub(crate) fn compose_native_core_instance(
-    config: TomlConfig,
+pub(crate) fn compose_native_core_instance_with_projector(
+    authoritative_config: TomlConfig,
     process_runtime: Arc<CoreProcessRuntime>,
+    projector: Arc<dyn RuntimeConfigProjector>,
 ) -> anyhow::Result<Arc<NativeCoreInstance>> {
-    let global_ctx = Arc::new(GlobalCtx::new(config.clone()));
+    authoritative_config.get_id();
+    let projection = projector.project(&authoritative_config)?;
+    let global_ctx = Arc::new(GlobalCtx::new(projection.effective_config.clone()));
     let runtime_host = NativeInstanceRuntimeHost::new(global_ctx.clone());
     let mut adapters = runtime_core_host_adapters_with_packet_egress(
         global_ctx.clone(),
@@ -53,7 +57,7 @@ pub(crate) fn compose_native_core_instance(
         runtime_host.clone(),
     );
     adapters.instance_runtime = runtime_host;
-    NativeCoreInstance::from_toml(config, adapters)
+    NativeCoreInstance::from_projected_toml(authoritative_config, projection, projector, adapters)
 }
 
 impl CoreEventSink for GlobalCtx {
@@ -230,7 +234,7 @@ fn configure_runtime_core_host_adapters(
     adapters
 }
 
-#[cfg(feature = "management")]
+#[cfg(feature = "web-client")]
 pub(crate) fn runtime_one_shot_manual_connector(
     global_ctx: ArcGlobalCtx,
     config: &TomlConfig,

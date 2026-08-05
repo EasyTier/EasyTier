@@ -29,14 +29,20 @@ impl InstanceRuntimeHost for NativeInstanceRuntimeHost {
         self.management_events_snapshot()
     }
 
-    #[cfg(feature = "management")]
+    #[cfg(feature = "web-client")]
     fn synchronize_config(&self, patch: &crate::proto::api::config::InstanceConfigPatch) {
+        #[cfg(feature = "management")]
         self.event_journal.synchronize_config(patch);
+        #[cfg(not(feature = "management"))]
+        let _ = patch;
     }
 
-    #[cfg(feature = "management")]
+    #[cfg(feature = "web-client")]
     fn publish_config_patch(&self, patch: crate::proto::api::config::InstanceConfigPatch) {
+        #[cfg(feature = "management")]
         self.event_journal.publish_config_patch(patch);
+        #[cfg(not(feature = "management"))]
+        let _ = patch;
     }
 
     fn attach_tun_fd(&self, fd: i32) -> anyhow::Result<()> {

@@ -1,19 +1,22 @@
+#[cfg(feature = "management")]
 mod compiled;
 mod config_patch;
 mod instance_info;
+#[cfg(feature = "management")]
 mod logger_rpc;
+#[cfg(feature = "management")]
 pub(super) mod packet_proxy;
 mod process_rpc;
+#[cfg(feature = "management")]
 pub mod remote_client;
 mod web_client;
 
 use std::sync::Arc;
 
+use easytier_proto::api::{config::ConfigRpcServer, manage::WebClientServiceServer};
+#[cfg(feature = "management")]
 use easytier_proto::{
-    api::{
-        logger::{LoggerRpc, LoggerRpcServer},
-        manage::WebClientServiceServer,
-    },
+    api::logger::{LoggerRpc, LoggerRpcServer},
     rpc_types::controller::BaseController,
 };
 
@@ -30,9 +33,11 @@ use super::{
     ConfigFileControl, ConfigFilePermission, DaemonGuard, resolve_optional_instance_by_name,
 };
 
+#[cfg(feature = "management")]
 pub use compiled::register_instance_management_rpc;
 pub use config_patch::apply_config_patch;
 pub use instance_info::network_instance_running_info;
+#[cfg(feature = "management")]
 pub use logger_rpc::{
     LoggerControl, LoggerManagementRpc, UnsupportedLoggerControl, log_level_name, parse_log_level,
 };
@@ -42,6 +47,7 @@ pub use process_rpc::{
 };
 pub use web_client::{ConfigServerEndpoint, WebClient, WebClientConfig};
 
+#[cfg(feature = "management")]
 pub use super::instance_rpc::full::call_instance_json_rpc;
 
 pub fn config_source_from_rpc(source: i32) -> Option<ConfigSource> {
@@ -60,6 +66,7 @@ pub fn config_source_to_rpc(source: ConfigSource) -> i32 {
 }
 
 /// Registers the complete process-level management surface once.
+#[cfg(feature = "management")]
 pub fn register_management_rpc<F, H>(
     instances: Arc<InstanceManager<F>>,
     registry: &ServiceRegistry,
@@ -79,6 +86,26 @@ pub fn register_management_rpc<F, H>(
     );
 }
 
+/// Registers the compact reverse-RPC surface required by easytier-web.
+pub fn register_web_client_rpc<F, H>(
+    instances: Arc<InstanceManager<F>>,
+    registry: &ServiceRegistry,
+    hooks: Arc<dyn InstanceMutationHooks>,
+    storage: Arc<dyn ConfigFileStorage>,
+) where
+    F: InstanceFactory<Instance = CoreInstance<H>, CreateContext = ()>,
+    F::Error: std::fmt::Debug + std::fmt::Display + Send + Sync + 'static,
+    H: CoreInstanceHost,
+{
+    let config_rpc = super::instance_rpc::InstanceManagementRpc::<F>::new(instances.clone());
+    registry.register(ConfigRpcServer::new(config_rpc), "");
+    registry.register(
+        WebClientServiceServer::new(ProcessManagementRpc::<F>::new(instances, hooks, storage)),
+        "",
+    );
+}
+
+#[cfg(feature = "management")]
 pub async fn call_management_json_rpc<F, H>(
     manager: &Arc<InstanceManager<F>>,
     logger: Arc<dyn LoggerControl>,
