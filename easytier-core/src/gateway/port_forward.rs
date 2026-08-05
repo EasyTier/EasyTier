@@ -103,6 +103,7 @@ where
     cancel_tokens: Arc<DashMap<PortForwardConfig, DropGuard>>,
     udp_clients: Arc<DashMap<UdpClientKey, Arc<UdpClientInfo<H>>>>,
     udp_response_tasks: Arc<DashMap<UdpClientKey, AbortOnDropHandle<()>>>,
+    udp_client_admission: Arc<Mutex<()>>,
     udp_client_slots: Arc<Semaphore>,
     consumer_lease: Mutex<Option<DataPlaneConsumerLease>>,
 }
@@ -130,6 +131,7 @@ where
             cancel_tokens: Arc::new(DashMap::new()),
             udp_clients: Arc::new(DashMap::new()),
             udp_response_tasks: Arc::new(DashMap::new()),
+            udp_client_admission: Arc::new(Mutex::new(())),
             udp_client_slots: Arc::new(Semaphore::new(MAX_ACTIVE_UDP_CLIENTS)),
             consumer_lease: Mutex::new(None),
         })
@@ -294,6 +296,7 @@ where
         let socket_context = self.socket_context.clone();
         let udp_clients = self.udp_clients.clone();
         let response_tasks = self.udp_response_tasks.clone();
+        let client_admission = self.udp_client_admission.clone();
         let client_slots = self.udp_client_slots.clone();
         self.tasks.lock().unwrap().spawn(async move {
             let adapter = UdpFlowFactory {
@@ -323,6 +326,7 @@ where
                     None => {
                         let Some(slot) = reserve_udp_client_slot(
                             &cancel,
+                            &client_admission,
                             &client_slots,
                             &udp_clients,
                             &response_tasks,
@@ -438,6 +442,7 @@ where
 
 async fn reserve_udp_client_slot<H>(
     cancel: &CancellationToken,
+    admission: &Mutex<()>,
     slots: &Arc<Semaphore>,
     clients: &DashMap<UdpClientKey, Arc<UdpClientInfo<H>>>,
     response_tasks: &DashMap<UdpClientKey, AbortOnDropHandle<()>>,
@@ -445,20 +450,31 @@ async fn reserve_udp_client_slot<H>(
 where
     H: VirtualUdpSocketFactory,
 {
-    if let Ok(slot) = slots.clone().try_acquire_owned() {
-        return Some(slot);
-    }
-
-    let oldest = clients
-        .iter()
-        .min_by_key(|entry| entry.value().last_active.load())
-        .map(|entry| entry.key().clone())?;
-    drop(response_tasks.remove(&oldest));
-    drop(clients.remove(&oldest));
-    select! {
+    // Keep eviction and acquisition of its released permit in one critical section.
+    let _admission_guard = select! {
         biased;
-        _ = cancel.cancelled() => None,
-        slot = slots.clone().acquire_owned() => slot.ok(),
+        _ = cancel.cancelled() => return None,
+        admission = admission.lock() => admission,
+    };
+    loop {
+        if let Ok(slot) = slots.clone().try_acquire_owned() {
+            return Some(slot);
+        }
+
+        let oldest = clients
+            .iter()
+            .min_by_key(|entry| entry.value().last_active.load())
+            .map(|entry| entry.key().clone())?;
+        let Some(evicted) = clients.remove(&oldest) else {
+            continue;
+        };
+        drop(response_tasks.remove(&oldest));
+        drop(evicted);
+        return select! {
+            biased;
+            _ = cancel.cancelled() => None,
+            slot = slots.clone().acquire_owned() => slot.ok(),
+        };
     }
 }
 
@@ -547,6 +563,7 @@ mod tests {
     #[tokio::test]
     async fn udp_client_capacity_evicts_least_recently_active_flow() {
         let slots = Arc::new(Semaphore::new(2));
+        let admission = Mutex::new(());
         let clients: DashMap<UdpClientKey, Arc<UdpClientInfo<TestHost>>> = DashMap::new();
         let response_tasks: DashMap<UdpClientKey, AbortOnDropHandle<()>> = DashMap::new();
         let oldest = udp_client_key(40001);
@@ -566,10 +583,15 @@ mod tests {
         clients.insert(newest.clone(), newest_client);
         assert_eq!(slots.available_permits(), 0);
 
-        let replacement =
-            reserve_udp_client_slot(&CancellationToken::new(), &slots, &clients, &response_tasks)
-                .await
-                .unwrap();
+        let replacement = reserve_udp_client_slot(
+            &CancellationToken::new(),
+            &admission,
+            &slots,
+            &clients,
+            &response_tasks,
+        )
+        .await
+        .unwrap();
 
         assert!(!clients.contains_key(&oldest));
         assert!(!response_tasks.contains_key(&oldest));
@@ -582,5 +604,72 @@ mod tests {
         clients.clear();
         tokio::task::yield_now().await;
         assert_eq!(slots.available_permits(), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn udp_client_admissions_serialize_eviction_permit_handoff() {
+        let slots = Arc::new(Semaphore::new(1));
+        let admission = Arc::new(Mutex::new(()));
+        let clients: Arc<DashMap<UdpClientKey, Arc<UdpClientInfo<TestHost>>>> =
+            Arc::new(DashMap::new());
+        let response_tasks: Arc<DashMap<UdpClientKey, AbortOnDropHandle<()>>> =
+            Arc::new(DashMap::new());
+        let oldest = udp_client_key(40001);
+        let oldest_client = udp_client(&slots, Instant::now());
+        response_tasks.insert(
+            oldest.clone(),
+            pending_response_task(oldest_client._slot.clone()),
+        );
+        clients.insert(oldest.clone(), oldest_client.clone());
+
+        let reserve = || {
+            let admission = admission.clone();
+            let slots = slots.clone();
+            let clients = clients.clone();
+            let response_tasks = response_tasks.clone();
+            tokio::spawn(async move {
+                reserve_udp_client_slot(
+                    &CancellationToken::new(),
+                    &admission,
+                    &slots,
+                    &clients,
+                    &response_tasks,
+                )
+                .await
+            })
+        };
+        let first = reserve();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while clients.contains_key(&oldest) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let mut second = reserve();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut second)
+                .await
+                .is_err()
+        );
+
+        drop(oldest_client);
+        let first_slot = tokio::time::timeout(Duration::from_secs(1), first)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), second)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_none()
+        );
+
+        drop(first_slot);
+        tokio::task::yield_now().await;
+        assert_eq!(slots.available_permits(), 1);
     }
 }
