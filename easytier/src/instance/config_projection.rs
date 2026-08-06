@@ -69,8 +69,7 @@ impl RuntimeConfigProjector for CompactRuntimeConfigProjector {
         );
         effective.set_peers(supported_peers);
 
-        let gateway_requested = authoritative.get_dhcp()
-            || authoritative.get_vpn_portal_config().is_some()
+        let gateway_requested = authoritative.get_vpn_portal_config().is_some()
             || authoritative.get_socks5_portal().is_some()
             || !authoritative.get_port_forwards().is_empty()
             || !authoritative.get_proxy_cidrs().is_empty()
@@ -80,7 +79,6 @@ impl RuntimeConfigProjector for CompactRuntimeConfigProjector {
             gateway_requested,
             "gateway, proxy, and VPN services",
         );
-        effective.set_dhcp(false);
         effective.clear_vpn_portal_config();
         effective.set_socks5_portal(None);
         effective.set_port_forwards(Vec::new());
@@ -100,13 +98,18 @@ impl RuntimeConfigProjector for CompactRuntimeConfigProjector {
         effective.set_ipv6_public_addr_prefix(None);
 
         let mut flags = authoritative.get_flags();
+        let smoltcp_available = cfg!(feature = "smoltcp");
         Self::suppress(
             &mut suppressions,
-            flags.no_tun || flags.use_smoltcp || flags.enable_exit_node,
+            !smoltcp_available && (flags.no_tun || flags.use_smoltcp),
             "userspace gateway mode",
         );
-        flags.no_tun = false;
-        flags.use_smoltcp = false;
+        if !smoltcp_available {
+            flags.no_tun = false;
+            flags.use_smoltcp = false;
+        }
+
+        Self::suppress(&mut suppressions, flags.enable_exit_node, "exit node");
         flags.enable_exit_node = false;
 
         Self::suppress(&mut suppressions, flags.accept_dns, "Magic DNS");
@@ -226,6 +229,47 @@ data_compress_algo = "Zstd"
             projection
                 .suppressed_capabilities
                 .contains(&"UPnP and TCP hole punching")
+        );
+    }
+
+    #[test]
+    fn projection_keeps_dhcp_enabled() {
+        let authoritative = TomlConfig::default();
+        authoritative.set_dhcp(true);
+
+        let projection = CompactRuntimeConfigProjector
+            .project(&authoritative)
+            .unwrap();
+
+        assert!(authoritative.get_dhcp());
+        assert!(projection.effective_config.get_dhcp());
+        assert!(
+            !projection
+                .suppressed_capabilities
+                .contains(&"gateway, proxy, and VPN services")
+        );
+    }
+
+    #[cfg(feature = "smoltcp")]
+    #[test]
+    fn projection_keeps_userspace_gateway_mode_when_available() {
+        let authoritative = TomlConfig::default();
+        let mut flags = authoritative.get_flags();
+        flags.no_tun = true;
+        flags.use_smoltcp = true;
+        authoritative.set_flags(flags);
+
+        let projection = CompactRuntimeConfigProjector
+            .project(&authoritative)
+            .unwrap();
+
+        let projected_flags = projection.effective_config.get_flags();
+        assert!(projected_flags.no_tun);
+        assert!(projected_flags.use_smoltcp);
+        assert!(
+            !projection
+                .suppressed_capabilities
+                .contains(&"userspace gateway mode")
         );
     }
 }

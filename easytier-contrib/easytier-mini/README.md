@@ -1,10 +1,10 @@
 # easytier-mini
 
 `easytier-mini` is a native EasyTier POC binary. It shares EasyTier's TOML
-configuration model, peer protocol, TCP/UDP tunnel implementations, TUN and
-STUN/UDP hole-punching core with the full binary.
-It includes AES-GCM so its default encryption setting interoperates with the
-full binary's default configuration.
+configuration model, peer protocol, TCP/UDP tunnel implementations, TUN,
+dynamic IPv4 allocation, the smoltcp userspace path and STUN/UDP hole-punching
+core with the full binary. It includes AES-GCM so its default encryption
+setting interoperates with the full binary's default configuration.
 
 Build it with:
 
@@ -31,11 +31,12 @@ MIPS target graph, and can build either or both byte orders:
 The `mini` profile derives from `release` and applies `opt-level=z` to the
 entire compact binary dependency graph. Full EasyTier release builds retain
 their normal `opt-level=3` profile. The musl builds use a mini-only static
-linker policy to stay below 5,000,000 bytes without UPX or another executable
-compressor. The compact x86-64 linker policy retains static PIE, packs relative
-relocations and folds identical code. MIPS builds omit standard-library
-backtrace support and use immediate abort; normal workspace MIPS builds are not
-affected. Compact linker policies omit unwind tables.
+linker policy to stay below 5,000,000 bytes on x86-64 and 5,500,000 bytes on
+MIPS without UPX or another executable compressor. The compact x86-64 linker
+policy retains static PIE, packs relative relocations and folds identical code.
+MIPS builds omit standard-library backtrace support and use immediate abort;
+normal workspace MIPS builds are not affected. Compact linker policies omit
+unwind tables.
 
 Start it with a normal EasyTier TOML file:
 
@@ -85,8 +86,11 @@ uri = "tcp://example.net:11010"
 
 Local TOML files accept only `tcp://` and `udp://` listener, mapped-listener
 and peer URLs. They reject unsupported VPN Portal, SOCKS, port forwarding,
-proxy networks, smoltcp/gateway, Magic DNS, KCP, QUIC, compression, ChaCha20,
-socket mark and UDP broadcast relay settings.
+proxy networks, exit-node gateway, Magic DNS, KCP, QUIC, compression, ChaCha20,
+socket mark and UDP broadcast relay settings. The standard `no_tun` and
+`use_smoltcp` flags are accepted; `no_tun = true` runs through smoltcp without
+an OS TUN device.
+Set `dhcp = true` to allocate the virtual IPv4 address dynamically.
 
 Web configuration is deliberately handled differently. The complete
 authoritative configuration is retained without feature stripping and returned

@@ -11,9 +11,11 @@ build = "build.rs"
 anyhow = "1.0"
 easytier = { path = "../../easytier", version = "2.6.4", default-features = false, features = [
     "aes-gcm",
+    "dhcp-ipv4",
     "logging",
     "management-rpc",
     "proxy-cidr-monitor",
+    "smoltcp",
     "tun",
     "web-client",
 ] }

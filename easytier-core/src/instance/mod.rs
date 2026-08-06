@@ -927,13 +927,15 @@ where
         if current.services.acl != config.services.acl {
             self.reload_acl_config_inner(&config.services.acl).await?;
         }
+        // Foreign-network watchers read this state after the runtime-config
+        // notification, so publish it before replacing the watched snapshot.
+        self.sync_peer_runtime_state(&config.peer);
         let peer_id = self.peer_id();
         let published = self
             .runtime_config
             .replace_with_current(config, |current, next| {
                 retain_runtime_owned_peer_state(current, next, peer_id);
             });
-        self.sync_peer_runtime_state(&published.peer);
         self.proxy_cidr_table
             .update_snapshot(proxy_cidr_snapshot(&published));
         if refresh_acl_groups {

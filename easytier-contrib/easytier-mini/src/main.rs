@@ -121,9 +121,6 @@ fn validate_local_config(config: &TomlConfigLoader) -> anyhow::Result<()> {
         require_tcp_or_udp(peer.uri.scheme(), "peer")?;
     }
 
-    if config.get_dhcp() {
-        anyhow::bail!("DHCP is not supported by easytier-mini");
-    }
     if config.get_vpn_portal_config().is_some() {
         anyhow::bail!("vpn_portal is not supported by easytier-mini");
     }
@@ -158,8 +155,8 @@ fn validate_local_config(config: &TomlConfigLoader) -> anyhow::Result<()> {
     if flags.socket_mark.is_some() {
         anyhow::bail!("socket_mark is not supported by easytier-mini");
     }
-    if flags.no_tun || flags.use_smoltcp || flags.enable_exit_node {
-        anyhow::bail!("gateway and smoltcp are not supported by easytier-mini");
+    if flags.enable_exit_node {
+        anyhow::bail!("exit-node gateway mode is not supported by easytier-mini");
     }
     if flags.accept_dns {
         anyhow::bail!("Magic DNS is not supported by easytier-mini");
@@ -309,6 +306,7 @@ mod tests {
     fn accepts_native_tcp_udp_config_without_mutating_it() {
         let config = TomlConfigLoader::new_from_str(
             r#"
+dhcp = true
 listeners = ["tcp://127.0.0.1:11010", "udp://127.0.0.1:11010"]
 
 [[peer]]
@@ -319,7 +317,25 @@ uri = "udp://127.0.0.1:11011"
 
         let before = config.dump();
         validate_local_config(&config).unwrap();
+        assert!(config.get_dhcp());
         assert_eq!(config.dump(), before);
+    }
+
+    #[test]
+    fn accepts_ipv4_smoltcp_mode() {
+        let config = TomlConfigLoader::new_from_str(
+            r#"
+[flags]
+no_tun = true
+use_smoltcp = true
+"#,
+        )
+        .unwrap();
+
+        validate_local_config(&config).unwrap();
+        let flags = config.get_flags();
+        assert!(flags.no_tun);
+        assert!(flags.use_smoltcp);
     }
 
     #[test]
@@ -358,6 +374,7 @@ uri = "udp://127.0.0.1:11011"
     async fn compact_factory_accepts_web_capabilities_without_changing_canonical_config() {
         let config = TomlConfigLoader::new_from_str(
             r#"
+dhcp = true
 listeners = ["quic://127.0.0.1:11010"]
 proxy_network = [{ cidr = "10.20.0.0/16" }]
 

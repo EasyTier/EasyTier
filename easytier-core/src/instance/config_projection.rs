@@ -4,7 +4,7 @@ use url::Url;
 
 use crate::config::toml::TomlConfig;
 
-/// An independent configuration snapshot used by the live runtime.
+/// The configuration used by the live runtime after host projection.
 pub struct RuntimeConfigProjection {
     pub effective_config: TomlConfig,
     pub suppressed_capabilities: Vec<&'static str>,
@@ -13,7 +13,7 @@ pub struct RuntimeConfigProjection {
 impl RuntimeConfigProjection {
     pub fn identity(config: &TomlConfig) -> Self {
         Self {
-            effective_config: config.detached_snapshot(),
+            effective_config: config.clone(),
             suppressed_capabilities: Vec::new(),
         }
     }
@@ -21,8 +21,8 @@ impl RuntimeConfigProjection {
 
 /// Projects an authoritative configuration onto the capabilities of one host.
 ///
-/// Management APIs retain the authoritative model. Only the returned detached
-/// snapshot may be normalized or changed for runtime use.
+/// Projectors that suppress capabilities must return an independent runtime
+/// snapshot so management can retain the authoritative model unchanged.
 pub trait RuntimeConfigProjector: Send + Sync + 'static {
     fn project(&self, authoritative: &TomlConfig) -> anyhow::Result<RuntimeConfigProjection>;
 
@@ -42,4 +42,26 @@ impl RuntimeConfigProjector for IdentityRuntimeConfigProjector {
 
 pub(crate) fn identity_runtime_config_projector() -> Arc<dyn RuntimeConfigProjector> {
     Arc::new(IdentityRuntimeConfigProjector)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::config::toml::ConfigLoader as _;
+
+    use super::*;
+
+    #[test]
+    fn identity_projection_preserves_shared_config_semantics() {
+        let authoritative = TomlConfig::default();
+        let projection = RuntimeConfigProjection::identity(&authoritative);
+
+        projection
+            .effective_config
+            .set_ipv4(Some("10.144.144.7/24".parse().unwrap()));
+
+        assert_eq!(
+            authoritative.get_ipv4(),
+            Some("10.144.144.7/24".parse().unwrap())
+        );
+    }
 }

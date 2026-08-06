@@ -169,4 +169,25 @@ mod tests {
         assert_eq!(global_ctx.get_ipv6(), Some("fd00::2/64".parse().unwrap()));
         assert!(global_ctx.get_flags().disable_relay_data);
     }
+
+    #[cfg(feature = "web-client")]
+    #[test]
+    fn runtime_host_preserves_dhcp_ipv4_during_config_synchronization() {
+        use easytier_core::{config::toml::ConfigLoader as _, instance::InstanceRuntimeHost as _};
+
+        let config = TomlConfig::default();
+        config.set_dhcp(true);
+        let global_ctx = Arc::new(GlobalCtx::new(config.clone()));
+        let runtime_host = NativeInstanceRuntimeHost::new(global_ctx.clone());
+        let lease = "10.20.0.7/24".parse().unwrap();
+        global_ctx.set_ipv4(Some(lease));
+
+        config.set_ipv4(None);
+        runtime_host.synchronize_config(&crate::proto::api::config::InstanceConfigPatch {
+            ipv4: Some("10.99.0.1/24".parse::<cidr::Ipv4Inet>().unwrap().into()),
+            ..Default::default()
+        });
+
+        assert_eq!(global_ctx.get_ipv4(), Some(lease));
+    }
 }

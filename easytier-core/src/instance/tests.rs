@@ -4,7 +4,6 @@ use async_trait::async_trait;
 
 use super::*;
 use crate::{
-    config::toml::ConfigLoader as _,
     listener::transport::TransportListenerConfig,
     socket::{
         SocketContext, SocketListener,
