@@ -281,7 +281,9 @@ pub fn build_rpc_packet(args: BuildRpcPacketArgs<'_>) -> Vec<ZCPacket> {
 mod tests {
     use crate::proto::common::CompressionAlgoPb;
 
-    use super::{compress_packet, preferred_compression_algo};
+    #[cfg(not(feature = "zstd"))]
+    use super::compress_packet;
+    use super::preferred_compression_algo;
 
     #[test]
     fn preferred_compression_matches_build_capabilities() {
