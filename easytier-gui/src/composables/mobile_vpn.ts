@@ -111,13 +111,14 @@ async function doStopVpn(force = false) {
   resetVpnConfigStatus()
 }
 
-async function doStartVpn(ipv4Addr: string, cidr: number, routes: string[], dns?: string) {
+async function doStartVpn(instanceId: string, ipv4Addr: string, cidr: number, routes: string[], dns?: string) {
   if (curVpnStatus.running) {
     return
   }
 
   console.log('start vpn service', ipv4Addr, cidr, routes, dns)
   const request = {
+    instanceId,
     ipv4Addr: `${ipv4Addr}/${cidr}`,
     routes,
     dns,
@@ -150,11 +151,6 @@ async function doStartVpn(ipv4Addr: string, cidr: number, routes: string[], dns?
 async function onVpnServiceStart(payload: any) {
   console.log('vpn service start', JSON.stringify(payload))
   curVpnStatus.running = true
-  if (payload.fd) {
-    await setTunFd(payload.fd).catch((e) => {
-      console.error('set tun fd failed', e)
-    })
-  }
 }
 
 async function onVpnServiceStop(payload: any) {
@@ -217,7 +213,6 @@ export async function onNetworkInstanceChange(instanceId: string) {
     return
   }
   const config = await getConfig(instanceId)
-  await save_headless_profile(await parseNetworkConfig(config))
   console.log('vpn service loaded config', instanceId, JSON.stringify({
     no_tun: config.no_tun,
     dhcp: config.dhcp,
@@ -227,6 +222,7 @@ export async function onNetworkInstanceChange(instanceId: string) {
     console.log('vpn service skipped because no_tun is enabled', instanceId)
     return
   }
+  await save_headless_profile(await parseNetworkConfig(config))
   const curNetworkInfo = (await collectNetworkInfo(instanceId))?.info?.map?.[instanceId]
   if (!curNetworkInfo || curNetworkInfo?.error_msg?.length) {
     console.warn('vpn service skipped because network info is unavailable', instanceId, curNetworkInfo?.error_msg)
@@ -278,7 +274,7 @@ export async function onNetworkInstanceChange(instanceId: string) {
     }
 
     try {
-      await doStartVpn(virtual_ip, network_length, routes, dns)
+      await doStartVpn(instanceId, virtual_ip, network_length, routes, dns)
     }
     catch (e) {
       if (e instanceof Error && e.message === 'need_prepare') {

@@ -14,6 +14,7 @@ export interface InvokeResponse {
 }
 
 export interface StartVpnRequest {
+  instanceId?: string;
   ipv4Addr?: string;
   routes?: string[];
   dns?: string;
@@ -26,11 +27,6 @@ export interface VpnStatusResponse {
   ipv4Addr?: string;
   routes?: string[];
   dns?: string;
-}
-
-export interface PendingTileToggleResponse {
-  pending: boolean;
-  targetActive: boolean;
 }
 
 export async function prepare_vpn(): Promise<InvokeResponse | null> {
@@ -49,14 +45,6 @@ export async function stop_vpn(): Promise<InvokeResponse | null> {
 
 export async function get_vpn_status(): Promise<VpnStatusResponse | null> {
   return await invoke<VpnStatusResponse>('plugin:vpnservice|get_vpn_status', {})
-}
-
-export async function consume_tile_toggle(): Promise<PendingTileToggleResponse> {
-  return await invoke<PendingTileToggleResponse>('plugin:vpnservice|consume_tile_toggle', {})
-}
-
-export async function complete_tile_toggle(): Promise<void> {
-  await invoke('plugin:vpnservice|complete_tile_toggle', {})
 }
 
 export async function save_headless_profile(configToml: string): Promise<void> {

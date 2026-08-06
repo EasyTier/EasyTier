@@ -25,6 +25,7 @@ class TauriVpnService : VpnService() {
         @JvmField var dns: String? = null
 
         const val IPV4_ADDR = "IPV4_ADDR"
+        const val INSTANCE_ID = "INSTANCE_ID"
         const val ROUTES = "ROUTES"
         const val DNS = "DNS"
         const val DISALLOWED_APPLICATIONS = "DISALLOWED_APPLICATIONS"
@@ -33,6 +34,7 @@ class TauriVpnService : VpnService() {
         const val ACTION_START_HEADLESS = "com.plugin.vpnservice.action.START_HEADLESS"
         const val ACTION_ATTACH_EXISTING = "com.plugin.vpnservice.action.ATTACH_EXISTING"
         const val ACTION_STOP = "com.plugin.vpnservice.action.STOP"
+        const val ACTION_DETACH = "com.plugin.vpnservice.action.DETACH"
 
         private const val PREFS_NAME = "easytier_headless_vpn"
         private const val PROFILE_TOML = "profile_toml"
@@ -61,13 +63,12 @@ class TauriVpnService : VpnService() {
         Thread(runnable, "easytier-vpn-service")
     }
     private val operationGeneration = AtomicInteger(0)
+    @Volatile
     private var vpnInterface: ParcelFileDescriptor? = null
+    @Volatile
+    private var activeInstanceId: String? = null
 
     fun isVpnActive(): Boolean = vpnInterface != null
-
-    fun disconnectAndStop() {
-        dispatchStop()
-    }
 
     override fun onCreate() {
         super.onCreate()
@@ -78,17 +79,18 @@ class TauriVpnService : VpnService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForeground(NOTIFICATION_ID, buildNotification("Connecting…"))
         when (intent?.action) {
-            ACTION_STOP -> dispatchStop()
+            ACTION_STOP -> dispatchStop(stopInstance = true)
+            ACTION_DETACH -> dispatchStop(stopInstance = false)
             ACTION_START_HEADLESS -> dispatchHeadlessStart()
             ACTION_ATTACH_EXISTING -> dispatchAttachExisting(intent.extras)
             null -> {
                 if (isPersistedActive(this)) {
                     dispatchHeadlessStart()
                 } else {
-                    dispatchStop()
+                    dispatchStop(stopInstance = false)
                 }
             }
-            else -> dispatchAttachExisting(intent.extras)
+            else -> dispatchStop(stopInstance = false)
         }
         return START_STICKY
     }
@@ -96,11 +98,6 @@ class TauriVpnService : VpnService() {
     override fun onDestroy() {
         operationGeneration.incrementAndGet()
         disconnectVpnInterface(true)
-        try {
-            parseNativeResult(HeadlessEasyTierBridge.stop())
-        } catch (error: Exception) {
-            println("headless EasyTier stop during destroy failed: $error")
-        }
         worker.shutdownNow()
         if (self === this) {
             self = null
@@ -109,8 +106,7 @@ class TauriVpnService : VpnService() {
     }
 
     override fun onRevoke() {
-        setDesiredActive(false)
-        dispatchStop()
+        dispatchStop(stopInstance = true)
         super.onRevoke()
     }
 
@@ -119,6 +115,7 @@ class TauriVpnService : VpnService() {
         setDesiredActive(true)
         EasyTierTileService.setVpnActive(this, false)
         worker.execute {
+            var startedInstanceId: String? = null
             try {
                 if (VpnService.prepare(this) != null) {
                     throw IllegalStateException("VPN permission is required; open EasyTier once and allow it")
@@ -128,11 +125,14 @@ class TauriVpnService : VpnService() {
                     ?.takeIf { it.isNotBlank() }
                     ?: throw IllegalStateException("No saved TUN network; start one from EasyTier once")
                 val result = parseNativeResult(HeadlessEasyTierBridge.start(configToml))
+                val instanceId = result.getString("instanceId")
+                startedInstanceId = instanceId
                 if (generation != operationGeneration.get()) {
-                    parseNativeResult(HeadlessEasyTierBridge.stop())
+                    stopNativeInstance(instanceId)
                     return@execute
                 }
                 val args = Bundle().apply {
+                    putString(INSTANCE_ID, instanceId)
                     putString(IPV4_ADDR, result.getString("ipv4Addr"))
                     putStringArray(ROUTES, jsonStringArray(result.optJSONArray("routes")))
                     result.optString("dns").takeIf { it.isNotEmpty() }?.let { putString(DNS, it) }
@@ -141,7 +141,7 @@ class TauriVpnService : VpnService() {
                 }
                 establishAndAttach(args, generation)
             } catch (error: Exception) {
-                failStart(error, generation)
+                failStart(error, generation, startedInstanceId)
             }
         }
     }
@@ -156,42 +156,45 @@ class TauriVpnService : VpnService() {
                 }
                 establishAndAttach(args, generation)
             } catch (error: Exception) {
-                failStart(error, generation)
+                failStart(error, generation, null)
             }
         }
     }
 
     private fun establishAndAttach(args: Bundle?, generation: Int) {
         disconnectVpnInterface(false)
+        val instanceId = args?.getString(INSTANCE_ID)
+            ?.takeIf { it.isNotBlank() }
+            ?: throw IllegalArgumentException("Missing EasyTier instance ID")
         val newInterface = createVpnInterface(args)
         if (generation != operationGeneration.get()) {
             newInterface.close()
             return
         }
         try {
-            parseNativeResult(HeadlessEasyTierBridge.attachTunFd(newInterface.fd))
+            parseNativeResult(HeadlessEasyTierBridge.attachTunFd(instanceId, newInterface.fd))
         } catch (error: Exception) {
             newInterface.close()
             throw error
         }
         vpnInterface = newInterface
+        activeInstanceId = instanceId
         ipv4Addr = args?.getString(IPV4_ADDR)
         routes = args?.getStringArray(ROUTES) ?: emptyArray()
         dns = args?.getString(DNS)
         EasyTierTileService.setVpnActive(this, true)
         updateNotification("Connected")
-        triggerCallback("vpn_service_start", JSObject().apply { put("fd", newInterface.fd) })
+        triggerCallback("vpn_service_start", JSObject().apply { put("instanceId", instanceId) })
     }
 
-    private fun dispatchStop() {
+    private fun dispatchStop(stopInstance: Boolean) {
         val generation = operationGeneration.incrementAndGet()
         setDesiredActive(false)
         worker.execute {
+            val instanceId = activeInstanceId
             disconnectVpnInterface(true)
-            try {
-                parseNativeResult(HeadlessEasyTierBridge.stop())
-            } catch (error: Exception) {
-                println("headless EasyTier stop failed: $error")
+            if (stopInstance && instanceId != null) {
+                stopNativeInstance(instanceId)
             }
             if (generation == operationGeneration.get()) {
                 stopForeground(true)
@@ -200,15 +203,15 @@ class TauriVpnService : VpnService() {
         }
     }
 
-    private fun failStart(error: Exception, generation: Int) {
+    private fun failStart(error: Exception, generation: Int, startedInstanceId: String?) {
         println("headless EasyTier start failed: $error")
-        if (generation != operationGeneration.get()) return
+        if (generation != operationGeneration.get()) {
+            if (startedInstanceId != null) stopNativeInstance(startedInstanceId)
+            return
+        }
         setDesiredActive(false)
         disconnectVpnInterface(true)
-        try {
-            parseNativeResult(HeadlessEasyTierBridge.stop())
-        } catch (_: Exception) {
-        }
+        if (startedInstanceId != null) stopNativeInstance(startedInstanceId)
         EasyTierTileService.setLastError(this, error.message ?: "Connection failed")
         stopForeground(true)
         stopSelf()
@@ -217,6 +220,7 @@ class TauriVpnService : VpnService() {
     private fun disconnectVpnInterface(notify: Boolean) {
         val interfaceToClose = vpnInterface
         vpnInterface = null
+        activeInstanceId = null
         if (interfaceToClose != null) {
             try {
                 interfaceToClose.close()
@@ -229,6 +233,14 @@ class TauriVpnService : VpnService() {
         routes = emptyArray()
         dns = null
         EasyTierTileService.setVpnActive(this, false)
+    }
+
+    private fun stopNativeInstance(instanceId: String) {
+        try {
+            parseNativeResult(HeadlessEasyTierBridge.stop(instanceId))
+        } catch (error: Exception) {
+            println("EasyTier instance $instanceId stop failed: $error")
+        }
     }
 
     private fun setDesiredActive(active: Boolean) {

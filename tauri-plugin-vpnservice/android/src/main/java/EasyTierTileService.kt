@@ -11,12 +11,13 @@ import androidx.core.content.ContextCompat
 class EasyTierTileService : TileService() {
     companion object {
         private const val PREFS_NAME = "easytier_quick_settings"
+        private const val VPN_ACTIVE = "vpn_active"
         private const val LAST_ERROR = "last_error"
 
         fun setVpnActive(context: Context, active: Boolean) {
             context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                 .edit()
-                .putBoolean("vpn_active", active)
+                .putBoolean(VPN_ACTIVE, active)
                 .remove(LAST_ERROR)
                 .apply()
             requestListeningState(
@@ -28,7 +29,7 @@ class EasyTierTileService : TileService() {
         fun setLastError(context: Context, error: String) {
             context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                 .edit()
-                .putBoolean("vpn_active", false)
+                .putBoolean(VPN_ACTIVE, false)
                 .putString(LAST_ERROR, error)
                 .apply()
             requestListeningState(
@@ -42,7 +43,7 @@ class EasyTierTileService : TileService() {
         super.onStartListening()
         val active = TauriVpnService.self?.isVpnActive()
             ?: getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                .getBoolean("vpn_active", false)
+                .getBoolean(VPN_ACTIVE, false)
         updateTile(active)
     }
 
@@ -56,10 +57,8 @@ class EasyTierTileService : TileService() {
     }
 
     private fun handleClick() {
-        val active = TauriVpnService.self?.isVpnActive()
-            ?: getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                .getBoolean("vpn_active", false)
-        val action = if (active) {
+        val requestedActive = TauriVpnService.isPersistedActive(this)
+        val action = if (requestedActive) {
             TauriVpnService.ACTION_STOP
         } else {
             TauriVpnService.ACTION_START_HEADLESS
@@ -76,9 +75,18 @@ class EasyTierTileService : TileService() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 val error = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                     .getString(LAST_ERROR, null)
-                subtitle = if (active) "Connected" else error ?: if (
-                    TauriVpnService.hasHeadlessProfile(this@EasyTierTileService)
-                ) "Disconnected" else "Open EasyTier once"
+                val desiredActive = TauriVpnService.isPersistedActive(this@EasyTierTileService)
+                subtitle = if (active) {
+                    "Connected"
+                } else if (desiredActive) {
+                    "Connecting…"
+                } else {
+                    error ?: if (TauriVpnService.hasHeadlessProfile(this@EasyTierTileService)) {
+                        "Disconnected"
+                    } else {
+                        "Open EasyTier once"
+                    }
+                }
             }
             updateTile()
         }

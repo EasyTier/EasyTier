@@ -19,58 +19,6 @@ Default permissions for the plugin
 <tr>
 <td>
 
-`vpnservice:allow-complete-tile-toggle`
-
-</td>
-<td>
-
-Enables the complete_tile_toggle command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`vpnservice:deny-complete-tile-toggle`
-
-</td>
-<td>
-
-Denies the complete_tile_toggle command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`vpnservice:allow-consume-tile-toggle`
-
-</td>
-<td>
-
-Enables the consume_tile_toggle command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`vpnservice:deny-consume-tile-toggle`
-
-</td>
-<td>
-
-Denies the consume_tile_toggle command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
 `vpnservice:allow-get-vpn-status`
 
 </td>

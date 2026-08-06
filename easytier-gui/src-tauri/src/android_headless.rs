@@ -79,9 +79,20 @@ pub(crate) fn instance_manager() -> Arc<NativeInstanceManager> {
     ANDROID_INSTANCE_MANAGER.clone()
 }
 
-fn stop_all() -> anyhow::Result<()> {
-    ANDROID_RUNTIME.block_on(ANDROID_INSTANCE_MANAGER.retain_network_instances(&[]))?;
-    *HEADLESS_INSTANCE_ID.write().expect("headless id poisoned") = None;
+fn stop_instance(instance_id: Uuid) -> anyhow::Result<()> {
+    ANDROID_RUNTIME.block_on(ANDROID_INSTANCE_MANAGER.delete_network_instances([instance_id]))?;
+    let mut headless_instance_id = HEADLESS_INSTANCE_ID.write().expect("headless id poisoned");
+    if *headless_instance_id == Some(instance_id) {
+        *headless_instance_id = None;
+    }
+    Ok(())
+}
+
+fn stop_previous_headless_instance() -> anyhow::Result<()> {
+    let instance_id = *HEADLESS_INSTANCE_ID.read().expect("headless id poisoned");
+    if let Some(instance_id) = instance_id {
+        stop_instance(instance_id)?;
+    }
     Ok(())
 }
 
@@ -89,7 +100,7 @@ fn start(config_toml: &str) -> anyhow::Result<NativeResult> {
     let _operation = HEADLESS_OPERATION
         .lock()
         .expect("headless operation poisoned");
-    stop_all()?;
+    stop_previous_headless_instance()?;
 
     let config = TomlConfigLoader::new_from_str(config_toml)?;
     let flags = config.get_flags();
@@ -146,24 +157,21 @@ fn start(config_toml: &str) -> anyhow::Result<NativeResult> {
     });
 
     if ready.is_err() {
-        let _ = stop_all();
+        let _ = stop_instance(instance_id);
     }
     ready
 }
 
-fn stop() -> anyhow::Result<NativeResult> {
+fn stop(instance_id: &str) -> anyhow::Result<NativeResult> {
     let _operation = HEADLESS_OPERATION
         .lock()
         .expect("headless operation poisoned");
-    stop_all()?;
+    stop_instance(instance_id.parse()?)?;
     Ok(NativeResult::success())
 }
 
-fn attach_tun_fd(fd: i32) -> anyhow::Result<NativeResult> {
-    let instance_id = *HEADLESS_INSTANCE_ID.read().expect("headless id poisoned");
-    let instance_id = instance_id
-        .or_else(|| ANDROID_INSTANCE_MANAGER.instance_ids().into_iter().next())
-        .ok_or_else(|| anyhow::anyhow!("no running EasyTier instance is available"))?;
+fn attach_tun_fd(instance_id: &str, fd: i32) -> anyhow::Result<NativeResult> {
+    let instance_id = instance_id.parse()?;
     ANDROID_INSTANCE_MANAGER.attach_tun_fd(instance_id, fd)?;
     Ok(NativeResult::success())
 }
@@ -197,17 +205,29 @@ pub extern "system" fn Java_com_plugin_vpnservice_HeadlessEasyTierBridge_start(
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_plugin_vpnservice_HeadlessEasyTierBridge_stop(
-    env: JNIEnv,
+    mut env: JNIEnv,
     _class: JClass,
+    instance_id: JString,
 ) -> jstring {
-    java_string(env, result_json(stop()))
+    let result = env
+        .get_string(&instance_id)
+        .map(|value| value.into())
+        .map_err(anyhow::Error::new)
+        .and_then(|instance_id: String| stop(&instance_id));
+    java_string(env, result_json(result))
 }
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_plugin_vpnservice_HeadlessEasyTierBridge_attachTunFd(
-    env: JNIEnv,
+    mut env: JNIEnv,
     _class: JClass,
+    instance_id: JString,
     fd: jint,
 ) -> jstring {
-    java_string(env, result_json(attach_tun_fd(fd)))
+    let result = env
+        .get_string(&instance_id)
+        .map(|value| value.into())
+        .map_err(anyhow::Error::new)
+        .and_then(|instance_id: String| attach_tun_fd(&instance_id, fd));
+    java_string(env, result_json(result))
 }

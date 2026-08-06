@@ -40,8 +40,6 @@
     "vpnservice:allow-prepare-vpn",
     "vpnservice:allow-start-vpn",
     "vpnservice:allow-stop-vpn",
-    "vpnservice:allow-consume-tile-toggle",
-    "vpnservice:allow-complete-tile-toggle",
     "vpnservice:allow-save-headless-profile",
     "vpnservice:allow-registerListener",
     "os:default",

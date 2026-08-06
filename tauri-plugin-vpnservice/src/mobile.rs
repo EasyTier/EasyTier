@@ -58,21 +58,6 @@ impl<R: Runtime> Vpnservice<R> {
             .map_err(Into::into)
     }
 
-    pub fn consume_tile_toggle(
-        &self,
-        payload: VoidRequest,
-    ) -> crate::Result<PendingTileToggleResponse> {
-        self.0
-            .run_mobile_plugin("consumeTileToggle", payload)
-            .map_err(Into::into)
-    }
-
-    pub fn complete_tile_toggle(&self, payload: VoidRequest) -> crate::Result<Status> {
-        self.0
-            .run_mobile_plugin("completeTileToggle", payload)
-            .map_err(Into::into)
-    }
-
     pub fn save_headless_profile(
         &self,
         payload: SaveHeadlessProfileRequest,

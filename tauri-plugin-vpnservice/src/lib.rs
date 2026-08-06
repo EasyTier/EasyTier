@@ -17,8 +17,8 @@ use mobile::Vpnservice;
 
 #[cfg(mobile)]
 use models::{
-    PendingTileToggleResponse, PingRequest, PingResponse, SaveHeadlessProfileRequest,
-    StartVpnRequest, Status, VoidRequest, VpnStatus,
+    PingRequest, PingResponse, SaveHeadlessProfileRequest, StartVpnRequest, Status, VoidRequest,
+    VpnStatus,
 };
 
 mod error;
@@ -71,18 +71,6 @@ async fn get_vpn_status<R: Runtime>(app: AppHandle<R>) -> Result<VpnStatus> {
 
 #[cfg(mobile)]
 #[tauri::command]
-async fn consume_tile_toggle<R: Runtime>(app: AppHandle<R>) -> Result<PendingTileToggleResponse> {
-    app.vpnservice().consume_tile_toggle(VoidRequest {})
-}
-
-#[cfg(mobile)]
-#[tauri::command]
-async fn complete_tile_toggle<R: Runtime>(app: AppHandle<R>) -> Result<Status> {
-    app.vpnservice().complete_tile_toggle(VoidRequest {})
-}
-
-#[cfg(mobile)]
-#[tauri::command]
 async fn save_headless_profile<R: Runtime>(
     app: AppHandle<R>,
     payload: SaveHeadlessProfileRequest,
@@ -100,8 +88,6 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
         start_vpn,
         stop_vpn,
         get_vpn_status,
-        consume_tile_toggle,
-        complete_tile_toggle,
         save_headless_profile,
     ]);
 

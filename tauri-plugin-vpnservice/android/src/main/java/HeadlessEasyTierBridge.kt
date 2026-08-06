@@ -6,6 +6,6 @@ object HeadlessEasyTierBridge {
     }
 
     @JvmStatic external fun start(configToml: String): String
-    @JvmStatic external fun stop(): String
-    @JvmStatic external fun attachTunFd(fd: Int): String
+    @JvmStatic external fun stop(instanceId: String): String
+    @JvmStatic external fun attachTunFd(instanceId: String, fd: Int): String
 }
