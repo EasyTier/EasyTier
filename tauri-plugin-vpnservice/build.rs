@@ -4,7 +4,9 @@ const COMMANDS: &[&str] = &[
     "start_vpn",
     "stop_vpn",
     "get_vpn_status",
-    "registerListener",
+    "consume_tile_toggle",
+    "complete_tile_toggle",
+    "save_headless_profile",
 ];
 
 fn main() {

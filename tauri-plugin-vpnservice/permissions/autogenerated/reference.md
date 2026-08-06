@@ -19,6 +19,58 @@ Default permissions for the plugin
 <tr>
 <td>
 
+`vpnservice:allow-complete-tile-toggle`
+
+</td>
+<td>
+
+Enables the complete_tile_toggle command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`vpnservice:deny-complete-tile-toggle`
+
+</td>
+<td>
+
+Denies the complete_tile_toggle command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`vpnservice:allow-consume-tile-toggle`
+
+</td>
+<td>
+
+Enables the consume_tile_toggle command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`vpnservice:deny-consume-tile-toggle`
+
+</td>
+<td>
+
+Denies the consume_tile_toggle command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `vpnservice:allow-get-vpn-status`
 
 </td>
@@ -142,6 +194,32 @@ Enables the register_listener command without any pre-configured scope.
 <td>
 
 Denies the register_listener command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`vpnservice:allow-save-headless-profile`
+
+</td>
+<td>
+
+Enables the save_headless_profile command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`vpnservice:deny-save-headless-profile`
+
+</td>
+<td>
+
+Denies the save_headless_profile command without any pre-configured scope.
 
 </td>
 </tr>

@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-save-headless-profile"
+description = "Enables the save_headless_profile command without any pre-configured scope."
+commands.allow = ["save_headless_profile"]
+
+[[permission]]
+identifier = "deny-save-headless-profile"
+description = "Denies the save_headless_profile command without any pre-configured scope."
+commands.deny = ["save_headless_profile"]

@@ -27,16 +27,66 @@ class StartVpnArgs {
     var mtu: Int? = null
 }
 
+@InvokeArg
+class SaveHeadlessProfileArgs {
+    var configToml: String? = null
+}
+
 @TauriPlugin
 class VpnServicePlugin(private val activity: Activity) : Plugin(activity) {
+    companion object {
+        @Volatile
+        private var activityVisible = false
+
+        fun isActivityVisible(): Boolean = activityVisible
+    }
+
     private val implementation = Example()
 
     override fun load(webView: WebView) {
         println("load vpn service plugin")
+        activityVisible = true
         TauriVpnService.triggerCallback = { event, data ->
             println("vpn: triggerCallback $event $data")
             trigger(event, data)
         }
+    }
+
+    override fun onResume() {
+        activityVisible = true
+    }
+
+    override fun onStop() {
+        activityVisible = false
+    }
+
+    override fun onDestroy() {
+        activityVisible = false
+    }
+
+    @Command
+    fun consumeTileToggle(invoke: Invoke) {
+        val ret = JSObject()
+        ret.put("pending", false)
+        ret.put("targetActive", false)
+        invoke.resolve(ret)
+    }
+
+    @Command
+    fun completeTileToggle(invoke: Invoke) {
+        invoke.resolve(JSObject())
+    }
+
+    @Command
+    fun saveHeadlessProfile(invoke: Invoke) {
+        val args = invoke.parseArgs(SaveHeadlessProfileArgs::class.java)
+        val configToml = args.configToml
+        if (configToml.isNullOrBlank()) {
+            invoke.reject("configToml is required")
+            return
+        }
+        TauriVpnService.saveHeadlessProfile(activity, configToml)
+        invoke.resolve(JSObject())
     }
 
     @Command
@@ -76,21 +126,24 @@ class VpnServicePlugin(private val activity: Activity) : Plugin(activity) {
         activity.runOnUiThread {
             println("start vpn in plugin, args: $args")
 
-            TauriVpnService.self?.onRevoke()
-
             val it = VpnService.prepare(activity)
             val ret = JSObject()
             if (it != null) {
                 ret.put("errorMsg", "need_prepare")
             } else {
                 val intent = Intent(activity, TauriVpnService::class.java)
+                intent.action = TauriVpnService.ACTION_ATTACH_EXISTING
                 intent.putExtra(TauriVpnService.IPV4_ADDR, args.ipv4Addr)
                 intent.putExtra(TauriVpnService.ROUTES, args.routes)
                 intent.putExtra(TauriVpnService.DNS, args.dns)
                 intent.putExtra(TauriVpnService.DISALLOWED_APPLICATIONS, args.disallowedApplications)
                 intent.putExtra(TauriVpnService.MTU, args.mtu)
 
-                activity.startService(intent)
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                    activity.startForegroundService(intent)
+                } else {
+                    activity.startService(intent)
+                }
             }
             invoke.resolve(ret)
         }
@@ -100,8 +153,13 @@ class VpnServicePlugin(private val activity: Activity) : Plugin(activity) {
     fun stopVpn(invoke: Invoke) {
         activity.runOnUiThread {
             println("stop vpn in plugin")
-            TauriVpnService.self?.onRevoke()
-            activity.stopService(Intent(activity, TauriVpnService::class.java))
+            val intent = Intent(activity, TauriVpnService::class.java)
+                .setAction(TauriVpnService.ACTION_STOP)
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                activity.startForegroundService(intent)
+            } else {
+                activity.startService(intent)
+            }
             println("stop vpn in plugin end")
             invoke.resolve(JSObject())
         }
@@ -110,7 +168,7 @@ class VpnServicePlugin(private val activity: Activity) : Plugin(activity) {
     @Command
     fun getVpnStatus(invoke: Invoke) {
         val ret = JSObject()
-        ret.put("running", TauriVpnService.self != null)
+        ret.put("running", TauriVpnService.self?.isVpnActive() == true)
         ret.put("ipv4Addr", TauriVpnService.ipv4Addr)
         ret.put("routes", TauriVpnService.routes)
         ret.put("dns", TauriVpnService.dns)

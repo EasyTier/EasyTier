@@ -42,3 +42,16 @@ pub struct VpnStatus {
     pub routes: Option<Vec<String>>,
     pub dns: Option<String>,
 }
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingTileToggleResponse {
+    pub pending: bool,
+    pub target_active: bool,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveHeadlessProfileRequest {
+    pub config_toml: String,
+}

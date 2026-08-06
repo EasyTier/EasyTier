@@ -58,6 +58,7 @@ async function main() {
   app.use(DialogService)
   app.use(ConfirmationService)
   app.mount('#app')
+
 }
 
 main()

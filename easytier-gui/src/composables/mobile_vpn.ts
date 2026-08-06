@@ -1,7 +1,7 @@
 import type { NetworkTypes } from 'easytier-frontend-lib'
 import { addPluginListener } from '@tauri-apps/api/core'
 import { Utils } from 'easytier-frontend-lib'
-import { get_vpn_status, prepare_vpn, start_vpn, stop_vpn } from 'tauri-plugin-vpnservice-api'
+import { get_vpn_status, prepare_vpn, save_headless_profile, start_vpn, stop_vpn } from 'tauri-plugin-vpnservice-api'
 
 type Route = NetworkTypes.Route
 
@@ -81,6 +81,21 @@ async function waitVpnStatus(target_status: boolean, timeout_sec: number) {
   }
 }
 
+async function waitNativeVpnStopped(timeout_sec: number) {
+  const start_time = Date.now()
+  while (true) {
+    const status = await get_vpn_status()
+    syncVpnStatusFromNative(status)
+    if (!curVpnStatus.running) {
+      return
+    }
+    if (Date.now() - start_time > timeout_sec * 1000) {
+      throw new Error('wait native vpn stop timeout')
+    }
+    await new Promise(r => setTimeout(r, 50))
+  }
+}
+
 async function doStopVpn(force = false) {
   const wasRunning = curVpnStatus.running
   if (!force && !wasRunning) {
@@ -90,7 +105,7 @@ async function doStopVpn(force = false) {
   const stop_ret = await stop_vpn()
   console.log('stop vpn', JSON.stringify((stop_ret)))
   if (wasRunning) {
-    await waitVpnStatus(false, 3)
+    await waitNativeVpnStopped(3)
   }
 
   resetVpnConfigStatus()
@@ -202,6 +217,7 @@ export async function onNetworkInstanceChange(instanceId: string) {
     return
   }
   const config = await getConfig(instanceId)
+  await save_headless_profile(await parseNetworkConfig(config))
   console.log('vpn service loaded config', instanceId, JSON.stringify({
     no_tun: config.no_tun,
     dhcp: config.dhcp,

@@ -3,7 +3,12 @@
 
 mod elevate;
 
+#[cfg(target_os = "android")]
+mod android_headless;
+
 use anyhow::Context;
+#[cfg(not(target_os = "android"))]
+use easytier::instance::factory::native_instance_manager;
 #[cfg(target_os = "android")]
 use easytier::instance::factory::subscribe_native_instance_event;
 use easytier::proto::api::manage::{
@@ -19,7 +24,7 @@ use easytier::{
         },
         log,
     },
-    instance::factory::{NativeInstanceManager, native_instance_manager},
+    instance::factory::NativeInstanceManager,
     proto::rpc::standalone::{runtime_rpc_dialer, runtime_rpc_listener},
     rpc_service::ApiRpcServer,
     utils::panic::setup_panic_handler,
@@ -415,7 +420,14 @@ async fn init_rpc_connection(
         let instance_manager = if let Some(im) = instance_manager_guard.take() {
             im
         } else {
-            Arc::new(native_instance_manager())
+            #[cfg(target_os = "android")]
+            {
+                android_headless::instance_manager()
+            }
+            #[cfg(not(target_os = "android"))]
+            {
+                Arc::new(native_instance_manager())
+            }
         };
 
         let portal = url.and_then(|s| {

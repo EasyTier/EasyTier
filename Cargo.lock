@@ -2503,6 +2503,7 @@ dependencies = [
  "easytier",
  "easytier-core",
  "gethostname 1.1.0",
+ "jni",
  "libc",
  "once_cell",
  "security-framework-sys",
