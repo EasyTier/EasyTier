@@ -44,11 +44,21 @@ impl SendBatch {
         Ok(Self {
             datagrams,
             meta: UdpSocketSendMeta {
-                src_ip: transmit.src_ip,
+                src_ip: selectable_source_ip(transmit.src_ip),
                 src_ifindex: None,
             },
         })
     }
+}
+
+fn selectable_source_ip(src_ip: Option<std::net::IpAddr>) -> Option<std::net::IpAddr> {
+    // OHOS cannot select an IPv6 source for UDP sends, so retain the OS-selected source.
+    #[cfg(target_env = "ohos")]
+    if matches!(src_ip, Some(std::net::IpAddr::V6(_))) {
+        return None;
+    }
+
+    src_ip
 }
 
 type WritableFuture = Pin<Box<dyn Future<Output = io::Result<()>> + Send>>;
@@ -315,5 +325,27 @@ mod tests {
         assert_eq!(batch.datagrams, vec![b"quic".to_vec()]);
         assert_eq!(batch.meta.src_ip, Some(source_ip));
         assert_eq!(batch.meta.src_ifindex, None);
+    }
+
+    #[test]
+    fn send_batch_uses_platform_supported_ipv6_source_selection() {
+        let peer_addr = "[2001:db8::2]:22023".parse().unwrap();
+        let source_ip = "2001:db8::1".parse().unwrap();
+        let transmit = Transmit {
+            destination: peer_addr,
+            ecn: None,
+            contents: b"quic",
+            segment_size: None,
+            src_ip: Some(source_ip),
+        };
+
+        let batch = SendBatch::from_transmit(&transmit).unwrap();
+        let expected_source_ip = if cfg!(target_env = "ohos") {
+            None
+        } else {
+            Some(source_ip)
+        };
+
+        assert_eq!(batch.meta.src_ip, expected_source_ip);
     }
 }
