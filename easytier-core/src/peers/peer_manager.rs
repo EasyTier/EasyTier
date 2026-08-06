@@ -420,10 +420,15 @@ impl PeerPacketFilter for NicPacketProcessor {
                 return None;
             }
             tracing::trace!(?packet, "send packet to nic channel");
-            let _ = self
+            if let Err(error) = self
                 .nic_channel
-                .send(HostPacket::from_core_packet(packet))
-                .await;
+                .try_send(HostPacket::from_core_packet(packet))
+            {
+                tracing::trace!(
+                    ?error,
+                    "dropping packet because nic channel cannot accept it"
+                );
+            }
             None
         } else {
             Some(packet)
@@ -3282,6 +3287,28 @@ mod tests {
         async fn try_process_packet_from_nic(&self, _data: &mut ZCPacket) -> bool {
             true
         }
+    }
+
+    #[tokio::test]
+    async fn full_host_packet_queue_does_not_block_peer_packet_processing() {
+        let (nic_channel, mut nic_receiver) = mpsc::channel(1);
+        nic_channel
+            .send(HostPacket::copy_from_payload(b"queued"))
+            .await
+            .unwrap();
+        let processor = NicPacketProcessor { nic_channel };
+        let mut packet = ZCPacket::new_with_payload(b"next");
+        packet.fill_peer_manager_hdr(1, 2, PacketType::Data as u8);
+
+        let result = tokio::time::timeout(
+            Duration::from_millis(100),
+            processor.try_process_packet_from_peer(packet),
+        )
+        .await;
+
+        assert!(result.is_ok(), "a full host queue blocked the peer router");
+        assert!(result.unwrap().is_none());
+        assert_eq!(nic_receiver.try_recv().unwrap().payload(), b"queued");
     }
 
     #[test]
