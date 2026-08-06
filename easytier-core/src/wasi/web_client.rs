@@ -18,18 +18,15 @@ use crate::{
     foundation::time::{enter_domain, next_deadline_millis},
     host::{dns::HostDnsResolver, management::HostManagementClient, socket::HostSocketRuntime},
     management::{
-        ConfigServerEndpoint, WebClient, WebClientBackend, WebClientConfig, config_source_from_rpc,
+        ConfigServerEndpoint, ManagementRpcForwarder, WebClient, WebClientBackend, WebClientConfig,
+        config_source_from_rpc, register_forwarded_instance_management_rpc,
     },
     process_runtime::CoreProcessRuntime,
     proto::{
-        api::{
-            config::{ConfigRpcDescriptor, ConfigRpcMethodDescriptor},
-            manage::{
-                ListNetworkInstanceRequest, NetworkConfig, NetworkingMethod,
-                RunNetworkInstanceRequest, ValidateConfigRequest, ValidateConfigResponse,
-                WebClientService, WebClientServiceClient, WebClientServiceDescriptor,
-                WebClientServiceMethodDescriptor,
-            },
+        api::manage::{
+            ListNetworkInstanceRequest, NetworkConfig, NetworkingMethod, RunNetworkInstanceRequest,
+            ValidateConfigRequest, ValidateConfigResponse, WebClientService,
+            WebClientServiceClient, WebClientServiceDescriptor, WebClientServiceMethodDescriptor,
         },
         common::{DirectRpcRequest, HostManagementRequest, RpcResponse},
         rpc_types::{
@@ -189,6 +186,13 @@ impl HostManagementHandler {
 }
 
 #[async_trait]
+impl ManagementRpcForwarder for HostManagementHandler {
+    async fn forward(&self, full_method_name: String, input: Bytes) -> error::Result<Bytes> {
+        HostManagementHandler::forward(self, full_method_name, input, None, None).await
+    }
+}
+
+#[async_trait]
 impl Handler for HostManagementHandler {
     type Descriptor = WebClientServiceDescriptor;
     type Controller = BaseController;
@@ -242,38 +246,6 @@ impl Handler for HostManagementHandler {
     }
 }
 
-#[derive(Clone)]
-struct HostConfigHandler {
-    management: HostManagementHandler,
-}
-
-#[async_trait]
-impl Handler for HostConfigHandler {
-    type Descriptor = ConfigRpcDescriptor;
-    type Controller = BaseController;
-
-    async fn call(
-        &self,
-        _: Self::Controller,
-        method: ConfigRpcMethodDescriptor,
-        input: Bytes,
-    ) -> error::Result<Bytes> {
-        self.management
-            .forward(
-                format!(
-                    "{}.{}.{}",
-                    ConfigRpcDescriptor.package(),
-                    ConfigRpcDescriptor.proto_name(),
-                    method.proto_name()
-                ),
-                input,
-                None,
-                None,
-            )
-            .await
-    }
-}
-
 struct WasiWebClientBackend {
     handler: HostManagementHandler,
 }
@@ -282,12 +254,7 @@ struct WasiWebClientBackend {
 impl WebClientBackend for WasiWebClientBackend {
     fn register(&self, registry: &ServiceRegistry) {
         registry.register(self.handler.clone(), "");
-        registry.register(
-            HostConfigHandler {
-                management: self.handler.clone(),
-            },
-            "",
-        );
+        register_forwarded_instance_management_rpc(self.handler.clone(), registry);
     }
 
     async fn instance_ids(&self) -> anyhow::Result<Vec<uuid::Uuid>> {

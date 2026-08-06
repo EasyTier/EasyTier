@@ -1,5 +1,7 @@
 //! Process-level management over the canonical Instance collection.
 
+#[cfg(all(feature = "management", any(test, target_os = "wasi")))]
+mod forwarded_rpc;
 #[cfg(feature = "management")]
 mod full;
 mod instance_rpc;
@@ -19,6 +21,10 @@ use easytier_proto::api::instance::{ConnectorManageRpcServer, PeerManageRpcServe
 
 pub use crate::instance::manager::{
     ConfigFileControl, ConfigFilePermission, DaemonGuard, InstanceManager, ProcessRuntimeProvider,
+};
+#[cfg(all(feature = "management", target_os = "wasi"))]
+pub(crate) use forwarded_rpc::{
+    ManagementRpcForwarder, register_forwarded_instance_management_rpc,
 };
 #[cfg(all(feature = "management", target_os = "wasi"))]
 pub(crate) use full::WebClientBackend;
