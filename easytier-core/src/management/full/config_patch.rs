@@ -150,14 +150,11 @@ where
     H: CoreInstanceHost,
 {
     let normalized = CoreInstanceConfig::from_toml_with_host(config, instance.host_config())?;
-    let current = instance.runtime_config_snapshot();
     let services = normalized.connectivity.runtime;
-    let mut peer = normalized.peer.snapshot;
-    peer.runtime.stun_info = current.peer.runtime.stun_info.clone();
 
     Ok(CoreInstanceRuntimeConfig {
         services,
-        peer: Arc::new(peer),
+        peer: Arc::new(normalized.peer.snapshot),
     })
 }
 

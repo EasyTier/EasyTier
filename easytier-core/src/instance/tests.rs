@@ -466,6 +466,57 @@ mod portable_runtime {
         build_with_engines(config, WrappedTransportEngines::default())
     }
 
+    #[cfg(feature = "dhcp-ipv4")]
+    #[tokio::test]
+    async fn runtime_update_preserves_dhcp_owned_ipv4() {
+        let mut initial = test_config("dhcp-runtime-update");
+        initial.connectivity.runtime.dhcp_ipv4 = true;
+        let instance = build_instance(initial).unwrap();
+        let lease = IpPrefix {
+            address: "10.126.126.7".parse().unwrap(),
+            prefix_len: 24,
+        };
+        instance.runtime_config.update_peer_with(|peer| {
+            peer.runtime.core.routes.ipv4 = Some(lease.clone());
+        });
+
+        let mut replacement = test_config("dhcp-runtime-update");
+        replacement.connectivity.runtime.dhcp_ipv4 = true;
+        instance
+            .update_runtime_config(runtime_snapshot(&replacement))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            instance
+                .runtime_config
+                .snapshot()
+                .peer
+                .runtime
+                .core
+                .routes
+                .ipv4,
+            Some(lease)
+        );
+
+        let static_replacement = test_config("dhcp-runtime-update");
+        instance
+            .update_runtime_config(runtime_snapshot(&static_replacement))
+            .await
+            .unwrap();
+        assert_eq!(
+            instance
+                .runtime_config
+                .snapshot()
+                .peer
+                .runtime
+                .core
+                .routes
+                .ipv4,
+            None
+        );
+    }
+
     #[tokio::test]
     async fn core_instance_is_a_direct_managed_record() {
         let instance = build_instance(test_config("managed-directly")).unwrap();
@@ -600,7 +651,7 @@ hostname = "core-owned-config"
             response.config.unwrap().hostname.as_deref(),
             Some("patched-in-core")
         );
-        let runtime = instance.runtime_config_snapshot();
+        let runtime = instance.runtime_config.snapshot();
         assert!(runtime.services.proxy.enable_exit_node);
         assert!(runtime.services.public_ipv6_provider.provider_supported);
         assert_eq!(runtime.peer.easytier_version, "host-version");
@@ -685,7 +736,8 @@ hostname = "core-owned-config"
         );
         assert!(
             instance
-                .runtime_config_snapshot()
+                .runtime_config
+                .snapshot()
                 .services
                 .gateway
                 .port_forwards
@@ -771,7 +823,8 @@ hostname = "core-owned-config"
         );
         assert!(
             instance
-                .runtime_config_snapshot()
+                .runtime_config
+                .snapshot()
                 .services
                 .gateway
                 .port_forwards

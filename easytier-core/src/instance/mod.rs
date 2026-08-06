@@ -219,6 +219,23 @@ fn retain_core_peer_identity(
     peer.runtime.core.node.instance_id = instance_id;
 }
 
+fn retain_runtime_owned_peer_state(
+    current: &CoreInstanceRuntimeConfig,
+    next: &mut CoreInstanceRuntimeConfig,
+    peer_id: crate::config::PeerId,
+) {
+    retain_core_peer_identity(
+        &mut next.peer,
+        peer_id,
+        current.peer.runtime.core.node.instance_id,
+    );
+    let next_peer = Arc::make_mut(&mut next.peer);
+    next_peer.runtime.stun_info = current.peer.runtime.stun_info.clone();
+    if current.services.dhcp_ipv4 && next.services.dhcp_ipv4 {
+        next_peer.runtime.core.routes.ipv4 = current.peer.runtime.core.routes.ipv4.clone();
+    }
+}
+
 /// Host-owned resources that must be prepared for the complete Instance
 /// lifetime, such as a native packet interface.
 #[async_trait::async_trait]
@@ -894,7 +911,7 @@ where
 
     pub(crate) async fn update_runtime_config_under_operation(
         &self,
-        mut config: CoreInstanceRuntimeConfig,
+        config: CoreInstanceRuntimeConfig,
     ) -> anyhow::Result<()> {
         if matches!(
             self.state(),
@@ -904,21 +921,21 @@ where
         }
         self.validate_runtime_config_capabilities(&config)?;
         let current = self.runtime_config.snapshot();
-        retain_core_peer_identity(
-            &mut config.peer,
-            self.peer_id(),
-            current.peer.runtime.core.node.instance_id,
-        );
         let refresh_acl_groups = current.peer.peer_group_memberships
             != config.peer.peer_group_memberships
             || current.peer.acl_group_declarations != config.peer.acl_group_declarations;
         if current.services.acl != config.services.acl {
             self.reload_acl_config_inner(&config.services.acl).await?;
         }
-        self.sync_peer_runtime_state(&config.peer);
-        self.runtime_config.replace(config);
+        let peer_id = self.peer_id();
+        let published = self
+            .runtime_config
+            .replace_with_current(config, |current, next| {
+                retain_runtime_owned_peer_state(current, next, peer_id);
+            });
+        self.sync_peer_runtime_state(&published.peer);
         self.proxy_cidr_table
-            .update_snapshot(proxy_cidr_snapshot(self.runtime_config.snapshot().as_ref()));
+            .update_snapshot(proxy_cidr_snapshot(&published));
         if refresh_acl_groups {
             self.refresh_acl_groups().await;
         }

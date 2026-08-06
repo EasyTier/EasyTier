@@ -31,10 +31,7 @@ impl InstanceRuntimeHost for NativeInstanceRuntimeHost {
 
     #[cfg(feature = "web-client")]
     fn synchronize_config(&self, patch: &crate::proto::api::config::InstanceConfigPatch) {
-        #[cfg(feature = "management")]
-        self.event_journal.synchronize_config(patch);
-        #[cfg(not(feature = "management"))]
-        let _ = patch;
+        self.synchronize_global_ctx_config(patch);
     }
 
     #[cfg(feature = "web-client")]
