@@ -46,12 +46,10 @@ easytier-mini --config mini.toml
 
 `-c` is accepted as the short form of `--config`.
 
-Start it as an EasyTier Web managed node with either a complete config-server
-URL or a token shorthand:
+Start it as an EasyTier Web managed node with a complete config-server URL:
 
 ```sh
 easytier-mini --config-server udp://config-server.easytier.cn:22020/TOKEN
-easytier-mini -w TOKEN
 ```
 
 `--machine-id`, `--hostname`, and `--secure-mode` match the full client's Web
