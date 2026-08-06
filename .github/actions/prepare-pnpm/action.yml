@@ -16,6 +16,7 @@ runs:
         toolchain: 1.95
         target: wasm32-unknown-unknown
         cache: false
+        rustflags: ''
 
     - uses: taiki-e/install-action@v2
       with:
