@@ -43,6 +43,12 @@ network_instances: 网络实例
 instance_id: 实例ID
 network_infos: 网络信息
 parse_network_config: 解析网络配置
+config_generator_placeholder: 生成的 TOML 配置将显示在这里
+generate_config: 生成配置
+copy_config: 复制配置
+config_copied: 已复制
+config_generation_failed: 生成失败
+config_copy_failed: 复制失败
 retain_network_instance: 保留网络实例
 collect_network_infos: 收集网络信息
 settings: 设置
