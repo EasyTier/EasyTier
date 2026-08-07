@@ -20,5 +20,7 @@ pub(crate) mod runtime_driver;
 pub(crate) mod schema;
 #[cfg(any(test, target_os = "wasi"))]
 pub(crate) mod time;
+#[cfg(all(target_os = "wasi", feature = "management"))]
+pub(crate) mod web_client;
 #[cfg(any(test, target_os = "wasi"))]
 pub(crate) mod wire;

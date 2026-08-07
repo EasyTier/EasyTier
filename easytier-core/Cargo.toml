@@ -132,9 +132,9 @@ proxy-packet = [
     "smoltcp/std",
     "smoltcp/proto-ipv4",
     "smoltcp/proto-ipv4-fragmentation",
-    "smoltcp/fragmentation-buffer-size-8192",
+    "smoltcp/fragmentation-buffer-size-65536",
     "smoltcp/assembler-max-segment-count-16",
-    "smoltcp/reassembly-buffer-size-8192",
+    "smoltcp/reassembly-buffer-size-65536",
     "smoltcp/reassembly-buffer-count-16",
 ]
 proxy-smoltcp-stack = [

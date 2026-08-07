@@ -3,7 +3,11 @@
 //! Everything in `foundation` may be used by any layer, and nothing here may
 //! depend on a domain Module. See `CONTEXT.md` "Module layers".
 
-#[cfg(any(feature = "proxy-smoltcp-stack", test))]
+#[cfg(any(
+    feature = "proxy-smoltcp-stack",
+    test,
+    all(feature = "management-rpc", target_os = "wasi")
+))]
 pub(crate) mod operation_broker;
 pub mod stats;
 pub(crate) mod task;

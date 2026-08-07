@@ -13,6 +13,14 @@ use super::RpcTransactId;
 
 const RPC_PACKET_UDP_PAYLOAD_BUDGET: usize = 1300;
 
+pub(crate) fn accepted_compression_algo() -> CompressionAlgoPb {
+    if CompressorAlgo::ZstdDefault.is_available() {
+        CompressionAlgoPb::Zstd
+    } else {
+        CompressionAlgoPb::None
+    }
+}
+
 pub async fn compress_packet(
     accepted_compression_algo: CompressionAlgoPb,
     content: &[u8],
@@ -273,10 +281,12 @@ pub fn build_rpc_packet(args: BuildRpcPacketArgs<'_>) -> Vec<ZCPacket> {
 mod tests {
     use crate::proto::common::CompressionAlgoPb;
 
-    use super::compress_packet;
+    use super::{accepted_compression_algo, compress_packet};
 
     #[tokio::test]
     async fn compression_negotiation_falls_back_when_zstd_is_unavailable() {
+        assert_eq!(accepted_compression_algo(), CompressionAlgoPb::None);
+
         let (content, algorithm) = compress_packet(CompressionAlgoPb::Zstd, b"rpc body")
             .await
             .unwrap();

@@ -527,6 +527,30 @@ async fn data_plane_udp_pingpong() {
 }
 
 #[tokio::test]
+async fn data_plane_udp_carries_maximum_ipv4_payload() {
+    let (a, b) = setup_data_plane_pair().await;
+    let timeout = Duration::from_secs(10);
+    let socket_a = a.gateway.data_plane_udp_bind(0, timeout).await.unwrap();
+    let socket_b = b.gateway.data_plane_udp_bind(0, timeout).await.unwrap();
+    let addr_a = SocketAddr::new(a.ip.address().into(), socket_a.local_addr().port());
+    let addr_b = SocketAddr::new(b.ip.address().into(), socket_b.local_addr().port());
+
+    socket_b.send_to(b"warmup", addr_a).await.unwrap();
+    let payload = vec![0x5a; 65_507];
+    socket_a.send_to(&payload, addr_b).await.unwrap();
+    let mut received = vec![0; payload.len()];
+    let (len, from) = tokio::time::timeout(timeout, socket_b.recv_from(&mut received))
+        .await
+        .expect("receive maximum UDP payload timed out")
+        .unwrap();
+    assert_eq!(from, addr_a);
+    assert_eq!(len, payload.len());
+    assert_eq!(received, payload);
+
+    stop_data_plane_pair(&a, &b).await;
+}
+
+#[tokio::test]
 async fn udp_socket_drop_releases_every_destination_flow() {
     let (a, b) = setup_data_plane_pair().await;
     let timeout = Duration::from_secs(10);
