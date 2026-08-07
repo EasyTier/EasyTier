@@ -172,7 +172,11 @@ disable_sym_hole_punching_help: 禁用对称NAT的打洞（生日攻击），将
 enable_magic_dns: 启用魔法DNS
 enable_magic_dns_help: |
   启用魔法DNS，允许通过EasyTier的DNS服务器访问其他节点的虚拟IPv4地址， 如 node1.et.net。
-
+tld_dns_zone: DNS域名后缀
+tld_dns_zone_help: |
+  自定义魔法DNS的顶级域名（TLD）后缀。默认为 "et.net."。
+  如需使用其他域名后缀，可改为 "et.internal." 或 "easytier.lan" 等。
+tld_dns_zone_placeholder: 例如 et.net.
 enable_private_mode: 启用私有模式
 enable_private_mode_help: |
   启用私有模式，则不允许使用了与本网络不相同的网络名称和密码的节点通过本节点进行握手或中转。

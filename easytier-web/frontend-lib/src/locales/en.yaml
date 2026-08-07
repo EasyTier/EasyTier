@@ -171,7 +171,11 @@ disable_sym_hole_punching_help: Disable special hole punching handling for symme
 enable_magic_dns: Enable Magic DNS
 enable_magic_dns_help: |
   Enable magic dns, all nodes in the network can access each other by domain name, e.g.: node1.et.net.
-
+tld_dns_zone: DNS Zone TLD
+tld_dns_zone_help: |
+  Custom top-level domain (TLD) zone for Magic DNS hostnames. Default is "et.net.".
+  Change this if you need a different domain suffix, e.g. "et.internal." or "easytier.lan".
+tld_dns_zone_placeholder: e.g. et.net.
 enable_private_mode: Enable Private Mode
 enable_private_mode_help: |
   Enable private mode, nodes with different network names or passwords from this network are not allowed to perform handshake or relay through this node.
