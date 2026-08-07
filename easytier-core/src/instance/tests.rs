@@ -4,7 +4,6 @@ use async_trait::async_trait;
 
 use super::*;
 use crate::{
-    config::toml::ConfigLoader as _,
     listener::transport::TransportListenerConfig,
     socket::{
         SocketContext, SocketListener,
@@ -466,6 +465,57 @@ mod portable_runtime {
         build_with_engines(config, WrappedTransportEngines::default())
     }
 
+    #[cfg(feature = "dhcp-ipv4")]
+    #[tokio::test]
+    async fn runtime_update_preserves_dhcp_owned_ipv4() {
+        let mut initial = test_config("dhcp-runtime-update");
+        initial.connectivity.runtime.dhcp_ipv4 = true;
+        let instance = build_instance(initial).unwrap();
+        let lease = IpPrefix {
+            address: "10.126.126.7".parse().unwrap(),
+            prefix_len: 24,
+        };
+        instance.runtime_config.update_peer_with(|peer| {
+            peer.runtime.core.routes.ipv4 = Some(lease.clone());
+        });
+
+        let mut replacement = test_config("dhcp-runtime-update");
+        replacement.connectivity.runtime.dhcp_ipv4 = true;
+        instance
+            .update_runtime_config(runtime_snapshot(&replacement))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            instance
+                .runtime_config
+                .snapshot()
+                .peer
+                .runtime
+                .core
+                .routes
+                .ipv4,
+            Some(lease)
+        );
+
+        let static_replacement = test_config("dhcp-runtime-update");
+        instance
+            .update_runtime_config(runtime_snapshot(&static_replacement))
+            .await
+            .unwrap();
+        assert_eq!(
+            instance
+                .runtime_config
+                .snapshot()
+                .peer
+                .runtime
+                .core
+                .routes
+                .ipv4,
+            None
+        );
+    }
+
     #[tokio::test]
     async fn core_instance_is_a_direct_managed_record() {
         let instance = build_instance(test_config("managed-directly")).unwrap();
@@ -600,7 +650,7 @@ hostname = "core-owned-config"
             response.config.unwrap().hostname.as_deref(),
             Some("patched-in-core")
         );
-        let runtime = instance.runtime_config_snapshot();
+        let runtime = instance.runtime_config.snapshot();
         assert!(runtime.services.proxy.enable_exit_node);
         assert!(runtime.services.public_ipv6_provider.provider_supported);
         assert_eq!(runtime.peer.easytier_version, "host-version");
@@ -685,7 +735,95 @@ hostname = "core-owned-config"
         );
         assert!(
             instance
-                .runtime_config_snapshot()
+                .runtime_config
+                .snapshot()
+                .services
+                .gateway
+                .port_forwards
+                .is_empty()
+        );
+        instance.stop().await;
+    }
+
+    #[cfg(feature = "web-client")]
+    #[tokio::test]
+    async fn projected_gateway_patch_commits_authoritative_config_only() {
+        use easytier_proto::{
+            api::config::{ConfigPatchAction, InstanceConfigPatch, PortForwardPatch},
+            common::{PortForwardConfigPb, SocketType},
+        };
+
+        struct SuppressGateway;
+
+        impl RuntimeConfigProjector for SuppressGateway {
+            fn project(
+                &self,
+                authoritative: &crate::config::toml::TomlConfig,
+            ) -> anyhow::Result<RuntimeConfigProjection> {
+                let effective = authoritative.detached_snapshot();
+                effective.set_port_forwards(Vec::new());
+                Ok(RuntimeConfigProjection {
+                    effective_config: effective,
+                    suppressed_capabilities: vec!["test gateway"],
+                })
+            }
+        }
+
+        let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+        let authoritative = crate::config::toml::TomlConfig::new_from_str(
+            "instance_name = \"projected-gateway-patch\"",
+        )
+        .unwrap();
+        let projector: Arc<dyn RuntimeConfigProjector> = Arc::new(SuppressGateway);
+        let projection = projector.project(&authoritative).unwrap();
+        let instance = CoreInstance::from_projected_toml(
+            authoritative,
+            projection,
+            projector,
+            adapters(None, Arc::new(packet_sink)),
+        )
+        .unwrap();
+        instance.start().await.unwrap();
+
+        crate::management::apply_config_patch(
+            &instance,
+            InstanceConfigPatch {
+                port_forwards: vec![PortForwardPatch {
+                    action: ConfigPatchAction::Add as i32,
+                    cfg: Some(PortForwardConfigPb {
+                        bind_addr: Some(
+                            "127.0.0.1:18080"
+                                .parse::<std::net::SocketAddr>()
+                                .unwrap()
+                                .into(),
+                        ),
+                        dst_addr: Some(
+                            "10.144.144.2:8080"
+                                .parse::<std::net::SocketAddr>()
+                                .unwrap()
+                                .into(),
+                        ),
+                        socket_type: SocketType::Tcp as i32,
+                    }),
+                }],
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(instance.toml_config().unwrap().get_port_forwards().len(), 1);
+        assert!(
+            instance
+                .effective_toml_config()
+                .unwrap()
+                .get_port_forwards()
+                .is_empty()
+        );
+        assert!(
+            instance
+                .runtime_config
+                .snapshot()
                 .services
                 .gateway
                 .port_forwards
@@ -992,19 +1130,24 @@ hostname = "core-owned-config"
         assert!(instances.instances().is_empty());
     }
 
-    #[cfg(feature = "management")]
+    #[cfg(feature = "web-client")]
     #[tokio::test]
     async fn process_management_rpc_owns_instance_create_list_and_delete() {
         use crate::{
             config::toml::TomlConfig,
             instance::manager::InstanceFactory,
-            management::{InstanceManager, ProcessManagementRpc, UnsupportedConfigFileStorage},
+            management::{
+                InstanceManager, ProcessManagementRpc, UnsupportedConfigFileStorage,
+                register_web_client_rpc,
+            },
+            rpc::service_registry::ServiceRegistry,
         };
         use easytier_proto::{
             api::manage::{
                 DeleteNetworkInstanceRequest, ListNetworkInstanceRequest, NetworkConfig,
                 NetworkingMethod, RunNetworkInstanceRequest, WebClientService,
             },
+            common::RpcDescriptor,
             rpc_types::controller::BaseController,
         };
 
@@ -1038,6 +1181,31 @@ hostname = "core-owned-config"
             ManagementTestFactory(CoreProcessRuntime::new()),
             Some(tokio::runtime::Handle::current()),
         ));
+        let registry = ServiceRegistry::new();
+        register_web_client_rpc(
+            instances.clone(),
+            &registry,
+            Arc::new(()),
+            Arc::new(UnsupportedConfigFileStorage),
+        );
+        assert_eq!(
+            registry.get_method_name(&RpcDescriptor {
+                domain_name: String::new(),
+                service_name: "ConfigRpc".to_owned(),
+                proto_name: "ConfigRpc".to_owned(),
+                method_index: 2,
+            }),
+            Some("get_config".to_owned())
+        );
+        assert_eq!(
+            registry.get_method_name(&RpcDescriptor {
+                domain_name: String::new(),
+                service_name: "WebClientService".to_owned(),
+                proto_name: "WebClientService".to_owned(),
+                method_index: 1,
+            }),
+            Some("validate_config".to_owned())
+        );
         let rpc = ProcessManagementRpc::<ManagementTestFactory>::new(
             instances.clone(),
             Arc::new(()),

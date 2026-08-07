@@ -2,11 +2,12 @@
 
 mod build_capabilities;
 mod config;
+mod config_projection;
 #[cfg(feature = "proxy-smoltcp-stack")]
 mod data_plane_extension;
 mod lifecycle;
 mod management;
-#[cfg(feature = "management")]
+#[cfg(feature = "web-client")]
 mod management_extension;
 mod management_state;
 pub mod manager;
@@ -37,7 +38,7 @@ use crate::connectivity::hole_punch::tcp::TcpHolePunchConnector;
 use crate::{
     config::peers::{AclRuleConfig, PeerRuntimeSnapshot},
     config::runtime::{CoreInstanceRuntimeConfig, CoreRuntimeConfig, CoreRuntimeConfigStore},
-    config::toml::TomlConfig,
+    config::toml::{ConfigLoader as _, TomlConfig},
     connectivity::hole_punch::port_mapping::UdpPortMappingPlatform,
     connectivity::hole_punch::tcp::TcpHolePunchHost,
     connectivity::stun::{
@@ -113,6 +114,10 @@ use crate::gateway::{
 #[cfg(feature = "public-ipv6-provider")]
 use crate::peers::public_ipv6::provider::PublicIpv6ProviderRuntime;
 pub use config::CoreInstanceHostConfig;
+use config_projection::identity_runtime_config_projector;
+pub use config_projection::{
+    IdentityRuntimeConfigProjector, RuntimeConfigProjection, RuntimeConfigProjector,
+};
 use management_state::ManagementState;
 pub use packet_io::PacketEgressHost;
 use packet_io::PacketSinkEgress;
@@ -214,6 +219,23 @@ fn retain_core_peer_identity(
     peer.runtime.core.node.instance_id = instance_id;
 }
 
+fn retain_runtime_owned_peer_state(
+    current: &CoreInstanceRuntimeConfig,
+    next: &mut CoreInstanceRuntimeConfig,
+    peer_id: crate::config::PeerId,
+) {
+    retain_core_peer_identity(
+        &mut next.peer,
+        peer_id,
+        current.peer.runtime.core.node.instance_id,
+    );
+    let next_peer = Arc::make_mut(&mut next.peer);
+    next_peer.runtime.stun_info = current.peer.runtime.stun_info.clone();
+    if current.services.dhcp_ipv4 && next.services.dhcp_ipv4 {
+        next_peer.runtime.core.routes.ipv4 = current.peer.runtime.core.routes.ipv4.clone();
+    }
+}
+
 /// Host-owned resources that must be prepared for the complete Instance
 /// lifetime, such as a native packet interface.
 #[async_trait::async_trait]
@@ -238,10 +260,10 @@ pub trait InstanceRuntimeHost: std::any::Any + Send + Sync + 'static {
 
     /// Applies Host-side cached views of fields already committed to the
     /// shared TOML model.
-    #[cfg(feature = "management")]
+    #[cfg(feature = "web-client")]
     fn synchronize_config(&self, _patch: &crate::proto::api::config::InstanceConfigPatch) {}
 
-    #[cfg(feature = "management")]
+    #[cfg(feature = "web-client")]
     fn publish_config_patch(&self, _patch: crate::proto::api::config::InstanceConfigPatch) {}
 
     fn attach_tun_fd(&self, _fd: i32) -> anyhow::Result<()> {
@@ -460,7 +482,15 @@ where
         adapters: CoreHostAdapters<H>,
     ) -> anyhow::Result<Arc<Self>> {
         let host_config = adapters.config.clone();
-        Self::new_inner(config, None, host_config, adapters)
+        Self::new_inner(
+            config,
+            None,
+            None,
+            identity_runtime_config_projector(),
+            Vec::new(),
+            host_config,
+            adapters,
+        )
     }
 
     /// Constructs an instance from the shared TOML model and retains that
@@ -469,14 +499,43 @@ where
         toml_config: TomlConfig,
         adapters: CoreHostAdapters<H>,
     ) -> anyhow::Result<Arc<Self>> {
+        toml_config.get_id();
+        let projector = identity_runtime_config_projector();
+        let projection = projector.project(&toml_config)?;
+        Self::from_projected_toml(toml_config, projection, projector, adapters)
+    }
+
+    /// Constructs an instance while retaining separate authoritative and
+    /// effective TOML models for subsequent management updates.
+    pub fn from_projected_toml(
+        authoritative_config: TomlConfig,
+        projection: RuntimeConfigProjection,
+        projector: Arc<dyn RuntimeConfigProjector>,
+        adapters: CoreHostAdapters<H>,
+    ) -> anyhow::Result<Arc<Self>> {
+        projection
+            .effective_config
+            .set_id(authoritative_config.get_id());
         let host_config = adapters.config.clone();
-        let config = CoreInstanceConfig::from_toml_with_host(&toml_config, &host_config)?;
-        Self::new_inner(config, Some(toml_config), host_config, adapters)
+        let config =
+            CoreInstanceConfig::from_toml_with_host(&projection.effective_config, &host_config)?;
+        Self::new_inner(
+            config,
+            Some(authoritative_config),
+            Some(projection.effective_config),
+            projector,
+            projection.suppressed_capabilities,
+            host_config,
+            adapters,
+        )
     }
 
     fn new_inner(
         config: CoreInstanceConfig,
-        toml_config: Option<TomlConfig>,
+        authoritative_config: Option<TomlConfig>,
+        effective_config: Option<TomlConfig>,
+        projector: Arc<dyn RuntimeConfigProjector>,
+        suppressed_capabilities: Vec<&'static str>,
         host_config: CoreInstanceHostConfig,
         mut adapters: CoreHostAdapters<H>,
     ) -> anyhow::Result<Arc<Self>> {
@@ -766,7 +825,13 @@ where
 
         Ok(Arc::new(Self {
             instance_name,
-            management: ManagementState::new(toml_config, host_config),
+            management: ManagementState::new(
+                authoritative_config,
+                effective_config,
+                projector,
+                suppressed_capabilities,
+                host_config,
+            ),
             instance_runtime,
             state: AtomicU8::new(CoreInstanceState::Created as u8),
             latest_error: RwLock::new(None),
@@ -846,7 +911,7 @@ where
 
     pub(crate) async fn update_runtime_config_under_operation(
         &self,
-        mut config: CoreInstanceRuntimeConfig,
+        config: CoreInstanceRuntimeConfig,
     ) -> anyhow::Result<()> {
         if matches!(
             self.state(),
@@ -856,21 +921,23 @@ where
         }
         self.validate_runtime_config_capabilities(&config)?;
         let current = self.runtime_config.snapshot();
-        retain_core_peer_identity(
-            &mut config.peer,
-            self.peer_id(),
-            current.peer.runtime.core.node.instance_id,
-        );
         let refresh_acl_groups = current.peer.peer_group_memberships
             != config.peer.peer_group_memberships
             || current.peer.acl_group_declarations != config.peer.acl_group_declarations;
         if current.services.acl != config.services.acl {
             self.reload_acl_config_inner(&config.services.acl).await?;
         }
+        // Foreign-network watchers read this state after the runtime-config
+        // notification, so publish it before replacing the watched snapshot.
         self.sync_peer_runtime_state(&config.peer);
-        self.runtime_config.replace(config);
+        let peer_id = self.peer_id();
+        let published = self
+            .runtime_config
+            .replace_with_current(config, |current, next| {
+                retain_runtime_owned_peer_state(current, next, peer_id);
+            });
         self.proxy_cidr_table
-            .update_snapshot(proxy_cidr_snapshot(self.runtime_config.snapshot().as_ref()));
+            .update_snapshot(proxy_cidr_snapshot(&published));
         if refresh_acl_groups {
             self.refresh_acl_groups().await;
         }

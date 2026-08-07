@@ -238,6 +238,7 @@ pub trait ConfigLoader: Send + Sync {
 
     fn get_vpn_portal_config(&self) -> Option<VpnPortalConfig>;
     fn set_vpn_portal_config(&self, config: VpnPortalConfig);
+    fn clear_vpn_portal_config(&self);
 
     fn get_flags(&self) -> Flags;
     fn set_flags(&self, flags: Flags);
@@ -624,7 +625,6 @@ impl TomlConfig {
     }
 }
 
-#[cfg(feature = "management")]
 mod snapshot;
 
 impl ConfigLoader for TomlConfig {
@@ -882,6 +882,10 @@ impl ConfigLoader for TomlConfig {
     }
     fn set_vpn_portal_config(&self, config: VpnPortalConfig) {
         self.config.lock().unwrap().vpn_portal_config = Some(config);
+    }
+
+    fn clear_vpn_portal_config(&self) {
+        self.config.lock().unwrap().vpn_portal_config = None;
     }
 
     fn get_flags(&self) -> Flags {

@@ -95,6 +95,23 @@ impl CoreRuntimeConfigStore {
             .send_modify(|version| *version += 1);
     }
 
+    pub(crate) fn replace_with_current(
+        &self,
+        mut config: CoreInstanceRuntimeConfig,
+        merge: impl FnOnce(&CoreInstanceRuntimeConfig, &mut CoreInstanceRuntimeConfig),
+    ) -> Arc<CoreInstanceRuntimeConfig> {
+        let _update = self.inner.update.lock();
+        let current = self.inner.snapshot.load_full();
+        merge(&current, &mut config);
+        let config = Arc::new(config);
+        self.inner.snapshot.store(config.clone());
+        self.inner.peer_changes.send_modify(|version| *version += 1);
+        self.inner
+            .service_changes
+            .send_modify(|version| *version += 1);
+        config
+    }
+
     pub fn update_services(&self, update: impl FnOnce(&mut CoreRuntimeConfig)) {
         let _update = self.inner.update.lock();
         let mut config = self.inner.snapshot.load_full().as_ref().clone();

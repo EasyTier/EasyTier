@@ -50,7 +50,10 @@ where
         .map(Into::into)
         .collect::<Vec<_>>();
     let peer_route_pairs = list_peer_route_pair(peers.clone(), routes.clone());
+    #[cfg(feature = "vpn-portal")]
     let vpn_portal_cfg = Some(instance.vpn_portal_info().await.client_config);
+    #[cfg(not(feature = "vpn-portal"))]
+    let vpn_portal_cfg = Some(String::new());
     let dev_name = instance
         .toml_config()
         .map(|config| config.get_flags().dev_name)

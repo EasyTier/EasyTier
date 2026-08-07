@@ -1,7 +1,8 @@
 use super::{Arc, Mutex, TomlConfig};
 
 impl TomlConfig {
-    pub(crate) fn detached_snapshot(&self) -> Self {
+    /// Copies the underlying configuration into an independent mutable model.
+    pub fn detached_snapshot(&self) -> Self {
         let config = self.config.lock().unwrap().clone();
         Self {
             config: Arc::new(Mutex::new(config)),

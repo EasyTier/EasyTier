@@ -1,6 +1,6 @@
 //! Process-level management over the canonical Instance collection.
 
-#[cfg(feature = "management")]
+#[cfg(feature = "web-client")]
 mod full;
 mod instance_rpc;
 mod rpc_server_hook;
@@ -20,14 +20,18 @@ pub use crate::instance::manager::{
 };
 #[cfg(feature = "management")]
 pub use full::remote_client;
-#[cfg(feature = "management")]
+#[cfg(feature = "web-client")]
 pub use full::{
     ConfigFileStorage, ConfigServerEndpoint, InstanceMutationHooks, InstanceMutationResult,
-    LoggerControl, LoggerManagementRpc, ProcessManagement, ProcessManagementRpc,
-    UnsupportedConfigFileStorage, UnsupportedLoggerControl, WebClient, WebClientConfig,
-    apply_config_patch, call_instance_json_rpc, call_management_json_rpc, config_source_from_rpc,
-    config_source_to_rpc, log_level_name, network_instance_running_info, parse_log_level,
-    register_instance_management_rpc, register_management_rpc,
+    ProcessManagement, ProcessManagementRpc, UnsupportedConfigFileStorage, WebClient,
+    WebClientConfig, apply_config_patch, config_source_from_rpc, config_source_to_rpc,
+    network_instance_running_info, register_web_client_rpc,
+};
+#[cfg(feature = "management")]
+pub use full::{
+    LoggerControl, LoggerManagementRpc, UnsupportedLoggerControl, call_instance_json_rpc,
+    call_management_json_rpc, log_level_name, parse_log_level, register_instance_management_rpc,
+    register_management_rpc,
 };
 pub use instance_rpc::InstanceManagementRpc;
 pub use rpc_server_hook::ManagementRpcServerHook;

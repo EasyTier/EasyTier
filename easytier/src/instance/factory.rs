@@ -6,14 +6,17 @@ use easytier_core::instance::manager::InstanceManager;
 use easytier_core::management::ProcessRuntimeProvider;
 use easytier_core::{
     config::toml::TomlConfig,
-    instance::{CoreInstance, manager::InstanceFactory},
+    instance::{
+        CoreInstance, IdentityRuntimeConfigProjector, RuntimeConfigProjector,
+        manager::InstanceFactory,
+    },
     process_runtime::CoreProcessRuntime,
 };
 
 use crate::common::global_ctx::EventBusSubscriber;
 
 use super::{
-    composition::compose_native_core_instance, host::NativeInstanceHost,
+    composition::compose_native_core_instance_with_projector, host::NativeInstanceHost,
     runtime_host::NativeInstanceRuntimeHost,
 };
 
@@ -58,6 +61,20 @@ pub fn native_instance_manager_with_runtime(
     native_instance_manager_with_optional_runtime(Some(runtime_handle))
 }
 
+#[cfg(feature = "management-rpc")]
+pub fn native_instance_manager_with_runtime_config_projector(
+    runtime_handle: tokio::runtime::Handle,
+    projector: Arc<dyn RuntimeConfigProjector>,
+) -> NativeInstanceManager {
+    let process_runtime = CoreProcessRuntime::new();
+    InstanceManager::new(
+        NativeInstanceFactory::new(process_runtime)
+            .with_runtime_handle(Some(runtime_handle.clone()))
+            .with_runtime_config_projector(projector),
+        Some(runtime_handle),
+    )
+}
+
 #[cfg(feature = "management")]
 pub fn native_process_management(
     instances: Arc<NativeInstanceManager>,
@@ -85,6 +102,7 @@ fn native_instance_manager_with_optional_runtime(
 pub struct NativeInstanceFactory {
     process_runtime: Arc<CoreProcessRuntime>,
     runtime_handle: Option<tokio::runtime::Handle>,
+    runtime_config_projector: Arc<dyn RuntimeConfigProjector>,
     #[cfg(feature = "management")]
     log_cli_events: bool,
 }
@@ -94,6 +112,7 @@ impl NativeInstanceFactory {
         Self {
             process_runtime,
             runtime_handle: None,
+            runtime_config_projector: Arc::new(IdentityRuntimeConfigProjector),
             #[cfg(feature = "management")]
             log_cli_events: false,
         }
@@ -108,6 +127,14 @@ impl NativeInstanceFactory {
     #[cfg(feature = "management-rpc")]
     fn with_runtime_handle(mut self, runtime_handle: Option<tokio::runtime::Handle>) -> Self {
         self.runtime_handle = runtime_handle;
+        self
+    }
+
+    pub fn with_runtime_config_projector(
+        mut self,
+        projector: Arc<dyn RuntimeConfigProjector>,
+    ) -> Self {
+        self.runtime_config_projector = projector;
         self
     }
 }
@@ -126,7 +153,11 @@ impl InstanceFactory for NativeInstanceFactory {
             .runtime_handle
             .as_ref()
             .map(tokio::runtime::Handle::enter);
-        let instance = compose_native_core_instance(config, self.process_runtime.clone())?;
+        let instance = compose_native_core_instance_with_projector(
+            config,
+            self.process_runtime.clone(),
+            self.runtime_config_projector.clone(),
+        )?;
         #[cfg(feature = "management")]
         if self.log_cli_events {
             let events = subscribe_native_instance_event(&instance)

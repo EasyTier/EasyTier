@@ -2,10 +2,12 @@
 pub(crate) mod cli_event_logger;
 pub(crate) mod composition;
 pub(crate) mod config;
+mod config_projection;
 #[cfg(feature = "management")]
 pub(crate) mod config_storage;
 pub mod dns_server;
 pub mod factory;
+pub use config_projection::CompactRuntimeConfigProjector;
 pub mod host;
 pub(crate) mod runtime_host;
 #[cfg(test)]

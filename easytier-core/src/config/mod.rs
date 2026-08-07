@@ -1,8 +1,8 @@
 //! Static configuration schema plus the live runtime configuration store.
 
-#[cfg(feature = "management")]
+#[cfg(feature = "web-client")]
 pub mod api;
-#[cfg(feature = "management")]
+#[cfg(feature = "web-client")]
 pub mod api_input;
 mod encryption;
 pub mod gateway;

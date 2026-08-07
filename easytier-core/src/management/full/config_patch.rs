@@ -31,7 +31,8 @@ where
         .toml_config()
         .ok_or_else(|| anyhow::anyhow!("shared TOML configuration is not available"))?;
     let candidate = config.detached_snapshot();
-    let parsed_prefix = validate_public_ipv6_patch(instance, &config, &patch)?;
+    let parsed_prefix =
+        parse_ipv6_public_addr_prefix_patch(patch.ipv6_public_addr_prefix.as_deref())?;
     let patch_for_host = patch.clone();
 
     // Preserve the existing ordered partial-commit contract: earlier valid
@@ -54,8 +55,9 @@ where
         result?;
 
         let result = patch_exit_nodes_config(&candidate, patch.exit_nodes);
-        validate_and_commit_candidate(instance, &config, &candidate)?;
-        instance.update_exit_nodes(result?).await;
+        let effective = validate_and_commit_candidate(instance, &config, &candidate)?;
+        result?;
+        instance.update_exit_nodes(effective.get_exit_nodes()).await;
 
         let result = patch_mapped_listeners(&candidate, patch.mapped_listeners);
         validate_and_commit_candidate(instance, &config, &candidate)?;
@@ -100,15 +102,23 @@ where
     .await;
 
     instance
-        .update_runtime_config_under_operation(runtime_config_from_toml(instance, &config)?)
+        .update_runtime_config_under_operation(runtime_config_from_toml(
+            instance,
+            &instance
+                .effective_toml_config()
+                .ok_or_else(|| anyhow::anyhow!("effective TOML configuration is unavailable"))?,
+        )?)
         .await?;
     let provider_config_changed = patch_result?;
     instance
         .instance_runtime
         .publish_config_patch(patch_for_host);
+    #[cfg(feature = "public-ipv6-provider")]
     if provider_config_changed && instance.state() == CoreInstanceState::Running {
         instance.reconcile_public_ipv6_provider().await;
     }
+    #[cfg(not(feature = "public-ipv6-provider"))]
+    let _ = provider_config_changed;
     Ok(())
 }
 
@@ -116,14 +126,20 @@ fn validate_and_commit_candidate<H>(
     instance: &CoreInstance<H>,
     shared: &TomlConfig,
     candidate: &TomlConfig,
-) -> anyhow::Result<()>
+) -> anyhow::Result<TomlConfig>
 where
     H: CoreInstanceHost,
 {
-    let runtime = runtime_config_from_toml(instance, candidate)?;
+    let projection = instance.project_runtime_config(candidate)?;
+    let runtime = runtime_config_from_toml(instance, &projection.effective_config)?;
+    runtime.services.public_ipv6_provider.validate()?;
     instance.validate_runtime_config_capabilities(&runtime)?;
     shared.replace_from_snapshot(candidate);
-    Ok(())
+    let effective = instance
+        .effective_toml_config()
+        .ok_or_else(|| anyhow::anyhow!("effective TOML configuration is unavailable"))?;
+    effective.replace_from_snapshot(&projection.effective_config);
+    Ok(effective)
 }
 
 fn runtime_config_from_toml<H>(
@@ -134,14 +150,11 @@ where
     H: CoreInstanceHost,
 {
     let normalized = CoreInstanceConfig::from_toml_with_host(config, instance.host_config())?;
-    let current = instance.runtime_config_snapshot();
     let services = normalized.connectivity.runtime;
-    let mut peer = normalized.peer.snapshot;
-    peer.runtime.stun_info = current.peer.runtime.stun_info.clone();
 
     Ok(CoreInstanceRuntimeConfig {
         services,
-        peer: Arc::new(peer),
+        peer: Arc::new(normalized.peer.snapshot),
     })
 }
 
@@ -158,34 +171,6 @@ fn parse_ipv6_public_addr_prefix_patch(
     Ok(Some(Some(prefix.parse().with_context(|| {
         format!("failed to parse ipv6 public address prefix: {prefix}")
     })?)))
-}
-
-fn validate_public_ipv6_patch<H>(
-    instance: &CoreInstance<H>,
-    config: &TomlConfig,
-    patch: &InstanceConfigPatch,
-) -> anyhow::Result<Option<Option<cidr::Ipv6Cidr>>>
-where
-    H: CoreInstanceHost,
-{
-    let parsed_prefix =
-        parse_ipv6_public_addr_prefix_patch(patch.ipv6_public_addr_prefix.as_deref())?;
-    let provider_enabled = patch
-        .ipv6_public_addr_provider
-        .unwrap_or(config.get_ipv6_public_addr_provider());
-    let configured_prefix = parsed_prefix.unwrap_or_else(|| config.get_ipv6_public_addr_prefix());
-    let provider_supported = instance
-        .runtime_config_snapshot()
-        .services
-        .public_ipv6_provider
-        .provider_supported;
-    crate::config::peers::PublicIpv6ProviderConfig {
-        provider_enabled,
-        configured_prefix,
-        provider_supported,
-    }
-    .validate()?;
-    Ok(parsed_prefix)
 }
 
 fn trace_patchables<T: Debug>(patches: &[Patchable<T>]) {
@@ -336,13 +321,27 @@ where
     H: CoreInstanceHost,
 {
     for patch in patches {
-        let Some(url) = patch.url.map(Into::<url::Url>::into) else {
-            tracing::warn!("ignored connector patch without URL");
-            return Ok(());
-        };
         match ConfigPatchAction::try_from(patch.action) {
-            Ok(ConfigPatchAction::Add) => instance.add_connector(url)?,
+            Ok(ConfigPatchAction::Add) => {
+                let Some(url) = patch.url.map(Into::<url::Url>::into) else {
+                    tracing::warn!("ignored connector add without URL");
+                    continue;
+                };
+                let Some(url) = instance.project_connector(&url) else {
+                    tracing::warn!(%url, "connector is preserved by the controller but disabled at runtime");
+                    continue;
+                };
+                instance.add_connector(url)?;
+            }
             Ok(ConfigPatchAction::Remove) => {
+                let Some(url) = patch.url.map(Into::<url::Url>::into) else {
+                    tracing::warn!("ignored connector remove without URL");
+                    continue;
+                };
+                let Some(url) = instance.project_connector(&url) else {
+                    tracing::warn!(%url, "disabled connector removal requires no runtime action");
+                    continue;
+                };
                 if !instance.remove_connector(&url) {
                     anyhow::bail!("connector not found: {url}");
                 }

@@ -217,7 +217,7 @@ impl GlobalCtx {
 
     pub fn set_ipv4(&self, addr: Option<cidr::Ipv4Inet>) {
         self.config.set_ipv4(addr);
-        self.cached_ipv4.store(None);
+        self.cached_ipv4.store(addr);
     }
 
     pub fn get_ipv6(&self) -> Option<cidr::Ipv6Inet> {
@@ -375,6 +375,19 @@ pub mod tests {
 
         assert!(!global_ctx.get_hostname().is_empty());
         assert!(!config.dump().contains("hostname"));
+    }
+
+    #[test]
+    fn active_dhcp_ipv4_survives_declarative_config_replacement() {
+        let config = TomlConfigLoader::default();
+        config.set_dhcp(true);
+        let global_ctx = GlobalCtx::new(config.clone());
+        let lease = "10.144.144.7/24".parse().unwrap();
+
+        global_ctx.set_ipv4(Some(lease));
+        config.set_ipv4(None);
+
+        assert_eq!(global_ctx.get_ipv4(), Some(lease));
     }
 
     pub fn get_mock_global_ctx_with_network(
