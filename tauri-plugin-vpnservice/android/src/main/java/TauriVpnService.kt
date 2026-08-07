@@ -74,6 +74,7 @@ class TauriVpnService : VpnService() {
         super.onCreate()
         self = this
         createNotificationChannel()
+        EasyTierTileService.setVpnActive(this, false)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {

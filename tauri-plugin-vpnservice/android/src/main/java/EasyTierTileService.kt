@@ -4,15 +4,22 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
 import androidx.core.content.ContextCompat
+import java.lang.ref.WeakReference
 
 class EasyTierTileService : TileService() {
     companion object {
         private const val PREFS_NAME = "easytier_quick_settings"
         private const val VPN_ACTIVE = "vpn_active"
         private const val LAST_ERROR = "last_error"
+        private val mainHandler = Handler(Looper.getMainLooper())
+
+        @Volatile
+        private var listeningService: WeakReference<EasyTierTileService>? = null
 
         fun setVpnActive(context: Context, active: Boolean) {
             context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -20,10 +27,7 @@ class EasyTierTileService : TileService() {
                 .putBoolean(VPN_ACTIVE, active)
                 .remove(LAST_ERROR)
                 .apply()
-            requestListeningState(
-                context,
-                ComponentName(context, EasyTierTileService::class.java),
-            )
+            notifyStateChanged(context)
         }
 
         fun setLastError(context: Context, error: String) {
@@ -32,6 +36,17 @@ class EasyTierTileService : TileService() {
                 .putBoolean(VPN_ACTIVE, false)
                 .putString(LAST_ERROR, error)
                 .apply()
+            notifyStateChanged(context)
+        }
+
+        private fun notifyStateChanged(context: Context) {
+            listeningService?.get()?.let { service ->
+                mainHandler.post {
+                    if (listeningService?.get() === service) {
+                        service.refreshTile()
+                    }
+                }
+            }
             requestListeningState(
                 context,
                 ComponentName(context, EasyTierTileService::class.java),
@@ -41,6 +56,25 @@ class EasyTierTileService : TileService() {
 
     override fun onStartListening() {
         super.onStartListening()
+        listeningService = WeakReference(this)
+        refreshTile()
+    }
+
+    override fun onStopListening() {
+        if (listeningService?.get() === this) {
+            listeningService = null
+        }
+        super.onStopListening()
+    }
+
+    override fun onDestroy() {
+        if (listeningService?.get() === this) {
+            listeningService = null
+        }
+        super.onDestroy()
+    }
+
+    private fun refreshTile() {
         val active = TauriVpnService.self?.isVpnActive()
             ?: getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                 .getBoolean(VPN_ACTIVE, false)
@@ -71,11 +105,11 @@ class EasyTierTileService : TileService() {
 
     private fun updateTile(active: Boolean) {
         qsTile?.apply {
-            state = if (active) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
+            val desiredActive = TauriVpnService.isPersistedActive(this@EasyTierTileService)
+            state = if (active || desiredActive) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 val error = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                     .getString(LAST_ERROR, null)
-                val desiredActive = TauriVpnService.isPersistedActive(this@EasyTierTileService)
                 subtitle = if (active) {
                     "Connected"
                 } else if (desiredActive) {
