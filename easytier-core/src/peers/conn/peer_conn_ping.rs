@@ -302,14 +302,12 @@ impl PeerConnPinger {
             )),
         );
 
-        let throughput = self.throughput_stats.clone();
-        let mut last_rx_packets = throughput.rx_packets();
-
         while let Some(ret) = ping_res_receiver.recv().await {
             if let Ok(lat) = ret {
                 latency_stats.record_latency(lat as u32);
 
                 loss_rate_stats_1.record_latency(0);
+                loss_counter.store(0, Ordering::Relaxed);
             } else {
                 loss_rate_stats_1.record_latency(1);
                 loss_counter.fetch_add(1, Ordering::Relaxed);
@@ -324,19 +322,10 @@ impl PeerConnPinger {
                 "pingpong task recv pingpong_once result"
             );
 
-            let current_rx_packets = throughput.rx_packets();
-            if last_rx_packets != current_rx_packets {
-                // if we receive some packet from peers, reset the counter to avoid conn close.
-                // conn will close only if we have 5 continous round pingpong loss after no packet received.
-                loss_counter.store(0, Ordering::Relaxed);
-            }
-
             tracing::debug!(
-                "loss_counter: {:?}, loss_rate_1: {}, cur_rx_packets: {}, last_rx: {}, node_id: {}",
+                "loss_counter: {:?}, loss_rate_1: {}, node_id: {}",
                 loss_counter,
                 loss_rate_1,
-                current_rx_packets,
-                last_rx_packets,
                 my_node_id
             );
 
@@ -346,19 +335,59 @@ impl PeerConnPinger {
                     ?self,
                     ?loss_rate_1,
                     ?loss_counter,
-                    ?last_rx_packets,
-                    ?current_rx_packets,
-                    "pingpong loss too much pingpong packet and no other ingress packets, closing the connection",
+                    "too many consecutive pingpong failures, closing the connection",
                 );
                 break;
             }
 
-            last_rx_packets = throughput.rx_packets();
             self.loss_rate_stats
                 .store((loss_rate_1 * 100.0) as u32, Ordering::Relaxed);
         }
 
         stopped.store(1, Ordering::Relaxed);
         ping_res_receiver.close();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        peers::test_support::NoopPeerContext,
+        tunnel::{mpsc::MpscTunnel, ring::create_ring_tunnel_pair},
+    };
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ingress_traffic_does_not_mask_failed_round_trips() {
+        let (local_tunnel, _remote_tunnel) = create_ring_tunnel_pair();
+        let tunnel = MpscTunnel::new(local_tunnel, None);
+        let (ctrl_sender, _) = broadcast::channel(16);
+        let throughput = Arc::new(Throughput::new());
+        let mut pinger = PeerConnPinger::new(
+            1,
+            2,
+            tunnel.get_sink(),
+            ctrl_sender,
+            Arc::new(WindowLatency::new(15)),
+            Arc::new(AtomicU32::new(0)),
+            throughput.clone(),
+            Arc::new(NoopPeerContext::default()),
+            "test".to_owned(),
+        );
+
+        let ingress = tokio::spawn(async move {
+            loop {
+                crate::foundation::time::sleep(Duration::from_millis(100)).await;
+                throughput.record_rx_bytes(1);
+            }
+        });
+
+        let result = timeout(Duration::from_secs(12), pinger.pingpong()).await;
+        ingress.abort();
+
+        assert!(
+            result.is_ok(),
+            "unrelated ingress traffic kept a failed round-trip alive"
+        );
     }
 }
