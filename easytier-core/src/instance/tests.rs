@@ -8,7 +8,7 @@ use crate::{
     listener::transport::TransportListenerConfig,
     socket::{
         SocketContext, SocketListener,
-        udp::{UdpSessionAcceptKind, UdpSessionProtocol},
+        udp::{UdpSessionAcceptKind, UdpSessionProtocol, UdpSessionRouteSet},
     },
 };
 
@@ -114,19 +114,142 @@ fn core_plans_transport_and_external_listener_capabilities() {
     assert!(matches!(
         &plan.transports[4],
         TransportListenerConfig::Udp {
-            accept_kind: UdpSessionAcceptKind::Classified(UdpSessionProtocol::WireGuard),
+            routes,
             ..
-        }
+        } if *routes == UdpSessionRouteSet::singleton(
+            UdpSessionAcceptKind::Classified(UdpSessionProtocol::WireGuard)
+        )
     ));
     assert!(matches!(
         &plan.transports[5],
         TransportListenerConfig::Udp {
-            accept_kind: UdpSessionAcceptKind::Classified(UdpSessionProtocol::Quic),
+            routes,
             ..
-        }
+        } if *routes == UdpSessionRouteSet::singleton(
+            UdpSessionAcceptKind::Classified(UdpSessionProtocol::Quic)
+        )
     ));
     assert_eq!(plan.external[0].0.url.scheme(), "faketcp");
     assert_eq!(plan.external[0].1.socket_mark, Some(7));
+}
+
+#[test]
+fn same_udp_endpoint_combines_protocol_routes() {
+    let config = ListenerRuntimeConfig::new(
+        [
+            "udp://127.0.0.1:11010/?accept=udp",
+            "wg://127.0.0.1",
+            "quic://127.0.0.1:11010",
+        ]
+        .into_iter()
+        .map(str::parse)
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap(),
+        false,
+        SocketContext::default(),
+    );
+
+    let plan = prepare_listener_plan::<(), ()>(
+        Some(&config),
+        uuid::Uuid::new_v4(),
+        Some(&TestServerProtocol),
+        None,
+    )
+    .unwrap();
+    let udp = plan
+        .transports
+        .iter()
+        .filter(|transport| matches!(transport, TransportListenerConfig::Udp { .. }))
+        .collect::<Vec<_>>();
+
+    assert_eq!(udp.len(), 1);
+    assert!(matches!(
+        udp[0],
+        TransportListenerConfig::Udp {
+            url,
+            routes,
+            must_succeed: true,
+            ..
+        } if url.as_str() == "udp://127.0.0.1:11010"
+            && routes.iter().eq(UdpSessionAcceptKind::ALL)
+    ));
+}
+
+fn planned_udp_listener(
+    listener: &str,
+    server_protocol: Option<&dyn ServerProtocolUpgrader<()>>,
+) -> anyhow::Result<(Url, UdpSessionRouteSet)> {
+    let config = ListenerRuntimeConfig::new(
+        vec![listener.parse().unwrap()],
+        false,
+        SocketContext::default(),
+    );
+    let plan = prepare_listener_plan::<(), ()>(
+        Some(&config),
+        uuid::Uuid::new_v4(),
+        server_protocol,
+        None,
+    )?;
+    plan.transports
+        .into_iter()
+        .find_map(|transport| match transport {
+            TransportListenerConfig::Udp { url, routes, .. } => Some((url, routes)),
+            _ => None,
+        })
+        .ok_or_else(|| anyhow::anyhow!("planned UDP listener is missing"))
+}
+
+#[test]
+fn udp_listener_accept_selects_routes_and_sanitizes_url() {
+    let all_routes = UdpSessionRouteSet::new([
+        UdpSessionAcceptKind::EasyTierMux,
+        UdpSessionAcceptKind::Classified(UdpSessionProtocol::WireGuard),
+        UdpSessionAcceptKind::Classified(UdpSessionProtocol::Quic),
+    ]);
+    let (_, default_routes) =
+        planned_udp_listener("udp://127.0.0.1:11010", Some(&TestServerProtocol)).unwrap();
+    let (_, explicit_all_routes) = planned_udp_listener(
+        "udp://127.0.0.1:11010?accept=all",
+        Some(&TestServerProtocol),
+    )
+    .unwrap();
+    assert_eq!(default_routes, all_routes);
+    assert_eq!(explicit_all_routes, all_routes);
+
+    let (url, selected_routes) = planned_udp_listener(
+        "udp://127.0.0.1:11010/device?accept=wg+udp&keep=value",
+        Some(&TestServerProtocol),
+    )
+    .unwrap();
+    assert_eq!(url.as_str(), "udp://127.0.0.1:11010/device?keep=value");
+    assert_eq!(
+        selected_routes.iter().collect::<Vec<_>>(),
+        vec![
+            UdpSessionAcceptKind::EasyTierMux,
+            UdpSessionAcceptKind::Classified(UdpSessionProtocol::WireGuard),
+        ]
+    );
+}
+
+#[test]
+fn udp_listener_accept_rejects_invalid_or_unavailable_routes() {
+    for listener in [
+        "udp://127.0.0.1:11010?accept=",
+        "udp://127.0.0.1:11010?accept=udp++wg",
+        "udp://127.0.0.1:11010?accept=udp+udp",
+        "udp://127.0.0.1:11010?accept=all+wg",
+        "udp://127.0.0.1:11010?accept=unknown",
+        "udp://127.0.0.1:11010?accept=udp&accept=wg",
+    ] {
+        assert!(
+            planned_udp_listener(listener, Some(&TestServerProtocol)).is_err(),
+            "{listener} should fail"
+        );
+    }
+    assert!(planned_udp_listener("udp://127.0.0.1:11010?accept=wg", None).is_err());
+    assert!(
+        planned_udp_listener("wg://127.0.0.1:11011?accept=wg", Some(&TestServerProtocol)).is_err()
+    );
 }
 
 #[test]

@@ -40,6 +40,14 @@ pub trait SocketListener: Debug + Send {
 
     fn local_url(&self) -> Url;
 
+    fn advertised_urls(&self) -> Vec<Url> {
+        vec![self.local_url()]
+    }
+
+    fn accepted_url(&self, _accepted: &Self::Accepted) -> Url {
+        self.local_url()
+    }
+
     fn connection_counter(&self) -> Arc<dyn ListenerConnectionCounter> {
         Arc::new(EmptyConnectionCounter)
     }

@@ -382,10 +382,10 @@ async fn run_listener<Accepted, H>(
         let _registration = registered_listener.registration;
 
         loop {
-            let listener_url = listener.local_url();
             let accepted = match listener.accept().await {
                 Ok(accepted) => accepted,
                 Err(error) => {
+                    let listener_url = listener.local_url();
                     events.emit(CoreEvent::ListenerAcceptFailed {
                         url: listener_url.clone(),
                         error: format!("{error:?}"),
@@ -395,6 +395,7 @@ async fn run_listener<Accepted, H>(
                     break;
                 }
             };
+            let listener_url = listener.accepted_url(&accepted);
 
             events.emit(CoreEvent::ListenerSocketAccepted {
                 url: listener_url.clone(),
@@ -468,35 +469,38 @@ where
         events: Arc<dyn CoreEventSink>,
         registry: Arc<RunningListenerRegistry>,
     ) -> Self {
-        let url = listener.local_url();
-        let registry = registry.register(url.clone());
-        events.emit(CoreEvent::ListenerAdded {
-            url: url.clone(),
-            connection_counter: listener.connection_counter(),
-        });
+        let connection_counter = listener.connection_counter();
+        let aliases = listener
+            .advertised_urls()
+            .into_iter()
+            .map(|url| {
+                let registration = registry.register(url.clone());
+                events.emit(CoreEvent::ListenerAdded {
+                    url,
+                    connection_counter: connection_counter.clone(),
+                });
+                registration
+            })
+            .collect();
         Self {
             listener,
-            registration: ListenerRegistration {
-                url,
-                events,
-                registry: Some(registry),
-            },
+            registration: ListenerRegistration { events, aliases },
         }
     }
 }
 
 struct ListenerRegistration {
-    url: Url,
     events: Arc<dyn CoreEventSink>,
-    registry: Option<RunningListenerRegistration>,
+    aliases: Vec<RunningListenerRegistration>,
 }
 
 impl Drop for ListenerRegistration {
     fn drop(&mut self) {
-        drop(self.registry.take());
-        self.events.emit(CoreEvent::ListenerRemoved {
-            url: self.url.clone(),
-        });
+        for alias in self.aliases.drain(..) {
+            let url = alias.url.clone();
+            drop(alias);
+            self.events.emit(CoreEvent::ListenerRemoved { url });
+        }
     }
 }
 
@@ -619,6 +623,63 @@ mod tests {
         assert_eq!(registry.running_listeners(), vec![url.clone()]);
         drop(second);
         assert!(registry.running_listeners().is_empty());
+    }
+
+    #[test]
+    fn registered_listener_publishes_and_removes_every_alias() {
+        #[derive(Debug)]
+        struct AliasListener;
+
+        #[async_trait]
+        impl SocketListener for AliasListener {
+            type Accepted = usize;
+
+            async fn listen(&mut self) -> anyhow::Result<()> {
+                Ok(())
+            }
+
+            async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
+                std::future::pending().await
+            }
+
+            fn local_url(&self) -> Url {
+                "udp://127.0.0.1:11010".parse().unwrap()
+            }
+
+            fn advertised_urls(&self) -> Vec<Url> {
+                ["udp", "wg", "quic"]
+                    .map(|scheme| format!("{scheme}://127.0.0.1:11010").parse().unwrap())
+                    .to_vec()
+            }
+        }
+
+        let registry = Arc::new(RunningListenerRegistry::default());
+        let events = Arc::new(Events::default());
+        let listener =
+            RegisteredListener::new(Box::new(AliasListener), events.clone(), registry.clone());
+        assert_eq!(
+            registry.running_listeners(),
+            ["udp", "wg", "quic"]
+                .map(|scheme| format!("{scheme}://127.0.0.1:11010").parse().unwrap())
+        );
+
+        drop(listener);
+        assert!(registry.running_listeners().is_empty());
+        let events = events.events.lock().unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, CoreEvent::ListenerAdded { .. }))
+                .count(),
+            3
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, CoreEvent::ListenerRemoved { .. }))
+                .count(),
+            3
+        );
     }
 
     #[tokio::test]
