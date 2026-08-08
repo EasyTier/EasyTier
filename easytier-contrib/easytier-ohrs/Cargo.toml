@@ -7,9 +7,18 @@ edition = "2024"
 crate-type=["cdylib"]
 
 [dependencies]
+anyhow = "1.0"
 async-trait = "0.1"
 base64 = "0.22"
+bytes = "1.5"
+easytier-core = { path = "../../easytier-core", default-features = false }
+easytier-proto = { path = "../../easytier-proto", default-features = false, features = [
+    "api",
+    "core",
+    "json-rpc",
+] }
 flate2 = "1.1"
+futures = "0.3"
 gethostname = "1.1"
 easytier = { path = "../../easytier" }
 napi-derive-ohos = "1.1"

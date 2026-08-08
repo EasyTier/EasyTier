@@ -731,7 +731,7 @@ impl ZCPacket {
                     .get_packet_offsets()
                     .dummy_tunnel_header_offset
             }
-            ZCPacketType::NIC => unreachable!(),
+            ZCPacketType::NIC => INVALID_OFFSET,
         };
 
         tracing::trace!(?self.packet_type, ?target_packet_type, ?new_offset, "convert zc packet type");
@@ -868,6 +868,30 @@ mod tests {
         let tcp_packet = packet.convert_type(ZCPacketType::TCP).into_bytes();
         assert_eq!(&tcp_packet[..1], b"\x0b");
         println!("{:?}", tcp_packet);
+    }
+
+    #[test]
+    fn converts_tunnel_packets_back_to_nic() {
+        let payload = b"management rpc";
+        let mut nic_packet = ZCPacket::new_with_payload(payload);
+        nic_packet.fill_peer_manager_hdr(1, 1, PacketType::RpcResp as u8);
+        let expected_tunnel_payload = nic_packet.tunnel_payload().to_vec();
+
+        for tunnel_type in [
+            ZCPacketType::TCP,
+            ZCPacketType::UDP,
+            ZCPacketType::WG,
+            ZCPacketType::DummyTunnel,
+        ] {
+            let converted = nic_packet
+                .clone()
+                .convert_type(tunnel_type)
+                .convert_type(ZCPacketType::NIC);
+
+            assert_eq!(converted.packet_type(), ZCPacketType::NIC);
+            assert_eq!(converted.tunnel_payload(), expected_tunnel_payload);
+            assert_eq!(converted.payload(), payload);
+        }
     }
 
     #[test]
