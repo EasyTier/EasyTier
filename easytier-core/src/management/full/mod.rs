@@ -13,7 +13,9 @@ mod web_client;
 
 use std::sync::Arc;
 
-use easytier_proto::api::{config::ConfigRpcServer, manage::WebClientServiceServer};
+#[cfg(any(not(feature = "management"), test))]
+use easytier_proto::api::config::ConfigRpcServer;
+use easytier_proto::api::manage::WebClientServiceServer;
 #[cfg(feature = "management")]
 use easytier_proto::{
     api::logger::{LoggerRpc, LoggerRpcServer},
@@ -89,6 +91,7 @@ pub fn register_management_rpc<F, H>(
 }
 
 /// Registers the compact reverse-RPC surface required by easytier-web.
+#[cfg(any(not(feature = "management"), test))]
 pub(crate) fn register_web_client_rpc<F, H>(
     instances: Arc<InstanceManager<F>>,
     registry: &ServiceRegistry,

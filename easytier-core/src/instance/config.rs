@@ -231,7 +231,7 @@ impl CoreInstanceConfig {
                 host_routing: host.host_routing,
                 acl: acl.clone(),
                 easytier_version: host.easytier_version.clone(),
-                vpn_portal_cidr: (!(host.ignore_unsupported_config && !host.vpn_portal_enabled))
+                vpn_portal_cidr: (!host.ignore_unsupported_config || host.vpn_portal_enabled)
                     .then(|| config.get_vpn_portal_config())
                     .flatten()
                     .map(|portal| portal.client_cidr),
@@ -268,7 +268,7 @@ impl CoreInstanceConfig {
             flags.enable_ipv6,
             socket_context.clone(),
         ));
-        let socks5_bind = (!(host.ignore_unsupported_config && !host.gateway_enabled))
+        let socks5_bind = (!host.ignore_unsupported_config || host.gateway_enabled)
             .then(|| config.get_socks5_portal())
             .flatten()
             .map(|url| {
@@ -312,12 +312,12 @@ impl CoreInstanceConfig {
                 udp_response_ipv4_mtu: 1280,
             },
             public_ipv6_auto: config.get_ipv6_public_addr_auto()
-                && !(host.ignore_unsupported_config && !host.public_ipv6_provider_supported),
+                && (!host.ignore_unsupported_config || host.public_ipv6_provider_supported),
             public_ipv6_provider: PublicIpv6ProviderConfig {
                 provider_enabled: config.get_ipv6_public_addr_provider()
-                    && !(host.ignore_unsupported_config && !host.public_ipv6_provider_supported),
-                configured_prefix: (!(host.ignore_unsupported_config
-                    && !host.public_ipv6_provider_supported))
+                    && (!host.ignore_unsupported_config || host.public_ipv6_provider_supported),
+                configured_prefix: (!host.ignore_unsupported_config
+                    || host.public_ipv6_provider_supported)
                     .then(|| config.get_ipv6_public_addr_prefix())
                     .flatten(),
                 provider_supported: host.public_ipv6_provider_supported,
@@ -524,16 +524,18 @@ data_compress_algo = "Zstd"
         config.get_id();
         let before = config.dump();
 
-        let mut host = CoreInstanceHostConfig::default();
-        host.ignore_unsupported_config = true;
-        host.smoltcp_available = true;
-        host.proxy_enabled = false;
-        host.gateway_enabled = false;
-        host.public_ipv6_provider_supported = false;
-        host.magic_dns_enabled = false;
-        host.kcp_enabled = false;
-        host.quic_enabled = false;
-        host.endpoint_protocols = vec!["tcp".to_owned(), "udp".to_owned()];
+        let host = CoreInstanceHostConfig {
+            ignore_unsupported_config: true,
+            smoltcp_available: true,
+            proxy_enabled: false,
+            gateway_enabled: false,
+            public_ipv6_provider_supported: false,
+            magic_dns_enabled: false,
+            kcp_enabled: false,
+            quic_enabled: false,
+            endpoint_protocols: vec!["tcp".to_owned(), "udp".to_owned()],
+            ..Default::default()
+        };
 
         let normalized = CoreInstanceConfig::from_toml_with_host(&config, &host).unwrap();
 
