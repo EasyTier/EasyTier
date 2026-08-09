@@ -15,6 +15,9 @@ virtual_ipv4: 虚拟IPv4地址
 virtual_ipv4_dhcp: DHCP
 network_name: 网络名称
 network_secret: 网络密码
+credential: 凭据
+credential_help: 凭据模式：填服务器签发的凭据，密码留空（自动启用安全模式，仅按网络名入网）
+credential_placeholder: 服务器签发的凭据（如 sxs3K94/...）
 public_server_url: 公共服务器地址
 peer_urls: 对等节点地址
 proxy_cidrs: 子网代理CIDR
