@@ -413,14 +413,15 @@ extended-services = [
     "proxy-cidr-monitor",
 ]
 management = [
+    "web-client",
     "logging",
-    "management-rpc",
     "easytier-core/management",
     "easytier-proto/json-rpc",
     "easytier-proto/utils",
     "tokio/full",
 ]
 management-rpc = ["easytier-core/management-rpc"]
+web-client = ["management-rpc", "easytier-core/web-client"]
 tcp-hole-punch = ["easytier-core/tcp-hole-punch"]
 # Deprecated: hotpath profiling has been removed. These feature aliases are
 # retained as no-ops so existing build scripts using `--features hotpath*`

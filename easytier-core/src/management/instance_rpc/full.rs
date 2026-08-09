@@ -2,9 +2,7 @@ use std::{sync::Arc, time::Duration};
 
 use easytier_proto::{
     api::{
-        config::{
-            ConfigRpc, GetConfigRequest, GetConfigResponse, PatchConfigRequest, PatchConfigResponse,
-        },
+        config::ConfigRpc,
         instance::{
             AclManageRpc, ConnectorManageRpc, CredentialInfo, CredentialManageRpc,
             GenerateCredentialRequest, GenerateCredentialResponse, GetAclStatsRequest,
@@ -27,7 +25,7 @@ use easytier_proto::{
 };
 
 use crate::{
-    config::{api::network_config_from_toml, toml::ConfigLoader as _},
+    config::toml::ConfigLoader as _,
     instance::{
         CoreInstance, CoreInstanceHost,
         manager::{InstanceFactory, InstanceManager},
@@ -35,11 +33,8 @@ use crate::{
     peers::credential_manager::{CredentialCreateOptions, CredentialInfo as CoreCredentialInfo},
 };
 
-use super::{InstanceManagementRpc, ReadOnlyInstanceResolver, ResolvedInstanceManagementRpc};
-use crate::management::{
-    full::{apply_config_patch, packet_proxy},
-    resolve_instance,
-};
+use super::InstanceManagementRpc;
+use crate::management::{full::packet_proxy, resolve_instance};
 
 /// Dispatches the JSON form of an Instance-targeted management RPC without
 /// introducing a second, Host-owned set of service implementations.
@@ -367,40 +362,5 @@ where
         _: ReportPeersRequest,
     ) -> rpc_types::error::Result<ReportPeersResponse> {
         Err(anyhow::anyhow!("not implemented for management API").into())
-    }
-}
-
-#[async_trait::async_trait]
-impl<R> ConfigRpc for ResolvedInstanceManagementRpc<R>
-where
-    R: ReadOnlyInstanceResolver,
-{
-    type Controller = BaseController;
-
-    async fn patch_config(
-        &self,
-        _: BaseController,
-        request: PatchConfigRequest,
-    ) -> rpc_types::error::Result<PatchConfigResponse> {
-        let instance = self.instance(request.instance.as_ref())?;
-        if let Some(patch) = request.patch {
-            apply_config_patch(&instance, patch).await?;
-        }
-        Ok(PatchConfigResponse::default())
-    }
-
-    async fn get_config(
-        &self,
-        _: BaseController,
-        request: GetConfigRequest,
-    ) -> rpc_types::error::Result<GetConfigResponse> {
-        let config = self
-            .instance(request.instance.as_ref())?
-            .toml_config()
-            .ok_or_else(|| anyhow::anyhow!("shared TOML configuration is not available"))?;
-        Ok(GetConfigResponse {
-            config: Some(network_config_from_toml(&config)),
-            toml_config: config.dump(),
-        })
     }
 }

@@ -21,3 +21,10 @@ operation transition.
 
 Host capability operations use a separate seam. They turn Host readiness into
 Rust task wakeups and do not share the caller-to-core broker state machine.
+
+## Compact compatibility Host
+
+A compact compatibility Host retains accepted values in the authoritative TOML
+model for management readback, while the shared host-aware normalization path
+omits capabilities that the compact runtime cannot execute. Omitted settings
+are silent no-ops and must not be advertised as live network capabilities.

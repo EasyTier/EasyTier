@@ -277,12 +277,24 @@ pub fn build_rpc_packet(args: BuildRpcPacketArgs<'_>) -> Vec<ZCPacket> {
     ret
 }
 
-#[cfg(all(test, not(feature = "zstd")))]
+#[cfg(test)]
 mod tests {
     use crate::proto::common::CompressionAlgoPb;
 
-    use super::{accepted_compression_algo, compress_packet};
+    use super::accepted_compression_algo;
+    #[cfg(not(feature = "zstd"))]
+    use super::compress_packet;
 
+    #[test]
+    fn accepted_compression_matches_build_capabilities() {
+        #[cfg(feature = "zstd")]
+        assert_eq!(accepted_compression_algo(), CompressionAlgoPb::Zstd);
+
+        #[cfg(not(feature = "zstd"))]
+        assert_eq!(accepted_compression_algo(), CompressionAlgoPb::None);
+    }
+
+    #[cfg(not(feature = "zstd"))]
     #[tokio::test]
     async fn compression_negotiation_falls_back_when_zstd_is_unavailable() {
         assert_eq!(accepted_compression_algo(), CompressionAlgoPb::None);

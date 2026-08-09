@@ -121,7 +121,8 @@ extended-services = [
     "wrapped-transport",
     "proxy-cidr-monitor",
 ]
-management = ["management-rpc", "config-write", "extended-services", "rich-config-errors", "easytier-proto/json-rpc"]
+web-client = ["management-rpc", "config-write"]
+management = ["web-client", "extended-services", "rich-config-errors", "easytier-proto/json-rpc"]
 management-rpc = ["easytier-proto/api"]
 proxy-cidr-monitor = []
 rich-config-errors = ["dep:ariadne"]

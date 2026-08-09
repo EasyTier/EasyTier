@@ -2529,6 +2529,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "easytier-mini"
+version = "2.6.4"
+dependencies = [
+ "anyhow",
+ "easytier",
+ "tokio",
+]
+
+[[package]]
 name = "easytier-proto"
 version = "2.6.4"
 dependencies = [

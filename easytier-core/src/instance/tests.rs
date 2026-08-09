@@ -466,6 +466,57 @@ mod portable_runtime {
         build_with_engines(config, WrappedTransportEngines::default())
     }
 
+    #[cfg(feature = "dhcp-ipv4")]
+    #[tokio::test]
+    async fn runtime_update_preserves_dhcp_owned_ipv4() {
+        let mut initial = test_config("dhcp-runtime-update");
+        initial.connectivity.runtime.dhcp_ipv4 = true;
+        let instance = build_instance(initial).unwrap();
+        let lease = IpPrefix {
+            address: "10.126.126.7".parse().unwrap(),
+            prefix_len: 24,
+        };
+        instance.runtime_config.update_peer_with(|peer| {
+            peer.runtime.core.routes.ipv4 = Some(lease.clone());
+        });
+
+        let mut replacement = test_config("dhcp-runtime-update");
+        replacement.connectivity.runtime.dhcp_ipv4 = true;
+        instance
+            .update_runtime_config(runtime_snapshot(&replacement))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            instance
+                .runtime_config
+                .snapshot()
+                .peer
+                .runtime
+                .core
+                .routes
+                .ipv4,
+            Some(lease)
+        );
+
+        let static_replacement = test_config("dhcp-runtime-update");
+        instance
+            .update_runtime_config(runtime_snapshot(&static_replacement))
+            .await
+            .unwrap();
+        assert_eq!(
+            instance
+                .runtime_config
+                .snapshot()
+                .peer
+                .runtime
+                .core
+                .routes
+                .ipv4,
+            None
+        );
+    }
+
     #[tokio::test]
     async fn core_instance_is_a_direct_managed_record() {
         let instance = build_instance(test_config("managed-directly")).unwrap();
@@ -600,7 +651,7 @@ hostname = "core-owned-config"
             response.config.unwrap().hostname.as_deref(),
             Some("patched-in-core")
         );
-        let runtime = instance.runtime_config_snapshot();
+        let runtime = instance.runtime_config.snapshot();
         assert!(runtime.services.proxy.enable_exit_node);
         assert!(runtime.services.public_ipv6_provider.provider_supported);
         assert_eq!(runtime.peer.easytier_version, "host-version");
@@ -685,12 +736,78 @@ hostname = "core-owned-config"
         );
         assert!(
             instance
-                .runtime_config_snapshot()
+                .runtime_config
+                .snapshot()
                 .services
                 .gateway
                 .port_forwards
                 .is_empty()
         );
+        instance.stop().await;
+    }
+
+    #[cfg(feature = "web-client")]
+    #[tokio::test]
+    async fn ignored_gateway_patch_remains_in_toml_config() {
+        use easytier_proto::{
+            api::config::{ConfigPatchAction, InstanceConfigPatch, PortForwardPatch, UrlPatch},
+            common::{PortForwardConfigPb, SocketType},
+        };
+
+        let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+        let toml_config = crate::config::toml::TomlConfig::new_from_str(
+            "instance_name = \"ignored-gateway-patch\"",
+        )
+        .unwrap();
+        let mut host_adapters = adapters(None, Arc::new(packet_sink));
+        host_adapters.config.ignore_unsupported_config = true;
+        host_adapters.config.gateway_enabled = false;
+        host_adapters.config.endpoint_protocols = vec!["tcp".to_owned(), "udp".to_owned()];
+        let instance = CoreInstance::from_toml(toml_config, host_adapters).unwrap();
+        instance.start().await.unwrap();
+
+        crate::management::apply_config_patch(
+            &instance,
+            InstanceConfigPatch {
+                port_forwards: vec![PortForwardPatch {
+                    action: ConfigPatchAction::Add as i32,
+                    cfg: Some(PortForwardConfigPb {
+                        bind_addr: Some(
+                            "127.0.0.1:18080"
+                                .parse::<std::net::SocketAddr>()
+                                .unwrap()
+                                .into(),
+                        ),
+                        dst_addr: Some(
+                            "10.144.144.2:8080"
+                                .parse::<std::net::SocketAddr>()
+                                .unwrap()
+                                .into(),
+                        ),
+                        socket_type: SocketType::Tcp as i32,
+                    }),
+                }],
+                connectors: vec![UrlPatch {
+                    action: ConfigPatchAction::Add as i32,
+                    url: Some("quic://127.0.0.1:11010".parse::<url::Url>().unwrap().into()),
+                }],
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(instance.toml_config().unwrap().get_port_forwards().len(), 1);
+        assert!(
+            instance
+                .runtime_config
+                .snapshot()
+                .services
+                .gateway
+                .port_forwards
+                .is_empty()
+        );
+        assert!(instance.list_connectors().is_empty());
         instance.stop().await;
     }
 
@@ -992,19 +1109,24 @@ hostname = "core-owned-config"
         assert!(instances.instances().is_empty());
     }
 
-    #[cfg(feature = "management")]
+    #[cfg(feature = "web-client")]
     #[tokio::test]
     async fn process_management_rpc_owns_instance_create_list_and_delete() {
         use crate::{
             config::toml::TomlConfig,
             instance::manager::InstanceFactory,
-            management::{InstanceManager, ProcessManagementRpc, UnsupportedConfigFileStorage},
+            management::{
+                InstanceManager, ProcessManagementRpc, UnsupportedConfigFileStorage,
+                register_web_client_rpc,
+            },
+            rpc::service_registry::ServiceRegistry,
         };
         use easytier_proto::{
             api::manage::{
                 DeleteNetworkInstanceRequest, ListNetworkInstanceRequest, NetworkConfig,
                 NetworkingMethod, RunNetworkInstanceRequest, WebClientService,
             },
+            common::RpcDescriptor,
             rpc_types::controller::BaseController,
         };
 
@@ -1038,6 +1160,31 @@ hostname = "core-owned-config"
             ManagementTestFactory(CoreProcessRuntime::new()),
             Some(tokio::runtime::Handle::current()),
         ));
+        let registry = ServiceRegistry::new();
+        register_web_client_rpc(
+            instances.clone(),
+            &registry,
+            Arc::new(()),
+            Arc::new(UnsupportedConfigFileStorage),
+        );
+        assert_eq!(
+            registry.get_method_name(&RpcDescriptor {
+                domain_name: String::new(),
+                service_name: "ConfigRpc".to_owned(),
+                proto_name: "ConfigRpc".to_owned(),
+                method_index: 2,
+            }),
+            Some("get_config".to_owned())
+        );
+        assert_eq!(
+            registry.get_method_name(&RpcDescriptor {
+                domain_name: String::new(),
+                service_name: "WebClientService".to_owned(),
+                proto_name: "WebClientService".to_owned(),
+                method_index: 1,
+            }),
+            Some("validate_config".to_owned())
+        );
         let rpc = ProcessManagementRpc::<ManagementTestFactory>::new(
             instances.clone(),
             Arc::new(()),

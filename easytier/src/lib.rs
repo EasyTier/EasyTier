@@ -20,7 +20,7 @@ pub mod service_manager;
 pub(crate) mod socket;
 pub mod tunnel;
 pub mod utils;
-#[cfg(feature = "management")]
+#[cfg(feature = "web-client")]
 pub mod web_client;
 
 #[cfg(test)]

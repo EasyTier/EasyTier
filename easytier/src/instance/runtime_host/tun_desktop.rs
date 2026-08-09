@@ -17,7 +17,6 @@ use tokio_util::sync::CancellationToken;
 use super::{MagicDnsRuntime, tun_common::TunNicState};
 use crate::{
     common::{
-        config::ConfigLoader as _,
         error::Error,
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
     },
@@ -133,7 +132,7 @@ impl NativeTunRuntime {
 
     pub(super) async fn prepare(&self, packet_plane: Arc<CorePacketPlane>) -> anyhow::Result<()> {
         self.nic.drain().await;
-        if !self.global_ctx.config.get_flags().no_tun {
+        if !self.global_ctx.get_flags().no_tun {
             self.start_static_ip(packet_plane).await?;
         }
         Ok(())
