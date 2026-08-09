@@ -1,4 +1,4 @@
-#[cfg(feature = "management")]
+#[cfg(feature = "logging")]
 pub(crate) mod cli_event_logger;
 pub(crate) mod composition;
 pub(crate) mod config;

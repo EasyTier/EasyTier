@@ -63,12 +63,12 @@ pub fn native_compact_instance_manager_with_runtime(
     runtime_handle: tokio::runtime::Handle,
 ) -> NativeInstanceManager {
     let process_runtime = CoreProcessRuntime::new();
-    InstanceManager::new(
-        NativeInstanceFactory::new(process_runtime)
-            .with_runtime_handle(Some(runtime_handle.clone()))
-            .with_compact_runtime(),
-        Some(runtime_handle),
-    )
+    let factory = NativeInstanceFactory::new(process_runtime)
+        .with_runtime_handle(Some(runtime_handle.clone()))
+        .with_compact_runtime();
+    #[cfg(feature = "logging")]
+    let factory = factory.with_cli_event_logging();
+    InstanceManager::new(factory, Some(runtime_handle))
 }
 
 #[cfg(feature = "management")]
@@ -99,7 +99,7 @@ pub struct NativeInstanceFactory {
     process_runtime: Arc<CoreProcessRuntime>,
     runtime_handle: Option<tokio::runtime::Handle>,
     compact_runtime: bool,
-    #[cfg(feature = "management")]
+    #[cfg(feature = "logging")]
     log_cli_events: bool,
 }
 
@@ -109,12 +109,12 @@ impl NativeInstanceFactory {
             process_runtime,
             runtime_handle: None,
             compact_runtime: false,
-            #[cfg(feature = "management")]
+            #[cfg(feature = "logging")]
             log_cli_events: false,
         }
     }
 
-    #[cfg(feature = "management")]
+    #[cfg(feature = "logging")]
     fn with_cli_event_logging(mut self) -> Self {
         self.log_cli_events = true;
         self
@@ -151,7 +151,7 @@ impl InstanceFactory for NativeInstanceFactory {
             self.process_runtime.clone(),
             self.compact_runtime,
         )?;
-        #[cfg(feature = "management")]
+        #[cfg(feature = "logging")]
         if self.log_cli_events {
             let events = subscribe_native_instance_event(&instance)
                 .ok_or_else(|| anyhow::anyhow!("native instance runtime host is unavailable"))?;

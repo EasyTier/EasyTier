@@ -105,8 +105,9 @@ added by future EasyTier versions are forwarded without requiring
 `prost-reflect`.
 
 For size, this POC reads one file directly and does not support configuration
-from stdin or `${VAR}` expansion. It also omits the tracing subscriber and the
-process-management event journal. Startup and fatal errors are still written
-to stderr. The RPC address is currently fixed, so only one mini process can use
-the default portal on a host. The x86-64 musl POC cannot provide reliable stack
-backtraces because its release binary has no unwind tables.
+from stdin or `${VAR}` expansion. It omits the process-management event journal,
+while the console logger still reports runtime events such as peer, connection,
+listener, TUN and DHCP changes. The RPC address is currently fixed, so only one
+mini process can use the default portal on a host. The x86-64 musl POC cannot
+provide reliable stack backtraces because its release binary has no unwind
+tables.
