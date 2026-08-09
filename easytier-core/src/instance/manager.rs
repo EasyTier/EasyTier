@@ -17,12 +17,12 @@ use uuid::Uuid;
 use crate::config::toml::TomlConfig;
 use crate::instance::{CoreInstance, CoreInstanceHost};
 use crate::process_runtime::CoreProcessRuntime;
-#[cfg(feature = "management")]
+#[cfg(feature = "web-client")]
 use crate::{
     config::toml::{ConfigLoader as _, ConfigSource},
     management::network_instance_running_info,
 };
-#[cfg(feature = "management")]
+#[cfg(feature = "web-client")]
 use easytier_proto::api::manage::NetworkInstanceRunningInfo;
 
 /// Stable identity required by the instance collection.
@@ -439,25 +439,25 @@ where
         }
     }
 
-    #[cfg(feature = "management")]
+    #[cfg(feature = "web-client")]
     pub fn config(&self, instance_id: Uuid) -> Option<TomlConfig> {
         self.get(instance_id)
             .and_then(|instance| instance.toml_config())
     }
 
-    #[cfg(feature = "management")]
+    #[cfg(feature = "web-client")]
     pub fn config_source(&self, instance_id: Uuid) -> Option<ConfigSource> {
         self.config(instance_id)
             .map(|config| config.get_network_config_source())
     }
 
-    #[cfg(feature = "management")]
+    #[cfg(feature = "web-client")]
     pub async fn network_info(&self, instance_id: Uuid) -> Option<NetworkInstanceRunningInfo> {
         let instance = self.get(instance_id)?;
         network_instance_running_info(instance.as_ref()).await.ok()
     }
 
-    #[cfg(feature = "management")]
+    #[cfg(feature = "web-client")]
     pub async fn collect_network_infos(
         &self,
     ) -> anyhow::Result<std::collections::BTreeMap<Uuid, NetworkInstanceRunningInfo>> {
@@ -471,7 +471,7 @@ where
         Ok(result)
     }
 
-    #[cfg(feature = "management")]
+    #[cfg(feature = "web-client")]
     pub fn collect_network_infos_sync(
         &self,
     ) -> anyhow::Result<std::collections::BTreeMap<Uuid, NetworkInstanceRunningInfo>> {

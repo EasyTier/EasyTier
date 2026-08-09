@@ -85,28 +85,6 @@ impl EventJournal {
         self.events.read().unwrap().iter().cloned().collect()
     }
 
-    pub(super) fn synchronize_config(
-        &self,
-        patch: &crate::proto::api::config::InstanceConfigPatch,
-    ) {
-        if let Some(hostname) = &patch.hostname {
-            self.global_ctx.set_hostname(hostname.clone());
-        }
-        if let Some(ipv4) = patch.ipv4.as_ref()
-            && !self.global_ctx.config.get_dhcp()
-        {
-            self.global_ctx.set_ipv4(Some((*ipv4).into()));
-        }
-        if let Some(ipv6) = patch.ipv6.as_ref() {
-            self.global_ctx.set_ipv6(Some((*ipv6).into()));
-        }
-        if let Some(disable_relay_data) = patch.disable_relay_data {
-            let mut flags = self.global_ctx.get_flags();
-            flags.disable_relay_data = disable_relay_data;
-            self.global_ctx.set_flags(flags);
-        }
-    }
-
     pub(super) fn publish_config_patch(
         &self,
         patch: crate::proto::api::config::InstanceConfigPatch,

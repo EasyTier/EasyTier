@@ -4,11 +4,11 @@ use std::collections::BTreeSet;
 
 use crate::{
     config::{
-        IpPrefix, NodeConfig, ProxyNetworkConfig, RouteConfig,
+        EncryptionAlgorithm, IpPrefix, NodeConfig, ProxyNetworkConfig, RouteConfig,
         gateway::{GatewayRuntimeConfig, ProxyRuntimeConfig},
         peers::{AclRuleConfig, HostRoutingPolicy, PublicIpv6ProviderConfig},
         runtime::CoreRuntimeConfig,
-        toml::{ConfigLoader as _, TomlConfig},
+        toml::{ConfigLoader as _, Flags, TomlConfig},
     },
     connectivity::{
         direct::DirectConnectorOptions,
@@ -16,12 +16,16 @@ use crate::{
         stun::StunServerConfig,
     },
     listener::plan::ListenerRuntimeConfig,
+    packet::CompressorAlgo,
     peers::{
         context::PeerRuntimeSnapshotInput,
         peer_manager::{PortablePeerManagerConfig, RouteAlgoType},
     },
     socket::{NetNamespace, SocketContext, tcp::TcpBindOptions, udp::UdpBindOptions},
+    tunnel::encrypt::algorithm_is_available,
 };
+
+use easytier_proto::common::CompressionAlgoPb;
 
 use super::{CoreConnectivityConfig, CoreInstanceConfig};
 
@@ -44,6 +48,15 @@ pub struct CoreInstanceHostConfig {
     pub icmp_failure_is_fatal: bool,
     pub public_ipv6_provider_supported: bool,
     pub gateway_enabled: bool,
+    pub proxy_enabled: bool,
+    pub vpn_portal_enabled: bool,
+    pub magic_dns_enabled: bool,
+    pub kcp_enabled: bool,
+    pub quic_enabled: bool,
+    pub udp_broadcast_enabled: bool,
+    pub upnp_enabled: bool,
+    pub tcp_hole_punching_enabled: bool,
+    pub ignore_unsupported_config: bool,
     pub easytier_version: String,
     pub endpoint_protocols: Vec<String>,
 }
@@ -60,9 +73,84 @@ impl Default for CoreInstanceHostConfig {
             icmp_failure_is_fatal: false,
             public_ipv6_provider_supported: false,
             gateway_enabled: true,
+            proxy_enabled: true,
+            vpn_portal_enabled: true,
+            magic_dns_enabled: true,
+            kcp_enabled: true,
+            quic_enabled: true,
+            udp_broadcast_enabled: true,
+            upnp_enabled: true,
+            tcp_hole_punching_enabled: true,
+            ignore_unsupported_config: false,
             easytier_version: env!("CARGO_PKG_VERSION").to_owned(),
             endpoint_protocols: ManualEndpointDiscoveryConfig::default().srv_protocols,
         }
+    }
+}
+
+impl CoreInstanceHostConfig {
+    pub(crate) fn accepts_runtime_url(&self, url: &url::Url) -> bool {
+        !self.ignore_unsupported_config
+            || self
+                .endpoint_protocols
+                .iter()
+                .any(|scheme| scheme.eq_ignore_ascii_case(url.scheme()))
+    }
+
+    fn runtime_flags(&self, mut flags: Flags) -> Flags {
+        if !self.ignore_unsupported_config {
+            return flags;
+        }
+
+        if !self.smoltcp_available {
+            flags.no_tun = false;
+            flags.use_smoltcp = false;
+        }
+        if !self.proxy_enabled {
+            flags.enable_exit_node = false;
+        }
+        if !self.magic_dns_enabled {
+            flags.accept_dns = false;
+        }
+        if !self.kcp_enabled {
+            flags.enable_kcp_proxy = false;
+            flags.disable_kcp_input = true;
+            flags.disable_relay_kcp = true;
+            flags.enable_relay_foreign_network_kcp = false;
+        }
+        if !self.quic_enabled {
+            flags.enable_quic_proxy = false;
+            flags.disable_quic_input = true;
+            flags.disable_relay_quic = true;
+            flags.enable_relay_foreign_network_quic = false;
+        }
+        if !self.udp_broadcast_enabled {
+            flags.enable_udp_broadcast_relay = false;
+        }
+        if !self.upnp_enabled {
+            flags.disable_upnp = true;
+        }
+        if !self.tcp_hole_punching_enabled {
+            flags.disable_tcp_hole_punching = true;
+        }
+        if CompressionAlgoPb::try_from(flags.data_compress_algo)
+            .ok()
+            .and_then(|algorithm| CompressorAlgo::try_from(algorithm).ok())
+            .is_some_and(|algorithm| !algorithm.is_available())
+        {
+            flags.data_compress_algo = CompressionAlgoPb::None as i32;
+        }
+
+        if flags
+            .encryption_algorithm
+            .parse::<EncryptionAlgorithm>()
+            .is_ok_and(|algorithm| !algorithm_is_available(algorithm))
+            && algorithm_is_available(EncryptionAlgorithm::AesGcm)
+        {
+            flags.encryption_algorithm = EncryptionAlgorithm::AesGcm.to_string();
+        }
+
+        flags
     }
 }
 
@@ -81,7 +169,7 @@ impl CoreInstanceConfig {
         config: &TomlConfig,
         host: &CoreInstanceHostConfig,
     ) -> anyhow::Result<Self> {
-        let flags = config.get_flags();
+        let flags = host.runtime_flags(config.get_flags());
         let instance_id = config.get_id();
         let identity: crate::config::NetworkIdentity = config.get_network_identity().into();
         let network_name = identity.network_name.clone();
@@ -93,6 +181,16 @@ impl CoreInstanceConfig {
             _ => host.hostname_fallback.clone().unwrap_or_default(),
         };
         let acl = config.get_acl();
+        let peers = config
+            .get_peers()
+            .into_iter()
+            .filter(|peer| host.accepts_runtime_url(&peer.uri))
+            .collect::<Vec<_>>();
+        let proxy_networks = if host.ignore_unsupported_config && !host.proxy_enabled {
+            Vec::new()
+        } else {
+            config.get_proxy_cidrs()
+        };
 
         let peer_snapshot =
             crate::config::peers::PeerRuntimeSnapshot::from_host_input(PeerRuntimeSnapshotInput {
@@ -111,8 +209,7 @@ impl CoreInstanceConfig {
                         address: value.address().into(),
                         prefix_len: value.network_length(),
                     }),
-                    proxy_networks: config
-                        .get_proxy_cidrs()
+                    proxy_networks: proxy_networks
                         .into_iter()
                         .map(|proxy| ProxyNetworkConfig {
                             real: IpPrefix {
@@ -134,12 +231,13 @@ impl CoreInstanceConfig {
                 host_routing: host.host_routing,
                 acl: acl.clone(),
                 easytier_version: host.easytier_version.clone(),
-                vpn_portal_cidr: config
-                    .get_vpn_portal_config()
+                vpn_portal_cidr: (!host.ignore_unsupported_config || host.vpn_portal_enabled)
+                    .then(|| config.get_vpn_portal_config())
+                    .flatten()
                     .map(|portal| portal.client_cidr),
-                pinned_peers: config
-                    .get_peers()
-                    .into_iter()
+                pinned_peers: peers
+                    .iter()
+                    .cloned()
                     .map(|peer| (peer.uri, peer.peer_public_key))
                     .collect(),
                 ospf_update_my_foreign_network_interval_sec:
@@ -151,19 +249,28 @@ impl CoreInstanceConfig {
         let peer = PortablePeerManagerConfig {
             snapshot: peer_snapshot,
             route_algo: RouteAlgoType::Ospf,
-            exit_nodes: config.get_exit_nodes(),
-            foreign_context_default_flags: TomlConfig::default().get_flags(),
+            exit_nodes: if host.ignore_unsupported_config && !host.proxy_enabled {
+                Vec::new()
+            } else {
+                config.get_exit_nodes()
+            },
+            foreign_context_default_flags: host.runtime_flags(TomlConfig::default().get_flags()),
         };
 
         let tcp_bind = TcpBindOptions::default().with_context(socket_context.clone());
         let udp_bind = UdpBindOptions::direct_connect().with_context(socket_context.clone());
         let listeners = Some(ListenerRuntimeConfig::new(
-            config.get_listener_uris(),
+            config
+                .get_listener_uris()
+                .into_iter()
+                .filter(|url| host.accepts_runtime_url(url))
+                .collect(),
             flags.enable_ipv6,
             socket_context.clone(),
         ));
-        let socks5_bind = config
-            .get_socks5_portal()
+        let socks5_bind = (!host.ignore_unsupported_config || host.gateway_enabled)
+            .then(|| config.get_socks5_portal())
+            .flatten()
             .map(|url| {
                 let host = url
                     .host_str()
@@ -186,7 +293,11 @@ impl CoreInstanceConfig {
             dhcp_ipv4: config.get_dhcp(),
             gateway: GatewayRuntimeConfig {
                 socks5_bind,
-                port_forwards: config.get_port_forwards(),
+                port_forwards: if host.ignore_unsupported_config && !host.gateway_enabled {
+                    Vec::new()
+                } else {
+                    config.get_port_forwards()
+                },
             },
             manual_routes: config
                 .get_routes()
@@ -200,10 +311,15 @@ impl CoreInstanceConfig {
                 icmp_failure_is_fatal: host.icmp_failure_is_fatal,
                 udp_response_ipv4_mtu: 1280,
             },
-            public_ipv6_auto: config.get_ipv6_public_addr_auto(),
+            public_ipv6_auto: config.get_ipv6_public_addr_auto()
+                && (!host.ignore_unsupported_config || host.public_ipv6_provider_supported),
             public_ipv6_provider: PublicIpv6ProviderConfig {
-                provider_enabled: config.get_ipv6_public_addr_provider(),
-                configured_prefix: config.get_ipv6_public_addr_prefix(),
+                provider_enabled: config.get_ipv6_public_addr_provider()
+                    && (!host.ignore_unsupported_config || host.public_ipv6_provider_supported),
+                configured_prefix: (!host.ignore_unsupported_config
+                    || host.public_ipv6_provider_supported)
+                    .then(|| config.get_ipv6_public_addr_prefix())
+                    .flatten(),
                 provider_supported: host.public_ipv6_provider_supported,
             },
         };
@@ -212,11 +328,7 @@ impl CoreInstanceConfig {
             instance_name: config.get_inst_name(),
             peer,
             connectivity: CoreConnectivityConfig {
-                initial_peers: config
-                    .get_peers()
-                    .into_iter()
-                    .map(|peer| peer.uri)
-                    .collect(),
+                initial_peers: peers.into_iter().map(|peer| peer.uri).collect(),
                 listeners,
                 runtime,
                 startup_plan: super::CoreInstanceStartupPlan {
@@ -341,6 +453,7 @@ disable_p2p = true
             gateway_enabled: false,
             easytier_version: "host-version".to_owned(),
             endpoint_protocols: vec!["host-protocol".to_owned()],
+            ..Default::default()
         };
 
         let normalized = CoreInstanceConfig::from_toml_with_host(&config, &host).unwrap();
@@ -381,6 +494,99 @@ disable_p2p = true
         assert_eq!(
             normalized.connectivity.endpoint_discovery.srv_protocols,
             ["host-protocol"]
+        );
+    }
+
+    #[test]
+    fn ignored_capabilities_stay_in_toml_but_not_runtime_config() {
+        let config = TomlConfig::new_from_str(
+            r#"
+listeners = ["tcp://127.0.0.1:11010", "quic://127.0.0.1:11011"]
+proxy_network = [{ cidr = "10.20.0.0/16" }]
+
+[[peer]]
+uri = "tcp://127.0.0.1:11010"
+
+[[peer]]
+uri = "quic://127.0.0.1:11011"
+
+[flags]
+enable_exit_node = true
+enable_kcp_proxy = true
+accept_dns = true
+encryption_algorithm = "chacha20"
+data_compress_algo = "Zstd"
+"#,
+        )
+        .unwrap();
+        config.set_exit_nodes(vec!["10.144.144.2".parse().unwrap()]);
+        config.set_ipv6_public_addr_provider(true);
+        config.get_id();
+        let before = config.dump();
+
+        let host = CoreInstanceHostConfig {
+            ignore_unsupported_config: true,
+            smoltcp_available: true,
+            proxy_enabled: false,
+            gateway_enabled: false,
+            public_ipv6_provider_supported: false,
+            magic_dns_enabled: false,
+            kcp_enabled: false,
+            quic_enabled: false,
+            endpoint_protocols: vec!["tcp".to_owned(), "udp".to_owned()],
+            ..Default::default()
+        };
+
+        let normalized = CoreInstanceConfig::from_toml_with_host(&config, &host).unwrap();
+
+        assert_eq!(config.dump(), before);
+        assert_eq!(normalized.connectivity.initial_peers.len(), 1);
+        assert_eq!(
+            normalized
+                .connectivity
+                .listeners
+                .as_ref()
+                .unwrap()
+                .urls
+                .len(),
+            1
+        );
+        assert!(
+            normalized
+                .peer
+                .snapshot
+                .runtime
+                .core
+                .routes
+                .proxy_networks
+                .is_empty()
+        );
+        assert!(normalized.peer.exit_nodes.is_empty());
+        assert!(!normalized.connectivity.runtime.proxy.enable_exit_node);
+        assert!(
+            !normalized
+                .connectivity
+                .runtime
+                .public_ipv6_provider
+                .provider_enabled
+        );
+        let flags = &normalized.peer.snapshot.flags;
+        assert!(!flags.enable_kcp_proxy);
+        assert!(flags.disable_kcp_input);
+        assert!(!flags.accept_dns);
+        let expected_encryption = if algorithm_is_available(EncryptionAlgorithm::ChaCha20) {
+            EncryptionAlgorithm::ChaCha20
+        } else {
+            EncryptionAlgorithm::AesGcm
+        };
+        assert_eq!(flags.encryption_algorithm, expected_encryption.to_string());
+        assert_eq!(
+            flags.data_compress_algo,
+            if CompressorAlgo::ZstdDefault.is_available() {
+                CompressionAlgoPb::Zstd as i32
+            } else {
+                CompressionAlgoPb::None as i32
+            }
         );
     }
 }

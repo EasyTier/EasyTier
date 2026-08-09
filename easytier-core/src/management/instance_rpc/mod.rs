@@ -27,6 +27,8 @@ use crate::{
 
 use super::resolve_instance;
 
+#[cfg(feature = "web-client")]
+mod config;
 #[cfg(feature = "management")]
 pub(super) mod full;
 #[cfg(all(feature = "management", feature = "proxy-packet"))]
