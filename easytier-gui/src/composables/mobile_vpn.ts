@@ -13,8 +13,14 @@ interface vpnStatus {
   dns: string | null | undefined
 }
 
-let dhcpPollingTimer: NodeJS.Timeout | null = null
+let vpnReconcileTimer: ReturnType<typeof setTimeout> | null = null
 const DHCP_POLLING_INTERVAL = 2000 // 2秒后重试
+const VPN_RECONCILE_MAX_ATTEMPTS = 60
+
+let vpnReconcileInstanceId: string | undefined
+let vpnReconcileAttempts = 0
+let vpnReconcileQueue: Promise<void> = Promise.resolve()
+let vpnPermissionRequest: Promise<boolean> | null = null
 
 const curVpnStatus: vpnStatus = {
   running: false,
@@ -24,7 +30,7 @@ const curVpnStatus: vpnStatus = {
   dns: undefined,
 }
 
-async function requestVpnPermission() {
+async function requestVpnPermissionOnce() {
   console.log('prepare vpn')
   const prepare_ret = await prepare_vpn()
   console.log('prepare vpn', JSON.stringify((prepare_ret)))
@@ -38,6 +44,70 @@ async function requestVpnPermission() {
   }
 
   return granted
+}
+
+async function requestVpnPermission() {
+  if (vpnPermissionRequest) {
+    console.log('reuse pending vpn permission request')
+    return await vpnPermissionRequest
+  }
+
+  const request = requestVpnPermissionOnce()
+  vpnPermissionRequest = request
+  try {
+    return await request
+  }
+  finally {
+    if (vpnPermissionRequest === request) {
+      vpnPermissionRequest = null
+    }
+  }
+}
+
+function clearVpnReconcileTimer() {
+  if (vpnReconcileTimer) {
+    clearTimeout(vpnReconcileTimer)
+    vpnReconcileTimer = null
+  }
+}
+
+function resetVpnReconcileState(instanceId?: string) {
+  clearVpnReconcileTimer()
+  vpnReconcileInstanceId = instanceId
+  vpnReconcileAttempts = 0
+}
+
+function scheduleVpnReconcile(instanceId: string, reason: string) {
+  if (vpnReconcileInstanceId !== instanceId) {
+    resetVpnReconcileState(instanceId)
+  }
+
+  if (vpnReconcileAttempts >= VPN_RECONCILE_MAX_ATTEMPTS) {
+    console.error(
+      'vpn service reconcile stopped after maximum attempts',
+      instanceId,
+      VPN_RECONCILE_MAX_ATTEMPTS,
+      reason,
+    )
+    return
+  }
+
+  clearVpnReconcileTimer()
+  vpnReconcileAttempts += 1
+  console.log(
+    'vpn service is not ready, retrying',
+    JSON.stringify({
+      instanceId,
+      attempt: vpnReconcileAttempts,
+      maxAttempts: VPN_RECONCILE_MAX_ATTEMPTS,
+      delayMs: DHCP_POLLING_INTERVAL,
+      reason,
+    }),
+  )
+  vpnReconcileTimer = setTimeout(() => {
+    vpnReconcileTimer = null
+    void enqueueVpnReconcile(instanceId, false)
+  }, DHCP_POLLING_INTERVAL)
 }
 
 function resetVpnConfigStatus() {
@@ -186,15 +256,18 @@ function getRoutesForVpn(routes: Route[] | undefined, node_config: NetworkTypes.
   return Array.from(new Set(ret)).sort()
 }
 
-export async function onNetworkInstanceChange(instanceId: string) {
+async function reconcileNetworkInstance(instanceId: string, resetAttempts: boolean) {
   console.error('vpn service network instance change id', instanceId)
 
-  if (dhcpPollingTimer) {
-    clearTimeout(dhcpPollingTimer)
-    dhcpPollingTimer = null
+  if (resetAttempts || vpnReconcileInstanceId !== instanceId) {
+    resetVpnReconcileState(instanceId || undefined)
+  }
+  else {
+    clearVpnReconcileTimer()
   }
 
   if (!instanceId) {
+    resetVpnReconcileState()
     console.warn('vpn service skipped because instance id is empty')
     if (curVpnStatus.running) {
       await doStopVpn()
@@ -209,11 +282,28 @@ export async function onNetworkInstanceChange(instanceId: string) {
   }))
   if (config.no_tun) {
     console.log('vpn service skipped because no_tun is enabled', instanceId)
+    resetVpnReconcileState()
     return
   }
-  const curNetworkInfo = (await collectNetworkInfo(instanceId))?.info?.map?.[instanceId]
-  if (!curNetworkInfo || curNetworkInfo?.error_msg?.length) {
-    console.warn('vpn service skipped because network info is unavailable', instanceId, curNetworkInfo?.error_msg)
+
+  let curNetworkInfo
+  try {
+    curNetworkInfo = (await collectNetworkInfo(instanceId))?.info?.map?.[instanceId]
+  }
+  catch (e) {
+    console.warn('vpn service network info query failed', instanceId, e)
+    scheduleVpnReconcile(instanceId, 'network_info_query_failed')
+    return
+  }
+
+  if (!curNetworkInfo) {
+    scheduleVpnReconcile(instanceId, 'network_info_unavailable')
+    return
+  }
+
+  if (curNetworkInfo.error_msg?.length) {
+    console.warn('vpn service skipped because network instance failed', instanceId, curNetworkInfo.error_msg)
+    resetVpnReconcileState()
     await doStopVpn()
     return
   }
@@ -221,18 +311,15 @@ export async function onNetworkInstanceChange(instanceId: string) {
   const virtualIpv4 = curNetworkInfo.my_node_info?.virtual_ipv4
   const virtual_ip = virtualIpv4?.address?.addr ? Utils.ipv4ToString(virtualIpv4.address) : undefined
 
-  if (config.dhcp && (!virtual_ip || !virtual_ip.length)) {
-    console.log('DHCP enabled but no IP yet, will retry in', DHCP_POLLING_INTERVAL, 'ms')
-    dhcpPollingTimer = setTimeout(() => {
-      onNetworkInstanceChange(instanceId)
-    }, DHCP_POLLING_INTERVAL)
+  if (!virtual_ip || !virtual_ip.length) {
+    scheduleVpnReconcile(
+      instanceId,
+      config.dhcp ? 'dhcp_ipv4_unavailable' : 'static_ipv4_unavailable',
+    )
     return
   }
 
-  if (!virtual_ip || !virtual_ip.length) {
-    await doStopVpn()
-    return
-  }
+  resetVpnReconcileState(instanceId)
 
   let network_length = virtualIpv4?.network_length
   if (!network_length) {
@@ -278,6 +365,22 @@ export async function onNetworkInstanceChange(instanceId: string) {
   }
 }
 
+function enqueueVpnReconcile(instanceId: string, resetAttempts: boolean) {
+  const run = vpnReconcileQueue
+    .catch((e) => {
+      console.error('previous vpn service reconcile failed', e)
+    })
+    .then(() => reconcileNetworkInstance(instanceId, resetAttempts))
+  vpnReconcileQueue = run.catch((e) => {
+    console.error('vpn service reconcile failed', e)
+  })
+  return run
+}
+
+export async function onNetworkInstanceChange(instanceId: string) {
+  await enqueueVpnReconcile(instanceId, true)
+}
+
 async function isNoTunEnabled(instanceId: string | undefined) {
   if (!instanceId) {
     return false
@@ -321,10 +424,7 @@ export async function syncMobileVpnService() {
     return
   }
 
-  if (dhcpPollingTimer) {
-    clearTimeout(dhcpPollingTimer)
-    dhcpPollingTimer = null
-  }
+  resetVpnReconcileState()
 
   await doStopVpn(true)
 }
