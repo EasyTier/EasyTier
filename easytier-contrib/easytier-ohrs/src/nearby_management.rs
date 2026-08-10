@@ -597,8 +597,10 @@ impl NearbyManagementSession {
 
         let inbound_task = ASYNC_RUNTIME.spawn(async move {
             while let Some(bytes) = inbound_rx.recv().await {
-                let packet =
-                    ZCPacket::new_from_buf(BytesMut::from(bytes.as_slice()), ZCPacketType::NIC);
+                let packet = ZCPacket::new_from_buf(
+                    BytesMut::from(bytes.as_slice()),
+                    ZCPacketType::DummyTunnel,
+                );
                 if bridge_sink.send(packet).await.is_err() {
                     break;
                 }
@@ -610,7 +612,10 @@ impl NearbyManagementSession {
                 let Ok(packet) = result else {
                     break;
                 };
-                let bytes = packet.convert_type(ZCPacketType::NIC).into_bytes().to_vec();
+                let bytes = packet
+                    .convert_type(ZCPacketType::DummyTunnel)
+                    .into_bytes()
+                    .to_vec();
                 if outbound_tx.send(bytes).await.is_err() {
                     break;
                 }
@@ -729,7 +734,7 @@ fn valid_rpc_packet_bytes(bytes: &[u8]) -> bool {
     if bytes.is_empty() || bytes.len() > MAX_PACKET_BYTES {
         return false;
     }
-    let packet = ZCPacket::new_from_buf(BytesMut::from(bytes), ZCPacketType::NIC);
+    let packet = ZCPacket::new_from_buf(BytesMut::from(bytes), ZCPacketType::DummyTunnel);
     let Some(header) = packet.peer_manager_header() else {
         return false;
     };
@@ -783,7 +788,7 @@ fn decode_ohos_envelope(bytes: &[u8]) -> anyhow::Result<NearbyOhosEnvelope> {
     if bytes.is_empty() || bytes.len() > MAX_PACKET_BYTES {
         anyhow::bail!("HarmonyOS private packet size is invalid");
     }
-    let packet = ZCPacket::new_from_buf(BytesMut::from(bytes), ZCPacketType::NIC);
+    let packet = ZCPacket::new_from_buf(BytesMut::from(bytes), ZCPacketType::DummyTunnel);
     let header = packet
         .peer_manager_header()
         .ok_or_else(|| anyhow::anyhow!("HarmonyOS private packet header is missing"))?;
@@ -819,7 +824,10 @@ pub(crate) fn encode_nearby_ohos_packet(envelope_json: String) -> Option<Uint8Ar
     let mut packet = ZCPacket::new_with_payload(&payload);
     packet.fill_peer_manager_hdr(RPC_PEER_ID, RPC_PEER_ID, OHOS_PRIVATE_PACKET_TYPE);
     Some(Uint8Array::from(
-        packet.convert_type(ZCPacketType::NIC).into_bytes().to_vec(),
+        packet
+            .convert_type(ZCPacketType::DummyTunnel)
+            .into_bytes()
+            .to_vec(),
     ))
 }
 
@@ -1002,16 +1010,40 @@ mod tests {
 
         let mut valid = ZCPacket::new_with_payload(&[]);
         valid.fill_peer_manager_hdr(RPC_PEER_ID, RPC_PEER_ID, PacketType::RpcReq as u8);
-        let valid_bytes = valid.convert_type(ZCPacketType::NIC).into_bytes().to_vec();
+        let expected_wire = valid.tunnel_payload().to_vec();
+        let valid_bytes = valid
+            .convert_type(ZCPacketType::DummyTunnel)
+            .into_bytes()
+            .to_vec();
+        assert_eq!(valid_bytes, expected_wire);
         assert!(valid_rpc_packet_bytes(&valid_bytes));
 
         let mut wrong_peer = ZCPacket::new_with_payload(&[]);
         wrong_peer.fill_peer_manager_hdr(2, RPC_PEER_ID, PacketType::RpcReq as u8);
         let wrong_peer_bytes = wrong_peer
-            .convert_type(ZCPacketType::NIC)
+            .convert_type(ZCPacketType::DummyTunnel)
             .into_bytes()
             .to_vec();
         assert!(!valid_rpc_packet_bytes(&wrong_peer_bytes));
+    }
+
+    #[test]
+    fn nearby_wire_round_trips_as_dummy_tunnel() {
+        let payload = b"management rpc";
+        let mut source = ZCPacket::new_with_payload(payload);
+        source.fill_peer_manager_hdr(RPC_PEER_ID, RPC_PEER_ID, PacketType::RpcResp as u8);
+        let expected_wire = source.tunnel_payload().to_vec();
+
+        let wire = source
+            .convert_type(ZCPacketType::DummyTunnel)
+            .into_bytes()
+            .to_vec();
+        assert_eq!(wire, expected_wire);
+
+        let decoded =
+            ZCPacket::new_from_buf(BytesMut::from(wire.as_slice()), ZCPacketType::DummyTunnel);
+        assert_eq!(decoded.tunnel_payload(), expected_wire);
+        assert_eq!(decoded.payload(), payload);
     }
 
     #[test]
