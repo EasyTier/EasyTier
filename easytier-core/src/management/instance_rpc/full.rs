@@ -12,8 +12,8 @@ use easytier_proto::{
             ListCredentialsResponse, ListMappedListenerRequest, ListMappedListenerResponse,
             ListPortForwardRequest, ListPortForwardResponse, MappedListener,
             MappedListenerManageRpc, MetricSnapshot, PeerManageRpc, PortForwardManageRpc,
-            RevokeCredentialRequest, RevokeCredentialResponse, StatsRpc, VpnPortalInfo,
-            VpnPortalRpc,
+            RevokeCredentialRequest, RevokeCredentialResponse, StatsRpc, UpsertCredentialRequest,
+            UpsertCredentialResponse, VpnPortalInfo, VpnPortalRpc,
         },
     },
     common::PortForwardConfigPb,
@@ -30,7 +30,9 @@ use crate::{
         CoreInstance, CoreInstanceHost,
         manager::{InstanceFactory, InstanceManager},
     },
-    peers::credential_manager::{CredentialCreateOptions, CredentialInfo as CoreCredentialInfo},
+    peers::credential_manager::{
+        CredentialCreateOptions, CredentialInfo as CoreCredentialInfo, CredentialUpsertOptions,
+    },
 };
 
 use super::InstanceManagementRpc;
@@ -105,6 +107,7 @@ fn credential_info_to_api(info: CoreCredentialInfo) -> CredentialInfo {
         expiry_unix: info.expiry_unix,
         allowed_proxy_cidrs: info.allowed_proxy_cidrs,
         reusable: info.reusable,
+        public_key_fingerprint: info.public_key_fingerprint,
     }
 }
 
@@ -298,7 +301,27 @@ where
         Ok(GenerateCredentialResponse {
             credential_id: generated.credential_id,
             credential_secret: generated.secret,
+            expiry_unix: generated.expiry_unix,
         })
+    }
+
+    async fn upsert_credential(
+        &self,
+        _: BaseController,
+        request: UpsertCredentialRequest,
+    ) -> rpc_types::error::Result<UpsertCredentialResponse> {
+        let changed = self
+            .instance(request.instance.as_ref())?
+            .upsert_credential(CredentialUpsertOptions {
+                credential_id: request.credential_id,
+                credential_secret: request.credential_secret,
+                groups: request.groups,
+                allow_relay: request.allow_relay,
+                allowed_proxy_cidrs: request.allowed_proxy_cidrs,
+                expiry_unix: request.expiry_unix,
+                reusable: request.reusable.unwrap_or(true),
+            })?;
+        Ok(UpsertCredentialResponse { changed })
     }
 
     async fn revoke_credential(

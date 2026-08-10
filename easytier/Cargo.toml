@@ -87,6 +87,7 @@ bytes = "1.5.0"
 pin-project-lite = "0.2.13"
 
 atomic_refcell = "0.1.13"
+atomic-write-file = { version = "0.2.3", optional = true }
 
 quinn = { version = "0.11.8", optional = true, features = ["ring"] }
 quinn-proto = { version = "0.11.12", optional = true }
@@ -413,6 +414,7 @@ extended-services = [
     "proxy-cidr-monitor",
 ]
 management = [
+    "dep:atomic-write-file",
     "web-client",
     "logging",
     "easytier-core/management",

@@ -345,6 +345,22 @@ message GenerateCredentialRequest {
 message GenerateCredentialResponse {
   string credential_id = 1;       // UUID
   string credential_secret = 2;   // private key base64
+  int64 expiry_unix = 3;
+}
+
+message UpsertCredentialRequest {
+  string credential_id = 1;
+  string credential_secret = 2;
+  repeated string groups = 3;
+  bool allow_relay = 4;
+  repeated string allowed_proxy_cidrs = 5;
+  int64 expiry_unix = 6;
+  optional bool reusable = 7;
+  InstanceIdentifier instance = 8;
+}
+
+message UpsertCredentialResponse {
+  bool changed = 1;
 }
 
 message RevokeCredentialRequest {
@@ -367,6 +383,7 @@ message CredentialInfo {
   int64 expiry_unix = 4;
   repeated string allowed_proxy_cidrs = 5;
   optional bool reusable = 6;
+  string public_key_fingerprint = 7;
 }
 
 message ListCredentialsResponse {
@@ -377,4 +394,5 @@ service CredentialManageRpc {
   rpc GenerateCredential(GenerateCredentialRequest) returns (GenerateCredentialResponse);
   rpc RevokeCredential(RevokeCredentialRequest) returns (RevokeCredentialResponse);
   rpc ListCredentials(ListCredentialsRequest) returns (ListCredentialsResponse);
+  rpc UpsertCredential(UpsertCredentialRequest) returns (UpsertCredentialResponse);
 }
