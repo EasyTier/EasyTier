@@ -26,6 +26,10 @@ use tokio_util::task::AbortOnDropHandle;
 type ArcPeerConn = Arc<PeerConn>;
 type ConnMap = Arc<DashMap<PeerConnId, ArcPeerConn>>;
 
+fn conn_latency_sort_key(latency_us: u64, is_hole_punched: bool) -> (bool, u64) {
+    (is_hole_punched && latency_us == 0, latency_us)
+}
+
 pub struct Peer {
     pub peer_node_id: PeerId,
     conns: ConnMap,
@@ -212,16 +216,19 @@ impl Peer {
             return Some(conn);
         }
 
-        // find a conn with the smallest latency
-        let mut min_latency = u64::MAX;
-        let mut selected = None;
-        for conn in self.conns.iter() {
-            let latency = conn.value().get_stats().latency_us;
-            if latency < min_latency {
-                min_latency = latency;
-                selected = Some(conn.value().clone());
-            }
-        }
+        // A zero latency on a hole-punched connection means the ping loop has not
+        // confirmed liveness yet. Prefer any other connection, so a freshly admitted
+        // hole-punched path cannot steal traffic before its first successful ping.
+        let selected = self
+            .conns
+            .iter()
+            .min_by_key(|conn| {
+                conn_latency_sort_key(
+                    conn.value().get_stats().latency_us,
+                    conn.value().is_hole_punched(),
+                )
+            })
+            .map(|conn| conn.value().clone());
 
         if let Some(conn) = selected.as_ref() {
             self.default_conn.store(Some(conn.clone()));
@@ -319,5 +326,25 @@ impl Drop for Peer {
         });
         self.shutdown_notifier.notify_one();
         tracing::info!("peer {} drop", self.peer_node_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::conn_latency_sort_key;
+
+    #[test]
+    fn measured_relay_precedes_unverified_hole_punch_path() {
+        assert!(conn_latency_sort_key(20_000, false) < conn_latency_sort_key(0, true));
+    }
+
+    #[test]
+    fn unmeasured_regular_connection_keeps_existing_priority() {
+        assert!(conn_latency_sort_key(0, false) < conn_latency_sort_key(20_000, false));
+    }
+
+    #[test]
+    fn verified_lower_latency_path_can_be_preferred() {
+        assert!(conn_latency_sort_key(5_000, true) < conn_latency_sort_key(20_000, false));
     }
 }
