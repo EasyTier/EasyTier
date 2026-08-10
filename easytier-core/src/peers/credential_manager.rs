@@ -108,6 +108,9 @@ pub struct GeneratedCredential {
 
 pub trait CredentialStorage: Send + Sync + 'static {
     fn load(&self) -> anyhow::Result<Option<String>>;
+
+    /// Atomically replaces the previously committed credential snapshot.
+    /// Returning an error must leave that snapshot readable.
     fn store(&self, serialized_credentials: &str) -> anyhow::Result<()>;
 }
 
