@@ -100,11 +100,23 @@ async function waitVpnStatus(target_status: boolean, timeout_sec: number) {
   }
 }
 
+async function detachTunFd(instanceIds: string[], instanceSources: TunFdInstanceSources[]) {
+  try {
+    await setTunFd(0, instanceIds, instanceSources)
+  }
+  catch (e) {
+    console.error('detach tun fd failed', e)
+  }
+}
+
 async function doStopVpn(force = false) {
   const wasRunning = curVpnStatus.running
   if (!force && !wasRunning) {
     return
   }
+  const instanceIds = [...curVpnStatus.instanceIds]
+  const instanceSources = [...curVpnStatus.instanceSources]
+  await detachTunFd(instanceIds, instanceSources)
   console.log('stop vpn')
   const stop_ret = await stop_vpn()
   console.log('stop vpn', JSON.stringify((stop_ret)))
@@ -194,6 +206,9 @@ async function onVpnServiceStart(payload: any) {
 
 async function onVpnServiceStop(payload: any) {
   console.log('vpn service stop', JSON.stringify(payload))
+  const instanceIds = [...curVpnStatus.instanceIds]
+  const instanceSources = [...curVpnStatus.instanceSources]
+  await detachTunFd(instanceIds, instanceSources)
   curVpnStatus.running = false
   resetVpnConfigStatus()
 }

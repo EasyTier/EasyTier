@@ -73,7 +73,7 @@ static RPC_SERVER: once_cell::sync::Lazy<Mutex<Option<RpcServer>>> =
 static WEB_CLIENT: once_cell::sync::Lazy<RwLock<Option<WebClient>>> =
     once_cell::sync::Lazy::new(|| RwLock::new(None));
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", test))]
 const ANDROID_SHARED_TUN_DEV_NAME: &str = "easytier-shared";
 
 macro_rules! get_client_manager {
@@ -88,13 +88,16 @@ macro_rules! get_client_manager {
 
 fn normalize_network_config_for_runtime(cfg: &mut NetworkConfig) {
     #[cfg(target_os = "android")]
-    {
-        if !cfg.no_tun() && cfg.dev_name.as_deref().map(str::is_empty).unwrap_or(true) {
-            cfg.dev_name = Some(ANDROID_SHARED_TUN_DEV_NAME.to_owned());
-        }
-    }
+    normalize_android_network_config(cfg);
     #[cfg(not(target_os = "android"))]
     let _ = cfg;
+}
+
+#[cfg(any(target_os = "android", test))]
+fn normalize_android_network_config(cfg: &mut NetworkConfig) {
+    if !cfg.no_tun() && cfg.dev_name.as_deref().map(str::is_empty).unwrap_or(true) {
+        cfg.dev_name = Some(ANDROID_SHARED_TUN_DEV_NAME.to_owned());
+    }
 }
 
 #[tauri::command]
@@ -250,6 +253,31 @@ async fn set_tun_fd(
         .collect::<std::collections::HashSet<_>>();
     if target_id_set.len() != target_ids.len() {
         return Err("duplicate instance id in TUN fd attachment group".to_string());
+    }
+
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    if fd <= 0 {
+        let mut errors = Vec::new();
+        for instance_id in target_ids {
+            if let Err(error) = attach_mobile_tun_fd(
+                instance_manager.as_ref(),
+                instance_id,
+                fd,
+                easytier::instance::virtual_nic::MobileTunSources::default(),
+            )
+            .await
+            {
+                errors.push(format!("{instance_id}: {error}"));
+            }
+        }
+        return if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "failed to detach tun fd from the instance group: {}",
+                errors.join("; ")
+            ))
+        };
     }
 
     #[cfg(any(target_os = "android", target_os = "ios"))]
@@ -955,9 +983,10 @@ mod manager {
             &self,
             app: &AppHandle,
             inst_id: Uuid,
-            cfg: NetworkConfig,
+            mut cfg: NetworkConfig,
             source: PersistedConfigSource,
         ) -> anyhow::Result<()> {
+            normalize_network_config_for_runtime(&mut cfg);
             let source = self
                 .network_configs
                 .get(&inst_id)
@@ -1436,7 +1465,32 @@ mod manager {
     #[cfg(test)]
     mod tests {
         use super::{PersistedConfigSource, StoredGuiConfig};
+        use crate::{ANDROID_SHARED_TUN_DEV_NAME, normalize_android_network_config};
         use easytier::proto::api::manage::NetworkConfig;
+
+        #[test]
+        fn android_default_tun_config_uses_shared_device_name() {
+            let mut config = NetworkConfig::default();
+
+            normalize_android_network_config(&mut config);
+
+            assert_eq!(
+                config.dev_name.as_deref(),
+                Some(ANDROID_SHARED_TUN_DEV_NAME)
+            );
+        }
+
+        #[test]
+        fn android_no_tun_config_keeps_empty_device_name() {
+            let mut config = NetworkConfig {
+                no_tun: Some(true),
+                ..Default::default()
+            };
+
+            normalize_android_network_config(&mut config);
+
+            assert!(config.dev_name.is_none());
+        }
 
         #[test]
         fn stored_gui_config_defaults_missing_source_to_legacy() {

@@ -15,6 +15,7 @@ use pnet_packet::{
     icmp::{self, MutableIcmpPacket},
     ip::IpNextHeaderProtocols,
     ipv4::{self, MutableIpv4Packet},
+    ipv6::MutableIpv6Packet,
     tcp::{self, MutableTcpPacket},
     udp::{self, MutableUdpPacket},
 };
@@ -48,6 +49,7 @@ const TCP_HEADER_MIN_LEN: usize = 20;
 const UDP_HEADER_LEN: usize = 8;
 const ICMP_ECHO_HEADER_LEN: usize = 8;
 const ICMP_PROTOCOL: u8 = 1;
+const ICMPV6_PROTOCOL: u8 = 58;
 const TCP_PROTOCOL: u8 = 6;
 const UDP_PROTOCOL: u8 = 17;
 const DISPATCHER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
@@ -372,6 +374,13 @@ impl SharedVirtualNicFlowAddr {
             Self::V6(_) => None,
         }
     }
+
+    fn as_ipv6(self) -> Option<std::net::Ipv6Addr> {
+        match self {
+            Self::V4(_) => None,
+            Self::V6(addr) => Some(std::net::Ipv6Addr::from(addr)),
+        }
+    }
 }
 
 impl SharedVirtualNicFlowKey {
@@ -416,12 +425,16 @@ impl SharedVirtualNicFlowKey {
             return None;
         }
 
-        let protocol = payload[6];
+        let transport = ipv6_transport_info(payload)?;
         Some(Self {
             src: SharedVirtualNicFlowAddr::V6(read_ipv6_addr(payload, 8)),
             dst: SharedVirtualNicFlowAddr::V6(read_ipv6_addr(payload, 24)),
-            protocol,
-            ports: transport_ports(protocol, &payload[IPV6_HEADER_LEN..]),
+            protocol: transport.protocol,
+            ports: if transport.fragment_offset == 0 {
+                transport_ports(transport.protocol, &payload[transport.offset..])
+            } else {
+                None
+            },
         })
     }
 
@@ -431,7 +444,7 @@ impl SharedVirtualNicFlowKey {
             dst: self.src,
             protocol: self.protocol,
             ports: self.ports.map(|ports| {
-                if self.protocol == ICMP_PROTOCOL {
+                if matches!(self.protocol, ICMP_PROTOCOL | ICMPV6_PROTOCOL) {
                     ports
                 } else {
                     ports.reversed()
@@ -1231,21 +1244,27 @@ impl SharedVirtualNicDispatcherState {
         member_id: SharedVirtualNicMemberId,
         mut packet: ZCPacket,
     ) -> Result<(), ZCPacket> {
-        let mut nat_entry = None;
-        if let Some(key) = SharedVirtualNicFlowKey::from_packet(&packet) {
-            if let Some(translated_src) = self
-                .source_table
-                .source_for_member_destination(member_id, key.dst)
-            {
-                if key.src != translated_src
-                    && rewrite_packet_source(&mut packet, key.src, translated_src)
-                {
-                    nat_entry = Some((packet.clone(), key.src, translated_src));
-                }
-            }
-        }
+        let Some(key) = SharedVirtualNicFlowKey::from_packet(&packet) else {
+            return Err(packet);
+        };
+        let Some(translated_src) = self
+            .source_table
+            .source_for_member_destination(member_id, key.dst)
+        else {
+            return Err(packet);
+        };
+        let original_packet = packet.clone();
+        let nat_entry = if key.src == translated_src {
+            None
+        } else if rewrite_packet_source(&mut packet, key.src, translated_src) {
+            Some((packet.clone(), key.src, translated_src))
+        } else {
+            return Err(packet);
+        };
 
-        self.send_packet_to_member(member_id, packet).await?;
+        if self.send_packet_to_member(member_id, packet).await.is_err() {
+            return Err(original_packet);
+        }
         if let Some((translated_packet, original_src, translated_src)) = nat_entry {
             self.nat_table
                 .remember(&translated_packet, original_src, translated_src);
@@ -1304,7 +1323,7 @@ fn rewrite_packet_source(
     expected_source: SharedVirtualNicFlowAddr,
     new_source: SharedVirtualNicFlowAddr,
 ) -> bool {
-    rewrite_ipv4_addr(packet, expected_source, new_source, RewriteIpv4Addr::Source)
+    rewrite_ip_addr(packet, expected_source, new_source, RewriteIpAddr::Source)
 }
 
 fn rewrite_packet_destination(
@@ -1312,25 +1331,42 @@ fn rewrite_packet_destination(
     expected_destination: SharedVirtualNicFlowAddr,
     new_destination: SharedVirtualNicFlowAddr,
 ) -> bool {
-    rewrite_ipv4_addr(
+    rewrite_ip_addr(
         packet,
         expected_destination,
         new_destination,
-        RewriteIpv4Addr::Destination,
+        RewriteIpAddr::Destination,
     )
 }
 
 #[derive(Clone, Copy)]
-enum RewriteIpv4Addr {
+enum RewriteIpAddr {
     Source,
     Destination,
+}
+
+fn rewrite_ip_addr(
+    packet: &mut ZCPacket,
+    expected_addr: SharedVirtualNicFlowAddr,
+    new_addr: SharedVirtualNicFlowAddr,
+    rewrite: RewriteIpAddr,
+) -> bool {
+    match (expected_addr, new_addr) {
+        (SharedVirtualNicFlowAddr::V4(_), SharedVirtualNicFlowAddr::V4(_)) => {
+            rewrite_ipv4_addr(packet, expected_addr, new_addr, rewrite)
+        }
+        (SharedVirtualNicFlowAddr::V6(_), SharedVirtualNicFlowAddr::V6(_)) => {
+            rewrite_ipv6_addr(packet, expected_addr, new_addr, rewrite)
+        }
+        _ => false,
+    }
 }
 
 fn rewrite_ipv4_addr(
     packet: &mut ZCPacket,
     expected_addr: SharedVirtualNicFlowAddr,
     new_addr: SharedVirtualNicFlowAddr,
-    rewrite: RewriteIpv4Addr,
+    rewrite: RewriteIpAddr,
 ) -> bool {
     let Some(expected_addr) = expected_addr.as_ipv4() else {
         return false;
@@ -1355,10 +1391,10 @@ fn rewrite_ipv4_addr(
         || (ipv4_packet.get_flags() & ipv4::Ipv4Flags::MoreFragments) != 0;
 
     match rewrite {
-        RewriteIpv4Addr::Source if ipv4_packet.get_source() == expected_addr => {
+        RewriteIpAddr::Source if ipv4_packet.get_source() == expected_addr => {
             ipv4_packet.set_source(new_addr);
         }
-        RewriteIpv4Addr::Destination if ipv4_packet.get_destination() == expected_addr => {
+        RewriteIpAddr::Destination if ipv4_packet.get_destination() == expected_addr => {
             ipv4_packet.set_destination(new_addr);
         }
         _ => return false,
@@ -1378,6 +1414,154 @@ fn rewrite_ipv4_addr(
     let checksum = ipv4::checksum(&ipv4_packet.to_immutable());
     ipv4_packet.set_checksum(checksum);
     true
+}
+
+fn rewrite_ipv6_addr(
+    packet: &mut ZCPacket,
+    expected_addr: SharedVirtualNicFlowAddr,
+    new_addr: SharedVirtualNicFlowAddr,
+    rewrite: RewriteIpAddr,
+) -> bool {
+    let Some(expected_addr) = expected_addr.as_ipv6() else {
+        return false;
+    };
+    let Some(new_addr) = new_addr.as_ipv6() else {
+        return false;
+    };
+
+    let payload = packet.mut_payload();
+    let Some(transport) = ipv6_transport_info(payload) else {
+        return false;
+    };
+    if matches!(transport.protocol, 50 | 51)
+        || (matches!(rewrite, RewriteIpAddr::Destination) && !transport.destination_rewrite_safe)
+    {
+        return false;
+    }
+    let Some(mut ipv6_packet) = MutableIpv6Packet::new(payload) else {
+        return false;
+    };
+
+    let old_source = ipv6_packet.get_source();
+    let old_destination = ipv6_packet.get_destination();
+    match rewrite {
+        RewriteIpAddr::Source if old_source == expected_addr => {
+            ipv6_packet.set_source(new_addr);
+        }
+        RewriteIpAddr::Destination if old_destination == expected_addr => {
+            ipv6_packet.set_destination(new_addr);
+        }
+        _ => return false,
+    }
+
+    if transport.fragment_offset == 0 {
+        let source = ipv6_packet.get_source();
+        let destination = ipv6_packet.get_destination();
+        adjust_ipv6_transport_checksum(
+            ipv6_packet.packet_mut(),
+            transport,
+            old_source,
+            source,
+            old_destination,
+            destination,
+        );
+    }
+    true
+}
+
+#[derive(Clone, Copy)]
+struct Ipv6TransportInfo {
+    protocol: u8,
+    offset: usize,
+    fragment_offset: u16,
+    destination_rewrite_safe: bool,
+}
+
+fn ipv6_transport_info(payload: &[u8]) -> Option<Ipv6TransportInfo> {
+    if payload.len() < IPV6_HEADER_LEN || payload[0] >> 4 != 6 {
+        return None;
+    }
+
+    let mut protocol = payload[6];
+    let mut offset = IPV6_HEADER_LEN;
+    let mut fragment_offset = 0;
+    let mut destination_rewrite_safe = true;
+    loop {
+        match protocol {
+            // Hop-by-hop, routing, and destination options headers.
+            0 | 43 | 60 => {
+                if protocol == 43 {
+                    destination_rewrite_safe = false;
+                }
+                let header = payload.get(offset..offset + 2)?;
+                protocol = header[0];
+                let header_len = (usize::from(header[1]) + 1) * 8;
+                offset = offset.checked_add(header_len)?;
+                if offset > payload.len() {
+                    return None;
+                }
+            }
+            // Fragment header.
+            44 => {
+                let header = payload.get(offset..offset + 8)?;
+                protocol = header[0];
+                fragment_offset = u16::from_be_bytes([header[2], header[3]]) >> 3;
+                offset += 8;
+                if fragment_offset != 0 {
+                    return Some(Ipv6TransportInfo {
+                        protocol,
+                        offset,
+                        fragment_offset,
+                        destination_rewrite_safe: destination_rewrite_safe
+                            && matches!(protocol, TCP_PROTOCOL | UDP_PROTOCOL | ICMPV6_PROTOCOL),
+                    });
+                }
+            }
+            _ => {
+                return Some(Ipv6TransportInfo {
+                    protocol,
+                    offset,
+                    fragment_offset,
+                    destination_rewrite_safe,
+                });
+            }
+        }
+    }
+}
+
+fn adjust_ipv6_transport_checksum(
+    payload: &mut [u8],
+    transport: Ipv6TransportInfo,
+    old_source: std::net::Ipv6Addr,
+    source: std::net::Ipv6Addr,
+    old_destination: std::net::Ipv6Addr,
+    destination: std::net::Ipv6Addr,
+) {
+    let checksum_offset = match transport.protocol {
+        TCP_PROTOCOL => 16,
+        UDP_PROTOCOL => 6,
+        ICMPV6_PROTOCOL => 2,
+        _ => return,
+    };
+    let Some(checksum_bytes) =
+        payload.get_mut(transport.offset + checksum_offset..transport.offset + checksum_offset + 2)
+    else {
+        return;
+    };
+    let checksum = u16::from_be_bytes([checksum_bytes[0], checksum_bytes[1]]);
+    let checksum = adjust_ipv6_pseudo_header_checksum(
+        checksum,
+        old_source,
+        source,
+        old_destination,
+        destination,
+    );
+    let checksum = if transport.protocol == UDP_PROTOCOL && checksum == 0 {
+        0xffff
+    } else {
+        checksum
+    };
+    checksum_bytes.copy_from_slice(&checksum.to_be_bytes());
 }
 
 fn update_ipv4_transport_checksum(ipv4_packet: &mut MutableIpv4Packet<'_>, header_len: usize) {
@@ -1478,6 +1662,29 @@ fn adjust_ipv4_pseudo_header_checksum(
         checksum = adjust_checksum_word(checksum, old, new);
     }
     for (old, new) in ipv4_checksum_words(old_destination).zip(ipv4_checksum_words(destination)) {
+        checksum = adjust_checksum_word(checksum, old, new);
+    }
+    checksum
+}
+
+fn adjust_ipv6_pseudo_header_checksum(
+    mut checksum: u16,
+    old_source: std::net::Ipv6Addr,
+    source: std::net::Ipv6Addr,
+    old_destination: std::net::Ipv6Addr,
+    destination: std::net::Ipv6Addr,
+) -> u16 {
+    for (old, new) in old_source
+        .segments()
+        .into_iter()
+        .zip(source.segments())
+        .chain(
+            old_destination
+                .segments()
+                .into_iter()
+                .zip(destination.segments()),
+        )
+    {
         checksum = adjust_checksum_word(checksum, old, new);
     }
     checksum
@@ -1753,7 +1960,7 @@ fn transport_ports(protocol: u8, payload: &[u8]) -> Option<SharedVirtualNicTrans
     let min_len = match protocol {
         TCP_PROTOCOL => TCP_HEADER_MIN_LEN,
         UDP_PROTOCOL => UDP_HEADER_LEN,
-        ICMP_PROTOCOL => ICMP_ECHO_HEADER_LEN,
+        ICMP_PROTOCOL | ICMPV6_PROTOCOL => ICMP_ECHO_HEADER_LEN,
         _ => return None,
     };
 
@@ -1763,10 +1970,21 @@ fn transport_ports(protocol: u8, payload: &[u8]) -> Option<SharedVirtualNicTrans
 
     match protocol {
         ICMP_PROTOCOL => icmp_echo_flow(payload),
+        ICMPV6_PROTOCOL => icmpv6_echo_flow(payload),
         _ => Some(SharedVirtualNicTransportPorts {
             src: u16::from_be_bytes([payload[0], payload[1]]),
             dst: u16::from_be_bytes([payload[2], payload[3]]),
         }),
+    }
+}
+
+fn icmpv6_echo_flow(payload: &[u8]) -> Option<SharedVirtualNicTransportPorts> {
+    match payload[0] {
+        128 | 129 => Some(SharedVirtualNicTransportPorts {
+            src: u16::from_be_bytes([payload[4], payload[5]]),
+            dst: u16::from_be_bytes([payload[6], payload[7]]),
+        }),
+        _ => None,
     }
 }
 
@@ -1831,6 +2049,84 @@ mod tests {
         payload[6] = 58;
         payload[8..24].copy_from_slice(&src.octets());
         payload[24..40].copy_from_slice(&dst.octets());
+        ZCPacket::new_with_payload(&payload)
+    }
+
+    fn ipv6_udp_packet_with_ports(
+        src: Ipv6Addr,
+        dst: Ipv6Addr,
+        src_port: u16,
+        dst_port: u16,
+    ) -> ZCPacket {
+        let mut payload = vec![0; IPV6_HEADER_LEN + UDP_HEADER_LEN];
+        {
+            let mut ipv6_packet = pnet_packet::ipv6::MutableIpv6Packet::new(&mut payload).unwrap();
+            ipv6_packet.set_version(6);
+            ipv6_packet.set_payload_length(UDP_HEADER_LEN as u16);
+            ipv6_packet.set_next_header(IpNextHeaderProtocols::Udp);
+            ipv6_packet.set_hop_limit(64);
+            ipv6_packet.set_source(src);
+            ipv6_packet.set_destination(dst);
+        }
+        {
+            let mut udp_packet = MutableUdpPacket::new(&mut payload[IPV6_HEADER_LEN..]).unwrap();
+            udp_packet.set_source(src_port);
+            udp_packet.set_destination(dst_port);
+            udp_packet.set_length(UDP_HEADER_LEN as u16);
+            let checksum = udp::ipv6_checksum(&udp_packet.to_immutable(), &src, &dst);
+            udp_packet.set_checksum(checksum);
+        }
+        ZCPacket::new_with_payload(&payload)
+    }
+
+    fn ipv6_tcp_packet_with_ports(
+        src: Ipv6Addr,
+        dst: Ipv6Addr,
+        src_port: u16,
+        dst_port: u16,
+    ) -> ZCPacket {
+        let mut payload = vec![0; IPV6_HEADER_LEN + TCP_HEADER_MIN_LEN];
+        {
+            let mut ipv6_packet = pnet_packet::ipv6::MutableIpv6Packet::new(&mut payload).unwrap();
+            ipv6_packet.set_version(6);
+            ipv6_packet.set_payload_length(TCP_HEADER_MIN_LEN as u16);
+            ipv6_packet.set_next_header(IpNextHeaderProtocols::Tcp);
+            ipv6_packet.set_hop_limit(64);
+            ipv6_packet.set_source(src);
+            ipv6_packet.set_destination(dst);
+        }
+        {
+            let mut tcp_packet = MutableTcpPacket::new(&mut payload[IPV6_HEADER_LEN..]).unwrap();
+            tcp_packet.set_source(src_port);
+            tcp_packet.set_destination(dst_port);
+            tcp_packet.set_data_offset(5);
+            let checksum = tcp::ipv6_checksum(&tcp_packet.to_immutable(), &src, &dst);
+            tcp_packet.set_checksum(checksum);
+        }
+        ZCPacket::new_with_payload(&payload)
+    }
+
+    fn ipv6_icmp_echo_packet(src: Ipv6Addr, dst: Ipv6Addr) -> ZCPacket {
+        let mut payload = vec![0; IPV6_HEADER_LEN + ICMP_ECHO_HEADER_LEN];
+        {
+            let mut ipv6_packet = pnet_packet::ipv6::MutableIpv6Packet::new(&mut payload).unwrap();
+            ipv6_packet.set_version(6);
+            ipv6_packet.set_payload_length(ICMP_ECHO_HEADER_LEN as u16);
+            ipv6_packet.set_next_header(IpNextHeaderProtocols::Icmpv6);
+            ipv6_packet.set_hop_limit(64);
+            ipv6_packet.set_source(src);
+            ipv6_packet.set_destination(dst);
+        }
+        {
+            let mut icmp_packet =
+                pnet_packet::icmpv6::MutableIcmpv6Packet::new(&mut payload[IPV6_HEADER_LEN..])
+                    .unwrap();
+            icmp_packet.set_icmpv6_type(pnet_packet::icmpv6::Icmpv6Types::EchoRequest);
+            icmp_packet.packet_mut()[4..6].copy_from_slice(&1234_u16.to_be_bytes());
+            icmp_packet.packet_mut()[6..8].copy_from_slice(&1_u16.to_be_bytes());
+            let checksum = pnet_packet::icmpv6::checksum(&icmp_packet.to_immutable(), &src, &dst);
+            icmp_packet.set_checksum(checksum);
+        }
         ZCPacket::new_with_payload(&payload)
     }
 
@@ -1985,6 +2281,13 @@ mod tests {
 
     fn member_sources_with_ipv6(ipv6: &[&str]) -> SharedVirtualNicMemberSources {
         SharedVirtualNicMemberSources::from_claims(&member_claims(&[], ipv6, &[], &[]))
+    }
+
+    fn member_sources_with_ipv6_routes(
+        ipv6: &[&str],
+        ipv6_routes: &[&str],
+    ) -> SharedVirtualNicMemberSources {
+        SharedVirtualNicMemberSources::from_claims(&member_claims(&[], ipv6, &[], ipv6_routes))
     }
 
     fn member_claims(
@@ -2266,6 +2569,98 @@ mod tests {
         let reply_ipv4 = pnet_packet::ipv4::Ipv4Packet::new(reply.payload()).unwrap();
         assert_eq!(reply_ipv4.get_source(), remote_ip);
         assert_eq!(reply_ipv4.get_destination(), source_owner_ip);
+    }
+
+    #[tokio::test]
+    async fn dispatcher_translates_wrong_local_ipv6_source_to_destination_member() {
+        let source_owner = uuid::Uuid::from_u128(1);
+        let destination_owner = uuid::Uuid::from_u128(2);
+        let source_owner_ip = "2001:db8:1::1".parse::<Ipv6Addr>().unwrap();
+        let destination_owner_ip = "2001:db8:2::1".parse::<Ipv6Addr>().unwrap();
+        let remote_ip = "2001:db8:99::2".parse::<Ipv6Addr>().unwrap();
+        let (source_sender, mut source_receiver) = mpsc::channel(1);
+        let (destination_sender, mut destination_receiver) = mpsc::channel(1);
+        let mut state = SharedVirtualNicDispatcherState::default();
+
+        state.register(source_owner, member_entry(source_sender));
+        state.register(destination_owner, member_entry(destination_sender));
+        state.source_table.update_member_sources(
+            source_owner,
+            member_sources_with_ipv6(&["2001:db8:1::1/64"]),
+        );
+        state.source_table.update_member_sources(
+            destination_owner,
+            member_sources_with_ipv6_routes(&["2001:db8:2::1/64"], &["2001:db8:99::/64"]),
+        );
+
+        state
+            .forward_tun_packet_to_member(ipv6_udp_packet_with_ports(
+                source_owner_ip,
+                remote_ip,
+                1234,
+                5678,
+            ))
+            .await;
+
+        assert!(source_receiver.try_recv().is_err());
+        let translated = destination_receiver.try_recv().unwrap();
+        let translated_ipv6 = pnet_packet::ipv6::Ipv6Packet::new(translated.payload()).unwrap();
+        assert_eq!(translated_ipv6.get_source(), destination_owner_ip);
+        assert_eq!(translated_ipv6.get_destination(), remote_ip);
+        let translated_udp =
+            pnet_packet::udp::UdpPacket::new(&translated.payload()[IPV6_HEADER_LEN..]).unwrap();
+        assert_eq!(
+            translated_udp.get_checksum(),
+            udp::ipv6_checksum(&translated_udp, &destination_owner_ip, &remote_ip,)
+        );
+
+        let reply = state.prepare_member_packet_to_tun(
+            destination_owner,
+            ipv6_udp_packet_with_ports(remote_ip, destination_owner_ip, 5678, 1234),
+        );
+        let reply_ipv6 = pnet_packet::ipv6::Ipv6Packet::new(reply.payload()).unwrap();
+        assert_eq!(reply_ipv6.get_source(), remote_ip);
+        assert_eq!(reply_ipv6.get_destination(), source_owner_ip);
+        let reply_udp =
+            pnet_packet::udp::UdpPacket::new(&reply.payload()[IPV6_HEADER_LEN..]).unwrap();
+        assert_eq!(
+            reply_udp.get_checksum(),
+            udp::ipv6_checksum(&reply_udp, &remote_ip, &source_owner_ip)
+        );
+    }
+
+    #[test]
+    fn rewrite_ipv6_source_updates_tcp_and_icmpv6_checksums() {
+        let source = "2001:db8:1::1".parse::<Ipv6Addr>().unwrap();
+        let translated_source = "2001:db8:2::1".parse::<Ipv6Addr>().unwrap();
+        let destination = "2001:db8:99::2".parse::<Ipv6Addr>().unwrap();
+
+        let mut tcp_packet = ipv6_tcp_packet_with_ports(source, destination, 1234, 5678);
+        assert!(rewrite_packet_source(
+            &mut tcp_packet,
+            SharedVirtualNicFlowAddr::from(source),
+            SharedVirtualNicFlowAddr::from(translated_source),
+        ));
+        let tcp =
+            pnet_packet::tcp::TcpPacket::new(&tcp_packet.payload()[IPV6_HEADER_LEN..]).unwrap();
+        assert_eq!(
+            tcp.get_checksum(),
+            tcp::ipv6_checksum(&tcp, &translated_source, &destination)
+        );
+
+        let mut icmp_packet = ipv6_icmp_echo_packet(source, destination);
+        assert!(rewrite_packet_source(
+            &mut icmp_packet,
+            SharedVirtualNicFlowAddr::from(source),
+            SharedVirtualNicFlowAddr::from(translated_source),
+        ));
+        let icmp =
+            pnet_packet::icmpv6::Icmpv6Packet::new(&icmp_packet.payload()[IPV6_HEADER_LEN..])
+                .unwrap();
+        assert_eq!(
+            icmp.get_checksum(),
+            pnet_packet::icmpv6::checksum(&icmp, &translated_source, &destination)
+        );
     }
 
     #[tokio::test]
