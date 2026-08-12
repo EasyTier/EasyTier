@@ -2,7 +2,7 @@
 import { Button, Column, DataTable, Divider, InputText, Select, SelectButton, ToggleButton } from 'primevue'
 import { ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { AclAction, AclChain, AclChainType, AclProtocol, AclRule } from '../../types/network'
+import { AclAction, AclChain, AclChainType, AclProtocol, AclRule, ensureAclChain, ensureAclRuleLists } from '../../types/network'
 import AclRuleDialog from './AclRuleDialog.vue'
 
 const props = defineProps<{
@@ -13,7 +13,11 @@ const chain = defineModel<AclChain>({ required: true })
 
 const { t } = useI18n()
 
-watch(() => chain.value.rules, (newRules) => {
+function rules() {
+  return ensureAclChain(chain.value).rules
+}
+
+watch(() => rules(), (newRules) => {
   if (!newRules) return
   const isSorted = newRules.every((rule, i) => i === 0 || (rule.priority || 0) <= (newRules[i - 1].priority || 0))
   if (!isSorted) {
@@ -60,7 +64,7 @@ function addRule() {
   editingRule.value = {
     name: '',
     description: '',
-    priority: chain.value.rules.length,
+    priority: rules().length,
     enabled: true,
     protocol: AclProtocol.Any,
     ports: [],
@@ -79,28 +83,31 @@ function addRule() {
 
 function editRule(index: number) {
   editingRuleIndex.value = index
-  editingRule.value = JSON.parse(JSON.stringify(chain.value.rules[index]))
+  editingRule.value = ensureAclRuleLists(JSON.parse(JSON.stringify(rules()[index])))
   showRuleDialog.value = true
 }
 
 function deleteRule(index: number) {
-  chain.value.rules.splice(index, 1)
+  rules().splice(index, 1)
 }
 
 function saveRule(rule: AclRule) {
+  const chainRules = rules()
+  ensureAclRuleLists(rule)
   if (editingRuleIndex.value === -1) {
-    chain.value.rules.push(rule)
+    chainRules.push(rule)
   } else {
-    chain.value.rules[editingRuleIndex.value] = rule
+    chainRules[editingRuleIndex.value] = rule
   }
-  chain.value.rules.sort((a, b) => (b.priority || 0) - (a.priority || 0))
+  chainRules.sort((a, b) => (b.priority || 0) - (a.priority || 0))
 }
 
 function onRowReorder(event: any) {
-  chain.value.rules = event.value
+  chain.value.rules = event.value ?? []
+  const chainRules = rules()
   // Update priorities based on new order (higher priority at top)
-  chain.value.rules.forEach((rule, index) => {
-    rule.priority = chain.value.rules.length - index - 1
+  chainRules.forEach((rule, index) => {
+    rule.priority = chainRules.length - index - 1
   })
 }
 </script>
@@ -143,7 +150,7 @@ function onRowReorder(event: any) {
       <Button icon="pi pi-plus" :label="t('acl.add_rule')" severity="success" size="small" @click="addRule" />
     </div>
 
-    <DataTable :value="chain.rules" @row-reorder="onRowReorder" responsiveLayout="scroll">
+    <DataTable :value="rules()" @row-reorder="onRowReorder" responsiveLayout="scroll">
       <Column rowReorder headerStyle="width: 3rem" />
       <Column field="enabled" :header="t('acl.rule.enabled')">
         <template #body="{ data }">

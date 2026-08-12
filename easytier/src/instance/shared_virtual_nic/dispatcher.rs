@@ -10,7 +10,7 @@ use std::{
 
 use cidr::{Ipv4Inet, Ipv6Inet};
 use futures::{SinkExt, StreamExt};
-use pnet::packet::{
+use pnet_packet::{
     MutablePacket as _, Packet as _,
     icmp::{self, MutableIcmpPacket},
     ip::IpNextHeaderProtocols,
@@ -23,15 +23,16 @@ use std::sync::OnceLock;
 #[cfg(mobile)]
 use tokio::runtime::{Builder, Runtime};
 #[cfg(mobile)]
-use tokio::sync::{Mutex, watch};
+use tokio::sync::Mutex;
 use tokio::sync::{Notify, mpsc, oneshot};
 use tokio_util::task::AbortOnDropHandle;
 
+use crate::common::error::Error;
 #[cfg(mobile)]
 use crate::instance::virtual_nic::VirtualNic;
-use crate::{
-    common::error::Error,
-    tunnel::{Tunnel, ZCPacketSink, ZCPacketStream, packet_def::ZCPacket},
+use easytier_core::{
+    packet::ZCPacket,
+    tunnel::{Tunnel, ZCPacketSink, ZCPacketStream},
 };
 
 use super::{
@@ -71,6 +72,12 @@ fn mobile_dispatcher_runtime() -> &'static Runtime {
 struct SharedVirtualNicMemberPacket {
     member_id: SharedVirtualNicMemberId,
     packet: ZCPacket,
+}
+
+#[cfg(mobile)]
+struct SharedVirtualNicMobileTunUpdate {
+    tun_fd: std::os::fd::RawFd,
+    ack: oneshot::Sender<Result<(), Error>>,
 }
 
 enum SharedVirtualNicControl {
@@ -544,7 +551,7 @@ pub(super) struct SharedVirtualNicDispatcher {
     _task: AbortOnDropHandle<()>,
     control_sender: mpsc::UnboundedSender<SharedVirtualNicControl>,
     #[cfg(mobile)]
-    mobile_tun_fd_sender: Option<watch::Sender<std::os::fd::RawFd>>,
+    mobile_tun_update_sender: Option<mpsc::UnboundedSender<SharedVirtualNicMobileTunUpdate>>,
 }
 
 impl SharedVirtualNicDispatcher {
@@ -572,20 +579,21 @@ impl SharedVirtualNicDispatcher {
             _task: AbortOnDropHandle::new(tokio::spawn(task.run())),
             control_sender,
             #[cfg(mobile)]
-            mobile_tun_fd_sender: None,
+            mobile_tun_update_sender: None,
         }
     }
 
     #[cfg(mobile)]
-    pub(super) fn start_for_mobile(
+    pub(super) async fn start_for_mobile(
         nic: Arc<Mutex<VirtualNic>>,
         tun_fd: std::os::fd::RawFd,
         member_tunnel_table: SharedVirtualNicMemberTunnelTable,
         valid: Arc<AtomicBool>,
-    ) -> Self {
+    ) -> Result<Self, Error> {
         let (to_tun_sender, to_tun_receiver) = mpsc::channel(MEMBER_TUNNEL_BUFFER_SIZE);
         let (control_sender, control_receiver) = mpsc::unbounded_channel();
-        let (mobile_tun_fd_sender, mobile_tun_fd_receiver) = watch::channel(tun_fd);
+        let (mobile_tun_update_sender, mobile_tun_update_receiver) = mpsc::unbounded_channel();
+        let (first_open_sender, first_open_receiver) = oneshot::channel();
         let task_member_tunnel_table = member_tunnel_table.clone();
         member_tunnel_table.attach_dispatcher(to_tun_sender, control_sender.clone());
 
@@ -594,7 +602,8 @@ impl SharedVirtualNicDispatcher {
                 nic,
                 tun_stream: None,
                 tun_sink: None,
-                tun_fd: mobile_tun_fd_receiver,
+                tun_fd,
+                tun_update_receiver: mobile_tun_update_receiver,
                 to_tun_receiver,
                 control_receiver,
                 member_tunnel_table: task_member_tunnel_table,
@@ -602,21 +611,38 @@ impl SharedVirtualNicDispatcher {
                 state: SharedVirtualNicDispatcherState::default(),
             };
 
-            task.run().await;
+            task.run(first_open_sender).await;
         });
 
-        Self {
+        let dispatcher = Self {
             _task: AbortOnDropHandle::new(task),
             control_sender,
-            mobile_tun_fd_sender: Some(mobile_tun_fd_sender),
-        }
+            mobile_tun_update_sender: Some(mobile_tun_update_sender),
+        };
+        await_mobile_open(first_open_receiver)
+            .await
+            .map(|()| dispatcher)
     }
 
     #[cfg(mobile)]
-    pub(super) fn update_mobile_tun_fd(&self, tun_fd: std::os::fd::RawFd) {
-        if let Some(sender) = &self.mobile_tun_fd_sender {
-            sender.send_replace(tun_fd);
-        }
+    pub(super) async fn update_mobile_tun_fd(
+        &self,
+        tun_fd: std::os::fd::RawFd,
+    ) -> Result<(), Error> {
+        let sender = self.mobile_tun_update_sender.as_ref().ok_or_else(|| {
+            Error::from(anyhow::anyhow!(
+                "shared virtual nic mobile dispatcher is not running"
+            ))
+        })?;
+        let (ack, receiver) = oneshot::channel();
+        sender
+            .send(SharedVirtualNicMobileTunUpdate { tun_fd, ack })
+            .map_err(|_| {
+                Error::from(anyhow::anyhow!(
+                    "shared virtual nic mobile dispatcher is not running"
+                ))
+            })?;
+        await_mobile_open(receiver).await
     }
 
     pub(super) async fn update_sources(
@@ -793,7 +819,8 @@ struct SharedVirtualNicMobileDispatcherTask {
     nic: Arc<Mutex<VirtualNic>>,
     tun_stream: Option<Pin<Box<dyn ZCPacketStream>>>,
     tun_sink: Option<Pin<Box<dyn ZCPacketSink>>>,
-    tun_fd: watch::Receiver<std::os::fd::RawFd>,
+    tun_fd: std::os::fd::RawFd,
+    tun_update_receiver: mpsc::UnboundedReceiver<SharedVirtualNicMobileTunUpdate>,
     to_tun_receiver: mpsc::Receiver<SharedVirtualNicMemberPacket>,
     control_receiver: mpsc::UnboundedReceiver<SharedVirtualNicControl>,
     member_tunnel_table: SharedVirtualNicMemberTunnelTable,
@@ -803,7 +830,21 @@ struct SharedVirtualNicMobileDispatcherTask {
 
 #[cfg(mobile)]
 impl SharedVirtualNicMobileDispatcherTask {
-    async fn run(mut self) {
+    async fn run(mut self, first_open_sender: oneshot::Sender<Result<(), Error>>) {
+        match self.open_tun().await {
+            Ok(()) => {
+                if first_open_sender.send(Ok(())).is_err() {
+                    self.cleanup(false);
+                    return;
+                }
+            }
+            Err(err) => {
+                self.cleanup(false);
+                let _ = first_open_sender.send(Err(err));
+                return;
+            }
+        }
+
         let mut rebuild_delay = MOBILE_REBUILD_INITIAL_DELAY;
         let mut wait_before_rebuild = false;
         let mut rebuild_deadline = None;
@@ -836,13 +877,17 @@ impl SharedVirtualNicMobileDispatcherTask {
                             "shared virtual nic dropped member packet while rebuilding mobile tun"
                         );
                     }
-                    changed = self.tun_fd.changed() => {
-                        if changed.is_err() {
+                    update = self.tun_update_receiver.recv() => {
+                        let Some(update) = update else {
                             self.cleanup(true);
                             return;
+                        };
+                        if self.apply_tun_update(update).await {
+                            rebuild_delay = MOBILE_REBUILD_INITIAL_DELAY;
+                            wait_before_rebuild = false;
+                        } else {
+                            wait_before_rebuild = true;
                         }
-                        rebuild_delay = MOBILE_REBUILD_INITIAL_DELAY;
-                        wait_before_rebuild = false;
                         rebuild_deadline = None;
                     }
                     _ = tokio::time::sleep_until(deadline) => {
@@ -893,30 +938,50 @@ impl SharedVirtualNicMobileDispatcherTask {
                     rebuild_delay = MOBILE_REBUILD_INITIAL_DELAY;
                     self.state.forward_tun_packet_to_member(packet).await;
                 }
-                changed = self.tun_fd.changed() => {
-                    if changed.is_err() {
+                update = self.tun_update_receiver.recv() => {
+                    let Some(update) = update else {
                         self.cleanup(true);
                         return;
-                    }
-                    self.drop_tun();
+                    };
+                    let opened = self.apply_tun_update(update).await;
                     rebuild_delay = MOBILE_REBUILD_INITIAL_DELAY;
-                    wait_before_rebuild = false;
+                    wait_before_rebuild = !opened;
                     rebuild_deadline = None;
                 }
             }
         }
     }
 
-    async fn rebuild_tun(&mut self) -> bool {
-        let tun_fd = *self.tun_fd.borrow_and_update();
-        match self.nic.lock().await.create_dev_for_mobile(tun_fd).await {
-            Ok(tunnel) => {
-                let (tun_stream, tun_sink) = tunnel.split();
-                self.tun_stream = Some(tun_stream);
-                self.tun_sink = Some(tun_sink);
-                tracing::info!(fd = tun_fd, "rebuilt shared virtual nic mobile tun");
+    async fn open_tun(&mut self) -> Result<(), Error> {
+        let tun_fd = self.tun_fd;
+        let tunnel = self.nic.lock().await.create_dev_for_mobile(tun_fd).await?;
+        let (tun_stream, tun_sink) = tunnel.split();
+        self.tun_stream = Some(tun_stream);
+        self.tun_sink = Some(tun_sink);
+        tracing::info!(fd = tun_fd, "rebuilt shared virtual nic mobile tun");
+        Ok(())
+    }
+
+    async fn apply_tun_update(&mut self, update: SharedVirtualNicMobileTunUpdate) -> bool {
+        self.drop_tun();
+        self.tun_fd = update.tun_fd;
+        match self.open_tun().await {
+            Ok(()) => {
+                let _ = update.ack.send(Ok(()));
                 true
             }
+            Err(err) => {
+                tracing::error!(fd = self.tun_fd, ?err, "failed to replace mobile tun");
+                let _ = update.ack.send(Err(err));
+                false
+            }
+        }
+    }
+
+    async fn rebuild_tun(&mut self) -> bool {
+        let tun_fd = self.tun_fd;
+        match self.open_tun().await {
+            Ok(()) => true,
             Err(err) => {
                 tracing::error!(
                     fd = tun_fd,
@@ -975,6 +1040,15 @@ impl SharedVirtualNicMobileDispatcherTask {
         self.member_tunnel_table.detach_dispatcher();
         self.state.close_all();
     }
+}
+
+#[cfg(any(mobile, test))]
+async fn await_mobile_open(receiver: oneshot::Receiver<Result<(), Error>>) -> Result<(), Error> {
+    receiver.await.map_err(|_| {
+        Error::from(anyhow::anyhow!(
+            "shared virtual nic mobile dispatcher stopped before opening TUN"
+        ))
+    })?
 }
 
 #[cfg(mobile)]
@@ -1722,7 +1796,34 @@ mod tests {
     };
 
     use super::*;
-    use crate::tunnel::{TunnelError, common::TunnelWrapper, ring::create_ring_tunnel_pair};
+    use easytier_core::tunnel::{
+        TunnelError, ring::create_ring_tunnel_pair, wrapper::TunnelWrapper,
+    };
+
+    #[tokio::test]
+    async fn mobile_open_handshake_waits_for_dispatcher_result() {
+        let (sender, receiver) = oneshot::channel();
+        let waiter = tokio::spawn(await_mobile_open(receiver));
+
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished());
+
+        sender.send(Ok(())).unwrap();
+        waiter.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn mobile_open_handshake_preserves_original_error() {
+        let (sender, receiver) = oneshot::channel();
+        let waiter = tokio::spawn(await_mobile_open(receiver));
+        let errno = 9;
+
+        sender
+            .send(Err(std::io::Error::from_raw_os_error(errno).into()))
+            .unwrap();
+        let err = waiter.await.unwrap().unwrap_err();
+        assert!(matches!(err, Error::IOError(ref io_err) if io_err.raw_os_error() == Some(errno)));
+    }
 
     fn ipv6_packet(src: Ipv6Addr, dst: Ipv6Addr) -> ZCPacket {
         let mut payload = vec![0; IPV6_HEADER_LEN];
@@ -2010,7 +2111,7 @@ mod tests {
 
         assert!(first_receiver.try_recv().is_err());
         let packet = source_receiver.try_recv().unwrap();
-        let ipv4 = pnet::packet::ipv4::Ipv4Packet::new(packet.payload()).unwrap();
+        let ipv4 = pnet_packet::ipv4::Ipv4Packet::new(packet.payload()).unwrap();
         assert_eq!(ipv4.get_source(), source_owner_ip);
         assert_ne!(ipv4.get_source(), first_ip);
         assert_eq!(ipv4.get_destination(), remote_ip);
@@ -2030,7 +2131,7 @@ mod tests {
             SharedVirtualNicFlowAddr::from(translated_src)
         ));
 
-        let ipv4 = pnet::packet::ipv4::Ipv4Packet::new(packet.payload()).unwrap();
+        let ipv4 = pnet_packet::ipv4::Ipv4Packet::new(packet.payload()).unwrap();
         assert_eq!(ipv4.get_source(), translated_src);
         assert_eq!(ipv4.get_destination(), dst);
         assert_eq!(&packet.payload()[IPV4_HEADER_MIN_LEN..], &fragment_payload);
@@ -2055,7 +2156,7 @@ mod tests {
         ));
 
         let udp =
-            pnet::packet::udp::UdpPacket::new(&packet.payload()[IPV4_HEADER_MIN_LEN..]).unwrap();
+            pnet_packet::udp::UdpPacket::new(&packet.payload()[IPV4_HEADER_MIN_LEN..]).unwrap();
         assert_eq!(udp.get_checksum(), expected_checksum);
         assert_eq!(
             &packet.payload()[IPV4_HEADER_MIN_LEN + UDP_HEADER_LEN..],
@@ -2154,7 +2255,7 @@ mod tests {
 
         assert!(source_receiver.try_recv().is_err());
         let translated = destination_receiver.try_recv().unwrap();
-        let translated_ipv4 = pnet::packet::ipv4::Ipv4Packet::new(translated.payload()).unwrap();
+        let translated_ipv4 = pnet_packet::ipv4::Ipv4Packet::new(translated.payload()).unwrap();
         assert_eq!(translated_ipv4.get_source(), destination_owner_ip);
         assert_eq!(translated_ipv4.get_destination(), remote_ip);
 
@@ -2162,7 +2263,7 @@ mod tests {
             destination_owner,
             ipv4_udp_packet_with_ports(remote_ip, destination_owner_ip, 5678, 1234),
         );
-        let reply_ipv4 = pnet::packet::ipv4::Ipv4Packet::new(reply.payload()).unwrap();
+        let reply_ipv4 = pnet_packet::ipv4::Ipv4Packet::new(reply.payload()).unwrap();
         assert_eq!(reply_ipv4.get_source(), remote_ip);
         assert_eq!(reply_ipv4.get_destination(), source_owner_ip);
     }
@@ -2199,7 +2300,7 @@ mod tests {
             destination_owner,
             ipv4_udp_packet_with_ports(remote_ip, destination_owner_ip, 5678, 1234),
         );
-        let reply_ipv4 = pnet::packet::ipv4::Ipv4Packet::new(reply.payload()).unwrap();
+        let reply_ipv4 = pnet_packet::ipv4::Ipv4Packet::new(reply.payload()).unwrap();
         assert_eq!(reply_ipv4.get_source(), remote_ip);
         assert_eq!(reply_ipv4.get_destination(), destination_owner_ip);
     }
@@ -2236,7 +2337,7 @@ mod tests {
             destination_owner,
             ipv4_udp_packet_with_ports(remote_ip, destination_owner_ip, 5678, 1234),
         );
-        let reply_ipv4 = pnet::packet::ipv4::Ipv4Packet::new(reply.payload()).unwrap();
+        let reply_ipv4 = pnet_packet::ipv4::Ipv4Packet::new(reply.payload()).unwrap();
         assert_eq!(reply_ipv4.get_source(), remote_ip);
         assert_eq!(reply_ipv4.get_destination(), destination_owner_ip);
     }
@@ -2312,7 +2413,7 @@ mod tests {
             .await;
 
         let packet = source_receiver.try_recv().unwrap();
-        let ipv4 = pnet::packet::ipv4::Ipv4Packet::new(packet.payload()).unwrap();
+        let ipv4 = pnet_packet::ipv4::Ipv4Packet::new(packet.payload()).unwrap();
         assert_eq!(ipv4.get_source(), source_owner_ip);
         assert_ne!(ipv4.get_source(), stale_owner_ip);
         assert_eq!(ipv4.get_destination(), remote_ip);
@@ -2355,7 +2456,7 @@ mod tests {
             destination_owner,
             ipv4_udp_packet_with_ports(remote_ip, destination_owner_ip, 5678, 1234),
         );
-        let reply_ipv4 = pnet::packet::ipv4::Ipv4Packet::new(reply.payload()).unwrap();
+        let reply_ipv4 = pnet_packet::ipv4::Ipv4Packet::new(reply.payload()).unwrap();
         assert_eq!(reply_ipv4.get_source(), remote_ip);
         assert_eq!(reply_ipv4.get_destination(), destination_owner_ip);
     }
@@ -2387,7 +2488,7 @@ mod tests {
 
         assert!(first_receiver.try_recv().is_err());
         let translated = route_receiver.try_recv().unwrap();
-        let translated_ipv4 = pnet::packet::ipv4::Ipv4Packet::new(translated.payload()).unwrap();
+        let translated_ipv4 = pnet_packet::ipv4::Ipv4Packet::new(translated.payload()).unwrap();
         assert_eq!(translated_ipv4.get_source(), route_owner_ip);
         assert_eq!(translated_ipv4.get_destination(), remote_ip);
     }
@@ -2418,7 +2519,7 @@ mod tests {
 
         assert!(first_receiver.try_recv().is_err());
         let translated = destination_receiver.try_recv().unwrap();
-        let translated_ipv4 = pnet::packet::ipv4::Ipv4Packet::new(translated.payload()).unwrap();
+        let translated_ipv4 = pnet_packet::ipv4::Ipv4Packet::new(translated.payload()).unwrap();
         assert_eq!(translated_ipv4.get_source(), destination_owner_ip);
         assert_eq!(translated_ipv4.get_destination(), remote_ip);
 
@@ -2426,7 +2527,7 @@ mod tests {
             destination_owner,
             ipv4_icmp_echo_packet(remote_ip, destination_owner_ip),
         );
-        let reply_ipv4 = pnet::packet::ipv4::Ipv4Packet::new(reply.payload()).unwrap();
+        let reply_ipv4 = pnet_packet::ipv4::Ipv4Packet::new(reply.payload()).unwrap();
         assert_eq!(reply_ipv4.get_source(), remote_ip);
         assert_eq!(reply_ipv4.get_destination(), synthetic_source);
     }
@@ -2492,7 +2593,7 @@ mod tests {
                 1,
             ),
         );
-        let first_reply_ipv4 = pnet::packet::ipv4::Ipv4Packet::new(first_reply.payload()).unwrap();
+        let first_reply_ipv4 = pnet_packet::ipv4::Ipv4Packet::new(first_reply.payload()).unwrap();
         assert_eq!(first_reply_ipv4.get_destination(), first_source_ip);
 
         let second_reply = state.prepare_member_packet_to_tun(
@@ -2505,8 +2606,7 @@ mod tests {
                 1,
             ),
         );
-        let second_reply_ipv4 =
-            pnet::packet::ipv4::Ipv4Packet::new(second_reply.payload()).unwrap();
+        let second_reply_ipv4 = pnet_packet::ipv4::Ipv4Packet::new(second_reply.payload()).unwrap();
         assert_eq!(second_reply_ipv4.get_destination(), second_source_ip);
     }
 
@@ -2527,7 +2627,7 @@ mod tests {
             .await;
 
         let packet = receiver.try_recv().unwrap();
-        let ipv4 = pnet::packet::ipv4::Ipv4Packet::new(packet.payload()).unwrap();
+        let ipv4 = pnet_packet::ipv4::Ipv4Packet::new(packet.payload()).unwrap();
         assert_eq!(ipv4.get_source(), local_ip);
         assert_eq!(ipv4.get_destination(), remote_ip);
     }
@@ -2561,7 +2661,9 @@ mod tests {
     async fn dispatcher_invalidates_shared_nic_when_tun_read_fails() {
         let member_id = uuid::Uuid::from_u128(1);
         let (tun_tx, tun_rx) = mpsc::unbounded_channel();
-        let tun_stream = tokio_stream::wrappers::UnboundedReceiverStream::new(tun_rx);
+        let tun_stream = futures::stream::unfold(tun_rx, |mut receiver| async move {
+            receiver.recv().await.map(|packet| (packet, receiver))
+        });
         let tun_sink = futures::sink::unfold((), |(), _packet: ZCPacket| async {
             Ok::<(), TunnelError>(())
         });
@@ -2603,7 +2705,9 @@ mod tests {
     async fn dispatcher_shutdown_for_replacement_keeps_shared_nic_valid() {
         let member_id = uuid::Uuid::from_u128(1);
         let (_tun_tx, tun_rx) = mpsc::unbounded_channel();
-        let tun_stream = tokio_stream::wrappers::UnboundedReceiverStream::new(tun_rx);
+        let tun_stream = futures::stream::unfold(tun_rx, |mut receiver| async move {
+            receiver.recv().await.map(|packet| (packet, receiver))
+        });
         let tun_sink = futures::sink::unfold((), |(), _packet: ZCPacket| async {
             Ok::<(), TunnelError>(())
         });

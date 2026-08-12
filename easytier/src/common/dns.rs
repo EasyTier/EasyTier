@@ -1,19 +1,35 @@
-use std::net::SocketAddr;
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs as _};
+#[cfg(feature = "dns-resolver")]
+use std::{future::Future, io, pin::Pin, sync::Arc, time::Duration};
 
 use anyhow::Context;
-use hickory_proto::runtime::TokioRuntimeProvider;
+use async_trait::async_trait;
+use easytier_core::host::dns::{DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord};
+use easytier_core::socket::SocketContext;
+#[cfg(feature = "dns-resolver")]
+use hickory_proto::runtime::{RuntimeProvider, TokioRuntimeProvider, iocompat::AsyncIoTokioAsStd};
+#[cfg(feature = "dns-resolver")]
 use hickory_proto::xfer::Protocol;
+#[cfg(feature = "dns-resolver")]
 use hickory_resolver::config::{LookupIpStrategy, NameServerConfig, ResolverConfig, ResolverOpts};
+#[cfg(feature = "dns-resolver")]
 use hickory_resolver::name_server::{GenericConnector, TokioConnectionProvider};
+#[cfg(feature = "dns-resolver")]
 use hickory_resolver::system_conf::read_system_conf;
+#[cfg(feature = "dns-resolver")]
 use hickory_resolver::{Resolver, TokioResolver};
+#[cfg(feature = "dns-resolver")]
 use once_cell::sync::Lazy;
 use tokio::net::lookup_host;
+#[cfg(feature = "dns-resolver")]
+use tokio::net::{TcpSocket, TcpStream, UdpSocket};
 
 use super::error::Error;
+use super::netns::NetNS;
+#[cfg(feature = "dns-resolver")]
+use crate::tunnel::common::apply_socket_mark;
 
+#[cfg(feature = "dns-resolver")]
 pub fn get_default_resolver_config() -> ResolverConfig {
     let mut default_resolve_config = ResolverConfig::new();
     default_resolve_config.add_name_server(NameServerConfig::new(
@@ -27,26 +43,312 @@ pub fn get_default_resolver_config() -> ResolverConfig {
     default_resolve_config
 }
 
-pub static ALLOW_USE_SYSTEM_DNS_RESOLVER: Lazy<AtomicBool> = Lazy::new(|| AtomicBool::new(true));
-
-pub static RESOLVER: Lazy<Arc<Resolver<GenericConnector<TokioRuntimeProvider>>>> =
-    Lazy::new(|| {
-        let system_cfg = read_system_conf();
-        let mut cfg = get_default_resolver_config();
-        let mut opt = ResolverOpts::default();
-        if let Ok(s) = system_cfg {
-            for ns in s.0.name_servers() {
-                cfg.add_name_server(ns.clone());
-            }
-            opt = s.1;
+#[cfg(feature = "dns-resolver")]
+fn resolver_config() -> (ResolverConfig, ResolverOpts) {
+    let system_cfg = read_system_conf();
+    let mut config = get_default_resolver_config();
+    let mut options = ResolverOpts::default();
+    if let Ok(system) = system_cfg {
+        for name_server in system.0.name_servers() {
+            config.add_name_server(name_server.clone());
         }
-        opt.ip_strategy = LookupIpStrategy::Ipv4AndIpv6;
-        let builder = TokioResolver::builder_with_config(cfg, TokioConnectionProvider::default())
-            .with_options(opt);
-        Arc::new(builder.build())
-    });
+        options = system.1;
+    }
+    options.ip_strategy = LookupIpStrategy::Ipv4AndIpv6;
+    (config, options)
+}
 
-pub async fn resolve_txt_record(domain_name: &str) -> Result<String, Error> {
+#[cfg(feature = "dns-resolver")]
+static RESOLVER: Lazy<Arc<Resolver<GenericConnector<TokioRuntimeProvider>>>> = Lazy::new(|| {
+    let (config, options) = resolver_config();
+    let builder = TokioResolver::builder_with_config(config, TokioConnectionProvider::default())
+        .with_options(options);
+    Arc::new(builder.build())
+});
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct RuntimeDnsIoContext {
+    netns: Option<String>,
+    socket_mark: Option<u32>,
+}
+
+impl RuntimeDnsIoContext {
+    fn from_socket_context(context: &SocketContext) -> Self {
+        Self {
+            netns: context
+                .netns
+                .as_ref()
+                .map(|namespace| namespace.token().to_owned()),
+            socket_mark: context.socket_mark,
+        }
+    }
+
+    fn netns(&self) -> NetNS {
+        NetNS::new(self.netns.clone())
+    }
+
+    #[cfg(feature = "dns-resolver")]
+    fn is_process_default(&self) -> bool {
+        self.netns.is_none() && self.socket_mark.is_none()
+    }
+}
+
+#[cfg(feature = "dns-resolver")]
+#[derive(Clone)]
+struct RuntimeDnsIoProvider {
+    inner: TokioRuntimeProvider,
+    context: RuntimeDnsIoContext,
+}
+
+#[cfg(feature = "dns-resolver")]
+impl RuntimeDnsIoProvider {
+    fn new(context: RuntimeDnsIoContext) -> Self {
+        Self {
+            inner: TokioRuntimeProvider::new(),
+            context,
+        }
+    }
+}
+
+#[cfg(feature = "dns-resolver")]
+fn create_dns_tcp_socket(
+    context: &RuntimeDnsIoContext,
+    server_addr: SocketAddr,
+    bind_addr: Option<SocketAddr>,
+) -> io::Result<TcpSocket> {
+    context.netns().run(|| {
+        let socket = if server_addr.is_ipv4() {
+            TcpSocket::new_v4()?
+        } else {
+            TcpSocket::new_v6()?
+        };
+        apply_socket_mark(&socket2::SockRef::from(&socket), context.socket_mark)
+            .map_err(io::Error::other)?;
+        if let Some(bind_addr) = bind_addr {
+            socket.bind(bind_addr)?;
+        }
+        socket.set_nodelay(true)?;
+        Ok(socket)
+    })
+}
+
+#[cfg(feature = "dns-resolver")]
+fn create_dns_udp_socket(
+    context: &RuntimeDnsIoContext,
+    local_addr: SocketAddr,
+) -> io::Result<UdpSocket> {
+    context.netns().run(|| {
+        let socket = socket2::Socket::new(
+            socket2::Domain::for_address(local_addr),
+            socket2::Type::DGRAM,
+            Some(socket2::Protocol::UDP),
+        )?;
+        socket.set_nonblocking(true)?;
+        apply_socket_mark(&socket, context.socket_mark).map_err(io::Error::other)?;
+        socket.bind(&socket2::SockAddr::from(local_addr))?;
+        let socket: std::net::UdpSocket = socket.into();
+        UdpSocket::from_std(socket)
+    })
+}
+
+#[cfg(feature = "dns-resolver")]
+impl RuntimeProvider for RuntimeDnsIoProvider {
+    type Handle = <TokioRuntimeProvider as RuntimeProvider>::Handle;
+    type Timer = <TokioRuntimeProvider as RuntimeProvider>::Timer;
+    type Udp = UdpSocket;
+    type Tcp = AsyncIoTokioAsStd<TcpStream>;
+
+    fn create_handle(&self) -> Self::Handle {
+        self.inner.create_handle()
+    }
+
+    fn connect_tcp(
+        &self,
+        server_addr: SocketAddr,
+        bind_addr: Option<SocketAddr>,
+        wait_for: Option<Duration>,
+    ) -> Pin<Box<dyn Send + Future<Output = io::Result<Self::Tcp>>>> {
+        // setns is thread-local. Create the socket synchronously while the
+        // guard is active, then perform only descriptor I/O after it is gone.
+        let socket = create_dns_tcp_socket(&self.context, server_addr, bind_addr);
+        Box::pin(async move {
+            let socket = socket?;
+            let wait_for = wait_for.unwrap_or(Duration::from_secs(5));
+            match tokio::time::timeout(wait_for, socket.connect(server_addr)).await {
+                Ok(Ok(stream)) => Ok(AsyncIoTokioAsStd(stream)),
+                Ok(Err(error)) => Err(error),
+                Err(_) => Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!("connection to {server_addr:?} timed out after {wait_for:?}"),
+                )),
+            }
+        })
+    }
+
+    fn bind_udp(
+        &self,
+        local_addr: SocketAddr,
+        _server_addr: SocketAddr,
+    ) -> Pin<Box<dyn Send + Future<Output = io::Result<Self::Udp>>>> {
+        // Keep namespace switching out of the returned future for the same
+        // reason as TCP above.
+        let socket = create_dns_udp_socket(&self.context, local_addr);
+        Box::pin(async move { socket })
+    }
+}
+
+#[cfg(feature = "dns-resolver")]
+type ContextualResolver = Resolver<GenericConnector<RuntimeDnsIoProvider>>;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct RuntimeDnsResolver;
+
+impl RuntimeDnsResolver {
+    pub(crate) fn new() -> Self {
+        Self
+    }
+
+    // A netns token can be deleted and recreated. Keep contextual resolvers
+    // request-scoped so pooled DNS sockets cannot outlive that namespace.
+    #[cfg(feature = "dns-resolver")]
+    fn contextual_resolver(context: RuntimeDnsIoContext) -> ContextualResolver {
+        let (config, options) = resolver_config();
+        let provider = GenericConnector::new(RuntimeDnsIoProvider::new(context));
+        Resolver::builder_with_config(config, provider)
+            .with_options(options)
+            .build()
+    }
+
+    #[cfg(feature = "dns-resolver")]
+    async fn resolve_contextual_ips(
+        &self,
+        context: RuntimeDnsIoContext,
+        host: String,
+    ) -> anyhow::Result<Vec<IpAddr>> {
+        if context.socket_mark.is_none() {
+            // libc DNS cannot attach SO_MARK. It remains usable for a
+            // namespace-only context when confined to one blocking thread.
+            let lookup_host = host.clone();
+            let netns = context.netns();
+            match tokio::task::spawn_blocking(move || {
+                netns.run(|| {
+                    (lookup_host.as_str(), 0)
+                        .to_socket_addrs()
+                        .map(|addrs| addrs.map(|addr| addr.ip()).collect())
+                })
+            })
+            .await
+            .context("contextual system DNS task failed")?
+            {
+                Ok(addresses) => return Ok(addresses),
+                Err(error) => tracing::error!(?error, "contextual system dns lookup failed"),
+            }
+        }
+
+        let resolver = Self::contextual_resolver(context);
+        let response = resolver
+            .lookup_ip(&host)
+            .await
+            .with_context(|| format!("contextual hickory lookup_ip failed, host: {host}"))?;
+        Ok(response.iter().collect())
+    }
+}
+
+#[async_trait]
+impl DnsResolver for RuntimeDnsResolver {
+    async fn resolve(&self, query: DnsQuery) -> anyhow::Result<Vec<IpAddr>> {
+        let context = RuntimeDnsIoContext::from_socket_context(&query.context);
+        #[cfg(feature = "dns-resolver")]
+        {
+            if context.is_process_default() {
+                return Ok(resolve_ips(&query.host).await?);
+            }
+            return self.resolve_contextual_ips(context, query.host).await;
+        }
+        #[cfg(not(feature = "dns-resolver"))]
+        {
+            if context.socket_mark.is_some() {
+                anyhow::bail!("socket-marked DNS requires DNS resolver support");
+            }
+            if context.netns.is_none() {
+                return Ok(resolve_ips(&query.host).await?);
+            }
+            let host = query.host;
+            let netns = context.netns();
+            return tokio::task::spawn_blocking(move || {
+                netns.run(|| {
+                    (host.as_str(), 0)
+                        .to_socket_addrs()
+                        .map(|addrs| addrs.map(|addr| addr.ip()).collect())
+                })
+            })
+            .await
+            .context("contextual system DNS task failed")?
+            .map_err(Into::into);
+        }
+    }
+}
+
+#[cfg(feature = "dns-resolver")]
+#[async_trait]
+impl DnsRecordResolver for RuntimeDnsResolver {
+    async fn resolve_txt(&self, query: DnsQuery) -> anyhow::Result<String> {
+        let context = RuntimeDnsIoContext::from_socket_context(&query.context);
+        if context.is_process_default() {
+            return Ok(resolve_txt_record(&query.host).await?);
+        }
+
+        let resolver = Self::contextual_resolver(context);
+        let response = resolver
+            .txt_lookup(&query.host)
+            .await
+            .with_context(|| format!("txt_lookup failed, domain_name: {}", query.host))?;
+        let record = response
+            .iter()
+            .next()
+            .with_context(|| format!("no txt record found, domain_name: {}", query.host))?;
+        let data = record
+            .txt_data()
+            .first()
+            .with_context(|| format!("empty txt record, domain_name: {}", query.host))?;
+        Ok(String::from_utf8_lossy(data).into_owned())
+    }
+
+    async fn resolve_srv(&self, query: DnsQuery) -> anyhow::Result<Vec<DnsSrvRecord>> {
+        let context = RuntimeDnsIoContext::from_socket_context(&query.context);
+        let response = if context.is_process_default() {
+            RESOLVER.srv_lookup(&query.host).await?
+        } else {
+            Self::contextual_resolver(context)
+                .srv_lookup(&query.host)
+                .await?
+        };
+        Ok(response
+            .iter()
+            .map(|record| DnsSrvRecord {
+                priority: record.priority(),
+                weight: record.weight(),
+                port: record.port(),
+                target: record.target().to_utf8(),
+            })
+            .collect())
+    }
+}
+
+#[cfg(not(feature = "dns-resolver"))]
+#[async_trait]
+impl DnsRecordResolver for RuntimeDnsResolver {
+    async fn resolve_txt(&self, _query: DnsQuery) -> anyhow::Result<String> {
+        anyhow::bail!("this build does not include TXT DNS resolution")
+    }
+
+    async fn resolve_srv(&self, _query: DnsQuery) -> anyhow::Result<Vec<DnsSrvRecord>> {
+        anyhow::bail!("this build does not include SRV DNS resolution")
+    }
+}
+
+#[cfg(feature = "dns-resolver")]
+async fn resolve_txt_record(domain_name: &str) -> Result<String, Error> {
     let r = RESOLVER.clone();
     let response = r
         .txt_lookup(domain_name)
@@ -68,6 +370,14 @@ pub async fn socket_addrs(
     url: &url::Url,
     default_port_number: impl Fn() -> Option<u16>,
 ) -> Result<Vec<SocketAddr>, Error> {
+    socket_addrs_with_system_resolver(url, default_port_number, true).await
+}
+
+async fn socket_addrs_with_system_resolver(
+    url: &url::Url,
+    default_port_number: impl Fn() -> Option<u16>,
+    allow_system_resolver: bool,
+) -> Result<Vec<SocketAddr>, Error> {
     let host = url.host().ok_or(Error::InvalidUrl(url.to_string()))?;
     let port = url
         .port()
@@ -82,7 +392,7 @@ pub async fn socket_addrs(
     }
     let host = host.to_string();
 
-    if ALLOW_USE_SYSTEM_DNS_RESOLVER.load(std::sync::atomic::Ordering::Relaxed) {
+    if allow_system_resolver {
         let socket_addr = format!("{}:{}", host, port);
         match lookup_host(socket_addr).await {
             Ok(a) => {
@@ -92,27 +402,76 @@ pub async fn socket_addrs(
             }
             Err(e) => {
                 tracing::error!(?e, "system dns lookup failed");
+                #[cfg(not(feature = "dns-resolver"))]
+                return Err(e.into());
             }
         }
     }
 
     // use hickory_resolver
-    let ret = RESOLVER.lookup_ip(&host).await.with_context(|| {
-        format!(
-            "hickory dns lookup_ip failed, host: {}, port: {}",
-            host, port
-        )
-    })?;
-    Ok(ret
-        .iter()
-        .map(|ip| SocketAddr::new(ip, port))
-        .collect::<Vec<_>>())
+    #[cfg(feature = "dns-resolver")]
+    {
+        let ret = RESOLVER.lookup_ip(&host).await.with_context(|| {
+            format!(
+                "hickory dns lookup_ip failed, host: {}, port: {}",
+                host, port
+            )
+        })?;
+        Ok(ret
+            .iter()
+            .map(|ip| SocketAddr::new(ip, port))
+            .collect::<Vec<_>>())
+    }
+    #[cfg(not(feature = "dns-resolver"))]
+    unreachable!("the system resolver error returns above")
+}
+
+#[cfg(feature = "dns-resolver")]
+async fn resolve_ips(host: &str) -> Result<Vec<IpAddr>, Error> {
+    match lookup_host((host, 0)).await {
+        Ok(a) => {
+            let a = a.map(|addr| addr.ip()).collect();
+            tracing::debug!(?a, "system dns lookup done");
+            return Ok(a);
+        }
+        Err(e) => {
+            tracing::error!(?e, "system dns lookup failed");
+        }
+    }
+
+    let ret = RESOLVER
+        .lookup_ip(host)
+        .await
+        .with_context(|| format!("hickory dns lookup_ip failed, host: {}", host))?;
+    Ok(ret.iter().collect::<Vec<_>>())
+}
+
+#[cfg(not(feature = "dns-resolver"))]
+async fn resolve_ips(host: &str) -> Result<Vec<IpAddr>, Error> {
+    Ok(lookup_host((host, 0))
+        .await?
+        .map(|addr| addr.ip())
+        .collect())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use guarden::defer;
+
+    #[test]
+    fn runtime_dns_context_preserves_process_routing_inputs() {
+        let context = SocketContext::default()
+            .with_socket_mark(Some(0))
+            .with_netns(Some(easytier_core::socket::NetNamespace::new("instance-a")));
+
+        assert_eq!(
+            RuntimeDnsIoContext::from_socket_context(&context),
+            RuntimeDnsIoContext {
+                netns: Some("instance-a".to_owned()),
+                socket_mark: Some(0),
+            }
+        );
+    }
 
     #[tokio::test]
     async fn test_socket_addrs() {
@@ -121,11 +480,9 @@ mod tests {
         assert_eq!(2, addrs.len(), "addrs: {:?}", addrs);
         println!("addrs: {:?}", addrs);
 
-        ALLOW_USE_SYSTEM_DNS_RESOLVER.store(false, std::sync::atomic::Ordering::Relaxed);
-        defer!(
-            ALLOW_USE_SYSTEM_DNS_RESOLVER.store(true, std::sync::atomic::Ordering::Relaxed);
-        );
-        let addrs = socket_addrs(&url, || Some(80)).await.unwrap();
+        let addrs = socket_addrs_with_system_resolver(&url, || Some(80), false)
+            .await
+            .unwrap();
         assert_eq!(2, addrs.len(), "addrs: {:?}", addrs);
         println!("addrs2: {:?}", addrs);
     }

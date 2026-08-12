@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { useTimeAgo } from '@vueuse/core'
-import { IPv4 } from 'ip-num/IPNumber'
 import { NetworkInstance, type TunnelInfo, type NodeInfo, type PeerRoutePair } from '../types/network'
 import { useI18n } from 'vue-i18n';
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { ipv4InetToString, ipv4ToString, ipv6ToString } from '../modules/utils';
+import { latencyMs, lossRate, numericValue, peerConns } from '../modules/statusDisplay';
 import { Badge, DataTable, Column, Tag, Chip, Button, Dialog, ScrollPanel, Timeline, Divider, Card, } from 'primevue';
 import NetworkChart from './NetworkChart.vue';
 
@@ -39,8 +39,8 @@ function routeCost(info: any) {
   return '?'
 }
 
-function resolveObjPath(path: string, obj = globalThis, separator = '.') {
-  const properties = Array.isArray(path) ? path : path.split(separator)
+function resolveObjPath(path: string, obj: any = globalThis, separator = '.') {
+  const properties = path.split(separator)
   return properties.reduce((prev, curr) => prev?.[curr], obj)
 }
 
@@ -48,10 +48,17 @@ function statsCommon(info: any, field: string): number | undefined {
   if (!info.peer)
     return undefined
 
-  const conns = info.peer.conns
-  return conns.reduce((acc: number, conn: any) => {
-    return acc + resolveObjPath(field, conn)
-  }, 0)
+  let sum = 0
+  let hasValue = false
+  for (const conn of peerConns(info)) {
+    const value = numericValue(resolveObjPath(field, conn))
+    if (value === undefined)
+      continue
+
+    sum += value
+    hasValue = true
+  }
+  return hasValue ? sum : undefined
 }
 
 function humanFileSize(bytes: number, si = false, dp = 1) {
@@ -74,14 +81,6 @@ function humanFileSize(bytes: number, si = false, dp = 1) {
   return `${bytes.toFixed(dp)} ${units[u]}`
 }
 
-function latencyMs(info: PeerRoutePair) {
-  let lat_us_sum = statsCommon(info, 'stats.latency_us')
-  if (lat_us_sum === undefined)
-    return ''
-  lat_us_sum = lat_us_sum / 1000 / info.peer!.conns.length
-  return `${lat_us_sum % 1 > 0 ? Math.round(lat_us_sum) + 1 : Math.round(lat_us_sum)}ms`
-}
-
 function txBytes(info: PeerRoutePair) {
   const tx = statsCommon(info, 'stats.tx_bytes')
   return tx ? humanFileSize(tx) : ''
@@ -92,11 +91,6 @@ function rxBytes(info: PeerRoutePair) {
   return rx ? humanFileSize(rx) : ''
 }
 
-function lossRate(info: PeerRoutePair) {
-  const lossRate = statsCommon(info, 'loss_rate')
-  return lossRate !== undefined ? `${Math.round(lossRate * 100)}%` : ''
-}
-
 function version(info: PeerRoutePair) {
   return info.route.version === '' ? 'unknown' : info.route.version
 }
@@ -105,7 +99,7 @@ function ipFormat(info: PeerRoutePair) {
   const ip = info.route.ipv4_addr
   if (typeof ip === 'string')
     return ip
-  return ip ? `${IPv4.fromNumber(ip.address.addr)}/${ip.network_length}` : ''
+  return ip ? ipv4InetToString(ip) : ''
 }
 
 function oneTunnelProto(tunnel?: TunnelInfo): string {
@@ -131,7 +125,7 @@ function oneTunnelProto(tunnel?: TunnelInfo): string {
 }
 
 function tunnelProto(info: PeerRoutePair) {
-  return [...new Set(info.peer?.conns.map(c => oneTunnelProto(c.tunnel)))].join(',')
+  return [...new Set(peerConns(info).map(c => oneTunnelProto(c.tunnel)))].join(',')
 }
 
 const myNodeInfo = computed(() => {
@@ -206,7 +200,7 @@ const myNodeInfoChips = computed(() => {
 
   // local ipv4s
   const local_ipv4s = my_node_info.ips?.interface_ipv4s
-  for (const [idx, ip] of local_ipv4s?.entries()) {
+  for (const [idx, ip] of local_ipv4s?.entries() ?? []) {
     chips.push({
       label: `Local IPv4 ${idx}: ${ipv4ToString(ip)}`,
       icon: '',
@@ -215,7 +209,7 @@ const myNodeInfoChips = computed(() => {
 
   // local ipv6s
   const local_ipv6s = my_node_info.ips?.interface_ipv6s
-  for (const [idx, ip] of local_ipv6s?.entries()) {
+  for (const [idx, ip] of local_ipv6s?.entries() ?? []) {
     chips.push({
       label: `Local IPv6 ${idx}: ${ipv6ToString(ip)}`,
       icon: '',
@@ -226,7 +220,7 @@ const myNodeInfoChips = computed(() => {
   const public_ip = my_node_info.ips?.public_ipv4
   if (public_ip) {
     chips.push({
-      label: `Public IP: ${IPv4.fromNumber(public_ip.addr)}`,
+      label: `Public IP: ${ipv4ToString(public_ip)}`,
       icon: '',
     } as Chip)
   }
@@ -241,7 +235,7 @@ const myNodeInfoChips = computed(() => {
 
   // listeners:
   const listeners = my_node_info.listeners
-  for (const [idx, listener] of listeners?.entries()) {
+  for (const [idx, listener] of listeners?.entries() ?? []) {
     chips.push({
       label: `Listener ${idx}: ${listener.url}`,
       icon: '',
@@ -286,6 +280,14 @@ function natType(info: PeerRoutePair): string {
     return udpNatTypeStrMap[udpNatType as NatType]
 
   return ''
+}
+
+function isPublicServerRoute(info: PeerRoutePair): boolean {
+  return info.route?.feature_flag?.is_public_server ?? false
+}
+
+function shouldAvoidRelayData(info: PeerRoutePair): boolean {
+  return info.route?.feature_flag?.avoid_relay_data ?? false
 }
 
 const peerCount = computed(() => {
@@ -342,7 +344,7 @@ function showEventLogs() {
   if (!detail)
     return
 
-  dialogContent.value = detail.events.map((event: string) => JSON.parse(event))
+  dialogContent.value = detail.events?.map((event: string) => JSON.parse(event)) ?? []
   dialogHeader.value = 'event_log'
   dialogVisible.value = true
 }
@@ -434,16 +436,16 @@ function showEventLogs() {
             <Column :field="ipFormat" :header="t('virtual_ipv4')" />
             <Column :header="t('hostname')">
               <template #body="slotProps">
-                <div v-if="!slotProps.data.route.cost || !slotProps.data.route.feature_flag.is_public_server"
+                <div v-if="!slotProps.data.route.cost || !isPublicServerRoute(slotProps.data)"
                   v-tooltip="slotProps.data.route.hostname">
                   {{
                     slotProps.data.route.hostname }}
                 </div>
                 <div v-else v-tooltip="slotProps.data.route.hostname" class="space-x-1">
-                  <Tag v-if="slotProps.data.route.feature_flag.is_public_server" severity="info" value="Info">
+                  <Tag v-if="isPublicServerRoute(slotProps.data)" severity="info" value="Info">
                     {{ t('status.server') }}
                   </Tag>
-                  <Tag v-if="slotProps.data.route.feature_flag.avoid_relay_data" severity="warn" value="Warn">
+                  <Tag v-if="shouldAvoidRelayData(slotProps.data)" severity="warn" value="Warn">
                     {{ t('status.relay') }}
                   </Tag>
                 </div>

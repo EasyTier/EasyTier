@@ -7,17 +7,15 @@
 // all the clients will exit and let the easytier instance to launch a new server instance.
 
 use super::{
-    MAGIC_DNS_INSTANCE_ADDR,
+    MAGIC_DNS_INSTANCE_SOCKET_ADDR,
     config::{GeneralConfigBuilder, RunConfigBuilder},
     server::Server,
     system_config::{OSConfig, SystemConfig},
 };
-#[cfg(feature = "tun")]
-use crate::instance::virtual_nic::NicBackend;
 use crate::{
     common::{
-        PeerId,
         error::Error as EtError,
+        global_ctx::ArcGlobalCtx,
         ifcfg::{IfConfiger, IfConfiguerTrait},
         netns::NetNS,
     },
@@ -25,62 +23,47 @@ use crate::{
         config::{Record, RecordBuilder, RecordType},
         server::build_authority,
     },
-    peers::{NicPacketFilter, peer_manager::PeerManager},
     proto::{
-        api::instance::Route,
         common::{TunnelInfo, Void},
         magic_dns::{
             DnsRecord, DnsRecordA, DnsRecordList, GetDnsRecordResponse, HandshakeRequest,
             HandshakeResponse, MagicDnsServerRpc, MagicDnsServerRpcServer, UpdateDnsRecordRequest,
             dns_record::{self},
         },
-        rpc_impl::standalone::{RpcServerHook, StandAloneServer},
+        rpc::standalone::{
+            RpcServerHook, RuntimeRpcListener, StandAloneServer, runtime_rpc_listener,
+        },
         rpc_types::controller::{BaseController, Controller},
     },
-    tunnel::{packet_def::ZCPacket, tcp::TcpTunnelListener},
 };
 use anyhow::Context;
 use cidr::Ipv4Inet;
-use dashmap::DashMap;
+use easytier_core::gateway::magic_dns::{
+    MagicDnsQuery, MagicDnsQueryResolver, MagicDnsRecordStore, MagicDnsResolverRegistration,
+    MagicDnsRoute,
+};
+use easytier_core::instance::CorePacketPlane;
 use hickory_proto::rr::LowerName;
 use hickory_proto::serialize::binary::{BinDecodable, BinEncoder};
 use hickory_server::authority::{MessageRequest, MessageResponse};
 use hickory_server::server::{Request, RequestHandler, ResponseHandler, ResponseInfo};
-use multimap::MultiMap;
-use pnet::packet::icmp::{IcmpTypes, MutableIcmpPacket};
-use pnet::packet::ipv4::Ipv4Packet;
-use pnet::packet::udp::UdpPacket;
-use pnet::packet::{
-    MutablePacket, Packet, icmp,
-    ip::IpNextHeaderProtocols,
-    ipv4::{self, MutableIpv4Packet},
-    udp::{self, MutableUdpPacket},
-};
-use std::net::{SocketAddr, SocketAddrV4};
 use std::sync::Mutex;
 use std::{collections::BTreeMap, io, net::Ipv4Addr, str::FromStr, sync::Arc, time::Duration};
-
-static NIC_PIPELINE_NAME: &str = "magic_dns_server";
 
 pub(super) struct MagicDnsServerInstanceData {
     dns_server: Server,
     tun_dev: Option<String>,
-    netns: Option<String>,
-    tun_ip: Ipv4Addr,
+    net_ns: NetNS,
     fake_ip: Ipv4Addr,
-    #[cfg(feature = "tun")]
-    route_backend: Option<NicBackend>,
     manage_fake_ip_route: bool,
-    my_peer_id: PeerId,
-
-    // zone -> (tunnel remote addr -> route)
-    route_infos: DashMap<String, MultiMap<url::Url, Route>>,
+    route_store: MagicDnsRecordStore,
+    record_apply: tokio::sync::Mutex<()>,
 
     system_config: Option<Box<dyn SystemConfig>>,
 }
 
 impl MagicDnsServerInstanceData {
-    pub async fn update_dns_records<'a, T: Iterator<Item = &'a Route>>(
+    pub async fn update_dns_records<'a, T: Iterator<Item = &'a MagicDnsRoute>>(
         &self,
         routes: T,
         zone: &str,
@@ -91,7 +74,7 @@ impl MagicDnsServerInstanceData {
                 continue;
             }
 
-            let Some(ipv4_addr) = route.ipv4_addr.unwrap_or_default().address else {
+            let Some(ipv4_addr) = route.ipv4_addr else {
                 continue;
             };
 
@@ -138,10 +121,9 @@ impl MagicDnsServerInstanceData {
     }
 
     pub async fn update(&self) {
-        for item in self.route_infos.iter() {
-            let zone = item.key();
-            let route_iter = item.value().flat_iter().map(|x| x.1);
-            if let Err(e) = self.update_dns_records(route_iter, zone).await {
+        let snapshot = self.route_store.snapshot();
+        for (zone, routes) in &snapshot.zones {
+            if let Err(e) = self.update_dns_records(routes.iter(), zone).await {
                 tracing::error!("Failed to update DNS records for zone {}: {:?}", zone, e);
             }
         }
@@ -149,7 +131,7 @@ impl MagicDnsServerInstanceData {
 
     async fn keep_zone_authoritative(&self, zone: &str) {
         if let Err(e) = self
-            .update_dns_records(std::iter::empty::<&Route>(), zone)
+            .update_dns_records(std::iter::empty::<&MagicDnsRoute>(), zone)
             .await
         {
             tracing::error!(
@@ -202,24 +184,22 @@ impl MagicDnsServerRpc for MagicDnsServerInstanceData {
         let Some(remote_addr) = &tunnel_info.remote_addr else {
             return Err(anyhow::anyhow!("No remote addr").into());
         };
+        let _apply = self.record_apply.lock().await;
         let zone = input.zone.clone();
         let remote_addr: url::Url = remote_addr.clone().into();
-        let mut zone_removed = false;
-
-        if let Some(mut routes_by_addr) = self.route_infos.get_mut(&zone) {
-            routes_by_addr.remove(&remote_addr);
-            if !input.routes.is_empty() {
-                routes_by_addr.insert_many(remote_addr, input.routes);
-            }
-            zone_removed = routes_by_addr.is_empty();
-        } else if !input.routes.is_empty() {
-            let mut routes_by_addr = MultiMap::new();
-            routes_by_addr.insert_many(remote_addr, input.routes);
-            self.route_infos.insert(zone.clone(), routes_by_addr);
-        }
+        let routes = input
+            .routes
+            .into_iter()
+            .map(|route| MagicDnsRoute {
+                hostname: route.hostname,
+                ipv4_addr: route.ipv4_addr.unwrap_or_default().address.map(Into::into),
+            })
+            .collect();
+        let zone_removed =
+            self.route_store
+                .replace_client_routes(zone.clone(), remote_addr.to_string(), routes);
 
         if zone_removed {
-            self.route_infos.remove(&zone);
             self.keep_zone_authoritative(&zone).await;
         }
 
@@ -233,20 +213,18 @@ impl MagicDnsServerRpc for MagicDnsServerInstanceData {
         _input: Void,
     ) -> crate::proto::rpc_types::error::Result<GetDnsRecordResponse> {
         let mut ret = BTreeMap::new();
-        for item in self.route_infos.iter() {
-            let zone = item.key();
-            let routes = item.value();
+        for (zone, routes) in self.route_store.snapshot().zones {
             let mut dns_records = DnsRecordList::default();
-            for route in routes.iter().map(|x| x.1) {
+            for route in routes {
                 dns_records.records.push(DnsRecord {
                     record: Some(dns_record::Record::A(DnsRecordA {
                         name: format!("{}.{}", route.hostname, zone),
-                        value: route.ipv4_addr.unwrap_or_default().address,
+                        value: route.ipv4_addr.map(Into::into),
                         ttl: 1,
                     })),
                 });
             }
-            ret.insert(zone.clone(), dns_records);
+            ret.insert(zone, dns_records);
         }
         Ok(GetDnsRecordResponse { records: ret })
     }
@@ -297,160 +275,33 @@ impl ResponseHandler for ResponseWrapper {
 }
 
 impl MagicDnsServerInstanceData {
-    /// Replace content of incoming UDP DNS request and ICMP echo request packet with reply data,
-    /// and swap source and destination IP addresses to send it back.
-    async fn handle_ip_packet(&self, zc_packet: &mut ZCPacket) -> Option<()> {
-        let (ip_header_length, ip_protocol, src_ip, dst_ip) = {
-            let ip_packet = Ipv4Packet::new(zc_packet.payload())?;
+    async fn resolve_query_inner(&self, query: MagicDnsQuery) -> Option<Vec<u8>> {
+        let request = Request::new(
+            MessageRequest::from_bytes(&query.payload).ok()?,
+            query.source,
+            hickory_proto::xfer::Protocol::Udp,
+        );
+        let response = Arc::new(Mutex::new(Vec::with_capacity(512)));
 
-            if ip_packet.get_version() != 4 {
-                return None;
-            }
-
-            (
-                ip_packet.get_header_length() as usize * 4,
-                ip_packet.get_next_level_protocol(),
-                ip_packet.get_source(),
-                ip_packet.get_destination(),
+        self.dns_server
+            .read_catalog()
+            .await
+            .handle_request(
+                &request,
+                ResponseWrapper {
+                    response: response.clone(),
+                },
             )
-        };
+            .await;
 
-        if dst_ip != self.fake_ip {
-            return None;
-        }
-
-        match ip_protocol {
-            IpNextHeaderProtocols::Udp => {
-                self.handle_udp_packet(zc_packet, ip_header_length, src_ip, dst_ip)
-                    .await?;
-            }
-            IpNextHeaderProtocols::Icmp => {
-                self.handle_icmp_packet(zc_packet, ip_header_length)?;
-            }
-            _ => {
-                return None;
-            }
-        }
-
-        let mut ip_packet = MutableIpv4Packet::new(zc_packet.mut_payload())?;
-        ip_packet.set_source(dst_ip);
-        ip_packet.set_destination(src_ip);
-
-        ip_packet.set_checksum(ipv4::checksum(&ip_packet.to_immutable()));
-
-        zc_packet.mut_peer_manager_header().unwrap().to_peer_id = self.my_peer_id.into();
-
-        Some(())
-    }
-
-    /// Extract the DNS request message and send it to the hickory-dns server instance.
-    /// Replace the content of the UDP packet with the response message.
-    async fn handle_udp_packet(
-        &self,
-        zc_packet: &mut ZCPacket,
-        ip_header_length: usize,
-        src_ip: Ipv4Addr,
-        dst_ip: Ipv4Addr,
-    ) -> Option<()> {
-        let (src_port, dst_port, request, request_length) = {
-            let udp_packet = UdpPacket::new(&zc_packet.payload()[ip_header_length..])?;
-
-            let src_port = udp_packet.get_source();
-            let dst_port = udp_packet.get_destination();
-
-            // Remove this to support any UDP port
-            if dst_port != 53 {
-                return None;
-            }
-
-            let request_payload = udp_packet.payload();
-
-            (
-                src_port,
-                dst_port,
-                Request::new(
-                    MessageRequest::from_bytes(request_payload).ok()?,
-                    SocketAddr::from(SocketAddrV4::new(src_ip, src_port)),
-                    hickory_proto::xfer::Protocol::Udp,
-                ),
-                request_payload.len(),
-            )
-        };
-
-        let response_payload = {
-            let response_payload_arc = Arc::new(Mutex::new(Vec::with_capacity(512)));
-
-            self.dns_server
-                .read_catalog()
-                .await
-                .handle_request(
-                    &request,
-                    ResponseWrapper {
-                        response: response_payload_arc.clone(),
-                    },
-                )
-                .await;
-
-            Arc::into_inner(response_payload_arc)?.into_inner().ok()?
-        };
-
-        let response_length = response_payload.len();
-        let delta_length = response_length as isize - request_length as isize;
-
-        let inner_length = (zc_packet.buf_len() as isize + delta_length) as usize;
-        if zc_packet.mut_inner().capacity() < inner_length {
-            let header_length = inner_length - response_length;
-            zc_packet.mut_inner().truncate(header_length);
-        }
-        zc_packet.mut_inner().resize(inner_length, 0);
-
-        let mut ip_packet = MutableIpv4Packet::new(zc_packet.mut_payload())?;
-
-        let ip_length = (ip_packet.get_total_length() as isize + delta_length) as u16;
-        ip_packet.set_total_length(ip_length);
-
-        let mut udp_packet = MutableUdpPacket::new(ip_packet.payload_mut())?;
-
-        let udp_length = (udp_packet.get_length() as isize + delta_length) as u16;
-        udp_packet.set_length(udp_length);
-
-        udp_packet.set_source(dst_port);
-        udp_packet.set_destination(src_port);
-
-        udp_packet.payload_mut().copy_from_slice(&response_payload);
-
-        udp_packet.set_checksum(udp::ipv4_checksum(
-            &udp_packet.to_immutable(),
-            &dst_ip,
-            &src_ip,
-        ));
-
-        Some(())
-    }
-
-    fn handle_icmp_packet(&self, zc_packet: &mut ZCPacket, ip_header_length: usize) -> Option<()> {
-        let mut icmp_packet =
-            MutableIcmpPacket::new(&mut zc_packet.mut_payload()[ip_header_length..])?;
-
-        if icmp_packet.get_icmp_type() != IcmpTypes::EchoRequest {
-            return None;
-        }
-
-        icmp_packet.set_icmp_type(IcmpTypes::EchoReply);
-        icmp_packet.set_checksum(icmp::checksum(&icmp_packet.to_immutable()));
-
-        Some(())
+        Arc::into_inner(response)?.into_inner().ok()
     }
 }
 
 #[async_trait::async_trait]
-impl NicPacketFilter for MagicDnsServerInstanceData {
-    async fn try_process_packet_from_nic(&self, zc_packet: &mut ZCPacket) -> bool {
-        self.handle_ip_packet(zc_packet).await.is_some()
-    }
-
-    fn id(&self) -> String {
-        NIC_PIPELINE_NAME.to_string()
+impl MagicDnsQueryResolver for MagicDnsServerInstanceData {
+    async fn resolve(&self, query: MagicDnsQuery) -> Option<Vec<u8>> {
+        self.resolve_query_inner(query).await
     }
 }
 
@@ -472,18 +323,9 @@ impl RpcServerHook for MagicDnsServerInstanceData {
         let Some(remote_addr) = tunnel_info.remote_addr else {
             return;
         };
-        let remote_addr = remote_addr.into();
-        let mut removed_zones = vec![];
-        for mut item in self.route_infos.iter_mut() {
-            item.value_mut().remove(&remote_addr);
-            if item.value().is_empty() {
-                removed_zones.push(item.key().clone());
-            }
-        }
-        for zone in &removed_zones {
-            self.route_infos.remove(zone);
-        }
-        for zone in removed_zones {
+        let _apply = self.record_apply.lock().await;
+        let remote_addr: url::Url = remote_addr.into();
+        for zone in self.route_store.remove_client(remote_addr.as_ref()) {
             self.keep_zone_authoritative(&zone).await;
         }
         self.update().await;
@@ -491,9 +333,9 @@ impl RpcServerHook for MagicDnsServerInstanceData {
 }
 
 pub struct MagicDnsServerInstance {
-    rpc_server: StandAloneServer<TcpTunnelListener>,
+    _rpc_server: StandAloneServer<RuntimeRpcListener>,
     pub(super) data: Arc<MagicDnsServerInstanceData>,
-    peer_mgr: Arc<PeerManager>,
+    packet_filter: MagicDnsResolverRegistration,
     tun_inet: Ipv4Inet,
 }
 
@@ -518,29 +360,14 @@ fn get_system_config(
 }
 
 impl MagicDnsServerInstance {
-    pub(super) async fn add_fake_ip_route(
+    async fn add_fake_ip_route(
         tun_dev_name: &str,
         fake_ip: Ipv4Addr,
-        netns: Option<String>,
+        net_ns: &NetNS,
         cost: Option<i32>,
-        #[cfg(feature = "tun")] route_backend: Option<&NicBackend>,
     ) -> Result<(), anyhow::Error> {
-        #[cfg(feature = "tun")]
-        if let Some(route_backend) = route_backend {
-            match route_backend.add_route_with_cost(fake_ip, 32, cost).await {
-                Err(EtError::IOError(err)) if err.kind() == io::ErrorKind::AlreadyExists => {
-                    let ifcfg = IfConfiger::default();
-                    let _guard = NetNS::new(netns).guard();
-                    ifcfg.remove_ipv4_route(tun_dev_name, fake_ip, 32).await?;
-                    route_backend.add_route_with_cost(fake_ip, 32, cost).await?;
-                    return Ok(());
-                }
-                ret => return ret.map_err(Into::into),
-            }
-        }
-
         let ifcfg = IfConfiger::default();
-        let _guard = NetNS::new(netns).guard();
+        let _guard = net_ns.guard();
         match ifcfg.add_ipv4_route(tun_dev_name, fake_ip, 32, cost).await {
             Err(EtError::IOError(err)) if err.kind() == io::ErrorKind::AlreadyExists => {
                 ifcfg.remove_ipv4_route(tun_dev_name, fake_ip, 32).await?;
@@ -553,27 +380,9 @@ impl MagicDnsServerInstance {
         }
     }
 
-    pub(super) async fn remove_fake_ip_route(
-        tun_dev_name: &str,
-        fake_ip: Ipv4Addr,
-        netns: Option<String>,
-        #[cfg(feature = "tun")] route_backend: Option<&NicBackend>,
-    ) {
-        #[cfg(feature = "tun")]
-        if let Some(route_backend) = route_backend {
-            if let Err(err) = route_backend.remove_route(fake_ip, 32).await {
-                tracing::warn!(
-                    ?err,
-                    ?tun_dev_name,
-                    ?fake_ip,
-                    "remove magic dns route failed"
-                );
-            }
-            return;
-        }
-
+    async fn remove_fake_ip_route(tun_dev_name: &str, fake_ip: Ipv4Addr, net_ns: &NetNS) {
         let ifcfg = IfConfiger::default();
-        let _guard = NetNS::new(netns).guard();
+        let _guard = net_ns.guard();
         if let Err(err) = ifcfg.remove_ipv4_route(tun_dev_name, fake_ip, 32).await {
             tracing::warn!(
                 ?err,
@@ -584,77 +393,35 @@ impl MagicDnsServerInstance {
         }
     }
 
-    pub async fn new(
-        peer_mgr: Arc<PeerManager>,
+    pub(crate) async fn new(
+        packet_plane: Arc<CorePacketPlane>,
+        global_ctx: ArcGlobalCtx,
         tun_dev: Option<String>,
         tun_inet: Ipv4Inet,
         fake_ip: Ipv4Addr,
     ) -> Result<Self, anyhow::Error> {
-        Self::new_with_netns(peer_mgr, tun_dev, tun_inet, fake_ip, None).await
+        Self::new_inner(packet_plane, global_ctx, tun_dev, tun_inet, fake_ip, true).await
     }
 
-    pub async fn new_with_netns(
-        peer_mgr: Arc<PeerManager>,
+    pub(crate) async fn new_with_external_fake_ip_route(
+        packet_plane: Arc<CorePacketPlane>,
+        global_ctx: ArcGlobalCtx,
         tun_dev: Option<String>,
         tun_inet: Ipv4Inet,
         fake_ip: Ipv4Addr,
-        netns: Option<String>,
     ) -> Result<Self, anyhow::Error> {
-        Self::new_inner(
-            peer_mgr,
-            tun_dev,
-            tun_inet,
-            fake_ip,
-            netns,
-            #[cfg(feature = "tun")]
-            None,
-            true,
-        )
-        .await
-    }
-
-    #[cfg(feature = "tun")]
-    pub async fn new_with_route_backend(
-        peer_mgr: Arc<PeerManager>,
-        tun_dev: Option<String>,
-        tun_inet: Ipv4Inet,
-        fake_ip: Ipv4Addr,
-        netns: Option<String>,
-        route_backend: Option<NicBackend>,
-    ) -> Result<Self, anyhow::Error> {
-        Self::new_inner(
-            peer_mgr,
-            tun_dev,
-            tun_inet,
-            fake_ip,
-            netns,
-            route_backend,
-            true,
-        )
-        .await
-    }
-
-    #[cfg(feature = "tun")]
-    pub async fn new_with_external_fake_ip_route(
-        peer_mgr: Arc<PeerManager>,
-        tun_dev: Option<String>,
-        tun_inet: Ipv4Inet,
-        fake_ip: Ipv4Addr,
-        netns: Option<String>,
-    ) -> Result<Self, anyhow::Error> {
-        Self::new_inner(peer_mgr, tun_dev, tun_inet, fake_ip, netns, None, false).await
+        Self::new_inner(packet_plane, global_ctx, tun_dev, tun_inet, fake_ip, false).await
     }
 
     async fn new_inner(
-        peer_mgr: Arc<PeerManager>,
+        packet_plane: Arc<CorePacketPlane>,
+        global_ctx: ArcGlobalCtx,
         tun_dev: Option<String>,
         tun_inet: Ipv4Inet,
         fake_ip: Ipv4Addr,
-        netns: Option<String>,
-        #[cfg(feature = "tun")] route_backend: Option<NicBackend>,
         manage_fake_ip_route: bool,
     ) -> Result<Self, anyhow::Error> {
-        let tcp_listener = TcpTunnelListener::new(MAGIC_DNS_INSTANCE_ADDR.parse()?);
+        let tcp_listener = runtime_rpc_listener(MAGIC_DNS_INSTANCE_SOCKET_ADDR.parse()?);
         let mut rpc_server = StandAloneServer::new(tcp_listener);
         rpc_server.serve().await?;
 
@@ -674,28 +441,17 @@ impl MagicDnsServerInstance {
             } else {
                 None
             };
-            Self::add_fake_ip_route(
-                tun_dev_name,
-                fake_ip,
-                netns.clone(),
-                cost,
-                #[cfg(feature = "tun")]
-                route_backend.as_ref(),
-            )
-            .await?;
+            Self::add_fake_ip_route(tun_dev_name, fake_ip, &global_ctx.net_ns, cost).await?;
         }
 
         let data = Arc::new(MagicDnsServerInstanceData {
             dns_server,
             tun_dev: tun_dev.clone(),
-            netns,
-            tun_ip: tun_inet.address(),
+            net_ns: global_ctx.net_ns.clone(),
             fake_ip,
-            #[cfg(feature = "tun")]
-            route_backend,
             manage_fake_ip_route,
-            my_peer_id: peer_mgr.my_peer_id(),
-            route_infos: DashMap::new(),
+            route_store: MagicDnsRecordStore::default(),
+            record_apply: tokio::sync::Mutex::new(()),
             system_config: get_system_config(tun_dev.as_deref())?,
         });
 
@@ -704,11 +460,8 @@ impl MagicDnsServerInstance {
             .register(MagicDnsServerRpcServer::new_arc(data.clone()), "");
         rpc_server.set_hook(data.clone());
 
-        peer_mgr
-            .add_nic_packet_process_pipeline(Box::new(data.clone()))
-            .await;
         // Use configured tld_dns_zone or fall back to DEFAULT_ET_DNS_ZONE if empty
-        let flags = peer_mgr.get_global_ctx().config.get_flags();
+        let flags = global_ctx.get_flags();
         let tld_dns_zone_clone = flags.tld_dns_zone.clone();
 
         data.update_dns_records(std::iter::empty(), &tld_dns_zone_clone)
@@ -720,10 +473,17 @@ impl MagicDnsServerInstance {
             .await
             .context("Failed to configure system")??;
 
+        // Install the resolver only after all fallible initialization has
+        // completed, so construction failure cannot leave a managed pipeline
+        // registration that never reaches async cleanup.
+        let packet_filter = packet_plane
+            .register_magic_dns_resolver(fake_ip, data.clone())
+            .await;
+
         Ok(Self {
-            rpc_server,
+            _rpc_server: rpc_server,
             data,
-            peer_mgr,
+            packet_filter,
             tun_inet,
         })
     }
@@ -740,20 +500,10 @@ impl MagicDnsServerInstance {
             && !self.tun_inet.contains(&self.data.fake_ip)
             && let Some(tun_dev_name) = &self.data.tun_dev
         {
-            Self::remove_fake_ip_route(
-                tun_dev_name,
-                self.data.fake_ip,
-                self.data.netns.clone(),
-                #[cfg(feature = "tun")]
-                self.data.route_backend.as_ref(),
-            )
-            .await;
+            Self::remove_fake_ip_route(tun_dev_name, self.data.fake_ip, &self.data.net_ns).await;
         }
 
-        let _ = self
-            .peer_mgr
-            .remove_nic_packet_process_pipeline(NIC_PIPELINE_NAME.to_string())
-            .await;
+        self.packet_filter.close().await;
     }
 }
 

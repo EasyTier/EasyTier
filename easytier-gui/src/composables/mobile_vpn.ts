@@ -1,8 +1,8 @@
 import type { NetworkTypes } from 'easytier-frontend-lib'
+import type { TunFdInstanceSources } from './backend'
 import { addPluginListener } from '@tauri-apps/api/core'
 import { Utils } from 'easytier-frontend-lib'
 import { get_vpn_status, prepare_vpn, start_vpn, stop_vpn } from 'tauri-plugin-vpnservice-api'
-import type { TunFdInstanceSources } from './backend'
 
 type Route = NetworkTypes.Route
 
@@ -182,9 +182,13 @@ async function onVpnServiceStart(payload: any) {
   console.log('vpn service start', JSON.stringify(payload))
   curVpnStatus.running = true
   if (payload.fd) {
-    await setTunFd(payload.fd, curVpnStatus.instanceIds, curVpnStatus.instanceSources).catch((e) => {
+    try {
+      await setTunFd(payload.fd, curVpnStatus.instanceIds, curVpnStatus.instanceSources)
+    }
+    catch (e) {
       console.error('set tun fd failed', e)
-    })
+      await doStopVpn(true).catch(stopError => console.error('stop vpn after tun attach failure', stopError))
+    }
   }
 }
 
@@ -209,13 +213,9 @@ async function registerVpnServiceListener() {
   )
 }
 
-function getRoutesForVpn(routes: Route[], node_config: NetworkTypes.NetworkConfig): string[] {
-  if (!routes) {
-    return []
-  }
-
+function getRoutesForVpn(routes: Route[] | undefined, node_config: NetworkTypes.NetworkConfig): string[] {
   const ret = []
-  for (const r of routes) {
+  for (const r of routes ?? []) {
     for (let cidr of r.proxy_cidrs ?? []) {
       if (!cidr.includes('/')) {
         cidr += '/32'
@@ -224,9 +224,9 @@ function getRoutesForVpn(routes: Route[], node_config: NetworkTypes.NetworkConfi
     }
   }
 
-  node_config.routes?.forEach(r => {
-    ret.push(r)
-  })
+  for (const route of node_config.routes ?? []) {
+    ret.push(route)
+  }
 
   if (node_config.enable_magic_dns) {
     ret.push('100.100.100.101/32')
@@ -340,7 +340,6 @@ async function applyNetworkInstanceChange(instanceId: string) {
     }
     return
   }
-
   const group = await findRunningTunInstanceGroup(instanceId)
   if (!group.length) {
     console.warn('vpn service skipped because no running tun instance is available', instanceId)
@@ -371,7 +370,8 @@ async function applyNetworkInstanceChange(instanceId: string) {
       continue
     }
 
-    const virtual_ip = Utils.ipv4ToString(curNetworkInfo?.my_node_info?.virtual_ipv4.address)
+    const virtualIpv4 = curNetworkInfo.my_node_info?.virtual_ipv4
+    const virtual_ip = virtualIpv4?.address?.addr ? Utils.ipv4ToString(virtualIpv4.address) : undefined
     if (config.dhcp && (!virtual_ip || !virtual_ip.length)) {
       console.log('DHCP enabled but no IP yet, will retry in', DHCP_POLLING_INTERVAL, 'ms')
       retryInstanceIds.push(instanceId)
@@ -383,7 +383,7 @@ async function applyNetworkInstanceChange(instanceId: string) {
       continue
     }
 
-    let network_length = curNetworkInfo?.my_node_info?.virtual_ipv4.network_length
+    let network_length = virtualIpv4?.network_length
     if (!network_length) {
       network_length = 24
     }
@@ -415,6 +415,12 @@ async function applyNetworkInstanceChange(instanceId: string) {
 
   if (retryInstanceIds.length) {
     scheduleVpnConfigRetry(retryInstanceIds[0])
+    console.warn('vpn service waiting for complete shared tun instance sources', retryInstanceIds)
+    if (hasQueuedVpnConfigChange()) {
+      return
+    }
+    await doStopVpn()
+    return
   }
 
   if (!ipv4Addrs.length) {
@@ -484,7 +490,7 @@ async function isNoTunEnabled(instanceId: string | undefined) {
 
 async function findRunningTunInstanceId() {
   const instanceIds = await listNetworkInstanceIds()
-  const runningIds = instanceIds.running_inst_ids.map(Utils.UuidToStr)
+  const runningIds = (instanceIds.running_inst_ids ?? []).map(Utils.UuidToStr)
   console.log('vpn service sync running instances', JSON.stringify(runningIds))
 
   for (const instanceId of runningIds) {
@@ -500,7 +506,7 @@ async function findRunningTunInstanceId() {
 
 async function findRunningTunInstanceGroup(preferredInstanceId?: string) {
   const instanceIds = await listNetworkInstanceIds()
-  const runningIds = instanceIds.running_inst_ids.map(Utils.UuidToStr)
+  const runningIds = (instanceIds.running_inst_ids ?? []).map(Utils.UuidToStr)
   const runningTunInstances = []
 
   for (const instanceId of runningIds) {

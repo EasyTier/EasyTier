@@ -10,10 +10,8 @@ use std::{
 use cidr::{Ipv4Inet, Ipv6Inet};
 use tokio::sync::{Mutex, Notify};
 
-use crate::{
-    common::error::Error,
-    tunnel::{Tunnel, ring::create_ring_tunnel_pair},
-};
+use crate::common::error::Error;
+use easytier_core::tunnel::{Tunnel, ring::create_ring_tunnel_pair};
 
 use super::virtual_nic::{VirtualNic, VirtualNicConfig};
 
@@ -26,6 +24,7 @@ use dispatcher::{SharedVirtualNicDispatcher, SharedVirtualNicMemberTunnelTable};
 
 pub type SharedVirtualNicMemberId = uuid::Uuid;
 pub(super) type SharedVirtualNicMemberRegistrationId = uuid::Uuid;
+pub(crate) type ArcSharedVirtualNicRegistry = Arc<Mutex<SharedVirtualNicRegistry>>;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SharedIpv4Route {
@@ -724,18 +723,17 @@ impl SharedVirtualNic {
         self.ensure_valid()?;
 
         if let Some(dispatcher) = &self.dispatcher {
-            dispatcher.update_mobile_tun_fd(tun_fd);
-            self.nic.lock().await.set_mobile_tun_fd_name(tun_fd);
+            dispatcher.update_mobile_tun_fd(tun_fd).await?;
             return Ok(());
         }
 
-        self.nic.lock().await.set_mobile_tun_fd_name(tun_fd);
         let dispatcher = SharedVirtualNicDispatcher::start_for_mobile(
             self.nic.clone(),
             tun_fd,
             self.member_tunnel_table.clone(),
             self.valid.clone(),
-        );
+        )
+        .await?;
         self.sync_dispatcher_sources(&dispatcher).await?;
         self.dispatcher = Some(dispatcher);
         Ok(())

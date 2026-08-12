@@ -3,11 +3,12 @@ use axum::http::StatusCode;
 use axum::routing::{delete, post};
 use axum::{Json, Router, extract::State, routing::get};
 use axum_login::AuthUser;
-use easytier::common::config::ConfigSource as RuntimeConfigSource;
-use easytier::launcher::NetworkConfig;
+use easytier::common::config::{
+    ConfigSource as RuntimeConfigSource, NetworkConfig, config_source_from_rpc,
+};
 use easytier::proto::common::Void;
 use easytier::proto::{api::manage::*, web::*};
-use easytier::rpc_service::remote_client::{
+use easytier_core::management::remote_client::{
     GetNetworkMetasResponse, ListNetworkInstanceIdsJsonResp, RemoteClientError, RemoteClientManager,
 };
 use sea_orm::DbErr;
@@ -93,6 +94,8 @@ struct ManagedNetworkConfigJson {
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct ReconcileManagedNetworkConfigsJsonReq {
     managed_network_configs: Vec<ManagedNetworkConfigJson>,
+    config_revision: Option<String>,
+    expected_config_revision: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -319,7 +322,7 @@ impl NetworkApi {
     ) -> Result<Json<Void>, HttpHandleError> {
         let source = payload
             .source
-            .and_then(RuntimeConfigSource::from_rpc)
+            .and_then(config_source_from_rpc)
             .unwrap_or(RuntimeConfigSource::Web);
         client_mgr
             .handle_run_network_instance_with_source(
@@ -357,13 +360,21 @@ impl NetworkApi {
             })
             .collect();
         client_mgr
-            .reconcile_managed_network_configs(user_id, machine_id, desired)
+            .reconcile_managed_network_configs(
+                user_id,
+                machine_id,
+                desired,
+                payload.config_revision,
+                payload.expected_config_revision,
+            )
             .await
             .map_err(|err| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    other_error(err.to_string()).into(),
-                )
+                let status = if crate::client_manager::is_managed_config_revision_conflict(&err) {
+                    StatusCode::CONFLICT
+                } else {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                };
+                (status, other_error(err.to_string()).into())
             })?;
         Ok(Void::default().into())
     }

@@ -1,0 +1,388 @@
+syntax = "proto3";
+
+import "google/protobuf/timestamp.proto";
+import "common.proto";
+
+package peer_rpc;
+
+message TrustedCredentialPubkey {
+  bytes pubkey = 1;              // X25519 public key (32 bytes)
+  repeated string groups = 2;   // ACL groups this credential belongs to
+  bool allow_relay = 3;         // whether this credential node can relay data
+  int64 expiry_unix = 4;        // expiry time (Unix timestamp)
+  repeated string allowed_proxy_cidrs = 5; // allowed proxy_cidrs ranges
+  optional bool reusable = 6;   // whether multiple peers may use the same credential concurrently
+}
+
+message TrustedCredentialPubkeyProof {
+  TrustedCredentialPubkey credential = 1;
+  bytes credential_hmac = 2;
+}
+
+message RoutePeerInfo {
+  // means next hop in route table.
+  uint32 peer_id = 1;
+  common.UUID inst_id = 2;
+  uint32 cost = 3;
+  optional common.Ipv4Addr ipv4_addr = 4;
+  repeated string proxy_cidrs = 5;
+  optional string hostname = 6;
+  common.NatType udp_nat_type = 7;
+  google.protobuf.Timestamp last_update = 8;
+  uint32 version = 9;
+
+  string easytier_version = 10;
+  common.PeerFeatureFlag feature_flag = 11;
+  uint64 peer_route_id = 12;
+
+  uint32 network_length = 13;
+
+  optional uint32 quic_port = 14 [deprecated = true];
+  optional common.Ipv6Inet ipv6_addr = 15;
+
+  repeated PeerGroupInfo groups = 16;
+
+  common.NatType tcp_nat_type = 17;
+  bytes noise_static_pubkey = 18;
+
+  // Trusted credential public keys published by admin nodes (holding network_secret)
+  repeated TrustedCredentialPubkeyProof trusted_credential_pubkeys = 19;
+
+  optional common.Ipv6Inet ipv6_public_addr_prefix = 22;
+  optional common.Ipv6Inet ipv6_public_addr_lease = 24;
+}
+
+message PeerIdVersion {
+  uint32 peer_id = 1;
+  uint32 version = 2;
+}
+
+message RouteConnBitmap {
+  repeated PeerIdVersion peer_ids = 1;
+  bytes bitmap = 2;
+}
+
+message RouteConnPeerList {
+  message PeerConnInfo {
+    PeerIdVersion peer_id = 1;
+    repeated uint32 connected_peer_ids = 2;
+  }
+  repeated PeerConnInfo peer_conn_infos = 1;
+}
+
+message RoutePeerInfos { repeated RoutePeerInfo items = 1; }
+
+message ForeignNetworkRouteInfoKey {
+  uint32 peer_id = 1;
+  string network_name = 2;
+}
+
+message ForeignNetworkRouteInfoEntry {
+  repeated uint32 foreign_peer_ids = 1;
+  google.protobuf.Timestamp last_update = 2;
+  uint32 version = 3;
+  bytes network_secret_digest = 4;
+  uint32 my_peer_id_for_this_network = 5;
+}
+
+message RouteForeignNetworkInfos {
+  message Info {
+    ForeignNetworkRouteInfoKey key = 1;
+    ForeignNetworkRouteInfoEntry value = 2;
+  }
+  repeated Info infos = 1;
+}
+
+message RouteForeignNetworkSummary {
+  message Info {
+    uint32 peer_id = 1;
+    uint32 network_count = 2;
+    uint32 peer_count = 3;
+  }
+
+  map<uint32, Info> info_map = 1;
+}
+
+message PeerGroupInfo {
+  string group_name = 1;
+  bytes group_proof = 2;
+}
+
+message SyncRouteInfoRequest {
+  uint32 my_peer_id = 1;
+  uint64 my_session_id = 2;
+  bool is_initiator = 3;
+  RoutePeerInfos peer_infos = 4;
+  oneof conn_info {
+    RouteConnBitmap conn_bitmap = 5;
+    RouteConnPeerList conn_peer_list = 7;
+  }
+  RouteForeignNetworkInfos foreign_network_infos = 6;
+}
+
+enum SyncRouteInfoError {
+  DuplicatePeerId = 0;
+  Stopped = 1;
+}
+
+message SyncRouteInfoResponse {
+  bool is_initiator = 1;
+  uint64 session_id = 2;
+  optional SyncRouteInfoError error = 3;
+}
+
+service OspfRouteRpc {
+  // Generates a "hello" greeting based on the supplied info.
+  rpc SyncRouteInfo(SyncRouteInfoRequest) returns (SyncRouteInfoResponse);
+}
+
+message AcquireIpv6PublicAddrLeaseRequest {
+  uint32 peer_id = 1;
+  common.UUID inst_id = 2;
+}
+
+message RenewIpv6PublicAddrLeaseRequest {
+  uint32 peer_id = 1;
+  common.UUID inst_id = 2;
+  common.Ipv6Inet leased_addr = 3;
+}
+
+message ReleaseIpv6PublicAddrLeaseRequest {
+  uint32 peer_id = 1;
+  common.UUID inst_id = 2;
+}
+
+message GetIpv6PublicAddrLeaseRequest {
+  uint32 peer_id = 1;
+  common.UUID inst_id = 2;
+}
+
+message Ipv6PublicAddrLeaseReply {
+  uint32 provider_peer_id = 1;
+  common.UUID provider_inst_id = 2;
+  common.Ipv6Inet provider_prefix = 3;
+  common.Ipv6Inet leased_addr = 4;
+  google.protobuf.Timestamp valid_until = 5;
+  bool reused = 6;
+  optional string error_msg = 7;
+}
+
+service PublicIpv6AddrRpc {
+  rpc AcquireLease(AcquireIpv6PublicAddrLeaseRequest)
+      returns (Ipv6PublicAddrLeaseReply);
+  rpc RenewLease(RenewIpv6PublicAddrLeaseRequest)
+      returns (Ipv6PublicAddrLeaseReply);
+  rpc ReleaseLease(ReleaseIpv6PublicAddrLeaseRequest) returns (common.Void);
+  rpc GetLease(GetIpv6PublicAddrLeaseRequest) returns (Ipv6PublicAddrLeaseReply);
+}
+
+message GetIpListRequest {}
+
+message GetIpListResponse {
+  common.Ipv4Addr public_ipv4 = 1;
+  repeated common.Ipv4Addr interface_ipv4s = 2;
+  common.Ipv6Addr public_ipv6 = 3;
+  repeated common.Ipv6Addr interface_ipv6s = 4;
+  repeated common.Url listeners = 5;
+}
+
+message SendUdpHolePunchPacketRequest {
+  common.SocketAddr connector_addr = 1;
+  uint32 listener_port = 2;
+  common.Ipv6Addr preferred_src_ipv6 = 3;
+  repeated common.SocketAddr connector_addrs = 4;
+}
+
+service DirectConnectorRpc {
+  rpc GetIpList(GetIpListRequest) returns (GetIpListResponse);
+  rpc SendUdpHolePunchPacket(SendUdpHolePunchPacketRequest) returns (common.Void);
+}
+
+message SelectPunchListenerRequest {
+  bool force_new = 1;
+  bool prefer_port_mapping = 2;
+}
+
+message SelectPunchListenerResponse {
+  common.SocketAddr listener_mapped_addr = 1;
+}
+
+message SendPunchPacketConeRequest {
+  common.SocketAddr listener_mapped_addr = 1;
+  common.SocketAddr dest_addr = 2;
+  uint32 transaction_id = 3;
+  // send this many packets in a batch
+  uint32 packet_count_per_batch = 4;
+  // send total this batch count, total packet count = packet_batch_size * packet_batch_count
+  uint32 packet_batch_count = 5;
+  // interval between each batch
+  uint32 packet_interval_ms = 6;
+}
+
+message SendPunchPacketHardSymRequest {
+  common.SocketAddr listener_mapped_addr = 1;
+
+  repeated common.Ipv4Addr public_ips = 2;
+  uint32 transaction_id = 3;
+  uint32 port_index = 4;
+  uint32 round = 5;
+}
+
+message SendPunchPacketHardSymResponse { uint32 next_port_index = 1; }
+
+message SendPunchPacketEasySymRequest {
+  common.SocketAddr listener_mapped_addr = 1;
+  repeated common.Ipv4Addr public_ips = 2;
+  uint32 transaction_id = 3;
+
+  uint32 base_port_num = 4;
+  uint32 max_port_num = 5;
+  bool is_incremental = 6;
+}
+
+message SendPunchPacketBothEasySymRequest {
+  uint32 udp_socket_count = 1;
+  common.Ipv4Addr public_ip = 2;
+  uint32 transaction_id = 3;
+
+  uint32 dst_port_num = 4;
+  uint32 wait_time_ms = 5;
+}
+
+message SendPunchPacketBothEasySymResponse {
+  // is doing punch with other peer
+  bool is_busy = 1;
+  common.SocketAddr base_mapped_addr = 2;
+}
+
+service UdpHolePunchRpc {
+  rpc SelectPunchListener(SelectPunchListenerRequest)
+      returns (SelectPunchListenerResponse);
+
+  // send packet to one remote_addr, used by nat1-3 to nat1-3
+  rpc SendPunchPacketCone(SendPunchPacketConeRequest) returns (common.Void);
+
+  // send packet to multiple remote_addr (birthday attack), used by nat4 to nat1-3
+  rpc SendPunchPacketHardSym(SendPunchPacketHardSymRequest)
+      returns (SendPunchPacketHardSymResponse);
+  rpc SendPunchPacketEasySym(SendPunchPacketEasySymRequest)
+      returns (common.Void);
+
+  // nat4 to nat4 (both predictably)
+  rpc SendPunchPacketBothEasySym(SendPunchPacketBothEasySymRequest)
+      returns (SendPunchPacketBothEasySymResponse);
+}
+
+message TcpHolePunchRequest { common.SocketAddr connector_mapped_addr = 1; }
+
+message TcpHolePunchResponse { common.SocketAddr listener_mapped_addr = 1; }
+
+service TcpHolePunchRpc {
+  rpc ExchangeMappedAddr(TcpHolePunchRequest) returns (TcpHolePunchResponse);
+}
+
+message DirectConnectedPeerInfo { int32 latency_ms = 1; }
+
+message PeerInfoForGlobalMap {
+  map<uint32, DirectConnectedPeerInfo> direct_peers = 1;
+}
+
+message ReportPeersRequest {
+  uint32 my_peer_id = 1;
+  PeerInfoForGlobalMap peer_infos = 2;
+}
+
+message ReportPeersResponse {}
+
+message GlobalPeerMap { map<uint32, PeerInfoForGlobalMap> map = 1; }
+
+message GetGlobalPeerMapRequest { uint64 digest = 1; }
+
+message GetGlobalPeerMapResponse {
+  map<uint32, PeerInfoForGlobalMap> global_peer_map = 1;
+  optional uint64 digest = 2;
+}
+
+service PeerCenterRpc {
+  rpc ReportPeers(ReportPeersRequest) returns (ReportPeersResponse);
+  rpc GetGlobalPeerMap(GetGlobalPeerMapRequest)
+      returns (GetGlobalPeerMapResponse);
+}
+
+message HandshakeRequest {
+  uint32 magic = 1;
+  uint32 my_peer_id = 2;
+  uint32 version = 3;
+  repeated string features = 4;
+  string network_name = 5;
+  bytes network_secret_digest = 6;
+}
+
+message KcpConnData {
+  common.SocketAddr src = 1;
+  common.SocketAddr dst = 4;
+}
+
+enum SecureAuthLevel {
+  None = 0;
+  EncryptedUnauthenticated = 1;
+  PeerVerified = 2;
+  NetworkSecretConfirmed = 3;
+}
+
+enum PeerIdentityType {
+  Admin = 0;
+  Credential = 1;
+  SharedNode = 2;
+}
+
+enum PeerConnSessionActionPb {
+  Join = 0;
+  Sync = 1;
+  Create = 2;
+}
+
+message PeerConnNoiseMsg1Pb {
+  uint32 version = 1;
+  string a_network_name = 2;
+  optional uint32 a_session_generation = 3;
+  common.UUID a_conn_id = 4;
+  string client_encryption_algorithm = 5;
+}
+
+message PeerConnNoiseMsg2Pb {
+  string b_network_name = 1;
+  uint32 role_hint = 2;
+  PeerConnSessionActionPb action = 3;
+  uint32 b_session_generation = 4;
+  optional bytes root_key_32 = 5;
+  uint32 initial_epoch = 6;
+  common.UUID b_conn_id = 7;
+  common.UUID a_conn_id_echo = 8;
+  optional bytes secret_proof_32 = 9;
+  string server_encryption_algorithm = 10;
+}
+
+message RelayNoiseMsg1Pb {
+  uint32 version = 1;
+  optional uint32 a_session_generation = 3;
+  common.UUID a_conn_id = 4;
+  string client_encryption_algorithm = 5;
+}
+
+message RelayNoiseMsg2Pb {
+  PeerConnSessionActionPb action = 3;
+  uint32 b_session_generation = 4;
+  optional bytes root_key_32 = 5;
+  uint32 initial_epoch = 6;
+  common.UUID b_conn_id = 7;
+  common.UUID a_conn_id_echo = 8;
+  string server_encryption_algorithm = 10;
+}
+
+message PeerConnNoiseMsg3Pb {
+  common.UUID a_conn_id_echo = 1;
+  common.UUID b_conn_id_echo = 2;
+  optional bytes secret_proof_32 = 3;
+  bytes secret_digest = 4;
+}

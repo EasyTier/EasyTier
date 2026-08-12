@@ -1,0 +1,14 @@
+{
+  "version": 14,
+  "config": "instance_id = \"018f4fb1-7a2c-7d1f-9d89-935b0ad7e135\"\ninstance_name = \"wasi-core\"\n\n[network_identity]\nnetwork_name = \"default\"\nnetwork_secret = \"test\"\n\n[flags]\ndisable_p2p = true\nenable_encryption = false\nbind_device = false\n",
+  "environment": {
+    "public_ipv4": null,
+    "interface_ipv4s": [],
+    "public_ipv6": null,
+    "interface_ipv6s": [],
+    "mapped_listeners": [],
+    "local_ips": [],
+    "protected_tcp_ports": [],
+    "preferred_ipv6_sources": []
+  }
+}

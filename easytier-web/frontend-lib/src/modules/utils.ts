@@ -1,24 +1,30 @@
 import { IPv4, IPv6 } from 'ip-num/IPNumber'
 import { Ipv4Addr, Ipv4Inet, Ipv6Addr } from '../types/network'
 
-export function ipv4ToString(ip: Ipv4Addr) {
-    return IPv4.fromNumber(ip.addr).toString()
+export function ipv4ToString(ip: Ipv4Addr | null | undefined) {
+    if (!ip) {
+        return ''
+    }
+    return IPv4.fromNumber(ip.addr ?? 0).toString()
 }
 
 export function ipv4InetToString(ip: Ipv4Inet | undefined) {
     if (ip?.address === undefined) {
         return 'undefined'
     }
-    return `${ipv4ToString(ip.address)}/${ip.network_length}`
+    return `${ipv4ToString(ip.address)}/${ip.network_length ?? 0}`
 }
 
-export function ipv6ToString(ip: Ipv6Addr) {
+export function ipv6ToString(ip: Ipv6Addr | null | undefined) {
+    if (!ip) {
+        return ''
+    }
     return IPv6.fromBigInt(
-        (BigInt(ip.part1) << BigInt(96))
-        + (BigInt(ip.part2) << BigInt(64))
-        + (BigInt(ip.part3) << BigInt(32))
-        + BigInt(ip.part4),
-    )
+        (BigInt(ip.part1 ?? 0) << BigInt(96))
+        + (BigInt(ip.part2 ?? 0) << BigInt(64))
+        + (BigInt(ip.part3 ?? 0) << BigInt(32))
+        + BigInt(ip.part4 ?? 0),
+    ).toString()
 }
 
 function toHexString(uint64: bigint, padding = 9): string {
@@ -43,14 +49,17 @@ function uint32ToUuid(part1: number, part2: number, part3: number, part4: number
 }
 
 export interface UUID {
-    part1: number;
-    part2: number;
-    part3: number;
-    part4: number;
+    part1?: number;
+    part2?: number;
+    part3?: number;
+    part4?: number;
 }
 
-export function UuidToStr(uuid: UUID): string {
-    return uint32ToUuid(uuid.part1, uuid.part2, uuid.part3, uuid.part4);
+export function UuidToStr(uuid: UUID | null | undefined): string {
+    if (!uuid) {
+        return '';
+    }
+    return uint32ToUuid(uuid.part1 ?? 0, uuid.part2 ?? 0, uuid.part3 ?? 0, uuid.part4 ?? 0);
 }
 
 export interface Location {
@@ -71,11 +80,12 @@ export interface DeviceInfo {
 }
 
 export function buildDeviceInfo(device: any): DeviceInfo {
+    const runningInstances = device.info?.running_network_instances ?? [];
     let dev_info: DeviceInfo = {
         hostname: device.info?.hostname,
         public_ip: device.client_url,
-        running_network_instances: device.info?.running_network_instances.map((instance: any) => UuidToStr(instance)),
-        running_network_count: device.info?.running_network_instances.length,
+        running_network_instances: runningInstances.map((instance: any) => UuidToStr(instance)),
+        running_network_count: runningInstances.length,
         report_time: device.info?.report_time,
         easytier_version: device.info?.easytier_version,
         machine_id: UuidToStr(device.info?.machine_id),
