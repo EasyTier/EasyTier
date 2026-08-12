@@ -63,6 +63,7 @@ declare global {
   const onErrorCaptured: typeof import('vue')['onErrorCaptured']
   const onMounted: typeof import('vue')['onMounted']
   const onNetworkInstanceChange: typeof import('./composables/mobile_vpn')['onNetworkInstanceChange']
+  const onNetworkInstanceUpdate: typeof import('./composables/mobile_vpn')['onNetworkInstanceUpdate']
   const onRenderTracked: typeof import('vue')['onRenderTracked']
   const onRenderTriggered: typeof import('vue')['onRenderTriggered']
   const onScopeDispose: typeof import('vue')['onScopeDispose']
@@ -189,6 +190,7 @@ declare module 'vue' {
     readonly onErrorCaptured: UnwrapRef<typeof import('vue')['onErrorCaptured']>
     readonly onMounted: UnwrapRef<typeof import('vue')['onMounted']>
     readonly onNetworkInstanceChange: UnwrapRef<typeof import('./composables/mobile_vpn')['onNetworkInstanceChange']>
+    readonly onNetworkInstanceUpdate: UnwrapRef<typeof import('./composables/mobile_vpn')['onNetworkInstanceUpdate']>
     readonly onRenderTracked: UnwrapRef<typeof import('vue')['onRenderTracked']>
     readonly onRenderTriggered: UnwrapRef<typeof import('vue')['onRenderTriggered']>
     readonly onScopeDispose: UnwrapRef<typeof import('vue')['onScopeDispose']>
