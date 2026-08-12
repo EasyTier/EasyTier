@@ -63,6 +63,11 @@ const TCP_OPTION_END: u8 = 0;
 const TCP_OPTION_NOP: u8 = 1;
 const TCP_OPTION_SACK: u8 = 5;
 
+fn tcp_seq_forward_distance(from: u32, to: u32) -> Option<u32> {
+    let distance = to.wrapping_sub(from);
+    (distance != 0 && distance < (1 << 31)).then_some(distance)
+}
+
 struct TcpOptionIter<'a> {
     remaining: &'a [u8],
 }
@@ -393,11 +398,13 @@ impl Socket {
                                     continue;
                                 }
                                 let left = tcp_packet.ack_number().0 as u32;
-                                let right = u32::from_be_bytes(chunk[0..4].try_into().unwrap());
-                                let len = right.wrapping_sub(left);
-
+                                let sack_start =
+                                    u32::from_be_bytes(chunk[0..4].try_into().unwrap());
                                 let sack_end = u32::from_be_bytes(chunk[4..8].try_into().unwrap());
-                                if len == 0 || sack_end <= left {
+                                let Some(len) = tcp_seq_forward_distance(left, sack_start) else {
+                                    continue;
+                                };
+                                if tcp_seq_forward_distance(sack_start, sack_end).is_none() {
                                     continue;
                                 }
 
@@ -794,6 +801,15 @@ mod tests {
         assert_eq!(TcpOptionIter::new(&[TCP_OPTION_SACK]).count(), 0);
         assert_eq!(TcpOptionIter::new(&[TCP_OPTION_SACK, 1]).count(), 0);
         assert_eq!(TcpOptionIter::new(&[TCP_OPTION_SACK, 10, 0, 0]).count(), 0);
+    }
+
+    #[test]
+    fn tcp_sequence_forward_distance_handles_wraparound() {
+        assert_eq!(tcp_seq_forward_distance(u32::MAX - 15, 16), Some(32));
+        assert_eq!(tcp_seq_forward_distance(100, 101), Some(1));
+        assert_eq!(tcp_seq_forward_distance(100, 100), None);
+        assert_eq!(tcp_seq_forward_distance(101, 100), None);
+        assert_eq!(tcp_seq_forward_distance(0, 1 << 31), None);
     }
 
     #[derive(Default)]
@@ -1268,6 +1284,40 @@ mod tests {
         assert_eq!(tcp_flags(&tcp_packet), TCP_FLAG_ACK);
         assert_eq!(tcp_packet.payload().len(), 120);
         assert!(tcp_packet.payload().iter().all(|&b| b == 0));
+    }
+
+    #[tokio::test]
+    async fn sack_zero_fill_handles_sequence_wraparound() {
+        let (socket, incoming, tun) = socket_with_state(Some(1001), State::Established);
+        let ack = u32::MAX - 15;
+
+        incoming
+            .send(inbound_sack_packet(&socket, 1001, ack, 16, 32, b"data"))
+            .unwrap();
+
+        let mut buf = BytesMut::new();
+        assert_eq!(socket.recv(&mut buf).await, Some(4));
+
+        let sent = tun.sent_packets();
+        assert_eq!(sent.len(), 1);
+        let (_, _, _, tcp_packet) = parse_ip_packet(&sent[0]).unwrap();
+        assert_eq!(tcp_packet.seq_number().0 as u32, ack);
+        assert_eq!(tcp_packet.payload().len(), 32);
+    }
+
+    #[tokio::test]
+    async fn sack_zero_fill_rejects_backward_block() {
+        let (socket, incoming, tun) = socket_with_state(Some(1001), State::Established);
+
+        incoming
+            .send(inbound_sack_packet(
+                &socket, 1001, 5000, 4900, 5100, b"data",
+            ))
+            .unwrap();
+
+        let mut buf = BytesMut::new();
+        assert_eq!(socket.recv(&mut buf).await, Some(4));
+        assert!(tun.sent_packets().is_empty());
     }
 
     #[tokio::test]
