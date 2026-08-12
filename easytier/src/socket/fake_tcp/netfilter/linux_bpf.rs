@@ -15,9 +15,8 @@ use tokio::sync::Mutex;
 use crate::socket::fake_tcp::stack;
 
 const ETH_HDR_LEN: usize = 14;
-const ETH_TYPE_OFFSET: u32 = 12;
-const ETHERTYPE_IPV4: u32 = 0x0800;
-const ETHERTYPE_IPV6: u32 = 0x86DD;
+const ETHERTYPE_IPV4: u16 = 0x0800;
+const ETHERTYPE_IPV6: u16 = 0x86DD;
 const IPPROTO_TCP_U32: u32 = 6;
 
 const BPF_LD: u16 = 0x00;
@@ -35,6 +34,7 @@ const BPF_MSH: u16 = 0xa0;
 
 const BPF_JA: u16 = 0x00;
 const BPF_JEQ: u16 = 0x10;
+const BPF_JSET: u16 = 0x40;
 
 const BPF_K: u16 = 0x00;
 
@@ -42,6 +42,7 @@ const SOL_PACKET: i32 = 263;
 const PACKET_STATISTICS: i32 = 6;
 
 const DEFAULT_RCVBUF_BYTES: i32 = 32 * 1024 * 1024;
+const IPV4_FRAGMENT_OFFSET_MASK: u32 = 0x1fff;
 
 fn stmt(code: u16, k: u32) -> libc::sock_filter {
     libc::sock_filter {
@@ -61,6 +62,15 @@ fn jeq(k: u32, jt: u8, jf: u8) -> libc::sock_filter {
     }
 }
 
+fn jset(k: u32, jt: u8, jf: u8) -> libc::sock_filter {
+    libc::sock_filter {
+        code: BPF_JMP | BPF_JSET | BPF_K,
+        jt,
+        jf,
+        k,
+    }
+}
+
 fn ja(k: u32) -> libc::sock_filter {
     libc::sock_filter {
         code: BPF_JMP | BPF_JA,
@@ -73,7 +83,7 @@ fn ja(k: u32) -> libc::sock_filter {
 #[derive(Clone, Copy)]
 struct Label(usize);
 
-struct JeqPatch {
+struct ConditionalJumpPatch {
     idx: usize,
     t: Label,
     f: Label,
@@ -87,7 +97,7 @@ struct JaPatch {
 struct BpfBuilder {
     insns: Vec<libc::sock_filter>,
     labels: Vec<Option<usize>>,
-    jeq_patches: Vec<JeqPatch>,
+    conditional_jump_patches: Vec<ConditionalJumpPatch>,
     ja_patches: Vec<JaPatch>,
 }
 
@@ -96,7 +106,7 @@ impl BpfBuilder {
         Self {
             insns: Vec::new(),
             labels: Vec::new(),
-            jeq_patches: Vec::new(),
+            conditional_jump_patches: Vec::new(),
             ja_patches: Vec::new(),
         }
     }
@@ -118,7 +128,15 @@ impl BpfBuilder {
     fn push_jeq(&mut self, k: u32, t: Label, f: Label) {
         let idx = self.insns.len();
         self.insns.push(jeq(k, 0, 0));
-        self.jeq_patches.push(JeqPatch { idx, t, f });
+        self.conditional_jump_patches
+            .push(ConditionalJumpPatch { idx, t, f });
+    }
+
+    fn push_jset(&mut self, k: u32, t: Label, f: Label) {
+        let idx = self.insns.len();
+        self.insns.push(jset(k, 0, 0));
+        self.conditional_jump_patches
+            .push(ConditionalJumpPatch { idx, t, f });
     }
 
     fn push_ja(&mut self, target: Label) {
@@ -128,8 +146,8 @@ impl BpfBuilder {
     }
 
     fn finish(mut self) -> io::Result<Vec<libc::sock_filter>> {
-        for patch in self.jeq_patches {
-            let JeqPatch { idx, t, f } = patch;
+        for patch in self.conditional_jump_patches {
+            let ConditionalJumpPatch { idx, t, f } = patch;
             let cur = idx + 1;
             let t_pos =
                 self.labels.get(t.0).and_then(|v| *v).ok_or_else(|| {
@@ -192,31 +210,30 @@ fn build_tcp_filter(
     }
 
     let mut b = BpfBuilder::new();
-    let l_check_ipv6 = b.new_label();
-    let l_ipv4 = b.new_label();
-    let l_ipv6 = b.new_label();
     let l_accept = b.new_label();
     let l_reject = b.new_label();
 
-    b.push(stmt(BPF_LD | BPF_H | BPF_ABS, ETH_TYPE_OFFSET));
-    b.push_jeq(ETHERTYPE_IPV4, l_ipv4, l_check_ipv6);
-
-    b.set_label(l_check_ipv6);
-    b.push_jeq(ETHERTYPE_IPV6, l_ipv6, l_reject);
-
     if dst_addr.is_ipv4() {
-        b.set_label(l_ipv4);
         let l_v4_proto_ok = b.new_label();
-        b.push(stmt(BPF_LD | BPF_B | BPF_ABS, (ETH_HDR_LEN + 9) as u32));
+        b.push(stmt(BPF_LD | BPF_B | BPF_ABS, 9));
         b.push_jeq(IPPROTO_TCP_U32, l_v4_proto_ok, l_reject);
 
         b.set_label(l_v4_proto_ok);
+        let l_v4_fragment_ok = b.new_label();
+        b.push(stmt(BPF_LD | BPF_H | BPF_ABS, 6));
+        b.push_jset(
+            IPV4_FRAGMENT_OFFSET_MASK,
+            l_reject,
+            l_v4_fragment_ok,
+        );
+
+        b.set_label(l_v4_fragment_ok);
         let dst_ip = match dst_addr.ip() {
             IpAddr::V4(ip) => u32::from(ip),
             _ => unreachable!(),
         };
         let l_v4_dstip_ok = b.new_label();
-        b.push(stmt(BPF_LD | BPF_W | BPF_ABS, (ETH_HDR_LEN + 16) as u32));
+        b.push(stmt(BPF_LD | BPF_W | BPF_ABS, 16));
         b.push_jeq(dst_ip, l_v4_dstip_ok, l_reject);
 
         b.set_label(l_v4_dstip_ok);
@@ -226,28 +243,27 @@ fn build_tcp_filter(
                 _ => unreachable!(),
             };
             let l_v4_srcip_ok = b.new_label();
-            b.push(stmt(BPF_LD | BPF_W | BPF_ABS, (ETH_HDR_LEN + 12) as u32));
+            b.push(stmt(BPF_LD | BPF_W | BPF_ABS, 12));
             b.push_jeq(src_ip, l_v4_srcip_ok, l_reject);
             b.set_label(l_v4_srcip_ok);
         }
 
-        b.push(stmt(BPF_LDX | BPF_B | BPF_MSH, ETH_HDR_LEN as u32));
+        b.push(stmt(BPF_LDX | BPF_B | BPF_MSH, 0));
 
         let l_v4_dstport_ok = b.new_label();
-        b.push(stmt(BPF_LD | BPF_H | BPF_IND, (ETH_HDR_LEN + 2) as u32));
+        b.push(stmt(BPF_LD | BPF_H | BPF_IND, 2));
         b.push_jeq(dst_addr.port() as u32, l_v4_dstport_ok, l_reject);
 
         b.set_label(l_v4_dstport_ok);
         if let Some(src) = src_addr {
-            b.push(stmt(BPF_LD | BPF_H | BPF_IND, ETH_HDR_LEN as u32));
+            b.push(stmt(BPF_LD | BPF_H | BPF_IND, 0));
             b.push_jeq(src.port() as u32, l_accept, l_reject);
         } else {
             b.push_ja(l_accept);
         }
     } else {
-        b.set_label(l_ipv6);
         let l_v6_proto_ok = b.new_label();
-        b.push(stmt(BPF_LD | BPF_B | BPF_ABS, (ETH_HDR_LEN + 6) as u32));
+        b.push(stmt(BPF_LD | BPF_B | BPF_ABS, 6));
         b.push_jeq(IPPROTO_TCP_U32, l_v6_proto_ok, l_reject);
 
         b.set_label(l_v6_proto_ok);
@@ -256,7 +272,7 @@ fn build_tcp_filter(
             _ => unreachable!(),
         };
         for (i, chunk) in dst_ip.chunks_exact(4).enumerate() {
-            let off = ETH_HDR_LEN + 24 + (i * 4);
+            let off = 24 + (i * 4);
             let v = u32::from_be_bytes(chunk.try_into().unwrap());
             let l_v6_dstip_word_ok = b.new_label();
             b.push(stmt(BPF_LD | BPF_W | BPF_ABS, off as u32));
@@ -270,7 +286,7 @@ fn build_tcp_filter(
                 _ => unreachable!(),
             };
             for (i, chunk) in src_ip.chunks_exact(4).enumerate() {
-                let off = ETH_HDR_LEN + 8 + (i * 4);
+                let off = 8 + (i * 4);
                 let v = u32::from_be_bytes(chunk.try_into().unwrap());
                 let l_v6_srcip_word_ok = b.new_label();
                 b.push(stmt(BPF_LD | BPF_W | BPF_ABS, off as u32));
@@ -280,15 +296,12 @@ fn build_tcp_filter(
         }
 
         let l_v6_dstport_ok = b.new_label();
-        b.push(stmt(
-            BPF_LD | BPF_H | BPF_ABS,
-            (ETH_HDR_LEN + 40 + 2) as u32,
-        ));
+        b.push(stmt(BPF_LD | BPF_H | BPF_ABS, 42));
         b.push_jeq(dst_addr.port() as u32, l_v6_dstport_ok, l_reject);
 
         b.set_label(l_v6_dstport_ok);
         if let Some(src) = src_addr {
-            b.push(stmt(BPF_LD | BPF_H | BPF_ABS, (ETH_HDR_LEN + 40) as u32));
+            b.push(stmt(BPF_LD | BPF_H | BPF_ABS, 40));
             b.push_jeq(src.port() as u32, l_accept, l_reject);
         } else {
             b.push_ja(l_accept);
@@ -299,14 +312,31 @@ fn build_tcp_filter(
     b.push(stmt(BPF_RET | BPF_K, 0xFFFF));
 
     b.set_label(l_reject);
-    if dst_addr.is_ipv4() {
-        b.set_label(l_ipv6);
-    } else {
-        b.set_label(l_ipv4);
-    }
     b.push(stmt(BPF_RET | BPF_K, 0));
 
     b.finish()
+}
+
+fn ether_type_for_ip(packet: &[u8]) -> io::Result<u16> {
+    match packet.first().map(|byte| byte >> 4) {
+        Some(4) => Ok(ETHERTYPE_IPV4),
+        Some(6) => Ok(ETHERTYPE_IPV6),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "packet has no valid IP header",
+        )),
+    }
+}
+
+fn normalize_rx_packet(packet: &[u8], link_addr: &libc::sockaddr_ll) -> io::Result<Vec<u8>> {
+    let ether_type = ether_type_for_ip(packet)?;
+    let mut frame = vec![0; ETH_HDR_LEN + packet.len()];
+    if link_addr.sll_halen == 6 {
+        frame[6..12].copy_from_slice(&link_addr.sll_addr[..6]);
+    }
+    frame[12..14].copy_from_slice(&ether_type.to_be_bytes());
+    frame[ETH_HDR_LEN..].copy_from_slice(packet);
+    Ok(frame)
 }
 
 #[repr(C)]
@@ -390,8 +420,12 @@ impl LinuxBpfTun {
             ));
         }
 
-        let proto: i32 = (libc::ETH_P_ALL as u16).to_be() as i32;
-        let fd = unsafe { libc::socket(libc::AF_PACKET, libc::SOCK_RAW, proto) };
+        let protocol = match dst_addr {
+            SocketAddr::V4(_) => ETHERTYPE_IPV4,
+            SocketAddr::V6(_) => ETHERTYPE_IPV6,
+        };
+        let proto = protocol.to_be() as i32;
+        let fd = unsafe { libc::socket(libc::AF_PACKET, libc::SOCK_DGRAM, proto) };
         if fd < 0 {
             return Err(io::Error::last_os_error());
         }
@@ -399,7 +433,7 @@ impl LinuxBpfTun {
 
         let mut addr: libc::sockaddr_ll = unsafe { mem::zeroed() };
         addr.sll_family = libc::AF_PACKET as u16;
-        addr.sll_protocol = (libc::ETH_P_ALL as u16).to_be();
+        addr.sll_protocol = protocol.to_be();
         addr.sll_ifindex = ifindex;
 
         let bind_ret = unsafe {
@@ -468,8 +502,17 @@ impl LinuxBpfTun {
             let mut dropped_by_queue_full: u64 = 0;
             let mut last_stats_log = Instant::now();
             while !stop_clone.load(AtomicOrdering::Relaxed) {
+                let mut link_addr: libc::sockaddr_ll = unsafe { mem::zeroed() };
+                let mut link_addr_len = mem::size_of::<libc::sockaddr_ll>() as libc::socklen_t;
                 let n = unsafe {
-                    libc::recv(read_fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len(), 0)
+                    libc::recvfrom(
+                        read_fd,
+                        buf.as_mut_ptr() as *mut libc::c_void,
+                        buf.len(),
+                        0,
+                        &mut link_addr as *mut _ as *mut libc::sockaddr,
+                        &mut link_addr_len,
+                    )
                 };
                 if n < 0 {
                     let err = io::Error::last_os_error();
@@ -484,7 +527,9 @@ impl LinuxBpfTun {
                 if n == 0 {
                     continue;
                 }
-                let data = buf[..(n as usize)].to_vec();
+                let Ok(data) = normalize_rx_packet(&buf[..n as usize], &link_addr) else {
+                    continue;
+                };
                 total_bytes = total_bytes.wrapping_add(n as u64);
                 match tx.try_send(data) {
                     Ok(()) => {}
@@ -591,16 +636,25 @@ impl stack::Tun for LinuxBpfTun {
     }
 
     fn try_send(&self, packet: &Bytes) -> Result<(), std::io::Error> {
-        if packet.len() < 6 {
+        if packet.len() < ETH_HDR_LEN {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "packet too short",
             ));
         }
+        let payload = &packet[ETH_HDR_LEN..];
+        let protocol = ether_type_for_ip(payload)?;
+        let frame_protocol = u16::from_be_bytes([packet[12], packet[13]]);
+        if frame_protocol != protocol {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Ethernet and IP protocol mismatch",
+            ));
+        }
 
         let mut addr: libc::sockaddr_ll = unsafe { mem::zeroed() };
         addr.sll_family = libc::AF_PACKET as u16;
-        addr.sll_protocol = (libc::ETH_P_ALL as u16).to_be();
+        addr.sll_protocol = protocol.to_be();
         addr.sll_ifindex = self.ifindex;
         addr.sll_halen = 6;
         addr.sll_addr[..6].copy_from_slice(&packet[..6]);
@@ -608,8 +662,8 @@ impl stack::Tun for LinuxBpfTun {
         let ret = unsafe {
             libc::sendto(
                 self.fd.as_ref().as_raw_fd(),
-                packet.as_ptr() as *const libc::c_void,
-                packet.len(),
+                payload.as_ptr() as *const libc::c_void,
+                payload.len(),
                 0,
                 &addr as *const _ as *const libc::sockaddr,
                 mem::size_of::<libc::sockaddr_ll>() as u32,
@@ -617,6 +671,12 @@ impl stack::Tun for LinuxBpfTun {
         };
         if ret < 0 {
             return Err(std::io::Error::last_os_error());
+        }
+        if ret as usize != payload.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "partial packet socket write",
+            ));
         }
         Ok(())
     }
@@ -634,33 +694,432 @@ mod tests {
     use crate::socket::fake_tcp::stack::Tun;
     use pnet_datalink as datalink;
     use rand::Rng;
-    use std::net::{IpAddr, Ipv4Addr};
+    use serial_test::serial;
+    use std::env;
+    use std::process::Command;
     use tokio::time::{Duration, timeout};
 
     fn is_root() -> bool {
         unsafe { libc::geteuid() == 0 }
     }
 
-    fn pick_interface_v4() -> Option<(String, Ipv4Addr, MacAddr)> {
-        let interfaces = datalink::interfaces();
-        for iface in interfaces {
-            let Some(mac) = iface.mac else {
-                continue;
-            };
-            if iface.is_loopback() {
-                continue;
-            }
-            let ipv4 = iface.ips.iter().find_map(|n| match n.ip() {
-                IpAddr::V4(ip) => Some(ip),
-                IpAddr::V6(_) => None,
-            })?;
-            return Some((iface.name, ipv4, MacAddr::from_bytes(&mac.octets())));
+    fn linux_bpf_integration_enabled(test_name: &str) -> bool {
+        if env::var_os("EASYTIER_LINUX_BPF_INTEGRATION").is_none() {
+            eprintln!("{test_name}: skipped (EASYTIER_LINUX_BPF_INTEGRATION not set)");
+            return false;
         }
-        None
+        assert!(
+            is_root(),
+            "{test_name}: EASYTIER_LINUX_BPF_INTEGRATION requires root"
+        );
+        true
+    }
+
+    fn run_ip(args: &[&str]) -> io::Result<()> {
+        let output = Command::new("ip").args(args).output()?;
+        if output.status.success() {
+            return Ok(());
+        }
+        Err(io::Error::other(format!(
+            "ip {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        )))
+    }
+
+    fn test_frame(src_addr: SocketAddr, dst_addr: SocketAddr) -> Bytes {
+        build_tcp_packet(
+            MacAddr::from_bytes(&[0x02, 0, 0, 0, 0, 1]),
+            MacAddr::from_bytes(&[0x02, 0, 0, 0, 0, 2]),
+            src_addr,
+            dst_addr,
+            1,
+            0,
+            TCP_FLAG_SYN,
+            Some(b"test"),
+        )
+    }
+
+    fn set_ipv4_fragment_offset(packet: &mut [u8], fragment_offset: u16) {
+        assert_eq!(packet[0] >> 4, 4);
+        let header_len = usize::from(packet[0] & 0x0f) * 4;
+        packet[6..8].copy_from_slice(&(fragment_offset & 0x1fff).to_be_bytes());
+        packet[10..12].fill(0);
+
+        let mut sum = 0u32;
+        for word in packet[..header_len].chunks_exact(2) {
+            sum += u32::from(u16::from_be_bytes([word[0], word[1]]));
+        }
+        while sum > u16::MAX as u32 {
+            sum = (sum & u16::MAX as u32) + (sum >> 16);
+        }
+        packet[10..12].copy_from_slice(&(!(sum as u16)).to_be_bytes());
+    }
+
+    const TUN_DEV_PATH: &str = "/dev/net/tun";
+
+    struct TestTun {
+        name: String,
+        fd: OwnedFd,
+    }
+
+    impl TestTun {
+        fn create() -> io::Result<Self> {
+            let name = format!("etlb{}", rand::thread_rng().gen_range(10000..99999));
+            let path = CString::new(TUN_DEV_PATH)
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid tun path"))?;
+            let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC) };
+            if fd < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+
+            let mut ifr: libc::ifreq = unsafe { mem::zeroed() };
+            for (index, byte) in name.bytes().enumerate() {
+                ifr.ifr_name[index] = byte as libc::c_char;
+            }
+            ifr.ifr_ifru.ifru_flags = (libc::IFF_TUN | libc::IFF_NO_PI) as libc::c_short;
+
+            let ret = unsafe { libc::ioctl(fd.as_raw_fd(), libc::TUNSETIFF, &mut ifr) };
+            if ret != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            run_ip(&["link", "set", "dev", &name, "up"])?;
+            Ok(Self { name, fd })
+        }
+
+        fn write_packet(&self, packet: &[u8]) -> io::Result<()> {
+            let ret = unsafe {
+                libc::write(
+                    self.fd.as_raw_fd(),
+                    packet.as_ptr() as *const libc::c_void,
+                    packet.len(),
+                )
+            };
+            if ret < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if ret as usize != packet.len() {
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "partial tun packet write",
+                ));
+            }
+            Ok(())
+        }
+
+        fn read_matching_packet(&self, expected: &[u8]) -> io::Result<Vec<u8>> {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "timed out waiting for matching TUN packet",
+                    ));
+                }
+
+                let mut pollfd = libc::pollfd {
+                    fd: self.fd.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                let timeout_ms = remaining.as_millis().min(i32::MAX as u128) as i32;
+                let ready = unsafe { libc::poll(&mut pollfd, 1, timeout_ms) };
+                if ready < 0 {
+                    let error = io::Error::last_os_error();
+                    if error.kind() == io::ErrorKind::Interrupted {
+                        continue;
+                    }
+                    return Err(error);
+                }
+                if ready == 0 {
+                    continue;
+                }
+
+                let mut packet = vec![0; 65_536];
+                let len = unsafe {
+                    libc::read(
+                        self.fd.as_raw_fd(),
+                        packet.as_mut_ptr() as *mut libc::c_void,
+                        packet.len(),
+                    )
+                };
+                if len < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                packet.truncate(len as usize);
+                if packet == expected {
+                    return Ok(packet);
+                }
+            }
+        }
+    }
+
+    impl Drop for TestTun {
+        fn drop(&mut self) {
+            let _ = run_ip(&["link", "del", "dev", &self.name]);
+        }
+    }
+
+    struct TestVeth {
+        capture_name: String,
+        sender_name: String,
+        capture_mac: MacAddr,
+        sender_mac: MacAddr,
+    }
+
+    impl TestVeth {
+        fn create() -> io::Result<Self> {
+            let suffix = rand::thread_rng().gen_range(10000..99999);
+            let capture_name = format!("elbc{suffix}");
+            let sender_name = format!("elbs{suffix}");
+            run_ip(&[
+                "link",
+                "add",
+                &capture_name,
+                "type",
+                "veth",
+                "peer",
+                "name",
+                &sender_name,
+            ])?;
+
+            let setup_result = (|| {
+                run_ip(&["link", "set", "dev", &capture_name, "up"])?;
+                run_ip(&["link", "set", "dev", &sender_name, "up"])?;
+                let interfaces = datalink::interfaces();
+                let find_mac = |name: &str| {
+                    interfaces
+                        .iter()
+                        .find(|interface| interface.name == name)
+                        .and_then(|interface| interface.mac)
+                        .map(|mac| MacAddr::from_bytes(&mac.octets()))
+                        .ok_or_else(|| {
+                            io::Error::new(io::ErrorKind::NotFound, "veth MAC address not found")
+                        })
+                };
+                Ok((find_mac(&capture_name)?, find_mac(&sender_name)?))
+            })();
+
+            let (capture_mac, sender_mac) = match setup_result {
+                Ok(macs) => macs,
+                Err(error) => {
+                    let _ = run_ip(&["link", "del", "dev", &capture_name]);
+                    return Err(error);
+                }
+            };
+
+            Ok(Self {
+                capture_name,
+                sender_name,
+                capture_mac,
+                sender_mac,
+            })
+        }
+    }
+
+    impl Drop for TestVeth {
+        fn drop(&mut self) {
+            let _ = run_ip(&["link", "del", "dev", &self.capture_name]);
+        }
+    }
+
+    fn open_datalink_channel(
+        interface_name: &str,
+    ) -> io::Result<(
+        Box<dyn datalink::DataLinkSender>,
+        Box<dyn datalink::DataLinkReceiver>,
+    )> {
+        let interface = datalink::interfaces()
+            .into_iter()
+            .find(|interface| interface.name == interface_name)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "interface not found"))?;
+        let config = datalink::Config {
+            read_timeout: Some(Duration::from_millis(100)),
+            ..Default::default()
+        };
+        match datalink::channel(&interface, config).map_err(io::Error::other)? {
+            datalink::Channel::Ethernet(sender, receiver) => Ok((sender, receiver)),
+            _ => Err(io::Error::other("unsupported datalink channel")),
+        }
+    }
+
+    #[tokio::test]
+    #[serial(linux_bpf_cooked)]
+    async fn linux_bpf_tun_receives_ipv4_from_l3_interface() -> io::Result<()> {
+        let test_name = "linux_bpf_tun_receives_ipv4_from_l3_interface";
+        if !linux_bpf_integration_enabled(test_name) {
+            return Ok(());
+        }
+
+        let test_tun = TestTun::create()?;
+        let src_addr: SocketAddr = "192.0.2.10:12345".parse().unwrap();
+        let dst_addr: SocketAddr = "198.51.100.20:23456".parse().unwrap();
+        let frame = test_frame(src_addr, dst_addr);
+        let tun = LinuxBpfTun::new(&test_tun.name, None, dst_addr)?;
+
+        test_tun.write_packet(&frame[ETH_HDR_LEN..])?;
+
+        let mut received = BytesMut::new();
+        let n = timeout(Duration::from_secs(2), tun.recv(&mut received))
+            .await
+            .expect("timed out waiting for packet")?;
+        assert_eq!(n, frame.len());
+        assert!(received[..12].iter().all(|byte| *byte == 0));
+        assert_eq!(&received[12..14], &frame[12..14]);
+        assert_eq!(&received[ETH_HDR_LEN..], &frame[ETH_HDR_LEN..]);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial(linux_bpf_cooked)]
+    async fn linux_bpf_tun_sends_ipv4_to_l3_interface() -> io::Result<()> {
+        let test_name = "linux_bpf_tun_sends_ipv4_to_l3_interface";
+        if !linux_bpf_integration_enabled(test_name) {
+            return Ok(());
+        }
+
+        let test_tun = TestTun::create()?;
+        let src_addr: SocketAddr = "192.0.2.30:34567".parse().unwrap();
+        let dst_addr: SocketAddr = "198.51.100.40:45678".parse().unwrap();
+        let frame = test_frame(src_addr, dst_addr);
+        let tun = LinuxBpfTun::new(&test_tun.name, None, dst_addr)?;
+
+        tun.try_send(&frame)?;
+
+        let packet = test_tun.read_matching_packet(&frame[ETH_HDR_LEN..])?;
+        assert_eq!(packet, &frame[ETH_HDR_LEN..]);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial(linux_bpf_cooked)]
+    async fn linux_bpf_tun_rejects_non_initial_ipv4_fragment() -> io::Result<()> {
+        let test_name = "linux_bpf_tun_rejects_non_initial_ipv4_fragment";
+        if !linux_bpf_integration_enabled(test_name) {
+            return Ok(());
+        }
+
+        let test_tun = TestTun::create()?;
+        let src_addr: SocketAddr = "192.0.2.50:12345".parse().unwrap();
+        let dst_addr: SocketAddr = "198.51.100.60:23456".parse().unwrap();
+        let frame = test_frame(src_addr, dst_addr);
+        let tun = LinuxBpfTun::new(&test_tun.name, None, dst_addr)?;
+
+        let mut fragment = frame[ETH_HDR_LEN..].to_vec();
+        set_ipv4_fragment_offset(&mut fragment, 1);
+        test_tun.write_packet(&fragment)?;
+
+        let mut received = BytesMut::new();
+        assert!(
+            timeout(Duration::from_millis(400), tun.recv(&mut received))
+                .await
+                .is_err(),
+            "non-initial IPv4 fragment passed the TCP port filter"
+        );
+
+        test_tun.write_packet(&frame[ETH_HDR_LEN..])?;
+        let mut received = BytesMut::new();
+        timeout(Duration::from_secs(2), tun.recv(&mut received))
+            .await
+            .expect("timed out waiting for unfragmented packet")?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial(linux_bpf_cooked)]
+    async fn linux_bpf_tun_filters_ipv4_tuple_on_l3_interface() -> io::Result<()> {
+        let test_name = "linux_bpf_tun_filters_ipv4_tuple_on_l3_interface";
+        if !linux_bpf_integration_enabled(test_name) {
+            return Ok(());
+        }
+
+        let test_tun = TestTun::create()?;
+        let src_addr: SocketAddr = "192.0.2.70:12345".parse().unwrap();
+        let dst_addr: SocketAddr = "198.51.100.80:23456".parse().unwrap();
+        let tun = LinuxBpfTun::new(&test_tun.name, Some(src_addr), dst_addr)?;
+
+        let wrong_src_port = test_frame("192.0.2.70:12346".parse().unwrap(), dst_addr);
+        let wrong_src_ip = test_frame("192.0.2.71:12345".parse().unwrap(), dst_addr);
+        let wrong_dst_port = test_frame(src_addr, "198.51.100.80:23457".parse().unwrap());
+        for frame in [&wrong_src_port, &wrong_src_ip, &wrong_dst_port] {
+            test_tun.write_packet(&frame[ETH_HDR_LEN..])?;
+        }
+
+        let mut received = BytesMut::new();
+        assert!(
+            timeout(Duration::from_millis(400), tun.recv(&mut received))
+                .await
+                .is_err(),
+            "packet outside the configured IPv4 tuple passed the filter"
+        );
+
+        let matching = test_frame(src_addr, dst_addr);
+        test_tun.write_packet(&matching[ETH_HDR_LEN..])?;
+        let mut received = BytesMut::new();
+        timeout(Duration::from_secs(2), tun.recv(&mut received))
+            .await
+            .expect("timed out waiting for matching IPv4 packet")?;
+        assert_eq!(&received[ETH_HDR_LEN..], &matching[ETH_HDR_LEN..]);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial(linux_bpf_cooked)]
+    async fn linux_bpf_tun_receives_ipv6_from_l3_interface() -> io::Result<()> {
+        let test_name = "linux_bpf_tun_receives_ipv6_from_l3_interface";
+        if !linux_bpf_integration_enabled(test_name) {
+            return Ok(());
+        }
+
+        let test_tun = TestTun::create()?;
+        let src_addr: SocketAddr = "[2001:db8::10]:12345".parse().unwrap();
+        let dst_addr: SocketAddr = "[2001:db8::20]:23456".parse().unwrap();
+        let frame = test_frame(src_addr, dst_addr);
+        let tun = LinuxBpfTun::new(&test_tun.name, None, dst_addr)?;
+
+        test_tun.write_packet(&frame[ETH_HDR_LEN..])?;
+
+        let mut received = BytesMut::new();
+        timeout(Duration::from_secs(2), tun.recv(&mut received))
+            .await
+            .expect("timed out waiting for IPv6 packet")?;
+        assert!(received[..12].iter().all(|byte| *byte == 0));
+        assert_eq!(&received[12..14], &frame[12..14]);
+        assert_eq!(&received[ETH_HDR_LEN..], &frame[ETH_HDR_LEN..]);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial(linux_bpf_cooked)]
+    async fn linux_bpf_tun_sends_ipv6_to_l3_interface() -> io::Result<()> {
+        let test_name = "linux_bpf_tun_sends_ipv6_to_l3_interface";
+        if !linux_bpf_integration_enabled(test_name) {
+            return Ok(());
+        }
+
+        let test_tun = TestTun::create()?;
+        let src_addr: SocketAddr = "[2001:db8::30]:34567".parse().unwrap();
+        let dst_addr: SocketAddr = "[2001:db8::40]:45678".parse().unwrap();
+        let frame = test_frame(src_addr, dst_addr);
+        let tun = LinuxBpfTun::new(&test_tun.name, None, dst_addr)?;
+
+        tun.try_send(&frame)?;
+
+        let packet = test_tun.read_matching_packet(&frame[ETH_HDR_LEN..])?;
+        assert_eq!(packet, &frame[ETH_HDR_LEN..]);
+
+        Ok(())
     }
 
     fn send_raw_frame(interface_name: &str, frame: &[u8]) -> io::Result<()> {
-        if frame.len() < 6 {
+        if frame.len() < ETH_HDR_LEN {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "frame too short",
@@ -677,7 +1136,8 @@ mod tests {
             ));
         }
 
-        let proto: i32 = (libc::ETH_P_ALL as u16).to_be() as i32;
+        let frame_protocol = u16::from_be_bytes([frame[12], frame[13]]);
+        let proto = frame_protocol.to_be() as i32;
         let fd = unsafe { libc::socket(libc::AF_PACKET, libc::SOCK_RAW, proto) };
         if fd < 0 {
             return Err(io::Error::last_os_error());
@@ -686,7 +1146,7 @@ mod tests {
 
         let mut addr: libc::sockaddr_ll = unsafe { mem::zeroed() };
         addr.sll_family = libc::AF_PACKET as u16;
-        addr.sll_protocol = (libc::ETH_P_ALL as u16).to_be();
+        addr.sll_protocol = frame_protocol.to_be();
         addr.sll_ifindex = ifindex;
         addr.sll_halen = 6;
         addr.sll_addr[..6].copy_from_slice(&frame[..6]);
@@ -709,32 +1169,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn linux_bpf_tun_receives_matching_ipv4_frame() {
-        if !is_root() {
-            eprintln!("linux_bpf_tun_receives_matching_ipv4_frame: skipped (not root)");
-            return;
+    #[serial(linux_bpf_cooked)]
+    async fn linux_bpf_tun_receives_matching_ipv4_frame() -> io::Result<()> {
+        let test_name = "linux_bpf_tun_receives_matching_ipv4_frame";
+        if !linux_bpf_integration_enabled(test_name) {
+            return Ok(());
         }
 
-        let Some((ifname, dst_ip, mac)) = pick_interface_v4() else {
-            eprintln!("linux_bpf_tun_receives_matching_ipv4_frame: skipped (no suitable iface)");
-            return;
-        };
-
-        let dst_port: u16 = rand::thread_rng().gen_range(40000..60000);
-        let dst_addr = SocketAddr::new(IpAddr::V4(dst_ip), dst_port);
-        eprintln!(
-            "linux_bpf_tun_receives_matching_ipv4_frame: ifname={ifname} dst_addr={dst_addr} mac={mac}"
-        );
-
-        let tun = LinuxBpfTun::new(&ifname, None, dst_addr).unwrap();
-
-        let src_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 123, 0, 1)), 12345);
-        eprintln!(
-            "linux_bpf_tun_receives_matching_ipv4_frame: sending frame src_addr={src_addr} -> dst_addr={dst_addr}"
-        );
+        let veth = TestVeth::create()?;
+        let src_addr: SocketAddr = "192.0.2.90:12345".parse().unwrap();
+        let dst_addr: SocketAddr = "198.51.100.100:23456".parse().unwrap();
+        let tun = LinuxBpfTun::new(&veth.capture_name, None, dst_addr)?;
         let frame = build_tcp_packet(
-            mac,
-            mac,
+            veth.sender_mac,
+            veth.capture_mac,
             src_addr,
             dst_addr,
             1,
@@ -743,51 +1191,37 @@ mod tests {
             Some(b"ping"),
         );
 
-        send_raw_frame(&ifname, &frame).unwrap();
+        send_raw_frame(&veth.sender_name, &frame)?;
 
         let mut received = BytesMut::new();
         let n = timeout(Duration::from_secs(2), tun.recv(&mut received))
             .await
-            .unwrap()
-            .unwrap();
-        eprintln!(
-            "linux_bpf_tun_receives_matching_ipv4_frame: received {} bytes",
-            n
-        );
+            .expect("timed out waiting for Ethernet packet")?;
         assert_eq!(n, frame.len());
-        assert_eq!(&received[..], &frame[..]);
+        assert!(received[..6].iter().all(|byte| *byte == 0));
+        assert_eq!(&received[6..12], &frame[6..12]);
+        assert_eq!(&received[12..14], &frame[12..14]);
+        assert_eq!(&received[ETH_HDR_LEN..], &frame[ETH_HDR_LEN..]);
+
+        Ok(())
     }
 
     #[tokio::test]
-    async fn linux_bpf_tun_filters_out_non_matching_ipv4_frame() {
-        if !is_root() {
-            eprintln!("linux_bpf_tun_filters_out_non_matching_ipv4_frame: skipped (not root)");
-            return;
+    #[serial(linux_bpf_cooked)]
+    async fn linux_bpf_tun_filters_out_non_matching_ipv4_frame() -> io::Result<()> {
+        let test_name = "linux_bpf_tun_filters_out_non_matching_ipv4_frame";
+        if !linux_bpf_integration_enabled(test_name) {
+            return Ok(());
         }
 
-        let Some((ifname, dst_ip, mac)) = pick_interface_v4() else {
-            eprintln!(
-                "linux_bpf_tun_filters_out_non_matching_ipv4_frame: skipped (no suitable iface)"
-            );
-            return;
-        };
-
-        let dst_port: u16 = rand::thread_rng().gen_range(40000..60000);
-        let dst_addr = SocketAddr::new(IpAddr::V4(dst_ip), dst_port);
-        eprintln!(
-            "linux_bpf_tun_filters_out_non_matching_ipv4_frame: ifname={ifname} dst_addr={dst_addr} mac={mac}"
-        );
-
-        let tun = LinuxBpfTun::new(&ifname, None, dst_addr).unwrap();
-
-        let src_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 123, 0, 2)), 23456);
-        let non_matching_dst = SocketAddr::new(IpAddr::V4(dst_ip), dst_port.wrapping_add(1));
-        eprintln!(
-            "linux_bpf_tun_filters_out_non_matching_ipv4_frame: sending non-matching src_addr={src_addr} -> dst_addr={non_matching_dst}"
-        );
+        let veth = TestVeth::create()?;
+        let src_addr: SocketAddr = "192.0.2.110:12345".parse().unwrap();
+        let dst_addr: SocketAddr = "198.51.100.120:23456".parse().unwrap();
+        let non_matching_dst: SocketAddr = "198.51.100.120:23457".parse().unwrap();
+        let tun = LinuxBpfTun::new(&veth.capture_name, None, dst_addr)?;
         let non_matching = build_tcp_packet(
-            mac,
-            mac,
+            veth.sender_mac,
+            veth.capture_mac,
             src_addr,
             non_matching_dst,
             1,
@@ -795,24 +1229,18 @@ mod tests {
             TCP_FLAG_SYN,
             Some(b"nope"),
         );
-        send_raw_frame(&ifname, &non_matching).unwrap();
+        send_raw_frame(&veth.sender_name, &non_matching)?;
 
         let mut received = BytesMut::new();
-        let non_matching_timeout = timeout(Duration::from_millis(400), tun.recv(&mut received))
-            .await
-            .is_err();
-        eprintln!(
-            "linux_bpf_tun_filters_out_non_matching_ipv4_frame: non-matching recv timeout={}",
-            non_matching_timeout
+        assert!(
+            timeout(Duration::from_millis(400), tun.recv(&mut received))
+                .await
+                .is_err()
         );
-        assert!(non_matching_timeout);
 
-        eprintln!(
-            "linux_bpf_tun_filters_out_non_matching_ipv4_frame: sending matching src_addr={src_addr} -> dst_addr={dst_addr}"
-        );
         let matching = build_tcp_packet(
-            mac,
-            mac,
+            veth.sender_mac,
+            veth.capture_mac,
             src_addr,
             dst_addr,
             2,
@@ -820,18 +1248,72 @@ mod tests {
             TCP_FLAG_SYN,
             Some(b"ok"),
         );
-        send_raw_frame(&ifname, &matching).unwrap();
+        send_raw_frame(&veth.sender_name, &matching)?;
 
-        let mut received2 = BytesMut::new();
-        let n = timeout(Duration::from_secs(2), tun.recv(&mut received2))
+        let mut received = BytesMut::new();
+        let n = timeout(Duration::from_secs(2), tun.recv(&mut received))
             .await
-            .unwrap()
-            .unwrap();
-        eprintln!(
-            "linux_bpf_tun_filters_out_non_matching_ipv4_frame: received {} bytes",
-            n
-        );
+            .expect("timed out waiting for matching Ethernet packet")?;
         assert_eq!(n, matching.len());
-        assert_eq!(&received2[..], &matching[..]);
+        assert_eq!(&received[ETH_HDR_LEN..], &matching[ETH_HDR_LEN..]);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial(linux_bpf_cooked)]
+    async fn linux_bpf_tun_sends_ipv4_frame_to_ethernet_interface() -> io::Result<()> {
+        let test_name = "linux_bpf_tun_sends_ipv4_frame_to_ethernet_interface";
+        if !linux_bpf_integration_enabled(test_name) {
+            return Ok(());
+        }
+
+        let veth = TestVeth::create()?;
+        let (_sender, mut receiver) = open_datalink_channel(&veth.sender_name)?;
+        let src_addr: SocketAddr = "192.0.2.130:12345".parse().unwrap();
+        let dst_addr: SocketAddr = "198.51.100.140:23456".parse().unwrap();
+        let frame = build_tcp_packet(
+            veth.capture_mac,
+            veth.sender_mac,
+            src_addr,
+            dst_addr,
+            1,
+            0,
+            TCP_FLAG_SYN,
+            Some(b"ethernet send"),
+        );
+        let tun = LinuxBpfTun::new(&veth.capture_name, None, dst_addr)?;
+
+        tun.try_send(&frame)?;
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match receiver.next() {
+                Ok(received)
+                    if received.len() >= ETH_HDR_LEN
+                        && received[ETH_HDR_LEN..] == frame[ETH_HDR_LEN..] =>
+                {
+                    assert_eq!(&received[..ETH_HDR_LEN], &frame[..ETH_HDR_LEN]);
+                    break;
+                }
+                Ok(_) => {}
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::Interrupted
+                            | io::ErrorKind::TimedOut
+                            | io::ErrorKind::WouldBlock
+                    ) => {}
+                Err(error) => return Err(error),
+            }
+            if Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "timed out waiting for Ethernet frame",
+                ));
+            }
+        }
+
+        Ok(())
     }
 }
