@@ -12,11 +12,6 @@ use anyhow::Context;
 use ariadne::{CharSet, Config as AriadneConfig, IndexType, Label, Report, ReportKind, Source};
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "config-write")]
-use crate::config::{
-    DEFAULT_TCP_STUN_SERVERS, DEFAULT_UDP_STUN_SERVERS, DEFAULT_UDP_V6_STUN_SERVERS,
-    default_stun_servers,
-};
 use crate::proto::{
     acl::Acl,
     common::{CompressionAlgoPb, SecureModeConfig},
@@ -28,21 +23,6 @@ pub type Flags = crate::proto::common::FlagsInConfig;
 
 pub(crate) fn default_instance_name() -> String {
     "default".to_owned()
-}
-
-#[cfg(feature = "config-write")]
-fn default_udp_stun_servers() -> Vec<String> {
-    default_stun_servers(DEFAULT_UDP_STUN_SERVERS)
-}
-
-#[cfg(feature = "config-write")]
-fn default_tcp_stun_servers() -> Vec<String> {
-    default_stun_servers(DEFAULT_TCP_STUN_SERVERS)
-}
-
-#[cfg(feature = "config-write")]
-fn default_udp_v6_stun_servers() -> Vec<String> {
-    default_stun_servers(DEFAULT_UDP_V6_STUN_SERVERS)
 }
 
 pub fn gen_default_flags() -> Flags {
@@ -1050,15 +1030,6 @@ impl ConfigLoader for TomlConfig {
             let mut config = self.config.lock().unwrap().clone();
             Self::normalize_config_source(&mut config);
             config.flags = Some(flags_diff_from_default(&self.get_flags()));
-            if config.stun_servers == Some(default_udp_stun_servers()) {
-                config.stun_servers = None;
-            }
-            if config.tcp_stun_servers == Some(default_tcp_stun_servers()) {
-                config.tcp_stun_servers = None;
-            }
-            if config.stun_servers_v6 == Some(default_udp_v6_stun_servers()) {
-                config.stun_servers_v6 = None;
-            }
             toml::to_string_pretty(&config).unwrap()
         }
         #[cfg(not(feature = "config-write"))]

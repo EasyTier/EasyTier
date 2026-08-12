@@ -347,7 +347,6 @@ impl CoreInstanceConfig {
                         .get_stun_servers_v6()
                         .or_else(|| stun_servers.as_ref().map(|_| Vec::new()))
                         .unwrap_or_else(|| StunServerConfig::default().udp_v6_servers),
-                    ..StunServerConfig::default()
                 },
                 endpoint_discovery: ManualEndpointDiscoveryConfig {
                     user_agent: format!("easytier/{}", host.easytier_version),
@@ -444,6 +443,35 @@ stun_servers_v6 = ["custom-v6.example.com:3478"]
             normalized.connectivity.stun.udp_v6_servers,
             ["custom-v6.example.com:3478"]
         );
+    }
+
+    #[cfg(feature = "config-write")]
+    #[test]
+    fn explicit_stun_servers_survive_dump_reload() {
+        let assert_roundtrip = |config: TomlConfig| {
+            let before = CoreInstanceConfig::from_toml(&config)
+                .unwrap()
+                .connectivity
+                .stun;
+            let reloaded = TomlConfig::new_from_str(&config.dump()).unwrap();
+            let after = CoreInstanceConfig::from_toml(&reloaded)
+                .unwrap()
+                .connectivity
+                .stun;
+
+            assert_eq!(after, before);
+        };
+
+        let defaults = StunServerConfig::default();
+        let config = TomlConfig::default();
+        config.set_stun_servers(Some(defaults.udp_servers.clone()));
+        assert_roundtrip(config);
+
+        let config = TomlConfig::default();
+        config.set_stun_servers(Some(vec!["custom.example.com:3478".to_string()]));
+        config.set_tcp_stun_servers(Some(defaults.tcp_servers));
+        config.set_stun_servers_v6(Some(defaults.udp_v6_servers));
+        assert_roundtrip(config);
     }
 
     #[test]
