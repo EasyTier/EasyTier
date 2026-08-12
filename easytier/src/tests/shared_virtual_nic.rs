@@ -238,15 +238,13 @@ async fn shared_route_owner_count(
     let Some(nic) = nic else {
         return 0;
     };
-    let count = nic
-        .lock()
+    nic.lock()
         .await
         .ifcfg()
         .snapshot()
         .ipv4_routes
         .get(route)
-        .map_or(0, |owners| owners.len());
-    count
+        .map_or(0, |owners| owners.len())
 }
 
 #[tokio::test]
