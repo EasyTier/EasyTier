@@ -100,9 +100,7 @@ impl IfConfiguerTrait for MacIfConfiger {
         cidr_prefix: u8,
     ) -> Result<(), Error> {
         let addr = Ipv4Inet::new(address, cidr_prefix).map_err(|err| {
-            Error::RouteError(Some(format!(
-                "invalid IPv4 address {address}/{cidr_prefix}: {err:?}"
-            )))
+            anyhow::anyhow!("invalid IPv4 address {address}/{cidr_prefix}: {err:?}")
         })?;
         let mut configured_ipv4 = self.configured_ipv4.lock().await;
         let has_configured_ipv4 = configured_ipv4

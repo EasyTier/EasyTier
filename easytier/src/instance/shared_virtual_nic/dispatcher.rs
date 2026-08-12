@@ -1251,7 +1251,7 @@ impl SharedVirtualNicDispatcherState {
             .source_table
             .source_for_member_destination(member_id, key.dst)
         else {
-            return Err(packet);
+            return self.send_packet_to_member(member_id, packet).await;
         };
         let original_packet = packet.clone();
         let nat_entry = if key.src == translated_src {
@@ -2488,6 +2488,29 @@ mod tests {
 
         assert!(first_receiver.try_recv().is_err());
         assert!(owner_receiver.try_recv().is_ok());
+    }
+
+    #[tokio::test]
+    async fn dispatcher_forwards_external_ipv6_to_route_only_owner() {
+        let route_owner = uuid::Uuid::from_u128(1);
+        let source = "2001:db8:ffff::2".parse::<Ipv6Addr>().unwrap();
+        let destination = "2001:db8:100::2".parse::<Ipv6Addr>().unwrap();
+        let (sender, mut receiver) = mpsc::channel(1);
+        let mut state = SharedVirtualNicDispatcherState::default();
+
+        state.register(route_owner, member_entry(sender));
+        state.source_table.update_member_sources(
+            route_owner,
+            member_sources_with_ipv6_routes(&[], &["2001:db8:100::2/128"]),
+        );
+        state
+            .forward_tun_packet_to_member(ipv6_packet(source, destination))
+            .await;
+
+        let packet = receiver.try_recv().unwrap();
+        let ipv6 = pnet_packet::ipv6::Ipv6Packet::new(packet.payload()).unwrap();
+        assert_eq!(ipv6.get_source(), source);
+        assert_eq!(ipv6.get_destination(), destination);
     }
 
     #[tokio::test]

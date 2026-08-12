@@ -1197,7 +1197,6 @@ impl NicCtx {
         )
     }
 
-    #[cfg(feature = "magic-dns")]
     pub(crate) fn shared_route_backend_for_dns(&self) -> Option<NicBackend> {
         match self.backend {
             NicBackend::Dedicated(_) => None,
