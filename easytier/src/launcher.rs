@@ -2,6 +2,7 @@ use crate::common::config::{
     ConfigFileControl, ConfigSource, PortForwardConfig, parse_mapped_listener_urls,
     process_secure_mode_cfg,
 };
+use crate::common::netns::NetNSGuard;
 #[cfg(feature = "ffi-dataplane")]
 use crate::gateway::socks5::Socks5Server;
 #[cfg(feature = "ffi-dataplane")]
@@ -225,7 +226,19 @@ impl EasyTierLauncher {
         let api_service = self.api_service.clone();
 
         self.thread_handle = Some(std::thread::spawn(move || {
-            let rt = if cfg.get_flags().multi_thread {
+            let configured_netns = cfg.get_netns();
+            let _netns_guard = match NetNSGuard::try_new(configured_netns.clone()) {
+                Ok(guard) => guard,
+                Err(error) => {
+                    error_msg.write().unwrap().replace(error.to_string());
+                    instance_alive.store(false, std::sync::atomic::Ordering::Relaxed);
+                    data.instance_stop_notifier.notify_one();
+                    return;
+                }
+            };
+            cfg.set_netns(None);
+
+            let rt = if cfg.get_flags().multi_thread && configured_netns.is_none() {
                 let worker_threads = 2.max(cfg.get_flags().multi_thread_count as usize);
                 tokio::runtime::Builder::new_multi_thread()
                     .worker_threads(worker_threads)
@@ -682,6 +695,7 @@ impl NetworkConfig {
                 .with_context(|| format!("failed to parse instance id: {:?}", self.instance_id))?,
         );
         cfg.set_hostname(self.hostname.clone());
+        cfg.set_netns(self.netns.clone());
         cfg.set_dhcp(self.dhcp.unwrap_or_default());
         cfg.set_inst_name(self.network_name.clone().unwrap_or_default());
 
@@ -1057,6 +1071,7 @@ impl NetworkConfig {
         };
 
         result.instance_id = Some(config.get_id().to_string());
+        result.netns = config.get_netns();
         if config.get_hostname() != default_config.get_hostname() {
             result.hostname = Some(config.get_hostname());
         }
@@ -1247,6 +1262,7 @@ mod tests {
     #[test]
     fn test_network_config_conversion_basic() -> Result<(), anyhow::Error> {
         let config = gen_default_config();
+        config.set_netns(Some("/proc/123/ns/net".to_string()));
 
         let network_config = super::NetworkConfig::new_from_config(&config)?;
 
