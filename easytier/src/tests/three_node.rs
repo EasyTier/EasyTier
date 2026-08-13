@@ -1782,8 +1782,14 @@ pub async fn wireguard_vpn_portal(#[values(true, false)] test_v6: bool) {
         .get_vpn_portal_config()
         .unwrap();
     let portal_info = insts[2].get_core_instance().vpn_portal_info().await;
+    assert_eq!(portal_info.clients.len(), 1);
+    let client_info = portal_info
+        .clients
+        .iter()
+        .find(|client| client.name == "test-client")
+        .expect("configured client must be reported");
     assert!(
-        portal_info.client_config.contains("198.51.100.0/24"),
+        client_info.client_config.contains("198.51.100.0/24"),
         "client config must include remote proxy CIDRs"
     );
     let (server_public, client_private) =

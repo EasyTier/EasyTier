@@ -2513,15 +2513,35 @@ impl<'a> CommandHandler<'a> {
 
         self.print_results(&results, |resp| {
             println!("portal_name: {}", resp.vpn_type);
-            println!(
-                r#"
-############### client_config_start ###############
-{}
-############### client_config_end ###############
-"#,
-                resp.client_config
-            );
-            println!("connected_clients:\n{:#?}", resp.connected_clients);
+            if let Some(listener) = &resp.listener {
+                println!("listener: {listener}");
+            }
+            for client in &resp.clients {
+                let state = easytier_proto::api::instance::VpnPortalClientState::try_from(
+                    client.state,
+                )
+                .map_or("UNKNOWN", |state| state.as_str_name());
+                println!(
+                    "\nclient: {}\nvirtual_ip: {}\nstate: {}\npeer_id: {}\nendpoint: {}\ntunnel_ip: {}\ngroups: {}",
+                    client.name,
+                    client.virtual_ip,
+                    state,
+                    client
+                        .peer_id
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "-".to_owned()),
+                    client.endpoint.as_deref().unwrap_or("-"),
+                    client.tunnel_ip.as_deref().unwrap_or("-"),
+                    client.groups.join(", "),
+                );
+                println!(
+                    "############### client_config_start ###############\n{}############### client_config_end ###############",
+                    client.client_config
+                );
+                if let Some(error) = &client.error {
+                    println!("error: {error}");
+                }
+            }
             Ok(())
         })
     }

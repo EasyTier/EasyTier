@@ -108,8 +108,6 @@ pub struct PortalInfoSnapshot {
     pub vpn_type: String,
     pub clients: Vec<PortalClientInfoSnapshot>,
     pub listener: Option<String>,
-    pub client_config: String,
-    pub connected_clients: Vec<String>,
 }
 
 #[async_trait]
@@ -624,8 +622,6 @@ impl PortalModule {
                 vpn_type: "null".to_owned(),
                 clients: Vec::new(),
                 listener: None,
-                client_config: String::new(),
-                connected_clients: Vec::new(),
             };
         };
         let listener_url = self
@@ -637,7 +633,7 @@ impl PortalModule {
             .and_then(|runtime| runtime.listener_urls.first().cloned());
         let allowed_ips = self.allowed_ips().await;
         let statuses = self.statuses.read().await;
-        let clients: Vec<PortalClientInfoSnapshot> = config
+        let clients = config
             .clients
             .iter()
             .map(|client| {
@@ -666,15 +662,6 @@ impl PortalModule {
                 }
             })
             .collect();
-        let client_config = clients
-            .first()
-            .map(|client| client.client_config.clone())
-            .unwrap_or_default();
-        let connected_clients = clients
-            .iter()
-            .filter(|client| client.state == PortalClientState::Online)
-            .filter_map(|client| client.endpoint.clone())
-            .collect();
         PortalInfoSnapshot {
             vpn_type: self
                 .host
@@ -682,8 +669,6 @@ impl PortalModule {
                 .map_or_else(|| "null".to_owned(), |host| host.name()),
             clients,
             listener: listener_url.map(|url| url.to_string()),
-            client_config,
-            connected_clients,
         }
     }
 

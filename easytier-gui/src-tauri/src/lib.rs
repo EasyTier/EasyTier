@@ -6,10 +6,15 @@ mod elevate;
 use anyhow::Context;
 #[cfg(target_os = "android")]
 use easytier::instance::factory::subscribe_native_instance_event;
+use easytier::proto::api::instance::{
+    GetVpnPortalInfoRequest, InstanceIdentifier, VpnPortalInfo, VpnPortalRpc,
+    VpnPortalRpcClientFactory, instance_identifier,
+};
 use easytier::proto::api::manage::{
     CollectNetworkInfoResponse, ValidateConfigResponse, WebClientService,
     WebClientServiceClientFactory,
 };
+use easytier::proto::rpc_types::controller::BaseController;
 use easytier::web_client::{self, WebClient};
 use easytier::{
     common::config::{NetworkConfig, NetworkConfigExt},
@@ -149,6 +154,30 @@ async fn collect_network_info(
         .handle_collect_network_info(app, Some(vec![instance_id]))
         .await
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_vpn_portal_info(instance_id: String) -> Result<Option<VpnPortalInfo>, String> {
+    let instance_id = instance_id
+        .parse::<uuid::Uuid>()
+        .map_err(|e| e.to_string())?;
+    let client_manager = get_client_manager!()?;
+    let client = client_manager
+        .rpc_manager
+        .rpc_client()
+        .scoped_client::<VpnPortalRpcClientFactory<BaseController>>(1, 1, "".to_string());
+    let response = client
+        .get_vpn_portal_info(
+            BaseController::default(),
+            GetVpnPortalInfoRequest {
+                instance: Some(InstanceIdentifier {
+                    selector: Some(instance_identifier::Selector::Id(instance_id.into())),
+                }),
+            },
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(response.vpn_portal_info)
 }
 
 #[tauri::command]
@@ -1393,6 +1422,7 @@ pub fn run_gui() -> std::process::ExitCode {
             generate_network_config,
             run_network_instance,
             collect_network_info,
+            get_vpn_portal_info,
             set_logging_level,
             set_tun_fd,
             easytier_version,
