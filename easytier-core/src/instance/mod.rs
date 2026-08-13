@@ -90,7 +90,8 @@ use crate::gateway::proxy::icmp_host::IcmpProxyHost;
 #[cfg(feature = "wrapped-transport")]
 use crate::gateway::proxy::wrapped_transport::WrappedTransportEngines;
 #[cfg(feature = "vpn-portal")]
-use crate::gateway::vpn_portal::VpnPortalHost;
+use crate::gateway::vpn_portal::PortalHost;
+use crate::gateway::vpn_portal::PortalRuntimeConfig;
 
 #[cfg(feature = "public-ipv6-provider")]
 use crate::peers::public_ipv6::provider::PublicIpv6ProviderPlatform;
@@ -104,7 +105,7 @@ use crate::gateway::proxy::service::CoreProxyModule;
 #[cfg(feature = "wrapped-transport")]
 use crate::gateway::proxy::wrapped_transport::WrappedTransportProxyModule;
 #[cfg(feature = "vpn-portal")]
-use crate::gateway::vpn_portal::VpnPortalModule;
+use crate::gateway::vpn_portal::PortalModule;
 #[cfg(feature = "proxy-smoltcp-stack")]
 use crate::gateway::{
     DataPlaneRuntime, DataPlaneSession, PortForwardAdapter, Socks5GatewayAdapter,
@@ -181,6 +182,8 @@ pub struct CoreInstanceConfig {
     pub instance_name: String,
     pub peer: PortablePeerManagerConfig,
     pub connectivity: CoreConnectivityConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vpn_portal: Option<PortalRuntimeConfig>,
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -287,7 +290,7 @@ where
     #[cfg(feature = "public-ipv6-provider")]
     pub public_ipv6_provider: Option<Arc<dyn PublicIpv6ProviderPlatform>>,
     #[cfg(feature = "vpn-portal")]
-    pub vpn_portal: Option<Arc<dyn VpnPortalHost>>,
+    pub vpn_portal: Option<Arc<dyn PortalHost>>,
 }
 
 impl<H> CoreHostAdapters<H>
@@ -405,7 +408,7 @@ where
     #[cfg(feature = "public-ipv6-provider")]
     public_ipv6_provider: PublicIpv6ProviderRuntime,
     #[cfg(feature = "vpn-portal")]
-    vpn_portal: Arc<VpnPortalModule>,
+    vpn_portal: Arc<PortalModule>,
     #[cfg(feature = "proxy-smoltcp-stack")]
     pub(super) startup_plan: CoreInstanceStartupPlan,
     pub(super) runtime_config: CoreRuntimeConfigStore,
@@ -468,6 +471,8 @@ where
     ) -> anyhow::Result<Arc<Self>> {
         build_capabilities::validate(&config)?;
         let instance_name = config.instance_name;
+        #[cfg(feature = "vpn-portal")]
+        let vpn_portal_config = config.vpn_portal.clone();
         let (packet_tx, packet_rx) = host_packet_channel();
         let runtime_config = CoreRuntimeConfigStore::new(
             config.connectivity.runtime.clone(),
@@ -730,12 +735,13 @@ where
             public_ipv6_runtime,
         );
         #[cfg(feature = "vpn-portal")]
-        let vpn_portal = VpnPortalModule::new(
+        let vpn_portal = PortalModule::new(
             peer_manager.clone(),
             runtime_config.clone(),
+            vpn_portal_config,
             vpn_portal,
             events.clone(),
-        );
+        )?;
         #[cfg(feature = "proxy-cidr-monitor")]
         let proxy_cidr_monitor =
             ProxyCidrMonitorRuntime::new(proxy_cidr_monitor_enabled, events.clone());
@@ -854,7 +860,10 @@ where
         &self,
         config: &CoreInstanceRuntimeConfig,
     ) -> anyhow::Result<()> {
-        build_capabilities::validate_runtime(config)
+        build_capabilities::validate_runtime(config)?;
+        #[cfg(feature = "vpn-portal")]
+        self.vpn_portal.validate_runtime_config(config)?;
+        Ok(())
     }
 
     pub async fn wait(&self) {

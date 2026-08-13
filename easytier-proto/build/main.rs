@@ -124,7 +124,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .file_descriptor_set_path(&descriptor)
         .service_generator(Box::new(ServiceGenerator::default()))
         .btree_map(["."])
-        .skip_debug([".common.Ipv4Addr", ".common.Ipv6Addr", ".common.UUID"]);
+        .skip_debug([
+            ".common.Ipv4Addr",
+            ".common.Ipv6Addr",
+            ".common.UUID",
+            ".api.manage.VpnPortalConfig",
+        ]);
 
     config.compile_protos(&proto_files, &["proto/"])?;
 

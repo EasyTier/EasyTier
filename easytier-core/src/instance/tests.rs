@@ -173,6 +173,7 @@ fn core_instance_config_round_trips_as_normalized_json() {
         instance_name: String::new(),
         peer,
         connectivity: CoreConnectivityConfig::default(),
+        vpn_portal: None,
     };
 
     let mut config = config;
@@ -326,7 +327,26 @@ mod portable_runtime {
             instance_name: network_name.to_owned(),
             peer,
             connectivity,
+            vpn_portal: None,
         }
+    }
+    #[cfg(feature = "vpn-portal")]
+    fn portal_test_config(network_name: &str) -> CoreInstanceConfig {
+        let mut config = test_config(network_name);
+        config.peer.snapshot.runtime.network_identity.network_secret =
+            Some("portal-network-secret".to_owned());
+        config.peer.snapshot.runtime.core.routes.ipv4 = Some(IpPrefix {
+            address: "10.82.0.1".parse().unwrap(),
+            prefix_len: 24,
+        });
+        config.vpn_portal = Some(crate::gateway::vpn_portal::PortalRuntimeConfig {
+            clients: vec![crate::gateway::vpn_portal::PortalClientConfig {
+                name: "alice".to_owned(),
+                virtual_ip: "10.82.0.2".parse().unwrap(),
+                groups: Vec::new(),
+            }],
+        });
+        config
     }
 
     fn runtime_snapshot(config: &CoreInstanceConfig) -> CoreInstanceRuntimeConfig {
@@ -431,6 +451,71 @@ mod portable_runtime {
 
     fn build_instance(config: CoreInstanceConfig) -> anyhow::Result<Arc<CoreInstance<TestHost>>> {
         build_with_engines(config, WrappedTransportEngines::default())
+    }
+    #[cfg(feature = "vpn-portal")]
+    #[tokio::test]
+    async fn runtime_update_rejects_portal_client_address_conflict() {
+        let instance = build_instance(portal_test_config("portal-runtime-update")).unwrap();
+        let before = instance.runtime_config.snapshot();
+        let mut conflicting = before.as_ref().clone();
+        Arc::make_mut(&mut conflicting.peer)
+            .runtime
+            .core
+            .routes
+            .ipv4 = Some(IpPrefix {
+            address: "10.82.0.2".parse().unwrap(),
+            prefix_len: 24,
+        });
+
+        let error = instance
+            .update_runtime_config(conflicting)
+            .await
+            .unwrap_err();
+
+        assert!(
+            error.to_string().contains("unusable virtual IP"),
+            "unexpected runtime update error: {error:#}"
+        );
+        assert_eq!(
+            instance
+                .runtime_config
+                .snapshot()
+                .peer
+                .runtime
+                .core
+                .routes
+                .ipv4,
+            before.peer.runtime.core.routes.ipv4
+        );
+        instance.peer_manager.clear_resources().await;
+    }
+    #[cfg(feature = "vpn-portal")]
+    #[tokio::test]
+    async fn runtime_update_allows_removing_portal_client_acl_group() {
+        let mut config = portal_test_config("portal-acl-group-removal");
+        config.vpn_portal.as_mut().unwrap().clients[0].groups = vec!["ops".to_owned()];
+        config.peer.snapshot.acl_group_declarations =
+            vec![crate::config::peers::PeerGroupIdentity {
+                group_name: "ops".to_owned(),
+                group_secret: "ops-secret".to_owned(),
+            }];
+        let instance = build_instance(config).unwrap();
+        let mut updated = instance.runtime_config.snapshot().as_ref().clone();
+        Arc::make_mut(&mut updated.peer)
+            .acl_group_declarations
+            .clear();
+
+        instance.update_runtime_config(updated).await.unwrap();
+
+        assert!(
+            instance
+                .runtime_config
+                .snapshot()
+                .peer
+                .acl_group_declarations
+                .is_empty()
+        );
+        instance.peer_manager.clear_resources().await;
     }
 
     #[cfg(feature = "dhcp-ipv4")]
@@ -711,6 +796,70 @@ hostname = "core-owned-config"
                 .is_empty()
         );
         instance.stop().await;
+    }
+    #[cfg(all(feature = "management", feature = "vpn-portal"))]
+    #[tokio::test]
+    async fn rejected_portal_address_patch_does_not_commit_shared_toml() {
+        use easytier_proto::api::config::InstanceConfigPatch;
+
+        let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+        let instance = CoreInstance::from_toml(
+            crate::config::toml::TomlConfig::new_from_str(
+                r#"
+instance_name = "rejected-portal-address-patch"
+ipv4 = "10.82.0.1/24"
+
+[network_identity]
+network_name = "rejected-portal-address-patch"
+network_secret = "portal-network-secret"
+
+[vpn_portal_config]
+wireguard_listen = "0.0.0.0:51820"
+
+[[vpn_portal_config.clients]]
+name = "alice"
+virtual_ip = "10.82.0.2"
+"#,
+            )
+            .unwrap(),
+            adapters(None, Arc::new(packet_sink)),
+        )
+        .unwrap();
+        instance.set_state(CoreInstanceState::Running);
+
+        let error = crate::management::apply_config_patch(
+            &instance,
+            InstanceConfigPatch {
+                ipv4: Some("10.82.0.2/24".parse::<cidr::Ipv4Inet>().unwrap().into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            error.to_string().contains("unusable virtual IP"),
+            "unexpected config patch error: {error:#}"
+        );
+        assert_eq!(
+            instance.toml_config().unwrap().get_ipv4().unwrap(),
+            "10.82.0.1/24".parse().unwrap()
+        );
+        assert_eq!(
+            instance
+                .runtime_config
+                .snapshot()
+                .peer
+                .runtime
+                .core
+                .routes
+                .ipv4
+                .as_ref()
+                .unwrap()
+                .address,
+            "10.82.0.1".parse::<IpAddr>().unwrap()
+        );
+        instance.peer_manager.clear_resources().await;
     }
 
     #[cfg(feature = "web-client")]

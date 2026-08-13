@@ -276,6 +276,9 @@ pub trait ConfigLoader: Send + Sync {
     fn set_network_config_source(&self, _source: Option<ConfigSource>) {}
 
     fn dump(&self) -> String;
+    fn dump_redacted(&self) -> String {
+        self.dump()
+    }
 }
 
 pub trait LoggingConfigLoader {
@@ -435,10 +438,37 @@ impl LoggingConfigLoader for &LoggingConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct VpnPortalConfig {
-    pub client_cidr: cidr::Ipv4Cidr,
     pub wireguard_listen: SocketAddr,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wireguard_private_key: Option<String>,
+    #[serde(default)]
+    pub clients: Vec<VpnPortalClientConfig>,
+}
+
+impl std::fmt::Debug for VpnPortalConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("VpnPortalConfig")
+            .field("wireguard_listen", &self.wireguard_listen)
+            .field(
+                "wireguard_private_key",
+                &self.wireguard_private_key.as_ref().map(|_| "<redacted>"),
+            )
+            .field("clients", &self.clients)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct VpnPortalClientConfig {
+    pub name: String,
+    pub virtual_ip: std::net::Ipv4Addr,
+    #[serde(default)]
+    pub groups: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -546,6 +576,57 @@ impl TomlConfig {
             Some(ConfigSource::User)
         ) {
             config.source = None;
+        }
+    }
+
+    #[cfg(feature = "config-write")]
+    fn config_for_dump(&self) -> Config {
+        let mut config = self.config.lock().unwrap().clone();
+        Self::normalize_config_source(&mut config);
+        config.flags = Some(flags_diff_from_default(&self.get_flags()));
+        config
+    }
+
+    #[cfg(feature = "config-write")]
+    fn redact_secrets(config: &mut Config) {
+        const REDACTED: &str = "<redacted>";
+
+        if let Some(secret) = config
+            .network_identity
+            .as_mut()
+            .and_then(|identity| identity.network_secret.as_mut())
+            && !secret.is_empty()
+        {
+            *secret = REDACTED.to_owned();
+        }
+        if let Some(private_key) = config
+            .secure_mode
+            .as_mut()
+            .and_then(|secure_mode| secure_mode.local_private_key.as_mut())
+            && !private_key.is_empty()
+        {
+            *private_key = REDACTED.to_owned();
+        }
+        if let Some(private_key) = config
+            .vpn_portal_config
+            .as_mut()
+            .and_then(|portal| portal.wireguard_private_key.as_mut())
+            && !private_key.is_empty()
+        {
+            *private_key = REDACTED.to_owned();
+        }
+        if let Some(declarations) = config
+            .acl
+            .as_mut()
+            .and_then(|acl| acl.acl_v1.as_mut())
+            .and_then(|acl| acl.group.as_mut())
+            .map(|group| &mut group.declares)
+        {
+            for declaration in declarations {
+                if !declaration.group_secret.is_empty() {
+                    declaration.group_secret = REDACTED.to_owned();
+                }
+            }
         }
     }
 
@@ -1027,9 +1108,19 @@ impl ConfigLoader for TomlConfig {
     fn dump(&self) -> String {
         #[cfg(feature = "config-write")]
         {
-            let mut config = self.config.lock().unwrap().clone();
-            Self::normalize_config_source(&mut config);
-            config.flags = Some(flags_diff_from_default(&self.get_flags()));
+            toml::to_string_pretty(&self.config_for_dump()).unwrap()
+        }
+        #[cfg(not(feature = "config-write"))]
+        {
+            panic!("this build does not include TOML configuration serialization")
+        }
+    }
+
+    fn dump_redacted(&self) -> String {
+        #[cfg(feature = "config-write")]
+        {
+            let mut config = self.config_for_dump();
+            Self::redact_secrets(&mut config);
             toml::to_string_pretty(&config).unwrap()
         }
         #[cfg(not(feature = "config-write"))]
@@ -1095,6 +1186,72 @@ socket_mark = 0
         assert_eq!(restored.get_listener_uris(), config.get_listener_uris());
         assert_eq!(restored.get_flags().mtu, 1420);
         assert_eq!(restored.get_flags().socket_mark, Some(0));
+    }
+
+    #[test]
+    fn legacy_vpn_portal_client_cidr_is_rejected_explicitly() {
+        let error = TomlConfig::new_from_str(
+            r#"
+[vpn_portal_config]
+client_cidr = "10.14.14.0/24"
+wireguard_listen = "0.0.0.0:51820"
+"#,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("client_cidr"), "{error}");
+    }
+
+    #[cfg(feature = "config-write")]
+    #[test]
+    fn vpn_portal_round_trip_and_redacted_dump_preserve_dump_semantics() {
+        let config = TomlConfig::new_from_str(
+            r#"
+[network_identity]
+network_name = "network-a"
+network_secret = "network-secret"
+
+[secure_mode]
+enabled = true
+local_private_key = "noise-private-key"
+
+[vpn_portal_config]
+wireguard_listen = "0.0.0.0:51820"
+wireguard_private_key = "wireguard-private-key"
+
+[[vpn_portal_config.clients]]
+name = "alice"
+virtual_ip = "10.144.144.10"
+groups = ["staff"]
+
+[acl.acl_v1.group]
+
+[[acl.acl_v1.group.declares]]
+group_name = "staff"
+group_secret = "group-secret"
+"#,
+        )
+        .unwrap();
+
+        let dumped = config.dump();
+        assert!(dumped.contains("network-secret"));
+        assert!(dumped.contains("noise-private-key"));
+        assert!(dumped.contains("wireguard-private-key"));
+        assert!(dumped.contains("group-secret"));
+        assert_eq!(
+            TomlConfig::new_from_str(&dumped)
+                .unwrap()
+                .get_vpn_portal_config(),
+            config.get_vpn_portal_config()
+        );
+
+        let redacted = config.dump_redacted();
+        assert!(!redacted.contains("network-secret"));
+        assert!(!redacted.contains("noise-private-key"));
+        assert!(!redacted.contains("wireguard-private-key"));
+        assert!(!redacted.contains("group-secret"));
+        assert_eq!(redacted.matches("<redacted>").count(), 4);
     }
 
     #[test]

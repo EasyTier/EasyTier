@@ -7,6 +7,8 @@ use std::{
     time::Duration,
 };
 
+#[cfg(feature = "wireguard")]
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use easytier_core::{
     connectivity::protocol::raw::TunnelDialer,
     foundation::stats::{LabelSet, LabelType, MetricName, MetricSnapshot},
@@ -99,7 +101,10 @@ async fn set_foreign_network_refresh_interval(inst: &Instance, seconds: u64) {
 }
 
 #[cfg(feature = "wireguard")]
-use crate::{common::config::VpnPortalConfig, vpn_portal::wireguard::get_wg_config_for_portal};
+use crate::{
+    common::config::{VpnPortalClientConfig, VpnPortalConfig},
+    vpn_portal::wireguard::test_wireguard_keys,
+};
 
 pub fn prepare_linux_namespaces() {
     del_netns("net_a");
@@ -1730,10 +1735,25 @@ pub async fn wireguard_vpn_portal(#[values(true, false)] test_v6: bool) {
     let insts = init_three_node_ex(
         "tcp",
         |config| {
+            let identity = config.get_network_identity();
+            config.set_network_identity(NetworkIdentity::new(
+                identity.network_name,
+                "wireguard-portal-test".to_owned(),
+            ));
+            if config.get_inst_name() == "inst1" {
+                config
+                    .add_proxy_cidr("198.51.100.0/24".parse().unwrap(), None)
+                    .unwrap();
+            }
             if config.get_inst_name() == "inst3" {
                 config.set_vpn_portal_config(VpnPortalConfig {
                     wireguard_listen: "0.0.0.0:22121".parse().unwrap(),
-                    client_cidr: "10.14.14.0/24".parse().unwrap(),
+                    wireguard_private_key: Some(BASE64_STANDARD.encode([42u8; 32])),
+                    clients: vec![VpnPortalClientConfig {
+                        name: "test-client".to_owned(),
+                        virtual_ip: "10.144.144.4".parse().unwrap(),
+                        groups: Vec::new(),
+                    }],
                 });
             }
             config
@@ -1756,13 +1776,24 @@ pub async fn wireguard_vpn_portal(#[values(true, false)] test_v6: bool) {
 
     let net_ns = NetNS::new(Some("net_d".into()));
     let _g = net_ns.guard();
-    let wg_cfg = get_wg_config_for_portal(&insts[2].get_global_ctx().get_network_identity());
+    let portal_config = insts[2]
+        .get_global_ctx()
+        .config
+        .get_vpn_portal_config()
+        .unwrap();
+    let portal_info = insts[2].get_core_instance().vpn_portal_info().await;
+    assert!(
+        portal_info.client_config.contains("198.51.100.0/24"),
+        "client config must include remote proxy CIDRs"
+    );
+    let (server_public, client_private) =
+        test_wireguard_keys(&portal_config, "test-client").unwrap();
     run_wireguard_client(
         dst_socket_addr,
-        Key::try_from(wg_cfg.my_public_key()).unwrap(),
-        Key::try_from(wg_cfg.peer_secret_key()).unwrap(),
-        vec!["10.14.14.0/24".to_string(), "10.144.144.0/24".to_string()],
-        "10.14.14.2".to_string(),
+        Key::try_from(server_public.as_slice()).unwrap(),
+        Key::try_from(client_private.as_slice()).unwrap(),
+        vec!["10.144.144.0/24".to_string()],
+        "192.0.2.42".to_string(),
     )
     .unwrap();
 

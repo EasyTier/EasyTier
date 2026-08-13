@@ -5,7 +5,7 @@
 //! `crate::peers`.
 
 use anyhow::Context as _;
-use cidr::{Ipv4Cidr, Ipv6Cidr};
+use cidr::Ipv6Cidr;
 use easytier_proto::common::{FlagsInConfig, PeerFeatureFlag, SecureModeConfig, StunInfo};
 use serde::{Deserialize, Serialize};
 
@@ -237,7 +237,6 @@ pub struct PeerRuntimeSnapshot {
     pub easytier_version: String,
     pub avoid_relay_data_preference: bool,
     pub flags: FlagsInConfig,
-    pub vpn_portal_cidr: Option<Ipv4Cidr>,
     pub pinned_peers: Vec<(url::Url, Option<String>)>,
     pub peer_group_memberships: Vec<PeerGroupIdentity>,
     pub acl_group_declarations: Vec<PeerGroupIdentity>,
@@ -254,7 +253,6 @@ impl PeerRuntimeSnapshot {
             easytier_version: env!("CARGO_PKG_VERSION").to_owned(),
             avoid_relay_data_preference,
             flags,
-            vpn_portal_cidr: None,
             pinned_peers: Vec::new(),
             peer_group_memberships: Vec::new(),
             acl_group_declarations: Vec::new(),
