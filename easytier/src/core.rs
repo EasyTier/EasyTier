@@ -1355,13 +1355,31 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
 
     let manager = Arc::new(NetworkInstanceManager::new().with_config_path(cli.config_dir.clone()));
 
-    let _rpc_server = ApiRpcServer::new(
-        cli.rpc_portal_options.rpc_portal,
-        cli.rpc_portal_options.rpc_portal_whitelist,
-        manager.clone(),
-    )?
-    .serve()
-    .await?;
+    let rpc_portal = cli.rpc_portal_options.rpc_portal;
+    let _tcp_rpc_server;
+    let _unix_rpc_server;
+    if rpc_portal
+        .as_deref()
+        .is_some_and(|value| value.starts_with("unix://"))
+    {
+        _unix_rpc_server = Some(
+            ApiRpcServer::new_unix(rpc_portal.as_deref().unwrap(), manager.clone())?
+                .serve()
+                .await?,
+        );
+        _tcp_rpc_server = None;
+    } else {
+        _tcp_rpc_server = Some(
+            ApiRpcServer::new(
+                rpc_portal,
+                cli.rpc_portal_options.rpc_portal_whitelist,
+                manager.clone(),
+            )?
+            .serve()
+            .await?,
+        );
+        _unix_rpc_server = None;
+    }
 
     let _web_client = if let Some(config_server_url_s) = cli.config_server.as_ref() {
         let wc = web_client::run_web_client(

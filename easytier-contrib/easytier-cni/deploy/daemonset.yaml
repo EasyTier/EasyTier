@@ -1,0 +1,98 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: easytier-cni
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: easytier-cni
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: easytier-cni
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: easytier-cni
+    spec:
+      hostNetwork: true
+      hostPID: true
+      priorityClassName: system-node-critical
+      tolerations:
+        - operator: Exists
+      initContainers:
+        - name: install-cni
+          image: ghcr.io/easytier/easytier:unstable
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              install -d -m 0755 /host/opt/cni/bin
+              install -m 0755 /usr/local/bin/easytier-cni /host/opt/cni/bin/easytier-cni
+              install -d -m 0700 /host/etc/easytier-cni
+              install -m 0600 /secret/network-secret /host/etc/easytier-cni/network-secret
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: cni-bin
+              mountPath: /host/opt/cni/bin
+            - name: cni-config
+              mountPath: /host/etc/easytier-cni
+            - name: network-secret
+              mountPath: /secret
+              readOnly: true
+      containers:
+        - name: easytier
+          image: ghcr.io/easytier/easytier:unstable
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              install -d -m 0700 /var/lib/easytier-cni/configs /run/easytier-cni
+              umask 077
+              exec easytier-core \
+                --daemon \
+                --rpc-portal unix:///run/easytier-cni/rpc.sock \
+                --config-dir /var/lib/easytier-cni/configs \
+                --console-log-level info
+          securityContext:
+            privileged: true
+            allowPrivilegeEscalation: true
+          readinessProbe:
+            exec:
+              command: ["/bin/sh", "-ec", "test -S /run/easytier-cni/rpc.sock"]
+            periodSeconds: 2
+            timeoutSeconds: 1
+          volumeMounts:
+            - name: tun
+              mountPath: /dev/net/tun
+            - name: host-run
+              mountPath: /run
+              mountPropagation: HostToContainer
+            - name: state
+              mountPath: /var/lib/easytier-cni
+      terminationGracePeriodSeconds: 30
+      volumes:
+        - name: cni-bin
+          hostPath:
+            path: /opt/cni/bin
+            type: Directory
+        - name: cni-config
+          hostPath:
+            path: /etc/easytier-cni
+            type: DirectoryOrCreate
+        - name: tun
+          hostPath:
+            path: /dev/net/tun
+            type: CharDevice
+        - name: host-run
+          hostPath:
+            path: /run
+            type: Directory
+        - name: state
+          hostPath:
+            path: /var/lib/easytier-cni
+            type: DirectoryOrCreate
+        - name: network-secret
+          secret:
+            secretName: easytier-cni
+            defaultMode: 0400

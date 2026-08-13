@@ -36,7 +36,7 @@ jobs:
           concurrent_skipping: 'same_content_newer'
           skip_after_successful_duplicate: 'true'
           cancel_others: 'true'
-          paths: '["Cargo.toml", "Cargo.lock", "easytier/**", ".github/workflows/core.yml", ".github/actions/**", "easytier-web/**"]'
+          paths: '["Cargo.toml", "Cargo.lock", "easytier/**", "easytier-contrib/easytier-cni/**", ".github/workflows/core.yml", ".github/actions/**", "easytier-web/**"]'
   build_web:
     runs-on: ubuntu-latest
     needs: pre_job
@@ -192,6 +192,10 @@ jobs:
           
           cargo $BUILD --release --target $TARGET --features=$FEATURES
 
+          if [[ "$TARGET" == *-unknown-linux-musl ]]; then
+            cargo $BUILD --release --target $TARGET --package=easytier-cni
+          fi
+
       - name: Build (MIPS)
         if: ${{ contains(matrix.TARGET, 'mips') }}
         env:
@@ -237,7 +241,7 @@ jobs:
             UPX_BIN=./upx
           fi
 
-          for BIN in ./target/$TARGET/release/easytier-{core,cli,web,web-embed}"$SUFFIX"; do
+          for BIN in ./target/$TARGET/release/easytier-{core,cli,cni,web,web-embed}"$SUFFIX"; do
             if [[ -f "$BIN" ]]; then
               if [[ -n "$UPX_BIN" ]]; then
                 $UPX_BIN --lzma --best "$BIN" || true

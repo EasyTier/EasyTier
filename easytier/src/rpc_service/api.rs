@@ -30,7 +30,7 @@ use crate::{
         port_forward_manage::PortForwardManageRpcService, protected_port,
         proxy::TcpProxyRpcService, stats::StatsRpcService, vpn_portal::VpnPortalRpcService,
     },
-    tunnel::{TunnelListener, tcp::TcpTunnelListener},
+    tunnel::{TunnelListener, tcp::TcpTunnelListener, unix::UnixSocketTunnelListener},
     web_client::{DefaultHooks, WebClientHooks},
 };
 
@@ -62,6 +62,23 @@ impl ApiRpcServer<TcpTunnelListener> {
             .set_hook(Arc::new(InstanceRpcServerHook::new(rpc_portal_whitelist)));
 
         Ok(server)
+    }
+}
+
+impl ApiRpcServer<UnixSocketTunnelListener> {
+    pub fn new_unix(
+        rpc_portal: &str,
+        instance_manager: Arc<NetworkInstanceManager>,
+    ) -> anyhow::Result<Self> {
+        let url = rpc_portal
+            .parse::<url::Url>()
+            .context("failed to parse Unix RPC portal")?;
+        anyhow::ensure!(url.scheme() == "unix", "RPC portal must use unix://");
+        anyhow::ensure!(!url.path().is_empty(), "Unix RPC portal path is required");
+        Ok(Self::from_tunnel(
+            UnixSocketTunnelListener::new(url),
+            instance_manager,
+        ))
     }
 }
 

@@ -1,0 +1,23 @@
+apiVersion: k8s.cni.cncf.io/v1
+kind: NetworkAttachmentDefinition
+metadata:
+  name: easytier
+spec:
+  config: |-
+    {
+      "cniVersion": "1.0.0",
+      "name": "easytier",
+      "type": "easytier-cni",
+      "rpcPortal": "unix:///run/easytier-cni/rpc.sock",
+      "networkName": "kubernetes",
+      "networkSecretFile": "/etc/easytier-cni/network-secret",
+      "peers": ["tcp://relay.example.com:11010"],
+      "mtu": 1380,
+      "timeoutSeconds": 30,
+      "ipam": {
+        "type": "whereabouts",
+        "range": "10.200.0.0/24",
+        "range_start": "10.200.0.10",
+        "range_end": "10.200.0.250"
+      }
+    }

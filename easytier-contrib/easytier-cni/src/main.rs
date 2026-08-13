@@ -1,7 +1,7 @@
 use std::{
     env, fs,
     io::{self, Read},
-    net::{Ipv4Addr, SocketAddr},
+    net::Ipv4Addr,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     time::{Duration, Instant},
@@ -9,6 +9,7 @@ use std::{
 
 use anyhow::{Context, Result, bail, ensure};
 use easytier::{
+    common::netns::NetNSGuard,
     proto::{
         api::manage::{
             CollectNetworkInfoRequest, ConfigSource, DeleteNetworkInstanceRequest,
@@ -18,14 +19,15 @@ use easytier::{
         rpc_impl::standalone::StandAloneClient,
         rpc_types::controller::BaseController,
     },
-    tunnel::tcp::TcpTunnelConnector,
+    tunnel::{tcp::TcpTunnelConnector, unix::UnixSocketTunnelConnector},
 };
+use network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-const SUPPORTED_VERSIONS: &[&str] = &["0.4.0", "1.0.0", "1.1.0"];
+const SUPPORTED_VERSIONS: &[&str] = &["1.0.0"];
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -33,7 +35,7 @@ struct PluginConfig {
     cni_version: String,
     name: String,
     #[serde(default = "default_rpc_portal")]
-    rpc_portal: SocketAddr,
+    rpc_portal: String,
     network_name: String,
     network_secret_file: PathBuf,
     #[serde(default)]
@@ -85,8 +87,6 @@ struct CniInterface {
     name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     sandbox: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    mtu: Option<u16>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -105,8 +105,8 @@ struct CniRoute {
     gw: Option<String>,
 }
 
-fn default_rpc_portal() -> SocketAddr {
-    "127.0.0.1:15888".parse().unwrap()
+fn default_rpc_portal() -> String {
+    "unix:///run/easytier-cni/rpc.sock".to_string()
 }
 
 fn default_mtu() -> u16 {
@@ -224,26 +224,90 @@ fn select_ipv4(result: &mut CniResult) -> Result<(Ipv4Addr, u8)> {
     Ok((address, prefix))
 }
 
-type RpcClient = StandAloneClient<TcpTunnelConnector>;
+fn netmask_prefix(netmask: Ipv4Addr) -> Result<u8> {
+    let bits = u32::from(netmask);
+    let prefix = bits.leading_ones() as u8;
+    ensure!(
+        bits == u32::MAX.checked_shl((32 - prefix).into()).unwrap_or(0),
+        "non-contiguous IPv4 netmask"
+    );
+    Ok(prefix)
+}
+
+fn check_interface(netns: &str, ifname: &str, address: Ipv4Addr, prefix: u8) -> Result<()> {
+    let _guard = NetNSGuard::try_new(Some(netns.to_string()))?;
+    let interface = NetworkInterface::show()?
+        .into_iter()
+        .find(|interface| interface.name == ifname)
+        .with_context(|| format!("interface {ifname} does not exist"))?;
+    let has_address = interface.addr.into_iter().any(|entry| match entry {
+        Addr::V4(entry) if entry.ip == address => entry
+            .netmask
+            .is_some_and(|netmask| netmask_prefix(netmask).is_ok_and(|value| value == prefix)),
+        _ => false,
+    });
+    ensure!(
+        has_address,
+        "interface {ifname} does not have {address}/{prefix}"
+    );
+    let is_up = pnet::datalink::interfaces()
+        .into_iter()
+        .find(|interface| interface.name == ifname)
+        .is_some_and(|interface| interface.is_up());
+    ensure!(is_up, "interface {ifname} is not up");
+    Ok(())
+}
+
+enum RpcConnection {
+    Tcp {
+        _client: StandAloneClient<TcpTunnelConnector>,
+    },
+    Unix {
+        _client: StandAloneClient<UnixSocketTunnelConnector>,
+    },
+}
 
 struct ManageClient {
     client: Box<dyn WebClientService<Controller = BaseController>>,
-    _connection: RpcClient,
+    _connection: RpcConnection,
 }
 
-async fn rpc_client(portal: SocketAddr) -> Result<ManageClient> {
-    let mut connection =
-        RpcClient::new(TcpTunnelConnector::new(format!("tcp://{portal}").parse()?));
-    let client = connection
-        .scoped_client::<WebClientServiceClientFactory<BaseController>>(String::new())
-        .await?;
-    Ok(ManageClient {
-        client: Box::new(client),
-        _connection: connection,
-    })
+async fn rpc_client(portal: &str) -> Result<ManageClient> {
+    let url: url::Url = if portal.contains("://") {
+        portal.parse()?
+    } else {
+        format!("tcp://{portal}").parse()?
+    };
+    match url.scheme() {
+        "tcp" => {
+            let mut connection = StandAloneClient::new(TcpTunnelConnector::new(url));
+            let client = connection
+                .scoped_client::<WebClientServiceClientFactory<BaseController>>(String::new())
+                .await?;
+            Ok(ManageClient {
+                client: Box::new(client),
+                _connection: RpcConnection::Tcp {
+                    _client: connection,
+                },
+            })
+        }
+        "unix" => {
+            let mut connection = StandAloneClient::new(UnixSocketTunnelConnector::new(url));
+            let client = connection
+                .scoped_client::<WebClientServiceClientFactory<BaseController>>(String::new())
+                .await?;
+            Ok(ManageClient {
+                client: Box::new(client),
+                _connection: RpcConnection::Unix {
+                    _client: connection,
+                },
+            })
+        }
+        scheme => bail!("unsupported RPC portal scheme {scheme:?}"),
+    }
 }
 
-async fn delete_instance(portal: SocketAddr, id: Uuid) -> Result<()> {
+async fn delete_instance(portal: &str, id: Uuid) -> Result<()> {
     let client = rpc_client(portal).await?;
     let response = client
         .client
@@ -262,7 +326,7 @@ async fn delete_instance(portal: SocketAddr, id: Uuid) -> Result<()> {
 }
 
 async fn wait_ready(
-    portal: SocketAddr,
+    portal: &str,
     id: Uuid,
     ifname: &str,
     address: Ipv4Addr,
@@ -306,6 +370,10 @@ async fn wait_ready(
 
 async fn add(config: &PluginConfig, input: &[u8], args: &CniArgs) -> Result<CniResult> {
     validate_version(&config.cni_version)?;
+    ensure!(
+        config.prev_result.is_none(),
+        "prevResult is not supported; use EasyTier as a standalone Multus delegate"
+    );
     let (container_id, ifname) = required_attachment_args(args)?;
     let netns = args.netns.as_deref().context("CNI_NETNS is required")?;
     ensure!(Path::new(netns).is_absolute(), "CNI_NETNS must be absolute");
@@ -318,7 +386,7 @@ async fn add(config: &PluginConfig, input: &[u8], args: &CniArgs) -> Result<CniR
     ensure!(!config.peers.is_empty(), "at least one peer is required");
 
     let id = attachment_id(&config.name, container_id, ifname);
-    let existing_client = rpc_client(config.rpc_portal).await?;
+    let existing_client = rpc_client(&config.rpc_portal).await?;
     let existing = existing_client
         .client
         .get_network_instance_config(
@@ -328,7 +396,14 @@ async fn add(config: &PluginConfig, input: &[u8], args: &CniArgs) -> Result<CniR
             },
         )
         .await;
-    ensure!(existing.is_err(), "attachment already exists");
+    match existing {
+        Ok(_) => bail!("attachment already exists"),
+        Err(error)
+            if error
+                .to_string()
+                .contains("instance config control not found") => {}
+        Err(error) => return Err(error.into()),
+    }
 
     let secret = fs::read_to_string(&config.network_secret_file)
         .with_context(|| {
@@ -342,13 +417,28 @@ async fn add(config: &PluginConfig, input: &[u8], args: &CniArgs) -> Result<CniR
     ensure!(!secret.is_empty(), "networkSecretFile is empty");
 
     let ipam_output = run_ipam(config, input, args, "ADD")?;
-    let mut ipam_result: CniResult = serde_json::from_slice(&ipam_output)
-        .context("failed to decode the delegated IPAM result")?;
+    let mut ipam_result: CniResult = match serde_json::from_slice(&ipam_output)
+        .context("failed to decode the delegated IPAM result")
+    {
+        Ok(result) => result,
+        Err(error) => {
+            return match run_ipam(config, input, args, "DEL") {
+                Ok(_) => Err(error),
+                Err(rollback) => {
+                    Err(error.context(format!("IPAM rollback also failed: {rollback:#}")))
+                }
+            };
+        }
+    };
     let (address, prefix) = match select_ipv4(&mut ipam_result) {
         Ok(value) => value,
         Err(error) => {
-            let _ = run_ipam(config, input, args, "DEL");
-            return Err(error);
+            return match run_ipam(config, input, args, "DEL") {
+                Ok(_) => Err(error),
+                Err(rollback) => {
+                    Err(error.context(format!("IPAM rollback also failed: {rollback:#}")))
+                }
+            };
         }
     };
     let network_config = NetworkConfig {
@@ -372,7 +462,7 @@ async fn add(config: &PluginConfig, input: &[u8], args: &CniArgs) -> Result<CniR
     };
 
     let start_result = async {
-        rpc_client(config.rpc_portal)
+        rpc_client(&config.rpc_portal)
             .await?
             .client
             .run_network_instance(
@@ -386,7 +476,7 @@ async fn add(config: &PluginConfig, input: &[u8], args: &CniArgs) -> Result<CniR
             )
             .await?;
         wait_ready(
-            config.rpc_portal,
+            &config.rpc_portal,
             id,
             ifname,
             address,
@@ -397,16 +487,21 @@ async fn add(config: &PluginConfig, input: &[u8], args: &CniArgs) -> Result<CniR
     .await;
 
     if let Err(error) = start_result {
-        let _ = delete_instance(config.rpc_portal, id).await;
-        let _ = run_ipam(config, input, args, "DEL");
-        return Err(error);
+        if let Err(rollback) = delete_instance(&config.rpc_portal, id).await {
+            return Err(error.context(format!(
+                "EasyTier rollback also failed; IPAM allocation was retained: {rollback:#}"
+            )));
+        }
+        return match run_ipam(config, input, args, "DEL") {
+            Ok(_) => Err(error),
+            Err(rollback) => Err(error.context(format!("IPAM rollback also failed: {rollback:#}"))),
+        };
     }
 
     ipam_result.cni_version = config.cni_version.clone();
     ipam_result.interfaces = vec![CniInterface {
         name: ifname.to_string(),
         sandbox: Some(netns.to_string()),
-        mtu: Some(config.mtu),
     }];
     Ok(ipam_result)
 }
@@ -415,7 +510,7 @@ async fn delete(config: &PluginConfig, input: &[u8], args: &CniArgs) -> Result<(
     validate_version(&config.cni_version)?;
     let (container_id, ifname) = required_attachment_args(args)?;
     let id = attachment_id(&config.name, container_id, ifname);
-    let instance_result = delete_instance(config.rpc_portal, id).await;
+    let instance_result = delete_instance(&config.rpc_portal, id).await;
     let ipam_result = run_ipam(config, input, args, "DEL").map(|_| ());
     match (instance_result, ipam_result) {
         (Ok(()), Ok(())) => Ok(()),
@@ -436,29 +531,19 @@ async fn check(config: &PluginConfig, input: &[u8], args: &CniArgs) -> Result<()
         .clone()
         .context("prevResult is required for CHECK")?;
     let mut result: CniResult = serde_json::from_value(previous)?;
-    let (address, _) = select_ipv4(&mut result)?;
+    let (address, prefix) = select_ipv4(&mut result)?;
     run_ipam(config, input, args, "CHECK")?;
 
     let id = attachment_id(&config.name, container_id, ifname);
     wait_ready(
-        config.rpc_portal,
+        &config.rpc_portal,
         id,
         ifname,
         address,
         Duration::from_secs(config.timeout_seconds),
     )
     .await?;
-    ensure!(
-        Path::new(netns).exists(),
-        "network namespace no longer exists"
-    );
-    Ok(())
-}
-
-async fn status(config: &PluginConfig, input: &[u8], args: &CniArgs) -> Result<()> {
-    validate_version(&config.cni_version)?;
-    let _client = rpc_client(config.rpc_portal).await?;
-    run_ipam(config, input, args, "STATUS")?;
+    check_interface(netns, ifname, address, prefix)?;
     Ok(())
 }
 
@@ -485,7 +570,7 @@ async fn main() {
         let requested = serde_json::from_slice::<Value>(&input)
             .ok()
             .and_then(|value| value.get("cniVersion")?.as_str().map(str::to_string))
-            .unwrap_or_else(|| "1.1.0".to_string());
+            .unwrap_or_else(|| "1.0.0".to_string());
         if let Err(error) = print_json(&json!({
             "cniVersion": requested,
             "supportedVersions": SUPPORTED_VERSIONS,
@@ -499,14 +584,14 @@ async fn main() {
     let input = match read_stdin() {
         Ok(input) => input,
         Err(error) => {
-            print_error("1.1.0", &error);
+            print_error("1.0.0", &error);
             std::process::exit(1);
         }
     };
     let config: PluginConfig = match serde_json::from_slice(&input) {
         Ok(config) => config,
         Err(error) => {
-            print_error("1.1.0", &error.into());
+            print_error("1.0.0", &error.into());
             std::process::exit(1);
         }
     };
@@ -517,7 +602,6 @@ async fn main() {
         }),
         "DEL" => delete(&config, &input, &args).await,
         "CHECK" => check(&config, &input, &args).await,
-        "STATUS" => status(&config, &input, &args).await,
         command => Err(anyhow::anyhow!("unsupported CNI_COMMAND {command:?}")),
     };
     if let Err(error) = result {
@@ -541,7 +625,7 @@ mod tests {
     #[test]
     fn parses_minimal_config() {
         let config: PluginConfig = serde_json::from_value(json!({
-            "cniVersion": "1.1.0",
+            "cniVersion": "1.0.0",
             "name": "overlay",
             "type": "easytier-cni",
             "networkName": "cluster",
@@ -558,7 +642,7 @@ mod tests {
     #[test]
     fn selects_one_ipv4_address() {
         let mut result: CniResult = serde_json::from_value(json!({
-            "cniVersion": "1.1.0",
+            "cniVersion": "1.0.0",
             "ips": [{"address": "10.200.0.8/24"}]
         }))
         .unwrap();
