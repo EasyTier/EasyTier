@@ -2483,6 +2483,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "easytier-cni"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "easytier",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "easytier-ffi"
 version = "0.1.0"
 dependencies = [

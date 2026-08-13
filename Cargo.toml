@@ -7,6 +7,7 @@ members = [
     "easytier-contrib/easytier-ffi",
     "easytier-contrib/easytier-uptime",
     "easytier-contrib/easytier-android-jni",
+    "easytier-contrib/easytier-cni",
 ]
 default-members = ["easytier", "easytier-web"]
 exclude = [
