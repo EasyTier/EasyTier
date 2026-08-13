@@ -1,5 +1,5 @@
 import { UUID } from './utils';
-import { NetworkConfig, NetworkInstanceRunningInfo } from '../types/network';
+import { NetworkConfig, NetworkInstanceRunningInfo, VpnPortalInfo } from '../types/network';
 
 export interface ValidateConfigResponse {
     toml_config: string;
@@ -57,6 +57,7 @@ export interface RemoteClient {
     validate_config(config: NetworkConfig): Promise<ValidateConfigResponse>;
     run_network(config: NetworkConfig, save: boolean): Promise<undefined>;
     get_network_info(inst_id: string): Promise<NetworkInstanceRunningInfo | undefined>;
+    get_vpn_portal_info(inst_id: string): Promise<VpnPortalInfo | undefined>;
     list_network_instance_ids(): Promise<ListNetworkInstanceIdResponse>;
     delete_network(inst_id: string): Promise<undefined>;
     update_network_instance_state(inst_id: string, disabled: boolean): Promise<undefined>;

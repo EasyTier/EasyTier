@@ -29,6 +29,7 @@ declare global {
   const getEasytierVersion: typeof import('./composables/backend')['getEasytierVersion']
   const getNetworkMetas: typeof import('./composables/backend')['getNetworkMetas']
   const getServiceStatus: typeof import('./composables/backend')['getServiceStatus']
+  const getVpnPortalInfo: typeof import('./composables/backend')['getVpnPortalInfo']
   const h: typeof import('vue')['h']
   const initMobileVpnService: typeof import('./composables/mobile_vpn')['initMobileVpnService']
   const initRpcConnection: typeof import('./composables/backend')['initRpcConnection']
@@ -156,6 +157,7 @@ declare module 'vue' {
     readonly getEasytierVersion: UnwrapRef<typeof import('./composables/backend')['getEasytierVersion']>
     readonly getNetworkMetas: UnwrapRef<typeof import('./composables/backend')['getNetworkMetas']>
     readonly getServiceStatus: UnwrapRef<typeof import('./composables/backend')['getServiceStatus']>
+    readonly getVpnPortalInfo: UnwrapRef<typeof import('./composables/backend')['getVpnPortalInfo']>
     readonly h: UnwrapRef<typeof import('vue')['h']>
     readonly initMobileVpnService: UnwrapRef<typeof import('./composables/mobile_vpn')['initMobileVpnService']>
     readonly initRpcConnection: UnwrapRef<typeof import('./composables/backend')['initRpcConnection']>

@@ -66,6 +66,11 @@ export async function collectNetworkInfo(instanceId: string) {
   return await invoke<Api.CollectNetworkInfoResponse>('collect_network_info', { instanceId })
 }
 
+export async function getVpnPortalInfo(instanceId: string) {
+  const info = await invoke<NetworkTypes.VpnPortalInfo | undefined>('get_vpn_portal_info', { instanceId })
+  return info ? NetworkTypes.normalizeVpnPortalInfo(info) : undefined
+}
+
 export async function setLoggingLevel(level: string) {
   return await invoke('set_logging_level', { level })
 }
