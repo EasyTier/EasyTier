@@ -12,8 +12,6 @@ use anyhow::Context;
 use ariadne::{CharSet, Config as AriadneConfig, IndexType, Label, Report, ReportKind, Source};
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "config-write")]
-use crate::config::{DEFAULT_UDP_STUN_SERVERS, DEFAULT_UDP_V6_STUN_SERVERS, default_stun_servers};
 use crate::proto::{
     acl::Acl,
     common::{CompressionAlgoPb, SecureModeConfig},
@@ -25,16 +23,6 @@ pub type Flags = crate::proto::common::FlagsInConfig;
 
 pub(crate) fn default_instance_name() -> String {
     "default".to_owned()
-}
-
-#[cfg(feature = "config-write")]
-fn default_udp_stun_servers() -> Vec<String> {
-    default_stun_servers(DEFAULT_UDP_STUN_SERVERS)
-}
-
-#[cfg(feature = "config-write")]
-fn default_udp_v6_stun_servers() -> Vec<String> {
-    default_stun_servers(DEFAULT_UDP_V6_STUN_SERVERS)
 }
 
 pub fn gen_default_flags() -> Flags {
@@ -266,6 +254,11 @@ pub trait ConfigLoader: Send + Sync {
     fn get_stun_servers(&self) -> Option<Vec<String>>;
     fn set_stun_servers(&self, servers: Option<Vec<String>>);
 
+    fn get_tcp_stun_servers(&self) -> Option<Vec<String>> {
+        None
+    }
+    fn set_tcp_stun_servers(&self, _servers: Option<Vec<String>>) {}
+
     fn get_stun_servers_v6(&self) -> Option<Vec<String>>;
     fn set_stun_servers_v6(&self, servers: Option<Vec<String>>);
 
@@ -489,6 +482,7 @@ struct Config {
     tcp_whitelist: Option<Vec<String>>,
     udp_whitelist: Option<Vec<String>>,
     stun_servers: Option<Vec<String>>,
+    tcp_stun_servers: Option<Vec<String>>,
     stun_servers_v6: Option<Vec<String>>,
 
     credential_file: Option<PathBuf>,
@@ -981,6 +975,14 @@ impl ConfigLoader for TomlConfig {
         self.config.lock().unwrap().stun_servers = servers;
     }
 
+    fn get_tcp_stun_servers(&self) -> Option<Vec<String>> {
+        self.config.lock().unwrap().tcp_stun_servers.clone()
+    }
+
+    fn set_tcp_stun_servers(&self, servers: Option<Vec<String>>) {
+        self.config.lock().unwrap().tcp_stun_servers = servers;
+    }
+
     fn get_stun_servers_v6(&self) -> Option<Vec<String>> {
         self.config.lock().unwrap().stun_servers_v6.clone()
     }
@@ -1028,12 +1030,6 @@ impl ConfigLoader for TomlConfig {
             let mut config = self.config.lock().unwrap().clone();
             Self::normalize_config_source(&mut config);
             config.flags = Some(flags_diff_from_default(&self.get_flags()));
-            if config.stun_servers == Some(default_udp_stun_servers()) {
-                config.stun_servers = None;
-            }
-            if config.stun_servers_v6 == Some(default_udp_v6_stun_servers()) {
-                config.stun_servers_v6 = None;
-            }
             toml::to_string_pretty(&config).unwrap()
         }
         #[cfg(not(feature = "config-write"))]
@@ -1298,6 +1294,7 @@ socket_mark = 66
         let config = TomlConfigLoader::default();
         let stun_servers = config.get_stun_servers();
         assert!(stun_servers.is_none());
+        assert!(config.get_tcp_stun_servers().is_none());
 
         // Test setting custom stun servers
         let custom_servers = vec!["txt:stun.easytier.cn".to_string()];
@@ -1305,6 +1302,12 @@ socket_mark = 66
 
         let retrieved_servers = config.get_stun_servers();
         assert_eq!(retrieved_servers.unwrap(), custom_servers);
+
+        let custom_tcp_servers = vec!["tcp-stun.example.com:3478".to_string()];
+        config.set_tcp_stun_servers(Some(custom_tcp_servers.clone()));
+
+        let retrieved_tcp_servers = config.get_tcp_stun_servers();
+        assert_eq!(retrieved_tcp_servers.unwrap(), custom_tcp_servers);
     }
 
     #[test]
@@ -1315,15 +1318,33 @@ stun_servers = [
     "stun.l.google.com:19302",
     "stun1.l.google.com:19302",
     "txt:stun.easytier.cn"
+]
+tcp_stun_servers = [
+    "tcp-stun.example.com:3478"
 ]"#;
 
         let config = TomlConfigLoader::new_from_str(config_str).unwrap();
         let stun_servers = config.get_stun_servers().unwrap();
+        let tcp_stun_servers = config.get_tcp_stun_servers().unwrap();
 
         assert_eq!(stun_servers.len(), 3);
         assert_eq!(stun_servers[0], "stun.l.google.com:19302");
         assert_eq!(stun_servers[1], "stun1.l.google.com:19302");
         assert_eq!(stun_servers[2], "txt:stun.easytier.cn");
+        assert_eq!(tcp_stun_servers, ["tcp-stun.example.com:3478"]);
+    }
+
+    #[test]
+    fn test_empty_tcp_stun_servers_toml_parsing() {
+        let config = TomlConfigLoader::new_from_str(
+            r#"
+instance_name = "test"
+tcp_stun_servers = []
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.get_tcp_stun_servers(), Some(Vec::new()));
     }
 
     #[cfg(feature = "config-write")]
