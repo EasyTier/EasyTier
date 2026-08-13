@@ -116,6 +116,7 @@ pub trait CredentialStorage: Send + Sync + 'static {
 
 pub(crate) struct CredentialManager {
     credentials: Mutex<HashMap<String, CredentialEntry>>,
+    ephemeral_credentials: Mutex<HashMap<uuid::Uuid, CredentialEntry>>,
     storage: Option<Arc<dyn CredentialStorage>>,
     storage_write: Mutex<()>,
 }
@@ -130,6 +131,7 @@ impl CredentialManager {
     pub fn new() -> Self {
         Self {
             credentials: Mutex::new(HashMap::new()),
+            ephemeral_credentials: Mutex::new(HashMap::new()),
             storage: None,
             storage_write: Mutex::new(()),
         }
@@ -149,6 +151,7 @@ impl CredentialManager {
         };
         Self {
             credentials: Mutex::new(credentials),
+            ephemeral_credentials: Mutex::new(HashMap::new()),
             storage: Some(storage),
             storage_write: Mutex::new(()),
         }
@@ -268,6 +271,72 @@ impl CredentialManager {
         removed
     }
 
+    pub fn register_ephemeral_credential(
+        &self,
+        public_key: [u8; 32],
+        groups: Vec<String>,
+        allow_relay: bool,
+        allowed_proxy_cidrs: Vec<String>,
+        reusable: bool,
+    ) -> Result<uuid::Uuid, String> {
+        let entry = CredentialEntry {
+            pubkey: BASE64_STANDARD.encode(public_key),
+            secret: String::new(),
+            groups,
+            allow_relay,
+            allowed_proxy_cidrs,
+            reusable,
+            expiry_unix: i64::MAX,
+            created_at_unix: current_unix_timestamp(),
+        };
+
+        let _storage_write = self.storage_write.lock().unwrap();
+        if self
+            .credentials
+            .lock()
+            .unwrap()
+            .values()
+            .any(|existing| existing.pubkey == entry.pubkey)
+            || self
+                .ephemeral_credentials
+                .lock()
+                .unwrap()
+                .values()
+                .any(|existing| existing.pubkey == entry.pubkey)
+        {
+            return Err("credential public key is already registered".to_owned());
+        }
+
+        let credential_id = uuid::Uuid::new_v4();
+        self.ephemeral_credentials
+            .lock()
+            .unwrap()
+            .insert(credential_id, entry);
+        Ok(credential_id)
+    }
+
+    pub fn update_ephemeral_credential_groups(
+        &self,
+        credential_id: uuid::Uuid,
+        groups: Vec<String>,
+    ) -> Option<bool> {
+        let mut credentials = self.ephemeral_credentials.lock().unwrap();
+        let credential = credentials.get_mut(&credential_id)?;
+        if credential.groups == groups {
+            return Some(false);
+        }
+        credential.groups = groups;
+        Some(true)
+    }
+
+    pub fn revoke_ephemeral_credential(&self, credential_id: uuid::Uuid) -> bool {
+        self.ephemeral_credentials
+            .lock()
+            .unwrap()
+            .remove(&credential_id)
+            .is_some()
+    }
+
     pub fn upsert_credential(&self, options: CredentialUpsertOptions) -> Result<bool, String> {
         let CredentialUpsertOptions {
             credential_id,
@@ -309,6 +378,15 @@ impl CredentialManager {
             existing_id != &credential_id && existing.pubkey == entry.pubkey
         }) {
             return Err("credential_secret is already used by another credential_id".to_string());
+        }
+        if self
+            .ephemeral_credentials
+            .lock()
+            .unwrap()
+            .values()
+            .any(|existing| existing.pubkey == entry.pubkey)
+        {
+            return Err("credential public key is already registered".to_owned());
         }
         let changed = credentials.get(&credential_id).is_none_or(|existing| {
             existing.secret != entry.secret
@@ -356,29 +434,43 @@ impl CredentialManager {
 
     pub fn get_trusted_pubkeys(&self, network_secret: &str) -> Vec<TrustedCredentialPubkeyProof> {
         let now = current_unix_timestamp();
-
-        self.credentials
+        let to_proof = |entry: &CredentialEntry| {
+            entry.to_trusted_credential().map(|credential| {
+                TrustedCredentialPubkeyProof::new_signed(credential, network_secret)
+            })
+        };
+        let mut trusted = self
+            .credentials
             .lock()
             .unwrap()
             .values()
             .filter(|entry| entry.is_active_at(now))
-            .filter_map(|entry| {
-                entry.to_trusted_credential().map(|credential| {
-                    TrustedCredentialPubkeyProof::new_signed(credential, network_secret)
-                })
-            })
-            .collect()
+            .filter_map(to_proof)
+            .collect::<Vec<_>>();
+        trusted.extend(
+            self.ephemeral_credentials
+                .lock()
+                .unwrap()
+                .values()
+                .filter_map(to_proof),
+        );
+        trusted
     }
 
     pub fn is_pubkey_trusted(&self, pubkey: &[u8]) -> bool {
         let now = current_unix_timestamp();
-
         let encoded = BASE64_STANDARD.encode(pubkey);
         self.credentials
             .lock()
             .unwrap()
             .values()
             .any(|entry| entry.pubkey == encoded && entry.is_active_at(now))
+            || self
+                .ephemeral_credentials
+                .lock()
+                .unwrap()
+                .values()
+                .any(|entry| entry.pubkey == encoded)
     }
 
     pub fn list_credentials(&self) -> Vec<CredentialInfo> {
@@ -724,5 +816,34 @@ mod tests {
         let manager = CredentialManager::from_storage(storage);
 
         assert!(manager.list_credentials().is_empty());
+    }
+
+    #[test]
+    fn ephemeral_credentials_are_trusted_but_not_persisted_or_listed() {
+        let storage = Arc::new(MemoryCredentialStorage::default());
+        let manager = CredentialManager::from_storage(storage.clone());
+        let private = StaticSecret::from([7u8; 32]);
+        let public = *PublicKey::from(&private).as_bytes();
+
+        let credential_id = manager
+            .register_ephemeral_credential(public, vec!["ops".to_owned()], false, Vec::new(), false)
+            .unwrap();
+
+        assert!(manager.is_pubkey_trusted(&public));
+        let trusted = manager.get_trusted_pubkeys("network-secret");
+        assert_eq!(trusted.len(), 1);
+        let credential = trusted[0].credential.as_ref().unwrap();
+        assert_eq!(credential.pubkey, public);
+        assert_eq!(credential.groups, ["ops"]);
+        assert!(!credential.allow_relay);
+        assert!(credential.allowed_proxy_cidrs.is_empty());
+        assert_eq!(credential.reusable, Some(false));
+        assert!(manager.list_credentials().is_empty());
+        assert!(storage.serialized.lock().unwrap().is_none());
+
+        assert!(manager.revoke_ephemeral_credential(credential_id));
+        assert!(!manager.is_pubkey_trusted(&public));
+        assert!(manager.get_trusted_pubkeys("network-secret").is_empty());
+        assert!(storage.serialized.lock().unwrap().is_none());
     }
 }

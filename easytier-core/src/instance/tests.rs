@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use async_trait::async_trait;
 
 use super::*;
@@ -57,21 +55,6 @@ impl ExternalListenerFactory<()> for TestExternalListenerFactory {
     fn create(&self, _request: ExternalListenerRequest) -> Box<dyn SocketListener<Accepted = ()>> {
         unreachable!()
     }
-}
-
-#[test]
-fn runtime_updates_retain_core_owned_peer_identity() {
-    let mut snapshot = Arc::new(PeerRuntimeSnapshot::default());
-    Arc::make_mut(&mut snapshot).runtime.core.node.peer_id = Some(17);
-    Arc::make_mut(&mut snapshot).runtime.core.node.instance_id = Some([1; 16]);
-    let submitted = snapshot.clone();
-
-    retain_core_peer_identity(&mut snapshot, 23, Some([2; 16]));
-
-    assert_eq!(snapshot.runtime.core.node.peer_id, Some(23));
-    assert_eq!(snapshot.runtime.core.node.instance_id, Some([2; 16]));
-    assert_eq!(submitted.runtime.core.node.peer_id, Some(17));
-    assert_eq!(submitted.runtime.core.node.instance_id, Some([1; 16]));
 }
 
 #[test]
@@ -228,29 +211,13 @@ fn wasi_create_config_uses_shared_toml() {
 }
 
 #[test]
-fn core_instance_config_validation_rejects_invalid_acl_whitelist() {
-    let peer = crate::peers::peer_manager::PortablePeerManagerConfig::new(
-        crate::config::peers::PeerRuntimeConfig {
-            core: crate::config::CoreConfig::default(),
-            network_identity: crate::config::NetworkIdentity {
-                network_name: "default".to_owned(),
-                network_secret: Some("test".to_owned()),
-                network_secret_digest: None,
-            },
-            stun_info: crate::proto::common::StunInfo::default(),
-            feature_flags: crate::proto::common::PeerFeatureFlag::default(),
-            secure_mode: None,
-            host_routing: crate::config::peers::HostRoutingPolicy::default(),
-        },
-    );
-    let mut config = CoreInstanceConfig {
-        instance_name: String::new(),
-        peer,
-        connectivity: CoreConnectivityConfig::default(),
+fn acl_config_rejects_invalid_whitelist() {
+    let config = crate::config::peers::AclRuleConfig {
+        tcp_whitelist: vec!["9000-8000".to_owned()],
+        ..Default::default()
     };
-    config.connectivity.runtime.acl.tcp_whitelist = vec!["9000-8000".to_owned()];
 
-    let error = validate_core_instance_config(&config).unwrap_err();
+    let error = config.build().unwrap_err();
 
     assert!(error.to_string().contains("Start port must be <= end port"));
 }

@@ -185,6 +185,14 @@ impl AclRuleConfig {
         Ok(())
     }
 
+    pub(crate) fn for_credential_peer(&self) -> Self {
+        let mut config = self.clone();
+        if let Some(acl) = config.acl.as_mut().and_then(|acl| acl.acl_v1.as_mut()) {
+            acl.group = None;
+        }
+        config
+    }
+
     pub fn build(&self) -> anyhow::Result<Option<Acl>> {
         let mut config = self.clone();
         config.generate_acl_from_whitelists()?;
@@ -311,5 +319,43 @@ mod tests {
         .unwrap_err();
 
         assert!(error.to_string().contains("Start port must be <= end port"));
+    }
+
+    #[test]
+    fn credential_peer_acl_preserves_chains_without_group_secrets() {
+        let config = AclRuleConfig {
+            acl: Some(Acl {
+                acl_v1: Some(AclV1 {
+                    chains: vec![Chain {
+                        name: "forward".to_owned(),
+                        chain_type: ChainType::Forward as i32,
+                        rules: vec![Rule {
+                            action: Action::Drop as i32,
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }],
+                    group: Some(GroupInfo {
+                        declares: vec![crate::proto::acl::GroupIdentity {
+                            group_name: "ops".to_owned(),
+                            group_secret: "secret".to_owned(),
+                        }],
+                        members: vec!["ops".to_owned()],
+                    }),
+                }),
+            }),
+            tcp_whitelist: vec!["22".to_owned()],
+            ..Default::default()
+        };
+
+        let sanitized = config.for_credential_peer();
+
+        let acl = sanitized.acl.unwrap().acl_v1.unwrap();
+        assert_eq!(acl.chains.len(), 1);
+        assert_eq!(acl.chains[0].name, "forward");
+        assert_eq!(acl.chains[0].rules[0].action, Action::Drop as i32);
+        assert!(acl.group.is_none());
+        assert_eq!(sanitized.tcp_whitelist, ["22"]);
+        assert!(config.acl.unwrap().acl_v1.unwrap().group.is_some());
     }
 }

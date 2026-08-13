@@ -331,6 +331,10 @@ impl CorePeerContext {
         self.config.snapshot().peer.clone()
     }
 
+    pub(crate) fn runtime_config_store(&self) -> CoreRuntimeConfigStore {
+        self.config.clone()
+    }
+
     pub fn stats_manager(&self) -> Arc<StatsManager> {
         self.stats_manager.clone()
     }

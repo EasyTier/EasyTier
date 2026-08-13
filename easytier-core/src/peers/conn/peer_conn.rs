@@ -34,9 +34,9 @@ use super::{
     peer_session::{PeerSession, PeerSessionAction},
 };
 use crate::peers::{
-    PacketRecvChan,
+    PacketRecvChan, PeerConnectionOrigin, PeerPacketIngress,
     context::{ArcPeerContext, NetworkIdentity, NetworkSecretDigest},
-    send_packet_to_chan,
+    send_peer_packet_to_chan,
     traffic_metrics::data_packet_payload_len,
 };
 use crate::{
@@ -272,6 +272,7 @@ impl PeerConnCloseNotify {
 
 pub struct PeerConn {
     conn_id: PeerConnId,
+    origin: PeerConnectionOrigin,
 
     my_peer_id: PeerId,
     peer_id_hint: Option<PeerId>,
@@ -319,21 +320,30 @@ impl Debug for PeerConn {
 }
 
 impl PeerConn {
+    #[cfg(test)]
     pub(crate) fn new(
         my_peer_id: PeerId,
         context: ArcPeerContext,
         tunnel: Box<dyn Tunnel>,
         peer_session_store: Arc<PeerSessionStore>,
     ) -> Self {
-        Self::new_with_peer_id_hint(my_peer_id, context, tunnel, None, peer_session_store)
+        Self::new_with_peer_id_hint_and_origin(
+            my_peer_id,
+            context,
+            tunnel,
+            None,
+            peer_session_store,
+            PeerConnectionOrigin::Network,
+        )
     }
 
-    pub(crate) fn new_with_peer_id_hint(
+    pub(crate) fn new_with_peer_id_hint_and_origin(
         my_peer_id: PeerId,
         context: ArcPeerContext,
         tunnel: Box<dyn Tunnel>,
         peer_id_hint: Option<PeerId>,
         peer_session_store: Arc<PeerSessionStore>,
+        origin: PeerConnectionOrigin,
     ) -> Self {
         let flags = context.flags();
         let tunnel_info = tunnel.info();
@@ -363,6 +373,7 @@ impl PeerConn {
 
         PeerConn {
             conn_id,
+            origin,
 
             my_peer_id,
             peer_id_hint,
@@ -426,6 +437,10 @@ impl PeerConn {
 
     pub fn get_conn_id(&self) -> PeerConnId {
         self.conn_id
+    }
+
+    pub(crate) fn is_attached(&self) -> bool {
+        self.origin == PeerConnectionOrigin::Attached
     }
 
     pub fn set_is_hole_punched(&mut self, is_hole_punched: bool) {
@@ -1286,6 +1301,11 @@ impl PeerConn {
         let ctrl_sender = self.ctrl_resp_sender.clone();
         let conn_info_for_instrument = self.get_conn_info();
         let context = self.context.clone();
+        let ingress = PeerPacketIngress::Peer {
+            peer_id: self.get_peer_id(),
+            conn_id: self.conn_id,
+            origin: self.origin,
+        };
         let control_network_name = conn_info_for_instrument.network_name.clone();
 
         let is_foreign_network =
@@ -1329,7 +1349,10 @@ impl PeerConn {
                         if let Err(e) = ctrl_sender.send(zc_packet) {
                             tracing::error!(?e, "peer conn send ctrl resp error");
                         }
-                    } else if send_packet_to_chan(&sender, zc_packet).await.is_err() {
+                    } else if send_peer_packet_to_chan(&sender, zc_packet, ingress)
+                        .await
+                        .is_err()
+                    {
                         break;
                     }
 
