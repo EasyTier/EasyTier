@@ -1,5 +1,8 @@
 use std::sync::Arc;
 
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+use x25519_dalek::{PublicKey, StaticSecret};
+
 use crate::foundation::time::{Duration, timeout};
 
 use crate::{
@@ -44,6 +47,52 @@ async fn peer_conn_handshake_over_memory_tunnel() {
     server_ret.unwrap();
     assert_eq!(client.get_peer_id(), 2);
     assert_eq!(server.get_peer_id(), 1);
+    assert_eq!(client.get_conn_info().features, ["liveness-echo-v1"]);
+    assert_eq!(server.get_conn_info().features, ["liveness-echo-v1"]);
+}
+
+#[tokio::test]
+async fn peer_conn_noise_handshake_advertises_liveness_echo() {
+    fn context(peer_key: u8) -> Arc<NoopPeerContext> {
+        let private = StaticSecret::from([peer_key; 32]);
+        let public = PublicKey::from(&private);
+        Arc::new(
+            NoopPeerContext::new(NetworkIdentity {
+                network_name: "net".to_owned(),
+                network_secret: Some("secret".to_owned()),
+                network_secret_digest: None,
+            })
+            .with_secure_mode(crate::proto::common::SecureModeConfig {
+                enabled: true,
+                local_private_key: Some(BASE64_STANDARD.encode(private.as_bytes())),
+                local_public_key: Some(BASE64_STANDARD.encode(public.as_bytes())),
+            }),
+        )
+    }
+
+    let (client_tunnel, server_tunnel) = create_ring_tunnel_pair();
+    let mut client = PeerConn::new(
+        1,
+        context(1),
+        client_tunnel,
+        Arc::new(PeerSessionStore::new()),
+    );
+    let mut server = PeerConn::new(
+        2,
+        context(2),
+        server_tunnel,
+        Arc::new(PeerSessionStore::new()),
+    );
+
+    let (client_ret, server_ret) = tokio::join!(
+        client.do_handshake_as_client(),
+        server.do_handshake_as_server()
+    );
+
+    client_ret.unwrap();
+    server_ret.unwrap();
+    assert_eq!(client.get_conn_info().features, ["liveness-echo-v1"]);
+    assert_eq!(server.get_conn_info().features, ["liveness-echo-v1"]);
 }
 
 #[tokio::test]

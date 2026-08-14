@@ -1541,9 +1541,9 @@ pub async fn proxy_three_node_disconnect_test(#[values("tcp", "wg")] proto: &str
                         .any(|r| *r == inst4.peer_id())
                 },
                 // 0 down, assume last packet is recv in -0.01
-                // [2, 7) send ping
-                // [4, 9) ping fail and close connection
-                Duration::from_secs(11),
+                // one ping outstanding at a time, each waits up to 2s:
+                // 5 consecutive failures close the connection at ~[4, 11)
+                Duration::from_secs(15),
             )
             .await;
 
