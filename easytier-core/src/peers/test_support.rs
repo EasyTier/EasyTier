@@ -70,6 +70,12 @@ impl NoopPeerContext {
             secure_mode: None,
         }
     }
+
+    pub(crate) fn with_secure_mode(mut self, secure_mode: SecureModeConfig) -> Self {
+        self.flags.encryption_algorithm = "aes-gcm".to_owned();
+        self.secure_mode = Some(secure_mode);
+        self
+    }
 }
 
 impl Default for NoopPeerContext {

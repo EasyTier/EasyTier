@@ -29,6 +29,7 @@ use snow::{HandshakeState, params::NoiseParams};
 use crate::foundation::time::{Duration, timeout};
 
 use super::{
+    peer_conn_liveness::{FEATURE as LIVENESS_ECHO_FEATURE, PeerConnLiveness},
     peer_conn_ping::PeerConnPinger,
     peer_session::{PeerSession, PeerSessionAction},
 };
@@ -88,6 +89,7 @@ struct NoiseHandshakeResult {
     // foreign network manager use this to verify peer.
     // the challenge will be sent to authorized peer and compare the proof against it.
     client_secret_proof: Option<SecretProof>,
+    remote_features: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -300,6 +302,7 @@ pub struct PeerConn {
     latency_stats: Arc<WindowLatency>,
     throughput: Arc<Throughput>,
     loss_rate_stats: Arc<AtomicU32>,
+    liveness: PeerConnLiveness,
 
     peer_session_store: Arc<PeerSessionStore>,
     my_encrypt_algo: String,
@@ -347,7 +350,9 @@ impl PeerConn {
 
         let peer_conn_tunnel_filter = StatsRecorderTunnelFilter::new();
         let throughput = peer_conn_tunnel_filter.filter_output();
-        let filter_chain = TunnelFilterChain::new(session_filter.clone(), peer_conn_tunnel_filter);
+        let liveness = PeerConnLiveness::new();
+        let filter_chain = TunnelFilterChain::new(session_filter.clone(), peer_conn_tunnel_filter)
+            .chain(liveness.clone());
         let peer_conn_tunnel = TunnelWithFilter::new(tunnel, filter_chain);
         let mut mpsc_tunnel = MpscTunnel::new(peer_conn_tunnel, Some(Duration::from_secs(7)));
 
@@ -389,6 +394,7 @@ impl PeerConn {
             latency_stats: Arc::new(WindowLatency::new(15)),
             throughput,
             loss_rate_stats: Arc::new(AtomicU32::new(0)),
+            liveness,
 
             peer_session_store,
             my_encrypt_algo,
@@ -515,7 +521,7 @@ impl PeerConn {
             magic: MAGIC,
             my_peer_id: self.my_peer_id,
             version: VERSION,
-            features: Vec::new(),
+            features: vec![LIVENESS_ECHO_FEATURE.to_owned()],
             network_name: network.network_name.clone(),
             ..Default::default()
         };
@@ -796,6 +802,7 @@ impl PeerConn {
             a_session_generation,
             a_conn_id: Some(a_conn_id.into()),
             client_encryption_algorithm: self.my_encrypt_algo.clone(),
+            features: vec![LIVENESS_ECHO_FEATURE.to_owned()],
         };
 
         let mut hs = builder
@@ -941,6 +948,7 @@ impl PeerConn {
             // we have authorized the peer with noise handshake, so just set secret digest same as us even remote is a shared node.
             secret_digest,
             client_secret_proof: None,
+            remote_features: msg2_pb.features,
         })
     }
 
@@ -1067,6 +1075,7 @@ impl PeerConn {
             a_conn_id_echo: msg1_pb.a_conn_id,
             secret_proof_32,
             server_encryption_algorithm: algo,
+            features: vec![LIVENESS_ECHO_FEATURE.to_owned()],
         };
         self.send_noise_msg(
             msg2_pb,
@@ -1151,6 +1160,7 @@ impl PeerConn {
                 challenge: handshake_hash_for_proof,
                 proof: p.clone(),
             }),
+            remote_features: msg1_pb.features,
         })
     }
 
@@ -1162,7 +1172,7 @@ impl PeerConn {
             version: VERSION,
             network_name: noise.remote_network_name.clone(),
 
-            features: Vec::new(),
+            features: noise.remote_features.clone(),
             network_secret_digest: noise.secret_digest.clone(),
         }
     }
@@ -1217,6 +1227,9 @@ impl PeerConn {
             )));
         }
 
+        self.liveness
+            .set_remote_features(&self.info.as_ref().unwrap().features);
+
         if self.get_peer_id() == self.my_peer_id {
             Err(Error::WaitRespError("peer id conflict".to_owned()))
         } else {
@@ -1244,6 +1257,9 @@ impl PeerConn {
             self.info = Some(rsp);
             self.is_client = Some(true);
         }
+
+        self.liveness
+            .set_remote_features(&self.info.as_ref().unwrap().features);
 
         if self.get_peer_id() == self.my_peer_id {
             Err(Error::WaitRespError(
@@ -1348,6 +1364,7 @@ impl PeerConn {
             self.throughput.clone(),
             self.context.clone(),
             self.get_conn_info().network_name,
+            self.liveness.clone(),
         );
 
         let close_event_notifier = self.close_event_notifier.clone();

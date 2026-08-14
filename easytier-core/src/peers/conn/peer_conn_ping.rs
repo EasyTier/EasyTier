@@ -7,20 +7,27 @@ use std::{
 };
 
 use rand::{Rng, thread_rng};
-use tokio::{sync::broadcast, task::JoinSet};
-use tracing::Instrument;
+use tokio::{
+    sync::{broadcast, mpsc::error::TrySendError},
+    task::JoinSet,
+};
 
 use crate::{
     config::PeerId,
     foundation::time::{Interval, interval, timeout},
     packet::{PacketType, ZCPacket},
-    peers::{context::ArcPeerContext, error::Error},
+    peers::{conn::peer_conn_liveness::PeerConnLiveness, context::ArcPeerContext, error::Error},
     tunnel::{
-        TunnelError,
         mpsc::MpscTunnelSender,
         stats::{Throughput, WindowLatency},
     },
 };
+
+#[derive(Debug)]
+enum PingResponse {
+    Pong(u128),
+    LivenessEcho,
+}
 
 struct PingIntervalController {
     throughput: Arc<Throughput>,
@@ -118,7 +125,7 @@ pub struct PeerConnPinger {
     throughput_stats: Arc<Throughput>,
     context: ArcPeerContext,
     network_name: String,
-    tasks: JoinSet<Result<(), TunnelError>>,
+    liveness: PeerConnLiveness,
 }
 
 impl std::fmt::Debug for PeerConnPinger {
@@ -132,7 +139,7 @@ impl std::fmt::Debug for PeerConnPinger {
 
 impl PeerConnPinger {
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new(
+    pub(super) fn new(
         my_peer_id: PeerId,
         peer_id: PeerId,
         sink: MpscTunnelSender,
@@ -142,18 +149,19 @@ impl PeerConnPinger {
         throughput_stats: Arc<Throughput>,
         context: ArcPeerContext,
         network_name: String,
+        liveness: PeerConnLiveness,
     ) -> Self {
         Self {
             my_peer_id,
             peer_id,
             sink,
-            tasks: JoinSet::new(),
             latency_stats,
             ctrl_sender,
             loss_rate_stats,
             throughput_stats,
             context,
             network_name,
+            liveness,
         }
     }
 
@@ -164,23 +172,19 @@ impl PeerConnPinger {
     }
 
     async fn do_pingpong_once(
-        my_node_id: PeerId,
-        peer_id: PeerId,
-        sink: &MpscTunnelSender,
-        context: &ArcPeerContext,
-        network_name: &str,
+        &self,
         receiver: &mut broadcast::Receiver<ZCPacket>,
         seq: u32,
-    ) -> Result<u128, Error> {
+        liveness_token: Option<u8>,
+    ) -> Result<PingResponse, Error> {
         // should add seq here. so latency can be calculated more accurately
-        let req = Self::new_ping_packet(my_node_id, peer_id, seq);
+        let req = Self::new_ping_packet(self.my_peer_id, self.peer_id, seq);
         let req_len = req.buf_len() as u64;
-        sink.send(req).await?;
-        context.record_control_tx(network_name, req_len);
+        self.sink.send(req).await?;
+        self.context.record_control_tx(&self.network_name, req_len);
 
         let now = Instant::now();
-        // wait until we get a pong packet in ctrl_resp_receiver
-        let resp = timeout(Duration::from_secs(2), async {
+        let wait_for_pong = async {
             loop {
                 match receiver.recv().await {
                     Ok(p) => {
@@ -203,6 +207,18 @@ impl PeerConnPinger {
                 }
             }
             Ok(())
+        };
+        let resp = timeout(Duration::from_secs(2), async {
+            if let Some(token) = liveness_token {
+                tokio::select! {
+                    ret = wait_for_pong => ret.map(|()| PingResponse::Pong(now.elapsed().as_micros())),
+                    () = self.liveness.wait_for_echo(token) => Ok(PingResponse::LivenessEcho),
+                }
+            } else {
+                wait_for_pong
+                    .await
+                    .map(|()| PingResponse::Pong(now.elapsed().as_micros()))
+            }
         })
         .await;
 
@@ -214,98 +230,59 @@ impl PeerConnPinger {
             ));
         }
 
-        if resp.as_ref().unwrap().is_err() {
-            return Err(resp.unwrap().err().unwrap());
-        }
-
-        Ok(now.elapsed().as_micros())
+        resp.unwrap()
     }
 
     pub async fn pingpong(&mut self) {
-        let sink = self.sink.clone();
-        let context = self.context.clone();
-        let network_name = self.network_name.clone();
         let my_node_id = self.my_peer_id;
-        let peer_id = self.peer_id;
-        let latency_stats = self.latency_stats.clone();
-
-        let (ping_res_sender, mut ping_res_receiver) = tokio::sync::mpsc::channel(100);
 
         // one with 1% precision
         let loss_rate_stats_1 = WindowLatency::new(100);
         // disconnect the connection if lost 5 pingpong consecutively
         let loss_counter = Arc::new(AtomicU32::new(0));
 
-        let stopped = Arc::new(AtomicU32::new(0));
-
-        // generate a pingpong task every 200ms
-        let mut pingpong_tasks = JoinSet::new();
-        let ctrl_resp_sender = self.ctrl_sender.clone();
-        let stopped_clone = stopped.clone();
-        let mut controller =
-            PingIntervalController::new(self.throughput_stats.clone(), loss_counter.clone());
-        self.tasks.spawn(
-            async move {
-                let mut req_seq = 0;
-                loop {
-                    controller.tick().await;
-
-                    if stopped_clone.load(Ordering::Relaxed) != 0 {
-                        return Ok(());
-                    }
-
-                    while pingpong_tasks.len() > 5 {
-                        pingpong_tasks.join_next().await;
-                    }
-
-                    if !controller.should_send_ping() {
-                        continue;
-                    }
-
-                    tracing::debug!(
-                        "pingpong controller send pingpong task, seq: {}, node_id: {}, controller: {:?}",
-                        req_seq,
-                        my_node_id,
-                        controller,
-                    );
-
-                    let sink = sink.clone();
-                    let context = context.clone();
-                    let network_name = network_name.clone();
-                    let receiver = ctrl_resp_sender.subscribe();
-                    let ping_res_sender = ping_res_sender.clone();
-                    pingpong_tasks.spawn(async move {
-                        let mut receiver = receiver.resubscribe();
-                        let pingpong_once_ret = Self::do_pingpong_once(
-                            my_node_id,
-                            peer_id,
-                            &sink,
-                            &context,
-                            &network_name,
-                            &mut receiver,
-                            req_seq,
-                        )
-                        .await;
-
-                        if let Err(e) = ping_res_sender.send(pingpong_once_ret).await {
-                            tracing::info!(?e, "pingpong task send result error, exit..");
-                        };
-                    });
-
-                    req_seq = req_seq.wrapping_add(1);
+        let (trigger_sender, mut trigger_receiver) = tokio::sync::mpsc::channel(1);
+        let mut controller_tasks = JoinSet::new();
+        let throughput = self.throughput_stats.clone();
+        let controller_loss_counter = loss_counter.clone();
+        controller_tasks.spawn(async move {
+            let mut controller = PingIntervalController::new(throughput, controller_loss_counter);
+            loop {
+                controller.tick().await;
+                if !controller.should_send_ping() {
+                    continue;
+                }
+                match trigger_sender.try_send(()) {
+                    Ok(()) | Err(TrySendError::Full(())) => {}
+                    Err(TrySendError::Closed(())) => break,
                 }
             }
-            .instrument(tracing::info_span!(
-                "pingpong_controller",
-                ?my_node_id,
-                ?peer_id
-            )),
-        );
+        });
 
-        while let Some(ret) = ping_res_receiver.recv().await {
-            if let Ok(lat) = ret {
-                latency_stats.record_latency(lat as u32);
+        let mut req_seq = 0u32;
+        while trigger_receiver.recv().await.is_some() {
+            tracing::debug!(
+                "pingpong controller send pingpong task, seq: {}, node_id: {}",
+                req_seq,
+                my_node_id,
+            );
 
+            let liveness_token = (loss_counter.load(Ordering::Relaxed) > 0)
+                .then(|| self.liveness.start_probe())
+                .flatten();
+            let mut receiver = self.ctrl_sender.subscribe();
+            let ret = self
+                .do_pingpong_once(&mut receiver, req_seq, liveness_token)
+                .await;
+            req_seq = req_seq.wrapping_add(1);
+
+            if let Ok(response) = &ret {
+                if let PingResponse::Pong(lat) = response {
+                    self.latency_stats.record_latency(*lat as u32);
+                }
+                if let Some(token) = liveness_token {
+                    self.liveness.finish_probe(token);
+                }
                 loss_rate_stats_1.record_latency(0);
                 loss_counter.store(0, Ordering::Relaxed);
             } else {
@@ -343,18 +320,21 @@ impl PeerConnPinger {
             self.loss_rate_stats
                 .store((loss_rate_1 * 100.0) as u32, Ordering::Relaxed);
         }
-
-        stopped.store(1, Ordering::Relaxed);
-        ping_res_receiver.close();
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use futures::{SinkExt, StreamExt};
+
     use super::*;
     use crate::{
+        packet::PacketType,
+        peers::conn::peer_conn_liveness::PeerConnLiveness,
         peers::test_support::NoopPeerContext,
-        tunnel::{mpsc::MpscTunnel, ring::create_ring_tunnel_pair},
+        tunnel::{
+            Tunnel, filter::TunnelWithFilter, mpsc::MpscTunnel, ring::create_ring_tunnel_pair,
+        },
     };
 
     #[tokio::test(flavor = "current_thread")]
@@ -373,6 +353,7 @@ mod tests {
             throughput.clone(),
             Arc::new(NoopPeerContext::default()),
             "test".to_owned(),
+            PeerConnLiveness::new(),
         );
 
         let ingress = tokio::spawn(async move {
@@ -388,6 +369,54 @@ mod tests {
         assert!(
             result.is_ok(),
             "unrelated ingress traffic kept a failed round-trip alive"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn echoed_business_traffic_keeps_connection_alive_when_pongs_are_lost() {
+        let local_liveness = PeerConnLiveness::new();
+        let remote_liveness = PeerConnLiveness::new();
+        local_liveness.set_enabled(true);
+        remote_liveness.set_enabled(true);
+
+        let (local_transport, remote_transport) = create_ring_tunnel_pair();
+        let local_transport = TunnelWithFilter::new(local_transport, local_liveness.clone());
+        let mut local_tunnel = MpscTunnel::new(local_transport, None);
+        let mut local_stream = local_tunnel.get_stream();
+        let local_reader =
+            tokio::spawn(async move { while local_stream.next().await.is_some() {} });
+
+        let remote_transport = TunnelWithFilter::new(remote_transport, remote_liveness);
+        let (mut remote_stream, mut remote_sink) = remote_transport.split();
+        let remote = tokio::spawn(async move {
+            while let Some(Ok(_packet)) = remote_stream.next().await {
+                let mut reply = ZCPacket::new_with_payload(b"business traffic");
+                reply.fill_peer_manager_hdr(2, 1, PacketType::Data as u8);
+                remote_sink.send(reply).await.unwrap();
+            }
+        });
+
+        let (ctrl_sender, _) = broadcast::channel(16);
+        let mut pinger = PeerConnPinger::new(
+            1,
+            2,
+            local_tunnel.get_sink(),
+            ctrl_sender,
+            Arc::new(WindowLatency::new(15)),
+            Arc::new(AtomicU32::new(0)),
+            Arc::new(Throughput::new()),
+            Arc::new(NoopPeerContext::default()),
+            "test".to_owned(),
+            local_liveness,
+        );
+
+        let result = timeout(Duration::from_secs(12), pinger.pingpong()).await;
+        remote.abort();
+        local_reader.abort();
+
+        assert!(
+            result.is_err(),
+            "matching business-packet echoes did not keep the connection alive"
         );
     }
 }
