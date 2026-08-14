@@ -36,8 +36,8 @@ pub(crate) fn stop_kernel(
         return false;
     };
 
-    let ret = INSTANCE_MANAGER
-        .delete_network_instance(vec![instance_id])
+    let ret = ASYNC_RUNTIME
+        .block_on(INSTANCE_MANAGER.delete_network_instances([instance_id]))
         .map(|_| true)
         .unwrap_or_else(|err| {
             ohrs_log_error!("[Rust] stop_kernel failed {}: {}", config_id, err);
@@ -46,7 +46,7 @@ pub(crate) fn stop_kernel(
     if ret {
         clear_runtime_config_snapshot(&config_id);
     }
-    let has_active_instances = !INSTANCE_MANAGER.list_network_instance_ids().is_empty();
+    let has_active_instances = !INSTANCE_MANAGER.instance_ids().is_empty();
     let has_web_clients = WEB_CLIENTS
         .lock()
         .map(|guard| !guard.is_empty())
@@ -102,7 +102,7 @@ pub(crate) fn set_tun_fd(
     };
 
     INSTANCE_MANAGER
-        .set_tun_fd(&instance_id, fd)
+        .attach_tun_fd(instance_id, fd)
         .map(|_| {
             mark_tun_attached(&config_id);
             ohrs_log_info!(

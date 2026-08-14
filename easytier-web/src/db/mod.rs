@@ -2,11 +2,8 @@
 #[allow(unused_imports)]
 pub mod entity;
 
-use easytier::{
-    common::config::ConfigSource,
-    launcher::NetworkConfig,
-    rpc_service::remote_client::{ListNetworkProps, Storage},
-};
+use easytier::common::config::{ConfigSource, NetworkConfig};
+use easytier_core::management::remote_client::{ListNetworkProps, Storage};
 use entity::user_running_network_configs;
 use sea_orm::{
     ColumnTrait as _, DatabaseConnection, DbErr, EntityTrait, QueryFilter as _, Set,
@@ -385,11 +382,8 @@ impl Storage<(UserIdInDb, Uuid), user_running_network_configs::Model, DbErr> for
 
 #[cfg(test)]
 mod tests {
-    use easytier::{
-        common::config::ConfigSource,
-        proto::api::manage::NetworkConfig,
-        rpc_service::remote_client::{PersistentConfig, Storage},
-    };
+    use easytier::{common::config::ConfigSource, proto::api::manage::NetworkConfig};
+    use easytier_core::management::remote_client::{PersistentConfig, Storage};
     use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter as _, Set};
 
     use crate::db::{Db, ListNetworkProps, entity::user_running_network_configs};

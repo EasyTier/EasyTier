@@ -1,5 +1,6 @@
 use std::{
     env, fs,
+    fs::{File, OpenOptions},
     io::{self, Read},
     net::Ipv4Addr,
     path::{Path, PathBuf},
@@ -9,17 +10,20 @@ use std::{
 
 use anyhow::{Context, Result, bail, ensure};
 use easytier::{
-    common::netns::NetNSGuard,
+    common::{
+        config::{ConfigLoader as _, load_toml_config_from_path},
+        netns::NetNSGuard,
+    },
     proto::{
         api::manage::{
             CollectNetworkInfoRequest, ConfigSource, DeleteNetworkInstanceRequest,
-            GetNetworkInstanceConfigRequest, NetworkConfig, NetworkingMethod,
-            RunNetworkInstanceRequest, WebClientService, WebClientServiceClientFactory,
+            GetNetworkInstanceConfigRequest, ListNetworkInstanceRequest, NetworkConfig,
+            NetworkingMethod, RunNetworkInstanceRequest, WebClientService,
+            WebClientServiceClientFactory,
         },
-        rpc_impl::standalone::StandAloneClient,
+        rpc::standalone::{RuntimeUnixRpcClient, runtime_unix_rpc_client},
         rpc_types::controller::BaseController,
     },
-    tunnel::{tcp::TcpTunnelConnector, unix::UnixSocketTunnelConnector},
 };
 use network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig};
 use serde::{Deserialize, Serialize};
@@ -117,6 +121,12 @@ fn default_timeout_seconds() -> u64 {
     30
 }
 
+fn config_dir() -> PathBuf {
+    env::var_os("EASYTIER_CNI_TEST_CONFIG_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/var/lib/easytier-cni/configs"))
+}
+
 fn read_stdin() -> Result<Vec<u8>> {
     let mut input = Vec::new();
     io::stdin().read_to_end(&mut input)?;
@@ -150,6 +160,178 @@ fn attachment_id(network: &str, container_id: &str, ifname: &str) -> Uuid {
     bytes[6] = (bytes[6] & 0x0f) | 0x50;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     Uuid::from_bytes(bytes)
+}
+
+struct AttachmentLock {
+    _file: File,
+}
+
+impl AttachmentLock {
+    fn acquire(id: Uuid) -> Result<Self> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+
+            let config_dir = config_dir();
+            let metadata = fs::symlink_metadata(&config_dir).with_context(|| {
+                format!(
+                    "failed to inspect config directory {}",
+                    config_dir.display()
+                )
+            })?;
+            ensure!(metadata.is_dir(), "configDir must be a directory");
+            ensure!(metadata.uid() == 0, "configDir must be owned by root");
+            ensure!(
+                metadata.permissions().mode() & 0o022 == 0,
+                "configDir must not be writable by group or other users"
+            );
+
+            let lock_dir = config_dir.join(".locks");
+            fs::create_dir_all(&lock_dir)?;
+            fs::set_permissions(&lock_dir, fs::Permissions::from_mode(0o700))?;
+            let file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .mode(0o600)
+                .open(lock_dir.join(id.to_string()))?;
+            file.lock()?;
+            Ok(Self { _file: file })
+        }
+        #[cfg(not(unix))]
+        bail!("EasyTier CNI is unsupported on this platform")
+    }
+}
+
+fn ensure_attachment_persisted(
+    id: Uuid,
+    address: Ipv4Addr,
+    prefix: u8,
+    netns: &str,
+    ifname: &str,
+    config: &PluginConfig,
+    secret: &str,
+) -> Result<()> {
+    let path = config_dir().join(format!("{id}.toml"));
+    let persisted = load_toml_config_from_path(&path)
+        .with_context(|| format!("persisted attachment config {} is invalid", path.display()))?;
+    ensure!(persisted.get_id() == id, "persisted attachment ID differs");
+    ensure!(
+        persisted.get_ipv4().is_some_and(|value| {
+            value.address() == address && value.network_length() == prefix
+        }),
+        "persisted attachment address differs"
+    );
+    ensure!(
+        persisted.get_netns().as_deref() == Some(netns),
+        "persisted attachment network namespace differs"
+    );
+    let identity = persisted.get_network_identity();
+    ensure!(
+        identity.network_name == config.network_name
+            && identity.network_secret.as_deref() == Some(secret),
+        "persisted attachment network identity differs"
+    );
+    let expected_peers = config
+        .peers
+        .iter()
+        .map(|peer| peer.parse::<url::Url>())
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    ensure!(
+        persisted
+            .get_peers()
+            .into_iter()
+            .map(|peer| peer.uri)
+            .eq(expected_peers),
+        "persisted attachment peers differ"
+    );
+    let flags = persisted.get_flags();
+    ensure!(
+        flags.dev_name == ifname
+            && flags.mtu == u32::from(config.mtu)
+            && !flags.no_tun
+            && !flags.enable_ipv6
+            && !flags.multi_thread,
+        "persisted attachment interface settings differ"
+    );
+    Ok(())
+}
+
+fn take_persisted_attachment(id: Uuid) -> Result<Option<Vec<u8>>> {
+    let path = config_dir().join(format!("{id}.toml"));
+    if !path.exists() {
+        return Ok(None);
+    }
+    let persisted = load_toml_config_from_path(&path)
+        .with_context(|| format!("orphaned attachment config {} is invalid", path.display()))?;
+    ensure!(persisted.get_id() == id, "orphaned attachment ID differs");
+    let contents = fs::read(&path)?;
+    fs::remove_file(&path)
+        .with_context(|| format!("failed to remove attachment config {}", path.display()))?;
+    Ok(Some(contents))
+}
+
+fn restore_persisted_attachment(id: Uuid, contents: Option<&[u8]>) -> Result<()> {
+    let Some(contents) = contents else {
+        return Ok(());
+    };
+    #[cfg(unix)]
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let path = config_dir().join(format!("{id}.toml"));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)
+        .with_context(|| format!("failed to restore attachment config {}", path.display()))?;
+    io::Write::write_all(&mut file, contents)?;
+    file.sync_all()?;
+    Ok(())
+}
+
+fn read_network_secret(path: &Path) -> Result<String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let parent = path.parent().context("networkSecretFile has no parent")?;
+        let parent_metadata = fs::symlink_metadata(parent).with_context(|| {
+            format!(
+                "failed to inspect networkSecretFile directory {}",
+                parent.display()
+            )
+        })?;
+        ensure!(
+            parent_metadata.is_dir()
+                && parent_metadata.uid() == 0
+                && parent_metadata.permissions().mode() & 0o022 == 0,
+            "networkSecretFile directory must be root-owned and not group/world-writable"
+        );
+        let metadata = fs::symlink_metadata(path)
+            .with_context(|| format!("failed to inspect networkSecretFile {}", path.display()))?;
+        ensure!(
+            metadata.is_file(),
+            "networkSecretFile must be a regular file"
+        );
+        ensure!(
+            metadata.uid() == 0,
+            "networkSecretFile must be owned by root"
+        );
+        ensure!(
+            metadata.permissions().mode() & 0o077 == 0,
+            "networkSecretFile must not be accessible by group or other users"
+        );
+        ensure!(metadata.len() <= 4096, "networkSecretFile is too large");
+    }
+
+    let secret = fs::read_to_string(path)
+        .with_context(|| format!("failed to read networkSecretFile {}", path.display()))?
+        .trim()
+        .to_string();
+    ensure!(!secret.is_empty(), "networkSecretFile is empty");
+    Ok(secret)
 }
 
 fn required_attachment_args(args: &CniArgs) -> Result<(&str, &str)> {
@@ -190,7 +372,7 @@ fn run_ipam(config: &PluginConfig, input: &[u8], args: &CniArgs, command: &str) 
     io::Write::write_all(child.stdin.as_mut().unwrap(), input)?;
     let output = child.wait_with_output()?;
     if !output.stderr.is_empty() {
-        io::Write::write_all(&mut io::stderr(), &output.stderr)?;
+        let _ = io::Write::write_all(&mut io::stderr(), &output.stderr);
     }
     ensure!(
         output.status.success(),
@@ -258,18 +440,9 @@ fn check_interface(netns: &str, ifname: &str, address: Ipv4Addr, prefix: u8) -> 
     Ok(())
 }
 
-enum RpcConnection {
-    Tcp {
-        _client: StandAloneClient<TcpTunnelConnector>,
-    },
-    Unix {
-        _client: StandAloneClient<UnixSocketTunnelConnector>,
-    },
-}
-
 struct ManageClient {
     client: Box<dyn WebClientService<Controller = BaseController>>,
-    _connection: RpcConnection,
+    _connection: RuntimeUnixRpcClient,
 }
 
 async fn rpc_client(portal: &str) -> Result<ManageClient> {
@@ -278,33 +451,73 @@ async fn rpc_client(portal: &str) -> Result<ManageClient> {
     } else {
         format!("tcp://{portal}").parse()?
     };
-    match url.scheme() {
-        "tcp" => {
-            let mut connection = StandAloneClient::new(TcpTunnelConnector::new(url));
-            let client = connection
-                .scoped_client::<WebClientServiceClientFactory<BaseController>>(String::new())
-                .await?;
-            Ok(ManageClient {
-                client: Box::new(client),
-                _connection: RpcConnection::Tcp {
-                    _client: connection,
-                },
-            })
-        }
-        "unix" => {
-            let mut connection = StandAloneClient::new(UnixSocketTunnelConnector::new(url));
-            let client = connection
-                .scoped_client::<WebClientServiceClientFactory<BaseController>>(String::new())
-                .await?;
-            Ok(ManageClient {
-                client: Box::new(client),
-                _connection: RpcConnection::Unix {
-                    _client: connection,
-                },
-            })
-        }
-        scheme => bail!("unsupported RPC portal scheme {scheme:?}"),
+    ensure!(
+        url.scheme() == "unix",
+        "CNI RPC portal must use a Unix socket"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
+
+        let metadata = fs::symlink_metadata(url.path())
+            .with_context(|| format!("failed to inspect RPC socket {}", url.path()))?;
+        ensure!(
+            metadata.file_type().is_socket(),
+            "RPC portal is not a socket"
+        );
+        ensure!(metadata.uid() == 0, "RPC socket must be owned by root");
+        ensure!(
+            metadata.permissions().mode() & 0o077 == 0,
+            "RPC socket must not be accessible by group or other users"
+        );
     }
+
+    let mut connection = runtime_unix_rpc_client(url);
+    let client = connection
+        .scoped_client::<WebClientServiceClientFactory<BaseController>>(String::new())
+        .await?;
+    Ok(ManageClient {
+        client: Box::new(client),
+        _connection: connection,
+    })
+}
+
+async fn instance_config(portal: &str, id: Uuid) -> Result<Option<NetworkConfig>> {
+    let client = rpc_client(portal).await?;
+    let instances = client
+        .client
+        .list_network_instance(BaseController::default(), ListNetworkInstanceRequest {})
+        .await?;
+    if !instances.inst_ids.contains(&id.into()) {
+        return Ok(None);
+    }
+    let response = client
+        .client
+        .get_network_instance_config(
+            BaseController::default(),
+            GetNetworkInstanceConfigRequest {
+                inst_id: Some(id.into()),
+            },
+        )
+        .await?;
+    Ok(Some(
+        response.config.context("instance has no configuration")?,
+    ))
+}
+
+fn ensure_same_attachment(actual: &NetworkConfig, expected: &NetworkConfig) -> Result<()> {
+    ensure!(
+        actual.instance_id == expected.instance_id
+            && actual.virtual_ipv4 == expected.virtual_ipv4
+            && actual.network_length == expected.network_length
+            && actual.network_name == expected.network_name
+            && actual.network_secret == expected.network_secret
+            && actual.dev_name == expected.dev_name
+            && actual.mtu == expected.mtu
+            && actual.netns == expected.netns,
+        "existing attachment configuration differs from the requested configuration"
+    );
+    Ok(())
 }
 
 async fn delete_instance(portal: &str, id: Uuid) -> Result<()> {
@@ -386,35 +599,10 @@ async fn add(config: &PluginConfig, input: &[u8], args: &CniArgs) -> Result<CniR
     ensure!(!config.peers.is_empty(), "at least one peer is required");
 
     let id = attachment_id(&config.name, container_id, ifname);
-    let existing_client = rpc_client(&config.rpc_portal).await?;
-    let existing = existing_client
-        .client
-        .get_network_instance_config(
-            BaseController::default(),
-            GetNetworkInstanceConfigRequest {
-                inst_id: Some(id.into()),
-            },
-        )
-        .await;
-    match existing {
-        Ok(_) => bail!("attachment already exists"),
-        Err(error)
-            if error
-                .to_string()
-                .contains("instance config control not found") => {}
-        Err(error) => return Err(error.into()),
-    }
+    let _lock = AttachmentLock::acquire(id)?;
+    let existing = instance_config(&config.rpc_portal, id).await?;
 
-    let secret = fs::read_to_string(&config.network_secret_file)
-        .with_context(|| {
-            format!(
-                "failed to read networkSecretFile {}",
-                config.network_secret_file.display()
-            )
-        })?
-        .trim()
-        .to_string();
-    ensure!(!secret.is_empty(), "networkSecretFile is empty");
+    let secret = read_network_secret(&config.network_secret_file)?;
 
     let ipam_output = run_ipam(config, input, args, "ADD")?;
     let mut ipam_result: CniResult = match serde_json::from_slice(&ipam_output)
@@ -448,7 +636,7 @@ async fn add(config: &PluginConfig, input: &[u8], args: &CniArgs) -> Result<CniR
         network_length: Some(prefix.into()),
         hostname: Some(format!("cni-{}", &id.simple().to_string()[..12])),
         network_name: Some(config.network_name.clone()),
-        network_secret: Some(secret),
+        network_secret: Some(secret.clone()),
         networking_method: Some(NetworkingMethod::Manual.into()),
         peer_urls: config.peers.clone(),
         dev_name: Some(ifname.to_string()),
@@ -461,20 +649,47 @@ async fn add(config: &PluginConfig, input: &[u8], args: &CniArgs) -> Result<CniR
         ..Default::default()
     };
 
-    let start_result = async {
-        rpc_client(&config.rpc_portal)
+    let created = if let Some(actual) = existing {
+        ensure_same_attachment(&actual, &network_config)?;
+        false
+    } else {
+        let start_result = rpc_client(&config.rpc_portal)
             .await?
             .client
             .run_network_instance(
                 BaseController::default(),
                 RunNetworkInstanceRequest {
                     inst_id: Some(id.into()),
-                    config: Some(network_config),
+                    config: Some(network_config.clone()),
                     overwrite: false,
                     source: ConfigSource::User.into(),
                 },
             )
-            .await?;
+            .await;
+        match start_result {
+            Ok(_) => true,
+            Err(error) => match instance_config(&config.rpc_portal, id).await {
+                Ok(Some(actual)) => {
+                    ensure_same_attachment(&actual, &network_config)?;
+                    false
+                }
+                Ok(None) => {
+                    return match run_ipam(config, input, args, "DEL") {
+                        Ok(_) => Err(error.into()),
+                        Err(rollback) => Err(anyhow::Error::from(error)
+                            .context(format!("IPAM rollback also failed: {rollback:#}"))),
+                    };
+                }
+                Err(state_error) => {
+                    return Err(anyhow::Error::from(error).context(format!(
+                        "attachment state is unknown; IPAM allocation was retained: {state_error:#}"
+                    )));
+                }
+            },
+        }
+    };
+
+    let start_result = async {
         wait_ready(
             &config.rpc_portal,
             id,
@@ -482,14 +697,28 @@ async fn add(config: &PluginConfig, input: &[u8], args: &CniArgs) -> Result<CniR
             address,
             Duration::from_secs(config.timeout_seconds),
         )
-        .await
+        .await?;
+        check_interface(netns, ifname, address, prefix)?;
+        ensure_attachment_persisted(id, address, prefix, netns, ifname, config, &secret)
     }
     .await;
 
     if let Err(error) = start_result {
+        if !created {
+            return Err(error.context("existing attachment and IPAM allocation were retained"));
+        }
+        let persisted = match take_persisted_attachment(id) {
+            Ok(persisted) => persisted,
+            Err(rollback) => {
+                return Err(error.context(format!(
+                    "attachment config rollback also failed; instance and IPAM allocation were retained: {rollback:#}"
+                )));
+            }
+        };
         if let Err(rollback) = delete_instance(&config.rpc_portal, id).await {
+            let restore = restore_persisted_attachment(id, persisted.as_deref());
             return Err(error.context(format!(
-                "EasyTier rollback also failed; IPAM allocation was retained: {rollback:#}"
+                "EasyTier rollback also failed; IPAM allocation was retained: {rollback:#}; config restore: {restore:?}"
             )));
         }
         return match run_ipam(config, input, args, "DEL") {
@@ -510,22 +739,25 @@ async fn delete(config: &PluginConfig, input: &[u8], args: &CniArgs) -> Result<(
     validate_version(&config.cni_version)?;
     let (container_id, ifname) = required_attachment_args(args)?;
     let id = attachment_id(&config.name, container_id, ifname);
-    let instance_result = delete_instance(&config.rpc_portal, id).await;
-    let ipam_result = run_ipam(config, input, args, "DEL").map(|_| ());
-    match (instance_result, ipam_result) {
-        (Ok(()), Ok(())) => Ok(()),
-        (Err(instance), Ok(())) => Err(instance),
-        (Ok(()), Err(ipam)) => Err(ipam),
-        (Err(instance), Err(ipam)) => {
-            bail!("failed to delete EasyTier instance: {instance}; failed to release IPAM: {ipam}")
-        }
+    let _lock = AttachmentLock::acquire(id)?;
+    let persisted = take_persisted_attachment(id).context(
+        "IPAM allocation was retained because the attachment config could not be removed",
+    )?;
+    if let Err(error) = delete_instance(&config.rpc_portal, id).await {
+        let restore = restore_persisted_attachment(id, persisted.as_deref());
+        return Err(error.context(format!(
+            "IPAM allocation was retained; attachment config restore: {restore:?}"
+        )));
     }
+    run_ipam(config, input, args, "DEL").map(|_| ())
 }
 
 async fn check(config: &PluginConfig, input: &[u8], args: &CniArgs) -> Result<()> {
     validate_version(&config.cni_version)?;
     let (container_id, ifname) = required_attachment_args(args)?;
     let netns = args.netns.as_deref().context("CNI_NETNS is required")?;
+    let id = attachment_id(&config.name, container_id, ifname);
+    let _lock = AttachmentLock::acquire(id)?;
     let previous = config
         .prev_result
         .clone()
@@ -533,8 +765,8 @@ async fn check(config: &PluginConfig, input: &[u8], args: &CniArgs) -> Result<()
     let mut result: CniResult = serde_json::from_value(previous)?;
     let (address, prefix) = select_ipv4(&mut result)?;
     run_ipam(config, input, args, "CHECK")?;
+    let secret = read_network_secret(&config.network_secret_file)?;
 
-    let id = attachment_id(&config.name, container_id, ifname);
     wait_ready(
         &config.rpc_portal,
         id,
@@ -544,6 +776,7 @@ async fn check(config: &PluginConfig, input: &[u8], args: &CniArgs) -> Result<()
     )
     .await?;
     check_interface(netns, ifname, address, prefix)?;
+    ensure_attachment_persisted(id, address, prefix, netns, ifname, config, &secret)?;
     Ok(())
 }
 
@@ -651,5 +884,25 @@ mod tests {
             (Ipv4Addr::new(10, 200, 0, 8), 24)
         );
         assert_eq!(result.ips[0].interface, Some(0));
+    }
+
+    #[test]
+    fn validates_existing_attachment_identity() {
+        let expected = NetworkConfig {
+            instance_id: Some(Uuid::nil().to_string()),
+            virtual_ipv4: Some("10.200.0.8".to_string()),
+            network_length: Some(24),
+            network_name: Some("overlay".to_string()),
+            network_secret: Some("secret".to_string()),
+            dev_name: Some("net1".to_string()),
+            mtu: Some(1380),
+            netns: Some("/proc/123/ns/net".to_string()),
+            ..Default::default()
+        };
+        assert!(ensure_same_attachment(&expected, &expected).is_ok());
+
+        let mut changed = expected.clone();
+        changed.netns = Some("/proc/456/ns/net".to_string());
+        assert!(ensure_same_attachment(&changed, &expected).is_err());
     }
 }

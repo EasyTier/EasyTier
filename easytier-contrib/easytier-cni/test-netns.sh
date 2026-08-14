@@ -134,12 +134,20 @@ run_cni() {
     CNI_NETNS="/var/run/netns/$netns" \
     CNI_IFNAME=net1 \
     CNI_PATH="$tmp/cni-bin" \
+    EASYTIER_CNI_TEST_CONFIG_DIR="$tmp/configs" \
         timeout 30s "$cni" <"$config"
 }
 
-run_cni ADD "$tmp/config.json" >"$tmp/result.json"
+run_cni ADD "$tmp/config.json" >"$tmp/result.json" &
+first_add_pid=$!
+run_cni ADD "$tmp/config.json" >"$tmp/retry-result.json" &
+second_add_pid=$!
+wait "$first_add_pid"
+wait "$second_add_pid"
 jq -e '.interfaces[0].name == "net1" and .ips[0].address == "10.200.0.10/24"' \
     "$tmp/result.json" >/dev/null
+jq -e '.interfaces[0].name == "net1" and .ips[0].address == "10.200.0.10/24"' \
+    "$tmp/retry-result.json" >/dev/null
 ip -n "$netns" link show net1 >/dev/null
 ip -n "$netns" -4 address show dev net1 | grep -F '10.200.0.10/24' >/dev/null
 

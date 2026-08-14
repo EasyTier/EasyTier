@@ -3,11 +3,12 @@ use axum::http::StatusCode;
 use axum::routing::{delete, post};
 use axum::{Json, Router, extract::State, routing::get};
 use axum_login::AuthUser;
-use easytier::common::config::ConfigSource as RuntimeConfigSource;
-use easytier::launcher::NetworkConfig;
+use easytier::common::config::{
+    ConfigSource as RuntimeConfigSource, NetworkConfig, config_source_from_rpc,
+};
 use easytier::proto::common::Void;
 use easytier::proto::{api::manage::*, web::*};
-use easytier::rpc_service::remote_client::{
+use easytier_core::management::remote_client::{
     GetNetworkMetasResponse, ListNetworkInstanceIdsJsonResp, RemoteClientError, RemoteClientManager,
 };
 use sea_orm::DbErr;
@@ -321,7 +322,7 @@ impl NetworkApi {
     ) -> Result<Json<Void>, HttpHandleError> {
         let source = payload
             .source
-            .and_then(RuntimeConfigSource::from_rpc)
+            .and_then(config_source_from_rpc)
             .unwrap_or(RuntimeConfigSource::Web);
         client_mgr
             .handle_run_network_instance_with_source(

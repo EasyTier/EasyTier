@@ -1,9 +1,12 @@
 [workspace]
 resolver = "2"
 members = [
+    "easytier-core",
+    "easytier-proto",
     "easytier",
     "easytier-gui/src-tauri",
     "easytier-web",
+    "easytier-contrib/easytier-mini",
     "easytier-contrib/easytier-ffi",
     "easytier-contrib/easytier-uptime",
     "easytier-contrib/easytier-android-jni",
@@ -28,3 +31,8 @@ lto = true
 codegen-units = 1
 opt-level = 3
 strip = true
+
+[profile.mini]
+inherits = "release"
+opt-level = "z"
+strip = "symbols"

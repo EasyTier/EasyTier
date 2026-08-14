@@ -50,6 +50,7 @@ runs:
       if: ${{ inputs.pnpm == 'true' }}
       uses: ./.github/actions/prepare-pnpm
       with:
+        token: ${{ inputs.token }}
         build-filter: ${{ inputs.pnpm-build-filter }}
 
     - name: Install GUI dependencies (Linux)

@@ -3,13 +3,11 @@ _version: 2
 core_clap:
   config_server:
     en: |+
-      config server address, allow format:
-      full url: --config-server udp://127.0.0.1:22020/admin, 'udp' can be replaced with tcp, ws, wss (when config server ws is proxied to wss)
-      only user name: --config-server admin, will use official server
+      config server address, must be a full URL:
+      --config-server udp://127.0.0.1:22020/admin, 'udp' can be replaced with tcp, ws, wss (when config server ws is proxied to wss)
     zh-CN: |+
-      配置服务器地址。允许格式：
-      完整URL：--config-server udp://127.0.0.1:22020/admin，udp可以根据配置服务器替换为 tcp，ws，wss(配置服务器ws被代理为wss时)
-      仅用户名：--config-server admin，将使用官方的服务器
+      配置服务器地址，必须使用完整 URL：
+      --config-server udp://127.0.0.1:22020/admin，udp 可以根据配置服务器替换为 tcp、ws、wss（配置服务器 ws 被代理为 wss 时）
   machine_id:
     en: |+
       the machine id to identify this machine, used for config recovery after disconnection, must be unique and fixed. by default it is loaded from persisted local state; on first start it may be migrated from system information or generated, then remains fixed.
@@ -257,11 +255,14 @@ core_clap:
     en: "if true, allow relay quic packets from foreign network. default is false (not forward foreign network quic packets)"
     zh-CN: "如果为true，则作为共享节点时也可以转发其他网络的 QUIC 数据包。默认值为false（不转发）"
   stun_servers:
-    en: "Override default STUN servers; If configured but empty, STUN servers are not used"
-    zh-CN: "覆盖内置的默认 STUN server 列表；如果设置了但是为空，则不使用 STUN servers；如果没设置，则使用默认 STUN server 列表"
+    en: "Override default UDP STUN servers. TCP STUN also uses this list when tcp-stun-servers is unset. If configured but empty, UDP STUN and fallback TCP/IPv6 STUN are disabled"
+    zh-CN: "覆盖内置的默认 UDP STUN server 列表；未设置 tcp-stun-servers 时，TCP STUN 也使用此列表；如果设置了但是为空，则禁用 UDP STUN 以及回退的 TCP/IPv6 STUN"
   stun_servers_v6:
-    en: "Override default STUN servers, IPv6; If configured but empty, IPv6 STUN servers are not used"
-    zh-CN: "覆盖内置的默认 IPv6 STUN server 列表；如果设置了但是为空，则不使用 IPv6 STUN servers；如果没设置，则使用默认 IPv6 STUN server 列表"
+    en: "Override default IPv6 STUN servers. If unset while stun-servers is configured, IPv6 STUN is disabled. If configured but empty, IPv6 STUN servers are not used"
+    zh-CN: "覆盖内置的默认 IPv6 STUN server 列表；如果未设置但已设置 stun-servers，则禁用 IPv6 STUN；如果设置了但是为空，则不使用 IPv6 STUN servers"
+  tcp_stun_servers:
+    en: "Override default TCP STUN servers. If unset, TCP STUN uses stun-servers when configured, otherwise default TCP STUN servers. If configured but empty, TCP STUN is disabled"
+    zh-CN: "覆盖内置的默认 TCP STUN server 列表；如果未设置，TCP STUN 会优先使用 stun-servers，否则使用默认 TCP STUN server 列表；如果设置了但是为空，则禁用 TCP STUN"
   secure_mode:
     en: "if true, enable secure mode. default is false"
     zh-CN: "如果为true，则启用安全模式。默认值为false"

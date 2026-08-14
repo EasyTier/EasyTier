@@ -1,19 +1,16 @@
-#![allow(dead_code)]
-
 use crate::{
     ShellType,
     common::{
         config::{
             ConfigFileControl, ConfigLoader, ConsoleLoggerConfig, EncryptionAlgorithm,
             FileLoggerConfig, LoggingConfigLoader, NetworkIdentity, PeerConfig, PortForwardConfig,
-            TomlConfigLoader, VpnPortalConfig, load_config_from_file, parse_mapped_listener_urls,
-            process_secure_mode_cfg,
+            TomlConfigLoader, VpnPortalConfig, add_proxy_network_to_config, load_config_from_file,
+            load_toml_config_from_path, parse_mapped_listener_urls,
         },
         constants::EASYTIER_VERSION,
         log,
     },
-    instance_manager::NetworkInstanceManager,
-    launcher::add_proxy_network_to_config,
+    instance::factory::native_cli_instance_manager,
     proto::common::{CompressionAlgoPb, SecureModeConfig},
     rpc_service::ApiRpcServer,
     utils::panic::setup_panic_handler,
@@ -22,6 +19,7 @@ use crate::{
 use anyhow::Context;
 use cidr::IpCidr;
 use clap::{CommandFactory, Parser};
+use easytier_core::config::normalize_secure_mode_config;
 use guarden::defer;
 use rust_i18n::t;
 use std::{
@@ -49,6 +47,7 @@ fn set_prof_active(_active: bool) {
     }
 }
 
+#[cfg(feature = "jemalloc-prof")]
 fn get_dump_profile_path(cur_allocated: usize, suffix: &str) -> String {
     format!(
         "profile-{}-{}.{}",
@@ -303,7 +302,7 @@ struct NetworkOptions {
         long,
         env = "ET_ENCRYPTION_ALGORITHM",
         help = t!("core_clap.encryption_algorithm").to_string(),
-        value_enum,
+        value_parser = crate::common::config::parse_encryption_algorithm,
     )]
     encryption_algorithm: Option<EncryptionAlgorithm>,
 
@@ -695,6 +694,15 @@ struct NetworkOptions {
 
     #[arg(
         long,
+        env = "ET_TCP_STUN_SERVERS",
+        value_delimiter = ',',
+        help = t!("core_clap.tcp_stun_servers").to_string(),
+        num_args = 0..
+    )]
+    tcp_stun_servers: Option<Vec<String>>,
+
+    #[arg(
+        long,
         env = "ET_SECURE_MODE",
         help = t!("core_clap.secure_mode").to_string(),
         num_args = 0..=1,
@@ -1075,7 +1083,7 @@ impl NetworkOptions {
                 local_private_key: Some(credential_secret.clone()),
                 local_public_key: None,
             };
-            cfg.set_secure_mode(Some(process_secure_mode_cfg(c)?));
+            cfg.set_secure_mode(Some(normalize_secure_mode_config(c)?));
         } else if let Some(secure_mode) = self.secure_mode
             && secure_mode
         {
@@ -1084,7 +1092,7 @@ impl NetworkOptions {
                 local_private_key: self.local_private_key.clone(),
                 local_public_key: self.local_public_key.clone(),
             };
-            cfg.set_secure_mode(Some(process_secure_mode_cfg(c)?));
+            cfg.set_secure_mode(Some(normalize_secure_mode_config(c)?));
         }
 
         let mut f = cfg.get_flags();
@@ -1191,15 +1199,33 @@ impl NetworkOptions {
         cfg.set_udp_whitelist(old_udp_whitelist);
 
         if let Some(stun_servers) = &self.stun_servers {
-            let mut old_stun_servers = cfg.get_stun_servers().unwrap_or_default();
-            old_stun_servers.extend(stun_servers.iter().cloned());
-            cfg.set_stun_servers(Some(old_stun_servers));
+            if stun_servers.is_empty() {
+                cfg.set_stun_servers(Some(Vec::new()));
+            } else {
+                let mut old_stun_servers = cfg.get_stun_servers().unwrap_or_default();
+                old_stun_servers.extend(stun_servers.iter().cloned());
+                cfg.set_stun_servers(Some(old_stun_servers));
+            }
         }
 
         if let Some(stun_servers_v6) = &self.stun_servers_v6 {
-            let mut old_stun_servers_v6 = cfg.get_stun_servers_v6().unwrap_or_default();
-            old_stun_servers_v6.extend(stun_servers_v6.iter().cloned());
-            cfg.set_stun_servers_v6(Some(old_stun_servers_v6));
+            if stun_servers_v6.is_empty() {
+                cfg.set_stun_servers_v6(Some(Vec::new()));
+            } else {
+                let mut old_stun_servers_v6 = cfg.get_stun_servers_v6().unwrap_or_default();
+                old_stun_servers_v6.extend(stun_servers_v6.iter().cloned());
+                cfg.set_stun_servers_v6(Some(old_stun_servers_v6));
+            }
+        }
+
+        if let Some(tcp_stun_servers) = &self.tcp_stun_servers {
+            if tcp_stun_servers.is_empty() {
+                cfg.set_tcp_stun_servers(Some(Vec::new()));
+            } else {
+                let mut old_tcp_stun_servers = cfg.get_tcp_stun_servers().unwrap_or_default();
+                old_tcp_stun_servers.extend(tcp_stun_servers.iter().cloned());
+                cfg.set_tcp_stun_servers(Some(old_tcp_stun_servers));
+            }
         }
         Ok(())
     }
@@ -1307,6 +1333,9 @@ fn parse_cli() -> Cli {
     if let Some(stun_servers_v6) = &mut cli.network_options.stun_servers_v6 {
         stun_servers_v6.retain(|s| !s.trim().is_empty());
     }
+    if let Some(tcp_stun_servers) = &mut cli.network_options.tcp_stun_servers {
+        tcp_stun_servers.retain(|s| !s.trim().is_empty());
+    }
     cli
 }
 
@@ -1353,33 +1382,25 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
     defer!(dump_profile(0););
     log::init(&cli.logging_options, true)?;
 
-    let manager = Arc::new(NetworkInstanceManager::new().with_config_path(cli.config_dir.clone()));
+    let manager = Arc::new(native_cli_instance_manager().with_config_path(cli.config_dir.clone()));
 
     let rpc_portal = cli.rpc_portal_options.rpc_portal;
-    let _tcp_rpc_server;
-    let _unix_rpc_server;
-    if rpc_portal
+    let is_unix_rpc = rpc_portal
         .as_deref()
-        .is_some_and(|value| value.starts_with("unix://"))
-    {
-        _unix_rpc_server = Some(
-            ApiRpcServer::new_unix(rpc_portal.as_deref().unwrap(), manager.clone())?
-                .serve()
-                .await?,
-        );
-        _tcp_rpc_server = None;
+        .is_some_and(|value| value.starts_with("unix://"));
+    let _tcp_rpc_server = if is_unix_rpc {
+        None
     } else {
-        _tcp_rpc_server = Some(
+        Some(
             ApiRpcServer::new(
-                rpc_portal,
+                rpc_portal.clone(),
                 cli.rpc_portal_options.rpc_portal_whitelist,
                 manager.clone(),
             )?
             .serve()
             .await?,
-        );
-        _unix_rpc_server = None;
-    }
+        )
+    };
 
     let _web_client = if let Some(config_server_url_s) = cli.config_server.as_ref() {
         let wc = web_client::run_web_client(
@@ -1488,7 +1509,7 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
             control.permission,
             cfg.dump()
         );
-        manager.run_network_instance(cfg, true, control)?;
+        manager.run_network_instance(cfg, control)?;
     }
 
     if crate_cli_network {
@@ -1505,8 +1526,20 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
             ",
             cfg.dump()
         );
-        manager.run_network_instance(cfg, true, ConfigFileControl::STATIC_CONFIG)?;
+        manager.run_network_instance(cfg, ConfigFileControl::STATIC_CONFIG)?;
     }
+
+    // The CNI readiness probe watches the Unix socket. Expose it only after
+    // persisted instances have been restored to avoid racing new attachments.
+    let _unix_rpc_server = if is_unix_rpc {
+        Some(
+            ApiRpcServer::new_unix(rpc_portal.as_deref().unwrap(), manager.clone())?
+                .serve()
+                .await?,
+        )
+    } else {
+        None
+    };
 
     #[cfg(unix)]
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
@@ -1668,7 +1701,7 @@ async fn validate_config(cli: &Cli) -> anyhow::Result<()> {
                 .context("failed to read config from stdin")?;
             TomlConfigLoader::new_from_str_with_source("stdin", stdin.as_str())?;
         } else {
-            TomlConfigLoader::new(config_file)?;
+            load_toml_config_from_path(config_file)?;
         };
     }
 
@@ -1789,5 +1822,30 @@ enabled = true
         assert_eq!(identity.network_secret, None);
         assert_eq!(identity.network_secret_digest, None);
         assert_eq!(cfg.get_hostname(), "override-host");
+    }
+
+    #[test]
+    fn empty_stun_server_options_clear_existing_config() {
+        let cfg = TomlConfigLoader::new_from_str(
+            r#"
+stun_servers = ["udp.example.com:3478"]
+stun_servers_v6 = ["v6.example.com:3478"]
+tcp_stun_servers = ["tcp.example.com:3478"]
+"#,
+        )
+        .unwrap();
+
+        NetworkOptions {
+            stun_servers: Some(Vec::new()),
+            stun_servers_v6: Some(Vec::new()),
+            tcp_stun_servers: Some(Vec::new()),
+            ..Default::default()
+        }
+        .merge_into(&cfg)
+        .unwrap();
+
+        assert_eq!(cfg.get_stun_servers(), Some(Vec::new()));
+        assert_eq!(cfg.get_stun_servers_v6(), Some(Vec::new()));
+        assert_eq!(cfg.get_tcp_stun_servers(), Some(Vec::new()));
     }
 }

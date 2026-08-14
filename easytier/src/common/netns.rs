@@ -1,3 +1,4 @@
+use easytier_core::socket::SocketContext;
 use futures::Future;
 use std::path::{Path, PathBuf};
 
@@ -84,12 +85,11 @@ impl Drop for NetNSGuard {
             return;
         }
         tracing::info!("[INIT NS] switching back to old ns, ns: {:?}", self.old_ns);
-        if let Err(error) = setns(
+        setns(
             self.old_ns.as_ref().unwrap().as_fd(),
             CloneFlags::CLONE_NEWNET,
-        ) {
-            tracing::error!(?error, "failed to restore network namespace");
-        }
+        )
+        .expect("failed to restore network namespace");
     }
 }
 
@@ -112,6 +112,15 @@ pub struct NetNS {
 impl NetNS {
     pub fn new(name: Option<String>) -> Self {
         NetNS { name }
+    }
+
+    pub fn from_socket_context(context: &SocketContext) -> Self {
+        Self::new(
+            context
+                .netns
+                .as_ref()
+                .map(|namespace| namespace.token().to_owned()),
+        )
     }
 
     pub async fn run_async<F, Fut, Ret>(&self, f: F) -> Ret
