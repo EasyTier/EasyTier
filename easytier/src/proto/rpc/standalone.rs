@@ -44,6 +44,19 @@ pub fn runtime_rpc_listener(local_addr: std::net::SocketAddr) -> RuntimeRpcListe
     TcpTunnelListener::new(local_addr, native_host_runtime())
 }
 
+pub fn validate_unix_rpc_url(url: &url::Url) -> anyhow::Result<()> {
+    anyhow::ensure!(url.scheme() == "unix", "RPC portal must use unix://");
+    anyhow::ensure!(
+        url.host_str().is_none(),
+        "Unix RPC portal must not contain a host"
+    );
+    anyhow::ensure!(
+        std::path::Path::new(url.path()).is_absolute(),
+        "Unix RPC portal path must be absolute"
+    );
+    Ok(())
+}
+
 pub struct RuntimeUnixRpcDialer {
     remote_url: url::Url,
 }
@@ -57,9 +70,7 @@ impl RuntimeUnixRpcDialer {
 #[async_trait]
 impl TunnelDialer for RuntimeUnixRpcDialer {
     async fn connect(&self) -> anyhow::Result<Box<dyn Tunnel>> {
-        if self.remote_url.scheme() != "unix" {
-            anyhow::bail!("Unix RPC dialer requires unix:// URL")
-        }
+        validate_unix_rpc_url(&self.remote_url)?;
         let stream = native_host_runtime()
             .connect_byte_stream(&self.remote_url)
             .await?;
@@ -82,11 +93,7 @@ pub struct RuntimeUnixRpcListener {
 
 impl RuntimeUnixRpcListener {
     pub fn new(local_url: url::Url) -> anyhow::Result<Self> {
-        anyhow::ensure!(local_url.scheme() == "unix", "RPC portal must use unix://");
-        anyhow::ensure!(
-            !local_url.path().is_empty(),
-            "Unix RPC portal path is required"
-        );
+        validate_unix_rpc_url(&local_url)?;
         Ok(Self {
             local_url,
             #[cfg(unix)]
@@ -346,5 +353,17 @@ mod tests {
 
         assert!(path.exists());
         drop(replacement);
+    }
+
+    #[test]
+    fn runtime_unix_rpc_endpoints_require_absolute_hostless_paths() {
+        let with_host: url::Url = "unix://tmp/rpc.sock".parse().unwrap();
+        assert!(RuntimeUnixRpcListener::new(with_host).is_err());
+
+        let relative: url::Url = "unix:rpc.sock".parse().unwrap();
+        assert!(RuntimeUnixRpcListener::new(relative).is_err());
+
+        let valid: url::Url = "unix:///tmp/rpc.sock".parse().unwrap();
+        assert!(RuntimeUnixRpcListener::new(valid).is_ok());
     }
 }

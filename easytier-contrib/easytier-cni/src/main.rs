@@ -21,7 +21,7 @@ use easytier::{
             NetworkingMethod, RunNetworkInstanceRequest, WebClientService,
             WebClientServiceClientFactory,
         },
-        rpc::standalone::{RuntimeUnixRpcClient, runtime_unix_rpc_client},
+        rpc::standalone::{RuntimeUnixRpcClient, runtime_unix_rpc_client, validate_unix_rpc_url},
         rpc_types::controller::BaseController,
     },
 };
@@ -376,10 +376,11 @@ fn run_ipam(config: &PluginConfig, input: &[u8], args: &CniArgs, command: &str) 
     }
     ensure!(
         output.status.success(),
-        "IPAM plugin {} failed with {}: {}",
+        "IPAM plugin {} failed with {}; stdout: {}; stderr: {}",
         config.ipam.plugin_type,
         output.status,
-        String::from_utf8_lossy(&output.stdout)
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
     Ok(output.stdout)
 }
@@ -451,10 +452,7 @@ async fn rpc_client(portal: &str) -> Result<ManageClient> {
     } else {
         format!("tcp://{portal}").parse()?
     };
-    ensure!(
-        url.scheme() == "unix",
-        "CNI RPC portal must use a Unix socket"
-    );
+    validate_unix_rpc_url(&url)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
@@ -904,5 +902,41 @@ mod tests {
         let mut changed = expected.clone();
         changed.netns = Some("/proc/456/ns/net".to_string());
         assert!(ensure_same_attachment(&changed, &expected).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn includes_ipam_stderr_in_failures() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let plugin = directory.path().join("failed-ipam");
+        fs::write(
+            &plugin,
+            "#!/bin/sh\necho standard-output\necho useful-diagnostic >&2\nexit 1\n",
+        )
+        .unwrap();
+        fs::set_permissions(&plugin, fs::Permissions::from_mode(0o755)).unwrap();
+        let config: PluginConfig = serde_json::from_value(json!({
+            "cniVersion": "1.0.0",
+            "name": "overlay",
+            "networkName": "cluster",
+            "networkSecretFile": "/etc/easytier/secret",
+            "peers": ["tcp://192.0.2.1:11010"],
+            "ipam": {"type": "failed-ipam"}
+        }))
+        .unwrap();
+        let args = CniArgs {
+            command: "ADD".to_string(),
+            container_id: Some("container".to_string()),
+            netns: Some("/proc/1/ns/net".to_string()),
+            ifname: Some("net1".to_string()),
+            path: vec![directory.path().to_path_buf()],
+        };
+
+        let error = run_ipam(&config, b"{}", &args, "ADD").unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("standard-output"));
+        assert!(message.contains("useful-diagnostic"));
     }
 }

@@ -1,6 +1,6 @@
 use easytier_core::socket::SocketContext;
 use futures::Future;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 #[cfg(target_os = "linux")]
 use nix::sched::{CloneFlags, setns};
@@ -71,9 +71,11 @@ pub fn resolve_netns_path(name: &str) -> anyhow::Result<PathBuf> {
         return Ok(path.to_path_buf());
     }
 
-    if path.components().count() != 1 {
-        anyhow::bail!("network namespace name must be a name or an absolute path: {name}");
-    }
+    let mut components = path.components();
+    anyhow::ensure!(
+        matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none(),
+        "network namespace name must be a name or an absolute path: {name}"
+    );
 
     Ok(Path::new("/var/run/netns").join(path))
 }
@@ -170,5 +172,7 @@ mod tests {
             PathBuf::from("/proc/123/ns/net")
         );
         assert!(resolve_netns_path("nested/pod-a").is_err());
+        assert!(resolve_netns_path(".").is_err());
+        assert!(resolve_netns_path("..").is_err());
     }
 }
