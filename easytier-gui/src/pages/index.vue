@@ -54,8 +54,10 @@ async function onModeSave() {
   }
 }
 
-async function onUninstallService() {
+async function onUninstallService(event: any) {
   confirm.require({
+    target: event.currentTarget,
+    group: 'service',
     message: t('mode.uninstall_service_confirm'),
     header: t('mode.uninstall_service'),
     icon: 'pi pi-exclamation-triangle',
@@ -72,7 +74,12 @@ async function onUninstallService() {
       isModeSaving.value = true
       try {
         await initWithMode({ ...currentMode.value, mode: 'normal' });
-        await initService(undefined)
+        // initWithMode already uninstalls the service when transitioning from
+        // service mode. For other cases, ensure the service is uninstalled here.
+        const status = await getServiceStatus()
+        if (status !== 'NotInstalled') {
+          await initService(undefined)
+        }
         toast.add({ severity: 'success', summary: t('web.common.success'), detail: t('mode.uninstall_service_success'), life: 3000 })
         modeDialogVisible.value = false
       } catch (e: any) {

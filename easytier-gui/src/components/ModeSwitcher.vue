@@ -221,7 +221,7 @@ watch(() => model.value.mode, async (newMode, oldMode) => {
           <Button :label="t('mode.stop_service')" icon="pi pi-stop-circle" v-if="serviceStatus === 'Running'"
             @click="emit('stop-service')" severity="warn" text />
           <Button :label="t('mode.uninstall_service')" icon="pi pi-trash" v-if="serviceStatus !== 'NotInstalled'"
-            @click="emit('uninstall-service')" severity="danger" text />
+            @click="emit('uninstall-service', $event)" severity="danger" text />
         </div>
       </div>
     </div>
