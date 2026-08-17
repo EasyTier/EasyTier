@@ -15,6 +15,8 @@ virtual_ipv4: 虚拟IPv4地址
 virtual_ipv4_dhcp: DHCP
 network_name: 网络名称
 network_secret: 网络密码
+secure_mode: 安全模式
+secure_mode_help: 使用每个节点独立的 X25519 密钥对进行端到端认证加密（通过公钥校验对端身份），比默认基于网络密码的加密更强。与“禁用加密”不同：“禁用加密”只是把默认流量加密整体开关，而“安全模式”升级的是对端身份认证与密钥交换方式。同一网络内所有节点必须设置一致，否则连接会被拒绝。等同于命令行的 --secure-mode 参数。
 public_server_url: 公共服务器地址
 peer_urls: 对等节点地址
 proxy_cidrs: 子网代理CIDR
