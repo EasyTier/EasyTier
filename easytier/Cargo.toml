@@ -154,6 +154,7 @@ rand = "0.8.5"
 
 serde = { version = "1.0", features = ["derive"] }
 pnet_datalink = { version = "0.35.0", optional = true }
+pnet_packet = "0.35.0"
 smoltcp = { git = "https://github.com/smoltcp-rs/smoltcp.git", rev = "0a926767a68bc88d5512afefa7529c5ecdade4ea", optional = true, default-features = false, features = [
     "std",
     "medium-ethernet",

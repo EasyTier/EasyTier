@@ -37,6 +37,7 @@ const RTA_DST: u16 = 1;
 const RTA_SRC: u16 = 2;
 const RTA_OIF: u16 = 4;
 const RTA_PRIORITY: u16 = 6;
+const RTA_PREFSRC: u16 = 7;
 const RTA_TABLE: u16 = 15;
 
 const NDA_DST: u16 = 1;
@@ -341,7 +342,9 @@ pub(crate) struct RouteMessage {
     attributes: Vec<Attribute>,
     destination: Option<IpAddr>,
     source: Option<IpAddr>,
+    preferred_source: Option<IpAddr>,
     oif: Option<u32>,
+    priority: Option<u32>,
 }
 
 impl RouteMessage {
@@ -369,8 +372,24 @@ impl RouteMessage {
         self.source.as_ref()
     }
 
+    pub(crate) fn preferred_source(&self) -> Option<&IpAddr> {
+        self.preferred_source.as_ref()
+    }
+
     pub(crate) fn oif(&self) -> Option<u32> {
         self.oif
+    }
+
+    pub(crate) fn table(&self) -> u32 {
+        self.attributes
+            .iter()
+            .find(|attribute| attribute.kind & NLA_TYPE_MASK == RTA_TABLE)
+            .and_then(|attribute| read_u32(&attribute.value).ok())
+            .unwrap_or(self.table.into())
+    }
+
+    pub(crate) fn priority(&self) -> Option<u32> {
+        self.priority
     }
 }
 
@@ -397,9 +416,17 @@ impl NetlinkDecode for RouteMessage {
             .iter()
             .find(|attribute| attribute.kind & NLA_TYPE_MASK == RTA_SRC)
             .and_then(|attribute| parse_ip(family, &attribute.value));
+        let preferred_source = attributes
+            .iter()
+            .find(|attribute| attribute.kind & NLA_TYPE_MASK == RTA_PREFSRC)
+            .and_then(|attribute| parse_ip(family, &attribute.value));
         let oif = attributes
             .iter()
             .find(|attribute| attribute.kind & NLA_TYPE_MASK == RTA_OIF)
+            .and_then(|attribute| read_u32(&attribute.value).ok());
+        let priority = attributes
+            .iter()
+            .find(|attribute| attribute.kind & NLA_TYPE_MASK == RTA_PRIORITY)
             .and_then(|attribute| read_u32(&attribute.value).ok());
 
         Ok(Self {
@@ -415,7 +442,9 @@ impl NetlinkDecode for RouteMessage {
             attributes,
             destination,
             source,
+            preferred_source,
             oif,
+            priority,
         })
     }
 }
@@ -458,7 +487,9 @@ impl RouteMessageBuilder {
                 attributes: Vec::new(),
                 destination: None,
                 source: None,
+                preferred_source: None,
                 oif: None,
+                priority: None,
             },
         }
     }
@@ -481,10 +512,19 @@ impl RouteMessageBuilder {
     }
 
     pub(crate) fn priority(mut self, priority: u32) -> Self {
+        self.message.priority = Some(priority);
         self.message.attributes.push(Attribute::new(
             RTA_PRIORITY,
             priority.to_ne_bytes().to_vec(),
         ));
+        self
+    }
+
+    pub(crate) fn preferred_source(mut self, address: IpAddr) -> Self {
+        self.message.preferred_source = Some(address);
+        self.message
+            .attributes
+            .push(Attribute::new(RTA_PREFSRC, ip_bytes(address)));
         self
     }
 
@@ -630,6 +670,38 @@ mod tests {
         assert_eq!(decoded.oif(), Some(7));
         assert_eq!(decoded.route_type(), RouteType::Unicast);
         assert_eq!(encode(&decoded), bytes);
+    }
+
+    #[test]
+    fn route_round_trip_preserves_preferred_source_and_priority() {
+        let source = "10.231.1.1".parse().unwrap();
+        let message = RouteMessageBuilder::new(libc::AF_INET as u8)
+            .destination("10.99.0.0".parse().unwrap(), 24)
+            .preferred_source(source)
+            .oif(7)
+            .priority(123)
+            .table(libc::RT_TABLE_MAIN.into())
+            .static_protocol()
+            .universe_scope()
+            .route_type(RouteType::Unicast)
+            .build();
+
+        let decoded = RouteMessage::from_bytes(&encode(&message)).unwrap();
+        assert_eq!(decoded.preferred_source(), Some(&source));
+        assert_eq!(decoded.priority(), Some(123));
+        assert_eq!(decoded.table(), u32::from(libc::RT_TABLE_MAIN));
+    }
+
+    #[test]
+    fn route_parser_reads_extended_table_attribute() {
+        let message = RouteMessageBuilder::new(libc::AF_INET as u8)
+            .destination("10.99.0.0".parse().unwrap(), 24)
+            .table(1000)
+            .route_type(RouteType::Unicast)
+            .build();
+
+        let decoded = RouteMessage::from_bytes(&encode(&message)).unwrap();
+        assert_eq!(decoded.table(), 1000);
     }
 
     #[test]

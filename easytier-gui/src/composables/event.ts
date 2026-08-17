@@ -14,6 +14,7 @@ const EVENTS = Object.freeze({
     PRE_RUN_NETWORK_INSTANCE: 'pre_run_network_instance',
     POST_RUN_NETWORK_INSTANCE: 'post_run_network_instance',
     VPN_SERVICE_STOP: 'vpn_service_stop',
+    VPN_SERVICE_CONFIG_CHANGED: 'vpn_service_config_changed',
     DHCP_IP_CHANGED: 'dhcp_ip_changed',
     PROXY_CIDRS_UPDATED: 'proxy_cidrs_updated',
     EVENT_LAGGED: 'event_lagged',
@@ -76,6 +77,14 @@ async function onVpnServiceStop(event: Event<unknown>) {
     await syncMobileVpnService();
 }
 
+async function onVpnServiceConfigChanged(event: Event<unknown>) {
+    const instanceId = normalizeInstanceIdPayload(event.payload)
+    console.log(`Received event '${EVENTS.VPN_SERVICE_CONFIG_CHANGED}' for instance: ${instanceId}`)
+    if (type() === 'android') {
+        await onNetworkInstanceChange(instanceId);
+    }
+}
+
 async function onDhcpIpChanged(event: Event<unknown>) {
     const instanceId = normalizeInstanceIdPayload(event.payload)
     console.log(`Received event '${EVENTS.DHCP_IP_CHANGED}' for instance: ${instanceId}`);
@@ -104,6 +113,7 @@ export async function listenGlobalEvents() {
         await listen(EVENTS.PRE_RUN_NETWORK_INSTANCE, onPreRunNetworkInstance),
         await listen(EVENTS.POST_RUN_NETWORK_INSTANCE, onPostRunNetworkInstance),
         await listen(EVENTS.VPN_SERVICE_STOP, onVpnServiceStop),
+        await listen(EVENTS.VPN_SERVICE_CONFIG_CHANGED, onVpnServiceConfigChanged),
         await listen(EVENTS.DHCP_IP_CHANGED, onDhcpIpChanged),
         await listen(EVENTS.PROXY_CIDRS_UPDATED, onProxyCidrsUpdated),
         await listen(EVENTS.EVENT_LAGGED, onEventLagged),

@@ -4,6 +4,8 @@
 mod elevate;
 
 use anyhow::Context;
+#[cfg(any(target_os = "android", target_os = "ios"))]
+use easytier::instance::factory::attach_mobile_tun_fd;
 #[cfg(target_os = "android")]
 use easytier::instance::factory::subscribe_native_instance_event;
 use easytier::proto::api::manage::{
@@ -71,6 +73,9 @@ static RPC_SERVER: once_cell::sync::Lazy<Mutex<Option<RpcServer>>> =
 static WEB_CLIENT: once_cell::sync::Lazy<RwLock<Option<WebClient>>> =
     once_cell::sync::Lazy::new(|| RwLock::new(None));
 
+#[cfg(any(target_os = "android", test))]
+const ANDROID_SHARED_TUN_DEV_NAME: &str = "easytier-shared";
+
 macro_rules! get_client_manager {
     () => {{
         let guard = CLIENT_MANAGER
@@ -79,6 +84,20 @@ macro_rules! get_client_manager {
         RwLockReadGuard::try_map(guard, |cm| cm.as_ref())
             .map_err(|_| "RPC connection not initialized".to_string())
     }};
+}
+
+fn normalize_network_config_for_runtime(cfg: &mut NetworkConfig) {
+    #[cfg(target_os = "android")]
+    normalize_android_network_config(cfg);
+    #[cfg(not(target_os = "android"))]
+    let _ = cfg;
+}
+
+#[cfg(any(target_os = "android", test))]
+fn normalize_android_network_config(cfg: &mut NetworkConfig) {
+    if !cfg.no_tun() && cfg.dev_name.as_deref().map(str::is_empty).unwrap_or(true) {
+        cfg.dev_name = Some(ANDROID_SHARED_TUN_DEV_NAME.to_owned());
+    }
 }
 
 #[tauri::command]
@@ -105,6 +124,8 @@ fn set_dock_visibility(app: tauri::AppHandle, visible: bool) -> Result<(), Strin
 
 #[tauri::command]
 fn parse_network_config(cfg: NetworkConfig) -> Result<String, String> {
+    let mut cfg = cfg;
+    normalize_network_config_for_runtime(&mut cfg);
     let toml = cfg.gen_config().map_err(|e| e.to_string())?;
     Ok(toml.dump())
 }
@@ -122,6 +143,8 @@ async fn run_network_instance(
     cfg: NetworkConfig,
     save: bool,
 ) -> Result<(), String> {
+    let mut cfg = cfg;
+    normalize_network_config_for_runtime(&mut cfg);
     let client_manager = get_client_manager!()?;
     let toml_config = cfg.gen_config().map_err(|e| e.to_string())?;
     client_manager
@@ -160,20 +183,191 @@ async fn set_logging_level(level: String) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+struct TunFdInstanceSources {
+    instance_id: String,
+    ipv4_addrs: Vec<String>,
+    #[serde(default)]
+    ipv6_addrs: Vec<String>,
+    #[serde(default)]
+    ipv4_routes: Vec<String>,
+    #[serde(default)]
+    ipv6_routes: Vec<String>,
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn parse_tun_fd_instance_sources(
+    instance_sources: Vec<TunFdInstanceSources>,
+) -> Result<
+    std::collections::HashMap<uuid::Uuid, easytier::instance::virtual_nic::MobileTunSources>,
+    String,
+> {
+    let mut parsed = std::collections::HashMap::with_capacity(instance_sources.len());
+    for source in instance_sources {
+        let instance_id = source
+            .instance_id
+            .parse::<uuid::Uuid>()
+            .map_err(|err| format!("invalid instance id {}: {err}", source.instance_id))?;
+        let sources = easytier::instance::virtual_nic::MobileTunSources::parse(
+            source.ipv4_addrs,
+            source.ipv6_addrs,
+            source.ipv4_routes,
+            source.ipv6_routes,
+        )
+        .map_err(|err| err.to_string())?;
+        if parsed.insert(instance_id, sources).is_some() {
+            return Err(format!("duplicate tun sources for instance {instance_id}"));
+        }
+    }
+    Ok(parsed)
+}
+
 #[tauri::command]
-async fn set_tun_fd(fd: i32) -> Result<(), String> {
+async fn set_tun_fd(
+    fd: i32,
+    instance_ids: Option<Vec<String>>,
+    instance_sources: Option<Vec<TunFdInstanceSources>>,
+) -> Result<(), String> {
     let Some(instance_manager) = INSTANCE_MANAGER.read().await.clone() else {
         return Err("set_tun_fd is not supported in remote mode".to_string());
     };
-    if let Some(uuid) = get_client_manager!()?
-        .get_enabled_instances_with_tun_ids()
-        .next()
-    {
-        instance_manager
-            .attach_tun_fd(uuid, fd)
-            .map_err(|e| e.to_string())?;
+
+    let target_ids = match instance_ids {
+        Some(instance_ids) if !instance_ids.is_empty() => instance_ids
+            .into_iter()
+            .map(|id| {
+                id.parse::<uuid::Uuid>()
+                    .map_err(|err| format!("invalid instance id {id}: {err}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        _ => get_client_manager!()?.get_enabled_instances_for_tun_fd(),
+    };
+    if target_ids.is_empty() {
+        return Err("no TUN-enabled instance is available for fd attachment".to_string());
     }
-    Ok(())
+    let target_id_set = target_ids
+        .iter()
+        .copied()
+        .collect::<std::collections::HashSet<_>>();
+    if target_id_set.len() != target_ids.len() {
+        return Err("duplicate instance id in TUN fd attachment group".to_string());
+    }
+
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    if fd <= 0 {
+        let mut errors = Vec::new();
+        for instance_id in target_ids {
+            if let Err(error) = attach_mobile_tun_fd(
+                instance_manager.as_ref(),
+                instance_id,
+                fd,
+                easytier::instance::virtual_nic::MobileTunSources::default(),
+            )
+            .await
+            {
+                errors.push(format!("{instance_id}: {error}"));
+            }
+        }
+        return if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "failed to detach tun fd from the instance group: {}",
+                errors.join("; ")
+            ))
+        };
+    }
+
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    let mut source_map = parse_tun_fd_instance_sources(instance_sources.unwrap_or_default())?;
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let _ = instance_sources;
+
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        for instance_id in &target_ids {
+            if instance_manager.instance(*instance_id).is_none() {
+                return Err(format!("instance {instance_id} not found"));
+            }
+            if !source_map.contains_key(instance_id) {
+                return Err(format!("missing tun sources for instance {instance_id}"));
+            }
+        }
+        if let Some(unexpected_id) = source_map
+            .keys()
+            .find(|instance_id| !target_id_set.contains(instance_id))
+        {
+            return Err(format!(
+                "received tun sources for unexpected instance {unexpected_id}"
+            ));
+        }
+    }
+
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        let mut attach_error = None;
+        for instance_id in target_ids.iter().copied() {
+            let result = attach_mobile_tun_fd(
+                instance_manager.as_ref(),
+                instance_id,
+                fd,
+                source_map
+                    .remove(&instance_id)
+                    .expect("tun sources were validated before attachment"),
+            )
+            .await;
+            if let Err(error) = result {
+                attach_error = Some(format!("{instance_id}: {error}"));
+                break;
+            }
+        }
+
+        if let Some(attach_error) = attach_error {
+            let mut rollback_errors = Vec::new();
+            for instance_id in target_ids {
+                if let Err(error) = attach_mobile_tun_fd(
+                    instance_manager.as_ref(),
+                    instance_id,
+                    0,
+                    easytier::instance::virtual_nic::MobileTunSources::default(),
+                )
+                .await
+                {
+                    rollback_errors.push(format!("{instance_id}: {error}"));
+                }
+            }
+            let rollback = if rollback_errors.is_empty() {
+                String::new()
+            } else {
+                format!("; rollback failed for {}", rollback_errors.join("; "))
+            };
+            return Err(format!(
+                "failed to set tun fd for the instance group: {attach_error}{rollback}"
+            ));
+        }
+
+        return Ok(());
+    }
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let mut errors = Vec::new();
+        for instance_id in target_ids {
+            if let Err(error) = instance_manager.attach_tun_fd(instance_id, fd) {
+                errors.push(format!("{instance_id}: {error}"));
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "failed to set tun fd for the instance group: {}",
+                errors.join("; ")
+            ))
+        }
+    }
 }
 
 #[tauri::command]
@@ -789,9 +983,10 @@ mod manager {
             &self,
             app: &AppHandle,
             inst_id: Uuid,
-            cfg: NetworkConfig,
+            mut cfg: NetworkConfig,
             source: PersistedConfigSource,
         ) -> anyhow::Result<()> {
+            normalize_network_config_for_runtime(&mut cfg);
             let source = self
                 .network_configs
                 .get(&inst_id)
@@ -926,32 +1121,99 @@ mod manager {
                 .filter_map(|c| c.config.instance_id().parse::<uuid::Uuid>().ok())
         }
 
+        pub fn get_enabled_instances_for_tun_fd(&self) -> Vec<uuid::Uuid> {
+            let Some(first) = self
+                .storage
+                .network_configs
+                .iter()
+                .filter(|v| self.storage.enabled_networks.contains(v.key()))
+                .filter(|v| !v.config.no_tun())
+                .find_map(|c| {
+                    c.config
+                        .instance_id()
+                        .parse::<uuid::Uuid>()
+                        .ok()
+                        .map(|id| (id, Self::shared_tun_dev_name(&c.config).map(str::to_owned)))
+                })
+            else {
+                return Vec::new();
+            };
+
+            let (first_id, shared_dev_name) = first;
+            let Some(shared_dev_name) = shared_dev_name else {
+                return vec![first_id];
+            };
+
+            let ids: Vec<uuid::Uuid> = self
+                .storage
+                .network_configs
+                .iter()
+                .filter(|v| self.storage.enabled_networks.contains(v.key()))
+                .filter(|v| Self::shared_tun_dev_name(&v.config) == Some(shared_dev_name.as_str()))
+                .filter_map(|c| c.config.instance_id().parse::<uuid::Uuid>().ok())
+                .collect();
+            if ids.is_empty() { vec![first_id] } else { ids }
+        }
+
+        fn shared_tun_dev_name(config: &NetworkConfig) -> Option<&str> {
+            if config.no_tun() {
+                return None;
+            }
+            config
+                .dev_name
+                .as_deref()
+                .filter(|dev_name| !dev_name.is_empty())
+        }
+
         #[cfg(target_os = "android")]
-        pub fn get_enabled_instances_with_web_like_tun_ids(
+        fn runtime_shared_tun_dev_name(
+            cfg: &easytier::common::config::TomlConfigLoader,
+        ) -> Option<String> {
+            let flags = cfg.get_flags();
+            if flags.no_tun || flags.dev_name.is_empty() {
+                None
+            } else {
+                Some(flags.dev_name)
+            }
+        }
+
+        #[cfg(target_os = "android")]
+        fn is_compatible_android_tun(
+            config: &NetworkConfig,
+            shared_dev_name: Option<&str>,
+        ) -> bool {
+            matches!(
+                (Self::shared_tun_dev_name(config), shared_dev_name),
+                (Some(existing), Some(next)) if existing == next
+            )
+        }
+
+        #[cfg(target_os = "android")]
+        fn enabled_incompatible_tun_ids(
             &self,
-        ) -> impl Iterator<Item = uuid::Uuid> + '_ {
+            web_only: bool,
+            shared_dev_name: Option<&str>,
+        ) -> Vec<uuid::Uuid> {
             self.storage
                 .network_configs
                 .iter()
                 .filter(|v| self.storage.enabled_networks.contains(v.key()))
                 .filter(|v| !v.config.no_tun())
-                .filter(|v| v.source.is_web_like())
+                .filter(|v| !web_only || v.source.is_web_like())
+                .filter(|v| !Self::is_compatible_android_tun(&v.config, shared_dev_name))
                 .filter_map(|c| c.config.instance_id().parse::<uuid::Uuid>().ok())
+                .collect()
         }
 
         #[cfg(target_os = "android")]
-        pub(super) async fn disable_instances_with_tun(
+        pub(super) async fn disable_incompatible_instances_with_tun(
             &self,
             app: &AppHandle,
             web_only: bool,
+            shared_dev_name: Option<&str>,
         ) -> Result<(), easytier_core::management::remote_client::RemoteClientError<anyhow::Error>>
         {
-            let inst_ids: Vec<uuid::Uuid> = if web_only {
-                self.get_enabled_instances_with_web_like_tun_ids().collect()
-            } else {
-                self.get_enabled_instances_with_tun_ids().collect()
-            };
-            for inst_id in inst_ids {
+            for inst_id in self.enabled_incompatible_tun_ids(web_only, shared_dev_name) {
                 self.handle_update_network_state(app.clone(), inst_id, true)
                     .await?;
             }
@@ -959,11 +1221,20 @@ mod manager {
         }
 
         pub(super) fn notify_vpn_stop_if_no_tun(&self, app: &AppHandle) -> Result<(), String> {
-            let has_tun = self.get_enabled_instances_with_tun_ids().any(|_| true);
-            if !has_tun {
-                app.emit("vpn_service_stop", "")
+            #[cfg(target_os = "android")]
+            if let Some(instance_id) = self.get_enabled_instances_with_tun_ids().next() {
+                app.emit("vpn_service_config_changed", instance_id.to_string())
                     .map_err(|e| e.to_string())?;
+                return Ok(());
             }
+
+            #[cfg(not(target_os = "android"))]
+            if self.get_enabled_instances_with_tun_ids().next().is_some() {
+                return Ok(());
+            }
+
+            app.emit("vpn_service_stop", "")
+                .map_err(|e| e.to_string())?;
             Ok(())
         }
 
@@ -979,19 +1250,31 @@ mod manager {
 
             #[cfg(target_os = "android")]
             if !cfg.get_flags().no_tun {
+                let shared_dev_name = Self::runtime_shared_tun_dev_name(cfg);
                 match source {
                     PersistedConfigSource::User | PersistedConfigSource::Legacy => {
-                        self.disable_instances_with_tun(app, false)
-                            .await
-                            .map_err(|e| e.to_string())?;
+                        self.disable_incompatible_instances_with_tun(
+                            app,
+                            false,
+                            shared_dev_name.as_deref(),
+                        )
+                        .await
+                        .map_err(|e| e.to_string())?;
                     }
                     PersistedConfigSource::Web => {
-                        self.disable_instances_with_tun(app, true)
-                            .await
-                            .map_err(|e| e.to_string())?;
-                        if self.get_enabled_instances_with_tun_ids().next().is_some() {
+                        self.disable_incompatible_instances_with_tun(
+                            app,
+                            true,
+                            shared_dev_name.as_deref(),
+                        )
+                        .await
+                        .map_err(|e| e.to_string())?;
+                        if !self
+                            .enabled_incompatible_tun_ids(false, shared_dev_name.as_deref())
+                            .is_empty()
+                        {
                             return Err(
-                                "Android only supports one active TUN network; user-managed VPN remains active"
+                                "Android only supports one active TUN device; user-managed VPN remains active with an incompatible dev_name"
                                     .to_string(),
                             );
                         }
@@ -1110,10 +1393,12 @@ mod manager {
         ) -> anyhow::Result<()> {
             self.storage.network_configs.clear();
             for stored in configs {
-                let instance_id = stored.config.instance_id();
+                let mut config = stored.config;
+                normalize_network_config_for_runtime(&mut config);
+                let instance_id = config.instance_id();
                 self.storage.network_configs.insert(
                     instance_id.parse()?,
-                    GUIConfig::new(instance_id.to_string(), stored.config, stored.source),
+                    GUIConfig::new(instance_id.to_string(), config, stored.source),
                 );
             }
 
@@ -1180,7 +1465,32 @@ mod manager {
     #[cfg(test)]
     mod tests {
         use super::{PersistedConfigSource, StoredGuiConfig};
+        use crate::{ANDROID_SHARED_TUN_DEV_NAME, normalize_android_network_config};
         use easytier::proto::api::manage::NetworkConfig;
+
+        #[test]
+        fn android_default_tun_config_uses_shared_device_name() {
+            let mut config = NetworkConfig::default();
+
+            normalize_android_network_config(&mut config);
+
+            assert_eq!(
+                config.dev_name.as_deref(),
+                Some(ANDROID_SHARED_TUN_DEV_NAME)
+            );
+        }
+
+        #[test]
+        fn android_no_tun_config_keeps_empty_device_name() {
+            let mut config = NetworkConfig {
+                no_tun: Some(true),
+                ..Default::default()
+            };
+
+            normalize_android_network_config(&mut config);
+
+            assert!(config.dev_name.is_none());
+        }
 
         #[test]
         fn stored_gui_config_defaults_missing_source_to_legacy() {

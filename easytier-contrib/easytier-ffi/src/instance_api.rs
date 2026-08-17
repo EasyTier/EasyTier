@@ -1,5 +1,12 @@
 use std::ffi::{CString, c_char, c_int};
 
+#[cfg(any(
+    target_os = "android",
+    target_os = "ios",
+    all(target_os = "macos", feature = "macos-ne"),
+    target_env = "ohos"
+))]
+use easytier::common::config::ConfigLoader as _;
 use easytier::common::config::{ConfigFileControl, TomlConfigLoader};
 
 use crate::{
@@ -8,6 +15,28 @@ use crate::{
     state::{ffi_context, resolve_instance_id_by_name},
     types::KeyValuePair,
 };
+
+#[cfg(any(
+    target_os = "android",
+    target_os = "ios",
+    all(target_os = "macos", feature = "macos-ne"),
+    target_env = "ohos"
+))]
+fn mobile_tun_sources_for_legacy_set_tun_fd(inst_id: uuid::Uuid) -> Result<(), String> {
+    let config = ffi_context()
+        .manager
+        .config(inst_id)
+        .ok_or_else(|| format!("instance config unavailable: {inst_id}"))?;
+    let flags = config.get_flags();
+    if flags.dev_name.is_empty() {
+        return Ok(());
+    }
+
+    Err(format!(
+        "set_tun_fd legacy API cannot attach shared mobile TUN dev_name={} without tun sources",
+        flags.dev_name
+    ))
+}
 
 /// # Safety
 /// Set the tun fd
@@ -21,7 +50,7 @@ pub(crate) unsafe fn set_tun_fd(inst_name: *const c_char, fd: c_int) -> c_int {
     let inst_id = match resolve_instance_id_by_name(&inst_name) {
         Ok(Some(instance_id)) => instance_id,
         Ok(None) => {
-            set_error_msg("instance not found");
+            set_error_msg(&format!("instance not found: {inst_name}"));
             return -1;
         }
         Err(error) => {
@@ -30,9 +59,23 @@ pub(crate) unsafe fn set_tun_fd(inst_name: *const c_char, fd: c_int) -> c_int {
         }
     };
 
+    #[cfg(any(
+        target_os = "android",
+        target_os = "ios",
+        all(target_os = "macos", feature = "macos-ne"),
+        target_env = "ohos"
+    ))]
+    if let Err(error) = mobile_tun_sources_for_legacy_set_tun_fd(inst_id) {
+        set_error_msg(&error);
+        return -1;
+    }
+
     match ffi_context().manager.attach_tun_fd(inst_id, fd) {
         Ok(_) => 0,
-        Err(_) => -1,
+        Err(e) => {
+            set_error_msg(&format!("failed to set tun fd: {}", e));
+            -1
+        }
     }
 }
 

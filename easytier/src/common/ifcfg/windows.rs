@@ -22,6 +22,7 @@ use winreg::{
 };
 
 use super::{Error, IfConfiguerTrait};
+#[derive(Default)]
 pub struct WindowsIfConfiger {}
 
 fn format_win_error(error: u32) -> String {

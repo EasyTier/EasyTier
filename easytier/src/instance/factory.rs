@@ -1,5 +1,8 @@
 use std::sync::Arc;
 
+#[cfg(feature = "tun")]
+use tokio::sync::Mutex;
+
 #[cfg(any(feature = "management-rpc", test))]
 use easytier_core::instance::manager::InstanceManager;
 #[cfg(feature = "management-rpc")]
@@ -12,6 +15,10 @@ use easytier_core::{
 
 use crate::common::global_ctx::EventBusSubscriber;
 
+#[cfg(feature = "tun")]
+use super::shared_virtual_nic::{ArcSharedVirtualNicRegistry, SharedVirtualNicRegistry};
+#[cfg(all(feature = "tun", mobile))]
+use super::virtual_nic::MobileTunSources;
 use super::{
     composition::compose_native_core_instance, host::NativeInstanceHost,
     runtime_host::NativeInstanceRuntimeHost,
@@ -49,6 +56,22 @@ pub fn subscribe_native_instance_event(
     instance
         .runtime_host::<NativeInstanceRuntimeHost>()
         .map(NativeInstanceRuntimeHost::subscribe_event)
+}
+
+#[cfg(all(feature = "management-rpc", feature = "tun", mobile))]
+pub async fn attach_mobile_tun_fd(
+    manager: &NativeInstanceManager,
+    instance_id: uuid::Uuid,
+    fd: i32,
+    sources: MobileTunSources,
+) -> anyhow::Result<()> {
+    let instance = manager
+        .instance(instance_id)
+        .ok_or_else(|| anyhow::anyhow!("instance {instance_id} not found"))?;
+    let runtime = instance
+        .runtime_host::<NativeInstanceRuntimeHost>()
+        .ok_or_else(|| anyhow::anyhow!("native runtime host is unavailable"))?;
+    runtime.attach_mobile_tun_fd(fd, sources).await
 }
 
 #[cfg(feature = "management-rpc")]
@@ -97,6 +120,8 @@ fn native_instance_manager_with_optional_runtime(
 /// Native construction Adapter for the canonical core InstanceManager.
 pub struct NativeInstanceFactory {
     process_runtime: Arc<CoreProcessRuntime>,
+    #[cfg(feature = "tun")]
+    shared_virtual_nic_registry: ArcSharedVirtualNicRegistry,
     runtime_handle: Option<tokio::runtime::Handle>,
     compact_runtime: bool,
     #[cfg(feature = "logging")]
@@ -107,6 +132,8 @@ impl NativeInstanceFactory {
     pub fn new(process_runtime: Arc<CoreProcessRuntime>) -> Self {
         Self {
             process_runtime,
+            #[cfg(feature = "tun")]
+            shared_virtual_nic_registry: Arc::new(Mutex::new(SharedVirtualNicRegistry::new())),
             runtime_handle: None,
             compact_runtime: false,
             #[cfg(feature = "logging")]
@@ -126,6 +153,7 @@ impl NativeInstanceFactory {
         self
     }
 
+    #[cfg(feature = "management-rpc")]
     fn with_compact_runtime(mut self) -> Self {
         self.compact_runtime = true;
         self
@@ -149,6 +177,8 @@ impl InstanceFactory for NativeInstanceFactory {
         let instance = compose_native_core_instance(
             config,
             self.process_runtime.clone(),
+            #[cfg(feature = "tun")]
+            self.shared_virtual_nic_registry.clone(),
             self.compact_runtime,
         )?;
         #[cfg(feature = "logging")]

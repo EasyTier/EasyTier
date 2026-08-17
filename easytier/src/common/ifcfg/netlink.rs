@@ -133,6 +133,7 @@ fn dump_netlink_messages<T: NetlinkDecode>(
     receive_netlink_dump(builder)
 }
 
+#[derive(Default)]
 pub struct NetlinkIfConfiger {}
 
 impl NetlinkIfConfiger {
@@ -335,6 +336,52 @@ impl NetlinkIfConfiger {
             })
             .collect())
     }
+
+    fn ipv4_route_message(
+        ifindex: u32,
+        address: Ipv4Addr,
+        cidr_prefix: u8,
+        cost: Option<i32>,
+        source_hint: Option<Ipv4Addr>,
+    ) -> RouteMessage {
+        let mut builder = RouteMessageBuilder::new(libc::AF_INET as u8)
+            .destination(IpAddr::V4(address), cidr_prefix)
+            .oif(ifindex)
+            .priority(cost.unwrap_or(65535) as u32)
+            .table(libc::RT_TABLE_MAIN.into())
+            .static_protocol()
+            .universe_scope()
+            .route_type(RouteType::Unicast);
+        if let Some(source_hint) = source_hint {
+            builder = builder.preferred_source(IpAddr::V4(source_hint));
+        }
+        builder.build()
+    }
+
+    fn ipv4_route_target_matches(
+        route: &RouteMessage,
+        address: Ipv4Addr,
+        cidr_prefix: u8,
+        ifidx: u32,
+    ) -> bool {
+        route.destination().copied() == Some(IpAddr::V4(address))
+            && route.dst_len() == cidr_prefix
+            && route.oif() == Some(ifidx)
+    }
+
+    fn ipv4_route_exact_matches(
+        route: &RouteMessage,
+        address: Ipv4Addr,
+        cidr_prefix: u8,
+        ifidx: u32,
+        cost: Option<i32>,
+        source_hint: Option<Ipv4Addr>,
+    ) -> bool {
+        Self::ipv4_route_target_matches(route, address, cidr_prefix, ifidx)
+            && route.table() == u32::from(libc::RT_TABLE_MAIN)
+            && route.priority() == Some(cost.unwrap_or(65535) as u32)
+            && route.preferred_source().copied() == source_hint.map(IpAddr::V4)
+    }
 }
 
 #[async_trait]
@@ -346,15 +393,25 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
         cidr_prefix: u8,
         cost: Option<i32>,
     ) -> Result<(), Error> {
-        let message = RouteMessageBuilder::new(libc::AF_INET as u8)
-            .destination(IpAddr::V4(address), cidr_prefix)
-            .oif(Self::get_interface_index(name)?)
-            .priority(cost.unwrap_or(65535) as u32)
-            .table(libc::RT_TABLE_MAIN.into())
-            .static_protocol()
-            .universe_scope()
-            .route_type(RouteType::Unicast)
-            .build();
+        self.add_ipv4_route_with_source_hint(name, address, cidr_prefix, cost, None)
+            .await
+    }
+
+    async fn add_ipv4_route_with_source_hint(
+        &self,
+        name: &str,
+        address: Ipv4Addr,
+        cidr_prefix: u8,
+        cost: Option<i32>,
+        source_hint: Option<Ipv4Addr>,
+    ) -> Result<(), Error> {
+        let message = NetlinkIfConfiger::ipv4_route_message(
+            NetlinkIfConfiger::get_interface_index(name)?,
+            address,
+            cidr_prefix,
+            cost,
+            source_hint,
+        );
         let request = message_request(
             RTM_NEWROUTE,
             NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL | NLM_F_REQUEST,
@@ -373,14 +430,36 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
         let ifidx = NetlinkIfConfiger::get_interface_index(name)?;
 
         for msg in routes {
-            let destination = msg
-                .destination()
-                .copied()
-                .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
-            if destination == IpAddr::V4(address)
-                && msg.dst_len() == cidr_prefix
-                && msg.oif() == Some(ifidx)
-            {
+            if NetlinkIfConfiger::ipv4_route_target_matches(&msg, address, cidr_prefix, ifidx) {
+                let request = message_request(RTM_DELROUTE, NLM_F_ACK | NLM_F_REQUEST, &msg)?;
+                send_netlink_req_and_wait_ack(request)?;
+                return Ok(());
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn remove_ipv4_route_with_cost_and_source_hint(
+        &self,
+        name: &str,
+        address: Ipv4Addr,
+        cidr_prefix: u8,
+        cost: Option<i32>,
+        source_hint: Option<Ipv4Addr>,
+    ) -> Result<(), Error> {
+        let routes = Self::list_routes()?;
+        let ifidx = NetlinkIfConfiger::get_interface_index(name)?;
+
+        for msg in routes {
+            if NetlinkIfConfiger::ipv4_route_exact_matches(
+                &msg,
+                address,
+                cidr_prefix,
+                ifidx,
+                cost,
+                source_hint,
+            ) {
                 let request = message_request(RTM_DELROUTE, NLM_F_ACK | NLM_F_REQUEST, &msg)?;
                 send_netlink_req_and_wait_ack(request)?;
                 return Ok(());
@@ -599,6 +678,84 @@ mod tests {
                 .args(["link", "del", &self.name])
                 .output();
         }
+    }
+
+    #[test]
+    fn ipv4_route_message_includes_pref_source_when_source_hint_is_set() {
+        let source_hint = Ipv4Addr::new(10, 231, 1, 1);
+        let message = NetlinkIfConfiger::ipv4_route_message(
+            7,
+            Ipv4Addr::new(10, 99, 0, 0),
+            24,
+            Some(123),
+            Some(source_hint),
+        );
+
+        assert_eq!(message.dst_len(), 24);
+        assert_eq!(message.preferred_source(), Some(&IpAddr::V4(source_hint)));
+        assert_eq!(message.priority(), Some(123));
+        assert_eq!(message.oif(), Some(7));
+    }
+
+    #[test]
+    fn ipv4_route_exact_match_distinguishes_metric_and_pref_source() {
+        let address = Ipv4Addr::new(10, 99, 0, 0);
+        let source_hint = Ipv4Addr::new(10, 99, 0, 1);
+        let other_source_hint = Ipv4Addr::new(10, 99, 0, 2);
+        let route =
+            NetlinkIfConfiger::ipv4_route_message(7, address, 24, Some(123), Some(source_hint));
+
+        assert!(NetlinkIfConfiger::ipv4_route_exact_matches(
+            &route,
+            address,
+            24,
+            7,
+            Some(123),
+            Some(source_hint),
+        ));
+        assert!(!NetlinkIfConfiger::ipv4_route_exact_matches(
+            &route,
+            address,
+            24,
+            7,
+            Some(124),
+            Some(source_hint),
+        ));
+        assert!(!NetlinkIfConfiger::ipv4_route_exact_matches(
+            &route,
+            address,
+            24,
+            7,
+            Some(123),
+            Some(other_source_hint),
+        ));
+        assert!(!NetlinkIfConfiger::ipv4_route_exact_matches(
+            &route,
+            address,
+            24,
+            7,
+            Some(123),
+            None,
+        ));
+
+        let non_main_table_route = RouteMessageBuilder::new(libc::AF_INET as u8)
+            .destination(IpAddr::V4(address), 24)
+            .preferred_source(IpAddr::V4(source_hint))
+            .oif(7)
+            .priority(123)
+            .table(100)
+            .static_protocol()
+            .universe_scope()
+            .route_type(RouteType::Unicast)
+            .build();
+        assert!(!NetlinkIfConfiger::ipv4_route_exact_matches(
+            &non_main_table_route,
+            address,
+            24,
+            7,
+            Some(123),
+            Some(source_hint),
+        ));
     }
 
     struct PrepareEnv {}

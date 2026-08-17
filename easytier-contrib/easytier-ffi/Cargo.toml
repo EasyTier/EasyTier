@@ -13,6 +13,7 @@ ffi-dataplane = [
     "easytier/ffi-dataplane",
     "easytier-core/proxy-smoltcp-stack",
 ]
+macos-ne = ["easytier/macos-ne"]
 
 [dependencies]
 easytier = { path = "../../easytier", features = ["tracing-log"] }
@@ -31,4 +32,3 @@ uuid = "1.17.0"
 thunk-rs = { git = "https://github.com/easytier/thunk.git", default-features = false, features = [
     "win7",
 ] }
-

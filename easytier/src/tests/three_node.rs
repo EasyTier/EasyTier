@@ -1001,6 +1001,157 @@ pub async fn public_ipv6_auto_addr_reconnect_reuses_same_address() {
     drop_insts(vec![provider, client]).await;
 }
 
+#[cfg(feature = "tun")]
+#[tokio::test]
+#[serial_test::serial]
+pub async fn shared_tun_public_ipv6_auto_addr_end_to_end() {
+    let lab = PublicIpv6Lab::setup_with_topology(PublicIpv6LabTopology::DelegatedPrefix);
+    let provider_dev = format!("st{:08x}", rand::random::<u32>());
+    let client_dev = format!("st{:08x}", rand::random::<u32>());
+    let process_runtime = CoreProcessRuntime::new();
+    let shared_virtual_nic_registry = Instance::new_shared_virtual_nic_registry();
+
+    let provider_cfg = get_public_ipv6_config(
+        "provider_shared_public_ipv6",
+        PublicIpv6Lab::PROVIDER_NS,
+        "10.144.144.1",
+        &provider_dev,
+        uuid::Uuid::parse_str("44444444-4444-4444-4444-444444444444").unwrap(),
+    );
+    provider_cfg.set_ipv6_public_addr_provider(true);
+
+    let client_cfg = get_public_ipv6_config(
+        "client_shared_public_ipv6",
+        PublicIpv6Lab::CLIENT_NS,
+        "10.144.144.2",
+        &client_dev,
+        uuid::Uuid::parse_str("55555555-5555-5555-5555-555555555555").unwrap(),
+    );
+    client_cfg.set_ipv6_public_addr_auto(true);
+
+    let client_peer_cfg = get_public_ipv6_config(
+        "client_shared_public_ipv6_peer",
+        PublicIpv6Lab::CLIENT_NS,
+        "10.144.144.3",
+        &client_dev,
+        uuid::Uuid::parse_str("66666666-6666-6666-6666-666666666666").unwrap(),
+    );
+    client_peer_cfg.set_listeners(vec![]);
+
+    let mut provider = Instance::new_with_process_runtime_and_shared_virtual_nic_registry(
+        provider_cfg,
+        process_runtime.clone(),
+        shared_virtual_nic_registry.clone(),
+    );
+    let mut client = Instance::new_with_process_runtime_and_shared_virtual_nic_registry(
+        client_cfg,
+        process_runtime.clone(),
+        shared_virtual_nic_registry.clone(),
+    );
+    let mut client_peer = Instance::new_with_process_runtime_and_shared_virtual_nic_registry(
+        client_peer_cfg,
+        process_runtime,
+        shared_virtual_nic_registry,
+    );
+    let mut client_events = client.get_global_ctx().subscribe();
+    let mut client_peer_events = client_peer.get_global_ctx().subscribe();
+
+    provider.run().await.unwrap();
+    client.run().await.unwrap();
+    client_peer.run().await.unwrap();
+
+    let shared_ifname = wait_for_tun_ready(&mut client_events).await;
+    assert_eq!(
+        shared_ifname,
+        wait_for_tun_ready(&mut client_peer_events).await
+    );
+    assert_eq!(shared_ifname, client_dev);
+
+    provider.add_connector_url("tcp://10.1.1.2:11010".parse().unwrap());
+
+    wait_for_condition(
+        || async {
+            provider.get_core_instance().route_snapshots().await.len() == 1
+                && client.get_core_instance().route_snapshots().await.len() == 1
+        },
+        Duration::from_secs(8),
+    )
+    .await;
+
+    wait_for_condition(
+        || async {
+            provider
+                .get_core_instance()
+                .node_snapshot()
+                .await
+                .ipv6_public_addr_prefix
+                == Some(PublicIpv6Lab::PROVIDER_PREFIX.parse().unwrap())
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    let leased = wait_for_public_ipv6_addr(&client).await;
+    wait_for_public_ipv6_route(&provider, leased).await;
+
+    wait_for_condition(
+        || async {
+            addr_exists_in_ns(PublicIpv6Lab::CLIENT_NS, &client_dev, &leased.to_string())
+                && route_exists_in_ns(
+                    PublicIpv6Lab::CLIENT_NS,
+                    &format!("default dev {client_dev}"),
+                )
+                && route_exists_in_ns(
+                    PublicIpv6Lab::PROVIDER_NS,
+                    &format!("{} dev {provider_dev}", leased.address()),
+                )
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    wait_for_condition(
+        || async { ping6_test(PublicIpv6Lab::CLIENT_NS, PublicIpv6Lab::SERVER_IP, None).await },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    wait_for_condition(
+        || async {
+            ping6_test(
+                PublicIpv6Lab::SERVER_NS,
+                leased.address().to_string().as_str(),
+                None,
+            )
+            .await
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    drop_insts(vec![provider, client, client_peer]).await;
+    drop(lab);
+}
+
+#[cfg(feature = "tun")]
+async fn wait_for_tun_ready(
+    receiver: &mut tokio::sync::broadcast::Receiver<crate::common::global_ctx::GlobalCtxEvent>,
+) -> String {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match receiver.recv().await.unwrap() {
+                crate::common::global_ctx::GlobalCtxEvent::TunDeviceReady(ifname) => return ifname,
+                crate::common::global_ctx::GlobalCtxEvent::TunDeviceError(error) => {
+                    panic!("tun device error: {error}")
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for tun ready")
+}
+
 #[rstest::rstest]
 #[tokio::test]
 #[serial_test::serial]
