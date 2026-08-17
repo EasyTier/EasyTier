@@ -8,6 +8,7 @@
     "dev": "pnpm --dir ../easytier-web/frontend-lib build && vite",
     "build": "pnpm --dir ../easytier-web/frontend-lib build && vue-tsc --noEmit && vite build",
     "preview": "vite preview",
+    "test:mobile-vpn": "vitest run src/composables/mobile_vpn.test.ts",
     "tauri": "tauri",
     "lint": "eslint . --ignore-pattern src-tauri",
     "lint:fix": "eslint . --ignore-pattern src-tauri --fix"
@@ -56,6 +57,7 @@
     "vite": "^5.4.21",
     "vite-plugin-vue-devtools": "^7.4.6",
     "vite-plugin-vue-layouts": "^0.11.0",
+    "vitest": "^2.1.9",
     "vue-i18n": "^10.0.0",
     "vue-tsc": "^2.1.10"
   }

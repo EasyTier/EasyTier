@@ -9,7 +9,7 @@ import { exit } from '@tauri-apps/plugin-process'
 import { I18nUtils, RemoteManagement, Utils } from "easytier-frontend-lib"
 import type { MenuItem } from 'primevue/menuitem'
 import { useTray } from '~/composables/tray'
-import { initMobileVpnService } from '~/composables/mobile_vpn'
+import { initMobileVpnService, syncMobileVpnService } from '~/composables/mobile_vpn'
 import { GUIRemoteClient } from '~/modules/api'
 
 import { useToast, useConfirm } from 'primevue'
@@ -213,7 +213,6 @@ onMounted(async () => {
   if (type() === 'android') {
     try {
       await initMobileVpnService()
-      console.error("easytier init vpn service done")
     } catch (e: any) {
       console.error("easytier init vpn service failed", e)
     }
@@ -222,6 +221,14 @@ onMounted(async () => {
   cleanupFns.push(await listenGlobalEvents())
   currentMode.value = loadMode()
   await initWithMode(currentMode.value);
+
+  if (type() === 'android') {
+    try {
+      await syncMobileVpnService()
+    } catch (e: any) {
+      console.error("easytier sync vpn service failed", e)
+    }
+  }
 
   onUnmounted(() => {
     cleanupFns.forEach(unlisten => unlisten())
