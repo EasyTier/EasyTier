@@ -1,11 +1,12 @@
 //! Shared WireGuard packet engine for named portal clients.
 
+use atomic_shim::AtomicU64;
 use std::{
     collections::HashMap,
     net::SocketAddr,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::Ordering,
     },
     time::Duration,
 };
