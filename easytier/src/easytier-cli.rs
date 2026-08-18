@@ -537,6 +537,17 @@ type LocalBoxFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, Error>> + 'a>
 type ForeignNetworkMap = BTreeMap<String, ForeignNetworkEntryPb>;
 type GlobalForeignNetworkMap = BTreeMap<u32, list_global_foreign_network_response::ForeignNetworks>;
 
+const ROUTE_OPTIONAL_COLUMNS: &[&str] = &["hostname"];
+const ROUTE_DROP_COLUMNS: &[&str] = &[
+    "version",
+    "next_hop_hostname_lat_first",
+    "next_hop_ipv4_lat_first",
+    "path_len_lat_first",
+    "path_latency_lat_first",
+    "next_hop_hostname",
+    "next_hop_lat",
+];
+
 fn is_missing_web_client_service(error: &RpcError) -> bool {
     matches!(
         error,
@@ -569,6 +580,60 @@ mod tests {
 
         assert!(!is_missing_web_client_service(&error));
     }
+
+    #[test]
+    fn proxy_cidrs_are_displayed_one_per_line() {
+        assert_eq!(
+            format_proxy_cidrs("10.0.0.0/24, 192.168.0.0/16"),
+            "10.0.0.0/24\n192.168.0.0/16"
+        );
+        assert_eq!(format_proxy_cidrs("10.0.0.0/24"), "10.0.0.0/24");
+        assert_eq!(format_proxy_cidrs(""), "");
+    }
+
+    #[test]
+    fn route_column_priority_preserves_proxy_cidrs() {
+        let headers = [
+            "ipv4",
+            "hostname",
+            "proxy_cidrs",
+            "next_hop_ipv4",
+            "next_hop_hostname",
+            "next_hop_lat",
+            "path_len",
+            "path_latency",
+            "next_hop_ipv4_lat_first",
+            "next_hop_hostname_lat_first",
+            "path_len_lat_first",
+            "path_latency_lat_first",
+            "version",
+        ]
+        .map(str::to_string);
+        let col_widths = headers
+            .iter()
+            .map(|header| text_width(header))
+            .collect::<Vec<_>>();
+        let drop_indices = header_indices(&headers, ROUTE_DROP_COLUMNS);
+
+        let (active, dropped, total_width) =
+            select_columns_to_drop(Some(79), &drop_indices, &col_widths);
+
+        let proxy_index = headers
+            .iter()
+            .position(|header| header == "proxy_cidrs")
+            .unwrap();
+        assert!(active[proxy_index]);
+        assert!(!dropped.contains(&proxy_index));
+        assert!(total_width <= 79);
+    }
+}
+
+fn format_proxy_cidrs(value: &str) -> String {
+    value
+        .split(',')
+        .map(str::trim)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[derive(serde::Serialize)]
@@ -1707,6 +1772,7 @@ impl<'a> CommandHandler<'a> {
         struct RouteTableItem {
             ipv4: String,
             hostname: String,
+            #[tabled(display_with = "format_proxy_cidrs")]
             proxy_cidrs: String,
 
             next_hop_ipv4: String,
@@ -1833,8 +1899,8 @@ impl<'a> CommandHandler<'a> {
             print_output(
                 &items,
                 self.output_format,
-                &["proxy_cidrs", "version"],
-                &["proxy_cidrs", "version"],
+                ROUTE_OPTIONAL_COLUMNS,
+                ROUTE_DROP_COLUMNS,
                 self.no_trunc,
             )
         })
