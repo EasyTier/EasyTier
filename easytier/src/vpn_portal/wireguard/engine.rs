@@ -4,10 +4,7 @@ use atomic_shim::AtomicU64;
 use std::{
     collections::HashMap,
     net::SocketAddr,
-    sync::{
-        Arc,
-        atomic::Ordering,
-    },
+    sync::{Arc, atomic::Ordering},
     time::Duration,
 };
 
