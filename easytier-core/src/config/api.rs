@@ -11,6 +11,7 @@ pub fn network_config_from_toml(config: &TomlConfig) -> NetworkConfig {
     let mut result = NetworkConfig {
         instance_id: Some(config.get_id().to_string()),
         dhcp: Some(config.get_dhcp()),
+        netns: config.get_netns(),
         ..Default::default()
     };
 
@@ -163,4 +164,20 @@ pub fn network_config_from_toml(config: &TomlConfig) -> NetworkConfig {
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn portable_conversion_preserves_network_namespace() {
+        let config = TomlConfig::default();
+        config.set_netns(Some("pod-a".to_owned()));
+
+        assert_eq!(
+            network_config_from_toml(&config).netns.as_deref(),
+            Some("pod-a")
+        );
+    }
 }

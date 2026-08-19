@@ -1384,13 +1384,23 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
 
     let manager = Arc::new(native_cli_instance_manager().with_config_path(cli.config_dir.clone()));
 
-    let _rpc_server = ApiRpcServer::new(
-        cli.rpc_portal_options.rpc_portal,
-        cli.rpc_portal_options.rpc_portal_whitelist,
-        manager.clone(),
-    )?
-    .serve()
-    .await?;
+    let rpc_portal = cli.rpc_portal_options.rpc_portal;
+    let is_unix_rpc = rpc_portal
+        .as_deref()
+        .is_some_and(|value| value.starts_with("unix://"));
+    let _tcp_rpc_server = if is_unix_rpc {
+        None
+    } else {
+        Some(
+            ApiRpcServer::new(
+                rpc_portal.clone(),
+                cli.rpc_portal_options.rpc_portal_whitelist,
+                manager.clone(),
+            )?
+            .serve()
+            .await?,
+        )
+    };
 
     let _web_client = if let Some(config_server_url_s) = cli.config_server.as_ref() {
         let wc = web_client::run_web_client(
@@ -1518,6 +1528,18 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
         );
         manager.run_network_instance(cfg, ConfigFileControl::STATIC_CONFIG)?;
     }
+
+    // The CNI readiness probe watches the Unix socket. Expose it only after
+    // persisted instances have been restored to avoid racing new attachments.
+    let _unix_rpc_server = if is_unix_rpc {
+        Some(
+            ApiRpcServer::new_unix(rpc_portal.as_deref().unwrap(), manager.clone())?
+                .serve()
+                .await?,
+        )
+    } else {
+        None
+    };
 
     #[cfg(unix)]
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;

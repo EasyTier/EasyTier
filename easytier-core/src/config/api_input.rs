@@ -110,6 +110,7 @@ impl NetworkConfigExt for NetworkConfig {
         cfg.set_hostname(self.hostname.clone());
         cfg.set_dhcp(self.dhcp.unwrap_or_default());
         cfg.set_inst_name(self.network_name.clone().unwrap_or_default());
+        cfg.set_netns(self.netns.clone().filter(|value| !value.is_empty()));
 
         // The web UI does not expose credential inputs directly, but imported/saved
         // NetworkConfig objects still need to preserve credential-mode instances via
@@ -483,6 +484,7 @@ impl NetworkConfigExt for NetworkConfig {
         };
 
         result.instance_id = Some(config.get_id().to_string());
+        result.netns = config.get_netns();
         if config.get_hostname() != default_config.get_hostname() {
             result.hostname = Some(config.get_hostname());
         }
@@ -648,5 +650,36 @@ impl NetworkConfigExt for NetworkConfig {
         }
 
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn network_config_preserves_absolute_network_namespace() {
+        let input = NetworkConfig {
+            netns: Some("/proc/123/ns/net".to_owned()),
+            networking_method: Some(NetworkingMethod::Manual as i32),
+            ..Default::default()
+        };
+
+        let config = input.gen_config().unwrap();
+        assert_eq!(config.get_netns().as_deref(), Some("/proc/123/ns/net"));
+
+        let output = NetworkConfig::new_from_config(config).unwrap();
+        assert_eq!(output.netns, input.netns);
+    }
+
+    #[test]
+    fn network_config_normalizes_empty_network_namespace() {
+        let input = NetworkConfig {
+            netns: Some(String::new()),
+            networking_method: Some(NetworkingMethod::Manual as i32),
+            ..Default::default()
+        };
+
+        assert_eq!(input.gen_config().unwrap().get_netns(), None);
     }
 }

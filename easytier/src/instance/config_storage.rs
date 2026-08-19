@@ -36,7 +36,10 @@ impl ConfigFileStorage for NativeConfigFileStorage {
     }
 
     async fn remove(&self, path: &Path) -> anyhow::Result<()> {
-        tokio::fs::remove_file(path).await?;
-        Ok(())
+        match tokio::fs::remove_file(path).await {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
     }
 }

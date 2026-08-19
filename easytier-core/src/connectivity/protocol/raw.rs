@@ -333,7 +333,7 @@ where
     }
 }
 
-pub(crate) fn upgrade_connected_byte_stream<S>(
+pub fn upgrade_connected_byte_stream<S>(
     connected: ConnectedByteStream<S>,
 ) -> Result<Box<dyn Tunnel>, TunnelError>
 where
@@ -406,7 +406,7 @@ where
     TcpTunnelUpgrader::new(info).upgrade(socket)
 }
 
-pub(crate) fn upgrade_accepted_byte_stream<S>(
+pub fn upgrade_accepted_byte_stream<S>(
     socket: S,
     local_url: Url,
     remote_url: Option<Url>,

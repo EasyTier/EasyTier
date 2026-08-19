@@ -14,7 +14,7 @@ use crate::{
 use crate::{
     instance::factory::NativeInstanceManager,
     proto::{
-        rpc::standalone::{RuntimeRpcListener, runtime_rpc_listener},
+        rpc::standalone::{RuntimeRpcListener, RuntimeUnixRpcListener, runtime_rpc_listener},
         rpc_types::error::Error,
     },
 };
@@ -39,6 +39,22 @@ impl ApiRpcServer<RuntimeRpcListener> {
         server.rpc_server.set_whitelist(rpc_portal_whitelist);
 
         Ok(server)
+    }
+}
+
+#[cfg(feature = "management")]
+impl ApiRpcServer<RuntimeUnixRpcListener> {
+    pub fn new_unix(
+        rpc_portal: &str,
+        instance_manager: Arc<NativeInstanceManager>,
+    ) -> anyhow::Result<Self> {
+        let url = rpc_portal
+            .parse::<url::Url>()
+            .context("failed to parse Unix RPC portal")?;
+        Ok(Self::from_tunnel(
+            RuntimeUnixRpcListener::new(url)?,
+            instance_manager,
+        ))
     }
 }
 

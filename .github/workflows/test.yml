@@ -100,7 +100,7 @@ jobs:
       - name: Archive test
         run: >-
           cargo nextest archive --archive-file tests.tar.zst
-          --package easytier --package easytier-core --features full
+          --package easytier --package easytier-core --package easytier-cni --features full
 
       - uses: actions/upload-artifact@v5
         with:
