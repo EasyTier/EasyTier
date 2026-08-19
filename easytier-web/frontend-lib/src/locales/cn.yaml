@@ -270,6 +270,8 @@ event:
   PortForwardAdded: 端口转发添加
   ProxyCidrsUpdated: 子网代理CIDR更新
   UdpBroadcastRelayStartResult: UDP广播中继启动结果
+  MagicDnsReady: Magic DNS 就绪
+  MagicDnsError: Magic DNS 错误
 
 web:
   login:

@@ -71,6 +71,9 @@ pub enum GlobalCtxEvent {
         error: Option<String>,
     },
 
+    MagicDnsReady(String),
+    MagicDnsError(String),
+
     CredentialChanged,
 }
 

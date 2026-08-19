@@ -510,4 +510,7 @@ export enum EventType {
   ProxyCidrsUpdated = 'ProxyCidrsUpdated', // string[], string[]
 
   UdpBroadcastRelayStartResult = 'UdpBroadcastRelayStartResult', // { capture_backend?: string, error?: string }
+
+  MagicDnsReady = 'MagicDnsReady', // string
+  MagicDnsError = 'MagicDnsError', // string
 }

@@ -243,6 +243,24 @@ fn log_event(instance_id: Uuid, event: GlobalCtxEvent) {
                 );
             }
         }
+        GlobalCtxEvent::MagicDnsReady(endpoint) => {
+            event!(
+                info,
+                category: "DNS",
+                endpoint,
+                "[{}] Magic DNS ready",
+                instance_id
+            );
+        }
+        GlobalCtxEvent::MagicDnsError(error) => {
+            event!(
+                error,
+                category: "DNS",
+                %error,
+                "[{}] Magic DNS error",
+                instance_id
+            );
+        }
         GlobalCtxEvent::CredentialChanged => {
             event!(info, "[{}] credential changed", instance_id);
         }
