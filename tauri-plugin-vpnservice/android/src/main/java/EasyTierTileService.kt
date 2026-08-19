@@ -2,7 +2,6 @@ package com.plugin.vpnservice
 
 import android.content.ComponentName
 import android.content.Context
-import android.content.Intent
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -14,17 +13,15 @@ import java.lang.ref.WeakReference
 class EasyTierTileService : TileService() {
     companion object {
         private const val PREFS_NAME = "easytier_quick_settings"
-        private const val VPN_ACTIVE = "vpn_active"
         private const val LAST_ERROR = "last_error"
         private val mainHandler = Handler(Looper.getMainLooper())
 
         @Volatile
         private var listeningService: WeakReference<EasyTierTileService>? = null
 
-        fun setVpnActive(context: Context, active: Boolean) {
+        fun refreshVpnState(context: Context) {
             context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                 .edit()
-                .putBoolean(VPN_ACTIVE, active)
                 .remove(LAST_ERROR)
                 .apply()
             notifyStateChanged(context)
@@ -33,7 +30,6 @@ class EasyTierTileService : TileService() {
         fun setLastError(context: Context, error: String) {
             context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                 .edit()
-                .putBoolean(VPN_ACTIVE, false)
                 .putString(LAST_ERROR, error)
                 .apply()
             notifyStateChanged(context)
@@ -75,9 +71,7 @@ class EasyTierTileService : TileService() {
     }
 
     private fun refreshTile() {
-        val active = TauriVpnService.self?.isVpnActive()
-            ?: getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                .getBoolean(VPN_ACTIVE, false)
+        val active = TauriVpnService.self?.isVpnActive() == true
         updateTile(active)
     }
 
@@ -91,7 +85,7 @@ class EasyTierTileService : TileService() {
     }
 
     private fun handleClick() {
-        val requestedActive = TauriVpnService.isPersistedActive(this)
+        val requestedActive = isRequestedActive()
         val action = if (requestedActive) {
             TauriVpnService.ACTION_STOP
         } else {
@@ -99,13 +93,13 @@ class EasyTierTileService : TileService() {
         }
         ContextCompat.startForegroundService(
             this,
-            Intent(this, TauriVpnService::class.java).setAction(action),
+            TauriVpnService.createIntent(this, action),
         )
     }
 
     private fun updateTile(active: Boolean) {
         qsTile?.apply {
-            val desiredActive = TauriVpnService.isPersistedActive(this@EasyTierTileService)
+            val desiredActive = isRequestedActive()
             state = if (active || desiredActive) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 val error = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -125,4 +119,7 @@ class EasyTierTileService : TileService() {
             updateTile()
         }
     }
+
+    private fun isRequestedActive(): Boolean =
+        TauriVpnService.self?.isVpnRequestedOrActive() == true
 }

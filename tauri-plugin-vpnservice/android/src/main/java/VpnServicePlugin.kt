@@ -1,7 +1,6 @@
 package com.plugin.vpnservice
 
 import android.app.Activity
-import android.content.Intent
 import android.net.VpnService
 import androidx.activity.result.ActivityResult
 import app.tauri.annotation.Command
@@ -104,8 +103,10 @@ class VpnServicePlugin(private val activity: Activity) : Plugin(activity) {
             if (it != null) {
                 ret.put("errorMsg", "need_prepare")
             } else {
-                val intent = Intent(activity, TauriVpnService::class.java)
-                intent.action = TauriVpnService.ACTION_ATTACH_EXISTING
+                val intent = TauriVpnService.createIntent(
+                    activity,
+                    TauriVpnService.ACTION_ATTACH_EXISTING,
+                )
                 intent.putExtra(TauriVpnService.INSTANCE_ID, args.instanceId)
                 intent.putExtra(TauriVpnService.IPV4_ADDR, args.ipv4Addr)
                 intent.putExtra(TauriVpnService.ROUTES, args.routes)
@@ -127,8 +128,7 @@ class VpnServicePlugin(private val activity: Activity) : Plugin(activity) {
     fun stopVpn(invoke: Invoke) {
         activity.runOnUiThread {
             println("stop vpn in plugin")
-            val intent = Intent(activity, TauriVpnService::class.java)
-                .setAction(TauriVpnService.ACTION_DETACH)
+            val intent = TauriVpnService.createIntent(activity, TauriVpnService.ACTION_DETACH)
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
                 activity.startForegroundService(intent)
             } else {
