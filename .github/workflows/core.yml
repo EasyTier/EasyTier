@@ -47,6 +47,7 @@ jobs:
       - name: Setup Frontend Environment
         uses: ./.github/actions/prepare-pnpm
         with:
+          token: ${{ github.token }}
           build-filter: './easytier-web/*'
 
       - name: Archive artifact

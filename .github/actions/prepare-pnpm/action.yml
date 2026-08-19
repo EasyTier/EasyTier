@@ -3,6 +3,9 @@ author: Luna
 description: 'Setup Node.js, pnpm, and install dependencies'
 
 inputs:
+  token:
+    description: 'GitHub token, used by setup-protoc action'
+    required: false
   build-filter:
     description: 'The filter argument for pnpm build (e.g. ./easytier-web/*)'
     required: false
@@ -11,6 +14,22 @@ inputs:
 runs:
   using: "composite"
   steps:
+    - uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        toolchain: 1.95
+        target: wasm32-unknown-unknown
+        cache: false
+        rustflags: ''
+
+    - uses: taiki-e/install-action@v2
+      with:
+        tool: wasm-pack
+
+    - uses: arduino/setup-protoc@v3
+      with:
+        version: '35.1'
+        repo-token: ${{ inputs.token }}
+
     - name: Setup Node.js
       uses: actions/setup-node@v5
       with:
@@ -45,4 +64,12 @@ runs:
         else
           echo "No build filter provided, building all packages"
           pnpm -r --workspace-concurrency=1 build
+        fi
+
+    - name: Bundle config generator with web frontend
+      shell: bash
+      run: |
+        if [ -f easytier-web/frontend/dist/index.html ] && [ -f easytier-web/config-generator/dist/index.html ]; then
+          mkdir -p easytier-web/frontend/dist/config-generator
+          cp -R easytier-web/config-generator/dist/. easytier-web/frontend/dist/config-generator/
         fi

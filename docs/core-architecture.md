@@ -217,7 +217,10 @@ are not independent owners of EasyTier peer state.
 
 Each protocol registration must provide a coherent client/server Adapter.
 Unavailable configured transports must be rejected during validation or
-protocol selection, rather than silently falling back to another transport.
+protocol selection in the standard runtime, rather than silently falling back
+to another transport. A compact compatibility Host may instead retain the
+desired value for management readback and omit it from normalized runtime
+state; it must not advertise or partially activate the unavailable transport.
 
 ### Connectivity
 
@@ -283,8 +286,9 @@ Adapters.
 
 Optional gateway capabilities are selected by cohesive Modules. Disabled
 implementations retain stable lifecycle calls and report unsupported
-configuration where a stable interface is required; they do not duplicate
-portable policy.
+configuration in the standard runtime. A compact compatibility Host may
+silently normalize those settings to no-ops while preserving the desired TOML
+model; disabled implementations do not duplicate portable policy.
 
 The instance-scoped `DataPlaneSession` composes the foundation operation broker
 under the same session lock as its resource and quota state. The broker owns
@@ -368,10 +372,12 @@ configuration, or connectivity state.
 
 ## Runtime configuration authority
 
-`TomlConfig` is an owned construction input. After startup, it is not a second
-mutable source of truth.
+`TomlConfig` is the authoritative desired configuration used for management
+readback and patch transactions. Compact Hosts keep unsupported accepted values
+there so controllers observe the configuration they submitted.
 
-The normalized core runtime store is authoritative for:
+The separately typed, normalized core runtime store is authoritative for live
+behavior:
 
 - peer feature flags and routing policy;
 - listeners and initial peers;
@@ -477,8 +483,9 @@ configuration, management, packet-plane, or test-support interfaces.
 14. Unknown protobuf fields in reflected route information survive forwarding
     and credential filtering.
 15. Feature selection is localized at cohesive Module/Adapter boundaries.
-16. Unsupported configured capabilities fail explicitly rather than changing
-    wire protocol or silently falling back.
+16. The standard runtime rejects unsupported configured capabilities. Compact
+    compatibility Hosts may preserve them as runtime no-ops, but never change
+    wire protocol, advertise them, or silently fall back to an unsafe mode.
 
 ## Validation
 

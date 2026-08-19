@@ -1,8 +1,40 @@
 //! Runtime implementation and lifecycle exports for a WASI core instance.
 
 use crate::{
-    config::toml::TomlConfig, connectivity::connector_host::HostConnectorEnvironmentSnapshot,
+    config::toml::TomlConfig,
+    connectivity::connector_host::HostConnectorEnvironmentSnapshot,
+    gateway::dhcp::{DhcpIpv4ApplyOutcome, DhcpIpv4Host},
+    instance::{CorePacketPlane, InstanceRuntimeHost},
 };
+
+struct WasiInstanceRuntimeHost;
+
+#[async_trait::async_trait]
+impl DhcpIpv4Host for WasiInstanceRuntimeHost {
+    fn take_interface_closed(&self) -> bool {
+        false
+    }
+
+    async fn apply_dhcp_ipv4(
+        &self,
+        _previous: Option<cidr::Ipv4Inet>,
+        next: Option<cidr::Ipv4Inet>,
+    ) -> DhcpIpv4ApplyOutcome {
+        DhcpIpv4ApplyOutcome::applied(next)
+    }
+}
+
+#[async_trait::async_trait]
+impl InstanceRuntimeHost for WasiInstanceRuntimeHost {
+    async fn prepare(
+        &self,
+        _packet_plane: std::sync::Arc<CorePacketPlane>,
+    ) -> anyhow::Result<Option<std::sync::Arc<dyn DhcpIpv4Host>>> {
+        Ok(Some(std::sync::Arc::new(WasiInstanceRuntimeHost)))
+    }
+
+    async fn shutdown(&self) {}
+}
 
 pub(super) type WasiCore = crate::instance::CoreInstance<
     crate::connectivity::connector_host::ConnectorHost<
@@ -63,6 +95,7 @@ pub(super) fn new_wasi_core_runtime(
         packet_sink,
     ));
     let mut adapters = CoreHostAdapters::new(host, dns, packet_sink, process_runtime);
+    adapters.instance_runtime = Arc::new(WasiInstanceRuntimeHost);
     adapters.events = Arc::new(WasiHostEventSink::new(event_sink));
     let core = CoreInstance::from_toml(config, adapters)?;
 
@@ -98,9 +131,17 @@ mod abi {
 
     #[cfg(feature = "proxy-smoltcp-stack")]
     mod data_plane;
+    #[cfg(feature = "management-rpc")]
+    mod rpc;
+    #[cfg(feature = "management")]
+    mod web_client;
 
     const MAX_CREATE_CONFIG_LEN: usize = 16 * 1024 * 1024;
     const MAX_GUEST_BUFFER_LEN: usize = MAX_CREATE_CONFIG_LEN;
+    #[cfg(feature = "management-rpc")]
+    const MAX_RPC_MESSAGE_LEN: usize = 16 * 1024 * 1024;
+    #[cfg(feature = "management-rpc")]
+    const MAX_RPC_OPERATIONS: usize = 256;
     const INVALID_HANDLE: i32 = -1;
     const INVALID_STATE: i32 = -2;
     const INVALID_INPUT: i32 = -3;
@@ -135,6 +176,8 @@ mod abi {
     struct WasiContext {
         factory: WasiInstanceFactory,
         instances: RefCell<BTreeMap<uuid::Uuid, Arc<WasiInstance>>>,
+        #[cfg(feature = "management")]
+        web_client: RefCell<Option<crate::wasi::web_client::WasiWebClientRuntime>>,
         abi: RefCell<WasiAbiState>,
     }
 
@@ -146,6 +189,8 @@ mod abi {
             Self {
                 factory,
                 instances: RefCell::new(BTreeMap::new()),
+                #[cfg(feature = "management")]
+                web_client: RefCell::new(None),
                 abi: RefCell::new(WasiAbiState::default()),
             }
         }
@@ -171,6 +216,8 @@ mod abi {
         domain: u64,
         core: WasiCoreRuntime,
         execution: Mutex<WasiExecution>,
+        #[cfg(feature = "management-rpc")]
+        rpc_operations: crate::rpc::operation::RpcOperationSession,
         _protected_tcp_port_leases: Vec<ProtectedTcpPortLease>,
     }
 
@@ -223,6 +270,19 @@ mod abi {
                     context.event_sink,
                 )?
             };
+            #[cfg(feature = "management-rpc")]
+            let rpc_operations = {
+                let registry = Arc::new(crate::rpc::service_registry::ServiceRegistry::new());
+                crate::management::register_bound_management_rpc(
+                    core.core().clone(),
+                    registry.as_ref(),
+                );
+                crate::rpc::operation::RpcOperationSession::new(
+                    registry,
+                    MAX_RPC_OPERATIONS,
+                    MAX_RPC_MESSAGE_LEN,
+                )
+            };
 
             Ok(Arc::new(WasiInstance {
                 instance_id,
@@ -235,6 +295,8 @@ mod abi {
                     start_task: None,
                     stop_task: None,
                 }),
+                #[cfg(feature = "management-rpc")]
+                rpc_operations,
                 _protected_tcp_port_leases: protected_tcp_ports,
             }))
         }
@@ -749,6 +811,8 @@ mod abi {
             return INVALID_STATE;
         };
         let domain = instance.domain;
+        #[cfg(feature = "management-rpc")]
+        instance.rpc_operations.discard_all();
         {
             let _domain = enter_domain(domain);
             drop(instance);

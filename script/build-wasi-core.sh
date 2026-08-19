@@ -10,7 +10,7 @@ cd "$repository_root"
 readonly target_dir="${CARGO_TARGET_DIR:-target}"
 readonly raw_artifact="${target_dir}/wasm32-wasip1/release/easytier_core.wasm"
 readonly artifact="${target_dir}/wasm32-wasip1/release/easytier_core_go_host.wasm"
-readonly core_features="proxy-smoltcp-stack,ring-crypto,wasi-crypto-offload"
+readonly core_features="management-rpc,proxy-smoltcp-stack,ring-crypto,wasi-crypto-offload"
 
 sha256_file() {
     if command -v sha256sum >/dev/null; then

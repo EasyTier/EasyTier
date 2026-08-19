@@ -1,9 +1,15 @@
 //! Static configuration schema plus the live runtime configuration store.
 
-#[cfg(feature = "management")]
+#[cfg(feature = "web-client")]
 pub mod api;
-#[cfg(feature = "management")]
+#[cfg(any(feature = "web-client", feature = "browser-config"))]
 pub mod api_input;
+#[cfg(all(
+    feature = "browser-config",
+    target_arch = "wasm32",
+    target_os = "unknown"
+))]
+mod browser;
 mod encryption;
 pub mod gateway;
 pub mod peers;

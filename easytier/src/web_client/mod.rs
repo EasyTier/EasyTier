@@ -3,6 +3,7 @@ use std::sync::Arc;
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
 use easytier_core::{
+    config::toml::ConfigLoader as _,
     connectivity::{manual::ManualTunnelConnector, protocol::raw::TunnelDialer},
     management::{ConfigServerEndpoint, WebClientConfig},
     socket::IpVersion,
@@ -10,18 +11,21 @@ use easytier_core::{
 };
 use url::Url;
 
+#[cfg(feature = "management")]
+use crate::{
+    common::os_info::collect_device_os_info, instance::config_storage::NativeConfigFileStorage,
+    rpc_service::logger::NativeLoggerControl,
+};
 use crate::{
     common::{
         MachineIdOptions, config::TomlConfigLoader, constants::EASYTIER_VERSION,
-        global_ctx::GlobalCtx, os_info::collect_device_os_info, resolve_machine_id,
+        global_ctx::GlobalCtx, resolve_machine_id,
     },
     instance::{
         composition::runtime_one_shot_manual_connector,
-        config_storage::NativeConfigFileStorage,
         factory::{NativeInstanceFactory, NativeInstanceManager},
         host::NativeInstanceHost,
     },
-    rpc_service::logger::NativeLoggerControl,
     tunnel::TunnelScheme,
 };
 
@@ -46,27 +50,50 @@ impl WebClient {
         S: ToString,
         H: ToString,
     {
-        Self {
-            inner: easytier_core::management::WebClient::new(
-                connector,
-                WebClientConfig {
-                    token: token.to_string(),
-                    machine_id,
-                    hostname: hostname.to_string(),
-                    device_os: collect_device_os_info(),
-                    easytier_version: EASYTIER_VERSION.to_owned(),
-                    secure_mode,
-                },
-                manager,
-                hooks.unwrap_or_else(|| Arc::new(DefaultHooks)),
-                Arc::new(NativeConfigFileStorage),
-                Arc::new(NativeLoggerControl),
-            ),
-        }
+        let config = WebClientConfig {
+            token: token.to_string(),
+            machine_id,
+            hostname: hostname.to_string(),
+            device_os: web_client_device_os_info(),
+            easytier_version: EASYTIER_VERSION.to_owned(),
+            secure_mode,
+        };
+        #[cfg(feature = "management")]
+        let inner = easytier_core::management::WebClient::new(
+            connector,
+            config,
+            manager,
+            hooks.unwrap_or_else(|| Arc::new(DefaultHooks)),
+            Arc::new(NativeConfigFileStorage),
+            Arc::new(NativeLoggerControl),
+        );
+        #[cfg(not(feature = "management"))]
+        let inner = easytier_core::management::WebClient::new(
+            connector,
+            config,
+            manager,
+            hooks.unwrap_or_else(|| Arc::new(DefaultHooks)),
+            Arc::new(easytier_core::management::UnsupportedConfigFileStorage),
+        );
+        Self { inner }
     }
 
     pub fn is_connected(&self) -> bool {
         self.inner.is_connected()
+    }
+}
+
+#[cfg(feature = "management")]
+fn web_client_device_os_info() -> easytier_proto::web::DeviceOsInfo {
+    collect_device_os_info()
+}
+
+#[cfg(not(feature = "management"))]
+fn web_client_device_os_info() -> easytier_proto::web::DeviceOsInfo {
+    easytier_proto::web::DeviceOsInfo {
+        os_type: std::env::consts::OS.to_owned(),
+        version: String::new(),
+        distribution: String::new(),
     }
 }
 
@@ -113,6 +140,7 @@ pub async fn run_web_client(
     let global_ctx = Arc::new(GlobalCtx::new(config.clone()));
     let mut flags = global_ctx.get_flags();
     flags.bind_device = false;
+    config.set_flags(flags.clone());
     global_ctx.set_flags(flags);
     let hostname =
         hostname.unwrap_or_else(|| gethostname::gethostname().to_string_lossy().to_string());

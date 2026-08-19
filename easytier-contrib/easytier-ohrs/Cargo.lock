@@ -1244,6 +1244,8 @@ dependencies = [
  "derive_builder",
  "easytier-proto",
  "futures",
+ "getrandom 0.2.16",
+ "getrandom 0.3.3",
  "guarden",
  "hmac",
  "http-body-util",
@@ -1277,6 +1279,7 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+ "wasm-bindgen",
  "webpki-roots 0.26.11",
  "wildmatch",
  "x25519-dalek",
@@ -1288,10 +1291,15 @@ dependencies = [
 name = "easytier-ohrs"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "base64 0.22.1",
+ "bytes",
  "easytier",
+ "easytier-core",
+ "easytier-proto",
  "flate2",
+ "futures",
  "gethostname 1.1.0",
  "ipnet",
  "napi-build-ohos",

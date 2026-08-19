@@ -1,20 +1,18 @@
 use std::{
-    collections::BinaryHeap,
+    collections::BTreeMap,
     hash::{Hash, Hasher},
     sync::Arc,
 };
 
-use crossbeam::atomic::AtomicCell;
-use dashmap::DashMap;
+use parking_lot::RwLock;
 use tokio::task::JoinSet;
 
 use crate::{
     config::PeerId,
     proto::{
         peer_rpc::{
-            DirectConnectedPeerInfo, GetGlobalPeerMapRequest, GetGlobalPeerMapResponse,
-            GlobalPeerMap, PeerCenterRpc, PeerInfoForGlobalMap, ReportPeersRequest,
-            ReportPeersResponse,
+            GetGlobalPeerMapRequest, GetGlobalPeerMapResponse, PeerCenterRpc, PeerInfoForGlobalMap,
+            ReportPeersRequest, ReportPeersResponse,
         },
         rpc_types::{self, controller::BaseController},
     },
@@ -22,23 +20,21 @@ use crate::{
 
 use super::Digest;
 
-#[derive(Debug, Clone, PartialEq, PartialOrd, Ord, Eq, Hash)]
-pub(crate) struct SrcDstPeerPair {
-    src: PeerId,
-    dst: PeerId,
-}
-
 #[derive(Debug, Clone)]
-pub(crate) struct PeerCenterInfoEntry {
-    info: DirectConnectedPeerInfo,
+struct PeerCenterInfoEntry {
+    peer_info: PeerInfoForGlobalMap,
     update_time: std::time::Instant,
 }
 
 #[derive(Debug, Default)]
+struct PeerCenterServerState {
+    peer_infos: BTreeMap<PeerId, PeerCenterInfoEntry>,
+    digest: Digest,
+}
+
+#[derive(Debug, Default)]
 struct PeerCenterServerData {
-    global_peer_map: DashMap<SrcDstPeerPair, PeerCenterInfoEntry>,
-    peer_report_time: DashMap<PeerId, std::time::Instant>,
-    digest: AtomicCell<Digest>,
+    state: RwLock<PeerCenterServerState>,
 }
 
 #[derive(Clone, Debug)]
@@ -69,24 +65,27 @@ impl PeerCenterServer {
     }
 
     async fn clean_outdated_peer_data(data: &PeerCenterServerData) {
-        data.peer_report_time.retain(|_, v| {
-            std::time::Instant::now().duration_since(*v) < std::time::Duration::from_secs(180)
-        });
-        data.global_peer_map.retain(|_, v| {
-            std::time::Instant::now().duration_since(v.update_time)
-                < std::time::Duration::from_secs(180)
-        });
+        let mut state = data.state.write();
+        let previous_len = state.peer_infos.len();
+        state
+            .peer_infos
+            .retain(|_, entry| entry.update_time.elapsed() < std::time::Duration::from_secs(180));
+        if state.peer_infos.len() != previous_len {
+            state.digest = Self::calc_global_digest_data(&state.peer_infos);
+        }
     }
 
-    fn calc_global_digest_data(data: &PeerCenterServerData) -> Digest {
+    fn calc_global_digest_data(peer_infos: &BTreeMap<PeerId, PeerCenterInfoEntry>) -> Digest {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        data.global_peer_map
-            .iter()
-            .map(|v| v.key().clone())
-            .collect::<BinaryHeap<_>>()
-            .into_sorted_vec()
-            .into_iter()
-            .for_each(|v| v.hash(&mut hasher));
+        peer_infos.len().hash(&mut hasher);
+        for (src_peer_id, entry) in peer_infos {
+            src_peer_id.hash(&mut hasher);
+            entry.peer_info.direct_peers.len().hash(&mut hasher);
+            for (dst_peer_id, peer_info) in &entry.peer_info.direct_peers {
+                dst_peer_id.hash(&mut hasher);
+                peer_info.latency_ms.hash(&mut hasher);
+            }
+        }
         hasher.finish()
     }
 }
@@ -107,23 +106,15 @@ impl PeerCenterRpc for PeerCenterServer {
         tracing::debug!("receive report_peers");
 
         let data = &self.data;
-        data.peer_report_time
-            .insert(my_peer_id, std::time::Instant::now());
-
-        for (peer_id, peer_info) in peers.direct_peers {
-            let pair = SrcDstPeerPair {
-                src: my_peer_id,
-                dst: peer_id,
-            };
-            let entry = PeerCenterInfoEntry {
-                info: peer_info,
+        let mut state = data.state.write();
+        state.peer_infos.insert(
+            my_peer_id,
+            PeerCenterInfoEntry {
+                peer_info: peers,
                 update_time: std::time::Instant::now(),
-            };
-            data.global_peer_map.insert(pair, entry);
-        }
-
-        data.digest
-            .store(PeerCenterServer::calc_global_digest_data(data));
+            },
+        );
+        state.digest = PeerCenterServer::calc_global_digest_data(&state.peer_infos);
 
         Ok(ReportPeersResponse::default())
     }
@@ -136,27 +127,20 @@ impl PeerCenterRpc for PeerCenterServer {
     ) -> Result<GetGlobalPeerMapResponse, rpc_types::error::Error> {
         let digest = req.digest;
 
-        let data = &self.data;
-        if digest == data.digest.load() && digest != 0 {
+        let state = self.data.state.read();
+        if digest == state.digest && digest != 0 {
             return Ok(GetGlobalPeerMapResponse::default());
         }
 
-        let mut global_peer_map = GlobalPeerMap::default();
-        for item in data.global_peer_map.iter() {
-            let (pair, entry) = item.pair();
-            global_peer_map
-                .map
-                .entry(pair.src)
-                .or_insert_with(|| PeerInfoForGlobalMap {
-                    direct_peers: Default::default(),
-                })
-                .direct_peers
-                .insert(pair.dst, entry.info);
-        }
+        let global_peer_map = state
+            .peer_infos
+            .iter()
+            .map(|(peer_id, entry)| (*peer_id, entry.peer_info.clone()))
+            .collect();
 
         Ok(GetGlobalPeerMapResponse {
-            global_peer_map: global_peer_map.map,
-            digest: Some(data.digest.load()),
+            global_peer_map,
+            digest: Some(state.digest),
         })
     }
 }
@@ -164,6 +148,7 @@ impl PeerCenterRpc for PeerCenterServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::proto::peer_rpc::DirectConnectedPeerInfo;
 
     #[tokio::test]
     async fn server_clones_share_instance_data() {
@@ -235,5 +220,165 @@ mod tests {
             .await
             .unwrap();
         assert!(resp_b.global_peer_map.is_empty());
+    }
+
+    #[tokio::test]
+    async fn peer_report_replaces_removed_neighbors() {
+        let server = PeerCenterServer::new();
+        let mut peers = PeerInfoForGlobalMap::default();
+        peers
+            .direct_peers
+            .insert(100, DirectConnectedPeerInfo { latency_ms: 3 });
+        server
+            .report_peers(
+                BaseController::default(),
+                ReportPeersRequest {
+                    my_peer_id: 99,
+                    peer_infos: Some(peers),
+                },
+            )
+            .await
+            .unwrap();
+        let initial = server
+            .get_global_peer_map(
+                BaseController::default(),
+                GetGlobalPeerMapRequest { digest: 0 },
+            )
+            .await
+            .unwrap();
+
+        server
+            .report_peers(
+                BaseController::default(),
+                ReportPeersRequest {
+                    my_peer_id: 99,
+                    peer_infos: Some(PeerInfoForGlobalMap::default()),
+                },
+            )
+            .await
+            .unwrap();
+        let updated = server
+            .get_global_peer_map(
+                BaseController::default(),
+                GetGlobalPeerMapRequest {
+                    digest: initial.digest.unwrap(),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            updated.digest.is_some(),
+            "removed peer did not change digest"
+        );
+        assert!(
+            updated
+                .global_peer_map
+                .get(&99)
+                .is_none_or(|peers| peers.direct_peers.is_empty())
+        );
+    }
+
+    #[tokio::test]
+    async fn peer_latency_change_invalidates_digest() {
+        let server = PeerCenterServer::new();
+        let mut peers = PeerInfoForGlobalMap::default();
+        peers
+            .direct_peers
+            .insert(100, DirectConnectedPeerInfo { latency_ms: 3 });
+        server
+            .report_peers(
+                BaseController::default(),
+                ReportPeersRequest {
+                    my_peer_id: 99,
+                    peer_infos: Some(peers),
+                },
+            )
+            .await
+            .unwrap();
+        let initial = server
+            .get_global_peer_map(
+                BaseController::default(),
+                GetGlobalPeerMapRequest { digest: 0 },
+            )
+            .await
+            .unwrap();
+
+        let mut peers = PeerInfoForGlobalMap::default();
+        peers
+            .direct_peers
+            .insert(100, DirectConnectedPeerInfo { latency_ms: 30 });
+        server
+            .report_peers(
+                BaseController::default(),
+                ReportPeersRequest {
+                    my_peer_id: 99,
+                    peer_infos: Some(peers),
+                },
+            )
+            .await
+            .unwrap();
+        let updated = server
+            .get_global_peer_map(
+                BaseController::default(),
+                GetGlobalPeerMapRequest {
+                    digest: initial.digest.unwrap(),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            updated.global_peer_map[&99].direct_peers[&100].latency_ms,
+            30
+        );
+    }
+
+    #[tokio::test]
+    async fn expired_peer_report_invalidates_digest() {
+        let server = PeerCenterServer::new();
+        let mut peers = PeerInfoForGlobalMap::default();
+        peers
+            .direct_peers
+            .insert(100, DirectConnectedPeerInfo { latency_ms: 3 });
+        server
+            .report_peers(
+                BaseController::default(),
+                ReportPeersRequest {
+                    my_peer_id: 99,
+                    peer_infos: Some(peers),
+                },
+            )
+            .await
+            .unwrap();
+        let initial = server
+            .get_global_peer_map(
+                BaseController::default(),
+                GetGlobalPeerMapRequest { digest: 0 },
+            )
+            .await
+            .unwrap();
+        {
+            let mut state = server.data.state.write();
+            state.peer_infos.get_mut(&99).unwrap().update_time =
+                std::time::Instant::now() - std::time::Duration::from_secs(181);
+        }
+
+        PeerCenterServer::clean_outdated_peer_data(&server.data).await;
+        let updated = server
+            .get_global_peer_map(
+                BaseController::default(),
+                GetGlobalPeerMapRequest {
+                    digest: initial.digest.unwrap(),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            updated.digest.is_some(),
+            "expired peer did not change digest"
+        );
+        assert!(!updated.global_peer_map.contains_key(&99));
     }
 }

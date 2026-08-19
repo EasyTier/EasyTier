@@ -37,6 +37,7 @@ macro_rules! ohrs_log_debug {
 mod config;
 mod exports;
 mod kernel_bridge;
+mod nearby_management;
 mod platform;
 mod runtime;
 
@@ -57,7 +58,7 @@ use easytier::common::config::NetworkConfigExt;
 use easytier::common::constants::EASYTIER_VERSION;
 use easytier::common::{
     MachineIdOptions,
-    config::{ConfigFileControl, ConfigLoader, TomlConfigLoader},
+    config::{ConfigLoader, TomlConfigLoader},
 };
 use easytier::instance::factory::{NativeInstanceManager, native_instance_manager_with_runtime};
 use easytier::proto::api::manage::NetworkConfig;
@@ -68,6 +69,7 @@ use kernel_bridge::{
     stop_local_socket_server as stop_local_socket_server_inner,
 };
 use napi_derive_ohos::napi;
+use napi_ohos::bindgen_prelude::Uint8Array;
 use runtime::state::runtime_state::{RuntimeAggregateState, RuntimeInstanceState};
 use std::collections::{HashMap, HashSet};
 use std::format;
@@ -380,6 +382,7 @@ fn stop_runtime_inner() -> bool {
             && ok;
     }
     maybe_stop_local_socket_server();
+    let _ = nearby_management::stop_runtime_management_server();
     ok
 }
 
@@ -730,7 +733,12 @@ pub(crate) fn run_network_instance_from_json(cfg_json: &str) -> bool {
         return false;
     }
 
-    match INSTANCE_MANAGER.run_network_instance(cfg, ConfigFileControl::STATIC_CONFIG) {
+    let config_control = nearby_management::runtime_management_config_control(inst_id);
+    if !nearby_management::ensure_runtime_management_server_started() {
+        return false;
+    }
+
+    match INSTANCE_MANAGER.run_network_instance(cfg, config_control) {
         Ok(_) => {
             cache_runtime_config_snapshot(inst_id.to_string(), inst_id.to_string(), config);
             true
@@ -957,6 +965,92 @@ pub fn parse_network_config(cfg_json: String) -> bool {
 #[napi]
 pub fn run_network_instance(cfg_json: String) -> bool {
     run_network_instance_from_json(&cfg_json)
+}
+
+/// Starts the management server in the VPN Extension process even when no
+/// network instance is active, allowing a nearby controller to deploy a
+/// one-shot config through the canonical Core RPC surface.
+#[napi]
+pub fn start_nearby_management_host() -> bool {
+    nearby_management::ensure_runtime_management_server_started()
+}
+
+#[napi]
+pub fn stop_nearby_management_host() -> bool {
+    nearby_management::stop_runtime_management_server()
+}
+
+#[napi]
+pub fn drain_nearby_host_commands() -> Vec<nearby_management::NearbyHostCommand> {
+    nearby_management::drain_nearby_host_commands()
+}
+
+#[napi]
+pub fn complete_nearby_host_command(
+    request_id: String,
+    success: bool,
+    error: Option<String>,
+) -> bool {
+    nearby_management::complete_nearby_host_command(request_id, success, error)
+}
+
+/// Returns 1 for canonical Core RPC packets, 2 for the OHOS-private settings
+/// envelope, and 0 for malformed or unsupported data.
+#[napi]
+pub fn nearby_management_packet_kind(packet: Uint8Array) -> i32 {
+    nearby_management::nearby_management_packet_kind(packet)
+}
+
+#[napi]
+pub fn encode_nearby_ohos_packet(envelope_json: String) -> Option<Uint8Array> {
+    nearby_management::encode_nearby_ohos_packet(envelope_json)
+}
+
+#[napi]
+pub fn decode_nearby_ohos_packet(packet: Uint8Array) -> Option<String> {
+    nearby_management::decode_nearby_ohos_packet(packet)
+}
+
+/// Opens one Core RPC endpoint for a HarmonyOS collaboration session.
+///
+/// The Harmony layer transports the returned native packets verbatim with
+/// `abilityConnectionManager.sendData`; all RPC framing stays inside Core.
+#[napi]
+pub fn open_nearby_management_session(session_key: String, host: bool) -> bool {
+    nearby_management::open_nearby_management_session(session_key, host)
+}
+
+#[napi]
+pub fn close_nearby_management_session(session_key: String) -> bool {
+    nearby_management::close_nearby_management_session(session_key)
+}
+
+#[napi]
+pub fn push_nearby_management_packet(session_key: String, packet: Uint8Array) -> bool {
+    nearby_management::push_nearby_management_packet(session_key, packet)
+}
+
+#[napi]
+pub fn drain_nearby_management_packets(session_key: String) -> Vec<Uint8Array> {
+    nearby_management::drain_nearby_management_packets(session_key)
+}
+
+#[napi]
+pub async fn call_nearby_management_json_rpc(
+    session_key: String,
+    service_name: String,
+    method_name: String,
+    domain_name: Option<String>,
+    payload_json: String,
+) -> String {
+    nearby_management::call_nearby_management_json_rpc(
+        session_key,
+        service_name,
+        method_name,
+        domain_name,
+        payload_json,
+    )
+    .await
 }
 
 #[napi]

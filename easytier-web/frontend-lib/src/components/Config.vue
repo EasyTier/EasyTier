@@ -15,6 +15,7 @@ import AclManager from './acl/AclManager.vue'
 import UrlListInput from './UrlListInput.vue'
 
 const props = defineProps<{
+  actionLabel?: string
   configInvalid?: boolean
   hostname?: string
 }>()
@@ -235,7 +236,7 @@ const instanceRecvBpsLimitInput = computed<string>({
                 <div class="flex flex-col gap-2 basis-5/12 grow">
                   <label for="network_secret">{{ t('network_secret') }}</label>
                   <Password id="network_secret" v-model="curNetwork.network_secret"
-                    aria-describedby="network_secret-help" toggleMask :feedback="false" />
+                    aria-describedby="network_secret-help" toggleMask :feedback="false" fluid />
                 </div>
               </div>
 
@@ -539,7 +540,7 @@ const instanceRecvBpsLimitInput = computed<string>({
           </Panel>
 
           <div class="flex pt-6 justify-center">
-            <Button :label="t('run_network')" icon="pi pi-arrow-right" icon-pos="right" :disabled="configInvalid"
+            <Button :label="actionLabel || t('run_network')" icon="pi pi-arrow-right" icon-pos="right" :disabled="configInvalid"
               @click="$emit('runNetwork', curNetwork)" />
           </div>
         </div>

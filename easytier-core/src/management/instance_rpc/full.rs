@@ -2,9 +2,7 @@ use std::{sync::Arc, time::Duration};
 
 use easytier_proto::{
     api::{
-        config::{
-            ConfigRpc, GetConfigRequest, GetConfigResponse, PatchConfigRequest, PatchConfigResponse,
-        },
+        config::ConfigRpc,
         instance::{
             AclManageRpc, ConnectorManageRpc, CredentialInfo, CredentialManageRpc,
             GenerateCredentialRequest, GenerateCredentialResponse, GetAclStatsRequest,
@@ -14,8 +12,8 @@ use easytier_proto::{
             ListCredentialsResponse, ListMappedListenerRequest, ListMappedListenerResponse,
             ListPortForwardRequest, ListPortForwardResponse, MappedListener,
             MappedListenerManageRpc, MetricSnapshot, PeerManageRpc, PortForwardManageRpc,
-            RevokeCredentialRequest, RevokeCredentialResponse, StatsRpc, VpnPortalInfo,
-            VpnPortalRpc,
+            RevokeCredentialRequest, RevokeCredentialResponse, StatsRpc, UpsertCredentialRequest,
+            UpsertCredentialResponse, VpnPortalInfo, VpnPortalRpc,
         },
     },
     common::PortForwardConfigPb,
@@ -27,19 +25,18 @@ use easytier_proto::{
 };
 
 use crate::{
-    config::{api::network_config_from_toml, toml::ConfigLoader as _},
+    config::toml::ConfigLoader as _,
     instance::{
         CoreInstance, CoreInstanceHost,
         manager::{InstanceFactory, InstanceManager},
     },
-    peers::credential_manager::{CredentialCreateOptions, CredentialInfo as CoreCredentialInfo},
+    peers::credential_manager::{
+        CredentialCreateOptions, CredentialInfo as CoreCredentialInfo, CredentialUpsertOptions,
+    },
 };
 
 use super::InstanceManagementRpc;
-use crate::management::{
-    full::{apply_config_patch, packet_proxy},
-    resolve_instance,
-};
+use crate::management::{full::packet_proxy, resolve_instance};
 
 /// Dispatches the JSON form of an Instance-targeted management RPC without
 /// introducing a second, Host-owned set of service implementations.
@@ -110,6 +107,7 @@ fn credential_info_to_api(info: CoreCredentialInfo) -> CredentialInfo {
         expiry_unix: info.expiry_unix,
         allowed_proxy_cidrs: info.allowed_proxy_cidrs,
         reusable: info.reusable,
+        public_key_fingerprint: info.public_key_fingerprint,
     }
 }
 
@@ -303,7 +301,27 @@ where
         Ok(GenerateCredentialResponse {
             credential_id: generated.credential_id,
             credential_secret: generated.secret,
+            expiry_unix: generated.expiry_unix,
         })
+    }
+
+    async fn upsert_credential(
+        &self,
+        _: BaseController,
+        request: UpsertCredentialRequest,
+    ) -> rpc_types::error::Result<UpsertCredentialResponse> {
+        let changed = self
+            .instance(request.instance.as_ref())?
+            .upsert_credential(CredentialUpsertOptions {
+                credential_id: request.credential_id,
+                credential_secret: request.credential_secret,
+                groups: request.groups,
+                allow_relay: request.allow_relay,
+                allowed_proxy_cidrs: request.allowed_proxy_cidrs,
+                expiry_unix: request.expiry_unix,
+                reusable: request.reusable.unwrap_or(true),
+            })?;
+        Ok(UpsertCredentialResponse { changed })
     }
 
     async fn revoke_credential(
@@ -347,7 +365,7 @@ where
         _: BaseController,
         _: GetGlobalPeerMapRequest,
     ) -> rpc_types::error::Result<GetGlobalPeerMapResponse> {
-        let instance = resolve_instance(&self.manager, None).map_err(|error| {
+        let instance = resolve_instance(self.manager(), None).map_err(|error| {
             if error.to_string().contains("please specify the instance ID") {
                 anyhow::anyhow!(
                     "PeerCenter management RPC cannot select an instance automatically when \
@@ -367,40 +385,5 @@ where
         _: ReportPeersRequest,
     ) -> rpc_types::error::Result<ReportPeersResponse> {
         Err(anyhow::anyhow!("not implemented for management API").into())
-    }
-}
-
-#[async_trait::async_trait]
-impl<F, H> ConfigRpc for InstanceManagementRpc<F>
-where
-    F: InstanceFactory<Instance = CoreInstance<H>>,
-    H: CoreInstanceHost,
-{
-    type Controller = BaseController;
-
-    async fn patch_config(
-        &self,
-        _: BaseController,
-        request: PatchConfigRequest,
-    ) -> rpc_types::error::Result<PatchConfigResponse> {
-        let instance = self.instance(request.instance.as_ref())?;
-        if let Some(patch) = request.patch {
-            apply_config_patch(&instance, patch).await?;
-        }
-        Ok(PatchConfigResponse::default())
-    }
-
-    async fn get_config(
-        &self,
-        _: BaseController,
-        request: GetConfigRequest,
-    ) -> rpc_types::error::Result<GetConfigResponse> {
-        let config = self
-            .instance(request.instance.as_ref())?
-            .toml_config()
-            .ok_or_else(|| anyhow::anyhow!("shared TOML configuration is not available"))?;
-        Ok(GetConfigResponse {
-            config: Some(network_config_from_toml(&config)),
-        })
     }
 }

@@ -80,6 +80,7 @@ message GetConfigRequest {
 
 message GetConfigResponse {
   api.manage.NetworkConfig config = 1;
+  string toml_config = 2;
 }
 
 service ConfigRpc {

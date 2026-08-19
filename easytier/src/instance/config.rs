@@ -44,11 +44,42 @@ pub(crate) fn runtime_core_host_config() -> CoreInstanceHostConfig {
             all(target_os = "macos", feature = "macos-ne"),
             target_env = "ohos"
         ))),
-        public_ipv6_provider_supported: cfg!(target_os = "linux"),
+        public_ipv6_provider_supported: cfg!(all(
+            target_os = "linux",
+            feature = "public-ipv6-provider"
+        )),
         gateway_enabled: cfg!(feature = "socks5"),
+        proxy_enabled: cfg!(any(feature = "kcp", feature = "quic")),
+        vpn_portal_enabled: cfg!(feature = "wireguard"),
+        magic_dns_enabled: cfg!(feature = "magic-dns"),
+        kcp_enabled: cfg!(feature = "kcp"),
+        quic_enabled: cfg!(feature = "quic"),
+        udp_broadcast_enabled: cfg!(all(target_os = "windows", feature = "tun")),
+        upnp_enabled: cfg!(feature = "upnp"),
+        tcp_hole_punching_enabled: cfg!(feature = "tcp-hole-punch"),
+        ignore_unsupported_config: false,
         easytier_version: EASYTIER_VERSION.to_owned(),
         endpoint_protocols: IpScheme::VARIANTS.iter().map(ToString::to_string).collect(),
     }
+}
+
+pub(crate) fn compact_runtime_core_host_config() -> CoreInstanceHostConfig {
+    let mut config = runtime_core_host_config();
+    config.force_exit_node = false;
+    config.host_routing.local_exit_node_fallback = false;
+    config.public_ipv6_provider_supported = false;
+    config.gateway_enabled = false;
+    config.proxy_enabled = false;
+    config.vpn_portal_enabled = false;
+    config.magic_dns_enabled = false;
+    config.kcp_enabled = false;
+    config.quic_enabled = false;
+    config.udp_broadcast_enabled = false;
+    config.upnp_enabled = false;
+    config.tcp_hole_punching_enabled = false;
+    config.ignore_unsupported_config = true;
+    config.endpoint_protocols = vec!["tcp".to_owned(), "udp".to_owned()];
+    config
 }
 
 pub(crate) fn runtime_peer_credential_storage(
@@ -71,6 +102,9 @@ pub(crate) fn test_core_instance_config(
 
     let config = TomlConfig::new_from_str(&global_ctx.config.dump())
         .expect("test configuration should round-trip through TOML");
+    config.set_ipv4(global_ctx.get_ipv4());
+    config.set_ipv6(global_ctx.get_ipv6());
+    config.set_flags(global_ctx.get_flags());
     let mut host = runtime_core_host_config();
     let hostname = global_ctx.get_hostname();
     host.hostname_fallback = (!hostname.is_empty()).then_some(hostname);
@@ -113,7 +147,7 @@ mod tests {
         assert_eq!(config.smoltcp_available, cfg!(feature = "smoltcp"));
         assert_eq!(
             config.public_ipv6_provider_supported,
-            cfg!(target_os = "linux")
+            cfg!(all(target_os = "linux", feature = "public-ipv6-provider"))
         );
         assert_eq!(config.easytier_version, EASYTIER_VERSION);
     }
