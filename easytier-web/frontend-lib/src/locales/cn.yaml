@@ -61,6 +61,11 @@ logging_level_trace: 跟踪
 logging_level_off: 关闭
 logging_open_dir: 打开日志目录
 logging_copy_dir: 复制日志路径
+vpn_tile_no_network: 没有已配置的网络
+vpn_tile_no_network_description: 请先在 EasyTier 中配置网络，再使用 VPN 快捷磁贴。
+vpn_tile_started: VPN 网络已启动
+vpn_tile_stopped: VPN 网络已停止
+vpn_tile_action_failed: 'VPN 磁贴操作失败：{error}'
 disable_auto_launch: 关闭开机自启
 enable_auto_launch: 开启开机自启
 hide_dock_icon: 隐藏 Dock 图标

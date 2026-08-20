@@ -61,6 +61,11 @@ logging_level_trace: Trace
 logging_level_off: Off
 logging_open_dir: Open Log Directory
 logging_copy_dir: Copy Log Path
+vpn_tile_no_network: No configured network
+vpn_tile_no_network_description: Configure a network in EasyTier before using the VPN tile.
+vpn_tile_started: VPN network started
+vpn_tile_stopped: VPN network stopped
+vpn_tile_action_failed: 'VPN tile action failed: {error}'
 disable_auto_launch: Disable Launch on Reboot
 enable_auto_launch: Enable Launch on Reboot
 hide_dock_icon: Hide Dock Icon

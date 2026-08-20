@@ -40,6 +40,7 @@ class TauriVpnService : VpnService() {
         var event_data = JSObject()
         event_data.put("fd", vpnInterface.fd)
         triggerCallback("vpn_service_start", event_data)
+        EasyTierVpnTileService.requestStateUpdate(this)
 
         return START_STICKY
     }
@@ -55,6 +56,7 @@ class TauriVpnService : VpnService() {
         super.onDestroy()
         disconnect()
         self = null
+        EasyTierVpnTileService.requestStateUpdate(this)
     }
 
     override fun onRevoke() {
@@ -62,6 +64,7 @@ class TauriVpnService : VpnService() {
         super.onRevoke()
         disconnect()
         self = null
+        EasyTierVpnTileService.requestStateUpdate(this)
     }
 
     private fun disconnect() {

@@ -8,7 +8,7 @@
     "dev": "pnpm --dir ../easytier-web/frontend-lib build && vite",
     "build": "pnpm --dir ../easytier-web/frontend-lib build && vue-tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test:mobile-vpn": "vitest run src/composables/mobile_vpn.test.ts",
+    "test:mobile-vpn": "vitest run src/composables/mobile_vpn*.test.ts",
     "tauri": "tauri",
     "lint": "eslint . --ignore-pattern src-tauri",
     "lint:fix": "eslint . --ignore-pattern src-tauri --fix"
