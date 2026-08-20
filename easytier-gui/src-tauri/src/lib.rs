@@ -1271,12 +1271,24 @@ mod service {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    fn service_environment() -> Option<Vec<(String, String)>> {
+        // System LaunchDaemons run as root but launchd does not provide HOME.
+        Some(vec![("HOME".to_string(), "/var/root".to_string())])
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn service_environment() -> Option<Vec<(String, String)>> {
+        None
+    }
+
     pub fn install(opts: ServiceOptions) -> anyhow::Result<()> {
         let service = easytier::service_manager::Service::new(env!("CARGO_PKG_NAME").to_string())?;
         let options = easytier::service_manager::ServiceInstallOptions {
             program: super::get_exe_path().into(),
             args: opts.to_args_vec(),
             work_directory: std::env::current_dir()?,
+            environment: service_environment(),
             disable_autostart: false,
             description: Some("EasyTier Gui Service".to_string()),
             display_name: Some("EasyTier Gui Service".to_string()),
@@ -1311,6 +1323,21 @@ mod service {
     pub fn status() -> anyhow::Result<easytier::service_manager::ServiceStatus> {
         let service = easytier::service_manager::Service::new(env!("CARGO_PKG_NAME").to_string())?;
         service.status()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn service_environment_matches_platform() {
+            #[cfg(target_os = "macos")]
+            assert_eq!(
+                super::service_environment(),
+                Some(vec![("HOME".to_string(), "/var/root".to_string())])
+            );
+
+            #[cfg(not(target_os = "macos"))]
+            assert_eq!(super::service_environment(), None);
+        }
     }
 }
 
