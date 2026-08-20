@@ -1,10 +1,15 @@
 package com.plugin.vpnservice
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Intent
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.os.Bundle
+import android.content.pm.ServiceInfo
+import androidx.core.app.NotificationCompat
 import java.net.InetAddress
 import java.util.Arrays
 
@@ -23,12 +28,16 @@ class TauriVpnService : VpnService() {
         const val DNS = "DNS"
         const val DISALLOWED_APPLICATIONS = "DISALLOWED_APPLICATIONS"
         const val MTU = "MTU"
+
+        private const val NOTIFICATION_CHANNEL_ID = "easytier_vpn_channel"
+        private const val NOTIFICATION_ID = 1356
     }
 
     private lateinit var vpnInterface: ParcelFileDescriptor
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         println("vpn on start command ${intent?.getExtras()} $intent")
+        startVpnForegroundService()
         var args = intent?.getExtras()
         ipv4Addr = args?.getString(IPV4_ADDR)
         routes = args?.getStringArray(ROUTES) ?: emptyArray()
@@ -53,18 +62,20 @@ class TauriVpnService : VpnService() {
 
     override fun onDestroy() {
         println("vpn on destroy")
-        super.onDestroy()
         disconnect()
+        stopForeground(STOP_FOREGROUND_REMOVE)
         self = null
         EasyTierVpnTileService.requestStateUpdate(this)
+        super.onDestroy()
     }
 
     override fun onRevoke() {
         println("vpn on revoke")
-        super.onRevoke()
         disconnect()
+        stopForeground(STOP_FOREGROUND_REMOVE)
         self = null
         EasyTierVpnTileService.requestStateUpdate(this)
+        super.onRevoke()
     }
 
     private fun disconnect() {
@@ -79,6 +90,53 @@ class TauriVpnService : VpnService() {
         ipv4Addr = null
         routes = emptyArray()
         dns = null
+    }
+
+    private fun startVpnForegroundService() {
+        createNotificationChannel()
+
+        val launchIntent = packageManager.getLaunchIntentForPackage(packageName)?.apply {
+            addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        }
+        val contentIntent = launchIntent?.let {
+            PendingIntent.getActivity(
+                this,
+                0,
+                it,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+        }
+        val notification = NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_menu_manage)
+            .setContentTitle("EasyTier VPN is running")
+            .setContentText("VPN connection is active")
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+            .apply { contentIntent?.let(::setContentIntent) }
+            .build()
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
+    }
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                NOTIFICATION_CHANNEL_ID,
+                "EasyTier VPN",
+                NotificationManager.IMPORTANCE_LOW,
+            )
+            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+        }
     }
 
     private fun createVpnInterface(args: Bundle?): ParcelFileDescriptor {
