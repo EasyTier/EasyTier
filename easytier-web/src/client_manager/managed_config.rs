@@ -422,7 +422,9 @@ pub(super) fn desired_web_source_instance_ids(
 ) -> HashSet<String> {
     local_configs
         .iter()
-        .filter(|cfg| cfg.get_runtime_network_config_source() == ConfigSource::Web)
+        .filter(|cfg| {
+            !cfg.disabled && cfg.get_runtime_network_config_source() == ConfigSource::Web
+        })
         .map(|cfg| cfg.network_instance_id.clone())
         .collect()
 }
@@ -1013,6 +1015,55 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(updated.get_network_config_source(), ConfigSource::Web);
+    }
+
+    #[tokio::test]
+    async fn disabled_web_configs_are_not_auto_run() {
+        let db = crate::db::Db::memory_db().await;
+        let user_id = db.auto_create_user("web-user-disabled").await.unwrap().id;
+        let machine_id = uuid::Uuid::new_v4();
+        let enabled_id = uuid::Uuid::new_v4();
+        let disabled_id = uuid::Uuid::new_v4();
+
+        for inst_id in [enabled_id, disabled_id] {
+            assert!(
+                db.insert_or_update_web_network_config(
+                    (user_id, machine_id),
+                    inst_id,
+                    NetworkConfig::default(),
+                )
+                .await
+                .unwrap()
+            );
+        }
+        db.update_network_config_state((user_id, machine_id), disabled_id, true)
+            .await
+            .unwrap();
+        assert!(
+            db.insert_or_update_web_network_config(
+                (user_id, machine_id),
+                disabled_id,
+                NetworkConfig::default(),
+            )
+            .await
+            .unwrap()
+        );
+
+        let configs = db
+            .list_network_configs((user_id, machine_id), ListNetworkProps::All)
+            .await
+            .unwrap();
+        let desired = desired_web_source_instance_ids(&configs);
+
+        assert!(
+            configs
+                .iter()
+                .find(|cfg| cfg.network_instance_id == disabled_id.to_string())
+                .unwrap()
+                .disabled
+        );
+        assert!(desired.contains(&enabled_id.to_string()));
+        assert!(!desired.contains(&disabled_id.to_string()));
     }
 
     #[test]
