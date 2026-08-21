@@ -148,7 +148,7 @@ where
             return Ok(());
         }
         self.tasks.lock().unwrap().spawn(reap_joinset_background(
-            self.tasks.clone(),
+            Arc::downgrade(&self.tasks),
             "port-forward adapter",
         ));
         self.start_udp_reaper();
@@ -246,7 +246,7 @@ where
         let data_plane = self.data_plane.clone();
         let connections = Arc::new(std::sync::Mutex::new(JoinSet::new()));
         connections.lock().unwrap().spawn(reap_joinset_background(
-            connections.clone(),
+            Arc::downgrade(&connections),
             "TCP port-forward connections",
         ));
         self.tasks.lock().unwrap().spawn(async move {
