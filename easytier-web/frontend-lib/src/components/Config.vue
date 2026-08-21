@@ -445,7 +445,7 @@ const instanceRecvBpsLimitInput = computed<string>({
               <div class="flex flex-row gap-x-9 flex-wrap w-full">
                 <div class="flex flex-col gap-2 grow p-fluid">
                   <div class="flex">
-                    <label for="port_forwards">{{ t('port_forwards_help') }}</label>
+                    <div class="text-sm text-gray-600 whitespace-pre-wrap" style="line-height: 1.6;">{{ t('port_forwards_help') }}</div>
                   </div>
                   <div v-for="(row, index) in curNetwork.port_forwards" :key="index" class="form-row">
                     <!-- Wide screen view -->

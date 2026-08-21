@@ -160,6 +160,13 @@ watch(() => model.value.mode, async (newMode, oldMode) => {
   }
 }, { immediate: true })
 
+async function refreshServiceStatus() {
+  serviceStatus.value = await getServiceStatus()
+  isServiceStatusLoaded.value = true
+}
+
+defineExpose({ refreshServiceStatus })
+
 </script>
 
 <template>
@@ -202,11 +209,6 @@ watch(() => model.value.mode, async (newMode, oldMode) => {
       <div class="flex items-center gap-2">
         <label for="rpc-portal">{{ t('mode.rpc_portal') }}</label>
         <InputText id="rpc-portal" v-model="serviceMode.rpc_portal" class="flex-1" />
-      </div>
-      <div class="flex items-center gap-2">
-        <label for="log-level">{{ t('mode.log_level') }}</label>
-        <Select id="log-level" v-model="serviceMode.file_log_level"
-          :options="['off', 'warn', 'info', 'debug', 'trace']" />
       </div>
       <div class="flex items-center gap-2">
         <label for="log-dir">{{ t('mode.log_dir') }}</label>

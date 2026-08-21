@@ -1,11 +1,10 @@
 <script setup lang="ts">
-import { Button, ConfirmPopup, Divider, IftaLabel, Menu, Message, Select, Tag, useConfirm, useToast, type VirtualScrollerLazyEvent } from 'primevue';
-import { computed, onMounted, onUnmounted, Ref, ref, watch } from 'vue';
+import { Button, ConfirmPopup, Divider, IftaLabel, Message, Select, Tag, useConfirm, useToast, type VirtualScrollerLazyEvent } from 'primevue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import * as Api from '../modules/api';
 import * as Utils from '../modules/utils';
 import * as NetworkTypes from '../types/network';
-import { type MenuItem } from 'primevue/menuitem';
 
 const { t } = useI18n()
 
@@ -181,15 +180,15 @@ const confirm = useConfirm();
 const confirmDeleteNetwork = (event: any) => {
     confirm.require({
         target: event.currentTarget,
-        message: 'Do you want to delete this network?',
+        message: t('web.device_management.delete_network_confirm'),
         icon: 'pi pi-info-circle',
         rejectProps: {
-            label: 'Cancel',
+            label: t('web.common.cancel'),
             severity: 'secondary',
             outlined: true
         },
         acceptProps: {
-            label: 'Delete',
+            label: t('web.common.delete'),
             severity: 'danger'
         },
         accept: async () => {
@@ -414,29 +413,6 @@ const updateScreenWidth = () => {
     screenWidth.value = window.innerWidth;
 };
 
-// 菜单引用和菜单项
-const menuRef = ref();
-const actionMenu: Ref<MenuItem[]> = ref([
-    {
-        label: () => t('web.device_management.edit_network'),
-        icon: 'pi pi-pencil',
-        visible: () => !(networkIsDisabled.value ?? true) && currentNetworkControl.editable.value,
-        command: () => editNetwork()
-    },
-    {
-        label: () => t('web.device_management.export_config'),
-        icon: 'pi pi-download',
-        command: () => exportConfig()
-    },
-    {
-        label: () => t('web.device_management.delete_network'),
-        icon: 'pi pi-trash',
-        class: 'p-error',
-        visible: () => currentNetworkControl.deletable.value,
-        command: () => confirmDeleteNetwork(new Event('click'))
-    }
-]);
-
 let periodFunc = new Utils.PeriodicTask(async () => {
     if (props.pauseAutoRefresh) {
         return;
@@ -542,15 +518,7 @@ onUnmounted(() => {
                         :class="['cancel-button', screenWidth <= 640 ? 'p-button-icon-only' : '']"
                         :style="screenWidth <= 640 ? 'width: 3rem !important; height: 3rem !important; font-size: 1.2rem' : ''"
                         :tooltip="screenWidth <= 640 ? t('web.device_management.cancel_edit') : undefined"
-                        tooltipOptions="{ position: 'bottom' }" severity="secondary" />
-
-                    <!-- More actions menu -->
-                    <Menu ref="menuRef" :model="actionMenu" :popup="true" />
-                    <Button v-if="!isEditingNetwork && selectedInstanceId" icon="pi pi-ellipsis-v"
-                        class="p-button-rounded flex items-center justify-center" severity="help"
-                        style="width: 3rem !important; height: 3rem !important; font-size: 1.2rem"
-                        @click="menuRef.toggle($event)" :aria-label="t('web.device_management.more_actions')"
-                        :tooltip="t('web.device_management.more_actions')" tooltipOptions="{ position: 'bottom' }" />
+                        tooltipOptions="{ position: 'bottom' }" style="background-color: #EF4444; border-color: #EF4444; color: white;" />
                 </div>
             </div>
         </div>
@@ -569,9 +537,14 @@ onUnmounted(() => {
                         :label="t('web.device_management.edit_as_file')" iconPos="left" severity="secondary" />
                     <Button @click="importConfig" icon="pi pi-upload" :label="t('web.device_management.import_config')"
                         iconPos="left" severity="help" />
+                    <Button @click="exportConfig" icon="pi pi-download" :label="t('web.device_management.export_config')"
+                        iconPos="left" style="background-color: #A855F7; border-color: #A855F7; color: white;" />
                     <Button v-if="networkIsDisabled" @click="saveNetworkConfig" :disabled="!currentNetworkConfig"
                         icon="pi pi-save" :label="t('web.device_management.save_config')" iconPos="left"
                         severity="success" />
+                    <Button v-if="currentNetworkControl.deletable.value" @click="confirmDeleteNetwork($event)"
+                        icon="pi pi-trash" :label="t('web.device_management.delete_network')" iconPos="left"
+                        style="background-color: #EF4444; border-color: #EF4444; color: white;" />
                 </div>
 
                 <Divider />
@@ -595,7 +568,10 @@ onUnmounted(() => {
                 <Message v-else severity="info" class="mb-4">{{ t('web.device_management.loading_network_status') }}
                 </Message>
 
-                <div class="text-center mt-4">
+                <div class="text-center mt-4 flex gap-2 justify-center">
+                    <Button v-if="currentNetworkControl.editable.value && !networkIsDisabled" @click="editNetwork"
+                        icon="pi pi-pencil" :label="t('web.device_management.edit_network')" iconPos="left"
+                        style="background-color: #F1F5F9; border-color: #F1F5F9; color: #334155;" />
                     <Button @click="stopNetwork" :disabled="!currentNetworkControl.deletable.value"
                         :label="t('web.device_management.disable_network')" severity="danger" icon="pi pi-power-off"
                         iconPos="left" />
@@ -610,8 +586,6 @@ onUnmounted(() => {
                 <p class="text-secondary text-center mb-6 max-w-md">
                     {{ t('web.device_management.select_existing_network_or_create_new') }}
                 </p>
-                <Button @click="newNetwork" :label="t('web.device_management.create_network')" icon="pi pi-plus"
-                    iconPos="left" />
             </div>
         </div>
 

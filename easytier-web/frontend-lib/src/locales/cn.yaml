@@ -1,276 +1,3 @@
-network: 网络
-networking_method: 网络方式
-public_server: 公共服务器
-manual: 手动
-standalone: 独立
-initial_nodes: 初始节点
-initial_nodes_help: |
-  EasyTier 不分服务端/客户端。
-  • 填“初始节点” = 插上网线，直接加入已有网络。
-  • 留空 = 节点独立启动，等别人来连，或你后续手动连。
-  • 无论直接还是间接连通（通过其他节点搭桥），都能组网互通。
-  初始节点可以用自己的，也可以用别人分享的。
-initial_node_placeholder: 例如：node.example.com
-virtual_ipv4: 虚拟IPv4地址
-virtual_ipv4_dhcp: DHCP
-network_name: 网络名称
-network_secret: 网络密码
-public_server_url: 公共服务器地址
-peer_urls: 对等节点地址
-proxy_cidrs: 子网代理CIDR
-enable_vpn_portal: 启用VPN门户
-vpn_portal_listen_port: 监听端口
-vpn_portal_client_network: 客户端子网
-dev_name: TUN接口名称
-advanced_settings: 高级设置
-basic_settings: 基础设置
-listener_urls: 监听地址
-rpc_port: RPC端口
-port: 端口
-rpc_portal_whitelists: RPC白名单
-config_network: 配置网络
-running: 运行中
-error_msg: 错误信息
-detail: 详情
-add_new_network: 添加新网络
-add_peer_url: 添加节点
-add_initial_node: 添加初始节点
-add_listener_url: 添加监听地址
-add_mapped_listener: 添加监听映射
-del_cur_network: 删除当前网络
-select_network: 选择网络
-network_instances: 网络实例
-instance_id: 实例ID
-network_infos: 网络信息
-parse_network_config: 解析网络配置
-config_generator_placeholder: 生成的 TOML 配置将显示在这里
-generate_config: 生成配置
-copy_config: 复制配置
-config_copied: 已复制
-config_generation_failed: 生成失败
-config_copy_failed: 复制失败
-retain_network_instance: 保留网络实例
-collect_network_infos: 收集网络信息
-settings: 设置
-exchange_language: Switch to English
-logging: 日志
-logging_level_info: 信息
-logging_level_debug: 调试
-logging_level_warn: 警告
-logging_level_trace: 跟踪
-logging_level_off: 关闭
-logging_open_dir: 打开日志目录
-logging_copy_dir: 复制日志路径
-disable_auto_launch: 关闭开机自启
-enable_auto_launch: 开启开机自启
-hide_dock_icon: 隐藏 Dock 图标
-show_dock_icon: 显示 Dock 图标
-exit: 退出
-chips_placeholder: 例如： {0}, 输入后在下拉框中选择生效
-show_node_details: 显示节点详细信息
-hide_node_details: 隐藏节点详细信息
-hostname_placeholder: '留空默认为主机名: {0}'
-dev_name_placeholder: 注意：当多个网络同时使用相同的TUN接口名称时，将会在设置TUN的IP时产生冲突，留空以自动生成随机名称
-off_text: 点击关闭
-on_text: 点击开启
-show_config: 显示配置
-edit_config: 编辑配置文件
-config_file: 配置文件
-close: 关闭
-save: 保存
-config_saved: 配置已保存
-
-use_latency_first: 延迟优先模式
-my_node_info: 当前节点信息
-peer_count: 已连接
-upload: 上传
-download: 下载
-show_vpn_portal_config: 显示VPN门户配置
-vpn_portal_config: VPN门户配置
-show_event_log: 显示事件日志
-event_log: 事件日志
-peer_info: 节点信息
-hostname: 主机名
-route_cost: 路由
-tunnel_proto: 协议
-latency: 延迟
-upload_bytes: 上传
-download_bytes: 下载
-loss_rate: 丢包率
-nat_type: NAT 类型
-
-flags_switch: 功能开关
-
-latency_first: 开启延迟优先模式
-latency_first_help: 忽略中转跳数，选择总延迟最低的路径
-
-use_smoltcp: 使用用户态协议栈
-use_smoltcp_help: 使用用户态 TCP/IP 协议栈，避免操作系统防火墙问题导致无法子网代理 / KCP代理。
-
-disable_ipv6: 禁用IPv6
-disable_ipv6_help: 禁用此节点的IPv6功能，仅使用IPv4进行网络通信。
-
-ipv6_public_addr_auto: 自动获取公网 IPv6
-ipv6_public_addr_auto_help: 自动从共享了 IPv6 子网的对等节点获取一个公网 IPv6 地址。
-
-enable_kcp_proxy: 启用 KCP 代理
-enable_kcp_proxy_help: 将 TCP 流量转为 KCP 流量，降低传输延迟，提升传输速度。
-
-disable_kcp_input: 禁用 KCP 输入
-disable_kcp_input_help: 禁用 KCP 入站流量，其他开启 KCP 代理的节点仍然使用 TCP 连接到本节点。
-
-enable_quic_proxy: 启用 QUIC 代理
-enable_quic_proxy_help: 将 TCP 流量转为 QUIC 流量，降低传输延迟，提升传输速度。
-
-disable_quic_input: 禁用 QUIC 输入
-disable_quic_input_help: 禁用 QUIC 入站流量，其他开启 QUIC 代理的节点仍然使用 TCP 连接到本节点。
-
-disable_p2p: 禁用 P2P
-disable_p2p_help: 禁用普通自动 P2P。开启 need-p2p 的节点仍可与当前节点建立 P2P。
-
-p2p_only: 仅 P2P
-p2p_only_help: 仅与已经建立P2P连接的对等节点通信，不通过其他节点中转。
-
-lazy_p2p: 延迟 P2P
-lazy_p2p_help: 仅在实际流量需要某个对等节点时才尝试建立 P2P。开启 need-p2p 的节点仍会被主动连接。
-
-bind_device: 仅使用物理网卡
-bind_device_help: 仅使用物理网卡，避免 EasyTier 通过其他虚拟网建立连接。
-
-no_tun: 无 TUN 模式
-no_tun_help: 不使用 TUN 网卡，适合无管理员权限时使用。本节点仅允许被访问。访问其他节点需要使用 SOCK5
-
-enable_exit_node: 启用出口节点
-enable_exit_node_help: 允许此节点成为出口节点
-
-relay_all_peer_rpc: 转发RPC包
-relay_all_peer_rpc_help: |
-  允许转发所有对等节点的RPC数据包，即使对等节点不在转发网络白名单中。
-  这可以帮助白名单外网络中的对等节点建立P2P连接。
-
-need_p2p: 需要 P2P
-need_p2p_help: 即使其他节点启用了 lazy p2p，也要求它们主动与当前节点建立 P2P 连接。
-
-multi_thread: 启用多线程
-multi_thread_help: 使用多线程运行时
-
-proxy_forward_by_system: 系统转发
-proxy_forward_by_system_help: 通过系统内核转发子网代理数据包，禁用内置NAT
-
-disable_encryption: 禁用加密
-disable_encryption_help: 禁用对等节点通信的加密。注意：默认启用加密，若勾选此项则关闭，必须与对等节点设置一致。
-
-disable_tcp_hole_punching: 禁用TCP打洞
-disable_tcp_hole_punching_help: 禁用TCP打洞功能
-
-disable_udp_hole_punching: 禁用UDP打洞
-disable_udp_hole_punching_help: 禁用UDP打洞功能
-
-enable_udp_broadcast_relay: UDP 广播中继
-enable_udp_broadcast_relay_help: "仅 Windows：捕获物理网卡上的本机 UDP 广播包并转发给 EasyTier 对等节点，帮助局域网游戏发现房间。需要管理员权限。"
-
-disable_upnp: 禁用 UPnP
-disable_upnp_help: 禁用符合条件监听器的运行时 UPnP/NAT-PMP 端口映射；自动端口映射默认开启。
-
-disable_sym_hole_punching: 禁用对称NAT打洞
-disable_sym_hole_punching_help: 禁用对称NAT的打洞（生日攻击），将对称NAT视为锥形NAT处理
-
-enable_magic_dns: 启用魔法DNS
-enable_magic_dns_help: |
-  启用魔法DNS，允许通过EasyTier的DNS服务器访问其他节点的虚拟IPv4地址， 如 node1.et.net。
-
-enable_private_mode: 启用私有模式
-enable_private_mode_help: |
-  启用私有模式，则不允许使用了与本网络不相同的网络名称和密码的节点通过本节点进行握手或中转。
-
-relay_network_whitelist: 网络白名单
-relay_network_whitelist_help: |
-  仅转发白名单网络的流量，支持通配符字符串。多个网络名称间可以使用英文空格间隔。
-  如果该参数为空，则禁用转发。默认允许所有网络。
-  例如：'*'（所有网络），'def*'（以def为前缀的网络），'net1 net2'（只允许net1和net2）
-
-manual_routes: 自定义路由
-manual_routes_help: 手动分配路由CIDR，将禁用子网代理和从对等节点传播的wireguard路由。例如：192.168.0.0/16
-
-socks5: socks5服务器
-socks5_help: |
-  启用 socks5 服务器，允许 socks5 客户端访问虚拟网络. 格式: <端口>，例如：1080
-
-exit_nodes: 出口节点列表
-exit_nodes_help: 转发所有流量的出口节点，虚拟IPv4地址，优先级由列表顺序决定
-  
-port_forwards: 端口转发
-port_forwards_help: "将本地端口转发到虚拟网络中的远程端口。例如：udp://0.0.0.0:12345/10.126.126.1:23456，表示将本地UDP端口12345转发到虚拟网络中的10.126.126.1:23456。可以指定多个。"
-port_forwards_bind_addr: "绑定地址，如：0.0.0.0"
-port_forwards_dst_addr: "目标地址，如：10.126.126.1"
-port_forwards_add_btn: "添加"
-edit_port_forward: "编辑端口转发"
-
-mtu: MTU
-mtu_help: |
-  TUN设备的MTU，默认为非加密时为1380，加密时为1360。范围：400-1380
-mtu_placeholder: 留空为默认值1380
-
-instance_recv_bps_limit: 实例接收限速
-instance_recv_bps_limit_help: |
-  限制当前实例整体入站流量的总接收速率，单位为字节每秒。
-  留空表示不限速。
-instance_recv_bps_limit_placeholder: 留空表示不限速
-
-mapped_listeners: 监听映射
-mapped_listeners_help: |
-  手动指定监听器的公网地址，其他节点可以使用该地址连接到本节点。
-  例如：tcp://123.123.123.123:11223，可以指定多个。
-
-status:
-  version: 内核版本
-  local: 本机
-  server: 服务器
-  relay: 中继
-
-run_network: 运行网络
-stop_network: 停止网络
-network_running: 运行中
-network_stopped: 已停止
-dhcp_experimental_warning: 实验性警告！使用DHCP时如果组网环境中发生IP冲突，将自动更改IP。
-
-tray:
-  show: 显示 / 隐藏
-  exit: 退出
-
-about:
-  title: 关于
-  version: 版本
-  author: 作者
-  homepage: 主页
-  license: 许可证
-  description: 一个简单、安全、去中心化的内网穿透 VPN 组网方案，使用 Rust 语言和 Tokio 框架实现。
-  check_update: 检查更新
-
-event:
-  Unknown: 未知
-  TunDeviceReady: Tun设备就绪
-  TunDeviceError: Tun设备错误
-  PeerAdded: 对端添加
-  PeerRemoved: 对端移除
-  PeerConnAdded: 对端连接添加
-  PeerConnRemoved: 对端连接移除
-  ListenerAdded: 监听器添加
-  ListenerAddFailed: 监听器添加失败
-  ListenerAcceptFailed: 监听器接受连接失败
-  ConnectionAccepted: 连接已接受
-  ConnectionError: 连接错误
-  Connecting: 正在连接
-  ConnectError: 连接错误
-  VpnPortalStarted: VPN门户已启动
-  VpnPortalClientConnected: VPN门户客户端已连接
-  VpnPortalClientDisconnected: VPN门户客户端已断开连接
-  DhcpIpv4Changed: DHCP IPv4地址更改
-  DhcpIpv4Conflicted: DHCP IPv4地址冲突
-  PortForwardAdded: 端口转发添加
-  ProxyCidrsUpdated: 子网代理CIDR更新
-  UdpBroadcastRelayStartResult: UDP广播中继启动结果
-
 web:
   login:
     title: 登录
@@ -279,11 +6,11 @@ web:
     submit: 登录
     register: 注册
     remember_me: 记住我
-    api_host: API主机
+    api_host: API 主机
     captcha: 验证码
     back_to_login: 返回登录
     login: 登录
-    sso_login: "SSO 登录"
+    sso_login: SSO 登录
 
   register:
     title: 注册
@@ -296,7 +23,6 @@ web:
   main:
     dashboard: 仪表盘
     device_list: 设备列表
-    device_management: 设备管理
     login_page: 登录页面
     settings: 设置
     logout: 退出登录
@@ -305,7 +31,6 @@ web:
 
   device:
     list: 设备列表
-    management: 设备管理
     add: 添加设备
     delete: 删除设备
     refresh: 刷新
@@ -319,41 +44,39 @@ web:
     show_detailed_view: 显示详情
     hide_detailed_view: 隐藏详情
     sort_by_hostname: 主机名
-    sort_by_public_ip: 公网IP
+    sort_by_public_ip: 公网 IP
     sort_by_version: 版本
     sort_by_networks: 网络数量
     sort_direction_asc: 当前升序，点击切换为降序
     sort_direction_desc: 当前降序，点击切换为升序
     hostname: 主机名
-    public_ip: 公网IP
+    public_ip: 公网 IP
     networks: 网络数量
     last_report: 最后在线
     version: 版本
-    machine_id: 机器ID
+    machine_id: 机器 ID
     unknown_location: 未知位置
 
   device_management:
-    edit_network: 编辑网络
-    export_config: 导出配置
-    delete_network: 删除网络
     network: 网络
-    select_network: 选择网络
-    create_network: 创建网络
-    cancel_edit: 取消编辑
-    more_actions: 更多操作
-    edit_as_file: 编辑为文件
+    create_new: 创建网络
+    edit_network: 编辑网络
+    edit_as_file: 编辑配置文件
+    import_config: 导入配置
+    export_config: 导出配置
     save_config: 保存配置
     config_saved: 配置已保存
-    import_config: 导入配置
-    create_new: 创建新网络
+    delete_network: 删除网络
+    delete_network_confirm: 确定要删除此网络吗？
+    select_network: 选择网络
+    cancel_edit: 取消编辑
+    more_actions: 更多操作
     network_status: 网络状态
     loading_network_status: 正在加载网络状态
     network_info_unavailable: 网络状态不可用
-    network_configuration: 网络配置
-    loading_network_configuration: 加载网络配置
-    no_network_selected: 未选择网络
-    select_existing_network_or_create_new: 选择现有网络实例或创建新网络以管理网络设置
     disable_network: 禁用网络
+    no_network_selected: 未选择网络
+    select_existing_network_or_create_new: 在上方 “选择网络” 或 “创建网络” 以管理网络设置
 
   network:
     title: 网络
@@ -374,7 +97,7 @@ web:
     edit: 编辑
     refresh: 刷新
     add: 添加
-    loading: 加载中...
+    loading: 加载中…
     error: 错误
     success: 成功
     warning: 警告
@@ -393,54 +116,130 @@ web:
     theme: 主题
     logout: 退出登录
 
-mode:
-  title: 模式
-  switch_mode: 切换模式
-  config_dir: 配置目录
-  rpc_portal: RPC端口
-  enable_rpc_tcp_listen: 开启 RPC 端口监听（TCP）
-  rpc_listen_port: RPC 监听端口
-  log_level: 日志级别
-  log_dir: 日志目录
-  remote_rpc_address: 远程RPC地址
-  normal: 普通模式
-  service: 服务模式
-  remote: 远程模式
-  normal_description: 直接运行EasyTier，适合本地使用
-  service_description: 作为系统服务运行，支持开机自启和后台运行。退出GUI后服务仍在后台运行。
-  remote_description: 连接到远程RPC服务，管理和控制远程节点
-  service_status: 服务状态
-  service_status_running: 运行中
-  service_status_stopped: 已停止
-  service_status_notinstalled: 未安装
-  uninstall_service: 卸载服务
-  stop_service: 停止服务
-  uninstall_service_confirm: 确定要卸载服务吗？
-  uninstall_service_success: 服务卸载成功，已切换回普通模式
-  stop_service_success: 服务停止成功
-  remote_rpc_address_empty: 远程RPC地址不能为空
-  service_config_empty: 服务配置不能为空
-  rpc_connection_failed: "RPC 连接失败：{error}"
 
-config-server:
-  title: 配置服务器
-  address: 配置服务器地址
-  address_placeholder: 例如：udp://127.0.0.1:22020/admin 或 admin
-  description: |
-    配置服务器地址，支持以下格式：
-    完整URL：udp://127.0.0.1:22020/admin
-    仅用户名：admin（使用官方服务器）
-    留空：不连接配置服务器
-  connection_status: 连接状态
-  connected: ": 已连接"
-  disconnected: ": 未连接"
-  connecting: ": 连接中..."
-  unknown: ""
-  update_service_confirm: 将重启服务以应用更改，是否继续？
+network_running: 运行中
+network_stopped: 已停止
 
-client:
-  not_running: 无法连接至远程客户端
-  retry: 重试
+
+config_file: 配置文件
+
+
+basic_settings: 基础设置
+network: 网络配置
+virtual_ipv4: 虚拟 IPv4 地址
+virtual_ipv4_dhcp: 自动分配
+network_name: 网络名称
+network_secret: 网络密码
+initial_nodes: 初始节点
+initial_nodes_help: |
+  EasyTier 是去中心化工具，不区分服务端与客户端。
+  · 填写此项 = 加入已有网络。
+  · 留空 = 作为初始节点启动。
+  · 无论直接与初始节点连接还是通过网络中的其它节点连接，都能与网络中的所有节点互联互通。
+  · 可以使用公共服务器作为初始节点，也可以自行搭建。
+initial_node_placeholder: 例如：node.example.com
+add_initial_node: 添加初始节点
+
+
+advanced_settings: 高级设置
+flags_switch: 功能开关
+latency_first: 延迟优先模式
+latency_first_help: 忽略数据包跳数，选择总延迟最低的路径
+use_smoltcp: 用户态协议栈
+use_smoltcp_help: 使用用户态 TCP/IP 协议栈，规避系统防火墙导致的子网代理 / KCP 代理问题
+disable_ipv6: 禁用 IPv6
+disable_ipv6_help: 禁用当前节点的 IPv6 相关功能，仅使用 IPv4 进行网络通信
+ipv6_public_addr_auto: 自动获取公网 IPv6
+ipv6_public_addr_auto_help: 接受其它节点通告的 IPv6 路由，为当前节点分配公网 IPv6 地址
+enable_kcp_proxy: KCP 代理
+enable_kcp_proxy_help: 将 TCP 流量转为 KCP 流量
+disable_kcp_input: 拒绝 KCP 入站
+disable_kcp_input_help: 拒绝 KCP 入站流量，令其它开启 “KCP 代理” 功能的节点使用 TCP 连接到当前节点
+enable_quic_proxy: QUIC 代理
+enable_quic_proxy_help: 将 TCP 流量转为 QUIC 流量
+disable_quic_input: 拒绝 QUIC 入站
+disable_quic_input_help: 拒绝 QUIC 入站流量，令其它开启 “QUIC 代理” 功能的节点使用 TCP 连接到当前节点
+disable_p2p: 禁用 P2P 打洞
+disable_p2p_help: 禁用自动打洞功能，但开启 “要求 P2P 打洞” 功能的节点仍可与当前节点建立 P2P 连接
+p2p_only: 仅使用 P2P
+p2p_only_help: 仅与已经建立 P2P 连接的节点通信，不与处于 Relay 状态的节点通信
+lazy_p2p: 延迟 P2P 打洞
+lazy_p2p_help: 仅在数据面流量需要某个节点时才尝试与之建立 P2P 连接，但仍会主动连接开启 “要求 P2P 打洞” 的节点
+bind_device: 仅使用物理网卡
+bind_device_help: 仅使用物理网卡，避免通过其它虚拟网卡建立连接。
+no_tun: 无 TUN 模式
+no_tun_help: 不使用 TUN 虚拟网卡，主动访问其它节点需要使用 SOCKS5 代理
+enable_exit_node: 作为互联网网关
+enable_exit_node_help: 允许当前节点作为访问互联网的网关，转发其它节点的所有互联网流量
+relay_all_peer_rpc: 转发所有 RPC 流量
+relay_all_peer_rpc_help: 仅在配置 “网络白名单” 后生效，转发所有节点的 RPC 流量，即使节点所处的网络不在 “网络白名单” 中
+need_p2p: 要求 P2P 打洞
+need_p2p_help: 即使其它节点启用了 “禁用 P2P 打洞” 或 “延迟 P2P 打洞”，也要求它们与当前节点建立 P2P 连接
+multi_thread: 多线程运行
+multi_thread_help: 使用多线程运行时
+proxy_forward_by_system: 系统级子网代理
+proxy_forward_by_system_help: 禁用内置 NAT，调用系统内核转发子网代理流量
+disable_encryption: 禁用加密
+disable_encryption_help: 默认启用流量加密，如需禁用，必须在所有节点中均开启此选项
+disable_tcp_hole_punching: 禁用 TCP 打洞
+disable_tcp_hole_punching_help: 禁用 TCP 打洞功能
+disable_udp_hole_punching: 禁用 UDP 打洞
+disable_udp_hole_punching_help: 禁用 UDP 打洞功能
+enable_udp_broadcast_relay: 转发 UDP 广播
+enable_udp_broadcast_relay_help: 捕获物理网卡上的 UDP 广播流量并转发给其它节点，帮助局域网游戏发现房间
+disable_upnp: 禁用 UPnP/NAT-PMP 端口映射
+disable_upnp_help: 默认启用自动端口映射，开启后禁用端口映射
+disable_sym_hole_punching: 禁用端口预测
+disable_sym_hole_punching_help: 针对 Symmetric NAT 禁用端口预测打洞，仅使用标准流程尝试打洞，失败后退回 Relay 状态
+enable_magic_dns: 魔法 DNS
+enable_magic_dns_help: 允许通过 EasyTier 的 DNS 服务器访问其它节点的虚拟 IPv4 地址，例如 node1.et.net
+enable_private_mode: 私有网络模式
+enable_private_mode_help: 类似网络白名单，不允许网络名称和密码与当前节点不同的的节点将当前节点作为初始节点，如需启用，必须在所有节点中均开启此选项
+hostname_placeholder: 留空默认为主机名：{0}
+proxy_cidrs: 子网代理 CIDR
+enable_vpn_portal: VPN Portal
+vpn_portal_client_network: 客户端路由
+listener_urls: 监听地址
+add_listener_url: 添加监听地址
+dev_name: TUN 网卡名称
+dev_name_placeholder: 留空以自动生成随机名称。请为不同网络设置不同的 TUN 名称，否则会在给 TUN 分配 IP 时产生冲突
+mtu: MTU
+mtu_help: TUN 虚拟网卡的数据包最大传输单元，范围：400-1380，非加密时默认为 1380，加密时默认为 1360
+mtu_placeholder: 留空为默认值
+instance_recv_bps_limit: 限制入站速率
+instance_recv_bps_limit_help: 限制当前节点总入站流量的接收速率，单位 Byte/s
+instance_recv_bps_limit_placeholder: 留空表示不限速
+relay_network_whitelist: 网络白名单
+relay_network_whitelist_help: |
+  仅允许白名单网络中的节点将当前节点作为初始节点，若参数为空，则允许所有网络将当前节点作为初始节点
+  支持通配符字符串，输入完成后在下拉框中点选才能生效，如需连续输入多个网络名称，应使用英文空格间隔，例如：
+  * 表示所有网络；
+  def* 表示以 def 为前缀的网络；
+  net1 net2 表示 net1 和 net2 两个网络
+manual_routes: 自定义路由
+manual_routes_help: 当前节点将忽略其他节点共享的完整子网路由，仅使用指定的路由条目，当前节点自身通过 “子网代理 CIDR” 共享的路由仍会正常广播给其他节点
+socks5: SOCKS5 服务器
+socks5_help: 启用 SOCKS5 服务器，允许 SOCKS5 客户端访问虚拟网络，需填写将要开放的服务器端口
+exit_nodes: 互联网网关
+exit_nodes_help: 填写开启 “作为互联网网关” 功能的虚拟 IPv4 地址，优先级由列表顺序决定
+mapped_listeners: 监听映射
+mapped_listeners_help: 在复杂网络环境中手动指定监听器的公网地址，便于其它节点连接到当前节点
+add_mapped_listener: 添加监听映射
+
+
+port_forwards: 端口转发
+port_forwards_help: |
+  · 将访问当前节点所在主机指定端口的流量，通过当前节点转发至目标 IPv4 地址的指定端口，即：访问本机端口 = 访问远端服务，这一过程可以不经过虚拟网络。
+  · 假设本机物理 IPv4 地址为 192.168.1.2，虚拟 IPv4 地址为 10.126.126.5。
+  · 使用案例如下：
+  · tcp://0.0.0.0:80/10.126.126.1:8080 表示将访问当前节点所在主机的 80 端口 TCP 流量，通过节点所在主机转发到 IPv4 地址为 10.126.126.1，端口为 8080 的设备上的服务；
+  · udp://0.0.0.0:12345/192.168.1.100:23456 表示将访问当前节点所在主机的 12345 端口 UDP 流量，通过节点所在主机转发到 IPv4 地址为 192.168.1.100，端口为 23456 的设备上的服务；
+  · tcp://10.126.126.2:11211/192.168.1.100:11211 该路径不通，“监听地址” 必须为本机。
+port_forwards_bind_addr: 监听地址，如：0.0.0.0
+port_forwards_dst_addr: 目标地址，如：10.126.126.1
+port_forwards_add_btn: 添加
+edit_port_forward: 编辑转发规则
+
 
 acl:
   title: 访问控制
@@ -484,3 +283,139 @@ acl:
     name: 名称
     type: 类型
   match: 匹配
+
+
+run_network: 运行网络
+stop_network: 停止网络
+
+
+client:
+  not_running: 未连接至 RPC
+  retry: 重新连接
+
+
+exchange_language: Switch to English
+mode:  
+  switch_mode: 工作模式
+  normal: 普通模式
+  normal_description: 直接运行 EasyTier，适合本地轻量使用
+  enable_rpc_tcp_listen: RPC 端口监听 (TCP)
+  service: 服务模式
+  service_description: 注册为系统服务，开机自启动，关闭 GUI 后保持运行
+  config_dir: 配置目录
+  rpc_portal: RPC 地址
+  log_dir: 日志目录
+  service_config_empty: 服务配置不能为空
+  service_status: 服务状态
+  service_status_running: 正在运行
+  service_status_stopped: 已停止
+  service_status_notinstalled: 未安装
+  stop_service: 停止服务
+  uninstall_service: 卸载服务
+  uninstall_service_confirm: 确定要卸载服务吗？
+  uninstall_service_success: 服务卸载成功
+  remote: 远程模式
+  remote_description: 通过 RPC 管理、控制远程节点
+  remote_rpc_address: RPC 地址
+  remote_rpc_address_empty: 远程 RPC 地址不能为空
+  rpc_connection_failed: RPC 连接失败：{error}
+config-server:
+  title: Web 控制台
+  address: 配置控制台地址
+  address_placeholder: 例如：udp://127.0.0.1:22020/admin
+  description: 留空：不使用 Web 控制台
+  connection_status: 连接状态
+  connected: ：已连接
+  disconnected: ：未连接
+  connecting: ：连接中…
+  unknown: ""
+  update_service_confirm: 将重启服务以应用更改，是否继续？
+logging: 日志
+logging_level_off: 关闭
+logging_level_warn: 警告
+logging_level_info: 信息
+logging_level_debug: 调试
+logging_level_trace: 跟踪
+logging_open_dir: 打开日志目录
+logging_copy_dir: 复制日志路径
+about:
+  title: 关于
+  version: 版本
+  description: 一个简单、安全、去中心化的内网穿透 VPN 组网方案，使用 Rust 语言和 Tokio 框架实现。
+exit: 退出程序
+
+
+chips_placeholder: 例如：{0}, 输入完成后在下拉框中点选才能生效
+port: 端口
+off_text: 点击关闭
+on_text: 点击开启
+close: 关闭
+save: 保存
+config_saved: 配置已保存
+
+
+my_node_info: 当前节点
+upload: 上传速度
+download: 下载速度
+show_node_details: 显示节点详细信息
+hide_node_details: 隐藏节点详细信息
+show_vpn_portal_config: 查看 VPN Portal 配置
+vpn_portal_config: VPN Protal 配置
+show_event_log: 查看事件记录
+event_log: 事件记录
+
+
+peer_info: 网络中的节点
+hostname: 主机名
+route_cost: 路由
+tunnel_proto: 协议
+latency: 延迟
+upload_bytes: 上传量
+download_bytes: 下载量
+loss_rate: 丢包率
+nat_type: NAT 类型
+
+
+event:
+  Unknown: 未知
+  TunDeviceReady: Tun 网卡就绪
+  TunDeviceError: Tun 网卡错误
+  PeerAdded: 节点已添加
+  PeerRemoved: 节点已断开
+  PeerConnAdded: 节点连接已添加
+  PeerConnRemoved: 节点连接已断开
+  ListenerAdded: 监听器已添加
+  ListenerAddFailed: 监听器添加失败
+  ListenerAcceptFailed: 监听器接受连接失败
+  ConnectionAccepted: 初始节点已接受连接
+  ConnectionError: 初始节点连接错误
+  Connecting: 正在连接初始节点
+  ConnectError: 初始节点连接错误
+  VpnPortalStarted: VPN Portal 已启动
+  VpnPortalClientConnected: VPN Portal 客户端已连接
+  VpnPortalClientDisconnected: VPN Portal 客户端已断开连接
+  DhcpIpv4Changed: DHCP IPv4 已更改
+  DhcpIpv4Conflicted: DHCP IPv4 冲突
+  PortForwardAdded: 端口转发规则已添加
+  ProxyCidrsUpdated: 子网代理 CIDR 已更新
+  UdpBroadcastRelayStartResult: UDP 广播转发结果
+
+
+status:
+  relay: 中继
+  version: 内核版本
+  local: 本机
+  server: 服务器
+
+
+tray:
+  show: 显示 / 隐藏
+  exit: 退出
+
+
+config_generator_placeholder: 生成的 TOML 配置将显示在这里
+generate_config: 生成配置
+copy_config: 复制配置
+config_copied: 已复制
+config_generation_failed: 生成失败
+config_copy_failed: 复制失败

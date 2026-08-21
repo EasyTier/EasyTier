@@ -16,10 +16,11 @@ import { useToast, useConfirm } from 'primevue'
 import { loadMode, saveMode, WebClientConfig, type Mode } from '~/composables/mode'
 import { saveLastNetworkInstanceId, loadLastNetworkInstanceId } from '~/composables/config'
 import ModeSwitcher from '~/components/ModeSwitcher.vue'
-import { getEasytierVersion, getServiceStatus } from '~/composables/backend'
+import { getEasytierVersion, getServiceStatus, setServiceStatus, initService } from '~/composables/backend'
 
 const { t, locale } = useI18n()
 const confirm = useConfirm()
+const modeSwitcherRef = ref()
 const aboutVisible = ref(false)
 const modeDialogVisible = ref(false)
 const currentMode = ref<Mode>({ mode: 'normal' })
@@ -73,15 +74,24 @@ async function onUninstallService(event: any) {
     accept: async () => {
       isModeSaving.value = true
       try {
-        await initWithMode({ ...currentMode.value, mode: 'normal' });
-        // initWithMode already uninstalls the service when transitioning from
-        // service mode. For other cases, ensure the service is uninstalled here.
-        const status = await getServiceStatus()
-        if (status !== 'NotInstalled') {
+        let serviceStatus = await getServiceStatus()
+        if (serviceStatus === "Running") {
+          manualDisconnect.value = true
+          await setServiceStatus(false)
+          serviceStatus = await getServiceStatus()
+          for (let i = 0; i < 10; i++) {
+            if (serviceStatus === "Stopped") {
+              break;
+            }
+            await new Promise(resolve => setTimeout(resolve, 100))
+            serviceStatus = await getServiceStatus()
+          }
+        }
+        if (serviceStatus !== 'NotInstalled') {
           await initService(undefined)
         }
+        modeSwitcherRef.value?.refreshServiceStatus()
         toast.add({ severity: 'success', summary: t('web.common.success'), detail: t('mode.uninstall_service_success'), life: 3000 })
-        modeDialogVisible.value = false
       } catch (e: any) {
         toast.add({ severity: 'error', summary: t('error'), detail: e, life: 10000 })
         console.error("Error uninstalling service", e)
@@ -111,8 +121,7 @@ async function onStopService() {
   manualDisconnect.value = true
   try {
     await setServiceStatus(false)
-    toast.add({ severity: 'success', summary: t('web.common.success'), detail: t('mode.stop_service_success'), life: 3000 })
-    modeDialogVisible.value = false
+    modeSwitcherRef.value?.refreshServiceStatus()
   }
   catch (e: any) {
     toast.add({ severity: 'error', summary: t('error'), detail: e, life: 10000 })
@@ -452,7 +461,7 @@ const configServerConnectionStatus = computed(() => {
       <About />
     </Dialog>
     <Dialog v-model:visible="modeDialogVisible" modal :header="t('mode.switch_mode')" :style="{ width: '50vw' }">
-      <ModeSwitcher v-model="editingMode" @uninstall-service="onUninstallService" @stop-service="onStopService" />
+      <ModeSwitcher ref="modeSwitcherRef" v-model="editingMode" @uninstall-service="onUninstallService" @stop-service="onStopService" />
       <template #footer>
         <Button :label="t('web.common.cancel')" icon="pi pi-times" @click="modeDialogVisible = false" text />
         <Button :label="t('web.common.save')" icon="pi pi-save" @click="onModeSave" autofocus :loading="isModeSaving" />
