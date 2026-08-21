@@ -29,6 +29,7 @@ use crate::{
 };
 
 use super::resolve_instance;
+#[cfg(feature = "web-client")]
 use super::{ConfigFileStorage, ConfigPatchPersistence};
 
 #[cfg(feature = "web-client")]
@@ -128,6 +129,7 @@ where
 #[doc(hidden)]
 pub struct ResolvedInstanceManagementRpc<R> {
     resolver: R,
+    #[cfg(feature = "web-client")]
     config_patch_persistence: Option<Arc<dyn ConfigPatchPersistence>>,
 }
 
@@ -138,6 +140,7 @@ where
     fn clone(&self) -> Self {
         Self {
             resolver: self.resolver.clone(),
+            #[cfg(feature = "web-client")]
             config_patch_persistence: self.config_patch_persistence.clone(),
         }
     }
@@ -166,10 +169,11 @@ where
     pub fn new(manager: Arc<InstanceManager<F>>) -> Self {
         Self {
             resolver: ManagerInstanceResolver { manager },
+            #[cfg(feature = "web-client")]
             config_patch_persistence: None,
         }
     }
-
+    #[cfg(feature = "web-client")]
     pub fn new_with_config_storage(
         manager: Arc<InstanceManager<F>>,
         storage: Arc<dyn ConfigFileStorage>,
@@ -204,10 +208,12 @@ where
 {
     ResolvedInstanceManagementRpc {
         resolver: BoundInstanceResolver { instance },
+        #[cfg(feature = "web-client")]
         config_patch_persistence: None,
     }
 }
 
+#[cfg(feature = "web-client")]
 struct ManagerConfigPatchPersistence<F, H>
 where
     F: InstanceFactory,
@@ -219,6 +225,7 @@ where
 }
 
 #[async_trait::async_trait]
+#[cfg(feature = "web-client")]
 impl<F, H> ConfigPatchPersistence for ManagerConfigPatchPersistence<F, H>
 where
     F: InstanceFactory<Instance = CoreInstance<H>, CreateContext = ()>,
