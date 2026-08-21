@@ -32,7 +32,7 @@ use tokio::time::timeout;
 use easytier::{
     common::{constants::EASYTIER_VERSION, stun::runtime_stun_info_collector},
     proto::{
-        acl::AclStats,
+        acl::{Acl, AclStats},
         api::{
             config::{
                 AclPatch, ConfigPatchAction, ConfigRpc, ConfigRpcClientFactory,
@@ -285,10 +285,38 @@ struct AclArgs {
     sub_command: Option<AclSubCommand>,
 }
 
+#[derive(Args, Debug)]
+struct AclSetArgs {
+    /// Full ACL as a TOML string, or a path to a TOML file prefixed by '@'.
+    ///
+    /// The TOML uses the same shape as the `[acl]` section of an easytier
+    /// configuration file, for example:
+    ///
+    /// ```toml
+    /// [acl.acl_v1]
+    /// [[acl.acl_v1.chains]]
+    /// name = "Inbound"
+    /// chain_type = 1
+    /// enabled = true
+    /// default_action = 2
+    /// [[acl.acl_v1.chains.rules]]
+    /// protocol = 3
+    /// action = 1
+    /// ```
+    ///
+    /// Using `@/path/to/acl.toml` makes it easy to manage and debug the full
+    /// ACL offline. The whole ACL is replaced at runtime without restarting
+    /// easytier-core.
+    #[arg(help = "full ACL TOML string or '@path/to/acl.toml'")]
+    acl: String,
+}
+
 #[derive(Subcommand, Debug)]
 enum AclSubCommand {
     /// Show ACL rule hit statistics
     Stats,
+    /// Replace the whole ACL at runtime without restarting easytier-core
+    Set(AclSetArgs),
 }
 
 #[derive(Args, Debug)]
@@ -1871,6 +1899,77 @@ impl<'a> CommandHandler<'a> {
         })
     }
 
+    async fn apply_acl_set(&self, acl: Acl) -> Result<(), Error> {
+        let client = self.get_config_client().await?;
+        let request = PatchConfigRequest {
+            instance: Some(self.instance_selector.clone()),
+            patch: Some(InstanceConfigPatch {
+                acl: Some(AclPatch {
+                    acl: Some(acl),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+        };
+        let _response = client
+            .patch_config(BaseController::default(), request)
+            .await?;
+        Ok(())
+    }
+
+    async fn handle_acl_set(&self, raw: &str) -> Result<(), Error> {
+        // Load the TOML content either from a file (`@path`) or inline.
+        let toml_text = if let Some(path) = raw.strip_prefix('@') {
+            tokio::fs::read_to_string(path)
+                .await
+                .with_context(|| format!("failed to read ACL file `{path}`"))?
+        } else {
+            raw.to_string()
+        };
+
+        // The input mirrors the `[acl]` section of an easytier TOML config, so
+        // we wrap the parsed `Acl` inside a top-level `acl` table.
+        #[derive(serde::Deserialize, Default)]
+        struct AclToml {
+            acl: Option<Acl>,
+        }
+
+        let parsed: AclToml = toml::from_str(&toml_text)
+            .with_context(|| "failed to parse ACL TOML (expected `[acl.acl_v1]` structure)")?;
+        let acl = parsed.acl.unwrap_or_default();
+        if acl.acl_v1.is_none()
+            || acl
+                .acl_v1
+                .as_ref()
+                .map(|v| v.chains.is_empty() && v.group.is_none())
+                .unwrap_or(true)
+        {
+            anyhow::bail!(
+                "parsed ACL is empty; provide at least one chain under `[acl.acl_v1.chains]`"
+            );
+        }
+
+        let acl_for_clone = acl.clone();
+        self.apply_to_instances(|handler| {
+            let acl = acl_for_clone.clone();
+            Box::pin(async move { handler.apply_acl_set(acl).await })
+        })
+        .await?;
+
+        if *self.output_format == OutputFormat::Json {
+            println!("{}", serde_json::to_string_pretty(&acl)?);
+        } else {
+            println!(
+                "ACL updated successfully ({} chain(s))",
+                acl.acl_v1
+                    .as_ref()
+                    .map(|v| v.chains.len())
+                    .unwrap_or_default()
+            );
+        }
+        Ok(())
+    }
+
     async fn handle_mapped_listener_list(&self) -> Result<(), Error> {
         let results = self
             .collect_instance_results(|handler| Box::pin(handler.fetch_mapped_listener_list()))
@@ -3103,6 +3202,9 @@ async fn main() -> Result<(), Error> {
         SubCommand::Acl(acl_args) => match &acl_args.sub_command {
             Some(AclSubCommand::Stats) | None => {
                 handler.handle_acl_stats().await?;
+            }
+            Some(AclSubCommand::Set(args)) => {
+                handler.handle_acl_set(&args.acl).await?;
             }
         },
         SubCommand::PortForward(port_forward_args) => match &port_forward_args.sub_command {

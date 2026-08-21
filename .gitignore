@@ -49,3 +49,4 @@ easytier-gui/src-tauri/*.sys
 
 # contrib
 go.sum
+/tauri-plugin-vpnservice
