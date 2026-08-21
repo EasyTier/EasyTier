@@ -30,6 +30,7 @@ class StartVpnArgs {
 @TauriPlugin
 class VpnServicePlugin(private val activity: Activity) : Plugin(activity) {
     companion object {
+        @Volatile
         private var tileActionCallback: (String) -> Boolean = { false }
 
         fun dispatchTileAction(action: String): Boolean = tileActionCallback(action)

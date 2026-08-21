@@ -27,7 +27,9 @@ class EasyTierVpnTileService : TileService() {
         }
 
         fun requestStateUpdate(context: Context) {
-            requestListeningState(context, ComponentName(context, EasyTierVpnTileService::class.java))
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                requestListeningState(context, ComponentName(context, EasyTierVpnTileService::class.java))
+            }
         }
 
         private fun pendingAction(context: Context): String? =
