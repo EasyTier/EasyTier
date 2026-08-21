@@ -52,6 +52,12 @@ impl<R: Runtime> Vpnservice<R> {
             .map_err(Into::into)
     }
 
+    pub fn detach_vpn_instance(&self, payload: InstanceRequest) -> crate::Result<Status> {
+        self.0
+            .run_mobile_plugin("detachVpnInstance", payload)
+            .map_err(Into::into)
+    }
+
     pub fn get_vpn_status(&self, payload: VoidRequest) -> crate::Result<VpnStatus> {
         self.0
             .run_mobile_plugin("getVpnStatus", payload)

@@ -32,6 +32,11 @@ class SaveHeadlessProfileArgs {
     var configToml: String? = null
 }
 
+@InvokeArg
+class InstanceArgs {
+    var instanceId: String? = null
+}
+
 @TauriPlugin
 class VpnServicePlugin(private val activity: Activity) : Plugin(activity) {
     private val implementation = Example()
@@ -140,9 +145,35 @@ class VpnServicePlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     @Command
+    fun detachVpnInstance(invoke: Invoke) {
+        val instanceId = invoke.parseArgs(InstanceArgs::class.java).instanceId
+        if (instanceId.isNullOrBlank()) {
+            invoke.reject("instanceId is required")
+            return
+        }
+        activity.runOnUiThread {
+            if (TauriVpnService.self == null) {
+                invoke.resolve(JSObject())
+                return@runOnUiThread
+            }
+            val intent = TauriVpnService.createIntent(
+                activity,
+                TauriVpnService.ACTION_DETACH_INSTANCE,
+            ).putExtra(TauriVpnService.INSTANCE_ID, instanceId)
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                activity.startForegroundService(intent)
+            } else {
+                activity.startService(intent)
+            }
+            invoke.resolve(JSObject())
+        }
+    }
+
+    @Command
     fun getVpnStatus(invoke: Invoke) {
         val ret = JSObject()
         ret.put("running", TauriVpnService.self?.isVpnActive() == true)
+        ret.put("instanceId", TauriVpnService.self?.getActiveInstanceId())
         ret.put("ipv4Addr", TauriVpnService.ipv4Addr)
         ret.put("routes", TauriVpnService.routes)
         ret.put("dns", TauriVpnService.dns)

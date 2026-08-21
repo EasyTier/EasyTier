@@ -6,7 +6,7 @@ use std::{
 };
 
 use easytier::{
-    common::config::{ConfigFileControl, ConfigLoader, TomlConfigLoader},
+    common::config::{ConfigFileControl, ConfigFilePermission, ConfigLoader, TomlConfigLoader},
     instance::factory::{NativeInstanceManager, native_instance_manager_with_runtime},
 };
 use jni::{
@@ -115,8 +115,11 @@ fn start(config_toml: &str) -> anyhow::Result<NativeResult> {
         .map(|route| route.to_string())
         .collect::<BTreeSet<_>>();
     let enable_magic_dns = flags.accept_dns;
-    let instance_id =
-        ANDROID_INSTANCE_MANAGER.run_network_instance(config, ConfigFileControl::STATIC_CONFIG)?;
+    let control = ConfigFileControl::new(
+        None,
+        ConfigFilePermission::from(ConfigFilePermission::READ_ONLY),
+    );
+    let instance_id = ANDROID_INSTANCE_MANAGER.run_network_instance(config, control)?;
     *HEADLESS_INSTANCE_ID.write().expect("headless id poisoned") = Some(instance_id);
 
     let ready = ANDROID_RUNTIME.block_on(async {

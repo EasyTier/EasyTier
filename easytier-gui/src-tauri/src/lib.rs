@@ -86,6 +86,12 @@ macro_rules! get_client_manager {
     }};
 }
 
+#[cfg(target_os = "android")]
+fn detach_android_vpn_instance(app: &AppHandle, instance_id: Uuid) -> Result<(), String> {
+    tauri_plugin_vpnservice::detach_vpn_instance(app, instance_id.to_string())
+        .map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 fn easytier_version() -> Result<String, String> {
     Ok(easytier::VERSION.to_string())
@@ -201,6 +207,9 @@ async fn remove_network_instance(app: AppHandle, instance_id: String) -> Result<
         .handle_remove_network_instances(app.clone(), vec![instance_id])
         .await
         .map_err(|e| e.to_string())?;
+    #[cfg(target_os = "android")]
+    detach_android_vpn_instance(&app, instance_id)?;
+    #[cfg(not(target_os = "android"))]
     client_manager
         .post_stop_network_instances_hook(&app)
         .await?;
@@ -238,6 +247,9 @@ async fn update_network_config_state(
         .map_err(|e| e.to_string())?;
 
     if disabled {
+        #[cfg(target_os = "android")]
+        detach_android_vpn_instance(&app, instance_id)?;
+        #[cfg(not(target_os = "android"))]
         client_manager
             .post_stop_network_instances_hook(&app)
             .await?;
@@ -970,6 +982,7 @@ mod manager {
             Ok(())
         }
 
+        #[cfg(not(target_os = "android"))]
         pub(super) fn notify_vpn_stop_if_no_tun(&self, app: &AppHandle) -> Result<(), String> {
             let has_tun = self.get_enabled_instances_with_tun_ids().any(|_| true);
             if !has_tun {
@@ -1077,10 +1090,16 @@ mod manager {
                 .delete_network_configs(app.clone(), ids)
                 .await
                 .map_err(|e| e.to_string())?;
+            #[cfg(target_os = "android")]
+            for instance_id in ids {
+                super::detach_android_vpn_instance(app, *instance_id)?;
+            }
+            #[cfg(not(target_os = "android"))]
             self.notify_vpn_stop_if_no_tun(app)?;
             Ok(())
         }
 
+        #[cfg(not(target_os = "android"))]
         pub(super) async fn post_stop_network_instances_hook(
             &self,
             app: &AppHandle,

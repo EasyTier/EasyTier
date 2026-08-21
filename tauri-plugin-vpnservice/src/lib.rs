@@ -17,8 +17,8 @@ use mobile::Vpnservice;
 
 #[cfg(mobile)]
 use models::{
-    PingRequest, PingResponse, SaveHeadlessProfileRequest, StartVpnRequest, Status, VoidRequest,
-    VpnStatus,
+    InstanceRequest, PingRequest, PingResponse, SaveHeadlessProfileRequest, StartVpnRequest,
+    Status, VoidRequest, VpnStatus,
 };
 
 mod error;
@@ -61,6 +61,17 @@ async fn start_vpn<R: Runtime>(app: AppHandle<R>, payload: StartVpnRequest) -> R
 #[tauri::command]
 async fn stop_vpn<R: Runtime>(app: AppHandle<R>) -> Result<Status> {
     app.vpnservice().stop_vpn(VoidRequest {})
+}
+
+#[cfg(target_os = "android")]
+pub fn detach_vpn_instance<R: Runtime>(
+    app: &AppHandle<R>,
+    instance_id: impl Into<String>,
+) -> Result<()> {
+    app.vpnservice().detach_vpn_instance(InstanceRequest {
+        instance_id: instance_id.into(),
+    })?;
+    Ok(())
 }
 
 #[cfg(mobile)]

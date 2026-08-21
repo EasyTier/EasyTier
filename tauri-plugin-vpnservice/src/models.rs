@@ -29,6 +29,12 @@ pub struct StartVpnRequest {
     pub mtu: Option<u32>,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstanceRequest {
+    pub instance_id: String,
+}
+
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
@@ -39,6 +45,7 @@ pub struct Status {
 #[serde(rename_all = "camelCase")]
 pub struct VpnStatus {
     pub running: bool,
+    pub instance_id: Option<String>,
     pub ipv4_addr: Option<String>,
     pub routes: Option<Vec<String>>,
     pub dns: Option<String>,

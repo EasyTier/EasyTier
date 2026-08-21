@@ -24,6 +24,7 @@ export interface StartVpnRequest {
 
 export interface VpnStatusResponse {
   running: boolean;
+  instanceId?: string;
   ipv4Addr?: string;
   routes?: string[];
   dns?: string;

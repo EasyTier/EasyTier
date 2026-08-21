@@ -9,6 +9,7 @@ type Route = NetworkTypes.Route
 
 interface vpnStatus {
   running: boolean
+  instanceId: string | null | undefined
   ipv4Addr: string | null | undefined
   ipv4Cidr: number | null | undefined
   routes: string[]
@@ -28,6 +29,7 @@ let vpnPermissionRequest: Promise<boolean> | null = null
 
 const curVpnStatus: vpnStatus = {
   running: false,
+  instanceId: undefined,
   ipv4Addr: undefined,
   ipv4Cidr: undefined,
   routes: [],
@@ -130,8 +132,14 @@ function syncVpnStatusFromNative(status: Awaited<ReturnType<typeof get_vpn_statu
   curVpnStatus.running = status?.running ?? false
   if (!curVpnStatus.running) {
     activeVpnInstanceId = undefined
+    curVpnStatus.instanceId = undefined
     resetVpnConfigStatus()
     return
+  }
+
+  curVpnStatus.instanceId = status?.instanceId
+  if (status?.instanceId) {
+    activeVpnInstanceId = status.instanceId
   }
 
   const ipv4WithCidr = status?.ipv4Addr
@@ -234,12 +242,17 @@ async function doStartVpn(instanceId: string, ipv4Addr: string, cidr: number, ro
 async function onVpnServiceStart(payload: any) {
   console.log('vpn service start', JSON.stringify(payload))
   curVpnStatus.running = true
+  if (typeof payload?.instanceId === 'string' && payload.instanceId) {
+    activeVpnInstanceId = payload.instanceId
+    curVpnStatus.instanceId = payload.instanceId
+  }
 }
 
 async function onVpnServiceStop(payload: any) {
   console.log('vpn service stop', JSON.stringify(payload))
   curVpnStatus.running = false
   activeVpnInstanceId = undefined
+  curVpnStatus.instanceId = undefined
   resetVpnConfigStatus()
 }
 
