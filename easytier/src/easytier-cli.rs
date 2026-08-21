@@ -1966,13 +1966,23 @@ impl<'a> CommandHandler<'a> {
     }
 
     async fn apply_acl_set(&self, acl: Acl) -> Result<(), Error> {
+        // Clear legacy TCP/UDP whitelists too, so that replacing the ACL is a
+        // true full replacement instead of silently keeping old whitelist
+        // rules alongside the new chains.
         let client = self.get_config_client().await?;
         let request = PatchConfigRequest {
             instance: Some(self.instance_selector.clone()),
             patch: Some(InstanceConfigPatch {
                 acl: Some(AclPatch {
                     acl: Some(acl),
-                    ..Default::default()
+                    tcp_whitelist: vec![StringPatch {
+                        action: ConfigPatchAction::Clear.into(),
+                        value: String::new(),
+                    }],
+                    udp_whitelist: vec![StringPatch {
+                        action: ConfigPatchAction::Clear.into(),
+                        value: String::new(),
+                    }],
                 }),
                 ..Default::default()
             }),
@@ -2003,35 +2013,105 @@ impl<'a> CommandHandler<'a> {
         let parsed: AclToml = toml::from_str(&toml_text)
             .with_context(|| "failed to parse ACL TOML (expected `[acl.acl_v1]` structure)")?;
         let acl = parsed.acl.unwrap_or_default();
-        if acl.acl_v1.is_none()
-            || acl
-                .acl_v1
-                .as_ref()
-                .map(|v| v.chains.is_empty() && v.group.is_none())
-                .unwrap_or(true)
-        {
+        if acl.is_empty() {
             anyhow::bail!(
-                "parsed ACL is empty; provide at least one chain under `[acl.acl_v1.chains]`"
+                "parsed ACL is empty; provide at least one chain or a non-empty group under `[acl.acl_v1]`"
             );
         }
 
-        let acl_for_clone = acl.clone();
-        self.apply_to_instances(|handler| {
-            let acl = acl_for_clone.clone();
-            Box::pin(async move { handler.apply_acl_set(acl).await })
-        })
-        .await?;
+        // Redact group secrets before any JSON echo so credentials are never
+        // written to stdout or captured logs (matches core's dump redaction).
+        let mut sanitized = acl.clone();
+        if let Some(group) = sanitized.acl_v1.as_mut().and_then(|v| v.group.as_mut()) {
+            for declaration in group.declares.iter_mut() {
+                if !declaration.group_secret.is_empty() {
+                    declaration.group_secret = "<redacted>".to_string();
+                }
+            }
+        }
 
-        if *self.output_format == OutputFormat::Json {
-            println!("{}", serde_json::to_string_pretty(&acl)?);
-        } else {
-            println!(
-                "ACL updated successfully ({} chain(s))",
-                acl.acl_v1
-                    .as_ref()
-                    .map(|v| v.chains.len())
-                    .unwrap_or_default()
-            );
+        let chain_count = acl
+            .acl_v1
+            .as_ref()
+            .map(|v| v.chains.len())
+            .unwrap_or_default();
+
+        // Apply to each selected instance, collecting per-instance outcomes so
+        // a failure on one instance does not leave others partially or
+        // silently updated.
+        let outcomes: Vec<(String, Result<(), Error>)> = match self.fanout_targets().await? {
+            Some(targets) => {
+                let mut list = Vec::with_capacity(targets.len());
+                for target in targets {
+                    let label = target.label();
+                    let scoped = self.scoped_to_instance(&target);
+                    list.push((label, scoped.apply_acl_set(acl.clone()).await));
+                }
+                list
+            }
+            None => vec![(
+                "selected instance".to_string(),
+                self.apply_acl_set(acl.clone()).await,
+            )],
+        };
+
+        let mut failures: Vec<(String, Error)> = Vec::new();
+        let mut ok = 0usize;
+        for (label, result) in outcomes {
+            match result {
+                Ok(()) => {
+                    ok += 1;
+                    if *self.output_format == OutputFormat::Json {
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&serde_json::json!({
+                                "instance": label,
+                                "success": true,
+                                "chains": chain_count,
+                                "acl": &sanitized,
+                            }))?
+                        );
+                    } else {
+                        println!("== {} ==", label);
+                        println!("ACL updated successfully ({chain_count} chain(s))");
+                    }
+                }
+                Err(e) => {
+                    if *self.output_format == OutputFormat::Json {
+                        let _ = serde_json::to_writer(
+                            std::io::stdout(),
+                            &serde_json::json!({
+                                "instance": label,
+                                "success": false,
+                                "error": e.to_string(),
+                            }),
+                        );
+                    } else {
+                        println!("== {} ==", label);
+                        println!("ACL update failed: {e:#}");
+                    }
+                    failures.push((label, e));
+                }
+            }
+        }
+
+        if ok == 0 {
+            return Err(anyhow::anyhow!(
+                "ACL update failed on all {} selected instance(s)",
+                failures.len()
+            ));
+        }
+        if !failures.is_empty() {
+            return Err(anyhow::anyhow!(
+                "ACL update failed on {} of {} selected instance(s): {}",
+                failures.len(),
+                ok + failures.len(),
+                failures
+                    .iter()
+                    .map(|(label, _)| label.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
         }
         Ok(())
     }
