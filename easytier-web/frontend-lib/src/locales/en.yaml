@@ -23,6 +23,8 @@ vpn_portal_listen_port: VPN Portal Listen Port
 vpn_portal_client_network: Client Sub Network
 dev_name: TUN interface name
 advanced_settings: Advanced Settings
+vpn_auto_stop_on_wifi: Auto pause VPN on WiFi, resume on disconnect
+vpn_auto_stop_on_wifi_help: When enabled, the VPN pauses automatically while WiFi is connected and resumes when WiFi disconnects
 basic_settings: Basic Settings
 listener_urls: Listener URLs
 rpc_port: RPC Port

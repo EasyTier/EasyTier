@@ -149,6 +149,32 @@ Denies the register_listener command without any pre-configured scope.
 <tr>
 <td>
 
+`vpnservice:allow-set-auto-stop-on-wifi`
+
+</td>
+<td>
+
+Enables the set_auto_stop_on_wifi command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`vpnservice:deny-set-auto-stop-on-wifi`
+
+</td>
+<td>
+
+Denies the set_auto_stop_on_wifi command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `vpnservice:allow-start-vpn`
 
 </td>

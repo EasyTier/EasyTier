@@ -45,3 +45,9 @@ export async function stop_vpn(): Promise<InvokeResponse | null> {
 export async function get_vpn_status(): Promise<VpnStatusResponse | null> {
   return await invoke<VpnStatusResponse>('plugin:vpnservice|get_vpn_status', {})
 }
+
+export async function set_auto_stop_on_wifi(enabled: boolean): Promise<void> {
+  return await invoke<void>('plugin:vpnservice|set_auto_stop_on_wifi', {
+    enabled,
+  })
+}

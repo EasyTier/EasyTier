@@ -196,6 +196,34 @@ const instanceRecvBpsLimitInput = computed<string>({
     }
   },
 })
+
+const AUTO_STOP_ON_WIFI_KEY = 'easytier.auto_stop_vpn_on_wifi'
+
+const isAndroidApp = computed(() => {
+  const internals = (window as any).__TAURI_INTERNALS__
+  return !!internals?.invoke && /android/i.test(navigator.userAgent)
+})
+
+const autoStopOnWifi = ref(false)
+
+async function applyAutoStopOnWifi() {
+  const internals = (window as any).__TAURI_INTERNALS__
+  if (!internals?.invoke) return
+  try {
+    localStorage.setItem(AUTO_STOP_ON_WIFI_KEY, autoStopOnWifi.value ? '1' : '0')
+    await internals.invoke('plugin:vpnservice|set_auto_stop_on_wifi', { enabled: autoStopOnWifi.value })
+  } catch (e) {
+    console.error('set auto stop on wifi failed', e)
+  }
+}
+
+onMounted(() => {
+  if (isAndroidApp.value) {
+    const saved = localStorage.getItem(AUTO_STOP_ON_WIFI_KEY)
+    autoStopOnWifi.value = saved === '1'
+    applyAutoStopOnWifi()
+  }
+})
 </script>
 
 <template>
@@ -272,6 +300,17 @@ const instanceRecvBpsLimitInput = computed<string>({
                       <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t(flag.help)"></span>
                     </div>
 
+                  </div>
+                </div>
+              </div>
+
+              <div v-if="isAndroidApp" class="flex flex-row gap-x-9 flex-wrap">
+                <div class="flex flex-col gap-2 grow">
+                  <div class="flex items-center">
+                    <Checkbox v-model="autoStopOnWifi" input-id="vpn_auto_stop_on_wifi" :binary="true"
+                      @change="applyAutoStopOnWifi" />
+                    <label for="vpn_auto_stop_on_wifi" class="ml-2">{{ t('vpn_auto_stop_on_wifi') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('vpn_auto_stop_on_wifi_help')"></span>
                   </div>
                 </div>
               </div>

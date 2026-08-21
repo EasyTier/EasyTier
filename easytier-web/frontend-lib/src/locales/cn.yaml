@@ -23,6 +23,8 @@ vpn_portal_listen_port: 监听端口
 vpn_portal_client_network: 客户端子网
 dev_name: TUN接口名称
 advanced_settings: 高级设置
+vpn_auto_stop_on_wifi: 连接WiFi自动暂停VPN，断开自动恢复
+vpn_auto_stop_on_wifi_help: 开启后，连接WiFi时自动暂停VPN服务，断开WiFi后自动恢复连接
 basic_settings: 基础设置
 listener_urls: 监听地址
 rpc_port: RPC端口
