@@ -35,10 +35,10 @@ message NetworkConfig {
 
   repeated string proxy_cidrs = 11;
 
-  optional bool enable_vpn_portal = 12;
-  optional int32 vpn_portal_listen_port = 13;
-  optional string vpn_portal_client_network_addr = 14;
-  optional int32 vpn_portal_client_network_len = 15;
+  optional bool enable_vpn_portal = 12 [deprecated = true];
+  optional int32 vpn_portal_listen_port = 13 [deprecated = true];
+  optional string vpn_portal_client_network_addr = 14 [deprecated = true];
+  optional int32 vpn_portal_client_network_len = 15 [deprecated = true];
 
   optional bool advanced_settings = 16;
 
@@ -103,6 +103,19 @@ message NetworkConfig {
   optional bool enable_udp_broadcast_relay = 66;
   optional uint32 socket_mark = 67;
   repeated NetworkPeerConfig peers = 68;
+  optional VpnPortalConfig vpn_portal_config = 69;
+}
+
+message VpnPortalClientConfig {
+  string name = 1;
+  string virtual_ip = 2;
+  repeated string groups = 3;
+}
+
+message VpnPortalConfig {
+  string wireguard_listen = 1;
+  optional string wireguard_private_key = 2;
+  repeated VpnPortalClientConfig clients = 3;
 }
 
 message NetworkPeerConfig {
@@ -125,7 +138,7 @@ message MyNodeInfo {
   peer_rpc.GetIpListResponse ips = 4;
   common.StunInfo stun_info = 5;
   repeated common.Url listeners = 6;
-  optional string vpn_portal_cfg = 7;
+  optional string vpn_portal_cfg = 7 [deprecated = true];
   uint32 peer_id = 8;
 }
 

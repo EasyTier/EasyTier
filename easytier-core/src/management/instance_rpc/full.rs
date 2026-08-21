@@ -12,7 +12,8 @@ use easytier_proto::{
             ListCredentialsResponse, ListMappedListenerRequest, ListMappedListenerResponse,
             ListPortForwardRequest, ListPortForwardResponse, MappedListener,
             MappedListenerManageRpc, MetricSnapshot, PeerManageRpc, PortForwardManageRpc,
-            RevokeCredentialRequest, RevokeCredentialResponse, StatsRpc, VpnPortalInfo,
+            RevokeCredentialRequest, RevokeCredentialResponse, StatsRpc, UpsertCredentialRequest,
+            UpsertCredentialResponse, VpnPortalClientInfo, VpnPortalClientState, VpnPortalInfo,
             VpnPortalRpc,
         },
     },
@@ -26,11 +27,14 @@ use easytier_proto::{
 
 use crate::{
     config::toml::ConfigLoader as _,
+    gateway::vpn_portal::{PortalClientState, PortalInfoSnapshot},
     instance::{
         CoreInstance, CoreInstanceHost,
         manager::{InstanceFactory, InstanceManager},
     },
-    peers::credential_manager::{CredentialCreateOptions, CredentialInfo as CoreCredentialInfo},
+    peers::credential_manager::{
+        CredentialCreateOptions, CredentialInfo as CoreCredentialInfo, CredentialUpsertOptions,
+    },
 };
 
 use super::InstanceManagementRpc;
@@ -105,6 +109,7 @@ fn credential_info_to_api(info: CoreCredentialInfo) -> CredentialInfo {
         expiry_unix: info.expiry_unix,
         allowed_proxy_cidrs: info.allowed_proxy_cidrs,
         reusable: info.reusable,
+        public_key_fingerprint: info.public_key_fingerprint,
     }
 }
 
@@ -137,6 +142,47 @@ where
     }
 }
 
+fn vpn_portal_info_to_proto(info: PortalInfoSnapshot) -> VpnPortalInfo {
+    let client_config = info
+        .clients
+        .first()
+        .map(|client| client.client_config.clone())
+        .unwrap_or_default();
+    let connected_clients = info
+        .clients
+        .iter()
+        .filter(|client| client.state == PortalClientState::Online)
+        .filter_map(|client| client.endpoint.clone())
+        .collect();
+    #[allow(deprecated)]
+    VpnPortalInfo {
+        vpn_type: info.vpn_type,
+        client_config,
+        connected_clients,
+        clients: info
+            .clients
+            .into_iter()
+            .map(|client| VpnPortalClientInfo {
+                name: client.name,
+                virtual_ip: client.virtual_ip.to_string(),
+                groups: client.groups,
+                state: match client.state {
+                    PortalClientState::Offline => VpnPortalClientState::Offline as i32,
+                    PortalClientState::Connecting => VpnPortalClientState::Connecting as i32,
+                    PortalClientState::Online => VpnPortalClientState::Online as i32,
+                    PortalClientState::Error => VpnPortalClientState::Error as i32,
+                },
+                peer_id: client.peer_id,
+                endpoint: client.endpoint,
+                tunnel_ip: client.tunnel_ip.map(|address| address.to_string()),
+                client_config: client.client_config,
+                error: client.error,
+            })
+            .collect(),
+        listener: info.listener,
+    }
+}
+
 #[async_trait::async_trait]
 impl<F, H> VpnPortalRpc for InstanceManagementRpc<F>
 where
@@ -155,11 +201,7 @@ where
             .vpn_portal_info()
             .await;
         Ok(GetVpnPortalInfoResponse {
-            vpn_portal_info: Some(VpnPortalInfo {
-                vpn_type: info.vpn_type,
-                client_config: info.client_config,
-                connected_clients: info.connected_clients,
-            }),
+            vpn_portal_info: Some(vpn_portal_info_to_proto(info)),
         })
     }
 }
@@ -298,7 +340,27 @@ where
         Ok(GenerateCredentialResponse {
             credential_id: generated.credential_id,
             credential_secret: generated.secret,
+            expiry_unix: generated.expiry_unix,
         })
+    }
+
+    async fn upsert_credential(
+        &self,
+        _: BaseController,
+        request: UpsertCredentialRequest,
+    ) -> rpc_types::error::Result<UpsertCredentialResponse> {
+        let changed = self
+            .instance(request.instance.as_ref())?
+            .upsert_credential(CredentialUpsertOptions {
+                credential_id: request.credential_id,
+                credential_secret: request.credential_secret,
+                groups: request.groups,
+                allow_relay: request.allow_relay,
+                allowed_proxy_cidrs: request.allowed_proxy_cidrs,
+                expiry_unix: request.expiry_unix,
+                reusable: request.reusable.unwrap_or(true),
+            })?;
+        Ok(UpsertCredentialResponse { changed })
     }
 
     async fn revoke_credential(
@@ -362,5 +424,71 @@ where
         _: ReportPeersRequest,
     ) -> rpc_types::error::Result<ReportPeersResponse> {
         Err(anyhow::anyhow!("not implemented for management API").into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::Ipv4Addr;
+
+    use super::*;
+    use crate::gateway::vpn_portal::PortalClientInfoSnapshot;
+
+    #[test]
+    #[allow(deprecated)]
+    fn vpn_portal_info_to_proto_preserves_per_client_status() {
+        let info = vpn_portal_info_to_proto(PortalInfoSnapshot {
+            vpn_type: "wireguard".to_owned(),
+            clients: vec![
+                PortalClientInfoSnapshot {
+                    name: "alice".to_owned(),
+                    virtual_ip: Ipv4Addr::new(10, 82, 0, 2),
+                    groups: vec!["ops".to_owned()],
+                    state: PortalClientState::Online,
+                    peer_id: Some(42),
+                    endpoint: Some("198.51.100.2:51820".to_owned()),
+                    tunnel_ip: Some(Ipv4Addr::new(192, 0, 2, 1)),
+                    client_config: "[Interface]\nPrivateKey = secret\n".to_owned(),
+                    error: None,
+                },
+                PortalClientInfoSnapshot {
+                    name: "bob".to_owned(),
+                    virtual_ip: Ipv4Addr::new(10, 82, 0, 3),
+                    groups: vec!["guests".to_owned()],
+                    state: PortalClientState::Error,
+                    peer_id: None,
+                    endpoint: None,
+                    tunnel_ip: None,
+                    client_config: String::new(),
+                    error: Some("activation failed".to_owned()),
+                },
+            ],
+            listener: Some("udp://0.0.0.0:51820".to_owned()),
+        });
+
+        assert_eq!(info.vpn_type, "wireguard");
+        assert_eq!(info.listener.as_deref(), Some("udp://0.0.0.0:51820"));
+        assert_eq!(info.client_config, "[Interface]\nPrivateKey = secret\n");
+        assert_eq!(info.connected_clients, ["198.51.100.2:51820"]);
+        assert_eq!(info.clients.len(), 2);
+
+        let online = &info.clients[0];
+        assert_eq!(online.name, "alice");
+        assert_eq!(online.virtual_ip, "10.82.0.2");
+        assert_eq!(online.groups, ["ops"]);
+        assert_eq!(online.state, VpnPortalClientState::Online as i32);
+        assert_eq!(online.peer_id, Some(42));
+        assert_eq!(online.endpoint.as_deref(), Some("198.51.100.2:51820"));
+        assert_eq!(online.tunnel_ip.as_deref(), Some("192.0.2.1"));
+        assert_eq!(online.client_config, "[Interface]\nPrivateKey = secret\n");
+        assert_eq!(online.error, None);
+
+        let failed = &info.clients[1];
+        assert_eq!(failed.name, "bob");
+        assert_eq!(failed.state, VpnPortalClientState::Error as i32);
+        assert_eq!(failed.peer_id, None);
+        assert_eq!(failed.endpoint, None);
+        assert_eq!(failed.tunnel_ip, None);
+        assert_eq!(failed.error.as_deref(), Some("activation failed"));
     }
 }

@@ -143,6 +143,11 @@ impl PeerMap {
         peer_id == self.my_peer_id || self.peer_map.contains_key(&peer_id)
     }
 
+    pub(crate) fn has_direct_attached_peer(&self, peer_id: PeerId) -> bool {
+        self.get_peer_by_id(peer_id)
+            .is_some_and(|peer| peer.has_direct_attached_conn())
+    }
+
     pub(crate) fn is_self(&self, peer_id: PeerId) -> bool {
         peer_id == self.my_peer_id
     }

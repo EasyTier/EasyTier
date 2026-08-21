@@ -4,8 +4,8 @@ use crate::{
         config::{
             ConfigFileControl, ConfigLoader, ConsoleLoggerConfig, EncryptionAlgorithm,
             FileLoggerConfig, LoggingConfigLoader, NetworkIdentity, PeerConfig, PortForwardConfig,
-            TomlConfigLoader, VpnPortalConfig, add_proxy_network_to_config, load_config_from_file,
-            load_toml_config_from_path, parse_mapped_listener_urls,
+            TomlConfigLoader, VpnPortalClientConfig, VpnPortalConfig, add_proxy_network_to_config,
+            load_config_from_file, load_toml_config_from_path, parse_mapped_listener_urls,
         },
         constants::EASYTIER_VERSION,
         log,
@@ -280,6 +280,29 @@ struct NetworkOptions {
         help = t!("core_clap.vpn_portal").to_string()
     )]
     vpn_portal: Option<String>,
+
+    #[arg(
+        long,
+        env = "ET_VPN_PORTAL_PRIVATE_KEY",
+        help = t!("core_clap.vpn_portal_private_key").to_string()
+    )]
+    vpn_portal_private_key: Option<String>,
+
+    #[arg(
+        long = "vpn-portal-client",
+        env = "ET_VPN_PORTAL_CLIENT",
+        value_delimiter = ',',
+        help = t!("core_clap.vpn_portal_client").to_string()
+    )]
+    vpn_portal_clients: Vec<String>,
+
+    #[arg(
+        long = "vpn-portal-client-group",
+        env = "ET_VPN_PORTAL_CLIENT_GROUP",
+        value_delimiter = ',',
+        help = t!("core_clap.vpn_portal_client_group").to_string()
+    )]
+    vpn_portal_client_groups: Vec<String>,
 
     #[arg(
         long,
@@ -694,6 +717,15 @@ struct NetworkOptions {
 
     #[arg(
         long,
+        env = "ET_TCP_STUN_SERVERS",
+        value_delimiter = ',',
+        help = t!("core_clap.tcp_stun_servers").to_string(),
+        num_args = 0..
+    )]
+    tcp_stun_servers: Option<Vec<String>>,
+
+    #[arg(
+        long,
         env = "ET_SECURE_MODE",
         help = t!("core_clap.secure_mode").to_string(),
         num_args = 0..=1,
@@ -855,6 +887,77 @@ impl Cli {
 }
 
 impl NetworkOptions {
+    fn parse_vpn_portal_listener(value: &str) -> anyhow::Result<SocketAddr> {
+        let url: url::Url = value
+            .parse()
+            .with_context(|| format!("failed to parse vpn portal url: {value}"))?;
+        if url.scheme() != "wg" {
+            anyhow::bail!("vpn portal URL must use the wg scheme: {value}");
+        }
+        if !url.path().is_empty() {
+            anyhow::bail!(
+                "legacy VPN portal CIDR paths are no longer supported; use wg://host:port and configure --vpn-portal-client NAME=IP"
+            );
+        }
+        if !url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            anyhow::bail!("vpn portal URL must have the form wg://host:port");
+        }
+
+        let host: IpAddr = url
+            .host_str()
+            .ok_or_else(|| anyhow::anyhow!("vpn portal url missing host"))?
+            .parse()
+            .with_context(|| "vpn portal listener host must be an IP address")?;
+        let port = url
+            .port()
+            .ok_or_else(|| anyhow::anyhow!("vpn portal url missing port"))?;
+        Ok(SocketAddr::new(host, port))
+    }
+
+    fn parse_vpn_portal_clients(&self) -> anyhow::Result<Vec<VpnPortalClientConfig>> {
+        let mut clients = self
+            .vpn_portal_clients
+            .iter()
+            .map(|value| {
+                let (name, virtual_ip) = value.split_once('=').ok_or_else(|| {
+                    anyhow::anyhow!("invalid vpn portal client {value:?}; expected NAME=IP")
+                })?;
+                if name.is_empty() {
+                    anyhow::bail!("vpn portal client name cannot be empty");
+                }
+                Ok(VpnPortalClientConfig {
+                    name: name.to_owned(),
+                    virtual_ip: virtual_ip.parse().with_context(|| {
+                        format!("invalid virtual IP for vpn portal client {name}: {virtual_ip}")
+                    })?,
+                    groups: Vec::new(),
+                })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+
+        for value in &self.vpn_portal_client_groups {
+            let (name, group) = value.split_once('=').ok_or_else(|| {
+                anyhow::anyhow!("invalid vpn portal client group {value:?}; expected NAME=GROUP")
+            })?;
+            if name.is_empty() || group.is_empty() {
+                anyhow::bail!("vpn portal client group name and group cannot be empty");
+            }
+            let client = clients
+                .iter_mut()
+                .find(|client| client.name == name)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("vpn portal client group references unknown CLI client: {name}")
+                })?;
+            client.groups.push(group.to_owned());
+        }
+
+        Ok(clients)
+    }
+
     fn can_merge(
         &self,
         cfg: &TomlConfigLoader,
@@ -990,23 +1093,41 @@ impl NetworkOptions {
             cfg.set_inst_name(inst_name.clone());
         }
 
-        if let Some(vpn_portal) = self.vpn_portal.as_ref() {
-            let url: url::Url = vpn_portal
-                .parse()
-                .with_context(|| format!("failed to parse vpn portal url: {}", vpn_portal))?;
-            let host = url
-                .host_str()
-                .ok_or_else(|| anyhow::anyhow!("vpn portal url missing host"))?;
-            let port = url
-                .port()
-                .ok_or_else(|| anyhow::anyhow!("vpn portal url missing port"))?;
-            let client_cidr = url.path()[1..].parse().with_context(|| {
-                format!("failed to parse vpn portal client cidr: {}", url.path())
-            })?;
-            let wireguard_listen: SocketAddr = format!("{}:{}", host, port).parse().unwrap();
+        let has_vpn_portal_overrides = self.vpn_portal.is_some()
+            || self.vpn_portal_private_key.is_some()
+            || !self.vpn_portal_clients.is_empty()
+            || !self.vpn_portal_client_groups.is_empty();
+        if has_vpn_portal_overrides {
+            if self.vpn_portal_clients.is_empty() && !self.vpn_portal_client_groups.is_empty() {
+                anyhow::bail!(
+                    "--vpn-portal-client-group requires at least one --vpn-portal-client"
+                );
+            }
+
+            let existing = cfg.get_vpn_portal_config();
+            let wireguard_listen = match self.vpn_portal.as_deref() {
+                Some(value) => Self::parse_vpn_portal_listener(value)?,
+                None => existing
+                    .as_ref()
+                    .map(|portal| portal.wireguard_listen)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("--vpn-portal is required when no vpn_portal_config exists")
+                    })?,
+            };
+            let wireguard_private_key = self
+                .vpn_portal_private_key
+                .clone()
+                .or_else(|| existing.as_ref()?.wireguard_private_key.clone());
+            let clients = if self.vpn_portal_clients.is_empty() {
+                existing.map_or_else(Vec::new, |portal| portal.clients)
+            } else {
+                self.parse_vpn_portal_clients()?
+            };
+
             cfg.set_vpn_portal_config(VpnPortalConfig {
                 wireguard_listen,
-                client_cidr,
+                wireguard_private_key,
+                clients,
             });
         }
 
@@ -1190,15 +1311,33 @@ impl NetworkOptions {
         cfg.set_udp_whitelist(old_udp_whitelist);
 
         if let Some(stun_servers) = &self.stun_servers {
-            let mut old_stun_servers = cfg.get_stun_servers().unwrap_or_default();
-            old_stun_servers.extend(stun_servers.iter().cloned());
-            cfg.set_stun_servers(Some(old_stun_servers));
+            if stun_servers.is_empty() {
+                cfg.set_stun_servers(Some(Vec::new()));
+            } else {
+                let mut old_stun_servers = cfg.get_stun_servers().unwrap_or_default();
+                old_stun_servers.extend(stun_servers.iter().cloned());
+                cfg.set_stun_servers(Some(old_stun_servers));
+            }
         }
 
         if let Some(stun_servers_v6) = &self.stun_servers_v6 {
-            let mut old_stun_servers_v6 = cfg.get_stun_servers_v6().unwrap_or_default();
-            old_stun_servers_v6.extend(stun_servers_v6.iter().cloned());
-            cfg.set_stun_servers_v6(Some(old_stun_servers_v6));
+            if stun_servers_v6.is_empty() {
+                cfg.set_stun_servers_v6(Some(Vec::new()));
+            } else {
+                let mut old_stun_servers_v6 = cfg.get_stun_servers_v6().unwrap_or_default();
+                old_stun_servers_v6.extend(stun_servers_v6.iter().cloned());
+                cfg.set_stun_servers_v6(Some(old_stun_servers_v6));
+            }
+        }
+
+        if let Some(tcp_stun_servers) = &self.tcp_stun_servers {
+            if tcp_stun_servers.is_empty() {
+                cfg.set_tcp_stun_servers(Some(Vec::new()));
+            } else {
+                let mut old_tcp_stun_servers = cfg.get_tcp_stun_servers().unwrap_or_default();
+                old_tcp_stun_servers.extend(tcp_stun_servers.iter().cloned());
+                cfg.set_tcp_stun_servers(Some(old_tcp_stun_servers));
+            }
         }
         Ok(())
     }
@@ -1305,6 +1444,9 @@ fn parse_cli() -> Cli {
     }
     if let Some(stun_servers_v6) = &mut cli.network_options.stun_servers_v6 {
         stun_servers_v6.retain(|s| !s.trim().is_empty());
+    }
+    if let Some(tcp_stun_servers) = &mut cli.network_options.tcp_stun_servers {
+        tcp_stun_servers.retain(|s| !s.trim().is_empty());
     }
     cli
 }
@@ -1467,7 +1609,7 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
             ",
             config_file,
             control.permission,
-            cfg.dump()
+            cfg.dump_redacted()
         );
         manager.run_network_instance(cfg, control)?;
     }
@@ -1484,7 +1626,7 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
             {}\n\
             -----------------------------------\n\
             ",
-            cfg.dump()
+            cfg.dump_redacted()
         );
         manager.run_network_instance(cfg, ConfigFileControl::STATIC_CONFIG)?;
     }
@@ -1770,5 +1912,162 @@ enabled = true
         assert_eq!(identity.network_secret, None);
         assert_eq!(identity.network_secret_digest, None);
         assert_eq!(cfg.get_hostname(), "override-host");
+    }
+
+    #[test]
+    fn empty_stun_server_options_clear_existing_config() {
+        let cfg = TomlConfigLoader::new_from_str(
+            r#"
+stun_servers = ["udp.example.com:3478"]
+stun_servers_v6 = ["v6.example.com:3478"]
+tcp_stun_servers = ["tcp.example.com:3478"]
+"#,
+        )
+        .unwrap();
+
+        NetworkOptions {
+            stun_servers: Some(Vec::new()),
+            stun_servers_v6: Some(Vec::new()),
+            tcp_stun_servers: Some(Vec::new()),
+            ..Default::default()
+        }
+        .merge_into(&cfg)
+        .unwrap();
+
+        assert_eq!(cfg.get_stun_servers(), Some(Vec::new()));
+        assert_eq!(cfg.get_stun_servers_v6(), Some(Vec::new()));
+        assert_eq!(cfg.get_tcp_stun_servers(), Some(Vec::new()));
+    }
+
+    #[test]
+    fn vpn_portal_cli_uses_named_clients_and_preserves_unset_fields() {
+        let cfg = TomlConfigLoader::new_from_str(
+            r#"
+[vpn_portal_config]
+wireguard_listen = "127.0.0.1:51820"
+wireguard_private_key = "existing-key"
+
+[[vpn_portal_config.clients]]
+name = "existing"
+virtual_ip = "10.144.144.9"
+"#,
+        )
+        .unwrap();
+
+        NetworkOptions {
+            vpn_portal: Some("wg://0.0.0.0:51821".to_owned()),
+            ..Default::default()
+        }
+        .merge_into(&cfg)
+        .unwrap();
+        let preserved = cfg.get_vpn_portal_config().unwrap();
+        assert_eq!(preserved.wireguard_listen, "0.0.0.0:51821".parse().unwrap());
+        assert_eq!(
+            preserved.wireguard_private_key.as_deref(),
+            Some("existing-key")
+        );
+        assert_eq!(preserved.clients[0].name, "existing");
+
+        NetworkOptions {
+            vpn_portal_private_key: Some("replacement-key".to_owned()),
+            vpn_portal_clients: vec![
+                "alice=10.144.144.10".to_owned(),
+                "bob=10.144.144.11".to_owned(),
+            ],
+            vpn_portal_client_groups: vec!["alice=staff".to_owned(), "alice=dev".to_owned()],
+            ..Default::default()
+        }
+        .merge_into(&cfg)
+        .unwrap();
+
+        let replaced = cfg.get_vpn_portal_config().unwrap();
+        assert_eq!(replaced.wireguard_listen, "0.0.0.0:51821".parse().unwrap());
+        assert_eq!(
+            replaced.wireguard_private_key.as_deref(),
+            Some("replacement-key")
+        );
+        assert_eq!(
+            replaced
+                .clients
+                .iter()
+                .map(|client| client.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alice", "bob"]
+        );
+        assert_eq!(
+            replaced.clients[0].groups,
+            vec!["staff".to_owned(), "dev".to_owned()]
+        );
+        assert!(replaced.clients[1].groups.is_empty());
+    }
+
+    #[test]
+    fn vpn_portal_cli_rejects_legacy_path_and_invalid_group_mapping() {
+        let error = NetworkOptions::parse_vpn_portal_listener("wg://0.0.0.0:51820/10.14.14.0/24")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("legacy VPN portal CIDR"), "{error}");
+
+        let cfg = TomlConfigLoader::default();
+        let missing_clients = NetworkOptions {
+            vpn_portal: Some("wg://0.0.0.0:51820".to_owned()),
+            vpn_portal_client_groups: vec!["alice=staff".to_owned()],
+            ..Default::default()
+        }
+        .merge_into(&cfg)
+        .unwrap_err()
+        .to_string();
+        assert!(
+            missing_clients.contains("requires at least one --vpn-portal-client"),
+            "{missing_clients}"
+        );
+
+        let unknown_client = NetworkOptions {
+            vpn_portal: Some("wg://0.0.0.0:51820".to_owned()),
+            vpn_portal_clients: vec!["alice=10.144.144.10".to_owned()],
+            vpn_portal_client_groups: vec!["bob=staff".to_owned()],
+            ..Default::default()
+        }
+        .merge_into(&TomlConfigLoader::default())
+        .unwrap_err()
+        .to_string();
+        assert!(
+            unknown_client.contains("unknown CLI client: bob"),
+            "{unknown_client}"
+        );
+    }
+
+    #[test]
+    fn vpn_portal_cli_repeat_flags_use_singular_names() {
+        let cli = Cli::try_parse_from([
+            "easytier-core",
+            "--vpn-portal",
+            "wg://0.0.0.0:51820",
+            "--vpn-portal-private-key",
+            "private-key",
+            "--vpn-portal-client",
+            "alice=10.144.144.10",
+            "--vpn-portal-client",
+            "bob=10.144.144.11",
+            "--vpn-portal-client-group",
+            "alice=staff",
+        ])
+        .unwrap();
+
+        assert_eq!(
+            cli.network_options.vpn_portal_clients,
+            vec![
+                "alice=10.144.144.10".to_owned(),
+                "bob=10.144.144.11".to_owned()
+            ]
+        );
+        assert_eq!(
+            cli.network_options.vpn_portal_client_groups,
+            vec!["alice=staff".to_owned()]
+        );
+        assert_eq!(
+            cli.network_options.vpn_portal_private_key.as_deref(),
+            Some("private-key")
+        );
     }
 }

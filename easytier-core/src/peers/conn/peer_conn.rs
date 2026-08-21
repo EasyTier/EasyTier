@@ -29,13 +29,14 @@ use snow::{HandshakeState, params::NoiseParams};
 use crate::foundation::time::{Duration, timeout};
 
 use super::{
+    peer_conn_liveness::{FEATURE as LIVENESS_ECHO_FEATURE, PeerConnLiveness},
     peer_conn_ping::PeerConnPinger,
     peer_session::{PeerSession, PeerSessionAction},
 };
 use crate::peers::{
-    PacketRecvChan,
+    PacketRecvChan, PeerConnectionOrigin, PeerPacketIngress,
     context::{ArcPeerContext, NetworkIdentity, NetworkSecretDigest},
-    send_packet_to_chan,
+    send_peer_packet_to_chan,
     traffic_metrics::data_packet_payload_len,
 };
 use crate::{
@@ -88,6 +89,7 @@ struct NoiseHandshakeResult {
     // foreign network manager use this to verify peer.
     // the challenge will be sent to authorized peer and compare the proof against it.
     client_secret_proof: Option<SecretProof>,
+    remote_features: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -270,6 +272,7 @@ impl PeerConnCloseNotify {
 
 pub struct PeerConn {
     conn_id: PeerConnId,
+    origin: PeerConnectionOrigin,
 
     my_peer_id: PeerId,
     peer_id_hint: Option<PeerId>,
@@ -300,6 +303,7 @@ pub struct PeerConn {
     latency_stats: Arc<WindowLatency>,
     throughput: Arc<Throughput>,
     loss_rate_stats: Arc<AtomicU32>,
+    liveness: PeerConnLiveness,
 
     peer_session_store: Arc<PeerSessionStore>,
     my_encrypt_algo: String,
@@ -316,21 +320,30 @@ impl Debug for PeerConn {
 }
 
 impl PeerConn {
+    #[cfg(test)]
     pub(crate) fn new(
         my_peer_id: PeerId,
         context: ArcPeerContext,
         tunnel: Box<dyn Tunnel>,
         peer_session_store: Arc<PeerSessionStore>,
     ) -> Self {
-        Self::new_with_peer_id_hint(my_peer_id, context, tunnel, None, peer_session_store)
+        Self::new_with_peer_id_hint_and_origin(
+            my_peer_id,
+            context,
+            tunnel,
+            None,
+            peer_session_store,
+            PeerConnectionOrigin::Network,
+        )
     }
 
-    pub(crate) fn new_with_peer_id_hint(
+    pub(crate) fn new_with_peer_id_hint_and_origin(
         my_peer_id: PeerId,
         context: ArcPeerContext,
         tunnel: Box<dyn Tunnel>,
         peer_id_hint: Option<PeerId>,
         peer_session_store: Arc<PeerSessionStore>,
+        origin: PeerConnectionOrigin,
     ) -> Self {
         let flags = context.flags();
         let tunnel_info = tunnel.info();
@@ -347,7 +360,9 @@ impl PeerConn {
 
         let peer_conn_tunnel_filter = StatsRecorderTunnelFilter::new();
         let throughput = peer_conn_tunnel_filter.filter_output();
-        let filter_chain = TunnelFilterChain::new(session_filter.clone(), peer_conn_tunnel_filter);
+        let liveness = PeerConnLiveness::new();
+        let filter_chain = TunnelFilterChain::new(session_filter.clone(), peer_conn_tunnel_filter)
+            .chain(liveness.clone());
         let peer_conn_tunnel = TunnelWithFilter::new(tunnel, filter_chain);
         let mut mpsc_tunnel = MpscTunnel::new(peer_conn_tunnel, Some(Duration::from_secs(7)));
 
@@ -358,6 +373,7 @@ impl PeerConn {
 
         PeerConn {
             conn_id,
+            origin,
 
             my_peer_id,
             peer_id_hint,
@@ -389,6 +405,7 @@ impl PeerConn {
             latency_stats: Arc::new(WindowLatency::new(15)),
             throughput,
             loss_rate_stats: Arc::new(AtomicU32::new(0)),
+            liveness,
 
             peer_session_store,
             my_encrypt_algo,
@@ -420,6 +437,10 @@ impl PeerConn {
 
     pub fn get_conn_id(&self) -> PeerConnId {
         self.conn_id
+    }
+
+    pub(crate) fn is_attached(&self) -> bool {
+        self.origin == PeerConnectionOrigin::Attached
     }
 
     pub fn set_is_hole_punched(&mut self, is_hole_punched: bool) {
@@ -515,7 +536,7 @@ impl PeerConn {
             magic: MAGIC,
             my_peer_id: self.my_peer_id,
             version: VERSION,
-            features: Vec::new(),
+            features: vec![LIVENESS_ECHO_FEATURE.to_owned()],
             network_name: network.network_name.clone(),
             ..Default::default()
         };
@@ -796,6 +817,7 @@ impl PeerConn {
             a_session_generation,
             a_conn_id: Some(a_conn_id.into()),
             client_encryption_algorithm: self.my_encrypt_algo.clone(),
+            features: vec![LIVENESS_ECHO_FEATURE.to_owned()],
         };
 
         let mut hs = builder
@@ -941,6 +963,7 @@ impl PeerConn {
             // we have authorized the peer with noise handshake, so just set secret digest same as us even remote is a shared node.
             secret_digest,
             client_secret_proof: None,
+            remote_features: msg2_pb.features,
         })
     }
 
@@ -1067,6 +1090,7 @@ impl PeerConn {
             a_conn_id_echo: msg1_pb.a_conn_id,
             secret_proof_32,
             server_encryption_algorithm: algo,
+            features: vec![LIVENESS_ECHO_FEATURE.to_owned()],
         };
         self.send_noise_msg(
             msg2_pb,
@@ -1151,6 +1175,7 @@ impl PeerConn {
                 challenge: handshake_hash_for_proof,
                 proof: p.clone(),
             }),
+            remote_features: msg1_pb.features,
         })
     }
 
@@ -1162,7 +1187,7 @@ impl PeerConn {
             version: VERSION,
             network_name: noise.remote_network_name.clone(),
 
-            features: Vec::new(),
+            features: noise.remote_features.clone(),
             network_secret_digest: noise.secret_digest.clone(),
         }
     }
@@ -1217,6 +1242,9 @@ impl PeerConn {
             )));
         }
 
+        self.liveness
+            .set_remote_features(&self.info.as_ref().unwrap().features);
+
         if self.get_peer_id() == self.my_peer_id {
             Err(Error::WaitRespError("peer id conflict".to_owned()))
         } else {
@@ -1245,6 +1273,9 @@ impl PeerConn {
             self.is_client = Some(true);
         }
 
+        self.liveness
+            .set_remote_features(&self.info.as_ref().unwrap().features);
+
         if self.get_peer_id() == self.my_peer_id {
             Err(Error::WaitRespError(
                 "peer id conflict, are you connecting to yourself?".to_owned(),
@@ -1270,6 +1301,11 @@ impl PeerConn {
         let ctrl_sender = self.ctrl_resp_sender.clone();
         let conn_info_for_instrument = self.get_conn_info();
         let context = self.context.clone();
+        let ingress = PeerPacketIngress::Peer {
+            peer_id: self.get_peer_id(),
+            conn_id: self.conn_id,
+            origin: self.origin,
+        };
         let control_network_name = conn_info_for_instrument.network_name.clone();
 
         let is_foreign_network =
@@ -1313,7 +1349,10 @@ impl PeerConn {
                         if let Err(e) = ctrl_sender.send(zc_packet) {
                             tracing::error!(?e, "peer conn send ctrl resp error");
                         }
-                    } else if send_packet_to_chan(&sender, zc_packet).await.is_err() {
+                    } else if send_peer_packet_to_chan(&sender, zc_packet, ingress)
+                        .await
+                        .is_err()
+                    {
                         break;
                     }
 
@@ -1348,6 +1387,7 @@ impl PeerConn {
             self.throughput.clone(),
             self.context.clone(),
             self.get_conn_info().network_name,
+            self.liveness.clone(),
         );
 
         let close_event_notifier = self.close_event_notifier.clone();

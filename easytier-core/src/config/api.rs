@@ -80,11 +80,19 @@ pub fn network_config_from_toml(config: &TomlConfig) -> NetworkConfig {
     }
 
     if let Some(vpn_config) = config.get_vpn_portal_config() {
-        result.enable_vpn_portal = Some(true);
-        result.vpn_portal_client_network_addr =
-            Some(vpn_config.client_cidr.first_address().to_string());
-        result.vpn_portal_client_network_len = Some(vpn_config.client_cidr.network_length() as i32);
-        result.vpn_portal_listen_port = Some(vpn_config.wireguard_listen.port() as i32);
+        result.vpn_portal_config = Some(manage::VpnPortalConfig {
+            wireguard_listen: vpn_config.wireguard_listen.to_string(),
+            wireguard_private_key: vpn_config.wireguard_private_key,
+            clients: vpn_config
+                .clients
+                .into_iter()
+                .map(|client| manage::VpnPortalClientConfig {
+                    name: client.name,
+                    virtual_ip: client.virtual_ip.to_string(),
+                    groups: client.groups,
+                })
+                .collect(),
+        });
     }
 
     if let Some(routes) = config.get_routes()

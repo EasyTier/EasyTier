@@ -11,6 +11,9 @@ export class GUIRemoteClient implements Api.RemoteClient {
     async get_network_info(inst_id: string): Promise<NetworkTypes.NetworkInstanceRunningInfo | undefined> {
         return backend.collectNetworkInfo(inst_id).then(infos => infos.info?.map?.[inst_id]);
     }
+    async get_vpn_portal_info(inst_id: string): Promise<NetworkTypes.VpnPortalInfo | undefined> {
+        return backend.getVpnPortalInfo(inst_id);
+    }
     async list_network_instance_ids(): Promise<Api.ListNetworkInstanceIdResponse> {
         return backend.listNetworkInstanceIds();
     }

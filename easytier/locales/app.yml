@@ -100,8 +100,17 @@ core_clap:
     en: "instance name to identify this vpn node in same machine"
     zh-CN: "实例名称，用于在同一台机器上标识此VPN节点"
   vpn_portal:
-    en: "url that defines the vpn portal, allow other vpn clients to connect. example: wg://0.0.0.0:11010/10.14.14.0/24, means the vpn portal is a wireguard server listening on vpn.example.com:11010, and the vpn client is in network of 10.14.14.0/24"
-    zh-CN: "定义VPN门户的URL，允许其他VPN客户端连接。示例：wg://0.0.0.0:11010/10.14.14.0/24，表示VPN门户是监听在vpn.example.com:11010的wireguard服务器，VPN客户端在10.14.14.0/24网络中"
+    en: "WireGuard VPN portal listener URL, for example wg://0.0.0.0:51820"
+    zh-CN: "WireGuard VPN 门户监听 URL，例如 wg://0.0.0.0:51820"
+  vpn_portal_private_key:
+    en: "base64 WireGuard server private key (prefer ET_VPN_PORTAL_PRIVATE_KEY over command-line exposure)"
+    zh-CN: "Base64 WireGuard 服务端私钥（建议通过 ET_VPN_PORTAL_PRIVATE_KEY 传入，避免命令行暴露）"
+  vpn_portal_client:
+    en: "named VPN portal client in NAME=IP form; may be repeated"
+    zh-CN: "NAME=IP 格式的具名 VPN 门户客户端；可重复指定"
+  vpn_portal_client_group:
+    en: "VPN portal client group membership in NAME=GROUP form; may be repeated"
+    zh-CN: "NAME=GROUP 格式的 VPN 门户客户端组成员关系；可重复指定"
   default_protocol:
     en: "default protocol to use when connecting to peers"
     zh-CN: "连接到对等节点时使用的默认协议"
@@ -255,11 +264,14 @@ core_clap:
     en: "if true, allow relay quic packets from foreign network. default is false (not forward foreign network quic packets)"
     zh-CN: "如果为true，则作为共享节点时也可以转发其他网络的 QUIC 数据包。默认值为false（不转发）"
   stun_servers:
-    en: "Override default STUN servers; If configured but empty, STUN servers are not used"
-    zh-CN: "覆盖内置的默认 STUN server 列表；如果设置了但是为空，则不使用 STUN servers；如果没设置，则使用默认 STUN server 列表"
+    en: "Override default UDP STUN servers. TCP STUN also uses this list when tcp-stun-servers is unset. If configured but empty, UDP STUN and fallback TCP/IPv6 STUN are disabled"
+    zh-CN: "覆盖内置的默认 UDP STUN server 列表；未设置 tcp-stun-servers 时，TCP STUN 也使用此列表；如果设置了但是为空，则禁用 UDP STUN 以及回退的 TCP/IPv6 STUN"
   stun_servers_v6:
-    en: "Override default STUN servers, IPv6; If configured but empty, IPv6 STUN servers are not used"
-    zh-CN: "覆盖内置的默认 IPv6 STUN server 列表；如果设置了但是为空，则不使用 IPv6 STUN servers；如果没设置，则使用默认 IPv6 STUN server 列表"
+    en: "Override default IPv6 STUN servers. If unset while stun-servers is configured, IPv6 STUN is disabled. If configured but empty, IPv6 STUN servers are not used"
+    zh-CN: "覆盖内置的默认 IPv6 STUN server 列表；如果未设置但已设置 stun-servers，则禁用 IPv6 STUN；如果设置了但是为空，则不使用 IPv6 STUN servers"
+  tcp_stun_servers:
+    en: "Override default TCP STUN servers. If unset, TCP STUN uses stun-servers when configured, otherwise default TCP STUN servers. If configured but empty, TCP STUN is disabled"
+    zh-CN: "覆盖内置的默认 TCP STUN server 列表；如果未设置，TCP STUN 会优先使用 stun-servers，否则使用默认 TCP STUN server 列表；如果设置了但是为空，则禁用 TCP STUN"
   secure_mode:
     en: "if true, enable secure mode. default is false"
     zh-CN: "如果为true，则启用安全模式。默认值为false"

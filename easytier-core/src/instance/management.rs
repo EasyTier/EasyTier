@@ -8,7 +8,9 @@ use crate::{
     foundation::stats::MetricSnapshot,
     peers::{
         conn::peer_conn::PeerConnId,
-        credential_manager::{CredentialCreateOptions, CredentialInfo, GeneratedCredential},
+        credential_manager::{
+            CredentialCreateOptions, CredentialInfo, CredentialUpsertOptions, GeneratedCredential,
+        },
         peer_manager::PeerSnapshot,
     },
 };
@@ -179,6 +181,21 @@ where
             self.peer_manager.notify_credential_changed();
         }
         Ok(revoked)
+    }
+
+    pub fn upsert_credential(&self, options: CredentialUpsertOptions) -> anyhow::Result<bool> {
+        if !self.peer_manager.can_manage_credentials() {
+            anyhow::bail!("only admin nodes (with network_secret) can import credentials");
+        }
+        let changed = self
+            .peer_manager
+            .credential_manager()
+            .upsert_credential(options)
+            .map_err(anyhow::Error::msg)?;
+        if changed {
+            self.peer_manager.notify_credential_changed();
+        }
+        Ok(changed)
     }
 
     pub fn credential_snapshots(&self) -> Vec<CredentialInfo> {

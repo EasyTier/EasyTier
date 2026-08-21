@@ -93,6 +93,10 @@ impl ForeignNetworkClient {
         })));
     }
 
+    pub(crate) fn stop(&self) {
+        self.task.lock().unwrap().take();
+    }
+
     pub fn get_peer_map(&self) -> Arc<PeerMap> {
         self.peer_map.clone()
     }

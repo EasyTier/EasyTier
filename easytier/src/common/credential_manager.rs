@@ -1,5 +1,6 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{io::Write, path::PathBuf, sync::Arc};
 
+use atomic_write_file::AtomicWriteFile;
 use easytier_core::peers::credential_manager::CredentialStorage;
 
 struct FileCredentialStorage {
@@ -16,7 +17,9 @@ impl CredentialStorage for FileCredentialStorage {
     }
 
     fn store(&self, serialized_credentials: &str) -> anyhow::Result<()> {
-        std::fs::write(&self.path, serialized_credentials)?;
+        let mut file = AtomicWriteFile::open(&self.path)?;
+        file.write_all(serialized_credentials.as_bytes())?;
+        file.commit()?;
         Ok(())
     }
 }
@@ -40,9 +43,10 @@ mod tests {
 
         assert_eq!(storage.load().unwrap(), None);
         storage.store("{\"credential\":true}").unwrap();
+        storage.store("{\"credential\":false}").unwrap();
         assert_eq!(
             storage.load().unwrap().as_deref(),
-            Some("{\"credential\":true}")
+            Some("{\"credential\":false}")
         );
     }
 }

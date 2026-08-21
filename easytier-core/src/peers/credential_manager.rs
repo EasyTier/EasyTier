@@ -6,6 +6,7 @@ use std::{
 
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use x25519_dalek::{PublicKey, StaticSecret};
 
 use crate::proto::peer_rpc::{TrustedCredentialPubkey, TrustedCredentialPubkeyProof};
@@ -28,6 +29,17 @@ pub struct CredentialCreateOptions {
     pub allowed_proxy_cidrs: Vec<String>,
     pub ttl: Duration,
     pub credential_id: Option<String>,
+    pub reusable: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct CredentialUpsertOptions {
+    pub credential_id: String,
+    pub credential_secret: String,
+    pub groups: Vec<String>,
+    pub allow_relay: bool,
+    pub allowed_proxy_cidrs: Vec<String>,
+    pub expiry_unix: i64,
     pub reusable: bool,
 }
 
@@ -69,6 +81,8 @@ impl CredentialEntry {
             expiry_unix: self.expiry_unix,
             allowed_proxy_cidrs: self.allowed_proxy_cidrs.clone(),
             reusable: Some(self.reusable),
+            public_key_fingerprint: CredentialManager::public_key_fingerprint(&self.pubkey)
+                .unwrap_or_default(),
         }
     }
 }
@@ -81,22 +95,28 @@ pub struct CredentialInfo {
     pub expiry_unix: i64,
     pub allowed_proxy_cidrs: Vec<String>,
     pub reusable: Option<bool>,
+    pub public_key_fingerprint: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GeneratedCredential {
     pub credential_id: String,
     pub secret: String,
+    pub expiry_unix: i64,
     pub changed: bool,
 }
 
 pub trait CredentialStorage: Send + Sync + 'static {
     fn load(&self) -> anyhow::Result<Option<String>>;
+
+    /// Atomically replaces the previously committed credential snapshot.
+    /// Returning an error must leave that snapshot readable.
     fn store(&self, serialized_credentials: &str) -> anyhow::Result<()>;
 }
 
 pub(crate) struct CredentialManager {
     credentials: Mutex<HashMap<String, CredentialEntry>>,
+    ephemeral_credentials: Mutex<HashMap<uuid::Uuid, CredentialEntry>>,
     storage: Option<Arc<dyn CredentialStorage>>,
     storage_write: Mutex<()>,
 }
@@ -111,6 +131,7 @@ impl CredentialManager {
     pub fn new() -> Self {
         Self {
             credentials: Mutex::new(HashMap::new()),
+            ephemeral_credentials: Mutex::new(HashMap::new()),
             storage: None,
             storage_write: Mutex::new(()),
         }
@@ -130,6 +151,7 @@ impl CredentialManager {
         };
         Self {
             credentials: Mutex::new(credentials),
+            ephemeral_credentials: Mutex::new(HashMap::new()),
             storage: Some(storage),
             storage_write: Mutex::new(()),
         }
@@ -181,6 +203,7 @@ impl CredentialManager {
                     return GeneratedCredential {
                         credential_id: id,
                         secret: existing.secret.clone(),
+                        expiry_unix: existing.expiry_unix,
                         changed: false,
                     };
                 }
@@ -191,10 +214,12 @@ impl CredentialManager {
 
             let (entry, secret) =
                 Self::build_entry(groups, allow_relay, allowed_proxy_cidrs, reusable, ttl);
+            let expiry_unix = entry.expiry_unix;
             credentials.insert(id.clone(), entry);
             GeneratedCredential {
                 credential_id: id,
                 secret,
+                expiry_unix,
                 changed: true,
             }
         };
@@ -246,6 +271,151 @@ impl CredentialManager {
         removed
     }
 
+    pub fn register_ephemeral_credential(
+        &self,
+        public_key: [u8; 32],
+        groups: Vec<String>,
+        allow_relay: bool,
+        allowed_proxy_cidrs: Vec<String>,
+        reusable: bool,
+    ) -> Result<uuid::Uuid, String> {
+        let entry = CredentialEntry {
+            pubkey: BASE64_STANDARD.encode(public_key),
+            secret: String::new(),
+            groups,
+            allow_relay,
+            allowed_proxy_cidrs,
+            reusable,
+            expiry_unix: i64::MAX,
+            created_at_unix: current_unix_timestamp(),
+        };
+
+        let _storage_write = self.storage_write.lock().unwrap();
+        if self
+            .credentials
+            .lock()
+            .unwrap()
+            .values()
+            .any(|existing| existing.pubkey == entry.pubkey)
+            || self
+                .ephemeral_credentials
+                .lock()
+                .unwrap()
+                .values()
+                .any(|existing| existing.pubkey == entry.pubkey)
+        {
+            return Err("credential public key is already registered".to_owned());
+        }
+
+        let credential_id = uuid::Uuid::new_v4();
+        self.ephemeral_credentials
+            .lock()
+            .unwrap()
+            .insert(credential_id, entry);
+        Ok(credential_id)
+    }
+
+    pub fn update_ephemeral_credential_groups(
+        &self,
+        credential_id: uuid::Uuid,
+        groups: Vec<String>,
+    ) -> Option<bool> {
+        let mut credentials = self.ephemeral_credentials.lock().unwrap();
+        let credential = credentials.get_mut(&credential_id)?;
+        if credential.groups == groups {
+            return Some(false);
+        }
+        credential.groups = groups;
+        Some(true)
+    }
+
+    pub fn revoke_ephemeral_credential(&self, credential_id: uuid::Uuid) -> bool {
+        self.ephemeral_credentials
+            .lock()
+            .unwrap()
+            .remove(&credential_id)
+            .is_some()
+    }
+
+    pub fn upsert_credential(&self, options: CredentialUpsertOptions) -> Result<bool, String> {
+        let CredentialUpsertOptions {
+            credential_id,
+            credential_secret,
+            groups,
+            allow_relay,
+            allowed_proxy_cidrs,
+            expiry_unix,
+            reusable,
+        } = options;
+        let credential_id = credential_id.trim().to_string();
+        if credential_id.is_empty() {
+            return Err("credential_id must not be empty".to_string());
+        }
+        if expiry_unix <= current_unix_timestamp() {
+            return Err("expiry_unix must be in the future".to_string());
+        }
+
+        let private_bytes: [u8; 32] = BASE64_STANDARD
+            .decode(credential_secret.trim())
+            .map_err(|_| "credential_secret must be base64".to_string())?
+            .try_into()
+            .map_err(|_| "credential_secret must contain 32 bytes".to_string())?;
+        let private = StaticSecret::from(private_bytes);
+        let entry = CredentialEntry {
+            pubkey: BASE64_STANDARD.encode(PublicKey::from(&private).as_bytes()),
+            secret: BASE64_STANDARD.encode(private.as_bytes()),
+            groups,
+            allow_relay,
+            allowed_proxy_cidrs,
+            reusable,
+            expiry_unix,
+            created_at_unix: current_unix_timestamp(),
+        };
+
+        let _storage_write = self.storage_write.lock().unwrap();
+        let mut credentials = self.credentials.lock().unwrap();
+        if credentials.iter().any(|(existing_id, existing)| {
+            existing_id != &credential_id && existing.pubkey == entry.pubkey
+        }) {
+            return Err("credential_secret is already used by another credential_id".to_string());
+        }
+        if self
+            .ephemeral_credentials
+            .lock()
+            .unwrap()
+            .values()
+            .any(|existing| existing.pubkey == entry.pubkey)
+        {
+            return Err("credential public key is already registered".to_owned());
+        }
+        let changed = credentials.get(&credential_id).is_none_or(|existing| {
+            existing.secret != entry.secret
+                || existing.pubkey != entry.pubkey
+                || existing.groups != entry.groups
+                || existing.allow_relay != entry.allow_relay
+                || existing.allowed_proxy_cidrs != entry.allowed_proxy_cidrs
+                || existing.reusable != entry.reusable
+                || existing.expiry_unix != entry.expiry_unix
+        });
+        if !changed {
+            return Ok(false);
+        }
+
+        if let Some(storage) = &self.storage {
+            let mut updated = credentials.clone();
+            updated.insert(credential_id, entry);
+            let serialized = serde_json::to_string_pretty(&updated)
+                .map_err(|error| format!("failed to serialize credentials: {error}"))?;
+            storage
+                .store(&serialized)
+                .map_err(|error| format!("failed to store credentials: {error}"))?;
+            *credentials = updated;
+        } else {
+            credentials.insert(credential_id, entry);
+        }
+        Ok(true)
+    }
+
     pub fn remove_expired_credentials(&self) -> bool {
         self.remove_expired_credentials_at(current_unix_timestamp())
     }
@@ -264,29 +434,43 @@ impl CredentialManager {
 
     pub fn get_trusted_pubkeys(&self, network_secret: &str) -> Vec<TrustedCredentialPubkeyProof> {
         let now = current_unix_timestamp();
-
-        self.credentials
+        let to_proof = |entry: &CredentialEntry| {
+            entry.to_trusted_credential().map(|credential| {
+                TrustedCredentialPubkeyProof::new_signed(credential, network_secret)
+            })
+        };
+        let mut trusted = self
+            .credentials
             .lock()
             .unwrap()
             .values()
             .filter(|entry| entry.is_active_at(now))
-            .filter_map(|entry| {
-                entry.to_trusted_credential().map(|credential| {
-                    TrustedCredentialPubkeyProof::new_signed(credential, network_secret)
-                })
-            })
-            .collect()
+            .filter_map(to_proof)
+            .collect::<Vec<_>>();
+        trusted.extend(
+            self.ephemeral_credentials
+                .lock()
+                .unwrap()
+                .values()
+                .filter_map(to_proof),
+        );
+        trusted
     }
 
     pub fn is_pubkey_trusted(&self, pubkey: &[u8]) -> bool {
         let now = current_unix_timestamp();
-
         let encoded = BASE64_STANDARD.encode(pubkey);
         self.credentials
             .lock()
             .unwrap()
             .values()
             .any(|entry| entry.pubkey == encoded && entry.is_active_at(now))
+            || self
+                .ephemeral_credentials
+                .lock()
+                .unwrap()
+                .values()
+                .any(|entry| entry.pubkey == encoded)
     }
 
     pub fn list_credentials(&self) -> Vec<CredentialInfo> {
@@ -307,6 +491,16 @@ impl CredentialManager {
             return None;
         }
         Some(decoded)
+    }
+
+    fn public_key_fingerprint(pubkey: &str) -> Option<String> {
+        let decoded = Self::decode_pubkey_b64(pubkey)?;
+        Some(
+            Sha256::digest(decoded)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect(),
+        )
     }
 
     fn persist(&self) {
@@ -384,6 +578,36 @@ mod tests {
         }
     }
 
+    struct FailOnceCredentialStorage {
+        serialized: Mutex<Option<String>>,
+        fail_next_store: Mutex<bool>,
+    }
+
+    impl Default for FailOnceCredentialStorage {
+        fn default() -> Self {
+            Self {
+                serialized: Mutex::new(None),
+                fail_next_store: Mutex::new(true),
+            }
+        }
+    }
+
+    impl CredentialStorage for FailOnceCredentialStorage {
+        fn load(&self) -> anyhow::Result<Option<String>> {
+            Ok(self.serialized.lock().unwrap().clone())
+        }
+
+        fn store(&self, serialized_credentials: &str) -> anyhow::Result<()> {
+            let mut fail_next_store = self.fail_next_store.lock().unwrap();
+            if *fail_next_store {
+                *fail_next_store = false;
+                anyhow::bail!("injected credential storage failure");
+            }
+            *self.serialized.lock().unwrap() = Some(serialized_credentials.to_owned());
+            Ok(())
+        }
+    }
+
     #[test]
     fn generate_and_revoke_credential() {
         let mgr = CredentialManager::new();
@@ -396,6 +620,7 @@ mod tests {
 
         assert!(!generated.credential_id.is_empty());
         assert!(!generated.secret.is_empty());
+        assert!(generated.expiry_unix > current_unix_timestamp());
         assert!(generated.changed);
         assert!(uuid::Uuid::parse_str(&generated.credential_id).is_ok());
 
@@ -453,6 +678,104 @@ mod tests {
         assert!(!list[0].allow_relay);
         assert_eq!(list[0].allowed_proxy_cidrs, vec!["10.0.0.0/24".to_string()]);
         assert_eq!(list[0].reusable, Some(true));
+        assert_eq!(list[0].public_key_fingerprint.len(), 64);
+    }
+
+    #[test]
+    fn upsert_credential_preserves_key_attributes_and_storage() {
+        let source = CredentialManager::new();
+        let generated = source.generate_credential_with_options(
+            vec!["users".to_string()],
+            false,
+            vec!["10.0.0.0/8".to_string()],
+            Duration::from_secs(3600),
+            Some("shared-id".to_string()),
+            false,
+        );
+        let source_info = source.list_credentials().remove(0);
+        let options = CredentialUpsertOptions {
+            credential_id: generated.credential_id,
+            credential_secret: generated.secret,
+            groups: source_info.groups.clone(),
+            allow_relay: source_info.allow_relay,
+            allowed_proxy_cidrs: source_info.allowed_proxy_cidrs.clone(),
+            expiry_unix: source_info.expiry_unix,
+            reusable: source_info.reusable.unwrap(),
+        };
+
+        let storage = Arc::new(MemoryCredentialStorage::default());
+        let target = CredentialManager::from_storage(storage.clone());
+        assert!(target.upsert_credential(options.clone()).unwrap());
+        assert!(!target.upsert_credential(options).unwrap());
+        assert_eq!(target.list_credentials(), vec![source_info.clone()]);
+        assert_eq!(
+            CredentialManager::from_storage(storage).list_credentials(),
+            vec![source_info]
+        );
+    }
+
+    #[test]
+    fn upsert_credential_can_retry_after_storage_failure() {
+        let source = CredentialManager::new();
+        let generated =
+            source.generate_credential(vec![], false, vec![], Duration::from_secs(3600));
+        let options = CredentialUpsertOptions {
+            credential_id: generated.credential_id,
+            credential_secret: generated.secret,
+            groups: vec!["users".to_string()],
+            allow_relay: false,
+            allowed_proxy_cidrs: vec![],
+            expiry_unix: generated.expiry_unix,
+            reusable: true,
+        };
+
+        let storage = Arc::new(FailOnceCredentialStorage::default());
+        let target = CredentialManager::from_storage(storage.clone());
+        assert!(target.upsert_credential(options.clone()).is_err());
+        assert!(target.list_credentials().is_empty());
+
+        assert!(target.upsert_credential(options).unwrap());
+        assert_eq!(target.list_credentials().len(), 1);
+        assert_eq!(
+            CredentialManager::from_storage(storage)
+                .list_credentials()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn upsert_credential_rejects_public_key_assigned_to_another_id() {
+        let source = CredentialManager::new();
+        let generated =
+            source.generate_credential(vec![], false, vec![], Duration::from_secs(3600));
+        let options = CredentialUpsertOptions {
+            credential_id: "original-id".to_string(),
+            credential_secret: generated.secret,
+            groups: vec!["users".to_string()],
+            allow_relay: false,
+            allowed_proxy_cidrs: vec![],
+            expiry_unix: generated.expiry_unix,
+            reusable: true,
+        };
+
+        let target = CredentialManager::new();
+        assert!(target.upsert_credential(options.clone()).unwrap());
+
+        let duplicate = CredentialUpsertOptions {
+            credential_id: "duplicate-id".to_string(),
+            groups: vec!["admins".to_string()],
+            ..options
+        };
+        assert_eq!(
+            target.upsert_credential(duplicate).unwrap_err(),
+            "credential_secret is already used by another credential_id"
+        );
+
+        let credentials = target.list_credentials();
+        assert_eq!(credentials.len(), 1);
+        assert_eq!(credentials[0].credential_id, "original-id");
+        assert_eq!(credentials[0].groups, vec!["users".to_string()]);
     }
 
     #[test]
@@ -493,5 +816,34 @@ mod tests {
         let manager = CredentialManager::from_storage(storage);
 
         assert!(manager.list_credentials().is_empty());
+    }
+
+    #[test]
+    fn ephemeral_credentials_are_trusted_but_not_persisted_or_listed() {
+        let storage = Arc::new(MemoryCredentialStorage::default());
+        let manager = CredentialManager::from_storage(storage.clone());
+        let private = StaticSecret::from([7u8; 32]);
+        let public = *PublicKey::from(&private).as_bytes();
+
+        let credential_id = manager
+            .register_ephemeral_credential(public, vec!["ops".to_owned()], false, Vec::new(), false)
+            .unwrap();
+
+        assert!(manager.is_pubkey_trusted(&public));
+        let trusted = manager.get_trusted_pubkeys("network-secret");
+        assert_eq!(trusted.len(), 1);
+        let credential = trusted[0].credential.as_ref().unwrap();
+        assert_eq!(credential.pubkey, public);
+        assert_eq!(credential.groups, ["ops"]);
+        assert!(!credential.allow_relay);
+        assert!(credential.allowed_proxy_cidrs.is_empty());
+        assert_eq!(credential.reusable, Some(false));
+        assert!(manager.list_credentials().is_empty());
+        assert!(storage.serialized.lock().unwrap().is_none());
+
+        assert!(manager.revoke_ephemeral_credential(credential_id));
+        assert!(!manager.is_pubkey_trusted(&public));
+        assert!(manager.get_trusted_pubkeys("network-secret").is_empty());
+        assert!(storage.serialized.lock().unwrap().is_none());
     }
 }

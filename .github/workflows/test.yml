@@ -138,6 +138,11 @@ jobs:
       - name: Setup system for test
         run: |
           sudo modprobe br_netfilter
+          sudo modprobe tun
+          if [ ! -e /dev/net/tun ]; then
+            sudo mkdir -p /dev/net
+            sudo mknod /dev/net/tun c 10 200
+          fi
           sudo sysctl net.bridge.bridge-nf-call-iptables=0
           sudo sysctl net.bridge.bridge-nf-call-ip6tables=0
           sudo sysctl net.ipv6.conf.lo.disable_ipv6=0
@@ -153,7 +158,8 @@ jobs:
       - name: Run tests
         run: |
           sudo prlimit --pid $$ --nofile=1048576:1048576
-          sudo -E env "PATH=$PATH" cargo nextest run --archive-file tests.tar.zst ${{ matrix.opts }}
+          sudo -E env "PATH=$PATH" EASYTIER_LINUX_BPF_INTEGRATION=required \
+            cargo nextest run --archive-file tests.tar.zst ${{ matrix.opts }}
 
   test:
     runs-on: ubuntu-latest
