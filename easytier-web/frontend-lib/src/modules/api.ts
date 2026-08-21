@@ -58,6 +58,9 @@ export interface RemoteClient {
     run_network(config: NetworkConfig, save: boolean): Promise<undefined>;
     get_network_info(inst_id: string): Promise<NetworkInstanceRunningInfo | undefined>;
     get_vpn_portal_info(inst_id: string): Promise<VpnPortalInfo | undefined>;
+    add_vpn_portal_client(inst_id: string, client: { name: string, virtual_ip: string, groups: string[] }): Promise<undefined>;
+    remove_vpn_portal_client(inst_id: string, name: string): Promise<undefined>;
+    clear_vpn_portal_clients(inst_id: string): Promise<undefined>;
     list_network_instance_ids(): Promise<ListNetworkInstanceIdResponse>;
     delete_network(inst_id: string): Promise<undefined>;
     update_network_instance_state(inst_id: string, disabled: boolean): Promise<undefined>;
