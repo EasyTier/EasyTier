@@ -76,7 +76,6 @@ pub struct PeerRuntimeSnapshotInput {
     pub host_routing: HostRoutingPolicy,
     pub acl: Option<Acl>,
     pub easytier_version: String,
-    pub vpn_portal_cidr: Option<Ipv4Cidr>,
     pub pinned_peers: Vec<(url::Url, Option<String>)>,
     pub ospf_update_my_foreign_network_interval_sec: u64,
     pub max_direct_conns_per_peer_in_foreign_network: usize,
@@ -126,7 +125,6 @@ impl PeerRuntimeSnapshot {
             host_routing,
             acl,
             easytier_version,
-            vpn_portal_cidr,
             pinned_peers,
             ospf_update_my_foreign_network_interval_sec,
             max_direct_conns_per_peer_in_foreign_network,
@@ -183,7 +181,6 @@ impl PeerRuntimeSnapshot {
             easytier_version,
             avoid_relay_data_preference,
             flags,
-            vpn_portal_cidr,
             pinned_peers,
             peer_group_memberships,
             acl_group_declarations,
@@ -329,6 +326,10 @@ impl CorePeerContext {
 
     fn snapshot(&self) -> Arc<PeerRuntimeSnapshot> {
         self.config.snapshot().peer.clone()
+    }
+
+    pub(crate) fn runtime_config_store(&self) -> CoreRuntimeConfigStore {
+        self.config.clone()
     }
 
     pub fn stats_manager(&self) -> Arc<StatsManager> {
@@ -604,10 +605,6 @@ pub(crate) trait PeerContext: Send + Sync {
         Vec::new()
     }
 
-    fn vpn_portal_cidr(&self) -> Option<Ipv4Cidr> {
-        None
-    }
-
     fn hostname(&self) -> String {
         String::new()
     }
@@ -821,10 +818,6 @@ impl PeerContext for CorePeerContext {
 
     fn proxy_networks(&self) -> Vec<ProxyNetworkConfig> {
         self.snapshot().runtime.core.routes.proxy_networks.clone()
-    }
-
-    fn vpn_portal_cidr(&self) -> Option<Ipv4Cidr> {
-        self.snapshot().vpn_portal_cidr
     }
 
     fn hostname(&self) -> String {
@@ -1131,7 +1124,6 @@ pub(crate) mod tests {
             },
             acl,
             easytier_version: "host-version".to_owned(),
-            vpn_portal_cidr: Some("10.30.0.0/24".parse().unwrap()),
             pinned_peers: vec![(
                 "tcp://192.0.2.10:11010".parse().unwrap(),
                 Some("peer-key".to_owned()),
@@ -1211,10 +1203,6 @@ pub(crate) mod tests {
 
         assert!(snapshot.avoid_relay_data_preference);
         assert_eq!(snapshot.easytier_version, "host-version");
-        assert_eq!(
-            snapshot.vpn_portal_cidr,
-            Some("10.30.0.0/24".parse().unwrap())
-        );
         assert_eq!(
             snapshot.pinned_peers,
             vec![(

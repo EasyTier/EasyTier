@@ -9,7 +9,6 @@ import {
 
 const BOOLEAN_CONFIG_FIELDS = [
   'dhcp',
-  'enable_vpn_portal',
   'advanced_settings',
   'latency_first',
   'use_smoltcp',
@@ -171,6 +170,7 @@ describe('RemoteManagement config save', () => {
       generate_config: vi.fn(),
       get_network_config: vi.fn(async () => cloneConfig(config)),
       get_network_info: vi.fn(),
+      get_vpn_portal_info: vi.fn(),
       get_network_metas: vi.fn(async (instanceIds: string[]) => ({
         metas: Object.fromEntries(instanceIds.map((id) => [id, {
           config_permission: 0xffffffff,

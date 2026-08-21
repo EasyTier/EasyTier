@@ -291,6 +291,13 @@ impl Peer {
             .any(|entry| !entry.value().is_closed() && !entry.value().is_hole_punched())
     }
 
+    pub(crate) fn has_direct_attached_conn(&self) -> bool {
+        self.conns.iter().any(|entry| {
+            let conn = entry.value();
+            !conn.is_closed() && !conn.is_hole_punched() && conn.is_attached()
+        })
+    }
+
     pub fn get_directly_connections(&self) -> DashSet<uuid::Uuid> {
         self.conns
             .iter()

@@ -43,7 +43,6 @@ const CONFIG_CHECKBOX_FIELDS = [
 ] as const satisfies readonly (readonly [keyof NetworkConfig, string])[]
 
 const CONFIG_TOGGLE_FIELDS = [
-  'enable_vpn_portal',
   'enable_relay_network_whitelist',
   'enable_manual_routes',
   'enable_socks5',
@@ -212,6 +211,26 @@ const AutoCompleteStub = defineComponent({
   },
 })
 
+const MultiSelectStub = defineComponent({
+  name: 'MultiSelect',
+  props: {
+    modelValue: Array,
+    inputId: String,
+    appendTo: String,
+  },
+  emits: ['update:modelValue'],
+  setup(props, { attrs, emit }) {
+    return () => h('input', {
+      ...attrs,
+      id: props.inputId,
+      'data-append-to': props.appendTo,
+      value: (props.modelValue ?? []).join(','),
+      'data-stub': 'multi-select',
+      onInput: (event: Event) => emit('update:modelValue', splitList((event.target as HTMLInputElement).value)),
+    })
+  },
+})
+
 const UrlListInputStub = defineComponent({
   name: 'UrlListInput',
   props: {
@@ -307,9 +326,15 @@ function makeConfig(): NetworkConfig {
     no_tun: true,
     hostname: 'host-a',
     proxy_cidrs: ['10.10.0.0/16', '172.16.1.0/24'],
-    enable_vpn_portal: true,
-    vpn_portal_client_network_addr: '10.144.0.0',
-    vpn_portal_listen_port: 22023,
+    vpn_portal_config: {
+      wireguard_listen: '0.0.0.0:22023',
+      wireguard_private_key: 'portal-private-key',
+      clients: [{
+        name: 'phone-a',
+        virtual_ip: '10.1.2.10',
+        groups: ['ops'],
+      }],
+    },
     listener_urls: ['tcp://0.0.0.0:12010'],
     dev_name: 'tun-test',
     mtu: 1280,
@@ -354,6 +379,7 @@ function mountConfig(config: NetworkConfig = makeConfig()) {
         InputGroupAddon: PassThrough,
         InputNumber: InputNumberStub,
         InputText: InputTextStub,
+        MultiSelect: MultiSelectStub,
         Panel: PanelStub,
         Password: PasswordStub,
         SelectButton: SelectButtonStub,
@@ -392,7 +418,11 @@ describe('Config.vue network config projection', () => {
 
     expect(input(wrapper, '#hostname').value).toBe('host-a')
     expect(input(wrapper, '#subnet-proxy').value).toBe('10.10.0.0/16,172.16.1.0/24')
-    expect(input(wrapper, 'input[placeholder="vpn_portal_client_network"]').value).toBe('10.144.0.0')
+    expect(input(wrapper, '#vpn_portal_wireguard_listen').value).toBe('0.0.0.0:22023')
+    expect(input(wrapper, '#vpn_portal_wireguard_private_key').value).toBe('portal-private-key')
+    expect(input(wrapper, '#vpn_portal_client_name_0').value).toBe('phone-a')
+    expect(input(wrapper, '#vpn_portal_client_virtual_ip_0').value).toBe('10.1.2.10')
+    expect(input(wrapper, '#vpn_portal_client_groups_0').value).toBe('ops')
     expect(input(wrapper, '#dev_name').value).toBe('tun-test')
     expect(input(wrapper, '#mtu').value).toBe('1280')
     expect(input(wrapper, '#instance_recv_bps_limit').value).toBe('9007199254740993')
@@ -422,7 +452,11 @@ describe('Config.vue network config projection', () => {
     await wrapper.find('#disable_ipv6').setValue(false)
     await setInput(wrapper, '#hostname', 'host-edited')
     await setInput(wrapper, '#subnet-proxy', '10.7.0.0/16,172.17.0.0/16')
-    await setInput(wrapper, 'input[placeholder="vpn_portal_client_network"]', '10.200.0.0')
+    await setInput(wrapper, '#vpn_portal_wireguard_listen', '[::]:23000')
+    await setInput(wrapper, '#vpn_portal_wireguard_private_key', 'edited-private-key')
+    await setInput(wrapper, '#vpn_portal_client_name_0', 'laptop-a')
+    await setInput(wrapper, '#vpn_portal_client_virtual_ip_0', '10.1.2.20')
+    await setInput(wrapper, '#vpn_portal_client_groups_0', 'ops,admin')
     await setInput(wrapper, 'input[data-add-label="add_listener_url"]', 'tcp://0.0.0.0:13010')
     await setInput(wrapper, '#dev_name', 'tun-edited')
     await setInput(wrapper, '#mtu', '1260')
@@ -450,7 +484,15 @@ describe('Config.vue network config projection', () => {
       disable_ipv6: false,
       hostname: 'host-edited',
       proxy_cidrs: ['10.7.0.0/16', '172.17.0.0/16'],
-      vpn_portal_client_network_addr: '10.200.0.0',
+      vpn_portal_config: {
+        wireguard_listen: '[::]:23000',
+        wireguard_private_key: 'edited-private-key',
+        clients: [{
+          name: 'laptop-a',
+          virtual_ip: '10.1.2.20',
+          groups: ['ops', 'admin'],
+        }],
+      },
       listener_urls: ['tcp://0.0.0.0:13010'],
       dev_name: 'tun-edited',
       mtu: 1260,
@@ -478,6 +520,15 @@ describe('Config.vue network config projection', () => {
       listener_urls: ['tcp://0.0.0.0:13010'],
       mtu: 1260,
       instance_recv_bps_limit: '9007199254740993',
+      vpn_portal_config: {
+        wireguard_listen: '[::]:23000',
+        wireguard_private_key: 'edited-private-key',
+        clients: [{
+          name: 'laptop-a',
+          virtual_ip: '10.1.2.20',
+          groups: ['ops', 'admin'],
+        }],
+      },
       port_forwards: [{
         proto: 'tcp',
         bind_ip: '127.0.0.1',
@@ -509,12 +560,13 @@ describe('Config.vue network config projection', () => {
     }
 
     const toggleButtons = wrapper.findAll('button[data-stub="toggle-button"]')
-    expect(toggleButtons).toHaveLength(CONFIG_TOGGLE_FIELDS.length)
+    expect(toggleButtons).toHaveLength(CONFIG_TOGGLE_FIELDS.length + 1)
     for (const [index, field] of CONFIG_TOGGLE_FIELDS.entries()) {
       const value = originalFlagValues.get(field)
-      expect(toggleButtons[index].attributes('aria-pressed'), `${field} should project into UI`)
+      const toggle = toggleButtons[index + 1]
+      expect(toggle.attributes('aria-pressed'), `${field} should project into UI`)
         .toBe(String(value))
-      await toggleButtons[index].trigger('click')
+      await toggle.trigger('click')
       await nextTick()
     }
 
@@ -524,6 +576,55 @@ describe('Config.vue network config projection', () => {
       expect(curNetwork[field], `${field} should update config`).toBe(expectedValue)
       expect(backend[field], `${field} should be preserved in backend JSON`).toBe(expectedValue)
     }
+  })
+
+  it('uses VPN Portal config presence as the enable switch', async () => {
+    const config = DEFAULT_NETWORK_CONFIG()
+    const { curNetwork, wrapper } = mountConfig(config)
+    await nextTick()
+
+    const portalToggle = wrapper.findAll('button[data-stub="toggle-button"]')[0]
+    expect(portalToggle.attributes('aria-pressed')).toBe('false')
+
+    await portalToggle.trigger('click')
+    await nextTick()
+    expect(curNetwork.vpn_portal_config).toEqual({
+      wireguard_listen: '0.0.0.0:22022',
+      clients: [],
+    })
+
+    await portalToggle.trigger('click')
+    await nextTick()
+    expect(curNetwork.vpn_portal_config).toBeUndefined()
+  })
+
+  it('keeps each VPN Portal client row bound to the same client when reordered', async () => {
+    const config = makeConfig()
+    config.vpn_portal_config!.clients.push({
+      name: 'phone-b',
+      virtual_ip: '10.1.2.11',
+      groups: ['guests'],
+    })
+    const { curNetwork, wrapper } = mountConfig(config)
+    await nextTick()
+
+    const firstClient = curNetwork.vpn_portal_config!.clients[0]
+    const secondClient = curNetwork.vpn_portal_config!.clients[1]
+    const firstClientInput = input(wrapper, '#vpn_portal_client_name_0')
+    curNetwork.vpn_portal_config!.clients = [secondClient, firstClient]
+    await nextTick()
+
+    expect(input(wrapper, '#vpn_portal_client_name_1')).toBe(firstClientInput)
+    await setInput(wrapper, '#vpn_portal_client_name_1', 'phone-a-edited')
+    expect(firstClient.name).toBe('phone-a-edited')
+    expect(secondClient.name).toBe('phone-b')
+  })
+
+  it('keeps VPN Portal ACL group menus inside the management drawer', async () => {
+    const { wrapper } = mountConfig()
+    await nextTick()
+
+    expect(wrapper.find('#vpn_portal_client_groups_0').attributes('data-append-to')).toBe('self')
   })
 
   it('keeps uint64 input editable without losing large values', async () => {

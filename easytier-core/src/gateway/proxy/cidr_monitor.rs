@@ -14,14 +14,12 @@ use crate::{
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ProxyCidrConfigSnapshot {
     pub manual_routes: Option<BTreeSet<Ipv4Cidr>>,
-    pub vpn_portal_cidr: Option<Ipv4Cidr>,
 }
 
 impl From<&CoreInstanceRuntimeConfig> for ProxyCidrConfigSnapshot {
     fn from(config: &CoreInstanceRuntimeConfig) -> Self {
         Self {
             manual_routes: config.services.manual_routes.clone(),
-            vpn_portal_cidr: config.peer.vpn_portal_cidr,
         }
     }
 }
@@ -76,14 +74,11 @@ pub struct ProxyCidrDiff {
 }
 
 pub(crate) fn resolve_proxy_cidrs(
-    mut peer_routes: BTreeSet<Ipv4Cidr>,
+    peer_routes: BTreeSet<Ipv4Cidr>,
     config: ProxyCidrConfigSnapshot,
 ) -> BTreeSet<Ipv4Cidr> {
     if let Some(manual_routes) = config.manual_routes {
         return manual_routes;
-    }
-    if let Some(vpn_portal_cidr) = config.vpn_portal_cidr {
-        peer_routes.insert(vpn_portal_cidr);
     }
     peer_routes
 }
@@ -212,39 +207,34 @@ mod tests {
     }
 
     #[test]
-    fn manual_routes_override_peer_and_vpn_routes() {
+    fn manual_routes_override_peer_routes() {
         let resolved = resolve_proxy_cidrs(
             cidrs(&["10.0.0.0/8"]),
             ProxyCidrConfigSnapshot {
                 manual_routes: Some(cidrs(&["192.0.2.0/24"])),
-                vpn_portal_cidr: Some("198.51.100.0/24".parse().unwrap()),
             },
         );
         assert_eq!(resolved, cidrs(&["192.0.2.0/24"]));
     }
 
     #[test]
-    fn dynamic_routes_merge_vpn_and_report_ordered_diff() {
+    fn dynamic_routes_report_ordered_diff() {
         let current = resolve_proxy_cidrs(
             cidrs(&["10.0.0.0/8"]),
             ProxyCidrConfigSnapshot {
                 manual_routes: None,
-                vpn_portal_cidr: Some("192.0.2.0/24".parse().unwrap()),
             },
         );
         let diff = diff_proxy_cidrs(&cidrs(&["10.0.0.0/8", "172.16.0.0/12"]), current);
 
-        assert_eq!(diff.current, cidrs(&["10.0.0.0/8", "192.0.2.0/24"]));
-        assert_eq!(diff.added, vec!["192.0.2.0/24".parse().unwrap()]);
+        assert_eq!(diff.current, cidrs(&["10.0.0.0/8"]));
+        assert!(diff.added.is_empty());
         assert_eq!(diff.removed, vec!["172.16.0.0/12".parse().unwrap()]);
     }
 
     #[test]
     fn runtime_store_update_changes_the_monitor_config_snapshot() {
-        let initial_peer = PeerRuntimeSnapshot {
-            vpn_portal_cidr: Some("198.51.100.0/24".parse().unwrap()),
-            ..Default::default()
-        };
+        let initial_peer = PeerRuntimeSnapshot::default();
         let store = CoreRuntimeConfigStore::new(
             CoreRuntimeConfig {
                 manual_routes: Some(cidrs(&["192.0.2.0/24"])),
@@ -254,10 +244,7 @@ mod tests {
         );
         let initial = store.snapshot();
 
-        let updated_peer = PeerRuntimeSnapshot {
-            vpn_portal_cidr: Some("203.0.113.0/24".parse().unwrap()),
-            ..Default::default()
-        };
+        let updated_peer = PeerRuntimeSnapshot::default();
         store.replace(CoreInstanceRuntimeConfig {
             services: CoreRuntimeConfig::default(),
             peer: Arc::new(updated_peer),
@@ -270,7 +257,7 @@ mod tests {
         );
         assert_eq!(
             resolve_proxy_cidrs_from_runtime(cidrs(&["10.0.0.0/8"]), updated.as_ref()),
-            cidrs(&["10.0.0.0/8", "203.0.113.0/24"])
+            cidrs(&["10.0.0.0/8"])
         );
     }
 }

@@ -250,8 +250,12 @@ ios <-.-> nodea <--> nodeb <-.-> id1
 1. 启动启用 WireGuard 门户的 EasyTier：
 
 ```bash
-# 在 0.0.0.0:11013 上监听，并使用 10.14.14.0/24 子网作为 WireGuard 客户端
-sudo easytier-core -i 10.144.144.1 --vpn-portal wg://0.0.0.0:11013/10.14.14.0/24
+# 将一个 WireGuard 客户端注册为虚拟 peer 10.144.144.3
+sudo easytier-core -i 10.144.144.1 \
+  --network-secret portal-secret \
+  --vpn-portal wg://0.0.0.0:11013 \
+  --vpn-portal-private-key "$(wg genkey)" \
+  --vpn-portal-client phone=10.144.144.3
 ```
 
 2. 获取 WireGuard 客户端配置：
@@ -261,10 +265,9 @@ sudo easytier-core -i 10.144.144.1 --vpn-portal wg://0.0.0.0:11013/10.14.14.0/24
 easytier-cli vpn-portal
 ```
 
-3. 在输出配置中：
-   - 将 `Interface.Address` 设置为 WireGuard 子网中的可用 IP
-   - 将 `Peer.Endpoint` 设置为您的 EasyTier 节点的公网 IP/域名
-   - 将修改后的配置导入到您的 WireGuard 客户端
+3. 如果输出配置中的 `Peer.Endpoint` 是通配地址，将其替换为 EasyTier
+   节点的公网 IP/域名后即可导入。`Interface.Address` 只是客户端本地地址，
+   可以改为任意 IPv4 地址；EasyTier 会把它转换成已注册的虚拟 peer 地址。
 
 #### 自建公共共享节点
 

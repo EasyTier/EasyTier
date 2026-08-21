@@ -561,6 +561,7 @@ onUnmounted(() => {
                 </div>
 
                 <Status v-if="curNetworkInfo && curNetworkInfo.error_msg === ''" v-bind:cur-network-inst="curNetworkInfo"
+                    :api="api"
                     class="mb-4">
                 </Status>
                 <Message v-else-if="curNetworkInfo?.error_msg" severity="error" class="mb-4">{{
