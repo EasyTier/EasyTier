@@ -177,11 +177,7 @@ where
     pub fn new_with_config_storage(
         manager: Arc<InstanceManager<F>>,
         storage: Arc<dyn ConfigFileStorage>,
-    ) -> Self
-    where
-        F: InstanceFactory<CreateContext = ()>,
-        F::Error: std::fmt::Debug + std::fmt::Display + Send + Sync + 'static,
-    {
+    ) -> Self {
         let persistence = Arc::new(ManagerConfigPatchPersistence {
             manager: manager.clone(),
             storage,
@@ -228,8 +224,7 @@ where
 #[cfg(feature = "web-client")]
 impl<F, H> ConfigPatchPersistence for ManagerConfigPatchPersistence<F, H>
 where
-    F: InstanceFactory<Instance = CoreInstance<H>, CreateContext = ()>,
-    F::Error: std::fmt::Debug + std::fmt::Display + Send + Sync + 'static,
+    F: InstanceFactory<Instance = CoreInstance<H>>,
     H: CoreInstanceHost,
 {
     async fn persist(&self, instance_id: uuid::Uuid, config: &TomlConfig) -> anyhow::Result<()> {

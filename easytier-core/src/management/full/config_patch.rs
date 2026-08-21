@@ -40,6 +40,10 @@ where
     let candidate = config.detached_snapshot();
     let parsed_prefix =
         parse_ipv6_public_addr_prefix_patch(patch.ipv6_public_addr_prefix.as_deref())?;
+    // Take the credential set out first so the host-facing copy below never
+    // clones secret material.
+    let mut patch = patch;
+    let managed_credentials = patch.managed_credentials.take();
     let patch_for_host = patch_without_managed_credentials(&patch);
 
     // Preserve the existing ordered partial-commit contract: earlier valid
@@ -132,7 +136,7 @@ where
             validate_and_commit_candidate(instance, &config, &candidate)?;
         }
 
-        if let Some(managed) = &patch.managed_credentials {
+        if let Some(managed) = &managed_credentials {
             // Managed credential patch transaction: validate → persist →
             // install. All fallible checks (secret parsing, duplicate IDs,
             // conflicts with base/ephemeral credentials) run BEFORE the
