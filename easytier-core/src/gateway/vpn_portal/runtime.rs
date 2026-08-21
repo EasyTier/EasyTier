@@ -7,7 +7,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     net::{IpAddr, Ipv4Addr},
-    sync::Arc,
+    sync::{Arc, RwLock as StdRwLock},
 };
 
 use async_trait::async_trait;
@@ -119,6 +119,15 @@ pub trait PortalHost: Send + Sync + 'static {
     fn name(&self) -> String;
 
     fn render_client_config(&self, plan: &PortalClientConfigPlan) -> String;
+
+    /// Replaces the configured client set at runtime without restarting the
+    /// listeners. Established sessions of untouched clients must stay intact;
+    /// sessions of removed or changed clients are torn down through the
+    /// regular channel-close cleanup path.
+    async fn update_clients(&self, clients: &[PortalClientConfig]) -> anyhow::Result<()> {
+        let _ = clients;
+        anyhow::bail!("portal host does not support runtime client updates")
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -154,11 +163,11 @@ pub struct PortalModule {
     operation: Mutex<()>,
     peer_manager: Arc<PeerManagerCore>,
     runtime_config: CoreRuntimeConfigStore,
-    config: Option<PortalRuntimeConfig>,
+    config: Option<Arc<StdRwLock<PortalRuntimeConfig>>>,
     host: Option<Arc<dyn PortalHost>>,
     events: Arc<dyn CoreEventSink>,
     statuses: Arc<RwLock<BTreeMap<String, ClientStatus>>>,
-    session_locks: Arc<BTreeMap<String, Arc<Mutex<()>>>>,
+    session_locks: Arc<RwLock<BTreeMap<String, Arc<Mutex<()>>>>>,
     runtime: Mutex<Option<PortalRuntime>>,
 }
 
@@ -171,37 +180,17 @@ impl PortalModule {
         events: Arc<dyn CoreEventSink>,
     ) -> anyhow::Result<Arc<Self>> {
         if let Some(config) = config.as_ref() {
-            validate_config(config, runtime_config.snapshot().as_ref())?;
+            validate_clients(config, runtime_config.snapshot().as_ref())?;
         }
-        let statuses = config
-            .as_ref()
-            .map(|config| {
-                config
-                    .clients
-                    .iter()
-                    .map(|client| (client.name.clone(), ClientStatus::default()))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let session_locks = config
-            .as_ref()
-            .map(|config| {
-                config
-                    .clients
-                    .iter()
-                    .map(|client| (client.name.clone(), Arc::new(Mutex::new(()))))
-                    .collect()
-            })
-            .unwrap_or_default();
         Ok(Arc::new(Self {
             operation: Mutex::new(()),
             peer_manager,
             runtime_config,
-            config,
+            config: config.map(|config| Arc::new(StdRwLock::new(config))),
             host,
             events,
-            statuses: Arc::new(RwLock::new(statuses)),
-            session_locks: Arc::new(session_locks),
+            statuses: Arc::new(RwLock::new(BTreeMap::new())),
+            session_locks: Arc::new(RwLock::new(BTreeMap::new())),
             runtime: Mutex::new(None),
         }))
     }
@@ -213,7 +202,77 @@ impl PortalModule {
         let Some(config) = self.config.as_ref() else {
             return Ok(());
         };
-        validate_runtime_compatibility(config, runtime_config)
+        let config = config.read().unwrap();
+        validate_runtime_compatibility(&config, runtime_config)
+    }
+
+    /// Replaces the configured client set at runtime. Untouched clients keep
+    /// their established sessions; removed and changed clients are torn down
+    /// through the regular cleanup path and may re-handshake afterwards.
+    ///
+    /// The caller supplies the runtime snapshot the new set must be validated
+    /// against, so a combined configuration patch is judged by its final
+    /// state rather than the currently running one.
+    pub async fn update_clients(
+        &self,
+        clients: Vec<PortalClientConfig>,
+        runtime: &CoreInstanceRuntimeConfig,
+    ) -> anyhow::Result<Vec<PortalClientConfig>> {
+        let _operation = self.operation.lock().await;
+        let Some(config) = self.config.as_ref() else {
+            anyhow::bail!("VPN portal is not configured");
+        };
+        if self.host.is_none() {
+            anyhow::bail!("VPN portal has no host adapter");
+        }
+        let candidate = PortalRuntimeConfig { clients };
+        validate_clients(&candidate, runtime)?;
+
+        self.host
+            .as_ref()
+            .expect("checked above")
+            .update_clients(&candidate.clients)
+            .await?;
+
+        let applied: BTreeSet<String> = candidate
+            .clients
+            .iter()
+            .map(|client| client.name.clone())
+            .collect();
+        let removed: Vec<String> = {
+            let mut current = config.write().unwrap();
+            let removed: Vec<String> = current
+                .clients
+                .iter()
+                .map(|client| client.name.clone())
+                .filter(|name| !applied.contains(name))
+                .collect();
+            current.clients = candidate.clients.clone();
+            removed
+        };
+        let applied_clients = candidate.clients;
+
+        {
+            let mut statuses = self.statuses.write().await;
+            statuses.retain(|name, _| applied.contains(name));
+            for name in applied {
+                statuses.entry(name).or_default();
+            }
+        }
+        {
+            let mut locks = self.session_locks.write().await;
+            for name in removed {
+                // Entries still held by a live session are left alone; the
+                // session drops its reference during its regular cleanup.
+                if locks
+                    .get(&name)
+                    .is_none_or(|lock| Arc::strong_count(lock) == 1)
+                {
+                    locks.remove(&name);
+                }
+            }
+        }
+        Ok(applied_clients)
     }
 
     pub async fn start(&self) -> anyhow::Result<()> {
@@ -288,9 +347,9 @@ impl PortalModule {
         listener_url: url::Url,
         peer_manager: Arc<PeerManagerCore>,
         runtime_config: CoreRuntimeConfigStore,
-        config: PortalRuntimeConfig,
+        config: Arc<StdRwLock<PortalRuntimeConfig>>,
         statuses: Arc<RwLock<BTreeMap<String, ClientStatus>>>,
-        session_locks: Arc<BTreeMap<String, Arc<Mutex<()>>>>,
+        session_locks: Arc<RwLock<BTreeMap<String, Arc<Mutex<()>>>>>,
         events: Arc<dyn CoreEventSink>,
         cancel: CancellationToken,
         start_signal: CancellationToken,
@@ -338,13 +397,15 @@ impl PortalModule {
         listener_url: url::Url,
         peer_manager: Arc<PeerManagerCore>,
         runtime_config: CoreRuntimeConfigStore,
-        config: PortalRuntimeConfig,
+        config: Arc<StdRwLock<PortalRuntimeConfig>>,
         statuses: Arc<RwLock<BTreeMap<String, ClientStatus>>>,
-        session_locks: Arc<BTreeMap<String, Arc<Mutex<()>>>>,
+        session_locks: Arc<RwLock<BTreeMap<String, Arc<Mutex<()>>>>>,
         events: Arc<dyn CoreEventSink>,
         cancel: CancellationToken,
     ) {
         let Some(client) = config
+            .read()
+            .unwrap()
             .clients
             .iter()
             .find(|client| client.name == session.client_name)
@@ -353,18 +414,17 @@ impl PortalModule {
             tracing::warn!(client = %session.client_name, "unknown VPN portal client session");
             return;
         };
-        let session_lock = session_locks
-            .get(&client.name)
-            .expect("validated client session lock exists");
+        let session_lock = {
+            let mut locks = session_locks.write().await;
+            locks.entry(client.name.clone()).or_default().clone()
+        };
         let _session_guard = tokio::select! {
             _ = cancel.cancelled() => return,
             guard = session_lock.lock() => guard,
         };
         let generation = {
             let mut statuses = statuses.write().await;
-            let status = statuses
-                .get_mut(&client.name)
-                .expect("validated client status exists");
+            let status = statuses.entry(client.name.clone()).or_default();
             status.generation = status.generation.wrapping_add(1);
             status.state = PortalClientState::Connecting;
             status.endpoint = Some(session.endpoint.borrow_and_update().clone());
@@ -400,9 +460,11 @@ impl PortalModule {
 
         {
             let mut statuses = statuses.write().await;
-            let status = statuses
-                .get_mut(&client.name)
-                .expect("validated client status exists");
+            let Some(status) = statuses.get_mut(&client.name) else {
+                drop(statuses);
+                attached.close().await;
+                return;
+            };
             if status.generation != generation {
                 drop(statuses);
                 attached.close().await;
@@ -617,7 +679,11 @@ impl PortalModule {
     }
 
     pub async fn info_snapshot(&self) -> PortalInfoSnapshot {
-        let Some(config) = self.config.as_ref() else {
+        let Some(config) = self
+            .config
+            .as_ref()
+            .map(|config| config.read().unwrap().clone())
+        else {
             return PortalInfoSnapshot {
                 vpn_type: "null".to_owned(),
                 clients: Vec::new(),
@@ -692,13 +758,14 @@ impl PortalModule {
     }
 }
 
-fn validate_config(
+/// Validates a client set. The empty set is legal in every lifecycle stage:
+/// a portal with zero clients keeps listening and accepts nothing, so
+/// clearing all clients never produces a configuration that fails a later
+/// instance recreation.
+fn validate_clients(
     config: &PortalRuntimeConfig,
     runtime_config: &CoreInstanceRuntimeConfig,
 ) -> anyhow::Result<()> {
-    if config.clients.is_empty() {
-        anyhow::bail!("VPN portal requires at least one configured client");
-    }
     if config.clients.len() > MAX_VPN_PORTAL_CLIENTS {
         anyhow::bail!("VPN portal supports at most {MAX_VPN_PORTAL_CLIENTS} clients");
     }
@@ -1102,7 +1169,7 @@ mod tests {
                 client("alice", Ipv4Addr::new(10, 82, 0, 3), &["ops"]),
             ],
         };
-        let error = validate_config(&duplicate_name, snapshot.as_ref())
+        let error = validate_clients(&duplicate_name, snapshot.as_ref())
             .unwrap_err()
             .to_string();
         assert!(error.contains("duplicate VPN portal client name"));
@@ -1110,7 +1177,7 @@ mod tests {
         let duplicate_ip = PortalRuntimeConfig {
             clients: vec![alice, client("bob", Ipv4Addr::new(10, 82, 0, 2), &["ops"])],
         };
-        let error = validate_config(&duplicate_ip, snapshot.as_ref())
+        let error = validate_clients(&duplicate_ip, snapshot.as_ref())
             .unwrap_err()
             .to_string();
         assert!(error.contains("duplicate VPN portal virtual IP"));
@@ -1122,7 +1189,7 @@ mod tests {
         let config = PortalRuntimeConfig {
             clients: vec![client("alice", Ipv4Addr::new(10, 82, 0, 2), &["unknown"])],
         };
-        let error = validate_config(&config, runtime_config.snapshot().as_ref())
+        let error = validate_clients(&config, runtime_config.snapshot().as_ref())
             .unwrap_err()
             .to_string();
         assert!(error.contains("unknown ACL group"));
@@ -1138,7 +1205,7 @@ mod tests {
             clients: vec![client("alice", Ipv4Addr::new(10, 82, 0, 2), &["ops"])],
         };
 
-        let error = validate_config(&config, runtime_config.snapshot().as_ref())
+        let error = validate_clients(&config, runtime_config.snapshot().as_ref())
             .unwrap_err()
             .to_string();
 
@@ -1175,10 +1242,10 @@ mod tests {
             "alice".to_owned(),
             ClientStatus::default(),
         )])));
-        let session_locks = Arc::new(BTreeMap::from([(
+        let session_locks = Arc::new(RwLock::new(BTreeMap::from([(
             "alice".to_owned(),
             Arc::new(Mutex::new(())),
-        )]));
+        )])));
         let (to_runtime, from_client) = mpsc::channel(1);
         let (to_client, _from_runtime) = mpsc::channel(1);
         let (endpoint_sender, endpoint) = tokio::sync::watch::channel("portal://alice".to_owned());
@@ -1195,7 +1262,7 @@ mod tests {
             "portal://listener".parse().unwrap(),
             peer_manager.clone(),
             runtime_config,
-            config,
+            Arc::new(StdRwLock::new(config)),
             statuses.clone(),
             session_locks,
             Arc::new(()),
@@ -1263,10 +1330,10 @@ mod tests {
             "alice".to_owned(),
             ClientStatus::default(),
         )])));
-        let session_locks = Arc::new(BTreeMap::from([(
+        let session_locks = Arc::new(RwLock::new(BTreeMap::from([(
             "alice".to_owned(),
             Arc::new(Mutex::new(())),
-        )]));
+        )])));
         let (_to_runtime, from_client) = mpsc::channel(1);
         let (to_client, _from_runtime) = mpsc::channel(1);
         let (_endpoint_sender, endpoint) = tokio::sync::watch::channel("portal://alice".to_owned());
@@ -1287,7 +1354,7 @@ mod tests {
             "portal://listener".parse().unwrap(),
             peer_manager.clone(),
             runtime_config,
-            config,
+            Arc::new(StdRwLock::new(config)),
             statuses.clone(),
             session_locks,
             events.clone(),
@@ -1373,10 +1440,10 @@ mod tests {
             "alice".to_owned(),
             ClientStatus::default(),
         )])));
-        let session_locks = Arc::new(BTreeMap::from([(
+        let session_locks = Arc::new(RwLock::new(BTreeMap::from([(
             "alice".to_owned(),
             Arc::new(Mutex::new(())),
-        )]));
+        )])));
         let (to_runtime, from_client) = mpsc::channel(1);
         let (to_client, from_runtime) = mpsc::channel(1);
         let (_endpoint_sender, endpoint) = tokio::sync::watch::channel("portal://alice".to_owned());
@@ -1393,7 +1460,7 @@ mod tests {
             "portal://listener".parse().unwrap(),
             peer_manager.clone(),
             runtime_config,
-            config,
+            Arc::new(StdRwLock::new(config)),
             statuses.clone(),
             session_locks,
             events.clone(),
@@ -1651,5 +1718,145 @@ mod tests {
         assert!(validate_client_name("-laptop").is_err());
         assert!(validate_client_name("laptop_1").is_err());
         assert!(validate_client_name("").is_err());
+    }
+
+    #[derive(Default)]
+    struct RecordingPortalHost {
+        updates: StdMutex<Vec<Vec<PortalClientConfig>>>,
+    }
+
+    impl RecordingPortalHost {
+        fn recorded(&self) -> Vec<Vec<PortalClientConfig>> {
+            self.updates.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl PortalHost for RecordingPortalHost {
+        async fn start_listeners(&self) -> anyhow::Result<Vec<PortalListener>> {
+            anyhow::bail!("recording host never starts listeners")
+        }
+
+        fn name(&self) -> String {
+            "recording".to_owned()
+        }
+
+        fn render_client_config(&self, plan: &PortalClientConfigPlan) -> String {
+            format!("config:{}", plan.name)
+        }
+
+        async fn update_clients(&self, clients: &[PortalClientConfig]) -> anyhow::Result<()> {
+            self.updates.lock().unwrap().push(clients.to_vec());
+            Ok(())
+        }
+    }
+
+    fn portal_module_with_recording_host(
+        initial: PortalRuntimeConfig,
+    ) -> (
+        Arc<PortalModule>,
+        Arc<RecordingPortalHost>,
+        CoreRuntimeConfigStore,
+    ) {
+        let (peer_manager, runtime_config) = network_runtime();
+        let host = Arc::new(RecordingPortalHost::default());
+        let module = PortalModule::new(
+            peer_manager,
+            runtime_config.clone(),
+            Some(initial),
+            Some(host.clone()),
+            Arc::new(()),
+        )
+        .unwrap();
+        (module, host, runtime_config)
+    }
+
+    #[tokio::test]
+    async fn portal_module_update_clients_rejects_invalid_sets() {
+        let (module, _host, runtime_config) =
+            portal_module_with_recording_host(PortalRuntimeConfig {
+                clients: vec![client("alice", Ipv4Addr::new(10, 82, 0, 2), &["ops"])],
+            });
+        let runtime = runtime_config.snapshot();
+
+        let duplicate = module
+            .update_clients(
+                vec![
+                    client("bob", Ipv4Addr::new(10, 82, 0, 3), &["ops"]),
+                    client("bob", Ipv4Addr::new(10, 82, 0, 4), &["ops"]),
+                ],
+                runtime.as_ref(),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            duplicate
+                .to_string()
+                .contains("duplicate VPN portal client name")
+        );
+
+        let unknown_group = module
+            .update_clients(
+                vec![client("bob", Ipv4Addr::new(10, 82, 0, 3), &["missing"])],
+                runtime.as_ref(),
+            )
+            .await
+            .unwrap_err();
+        assert!(unknown_group.to_string().contains("unknown ACL group"));
+
+        // Runtime updates may drain the portal to zero clients.
+        let applied = module
+            .update_clients(Vec::new(), runtime.as_ref())
+            .await
+            .unwrap();
+        assert!(applied.is_empty());
+    }
+
+    #[tokio::test]
+    async fn portal_module_update_clients_replaces_shared_state_and_notifies_host() {
+        let (module, host, runtime_config) =
+            portal_module_with_recording_host(PortalRuntimeConfig {
+                clients: vec![client("alice", Ipv4Addr::new(10, 82, 0, 2), &["ops"])],
+            });
+
+        let applied = module
+            .update_clients(
+                vec![client("bob", Ipv4Addr::new(10, 82, 0, 3), &["ops"])],
+                runtime_config.snapshot().as_ref(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(applied.len(), 1);
+        assert_eq!(applied[0].name, "bob");
+
+        let recorded = host.recorded();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].len(), 1);
+        assert_eq!(recorded[0][0].name, "bob");
+
+        let snapshot = module.info_snapshot().await;
+        assert_eq!(snapshot.clients.len(), 1);
+        assert_eq!(snapshot.clients[0].name, "bob");
+    }
+
+    #[tokio::test]
+    async fn portal_module_update_clients_requires_configured_portal() {
+        let (peer_manager, runtime_config) = network_runtime();
+        let module = PortalModule::new(
+            peer_manager,
+            runtime_config.clone(),
+            None,
+            None,
+            Arc::new(()),
+        )
+        .unwrap();
+        let error = module
+            .update_clients(
+                vec![client("alice", Ipv4Addr::new(10, 82, 0, 2), &["ops"])],
+                runtime_config.snapshot().as_ref(),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("not configured"));
     }
 }

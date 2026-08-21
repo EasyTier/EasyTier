@@ -8,9 +8,10 @@
 mod engine;
 
 use std::{
+    collections::{BTreeMap, BTreeSet},
     fmt,
     net::{Ipv6Addr, SocketAddr, SocketAddrV6},
-    sync::Arc,
+    sync::{Arc, Mutex as StdMutex, RwLock, Weak},
 };
 
 use anyhow::Context as _;
@@ -18,7 +19,9 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use boringtun::x25519::{PublicKey, StaticSecret};
 use easytier_core::{
     config::toml::VpnPortalConfig,
-    gateway::vpn_portal::{PortalClientConfigPlan, PortalHost, PortalListener, PortalSession},
+    gateway::vpn_portal::{
+        PortalClientConfig, PortalClientConfigPlan, PortalHost, PortalListener, PortalSession,
+    },
     socket::{
         ListenerConnectionCounter, NetNamespace, SocketContext, SocketListener,
         udp::{UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory},
@@ -147,36 +150,34 @@ pub struct WireGuardPortalHost {
     global_ctx: ArcGlobalCtx,
     config: VpnPortalConfig,
     setup: Result<WireGuardPortalSetup, String>,
+    engine: StdMutex<Option<Weak<PortalEngine>>>,
 }
 
 struct WireGuardPortalSetup {
     server_private: [u8; 32],
     server_public: PublicKey,
-    clients: Vec<DerivedClient>,
+    clients: RwLock<BTreeMap<String, DerivedClient>>,
 }
 
 impl WireGuardPortalHost {
     pub fn new(global_ctx: ArcGlobalCtx, config: VpnPortalConfig) -> Arc<Self> {
         let setup = (|| -> anyhow::Result<_> {
-            let (master, server_private) = portal_master_and_server_key(&config)?;
+            // The derivation master equals the server private key.
+            let (_, server_private) = portal_master_and_server_key(&config)?;
             let server_public = PublicKey::from(&StaticSecret::from(server_private));
-            let mut clients = Vec::with_capacity(config.clients.len());
+            let mut clients = BTreeMap::new();
             for client in &config.clients {
-                let wireguard_private =
-                    derive_named_key(&master, b"wireguard-client", &client.name)?;
-                let identity_private_key =
-                    derive_named_key(&master, b"attached-noise", &client.name)?;
-                clients.push(DerivedClient {
-                    config: client.clone(),
-                    wireguard_private,
-                    wireguard_public: PublicKey::from(&StaticSecret::from(wireguard_private)),
-                    identity_private_key,
-                });
+                let client = PortalClientConfig {
+                    name: client.name.clone(),
+                    virtual_ip: client.virtual_ip,
+                    groups: client.groups.clone(),
+                };
+                clients.insert(client.name.clone(), derive_client(server_private, &client)?);
             }
             Ok(WireGuardPortalSetup {
                 server_private,
                 server_public,
-                clients,
+                clients: RwLock::new(clients),
             })
         })()
         .map_err(|error| error.to_string());
@@ -184,6 +185,7 @@ impl WireGuardPortalHost {
             global_ctx,
             config,
             setup,
+            engine: StdMutex::new(None),
         })
     }
 
@@ -204,6 +206,69 @@ impl WireGuardPortalHost {
             )
             .await
     }
+
+    async fn apply_client_updates(&self, clients: &[PortalClientConfig]) -> anyhow::Result<()> {
+        let setup = self
+            .setup
+            .as_ref()
+            .map_err(|error| anyhow::anyhow!(error.clone()))?;
+        let engine = self
+            .engine
+            .lock()
+            .unwrap()
+            .clone()
+            .and_then(|engine| engine.upgrade())
+            .ok_or_else(|| anyhow::anyhow!("WireGuard VPN portal is not running"))?;
+
+        let desired: BTreeSet<&str> = clients.iter().map(|client| client.name.as_str()).collect();
+        let stale: Vec<String> = setup
+            .clients
+            .read()
+            .unwrap()
+            .keys()
+            .filter(|name| !desired.contains(name.as_str()))
+            .cloned()
+            .collect();
+        for name in &stale {
+            engine.remove_client(name).await;
+            setup.clients.write().unwrap().remove(name);
+        }
+        for client in clients {
+            if setup
+                .clients
+                .read()
+                .unwrap()
+                .get(&client.name)
+                .is_some_and(|existing| existing.config == *client)
+            {
+                continue;
+            }
+            // A changed client keeps its WireGuard identity (keys derive from
+            // the name), but its attached peer must be rebuilt with the new
+            // virtual IP or groups. Expiring the session makes the client
+            // re-handshake into a fresh Core generation.
+            engine.remove_client(&client.name).await;
+            let derived = derive_client(setup.server_private, client)?;
+            engine.add_client(derived.clone())?;
+            setup
+                .clients
+                .write()
+                .unwrap()
+                .insert(client.name.clone(), derived);
+        }
+        Ok(())
+    }
+}
+
+fn derive_client(master: [u8; 32], client: &PortalClientConfig) -> anyhow::Result<DerivedClient> {
+    let wireguard_private = derive_named_key(&master, b"wireguard-client", &client.name)?;
+    let identity_private_key = derive_named_key(&master, b"attached-noise", &client.name)?;
+    Ok(DerivedClient {
+        config: client.clone(),
+        wireguard_private,
+        wireguard_public: PublicKey::from(&StaticSecret::from(wireguard_private)),
+        identity_private_key,
+    })
 }
 fn secondary_ipv6_bind_address(address: SocketAddr, primary_port: u16) -> Option<SocketAddr> {
     let SocketAddr::V4(address) = address else {
@@ -237,7 +302,12 @@ impl PortalHost for WireGuardPortalHost {
         }
         let url = url::Url::parse(&format!("wg://{local}"))?;
         let (accepted, receiver) = mpsc::unbounded_channel();
-        let engine = PortalEngine::new(setup.server_private, setup.clients.clone(), accepted);
+        let engine = PortalEngine::new(
+            setup.server_private,
+            setup.clients.read().unwrap().values().cloned().collect(),
+            accepted,
+        );
+        *self.engine.lock().unwrap() = Some(Arc::downgrade(&engine));
         Ok(vec![Box::new(WireGuardPortalListener {
             url,
             sockets,
@@ -252,27 +322,25 @@ impl PortalHost for WireGuardPortalHost {
         "wireguard".to_owned()
     }
 
+    async fn update_clients(&self, clients: &[PortalClientConfig]) -> anyhow::Result<()> {
+        self.apply_client_updates(clients).await
+    }
+
     fn render_client_config(&self, plan: &PortalClientConfigPlan) -> String {
-        let client = self
+        let setup = self
             .setup
             .as_ref()
-            .expect("client config is rendered only after successful startup")
-            .clients
-            .iter()
-            .find(|client| client.config.name == plan.name)
-            .expect("Core only renders configured clients");
+            .expect("client config is rendered only after successful startup");
+        let clients = setup.clients.read().unwrap();
+        let Some(client) = clients.get(&plan.name) else {
+            return String::new();
+        };
         let endpoint = &plan.listener_url[url::Position::BeforeHost..url::Position::AfterPort];
         format!(
             "[Interface]\nPrivateKey = {}\nAddress = {}/32\n\n[Peer]\nPublicKey = {}\nAllowedIPs = {}\nEndpoint = {} # replace wildcard with the public address\nPersistentKeepalive = 25\n",
             BASE64_STANDARD.encode(client.wireguard_private),
             plan.address,
-            BASE64_STANDARD.encode(
-                self.setup
-                    .as_ref()
-                    .expect("client config is rendered only after successful startup")
-                    .server_public
-                    .as_bytes()
-            ),
+            BASE64_STANDARD.encode(setup.server_public.as_bytes()),
             plan.allowed_ips.join(", "),
             endpoint,
         )

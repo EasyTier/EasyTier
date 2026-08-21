@@ -28,6 +28,12 @@ message InstanceConfigPatch {
   optional bool ipv6_public_addr_auto = 12;
   optional string ipv6_public_addr_prefix = 13;
   optional bool disable_relay_data = 14;
+  repeated VpnPortalClientPatch vpn_portal_clients = 15;
+}
+
+message VpnPortalClientPatch {
+  ConfigPatchAction action = 1;
+  api.manage.VpnPortalClientConfig client = 2;
 }
 
 message PortForwardPatch {
