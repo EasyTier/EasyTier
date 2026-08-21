@@ -10,14 +10,21 @@ use crate::{
     config::{
         peers::AclRuleConfig,
         runtime::CoreInstanceRuntimeConfig,
-        toml::{ConfigLoader as _, TomlConfig},
+        toml::{ConfigLoader as _, ManagedCredentialConfig, TomlConfig},
     },
     instance::{CoreInstance, CoreInstanceConfig, CoreInstanceHost, CoreInstanceState},
+    peers::credential_manager::CredentialManager,
 };
+
+#[async_trait::async_trait]
+pub trait ConfigPatchPersistence: Send + Sync {
+    async fn persist(&self, instance_id: uuid::Uuid, config: &TomlConfig) -> anyhow::Result<()>;
+}
 
 pub async fn apply_config_patch<H>(
     instance: &Arc<CoreInstance<H>>,
     patch: InstanceConfigPatch,
+    persistence: Option<&dyn ConfigPatchPersistence>,
 ) -> anyhow::Result<()>
 where
     H: CoreInstanceHost,
@@ -33,11 +40,11 @@ where
     let candidate = config.detached_snapshot();
     let parsed_prefix =
         parse_ipv6_public_addr_prefix_patch(patch.ipv6_public_addr_prefix.as_deref())?;
-    let patch_for_host = patch.clone();
+    let patch_for_host = patch_without_managed_credentials(&patch);
 
     // Preserve the existing ordered partial-commit contract: earlier valid
     // sub-patches remain applied if a later sub-patch fails.
-    let patch_result: anyhow::Result<bool> = async {
+    let patch_result: anyhow::Result<(bool, bool)> = async {
         let result = patch_port_forwards(&candidate, patch.port_forwards);
         validate_and_commit_candidate(instance, &config, &candidate)?;
         result?;
@@ -95,6 +102,7 @@ where
             candidate.set_ipv6_public_addr_prefix(prefix);
             provider_config_changed = true;
         }
+        let mut managed_credentials_changed = false;
 
         // Runs last so client validation sees the fully patched candidate,
         // including routes and the node IPv4 set earlier in this request.
@@ -124,22 +132,95 @@ where
             validate_and_commit_candidate(instance, &config, &candidate)?;
         }
 
-        let normalized = validate_and_commit_candidate(instance, &config, &candidate)?;
+        if let Some(managed) = &patch.managed_credentials {
+            // Managed credential patch transaction: validate → persist →
+            // install. All fallible checks (secret parsing, duplicate IDs,
+            // conflicts with base/ephemeral credentials) run BEFORE the
+            // durable write, so a rejected patch can never leave bad data in
+            // the TOML file. The only await point is the atomic persist;
+            // everything after it is synchronous memory updates that a task
+            // cancellation cannot split.
+            //
+            // Accepted race windows (deliberate tradeoffs, do not "fix"):
+            //
+            // 1. A concurrent plain credential mutation (upsert/generate)
+            //    taking `state` between validate and install can invalidate
+            //    the validated replacement. The window is one file write
+            //    wide, the actors are admin-only management RPCs, and on
+            //    failure the RPC returns an error while the file remains
+            //    authoritative across restarts. Holding a transaction lock
+            //    across the persist await would make the future !Send for no
+            //    realistic gain.
+            //
+            // 2. If this RPC future is dropped mid-persist, production
+            //    storage completes its spawn_blocking write without running
+            //    the in-memory commits. Callers (web reconcile, CLI) always
+            //    await the result and never abort; and even if it happened,
+            //    the next full reconcile re-runs the instance from config,
+            //    converging disk and runtime. The previous two-phase protocol
+            //    existed to close exactly this gap and was removed as
+            //    over-engineering.
+            //
+            // 3. This patch is not serialized against process-level instance
+            //    replacement (run_network_instance overwrite). Web sessions
+            //    issue both sequentially per instance; a racing admin would
+            //    be writing two different configs to the same file anyway,
+            //    and last-writer-wins on the durable file is the declared
+            //    model.
+            let credential_manager = instance.credential_manager();
+            let entries = managed
+                .entries
+                .iter()
+                .map(|credential| ManagedCredentialConfig {
+                    credential_id: credential.credential_id.clone(),
+                    credential_secret: credential.credential_secret.clone(),
+                    groups: credential.groups.clone(),
+                    allow_relay: credential.allow_relay,
+                    allowed_proxy_cidrs: credential.allowed_proxy_cidrs.clone(),
+                    expiry_unix: credential.expiry_unix,
+                    reusable: credential.reusable.unwrap_or(true),
+                })
+                .collect::<Vec<_>>();
+            let replacement = credential_manager
+                .validate_managed_credentials(&entries)
+                .map_err(anyhow::Error::msg)?;
+            candidate.set_managed_credentials(entries);
+            validate_candidate(instance, &candidate)?;
+            // File-backed configs persist every successful patch, so the
+            // durable file and the shared TOML model can never diverge.
+            persistence
+                .ok_or_else(|| anyhow::anyhow!("durable config patching is unavailable"))?
+                .persist(instance.instance_id(), &candidate)
+                .await?;
+            config.replace_from_snapshot(&candidate);
+            managed_credentials_changed =
+                CredentialManager::install_managed_credentials(replacement);
+        } else {
+            validate_and_commit_candidate(instance, &config, &candidate)?;
+        }
+        let normalized = validate_candidate(instance, &candidate)?;
         let runtime = runtime_config_from_normalized(&normalized);
-        instance
-            .instance_runtime
-            .synchronize_config(&patch_for_host, &runtime);
-        Ok(provider_config_changed)
+        if patch_for_host != InstanceConfigPatch::default() {
+            instance
+                .instance_runtime
+                .synchronize_config(&patch_for_host, &runtime);
+        }
+        Ok((provider_config_changed, managed_credentials_changed))
     }
     .await;
 
     instance
         .update_runtime_config_under_operation(runtime_config_from_toml(instance, &config)?)
         .await?;
-    let provider_config_changed = patch_result?;
-    instance
-        .instance_runtime
-        .publish_config_patch(patch_for_host);
+    let (provider_config_changed, managed_credentials_changed) = patch_result?;
+    if patch_for_host != InstanceConfigPatch::default() {
+        instance
+            .instance_runtime
+            .publish_config_patch(patch_for_host);
+    }
+    if managed_credentials_changed {
+        instance.notify_credential_changed();
+    }
     #[cfg(feature = "public-ipv6-provider")]
     if provider_config_changed && instance.state() == CoreInstanceState::Running {
         instance.reconcile_public_ipv6_provider().await;
@@ -147,6 +228,12 @@ where
     #[cfg(not(feature = "public-ipv6-provider"))]
     let _ = provider_config_changed;
     Ok(())
+}
+
+fn patch_without_managed_credentials(patch: &InstanceConfigPatch) -> InstanceConfigPatch {
+    let mut patch = patch.clone();
+    patch.managed_credentials = None;
+    patch
 }
 
 fn validate_candidate<H>(
@@ -224,6 +311,27 @@ fn trace_patchables<T: Debug>(patches: &[Patchable<T>]) {
             }
             None => tracing::warn!("ignored invalid configuration patch action"),
         }
+    }
+}
+
+#[cfg(test)]
+mod managed_credential_tests {
+    use easytier_proto::api::manage::ManagedCredentialSet;
+
+    use super::*;
+
+    #[test]
+    fn event_patch_drops_managed_credential_secrets() {
+        let patch = InstanceConfigPatch {
+            managed_credentials: Some(ManagedCredentialSet::default()),
+            ..Default::default()
+        };
+
+        assert!(
+            patch_without_managed_credentials(&patch)
+                .managed_credentials
+                .is_none()
+        );
     }
 }
 

@@ -28,6 +28,7 @@ use crate::{
             PeerRuntimeSnapshot,
         },
         runtime::{CoreInstanceRuntimeConfig, CoreRuntimeConfigStore},
+        toml::ManagedCredentialConfig,
     },
     events::CoreEventSink,
     foundation::task::ExternalTaskSignal,
@@ -811,6 +812,7 @@ impl PeerManagerCore {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         mut config: PortablePeerManagerConfig,
+        managed_credentials: Vec<ManagedCredentialConfig>,
         runtime_config: CoreRuntimeConfigStore,
         stun_info_source: Arc<dyn PeerStunInfoSource>,
         nic_channel: HostPacketSender,
@@ -922,6 +924,10 @@ impl PeerManagerCore {
                 credential_storage,
             },
         ));
+        context
+            .credential_manager()
+            .install_initial_managed_credentials(&managed_credentials)
+            .map_err(anyhow::Error::msg)?;
         let peer_manager = Self::assemble(
             config.route_algo,
             my_peer_id,
@@ -3563,6 +3569,7 @@ mod tests {
             let stun_info_source = Arc::new(RuntimeConfigStunInfoSource(runtime_config.clone()));
             Self::new(
                 config,
+                Vec::new(),
                 runtime_config,
                 stun_info_source,
                 nic_channel,
@@ -3879,6 +3886,7 @@ mod tests {
 
         let core = PeerManagerCore::new(
             config,
+            Vec::new(),
             runtime_config,
             Arc::new(()),
             packet_tx,
@@ -4099,6 +4107,7 @@ mod tests {
             admin_a
                 .credential_manager()
                 .revoke_credential(&generated.credential_id)
+                .unwrap()
         );
         admin_b
             .context

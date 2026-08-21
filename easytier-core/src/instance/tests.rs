@@ -174,6 +174,7 @@ fn core_instance_config_round_trips_as_normalized_json() {
         peer,
         connectivity: CoreConnectivityConfig::default(),
         vpn_portal: None,
+        managed_credentials: Vec::new(),
     };
 
     let mut config = config;
@@ -328,6 +329,7 @@ mod portable_runtime {
             peer,
             connectivity,
             vpn_portal: None,
+            managed_credentials: Vec::new(),
         }
     }
     #[cfg(feature = "vpn-portal")]
@@ -451,6 +453,28 @@ mod portable_runtime {
 
     fn build_instance(config: CoreInstanceConfig) -> anyhow::Result<Arc<CoreInstance<TestHost>>> {
         build_with_engines(config, WrappedTransportEngines::default())
+    }
+
+    #[cfg(feature = "management")]
+    struct RecordingConfigPatchPersistence {
+        writes: std::sync::Mutex<Vec<String>>,
+        fail: AtomicBool,
+    }
+
+    #[cfg(feature = "management")]
+    #[async_trait]
+    impl crate::management::ConfigPatchPersistence for RecordingConfigPatchPersistence {
+        async fn persist(
+            &self,
+            _instance_id: uuid::Uuid,
+            config: &TomlConfig,
+        ) -> anyhow::Result<()> {
+            if self.fail.load(Ordering::Relaxed) {
+                anyhow::bail!("injected config persistence failure");
+            }
+            self.writes.lock().unwrap().push(config.dump());
+            Ok(())
+        }
     }
     #[cfg(feature = "vpn-portal")]
     #[tokio::test]
@@ -720,11 +744,107 @@ hostname = "core-owned-config"
                 hostname: Some("too-early".to_owned()),
                 ..Default::default()
             },
+            None,
         )
         .await
         .unwrap_err();
 
         assert!(error.to_string().contains("instance is not ready"));
+    }
+
+    #[cfg(feature = "management")]
+    #[tokio::test]
+    async fn managed_credential_patch_is_durable_atomic_and_does_not_restart() {
+        use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+        use easytier_proto::api::{
+            config::InstanceConfigPatch,
+            manage::{ManagedCredentialConfig, ManagedCredentialSet},
+        };
+
+        let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+        let config = TomlConfig::new_from_str(
+            r#"
+[network_identity]
+network_name = "managed-network"
+network_secret = "network-secret"
+
+[source]
+source = "web"
+"#,
+        )
+        .unwrap();
+        let instance =
+            CoreInstance::from_toml(config, adapters(None, Arc::new(packet_sink))).unwrap();
+        instance.start().await.unwrap();
+        let peer_id = instance.peer_id();
+        let secret = BASE64_STANDARD.encode([7u8; 32]);
+        let patch = InstanceConfigPatch {
+            managed_credentials: Some(ManagedCredentialSet {
+                entries: vec![ManagedCredentialConfig {
+                    credential_id: "managed".to_owned(),
+                    credential_secret: secret.clone(),
+                    groups: vec!["ops".to_owned()],
+                    allow_relay: false,
+                    allowed_proxy_cidrs: Vec::new(),
+                    expiry_unix: 2_000_000_000,
+                    reusable: Some(true),
+                }],
+            }),
+            ..Default::default()
+        };
+        let persistence = RecordingConfigPatchPersistence {
+            writes: std::sync::Mutex::new(Vec::new()),
+            fail: AtomicBool::new(true),
+        };
+
+        let error =
+            crate::management::apply_config_patch(&instance, patch.clone(), Some(&persistence))
+                .await
+                .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("injected config persistence failure")
+        );
+        assert!(
+            instance
+                .toml_config()
+                .unwrap()
+                .get_managed_credentials()
+                .is_empty()
+        );
+        let private_bytes: [u8; 32] = BASE64_STANDARD.decode(&secret).unwrap().try_into().unwrap();
+        let public_key =
+            x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(private_bytes));
+        assert!(
+            !instance
+                .credential_manager()
+                .is_pubkey_trusted(public_key.as_bytes())
+        );
+
+        persistence.fail.store(false, Ordering::Relaxed);
+        crate::management::apply_config_patch(&instance, patch, Some(&persistence))
+            .await
+            .unwrap();
+
+        assert_eq!(instance.peer_id(), peer_id);
+        assert_eq!(instance.state(), CoreInstanceState::Running);
+        assert!(
+            instance
+                .credential_manager()
+                .is_pubkey_trusted(public_key.as_bytes())
+        );
+        assert_eq!(
+            instance
+                .toml_config()
+                .unwrap()
+                .get_managed_credentials()
+                .len(),
+            1
+        );
+        let persisted = persistence.writes.lock().unwrap();
+        assert_eq!(persisted.len(), 1);
+        assert!(persisted[0].contains(&secret));
     }
 
     #[cfg(all(feature = "management", not(feature = "proxy-smoltcp-stack")))]
@@ -769,6 +889,7 @@ hostname = "core-owned-config"
                 }],
                 ..Default::default()
             },
+            None,
         )
         .await
         .unwrap_err();
@@ -833,6 +954,7 @@ virtual_ip = "10.82.0.2"
                 ipv4: Some("10.82.0.2/24".parse::<cidr::Ipv4Inet>().unwrap().into()),
                 ..Default::default()
             },
+            None,
         )
         .await
         .unwrap_err();
@@ -909,6 +1031,7 @@ virtual_ip = "10.82.0.2"
                 }],
                 ..Default::default()
             },
+            None,
         )
         .await
         .unwrap();

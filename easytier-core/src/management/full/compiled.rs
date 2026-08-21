@@ -13,6 +13,7 @@ use easytier_proto::{
 };
 
 use super::super::instance_rpc::InstanceManagementRpc;
+use super::ConfigFileStorage;
 use crate::{
     instance::{
         CoreInstance, CoreInstanceHost,
@@ -26,11 +27,13 @@ use crate::{
 pub fn register_instance_management_rpc<F, H>(
     manager: Arc<InstanceManager<F>>,
     registry: &ServiceRegistry,
+    storage: Arc<dyn ConfigFileStorage>,
 ) where
-    F: InstanceFactory<Instance = CoreInstance<H>>,
+    F: InstanceFactory<Instance = CoreInstance<H>, CreateContext = ()>,
+    F::Error: std::fmt::Debug + std::fmt::Display + Send + Sync + 'static,
     H: CoreInstanceHost,
 {
-    let rpc = InstanceManagementRpc::<F>::new(manager.clone());
+    let rpc = InstanceManagementRpc::<F>::new_with_config_storage(manager.clone(), storage);
     registry.register(PeerManageRpcServer::new(rpc.clone()), "");
     registry.register(ConnectorManageRpcServer::new(rpc.clone()), "");
     registry.register(MappedListenerManageRpcServer::new(rpc.clone()), "");

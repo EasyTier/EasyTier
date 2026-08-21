@@ -95,7 +95,7 @@ impl TestConfigPatcher {
         &self,
         patch: crate::proto::api::config::InstanceConfigPatch,
     ) -> anyhow::Result<()> {
-        easytier_core::management::apply_config_patch(&self.core, patch).await
+        easytier_core::management::apply_config_patch(&self.core, patch, None).await
     }
 }
 

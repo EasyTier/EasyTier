@@ -29,6 +29,7 @@ message InstanceConfigPatch {
   optional string ipv6_public_addr_prefix = 13;
   optional bool disable_relay_data = 14;
   repeated VpnPortalClientPatch vpn_portal_clients = 15;
+  api.manage.ManagedCredentialSet managed_credentials = 16;
 }
 
 message VpnPortalClientPatch {

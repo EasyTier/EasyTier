@@ -16,7 +16,10 @@ use easytier_proto::{
 };
 
 use crate::{
-    config::{IpPrefix, ProxyNetworkConfig},
+    config::{
+        IpPrefix, ProxyNetworkConfig,
+        toml::{ConfigLoader as _, TomlConfig},
+    },
     connectivity::manual::{ManualConnectorSnapshot, ManualConnectorStatus},
     instance::{
         CoreInstance, CoreInstanceHost,
@@ -26,6 +29,7 @@ use crate::{
 };
 
 use super::resolve_instance;
+use super::{ConfigFileStorage, ConfigPatchPersistence};
 
 #[cfg(feature = "web-client")]
 mod config;
@@ -124,6 +128,7 @@ where
 #[doc(hidden)]
 pub struct ResolvedInstanceManagementRpc<R> {
     resolver: R,
+    config_patch_persistence: Option<Arc<dyn ConfigPatchPersistence>>,
 }
 
 impl<R> Clone for ResolvedInstanceManagementRpc<R>
@@ -133,6 +138,7 @@ where
     fn clone(&self) -> Self {
         Self {
             resolver: self.resolver.clone(),
+            config_patch_persistence: self.config_patch_persistence.clone(),
         }
     }
 }
@@ -160,6 +166,26 @@ where
     pub fn new(manager: Arc<InstanceManager<F>>) -> Self {
         Self {
             resolver: ManagerInstanceResolver { manager },
+            config_patch_persistence: None,
+        }
+    }
+
+    pub fn new_with_config_storage(
+        manager: Arc<InstanceManager<F>>,
+        storage: Arc<dyn ConfigFileStorage>,
+    ) -> Self
+    where
+        F: InstanceFactory<CreateContext = ()>,
+        F::Error: std::fmt::Debug + std::fmt::Display + Send + Sync + 'static,
+    {
+        let persistence = Arc::new(ManagerConfigPatchPersistence {
+            manager: manager.clone(),
+            storage,
+            _host: std::marker::PhantomData,
+        });
+        Self {
+            resolver: ManagerInstanceResolver { manager },
+            config_patch_persistence: Some(persistence),
         }
     }
 
@@ -178,6 +204,39 @@ where
 {
     ResolvedInstanceManagementRpc {
         resolver: BoundInstanceResolver { instance },
+        config_patch_persistence: None,
+    }
+}
+
+struct ManagerConfigPatchPersistence<F, H>
+where
+    F: InstanceFactory,
+    H: CoreInstanceHost,
+{
+    manager: Arc<InstanceManager<F>>,
+    storage: Arc<dyn ConfigFileStorage>,
+    _host: std::marker::PhantomData<fn() -> H>,
+}
+
+#[async_trait::async_trait]
+impl<F, H> ConfigPatchPersistence for ManagerConfigPatchPersistence<F, H>
+where
+    F: InstanceFactory<Instance = CoreInstance<H>, CreateContext = ()>,
+    F::Error: std::fmt::Debug + std::fmt::Display + Send + Sync + 'static,
+    H: CoreInstanceHost,
+{
+    async fn persist(&self, instance_id: uuid::Uuid, config: &TomlConfig) -> anyhow::Result<()> {
+        let control = self
+            .manager
+            .config_control(instance_id)
+            .ok_or_else(|| anyhow::anyhow!("configuration file control is unavailable"))?;
+        if control.is_read_only() {
+            anyhow::bail!("configuration file is read-only");
+        }
+        let path = control
+            .path
+            .ok_or_else(|| anyhow::anyhow!("configuration has no durable file path"))?;
+        self.storage.write(&path, config.dump().as_bytes()).await
     }
 }
 
