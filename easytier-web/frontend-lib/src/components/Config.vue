@@ -14,10 +14,9 @@ import { useI18n } from 'vue-i18n'
 import AclManager from './acl/AclManager.vue'
 import UrlListInput from './UrlListInput.vue'
 
-const props = defineProps<{
+defineProps<{
   actionLabel?: string
   configInvalid?: boolean
-  hostname?: string
 }>()
 
 defineEmits(['runNetwork'])
@@ -248,7 +247,7 @@ const instanceRecvBpsLimitInput = computed<string>({
                   </div>
                   <div class="items-center flex flex-col p-fluid gap-y-2">
                     <UrlListInput id="initial_nodes" v-model="curNetwork.peer_urls" :protos="protos"
-                      defaultUrl="tcp://:11010" :add-label="t('add_initial_node')"
+                      defaultUrl="tcp://:11010" :add-label="t('add_initial_node')" :title="t('initial_nodes')"
                       :placeholder="t('initial_node_placeholder')" />
                   </div>
                 </div>
@@ -280,7 +279,7 @@ const instanceRecvBpsLimitInput = computed<string>({
                 <div class="flex flex-col gap-2 basis-5/12 grow">
                   <label for="hostname">{{ t('hostname') }}</label>
                   <InputText id="hostname" v-model="curNetwork.hostname" aria-describedby="hostname-help" :format="true"
-                    :placeholder="t('hostname_placeholder', [props.hostname])" />
+                    :placeholder="t('hostname_placeholder')" />
                 </div>
               </div>
 
@@ -295,7 +294,7 @@ const instanceRecvBpsLimitInput = computed<string>({
 
               <div class="flex flex-row gap-x-9 flex-wrap ">
                 <div class="flex flex-col gap-2 grow">
-                  <label for="username">VPN Portal</label>
+                  <label for="username">{{ t('enable_vpn_portal') }}</label>
                   <ToggleButton v-model="curNetwork.enable_vpn_portal" on-icon="pi pi-check" off-icon="pi pi-times"
                     :on-label="t('off_text')" :off-label="t('on_text')" class="w-48" />
                   <div v-if="curNetwork.enable_vpn_portal" class="items-center flex flex-row gap-x-4">
@@ -322,7 +321,7 @@ const instanceRecvBpsLimitInput = computed<string>({
                 <div class="flex flex-col gap-2 grow p-fluid">
                   <label for="listener_urls">{{ t('listener_urls') }}</label>
                   <UrlListInput v-model="curNetwork.listener_urls" :protos="protos" :add-label="t('add_listener_url')"
-                    placeholder="0.0.0.0" />
+                    :title="t('listener_urls')" placeholder="0.0.0.0" />
                 </div>
               </div>
 
@@ -431,7 +430,7 @@ const instanceRecvBpsLimitInput = computed<string>({
                     <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('mapped_listeners_help')"></span>
                   </div>
                   <UrlListInput v-model="curNetwork.mapped_listeners" :protos="protos"
-                    :add-label="t('add_mapped_listener')" />
+                    :add-label="t('add_mapped_listener')" :title="t('mapped_listeners')" />
                 </div>
               </div>
 

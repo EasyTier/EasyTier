@@ -127,7 +127,7 @@ config_file: Config File
 basic_settings: Basic Settings
 network: Network Config
 virtual_ipv4: Virtual IPv4
-virtual_ipv4_dhcp: Auto Assign
+virtual_ipv4_dhcp: DHCP
 network_name: Network Name
 network_secret: Network Secret
 initial_nodes: Initial Nodes
@@ -175,11 +175,11 @@ relay_all_peer_rpc: Relay All RPC Traffic
 relay_all_peer_rpc_help: Only effective when "Network Whitelist" is configured; relay RPC traffic for all nodes even if their network is not in the whitelist
 need_p2p: Need P2P
 need_p2p_help: Require other nodes to establish P2P connections with this node even if they have "Disable P2P" or "Lazy P2P" enabled
-multi_thread: Multi-Thread Runtime
+multi_thread: Multi-threaded Mode
 multi_thread_help: Use multi-threaded runtime
 proxy_forward_by_system: System-Level Subnet Proxy
 proxy_forward_by_system_help: Disable built-in NAT, delegate subnet proxy forwarding to the system kernel
-disable_encryption: Disable Encryption
+disable_encryption: Disable Traffic Encryption
 disable_encryption_help: Encryption is enabled by default; to disable, this option must be enabled on all nodes
 disable_tcp_hole_punching: Disable TCP Hole Punching
 disable_tcp_hole_punching_help: Disable TCP hole punching
@@ -195,10 +195,11 @@ enable_magic_dns: Magic DNS
 enable_magic_dns_help: Allow accessing other nodes' virtual IPv4 addresses via EasyTier's DNS server, e.g. node1.et.net
 enable_private_mode: Private Network Mode
 enable_private_mode_help: Similar to a network whitelist; prevents nodes with different network names or passwords from using this node as an initial node. Must be enabled on all nodes
+hostname: Hostname
 hostname_placeholder: 'Leave blank to default to hostname: {0}'
 proxy_cidrs: Subnet Proxy CIDRs
 enable_vpn_portal: VPN Portal
-vpn_portal_client_network: Client Route
+vpn_portal_client_network: Enter Client Route
 listener_urls: Listener URLs
 add_listener_url: Add Listener
 dev_name: TUN Interface Name
@@ -320,10 +321,10 @@ mode:
   remote_rpc_address_empty: Remote RPC address cannot be empty
   rpc_connection_failed: "RPC connection failed: {error}"
 config-server:
-  title: Web Server
+  title: Web Dashboard
   address: Config Server Address
   address_placeholder: "e.g.: udp://127.0.0.1:22020/admin"
-  description: Leave blank to not use the web server
+  description: Leave blank to not use the Web Dashboard
   connection_status: Connection Status
   connected: ": Connected"
   disconnected: ": Disconnected"
@@ -366,7 +367,6 @@ event_log: Event Log
 
 
 peer_info: Nodes in Network
-hostname: Hostname
 route_cost: Route Cost
 tunnel_proto: Protocol
 latency: Latency

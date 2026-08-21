@@ -88,7 +88,7 @@ watch(tomlConfig, (newValue) => {
 </script>
 <template>
     <Dialog v-model:visible="visible" :closable="true" modal :header="t('config_file')" :style="{ width: '70%' }"
-        :pt="{ pcCloseButton: { style: { borderRadius: '0', background: 'transparent', border: 'none' } } }">
+        :closeButtonProps="{ severity: 'secondary', text: true, rounded: false }">
         <pre v-if="errorMessage"
             class="mb-2 p-2 rounded text-sm overflow-auto bg-red-100 text-red-700 max-h-40">{{ errorMessage }}</pre>
         <div class="flex w-full" style="max-height: 60vh; overflow-y: auto;">
@@ -101,3 +101,11 @@ watch(tomlConfig, (newValue) => {
         </div>
     </Dialog>
 </template>
+
+<style>
+.p-dialog-close-button {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+}
+</style>

@@ -5,6 +5,7 @@ import UrlInput from './UrlInput.vue'
 const props = defineProps<{
     protos: { [proto: string]: number }
     addLabel: string
+    title?: string
     placeholder?: string
     defaultUrl?: string
 }>()
@@ -23,7 +24,7 @@ const removeUrl = (index: number) => {
 <template>
     <div class="flex flex-col gap-y-2 w-full">
         <div v-for="(_, index) in list" :key="index" class="flex gap-2 items-center w-full">
-            <UrlInput v-model="list[index]" :protos="protos" :placeholder="placeholder">
+            <UrlInput v-model="list[index]" :protos="protos" :placeholder="placeholder" :title="title || addLabel">
                 <template #actions>
                     <Button icon="pi pi-trash" severity="danger" text rounded @click="removeUrl(index)" />
                 </template>

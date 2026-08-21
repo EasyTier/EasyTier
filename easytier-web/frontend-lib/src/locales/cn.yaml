@@ -162,7 +162,7 @@ disable_quic_input_help: 拒绝 QUIC 入站流量，令其它开启 “QUIC 代�
 disable_p2p: 禁用 P2P 打洞
 disable_p2p_help: 禁用自动打洞功能，但开启 “要求 P2P 打洞” 功能的节点仍可与当前节点建立 P2P 连接
 p2p_only: 仅使用 P2P
-p2p_only_help: 仅与已经建立 P2P 连接的节点通信，不与处于 Relay 状态的节点通信
+p2p_only_help: 仅与已经建立 P2P 连接的节点通信，不与 Relay 状态的节点通信
 lazy_p2p: 延迟 P2P 打洞
 lazy_p2p_help: 仅在数据面流量需要某个节点时才尝试与之建立 P2P 连接，但仍会主动连接开启 “要求 P2P 打洞” 的节点
 bind_device: 仅使用物理网卡
@@ -175,34 +175,35 @@ relay_all_peer_rpc: 转发所有 RPC 流量
 relay_all_peer_rpc_help: 仅在配置 “网络白名单” 后生效，转发所有节点的 RPC 流量，即使节点所处的网络不在 “网络白名单” 中
 need_p2p: 要求 P2P 打洞
 need_p2p_help: 即使其它节点启用了 “禁用 P2P 打洞” 或 “延迟 P2P 打洞”，也要求它们与当前节点建立 P2P 连接
-multi_thread: 多线程运行
-multi_thread_help: 使用多线程运行时
+multi_thread: 多线程模式
+multi_thread_help: 使用多线程运行库
 proxy_forward_by_system: 系统级子网代理
 proxy_forward_by_system_help: 禁用内置 NAT，调用系统内核转发子网代理流量
-disable_encryption: 禁用加密
-disable_encryption_help: 默认启用流量加密，如需禁用，必须在所有节点中均开启此选项
+disable_encryption: 禁用流量加密
+disable_encryption_help: 默认启用加密，如需禁用，必须在所有节点中均开启此选项
 disable_tcp_hole_punching: 禁用 TCP 打洞
 disable_tcp_hole_punching_help: 禁用 TCP 打洞功能
 disable_udp_hole_punching: 禁用 UDP 打洞
 disable_udp_hole_punching_help: 禁用 UDP 打洞功能
 enable_udp_broadcast_relay: 转发 UDP 广播
 enable_udp_broadcast_relay_help: 捕获物理网卡上的 UDP 广播流量并转发给其它节点，帮助局域网游戏发现房间
-disable_upnp: 禁用 UPnP/NAT-PMP 端口映射
+disable_upnp: 禁用 UPnP/NAT-PMP
 disable_upnp_help: 默认启用自动端口映射，开启后禁用端口映射
-disable_sym_hole_punching: 禁用端口预测
-disable_sym_hole_punching_help: 针对 Symmetric NAT 禁用端口预测打洞，仅使用标准流程尝试打洞，失败后退回 Relay 状态
+disable_sym_hole_punching: 禁用 Symmetric 打洞
+disable_sym_hole_punching_help: 针对 Symmetric NAT 禁用生日攻击打洞，仅使用标准流程尝试打洞，失败后退回 Relay 状态
 enable_magic_dns: 魔法 DNS
 enable_magic_dns_help: 允许通过 EasyTier 的 DNS 服务器访问其它节点的虚拟 IPv4 地址，例如 node1.et.net
 enable_private_mode: 私有网络模式
 enable_private_mode_help: 类似网络白名单，不允许网络名称和密码与当前节点不同的的节点将当前节点作为初始节点，如需启用，必须在所有节点中均开启此选项
+hostname: 主机名
 hostname_placeholder: 留空默认为主机名：{0}
 proxy_cidrs: 子网代理 CIDR
 enable_vpn_portal: VPN Portal
-vpn_portal_client_network: 客户端路由
+vpn_portal_client_network: 填写客户端路由
 listener_urls: 监听地址
 add_listener_url: 添加监听地址
 dev_name: TUN 网卡名称
-dev_name_placeholder: 留空以自动生成随机名称。请为不同网络设置不同的 TUN 名称，否则会在给 TUN 分配 IP 时产生冲突
+dev_name_placeholder: 留空以自动生成随机名称。请为不同网络设置不同的 TUN 名称以避免 IP 冲突
 mtu: MTU
 mtu_help: TUN 虚拟网卡的数据包最大传输单元，范围：400-1380，非加密时默认为 1380，加密时默认为 1360
 mtu_placeholder: 留空为默认值
@@ -232,8 +233,8 @@ port_forwards_help: |
   · 将访问当前节点所在主机指定端口的流量，通过当前节点转发至目标 IPv4 地址的指定端口，即：访问本机端口 = 访问远端服务，这一过程可以不经过虚拟网络。
   · 假设本机物理 IPv4 地址为 192.168.1.2，虚拟 IPv4 地址为 10.126.126.5。
   · 使用案例如下：
-  · tcp://0.0.0.0:80/10.126.126.1:8080 表示将访问当前节点所在主机的 80 端口 TCP 流量，通过节点所在主机转发到 IPv4 地址为 10.126.126.1，端口为 8080 的设备上的服务；
-  · udp://0.0.0.0:12345/192.168.1.100:23456 表示将访问当前节点所在主机的 12345 端口 UDP 流量，通过节点所在主机转发到 IPv4 地址为 192.168.1.100，端口为 23456 的设备上的服务；
+  · tcp://0.0.0.0:80/10.126.126.1:8080 表示将访问当前节点所在主机的 80 端口 TCP 流量，通过节点所在主机转发到 IPv4 地址为 10.126.126.1，端口为 8080 的设备上的 TCP 服务；
+  · udp://0.0.0.0:12345/192.168.1.100:23456 表示将访问当前节点所在主机的 12345 端口 UDP 流量，通过节点所在主机转发到 IPv4 地址为 192.168.1.100，端口为 23456 的设备上的 UDP 服务；
   · tcp://10.126.126.2:11211/192.168.1.100:11211 该路径不通，“监听地址” 必须为本机。
 port_forwards_bind_addr: 监听地址，如：0.0.0.0
 port_forwards_dst_addr: 目标地址，如：10.126.126.1
@@ -321,7 +322,7 @@ mode:
   rpc_connection_failed: RPC 连接失败：{error}
 config-server:
   title: Web 控制台
-  address: 配置控制台地址
+  address: 配置服务器地址
   address_placeholder: 例如：udp://127.0.0.1:22020/admin
   description: 留空：不使用 Web 控制台
   connection_status: 连接状态
@@ -366,7 +367,6 @@ event_log: 事件记录
 
 
 peer_info: 网络中的节点
-hostname: 主机名
 route_cost: 路由
 tunnel_proto: 协议
 latency: 延迟
