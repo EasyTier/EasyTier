@@ -3,7 +3,7 @@ use std::{fmt::Debug, sync::Arc};
 use anyhow::Context as _;
 use easytier_proto::api::config::{
     self, AclPatch, ConfigPatchAction, ExitNodePatch, InstanceConfigPatch, Patchable,
-    PortForwardPatch, ProxyNetworkPatch, RoutePatch, UrlPatch,
+    PortForwardPatch, ProxyNetworkPatch, RoutePatch, UrlPatch, VpnPortalClientPatch,
 };
 
 use crate::{
@@ -95,6 +95,35 @@ where
             candidate.set_ipv6_public_addr_prefix(prefix);
             provider_config_changed = true;
         }
+
+        // Runs last so client validation sees the fully patched candidate,
+        // including routes and the node IPv4 set earlier in this request.
+        if !patch.vpn_portal_clients.is_empty() {
+            apply_vpn_portal_client_patches(&candidate, patch.vpn_portal_clients)?;
+            // Deep-validate and hot-apply before committing, so a rejected
+            // client set leaves neither the shared TOML model nor the live
+            // portal changed.
+            let normalized = validate_candidate(instance, &candidate)?;
+            #[cfg(feature = "vpn-portal")]
+            {
+                let portal = normalized
+                    .vpn_portal
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("VPN portal is not configured"))?;
+                instance
+                    .update_vpn_portal_clients(
+                        portal.clients,
+                        &runtime_config_from_normalized(&normalized),
+                    )
+                    .await?;
+            }
+            #[cfg(not(feature = "vpn-portal"))]
+            {
+                let _ = normalized;
+            }
+            validate_and_commit_candidate(instance, &config, &candidate)?;
+        }
+
         let normalized = validate_and_commit_candidate(instance, &config, &candidate)?;
         let runtime = runtime_config_from_normalized(&normalized);
         instance
@@ -120,9 +149,8 @@ where
     Ok(())
 }
 
-fn validate_and_commit_candidate<H>(
+fn validate_candidate<H>(
     instance: &CoreInstance<H>,
-    shared: &TomlConfig,
     candidate: &TomlConfig,
 ) -> anyhow::Result<CoreInstanceConfig>
 where
@@ -132,6 +160,18 @@ where
     let runtime = runtime_config_from_normalized(&normalized);
     runtime.services.public_ipv6_provider.validate()?;
     instance.validate_runtime_config_capabilities(&runtime)?;
+    Ok(normalized)
+}
+
+fn validate_and_commit_candidate<H>(
+    instance: &CoreInstance<H>,
+    shared: &TomlConfig,
+    candidate: &TomlConfig,
+) -> anyhow::Result<CoreInstanceConfig>
+where
+    H: CoreInstanceHost,
+{
+    let normalized = validate_candidate(instance, candidate)?;
     shared.replace_from_snapshot(candidate);
     Ok(normalized)
 }
@@ -312,6 +352,67 @@ fn patch_mapped_listeners(config: &TomlConfig, patches: Vec<UrlPatch>) -> anyhow
     Ok(())
 }
 
+/// Applies VPN portal client patches to the candidate TOML model. The live
+/// portal is updated by the caller after the candidate commits, so deep
+/// validation runs against the final configuration state.
+fn apply_vpn_portal_client_patches(
+    config: &TomlConfig,
+    patches: Vec<VpnPortalClientPatch>,
+) -> anyhow::Result<()> {
+    if patches.is_empty() {
+        return Ok(());
+    }
+    let mut portal = config
+        .get_vpn_portal_config()
+        .ok_or_else(|| anyhow::anyhow!("VPN portal is not configured; cannot patch its clients"))?;
+    for patch in patches {
+        match ConfigPatchAction::try_from(patch.action) {
+            Ok(ConfigPatchAction::Add) => {
+                let Some(client) = patch.client else {
+                    tracing::warn!("ignored VPN portal client add without client");
+                    continue;
+                };
+                let virtual_ip = client
+                    .virtual_ip
+                    .parse::<std::net::Ipv4Addr>()
+                    .with_context(|| {
+                        format!(
+                            "invalid VPN portal client virtual IP: {}",
+                            client.virtual_ip
+                        )
+                    })?;
+                portal
+                    .clients
+                    .push(crate::config::toml::VpnPortalClientConfig {
+                        name: client.name,
+                        virtual_ip,
+                        groups: client.groups,
+                    });
+            }
+            Ok(ConfigPatchAction::Remove) => {
+                let Some(client) = patch.client else {
+                    tracing::warn!("ignored VPN portal client remove without client");
+                    continue;
+                };
+                let before = portal.clients.len();
+                portal
+                    .clients
+                    .retain(|existing| existing.name != client.name);
+                if portal.clients.len() == before {
+                    anyhow::bail!("VPN portal client not found: {}", client.name);
+                }
+            }
+            Ok(ConfigPatchAction::Clear) => portal.clients.clear(),
+            Err(_) => tracing::warn!(
+                action = patch.action,
+                "ignored invalid VPN portal client action"
+            ),
+        }
+    }
+    config.set_vpn_portal_config(portal);
+    Ok(())
+}
+
 fn patch_connectors<H>(instance: &CoreInstance<H>, patches: Vec<UrlPatch>) -> anyhow::Result<()>
 where
     H: CoreInstanceHost,
@@ -345,4 +446,98 @@ where
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::toml::{VpnPortalClientConfig, VpnPortalConfig};
+    use easytier_proto::api::manage::VpnPortalClientConfig as ClientPb;
+
+    fn portal_config() -> TomlConfig {
+        let config = TomlConfig::default();
+        config.set_vpn_portal_config(VpnPortalConfig {
+            wireguard_listen: "0.0.0.0:51820".parse().unwrap(),
+            wireguard_private_key: None,
+            clients: vec![VpnPortalClientConfig {
+                name: "alice".to_owned(),
+                virtual_ip: "10.0.0.2".parse().unwrap(),
+                groups: Vec::new(),
+            }],
+        });
+        config
+    }
+
+    fn configured_names(config: &TomlConfig) -> Vec<String> {
+        config
+            .get_vpn_portal_config()
+            .unwrap()
+            .clients
+            .into_iter()
+            .map(|client| client.name)
+            .collect()
+    }
+
+    fn add(name: &str, ip: &str) -> VpnPortalClientPatch {
+        VpnPortalClientPatch {
+            action: ConfigPatchAction::Add as i32,
+            client: Some(ClientPb {
+                name: name.to_owned(),
+                virtual_ip: ip.to_owned(),
+                groups: Vec::new(),
+            }),
+        }
+    }
+
+    fn remove(name: &str) -> VpnPortalClientPatch {
+        VpnPortalClientPatch {
+            action: ConfigPatchAction::Remove as i32,
+            client: Some(ClientPb {
+                name: name.to_owned(),
+                virtual_ip: String::new(),
+                groups: Vec::new(),
+            }),
+        }
+    }
+
+    #[test]
+    fn vpn_portal_client_patches_add_remove_and_clear() {
+        let config = portal_config();
+
+        apply_vpn_portal_client_patches(&config, vec![add("bob", "10.0.0.3")]).unwrap();
+        assert_eq!(configured_names(&config), ["alice", "bob"]);
+
+        apply_vpn_portal_client_patches(&config, vec![remove("alice")]).unwrap();
+        assert_eq!(configured_names(&config), ["bob"]);
+
+        apply_vpn_portal_client_patches(
+            &config,
+            vec![VpnPortalClientPatch {
+                action: ConfigPatchAction::Clear as i32,
+                client: None,
+            }],
+        )
+        .unwrap();
+        assert!(configured_names(&config).is_empty());
+    }
+
+    #[test]
+    fn vpn_portal_client_patches_reject_missing_prerequisites() {
+        let bare = TomlConfig::default();
+        let error =
+            apply_vpn_portal_client_patches(&bare, vec![add("alice", "10.0.0.2")]).unwrap_err();
+        assert!(error.to_string().contains("not configured"));
+
+        let config = portal_config();
+        let error = apply_vpn_portal_client_patches(&config, vec![remove("ghost")]).unwrap_err();
+        assert!(error.to_string().contains("not found"));
+
+        let error =
+            apply_vpn_portal_client_patches(&config, vec![add("bob", "not-an-ip")]).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("invalid VPN portal client virtual IP")
+        );
+    }
 }

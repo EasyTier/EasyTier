@@ -108,6 +108,11 @@ use crate::{
 
 #[cfg(feature = "wireguard")]
 use easytier_core::gateway::vpn_portal::PortalClientState;
+#[cfg(feature = "wireguard")]
+use easytier_proto::api::{
+    config::{ConfigPatchAction, InstanceConfigPatch, VpnPortalClientPatch},
+    manage::VpnPortalClientConfig as VpnPortalClientConfigPb,
+};
 
 pub fn prepare_linux_namespaces() {
     del_netns("net_a");
@@ -2130,6 +2135,199 @@ pub async fn wireguard_vpn_portal_client_roaming() {
     )
     .await;
 
+    drop_insts(insts).await;
+}
+
+#[cfg(feature = "wireguard")]
+#[tokio::test]
+#[serial_test::serial]
+pub async fn wireguard_vpn_portal_dynamic_clients() {
+    let insts = init_three_node_ex(
+        "tcp",
+        |config| {
+            let identity = config.get_network_identity();
+            config.set_network_identity(NetworkIdentity::new(
+                identity.network_name,
+                "wireguard-portal-dynamic-clients-test".to_owned(),
+            ));
+            if config.get_inst_name() == "inst3" {
+                config.set_vpn_portal_config(VpnPortalConfig {
+                    wireguard_listen: "0.0.0.0:22121".parse().unwrap(),
+                    wireguard_private_key: Some(BASE64_STANDARD.encode([42u8; 32])),
+                    clients: vec![VpnPortalClientConfig {
+                        name: "client-a".to_owned(),
+                        virtual_ip: "10.144.144.4".parse().unwrap(),
+                        groups: Vec::new(),
+                    }],
+                });
+            }
+            config
+        },
+        false,
+    )
+    .await;
+
+    let core = insts[2].get_core_instance();
+    let portal_config = insts[2]
+        .get_global_ctx()
+        .config
+        .get_vpn_portal_config()
+        .unwrap();
+
+    // 初始客户端上线
+    {
+        let net_ns = NetNS::new(Some("net_d".into()));
+        let _g = net_ns.guard();
+        let (server_public, client_private) =
+            test_wireguard_keys(&portal_config, "client-a").unwrap();
+        run_wireguard_client(
+            &wireguard_ifname("wg0"),
+            "10.1.2.3:22121".parse().unwrap(),
+            Key::try_from(server_public.as_slice()).unwrap(),
+            Key::try_from(client_private.as_slice()).unwrap(),
+            vec!["10.144.144.0/24".to_string()],
+            "192.0.2.42".to_string(),
+        )
+        .unwrap();
+    }
+    wait_for_condition(
+        || async { ping_test("net_d", "10.144.144.1", None).await },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    // 不重启实例，通过配置补丁动态添加第二个客户端
+    easytier_core::management::apply_config_patch(
+        &core,
+        InstanceConfigPatch {
+            vpn_portal_clients: vec![VpnPortalClientPatch {
+                action: ConfigPatchAction::Add as i32,
+                client: Some(VpnPortalClientConfigPb {
+                    name: "client-b".to_owned(),
+                    virtual_ip: "10.144.144.5".to_owned(),
+                    groups: Vec::new(),
+                }),
+            }],
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        insts[2]
+            .get_global_ctx()
+            .config
+            .get_vpn_portal_config()
+            .unwrap()
+            .clients
+            .len(),
+        2,
+        "shared TOML model must reflect the runtime update"
+    );
+
+    // 拒绝的补丁不能污染共享 TOML 模型：重复添加 client-b 必须整体失败
+    let error = easytier_core::management::apply_config_patch(
+        &core,
+        InstanceConfigPatch {
+            vpn_portal_clients: vec![VpnPortalClientPatch {
+                action: ConfigPatchAction::Add as i32,
+                client: Some(VpnPortalClientConfigPb {
+                    name: "client-b".to_owned(),
+                    virtual_ip: "10.144.144.9".to_owned(),
+                    groups: Vec::new(),
+                }),
+            }],
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("duplicate VPN portal client name"),
+        "unexpected rejection reason: {error:#}"
+    );
+    assert_eq!(
+        insts[2]
+            .get_global_ctx()
+            .config
+            .get_vpn_portal_config()
+            .unwrap()
+            .clients
+            .len(),
+        2,
+        "rejected patch must leave the shared TOML model unchanged"
+    );
+
+    // 新客户端立即可以握手上线，原客户端不受影响
+    {
+        let net_ns = NetNS::new(Some("net_f".into()));
+        let _g = net_ns.guard();
+        let (server_public, client_private) =
+            test_wireguard_keys(&portal_config, "client-b").unwrap();
+        run_wireguard_client(
+            &wireguard_ifname("wg0"),
+            "10.1.2.3:22121".parse().unwrap(),
+            Key::try_from(server_public.as_slice()).unwrap(),
+            Key::try_from(client_private.as_slice()).unwrap(),
+            vec!["10.144.144.0/24".to_string()],
+            "192.0.2.43".to_string(),
+        )
+        .unwrap();
+    }
+    wait_for_condition(
+        || async { ping_test("net_f", "10.144.144.1", None).await },
+        Duration::from_secs(10),
+    )
+    .await;
+    wait_for_condition(
+        || async { ping_test("net_d", "10.144.144.1", None).await },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    // 动态移除 client-a：其会话被拆除，client-b 保持在线
+    easytier_core::management::apply_config_patch(
+        &core,
+        InstanceConfigPatch {
+            vpn_portal_clients: vec![VpnPortalClientPatch {
+                action: ConfigPatchAction::Remove as i32,
+                client: Some(VpnPortalClientConfigPb {
+                    name: "client-a".to_owned(),
+                    virtual_ip: String::new(),
+                    groups: Vec::new(),
+                }),
+            }],
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    wait_for_condition(
+        || async { !ping_test("net_d", "10.144.144.1", None).await },
+        Duration::from_secs(20),
+    )
+    .await;
+    wait_for_condition(
+        || async { ping_test("net_f", "10.144.144.1", None).await },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    let info = core.vpn_portal_info().await;
+    assert_eq!(info.clients.len(), 1);
+    assert_eq!(info.clients[0].name, "client-b");
+    assert_eq!(info.clients[0].state, PortalClientState::Online);
+    assert_eq!(
+        info.clients[0].tunnel_ip,
+        Some("192.0.2.43".parse().unwrap())
+    );
+
+    // Release the held CoreInstance Arc so drop_insts can observe a clean
+    // drop instead of swallowing its debug assertion.
+    drop(core);
     drop_insts(insts).await;
 }
 

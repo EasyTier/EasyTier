@@ -37,6 +37,7 @@ use easytier::{
             config::{
                 AclPatch, ConfigPatchAction, ConfigRpc, ConfigRpcClientFactory,
                 InstanceConfigPatch, PatchConfigRequest, PortForwardPatch, StringPatch, UrlPatch,
+                VpnPortalClientPatch,
             },
             instance::{
                 AclManageRpc, AclManageRpcClientFactory, Connector, ConnectorManageRpc,
@@ -64,7 +65,8 @@ use easytier::{
                 SetLoggerConfigRequest,
             },
             manage::{
-                ListNetworkInstanceMetaRequest, ListNetworkInstanceRequest, WebClientService,
+                ListNetworkInstanceMetaRequest, ListNetworkInstanceRequest,
+                VpnPortalClientConfig as ManageVpnPortalClientConfig, WebClientService,
                 WebClientServiceClientFactory,
             },
         },
@@ -130,8 +132,8 @@ enum SubCommand {
     Route(RouteArgs),
     #[command(about = "show global peers info")]
     PeerCenter,
-    #[command(about = "show vpn portal (wireguard) info")]
-    VpnPortal,
+    #[command(about = "manage vpn portal (wireguard) clients")]
+    VpnPortal(VpnPortalArgs),
     #[command(about = "inspect self easytier-core status")]
     Node(NodeArgs),
     #[command(about = "manage easytier-core as a system service")]
@@ -263,6 +265,32 @@ enum MappedListenerSubCommand {
     Remove { url: String },
     /// List Existing Mapped Listener
     List,
+}
+
+#[derive(Args, Debug)]
+struct VpnPortalArgs {
+    #[command(subcommand)]
+    sub_command: Option<VpnPortalSubCommand>,
+}
+
+#[derive(Subcommand, Debug)]
+enum VpnPortalSubCommand {
+    /// Add a WireGuard portal client
+    AddClient {
+        #[arg(help = "client name")]
+        name: String,
+        #[arg(long, help = "client virtual IPv4 address inside the mesh network")]
+        virtual_ip: String,
+        #[arg(long, help = "ACL groups assigned to the client")]
+        groups: Vec<String>,
+    },
+    /// Remove a WireGuard portal client
+    RemoveClient {
+        #[arg(help = "client name")]
+        name: String,
+    },
+    /// Remove all WireGuard portal clients
+    ClearClients,
 }
 
 #[derive(Subcommand, Debug)]
@@ -2502,6 +2530,86 @@ impl<'a> CommandHandler<'a> {
         })
     }
 
+    async fn apply_vpn_portal_client_patch(
+        &self,
+        patch: VpnPortalClientPatch,
+    ) -> Result<(), Error> {
+        let client = self.get_config_client().await?;
+        let request = PatchConfigRequest {
+            instance: Some(self.instance_selector.clone()),
+            patch: Some(InstanceConfigPatch {
+                vpn_portal_clients: vec![patch],
+                ..Default::default()
+            }),
+        };
+        let _response = client
+            .patch_config(BaseController::default(), request)
+            .await?;
+        Ok(())
+    }
+
+    async fn handle_vpn_portal_add_client(
+        &self,
+        name: String,
+        virtual_ip: String,
+        groups: Vec<String>,
+    ) -> Result<(), Error> {
+        virtual_ip
+            .parse::<std::net::Ipv4Addr>()
+            .map_err(|e| anyhow::anyhow!("invalid virtual ip ({virtual_ip}): {e}"))?;
+        self.apply_to_instances(|handler| {
+            let name = name.clone();
+            let virtual_ip = virtual_ip.clone();
+            let groups = groups.clone();
+            Box::pin(async move {
+                handler
+                    .apply_vpn_portal_client_patch(VpnPortalClientPatch {
+                        action: ConfigPatchAction::Add as i32,
+                        client: Some(ManageVpnPortalClientConfig {
+                            name,
+                            virtual_ip,
+                            groups,
+                        }),
+                    })
+                    .await
+            })
+        })
+        .await
+    }
+
+    async fn handle_vpn_portal_remove_client(&self, name: String) -> Result<(), Error> {
+        self.apply_to_instances(|handler| {
+            let name = name.clone();
+            Box::pin(async move {
+                handler
+                    .apply_vpn_portal_client_patch(VpnPortalClientPatch {
+                        action: ConfigPatchAction::Remove as i32,
+                        client: Some(ManageVpnPortalClientConfig {
+                            name,
+                            virtual_ip: String::new(),
+                            groups: Vec::new(),
+                        }),
+                    })
+                    .await
+            })
+        })
+        .await
+    }
+
+    async fn handle_vpn_portal_clear_clients(&self) -> Result<(), Error> {
+        self.apply_to_instances(|handler| {
+            Box::pin(async move {
+                handler
+                    .apply_vpn_portal_client_patch(VpnPortalClientPatch {
+                        action: ConfigPatchAction::Clear as i32,
+                        client: None,
+                    })
+                    .await
+            })
+        })
+        .await
+    }
+
     async fn handle_vpn_portal(&self) -> Result<(), Error> {
         let results = self
             .collect_instance_results(|handler| Box::pin(handler.fetch_vpn_portal_info()))
@@ -3053,9 +3161,24 @@ async fn main() -> Result<(), Error> {
         SubCommand::PeerCenter => {
             handler.handle_peer_center().await?;
         }
-        SubCommand::VpnPortal => {
-            handler.handle_vpn_portal().await?;
-        }
+        SubCommand::VpnPortal(args) => match args.sub_command {
+            None => handler.handle_vpn_portal().await?,
+            Some(VpnPortalSubCommand::AddClient {
+                name,
+                virtual_ip,
+                groups,
+            }) => {
+                handler
+                    .handle_vpn_portal_add_client(name, virtual_ip, groups)
+                    .await?;
+            }
+            Some(VpnPortalSubCommand::RemoveClient { name }) => {
+                handler.handle_vpn_portal_remove_client(name).await?;
+            }
+            Some(VpnPortalSubCommand::ClearClients) => {
+                handler.handle_vpn_portal_clear_clients().await?;
+            }
+        },
         SubCommand::Node(sub_cmd) => {
             handler.handle_node(sub_cmd.sub_command.as_ref()).await?;
         }

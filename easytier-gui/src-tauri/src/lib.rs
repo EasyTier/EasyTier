@@ -6,12 +6,16 @@ mod elevate;
 use anyhow::Context;
 #[cfg(target_os = "android")]
 use easytier::instance::factory::subscribe_native_instance_event;
+use easytier::proto::api::config::{
+    ConfigPatchAction, ConfigRpc, ConfigRpcClientFactory, InstanceConfigPatch, PatchConfigRequest,
+    VpnPortalClientPatch,
+};
 use easytier::proto::api::instance::{
     GetVpnPortalInfoRequest, InstanceIdentifier, VpnPortalInfo, VpnPortalRpc,
     VpnPortalRpcClientFactory, instance_identifier,
 };
 use easytier::proto::api::manage::{
-    CollectNetworkInfoResponse, ValidateConfigResponse, WebClientService,
+    CollectNetworkInfoResponse, ValidateConfigResponse, VpnPortalClientConfig, WebClientService,
     WebClientServiceClientFactory,
 };
 use easytier::proto::rpc_types::controller::BaseController;
@@ -178,6 +182,58 @@ async fn get_vpn_portal_info(instance_id: String) -> Result<Option<VpnPortalInfo
         .await
         .map_err(|e| e.to_string())?;
     Ok(response.vpn_portal_info)
+}
+
+#[tauri::command]
+async fn patch_vpn_portal_clients(
+    instance_id: String,
+    action: String,
+    name: Option<String>,
+    virtual_ip: Option<String>,
+    groups: Option<Vec<String>>,
+) -> Result<(), String> {
+    let instance_id = instance_id
+        .parse::<uuid::Uuid>()
+        .map_err(|e| e.to_string())?;
+    let action = match action.as_str() {
+        "add" => ConfigPatchAction::Add,
+        "remove" => ConfigPatchAction::Remove,
+        "clear" => ConfigPatchAction::Clear,
+        other => return Err(format!("invalid vpn portal client patch action: {other}")),
+    };
+    let client = if action == ConfigPatchAction::Clear {
+        None
+    } else {
+        Some(VpnPortalClientConfig {
+            name: name.unwrap_or_default(),
+            virtual_ip: virtual_ip.unwrap_or_default(),
+            groups: groups.unwrap_or_default(),
+        })
+    };
+
+    let client_manager = get_client_manager!()?;
+    let rpc = client_manager
+        .rpc_manager
+        .rpc_client()
+        .scoped_client::<ConfigRpcClientFactory<BaseController>>(1, 1, "".to_string());
+    rpc.patch_config(
+        BaseController::default(),
+        PatchConfigRequest {
+            instance: Some(InstanceIdentifier {
+                selector: Some(instance_identifier::Selector::Id(instance_id.into())),
+            }),
+            patch: Some(InstanceConfigPatch {
+                vpn_portal_clients: vec![VpnPortalClientPatch {
+                    action: action as i32,
+                    client,
+                }],
+                ..Default::default()
+            }),
+        },
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -1423,6 +1479,7 @@ pub fn run_gui() -> std::process::ExitCode {
             run_network_instance,
             collect_network_info,
             get_vpn_portal_info,
+            patch_vpn_portal_clients,
             set_logging_level,
             set_tun_fd,
             easytier_version,
