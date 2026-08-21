@@ -15,6 +15,7 @@ use crate::{
         manual::{ManualConnectorOptions, discovery::ManualEndpointDiscoveryConfig},
         stun::StunServerConfig,
     },
+    gateway::vpn_portal::{PortalClientConfig, PortalRuntimeConfig},
     listener::plan::ListenerRuntimeConfig,
     packet::CompressorAlgo,
     peers::{
@@ -231,10 +232,6 @@ impl CoreInstanceConfig {
                 host_routing: host.host_routing,
                 acl: acl.clone(),
                 easytier_version: host.easytier_version.clone(),
-                vpn_portal_cidr: (!host.ignore_unsupported_config || host.vpn_portal_enabled)
-                    .then(|| config.get_vpn_portal_config())
-                    .flatten()
-                    .map(|portal| portal.client_cidr),
                 pinned_peers: peers
                     .iter()
                     .cloned()
@@ -328,6 +325,20 @@ impl CoreInstanceConfig {
         Ok(Self {
             instance_name: config.get_inst_name(),
             peer,
+            vpn_portal: (!host.ignore_unsupported_config || host.vpn_portal_enabled)
+                .then(|| config.get_vpn_portal_config())
+                .flatten()
+                .map(|config| PortalRuntimeConfig {
+                    clients: config
+                        .clients
+                        .into_iter()
+                        .map(|client| PortalClientConfig {
+                            name: client.name,
+                            virtual_ip: client.virtual_ip,
+                            groups: client.groups,
+                        })
+                        .collect(),
+                }),
             connectivity: CoreConnectivityConfig {
                 initial_peers: peers.into_iter().map(|peer| peer.uri).collect(),
                 listeners,

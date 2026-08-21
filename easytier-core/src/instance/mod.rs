@@ -35,7 +35,6 @@ use url::Url;
 #[cfg(feature = "tcp-hole-punch")]
 use crate::connectivity::hole_punch::tcp::TcpHolePunchConnector;
 use crate::{
-    config::peers::{AclRuleConfig, PeerRuntimeSnapshot},
     config::runtime::{CoreInstanceRuntimeConfig, CoreRuntimeConfig, CoreRuntimeConfigStore},
     config::toml::TomlConfig,
     connectivity::hole_punch::port_mapping::UdpPortMappingPlatform,
@@ -91,7 +90,8 @@ use crate::gateway::proxy::icmp_host::IcmpProxyHost;
 #[cfg(feature = "wrapped-transport")]
 use crate::gateway::proxy::wrapped_transport::WrappedTransportEngines;
 #[cfg(feature = "vpn-portal")]
-use crate::gateway::vpn_portal::VpnPortalHost;
+use crate::gateway::vpn_portal::PortalHost;
+use crate::gateway::vpn_portal::PortalRuntimeConfig;
 
 #[cfg(feature = "public-ipv6-provider")]
 use crate::peers::public_ipv6::provider::PublicIpv6ProviderPlatform;
@@ -105,7 +105,7 @@ use crate::gateway::proxy::service::CoreProxyModule;
 #[cfg(feature = "wrapped-transport")]
 use crate::gateway::proxy::wrapped_transport::WrappedTransportProxyModule;
 #[cfg(feature = "vpn-portal")]
-use crate::gateway::vpn_portal::VpnPortalModule;
+use crate::gateway::vpn_portal::PortalModule;
 #[cfg(feature = "proxy-smoltcp-stack")]
 use crate::gateway::{
     DataPlaneRuntime, DataPlaneSession, PortForwardAdapter, Socks5GatewayAdapter,
@@ -182,6 +182,8 @@ pub struct CoreInstanceConfig {
     pub instance_name: String,
     pub peer: PortablePeerManagerConfig,
     pub connectivity: CoreConnectivityConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vpn_portal: Option<PortalRuntimeConfig>,
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -192,43 +194,8 @@ pub struct PeerRelaySessionSnapshot {
     pub has_session: bool,
 }
 
-fn validate_core_instance_config(
-    config: &CoreInstanceConfig,
-) -> anyhow::Result<Option<crate::proto::acl::Acl>> {
-    let acl = config.connectivity.runtime.acl.build()?;
-    build_capabilities::validate(config)?;
-    Ok(acl)
-}
-
 fn proxy_cidr_snapshot(config: &CoreInstanceRuntimeConfig) -> ProxyCidrSnapshot {
     ProxyCidrSnapshot::from_proxy_networks(&config.peer.runtime.core.routes.proxy_networks)
-}
-
-fn retain_core_peer_identity(
-    peer: &mut Arc<PeerRuntimeSnapshot>,
-    peer_id: crate::config::PeerId,
-    instance_id: Option<[u8; 16]>,
-) {
-    let peer = Arc::make_mut(peer);
-    peer.runtime.core.node.peer_id = Some(peer_id);
-    peer.runtime.core.node.instance_id = instance_id;
-}
-
-fn retain_runtime_owned_peer_state(
-    current: &CoreInstanceRuntimeConfig,
-    next: &mut CoreInstanceRuntimeConfig,
-    peer_id: crate::config::PeerId,
-) {
-    retain_core_peer_identity(
-        &mut next.peer,
-        peer_id,
-        current.peer.runtime.core.node.instance_id,
-    );
-    let next_peer = Arc::make_mut(&mut next.peer);
-    next_peer.runtime.stun_info = current.peer.runtime.stun_info.clone();
-    if current.services.dhcp_ipv4 && next.services.dhcp_ipv4 {
-        next_peer.runtime.core.routes.ipv4 = current.peer.runtime.core.routes.ipv4.clone();
-    }
 }
 
 /// Host-owned resources that must be prepared for the complete Instance
@@ -323,7 +290,7 @@ where
     #[cfg(feature = "public-ipv6-provider")]
     pub public_ipv6_provider: Option<Arc<dyn PublicIpv6ProviderPlatform>>,
     #[cfg(feature = "vpn-portal")]
-    pub vpn_portal: Option<Arc<dyn VpnPortalHost>>,
+    pub vpn_portal: Option<Arc<dyn PortalHost>>,
 }
 
 impl<H> CoreHostAdapters<H>
@@ -441,7 +408,7 @@ where
     #[cfg(feature = "public-ipv6-provider")]
     public_ipv6_provider: PublicIpv6ProviderRuntime,
     #[cfg(feature = "vpn-portal")]
-    vpn_portal: Arc<VpnPortalModule>,
+    vpn_portal: Arc<PortalModule>,
     #[cfg(feature = "proxy-smoltcp-stack")]
     pub(super) startup_plan: CoreInstanceStartupPlan,
     pub(super) runtime_config: CoreRuntimeConfigStore,
@@ -502,8 +469,10 @@ where
         host_config: CoreInstanceHostConfig,
         mut adapters: CoreHostAdapters<H>,
     ) -> anyhow::Result<Arc<Self>> {
-        let initial_acl = validate_core_instance_config(&config)?;
+        build_capabilities::validate(&config)?;
         let instance_name = config.instance_name;
+        #[cfg(feature = "vpn-portal")]
+        let vpn_portal_config = config.vpn_portal.clone();
         let (packet_tx, packet_rx) = host_packet_channel();
         let runtime_config = CoreRuntimeConfigStore::new(
             config.connectivity.runtime.clone(),
@@ -542,7 +511,6 @@ where
             adapters.credential_storage.take(),
             foreign_rpc_registrar,
         )?);
-        peer_manager.reload_acl(initial_acl.as_ref());
         let config = config.connectivity;
         let listener_plan = prepare_listener_plan(
             config.listeners.as_ref(),
@@ -767,12 +735,13 @@ where
             public_ipv6_runtime,
         );
         #[cfg(feature = "vpn-portal")]
-        let vpn_portal = VpnPortalModule::new(
+        let vpn_portal = PortalModule::new(
             peer_manager.clone(),
             runtime_config.clone(),
+            vpn_portal_config,
             vpn_portal,
             events.clone(),
-        );
+        )?;
         #[cfg(feature = "proxy-cidr-monitor")]
         let proxy_cidr_monitor =
             ProxyCidrMonitorRuntime::new(proxy_cidr_monitor_enabled, events.clone());
@@ -843,19 +812,6 @@ where
         self.state.store(state as u8, Ordering::Release);
     }
 
-    async fn reload_acl_config_inner(&self, config: &AclRuleConfig) -> anyhow::Result<()> {
-        let acl = config.build()?;
-        self.peer_manager.reload_acl(acl.as_ref());
-        #[cfg(feature = "test-utils")]
-        self.acl_reload_count.fetch_add(1, Ordering::Relaxed);
-        Ok(())
-    }
-
-    fn sync_peer_runtime_state(&self, snapshot: &PeerRuntimeSnapshot) {
-        self.peer_manager
-            .set_avoid_relay_data_preference(snapshot.avoid_relay_data_preference);
-    }
-
     /// Publishes one complete instance configuration version. Host changes have
     /// no effect until submitted through this method.
     pub async fn update_runtime_config(
@@ -877,27 +833,15 @@ where
             anyhow::bail!("runtime config cannot update while instance is stopping or stopped");
         }
         self.validate_runtime_config_capabilities(&config)?;
-        let current = self.runtime_config.snapshot();
-        let refresh_acl_groups = current.peer.peer_group_memberships
-            != config.peer.peer_group_memberships
-            || current.peer.acl_group_declarations != config.peer.acl_group_declarations;
-        if current.services.acl != config.services.acl {
-            self.reload_acl_config_inner(&config.services.acl).await?;
+        #[cfg(feature = "test-utils")]
+        let reload_acl = self.runtime_config.snapshot().services.acl != config.services.acl;
+        let published = self.peer_manager.update_runtime_config(config).await?;
+        #[cfg(feature = "test-utils")]
+        if reload_acl {
+            self.acl_reload_count.fetch_add(1, Ordering::Relaxed);
         }
-        // Foreign-network watchers read this state after the runtime-config
-        // notification, so publish it before replacing the watched snapshot.
-        self.sync_peer_runtime_state(&config.peer);
-        let peer_id = self.peer_id();
-        let published = self
-            .runtime_config
-            .replace_with_current(config, |current, next| {
-                retain_runtime_owned_peer_state(current, next, peer_id);
-            });
         self.proxy_cidr_table
             .update_snapshot(proxy_cidr_snapshot(&published));
-        if refresh_acl_groups {
-            self.refresh_acl_groups().await;
-        }
         #[cfg(feature = "proxy-smoltcp-stack")]
         self.port_forward_adapter
             .reload(
@@ -916,7 +860,10 @@ where
         &self,
         config: &CoreInstanceRuntimeConfig,
     ) -> anyhow::Result<()> {
-        build_capabilities::validate_runtime(config)
+        build_capabilities::validate_runtime(config)?;
+        #[cfg(feature = "vpn-portal")]
+        self.vpn_portal.validate_runtime_config(config)?;
+        Ok(())
     }
 
     pub async fn wait(&self) {

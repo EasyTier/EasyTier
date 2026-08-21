@@ -11,7 +11,8 @@ type JsonRecord = Record<string, unknown>
 
 export function prepareNetworkConfigForProtoJson(config: NetworkConfig): NetworkConfig {
   const prepared = dropUnsupportedJsonValues(applyLegacyAclDefaults(config)) as NetworkConfig
-  normalizeLegacyOptionalUint64(prepared as JsonRecord, 'instance_recv_bps_limit')
+  const record = prepared as JsonRecord
+  normalizeLegacyOptionalUint64(record, 'instance_recv_bps_limit')
   return prepared
 }
 

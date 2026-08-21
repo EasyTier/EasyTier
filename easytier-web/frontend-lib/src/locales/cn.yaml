@@ -18,9 +18,20 @@ network_secret: 网络密码
 public_server_url: 公共服务器地址
 peer_urls: 对等节点地址
 proxy_cidrs: 子网代理CIDR
-enable_vpn_portal: 启用VPN门户
-vpn_portal_listen_port: 监听端口
-vpn_portal_client_network: 客户端子网
+vpn_portal_wireguard_listen: WireGuard 监听地址
+vpn_portal_wireguard_listen_placeholder: 例如：0.0.0.0:22022
+vpn_portal_wireguard_private_key: WireGuard 服务端私钥
+vpn_portal_wireguard_private_key_placeholder: 必填 Base64 密钥（可用 wg genkey 生成）
+vpn_portal_clients: WireGuard 客户端
+vpn_portal_add_client: 添加客户端
+vpn_portal_no_clients: 尚未配置客户端
+vpn_portal_client_name: 客户端名称
+vpn_portal_client_name_placeholder: 例如：alice-phone
+vpn_portal_client_virtual_ip: 虚拟网地址
+vpn_portal_client_virtual_ip_placeholder: 例如：10.126.126.10
+vpn_portal_client_groups: ACL 组
+vpn_portal_client_groups_placeholder: 选择 ACL 组
+vpn_portal_remove_client: 删除客户端
 dev_name: TUN接口名称
 advanced_settings: 高级设置
 basic_settings: 基础设置
@@ -87,6 +98,21 @@ upload: 上传
 download: 下载
 show_vpn_portal_config: 显示VPN门户配置
 vpn_portal_config: VPN门户配置
+vpn_portal_not_configured: 当前节点未配置 VPN 门户
+vpn_portal_load_failed: VPN 门户信息加载失败
+vpn_portal_listener: 监听地址
+vpn_portal_type: 类型
+vpn_portal_state: 状态
+vpn_portal_peer_id: 节点 ID
+vpn_portal_endpoint: 客户端端点
+vpn_portal_tunnel_ip: 客户端隧道地址
+vpn_portal_client_config: 客户端配置
+vpn_portal_copy_client_config: 复制客户端配置
+vpn_portal_state_unspecified: 未知
+vpn_portal_state_offline: 离线
+vpn_portal_state_connecting: 连接中
+vpn_portal_state_online: 在线
+vpn_portal_state_error: 错误
 show_event_log: 显示事件日志
 event_log: 事件日志
 peer_info: 节点信息

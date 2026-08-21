@@ -88,7 +88,6 @@ pub struct GlobalCtx {
 
     cached_ipv4: AtomicCell<Option<cidr::Ipv4Inet>>,
     cached_ipv6: AtomicCell<Option<cidr::Ipv6Inet>>,
-    vpn_portal_cidr: AtomicCell<Option<cidr::Ipv4Cidr>>,
     hostname: Mutex<String>,
 
     tun_device_name: Mutex<Option<String>>,
@@ -188,13 +187,6 @@ impl GlobalCtx {
         let ipv6 = runtime
             .map(|runtime| Self::runtime_ipv6(&runtime.peer))
             .unwrap_or_else(|| config_fs.get_ipv6());
-        let vpn_portal_cidr = runtime
-            .map(|runtime| runtime.peer.vpn_portal_cidr)
-            .unwrap_or_else(|| {
-                config_fs
-                    .get_vpn_portal_config()
-                    .map(|config| config.client_cidr)
-            });
         if flags.enable_encryption && effective_encryption_uses_xor(&flags.encryption_algorithm) {
             tracing::warn!("using insecure XOR because no AEAD encryption is configured");
         }
@@ -210,7 +202,6 @@ impl GlobalCtx {
             event_bus,
             cached_ipv4: AtomicCell::new(ipv4),
             cached_ipv6: AtomicCell::new(ipv6),
-            vpn_portal_cidr: AtomicCell::new(vpn_portal_cidr),
             hostname: Mutex::new(hostname),
 
             tun_device_name: Mutex::new(None),
@@ -324,10 +315,6 @@ impl GlobalCtx {
 
     pub fn set_hostname(&self, hostname: String) {
         *self.hostname.lock().unwrap() = hostname;
-    }
-
-    pub fn get_vpn_portal_cidr(&self) -> Option<cidr::Ipv4Cidr> {
-        self.vpn_portal_cidr.load()
     }
 
     pub fn get_flags(&self) -> Flags {

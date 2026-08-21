@@ -220,6 +220,23 @@ class WebRemoteClient implements Api.RemoteClient {
         const response = await this.client.get<any, Api.CollectNetworkInfoResponse>('/machines/' + this.machine_id + '/networks/info/' + inst_id);
         return response.info?.map?.[inst_id];
     }
+    async get_vpn_portal_info(inst_id: string): Promise<NetworkTypes.VpnPortalInfo | undefined> {
+        const response = await this.client.post<any, { vpn_portal_info?: NetworkTypes.VpnPortalInfo }>(
+            `/machines/${this.machine_id}/proxy-rpc`,
+            {
+                service_name: 'api.instance.VpnPortalRpcService',
+                method_name: 'get_vpn_portal_info',
+                payload: {
+                    instance: {
+                        id: Utils.StrToUuid(inst_id),
+                    },
+                },
+            },
+        );
+        return response.vpn_portal_info
+            ? NetworkTypes.normalizeVpnPortalInfo(response.vpn_portal_info)
+            : undefined;
+    }
     async list_network_instance_ids(): Promise<Api.ListNetworkInstanceIdResponse> {
         const response = await this.client.get<any, ListNetworkInstanceIdResponse>('/machines/' + this.machine_id + '/networks');
         return response;

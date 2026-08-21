@@ -62,6 +62,20 @@ export function UuidToStr(uuid: UUID | null | undefined): string {
     return uint32ToUuid(uuid.part1 ?? 0, uuid.part2 ?? 0, uuid.part3 ?? 0, uuid.part4 ?? 0);
 }
 
+export function StrToUuid(uuid: string): UUID {
+    const hex = uuid.replace(/-/g, '');
+    if (!/^[0-9a-fA-F]{32}$/.test(hex)) {
+        throw new Error(`Invalid UUID: ${uuid}`);
+    }
+
+    return {
+        part1: Number.parseInt(hex.slice(0, 8), 16),
+        part2: Number.parseInt(hex.slice(8, 16), 16),
+        part3: Number.parseInt(hex.slice(16, 24), 16),
+        part4: Number.parseInt(hex.slice(24, 32), 16),
+    };
+}
+
 export interface Location {
     country: string | undefined;
     city: string | undefined;

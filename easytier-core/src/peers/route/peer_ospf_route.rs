@@ -793,7 +793,6 @@ pub fn new_updated_self_route_peer_info(
         proxy_cidrs: context
             .proxy_cidrs()
             .into_iter()
-            .chain(context.vpn_portal_cidr())
             .map(|x| x.to_string())
             .collect(),
         hostname: Some(context.hostname()),
