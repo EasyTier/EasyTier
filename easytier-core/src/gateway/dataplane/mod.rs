@@ -506,7 +506,7 @@ where
             .lock()
             .unwrap()
             .spawn(reap_joinset_background(
-                self.runtime_tasks.clone(),
+                Arc::downgrade(&self.runtime_tasks),
                 "data plane runtime",
             ));
         self.run_net_update_task().await;

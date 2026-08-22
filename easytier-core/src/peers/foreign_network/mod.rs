@@ -811,7 +811,7 @@ impl ForeignNetworkManager {
 
         let tasks = Arc::new(std::sync::Mutex::new(JoinSet::new()));
         let task_reaper = tokio::spawn(reap_joinset_background(
-            tasks.clone(),
+            Arc::downgrade(&tasks),
             "ForeignNetworkManager",
         ));
 

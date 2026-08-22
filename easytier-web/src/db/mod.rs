@@ -11,12 +11,43 @@ use sea_orm::{
 };
 use sea_orm_migration::MigratorTrait as _;
 use sqlx::{Sqlite, SqlitePool, migrate::MigrateDatabase as _, types::chrono};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt as _;
 use uuid::Uuid;
 
 use crate::migrator;
 use async_trait::async_trait;
 
 pub type UserIdInDb = i32;
+
+#[cfg(unix)]
+fn restrict_database_file_permissions(db_path: &str) -> anyhow::Result<()> {
+    if db_path.ends_with(":memory:") || db_path.contains("mode=memory") {
+        return Ok(());
+    }
+    let path = db_path
+        .strip_prefix("sqlite://")
+        .or_else(|| db_path.strip_prefix("sqlite:"))
+        .unwrap_or(db_path);
+    let path = path
+        .strip_prefix("file:")
+        .unwrap_or(path)
+        .split('?')
+        .next()
+        .filter(|path| !path.is_empty());
+    let Some(path) = path else {
+        return Ok(());
+    };
+    let mut permissions = std::fs::metadata(path)?.permissions();
+    permissions.set_mode(0o600);
+    std::fs::set_permissions(path, permissions)?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn restrict_database_file_permissions(_db_path: &str) -> anyhow::Result<()> {
+    Ok(())
+}
 
 #[derive(Debug, Clone)]
 pub struct Db {
@@ -48,6 +79,7 @@ impl Db {
             tracing::info!("Database not found, creating a new one");
             Sqlite::create_database(db_path).await?;
         }
+        restrict_database_file_permissions(db_path)?;
 
         let db = sqlx::pool::PoolOptions::new()
             .max_lifetime(None)

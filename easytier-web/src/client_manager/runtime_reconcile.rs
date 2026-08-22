@@ -15,7 +15,8 @@ use easytier::{
             },
             instance::{InstanceIdentifier, instance_identifier},
             manage::{
-                ConfigSource as RpcConfigSource, GetNetworkInstanceConfigRequest, NetworkConfig,
+                ConfigSource as RpcConfigSource, GetNetworkInstanceConfigRequest,
+                ManagedCredentialConfig, ManagedCredentialSet, NetworkConfig,
                 RunNetworkInstanceRequest,
             },
         },
@@ -66,6 +67,7 @@ fn hot_patch_base(config: &NetworkConfig) -> anyhow::Result<NetworkConfig> {
     // VPN portal clients are diffed separately; the listener identity
     // (address and private key) decides between patch and recreate.
     config.vpn_portal_config = None;
+    config.managed_credentials.clear();
     if config.dhcp.unwrap_or_default() {
         config.virtual_ipv4 = None;
         config.network_length = None;
@@ -256,6 +258,12 @@ fn client_name_only(name: &str) -> easytier::proto::api::manage::VpnPortalClient
     }
 }
 
+fn normalized_managed_credentials(
+    config: &NetworkConfig,
+) -> anyhow::Result<Vec<ManagedCredentialConfig>> {
+    Ok(NetworkConfig::new_from_config(config.gen_config()?)?.managed_credentials)
+}
+
 fn web_source_runtime_patch(
     current: &NetworkConfig,
     desired: &NetworkConfig,
@@ -328,6 +336,13 @@ fn web_source_runtime_patch(
         (Some(_), None) | (None, Some(_)) => return Ok(None),
         (None, None) => {}
     }
+    let current_managed_credentials = normalized_managed_credentials(current)?;
+    let desired_managed_credentials = normalized_managed_credentials(desired)?;
+    if current_managed_credentials != desired_managed_credentials {
+        patch.managed_credentials = Some(ManagedCredentialSet {
+            entries: desired_managed_credentials,
+        });
+    }
 
     Ok(Some(patch))
 }
@@ -339,7 +354,7 @@ fn ensure_runtime_config_converged(
     let patch = web_source_runtime_patch(current, desired)?;
     match patch {
         Some(patch) if patch == InstanceConfigPatch::default() => Ok(()),
-        Some(patch) => anyhow::bail!("runtime config still needs patch after reconcile: {patch:?}"),
+        Some(_) => anyhow::bail!("runtime config still needs patch after reconcile"),
         None => anyhow::bail!("runtime config still needs full overwrite after reconcile"),
     }
 }
@@ -769,6 +784,27 @@ mod tests {
         let patch = web_source_runtime_patch(&current, &desired).expect("build patch");
 
         assert!(patch.is_none());
+    }
+
+    #[test]
+    fn runtime_patch_replaces_managed_credentials_without_full_run() {
+        let current = config_with_port_forwards(Vec::new());
+        let mut desired = current.clone();
+        desired.managed_credentials = vec![ManagedCredentialConfig {
+            credential_id: "managed".to_owned(),
+            credential_secret: "credential-secret".to_owned(),
+            expiry_unix: 2_000_000_000,
+            ..Default::default()
+        }];
+
+        let action = prepare_web_source_runtime_reconcile_from_current(&current, desired)
+            .expect("prepare reconcile");
+        let RuntimeReconcileAction::Patch(patch) = action else {
+            panic!("managed credential change must use a hot patch");
+        };
+        let managed = patch.managed_credentials.expect("managed credential patch");
+        assert_eq!(managed.entries.len(), 1);
+        assert_eq!(managed.entries[0].credential_id, "managed");
     }
 
     #[test]

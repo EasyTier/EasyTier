@@ -104,6 +104,21 @@ message NetworkConfig {
   optional uint32 socket_mark = 67;
   repeated NetworkPeerConfig peers = 68;
   optional VpnPortalConfig vpn_portal_config = 69;
+  repeated ManagedCredentialConfig managed_credentials = 71;
+}
+
+message ManagedCredentialConfig {
+  string credential_id = 1;
+  string credential_secret = 2;
+  repeated string groups = 3;
+  bool allow_relay = 4;
+  repeated string allowed_proxy_cidrs = 5;
+  int64 expiry_unix = 6;
+  optional bool reusable = 7;
+}
+
+message ManagedCredentialSet {
+  repeated ManagedCredentialConfig entries = 1;
 }
 
 message VpnPortalClientConfig {

@@ -291,6 +291,12 @@ impl<F: InstanceFactory> InstanceManager<F> {
             .remove(&instance_id)
     }
 
+    pub fn config_control(&self, instance_id: Uuid) -> Option<ConfigFileControl> {
+        self.config_controls
+            .get(&instance_id)
+            .map(|control| control.clone())
+    }
+
     pub fn mutation_lock(&self) -> Arc<tokio::sync::Mutex<()>> {
         self.mutation_lock.clone()
     }
@@ -403,12 +409,6 @@ where
 
     pub fn instances(&self) -> Vec<Arc<CoreInstance<H>>> {
         self.list()
-    }
-
-    pub fn config_control(&self, instance_id: Uuid) -> Option<ConfigFileControl> {
-        self.config_controls
-            .get(&instance_id)
-            .map(|control| control.clone())
     }
 
     pub fn attach_tun_fd(&self, instance_id: Uuid, fd: i32) -> anyhow::Result<()> {
