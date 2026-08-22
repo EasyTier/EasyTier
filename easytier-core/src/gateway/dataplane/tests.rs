@@ -654,6 +654,53 @@ async fn immediate_consumer_reacquire_never_leases_closing_generation() {
 }
 
 #[tokio::test]
+async fn tcp_connect_survives_ipv4_generation_replacement() {
+    let (a, b) = setup_data_plane_pair().await;
+    let _consumer = b.gateway.acquire_consumer_lease().unwrap();
+
+    for ip in ["10.126.127.2", "10.126.126.2"] {
+        let ip: IpAddr = ip.parse().unwrap();
+        b.gateway.runtime_config.update_peer_with(|peer| {
+            peer.runtime.core.routes.ipv4 = Some(IpPrefix::new(ip, 24).unwrap());
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if b.gateway
+                    .net
+                    .lock()
+                    .await
+                    .as_ref()
+                    .is_some_and(|plane| IpAddr::V4(plane.ipv4_addr.address()) == ip)
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("data-plane IPv4 generation did not update");
+    }
+
+    let timeout = Duration::from_secs(10);
+    let mut listener = b.gateway.data_plane_tcp_bind(0, timeout).await.unwrap();
+    let listen_addr = SocketAddr::new(b.ip.address().into(), listener.local_addr().port());
+    let (accepted, client) = tokio::join!(
+        listener.accept(),
+        a.gateway.data_plane_tcp_connect(listen_addr, timeout),
+    );
+    let (mut server, _) = accepted.unwrap();
+    let mut client = client.unwrap();
+
+    client.write_all(b"ping").await.unwrap();
+    client.flush().await.unwrap();
+    let mut buf = [0u8; 4];
+    server.read_exact(&mut buf).await.unwrap();
+    assert_eq!(&buf, b"ping");
+
+    stop_data_plane_pair(&a, &b).await;
+}
+
+#[tokio::test]
 async fn ipv4_change_closes_existing_generation_with_typed_error() {
     let host = Arc::new(TestHost::default());
     let endpoint = data_plane_endpoint(host, "10.126.128.1/24".parse().unwrap());

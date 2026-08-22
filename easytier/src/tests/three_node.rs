@@ -2210,6 +2210,7 @@ pub async fn wireguard_vpn_portal_dynamic_clients() {
             }],
             ..Default::default()
         },
+        None,
     )
     .await
     .unwrap();
@@ -2239,6 +2240,7 @@ pub async fn wireguard_vpn_portal_dynamic_clients() {
             }],
             ..Default::default()
         },
+        None,
     )
     .await
     .unwrap_err();
@@ -2301,6 +2303,7 @@ pub async fn wireguard_vpn_portal_dynamic_clients() {
             }],
             ..Default::default()
         },
+        None,
     )
     .await
     .unwrap();

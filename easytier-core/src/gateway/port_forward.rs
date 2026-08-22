@@ -148,7 +148,7 @@ where
             return Ok(());
         }
         self.tasks.lock().unwrap().spawn(reap_joinset_background(
-            self.tasks.clone(),
+            Arc::downgrade(&self.tasks),
             "port-forward adapter",
         ));
         self.start_udp_reaper();
@@ -246,7 +246,7 @@ where
         let data_plane = self.data_plane.clone();
         let connections = Arc::new(std::sync::Mutex::new(JoinSet::new()));
         connections.lock().unwrap().spawn(reap_joinset_background(
-            connections.clone(),
+            Arc::downgrade(&connections),
             "TCP port-forward connections",
         ));
         self.tasks.lock().unwrap().spawn(async move {
@@ -624,7 +624,11 @@ mod tests {
         assert_eq!(slots.available_permits(), 2);
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[cfg_attr(
+        not(target_os = "wasi"),
+        tokio::test(flavor = "multi_thread", worker_threads = 2)
+    )]
+    #[cfg_attr(target_os = "wasi", tokio::test)]
     async fn udp_client_admission_covers_client_and_response_task_publication() {
         let slots = Arc::new(Semaphore::new(1));
         let admission = Arc::new(Mutex::new(()));

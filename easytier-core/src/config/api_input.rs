@@ -8,8 +8,8 @@ use easytier_proto::api::manage;
 use crate::config::{
     MappedListenerPolicy, normalize_secure_mode_config,
     toml::{
-        ConfigLoader, NetworkIdentity, PeerConfig, PortForwardConfig, TomlConfigLoader,
-        VpnPortalClientConfig, VpnPortalConfig, gen_default_flags,
+        ConfigLoader, ManagedCredentialConfig, NetworkIdentity, PeerConfig, PortForwardConfig,
+        TomlConfigLoader, VpnPortalClientConfig, VpnPortalConfig, gen_default_flags,
     },
 };
 
@@ -297,6 +297,21 @@ impl NetworkConfigExt for NetworkConfig {
         {
             cfg.set_credential_file(Some(credential_file.into()));
         }
+
+        cfg.set_managed_credentials(
+            self.managed_credentials
+                .iter()
+                .map(|credential| ManagedCredentialConfig {
+                    credential_id: credential.credential_id.clone(),
+                    credential_secret: credential.credential_secret.clone(),
+                    groups: credential.groups.clone(),
+                    allow_relay: credential.allow_relay,
+                    allowed_proxy_cidrs: credential.allowed_proxy_cidrs.clone(),
+                    expiry_unix: credential.expiry_unix,
+                    reusable: credential.reusable.unwrap_or(true),
+                })
+                .collect(),
+        );
 
         if let Some(credential_secret) = credential_secret {
             cfg.set_secure_mode(Some(normalize_secure_mode_config(
@@ -606,6 +621,19 @@ impl NetworkConfigExt for NetworkConfig {
         result.credential_file = config
             .get_credential_file()
             .map(|path| path.to_string_lossy().into_owned());
+        result.managed_credentials = config
+            .get_managed_credentials()
+            .into_iter()
+            .map(|credential| manage::ManagedCredentialConfig {
+                credential_id: credential.credential_id,
+                credential_secret: credential.credential_secret,
+                groups: credential.groups,
+                allow_relay: credential.allow_relay,
+                allowed_proxy_cidrs: credential.allowed_proxy_cidrs,
+                expiry_unix: credential.expiry_unix,
+                reusable: Some(credential.reusable),
+            })
+            .collect();
         let flags = config.get_flags();
         let default_flags = default_config.get_flags();
         result.latency_first = Some(flags.latency_first);
@@ -712,6 +740,27 @@ mod tests {
         let output = NetworkConfig::new_from_config(&config).unwrap();
         assert_eq!(output.vpn_portal_config, input.vpn_portal_config);
         assert_eq!(output.enable_vpn_portal, None);
+    }
+
+    #[test]
+    fn managed_credentials_round_trip_through_toml_model() {
+        let input = NetworkConfig {
+            managed_credentials: vec![manage::ManagedCredentialConfig {
+                credential_id: "managed-a".to_owned(),
+                credential_secret: "secret".to_owned(),
+                groups: vec!["ops".to_owned()],
+                allow_relay: true,
+                allowed_proxy_cidrs: vec!["10.0.0.0/24".to_owned()],
+                expiry_unix: 2_000_000_000,
+                reusable: None,
+            }],
+            ..standalone_config()
+        };
+
+        let config = input.gen_config().unwrap();
+        let output = NetworkConfig::new_from_config(&config).unwrap();
+        assert_eq!(output.managed_credentials[0].credential_id, "managed-a");
+        assert_eq!(output.managed_credentials[0].reusable, Some(true));
     }
 
     #[test]

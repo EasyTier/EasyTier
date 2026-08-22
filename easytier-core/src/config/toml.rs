@@ -270,6 +270,11 @@ pub trait ConfigLoader: Send + Sync {
     }
     fn set_credential_file(&self, _path: Option<std::path::PathBuf>) {}
 
+    fn get_managed_credentials(&self) -> Vec<ManagedCredentialConfig> {
+        Vec::new()
+    }
+    fn set_managed_credentials(&self, _credentials: Vec<ManagedCredentialConfig>) {}
+
     fn get_network_config_source(&self) -> ConfigSource {
         ConfigSource::User
     }
@@ -471,6 +476,41 @@ pub struct VpnPortalClientConfig {
     pub groups: Vec<String>,
 }
 
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ManagedCredentialConfig {
+    pub credential_id: String,
+    pub credential_secret: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<String>,
+    #[serde(default)]
+    pub allow_relay: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_proxy_cidrs: Vec<String>,
+    pub expiry_unix: i64,
+    #[serde(default = "default_true")]
+    pub reusable: bool,
+}
+
+impl std::fmt::Debug for ManagedCredentialConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ManagedCredentialConfig")
+            .field("credential_id", &self.credential_id)
+            .field("credential_secret", &"<redacted>")
+            .field("groups", &self.groups)
+            .field("allow_relay", &self.allow_relay)
+            .field("allowed_proxy_cidrs", &self.allowed_proxy_cidrs)
+            .field("expiry_unix", &self.expiry_unix)
+            .field("reusable", &self.reusable)
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[cfg_attr(feature = "config-write", derive(Serialize))]
 struct Config {
@@ -516,6 +556,8 @@ struct Config {
     stun_servers_v6: Option<Vec<String>>,
 
     credential_file: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    managed_credentials: Vec<ManagedCredentialConfig>,
     source: Option<ConfigSourceConfig>,
 }
 
@@ -626,6 +668,11 @@ impl TomlConfig {
                 if !declaration.group_secret.is_empty() {
                     declaration.group_secret = REDACTED.to_owned();
                 }
+            }
+        }
+        for credential in &mut config.managed_credentials {
+            if !credential.credential_secret.is_empty() {
+                credential.credential_secret = REDACTED.to_owned();
             }
         }
     }
@@ -1088,6 +1135,14 @@ impl ConfigLoader for TomlConfig {
         self.config.lock().unwrap().credential_file = path;
     }
 
+    fn get_managed_credentials(&self) -> Vec<ManagedCredentialConfig> {
+        self.config.lock().unwrap().managed_credentials.clone()
+    }
+
+    fn set_managed_credentials(&self, credentials: Vec<ManagedCredentialConfig>) {
+        self.config.lock().unwrap().managed_credentials = credentials;
+    }
+
     fn get_network_config_source(&self) -> ConfigSource {
         self.config
             .lock()
@@ -1252,6 +1307,36 @@ group_secret = "group-secret"
         assert!(!redacted.contains("wireguard-private-key"));
         assert!(!redacted.contains("group-secret"));
         assert_eq!(redacted.matches("<redacted>").count(), 4);
+    }
+
+    #[cfg(feature = "config-write")]
+    #[test]
+    fn managed_credentials_round_trip_and_redact_secret() {
+        let config = TomlConfig::new_from_str(
+            r#"
+[[managed_credentials]]
+credential_id = "managed-a"
+credential_secret = "private-key-material"
+groups = ["ops"]
+allow_relay = true
+allowed_proxy_cidrs = ["10.0.0.0/24"]
+expiry_unix = 2000000000
+"#,
+        )
+        .unwrap();
+
+        let dumped = config.dump();
+        let restored = TomlConfig::new_from_str(&dumped).unwrap();
+        assert_eq!(
+            restored.get_managed_credentials(),
+            config.get_managed_credentials()
+        );
+        assert!(dumped.contains("private-key-material"));
+
+        let redacted = config.dump_redacted();
+        assert!(!redacted.contains("private-key-material"));
+        assert!(redacted.contains("<redacted>"));
+        assert!(!TomlConfig::default().dump().contains("managed_credentials"));
     }
 
     #[test]

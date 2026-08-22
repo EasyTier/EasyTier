@@ -123,7 +123,7 @@ impl Server {
         self.stopped.store(false, Ordering::Relaxed);
         let handler_tasks = self.handler_tasks.clone();
         self.tasks.lock().unwrap().spawn(reap_joinset_background(
-            handler_tasks.clone(),
+            Arc::downgrade(&handler_tasks),
             "rpc server handlers",
         ));
 
