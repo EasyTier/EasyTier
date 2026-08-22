@@ -143,6 +143,23 @@ where
             // the durable write is in flight, without holding a synchronous
             // lock across the await. Dropping the replacement before install
             // releases the reservation.
+            //
+            // Accepted consistency limits:
+            //
+            // 1. A persistence implementation may finish its write after this
+            //    RPC future is cancelled. The reservation is then released and
+            //    the running instance keeps its previous credentials even if
+            //    the durable file contains the replacement. A retry, controller
+            //    reconcile, or restart is required to converge; until then a
+            //    removed credential may remain trusted by the running instance.
+            //
+            // 2. This instance operation is not serialized with a process-level
+            //    instance overwrite. The built-in web reconciler serializes its
+            //    own actions, but independently concurrent admin RPCs are
+            //    last-writer-wins and may leave the running instance and durable
+            //    file on different config generations. A restart aligns runtime
+            //    with the file; controller reconcile is required to restore its
+            //    desired generation.
             let credential_manager = instance.credential_manager();
             let entries = managed
                 .entries
