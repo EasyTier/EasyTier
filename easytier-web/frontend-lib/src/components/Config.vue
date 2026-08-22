@@ -20,6 +20,7 @@ import UrlListInput from './UrlListInput.vue'
 defineProps<{
   actionLabel?: string
   configInvalid?: boolean
+  hostname?: string
 }>()
 
 defineEmits(['runNetwork'])
@@ -328,7 +329,7 @@ function removeVpnPortalClient(index: number) {
                 <div class="flex flex-col gap-2 basis-5/12 grow">
                   <label for="hostname">{{ t('hostname') }}</label>
                   <InputText id="hostname" v-model="curNetwork.hostname" aria-describedby="hostname-help" :format="true"
-                    :placeholder="t('hostname_placeholder')" />
+                    :placeholder="t('hostname_placeholder', [hostname])" />
                 </div>
               </div>
 

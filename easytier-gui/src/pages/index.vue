@@ -18,6 +18,8 @@ import { saveLastNetworkInstanceId, loadLastNetworkInstanceId } from '~/composab
 import ModeSwitcher from '~/components/ModeSwitcher.vue'
 import { getEasytierVersion, getServiceStatus, setServiceStatus, initService } from '~/composables/backend'
 
+const deviceHostname = ref('')
+
 const { t, locale } = useI18n()
 const confirm = useConfirm()
 const modeSwitcherRef = ref()
@@ -225,6 +227,11 @@ async function initWithMode(mode: Mode) {
 
 onMounted(async () => {
   const cleanupFns: Array<() => void> = []
+
+  try {
+    const { hostname } = await import('@tauri-apps/plugin-os')
+    deviceHostname.value = (await hostname()) ?? ''
+  } catch (_) { /* ignore */ }
 
   if (type() === 'android') {
     try {
@@ -493,7 +500,7 @@ const configServerConnectionStatus = computed(() => {
     <Menu ref="log_menu" :model="log_menu_items_popup" :popup="true" />
 
     <RemoteManagement v-if="clientRunning" class="flex-1 overflow-y-auto" :api="remoteClient"
-      :pause-auto-refresh="isModeSaving" v-model:instance-id="instanceId" />
+      :pause-auto-refresh="isModeSaving" v-model:instance-id="instanceId" :device-hostname="deviceHostname" />
     <div v-else class="empty-state flex-1 flex flex-col items-center py-12">
       <i class="pi pi-server text-5xl text-secondary mb-4 opacity-50"></i>
       <div class="text-xl text-center font-medium mb-3">{{ t('client.not_running') }}

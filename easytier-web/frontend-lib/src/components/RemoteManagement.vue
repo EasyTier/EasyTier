@@ -12,6 +12,7 @@ const props = defineProps<{
     api: Api.RemoteClient;
     newConfigGenerator?: () => NetworkTypes.NetworkConfig;
     pauseAutoRefresh?: boolean;
+    deviceHostname?: string;
 }>();
 
 const instanceId = defineModel('instanceId', {
@@ -550,6 +551,7 @@ onUnmounted(() => {
                 <Divider />
 
                 <Config :cur-network="currentNetworkConfig" :config-invalid="!currentNetworkConfig"
+                    :hostname="props.deviceHostname"
                     @run-network="saveAndRunNewNetwork"></Config>
             </div>
 

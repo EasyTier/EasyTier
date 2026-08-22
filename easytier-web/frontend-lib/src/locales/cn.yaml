@@ -189,8 +189,8 @@ enable_udp_broadcast_relay: 转发 UDP 广播
 enable_udp_broadcast_relay_help: 捕获物理网卡上的 UDP 广播流量并转发给其它节点，帮助局域网游戏发现房间
 disable_upnp: 禁用 UPnP/NAT-PMP
 disable_upnp_help: 默认启用自动端口映射，开启后禁用端口映射
-disable_sym_hole_punching: 禁用 Symmetric 打洞
-disable_sym_hole_punching_help: 针对 Symmetric NAT 禁用生日攻击打洞，仅使用标准流程尝试打洞，失败后退回 Relay 状态
+disable_sym_hole_punching: 禁用端口预测
+disable_sym_hole_punching_help: 针对 Symmetric NAT 禁用端口预测打洞，仅使用标准流程尝试打洞，失败后退回 Relay 状态
 enable_magic_dns: 魔法 DNS
 enable_magic_dns_help: 允许通过 EasyTier 的 DNS 服务器访问其它节点的虚拟 IPv4 地址，例如 node1.et.net
 enable_private_mode: 私有网络模式
@@ -246,8 +246,8 @@ port_forwards_help: |
   · 将访问当前节点所在主机指定端口的流量，通过当前节点转发至目标 IPv4 地址的指定端口，即：访问本机端口 = 访问远端服务，这一过程可以不经过虚拟网络。
   · 假设本机物理 IPv4 地址为 192.168.1.2，虚拟 IPv4 地址为 10.126.126.5。
   · 使用案例如下：
-  · tcp://0.0.0.0:80/10.126.126.1:8080 表示将访问当前节点所在主机的 80 端口 TCP 流量，通过节点所在主机转发到 IPv4 地址为 10.126.126.1，端口为 8080 的设备上的 TCP 服务；
-  · udp://0.0.0.0:12345/192.168.1.100:23456 表示将访问当前节点所在主机的 12345 端口 UDP 流量，通过节点所在主机转发到 IPv4 地址为 192.168.1.100，端口为 23456 的设备上的 UDP 服务；
+  · tcp://0.0.0.0:80/10.126.126.1:8080 表示将访问当前节点所在主机 80 端口的 TCP 流量，通过节点转发到设备 IPv4 地址为 10.126.126.1，端口为 8080 的 TCP 服务；
+  · udp://0.0.0.0:12345/192.168.1.100:23456 表示将访问当前节点所在主机 12345 端口的 UDP 流量，通过节点转发到设备 IPv4 地址为 192.168.1.100，端口为 23456 的 UDP 服务；
   · tcp://10.126.126.2:11211/192.168.1.100:11211 该路径不通，“监听地址” 必须为本机。
 port_forwards_bind_addr: 监听地址，如：0.0.0.0
 port_forwards_dst_addr: 目标地址，如：10.126.126.1
