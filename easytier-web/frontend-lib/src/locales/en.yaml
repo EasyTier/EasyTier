@@ -339,9 +339,9 @@ config-server:
   address_placeholder: "e.g.: udp://127.0.0.1:22020/admin"
   description: Leave blank to not use the Web Dashboard
   connection_status: Connection Status
-  connected: ": Connected"
-  disconnected: ": Disconnected"
-  connecting: ": Connecting…"
+  connected: Connected
+  disconnected: Disconnected
+  connecting: Connecting…
   unknown: ""
   update_service_confirm: The service will be restarted to apply changes, do you want to continue?
 logging: Logging

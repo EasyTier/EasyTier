@@ -339,9 +339,9 @@ config-server:
   address_placeholder: 例如：udp://127.0.0.1:22020/admin
   description: 留空：不使用 Web 控制台
   connection_status: 连接状态
-  connected: ：已连接
-  disconnected: ：未连接
-  connecting: ：连接中…
+  connected: 已连接
+  disconnected: 未连接
+  connecting: 连接中…
   unknown: ""
   update_service_confirm: 将重启服务以应用更改，是否继续？
 logging: 日志
