@@ -174,7 +174,7 @@ enable_exit_node_help: Allow this node to act as an internet gateway, forwarding
 relay_all_peer_rpc: Relay All RPC Traffic
 relay_all_peer_rpc_help: Only effective when "Network Whitelist" is configured; relay RPC traffic for all nodes even if their network is not in the whitelist
 need_p2p: Need P2P
-need_p2p_help: Require other nodes to establish P2P connections with this node even if they have "Disable P2P" or "Lazy P2P" enabled
+need_p2p_help: Require other nodes to establish P2P connections with this node even if they have "Disable P2P Hole Punching" or "Lazy P2P Hole Punching" enabled
 multi_thread: Multi-threaded Mode
 multi_thread_help: Use multi-threaded runtime
 proxy_forward_by_system: System-Level Subnet Proxy
@@ -248,7 +248,7 @@ port_forwards_help: |
   · Usage examples:
   · tcp://0.0.0.0:80/10.126.126.1:8080 means forwarding TCP traffic from port 80 on this node's host to the device at IPv4 10.126.126.1, port 8080;
   · udp://0.0.0.0:12345/192.168.1.100:23456 means forwarding UDP traffic from port 12345 on this node's host to the device at IPv4 192.168.1.100, port 23456;
-  · tcp://10.126.126.2:11211/192.168.1.100:11211 will not work — the "Listener URL" must be on this node's host.
+  · tcp://10.126.126.2:11211/192.168.1.100:11211 will not work because the "Listen address" must be on this node's host.
 port_forwards_bind_addr: "Listen address, e.g.: 0.0.0.0"
 port_forwards_dst_addr: "Target address, e.g.: 10.126.126.1"
 port_forwards_add_btn: "Add"
