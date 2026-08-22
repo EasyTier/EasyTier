@@ -75,13 +75,8 @@ impl AttachedCredentialRegistration {
             network_runtime_config.snapshot().as_ref(),
             &configured_groups,
         );
-        let credential_id = network_peer_manager.register_ephemeral_credential(
-            public_key,
-            groups,
-            false,
-            Vec::new(),
-            false,
-        )?;
+        let credential_id =
+            network_peer_manager.register_ephemeral_credential(public_key, groups)?;
         let task_peer_manager = network_peer_manager.clone();
         let policy_task = tokio::spawn(async move {
             while peer_changes.changed().await.is_ok() {

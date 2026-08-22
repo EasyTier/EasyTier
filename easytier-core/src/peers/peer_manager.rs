@@ -1166,19 +1166,10 @@ impl PeerManagerCore {
         &self,
         public_key: [u8; 32],
         groups: Vec<String>,
-        allow_relay: bool,
-        allowed_proxy_cidrs: Vec<String>,
-        reusable: bool,
     ) -> anyhow::Result<uuid::Uuid> {
         let credential_id = self
             .credential_manager()
-            .register_ephemeral_credential(
-                public_key,
-                groups,
-                allow_relay,
-                allowed_proxy_cidrs,
-                reusable,
-            )
+            .register_ephemeral_credential(public_key, groups)
             .map_err(anyhow::Error::msg)?;
         self.notify_credential_changed();
         Ok(credential_id)
