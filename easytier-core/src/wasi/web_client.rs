@@ -127,6 +127,7 @@ fn hosted_network_config(config: &NetworkConfig) -> NetworkConfig {
         disable_upnp: config.disable_upnp,
         disable_relay_data: config.disable_relay_data,
         enable_udp_broadcast_relay: config.enable_udp_broadcast_relay,
+        managed_credentials: config.managed_credentials.clone(),
         peers,
         ..Default::default()
     }
@@ -388,7 +389,7 @@ impl WasiWebClientRuntime {
 mod tests {
     use super::*;
     use crate::proto::{
-        api::manage::NetworkPeerConfig,
+        api::manage::{ManagedCredentialConfig, NetworkPeerConfig},
         common::{CompressionAlgoPb, SecureModeConfig},
     };
 
@@ -425,6 +426,11 @@ mod tests {
             enable_private_mode: Some(true),
             disable_relay_data: Some(true),
             proxy_cidrs: vec!["10.88.0.0/24".to_owned()],
+            managed_credentials: vec![ManagedCredentialConfig {
+                credential_id: "managed".to_owned(),
+                credential_secret: "secret".to_owned(),
+                ..Default::default()
+            }],
             port_forwards: vec![crate::proto::api::manage::PortForwardConfig {
                 proto: "tcp".to_owned(),
                 bind_ip: "127.0.0.1".to_owned(),
@@ -450,6 +456,7 @@ mod tests {
         assert_eq!(hosted.enable_private_mode, Some(true));
         assert_eq!(hosted.disable_relay_data, Some(true));
         assert_eq!(hosted.proxy_cidrs, original.proxy_cidrs);
+        assert_eq!(hosted.managed_credentials, original.managed_credentials);
         assert_eq!(hosted.port_forwards, original.port_forwards);
         assert_eq!(hosted.enable_vpn_portal, None);
         assert_eq!(hosted.data_compress_algo, None);

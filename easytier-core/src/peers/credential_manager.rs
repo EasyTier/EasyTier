@@ -97,17 +97,19 @@ impl CredentialEntry {
             .try_into()
             .map_err(|_| format!("credential_secret for {credential_id} must contain 32 bytes"))?;
         let private = StaticSecret::from(private_bytes);
+        let mut allowed_proxy_cidrs = Vec::with_capacity(entry.allowed_proxy_cidrs.len());
         for cidr in &entry.allowed_proxy_cidrs {
-            cidr.trim()
-                .parse::<cidr::IpCidr>()
+            let cidr = cidr.trim();
+            cidr.parse::<cidr::IpCidr>()
                 .map_err(|_| format!("invalid allowed_proxy_cidr for {credential_id}: {cidr}"))?;
+            allowed_proxy_cidrs.push(cidr.to_owned());
         }
         Ok(Self {
             pubkey: BASE64_STANDARD.encode(PublicKey::from(&private).as_bytes()),
             secret: BASE64_STANDARD.encode(private.as_bytes()),
             groups: entry.groups.clone(),
             allow_relay: entry.allow_relay,
-            allowed_proxy_cidrs: entry.allowed_proxy_cidrs.clone(),
+            allowed_proxy_cidrs,
             reusable: entry.reusable,
             expiry_unix: entry.expiry_unix,
             created_at_unix: 0,
@@ -669,6 +671,16 @@ mod tests {
             expiry_unix,
             reusable: true,
         }
+    }
+
+    #[test]
+    fn managed_credential_trims_allowed_proxy_cidrs() {
+        let mut credential = managed_credential("managed", 1, i64::MAX);
+        credential.allowed_proxy_cidrs = vec![" 10.0.0.0/24 ".to_owned()];
+
+        let entry = CredentialEntry::from_managed(&credential).unwrap();
+
+        assert_eq!(entry.allowed_proxy_cidrs, ["10.0.0.0/24"]);
     }
 
     impl CredentialManager {
