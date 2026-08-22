@@ -220,6 +220,27 @@ where
     _host: std::marker::PhantomData<fn() -> H>,
 }
 
+#[cfg(feature = "web-client")]
+async fn persist_config_patch(
+    storage: &dyn ConfigFileStorage,
+    control: &crate::instance::manager::ConfigFileControl,
+    config: &TomlConfig,
+) -> anyhow::Result<()> {
+    if control.is_read_only() {
+        anyhow::bail!("configuration file is read-only");
+    }
+    let Some(path) = control.path.as_deref() else {
+        return Ok(());
+    };
+    if storage.inspect(path).await.is_read_only() {
+        anyhow::bail!(
+            "config file {} is read-only, cannot be overwritten",
+            path.display()
+        );
+    }
+    storage.write(path, config.dump().as_bytes()).await
+}
+
 #[async_trait::async_trait]
 #[cfg(feature = "web-client")]
 impl<F, H> ConfigPatchPersistence for ManagerConfigPatchPersistence<F, H>
@@ -232,13 +253,85 @@ where
             .manager
             .config_control(instance_id)
             .ok_or_else(|| anyhow::anyhow!("configuration file control is unavailable"))?;
-        if control.is_read_only() {
-            anyhow::bail!("configuration file is read-only");
+        persist_config_patch(self.storage.as_ref(), &control, config).await
+    }
+}
+
+#[cfg(all(test, feature = "web-client"))]
+mod config_patch_persistence_tests {
+    use std::{
+        path::{Path, PathBuf},
+        sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
+
+    use super::*;
+    use crate::{
+        instance::manager::{ConfigFileControl, ConfigFilePermission},
+        management::ConfigFileStorage,
+    };
+
+    #[derive(Default)]
+    struct RecordingStorage {
+        read_only: AtomicBool,
+        inspections: AtomicUsize,
+        writes: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl ConfigFileStorage for RecordingStorage {
+        async fn inspect(&self, path: &Path) -> ConfigFileControl {
+            self.inspections.fetch_add(1, Ordering::Relaxed);
+            let permission = if self.read_only.load(Ordering::Relaxed) {
+                ConfigFilePermission::from(ConfigFilePermission::READ_ONLY)
+            } else {
+                ConfigFilePermission::default()
+            };
+            ConfigFileControl::new(Some(path.to_owned()), permission)
         }
-        let path = control
-            .path
-            .ok_or_else(|| anyhow::anyhow!("configuration has no durable file path"))?;
-        self.storage.write(&path, config.dump().as_bytes()).await
+
+        async fn read(&self, _path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
+            unreachable!("config patch persistence does not read files")
+        }
+
+        async fn write(&self, _path: &Path, _contents: &[u8]) -> anyhow::Result<()> {
+            self.writes.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+
+        async fn remove(&self, _path: &Path) -> anyhow::Result<()> {
+            unreachable!("config patch persistence does not remove files")
+        }
+    }
+
+    #[tokio::test]
+    async fn pathless_config_patch_skips_persistence() {
+        let storage = RecordingStorage::default();
+        let control = ConfigFileControl::new(None, ConfigFilePermission::default());
+
+        persist_config_patch(&storage, &control, &TomlConfig::default())
+            .await
+            .unwrap();
+
+        assert_eq!(storage.inspections.load(Ordering::Relaxed), 0);
+        assert_eq!(storage.writes.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn config_patch_rechecks_file_permission_before_write() {
+        let storage = RecordingStorage::default();
+        storage.read_only.store(true, Ordering::Relaxed);
+        let control = ConfigFileControl::new(
+            Some(PathBuf::from("managed.toml")),
+            ConfigFilePermission::default(),
+        );
+
+        let error = persist_config_patch(&storage, &control, &TomlConfig::default())
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("managed.toml is read-only"));
+        assert_eq!(storage.inspections.load(Ordering::Relaxed), 1);
+        assert_eq!(storage.writes.load(Ordering::Relaxed), 0);
     }
 }
 
