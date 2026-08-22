@@ -624,7 +624,11 @@ mod tests {
         assert_eq!(slots.available_permits(), 2);
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[cfg_attr(
+        not(target_os = "wasi"),
+        tokio::test(flavor = "multi_thread", worker_threads = 2)
+    )]
+    #[cfg_attr(target_os = "wasi", tokio::test)]
     async fn udp_client_admission_covers_client_and_response_task_publication() {
         let slots = Arc::new(Semaphore::new(1));
         let admission = Arc::new(Mutex::new(()));

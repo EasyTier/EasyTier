@@ -54,6 +54,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           components: rustfmt,clippy
+          target: wasm32-wasip1
           rustflags: ''
 
       - uses: taiki-e/install-action@cargo-hack
@@ -69,6 +70,12 @@ jobs:
       - name: Check features
         if: ${{ !cancelled() }}
         run: cargo hack check --package easytier --each-feature --exclude-features macos-ne --verbose
+
+      - name: Check WASI
+        if: ${{ !cancelled() }}
+        run: >-
+          cargo check --package easytier-core --lib --target wasm32-wasip1
+          --features management-rpc,proxy-smoltcp-stack,ring-crypto,wasi-crypto-offload
 
       - name: Check Cargo.lock is up to date
         if: ${{ !cancelled() }}
