@@ -3,13 +3,15 @@ use easytier::{
     common::config::{
         ConfigLoader, EncryptionAlgorithm, NetworkConfigExt,
         PortForwardConfig as RuntimePortForwardConfig,
+        VpnPortalClientConfig as RuntimeVpnPortalClientConfig,
+        VpnPortalConfig as RuntimeVpnPortalConfig,
     },
     proto::{
         acl::Acl,
         api::{
             config::{
                 AclPatch, ConfigPatchAction, InstanceConfigPatch, PatchConfigRequest,
-                PortForwardPatch, ProxyNetworkPatch,
+                PortForwardPatch, ProxyNetworkPatch, VpnPortalClientPatch,
             },
             instance::{InstanceIdentifier, instance_identifier},
             manage::{
@@ -61,6 +63,9 @@ fn hot_patch_base(config: &NetworkConfig) -> anyhow::Result<NetworkConfig> {
     config.port_forwards.clear();
     config.proxy_cidrs.clear();
     config.disable_relay_data = None;
+    // VPN portal clients are diffed separately; the listener identity
+    // (address and private key) decides between patch and recreate.
+    config.vpn_portal_config = None;
     if config.dhcp.unwrap_or_default() {
         config.virtual_ipv4 = None;
         config.network_length = None;
@@ -204,6 +209,53 @@ fn normalized_disable_relay_data(config: &NetworkConfig) -> anyhow::Result<bool>
     Ok(config.gen_config()?.get_flags().disable_relay_data)
 }
 
+fn normalized_vpn_portal(config: &NetworkConfig) -> anyhow::Result<Option<RuntimeVpnPortalConfig>> {
+    Ok(config.gen_config()?.get_vpn_portal_config())
+}
+
+fn diff_vpn_portal_clients(
+    current: &[RuntimeVpnPortalClientConfig],
+    desired: &[RuntimeVpnPortalClientConfig],
+) -> Vec<VpnPortalClientPatch> {
+    let mut patches = Vec::new();
+    // Removals first so a virtual IP moved between clients never exists
+    // twice inside one patch request.
+    for client in current {
+        match desired.iter().find(|desired| desired.name == client.name) {
+            Some(matching) if matching == client => {}
+            _ => patches.push(VpnPortalClientPatch {
+                action: ConfigPatchAction::Remove as i32,
+                client: Some(client_name_only(&client.name)),
+            }),
+        }
+    }
+    for client in desired {
+        if current
+            .iter()
+            .find(|existing| existing.name == client.name)
+            .is_none_or(|existing| existing != client)
+        {
+            patches.push(VpnPortalClientPatch {
+                action: ConfigPatchAction::Add as i32,
+                client: Some(easytier::proto::api::manage::VpnPortalClientConfig {
+                    name: client.name.clone(),
+                    virtual_ip: client.virtual_ip.to_string(),
+                    groups: client.groups.clone(),
+                }),
+            });
+        }
+    }
+    patches
+}
+
+fn client_name_only(name: &str) -> easytier::proto::api::manage::VpnPortalClientConfig {
+    easytier::proto::api::manage::VpnPortalClientConfig {
+        name: name.to_owned(),
+        virtual_ip: String::new(),
+        groups: Vec::new(),
+    }
+}
+
 fn web_source_runtime_patch(
     current: &NetworkConfig,
     desired: &NetworkConfig,
@@ -254,6 +306,27 @@ fn web_source_runtime_patch(
     let desired_disable_relay_data = normalized_disable_relay_data(desired)?;
     if current_disable_relay_data != desired_disable_relay_data {
         patch.disable_relay_data = Some(desired_disable_relay_data);
+    }
+
+    match (
+        normalized_vpn_portal(current)?,
+        normalized_vpn_portal(desired)?,
+    ) {
+        (Some(current_portal), Some(desired_portal)) => {
+            if current_portal.wireguard_listen != desired_portal.wireguard_listen
+                || current_portal.wireguard_private_key != desired_portal.wireguard_private_key
+            {
+                // The listener identity changed; the portal must be rebuilt.
+                return Ok(None);
+            }
+            if current_portal.clients != desired_portal.clients {
+                patch.vpn_portal_clients =
+                    diff_vpn_portal_clients(&current_portal.clients, &desired_portal.clients);
+            }
+        }
+        // Enabling or disabling the portal changes the listener lifecycle.
+        (Some(_), None) | (None, Some(_)) => return Ok(None),
+        (None, None) => {}
     }
 
     Ok(Some(patch))
@@ -422,6 +495,151 @@ mod tests {
             patch.cidr.map(|cidr| cidr.to_string()).unwrap_or_default(),
             patch.mapped_cidr.map(|cidr| cidr.to_string()),
         )
+    }
+
+    fn portal_client(name: &str, ip: &str) -> easytier::proto::api::manage::VpnPortalClientConfig {
+        easytier::proto::api::manage::VpnPortalClientConfig {
+            name: name.to_owned(),
+            virtual_ip: ip.to_owned(),
+            groups: Vec::new(),
+        }
+    }
+
+    fn config_with_vpn_portal(
+        clients: Vec<easytier::proto::api::manage::VpnPortalClientConfig>,
+        listen: &str,
+    ) -> NetworkConfig {
+        let mut config = config_with_port_forwards(Vec::new());
+        config.dhcp = Some(false);
+        config.virtual_ipv4 = Some("10.144.0.1".to_string());
+        config.network_length = Some(24);
+        config.vpn_portal_config = Some(easytier::proto::api::manage::VpnPortalConfig {
+            wireguard_listen: listen.to_owned(),
+            wireguard_private_key: Some("dGVzdC1rZXk=".to_owned()),
+            clients,
+        });
+        config
+    }
+
+    fn patch_vpn_portal_actions(patch: &InstanceConfigPatch) -> Vec<(i32, String)> {
+        patch
+            .vpn_portal_clients
+            .iter()
+            .map(|client_patch| {
+                (
+                    client_patch.action,
+                    client_patch
+                        .client
+                        .as_ref()
+                        .map(|client| client.name.clone())
+                        .unwrap_or_default(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn vpn_portal_client_changes_produce_hot_patches() {
+        let current = config_with_vpn_portal(
+            vec![
+                portal_client("alice", "10.144.144.4"),
+                portal_client("carol", "10.144.144.6"),
+            ],
+            "0.0.0.0:22121",
+        );
+        let desired = config_with_vpn_portal(
+            vec![
+                portal_client("bob", "10.144.144.5"),
+                portal_client("carol", "10.144.144.7"),
+            ],
+            "0.0.0.0:22121",
+        );
+
+        let patch = web_source_runtime_patch(&current, &desired)
+            .unwrap()
+            .expect("client-only changes must be hot-patchable");
+
+        assert_eq!(
+            patch_vpn_portal_actions(&patch),
+            vec![
+                (ConfigPatchAction::Remove as i32, "alice".to_owned()),
+                (ConfigPatchAction::Remove as i32, "carol".to_owned()),
+                (ConfigPatchAction::Add as i32, "bob".to_owned()),
+                (ConfigPatchAction::Add as i32, "carol".to_owned()),
+            ],
+            "removals must precede additions; changed clients are remove+add"
+        );
+    }
+
+    #[test]
+    fn vpn_portal_client_no_op_produces_empty_patch_section() {
+        let current = config_with_vpn_portal(
+            vec![portal_client("alice", "10.144.144.4")],
+            "0.0.0.0:22121",
+        );
+        let desired = config_with_vpn_portal(
+            vec![portal_client("alice", "10.144.144.4")],
+            "0.0.0.0:22121",
+        );
+
+        let patch = web_source_runtime_patch(&current, &desired)
+            .unwrap()
+            .unwrap();
+        assert!(patch.vpn_portal_clients.is_empty());
+    }
+
+    #[test]
+    fn vpn_portal_listener_identity_change_requires_recreate() {
+        let current = config_with_vpn_portal(
+            vec![portal_client("alice", "10.144.144.4")],
+            "0.0.0.0:22121",
+        );
+        let desired = config_with_vpn_portal(
+            vec![portal_client("alice", "10.144.144.4")],
+            "0.0.0.0:22122",
+        );
+        assert!(
+            web_source_runtime_patch(&current, &desired)
+                .unwrap()
+                .is_none()
+        );
+
+        let mut different_key = desired.clone();
+        different_key
+            .vpn_portal_config
+            .as_mut()
+            .unwrap()
+            .wireguard_listen = "0.0.0.0:22121".to_owned();
+        different_key
+            .vpn_portal_config
+            .as_mut()
+            .unwrap()
+            .wireguard_private_key = Some("bm90LXRoZS1zYW1lLWtleQ==".to_owned());
+        assert!(
+            web_source_runtime_patch(&current, &different_key)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn vpn_portal_enable_or_disable_requires_recreate() {
+        let without_portal = config_with_port_forwards(Vec::new());
+        let with_portal = config_with_vpn_portal(
+            vec![portal_client("alice", "10.144.144.4")],
+            "0.0.0.0:22121",
+        );
+
+        assert!(
+            web_source_runtime_patch(&without_portal, &with_portal)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            web_source_runtime_patch(&with_portal, &without_portal)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

@@ -2,9 +2,12 @@
 
 use atomic_shim::AtomicU64;
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     net::SocketAddr,
-    sync::{Arc, atomic::Ordering},
+    sync::{
+        Arc, RwLock,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -16,7 +19,7 @@ use boringtun::{
     x25519::{PublicKey, StaticSecret},
 };
 use easytier_core::{
-    config::toml::VpnPortalClientConfig, gateway::vpn_portal::PortalSession,
+    gateway::vpn_portal::{PortalClientConfig, PortalSession},
     socket::udp::VirtualUdpSocket,
 };
 use tokio::{
@@ -35,7 +38,7 @@ const TIMER_INTERVAL: Duration = Duration::from_millis(250);
 const PORTAL_PACKET_CAPACITY: usize = 128;
 #[derive(Clone)]
 pub(super) struct DerivedClient {
-    pub(super) config: VpnPortalClientConfig,
+    pub(super) config: PortalClientConfig,
     pub(super) wireguard_private: [u8; 32],
     pub(super) wireguard_public: PublicKey,
     pub(super) identity_private_key: [u8; 32],
@@ -63,6 +66,30 @@ struct ClientSlot {
     index: u32,
     next_generation: AtomicU64,
     session: Mutex<Option<ClientSession>>,
+    retired: AtomicBool,
+}
+
+#[derive(Default)]
+struct EngineSlots {
+    by_name: HashMap<String, Arc<ClientSlot>>,
+    by_public_key: HashMap<[u8; 32], Arc<ClientSlot>>,
+    by_index: HashMap<u32, Arc<ClientSlot>>,
+    free_indices: BTreeSet<u32>,
+    highest_index: u32,
+}
+
+impl EngineSlots {
+    fn allocate_index(&mut self) -> anyhow::Result<u32> {
+        if let Some(index) = self.free_indices.pop_first() {
+            return Ok(index);
+        }
+        let next = self
+            .highest_index
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("WireGuard portal client index space is exhausted"))?;
+        self.highest_index = next;
+        Ok(next)
+    }
 }
 
 #[derive(Clone)]
@@ -88,8 +115,7 @@ pub(super) struct PortalEngine {
     server_private: StaticSecret,
     server_public: PublicKey,
     rate_limiter: Arc<RateLimiter>,
-    by_public_key: HashMap<[u8; 32], Arc<ClientSlot>>,
-    by_index: HashMap<u32, Arc<ClientSlot>>,
+    slots: RwLock<EngineSlots>,
     accepted: mpsc::UnboundedSender<PortalSession>,
     cancel: CancellationToken,
 }
@@ -102,19 +128,24 @@ impl PortalEngine {
     ) -> Arc<Self> {
         let server_private = StaticSecret::from(server_private);
         let server_public = PublicKey::from(&server_private);
-        let mut by_public_key = HashMap::with_capacity(clients.len());
-        let mut by_index = HashMap::with_capacity(clients.len());
-        for (offset, client) in clients.into_iter().enumerate() {
-            let index = u32::try_from(offset + 1).expect("client limit is below u32");
+        let mut slots = EngineSlots::default();
+        for client in clients {
             let public = *client.wireguard_public.as_bytes();
+            let index = slots
+                .allocate_index()
+                .expect("initial portal clients fit the index space");
             let slot = Arc::new(ClientSlot {
                 client,
                 index,
                 next_generation: AtomicU64::new(1),
                 session: Mutex::new(None),
+                retired: AtomicBool::new(false),
             });
-            by_public_key.insert(public, slot.clone());
-            by_index.insert(index, slot);
+            slots
+                .by_name
+                .insert(slot.client.config.name.clone(), slot.clone());
+            slots.by_public_key.insert(public, slot.clone());
+            slots.by_index.insert(index, slot);
         }
         Arc::new(Self {
             server_private,
@@ -123,18 +154,61 @@ impl PortalEngine {
                 &server_public,
                 DOUBLE_VERIFY_HANDSHAKE_LIMIT,
             )),
-            by_public_key,
-            by_index,
+            slots: RwLock::new(slots),
             accepted,
             cancel: CancellationToken::new(),
         })
+    }
+
+    pub(super) fn add_client(&self, client: DerivedClient) -> anyhow::Result<()> {
+        let public = *client.wireguard_public.as_bytes();
+        let name = client.config.name.clone();
+        let mut slots = self.slots.write().unwrap();
+        if slots.by_name.contains_key(&name) || slots.by_public_key.contains_key(&public) {
+            anyhow::bail!("WireGuard portal client {name} already exists");
+        }
+        let index = slots.allocate_index()?;
+        let slot = Arc::new(ClientSlot {
+            client,
+            index,
+            next_generation: AtomicU64::new(1),
+            session: Mutex::new(None),
+            retired: AtomicBool::new(false),
+        });
+        slots.by_name.insert(name, slot.clone());
+        slots.by_public_key.insert(public, slot.clone());
+        slots.by_index.insert(index, slot);
+        Ok(())
+    }
+
+    /// Removes a client by name. Any active session is expired so Core tears
+    /// down the attached peer through its regular channel-close path.
+    pub(super) async fn remove_client(&self, name: &str) -> bool {
+        let slot = {
+            let mut slots = self.slots.write().unwrap();
+            slots.by_name.remove(name).inspect(|slot| {
+                slot.retired.store(true, Ordering::Relaxed);
+                let public = *slot.client.wireguard_public.as_bytes();
+                slots.by_public_key.remove(&public);
+                slots.by_index.remove(&slot.index);
+                slots.free_indices.insert(slot.index);
+            })
+        };
+        let Some(slot) = slot else {
+            return false;
+        };
+        let expired = slot.session.lock().await.take();
+        Self::retire_session(expired);
+        true
     }
 
     pub(super) fn cancel(&self) {
         self.cancel.cancel();
     }
     pub(super) fn connection_count(&self) -> u32 {
-        self.by_index
+        let slots = self.slots.read().unwrap();
+        slots
+            .by_index
             .values()
             .filter(|slot| {
                 slot.session.try_lock().is_ok_and(|guard| {
@@ -169,7 +243,10 @@ impl PortalEngine {
                 parse_handshake_anon(&self.server_private, &self.server_public, init)
                     .ok()
                     .and_then(|handshake| {
-                        self.by_public_key
+                        self.slots
+                            .read()
+                            .unwrap()
+                            .by_public_key
                             .get(&handshake.peer_static_public)
                             .cloned()
                     })
@@ -179,8 +256,17 @@ impl PortalEngine {
             Packet::PacketData(data) => self.slot_by_receiver(data.receiver_idx),
         };
         let Some(slot) = slot else { return };
+        if slot.retired.load(Ordering::Relaxed) {
+            return;
+        }
 
         let mut session = slot.session.lock().await;
+        // Re-check after acquiring the lock: remove_client retires the slot
+        // and drains the session under this same lock, so a datagram that
+        // raced with removal cannot resurrect a session here.
+        if slot.retired.load(Ordering::Relaxed) {
+            return;
+        }
         if session.is_none() {
             if !matches!(parsed, Packet::HandshakeInit(_)) {
                 return;
@@ -277,7 +363,12 @@ impl PortalEngine {
     }
 
     fn slot_by_receiver(&self, receiver: u32) -> Option<Arc<ClientSlot>> {
-        self.by_index.get(&(receiver >> 8)).cloned()
+        self.slots
+            .read()
+            .unwrap()
+            .by_index
+            .get(&(receiver >> 8))
+            .cloned()
     }
 
     fn new_session(
@@ -399,7 +490,15 @@ impl PortalEngine {
                 _ = interval.tick() => {}
             }
             self.rate_limiter.reset_count();
-            for slot in self.by_index.values() {
+            let slots = self
+                .slots
+                .read()
+                .unwrap()
+                .by_index
+                .values()
+                .cloned()
+                .collect::<Vec<_>>();
+            for slot in slots {
                 let mut output = [0u8; 148];
                 let mut guard = slot.session.lock().await;
                 let Some(session) = guard.as_mut() else {
@@ -432,4 +531,58 @@ fn is_handshake_response_packet(packet: &[u8]) -> bool {
 
 fn is_transport_data_packet(packet: &[u8]) -> bool {
     packet.len() >= 32 && packet.get(..4) == Some(&4u32.to_le_bytes())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn derived(name: &str, seed: u8) -> DerivedClient {
+        let secret = StaticSecret::from([seed; 32]);
+        DerivedClient {
+            config: PortalClientConfig {
+                name: name.to_owned(),
+                virtual_ip: "192.0.2.1".parse().unwrap(),
+                groups: Vec::new(),
+            },
+            wireguard_private: secret.to_bytes(),
+            wireguard_public: PublicKey::from(&secret),
+            identity_private_key: [seed.wrapping_add(1); 32],
+        }
+    }
+
+    fn slot_index(engine: &PortalEngine, name: &str) -> Option<u32> {
+        engine
+            .slots
+            .read()
+            .unwrap()
+            .by_name
+            .get(name)
+            .map(|slot| slot.index)
+    }
+
+    #[tokio::test]
+    async fn remove_client_drops_slot_and_recycles_index() {
+        let (accepted, _receiver) = mpsc::unbounded_channel();
+        let engine = PortalEngine::new([1; 32], vec![derived("a", 10), derived("b", 11)], accepted);
+        assert_eq!(slot_index(&engine, "a"), Some(1));
+        assert_eq!(slot_index(&engine, "b"), Some(2));
+
+        assert!(engine.remove_client("a").await);
+        assert!(!engine.remove_client("a").await);
+
+        engine.add_client(derived("c", 12)).unwrap();
+        assert_eq!(slot_index(&engine, "c"), Some(1), "freed index is reused");
+        assert!(
+            engine.add_client(derived("c", 13)).is_err(),
+            "duplicate client name is rejected"
+        );
+        assert!(
+            engine.add_client(derived("d", 11)).is_err(),
+            "duplicate client public key is rejected"
+        );
+
+        engine.add_client(derived("d", 14)).unwrap();
+        assert_eq!(slot_index(&engine, "d"), Some(3));
+    }
 }
