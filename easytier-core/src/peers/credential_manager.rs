@@ -71,20 +71,25 @@ impl CredentialGrant {
         allowed_proxy_cidrs: Vec<String>,
         reusable: bool,
     ) -> Result<Self, InvalidAllowedProxyCidr> {
-        let mut normalized_cidrs = Vec::with_capacity(allowed_proxy_cidrs.len());
-        for cidr in allowed_proxy_cidrs {
-            let cidr = cidr.trim();
-            cidr.parse::<cidr::IpCidr>()
-                .map_err(|_| InvalidAllowedProxyCidr(cidr.to_owned()))?;
-            normalized_cidrs.push(cidr.to_owned());
-        }
-
-        Ok(Self {
+        let mut grant = Self {
             groups,
             allow_relay,
-            allowed_proxy_cidrs: normalized_cidrs,
+            allowed_proxy_cidrs,
             reusable,
-        })
+        };
+        grant.normalize()?;
+        Ok(grant)
+    }
+
+    fn normalize(&mut self) -> Result<(), InvalidAllowedProxyCidr> {
+        for cidr in &mut self.allowed_proxy_cidrs {
+            let normalized = cidr.trim().to_owned();
+            normalized
+                .parse::<cidr::IpCidr>()
+                .map_err(|_| InvalidAllowedProxyCidr(normalized.clone()))?;
+            *cidr = normalized;
+        }
+        Ok(())
     }
 
     fn for_attached_peer(groups: Vec<String>) -> Self {
@@ -242,7 +247,9 @@ impl CredentialManager {
 
     pub fn from_storage(storage: Arc<dyn CredentialStorage>) -> Self {
         let loaded = match storage.load() {
-            Ok(Some(serialized)) => serde_json::from_str(&serialized).map_err(anyhow::Error::from),
+            Ok(Some(serialized)) => serde_json::from_str(&serialized)
+                .map_err(anyhow::Error::from)
+                .and_then(Self::normalize_loaded_entries),
             Ok(None) => Ok(HashMap::new()),
             Err(error) => Err(error),
         };
@@ -261,6 +268,17 @@ impl CredentialManager {
             storage: Some(storage),
             storage_load_error,
         }
+    }
+
+    fn normalize_loaded_entries(
+        mut entries: HashMap<String, CredentialEntry>,
+    ) -> anyhow::Result<HashMap<String, CredentialEntry>> {
+        for (credential_id, entry) in &mut entries {
+            entry.grant.normalize().map_err(|error| {
+                anyhow::anyhow!("invalid stored credential {credential_id}: {error}")
+            })?;
+        }
+        Ok(entries)
     }
 
     pub fn generate_credential_with_options(
@@ -846,6 +864,24 @@ mod tests {
         }
     }
 
+    fn credential_storage_with_proxy_cidr(
+        allowed_proxy_cidr: &str,
+    ) -> (Arc<MemoryCredentialStorage>, String) {
+        let storage = Arc::new(MemoryCredentialStorage::default());
+        let manager = CredentialManager::from_storage(storage.clone());
+        let generated = manager.generate_credential(
+            Vec::new(),
+            false,
+            vec!["10.0.0.0/24".to_owned()],
+            Duration::from_secs(3600),
+        );
+        let serialized = storage.serialized.lock().unwrap().clone().unwrap();
+        let mut snapshot: serde_json::Value = serde_json::from_str(&serialized).unwrap();
+        snapshot[&generated.credential_id]["allowed_proxy_cidrs"][0] = allowed_proxy_cidr.into();
+        *storage.serialized.lock().unwrap() = Some(serde_json::to_string(&snapshot).unwrap());
+        (storage, generated.credential_id)
+    }
+
     struct FailOnceCredentialStorage {
         serialized: Mutex<Option<String>>,
         fail_next_store: Mutex<bool>,
@@ -1075,6 +1111,33 @@ mod tests {
         assert!(manager.revoke_credential(&generated.credential_id).unwrap());
         let reloaded = CredentialManager::from_storage(storage);
         assert!(reloaded.list_credentials().is_empty());
+    }
+
+    #[test]
+    fn stored_credentials_normalize_allowed_proxy_cidrs_on_load() {
+        let (storage, credential_id) = credential_storage_with_proxy_cidr(" 10.0.0.0/24 ");
+
+        let manager = CredentialManager::from_storage(storage);
+
+        assert_eq!(manager.list_credentials()[0].credential_id, credential_id);
+        assert_eq!(
+            manager.list_credentials()[0].allowed_proxy_cidrs,
+            ["10.0.0.0/24"]
+        );
+    }
+
+    #[test]
+    fn stored_credentials_with_invalid_proxy_cidr_fail_closed() {
+        let (storage, credential_id) = credential_storage_with_proxy_cidr("not-a-cidr");
+
+        let manager = CredentialManager::from_storage(storage);
+
+        assert!(manager.list_credentials().is_empty());
+        let error = manager
+            .install_initial_managed_credentials(&[])
+            .unwrap_err();
+        assert!(error.contains(&credential_id), "{error}");
+        assert!(error.contains("invalid allowed_proxy_cidr"), "{error}");
     }
 
     #[test]
