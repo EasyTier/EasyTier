@@ -157,14 +157,7 @@ where
         let generated = self
             .peer_manager
             .credential_manager()
-            .generate_credential_with_options(
-                options.groups,
-                options.allow_relay,
-                options.allowed_proxy_cidrs,
-                options.ttl,
-                options.credential_id,
-                options.reusable,
-            )
+            .generate_credential_with_options(options)
             .map_err(anyhow::Error::msg)?;
         self.peer_manager.notify_credential_changed();
         Ok(generated)

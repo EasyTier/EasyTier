@@ -8,9 +8,10 @@ use easytier_proto::api::config::{
 
 use crate::{
     config::{
+        api_input::managed_credential_from_proto,
         peers::AclRuleConfig,
         runtime::CoreInstanceRuntimeConfig,
-        toml::{ConfigLoader as _, ManagedCredentialConfig, TomlConfig},
+        toml::{ConfigLoader as _, TomlConfig},
     },
     instance::{CoreInstance, CoreInstanceConfig, CoreInstanceHost, CoreInstanceState},
     peers::credential_manager::CredentialManager,
@@ -164,15 +165,7 @@ where
             let entries = managed
                 .entries
                 .iter()
-                .map(|credential| ManagedCredentialConfig {
-                    credential_id: credential.credential_id.clone(),
-                    credential_secret: credential.credential_secret.clone(),
-                    groups: credential.groups.clone(),
-                    allow_relay: credential.allow_relay,
-                    allowed_proxy_cidrs: credential.allowed_proxy_cidrs.clone(),
-                    expiry_unix: credential.expiry_unix,
-                    reusable: credential.reusable.unwrap_or(true),
-                })
+                .map(managed_credential_from_proto)
                 .collect::<Vec<_>>();
             let replacement = credential_manager
                 .validate_managed_credentials(&entries)
