@@ -467,7 +467,7 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
 
         if snapshot.smoltcp_enabled {
             #[cfg(feature = "proxy-smoltcp-stack")]
-            self.handle_smoltcp_packet(packet, _new_syn).await;
+            self.handle_smoltcp_packet(packet).await;
 
             #[cfg(not(feature = "proxy-smoltcp-stack"))]
             tracing::error!("smoltcp packet received but proxy-smoltcp-stack is disabled");
@@ -484,15 +484,12 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
     }
 
     #[cfg(feature = "proxy-smoltcp-stack")]
-    async fn handle_smoltcp_packet(&self, packet: ZCPacket, new_syn: bool) {
+    async fn handle_smoltcp_packet(&self, packet: ZCPacket) {
         let stack = self.smoltcp_stack.lock().unwrap().clone();
         let Some(stack) = stack else {
             tracing::error!("smoltcp stack is not started");
             return;
         };
-        if new_syn {
-            stack.add_listener().await;
-        }
         if let Err(err) = stack.send_ingress(packet).await {
             tracing::error!(?err, "send to smoltcp stack failed");
         }

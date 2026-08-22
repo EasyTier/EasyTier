@@ -30,6 +30,8 @@ pub mod device;
 mod reactor;
 mod socket;
 mod socket_allocator;
+#[cfg(test)]
+pub(super) mod test_utils;
 
 /// A config for a `Net`.
 ///
