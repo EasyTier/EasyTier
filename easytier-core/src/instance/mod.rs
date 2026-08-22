@@ -184,6 +184,8 @@ pub struct CoreInstanceConfig {
     pub connectivity: CoreConnectivityConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vpn_portal: Option<PortalRuntimeConfig>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub managed_credentials: Vec<crate::config::toml::ManagedCredentialConfig>,
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -503,6 +505,7 @@ where
         ));
         let peer_manager = Arc::new(PeerManagerCore::new(
             config.peer,
+            config.managed_credentials,
             runtime_config.clone(),
             Arc::new(CoreStunPeerInfoSource(peer_stun)),
             packet_tx,

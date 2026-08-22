@@ -37,7 +37,7 @@ use super::{
 
 #[cfg(feature = "management")]
 pub use compiled::register_instance_management_rpc;
-pub use config_patch::apply_config_patch;
+pub use config_patch::{ConfigPatchPersistence, apply_config_patch};
 pub use instance_info::network_instance_running_info;
 #[cfg(feature = "management")]
 pub use logger_rpc::{
@@ -82,7 +82,7 @@ pub fn register_management_rpc<F, H>(
     F::Error: std::fmt::Debug + std::fmt::Display + Send + Sync + 'static,
     H: CoreInstanceHost,
 {
-    register_instance_management_rpc(instances.clone(), registry);
+    register_instance_management_rpc(instances.clone(), registry, storage.clone());
     registry.register(LoggerRpcServer::new(LoggerManagementRpc::new(logger)), "");
     registry.register(
         WebClientServiceServer::new(ProcessManagementRpc::<F>::new(instances, hooks, storage)),
@@ -102,7 +102,10 @@ pub(crate) fn register_web_client_rpc<F, H>(
     F::Error: std::fmt::Debug + std::fmt::Display + Send + Sync + 'static,
     H: CoreInstanceHost,
 {
-    let config_rpc = super::instance_rpc::InstanceManagementRpc::<F>::new(instances.clone());
+    let config_rpc = super::instance_rpc::InstanceManagementRpc::<F>::new_with_config_storage(
+        instances.clone(),
+        storage.clone(),
+    );
     registry.register(ConfigRpcServer::new(config_rpc), "");
     registry.register(
         WebClientServiceServer::new(ProcessManagementRpc::<F>::new(instances, hooks, storage)),

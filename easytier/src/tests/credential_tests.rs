@@ -30,7 +30,7 @@ const PUBLIC_SERVER_NETWORK_NAME: &str = "__public_server__";
 const PUBLIC_SERVER_SHARED_SECRET: &str = "public-server-shared-secret";
 const NEED_P2P_ADMIN_NETWORK_NAME: &str = "need_p2p_credential_test_network";
 
-fn generate_credential(
+async fn generate_credential(
     admin: &Instance,
     groups: Vec<String>,
     allow_relay: bool,
@@ -46,9 +46,10 @@ fn generate_credential(
         None,
         true,
     )
+    .await
 }
 
-fn generate_credential_with_options(
+async fn generate_credential_with_options(
     admin: &Instance,
     groups: Vec<String>,
     allow_relay: bool,
@@ -184,7 +185,7 @@ async fn create_credential_config(
     ipv6: &str,
 ) -> TomlConfigLoader {
     let (_cred_id, cred_secret) =
-        generate_credential(admin_inst, vec![], false, vec![], Duration::from_secs(3600));
+        generate_credential(admin_inst, vec![], false, vec![], Duration::from_secs(3600)).await;
 
     build_credential_config(
         admin_inst
@@ -481,7 +482,8 @@ async fn credential_peers_p2p_to_need_p2p_admin_through_public_server(
         Duration::from_secs(3600),
         Some("credential-peer-a".to_string()),
         false,
-    );
+    )
+    .await;
     let (_credential_b_id, credential_b_secret) = generate_credential_with_options(
         &admin_inst,
         vec![],
@@ -490,7 +492,8 @@ async fn credential_peers_p2p_to_need_p2p_admin_through_public_server(
         Duration::from_secs(3600),
         Some("credential-peer-b".to_string()),
         false,
-    );
+    )
+    .await;
     admin_inst
         .get_global_ctx()
         .issue_event(GlobalCtxEvent::CredentialChanged);
@@ -593,7 +596,7 @@ async fn credential_peers_p2p_to_need_p2p_admin_through_public_server(
     .await;
 }
 
-fn create_generated_credential_config(
+async fn create_generated_credential_config(
     admin_inst: &Instance,
     inst_name: &str,
     ns: Option<&str>,
@@ -601,7 +604,7 @@ fn create_generated_credential_config(
     ipv6: &str,
 ) -> (TomlConfigLoader, String) {
     let (cred_id, cred_secret) =
-        generate_credential(admin_inst, vec![], false, vec![], Duration::from_secs(3600));
+        generate_credential(admin_inst, vec![], false, vec![], Duration::from_secs(3600)).await;
     let config = build_credential_config(
         admin_inst
             .get_global_ctx()
@@ -881,7 +884,8 @@ async fn credential_relay_capability(#[case] allow_relay: bool) {
         false,
         vec![],
         Duration::from_secs(3600),
-    );
+    )
+    .await;
 
     let (_cred_b_id, cred_b_secret) = generate_credential(
         &admin_inst,
@@ -889,7 +893,8 @@ async fn credential_relay_capability(#[case] allow_relay: bool) {
         false,
         vec![],
         Duration::from_secs(3600),
-    );
+    )
+    .await;
 
     let (_cred_c_id, cred_c_secret) = generate_credential(
         &admin_inst,
@@ -897,7 +902,8 @@ async fn credential_relay_capability(#[case] allow_relay: bool) {
         allow_relay,
         vec![],
         Duration::from_secs(3600),
-    );
+    )
+    .await;
 
     // Create credential A on ns_c1
     let cred_a_config = {
@@ -1215,7 +1221,8 @@ async fn credential_revocation_propagates() {
         false,
         vec![],
         Duration::from_secs(3600),
-    );
+    )
+    .await;
 
     // Create credential node
     let cred_config = {
@@ -1335,7 +1342,8 @@ async fn credential_non_reusable_allows_only_one_peer() {
         Duration::from_secs(3600),
         None,
         false,
-    );
+    )
+    .await;
 
     let network_name = admin_inst
         .get_global_ctx()
@@ -1582,7 +1590,8 @@ async fn credential_unknown_via_shared_rejected(#[values(true, false)] test_revo
             Some("ns_c2"),
             "10.144.144.5",
             "fd00::5/64",
-        );
+        )
+        .await;
         (config, Some(cred_id))
     } else {
         (
@@ -1841,7 +1850,8 @@ async fn credential_non_reusable_across_two_admins_allows_only_one_peer() {
         Duration::from_secs(3600),
         None,
         false,
-    );
+    )
+    .await;
     admin_a_inst
         .get_global_ctx()
         .issue_event(GlobalCtxEvent::CredentialChanged);

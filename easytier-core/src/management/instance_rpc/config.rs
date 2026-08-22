@@ -26,7 +26,7 @@ where
     ) -> rpc_types::error::Result<PatchConfigResponse> {
         let instance = self.instance(request.instance.as_ref())?;
         if let Some(patch) = request.patch {
-            apply_config_patch(&instance, patch).await?;
+            apply_config_patch(&instance, patch, self.config_patch_persistence.as_deref()).await?;
         }
         Ok(PatchConfigResponse::default())
     }

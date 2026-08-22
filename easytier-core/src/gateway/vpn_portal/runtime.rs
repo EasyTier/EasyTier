@@ -1144,6 +1144,7 @@ mod tests {
         let peer = Arc::new(
             PeerManagerCore::new(
                 portable,
+                Vec::new(),
                 store.clone(),
                 Arc::new(()),
                 packet_sender,

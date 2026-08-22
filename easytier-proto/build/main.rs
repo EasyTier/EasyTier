@@ -128,6 +128,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ".common.Ipv4Addr",
             ".common.Ipv6Addr",
             ".common.UUID",
+            ".api.manage.ManagedCredentialConfig",
             ".api.manage.VpnPortalConfig",
         ]);
 

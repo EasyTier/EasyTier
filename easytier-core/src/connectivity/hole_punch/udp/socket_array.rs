@@ -56,7 +56,10 @@ where
         socket_context: SocketContext,
     ) -> Self {
         let tasks = Arc::new(Mutex::new(JoinSet::new()));
-        tokio::spawn(reap_joinset_background(tasks.clone(), "UdpSocketArray"));
+        tokio::spawn(reap_joinset_background(
+            Arc::downgrade(&tasks),
+            "UdpSocketArray",
+        ));
 
         Self {
             sockets: Arc::new(DashMap::new()),
