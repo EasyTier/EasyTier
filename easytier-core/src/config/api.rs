@@ -189,7 +189,7 @@ pub fn network_config_from_toml(config: &TomlConfig) -> NetworkConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::toml::{ConfigLoader as _, ManagedCredentialConfig};
+    use crate::config::toml::ManagedCredentialConfig;
 
     #[test]
     fn includes_managed_credentials() {
