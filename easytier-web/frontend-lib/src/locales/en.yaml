@@ -129,6 +129,7 @@ network: Network Config
 virtual_ipv4: Virtual IPv4
 virtual_ipv4_dhcp: DHCP
 network_name: Network Name
+network_name_label: "Network Name: "
 network_secret: Network Secret
 initial_nodes: Initial Nodes
 initial_nodes_help: |

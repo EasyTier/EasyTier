@@ -486,7 +486,7 @@ onUnmounted(() => {
                                 <div class="flex flex-col items-start content-center max-w-full">
                                     <div class="flex items-center min-w-0">
                                         <div class="mr-4 min-w-0 flex-1">
-                                            <span class="truncate block">{{ t('network_name') }}: {{
+                                            <span class="truncate block">{{ t('network_name_label') }}{{
                                                 slotProps.option.meta?.network_name ?? slotProps.option.uuid }}</span>
                                         </div>
                                         <Tag class="my-auto leading-3 shrink-0"

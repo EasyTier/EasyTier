@@ -129,6 +129,7 @@ network: 网络配置
 virtual_ipv4: 虚拟 IPv4 地址
 virtual_ipv4_dhcp: 自动分配
 network_name: 网络名称
+network_name_label: 网络名称：
 network_secret: 网络密码
 initial_nodes: 初始节点
 initial_nodes_help: |
