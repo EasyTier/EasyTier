@@ -311,10 +311,11 @@ client:
 exchange_language: Switch to English
 mode:  
   switch_mode: 工作模式
-  normal: ：普通模式
+  switch_mode_label: 工作模式：
+  normal: 普通模式
   normal_description: 直接运行 EasyTier，适合本地轻量使用
   enable_rpc_tcp_listen: RPC 端口监听 (TCP)
-  service: ：服务模式
+  service: 服务模式
   service_description: 注册为系统服务，开机自启动，关闭 GUI 后保持运行
   config_dir: 配置目录
   rpc_portal: RPC 地址
@@ -328,20 +329,21 @@ mode:
   uninstall_service: 卸载服务
   uninstall_service_confirm: 确定要卸载服务吗？
   uninstall_service_success: 服务卸载成功
-  remote: ：远程模式
+  remote: 远程模式
   remote_description: 通过 RPC 管理、控制远程节点
   remote_rpc_address: RPC 地址
   remote_rpc_address_empty: 远程 RPC 地址不能为空
   rpc_connection_failed: RPC 连接失败：{error}
 config-server:
   title: Web 控制台
+  title_label: Web 控制台：
   address: 配置服务器地址
   address_placeholder: 例如：udp://127.0.0.1:22020/admin
   description: 留空：不使用 Web 控制台
   connection_status: 连接状态
-  connected: ：已连接
-  disconnected: ：未连接
-  connecting: ：连接中…
+  connected: 已连接
+  disconnected: 未连接
+  connecting: 连接中…
   unknown: ""
   update_service_confirm: 将重启服务以应用更改，是否继续？
 logging: 日志

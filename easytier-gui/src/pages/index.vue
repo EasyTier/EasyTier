@@ -373,13 +373,13 @@ const setting_menu_items: Ref<MenuItem[]> = ref([
     },
   },
   {
-    label: () => `${t('mode.switch_mode')}${t('mode.' + currentMode.value.mode)}`,
+    label: () => `${t('mode.switch_mode_label')}${t('mode.' + currentMode.value.mode)}`,
     icon: 'pi pi-sync',
     command: openModeDialog,
     visible: () => type() !== 'android',
   },
   {
-    label: () => `${t('config-server.title')}${t('config-server.' + configServerConnectionStatus.value)}`,
+    label: () => `${t('config-server.title_label')}${t('config-server.' + configServerConnectionStatus.value)}`,
     icon: 'pi pi-globe',
     command: openConfigServerDialog,
     visible: () => ["normal", "service"].includes(currentMode.value.mode),
