@@ -148,6 +148,7 @@ pub trait CredentialStorage: Send + Sync + 'static {
 struct CredentialState {
     base: HashMap<String, CredentialEntry>,
     managed: HashMap<String, CredentialEntry>,
+    pending_managed: Option<HashMap<String, CredentialEntry>>,
     ephemeral: HashMap<uuid::Uuid, CredentialEntry>,
 }
 
@@ -162,7 +163,16 @@ pub(crate) struct CredentialManager {
 pub(crate) struct ManagedCredentialReplacement<'a> {
     manager: &'a CredentialManager,
     changed: bool,
-    replacement: HashMap<String, CredentialEntry>,
+    installed: bool,
+}
+
+#[cfg(feature = "web-client")]
+impl Drop for ManagedCredentialReplacement<'_> {
+    fn drop(&mut self) {
+        if self.changed && !self.installed {
+            self.manager.state.lock().unwrap().pending_managed = None;
+        }
+    }
 }
 
 impl Default for CredentialManager {
@@ -222,7 +232,7 @@ impl CredentialManager {
             .map(|x| x.trim().to_string())
             .filter(|x| !x.is_empty())
         {
-            if state.managed.contains_key(&id) {
+            if Self::managed_contains_id(&state, &id) {
                 return Err(format!("credential_id {id} is managed by configuration"));
             }
             if let Some(existing) = updated.get(&id)
@@ -239,7 +249,7 @@ impl CredentialManager {
         } else {
             loop {
                 let id = uuid::Uuid::new_v4().to_string();
-                if !updated.contains_key(&id) && !state.managed.contains_key(&id) {
+                if !updated.contains_key(&id) && !Self::managed_contains_id(&state, &id) {
                     break id;
                 }
             }
@@ -255,7 +265,7 @@ impl CredentialManager {
             );
             let public_key_in_use = updated
                 .values()
-                .chain(state.managed.values())
+                .chain(Self::managed_values(&state))
                 .chain(state.ephemeral.values())
                 .any(|existing| existing.pubkey == generated.0.pubkey);
             if !public_key_in_use {
@@ -344,7 +354,7 @@ impl CredentialManager {
         if state
             .base
             .values()
-            .chain(state.managed.values())
+            .chain(Self::managed_values(&state))
             .any(|existing| existing.pubkey == entry.pubkey)
             || state
                 .ephemeral
@@ -420,7 +430,7 @@ impl CredentialManager {
         self.ensure_storage_available()
             .map_err(|error| error.to_string())?;
         let mut state = self.state.lock().unwrap();
-        if state.managed.contains_key(&credential_id) {
+        if Self::managed_contains_id(&state, &credential_id) {
             return Err(format!(
                 "credential_id {credential_id} is managed by configuration"
             ));
@@ -428,7 +438,7 @@ impl CredentialManager {
         if state
             .base
             .iter()
-            .chain(state.managed.iter())
+            .chain(Self::managed_entries(&state))
             .any(|(existing_id, existing)| {
                 existing_id != &credential_id && existing.pubkey == entry.pubkey
             })
@@ -554,27 +564,59 @@ impl CredentialManager {
         credentials: &[ManagedCredentialConfig],
     ) -> Result<ManagedCredentialReplacement<'_>, String> {
         let replacement = Self::build_managed_entries(credentials)?;
-        let state = self.state.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
+        if state.pending_managed.is_some() {
+            return Err("managed credential replacement is already pending".to_owned());
+        }
         Self::validate_managed_conflicts(&state, &replacement)?;
+        let changed = state.managed != replacement;
+        if changed {
+            state.pending_managed = Some(replacement);
+        }
         Ok(ManagedCredentialReplacement {
             manager: self,
-            changed: state.managed != replacement,
-            replacement,
+            changed,
+            installed: false,
         })
     }
 
-    /// Installs an already validated replacement. The caller must have run
-    /// [`Self::validate_managed_credentials`] first; see the transaction
-    /// comment in `apply_config_patch` for the accepted race windows between
-    /// the two calls.
+    /// Installs a replacement whose IDs and public keys were reserved by
+    /// [`Self::validate_managed_credentials`].
     #[cfg(feature = "web-client")]
-    pub fn install_managed_credentials(replacement: ManagedCredentialReplacement<'_>) -> bool {
+    pub fn install_managed_credentials(mut replacement: ManagedCredentialReplacement<'_>) -> bool {
         if !replacement.changed {
             return false;
         }
         let mut state = replacement.manager.state.lock().unwrap();
-        state.managed = replacement.replacement;
+        state.managed = state
+            .pending_managed
+            .take()
+            .expect("validated managed credential replacement must remain reserved");
+        replacement.installed = true;
         true
+    }
+
+    fn managed_contains_id(state: &CredentialState, credential_id: &str) -> bool {
+        state.managed.contains_key(credential_id)
+            || state
+                .pending_managed
+                .as_ref()
+                .is_some_and(|pending| pending.contains_key(credential_id))
+    }
+
+    fn managed_entries(
+        state: &CredentialState,
+    ) -> impl Iterator<Item = (&String, &CredentialEntry)> {
+        state.managed.iter().chain(
+            state
+                .pending_managed
+                .iter()
+                .flat_map(|pending| pending.iter()),
+        )
+    }
+
+    fn managed_values(state: &CredentialState) -> impl Iterator<Item = &CredentialEntry> {
+        Self::managed_entries(state).map(|(_, entry)| entry)
     }
 
     fn build_managed_entries(
@@ -1035,6 +1077,60 @@ mod tests {
         assert!(replacement.changed);
         assert!(CredentialManager::install_managed_credentials(replacement));
         assert!(manager.list_credentials().is_empty());
+    }
+
+    #[cfg(feature = "web-client")]
+    #[test]
+    fn pending_managed_replacement_reserves_ids_and_public_keys() {
+        let manager = CredentialManager::new();
+        let pending = managed_credential("pending", 5, current_unix_timestamp() + 60);
+        let private_bytes: [u8; 32] = BASE64_STANDARD
+            .decode(&pending.credential_secret)
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let public = PublicKey::from(&StaticSecret::from(private_bytes));
+
+        let replacement = manager
+            .validate_managed_credentials(std::slice::from_ref(&pending))
+            .unwrap();
+
+        let error = manager
+            .generate_credential_with_options(
+                Vec::new(),
+                false,
+                Vec::new(),
+                Duration::from_secs(60),
+                Some("pending".to_owned()),
+                true,
+            )
+            .unwrap_err();
+        assert!(error.contains("managed by configuration"));
+        assert!(
+            manager
+                .register_ephemeral_credential(
+                    *public.as_bytes(),
+                    Vec::new(),
+                    false,
+                    Vec::new(),
+                    false,
+                )
+                .is_err()
+        );
+        assert!(!manager.is_pubkey_trusted(public.as_bytes()));
+
+        drop(replacement);
+        assert!(
+            manager
+                .register_ephemeral_credential(
+                    *public.as_bytes(),
+                    Vec::new(),
+                    false,
+                    Vec::new(),
+                    false,
+                )
+                .is_ok()
+        );
     }
 
     #[cfg(feature = "web-client")]

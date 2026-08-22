@@ -137,40 +137,12 @@ where
         }
 
         if let Some(managed) = &managed_credentials {
-            // Managed credential patch transaction: validate → persist →
-            // install. All fallible checks (secret parsing, duplicate IDs,
-            // conflicts with base/ephemeral credentials) run BEFORE the
-            // durable write, so a rejected patch can never leave bad data in
-            // the TOML file. The only await point is the atomic persist;
-            // everything after it is synchronous memory updates that a task
-            // cancellation cannot split.
-            //
-            // Accepted race windows (deliberate tradeoffs, do not "fix"):
-            //
-            // 1. A concurrent plain credential mutation (upsert/generate)
-            //    taking `state` between validate and install can invalidate
-            //    the validated replacement. The window is one file write
-            //    wide, the actors are admin-only management RPCs, and on
-            //    failure the RPC returns an error while the file remains
-            //    authoritative across restarts. Holding a transaction lock
-            //    across the persist await would make the future !Send for no
-            //    realistic gain.
-            //
-            // 2. If this RPC future is dropped mid-persist, production
-            //    storage completes its spawn_blocking write without running
-            //    the in-memory commits. Callers (web reconcile, CLI) always
-            //    await the result and never abort; and even if it happened,
-            //    the next full reconcile re-runs the instance from config,
-            //    converging disk and runtime. The previous two-phase protocol
-            //    existed to close exactly this gap and was removed as
-            //    over-engineering.
-            //
-            // 3. This patch is not serialized against process-level instance
-            //    replacement (run_network_instance overwrite). Web sessions
-            //    issue both sequentially per instance; a racing admin would
-            //    be writing two different configs to the same file anyway,
-            //    and last-writer-wins on the durable file is the declared
-            //    model.
+            // Managed credential patch transaction: validate and reserve →
+            // persist → install. The reservation prevents base or ephemeral
+            // credential mutations from invalidating the replacement while
+            // the durable write is in flight, without holding a synchronous
+            // lock across the await. Dropping the replacement before install
+            // releases the reservation.
             let credential_manager = instance.credential_manager();
             let entries = managed
                 .entries

@@ -637,12 +637,14 @@ mod portable_runtime {
             instance::manager::{InstanceFactory, InstanceManager},
             management::InstanceManagementRpc,
         };
+        use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
         use easytier_proto::{
             api::config::{ConfigRpc, GetConfigRequest, InstanceConfigPatch, PatchConfigRequest},
             api::instance::{
                 PeerManageRpc, ShowNodeInfoRequest,
                 instance_identifier::{InstanceSelector, Selector},
             },
+            api::manage::{ManagedCredentialConfig, ManagedCredentialSet},
             rpc_types::controller::BaseController,
         };
 
@@ -672,6 +674,10 @@ mod portable_runtime {
             r#"
 instance_name = "managed-by-name"
 hostname = "core-owned-config"
+
+[network_identity]
+network_name = "managed-network"
+network_secret = "network-secret"
 "#,
         )
         .unwrap();
@@ -726,6 +732,46 @@ hostname = "core-owned-config"
         assert_eq!(
             response.config.unwrap().hostname.as_deref(),
             Some("patched-in-core")
+        );
+
+        let secret = BASE64_STANDARD.encode([9u8; 32]);
+        rpc.patch_config(
+            BaseController::default(),
+            PatchConfigRequest {
+                patch: Some(InstanceConfigPatch {
+                    managed_credentials: Some(ManagedCredentialSet {
+                        entries: vec![ManagedCredentialConfig {
+                            credential_id: "pathless".to_owned(),
+                            credential_secret: secret.clone(),
+                            expiry_unix: i64::MAX,
+                            ..Default::default()
+                        }],
+                    }),
+                    ..Default::default()
+                }),
+                instance: Some(selector()),
+            },
+        )
+        .await
+        .unwrap();
+        let response = rpc
+            .get_config(
+                BaseController::default(),
+                GetConfigRequest {
+                    instance: Some(selector()),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.config.unwrap().managed_credentials,
+            vec![ManagedCredentialConfig {
+                credential_id: "pathless".to_owned(),
+                credential_secret: secret,
+                expiry_unix: i64::MAX,
+                reusable: Some(true),
+                ..Default::default()
+            }]
         );
         let runtime = instance.runtime_config.snapshot();
         assert!(runtime.services.proxy.enable_exit_node);

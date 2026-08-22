@@ -167,10 +167,15 @@ where
     H: CoreInstanceHost,
 {
     pub fn new(manager: Arc<InstanceManager<F>>) -> Self {
+        #[cfg(feature = "web-client")]
+        let persistence = Arc::new(ManagerPathlessConfigPatchPersistence {
+            manager: manager.clone(),
+            _host: std::marker::PhantomData,
+        });
         Self {
             resolver: ManagerInstanceResolver { manager },
             #[cfg(feature = "web-client")]
-            config_patch_persistence: None,
+            config_patch_persistence: Some(persistence),
         }
     }
     #[cfg(feature = "web-client")]
@@ -205,7 +210,52 @@ where
     ResolvedInstanceManagementRpc {
         resolver: BoundInstanceResolver { instance },
         #[cfg(feature = "web-client")]
-        config_patch_persistence: None,
+        config_patch_persistence: Some(Arc::new(InMemoryConfigPatchPersistence)),
+    }
+}
+
+#[cfg(all(feature = "web-client", target_os = "wasi"))]
+struct InMemoryConfigPatchPersistence;
+
+#[async_trait::async_trait]
+#[cfg(all(feature = "web-client", target_os = "wasi"))]
+impl ConfigPatchPersistence for InMemoryConfigPatchPersistence {
+    async fn persist(&self, _instance_id: uuid::Uuid, _config: &TomlConfig) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+#[cfg(feature = "web-client")]
+struct ManagerPathlessConfigPatchPersistence<F, H>
+where
+    F: InstanceFactory,
+    H: CoreInstanceHost,
+{
+    manager: Arc<InstanceManager<F>>,
+    _host: std::marker::PhantomData<fn() -> H>,
+}
+
+#[async_trait::async_trait]
+#[cfg(feature = "web-client")]
+impl<F, H> ConfigPatchPersistence for ManagerPathlessConfigPatchPersistence<F, H>
+where
+    F: InstanceFactory<Instance = CoreInstance<H>>,
+    H: CoreInstanceHost,
+{
+    async fn persist(&self, instance_id: uuid::Uuid, _config: &TomlConfig) -> anyhow::Result<()> {
+        let Some(control) = self.manager.config_control(instance_id) else {
+            return Ok(());
+        };
+        if control.is_read_only() {
+            anyhow::bail!("configuration file is read-only");
+        }
+        if let Some(path) = control.path {
+            anyhow::bail!(
+                "config file {} requires a durable config storage backend",
+                path.display()
+            );
+        }
+        Ok(())
     }
 }
 

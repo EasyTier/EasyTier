@@ -29,8 +29,7 @@ pub fn register_instance_management_rpc<F, H>(
     registry: &ServiceRegistry,
     storage: Arc<dyn ConfigFileStorage>,
 ) where
-    F: InstanceFactory<Instance = CoreInstance<H>, CreateContext = ()>,
-    F::Error: std::fmt::Debug + std::fmt::Display + Send + Sync + 'static,
+    F: InstanceFactory<Instance = CoreInstance<H>>,
     H: CoreInstanceHost,
 {
     let rpc = InstanceManagementRpc::<F>::new_with_config_storage(manager.clone(), storage);
