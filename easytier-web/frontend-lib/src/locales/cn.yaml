@@ -64,6 +64,7 @@ web:
     edit_as_file: 编辑配置文件
     import_config: 导入配置
     export_config: 导出配置
+    export_config_success: 已导出至默认下载目录
     save_config: 保存配置
     config_saved: 配置已保存
     delete_network: 删除网络

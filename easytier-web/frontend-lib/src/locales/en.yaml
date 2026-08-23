@@ -64,6 +64,7 @@ web:
     edit_as_file: Edit Config File
     import_config: Import Config
     export_config: Export Config
+    export_config_success: Exported to default download directory
     save_config: Save Config
     config_saved: Config Saved
     delete_network: Delete Network

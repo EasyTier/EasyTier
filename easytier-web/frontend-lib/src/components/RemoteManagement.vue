@@ -335,6 +335,7 @@ const exportConfig = async () => {
             throw { response: { data: error } };
         }
         exportTomlFile(tomlConfig ?? '', instanceId.value + '.toml');
+        toast.add({ severity: 'success', summary: t('web.common.success'), detail: t('web.device_management.export_config_success'), life: 3000 });
     } catch (e: any) {
         console.error(e);
         toast.add({ severity: 'error', summary: 'Error', detail: 'Failed to export network config, error: ' + JSON.stringify(e.response.data), life: 2000 });
