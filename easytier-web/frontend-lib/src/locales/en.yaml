@@ -323,12 +323,12 @@ mode:
   rpc_portal: RPC Address
   log_dir: Log Directory
   service_config_empty: Service config cannot be empty
-  service_status: Service Status
+  service_status: Status
   service_status_running: Running
   service_status_stopped: Stopped
   service_status_notinstalled: Not Installed
-  stop_service: Stop Service
-  uninstall_service: Uninstall Service
+  stop_service: Stop
+  uninstall_service: Uninstall
   uninstall_service_confirm: Are you sure you want to uninstall the service?
   uninstall_service_success: Service uninstalled successfully
   remote: Remote Mode
