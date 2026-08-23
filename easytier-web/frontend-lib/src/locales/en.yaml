@@ -373,8 +373,8 @@ config_saved: Configuration saved
 
 
 my_node_info: My Node
-upload: Upload Speed
-download: Download Speed
+upload_label: "Upload Speed: "
+download_label: "Download Speed: "
 show_node_details: Show Node Details
 hide_node_details: Hide Node Details
 show_vpn_portal_config: Show VPN Portal Config

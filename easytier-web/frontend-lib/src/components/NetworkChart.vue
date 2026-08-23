@@ -3,13 +3,13 @@
     class="bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-blue-900/20 dark:to-indigo-800/20 rounded-xl p-4 border border-blue-200 dark:border-blue-700 shadow-md hover:shadow-lg transition-all duration-300">
     <div class="flex items-center justify-center mb-3">
       <div class="flex gap-2 text-sm">
-        <span class="flex items-center gap-1 w-32">
-          <div class="w-2 h-2 bg-green-500 rounded-full"></div>
-          <span class="text-green-600 dark:text-green-400 truncate">{{ t('upload') }}: {{ currentUpload }}/s</span>
+        <span class="flex items-center gap-1 w-44">
+          <div class="w-2 h-2 bg-green-500 rounded-full shrink-0"></div>
+          <span class="text-green-600 dark:text-green-400 whitespace-nowrap">{{ t('upload_label') }}{{ currentUpload }}/s</span>
         </span>
-        <span class="flex items-center gap-1 w-32">
-          <div class="w-2 h-2 bg-blue-500 rounded-full"></div>
-          <span class="text-blue-600 dark:text-blue-400 truncate">{{ t('download') }}: {{ currentDownload }}/s</span>
+        <span class="flex items-center gap-1 w-44">
+          <div class="w-2 h-2 bg-blue-500 rounded-full shrink-0"></div>
+          <span class="text-blue-600 dark:text-blue-400 whitespace-nowrap">{{ t('download_label') }}{{ currentDownload }}/s</span>
         </span>
       </div>
     </div>
@@ -35,7 +35,7 @@ import {
 } from 'chart.js'
 import { useI18n } from 'vue-i18n';
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 
 // 注册Chart.js组件
 ChartJS.register(
@@ -157,7 +157,7 @@ function initChart() {
       labels: timeLabels,
       datasets: [
         {
-          label: t('upload'),
+          label: t('upload_label'),
           data: uploadHistory,
           borderColor: 'rgb(34, 197, 94)',
           backgroundColor: 'rgba(34, 197, 94, 0.1)',
@@ -168,7 +168,7 @@ function initChart() {
           pointHoverRadius: 4
         },
         {
-          label: t('download'),
+          label: t('download_label'),
           data: downloadHistory,
           borderColor: 'rgb(59, 130, 246)',
           backgroundColor: 'rgba(59, 130, 246, 0.1)',
@@ -195,7 +195,8 @@ function initChart() {
           callbacks: {
             label: function (context: any) {
               const value = context.parsed.y
-              return `${context.dataset.label}: ${formatBytes(value)}/s`
+              const label = context.datasetIndex === 0 ? t('upload_label') : t('download_label')
+              return `${label}${formatBytes(value)}/s`
             }
           }
         }
@@ -241,6 +242,14 @@ function initChart() {
 watch([() => props.uploadRate, () => props.downloadRate], () => {
   updateData()
 }, { immediate: true })
+
+// 监听语言切换，更新图表标签
+watch(locale, () => {
+  if (!chart) return
+  chart.data.datasets[0].label = t('upload_label')
+  chart.data.datasets[1].label = t('download_label')
+  chart.update('none')
+})
 
 onMounted(async () => {
   // add initial point

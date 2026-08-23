@@ -373,8 +373,8 @@ config_saved: 配置已保存
 
 
 my_node_info: 当前节点
-upload: 上传速度
-download: 下载速度
+upload_label: 上传速度：
+download_label: 下载速度：
 show_node_details: 显示节点详细信息
 hide_node_details: 隐藏节点详细信息
 show_vpn_portal_config: 查看 VPN Portal 配置
