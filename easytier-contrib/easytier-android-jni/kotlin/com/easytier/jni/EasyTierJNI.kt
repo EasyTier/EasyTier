@@ -125,6 +125,35 @@ object EasyTierJNI {
     @JvmStatic external fun getLastError(): String?
 
     /**
+     * 启动本地 TCP 端口转发器
+     *
+     * 在 `127.0.0.1:listenPort` 监听，把每条连接经 EasyTier data plane 转发到
+     * 虚拟网络中的 `targetIp:targetPort`。无需 TUN/VpnService。
+     *
+     * @param instanceName EasyTier 实例名称
+     * @param targetIp 虚拟网络内的目标 IPv4 地址
+     * @param targetPort 目标端口
+     * @param listenPort 本地监听端口，传 0 由系统分配
+     * @return 实际监听的本地端口；失败返回 -1
+     * @throws RuntimeException 当启动失败时抛出异常
+     */
+    @JvmStatic
+    external fun startTcpForwarder(
+            instanceName: String,
+            targetIp: String,
+            targetPort: Int,
+            listenPort: Int
+    ): Int
+
+    /**
+     * 停止本地 TCP 端口转发器
+     * @param localPort [startTcpForwarder] 返回的本地端口
+     * @return 0 表示成功或该转发器不存在，-1 表示失败
+     * @throws RuntimeException 当停止失败时抛出异常
+     */
+    @JvmStatic external fun stopTcpForwarder(localPort: Int): Int
+
+    /**
      * 便利方法：停止所有网络实例
      * @return 0 表示成功，-1 表示失败
      * @throws RuntimeException 当操作失败时抛出异常

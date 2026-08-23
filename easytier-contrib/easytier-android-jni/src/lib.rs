@@ -22,9 +22,17 @@
 //! Error API:
 //! - `getLastError()`: return the latest FFI/JNI error string for the calling thread.
 //!
+//! TCP forwarder APIs:
+//! - `startTcpForwarder(instanceName, targetIp, targetPort, listenPort)`: listen
+//!   on `127.0.0.1:listenPort` and relay each connection to `targetIp:targetPort`
+//!   through the instance's data plane.
+//! - `stopTcpForwarder(localPort)`: stop the forwarder bound to `localPort`.
+//!
 mod callback;
 mod config_server_api;
 mod error;
+mod forwarder;
+mod forwarder_api;
 mod json_rpc_api;
 mod logger;
 mod network_api;
@@ -184,6 +192,52 @@ pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_getLastError(
     class: JClass,
 ) -> jstring {
     error::get_last_error_jni(env, class)
+}
+
+/// Start a loopback TCP forwarder into the virtual network.
+///
+/// Java signature:
+/// `EasyTierJNI.startTcpForwarder(instanceName, targetIp, targetPort, listenPort): int`
+///
+/// Listens on `127.0.0.1:listenPort` (0 = auto-assign) and relays every
+/// connection to `targetIp:targetPort` through the data plane of the instance
+/// named `instanceName`. Returns the bound local port; on failure returns -1
+/// and throws `RuntimeException` with the error message when one is available.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_startTcpForwarder(
+    env: JNIEnv,
+    class: JClass,
+    instance_name: JString,
+    target_ip: JString,
+    target_port: jint,
+    listen_port: jint,
+) -> jint {
+    logger::init();
+    forwarder_api::start_tcp_forwarder_jni(
+        env,
+        class,
+        instance_name,
+        target_ip,
+        target_port,
+        listen_port,
+    )
+}
+
+/// Stop a loopback TCP forwarder.
+///
+/// Java signature:
+/// `EasyTierJNI.stopTcpForwarder(localPort): int`
+///
+/// Stops the forwarder bound to `localPort`. Returns 0 on success or when no
+/// such forwarder exists; on failure returns -1 and throws `RuntimeException`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_stopTcpForwarder(
+    env: JNIEnv,
+    class: JClass,
+    local_port: jint,
+) -> jint {
+    logger::init();
+    forwarder_api::stop_tcp_forwarder_jni(env, class, local_port)
 }
 
 /// Start the managed config-server client.
