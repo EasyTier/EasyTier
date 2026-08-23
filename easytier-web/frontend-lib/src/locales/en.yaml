@@ -258,7 +258,7 @@ edit_port_forward: "Edit Forward Rule"
 
 
 acl:
-  title: Access Control (ACL)
+  title: Access Control
   help: Access control list to restrict communication between nodes.
   enabled: Enable ACL
   default_action: Default Action
