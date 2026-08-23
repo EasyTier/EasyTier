@@ -1966,23 +1966,15 @@ impl<'a> CommandHandler<'a> {
     }
 
     async fn apply_acl_set(&self, acl: Acl) -> Result<(), Error> {
-        // Clear legacy TCP/UDP whitelists too, so that replacing the ACL is a
-        // true full replacement instead of silently keeping old whitelist
-        // rules alongside the new chains.
+        // tcp_whitelist/udp_whitelist are separate config knobs that remain in
+        // effect alongside the ACL; updating them is out of scope for `acl set`.
         let client = self.get_config_client().await?;
         let request = PatchConfigRequest {
             instance: Some(self.instance_selector.clone()),
             patch: Some(InstanceConfigPatch {
                 acl: Some(AclPatch {
                     acl: Some(acl),
-                    tcp_whitelist: vec![StringPatch {
-                        action: ConfigPatchAction::Clear.into(),
-                        value: String::new(),
-                    }],
-                    udp_whitelist: vec![StringPatch {
-                        action: ConfigPatchAction::Clear.into(),
-                        value: String::new(),
-                    }],
+                    ..Default::default()
                 }),
                 ..Default::default()
             }),
