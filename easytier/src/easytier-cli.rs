@@ -32,7 +32,7 @@ use tokio::time::timeout;
 use easytier::{
     common::{constants::EASYTIER_VERSION, stun::runtime_stun_info_collector},
     proto::{
-        acl::AclStats,
+        acl::{Acl, AclStats},
         api::{
             config::{
                 AclPatch, ConfigPatchAction, ConfigRpc, ConfigRpcClientFactory,
@@ -313,10 +313,38 @@ struct AclArgs {
     sub_command: Option<AclSubCommand>,
 }
 
+#[derive(Args, Debug)]
+struct AclSetArgs {
+    /// Full ACL as a TOML string, or a path to a TOML file prefixed by '@'.
+    ///
+    /// The TOML uses the same shape as the `[acl]` section of an easytier
+    /// configuration file, for example:
+    ///
+    /// ```toml
+    /// [acl.acl_v1]
+    /// [[acl.acl_v1.chains]]
+    /// name = "Inbound"
+    /// chain_type = 1
+    /// enabled = true
+    /// default_action = 2
+    /// [[acl.acl_v1.chains.rules]]
+    /// protocol = 3
+    /// action = 1
+    /// ```
+    ///
+    /// Using `@/path/to/acl.toml` makes it easy to manage and debug the full
+    /// ACL offline. The whole ACL is replaced at runtime without restarting
+    /// easytier-core.
+    #[arg(help = "full ACL TOML string or '@path/to/acl.toml'")]
+    acl: String,
+}
+
 #[derive(Subcommand, Debug)]
 enum AclSubCommand {
     /// Show ACL rule hit statistics
     Stats,
+    /// Replace the whole ACL at runtime without restarting easytier-core
+    Set(AclSetArgs),
 }
 
 #[derive(Args, Debug)]
@@ -1965,6 +1993,149 @@ impl<'a> CommandHandler<'a> {
         })
     }
 
+    async fn apply_acl_set(&self, acl: Acl) -> Result<(), Error> {
+        // tcp_whitelist/udp_whitelist are separate config knobs that remain in
+        // effect alongside the ACL; updating them is out of scope for `acl set`.
+        let client = self.get_config_client().await?;
+        let request = PatchConfigRequest {
+            instance: Some(self.instance_selector.clone()),
+            patch: Some(InstanceConfigPatch {
+                acl: Some(AclPatch {
+                    acl: Some(acl),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+        };
+        let _response = client
+            .patch_config(BaseController::default(), request)
+            .await?;
+        Ok(())
+    }
+
+    async fn handle_acl_set(&self, raw: &str) -> Result<(), Error> {
+        // Load the TOML content either from a file (`@path`) or inline.
+        let toml_text = if let Some(path) = raw.strip_prefix('@') {
+            tokio::fs::read_to_string(path)
+                .await
+                .with_context(|| format!("failed to read ACL file `{path}`"))?
+        } else {
+            raw.to_string()
+        };
+
+        // The input mirrors the `[acl]` section of an easytier TOML config, so
+        // we wrap the parsed `Acl` inside a top-level `acl` table.
+        #[derive(serde::Deserialize, Default)]
+        struct AclToml {
+            acl: Option<Acl>,
+        }
+
+        let parsed: AclToml = toml::from_str(&toml_text)
+            .with_context(|| "failed to parse ACL TOML (expected `[acl.acl_v1]` structure)")?;
+        let acl = parsed.acl.unwrap_or_default();
+        if acl.is_empty() {
+            anyhow::bail!(
+                "parsed ACL is empty; provide at least one chain or a non-empty group under `[acl.acl_v1]`"
+            );
+        }
+
+        // Redact group secrets before any JSON echo so credentials are never
+        // written to stdout or captured logs (matches core's dump redaction).
+        let mut sanitized = acl.clone();
+        if let Some(group) = sanitized.acl_v1.as_mut().and_then(|v| v.group.as_mut()) {
+            for declaration in group.declares.iter_mut() {
+                if !declaration.group_secret.is_empty() {
+                    declaration.group_secret = "<redacted>".to_string();
+                }
+            }
+        }
+
+        let chain_count = acl
+            .acl_v1
+            .as_ref()
+            .map(|v| v.chains.len())
+            .unwrap_or_default();
+
+        // Apply to each selected instance, collecting per-instance outcomes so
+        // a failure on one instance does not leave others partially or
+        // silently updated.
+        let outcomes: Vec<(String, Result<(), Error>)> = match self.fanout_targets().await? {
+            Some(targets) => {
+                let mut list = Vec::with_capacity(targets.len());
+                for target in targets {
+                    let label = target.label();
+                    let scoped = self.scoped_to_instance(&target);
+                    list.push((label, scoped.apply_acl_set(acl.clone()).await));
+                }
+                list
+            }
+            None => vec![(
+                "selected instance".to_string(),
+                self.apply_acl_set(acl.clone()).await,
+            )],
+        };
+
+        let mut failures: Vec<(String, Error)> = Vec::new();
+        let mut ok = 0usize;
+        for (label, result) in outcomes {
+            match result {
+                Ok(()) => {
+                    ok += 1;
+                    if *self.output_format == OutputFormat::Json {
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&serde_json::json!({
+                                "instance": label,
+                                "success": true,
+                                "chains": chain_count,
+                                "acl": &sanitized,
+                            }))?
+                        );
+                    } else {
+                        println!("== {} ==", label);
+                        println!("ACL updated successfully ({chain_count} chain(s))");
+                    }
+                }
+                Err(e) => {
+                    if *self.output_format == OutputFormat::Json {
+                        let _ = serde_json::to_writer(
+                            std::io::stdout(),
+                            &serde_json::json!({
+                                "instance": label,
+                                "success": false,
+                                "error": e.to_string(),
+                            }),
+                        );
+                    } else {
+                        println!("== {} ==", label);
+                        println!("ACL update failed: {e:#}");
+                    }
+                    failures.push((label, e));
+                }
+            }
+        }
+
+        if ok == 0 {
+            return Err(anyhow::anyhow!(
+                "ACL update failed on all {} selected instance(s)",
+                failures.len()
+            ));
+        }
+        if !failures.is_empty() {
+            return Err(anyhow::anyhow!(
+                "ACL update failed on {} of {} selected instance(s): {}",
+                failures.len(),
+                ok + failures.len(),
+                failures
+                    .iter()
+                    .map(|(label, _)| label.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        Ok(())
+    }
+
     async fn handle_mapped_listener_list(&self) -> Result<(), Error> {
         let results = self
             .collect_instance_results(|handler| Box::pin(handler.fetch_mapped_listener_list()))
@@ -3227,6 +3398,7 @@ async fn main() -> Result<(), Error> {
                         program: bin_path,
                         args: bin_args,
                         work_directory: work_dir,
+                        environment: None,
                         disable_autostart: install_args.disable_autostart.unwrap_or(false),
                         description: Some(install_args.description),
                         display_name: install_args.display_name,
@@ -3312,6 +3484,9 @@ async fn main() -> Result<(), Error> {
         SubCommand::Acl(acl_args) => match &acl_args.sub_command {
             Some(AclSubCommand::Stats) | None => {
                 handler.handle_acl_stats().await?;
+            }
+            Some(AclSubCommand::Set(args)) => {
+                handler.handle_acl_set(&args.acl).await?;
             }
         },
         SubCommand::PortForward(port_forward_args) => match &port_forward_args.sub_command {

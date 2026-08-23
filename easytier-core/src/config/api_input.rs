@@ -51,6 +51,34 @@ pub fn add_proxy_network_to_config(
 pub type NetworkingMethod = easytier_proto::api::manage::NetworkingMethod;
 pub type NetworkConfig = easytier_proto::api::manage::NetworkConfig;
 
+pub(crate) fn managed_credential_from_proto(
+    credential: &manage::ManagedCredentialConfig,
+) -> ManagedCredentialConfig {
+    ManagedCredentialConfig {
+        credential_id: credential.credential_id.clone(),
+        credential_secret: credential.credential_secret.clone(),
+        groups: credential.groups.clone(),
+        allow_relay: credential.allow_relay,
+        allowed_proxy_cidrs: credential.allowed_proxy_cidrs.clone(),
+        expiry_unix: credential.expiry_unix,
+        reusable: credential.reusable.unwrap_or(true),
+    }
+}
+
+pub(crate) fn managed_credential_to_proto(
+    credential: ManagedCredentialConfig,
+) -> manage::ManagedCredentialConfig {
+    manage::ManagedCredentialConfig {
+        credential_id: credential.credential_id,
+        credential_secret: credential.credential_secret,
+        groups: credential.groups,
+        allow_relay: credential.allow_relay,
+        allowed_proxy_cidrs: credential.allowed_proxy_cidrs,
+        expiry_unix: credential.expiry_unix,
+        reusable: Some(credential.reusable),
+    }
+}
+
 pub trait NetworkConfigExt {
     fn gen_config(&self) -> Result<TomlConfigLoader, anyhow::Error>;
     fn new_from_config(config: impl ConfigLoader) -> Result<NetworkConfig, anyhow::Error>;
@@ -301,15 +329,7 @@ impl NetworkConfigExt for NetworkConfig {
         cfg.set_managed_credentials(
             self.managed_credentials
                 .iter()
-                .map(|credential| ManagedCredentialConfig {
-                    credential_id: credential.credential_id.clone(),
-                    credential_secret: credential.credential_secret.clone(),
-                    groups: credential.groups.clone(),
-                    allow_relay: credential.allow_relay,
-                    allowed_proxy_cidrs: credential.allowed_proxy_cidrs.clone(),
-                    expiry_unix: credential.expiry_unix,
-                    reusable: credential.reusable.unwrap_or(true),
-                })
+                .map(managed_credential_from_proto)
                 .collect(),
         );
 
@@ -624,15 +644,7 @@ impl NetworkConfigExt for NetworkConfig {
         result.managed_credentials = config
             .get_managed_credentials()
             .into_iter()
-            .map(|credential| manage::ManagedCredentialConfig {
-                credential_id: credential.credential_id,
-                credential_secret: credential.credential_secret,
-                groups: credential.groups,
-                allow_relay: credential.allow_relay,
-                allowed_proxy_cidrs: credential.allowed_proxy_cidrs,
-                expiry_unix: credential.expiry_unix,
-                reusable: Some(credential.reusable),
-            })
+            .map(managed_credential_to_proto)
             .collect();
         let flags = config.get_flags();
         let default_flags = default_config.get_flags();

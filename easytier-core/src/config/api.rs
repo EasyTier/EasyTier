@@ -4,7 +4,10 @@ use easytier_proto::api::manage::{
     self, NetworkConfig, NetworkingMethod, PortForwardConfig as ApiPortForwardConfig,
 };
 
-use super::toml::{ConfigLoader as _, TomlConfig};
+use super::{
+    api_input::managed_credential_to_proto,
+    toml::{ConfigLoader as _, TomlConfig},
+};
 
 pub fn network_config_from_toml(config: &TomlConfig) -> NetworkConfig {
     let default_config = TomlConfig::default();
@@ -121,15 +124,7 @@ pub fn network_config_from_toml(config: &TomlConfig) -> NetworkConfig {
     result.managed_credentials = config
         .get_managed_credentials()
         .into_iter()
-        .map(|credential| manage::ManagedCredentialConfig {
-            credential_id: credential.credential_id,
-            credential_secret: credential.credential_secret,
-            groups: credential.groups,
-            allow_relay: credential.allow_relay,
-            allowed_proxy_cidrs: credential.allowed_proxy_cidrs,
-            expiry_unix: credential.expiry_unix,
-            reusable: Some(credential.reusable),
-        })
+        .map(managed_credential_to_proto)
         .collect();
 
     let flags = config.get_flags();

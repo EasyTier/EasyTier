@@ -22,6 +22,14 @@ operation transition.
 Host capability operations use a separate seam. They turn Host readiness into
 Rust task wakeups and do not share the caller-to-core broker state machine.
 
+## Credential grant
+
+A credential grant contains the authorization constraints shared by generated,
+imported, managed, and attached-peer credentials: ACL groups, relay permission,
+allowed proxy CIDRs, and whether concurrent reuse is allowed. It does not own
+credential identity, key material, lifetime, persistence, or runtime ownership.
+Each credential intake path normalizes the grant before installing it.
+
 ## Attached peer
 
 An attached peer is an ordinary `PeerManagerCore` connected to another

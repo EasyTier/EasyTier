@@ -47,15 +47,68 @@ pub struct CredentialUpsertOptions {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct CredentialEntry {
-    pubkey: String,
-    #[serde(default)]
-    secret: String,
+struct CredentialGrant {
     groups: Vec<String>,
     allow_relay: bool,
     allowed_proxy_cidrs: Vec<String>,
     #[serde(default = "default_true")]
     reusable: bool,
+}
+
+#[derive(Debug)]
+struct InvalidAllowedProxyCidr(String);
+
+impl std::fmt::Display for InvalidAllowedProxyCidr {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "invalid allowed_proxy_cidr: {}", self.0)
+    }
+}
+
+impl CredentialGrant {
+    fn new(
+        groups: Vec<String>,
+        allow_relay: bool,
+        allowed_proxy_cidrs: Vec<String>,
+        reusable: bool,
+    ) -> Result<Self, InvalidAllowedProxyCidr> {
+        let mut grant = Self {
+            groups,
+            allow_relay,
+            allowed_proxy_cidrs,
+            reusable,
+        };
+        grant.normalize()?;
+        Ok(grant)
+    }
+
+    fn normalize(&mut self) -> Result<(), InvalidAllowedProxyCidr> {
+        for cidr in &mut self.allowed_proxy_cidrs {
+            let normalized = cidr.trim().to_owned();
+            normalized
+                .parse::<cidr::IpCidr>()
+                .map_err(|_| InvalidAllowedProxyCidr(normalized.clone()))?;
+            *cidr = normalized;
+        }
+        Ok(())
+    }
+
+    fn for_attached_peer(groups: Vec<String>) -> Self {
+        Self {
+            groups,
+            allow_relay: false,
+            allowed_proxy_cidrs: Vec::new(),
+            reusable: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct CredentialEntry {
+    pubkey: String,
+    #[serde(default)]
+    secret: String,
+    #[serde(flatten)]
+    grant: CredentialGrant,
     expiry_unix: i64,
     created_at_unix: i64,
 }
@@ -68,22 +121,22 @@ impl CredentialEntry {
     fn to_trusted_credential(&self) -> Option<TrustedCredentialPubkey> {
         Some(TrustedCredentialPubkey {
             pubkey: CredentialManager::decode_pubkey_b64(&self.pubkey)?,
-            groups: self.groups.clone(),
-            allow_relay: self.allow_relay,
+            groups: self.grant.groups.clone(),
+            allow_relay: self.grant.allow_relay,
             expiry_unix: self.expiry_unix,
-            allowed_proxy_cidrs: self.allowed_proxy_cidrs.clone(),
-            reusable: Some(self.reusable),
+            allowed_proxy_cidrs: self.grant.allowed_proxy_cidrs.clone(),
+            reusable: Some(self.grant.reusable),
         })
     }
 
     fn to_credential_info(&self, credential_id: &str) -> CredentialInfo {
         CredentialInfo {
             credential_id: credential_id.to_string(),
-            groups: self.groups.clone(),
-            allow_relay: self.allow_relay,
+            groups: self.grant.groups.clone(),
+            allow_relay: self.grant.allow_relay,
             expiry_unix: self.expiry_unix,
-            allowed_proxy_cidrs: self.allowed_proxy_cidrs.clone(),
-            reusable: Some(self.reusable),
+            allowed_proxy_cidrs: self.grant.allowed_proxy_cidrs.clone(),
+            reusable: Some(self.grant.reusable),
             public_key_fingerprint: CredentialManager::public_key_fingerprint(&self.pubkey)
                 .unwrap_or_default(),
         }
@@ -97,20 +150,22 @@ impl CredentialEntry {
             .try_into()
             .map_err(|_| format!("credential_secret for {credential_id} must contain 32 bytes"))?;
         let private = StaticSecret::from(private_bytes);
-        let mut allowed_proxy_cidrs = Vec::with_capacity(entry.allowed_proxy_cidrs.len());
-        for cidr in &entry.allowed_proxy_cidrs {
-            let cidr = cidr.trim();
-            cidr.parse::<cidr::IpCidr>()
-                .map_err(|_| format!("invalid allowed_proxy_cidr for {credential_id}: {cidr}"))?;
-            allowed_proxy_cidrs.push(cidr.to_owned());
-        }
+        let grant = CredentialGrant::new(
+            entry.groups.clone(),
+            entry.allow_relay,
+            entry.allowed_proxy_cidrs.clone(),
+            entry.reusable,
+        )
+        .map_err(|error| {
+            format!(
+                "invalid allowed_proxy_cidr for {credential_id}: {}",
+                error.0
+            )
+        })?;
         Ok(Self {
             pubkey: BASE64_STANDARD.encode(PublicKey::from(&private).as_bytes()),
             secret: BASE64_STANDARD.encode(private.as_bytes()),
-            groups: entry.groups.clone(),
-            allow_relay: entry.allow_relay,
-            allowed_proxy_cidrs,
-            reusable: entry.reusable,
+            grant,
             expiry_unix: entry.expiry_unix,
             created_at_unix: 0,
         })
@@ -192,7 +247,9 @@ impl CredentialManager {
 
     pub fn from_storage(storage: Arc<dyn CredentialStorage>) -> Self {
         let loaded = match storage.load() {
-            Ok(Some(serialized)) => serde_json::from_str(&serialized).map_err(anyhow::Error::from),
+            Ok(Some(serialized)) => serde_json::from_str(&serialized)
+                .map_err(anyhow::Error::from)
+                .and_then(Self::normalize_loaded_entries),
             Ok(None) => Ok(HashMap::new()),
             Err(error) => Err(error),
         };
@@ -213,15 +270,29 @@ impl CredentialManager {
         }
     }
 
+    fn normalize_loaded_entries(
+        mut entries: HashMap<String, CredentialEntry>,
+    ) -> anyhow::Result<HashMap<String, CredentialEntry>> {
+        for (credential_id, entry) in &mut entries {
+            entry.grant.normalize().map_err(|error| {
+                anyhow::anyhow!("invalid stored credential {credential_id}: {error}")
+            })?;
+        }
+        Ok(entries)
+    }
+
     pub fn generate_credential_with_options(
         &self,
-        groups: Vec<String>,
-        allow_relay: bool,
-        allowed_proxy_cidrs: Vec<String>,
-        ttl: Duration,
-        credential_id: Option<String>,
-        reusable: bool,
+        options: CredentialCreateOptions,
     ) -> Result<GeneratedCredential, String> {
+        let CredentialCreateOptions {
+            groups,
+            allow_relay,
+            allowed_proxy_cidrs,
+            ttl,
+            credential_id,
+            reusable,
+        } = options;
         self.ensure_storage_available()
             .map_err(|error| error.to_string())?;
         let mut state = self.state.lock().unwrap();
@@ -254,15 +325,11 @@ impl CredentialManager {
                 }
             }
         };
+        let grant = CredentialGrant::new(groups, allow_relay, allowed_proxy_cidrs, reusable)
+            .map_err(|error| error.to_string())?;
 
         let (entry, secret) = loop {
-            let generated = Self::build_entry(
-                groups.clone(),
-                allow_relay,
-                allowed_proxy_cidrs.clone(),
-                reusable,
-                ttl,
-            );
+            let generated = Self::build_entry(grant.clone(), ttl);
             let public_key_in_use = updated
                 .values()
                 .chain(Self::managed_values(&state))
@@ -285,13 +352,7 @@ impl CredentialManager {
         })
     }
 
-    fn build_entry(
-        groups: Vec<String>,
-        allow_relay: bool,
-        allowed_proxy_cidrs: Vec<String>,
-        reusable: bool,
-        ttl: Duration,
-    ) -> (CredentialEntry, String) {
+    fn build_entry(grant: CredentialGrant, ttl: Duration) -> (CredentialEntry, String) {
         let private = StaticSecret::random_from_rng(rand::rngs::OsRng);
         let public = PublicKey::from(&private);
         let pubkey = BASE64_STANDARD.encode(public.as_bytes());
@@ -306,10 +367,7 @@ impl CredentialManager {
         let entry = CredentialEntry {
             pubkey,
             secret: secret.clone(),
-            groups,
-            allow_relay,
-            allowed_proxy_cidrs,
-            reusable,
+            grant,
             expiry_unix,
             created_at_unix: now,
         };
@@ -335,17 +393,11 @@ impl CredentialManager {
         &self,
         public_key: [u8; 32],
         groups: Vec<String>,
-        allow_relay: bool,
-        allowed_proxy_cidrs: Vec<String>,
-        reusable: bool,
     ) -> Result<uuid::Uuid, String> {
         let entry = CredentialEntry {
             pubkey: BASE64_STANDARD.encode(public_key),
             secret: String::new(),
-            groups,
-            allow_relay,
-            allowed_proxy_cidrs,
-            reusable,
+            grant: CredentialGrant::for_attached_peer(groups),
             expiry_unix: i64::MAX,
             created_at_unix: current_unix_timestamp(),
         };
@@ -376,10 +428,10 @@ impl CredentialManager {
     ) -> Option<bool> {
         let mut state = self.state.lock().unwrap();
         let credential = state.ephemeral.get_mut(&credential_id)?;
-        if credential.groups == groups {
+        if credential.grant.groups == groups {
             return Some(false);
         }
-        credential.groups = groups;
+        credential.grant.groups = groups;
         Some(true)
     }
 
@@ -416,13 +468,12 @@ impl CredentialManager {
             .try_into()
             .map_err(|_| "credential_secret must contain 32 bytes".to_string())?;
         let private = StaticSecret::from(private_bytes);
+        let grant = CredentialGrant::new(groups, allow_relay, allowed_proxy_cidrs, reusable)
+            .map_err(|error| error.to_string())?;
         let entry = CredentialEntry {
             pubkey: BASE64_STANDARD.encode(PublicKey::from(&private).as_bytes()),
             secret: BASE64_STANDARD.encode(private.as_bytes()),
-            groups,
-            allow_relay,
-            allowed_proxy_cidrs,
-            reusable,
+            grant,
             expiry_unix,
             created_at_unix: current_unix_timestamp(),
         };
@@ -455,10 +506,7 @@ impl CredentialManager {
         let changed = state.base.get(&credential_id).is_none_or(|existing| {
             existing.secret != entry.secret
                 || existing.pubkey != entry.pubkey
-                || existing.groups != entry.groups
-                || existing.allow_relay != entry.allow_relay
-                || existing.allowed_proxy_cidrs != entry.allowed_proxy_cidrs
-                || existing.reusable != entry.reusable
+                || existing.grant != entry.grant
                 || existing.expiry_unix != entry.expiry_unix
         });
         if !changed {
@@ -722,7 +770,43 @@ mod tests {
 
         let entry = CredentialEntry::from_managed(&credential).unwrap();
 
-        assert_eq!(entry.allowed_proxy_cidrs, ["10.0.0.0/24"]);
+        assert_eq!(entry.grant.allowed_proxy_cidrs, ["10.0.0.0/24"]);
+    }
+
+    #[test]
+    fn generated_and_imported_credentials_normalize_allowed_proxy_cidrs() {
+        let source = CredentialManager::new();
+        let generated = source
+            .generate_credential_with_options(CredentialCreateOptions {
+                groups: Vec::new(),
+                allow_relay: false,
+                allowed_proxy_cidrs: vec![" 10.0.0.0/24 ".to_owned()],
+                ttl: Duration::from_secs(3600),
+                credential_id: None,
+                reusable: true,
+            })
+            .unwrap();
+        assert_eq!(
+            source.list_credentials()[0].allowed_proxy_cidrs,
+            ["10.0.0.0/24"]
+        );
+
+        let target = CredentialManager::new();
+        target
+            .upsert_credential(CredentialUpsertOptions {
+                credential_id: "imported".to_owned(),
+                credential_secret: generated.secret,
+                groups: Vec::new(),
+                allow_relay: false,
+                allowed_proxy_cidrs: vec![" 192.168.0.0/16 ".to_owned()],
+                expiry_unix: generated.expiry_unix,
+                reusable: true,
+            })
+            .unwrap();
+        assert_eq!(
+            target.list_credentials()[0].allowed_proxy_cidrs,
+            ["192.168.0.0/16"]
+        );
     }
 
     impl CredentialManager {
@@ -733,14 +817,14 @@ mod tests {
             allowed_proxy_cidrs: Vec<String>,
             ttl: Duration,
         ) -> GeneratedCredential {
-            self.generate_credential_with_options(
+            self.generate_credential_with_options(CredentialCreateOptions {
                 groups,
                 allow_relay,
                 allowed_proxy_cidrs,
                 ttl,
-                None,
-                true,
-            )
+                credential_id: None,
+                reusable: true,
+            })
             .unwrap()
         }
 
@@ -752,14 +836,14 @@ mod tests {
             ttl: Duration,
             credential_id: Option<String>,
         ) -> GeneratedCredential {
-            self.generate_credential_with_options(
+            self.generate_credential_with_options(CredentialCreateOptions {
                 groups,
                 allow_relay,
                 allowed_proxy_cidrs,
                 ttl,
                 credential_id,
-                true,
-            )
+                reusable: true,
+            })
             .unwrap()
         }
     }
@@ -778,6 +862,24 @@ mod tests {
             *self.serialized.lock().unwrap() = Some(serialized_credentials.to_owned());
             Ok(())
         }
+    }
+
+    fn credential_storage_with_proxy_cidr(
+        allowed_proxy_cidr: &str,
+    ) -> (Arc<MemoryCredentialStorage>, String) {
+        let storage = Arc::new(MemoryCredentialStorage::default());
+        let manager = CredentialManager::from_storage(storage.clone());
+        let generated = manager.generate_credential(
+            Vec::new(),
+            false,
+            vec!["10.0.0.0/24".to_owned()],
+            Duration::from_secs(3600),
+        );
+        let serialized = storage.serialized.lock().unwrap().clone().unwrap();
+        let mut snapshot: serde_json::Value = serde_json::from_str(&serialized).unwrap();
+        snapshot[&generated.credential_id]["allowed_proxy_cidrs"][0] = allowed_proxy_cidr.into();
+        *storage.serialized.lock().unwrap() = Some(serde_json::to_string(&snapshot).unwrap());
+        (storage, generated.credential_id)
     }
 
     struct FailOnceCredentialStorage {
@@ -887,14 +989,14 @@ mod tests {
     fn upsert_credential_preserves_key_attributes_and_storage() {
         let source = CredentialManager::new();
         let generated = source
-            .generate_credential_with_options(
-                vec!["users".to_string()],
-                false,
-                vec!["10.0.0.0/8".to_string()],
-                Duration::from_secs(3600),
-                Some("shared-id".to_string()),
-                false,
-            )
+            .generate_credential_with_options(CredentialCreateOptions {
+                groups: vec!["users".to_string()],
+                allow_relay: false,
+                allowed_proxy_cidrs: vec!["10.0.0.0/8".to_string()],
+                ttl: Duration::from_secs(3600),
+                credential_id: Some("shared-id".to_string()),
+                reusable: false,
+            })
             .unwrap();
         let source_info = source.list_credentials().remove(0);
         let options = CredentialUpsertOptions {
@@ -1012,6 +1114,67 @@ mod tests {
     }
 
     #[test]
+    fn stored_credentials_normalize_allowed_proxy_cidrs_on_load() {
+        let (storage, credential_id) = credential_storage_with_proxy_cidr(" 10.0.0.0/24 ");
+
+        let manager = CredentialManager::from_storage(storage);
+
+        assert_eq!(manager.list_credentials()[0].credential_id, credential_id);
+        assert_eq!(
+            manager.list_credentials()[0].allowed_proxy_cidrs,
+            ["10.0.0.0/24"]
+        );
+    }
+
+    #[test]
+    fn stored_credentials_with_invalid_proxy_cidr_fail_closed() {
+        let (storage, credential_id) = credential_storage_with_proxy_cidr("not-a-cidr");
+
+        let manager = CredentialManager::from_storage(storage);
+
+        assert!(manager.list_credentials().is_empty());
+        let error = manager
+            .install_initial_managed_credentials(&[])
+            .unwrap_err();
+        assert!(error.contains(&credential_id), "{error}");
+        assert!(error.contains("invalid allowed_proxy_cidr"), "{error}");
+    }
+
+    #[test]
+    fn credential_storage_schema_remains_flat() {
+        let storage = Arc::new(MemoryCredentialStorage::default());
+        let manager = CredentialManager::from_storage(storage.clone());
+        manager.generate_credential(
+            vec!["ops".to_owned()],
+            true,
+            vec!["10.0.0.0/24".to_owned()],
+            Duration::from_secs(3600),
+        );
+
+        let serialized = storage.serialized.lock().unwrap().clone().unwrap();
+        let mut snapshot: serde_json::Value = serde_json::from_str(&serialized).unwrap();
+        let entry = snapshot.as_object().unwrap().values().next().unwrap();
+
+        assert!(entry.get("grant").is_none());
+        assert_eq!(entry["groups"][0], "ops");
+        assert_eq!(entry["allowed_proxy_cidrs"][0], "10.0.0.0/24");
+        assert_eq!(entry["allow_relay"], true);
+        assert_eq!(entry["reusable"], true);
+
+        snapshot
+            .as_object_mut()
+            .unwrap()
+            .values_mut()
+            .next()
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .remove("reusable");
+        let legacy: HashMap<String, CredentialEntry> = serde_json::from_value(snapshot).unwrap();
+        assert!(legacy.values().next().unwrap().grant.reusable);
+    }
+
+    #[test]
     fn malformed_storage_is_fail_closed() {
         let storage = Arc::new(MemoryCredentialStorage {
             serialized: Mutex::new(Some("not json".to_owned())),
@@ -1031,7 +1194,7 @@ mod tests {
         let public = *PublicKey::from(&private).as_bytes();
 
         let credential_id = manager
-            .register_ephemeral_credential(public, vec!["ops".to_owned()], false, Vec::new(), false)
+            .register_ephemeral_credential(public, vec!["ops".to_owned()])
             .unwrap();
 
         assert!(manager.is_pubkey_trusted(&public));
@@ -1096,25 +1259,19 @@ mod tests {
             .unwrap();
 
         let error = manager
-            .generate_credential_with_options(
-                Vec::new(),
-                false,
-                Vec::new(),
-                Duration::from_secs(60),
-                Some("pending".to_owned()),
-                true,
-            )
+            .generate_credential_with_options(CredentialCreateOptions {
+                groups: Vec::new(),
+                allow_relay: false,
+                allowed_proxy_cidrs: Vec::new(),
+                ttl: Duration::from_secs(60),
+                credential_id: Some("pending".to_owned()),
+                reusable: true,
+            })
             .unwrap_err();
         assert!(error.contains("managed by configuration"));
         assert!(
             manager
-                .register_ephemeral_credential(
-                    *public.as_bytes(),
-                    Vec::new(),
-                    false,
-                    Vec::new(),
-                    false,
-                )
+                .register_ephemeral_credential(*public.as_bytes(), Vec::new())
                 .is_err()
         );
         assert!(!manager.is_pubkey_trusted(public.as_bytes()));
@@ -1122,13 +1279,7 @@ mod tests {
         drop(replacement);
         assert!(
             manager
-                .register_ephemeral_credential(
-                    *public.as_bytes(),
-                    Vec::new(),
-                    false,
-                    Vec::new(),
-                    false,
-                )
+                .register_ephemeral_credential(*public.as_bytes(), Vec::new())
                 .is_ok()
         );
     }
@@ -1146,14 +1297,14 @@ mod tests {
             .unwrap();
 
         let error = manager
-            .generate_credential_with_options(
-                Vec::new(),
-                false,
-                Vec::new(),
-                Duration::from_secs(60),
-                Some("managed".to_owned()),
-                true,
-            )
+            .generate_credential_with_options(CredentialCreateOptions {
+                groups: Vec::new(),
+                allow_relay: false,
+                allowed_proxy_cidrs: Vec::new(),
+                ttl: Duration::from_secs(60),
+                credential_id: Some("managed".to_owned()),
+                reusable: true,
+            })
             .unwrap_err();
         assert!(error.contains("managed by configuration"));
 
