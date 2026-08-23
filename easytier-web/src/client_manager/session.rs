@@ -67,6 +67,7 @@ pub struct SessionData {
     webhook_connected_binding_version: Option<u64>,
     webhook_validation_dirty: bool,
     webhook_validation_notify: Arc<Notify>,
+    session_epoch: u64,
 }
 
 impl SessionData {
@@ -96,6 +97,7 @@ impl SessionData {
             webhook_connected_binding_version: None,
             webhook_validation_dirty: false,
             webhook_validation_notify: Arc::new(Notify::new()),
+            session_epoch: 0,
         }
     }
 
@@ -252,7 +254,7 @@ impl Drop for SessionData {
         if let Ok(storage) = Storage::try_from(self.storage.clone())
             && let Some(token) = self.storage_token.as_ref()
         {
-            storage.remove_client(token);
+            storage.remove_session_client(token, self.session_epoch);
 
             // Notify the webhook receiver when a node disconnects.
             if self.webhook_config.is_enabled()
@@ -426,7 +428,12 @@ impl SessionRpcService {
             let authorized = data.auth_state.is_authorized();
             if let Some(storage_token) = data.storage_token.clone() {
                 let report_time = Self::heartbeat_report_timestamp(&runtime_req);
-                storage.update_client(storage_token, report_time, authorized);
+                storage.update_session_client(
+                    storage_token,
+                    report_time,
+                    authorized,
+                    data.session_epoch,
+                );
             }
             let runtime_notify = (authorized && data.storage_token.is_some())
                 .then(|| (data.notifier.clone(), runtime_req));
@@ -498,7 +505,7 @@ impl SessionRpcService {
             }
         };
 
-        let (storage_token, notifier, runtime_req) = {
+        let (storage_token, notifier, runtime_req, session_epoch) = {
             let mut data = self.data.write().await;
             let is_new_storage_token = data.storage_token.is_none();
             let runtime_req = Self::store_latest_heartbeat_req(&mut data, req.clone());
@@ -519,11 +526,16 @@ impl SessionRpcService {
                 tracing::error!("Heartbeat succeeded before session token was initialized");
                 return Ok(HeartbeatResponse {});
             };
-            (storage_token, data.notifier.clone(), runtime_req)
+            (
+                storage_token,
+                data.notifier.clone(),
+                runtime_req,
+                data.session_epoch,
+            )
         };
 
         let report_time = Self::heartbeat_report_timestamp(&runtime_req);
-        storage.update_client(storage_token, report_time, true);
+        storage.update_session_client(storage_token, report_time, true, session_epoch);
         let _ = notifier.send(runtime_req);
         Ok(HeartbeatResponse {})
     }
@@ -575,6 +587,7 @@ pub struct Session {
 
     webhook_validation_task: Option<AbortOnDropHandle<()>>,
     config_reconcile_task: Option<AbortOnDropHandle<()>>,
+    route_ready: Arc<Notify>,
 }
 
 impl Debug for Session {
@@ -594,9 +607,11 @@ impl Session {
         heartbeat_min_response_delay: Duration,
         feature_flags: Arc<FeatureFlags>,
         webhook_config: SharedWebhookConfig,
+        session_epoch: u64,
     ) -> Self {
-        let session_data =
+        let mut session_data =
             SessionData::new(storage, client_url, location, feature_flags, webhook_config);
+        session_data.session_epoch = session_epoch;
         let data = Arc::new(RwLock::new(session_data));
 
         let rpc_mgr =
@@ -615,6 +630,7 @@ impl Session {
             data,
             webhook_validation_task: None,
             config_reconcile_task: None,
+            route_ready: Arc::new(Notify::new()),
         }
     }
 
@@ -623,10 +639,13 @@ impl Session {
 
         let data = self.data.read().await;
         if data.webhook_config.is_enabled() {
+            let route_ready = self.route_ready.clone();
+            let session_data = Arc::downgrade(&self.data);
             self.webhook_validation_task
-                .replace(AbortOnDropHandle::new(tokio::spawn(
-                    webhook_validation::run_worker(Arc::downgrade(&self.data)),
-                )));
+                .replace(AbortOnDropHandle::new(tokio::spawn(async move {
+                    route_ready.notified().await;
+                    webhook_validation::run_worker(session_data).await;
+                })));
         }
         self.config_reconcile_task
             .replace(AbortOnDropHandle::new(tokio::spawn(
@@ -638,6 +657,10 @@ impl Session {
                     self.scoped_config_client(),
                 ),
             )));
+    }
+
+    pub fn mark_route_ready(&self) {
+        self.route_ready.notify_one();
     }
 
     pub fn is_running(&self) -> bool {
