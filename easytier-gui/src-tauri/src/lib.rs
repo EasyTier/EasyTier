@@ -597,7 +597,7 @@ async fn init_web_client(app: AppHandle, url: Option<String>) -> Result<(), Stri
         .try_read()
         .map_err(|_| "Failed to acquire read lock for instance manager")?
         .clone()
-        .ok_or_else(|| "Instance manager is not available".to_string())?;
+        .unwrap_or_else(|| Arc::new(native_instance_manager()));
 
     let hooks = Arc::new(manager::GuiHooks { app: app.clone() });
     let machine_id_state_dir = app

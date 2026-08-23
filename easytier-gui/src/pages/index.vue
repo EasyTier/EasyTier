@@ -185,7 +185,15 @@ async function initWithMode(mode: Mode) {
         mode.installed_core_version = coreVersion
         serviceStatus = await getServiceStatus()
       }
-      if (serviceStatus === "Stopped") {
+      if (serviceStatus === "Running") {
+        await setServiceStatus(false)
+        for (let i = 0; i < 10; i++) {
+          serviceStatus = await getServiceStatus()
+          if (serviceStatus === "Stopped" || serviceStatus === "NotInstalled") break;
+          await new Promise(resolve => setTimeout(resolve, 100))
+        }
+        await setServiceStatus(true)
+      } else if (serviceStatus === "Stopped") {
         await setServiceStatus(true)
       }
       url = "tcp://" + mode.rpc_portal.replace("0.0.0.0", "127.0.0.1")
@@ -216,8 +224,7 @@ async function initWithMode(mode: Mode) {
     }
   }
   await sendConfigs(running_inst_ids.map(Utils.UuidToStr))
-  if (mode.mode === 'normal') {
-    mode.config_server_url = mode.config_server_url || undefined
+  if ('config_server_url' in mode && mode.config_server_url) {
     initWebClient(mode.config_server_url)
   }
   currentMode.value = mode
@@ -448,8 +455,7 @@ async function onConfigServerSave() {
 }
 onMounted(() => {
   const timer = setInterval(async () => {
-    if (currentMode.value.mode !== 'normal') return;
-    if (!currentMode.value.config_server_url) return;
+    if (!('config_server_url' in currentMode.value) || !currentMode.value.config_server_url) return;
     configServerConnected.value = await isWebClientConnected();
   }, 1000)
 
@@ -458,10 +464,7 @@ onMounted(() => {
   })
 })
 const configServerConnectionStatus = computed(() => {
-  if (currentMode.value.mode !== 'normal') {
-    return 'unknown'
-  }
-  if (!currentMode.value.config_server_url) {
+  if (!('config_server_url' in currentMode.value) || !currentMode.value.config_server_url) {
     return 'disconnected'
   }
   return configServerConnected.value ? 'connected' : 'connecting'
