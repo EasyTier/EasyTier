@@ -314,10 +314,10 @@ exchange_language: 切换中文
 mode:
   switch_mode: Work Mode
   switch_mode_label: "Work Mode: "
-  normal: Normal Mode
+  normal: Normal
   normal_description: Run EasyTier directly, suitable for lightweight local use
   enable_rpc_tcp_listen: RPC Port Listening (TCP)
-  service: Service Mode
+  service: Service
   service_description: Register as a system service, auto-start on boot, keep running after GUI is closed
   config_dir: Config Directory
   rpc_portal: RPC Address
@@ -331,7 +331,7 @@ mode:
   uninstall_service: Uninstall
   uninstall_service_confirm: Are you sure you want to uninstall the service?
   uninstall_service_success: Service uninstalled successfully
-  remote: Remote Mode
+  remote: Remote
   remote_description: Manage and control remote nodes via RPC
   remote_rpc_address: RPC Address
   remote_rpc_address_empty: Remote RPC address cannot be empty
