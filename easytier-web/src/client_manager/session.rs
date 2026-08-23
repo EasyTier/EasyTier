@@ -796,6 +796,8 @@ mod tests {
     struct ValidateWebhookTestState {
         received: Arc<Mutex<Option<oneshot::Sender<()>>>>,
         release: Arc<Notify>,
+        connected_received: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+        connected_release: Option<Arc<Notify>>,
     }
 
     async fn valid_validate_token_handler(
@@ -813,11 +815,25 @@ mod tests {
         }))
     }
 
+    async fn node_connected_handler(
+        State(state): State<ValidateWebhookTestState>,
+    ) -> Json<serde_json::Value> {
+        if let Some(sender) = state.connected_received.lock().await.take() {
+            let _ = sender.send(());
+        }
+        if let Some(release) = state.connected_release {
+            release.notified().await;
+        }
+
+        Json(json!({}))
+    }
+
     async fn test_webhook_config(
         state: ValidateWebhookTestState,
     ) -> (SharedWebhookConfig, tokio::task::JoinHandle<()>) {
         let app = Router::new()
             .route("/validate-token", post(valid_validate_token_handler))
+            .route("/webhook/node-connected", post(node_connected_handler))
             .with_state(state);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -907,10 +923,14 @@ mod tests {
         let req = heartbeat_request("token", machine_id);
         let storage = Storage::new(crate::db::Db::memory_db().await);
         let (received_tx, received_rx) = oneshot::channel();
+        let (connected_tx, connected_rx) = oneshot::channel();
         let release = Arc::new(Notify::new());
+        let connected_release = Arc::new(Notify::new());
         let (webhook_config, server) = test_webhook_config(ValidateWebhookTestState {
             received: Arc::new(Mutex::new(Some(received_tx))),
             release: release.clone(),
+            connected_received: Arc::new(Mutex::new(Some(connected_tx))),
+            connected_release: Some(connected_release.clone()),
         })
         .await;
         let mut session = SessionData::new(
@@ -938,6 +958,18 @@ mod tests {
         ));
         received_rx.await.unwrap();
         release.notify_waiters();
+        connected_rx.await.unwrap();
+        let user_id = storage
+            .db()
+            .get_user_id_by_token("token")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            storage.get_client_url_by_machine_id(user_id, &machine_id),
+            Some(url::Url::parse("http://127.0.0.1").unwrap())
+        );
+        connected_release.notify_waiters();
         validation.await.unwrap().unwrap();
         server.abort();
 
@@ -970,6 +1002,8 @@ mod tests {
         let (webhook_config, server) = test_webhook_config(ValidateWebhookTestState {
             received: Arc::new(Mutex::new(Some(received_tx))),
             release,
+            connected_received: Arc::new(Mutex::new(None)),
+            connected_release: None,
         })
         .await;
         let mut data = SessionData::new(

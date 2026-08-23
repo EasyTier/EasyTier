@@ -370,6 +370,11 @@ pub(super) async fn apply_success(
         )
     };
 
+    let report_time = SessionRpcService::heartbeat_report_timestamp(&runtime_req);
+    input
+        .storage
+        .update_client(storage_token, report_time, true);
+
     if disconnect_notification.is_some() || connect_notification.is_some() {
         wait_webhook_connection_transition(
             Arc::downgrade(&session_data),
@@ -379,10 +384,6 @@ pub(super) async fn apply_success(
         .await;
     }
 
-    let report_time = SessionRpcService::heartbeat_report_timestamp(&runtime_req);
-    input
-        .storage
-        .update_client(storage_token, report_time, true);
     let _ = notifier.send(runtime_req);
 }
 
