@@ -372,7 +372,7 @@ save: Save
 config_saved: Configuration saved
 
 
-my_node_info: My Node
+my_node_info: This Node
 upload_label: "Upload Speed: "
 download_label: "Download Speed: "
 show_node_details: Show Node Details
