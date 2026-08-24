@@ -18,6 +18,7 @@ struct ClientInfo {
     storage_token: StorageToken,
     report_time: i64,
     authorized: bool,
+    session_epoch: u64,
 }
 
 #[derive(Debug)]
@@ -46,10 +47,15 @@ impl Storage {
         }))
     }
 
-    fn remove_client_info_map(map: &DashMap<uuid::Uuid, ClientInfo>, stoken: &StorageToken) {
+    fn remove_client_info_map(
+        map: &DashMap<uuid::Uuid, ClientInfo>,
+        stoken: &StorageToken,
+        session_epoch: u64,
+    ) {
         map.remove_if(&stoken.machine_id, |_, v| {
             v.storage_token.client_url == stoken.client_url
                 && v.storage_token.user_id == stoken.user_id
+                && v.session_epoch == session_epoch
         });
     }
 
@@ -59,7 +65,9 @@ impl Storage {
                 let same_client = e.storage_token.client_url
                     == client_info.storage_token.client_url
                     && e.storage_token.user_id == client_info.storage_token.user_id;
-                let should_replace = if (same_client && e.authorized != client_info.authorized)
+                let should_replace = if e.session_epoch != client_info.session_epoch {
+                    e.session_epoch < client_info.session_epoch
+                } else if (same_client && e.authorized != client_info.authorized)
                     || (!e.authorized && client_info.authorized)
                 {
                     true
@@ -79,22 +87,38 @@ impl Storage {
             .or_insert(client_info.clone());
     }
 
+    #[cfg(test)]
     pub fn update_client(&self, stoken: StorageToken, report_time: i64, authorized: bool) {
+        self.update_session_client(stoken, report_time, authorized, 0);
+    }
+
+    pub(super) fn update_session_client(
+        &self,
+        stoken: StorageToken,
+        report_time: i64,
+        authorized: bool,
+        session_epoch: u64,
+    ) {
         let inner = self.0.user_clients_map.entry(stoken.user_id).or_default();
 
         let client_info = ClientInfo {
             storage_token: stoken.clone(),
             report_time,
             authorized,
+            session_epoch,
         };
         Self::update_client_info_map(&inner, &client_info);
     }
 
     pub fn remove_client(&self, stoken: &StorageToken) {
+        self.remove_session_client(stoken, 0);
+    }
+
+    pub(super) fn remove_session_client(&self, stoken: &StorageToken, session_epoch: u64) {
         self.0
             .user_clients_map
             .remove_if(&stoken.user_id, |_, set| {
-                Self::remove_client_info_map(set, stoken);
+                Self::remove_client_info_map(set, stoken, session_epoch);
                 set.is_empty()
             });
     }
@@ -236,6 +260,31 @@ mod tests {
         storage.remove_client(&user2_token);
 
         assert_eq!(storage.get_client_url_by_machine_id(2, &machine_id), None);
+    }
+
+    #[tokio::test]
+    async fn newer_session_epoch_owns_route_until_it_is_removed() {
+        let storage = Storage::new(Db::memory_db().await);
+        let machine_id = uuid::Uuid::new_v4();
+        let old = make_storage_token(1, machine_id, "tcp://127.0.0.1:1001");
+        let current = make_storage_token(1, machine_id, "tcp://127.0.0.1:1002");
+
+        storage.update_session_client(old.clone(), 20, true, 1);
+        storage.update_session_client(current.clone(), 20, true, 2);
+        storage.update_session_client(old.clone(), 30, true, 1);
+
+        assert_eq!(
+            storage.get_client_url_by_machine_id(1, &machine_id),
+            Some(current.client_url.clone())
+        );
+
+        storage.remove_session_client(&old, 1);
+        assert_eq!(
+            storage.get_client_url_by_machine_id(1, &machine_id),
+            Some(current.client_url.clone())
+        );
+        storage.remove_session_client(&current, 2);
+        assert_eq!(storage.get_client_url_by_machine_id(1, &machine_id), None);
     }
 
     #[tokio::test]

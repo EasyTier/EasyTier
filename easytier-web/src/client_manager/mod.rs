@@ -5,7 +5,7 @@ pub mod storage;
 
 use std::sync::{
     Arc,
-    atomic::{AtomicU32, Ordering},
+    atomic::{AtomicU32, AtomicU64, Ordering},
 };
 use std::time::Duration;
 
@@ -62,6 +62,7 @@ pub struct ClientManager {
     tasks: JoinSet<()>,
 
     listeners_cnt: Arc<AtomicU32>,
+    next_session_epoch: Arc<AtomicU64>,
 
     client_sessions: Arc<DashMap<url::Url, Arc<Session>>>,
     storage: Storage,
@@ -94,6 +95,7 @@ impl ClientManager {
             tasks,
 
             listeners_cnt: Arc::new(AtomicU32::new(0)),
+            next_session_epoch: Arc::new(AtomicU64::new(0)),
 
             client_sessions,
             storage: Storage::new(db),
@@ -115,6 +117,7 @@ impl ClientManager {
         let sessions = self.client_sessions.clone();
         let storage = self.storage.weak_ref();
         let listeners_cnt = self.listeners_cnt.clone();
+        let next_session_epoch = self.next_session_epoch.clone();
         let geoip_db = self.geoip_db.clone();
         let heartbeat_min_response_delay = self.heartbeat_min_response_delay;
         let feature_flags = self.feature_flags.clone();
@@ -148,9 +151,12 @@ impl ClientManager {
                     heartbeat_min_response_delay,
                     feature_flags.clone(),
                     webhook_config.clone(),
+                    next_session_epoch.fetch_add(1, Ordering::Relaxed) + 1,
                 );
                 session.serve(tunnel).await;
-                sessions.insert(client_url, Arc::new(session));
+                let session = Arc::new(session);
+                sessions.insert(client_url, session.clone());
+                session.mark_route_ready();
             }
             listeners_cnt.fetch_sub(1, Ordering::Relaxed);
         });
@@ -427,6 +433,9 @@ mod tests {
         validate_count: Arc<AtomicUsize>,
         block_second_validate: Arc<AtomicBool>,
         allow_second_validate: Arc<AtomicBool>,
+        connected_count: Arc<AtomicUsize>,
+        block_connected: Arc<AtomicBool>,
+        allow_connected: Arc<AtomicBool>,
     }
 
     impl TestWebhookState {
@@ -438,6 +447,9 @@ mod tests {
                 validate_count: Arc::new(AtomicUsize::new(0)),
                 block_second_validate: Arc::new(AtomicBool::new(false)),
                 allow_second_validate: Arc::new(AtomicBool::new(true)),
+                connected_count: Arc::new(AtomicUsize::new(0)),
+                block_connected: Arc::new(AtomicBool::new(false)),
+                allow_connected: Arc::new(AtomicBool::new(true)),
             }
         }
 
@@ -450,12 +462,27 @@ mod tests {
             state
         }
 
+        fn with_blocked_connected(validate_responses: impl IntoIterator<Item = bool>) -> Self {
+            let state = Self::new(validate_responses);
+            state.block_connected.store(true, Ordering::Release);
+            state.allow_connected.store(false, Ordering::Release);
+            state
+        }
+
         fn allow_second_validate(&self) {
             self.allow_second_validate.store(true, Ordering::Release);
         }
 
         fn validate_count(&self) -> usize {
             self.validate_count.load(Ordering::Acquire)
+        }
+
+        fn allow_connected(&self) {
+            self.allow_connected.store(true, Ordering::Release);
+        }
+
+        fn connected_count(&self) -> usize {
+            self.connected_count.load(Ordering::Acquire)
         }
     }
 
@@ -489,6 +516,18 @@ mod tests {
         Json(json!({}))
     }
 
+    async fn node_connected_handler(
+        State(state): State<TestWebhookState>,
+    ) -> Json<serde_json::Value> {
+        state.connected_count.fetch_add(1, Ordering::AcqRel);
+        while state.block_connected.load(Ordering::Acquire)
+            && !state.allow_connected.load(Ordering::Acquire)
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        Json(json!({}))
+    }
+
     async fn test_webhook_config() -> (
         crate::webhook::SharedWebhookConfig,
         tokio::task::JoinHandle<()>,
@@ -507,7 +546,7 @@ mod tests {
     ) {
         let app = Router::new()
             .route("/validate-token", post(validate_token_handler))
-            .route("/webhook/node-connected", post(webhook_ack_handler))
+            .route("/webhook/node-connected", post(node_connected_handler))
             .route("/webhook/node-disconnected", post(webhook_ack_handler))
             .with_state(state.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -539,6 +578,42 @@ mod tests {
             .into_iter()
             .next()
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn connected_webhook_observes_a_routable_current_session() {
+        let webhook_state = TestWebhookState::with_blocked_connected([true]);
+        let (webhook_config, webhook_server, webhook_state) =
+            test_webhook_config_with_state(webhook_state).await;
+        let mut mgr = ClientManager::new(
+            Db::memory_db().await,
+            None,
+            Duration::ZERO,
+            Arc::new(FeatureFlags::default()),
+            webhook_config,
+        );
+        let config_server_addr = add_random_udp_listener(&mut mgr).await;
+        let machine_id = uuid::Uuid::new_v4();
+        let _client = start_web_client_for_test(
+            config_server_addr,
+            machine_id,
+            Arc::new(native_instance_manager()),
+        )
+        .await;
+
+        wait_for_condition(
+            || async { webhook_state.connected_count() == 1 },
+            Duration::from_secs(12),
+        )
+        .await;
+        let user_id = wait_for_validated_user(&mgr, machine_id).await;
+        let session = mgr
+            .get_session_by_machine_id(user_id, &machine_id)
+            .expect("connected target must already resolve to a session");
+        assert!(session.is_running());
+
+        webhook_state.allow_connected();
+        webhook_server.abort();
     }
 
     async fn wait_for_validated_user(mgr: &ClientManager, machine_id: uuid::Uuid) -> i32 {
