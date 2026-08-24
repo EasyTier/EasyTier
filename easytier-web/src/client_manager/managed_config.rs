@@ -417,6 +417,16 @@ fn collect_web_source_instance_ids(metas: &[NetworkMeta]) -> HashSet<String> {
         .collect()
 }
 
+pub(super) fn web_source_instance_ids(
+    local_configs: &[crate::db::entity::user_running_network_configs::Model],
+) -> HashSet<String> {
+    local_configs
+        .iter()
+        .filter(|cfg| cfg.get_runtime_network_config_source() == ConfigSource::Web)
+        .map(|cfg| cfg.network_instance_id.clone())
+        .collect()
+}
+
 pub(super) fn desired_web_source_instance_ids(
     local_configs: &[crate::db::entity::user_running_network_configs::Model],
 ) -> HashSet<String> {
@@ -1053,6 +1063,7 @@ mod tests {
             .list_network_configs((user_id, machine_id), ListNetworkProps::All)
             .await
             .unwrap();
+        let all_web = web_source_instance_ids(&configs);
         let desired = desired_web_source_instance_ids(&configs);
 
         assert!(
@@ -1064,6 +1075,12 @@ mod tests {
         );
         assert!(desired.contains(&enabled_id.to_string()));
         assert!(!desired.contains(&disabled_id.to_string()));
+        assert!(all_web.contains(&enabled_id.to_string()));
+        assert!(all_web.contains(&disabled_id.to_string()));
+
+        let running = HashSet::from([disabled_id.to_string()]);
+        let running_web = running_web_source_instance_ids(&running, &all_web, None);
+        assert!(running_web.contains(&disabled_id.to_string()));
     }
 
     #[test]

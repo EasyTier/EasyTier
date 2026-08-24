@@ -429,7 +429,7 @@ async fn cleanup_stale_web_source_instances(
         .list_network_configs((round.user_id, round.machine_id), ListNetworkProps::All)
         .await
     {
-        Ok(configs) => managed_config::desired_web_source_instance_ids(&configs),
+        Ok(configs) => managed_config::web_source_instance_ids(&configs),
         Err(e) => {
             tracing::error!("Failed to list all network configs, error: {:?}", e);
             return RoundStatus::Stop;
