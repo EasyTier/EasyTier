@@ -12,7 +12,7 @@ use easytier_core::process_runtime::CoreProcessRuntime;
 
 use crate::{
     common::{
-        config::{ConfigLoader, NetworkIdentity, TomlConfigLoader},
+        config::{ConfigLoader, NetworkIdentity, PeerConfig, TomlConfigLoader},
         global_ctx::GlobalCtxEvent,
     },
     instance::test_instance::TestInstance as Instance,
@@ -763,17 +763,24 @@ async fn wait_stable_single_visible_peer_on_admins(
     }
 }
 
-/// Test 1: Basic credential node connectivity
+/// Test 1: Basic credential node connectivity with and without an admin key pin
 /// Topology: Admin ← Credential
 /// Verifies that a credential node can connect to an admin node and appears in routes
+#[rstest]
+#[case(false)]
+#[case(true)]
 #[tokio::test]
 #[serial_test::serial]
-async fn credential_basic_connectivity() {
+async fn credential_basic_connectivity(#[case] pin_admin: bool) {
     prepare_credential_network();
     let process_runtime = CoreProcessRuntime::new();
 
     // Create admin node
     let admin_config = create_admin_config("admin", Some("ns_adm"), "10.144.144.1", "fd00::1/64");
+    let admin_public_key = admin_config
+        .get_secure_mode()
+        .and_then(|config| config.local_public_key)
+        .unwrap();
     let mut admin_inst = Instance::new_with_process_runtime(admin_config, process_runtime.clone());
     admin_inst.run().await.unwrap();
 
@@ -786,11 +793,19 @@ async fn credential_basic_connectivity() {
         "fd00::2/64",
     )
     .await;
+    if pin_admin {
+        cred_config.set_peers(vec![PeerConfig {
+            uri: "tcp://10.1.1.1:11010".parse().unwrap(),
+            peer_public_key: Some(admin_public_key),
+        }]);
+    }
     let mut cred_inst = Instance::new_with_process_runtime(cred_config, process_runtime.clone());
     cred_inst.run().await.unwrap();
 
     // Credential connects to admin
-    cred_inst.add_connector_url("tcp://10.1.1.1:11010".parse().unwrap());
+    if !pin_admin {
+        cred_inst.add_connector_url("tcp://10.1.1.1:11010".parse().unwrap());
+    }
 
     let cred_peer_id = cred_inst.peer_id();
     let admin_peer_id = admin_inst.peer_id();
