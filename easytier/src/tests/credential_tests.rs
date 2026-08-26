@@ -868,6 +868,66 @@ async fn credential_basic_connectivity(#[case] pin_admin: bool) {
     drop_insts(vec![admin_inst, cred_inst]).await;
 }
 
+/// A credential node must reject an admin whose Noise key does not match its pin.
+#[tokio::test]
+#[serial_test::serial]
+async fn credential_rejects_incorrect_admin_pin() {
+    prepare_credential_network();
+    let process_runtime = CoreProcessRuntime::new();
+
+    let admin_config = create_admin_config("admin", Some("ns_adm"), "10.144.144.1", "fd00::1/64");
+    let admin_public_key = admin_config
+        .get_secure_mode()
+        .and_then(|config| config.local_public_key)
+        .unwrap();
+    let mut admin_inst = Instance::new_with_process_runtime(admin_config, process_runtime.clone());
+    admin_inst.run().await.unwrap();
+
+    let cred_config = create_credential_config(
+        &admin_inst,
+        "cred",
+        Some("ns_c1"),
+        "10.144.144.2",
+        "fd00::2/64",
+    )
+    .await;
+    let incorrect_admin_public_key = generate_secure_mode_config().local_public_key.unwrap();
+    assert_ne!(incorrect_admin_public_key, admin_public_key);
+    cred_config.set_peers(vec![PeerConfig {
+        uri: "tcp://10.1.1.1:11010".parse().unwrap(),
+        peer_public_key: Some(incorrect_admin_public_key),
+    }]);
+
+    let mut cred_inst = Instance::new_with_process_runtime(cred_config, process_runtime.clone());
+    cred_inst.run().await.unwrap();
+
+    let admin_peer_id = admin_inst.peer_id();
+    let cred_peer_id = cred_inst.peer_id();
+    for _ in 0..5 {
+        let admin_peers = admin_inst.get_core_instance().connected_peers().await;
+        let cred_peers = cred_inst.get_core_instance().connected_peers().await;
+        let admin_routes = admin_inst.get_core_instance().route_snapshots().await;
+        let cred_routes = cred_inst.get_core_instance().route_snapshots().await;
+
+        assert!(!admin_peers.contains(&cred_peer_id));
+        assert!(!cred_peers.contains(&admin_peer_id));
+        assert!(
+            !admin_routes
+                .iter()
+                .any(|route| route.peer_id == cred_peer_id)
+        );
+        assert!(
+            !cred_routes
+                .iter()
+                .any(|route| route.peer_id == admin_peer_id)
+        );
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+
+    drop_insts(vec![admin_inst, cred_inst]).await;
+}
+
 /// Test 5-6: Credential relay capability with allow_relay parameter
 /// Topology: Admin ← Credential_A, Admin ← Credential_B, Admin ← Credential_C(listener, allow_relay)
 /// Verifies routing behavior based on allow_relay flag:
