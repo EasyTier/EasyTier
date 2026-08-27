@@ -233,7 +233,6 @@ impl Db {
             ON CONFLICT(user_id, device_id, network_instance_id) DO UPDATE SET
                 network_config = excluded.network_config,
                 source = excluded.source,
-                disabled = excluded.disabled,
                 update_time = excluded.update_time
             WHERE user_running_network_configs.source = ?
             "#,
