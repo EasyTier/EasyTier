@@ -28,14 +28,12 @@ use tokio::task::JoinSet;
 
 use crate::db::{Db, UserIdInDb, entity::user_running_network_configs};
 
+pub(crate) use managed_config::ManagedConfigError;
+
 #[derive(rust_embed::Embed)]
 #[folder = "resources/"]
 #[include = "geoip2-cn.mmdb"]
 struct GeoipDb;
-
-pub fn is_managed_config_revision_conflict(error: &anyhow::Error) -> bool {
-    managed_config::is_revision_conflict(error)
-}
 
 fn load_geoip_db(geoip_db: Option<String>) -> Option<maxminddb::Reader<Vec<u8>>> {
     if let Some(path) = geoip_db {
@@ -228,7 +226,7 @@ impl ClientManager {
             Some("") => managed_config::ExpectedConfigRevision::Exact(None),
             Some(revision) => managed_config::ExpectedConfigRevision::Exact(Some(revision)),
         };
-        managed_config::reconcile_web_source_configs(
+        let status = managed_config::reconcile_web_source_configs(
             &self.storage,
             user_id,
             machine_id,
@@ -237,7 +235,39 @@ impl ClientManager {
             expected_config_revision,
         )
         .await?;
-        if let Some(config_revision) = config_revision
+        if status == managed_config::ManagedConfigApplyStatus::Applied
+            && let Some(config_revision) = config_revision
+            && let Some(session) = self.get_session_by_machine_id(user_id, &machine_id)
+        {
+            session
+                .notify_config_revision_changed(user_id, machine_id, config_revision)
+                .await;
+        }
+        Ok(())
+    }
+
+    pub async fn patch_managed_network_configs(
+        &self,
+        user_id: UserIdInDb,
+        machine_id: uuid::Uuid,
+        upserts: Vec<ManagedNetworkConfig>,
+        delete_instance_ids: Vec<uuid::Uuid>,
+        config_revision: String,
+        expected_config_revision: String,
+    ) -> anyhow::Result<()> {
+        let config_revision = config_revision.trim().to_string();
+        let expected_config_revision = expected_config_revision.trim().to_string();
+        let status = managed_config::patch_web_source_configs(
+            &self.storage,
+            user_id,
+            machine_id,
+            upserts,
+            delete_instance_ids,
+            &config_revision,
+            &expected_config_revision,
+        )
+        .await?;
+        if status == managed_config::ManagedConfigApplyStatus::Applied
             && let Some(session) = self.get_session_by_machine_id(user_id, &machine_id)
         {
             session

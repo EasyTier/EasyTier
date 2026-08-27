@@ -99,6 +99,14 @@ struct ReconcileManagedNetworkConfigsJsonReq {
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct PatchManagedNetworkConfigsJsonReq {
+    upserts: Vec<ManagedNetworkConfigJson>,
+    delete_instance_ids: Vec<uuid::Uuid>,
+    config_revision: String,
+    expected_config_revision: String,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct ListMachineItem {
     client_url: Option<url::Url>,
     info: Option<HeartbeatRequest>,
@@ -113,6 +121,18 @@ struct ListMachineJsonResp {
 pub struct NetworkApi;
 
 impl NetworkApi {
+    fn convert_managed_config_error(error: anyhow::Error) -> HttpHandleError {
+        let status = match error.downcast_ref::<crate::client_manager::ManagedConfigError>() {
+            Some(crate::client_manager::ManagedConfigError::Invalid(_)) => StatusCode::BAD_REQUEST,
+            Some(
+                crate::client_manager::ManagedConfigError::RevisionConflict { .. }
+                | crate::client_manager::ManagedConfigError::OwnershipConflict { .. },
+            ) => StatusCode::CONFLICT,
+            None => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        (status, other_error(error.to_string()).into())
+    }
+
     fn get_user_id(auth_session: &AuthSession) -> Result<UserIdInDb, (StatusCode, Json<Error>)> {
         let Some(user_id) = auth_session.user.as_ref().map(|x| x.id()) else {
             return Err((
@@ -368,14 +388,34 @@ impl NetworkApi {
                 payload.expected_config_revision,
             )
             .await
-            .map_err(|err| {
-                let status = if crate::client_manager::is_managed_config_revision_conflict(&err) {
-                    StatusCode::CONFLICT
-                } else {
-                    StatusCode::INTERNAL_SERVER_ERROR
-                };
-                (status, other_error(err.to_string()).into())
-            })?;
+            .map_err(Self::convert_managed_config_error)?;
+        Ok(Void::default().into())
+    }
+
+    async fn handle_patch_managed_network_configs_internal(
+        State(client_mgr): AppState,
+        Path((user_id, machine_id)): Path<(UserIdInDb, uuid::Uuid)>,
+        Json(payload): Json<PatchManagedNetworkConfigsJsonReq>,
+    ) -> Result<Json<Void>, HttpHandleError> {
+        let upserts = payload
+            .upserts
+            .into_iter()
+            .map(|item| crate::webhook::ManagedNetworkConfig {
+                instance_id: item.instance_id.to_string(),
+                network_config: item.network_config,
+            })
+            .collect();
+        client_mgr
+            .patch_managed_network_configs(
+                user_id,
+                machine_id,
+                upserts,
+                payload.delete_instance_ids,
+                payload.config_revision,
+                payload.expected_config_revision,
+            )
+            .await
+            .map_err(Self::convert_managed_config_error)?;
         Ok(Void::default().into())
     }
 
@@ -408,6 +448,7 @@ impl NetworkApi {
                 "/api/internal/users/:user-id/machines/:machine-id/networks",
                 post(Self::handle_run_network_instance_internal)
                     .put(Self::handle_reconcile_managed_network_configs_internal)
+                    .patch(Self::handle_patch_managed_network_configs_internal)
                     .get(Self::handle_list_network_instance_ids_internal),
             )
             .route(
