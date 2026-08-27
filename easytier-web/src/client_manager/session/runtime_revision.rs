@@ -2,8 +2,9 @@ use std::collections::{HashMap, HashSet};
 
 use easytier::proto::{
     api::manage::{
-        DeleteNetworkInstanceRequest, ListNetworkInstanceMetaRequest, ListNetworkInstanceRequest,
-        NetworkConfig, NetworkMeta, RunNetworkInstanceRequest,
+        DeleteNetworkInstanceRequest, DeleteNetworkInstanceResponse,
+        ListNetworkInstanceMetaRequest, ListNetworkInstanceRequest, NetworkConfig, NetworkMeta,
+        RunNetworkInstanceRequest,
     },
     rpc_types::controller::BaseController,
     web::HeartbeatRequest,
@@ -11,7 +12,10 @@ use easytier::proto::{
 use easytier_core::management::remote_client::{ListNetworkProps, Storage as _};
 use tokio::sync::{RwLock, broadcast};
 
-use super::{SessionConfigClient, SessionData, SessionRpcClient, SessionRpcService};
+use super::{
+    ManagedConfigRevisionDelta, SessionConfigClient, SessionData, SessionRpcClient,
+    SessionRpcService,
+};
 use crate::client_manager::{
     managed_config::{self, PersistedConfigSource},
     runtime_reconcile,
@@ -75,48 +79,105 @@ pub(super) async fn reconcile_network_configs_on_heartbeat(
                 RoundStatus::Skip => continue,
                 RoundStatus::Stop => return,
             };
+        if cache.runtime_config_epoch != round.runtime_config_epoch {
+            cache = ReconcileCache {
+                runtime_config_epoch: round.runtime_config_epoch,
+                ..Default::default()
+            };
+        }
         let running_metas =
             match sync_running_sources_for_round(&mut rpc_client, &storage, &mut round).await {
                 RoundStatus::Ready(running_metas) => running_metas,
                 RoundStatus::Skip => continue,
                 RoundStatus::Stop => return,
             };
+        let mut mutation_fence = RuntimeMutationFence::default();
+        let context = ReconcileRoundContext {
+            session_data: &session_data,
+            round: &round,
+        };
 
-        let desired_web_inst_ids =
-            managed_config::desired_web_source_instance_ids(&round.local_configs);
-        cache.runtime_configs.retain_desired(&desired_web_inst_ids);
-        let mut outcome = match cleanup_stale_web_source_instances(
-            &session_data,
-            &storage,
-            &mut rpc_client,
-            &round,
-            running_metas.as_deref(),
-            &desired_web_inst_ids,
-            &mut cache,
-        )
-        .await
-        {
-            RoundStatus::Ready(outcome) => outcome,
-            RoundStatus::Skip => continue,
-            RoundStatus::Stop => return,
+        let mut outcome = match &round.scope {
+            ReconcileScope::Full => {
+                let desired_web_inst_ids =
+                    managed_config::desired_web_source_instance_ids(&round.local_configs);
+                cache.runtime_configs.retain_desired(&desired_web_inst_ids);
+                match cleanup_stale_web_source_instances(
+                    &context,
+                    &storage,
+                    &mut rpc_client,
+                    running_metas.as_deref(),
+                    &desired_web_inst_ids,
+                    &mut cache,
+                    &mut mutation_fence,
+                )
+                .await
+                {
+                    RoundStatus::Ready(outcome) => outcome,
+                    RoundStatus::Skip => continue,
+                    RoundStatus::Stop => return,
+                }
+            }
+            ReconcileScope::Patch {
+                delete_instance_ids,
+                ..
+            } => {
+                match cleanup_patch_deleted_instances(
+                    &session_data,
+                    &mut rpc_client,
+                    &round,
+                    running_metas.as_deref(),
+                    delete_instance_ids,
+                    &mut cache,
+                    &mut mutation_fence,
+                )
+                .await
+                {
+                    RoundStatus::Ready(outcome) => outcome,
+                    RoundStatus::Skip => continue,
+                    RoundStatus::Stop => return,
+                }
+            }
         };
 
         outcome.merge(
             reconcile_desired_runtime_configs(
-                &session_data,
+                &context,
                 &mut rpc_client,
                 &mut config_client,
-                &round,
                 &mut cache,
+                &mut mutation_fence,
             )
             .await,
         );
 
         if !outcome.has_failed {
-            cache.last_desired_web_inst_ids = Some(desired_web_inst_ids);
+            match &round.scope {
+                ReconcileScope::Full => {
+                    cache.last_desired_web_inst_ids = Some(
+                        managed_config::desired_web_source_instance_ids(&round.local_configs),
+                    );
+                }
+                ReconcileScope::Patch {
+                    upsert_instance_ids,
+                    delete_instance_ids,
+                } => {
+                    if let Some(last) = &mut cache.last_desired_web_inst_ids {
+                        last.retain(|id| !delete_instance_ids.contains(id));
+                        last.extend(upsert_instance_ids.iter().cloned());
+                    }
+                }
+            }
         }
-        match mark_config_revision_applied_if_current(&session_data, &storage, &round, &outcome)
-            .await
+
+        match mark_config_revision_applied_if_current(
+            &session_data,
+            &storage,
+            &round,
+            &outcome,
+            &mutation_fence,
+        )
+        .await
         {
             RoundStatus::Ready(()) | RoundStatus::Skip => {}
             RoundStatus::Stop => return,
@@ -138,6 +199,7 @@ enum ConfigActionResult {
 
 #[derive(Default)]
 struct ReconcileCache {
+    runtime_config_epoch: u64,
     cleaned_web_source_instances: bool,
     last_desired_web_inst_ids: Option<HashSet<String>>,
     runtime_configs: SessionRuntimeConfigCache,
@@ -191,6 +253,11 @@ struct ReconcileOutcome {
     managed_revision_failed: bool,
 }
 
+#[derive(Default)]
+struct RuntimeMutationFence {
+    started: bool,
+}
+
 impl ReconcileOutcome {
     fn record_failure(&mut self, managed_revision_failed: bool) {
         self.has_failed = true;
@@ -211,6 +278,41 @@ struct ReconcileRound {
     local_configs: Vec<crate::db::entity::user_running_network_configs::Model>,
     target_config_revision: Option<String>,
     should_apply_runtime_revision: bool,
+    scope: ReconcileScope,
+    runtime_config_epoch: u64,
+}
+
+struct ReconcileRoundContext<'a> {
+    session_data: &'a std::sync::Weak<RwLock<SessionData>>,
+    round: &'a ReconcileRound,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ReconcileScope {
+    Full,
+    Patch {
+        upsert_instance_ids: HashSet<String>,
+        delete_instance_ids: HashSet<String>,
+    },
+}
+
+fn select_reconcile_scope(
+    applied_revision: Option<&str>,
+    target_revision: Option<&str>,
+    pending_delta: Option<&ManagedConfigRevisionDelta>,
+) -> ReconcileScope {
+    match pending_delta {
+        Some(delta)
+            if applied_revision == Some(delta.expected_revision.as_str())
+                && target_revision == Some(delta.target_revision.as_str()) =>
+        {
+            ReconcileScope::Patch {
+                upsert_instance_ids: delta.upsert_instance_ids.clone(),
+                delete_instance_ids: delta.delete_instance_ids.clone(),
+            }
+        }
+        _ => ReconcileScope::Full,
+    }
 }
 
 async fn prepare_reconcile_round(
@@ -244,11 +346,16 @@ async fn prepare_reconcile_round(
         }
     };
 
-    let applied_config_revision = {
+    let (applied_config_revision, pending_delta, runtime_config_epoch) = {
         let Some(data) = session_data.upgrade() else {
             return RoundStatus::Stop;
         };
-        data.read().await.applied_config_revision.clone()
+        let data = data.read().await;
+        (
+            data.applied_config_revision.clone(),
+            data.pending_managed_config_delta.clone(),
+            data.runtime_config_epoch,
+        )
     };
     let target_config_revision = match storage
         .db
@@ -263,6 +370,15 @@ async fn prepare_reconcile_round(
     };
     let should_apply_runtime_revision =
         target_config_revision.is_some() && target_config_revision != applied_config_revision;
+    let mut scope = if should_apply_runtime_revision {
+        select_reconcile_scope(
+            applied_config_revision.as_deref(),
+            target_config_revision.as_deref(),
+            pending_delta.as_ref(),
+        )
+    } else {
+        ReconcileScope::Full
+    };
     let running_inst_ids = match running_instance_ids_for_round(
         rpc_client,
         &req,
@@ -277,14 +393,29 @@ async fn prepare_reconcile_round(
         RoundStatus::Stop => return RoundStatus::Stop,
     };
 
-    let local_configs = match storage
-        .db
-        .list_network_configs((user_id, machine_id), ListNetworkProps::EnabledOnly)
-        .await
-    {
-        Ok(configs) => configs,
+    let local_configs = match load_round_configs(storage, user_id, machine_id, &scope).await {
+        Ok(Some(configs)) => configs,
+        Ok(None) => {
+            tracing::warn!(
+                ?user_id,
+                ?machine_id,
+                "Managed config Patch no longer matches persisted rows; using Full reconcile"
+            );
+            scope = ReconcileScope::Full;
+            match storage
+                .db
+                .list_network_configs((user_id, machine_id), ListNetworkProps::EnabledOnly)
+                .await
+            {
+                Ok(configs) => configs,
+                Err(e) => {
+                    tracing::error!("Failed to list network configs, error: {:?}", e);
+                    return RoundStatus::Stop;
+                }
+            }
+        }
         Err(e) => {
-            tracing::error!("Failed to list network configs, error: {:?}", e);
+            tracing::error!("Failed to load managed config Patch rows, error: {:?}", e);
             return RoundStatus::Stop;
         }
     };
@@ -297,7 +428,48 @@ async fn prepare_reconcile_round(
         local_configs,
         target_config_revision,
         should_apply_runtime_revision,
+        scope,
+        runtime_config_epoch,
     })
+}
+
+async fn load_round_configs(
+    storage: &StorageInner,
+    user_id: i32,
+    machine_id: uuid::Uuid,
+    scope: &ReconcileScope,
+) -> Result<Option<Vec<crate::db::entity::user_running_network_configs::Model>>, sea_orm::DbErr> {
+    let ReconcileScope::Patch {
+        upsert_instance_ids,
+        ..
+    } = scope
+    else {
+        return storage
+            .db
+            .list_network_configs((user_id, machine_id), ListNetworkProps::EnabledOnly)
+            .await
+            .map(Some);
+    };
+
+    let mut instance_ids = upsert_instance_ids.iter().collect::<Vec<_>>();
+    instance_ids.sort_unstable();
+    let mut configs = Vec::with_capacity(instance_ids.len());
+    for instance_id in instance_ids {
+        let Some(config) = storage
+            .db
+            .get_network_config((user_id, machine_id), instance_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        if config.disabled
+            || PersistedConfigSource::from_db(&config.source) != PersistedConfigSource::Web
+        {
+            return Ok(None);
+        }
+        configs.push(config);
+    }
+    Ok(Some(configs))
 }
 
 async fn running_instance_ids_for_round(
@@ -375,7 +547,7 @@ async fn sync_running_sources_for_round(
                     %e,
                     "Failed to sync running network config sources"
                 );
-            } else if !metas.is_empty() {
+            } else if !metas.is_empty() && matches!(round.scope, ReconcileScope::Full) {
                 round.local_configs = match storage
                     .db
                     .list_network_configs(
@@ -408,14 +580,16 @@ async fn sync_running_sources_for_round(
 }
 
 async fn cleanup_stale_web_source_instances(
-    session_data: &std::sync::Weak<RwLock<SessionData>>,
+    context: &ReconcileRoundContext<'_>,
     storage: &StorageInner,
     rpc_client: &mut SessionRpcClient,
-    round: &ReconcileRound,
     running_metas: Option<&[NetworkMeta]>,
     desired_web_inst_ids: &HashSet<String>,
     cache: &mut ReconcileCache,
+    mutation_fence: &mut RuntimeMutationFence,
 ) -> RoundStatus<ReconcileOutcome> {
+    let session_data = context.session_data;
+    let round = context.round;
     let desired_changed = cache
         .last_desired_web_inst_ids
         .as_ref()
@@ -450,10 +624,10 @@ async fn cleanup_stale_web_source_instances(
 
     let mut outcome = ReconcileOutcome::default();
     if !should_delete_ids.is_empty() {
-        if !SessionRpcService::runtime_heartbeat_is_current(session_data, &round.req).await {
+        if !begin_managed_runtime_mutation(session_data, round, mutation_fence).await {
             tracing::debug!(
                 machine_id = ?round.machine_id,
-                "skip stale cleanup because webhook session is no longer current"
+                "skip stale cleanup because the managed runtime fence is no longer current"
             );
             return RoundStatus::Skip;
         }
@@ -471,10 +645,23 @@ async fn cleanup_stale_web_source_instances(
             ret,
             round.req.user_token
         );
-        if ret.is_err() {
-            outcome.record_failure(true);
-        } else {
-            cache.runtime_configs.forget_many(&should_delete_inst_ids);
+        match ret {
+            Err(_) => outcome.record_failure(true),
+            Ok(response) => {
+                let undeleted_instance_ids =
+                    retained_requested_instance_ids(response, &should_delete_inst_ids);
+                if undeleted_instance_ids.is_empty() {
+                    cache.runtime_configs.forget_many(&should_delete_inst_ids);
+                } else {
+                    tracing::warn!(
+                        user_id = ?round.user_id,
+                        machine_id = ?round.machine_id,
+                        instance_ids = ?undeleted_instance_ids,
+                        "Stale managed instances were retained by the runtime"
+                    );
+                    outcome.record_failure(true);
+                }
+            }
         }
     }
 
@@ -486,13 +673,128 @@ async fn cleanup_stale_web_source_instances(
     RoundStatus::Ready(outcome)
 }
 
-async fn reconcile_desired_runtime_configs(
+async fn cleanup_patch_deleted_instances(
     session_data: &std::sync::Weak<RwLock<SessionData>>,
     rpc_client: &mut SessionRpcClient,
-    config_client: &mut SessionConfigClient,
     round: &ReconcileRound,
+    running_metas: Option<&[NetworkMeta]>,
+    delete_instance_ids: &HashSet<String>,
     cache: &mut ReconcileCache,
+    mutation_fence: &mut RuntimeMutationFence,
+) -> RoundStatus<ReconcileOutcome> {
+    let running_web_instance_ids: HashSet<String> = match running_metas {
+        Some(metas) => managed_config::running_web_source_instance_ids(
+            &round.running_inst_ids,
+            delete_instance_ids,
+            Some(metas),
+        )
+        .intersection(delete_instance_ids)
+        .cloned()
+        .collect(),
+        None => round
+            .running_inst_ids
+            .intersection(delete_instance_ids)
+            .cloned()
+            .collect(),
+    };
+    if running_web_instance_ids.is_empty() {
+        cache
+            .runtime_configs
+            .forget_many(delete_instance_ids.iter());
+        return RoundStatus::Ready(ReconcileOutcome::default());
+    }
+    if !begin_managed_runtime_mutation(session_data, round, mutation_fence).await {
+        tracing::debug!(
+            machine_id = ?round.machine_id,
+            "skip managed config Patch cleanup because the runtime fence is no longer current"
+        );
+        return RoundStatus::Skip;
+    }
+
+    let ret = rpc_client
+        .delete_network_instance(
+            BaseController::default(),
+            DeleteNetworkInstanceRequest {
+                inst_ids: managed_config::parse_instance_ids(
+                    running_web_instance_ids.iter().cloned(),
+                ),
+            },
+        )
+        .await;
+    tracing::info!(
+        user_id = ?round.user_id,
+        deleted_instance_ids = ?running_web_instance_ids,
+        "Apply managed config Patch deletions at runtime: {:?}",
+        ret
+    );
+
+    let mut outcome = ReconcileOutcome::default();
+    match ret {
+        Err(_) => outcome.record_failure(true),
+        Ok(response) => {
+            let undeleted_instance_ids =
+                retained_requested_instance_ids(response, &running_web_instance_ids);
+            if undeleted_instance_ids.is_empty() {
+                cache
+                    .runtime_configs
+                    .forget_many(delete_instance_ids.iter());
+            } else {
+                tracing::warn!(
+                    user_id = ?round.user_id,
+                    machine_id = ?round.machine_id,
+                    instance_ids = ?undeleted_instance_ids,
+                    "Managed config Patch deletion was retained by the runtime"
+                );
+                outcome.record_failure(true);
+            }
+        }
+    }
+    RoundStatus::Ready(outcome)
+}
+
+async fn begin_managed_runtime_mutation(
+    session_data: &std::sync::Weak<RwLock<SessionData>>,
+    round: &ReconcileRound,
+    mutation_fence: &mut RuntimeMutationFence,
+) -> bool {
+    let Some(data) = session_data.upgrade() else {
+        return false;
+    };
+    let mut data = data.write().await;
+    if !SessionRpcService::runtime_heartbeat_is_current_locked(&data, &round.req)
+        || data.runtime_config_epoch != round.runtime_config_epoch
+    {
+        return false;
+    }
+    if !mutation_fence.started {
+        data.applied_config_revision = None;
+        data.pending_managed_config_delta = None;
+        mutation_fence.started = true;
+    }
+    true
+}
+
+fn retained_requested_instance_ids(
+    response: DeleteNetworkInstanceResponse,
+    requested_instance_ids: &HashSet<String>,
+) -> HashSet<String> {
+    response
+        .remain_inst_ids
+        .into_iter()
+        .map(|instance_id| uuid::Uuid::from(instance_id).to_string())
+        .filter(|instance_id| requested_instance_ids.contains(instance_id))
+        .collect()
+}
+
+async fn reconcile_desired_runtime_configs(
+    context: &ReconcileRoundContext<'_>,
+    rpc_client: &mut SessionRpcClient,
+    config_client: &mut SessionConfigClient,
+    cache: &mut ReconcileCache,
+    mutation_fence: &mut RuntimeMutationFence,
 ) -> ReconcileOutcome {
+    let session_data = context.session_data;
+    let round = context.round;
     let mut outcome = ReconcileOutcome::default();
 
     // After stale web-owned instances are removed, start every enabled
@@ -529,13 +831,13 @@ async fn reconcile_desired_runtime_configs(
 
         let action_result = if should_reconcile_running_web_config {
             reconcile_running_web_config(
-                session_data,
+                context,
                 rpc_client,
                 config_client,
-                round,
                 config,
                 desired_config,
                 &mut cache.runtime_configs,
+                mutation_fence,
             )
             .await
         } else {
@@ -548,6 +850,7 @@ async fn reconcile_desired_runtime_configs(
                 round,
                 config,
                 desired_config.clone(),
+                mutation_fence,
             )
             .await;
             if matches!(action_result, ConfigActionResult::Success)
@@ -599,14 +902,16 @@ async fn reconcile_desired_runtime_configs(
 }
 
 async fn reconcile_running_web_config(
-    session_data: &std::sync::Weak<RwLock<SessionData>>,
+    context: &ReconcileRoundContext<'_>,
     rpc_client: &mut SessionRpcClient,
     config_client: &mut SessionConfigClient,
-    round: &ReconcileRound,
     config: &crate::db::entity::user_running_network_configs::Model,
     desired_config: NetworkConfig,
     runtime_config_cache: &mut SessionRuntimeConfigCache,
+    mutation_fence: &mut RuntimeMutationFence,
 ) -> ConfigActionResult {
+    let session_data = context.session_data;
+    let round = context.round;
     if !SessionRpcService::runtime_heartbeat_is_current(session_data, &round.req).await {
         tracing::debug!(
             machine_id = ?round.machine_id,
@@ -632,6 +937,11 @@ async fn reconcile_running_web_config(
             };
         if !SessionRpcService::runtime_heartbeat_is_current(session_data, &round.req).await {
             anyhow::bail!("webhook session is no longer current before runtime reconcile apply");
+        }
+        if !matches!(action, runtime_reconcile::RuntimeReconcileAction::None)
+            && !begin_managed_runtime_mutation(session_data, round, mutation_fence).await
+        {
+            anyhow::bail!("managed runtime mutation fence is no longer current");
         }
         let observed_config = runtime_reconcile::apply_web_source_runtime_reconcile(
             &mut *rpc_client,
@@ -667,12 +977,25 @@ async fn run_missing_network_config(
     round: &ReconcileRound,
     config: &crate::db::entity::user_running_network_configs::Model,
     desired_config: NetworkConfig,
+    mutation_fence: &mut RuntimeMutationFence,
 ) -> ConfigActionResult {
     if !SessionRpcService::runtime_heartbeat_is_current(session_data, &round.req).await {
         tracing::debug!(
             machine_id = ?round.machine_id,
             instance_id = %config.network_instance_id,
             "skip run network instance because webhook session is no longer current"
+        );
+        return ConfigActionResult::StopRound;
+    }
+
+    let source = PersistedConfigSource::from_db(&config.source);
+    if source == PersistedConfigSource::Web
+        && !begin_managed_runtime_mutation(session_data, round, mutation_fence).await
+    {
+        tracing::debug!(
+            machine_id = ?round.machine_id,
+            instance_id = %config.network_instance_id,
+            "skip run network instance because the managed runtime fence is no longer current"
         );
         return ConfigActionResult::StopRound;
     }
@@ -684,7 +1007,7 @@ async fn run_missing_network_config(
                 inst_id: Some(config.network_instance_id.clone().into()),
                 config: Some(desired_config),
                 overwrite: false,
-                source: PersistedConfigSource::from_db(&config.source).auto_run_rpc_source() as i32,
+                source: source.auto_run_rpc_source() as i32,
             },
         )
         .await;
@@ -739,8 +1062,11 @@ async fn mark_config_revision_applied_if_current(
     storage: &StorageInner,
     round: &ReconcileRound,
     outcome: &ReconcileOutcome,
+    mutation_fence: &RuntimeMutationFence,
 ) -> RoundStatus<()> {
-    if outcome.managed_revision_failed || !round.should_apply_runtime_revision {
+    if outcome.managed_revision_failed
+        || (!round.should_apply_runtime_revision && !mutation_fence.started)
+    {
         return RoundStatus::Ready(());
     }
 
@@ -765,7 +1091,11 @@ async fn mark_config_revision_applied_if_current(
     if !SessionRpcService::runtime_heartbeat_is_current_locked(&data, &round.req) {
         return RoundStatus::Ready(());
     }
+    if data.runtime_config_epoch != round.runtime_config_epoch {
+        return RoundStatus::Ready(());
+    }
     data.applied_config_revision = round.target_config_revision.clone();
+    data.pending_managed_config_delta = None;
 
     RoundStatus::Ready(())
 }
@@ -796,6 +1126,132 @@ mod tests {
             dst_port,
             proto: "tcp".to_string(),
         }
+    }
+
+    #[test]
+    fn patch_delete_requires_runtime_to_remove_every_requested_instance() {
+        let deleted_id = uuid::Uuid::new_v4();
+        let requested = HashSet::from([deleted_id.to_string()]);
+
+        assert_eq!(
+            retained_requested_instance_ids(
+                DeleteNetworkInstanceResponse {
+                    remain_inst_ids: vec![deleted_id.into()],
+                },
+                &requested,
+            ),
+            requested
+        );
+        assert!(
+            retained_requested_instance_ids(
+                DeleteNetworkInstanceResponse {
+                    remain_inst_ids: Vec::new(),
+                },
+                &requested,
+            )
+            .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn managed_runtime_mutation_clears_old_applied_revision_before_side_effects() {
+        let machine_id = uuid::Uuid::new_v4();
+        let req = HeartbeatRequest {
+            user_token: "token".to_string(),
+            machine_id: Some(machine_id.into()),
+            ..Default::default()
+        };
+        let storage =
+            crate::client_manager::storage::Storage::new(crate::db::Db::memory_db().await);
+        let client_url = url::Url::parse("http://127.0.0.1").unwrap();
+        let mut data = SessionData::new(
+            storage.weak_ref(),
+            client_url.clone(),
+            None,
+            std::sync::Arc::new(crate::FeatureFlags::default()),
+            std::sync::Arc::new(crate::webhook::WebhookConfig::new(
+                None, None, None, None, None,
+            )),
+        );
+        data.storage_token = Some(crate::client_manager::storage::StorageToken {
+            token: req.user_token.clone(),
+            client_url,
+            machine_id,
+            user_id: 7,
+        });
+        data.req = Some(req.clone());
+        data.auth_state = super::super::SessionAuthState::Authorized;
+        data.applied_config_revision = Some("rev-a".to_string());
+        data.pending_managed_config_delta = Some(revision_delta("rev-a", "rev-b"));
+        data.runtime_config_epoch = 11;
+        let session_data = std::sync::Arc::new(RwLock::new(data));
+        let round = ReconcileRound {
+            req,
+            machine_id,
+            user_id: 7,
+            running_inst_ids: HashSet::new(),
+            local_configs: Vec::new(),
+            target_config_revision: Some("rev-b".to_string()),
+            should_apply_runtime_revision: true,
+            scope: ReconcileScope::Full,
+            runtime_config_epoch: 11,
+        };
+        let mut mutation_fence = RuntimeMutationFence::default();
+
+        assert!(
+            begin_managed_runtime_mutation(
+                &std::sync::Arc::downgrade(&session_data),
+                &round,
+                &mut mutation_fence,
+            )
+            .await
+        );
+
+        let data = session_data.read().await;
+        assert!(mutation_fence.started);
+        assert_eq!(data.applied_config_revision, None);
+        assert_eq!(data.pending_managed_config_delta, None);
+        assert_eq!(data.runtime_config_epoch, 11);
+    }
+
+    fn revision_delta(base: &str, target: &str) -> ManagedConfigRevisionDelta {
+        ManagedConfigRevisionDelta {
+            expected_revision: base.to_string(),
+            target_revision: target.to_string(),
+            upsert_instance_ids: HashSet::from(["upsert".to_string()]),
+            delete_instance_ids: HashSet::from(["delete".to_string()]),
+        }
+    }
+
+    #[test]
+    fn exact_revision_delta_selects_targeted_reconcile() {
+        let delta = revision_delta("rev-1", "rev-2");
+
+        assert_eq!(
+            select_reconcile_scope(Some("rev-1"), Some("rev-2"), Some(&delta)),
+            ReconcileScope::Patch {
+                upsert_instance_ids: HashSet::from(["upsert".to_string()]),
+                delete_instance_ids: HashSet::from(["delete".to_string()]),
+            }
+        );
+    }
+
+    #[test]
+    fn revision_gap_uses_full_reconcile() {
+        let delta = revision_delta("rev-1", "rev-2");
+
+        assert_eq!(
+            select_reconcile_scope(Some("older"), Some("rev-2"), Some(&delta)),
+            ReconcileScope::Full
+        );
+        assert_eq!(
+            select_reconcile_scope(Some("rev-1"), Some("newer"), Some(&delta)),
+            ReconcileScope::Full
+        );
+        assert_eq!(
+            select_reconcile_scope(Some("rev-1"), Some("rev-2"), None),
+            ReconcileScope::Full
+        );
     }
 
     #[test]

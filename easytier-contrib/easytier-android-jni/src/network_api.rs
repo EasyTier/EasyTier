@@ -2,8 +2,8 @@ use std::{ffi::CStr, ptr};
 
 use easytier::proto::api::manage::{NetworkInstanceRunningInfo, NetworkInstanceRunningInfoMap};
 use easytier_ffi::{
-    KeyValuePair, collect_network_infos, free_string, list_instance, parse_config,
-    retain_network_instance, run_network_instance, set_tun_fd,
+    KeyValuePair, collect_network_infos, delete_network_instance, free_string, list_instance,
+    parse_config, retain_network_instance, run_network_instance, set_tun_fd,
 };
 use jni::JNIEnv;
 use jni::objects::{JClass, JObjectArray, JString};
@@ -67,6 +67,30 @@ pub(crate) fn run_network_instance_jni(mut env: JNIEnv, _class: JClass, config: 
     };
     unsafe {
         let result = run_network_instance(config_cstr.as_ptr());
+        if result != 0
+            && let Some(error) = get_last_error()
+        {
+            throw_exception(&mut env, &error);
+        }
+        result
+    }
+}
+
+pub(crate) fn delete_network_instance_jni(
+    mut env: JNIEnv,
+    _class: JClass,
+    instance_name: JString,
+) -> jint {
+    let instance_name = match jstring_to_cstring(&mut env, &instance_name) {
+        Ok(name) => name,
+        Err(error) => {
+            throw_exception(&mut env, &format!("Invalid instance name: {error}"));
+            return -1;
+        }
+    };
+    let instance_names = [instance_name.as_ptr()];
+    unsafe {
+        let result = delete_network_instance(instance_names.as_ptr(), instance_names.len());
         if result != 0
             && let Some(error) = get_last_error()
         {

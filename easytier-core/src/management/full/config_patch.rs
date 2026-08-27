@@ -96,6 +96,11 @@ where
             flags.disable_relay_data = disable_relay_data;
             candidate.set_flags(flags);
         }
+        if let Some(prefer_peer_relay) = patch.prefer_peer_relay {
+            let mut flags = candidate.get_flags();
+            flags.prefer_peer_relay = prefer_peer_relay;
+            candidate.set_flags(flags);
+        }
         if let Some(enabled) = patch.ipv6_public_addr_provider {
             candidate.set_ipv6_public_addr_provider(enabled);
             provider_config_changed = true;

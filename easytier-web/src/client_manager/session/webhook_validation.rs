@@ -248,6 +248,7 @@ pub(super) async fn apply_rejected(
         data.webhook_validation_dirty = false;
         data.binding_version = None;
         data.applied_config_revision = None;
+        data.pending_managed_config_delta = None;
         let storage_token = data.storage_token.clone();
         let disconnect_notification = storage_token.as_ref().and_then(|storage_token| {
             data.webhook_connected_binding_version

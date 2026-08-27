@@ -30,6 +30,7 @@ message InstanceConfigPatch {
   optional bool disable_relay_data = 14;
   repeated VpnPortalClientPatch vpn_portal_clients = 15;
   api.manage.ManagedCredentialSet managed_credentials = 16;
+  optional bool prefer_peer_relay = 17;
 }
 
 message VpnPortalClientPatch {

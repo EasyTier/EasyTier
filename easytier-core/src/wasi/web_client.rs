@@ -126,6 +126,7 @@ fn hosted_network_config(config: &NetworkConfig) -> NetworkConfig {
         instance_recv_bps_limit: config.instance_recv_bps_limit,
         disable_upnp: config.disable_upnp,
         disable_relay_data: config.disable_relay_data,
+        prefer_peer_relay: config.prefer_peer_relay,
         enable_udp_broadcast_relay: config.enable_udp_broadcast_relay,
         managed_credentials: config.managed_credentials.clone(),
         peers,
@@ -425,6 +426,7 @@ mod tests {
             }),
             enable_private_mode: Some(true),
             disable_relay_data: Some(true),
+            prefer_peer_relay: Some(true),
             proxy_cidrs: vec!["10.88.0.0/24".to_owned()],
             managed_credentials: vec![ManagedCredentialConfig {
                 credential_id: "managed".to_owned(),
@@ -455,6 +457,7 @@ mod tests {
         assert_eq!(hosted.secure_mode, original.secure_mode);
         assert_eq!(hosted.enable_private_mode, Some(true));
         assert_eq!(hosted.disable_relay_data, Some(true));
+        assert_eq!(hosted.prefer_peer_relay, Some(true));
         assert_eq!(hosted.proxy_cidrs, original.proxy_cidrs);
         assert_eq!(hosted.managed_credentials, original.managed_credentials);
         assert_eq!(hosted.port_forwards, original.port_forwards);

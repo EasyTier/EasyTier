@@ -3,7 +3,6 @@ use std::{
     sync::{Arc, Weak},
 };
 
-use anyhow::Context as _;
 use dashmap::{DashMap, mapref::entry::Entry};
 use easytier::{
     common::config::ConfigSource,
@@ -13,11 +12,13 @@ use easytier::{
     },
 };
 use easytier_core::management::config_source_from_rpc;
-use easytier_core::management::remote_client::{
-    ListNetworkProps, PersistentConfig as _, Storage as _,
-};
+use easytier_core::management::remote_client::{PersistentConfig as _, Storage as _};
 
 use super::storage::Storage;
+use crate::db::{
+    ManagedConfigApplyResult, ManagedConfigExpectedRevision, ManagedConfigUpdate,
+    ManagedConfigUpsert,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PersistedConfigSource {
@@ -31,7 +32,9 @@ pub(super) enum ExpectedConfigRevision<'a> {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub(super) enum ManagedConfigError {
+pub(crate) enum ManagedConfigError {
+    #[error("invalid managed config update: {0}")]
+    Invalid(String),
     #[error(
         "managed config revision changed while reconciling: expected {expected:?}, current {current:?}"
     )]
@@ -39,6 +42,16 @@ pub(super) enum ManagedConfigError {
         expected: Option<String>,
         current: Option<String>,
     },
+    #[error("managed config instance {instance_id} is user-owned")]
+    OwnershipConflict { instance_id: uuid::Uuid },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum ManagedConfigApplyStatus {
+    Applied {
+        deleted_web_instance_ids: Vec<uuid::Uuid>,
+    },
+    AlreadyApplied,
 }
 
 impl PersistedConfigSource {
@@ -111,8 +124,12 @@ fn remove_unused_managed_config_reconcile_lock(
     });
 }
 
-pub(super) fn is_revision_conflict(error: &anyhow::Error) -> bool {
-    error.downcast_ref::<ManagedConfigError>().is_some()
+#[cfg(test)]
+fn is_revision_conflict(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<ManagedConfigError>(),
+        Some(ManagedConfigError::RevisionConflict { .. })
+    )
 }
 
 fn snake_to_lower_camel(key: &str) -> Option<String> {
@@ -188,103 +205,36 @@ fn normalize_network_config(
     Ok(serde_json::from_value::<NetworkConfig>(network_config)?)
 }
 
-struct ExistingConfigSources {
-    sources: HashMap<uuid::Uuid, PersistedConfigSource>,
-    web_ids: HashSet<uuid::Uuid>,
-}
-
 struct NormalizedWebConfigs {
     desired_ids: HashSet<uuid::Uuid>,
-    configs: HashMap<uuid::Uuid, NetworkConfig>,
-}
-
-async fn ensure_expected_config_revision(
-    storage: &Storage,
-    user_id: i32,
-    machine_id: uuid::Uuid,
-    expected_config_revision: ExpectedConfigRevision<'_>,
-) -> anyhow::Result<()> {
-    let ExpectedConfigRevision::Exact(expected) = expected_config_revision else {
-        return Ok(());
-    };
-
-    let current = storage
-        .db()
-        .get_managed_config_revision((user_id, machine_id))
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to get managed config revision: {:?}", e))?;
-    if current.as_deref() != expected {
-        return Err(ManagedConfigError::RevisionConflict {
-            expected: expected.map(str::to_string),
-            current,
-        }
-        .into());
-    }
-
-    Ok(())
-}
-
-async fn load_existing_config_sources(
-    storage: &Storage,
-    user_id: i32,
-    machine_id: uuid::Uuid,
-) -> anyhow::Result<ExistingConfigSources> {
-    let existing_configs = storage
-        .db()
-        .list_network_configs((user_id, machine_id), ListNetworkProps::All)
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to list existing network configs: {:?}", e))?;
-    let sources = existing_configs
-        .iter()
-        .filter_map(|cfg| {
-            uuid::Uuid::parse_str(&cfg.network_instance_id)
-                .ok()
-                .map(|inst_id| (inst_id, PersistedConfigSource::from_db(&cfg.source)))
-        })
-        .collect::<HashMap<_, _>>();
-    let web_ids = sources
-        .iter()
-        .filter_map(|(inst_id, source)| (*source == PersistedConfigSource::Web).then_some(*inst_id))
-        .collect::<HashSet<_>>();
-
-    Ok(ExistingConfigSources { sources, web_ids })
+    configs: Vec<ManagedConfigUpsert>,
 }
 
 fn normalize_desired_web_configs(
-    user_id: i32,
-    machine_id: uuid::Uuid,
     desired_configs: Vec<crate::webhook::ManagedNetworkConfig>,
-    config_revision: Option<&str>,
-    existing_sources: &HashMap<uuid::Uuid, PersistedConfigSource>,
 ) -> anyhow::Result<NormalizedWebConfigs> {
     let mut desired_ids = HashSet::with_capacity(desired_configs.len());
-    let mut configs = HashMap::with_capacity(desired_configs.len());
+    let mut configs = Vec::with_capacity(desired_configs.len());
 
     for desired in desired_configs {
-        let inst_id = uuid::Uuid::parse_str(&desired.instance_id).with_context(|| {
-            format!(
+        let inst_id = uuid::Uuid::parse_str(&desired.instance_id).map_err(|_| {
+            ManagedConfigError::Invalid(format!(
                 "invalid desired web config instance id: {}",
                 desired.instance_id
-            )
+            ))
         })?;
-        if let Some(PersistedConfigSource::User) = existing_sources.get(&inst_id) {
-            if config_revision.is_some() {
-                anyhow::bail!(
-                    "cannot persist managed config revision because instance {} is user-owned",
-                    inst_id
-                );
-            }
-            tracing::warn!(
-                ?user_id,
-                ?machine_id,
-                instance_id = %inst_id,
-                "skip web config because a user-owned config already exists"
-            );
-            continue;
+        if !desired_ids.insert(inst_id) {
+            return Err(ManagedConfigError::Invalid(format!(
+                "duplicate managed config instance id: {inst_id}"
+            ))
+            .into());
         }
-        let config = normalize_network_config(desired.network_config, inst_id)?;
-        desired_ids.insert(inst_id);
-        configs.insert(inst_id, config);
+        let config = normalize_network_config(desired.network_config, inst_id)
+            .map_err(|error| ManagedConfigError::Invalid(error.to_string()))?;
+        configs.push(ManagedConfigUpsert {
+            instance_id: inst_id,
+            network_config: config,
+        });
     }
 
     Ok(NormalizedWebConfigs {
@@ -293,72 +243,21 @@ fn normalize_desired_web_configs(
     })
 }
 
-async fn upsert_web_configs(
-    storage: &Storage,
-    user_id: i32,
-    machine_id: uuid::Uuid,
-    configs: HashMap<uuid::Uuid, NetworkConfig>,
-) -> anyhow::Result<()> {
-    for (inst_id, config) in configs {
-        let updated = storage
-            .db()
-            .insert_or_update_web_network_config((user_id, machine_id), inst_id, config)
-            .await
-            .map_err(|e| {
-                anyhow::anyhow!("failed to persist web network config {}: {:?}", inst_id, e)
-            })?;
-        if !updated {
-            anyhow::bail!(
-                "cannot persist managed config revision because instance {} is user-owned",
-                inst_id
-            );
+fn map_apply_result(result: ManagedConfigApplyResult) -> anyhow::Result<ManagedConfigApplyStatus> {
+    match result {
+        ManagedConfigApplyResult::Applied {
+            deleted_web_instance_ids,
+        } => Ok(ManagedConfigApplyStatus::Applied {
+            deleted_web_instance_ids,
+        }),
+        ManagedConfigApplyResult::AlreadyApplied => Ok(ManagedConfigApplyStatus::AlreadyApplied),
+        ManagedConfigApplyResult::RevisionConflict { expected, current } => {
+            Err(ManagedConfigError::RevisionConflict { expected, current }.into())
+        }
+        ManagedConfigApplyResult::OwnershipConflict { instance_id } => {
+            Err(ManagedConfigError::OwnershipConflict { instance_id }.into())
         }
     }
-
-    Ok(())
-}
-
-async fn delete_stale_web_configs(
-    storage: &Storage,
-    user_id: i32,
-    machine_id: uuid::Uuid,
-    existing_web_ids: &HashSet<uuid::Uuid>,
-    desired_ids: &HashSet<uuid::Uuid>,
-) -> anyhow::Result<()> {
-    let stale_ids = existing_web_ids
-        .difference(desired_ids)
-        .copied()
-        .collect::<Vec<_>>();
-    if stale_ids.is_empty() {
-        return Ok(());
-    }
-
-    storage
-        .db()
-        .delete_web_network_configs((user_id, machine_id), &stale_ids)
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to delete stale network configs: {:?}", e))?;
-
-    Ok(())
-}
-
-async fn persist_config_revision(
-    storage: &Storage,
-    user_id: i32,
-    machine_id: uuid::Uuid,
-    config_revision: Option<&str>,
-) -> anyhow::Result<()> {
-    let Some(config_revision) = config_revision else {
-        return Ok(());
-    };
-
-    storage
-        .db()
-        .set_managed_config_revision((user_id, machine_id), config_revision)
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to persist managed config revision: {:?}", e))?;
-
-    Ok(())
 }
 
 pub(super) async fn reconcile_web_source_configs(
@@ -368,34 +267,111 @@ pub(super) async fn reconcile_web_source_configs(
     desired_configs: Vec<crate::webhook::ManagedNetworkConfig>,
     config_revision: Option<&str>,
     expected_config_revision: ExpectedConfigRevision<'_>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<ManagedConfigApplyStatus> {
+    if config_revision.is_some_and(|revision| revision.trim().is_empty()) {
+        return Err(
+            ManagedConfigError::Invalid("config_revision must not be empty".to_string()).into(),
+        );
+    }
+    let normalized = normalize_desired_web_configs(desired_configs)?;
+    let expected_revision = match expected_config_revision {
+        ExpectedConfigRevision::Any => ManagedConfigExpectedRevision::Any,
+        ExpectedConfigRevision::Exact(revision) => {
+            ManagedConfigExpectedRevision::Exact(revision.map(str::to_string))
+        }
+    };
     let key = (user_id, machine_id);
     let reconcile_lock = managed_config_reconcile_lock(key);
     let result = async {
         let _guard = reconcile_lock.lock().await;
 
-        ensure_expected_config_revision(storage, user_id, machine_id, expected_config_revision)
-            .await?;
-        let existing = load_existing_config_sources(storage, user_id, machine_id).await?;
-        let normalized = normalize_desired_web_configs(
-            user_id,
-            machine_id,
-            desired_configs,
-            config_revision,
-            &existing.sources,
-        )?;
-        upsert_web_configs(storage, user_id, machine_id, normalized.configs).await?;
-        delete_stale_web_configs(
-            storage,
-            user_id,
-            machine_id,
-            &existing.web_ids,
-            &normalized.desired_ids,
-        )
-        .await?;
-        persist_config_revision(storage, user_id, machine_id, config_revision).await?;
+        let result = storage
+            .db()
+            .apply_managed_config_update(
+                (user_id, machine_id),
+                ManagedConfigUpdate::Full {
+                    upserts: normalized.configs,
+                    target_revision: config_revision.map(str::to_string),
+                    expected_revision,
+                },
+            )
+            .await
+            .map_err(|error| anyhow::anyhow!("failed to apply managed config Full: {error}"))?;
+        map_apply_result(result)
+    }
+    .await;
+    remove_unused_managed_config_reconcile_lock(key, &reconcile_lock);
+    result
+}
 
-        Ok(())
+pub(super) async fn patch_web_source_configs(
+    storage: &Storage,
+    user_id: i32,
+    machine_id: uuid::Uuid,
+    upserts: Vec<crate::webhook::ManagedNetworkConfig>,
+    delete_instance_ids: Vec<uuid::Uuid>,
+    config_revision: &str,
+    expected_config_revision: &str,
+) -> anyhow::Result<ManagedConfigApplyStatus> {
+    let config_revision = config_revision.trim();
+    let expected_config_revision = expected_config_revision.trim();
+    if config_revision.is_empty() || expected_config_revision.is_empty() {
+        return Err(
+            ManagedConfigError::Invalid("Patch revisions must not be empty".to_string()).into(),
+        );
+    }
+    if config_revision == expected_config_revision {
+        return Err(ManagedConfigError::Invalid(
+            "Patch target revision must differ from expected revision".to_string(),
+        )
+        .into());
+    }
+
+    let normalized = normalize_desired_web_configs(upserts)?;
+    let mut delete_ids = HashSet::with_capacity(delete_instance_ids.len());
+    for instance_id in delete_instance_ids {
+        if !delete_ids.insert(instance_id) {
+            return Err(ManagedConfigError::Invalid(format!(
+                "duplicate managed config delete instance id: {instance_id}"
+            ))
+            .into());
+        }
+    }
+    if let Some(instance_id) = delete_ids
+        .intersection(&normalized.desired_ids)
+        .next()
+        .copied()
+    {
+        return Err(ManagedConfigError::Invalid(format!(
+            "managed config instance {instance_id} cannot be upserted and deleted"
+        ))
+        .into());
+    }
+    if normalized.configs.is_empty() && delete_ids.is_empty() {
+        return Err(ManagedConfigError::Invalid(
+            "Patch must contain an upsert or delete".to_string(),
+        )
+        .into());
+    }
+
+    let key = (user_id, machine_id);
+    let reconcile_lock = managed_config_reconcile_lock(key);
+    let result = async {
+        let _guard = reconcile_lock.lock().await;
+        let result = storage
+            .db()
+            .apply_managed_config_update(
+                (user_id, machine_id),
+                ManagedConfigUpdate::Patch {
+                    upserts: normalized.configs,
+                    delete_instance_ids: delete_ids.into_iter().collect(),
+                    target_revision: config_revision.to_string(),
+                    expected_revision: expected_config_revision.to_string(),
+                },
+            )
+            .await
+            .map_err(|error| anyhow::anyhow!("failed to apply managed config Patch: {error}"))?;
+        map_apply_result(result)
     }
     .await;
     remove_unused_managed_config_reconcile_lock(key, &reconcile_lock);
@@ -515,6 +491,19 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    fn managed_config(
+        instance_id: uuid::Uuid,
+        network_name: &str,
+    ) -> crate::webhook::ManagedNetworkConfig {
+        crate::webhook::ManagedNetworkConfig {
+            instance_id: instance_id.to_string(),
+            network_config: json!({
+                "instance_id": instance_id.to_string(),
+                "network_name": network_name
+            }),
+        }
+    }
 
     #[tokio::test]
     async fn reconcile_web_source_configs_upserts_and_deletes_exact_set() {
@@ -812,12 +801,11 @@ mod tests {
         let conflict = err
             .downcast_ref::<ManagedConfigError>()
             .expect("expected typed revision conflict");
-        match conflict {
-            ManagedConfigError::RevisionConflict { expected, current } => {
-                assert_eq!(expected.as_deref(), Some("rev-old"));
-                assert_eq!(current.as_deref(), Some("rev-new"));
-            }
-        }
+        let ManagedConfigError::RevisionConflict { expected, current } = conflict else {
+            panic!("unexpected managed config error: {conflict:?}");
+        };
+        assert_eq!(expected.as_deref(), Some("rev-old"));
+        assert_eq!(current.as_deref(), Some("rev-new"));
         assert_eq!(
             storage
                 .db()
@@ -831,6 +819,237 @@ mod tests {
             storage
                 .db()
                 .get_network_config((user_id, machine_id), &inst_id.to_string())
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn patch_web_source_configs_applies_delta_and_is_idempotent() {
+        let storage = Storage::new(crate::db::Db::memory_db().await);
+        let user_id = storage
+            .db()
+            .auto_create_user("web-user-patch")
+            .await
+            .unwrap()
+            .id;
+        let machine_id = uuid::Uuid::new_v4();
+        let update_id = uuid::Uuid::new_v4();
+        let delete_id = uuid::Uuid::new_v4();
+        let missing_delete_id = uuid::Uuid::new_v4();
+        let add_id = uuid::Uuid::new_v4();
+
+        reconcile_web_source_configs(
+            &storage,
+            user_id,
+            machine_id,
+            vec![
+                managed_config(update_id, "before"),
+                managed_config(delete_id, "delete"),
+            ],
+            Some("rev-1"),
+            ExpectedConfigRevision::Any,
+        )
+        .await
+        .unwrap();
+
+        let status = patch_web_source_configs(
+            &storage,
+            user_id,
+            machine_id,
+            vec![
+                managed_config(update_id, "after"),
+                managed_config(add_id, "added"),
+            ],
+            vec![delete_id, missing_delete_id],
+            "rev-2",
+            "rev-1",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            status,
+            ManagedConfigApplyStatus::Applied {
+                deleted_web_instance_ids: vec![delete_id],
+            }
+        );
+
+        let retry_status = patch_web_source_configs(
+            &storage,
+            user_id,
+            machine_id,
+            vec![managed_config(update_id, "ignored-on-idempotent-retry")],
+            vec![delete_id],
+            "rev-2",
+            "rev-1",
+        )
+        .await
+        .unwrap();
+        assert_eq!(retry_status, ManagedConfigApplyStatus::AlreadyApplied);
+
+        let updated = storage
+            .db()
+            .get_network_config((user_id, machine_id), &update_id.to_string())
+            .await
+            .unwrap()
+            .unwrap()
+            .get_network_config()
+            .unwrap();
+        assert_eq!(updated.network_name.as_deref(), Some("after"));
+        assert!(
+            storage
+                .db()
+                .get_network_config((user_id, machine_id), &delete_id.to_string())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            storage
+                .db()
+                .get_network_config((user_id, machine_id), &add_id.to_string())
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            storage
+                .db()
+                .get_managed_config_revision((user_id, machine_id))
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("rev-2")
+        );
+    }
+
+    #[tokio::test]
+    async fn patch_web_source_configs_rejects_conflict_and_user_owned_delete() {
+        let storage = Storage::new(crate::db::Db::memory_db().await);
+        let user_id = storage
+            .db()
+            .auto_create_user("web-user-patch-conflict")
+            .await
+            .unwrap()
+            .id;
+        let machine_id = uuid::Uuid::new_v4();
+        let user_owned_id = uuid::Uuid::new_v4();
+        storage
+            .db()
+            .insert_or_update_user_network_config(
+                (user_id, machine_id),
+                user_owned_id,
+                NetworkConfig {
+                    network_name: Some("user-owned".to_string()),
+                    ..Default::default()
+                },
+                ConfigSource::User,
+            )
+            .await
+            .unwrap();
+        storage
+            .db()
+            .set_managed_config_revision((user_id, machine_id), "rev-current")
+            .await
+            .unwrap();
+
+        let revision_error = patch_web_source_configs(
+            &storage,
+            user_id,
+            machine_id,
+            vec![managed_config(uuid::Uuid::new_v4(), "new")],
+            Vec::new(),
+            "rev-next",
+            "rev-stale",
+        )
+        .await
+        .unwrap_err();
+        assert!(is_revision_conflict(&revision_error));
+
+        let ownership_error = patch_web_source_configs(
+            &storage,
+            user_id,
+            machine_id,
+            Vec::new(),
+            vec![user_owned_id],
+            "rev-next",
+            "rev-current",
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            ownership_error.downcast_ref::<ManagedConfigError>(),
+            Some(ManagedConfigError::OwnershipConflict { instance_id })
+                if *instance_id == user_owned_id
+        ));
+        assert!(
+            storage
+                .db()
+                .get_network_config((user_id, machine_id), &user_owned_id.to_string())
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            storage
+                .db()
+                .get_managed_config_revision((user_id, machine_id))
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("rev-current")
+        );
+    }
+
+    #[tokio::test]
+    async fn reconcile_web_source_configs_rolls_back_rows_when_revision_write_fails() {
+        let storage = Storage::new(crate::db::Db::memory_db().await);
+        let user_id = storage
+            .db()
+            .auto_create_user("web-user-rollback")
+            .await
+            .unwrap()
+            .id;
+        let machine_id = uuid::Uuid::new_v4();
+        let instance_id = uuid::Uuid::new_v4();
+        sqlx::query(
+            r#"
+            CREATE TRIGGER reject_managed_revision
+            BEFORE INSERT ON managed_config_revisions
+            WHEN NEW.config_revision = 'reject-revision'
+            BEGIN
+                SELECT RAISE(ABORT, 'forced revision failure');
+            END
+            "#,
+        )
+        .execute(&storage.db().inner())
+        .await
+        .unwrap();
+
+        reconcile_web_source_configs(
+            &storage,
+            user_id,
+            machine_id,
+            vec![managed_config(instance_id, "must-rollback")],
+            Some("reject-revision"),
+            ExpectedConfigRevision::Any,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            storage
+                .db()
+                .get_network_config((user_id, machine_id), &instance_id.to_string())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            storage
+                .db()
+                .get_managed_config_revision((user_id, machine_id))
                 .await
                 .unwrap()
                 .is_none()

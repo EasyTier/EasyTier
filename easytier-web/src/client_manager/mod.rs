@@ -19,7 +19,7 @@ use easytier_core::{
     tunnel::{Tunnel, web_security},
 };
 use maxminddb::geoip2;
-use session::{Location, Session};
+use session::{Location, ManagedConfigRevisionDelta, Session};
 use storage::{Storage, StorageToken};
 
 use crate::FeatureFlags;
@@ -28,14 +28,12 @@ use tokio::task::JoinSet;
 
 use crate::db::{Db, UserIdInDb, entity::user_running_network_configs};
 
+pub(crate) use managed_config::ManagedConfigError;
+
 #[derive(rust_embed::Embed)]
 #[folder = "resources/"]
 #[include = "geoip2-cn.mmdb"]
 struct GeoipDb;
-
-pub fn is_managed_config_revision_conflict(error: &anyhow::Error) -> bool {
-    managed_config::is_revision_conflict(error)
-}
 
 fn load_geoip_db(geoip_db: Option<String>) -> Option<maxminddb::Reader<Vec<u8>>> {
     if let Some(path) = geoip_db {
@@ -228,7 +226,7 @@ impl ClientManager {
             Some("") => managed_config::ExpectedConfigRevision::Exact(None),
             Some(revision) => managed_config::ExpectedConfigRevision::Exact(Some(revision)),
         };
-        managed_config::reconcile_web_source_configs(
+        let status = managed_config::reconcile_web_source_configs(
             &self.storage,
             user_id,
             machine_id,
@@ -237,14 +235,78 @@ impl ClientManager {
             expected_config_revision,
         )
         .await?;
-        if let Some(config_revision) = config_revision
+        if matches!(
+            status,
+            managed_config::ManagedConfigApplyStatus::Applied { .. }
+        ) && let Some(config_revision) = config_revision
             && let Some(session) = self.get_session_by_machine_id(user_id, &machine_id)
         {
             session
-                .notify_config_revision_changed(user_id, machine_id, config_revision)
+                .notify_full_config_revision_changed(user_id, machine_id, config_revision)
                 .await;
         }
         Ok(())
+    }
+
+    pub async fn patch_managed_network_configs(
+        &self,
+        user_id: UserIdInDb,
+        machine_id: uuid::Uuid,
+        upserts: Vec<ManagedNetworkConfig>,
+        delete_instance_ids: Vec<uuid::Uuid>,
+        config_revision: String,
+        expected_config_revision: String,
+    ) -> anyhow::Result<()> {
+        let config_revision = config_revision.trim().to_string();
+        let expected_config_revision = expected_config_revision.trim().to_string();
+        let upsert_instance_ids = upserts
+            .iter()
+            .map(|config| config.instance_id.clone())
+            .collect();
+        let status = managed_config::patch_web_source_configs(
+            &self.storage,
+            user_id,
+            machine_id,
+            upserts,
+            delete_instance_ids,
+            &config_revision,
+            &expected_config_revision,
+        )
+        .await?;
+        if let managed_config::ManagedConfigApplyStatus::Applied {
+            deleted_web_instance_ids,
+        } = status
+            && let Some(session) = self.get_session_by_machine_id(user_id, &machine_id)
+        {
+            session
+                .notify_patch_config_revision_changed(
+                    user_id,
+                    machine_id,
+                    ManagedConfigRevisionDelta {
+                        expected_revision: expected_config_revision,
+                        target_revision: config_revision,
+                        upsert_instance_ids,
+                        delete_instance_ids: deleted_web_instance_ids
+                            .into_iter()
+                            .map(|instance_id| instance_id.to_string())
+                            .collect(),
+                    },
+                )
+                .await;
+        }
+        Ok(())
+    }
+
+    pub async fn invalidate_applied_config_revision(
+        &self,
+        user_id: UserIdInDb,
+        machine_id: uuid::Uuid,
+    ) {
+        if let Some(session) = self.get_session_by_machine_id(user_id, &machine_id) {
+            session
+                .invalidate_applied_config_revision(user_id, machine_id)
+                .await;
+        }
     }
 
     pub async fn get_heartbeat_requests(&self, client_url: &url::Url) -> Option<HeartbeatRequest> {
@@ -390,7 +452,10 @@ mod tests {
 
     use axum::{Json, Router, extract::State, routing::post};
     use easytier::{
-        common::{MachineIdOptions, config::NetworkConfigExt},
+        common::{
+            MachineIdOptions,
+            config::{ConfigSource, NetworkConfigExt},
+        },
         instance::factory::{
             NativeInstanceManager, native_compact_instance_manager_with_runtime,
             native_instance_manager,
@@ -402,7 +467,9 @@ mod tests {
         },
         web_client::{WebClient, run_web_client},
     };
-    use easytier_core::management::remote_client::Storage as RemoteStorage;
+    use easytier_core::management::remote_client::{
+        RemoteClientManager as _, Storage as RemoteStorage,
+    };
     use serde_json::json;
     use sqlx::Executor;
 
@@ -691,6 +758,29 @@ mod tests {
         })
         .await
         .unwrap()
+    }
+
+    async fn wait_for_applied_revision(
+        manager: &ClientManager,
+        user_id: i32,
+        machine_id: uuid::Uuid,
+        revision: &str,
+    ) {
+        tokio::time::timeout(Duration::from_secs(12), async {
+            loop {
+                let applied = manager
+                    .get_session_by_machine_id(user_id, &machine_id)
+                    .map(|session| async move { session.applied_config_revision().await });
+                if let Some(applied) = applied
+                    && applied.await.as_deref() == Some(revision)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .unwrap();
     }
 
     async fn start_web_client_for_test(
@@ -1081,6 +1171,33 @@ mod tests {
             config.network_name.as_deref() == Some("managed-initial")
         })
         .await;
+        wait_for_applied_revision(&mgr, user_id, machine_id, "rev-initial").await;
+
+        // Runtime-only mutations do not change SQLite. Invalidate the Session
+        // applied fence and verify the existing revision is fully reconciled
+        // before a later targeted Patch may rely on it as a base.
+        let mut drifted: NetworkConfig =
+            serde_json::from_value(initial_managed_network_config(instance_id)).unwrap();
+        drifted.network_name = Some("runtime-only-drift".to_string());
+        mgr.handle_run_network_instance_with_source(
+            (user_id, machine_id),
+            drifted,
+            false,
+            ConfigSource::Web,
+        )
+        .await
+        .unwrap();
+        wait_for_runtime_config(&core_manager, instance_id, |config| {
+            config.network_name.as_deref() == Some("runtime-only-drift")
+        })
+        .await;
+        mgr.invalidate_applied_config_revision(user_id, machine_id)
+            .await;
+        wait_for_runtime_config(&core_manager, instance_id, |config| {
+            config.network_name.as_deref() == Some("managed-initial")
+        })
+        .await;
+        wait_for_applied_revision(&mgr, user_id, machine_id, "rev-initial").await;
 
         // Online revision update: web-owned running config is fully overwritten
         // when non-hot-patch flags such as enable_kcp_proxy change.

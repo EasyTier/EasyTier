@@ -1,0 +1,23 @@
+[package]
+name = "easytier-ios"
+version = "0.1.0"
+edition.workspace = true
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+serde_json = "1.0"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+easytier-ffi = { path = "../easytier-ffi", default-features = false, features = [
+    "c-abi",
+] }
+
+[dev-dependencies]
+uuid = "1"
+tokio = { version = "1", features = ["io-util"] }
+easytier-core = { path = "../../easytier-core" }
+easytier-ffi = { path = "../easytier-ffi", default-features = false, features = [
+    "c-abi",
+    "ffi-dataplane",
+] }

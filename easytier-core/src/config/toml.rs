@@ -69,6 +69,7 @@ pub fn gen_default_flags() -> Flags {
         instance_recv_bps_limit: u64::MAX,
         disable_upnp: false,
         disable_relay_data: false,
+        prefer_peer_relay: false,
         enable_udp_broadcast_relay: false,
         socket_mark: None,
     }
@@ -162,6 +163,7 @@ define_flags_diff! {
         need_p2p,
         disable_upnp,
         disable_relay_data,
+        prefer_peer_relay,
         enable_udp_broadcast_relay,
         socket_mark,
     ],
@@ -1488,6 +1490,7 @@ socket_mark = 66
         flags.bind_device = false;
         flags.enable_ipv6 = false;
         flags.relay_network_whitelist = "".to_string();
+        flags.prefer_peer_relay = true;
         flags.mtu = 0;
         flags.foreign_relay_bps_limit = u64::MAX - 1;
         flags.instance_recv_bps_limit = u64::MAX - 2;
@@ -1521,6 +1524,7 @@ socket_mark = 66
         assert!(!reloaded_flags.bind_device);
         assert!(!reloaded_flags.enable_ipv6);
         assert_eq!(reloaded_flags.relay_network_whitelist, "");
+        assert!(reloaded_flags.prefer_peer_relay);
         assert_eq!(reloaded_flags.mtu, 0);
         assert_eq!(reloaded_flags.foreign_relay_bps_limit, u64::MAX - 1);
         assert_eq!(reloaded_flags.instance_recv_bps_limit, u64::MAX - 2);

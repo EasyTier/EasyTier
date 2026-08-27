@@ -881,11 +881,12 @@ impl Default for RouteConnInfo {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 struct InterfacePeerSnapshot {
     generation: u64,
     peers: BTreeSet<PeerId>,
     identity_types: BTreeMap<PeerId, Option<PeerIdentityType>>,
+    public_keys: BTreeMap<PeerId, Option<Vec<u8>>>,
 }
 
 // constructed with all infos synced from all peers.
@@ -904,7 +905,7 @@ struct SyncedRouteInfo {
 
     // Aggregated trusted credential pubkeys from all admin nodes
     // Maps pubkey bytes -> TrustedCredentialPubkey
-    trusted_credential_pubkeys: DashMap<Vec<u8>, TrustedCredentialPubkey>,
+    trusted_credential_pubkeys: RwLock<HashMap<Vec<u8>, TrustedCredentialPubkey>>,
     // Tracks the currently accepted peer for non-reusable credentials.
     // Maps credential pubkey bytes -> peer_id.
     non_reusable_credential_owners: DashMap<Vec<u8>, PeerId>,
@@ -1060,17 +1061,9 @@ impl SyncedRouteInfo {
         &self,
         all_trusted: &HashMap<Vec<u8>, TrustedCredentialPubkey>,
     ) -> HashSet<Vec<u8>> {
-        let prev_trusted = self
-            .trusted_credential_pubkeys
-            .iter()
-            .map(|entry| entry.key().clone())
-            .collect();
-
-        self.trusted_credential_pubkeys.clear();
-        for (pubkey, credential) in all_trusted {
-            self.trusted_credential_pubkeys
-                .insert(pubkey.clone(), credential.clone());
-        }
+        let mut trusted = self.trusted_credential_pubkeys.write();
+        let prev_trusted = trusted.keys().cloned().collect();
+        *trusted = all_trusted.clone();
 
         prev_trusted
     }
@@ -1881,8 +1874,9 @@ impl SyncedRouteInfo {
             return None;
         }
         self.trusted_credential_pubkeys
+            .read()
             .get(peer_pubkey)
-            .map(|r| r.value().clone())
+            .cloned()
     }
 }
 
@@ -2374,6 +2368,7 @@ struct PeerRouteServiceImpl {
     cached_interface_peer_snapshot: std::sync::Mutex<Arc<InterfacePeerSnapshot>>,
     interface_peers_generation: AtomicU64,
     applied_interface_peers_generation: AtomicU64,
+    applied_interface_peers: std::sync::Mutex<BTreeSet<PeerId>>,
 
     last_update_my_foreign_network: AtomicCell<Option<Instant>>,
 
@@ -2432,7 +2427,7 @@ impl PeerRouteServiceImpl {
                 group_trust_map: DashMap::new(),
                 group_trust_map_cache: DashMap::new(),
                 group_trust_update_lock: parking_lot::Mutex::new(()),
-                trusted_credential_pubkeys: DashMap::new(),
+                trusted_credential_pubkeys: RwLock::new(HashMap::new()),
                 non_reusable_credential_owners: DashMap::new(),
                 suppressed_non_reusable_credential_peers: DashMap::new(),
                 version: AtomicVersion::new(),
@@ -2446,6 +2441,7 @@ impl PeerRouteServiceImpl {
             )),
             interface_peers_generation: AtomicU64::new(1),
             applied_interface_peers_generation: AtomicU64::new(0),
+            applied_interface_peers: std::sync::Mutex::new(BTreeSet::new()),
 
             last_update_my_foreign_network: AtomicCell::new(None),
 
@@ -2460,6 +2456,10 @@ impl PeerRouteServiceImpl {
                 .secure_mode()
                 .map(|c| c.enabled)
                 .unwrap_or(false)
+    }
+
+    fn peer_relay_projection_enabled(&self) -> bool {
+        self.context.flags().prefer_peer_relay && !self.is_credential_node()
     }
 
     fn set_public_ipv6_service(&self, service: Weak<PublicIpv6Service>) {
@@ -2532,14 +2532,19 @@ impl PeerRouteServiceImpl {
 
         let peers: BTreeSet<_> = interface.list_peers().await.into_iter().collect();
         let mut identity_types = BTreeMap::new();
+        let mut public_keys = BTreeMap::new();
         for peer_id in peers.iter().copied() {
             identity_types.insert(peer_id, interface.get_peer_identity_type(peer_id).await);
+            if self.peer_relay_projection_enabled() {
+                public_keys.insert(peer_id, interface.get_peer_public_key(peer_id).await);
+            }
         }
 
         InterfacePeerSnapshot {
             generation: 0,
             peers,
             identity_types,
+            public_keys,
         }
     }
 
@@ -2564,11 +2569,6 @@ impl PeerRouteServiceImpl {
         }
     }
 
-    async fn list_peers_from_interface_snapshot(&self) -> (u64, BTreeSet<PeerId>) {
-        let snapshot = self.interface_peer_snapshot().await;
-        (snapshot.generation, snapshot.peers.clone())
-    }
-
     async fn get_peer_identity_type_from_interface(
         &self,
         peer_id: PeerId,
@@ -2588,6 +2588,11 @@ impl PeerRouteServiceImpl {
     }
 
     async fn get_peer_public_key_from_interface(&self, peer_id: PeerId) -> Option<Vec<u8>> {
+        let snapshot = self.interface_peer_snapshot().await;
+        if let Some(public_key) = snapshot.public_keys.get(&peer_id) {
+            return public_key.clone();
+        }
+
         self.interface
             .lock()
             .await
@@ -2595,6 +2600,105 @@ impl PeerRouteServiceImpl {
             .unwrap()
             .get_peer_public_key(peer_id)
             .await
+    }
+
+    fn derive_advertised_connected_peers(
+        &self,
+        snapshot: &InterfacePeerSnapshot,
+    ) -> BTreeSet<PeerId> {
+        if !self.peer_relay_projection_enabled() {
+            return snapshot.peers.clone();
+        }
+
+        let is_credential_peer = |peer_id: PeerId| {
+            matches!(
+                snapshot.identity_types.get(&peer_id),
+                Some(Some(PeerIdentityType::Credential))
+            )
+        };
+
+        let eligible_relays: BTreeSet<_> = {
+            let peer_infos = self.synced_route_info.peer_infos.read();
+            snapshot
+                .peers
+                .iter()
+                .copied()
+                .filter(|peer_id| is_credential_peer(*peer_id))
+                .filter(|peer_id| {
+                    !self
+                        .synced_route_info
+                        .suppressed_non_reusable_credential_peers
+                        .contains_key(peer_id)
+                })
+                .filter(|peer_id| {
+                    let Some(Some(public_key)) = snapshot.public_keys.get(peer_id) else {
+                        return false;
+                    };
+                    if peer_infos
+                        .get(peer_id)
+                        .and_then(|info| info.feature_flag)
+                        .is_some_and(|flags| flags.avoid_relay_data)
+                    {
+                        return false;
+                    }
+
+                    self.synced_route_info
+                        .get_credential_info_by_pubkey(public_key)
+                        .is_some_and(|credential| credential.allow_relay)
+                })
+                .collect()
+        };
+
+        if eligible_relays.is_empty() {
+            return snapshot.peers.clone();
+        }
+
+        let conn_map = self.synced_route_info.conn_map.read();
+        let mut covered_targets = BTreeSet::new();
+        for relay_peer_id in &eligible_relays {
+            let Some(relay_conn_info) = conn_map.get(relay_peer_id) else {
+                continue;
+            };
+            for target_peer_id in &relay_conn_info.connected_peers {
+                if snapshot.peers.contains(target_peer_id)
+                    && is_credential_peer(*target_peer_id)
+                    && !eligible_relays.contains(target_peer_id)
+                    && !self
+                        .synced_route_info
+                        .suppressed_non_reusable_credential_peers
+                        .contains_key(target_peer_id)
+                {
+                    covered_targets.insert(*target_peer_id);
+                }
+            }
+        }
+
+        snapshot
+            .peers
+            .difference(&covered_targets)
+            .copied()
+            .collect()
+    }
+
+    fn reconcile_my_conn_info(
+        &self,
+        snapshot: &InterfacePeerSnapshot,
+        interface_snapshot_changed: bool,
+    ) -> bool {
+        let advertised_peers = self.derive_advertised_connected_peers(snapshot);
+        if self
+            .synced_route_info
+            .update_my_conn_info(self.my_peer_id, advertised_peers)
+        {
+            return true;
+        }
+
+        if interface_snapshot_changed && self.peer_relay_projection_enabled() {
+            self.synced_route_info.version.inc();
+            return true;
+        }
+
+        false
     }
 
     fn update_my_peer_info(&self) -> bool {
@@ -2620,17 +2724,28 @@ impl PeerRouteServiceImpl {
                 .as_ref()
                 .map(|x| x.need_periodic_requery_peers())
                 .unwrap_or(false);
-            if !need_periodic_requery {
-                return false;
+            let snapshot = self.cached_interface_peer_snapshot.lock().unwrap().clone();
+            let need_peer_relay_metadata = self.peer_relay_projection_enabled()
+                && snapshot.public_keys.len() != snapshot.peers.len();
+            if !need_periodic_requery && !need_peer_relay_metadata {
+                return self.reconcile_my_conn_info(&snapshot, false);
             }
 
             self.mark_interface_peers_dirty();
         }
 
-        let (generation, connected_peers) = self.list_peers_from_interface_snapshot().await;
-        let updated = self
-            .synced_route_info
-            .update_my_conn_info(self.my_peer_id, connected_peers);
+        let snapshot = self.interface_peer_snapshot().await;
+        let generation = snapshot.generation;
+        let interface_snapshot_changed = {
+            let mut applied_peers = self.applied_interface_peers.lock().unwrap();
+            if *applied_peers == snapshot.peers {
+                false
+            } else {
+                *applied_peers = snapshot.peers.clone();
+                true
+            }
+        };
+        let updated = self.reconcile_my_conn_info(&snapshot, interface_snapshot_changed);
         self.applied_interface_peers_generation
             .store(generation, Ordering::Release);
         updated
@@ -2663,6 +2778,28 @@ impl PeerRouteServiceImpl {
             .update_my_foreign_network(self.my_peer_id, foreign_networks)
     }
 
+    fn local_route_snapshot(&self) -> OspfRouteSnapshot {
+        let mut snapshot = self.synced_route_info.route_snapshot();
+        if !self.peer_relay_projection_enabled() {
+            return snapshot;
+        }
+
+        let local_connected_peers = self
+            .cached_interface_peer_snapshot
+            .lock()
+            .unwrap()
+            .peers
+            .clone();
+        if let Some(self_row) = snapshot
+            .conn_map
+            .iter_mut()
+            .find(|row| row.peer_id == self.my_peer_id)
+        {
+            self_row.connected_peers = local_connected_peers;
+        }
+        snapshot
+    }
+
     fn update_route_table(&self) {
         self.cost_calculator
             .write()
@@ -2672,7 +2809,7 @@ impl PeerRouteServiceImpl {
             .begin_update();
 
         let calc_locked = self.cost_calculator.read().unwrap();
-        let route_snapshot = self.synced_route_info.route_snapshot();
+        let route_snapshot = self.local_route_snapshot();
 
         self.route_table.build_from_snapshot(
             self.my_peer_id,
@@ -4538,9 +4675,32 @@ mod tests {
         get_peer_identity_type_calls: Arc<AtomicU32>,
     }
 
+    struct PeriodicRequeryInterface {
+        peers: Vec<PeerId>,
+        list_peers_calls: Arc<AtomicU32>,
+    }
+
     struct BlockingInterface {
         entered: Arc<Notify>,
         release: Arc<Notify>,
+    }
+
+    #[derive(Default)]
+    struct TogglePeerRelayContext {
+        enabled: AtomicBool,
+    }
+
+    impl PeerContext for TogglePeerRelayContext {
+        fn network_identity(&self) -> CoreNetworkIdentity {
+            CoreNetworkIdentity::default()
+        }
+
+        fn flags(&self) -> crate::proto::common::FlagsInConfig {
+            crate::proto::common::FlagsInConfig {
+                prefer_peer_relay: self.enabled.load(Ordering::Relaxed),
+                ..Default::default()
+            }
+        }
     }
 
     #[async_trait::async_trait]
@@ -4623,13 +4783,125 @@ mod tests {
                 .flatten()
         }
 
+        async fn get_peer_public_key(&self, peer_id: PeerId) -> Option<Vec<u8>> {
+            Some(vec![peer_id as u8; 32])
+        }
+
         fn my_peer_id(&self) -> PeerId {
             self.my_peer_id
         }
     }
 
+    #[async_trait::async_trait]
+    impl RouteInterface for PeriodicRequeryInterface {
+        async fn list_peers(&self) -> Vec<PeerId> {
+            self.list_peers_calls.fetch_add(1, Ordering::Relaxed);
+            self.peers.clone()
+        }
+
+        fn my_peer_id(&self) -> PeerId {
+            1
+        }
+
+        fn need_periodic_requery_peers(&self) -> bool {
+            true
+        }
+
+        async fn get_peer_identity_type(&self, _peer_id: PeerId) -> Option<PeerIdentityType> {
+            Some(PeerIdentityType::Admin)
+        }
+
+        async fn get_peer_public_key(&self, peer_id: PeerId) -> Option<Vec<u8>> {
+            Some(vec![peer_id as u8; 32])
+        }
+    }
+
     fn test_service_impl(my_peer_id: PeerId) -> PeerRouteServiceImpl {
         PeerRouteServiceImpl::new(my_peer_id, Arc::new(NoopPeerContext::default()))
+    }
+
+    fn test_peer_relay_service_impl(my_peer_id: PeerId) -> PeerRouteServiceImpl {
+        let flags = crate::proto::common::FlagsInConfig {
+            prefer_peer_relay: true,
+            ..Default::default()
+        };
+        PeerRouteServiceImpl::new(
+            my_peer_id,
+            Arc::new(NoopPeerContext::default().with_flags(flags)),
+        )
+    }
+
+    fn interface_peer_snapshot(
+        peers: impl IntoIterator<Item = (PeerId, PeerIdentityType, Option<Vec<u8>>)>,
+    ) -> InterfacePeerSnapshot {
+        let peers: Vec<_> = peers.into_iter().collect();
+        InterfacePeerSnapshot {
+            generation: 1,
+            peers: peers.iter().map(|(peer_id, _, _)| *peer_id).collect(),
+            identity_types: peers
+                .iter()
+                .map(|(peer_id, identity, _)| (*peer_id, Some(*identity)))
+                .collect(),
+            public_keys: peers
+                .into_iter()
+                .map(|(peer_id, _, public_key)| (peer_id, public_key))
+                .collect(),
+        }
+    }
+
+    fn install_peer_info(
+        service_impl: &PeerRouteServiceImpl,
+        peer_id: PeerId,
+        advertised_public_key: Vec<u8>,
+        avoid_relay_data: bool,
+    ) {
+        let feature_flag = crate::proto::common::PeerFeatureFlag {
+            avoid_relay_data,
+            ..Default::default()
+        };
+        service_impl.synced_route_info.peer_infos.write().insert(
+            peer_id,
+            RoutePeerInfo {
+                peer_id,
+                version: 1,
+                feature_flag: Some(feature_flag),
+                noise_static_pubkey: advertised_public_key,
+                ..Default::default()
+            },
+        );
+    }
+
+    fn install_credential_grant(
+        service_impl: &PeerRouteServiceImpl,
+        public_key: Vec<u8>,
+        allow_relay: bool,
+    ) {
+        service_impl
+            .synced_route_info
+            .trusted_credential_pubkeys
+            .write()
+            .insert(
+                public_key,
+                TrustedCredentialPubkey {
+                    allow_relay,
+                    ..Default::default()
+                },
+            );
+    }
+
+    fn install_conn_row(
+        service_impl: &PeerRouteServiceImpl,
+        peer_id: PeerId,
+        connected_peers: impl IntoIterator<Item = PeerId>,
+    ) {
+        service_impl.synced_route_info.conn_map.write().insert(
+            peer_id,
+            RouteConnInfo {
+                connected_peers: connected_peers.into_iter().collect(),
+                version: 1.into(),
+                last_update: SystemTime::now(),
+            },
+        );
     }
 
     async fn test_route_with_admin_peer(
@@ -4674,6 +4946,307 @@ mod tests {
             peer_id,
             connected_peers: connected_peers.into_iter().collect(),
         }
+    }
+
+    #[test]
+    fn trusted_credential_replacement_is_atomic_for_readers() {
+        const CREDENTIAL_COUNT: u32 = 16_384;
+        const REPLACEMENT_COUNT: usize = 16;
+
+        let service_impl = test_service_impl(1);
+        let credentials: HashMap<_, _> = (0..CREDENTIAL_COUNT)
+            .map(|id| {
+                (
+                    id.to_le_bytes().to_vec(),
+                    TrustedCredentialPubkey {
+                        allow_relay: true,
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect();
+        service_impl
+            .synced_route_info
+            .replace_trusted_credential_pubkeys(&credentials);
+
+        let keys: Vec<_> = credentials.keys().cloned().collect();
+        let start = std::sync::Barrier::new(2);
+
+        std::thread::scope(|scope| {
+            let writer = scope.spawn(|| {
+                start.wait();
+                for _ in 0..REPLACEMENT_COUNT {
+                    service_impl
+                        .synced_route_info
+                        .replace_trusted_credential_pubkeys(&credentials);
+                }
+            });
+
+            start.wait();
+            let mut snapshots_read = 0;
+            while !writer.is_finished() {
+                assert!(keys.iter().all(|key| {
+                    service_impl
+                        .synced_route_info
+                        .get_credential_info_by_pubkey(key)
+                        .is_some()
+                }));
+                snapshots_read += 1;
+            }
+            writer.join().unwrap();
+            assert!(snapshots_read > 0);
+        });
+    }
+
+    #[test]
+    fn peer_relay_projection_suppresses_only_covered_credential_leaves() {
+        let service_impl = test_peer_relay_service_impl(1);
+        let relay_key = vec![2; 32];
+        let leaf_a_key = vec![3; 32];
+        let leaf_b_key = vec![4; 32];
+        let snapshot = interface_peer_snapshot([
+            (2, PeerIdentityType::Credential, Some(relay_key.clone())),
+            (3, PeerIdentityType::Credential, Some(leaf_a_key.clone())),
+            (4, PeerIdentityType::Credential, Some(leaf_b_key.clone())),
+            (5, PeerIdentityType::Admin, None),
+        ]);
+
+        for peer_id in 1..=5 {
+            install_peer_info(&service_impl, peer_id, vec![peer_id as u8; 32], false);
+        }
+        install_credential_grant(&service_impl, relay_key, true);
+        install_credential_grant(&service_impl, leaf_a_key, false);
+        install_credential_grant(&service_impl, leaf_b_key, false);
+        install_conn_row(&service_impl, 2, [3, 4]);
+
+        assert!(service_impl.reconcile_my_conn_info(&snapshot, false));
+        assert_eq!(
+            service_impl
+                .synced_route_info
+                .get_connected_peers::<BTreeSet<_>>(1),
+            Some(BTreeSet::from([2, 5]))
+        );
+
+        *service_impl.cached_interface_peer_snapshot.lock().unwrap() = Arc::new(snapshot.clone());
+        let local_snapshot = service_impl.local_route_snapshot();
+        assert_eq!(
+            local_snapshot
+                .conn_map
+                .iter()
+                .find(|row| row.peer_id == 1)
+                .unwrap()
+                .connected_peers,
+            snapshot.peers
+        );
+
+        service_impl.update_route_table();
+        assert_eq!(
+            service_impl
+                .route_table
+                .get_next_hop(3)
+                .unwrap()
+                .next_hop_peer_id,
+            3
+        );
+    }
+
+    #[test]
+    fn peer_relay_projection_uses_authenticated_public_key() {
+        let service_impl = test_peer_relay_service_impl(1);
+        let authenticated_key = vec![2; 32];
+        let forged_relay_key = vec![9; 32];
+        let snapshot = interface_peer_snapshot([
+            (
+                2,
+                PeerIdentityType::Credential,
+                Some(authenticated_key.clone()),
+            ),
+            (4, PeerIdentityType::Credential, Some(vec![4; 32])),
+        ]);
+        install_peer_info(&service_impl, 2, forged_relay_key.clone(), false);
+        install_credential_grant(&service_impl, authenticated_key, false);
+        install_credential_grant(&service_impl, forged_relay_key, true);
+        install_conn_row(&service_impl, 2, [4]);
+
+        assert_eq!(
+            service_impl.derive_advertised_connected_peers(&snapshot),
+            snapshot.peers
+        );
+    }
+
+    #[test]
+    fn peer_relay_projection_is_disabled_by_default() {
+        let service_impl = test_service_impl(1);
+        let snapshot = interface_peer_snapshot([
+            (2, PeerIdentityType::Credential, Some(vec![2; 32])),
+            (4, PeerIdentityType::Credential, Some(vec![4; 32])),
+        ]);
+        install_peer_info(&service_impl, 2, vec![2; 32], false);
+        install_credential_grant(&service_impl, vec![2; 32], true);
+        install_conn_row(&service_impl, 2, [4]);
+
+        assert_eq!(
+            service_impl.derive_advertised_connected_peers(&snapshot),
+            snapshot.peers
+        );
+    }
+
+    #[test]
+    fn peer_relay_projection_restores_edges_after_last_coverage_disappears() {
+        let service_impl = test_peer_relay_service_impl(1);
+        let snapshot = interface_peer_snapshot([
+            (2, PeerIdentityType::Credential, Some(vec![2; 32])),
+            (3, PeerIdentityType::Credential, Some(vec![3; 32])),
+            (4, PeerIdentityType::Credential, Some(vec![4; 32])),
+            (5, PeerIdentityType::Credential, Some(vec![5; 32])),
+        ]);
+        for relay_peer_id in [2, 3] {
+            install_peer_info(
+                &service_impl,
+                relay_peer_id,
+                vec![relay_peer_id as u8; 32],
+                false,
+            );
+            install_credential_grant(&service_impl, vec![relay_peer_id as u8; 32], true);
+        }
+        install_conn_row(&service_impl, 2, [4]);
+        install_conn_row(&service_impl, 3, [4, 5]);
+
+        assert!(service_impl.reconcile_my_conn_info(&snapshot, false));
+        let first_version = service_impl
+            .synced_route_info
+            .conn_map
+            .read()
+            .get(&1)
+            .unwrap()
+            .version
+            .get();
+        assert_eq!(
+            service_impl
+                .synced_route_info
+                .get_connected_peers::<BTreeSet<_>>(1),
+            Some(BTreeSet::from([2, 3]))
+        );
+
+        service_impl.synced_route_info.conn_map.write().remove(&2);
+        assert!(!service_impl.reconcile_my_conn_info(&snapshot, false));
+
+        service_impl.synced_route_info.conn_map.write().remove(&3);
+        assert!(service_impl.reconcile_my_conn_info(&snapshot, false));
+        let self_row = service_impl.synced_route_info.conn_map.read();
+        let self_row = self_row.get(&1).unwrap();
+        assert_eq!(self_row.connected_peers, snapshot.peers);
+        assert_eq!(self_row.version.get(), first_version + 1);
+    }
+
+    #[test]
+    fn peer_relay_projection_ignores_ineligible_relays() {
+        let service_impl = test_peer_relay_service_impl(1);
+        let snapshot = interface_peer_snapshot([
+            (2, PeerIdentityType::Credential, Some(vec![2; 32])),
+            (3, PeerIdentityType::Credential, Some(vec![3; 32])),
+            (4, PeerIdentityType::Admin, Some(vec![4; 32])),
+            (5, PeerIdentityType::Credential, Some(vec![5; 32])),
+            (6, PeerIdentityType::Credential, Some(vec![6; 32])),
+        ]);
+        install_peer_info(&service_impl, 2, vec![2; 32], false);
+        install_peer_info(&service_impl, 3, vec![3; 32], true);
+        install_peer_info(&service_impl, 4, vec![4; 32], false);
+        install_peer_info(&service_impl, 5, vec![5; 32], false);
+        for peer_id in [2, 3, 4, 5] {
+            install_credential_grant(&service_impl, vec![peer_id as u8; 32], peer_id != 2);
+            install_conn_row(&service_impl, peer_id, [6]);
+        }
+        service_impl
+            .synced_route_info
+            .suppressed_non_reusable_credential_peers
+            .insert(5, ());
+
+        assert_eq!(
+            service_impl.derive_advertised_connected_peers(&snapshot),
+            snapshot.peers
+        );
+    }
+
+    #[test]
+    fn peer_relay_projection_refreshes_local_topology_when_advertisement_is_unchanged() {
+        let service_impl = test_peer_relay_service_impl(1);
+        install_peer_info(&service_impl, 2, vec![2; 32], false);
+        install_credential_grant(&service_impl, vec![2; 32], true);
+        install_conn_row(&service_impl, 2, [3, 4]);
+        let first = interface_peer_snapshot([
+            (2, PeerIdentityType::Credential, Some(vec![2; 32])),
+            (3, PeerIdentityType::Credential, Some(vec![3; 32])),
+        ]);
+        assert!(service_impl.reconcile_my_conn_info(&first, false));
+        let self_version = service_impl
+            .synced_route_info
+            .conn_map
+            .read()
+            .get(&1)
+            .unwrap()
+            .version
+            .get();
+        let route_version = service_impl.synced_route_info.version.get();
+
+        let second = interface_peer_snapshot([
+            (2, PeerIdentityType::Credential, Some(vec![2; 32])),
+            (4, PeerIdentityType::Credential, Some(vec![4; 32])),
+        ]);
+        assert!(service_impl.reconcile_my_conn_info(&second, true));
+        assert_eq!(
+            service_impl
+                .synced_route_info
+                .conn_map
+                .read()
+                .get(&1)
+                .unwrap()
+                .version
+                .get(),
+            self_version
+        );
+        assert_eq!(
+            service_impl.synced_route_info.version.get(),
+            route_version + 1
+        );
+    }
+
+    #[tokio::test]
+    async fn peer_relay_projection_reconciles_forwarded_row_without_interface_change() {
+        let service_impl = test_peer_relay_service_impl(1);
+        let peers = Arc::new(Mutex::new(vec![2, 4]));
+        let list_peers_calls = Arc::new(AtomicU32::new(0));
+        *service_impl.interface.lock().await = Some(Box::new(CountingInterface {
+            my_peer_id: 1,
+            peers,
+            peer_identity_types: Arc::new(Mutex::new(HashMap::from([
+                (2, Some(PeerIdentityType::Credential)),
+                (4, Some(PeerIdentityType::Credential)),
+            ]))),
+            list_peers_calls: list_peers_calls.clone(),
+            get_peer_identity_type_calls: Arc::new(AtomicU32::new(0)),
+        }));
+        install_peer_info(&service_impl, 2, vec![2; 32], false);
+        install_credential_grant(&service_impl, vec![2; 32], true);
+
+        assert!(service_impl.update_my_conn_info().await);
+        assert_eq!(list_peers_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            service_impl
+                .synced_route_info
+                .get_connected_peers::<BTreeSet<_>>(1),
+            Some(BTreeSet::from([2, 4]))
+        );
+
+        install_conn_row(&service_impl, 2, [4]);
+        assert!(service_impl.update_my_conn_info().await);
+        assert_eq!(list_peers_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            service_impl
+                .synced_route_info
+                .get_connected_peers::<BTreeSet<_>>(1),
+            Some(BTreeSet::from([2]))
+        );
     }
 
     #[tokio::test]
@@ -4739,6 +5312,64 @@ mod tests {
         assert!(!service_impl.update_my_conn_info().await);
         assert_eq!(list_peers_calls.load(Ordering::Relaxed), 2);
         assert_eq!(get_peer_identity_type_calls.load(Ordering::Relaxed), 4);
+    }
+
+    #[tokio::test]
+    async fn periodic_requery_without_peer_change_keeps_route_version_stable() {
+        let service_impl = test_peer_relay_service_impl(1);
+        let list_peers_calls = Arc::new(AtomicU32::new(0));
+        *service_impl.interface.lock().await = Some(Box::new(PeriodicRequeryInterface {
+            peers: vec![2],
+            list_peers_calls: list_peers_calls.clone(),
+        }));
+
+        assert!(service_impl.update_my_conn_info().await);
+        let route_version = service_impl.synced_route_info.version.get();
+
+        assert!(!service_impl.update_my_conn_info().await);
+        assert_eq!(list_peers_calls.load(Ordering::Relaxed), 2);
+        assert_eq!(service_impl.synced_route_info.version.get(), route_version);
+    }
+
+    #[tokio::test]
+    async fn enabling_peer_relay_refreshes_authenticated_interface_metadata() {
+        let context = Arc::new(TogglePeerRelayContext::default());
+        let service_impl = PeerRouteServiceImpl::new(1, context.clone());
+        let peer_identity_types = Arc::new(Mutex::new(HashMap::from([
+            (2, Some(PeerIdentityType::Credential)),
+            (3, Some(PeerIdentityType::Credential)),
+        ])));
+        let list_peers_calls = Arc::new(AtomicU32::new(0));
+        *service_impl.interface.lock().await = Some(Box::new(CountingInterface {
+            my_peer_id: 1,
+            peers: Arc::new(Mutex::new(vec![2, 3])),
+            peer_identity_types,
+            list_peers_calls: list_peers_calls.clone(),
+            get_peer_identity_type_calls: Arc::new(AtomicU32::new(0)),
+        }));
+        install_peer_info(&service_impl, 2, vec![2; 32], false);
+        install_credential_grant(&service_impl, vec![2; 32], true);
+        install_conn_row(&service_impl, 2, [3]);
+
+        assert!(service_impl.update_my_conn_info().await);
+        assert_eq!(list_peers_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            service_impl
+                .synced_route_info
+                .get_connected_peers::<BTreeSet<_>>(1),
+            Some(BTreeSet::from([2, 3]))
+        );
+
+        context.enabled.store(true, Ordering::Relaxed);
+
+        assert!(service_impl.update_my_conn_info().await);
+        assert_eq!(list_peers_calls.load(Ordering::Relaxed), 2);
+        assert_eq!(
+            service_impl
+                .synced_route_info
+                .get_connected_peers::<BTreeSet<_>>(1),
+            Some(BTreeSet::from([2]))
+        );
     }
 
     #[tokio::test]

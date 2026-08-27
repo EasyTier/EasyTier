@@ -473,6 +473,10 @@ impl NetworkConfigExt for NetworkConfig {
             flags.disable_relay_data = disable_relay_data;
         }
 
+        if let Some(prefer_peer_relay) = self.prefer_peer_relay {
+            flags.prefer_peer_relay = prefer_peer_relay;
+        }
+
         if let Some(enable_udp_broadcast_relay) = self.enable_udp_broadcast_relay {
             flags.enable_udp_broadcast_relay = enable_udp_broadcast_relay;
         }
@@ -672,6 +676,7 @@ impl NetworkConfigExt for NetworkConfig {
         result.disable_udp_hole_punching = Some(flags.disable_udp_hole_punching);
         result.disable_upnp = Some(flags.disable_upnp);
         result.disable_relay_data = Some(flags.disable_relay_data);
+        result.prefer_peer_relay = Some(flags.prefer_peer_relay);
         result.enable_udp_broadcast_relay = Some(flags.enable_udp_broadcast_relay);
         result.disable_sym_hole_punching = Some(flags.disable_sym_hole_punching);
         result.enable_magic_dns = Some(flags.accept_dns);
@@ -773,6 +778,24 @@ mod tests {
         let output = NetworkConfig::new_from_config(&config).unwrap();
         assert_eq!(output.managed_credentials[0].credential_id, "managed-a");
         assert_eq!(output.managed_credentials[0].reusable, Some(true));
+    }
+
+    #[test]
+    fn peer_relay_preference_round_trips_independently() {
+        let input = NetworkConfig {
+            disable_relay_data: Some(false),
+            prefer_peer_relay: Some(true),
+            ..standalone_config()
+        };
+
+        let config = input.gen_config().unwrap();
+        let flags = config.get_flags();
+        assert!(!flags.disable_relay_data);
+        assert!(flags.prefer_peer_relay);
+
+        let output = NetworkConfig::new_from_config(&config).unwrap();
+        assert_eq!(output.disable_relay_data, Some(false));
+        assert_eq!(output.prefer_peer_relay, Some(true));
     }
 
     #[test]
