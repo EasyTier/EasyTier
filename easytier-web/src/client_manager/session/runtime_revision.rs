@@ -1087,17 +1087,31 @@ async fn mark_config_revision_applied_if_current(
     let Some(data) = session_data.upgrade() else {
         return RoundStatus::Stop;
     };
-    let mut data = data.write().await;
-    if !SessionRpcService::runtime_heartbeat_is_current_locked(&data, &round.req) {
-        return RoundStatus::Ready(());
+    let notify = {
+        let mut data = data.write().await;
+        if !SessionRpcService::runtime_heartbeat_is_current_locked(&data, &round.req) {
+            return RoundStatus::Ready(());
+        }
+        if data.runtime_config_epoch != round.runtime_config_epoch {
+            return RoundStatus::Ready(());
+        }
+        record_applied_config_revision(&mut data, round.target_config_revision.clone())
+    };
+    if let Some(notify) = notify {
+        notify.notify_one();
     }
-    if data.runtime_config_epoch != round.runtime_config_epoch {
-        return RoundStatus::Ready(());
-    }
-    data.applied_config_revision = round.target_config_revision.clone();
-    data.pending_managed_config_delta = None;
 
     RoundStatus::Ready(())
+}
+
+fn record_applied_config_revision(
+    data: &mut SessionData,
+    revision: Option<String>,
+) -> Option<std::sync::Arc<tokio::sync::Notify>> {
+    let changed = data.applied_config_revision != revision;
+    data.applied_config_revision = revision;
+    data.pending_managed_config_delta = None;
+    changed.then(|| SessionRpcService::mark_webhook_validation_dirty_locked(data))
 }
 
 #[cfg(test)]
@@ -1126,6 +1140,52 @@ mod tests {
             dst_port,
             proto: "tcp".to_string(),
         }
+    }
+
+    #[tokio::test]
+    async fn newly_applied_revision_wakes_webhook_validation() {
+        let storage =
+            crate::client_manager::storage::Storage::new(crate::db::Db::memory_db().await);
+        let mut data = SessionData::new(
+            storage.weak_ref(),
+            url::Url::parse("http://127.0.0.1").unwrap(),
+            None,
+            std::sync::Arc::new(crate::FeatureFlags::default()),
+            std::sync::Arc::new(crate::webhook::WebhookConfig::new(
+                None, None, None, None, None,
+            )),
+        );
+
+        let notify = record_applied_config_revision(&mut data, Some("rev-applied".to_string()))
+            .expect("new applied revision should wake validation");
+        assert_eq!(data.applied_config_revision.as_deref(), Some("rev-applied"));
+        assert!(data.webhook_validation_dirty);
+
+        notify.notify_one();
+        tokio::time::timeout(std::time::Duration::from_millis(100), notify.notified())
+            .await
+            .expect("validation worker was not notified");
+    }
+
+    #[tokio::test]
+    async fn unchanged_applied_revision_does_not_add_validation_work() {
+        let storage =
+            crate::client_manager::storage::Storage::new(crate::db::Db::memory_db().await);
+        let mut data = SessionData::new(
+            storage.weak_ref(),
+            url::Url::parse("http://127.0.0.1").unwrap(),
+            None,
+            std::sync::Arc::new(crate::FeatureFlags::default()),
+            std::sync::Arc::new(crate::webhook::WebhookConfig::new(
+                None, None, None, None, None,
+            )),
+        );
+        data.applied_config_revision = Some("rev-applied".to_string());
+
+        assert!(
+            record_applied_config_revision(&mut data, Some("rev-applied".to_string())).is_none()
+        );
+        assert!(!data.webhook_validation_dirty);
     }
 
     #[test]
