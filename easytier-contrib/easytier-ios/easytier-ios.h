@@ -28,6 +28,16 @@ extern "C" {
 #endif
 
 /**
+ * @brief Enable diagnostic EasyTier logging to stderr.
+ *
+ * Installs a narrow global tracing subscriber that records port-forward
+ * lifecycle events. Repeated calls are idempotent.
+ *
+ * @return 0 on success, -1 if another tracing subscriber was installed first.
+ */
+int easytier_ios_enable_diagnostic_logging(void);
+
+/**
  * @brief Start one EasyTier network instance from a TOML config string.
  *
  * The config's `instance_name` must be unique among instances started

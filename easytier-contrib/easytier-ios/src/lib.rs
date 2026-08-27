@@ -19,9 +19,41 @@ use std::{
     ffi::{CStr, c_char, c_int},
     panic::{AssertUnwindSafe, catch_unwind},
     ptr,
+    sync::OnceLock,
 };
 
 use strings::cstring_for;
+
+/// Install a narrow tracing subscriber for an embedding app that needs to
+/// diagnose EasyTier transport failures. The subscriber writes port-forward
+/// lifecycle events to stderr.
+///
+/// Returns 0 on success, -1 when another global subscriber was installed
+/// first (see `easytier_ios_last_error`). Repeated calls are idempotent.
+#[unsafe(no_mangle)]
+pub extern "C" fn easytier_ios_enable_diagnostic_logging() -> c_int {
+    guarded(-1, || {
+        error::clear_error();
+        static RESULT: OnceLock<Result<(), String>> = OnceLock::new();
+        let result = RESULT.get_or_init(|| {
+            let filter =
+                tracing_subscriber::EnvFilter::new("easytier_core::gateway::port_forward=info");
+            tracing_subscriber::fmt()
+                .with_ansi(false)
+                .with_env_filter(filter)
+                .with_writer(std::io::stderr)
+                .try_init()
+                .map_err(|error| error.to_string())
+        });
+        match result {
+            Ok(()) => 0,
+            Err(message) => {
+                error::set_error(&format!("failed to enable diagnostic logging: {message}"));
+                -1
+            }
+        }
+    })
+}
 
 /// Run `body` catching any panic; panics are recorded in the last-error
 /// buffer so they never unwind across the FFI boundary.

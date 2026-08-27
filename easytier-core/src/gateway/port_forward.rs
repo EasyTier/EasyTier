@@ -41,6 +41,7 @@ use crate::{
 };
 
 const MAX_UDP_PAYLOAD_SIZE: usize = 65_507;
+const TCP_PORT_FORWARD_REBIND_DELAY: Duration = Duration::from_millis(100);
 // A remote flow owns roughly 320 KiB of smoltcp and response buffers.
 // Keep the per-instance worst case near 80 MiB instead of allowing a
 // source-port flood to grow the WASM heap without bound.
@@ -193,13 +194,17 @@ where
         }
 
         self.cancel_tokens.retain(|current, _| {
-            cfgs.iter().any(|next| {
+            let keep = cfgs.iter().any(|next| {
                 if next.dst_addr.ip().is_unspecified() {
                     current.bind_addr == next.bind_addr && current.proto == next.proto
                 } else {
                     current == next
                 }
-            })
+            });
+            if !keep {
+                tracing::info!(?current, "port-forward removed by runtime config reload");
+            }
+            keep
         });
         self.udp_clients
             .retain(|key, _| self.cancel_tokens.contains_key(&key.forward));
@@ -238,7 +243,9 @@ where
             .bind
             .clone()
             .with_context(self.socket_context.clone());
-        let listener = self.host.bind_tcp(options.with_bind(bind)).await?;
+        let options = options.with_bind(bind);
+        let listener = self.host.bind_tcp(options.clone()).await?;
+        tracing::info!(?bind_addr, ?dst_addr, "TCP port-forward listener bound");
         let cancel = CancellationToken::new();
         self.cancel_tokens
             .insert(cfg.clone(), cancel.clone().drop_guard());
@@ -249,21 +256,28 @@ where
             Arc::downgrade(&connections),
             "TCP port-forward connections",
         ));
+        let host = self.host.clone();
         self.tasks.lock().unwrap().spawn(async move {
+            let mut listener = Some(listener);
             loop {
-                let (incoming, source_addr) = select! {
-                    biased;
-                    _ = cancel.cancelled() => break,
-                    result = listener.accept() => match result {
-                        Ok(accepted) => accepted,
-                        Err(error) => {
-                            tracing::error!(?error, ?bind_addr, "port-forward accept failed");
-                            continue;
-                        }
-                    },
+                let Some((incoming, source_addr)) =
+                    accept_tcp_port_forward(&host, &options, &mut listener, &cancel).await
+                else {
+                    break;
                 };
+                tracing::info!(
+                    ?bind_addr,
+                    ?source_addr,
+                    ?dst_addr,
+                    "port-forward accepted local connection"
+                );
                 let data_plane = data_plane.clone();
                 connections.lock().unwrap().spawn(async move {
+                    tracing::info!(
+                        ?source_addr,
+                        ?dst_addr,
+                        "port-forward data-plane connect started"
+                    );
                     let options = DataPlaneTcpConnectOptions::gateway(
                         Duration::from_secs(10),
                         TcpSocketPurpose::PortForward,
@@ -276,9 +290,15 @@ where
                             return;
                         }
                     };
+                    tracing::info!(?source_addr, ?dst_addr, "port-forward data-plane connected");
                     copy_tcp(incoming, outgoing, dst_addr).await;
                 });
             }
+            tracing::info!(
+                ?bind_addr,
+                ?dst_addr,
+                "TCP port-forward listener task stopped"
+            );
         });
         Ok(())
     }
@@ -430,6 +450,10 @@ where
 
     async fn stop_inner(&self) {
         self.started.store(false, Ordering::Release);
+        tracing::info!(
+            forward_count = self.cancel_tokens.len(),
+            "port-forward adapter stopping"
+        );
         self.cancel_tokens.clear();
         self.udp_response_tasks.clear();
         self.udp_clients.clear();
@@ -444,6 +468,69 @@ where
     pub(crate) async fn stop(&self) {
         let _operation = self.operation.lock().await;
         self.stop_inner().await;
+    }
+}
+
+async fn accept_tcp_port_forward<H>(
+    host: &Arc<H>,
+    options: &TcpListenOptions,
+    listener: &mut Option<Arc<H::Listener>>,
+    cancel: &CancellationToken,
+) -> Option<(<H::Listener as VirtualTcpListener>::Socket, SocketAddr)>
+where
+    H: VirtualTcpListenerFactory,
+{
+    loop {
+        let current = listener
+            .take()
+            .expect("TCP port-forward listener must be bound before accepting");
+        let accepted = select! {
+            biased;
+            _ = cancel.cancelled() => {
+                tracing::info!(?options, "port-forward listener cancelled while accepting");
+                return None;
+            },
+            result = current.accept() => result,
+        };
+        match accepted {
+            Ok(accepted) => {
+                listener.replace(current);
+                return Some(accepted);
+            }
+            Err(error) => {
+                tracing::error!(?error, ?options, "port-forward accept failed; rebinding");
+            }
+        }
+        drop(current);
+
+        loop {
+            select! {
+                biased;
+                _ = cancel.cancelled() => {
+                    tracing::info!(?options, "port-forward listener cancelled during rebind delay");
+                    return None;
+                },
+                _ = crate::foundation::time::sleep(TCP_PORT_FORWARD_REBIND_DELAY) => {}
+            }
+            let rebound = select! {
+                biased;
+                _ = cancel.cancelled() => {
+                    tracing::info!(?options, "port-forward listener cancelled while rebinding");
+                    return None;
+                },
+                result = host.bind_tcp(options.clone()) => result,
+            };
+            match rebound {
+                Ok(rebound) => {
+                    tracing::info!(?options, "port-forward listener rebound");
+                    listener.replace(rebound);
+                    break;
+                }
+                Err(error) => {
+                    tracing::error!(?error, ?options, "port-forward listener rebind failed");
+                }
+            }
+        }
     }
 }
 
@@ -536,8 +623,105 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::{io, sync::atomic::AtomicUsize};
+
     use super::*;
-    use crate::host::testkit::{TestHost, TestUdpSocket};
+    use crate::host::testkit::{TestHost, TestTcpSocket, TestUdpSocket};
+
+    struct RecoveringTcpListener {
+        accept_error: bool,
+        active: Arc<AtomicUsize>,
+        address: SocketAddr,
+    }
+
+    impl Drop for RecoveringTcpListener {
+        fn drop(&mut self) {
+            self.active.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl VirtualTcpListener for RecoveringTcpListener {
+        type Socket = TestTcpSocket;
+
+        fn local_addr(&self) -> io::Result<SocketAddr> {
+            Ok(self.address)
+        }
+
+        async fn accept(&self) -> io::Result<(Self::Socket, SocketAddr)> {
+            if self.accept_error {
+                return Err(io::Error::other("listener is no longer usable"));
+            }
+            let (socket, _) = tokio::io::duplex(64);
+            Ok((TestTcpSocket(socket), "127.0.0.1:40000".parse().unwrap()))
+        }
+    }
+
+    #[derive(Default)]
+    struct RecoveringTcpHost {
+        binds: AtomicUsize,
+        active: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl VirtualTcpListenerFactory for RecoveringTcpHost {
+        type Listener = RecoveringTcpListener;
+
+        async fn bind_tcp(&self, options: TcpListenOptions) -> anyhow::Result<Arc<Self::Listener>> {
+            let bind_index = self.binds.fetch_add(1, Ordering::Relaxed);
+            if bind_index > 0 && self.active.load(Ordering::Relaxed) != 0 {
+                anyhow::bail!("previous listener is still active");
+            }
+            self.active.fetch_add(1, Ordering::Relaxed);
+            Ok(Arc::new(RecoveringTcpListener {
+                accept_error: bind_index == 0,
+                active: self.active.clone(),
+                address: options.bind.local_addr.unwrap(),
+            }))
+        }
+    }
+
+    #[tokio::test]
+    async fn tcp_listener_rebinds_after_accept_error() {
+        let host = Arc::new(RecoveringTcpHost::default());
+        let options = TcpListenOptions::port_forward("127.0.0.1:5202".parse().unwrap());
+        let mut listener = Some(host.bind_tcp(options.clone()).await.unwrap());
+
+        let accepted = tokio::time::timeout(
+            Duration::from_secs(1),
+            accept_tcp_port_forward(&host, &options, &mut listener, &CancellationToken::new()),
+        )
+        .await
+        .unwrap();
+
+        assert!(accepted.is_some());
+        assert_eq!(host.binds.load(Ordering::Relaxed), 2);
+        assert_eq!(host.active.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn tcp_listener_rebind_stops_when_cancelled() {
+        let host = Arc::new(RecoveringTcpHost::default());
+        let options = TcpListenOptions::port_forward("127.0.0.1:5202".parse().unwrap());
+        let mut listener = Some(host.bind_tcp(options.clone()).await.unwrap());
+        let cancel = CancellationToken::new();
+        let cancel_after_error = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            cancel_after_error.cancel();
+        });
+
+        let accepted = tokio::time::timeout(
+            Duration::from_secs(1),
+            accept_tcp_port_forward(&host, &options, &mut listener, &cancel),
+        )
+        .await
+        .unwrap();
+
+        assert!(accepted.is_none());
+        assert_eq!(host.binds.load(Ordering::Relaxed), 1);
+        assert_eq!(host.active.load(Ordering::Relaxed), 0);
+    }
 
     fn udp_client_key(port: u16) -> UdpClientKey {
         UdpClientKey {
