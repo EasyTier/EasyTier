@@ -30,6 +30,20 @@ allowed proxy CIDRs, and whether concurrent reuse is allowed. It does not own
 credential identity, key material, lifetime, persistence, or runtime ownership.
 Each credential intake path normalizes the grant before installing it.
 
+## Peer Relay advertisement
+
+A platform peer may prefer an eligible directly connected credential relay by
+omitting covered credential-leaf edges from only its own advertised OSPF
+connection row. Its local route calculation still uses the complete physical
+adjacency so direct-destination fallback remains available. Other peers'
+source-owned rows and versions are never rewritten, cached for promotion, or
+otherwise changed by this projection.
+
+Relay eligibility comes from the transport-authenticated credential identity
+and grant, not self-reported route metadata. The advertisement Module does not
+support changing a credential's relay permission in place; such a permission
+change is a credential revocation and new authenticated Session.
+
 ## Attached peer
 
 An attached peer is an ordinary `PeerManagerCore` connected to another

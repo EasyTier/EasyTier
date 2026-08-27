@@ -105,6 +105,7 @@ message NetworkConfig {
   repeated NetworkPeerConfig peers = 68;
   optional VpnPortalConfig vpn_portal_config = 69;
   repeated ManagedCredentialConfig managed_credentials = 71;
+  optional bool prefer_peer_relay = 72;
 }
 
 message ManagedCredentialConfig {

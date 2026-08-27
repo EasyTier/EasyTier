@@ -64,6 +64,7 @@ fn hot_patch_base(config: &NetworkConfig) -> anyhow::Result<NetworkConfig> {
     config.port_forwards.clear();
     config.proxy_cidrs.clear();
     config.disable_relay_data = None;
+    config.prefer_peer_relay = None;
     // VPN portal clients are diffed separately; the listener identity
     // (address and private key) decides between patch and recreate.
     config.vpn_portal_config = None;
@@ -211,6 +212,10 @@ fn normalized_disable_relay_data(config: &NetworkConfig) -> anyhow::Result<bool>
     Ok(config.gen_config()?.get_flags().disable_relay_data)
 }
 
+fn normalized_prefer_peer_relay(config: &NetworkConfig) -> anyhow::Result<bool> {
+    Ok(config.gen_config()?.get_flags().prefer_peer_relay)
+}
+
 fn normalized_vpn_portal(config: &NetworkConfig) -> anyhow::Result<Option<RuntimeVpnPortalConfig>> {
     Ok(config.gen_config()?.get_vpn_portal_config())
 }
@@ -314,6 +319,12 @@ fn web_source_runtime_patch(
     let desired_disable_relay_data = normalized_disable_relay_data(desired)?;
     if current_disable_relay_data != desired_disable_relay_data {
         patch.disable_relay_data = Some(desired_disable_relay_data);
+    }
+
+    let current_prefer_peer_relay = normalized_prefer_peer_relay(current)?;
+    let desired_prefer_peer_relay = normalized_prefer_peer_relay(desired)?;
+    if current_prefer_peer_relay != desired_prefer_peer_relay {
+        patch.prefer_peer_relay = Some(desired_prefer_peer_relay);
     }
 
     match (
@@ -941,6 +952,20 @@ mod tests {
             .expect("hot patch");
 
         assert_eq!(patch.disable_relay_data, Some(true));
+    }
+
+    #[test]
+    fn runtime_patch_updates_peer_relay_preference_independently() {
+        let current = config_with_port_forwards(Vec::new());
+        let mut desired = current.clone();
+        desired.prefer_peer_relay = Some(true);
+
+        let patch = web_source_runtime_patch(&current, &desired)
+            .expect("build patch")
+            .expect("hot patch");
+
+        assert_eq!(patch.prefer_peer_relay, Some(true));
+        assert_eq!(patch.disable_relay_data, None);
     }
 
     #[test]
