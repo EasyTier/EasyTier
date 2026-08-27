@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     fmt::Debug,
     str::FromStr as _,
     sync::Arc,
@@ -42,6 +43,14 @@ enum SessionAuthState {
     Invalid,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ManagedConfigRevisionDelta {
+    pub expected_revision: String,
+    pub target_revision: String,
+    pub upsert_instance_ids: HashSet<String>,
+    pub delete_instance_ids: HashSet<String>,
+}
+
 impl SessionAuthState {
     fn is_authorized(self) -> bool {
         matches!(self, Self::Authorized)
@@ -58,6 +67,8 @@ pub struct SessionData {
     storage_token: Option<StorageToken>,
     binding_version: Option<u64>,
     applied_config_revision: Option<String>,
+    pending_managed_config_delta: Option<ManagedConfigRevisionDelta>,
+    runtime_config_epoch: u64,
     notifier: broadcast::Sender<HeartbeatRequest>,
     req: Option<HeartbeatRequest>,
     location: Option<Location>,
@@ -88,6 +99,8 @@ impl SessionData {
             storage_token: None,
             binding_version: None,
             applied_config_revision: None,
+            pending_managed_config_delta: None,
+            runtime_config_epoch: 0,
             notifier: tx,
             req: None,
             location,
@@ -698,14 +711,14 @@ impl Session {
         self.scoped_client::<ConfigRpcClientFactory<BaseController>>()
     }
 
-    pub async fn notify_config_revision_changed(
+    pub(super) async fn notify_full_config_revision_changed(
         &self,
         user_id: i32,
         machine_id: uuid::Uuid,
         config_revision: String,
     ) {
         let notify = {
-            let data = self.data.read().await;
+            let mut data = self.data.write().await;
             if !data.auth_state.is_authorized() {
                 return;
             }
@@ -719,6 +732,84 @@ impl Session {
             if data.applied_config_revision.as_deref() == Some(config_revision.as_str()) {
                 return;
             }
+            data.pending_managed_config_delta = None;
+            data.req.clone().map(|req| (data.notifier.clone(), req))
+        };
+        if let Some((notifier, req)) = notify {
+            let _ = notifier.send(req);
+        }
+    }
+
+    pub(super) async fn notify_patch_config_revision_changed(
+        &self,
+        user_id: i32,
+        machine_id: uuid::Uuid,
+        delta: ManagedConfigRevisionDelta,
+    ) {
+        let notify = {
+            let mut data = self.data.write().await;
+            if !data.auth_state.is_authorized() {
+                return;
+            }
+            if !data
+                .storage_token
+                .as_ref()
+                .is_some_and(|token| token.user_id == user_id && token.machine_id == machine_id)
+            {
+                return;
+            }
+            if data.applied_config_revision.as_deref() == Some(delta.target_revision.as_str()) {
+                return;
+            }
+
+            // A Patch may drive a targeted runtime reconcile only when the
+            // connected Session has applied its exact base and no earlier
+            // Patch is still pending. Otherwise the normal Full reconcile is
+            // the safe convergence path.
+            data.pending_managed_config_delta = (data.applied_config_revision.as_deref()
+                == Some(delta.expected_revision.as_str())
+                && data.pending_managed_config_delta.is_none())
+            .then_some(delta);
+            data.req.clone().map(|req| (data.notifier.clone(), req))
+        };
+        if let Some((notifier, req)) = notify {
+            let _ = notifier.send(req);
+        }
+    }
+
+    pub(super) async fn invalidate_applied_config_revision(
+        &self,
+        user_id: i32,
+        machine_id: uuid::Uuid,
+    ) {
+        let notify = {
+            let mut data = self.data.write().await;
+            if !data
+                .storage_token
+                .as_ref()
+                .is_some_and(|token| token.user_id == user_id && token.machine_id == machine_id)
+            {
+                return;
+            }
+            data.applied_config_revision = None;
+            data.pending_managed_config_delta = None;
+            data.runtime_config_epoch = data.runtime_config_epoch.wrapping_add(1);
+            data.req.clone().map(|req| (data.notifier.clone(), req))
+        };
+        if let Some((notifier, req)) = notify {
+            let _ = notifier.send(req);
+        }
+    }
+
+    pub(crate) async fn invalidate_runtime_config_for_direct_mutation(&self) {
+        let notify = {
+            let mut data = self.data.write().await;
+            if data.storage_token.is_none() {
+                return;
+            }
+            data.applied_config_revision = None;
+            data.pending_managed_config_delta = None;
+            data.runtime_config_epoch = data.runtime_config_epoch.wrapping_add(1);
             data.req.clone().map(|req| (data.notifier.clone(), req))
         };
         if let Some((notifier, req)) = notify {
@@ -732,6 +823,11 @@ impl Session {
 
     pub async fn get_heartbeat_req(&self) -> Option<HeartbeatRequest> {
         self.data.read().await.req()
+    }
+
+    #[cfg(test)]
+    pub(super) async fn applied_config_revision(&self) -> Option<String> {
+        self.data.read().await.applied_config_revision.clone()
     }
 }
 

@@ -2,13 +2,14 @@
 
 ## Status
 
-- 状态：Proposed
-- 实施范围：EasyTier Web 的 HTTP 接收、校验和 SQLite 持久化
+- 状态：Implemented（核心协议、持久化与 Session 增量收敛）
+- 实施范围：EasyTier Web 的 HTTP 接收、校验、SQLite 持久化和 Session 运行态收敛
 - 上游依赖：后续由 Console 计算并发送 Patch
 - 兼容要求：保留现有 Full PUT
 
-本文只设计第一阶段的接收端优化。Session 收到 revision 通知后仍沿用现有
-Full reconcile；其运行态增量应用不在本阶段内。
+本文记录当前接收端方案。Session 在能够证明 Patch base 与已应用 revision 连续时
+只收敛 touched instances；重启、通知丢失、revision 断链或并发积压时沿用 Full
+reconcile。
 
 ## 1. 背景与结论
 
@@ -29,7 +30,8 @@ Console 每次发布都会向该路径发送完整 Exact Set。实例很多时�
 3. PATCH 使用 `expected_config_revision` 做 compare-and-swap（CAS）。
 4. Full/Patch 的配置变更与 revision 更新在一个 SQLite transaction 中提交。
 5. Patch 只查询和写入 touched instances，不扫描完整 Target。
-6. 写入成功后沿用现有 Session revision 通知，不在本阶段改造运行态应用。
+6. 写入成功后通知 Session 本次 base、target 和 touched instance IDs。
+7. Session 仅在 applied revision 精确匹配 base 时增量收敛，否则安全回退 Full。
 
 普通变更的接收端成本由：
 
@@ -40,7 +42,7 @@ O(total instances)
 降为：
 
 ```text
-wire / JSON / persistence transaction = O(changed instances)
+wire / JSON / persistence transaction / runtime config apply = O(changed instances)
 ```
 
 冷启动或 revision 冲突仍需要 `O(total)` 的 Full。这是没有可用基线时传递完整
@@ -63,10 +65,9 @@ snapshot，而不是直接分页写入 live rows。
 
 1. 修改 `/validate-token` request/response。
 2. 在本阶段实现 Console 的 diff/cache 逻辑。
-3. 优化 Session 的 runtime Full reconcile。
-4. 优化 Core heartbeat 中的完整运行实例上报。
-5. 实现 Full 分页、上传会话或持久化 delivery FSM。
-6. 让冷启动 Full 的成本低于 `O(total)`。
+3. 优化 Core heartbeat 中的完整运行实例上报。
+4. 实现 Full 分页、上传会话或持久化 delivery FSM。
+5. 让冷启动 Full 的成本低于 `O(total)`。
 
 ## 3. 必须保持的语义
 
@@ -203,8 +204,11 @@ Patch contract：
 | 条目数或单 config 超过限制 | 422 | 超出接收端容量 contract |
 | SQLite 错误 | 500 | Transaction rollback |
 
-409 返回机器可读的 error kind，并可包含当前 persisted revision；不得返回配置
-内容。日志不得记录 token、secret 或完整 config JSON。
+409 返回机器可读字段：revision 冲突为
+`code=managed_config_revision_conflict` 并在已知时带
+`current_config_revision`；ownership 冲突为
+`code=managed_config_ownership_conflict`。响应不得返回配置内容。日志不得记录
+token、secret 或完整 config JSON。
 
 ## 5. Receiver architecture
 
@@ -216,7 +220,7 @@ Patch contract：
 | `ClientManager` | 解析 Target，调用 managed-config Interface，成功后通知 Session |
 | `client_manager::managed_config` | Full/Patch 规则、归一化、typed outcome |
 | `Db` Adapter | CAS、ownership fence、批量 mutation、revision transaction |
-| Session runtime reconciliation | 保持现有实现，收到 revision 通知后 Full reconcile |
+| Session runtime reconciliation | 校验 applied/base/target fence，增量收敛 touched instances；断链时 Full |
 
 HTTP Adapter 不实现 ownership、diff 或 transaction 逻辑。PUT 和 PATCH 共用
 managed-config Module，避免两套规则逐渐分叉。
@@ -367,10 +371,24 @@ revision。只影响 user-owned rows 的操作不清除 managed revision。
 - 只有带 target revision 的 `Applied` 才通知匹配的 live Session；
   `AlreadyApplied`、legacy unrevisioned Full、conflict 和失败不重复通知。
 - Notification 必须发生在 commit 之后。
-
-本阶段通知仍只携带 target revision。Session 随后读取完整 persisted projection
-并按现有逻辑 reconcile，因此 HTTP/persistence request path 已是 `O(delta)`，
-运行态应用暂时仍可能是 `O(total)`。
+- Full notification 清除任何 pending delta，触发完整收敛。
+- Patch notification 携带 expected revision、target revision、upsert IDs 和本次
+  transaction 实际接受删除的 web-owned IDs。请求删除但数据库原本不存在的 ID
+  仍是 no-op，不能借机删除 Core 中同 ID 的 user-owned 实例。只有 Session applied
+  revision 精确等于 expected revision，且没有更早的 Patch 等待处理时，才保留该
+  delta。
+- 两次 Patch 在前一次完成前积压时不合并 delta；Session 清除 pending delta，并在
+  最新 heartbeat/revision 上执行一次 Full。这避免引入 Patch queue 或 delivery FSM。
+- 增量 round 只读取 upsert rows，只删除本次 delete IDs，只对 touched running
+  instances 执行 runtime Patch/Run。完成前再次校验 persisted target revision；只有
+  全部 touched instances 成功且 target 仍相同，才推进 applied revision。
+- 任何通过 EasyTier Web mutation route 直接 Run、Save、Delete 或切换实例状态的
+  操作在执行前和结束后（包括部分 side effect 后返回错误）都清除 Session applied
+  revision 与 pending delta、增加运行配置 cache epoch，并唤醒一次 Full
+  reconcile。旧 round 只有 epoch 仍匹配时才能推进 applied revision；新一轮不得
+  信任 mutation 前缓存的 runtime config。否则 runtime-only mutation 或 Core 成功、
+  SQLite 失败的复合 mutation 可能在 persisted revision 不变时破坏 Patch base 的
+  完整性。
 
 ## 7. Capacity contract
 
@@ -473,8 +491,11 @@ response 当作旧 receiver 并静默换一种 mutation contract；出现 404 �
 - 超限 Full 稳定返回 413/422，而不是耗尽进程内存；
 - 并发请求无 deadlock，且 CAS 结果确定。
 
-Session 测试只验证：新 commit 通知一次，AlreadyApplied/conflict 不通知，persisted
-成功不直接推进 applied revision。本阶段不要求 runtime RPC 数量为 O(delta)。
+Session 测试还必须验证：精确 base/target 使用 touched-instance reconcile；base
+不匹配、目标 revision 已变化、Full notification 和 Patch backlog 都使用 Full；
+touched runtime apply 失败不推进 applied revision；删除只作用于本次 delete IDs。
+运行态 Config Get/Patch/Run/Delete 数量应随 touched instances 增长。为确认运行实例
+身份而进行的一次 list/meta RPC 可以保留，它不发送或重写所有实例配置。
 
 ## 11. Observability
 
@@ -500,16 +521,11 @@ Rollout acceptance：
 
 ## 12. 后续优化
 
-### 12.1 Session runtime delta apply
+### 12.1 Session runtime delta apply（已实现）
 
-本阶段完成后，一次 Patch 虽然只增量入库，现有 Session revision worker 仍可能
-读取并 reconcile 全部 persisted configs。这不影响 HTTP 接收端落地，但大 Target
-的运行态应用仍可能是下一个瓶颈。
-
-后续可让 commit outcome 携带 touched IDs，并在 applied revision 正好等于 Patch
-base 时只 reconcile 这些实例；重启、revision 断链或通知丢失时退回 Full。该方案
-涉及 Session pending state、通知合并和 applied revision fencing，应单独设计和
-评审，不混入本阶段 Patch Interface。
+Patch commit outcome 已携带 touched IDs。Session 只在 applied revision 正好等于
+Patch base 时执行 touched-instance reconcile；重启、revision 断链、通知丢失或
+并发 Patch backlog 都退回 Full。接收端不保存 Patch queue，也不合并 delta。
 
 ### 12.2 Chunked Full
 
@@ -532,15 +548,16 @@ snapshot ID、staging rows、expiry、finalize 和 atomic swap 的协议。在�
 
 完成条件：
 
-- [ ] 现有 Full compatibility tests 固定。
-- [ ] Full config rows 与 revision 原子提交。
-- [ ] Alternate web-owned mutations 原子清除 revision。
-- [ ] PATCH contract 和 typed 409 实现。
-- [ ] Patch 只查询、写入 touched IDs。
+- [x] 现有 Full compatibility tests 固定。
+- [x] Full config rows 与 revision 原子提交。
+- [x] Alternate web-owned mutations 原子清除 revision。
+- [x] PATCH contract 和 typed 409 实现。
+- [x] Patch 只查询、写入 touched IDs。
 - [ ] Bulk SQL 遵守 tested bind-count bound。
 - [ ] Route byte/count/per-entry limits 有文档和测试。
-- [ ] User-owned rows 不能被 Full/Patch 覆盖或删除。
-- [ ] Empty Full 语义保持。
-- [ ] Applied/AlreadyApplied/conflict 的通知行为符合设计。
+- [x] User-owned rows 不能被 Full/Patch 覆盖或删除。
+- [x] Empty Full 语义保持。
+- [x] Applied/AlreadyApplied/conflict 的通知行为符合设计。
+- [x] Session 在 revision 连续时只收敛 touched instances，断链时使用 Full。
 - [ ] 1k/10k scale 与 concurrent CAS tests 通过。
 - [ ] Receiver-first compatibility matrix 通过。

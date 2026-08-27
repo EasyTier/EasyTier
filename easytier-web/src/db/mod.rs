@@ -50,7 +50,9 @@ pub(crate) enum ManagedConfigUpdate {
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ManagedConfigApplyResult {
-    Applied,
+    Applied {
+        deleted_web_instance_ids: Vec<Uuid>,
+    },
     AlreadyApplied,
     RevisionConflict {
         expected: Option<String>,
@@ -546,9 +548,17 @@ impl Db {
             ManagedConfigUpdate::Patch {
                 delete_instance_ids,
                 ..
-            } => delete_instance_ids.clone(),
+            } => delete_instance_ids
+                .iter()
+                .filter(|instance_id| {
+                    existing_sources
+                        .get(instance_id)
+                        .is_some_and(|source| source == ConfigSource::Web.as_str())
+                })
+                .copied()
+                .collect(),
         };
-        for instance_id in delete_instance_ids {
+        for instance_id in &delete_instance_ids {
             sqlx::query(
                 r#"
                 DELETE FROM user_running_network_configs
@@ -574,7 +584,9 @@ impl Db {
             }
         }
         transaction.commit().await.map_err(sqlx_db_error)?;
-        Ok(ManagedConfigApplyResult::Applied)
+        Ok(ManagedConfigApplyResult::Applied {
+            deleted_web_instance_ids: delete_instance_ids,
+        })
     }
 
     pub async fn delete_web_network_configs(

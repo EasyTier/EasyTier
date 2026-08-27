@@ -46,9 +46,11 @@ pub(crate) enum ManagedConfigError {
     OwnershipConflict { instance_id: uuid::Uuid },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ManagedConfigApplyStatus {
-    Applied,
+    Applied {
+        deleted_web_instance_ids: Vec<uuid::Uuid>,
+    },
     AlreadyApplied,
 }
 
@@ -243,7 +245,11 @@ fn normalize_desired_web_configs(
 
 fn map_apply_result(result: ManagedConfigApplyResult) -> anyhow::Result<ManagedConfigApplyStatus> {
     match result {
-        ManagedConfigApplyResult::Applied => Ok(ManagedConfigApplyStatus::Applied),
+        ManagedConfigApplyResult::Applied {
+            deleted_web_instance_ids,
+        } => Ok(ManagedConfigApplyStatus::Applied {
+            deleted_web_instance_ids,
+        }),
         ManagedConfigApplyResult::AlreadyApplied => Ok(ManagedConfigApplyStatus::AlreadyApplied),
         ManagedConfigApplyResult::RevisionConflict { expected, current } => {
             Err(ManagedConfigError::RevisionConflict { expected, current }.into())
@@ -831,6 +837,7 @@ mod tests {
         let machine_id = uuid::Uuid::new_v4();
         let update_id = uuid::Uuid::new_v4();
         let delete_id = uuid::Uuid::new_v4();
+        let missing_delete_id = uuid::Uuid::new_v4();
         let add_id = uuid::Uuid::new_v4();
 
         reconcile_web_source_configs(
@@ -855,13 +862,18 @@ mod tests {
                 managed_config(update_id, "after"),
                 managed_config(add_id, "added"),
             ],
-            vec![delete_id],
+            vec![delete_id, missing_delete_id],
             "rev-2",
             "rev-1",
         )
         .await
         .unwrap();
-        assert_eq!(status, ManagedConfigApplyStatus::Applied);
+        assert_eq!(
+            status,
+            ManagedConfigApplyStatus::Applied {
+                deleted_web_instance_ids: vec![delete_id],
+            }
+        );
 
         let retry_status = patch_web_source_configs(
             &storage,
