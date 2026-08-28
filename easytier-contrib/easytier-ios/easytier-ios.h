@@ -28,14 +28,34 @@ extern "C" {
 #endif
 
 /**
- * @brief Enable diagnostic EasyTier logging to stderr.
+ * @brief Configure persistent EasyTier diagnostic logging.
  *
- * Installs a narrow global tracing subscriber that records port-forward
- * lifecycle events. Repeated calls are idempotent.
+ * Enabling writes targeted connection trace/debug events into rotating log
+ * files in `directory`; disabling turns the filter off and flushes output.
  *
- * @return 0 on success, -1 if another tracing subscriber was installed first.
+ * @param directory UTF-8 directory path. Required when enabling; ignored when
+ *                  disabling.
+ * @param enabled Non-zero to enable, zero to disable.
+ * @return 0 on success, -1 on failure.
  */
-int easytier_ios_enable_diagnostic_logging(void);
+int easytier_ios_configure_diagnostic_logging(const char *directory,
+                                               int enabled);
+
+/**
+ * @brief Append a host lifecycle or network-path marker to the active log.
+ *
+ * This is a no-op while diagnostic logging is disabled.
+ *
+ * @param message Non-null NUL-terminated UTF-8 event text.
+ * @return 0 on success, -1 on failure.
+ */
+int easytier_ios_append_diagnostic_event(const char *message);
+
+/** @brief Flush diagnostic log output. */
+int easytier_ios_flush_diagnostic_logging(void);
+
+/** @brief Delete all diagnostic log content and reopen the active log. */
+int easytier_ios_clear_diagnostic_logs(void);
 
 /**
  * @brief Start one EasyTier network instance from a TOML config string.
