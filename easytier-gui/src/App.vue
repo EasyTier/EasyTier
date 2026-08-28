@@ -9,5 +9,6 @@ onBeforeMount(async () => {
 
 <template>
   <Toast position="bottom-right" />
+  <ConfirmPopup group="service" />
   <RouterView />
 </template>

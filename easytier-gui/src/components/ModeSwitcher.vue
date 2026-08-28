@@ -160,6 +160,13 @@ watch(() => model.value.mode, async (newMode, oldMode) => {
   }
 }, { immediate: true })
 
+async function refreshServiceStatus() {
+  serviceStatus.value = await getServiceStatus()
+  isServiceStatusLoaded.value = true
+}
+
+defineExpose({ refreshServiceStatus })
+
 </script>
 
 <template>
@@ -204,11 +211,6 @@ watch(() => model.value.mode, async (newMode, oldMode) => {
         <InputText id="rpc-portal" v-model="serviceMode.rpc_portal" class="flex-1" />
       </div>
       <div class="flex items-center gap-2">
-        <label for="log-level">{{ t('mode.log_level') }}</label>
-        <Select id="log-level" v-model="serviceMode.file_log_level"
-          :options="['off', 'warn', 'info', 'debug', 'trace']" />
-      </div>
-      <div class="flex items-center gap-2">
         <label for="log-dir">{{ t('mode.log_dir') }}</label>
         <InputText id="log-dir" v-model="serviceMode.file_log_dir" class="flex-1" />
       </div>
@@ -221,7 +223,7 @@ watch(() => model.value.mode, async (newMode, oldMode) => {
           <Button :label="t('mode.stop_service')" icon="pi pi-stop-circle" v-if="serviceStatus === 'Running'"
             @click="emit('stop-service')" severity="warn" text />
           <Button :label="t('mode.uninstall_service')" icon="pi pi-trash" v-if="serviceStatus !== 'NotInstalled'"
-            @click="emit('uninstall-service')" severity="danger" text />
+            @click="emit('uninstall-service', $event)" severity="danger" text />
         </div>
       </div>
     </div>

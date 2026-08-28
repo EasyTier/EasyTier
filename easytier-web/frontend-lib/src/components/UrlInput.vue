@@ -7,6 +7,7 @@ import { useI18n } from 'vue-i18n'
 
 const props = defineProps<{
     placeholder?: string
+    title?: string
     protos: { [proto: string]: number }
 }>()
 
@@ -180,7 +181,7 @@ const onProtoChange = (newProto: string) => {
             </div>
         </div>
 
-        <Dialog v-model:visible="editing" modal :header="placeholder" :style="{ width: '90vw', maxWidth: '500px' }">
+        <Dialog v-model:visible="editing" modal :header="title || t('web.common.edit')" :style="{ width: '90vw', maxWidth: '500px' }">
             <div class="flex flex-col gap-4 py-4">
                 <div class="flex flex-col gap-2">
                     <label>{{ t('tunnel_proto') }}</label>

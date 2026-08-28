@@ -17,7 +17,7 @@ import { useI18n } from 'vue-i18n'
 import AclManager from './acl/AclManager.vue'
 import UrlListInput from './UrlListInput.vue'
 
-const props = defineProps<{
+defineProps<{
   actionLabel?: string
   configInvalid?: boolean
   hostname?: string
@@ -297,7 +297,7 @@ function removeVpnPortalClient(index: number) {
                   </div>
                   <div class="items-center flex flex-col p-fluid gap-y-2">
                     <UrlListInput id="initial_nodes" v-model="curNetwork.peer_urls" :protos="protos"
-                      defaultUrl="tcp://:11010" :add-label="t('add_initial_node')"
+                      defaultUrl="tcp://:11010" :add-label="t('add_initial_node')" :title="t('initial_nodes')"
                       :placeholder="t('initial_node_placeholder')" />
                   </div>
                 </div>
@@ -329,7 +329,7 @@ function removeVpnPortalClient(index: number) {
                 <div class="flex flex-col gap-2 basis-5/12 grow">
                   <label for="hostname">{{ t('hostname') }}</label>
                   <InputText id="hostname" v-model="curNetwork.hostname" aria-describedby="hostname-help" :format="true"
-                    :placeholder="t('hostname_placeholder', [props.hostname])" />
+                    :placeholder="t('hostname_placeholder', [hostname])" />
                 </div>
               </div>
 
@@ -344,7 +344,7 @@ function removeVpnPortalClient(index: number) {
 
               <div class="flex flex-row gap-x-9 flex-wrap ">
                 <div class="flex flex-col gap-2 grow">
-                  <label>VPN Portal</label>
+                  <label for="username">{{ t('enable_vpn_portal') }}</label>
                   <ToggleButton v-model="vpnPortalEnabled" on-icon="pi pi-check" off-icon="pi pi-times"
                     :on-label="t('off_text')" :off-label="t('on_text')" class="w-48" />
                   <div v-if="vpnPortalEnabled" class="flex flex-col gap-3 w-full">
@@ -403,7 +403,7 @@ function removeVpnPortalClient(index: number) {
                 <div class="flex flex-col gap-2 grow p-fluid">
                   <label for="listener_urls">{{ t('listener_urls') }}</label>
                   <UrlListInput v-model="curNetwork.listener_urls" :protos="protos" :add-label="t('add_listener_url')"
-                    placeholder="0.0.0.0" />
+                    :title="t('listener_urls')" placeholder="0.0.0.0" />
                 </div>
               </div>
 
@@ -512,7 +512,7 @@ function removeVpnPortalClient(index: number) {
                     <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('mapped_listeners_help')"></span>
                   </div>
                   <UrlListInput v-model="curNetwork.mapped_listeners" :protos="protos"
-                    :add-label="t('add_mapped_listener')" />
+                    :add-label="t('add_mapped_listener')" :title="t('mapped_listeners')" />
                 </div>
               </div>
 
@@ -526,7 +526,7 @@ function removeVpnPortalClient(index: number) {
               <div class="flex flex-row gap-x-9 flex-wrap w-full">
                 <div class="flex flex-col gap-2 grow p-fluid">
                   <div class="flex">
-                    <label for="port_forwards">{{ t('port_forwards_help') }}</label>
+                    <div class="text-sm text-gray-600 whitespace-pre-wrap" style="line-height: 1.6;">{{ t('port_forwards_help') }}</div>
                   </div>
                   <div v-for="(row, index) in curNetwork.port_forwards" :key="index" class="form-row">
                     <!-- Wide screen view -->

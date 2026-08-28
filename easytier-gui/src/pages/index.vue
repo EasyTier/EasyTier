@@ -16,10 +16,13 @@ import { useToast, useConfirm } from 'primevue'
 import { loadMode, saveMode, WebClientConfig, type Mode } from '~/composables/mode'
 import { saveLastNetworkInstanceId, loadLastNetworkInstanceId } from '~/composables/config'
 import ModeSwitcher from '~/components/ModeSwitcher.vue'
-import { getEasytierVersion, getServiceStatus } from '~/composables/backend'
+import { getEasytierVersion, getServiceStatus, setServiceStatus, initService } from '~/composables/backend'
+
+const deviceHostname = ref('')
 
 const { t, locale } = useI18n()
 const confirm = useConfirm()
+const modeSwitcherRef = ref()
 const aboutVisible = ref(false)
 const modeDialogVisible = ref(false)
 const currentMode = ref<Mode>({ mode: 'normal' })
@@ -54,8 +57,10 @@ async function onModeSave() {
   }
 }
 
-async function onUninstallService() {
+async function onUninstallService(event: any) {
   confirm.require({
+    target: event.currentTarget,
+    group: 'service',
     message: t('mode.uninstall_service_confirm'),
     header: t('mode.uninstall_service'),
     icon: 'pi pi-exclamation-triangle',
@@ -71,10 +76,24 @@ async function onUninstallService() {
     accept: async () => {
       isModeSaving.value = true
       try {
-        await initWithMode({ ...currentMode.value, mode: 'normal' });
-        await initService(undefined)
+        let serviceStatus = await getServiceStatus()
+        if (serviceStatus === "Running") {
+          manualDisconnect.value = true
+          await setServiceStatus(false)
+          serviceStatus = await getServiceStatus()
+          for (let i = 0; i < 10; i++) {
+            if (serviceStatus === "Stopped") {
+              break;
+            }
+            await new Promise(resolve => setTimeout(resolve, 100))
+            serviceStatus = await getServiceStatus()
+          }
+        }
+        if (serviceStatus !== 'NotInstalled') {
+          await initService(undefined)
+        }
+        modeSwitcherRef.value?.refreshServiceStatus()
         toast.add({ severity: 'success', summary: t('web.common.success'), detail: t('mode.uninstall_service_success'), life: 3000 })
-        modeDialogVisible.value = false
       } catch (e: any) {
         toast.add({ severity: 'error', summary: t('error'), detail: e, life: 10000 })
         console.error("Error uninstalling service", e)
@@ -104,8 +123,7 @@ async function onStopService() {
   manualDisconnect.value = true
   try {
     await setServiceStatus(false)
-    toast.add({ severity: 'success', summary: t('web.common.success'), detail: t('mode.stop_service_success'), life: 3000 })
-    modeDialogVisible.value = false
+    modeSwitcherRef.value?.refreshServiceStatus()
   }
   catch (e: any) {
     toast.add({ severity: 'error', summary: t('error'), detail: e, life: 10000 })
@@ -167,7 +185,15 @@ async function initWithMode(mode: Mode) {
         mode.installed_core_version = coreVersion
         serviceStatus = await getServiceStatus()
       }
-      if (serviceStatus === "Stopped") {
+      if (serviceStatus === "Running") {
+        await setServiceStatus(false)
+        for (let i = 0; i < 10; i++) {
+          serviceStatus = await getServiceStatus()
+          if (serviceStatus === "Stopped" || serviceStatus === "NotInstalled") break;
+          await new Promise(resolve => setTimeout(resolve, 100))
+        }
+        await setServiceStatus(true)
+      } else if (serviceStatus === "Stopped") {
         await setServiceStatus(true)
       }
       url = "tcp://" + mode.rpc_portal.replace("0.0.0.0", "127.0.0.1")
@@ -198,8 +224,7 @@ async function initWithMode(mode: Mode) {
     }
   }
   await sendConfigs(running_inst_ids.map(Utils.UuidToStr))
-  if (mode.mode === 'normal') {
-    mode.config_server_url = mode.config_server_url || undefined
+  if ('config_server_url' in mode && mode.config_server_url) {
     initWebClient(mode.config_server_url)
   }
   currentMode.value = mode
@@ -209,6 +234,11 @@ async function initWithMode(mode: Mode) {
 
 onMounted(async () => {
   const cleanupFns: Array<() => void> = []
+
+  try {
+    const { hostname } = await import('@tauri-apps/plugin-os')
+    deviceHostname.value = (await hostname()) ?? ''
+  } catch (_) { /* ignore */ }
 
   if (type() === 'android') {
     try {
@@ -350,13 +380,13 @@ const setting_menu_items: Ref<MenuItem[]> = ref([
     },
   },
   {
-    label: () => `${t('mode.switch_mode')}: ${t('mode.' + currentMode.value.mode)}`,
+    label: () => `${t('mode.switch_mode_label')}${t('mode.' + currentMode.value.mode)}`,
     icon: 'pi pi-sync',
     command: openModeDialog,
     visible: () => type() !== 'android',
   },
   {
-    label: () => `${t('config-server.title')}${t('config-server.' + configServerConnectionStatus.value)}`,
+    label: () => `${t('config-server.title_label')}${t('config-server.' + configServerConnectionStatus.value)}`,
     icon: 'pi pi-globe',
     command: openConfigServerDialog,
     visible: () => ["normal", "service"].includes(currentMode.value.mode),
@@ -425,8 +455,7 @@ async function onConfigServerSave() {
 }
 onMounted(() => {
   const timer = setInterval(async () => {
-    if (currentMode.value.mode !== 'normal') return;
-    if (!currentMode.value.config_server_url) return;
+    if (!('config_server_url' in currentMode.value) || !currentMode.value.config_server_url) return;
     configServerConnected.value = await isWebClientConnected();
   }, 1000)
 
@@ -435,10 +464,7 @@ onMounted(() => {
   })
 })
 const configServerConnectionStatus = computed(() => {
-  if (currentMode.value.mode !== 'normal') {
-    return 'unknown'
-  }
-  if (!currentMode.value.config_server_url) {
+  if (!('config_server_url' in currentMode.value) || !currentMode.value.config_server_url) {
     return 'disconnected'
   }
   return configServerConnected.value ? 'connected' : 'connecting'
@@ -452,7 +478,7 @@ const configServerConnectionStatus = computed(() => {
       <About />
     </Dialog>
     <Dialog v-model:visible="modeDialogVisible" modal :header="t('mode.switch_mode')" :style="{ width: '50vw' }">
-      <ModeSwitcher v-model="editingMode" @uninstall-service="onUninstallService" @stop-service="onStopService" />
+      <ModeSwitcher ref="modeSwitcherRef" v-model="editingMode" @uninstall-service="onUninstallService" @stop-service="onStopService" />
       <template #footer>
         <Button :label="t('web.common.cancel')" icon="pi pi-times" @click="modeDialogVisible = false" text />
         <Button :label="t('web.common.save')" icon="pi pi-save" @click="onModeSave" autofocus :loading="isModeSaving" />
@@ -477,7 +503,7 @@ const configServerConnectionStatus = computed(() => {
     <Menu ref="log_menu" :model="log_menu_items_popup" :popup="true" />
 
     <RemoteManagement v-if="clientRunning" class="flex-1 overflow-y-auto" :api="remoteClient"
-      :pause-auto-refresh="isModeSaving" v-model:instance-id="instanceId" />
+      :pause-auto-refresh="isModeSaving" v-model:instance-id="instanceId" :device-hostname="deviceHostname" />
     <div v-else class="empty-state flex-1 flex flex-col items-center py-12">
       <i class="pi pi-server text-5xl text-secondary mb-4 opacity-50"></i>
       <div class="text-xl text-center font-medium mb-3">{{ t('client.not_running') }}

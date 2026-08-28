@@ -1,302 +1,3 @@
-network: Network
-networking_method: Networking Method
-public_server: Public Server
-manual: Manual
-standalone: Standalone
-initial_nodes: Initial Nodes
-initial_nodes_help: |
-  EasyTier does not distinguish between server and client roles.
-  • Filling in Initial Nodes = plugging in the cable and joining an existing network.
-  • Leaving it empty = the node starts alone until others connect to it, or you connect it later yourself.
-  • Direct or indirect connectivity, including through relay nodes, can form one network.
-  Initial nodes can be your own nodes or ones shared by others.
-initial_node_placeholder: "Example: node.example.com"
-virtual_ipv4: Virtual IPv4
-virtual_ipv4_dhcp: DHCP
-network_name: Network Name
-network_secret: Network Secret
-public_server_url: Public Server URL
-peer_urls: Peer URLs
-proxy_cidrs: Subnet Proxy CIDRs
-vpn_portal_wireguard_listen: WireGuard Listen Address
-vpn_portal_wireguard_listen_placeholder: "Example: 0.0.0.0:22022"
-vpn_portal_wireguard_private_key: WireGuard Server Private Key
-vpn_portal_wireguard_private_key_placeholder: Required base64 key (generate with wg genkey)
-vpn_portal_clients: WireGuard Clients
-vpn_portal_add_client: Add Client
-vpn_portal_no_clients: No clients configured
-vpn_portal_client_name: Client Name
-vpn_portal_client_name_placeholder: "Example: alice-phone"
-vpn_portal_client_virtual_ip: Virtual Network Address
-vpn_portal_client_virtual_ip_placeholder: "Example: 10.126.126.10"
-vpn_portal_client_groups: ACL Groups
-vpn_portal_client_groups_placeholder: Select ACL groups
-vpn_portal_remove_client: Remove Client
-dev_name: TUN interface name
-advanced_settings: Advanced Settings
-basic_settings: Basic Settings
-listener_urls: Listener URLs
-rpc_port: RPC Port
-port: Port
-rpc_portal_whitelists: RPC Whitelist
-config_network: Config Network
-running: Running
-error_msg: Error Message
-detail: Detail
-add_new_network: New Network
-add_peer_url: Add Peer
-add_initial_node: Add Initial Node
-add_listener_url: Add Listener
-add_mapped_listener: Add Mapped Listener
-del_cur_network: Delete Current Network
-select_network: Select Network
-network_instances: Network Instances
-instance_id: Instance ID
-network_infos: Network Infos
-parse_network_config: Parse Network Config
-config_generator_placeholder: Generated TOML configuration appears here
-generate_config: Generate Config
-copy_config: Copy Config
-config_copied: Copied
-config_generation_failed: Generation failed
-config_copy_failed: Copy failed
-retain_network_instance: Retain Network Instance
-collect_network_infos: Collect Network Infos
-settings: Settings
-exchange_language: 切换中文
-logging: Logging
-logging_level_info: Info
-logging_level_debug: Debug
-logging_level_warn: Warn
-logging_level_trace: Trace
-logging_level_off: Off
-logging_open_dir: Open Log Directory
-logging_copy_dir: Copy Log Path
-disable_auto_launch: Disable Launch on Reboot
-enable_auto_launch: Enable Launch on Reboot
-hide_dock_icon: Hide Dock Icon
-show_dock_icon: Show Dock Icon
-exit: Exit
-use_latency_first: Latency First Mode
-show_node_details: Show Node Details
-hide_node_details: Hide Node Details
-chips_placeholder: 'e.g: {0}, select from the dropdown after input'
-hostname_placeholder: 'Leave blank and default to host name: {0}'
-dev_name_placeholder: 'Note: When multiple networks use the same TUN interface name at the same time, there will be a conflict when setting the TUN''s IP. Leave blank to automatically generate a random name.'
-off_text: Press to disable
-on_text: Press to enable
-show_config: Show Config
-edit_config: Edit Config File
-config_file: Config File
-close: Close
-save: Save
-config_saved: Configuration saved
-my_node_info: My Node Info
-peer_count: Connected
-upload: Upload
-download: Download
-show_vpn_portal_config: Show VPN Portal Config
-vpn_portal_config: VPN Portal Config
-vpn_portal_not_configured: VPN Portal is not configured on this node
-vpn_portal_load_failed: Failed to load VPN Portal information
-vpn_portal_listener: Listener
-vpn_portal_type: Type
-vpn_portal_state: State
-vpn_portal_peer_id: Peer ID
-vpn_portal_endpoint: Client Endpoint
-vpn_portal_tunnel_ip: Client Tunnel Address
-vpn_portal_client_config: Client Config
-vpn_portal_copy_client_config: Copy Client Config
-vpn_portal_state_unspecified: Unknown
-vpn_portal_state_offline: Offline
-vpn_portal_state_connecting: Connecting
-vpn_portal_state_online: Online
-vpn_portal_state_error: Error
-show_event_log: Show Event Log
-event_log: Event Log
-peer_info: Peer Info
-route_cost: Route Cost
-tunnel_proto: Protocol
-hostname: Hostname
-latency: Latency
-upload_bytes: Upload
-download_bytes: Download
-loss_rate: Loss Rate
-nat_type: NAT Type
-
-flags_switch: Feature Switch
-
-latency_first: Enable Latency-First Mode
-latency_first_help: Ignore hop count and select the path with the lowest total latency
-
-use_smoltcp: Use User-Space Protocol Stack
-use_smoltcp_help: Use a user-space TCP/IP stack to avoid issues with operating system firewalls blocking subnet or KCP proxy functionality.
-
-disable_ipv6: Disable IPv6
-disable_ipv6_help: Disable IPv6 functionality for this node, only use IPv4 for network communication.
-
-ipv6_public_addr_auto: Auto Public IPv6
-ipv6_public_addr_auto_help: Auto-obtain a public IPv6 address from a peer that shares its IPv6 subnet.
-
-enable_kcp_proxy: Enable KCP Proxy
-enable_kcp_proxy_help: Convert TCP traffic to KCP traffic to reduce latency and boost transmission speed.
-
-disable_kcp_input: Disable KCP Input
-disable_kcp_input_help: Disable inbound KCP traffic, while nodes with KCP proxy enabled continue to connect using TCP.
-
-enable_quic_proxy: Enable QUIC Proxy
-enable_quic_proxy_help: Convert TCP traffic to QUIC traffic to reduce latency and boost transmission speed.
-
-disable_quic_input: Disable QUIC Input
-disable_quic_input_help: Disable inbound QUIC traffic, while nodes with QUIC proxy enabled continue to connect using TCP.
-
-disable_p2p: Disable P2P
-disable_p2p_help: Disable ordinary automatic P2P. Nodes with need-p2p enabled can still establish P2P with this node.
-
-p2p_only: P2P Only
-p2p_only_help: Only communicate with peers that have already established P2P connections, do not relay through other nodes.
-
-lazy_p2p: Lazy P2P
-lazy_p2p_help: Only try to establish P2P when traffic actually targets a peer. Peers with need-p2p enabled are still connected proactively.
-
-bind_device: Bind to Physical Device Only
-bind_device_help: Use only the physical network interface to prevent EasyTier from connecting via virtual networks.
-
-no_tun: No TUN Mode
-no_tun_help: Do not use a TUN interface, suitable for environments without administrator privileges. This node is only accessible; accessing other nodes requires SOCKS5.
-
-enable_exit_node: Enable Exit Node
-enable_exit_node_help: Allow this node to be an exit node
-
-relay_all_peer_rpc: Relay RPC Packets
-relay_all_peer_rpc_help: |
-  Relay all peer rpc packets, even if the peer is not in the relay network whitelist.
-  This can help peers not in relay network whitelist to establish p2p connection.
-
-need_p2p: Need P2P
-need_p2p_help: Ask other peers to proactively establish P2P connections to this node even when they enable lazy P2P.
-
-multi_thread: Multi Thread
-multi_thread_help: Use multi-thread runtime
-
-proxy_forward_by_system: System Forward
-proxy_forward_by_system_help: Forward packet to proxy networks via system kernel, disable internal nat for network proxy
-
-disable_encryption: Disable Encryption
-disable_encryption_help: Disable encryption for peers communication. Encryption is enabled by default, this option must be same with peers.
-
-disable_tcp_hole_punching: Disable TCP Hole Punching
-disable_tcp_hole_punching_help: Disable tcp hole punching
-
-disable_udp_hole_punching: Disable UDP Hole Punching
-disable_udp_hole_punching_help: Disable udp hole punching
-
-enable_udp_broadcast_relay: UDP Broadcast Relay
-enable_udp_broadcast_relay_help: "Windows only: capture local UDP broadcast packets from physical interfaces and forward them to EasyTier peers. Helps games to find rooms in local network. Requires administrator privileges."
-
-disable_upnp: Disable UPnP
-disable_upnp_help: Disable runtime UPnP/NAT-PMP port mapping for eligible listeners; automatic port mapping is enabled by default.
-
-disable_sym_hole_punching: Disable Symmetric NAT Hole Punching
-disable_sym_hole_punching_help: Disable special hole punching handling for symmetric NAT (based on birthday attack), treat symmetric NAT as cone NAT
-
-enable_magic_dns: Enable Magic DNS
-enable_magic_dns_help: |
-  Enable magic dns, all nodes in the network can access each other by domain name, e.g.: node1.et.net.
-
-enable_private_mode: Enable Private Mode
-enable_private_mode_help: |
-  Enable private mode, nodes with different network names or passwords from this network are not allowed to perform handshake or relay through this node.
-
-relay_network_whitelist: Network Whitelist
-relay_network_whitelist_help: |
-  Only forward traffic from the whitelist networks, supporting wildcard strings, multiple network names can be separated by spaces.
-  If this parameter is empty, forwarding is disabled. By default, all networks are allowed.
-  e.g.: '*' (all networks), 'def*' (networks with the prefix 'def'), 'net1 net2' (only allow net1 and net2)
-
-manual_routes: Manual Route
-manual_routes_help: |
-  Assign routes cidr manually, will disable subnet proxy and wireguard routes propagated from peers. e.g.:192.168.0.0/16
-
-socks5: Socks5 Server
-socks5_help: |
-  Enable socks5 server, allow socks5 client to access virtual network. format: <port>, e.g.: 1080
-
-exit_nodes: Exit Nodes
-exit_nodes_help: Exit nodes to forward all traffic to, a virtual ipv4 address, priority is determined by the order of the list
-
-port_forwards: Port Forward
-port_forwards_help: "forward local port to remote port in virtual network. e.g.: udp://0.0.0.0:12345/10.126.126.1:23456, means forward local udp port 12345 to 10.126.126.1:23456 in the virtual network. can specify multiple."
-port_forwards_bind_addr: "Bind address, e.g.: 0.0.0.0"
-port_forwards_dst_addr: "Destination address, e.g.: 10.126.126.1"
-port_forwards_add_btn: "Add"
-edit_port_forward: "Edit Port Forward"
-
-mtu: MTU
-mtu_help: |
-  MTU of the TUN device, default is 1380 for non-encryption, 1360 for encryption. Range:400-1380
-mtu_placeholder: Leave blank as default value 1380
-
-instance_recv_bps_limit: Instance Receive Limit
-instance_recv_bps_limit_help: |
-  Limit the total receive bandwidth for the whole instance. Unit: bytes per second.
-  Leave blank for no limit.
-instance_recv_bps_limit_placeholder: Leave blank for no limit
-
-mapped_listeners: Map Listeners
-mapped_listeners_help: |
-  Manually specify the public address of the listener, other nodes can use this address to connect to this node.
-  e.g.: tcp://123.123.123.123:11223, can specify multiple.
-
-status:
-  version: Version
-  local: Local
-  server: Server
-  relay: Relay
-
-run_network: Run Network
-stop_network: Stop Network
-network_running: running
-network_stopped: stopped
-dhcp_experimental_warning: Experimental warning! if there is an IP conflict in the network when using DHCP, the IP will be automatically changed.
-
-tray:
-  show: Show / Hide
-  exit: Exit
-
-about:
-  title: About
-  version: Version
-  author: Author
-  homepage: Homepage
-  license: License
-  description: 'EasyTier is a simple, safe and decentralized VPN networking solution implemented with the Rust language and Tokio framework.'
-  check_update: Check Update
-
-event:
-  Unknown: Unknown
-  TunDeviceReady: TunDeviceReady
-  TunDeviceError: TunDeviceError
-  PeerAdded: PeerAdded
-  PeerRemoved: PeerRemoved
-  PeerConnAdded: PeerConnAdded
-  PeerConnRemoved: PeerConnRemoved
-  ListenerAdded: ListenerAdded
-  ListenerAddFailed: ListenerAddFailed
-  ListenerAcceptFailed: ListenerAcceptFailed
-  ConnectionAccepted: ConnectionAccepted
-  ConnectionError: ConnectionError
-  Connecting: Connecting
-  ConnectError: ConnectError
-  VpnPortalStarted: VpnPortalStarted
-  VpnPortalClientConnected: VpnPortalClientConnected
-  VpnPortalClientDisconnected: VpnPortalClientDisconnected
-  DhcpIpv4Changed: DhcpIpv4Changed
-  DhcpIpv4Conflicted: DhcpIpv4Conflicted
-  PortForwardAdded: PortForwardAdded
-  ProxyCidrsUpdated: ProxyCidrsUpdated
-  UdpBroadcastRelayStartResult: UDP Broadcast Relay Start Result
-
 web:
   login:
     title: Login
@@ -309,7 +10,7 @@ web:
     captcha: Captcha
     back_to_login: Back to Login
     login: Login
-    sso_login: "SSO Login"
+    sso_login: SSO Login
 
   register:
     title: Register
@@ -318,11 +19,10 @@ web:
     confirm_password: Confirm Password
     submit: Register
     login: Back to Login
-  
+
   main:
     dashboard: Dashboard
     device_list: Device List
-    device_management: Device Management
     login_page: Login Page
     settings: Settings
     logout: Logout
@@ -331,7 +31,6 @@ web:
 
   device:
     list: Device List
-    management: Device Management
     add: Add Device
     delete: Delete Device
     refresh: Refresh
@@ -357,29 +56,28 @@ web:
     version: Version
     machine_id: Machine ID
     unknown_location: Unknown Location
-    
+
   device_management:
-    edit_network: Edit Network
-    export_config: Export Config
-    delete_network: Delete Network
     network: Network
-    select_network: Select Network
-    create_network: Create Network
-    cancel_edit: Cancel Edit
-    more_actions: More Actions
-    edit_as_file: Edit as File
+    create_new: Create Network
+    edit_network: Edit Network
+    edit_as_file: Edit Config File
+    import_config: Import Config
+    export_config: Export Config
+    export_config_success: Exported to default download directory
     save_config: Save Config
     config_saved: Config Saved
-    import_config: Import Config
-    create_new: Create New Network
+    delete_network: Delete Network
+    delete_network_confirm: Are you sure you want to delete the Network?
+    select_network: Select Network
+    cancel_edit: Cancel Edit
+    more_actions: More Actions
     network_status: Network Status
     loading_network_status: Loading Network Status
     network_info_unavailable: Network status is unavailable
-    network_configuration: Network Configuration
-    loading_network_configuration: Loading Network Configuration
-    no_network_selected: No Network Selected
-    select_existing_network_or_create_new: Select an existing network instance or create a new one to manage network settings
     disable_network: Disable Network
+    no_network_selected: No Network Selected
+    select_existing_network_or_create_new: Select a network or create a new one above to manage network settings
 
   network:
     title: Network
@@ -400,7 +98,7 @@ web:
     edit: Edit
     refresh: Refresh
     add: Add
-    loading: Loading...
+    loading: Loading…
     error: Error
     success: Success
     warning: Warning
@@ -419,57 +117,148 @@ web:
     theme: Theme
     logout: Logout
 
-mode:
-  title: Mode
-  switch_mode: Switch Mode
-  config_dir: Config Dir
-  rpc_portal: RPC Portal
-  enable_rpc_tcp_listen: Enable RPC port listening (TCP)
-  rpc_listen_port: RPC Listen Port
-  log_level: Log Level
-  log_dir: Log Dir
-  remote_rpc_address: Remote RPC Address
-  normal: Normal
-  service: Service
-  remote: Remote
-  normal_description: Run EasyTier directly, suitable for local use.
-  service_description: Run as a system service, supporting auto-startup and background operation. The service continues to run in the background after exiting the GUI.
-  remote_description: Connect to a remote RPC service to manage and control remote nodes.
-  service_status: Service Status
-  service_status_running: Running
-  service_status_stopped: Stopped
-  service_status_notinstalled: Not Installed
-  uninstall_service: Uninstall Service
-  stop_service: Stop Service
-  uninstall_service_confirm: Are you sure you want to uninstall the service?
-  uninstall_service_success: Service uninstalled successfully, switched back to normal mode
-  stop_service_success: Service stopped successfully
-  remote_rpc_address_empty: Remote RPC Address cannot be empty
-  service_config_empty: Service Config cannot be empty
-  rpc_connection_failed: "RPC connection failed: {error}"
 
-config-server:
-  title: Config Server
-  address: Config Server Address
-  address_placeholder: "e.g.: udp://127.0.0.1:22020/admin or admin"
-  description: |
-    Config server address, allowed formats:
-    Full URL: udp://127.0.0.1:22020/admin
-    Username only: admin (uses official server)
-    Leave blank: Don't connect to a config server
-  connection_status: Connection Status
-  connected: ": Connected"
-  disconnected: ": Disconnected"
-  connecting: ": Connecting..."
-  unknown: ""
-  update_service_confirm: The service will be restarted to apply changes, do you want to continue?
+network_running: Running
+network_stopped: Stopped
 
-client:
-  not_running: Unable to connect to remote client.
-  retry: Retry
+
+config_file: Config File
+
+
+basic_settings: Basic Settings
+network: Network Config
+virtual_ipv4: Virtual IPv4
+virtual_ipv4_dhcp: DHCP
+network_name: Network Name
+network_name_label: "Network Name: "
+network_secret: Network Secret
+initial_nodes: Initial Nodes
+initial_nodes_help: |
+  EasyTier is a decentralized tool and does not distinguish between server and client roles.
+  • Fill in this field = join an existing network.
+  • Leave empty = start as an initial node.
+  • Whether you connect directly to initial nodes or through other nodes in the network, you can communicate with all nodes in the network.
+  • You can use public servers as initial nodes, or set up your own.
+initial_node_placeholder: "Example: node.example.com"
+add_initial_node: Add Initial Node
+
+
+advanced_settings: Advanced Settings
+flags_switch: Feature Switch
+latency_first: Latency-First Mode
+latency_first_help: Ignore packet hop count and select the path with the lowest total latency
+use_smoltcp: User-Space Protocol Stack
+use_smoltcp_help: Use a user-space TCP/IP stack to avoid system firewall blocking subnet proxy / KCP proxy
+disable_ipv6: Disable IPv6
+disable_ipv6_help: Disable IPv6 functionality for this node, use IPv4 only
+ipv6_public_addr_auto: Auto Public IPv6
+ipv6_public_addr_auto_help: Accept IPv6 routes advertised by other nodes to assign a public IPv6 address to this node
+enable_kcp_proxy: KCP Proxy
+enable_kcp_proxy_help: Convert TCP traffic to KCP traffic
+disable_kcp_input: Reject KCP Inbound
+disable_kcp_input_help: Reject inbound KCP traffic; nodes with KCP proxy enabled will connect via TCP instead
+enable_quic_proxy: QUIC Proxy
+enable_quic_proxy_help: Convert TCP traffic to QUIC traffic
+disable_quic_input: Reject QUIC Inbound
+disable_quic_input_help: Reject inbound QUIC traffic; nodes with QUIC proxy enabled will connect via TCP instead
+disable_p2p: Disable P2P Hole Punching
+disable_p2p_help: Disable automatic hole punching, but nodes with "Need P2P" enabled can still establish P2P with this node
+p2p_only: P2P Only
+p2p_only_help: Only communicate with peers that have established P2P connections; do not communicate via relay
+lazy_p2p: Lazy P2P Hole Punching
+lazy_p2p_help: Only attempt P2P hole punching when data traffic requires a specific peer; still proactively connect to nodes with "Need P2P" enabled
+bind_device: Physical Device Only
+bind_device_help: Use only the physical network interface, prevent connections via virtual network interfaces
+no_tun: No TUN Mode
+no_tun_help: Do not use a TUN virtual interface; accessing other nodes requires SOCKS5 proxy
+enable_exit_node: Internet Gateway
+enable_exit_node_help: Allow this node to act as an internet gateway, forwarding all internet traffic from other nodes
+relay_all_peer_rpc: Relay All RPC Traffic
+relay_all_peer_rpc_help: Only effective when "Network Whitelist" is configured; relay RPC traffic for all nodes even if their network is not in the whitelist
+need_p2p: Need P2P
+need_p2p_help: Require other nodes to establish P2P connections with this node even if they have "Disable P2P Hole Punching" or "Lazy P2P Hole Punching" enabled
+multi_thread: Multi-threaded Mode
+multi_thread_help: Use multi-threaded runtime
+proxy_forward_by_system: System-Level Subnet Proxy
+proxy_forward_by_system_help: Disable built-in NAT, delegate subnet proxy forwarding to the system kernel
+disable_encryption: Disable Traffic Encryption
+disable_encryption_help: Encryption is enabled by default; to disable, this option must be enabled on all nodes
+disable_tcp_hole_punching: Disable TCP Hole Punching
+disable_tcp_hole_punching_help: Disable TCP hole punching
+disable_udp_hole_punching: Disable UDP Hole Punching
+disable_udp_hole_punching_help: Disable UDP hole punching
+enable_udp_broadcast_relay: Forward UDP Broadcast
+enable_udp_broadcast_relay_help: Capture UDP broadcast traffic from physical interfaces and forward it to other nodes, helping LAN games discover rooms
+disable_upnp: Disable UPnP/NAT-PMP
+disable_upnp_help: Automatic port mapping is enabled by default; enable this to disable port mapping
+disable_sym_hole_punching: Disable Port Prediction
+disable_sym_hole_punching_help: Disable port prediction for symmetric NAT; only attempt standard hole punching and fall back to relay on failure
+enable_magic_dns: Magic DNS
+enable_magic_dns_help: Allow accessing other nodes' virtual IPv4 addresses via EasyTier's DNS server, e.g. node1.et.net
+enable_private_mode: Private Network Mode
+enable_private_mode_help: Similar to a network whitelist; prevents nodes with different network names or passwords from using this node as an initial node. Must be enabled on all nodes
+hostname: Hostname
+hostname_placeholder: 'Leave blank to default to hostname: {0}'
+proxy_cidrs: Subnet Proxy CIDRs
+enable_vpn_portal: VPN Portal
+vpn_portal_wireguard_listen: WireGuard Listen Address
+vpn_portal_wireguard_listen_placeholder: "Example: 0.0.0.0:22022"
+vpn_portal_wireguard_private_key: WireGuard Server Private Key
+vpn_portal_wireguard_private_key_placeholder: Required base64 key (generate with wg genkey)
+vpn_portal_clients: WireGuard Clients
+vpn_portal_add_client: Add Client
+vpn_portal_no_clients: No clients configured
+vpn_portal_client_name: Client Name
+vpn_portal_client_name_placeholder: "Example: alice-phone"
+vpn_portal_client_virtual_ip: Virtual Network Address
+vpn_portal_client_virtual_ip_placeholder: "Example: 10.126.126.10"
+vpn_portal_client_groups: ACL Groups
+vpn_portal_client_groups_placeholder: Select ACL groups
+vpn_portal_remove_client: Remove Client
+listener_urls: Listener URLs
+add_listener_url: Add Listener
+dev_name: TUN Interface Name
+dev_name_placeholder: Leave blank to auto-generate a random name. Use different TUN names for different networks to avoid IP assignment conflicts
+mtu: MTU
+mtu_help: "Maximum Transmission Unit for the TUN virtual interface, range: 400-1380, defaults to 1380 (non-encrypted) or 1360 (encrypted)"
+mtu_placeholder: Leave blank for default
+instance_recv_bps_limit: Inbound Rate Limit
+instance_recv_bps_limit_help: "Limit the total inbound traffic rate for this node, unit: Byte/s"
+instance_recv_bps_limit_placeholder: Leave blank for no limit
+relay_network_whitelist: Network Whitelist
+relay_network_whitelist_help: |
+  Only allow nodes from whitelisted networks to use this node as an initial node. If empty, all networks are allowed.
+  Supports wildcard strings. Select from the dropdown after input to confirm. Use spaces to separate multiple network names, e.g.:
+  * means all networks;
+  def* means networks starting with "def";
+  net1 net2 means only net1 and net2
+manual_routes: Manual Routes
+manual_routes_help: This node will ignore full subnet routes shared by other nodes and only use the specified routes. Routes shared by this node via "Subnet Proxy CIDRs" are still broadcast normally
+socks5: SOCKS5 Server
+socks5_help: Enable SOCKS5 server to allow SOCKS5 clients to access the virtual network. Specify the server port to open
+exit_nodes: Internet Gateways
+exit_nodes_help: Virtual IPv4 addresses of nodes with "Internet Gateway" enabled. Priority is determined by list order
+mapped_listeners: Mapped Listeners
+mapped_listeners_help: Manually specify the public address of listeners in complex network environments, allowing other nodes to connect to this node
+add_mapped_listener: Add Mapped Listener
+
+
+port_forwards: Port Forwards
+port_forwards_help: |
+  · Forward traffic accessing a specified port on this node's host to a target IPv4 address and port via this node. Accessing a local port = accessing a remote service, without going through the virtual network.
+  · Suppose the host's physical IPv4 address is 192.168.1.2 and the virtual IPv4 address is 10.126.126.5.
+  · Usage examples:
+  · tcp://0.0.0.0:80/10.126.126.1:8080 means forwarding TCP traffic from port 80 on this node's host to the device at IPv4 10.126.126.1, port 8080;
+  · udp://0.0.0.0:12345/192.168.1.100:23456 means forwarding UDP traffic from port 12345 on this node's host to the device at IPv4 192.168.1.100, port 23456;
+  · tcp://10.126.126.2:11211/192.168.1.100:11211 will not work because the "Listen address" must be on this node's host.
+port_forwards_bind_addr: "Listen address, e.g.: 0.0.0.0"
+port_forwards_dst_addr: "Target address, e.g.: 10.126.126.1"
+port_forwards_add_btn: "Add"
+edit_port_forward: "Edit Forward Rule"
+
 
 acl:
-  title: Access Control (ACL)
+  title: Access Control
   help: Access control list to restrict communication between nodes.
   enabled: Enable ACL
   default_action: Default Action
@@ -510,3 +299,155 @@ acl:
     name: Name
     type: Type
   match: Match
+
+
+run_network: Run Network
+stop_network: Stop Network
+
+
+client:
+  not_running: Not connected to RPC
+  retry: Reconnect
+
+
+exchange_language: 切换中文
+mode:
+  switch_mode: Work Mode
+  switch_mode_label: "Work Mode: "
+  normal: Normal
+  normal_description: Run EasyTier directly, suitable for lightweight local use
+  enable_rpc_tcp_listen: RPC Port Listening (TCP)
+  service: Service
+  service_description: Register as a system service, auto-start on boot, keep running after GUI is closed
+  config_dir: Config Directory
+  rpc_portal: RPC Address
+  log_dir: Log Directory
+  service_config_empty: Service config cannot be empty
+  service_status: Status
+  service_status_running: Running
+  service_status_stopped: Stopped
+  service_status_notinstalled: Not Installed
+  stop_service: Stop
+  uninstall_service: Uninstall
+  uninstall_service_confirm: Are you sure you want to uninstall the service?
+  uninstall_service_success: Service uninstalled successfully
+  remote: Remote
+  remote_description: Manage and control remote nodes via RPC
+  remote_rpc_address: RPC Address
+  remote_rpc_address_empty: Remote RPC address cannot be empty
+  rpc_connection_failed: "RPC connection failed: {error}"
+config-server:
+  title: Web Dashboard
+  title_label: "Web Dashboard: "
+  address: Config Server Address
+  address_placeholder: "e.g.: udp://127.0.0.1:22020/admin"
+  description: Leave blank to not use the Web Dashboard
+  connection_status: Connection Status
+  connected: Connected
+  disconnected: Disconnected
+  connecting: Connecting…
+  unknown: ""
+  update_service_confirm: The service will be restarted to apply changes, do you want to continue?
+logging: Logging
+logging_level_off: Off
+logging_level_warn: Warn
+logging_level_info: Info
+logging_level_debug: Debug
+logging_level_trace: Trace
+logging_open_dir: Open Log Directory
+logging_copy_dir: Copy Log Path
+about:
+  title: About
+  version: Version
+  description: A simple, safe, and decentralized VPN networking solution implemented with the Rust language and Tokio framework.
+exit: Exit
+
+
+chips_placeholder: 'e.g.: {0}, select from the dropdown after input to confirm'
+port: Port
+off_text: Click to disable
+on_text: Click to enable
+close: Close
+save: Save
+config_saved: Configuration saved
+
+
+my_node_info: This Node
+upload_label: "Upload Speed: "
+download_label: "Download Speed: "
+show_node_details: Show Node Details
+hide_node_details: Hide Node Details
+show_vpn_portal_config: Show VPN Portal Config
+vpn_portal_config: VPN Portal Config
+vpn_portal_not_configured: VPN Portal is not configured on this node
+vpn_portal_load_failed: Failed to load information
+vpn_portal_listener: Listener
+vpn_portal_type: Type
+vpn_portal_state: State
+vpn_portal_peer_id: Peer ID
+vpn_portal_endpoint: Client Endpoint
+vpn_portal_tunnel_ip: Client Tunnel Address
+vpn_portal_client_config: Client Config
+vpn_portal_copy_client_config: Copy Client Config
+vpn_portal_state_unspecified: Unknown
+vpn_portal_state_offline: Offline
+vpn_portal_state_connecting: Connecting
+vpn_portal_state_online: Online
+vpn_portal_state_error: Error
+show_event_log: Show Event Log
+event_log: Event Log
+
+
+peer_info: Nodes in Network
+route_cost: Route Cost
+tunnel_proto: Protocol
+latency: Latency
+upload_bytes: Upload
+download_bytes: Download
+loss_rate: Loss Rate
+nat_type: NAT Type
+
+
+event:
+  Unknown: Unknown
+  TunDeviceReady: TUN device ready
+  TunDeviceError: TUN device error
+  PeerAdded: Peer added
+  PeerRemoved: Peer disconnected
+  PeerConnAdded: Peer connection added
+  PeerConnRemoved: Peer connection removed
+  ListenerAdded: Listener added
+  ListenerAddFailed: Listener add failed
+  ListenerAcceptFailed: Listener accept failed
+  ConnectionAccepted: Initial node accepted connection
+  ConnectionError: Initial node connection error
+  Connecting: Connecting to initial node
+  ConnectError: Initial node connection error
+  VpnPortalStarted: VPN Portal started
+  VpnPortalClientConnected: VPN Portal client connected
+  VpnPortalClientDisconnected: VPN Portal client disconnected
+  DhcpIpv4Changed: DHCP IPv4 changed
+  DhcpIpv4Conflicted: DHCP IPv4 conflict
+  PortForwardAdded: Port forward rule added
+  ProxyCidrsUpdated: Subnet proxy CIDRs updated
+  UdpBroadcastRelayStartResult: UDP broadcast relay result
+
+
+status:
+  relay: Relay
+  version: Kernel Version
+  local: Local
+  server: Server
+
+
+tray:
+  show: Show / Hide
+  exit: Exit
+
+
+config_generator_placeholder: Generated TOML configuration appears here
+generate_config: Generate Config
+copy_config: Copy Config
+config_copied: Copied
+config_generation_failed: Generation failed
+config_copy_failed: Copy failed
