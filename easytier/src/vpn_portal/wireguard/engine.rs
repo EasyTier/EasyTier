@@ -549,7 +549,7 @@ mod tests {
         DerivedClient {
             config: PortalClientConfig {
                 name: name.to_owned(),
-                virtual_ip: "192.0.2.1/24".parse().unwrap(),
+                virtual_ip: "10.82.0.2/24".parse().unwrap(),
                 groups: Vec::new(),
             },
             wireguard_private: secret.to_bytes(),

@@ -65,6 +65,11 @@ own static or DHCP address. A VPN portal derives the attached peer route and
 the external client's allowed network from that single CIDR; it does not infer
 either value from the portal-hosting instance.
 
+An external portal client uses that same IPv4 address on its native tunnel
+interface. The portal validates the source address and forwards IPv4 packets
+unchanged between the native tunnel and the attached peer; it does not assign
+a second tunnel-only address or perform address translation.
+
 Each manager owns its ACL execution state, route service, RPC endpoint, secure
 sessions, packet processing, and lifecycle. Portal code supplies raw packets
 and peer configuration but does not build, reload, or coordinate ACL filters.

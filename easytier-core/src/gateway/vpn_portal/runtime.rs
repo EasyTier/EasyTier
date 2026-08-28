@@ -2,7 +2,7 @@
 //!
 //! Native adapters authenticate clients and yield sessions. This module owns
 //! configured client identities, attached-peer lifetimes, per-client
-//! generations, and IPv4 address translation at the Host packet seam.
+//! generations, and raw IPv4 packet forwarding at the Host packet seam.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -29,10 +29,7 @@ use crate::{
     socket::SocketListener,
 };
 
-use super::ipv4_translator::{rewrite_ipv4_destination, rewrite_ipv4_source};
-
 pub const MAX_VPN_PORTAL_CLIENTS: usize = 64;
-pub const DEFAULT_PORTAL_CLIENT_ADDRESS: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 1);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PortalClientConfig {
@@ -428,7 +425,7 @@ impl PortalModule {
             status.generation = status.generation.wrapping_add(1);
             status.state = PortalClientState::Connecting;
             status.endpoint = Some(session.endpoint.borrow_and_update().clone());
-            status.tunnel_ip = None;
+            status.tunnel_ip = Some(client.virtual_ip.address());
             status.error = None;
             status.generation
         };
@@ -481,44 +478,15 @@ impl PortalModule {
         let mut client_stream = session.from_client;
         let endpoint = session.endpoint;
         let client_sink = session.to_client;
-        let client_ip = Arc::new(Mutex::new(None::<Ipv4Addr>));
         let client_to_mesh = {
             let attached = attached.clone();
-            let client_ip = client_ip.clone();
-            let statuses = statuses.clone();
             let name = client.name.clone();
             let virtual_ip = client.virtual_ip.address();
             tokio::spawn(async move {
-                while let Some(mut payload) = client_stream.recv().await {
-                    let Some(source) = ipv4_source(&payload) else {
+                while let Some(payload) = client_stream.recv().await {
+                    if !has_ipv4_source(&payload, virtual_ip) {
+                        tracing::warn!(client = %name, expected = ?virtual_ip, "VPN client source does not match its assigned address");
                         continue;
-                    };
-                    match *client_ip.lock().await {
-                        Some(expected) if expected != source => {
-                            tracing::warn!(client = %name, ?expected, ?source, "VPN client source changed");
-                            continue;
-                        }
-                        None | Some(_) => {}
-                    }
-                    if rewrite_ipv4_source(&mut payload, source, virtual_ip).is_err() {
-                        continue;
-                    }
-                    let learned = {
-                        let mut tunnel_ip = client_ip.lock().await;
-                        if tunnel_ip.is_none() {
-                            *tunnel_ip = Some(source);
-                            true
-                        } else {
-                            false
-                        }
-                    };
-                    if learned {
-                        let mut statuses = statuses.write().await;
-                        if let Some(status) = statuses.get_mut(&name)
-                            && status.generation == generation
-                        {
-                            status.tunnel_ip = Some(source);
-                        }
                     }
                     if let Err(error) = attached.send_packet(&payload).await {
                         tracing::debug!(?error, client = %name, "attached peer send failed");
@@ -529,27 +497,11 @@ impl PortalModule {
         };
         let mesh_to_client = {
             let attached = attached.clone();
-            let client_ip = client_ip.clone();
-            let statuses = statuses.clone();
-            let name = client.name.clone();
-            let virtual_ip = client.virtual_ip.address();
             tokio::spawn(async move {
                 while let Some(packet) = attached.recv_packet().await {
-                    let Some(tunnel_ip) = *client_ip.lock().await else {
-                        continue;
-                    };
-                    let mut payload = packet.payload().to_vec();
-                    if rewrite_ipv4_destination(&mut payload, virtual_ip, tunnel_ip).is_err() {
-                        continue;
-                    }
+                    let payload = packet.payload().to_vec();
                     if client_sink.send(payload).await.is_err() {
                         break;
-                    }
-                    let mut statuses = statuses.write().await;
-                    if let Some(status) = statuses.get_mut(&name)
-                        && status.generation == generation
-                    {
-                        status.tunnel_ip = Some(tunnel_ip);
                     }
                 }
             })
@@ -712,7 +664,7 @@ impl PortalModule {
                         client_allowed_ips.dedup();
                         host.render_client_config(&PortalClientConfigPlan {
                             name: client.name.clone(),
-                            address: DEFAULT_PORTAL_CLIENT_ADDRESS,
+                            address: client.virtual_ip.address(),
                             allowed_ips: client_allowed_ips,
                             listener_url: listener_url.clone(),
                         })
@@ -872,6 +824,10 @@ fn ipv4_source(payload: &[u8]) -> Option<Ipv4Addr> {
     ))
 }
 
+fn has_ipv4_source(payload: &[u8], expected: Ipv4Addr) -> bool {
+    ipv4_source(payload) == Some(expected)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -930,7 +886,12 @@ mod tests {
         }
 
         fn render_client_config(&self, plan: &PortalClientConfigPlan) -> String {
-            format!("config:{}:{}", plan.name, plan.allowed_ips.join(","))
+            format!(
+                "config:{}:{}:{}",
+                plan.name,
+                plan.address,
+                plan.allowed_ips.join(",")
+            )
         }
     }
 
@@ -1101,6 +1062,21 @@ mod tests {
         packet[20] = 8;
         packet
     }
+
+    #[test]
+    fn portal_client_packet_requires_its_assigned_source() {
+        let assigned = Ipv4Addr::new(10, 82, 0, 2);
+
+        assert!(has_ipv4_source(
+            &raw_ipv4(assigned, Ipv4Addr::new(10, 82, 0, 1)),
+            assigned
+        ));
+        assert!(!has_ipv4_source(
+            &raw_ipv4(Ipv4Addr::new(10, 82, 0, 99), Ipv4Addr::new(10, 82, 0, 1)),
+            assigned
+        ));
+        assert!(!has_ipv4_source(&[0u8; 8], assigned));
+    }
     fn network_runtime() -> (Arc<PeerManagerCore>, CoreRuntimeConfigStore) {
         network_runtime_with_secure_mode(false)
     }
@@ -1242,11 +1218,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn portal_session_publishes_learned_tunnel_ip_without_mesh_reply() {
+    async fn portal_session_publishes_virtual_ip_before_first_client_packet() {
         let (peer_manager, runtime_config) = network_runtime();
         peer_manager.run().await.unwrap();
+        let virtual_ip = Ipv4Addr::new(10, 82, 0, 2);
         let config = PortalRuntimeConfig {
-            clients: vec![client("alice", Ipv4Addr::new(10, 82, 0, 2), &["ops"])],
+            clients: vec![client("alice", virtual_ip, &["ops"])],
         };
         let statuses = Arc::new(RwLock::new(BTreeMap::from([(
             "alice".to_owned(),
@@ -1257,7 +1234,7 @@ mod tests {
             Arc::new(Mutex::new(())),
         )])));
         let (to_runtime, from_client) = mpsc::channel(1);
-        let (to_client, _from_runtime) = mpsc::channel(1);
+        let (to_client, mut from_runtime) = mpsc::channel(1);
         let (endpoint_sender, endpoint) = tokio::sync::watch::channel("portal://alice".to_owned());
         let session = PortalSession {
             client_name: "alice".to_owned(),
@@ -1279,34 +1256,51 @@ mod tests {
             cancel,
         ));
 
-        to_runtime
-            .send(raw_ipv4(
-                DEFAULT_PORTAL_CLIENT_ADDRESS,
-                Ipv4Addr::new(10, 82, 0, 1),
-            ))
-            .await
-            .unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
                 let status = statuses.read().await.get("alice").cloned().unwrap();
-                if status.tunnel_ip == Some(DEFAULT_PORTAL_CLIENT_ADDRESS) {
+                if status.state == PortalClientState::Online && status.tunnel_ip == Some(virtual_ip)
+                {
                     return;
                 }
                 assert_ne!(
                     status.state,
                     PortalClientState::Error,
-                    "portal session failed before learning tunnel IP: {:?}",
+                    "portal session failed before publishing virtual IP: {:?}",
                     status.error
                 );
                 assert!(
                     !task.is_finished(),
-                    "portal session ended before learning tunnel IP"
+                    "portal session ended before publishing virtual IP"
                 );
                 tokio::task::yield_now().await;
             }
         })
         .await
-        .expect("learned tunnel IP was not published");
+        .expect("configured virtual IP was not published before the first client packet");
+
+        let mesh_packet = raw_ipv4(Ipv4Addr::new(10, 82, 0, 1), virtual_ip);
+        let outbound = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let _ = peer_manager
+                    .send_msg_by_ip(
+                        crate::packet::ZCPacket::new_with_payload(&mesh_packet),
+                        IpAddr::V4(virtual_ip),
+                        false,
+                    )
+                    .await;
+                if let Ok(Some(packet)) =
+                    tokio::time::timeout(std::time::Duration::from_millis(20), from_runtime.recv())
+                        .await
+                {
+                    break packet;
+                }
+            }
+        })
+        .await
+        .expect("mesh packet was not delivered before the first client packet");
+        assert_eq!(&outbound[16..20], virtual_ip.octets().as_slice());
+
         endpoint_sender.send("portal://roamed".to_owned()).unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
@@ -1478,30 +1472,26 @@ mod tests {
         ));
 
         to_runtime
-            .send(raw_ipv4(
-                DEFAULT_PORTAL_CLIENT_ADDRESS,
-                Ipv4Addr::new(10, 82, 0, 1),
-            ))
+            .send(raw_ipv4(virtual_ip, Ipv4Addr::new(10, 82, 0, 1)))
             .await
             .unwrap();
         let attached_peer_id = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
                 let status = statuses.read().await.get("alice").cloned().unwrap();
-                if status.state == PortalClientState::Online
-                    && status.tunnel_ip == Some(DEFAULT_PORTAL_CLIENT_ADDRESS)
+                if status.state == PortalClientState::Online && status.tunnel_ip == Some(virtual_ip)
                 {
                     return status.peer_id.unwrap();
                 }
                 assert!(
                     !task.is_finished(),
-                    "portal session ended before learning its tunnel address: {:?}",
+                    "portal session ended before publishing its virtual address: {:?}",
                     status.error
                 );
                 tokio::task::yield_now().await;
             }
         })
         .await
-        .expect("portal session did not learn its tunnel address");
+        .expect("portal session did not publish its virtual address");
 
         drop(from_runtime);
         let mesh_packet = raw_ipv4(Ipv4Addr::new(10, 82, 0, 1), virtual_ip);
@@ -1667,6 +1657,7 @@ mod tests {
         module.start().await.unwrap();
         let snapshot = module.info_snapshot().await;
 
+        assert!(snapshot.clients[0].client_config.contains("10.90.0.2"));
         assert!(snapshot.clients[0].client_config.contains("10.90.0.0/16"));
         assert!(!snapshot.clients[0].client_config.contains("10.82.0.0/24"));
         module.stop().await;

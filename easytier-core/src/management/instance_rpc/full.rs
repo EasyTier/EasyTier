@@ -447,7 +447,7 @@ mod tests {
                     state: PortalClientState::Online,
                     peer_id: Some(42),
                     endpoint: Some("198.51.100.2:51820".to_owned()),
-                    tunnel_ip: Some(Ipv4Addr::new(192, 0, 2, 1)),
+                    tunnel_ip: Some(Ipv4Addr::new(10, 82, 0, 2)),
                     client_config: "[Interface]\nPrivateKey = secret\n".to_owned(),
                     error: None,
                 },
@@ -479,7 +479,7 @@ mod tests {
         assert_eq!(online.state, VpnPortalClientState::Online as i32);
         assert_eq!(online.peer_id, Some(42));
         assert_eq!(online.endpoint.as_deref(), Some("198.51.100.2:51820"));
-        assert_eq!(online.tunnel_ip.as_deref(), Some("192.0.2.1"));
+        assert_eq!(online.tunnel_ip.as_deref(), Some("10.82.0.2"));
         assert_eq!(online.client_config, "[Interface]\nPrivateKey = secret\n");
         assert_eq!(online.error, None);
 
