@@ -52,6 +52,12 @@ authenticated portal client owns one complete peer manager. The managers are
 protocol peers; `attached` describes only the local transport and its trusted
 ingress provenance, not a parent/child peer role.
 
+An attached peer owns one complete IPv4 CIDR (for example `10.144.0.5/16`).
+Its address and advertised network are independent of the network manager's
+own static or DHCP address. A VPN portal derives the attached peer route and
+the external client's allowed network from that single CIDR; it does not infer
+either value from the portal-hosting instance.
+
 Each manager owns its ACL execution state, route service, RPC endpoint, secure
 sessions, packet processing, and lifecycle. Portal code supplies raw packets
 and peer configuration but does not build, reload, or coordinate ACL filters.

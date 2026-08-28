@@ -280,6 +280,11 @@ Generated service descriptors and message types remain in `easytier-proto`.
 - VPN portal client/session policy;
 - UDP broadcast classification and rewrite policy.
 
+Each VPN portal client is normalized to one attached-peer IPv4 CIDR. The
+portable gateway owns that client address and prefix; the hosting network
+manager's DHCP or static address is not a source of portal client routing
+facts.
+
 TUN, raw sockets, transparent-destination lookup, concrete protocol engines,
 native DNS servers, namespace operations, and route application stay in native
 Adapters.

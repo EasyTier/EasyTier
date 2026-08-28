@@ -27,8 +27,8 @@ vpn_portal_add_client: Add Client
 vpn_portal_no_clients: No clients configured
 vpn_portal_client_name: Client Name
 vpn_portal_client_name_placeholder: "Example: alice-phone"
-vpn_portal_client_virtual_ip: Virtual Network Address
-vpn_portal_client_virtual_ip_placeholder: "Example: 10.126.126.10"
+vpn_portal_client_virtual_ip: Virtual Network CIDR
+vpn_portal_client_virtual_ip_placeholder: "Example: 10.126.126.10/24"
 vpn_portal_client_groups: ACL Groups
 vpn_portal_client_groups_placeholder: Select ACL groups
 vpn_portal_remove_client: Remove Client

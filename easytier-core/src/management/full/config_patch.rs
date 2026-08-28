@@ -513,15 +513,16 @@ fn apply_vpn_portal_client_patches(
                     tracing::warn!("ignored VPN portal client add without client");
                     continue;
                 };
-                let virtual_ip = client
-                    .virtual_ip
-                    .parse::<std::net::Ipv4Addr>()
-                    .with_context(|| {
-                        format!(
-                            "invalid VPN portal client virtual IP: {}",
-                            client.virtual_ip
-                        )
-                    })?;
+                let virtual_ip =
+                    client
+                        .virtual_ip
+                        .parse::<cidr::Ipv4Inet>()
+                        .with_context(|| {
+                            format!(
+                                "invalid VPN portal client virtual CIDR: {}",
+                                client.virtual_ip
+                            )
+                        })?;
                 portal
                     .clients
                     .push(crate::config::toml::VpnPortalClientConfig {
@@ -602,7 +603,7 @@ mod tests {
             wireguard_private_key: None,
             clients: vec![VpnPortalClientConfig {
                 name: "alice".to_owned(),
-                virtual_ip: "10.0.0.2".parse().unwrap(),
+                virtual_ip: "10.0.0.2/24".parse().unwrap(),
                 groups: Vec::new(),
             }],
         });
@@ -645,7 +646,7 @@ mod tests {
     fn vpn_portal_client_patches_add_remove_and_clear() {
         let config = portal_config();
 
-        apply_vpn_portal_client_patches(&config, vec![add("bob", "10.0.0.3")]).unwrap();
+        apply_vpn_portal_client_patches(&config, vec![add("bob", "10.0.0.3/24")]).unwrap();
         assert_eq!(configured_names(&config), ["alice", "bob"]);
 
         apply_vpn_portal_client_patches(&config, vec![remove("alice")]).unwrap();
@@ -678,7 +679,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("invalid VPN portal client virtual IP")
+                .contains("invalid VPN portal client virtual CIDR")
         );
     }
 }

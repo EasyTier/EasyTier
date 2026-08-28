@@ -106,8 +106,8 @@ core_clap:
     en: "base64 WireGuard server private key (prefer ET_VPN_PORTAL_PRIVATE_KEY over command-line exposure)"
     zh-CN: "Base64 WireGuard 服务端私钥（建议通过 ET_VPN_PORTAL_PRIVATE_KEY 传入，避免命令行暴露）"
   vpn_portal_client:
-    en: "named VPN portal client in NAME=IP form; may be repeated"
-    zh-CN: "NAME=IP 格式的具名 VPN 门户客户端；可重复指定"
+    en: "named VPN portal client in NAME=CIDR form, for example alice=10.144.0.5/16; may be repeated"
+    zh-CN: "NAME=CIDR 格式的具名 VPN 门户客户端，例如 alice=10.144.0.5/16；可重复指定"
   vpn_portal_client_group:
     en: "VPN portal client group membership in NAME=GROUP form; may be repeated"
     zh-CN: "NAME=GROUP 格式的 VPN 门户客户端组成员关系；可重复指定"

@@ -473,7 +473,7 @@ impl std::fmt::Debug for VpnPortalConfig {
 #[serde(deny_unknown_fields)]
 pub struct VpnPortalClientConfig {
     pub name: String,
-    pub virtual_ip: std::net::Ipv4Addr,
+    pub virtual_ip: cidr::Ipv4Inet,
     #[serde(default)]
     pub groups: Vec<String>,
 }
@@ -1279,7 +1279,7 @@ wireguard_private_key = "wireguard-private-key"
 
 [[vpn_portal_config.clients]]
 name = "alice"
-virtual_ip = "10.144.144.10"
+virtual_ip = "10.144.144.10/24"
 groups = ["staff"]
 
 [acl.acl_v1.group]

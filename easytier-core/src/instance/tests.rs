@@ -344,7 +344,7 @@ mod portable_runtime {
         config.vpn_portal = Some(crate::gateway::vpn_portal::PortalRuntimeConfig {
             clients: vec![crate::gateway::vpn_portal::PortalClientConfig {
                 name: "alice".to_owned(),
-                virtual_ip: "10.82.0.2".parse().unwrap(),
+                virtual_ip: "10.82.0.2/24".parse().unwrap(),
                 groups: Vec::new(),
             }],
         });
@@ -1005,7 +1005,7 @@ wireguard_listen = "0.0.0.0:51820"
 
 [[vpn_portal_config.clients]]
 name = "alice"
-virtual_ip = "10.82.0.2"
+virtual_ip = "10.82.0.2/24"
 
 [source]
 source = "web"
@@ -1036,7 +1036,7 @@ source = "web"
                         action: ConfigPatchAction::Add as i32,
                         client: Some(VpnPortalClientConfig {
                             name: "bob".to_owned(),
-                            virtual_ip: "10.82.0.3".to_owned(),
+                            virtual_ip: "10.82.0.3/24".to_owned(),
                             ..Default::default()
                         }),
                     },
@@ -1079,7 +1079,7 @@ source = "web"
                         action: ConfigPatchAction::Add as i32,
                         client: Some(VpnPortalClientConfig {
                             name: "bob".to_owned(),
-                            virtual_ip: "10.82.0.3".to_owned(),
+                            virtual_ip: "10.82.0.3/24".to_owned(),
                             ..Default::default()
                         }),
                     },
@@ -1204,7 +1204,7 @@ wireguard_listen = "0.0.0.0:51820"
 
 [[vpn_portal_config.clients]]
 name = "alice"
-virtual_ip = "10.82.0.2"
+virtual_ip = "10.82.0.2/24"
 "#,
             )
             .unwrap(),

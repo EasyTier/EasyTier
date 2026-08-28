@@ -331,7 +331,7 @@ function makeConfig(): NetworkConfig {
       wireguard_private_key: 'portal-private-key',
       clients: [{
         name: 'phone-a',
-        virtual_ip: '10.1.2.10',
+        virtual_ip: '10.1.2.10/24',
         groups: ['ops'],
       }],
     },
@@ -421,7 +421,7 @@ describe('Config.vue network config projection', () => {
     expect(input(wrapper, '#vpn_portal_wireguard_listen').value).toBe('0.0.0.0:22023')
     expect(input(wrapper, '#vpn_portal_wireguard_private_key').value).toBe('portal-private-key')
     expect(input(wrapper, '#vpn_portal_client_name_0').value).toBe('phone-a')
-    expect(input(wrapper, '#vpn_portal_client_virtual_ip_0').value).toBe('10.1.2.10')
+    expect(input(wrapper, '#vpn_portal_client_virtual_ip_0').value).toBe('10.1.2.10/24')
     expect(input(wrapper, '#vpn_portal_client_groups_0').value).toBe('ops')
     expect(input(wrapper, '#dev_name').value).toBe('tun-test')
     expect(input(wrapper, '#mtu').value).toBe('1280')
@@ -455,7 +455,7 @@ describe('Config.vue network config projection', () => {
     await setInput(wrapper, '#vpn_portal_wireguard_listen', '[::]:23000')
     await setInput(wrapper, '#vpn_portal_wireguard_private_key', 'edited-private-key')
     await setInput(wrapper, '#vpn_portal_client_name_0', 'laptop-a')
-    await setInput(wrapper, '#vpn_portal_client_virtual_ip_0', '10.1.2.20')
+    await setInput(wrapper, '#vpn_portal_client_virtual_ip_0', '10.1.2.20/24')
     await setInput(wrapper, '#vpn_portal_client_groups_0', 'ops,admin')
     await setInput(wrapper, 'input[data-add-label="add_listener_url"]', 'tcp://0.0.0.0:13010')
     await setInput(wrapper, '#dev_name', 'tun-edited')
@@ -489,7 +489,7 @@ describe('Config.vue network config projection', () => {
         wireguard_private_key: 'edited-private-key',
         clients: [{
           name: 'laptop-a',
-          virtual_ip: '10.1.2.20',
+          virtual_ip: '10.1.2.20/24',
           groups: ['ops', 'admin'],
         }],
       },
@@ -525,7 +525,7 @@ describe('Config.vue network config projection', () => {
         wireguard_private_key: 'edited-private-key',
         clients: [{
           name: 'laptop-a',
-          virtual_ip: '10.1.2.20',
+          virtual_ip: '10.1.2.20/24',
           groups: ['ops', 'admin'],
         }],
       },

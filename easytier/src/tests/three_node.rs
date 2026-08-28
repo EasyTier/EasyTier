@@ -1767,7 +1767,7 @@ pub async fn wireguard_vpn_portal(#[values(true, false)] test_v6: bool) {
                     wireguard_private_key: Some(BASE64_STANDARD.encode([42u8; 32])),
                     clients: vec![VpnPortalClientConfig {
                         name: "test-client".to_owned(),
-                        virtual_ip: "10.144.144.4".parse().unwrap(),
+                        virtual_ip: "10.144.144.4/24".parse().unwrap(),
                         groups: Vec::new(),
                     }],
                 });
@@ -1867,12 +1867,12 @@ pub async fn wireguard_vpn_portal_multi_client() {
                     clients: vec![
                         VpnPortalClientConfig {
                             name: "client-a".to_owned(),
-                            virtual_ip: "10.144.144.4".parse().unwrap(),
+                            virtual_ip: "10.144.144.4/24".parse().unwrap(),
                             groups: Vec::new(),
                         },
                         VpnPortalClientConfig {
                             name: "client-b".to_owned(),
-                            virtual_ip: "10.144.144.5".parse().unwrap(),
+                            virtual_ip: "10.144.144.5/24".parse().unwrap(),
                             groups: Vec::new(),
                         },
                     ],
@@ -2006,7 +2006,7 @@ pub async fn wireguard_vpn_portal_client_roaming() {
                     wireguard_private_key: Some(BASE64_STANDARD.encode([42u8; 32])),
                     clients: vec![VpnPortalClientConfig {
                         name: "roaming-client".to_owned(),
-                        virtual_ip: "10.144.144.4".parse().unwrap(),
+                        virtual_ip: "10.144.144.4/24".parse().unwrap(),
                         groups: Vec::new(),
                     }],
                 });
@@ -2156,7 +2156,7 @@ pub async fn wireguard_vpn_portal_dynamic_clients() {
                     wireguard_private_key: Some(BASE64_STANDARD.encode([42u8; 32])),
                     clients: vec![VpnPortalClientConfig {
                         name: "client-a".to_owned(),
-                        virtual_ip: "10.144.144.4".parse().unwrap(),
+                        virtual_ip: "10.144.144.4/24".parse().unwrap(),
                         groups: Vec::new(),
                     }],
                 });
@@ -2204,7 +2204,7 @@ pub async fn wireguard_vpn_portal_dynamic_clients() {
                 action: ConfigPatchAction::Add as i32,
                 client: Some(VpnPortalClientConfigPb {
                     name: "client-b".to_owned(),
-                    virtual_ip: "10.144.144.5".to_owned(),
+                    virtual_ip: "10.144.144.5/24".to_owned(),
                     groups: Vec::new(),
                 }),
             }],
@@ -2234,7 +2234,7 @@ pub async fn wireguard_vpn_portal_dynamic_clients() {
                 action: ConfigPatchAction::Add as i32,
                 client: Some(VpnPortalClientConfigPb {
                     name: "client-b".to_owned(),
-                    virtual_ip: "10.144.144.9".to_owned(),
+                    virtual_ip: "10.144.144.9/24".to_owned(),
                     groups: Vec::new(),
                 }),
             }],

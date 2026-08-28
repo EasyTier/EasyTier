@@ -723,7 +723,7 @@ mod tests {
             wireguard_private_key: Some("server-private-key".to_owned()),
             clients: vec![manage::VpnPortalClientConfig {
                 name: "alice".to_owned(),
-                virtual_ip: "10.144.144.10".to_owned(),
+                virtual_ip: "10.144.144.10/16".to_owned(),
                 groups: vec!["staff".to_owned()],
             }],
         }
@@ -751,7 +751,7 @@ mod tests {
             Some("server-private-key")
         );
         assert_eq!(portal.clients[0].name, "alice");
-        assert_eq!(portal.clients[0].virtual_ip.to_string(), "10.144.144.10");
+        assert_eq!(portal.clients[0].virtual_ip.to_string(), "10.144.144.10/16");
         assert_eq!(portal.clients[0].groups, vec!["staff".to_owned()]);
 
         let output = NetworkConfig::new_from_config(&config).unwrap();

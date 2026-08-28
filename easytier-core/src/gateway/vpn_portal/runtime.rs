@@ -37,7 +37,7 @@ pub const DEFAULT_PORTAL_CLIENT_ADDRESS: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 1);
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PortalClientConfig {
     pub name: String,
-    pub virtual_ip: Ipv4Addr,
+    pub virtual_ip: Ipv4Inet,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<String>,
 }
@@ -487,7 +487,7 @@ impl PortalModule {
             let client_ip = client_ip.clone();
             let statuses = statuses.clone();
             let name = client.name.clone();
-            let virtual_ip = client.virtual_ip;
+            let virtual_ip = client.virtual_ip.address();
             tokio::spawn(async move {
                 while let Some(mut payload) = client_stream.recv().await {
                     let Some(source) = ipv4_source(&payload) else {
@@ -532,7 +532,7 @@ impl PortalModule {
             let client_ip = client_ip.clone();
             let statuses = statuses.clone();
             let name = client.name.clone();
-            let virtual_ip = client.virtual_ip;
+            let virtual_ip = client.virtual_ip.address();
             tokio::spawn(async move {
                 while let Some(packet) = attached.recv_packet().await {
                     let Some(tunnel_ip) = *client_ip.lock().await else {
@@ -706,10 +706,14 @@ impl PortalModule {
                 let status = statuses.get(&client.name).cloned().unwrap_or_default();
                 let client_config = match (self.host.as_ref(), listener_url.as_ref()) {
                     (Some(host), Some(listener_url)) => {
+                        let mut client_allowed_ips = allowed_ips.clone();
+                        client_allowed_ips.push(client.virtual_ip.network().to_string());
+                        client_allowed_ips.sort();
+                        client_allowed_ips.dedup();
                         host.render_client_config(&PortalClientConfigPlan {
                             name: client.name.clone(),
                             address: DEFAULT_PORTAL_CLIENT_ADDRESS,
-                            allowed_ips: allowed_ips.clone(),
+                            allowed_ips: client_allowed_ips,
                             listener_url: listener_url.clone(),
                         })
                     }
@@ -717,7 +721,7 @@ impl PortalModule {
                 };
                 PortalClientInfoSnapshot {
                     name: client.name.clone(),
-                    virtual_ip: client.virtual_ip,
+                    virtual_ip: client.virtual_ip.address(),
                     groups: client.groups.clone(),
                     state: status.state,
                     peer_id: status.peer_id,
@@ -743,12 +747,6 @@ impl PortalModule {
         let mut allowed = BTreeSet::new();
         for route in self.peer_manager.list_route_snapshots().await {
             allowed.extend(route.proxy_cidrs);
-        }
-        if let Some(ipv4) = snapshot.peer.runtime.core.routes.ipv4.as_ref()
-            && let IpAddr::V4(address) = ipv4.address
-            && let Ok(inet) = Ipv4Inet::new(address, ipv4.prefix_len)
-        {
-            allowed.insert(inet.network().to_string());
         }
         for proxy in &snapshot.peer.runtime.core.routes.proxy_networks {
             let mapped = proxy.mapped.as_ref().unwrap_or(&proxy.real);
@@ -784,7 +782,7 @@ fn validate_clients(
         if !names.insert(client.name.as_str()) {
             anyhow::bail!("duplicate VPN portal client name: {}", client.name);
         }
-        if !addresses.insert(client.virtual_ip) {
+        if !addresses.insert(client.virtual_ip.address()) {
             anyhow::bail!("duplicate VPN portal virtual IP: {}", client.virtual_ip);
         }
         for group in &client.groups {
@@ -814,33 +812,28 @@ fn validate_runtime_compatibility(
     {
         anyhow::bail!("VPN portal requires an admin node with a non-empty network secret");
     }
-    if snapshot.services.dhcp_ipv4 {
-        anyhow::bail!("VPN portal does not support DHCP IPv4 on the portal node");
-    }
-    let prefix = snapshot
+    let host_address = snapshot
         .peer
         .runtime
         .core
         .routes
         .ipv4
         .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("VPN portal requires a static IPv4 address"))?;
-    let IpAddr::V4(portal_ip) = prefix.address else {
-        anyhow::bail!("VPN portal requires an IPv4 route prefix");
-    };
-    let network = Ipv4Inet::new(portal_ip, prefix.prefix_len)
-        .map_err(|error| anyhow::anyhow!("invalid portal IPv4 prefix: {error}"))?
-        .network();
+        .and_then(|prefix| match prefix.address {
+            IpAddr::V4(address) => Some(address),
+            IpAddr::V6(_) => None,
+        });
     for client in &config.clients {
-        if client.virtual_ip == portal_ip
-            || !network.contains(&client.virtual_ip)
-            || client.virtual_ip == network.first_address()
-            || client.virtual_ip == network.last_address()
+        let address = client.virtual_ip.address();
+        let network = client.virtual_ip.network();
+        if host_address == Some(address)
+            || address == network.first_address()
+            || address == network.last_address()
         {
             anyhow::bail!(
                 "VPN portal client {} has an unusable virtual IP {}",
                 client.name,
-                client.virtual_ip
+                address
             );
         }
     }
@@ -937,7 +930,7 @@ mod tests {
         }
 
         fn render_client_config(&self, plan: &PortalClientConfigPlan) -> String {
-            format!("config:{}", plan.name)
+            format!("config:{}:{}", plan.name, plan.allowed_ips.join(","))
         }
     }
 
@@ -1092,7 +1085,7 @@ mod tests {
     fn client(name: &str, virtual_ip: Ipv4Addr, groups: &[&str]) -> PortalClientConfig {
         PortalClientConfig {
             name: name.to_owned(),
-            virtual_ip,
+            virtual_ip: Ipv4Inet::new(virtual_ip, 24).unwrap(),
             groups: groups.iter().map(|group| (*group).to_owned()).collect(),
         }
     }
@@ -1211,6 +1204,22 @@ mod tests {
             .to_string();
 
         assert!(error.contains("VPN portal requires an admin node"));
+    }
+
+    #[test]
+    fn portal_client_cidr_is_independent_of_host_addressing() {
+        let runtime_config = runtime_config();
+        runtime_config.update_peer_with(|peer| peer.runtime.core.routes.ipv4 = None);
+        runtime_config.update_services(|services| services.dhcp_ipv4 = true);
+        let config = PortalRuntimeConfig {
+            clients: vec![PortalClientConfig {
+                name: "alice".to_owned(),
+                virtual_ip: "10.82.0.2/16".parse().unwrap(),
+                groups: vec!["ops".to_owned()],
+            }],
+        };
+
+        validate_clients(&config, runtime_config.snapshot().as_ref()).unwrap();
     }
 
     #[test]
@@ -1628,6 +1637,38 @@ mod tests {
             events.runtime_visible_on_start.load(Ordering::SeqCst),
             "VpnPortalStarted was emitted before runtime installation"
         );
+        module.stop().await;
+        peer_manager.clear_resources().await;
+    }
+
+    #[tokio::test]
+    async fn portal_client_config_routes_its_own_network_not_the_host_network() {
+        let (peer_manager, runtime_config) = network_runtime();
+        let module = PortalModule::new(
+            peer_manager.clone(),
+            runtime_config,
+            Some(PortalRuntimeConfig {
+                clients: vec![PortalClientConfig {
+                    name: "alice".to_owned(),
+                    virtual_ip: "10.90.0.2/16".parse().unwrap(),
+                    groups: vec!["ops".to_owned()],
+                }],
+            }),
+            Some(StaticPortalHost::new(vec![Box::new(
+                PendingPortalListener {
+                    url: "test://127.0.0.1:10004".parse().unwrap(),
+                    accept_calls: Arc::new(AtomicUsize::new(0)),
+                },
+            )])),
+            Arc::new(()),
+        )
+        .unwrap();
+
+        module.start().await.unwrap();
+        let snapshot = module.info_snapshot().await;
+
+        assert!(snapshot.clients[0].client_config.contains("10.90.0.0/16"));
+        assert!(!snapshot.clients[0].client_config.contains("10.82.0.0/24"));
         module.stop().await;
         peer_manager.clear_resources().await;
     }

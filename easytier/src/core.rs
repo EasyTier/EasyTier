@@ -896,7 +896,7 @@ impl NetworkOptions {
         }
         if !url.path().is_empty() {
             anyhow::bail!(
-                "legacy VPN portal CIDR paths are no longer supported; use wg://host:port and configure --vpn-portal-client NAME=IP"
+                "legacy VPN portal CIDR paths are no longer supported; use wg://host:port and configure --vpn-portal-client NAME=CIDR"
             );
         }
         if !url.username().is_empty()
@@ -924,15 +924,20 @@ impl NetworkOptions {
             .iter()
             .map(|value| {
                 let (name, virtual_ip) = value.split_once('=').ok_or_else(|| {
-                    anyhow::anyhow!("invalid vpn portal client {value:?}; expected NAME=IP")
+                    anyhow::anyhow!("invalid vpn portal client {value:?}; expected NAME=CIDR")
                 })?;
                 if name.is_empty() {
                     anyhow::bail!("vpn portal client name cannot be empty");
                 }
+                if !virtual_ip.contains('/') {
+                    anyhow::bail!(
+                        "invalid vpn portal client {value:?}; expected NAME=CIDR, for example alice=10.144.0.5/16"
+                    );
+                }
                 Ok(VpnPortalClientConfig {
                     name: name.to_owned(),
                     virtual_ip: virtual_ip.parse().with_context(|| {
-                        format!("invalid virtual IP for vpn portal client {name}: {virtual_ip}")
+                        format!("invalid virtual CIDR for vpn portal client {name}: {virtual_ip}")
                     })?,
                     groups: Vec::new(),
                 })
@@ -1949,7 +1954,7 @@ wireguard_private_key = "existing-key"
 
 [[vpn_portal_config.clients]]
 name = "existing"
-virtual_ip = "10.144.144.9"
+virtual_ip = "10.144.144.9/24"
 "#,
         )
         .unwrap();
@@ -1971,8 +1976,8 @@ virtual_ip = "10.144.144.9"
         NetworkOptions {
             vpn_portal_private_key: Some("replacement-key".to_owned()),
             vpn_portal_clients: vec![
-                "alice=10.144.144.10".to_owned(),
-                "bob=10.144.144.11".to_owned(),
+                "alice=10.144.144.10/24".to_owned(),
+                "bob=10.144.144.11/24".to_owned(),
             ],
             vpn_portal_client_groups: vec!["alice=staff".to_owned(), "alice=dev".to_owned()],
             ..Default::default()
@@ -2024,7 +2029,7 @@ virtual_ip = "10.144.144.9"
 
         let unknown_client = NetworkOptions {
             vpn_portal: Some("wg://0.0.0.0:51820".to_owned()),
-            vpn_portal_clients: vec!["alice=10.144.144.10".to_owned()],
+            vpn_portal_clients: vec!["alice=10.144.144.10/24".to_owned()],
             vpn_portal_client_groups: vec!["bob=staff".to_owned()],
             ..Default::default()
         }
@@ -2035,6 +2040,15 @@ virtual_ip = "10.144.144.9"
             unknown_client.contains("unknown CLI client: bob"),
             "{unknown_client}"
         );
+
+        let bare_ip = NetworkOptions {
+            vpn_portal_clients: vec!["alice=10.144.144.10".to_owned()],
+            ..Default::default()
+        }
+        .parse_vpn_portal_clients()
+        .unwrap_err()
+        .to_string();
+        assert!(bare_ip.contains("expected NAME=CIDR"), "{bare_ip}");
     }
 
     #[test]
