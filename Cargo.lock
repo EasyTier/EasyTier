@@ -2542,6 +2542,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "easytier-ios"
+version = "0.1.0"
+dependencies = [
+ "easytier-core",
+ "easytier-ffi",
+ "serde_json",
+ "tokio",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "easytier-mini"
 version = "2.6.4"
 dependencies = [

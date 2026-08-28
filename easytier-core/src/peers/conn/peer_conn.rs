@@ -687,7 +687,8 @@ impl PeerConn {
     /// | Client role | Server role | Typical credential condition | Client auth level | Server auth level | Client sees server type | Server sees client type |
     /// | --- | --- | --- | --- | --- | --- | --- |
     /// | Admin | Admin | same network_secret, proof verified | NetworkSecretConfirmed | NetworkSecretConfirmed | Admin | Admin |
-    /// | Credential | Admin | client pubkey is trusted by admin | EncryptedUnauthenticated | PeerVerified | Admin | Credential |
+    /// | Credential | Admin | admin key is pinned and client key is trusted | PeerVerified | PeerVerified | Admin | Credential |
+    /// | Credential | Admin | client pubkey is trusted, admin key is not pinned | EncryptedUnauthenticated | PeerVerified | Admin | Credential |
     /// | Credential | Admin | client pubkey is unknown | handshake may fail | handshake reject | unknown | unknown |
     /// | Admin | SharedNode | pinned key match | PeerVerified | EncryptedUnauthenticated | SharedNode | Admin |
     /// | Admin | SharedNode | local has no pinned key requirement | EncryptedUnauthenticated | EncryptedUnauthenticated | SharedNode | Admin |
@@ -696,8 +697,7 @@ impl PeerConn {
     ///
     /// Logic (in priority order):
     /// 1. **NetworkSecretConfirmed**: proof verification succeeds
-    /// 2. **PeerVerified**: pinned_pubkey matches and is in trusted list
-    ///    (if no network_secret, pinned_pubkey must be in trusted list)
+    /// 2. **PeerVerified**: pinned_pubkey matches
     /// 3. **PeerVerified**: pubkey is in trusted list
     /// 4. **EncryptedUnauthenticated**: initiator without network_secret
     /// 5. **Reject**: none of the above
@@ -725,16 +725,6 @@ impl PeerConn {
             if pinned != remote_pubkey {
                 return Err(Error::WaitRespError(
                     "pinned remote static pubkey mismatch".to_owned(),
-                ));
-            }
-            // If no network_secret, pinned key must be in trusted list
-            if !has_network_secret
-                && !self
-                    .context
-                    .is_pubkey_trusted(remote_pubkey, remote_network_name)
-            {
-                return Err(Error::WaitRespError(
-                    "pinned pubkey not in trusted list".to_owned(),
                 ));
             }
             return Ok(SecureAuthLevel::PeerVerified);
