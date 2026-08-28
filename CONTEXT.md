@@ -61,7 +61,10 @@ credential peer. Its portal-owned, in-memory credential grant carries ACL
 groups and is revoked with the attached runtime; the peer never receives the
 network secret or ACL group secrets. A non-Secure-Mode network retains the
 legacy admin-attached identity for compatibility. A credential peer cannot host
-a portal because it cannot issue credential grants.
+a portal because it cannot issue credential grants. Each live portal Session
+owns a fresh attached-peer identity, while the external client key remains
+stable across Sessions; a replacement Session must never reuse the previous
+non-reusable credential identity.
 
 ## Compact compatibility Host
 

@@ -37,8 +37,8 @@ pub struct AttachedPeerConfig {
     pub name: String,
     pub virtual_ip: Ipv4Addr,
     pub groups: Vec<String>,
-    /// Stable identity key supplied by the caller; changing it changes the
-    /// peer identity, so callers must persist and reuse it across restarts.
+    /// Identity key supplied by the caller. It stays stable for one attached
+    /// runtime; replacing the runtime may deliberately rotate the identity.
     pub identity_private_key: [u8; 32],
 }
 
