@@ -2369,6 +2369,7 @@ struct PeerRouteServiceImpl {
     interface_peers_generation: AtomicU64,
     applied_interface_peers_generation: AtomicU64,
     applied_interface_peers: std::sync::Mutex<BTreeSet<PeerId>>,
+    self_conn_info_withdrawn: AtomicBool,
 
     last_update_my_foreign_network: AtomicCell<Option<Instant>>,
 
@@ -2442,6 +2443,7 @@ impl PeerRouteServiceImpl {
             interface_peers_generation: AtomicU64::new(1),
             applied_interface_peers_generation: AtomicU64::new(0),
             applied_interface_peers: std::sync::Mutex::new(BTreeSet::new()),
+            self_conn_info_withdrawn: AtomicBool::new(false),
 
             last_update_my_foreign_network: AtomicCell::new(None),
 
@@ -2606,6 +2608,10 @@ impl PeerRouteServiceImpl {
         &self,
         snapshot: &InterfacePeerSnapshot,
     ) -> BTreeSet<PeerId> {
+        if self.self_conn_info_withdrawn.load(Ordering::Acquire) {
+            return BTreeSet::new();
+        }
+
         if !self.peer_relay_projection_enabled() {
             return snapshot.peers.clone();
         }
@@ -2780,7 +2786,9 @@ impl PeerRouteServiceImpl {
 
     fn local_route_snapshot(&self) -> OspfRouteSnapshot {
         let mut snapshot = self.synced_route_info.route_snapshot();
-        if !self.peer_relay_projection_enabled() {
+        if !self.peer_relay_projection_enabled()
+            && !self.self_conn_info_withdrawn.load(Ordering::Acquire)
+        {
             return snapshot;
         }
 
@@ -4201,6 +4209,63 @@ impl Debug for PeerRoute {
 }
 
 impl PeerRoute {
+    pub(crate) async fn withdraw_self_conn_info(&self) -> bool {
+        if self.service_impl.stopped.load(Ordering::Acquire) {
+            return true;
+        }
+        if self.service_impl.interface.lock().await.is_none() {
+            return true;
+        }
+
+        self.service_impl
+            .self_conn_info_withdrawn
+            .store(true, Ordering::Release);
+        self.service_impl.mark_interface_peers_dirty();
+        let direct_peers = self.service_impl.interface_peer_snapshot().await;
+        self.service_impl.update_my_infos().await;
+
+        let Some(conn_info_version) = self
+            .service_impl
+            .synced_route_info
+            .conn_map
+            .read()
+            .get(&self.my_peer_id)
+            .map(|info| info.version.get())
+        else {
+            return false;
+        };
+        let sessions = direct_peers
+            .peers
+            .iter()
+            .filter_map(|peer_id| {
+                self.service_impl
+                    .get_session(*peer_id)
+                    .map(|session| (*peer_id, session))
+            })
+            .collect::<Vec<_>>();
+        if sessions.is_empty() {
+            return true;
+        }
+
+        let Some(peer_rpc) = self.peer_rpc.upgrade() else {
+            return false;
+        };
+        let synchronized = crate::foundation::time::timeout(Duration::from_secs(1), async {
+            futures::future::join_all(sessions.iter().map(|(peer_id, _)| {
+                self.service_impl
+                    .sync_route_with_peer(*peer_id, peer_rpc.clone(), false)
+            }))
+            .await;
+
+            sessions.iter().all(|(_, session)| {
+                session.check_saved_conn_version_update_to_date(self.my_peer_id, conn_info_version)
+            })
+        })
+        .await;
+
+        matches!(synchronized, Ok(true))
+    }
+
     pub fn new(
         my_peer_id: PeerId,
         context: ArcPeerContext,
@@ -5312,6 +5377,126 @@ mod tests {
         assert!(!service_impl.update_my_conn_info().await);
         assert_eq!(list_peers_calls.load(Ordering::Relaxed), 2);
         assert_eq!(get_peer_identity_type_calls.load(Ordering::Relaxed), 4);
+    }
+
+    #[tokio::test]
+    async fn shutdown_withdrawal_preserves_local_physical_routes() {
+        let (route, _peer_rpc) =
+            test_route_with_admin_peer(Arc::new(NoopPeerContext::default())).await;
+
+        assert!(route.service_impl.update_my_infos().await);
+        assert_eq!(
+            route
+                .service_impl
+                .synced_route_info
+                .get_connected_peers::<BTreeSet<_>>(1),
+            Some(BTreeSet::from([2]))
+        );
+        let previous_version = route
+            .service_impl
+            .synced_route_info
+            .conn_map
+            .read()
+            .get(&1)
+            .unwrap()
+            .version
+            .get();
+
+        assert!(route.withdraw_self_conn_info().await);
+        let conn_map = route.service_impl.synced_route_info.conn_map.read();
+        let withdrawn = conn_map.get(&1).unwrap();
+        assert!(withdrawn.connected_peers.is_empty());
+        assert!(withdrawn.version.get() > previous_version);
+        drop(conn_map);
+
+        let local_snapshot = route.service_impl.local_route_snapshot();
+        assert_eq!(
+            local_snapshot
+                .conn_map
+                .iter()
+                .find(|row| row.peer_id == 1)
+                .unwrap()
+                .connected_peers,
+            BTreeSet::from([2])
+        );
+
+        route.service_impl.mark_interface_peers_dirty();
+        assert!(!route.service_impl.update_my_conn_info().await);
+        assert!(
+            route
+                .service_impl
+                .synced_route_info
+                .get_connected_peers::<BTreeSet<_>>(1)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_self_conn_info_round_trips_through_list_and_bitmap() {
+        let source = test_service_impl(1);
+        *source.interface.lock().await = Some(Box::new(CountingInterface {
+            my_peer_id: 1,
+            peers: Arc::new(Mutex::new(vec![2])),
+            peer_identity_types: Arc::new(Mutex::new(HashMap::from([(
+                2,
+                Some(PeerIdentityType::Admin),
+            )]))),
+            list_peers_calls: Arc::new(AtomicU32::new(0)),
+            get_peer_identity_type_calls: Arc::new(AtomicU32::new(0)),
+        }));
+        assert!(source.update_my_infos().await);
+        source
+            .self_conn_info_withdrawn
+            .store(true, Ordering::Release);
+        source.mark_interface_peers_dirty();
+        assert!(source.update_my_infos().await);
+
+        let session = SyncRouteSession::new(1, 2);
+        let mut estimated_size = 0;
+        let peer_list = source
+            .build_conn_peer_list(&session, &mut estimated_size)
+            .expect("withdrawn row should remain in the peer list");
+        let listed = peer_list
+            .peer_conn_infos
+            .iter()
+            .find(|info| info.peer_id.is_some_and(|id| id.peer_id == 1))
+            .expect("peer list should carry the withdrawn self row");
+        assert!(listed.connected_peer_ids.is_empty());
+
+        let list_receiver = test_service_impl(2);
+        install_conn_row(&list_receiver, 1, [2]);
+        list_receiver
+            .synced_route_info
+            .update_conn_info_with_list(&peer_list);
+        assert!(
+            list_receiver
+                .synced_route_info
+                .get_connected_peers::<BTreeSet<_>>(1)
+                .unwrap()
+                .is_empty()
+        );
+
+        let bitmap = source.build_conn_bitmap();
+        let self_index = bitmap
+            .peer_ids
+            .iter()
+            .position(|id| id.peer_id == 1)
+            .expect("bitmap should carry the withdrawn self row");
+        assert!(bitmap.get_connected_peers(self_index).is_empty());
+
+        let bitmap_receiver = test_service_impl(2);
+        install_conn_row(&bitmap_receiver, 1, [2]);
+        bitmap_receiver
+            .synced_route_info
+            .update_conn_info_with_bitmap(&bitmap);
+        assert!(
+            bitmap_receiver
+                .synced_route_info
+                .get_connected_peers::<BTreeSet<_>>(1)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]

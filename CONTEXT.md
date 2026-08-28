@@ -39,6 +39,13 @@ adjacency so direct-destination fallback remains available. Other peers'
 source-owned rows and versions are never rewritten, cached for promotion, or
 otherwise changed by this projection.
 
+Before a graceful Instance stop, the owner publishes a new-version empty
+connection row while keeping its physical adjacencies available for route
+synchronization. It waits for the current direct route Sessions to acknowledge
+that withdrawal up to a bounded deadline, then continues shutdown. Abrupt
+process loss cannot publish this withdrawal and retains the normal route
+expiry behavior.
+
 Relay eligibility comes from the transport-authenticated credential identity
 and grant, not self-reported route metadata. The advertisement Module does not
 support changing a credential's relay permission in place; such a permission
