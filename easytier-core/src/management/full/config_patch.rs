@@ -195,12 +195,13 @@ where
                 .map_err(anyhow::Error::msg)?;
             candidate.set_managed_credentials(entries);
             validate_candidate(instance, &candidate)?;
-            // Persist before installing secret authority so a successful
-            // replacement survives process restart.
-            persistence
-                .ok_or_else(|| anyhow::anyhow!("durable config patching is unavailable"))?
-                .persist(instance.instance_id(), &candidate)
-                .await?;
+            // When durable storage is configured, persist before installing
+            // secret authority so a successful replacement survives restart.
+            if let Some(persistence) = persistence {
+                persistence
+                    .persist(instance.instance_id(), &candidate)
+                    .await?;
+            }
             config.replace_from_snapshot(&candidate);
             managed_credentials_changed =
                 CredentialManager::install_managed_credentials(replacement);
