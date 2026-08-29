@@ -1,11 +1,17 @@
-use crate::config::types::stored_config::LocalSocketSyncMessage;
 use serde::Serialize;
 use std::io::{Error, ErrorKind, Write};
 use std::os::unix::net::UnixStream;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct TunRequestPayload {
+pub struct LocalSocketSyncMessage {
+    pub message_type: String,
+    pub payload_json: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TunRequestPayload {
     pub config_id: String,
     pub instance_id: String,
     pub display_name: String,
@@ -16,7 +22,7 @@ pub(crate) struct TunRequestPayload {
     pub need_exit_node: bool,
 }
 
-pub(crate) fn send_local_socket_message(
+pub fn send_local_socket_message(
     stream: &mut UnixStream,
     message_type: &str,
     payload_json: String,
@@ -39,7 +45,7 @@ fn shrink_clients_if_sparse(clients: &mut Vec<UnixStream>) {
     }
 }
 
-pub(crate) fn broadcast_local_socket_message(
+pub fn broadcast_local_socket_message(
     clients: &mut Vec<UnixStream>,
     message_type: &str,
     payload_json: &str,
@@ -57,7 +63,7 @@ pub(crate) fn broadcast_local_socket_message(
     delivered
 }
 
-pub(crate) fn send_local_socket_json_payload_message(
+pub fn send_local_socket_json_payload_message(
     stream: &mut UnixStream,
     message_type: &str,
     payload_json: &str,
@@ -74,7 +80,7 @@ pub(crate) fn send_local_socket_json_payload_message(
     Ok(())
 }
 
-pub(crate) fn broadcast_local_socket_json_payload_message(
+pub fn broadcast_local_socket_json_payload_message(
     clients: &mut Vec<UnixStream>,
     message_type: &str,
     payload_json: &str,
@@ -90,4 +96,42 @@ pub(crate) fn broadcast_local_socket_json_payload_message(
     shrink_clients_if_sparse(&mut active_clients);
     *clients = active_clients;
     delivered
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{broadcast_local_socket_message, send_local_socket_message};
+    use std::io::Read;
+    use std::os::unix::net::UnixStream;
+
+    #[test]
+    fn local_socket_message_uses_camel_case_newline_frame() {
+        let (mut sender, mut receiver) = UnixStream::pair().expect("socket pair");
+        send_local_socket_message(&mut sender, "runtimeState", "{\"ok\":true}".to_string())
+            .expect("send frame");
+        sender
+            .shutdown(std::net::Shutdown::Write)
+            .expect("shutdown");
+
+        let mut raw = String::new();
+        receiver.read_to_string(&mut raw).expect("read frame");
+        assert_eq!(
+            raw,
+            "{\"messageType\":\"runtimeState\",\"payloadJson\":\"{\\\"ok\\\":true}\"}\n"
+        );
+    }
+
+    #[test]
+    fn broadcast_removes_disconnected_clients() {
+        let (sender, receiver) = UnixStream::pair().expect("socket pair");
+        drop(receiver);
+        let mut clients = vec![sender];
+
+        assert!(!broadcast_local_socket_message(
+            &mut clients,
+            "runtimeState",
+            "{}"
+        ));
+        assert!(clients.is_empty());
+    }
 }

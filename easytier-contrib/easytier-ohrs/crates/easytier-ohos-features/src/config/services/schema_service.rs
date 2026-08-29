@@ -1,18 +1,15 @@
 use easytier::proto::ALL_DESCRIPTOR_BYTES;
-use napi_derive_ohos::napi;
 use once_cell::sync::Lazy;
 use prost_reflect::{Cardinality, DescriptorPool, FieldDescriptor, Kind, MessageDescriptor};
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
-#[napi(object)]
 pub struct FieldOption {
     pub label: String,
     pub value: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[napi(object)]
 pub struct ValidationRule {
     pub rule_type: String,
     pub arg: String,
@@ -20,7 +17,6 @@ pub struct ValidationRule {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[napi(object)]
 pub struct NetworkConfigSchema {
     pub node_kind: String,
     pub name: String,
@@ -38,7 +34,6 @@ pub struct NetworkConfigSchema {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[napi(object)]
 pub struct ConfigFieldMapping {
     pub field_name: String,
     pub field_number: i32,

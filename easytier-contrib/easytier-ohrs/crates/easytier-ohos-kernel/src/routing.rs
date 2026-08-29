@@ -1,4 +1,3 @@
-use crate::config::repository::get_runtime_config_route_overrides;
 use crate::runtime::state::runtime_state::RuntimeInstanceState;
 use ipnet::IpNet;
 use std::collections::HashSet;
@@ -54,13 +53,11 @@ fn simplify_routes(routes: Vec<String>) -> Vec<String> {
         .collect()
 }
 
-pub(crate) fn aggregate_tun_routes(instance: &RuntimeInstanceState) -> Vec<String> {
+pub fn aggregate_tun_routes(instance: &RuntimeInstanceState) -> Vec<String> {
     let virtual_ipv4_cidr = instance
         .my_node_info
         .as_ref()
         .and_then(|info| info.virtual_ipv4_cidr.clone());
-    let (manual_routes, config_proxy_cidrs) =
-        get_runtime_config_route_overrides(&instance.config_id);
     let runtime_proxy_cidrs = instance
         .routes
         .iter()
@@ -72,13 +69,13 @@ pub(crate) fn aggregate_tun_routes(instance: &RuntimeInstanceState) -> Vec<Strin
         raw_routes.push(cidr);
     }
 
-    raw_routes.extend(manual_routes.iter().cloned());
-    raw_routes.extend(config_proxy_cidrs.iter().cloned());
+    raw_routes.extend(instance.manual_routes.iter().cloned());
+    raw_routes.extend(instance.local_proxy_cidrs.iter().cloned());
     raw_routes.extend(runtime_proxy_cidrs.iter().cloned());
     simplify_routes(raw_routes)
 }
 
-pub(crate) fn aggregate_requested_tun_routes(instances: &[RuntimeInstanceState]) -> Vec<String> {
+pub fn aggregate_requested_tun_routes(instances: &[RuntimeInstanceState]) -> Vec<String> {
     let mut aggregated_routes = Vec::new();
     let mut seen_routes = HashSet::new();
     for instance in instances.iter().filter(|instance| instance.tun_required) {
@@ -89,4 +86,22 @@ pub(crate) fn aggregate_requested_tun_routes(instances: &[RuntimeInstanceState])
         }
     }
     aggregated_routes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::simplify_routes;
+
+    #[test]
+    fn simplify_routes_normalizes_deduplicates_and_removes_subnets() {
+        let routes = simplify_routes(vec![
+            "10.0.0.7".to_string(),
+            "10.0.0.0/24".to_string(),
+            "10.0.0.42/32->peer-a".to_string(),
+            "2001:db8::1".to_string(),
+            "2001:db8::/64".to_string(),
+        ]);
+
+        assert_eq!(routes, vec!["10.0.0.0/24", "2001:db8::/64"]);
+    }
 }

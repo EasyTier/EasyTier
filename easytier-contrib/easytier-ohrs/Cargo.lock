@@ -225,6 +225,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
+name = "atomic-write-file"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aeb1e2c1d58618bea806ccca5bbe65dc4e868be16f69ff118a39049389687548"
+dependencies = [
+ "nix 0.29.0",
+ "rand 0.8.5",
+]
+
+[[package]]
 name = "atomic_refcell"
 version = "0.1.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1132,6 +1142,7 @@ dependencies = [
  "async-recursion",
  "async-trait",
  "atomic-shim",
+ "atomic-write-file",
  "atomic_refcell",
  "auto_impl",
  "base64 0.22.1",
@@ -1163,6 +1174,7 @@ dependencies = [
  "hickory-proto",
  "hickory-resolver",
  "hickory-server",
+ "hkdf",
  "http",
  "humansize",
  "humantime-serde",
@@ -1195,6 +1207,7 @@ dependencies = [
  "serde",
  "serde_json",
  "service-manager",
+ "sha2",
  "shellexpand",
  "smoltcp",
  "socket2 0.5.10",
@@ -1288,26 +1301,53 @@ dependencies = [
 ]
 
 [[package]]
+name = "easytier-ohos-features"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "easytier",
+ "flate2",
+ "gethostname 1.1.0",
+ "once_cell",
+ "prost-reflect",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "easytier-ohos-kernel"
+version = "0.1.0"
+dependencies = [
+ "easytier",
+ "ipnet",
+ "once_cell",
+ "serde",
+ "serde_json",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "easytier-ohrs"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "base64 0.22.1",
  "bytes",
  "easytier",
  "easytier-core",
+ "easytier-ohos-features",
+ "easytier-ohos-kernel",
  "easytier-proto",
- "flate2",
  "futures",
- "gethostname 1.1.0",
- "ipnet",
  "napi-build-ohos",
  "napi-derive-ohos",
  "napi-ohos",
  "once_cell",
- "prost-reflect",
- "rusqlite",
  "serde",
  "serde_json",
  "tokio",
@@ -2073,6 +2113,15 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "hkdf"
+version = "0.12.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b5f8eb2ad728638ea2c7d47a21db23b7b58a72ed6a38256b8a1849f15fbbdf7"
+dependencies = [
+ "hmac",
 ]
 
 [[package]]
