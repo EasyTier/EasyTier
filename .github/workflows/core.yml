@@ -165,7 +165,10 @@ jobs:
       - uses: taiki-e/install-action@v2
         if: ${{ contains(matrix.OS, 'ubuntu') }}
         with:
-          tool: cargo-zigbuild
+          # v0.23.3 emits -mcpu=generic+v6+strict_align for
+          # arm-unknown-linux-musleabi, which zig 0.16.0 rejects;
+          # unpin only together with a zig bump.
+          tool: cargo-zigbuild@0.23.2
 
       - name: Build
         if: ${{ !contains(matrix.TARGET, 'mips') }}
