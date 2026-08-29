@@ -5403,11 +5403,12 @@ mod tests {
             .get();
 
         assert!(route.withdraw_self_conn_info().await);
-        let conn_map = route.service_impl.synced_route_info.conn_map.read();
-        let withdrawn = conn_map.get(&1).unwrap();
-        assert!(withdrawn.connected_peers.is_empty());
-        assert!(withdrawn.version.get() > previous_version);
-        drop(conn_map);
+        {
+            let conn_map = route.service_impl.synced_route_info.conn_map.read();
+            let withdrawn = conn_map.get(&1).unwrap();
+            assert!(withdrawn.connected_peers.is_empty());
+            assert!(withdrawn.version.get() > previous_version);
+        }
 
         let local_snapshot = route.service_impl.local_route_snapshot();
         assert_eq!(

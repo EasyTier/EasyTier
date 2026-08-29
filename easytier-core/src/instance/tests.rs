@@ -973,9 +973,11 @@ source = "web"
             .unwrap();
 
         assert_eq!(instance.toml_config().unwrap().get_hostname(), "after");
-        let persisted = persistence.writes.lock().unwrap();
-        assert_eq!(persisted.len(), 1);
-        assert!(persisted[0].contains("hostname = \"after\""));
+        {
+            let persisted = persistence.writes.lock().unwrap();
+            assert_eq!(persisted.len(), 1);
+            assert!(persisted[0].contains("hostname = \"after\""));
+        }
         instance.stop().await;
     }
 
@@ -1103,12 +1105,14 @@ source = "web"
         .await
         .unwrap();
 
-        let persisted = persistence.writes.lock().unwrap();
-        assert_eq!(persisted.len(), 3);
-        assert!(persisted[0].contains("name = \"bob\""));
-        assert!(persisted[1].contains("name = \"alice\""));
-        assert!(persisted[2].contains("name = \"alice\""));
-        assert!(!persisted[2].contains("name = \"bob\""));
+        {
+            let persisted = persistence.writes.lock().unwrap();
+            assert_eq!(persisted.len(), 3);
+            assert!(persisted[0].contains("name = \"bob\""));
+            assert!(persisted[1].contains("name = \"alice\""));
+            assert!(persisted[2].contains("name = \"alice\""));
+            assert!(!persisted[2].contains("name = \"bob\""));
+        }
         instance.peer_manager.clear_resources().await;
     }
 
