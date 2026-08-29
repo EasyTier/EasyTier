@@ -1519,6 +1519,13 @@ impl PeerManagerCore {
         self.route.clone()
     }
 
+    pub(crate) async fn withdraw_routes_before_stop(&self) -> bool {
+        let Some(route) = self.route_algo_inst.ospf_route() else {
+            return true;
+        };
+        route.withdraw_self_conn_info().await
+    }
+
     pub fn mark_recent_traffic(&self, dst_peer_id: PeerId) {
         let flags = self.context.flags();
         self.recent_traffic

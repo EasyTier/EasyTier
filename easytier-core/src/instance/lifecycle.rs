@@ -152,6 +152,13 @@ where
     }
 
     async fn stop_components(&self) {
+        if !self.peer_manager.withdraw_routes_before_stop().await {
+            tracing::warn!(
+                instance = %self.instance_name,
+                "not every direct route session acknowledged the shutdown withdrawal"
+            );
+        }
+
         #[cfg(feature = "vpn-portal")]
         self.vpn_portal.stop().await;
         #[cfg(feature = "public-ipv6-provider")]

@@ -568,15 +568,15 @@ mod tests {
     fn vpn_portal_client_changes_produce_hot_patches() {
         let current = config_with_vpn_portal(
             vec![
-                portal_client("alice", "10.144.144.4"),
-                portal_client("carol", "10.144.144.6"),
+                portal_client("alice", "10.144.144.4/24"),
+                portal_client("carol", "10.144.144.6/24"),
             ],
             "0.0.0.0:22121",
         );
         let desired = config_with_vpn_portal(
             vec![
-                portal_client("bob", "10.144.144.5"),
-                portal_client("carol", "10.144.144.7"),
+                portal_client("bob", "10.144.144.5/24"),
+                portal_client("carol", "10.144.144.7/24"),
             ],
             "0.0.0.0:22121",
         );
@@ -595,16 +595,24 @@ mod tests {
             ],
             "removals must precede additions; changed clients are remove+add"
         );
+        let added = patch
+            .vpn_portal_clients
+            .iter()
+            .filter(|item| item.action == ConfigPatchAction::Add as i32)
+            .filter_map(|item| item.client.as_ref())
+            .map(|client| client.virtual_ip.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(added, ["10.144.144.5/24", "10.144.144.7/24"]);
     }
 
     #[test]
     fn vpn_portal_client_no_op_produces_empty_patch_section() {
         let current = config_with_vpn_portal(
-            vec![portal_client("alice", "10.144.144.4")],
+            vec![portal_client("alice", "10.144.144.4/24")],
             "0.0.0.0:22121",
         );
         let desired = config_with_vpn_portal(
-            vec![portal_client("alice", "10.144.144.4")],
+            vec![portal_client("alice", "10.144.144.4/24")],
             "0.0.0.0:22121",
         );
 
@@ -617,11 +625,11 @@ mod tests {
     #[test]
     fn vpn_portal_listener_identity_change_requires_recreate() {
         let current = config_with_vpn_portal(
-            vec![portal_client("alice", "10.144.144.4")],
+            vec![portal_client("alice", "10.144.144.4/24")],
             "0.0.0.0:22121",
         );
         let desired = config_with_vpn_portal(
-            vec![portal_client("alice", "10.144.144.4")],
+            vec![portal_client("alice", "10.144.144.4/24")],
             "0.0.0.0:22122",
         );
         assert!(
@@ -652,7 +660,7 @@ mod tests {
     fn vpn_portal_enable_or_disable_requires_recreate() {
         let without_portal = config_with_port_forwards(Vec::new());
         let with_portal = config_with_vpn_portal(
-            vec![portal_client("alice", "10.144.144.4")],
+            vec![portal_client("alice", "10.144.144.4/24")],
             "0.0.0.0:22121",
         );
 

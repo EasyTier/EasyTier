@@ -262,12 +262,10 @@ impl WireGuardPortalHost {
 
 fn derive_client(master: [u8; 32], client: &PortalClientConfig) -> anyhow::Result<DerivedClient> {
     let wireguard_private = derive_named_key(&master, b"wireguard-client", &client.name)?;
-    let identity_private_key = derive_named_key(&master, b"attached-noise", &client.name)?;
     Ok(DerivedClient {
         config: client.clone(),
         wireguard_private,
         wireguard_public: PublicKey::from(&StaticSecret::from(wireguard_private)),
-        identity_private_key,
     })
 }
 fn secondary_ipv6_bind_address(address: SocketAddr, primary_port: u16) -> Option<SocketAddr> {
@@ -394,16 +392,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn named_keys_are_domain_separated_and_stable() {
+    fn named_wireguard_keys_are_stable_and_client_scoped() {
         let master = [7; 32];
         let client = derive_named_key(&master, b"wireguard-client", "laptop").unwrap();
         assert_eq!(
             client,
             derive_named_key(&master, b"wireguard-client", "laptop").unwrap()
-        );
-        assert_ne!(
-            client,
-            derive_named_key(&master, b"attached-noise", "laptop").unwrap()
         );
         assert_ne!(
             client,

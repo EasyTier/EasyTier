@@ -22,6 +22,7 @@ use easytier_core::{
     gateway::vpn_portal::{PortalClientConfig, PortalSession},
     socket::udp::VirtualUdpSocket,
 };
+use rand::rngs::OsRng;
 use tokio::{
     sync::{Mutex, mpsc, watch},
     task::JoinSet,
@@ -41,7 +42,6 @@ pub(super) struct DerivedClient {
     pub(super) config: PortalClientConfig,
     pub(super) wireguard_private: [u8; 32],
     pub(super) wireguard_public: PublicKey,
-    pub(super) identity_private_key: [u8; 32],
 }
 
 struct PortalChannels {
@@ -52,6 +52,7 @@ struct PortalChannels {
 
 struct ClientSession {
     generation: u64,
+    identity_private_key: [u8; 32],
     endpoint: Option<Endpoint>,
     endpoint_updates: watch::Sender<String>,
     tunnel: Tunn,
@@ -356,7 +357,7 @@ impl PortalEngine {
         let _ = self.accepted.send(PortalSession {
             client_name: slot.client.config.name.clone(),
             endpoint: channels.endpoint,
-            identity_private_key: slot.client.identity_private_key,
+            identity_private_key: session.identity_private_key,
             from_client: channels.from_client,
             to_client: channels.to_client,
         });
@@ -402,6 +403,7 @@ impl PortalEngine {
         });
         ClientSession {
             generation,
+            identity_private_key: new_attached_identity_private_key(),
             endpoint: Some(Endpoint { socket, remote }),
             endpoint_updates,
             tunnel: Tunn::new(
@@ -521,6 +523,11 @@ impl PortalEngine {
         }
     }
 }
+
+fn new_attached_identity_private_key() -> [u8; 32] {
+    StaticSecret::random_from_rng(OsRng).to_bytes()
+}
+
 fn is_handshake_initiation(packet: &[u8]) -> bool {
     packet.len() == 148 && packet.get(..4) == Some(&1u32.to_le_bytes())
 }
@@ -542,13 +549,20 @@ mod tests {
         DerivedClient {
             config: PortalClientConfig {
                 name: name.to_owned(),
-                virtual_ip: "192.0.2.1".parse().unwrap(),
+                virtual_ip: "10.82.0.2/24".parse().unwrap(),
                 groups: Vec::new(),
             },
             wireguard_private: secret.to_bytes(),
             wireguard_public: PublicKey::from(&secret),
-            identity_private_key: [seed.wrapping_add(1); 32],
         }
+    }
+
+    #[test]
+    fn attached_identity_is_unique_to_each_live_session() {
+        assert_ne!(
+            new_attached_identity_private_key(),
+            new_attached_identity_private_key()
+        );
     }
 
     fn slot_index(engine: &PortalEngine, name: &str) -> Option<u32> {

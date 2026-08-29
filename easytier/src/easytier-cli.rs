@@ -279,7 +279,7 @@ enum VpnPortalSubCommand {
     AddClient {
         #[arg(help = "client name")]
         name: String,
-        #[arg(long, help = "client virtual IPv4 address inside the mesh network")]
+        #[arg(long, help = "client virtual IPv4 CIDR inside the mesh network")]
         virtual_ip: String,
         #[arg(long, help = "ACL groups assigned to the client")]
         groups: Vec<String>,
@@ -612,6 +612,16 @@ fn is_missing_web_client_service(error: &RpcError) -> bool {
     )
 }
 
+fn parse_vpn_portal_client_cidr(value: &str) -> anyhow::Result<cidr::Ipv4Inet> {
+    let value = value.trim();
+    if !value.contains('/') {
+        anyhow::bail!("client virtual IPv4 must include its network prefix");
+    }
+    value
+        .parse::<cidr::Ipv4Inet>()
+        .map_err(|error| anyhow::anyhow!("invalid client virtual IPv4 CIDR ({value}): {error}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -635,6 +645,13 @@ mod tests {
         let error = RpcError::InvalidServiceKey("PeerManageRpc".to_string(), "".to_string());
 
         assert!(!is_missing_web_client_service(&error));
+    }
+
+    #[test]
+    fn vpn_portal_client_requires_a_complete_ipv4_cidr() {
+        let client = parse_vpn_portal_client_cidr("10.90.0.2/16").unwrap();
+        assert_eq!(client.to_string(), "10.90.0.2/16");
+        assert!(parse_vpn_portal_client_cidr("10.90.0.2").is_err());
     }
 
     #[test]
@@ -2725,9 +2742,7 @@ impl<'a> CommandHandler<'a> {
         virtual_ip: String,
         groups: Vec<String>,
     ) -> Result<(), Error> {
-        virtual_ip
-            .parse::<std::net::Ipv4Addr>()
-            .map_err(|e| anyhow::anyhow!("invalid virtual ip ({virtual_ip}): {e}"))?;
+        let virtual_ip = parse_vpn_portal_client_cidr(&virtual_ip)?.to_string();
         self.apply_to_instances(|handler| {
             let name = name.clone();
             let virtual_ip = virtual_ip.clone();

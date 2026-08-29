@@ -39,6 +39,13 @@ adjacency so direct-destination fallback remains available. Other peers'
 source-owned rows and versions are never rewritten, cached for promotion, or
 otherwise changed by this projection.
 
+Before a graceful Instance stop, the owner publishes a new-version empty
+connection row while keeping its physical adjacencies available for route
+synchronization. It waits for the current direct route Sessions to acknowledge
+that withdrawal up to a bounded deadline, then continues shutdown. Abrupt
+process loss cannot publish this withdrawal and retains the normal route
+expiry behavior.
+
 Relay eligibility comes from the transport-authenticated credential identity
 and grant, not self-reported route metadata. The advertisement Module does not
 support changing a credential's relay permission in place; such a permission
@@ -52,6 +59,17 @@ authenticated portal client owns one complete peer manager. The managers are
 protocol peers; `attached` describes only the local transport and its trusted
 ingress provenance, not a parent/child peer role.
 
+An attached peer owns one complete IPv4 CIDR (for example `10.144.0.5/16`).
+Its address and advertised network are independent of the network manager's
+own static or DHCP address. A VPN portal derives the attached peer route and
+the external client's allowed network from that single CIDR; it does not infer
+either value from the portal-hosting instance.
+
+An external portal client uses that same IPv4 address on its native tunnel
+interface. The portal validates the source address and forwards IPv4 packets
+unchanged between the native tunnel and the attached peer; it does not assign
+a second tunnel-only address or perform address translation.
+
 Each manager owns its ACL execution state, route service, RPC endpoint, secure
 sessions, packet processing, and lifecycle. Portal code supplies raw packets
 and peer configuration but does not build, reload, or coordinate ACL filters.
@@ -61,7 +79,10 @@ credential peer. Its portal-owned, in-memory credential grant carries ACL
 groups and is revoked with the attached runtime; the peer never receives the
 network secret or ACL group secrets. A non-Secure-Mode network retains the
 legacy admin-attached identity for compatibility. A credential peer cannot host
-a portal because it cannot issue credential grants.
+a portal because it cannot issue credential grants. Each live portal Session
+owns a fresh attached-peer identity, while the external client key remains
+stable across Sessions; a replacement Session must never reuse the previous
+non-reusable credential identity.
 
 ## Compact compatibility Host
 

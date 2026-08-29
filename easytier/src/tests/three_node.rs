@@ -1767,7 +1767,7 @@ pub async fn wireguard_vpn_portal(#[values(true, false)] test_v6: bool) {
                     wireguard_private_key: Some(BASE64_STANDARD.encode([42u8; 32])),
                     clients: vec![VpnPortalClientConfig {
                         name: "test-client".to_owned(),
-                        virtual_ip: "10.144.144.4".parse().unwrap(),
+                        virtual_ip: "10.144.144.4/24".parse().unwrap(),
                         groups: Vec::new(),
                     }],
                 });
@@ -1808,6 +1808,12 @@ pub async fn wireguard_vpn_portal(#[values(true, false)] test_v6: bool) {
         client_info.client_config.contains("198.51.100.0/24"),
         "client config must include remote proxy CIDRs"
     );
+    assert!(
+        client_info
+            .client_config
+            .contains("Address = 10.144.144.4/32"),
+        "client config must assign the attached peer virtual IP"
+    );
     let (server_public, client_private) =
         test_wireguard_keys(&portal_config, "test-client").unwrap();
     run_wireguard_client(
@@ -1816,7 +1822,7 @@ pub async fn wireguard_vpn_portal(#[values(true, false)] test_v6: bool) {
         Key::try_from(server_public.as_slice()).unwrap(),
         Key::try_from(client_private.as_slice()).unwrap(),
         vec!["10.144.144.0/24".to_string()],
-        "192.0.2.42".to_string(),
+        "10.144.144.4".to_owned(),
     )
     .unwrap();
 
@@ -1867,12 +1873,12 @@ pub async fn wireguard_vpn_portal_multi_client() {
                     clients: vec![
                         VpnPortalClientConfig {
                             name: "client-a".to_owned(),
-                            virtual_ip: "10.144.144.4".parse().unwrap(),
+                            virtual_ip: "10.144.144.4/24".parse().unwrap(),
                             groups: Vec::new(),
                         },
                         VpnPortalClientConfig {
                             name: "client-b".to_owned(),
-                            virtual_ip: "10.144.144.5".parse().unwrap(),
+                            virtual_ip: "10.144.144.5/24".parse().unwrap(),
                             groups: Vec::new(),
                         },
                     ],
@@ -1890,9 +1896,9 @@ pub async fn wireguard_vpn_portal_multi_client() {
         .get_vpn_portal_config()
         .unwrap();
 
-    for (ns, client_name, tunnel_ip) in [
-        ("net_d", "client-a", "192.0.2.42"),
-        ("net_f", "client-b", "192.0.2.43"),
+    for (ns, client_name, virtual_ip) in [
+        ("net_d", "client-a", "10.144.144.4"),
+        ("net_f", "client-b", "10.144.144.5"),
     ] {
         let net_ns = NetNS::new(Some(ns.into()));
         let _g = net_ns.guard();
@@ -1904,7 +1910,7 @@ pub async fn wireguard_vpn_portal_multi_client() {
             Key::try_from(server_public.as_slice()).unwrap(),
             Key::try_from(client_private.as_slice()).unwrap(),
             vec!["10.144.144.0/24".to_string()],
-            tunnel_ip.to_string(),
+            virtual_ip.to_owned(),
         )
         .unwrap();
     }
@@ -1923,9 +1929,8 @@ pub async fn wireguard_vpn_portal_multi_client() {
         .await;
     }
 
-    // 跨客户端互 ping 对方的虚拟 IP：一次流量同时覆盖源地址改写
-    // （tunnel_ip -> virtual_ip）与目的地址改写（virtual_ip -> tunnel_ip），
-    // 回程再反向各执行一遍
+    // 跨客户端互 ping 对方的虚拟 IP，验证 WireGuard 地址与 attached
+    // peer 地址相同且双向数据包无需地址改写。
     wait_for_condition(
         || async { ping_test("net_d", "10.144.144.5", None).await },
         Duration::from_secs(10),
@@ -1938,7 +1943,7 @@ pub async fn wireguard_vpn_portal_multi_client() {
     .await;
 
     // TCP 数据面：node1 侧看到的连接源地址必须是 client-a 的虚拟 IP，
-    // 并做一段随机数据回环，覆盖 TCP 增量校验和改写路径
+    // 并做一段随机数据回环，验证传输层校验和保持不变。
     let mut buf = vec![0u8; 1024];
     rand::thread_rng().fill(&mut buf[..]);
     let expected = buf.clone();
@@ -1964,7 +1969,8 @@ pub async fn wireguard_vpn_portal_multi_client() {
     }
     echo_task.await.unwrap();
 
-    // portal 状态：两个客户端均在线，tunnel_ip 学习正确，peer_id 互不相同
+    // portal 状态：两个客户端均在线，隧道地址等于各自的 attached peer
+    // 虚拟 IP，peer_id 互不相同。
     let portal_info = insts[2].get_core_instance().vpn_portal_info().await;
     assert_eq!(portal_info.clients.len(), 2);
     let client_a = portal_info
@@ -1982,8 +1988,8 @@ pub async fn wireguard_vpn_portal_multi_client() {
         assert!(client.peer_id.is_some());
     }
     assert_ne!(client_a.peer_id, client_b.peer_id);
-    assert_eq!(client_a.tunnel_ip, Some("192.0.2.42".parse().unwrap()));
-    assert_eq!(client_b.tunnel_ip, Some("192.0.2.43".parse().unwrap()));
+    assert_eq!(client_a.tunnel_ip, Some("10.144.144.4".parse().unwrap()));
+    assert_eq!(client_b.tunnel_ip, Some("10.144.144.5".parse().unwrap()));
 
     drop_insts(insts).await;
 }
@@ -2006,7 +2012,7 @@ pub async fn wireguard_vpn_portal_client_roaming() {
                     wireguard_private_key: Some(BASE64_STANDARD.encode([42u8; 32])),
                     clients: vec![VpnPortalClientConfig {
                         name: "roaming-client".to_owned(),
-                        virtual_ip: "10.144.144.4".parse().unwrap(),
+                        virtual_ip: "10.144.144.4/24".parse().unwrap(),
                         groups: Vec::new(),
                     }],
                 });
@@ -2033,7 +2039,7 @@ pub async fn wireguard_vpn_portal_client_roaming() {
             Key::try_from(server_public.as_slice()).unwrap(),
             Key::try_from(client_private.as_slice()).unwrap(),
             vec!["10.144.144.0/24".to_string()],
-            "192.0.2.42".to_string(),
+            "10.144.144.4".to_owned(),
         )
         .unwrap();
     }
@@ -2156,7 +2162,7 @@ pub async fn wireguard_vpn_portal_dynamic_clients() {
                     wireguard_private_key: Some(BASE64_STANDARD.encode([42u8; 32])),
                     clients: vec![VpnPortalClientConfig {
                         name: "client-a".to_owned(),
-                        virtual_ip: "10.144.144.4".parse().unwrap(),
+                        virtual_ip: "10.144.144.4/24".parse().unwrap(),
                         groups: Vec::new(),
                     }],
                 });
@@ -2186,7 +2192,7 @@ pub async fn wireguard_vpn_portal_dynamic_clients() {
             Key::try_from(server_public.as_slice()).unwrap(),
             Key::try_from(client_private.as_slice()).unwrap(),
             vec!["10.144.144.0/24".to_string()],
-            "192.0.2.42".to_string(),
+            "10.144.144.4".to_owned(),
         )
         .unwrap();
     }
@@ -2204,7 +2210,7 @@ pub async fn wireguard_vpn_portal_dynamic_clients() {
                 action: ConfigPatchAction::Add as i32,
                 client: Some(VpnPortalClientConfigPb {
                     name: "client-b".to_owned(),
-                    virtual_ip: "10.144.144.5".to_owned(),
+                    virtual_ip: "10.144.144.5/24".to_owned(),
                     groups: Vec::new(),
                 }),
             }],
@@ -2234,7 +2240,7 @@ pub async fn wireguard_vpn_portal_dynamic_clients() {
                 action: ConfigPatchAction::Add as i32,
                 client: Some(VpnPortalClientConfigPb {
                     name: "client-b".to_owned(),
-                    virtual_ip: "10.144.144.9".to_owned(),
+                    virtual_ip: "10.144.144.9/24".to_owned(),
                     groups: Vec::new(),
                 }),
             }],
@@ -2274,7 +2280,7 @@ pub async fn wireguard_vpn_portal_dynamic_clients() {
             Key::try_from(server_public.as_slice()).unwrap(),
             Key::try_from(client_private.as_slice()).unwrap(),
             vec!["10.144.144.0/24".to_string()],
-            "192.0.2.43".to_string(),
+            "10.144.144.5".to_owned(),
         )
         .unwrap();
     }
@@ -2325,7 +2331,7 @@ pub async fn wireguard_vpn_portal_dynamic_clients() {
     assert_eq!(info.clients[0].state, PortalClientState::Online);
     assert_eq!(
         info.clients[0].tunnel_ip,
-        Some("192.0.2.43".parse().unwrap())
+        Some("10.144.144.5".parse().unwrap())
     );
 
     // Release the held CoreInstance Arc so drop_insts can observe a clean

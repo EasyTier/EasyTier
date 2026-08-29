@@ -35,10 +35,10 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttachedPeerConfig {
     pub name: String,
-    pub virtual_ip: Ipv4Addr,
+    pub virtual_ip: cidr::Ipv4Inet,
     pub groups: Vec<String>,
-    /// Stable identity key supplied by the caller; changing it changes the
-    /// peer identity, so callers must persist and reuse it across restarts.
+    /// Identity key supplied by the caller. It stays stable for one attached
+    /// runtime; replacing the runtime may deliberately rotate the identity.
     pub identity_private_key: [u8; 32],
 }
 
@@ -393,28 +393,9 @@ fn build_peer_snapshot(
         .as_deref()
         .filter(|secret| !secret.is_empty())
         .ok_or_else(|| anyhow::anyhow!("attached peers require a non-empty network secret"))?;
-    if network.services.dhcp_ipv4 {
-        anyhow::bail!("attached peers require a static network-manager IPv4 address");
-    }
-    let network_ipv4 = network
-        .peer
-        .runtime
-        .core
-        .routes
-        .ipv4
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("attached peers require a network-manager IPv4 prefix"))?;
-    let IpAddr::V4(network_address) = network_ipv4.address else {
-        anyhow::bail!("attached peers require a network-manager IPv4 prefix");
-    };
-    let network_prefix = cidr::Ipv4Inet::new(network_address, network_ipv4.prefix_len)
-        .map_err(|error| anyhow::anyhow!("invalid network-manager IPv4 prefix: {error}"))?;
-    let network_prefix = network_prefix.network();
-    if config.virtual_ip == network_address
-        || !network_prefix.contains(&config.virtual_ip)
-        || config.virtual_ip == network_prefix.first_address()
-        || config.virtual_ip == network_prefix.last_address()
-    {
+    let address = config.virtual_ip.address();
+    let client_network = config.virtual_ip.network();
+    if address == client_network.first_address() || address == client_network.last_address() {
         anyhow::bail!("unusable attached-peer IPv4 address: {}", config.virtual_ip);
     }
 
@@ -423,8 +404,8 @@ fn build_peer_snapshot(
     snapshot.runtime.core.node.instance_id = None;
     snapshot.runtime.core.node.hostname = Some(config.name.clone());
     snapshot.runtime.core.routes.ipv4 = Some(IpPrefix {
-        address: IpAddr::V4(config.virtual_ip),
-        prefix_len: network_ipv4.prefix_len,
+        address: IpAddr::V4(address),
+        prefix_len: config.virtual_ip.network_length(),
     });
     snapshot.runtime.core.routes.ipv6 = None;
     snapshot.runtime.core.routes.advertised_routes.clear();
@@ -543,6 +524,10 @@ mod tests {
             common::{PeerFeatureFlag, StunInfo},
         },
     };
+
+    fn attached_ipv4(address: Ipv4Addr) -> cidr::Ipv4Inet {
+        cidr::Ipv4Inet::new(address, 24).unwrap()
+    }
 
     fn peer_manager_with_acl(
         tcp_whitelist: Vec<String>,
@@ -713,7 +698,7 @@ mod tests {
             store.clone(),
             AttachedPeerConfig {
                 name: "group-update".to_owned(),
-                virtual_ip: Ipv4Addr::new(10, 82, 0, 2),
+                virtual_ip: attached_ipv4(Ipv4Addr::new(10, 82, 0, 2)),
                 groups: vec!["ops".to_owned(), "audit".to_owned()],
                 identity_private_key: [2; 32],
             },
@@ -745,7 +730,7 @@ mod tests {
             store,
             AttachedPeerConfig {
                 name: "direct-group-update".to_owned(),
-                virtual_ip: Ipv4Addr::new(10, 82, 0, 2),
+                virtual_ip: attached_ipv4(Ipv4Addr::new(10, 82, 0, 2)),
                 groups: vec!["ops".to_owned()],
                 identity_private_key: [5; 32],
             },
@@ -831,7 +816,7 @@ mod tests {
         let network = store.snapshot();
         let config = AttachedPeerConfig {
             name: "sanitized".to_owned(),
-            virtual_ip: Ipv4Addr::new(10, 82, 0, 2),
+            virtual_ip: attached_ipv4(Ipv4Addr::new(10, 82, 0, 2)),
             groups: vec!["ops".to_owned()],
             identity_private_key: [3; 32],
         };
@@ -879,6 +864,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn attached_peer_uses_its_own_cidr_when_host_uses_dhcp() {
+        let (_network_peer_manager, store) = peer_manager_with_acl_and_secure(Vec::new(), true);
+        store.update_peer_with(|peer| peer.runtime.core.routes.ipv4 = None);
+        store.update_services(|services| services.dhcp_ipv4 = true);
+        let network = store.snapshot();
+        let config = AttachedPeerConfig {
+            name: "wireguard-client".to_owned(),
+            virtual_ip: "10.90.0.2/16".parse().unwrap(),
+            groups: vec!["ops".to_owned()],
+            identity_private_key: [3; 32],
+        };
+
+        let (snapshot, _) = build_peer_snapshot(network.as_ref(), &config).unwrap();
+
+        assert_eq!(
+            snapshot.runtime.core.routes.ipv4,
+            Some(IpPrefix {
+                address: IpAddr::V4(Ipv4Addr::new(10, 90, 0, 2)),
+                prefix_len: 16,
+            })
+        );
+    }
+
+    #[tokio::test]
     async fn secure_attached_peer_uses_credential_identity_and_granted_groups() {
         let (network_peer_manager, store) = peer_manager_with_acl_and_secure(Vec::new(), true);
         network_peer_manager.run().await.unwrap();
@@ -896,7 +905,7 @@ mod tests {
             store,
             AttachedPeerConfig {
                 name: "credential".to_owned(),
-                virtual_ip: Ipv4Addr::new(10, 82, 0, 2),
+                virtual_ip: attached_ipv4(Ipv4Addr::new(10, 82, 0, 2)),
                 groups: vec!["ops".to_owned()],
                 identity_private_key,
             },
@@ -944,7 +953,7 @@ mod tests {
             store.clone(),
             AttachedPeerConfig {
                 name: "first".to_owned(),
-                virtual_ip: Ipv4Addr::new(10, 82, 0, 2),
+                virtual_ip: attached_ipv4(Ipv4Addr::new(10, 82, 0, 2)),
                 groups: vec!["ops".to_owned()],
                 identity_private_key: [1; 32],
             },
@@ -956,7 +965,7 @@ mod tests {
             store.clone(),
             AttachedPeerConfig {
                 name: "second".to_owned(),
-                virtual_ip: Ipv4Addr::new(10, 82, 0, 3),
+                virtual_ip: attached_ipv4(Ipv4Addr::new(10, 82, 0, 3)),
                 groups: Vec::new(),
                 identity_private_key: [2; 32],
             },
@@ -1030,7 +1039,7 @@ mod tests {
             store,
             AttachedPeerConfig {
                 name: "reconnected".to_owned(),
-                virtual_ip: Ipv4Addr::new(10, 82, 0, 4),
+                virtual_ip: attached_ipv4(Ipv4Addr::new(10, 82, 0, 4)),
                 groups: vec!["ops".to_owned()],
                 identity_private_key: [3; 32],
             },
@@ -1059,7 +1068,7 @@ mod tests {
             store,
             AttachedPeerConfig {
                 name: "cancelled-close".to_owned(),
-                virtual_ip: Ipv4Addr::new(10, 82, 0, 4),
+                virtual_ip: attached_ipv4(Ipv4Addr::new(10, 82, 0, 4)),
                 groups: Vec::new(),
                 identity_private_key,
             },
@@ -1126,7 +1135,7 @@ mod tests {
             store,
             AttachedPeerConfig {
                 name: "closed-receiver".to_owned(),
-                virtual_ip: Ipv4Addr::new(10, 82, 0, 4),
+                virtual_ip: attached_ipv4(Ipv4Addr::new(10, 82, 0, 4)),
                 groups: Vec::new(),
                 identity_private_key: [3; 32],
             },
@@ -1158,7 +1167,7 @@ mod tests {
             store,
             AttachedPeerConfig {
                 name: "dropped".to_owned(),
-                virtual_ip: Ipv4Addr::new(10, 82, 0, 4),
+                virtual_ip: attached_ipv4(Ipv4Addr::new(10, 82, 0, 4)),
                 groups: Vec::new(),
                 identity_private_key: [3; 32],
             },
@@ -1198,7 +1207,7 @@ mod tests {
             store,
             AttachedPeerConfig {
                 name: "dropped-secure".to_owned(),
-                virtual_ip: Ipv4Addr::new(10, 82, 0, 5),
+                virtual_ip: attached_ipv4(Ipv4Addr::new(10, 82, 0, 5)),
                 groups: vec!["ops".to_owned()],
                 identity_private_key,
             },

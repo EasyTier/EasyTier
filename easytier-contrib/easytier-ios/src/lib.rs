@@ -12,43 +12,186 @@
 //! All exported functions are panic-safe: panics are caught at the FFI
 //! boundary and reported through `easytier_ios_last_error`.
 
+mod diagnostic_logging;
 mod error;
 mod strings;
 
 use std::{
     ffi::{CStr, c_char, c_int},
     panic::{AssertUnwindSafe, catch_unwind},
+    path::Path,
     ptr,
     sync::OnceLock,
 };
 
+use diagnostic_logging::DiagnosticMakeWriter;
 use strings::cstring_for;
+use tracing_subscriber::{
+    EnvFilter, Registry, layer::SubscriberExt, reload, util::SubscriberInitExt,
+};
 
-/// Install a narrow tracing subscriber for an embedding app that needs to
-/// diagnose EasyTier transport failures. The subscriber writes port-forward
-/// lifecycle events to stderr.
+const DIAGNOSTIC_FILTER: &str = concat!(
+    "easytier_ios::diagnostics=trace,",
+    "easytier_core::instance=trace,",
+    "easytier_core::connectivity=debug,",
+    "easytier_core::socket::udp=debug,",
+    "easytier_core::gateway::port_forward=trace"
+);
+
+struct DiagnosticLogger {
+    writer: DiagnosticMakeWriter,
+    filter: reload::Handle<EnvFilter, Registry>,
+}
+
+impl DiagnosticLogger {
+    fn install(directory: &Path) -> Result<Self, String> {
+        let writer = DiagnosticMakeWriter::new(directory).map_err(|error| error.to_string())?;
+        let (filter_layer, filter) = reload::Layer::new(EnvFilter::new("off"));
+        let format_layer = tracing_subscriber::fmt::layer()
+            .with_ansi(false)
+            .with_target(true)
+            .with_writer(writer.clone());
+        tracing_subscriber::registry()
+            .with(filter_layer)
+            .with(format_layer)
+            .try_init()
+            .map_err(|error| error.to_string())?;
+        Ok(Self { writer, filter })
+    }
+
+    fn enable(&self, directory: &Path) -> Result<(), String> {
+        self.writer
+            .set_directory(directory)
+            .map_err(|error| error.to_string())?;
+        self.filter
+            .reload(EnvFilter::new(DIAGNOSTIC_FILTER))
+            .map_err(|error| error.to_string())
+    }
+
+    fn disable(&self) -> Result<(), String> {
+        self.filter
+            .reload(EnvFilter::new("off"))
+            .map_err(|error| error.to_string())?;
+        self.writer.flush().map_err(|error| error.to_string())
+    }
+}
+
+static DIAGNOSTIC_LOGGER: OnceLock<Result<DiagnosticLogger, String>> = OnceLock::new();
+
+/// Configure persistent EasyTier diagnostic logging for the embedding app.
 ///
-/// Returns 0 on success, -1 when another global subscriber was installed
-/// first (see `easytier_ios_last_error`). Repeated calls are idempotent.
+/// Enabling installs a process-wide subscriber on first use, writes into
+/// `directory`, and turns on trace/debug events for connection lifecycle
+/// modules. Disabling reloads the filter to `off`, avoiding event construction
+/// while keeping the subscriber ready for a later enable.
+///
+/// # Safety
+/// When `enabled` is non-zero, `directory` must be a non-null pointer to a
+/// NUL-terminated UTF-8 path.
 #[unsafe(no_mangle)]
-pub extern "C" fn easytier_ios_enable_diagnostic_logging() -> c_int {
+pub unsafe extern "C" fn easytier_ios_configure_diagnostic_logging(
+    directory: *const c_char,
+    enabled: c_int,
+) -> c_int {
+    unsafe {
+        guarded(-1, || {
+            error::clear_error();
+            if enabled == 0 {
+                let Some(logger) = DIAGNOSTIC_LOGGER.get() else {
+                    return 0;
+                };
+                return match logger {
+                    Ok(logger) => diagnostic_result(logger.disable()),
+                    Err(message) => diagnostic_failure(message),
+                };
+            }
+
+            let directory = match cstr_arg(directory, "diagnostic log directory") {
+                Ok(directory) if !directory.is_empty() => Path::new(directory),
+                Ok(_) => {
+                    error::set_error("diagnostic log directory must not be empty");
+                    return -1;
+                }
+                Err(message) => {
+                    error::set_error(&message);
+                    return -1;
+                }
+            };
+            let logger = DIAGNOSTIC_LOGGER.get_or_init(|| DiagnosticLogger::install(directory));
+            match logger {
+                Ok(logger) => diagnostic_result(logger.enable(directory)),
+                Err(message) => diagnostic_failure(message),
+            }
+        })
+    }
+}
+
+fn diagnostic_result(result: Result<(), String>) -> c_int {
+    match result {
+        Ok(()) => 0,
+        Err(message) => diagnostic_failure(&message),
+    }
+}
+
+fn diagnostic_failure(message: &str) -> c_int {
+    error::set_error(&format!("diagnostic logging failed: {message}"));
+    -1
+}
+
+/// Append a host-app lifecycle or network-path marker to the diagnostic log.
+/// This is a no-op while logging is disabled or has never been enabled.
+///
+/// # Safety
+/// `message` must be a non-null pointer to a NUL-terminated UTF-8 string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn easytier_ios_append_diagnostic_event(message: *const c_char) -> c_int {
+    unsafe {
+        guarded(-1, || {
+            error::clear_error();
+            let message = match cstr_arg(message, "diagnostic event") {
+                Ok(message) => message,
+                Err(message) => {
+                    error::set_error(&message);
+                    return -1;
+                }
+            };
+            tracing::info!(target: "easytier_ios::diagnostics", %message, "host event");
+            0
+        })
+    }
+}
+
+/// Flush buffered diagnostic output. A logger that has never been enabled is
+/// already flushed and returns success.
+#[unsafe(no_mangle)]
+pub extern "C" fn easytier_ios_flush_diagnostic_logging() -> c_int {
     guarded(-1, || {
         error::clear_error();
-        static RESULT: OnceLock<Result<(), String>> = OnceLock::new();
-        let result = RESULT.get_or_init(|| {
-            let filter =
-                tracing_subscriber::EnvFilter::new("easytier_core::gateway::port_forward=info");
-            tracing_subscriber::fmt()
-                .with_ansi(false)
-                .with_env_filter(filter)
-                .with_writer(std::io::stderr)
-                .try_init()
-                .map_err(|error| error.to_string())
-        });
-        match result {
+        let Some(Ok(logger)) = DIAGNOSTIC_LOGGER.get() else {
+            return 0;
+        };
+        match logger.writer.flush() {
             Ok(()) => 0,
             Err(message) => {
-                error::set_error(&format!("failed to enable diagnostic logging: {message}"));
+                error::set_error(&format!("failed to flush diagnostic log: {message}"));
+                -1
+            }
+        }
+    })
+}
+
+/// Delete all rotated diagnostic content while keeping the active writer open.
+#[unsafe(no_mangle)]
+pub extern "C" fn easytier_ios_clear_diagnostic_logs() -> c_int {
+    guarded(-1, || {
+        error::clear_error();
+        let Some(Ok(logger)) = DIAGNOSTIC_LOGGER.get() else {
+            return 0;
+        };
+        match logger.writer.clear() {
+            Ok(()) => 0,
+            Err(message) => {
+                error::set_error(&format!("failed to clear diagnostic logs: {message}"));
                 -1
             }
         }
@@ -352,6 +495,15 @@ mod tests {
                 .with_writer(std::io::stderr)
                 .try_init();
         });
+    }
+
+    #[test]
+    fn diagnostic_filter_excludes_packet_payload_targets() {
+        // These targets include exceptional Debug events containing complete
+        // ZCPacket or decrypted packet buffers. Persistent diagnostics must
+        // never enable them at any level.
+        assert!(!DIAGNOSTIC_FILTER.contains("peer_manager"));
+        assert!(!DIAGNOSTIC_FILTER.contains("easytier::tunnel"));
     }
 
     fn acquire() -> MutexGuard<'static, ()> {

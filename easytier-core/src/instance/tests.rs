@@ -344,7 +344,7 @@ mod portable_runtime {
         config.vpn_portal = Some(crate::gateway::vpn_portal::PortalRuntimeConfig {
             clients: vec![crate::gateway::vpn_portal::PortalClientConfig {
                 name: "alice".to_owned(),
-                virtual_ip: "10.82.0.2".parse().unwrap(),
+                virtual_ip: "10.82.0.2/24".parse().unwrap(),
                 groups: Vec::new(),
             }],
         });
@@ -474,6 +474,37 @@ mod portable_runtime {
             }
             self.writes.lock().unwrap().push(config.dump());
             Ok(())
+        }
+    }
+
+    #[cfg(feature = "vpn-portal")]
+    struct RejectingPortalHost;
+
+    #[cfg(feature = "vpn-portal")]
+    #[async_trait]
+    impl crate::gateway::vpn_portal::PortalHost for RejectingPortalHost {
+        async fn start_listeners(
+            &self,
+        ) -> anyhow::Result<Vec<crate::gateway::vpn_portal::PortalListener>> {
+            anyhow::bail!("injected portal start failure")
+        }
+
+        fn name(&self) -> String {
+            "rejecting-test-portal".to_owned()
+        }
+
+        fn render_client_config(
+            &self,
+            _plan: &crate::gateway::vpn_portal::PortalClientConfigPlan,
+        ) -> String {
+            String::new()
+        }
+
+        async fn update_clients(
+            &self,
+            _clients: &[crate::gateway::vpn_portal::PortalClientConfig],
+        ) -> anyhow::Result<()> {
+            anyhow::bail!("injected portal update failure")
         }
     }
     #[cfg(feature = "vpn-portal")]
@@ -893,6 +924,198 @@ source = "web"
         assert!(persisted[0].contains(&secret));
     }
 
+    #[cfg(feature = "management")]
+    #[tokio::test]
+    async fn ordinary_config_patch_is_durable_before_commit() {
+        use easytier_proto::api::config::InstanceConfigPatch;
+
+        let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+        let config = TomlConfig::new_from_str(
+            r#"
+instance_name = "durable-ordinary-patch"
+hostname = "before"
+
+[network_identity]
+network_name = "durable-network"
+network_secret = "network-secret"
+
+[source]
+source = "web"
+"#,
+        )
+        .unwrap();
+        let instance =
+            CoreInstance::from_toml(config, adapters(None, Arc::new(packet_sink))).unwrap();
+        instance.start().await.unwrap();
+        let patch = InstanceConfigPatch {
+            hostname: Some("after".to_owned()),
+            ..Default::default()
+        };
+        let persistence = RecordingConfigPatchPersistence {
+            writes: std::sync::Mutex::new(Vec::new()),
+            fail: AtomicBool::new(true),
+        };
+
+        let error =
+            crate::management::apply_config_patch(&instance, patch.clone(), Some(&persistence))
+                .await
+                .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("injected config persistence failure")
+        );
+        assert_eq!(instance.toml_config().unwrap().get_hostname(), "before");
+
+        persistence.fail.store(false, Ordering::Relaxed);
+        crate::management::apply_config_patch(&instance, patch, Some(&persistence))
+            .await
+            .unwrap();
+
+        assert_eq!(instance.toml_config().unwrap().get_hostname(), "after");
+        {
+            let persisted = persistence.writes.lock().unwrap();
+            assert_eq!(persisted.len(), 1);
+            assert!(persisted[0].contains("hostname = \"after\""));
+        }
+        instance.stop().await;
+    }
+
+    #[cfg(all(feature = "management", feature = "vpn-portal"))]
+    #[tokio::test]
+    async fn portal_client_patch_restores_durable_state_after_failures() {
+        use easytier_proto::api::{
+            config::{ConfigPatchAction, InstanceConfigPatch, VpnPortalClientPatch},
+            manage::VpnPortalClientConfig,
+        };
+
+        let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+        let mut host_adapters = adapters(None, Arc::new(packet_sink));
+        host_adapters.vpn_portal = Some(Arc::new(RejectingPortalHost));
+        let instance = CoreInstance::from_toml(
+            TomlConfig::new_from_str(
+                r#"
+instance_name = "durable-portal-patch"
+ipv4 = "10.82.0.1/24"
+
+[network_identity]
+network_name = "durable-portal-network"
+network_secret = "network-secret"
+
+[vpn_portal_config]
+wireguard_listen = "0.0.0.0:51820"
+
+[[vpn_portal_config.clients]]
+name = "alice"
+virtual_ip = "10.82.0.2/24"
+
+[source]
+source = "web"
+"#,
+            )
+            .unwrap(),
+            host_adapters,
+        )
+        .unwrap();
+        instance.set_state(CoreInstanceState::Running);
+        let persistence = RecordingConfigPatchPersistence {
+            writes: std::sync::Mutex::new(Vec::new()),
+            fail: AtomicBool::new(true),
+        };
+
+        let error = crate::management::apply_config_patch(
+            &instance,
+            InstanceConfigPatch {
+                vpn_portal_clients: vec![
+                    VpnPortalClientPatch {
+                        action: ConfigPatchAction::Remove as i32,
+                        client: Some(VpnPortalClientConfig {
+                            name: "alice".to_owned(),
+                            ..Default::default()
+                        }),
+                    },
+                    VpnPortalClientPatch {
+                        action: ConfigPatchAction::Add as i32,
+                        client: Some(VpnPortalClientConfig {
+                            name: "bob".to_owned(),
+                            virtual_ip: "10.82.0.3/24".to_owned(),
+                            ..Default::default()
+                        }),
+                    },
+                ],
+                ..Default::default()
+            },
+            Some(&persistence),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("injected config persistence failure")
+        );
+        let clients = instance
+            .toml_config()
+            .unwrap()
+            .get_vpn_portal_config()
+            .unwrap()
+            .clients;
+        assert_eq!(clients.len(), 1);
+        assert_eq!(clients[0].name, "alice");
+        assert!(persistence.writes.lock().unwrap().is_empty());
+
+        persistence.fail.store(false, Ordering::Relaxed);
+        let error = crate::management::apply_config_patch(
+            &instance,
+            InstanceConfigPatch {
+                vpn_portal_clients: vec![
+                    VpnPortalClientPatch {
+                        action: ConfigPatchAction::Remove as i32,
+                        client: Some(VpnPortalClientConfig {
+                            name: "alice".to_owned(),
+                            ..Default::default()
+                        }),
+                    },
+                    VpnPortalClientPatch {
+                        action: ConfigPatchAction::Add as i32,
+                        client: Some(VpnPortalClientConfig {
+                            name: "bob".to_owned(),
+                            virtual_ip: "10.82.0.3/24".to_owned(),
+                            ..Default::default()
+                        }),
+                    },
+                ],
+                ..Default::default()
+            },
+            Some(&persistence),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("injected portal update failure"));
+
+        crate::management::apply_config_patch(
+            &instance,
+            InstanceConfigPatch {
+                hostname: Some("after-rollback".to_owned()),
+                ..Default::default()
+            },
+            Some(&persistence),
+        )
+        .await
+        .unwrap();
+
+        {
+            let persisted = persistence.writes.lock().unwrap();
+            assert_eq!(persisted.len(), 3);
+            assert!(persisted[0].contains("name = \"bob\""));
+            assert!(persisted[1].contains("name = \"alice\""));
+            assert!(persisted[2].contains("name = \"alice\""));
+            assert!(!persisted[2].contains("name = \"bob\""));
+        }
+        instance.peer_manager.clear_resources().await;
+    }
+
     #[cfg(all(feature = "management", not(feature = "proxy-smoltcp-stack")))]
     #[tokio::test]
     async fn unavailable_gateway_patch_does_not_commit_shared_toml() {
@@ -985,7 +1208,7 @@ wireguard_listen = "0.0.0.0:51820"
 
 [[vpn_portal_config.clients]]
 name = "alice"
-virtual_ip = "10.82.0.2"
+virtual_ip = "10.82.0.2/24"
 "#,
             )
             .unwrap(),

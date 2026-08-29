@@ -2549,6 +2549,7 @@ dependencies = [
  "easytier-ffi",
  "serde_json",
  "tokio",
+ "tracing",
  "tracing-subscriber",
  "uuid",
 ]

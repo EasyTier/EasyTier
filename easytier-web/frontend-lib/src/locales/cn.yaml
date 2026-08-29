@@ -27,8 +27,8 @@ vpn_portal_add_client: 添加客户端
 vpn_portal_no_clients: 尚未配置客户端
 vpn_portal_client_name: 客户端名称
 vpn_portal_client_name_placeholder: 例如：alice-phone
-vpn_portal_client_virtual_ip: 虚拟网地址
-vpn_portal_client_virtual_ip_placeholder: 例如：10.126.126.10
+vpn_portal_client_virtual_ip: 虚拟网 CIDR
+vpn_portal_client_virtual_ip_placeholder: 例如：10.126.126.10/24
 vpn_portal_client_groups: ACL 组
 vpn_portal_client_groups_placeholder: 选择 ACL 组
 vpn_portal_remove_client: 删除客户端
