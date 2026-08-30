@@ -16,17 +16,26 @@ use easytier_core::{
         wrapper::TunnelWrapper,
     },
 };
+use futures::FutureExt as _;
 use quinn::{
     AsyncUdpSocket, ClientConfig, Connecting, Connection, Endpoint, EndpointConfig, Incoming,
     ServerConfig, TransportConfig, congestion::BbrConfig, default_runtime,
 };
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    net::SocketAddr,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 use tokio::{
     sync::{
-        OwnedSemaphorePermit, Semaphore,
+        Notify, OwnedSemaphorePermit, Semaphore,
         mpsc::{Receiver, Sender, channel},
     },
     task::JoinSet,
+    time::Instant,
 };
 use tokio_util::task::AbortOnDropHandle;
 
@@ -313,10 +322,12 @@ pub fn endpoint_config() -> EndpointConfig {
 //endregion
 
 const QUIC_ACCEPT_COMPLETION_TIMEOUT: Duration = Duration::from_secs(10);
+const QUIC_ESTABLISHMENT_TIMEOUT: Duration = Duration::from_secs(30);
 
 struct ConnWrapper {
     conn: Connection,
     _endpoint: Endpoint,
+    _activity: Option<QuicActiveConnection>,
 }
 
 impl Drop for ConnWrapper {
@@ -353,6 +364,7 @@ pub(crate) async fn upgrade_connected(
     let connection = Arc::new(ConnWrapper {
         conn: connection,
         _endpoint: endpoint,
+        _activity: None,
     });
     let info = TunnelInfo {
         tunnel_type: "quic".to_owned(),
@@ -374,7 +386,38 @@ struct PendingQuicSessionTunnel {
     endpoint: Endpoint,
     local_url: url::Url,
     remote_addr: SocketAddr,
+    activity: Arc<QuicConnectionActivity>,
     _handshake_permit: OwnedSemaphorePermit,
+}
+
+#[derive(Debug, Default)]
+struct QuicConnectionActivity {
+    active: AtomicUsize,
+    changed: Notify,
+}
+
+impl QuicConnectionActivity {
+    fn active(&self) -> usize {
+        self.active.load(Ordering::Acquire)
+    }
+}
+
+struct QuicActiveConnection {
+    activity: Arc<QuicConnectionActivity>,
+}
+
+impl QuicActiveConnection {
+    fn new(activity: Arc<QuicConnectionActivity>) -> Self {
+        activity.active.fetch_add(1, Ordering::AcqRel);
+        Self { activity }
+    }
+}
+
+impl Drop for QuicActiveConnection {
+    fn drop(&mut self) {
+        self.activity.active.fetch_sub(1, Ordering::AcqRel);
+        self.activity.changed.notify_one();
+    }
 }
 
 async fn finish_quic_session_tunnel(
@@ -385,6 +428,7 @@ async fn finish_quic_session_tunnel(
         endpoint,
         local_url,
         remote_addr,
+        activity,
         _handshake_permit,
     } = pending;
     let connection = tokio::time::timeout(QUIC_ACCEPT_COMPLETION_TIMEOUT, connecting)
@@ -399,6 +443,7 @@ async fn finish_quic_session_tunnel(
     let connection = Arc::new(ConnWrapper {
         conn: connection,
         _endpoint: endpoint,
+        _activity: Some(QuicActiveConnection::new(activity)),
     });
     let remote_url = super::build_url_from_socket_addr(&remote_addr.to_string(), "quic");
     let info = TunnelInfo {
@@ -414,38 +459,72 @@ async fn finish_quic_session_tunnel(
     )))
 }
 
+struct QuicAcceptedSessionLease {
+    session: Arc<UdpSession>,
+    _active_session: OwnedSemaphorePermit,
+}
+
+impl Drop for QuicAcceptedSessionLease {
+    fn drop(&mut self) {
+        self.session.close();
+    }
+}
+
+fn try_accept_ready(endpoint: &Endpoint) -> Option<Incoming> {
+    endpoint.accept().now_or_never().flatten()
+}
+
 async fn run_quic_accepted_session(
     endpoint: Endpoint,
     local_url: url::Url,
     handshakes: Arc<Semaphore>,
     completed: Sender<Result<Box<dyn Tunnel>, TunnelError>>,
+    lease: QuicAcceptedSessionLease,
+    establishment_timeout: Duration,
 ) {
+    let activity = Arc::new(QuicConnectionActivity::default());
+    let establishment_deadline = Instant::now() + establishment_timeout;
     let mut complete_tasks = JoinSet::new();
     let mut pending_incoming: Option<Incoming> = None;
+    let mut ever_connected = false;
+
     loop {
+        let no_handshake = pending_incoming.is_none() && complete_tasks.is_empty();
+        if ever_connected && no_handshake && activity.active() == 0 {
+            // A connection drop can become visible alongside a queued replacement Initial.
+            let Some(incoming) = try_accept_ready(&endpoint) else {
+                break;
+            };
+            pending_incoming = Some(incoming);
+        }
+
         tokio::select! {
-            Some(result) = complete_tasks.join_next(), if !complete_tasks.is_empty() => {
-                let result = match result {
-                    Ok(result) => result,
+            biased;
+
+            result = complete_tasks.join_next(), if !complete_tasks.is_empty() => {
+                let result = match result.expect("nonempty QUIC task set must yield a result") {
+                    Ok(Ok(tunnel)) => {
+                        ever_connected = true;
+                        Ok(tunnel)
+                    }
+                    Ok(Err(error)) => Err(error),
                     Err(error) => Err(TunnelError::InternalError(
-                        format!("quic accept task failed: {error}"),
+                        format!("quic accept task failed: {error}")
                     )),
                 };
                 if completed.send(result).await.is_err() {
                     break;
                 }
             }
-            incoming = endpoint.accept(), if pending_incoming.is_none() => {
-                match incoming {
-                    Some(incoming) => pending_incoming = Some(incoming),
-                    None => break,
-                }
+            _ = tokio::time::sleep_until(establishment_deadline), if !ever_connected => {
+                break;
             }
+            _ = activity.changed.notified() => {}
             permit = handshakes.clone().acquire_owned(), if pending_incoming.is_some() => {
                 let Ok(handshake_permit) = permit else {
                     break;
                 };
-                let incoming = pending_incoming.take().unwrap();
+                let incoming = pending_incoming.take().expect("pending QUIC Incoming must exist");
                 let remote_addr = incoming.remote_address();
                 match incoming.accept() {
                     Ok(connecting) => {
@@ -455,26 +534,36 @@ async fn run_quic_accepted_session(
                                 endpoint: endpoint.clone(),
                                 local_url: local_url.clone(),
                                 remote_addr,
+                                activity: activity.clone(),
                                 _handshake_permit: handshake_permit,
                             },
                         ));
                     }
                     Err(error) => {
                         drop(handshake_permit);
-                        if completed
-                            .send(Err(anyhow::Error::new(error)
+                        let result = Err(
+                            anyhow::Error::new(error)
                                 .context("quic accept connection failed")
-                                .into()))
-                            .await
-                            .is_err()
-                        {
+                                .into(),
+                        );
+                        if completed.send(result).await.is_err() {
                             break;
                         }
                     }
                 }
             }
+            incoming = endpoint.accept(), if pending_incoming.is_none() => {
+                match incoming {
+                    Some(incoming) => pending_incoming = Some(incoming),
+                    None => break,
+                }
+            }
         }
     }
+
+    endpoint.close(0u32.into(), b"accepted session retired");
+    complete_tasks.abort_all();
+    drop(lease);
 }
 
 pub(crate) struct QuicAcceptedSession {
@@ -488,20 +577,27 @@ impl QuicAcceptedSession {
         local_url: url::Url,
         admission: ServerProtocolAdmission,
     ) -> Result<Self, TunnelError> {
-        let (active_session, handshake_slots) = admission.into_parts();
-        Self::new_with_admission_parts(session, local_url, active_session, handshake_slots)
+        Self::new_with_establishment_timeout(
+            session,
+            local_url,
+            admission,
+            QUIC_ESTABLISHMENT_TIMEOUT,
+        )
     }
 
-    fn new_with_admission_parts(
+    fn new_with_establishment_timeout(
         session: UdpSession,
         local_url: url::Url,
-        active_session: OwnedSemaphorePermit,
-        handshakes: Arc<Semaphore>,
+        admission: ServerProtocolAdmission,
+        establishment_timeout: Duration,
     ) -> Result<Self, TunnelError> {
-        let socket = Arc::new(QuicUdpSessionSocket::from_accepted(
-            session,
-            active_session,
-        )?);
+        let (active_session, handshakes) = admission.into_parts();
+        let session = Arc::new(session);
+        let lease = QuicAcceptedSessionLease {
+            session: session.clone(),
+            _active_session: active_session,
+        };
+        let socket = Arc::new(QuicUdpSessionSocket::from_accepted(session)?);
         let runtime = default_runtime().ok_or(TunnelError::InternalError(
             "no async runtime found".to_owned(),
         ))?;
@@ -517,6 +613,8 @@ impl QuicAcceptedSession {
             local_url,
             handshakes,
             completed_tx,
+            lease,
+            establishment_timeout,
         )));
         Ok(Self {
             completed,
@@ -524,29 +622,36 @@ impl QuicAcceptedSession {
         })
     }
 
-    pub(crate) async fn accept(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
+    pub(crate) async fn accept(&mut self) -> Result<Option<Box<dyn Tunnel>>, TunnelError> {
         while let Some(result) = self.completed.recv().await {
             match result {
-                Ok(tunnel) => return Ok(tunnel),
+                Ok(tunnel) => return Ok(Some(tunnel)),
                 Err(error) => {
                     tracing::warn!(?error, "QUIC session connection failed");
                 }
             }
         }
-        Err(TunnelError::Shutdown)
+        Ok(None)
     }
 }
 
 #[async_trait::async_trait]
 impl ServerTunnelAcceptor for QuicAcceptedSession {
-    async fn accept(&mut self) -> anyhow::Result<Box<dyn Tunnel>> {
+    async fn accept(&mut self) -> anyhow::Result<Option<Box<dyn Tunnel>>> {
         Ok(QuicAcceptedSession::accept(self).await?)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{net::SocketAddr, sync::Arc, time::Duration};
+    use std::{
+        io::{self, IoSliceMut},
+        net::SocketAddr,
+        pin::Pin,
+        sync::{Arc, Mutex},
+        task::{Context, Poll},
+        time::Duration,
+    };
 
     use easytier_core::{
         connectivity::{
@@ -557,10 +662,14 @@ mod tests {
         socket::SocketListener,
         socket::udp::{
             UdpBindOptions, UdpSessionAcceptKind, UdpSessionListenRequest, UdpSessionProtocol,
-            VirtualUdpSocket,
+            UdpSessionSocket, VirtualUdpSocket, parse_quic_initial_dcid,
         },
     };
     use futures::{SinkExt, StreamExt};
+    use quinn::{
+        UdpPoller,
+        udp::{RecvMeta, Transmit},
+    };
 
     use crate::{
         common::netns::NetNS, host_runtime::native_host_runtime,
@@ -568,6 +677,281 @@ mod tests {
     };
 
     use super::*;
+
+    fn synthetic_quic_initial(dcid: u8) -> Vec<u8> {
+        let mut packet = vec![0; 1200];
+        packet[0] = 0xc0;
+        packet[4] = 1;
+        packet[5] = 1;
+        packet[6] = dcid;
+        packet[7] = 0;
+        packet[8] = 0;
+        packet[9] = 1;
+        packet
+    }
+
+    #[derive(Debug)]
+    struct ReplacementInitialObserver {
+        inner: Arc<QuicUdpSessionSocket>,
+        first_dcid: Mutex<Option<Vec<u8>>>,
+        replacement_initial: Notify,
+    }
+
+    impl ReplacementInitialObserver {
+        fn new(inner: Arc<QuicUdpSessionSocket>) -> Self {
+            Self {
+                inner,
+                first_dcid: Mutex::new(None),
+                replacement_initial: Notify::new(),
+            }
+        }
+
+        fn observe(&self, datagram: &[u8]) {
+            let Some(dcid) = parse_quic_initial_dcid(datagram) else {
+                return;
+            };
+            let mut first_dcid = self.first_dcid.lock().unwrap();
+            match first_dcid.as_ref() {
+                None => *first_dcid = Some(dcid),
+                Some(first_dcid) if first_dcid != &dcid => {
+                    self.replacement_initial.notify_one();
+                }
+                Some(_) => {}
+            }
+        }
+
+        fn saw_first_initial(&self) -> bool {
+            self.first_dcid.lock().unwrap().is_some()
+        }
+
+        async fn replacement_initial_seen(&self) {
+            self.replacement_initial.notified().await;
+        }
+    }
+
+    impl AsyncUdpSocket for ReplacementInitialObserver {
+        fn create_io_poller(self: Arc<Self>) -> Pin<Box<dyn UdpPoller>> {
+            self.inner.clone().create_io_poller()
+        }
+
+        fn try_send(&self, transmit: &Transmit<'_>) -> io::Result<()> {
+            self.inner.try_send(transmit)
+        }
+
+        fn poll_recv(
+            &self,
+            context: &mut Context<'_>,
+            buffers: &mut [IoSliceMut<'_>],
+            meta: &mut [RecvMeta],
+        ) -> Poll<io::Result<usize>> {
+            let result = self.inner.poll_recv(context, buffers, meta);
+            if let Poll::Ready(Ok(received)) = &result {
+                for (buffer, meta) in buffers.iter().zip(meta.iter()).take(*received) {
+                    self.observe(&buffer[..meta.len]);
+                }
+            }
+            result
+        }
+
+        fn local_addr(&self) -> io::Result<SocketAddr> {
+            self.inner.local_addr()
+        }
+
+        fn max_transmit_segments(&self) -> usize {
+            self.inner.max_transmit_segments()
+        }
+
+        fn max_receive_segments(&self) -> usize {
+            self.inner.max_receive_segments()
+        }
+
+        fn may_fragment(&self) -> bool {
+            self.inner.may_fragment()
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn unestablished_quic_session_retires_and_releases_admission() {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            let bind_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+            let mut listener = new_runtime_udp_session_listener(
+                format!("quic://{bind_addr}").parse().unwrap(),
+                UdpSessionListenRequest::new(
+                    UdpBindOptions::port_bound_listener(bind_addr).with_only_v6(false),
+                ),
+                UdpSessionAcceptKind::Classified(UdpSessionProtocol::Quic),
+                NetNS::new(None),
+            );
+            listener.listen().await.unwrap();
+            let remote_addr = listener.bound_socket().unwrap().local_addr().unwrap();
+            let local_url = listener.local_url();
+            let client = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let client_addr = client.local_addr().unwrap();
+
+            client
+                .send_to(&synthetic_quic_initial(1), remote_addr)
+                .await
+                .unwrap();
+            let session = listener.accept().await.unwrap();
+            let admission = ServerProtocolAdmissionController::new(1, 1);
+            let permit = admission.try_admit().unwrap();
+            let mut accepted = QuicAcceptedSession::new_with_establishment_timeout(
+                session,
+                local_url,
+                permit,
+                Duration::from_millis(100),
+            )
+            .unwrap();
+
+            assert!(accepted.accept().await.unwrap().is_none());
+            assert!(admission.try_admit().is_some());
+
+            client
+                .send_to(&synthetic_quic_initial(2), remote_addr)
+                .await
+                .unwrap();
+            let fresh = tokio::time::timeout(Duration::from_secs(1), listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(fresh.peer_addr().unwrap(), client_addr);
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn queued_replacement_initial_is_accepted_before_idle_retirement() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let bind_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+            let mut listener = new_runtime_udp_session_listener(
+                format!("quic://{bind_addr}").parse().unwrap(),
+                UdpSessionListenRequest::new(
+                    UdpBindOptions::port_bound_listener(bind_addr).with_only_v6(false),
+                ),
+                UdpSessionAcceptKind::Classified(UdpSessionProtocol::Quic),
+                NetNS::new(None),
+            );
+            listener.listen().await.unwrap();
+            let remote_addr = listener.bound_socket().unwrap().local_addr().unwrap();
+            let local_url = listener.local_url();
+
+            let connected = connect_udp(
+                native_host_runtime(),
+                remote_addr,
+                Vec::new(),
+                UdpBindOptions::direct_connect(),
+                UdpSessionMode::Classified(UdpSessionProtocol::Quic),
+            )
+            .await
+            .unwrap();
+            let socket = Arc::new(QuicUdpSessionSocket::new(connected).unwrap());
+            let runtime = default_runtime().unwrap();
+            let mut client_endpoint =
+                Endpoint::new_with_abstract_socket(endpoint_config(), None, socket, runtime)
+                    .unwrap();
+            client_endpoint.set_default_client_config(client_config());
+
+            let first_connecting = client_endpoint.connect(remote_addr, "localhost").unwrap();
+            let first_client = tokio::spawn(async move {
+                let connection = first_connecting.await.unwrap();
+                let (write, read) = connection.open_bi().await.unwrap();
+                let mut write = FramedWriter::new(write);
+                write
+                    .send(ZCPacket::new_with_payload(b"first QUIC connection"))
+                    .await
+                    .unwrap();
+                (connection, (write, read))
+            });
+
+            let session = Arc::new(listener.accept().await.unwrap());
+            let socket = Arc::new(QuicUdpSessionSocket::from_accepted(session.clone()).unwrap());
+            let observer = Arc::new(ReplacementInitialObserver::new(socket));
+            let runtime = default_runtime().unwrap();
+            let endpoint = Endpoint::new_with_abstract_socket(
+                endpoint_config(),
+                Some(server_config()),
+                observer.clone(),
+                runtime,
+            )
+            .unwrap();
+            let endpoint_sync = endpoint.clone();
+            let admission = ServerProtocolAdmissionController::new(1, 2)
+                .try_admit()
+                .unwrap();
+            let (active_session, handshakes) = admission.into_parts();
+            let lease = QuicAcceptedSessionLease {
+                session,
+                _active_session: active_session,
+            };
+            let (completed_tx, mut completed) = channel(2);
+            let runner = run_quic_accepted_session(
+                endpoint,
+                local_url,
+                handshakes,
+                completed_tx,
+                lease,
+                Duration::from_secs(2),
+            );
+            tokio::pin!(runner);
+
+            let first_server = tokio::select! {
+                () = &mut runner => panic!("accepted QUIC session retired before first tunnel"),
+                result = completed.recv() => result
+                    .expect("accepted QUIC session must report first tunnel")
+                    .expect("first QUIC tunnel must complete"),
+            };
+            let (first_connection, first_streams) = first_client.await.unwrap();
+            assert!(observer.saw_first_initial());
+
+            let second_connecting = client_endpoint.connect(remote_addr, "localhost").unwrap();
+            let second_client = tokio::spawn(async move {
+                let connection = second_connecting.await.unwrap();
+                let (write, read) = connection.open_bi().await.unwrap();
+                let mut write = FramedWriter::new(write);
+                write
+                    .send(ZCPacket::new_with_payload(b"replacement QUIC connection"))
+                    .await
+                    .unwrap();
+                (connection, (write, read))
+            });
+            tokio::time::timeout(Duration::from_secs(1), observer.replacement_initial_seen())
+                .await
+                .expect("replacement QUIC Initial must reach the accepted session");
+            // The endpoint driver holds its state lock while polling the socket and
+            // queuing Incoming values. Acquiring it here waits for that poll to finish.
+            let _ = endpoint_sync.stats();
+
+            // The runner remains unpolled while Quinn queues the replacement Initial.
+            // Dropping the final active tunnel now makes both select branches ready.
+            drop(first_server);
+
+            let second_server = tokio::select! {
+                () = &mut runner => {
+                    panic!("accepted QUIC session retired with a replacement Initial queued")
+                }
+                result = completed.recv() => result
+                    .expect("accepted QUIC session must report replacement tunnel")
+                    .expect("replacement QUIC tunnel must complete"),
+            };
+            let (second_connection, second_streams) = second_client.await.unwrap();
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), listener.accept())
+                    .await
+                    .is_err(),
+                "replacement QUIC connection must use the first accepted UDP session"
+            );
+
+            drop(second_server);
+            drop(first_streams);
+            drop(second_streams);
+            first_connection.close(0u32.into(), b"first connection done");
+            second_connection.close(0u32.into(), b"second connection done");
+            client_endpoint.close(0u32.into(), b"client test done");
+        })
+        .await
+        .unwrap();
+    }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn accepted_udp_session_supports_multiple_quic_connections() {
@@ -606,16 +990,22 @@ mod tests {
                 let admission = ServerProtocolAdmissionController::new(1, 2)
                     .try_admit()
                     .unwrap();
-                let mut accepted = QuicAcceptedSession::new(session, local_url, admission).unwrap();
-                let first = accepted.accept().await.unwrap();
-                let second = accepted.accept().await.unwrap();
+                let mut accepted = QuicAcceptedSession::new_with_establishment_timeout(
+                    session,
+                    local_url,
+                    admission,
+                    Duration::from_secs(2),
+                )
+                .unwrap();
+                let first = accepted.accept().await.unwrap().unwrap();
+                let second = accepted.accept().await.unwrap().unwrap();
                 assert!(
                     tokio::time::timeout(Duration::from_millis(50), listener.accept())
                         .await
                         .is_err(),
                     "both QUIC connections must use the first accepted UDP session"
                 );
-                (first, second)
+                (first, second, accepted)
             });
 
             let first_connection = endpoint
@@ -640,7 +1030,7 @@ mod tests {
                 .send(ZCPacket::new_with_payload(b"second QUIC connection ready"))
                 .await
                 .unwrap();
-            let (first_server, second_server) = server_task.await.unwrap();
+            let (first_server, second_server, accepted) = server_task.await.unwrap();
 
             drop(first_send);
             drop(first_read);
@@ -666,6 +1056,14 @@ mod tests {
             echo_task.await.unwrap();
             second_connection.close(0u32.into(), b"second connection done");
             endpoint.close(0u32.into(), b"test done");
+            let mut accepted = accepted;
+            assert!(
+                tokio::time::timeout(Duration::from_secs(1), accepted.accept())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .is_none()
+            );
         })
         .await
         .unwrap();

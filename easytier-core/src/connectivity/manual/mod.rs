@@ -1062,6 +1062,14 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn multiplexed_udp_protocols_share_manual_default_port() {
+        for scheme in ["udp", "wg", "quic"] {
+            let url = format!("{scheme}://peer.example").parse().unwrap();
+            assert_eq!(manual_default_port(&url), 11010);
+        }
+    }
+
     fn reserve_pending_connector(
         state: &Arc<ManualConnectorState>,
         url: &Url,

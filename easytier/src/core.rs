@@ -820,9 +820,16 @@ struct RpcPortalOptions {
 }
 
 impl Cli {
+    fn generated_listener_schemes() -> impl Iterator<Item = &'static IpScheme> {
+        IpScheme::VARIANTS.iter().filter(|scheme| {
+            let scheme: &'static str = (**scheme).into();
+            !matches!(scheme, "wg" | "quic")
+        })
+    }
+
     fn gen_listeners(addr: SocketAddr) -> impl Iterator<Item = String> {
         let dynamic = addr.port() == 0;
-        IpScheme::VARIANTS.iter().map(move |proto| {
+        Self::generated_listener_schemes().map(move |proto| {
             let mut addr = addr;
             if !dynamic {
                 addr.set_port(addr.port() + proto.port_offset());
@@ -1833,16 +1840,52 @@ mod tests {
         for (input, output) in cases {
             assert_eq!(
                 Cli::parse_listeners(false, vec![input.to_string()]).unwrap(),
-                IpScheme::VARIANTS.iter().map(output).collect::<Vec<_>>()
+                Cli::generated_listener_schemes()
+                    .map(output)
+                    .collect::<Vec<_>>()
             );
         }
 
         let input = cases.iter().map(|(i, _)| i.to_string()).collect::<Vec<_>>();
         let output = cases
             .iter()
-            .flat_map(|(_, o)| IpScheme::VARIANTS.iter().map(o))
+            .flat_map(|(_, o)| Cli::generated_listener_schemes().map(o))
             .collect::<Vec<_>>();
         assert_eq!(Cli::parse_listeners(false, input).unwrap(), output);
+
+        let generated = Cli::parse_listeners(false, vec!["11010".to_string()]).unwrap();
+        assert!(
+            generated
+                .iter()
+                .any(|listener| listener == "udp://0.0.0.0:11010")
+        );
+        assert!(
+            generated
+                .iter()
+                .all(|listener| !listener.starts_with("wg://") && !listener.starts_with("quic://"))
+        );
+
+        #[cfg(feature = "wireguard")]
+        assert_eq!(
+            Cli::parse_listeners(false, vec!["wg".to_string()]).unwrap(),
+            vec!["wg://0.0.0.0:11010"]
+        );
+        #[cfg(feature = "quic")]
+        assert_eq!(
+            Cli::parse_listeners(false, vec!["quic".to_string()]).unwrap(),
+            vec!["quic://0.0.0.0:11010"]
+        );
+
+        let cli = Cli::try_parse_from([
+            "easytier-core",
+            "--listeners",
+            "udp://0.0.0.0:11010?accept=udp+wg",
+        ])
+        .unwrap();
+        assert_eq!(
+            cli.network_options.listeners,
+            vec!["udp://0.0.0.0:11010?accept=udp+wg"]
+        );
 
         let cases: [(IpSchemeMap, IpSchemeMap); _] = [
             (

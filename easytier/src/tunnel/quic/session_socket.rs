@@ -9,7 +9,7 @@ use std::{
 
 use easytier_core::{
     connectivity::transport::ConnectedUdpSession,
-    socket::udp::{UdpSession, UdpSessionSocket},
+    socket::udp::{UdpSession, UdpSessionSocket, UdpSocketSendMeta},
 };
 use quinn::{
     AsyncUdpSocket, UdpPoller,
@@ -20,7 +20,47 @@ use tokio_util::task::AbortOnDropHandle;
 
 const DATAGRAM_QUEUE_CAPACITY: usize = 1024;
 
-type SendBatch = Vec<Vec<u8>>;
+struct SendBatch {
+    datagrams: Vec<Vec<u8>>,
+    meta: UdpSocketSendMeta,
+}
+
+impl SendBatch {
+    fn from_transmit(transmit: &Transmit<'_>) -> io::Result<Self> {
+        let datagrams = match transmit.segment_size {
+            Some(0) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "QUIC segment size cannot be zero",
+                ));
+            }
+            Some(segment_size) => transmit
+                .contents
+                .chunks(segment_size)
+                .map(<[u8]>::to_vec)
+                .collect(),
+            None => vec![transmit.contents.to_vec()],
+        };
+        Ok(Self {
+            datagrams,
+            meta: UdpSocketSendMeta {
+                src_ip: selectable_source_ip(transmit.src_ip),
+                src_ifindex: None,
+            },
+        })
+    }
+}
+
+fn selectable_source_ip(src_ip: Option<std::net::IpAddr>) -> Option<std::net::IpAddr> {
+    // OHOS cannot select an IPv6 source for UDP sends, so retain the OS-selected source.
+    #[cfg(target_env = "ohos")]
+    if matches!(src_ip, Some(std::net::IpAddr::V6(_))) {
+        return None;
+    }
+
+    src_ip
+}
+
 type WritableFuture = Pin<Box<dyn Future<Output = io::Result<()>> + Send>>;
 
 struct ReceivedDatagram {
@@ -55,11 +95,8 @@ impl QuicUdpSessionSocket {
         Self::from_session(Arc::new(session), session_guard)
     }
 
-    pub(crate) fn from_accepted<T>(session: UdpSession, session_guard: T) -> io::Result<Self>
-    where
-        T: Send + Sync + 'static,
-    {
-        Self::from_session(Arc::new(session), Box::new(session_guard))
+    pub(crate) fn from_accepted(session: Arc<UdpSession>) -> io::Result<Self> {
+        Self::from_session(session, Box::new(()))
     }
 
     fn from_session(
@@ -97,8 +134,8 @@ impl QuicUdpSessionSocket {
         let send_session = session.clone();
         let send_task = AbortOnDropHandle::new(tokio::spawn(async move {
             while let Some(batch) = outgoing_rx.recv().await {
-                for datagram in batch {
-                    match send_session.send(&datagram).await {
+                for datagram in batch.datagrams {
+                    match send_session.send_with_meta(&datagram, batch.meta).await {
                         Ok(length) if length == datagram.len() => {}
                         Ok(_) => {
                             let _ = recv_errors
@@ -145,20 +182,7 @@ impl QuicUdpSessionSocket {
             ));
         }
 
-        let batch = match transmit.segment_size {
-            Some(0) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "QUIC segment size cannot be zero",
-                ));
-            }
-            Some(segment_size) => transmit
-                .contents
-                .chunks(segment_size)
-                .map(<[u8]>::to_vec)
-                .collect(),
-            None => vec![transmit.contents.to_vec()],
-        };
+        let batch = SendBatch::from_transmit(transmit)?;
         self.outgoing.try_send(batch).map_err(map_try_send_error)
     }
 }
@@ -275,5 +299,53 @@ impl AsyncUdpSocket for QuicUdpSessionSocket {
 
     fn may_fragment(&self) -> bool {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use quinn::udp::Transmit;
+
+    use super::SendBatch;
+
+    #[test]
+    fn send_batch_preserves_quinn_source_ip() {
+        let peer_addr = "192.0.2.2:22023".parse().unwrap();
+        let source_ip = "192.0.2.1".parse().unwrap();
+        let transmit = Transmit {
+            destination: peer_addr,
+            ecn: None,
+            contents: b"quic",
+            segment_size: None,
+            src_ip: Some(source_ip),
+        };
+
+        let batch = SendBatch::from_transmit(&transmit).unwrap();
+
+        assert_eq!(batch.datagrams, vec![b"quic".to_vec()]);
+        assert_eq!(batch.meta.src_ip, Some(source_ip));
+        assert_eq!(batch.meta.src_ifindex, None);
+    }
+
+    #[test]
+    fn send_batch_uses_platform_supported_ipv6_source_selection() {
+        let peer_addr = "[2001:db8::2]:22023".parse().unwrap();
+        let source_ip = "2001:db8::1".parse().unwrap();
+        let transmit = Transmit {
+            destination: peer_addr,
+            ecn: None,
+            contents: b"quic",
+            segment_size: None,
+            src_ip: Some(source_ip),
+        };
+
+        let batch = SendBatch::from_transmit(&transmit).unwrap();
+        let expected_source_ip = if cfg!(target_env = "ohos") {
+            None
+        } else {
+            Some(source_ip)
+        };
+
+        assert_eq!(batch.meta.src_ip, expected_source_ip);
     }
 }

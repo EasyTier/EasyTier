@@ -16,7 +16,7 @@ use crate::{
     socket::{
         SocketContext,
         tcp::{TcpBindOptions, TcpListenOptions},
-        udp::{UdpBindOptions, UdpSessionAcceptKind, UdpSessionListenRequest},
+        udp::{UdpBindOptions, UdpSessionAcceptKind, UdpSessionListenRequest, UdpSessionRouteSet},
     },
 };
 
@@ -183,26 +183,30 @@ where
                 });
             }
             ListenerKind::UdpSession => {
-                let accept_kind = match protocol_transport(listener.url.scheme()) {
-                    Some(ProtocolTransport::Udp(UdpSessionMode::EasyTierMux)) => {
-                        UdpSessionAcceptKind::EasyTierMux
-                    }
-                    Some(ProtocolTransport::Udp(UdpSessionMode::Classified(protocol))) => {
-                        UdpSessionAcceptKind::Classified(protocol)
-                    }
-                    _ => anyhow::bail!(
-                        "listener scheme {} cannot produce a core UDP session",
-                        listener.url.scheme()
-                    ),
-                };
-                let request = unresolved_udp_session_listen_request(
-                    &listener.url,
-                    config.socket_context.clone(),
-                );
+                let mut url = listener.url;
+                let routes = udp_listener_routes(&mut url, server_protocol)?;
+                normalize_udp_listener_url(&mut url)?;
+                let existing = transports.iter_mut().find_map(|transport| match transport {
+                    TransportListenerConfig::Udp {
+                        url: existing_url,
+                        routes: existing_routes,
+                        must_succeed: existing_must_succeed,
+                        ..
+                    } if existing_url == &url => Some((existing_routes, existing_must_succeed)),
+                    _ => None,
+                });
+                if let Some((existing_routes, existing_must_succeed)) = existing {
+                    *existing_routes =
+                        UdpSessionRouteSet::new(existing_routes.iter().chain(routes.iter()));
+                    *existing_must_succeed |= must_succeed;
+                    continue;
+                }
+                let request =
+                    unresolved_udp_session_listen_request(&url, config.socket_context.clone());
                 transports.push(TransportListenerConfig::Udp {
-                    url: listener.url,
+                    url,
                     request,
-                    accept_kind,
+                    routes,
                     must_succeed,
                 });
             }
@@ -216,6 +220,117 @@ where
         external,
         failures: plan.failures,
     })
+}
+
+fn udp_listener_routes<TcpSocket: 'static>(
+    url: &mut Url,
+    server_protocol: Option<&dyn ServerProtocolUpgrader<TcpSocket>>,
+) -> anyhow::Result<UdpSessionRouteSet> {
+    let configured_url = url.clone();
+    let accept = take_listener_accept(url)?;
+    if url.scheme() != "udp" {
+        if accept.is_some() {
+            anyhow::bail!("accept is only valid on udp listeners, not {configured_url}");
+        }
+        let route = match protocol_transport(url.scheme()) {
+            Some(ProtocolTransport::Udp(UdpSessionMode::EasyTierMux)) => {
+                UdpSessionAcceptKind::EasyTierMux
+            }
+            Some(ProtocolTransport::Udp(UdpSessionMode::Classified(protocol))) => {
+                UdpSessionAcceptKind::Classified(protocol)
+            }
+            _ => anyhow::bail!(
+                "listener scheme {} cannot produce a core UDP session",
+                url.scheme()
+            ),
+        };
+        return Ok(UdpSessionRouteSet::singleton(route));
+    }
+
+    let supported = UdpSessionAcceptKind::ALL
+        .into_iter()
+        .filter(|route| udp_route_supported(*route, server_protocol))
+        .collect::<Vec<_>>();
+
+    let Some(accept) = accept else {
+        return Ok(UdpSessionRouteSet::new(supported));
+    };
+    let accept = accept.to_ascii_lowercase();
+    if accept == "all" {
+        return Ok(UdpSessionRouteSet::new(supported));
+    }
+
+    let mut selected = Vec::new();
+    let mut tokens = BTreeSet::new();
+    for token in accept.split(['+', ' ']) {
+        if token.is_empty() {
+            anyhow::bail!("udp listener {configured_url} has an empty accept token");
+        }
+        if token == "all" {
+            anyhow::bail!(
+                "udp listener {configured_url} cannot combine all with another accept token"
+            );
+        }
+        if !tokens.insert(token.to_owned()) {
+            anyhow::bail!("udp listener {configured_url} repeats accept protocol {token}");
+        }
+        let Some(route) = UdpSessionAcceptKind::ALL
+            .into_iter()
+            .find(|route| route.scheme() == token)
+        else {
+            anyhow::bail!("udp listener {configured_url} has unknown accept protocol {token}");
+        };
+        if !udp_route_supported(route, server_protocol) {
+            anyhow::bail!(
+                "udp listener {configured_url} explicitly accepts unsupported protocol {token}"
+            );
+        }
+        selected.push(route);
+    }
+    Ok(UdpSessionRouteSet::new(selected))
+}
+
+fn normalize_udp_listener_url(url: &mut Url) -> anyhow::Result<()> {
+    if url.port().is_none() {
+        let default_port = listener_default_port(url.scheme())
+            .ok_or_else(|| anyhow::anyhow!("listener has no default port: {url}"))?;
+        url.set_port(Some(default_port))
+            .map_err(|_| anyhow::anyhow!("listener cannot use a port: {url}"))?;
+    }
+    match listener_url_bind_device(url) {
+        Some(bind_device) => url.set_path(&format!("/{bind_device}")),
+        None => url.set_path(""),
+    }
+    url.set_scheme("udp")
+        .map_err(|_| anyhow::anyhow!("failed to normalize UDP listener URL: {url}"))?;
+    Ok(())
+}
+
+fn udp_route_supported<TcpSocket: 'static>(
+    route: UdpSessionAcceptKind,
+    server_protocol: Option<&dyn ServerProtocolUpgrader<TcpSocket>>,
+) -> bool {
+    route == UdpSessionAcceptKind::EasyTierMux
+        || server_protocol.is_some_and(|protocol| protocol.supports_scheme(route.scheme()))
+}
+
+fn take_listener_accept(url: &mut Url) -> anyhow::Result<Option<String>> {
+    let mut accept = None;
+    let mut retained = Vec::new();
+    for (key, value) in url.query_pairs() {
+        if key == "accept" {
+            if accept.replace(value.into_owned()).is_some() {
+                anyhow::bail!("listener {url} contains more than one accept parameter");
+            }
+        } else {
+            retained.push((key.into_owned(), value.into_owned()));
+        }
+    }
+    url.set_query(None);
+    if !retained.is_empty() {
+        url.query_pairs_mut().extend_pairs(retained);
+    }
+    Ok(accept)
 }
 
 fn validate_listener_protocols(
@@ -471,5 +586,16 @@ mod tests {
         let url = "udp://0.0.0.0:11010/eth%2Btest".parse().unwrap();
 
         assert_eq!(listener_url_bind_device(&url), Some("eth+test".to_owned()));
+    }
+
+    #[test]
+    fn udp_listener_normalization_uses_effective_bind_device() {
+        let mut encoded = "wg://0.0.0.0/eth%2Btest".parse().unwrap();
+        let mut plain = "quic://0.0.0.0:11010/eth+test".parse().unwrap();
+
+        normalize_udp_listener_url(&mut encoded).unwrap();
+        normalize_udp_listener_url(&mut plain).unwrap();
+
+        assert_eq!(encoded, plain);
     }
 }
