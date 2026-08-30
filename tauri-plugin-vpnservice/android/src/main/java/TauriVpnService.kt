@@ -1,14 +1,20 @@
 package com.plugin.vpnservice
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.Context
 import android.content.Intent
 import android.net.VpnService
 import android.os.Build
-import android.os.ParcelFileDescriptor
 import android.os.Bundle
-import java.net.InetAddress
-import java.util.Arrays
-
+import android.os.ParcelFileDescriptor
+import androidx.core.app.NotificationCompat
 import app.tauri.plugin.JSObject
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
+import org.json.JSONObject
 
 class TauriVpnService : VpnService() {
     companion object {
@@ -19,104 +25,331 @@ class TauriVpnService : VpnService() {
         @JvmField var dns: String? = null
 
         const val IPV4_ADDR = "IPV4_ADDR"
+        const val INSTANCE_ID = "INSTANCE_ID"
         const val ROUTES = "ROUTES"
         const val DNS = "DNS"
         const val DISALLOWED_APPLICATIONS = "DISALLOWED_APPLICATIONS"
         const val MTU = "MTU"
+
+        const val ACTION_START_HEADLESS = "com.plugin.vpnservice.action.START_HEADLESS"
+        const val ACTION_ATTACH_EXISTING = "com.plugin.vpnservice.action.ATTACH_EXISTING"
+        const val ACTION_STOP = "com.plugin.vpnservice.action.STOP"
+        const val ACTION_DETACH = "com.plugin.vpnservice.action.DETACH"
+        const val ACTION_DETACH_INSTANCE = "com.plugin.vpnservice.action.DETACH_INSTANCE"
+
+        private const val PREFS_NAME = "easytier_headless_vpn"
+        private const val PROFILE_TOML = "profile_toml"
+        private const val PROCESS_TOKEN = "process_token"
+        private const val CHANNEL_ID = "easytier_vpn"
+        private const val NOTIFICATION_ID = 1357
+        private val processToken = java.util.UUID.randomUUID().toString()
+
+        fun createIntent(context: Context, action: String): Intent =
+            Intent(context, TauriVpnService::class.java)
+                .setAction(action)
+                .putExtra(PROCESS_TOKEN, processToken)
+
+        fun saveHeadlessProfile(context: Context, configToml: String) {
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putString(PROFILE_TOML, configToml)
+                .apply()
+        }
+
+        fun hasHeadlessProfile(context: Context): Boolean =
+            !context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .getString(PROFILE_TOML, null)
+                .isNullOrBlank()
+
     }
 
-    private lateinit var vpnInterface: ParcelFileDescriptor
-
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        println("vpn on start command ${intent?.getExtras()} $intent")
-        var args = intent?.getExtras()
-        ipv4Addr = args?.getString(IPV4_ADDR)
-        routes = args?.getStringArray(ROUTES) ?: emptyArray()
-        dns = args?.getString(DNS)
-
-        vpnInterface = createVpnInterface(args)
-        println("vpn created ${vpnInterface.fd}")
-
-        var event_data = JSObject()
-        event_data.put("fd", vpnInterface.fd)
-        triggerCallback("vpn_service_start", event_data)
-
-        return START_STICKY
+    private val worker = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "easytier-vpn-service")
     }
+    private val operationGeneration = AtomicInteger(0)
+    @Volatile
+    private var vpnInterface: ParcelFileDescriptor? = null
+    @Volatile
+    private var activeInstanceId: String? = null
+    @Volatile
+    private var requestedInstanceId: String? = null
+    @Volatile
+    private var connectionRequested = false
+
+    fun isVpnActive(): Boolean = vpnInterface != null
+
+    fun getActiveInstanceId(): String? = activeInstanceId
+
+    fun isVpnRequestedOrActive(): Boolean = connectionRequested || isVpnActive()
 
     override fun onCreate() {
         super.onCreate()
         self = this
-        println("vpn on create")
+        createNotificationChannel()
+        EasyTierTileService.refreshVpnState(this)
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.getStringExtra(PROCESS_TOKEN) != processToken) {
+            EasyTierTileService.refreshVpnState(this)
+            stopForeground(true)
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        startForeground(NOTIFICATION_ID, buildNotification("Connecting…"))
+        when (intent?.action) {
+            ACTION_STOP -> dispatchStop(stopInstance = true)
+            ACTION_DETACH -> dispatchStop(stopInstance = false)
+            ACTION_DETACH_INSTANCE -> dispatchDetachInstance(intent.getStringExtra(INSTANCE_ID))
+            ACTION_START_HEADLESS -> dispatchHeadlessStart()
+            ACTION_ATTACH_EXISTING -> dispatchAttachExisting(intent.extras)
+            else -> dispatchStop(stopInstance = false)
+        }
+        return START_NOT_STICKY
     }
 
     override fun onDestroy() {
-        println("vpn on destroy")
+        operationGeneration.incrementAndGet()
+        connectionRequested = false
+        requestedInstanceId = null
+        disconnectVpnInterface(true)
+        worker.shutdownNow()
+        if (self === this) {
+            self = null
+        }
         super.onDestroy()
-        disconnect()
-        self = null
     }
 
     override fun onRevoke() {
-        println("vpn on revoke")
+        dispatchStop(stopInstance = true)
         super.onRevoke()
-        disconnect()
-        self = null
     }
 
-    private fun disconnect() {
-        if (self == this && this::vpnInterface.isInitialized) {
-            triggerCallback("vpn_service_stop", JSObject())
-            vpnInterface.close()
+    private fun dispatchHeadlessStart() {
+        val generation = operationGeneration.incrementAndGet()
+        connectionRequested = true
+        EasyTierTileService.refreshVpnState(this)
+        worker.execute {
+            var startedInstanceId: String? = null
+            try {
+                if (VpnService.prepare(this) != null) {
+                    throw IllegalStateException("VPN permission is required; open EasyTier once and allow it")
+                }
+                val configToml = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                    .getString(PROFILE_TOML, null)
+                    ?.takeIf { it.isNotBlank() }
+                    ?: throw IllegalStateException("No saved TUN network; start one from EasyTier once")
+                val result = parseNativeResult(HeadlessEasyTierBridge.start(configToml))
+                val instanceId = result.getString("instanceId")
+                startedInstanceId = instanceId
+                if (generation != operationGeneration.get()) {
+                    stopNativeInstance(instanceId)
+                    return@execute
+                }
+                requestedInstanceId = instanceId
+                val args = Bundle().apply {
+                    putString(INSTANCE_ID, instanceId)
+                    putString(IPV4_ADDR, result.getString("ipv4Addr"))
+                    putStringArray(ROUTES, jsonStringArray(result.optJSONArray("routes")))
+                    result.optString("dns").takeIf { it.isNotEmpty() }?.let { putString(DNS, it) }
+                    putStringArray(DISALLOWED_APPLICATIONS, arrayOf(packageName))
+                    putInt(MTU, result.optInt("mtu", 1300))
+                }
+                establishAndAttach(args, generation)
+            } catch (error: Exception) {
+                failStart(error, generation, startedInstanceId)
+            }
         }
-        clearStatus()
     }
 
-    private fun clearStatus() {
+    private fun dispatchAttachExisting(args: Bundle?) {
+        val generation = operationGeneration.incrementAndGet()
+        connectionRequested = true
+        requestedInstanceId = args?.getString(INSTANCE_ID)?.takeIf { it.isNotBlank() }
+        worker.execute {
+            try {
+                if (VpnService.prepare(this) != null) {
+                    throw IllegalStateException("VPN permission is required")
+                }
+                establishAndAttach(args, generation)
+            } catch (error: Exception) {
+                failStart(error, generation, null)
+            }
+        }
+    }
+
+    private fun establishAndAttach(args: Bundle?, generation: Int) {
+        disconnectVpnInterface(false)
+        val instanceId = args?.getString(INSTANCE_ID)
+            ?.takeIf { it.isNotBlank() }
+            ?: throw IllegalArgumentException("Missing EasyTier instance ID")
+        requestedInstanceId = instanceId
+        val newInterface = createVpnInterface(args)
+        if (generation != operationGeneration.get()) {
+            newInterface.close()
+            return
+        }
+        try {
+            parseNativeResult(HeadlessEasyTierBridge.attachTunFd(instanceId, newInterface.fd))
+        } catch (error: Exception) {
+            newInterface.close()
+            throw error
+        }
+        vpnInterface = newInterface
+        activeInstanceId = instanceId
+        requestedInstanceId = instanceId
+        ipv4Addr = args?.getString(IPV4_ADDR)
+        routes = args?.getStringArray(ROUTES) ?: emptyArray()
+        dns = args?.getString(DNS)
+        EasyTierTileService.refreshVpnState(this)
+        updateNotification("Connected")
+        triggerCallback("vpn_service_start", JSObject().apply { put("instanceId", instanceId) })
+    }
+
+    private fun dispatchStop(stopInstance: Boolean) {
+        val generation = operationGeneration.incrementAndGet()
+        connectionRequested = false
+        requestedInstanceId = null
+        EasyTierTileService.refreshVpnState(this)
+        worker.execute {
+            val instanceId = activeInstanceId
+            disconnectVpnInterface(true)
+            if (stopInstance && instanceId != null) {
+                stopNativeInstance(instanceId)
+            }
+            if (generation == operationGeneration.get()) {
+                stopForeground(true)
+                stopSelf()
+            }
+        }
+    }
+
+    private fun dispatchDetachInstance(instanceId: String?) {
+        val expectedInstanceId = instanceId?.takeIf { it.isNotBlank() }
+        if (
+            expectedInstanceId == null
+            || (activeInstanceId != expectedInstanceId && requestedInstanceId != expectedInstanceId)
+        ) {
+            EasyTierTileService.refreshVpnState(this)
+            if (isVpnActive()) {
+                updateNotification("Connected")
+            } else if (!isVpnRequestedOrActive()) {
+                stopForeground(true)
+                stopSelf()
+            }
+            return
+        }
+        dispatchStop(stopInstance = false)
+    }
+
+    private fun failStart(error: Exception, generation: Int, startedInstanceId: String?) {
+        println("headless EasyTier start failed: $error")
+        if (generation != operationGeneration.get()) {
+            if (startedInstanceId != null) stopNativeInstance(startedInstanceId)
+            return
+        }
+        connectionRequested = false
+        requestedInstanceId = null
+        disconnectVpnInterface(true)
+        if (startedInstanceId != null) stopNativeInstance(startedInstanceId)
+        EasyTierTileService.setLastError(this, error.message ?: "Connection failed")
+        stopForeground(true)
+        stopSelf()
+    }
+
+    private fun disconnectVpnInterface(notify: Boolean) {
+        val interfaceToClose = vpnInterface
+        vpnInterface = null
+        activeInstanceId = null
+        requestedInstanceId = null
+        if (interfaceToClose != null) {
+            try {
+                interfaceToClose.close()
+            } catch (error: Exception) {
+                println("vpn interface close failed: $error")
+            }
+            if (notify) triggerCallback("vpn_service_stop", JSObject())
+        }
         ipv4Addr = null
         routes = emptyArray()
         dns = null
+        EasyTierTileService.refreshVpnState(this)
+    }
+
+    private fun stopNativeInstance(instanceId: String) {
+        try {
+            parseNativeResult(HeadlessEasyTierBridge.stop(instanceId))
+        } catch (error: Exception) {
+            println("EasyTier instance $instanceId stop failed: $error")
+        }
     }
 
     private fun createVpnInterface(args: Bundle?): ParcelFileDescriptor {
-        var builder = Builder()
-                .setSession("TauriVpnService")
-                .setBlocking(false)
-        
-        var mtu = args?.getInt(MTU) ?: 1500
-        var ipv4Addr = args?.getString(IPV4_ADDR) ?: "10.126.126.1/24"
-        var dns: String? = args?.getString(DNS)
-        var routes = args?.getStringArray(ROUTES) ?: emptyArray()
-        var disallowedApplications = args?.getStringArray(DISALLOWED_APPLICATIONS) ?: emptyArray()
-
-        println("vpn create vpn interface. mtu: $mtu, ipv4Addr: $ipv4Addr, dns:" +
-            "$dns, routes: ${java.util.Arrays.toString(routes)}," +
-            "disallowedApplications:  ${java.util.Arrays.toString(disallowedApplications)}")
-
-        val ipParts = ipv4Addr.split("/")
-        if (ipParts.size != 2) throw IllegalArgumentException("Invalid IP addr string")
+        val builder = Builder().setSession("EasyTier").setBlocking(false)
+        val mtu = args?.getInt(MTU) ?: 1300
+        val address = args?.getString(IPV4_ADDR)
+            ?: throw IllegalArgumentException("Missing EasyTier IPv4 address")
+        val ipParts = address.split("/")
+        require(ipParts.size == 2) { "Invalid EasyTier IPv4 address" }
         builder.addAddress(ipParts[0], ipParts[1].toInt())
         builder.addAddress("fd00::1", 128)
-
         builder.setMtu(mtu)
-        dns?.let { builder.addDnsServer(it) }
+        args?.getString(DNS)?.let(builder::addDnsServer)
+        for (route in args?.getStringArray(ROUTES) ?: emptyArray()) {
+            val routeParts = route.split("/")
+            require(routeParts.size == 2) { "Invalid route: $route" }
+            builder.addRoute(routeParts[0], routeParts[1].toInt())
+        }
+        for (application in args?.getStringArray(DISALLOWED_APPLICATIONS) ?: arrayOf(packageName)) {
+            builder.addDisallowedApplication(application)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) builder.setMetered(false)
+        return builder.establish() ?: throw IllegalStateException("Failed to establish Android VPN")
+    }
 
-        for (route in routes) {
-            val ipParts = route.split("/")
-            if (ipParts.size != 2) throw IllegalArgumentException("Invalid route cidr string")
-            builder.addRoute(ipParts[0], ipParts[1].toInt())
+    private fun parseNativeResult(json: String): JSONObject {
+        val result = JSONObject(json)
+        if (!result.optBoolean("ok", false)) {
+            throw IllegalStateException(result.optString("error", "Native EasyTier operation failed"))
         }
-        
-        for (app in disallowedApplications) {
-            builder.addDisallowedApplication(app)
-        }
+        return result
+    }
 
-        return builder.also {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                it.setMetered(false)
-            }
+    private fun jsonStringArray(array: org.json.JSONArray?): Array<String> {
+        if (array == null) return emptyArray()
+        return Array(array.length()) { index -> array.getString(index) }
+    }
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val manager = getSystemService(NotificationManager::class.java)
+            manager.createNotificationChannel(
+                NotificationChannel(CHANNEL_ID, "EasyTier VPN", NotificationManager.IMPORTANCE_LOW),
+            )
         }
-        .establish()
-        ?: throw IllegalStateException("Failed to init VpnService")
+    }
+
+    private fun buildNotification(status: String): Notification {
+        val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
+        val contentIntent = launchIntent?.let {
+            PendingIntent.getActivity(
+                this,
+                0,
+                it,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+        }
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(applicationInfo.icon)
+            .setContentTitle("EasyTier")
+            .setContentText(status)
+            .setOngoing(true)
+            .setContentIntent(contentIntent)
+            .build()
+    }
+
+    private fun updateNotification(status: String) {
+        getSystemService(NotificationManager::class.java)
+            .notify(NOTIFICATION_ID, buildNotification(status))
     }
 }

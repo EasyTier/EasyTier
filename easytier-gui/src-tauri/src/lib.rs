@@ -3,7 +3,12 @@
 
 mod elevate;
 
+#[cfg(target_os = "android")]
+mod android_headless;
+
 use anyhow::Context;
+#[cfg(not(target_os = "android"))]
+use easytier::instance::factory::native_instance_manager;
 #[cfg(target_os = "android")]
 use easytier::instance::factory::subscribe_native_instance_event;
 use easytier::proto::api::config::{
@@ -28,7 +33,7 @@ use easytier::{
         },
         log,
     },
-    instance::factory::{NativeInstanceManager, native_instance_manager},
+    instance::factory::NativeInstanceManager,
     proto::rpc::standalone::{runtime_rpc_dialer, runtime_rpc_listener},
     rpc_service::ApiRpcServer,
     utils::panic::setup_panic_handler,
@@ -88,6 +93,12 @@ macro_rules! get_client_manager {
         RwLockReadGuard::try_map(guard, |cm| cm.as_ref())
             .map_err(|_| "RPC connection not initialized".to_string())
     }};
+}
+
+#[cfg(target_os = "android")]
+fn detach_android_vpn_instance(app: &AppHandle, instance_id: Uuid) -> Result<(), String> {
+    tauri_plugin_vpnservice::detach_vpn_instance(app, instance_id.to_string())
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -281,6 +292,9 @@ async fn remove_network_instance(app: AppHandle, instance_id: String) -> Result<
         .handle_remove_network_instances(app.clone(), vec![instance_id])
         .await
         .map_err(|e| e.to_string())?;
+    #[cfg(target_os = "android")]
+    detach_android_vpn_instance(&app, instance_id)?;
+    #[cfg(not(target_os = "android"))]
     client_manager
         .post_stop_network_instances_hook(&app)
         .await?;
@@ -318,6 +332,9 @@ async fn update_network_config_state(
         .map_err(|e| e.to_string())?;
 
     if disabled {
+        #[cfg(target_os = "android")]
+        detach_android_vpn_instance(&app, instance_id)?;
+        #[cfg(not(target_os = "android"))]
         client_manager
             .post_stop_network_instances_hook(&app)
             .await?;
@@ -500,7 +517,14 @@ async fn init_rpc_connection(
         let instance_manager = if let Some(im) = instance_manager_guard.take() {
             im
         } else {
-            Arc::new(native_instance_manager())
+            #[cfg(target_os = "android")]
+            {
+                android_headless::instance_manager()
+            }
+            #[cfg(not(target_os = "android"))]
+            {
+                Arc::new(native_instance_manager())
+            }
         };
 
         let portal = url.and_then(|s| {
@@ -1043,6 +1067,7 @@ mod manager {
             Ok(())
         }
 
+        #[cfg(not(target_os = "android"))]
         pub(super) fn notify_vpn_stop_if_no_tun(&self, app: &AppHandle) -> Result<(), String> {
             let has_tun = self.get_enabled_instances_with_tun_ids().any(|_| true);
             if !has_tun {
@@ -1150,10 +1175,16 @@ mod manager {
                 .delete_network_configs(app.clone(), ids)
                 .await
                 .map_err(|e| e.to_string())?;
+            #[cfg(target_os = "android")]
+            for instance_id in ids {
+                super::detach_android_vpn_instance(app, *instance_id)?;
+            }
+            #[cfg(not(target_os = "android"))]
             self.notify_vpn_stop_if_no_tun(app)?;
             Ok(())
         }
 
+        #[cfg(not(target_os = "android"))]
         pub(super) async fn post_stop_network_instances_hook(
             &self,
             app: &AppHandle,

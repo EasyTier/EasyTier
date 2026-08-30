@@ -40,6 +40,7 @@
     "vpnservice:allow-prepare-vpn",
     "vpnservice:allow-start-vpn",
     "vpnservice:allow-stop-vpn",
+    "vpnservice:allow-save-headless-profile",
     "vpnservice:allow-registerListener",
     "os:default",
     "os:allow-os-type",

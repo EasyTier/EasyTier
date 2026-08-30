@@ -21,11 +21,18 @@ pub struct VoidRequest {}
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StartVpnRequest {
+    pub instance_id: Option<String>,
     pub ipv4_addr: Option<String>,
     pub routes: Option<Vec<String>>,
     pub dns: Option<String>,
     pub disallowed_applications: Option<Vec<String>>,
     pub mtu: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstanceRequest {
+    pub instance_id: String,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -38,7 +45,14 @@ pub struct Status {
 #[serde(rename_all = "camelCase")]
 pub struct VpnStatus {
     pub running: bool,
+    pub instance_id: Option<String>,
     pub ipv4_addr: Option<String>,
     pub routes: Option<Vec<String>>,
     pub dns: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveHeadlessProfileRequest {
+    pub config_toml: String,
 }

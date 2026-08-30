@@ -1,13 +1,15 @@
 import type { NetworkTypes } from 'easytier-frontend-lib'
 import { addPluginListener } from '@tauri-apps/api/core'
 import { Utils } from 'easytier-frontend-lib'
-import { get_vpn_status, prepare_vpn, start_vpn, stop_vpn } from 'tauri-plugin-vpnservice-api'
-import { collectNetworkInfo, getConfig, listNetworkInstanceIds, setTunFd } from './backend'
+
+import { get_vpn_status, prepare_vpn, save_headless_profile, start_vpn, stop_vpn } from 'tauri-plugin-vpnservice-api'
+import { collectNetworkInfo, getConfig, listNetworkInstanceIds } from './backend'
 
 type Route = NetworkTypes.Route
 
 interface vpnStatus {
   running: boolean
+  instanceId: string | null | undefined
   ipv4Addr: string | null | undefined
   ipv4Cidr: number | null | undefined
   routes: string[]
@@ -27,6 +29,7 @@ let vpnPermissionRequest: Promise<boolean> | null = null
 
 const curVpnStatus: vpnStatus = {
   running: false,
+  instanceId: undefined,
   ipv4Addr: undefined,
   ipv4Cidr: undefined,
   routes: [],
@@ -129,8 +132,14 @@ function syncVpnStatusFromNative(status: Awaited<ReturnType<typeof get_vpn_statu
   curVpnStatus.running = status?.running ?? false
   if (!curVpnStatus.running) {
     activeVpnInstanceId = undefined
+    curVpnStatus.instanceId = undefined
     resetVpnConfigStatus()
     return
+  }
+
+  curVpnStatus.instanceId = status?.instanceId
+  if (status?.instanceId) {
+    activeVpnInstanceId = status.instanceId
   }
 
   const ipv4WithCidr = status?.ipv4Addr
@@ -160,6 +169,21 @@ async function waitVpnStatus(target_status: boolean, timeout_sec: number) {
   }
 }
 
+async function waitNativeVpnStopped(timeout_sec: number) {
+  const start_time = Date.now()
+  while (true) {
+    const status = await get_vpn_status()
+    syncVpnStatusFromNative(status)
+    if (!curVpnStatus.running) {
+      return
+    }
+    if (Date.now() - start_time > timeout_sec * 1000) {
+      throw new Error('wait native vpn stop timeout')
+    }
+    await new Promise(r => setTimeout(r, 50))
+  }
+}
+
 async function doStopVpn(force = false) {
   const wasRunning = curVpnStatus.running
   if (!force && !wasRunning) {
@@ -170,7 +194,7 @@ async function doStopVpn(force = false) {
   const stop_ret = await stop_vpn()
   console.log('stop vpn', JSON.stringify((stop_ret)))
   if (wasRunning) {
-    await waitVpnStatus(false, 3)
+    await waitNativeVpnStopped(3)
   }
 
   activeVpnInstanceId = undefined
@@ -184,6 +208,7 @@ async function doStartVpn(instanceId: string, ipv4Addr: string, cidr: number, ro
 
   console.log('start vpn service', ipv4Addr, cidr, routes, dns)
   const request = {
+    instanceId,
     ipv4Addr: `${ipv4Addr}/${cidr}`,
     routes,
     dns,
@@ -217,10 +242,9 @@ async function doStartVpn(instanceId: string, ipv4Addr: string, cidr: number, ro
 async function onVpnServiceStart(payload: any) {
   console.log('vpn service start', JSON.stringify(payload))
   curVpnStatus.running = true
-  if (payload.fd) {
-    await setTunFd(payload.fd).catch((e) => {
-      console.error('set tun fd failed', e)
-    })
+  if (typeof payload?.instanceId === 'string' && payload.instanceId) {
+    activeVpnInstanceId = payload.instanceId
+    curVpnStatus.instanceId = payload.instanceId
   }
 }
 
@@ -228,6 +252,7 @@ async function onVpnServiceStop(payload: any) {
   console.log('vpn service stop', JSON.stringify(payload))
   curVpnStatus.running = false
   activeVpnInstanceId = undefined
+  curVpnStatus.instanceId = undefined
   resetVpnConfigStatus()
 }
 
@@ -310,6 +335,8 @@ async function reconcileNetworkInstance(instanceId: string, generation: number) 
     }
     return
   }
+
+  await save_headless_profile(await parseNetworkConfig(config))
 
   if (!await stopVpnOwnedByOtherInstance(instanceId, generation))
     return

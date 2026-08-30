@@ -149,6 +149,32 @@ Denies the register_listener command without any pre-configured scope.
 <tr>
 <td>
 
+`vpnservice:allow-save-headless-profile`
+
+</td>
+<td>
+
+Enables the save_headless_profile command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`vpnservice:deny-save-headless-profile`
+
+</td>
+<td>
+
+Denies the save_headless_profile command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `vpnservice:allow-start-vpn`
 
 </td>

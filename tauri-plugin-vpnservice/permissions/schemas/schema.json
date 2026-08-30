@@ -355,6 +355,18 @@
           "markdownDescription": "Denies the register_listener command without any pre-configured scope."
         },
         {
+          "description": "Enables the save_headless_profile command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-save-headless-profile",
+          "markdownDescription": "Enables the save_headless_profile command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the save_headless_profile command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-save-headless-profile",
+          "markdownDescription": "Denies the save_headless_profile command without any pre-configured scope."
+        },
+        {
           "description": "Enables the start_vpn command without any pre-configured scope.",
           "type": "string",
           "const": "allow-start-vpn",

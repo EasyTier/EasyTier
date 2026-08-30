@@ -14,6 +14,7 @@ export interface InvokeResponse {
 }
 
 export interface StartVpnRequest {
+  instanceId?: string;
   ipv4Addr?: string;
   routes?: string[];
   dns?: string;
@@ -23,6 +24,7 @@ export interface StartVpnRequest {
 
 export interface VpnStatusResponse {
   running: boolean;
+  instanceId?: string;
   ipv4Addr?: string;
   routes?: string[];
   dns?: string;
@@ -34,7 +36,7 @@ export async function prepare_vpn(): Promise<InvokeResponse | null> {
 
 export async function start_vpn(request: StartVpnRequest): Promise<InvokeResponse | null> {
   return await invoke<InvokeResponse>('plugin:vpnservice|start_vpn', {
-    ...request,
+    payload: request,
   })
 }
 
@@ -44,4 +46,10 @@ export async function stop_vpn(): Promise<InvokeResponse | null> {
 
 export async function get_vpn_status(): Promise<VpnStatusResponse | null> {
   return await invoke<VpnStatusResponse>('plugin:vpnservice|get_vpn_status', {})
+}
+
+export async function save_headless_profile(configToml: string): Promise<void> {
+  await invoke('plugin:vpnservice|save_headless_profile', {
+    payload: { configToml },
+  })
 }

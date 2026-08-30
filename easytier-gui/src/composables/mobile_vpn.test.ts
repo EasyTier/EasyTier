@@ -16,12 +16,13 @@ const mocks = vi.hoisted(() => {
       info: { map: { [instanceId]: networkInfo.get(instanceId) } },
     })),
     getConfig: vi.fn(async (instanceId: string) => configs.get(instanceId)),
+    parseNetworkConfig: vi.fn(async () => 'mock-profile-toml'),
     getVpnStatus: vi.fn<() => Promise<Record<string, unknown>>>(async () => ({ running: false })),
     listNetworkInstanceIds: vi.fn<() => Promise<{ running_inst_ids: unknown[] }>>(async () => ({ running_inst_ids: [] })),
     prepareVpn: vi.fn(async () => ({ granted: true })),
-    setTunFd: vi.fn(async () => undefined),
-    startVpn: vi.fn(async () => {
-      await listeners.get('vpn_service_start')?.({ fd: 1 })
+    saveHeadlessProfile: vi.fn(async () => undefined),
+    startVpn: vi.fn(async (request?: { instanceId?: string }) => {
+      await listeners.get('vpn_service_start')?.({ instanceId: request?.instanceId })
       return {}
     }),
     stopVpn: vi.fn(async () => {
@@ -45,6 +46,7 @@ vi.mock('easytier-frontend-lib', () => ({
 vi.mock('tauri-plugin-vpnservice-api', () => ({
   get_vpn_status: mocks.getVpnStatus,
   prepare_vpn: mocks.prepareVpn,
+  save_headless_profile: mocks.saveHeadlessProfile,
   start_vpn: mocks.startVpn,
   stop_vpn: mocks.stopVpn,
 }))
@@ -53,7 +55,7 @@ vi.mock('./backend', () => ({
   collectNetworkInfo: mocks.collectNetworkInfo,
   getConfig: mocks.getConfig,
   listNetworkInstanceIds: mocks.listNetworkInstanceIds,
-  setTunFd: mocks.setTunFd,
+  parseNetworkConfig: mocks.parseNetworkConfig,
 }))
 
 function setConfig(instanceId: string, noTun = false) {
@@ -92,12 +94,13 @@ beforeEach(() => {
   mocks.addPluginListener.mockClear()
   mocks.collectNetworkInfo.mockClear()
   mocks.getConfig.mockClear()
+  mocks.parseNetworkConfig.mockClear()
   mocks.getVpnStatus.mockReset()
   mocks.getVpnStatus.mockResolvedValue({ running: false })
   mocks.listNetworkInstanceIds.mockReset()
   mocks.listNetworkInstanceIds.mockResolvedValue({ running_inst_ids: [] })
   mocks.prepareVpn.mockClear()
-  mocks.setTunFd.mockClear()
+  mocks.saveHeadlessProfile.mockClear()
   mocks.startVpn.mockClear()
   mocks.stopVpn.mockClear()
 })
@@ -122,7 +125,10 @@ describe('mobile VPN reconciliation ownership', () => {
     await vpn.onNetworkInstanceUpdate('B')
 
     expect(mocks.startVpn).toHaveBeenCalledTimes(1)
-    expect(mocks.startVpn).toHaveBeenCalledWith(expect.objectContaining({ ipv4Addr: '10.0.0.2/24' }))
+    expect(mocks.startVpn).toHaveBeenCalledWith(expect.objectContaining({
+      instanceId: 'B',
+      ipv4Addr: '10.0.0.2/24',
+    }))
   })
 
   it('stops the previous owner during pre-run even if the new instance never reaches post-run', async () => {
@@ -216,7 +222,7 @@ describe('mobile VPN reconciliation ownership', () => {
 
   it('stops a native VPN with unknown ownership before retrying the selected instance', async () => {
     setConfig('A')
-    mocks.getVpnStatus.mockResolvedValue({
+    mocks.getVpnStatus.mockResolvedValueOnce({
       running: true,
       ipv4Addr: '10.0.0.1/24',
       routes: [],
@@ -227,6 +233,24 @@ describe('mobile VPN reconciliation ownership', () => {
     await vpn.syncMobileVpnService()
 
     expect(mocks.stopVpn).toHaveBeenCalledTimes(1)
+    expect(mocks.startVpn).not.toHaveBeenCalled()
+  })
+
+  it('preserves a native VPN when status reports the selected instance as owner', async () => {
+    setConfig('A')
+    setReady('A', '10.0.0.1')
+    mocks.getVpnStatus.mockResolvedValue({
+      running: true,
+      instanceId: 'A',
+      ipv4Addr: '10.0.0.1/24',
+      routes: [],
+    })
+    mocks.listNetworkInstanceIds.mockResolvedValue({ running_inst_ids: ['A'] })
+    const vpn = await loadVpnModule()
+
+    await vpn.syncMobileVpnService()
+
+    expect(mocks.stopVpn).not.toHaveBeenCalled()
     expect(mocks.startVpn).not.toHaveBeenCalled()
   })
 })
