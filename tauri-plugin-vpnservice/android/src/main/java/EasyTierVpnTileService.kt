@@ -53,6 +53,14 @@ class EasyTierVpnTileService : TileService() {
     override fun onClick() {
         super.onClick()
 
+        if (isLocked) {
+            unlockAndRun(::handleClick)
+        } else {
+            handleClick()
+        }
+    }
+
+    private fun handleClick() {
         val action = pendingAction(this) ?: if (TauriVpnService.self == null) ACTION_START else ACTION_STOP
         savePendingAction(this, action)
         updateTileState()

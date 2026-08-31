@@ -37,6 +37,12 @@ class VpnServicePlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     private val implementation = Example()
+    private val tileActionHandler: (String) -> Boolean = { action ->
+        val data = JSObject()
+        data.put("action", action)
+        trigger("vpn_tile_action", data)
+        true
+    }
 
     override fun load(webView: WebView) {
         println("load vpn service plugin")
@@ -44,12 +50,14 @@ class VpnServicePlugin(private val activity: Activity) : Plugin(activity) {
             println("vpn: triggerCallback $event $data")
             trigger(event, data)
         }
-        tileActionCallback = { action ->
-            val data = JSObject()
-            data.put("action", action)
-            trigger("vpn_tile_action", data)
-            true
+        tileActionCallback = tileActionHandler
+    }
+
+    override fun onDestroy() {
+        if (tileActionCallback === tileActionHandler) {
+            tileActionCallback = { false }
         }
+        super.onDestroy()
     }
 
     @Command

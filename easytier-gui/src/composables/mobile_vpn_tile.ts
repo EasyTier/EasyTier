@@ -23,7 +23,14 @@ export async function executeVpnTileAction(
   const disabledIds = (response.disabled_inst_ids ?? []).map(Utils.UuidToStr)
   const configuredIds = [...new Set([...runningIds, ...disabledIds])]
 
-  const candidates = action === 'stop' ? runningIds : configuredIds
+  const candidateIds = action === 'stop' ? runningIds : configuredIds
+  const candidateConfigs = new Map(
+    await Promise.all(candidateIds.map(async (instanceId) => {
+      const config = await api.get_network_config(instanceId)
+      return [instanceId, config] as const
+    })),
+  )
+  const candidates = candidateIds.filter(instanceId => !candidateConfigs.get(instanceId)?.no_tun)
   const instanceId = options.lastInstanceId && candidates.includes(options.lastInstanceId)
     ? options.lastInstanceId
     : candidates[0]
@@ -34,7 +41,7 @@ export async function executeVpnTileAction(
 
   let changed = false
   if (action === 'start' && !runningIds.includes(instanceId)) {
-    const config = await api.get_network_config(instanceId)
+    const config = candidateConfigs.get(instanceId)!
     await api.run_network(config, true)
     changed = true
   }
