@@ -1144,7 +1144,7 @@ fn record_applied_config_revision(
     data.known_runtime_base_revision = revision.clone();
     data.applied_config_revision = revision;
     data.pending_managed_config_reconcile = None;
-    changed.then(|| SessionRpcService::mark_webhook_validation_dirty_locked(data))
+    changed.then(|| SessionRpcService::mark_webhook_validation_state_changed_locked(data))
 }
 
 #[cfg(test)]
@@ -1203,6 +1203,7 @@ mod tests {
         );
         assert_eq!(data.pending_managed_config_reconcile, None);
         assert!(data.webhook_validation_dirty);
+        assert_eq!(data.webhook_validation_change_epoch, 1);
 
         notify.notify_one();
         tokio::time::timeout(std::time::Duration::from_millis(100), notify.notified())

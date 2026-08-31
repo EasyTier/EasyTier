@@ -115,7 +115,7 @@ async fn persisted_config_revision_for_token(
 
 async fn wait_for_input(
     session_data: std::sync::Weak<RwLock<SessionData>>,
-) -> Option<WebhookValidationInput> {
+) -> Option<(WebhookValidationInput, u64)> {
     loop {
         let notify = {
             let session_data = session_data.upgrade()?;
@@ -133,14 +133,17 @@ async fn wait_for_input(
                 let req = data.req.clone()?;
                 let machine_id = req.machine_id.map(Into::into)?;
                 let storage = Storage::try_from(data.storage.clone()).ok()?;
-                return Some(WebhookValidationInput {
-                    storage,
-                    webhook_config: data.webhook_config.clone(),
-                    client_url: data.client_url.clone(),
-                    applied_config_revision: data.applied_config_revision.clone(),
-                    req,
-                    machine_id,
-                });
+                return Some((
+                    WebhookValidationInput {
+                        storage,
+                        webhook_config: data.webhook_config.clone(),
+                        client_url: data.client_url.clone(),
+                        applied_config_revision: data.applied_config_revision.clone(),
+                        req,
+                        machine_id,
+                    },
+                    data.webhook_validation_change_epoch,
+                ));
             }
             data.webhook_validation_notify.clone()
         };
@@ -148,8 +151,50 @@ async fn wait_for_input(
     }
 }
 
+async fn wait_for_retry_or_state_change(
+    session_data: &std::sync::Weak<RwLock<SessionData>>,
+    machine_id: uuid::Uuid,
+    validation_change_epoch: u64,
+    delay: Duration,
+) {
+    let retry_deadline = tokio::time::sleep(delay);
+    tokio::pin!(retry_deadline);
+
+    loop {
+        let notify = {
+            let Some(session_data) = session_data.upgrade() else {
+                return;
+            };
+            let data = session_data.read().await;
+            let Some(req) = data.req.as_ref() else {
+                return;
+            };
+            if req.machine_id.map(uuid::Uuid::from) != Some(machine_id)
+                || matches!(data.auth_state, SessionAuthState::Invalid)
+            {
+                return;
+            }
+            if data.webhook_validation_change_epoch != validation_change_epoch {
+                return;
+            }
+            data.webhook_validation_notify.clone()
+        };
+
+        // Notify is only a wake-up hint. Periodic validation can set dirty,
+        // but only a meaningful validation-state change may bypass backoff.
+        // Recheck the epoch after every wake without resetting the deadline.
+        tokio::select! {
+            _ = &mut retry_deadline => {
+                mark_dirty_if_current(session_data, machine_id).await;
+                return;
+            }
+            _ = notify.notified() => {}
+        }
+    }
+}
+
 pub(super) async fn run_worker(session_data: std::sync::Weak<RwLock<SessionData>>) {
-    while let Some(input) = wait_for_input(session_data.clone()).await {
+    while let Some((input, validation_change_epoch)) = wait_for_input(session_data.clone()).await {
         let machine_id = input.machine_id;
         if let Err(error) = run_round(session_data.clone(), input).await {
             tracing::warn!(
@@ -157,8 +202,13 @@ pub(super) async fn run_worker(session_data: std::sync::Weak<RwLock<SessionData>
                 %error,
                 "webhook validation failed, will retry later"
             );
-            tokio::time::sleep(retry_delay(machine_id)).await;
-            mark_dirty_if_current(&session_data, machine_id).await;
+            wait_for_retry_or_state_change(
+                &session_data,
+                machine_id,
+                validation_change_epoch,
+                retry_delay(machine_id),
+            )
+            .await;
         }
     }
 }
@@ -409,5 +459,129 @@ async fn wait_webhook_connection_transition(
     ));
     if let Err(error) = transition.await {
         tracing::warn!(%error, "webhook connection transition task failed");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn validation_session(machine_id: uuid::Uuid) -> Arc<RwLock<SessionData>> {
+        let storage = Storage::new(crate::db::Db::memory_db().await);
+        let mut data = SessionData::new(
+            storage.weak_ref(),
+            url::Url::parse("http://127.0.0.1").unwrap(),
+            None,
+            Arc::new(crate::FeatureFlags::default()),
+            Arc::new(crate::webhook::WebhookConfig::new(
+                None, None, None, None, None,
+            )),
+        );
+        data.req = Some(HeartbeatRequest {
+            user_token: "token".to_string(),
+            machine_id: Some(machine_id.into()),
+            ..Default::default()
+        });
+        data.auth_state = SessionAuthState::Authorized;
+        Arc::new(RwLock::new(data))
+    }
+
+    #[tokio::test]
+    async fn stale_notification_does_not_bypass_validation_retry_delay() {
+        let machine_id = uuid::Uuid::new_v4();
+        let session_data = validation_session(machine_id).await;
+        let notify = session_data.read().await.webhook_validation_notify.clone();
+        notify.notify_one();
+        let weak_session = Arc::downgrade(&session_data);
+
+        let wait =
+            wait_for_retry_or_state_change(&weak_session, machine_id, 0, Duration::from_secs(10));
+        tokio::pin!(wait);
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut wait)
+                .await
+                .is_err()
+        );
+        assert!(!session_data.read().await.webhook_validation_dirty);
+    }
+
+    #[tokio::test]
+    async fn validation_retry_deadline_rearms_dirty_state() {
+        let machine_id = uuid::Uuid::new_v4();
+        let session_data = validation_session(machine_id).await;
+        let weak_session = Arc::downgrade(&session_data);
+
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            wait_for_retry_or_state_change(&weak_session, machine_id, 0, Duration::from_millis(20)),
+        )
+        .await
+        .expect("retry deadline should eventually expire");
+        assert!(session_data.read().await.webhook_validation_dirty);
+    }
+
+    #[tokio::test]
+    async fn periodic_dirty_state_does_not_interrupt_validation_retry_delay() {
+        let machine_id = uuid::Uuid::new_v4();
+        let session_data = validation_session(machine_id).await;
+        let weak_session = Arc::downgrade(&session_data);
+        let wait =
+            wait_for_retry_or_state_change(&weak_session, machine_id, 0, Duration::from_secs(10));
+        tokio::pin!(wait);
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut wait)
+                .await
+                .is_err()
+        );
+        mark_dirty_if_current(&weak_session, machine_id).await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut wait)
+                .await
+                .is_err()
+        );
+        assert!(session_data.read().await.webhook_validation_dirty);
+    }
+
+    #[tokio::test]
+    async fn validation_state_change_interrupts_retry_delay() {
+        let machine_id = uuid::Uuid::new_v4();
+        let session_data = validation_session(machine_id).await;
+        let weak_session = Arc::downgrade(&session_data);
+        let wait =
+            wait_for_retry_or_state_change(&weak_session, machine_id, 0, Duration::from_secs(10));
+        tokio::pin!(wait);
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut wait)
+                .await
+                .is_err()
+        );
+        let notify = {
+            let mut data = session_data.write().await;
+            SessionRpcService::mark_webhook_validation_state_changed_locked(&mut data)
+        };
+        notify.notify_one();
+        tokio::time::timeout(Duration::from_millis(500), &mut wait)
+            .await
+            .expect("validation state change should interrupt retry delay");
+        assert!(session_data.read().await.webhook_validation_dirty);
+    }
+
+    #[tokio::test]
+    async fn invalid_session_does_not_rearm_validation_retry() {
+        let machine_id = uuid::Uuid::new_v4();
+        let session_data = validation_session(machine_id).await;
+        session_data.write().await.auth_state = SessionAuthState::Invalid;
+        let weak_session = Arc::downgrade(&session_data);
+
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            wait_for_retry_or_state_change(&weak_session, machine_id, 0, Duration::from_secs(10)),
+        )
+        .await
+        .expect("invalid session should stop waiting");
+        assert!(!session_data.read().await.webhook_validation_dirty);
     }
 }

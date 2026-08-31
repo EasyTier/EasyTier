@@ -125,6 +125,7 @@ pub struct SessionData {
     auth_state: SessionAuthState,
     webhook_connected_binding_version: Option<u64>,
     webhook_validation_dirty: bool,
+    webhook_validation_change_epoch: u64,
     webhook_validation_notify: Arc<Notify>,
     session_epoch: u64,
 }
@@ -159,6 +160,7 @@ impl SessionData {
             auth_state: SessionAuthState::Init,
             webhook_connected_binding_version: None,
             webhook_validation_dirty: false,
+            webhook_validation_change_epoch: 0,
             webhook_validation_notify: Arc::new(Notify::new()),
             session_epoch: 0,
         }
@@ -481,6 +483,11 @@ impl SessionRpcService {
     fn mark_webhook_validation_dirty_locked(data: &mut SessionData) -> Arc<Notify> {
         data.webhook_validation_dirty = true;
         data.webhook_validation_notify.clone()
+    }
+
+    fn mark_webhook_validation_state_changed_locked(data: &mut SessionData) -> Arc<Notify> {
+        data.webhook_validation_change_epoch = data.webhook_validation_change_epoch.wrapping_add(1);
+        Self::mark_webhook_validation_dirty_locked(data)
     }
 
     async fn handle_webhook_heartbeat(
@@ -1104,6 +1111,7 @@ mod tests {
 
         let data = data.read().await;
         assert!(data.webhook_validation_dirty);
+        assert_eq!(data.webhook_validation_change_epoch, 0);
         assert_eq!(data.auth_state, SessionAuthState::Init);
         assert!(data.storage_token.is_none());
         assert!(SessionRpcService::heartbeat_matches_identity(
