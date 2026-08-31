@@ -13,7 +13,7 @@ use easytier_core::management::remote_client::{ListNetworkProps, Storage as _};
 use tokio::sync::{RwLock, broadcast};
 
 use super::{
-    ManagedConfigRevisionDelta, SessionConfigClient, SessionData, SessionRpcClient,
+    ManagedConfigReconcileHint, SessionConfigClient, SessionData, SessionRpcClient,
     SessionRpcService,
 };
 use crate::client_manager::{
@@ -79,12 +79,7 @@ pub(super) async fn reconcile_network_configs_on_heartbeat(
                 RoundStatus::Skip => continue,
                 RoundStatus::Stop => return,
             };
-        if cache.runtime_config_epoch != round.runtime_config_epoch {
-            cache = ReconcileCache {
-                runtime_config_epoch: round.runtime_config_epoch,
-                ..Default::default()
-            };
-        }
+        cache.reset_if_runtime_config_cache_epoch_changed(round.runtime_config_cache_epoch);
         let running_metas =
             match sync_running_sources_for_round(&mut rpc_client, &storage, &mut round).await {
                 RoundStatus::Ready(running_metas) => running_metas,
@@ -118,16 +113,13 @@ pub(super) async fn reconcile_network_configs_on_heartbeat(
                     RoundStatus::Stop => return,
                 }
             }
-            ReconcileScope::Patch {
-                delete_instance_ids,
-                ..
-            } => {
+            ReconcileScope::Patch { .. } => {
                 match cleanup_patch_deleted_instances(
                     &session_data,
                     &mut rpc_client,
                     &round,
                     running_metas.as_deref(),
-                    delete_instance_ids,
+                    &round.delete_instance_ids,
                     &mut cache,
                     &mut mutation_fence,
                 )
@@ -158,13 +150,15 @@ pub(super) async fn reconcile_network_configs_on_heartbeat(
                         managed_config::desired_web_source_instance_ids(&round.local_configs),
                     );
                 }
-                ReconcileScope::Patch {
-                    upsert_instance_ids,
-                    delete_instance_ids,
-                } => {
+                ReconcileScope::Patch { dirty_instance_ids } => {
                     if let Some(last) = &mut cache.last_desired_web_inst_ids {
-                        last.retain(|id| !delete_instance_ids.contains(id));
-                        last.extend(upsert_instance_ids.iter().cloned());
+                        last.retain(|id| !dirty_instance_ids.contains(id));
+                        last.extend(
+                            round
+                                .local_configs
+                                .iter()
+                                .map(|config| config.network_instance_id.clone()),
+                        );
                     }
                 }
             }
@@ -199,10 +193,22 @@ enum ConfigActionResult {
 
 #[derive(Default)]
 struct ReconcileCache {
-    runtime_config_epoch: u64,
+    runtime_config_cache_epoch: u64,
     cleaned_web_source_instances: bool,
     last_desired_web_inst_ids: Option<HashSet<String>>,
     runtime_configs: SessionRuntimeConfigCache,
+}
+
+impl ReconcileCache {
+    fn reset_if_runtime_config_cache_epoch_changed(&mut self, current_epoch: u64) {
+        if self.runtime_config_cache_epoch == current_epoch {
+            return;
+        }
+        *self = Self {
+            runtime_config_cache_epoch: current_epoch,
+            ..Default::default()
+        };
+    }
 }
 
 #[derive(Default)]
@@ -276,10 +282,12 @@ struct ReconcileRound {
     user_id: i32,
     running_inst_ids: HashSet<String>,
     local_configs: Vec<crate::db::entity::user_running_network_configs::Model>,
+    delete_instance_ids: HashSet<String>,
     target_config_revision: Option<String>,
     should_apply_runtime_revision: bool,
     scope: ReconcileScope,
     runtime_config_epoch: u64,
+    runtime_config_cache_epoch: u64,
 }
 
 struct ReconcileRoundContext<'a> {
@@ -290,25 +298,24 @@ struct ReconcileRoundContext<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ReconcileScope {
     Full,
-    Patch {
-        upsert_instance_ids: HashSet<String>,
-        delete_instance_ids: HashSet<String>,
-    },
+    Patch { dirty_instance_ids: HashSet<String> },
 }
 
 fn select_reconcile_scope(
-    applied_revision: Option<&str>,
+    pending: Option<&ManagedConfigReconcileHint>,
+    known_runtime_base_revision: Option<&str>,
     target_revision: Option<&str>,
-    pending_delta: Option<&ManagedConfigRevisionDelta>,
 ) -> ReconcileScope {
-    match pending_delta {
-        Some(delta)
-            if applied_revision == Some(delta.expected_revision.as_str())
-                && target_revision == Some(delta.target_revision.as_str()) =>
+    match pending {
+        Some(ManagedConfigReconcileHint::Dirty {
+            expected_revision,
+            target_revision: dirty_target,
+            instance_ids,
+        }) if known_runtime_base_revision == Some(expected_revision.as_str())
+            && target_revision == Some(dirty_target.as_str()) =>
         {
             ReconcileScope::Patch {
-                upsert_instance_ids: delta.upsert_instance_ids.clone(),
-                delete_instance_ids: delta.delete_instance_ids.clone(),
+                dirty_instance_ids: instance_ids.clone(),
             }
         }
         _ => ReconcileScope::Full,
@@ -346,15 +353,23 @@ async fn prepare_reconcile_round(
         }
     };
 
-    let (applied_config_revision, pending_delta, runtime_config_epoch) = {
+    let (
+        applied_config_revision,
+        known_runtime_base_revision,
+        pending_reconcile,
+        runtime_config_epoch,
+        runtime_config_cache_epoch,
+    ) = {
         let Some(data) = session_data.upgrade() else {
             return RoundStatus::Stop;
         };
         let data = data.read().await;
         (
             data.applied_config_revision.clone(),
-            data.pending_managed_config_delta.clone(),
+            data.known_runtime_base_revision.clone(),
+            data.pending_managed_config_reconcile.clone(),
             data.runtime_config_epoch,
+            data.runtime_config_cache_epoch,
         )
     };
     let target_config_revision = match storage
@@ -372,9 +387,9 @@ async fn prepare_reconcile_round(
         target_config_revision.is_some() && target_config_revision != applied_config_revision;
     let mut scope = if should_apply_runtime_revision {
         select_reconcile_scope(
-            applied_config_revision.as_deref(),
+            pending_reconcile.as_ref(),
+            known_runtime_base_revision.as_deref(),
             target_config_revision.as_deref(),
-            pending_delta.as_ref(),
         )
     } else {
         ReconcileScope::Full
@@ -393,13 +408,17 @@ async fn prepare_reconcile_round(
         RoundStatus::Stop => return RoundStatus::Stop,
     };
 
-    let local_configs = match load_round_configs(storage, user_id, machine_id, &scope).await {
+    let (local_configs, delete_instance_ids) = match load_round_configs(
+        storage, user_id, machine_id, &scope,
+    )
+    .await
+    {
         Ok(Some(configs)) => configs,
         Ok(None) => {
             tracing::warn!(
                 ?user_id,
                 ?machine_id,
-                "Managed config Patch no longer matches persisted rows; using Full reconcile"
+                "Managed config dirty instance is no longer a web-owned row; using Full reconcile"
             );
             scope = ReconcileScope::Full;
             match storage
@@ -407,7 +426,7 @@ async fn prepare_reconcile_round(
                 .list_network_configs((user_id, machine_id), ListNetworkProps::EnabledOnly)
                 .await
             {
-                Ok(configs) => configs,
+                Ok(configs) => (configs, HashSet::new()),
                 Err(e) => {
                     tracing::error!("Failed to list network configs, error: {:?}", e);
                     return RoundStatus::Stop;
@@ -426,10 +445,12 @@ async fn prepare_reconcile_round(
         user_id,
         running_inst_ids,
         local_configs,
+        delete_instance_ids,
         target_config_revision,
         should_apply_runtime_revision,
         scope,
         runtime_config_epoch,
+        runtime_config_cache_epoch,
     })
 }
 
@@ -438,38 +459,45 @@ async fn load_round_configs(
     user_id: i32,
     machine_id: uuid::Uuid,
     scope: &ReconcileScope,
-) -> Result<Option<Vec<crate::db::entity::user_running_network_configs::Model>>, sea_orm::DbErr> {
-    let ReconcileScope::Patch {
-        upsert_instance_ids,
-        ..
-    } = scope
-    else {
+) -> Result<
+    Option<(
+        Vec<crate::db::entity::user_running_network_configs::Model>,
+        HashSet<String>,
+    )>,
+    sea_orm::DbErr,
+> {
+    let ReconcileScope::Patch { dirty_instance_ids } = scope else {
         return storage
             .db
             .list_network_configs((user_id, machine_id), ListNetworkProps::EnabledOnly)
             .await
-            .map(Some);
+            .map(|configs| Some((configs, HashSet::new())));
     };
 
-    let mut instance_ids = upsert_instance_ids.iter().collect::<Vec<_>>();
+    let mut instance_ids = dirty_instance_ids.iter().collect::<Vec<_>>();
     instance_ids.sort_unstable();
     let mut configs = Vec::with_capacity(instance_ids.len());
+    let mut delete_instance_ids = HashSet::new();
     for instance_id in instance_ids {
-        let Some(config) = storage
+        let config = storage
             .db
             .get_network_config((user_id, machine_id), instance_id)
-            .await?
-        else {
-            return Ok(None);
-        };
-        if config.disabled
-            || PersistedConfigSource::from_db(&config.source) != PersistedConfigSource::Web
-        {
-            return Ok(None);
+            .await?;
+        match config {
+            Some(config)
+                if !config.disabled
+                    && PersistedConfigSource::from_db(&config.source)
+                        == PersistedConfigSource::Web =>
+            {
+                configs.push(config);
+            }
+            None => {
+                delete_instance_ids.insert(instance_id.clone());
+            }
+            Some(_) => return Ok(None),
         }
-        configs.push(config);
     }
-    Ok(Some(configs))
+    Ok(Some((configs, delete_instance_ids)))
 }
 
 async fn running_instance_ids_for_round(
@@ -761,14 +789,16 @@ async fn begin_managed_runtime_mutation(
         return false;
     };
     let mut data = data.write().await;
-    if !SessionRpcService::runtime_heartbeat_is_current_locked(&data, &round.req)
+    if !SessionRpcService::runtime_heartbeat_is_current_or_invalidate_locked(&mut data, &round.req)
         || data.runtime_config_epoch != round.runtime_config_epoch
     {
         return false;
     }
     if !mutation_fence.started {
         data.applied_config_revision = None;
-        data.pending_managed_config_delta = None;
+        if matches!(round.scope, ReconcileScope::Full) {
+            data.known_runtime_base_revision = None;
+        }
         mutation_fence.started = true;
     }
     true
@@ -1089,7 +1119,9 @@ async fn mark_config_revision_applied_if_current(
     };
     let notify = {
         let mut data = data.write().await;
-        if !SessionRpcService::runtime_heartbeat_is_current_locked(&data, &round.req) {
+        if !SessionRpcService::runtime_heartbeat_is_current_or_invalidate_locked(
+            &mut data, &round.req,
+        ) {
             return RoundStatus::Ready(());
         }
         if data.runtime_config_epoch != round.runtime_config_epoch {
@@ -1109,8 +1141,9 @@ fn record_applied_config_revision(
     revision: Option<String>,
 ) -> Option<std::sync::Arc<tokio::sync::Notify>> {
     let changed = data.applied_config_revision != revision;
+    data.known_runtime_base_revision = revision.clone();
     data.applied_config_revision = revision;
-    data.pending_managed_config_delta = None;
+    data.pending_managed_config_reconcile = None;
     changed.then(|| SessionRpcService::mark_webhook_validation_dirty_locked(data))
 }
 
@@ -1155,10 +1188,20 @@ mod tests {
                 None, None, None, None, None,
             )),
         );
+        data.pending_managed_config_reconcile = Some(ManagedConfigReconcileHint::Dirty {
+            expected_revision: "rev-a".to_string(),
+            target_revision: "rev-b".to_string(),
+            instance_ids: HashSet::from(["managed".to_string()]),
+        });
 
         let notify = record_applied_config_revision(&mut data, Some("rev-applied".to_string()))
             .expect("new applied revision should wake validation");
         assert_eq!(data.applied_config_revision.as_deref(), Some("rev-applied"));
+        assert_eq!(
+            data.known_runtime_base_revision.as_deref(),
+            Some("rev-applied")
+        );
+        assert_eq!(data.pending_managed_config_reconcile, None);
         assert!(data.webhook_validation_dirty);
 
         notify.notify_one();
@@ -1184,6 +1227,10 @@ mod tests {
 
         assert!(
             record_applied_config_revision(&mut data, Some("rev-applied".to_string())).is_none()
+        );
+        assert_eq!(
+            data.known_runtime_base_revision.as_deref(),
+            Some("rev-applied")
         );
         assert!(!data.webhook_validation_dirty);
     }
@@ -1214,7 +1261,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn managed_runtime_mutation_clears_old_applied_revision_before_side_effects() {
+    async fn managed_runtime_mutation_preserves_base_only_for_patch_scope() {
         let machine_id = uuid::Uuid::new_v4();
         let req = HeartbeatRequest {
             user_token: "token".to_string(),
@@ -1233,28 +1280,39 @@ mod tests {
                 None, None, None, None, None,
             )),
         );
-        data.storage_token = Some(crate::client_manager::storage::StorageToken {
+        let storage_token = crate::client_manager::storage::StorageToken {
             token: req.user_token.clone(),
             client_url,
             machine_id,
             user_id: 7,
-        });
+        };
+        storage.update_session_client(storage_token.clone(), 1, true, 0);
+        data.storage_token = Some(storage_token);
         data.req = Some(req.clone());
         data.auth_state = super::super::SessionAuthState::Authorized;
         data.applied_config_revision = Some("rev-a".to_string());
-        data.pending_managed_config_delta = Some(revision_delta("rev-a", "rev-b"));
+        data.known_runtime_base_revision = Some("rev-a".to_string());
+        data.pending_managed_config_reconcile = Some(ManagedConfigReconcileHint::Dirty {
+            expected_revision: "rev-a".to_string(),
+            target_revision: "rev-b".to_string(),
+            instance_ids: HashSet::from(["managed".to_string()]),
+        });
         data.runtime_config_epoch = 11;
         let session_data = std::sync::Arc::new(RwLock::new(data));
-        let round = ReconcileRound {
+        let mut round = ReconcileRound {
             req,
             machine_id,
             user_id: 7,
             running_inst_ids: HashSet::new(),
             local_configs: Vec::new(),
+            delete_instance_ids: HashSet::new(),
             target_config_revision: Some("rev-b".to_string()),
             should_apply_runtime_revision: true,
-            scope: ReconcileScope::Full,
+            scope: ReconcileScope::Patch {
+                dirty_instance_ids: HashSet::from(["managed".to_string()]),
+            },
             runtime_config_epoch: 11,
+            runtime_config_cache_epoch: 0,
         };
         let mut mutation_fence = RuntimeMutationFence::default();
 
@@ -1270,47 +1328,210 @@ mod tests {
         let data = session_data.read().await;
         assert!(mutation_fence.started);
         assert_eq!(data.applied_config_revision, None);
-        assert_eq!(data.pending_managed_config_delta, None);
+        assert_eq!(data.known_runtime_base_revision.as_deref(), Some("rev-a"));
+        assert_eq!(
+            data.pending_managed_config_reconcile,
+            Some(ManagedConfigReconcileHint::Dirty {
+                expected_revision: "rev-a".to_string(),
+                target_revision: "rev-b".to_string(),
+                instance_ids: HashSet::from(["managed".to_string()]),
+            })
+        );
         assert_eq!(data.runtime_config_epoch, 11);
-    }
+        assert_eq!(
+            select_reconcile_scope(
+                data.pending_managed_config_reconcile.as_ref(),
+                data.known_runtime_base_revision.as_deref(),
+                Some("rev-b"),
+            ),
+            ReconcileScope::Patch {
+                dirty_instance_ids: HashSet::from(["managed".to_string()]),
+            }
+        );
+        drop(data);
 
-    fn revision_delta(base: &str, target: &str) -> ManagedConfigRevisionDelta {
-        ManagedConfigRevisionDelta {
-            expected_revision: base.to_string(),
-            target_revision: target.to_string(),
-            upsert_instance_ids: HashSet::from(["upsert".to_string()]),
-            delete_instance_ids: HashSet::from(["delete".to_string()]),
+        {
+            let mut data = session_data.write().await;
+            data.applied_config_revision = Some("rev-a".to_string());
         }
+        round.scope = ReconcileScope::Full;
+        let mut mutation_fence = RuntimeMutationFence::default();
+        assert!(
+            begin_managed_runtime_mutation(
+                &std::sync::Arc::downgrade(&session_data),
+                &round,
+                &mut mutation_fence,
+            )
+            .await
+        );
+
+        let data = session_data.read().await;
+        assert_eq!(data.applied_config_revision, None);
+        assert_eq!(data.known_runtime_base_revision, None);
     }
 
     #[test]
-    fn exact_revision_delta_selects_targeted_reconcile() {
-        let delta = revision_delta("rev-1", "rev-2");
-
+    fn dirty_hint_without_known_runtime_base_uses_full_reconcile() {
         assert_eq!(
-            select_reconcile_scope(Some("rev-1"), Some("rev-2"), Some(&delta)),
+            select_reconcile_scope(
+                Some(&ManagedConfigReconcileHint::Dirty {
+                    expected_revision: "rev-a".to_string(),
+                    target_revision: "rev-b".to_string(),
+                    instance_ids: HashSet::from(["upsert".to_string(), "delete".to_string(),]),
+                }),
+                None,
+                Some("rev-b"),
+            ),
+            ReconcileScope::Full
+        );
+    }
+
+    #[test]
+    fn matching_known_runtime_base_and_target_select_dirty_instances() {
+        assert_eq!(
+            select_reconcile_scope(
+                Some(&ManagedConfigReconcileHint::Dirty {
+                    expected_revision: "rev-a".to_string(),
+                    target_revision: "rev-b".to_string(),
+                    instance_ids: HashSet::from(["upsert".to_string(), "delete".to_string(),]),
+                }),
+                Some("rev-a"),
+                Some("rev-b"),
+            ),
             ReconcileScope::Patch {
-                upsert_instance_ids: HashSet::from(["upsert".to_string()]),
-                delete_instance_ids: HashSet::from(["delete".to_string()]),
+                dirty_instance_ids: HashSet::from(["upsert".to_string(), "delete".to_string()]),
             }
         );
     }
 
     #[test]
-    fn revision_gap_uses_full_reconcile() {
-        let delta = revision_delta("rev-1", "rev-2");
+    fn mismatched_known_runtime_base_uses_full_reconcile() {
+        let hint = ManagedConfigReconcileHint::Dirty {
+            expected_revision: "rev-b".to_string(),
+            target_revision: "rev-c".to_string(),
+            instance_ids: HashSet::from(["managed".to_string()]),
+        };
 
         assert_eq!(
-            select_reconcile_scope(Some("older"), Some("rev-2"), Some(&delta)),
+            select_reconcile_scope(Some(&hint), Some("rev-a"), Some("rev-c")),
+            ReconcileScope::Full
+        );
+    }
+
+    #[test]
+    fn missing_or_full_hint_uses_full_reconcile() {
+        assert_eq!(
+            select_reconcile_scope(
+                Some(&ManagedConfigReconcileHint::Full),
+                Some("rev-a"),
+                Some("rev-b"),
+            ),
             ReconcileScope::Full
         );
         assert_eq!(
-            select_reconcile_scope(Some("rev-1"), Some("newer"), Some(&delta)),
+            select_reconcile_scope(None, Some("rev-a"), Some("rev-b")),
             ReconcileScope::Full
         );
+    }
+
+    #[test]
+    fn dirty_hint_for_older_target_uses_full_reconcile() {
+        let hint = ManagedConfigReconcileHint::Dirty {
+            expected_revision: "rev-0".to_string(),
+            target_revision: "rev-a".to_string(),
+            instance_ids: HashSet::from(["managed".to_string()]),
+        };
+
         assert_eq!(
-            select_reconcile_scope(Some("rev-1"), Some("rev-2"), None),
+            select_reconcile_scope(Some(&hint), Some("rev-0"), Some("rev-b")),
             ReconcileScope::Full
+        );
+    }
+
+    #[test]
+    fn managed_revision_change_preserves_runtime_config_cache() {
+        let mut cache = ReconcileCache::default();
+        cache.runtime_configs.remember(
+            "managed",
+            config_with_port_forwards(vec![port_forward(23000, 5174)]),
+        );
+
+        cache.reset_if_runtime_config_cache_epoch_changed(0);
+
+        assert!(cache.runtime_configs.entries.contains_key("managed"));
+    }
+
+    #[test]
+    fn direct_runtime_mutation_invalidates_runtime_config_cache() {
+        let mut cache = ReconcileCache::default();
+        cache.runtime_configs.remember(
+            "managed",
+            config_with_port_forwards(vec![port_forward(23000, 5174)]),
+        );
+
+        cache.reset_if_runtime_config_cache_epoch_changed(1);
+
+        assert!(!cache.runtime_configs.entries.contains_key("managed"));
+        assert_eq!(cache.runtime_config_cache_epoch, 1);
+    }
+
+    #[tokio::test]
+    async fn patch_scope_reads_latest_persisted_state_for_dirty_instances() {
+        let storage =
+            crate::client_manager::storage::Storage::new(crate::db::Db::memory_db().await);
+        let user_id = storage.db().auto_create_user("token").await.unwrap().id;
+        let machine_id = uuid::Uuid::new_v4();
+        let persisted_id = uuid::Uuid::new_v4();
+        let missing_id = uuid::Uuid::new_v4();
+        crate::client_manager::managed_config::reconcile_web_source_configs(
+            &storage,
+            user_id,
+            machine_id,
+            vec![crate::webhook::ManagedNetworkConfig {
+                instance_id: persisted_id.to_string(),
+                network_config: serde_json::to_value(config_with_port_forwards(Vec::new()))
+                    .unwrap(),
+            }],
+            Some("rev-1"),
+            crate::client_manager::managed_config::ExpectedConfigRevision::Any,
+        )
+        .await
+        .unwrap();
+        let scope = ReconcileScope::Patch {
+            dirty_instance_ids: HashSet::from([persisted_id.to_string(), missing_id.to_string()]),
+        };
+
+        let storage_inner = storage.weak_ref().upgrade().unwrap();
+        let (configs, deleted) = load_round_configs(&storage_inner, user_id, machine_id, &scope)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(configs.len(), 1);
+        assert_eq!(configs[0].network_instance_id, persisted_id.to_string());
+        assert_eq!(deleted, HashSet::from([missing_id.to_string()]));
+
+        crate::client_manager::managed_config::patch_web_source_configs(
+            &storage,
+            user_id,
+            machine_id,
+            Vec::new(),
+            vec![persisted_id],
+            "rev-2",
+            "rev-1",
+        )
+        .await
+        .unwrap();
+
+        let (configs, deleted) = load_round_configs(&storage_inner, user_id, machine_id, &scope)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(configs.is_empty());
+        assert_eq!(
+            deleted,
+            HashSet::from([persisted_id.to_string(), missing_id.to_string()])
         );
     }
 

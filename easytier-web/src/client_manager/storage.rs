@@ -27,6 +27,28 @@ pub struct StorageInner {
     pub db: Db,
 }
 
+impl StorageInner {
+    pub(super) fn owns_authorized_session(
+        &self,
+        stoken: &StorageToken,
+        session_epoch: u64,
+    ) -> bool {
+        self.user_clients_map
+            .get(&stoken.user_id)
+            .and_then(|clients| {
+                clients.get(&stoken.machine_id).map(|client| {
+                    client.authorized
+                        && client.session_epoch == session_epoch
+                        && client.storage_token.token == stoken.token
+                        && client.storage_token.client_url == stoken.client_url
+                        && client.storage_token.user_id == stoken.user_id
+                        && client.storage_token.machine_id == stoken.machine_id
+                })
+            })
+            .unwrap_or(false)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Storage(Arc<StorageInner>);
 pub type WeakRefStorage = Weak<StorageInner>;
@@ -273,6 +295,8 @@ mod tests {
         storage.update_session_client(current.clone(), 20, true, 2);
         storage.update_session_client(old.clone(), 30, true, 1);
 
+        assert!(!storage.0.owns_authorized_session(&old, 1));
+        assert!(storage.0.owns_authorized_session(&current, 2));
         assert_eq!(
             storage.get_client_url_by_machine_id(1, &machine_id),
             Some(current.client_url.clone())

@@ -7,9 +7,9 @@
 - 上游依赖：后续由 Console 计算并发送 Patch
 - 兼容要求：保留现有 Full PUT
 
-本文记录当前接收端方案。Session 在能够证明 Patch base 与已应用 revision 连续时
-只收敛 touched instances；重启、通知丢失、revision 断链或并发积压时沿用 Full
-reconcile。
+本文记录当前接收端方案。Session 合并已持久化 Patch 的 touched instance IDs，
+并在运行态收敛时读取这些实例的最新持久化状态。重启、通知丢失或无法安全判断
+实例 ownership 时沿用 Full reconcile。
 
 ## 1. 背景与结论
 
@@ -30,8 +30,10 @@ Console 每次发布都会向该路径发送完整 Exact Set。实例很多时�
 3. PATCH 使用 `expected_config_revision` 做 compare-and-swap（CAS）。
 4. Full/Patch 的配置变更与 revision 更新在一个 SQLite transaction 中提交。
 5. Patch 只查询和写入 touched instances，不扫描完整 Target。
-6. 写入成功后通知 Session 本次 base、target 和 touched instance IDs。
-7. Session 仅在 applied revision 精确匹配 base 时增量收敛，否则安全回退 Full。
+6. 写入成功后通知 Session 本次 expected、target 和 transaction 实际 touched
+   instance IDs。
+7. Session 只合并 revision 连续的 touched IDs，并以 SQLite 当前状态为准增量
+   收敛；可信 runtime base、通知链或 persisted target 无法证明连续时回退 Full。
 
 普通变更的接收端成本由：
 
@@ -371,20 +373,33 @@ revision。只影响 user-owned rows 的操作不清除 managed revision。
 - 只有带 target revision 的 `Applied` 才通知匹配的 live Session；
   `AlreadyApplied`、legacy unrevisioned Full、conflict 和失败不重复通知。
 - Notification 必须发生在 commit 之后。
-- Full notification 清除任何 pending delta，触发完整收敛。
+- Full notification 将 pending reconcile hint 提升为 Full，触发完整收敛。
 - Patch notification 携带 expected revision、target revision、upsert IDs 和本次
   transaction 实际接受删除的 web-owned IDs。请求删除但数据库原本不存在的 ID
-  仍是 no-op，不能借机删除 Core 中同 ID 的 user-owned 实例。只有 Session applied
-  revision 精确等于 expected revision，且没有更早的 Patch 等待处理时，才保留该
-  delta。
-- 两次 Patch 在前一次完成前积压时不合并 delta；Session 清除 pending delta，并在
-  最新 heartbeat/revision 上执行一次 Full。这避免引入 Patch queue 或 delivery FSM。
-- 增量 round 只读取 upsert rows，只删除本次 delete IDs，只对 touched running
-  instances 执行 runtime Patch/Run。完成前再次校验 persisted target revision；只有
-  全部 touched instances 成功且 target 仍相同，才推进 applied revision。
+  仍是 no-op，不能借机删除 Core 中同 ID 的 user-owned 实例。
+- Session 将尚未应用的 Patch touched IDs 合并为一个 Dirty set，并始终以 SQLite
+  最新 revision 下的 rows 为准。它不重放历史 Patch，也不维护 Patch queue 或
+  delivery FSM。只有 incoming expected 等于 pending target 的通知才能合并；Dirty
+  hint 保留最早 expected 和最新 target。乱序、不连续或无法证明顺序的通知将 hint
+  提升为 Full。多个连续 Patch 积压时，旧 round 由 runtime epoch 拦截，下一 round
+  直接收敛到最新 target。
+- Session 分开记录对外报告的 applied revision 和内部可信的 runtime base。开始任何
+  runtime side effect 前清除 applied；Patch round 的 side effects 完全包含在 Dirty
+  set 中，因此失败或被新通知拦截时仍保留最早 runtime base，以便按最新持久化状态
+  重试 Dirty set。Full round、direct mutation、授权失败或 Session ownership 中断会
+  清除 runtime base。
+- 只有可信 runtime base 等于 Dirty 最早 expected，并且 SQLite persisted revision
+  等于 Dirty 最新 target 时，才允许增量 round。重连后 runtime base 未知、通知
+  丢失，或 SQLite 已经提交了更靠后的 revision 而通知尚未送达时都回退 Full，避免
+  不完整的 Dirty set 把完整 target revision 误标为已应用。
+- 增量 round 逐个读取 Dirty set 中的最新 row。仍然存在且启用的 web-owned row
+  使用其最新 config；已经删除的 row 进入 delete set；遇到 disabled 或非 web-owned
+  row 时回退 Full，以保留 ownership 规则。完成前再次校验 persisted target
+  revision；只有全部 touched instances 成功且 target 仍相同，才推进 applied
+  revision。
 - 任何通过 EasyTier Web mutation route 直接 Run、Save、Delete 或切换实例状态的
   操作在执行前和结束后（包括部分 side effect 后返回错误）都清除 Session applied
-  revision 与 pending delta、增加运行配置 cache epoch，并唤醒一次 Full
+  revision、可信 runtime base 与 pending hint，增加运行配置 cache epoch，并唤醒一次 Full
   reconcile。旧 round 只有 epoch 仍匹配时才能推进 applied revision；新一轮不得
   信任 mutation 前缓存的 runtime config。否则 runtime-only mutation 或 Core 成功、
   SQLite 失败的复合 mutation 可能在 persisted revision 不变时破坏 Patch base 的
@@ -491,11 +506,13 @@ response 当作旧 receiver 并静默换一种 mutation contract；出现 404 �
 - 超限 Full 稳定返回 413/422，而不是耗尽进程内存；
 - 并发请求无 deadlock，且 CAS 结果确定。
 
-Session 测试还必须验证：精确 base/target 使用 touched-instance reconcile；base
-不匹配、目标 revision 已变化、Full notification 和 Patch backlog 都使用 Full；
-touched runtime apply 失败不推进 applied revision；删除只作用于本次 delete IDs。
-运行态 Config Get/Patch/Run/Delete 数量应随 touched instances 增长。为确认运行实例
-身份而进行的一次 list/meta RPC 可以保留，它不发送或重写所有实例配置。
+Session 测试还必须验证：连续 Patch 的 Dirty IDs 会合并且保留最早 expected；未知
+或不匹配的 runtime base、乱序/不连续通知使用 Full；增量 round 读取最新 row；已经
+删除的 web-owned row 只删除对应 Dirty ID；Full notification 覆盖 Dirty hint；目标
+revision 已变化或 touched runtime apply 失败时不推进 applied revision；直接 runtime
+mutation 使 revision 与运行配置 cache 同时失效。运行态 Config Get/Patch/Run/Delete
+数量应随 touched instances 增长。为确认运行实例身份而进行的一次 list/meta RPC
+可以保留，它不发送或重写所有实例配置。
 
 ## 11. Observability
 
@@ -523,9 +540,13 @@ Rollout acceptance：
 
 ### 12.1 Session runtime delta apply（已实现）
 
-Patch commit outcome 已携带 touched IDs。Session 只在 applied revision 正好等于
-Patch base 时执行 touched-instance reconcile；重启、revision 断链、通知丢失或
-并发 Patch backlog 都退回 Full。接收端不保存 Patch queue，也不合并 delta。
+Patch commit outcome 已携带 expected、target 和 transaction 实际 touched IDs。
+Session 只合并 expected/target 连续的 Dirty IDs，并在每一轮从 SQLite 读取最新
+target revision 对应的当前 rows；因此正常积压只增加 Dirty set，不需要保留中间
+revision 的 Patch queue。可信 runtime base 必须等于 Dirty 最早 expected；Patch
+side effect 失败可保留该 base 重试，通知丢失、乱序、进程重启或新 Session 尚无
+runtime base 时回退 Full。Full
+notification、disabled row 或 ownership 无法证明时也回退 Full。
 
 ### 12.2 Chunked Full
 

@@ -3,11 +3,14 @@ mod runtime_reconcile;
 pub mod session;
 pub mod storage;
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicU32, AtomicU64, Ordering},
-};
 use std::time::Duration;
+use std::{
+    collections::HashSet,
+    sync::{
+        Arc,
+        atomic::{AtomicU32, AtomicU64, Ordering},
+    },
+};
 
 use dashmap::DashMap;
 use easytier::proto::{
@@ -19,7 +22,7 @@ use easytier_core::{
     tunnel::{Tunnel, web_security},
 };
 use maxminddb::geoip2;
-use session::{Location, ManagedConfigRevisionDelta, Session};
+use session::{Location, ManagedConfigPersistedChange, Session};
 use storage::{Storage, StorageToken};
 
 use crate::FeatureFlags;
@@ -259,7 +262,7 @@ impl ClientManager {
     ) -> anyhow::Result<()> {
         let config_revision = config_revision.trim().to_string();
         let expected_config_revision = expected_config_revision.trim().to_string();
-        let upsert_instance_ids = upserts
+        let mut dirty_instance_ids: HashSet<_> = upserts
             .iter()
             .map(|config| config.instance_id.clone())
             .collect();
@@ -278,18 +281,19 @@ impl ClientManager {
         } = status
             && let Some(session) = self.get_session_by_machine_id(user_id, &machine_id)
         {
+            dirty_instance_ids.extend(
+                deleted_web_instance_ids
+                    .into_iter()
+                    .map(|instance_id| instance_id.to_string()),
+            );
             session
                 .notify_patch_config_revision_changed(
                     user_id,
                     machine_id,
-                    ManagedConfigRevisionDelta {
+                    ManagedConfigPersistedChange {
                         expected_revision: expected_config_revision,
                         target_revision: config_revision,
-                        upsert_instance_ids,
-                        delete_instance_ids: deleted_web_instance_ids
-                            .into_iter()
-                            .map(|instance_id| instance_id.to_string())
-                            .collect(),
+                        dirty_instance_ids,
                     },
                 )
                 .await;

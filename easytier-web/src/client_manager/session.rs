@@ -44,11 +44,57 @@ enum SessionAuthState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct ManagedConfigRevisionDelta {
+pub(super) struct ManagedConfigPersistedChange {
     pub expected_revision: String,
     pub target_revision: String,
-    pub upsert_instance_ids: HashSet<String>,
-    pub delete_instance_ids: HashSet<String>,
+    pub dirty_instance_ids: HashSet<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ManagedConfigReconcileHint {
+    Full,
+    Dirty {
+        expected_revision: String,
+        target_revision: String,
+        instance_ids: HashSet<String>,
+    },
+}
+
+fn record_managed_config_reconcile_hint(
+    pending: &mut Option<ManagedConfigReconcileHint>,
+    hint: ManagedConfigReconcileHint,
+) {
+    match hint {
+        ManagedConfigReconcileHint::Full => {
+            *pending = Some(ManagedConfigReconcileHint::Full);
+        }
+        ManagedConfigReconcileHint::Dirty {
+            expected_revision,
+            target_revision,
+            instance_ids,
+        } => match pending {
+            Some(ManagedConfigReconcileHint::Full) => {}
+            Some(ManagedConfigReconcileHint::Dirty {
+                target_revision: pending_target,
+                instance_ids: pending_ids,
+                ..
+            }) => {
+                if *pending_target == expected_revision {
+                    *pending_target = target_revision;
+                    pending_ids.extend(instance_ids);
+                } else {
+                    *pending = Some(ManagedConfigReconcileHint::Full);
+                }
+            }
+            None => {
+                *pending = Some(ManagedConfigReconcileHint::Dirty {
+                    expected_revision,
+                    target_revision,
+                    instance_ids,
+                });
+            }
+        },
+    }
 }
 
 impl SessionAuthState {
@@ -67,8 +113,10 @@ pub struct SessionData {
     storage_token: Option<StorageToken>,
     binding_version: Option<u64>,
     applied_config_revision: Option<String>,
-    pending_managed_config_delta: Option<ManagedConfigRevisionDelta>,
+    known_runtime_base_revision: Option<String>,
+    pending_managed_config_reconcile: Option<ManagedConfigReconcileHint>,
     runtime_config_epoch: u64,
+    runtime_config_cache_epoch: u64,
     notifier: broadcast::Sender<HeartbeatRequest>,
     req: Option<HeartbeatRequest>,
     location: Option<Location>,
@@ -99,8 +147,10 @@ impl SessionData {
             storage_token: None,
             binding_version: None,
             applied_config_revision: None,
-            pending_managed_config_delta: None,
+            known_runtime_base_revision: None,
+            pending_managed_config_reconcile: None,
             runtime_config_epoch: 0,
+            runtime_config_cache_epoch: 0,
             notifier: tx,
             req: None,
             location,
@@ -364,8 +414,8 @@ impl SessionRpcService {
         let Some(session_data) = session_data.upgrade() else {
             return false;
         };
-        let data = session_data.read().await;
-        Self::runtime_heartbeat_is_current_locked(&data, req)
+        let mut data = session_data.write().await;
+        Self::runtime_heartbeat_is_current_or_invalidate_locked(&mut data, req)
     }
 
     fn runtime_heartbeat_is_current_locked(data: &SessionData, req: &HeartbeatRequest) -> bool {
@@ -375,7 +425,26 @@ impl SessionRpcService {
                     Self::storage_token_matches_heartbeat(storage_token, current_req)
                 })
                 && data.auth_state.is_authorized()
+                && data.storage.upgrade().is_some_and(|storage| {
+                    storage.owns_authorized_session(storage_token, data.session_epoch)
+                })
         })
+    }
+
+    fn runtime_heartbeat_is_current_or_invalidate_locked(
+        data: &mut SessionData,
+        req: &HeartbeatRequest,
+    ) -> bool {
+        if Self::runtime_heartbeat_is_current_locked(data, req) {
+            return true;
+        }
+
+        data.applied_config_revision = None;
+        data.known_runtime_base_revision = None;
+        data.pending_managed_config_reconcile = Some(ManagedConfigReconcileHint::Full);
+        data.runtime_config_epoch = data.runtime_config_epoch.wrapping_add(1);
+        data.runtime_config_cache_epoch = data.runtime_config_cache_epoch.wrapping_add(1);
+        false
     }
 
     fn heartbeat_matches_identity(
@@ -729,10 +798,18 @@ impl Session {
             {
                 return;
             }
-            if data.applied_config_revision.as_deref() == Some(config_revision.as_str()) {
+            let target_already_applied =
+                data.applied_config_revision.as_deref() == Some(config_revision.as_str());
+            if target_already_applied && data.pending_managed_config_reconcile.is_none() {
                 return;
             }
-            data.pending_managed_config_delta = None;
+            if !target_already_applied {
+                record_managed_config_reconcile_hint(
+                    &mut data.pending_managed_config_reconcile,
+                    ManagedConfigReconcileHint::Full,
+                );
+            }
+            data.runtime_config_epoch = data.runtime_config_epoch.wrapping_add(1);
             data.req.clone().map(|req| (data.notifier.clone(), req))
         };
         if let Some((notifier, req)) = notify {
@@ -744,7 +821,7 @@ impl Session {
         &self,
         user_id: i32,
         machine_id: uuid::Uuid,
-        delta: ManagedConfigRevisionDelta,
+        change: ManagedConfigPersistedChange,
     ) {
         let notify = {
             let mut data = self.data.write().await;
@@ -758,18 +835,23 @@ impl Session {
             {
                 return;
             }
-            if data.applied_config_revision.as_deref() == Some(delta.target_revision.as_str()) {
+            let target_already_applied =
+                data.applied_config_revision.as_deref() == Some(change.target_revision.as_str());
+            if target_already_applied && data.pending_managed_config_reconcile.is_none() {
                 return;
             }
 
-            // A Patch may drive a targeted runtime reconcile only when the
-            // connected Session has applied its exact base and no earlier
-            // Patch is still pending. Otherwise the normal Full reconcile is
-            // the safe convergence path.
-            data.pending_managed_config_delta = (data.applied_config_revision.as_deref()
-                == Some(delta.expected_revision.as_str())
-                && data.pending_managed_config_delta.is_none())
-            .then_some(delta);
+            if !target_already_applied {
+                record_managed_config_reconcile_hint(
+                    &mut data.pending_managed_config_reconcile,
+                    ManagedConfigReconcileHint::Dirty {
+                        expected_revision: change.expected_revision,
+                        target_revision: change.target_revision,
+                        instance_ids: change.dirty_instance_ids,
+                    },
+                );
+            }
+            data.runtime_config_epoch = data.runtime_config_epoch.wrapping_add(1);
             data.req.clone().map(|req| (data.notifier.clone(), req))
         };
         if let Some((notifier, req)) = notify {
@@ -792,8 +874,10 @@ impl Session {
                 return;
             }
             data.applied_config_revision = None;
-            data.pending_managed_config_delta = None;
+            data.known_runtime_base_revision = None;
+            data.pending_managed_config_reconcile = Some(ManagedConfigReconcileHint::Full);
             data.runtime_config_epoch = data.runtime_config_epoch.wrapping_add(1);
+            data.runtime_config_cache_epoch = data.runtime_config_cache_epoch.wrapping_add(1);
             data.req.clone().map(|req| (data.notifier.clone(), req))
         };
         if let Some((notifier, req)) = notify {
@@ -808,8 +892,10 @@ impl Session {
                 return;
             }
             data.applied_config_revision = None;
-            data.pending_managed_config_delta = None;
+            data.known_runtime_base_revision = None;
+            data.pending_managed_config_reconcile = Some(ManagedConfigReconcileHint::Full);
             data.runtime_config_epoch = data.runtime_config_epoch.wrapping_add(1);
+            data.runtime_config_cache_epoch = data.runtime_config_cache_epoch.wrapping_add(1);
             data.req.clone().map(|req| (data.notifier.clone(), req))
         };
         if let Some((notifier, req)) = notify {
@@ -1569,10 +1655,13 @@ mod tests {
                 None,
             )),
         );
+        storage.update_session_client(storage_token.clone(), 1, true, 0);
         data.storage_token = Some(storage_token);
         data.session_identity = Some(SessionRpcService::heartbeat_identity(&req, machine_id));
         data.req = Some(req.clone());
         data.auth_state = SessionAuthState::Authorized;
+        data.applied_config_revision = Some("rev-1".to_string());
+        data.known_runtime_base_revision = Some("rev-1".to_string());
         let session_data = Arc::new(RwLock::new(data));
         let weak_session = Arc::downgrade(&session_data);
 
@@ -1594,6 +1683,9 @@ mod tests {
         .await;
 
         assert!(!SessionRpcService::runtime_heartbeat_is_current(&weak_session, &req).await);
+        let data = session_data.read().await;
+        assert_eq!(data.applied_config_revision, None);
+        assert_eq!(data.known_runtime_base_revision, None);
     }
 
     #[test]
@@ -1626,5 +1718,85 @@ mod tests {
                 .and_then(|v| v.as_str()),
             Some("rev-1")
         );
+    }
+
+    #[test]
+    fn managed_patch_hints_merge_while_runtime_lags() {
+        let mut hint = None;
+
+        record_managed_config_reconcile_hint(
+            &mut hint,
+            ManagedConfigReconcileHint::Dirty {
+                expected_revision: "rev-a".to_string(),
+                target_revision: "rev-b".to_string(),
+                instance_ids: HashSet::from(["instance-a".to_string()]),
+            },
+        );
+        record_managed_config_reconcile_hint(
+            &mut hint,
+            ManagedConfigReconcileHint::Dirty {
+                expected_revision: "rev-b".to_string(),
+                target_revision: "rev-c".to_string(),
+                instance_ids: HashSet::from(["instance-b".to_string()]),
+            },
+        );
+
+        assert_eq!(
+            hint,
+            Some(ManagedConfigReconcileHint::Dirty {
+                expected_revision: "rev-a".to_string(),
+                target_revision: "rev-c".to_string(),
+                instance_ids: HashSet::from(["instance-a".to_string(), "instance-b".to_string(),]),
+            })
+        );
+    }
+
+    #[test]
+    fn non_contiguous_managed_patch_hints_require_full_reconcile() {
+        let mut hint = Some(ManagedConfigReconcileHint::Dirty {
+            expected_revision: "rev-a".to_string(),
+            target_revision: "rev-b".to_string(),
+            instance_ids: HashSet::from(["instance-a".to_string()]),
+        });
+
+        record_managed_config_reconcile_hint(
+            &mut hint,
+            ManagedConfigReconcileHint::Dirty {
+                expected_revision: "rev-c".to_string(),
+                target_revision: "rev-d".to_string(),
+                instance_ids: HashSet::from(["instance-b".to_string()]),
+            },
+        );
+
+        assert_eq!(hint, Some(ManagedConfigReconcileHint::Full));
+    }
+
+    #[test]
+    fn managed_patch_hint_does_not_narrow_pending_full_reconcile() {
+        let mut hint = Some(ManagedConfigReconcileHint::Full);
+
+        record_managed_config_reconcile_hint(
+            &mut hint,
+            ManagedConfigReconcileHint::Dirty {
+                expected_revision: "rev-0".to_string(),
+                target_revision: "rev-a".to_string(),
+                instance_ids: HashSet::from(["instance-a".to_string()]),
+            },
+        );
+
+        assert_eq!(hint, Some(ManagedConfigReconcileHint::Full));
+    }
+
+    #[test]
+    fn full_reconcile_hint_replaces_pending_dirty_instances() {
+        let mut hint = Some(ManagedConfigReconcileHint::Dirty {
+            expected_revision: "rev-0".to_string(),
+            target_revision: "rev-a".to_string(),
+            instance_ids: HashSet::from(["instance-a".to_string()]),
+        });
+
+        record_managed_config_reconcile_hint(&mut hint, ManagedConfigReconcileHint::Full);
+
+        assert_eq!(hint, Some(ManagedConfigReconcileHint::Full));
     }
 }
