@@ -226,3 +226,13 @@ describe('RemoteManagement config save', () => {
     }
   })
 })
+
+describe('default network config', () => {
+  it('uses dynamic listener ports', () => {
+    expect(DEFAULT_NETWORK_CONFIG().listener_urls).toStrictEqual([
+      'tcp://0.0.0.0:0',
+      'udp://0.0.0.0:0',
+      'wg://0.0.0.0:0',
+    ])
+  })
+})
