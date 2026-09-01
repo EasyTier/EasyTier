@@ -13,6 +13,12 @@ use easytier_core::{
     process_runtime::CoreProcessRuntime,
 };
 
+#[cfg(feature = "wireguard")]
+use crate::{
+    common::config::{VpnPortalClientConfig, VpnPortalConfig},
+    tests::three_node::{run_wireguard_client, wireguard_ifname},
+    vpn_portal::wireguard::test_wireguard_keys,
+};
 use crate::{
     common::{
         config::{ConfigLoader, NetworkIdentity, PeerConfig, TomlConfigLoader},
@@ -23,6 +29,12 @@ use crate::{
     tests::three_node::{generate_secure_mode_config, generate_secure_mode_config_with_key},
     tunnel::common::tests::wait_for_condition,
 };
+#[cfg(feature = "wireguard")]
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+#[cfg(feature = "wireguard")]
+use defguard_wireguard_rs::key::Key;
+#[cfg(feature = "wireguard")]
+use easytier_core::gateway::vpn_portal::PortalClientState;
 
 use super::{
     InstanceTestExt as _, add_ns_to_bridge, create_netns, del_netns, drop_insts, ping_test,
@@ -96,13 +108,8 @@ async fn set_prefer_peer_relay(inst: &Instance, prefer_peer_relay: bool) {
     );
 }
 
-fn forwarded_data_packets(inst: &Instance) -> u64 {
-    let labels = LabelSet::new().with_label_type(LabelType::NetworkName(
-        inst.get_global_ctx()
-            .get_network_identity()
-            .network_name
-            .clone(),
-    ));
+fn forwarded_data_packets_for_network(inst: &Instance, network_name: &str) -> u64 {
+    let labels = LabelSet::new().with_label_type(LabelType::NetworkName(network_name.to_owned()));
     inst.get_core_instance()
         .metric_snapshots()
         .into_iter()
@@ -110,6 +117,13 @@ fn forwarded_data_packets(inst: &Instance) -> u64 {
             metric.name == MetricName::TrafficPacketsForwarded && metric.labels == labels
         })
         .map_or(0, |metric| metric.value)
+}
+
+fn forwarded_data_packets(inst: &Instance) -> u64 {
+    forwarded_data_packets_for_network(
+        inst,
+        &inst.get_global_ctx().get_network_identity().network_name,
+    )
 }
 
 async fn assert_ping_forwarded_by(
@@ -712,6 +726,191 @@ async fn credential_peers_p2p_to_need_p2p_admin_through_public_server(
         credential_b_inst,
     ])
     .await;
+}
+
+#[cfg(feature = "wireguard")]
+#[tokio::test]
+#[serial_test::serial]
+async fn credential_peer_reconnects_to_admin_with_portal_client_online() {
+    prepare_credential_network();
+    let process_runtime = CoreProcessRuntime::new();
+
+    let public_server_config = create_public_server_config();
+    let mut public_server_flags = public_server_config.get_flags();
+    public_server_flags.disable_relay_data = true;
+    public_server_config.set_flags(public_server_flags);
+    let mut public_server_inst =
+        Instance::new_with_process_runtime(public_server_config, process_runtime.clone());
+    public_server_inst.run().await.unwrap();
+
+    let admin_config = create_need_p2p_admin_config("udp");
+    admin_config.set_vpn_portal_config(VpnPortalConfig {
+        wireguard_listen: "0.0.0.0:22121".parse().unwrap(),
+        wireguard_private_key: Some(BASE64_STANDARD.encode([42u8; 32])),
+        clients: vec![VpnPortalClientConfig {
+            name: "portal-client".to_owned(),
+            virtual_ip: "10.154.0.10/24".parse().unwrap(),
+            groups: Vec::new(),
+        }],
+    });
+    let mut admin_inst = Instance::new_with_process_runtime(admin_config, process_runtime.clone());
+    admin_inst.run().await.unwrap();
+    admin_inst.add_connector_url("udp://10.1.1.1:11010".parse().unwrap());
+    wait_foreign_network_count(&public_server_inst, 1, Duration::from_secs(10)).await;
+
+    let (_credential_id, credential_secret) = generate_credential_with_options(
+        &admin_inst,
+        Vec::new(),
+        false,
+        Vec::new(),
+        Duration::from_secs(3600),
+        Some("portal-p2p-credential".to_owned()),
+        false,
+    )
+    .await;
+    admin_inst
+        .get_global_ctx()
+        .issue_event(GlobalCtxEvent::CredentialChanged);
+
+    let credential_config = create_public_server_credential_config(
+        &credential_secret,
+        "portal-credential-peer",
+        "portal-credential-peer",
+        "ns_c1",
+        "10.154.0.1",
+        "fd00::1/64",
+        11030,
+        11031,
+        &[],
+    );
+    let mut credential_inst =
+        Instance::new_with_process_runtime(credential_config, process_runtime);
+    credential_inst.run().await.unwrap();
+    credential_inst.add_connector_url("udp://10.1.1.1:11010".parse().unwrap());
+
+    let admin_peer_id = admin_inst.peer_id();
+    let credential_peer_id = credential_inst.peer_id();
+    wait_direct_peer(
+        &credential_inst,
+        admin_peer_id,
+        Duration::from_secs(30),
+        "credential -> admin before portal client",
+    )
+    .await;
+    wait_direct_peer(
+        &admin_inst,
+        credential_peer_id,
+        Duration::from_secs(10),
+        "admin -> credential before portal client",
+    )
+    .await;
+    wait_route_cost(
+        &credential_inst,
+        admin_peer_id,
+        1,
+        Duration::from_secs(10),
+        "credential route to admin before portal client",
+    )
+    .await;
+
+    let portal_config = admin_inst
+        .get_global_ctx()
+        .config
+        .get_vpn_portal_config()
+        .unwrap();
+    let (server_public, client_private) =
+        test_wireguard_keys(&portal_config, "portal-client").unwrap();
+    {
+        let net_ns = crate::common::netns::NetNS::new(Some("ns_c4".to_owned()));
+        let _guard = net_ns.guard();
+        run_wireguard_client(
+            &wireguard_ifname("wg0"),
+            "10.1.1.4:22121".parse().unwrap(),
+            Key::try_from(server_public.as_slice()).unwrap(),
+            Key::try_from(client_private.as_slice()).unwrap(),
+            vec!["10.154.0.0/24".to_owned()],
+            "10.154.0.10".to_owned(),
+        )
+        .unwrap();
+    }
+
+    let public_server_forwarded_before =
+        forwarded_data_packets_for_network(&public_server_inst, NEED_P2P_ADMIN_NETWORK_NAME);
+    wait_for_condition(
+        || async {
+            ping_test("ns_c4", "10.154.0.1", None).await;
+            admin_inst
+                .get_core_instance()
+                .vpn_portal_info()
+                .await
+                .clients
+                .iter()
+                .any(|client| client.state == PortalClientState::Online)
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    let old_conn_ids = credential_inst
+        .get_core_instance()
+        .peer_snapshots()
+        .await
+        .into_iter()
+        .find(|peer| peer.peer_id == admin_peer_id)
+        .map(|peer| peer.directly_connected_conns)
+        .unwrap_or_default();
+    assert!(
+        !old_conn_ids.is_empty(),
+        "credential peer must have a direct admin connection to replace"
+    );
+    for conn_id in &old_conn_ids {
+        credential_inst
+            .get_core_instance()
+            .close_peer_conn(admin_peer_id, conn_id)
+            .await
+            .unwrap();
+    }
+
+    wait_for_condition(
+        || async {
+            let has_new_connection = credential_inst
+                .get_core_instance()
+                .peer_snapshots()
+                .await
+                .into_iter()
+                .find(|peer| peer.peer_id == admin_peer_id)
+                .is_some_and(|peer| {
+                    peer.directly_connected_conns
+                        .iter()
+                        .any(|conn_id| !old_conn_ids.contains(conn_id))
+                });
+            let has_direct_route = credential_inst
+                .get_core_instance()
+                .route_snapshots()
+                .await
+                .iter()
+                .any(|route| {
+                    route.peer_id == admin_peer_id
+                        && route.next_hop_peer_id == admin_peer_id
+                        && route.cost == 1
+                });
+            has_new_connection && has_direct_route
+        },
+        Duration::from_secs(30),
+    )
+    .await;
+
+    wait_ping_reachability("ns_c1", "10.154.0.10", true, Duration::from_secs(10)).await;
+    for _ in 0..3 {
+        assert!(ping_test("ns_c1", "10.154.0.10", None).await);
+    }
+    assert_eq!(
+        forwarded_data_packets_for_network(&public_server_inst, NEED_P2P_ADMIN_NETWORK_NAME),
+        public_server_forwarded_before,
+        "public server forwarded data despite disable_relay_data"
+    );
+
+    drop_insts(vec![public_server_inst, admin_inst, credential_inst]).await;
 }
 
 async fn create_generated_credential_config(

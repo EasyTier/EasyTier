@@ -1692,7 +1692,7 @@ use defguard_wireguard_rs::{
     InterfaceConfiguration, WGApi, WireguardInterfaceApi, host::Peer, key::Key, net::IpAddrMask,
 };
 
-fn wireguard_ifname(base: &str) -> String {
+pub(super) fn wireguard_ifname(base: &str) -> String {
     if cfg!(target_os = "linux") || cfg!(target_os = "freebsd") {
         base.to_owned()
     } else {
@@ -1701,7 +1701,7 @@ fn wireguard_ifname(base: &str) -> String {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_wireguard_client(
+pub(super) fn run_wireguard_client(
     ifname: &str,
     endpoint: SocketAddr,
     peer_public_key: Key,
