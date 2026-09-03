@@ -54,17 +54,14 @@ pub(crate) fn get_runtime_config_snapshot(config_id: &str) -> Option<RuntimeConf
         .and_then(|guard| guard.get(config_id).cloned())
 }
 
-pub(crate) fn get_runtime_config_route_overrides(config_id: &str) -> (Vec<String>, Vec<String>) {
+pub(crate) fn get_runtime_config_manual_routes(config_id: &str) -> Vec<String> {
     RUNTIME_CONFIG_SNAPSHOTS
         .lock()
         .ok()
         .and_then(|guard| {
-            guard.get(config_id).map(|snapshot| {
-                (
-                    snapshot.config.routes.clone(),
-                    snapshot.config.proxy_cidrs.clone(),
-                )
-            })
+            guard
+                .get(config_id)
+                .map(|snapshot| snapshot.config.routes.clone())
         })
         .unwrap_or_default()
 }
