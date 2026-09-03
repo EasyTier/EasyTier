@@ -162,7 +162,7 @@ pub fn import_config_share_link(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config_repo::{create_config_record, init_config_store};
+    use crate::config::repository::{create_config_record, init_config_store};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn test_root() -> String {
