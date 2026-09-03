@@ -28,6 +28,8 @@ mod runtime_revision;
 mod webhook_validation;
 
 const WEBHOOK_VALIDATION_HEARTBEAT_INTERVAL: u32 = 10;
+const CONNECTED_WEBHOOK_RETRY_DELAYS: [Duration; 2] =
+    [Duration::from_millis(100), Duration::from_millis(500)];
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Location {
@@ -242,7 +244,18 @@ fn connection_state_matches(
             .is_some_and(|current| storage_tokens_match(current, storage_token))
 }
 
-async fn connection_state_is_current(
+fn connected_delivery_state_matches(
+    data: &SessionData,
+    storage_token: &StorageToken,
+    binding_version: u64,
+) -> bool {
+    connection_state_matches(data, storage_token, binding_version)
+        && data.storage.upgrade().is_some_and(|storage| {
+            storage.owns_authorized_session(storage_token, data.session_epoch)
+        })
+}
+
+async fn connected_delivery_is_current(
     session_data: &std::sync::Weak<RwLock<SessionData>>,
     storage_token: &StorageToken,
     binding_version: u64,
@@ -251,7 +264,7 @@ async fn connection_state_is_current(
         return false;
     };
     let data = session_data.read().await;
-    connection_state_matches(&data, storage_token, binding_version)
+    connected_delivery_state_matches(&data, storage_token, binding_version)
 }
 
 async fn record_webhook_connected_binding_if_current(
@@ -287,7 +300,51 @@ async fn send_webhook_connection_transition(
     let Some(connect) = connect else {
         return;
     };
-    if !connection_state_is_current(
+    let mut attempt = 1;
+    loop {
+        if !connected_delivery_is_current(
+            &session_data,
+            &connect.storage_token,
+            connect.binding_version,
+        )
+        .await
+        {
+            return;
+        }
+        match connect.webhook.notify_node_connected(&connect.req).await {
+            Ok(()) => break,
+            Err(error) => {
+                let retry_delay = if error.is_retryable() {
+                    CONNECTED_WEBHOOK_RETRY_DELAYS.get(attempt - 1).copied()
+                } else {
+                    None
+                };
+                tracing::warn!(
+                    machine_id = %connect.storage_token.machine_id,
+                    binding_version = connect.binding_version,
+                    attempt,
+                    will_retry = retry_delay.is_some(),
+                    %error,
+                    "node-connected webhook delivery failed"
+                );
+                let Some(retry_delay) = retry_delay else {
+                    return;
+                };
+                if !connected_delivery_is_current(
+                    &session_data,
+                    &connect.storage_token,
+                    connect.binding_version,
+                )
+                .await
+                {
+                    return;
+                }
+                tokio::time::sleep(retry_delay).await;
+                attempt += 1;
+            }
+        }
+    }
+    if !connected_delivery_is_current(
         &session_data,
         &connect.storage_token,
         connect.binding_version,
@@ -296,8 +353,6 @@ async fn send_webhook_connection_transition(
     {
         return;
     }
-
-    connect.webhook.notify_node_connected(&connect.req).await;
     if !record_webhook_connected_binding_if_current(
         &session_data,
         &connect.storage_token,
@@ -926,7 +981,9 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
-    use axum::{Json, Router, extract::State, routing::post};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use axum::{Json, Router, extract::State, http::StatusCode, routing::post};
     use serde_json::json;
     use tokio::sync::{Mutex, Notify, oneshot};
 
@@ -1047,6 +1104,12 @@ mod tests {
             .route("/validate-token", post(valid_validate_token_handler))
             .route("/webhook/node-connected", post(node_connected_handler))
             .with_state(state);
+        test_webhook_server(app).await
+    }
+
+    async fn test_webhook_server(
+        app: Router,
+    ) -> (SharedWebhookConfig, tokio::task::JoinHandle<()>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
@@ -1061,6 +1124,248 @@ mod tests {
         ));
 
         (webhook_config, server)
+    }
+
+    #[derive(Clone)]
+    struct RetryingConnectedWebhookState {
+        attempts: Arc<AtomicUsize>,
+        second_received: Arc<Notify>,
+        second_release: Arc<Notify>,
+    }
+
+    async fn retrying_node_connected_handler(
+        State(state): State<RetryingConnectedWebhookState>,
+    ) -> (StatusCode, Json<serde_json::Value>) {
+        let attempt = state.attempts.fetch_add(1, Ordering::Relaxed) + 1;
+        if attempt == 1 {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"status": "error"})),
+            );
+        }
+        state.second_received.notify_one();
+        state.second_release.notified().await;
+        (StatusCode::OK, Json(json!({"status": "ok"})))
+    }
+
+    #[tokio::test]
+    async fn connected_webhook_is_confirmed_only_after_successful_retry() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let second_received = Arc::new(Notify::new());
+        let second_release = Arc::new(Notify::new());
+        let app = Router::new()
+            .route(
+                "/webhook/node-connected",
+                post(retrying_node_connected_handler),
+            )
+            .with_state(RetryingConnectedWebhookState {
+                attempts: attempts.clone(),
+                second_received: second_received.clone(),
+                second_release: second_release.clone(),
+            });
+        let (webhook_config, server) = test_webhook_server(app).await;
+        let fixture = connected_delivery_fixture(webhook_config).await;
+        let session_data = fixture.session_data.clone();
+        let delivery = tokio::spawn(send_webhook_connection_transition(
+            Arc::downgrade(&session_data),
+            None,
+            Some(fixture.notification),
+        ));
+
+        tokio::time::timeout(Duration::from_secs(1), second_received.notified())
+            .await
+            .expect("5xx connected webhook should be retried");
+        assert_eq!(
+            session_data.read().await.webhook_connected_binding_version,
+            None
+        );
+
+        second_release.notify_one();
+        delivery.await.unwrap();
+        server.abort();
+
+        assert_eq!(attempts.load(Ordering::Relaxed), 2);
+        assert_eq!(
+            session_data.read().await.webhook_connected_binding_version,
+            Some(1)
+        );
+    }
+
+    #[derive(Clone)]
+    struct FailingConnectedWebhookState {
+        attempts: Arc<AtomicUsize>,
+        first_received: Arc<Notify>,
+        first_release: Option<Arc<Notify>>,
+        status: StatusCode,
+    }
+
+    async fn failing_node_connected_handler(
+        State(state): State<FailingConnectedWebhookState>,
+    ) -> (StatusCode, Json<serde_json::Value>) {
+        let attempt = state.attempts.fetch_add(1, Ordering::Relaxed) + 1;
+        if attempt == 1 {
+            state.first_received.notify_one();
+            if let Some(first_release) = state.first_release {
+                first_release.notified().await;
+            }
+        }
+        (state.status, Json(json!({"status": "error"})))
+    }
+
+    struct ConnectedDeliveryFixture {
+        storage: Storage,
+        session_data: Arc<RwLock<SessionData>>,
+        notification: WebhookConnectNotification,
+        machine_id: uuid::Uuid,
+        user_id: i32,
+    }
+
+    async fn connected_delivery_fixture(
+        webhook_config: SharedWebhookConfig,
+    ) -> ConnectedDeliveryFixture {
+        let machine_id = uuid::Uuid::new_v4();
+        let storage = Storage::new(crate::db::Db::memory_db().await);
+        let user_id = storage.db().auto_create_user("token").await.unwrap().id;
+        let storage_token = StorageToken {
+            token: "token".to_string(),
+            client_url: url::Url::parse("http://127.0.0.1:1000").unwrap(),
+            machine_id,
+            user_id,
+        };
+        storage.update_session_client(storage_token.clone(), 1, true, 1);
+        let mut session = SessionData::new(
+            storage.weak_ref(),
+            storage_token.client_url.clone(),
+            None,
+            Arc::new(FeatureFlags::default()),
+            webhook_config.clone(),
+        );
+        session.storage_token = Some(storage_token.clone());
+        session.auth_state = SessionAuthState::Authorized;
+        session.binding_version = Some(1);
+        session.session_epoch = 1;
+
+        ConnectedDeliveryFixture {
+            storage,
+            session_data: Arc::new(RwLock::new(session)),
+            notification: WebhookConnectNotification {
+                webhook: webhook_config,
+                storage_token,
+                binding_version: 1,
+                req: crate::webhook::NodeConnectedRequest {
+                    machine_id: machine_id.to_string(),
+                    token: "token".to_string(),
+                    user_id: Some(user_id),
+                    hostname: String::new(),
+                    version: String::new(),
+                    os_type: None,
+                    os_version: None,
+                    os_distribution: None,
+                    web_instance_id: None,
+                    binding_version: Some(1),
+                },
+            },
+            machine_id,
+            user_id,
+        }
+    }
+
+    #[tokio::test]
+    async fn connected_webhook_retry_stops_after_session_replacement() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let first_received = Arc::new(Notify::new());
+        let first_release = Arc::new(Notify::new());
+        let app = Router::new()
+            .route(
+                "/webhook/node-connected",
+                post(failing_node_connected_handler),
+            )
+            .with_state(FailingConnectedWebhookState {
+                attempts: attempts.clone(),
+                first_received: first_received.clone(),
+                first_release: Some(first_release.clone()),
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+            });
+        let (webhook_config, server) = test_webhook_server(app).await;
+
+        let fixture = connected_delivery_fixture(webhook_config).await;
+        let session_data = fixture.session_data.clone();
+        let delivery = tokio::spawn(send_webhook_connection_transition(
+            Arc::downgrade(&session_data),
+            None,
+            Some(fixture.notification),
+        ));
+
+        tokio::time::timeout(Duration::from_secs(1), first_received.notified())
+            .await
+            .unwrap();
+        fixture.storage.update_session_client(
+            StorageToken {
+                token: "token".to_string(),
+                client_url: url::Url::parse("http://127.0.0.1:2000").unwrap(),
+                machine_id: fixture.machine_id,
+                user_id: fixture.user_id,
+            },
+            2,
+            true,
+            2,
+        );
+        first_release.notify_one();
+        delivery.await.unwrap();
+        server.abort();
+
+        assert_eq!(attempts.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            session_data.read().await.webhook_connected_binding_version,
+            None
+        );
+    }
+
+    async fn run_failed_connected_delivery(status: StatusCode) -> (usize, Option<u64>) {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let app = Router::new()
+            .route(
+                "/webhook/node-connected",
+                post(failing_node_connected_handler),
+            )
+            .with_state(FailingConnectedWebhookState {
+                attempts: attempts.clone(),
+                first_received: Arc::new(Notify::new()),
+                first_release: None,
+                status,
+            });
+        let (webhook_config, server) = test_webhook_server(app).await;
+        let fixture = connected_delivery_fixture(webhook_config).await;
+        let session_data = fixture.session_data.clone();
+
+        send_webhook_connection_transition(
+            Arc::downgrade(&session_data),
+            None,
+            Some(fixture.notification),
+        )
+        .await;
+        server.abort();
+
+        let confirmed_binding_version = session_data.read().await.webhook_connected_binding_version;
+        (attempts.load(Ordering::Relaxed), confirmed_binding_version)
+    }
+
+    #[tokio::test]
+    async fn connected_webhook_retry_is_bounded_when_receiver_keeps_failing() {
+        let (attempts, confirmed_binding_version) =
+            run_failed_connected_delivery(StatusCode::INTERNAL_SERVER_ERROR).await;
+
+        assert_eq!(attempts, CONNECTED_WEBHOOK_RETRY_DELAYS.len() + 1);
+        assert_eq!(confirmed_binding_version, None);
+    }
+
+    #[tokio::test]
+    async fn connected_webhook_does_not_retry_or_confirm_client_error() {
+        let (attempts, confirmed_binding_version) =
+            run_failed_connected_delivery(StatusCode::BAD_REQUEST).await;
+
+        assert_eq!(attempts, 1);
+        assert_eq!(confirmed_binding_version, None);
     }
 
     #[test]

@@ -350,6 +350,26 @@ pub struct NodeDisconnectedRequest {
     pub binding_version: Option<u64>,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum WebhookDeliveryError {
+    #[error("webhook endpoint is invalid: {0}")]
+    Configuration(#[source] anyhow::Error),
+    #[error("webhook request failed: {0}")]
+    Transport(#[source] reqwest::Error),
+    #[error("webhook returned status {0}")]
+    ResponseStatus(reqwest::StatusCode),
+}
+
+impl WebhookDeliveryError {
+    pub(crate) fn is_retryable(&self) -> bool {
+        match self {
+            Self::Transport(_) => true,
+            Self::ResponseStatus(status) => status.is_server_error(),
+            Self::Configuration(_) => false,
+        }
+    }
+}
+
 // --- Webhook client ---
 
 impl WebhookConfig {
@@ -410,21 +430,28 @@ impl WebhookConfig {
     }
 
     /// Notify the webhook receiver that a node has connected.
-    pub async fn notify_node_connected(&self, req: &NodeConnectedRequest) {
+    pub(crate) async fn notify_node_connected(
+        &self,
+        req: &NodeConnectedRequest,
+    ) -> Result<(), WebhookDeliveryError> {
         if !self.is_enabled() {
-            return;
+            return Ok(());
         }
-        let Ok(url) = self.webhook_endpoint("webhook/node-connected") else {
-            tracing::warn!("skip node-connected webhook because webhook_url is not configured");
-            return;
-        };
-        let _ = self
+        let url = self
+            .webhook_endpoint("webhook/node-connected")
+            .map_err(WebhookDeliveryError::Configuration)?;
+        let response = self
             .client
             .post(&url)
             .header("X-Internal-Auth", self.webhook_auth_secret())
             .json(req)
             .send()
-            .await;
+            .await
+            .map_err(WebhookDeliveryError::Transport)?;
+        if !response.status().is_success() {
+            return Err(WebhookDeliveryError::ResponseStatus(response.status()));
+        }
+        Ok(())
     }
 
     /// Notify the webhook receiver that a node has disconnected.
@@ -460,6 +487,21 @@ mod tests {
     use super::*;
     use axum::{Json, Router, routing::post};
     use serde_json::json;
+
+    fn node_connected_request() -> NodeConnectedRequest {
+        NodeConnectedRequest {
+            machine_id: uuid::Uuid::new_v4().to_string(),
+            token: "token".to_string(),
+            user_id: Some(1),
+            hostname: String::new(),
+            version: String::new(),
+            os_type: None,
+            os_version: None,
+            os_distribution: None,
+            web_instance_id: None,
+            binding_version: Some(1),
+        }
+    }
 
     #[test]
     fn adaptive_validate_limiter_increases_under_queue_pressure() {
@@ -772,5 +814,24 @@ mod tests {
         let resp: ValidateTokenResponse = serde_json::from_str(r#"{"valid":true}"#).unwrap();
         assert!(resp.valid);
         assert!(resp.config_revision.is_empty());
+    }
+
+    #[tokio::test]
+    async fn node_connected_transport_error_is_retryable() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let webhook = WebhookConfig::new(Some(format!("http://{addr}")), None, None, None, None);
+
+        let error = tokio::time::timeout(
+            Duration::from_secs(1),
+            webhook.notify_node_connected(&node_connected_request()),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+
+        assert!(matches!(error, WebhookDeliveryError::Transport(_)));
+        assert!(error.is_retryable());
     }
 }
