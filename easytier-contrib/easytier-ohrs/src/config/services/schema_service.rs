@@ -119,7 +119,11 @@ fn enum_options(kind: Kind) -> Vec<FieldOption> {
             .values()
             .map(|value| FieldOption {
                 label: value.name().to_string(),
-                value: value.number().to_string(),
+                // protobuf JSON uses enum names rather than their numeric wire values.
+                // Returning the number here made ArkTS write (for example) `1`, while
+                // NetworkConfig deserialization expects `"None"`, so field-level saves
+                // were rejected by the repository validation step.
+                value: value.name().to_string(),
             })
             .collect(),
         _ => Vec::new(),
@@ -410,5 +414,17 @@ mod tests {
                 .iter()
                 .any(|option| option.label == "PublicServer")
         );
+
+        let data_compress_algo = schema
+            .children
+            .iter()
+            .find(|field| field.name == "data_compress_algo")
+            .expect("data_compress_algo field");
+        let none = data_compress_algo
+            .enum_options
+            .iter()
+            .find(|option| option.label == "None")
+            .expect("compression None option");
+        assert_eq!(none.value, "None");
     }
 }

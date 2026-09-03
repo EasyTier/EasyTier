@@ -63,6 +63,7 @@ use easytier::common::{
 use easytier::instance::factory::{NativeInstanceManager, native_instance_manager_with_runtime};
 use easytier::proto::api::manage::NetworkConfig;
 use easytier::proto::api::manage::NetworkingMethod;
+use easytier::proto::common::CompressionAlgoPb;
 use easytier::web_client::{WebClient, WebClientHooks, run_web_client};
 use kernel_bridge::{
     start_local_socket_server as start_local_socket_server_inner,
@@ -669,8 +670,11 @@ fn resolve_instance_id_inner(instance_name: &str) -> Option<String> {
 }
 
 pub(crate) fn build_default_network_config_json() -> Result<String, String> {
-    let config = NetworkConfig::new_from_config(TomlConfigLoader::default())
+    let mut config = NetworkConfig::new_from_config(TomlConfigLoader::default())
         .map_err(|e| format!("default_network_config failed {}", e))?;
+    // HarmonyOS 的配置编辑页将压缩算法作为显式选项展示。新建实例默认
+    // 使用 NONE，避免在用户没有主动选择时增加压缩开销。
+    config.data_compress_algo = Some(CompressionAlgoPb::None as i32);
     serde_json::to_string(&config).map_err(|e| format!("default_network_config failed {}", e))
 }
 
