@@ -73,12 +73,13 @@ impl Storage {
         map: &DashMap<uuid::Uuid, ClientInfo>,
         stoken: &StorageToken,
         session_epoch: u64,
-    ) {
+    ) -> bool {
         map.remove_if(&stoken.machine_id, |_, v| {
             v.storage_token.client_url == stoken.client_url
                 && v.storage_token.user_id == stoken.user_id
                 && v.session_epoch == session_epoch
-        });
+        })
+        .is_some()
     }
 
     fn update_client_info_map(map: &DashMap<uuid::Uuid, ClientInfo>, client_info: &ClientInfo) {
@@ -133,16 +134,18 @@ impl Storage {
     }
 
     pub fn remove_client(&self, stoken: &StorageToken) {
-        self.remove_session_client(stoken, 0);
+        let _ = self.remove_session_client(stoken, 0);
     }
 
-    pub(super) fn remove_session_client(&self, stoken: &StorageToken, session_epoch: u64) {
+    pub(super) fn remove_session_client(&self, stoken: &StorageToken, session_epoch: u64) -> bool {
+        let mut removed = false;
         self.0
             .user_clients_map
             .remove_if(&stoken.user_id, |_, set| {
-                Self::remove_client_info_map(set, stoken, session_epoch);
+                removed = Self::remove_client_info_map(set, stoken, session_epoch);
                 set.is_empty()
             });
+        removed
     }
 
     pub fn weak_ref(&self) -> WeakRefStorage {
@@ -302,12 +305,12 @@ mod tests {
             Some(current.client_url.clone())
         );
 
-        storage.remove_session_client(&old, 1);
+        assert!(!storage.remove_session_client(&old, 1));
         assert_eq!(
             storage.get_client_url_by_machine_id(1, &machine_id),
             Some(current.client_url.clone())
         );
-        storage.remove_session_client(&current, 2);
+        assert!(storage.remove_session_client(&current, 2));
         assert_eq!(storage.get_client_url_by_machine_id(1, &machine_id), None);
     }
 

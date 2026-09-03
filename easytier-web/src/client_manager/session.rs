@@ -374,10 +374,11 @@ impl Drop for SessionData {
         if let Ok(storage) = Storage::try_from(self.storage.clone())
             && let Some(token) = self.storage_token.as_ref()
         {
-            storage.remove_session_client(token, self.session_epoch);
+            let removed_current_session = storage.remove_session_client(token, self.session_epoch);
 
             // Notify the webhook receiver when a node disconnects.
-            if self.webhook_config.is_enabled()
+            if removed_current_session
+                && self.webhook_config.is_enabled()
                 && let Some(binding_version) = self.webhook_connected_binding_version
             {
                 notify_webhook_node_disconnected(
