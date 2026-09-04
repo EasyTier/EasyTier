@@ -59,7 +59,7 @@ use napi_derive_ohos::napi;
 use napi_ohos::bindgen_prelude::Uint8Array;
 use napi_types::{
     ConfigFieldMapping, KeyValuePair, NetworkConfigSchema, SharedConfigLinkPayload,
-    SnapshotImportResult,
+    SnapshotImportResult, SocketProtectionRequest,
 };
 use runtime::state::runtime_state::{RuntimeAggregateState, RuntimeInstanceState};
 use std::collections::{HashMap, HashSet};
@@ -1056,6 +1056,37 @@ pub fn collect_network_infos() -> Vec<KeyValuePair> {
 #[napi]
 pub fn set_tun_fd(config_id: String, fd: i32) -> bool {
     exports::runtime_api::set_tun_fd(config_id, fd, parse_instance_uuid)
+}
+
+#[napi]
+pub fn enable_socket_protection() -> bool {
+    easytier_ohos_kernel::socket_protection::enable_socket_protection()
+}
+
+#[napi]
+pub async fn next_socket_protection_request() -> Option<SocketProtectionRequest> {
+    easytier_ohos_kernel::socket_protection::SOCKET_PROTECTION_MANAGER
+        .next_request()
+        .await
+        .map(Into::into)
+}
+
+#[napi]
+pub fn complete_socket_protection(
+    request_id: String,
+    success: bool,
+    error: Option<String>,
+) -> bool {
+    let Ok(request_id) = request_id.parse::<u64>() else {
+        return false;
+    };
+    easytier_ohos_kernel::socket_protection::SOCKET_PROTECTION_MANAGER
+        .complete_request(request_id, success, error)
+}
+
+#[napi]
+pub fn disable_socket_protection() -> bool {
+    easytier_ohos_kernel::socket_protection::disable_socket_protection()
 }
 
 #[napi]

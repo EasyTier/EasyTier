@@ -28,6 +28,7 @@ use crate::{
         tcp::{RuntimeTcpListener, RuntimeTcpSocket},
         udp::{RuntimeUdpSocket, RuntimeUdpSocketFactory},
     },
+    socket_protector::{NativeSocketPurpose, protect_native_socket},
 };
 
 /// Process-wide native implementation of the host capabilities consumed by core.
@@ -127,6 +128,7 @@ impl ConnectorRuntime for NativeHostRuntime {
             Ok(std::net::UdpSocket::from(socket))
         })?;
         let socket = tokio::net::UdpSocket::from_std(socket)?;
+        protect_native_socket(&socket, NativeSocketPurpose::RouteProbe).await?;
         socket.connect(remote_addr).await?;
         Ok(socket.local_addr()?)
     }
@@ -168,7 +170,9 @@ impl VirtualTcpListenerFactory for NativeHostRuntime {
     type Listener = RuntimeTcpListener;
 
     async fn bind_tcp(&self, options: TcpListenOptions) -> anyhow::Result<Arc<Self::Listener>> {
-        Ok(Arc::new(crate::socket::tcp::bind_tcp_listener(options)?))
+        Ok(Arc::new(
+            crate::socket::tcp::bind_tcp_listener(options).await?,
+        ))
     }
 }
 

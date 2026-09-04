@@ -29,7 +29,12 @@ use tokio::sync::Semaphore;
 use super::error::Error;
 use super::netns::NetNS;
 #[cfg(feature = "dns-resolver")]
-use crate::tunnel::common::apply_socket_mark;
+use crate::{
+    socket_protector::{
+        NativeSocketPurpose, native_socket_protection_available, protect_native_socket,
+    },
+    tunnel::common::apply_socket_mark,
+};
 
 #[cfg(feature = "dns-resolver")]
 pub fn get_default_resolver_config() -> ResolverConfig {
@@ -164,7 +169,7 @@ impl RuntimeDnsIoContext {
 
     #[cfg(feature = "dns-resolver")]
     fn is_process_default(&self) -> bool {
-        self.netns.is_none() && self.socket_mark.is_none()
+        self.netns.is_none() && self.socket_mark.is_none() && !native_socket_protection_available()
     }
 }
 
@@ -248,6 +253,7 @@ impl RuntimeProvider for RuntimeDnsIoProvider {
         let socket = create_dns_tcp_socket(&self.context, server_addr, bind_addr);
         Box::pin(async move {
             let socket = socket?;
+            protect_native_socket(&socket, NativeSocketPurpose::DnsTcp).await?;
             let wait_for = wait_for.unwrap_or(Duration::from_secs(5));
             match tokio::time::timeout(wait_for, socket.connect(server_addr)).await {
                 Ok(Ok(stream)) => Ok(AsyncIoTokioAsStd(stream)),
@@ -268,7 +274,11 @@ impl RuntimeProvider for RuntimeDnsIoProvider {
         // Keep namespace switching out of the returned future for the same
         // reason as TCP above.
         let socket = create_dns_udp_socket(&self.context, local_addr);
-        Box::pin(async move { socket })
+        Box::pin(async move {
+            let socket = socket?;
+            protect_native_socket(&socket, NativeSocketPurpose::DnsUdp).await?;
+            Ok(socket)
+        })
     }
 }
 

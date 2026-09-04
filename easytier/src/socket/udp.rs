@@ -23,6 +23,7 @@ use tokio::net::UdpSocket;
 use crate::host_runtime::{NativeHostRuntime, native_host_runtime};
 use crate::{
     common::netns::NetNS,
+    socket_protector::{NativeSocketPurpose, protect_native_socket},
     tunnel::common::{BindDev, bind},
 };
 
@@ -168,7 +169,11 @@ impl RuntimeUdpSocketFactory {
             ) && !cfg!(target_os = "windows"))
     }
 
-    fn bind_udp_socket(&self, options: UdpBindOptions) -> anyhow::Result<Arc<RuntimeUdpSocket>> {
+    async fn bind_udp_socket(
+        &self,
+        options: UdpBindOptions,
+    ) -> anyhow::Result<Arc<RuntimeUdpSocket>> {
+        let purpose = options.purpose;
         let context = options.context.clone();
         let bind_addr = options
             .local_addr
@@ -184,6 +189,7 @@ impl RuntimeUdpSocketFactory {
             .reuse_port(options.reuse_port)
             .maybe_socket_mark(context.socket_mark)
             .call()?;
+        protect_native_socket(&socket, NativeSocketPurpose::UdpBind(purpose)).await?;
         Ok(Arc::new(RuntimeUdpSocket::new_with_context(
             Arc::new(socket),
             context,
@@ -196,7 +202,7 @@ impl VirtualUdpSocketFactory for RuntimeUdpSocketFactory {
     type Socket = RuntimeUdpSocket;
 
     async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
-        self.bind_udp_socket(options)
+        self.bind_udp_socket(options).await
     }
 }
 

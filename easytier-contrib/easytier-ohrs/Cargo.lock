@@ -1322,7 +1322,9 @@ dependencies = [
 name = "easytier-ohos-kernel"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "easytier",
+ "easytier-core",
  "ipnet",
  "once_cell",
  "serde",

@@ -9,6 +9,27 @@ use serde::Serialize;
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[napi(object)]
+pub struct SocketProtectionRequest {
+    pub request_id: String,
+    pub socket_fd: i32,
+    pub purpose: String,
+}
+
+impl From<easytier_ohos_kernel::socket_protection::SocketProtectionRequest>
+    for SocketProtectionRequest
+{
+    fn from(value: easytier_ohos_kernel::socket_protection::SocketProtectionRequest) -> Self {
+        Self {
+            request_id: value.request_id.to_string(),
+            socket_fd: value.socket_fd,
+            purpose: value.purpose,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[napi(object)]
 pub struct StoredConfigMeta {
     pub config_id: String,
     pub display_name: String,

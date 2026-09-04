@@ -2,7 +2,7 @@
 
 `easytier-ohrs` keeps the single `.so`/HAR and N-API compatibility surface consumed by ArkTS, but its Rust implementation is split by responsibility:
 
-- **`easytier-ohos-kernel`** owns the process Tokio runtime, `NativeInstanceManager`, runtime-state projections, kernel socket protocol DTOs, and TUN route aggregation. Code that starts, stops, observes, or translates EasyTier kernel state belongs here.
+- **`easytier-ohos-kernel`** owns the process Tokio runtime, `NativeInstanceManager`, runtime-state projections, kernel socket protocol DTOs, TUN route aggregation, and the platform handshake used to protect individual transport sockets. Code that starts, stops, observes, or translates EasyTier kernel state belongs here.
 - **`easytier-ohos-features`** owns configuration persistence and migration, SQLite metadata/field storage, schema reflection, validation, import/export, and share links. Code that remains meaningful without a running EasyTier instance belongs here.
 - **`easytier-ohrs`** is the platform facade. It owns N-API exports, HarmonyOS platform logging and nearby-management adapters, and the small amount of orchestration that passes a validated feature configuration into the kernel package.
 

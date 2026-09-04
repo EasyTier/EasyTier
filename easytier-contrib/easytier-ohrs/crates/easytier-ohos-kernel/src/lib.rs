@@ -1,6 +1,7 @@
 pub mod protocol;
 pub mod routing;
 pub mod runtime;
+pub mod socket_protection;
 
 use easytier::instance::factory::{NativeInstanceManager, native_instance_manager_with_runtime};
 use once_cell::sync::Lazy;

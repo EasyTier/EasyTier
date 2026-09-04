@@ -23,6 +23,7 @@ use tokio::{
 
 use crate::{
     common::netns::NetNS,
+    socket_protector::{NativeSocketPurpose, protect_native_socket},
     tunnel::common::{BindDev, apply_socket_mark, bind},
 };
 
@@ -201,6 +202,7 @@ impl VirtualTcpListener for RuntimeTcpListener {
 
     async fn accept(&self) -> io::Result<(Self::Socket, SocketAddr)> {
         let (stream, addr) = self.listener.accept().await?;
+        protect_native_socket(&stream, NativeSocketPurpose::TcpAccepted(self.purpose)).await?;
         if self.purpose == TcpListenPurpose::ProxyNat {
             prepare_proxy_tcp_socket(&stream)?;
         }
@@ -290,7 +292,7 @@ fn native_reuse_addr(bind_options: &TcpBindOptions) -> bool {
         .unwrap_or_else(native_reuse_addr_default)
 }
 
-pub(crate) fn bind_tcp_listener(
+pub(crate) async fn bind_tcp_listener(
     options: TcpListenOptions,
 ) -> Result<RuntimeTcpListener, TunnelError> {
     let purpose = options.purpose;
@@ -313,6 +315,7 @@ pub(crate) fn bind_tcp_listener(
         .reuse_port(bind_options.reuse_port)
         .maybe_socket_mark(bind_options.context.socket_mark)
         .call()?;
+    protect_native_socket(&listener, NativeSocketPurpose::TcpListen(purpose)).await?;
     Ok(RuntimeTcpListener::new(listener, purpose))
 }
 
@@ -325,12 +328,14 @@ pub(crate) async fn connect_tcp(
 
     if !must_bind_before_connect(&bind_options) {
         let socket = create_tcp_socket(remote_addr, &bind_options)?;
+        protect_native_socket(&socket, NativeSocketPurpose::TcpConnect(purpose)).await?;
         let stream = socket.connect(remote_addr).await?;
         prepare_connected_tcp_socket(&stream, purpose)?;
         return Ok(RuntimeTcpSocket::new(stream));
     }
 
     let socket = bind_tcp_socket(remote_addr, bind_options)?;
+    protect_native_socket(&socket, NativeSocketPurpose::TcpConnect(purpose)).await?;
     let stream = socket.connect(remote_addr).await?;
     prepare_connected_tcp_socket(&stream, purpose)?;
     Ok(RuntimeTcpSocket::new(stream))
