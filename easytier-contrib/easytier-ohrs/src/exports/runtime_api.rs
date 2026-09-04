@@ -187,7 +187,6 @@ pub(crate) fn collect_runtime_state() -> RuntimeAggregateState {
                 routes: Vec::new(),
                 peers: Vec::new(),
                 manual_routes: Vec::new(),
-                local_proxy_cidrs: Vec::new(),
             });
         }
     }

@@ -55,21 +55,6 @@ pub fn get_runtime_config_snapshot(config_id: &str) -> Option<RuntimeConfigSnaps
         .and_then(|guard| guard.get(config_id).cloned())
 }
 
-pub fn get_runtime_config_route_overrides(config_id: &str) -> (Vec<String>, Vec<String>) {
-    RUNTIME_CONFIG_SNAPSHOTS
-        .lock()
-        .ok()
-        .and_then(|guard| {
-            guard.get(config_id).map(|snapshot| {
-                (
-                    snapshot.config.routes.clone(),
-                    snapshot.config.proxy_cidrs.clone(),
-                )
-            })
-        })
-        .unwrap_or_default()
-}
-
 pub fn config_root_dir() -> Option<PathBuf> {
     CONFIG_ROOT_DIR
         .lock()

@@ -70,7 +70,9 @@ pub fn aggregate_tun_routes(instance: &RuntimeInstanceState) -> Vec<String> {
     }
 
     raw_routes.extend(instance.manual_routes.iter().cloned());
-    raw_routes.extend(instance.local_proxy_cidrs.iter().cloned());
+    // Local proxy CIDRs are advertisements for networks reached through this
+    // node. Installing them into the same local TUN would recapture the proxy's
+    // own destination sockets instead of using the physical network.
     raw_routes.extend(runtime_proxy_cidrs.iter().cloned());
     simplify_routes(raw_routes)
 }
@@ -90,7 +92,9 @@ pub fn aggregate_requested_tun_routes(instances: &[RuntimeInstanceState]) -> Vec
 
 #[cfg(test)]
 mod tests {
-    use super::simplify_routes;
+    use super::{aggregate_tun_routes, simplify_routes};
+    use crate::runtime::state::runtime_state::{RouteView, runtime_instance_from_config_snapshot};
+    use easytier::proto::api::manage::NetworkConfig;
 
     #[test]
     fn simplify_routes_normalizes_deduplicates_and_removes_subnets() {
@@ -103,5 +107,44 @@ mod tests {
         ]);
 
         assert_eq!(routes, vec!["10.0.0.0/24", "2001:db8::/64"]);
+    }
+
+    #[test]
+    fn local_proxy_cidr_is_not_installed_in_tun_routes() {
+        let mut instance = runtime_instance_from_config_snapshot(
+            "routing-test".to_string(),
+            "test".to_string(),
+            NetworkConfig {
+                virtual_ipv4: Some("10.144.144.1".to_string()),
+                network_length: Some(24),
+                routes: vec!["172.16.0.0/16".to_string()],
+                proxy_cidrs: vec!["192.168.1.0/24".to_string()],
+                ..Default::default()
+            },
+            true,
+        );
+        instance.routes.push(RouteView {
+            peer_id: 2,
+            hostname: None,
+            ipv4: Some("10.144.144.2".to_string()),
+            ipv4_cidr: Some("10.144.144.2/24".to_string()),
+            ipv6_cidr: None,
+            proxy_cidrs: vec!["10.20.0.0/16".to_string()],
+            next_hop_peer_id: Some(2),
+            cost: Some(1),
+            path_latency: None,
+            udp_nat_type: None,
+            tcp_nat_type: None,
+            inst_id: None,
+            version: None,
+            is_public_server: None,
+        });
+
+        let routes = aggregate_tun_routes(&instance);
+
+        assert!(routes.contains(&"10.144.144.0/24".to_string()));
+        assert!(routes.contains(&"172.16.0.0/16".to_string()));
+        assert!(routes.contains(&"10.20.0.0/16".to_string()));
+        assert!(!routes.contains(&"192.168.1.0/24".to_string()));
     }
 }

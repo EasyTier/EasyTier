@@ -116,8 +116,6 @@ pub struct RuntimeInstanceState {
     pub peers: Vec<PeerInfo>,
     #[serde(skip)]
     pub manual_routes: Vec<String>,
-    #[serde(skip)]
-    pub local_proxy_cidrs: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -410,10 +408,6 @@ pub fn runtime_instance_from_running_info(
         .as_ref()
         .map(|config| config.routes.clone())
         .unwrap_or_default();
-    let local_proxy_cidrs = config
-        .as_ref()
-        .map(|config| config.proxy_cidrs.clone())
-        .unwrap_or_default();
 
     RuntimeInstanceState {
         config_id: config_id.clone(),
@@ -430,7 +424,6 @@ pub fn runtime_instance_from_running_info(
         routes: info.routes.into_iter().map(route_to_view).collect(),
         peers: info.peers.into_iter().map(peer_to_view).collect(),
         manual_routes,
-        local_proxy_cidrs,
     }
 }
 
@@ -446,7 +439,6 @@ pub fn runtime_instance_from_config_snapshot(
     let endpoint_urls = config_endpoint_urls(&config);
     let public_server_url = non_empty_string(config.public_server_url.clone());
     let manual_routes = config.routes.clone();
-    let local_proxy_cidrs = config.proxy_cidrs.clone();
     let my_node_info = MyNodeInfo {
         virtual_ipv4: non_empty_string(config.virtual_ipv4.clone()),
         virtual_ipv4_cidr: config_virtual_ipv4_cidr(&config),
@@ -474,6 +466,5 @@ pub fn runtime_instance_from_config_snapshot(
         routes: configured_route_views(&endpoint_urls, public_server_url.as_deref()),
         peers: configured_peer_views(&endpoint_urls),
         manual_routes,
-        local_proxy_cidrs,
     }
 }
