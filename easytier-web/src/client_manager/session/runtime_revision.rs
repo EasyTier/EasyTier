@@ -345,11 +345,11 @@ async fn prepare_reconcile_round(
         Ok(Some(user_id)) => user_id,
         Ok(None) => {
             tracing::info!("User not found by token: {:?}", req.user_token);
-            return RoundStatus::Stop;
+            return RoundStatus::Skip;
         }
         Err(e) => {
             tracing::error!("Failed to get user id by token, error: {:?}", e);
-            return RoundStatus::Stop;
+            return RoundStatus::Skip;
         }
     };
 
@@ -372,17 +372,12 @@ async fn prepare_reconcile_round(
             data.runtime_config_cache_epoch,
         )
     };
-    let target_config_revision = match storage
-        .db
-        .get_managed_config_revision((user_id, machine_id))
-        .await
-    {
-        Ok(revision) => revision,
-        Err(e) => {
-            tracing::error!("Failed to read managed config revision, error: {:?}", e);
-            return RoundStatus::Stop;
-        }
-    };
+    let target_config_revision =
+        match read_managed_config_revision(storage, user_id, machine_id).await {
+            RoundStatus::Ready(revision) => revision,
+            RoundStatus::Skip => return RoundStatus::Skip,
+            RoundStatus::Stop => return RoundStatus::Stop,
+        };
     let should_apply_runtime_revision =
         target_config_revision.is_some() && target_config_revision != applied_config_revision;
     let mut scope = if should_apply_runtime_revision {
@@ -429,13 +424,13 @@ async fn prepare_reconcile_round(
                 Ok(configs) => (configs, HashSet::new()),
                 Err(e) => {
                     tracing::error!("Failed to list network configs, error: {:?}", e);
-                    return RoundStatus::Stop;
+                    return RoundStatus::Skip;
                 }
             }
         }
         Err(e) => {
             tracing::error!("Failed to load managed config Patch rows, error: {:?}", e);
-            return RoundStatus::Stop;
+            return RoundStatus::Skip;
         }
     };
 
@@ -452,6 +447,24 @@ async fn prepare_reconcile_round(
         runtime_config_epoch,
         runtime_config_cache_epoch,
     })
+}
+
+async fn read_managed_config_revision(
+    storage: &StorageInner,
+    user_id: i32,
+    machine_id: uuid::Uuid,
+) -> RoundStatus<Option<String>> {
+    match storage
+        .db
+        .get_managed_config_revision((user_id, machine_id))
+        .await
+    {
+        Ok(revision) => RoundStatus::Ready(revision),
+        Err(e) => {
+            tracing::error!("Failed to read managed config revision, error: {:?}", e);
+            RoundStatus::Skip
+        }
+    }
 }
 
 async fn load_round_configs(
@@ -590,7 +603,7 @@ async fn sync_running_sources_for_round(
                             "Failed to reload network configs after source sync, error: {:?}",
                             e
                         );
-                        return RoundStatus::Stop;
+                        return RoundStatus::Skip;
                     }
                 };
             }
@@ -634,7 +647,7 @@ async fn cleanup_stale_web_source_instances(
         Ok(configs) => managed_config::desired_web_source_instance_ids(&configs),
         Err(e) => {
             tracing::error!("Failed to list all network configs, error: {:?}", e);
-            return RoundStatus::Stop;
+            return RoundStatus::Skip;
         }
     };
 
@@ -1105,17 +1118,12 @@ async fn mark_config_revision_applied_if_current(
         return RoundStatus::Ready(());
     }
 
-    let current_target_config_revision = match storage
-        .db
-        .get_managed_config_revision((round.user_id, round.machine_id))
-        .await
-    {
-        Ok(revision) => revision,
-        Err(e) => {
-            tracing::error!("Failed to verify managed config revision, error: {:?}", e);
-            return RoundStatus::Stop;
-        }
-    };
+    let current_target_config_revision =
+        match read_managed_config_revision(storage, round.user_id, round.machine_id).await {
+            RoundStatus::Ready(revision) => revision,
+            RoundStatus::Skip => return RoundStatus::Skip,
+            RoundStatus::Stop => return RoundStatus::Stop,
+        };
     if current_target_config_revision != round.target_config_revision {
         return RoundStatus::Ready(());
     }
@@ -1178,6 +1186,62 @@ mod tests {
             dst_port,
             proto: "tcp".to_string(),
         }
+    }
+
+    #[tokio::test]
+    async fn managed_revision_read_failure_retries_on_a_later_round() {
+        let storage =
+            crate::client_manager::storage::Storage::new(crate::db::Db::memory_db().await);
+        let user_id = storage.db().auto_create_user("token").await.unwrap().id;
+        let machine_id = uuid::Uuid::new_v4();
+        let pool = storage.db().inner();
+        sqlx::query("DROP TABLE managed_config_revisions")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let storage_inner = storage.weak_ref().upgrade().unwrap();
+
+        assert!(matches!(
+            read_managed_config_revision(&storage_inner, user_id, machine_id).await,
+            RoundStatus::Skip
+        ));
+
+        sqlx::query(
+            r#"
+            CREATE TABLE managed_config_revisions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                user_id INTEGER NOT NULL,
+                device_id TEXT NOT NULL,
+                config_revision TEXT NOT NULL,
+                create_time TEXT NOT NULL,
+                update_time TEXT NOT NULL,
+                CONSTRAINT fk_managed_config_revisions_user_id_to_users_id
+                    FOREIGN KEY (user_id) REFERENCES users(id)
+                    ON DELETE CASCADE
+                    ON UPDATE CASCADE
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE UNIQUE INDEX idx_managed_config_revisions_scope \
+             ON managed_config_revisions(user_id, device_id)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        storage
+            .db()
+            .set_managed_config_revision((user_id, machine_id), "rev-recovered")
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            read_managed_config_revision(&storage_inner, user_id, machine_id).await,
+            RoundStatus::Ready(Some(revision)) if revision == "rev-recovered"
+        ));
     }
 
     #[tokio::test]
