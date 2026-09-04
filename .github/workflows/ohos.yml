@@ -67,6 +67,13 @@ jobs:
           rustup component add rustfmt
           cargo fmt --all --manifest-path \
             easytier-contrib/easytier-ohrs/Cargo.toml -- --check
+          cargo test --locked --manifest-path \
+            easytier-contrib/easytier-ohrs/Cargo.toml \
+            -p easytier-ohos-core -p easytier-ohos-features \
+            --lib -- --test-threads=1
+          cargo check --locked --manifest-path \
+            easytier-contrib/easytier-ohrs/Cargo.toml \
+            -p easytier-ohrs --tests
 
           cargo_version=$(cargo metadata --format-version 1 --no-deps \
             --manifest-path easytier/Cargo.toml | jq -r '.packages[0].version')
