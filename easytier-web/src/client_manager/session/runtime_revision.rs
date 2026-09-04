@@ -968,8 +968,10 @@ async fn reconcile_running_web_config(
         if !SessionRpcService::runtime_heartbeat_is_current(session_data, &round.req).await {
             anyhow::bail!("webhook session is no longer current before runtime reconcile apply");
         }
-        if !matches!(action, runtime_reconcile::RuntimeReconcileAction::None)
-            && !begin_managed_runtime_mutation(session_data, round, mutation_fence).await
+        if !matches!(
+            action,
+            runtime_reconcile::RuntimeReconcileAction::Unchanged(_)
+        ) && !begin_managed_runtime_mutation(session_data, round, mutation_fence).await
         {
             anyhow::bail!("managed runtime mutation fence is no longer current");
         }
@@ -1080,7 +1082,10 @@ fn remember_if_runtime_matches_desired(
         &observed_config,
         desired_config.clone(),
     )?;
-    if !matches!(action, runtime_reconcile::RuntimeReconcileAction::None) {
+    if !matches!(
+        action,
+        runtime_reconcile::RuntimeReconcileAction::Unchanged(_)
+    ) {
         anyhow::bail!("runtime config still differs after managed run");
     }
     runtime_config_cache.remember(inst_id, observed_config);
@@ -1559,8 +1564,39 @@ mod tests {
 
         assert!(matches!(
             action,
-            runtime_reconcile::RuntimeReconcileAction::None
+            runtime_reconcile::RuntimeReconcileAction::Unchanged(_)
         ));
+    }
+
+    #[test]
+    fn cache_preserves_ignored_runtime_hostname_for_later_explicit_clear() {
+        let mut cache = SessionRuntimeConfigCache::default();
+        let mut observed = config_with_port_forwards(Vec::new());
+        observed.hostname = Some("runtime-host".to_string());
+        cache.remember("managed", observed);
+
+        let unmanaged_desired = config_with_port_forwards(Vec::new());
+        let action = cache
+            .plan("managed", unmanaged_desired)
+            .expect("prepare unmanaged hostname action")
+            .expect("cached action");
+        let runtime_reconcile::RuntimeReconcileAction::Unchanged(observed) = action else {
+            panic!("unmanaged hostname should preserve the observed config");
+        };
+        assert_eq!(observed.hostname.as_deref(), Some("runtime-host"));
+        cache.remember("managed", *observed);
+
+        let mut explicit_clear = config_with_port_forwards(Vec::new());
+        explicit_clear.hostname = Some(String::new());
+        let action = cache
+            .plan("managed", explicit_clear)
+            .expect("prepare explicit clear action")
+            .expect("cached action");
+        let runtime_reconcile::RuntimeReconcileAction::Patch(patch) = action else {
+            panic!("explicit clear should patch the observed runtime hostname");
+        };
+
+        assert_eq!(patch.hostname.as_deref(), Some(""));
     }
 
     #[test]
@@ -1623,7 +1659,7 @@ mod tests {
 
         assert!(matches!(
             action,
-            runtime_reconcile::RuntimeReconcileAction::None
+            runtime_reconcile::RuntimeReconcileAction::Unchanged(_)
         ));
     }
 

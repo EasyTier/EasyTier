@@ -28,7 +28,7 @@ use easytier::{
 use super::session::{SessionConfigClient, SessionRpcClient};
 
 pub(super) enum RuntimeReconcileAction {
-    None,
+    Unchanged(Box<NetworkConfig>),
     Run {
         config: Box<NetworkConfig>,
         overwrite: bool,
@@ -273,23 +273,18 @@ fn web_source_runtime_patch(
     current: &NetworkConfig,
     desired: &NetworkConfig,
 ) -> anyhow::Result<Option<InstanceConfigPatch>> {
-    if let Some(desired_hostname) = desired
-        .hostname
-        .as_deref()
-        .filter(|hostname| !hostname.is_empty())
-        && current.hostname.as_deref() != Some(desired_hostname)
-    {
-        return Ok(None);
-    }
     let mut current_base = hot_patch_base(current)?;
     let mut desired_base = hot_patch_base(desired)?;
-    current_base.hostname = None;
-    desired_base.hostname = None;
+    let current_hostname = current_base.hostname.take().unwrap_or_default();
+    let desired_hostname = desired_base.hostname.take().unwrap_or_default();
     if current_base != desired_base {
         return Ok(None);
     }
 
     let mut patch = InstanceConfigPatch::default();
+    if desired.hostname.is_some() && current_hostname != desired_hostname {
+        patch.hostname = Some(desired_hostname);
+    }
     let current_acl = normalized_acl(&current.acl);
     let desired_acl = normalized_acl(&desired.acl);
     if current_acl != desired_acl {
@@ -429,13 +424,19 @@ pub(super) fn prepare_web_source_runtime_reconcile_from_current(
     desired_config: NetworkConfig,
 ) -> anyhow::Result<RuntimeReconcileAction> {
     let Some(patch) = web_source_runtime_patch(current_config, &desired_config)? else {
+        let mut run_config = desired_config;
+        if run_config.hostname.is_none() {
+            run_config.hostname = current_config.hostname.clone();
+        }
         return Ok(RuntimeReconcileAction::Run {
-            config: Box::new(desired_config),
+            config: Box::new(run_config),
             overwrite: true,
         });
     };
     if patch == InstanceConfigPatch::default() {
-        return Ok(RuntimeReconcileAction::None);
+        return Ok(RuntimeReconcileAction::Unchanged(Box::new(
+            current_config.clone(),
+        )));
     }
 
     Ok(RuntimeReconcileAction::Patch(Box::new(patch)))
@@ -449,10 +450,12 @@ pub(super) async fn apply_web_source_runtime_reconcile(
     action: RuntimeReconcileAction,
 ) -> anyhow::Result<NetworkConfig> {
     match action {
-        RuntimeReconcileAction::None => Ok(desired_config),
+        RuntimeReconcileAction::Unchanged(current_config) => Ok(*current_config),
         RuntimeReconcileAction::Run { config, overwrite } => {
             run_web_source_instance(rpc_client, inst_id, *config, overwrite).await?;
-            Ok(desired_config)
+            let current_config = get_runtime_config(rpc_client, inst_id).await?;
+            ensure_runtime_config_converged(&current_config, &desired_config)?;
+            Ok(current_config)
         }
         RuntimeReconcileAction::Patch(patch) => {
             config_client
@@ -798,11 +801,42 @@ mod tests {
     fn runtime_patch_rejects_non_hot_config_change() {
         let current = config_with_port_forwards(Vec::new());
         let mut desired = current.clone();
+
         desired.network_secret = Some("new-secret".to_string());
 
         let patch = web_source_runtime_patch(&current, &desired).expect("build patch");
 
         assert!(patch.is_none());
+    }
+
+    #[test]
+    fn full_overwrite_preserves_unmanaged_hostname_for_later_explicit_clear() {
+        let mut current = config_with_port_forwards(Vec::new());
+        current.hostname = Some("runtime-host".to_string());
+        let mut unmanaged_desired = current.clone();
+        unmanaged_desired.hostname = None;
+        unmanaged_desired.network_secret = Some("new-secret".to_string());
+
+        let action =
+            prepare_web_source_runtime_reconcile_from_current(&current, unmanaged_desired.clone())
+                .expect("prepare full overwrite");
+        let RuntimeReconcileAction::Run { config, overwrite } = action else {
+            panic!("non-hot change should require a full overwrite");
+        };
+        assert!(overwrite);
+        assert_eq!(config.hostname.as_deref(), Some("runtime-host"));
+
+        let observed_after_run = *config;
+        let mut explicit_clear = unmanaged_desired;
+        explicit_clear.hostname = Some(String::new());
+        let action =
+            prepare_web_source_runtime_reconcile_from_current(&observed_after_run, explicit_clear)
+                .expect("prepare explicit clear");
+        let RuntimeReconcileAction::Patch(patch) = action else {
+            panic!("explicit clear should patch the preserved runtime hostname");
+        };
+
+        assert_eq!(patch.hostname.as_deref(), Some(""));
     }
 
     #[test]
@@ -1086,14 +1120,95 @@ mod tests {
     }
 
     #[test]
-    fn runtime_patch_rejects_explicit_desired_hostname_change() {
-        let current = config_with_port_forwards(vec![port_forward(23000, 5174)]);
-        let mut desired =
-            config_with_port_forwards(vec![port_forward(23000, 5174), port_forward(23007, 3389)]);
+    fn runtime_reconcile_hot_patches_explicit_desired_hostname_change() {
+        let current = config_with_port_forwards(Vec::new());
+        let mut desired = config_with_port_forwards(Vec::new());
         desired.hostname = Some("desired-host".to_string());
 
-        let patch = web_source_runtime_patch(&current, &desired).expect("build patch");
+        let action = prepare_web_source_runtime_reconcile_from_current(&current, desired)
+            .expect("prepare reconcile");
+        let RuntimeReconcileAction::Patch(patch) = action else {
+            panic!("hostname-only change should use a hot patch");
+        };
 
-        assert!(patch.is_none());
+        assert_eq!(patch.hostname.as_deref(), Some("desired-host"));
+    }
+
+    #[test]
+    fn runtime_patch_clears_explicit_desired_hostname() {
+        let mut current = config_with_port_forwards(Vec::new());
+        current.hostname = Some("runtime-host".to_string());
+        let mut desired = config_with_port_forwards(Vec::new());
+        desired.hostname = Some(String::new());
+
+        let patch = web_source_runtime_patch(&current, &desired)
+            .expect("build patch")
+            .expect("hot patch");
+
+        assert_eq!(patch.hostname.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn runtime_patch_normalizes_missing_runtime_hostname_for_explicit_clear() {
+        let current = config_with_port_forwards(Vec::new());
+        let mut desired = config_with_port_forwards(Vec::new());
+        desired.hostname = Some(String::new());
+
+        let action = prepare_web_source_runtime_reconcile_from_current(&current, desired)
+            .expect("prepare reconcile");
+
+        assert!(matches!(action, RuntimeReconcileAction::Unchanged(_)));
+    }
+
+    #[test]
+    fn runtime_patch_skips_matching_explicit_hostname() {
+        let mut current = config_with_port_forwards(Vec::new());
+        current.hostname = Some("desired-host".to_string());
+        let desired = current.clone();
+
+        let action = prepare_web_source_runtime_reconcile_from_current(&current, desired)
+            .expect("prepare reconcile");
+
+        assert!(matches!(action, RuntimeReconcileAction::Unchanged(_)));
+    }
+
+    #[test]
+    fn runtime_patch_uses_core_normalized_hostname() {
+        let current = config_with_port_forwards(Vec::new());
+        let mut desired = config_with_port_forwards(Vec::new());
+        desired.hostname = Some("a".repeat(33));
+
+        let patch = web_source_runtime_patch(&current, &desired)
+            .expect("build patch")
+            .expect("hot patch");
+
+        assert_eq!(patch.hostname.as_deref(), Some("a".repeat(32).as_str()));
+    }
+
+    #[test]
+    fn runtime_patch_removes_hostname_control_characters() {
+        let current = config_with_port_forwards(Vec::new());
+        let mut desired = config_with_port_forwards(Vec::new());
+        desired.hostname = Some("node\u{7}-name".to_string());
+
+        let patch = web_source_runtime_patch(&current, &desired)
+            .expect("build patch")
+            .expect("hot patch");
+
+        assert_eq!(patch.hostname.as_deref(), Some("node-name"));
+    }
+
+    #[test]
+    fn runtime_patch_normalizes_control_only_hostname_to_clear() {
+        let mut current = config_with_port_forwards(Vec::new());
+        current.hostname = Some("runtime-host".to_string());
+        let mut desired = config_with_port_forwards(Vec::new());
+        desired.hostname = Some("\u{7}\n".to_string());
+
+        let patch = web_source_runtime_patch(&current, &desired)
+            .expect("build patch")
+            .expect("hot patch");
+
+        assert_eq!(patch.hostname.as_deref(), Some(""));
     }
 }
