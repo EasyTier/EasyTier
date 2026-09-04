@@ -356,11 +356,24 @@ fn web_source_runtime_patch(
 fn ensure_runtime_config_converged(
     current: &NetworkConfig,
     desired: &NetworkConfig,
+    hostname_applied: bool,
 ) -> anyhow::Result<()> {
     let patch = web_source_runtime_patch(current, desired)?;
     match patch {
-        Some(patch) if patch == InstanceConfigPatch::default() => Ok(()),
-        Some(_) => anyhow::bail!("runtime config still needs patch after reconcile"),
+        Some(mut patch) => {
+            // Release 2.6.4 omits a configured hostname when it equals
+            // the device hostname. The successful mutation is therefore
+            // authoritative for hostname, while every other field remains
+            // verified from the runtime readback.
+            if hostname_applied && current.hostname.is_none() {
+                patch.hostname = None;
+            }
+            if patch == InstanceConfigPatch::default() {
+                Ok(())
+            } else {
+                anyhow::bail!("runtime config still needs patch after reconcile")
+            }
+        }
         None => anyhow::bail!("runtime config still needs full overwrite after reconcile"),
     }
 }
@@ -452,12 +465,14 @@ pub(super) async fn apply_web_source_runtime_reconcile(
     match action {
         RuntimeReconcileAction::Unchanged(current_config) => Ok(*current_config),
         RuntimeReconcileAction::Run { config, overwrite } => {
+            let hostname_applied = config.hostname.is_some();
             run_web_source_instance(rpc_client, inst_id, *config, overwrite).await?;
             let current_config = get_runtime_config(rpc_client, inst_id).await?;
-            ensure_runtime_config_converged(&current_config, &desired_config)?;
+            ensure_runtime_config_converged(&current_config, &desired_config, hostname_applied)?;
             Ok(current_config)
         }
         RuntimeReconcileAction::Patch(patch) => {
+            let hostname_applied = patch.hostname.is_some();
             config_client
                 .patch_config(
                     BaseController::default(),
@@ -468,7 +483,7 @@ pub(super) async fn apply_web_source_runtime_reconcile(
                 )
                 .await?;
             let current_config = get_runtime_config(rpc_client, inst_id).await?;
-            ensure_runtime_config_converged(&current_config, &desired_config)?;
+            ensure_runtime_config_converged(&current_config, &desired_config, hostname_applied)?;
             Ok(current_config)
         }
     }
@@ -772,7 +787,7 @@ mod tests {
         let desired =
             config_with_port_forwards(vec![port_forward(23000, 5174), port_forward(23007, 3389)]);
 
-        let err = ensure_runtime_config_converged(&current, &desired)
+        let err = ensure_runtime_config_converged(&current, &desired, false)
             .expect_err("extra runtime port forward should not converge");
 
         assert!(
@@ -794,7 +809,7 @@ mod tests {
             .expect("hot patch");
 
         assert_eq!(patch, InstanceConfigPatch::default());
-        ensure_runtime_config_converged(&current, &desired).expect("runtime converged");
+        ensure_runtime_config_converged(&current, &desired, false).expect("runtime converged");
     }
 
     #[test]
@@ -1132,6 +1147,47 @@ mod tests {
         };
 
         assert_eq!(patch.hostname.as_deref(), Some("desired-host"));
+    }
+
+    #[test]
+    fn runtime_convergence_accepts_hostname_only_readback_difference() {
+        let current = config_with_port_forwards(Vec::new());
+        let mut desired = config_with_port_forwards(Vec::new());
+        desired.hostname = Some("device-host".to_string());
+
+        ensure_runtime_config_converged(&current, &desired, true)
+            .expect("hostname-only readback difference should be converged");
+    }
+
+    #[test]
+    fn runtime_convergence_rejects_omitted_hostname_before_apply() {
+        let current = config_with_port_forwards(Vec::new());
+        let mut desired = config_with_port_forwards(Vec::new());
+        desired.hostname = Some("device-host".to_string());
+
+        let err = ensure_runtime_config_converged(&current, &desired, false)
+            .expect_err("omitted hostname before apply should not converge");
+
+        assert!(
+            err.to_string()
+                .contains("runtime config still needs patch after reconcile")
+        );
+    }
+
+    #[test]
+    fn runtime_convergence_rejects_explicit_wrong_hostname_after_apply() {
+        let mut current = config_with_port_forwards(Vec::new());
+        current.hostname = Some("wrong-host".to_string());
+        let mut desired = config_with_port_forwards(Vec::new());
+        desired.hostname = Some("device-host".to_string());
+
+        let err = ensure_runtime_config_converged(&current, &desired, true)
+            .expect_err("explicit wrong hostname should not converge");
+
+        assert!(
+            err.to_string()
+                .contains("runtime config still needs patch after reconcile")
+        );
     }
 
     #[test]

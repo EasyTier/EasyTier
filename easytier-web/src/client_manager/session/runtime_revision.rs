@@ -1746,4 +1746,21 @@ mod tests {
             .expect("prepare action after stale run result");
         assert!(action.is_none());
     }
+
+    #[test]
+    fn missing_run_does_not_accept_omitted_hostname() {
+        let mut cache = SessionRuntimeConfigCache::default();
+        let observed = config_with_port_forwards(Vec::new());
+        let mut desired = observed.clone();
+        desired.hostname = Some("device-host".to_string());
+
+        let err = remember_if_runtime_matches_desired("managed", &desired, observed, &mut cache)
+            .expect_err("missing run must not trust an omitted hostname");
+
+        assert!(
+            err.to_string()
+                .contains("runtime config still differs after managed run")
+        );
+        assert!(!cache.entries.contains_key("managed"));
+    }
 }
