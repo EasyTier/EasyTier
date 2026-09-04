@@ -92,7 +92,9 @@ where
     let Some(protector) = native_socket_protector() else {
         return Ok(());
     };
-    protector.protect(socket.as_raw_socket(), purpose).await
+    protector
+        .protect(socket.as_raw_socket() as u64, purpose)
+        .await
 }
 
 #[cfg(not(any(unix, windows)))]
