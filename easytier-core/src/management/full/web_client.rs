@@ -100,6 +100,8 @@ pub(crate) trait WebClientBackend: Send + Sync + 'static {
     fn register(&self, registry: &ServiceRegistry);
 
     async fn instance_ids(&self) -> anyhow::Result<Vec<uuid::Uuid>>;
+
+    fn failed_instance_ids(&self) -> Vec<uuid::Uuid>;
 }
 
 struct NativeWebClientBackend<F>
@@ -140,6 +142,10 @@ where
 
     async fn instance_ids(&self) -> anyhow::Result<Vec<uuid::Uuid>> {
         Ok(self.instances.instance_ids())
+    }
+
+    fn failed_instance_ids(&self) -> Vec<uuid::Uuid> {
+        self.instances.failed_instance_ids()
     }
 }
 
@@ -312,6 +318,32 @@ struct WebClientSession {
     tasks: Mutex<JoinSet<()>>,
 }
 
+fn build_heartbeat_request(
+    config: &WebClientConfig,
+    session_id: uuid::Uuid,
+    running_network_instances: Vec<uuid::Uuid>,
+    failed_network_instances: Vec<uuid::Uuid>,
+) -> HeartbeatRequest {
+    HeartbeatRequest {
+        machine_id: Some(config.machine_id.into()),
+        inst_id: Some(session_id.into()),
+        user_token: config.token.clone(),
+        easytier_version: config.easytier_version.clone(),
+        hostname: config.hostname.clone(),
+        report_time: chrono::Local::now().to_rfc3339(),
+        device_os: Some(config.device_os.clone()),
+        support_config_source: true,
+        running_network_instances: running_network_instances
+            .into_iter()
+            .map(Into::into)
+            .collect(),
+        failed_network_instances: failed_network_instances
+            .into_iter()
+            .map(Into::into)
+            .collect(),
+    }
+}
+
 impl WebClientSession {
     fn new(tunnel: Box<dyn Tunnel>, controller: Arc<WebClientController>) -> Self {
         let rpc = BidirectRpcManager::new();
@@ -339,12 +371,7 @@ impl WebClientSession {
         tasks: &mut JoinSet<()>,
     ) {
         let controller = controller.upgrade().expect("web client controller");
-        let machine_id = controller.config.machine_id;
         let session_id = uuid::Uuid::new_v4();
-        let token = controller.config.token.clone();
-        let hostname = controller.config.hostname.clone();
-        let device_os = controller.config.device_os.clone();
-        let easytier_version = controller.config.easytier_version.clone();
         let controller = Arc::downgrade(&controller);
         let client = rpc
             .rpc_client()
@@ -358,23 +385,18 @@ impl WebClientSession {
                     break;
                 };
                 let running_network_instances = match controller.backend.instance_ids().await {
-                    Ok(instance_ids) => instance_ids.into_iter().map(Into::into).collect(),
+                    Ok(instance_ids) => instance_ids,
                     Err(error) => {
                         tracing::error!(%error, "failed to list config-server instances");
                         break;
                     }
                 };
-                let request = HeartbeatRequest {
-                    machine_id: Some(machine_id.into()),
-                    inst_id: Some(session_id.into()),
-                    user_token: token.clone(),
-                    easytier_version: easytier_version.clone(),
-                    hostname: hostname.clone(),
-                    report_time: chrono::Local::now().to_rfc3339(),
-                    device_os: Some(device_os.clone()),
-                    support_config_source: true,
+                let request = build_heartbeat_request(
+                    &controller.config,
+                    session_id,
                     running_network_instances,
-                };
+                    controller.backend.failed_instance_ids(),
+                );
 
                 match client.heartbeat(BaseController::default(), request).await {
                     Ok(response) => {
@@ -501,5 +523,41 @@ mod tests {
     #[test]
     fn endpoint_rejects_an_empty_token() {
         assert!(ConfigServerEndpoint::parse("udp://example.com", |_| true).is_err());
+    }
+
+    #[test]
+    fn heartbeat_request_carries_registered_and_failed_instance_ids() {
+        let registered = uuid::Uuid::new_v4();
+        let failed = uuid::Uuid::new_v4();
+        let request = build_heartbeat_request(
+            &WebClientConfig {
+                token: "token".to_owned(),
+                machine_id: uuid::Uuid::new_v4(),
+                hostname: "host".to_owned(),
+                device_os: DeviceOsInfo::default(),
+                easytier_version: "test-version".to_owned(),
+                secure_mode: false,
+            },
+            uuid::Uuid::new_v4(),
+            vec![registered],
+            vec![failed],
+        );
+
+        assert_eq!(
+            request
+                .running_network_instances
+                .into_iter()
+                .map(uuid::Uuid::from)
+                .collect::<Vec<_>>(),
+            vec![registered]
+        );
+        assert_eq!(
+            request
+                .failed_network_instances
+                .into_iter()
+                .map(uuid::Uuid::from)
+                .collect::<Vec<_>>(),
+            vec![failed]
+        );
     }
 }

@@ -15,7 +15,7 @@ use dashmap::DashMap;
 use uuid::Uuid;
 
 use crate::config::toml::TomlConfig;
-use crate::instance::{CoreInstance, CoreInstanceHost};
+use crate::instance::{CoreInstance, CoreInstanceHost, CoreInstanceState};
 use crate::process_runtime::CoreProcessRuntime;
 #[cfg(feature = "web-client")]
 use crate::{
@@ -399,6 +399,19 @@ where
     pub fn instance_ids(&self) -> Vec<Uuid> {
         self.list()
             .into_iter()
+            .map(|instance| instance.instance_id())
+            .collect()
+    }
+
+    pub fn failed_instance_ids(&self) -> Vec<Uuid> {
+        self.list()
+            .into_iter()
+            .filter(|instance| {
+                instance.state() == CoreInstanceState::Stopped
+                    && instance
+                        .latest_error()
+                        .is_some_and(|error| !error.trim().is_empty())
+            })
             .map(|instance| instance.instance_id())
             .collect()
     }

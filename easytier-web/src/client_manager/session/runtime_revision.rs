@@ -86,11 +86,16 @@ pub(super) async fn reconcile_network_configs_on_heartbeat(
                 RoundStatus::Skip => continue,
                 RoundStatus::Stop => return,
             };
-        let mut mutation_fence = RuntimeMutationFence::default();
         let context = ReconcileRoundContext {
             session_data: &session_data,
             round: &round,
         };
+        match cleanup_direct_run_failures_for_round(&context).await {
+            RoundStatus::Ready(()) => {}
+            RoundStatus::Skip => continue,
+            RoundStatus::Stop => return,
+        }
+        let mut mutation_fence = RuntimeMutationFence::default();
 
         let mut outcome = match &round.scope {
             ReconcileScope::Full => {
@@ -185,6 +190,7 @@ enum RoundStatus<T> {
     Stop,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum ConfigActionResult {
     Success,
     Failed,
@@ -447,6 +453,51 @@ async fn prepare_reconcile_round(
         runtime_config_epoch,
         runtime_config_cache_epoch,
     })
+}
+
+async fn update_direct_run_failures_if_current(
+    session_data: &std::sync::Weak<RwLock<SessionData>>,
+    round: &ReconcileRound,
+    update: impl FnOnce(&mut SessionData) -> Option<std::sync::Arc<tokio::sync::Notify>>,
+) -> RoundStatus<()> {
+    let Some(data) = session_data.upgrade() else {
+        return RoundStatus::Stop;
+    };
+    let notify = {
+        let mut data = data.write().await;
+        if !SessionRpcService::runtime_heartbeat_is_current_or_invalidate_locked(
+            &mut data, &round.req,
+        ) || data.runtime_config_epoch != round.runtime_config_epoch
+        {
+            return RoundStatus::Skip;
+        }
+        update(&mut data)
+    };
+    if let Some(notify) = notify {
+        notify.notify_one();
+    }
+    RoundStatus::Ready(())
+}
+
+async fn cleanup_direct_run_failures_for_round(
+    context: &ReconcileRoundContext<'_>,
+) -> RoundStatus<()> {
+    let desired_instance_ids =
+        managed_config::desired_web_source_instance_ids(&context.round.local_configs);
+    update_direct_run_failures_if_current(
+        context.session_data,
+        context.round,
+        |data| match &context.round.scope {
+            ReconcileScope::Full => {
+                SessionRpcService::retain_direct_run_failures_locked(data, &desired_instance_ids)
+            }
+            ReconcileScope::Patch { .. } => SessionRpcService::remove_direct_run_failures_locked(
+                data,
+                &context.round.delete_instance_ids,
+            ),
+        },
+    )
+    .await
 }
 
 async fn read_managed_config_revision(
@@ -1063,11 +1114,33 @@ async fn run_missing_network_config(
         round.req.user_token
     );
 
-    if ret.is_ok() {
+    let action_result = if ret.is_ok() {
         ConfigActionResult::Success
     } else {
         ConfigActionResult::Failed
+    };
+    if source == PersistedConfigSource::Web {
+        record_direct_run_result(
+            session_data,
+            round,
+            &config.network_instance_id,
+            matches!(action_result, ConfigActionResult::Failed),
+        )
+        .await;
     }
+    action_result
+}
+
+async fn record_direct_run_result(
+    session_data: &std::sync::Weak<RwLock<SessionData>>,
+    round: &ReconcileRound,
+    instance_id: &str,
+    failed: bool,
+) {
+    let _ = update_direct_run_failures_if_current(session_data, round, |data| {
+        SessionRpcService::update_direct_run_failure_locked(data, instance_id, failed)
+    })
+    .await;
 }
 
 async fn remember_web_runtime_config_after_run(
@@ -1186,6 +1259,44 @@ mod tests {
             dst_port,
             proto: "tcp".to_string(),
         }
+    }
+
+    #[tokio::test]
+    async fn full_and_patch_deletes_cleanup_direct_run_failures() {
+        let storage =
+            crate::client_manager::storage::Storage::new(crate::db::Db::memory_db().await);
+        let mut data = SessionData::new(
+            storage.weak_ref(),
+            url::Url::parse("http://127.0.0.1").unwrap(),
+            None,
+            std::sync::Arc::new(crate::FeatureFlags::default()),
+            std::sync::Arc::new(crate::webhook::WebhookConfig::new(
+                None, None, None, None, None,
+            )),
+        );
+        let retained = uuid::Uuid::new_v4().to_string();
+        let removed_by_full = uuid::Uuid::new_v4().to_string();
+        let removed_by_patch = uuid::Uuid::new_v4().to_string();
+        data.direct_run_failed_instance_ids =
+            HashSet::from([retained.clone(), removed_by_full, removed_by_patch.clone()]);
+
+        SessionRpcService::retain_direct_run_failures_locked(
+            &mut data,
+            &HashSet::from([retained.clone(), removed_by_patch.clone()]),
+        );
+        assert_eq!(
+            data.direct_run_failed_instance_ids,
+            HashSet::from([retained.clone(), removed_by_patch.clone()])
+        );
+
+        SessionRpcService::remove_direct_run_failures_locked(
+            &mut data,
+            &HashSet::from([removed_by_patch]),
+        );
+        assert_eq!(
+            data.direct_run_failed_instance_ids,
+            HashSet::from([retained])
+        );
     }
 
     #[tokio::test]

@@ -25,6 +25,7 @@ pub(super) struct WebhookValidationInput {
     pub(super) webhook_config: SharedWebhookConfig,
     pub(super) client_url: url::Url,
     pub(super) applied_config_revision: Option<String>,
+    pub(super) failed_instance_ids: Vec<String>,
     pub(super) req: HeartbeatRequest,
     pub(super) machine_id: uuid::Uuid,
 }
@@ -44,6 +45,7 @@ async fn request_heartbeat_validation(
     client_url: &url::Url,
     persisted_config_revision: Option<&str>,
     applied_config_revision: Option<&str>,
+    failed_instance_ids: &[String],
     req: &HeartbeatRequest,
     machine_id: uuid::Uuid,
 ) -> anyhow::Result<Option<WebhookHeartbeatValidation>> {
@@ -60,6 +62,7 @@ async fn request_heartbeat_validation(
         web_instance_api_base_url: webhook_config.web_instance_api_base_url.clone(),
         persisted_config_revision: persisted_config_revision.map(str::to_string),
         applied_config_revision: applied_config_revision.map(str::to_string),
+        failed_instance_ids: failed_instance_ids.to_vec(),
     };
     let resp = webhook_config
         .validate_token(&webhook_req)
@@ -139,6 +142,9 @@ async fn wait_for_input(
                         webhook_config: data.webhook_config.clone(),
                         client_url: data.client_url.clone(),
                         applied_config_revision: data.applied_config_revision.clone(),
+                        failed_instance_ids: SessionRpcService::sorted_failed_instance_ids_locked(
+                            &data,
+                        ),
                         req,
                         machine_id,
                     },
@@ -228,6 +234,7 @@ pub(super) async fn run_round(
         &input.client_url,
         persisted_config_revision.as_deref(),
         input.applied_config_revision.as_deref(),
+        &input.failed_instance_ids,
         &input.req,
         input.machine_id,
     )
@@ -484,6 +491,35 @@ mod tests {
         });
         data.auth_state = SessionAuthState::Authorized;
         Arc::new(RwLock::new(data))
+    }
+
+    #[tokio::test]
+    async fn validation_input_carries_merged_failed_instance_ids() {
+        let machine_id = uuid::Uuid::new_v4();
+        let core_failed = uuid::Uuid::new_v4();
+        let local_failed = uuid::Uuid::new_v4().to_string();
+        let session_data = validation_session(machine_id).await;
+        let storage = Storage::new(crate::db::Db::memory_db().await);
+        {
+            let mut data = session_data.write().await;
+            data.storage = storage.weak_ref();
+            data.req
+                .as_mut()
+                .unwrap()
+                .failed_network_instances
+                .push(core_failed.into());
+            data.direct_run_failed_instance_ids
+                .insert(local_failed.clone());
+            data.webhook_validation_dirty = true;
+        }
+
+        let (input, _) = wait_for_input(Arc::downgrade(&session_data))
+            .await
+            .expect("validation input");
+        let mut expected = vec![core_failed.to_string(), local_failed];
+        expected.sort_unstable();
+
+        assert_eq!(input.failed_instance_ids, expected);
     }
 
     #[tokio::test]

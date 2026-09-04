@@ -308,6 +308,7 @@ pub struct ValidateTokenRequest {
     pub persisted_config_revision: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub applied_config_revision: Option<String>,
+    pub failed_instance_ids: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -778,6 +779,7 @@ mod tests {
                 web_instance_api_base_url: None,
                 persisted_config_revision: None,
                 applied_config_revision: None,
+                failed_instance_ids: Vec::new(),
             };
             validate_webhook
                 .validate_token_with_http_timeout(&req, Duration::from_millis(20))

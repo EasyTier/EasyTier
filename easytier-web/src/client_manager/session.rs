@@ -117,6 +117,7 @@ pub struct SessionData {
     applied_config_revision: Option<String>,
     known_runtime_base_revision: Option<String>,
     pending_managed_config_reconcile: Option<ManagedConfigReconcileHint>,
+    direct_run_failed_instance_ids: HashSet<String>,
     runtime_config_epoch: u64,
     runtime_config_cache_epoch: u64,
     notifier: broadcast::Sender<HeartbeatRequest>,
@@ -152,6 +153,7 @@ impl SessionData {
             applied_config_revision: None,
             known_runtime_base_revision: None,
             pending_managed_config_reconcile: None,
+            direct_run_failed_instance_ids: HashSet::new(),
             runtime_config_epoch: 0,
             runtime_config_cache_epoch: 0,
             notifier: tx,
@@ -546,6 +548,86 @@ impl SessionRpcService {
         Self::mark_webhook_validation_dirty_locked(data)
     }
 
+    fn failed_instance_ids(
+        req: Option<&HeartbeatRequest>,
+        direct_run_failed_instance_ids: &HashSet<String>,
+    ) -> HashSet<String> {
+        let mut instance_ids = req
+            .into_iter()
+            .flat_map(|req| &req.failed_network_instances)
+            .map(ToString::to_string)
+            .collect::<HashSet<_>>();
+        instance_ids.extend(direct_run_failed_instance_ids.iter().cloned());
+        instance_ids
+    }
+
+    fn failed_instance_ids_locked(data: &SessionData) -> HashSet<String> {
+        Self::failed_instance_ids(data.req.as_ref(), &data.direct_run_failed_instance_ids)
+    }
+
+    fn sorted_failed_instance_ids_locked(data: &SessionData) -> Vec<String> {
+        let mut instance_ids = Self::failed_instance_ids_locked(data)
+            .into_iter()
+            .collect::<Vec<_>>();
+        instance_ids.sort_unstable();
+        instance_ids
+    }
+
+    fn update_heartbeat_failed_instance_ids_locked(
+        data: &mut SessionData,
+        req: &HeartbeatRequest,
+    ) -> Option<Arc<Notify>> {
+        let previous_instance_ids = Self::failed_instance_ids_locked(data);
+        let next_instance_ids =
+            Self::failed_instance_ids(Some(req), &data.direct_run_failed_instance_ids);
+        (next_instance_ids != previous_instance_ids)
+            .then(|| Self::mark_webhook_validation_state_changed_locked(data))
+    }
+
+    fn update_direct_run_failures_locked(
+        data: &mut SessionData,
+        update: impl FnOnce(&mut HashSet<String>),
+    ) -> Option<Arc<Notify>> {
+        let previous_failed_instance_ids = Self::failed_instance_ids_locked(data);
+        update(&mut data.direct_run_failed_instance_ids);
+        let failed_instance_ids = Self::failed_instance_ids_locked(data);
+        (failed_instance_ids != previous_failed_instance_ids)
+            .then(|| Self::mark_webhook_validation_state_changed_locked(data))
+    }
+
+    fn update_direct_run_failure_locked(
+        data: &mut SessionData,
+        instance_id: &str,
+        failed: bool,
+    ) -> Option<Arc<Notify>> {
+        Self::update_direct_run_failures_locked(data, |direct_run_instance_ids| {
+            if failed {
+                direct_run_instance_ids.insert(instance_id.to_owned());
+            } else {
+                direct_run_instance_ids.remove(instance_id);
+            }
+        })
+    }
+
+    fn retain_direct_run_failures_locked(
+        data: &mut SessionData,
+        desired_instance_ids: &HashSet<String>,
+    ) -> Option<Arc<Notify>> {
+        Self::update_direct_run_failures_locked(data, |direct_run_instance_ids| {
+            direct_run_instance_ids
+                .retain(|instance_id| desired_instance_ids.contains(instance_id));
+        })
+    }
+
+    fn remove_direct_run_failures_locked(
+        data: &mut SessionData,
+        instance_ids: &HashSet<String>,
+    ) -> Option<Arc<Notify>> {
+        Self::update_direct_run_failures_locked(data, |direct_run_instance_ids| {
+            direct_run_instance_ids.retain(|instance_id| !instance_ids.contains(instance_id));
+        })
+    }
+
     async fn handle_webhook_heartbeat(
         &self,
         storage: &Storage,
@@ -563,13 +645,16 @@ impl SessionRpcService {
                 );
                 return Err(anyhow::anyhow!("webhook session is invalid").into());
             }
+            let failure_notify = Self::update_heartbeat_failed_instance_ids_locked(&mut data, &req);
             let runtime_req = Self::store_latest_heartbeat_req(&mut data, req);
             let heartbeat_count = data
                 .heartbeat_count
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                 + 1;
-            let notify = should_notify_webhook_validation(heartbeat_count)
-                .then(|| Self::mark_webhook_validation_dirty_locked(&mut data));
+            let notify = failure_notify.or_else(|| {
+                should_notify_webhook_validation(heartbeat_count)
+                    .then(|| Self::mark_webhook_validation_dirty_locked(&mut data))
+            });
             let authorized = data.auth_state.is_authorized();
             if let Some(storage_token) = data.storage_token.clone() {
                 let report_time = Self::heartbeat_report_timestamp(&runtime_req);
@@ -650,9 +735,11 @@ impl SessionRpcService {
             }
         };
 
-        let (storage_token, notifier, runtime_req, session_epoch) = {
+        let (storage_token, notifier, runtime_req, session_epoch, validation_notify) = {
             let mut data = self.data.write().await;
             let is_new_storage_token = data.storage_token.is_none();
+            let validation_notify =
+                Self::update_heartbeat_failed_instance_ids_locked(&mut data, &req);
             let runtime_req = Self::store_latest_heartbeat_req(&mut data, req.clone());
             data.heartbeat_count
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -676,12 +763,16 @@ impl SessionRpcService {
                 data.notifier.clone(),
                 runtime_req,
                 data.session_epoch,
+                validation_notify,
             )
         };
 
         let report_time = Self::heartbeat_report_timestamp(&runtime_req);
         storage.update_session_client(storage_token, report_time, true, session_epoch);
         let _ = notifier.send(runtime_req);
+        if let Some(notify) = validation_notify {
+            notify.notify_one();
+        }
         Ok(HeartbeatResponse {})
     }
 }
@@ -1060,6 +1151,118 @@ mod tests {
             user_token: token.to_string(),
             ..Default::default()
         }
+    }
+
+    async fn failure_state_test_data() -> SessionData {
+        let storage = Storage::new(crate::db::Db::memory_db().await);
+        SessionData::new(
+            storage.weak_ref(),
+            url::Url::parse("http://127.0.0.1").unwrap(),
+            None,
+            Arc::new(FeatureFlags::default()),
+            Arc::new(crate::webhook::WebhookConfig::new(
+                None, None, None, None, None,
+            )),
+        )
+    }
+
+    #[tokio::test]
+    async fn failed_instance_ids_merge_core_and_web_local_failures() {
+        let mut data = failure_state_test_data().await;
+        let core_failed = uuid::Uuid::new_v4();
+        let local_failed = uuid::Uuid::new_v4().to_string();
+        let core_failed_req = HeartbeatRequest {
+            failed_network_instances: vec![core_failed.into()],
+            ..Default::default()
+        };
+
+        assert!(
+            SessionRpcService::update_heartbeat_failed_instance_ids_locked(
+                &mut data,
+                &core_failed_req,
+            )
+            .is_some()
+        );
+        SessionRpcService::store_latest_heartbeat_req(&mut data, core_failed_req);
+        assert_eq!(
+            SessionRpcService::failed_instance_ids_locked(&data),
+            HashSet::from([core_failed.to_string()])
+        );
+
+        assert!(
+            SessionRpcService::update_direct_run_failure_locked(&mut data, &local_failed, true)
+                .is_some()
+        );
+        assert_eq!(
+            SessionRpcService::failed_instance_ids_locked(&data),
+            HashSet::from([core_failed.to_string(), local_failed.clone()])
+        );
+
+        let recovered_req = HeartbeatRequest::default();
+        SessionRpcService::update_heartbeat_failed_instance_ids_locked(&mut data, &recovered_req);
+        SessionRpcService::store_latest_heartbeat_req(&mut data, recovered_req);
+        assert_eq!(
+            SessionRpcService::failed_instance_ids_locked(&data),
+            HashSet::from([local_failed])
+        );
+    }
+
+    #[tokio::test]
+    async fn stable_failed_instance_ids_do_not_repeat_validation_work() {
+        let mut data = failure_state_test_data().await;
+        let failed = uuid::Uuid::new_v4();
+        let failed_req = HeartbeatRequest {
+            failed_network_instances: vec![failed.into()],
+            ..Default::default()
+        };
+        assert!(
+            SessionRpcService::update_heartbeat_failed_instance_ids_locked(&mut data, &failed_req)
+                .is_some()
+        );
+        SessionRpcService::store_latest_heartbeat_req(&mut data, failed_req);
+        data.webhook_validation_dirty = false;
+        let change_epoch = data.webhook_validation_change_epoch;
+
+        assert!(
+            SessionRpcService::update_direct_run_failure_locked(
+                &mut data,
+                &failed.to_string(),
+                true,
+            )
+            .is_none()
+        );
+        let recovered_req = HeartbeatRequest::default();
+        assert!(
+            SessionRpcService::update_heartbeat_failed_instance_ids_locked(
+                &mut data,
+                &recovered_req,
+            )
+            .is_none()
+        );
+        SessionRpcService::store_latest_heartbeat_req(&mut data, recovered_req);
+        assert!(!data.webhook_validation_dirty);
+        assert_eq!(data.webhook_validation_change_epoch, change_epoch);
+    }
+
+    #[tokio::test]
+    async fn direct_run_failure_is_added_and_direct_success_clears_it() {
+        let mut data = failure_state_test_data().await;
+        let instance_id = uuid::Uuid::new_v4().to_string();
+
+        assert!(
+            SessionRpcService::update_direct_run_failure_locked(&mut data, &instance_id, true)
+                .is_some()
+        );
+        assert_eq!(
+            SessionRpcService::failed_instance_ids_locked(&data),
+            HashSet::from([instance_id.clone()])
+        );
+
+        assert!(
+            SessionRpcService::update_direct_run_failure_locked(&mut data, &instance_id, false)
+                .is_some()
+        );
+        assert!(SessionRpcService::failed_instance_ids_locked(&data).is_empty());
     }
 
     #[derive(Clone)]
@@ -1471,6 +1674,7 @@ mod tests {
                 webhook_config,
                 client_url: url::Url::parse("http://127.0.0.1").unwrap(),
                 applied_config_revision: None,
+                failed_instance_ids: Vec::new(),
                 req,
                 machine_id,
             },
@@ -1680,6 +1884,7 @@ mod tests {
                 )),
                 client_url: url::Url::parse("http://127.0.0.1").unwrap(),
                 applied_config_revision: None,
+                failed_instance_ids: Vec::new(),
                 req,
                 machine_id,
             },
@@ -1744,6 +1949,7 @@ mod tests {
             )),
             client_url: client_url.clone(),
             applied_config_revision: None,
+            failed_instance_ids: Vec::new(),
             req: req.clone(),
             machine_id,
         };
@@ -1927,6 +2133,7 @@ mod tests {
                 )),
                 client_url,
                 applied_config_revision: None,
+                failed_instance_ids: Vec::new(),
                 req,
                 machine_id,
             },
@@ -1990,6 +2197,7 @@ mod tests {
                 )),
                 client_url: url::Url::parse("http://127.0.0.1").unwrap(),
                 applied_config_revision: None,
+                failed_instance_ids: Vec::new(),
                 req: req.clone(),
                 machine_id,
             },
@@ -2017,6 +2225,7 @@ mod tests {
             web_instance_api_base_url: Some("http://console".to_string()),
             persisted_config_revision: Some("rev-0".to_string()),
             applied_config_revision: Some("rev-1".to_string()),
+            failed_instance_ids: vec!["failed-instance".to_string()],
         };
 
         let value = serde_json::to_value(req).unwrap();
@@ -2031,6 +2240,10 @@ mod tests {
                 .get("applied_config_revision")
                 .and_then(|v| v.as_str()),
             Some("rev-1")
+        );
+        assert_eq!(
+            value.get("failed_instance_ids"),
+            Some(&json!(["failed-instance"]))
         );
     }
 

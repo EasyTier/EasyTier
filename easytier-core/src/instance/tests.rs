@@ -1396,6 +1396,74 @@ virtual_ip = "10.82.0.2/24"
     }
 
     #[tokio::test]
+    async fn manager_reports_only_stopped_instances_with_errors() {
+        use crate::instance::manager::{InstanceFactory, InstanceManager};
+
+        struct StateTestFactory;
+
+        impl InstanceFactory for StateTestFactory {
+            type Instance = CoreInstance<TestHost>;
+            type CreateContext = ();
+            type Error = anyhow::Error;
+
+            fn create(
+                &self,
+                config: TomlConfig,
+                (): Self::CreateContext,
+            ) -> Result<Arc<Self::Instance>, Self::Error> {
+                let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+                CoreInstance::from_toml(config, adapters(None, Arc::new(packet_sink)))
+            }
+        }
+
+        fn create_instance(
+            manager: &InstanceManager<StateTestFactory>,
+            name: &str,
+        ) -> Arc<CoreInstance<TestHost>> {
+            let config = TomlConfig::new_from_str(&format!("instance_name = \"{name}\"")).unwrap();
+            manager.create(config, ()).unwrap()
+        }
+
+        let manager = InstanceManager::new(StateTestFactory, None);
+        let running = create_instance(&manager, "running");
+        running
+            .latest_error
+            .write()
+            .replace("old startup error".to_owned());
+        running.set_state(CoreInstanceState::Running);
+
+        let starting = create_instance(&manager, "starting");
+        starting
+            .latest_error
+            .write()
+            .replace("old startup error".to_owned());
+        starting.set_state(CoreInstanceState::Starting);
+
+        let stopped_without_error = create_instance(&manager, "stopped-without-error");
+        stopped_without_error.set_state(CoreInstanceState::Stopped);
+
+        let stopped_with_blank_error = create_instance(&manager, "stopped-with-blank-error");
+        stopped_with_blank_error
+            .latest_error
+            .write()
+            .replace("  \n".to_owned());
+        stopped_with_blank_error.set_state(CoreInstanceState::Stopped);
+
+        let failed = create_instance(&manager, "failed");
+        failed
+            .latest_error
+            .write()
+            .replace("startup failed".to_owned());
+        failed.set_state(CoreInstanceState::Stopped);
+        let failed_id = failed.instance_id();
+
+        assert_eq!(manager.failed_instance_ids(), vec![failed_id]);
+
+        manager.delete_network_instances([failed_id]).await.unwrap();
+        assert!(manager.failed_instance_ids().is_empty());
+    }
+
+    #[tokio::test]
     async fn aborting_host_prepare_runs_unified_cleanup() {
         #[derive(Default)]
         struct BlockingPrepareRuntimeHost {
