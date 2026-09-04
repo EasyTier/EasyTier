@@ -269,12 +269,37 @@ fn normalized_managed_credentials(
     Ok(NetworkConfig::new_from_config(config.gen_config()?)?.managed_credentials)
 }
 
+fn is_automatic_windows_dev_name(dev_name: &str) -> bool {
+    let Some((interface_count, suffix)) = dev_name
+        .strip_prefix("et_")
+        .and_then(|value| value.split_once('_'))
+    else {
+        return false;
+    };
+    !interface_count.is_empty()
+        && interface_count.bytes().all(|byte| byte.is_ascii_digit())
+        && suffix.len() == 4
+        && suffix
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+}
+
 fn web_source_runtime_patch(
     current: &NetworkConfig,
     desired: &NetworkConfig,
 ) -> anyhow::Result<Option<InstanceConfigPatch>> {
     let mut current_base = hot_patch_base(current)?;
     let mut desired_base = hot_patch_base(desired)?;
+    if desired.dev_name.is_none()
+        || (desired.dev_name.as_deref() == Some("")
+            && current
+                .dev_name
+                .as_deref()
+                .is_some_and(is_automatic_windows_dev_name))
+    {
+        current_base.dev_name = None;
+        desired_base.dev_name = None;
+    }
     let current_hostname = current_base.hostname.take().unwrap_or_default();
     let desired_hostname = desired_base.hostname.take().unwrap_or_default();
     if current_base != desired_base {
@@ -775,6 +800,63 @@ mod tests {
                 SocketType::Tcp as i32
             )
         );
+    }
+
+    #[test]
+    fn runtime_reconcile_ignores_automatic_device_name_when_unmanaged() {
+        let mut current = config_with_port_forwards(Vec::new());
+        current.dev_name = Some("et_3_abcd".to_string());
+        let desired = config_with_port_forwards(Vec::new());
+
+        let action = prepare_web_source_runtime_reconcile_from_current(&current, desired)
+            .expect("prepare reconcile");
+
+        assert!(matches!(action, RuntimeReconcileAction::Unchanged(_)));
+    }
+
+    #[test]
+    fn runtime_reconcile_ignores_automatic_device_name_for_empty_desired_name() {
+        let mut current = config_with_port_forwards(Vec::new());
+        current.dev_name = Some("et_3_abcd".to_string());
+        let mut desired = config_with_port_forwards(Vec::new());
+        desired.dev_name = Some(String::new());
+
+        let action = prepare_web_source_runtime_reconcile_from_current(&current, desired)
+            .expect("prepare reconcile");
+
+        assert!(matches!(action, RuntimeReconcileAction::Unchanged(_)));
+    }
+
+    #[test]
+    fn runtime_reconcile_clears_explicit_device_name() {
+        let mut current = config_with_port_forwards(Vec::new());
+        current.dev_name = Some("managed-device".to_string());
+        let mut desired = config_with_port_forwards(Vec::new());
+        desired.dev_name = Some(String::new());
+
+        let action = prepare_web_source_runtime_reconcile_from_current(&current, desired)
+            .expect("prepare reconcile");
+        let RuntimeReconcileAction::Run { overwrite, .. } = action else {
+            panic!("clearing an explicit device name should require a full overwrite");
+        };
+
+        assert!(overwrite);
+    }
+
+    #[test]
+    fn runtime_reconcile_applies_explicit_device_name() {
+        let mut current = config_with_port_forwards(Vec::new());
+        current.dev_name = Some("et_3_abcd".to_string());
+        let mut desired = config_with_port_forwards(Vec::new());
+        desired.dev_name = Some("managed-device".to_string());
+
+        let action = prepare_web_source_runtime_reconcile_from_current(&current, desired)
+            .expect("prepare reconcile");
+        let RuntimeReconcileAction::Run { overwrite, .. } = action else {
+            panic!("explicit device name should require a full overwrite");
+        };
+
+        assert!(overwrite);
     }
 
     #[test]
