@@ -48,9 +48,9 @@ use easytier::common::{
 use easytier::proto::api::manage::NetworkConfig;
 use easytier::proto::api::manage::NetworkingMethod;
 use easytier::web_client::{WebClient, WebClientHooks, run_web_client};
+use easytier_ohos_core::runtime;
+use easytier_ohos_core::{ASYNC_RUNTIME, INSTANCE_MANAGER};
 use easytier_ohos_features::config;
-use easytier_ohos_kernel::runtime;
-use easytier_ohos_kernel::{ASYNC_RUNTIME, INSTANCE_MANAGER};
 use kernel_bridge::{
     start_local_socket_server as start_local_socket_server_inner,
     stop_local_socket_server as stop_local_socket_server_inner,
@@ -1060,12 +1060,12 @@ pub fn set_tun_fd(config_id: String, fd: i32) -> bool {
 
 #[napi]
 pub fn enable_socket_protection() -> bool {
-    easytier_ohos_kernel::socket_protection::enable_socket_protection()
+    easytier_ohos_core::socket_protection::enable_socket_protection()
 }
 
 #[napi]
 pub async fn next_socket_protection_request() -> Option<SocketProtectionRequest> {
-    easytier_ohos_kernel::socket_protection::SOCKET_PROTECTION_MANAGER
+    easytier_ohos_core::socket_protection::SOCKET_PROTECTION_MANAGER
         .next_request()
         .await
         .map(Into::into)
@@ -1080,13 +1080,18 @@ pub fn complete_socket_protection(
     let Ok(request_id) = request_id.parse::<u64>() else {
         return false;
     };
-    easytier_ohos_kernel::socket_protection::SOCKET_PROTECTION_MANAGER
+    easytier_ohos_core::socket_protection::SOCKET_PROTECTION_MANAGER
         .complete_request(request_id, success, error)
 }
 
 #[napi]
 pub fn disable_socket_protection() -> bool {
-    easytier_ohos_kernel::socket_protection::disable_socket_protection()
+    easytier_ohos_core::socket_protection::disable_socket_protection()
+}
+
+#[napi]
+pub fn fail_socket_protection() -> bool {
+    easytier_ohos_core::socket_protection::fail_socket_protection()
 }
 
 #[napi]
@@ -1147,6 +1152,7 @@ mod tests {
                     events: vec![],
                     routes: vec![],
                     peers: vec![],
+                    manual_routes: vec![],
                 },
                 RuntimeInstanceState {
                     config_id: "ec7b6a3c-aeae-4c0e-844e-f7ec2dbdc2ce".to_string(),
@@ -1162,6 +1168,7 @@ mod tests {
                     events: vec![],
                     routes: vec![],
                     peers: vec![],
+                    manual_routes: vec![],
                 },
             ],
             tun: runtime::state::runtime_state::TunAggregateState {

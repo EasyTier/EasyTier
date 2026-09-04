@@ -6,10 +6,10 @@ use crate::runtime::state::runtime_state::{
 use crate::{ASYNC_RUNTIME, INSTANCE_MANAGER};
 use easytier::common::global_ctx::{EventBusSubscriber, GlobalCtxEvent};
 use easytier::instance::factory::subscribe_native_instance_event;
-use easytier_ohos_kernel::protocol::{
+use easytier_ohos_core::protocol::{
     TunRequestPayload, broadcast_local_socket_json_payload_message, broadcast_local_socket_message,
 };
-use easytier_ohos_kernel::routing::aggregate_tun_routes;
+use easytier_ohos_core::routing::aggregate_tun_routes;
 use once_cell::sync::Lazy;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};

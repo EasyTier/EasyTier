@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
+use easytier_ohos_core::runtime::state::runtime_state as kernel_types;
 use easytier_ohos_features::config::services::schema_service as feature_schema;
 use easytier_ohos_features::config::types::stored_config as feature_types;
-use easytier_ohos_kernel::runtime::state::runtime_state as kernel_types;
 use napi_derive_ohos::napi;
 use serde::Serialize;
 
@@ -15,10 +15,10 @@ pub struct SocketProtectionRequest {
     pub purpose: String,
 }
 
-impl From<easytier_ohos_kernel::socket_protection::SocketProtectionRequest>
+impl From<easytier_ohos_core::socket_protection::SocketProtectionRequest>
     for SocketProtectionRequest
 {
-    fn from(value: easytier_ohos_kernel::socket_protection::SocketProtectionRequest) -> Self {
+    fn from(value: easytier_ohos_core::socket_protection::SocketProtectionRequest) -> Self {
         Self {
             request_id: value.request_id.to_string(),
             socket_fd: value.socket_fd,

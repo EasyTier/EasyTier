@@ -1,5 +1,5 @@
 [package]
-name = "easytier-ohos-kernel"
+name = "easytier-ohos-core"
 version = "0.1.0"
 edition = "2024"
 description = "HarmonyOS-side EasyTier runtime, instance lifecycle and kernel interaction state"

@@ -13,7 +13,7 @@ pub static ASYNC_RUNTIME: Lazy<Runtime> = Lazy::new(|| {
     Builder::new_multi_thread()
         .enable_all()
         .build()
-        .expect("tokio runtime for easytier-ohos-kernel")
+        .expect("tokio runtime for easytier-ohos-core")
 });
 
 /// Process-wide EasyTier instance manager. Keeping it in the kernel crate prevents feature/storage

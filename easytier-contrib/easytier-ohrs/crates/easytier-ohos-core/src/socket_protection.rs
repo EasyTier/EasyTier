@@ -13,6 +13,8 @@ use easytier_core::socket::{tcp::TcpListenPurpose, udp::UdpSocketPurpose};
 use once_cell::sync::Lazy;
 use tokio::sync::{Notify, oneshot};
 
+const MAX_PENDING_SOCKET_PROTECTIONS: usize = 128;
+
 #[derive(Debug, Clone)]
 pub struct SocketProtectionRequest {
     pub request_id: u64,
@@ -77,21 +79,25 @@ impl SocketProtectionManager {
     }
 
     fn disable(&self) {
-        let pending = {
+        let queued = {
             let mut state = self
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.enabled = false;
-            state.queued.clear();
-            state
-                .pending
-                .drain()
-                .map(|(_, pending)| pending.completion)
+            let queued_ids = state
+                .queued
+                .drain(..)
+                .map(|request| request.request_id)
+                .collect::<Vec<_>>();
+            queued_ids
+                .into_iter()
+                .filter_map(|request_id| state.pending.remove(&request_id))
+                .map(|pending| pending.completion)
                 .collect::<Vec<_>>()
         };
         self.request_ready.notify_waiters();
-        for sender in pending {
+        for sender in queued {
             let _ = sender.send(Err(io::Error::new(
                 io::ErrorKind::Interrupted,
                 "native socket protection stopped",
@@ -168,6 +174,12 @@ impl NativeSocketProtector for SocketProtectionManager {
                     "native socket protection is not active",
                 ));
             }
+            if state.pending.len() >= MAX_PENDING_SOCKET_PROTECTIONS {
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "too many pending native socket protection requests",
+                ));
+            }
             state.next_request_id = state.next_request_id.wrapping_add(1).max(1);
             let request_id = state.next_request_id;
             state.queued.push_back(SocketProtectionRequest {
@@ -202,6 +214,13 @@ pub fn enable_socket_protection() -> bool {
 
 pub fn disable_socket_protection() -> bool {
     set_native_socket_protector(None);
+    SOCKET_PROTECTION_MANAGER.disable();
+    true
+}
+
+pub fn fail_socket_protection() -> bool {
+    // Keep the disabled manager installed so an unexpected ArkTS pump failure
+    // remains fail-closed for every subsequently created transport socket.
     SOCKET_PROTECTION_MANAGER.disable();
     true
 }
@@ -258,6 +277,40 @@ mod tests {
             assert_ne!(request.socket_fd, socket_fd);
             assert!(manager.complete_request(request.request_id, true, None));
             task.await.unwrap().unwrap();
+        });
+    }
+
+    #[test]
+    fn dispatched_socket_is_retained_during_shutdown() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let manager = Arc::new(SocketProtectionManager::default());
+            manager.enable();
+            let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+            let socket_fd = socket.as_raw_fd();
+            let task = tokio::spawn({
+                let manager = manager.clone();
+                async move {
+                    manager
+                        .protect(socket_fd as u64, NativeSocketPurpose::DnsUdp)
+                        .await
+                }
+            });
+            let request = manager.next_request().await.unwrap();
+
+            manager.disable();
+            tokio::task::yield_now().await;
+            assert!(!task.is_finished());
+
+            assert!(manager.complete_request(
+                request.request_id,
+                false,
+                Some("shutdown".to_string()),
+            ));
+            assert!(task.await.unwrap().is_err());
         });
     }
 }

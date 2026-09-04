@@ -1319,7 +1319,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "easytier-ohos-kernel"
+name = "easytier-ohos-core"
 version = "0.1.0"
 dependencies = [
  "async-trait",
@@ -1343,7 +1343,7 @@ dependencies = [
  "easytier",
  "easytier-core",
  "easytier-ohos-features",
- "easytier-ohos-kernel",
+ "easytier-ohos-core",
  "easytier-proto",
  "futures",
  "napi-build-ohos",

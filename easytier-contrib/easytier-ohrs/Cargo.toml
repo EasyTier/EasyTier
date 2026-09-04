@@ -1,7 +1,7 @@
 [workspace]
 members = [
     "crates/easytier-ohos-features",
-    "crates/easytier-ohos-kernel",
+    "crates/easytier-ohos-core",
 ]
 resolver = "2"
 
@@ -19,7 +19,7 @@ async-trait = "0.1"
 bytes = "1.5"
 easytier-core = { path = "../../easytier-core", default-features = false }
 easytier-ohos-features = { path = "crates/easytier-ohos-features" }
-easytier-ohos-kernel = { path = "crates/easytier-ohos-kernel" }
+easytier-ohos-core = { path = "crates/easytier-ohos-core" }
 easytier-proto = { path = "../../easytier-proto", default-features = false, features = [
     "api",
     "core",
