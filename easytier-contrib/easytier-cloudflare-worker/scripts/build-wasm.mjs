@@ -31,8 +31,8 @@ await new Promise((resolve, reject) => {
       "--no-default-features",
       "--features",
       browserBuild
-        ? "wasm-host-websocket-outbound,aes-gcm,proxy-smoltcp-stack"
-        : "wasm-host-websocket,aes-gcm",
+        ? "wasm-host-tunnel-outbound,aes-gcm,proxy-smoltcp-stack"
+        : "wasm-host-tunnel,aes-gcm",
     ],
     {
       cwd: repositoryRoot,

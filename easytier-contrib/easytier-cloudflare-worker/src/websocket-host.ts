@@ -1,8 +1,7 @@
 const HOST_PENDING = -1;
 const HOST_INVALID = -3;
 const HOST_UNSUPPORTED = -4;
-const HOST_WEBSOCKET_CLOSED = -10;
-const HOST_WEBSOCKET_TEXT = -11;
+const HOST_TUNNEL_CLOSED = -10;
 
 const PACKET_SINK_HANDLE = 1n;
 const EVENT_SINK_HANDLE = 2n;
@@ -17,7 +16,6 @@ const MAX_URL_BYTES = 16 * 1024;
 
 type IncomingMessage =
   | { kind: "binary"; bytes: Uint8Array }
-  | { kind: "text" }
   | { kind: "error"; status: number };
 
 type ReceiveOperation =
@@ -71,13 +69,6 @@ interface WebSocketState {
   guestOwned: boolean;
 }
 
-export interface HostWebSocketMetadata {
-  version: 1;
-  local_url: string;
-  remote_url: string;
-  resolved_remote_url?: string;
-}
-
 export interface WebSocketHostHealth {
   connections: number;
   queuedBytes: number;
@@ -114,29 +105,29 @@ export class WebSocketHost {
       message: number,
       messageLength: number,
     ) => this.emitEvent(handle, kind, kindLength, message, messageLength),
-    start_websocket_receive: (
+    start_tunnel_receive: (
       handle: bigint,
       operation: bigint,
       capacity: number,
     ) => this.startReceive(handle, operation, capacity),
-    take_websocket_receive: (
+    take_tunnel_receive: (
       operation: bigint,
       destination: number,
       capacity: number,
     ) => this.takeReceive(operation, destination, capacity),
-    start_websocket_send: (
+    start_tunnel_send: (
       handle: bigint,
       operation: bigint,
       source: number,
       length: number,
     ) => this.startSend(handle, operation, source, length),
-    take_websocket_send: (operation: bigint) => this.takeSend(operation),
-    start_websocket_connect: (
+    take_tunnel_send: (operation: bigint) => this.takeSend(operation),
+    start_tunnel_connect: (
       operation: bigint,
       url: number,
       urlLength: number,
     ) => this.startConnect(operation, url, urlLength),
-    take_websocket_connect: (operation: bigint) =>
+    take_tunnel_connect: (operation: bigint) =>
       this.takeConnect(operation),
     cancel_operation: (operation: bigint) => this.cancelOperation(operation),
     close: (handle: bigint) => this.closeHandle(handle),
@@ -237,7 +228,12 @@ export class WebSocketHost {
       return;
     }
     if (typeof data === "string") {
-      this.enqueue(handle, state, { kind: "text" }, 0);
+      this.terminateWithError(
+        handle,
+        state,
+        1003,
+        "binary tunnel payload required",
+      );
       return;
     }
     if (data.byteLength > MAX_MESSAGE_BYTES) {
@@ -257,7 +253,7 @@ export class WebSocketHost {
     if (state.pendingReceive !== undefined && state.incoming.length === 0) {
       this.completeReceive(state.pendingReceive, {
         kind: "error",
-        status: HOST_WEBSOCKET_CLOSED,
+        status: HOST_TUNNEL_CLOSED,
       });
     }
   }
@@ -361,12 +357,12 @@ export class WebSocketHost {
       }
     });
     socket.addEventListener("close", () => {
-      if (!this.failConnect(operation, handle, HOST_WEBSOCKET_CLOSED)) {
+      if (!this.failConnect(operation, handle, HOST_TUNNEL_CLOSED)) {
         this.remoteClose(handle);
       }
     });
     socket.addEventListener("error", () => {
-      if (!this.failConnect(operation, handle, HOST_WEBSOCKET_CLOSED)) {
+      if (!this.failConnect(operation, handle, HOST_TUNNEL_CLOSED)) {
         this.remoteError(handle);
       }
     });
@@ -471,7 +467,7 @@ export class WebSocketHost {
         handle,
         capacity,
         state: "ready",
-        message: { kind: "error", status: HOST_WEBSOCKET_CLOSED },
+        message: { kind: "error", status: HOST_TUNNEL_CLOSED },
       });
       return 0;
     }
@@ -498,10 +494,6 @@ export class WebSocketHost {
       return HOST_PENDING;
     }
     const { message } = pending;
-    if (message.kind === "text") {
-      this.operations.delete(operation);
-      return HOST_WEBSOCKET_TEXT;
-    }
     if (message.kind === "error") {
       this.operations.delete(operation);
       return message.status;
@@ -539,7 +531,7 @@ export class WebSocketHost {
     }
     const state = this.sockets.get(handle);
     if (state === undefined || state.remoteClosed) {
-      return HOST_WEBSOCKET_CLOSED;
+      return HOST_TUNNEL_CLOSED;
     }
     const bufferedAmount = Reflect.get(state.socket, "bufferedAmount");
     if (
@@ -554,7 +546,7 @@ export class WebSocketHost {
     try {
       state.socket.send(message);
     } catch {
-      status = HOST_WEBSOCKET_CLOSED;
+      status = HOST_TUNNEL_CLOSED;
     }
     this.operations.set(operation, {
       kind: "send",

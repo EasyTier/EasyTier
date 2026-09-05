@@ -185,19 +185,19 @@ wire codecs. It does not own socket I/O or connection policy.
 - connector environment observations;
 - packet ingress and egress;
 - Host socket operation bridges and handle-based TCP/UDP/listener adapters;
-- host-upgraded WebSocket endpoints used as message-preserving tunnels.
+- host-owned, message-preserving tunnel endpoints.
 
 Core owns scheduling, backpressure, cancellation, UDP session state, and
 protocol state even when each actual operation crosses a Host Adapter. A Host
 Adapter owns the real resource and performs the OS operation.
 
-For host-upgraded WebSockets, ownership crosses the guest ABI only after a
-bounded Host listener queue accepts the tunnel. The queue is registered
-through `CoreHostAdapters` and consumed by the normal `CoreListenerRuntime`,
-so the tunnel still reaches `PeerAcceptedTunnelHandler` and cannot bypass
-peer handshake, admission, events, or routing policy. Each binary WebSocket
-message is one `DummyTunnel` payload; no TCP length prefix is added. Text
-messages are invalid packets and a clean close is stream EOF.
+For host-owned tunnels, ownership crosses the guest ABI only after a bounded
+Host listener queue accepts the tunnel. The queue is registered through
+`CoreHostAdapters` and consumed by the normal `CoreListenerRuntime`, so the
+tunnel still reaches `PeerAcceptedTunnelHandler` and cannot bypass peer
+handshake, admission, events, or routing policy. Each Host receive produces
+one complete `DummyTunnel` payload; no stream framing is added. The Host owns
+transport-specific message validation and maps a clean close to tunnel EOF.
 
 Hosts without outbound sockets select `CoreConnectivityMode::InboundOnly` for
 one instance. That startup plan retains listeners and the peer/router while

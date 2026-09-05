@@ -8,8 +8,8 @@ interface RuntimeHarness {
 }
 
 interface AttachHarness {
-  attachWebSocket(
-    websocketHandle: bigint,
+  attachTunnel(
+    tunnelHandle: bigint,
     metadata: {
       version: 1;
       local_url: string;
@@ -90,7 +90,7 @@ describe("EasyTierRuntime timer ownership", () => {
   });
 });
 
-describe("EasyTierRuntime WebSocket ownership", () => {
+describe("EasyTierRuntime host tunnel ownership", () => {
   it("commits guest ownership before driving admission", async () => {
     const events: string[] = [];
     const runtime = Object.create(
@@ -115,14 +115,14 @@ describe("EasyTierRuntime WebSocket ownership", () => {
       armNextDrive: () => events.push("armNextDrive"),
     });
 
-    await runtime.attachWebSocket(2n, {
+    await runtime.attachTunnel(2n, {
       version: 1,
       local_url: "wss://relay.example/",
       remote_url: "wss://client.example/",
     });
 
     expect(events).toEqual([
-      "acceptWebSocket",
+      "acceptTunnel",
       "transferToGuest",
       "bufferFree",
       "driveUntilIdle",
@@ -152,7 +152,7 @@ describe("EasyTierRuntime WebSocket ownership", () => {
     });
 
     await expect(
-      runtime.attachWebSocket(2n, {
+      runtime.attachTunnel(2n, {
         version: 1,
         local_url: "wss://relay.example/",
         remote_url: "wss://client.example/",

@@ -1,8 +1,10 @@
 import { DurableObject } from "cloudflare:workers";
 import coreModule from "./generated/easytier_core.wasm";
 
-import { EasyTierRuntime } from "./core-runtime";
-import type { HostWebSocketMetadata } from "./websocket-host";
+import {
+  EasyTierRuntime,
+  type HostTunnelMetadata,
+} from "./core-runtime";
 
 export class EasyTierCoreObject extends DurableObject<Env> {
   private readonly runtime: EasyTierRuntime;
@@ -56,7 +58,7 @@ export class EasyTierCoreObject extends DurableObject<Env> {
     server.accept();
 
     try {
-      await this.runtime.attachWebSocket(
+      await this.runtime.attachTunnel(
         handle,
         this.metadataFor(request, handle),
       );
@@ -80,7 +82,7 @@ export class EasyTierCoreObject extends DurableObject<Env> {
   private metadataFor(
     request: Request,
     handle: bigint,
-  ): HostWebSocketMetadata {
+  ): HostTunnelMetadata {
     const local = new URL(request.url);
     local.protocol = local.protocol === "https:" ? "wss:" : "ws:";
     const remote = new URL(`wss://client.invalid/${handle}`);

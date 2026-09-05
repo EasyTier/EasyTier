@@ -18,8 +18,8 @@ pub mod plan;
 #[cfg(any(
     test,
     all(
-        feature = "wasm-host-websocket",
-        not(feature = "wasm-host-websocket-outbound")
+        feature = "wasm-host-tunnel",
+        not(feature = "wasm-host-tunnel-outbound")
     )
 ))]
 pub(crate) mod queue;

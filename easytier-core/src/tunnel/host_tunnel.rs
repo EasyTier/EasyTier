@@ -1,4 +1,4 @@
-//! EasyTier message tunnel over a host-upgraded WebSocket.
+//! EasyTier message tunnel over a host-owned transport.
 
 use std::{io, sync::Arc};
 
@@ -8,7 +8,7 @@ use url::Url;
 use crate::{
     host::{
         socket::{HostSocketHandle, HostSocketRuntime},
-        websocket::{HostWebSocketIo, HostWebSocketMessage, MAX_HOST_WEBSOCKET_MESSAGE_LEN},
+        tunnel::{HostTunnelIo, MAX_HOST_TUNNEL_PAYLOAD_LEN},
     },
     packet::{ZCPacket, ZCPacketType},
     proto::common::TunnelInfo,
@@ -16,27 +16,27 @@ use crate::{
 
 use super::{Tunnel, TunnelError, wrapper::TunnelWrapper};
 
-struct HostWebSocketResource {
-    io: Arc<dyn HostWebSocketIo>,
+struct HostTunnelResource {
+    io: Arc<dyn HostTunnelIo>,
     handle: HostSocketHandle,
 }
 
-impl Drop for HostWebSocketResource {
+impl Drop for HostTunnelResource {
     fn drop(&mut self) {
         let _ = self.io.close(self.handle);
     }
 }
 
-/// Builds a message-preserving EasyTier tunnel around a host WebSocket.
-pub fn new_host_websocket_tunnel(
+/// Builds a message-preserving EasyTier tunnel around a host-owned transport.
+pub fn new_host_tunnel(
     runtime: HostSocketRuntime,
-    io: Arc<dyn HostWebSocketIo>,
+    io: Arc<dyn HostTunnelIo>,
     handle: HostSocketHandle,
     local_url: Url,
     remote_url: Url,
     resolved_remote_url: Option<Url>,
 ) -> Box<dyn Tunnel> {
-    let resource = Arc::new(HostWebSocketResource { io, handle });
+    let resource = Arc::new(HostTunnelResource { io, handle });
     let reader_resource = resource.clone();
     let reader_runtime = runtime.clone();
     let reader = stream::unfold(
@@ -46,23 +46,16 @@ pub fn new_host_websocket_tunnel(
                 .run_operation(
                     resource.io.clone(),
                     |io, operation| {
-                        io.submit_receive(
-                            resource.handle,
-                            operation,
-                            MAX_HOST_WEBSOCKET_MESSAGE_LEN,
-                        )
+                        io.submit_receive(resource.handle, operation, MAX_HOST_TUNNEL_PAYLOAD_LEN)
                     },
                     |io, operation| io.take_receive(operation),
                     |io, operation| io.cancel_operation(operation),
                 )
                 .await;
             let item = match result {
-                Ok(HostWebSocketMessage::Binary(message)) => Ok(ZCPacket::new_from_buf(
+                Ok(message) => Ok(ZCPacket::new_from_buf(
                     bytes::BytesMut::from(message.as_slice()),
                     ZCPacketType::DummyTunnel,
-                )),
-                Ok(HostWebSocketMessage::Text) => Err(TunnelError::InvalidPacket(
-                    "text WebSocket message".to_owned(),
                 )),
                 Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return None,
                 Err(error) => Err(TunnelError::IOError(error)),
@@ -115,21 +108,18 @@ mod tests {
     use futures::{SinkExt as _, StreamExt as _};
 
     use super::*;
-    use crate::host::{
-        socket::{HostOperationId, HostSocketIo},
-        websocket::HostWebSocketMessage,
-    };
+    use crate::host::socket::{HostOperationId, HostSocketIo};
 
     #[derive(Default)]
-    struct MockWebSocketIo {
-        incoming: Mutex<VecDeque<io::Result<HostWebSocketMessage>>>,
-        receives: Mutex<HashMap<HostOperationId, io::Result<HostWebSocketMessage>>>,
+    struct MockTunnelIo {
+        incoming: Mutex<VecDeque<io::Result<Vec<u8>>>>,
+        receives: Mutex<HashMap<HostOperationId, io::Result<Vec<u8>>>>,
         sends: Mutex<HashMap<HostOperationId, Vec<u8>>>,
         sent: Mutex<Vec<Vec<u8>>>,
         closes: AtomicUsize,
     }
 
-    impl HostSocketIo for MockWebSocketIo {
+    impl HostSocketIo for MockTunnelIo {
         fn cancel_operation(&self, operation: HostOperationId) -> io::Result<()> {
             self.receives.lock().unwrap().remove(&operation);
             self.sends.lock().unwrap().remove(&operation);
@@ -142,7 +132,7 @@ mod tests {
         }
     }
 
-    impl HostWebSocketIo for MockWebSocketIo {
+    impl HostTunnelIo for MockTunnelIo {
         fn submit_receive(
             &self,
             _handle: HostSocketHandle,
@@ -154,10 +144,7 @@ mod tests {
             Ok(())
         }
 
-        fn take_receive(
-            &self,
-            operation: HostOperationId,
-        ) -> Poll<io::Result<HostWebSocketMessage>> {
+        fn take_receive(&self, operation: HostOperationId) -> Poll<io::Result<Vec<u8>>> {
             Poll::Ready(self.receives.lock().unwrap().remove(&operation).unwrap())
         }
 
@@ -181,29 +168,24 @@ mod tests {
         }
     }
 
-    fn tunnel(io: Arc<MockWebSocketIo>) -> Box<dyn Tunnel> {
-        new_host_websocket_tunnel(
+    fn tunnel(io: Arc<MockTunnelIo>) -> Box<dyn Tunnel> {
+        new_host_tunnel(
             HostSocketRuntime::new(),
             io,
             HostSocketHandle(7),
-            Url::parse("wss://relay.example/").unwrap(),
-            Url::parse("wss://client.example/").unwrap(),
+            Url::parse("test-tunnel://relay.example/").unwrap(),
+            Url::parse("test-tunnel://client.example/").unwrap(),
             None,
         )
     }
 
     #[test]
-    fn preserves_websocket_message_boundaries_and_closes_once() {
-        let io = Arc::new(MockWebSocketIo::default());
-        io.incoming
-            .lock()
-            .unwrap()
-            .push_back(Ok(HostWebSocketMessage::Binary(vec![1, 2, 3])));
-        io.incoming
-            .lock()
-            .unwrap()
-            .push_back(Ok(HostWebSocketMessage::Binary(vec![8, 9])));
+    fn preserves_message_boundaries_and_closes_once() {
+        let io = Arc::new(MockTunnelIo::default());
+        io.incoming.lock().unwrap().push_back(Ok(vec![1, 2, 3]));
+        io.incoming.lock().unwrap().push_back(Ok(vec![8, 9]));
         let tunnel = tunnel(io.clone());
+        assert_eq!(tunnel.info().unwrap().tunnel_type, "test-tunnel");
         let (mut reader, mut writer) = tunnel.split();
 
         let first = futures::executor::block_on(reader.next()).unwrap().unwrap();
@@ -225,24 +207,8 @@ mod tests {
     }
 
     #[test]
-    fn rejects_text_messages_as_invalid_packets() {
-        let io = Arc::new(MockWebSocketIo::default());
-        io.incoming
-            .lock()
-            .unwrap()
-            .push_back(Ok(HostWebSocketMessage::Text));
-        let tunnel = tunnel(io);
-        let (mut reader, _writer) = tunnel.split();
-
-        let error = futures::executor::block_on(reader.next())
-            .unwrap()
-            .unwrap_err();
-        assert!(matches!(error, TunnelError::InvalidPacket(_)));
-    }
-
-    #[test]
     fn maps_clean_remote_close_to_stream_eof() {
-        let io = Arc::new(MockWebSocketIo::default());
+        let io = Arc::new(MockTunnelIo::default());
         io.incoming
             .lock()
             .unwrap()

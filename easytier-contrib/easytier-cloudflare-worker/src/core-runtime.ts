@@ -9,12 +9,11 @@ import {
 import {
   WebSocketHost,
   type EasyTierCoreEvent,
-  type HostWebSocketMetadata,
   type WebSocketHostHealth,
 } from "./websocket-host";
 
 const CORE_CONFIG_VERSION = 14;
-const HOST_WEBSOCKET_ABI_VERSION = 1;
+const HOST_TUNNEL_ABI_VERSION = 1;
 const PACKET_SINK_HANDLE = 1n;
 const EVENT_SINK_HANDLE = 2n;
 const INSTANCE_RUNNING = 2;
@@ -23,6 +22,13 @@ const NO_DEADLINE = 0x7fff_ffff_ffff_ffffn;
 const MAX_ZERO_DEADLINE_DRIVES = 64;
 const MAX_START_DRIVES = 512;
 const MAX_STOP_DRIVES = 512;
+
+export interface HostTunnelMetadata {
+  version: 1;
+  local_url: string;
+  remote_url: string;
+  resolved_remote_url?: string;
+}
 
 type WasmValue = number | bigint;
 type WasmCallable = (...parameters: WasmValue[]) => WasmValue;
@@ -43,8 +49,8 @@ interface CoreExports {
   easytier_instance_error_len: WasmCallable;
   easytier_instance_error_copy: WasmCallable;
   easytier_instance_drop: WasmCallable;
-  easytier_host_websocket_abi_version: WasmCallable;
-  easytier_instance_accept_websocket: WasmCallable;
+  easytier_host_tunnel_abi_version: WasmCallable;
+  easytier_instance_accept_tunnel: WasmCallable;
   easytier_data_plane_abi_version?: WasmCallable;
   easytier_data_plane_capabilities?: WasmCallable;
   easytier_data_plane_tcp_connect_submit?: WasmCallable;
@@ -79,8 +85,8 @@ interface PromisingCoreExports {
   errorLength: PromisingExport;
   errorCopy: PromisingExport;
   instanceDrop: PromisingExport;
-  websocketAbiVersion: PromisingExport;
-  acceptWebSocket: PromisingExport;
+  tunnelAbiVersion: PromisingExport;
+  acceptTunnel: PromisingExport;
   dataPlaneAbiVersion?: PromisingExport;
   dataPlaneCapabilities?: PromisingExport;
   dataPlaneTcpConnectSubmit?: PromisingExport;
@@ -103,7 +109,7 @@ interface PromisingCoreExports {
 
 export interface CoreHealth extends WebSocketHostHealth {
   state: number;
-  websocketAbiVersion: number;
+  tunnelAbiVersion: number;
 }
 
 export class EasyTierRuntime {
@@ -137,9 +143,9 @@ export class EasyTierRuntime {
     this.host.setWakeGuest(() => this.requestHostCompletion());
   }
 
-  async attachWebSocket(
-    websocketHandle: bigint,
-    metadata: HostWebSocketMetadata,
+  async attachTunnel(
+    tunnelHandle: bigint,
+    metadata: HostTunnelMetadata,
   ): Promise<void> {
     await this.ready;
     this.requireRunning();
@@ -151,19 +157,19 @@ export class EasyTierRuntime {
       try {
         try {
           const status = Number(
-            await this.call("acceptWebSocket", [
+            await this.call("acceptTunnel", [
               this.instanceHandle,
-              websocketHandle,
+              tunnelHandle,
               pointer,
               encoded.byteLength,
             ]),
           );
           if (status !== 0) {
             throw new Error(
-              await this.instanceError(`WebSocket attach (${status})`),
+              await this.instanceError(`Tunnel attach (${status})`),
             );
           }
-          this.host.transferToGuest(websocketHandle);
+          this.host.transferToGuest(tunnelHandle);
           transferred = true;
         } finally {
           await this.call("bufferFree", [pointer]);
@@ -172,7 +178,7 @@ export class EasyTierRuntime {
         this.armNextDrive();
       } catch (error) {
         if (transferred) {
-          this.host.abort(websocketHandle, "EasyTier admission failed");
+          this.host.abort(tunnelHandle, "EasyTier admission failed");
         }
         throw error;
       }
@@ -185,7 +191,7 @@ export class EasyTierRuntime {
       state: Number(
         await this.call("instanceState", [this.instanceHandle]),
       ),
-      websocketAbiVersion: Number(await this.call("websocketAbiVersion", [])),
+      tunnelAbiVersion: Number(await this.call("tunnelAbiVersion", [])),
       ...this.host.health(),
     }));
   }
@@ -263,10 +269,10 @@ export class EasyTierRuntime {
     this.exports = this.wrapExports(raw);
     await this.call("start", []);
 
-    const abiVersion = Number(await this.call("websocketAbiVersion", []));
-    if (abiVersion !== HOST_WEBSOCKET_ABI_VERSION) {
+    const abiVersion = Number(await this.call("tunnelAbiVersion", []));
+    if (abiVersion !== HOST_TUNNEL_ABI_VERSION) {
       throw new Error(
-        `host WebSocket ABI ${abiVersion} is unsupported; expected ${HOST_WEBSOCKET_ABI_VERSION}`,
+        `host tunnel ABI ${abiVersion} is unsupported; expected ${HOST_TUNNEL_ABI_VERSION}`,
       );
     }
     const createConfig = new TextEncoder().encode(
@@ -344,7 +350,7 @@ export class EasyTierRuntime {
         console.log(
           JSON.stringify({
             event: "easytier_core_started",
-            websocketAbiVersion: abiVersion,
+            tunnelAbiVersion: abiVersion,
             startupDrives: attempt + 1,
           }),
         );
@@ -615,8 +621,8 @@ export class EasyTierRuntime {
       errorLength: wrap(raw.easytier_instance_error_len),
       errorCopy: wrap(raw.easytier_instance_error_copy),
       instanceDrop: wrap(raw.easytier_instance_drop),
-      websocketAbiVersion: wrap(raw.easytier_host_websocket_abi_version),
-      acceptWebSocket: wrap(raw.easytier_instance_accept_websocket),
+      tunnelAbiVersion: wrap(raw.easytier_host_tunnel_abi_version),
+      acceptTunnel: wrap(raw.easytier_instance_accept_tunnel),
       dataPlaneAbiVersion: wrapOptional(raw.easytier_data_plane_abi_version),
       dataPlaneCapabilities: wrapOptional(
         raw.easytier_data_plane_capabilities,

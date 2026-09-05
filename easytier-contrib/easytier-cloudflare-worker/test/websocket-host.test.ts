@@ -88,7 +88,7 @@ describe("WebSocketHost", () => {
   it("releases every socket and pending operation on shutdown", () => {
     const { host, socket, handle } = fixture();
     expect(
-      call(host, "start_websocket_receive", handle, 99n, 1024),
+      call(host, "start_tunnel_receive", handle, 99n, 1024),
     ).toBe(0);
     expect(host.health()).toEqual({
       connections: 1,
@@ -130,13 +130,13 @@ describe("WebSocketHost", () => {
     expect(
       call(
         host,
-        "start_websocket_connect",
+        "start_tunnel_connect",
         1n,
         64,
         encoded.byteLength,
       ),
     ).toBe(0);
-    expect(call(host, "take_websocket_connect", 1n)).toBe(-1n);
+    expect(call(host, "take_tunnel_connect", 1n)).toBe(-1n);
     expect(urls).toEqual(["wss://relay.example/"]);
     const socket = sockets[0];
     expect(socket).toBeDefined();
@@ -147,7 +147,7 @@ describe("WebSocketHost", () => {
 
     socket.emit("open");
     expect(wakes).toBe(1);
-    const handle = call(host, "take_websocket_connect", 1n);
+    const handle = call(host, "take_tunnel_connect", 1n);
     expect(typeof handle).toBe("bigint");
     expect(handle).toBeGreaterThan(0n);
     expect(host.health()).toEqual({
@@ -170,14 +170,14 @@ describe("WebSocketHost", () => {
     expect(
       call(
         host,
-        "start_websocket_connect",
+        "start_tunnel_connect",
         2n,
         32,
         encoded.byteLength,
       ),
     ).toBe(0);
     socket.emit("error");
-    expect(call(host, "take_websocket_connect", 2n)).toBe(-10n);
+    expect(call(host, "take_tunnel_connect", 2n)).toBe(-10n);
     expect(host.health().connections).toBe(0);
   });
 
@@ -191,7 +191,7 @@ describe("WebSocketHost", () => {
     expect(
       call(
         host,
-        "start_websocket_connect",
+        "start_tunnel_connect",
         3n,
         16,
         encoded.byteLength,
@@ -251,18 +251,18 @@ describe("WebSocketHost", () => {
     host.receive(handle, new Uint8Array([1, 2, 3]).buffer);
     host.receive(handle, new Uint8Array([8, 9]).buffer);
 
-    expect(call(host, "start_websocket_receive", handle, 10n, 64)).toBe(
+    expect(call(host, "start_tunnel_receive", handle, 10n, 64)).toBe(
       0,
     );
-    expect(call(host, "take_websocket_receive", 10n, 100, 64)).toBe(3);
+    expect(call(host, "take_tunnel_receive", 10n, 100, 64)).toBe(3);
     expect(new Uint8Array(memory.buffer, 100, 3)).toEqual(
       new Uint8Array([1, 2, 3]),
     );
 
-    expect(call(host, "start_websocket_receive", handle, 11n, 64)).toBe(
+    expect(call(host, "start_tunnel_receive", handle, 11n, 64)).toBe(
       0,
     );
-    expect(call(host, "take_websocket_receive", 11n, 200, 64)).toBe(2);
+    expect(call(host, "take_tunnel_receive", 11n, 200, 64)).toBe(2);
     expect(new Uint8Array(memory.buffer, 200, 2)).toEqual(
       new Uint8Array([8, 9]),
     );
@@ -270,7 +270,7 @@ describe("WebSocketHost", () => {
 
   it("accounts for a ready receive until its probed message is taken", () => {
     const { host, memory, handle } = fixture();
-    expect(call(host, "start_websocket_receive", handle, 12n, 64)).toBe(
+    expect(call(host, "start_tunnel_receive", handle, 12n, 64)).toBe(
       0,
     );
 
@@ -280,10 +280,10 @@ describe("WebSocketHost", () => {
       queuedBytes: 3,
       pendingOperations: 1,
     });
-    expect(call(host, "take_websocket_receive", 12n, 0, 0)).toBe(3);
+    expect(call(host, "take_tunnel_receive", 12n, 0, 0)).toBe(3);
     expect(host.health().queuedBytes).toBe(3);
 
-    expect(call(host, "take_websocket_receive", 12n, 500, 3)).toBe(3);
+    expect(call(host, "take_tunnel_receive", 12n, 500, 3)).toBe(3);
     expect(new Uint8Array(memory.buffer, 500, 3)).toEqual(
       new Uint8Array([1, 2, 3]),
     );
@@ -293,19 +293,19 @@ describe("WebSocketHost", () => {
       pendingOperations: 0,
     });
 
-    expect(call(host, "start_websocket_receive", handle, 13n, 64)).toBe(
+    expect(call(host, "start_tunnel_receive", handle, 13n, 64)).toBe(
       0,
     );
     host.receive(handle, new Uint8Array([4, 5]).buffer);
     expect(call(host, "cancel_operation", 13n)).toBe(0);
     expect(host.health().queuedBytes).toBe(0);
 
-    expect(call(host, "start_websocket_receive", handle, 14n, 64)).toBe(
+    expect(call(host, "start_tunnel_receive", handle, 14n, 64)).toBe(
       0,
     );
     host.receive(handle, new ArrayBuffer(0));
-    expect(call(host, "take_websocket_receive", 14n, 0, 0)).toBe(0);
-    expect(call(host, "take_websocket_receive", 14n, 1, 0)).toBe(0);
+    expect(call(host, "take_tunnel_receive", 14n, 0, 0)).toBe(0);
+    expect(call(host, "take_tunnel_receive", 14n, 1, 0)).toBe(0);
     expect(host.health().pendingOperations).toBe(0);
   });
 
@@ -314,11 +314,11 @@ describe("WebSocketHost", () => {
     const source = new Uint8Array(memory.buffer, 300, 3);
     source.set([4, 5, 6]);
 
-    expect(call(host, "start_websocket_send", handle, 20n, 300, 3)).toBe(
+    expect(call(host, "start_tunnel_send", handle, 20n, 300, 3)).toBe(
       0,
     );
     source.fill(9);
-    expect(call(host, "take_websocket_send", 20n)).toBe(0);
+    expect(call(host, "take_tunnel_send", 20n)).toBe(0);
     expect(socket.sent).toEqual([new Uint8Array([4, 5, 6])]);
   });
 
@@ -328,7 +328,7 @@ describe("WebSocketHost", () => {
     expect(
       call(
         host,
-        "start_websocket_receive",
+        "start_tunnel_receive",
         handle,
         21n,
         megabyte,
@@ -350,28 +350,29 @@ describe("WebSocketHost", () => {
     expect(host.health().queuedBytes).toBe(0);
   });
 
-  it("reports text and remote close as terminal receive statuses", () => {
-    const { host, handle } = fixture();
+  it("rejects text before exposing the tunnel payload ABI", () => {
+    const { host, socket, handle } = fixture();
     host.receive(handle, "not a packet");
-    expect(call(host, "start_websocket_receive", handle, 30n, 64)).toBe(
-      0,
-    );
-    expect(call(host, "take_websocket_receive", 30n, 400, 64)).toBe(
-      -11,
-    );
+    expect(socket.closes).toContainEqual({
+      code: 1003,
+      reason: "binary tunnel payload required",
+    });
+    expect(call(host, "start_tunnel_receive", handle, 30n, 64)).toBe(0);
+    expect(call(host, "take_tunnel_receive", 30n, 400, 64)).toBe(-3);
+  });
 
-    expect(call(host, "start_websocket_receive", handle, 31n, 64)).toBe(
-      0,
-    );
+  it("reports remote close as tunnel EOF", () => {
+    const { host, handle } = fixture();
+    expect(call(host, "start_tunnel_receive", handle, 31n, 64)).toBe(0);
     host.remoteClose(handle);
-    expect(call(host, "take_websocket_receive", 31n, 400, 64)).toBe(
+    expect(call(host, "take_tunnel_receive", 31n, 400, 64)).toBe(
       -10,
     );
   });
 
   it("closes resources and cancellation idempotently", () => {
     const { host, socket, handle } = fixture();
-    expect(call(host, "start_websocket_receive", handle, 40n, 64)).toBe(
+    expect(call(host, "start_tunnel_receive", handle, 40n, 64)).toBe(
       0,
     );
     expect(call(host, "cancel_operation", 40n)).toBe(0);

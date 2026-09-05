@@ -36,6 +36,10 @@ hibernation. The Wasm memory, Tokio executor, and EasyTier peer graph are
 in-memory state and cannot be reconstructed from a hibernated socket
 attachment alone.
 
+The guest ABI is transport-neutral: it exchanges complete Host Tunnel
+payloads, EOF, and generic I/O errors. `WebSocketHost` owns WebSocket message
+types and maps accepted binary messages onto that ABI.
+
 ## Build and validate
 
 From this directory:
@@ -49,7 +53,7 @@ pnpm exec wrangler deploy --dry-run
 ```
 
 `build:wasm` compiles `easytier-core` for `wasm32-wasip1` with the
-`wasm-host-websocket` Adapter and runs `wasm-opt`. The Cargo feature compiles
+`wasm-host-tunnel` Adapter and runs `wasm-opt`. The Cargo feature compiles
 the Adapter; it does not change normal `CoreInstance` behavior. The resulting
 generated Wasm file is intentionally ignored by Git.
 
@@ -135,9 +139,9 @@ easytier-core \
   --bind-device false
 ```
 
-`GET /health` initializes the object and returns the core state, host
-WebSocket ABI version, active connection count, queued byte count, and pending
-operation count.
+`GET /health` initializes the object and returns the core state, Host Tunnel
+ABI version, active connection count, queued byte count, and pending operation
+count.
 
 ## Resource and protocol invariants
 

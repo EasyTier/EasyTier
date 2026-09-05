@@ -46,10 +46,10 @@ pub(super) type WasiCore = crate::instance::CoreInstance<
 pub(super) struct WasiCoreRuntime {
     socket_runtime: crate::host::socket::HostSocketRuntime,
     #[cfg(all(
-        feature = "wasm-host-websocket",
-        not(feature = "wasm-host-websocket-outbound")
+        feature = "wasm-host-tunnel",
+        not(feature = "wasm-host-tunnel-outbound")
     ))]
-    websocket_ingress: crate::wasi::adapter::websocket::WasiHostWebSocketIngress,
+    tunnel_ingress: crate::wasi::adapter::tunnel::WasiHostTunnelIngress,
     core: std::sync::Arc<WasiCore>,
 }
 
@@ -63,24 +63,24 @@ impl WasiCoreRuntime {
     }
 
     #[cfg(all(
-        feature = "wasm-host-websocket",
-        not(feature = "wasm-host-websocket-outbound")
+        feature = "wasm-host-tunnel",
+        not(feature = "wasm-host-tunnel-outbound")
     ))]
-    pub(super) fn accept_websocket(
+    pub(super) fn accept_tunnel(
         &self,
         handle: crate::host::socket::HostSocketHandle,
-        metadata: crate::wasi::schema::WasiHostWebSocketMetadata,
+        metadata: crate::wasi::schema::WasiHostTunnelMetadata,
     ) -> anyhow::Result<()> {
-        self.websocket_ingress.accept(handle, metadata)
+        self.tunnel_ingress.accept(handle, metadata)
     }
 
-    #[cfg(feature = "wasm-host-websocket-outbound")]
-    pub(super) fn accept_websocket(
+    #[cfg(feature = "wasm-host-tunnel-outbound")]
+    pub(super) fn accept_tunnel(
         &self,
         _handle: crate::host::socket::HostSocketHandle,
-        _metadata: crate::wasi::schema::WasiHostWebSocketMetadata,
+        _metadata: crate::wasi::schema::WasiHostTunnelMetadata,
     ) -> anyhow::Result<()> {
-        anyhow::bail!("Host WebSocket admission is unavailable in outbound-only WASI")
+        anyhow::bail!("Host Tunnel admission is unavailable in outbound-only WASI")
     }
 }
 
@@ -103,30 +103,31 @@ pub(super) fn new_wasi_core_runtime(
         },
     };
 
-    #[cfg(not(feature = "wasm-host-websocket-outbound"))]
+    #[cfg(not(feature = "wasm-host-tunnel-outbound"))]
     use crate::connectivity::connector_host::new_connector_host;
-    #[cfg(feature = "wasm-host-websocket-outbound")]
+    #[cfg(feature = "wasm-host-tunnel-outbound")]
     use crate::connectivity::connector_host::new_connector_host_with_external_tunnel;
 
     let socket_runtime = HostSocketRuntime::new();
     let socket_backend = Arc::new(WasiHostSocketBackend::default());
     let environment_io = Arc::new(WasiHostConnectorEnvironmentIo);
-    #[cfg(feature = "wasm-host-websocket-outbound")]
-    let websocket_io = Arc::new(crate::wasi::adapter::websocket::WasiHostWebSocketIo::default());
-    #[cfg(feature = "wasm-host-websocket-outbound")]
+    #[cfg(feature = "wasm-host-tunnel")]
+    let host_tunnel_schemes: Arc<[String]> = Arc::from(["ws".to_owned(), "wss".to_owned()]);
+    #[cfg(feature = "wasm-host-tunnel-outbound")]
+    let tunnel_io = Arc::new(crate::wasi::adapter::tunnel::WasiHostTunnelIo::default());
+    #[cfg(feature = "wasm-host-tunnel-outbound")]
     let host = Arc::new(new_connector_host_with_external_tunnel(
         socket_runtime.clone(),
         socket_backend,
         environment_snapshot,
         environment_io,
-        Arc::new(
-            crate::wasi::adapter::websocket::WasiHostWebSocketConnector::new(
-                socket_runtime.clone(),
-                websocket_io,
-            ),
-        ),
+        Arc::new(crate::wasi::adapter::tunnel::WasiHostTunnelConnector::new(
+            socket_runtime.clone(),
+            tunnel_io,
+            host_tunnel_schemes.clone(),
+        )),
     ));
-    #[cfg(not(feature = "wasm-host-websocket-outbound"))]
+    #[cfg(not(feature = "wasm-host-tunnel-outbound"))]
     let host = Arc::new(new_connector_host(
         socket_runtime.clone(),
         socket_backend,
@@ -145,7 +146,7 @@ pub(super) fn new_wasi_core_runtime(
     let mut adapters = CoreHostAdapters::new(host, dns, packet_sink, process_runtime);
     adapters.instance_runtime = Arc::new(WasiInstanceRuntimeHost);
     adapters.events = Arc::new(WasiHostEventSink::new(event_sink));
-    #[cfg(feature = "wasm-host-websocket-outbound")]
+    #[cfg(feature = "wasm-host-tunnel-outbound")]
     {
         adapters.config.connectivity = crate::instance::CoreConnectivityMode::OutboundOnly;
         adapters.config.smoltcp_available = true;
@@ -153,35 +154,37 @@ pub(super) fn new_wasi_core_runtime(
         adapters.config.gateway_enabled = false;
         adapters.config.proxy_enabled = false;
         adapters.config.ignore_unsupported_config = true;
-        adapters.config.endpoint_protocols = vec!["ws".to_owned(), "wss".to_owned()];
+        adapters.config.endpoint_protocols = host_tunnel_schemes.to_vec();
     }
-    #[cfg(feature = "wasm-host-websocket")]
-    #[cfg(not(feature = "wasm-host-websocket-outbound"))]
-    let websocket_ingress =
-        crate::wasi::adapter::websocket::WasiHostWebSocketIngress::new(socket_runtime.clone());
-    #[cfg(feature = "wasm-host-websocket")]
-    #[cfg(not(feature = "wasm-host-websocket-outbound"))]
+    #[cfg(feature = "wasm-host-tunnel")]
+    #[cfg(not(feature = "wasm-host-tunnel-outbound"))]
+    let tunnel_ingress = crate::wasi::adapter::tunnel::WasiHostTunnelIngress::new(
+        socket_runtime.clone(),
+        host_tunnel_schemes,
+    );
+    #[cfg(feature = "wasm-host-tunnel")]
+    #[cfg(not(feature = "wasm-host-tunnel-outbound"))]
     {
         adapters.config.connectivity = crate::instance::CoreConnectivityMode::InboundOnly;
-        adapters.external_listener_factory = Some(websocket_ingress.listener_factory());
-        adapters.host_listener_registrations.push(
-            crate::listener::ExternalListenerRequest {
+        adapters.external_listener_factory = Some(tunnel_ingress.listener_factory());
+        adapters
+            .host_listener_registrations
+            .push(crate::listener::ExternalListenerRequest {
                 url: "wss://0.0.0.0:443"
                     .parse()
-                    .expect("Host WebSocket listener URL must be valid"),
+                    .expect("Host Tunnel listener URL must be valid"),
                 socket_context: crate::socket::SocketContext::default(),
-            },
-        );
+            });
     }
     let core = CoreInstance::from_toml(config, adapters)?;
 
     Ok(WasiCoreRuntime {
         socket_runtime,
         #[cfg(all(
-            feature = "wasm-host-websocket",
-            not(feature = "wasm-host-websocket-outbound")
+            feature = "wasm-host-tunnel",
+            not(feature = "wasm-host-tunnel-outbound")
         ))]
-        websocket_ingress,
+        tunnel_ingress,
         core,
     })
 }
@@ -209,8 +212,8 @@ mod abi {
 
     use super::{WasiCoreRuntime, new_wasi_core_runtime};
     use crate::wasi::schema::WasiCoreInstanceCreateConfig;
-    #[cfg(feature = "wasm-host-websocket")]
-    use crate::wasi::schema::WasiHostWebSocketMetadata;
+    #[cfg(feature = "wasm-host-tunnel")]
+    use crate::wasi::schema::WasiHostTunnelMetadata;
 
     #[cfg(feature = "proxy-smoltcp-stack")]
     mod data_plane;
@@ -220,8 +223,8 @@ mod abi {
     mod web_client;
 
     const MAX_CREATE_CONFIG_LEN: usize = 16 * 1024 * 1024;
-    #[cfg(feature = "wasm-host-websocket")]
-    const MAX_WEBSOCKET_METADATA_LEN: usize = 16 * 1024;
+    #[cfg(feature = "wasm-host-tunnel")]
+    const MAX_HOST_TUNNEL_METADATA_LEN: usize = 16 * 1024;
     const MAX_GUEST_BUFFER_LEN: usize = MAX_CREATE_CONFIG_LEN;
     #[cfg(feature = "management-rpc")]
     const MAX_RPC_MESSAGE_LEN: usize = 16 * 1024 * 1024;
@@ -566,16 +569,16 @@ mod abi {
             });
         }
 
-        #[cfg(feature = "wasm-host-websocket")]
-        fn accept_websocket(
+        #[cfg(feature = "wasm-host-tunnel")]
+        fn accept_tunnel(
             &self,
-            websocket_handle: crate::host::socket::HostSocketHandle,
-            metadata: WasiHostWebSocketMetadata,
+            tunnel_handle: crate::host::socket::HostSocketHandle,
+            metadata: WasiHostTunnelMetadata,
         ) -> anyhow::Result<()> {
             if self.core.core().state() != CoreInstanceState::Running {
                 anyhow::bail!("core instance is not running");
             }
-            self.core.accept_websocket(websocket_handle, metadata)
+            self.core.accept_tunnel(tunnel_handle, metadata)
         }
     }
 
@@ -896,35 +899,35 @@ mod abi {
         })
     }
 
-    #[cfg(feature = "wasm-host-websocket")]
+    #[cfg(feature = "wasm-host-tunnel")]
     #[unsafe(no_mangle)]
-    /// Returns the host WebSocket tunnel ABI version implemented by this guest.
-    pub extern "C" fn easytier_host_websocket_abi_version() -> u32 {
-        crate::wasi::abi::HOST_WEBSOCKET_ABI_VERSION
+    /// Returns the host tunnel ABI version implemented by this guest.
+    pub extern "C" fn easytier_host_tunnel_abi_version() -> u32 {
+        crate::wasi::abi::HOST_TUNNEL_ABI_VERSION
     }
 
-    #[cfg(feature = "wasm-host-websocket")]
+    #[cfg(feature = "wasm-host-tunnel")]
     #[unsafe(no_mangle)]
-    /// Transfers one host-upgraded WebSocket into server tunnel admission.
+    /// Transfers one host-owned transport into server tunnel admission.
     ///
     /// `metadata` is a versioned JSON document. A zero return transfers
-    /// ownership of `websocket_handle` to the guest; on failure the host keeps
+    /// ownership of `tunnel_handle` to the guest; on failure the host keeps
     /// ownership and must close it. Admission is scheduled and completed by
     /// later drive calls so the export never waits for the peer handshake.
-    pub extern "C" fn easytier_instance_accept_websocket(
+    pub extern "C" fn easytier_instance_accept_tunnel(
         handle: u64,
-        websocket_handle: u64,
+        tunnel_handle: u64,
         metadata_pointer: u32,
         metadata_length: u32,
     ) -> i32 {
-        if websocket_handle == 0 {
-            set_instance_error(handle, "host WebSocket handle must be non-zero");
+        if tunnel_handle == 0 {
+            set_instance_error(handle, "host tunnel handle must be non-zero");
             return INVALID_INPUT;
         }
         let encoded = match read_guest_buffer(
             metadata_pointer,
             metadata_length,
-            MAX_WEBSOCKET_METADATA_LEN,
+            MAX_HOST_TUNNEL_METADATA_LEN,
         ) {
             Ok(encoded) => encoded,
             Err(error) => {
@@ -932,7 +935,7 @@ mod abi {
                 return INVALID_INPUT;
             }
         };
-        let metadata: WasiHostWebSocketMetadata = match serde_json::from_slice(&encoded) {
+        let metadata: WasiHostTunnelMetadata = match serde_json::from_slice(&encoded) {
             Ok(metadata) => metadata,
             Err(error) => {
                 set_instance_error(handle, error);
@@ -945,8 +948,8 @@ mod abi {
         }
 
         with_instance(handle, |instance| {
-            instance.accept_websocket(
-                crate::host::socket::HostSocketHandle(websocket_handle),
+            instance.accept_tunnel(
+                crate::host::socket::HostSocketHandle(tunnel_handle),
                 metadata,
             )?;
             Ok(0)

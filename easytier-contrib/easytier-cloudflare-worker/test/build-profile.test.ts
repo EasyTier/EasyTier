@@ -9,9 +9,9 @@ describe("Cloudflare Worker WASM build profile", () => {
       "utf8",
     );
 
-    expect(buildScript).toContain('"wasm-host-websocket,aes-gcm"');
+    expect(buildScript).toContain('"wasm-host-tunnel,aes-gcm"');
     expect(buildScript).toContain(
-      '"wasm-host-websocket-outbound,aes-gcm,proxy-smoltcp-stack"',
+      '"wasm-host-tunnel-outbound,aes-gcm,proxy-smoltcp-stack"',
     );
   });
 });
