@@ -10,12 +10,20 @@ import {
 const CONNECT_OPERATION = 101n;
 const READ_OPERATION = 102n;
 const WRITE_OPERATION = 103n;
+const BIND_OPERATION = 104n;
+const ACCEPT_OPERATION = 105n;
+const SHUTDOWN_OPERATION = 106n;
 const STREAM_RESOURCE = 501n;
+const ACCEPTED_STREAM_RESOURCE = 502n;
+const LISTENER_RESOURCE = 601n;
 
 class DataPlaneFixture implements DataPlaneBindings {
   readonly instanceHandle = 17n;
   readonly memory = new WebAssembly.Memory({ initial: 1 });
   readonly closedResources: bigint[] = [];
+  readonly boundPorts: number[] = [];
+  readonly acceptedListeners: bigint[] = [];
+  readonly shutdownResources: bigint[] = [];
   readonly submittedAddresses: Uint8Array[] = [];
   readonly submittedTimeouts: bigint[] = [];
   readonly writes: Uint8Array[] = [];
@@ -34,7 +42,7 @@ class DataPlaneFixture implements DataPlaneBindings {
   ): Promise<DataPlaneValue> {
     switch (name) {
       case "dataPlaneAbiVersion":
-        return 3;
+        return 4;
       case "dataPlaneCapabilities":
         return 2n;
       case "dataPlaneTcpConnectSubmit": {
@@ -49,6 +57,26 @@ class DataPlaneFixture implements DataPlaneBindings {
         });
         return 0;
       }
+      case "dataPlaneTcpBindSubmit":
+        this.boundPorts.push(Number(parameters[1]));
+        this.submittedTimeouts.push(BigInt(parameters[2]!));
+        this.writeU64(Number(parameters[3]), BIND_OPERATION);
+        this.completions.push({
+          operation: BIND_OPERATION,
+          kind: 2,
+          status: 0,
+        });
+        return 0;
+      case "dataPlaneTcpAcceptSubmit":
+        this.acceptedListeners.push(BigInt(parameters[1]!));
+        this.submittedTimeouts.push(BigInt(parameters[2]!));
+        this.writeU64(Number(parameters[3]), ACCEPT_OPERATION);
+        this.completions.push({
+          operation: ACCEPT_OPERATION,
+          kind: 3,
+          status: 0,
+        });
+        return 0;
       case "dataPlaneTcpReadSubmit":
         expect(parameters[1]).toBe(STREAM_RESOURCE);
         this.writeU64(Number(parameters[3]), READ_OPERATION);
@@ -70,6 +98,15 @@ class DataPlaneFixture implements DataPlaneBindings {
         });
         return 0;
       }
+      case "dataPlaneTcpShutdownWriteSubmit":
+        this.shutdownResources.push(BigInt(parameters[1]!));
+        this.writeU64(Number(parameters[2]), SHUTDOWN_OPERATION);
+        this.completions.push({
+          operation: SHUTDOWN_OPERATION,
+          kind: 9,
+          status: 0,
+        });
+        return 0;
       case "dataPlaneCompletionDrain": {
         const output = Number(parameters[1]);
         const capacity = Number(parameters[2]);
@@ -91,6 +128,19 @@ class DataPlaneFixture implements DataPlaneBindings {
       case "dataPlaneTcpConnectResultTake":
         expect(parameters[1]).toBe(CONNECT_OPERATION);
         this.writeU64(Number(parameters[2]), STREAM_RESOURCE);
+        this.writeSocketAddress(Number(parameters[2]) + 8, "10.1.2.4", 40000);
+        this.writeSocketAddress(Number(parameters[2]) + 35, "10.1.2.3", 8080);
+        return 0;
+      case "dataPlaneTcpBindResultTake":
+        expect(parameters[1]).toBe(BIND_OPERATION);
+        this.writeU64(Number(parameters[2]), LISTENER_RESOURCE);
+        this.writeSocketAddress(Number(parameters[2]) + 8, "10.1.2.4", 32123);
+        return 0;
+      case "dataPlaneTcpAcceptResultTake":
+        expect(parameters[1]).toBe(ACCEPT_OPERATION);
+        this.writeU64(Number(parameters[2]), ACCEPTED_STREAM_RESOURCE);
+        this.writeSocketAddress(Number(parameters[2]) + 8, "10.1.2.4", 32123);
+        this.writeSocketAddress(Number(parameters[2]) + 35, "10.1.2.5", 44000);
         return 0;
       case "dataPlaneResultSize":
         expect(parameters[1]).toBe(READ_OPERATION);
@@ -109,6 +159,9 @@ class DataPlaneFixture implements DataPlaneBindings {
       case "dataPlaneTcpWriteResultTake":
         expect(parameters[1]).toBe(WRITE_OPERATION);
         return this.writes.at(-1)?.byteLength ?? 0;
+      case "dataPlaneTcpShutdownWriteResultTake":
+        expect(parameters[1]).toBe(SHUTDOWN_OPERATION);
+        return 0;
       case "dataPlaneResourceClose":
         this.closedResources.push(BigInt(parameters[1]!));
         return 0;
@@ -150,6 +203,18 @@ class DataPlaneFixture implements DataPlaneBindings {
   private writeU64(pointer: number, value: bigint): void {
     new DataView(this.memory.buffer).setBigUint64(pointer, value, false);
   }
+
+  private writeSocketAddress(
+    pointer: number,
+    ipv4: string,
+    port: number,
+  ): void {
+    const bytes = new Uint8Array(this.memory.buffer, pointer, 27);
+    bytes.fill(0);
+    bytes[0] = 4;
+    bytes.set(ipv4.split(".").map(Number), 1);
+    new DataView(this.memory.buffer).setUint16(pointer + 17, port, false);
+  }
 }
 
 describe("EasyTierDataPlane", () => {
@@ -172,9 +237,22 @@ describe("EasyTierDataPlane", () => {
         address!.byteLength,
       ).getUint16(17, false),
     ).toBe(8080);
+    expect(stream.localAddress).toEqual({ ipv4: "10.1.2.4", port: 40000 });
+    expect(stream.peerAddress).toEqual({ ipv4: "10.1.2.3", port: 8080 });
 
     expect(await stream.write(new TextEncoder().encode("request"))).toBe(7);
     expect(bindings.writes).toEqual([new TextEncoder().encode("request")]);
+    await expect(stream.read()).resolves.toEqual({
+      data: new TextEncoder().encode("hello"),
+      eof: true,
+    });
+
+    await stream.shutdownWrite();
+    await stream.shutdownWrite();
+    expect(bindings.shutdownResources).toEqual([STREAM_RESOURCE]);
+    await expect(stream.write(new Uint8Array([1]))).rejects.toThrow(
+      "TCP stream write side is shut down",
+    );
     await expect(stream.read()).resolves.toEqual({
       data: new TextEncoder().encode("hello"),
       eof: true,
@@ -184,6 +262,41 @@ describe("EasyTierDataPlane", () => {
     await stream.close();
     expect(bindings.closedResources).toEqual([STREAM_RESOURCE]);
     expect(() => stream.read()).toThrow("TCP stream is closed");
+  });
+
+  it("binds a TCP listener and accepts streams with endpoint metadata", async () => {
+    const bindings = new DataPlaneFixture();
+    const dataPlane = new EasyTierDataPlane(bindings);
+    bindings.onDrive = () => dataPlane.drainCompletions();
+    await dataPlane.initialize();
+
+    const listener = await dataPlane.bindTcp(0, 500);
+    expect(listener.localAddress).toEqual({
+      ipv4: "10.1.2.4",
+      port: 32123,
+    });
+    expect(bindings.boundPorts).toEqual([0]);
+
+    const stream = await listener.accept(750);
+    expect(bindings.acceptedListeners).toEqual([LISTENER_RESOURCE]);
+    expect(bindings.submittedTimeouts).toEqual([500n, 750n]);
+    expect(stream.localAddress).toEqual({
+      ipv4: "10.1.2.4",
+      port: 32123,
+    });
+    expect(stream.peerAddress).toEqual({
+      ipv4: "10.1.2.5",
+      port: 44000,
+    });
+
+    await stream.close();
+    await listener.close();
+    await listener.close();
+    expect(bindings.closedResources).toEqual([
+      ACCEPTED_STREAM_RESOURCE,
+      LISTENER_RESOURCE,
+    ]);
+    expect(() => listener.accept()).toThrow("TCP listener is closed");
   });
 
   it("rejects invalid browser TCP endpoints before guest submission", async () => {
@@ -196,6 +309,26 @@ describe("EasyTierDataPlane", () => {
     );
     expect(() => dataPlane.connectTcp("10.0.0.1", 0)).toThrow(
       "TCP port must be between 1 and 65535",
+    );
+    expect(() => dataPlane.bindTcp(-1)).toThrow(
+      "TCP local port must be between 0 and 65535",
+    );
+  });
+
+  it("invalidates existing resources when the runtime stops", async () => {
+    const bindings = new DataPlaneFixture();
+    const dataPlane = new EasyTierDataPlane(bindings);
+    bindings.onDrive = () => dataPlane.drainCompletions();
+    await dataPlane.initialize();
+    const listener = await dataPlane.bindTcp(22);
+
+    dataPlane.shutdown();
+
+    await expect(listener.accept()).rejects.toThrow(
+      "EasyTier runtime is stopped",
+    );
+    await expect(listener.close()).rejects.toThrow(
+      "EasyTier runtime is stopped",
     );
   });
 });

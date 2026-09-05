@@ -85,6 +85,30 @@ function encodeTcpPortLease(
 }
 
 describe("WebSocketHost", () => {
+  it("releases every socket and pending operation on shutdown", () => {
+    const { host, socket, handle } = fixture();
+    expect(
+      call(host, "start_websocket_receive", handle, 99n, 1024),
+    ).toBe(0);
+    expect(host.health()).toEqual({
+      connections: 1,
+      queuedBytes: 0,
+      pendingOperations: 1,
+    });
+
+    host.shutdown();
+    host.shutdown();
+
+    expect(host.health()).toEqual({
+      connections: 0,
+      queuedBytes: 0,
+      pendingOperations: 0,
+    });
+    expect(socket.closes).toEqual([
+      { code: 1000, reason: "EasyTier runtime stopped" },
+    ]);
+  });
+
   it("opens outbound WebSockets as guest-owned tunnel handles", () => {
     const sockets: MockOutboundWebSocket[] = [];
     const urls: string[] = [];

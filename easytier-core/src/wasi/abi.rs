@@ -34,7 +34,7 @@ pub const CORE_INSTANCE_CONFIG_VERSION: u32 = 14;
 pub const WEB_CLIENT_CONFIG_VERSION: u32 = 1;
 
 /// Version of the public data-plane guest export contract.
-pub const DATA_PLANE_ABI_VERSION: u32 = 3;
+pub const DATA_PLANE_ABI_VERSION: u32 = 4;
 
 /// Version of the protobuf RPC guest export contract.
 #[cfg(feature = "management-rpc")]
@@ -136,6 +136,7 @@ pub const DATA_PLANE_GUEST_EXPORTS: &[&str] = &[
     "easytier_data_plane_tcp_accept_submit",
     "easytier_data_plane_tcp_read_submit",
     "easytier_data_plane_tcp_write_submit",
+    "easytier_data_plane_tcp_shutdown_write_submit",
     "easytier_data_plane_udp_bind_submit",
     "easytier_data_plane_udp_receive_submit",
     "easytier_data_plane_udp_send_submit",
@@ -148,6 +149,7 @@ pub const DATA_PLANE_GUEST_EXPORTS: &[&str] = &[
     "easytier_data_plane_tcp_accept_result_take",
     "easytier_data_plane_tcp_read_result_take",
     "easytier_data_plane_tcp_write_result_take",
+    "easytier_data_plane_tcp_shutdown_write_result_take",
     "easytier_data_plane_udp_bind_result_take",
     "easytier_data_plane_udp_receive_result_take",
     "easytier_data_plane_udp_send_result_take",

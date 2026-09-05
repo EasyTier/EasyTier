@@ -3,6 +3,7 @@ import { WasiPreview1 } from "./wasi-preview1";
 import {
   EasyTierDataPlane,
   type DataPlaneExportName,
+  type EasyTierTcpListener,
   type EasyTierTcpStream,
 } from "./data-plane";
 import {
@@ -17,9 +18,11 @@ const HOST_WEBSOCKET_ABI_VERSION = 1;
 const PACKET_SINK_HANDLE = 1n;
 const EVENT_SINK_HANDLE = 2n;
 const INSTANCE_RUNNING = 2;
+const INSTANCE_STOPPED = 4;
 const NO_DEADLINE = 0x7fff_ffff_ffff_ffffn;
 const MAX_ZERO_DEADLINE_DRIVES = 64;
 const MAX_START_DRIVES = 512;
+const MAX_STOP_DRIVES = 512;
 
 type WasmValue = number | bigint;
 type WasmCallable = (...parameters: WasmValue[]) => WasmValue;
@@ -32,24 +35,32 @@ interface CoreExports {
   easytier_buffer_free: WasmCallable;
   easytier_instance_create: WasmCallable;
   easytier_instance_start: WasmCallable;
+  easytier_instance_stop: WasmCallable;
   easytier_instance_drive: WasmCallable;
   easytier_instance_notify_completions: WasmCallable;
   easytier_instance_state: WasmCallable;
   easytier_instance_next_deadline_millis: WasmCallable;
   easytier_instance_error_len: WasmCallable;
   easytier_instance_error_copy: WasmCallable;
+  easytier_instance_drop: WasmCallable;
   easytier_host_websocket_abi_version: WasmCallable;
   easytier_instance_accept_websocket: WasmCallable;
   easytier_data_plane_abi_version?: WasmCallable;
   easytier_data_plane_capabilities?: WasmCallable;
   easytier_data_plane_tcp_connect_submit?: WasmCallable;
+  easytier_data_plane_tcp_bind_submit?: WasmCallable;
+  easytier_data_plane_tcp_accept_submit?: WasmCallable;
   easytier_data_plane_tcp_read_submit?: WasmCallable;
   easytier_data_plane_tcp_write_submit?: WasmCallable;
+  easytier_data_plane_tcp_shutdown_write_submit?: WasmCallable;
   easytier_data_plane_completion_drain?: WasmCallable;
   easytier_data_plane_result_size?: WasmCallable;
   easytier_data_plane_tcp_connect_result_take?: WasmCallable;
+  easytier_data_plane_tcp_bind_result_take?: WasmCallable;
+  easytier_data_plane_tcp_accept_result_take?: WasmCallable;
   easytier_data_plane_tcp_read_result_take?: WasmCallable;
   easytier_data_plane_tcp_write_result_take?: WasmCallable;
+  easytier_data_plane_tcp_shutdown_write_result_take?: WasmCallable;
   easytier_data_plane_operation_free?: WasmCallable;
   easytier_data_plane_resource_close?: WasmCallable;
 }
@@ -60,24 +71,32 @@ interface PromisingCoreExports {
   bufferFree: PromisingExport;
   instanceCreate: PromisingExport;
   instanceStart: PromisingExport;
+  instanceStop: PromisingExport;
   instanceDrive: PromisingExport;
   notifyCompletions: PromisingExport;
   instanceState: PromisingExport;
   nextDeadlineMillis: PromisingExport;
   errorLength: PromisingExport;
   errorCopy: PromisingExport;
+  instanceDrop: PromisingExport;
   websocketAbiVersion: PromisingExport;
   acceptWebSocket: PromisingExport;
   dataPlaneAbiVersion?: PromisingExport;
   dataPlaneCapabilities?: PromisingExport;
   dataPlaneTcpConnectSubmit?: PromisingExport;
+  dataPlaneTcpBindSubmit?: PromisingExport;
+  dataPlaneTcpAcceptSubmit?: PromisingExport;
   dataPlaneTcpReadSubmit?: PromisingExport;
   dataPlaneTcpWriteSubmit?: PromisingExport;
+  dataPlaneTcpShutdownWriteSubmit?: PromisingExport;
   dataPlaneCompletionDrain?: PromisingExport;
   dataPlaneResultSize?: PromisingExport;
   dataPlaneTcpConnectResultTake?: PromisingExport;
+  dataPlaneTcpBindResultTake?: PromisingExport;
+  dataPlaneTcpAcceptResultTake?: PromisingExport;
   dataPlaneTcpReadResultTake?: PromisingExport;
   dataPlaneTcpWriteResultTake?: PromisingExport;
+  dataPlaneTcpShutdownWriteResultTake?: PromisingExport;
   dataPlaneOperationFree?: PromisingExport;
   dataPlaneResourceClose?: PromisingExport;
 }
@@ -104,6 +123,8 @@ export class EasyTierRuntime {
   private completionRequested = false;
   private lastError: unknown;
   private dataPlane: EasyTierDataPlane | undefined;
+  private stopping = false;
+  private stopPromise: Promise<void> | undefined;
 
   constructor(
     private readonly module: WebAssembly.Module,
@@ -121,7 +142,9 @@ export class EasyTierRuntime {
     metadata: HostWebSocketMetadata,
   ): Promise<void> {
     await this.ready;
+    this.requireRunning();
     await this.enqueue(async () => {
+      this.requireRunning();
       const encoded = new TextEncoder().encode(JSON.stringify(metadata));
       const pointer = await this.copyIntoGuest(encoded);
       let transferred = false;
@@ -173,10 +196,42 @@ export class EasyTierRuntime {
     timeoutMilliseconds?: number,
   ): Promise<EasyTierTcpStream> {
     await this.ready;
+    this.requireRunning();
     if (this.dataPlane === undefined) {
       throw new Error("this EasyTier guest does not include the data plane");
     }
     return this.dataPlane.connectTcp(ipv4, port, timeoutMilliseconds);
+  }
+
+  async bindTcp(
+    localPort: number,
+    timeoutMilliseconds?: number,
+  ): Promise<EasyTierTcpListener> {
+    await this.ready;
+    this.requireRunning();
+    if (this.dataPlane === undefined) {
+      throw new Error("this EasyTier guest does not include the data plane");
+    }
+    return this.dataPlane.bindTcp(localPort, timeoutMilliseconds);
+  }
+
+  stop(): Promise<void> {
+    if (this.stopPromise !== undefined) {
+      return this.stopPromise;
+    }
+    this.stopping = true;
+    this.armRequest += 1;
+    this.cancelTimer();
+    this.clock?.interrupt();
+    const stop = this.ready.then(
+      () => this.enqueue(() => this.stopInstance()),
+      (error: unknown) => {
+        this.releaseRuntimeResources();
+        throw error;
+      },
+    );
+    this.stopPromise = stop;
+    return stop;
   }
 
   private async initialize(): Promise<void> {
@@ -316,14 +371,115 @@ export class EasyTierRuntime {
     );
   }
 
+  private async stopInstance(): Promise<void> {
+    let failure: unknown;
+    try {
+      const stopStatus = Number(
+        await this.call("instanceStop", [this.instanceHandle]),
+      );
+      if (stopStatus !== 0) {
+        throw new Error(
+          await this.instanceError(`core stop (${stopStatus})`),
+        );
+      }
+
+      let lastState = 0;
+      let lastDeadline = NO_DEADLINE;
+      for (let attempt = 0; attempt < MAX_STOP_DRIVES; attempt += 1) {
+        if (this.completionRequested) {
+          this.completionRequested = false;
+          const notifyStatus = Number(
+            await this.call("notifyCompletions", [this.instanceHandle]),
+          );
+          if (notifyStatus !== 0) {
+            throw new Error(
+              await this.instanceError(
+                `completion notification (${notifyStatus})`,
+              ),
+            );
+          }
+        }
+        lastState = Number(
+          await this.call("instanceDrive", [this.instanceHandle]),
+        );
+        if (lastState < 0) {
+          throw new Error(
+            await this.instanceError(`core drive (${lastState})`),
+          );
+        }
+        await this.dataPlane?.drainCompletions();
+        if (lastState === INSTANCE_STOPPED) {
+          break;
+        }
+        lastDeadline = BigInt(
+          await this.call("nextDeadlineMillis", [this.instanceHandle]),
+        );
+        if (lastDeadline > 0n && lastDeadline !== NO_DEADLINE) {
+          const wait = Number(
+            lastDeadline > 1000n ? 1000n : lastDeadline,
+          );
+          await new Promise((resolve) => setTimeout(resolve, wait));
+          this.clock?.advanceMillis(wait);
+        } else if (lastDeadline === NO_DEADLINE) {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+      }
+      if (lastState !== INSTANCE_STOPPED) {
+        throw new Error(
+          `core did not stop: state=${lastState}, deadline=${lastDeadline}`,
+        );
+      }
+    } catch (error) {
+      failure = error;
+    }
+
+    try {
+      if (this.instanceHandle !== 0n) {
+        const dropStatus = Number(
+          await this.call("instanceDrop", [this.instanceHandle]),
+        );
+        if (dropStatus !== 0) {
+          throw new Error(
+            await this.instanceError(`core drop (${dropStatus})`),
+          );
+        }
+      }
+    } catch (error) {
+      failure ??= error;
+    } finally {
+      this.releaseRuntimeResources();
+    }
+
+    if (failure !== undefined) {
+      throw failure;
+    }
+  }
+
+  private releaseRuntimeResources(): void {
+    this.cancelTimer();
+    this.clock?.interrupt();
+    this.dataPlane?.shutdown();
+    this.dataPlane = undefined;
+    this.host.shutdown();
+    this.instanceHandle = 0n;
+    this.exports = undefined;
+    this.memory = undefined;
+    this.clock = undefined;
+    this.completionRequested = false;
+    this.pumpQueued = false;
+  }
+
   private requestHostCompletion(): void {
     this.completionRequested = true;
     this.clock?.interrupt();
+    if (this.stopping) {
+      return;
+    }
     this.queuePump();
   }
 
   private queuePump(): void {
-    if (this.pumpQueued) {
+    if (this.pumpQueued || this.stopping) {
       return;
     }
     this.pumpQueued = true;
@@ -331,6 +487,9 @@ export class EasyTierRuntime {
       .then(() =>
         this.enqueue(async () => {
           this.pumpQueued = false;
+          if (this.stopping) {
+            return;
+          }
           if (this.completionRequested) {
             this.completionRequested = false;
             const status = Number(
@@ -377,6 +536,10 @@ export class EasyTierRuntime {
   }
 
   private armNextDrive(): void {
+    if (this.stopping) {
+      this.cancelTimer();
+      return;
+    }
     const request = ++this.armRequest;
     void this.enqueue(async () => {
       if (request !== this.armRequest) {
@@ -389,12 +552,7 @@ export class EasyTierRuntime {
         return;
       }
       if (deadline === NO_DEADLINE) {
-        if (this.timer !== undefined) {
-          clearTimeout(this.timer);
-          this.timer = undefined;
-          this.timerDueAt = undefined;
-          this.timerGeneration += 1;
-        }
+        this.cancelTimer();
         return;
       }
       const milliseconds = Number(
@@ -449,12 +607,14 @@ export class EasyTierRuntime {
       bufferFree: wrap(raw.easytier_buffer_free),
       instanceCreate: wrap(raw.easytier_instance_create),
       instanceStart: wrap(raw.easytier_instance_start),
+      instanceStop: wrap(raw.easytier_instance_stop),
       instanceDrive: wrap(raw.easytier_instance_drive),
       notifyCompletions: wrap(raw.easytier_instance_notify_completions),
       instanceState: wrap(raw.easytier_instance_state),
       nextDeadlineMillis: wrap(raw.easytier_instance_next_deadline_millis),
       errorLength: wrap(raw.easytier_instance_error_len),
       errorCopy: wrap(raw.easytier_instance_error_copy),
+      instanceDrop: wrap(raw.easytier_instance_drop),
       websocketAbiVersion: wrap(raw.easytier_host_websocket_abi_version),
       acceptWebSocket: wrap(raw.easytier_instance_accept_websocket),
       dataPlaneAbiVersion: wrapOptional(raw.easytier_data_plane_abi_version),
@@ -464,11 +624,20 @@ export class EasyTierRuntime {
       dataPlaneTcpConnectSubmit: wrapOptional(
         raw.easytier_data_plane_tcp_connect_submit,
       ),
+      dataPlaneTcpBindSubmit: wrapOptional(
+        raw.easytier_data_plane_tcp_bind_submit,
+      ),
+      dataPlaneTcpAcceptSubmit: wrapOptional(
+        raw.easytier_data_plane_tcp_accept_submit,
+      ),
       dataPlaneTcpReadSubmit: wrapOptional(
         raw.easytier_data_plane_tcp_read_submit,
       ),
       dataPlaneTcpWriteSubmit: wrapOptional(
         raw.easytier_data_plane_tcp_write_submit,
+      ),
+      dataPlaneTcpShutdownWriteSubmit: wrapOptional(
+        raw.easytier_data_plane_tcp_shutdown_write_submit,
       ),
       dataPlaneCompletionDrain: wrapOptional(
         raw.easytier_data_plane_completion_drain,
@@ -477,11 +646,20 @@ export class EasyTierRuntime {
       dataPlaneTcpConnectResultTake: wrapOptional(
         raw.easytier_data_plane_tcp_connect_result_take,
       ),
+      dataPlaneTcpBindResultTake: wrapOptional(
+        raw.easytier_data_plane_tcp_bind_result_take,
+      ),
+      dataPlaneTcpAcceptResultTake: wrapOptional(
+        raw.easytier_data_plane_tcp_accept_result_take,
+      ),
       dataPlaneTcpReadResultTake: wrapOptional(
         raw.easytier_data_plane_tcp_read_result_take,
       ),
       dataPlaneTcpWriteResultTake: wrapOptional(
         raw.easytier_data_plane_tcp_write_result_take,
+      ),
+      dataPlaneTcpShutdownWriteResultTake: wrapOptional(
+        raw.easytier_data_plane_tcp_shutdown_write_result_take,
       ),
       dataPlaneOperationFree: wrapOptional(
         raw.easytier_data_plane_operation_free,
@@ -490,6 +668,15 @@ export class EasyTierRuntime {
         raw.easytier_data_plane_resource_close,
       ),
     };
+  }
+
+  private cancelTimer(): void {
+    if (this.timer !== undefined) {
+      clearTimeout(this.timer);
+      this.timer = undefined;
+      this.timerDueAt = undefined;
+    }
+    this.timerGeneration += 1;
   }
 
   private async copyIntoGuest(bytes: Uint8Array): Promise<number> {
@@ -554,6 +741,12 @@ export class EasyTierRuntime {
       throw new Error("guest memory is unavailable");
     }
     return this.memory;
+  }
+
+  private requireRunning(): void {
+    if (this.stopping) {
+      throw new Error("EasyTier runtime is stopped");
+    }
   }
 
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {

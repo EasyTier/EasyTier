@@ -1,9 +1,10 @@
-const DATA_PLANE_ABI_VERSION = 3;
+const DATA_PLANE_ABI_VERSION = 4;
 const DATA_PLANE_TCP_CAPABILITY = 1n << 1n;
 const COMPLETION_RECORD_LENGTH = 12;
 const COMPLETION_BATCH_SIZE = 64;
 const SOCKET_ADDRESS_LENGTH = 27;
 const STREAM_RESULT_LENGTH = 8 + SOCKET_ADDRESS_LENGTH * 2;
+const LISTENER_RESULT_LENGTH = 8 + SOCKET_ADDRESS_LENGTH;
 const TCP_READ_METADATA_LENGTH = 1;
 const INFINITE_TIMEOUT = 0xffff_ffff_ffff_ffffn;
 
@@ -13,13 +14,19 @@ export type DataPlaneExportName =
   | "dataPlaneAbiVersion"
   | "dataPlaneCapabilities"
   | "dataPlaneTcpConnectSubmit"
+  | "dataPlaneTcpBindSubmit"
+  | "dataPlaneTcpAcceptSubmit"
   | "dataPlaneTcpReadSubmit"
   | "dataPlaneTcpWriteSubmit"
+  | "dataPlaneTcpShutdownWriteSubmit"
   | "dataPlaneCompletionDrain"
   | "dataPlaneResultSize"
   | "dataPlaneTcpConnectResultTake"
+  | "dataPlaneTcpBindResultTake"
+  | "dataPlaneTcpAcceptResultTake"
   | "dataPlaneTcpReadResultTake"
   | "dataPlaneTcpWriteResultTake"
+  | "dataPlaneTcpShutdownWriteResultTake"
   | "dataPlaneOperationFree"
   | "dataPlaneResourceClose";
 
@@ -50,12 +57,20 @@ export interface TcpReadResult {
   eof: boolean;
 }
 
+export interface EasyTierIpv4SocketAddress {
+  ipv4: string;
+  port: number;
+}
+
 export class EasyTierTcpStream {
   private closed = false;
+  private writeShutdown: Promise<void> | undefined;
 
   constructor(
     private readonly dataPlane: EasyTierDataPlane,
     private readonly resource: bigint,
+    readonly localAddress: EasyTierIpv4SocketAddress,
+    readonly peerAddress: EasyTierIpv4SocketAddress,
   ) {}
 
   read(maxLength = 64 * 1024): Promise<TcpReadResult> {
@@ -68,7 +83,25 @@ export class EasyTierTcpStream {
 
   write(data: Uint8Array): Promise<number> {
     this.requireOpen();
+    if (this.writeShutdown !== undefined) {
+      return Promise.reject(new Error("TCP stream write side is shut down"));
+    }
     return this.dataPlane.writeTcp(this.resource, data);
+  }
+
+  shutdownWrite(): Promise<void> {
+    this.requireOpen();
+    if (this.writeShutdown !== undefined) {
+      return this.writeShutdown;
+    }
+    const shutdown = this.dataPlane
+      .shutdownTcpWrite(this.resource)
+      .catch((error: unknown) => {
+        this.writeShutdown = undefined;
+        throw error;
+      });
+    this.writeShutdown = shutdown;
+    return shutdown;
   }
 
   async close(): Promise<void> {
@@ -86,8 +119,38 @@ export class EasyTierTcpStream {
   }
 }
 
+export class EasyTierTcpListener {
+  private closed = false;
+
+  constructor(
+    private readonly dataPlane: EasyTierDataPlane,
+    private readonly resource: bigint,
+    readonly localAddress: EasyTierIpv4SocketAddress,
+  ) {}
+
+  accept(timeoutMilliseconds?: number): Promise<EasyTierTcpStream> {
+    this.requireOpen();
+    return this.dataPlane.acceptTcp(this.resource, timeoutMilliseconds);
+  }
+
+  async close(): Promise<void> {
+    if (this.closed) {
+      return;
+    }
+    this.closed = true;
+    await this.dataPlane.closeResource(this.resource);
+  }
+
+  private requireOpen(): void {
+    if (this.closed) {
+      throw new Error("TCP listener is closed");
+    }
+  }
+}
+
 export class EasyTierDataPlane {
   private readonly pending = new Map<bigint, PendingOperation<unknown>>();
+  private stoppedError: Error | undefined;
 
   constructor(private readonly bindings: DataPlaneBindings) {}
 
@@ -142,8 +205,94 @@ export class EasyTierDataPlane {
             ),
             "TCP connect result",
           );
-          const result = this.bindings.readGuest(pointer, STREAM_RESULT_LENGTH);
-          return new EasyTierTcpStream(this, readU64(result, 0));
+          return this.streamFromResult(
+            this.bindings.readGuest(pointer, STREAM_RESULT_LENGTH),
+          );
+        } finally {
+          await this.bindings.free(pointer);
+        }
+      },
+    );
+  }
+
+  bindTcp(
+    localPort: number,
+    timeoutMilliseconds?: number,
+  ): Promise<EasyTierTcpListener> {
+    if (!Number.isInteger(localPort) || localPort < 0 || localPort > 65_535) {
+      throw new Error("TCP local port must be between 0 and 65535");
+    }
+    return this.submit(
+      2,
+      async (operationPointer) =>
+        Number(
+          await this.bindings.call("dataPlaneTcpBindSubmit", [
+            this.bindings.instanceHandle,
+            localPort,
+            timeoutValue(timeoutMilliseconds),
+            operationPointer,
+          ]),
+        ),
+      async (operation) => {
+        const pointer = await this.bindings.allocate(LISTENER_RESULT_LENGTH);
+        try {
+          await this.requireSuccess(
+            Number(
+              await this.bindings.call("dataPlaneTcpBindResultTake", [
+                this.bindings.instanceHandle,
+                operation,
+                pointer,
+              ]),
+            ),
+            "TCP bind result",
+          );
+          const result = this.bindings.readGuest(
+            pointer,
+            LISTENER_RESULT_LENGTH,
+          );
+          return new EasyTierTcpListener(
+            this,
+            readU64(result, 0),
+            decodeIpv4SocketAddress(result, 8),
+          );
+        } finally {
+          await this.bindings.free(pointer);
+        }
+      },
+    );
+  }
+
+  acceptTcp(
+    listener: bigint,
+    timeoutMilliseconds?: number,
+  ): Promise<EasyTierTcpStream> {
+    return this.submit(
+      3,
+      async (operationPointer) =>
+        Number(
+          await this.bindings.call("dataPlaneTcpAcceptSubmit", [
+            this.bindings.instanceHandle,
+            listener,
+            timeoutValue(timeoutMilliseconds),
+            operationPointer,
+          ]),
+        ),
+      async (operation) => {
+        const pointer = await this.bindings.allocate(STREAM_RESULT_LENGTH);
+        try {
+          await this.requireSuccess(
+            Number(
+              await this.bindings.call("dataPlaneTcpAcceptResultTake", [
+                this.bindings.instanceHandle,
+                operation,
+                pointer,
+              ]),
+            ),
+            "TCP accept result",
+          );
+          return this.streamFromResult(
+            this.bindings.readGuest(pointer, STREAM_RESULT_LENGTH),
+          );
         } finally {
           await this.bindings.free(pointer);
         }
@@ -239,7 +388,46 @@ export class EasyTierDataPlane {
     );
   }
 
+  shutdownTcpWrite(resource: bigint): Promise<void> {
+    return this.submit(
+      9,
+      async (operationPointer) =>
+        Number(
+          await this.bindings.call("dataPlaneTcpShutdownWriteSubmit", [
+            this.bindings.instanceHandle,
+            resource,
+            operationPointer,
+          ]),
+        ),
+      async (operation) => {
+        await this.requireSuccess(
+          Number(
+            await this.bindings.call("dataPlaneTcpShutdownWriteResultTake", [
+              this.bindings.instanceHandle,
+              operation,
+            ]),
+          ),
+          "TCP write shutdown result",
+        );
+      },
+    );
+  }
+
+  shutdown(error = new Error("EasyTier runtime is stopped")): void {
+    if (this.stoppedError !== undefined) {
+      return;
+    }
+    this.stoppedError = error;
+    for (const operation of this.pending.values()) {
+      operation.reject(error);
+    }
+    this.pending.clear();
+  }
+
   closeResource(resource: bigint): Promise<void> {
+    if (this.stoppedError !== undefined) {
+      return Promise.reject(this.stoppedError);
+    }
     return this.bindings.runExclusive(async () => {
       const status = Number(
         await this.bindings.call("dataPlaneResourceClose", [
@@ -252,6 +440,9 @@ export class EasyTierDataPlane {
   }
 
   async drainCompletions(): Promise<void> {
+    if (this.stoppedError !== undefined) {
+      return;
+    }
     if (this.pending.size === 0) {
       return;
     }
@@ -292,6 +483,9 @@ export class EasyTierDataPlane {
     submit: (operationPointer: number) => Promise<number>,
     take: (operation: bigint) => Promise<T>,
   ): Promise<T> {
+    if (this.stoppedError !== undefined) {
+      throw this.stoppedError;
+    }
     let resolve!: (value: T) => void;
     let reject!: (reason: unknown) => void;
     const completion = new Promise<T>((resolveValue, rejectValue) => {
@@ -361,6 +555,15 @@ export class EasyTierDataPlane {
       throw new Error(await this.bindings.instanceError(`${context} (${status})`));
     }
   }
+
+  private streamFromResult(result: Uint8Array): EasyTierTcpStream {
+    return new EasyTierTcpStream(
+      this,
+      readU64(result, 0),
+      decodeIpv4SocketAddress(result, 8),
+      decodeIpv4SocketAddress(result, 8 + SOCKET_ADDRESS_LENGTH),
+    );
+  }
 }
 
 function timeoutValue(milliseconds: number | undefined): bigint {
@@ -392,6 +595,24 @@ function encodeIpv4SocketAddress(ipv4: string, port: number): Uint8Array {
   encoded.set(octets, 1);
   new DataView(encoded.buffer).setUint16(17, port, false);
   return encoded;
+}
+
+function decodeIpv4SocketAddress(
+  bytes: Uint8Array,
+  offset: number,
+): EasyTierIpv4SocketAddress {
+  if (bytes[offset] !== 4) {
+    throw new Error(`guest returned a non-IPv4 socket address`);
+  }
+  const octets = bytes.subarray(offset + 1, offset + 5);
+  return {
+    ipv4: Array.from(octets).join("."),
+    port: new DataView(
+      bytes.buffer,
+      bytes.byteOffset,
+      bytes.byteLength,
+    ).getUint16(offset + 17, false),
+  };
 }
 
 function readU16(bytes: Uint8Array, offset: number): number {
