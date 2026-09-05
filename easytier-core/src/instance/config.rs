@@ -260,7 +260,9 @@ impl CoreInstanceConfig {
             foreign_context_default_flags: host.runtime_flags(TomlConfig::default().get_flags()),
         };
 
-        let tcp_bind = TcpBindOptions::default().with_context(socket_context.clone());
+        let tcp_bind = TcpBindOptions::default()
+            .with_need_protect(true)
+            .with_context(socket_context.clone());
         let udp_bind = UdpBindOptions::direct_connect().with_context(socket_context.clone());
         let listeners = Some(ListenerRuntimeConfig::new(
             config

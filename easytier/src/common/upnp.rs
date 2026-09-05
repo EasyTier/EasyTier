@@ -22,6 +22,7 @@ use natpmp::{
 };
 
 use super::netns::NetNS;
+use crate::socket_protector::NativeSocketPurpose;
 
 const UPNP_SEARCH_TIMEOUT: Duration = Duration::from_secs(1);
 const UPNP_SEARCH_RESPONSE_TIMEOUT: Duration = Duration::from_millis(300);
@@ -516,9 +517,15 @@ async fn resolve_internal_addr(
         listener_ipv4_host(local_listener).ok_or_else(|| anyhow!("listener must be ipv4"))?;
 
     let ip = if host.is_unspecified() {
-        let udp = std::net::UdpSocket::bind("0.0.0.0:0")
-            .context("bind probe socket for gateway route")?;
+        let options = easytier_core::socket::udp::UdpBindOptions::default()
+            .with_local_addr(Some("0.0.0.0:0".parse().unwrap()))
+            .with_need_protect(true);
+        let udp =
+            crate::socket::udp::create_udp_socket(&options, NativeSocketPurpose::UpnpRouteProbe)
+                .await
+                .context("create protected probe socket for gateway route")?;
         udp.connect(gateway_addr)
+            .await
             .with_context(|| format!("connect probe socket to gateway {gateway_addr}"))?;
         let SocketAddr::V4(local_addr) = udp.local_addr().context("get probe socket local addr")?
         else {

@@ -804,6 +804,7 @@ where
             ),
         };
         let bind = TcpBindOptions::default()
+            .with_need_protect(true)
             .with_context(self.socket_context.clone().with_ip_version(ip_version))
             .with_local_addr(Some(bind_addr))
             .with_reuse_addr(true)

@@ -1,5 +1,4 @@
 use easytier::proto::{api, common};
-use napi_derive_ohos::napi;
 use serde::Serialize;
 use std::collections::HashSet;
 use std::sync::Mutex;
@@ -29,7 +28,6 @@ pub fn is_tun_attached(instance_id: &str) -> bool {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-#[napi(object)]
 pub struct PeerConnStats {
     pub rx_bytes: i64,
     pub tx_bytes: i64,
@@ -40,7 +38,6 @@ pub struct PeerConnStats {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-#[napi(object)]
 pub struct PeerConnInfo {
     pub conn_id: String,
     pub my_peer_id: i64,
@@ -61,7 +58,6 @@ pub struct PeerConnInfo {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-#[napi(object)]
 pub struct PeerInfo {
     pub peer_id: i64,
     pub default_conn_id: Option<String>,
@@ -71,7 +67,6 @@ pub struct PeerInfo {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-#[napi(object)]
 pub struct RouteView {
     pub peer_id: i64,
     pub hostname: Option<String>,
@@ -91,7 +86,6 @@ pub struct RouteView {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-#[napi(object)]
 pub struct MyNodeInfo {
     pub virtual_ipv4: Option<String>,
     pub virtual_ipv4_cidr: Option<String>,
@@ -106,7 +100,6 @@ pub struct MyNodeInfo {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-#[napi(object)]
 pub struct RuntimeInstanceState {
     pub config_id: String,
     pub instance_id: String,
@@ -121,11 +114,12 @@ pub struct RuntimeInstanceState {
     pub events: Vec<String>,
     pub routes: Vec<RouteView>,
     pub peers: Vec<PeerInfo>,
+    #[serde(skip)]
+    pub manual_routes: Vec<String>,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-#[napi(object)]
 pub struct TunAggregateState {
     pub active: bool,
     pub attached_instance_ids: Vec<String>,
@@ -136,7 +130,6 @@ pub struct TunAggregateState {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-#[napi(object)]
 pub struct RuntimeAggregateState {
     pub instances: Vec<RuntimeInstanceState>,
     pub tun: TunAggregateState,
@@ -324,7 +317,7 @@ fn route_to_view(route: api::instance::Route) -> RouteView {
     }
 }
 
-pub(crate) fn peer_conn_to_view(conn: api::instance::PeerConnInfo) -> PeerConnInfo {
+pub fn peer_conn_to_view(conn: api::instance::PeerConnInfo) -> PeerConnInfo {
     let stats = conn.stats.map(|stats| PeerConnStats {
         rx_bytes: stats.rx_bytes as i64,
         tx_bytes: stats.tx_bytes as i64,
@@ -399,12 +392,22 @@ fn my_node_info_to_view(info: api::manage::MyNodeInfo) -> MyNodeInfo {
 pub fn runtime_instance_from_running_info(
     config_id: String,
     display_name: String,
-    magic_dns_enabled: bool,
-    need_exit_node: bool,
+    config: Option<api::manage::NetworkConfig>,
     info: api::manage::NetworkInstanceRunningInfo,
 ) -> RuntimeInstanceState {
     let tun_attached = info.running && is_tun_attached(&config_id);
     let tun_required = info.running && (info.dev_name != "no_tun" || tun_attached);
+    let magic_dns_enabled = config
+        .as_ref()
+        .and_then(|config| config.enable_magic_dns)
+        .unwrap_or(false);
+    let need_exit_node = config
+        .as_ref()
+        .is_some_and(|config| !config.exit_nodes.is_empty());
+    let manual_routes = config
+        .as_ref()
+        .map(|config| config.routes.clone())
+        .unwrap_or_default();
 
     RuntimeInstanceState {
         config_id: config_id.clone(),
@@ -420,6 +423,7 @@ pub fn runtime_instance_from_running_info(
         events: info.events,
         routes: info.routes.into_iter().map(route_to_view).collect(),
         peers: info.peers.into_iter().map(peer_to_view).collect(),
+        manual_routes,
     }
 }
 
@@ -434,6 +438,7 @@ pub fn runtime_instance_from_config_snapshot(
         running && (config.dev_name.as_deref().unwrap_or("") != "no_tun" || tun_attached);
     let endpoint_urls = config_endpoint_urls(&config);
     let public_server_url = non_empty_string(config.public_server_url.clone());
+    let manual_routes = config.routes.clone();
     let my_node_info = MyNodeInfo {
         virtual_ipv4: non_empty_string(config.virtual_ipv4.clone()),
         virtual_ipv4_cidr: config_virtual_ipv4_cidr(&config),
@@ -460,5 +465,6 @@ pub fn runtime_instance_from_config_snapshot(
         events: Vec::new(),
         routes: configured_route_views(&endpoint_urls, public_server_url.as_deref()),
         peers: configured_peer_views(&endpoint_urls),
+        manual_routes,
     }
 }

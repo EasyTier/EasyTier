@@ -590,6 +590,8 @@ where
         })?;
         let overlay_destination = if local_virtual_destination {
             true
+        } else if dst_ip.is_loopback() {
+            false
         } else {
             let (peers, _) = options
                 .deadline
@@ -702,7 +704,11 @@ where
     ) -> DataPlaneResult<DataPlaneTcpStream> {
         let connect_options = TcpConnectOptions::direct_connect(dst_addr)
             .with_purpose(options.purpose)
-            .with_bind(TcpBindOptions::default().with_context(self.socket_context.clone()));
+            .with_bind(
+                TcpBindOptions::default()
+                    .with_need_protect(true)
+                    .with_context(self.socket_context.clone()),
+            );
         let socket = self
             .runtime_guard
             .while_open(options.deadline.run(self.host.connect_tcp(connect_options)))

@@ -39,6 +39,7 @@ fn bind_options_constructors_describe_socket_purpose() {
             reuse_port: false,
             only_v6: false,
             purpose: UdpSocketPurpose::HolePunchControl,
+            need_protect: false,
         }
     );
     assert_eq!(
@@ -51,6 +52,7 @@ fn bind_options_constructors_describe_socket_purpose() {
             reuse_port: false,
             only_v6: false,
             purpose: UdpSocketPurpose::HolePunchCandidate,
+            need_protect: true,
         }
     );
     assert_eq!(
@@ -63,6 +65,7 @@ fn bind_options_constructors_describe_socket_purpose() {
             reuse_port: false,
             only_v6: false,
             purpose: UdpSocketPurpose::DirectConnect,
+            need_protect: true,
         }
     );
     assert_eq!(
@@ -75,6 +78,7 @@ fn bind_options_constructors_describe_socket_purpose() {
             reuse_port: false,
             only_v6: false,
             purpose: UdpSocketPurpose::PortBoundListener,
+            need_protect: true,
         }
     );
     assert_eq!(
@@ -87,6 +91,7 @@ fn bind_options_constructors_describe_socket_purpose() {
             reuse_port: false,
             only_v6: false,
             purpose: UdpSocketPurpose::Socks5,
+            need_protect: false,
         }
     );
     assert_eq!(
@@ -123,6 +128,7 @@ fn session_connect_request_keeps_peer_scoped_udp_shape() {
             reuse_port: false,
             only_v6: false,
             purpose: UdpSocketPurpose::PortBoundListener,
+            need_protect: true,
         }
     );
 }

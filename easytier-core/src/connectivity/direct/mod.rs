@@ -140,7 +140,7 @@ impl Default for DirectConnectorOptions {
             allow_public_server: false,
             bind_device: false,
             allow_interface_bind: true,
-            tcp_bind: TcpBindOptions::default(),
+            tcp_bind: TcpBindOptions::default().with_need_protect(true),
             udp_bind: UdpBindOptions::direct_connect(),
             testing: false,
         }

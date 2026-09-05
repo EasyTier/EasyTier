@@ -256,6 +256,17 @@ where
             Arc::downgrade(&connections),
             "TCP port-forward connections",
         ));
+        if self.runtime_config.snapshot().services.proxy.force_smoltcp
+            && bind_addr.is_ipv4()
+            && bind_addr.ip().is_unspecified()
+        {
+            self.spawn_data_plane_tcp_port_forward(
+                bind_addr.port(),
+                dst_addr,
+                cancel.clone(),
+                connections.clone(),
+            );
+        }
         let host = self.host.clone();
         self.tasks.lock().unwrap().spawn(async move {
             let mut listener = Some(listener);
@@ -301,6 +312,103 @@ where
             );
         });
         Ok(())
+    }
+
+    fn spawn_data_plane_tcp_port_forward(
+        &self,
+        local_port: u16,
+        dst_addr: SocketAddr,
+        cancel: CancellationToken,
+        connections: Arc<std::sync::Mutex<JoinSet<()>>>,
+    ) {
+        // An optional userspace ingress endpoint: matching overlay TCP is
+        // terminated before the host TUN/return route. Native port-forward
+        // listeners remain available and intentionally unprotected. This is
+        // independent of socket protection; no_tun also has the generic TCP
+        // proxy fallback, while force_smoltcp can be used with no_tun=false.
+        let data_plane = self.data_plane.clone();
+        self.tasks.lock().unwrap().spawn(async move {
+            loop {
+                let mut listener = match select! {
+                    biased;
+                    _ = cancel.cancelled() => break,
+                    result = data_plane.data_plane_tcp_bind(local_port, Duration::from_secs(10)) => result,
+                } {
+                    Ok(listener) => listener,
+                    Err(error) => {
+                        tracing::error!(
+                            ?error,
+                            local_port,
+                            "data-plane TCP port-forward bind failed"
+                        );
+                        select! {
+                            biased;
+                            _ = cancel.cancelled() => break,
+                            _ = crate::foundation::time::sleep(TCP_PORT_FORWARD_REBIND_DELAY) => continue,
+                        }
+                    }
+                };
+                tracing::info!(
+                    ?dst_addr,
+                    local_addr = ?listener.local_addr(),
+                    "data-plane TCP port-forward listener bound"
+                );
+
+                loop {
+                    let accepted = select! {
+                        biased;
+                        _ = cancel.cancelled() => return,
+                        result = listener.accept() => result,
+                    };
+                    let (mut incoming, source_addr) = match accepted {
+                        Ok(accepted) => accepted,
+                        Err(error) => {
+                            tracing::error!(
+                                ?error,
+                                local_port,
+                                "data-plane TCP port-forward accept failed; rebinding"
+                            );
+                            break;
+                        }
+                    };
+                    let data_plane = data_plane.clone();
+                    connections.lock().unwrap().spawn(async move {
+                        let options = DataPlaneTcpConnectOptions::gateway(
+                            Duration::from_secs(10),
+                            TcpSocketPurpose::PortForward,
+                            source_addr,
+                        );
+                        let mut outgoing = match data_plane.connect_tcp(dst_addr, options).await {
+                            Ok(stream) => stream,
+                            Err(error) => {
+                                tracing::error!(?error, ?dst_addr, "port-forward connect failed");
+                                return;
+                            }
+                        };
+                        match tokio::io::copy_bidirectional(&mut incoming, &mut outgoing).await {
+                            Ok((from_client, from_server)) => tracing::info!(
+                                ?dst_addr,
+                                from_client,
+                                from_server,
+                                "port-forward connection finished"
+                            ),
+                            Err(error) => tracing::error!(
+                                ?error,
+                                ?dst_addr,
+                                "port-forward connection failed"
+                            ),
+                        }
+                    });
+                }
+
+                drop(listener);
+                select! {
+                    biased;
+                    _ = cancel.cancelled() => break,
+                    _ = crate::foundation::time::sleep(TCP_PORT_FORWARD_REBIND_DELAY) => {}
+                }
+            }
+        });
     }
 
     async fn add_udp_port_forward(&self, cfg: &PortForwardConfig) -> anyhow::Result<()> {

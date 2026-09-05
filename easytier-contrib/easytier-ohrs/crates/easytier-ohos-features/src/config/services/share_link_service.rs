@@ -162,7 +162,7 @@ pub fn import_config_share_link(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config_repo::{create_config_record, init_config_store};
+    use crate::config::repository::{create_config_record, init_config_store};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn test_root() -> String {
@@ -178,20 +178,21 @@ mod tests {
 
     #[test]
     fn share_link_roundtrip_works() {
+        const CONFIG_ID: &str = "00000000-0000-0000-0000-000000000003";
         assert!(init_config_store(test_root()));
-        create_config_record("cfg-share".to_string(), "share-demo".to_string())
+        create_config_record(CONFIG_ID.to_string(), "share-demo".to_string())
             .expect("create config");
 
-        let link = build_config_share_link("cfg-share", None, true).expect("share link");
+        let link = build_config_share_link(CONFIG_ID, None, true).expect("share link");
         let payload = parse_config_share_link(&link).expect("parse link");
         let config =
             serde_json::from_str::<NetworkConfig>(&payload.config_json).expect("config json");
 
         assert!(payload.only_start);
         assert_eq!(payload.display_name.as_deref(), Some("share-demo"));
-        assert_ne!(config.instance_id.as_deref(), Some("cfg-share"));
+        assert_ne!(config.instance_id.as_deref(), Some(CONFIG_ID));
 
         let imported_id = import_config_share_link(&link, None).expect("import link");
-        assert_ne!(imported_id, "cfg-share");
+        assert_ne!(imported_id, CONFIG_ID);
     }
 }

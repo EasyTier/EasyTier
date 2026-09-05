@@ -1,18 +1,15 @@
 use easytier::proto::ALL_DESCRIPTOR_BYTES;
-use napi_derive_ohos::napi;
 use once_cell::sync::Lazy;
 use prost_reflect::{Cardinality, DescriptorPool, FieldDescriptor, Kind, MessageDescriptor};
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
-#[napi(object)]
 pub struct FieldOption {
     pub label: String,
     pub value: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[napi(object)]
 pub struct ValidationRule {
     pub rule_type: String,
     pub arg: String,
@@ -20,7 +17,6 @@ pub struct ValidationRule {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[napi(object)]
 pub struct NetworkConfigSchema {
     pub node_kind: String,
     pub name: String,
@@ -38,7 +34,6 @@ pub struct NetworkConfigSchema {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[napi(object)]
 pub struct ConfigFieldMapping {
     pub field_name: String,
     pub field_number: i32,
@@ -119,7 +114,10 @@ fn enum_options(kind: Kind) -> Vec<FieldOption> {
             .values()
             .map(|value| FieldOption {
                 label: value.name().to_string(),
-                value: value.number().to_string(),
+                // Protobuf JSON uses enum names rather than numeric wire values.
+                // Returning the number made ArkTS write `1`, while NetworkConfig
+                // deserialization expects a name such as `"None"`.
+                value: value.name().to_string(),
             })
             .collect(),
         _ => Vec::new(),
@@ -410,5 +408,17 @@ mod tests {
                 .iter()
                 .any(|option| option.label == "PublicServer")
         );
+
+        let data_compress_algo = schema
+            .children
+            .iter()
+            .find(|field| field.name == "data_compress_algo")
+            .expect("data_compress_algo field");
+        let none = data_compress_algo
+            .enum_options
+            .iter()
+            .find(|option| option.label == "None")
+            .expect("compression None option");
+        assert_eq!(none.value, "None");
     }
 }

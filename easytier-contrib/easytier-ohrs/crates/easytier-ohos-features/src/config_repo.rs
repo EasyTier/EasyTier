@@ -4,7 +4,9 @@ use crate::config::storage::config_meta::{
     reset_config_meta_store, upsert_config_meta_in_tx,
 };
 use crate::config::types::stored_config::{ExportTomlResult, StoredConfigRecord};
+use easytier::common::config::{NetworkConfigExt, TomlConfigLoader};
 use easytier::proto::api::manage::NetworkConfig;
+use easytier::proto::common::CompressionAlgoPb;
 use once_cell::sync::Lazy;
 use rusqlite::params;
 use serde_json::Value;
@@ -16,16 +18,16 @@ use std::time::Instant;
 static CONFIG_ROOT_DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
 static RUNTIME_CONFIG_SNAPSHOTS: Lazy<Mutex<HashMap<String, RuntimeConfigSnapshot>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
-pub(crate) const CONFIG_DIR_NAME: &str = "easytier-configs";
-pub(crate) const KERNEL_SOCKET_FILE_NAME: &str = "easytier-kernel.sock";
+pub const CONFIG_DIR_NAME: &str = "easytier-configs";
+pub const KERNEL_SOCKET_FILE_NAME: &str = "easytier-kernel.sock";
 
 #[derive(Clone)]
-pub(crate) struct RuntimeConfigSnapshot {
+pub struct RuntimeConfigSnapshot {
     pub display_name: String,
     pub config: NetworkConfig,
 }
 
-pub(crate) fn cache_runtime_config_snapshot(
+pub fn cache_runtime_config_snapshot(
     config_id: String,
     display_name: String,
     config: NetworkConfig,
@@ -41,42 +43,27 @@ pub(crate) fn cache_runtime_config_snapshot(
     }
 }
 
-pub(crate) fn clear_runtime_config_snapshot(config_id: &str) {
+pub fn clear_runtime_config_snapshot(config_id: &str) {
     if let Ok(mut guard) = RUNTIME_CONFIG_SNAPSHOTS.lock() {
         guard.remove(config_id);
     }
 }
 
-pub(crate) fn get_runtime_config_snapshot(config_id: &str) -> Option<RuntimeConfigSnapshot> {
+pub fn get_runtime_config_snapshot(config_id: &str) -> Option<RuntimeConfigSnapshot> {
     RUNTIME_CONFIG_SNAPSHOTS
         .lock()
         .ok()
         .and_then(|guard| guard.get(config_id).cloned())
 }
 
-pub(crate) fn get_runtime_config_route_overrides(config_id: &str) -> (Vec<String>, Vec<String>) {
-    RUNTIME_CONFIG_SNAPSHOTS
-        .lock()
-        .ok()
-        .and_then(|guard| {
-            guard.get(config_id).map(|snapshot| {
-                (
-                    snapshot.config.routes.clone(),
-                    snapshot.config.proxy_cidrs.clone(),
-                )
-            })
-        })
-        .unwrap_or_default()
-}
-
-pub(crate) fn config_root_dir() -> Option<PathBuf> {
+pub fn config_root_dir() -> Option<PathBuf> {
     CONFIG_ROOT_DIR
         .lock()
         .ok()
         .and_then(|guard| guard.as_ref().cloned())
 }
 
-pub(crate) fn kernel_socket_path() -> Option<PathBuf> {
+pub fn kernel_socket_path() -> Option<PathBuf> {
     config_root_dir().map(|root| root.join(KERNEL_SOCKET_FILE_NAME))
 }
 
@@ -280,7 +267,9 @@ pub fn set_config_field_value(config_id: &str, field: &str, json_value: &str) ->
 }
 
 pub fn get_default_config_json() -> Option<String> {
-    crate::build_default_network_config_json().ok()
+    let mut config = NetworkConfig::new_from_config(TomlConfigLoader::default()).ok()?;
+    config.data_compress_algo = Some(CompressionAlgoPb::None as i32);
+    serde_json::to_string(&config).ok()
 }
 
 pub fn create_config_record(config_id: String, display_name: String) -> Option<StoredConfigRecord> {
@@ -290,24 +279,6 @@ pub fn create_config_record(config_id: String, display_name: String) -> Option<S
     config.instance_id = Some(config_id.clone());
     let normalized_json = serde_json::to_string(&config).ok()?;
     save_config_record(config_id, display_name, normalized_json)
-}
-
-pub fn start_kernel_with_config_id(config_id: &str) -> bool {
-    if validation::validate_config_id(config_id).is_err() {
-        return false;
-    }
-    let raw = match load_config_json(config_id) {
-        Some(raw) => raw,
-        None => return false,
-    };
-    let display_name = get_config_meta(config_id)
-        .map(|meta| meta.display_name)
-        .unwrap_or_else(|| config_id.to_string());
-    let started = crate::run_network_instance_from_json(&raw);
-    if started && let Ok(config) = serde_json::from_str::<NetworkConfig>(&raw) {
-        cache_runtime_config_snapshot(config_id.to_string(), display_name, config);
-    }
-    started
 }
 
 pub fn list_config_meta_json() -> String {
@@ -379,23 +350,28 @@ mod tests {
 
     #[test]
     fn save_get_export_delete_roundtrip() {
+        const CONFIG_ID: &str = "00000000-0000-0000-0000-000000000001";
         let root = test_root();
         assert!(init_config_store(root.clone()));
 
-        let config_json = crate::build_default_network_config_json().expect("default config");
-        let saved = save_config_record("cfg-1".to_string(), "test-config".to_string(), config_json)
-            .expect("save config");
+        let config_json = get_default_config_json().expect("default config");
+        let saved = save_config_record(
+            CONFIG_ID.to_string(),
+            "test-config".to_string(),
+            config_json,
+        )
+        .expect("save config");
 
-        assert_eq!(saved.meta.config_id, "cfg-1");
+        assert_eq!(saved.meta.config_id, CONFIG_ID);
         assert_eq!(saved.meta.display_name, "test-config");
 
-        let loaded = get_config_record("cfg-1").expect("load config");
+        let loaded = get_config_record(CONFIG_ID).expect("load config");
         assert_eq!(loaded.meta.display_name, "test-config");
-        assert!(loaded.config_json.contains("cfg-1"));
+        assert!(loaded.config_json.contains(CONFIG_ID));
 
         let legacy_json_path = PathBuf::from(&root)
             .join(CONFIG_DIR_NAME)
-            .join("cfg-1.json");
+            .join(format!("{CONFIG_ID}.json"));
         assert!(
             !legacy_json_path.exists(),
             "config should no longer be persisted as a per-config json file"
@@ -405,52 +381,54 @@ mod tests {
         let field_count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM stored_config_fields WHERE config_id = ?1",
-                params!["cfg-1"],
+                params![CONFIG_ID],
                 |row| row.get(0),
             )
             .expect("count config fields");
+        drop(conn);
         assert!(field_count > 0, "config fields should be stored in sqlite");
 
-        let exported = export_config_toml("cfg-1").expect("export toml");
+        let exported = export_config_toml(CONFIG_ID).expect("export toml");
         assert!(exported.toml_text.contains("instance_id"));
 
-        assert!(delete_config_record("cfg-1"));
-        assert!(get_config_record("cfg-1").is_none());
+        assert!(delete_config_record(CONFIG_ID));
+        assert!(get_config_record(CONFIG_ID).is_none());
     }
 
     #[test]
     fn set_config_field_updates_only_requested_top_level_field() {
+        const CONFIG_ID: &str = "00000000-0000-0000-0000-000000000002";
         let root = test_root();
         assert!(init_config_store(root));
 
-        let config_json = crate::build_default_network_config_json().expect("default config");
+        let config_json = get_default_config_json().expect("default config");
         save_config_record(
-            "cfg-field".to_string(),
+            CONFIG_ID.to_string(),
             "field-config".to_string(),
             config_json,
         )
         .expect("save config");
 
-        let before_network_name = get_config_field_value("cfg-field", "network_name");
-        let before_instance_id = get_config_field_value("cfg-field", "instance_id")
+        let before_network_name = get_config_field_value(CONFIG_ID, "network_name");
+        let before_instance_id = get_config_field_value(CONFIG_ID, "instance_id")
             .expect("instance id field should exist");
 
         assert!(set_config_field_value(
-            "cfg-field",
+            CONFIG_ID,
             "network_name",
             "\"changed-network\""
         ));
 
         assert_eq!(
-            get_config_field_value("cfg-field", "network_name"),
+            get_config_field_value(CONFIG_ID, "network_name"),
             Some("\"changed-network\"".to_string())
         );
         assert_eq!(
-            get_config_field_value("cfg-field", "instance_id"),
+            get_config_field_value(CONFIG_ID, "instance_id"),
             Some(before_instance_id)
         );
         assert_ne!(
-            get_config_field_value("cfg-field", "network_name"),
+            get_config_field_value(CONFIG_ID, "network_name"),
             before_network_name
         );
     }

@@ -23,7 +23,8 @@ use tokio::net::UdpSocket;
 use crate::host_runtime::{NativeHostRuntime, native_host_runtime};
 use crate::{
     common::netns::NetNS,
-    tunnel::common::{BindDev, bind},
+    socket_protector::NativeSocketPurpose,
+    tunnel::common::{BindDev, bind_with_protection},
 };
 
 use super::udp_src;
@@ -168,22 +169,13 @@ impl RuntimeUdpSocketFactory {
             ) && !cfg!(target_os = "windows"))
     }
 
-    fn bind_udp_socket(&self, options: UdpBindOptions) -> anyhow::Result<Arc<RuntimeUdpSocket>> {
+    async fn bind_udp_socket(
+        &self,
+        options: UdpBindOptions,
+    ) -> anyhow::Result<Arc<RuntimeUdpSocket>> {
         let context = options.context.clone();
-        let bind_addr = options
-            .local_addr
-            .unwrap_or_else(|| SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)));
-        let bind_device = self.bind_device_for(&options);
-        let reuse_addr = self.reuse_addr_for(&options);
-        let socket = bind::<UdpSocket>()
-            .addr(bind_addr)
-            .dev(bind_device)
-            .maybe_net_ns(Some(NetNS::from_socket_context(&context)))
-            .only_v6(options.only_v6)
-            .reuse_addr(reuse_addr)
-            .reuse_port(options.reuse_port)
-            .maybe_socket_mark(context.socket_mark)
-            .call()?;
+        let socket =
+            create_udp_socket(&options, NativeSocketPurpose::UdpBind(options.purpose)).await?;
         Ok(Arc::new(RuntimeUdpSocket::new_with_context(
             Arc::new(socket),
             context,
@@ -191,12 +183,36 @@ impl RuntimeUdpSocketFactory {
     }
 }
 
+/// Creates a host-owned UDP socket, including any required protection, before
+/// it can be used by DNS, a route probe, or a virtual socket adapter.
+pub(crate) async fn create_udp_socket(
+    options: &UdpBindOptions,
+    purpose: NativeSocketPurpose,
+) -> anyhow::Result<UdpSocket> {
+    let factory = RuntimeUdpSocketFactory::new();
+    let bind_addr = options
+        .local_addr
+        .unwrap_or_else(|| SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)));
+    Ok(bind_with_protection::<UdpSocket>()
+        .addr(bind_addr)
+        .dev(factory.bind_device_for(options))
+        .net_ns(NetNS::from_socket_context(&options.context))
+        .only_v6(options.only_v6)
+        .reuse_addr(factory.reuse_addr_for(options))
+        .reuse_port(options.reuse_port)
+        .maybe_socket_mark(options.context.socket_mark)
+        .need_protect(options.need_protect)
+        .purpose(purpose)
+        .call()
+        .await?)
+}
+
 #[async_trait]
 impl VirtualUdpSocketFactory for RuntimeUdpSocketFactory {
     type Socket = RuntimeUdpSocket;
 
     async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
-        self.bind_udp_socket(options)
+        self.bind_udp_socket(options).await
     }
 }
 
