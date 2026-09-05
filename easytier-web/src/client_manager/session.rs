@@ -115,6 +115,7 @@ pub struct SessionData {
     storage_token: Option<StorageToken>,
     binding_version: Option<u64>,
     applied_config_revision: Option<String>,
+    applied_config_revision_known: bool,
     known_runtime_base_revision: Option<String>,
     pending_managed_config_reconcile: Option<ManagedConfigReconcileHint>,
     direct_run_failed_instance_ids: HashSet<String>,
@@ -151,6 +152,7 @@ impl SessionData {
             storage_token: None,
             binding_version: None,
             applied_config_revision: None,
+            applied_config_revision_known: false,
             known_runtime_base_revision: None,
             pending_managed_config_reconcile: None,
             direct_run_failed_instance_ids: HashSet::new(),
@@ -500,6 +502,7 @@ impl SessionRpcService {
         }
 
         data.applied_config_revision = None;
+        data.applied_config_revision_known = false;
         data.known_runtime_base_revision = None;
         data.pending_managed_config_reconcile = Some(ManagedConfigReconcileHint::Full);
         data.runtime_config_epoch = data.runtime_config_epoch.wrapping_add(1);
@@ -1028,6 +1031,7 @@ impl Session {
                 return;
             }
             data.applied_config_revision = None;
+            data.applied_config_revision_known = true;
             data.known_runtime_base_revision = None;
             data.pending_managed_config_reconcile = Some(ManagedConfigReconcileHint::Full);
             data.runtime_config_epoch = data.runtime_config_epoch.wrapping_add(1);
@@ -1046,6 +1050,7 @@ impl Session {
                 return;
             }
             data.applied_config_revision = None;
+            data.applied_config_revision_known = true;
             data.known_runtime_base_revision = None;
             data.pending_managed_config_reconcile = Some(ManagedConfigReconcileHint::Full);
             data.runtime_config_epoch = data.runtime_config_epoch.wrapping_add(1);
@@ -1674,6 +1679,7 @@ mod tests {
                 webhook_config,
                 client_url: url::Url::parse("http://127.0.0.1").unwrap(),
                 applied_config_revision: None,
+                applied_config_revision_known: false,
                 failed_instance_ids: Vec::new(),
                 req,
                 machine_id,
@@ -1884,6 +1890,7 @@ mod tests {
                 )),
                 client_url: url::Url::parse("http://127.0.0.1").unwrap(),
                 applied_config_revision: None,
+                applied_config_revision_known: false,
                 failed_instance_ids: Vec::new(),
                 req,
                 machine_id,
@@ -1949,6 +1956,7 @@ mod tests {
             )),
             client_url: client_url.clone(),
             applied_config_revision: None,
+            applied_config_revision_known: false,
             failed_instance_ids: Vec::new(),
             req: req.clone(),
             machine_id,
@@ -2133,6 +2141,7 @@ mod tests {
                 )),
                 client_url,
                 applied_config_revision: None,
+                applied_config_revision_known: false,
                 failed_instance_ids: Vec::new(),
                 req,
                 machine_id,
@@ -2182,6 +2191,7 @@ mod tests {
         data.req = Some(req.clone());
         data.auth_state = SessionAuthState::Authorized;
         data.applied_config_revision = Some("rev-1".to_string());
+        data.applied_config_revision_known = true;
         data.known_runtime_base_revision = Some("rev-1".to_string());
         let session_data = Arc::new(RwLock::new(data));
         let weak_session = Arc::downgrade(&session_data);
@@ -2197,6 +2207,7 @@ mod tests {
                 )),
                 client_url: url::Url::parse("http://127.0.0.1").unwrap(),
                 applied_config_revision: None,
+                applied_config_revision_known: false,
                 failed_instance_ids: Vec::new(),
                 req: req.clone(),
                 machine_id,
@@ -2207,7 +2218,25 @@ mod tests {
         assert!(!SessionRpcService::runtime_heartbeat_is_current(&weak_session, &req).await);
         let data = session_data.read().await;
         assert_eq!(data.applied_config_revision, None);
+        assert!(!data.applied_config_revision_known);
         assert_eq!(data.known_runtime_base_revision, None);
+    }
+
+    #[tokio::test]
+    async fn fresh_session_application_revision_is_unknown() {
+        let storage = Storage::new(crate::db::Db::memory_db().await);
+        let data = SessionData::new(
+            storage.weak_ref(),
+            url::Url::parse("http://127.0.0.1").unwrap(),
+            None,
+            Arc::new(FeatureFlags::default()),
+            Arc::new(crate::webhook::WebhookConfig::new(
+                None, None, None, None, None,
+            )),
+        );
+
+        assert_eq!(data.applied_config_revision, None);
+        assert!(!data.applied_config_revision_known);
     }
 
     #[test]
@@ -2225,6 +2254,7 @@ mod tests {
             web_instance_api_base_url: Some("http://console".to_string()),
             persisted_config_revision: Some("rev-0".to_string()),
             applied_config_revision: Some("rev-1".to_string()),
+            applied_config_revision_known: true,
             failed_instance_ids: vec!["failed-instance".to_string()],
         };
 
@@ -2240,6 +2270,12 @@ mod tests {
                 .get("applied_config_revision")
                 .and_then(|v| v.as_str()),
             Some("rev-1")
+        );
+        assert_eq!(
+            value
+                .get("applied_config_revision_known")
+                .and_then(|v| v.as_bool()),
+            Some(true)
         );
         assert_eq!(
             value.get("failed_instance_ids"),

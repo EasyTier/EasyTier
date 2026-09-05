@@ -25,6 +25,7 @@ pub(super) struct WebhookValidationInput {
     pub(super) webhook_config: SharedWebhookConfig,
     pub(super) client_url: url::Url,
     pub(super) applied_config_revision: Option<String>,
+    pub(super) applied_config_revision_known: bool,
     pub(super) failed_instance_ids: Vec<String>,
     pub(super) req: HeartbeatRequest,
     pub(super) machine_id: uuid::Uuid,
@@ -45,6 +46,7 @@ async fn request_heartbeat_validation(
     client_url: &url::Url,
     persisted_config_revision: Option<&str>,
     applied_config_revision: Option<&str>,
+    applied_config_revision_known: bool,
     failed_instance_ids: &[String],
     req: &HeartbeatRequest,
     machine_id: uuid::Uuid,
@@ -62,6 +64,7 @@ async fn request_heartbeat_validation(
         web_instance_api_base_url: webhook_config.web_instance_api_base_url.clone(),
         persisted_config_revision: persisted_config_revision.map(str::to_string),
         applied_config_revision: applied_config_revision.map(str::to_string),
+        applied_config_revision_known,
         failed_instance_ids: failed_instance_ids.to_vec(),
     };
     let resp = webhook_config
@@ -142,6 +145,7 @@ async fn wait_for_input(
                         webhook_config: data.webhook_config.clone(),
                         client_url: data.client_url.clone(),
                         applied_config_revision: data.applied_config_revision.clone(),
+                        applied_config_revision_known: data.applied_config_revision_known,
                         failed_instance_ids: SessionRpcService::sorted_failed_instance_ids_locked(
                             &data,
                         ),
@@ -234,6 +238,7 @@ pub(super) async fn run_round(
         &input.client_url,
         persisted_config_revision.as_deref(),
         input.applied_config_revision.as_deref(),
+        input.applied_config_revision_known,
         &input.failed_instance_ids,
         &input.req,
         input.machine_id,
@@ -305,6 +310,7 @@ pub(super) async fn apply_rejected(
         data.webhook_validation_dirty = false;
         data.binding_version = None;
         data.applied_config_revision = None;
+        data.applied_config_revision_known = false;
         data.known_runtime_base_revision = None;
         data.pending_managed_config_reconcile = None;
         let storage_token = data.storage_token.clone();

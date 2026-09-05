@@ -860,6 +860,7 @@ async fn begin_managed_runtime_mutation(
     }
     if !mutation_fence.started {
         data.applied_config_revision = None;
+        data.applied_config_revision_known = true;
         if matches!(round.scope, ReconcileScope::Full) {
             data.known_runtime_base_revision = None;
         }
@@ -1226,9 +1227,10 @@ fn record_applied_config_revision(
     data: &mut SessionData,
     revision: Option<String>,
 ) -> Option<std::sync::Arc<tokio::sync::Notify>> {
-    let changed = data.applied_config_revision != revision;
+    let changed = !data.applied_config_revision_known || data.applied_config_revision != revision;
     data.known_runtime_base_revision = revision.clone();
     data.applied_config_revision = revision;
+    data.applied_config_revision_known = true;
     data.pending_managed_config_reconcile = None;
     changed.then(|| SessionRpcService::mark_webhook_validation_state_changed_locked(data))
 }
@@ -1377,6 +1379,7 @@ mod tests {
         let notify = record_applied_config_revision(&mut data, Some("rev-applied".to_string()))
             .expect("new applied revision should wake validation");
         assert_eq!(data.applied_config_revision.as_deref(), Some("rev-applied"));
+        assert!(data.applied_config_revision_known);
         assert_eq!(
             data.known_runtime_base_revision.as_deref(),
             Some("rev-applied")
@@ -1405,6 +1408,7 @@ mod tests {
             )),
         );
         data.applied_config_revision = Some("rev-applied".to_string());
+        data.applied_config_revision_known = true;
 
         assert!(
             record_applied_config_revision(&mut data, Some("rev-applied".to_string())).is_none()
@@ -1509,6 +1513,7 @@ mod tests {
         let data = session_data.read().await;
         assert!(mutation_fence.started);
         assert_eq!(data.applied_config_revision, None);
+        assert!(data.applied_config_revision_known);
         assert_eq!(data.known_runtime_base_revision.as_deref(), Some("rev-a"));
         assert_eq!(
             data.pending_managed_config_reconcile,
@@ -1548,6 +1553,7 @@ mod tests {
 
         let data = session_data.read().await;
         assert_eq!(data.applied_config_revision, None);
+        assert!(data.applied_config_revision_known);
         assert_eq!(data.known_runtime_base_revision, None);
     }
 
