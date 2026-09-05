@@ -23,9 +23,7 @@ use easytier::web_client::{self, WebClient};
 use easytier::{
     common::config::{NetworkConfig, NetworkConfigExt},
     common::{
-        config::{
-            ConfigLoader, ConfigSource, FileLoggerConfig, LoggingConfigBuilder, TomlConfigLoader,
-        },
+        config::{ConfigLoader, ConfigSource, FileLoggerConfig, LoggingConfig, TomlConfigLoader},
         log,
     },
     instance::factory::{NativeInstanceManager, native_instance_manager},
@@ -123,6 +121,14 @@ fn generate_network_config(toml_config: String) -> Result<NetworkConfig, String>
     let config = TomlConfigLoader::new_from_str(&toml_config).map_err(|e| e.to_string())?;
     let cfg = NetworkConfig::new_from_config(&config).map_err(|e| e.to_string())?;
     Ok(cfg)
+}
+
+#[tauri::command]
+fn get_dns_servers(cfg: NetworkConfig) -> Result<Vec<String>, String> {
+    let config = cfg.gen_config().map_err(|e| e.to_string())?;
+    easytier::common::config::vpn_dns_servers(&config)
+        .map(|servers| servers.into_iter().map(|ip| ip.to_string()).collect())
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1463,16 +1469,16 @@ pub fn run_gui() -> std::process::ExitCode {
             let Ok(log_dir) = get_log_dir(app.app_handle()) else {
                 return Ok(());
             };
-            let config = LoggingConfigBuilder::default()
-                .file_logger(FileLoggerConfig {
+            let config = LoggingConfig {
+                file_logger: Some(FileLoggerConfig {
                     dir: Some(log_dir.to_string_lossy().to_string()),
                     level: None,
                     file: None,
                     size_mb: None,
                     count: None,
-                })
-                .build()
-                .map_err(|e| e.to_string())?;
+                }),
+                console_logger: None,
+            };
             let Ok(_) = log::init(&config, true) else {
                 return Ok(());
             };
@@ -1503,6 +1509,7 @@ pub fn run_gui() -> std::process::ExitCode {
         .invoke_handler(tauri::generate_handler![
             parse_network_config,
             generate_network_config,
+            get_dns_servers,
             run_network_instance,
             collect_network_info,
             get_vpn_portal_info,

@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => {
     })),
     consumeVpnTileAction: vi.fn(async () => ({})),
     getConfig: vi.fn(async (instanceId: string) => configs.get(instanceId)),
+    getDnsServers: vi.fn<() => Promise<string[]>>(async () => []),
     getVpnStatus: vi.fn<() => Promise<Record<string, unknown>>>(async () => ({ running: false })),
     listNetworkInstanceIds: vi.fn<() => Promise<{ running_inst_ids: unknown[] }>>(async () => ({ running_inst_ids: [] })),
     prepareVpn: vi.fn(async () => ({ granted: true })),
@@ -54,6 +55,7 @@ vi.mock('tauri-plugin-vpnservice-api', () => ({
 vi.mock('./backend', () => ({
   collectNetworkInfo: mocks.collectNetworkInfo,
   getConfig: mocks.getConfig,
+  getDnsServers: mocks.getDnsServers,
   listNetworkInstanceIds: mocks.listNetworkInstanceIds,
   setTunFd: mocks.setTunFd,
 }))
@@ -62,7 +64,7 @@ function setConfig(instanceId: string, noTun = false) {
   mocks.configs.set(instanceId, {
     no_tun: noTun,
     dhcp: false,
-    enable_magic_dns: false,
+    dns_toml: 'disabled = true',
     routes: [],
   })
 }
@@ -96,6 +98,8 @@ beforeEach(() => {
   mocks.consumeVpnTileAction.mockReset()
   mocks.consumeVpnTileAction.mockResolvedValue({})
   mocks.getConfig.mockClear()
+  mocks.getDnsServers.mockReset()
+  mocks.getDnsServers.mockResolvedValue([])
   mocks.getVpnStatus.mockReset()
   mocks.getVpnStatus.mockResolvedValue({ running: false })
   mocks.listNetworkInstanceIds.mockReset()
@@ -107,6 +111,51 @@ beforeEach(() => {
 })
 
 describe('mobile VPN reconciliation ownership', () => {
+  it.each([
+    { dnsToml: 'disabled = true', servers: [], dns: undefined, routes: [] },
+    { dnsToml: undefined, servers: ['100.100.100.101'], dns: '100.100.100.101', routes: ['100.100.100.101/32'] },
+    { dnsToml: 'addresses = ["10.7.0.53"]', servers: ['10.7.0.53', '10.7.0.54'], dns: '10.7.0.53', routes: ['10.7.0.53/32'] },
+    { dnsToml: 'addresses = ["fd00::53"]', servers: ['fd00::53'], dns: 'fd00::53', routes: ['fd00::53/128'] },
+  ])('uses native DNS addresses for $dnsToml', async ({ dnsToml, servers, dns, routes }) => {
+    setConfig('A')
+    const config = mocks.configs.get('A')!
+    config.dns_toml = dnsToml
+    mocks.getDnsServers.mockResolvedValue(servers)
+    setReady('A', '10.0.0.1')
+    const vpn = await loadVpnModule()
+
+    await vpn.onNetworkInstanceChange('A')
+
+    expect(mocks.getDnsServers).toHaveBeenCalledWith(config)
+    expect(mocks.startVpn).toHaveBeenCalledWith(expect.objectContaining({ dns, routes }))
+  })
+
+  it('does not start with a stale DNS configuration after the instance changes', async () => {
+    setConfig('A')
+    setConfig('B')
+    setReady('A', '10.0.0.1')
+    setReady('B', '10.0.0.2')
+    let resolveDns!: (servers: string[]) => void
+    let dnsRequested!: () => void
+    const dnsRequest = new Promise<void>((resolve) => {
+      dnsRequested = resolve
+    })
+    mocks.getDnsServers.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveDns = resolve
+      dnsRequested()
+    }))
+    const vpn = await loadVpnModule()
+
+    const startA = vpn.onNetworkInstanceChange('A')
+    await dnsRequest
+    const startB = vpn.onNetworkInstanceChange('B')
+    resolveDns(['10.0.0.53'])
+    await Promise.all([startA, startB])
+
+    expect(mocks.startVpn).toHaveBeenCalledTimes(1)
+    expect(mocks.startVpn).toHaveBeenCalledWith(expect.objectContaining({ ipv4Addr: '10.0.0.2/24', dns: undefined }))
+  })
+
   it('stops A before retrying an unavailable B, then starts B when it becomes ready', async () => {
     setConfig('A')
     setConfig('B')

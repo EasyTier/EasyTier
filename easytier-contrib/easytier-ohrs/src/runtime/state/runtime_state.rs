@@ -1,4 +1,8 @@
-use easytier::proto::{api, common};
+use anyhow::Context as _;
+use easytier::{
+    common::config::{NetworkConfigExt as _, vpn_dns_servers},
+    proto::{api, common},
+};
 use napi_derive_ohos::napi;
 use serde::Serialize;
 use std::collections::HashSet;
@@ -114,7 +118,7 @@ pub struct RuntimeInstanceState {
     pub running: bool,
     pub tun_required: bool,
     pub tun_attached: bool,
-    pub magic_dns_enabled: bool,
+    pub dns_servers: Vec<String>,
     pub need_exit_node: bool,
     pub error_message: Option<String>,
     pub my_node_info: Option<MyNodeInfo>,
@@ -399,7 +403,7 @@ fn my_node_info_to_view(info: api::manage::MyNodeInfo) -> MyNodeInfo {
 pub fn runtime_instance_from_running_info(
     config_id: String,
     display_name: String,
-    magic_dns_enabled: bool,
+    dns_servers: Vec<String>,
     need_exit_node: bool,
     info: api::manage::NetworkInstanceRunningInfo,
 ) -> RuntimeInstanceState {
@@ -413,7 +417,7 @@ pub fn runtime_instance_from_running_info(
         running: info.running,
         tun_required,
         tun_attached,
-        magic_dns_enabled,
+        dns_servers,
         need_exit_node,
         error_message: info.error_msg,
         my_node_info: info.my_node_info.map(my_node_info_to_view),
@@ -421,6 +425,17 @@ pub fn runtime_instance_from_running_info(
         routes: info.routes.into_iter().map(route_to_view).collect(),
         peers: info.peers.into_iter().map(peer_to_view).collect(),
     }
+}
+
+pub(crate) fn config_dns_servers(
+    config: &api::manage::NetworkConfig,
+) -> anyhow::Result<Vec<String>> {
+    let config = config
+        .gen_config()
+        .context("invalid network configuration")?;
+    vpn_dns_servers(&config)
+        .context("invalid DNS configuration")
+        .map(|servers| servers.into_iter().map(|ip| ip.to_string()).collect())
 }
 
 pub fn runtime_instance_from_config_snapshot(
@@ -445,6 +460,14 @@ pub fn runtime_instance_from_config_snapshot(
         udp_nat_type: None,
         tcp_nat_type: None,
     };
+    let (dns_servers, error_message) = match config_dns_servers(&config) {
+        Ok(servers) => (servers, None),
+        Err(error) => {
+            let message = format!("Failed to configure VPN DNS: {error:#}");
+            ohrs_log_error!("[Rust] {} instance={}", message, config_id);
+            (Vec::new(), Some(message))
+        }
+    };
 
     RuntimeInstanceState {
         config_id: config_id.clone(),
@@ -453,9 +476,9 @@ pub fn runtime_instance_from_config_snapshot(
         running,
         tun_required,
         tun_attached,
-        magic_dns_enabled: config.enable_magic_dns.unwrap_or(false),
+        dns_servers,
         need_exit_node: !config.exit_nodes.is_empty(),
-        error_message: None,
+        error_message,
         my_node_info: Some(my_node_info),
         events: Vec::new(),
         routes: configured_route_views(&endpoint_urls, public_server_url.as_deref()),

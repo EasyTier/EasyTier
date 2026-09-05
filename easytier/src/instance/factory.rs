@@ -137,6 +137,14 @@ impl InstanceFactory for NativeInstanceFactory {
     type CreateContext = ();
     type Error = anyhow::Error;
 
+    fn validate_config(&self, config: &TomlConfig) -> Result<(), Self::Error> {
+        #[cfg(feature = "magic-dns")]
+        crate::dns::config::validate_dns_config(config)?;
+        #[cfg(not(feature = "magic-dns"))]
+        let _ = config;
+        Ok(())
+    }
+
     fn create(
         &self,
         config: TomlConfig,

@@ -33,7 +33,6 @@ const CONFIG_FLAG_FIELDS = [
   'enable_udp_broadcast_relay',
   'disable_upnp',
   'disable_sym_hole_punching',
-  'enable_magic_dns',
   'enable_private_mode',
 ] as const satisfies readonly (keyof NetworkConfig)[]
 
@@ -103,6 +102,23 @@ const InputTextStub = defineComponent({
       value: props.modelValue ?? '',
       'data-stub': 'input-text',
       onInput: (event: Event) => emit('update:modelValue', (event.target as HTMLInputElement).value),
+    })
+  },
+})
+
+const TextareaStub = defineComponent({
+  name: 'Textarea',
+  props: {
+    modelValue: String,
+    id: String,
+  },
+  emits: ['update:modelValue'],
+  setup(props, { attrs, emit }) {
+    return () => h('textarea', {
+      ...attrs,
+      id: props.id,
+      value: props.modelValue ?? '',
+      onInput: (event: Event) => emit('update:modelValue', (event.target as HTMLTextAreaElement).value),
     })
   },
 })
@@ -379,6 +395,7 @@ function mountConfig(config: NetworkConfig = makeConfig()) {
         InputGroupAddon: PassThrough,
         InputNumber: InputNumberStub,
         InputText: InputTextStub,
+        Textarea: TextareaStub,
         MultiSelect: MultiSelectStub,
         Panel: PanelStub,
         Password: PasswordStub,
@@ -402,6 +419,26 @@ async function setInput(wrapper: VueWrapper, selector: string, value: string) {
 }
 
 describe('Config.vue network config projection', () => {
+  it('edits the full DNS configuration and leaves defaults to the backend when cleared', async () => {
+    const { curNetwork, wrapper } = mountConfig()
+    await nextTick()
+
+    expect(input(wrapper, '#dns_toml').value).toBe('')
+    expect(curNetwork.dns_toml).toBeUndefined()
+
+    const dnsToml = 'domain = "mesh.example."\n[[zone]]\norigin = "internal.example."\n'
+    await setInput(wrapper, '#dns_toml', dnsToml)
+    expect(curNetwork.dns_toml).toBe(dnsToml)
+    expect(toBackendNetworkConfig(curNetwork).dns_toml).toBe(dnsToml)
+
+    await setInput(wrapper, '#dns_toml', 'disabled = true')
+    expect(toBackendNetworkConfig(curNetwork).dns_toml).toBe('disabled = true')
+
+    await setInput(wrapper, '#dns_toml', '  ')
+    expect(curNetwork.dns_toml).toBeUndefined()
+    expect(toBackendNetworkConfig(curNetwork).dns_toml).toBeUndefined()
+  })
+
   it('projects config values into the visible form controls', async () => {
     const { curNetwork, wrapper } = mountConfig()
     await nextTick()

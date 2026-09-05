@@ -12,6 +12,7 @@ mod management_state;
 pub mod manager;
 mod packet_io;
 mod packet_plane;
+pub(crate) mod dns_peer;
 #[cfg(feature = "proxy-packet")]
 mod packet_proxy_extension;
 #[cfg(feature = "public-ipv6-provider")]
@@ -117,6 +118,7 @@ use management_state::ManagementState;
 pub use packet_io::PacketEgressHost;
 use packet_io::PacketSinkEgress;
 pub use packet_plane::CorePacketPlane;
+pub use dns_peer::{CoreDnsPeerAccess, DnsExportRegistration};
 
 /// Complete Host capability set required by one portable core instance.
 pub trait CoreInstanceHost: DirectConnectorHost + TcpHolePunchHost {}

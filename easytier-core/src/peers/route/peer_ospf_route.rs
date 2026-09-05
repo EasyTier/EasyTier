@@ -767,6 +767,7 @@ fn new_route_peer_info_with_version(easytier_version: String) -> RoutePeerInfo {
         trusted_credential_pubkeys: Vec::new(),
         ipv6_public_addr_prefix: None,
         ipv6_public_addr_lease: None,
+        dns: Vec::new(),
     }
 }
 
@@ -788,6 +789,7 @@ pub fn new_updated_self_route_peer_info(
     RoutePeerInfo {
         peer_id: my_peer_id,
         inst_id: Some(context.instance_id().into()),
+        dns: context.dns_export_digest(),
         cost: 0,
         ipv4_addr: ipv4.as_ref().map(|x| x.address().into()),
         proxy_cidrs: context
@@ -2809,6 +2811,15 @@ impl PeerRouteServiceImpl {
     }
 
     fn update_route_table(&self) {
+        // DNS consumers read the published route table. Notify only after both
+        // credential filtering and route rebuilding have made the change visible.
+        let dns_before: HashMap<_, _> = self
+            .route_table
+            .peer_infos
+            .iter()
+            .filter(|entry| !entry.dns.is_empty())
+            .map(|entry| (*entry.key(), entry.dns.clone()))
+            .collect();
         self.cost_calculator
             .write()
             .unwrap()
@@ -2841,6 +2852,24 @@ impl PeerRouteServiceImpl {
             .as_mut()
             .unwrap()
             .end_update();
+
+        let dns_after: HashMap<_, _> = self
+            .route_table
+            .peer_infos
+            .iter()
+            .filter(|entry| !entry.dns.is_empty())
+            .map(|entry| (*entry.key(), entry.dns.clone()))
+            .collect();
+        let changed: BTreeSet<_> = dns_before
+            .keys()
+            .chain(dns_after.keys())
+            .copied()
+            .filter(|peer_id| dns_before.get(peer_id) != dns_after.get(peer_id))
+            .collect();
+        if !changed.is_empty() {
+            self.context
+                .issue_route_info_updated(changed.into_iter().collect());
+        }
     }
 
     fn update_foreign_network_owner_map(&self) {
@@ -4321,6 +4350,7 @@ impl PeerRoute {
     ) {
         let mut peer_event_receiver = service_impl.context.subscribe_peer_events();
         let mut runtime_change_receiver = service_impl.context.subscribe_runtime_changes();
+        let mut dns_change_receiver = service_impl.context.subscribe_dns_export_changes();
         service_impl.mark_interface_peers_dirty();
         loop {
             if service_impl.update_my_infos().await {
@@ -4348,6 +4378,12 @@ impl PeerRoute {
                     None => std::future::pending().await,
                 }
             };
+            let dns_change = async {
+                match dns_change_receiver.as_mut() {
+                    Some(receiver) => Some(receiver.changed().await),
+                    None => std::future::pending().await,
+                }
+            };
 
             select! {
                 Some(ev) = peer_event => {
@@ -4366,6 +4402,11 @@ impl PeerRoute {
                     if change.is_err() {
                         runtime_change_receiver =
                             service_impl.context.subscribe_runtime_changes();
+                    }
+                }
+                Some(change) = dns_change => {
+                    if change.is_err() {
+                        dns_change_receiver = service_impl.context.subscribe_dns_export_changes();
                     }
                 }
                 _ = crate::foundation::time::sleep(Duration::from_secs(1)) => {}

@@ -142,8 +142,7 @@ pub async fn run_web_client(
     flags.bind_device = false;
     config.set_flags(flags.clone());
     global_ctx.set_flags(flags);
-    let hostname =
-        hostname.unwrap_or_else(|| gethostname::gethostname().to_string_lossy().to_string());
+    let hostname = hostname.unwrap_or_else(crate::utils::hostname);
     let connector =
         runtime_one_shot_manual_connector(global_ctx, &config, manager.process_runtime())?;
 

@@ -4,6 +4,8 @@ use clap::Command;
 use clap_complete::{Generator, Shell};
 
 mod arch;
+#[cfg(feature = "magic-dns")]
+mod dns;
 mod gateway;
 mod host_runtime;
 pub mod instance;

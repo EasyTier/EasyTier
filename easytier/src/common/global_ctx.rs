@@ -25,6 +25,11 @@ use crate::proto::api::instance::PeerConnInfo;
 use crate::proto::common::PortForwardConfigPb;
 use crossbeam::atomic::AtomicCell;
 
+#[cfg(feature = "magic-dns")]
+use crate::dns::config::{
+    DnsConfig, DnsConfigLoaderExt, DnsExportConfig, DnsGlobalCtxExt, zone::ZoneConfig,
+};
+
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "management", derive(serde::Serialize, serde::Deserialize))]
 pub enum GlobalCtxEvent {
@@ -35,6 +40,8 @@ pub enum GlobalCtxEvent {
     PeerRemoved(PeerId),
     PeerConnAdded(PeerConnInfo),
     PeerConnRemoved(PeerConnInfo),
+
+    PeerInfoUpdated(Vec<PeerId>),
 
     ListenerAdded(url::Url),
     ListenerAddFailed(url::Url, String), // (url, error message)
@@ -176,7 +183,7 @@ impl GlobalCtx {
             .and_then(|runtime| runtime.peer.runtime.core.node.hostname.clone())
             .unwrap_or_else(|| match config_fs.get_hostname() {
                 hostname if !hostname.is_empty() => hostname,
-                _ => gethostname::gethostname().to_string_lossy().to_string(),
+                _ => crate::utils::hostname(),
             });
         let flags = runtime
             .map(|runtime| runtime.peer.flags.clone())
@@ -350,6 +357,53 @@ impl GlobalCtx {
             .into_iter()
             .filter(|listener| protocols.contains(&listener.scheme().to_ascii_lowercase()))
             .collect()
+    }
+}
+
+#[cfg(feature = "magic-dns")]
+impl GlobalCtx {
+    fn dns_self_zone_from_config(&self, dns: &DnsConfig) -> anyhow::Result<ZoneConfig> {
+        let name: hickory_proto::rr::Name = dns
+            .name
+            .clone()
+            .unwrap_or_else(|| crate::utils::dns::parse(self.get_hostname()))
+            .into();
+        let fqdn = name.append_domain(&dns.domain)?;
+        Ok(ZoneConfig::dedicated(
+            fqdn.into(),
+            self.get_ipv4().map(|ip| ip.address()),
+            self.get_ipv6().map(|ip| ip.address()).into_iter().collect(),
+        ))
+    }
+}
+
+#[cfg(feature = "magic-dns")]
+impl DnsGlobalCtxExt for GlobalCtx {
+    fn try_dns_export_config(&self) -> anyhow::Result<DnsExportConfig> {
+        Ok(DnsExportConfig {
+            zones: self
+                .try_dns_iter_zones()?
+                .into_iter()
+                .filter(|zone| {
+                    zone.policy
+                        .export
+                        .as_ref()
+                        .is_some_and(|policy| !policy.disabled)
+                })
+                .map(ZoneConfig::into_data)
+                .collect(),
+        })
+    }
+
+    fn try_dns_iter_zones(&self) -> anyhow::Result<Vec<ZoneConfig>> {
+        let dns = self.config.try_get_dns()?;
+        if dns.disabled {
+            return Ok(Vec::new());
+        }
+        let own_zone = self.dns_self_zone_from_config(&dns)?;
+        Ok(std::iter::once(own_zone)
+            .chain(dns.into_parsed().zones)
+            .collect())
     }
 }
 

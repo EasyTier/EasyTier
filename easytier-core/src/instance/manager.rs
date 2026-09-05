@@ -45,6 +45,12 @@ pub trait InstanceFactory: Send + Sync + 'static {
     type CreateContext;
     type Error;
 
+    /// Validate host-specific configuration before management persists or
+    /// replaces an instance. The default supports hosts with no extra schema.
+    fn validate_config(&self, _config: &TomlConfig) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
     fn create(
         &self,
         config: TomlConfig,
@@ -246,11 +252,17 @@ impl<F: InstanceFactory> InstanceManager<F> {
         self
     }
 
+    pub fn validate_config(&self, config: &TomlConfig) -> Result<(), F::Error> {
+        self.factory.validate_config(config)
+    }
+
     pub fn create(
         &self,
         config: TomlConfig,
         context: F::CreateContext,
     ) -> Result<Arc<F::Instance>, InstanceCreateError<F::Error>> {
+        self.validate_config(&config)
+            .map_err(InstanceCreateError::Factory)?;
         let instance = self
             .factory
             .create(config, context)
