@@ -358,6 +358,7 @@ struct ForeignNetworkEntry {
 
     traffic_metrics: Arc<TrafficMetricRecorder>,
     event_handler_started: AtomicBool,
+    indexed_peers: DashSet<PeerId>,
 
     tasks: Mutex<JoinSet<()>>,
 
@@ -498,6 +499,7 @@ impl ForeignNetworkEntry {
 
             traffic_metrics,
             event_handler_started: AtomicBool::new(false),
+            indexed_peers: DashSet::new(),
 
             tasks: Mutex::new(JoinSet::new()),
 
@@ -629,6 +631,25 @@ struct ForeignNetworkManagerData {
 }
 
 impl ForeignNetworkManagerData {
+    fn remove_entry_from_peer_index_locked(
+        &self,
+        network_name: &String,
+        entry: &ForeignNetworkEntry,
+    ) {
+        let indexed_peers = entry
+            .indexed_peers
+            .iter()
+            .map(|peer_id| *peer_id)
+            .collect::<Vec<_>>();
+        for peer_id in indexed_peers {
+            self.peer_network_map.remove_if(&peer_id, |_, networks| {
+                networks.remove(network_name);
+                networks.is_empty()
+            });
+        }
+        entry.indexed_peers.clear();
+    }
+
     fn get_peer_network(&self, peer_id: PeerId) -> Option<DashSet<String>> {
         self.peer_network_map.get(&peer_id).map(|v| v.clone())
     }
@@ -637,18 +658,50 @@ impl ForeignNetworkManagerData {
         self.network_peer_maps.get(network_name).map(|v| v.clone())
     }
 
-    fn remove_peer(&self, peer_id: PeerId, network_name: &String) {
+    fn is_current_entry(
+        &self,
+        network_name: &String,
+        expected_entry: &Arc<ForeignNetworkEntry>,
+    ) -> bool {
         let _l = self.lock.lock().unwrap();
-        self.peer_network_map.remove_if(&peer_id, |_, v| {
-            let _ = v.remove(network_name);
-            v.is_empty()
-        });
-        if self
+        self.network_peer_maps
+            .get(network_name)
+            .is_some_and(|entry| Arc::ptr_eq(entry.value(), expected_entry))
+    }
+
+    fn remove_peer(
+        &self,
+        peer_id: PeerId,
+        network_name: &String,
+        expected_entry: &Weak<ForeignNetworkEntry>,
+    ) {
+        let _l = self.lock.lock().unwrap();
+        let Some(expected_entry) = expected_entry.upgrade() else {
+            return;
+        };
+        let is_current = self
             .network_peer_maps
-            .remove_if(network_name, |_, v| v.peer_map.is_empty())
-            .is_some()
-        {
+            .get(network_name)
+            .is_some_and(|entry| Arc::ptr_eq(entry.value(), &expected_entry));
+        if !is_current || expected_entry.peer_map.has_peer(peer_id) {
+            return;
+        }
+
+        let network_removed = self
+            .network_peer_maps
+            .remove_if(network_name, |_, entry| {
+                Arc::ptr_eq(entry, &expected_entry) && entry.peer_map.is_empty()
+            })
+            .is_some();
+        if network_removed {
+            self.remove_entry_from_peer_index_locked(network_name, &expected_entry);
             self.network_peer_last_update.remove(network_name);
+        } else {
+            self.peer_network_map.remove_if(&peer_id, |_, networks| {
+                networks.remove(network_name);
+                networks.is_empty()
+            });
+            expected_entry.indexed_peers.remove(&peer_id);
         }
         shrink_dashmap(&self.peer_network_map, None);
         shrink_dashmap(&self.network_peer_maps, None);
@@ -666,7 +719,77 @@ impl ForeignNetworkManagerData {
         peer_map.clean_peer_without_conn().await;
     }
 
+    fn record_peer_if_current(
+        &self,
+        network_name: &String,
+        expected_entry: &Arc<ForeignNetworkEntry>,
+        peer_id: PeerId,
+    ) -> bool {
+        let _l = self.lock.lock().unwrap();
+        let is_current = self
+            .network_peer_maps
+            .get(network_name)
+            .is_some_and(|entry| Arc::ptr_eq(entry.value(), expected_entry));
+        if !is_current || !expected_entry.peer_map.has_peer(peer_id) {
+            return false;
+        }
+
+        self.peer_network_map
+            .entry(peer_id)
+            .or_default()
+            .insert(network_name.clone());
+        expected_entry.indexed_peers.insert(peer_id);
+        self.network_peer_last_update
+            .insert(network_name.clone(), SystemTime::now());
+        true
+    }
+
+    /// Removes the current entry and closes all of its peer connections. A
+    /// secret-verified peer will reconnect and establish a fresh entry.
+    async fn remove_network_and_close_peers(
+        &self,
+        network_name: &String,
+        expected_entry: &Weak<ForeignNetworkEntry>,
+    ) -> bool {
+        let Some(entry) = expected_entry.upgrade() else {
+            return false;
+        };
+        let _entry_lock = entry.lock.lock().await;
+        if self
+            .remove_network_if_current(network_name, expected_entry)
+            .is_none()
+        {
+            return false;
+        }
+
+        for peer_id in entry.peer_map.list_peers() {
+            let _ = entry.peer_map.close_peer(peer_id).await;
+        }
+        true
+    }
+
     fn remove_network_if_current(
+        &self,
+        network_name: &String,
+        expected_entry: &Weak<ForeignNetworkEntry>,
+    ) -> Option<Arc<ForeignNetworkEntry>> {
+        let _l = self.lock.lock().unwrap();
+        let expected_entry = expected_entry.upgrade()?;
+        let old = self
+            .network_peer_maps
+            .remove_if(network_name, |_, entry| Arc::ptr_eq(entry, &expected_entry));
+        let (_, old) = old?;
+
+        old.traffic_metrics.clear_peer_cache();
+        self.remove_entry_from_peer_index_locked(network_name, &old);
+        self.network_peer_last_update.remove(network_name);
+        shrink_dashmap(&self.peer_network_map, None);
+        shrink_dashmap(&self.network_peer_maps, None);
+        shrink_dashmap(&self.network_peer_last_update, None);
+        Some(old)
+    }
+
+    fn remove_empty_network_if_current(
         &self,
         network_name: &String,
         expected_entry: &Weak<ForeignNetworkEntry>,
@@ -675,43 +798,44 @@ impl ForeignNetworkManagerData {
         let Some(expected_entry) = expected_entry.upgrade() else {
             return;
         };
-        let old = self
+        if self
             .network_peer_maps
-            .remove_if(network_name, |_, entry| Arc::ptr_eq(entry, &expected_entry));
-        let Some((_, old)) = old else {
-            return;
-        };
-
-        old.traffic_metrics.clear_peer_cache();
-        let to_remove_peers = old.peer_map.list_peers();
-        for p in to_remove_peers {
-            self.peer_network_map.remove_if(&p, |_, v| {
-                v.remove(network_name);
-                v.is_empty()
-            });
+            .remove_if(network_name, |_, entry| {
+                Arc::ptr_eq(entry, &expected_entry)
+                    && entry.peer_map.is_empty()
+                    && entry.indexed_peers.is_empty()
+            })
+            .is_some()
+        {
+            self.network_peer_last_update.remove(network_name);
+            shrink_dashmap(&self.network_peer_maps, None);
+            shrink_dashmap(&self.network_peer_last_update, None);
         }
-        self.network_peer_last_update.remove(network_name);
-        shrink_dashmap(&self.peer_network_map, None);
-        shrink_dashmap(&self.network_peer_maps, None);
-        shrink_dashmap(&self.network_peer_last_update, None);
     }
 
     #[allow(clippy::too_many_arguments)]
     async fn get_or_insert_entry(
         &self,
         network_identity: &NetworkIdentity,
+        allow_create: bool,
         my_peer_id: PeerId,
-        dst_peer_id: PeerId,
         relay_data: bool,
         rpc_registrar: Arc<dyn ForeignNetworkRpcRegistrar>,
         parent_context: Arc<CorePeerContext>,
         foreign_context_default_flags: FlagsInConfig,
         peer_session_store: Arc<PeerSessionStore>,
         pm_packet_sender: &PacketRecvChan,
-    ) -> (Arc<ForeignNetworkEntry>, bool) {
+    ) -> Option<(Arc<ForeignNetworkEntry>, bool)> {
         let mut new_added = false;
 
         let l = self.lock.lock().unwrap();
+        if !allow_create
+            && !self
+                .network_peer_maps
+                .contains_key(&network_identity.network_name)
+        {
+            return None;
+        }
         let entry = self
             .network_peer_maps
             .entry(network_identity.network_name.clone())
@@ -730,21 +854,13 @@ impl ForeignNetworkManagerData {
             })
             .clone();
 
-        self.peer_network_map
-            .entry(dst_peer_id)
-            .or_default()
-            .insert(network_identity.network_name.clone());
-
-        self.network_peer_last_update
-            .insert(network_identity.network_name.clone(), SystemTime::now());
-
         drop(l);
 
         if new_added {
             entry.prepare(self.global_peer_map.clone()).await;
         }
 
-        (entry, new_added)
+        Some((entry, new_added))
     }
 }
 
@@ -896,6 +1012,8 @@ impl ForeignNetworkManager {
         let _admission = self.admission_guard().await?;
         let conn_info = peer_conn.get_conn_info();
         let peer_network = peer_conn.get_network_identity();
+        let dst_peer_id = peer_conn.get_peer_id();
+        let conn_id = peer_conn.get_conn_id();
         tracing::info!(peer_conn = ?conn_info, network = ?peer_network, "add new peer conn in foreign network manager");
 
         let parent_flags = self.parent_context.flags();
@@ -908,25 +1026,12 @@ impl ForeignNetworkManager {
         }
 
         let peer_digest_empty = Self::network_secret_digest_is_empty(&peer_network);
-        if peer_digest_empty
-            && self
-                .data
-                .get_network_entry(&peer_network.network_name)
-                .is_none()
-        {
-            return Err(anyhow::anyhow!(
-                "foreign network {} is not established by a secret-verified peer yet",
-                peer_network.network_name
-            )
-            .into());
-        }
-
-        let (entry, new_added) = self
+        let Some((entry, new_added)) = self
             .data
             .get_or_insert_entry(
                 &peer_network,
+                !peer_digest_empty,
                 peer_conn.get_my_peer_id(),
-                peer_conn.get_peer_id(),
                 ret.is_ok(),
                 self.rpc_registrar.clone(),
                 self.parent_context.clone(),
@@ -934,12 +1039,19 @@ impl ForeignNetworkManager {
                 self.peer_session_store.clone(),
                 &self.packet_sender_to_mgr,
             )
-            .await;
+            .await
+        else {
+            return Err(anyhow::anyhow!(
+                "foreign network {} is not established by a secret-verified peer yet",
+                peer_network.network_name
+            )
+            .into());
+        };
 
         defer!(rollback_new_entry => sync [
             data = self.data.clone(),
             network_name = entry.network.network_name.clone(),
-            peer_id = peer_conn.get_peer_id(),
+            entry_for_rollback = Arc::downgrade(&entry),
             should_rollback = new_added
         ] {
             if should_rollback {
@@ -947,7 +1059,7 @@ impl ForeignNetworkManager {
                     %network_name,
                     "rollback newly added foreign network entry after add_peer_conn returned error"
                 );
-                data.remove_peer(peer_id, &network_name);
+                data.remove_empty_network_if_current(&network_name, &entry_for_rollback);
             }
         });
 
@@ -961,6 +1073,16 @@ impl ForeignNetworkManager {
             && Self::should_reject_credential_trust_path(peer_identity_type);
 
         let _g = entry.lock.lock().await;
+
+        if !self
+            .data
+            .is_current_entry(&peer_network.network_name, &entry)
+        {
+            return Err(anyhow::anyhow!(
+                "foreign network entry changed while admitting peer, need retry connect"
+            )
+            .into());
+        }
 
         if (!(same_identity || credential_peer_trusted))
             || credential_identity_mismatch
@@ -990,7 +1112,7 @@ impl ForeignNetworkManager {
             return Err(err.into());
         }
 
-        if !new_added && let Some(peer) = entry.peer_map.get_peer_by_id(peer_conn.get_peer_id()) {
+        if !new_added && let Some(peer) = entry.peer_map.get_peer_by_id(dst_peer_id) {
             let direct_conns_len = peer.get_directly_connections().len();
             let max_count = self
                 .parent_context
@@ -1006,6 +1128,16 @@ impl ForeignNetworkManager {
         }
 
         entry.peer_map.add_new_peer_conn(peer_conn).await?;
+        if !self
+            .data
+            .record_peer_if_current(&peer_network.network_name, &entry, dst_peer_id)
+        {
+            let _ = entry.peer_map.close_peer_conn(dst_peer_id, &conn_id).await;
+            return Err(anyhow::anyhow!(
+                "foreign network entry changed while admitting peer, need retry connect"
+            )
+            .into());
+        }
         let _ = rollback_new_entry.defuse();
         Ok(())
     }
@@ -1023,34 +1155,60 @@ impl ForeignNetworkManager {
         let entry_for_cleanup = Arc::downgrade(entry);
         let traffic_metrics = Arc::downgrade(&entry.traffic_metrics);
         self.tasks.lock().unwrap().spawn(async move {
-            while let Ok(e) = s.recv().await {
-                match &e {
-                    PeerContextEvent::PeerRemoved(peer_id) => {
-                        tracing::info!(?e, "remove peer from foreign network manager");
-                        if let Some(traffic_metrics) = traffic_metrics.upgrade() {
-                            traffic_metrics.remove_peer(*peer_id);
+            loop {
+                match s.recv().await {
+                    Ok(e) => {
+                        match &e {
+                            PeerContextEvent::PeerRemoved(peer_id) => {
+                                tracing::info!(?e, "remove peer from foreign network manager");
+                                if let Some(traffic_metrics) = traffic_metrics.upgrade() {
+                                    traffic_metrics.remove_peer(*peer_id);
+                                }
+                                data.network_peer_last_update
+                                    .insert(network_name.clone(), SystemTime::now());
+                                data.remove_peer(
+                                    *peer_id,
+                                    &network_name,
+                                    &entry_for_cleanup,
+                                );
+                            }
+                            PeerContextEvent::PeerConnRemoved => {
+                                tracing::info!(?e, "clear no conn peer from foreign network manager");
+                                data.clear_no_conn_peer(&network_name).await;
+                            }
+                            PeerContextEvent::PeerAdded(_) => {
+                                tracing::info!(?e, "add peer to foreign network manager");
+                                data.network_peer_last_update
+                                    .insert(network_name.clone(), SystemTime::now());
+                            }
+                            _ => continue,
                         }
-                        data.network_peer_last_update
-                            .insert(network_name.clone(), SystemTime::now());
-                        data.remove_peer(*peer_id, &network_name);
                     }
-                    PeerContextEvent::PeerConnRemoved => {
-                        tracing::info!(?e, "clear no conn peer from foreign network manager");
-                        data.clear_no_conn_peer(&network_name).await;
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        tracing::warn!(
+                            %network_name,
+                            skipped,
+                            "foreign network event handler lagged; closing the network so peers reconnect"
+                        );
+                        // Remove the stale entry and close all of its peers.
+                        // A secret-verified peer will reconnect and establish
+                        // a fresh entry.
+                        let _ = data
+                            .remove_network_and_close_peers(
+                                &network_name,
+                                &entry_for_cleanup,
+                            )
+                            .await;
+                        break;
                     }
-                    PeerContextEvent::PeerAdded(_) => {
-                        tracing::info!(?e, "add peer to foreign network manager");
-                        data.network_peer_last_update
-                            .insert(network_name.clone(), SystemTime::now());
-                    }
-                    _ => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
             tracing::error!("global event handler at foreign network manager exit");
             if let Some(traffic_metrics) = traffic_metrics.upgrade() {
                 traffic_metrics.clear_peer_cache();
             }
-            data.remove_network_if_current(&network_name, &entry_for_cleanup);
+            let _ = data.remove_network_if_current(&network_name, &entry_for_cleanup);
         });
     }
 
@@ -1430,14 +1588,16 @@ mod tests {
     #![allow(clippy::field_reassign_with_default)]
 
     use std::sync::{
-        Arc,
+        Arc, Weak,
         atomic::{AtomicBool, Ordering},
     };
 
+    use dashmap::DashMap;
     use easytier_proto::common::{FlagsInConfig, PeerFeatureFlag};
 
     use super::{
-        ForeignNetworkManager, abort_and_join_persistent_tasks, build_foreign_peer_context,
+        ForeignNetworkEntry, ForeignNetworkManager, ForeignNetworkManagerData,
+        abort_and_join_persistent_tasks, build_foreign_peer_context,
         desired_foreign_avoid_relay_data, sync_foreign_avoid_relay_data,
     };
 
@@ -1448,14 +1608,159 @@ mod tests {
         config::runtime::{CoreRuntimeConfig, CoreRuntimeConfigStore},
         foundation::stats::{LabelSet, LabelType, MetricName},
         peers::{
+            conn::{peer_map::PeerMap, peer_session::PeerSessionStore},
             context::{
                 ArcPeerContext, CorePeerContext, CorePeerContextAdapters, NetworkIdentity,
                 PeerContext,
             },
+            create_packet_recv_chan,
             error::Error,
         },
         proto::common::StunInfo,
     };
+
+    fn new_test_foreign_entry(network_name: &str) -> Arc<ForeignNetworkEntry> {
+        let parent = Arc::new(CorePeerContext::new(
+            CoreRuntimeConfigStore::new(
+                CoreRuntimeConfig::default(),
+                Arc::new(PeerRuntimeSnapshot::default()),
+            ),
+            Arc::new(()),
+            CorePeerContextAdapters {
+                stun_info_source: None,
+                events: Arc::new(()),
+                credential_storage: None,
+            },
+        ));
+        let (packet_sender, _packet_receiver) = create_packet_recv_chan();
+        Arc::new(ForeignNetworkEntry::new(
+            NetworkIdentity::new(network_name.to_owned(), "secret".to_owned()),
+            1,
+            Arc::new(()),
+            parent,
+            FlagsInConfig::default(),
+            true,
+            Arc::new(PeerSessionStore::new()),
+            packet_sender,
+        ))
+    }
+
+    fn new_test_manager_data() -> ForeignNetworkManagerData {
+        ForeignNetworkManagerData {
+            network_peer_maps: DashMap::new(),
+            peer_network_map: DashMap::new(),
+            network_peer_last_update: DashMap::new(),
+            global_peer_map: Weak::<PeerMap>::new(),
+            lock: std::sync::Mutex::new(()),
+        }
+    }
+
+    #[tokio::test]
+    async fn lag_reset_waits_for_admission_and_cleans_only_its_indexed_peers() {
+        let network_name = "foreign".to_owned();
+        let other_network = "other".to_owned();
+        let entry = new_test_foreign_entry(&network_name);
+
+        let data = new_test_manager_data();
+        data.network_peer_maps
+            .insert(network_name.clone(), entry.clone());
+        for peer_id in [10, 20] {
+            data.peer_network_map
+                .entry(peer_id)
+                .or_default()
+                .insert(network_name.clone());
+            entry.indexed_peers.insert(peer_id);
+        }
+        data.peer_network_map
+            .get(&20)
+            .unwrap()
+            .insert(other_network.clone());
+
+        let entry_for_reset = Arc::downgrade(&entry);
+        let entry_lock = entry.lock.lock().await;
+        let reset_succeeded = {
+            let reset = data.remove_network_and_close_peers(&network_name, &entry_for_reset);
+            tokio::pin!(reset);
+            assert!(matches!(
+                futures::poll!(reset.as_mut()),
+                std::task::Poll::Pending
+            ));
+            drop(entry_lock);
+            reset.await
+        };
+        assert!(reset_succeeded);
+
+        assert!(!data.network_peer_maps.contains_key(&network_name));
+        assert!(!data.peer_network_map.contains_key(&10));
+        assert_eq!(
+            data.peer_network_map
+                .get(&20)
+                .unwrap()
+                .iter()
+                .map(|network| network.clone())
+                .collect::<Vec<_>>(),
+            [other_network]
+        );
+        assert!(entry.indexed_peers.is_empty());
+        assert!(!data.network_peer_last_update.contains_key(&network_name));
+    }
+
+    #[tokio::test]
+    async fn peer_index_commit_rejects_an_entry_that_is_no_longer_current() {
+        let network_name = "foreign".to_owned();
+        let old_entry = new_test_foreign_entry(&network_name);
+        let current_entry = new_test_foreign_entry(&network_name);
+        let data = new_test_manager_data();
+        data.network_peer_maps
+            .insert(network_name.clone(), current_entry.clone());
+
+        data.remove_empty_network_if_current(&network_name, &Arc::downgrade(&old_entry));
+        assert!(
+            data.network_peer_maps
+                .get(&network_name)
+                .is_some_and(|entry| Arc::ptr_eq(entry.value(), &current_entry))
+        );
+        assert!(!data.record_peer_if_current(&network_name, &old_entry, 10));
+        assert!(!data.peer_network_map.contains_key(&10));
+        assert!(!data.is_current_entry(&network_name, &old_entry));
+        assert!(data.is_current_entry(&network_name, &current_entry));
+        assert!(!data.record_peer_if_current(&network_name, &current_entry, 10));
+        for peer_id in [10, 11] {
+            data.peer_network_map
+                .entry(peer_id)
+                .or_default()
+                .insert(network_name.clone());
+            current_entry.indexed_peers.insert(peer_id);
+        }
+        assert!(
+            data.peer_network_map
+                .get(&10)
+                .unwrap()
+                .contains(&network_name)
+        );
+        assert!(current_entry.indexed_peers.contains(&10));
+
+        data.remove_peer(10, &network_name, &Arc::downgrade(&old_entry));
+        assert!(
+            data.peer_network_map
+                .get(&10)
+                .unwrap()
+                .contains(&network_name)
+        );
+
+        data.remove_empty_network_if_current(&network_name, &Arc::downgrade(&current_entry));
+        assert!(
+            data.network_peer_maps
+                .get(&network_name)
+                .is_some_and(|entry| Arc::ptr_eq(entry.value(), &current_entry))
+        );
+
+        data.remove_peer(10, &network_name, &Arc::downgrade(&current_entry));
+        assert!(!data.network_peer_maps.contains_key(&network_name));
+        assert!(!data.peer_network_map.contains_key(&10));
+        assert!(!data.peer_network_map.contains_key(&11));
+        assert!(current_entry.indexed_peers.is_empty());
+    }
 
     impl ForeignNetworkManager {
         pub(crate) async fn is_stopped_for_test(&self) -> bool {
