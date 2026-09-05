@@ -20,7 +20,10 @@ use easytier_core::tunnel::Tunnel;
 use tokio::sync::{Notify, RwLock, broadcast};
 use tokio_util::task::AbortOnDropHandle;
 
-use super::storage::{Storage, StorageToken, WeakRefStorage};
+use super::{
+    HeartbeatPolicy,
+    storage::{Storage, StorageToken, WeakRefStorage},
+};
 use crate::FeatureFlags;
 use crate::webhook::SharedWebhookConfig;
 
@@ -400,7 +403,13 @@ pub type SharedSessionData = Arc<RwLock<SessionData>>;
 #[derive(Clone)]
 pub(super) struct SessionRpcService {
     data: SharedSessionData,
-    heartbeat_min_response_delay: Duration,
+    heartbeat_policy: HeartbeatPolicy,
+}
+
+impl SessionRpcService {
+    fn heartbeat_response(&self) -> HeartbeatResponse {
+        self.heartbeat_policy.response()
+    }
 }
 
 fn heartbeat_response_delay(elapsed: Duration, min_response_delay: Duration) -> Option<Duration> {
@@ -409,12 +418,20 @@ fn heartbeat_response_delay(elapsed: Duration, min_response_delay: Duration) -> 
         .filter(|delay| !delay.is_zero())
 }
 
-fn should_delay_heartbeat_response(is_paced_session: bool, is_first_heartbeat: bool) -> bool {
-    is_paced_session && !is_first_heartbeat
+fn should_delay_heartbeat_response(
+    supports_heartbeat_policy: bool,
+    is_paced_session: bool,
+    is_first_heartbeat: bool,
+) -> bool {
+    !supports_heartbeat_policy && is_paced_session && !is_first_heartbeat
 }
 
-fn should_delay_session_heartbeat_response(data: &SessionData) -> bool {
+fn should_delay_session_heartbeat_response(
+    data: &SessionData,
+    supports_heartbeat_policy: bool,
+) -> bool {
     should_delay_heartbeat_response(
+        supports_heartbeat_policy,
         data.webhook_config.is_enabled() || data.auth_state.is_authorized(),
         data.req.is_none(),
     )
@@ -679,7 +696,7 @@ impl SessionRpcService {
         if let Some(notify) = notify {
             notify.notify_one();
         }
-        Ok(HeartbeatResponse {})
+        Ok(self.heartbeat_response())
     }
 
     async fn handle_heartbeat(
@@ -690,7 +707,7 @@ impl SessionRpcService {
             let data = self.data.read().await;
             let Ok(storage) = Storage::try_from(data.storage.clone()) else {
                 tracing::error!("Failed to get storage");
-                return Ok(HeartbeatResponse {});
+                return Ok(self.heartbeat_response());
             };
             (
                 storage,
@@ -759,7 +776,7 @@ impl SessionRpcService {
 
             let Some(storage_token) = data.storage_token.as_ref().cloned() else {
                 tracing::error!("Heartbeat succeeded before session token was initialized");
-                return Ok(HeartbeatResponse {});
+                return Ok(self.heartbeat_response());
             };
             (
                 storage_token,
@@ -776,7 +793,7 @@ impl SessionRpcService {
         if let Some(notify) = validation_notify {
             notify.notify_one();
         }
-        Ok(HeartbeatResponse {})
+        Ok(self.heartbeat_response())
     }
 }
 
@@ -790,9 +807,10 @@ impl WebServerService for SessionRpcService {
         req: HeartbeatRequest,
     ) -> rpc_types::error::Result<HeartbeatResponse> {
         let started_at = Instant::now();
+        let support_heartbeat_policy = req.support_heartbeat_policy;
         let should_delay_response = {
             let data = self.data.read().await;
-            should_delay_session_heartbeat_response(&data)
+            should_delay_session_heartbeat_response(&data, support_heartbeat_policy)
         };
         let ret = self.handle_heartbeat(req).await;
         if ret.is_err() {
@@ -800,8 +818,10 @@ impl WebServerService for SessionRpcService {
             // sleep for a while to avoid client busy loop
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         } else if should_delay_response
-            && let Some(delay) =
-                heartbeat_response_delay(started_at.elapsed(), self.heartbeat_min_response_delay)
+            && let Some(delay) = heartbeat_response_delay(
+                started_at.elapsed(),
+                self.heartbeat_policy.legacy_response_delay(),
+            )
         {
             tokio::time::sleep(delay).await;
         }
@@ -843,7 +863,7 @@ impl Session {
         storage: WeakRefStorage,
         client_url: url::Url,
         location: Option<Location>,
-        heartbeat_min_response_delay: Duration,
+        heartbeat_policy: HeartbeatPolicy,
         feature_flags: Arc<FeatureFlags>,
         webhook_config: SharedWebhookConfig,
         session_epoch: u64,
@@ -854,12 +874,12 @@ impl Session {
         let data = Arc::new(RwLock::new(session_data));
 
         let rpc_mgr =
-            BidirectRpcManager::new().set_rx_timeout(Some(std::time::Duration::from_secs(30)));
+            BidirectRpcManager::new().set_rx_timeout(Some(heartbeat_policy.session_rx_timeout()));
 
         rpc_mgr.rpc_server().registry().register(
             WebServerServiceServer::new(SessionRpcService {
                 data: data.clone(),
-                heartbeat_min_response_delay,
+                heartbeat_policy,
             }),
             "",
         );
@@ -1104,10 +1124,12 @@ mod tests {
 
     #[test]
     fn heartbeat_response_delay_skips_unpaced_and_first_heartbeat() {
-        assert!(!should_delay_heartbeat_response(false, true));
-        assert!(!should_delay_heartbeat_response(false, false));
-        assert!(!should_delay_heartbeat_response(true, true));
-        assert!(should_delay_heartbeat_response(true, false));
+        assert!(!HeartbeatRequest::default().support_heartbeat_policy);
+        assert!(!should_delay_heartbeat_response(false, false, true));
+        assert!(!should_delay_heartbeat_response(false, false, false));
+        assert!(!should_delay_heartbeat_response(false, true, true));
+        assert!(should_delay_heartbeat_response(false, true, false));
+        assert!(!should_delay_heartbeat_response(true, true, false));
     }
 
     #[tokio::test]
@@ -1128,13 +1150,14 @@ mod tests {
             )),
         );
 
-        assert!(!should_delay_session_heartbeat_response(&data));
+        assert!(!should_delay_session_heartbeat_response(&data, false));
 
         data.req = Some(heartbeat_request("token", machine_id));
-        assert!(should_delay_session_heartbeat_response(&data));
+        assert!(should_delay_session_heartbeat_response(&data, false));
+        assert!(!should_delay_session_heartbeat_response(&data, true));
 
         data.auth_state = SessionAuthState::Invalid;
-        assert!(should_delay_session_heartbeat_response(&data));
+        assert!(should_delay_session_heartbeat_response(&data, false));
     }
 
     #[test]
@@ -1615,7 +1638,7 @@ mod tests {
         )));
         let service = SessionRpcService {
             data: data.clone(),
-            heartbeat_min_response_delay: Duration::ZERO,
+            heartbeat_policy: HeartbeatPolicy::default(),
         };
 
         service
@@ -1757,7 +1780,7 @@ mod tests {
         let session_data = Arc::new(RwLock::new(data));
         let service = SessionRpcService {
             data: session_data.clone(),
-            heartbeat_min_response_delay: Duration::ZERO,
+            heartbeat_policy: HeartbeatPolicy::default(),
         };
 
         let err = service
@@ -1826,7 +1849,7 @@ mod tests {
         let session_data = Arc::new(RwLock::new(data));
         let service = SessionRpcService {
             data: session_data,
-            heartbeat_min_response_delay: Duration::ZERO,
+            heartbeat_policy: HeartbeatPolicy::default(),
         };
 
         let err = service
@@ -2038,7 +2061,7 @@ mod tests {
         let session_data = Arc::new(RwLock::new(data));
         let service = SessionRpcService {
             data: session_data.clone(),
-            heartbeat_min_response_delay: Duration::ZERO,
+            heartbeat_policy: HeartbeatPolicy::default(),
         };
 
         service
@@ -2084,7 +2107,7 @@ mod tests {
         let session_data = Arc::new(RwLock::new(data));
         let service = SessionRpcService {
             data: session_data,
-            heartbeat_min_response_delay: Duration::ZERO,
+            heartbeat_policy: HeartbeatPolicy::default(),
         };
 
         service

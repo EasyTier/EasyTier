@@ -14,7 +14,9 @@ use std::{
 
 use dashmap::DashMap;
 use easytier::proto::{
-    api::manage::WebClientService, rpc_types::controller::BaseController, web::HeartbeatRequest,
+    api::manage::WebClientService,
+    rpc_types::controller::BaseController,
+    web::{HeartbeatRequest, HeartbeatResponse},
 };
 use easytier_core::{
     management::remote_client::{self, RemoteClientManager},
@@ -32,6 +34,67 @@ use tokio::task::JoinSet;
 use crate::db::{Db, UserIdInDb, entity::user_running_network_configs};
 
 pub(crate) use managed_config::ManagedConfigError;
+
+const DEFAULT_HEARTBEAT_INTERVAL: Duration = Duration::from_millis(3_500);
+const DEFAULT_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(15);
+const MIN_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
+const MAX_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
+const MIN_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(120);
+const HEARTBEAT_TIMEOUT_MARGIN: Duration = Duration::from_secs(5);
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct HeartbeatPolicy {
+    interval: Duration,
+    timeout: Duration,
+}
+
+impl Default for HeartbeatPolicy {
+    fn default() -> Self {
+        Self {
+            interval: DEFAULT_HEARTBEAT_INTERVAL,
+            timeout: DEFAULT_HEARTBEAT_TIMEOUT,
+        }
+    }
+}
+
+impl HeartbeatPolicy {
+    pub(crate) fn from_millis(interval_ms: u64, timeout_ms: u64) -> anyhow::Result<Self> {
+        let interval = if interval_ms == 0 {
+            DEFAULT_HEARTBEAT_INTERVAL
+        } else {
+            Duration::from_millis(interval_ms)
+        };
+        let timeout = Duration::from_millis(timeout_ms);
+        if !(MIN_HEARTBEAT_INTERVAL..=MAX_HEARTBEAT_INTERVAL).contains(&interval) {
+            anyhow::bail!("heartbeat interval must be between 1000 and 60000 milliseconds");
+        }
+        if !(MIN_HEARTBEAT_TIMEOUT..=MAX_HEARTBEAT_TIMEOUT).contains(&timeout) {
+            anyhow::bail!("heartbeat timeout must be between 5000 and 120000 milliseconds");
+        }
+        if timeout < interval.saturating_add(HEARTBEAT_TIMEOUT_MARGIN) {
+            anyhow::bail!(
+                "heartbeat timeout must exceed the interval by at least 5000 milliseconds"
+            );
+        }
+        Ok(Self { interval, timeout })
+    }
+
+    fn response(self) -> HeartbeatResponse {
+        HeartbeatResponse {
+            heartbeat_interval_ms: Some(self.interval.as_millis() as u32),
+            heartbeat_timeout_ms: Some(self.timeout.as_millis() as u32),
+        }
+    }
+
+    fn session_rx_timeout(self) -> Duration {
+        Duration::from_secs(30).max(self.timeout.saturating_add(HEARTBEAT_TIMEOUT_MARGIN))
+    }
+
+    fn legacy_response_delay(self) -> Duration {
+        self.interval.min(DEFAULT_HEARTBEAT_INTERVAL)
+    }
+}
 
 #[derive(rust_embed::Embed)]
 #[folder = "resources/"]
@@ -72,14 +135,14 @@ pub struct ClientManager {
     webhook_config: SharedWebhookConfig,
 
     geoip_db: Arc<Option<maxminddb::Reader<Vec<u8>>>>,
-    heartbeat_min_response_delay: Duration,
+    heartbeat_policy: HeartbeatPolicy,
 }
 
 impl ClientManager {
     pub fn new(
         db: Db,
         geoip_db: Option<String>,
-        heartbeat_min_response_delay: Duration,
+        heartbeat_policy: HeartbeatPolicy,
         feature_flags: Arc<FeatureFlags>,
         webhook_config: SharedWebhookConfig,
     ) -> Self {
@@ -104,7 +167,7 @@ impl ClientManager {
             webhook_config,
 
             geoip_db: Arc::new(load_geoip_db(geoip_db)),
-            heartbeat_min_response_delay,
+            heartbeat_policy,
         }
     }
 
@@ -120,7 +183,7 @@ impl ClientManager {
         let listeners_cnt = self.listeners_cnt.clone();
         let next_session_epoch = self.next_session_epoch.clone();
         let geoip_db = self.geoip_db.clone();
-        let heartbeat_min_response_delay = self.heartbeat_min_response_delay;
+        let heartbeat_policy = self.heartbeat_policy;
         let feature_flags = self.feature_flags.clone();
         let webhook_config = self.webhook_config.clone();
         self.tasks.spawn(async move {
@@ -149,7 +212,7 @@ impl ClientManager {
                     storage.clone(),
                     client_url.clone(),
                     location,
-                    heartbeat_min_response_delay,
+                    heartbeat_policy,
                     feature_flags.clone(),
                     webhook_config.clone(),
                     next_session_epoch.fetch_add(1, Ordering::Relaxed) + 1,
@@ -478,10 +541,35 @@ mod tests {
     use sqlx::Executor;
 
     use crate::{
-        FeatureFlags, client_manager::ClientManager, db::Db, webhook::ManagedNetworkConfig,
+        FeatureFlags,
+        client_manager::{ClientManager, HeartbeatPolicy},
+        db::Db,
+        webhook::ManagedNetworkConfig,
     };
 
     const MANAGED_CONFIG_TOKEN: &str = "managed-config-token";
+
+    #[test]
+    fn heartbeat_policy_validates_server_configuration() {
+        let policy = HeartbeatPolicy::from_millis(3_500, 15_000).unwrap();
+        let response = policy.response();
+        assert_eq!(response.heartbeat_interval_ms, Some(3_500));
+        assert_eq!(response.heartbeat_timeout_ms, Some(15_000));
+        assert_eq!(policy.session_rx_timeout(), Duration::from_secs(30));
+
+        let legacy_default = HeartbeatPolicy::from_millis(0, 15_000).unwrap();
+        assert_eq!(legacy_default.response().heartbeat_interval_ms, Some(3_500));
+
+        let slow = HeartbeatPolicy::from_millis(60_000, 65_000).unwrap();
+        assert_eq!(slow.session_rx_timeout(), Duration::from_secs(70));
+        assert_eq!(slow.legacy_response_delay(), Duration::from_millis(3_500));
+
+        assert!(HeartbeatPolicy::from_millis(999, 15_000).is_err());
+        assert!(HeartbeatPolicy::from_millis(60_001, 120_000).is_err());
+        assert!(HeartbeatPolicy::from_millis(3_500, 4_999).is_err());
+        assert!(HeartbeatPolicy::from_millis(60_000, 64_999).is_err());
+        assert!(HeartbeatPolicy::from_millis(3_500, 120_001).is_err());
+    }
 
     async fn wait_for_condition<F, Fut>(mut condition: F, timeout: Duration)
     where
@@ -659,7 +747,7 @@ mod tests {
         let mut mgr = ClientManager::new(
             Db::memory_db().await,
             None,
-            Duration::ZERO,
+            HeartbeatPolicy::from_millis(0, 15_000).unwrap(),
             Arc::new(FeatureFlags::default()),
             webhook_config,
         );
@@ -1012,7 +1100,7 @@ mod tests {
         let mut mgr = ClientManager::new(
             Db::memory_db().await,
             None,
-            Duration::ZERO,
+            HeartbeatPolicy::from_millis(0, 15_000).unwrap(),
             Arc::new(FeatureFlags::default()),
             Arc::new(crate::webhook::WebhookConfig::new(
                 None, None, None, None, None,
@@ -1079,7 +1167,7 @@ mod tests {
         let mut mgr = ClientManager::new(
             Db::memory_db().await,
             None,
-            Duration::ZERO,
+            HeartbeatPolicy::from_millis(0, 15_000).unwrap(),
             Arc::new(FeatureFlags::default()),
             webhook_config,
         );
@@ -1145,7 +1233,7 @@ mod tests {
         let mut mgr = ClientManager::new(
             Db::memory_db().await,
             None,
-            Duration::ZERO,
+            HeartbeatPolicy::from_millis(0, 15_000).unwrap(),
             Arc::new(FeatureFlags::default()),
             webhook_config,
         );
@@ -1337,7 +1425,7 @@ mod tests {
         let mut mgr = ClientManager::new(
             Db::memory_db().await,
             None,
-            Duration::ZERO,
+            HeartbeatPolicy::from_millis(0, 15_000).unwrap(),
             Arc::new(FeatureFlags::default()),
             webhook_config,
         );

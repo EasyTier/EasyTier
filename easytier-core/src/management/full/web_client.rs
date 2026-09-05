@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use easytier_proto::{
     rpc_types::controller::BaseController,
     web::{
-        DeviceOsInfo, GetFeatureRequest, GetFeatureResponse, HeartbeatRequest,
+        DeviceOsInfo, GetFeatureRequest, GetFeatureResponse, HeartbeatRequest, HeartbeatResponse,
         WebServerServiceClientFactory,
     },
 };
@@ -33,6 +33,64 @@ const RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 // Keep retry ownership in this loop when transport or protocol handshakes stall.
 const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 const FEATURE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+const DEFAULT_HEARTBEAT_INTERVAL_MS: u32 = 3_500;
+const DEFAULT_HEARTBEAT_TIMEOUT_MS: u32 = 15_000;
+const MIN_HEARTBEAT_INTERVAL_MS: u32 = 1_000;
+const MAX_HEARTBEAT_INTERVAL_MS: u32 = 60_000;
+const MIN_HEARTBEAT_TIMEOUT_MS: u32 = 5_000;
+const MAX_HEARTBEAT_TIMEOUT_MS: u32 = 120_000;
+const MIN_HEARTBEAT_TIMEOUT_MARGIN_MS: u32 = 5_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HeartbeatPolicy {
+    interval: std::time::Duration,
+    timeout_ms: i32,
+}
+
+impl Default for HeartbeatPolicy {
+    fn default() -> Self {
+        Self {
+            interval: std::time::Duration::from_millis(DEFAULT_HEARTBEAT_INTERVAL_MS.into()),
+            timeout_ms: DEFAULT_HEARTBEAT_TIMEOUT_MS as i32,
+        }
+    }
+}
+
+impl HeartbeatPolicy {
+    fn from_response(response: &HeartbeatResponse) -> (Self, bool) {
+        let requested_interval = response
+            .heartbeat_interval_ms
+            .unwrap_or(DEFAULT_HEARTBEAT_INTERVAL_MS);
+        let requested_timeout = response
+            .heartbeat_timeout_ms
+            .unwrap_or(DEFAULT_HEARTBEAT_TIMEOUT_MS);
+        let interval_ms =
+            requested_interval.clamp(MIN_HEARTBEAT_INTERVAL_MS, MAX_HEARTBEAT_INTERVAL_MS);
+        let timeout_ms = requested_timeout
+            .clamp(MIN_HEARTBEAT_TIMEOUT_MS, MAX_HEARTBEAT_TIMEOUT_MS)
+            .max(interval_ms.saturating_add(MIN_HEARTBEAT_TIMEOUT_MARGIN_MS));
+        (
+            Self {
+                interval: std::time::Duration::from_millis(interval_ms.into()),
+                timeout_ms: timeout_ms as i32,
+            },
+            interval_ms != requested_interval || timeout_ms != requested_timeout,
+        )
+    }
+
+    fn controller(self) -> BaseController {
+        BaseController {
+            timeout_ms: self.timeout_ms,
+            ..Default::default()
+        }
+    }
+
+    fn remaining_interval(self, elapsed: std::time::Duration) -> Option<std::time::Duration> {
+        self.interval
+            .checked_sub(elapsed)
+            .filter(|delay| !delay.is_zero())
+    }
+}
 
 async fn connect_config_server(
     connector: &dyn TunnelDialer,
@@ -102,6 +160,14 @@ pub(crate) trait WebClientBackend: Send + Sync + 'static {
     async fn instance_ids(&self) -> anyhow::Result<Vec<uuid::Uuid>>;
 
     fn failed_instance_ids(&self) -> Vec<uuid::Uuid>;
+
+    fn instance_state_generation(&self) -> usize {
+        0
+    }
+
+    async fn wait_for_instance_state_change(&self, _generation: usize) -> usize {
+        std::future::pending().await
+    }
 }
 
 struct NativeWebClientBackend<F>
@@ -146,6 +212,16 @@ where
 
     fn failed_instance_ids(&self) -> Vec<uuid::Uuid> {
         self.instances.failed_instance_ids()
+    }
+
+    fn instance_state_generation(&self) -> usize {
+        self.instances.instance_state_generation()
+    }
+
+    async fn wait_for_instance_state_change(&self, generation: usize) -> usize {
+        self.instances
+            .wait_for_instance_state_change(generation)
+            .await
     }
 }
 
@@ -341,6 +417,22 @@ fn build_heartbeat_request(
             .into_iter()
             .map(Into::into)
             .collect(),
+        support_heartbeat_policy: true,
+    }
+}
+
+async fn wait_for_next_heartbeat(
+    backend: &dyn WebClientBackend,
+    observed_generation: usize,
+    policy: HeartbeatPolicy,
+    elapsed: std::time::Duration,
+) {
+    let Some(delay) = policy.remaining_interval(elapsed) else {
+        return;
+    };
+    tokio::select! {
+        _ = time::sleep(delay) => {}
+        _ = backend.wait_for_instance_state_change(observed_generation) => {}
     }
 }
 
@@ -376,14 +468,15 @@ impl WebClientSession {
         let client = rpc
             .rpc_client()
             .scoped_client::<WebServerServiceClientFactory<BaseController>>(1, 1, String::new());
-        let mut tick = time::interval(std::time::Duration::from_secs(1));
 
         tasks.spawn(async move {
+            let mut heartbeat_policy = HeartbeatPolicy::default();
             loop {
-                tick.tick().await;
+                let heartbeat_started_at = std::time::Instant::now();
                 let Some(controller) = controller.upgrade() else {
                     break;
                 };
+                let observed_generation = controller.backend.instance_state_generation();
                 let running_network_instances = match controller.backend.instance_ids().await {
                     Ok(instance_ids) => instance_ids,
                     Err(error) => {
@@ -398,9 +491,30 @@ impl WebClientSession {
                     controller.backend.failed_instance_ids(),
                 );
 
-                match client.heartbeat(BaseController::default(), request).await {
+                match client
+                    .heartbeat(heartbeat_policy.controller(), request)
+                    .await
+                {
                     Ok(response) => {
                         tracing::debug!(?response, "config-server heartbeat response");
+                        let (next_policy, adjusted) = HeartbeatPolicy::from_response(&response);
+                        if adjusted {
+                            tracing::warn!(
+                                requested_interval_ms = ?response.heartbeat_interval_ms,
+                                requested_timeout_ms = ?response.heartbeat_timeout_ms,
+                                applied_interval_ms = next_policy.interval.as_millis(),
+                                applied_timeout_ms = next_policy.timeout_ms,
+                                "config-server heartbeat policy was outside safe bounds"
+                            );
+                        }
+                        heartbeat_policy = next_policy;
+                        wait_for_next_heartbeat(
+                            controller.backend.as_ref(),
+                            observed_generation,
+                            heartbeat_policy,
+                            heartbeat_started_at.elapsed(),
+                        )
+                        .await;
                     }
                     Err(error) => {
                         tracing::error!(?error, "config-server heartbeat failed");
@@ -452,6 +566,25 @@ mod tests {
         attempts: AtomicUsize,
     }
 
+    struct ImmediateStateChangeBackend;
+
+    #[async_trait]
+    impl WebClientBackend for ImmediateStateChangeBackend {
+        fn register(&self, _registry: &ServiceRegistry) {}
+
+        async fn instance_ids(&self) -> anyhow::Result<Vec<uuid::Uuid>> {
+            Ok(Vec::new())
+        }
+
+        fn failed_instance_ids(&self) -> Vec<uuid::Uuid> {
+            Vec::new()
+        }
+
+        async fn wait_for_instance_state_change(&self, generation: usize) -> usize {
+            generation.wrapping_add(1)
+        }
+    }
+
     #[async_trait]
     impl TunnelDialer for StalledThenReadyDialer {
         async fn connect(&self) -> anyhow::Result<Box<dyn Tunnel>> {
@@ -483,6 +616,26 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(connector.attempts.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn instance_state_change_interrupts_a_long_heartbeat_interval() {
+        let policy = HeartbeatPolicy {
+            interval: std::time::Duration::from_secs(60),
+            timeout_ms: 65_000,
+        };
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            wait_for_next_heartbeat(
+                &ImmediateStateChangeBackend,
+                0,
+                policy,
+                std::time::Duration::ZERO,
+            ),
+        )
+        .await
+        .expect("instance state change must wake heartbeat before its interval");
     }
 
     #[test]
@@ -559,5 +712,50 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![failed]
         );
+        assert!(request.support_heartbeat_policy);
+    }
+
+    #[test]
+    fn heartbeat_policy_uses_safe_defaults_for_legacy_servers() {
+        let (policy, adjusted) = HeartbeatPolicy::from_response(&HeartbeatResponse::default());
+
+        assert!(!adjusted);
+        assert_eq!(
+            policy.interval,
+            std::time::Duration::from_millis(DEFAULT_HEARTBEAT_INTERVAL_MS.into())
+        );
+        assert_eq!(policy.timeout_ms, DEFAULT_HEARTBEAT_TIMEOUT_MS as i32);
+    }
+
+    #[test]
+    fn heartbeat_policy_clamps_server_values_and_preserves_timeout_margin() {
+        let (minimum, adjusted) = HeartbeatPolicy::from_response(&HeartbeatResponse {
+            heartbeat_interval_ms: Some(1),
+            heartbeat_timeout_ms: Some(1),
+        });
+        assert!(adjusted);
+        assert_eq!(
+            minimum.interval,
+            std::time::Duration::from_millis(MIN_HEARTBEAT_INTERVAL_MS.into())
+        );
+        assert_eq!(minimum.timeout_ms, 6_000);
+
+        let (maximum, adjusted) = HeartbeatPolicy::from_response(&HeartbeatResponse {
+            heartbeat_interval_ms: Some(u32::MAX),
+            heartbeat_timeout_ms: Some(u32::MAX),
+        });
+        assert!(adjusted);
+        assert_eq!(
+            maximum.interval,
+            std::time::Duration::from_millis(MAX_HEARTBEAT_INTERVAL_MS.into())
+        );
+        assert_eq!(maximum.timeout_ms, MAX_HEARTBEAT_TIMEOUT_MS as i32);
+
+        let (margin, adjusted) = HeartbeatPolicy::from_response(&HeartbeatResponse {
+            heartbeat_interval_ms: Some(60_000),
+            heartbeat_timeout_ms: Some(5_000),
+        });
+        assert!(adjusted);
+        assert_eq!(margin.timeout_ms, 65_000);
     }
 }
