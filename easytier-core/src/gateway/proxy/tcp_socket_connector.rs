@@ -40,15 +40,15 @@ impl<F: VirtualTcpSocketFactory> TcpProxyDestinationConnector for TcpSocketProxy
             Duration::from_secs(10),
             self.socket_factory.connect_tcp(
                 TcpConnectOptions::proxy_nat(dst).with_bind(
-                    crate::socket::tcp::TcpBindOptions::default().with_context(
-                        self.socket_context
-                            .clone()
-                            .with_ip_version(if dst.is_ipv4() {
+                    crate::socket::tcp::TcpBindOptions::default()
+                        .with_need_protect(true)
+                        .with_context(self.socket_context.clone().with_ip_version(
+                            if dst.is_ipv4() {
                                 crate::socket::IpVersion::V4
                             } else {
                                 crate::socket::IpVersion::V6
-                            }),
-                    ),
+                            },
+                        )),
                 ),
             ),
         )

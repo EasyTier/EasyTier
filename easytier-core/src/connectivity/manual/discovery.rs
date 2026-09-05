@@ -28,7 +28,7 @@ impl Default for ManualEndpointDiscoveryConfig {
             network_name: String::new(),
             http_timeout: Duration::from_secs(20),
             http_ip_version: IpVersion::Both,
-            http_tcp_bind: TcpBindOptions::default(),
+            http_tcp_bind: TcpBindOptions::default().with_need_protect(true),
             dns_record_context: SocketContext::default(),
             srv_protocols: vec!["tcp".to_owned(), "udp".to_owned()],
         }

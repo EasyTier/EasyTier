@@ -9,7 +9,6 @@ use async_trait::async_trait;
 use easytier::socket_protector::{
     NativeSocketProtector, NativeSocketPurpose, set_native_socket_protector,
 };
-use easytier_core::socket::{tcp::TcpListenPurpose, udp::UdpSocketPurpose};
 use once_cell::sync::Lazy;
 use tokio::sync::{Notify, oneshot};
 
@@ -43,31 +42,6 @@ pub struct SocketProtectionManager {
 
 pub static SOCKET_PROTECTION_MANAGER: Lazy<Arc<SocketProtectionManager>> =
     Lazy::new(|| Arc::new(SocketProtectionManager::default()));
-
-fn should_protect(purpose: NativeSocketPurpose) -> bool {
-    match purpose {
-        NativeSocketPurpose::TcpConnect(_)
-        | NativeSocketPurpose::DnsTcp
-        | NativeSocketPurpose::DnsUdp
-        | NativeSocketPurpose::RouteProbe
-        | NativeSocketPurpose::UpnpRouteProbe => true,
-        NativeSocketPurpose::TcpListen(purpose) | NativeSocketPurpose::TcpAccepted(purpose) => {
-            matches!(
-                purpose,
-                TcpListenPurpose::DirectConnect
-                    | TcpListenPurpose::HolePunch
-                    | TcpListenPurpose::ManualConnect
-            )
-        }
-        NativeSocketPurpose::UdpBind(purpose) => !matches!(
-            purpose,
-            UdpSocketPurpose::HolePunchControl
-                | UdpSocketPurpose::Socks5
-                | UdpSocketPurpose::PortForward
-                | UdpSocketPurpose::PortLease
-        ),
-    }
-}
 
 impl SocketProtectionManager {
     fn enable(&self) {
@@ -148,9 +122,9 @@ impl SocketProtectionManager {
 #[async_trait]
 impl NativeSocketProtector for SocketProtectionManager {
     async fn protect(&self, socket_handle: u64, purpose: NativeSocketPurpose) -> io::Result<()> {
-        if !should_protect(purpose) {
-            return Ok(());
-        }
+        // Core's bind options decide whether protection is needed. The native
+        // creation path calls us only when requested; do not infer policy again
+        // from diagnostic purpose labels and accidentally ignore an override.
         let socket_fd = i32::try_from(socket_handle).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -231,25 +205,6 @@ mod tests {
     use easytier::socket_protector::NativeSocketProtector;
     use easytier_core::socket::tcp::TcpSocketPurpose;
     use std::os::fd::AsRawFd;
-
-    #[test]
-    fn protects_transport_sockets_but_not_local_port_forward_listeners() {
-        assert!(should_protect(NativeSocketPurpose::TcpConnect(
-            TcpSocketPurpose::ManualConnect,
-        )));
-        assert!(should_protect(NativeSocketPurpose::TcpListen(
-            TcpListenPurpose::ManualConnect,
-        )));
-        assert!(should_protect(NativeSocketPurpose::TcpAccepted(
-            TcpListenPurpose::ManualConnect,
-        )));
-        assert!(!should_protect(NativeSocketPurpose::TcpListen(
-            TcpListenPurpose::PortForward,
-        )));
-        assert!(!should_protect(NativeSocketPurpose::UdpBind(
-            UdpSocketPurpose::PortForward,
-        )));
-    }
 
     #[test]
     fn transport_socket_waits_for_platform_completion() {

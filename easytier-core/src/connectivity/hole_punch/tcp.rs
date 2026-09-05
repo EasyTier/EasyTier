@@ -219,6 +219,7 @@ where
         .bind_tcp(
             TcpListenOptions::hole_punch(bind_addr).with_bind(
                 TcpBindOptions::default()
+                    .with_need_protect(true)
                     .with_context(context)
                     .with_local_addr(Some(bind_addr)),
             ),
@@ -267,6 +268,7 @@ where
     while start.elapsed() < Duration::from_secs(10) && attempts < max_attempts {
         attempts = attempts.wrapping_add(1);
         let bind = TcpBindOptions::default()
+            .with_need_protect(true)
             .with_context(context.clone())
             .with_local_addr(Some(bind_addr))
             .with_only_v6(true);
@@ -369,6 +371,7 @@ fn fallback_listener_options(
     bind_addr: std::net::SocketAddr,
 ) -> TcpListenOptions {
     let bind = TcpBindOptions::default()
+        .with_need_protect(true)
         .with_context(socket_context.with_ip_version(IpVersion::V4))
         .with_local_addr(Some(bind_addr))
         .with_only_v6(true);

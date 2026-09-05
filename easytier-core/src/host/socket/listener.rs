@@ -19,6 +19,9 @@ pub struct HostTcpBindResult {
 /// Bind cancellation must close a completed but unobserved listener. Accepted
 /// connections stay in a host-owned listener queue until `take_tcp_accept` is
 /// called from a guest poll; canceling an accept waiter must not remove one.
+/// When bind options request socket protection, the host must complete and
+/// acknowledge protection before bind/listen and before exposing each accepted
+/// child. A protection error fails the corresponding bind or accept operation.
 pub trait HostTcpListenerIo: HostSocketIo {
     fn submit_tcp_bind(
         &self,

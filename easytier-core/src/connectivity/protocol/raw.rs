@@ -62,7 +62,7 @@ where
             factory,
             dns,
             ip_version: IpVersion::Both,
-            bind: TcpBindOptions::default(),
+            bind: TcpBindOptions::default().with_need_protect(true),
         }
     }
 
@@ -126,6 +126,7 @@ where
 {
     pub fn new(local_addr: SocketAddr, factory: Arc<F>) -> Self {
         let bind = TcpBindOptions::default()
+            .with_need_protect(true)
             .with_local_addr(Some(local_addr))
             .with_only_v6(true);
         Self::new_with_bind(local_addr, bind, factory)

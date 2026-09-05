@@ -199,6 +199,10 @@ pub enum UdpSocketPurpose {
 pub struct UdpBindOptions {
     #[serde(default)]
     pub context: SocketContext,
+    /// Request host VPN bypass before bind or datagram I/O. Protection must be
+    /// acknowledged inside creation, not emitted as a fire-and-forget event.
+    #[serde(default)]
+    pub need_protect: bool,
     pub local_addr: Option<SocketAddr>,
     pub bind_device: Option<String>,
     pub reuse_addr: bool,
@@ -209,8 +213,16 @@ pub struct UdpBindOptions {
 
 impl UdpBindOptions {
     fn for_purpose(purpose: UdpSocketPurpose) -> Self {
+        let need_protect = !matches!(
+            purpose,
+            UdpSocketPurpose::HolePunchControl
+                | UdpSocketPurpose::Socks5
+                | UdpSocketPurpose::PortForward
+                | UdpSocketPurpose::PortLease
+        );
         Self {
             context: SocketContext::default(),
+            need_protect,
             local_addr: None,
             bind_device: None,
             reuse_addr: false,
@@ -274,6 +286,11 @@ impl UdpBindOptions {
         self
     }
 
+    pub fn with_need_protect(mut self, need_protect: bool) -> Self {
+        self.need_protect = need_protect;
+        self
+    }
+
     pub fn with_ip_version(mut self, ip_version: IpVersion) -> Self {
         self.context.ip_version = ip_version;
         self
@@ -303,6 +320,35 @@ impl UdpBindOptions {
 impl Default for UdpBindOptions {
     fn default() -> Self {
         Self::hole_punch_control()
+    }
+}
+
+#[cfg(test)]
+mod option_tests {
+    use super::*;
+
+    #[test]
+    fn udp_constructor_protection_defaults_match_endpoint_role() {
+        let local = SocketAddr::from(([0, 0, 0, 0], 11010));
+
+        assert!(!UdpBindOptions::hole_punch_control().need_protect);
+        assert!(UdpBindOptions::hole_punch_candidate().need_protect);
+        assert!(UdpBindOptions::direct_connect().need_protect);
+        assert!(UdpBindOptions::port_bound_listener(local).need_protect);
+        assert!(UdpBindOptions::proxy_nat().need_protect);
+        assert!(UdpBindOptions::stun_probe().need_protect);
+        assert!(!UdpBindOptions::socks5().need_protect);
+        assert!(!UdpBindOptions::port_forward(local).need_protect);
+        assert!(!UdpBindOptions::port_lease(local).need_protect);
+    }
+
+    #[test]
+    fn udp_bind_serde_defaults_need_protect_to_false() {
+        let options: UdpBindOptions = serde_json::from_str(
+            r#"{"local_addr":null,"bind_device":null,"reuse_addr":false,"reuse_port":false,"only_v6":false,"purpose":"DirectConnect"}"#,
+        )
+        .unwrap();
+        assert!(!options.need_protect);
     }
 }
 

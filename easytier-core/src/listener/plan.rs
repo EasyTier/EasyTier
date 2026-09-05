@@ -321,8 +321,11 @@ pub(crate) fn unresolved_udp_session_listen_request(
 }
 
 pub(crate) fn unresolved_tcp_listener_options(context: SocketContext) -> TcpListenOptions {
-    TcpListenOptions::direct_connect("0.0.0.0:0".parse().unwrap())
-        .with_bind(TcpBindOptions::default().with_context(context))
+    TcpListenOptions::direct_connect("0.0.0.0:0".parse().unwrap()).with_bind(
+        TcpBindOptions::default()
+            .with_need_protect(true)
+            .with_context(context),
+    )
 }
 
 pub(crate) fn is_url_host_ipv6(url: &Url) -> bool {

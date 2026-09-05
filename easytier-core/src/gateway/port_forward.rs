@@ -321,6 +321,11 @@ where
         cancel: CancellationToken,
         connections: Arc<std::sync::Mutex<JoinSet<()>>>,
     ) {
+        // An optional userspace ingress endpoint: matching overlay TCP is
+        // terminated before the host TUN/return route. Native port-forward
+        // listeners remain available and intentionally unprotected. This is
+        // independent of socket protection; no_tun also has the generic TCP
+        // proxy fallback, while force_smoltcp can be used with no_tun=false.
         let data_plane = self.data_plane.clone();
         self.tasks.lock().unwrap().spawn(async move {
             loop {

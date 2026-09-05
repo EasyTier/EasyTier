@@ -31,6 +31,9 @@ pub struct HostUdpBindResult {
 /// their handles and address metadata. Canceling an operation must atomically
 /// stop pending creation or close and discard a resource that completed before
 /// core observed it, so dropping a factory future cannot leak a host socket.
+/// When bind options request socket protection, the host must complete and
+/// acknowledge protection before connect, datagram I/O, or successful creation
+/// completion. A protection error fails the creation operation.
 pub trait HostSocketFactoryIo: HostSocketIo {
     fn submit_tcp_connect(
         &self,
@@ -388,7 +391,8 @@ mod tests {
                 .with_local_addr(Some("192.0.2.1:0".parse().unwrap()))
                 .with_socket_mark(Some(7))
                 .with_bind_device(Some("host-device".to_owned()))
-                .with_reuse_port(true),
+                .with_reuse_port(true)
+                .with_need_protect(true),
             purpose: TcpSocketPurpose::ManualConnect,
         };
         let task = tokio::spawn({
@@ -407,6 +411,7 @@ mod tests {
                 panic!("operation is not TCP connect");
             };
             assert_eq!(submitted, &options);
+            assert!(submitted.bind.need_protect);
         }
 
         io.complete_tcp(
@@ -436,6 +441,7 @@ mod tests {
         let (runtime, factory) = test_factory(io.clone());
         let options = UdpBindOptions {
             context: crate::socket::SocketContext::default().with_socket_mark(Some(9)),
+            need_protect: false,
             local_addr: Some("[::]:11013".parse().unwrap()),
             bind_device: Some("host-device".to_owned()),
             reuse_addr: true,
@@ -459,6 +465,7 @@ mod tests {
                 panic!("operation is not UDP bind");
             };
             assert_eq!(submitted, &options);
+            assert!(!submitted.need_protect);
         }
 
         io.complete_udp(
