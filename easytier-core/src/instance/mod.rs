@@ -35,8 +35,9 @@ use url::Url;
 #[cfg(feature = "tcp-hole-punch")]
 use crate::connectivity::hole_punch::tcp::TcpHolePunchConnector;
 use crate::{
+    config::normalize_secure_mode_config,
     config::runtime::{CoreInstanceRuntimeConfig, CoreRuntimeConfig, CoreRuntimeConfigStore},
-    config::toml::TomlConfig,
+    config::toml::{ConfigLoader as _, TomlConfig},
     connectivity::hole_punch::port_mapping::UdpPortMappingPlatform,
     connectivity::hole_punch::tcp::TcpHolePunchHost,
     connectivity::stun::{
@@ -460,6 +461,12 @@ where
         toml_config: TomlConfig,
         adapters: CoreHostAdapters<H>,
     ) -> anyhow::Result<Arc<Self>> {
+        let secure_mode = toml_config
+            .get_secure_mode()
+            .map(normalize_secure_mode_config)
+            .transpose()?;
+        toml_config.set_secure_mode(secure_mode);
+
         let host_config = adapters.config.clone();
         let config = CoreInstanceConfig::from_toml_with_host(&toml_config, &host_config)?;
         Self::new_inner(config, Some(toml_config), host_config, adapters)
