@@ -8,7 +8,9 @@ vi.mock("@easytier/runtime/adapter", () => ({
   createEasyTierRuntime: createRuntime,
 }));
 
-import { createEasyTier } from "../src/index";
+import { createEasyTierWithArtifact } from "../src/create";
+
+const EMPTY_WASM_MODULE = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]);
 
 describe("createEasyTier", () => {
   afterEach(() => {
@@ -23,19 +25,14 @@ describe("createEasyTier", () => {
       loadedModule = await options.module();
       return instance;
     });
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue(
-        new Response(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0])),
-      ),
-    );
     class MockWebSocket {
       constructor(readonly url: string) {}
     }
     vi.stubGlobal("WebSocket", MockWebSocket);
 
     await expect(
-      createEasyTier(
+      createEasyTierWithArtifact(
+        EMPTY_WASM_MODULE,
         {
           networkName: "office",
           networkSecret: "secret",
@@ -64,23 +61,22 @@ describe("createEasyTier", () => {
     );
   });
 
-  it("reports artifact loading failures without exposing runtime details", async () => {
+  it("fails before starting when the embedded artifact is invalid", async () => {
     createRuntime.mockImplementation(async (options) => {
       await options.module();
     });
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue(new Response(null, { status: 404 })),
-    );
 
     await expect(
-      createEasyTier({
-        networkName: "office",
-        networkSecret: "secret",
-        ipv4: "10.144.0.10/24",
-        peers: ["wss://relay.example.com/"],
-      }),
-    ).rejects.toThrow("failed to load the EasyTier browser artifact: HTTP 404");
+      createEasyTierWithArtifact(
+        new Uint8Array([1, 2, 3]),
+        {
+          networkName: "office",
+          networkSecret: "secret",
+          ipv4: "10.144.0.10/24",
+          peers: ["wss://relay.example.com/"],
+        },
+      ),
+    ).rejects.toThrow();
     expect(createRuntime).toHaveBeenCalledOnce();
   });
 });

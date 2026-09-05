@@ -1,8 +1,9 @@
 # `@easytier/browser`
 
 Run an outbound EasyTier instance and its TCP data plane directly in a browser.
-The package includes the matching EasyTier WebAssembly artifact; applications
-do not compile Rust, load WASI, or work with Guest handles.
+The package embeds the matching EasyTier WebAssembly artifact in its JavaScript
+entry point; applications do not configure a bundler loader, compile Rust, load
+WASI, or work with Guest handles.
 
 ```sh
 pnpm add @easytier/browser

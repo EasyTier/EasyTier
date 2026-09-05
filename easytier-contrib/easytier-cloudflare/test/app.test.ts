@@ -90,9 +90,10 @@ describe("createEasyTierCloudflare", () => {
       namespace: {} as DurableObjectNamespace,
       secret: "do-not-log-this",
     };
+    class TestEasyTierCoreObject extends application.DurableObject {}
 
-    const first = new application.DurableObject(state, env);
-    const firstResponse = await first.fetch(
+    const first = new TestEasyTierCoreObject(state, env);
+    const firstResponse = await first.fetch!(
       new Request("https://relay.example.com/health"),
     );
     expect(await firstResponse.json()).toEqual({
@@ -101,8 +102,8 @@ describe("createEasyTierCloudflare", () => {
       connections: 2,
     });
 
-    const second = new application.DurableObject(state, env);
-    await second.fetch(new Request("https://relay.example.com/health"));
+    const second = new TestEasyTierCoreObject(state, env);
+    await second.fetch!(new Request("https://relay.example.com/health"));
 
     expect(createRuntime).toHaveBeenCalledTimes(2);
     const firstConfig = createRuntime.mock.calls[0]?.[0].config;

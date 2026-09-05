@@ -10,8 +10,6 @@ export type {
   CloudflareEasyTierConfig,
   CloudflareEasyTierOptions,
   EasyTierCloudflareApplication,
-  EasyTierDurableObject,
-  EasyTierDurableObjectClass,
 } from "./types.js";
 
 export function createEasyTierCloudflare<Env>(

@@ -12,7 +12,7 @@ pnpm add @easytier/cloudflare
 import { createEasyTierCloudflare } from "@easytier/cloudflare";
 
 interface Env {
-  EASYTIER_CORE: DurableObjectNamespace;
+  EASYTIER_CORE: DurableObjectNamespace<EasyTierCoreObject>;
   EASYTIER_NETWORK_SECRET: string;
 }
 
@@ -26,7 +26,7 @@ const easytier = createEasyTierCloudflare<Env>({
   }),
 });
 
-export const EasyTierCoreObject = easytier.DurableObject;
+export class EasyTierCoreObject extends easytier.DurableObject {}
 export default easytier;
 ```
 
@@ -51,8 +51,9 @@ The Worker project still declares the deployment resource in `wrangler.jsonc`:
 }
 ```
 
-`createEasyTierCloudflare()` returns both the Durable Object class and a fetch
-handler. Pass a custom `objectName` string or callback to route independent
+`createEasyTierCloudflare()` returns both the Durable Object base class and a
+fetch handler. The one-line named subclass gives Wrangler a concrete class and
+type to bind. Pass a custom `objectName` string or callback to route independent
 EasyTier networks to different named objects; the default is `primary`.
 
 The Cloudflare Adapter is an inbound-only relay. Its public Interface does not

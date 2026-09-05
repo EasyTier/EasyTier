@@ -12,5 +12,5 @@ const easytier = createEasyTierCloudflare<Env>({
   }),
 });
 
-export const EasyTierCoreObject = easytier.DurableObject;
+export class EasyTierCoreObject extends easytier.DurableObject {}
 export default easytier;
