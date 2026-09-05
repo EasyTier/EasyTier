@@ -301,6 +301,8 @@ event:
   PortForwardAdded: PortForwardAdded
   ProxyCidrsUpdated: ProxyCidrsUpdated
   UdpBroadcastRelayStartResult: UDP Broadcast Relay Start Result
+  MagicDnsReady: Magic DNS Ready
+  MagicDnsError: Magic DNS Error
 
 web:
   login:
