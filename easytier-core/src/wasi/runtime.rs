@@ -45,7 +45,10 @@ pub(super) type WasiCore = crate::instance::CoreInstance<
 
 pub(super) struct WasiCoreRuntime {
     socket_runtime: crate::host::socket::HostSocketRuntime,
-    #[cfg(feature = "wasm-host-websocket")]
+    #[cfg(all(
+        feature = "wasm-host-websocket",
+        not(feature = "wasm-host-websocket-outbound")
+    ))]
     websocket_ingress: crate::wasi::adapter::websocket::WasiHostWebSocketIngress,
     core: std::sync::Arc<WasiCore>,
 }
@@ -59,13 +62,25 @@ impl WasiCoreRuntime {
         self.socket_runtime.notify_completions();
     }
 
-    #[cfg(feature = "wasm-host-websocket")]
+    #[cfg(all(
+        feature = "wasm-host-websocket",
+        not(feature = "wasm-host-websocket-outbound")
+    ))]
     pub(super) fn accept_websocket(
         &self,
         handle: crate::host::socket::HostSocketHandle,
         metadata: crate::wasi::schema::WasiHostWebSocketMetadata,
     ) -> anyhow::Result<()> {
         self.websocket_ingress.accept(handle, metadata)
+    }
+
+    #[cfg(feature = "wasm-host-websocket-outbound")]
+    pub(super) fn accept_websocket(
+        &self,
+        _handle: crate::host::socket::HostSocketHandle,
+        _metadata: crate::wasi::schema::WasiHostWebSocketMetadata,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("Host WebSocket admission is unavailable in outbound-only WASI")
     }
 }
 
@@ -80,7 +95,6 @@ pub(super) fn new_wasi_core_runtime(
 
     use crate::host::{dns::HostDnsResolver, packet::HostPacketSink, socket::HostSocketRuntime};
     use crate::{
-        connectivity::connector_host::new_connector_host,
         instance::{CoreHostAdapters, CoreInstance},
         wasi::adapter::{
             dns::WasiHostDnsIo, environment::WasiHostConnectorEnvironmentIo,
@@ -89,12 +103,35 @@ pub(super) fn new_wasi_core_runtime(
         },
     };
 
+    #[cfg(not(feature = "wasm-host-websocket-outbound"))]
+    use crate::connectivity::connector_host::new_connector_host;
+    #[cfg(feature = "wasm-host-websocket-outbound")]
+    use crate::connectivity::connector_host::new_connector_host_with_external_tunnel;
+
     let socket_runtime = HostSocketRuntime::new();
+    let socket_backend = Arc::new(WasiHostSocketBackend::default());
+    let environment_io = Arc::new(WasiHostConnectorEnvironmentIo);
+    #[cfg(feature = "wasm-host-websocket-outbound")]
+    let websocket_io = Arc::new(crate::wasi::adapter::websocket::WasiHostWebSocketIo::default());
+    #[cfg(feature = "wasm-host-websocket-outbound")]
+    let host = Arc::new(new_connector_host_with_external_tunnel(
+        socket_runtime.clone(),
+        socket_backend,
+        environment_snapshot,
+        environment_io,
+        Arc::new(
+            crate::wasi::adapter::websocket::WasiHostWebSocketConnector::new(
+                socket_runtime.clone(),
+                websocket_io,
+            ),
+        ),
+    ));
+    #[cfg(not(feature = "wasm-host-websocket-outbound"))]
     let host = Arc::new(new_connector_host(
         socket_runtime.clone(),
-        Arc::new(WasiHostSocketBackend::default()),
+        socket_backend,
         environment_snapshot,
-        Arc::new(WasiHostConnectorEnvironmentIo),
+        environment_io,
     ));
     let dns = Arc::new(HostDnsResolver::new(
         socket_runtime.clone(),
@@ -108,10 +145,22 @@ pub(super) fn new_wasi_core_runtime(
     let mut adapters = CoreHostAdapters::new(host, dns, packet_sink, process_runtime);
     adapters.instance_runtime = Arc::new(WasiInstanceRuntimeHost);
     adapters.events = Arc::new(WasiHostEventSink::new(event_sink));
+    #[cfg(feature = "wasm-host-websocket-outbound")]
+    {
+        adapters.config.connectivity = crate::instance::CoreConnectivityMode::OutboundOnly;
+        adapters.config.smoltcp_available = true;
+        adapters.config.requires_smoltcp = true;
+        adapters.config.gateway_enabled = false;
+        adapters.config.proxy_enabled = false;
+        adapters.config.ignore_unsupported_config = true;
+        adapters.config.endpoint_protocols = vec!["ws".to_owned(), "wss".to_owned()];
+    }
     #[cfg(feature = "wasm-host-websocket")]
+    #[cfg(not(feature = "wasm-host-websocket-outbound"))]
     let websocket_ingress =
         crate::wasi::adapter::websocket::WasiHostWebSocketIngress::new(socket_runtime.clone());
     #[cfg(feature = "wasm-host-websocket")]
+    #[cfg(not(feature = "wasm-host-websocket-outbound"))]
     {
         adapters.config.connectivity = crate::instance::CoreConnectivityMode::InboundOnly;
         adapters.external_listener_factory = Some(websocket_ingress.listener_factory());
@@ -128,7 +177,10 @@ pub(super) fn new_wasi_core_runtime(
 
     Ok(WasiCoreRuntime {
         socket_runtime,
-        #[cfg(feature = "wasm-host-websocket")]
+        #[cfg(all(
+            feature = "wasm-host-websocket",
+            not(feature = "wasm-host-websocket-outbound")
+        ))]
         websocket_ingress,
         core,
     })

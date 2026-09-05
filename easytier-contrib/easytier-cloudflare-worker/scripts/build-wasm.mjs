@@ -7,11 +7,15 @@ const packageDirectory = path.dirname(
   path.dirname(fileURLToPath(import.meta.url)),
 );
 const repositoryRoot = path.resolve(packageDirectory, "../..");
+const browserBuild = process.argv.includes("--browser");
 const artifact = path.join(
   repositoryRoot,
   "target/wasm32-wasip1/release/easytier_core.wasm",
 );
-const outputDirectory = path.join(packageDirectory, "src/generated");
+const outputDirectory = path.join(
+  packageDirectory,
+  browserBuild ? "browser/generated" : "src/generated",
+);
 const output = path.join(outputDirectory, "easytier_core.wasm");
 
 await new Promise((resolve, reject) => {
@@ -26,7 +30,9 @@ await new Promise((resolve, reject) => {
       "wasm32-wasip1",
       "--no-default-features",
       "--features",
-      "wasm-host-websocket,aes-gcm",
+      browserBuild
+        ? "wasm-host-websocket-outbound,aes-gcm,proxy-smoltcp-stack"
+        : "wasm-host-websocket,aes-gcm",
     ],
     {
       cwd: repositoryRoot,
@@ -83,4 +89,6 @@ await new Promise((resolve, reject) => {
     );
   });
 });
-console.log(`optimized ${path.relative(packageDirectory, output)}`);
+console.log(
+  `optimized ${path.relative(packageDirectory, output)} (${browserBuild ? "browser" : "worker"})`,
+);

@@ -5,6 +5,9 @@
   "type": "module",
   "scripts": {
     "build:wasm": "node scripts/build-wasm.mjs",
+    "build:browser-wasm": "node scripts/build-wasm.mjs --browser",
+    "build:browser-smoke": "esbuild browser/smoke.ts --bundle --format=esm --outfile=browser/generated/smoke.js",
+    "smoke:browser-node": "esbuild browser/node-smoke.ts --bundle --platform=node --format=esm --outfile=browser/generated/node-smoke.js && node browser/generated/node-smoke.js",
     "check": "pnpm build:wasm && tsc --noEmit && wrangler deploy --dry-run",
     "deploy": "pnpm build:wasm && wrangler deploy",
     "test": "vitest run"
@@ -13,6 +16,7 @@
     "@cloudflare/workers-types": "5.20260724.1",
     "@types/node": "22.18.1",
     "binaryen": "131.0.0",
+    "esbuild": "0.25.9",
     "typescript": "5.9.3",
     "vitest": "2.1.9",
     "wrangler": "4.114.0"

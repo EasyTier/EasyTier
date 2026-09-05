@@ -15,7 +15,13 @@ use crate::{
 };
 
 pub mod plan;
-#[cfg(any(test, feature = "wasm-host-websocket"))]
+#[cfg(any(
+    test,
+    all(
+        feature = "wasm-host-websocket",
+        not(feature = "wasm-host-websocket-outbound")
+    )
+))]
 pub(crate) mod queue;
 pub mod transport;
 

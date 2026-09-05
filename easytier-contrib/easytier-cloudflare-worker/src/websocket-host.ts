@@ -5,13 +5,15 @@ const HOST_WEBSOCKET_CLOSED = -10;
 const HOST_WEBSOCKET_TEXT = -11;
 
 const PACKET_SINK_HANDLE = 1n;
-const FIRST_WEBSOCKET_HANDLE = 2n;
+const EVENT_SINK_HANDLE = 2n;
+const FIRST_WEBSOCKET_HANDLE = 3n;
 const MAX_CONNECTIONS = 256;
 const MAX_MESSAGE_BYTES = 1024 * 1024;
 const MAX_QUEUED_MESSAGES = 64;
 const MAX_QUEUED_BYTES_PER_CONNECTION = 2 * 1024 * 1024;
 const MAX_QUEUED_BYTES_PER_OBJECT = 16 * 1024 * 1024;
 const MAX_BUFFERED_SEND_BYTES = 4 * 1024 * 1024;
+const MAX_URL_BYTES = 16 * 1024;
 
 type IncomingMessage =
   | { kind: "binary"; bytes: Uint8Array }
@@ -40,7 +42,25 @@ interface SendOperation {
   status: number;
 }
 
-type HostOperation = ReceiveOperation | SendOperation;
+type ConnectOperation = {
+  kind: "connect";
+  handle: bigint;
+  state: "pending" | "ready";
+  result: bigint;
+};
+
+type TcpPortLeaseOperation = {
+  kind: "tcp-port-lease";
+  handle: bigint;
+  port: number;
+  state: "ready";
+};
+
+type HostOperation =
+  | ReceiveOperation
+  | SendOperation
+  | ConnectOperation
+  | TcpPortLeaseOperation;
 
 interface WebSocketState {
   socket: WebSocket;
@@ -64,15 +84,36 @@ export interface WebSocketHostHealth {
   pendingOperations: number;
 }
 
+export interface EasyTierCoreEvent {
+  kind: string;
+  message: string;
+}
+
 export class WebSocketHost {
   private readonly sockets = new Map<bigint, WebSocketState>();
+  private readonly tcpPortLeases = new Map<bigint, number>();
   private readonly operations = new Map<bigint, HostOperation>();
   private nextHandle = FIRST_WEBSOCKET_HANDLE;
+  private nextTcpPort = 49_152;
   private totalQueuedBytes = 0;
   private wakeGuest: () => void = () => {};
   private wasmMemory: WebAssembly.Memory | undefined;
 
+  constructor(
+    private readonly outboundFactory?: (url: string) => WebSocket,
+    private readonly onEvent: (event: EasyTierCoreEvent) => void = (event) => {
+      console.log(JSON.stringify({ event: "easytier_core_event", ...event }));
+    },
+  ) {}
+
   readonly imports: WebAssembly.Imports["easytier_host"] = {
+    emit_event: (
+      handle: bigint,
+      kind: number,
+      kindLength: number,
+      message: number,
+      messageLength: number,
+    ) => this.emitEvent(handle, kind, kindLength, message, messageLength),
     start_websocket_receive: (
       handle: bigint,
       operation: bigint,
@@ -90,6 +131,13 @@ export class WebSocketHost {
       length: number,
     ) => this.startSend(handle, operation, source, length),
     take_websocket_send: (operation: bigint) => this.takeSend(operation),
+    start_websocket_connect: (
+      operation: bigint,
+      url: number,
+      urlLength: number,
+    ) => this.startConnect(operation, url, urlLength),
+    take_websocket_connect: (operation: bigint) =>
+      this.takeConnect(operation),
     cancel_operation: (operation: bigint) => this.cancelOperation(operation),
     close: (handle: bigint) => this.closeHandle(handle),
     try_packet_write: (
@@ -112,8 +160,16 @@ export class WebSocketHost {
     take_tcp_connect: () => HOST_UNSUPPORTED,
     start_udp_bind: () => HOST_UNSUPPORTED,
     take_udp_bind: () => HOST_UNSUPPORTED,
-    start_tcp_bind: () => HOST_UNSUPPORTED,
-    take_tcp_bind: () => HOST_UNSUPPORTED,
+    start_tcp_bind: (
+      operation: bigint,
+      options: number,
+      optionsLength: number,
+    ) => this.startTcpBind(operation, options, optionsLength),
+    take_tcp_bind: (
+      operation: bigint,
+      destination: number,
+      capacity: number,
+    ) => this.takeTcpBind(operation, destination, capacity),
     start_tcp_accept: () => HOST_UNSUPPORTED,
     take_tcp_accept: () => HOST_UNSUPPORTED,
     start_dns_resolve: () => HOST_UNSUPPORTED,
@@ -220,6 +276,155 @@ export class WebSocketHost {
       queuedBytes: this.totalQueuedBytes,
       pendingOperations: this.operations.size,
     };
+  }
+
+  private emitEvent(
+    handle: bigint,
+    kindPointer: number,
+    kindLength: number,
+    messagePointer: number,
+    messageLength: number,
+  ): number {
+    if (handle !== EVENT_SINK_HANDLE) {
+      return HOST_INVALID;
+    }
+    const decoder = new TextDecoder();
+    this.onEvent({
+      kind: decoder.decode(this.memoryBytes(kindPointer, kindLength)),
+      message: decoder.decode(this.memoryBytes(messagePointer, messageLength)),
+    });
+    return 0;
+  }
+
+  private startConnect(
+    operation: bigint,
+    urlPointer: number,
+    urlLength: number,
+  ): number {
+    if (this.outboundFactory === undefined) {
+      return HOST_UNSUPPORTED;
+    }
+    if (
+      urlLength <= 0 ||
+      urlLength > MAX_URL_BYTES ||
+      this.operations.has(operation) ||
+      !this.canAccept()
+    ) {
+      return HOST_INVALID;
+    }
+
+    let requestedUrl: string;
+    let socket: WebSocket;
+    try {
+      requestedUrl = new TextDecoder("utf-8", {
+        fatal: true,
+        ignoreBOM: false,
+      }).decode(
+        this.memoryBytes(urlPointer, urlLength),
+      );
+      const parsed = new URL(requestedUrl);
+      if (parsed.protocol !== "ws:" && parsed.protocol !== "wss:") {
+        return HOST_INVALID;
+      }
+      socket = this.outboundFactory(requestedUrl);
+    } catch {
+      return HOST_INVALID;
+    }
+
+    socket.binaryType = "arraybuffer";
+    const handle = this.register(socket);
+    this.operations.set(operation, {
+      kind: "connect",
+      handle,
+      state: "pending",
+      result: BigInt(HOST_PENDING),
+    });
+    socket.addEventListener("open", () => {
+      this.completeConnect(operation, handle);
+    });
+    socket.addEventListener("message", (event) => {
+      if (typeof event.data === "string" || event.data instanceof ArrayBuffer) {
+        this.receive(handle, event.data);
+      } else {
+        this.remoteError(handle);
+      }
+    });
+    socket.addEventListener("close", () => {
+      if (!this.failConnect(operation, handle, HOST_WEBSOCKET_CLOSED)) {
+        this.remoteClose(handle);
+      }
+    });
+    socket.addEventListener("error", () => {
+      if (!this.failConnect(operation, handle, HOST_WEBSOCKET_CLOSED)) {
+        this.remoteError(handle);
+      }
+    });
+    return 0;
+  }
+
+  private takeConnect(operation: bigint): bigint {
+    const pending = this.operations.get(operation);
+    if (pending === undefined || pending.kind !== "connect") {
+      return BigInt(HOST_INVALID);
+    }
+    if (pending.state === "pending") {
+      return BigInt(HOST_PENDING);
+    }
+    this.operations.delete(operation);
+    if (pending.result > 0n) {
+      this.transferToGuest(pending.handle);
+    }
+    return pending.result;
+  }
+
+  private completeConnect(operation: bigint, handle: bigint): void {
+    const pending = this.operations.get(operation);
+    if (
+      pending === undefined ||
+      pending.kind !== "connect" ||
+      pending.handle !== handle ||
+      pending.state !== "pending"
+    ) {
+      return;
+    }
+    this.operations.set(operation, {
+      ...pending,
+      state: "ready",
+      result: handle,
+    });
+    this.wakeGuest();
+  }
+
+  private failConnect(
+    operation: bigint,
+    handle: bigint,
+    status: number,
+  ): boolean {
+    const pending = this.operations.get(operation);
+    if (
+      pending === undefined ||
+      pending.kind !== "connect" ||
+      pending.handle !== handle
+    ) {
+      return false;
+    }
+    const state = this.sockets.get(handle);
+    if (state !== undefined) {
+      this.sockets.delete(handle);
+      this.totalQueuedBytes -= state.queuedBytes;
+      try {
+        state.socket.close(1011, "WebSocket connect failed");
+      } catch {
+        // The browser has already made the endpoint terminal.
+      }
+    }
+    this.operations.set(operation, {
+      ...pending,
+      state: "ready",
+      result: BigInt(status),
+    });
+    this.wakeGuest();
+    return true;
   }
 
   private startReceive(
@@ -360,13 +565,25 @@ export class WebSocketHost {
 
   private cancelOperation(operation: bigint): number {
     const pending = this.operations.get(operation);
-    if (pending?.kind === "receive" && pending.state === "pending") {
+    if (pending?.kind === "connect") {
+      const state = this.sockets.get(pending.handle);
+      if (state !== undefined) {
+        this.releaseSocket(
+          pending.handle,
+          state,
+          1000,
+          "WebSocket connect cancelled",
+        );
+      }
+    } else if (pending?.kind === "receive" && pending.state === "pending") {
       const state = this.sockets.get(pending.handle);
       if (state?.pendingReceive === operation) {
         state.pendingReceive = undefined;
       }
     } else if (pending?.kind === "receive") {
       this.removeQueuedBytesForHandle(pending.handle, pending.message);
+    } else if (pending?.kind === "tcp-port-lease") {
+      this.tcpPortLeases.delete(pending.handle);
     }
     this.operations.delete(operation);
     return 0;
@@ -374,6 +591,9 @@ export class WebSocketHost {
 
   private closeHandle(handle: bigint): number {
     if (handle === PACKET_SINK_HANDLE) {
+      return 0;
+    }
+    if (this.tcpPortLeases.delete(handle)) {
       return 0;
     }
     const state = this.sockets.get(handle);
@@ -521,7 +741,10 @@ export class WebSocketHost {
   }
 
   private allocateHandle(): bigint {
-    while (this.sockets.has(this.nextHandle)) {
+    while (
+      this.sockets.has(this.nextHandle) ||
+      this.tcpPortLeases.has(this.nextHandle)
+    ) {
       this.nextHandle += 1n;
       if (this.nextHandle === 0n) {
         this.nextHandle = FIRST_WEBSOCKET_HANDLE;
@@ -530,6 +753,98 @@ export class WebSocketHost {
     const handle = this.nextHandle;
     this.nextHandle += 1n;
     return handle;
+  }
+
+  private startTcpBind(
+    operation: bigint,
+    optionsPointer: number,
+    optionsLength: number,
+  ): number {
+    if (this.outboundFactory === undefined) {
+      return HOST_UNSUPPORTED;
+    }
+    if (this.operations.has(operation) || optionsLength < 48) {
+      return HOST_INVALID;
+    }
+    let options: Uint8Array;
+    try {
+      options = this.memoryBytes(optionsPointer, optionsLength);
+    } catch {
+      return HOST_INVALID;
+    }
+    if (options.byteLength < 48 || options[0] !== 2) {
+      return HOST_INVALID;
+    }
+    const netnsLength = new DataView(
+      options.buffer,
+      options.byteOffset,
+      options.byteLength,
+    ).getUint32(35, false);
+    const purposeOffset = 42 + netnsLength;
+    if (
+      purposeOffset >= options.byteLength ||
+      options[purposeOffset] !== 6 ||
+      options[1] !== 4 ||
+      options.subarray(2, 18).some((byte) => byte !== 0)
+    ) {
+      return HOST_UNSUPPORTED;
+    }
+    const requestedPort = new DataView(
+      options.buffer,
+      options.byteOffset,
+      options.byteLength,
+    ).getUint16(18, false);
+    const port = this.allocateTcpPort(requestedPort);
+    if (port === undefined) {
+      return HOST_INVALID;
+    }
+    const handle = this.allocateHandle();
+    this.tcpPortLeases.set(handle, port);
+    this.operations.set(operation, {
+      kind: "tcp-port-lease",
+      handle,
+      port,
+      state: "ready",
+    });
+    return 0;
+  }
+
+  private takeTcpBind(
+    operation: bigint,
+    destination: number,
+    capacity: number,
+  ): number {
+    const pending = this.operations.get(operation);
+    if (
+      pending === undefined ||
+      pending.kind !== "tcp-port-lease" ||
+      capacity < 35
+    ) {
+      return HOST_INVALID;
+    }
+    const encoded = this.memoryBytes(destination, capacity);
+    encoded.subarray(0, 35).fill(0);
+    const view = new DataView(encoded.buffer, encoded.byteOffset, 35);
+    view.setBigUint64(0, pending.handle, false);
+    encoded[8] = 4;
+    view.setUint16(25, pending.port, false);
+    this.operations.delete(operation);
+    return 0;
+  }
+
+  private allocateTcpPort(requestedPort: number): number | undefined {
+    const leasedPorts = new Set(this.tcpPortLeases.values());
+    if (requestedPort !== 0) {
+      return leasedPorts.has(requestedPort) ? undefined : requestedPort;
+    }
+    for (let attempts = 0; attempts < 16_384; attempts += 1) {
+      const port = this.nextTcpPort;
+      this.nextTcpPort = port === 65_535 ? 49_152 : port + 1;
+      if (!leasedPorts.has(port)) {
+        return port;
+      }
+    }
+    return undefined;
   }
 
   private requireSocket(handle: bigint): WebSocketState {

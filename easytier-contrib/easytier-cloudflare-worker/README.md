@@ -57,6 +57,24 @@ The deployment requires a Workers runtime with WebAssembly JSPI support. The
 `/runtime-capabilities` endpoint reports whether both
 `WebAssembly.Suspending` and `WebAssembly.promising` are available.
 
+## Browser client
+
+The same host ABI also has an outbound-only browser profile. It dials EasyTier
+`ws://` or `wss://` peers with the browser WebSocket API and keeps the smoltcp
+TCP data plane inside Wasm; it does not attempt native DNS, socket listeners,
+STUN, hole punching, TUN, or host packet forwarding.
+
+Build the browser Wasm and the smoke page with:
+
+```sh
+pnpm build:browser-wasm
+pnpm build:browser-smoke
+```
+
+Serve this directory over localhost or HTTPS and open `browser/index.html` to
+exercise raw EasyTier TCP through a WebSocket relay. Browsers must provide
+WebAssembly JSPI.
+
 ## Configure
 
 `wrangler.jsonc` contains a non-production test network so local development

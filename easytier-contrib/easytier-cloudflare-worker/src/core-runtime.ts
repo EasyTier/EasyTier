@@ -1,7 +1,13 @@
 import { WasiClock } from "./wasi-clock";
 import { WasiPreview1 } from "./wasi-preview1";
 import {
+  EasyTierDataPlane,
+  type DataPlaneExportName,
+  type EasyTierTcpStream,
+} from "./data-plane";
+import {
   WebSocketHost,
+  type EasyTierCoreEvent,
   type HostWebSocketMetadata,
   type WebSocketHostHealth,
 } from "./websocket-host";
@@ -9,6 +15,7 @@ import {
 const CORE_CONFIG_VERSION = 14;
 const HOST_WEBSOCKET_ABI_VERSION = 1;
 const PACKET_SINK_HANDLE = 1n;
+const EVENT_SINK_HANDLE = 2n;
 const INSTANCE_RUNNING = 2;
 const NO_DEADLINE = 0x7fff_ffff_ffff_ffffn;
 const MAX_ZERO_DEADLINE_DRIVES = 64;
@@ -18,7 +25,7 @@ type WasmValue = number | bigint;
 type WasmCallable = (...parameters: WasmValue[]) => WasmValue;
 type PromisingExport = (...parameters: WasmValue[]) => Promise<WasmValue>;
 
-interface CoreExports extends WebAssembly.Exports {
+interface CoreExports {
   memory: WebAssembly.Memory;
   _start: WasmCallable;
   easytier_buffer_alloc: WasmCallable;
@@ -33,6 +40,18 @@ interface CoreExports extends WebAssembly.Exports {
   easytier_instance_error_copy: WasmCallable;
   easytier_host_websocket_abi_version: WasmCallable;
   easytier_instance_accept_websocket: WasmCallable;
+  easytier_data_plane_abi_version?: WasmCallable;
+  easytier_data_plane_capabilities?: WasmCallable;
+  easytier_data_plane_tcp_connect_submit?: WasmCallable;
+  easytier_data_plane_tcp_read_submit?: WasmCallable;
+  easytier_data_plane_tcp_write_submit?: WasmCallable;
+  easytier_data_plane_completion_drain?: WasmCallable;
+  easytier_data_plane_result_size?: WasmCallable;
+  easytier_data_plane_tcp_connect_result_take?: WasmCallable;
+  easytier_data_plane_tcp_read_result_take?: WasmCallable;
+  easytier_data_plane_tcp_write_result_take?: WasmCallable;
+  easytier_data_plane_operation_free?: WasmCallable;
+  easytier_data_plane_resource_close?: WasmCallable;
 }
 
 interface PromisingCoreExports {
@@ -49,6 +68,18 @@ interface PromisingCoreExports {
   errorCopy: PromisingExport;
   websocketAbiVersion: PromisingExport;
   acceptWebSocket: PromisingExport;
+  dataPlaneAbiVersion?: PromisingExport;
+  dataPlaneCapabilities?: PromisingExport;
+  dataPlaneTcpConnectSubmit?: PromisingExport;
+  dataPlaneTcpReadSubmit?: PromisingExport;
+  dataPlaneTcpWriteSubmit?: PromisingExport;
+  dataPlaneCompletionDrain?: PromisingExport;
+  dataPlaneResultSize?: PromisingExport;
+  dataPlaneTcpConnectResultTake?: PromisingExport;
+  dataPlaneTcpReadResultTake?: PromisingExport;
+  dataPlaneTcpWriteResultTake?: PromisingExport;
+  dataPlaneOperationFree?: PromisingExport;
+  dataPlaneResourceClose?: PromisingExport;
 }
 
 export interface CoreHealth extends WebSocketHostHealth {
@@ -57,7 +88,7 @@ export interface CoreHealth extends WebSocketHostHealth {
 }
 
 export class EasyTierRuntime {
-  readonly host = new WebSocketHost();
+  readonly host: WebSocketHost;
   readonly ready: Promise<void>;
 
   private instanceHandle = 0n;
@@ -67,14 +98,20 @@ export class EasyTierRuntime {
   private serial = Promise.resolve();
   private timer: ReturnType<typeof setTimeout> | undefined;
   private timerGeneration = 0;
+  private timerDueAt: number | undefined;
+  private armRequest = 0;
   private pumpQueued = false;
   private completionRequested = false;
   private lastError: unknown;
+  private dataPlane: EasyTierDataPlane | undefined;
 
   constructor(
     private readonly module: WebAssembly.Module,
     private readonly config: string,
+    outboundWebSocketFactory?: (url: string) => WebSocket,
+    onEvent?: (event: EasyTierCoreEvent) => void,
   ) {
+    this.host = new WebSocketHost(outboundWebSocketFactory, onEvent);
     this.ready = this.enqueue(() => this.initialize());
     this.host.setWakeGuest(() => this.requestHostCompletion());
   }
@@ -130,6 +167,18 @@ export class EasyTierRuntime {
     }));
   }
 
+  async connectTcp(
+    ipv4: string,
+    port: number,
+    timeoutMilliseconds?: number,
+  ): Promise<EasyTierTcpStream> {
+    await this.ready;
+    if (this.dataPlane === undefined) {
+      throw new Error("this EasyTier guest does not include the data plane");
+    }
+    return this.dataPlane.connectTcp(ipv4, port, timeoutMilliseconds);
+  }
+
   private async initialize(): Promise<void> {
     if (
       typeof WebAssembly.Suspending !== "function" ||
@@ -143,7 +192,7 @@ export class EasyTierRuntime {
       if (instance === undefined) {
         throw new Error("Wasm instance is not initialized");
       }
-      return (instance.exports as CoreExports).memory;
+      return (instance.exports as unknown as CoreExports).memory;
     });
     const wasi = new WasiPreview1(clock);
 
@@ -151,7 +200,7 @@ export class EasyTierRuntime {
       wasi_snapshot_preview1: wasi.imports,
       easytier_host: this.host.imports,
     });
-    const raw = instance.exports as CoreExports;
+    const raw = instance.exports as unknown as CoreExports;
     this.memory = raw.memory;
     this.host.bindMemory(raw.memory);
     wasi.bindMemory(raw.memory);
@@ -188,6 +237,7 @@ export class EasyTierRuntime {
           configPointer,
           createConfig.byteLength,
           PACKET_SINK_HANDLE,
+          EVENT_SINK_HANDLE,
         ]),
       );
     } finally {
@@ -195,6 +245,32 @@ export class EasyTierRuntime {
     }
     if (this.instanceHandle === 0n) {
       throw new Error(await this.instanceError("core instance creation"));
+    }
+    if (this.exports.dataPlaneAbiVersion !== undefined) {
+      this.dataPlane = new EasyTierDataPlane({
+        instanceHandle: this.instanceHandle,
+        call: (name, parameters) => this.call(name, parameters),
+        allocate: async (length) => {
+          const pointer = Number(await this.call("bufferAlloc", [length]));
+          if (pointer === 0) {
+            throw new Error("guest buffer allocation failed");
+          }
+          return pointer;
+        },
+        free: async (pointer) => {
+          await this.call("bufferFree", [pointer]);
+        },
+        copyIntoGuest: (bytes) => this.copyIntoGuest(bytes),
+        readGuest: (pointer, length) =>
+          new Uint8Array(this.requireMemory().buffer, pointer, length).slice(),
+        instanceError: (context) => this.instanceError(context),
+        runExclusive: (operation) => this.enqueue(operation),
+        drive: async () => {
+          await this.driveUntilIdle();
+          this.armNextDrive();
+        },
+      });
+      await this.dataPlane.initialize();
     }
     const startStatus = Number(
       await this.call("instanceStart", [this.instanceHandle]),
@@ -290,6 +366,7 @@ export class EasyTierRuntime {
       if (state < 0) {
         throw new Error(await this.instanceError(`core drive (${state})`));
       }
+      await this.dataPlane?.drainCompletions();
       const deadline = BigInt(
         await this.call("nextDeadlineMillis", [this.instanceHandle]),
       );
@@ -300,38 +377,54 @@ export class EasyTierRuntime {
   }
 
   private armNextDrive(): void {
-    const generation = ++this.timerGeneration;
-    if (this.timer !== undefined) {
-      clearTimeout(this.timer);
-      this.timer = undefined;
-    }
+    const request = ++this.armRequest;
     void this.enqueue(async () => {
-      if (generation !== this.timerGeneration) {
+      if (request !== this.armRequest) {
         return;
       }
       const deadline = BigInt(
         await this.call("nextDeadlineMillis", [this.instanceHandle]),
       );
-      if (generation !== this.timerGeneration) {
+      if (request !== this.armRequest) {
         return;
       }
       if (deadline === NO_DEADLINE) {
+        if (this.timer !== undefined) {
+          clearTimeout(this.timer);
+          this.timer = undefined;
+          this.timerDueAt = undefined;
+          this.timerGeneration += 1;
+        }
         return;
       }
       const milliseconds = Number(
         deadline > 2_147_483_647n ? 2_147_483_647n : deadline,
       );
+      const dueAt = Date.now() + milliseconds;
+      if (
+        this.timer !== undefined &&
+        this.timerDueAt !== undefined &&
+        this.timerDueAt <= dueAt
+      ) {
+        return;
+      }
+      if (this.timer !== undefined) {
+        clearTimeout(this.timer);
+      }
+      const generation = ++this.timerGeneration;
       const timer = setTimeout(() => {
         if (generation !== this.timerGeneration) {
           return;
         }
         if (this.timer === timer) {
           this.timer = undefined;
+          this.timerDueAt = undefined;
         }
-        this.clock?.advanceMillis(milliseconds);
+        this.clock?.syncWallTime();
         this.queuePump();
       }, milliseconds);
       this.timer = timer;
+      this.timerDueAt = dueAt;
     }).catch((error: unknown) => {
       this.lastError = error;
       console.error(
@@ -346,6 +439,10 @@ export class EasyTierRuntime {
   private wrapExports(raw: CoreExports): PromisingCoreExports {
     const wrap = (callable: WasmCallable): PromisingExport =>
       WebAssembly.promising(callable) as PromisingExport;
+    const wrapOptional = (
+      callable: WasmCallable | undefined,
+    ): PromisingExport | undefined =>
+      callable === undefined ? undefined : wrap(callable);
     return {
       start: wrap(raw._start),
       bufferAlloc: wrap(raw.easytier_buffer_alloc),
@@ -360,6 +457,38 @@ export class EasyTierRuntime {
       errorCopy: wrap(raw.easytier_instance_error_copy),
       websocketAbiVersion: wrap(raw.easytier_host_websocket_abi_version),
       acceptWebSocket: wrap(raw.easytier_instance_accept_websocket),
+      dataPlaneAbiVersion: wrapOptional(raw.easytier_data_plane_abi_version),
+      dataPlaneCapabilities: wrapOptional(
+        raw.easytier_data_plane_capabilities,
+      ),
+      dataPlaneTcpConnectSubmit: wrapOptional(
+        raw.easytier_data_plane_tcp_connect_submit,
+      ),
+      dataPlaneTcpReadSubmit: wrapOptional(
+        raw.easytier_data_plane_tcp_read_submit,
+      ),
+      dataPlaneTcpWriteSubmit: wrapOptional(
+        raw.easytier_data_plane_tcp_write_submit,
+      ),
+      dataPlaneCompletionDrain: wrapOptional(
+        raw.easytier_data_plane_completion_drain,
+      ),
+      dataPlaneResultSize: wrapOptional(raw.easytier_data_plane_result_size),
+      dataPlaneTcpConnectResultTake: wrapOptional(
+        raw.easytier_data_plane_tcp_connect_result_take,
+      ),
+      dataPlaneTcpReadResultTake: wrapOptional(
+        raw.easytier_data_plane_tcp_read_result_take,
+      ),
+      dataPlaneTcpWriteResultTake: wrapOptional(
+        raw.easytier_data_plane_tcp_write_result_take,
+      ),
+      dataPlaneOperationFree: wrapOptional(
+        raw.easytier_data_plane_operation_free,
+      ),
+      dataPlaneResourceClose: wrapOptional(
+        raw.easytier_data_plane_resource_close,
+      ),
     };
   }
 
@@ -407,7 +536,7 @@ export class EasyTierRuntime {
   }
 
   private call(
-    name: keyof PromisingCoreExports,
+    name: keyof PromisingCoreExports | DataPlaneExportName,
     parameters: Array<number | bigint>,
   ): Promise<number | bigint> {
     if (this.lastError !== undefined) {

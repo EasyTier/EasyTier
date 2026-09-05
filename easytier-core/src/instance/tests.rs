@@ -3071,4 +3071,38 @@ virtual_ip = "10.82.0.2/24"
         );
     }
 
+
+    #[tokio::test]
+    async fn outbound_only_ignores_configured_and_host_registered_listeners() {
+        let configured_url: Url = "unix:///tmp/easytier-outbound-configured-listener"
+            .parse()
+            .unwrap();
+        let host_url: Url = "unix:///tmp/easytier-outbound-host-listener"
+            .parse()
+            .unwrap();
+        let mut config = test_config("outbound-only-listeners");
+        config.connectivity.startup_plan.connectivity = CoreConnectivityMode::OutboundOnly;
+        config.connectivity.listeners = Some(ListenerRuntimeConfig::new(
+            vec![configured_url],
+            false,
+            SocketContext::default(),
+        ));
+        let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+        let mut adapters = adapters(
+            Some(Arc::new(ReadyExternalListenerFactory)),
+            Arc::new(packet_sink),
+        );
+        adapters
+            .host_listener_registrations
+            .push(ExternalListenerRequest {
+                url: host_url,
+                socket_context: SocketContext::default(),
+            });
+        let instance = CoreInstance::new(config, adapters).unwrap();
+
+        instance.start().await.unwrap();
+        assert!(instance.running_listeners().is_empty());
+
+        instance.stop().await;
+    }
 }

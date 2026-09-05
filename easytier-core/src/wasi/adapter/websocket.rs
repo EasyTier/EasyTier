@@ -2,22 +2,19 @@
 
 use std::{
     collections::HashMap,
-    fmt, io,
-    marker::PhantomData,
+    io,
     sync::{Arc, Mutex},
     task::Poll,
 };
+
+#[cfg(not(feature = "wasm-host-websocket-outbound"))]
+use std::{fmt, marker::PhantomData};
 
 use crate::{
     host::{
         socket::{HostOperationId, HostSocketHandle, HostSocketIo},
         websocket::{HostWebSocketIo, HostWebSocketMessage},
     },
-    listener::{
-        ExternalListenerFactory, ExternalListenerRequest, queue::HostListenerQueue,
-        transport::AcceptedTransport,
-    },
-    socket::{SocketListener, tcp::VirtualTcpSocket},
     tunnel::Tunnel,
     wasi::{
         imports::{
@@ -29,6 +26,21 @@ use crate::{
     },
 };
 
+#[cfg(not(feature = "wasm-host-websocket-outbound"))]
+use crate::{
+    listener::{
+        ExternalListenerFactory, ExternalListenerRequest, queue::HostListenerQueue,
+        transport::AcceptedTransport,
+    },
+    socket::{SocketListener, tcp::VirtualTcpSocket},
+};
+
+#[cfg(feature = "wasm-host-websocket-outbound")]
+use crate::connectivity::manual::ExternalTunnelConnector;
+#[cfg(feature = "wasm-host-websocket-outbound")]
+use crate::wasi::imports::{start_websocket_connect, take_websocket_connect};
+
+#[cfg(not(feature = "wasm-host-websocket-outbound"))]
 const MAX_PENDING_HOST_WEBSOCKETS: usize = 256;
 
 #[derive(Default)]
@@ -157,20 +169,89 @@ impl HostWebSocketIo for WasiHostWebSocketIo {
     }
 }
 
+#[cfg(feature = "wasm-host-websocket-outbound")]
+pub(crate) struct WasiHostWebSocketConnector {
+    runtime: crate::host::socket::HostSocketRuntime,
+    io: Arc<WasiHostWebSocketIo>,
+}
+
+#[cfg(feature = "wasm-host-websocket-outbound")]
+impl WasiHostWebSocketConnector {
+    pub(crate) fn new(
+        runtime: crate::host::socket::HostSocketRuntime,
+        io: Arc<WasiHostWebSocketIo>,
+    ) -> Self {
+        Self { runtime, io }
+    }
+}
+
+#[cfg(feature = "wasm-host-websocket-outbound")]
+#[async_trait::async_trait]
+impl ExternalTunnelConnector for WasiHostWebSocketConnector {
+    fn supports_scheme(&self, scheme: &str) -> bool {
+        matches!(scheme, "ws" | "wss")
+    }
+
+    async fn connect(&self, url: &url::Url) -> anyhow::Result<Box<dyn Tunnel>> {
+        let encoded = url.as_str().as_bytes();
+        let encoded_len = u32::try_from(encoded.len())
+            .map_err(|_| anyhow::anyhow!("host WebSocket URL exceeds WASI guest memory"))?;
+        let handle = self
+            .runtime
+            .run_operation(
+                self.io.clone(),
+                |_, operation| {
+                    status("start_websocket_connect", unsafe {
+                        start_websocket_connect(operation.0, encoded.as_ptr() as u32, encoded_len)
+                    })
+                },
+                |_, operation| match unsafe { take_websocket_connect(operation.0) } {
+                    value if value == i64::from(HOST_PENDING) => Poll::Pending,
+                    value if value > 0 => Poll::Ready(Ok(HostSocketHandle(value as u64))),
+                    value => Poll::Ready(Err(host_error(
+                        "take_websocket_connect",
+                        i32::try_from(value).unwrap_or(i32::MIN),
+                    ))),
+                },
+                |io, operation| io.cancel_operation(operation),
+            )
+            .await?;
+        let local_url = url::Url::parse(&format!("{}://0.0.0.0:0", url.scheme()))?;
+        Ok(crate::tunnel::host_websocket::new_host_websocket_tunnel(
+            self.runtime.clone(),
+            self.io.clone(),
+            handle,
+            local_url,
+            url.clone(),
+            None,
+        ))
+    }
+}
+
+#[cfg(not(feature = "wasm-host-websocket-outbound"))]
 type HostWebSocketTunnelQueue = HostListenerQueue<Box<dyn Tunnel>>;
 
 /// Owns the Host WebSocket I/O Adapter and its listener admission queue.
+#[cfg(not(feature = "wasm-host-websocket-outbound"))]
 pub(crate) struct WasiHostWebSocketIngress {
     runtime: crate::host::socket::HostSocketRuntime,
     io: Arc<WasiHostWebSocketIo>,
     queue: Arc<HostWebSocketTunnelQueue>,
 }
 
+#[cfg(not(feature = "wasm-host-websocket-outbound"))]
 impl WasiHostWebSocketIngress {
     pub(crate) fn new(runtime: crate::host::socket::HostSocketRuntime) -> Self {
+        Self::with_io(runtime, Arc::new(WasiHostWebSocketIo::default()))
+    }
+
+    pub(crate) fn with_io(
+        runtime: crate::host::socket::HostSocketRuntime,
+        io: Arc<WasiHostWebSocketIo>,
+    ) -> Self {
         Self {
             runtime,
-            io: Arc::new(WasiHostWebSocketIo::default()),
+            io,
             queue: Arc::new(HostListenerQueue::new(MAX_PENDING_HOST_WEBSOCKETS)),
         }
     }
@@ -210,10 +291,12 @@ impl WasiHostWebSocketIngress {
     }
 }
 
+#[cfg(not(feature = "wasm-host-websocket-outbound"))]
 struct WasiHostWebSocketListenerFactory {
     queue: Arc<HostWebSocketTunnelQueue>,
 }
 
+#[cfg(not(feature = "wasm-host-websocket-outbound"))]
 impl<TcpSocket> ExternalListenerFactory<AcceptedTransport<TcpSocket>>
     for WasiHostWebSocketListenerFactory
 where
@@ -236,6 +319,7 @@ where
     }
 }
 
+#[cfg(not(feature = "wasm-host-websocket-outbound"))]
 struct WasiHostWebSocketListener<TcpSocket> {
     registered: bool,
     queue: Arc<HostWebSocketTunnelQueue>,
@@ -243,6 +327,7 @@ struct WasiHostWebSocketListener<TcpSocket> {
     tcp_socket: PhantomData<fn() -> TcpSocket>,
 }
 
+#[cfg(not(feature = "wasm-host-websocket-outbound"))]
 impl<TcpSocket> fmt::Debug for WasiHostWebSocketListener<TcpSocket> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -254,6 +339,7 @@ impl<TcpSocket> fmt::Debug for WasiHostWebSocketListener<TcpSocket> {
 }
 
 #[async_trait::async_trait]
+#[cfg(not(feature = "wasm-host-websocket-outbound"))]
 impl<TcpSocket> SocketListener for WasiHostWebSocketListener<TcpSocket>
 where
     TcpSocket: VirtualTcpSocket,
@@ -284,6 +370,7 @@ where
     }
 }
 
+#[cfg(not(feature = "wasm-host-websocket-outbound"))]
 impl<TcpSocket> Drop for WasiHostWebSocketListener<TcpSocket> {
     fn drop(&mut self) {
         if self.registered {

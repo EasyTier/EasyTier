@@ -154,7 +154,8 @@ fn default_true() -> bool {
 pub struct CoreInstanceStartupPlan {
     #[serde(default = "default_true")]
     pub gateway: bool,
-
+    #[serde(default = "default_true")]
+    pub packet_proxy: bool,
     #[serde(default)]
     pub connectivity: CoreConnectivityMode,
 }
@@ -169,6 +170,7 @@ impl Default for CoreInstanceStartupPlan {
     fn default() -> Self {
         Self {
             gateway: true,
+            packet_proxy: true,
             connectivity: CoreConnectivityMode::Full,
         }
     }
@@ -180,6 +182,8 @@ impl Default for CoreInstanceStartupPlan {
 pub enum CoreConnectivityMode {
     #[default]
     Full,
+    /// Dial configured peers without listeners, discovery, or direct connectivity.
+    OutboundOnly,
     /// Accept Host-registered listeners without constructing outbound socket Modules.
     InboundOnly,
 }
@@ -548,8 +552,11 @@ where
             foreign_rpc_registrar,
         )?);
         let config = config.connectivity;
+        let configured_listeners = (connectivity_mode != CoreConnectivityMode::OutboundOnly)
+            .then_some(config.listeners.as_ref())
+            .flatten();
         let listener_plan = prepare_listener_plan(
-            config.listeners.as_ref(),
+            configured_listeners,
             peer_manager.instance_id(),
             adapters.server_protocol.as_deref(),
             adapters.external_listener_factory.as_deref(),
@@ -583,6 +590,12 @@ where
             #[cfg(feature = "vpn-portal")]
             vpn_portal,
         } = adapters;
+        let host_listener_registrations = if connectivity_mode == CoreConnectivityMode::OutboundOnly
+        {
+            Vec::new()
+        } else {
+            host_listener_registrations
+        };
         let dns_records: Arc<dyn DnsRecordResolver> = dns.clone();
         let dns: Arc<dyn DnsResolver> = dns;
         let ring_registry = process_runtime.ring_registry();
@@ -666,7 +679,7 @@ where
                 running_listeners.clone(),
             ))
         });
-        let protocol = (connectivity_mode == CoreConnectivityMode::Full).then(|| {
+        let protocol = (connectivity_mode != CoreConnectivityMode::InboundOnly).then(|| {
             protocol.unwrap_or_else(|| {
                 Arc::new(CoreClientProtocolUpgrader::new(
                     CoreClientProtocolConfig::default(),
@@ -697,17 +710,20 @@ where
         } else {
             None
         };
-        let udp_hole_punch = protocol.as_ref().map(|protocol| {
-            CoreUdpHolePunchService::new(
-                peer_manager.clone(),
-                host.clone(),
-                stun.as_ref().unwrap().clone(),
-                udp_hole_punch_platform,
-                events.clone(),
-                direct_options.udp_bind.context.clone(),
-                protocol.clone(),
-            )
-        });
+        let udp_hole_punch = stun
+            .as_ref()
+            .zip(protocol.as_ref())
+            .map(|(stun, protocol)| {
+                CoreUdpHolePunchService::new(
+                    peer_manager.clone(),
+                    host.clone(),
+                    stun.clone(),
+                    udp_hole_punch_platform,
+                    events.clone(),
+                    direct_options.udp_bind.context.clone(),
+                    protocol.clone(),
+                )
+            });
         let proxy_cidr_table = Arc::new(ProxyCidrTable::from_snapshot(proxy_cidr_snapshot(
             runtime_config.snapshot().as_ref(),
         )));
@@ -769,20 +785,23 @@ where
             events.clone(),
         );
         #[cfg(feature = "tcp-hole-punch")]
-        let tcp_hole_punch = protocol.as_ref().map(|protocol| {
-            TcpHolePunchConnector::new(
-                peer_manager.clone(),
-                host.clone(),
-                stun.as_ref().unwrap().clone(),
-                direct_options.tcp_bind.context.clone(),
-                protocol.clone(),
-                Arc::new(crate::connectivity::protocol::CoreServerProtocolUpgrader::<
-                    HostAcceptedTcpSocket<H>,
-                >::new(
-                    crate::connectivity::protocol::CoreServerProtocolConfig::default(),
-                )),
-            )
-        });
+        let tcp_hole_punch = stun
+            .as_ref()
+            .zip(protocol.as_ref())
+            .map(|(stun, protocol)| {
+                TcpHolePunchConnector::new(
+                    peer_manager.clone(),
+                    host.clone(),
+                    stun.clone(),
+                    direct_options.tcp_bind.context.clone(),
+                    protocol.clone(),
+                    Arc::new(crate::connectivity::protocol::CoreServerProtocolUpgrader::<
+                        HostAcceptedTcpSocket<H>,
+                    >::new(
+                        crate::connectivity::protocol::CoreServerProtocolConfig::default(),
+                    )),
+                )
+            });
         let direct = match (stun, protocol) {
             (Some(stun), Some(protocol)) => {
                 Some(DirectConnectorManager::new_with_running_listeners(
@@ -796,8 +815,7 @@ where
                     direct_options,
                 ))
             }
-            (None, None) => None,
-            _ => unreachable!("outbound connectivity Modules are composed together"),
+            _ => None,
         };
         let peer_center = Arc::new(PeerCenterInstance::new(peer_manager.clone()));
         #[cfg(feature = "public-ipv6-provider")]

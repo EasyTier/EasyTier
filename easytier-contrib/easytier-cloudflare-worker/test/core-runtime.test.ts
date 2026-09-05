@@ -37,6 +37,8 @@ describe("EasyTierRuntime timer ownership", () => {
       serial: Promise.resolve(),
       timer: undefined,
       timerGeneration: 0,
+      timerDueAt: undefined,
+      armRequest: 0,
     });
 
     runtime.armNextDrive();
@@ -44,6 +46,47 @@ describe("EasyTierRuntime timer ownership", () => {
     await runtime.serial;
 
     expect(vi.getTimerCount()).toBe(1);
+  });
+
+  it("does not postpone an earlier deadline when re-armed", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    let pumpCount = 0;
+    const clock = {
+      advanceMillis: vi.fn(),
+      syncWallTime: vi.fn(),
+    };
+    const runtime = Object.create(
+      EasyTierRuntime.prototype,
+    ) as RuntimeHarness;
+    Object.assign(runtime, {
+      call: async (name: string) =>
+        name === "nextDeadlineMillis" ? 1000n : 0,
+      instanceHandle: 1n,
+      lastError: undefined,
+      serial: Promise.resolve(),
+      timer: undefined,
+      timerGeneration: 0,
+      timerDueAt: undefined,
+      armRequest: 0,
+      clock,
+      queuePump: () => {
+        pumpCount += 1;
+      },
+    });
+
+    runtime.armNextDrive();
+    await runtime.serial;
+    await vi.advanceTimersByTimeAsync(100);
+    runtime.armNextDrive();
+    await runtime.serial;
+
+    await vi.advanceTimersByTimeAsync(899);
+    expect(pumpCount).toBe(0);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(pumpCount).toBe(1);
+    expect(clock.syncWallTime).toHaveBeenCalledOnce();
+    expect(clock.advanceMillis).not.toHaveBeenCalled();
   });
 });
 
