@@ -1,5 +1,4 @@
 use crate::config::storage::config_meta::{now_ts_string, open_db};
-use ohos_hilog_binding::hilog_error;
 use rusqlite::{Connection, params};
 use serde_json::{Map, Value};
 
@@ -43,7 +42,7 @@ pub(super) fn replace_config_fields(
         "DELETE FROM stored_config_fields WHERE config_id = ?1",
         params![config_id],
     ) {
-        hilog_error!(
+        ohrs_log_error!(
             "[Rust] failed to clear existing config fields {}: {}",
             config_id,
             e
@@ -58,7 +57,7 @@ pub(super) fn replace_config_fields(
              VALUES (?1, ?2, ?3, ?4)",
             params![config_id, field_name, field_json, now_ts_string()],
         ) {
-            hilog_error!("[Rust] failed to persist config field {}: {}", config_id, e);
+            ohrs_log_error!("[Rust] failed to persist config field {}: {}", config_id, e);
             return None;
         }
     }

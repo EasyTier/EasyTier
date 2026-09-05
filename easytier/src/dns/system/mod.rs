@@ -1,16 +1,13 @@
 #[allow(unused_imports)]
 use crate::utils::BoxExt;
 
-#[cfg(target_os = "linux")]
-pub mod linux;
-
 #[cfg(target_os = "windows")]
 pub mod windows;
 
 #[cfg(all(target_os = "macos", not(feature = "macos-ne")))]
 pub mod macos;
 
-#[derive(Default, Debug)]
+#[derive(Clone, Default, Debug, PartialEq, Eq)]
 pub struct SystemConfig {
     pub nameservers: Vec<String>,
     pub search_domains: Vec<String>,

@@ -16,6 +16,7 @@ pub struct ProxyRpcRequest {
     pub service_name: String,
     pub method_name: String,
     pub payload: serde_json::Value,
+    pub scope: Option<String>,
 }
 
 macro_rules! match_service {
@@ -35,7 +36,15 @@ async fn handle_proxy_rpc_by_session(
         service_name,
         method_name,
         payload,
+        scope,
     } = req;
+
+    let mutates_runtime_config = proxy_rpc_mutates_runtime_config(&service_name, &method_name);
+    if mutates_runtime_config {
+        session
+            .invalidate_runtime_config_for_direct_mutation()
+            .await;
+    }
 
     let resp = match service_name.as_str() {
         "api.manage.WebClientService" => match_service!(
@@ -74,12 +83,20 @@ async fn handle_proxy_rpc_by_session(
             payload,
             session
         ),
-        "api.instance.TcpProxyRpcService" => match_service!(
-            easytier::proto::api::instance::TcpProxyRpcClientFactory<BaseController>,
-            method_name,
-            payload,
-            session
-        ),
+        "api.instance.TcpProxyRpcService" => {
+            let client = if let Some(ref domain) = scope {
+                session.scoped_client_with_domain::<
+                    easytier::proto::api::instance::TcpProxyRpcClientFactory<BaseController>,
+                >(domain.clone())
+            } else {
+                session.scoped_client::<
+                    easytier::proto::api::instance::TcpProxyRpcClientFactory<BaseController>,
+                >()
+            };
+            client
+                .json_call_method(BaseController::default(), &method_name, payload)
+                .await
+        }
         "api.instance.AclManageRpcService" => match_service!(
             easytier::proto::api::instance::AclManageRpcClientFactory<BaseController>,
             method_name,
@@ -124,6 +141,12 @@ async fn handle_proxy_rpc_by_session(
         }
     };
 
+    if mutates_runtime_config {
+        session
+            .invalidate_runtime_config_for_direct_mutation()
+            .await;
+    }
+
     match resp {
         Ok(v) => Ok(Json(v)),
         Err(e) => Err((
@@ -131,6 +154,32 @@ async fn handle_proxy_rpc_by_session(
             other_error(format!("RPC Error: {:?}", e)).into(),
         )),
     }
+}
+
+fn proxy_rpc_mutates_runtime_config(service_name: &str, method_name: &str) -> bool {
+    matches!(
+        (service_name, method_name),
+        (
+            "api.manage.WebClientService",
+            "run_network_instance"
+                | "RunNetworkInstance"
+                | "retain_network_instance"
+                | "RetainNetworkInstance"
+                | "delete_network_instance"
+                | "DeleteNetworkInstance"
+        ) | (
+            "api.config.ConfigRpcService",
+            "patch_config" | "PatchConfig"
+        ) | (
+            "api.instance.CredentialManageRpcService",
+            "generate_credential"
+                | "GenerateCredential"
+                | "revoke_credential"
+                | "RevokeCredential"
+                | "upsert_credential"
+                | "UpsertCredential"
+        )
+    )
 }
 
 pub async fn handle_proxy_rpc(
@@ -181,4 +230,51 @@ pub fn router_internal() -> Router<super::AppStateInner> {
         "/api/internal/users/:user-id/machines/:machine-id/proxy-rpc",
         post(handle_proxy_rpc_internal),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::proxy_rpc_mutates_runtime_config;
+
+    #[test]
+    fn runtime_config_mutation_detection_covers_proxy_rpc_aliases() {
+        for (service, method) in [
+            ("api.manage.WebClientService", "run_network_instance"),
+            ("api.manage.WebClientService", "RetainNetworkInstance"),
+            ("api.manage.WebClientService", "delete_network_instance"),
+            ("api.config.ConfigRpcService", "PatchConfig"),
+            (
+                "api.instance.CredentialManageRpcService",
+                "generate_credential",
+            ),
+            (
+                "api.instance.CredentialManageRpcService",
+                "RevokeCredential",
+            ),
+            (
+                "api.instance.CredentialManageRpcService",
+                "upsert_credential",
+            ),
+        ] {
+            assert!(
+                proxy_rpc_mutates_runtime_config(service, method),
+                "{service}/{method} must invalidate the managed revision fence"
+            );
+        }
+
+        for (service, method) in [
+            ("api.manage.WebClientService", "list_network_instance"),
+            ("api.config.ConfigRpcService", "get_config"),
+            (
+                "api.instance.CredentialManageRpcService",
+                "list_credentials",
+            ),
+            ("api.instance.StatsRpcService", "get_stats"),
+        ] {
+            assert!(
+                !proxy_rpc_mutates_runtime_config(service, method),
+                "{service}/{method} must remain read-only"
+            );
+        }
+    }
 }

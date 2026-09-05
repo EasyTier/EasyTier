@@ -12,6 +12,7 @@ use hickory_server::zone_handler::Catalog;
 use itertools::Itertools;
 use moka::future::Cache;
 use std::collections::HashSet;
+use std::sync::Arc;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Default)]
@@ -53,23 +54,44 @@ pub struct DnsNodeMgrDirtyFlags {
 #[derive(Debug)]
 pub struct DnsNodeMgr {
     nodes: Cache<Uuid, DnsNodeInfo>,
-    pub dirty: DnsNodeMgrDirtyFlags,
+    pub dirty: Arc<DnsNodeMgrDirtyFlags>,
 }
 
 impl DnsNodeMgr {
     pub fn new() -> Self {
+        let dirty = Arc::new(DnsNodeMgrDirtyFlags::default());
+        let evicted = dirty.clone();
         Self {
-            nodes: Cache::builder().time_to_idle(DNS_NODE_TTI).build(),
-            dirty: Default::default(),
+            nodes: Cache::builder()
+                .time_to_idle(DNS_NODE_TTI)
+                .eviction_listener(move |_, _, cause| {
+                    if cause != moka::notification::RemovalCause::Replaced {
+                        evicted.catalog.mark();
+                        evicted.addresses.mark();
+                        evicted.listeners.mark();
+                    }
+                })
+                .build(),
+            dirty,
         }
     }
 
+    /// Expiry must invalidate the materialized catalog even if no more
+    /// heartbeats arrive. Called by the server's periodic reconciliation.
+    pub async fn maintain(&self) {
+        self.nodes.run_pending_tasks().await;
+    }
+
     pub fn catalog(&self) -> Catalog {
-        let groups = self.collect_zones().into_groups();
+        let zones = self.collect_zones();
+        // collect_zones appends the system zone and removes our own listeners
+        // from its forwarders. Reuse it here: rebuilding an unfiltered system
+        // zone would reintroduce a forwarding loop after installing system DNS.
+        let system = zones.last().and_then(Zone::create_forward_zone_handler);
+        let groups = zones.into_groups();
 
         tracing::trace!("building catalog with zones: {:?}", groups);
 
-        let system = Zone::system().create_forward_zone_handler();
         groups
             .into_iter()
             .fold(Catalog::new(), |mut catalog, (origin, zones)| {
@@ -554,6 +576,13 @@ mod tests {
         assert!(!before_expiry.resync);
 
         sleep(DNS_NODE_TTI + Duration::from_millis(300)).await;
+
+        reset_all_dirty(&mgr);
+        mgr.maintain().await;
+        assert!(mgr.dirty.catalog.peek());
+        assert!(mgr.dirty.addresses.peek());
+        assert!(mgr.dirty.listeners.peek());
+        assert!(mgr.iter_addresses().next().is_none());
 
         let after_expiry = send_heartbeat(&mgr, heartbeat_digest_only(id, digest.into())).await;
         assert!(after_expiry.resync);

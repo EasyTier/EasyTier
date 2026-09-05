@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::io;
 
 use clap::Command;
@@ -9,21 +7,22 @@ mod arch;
 #[cfg(feature = "magic-dns")]
 mod dns;
 mod gateway;
+mod host_runtime;
 pub mod instance;
-mod peer_center;
 mod vpn_portal;
 
 pub mod common;
-pub mod connector;
+#[cfg(feature = "management")]
 pub mod core;
-pub mod instance_manager;
-pub mod launcher;
-pub mod peers;
 pub mod proto;
+#[cfg(feature = "management-rpc")]
 pub mod rpc_service;
+#[cfg(feature = "management")]
 pub mod service_manager;
+pub(crate) mod socket;
 pub mod tunnel;
 pub mod utils;
+#[cfg(feature = "web-client")]
 pub mod web_client;
 
 #[cfg(test)]

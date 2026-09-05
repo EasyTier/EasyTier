@@ -1,9 +1,10 @@
 pub mod config;
+pub(crate) mod host;
 pub mod node;
 mod node_mgr;
 mod peer_mgr;
 pub mod server;
-mod system;
+pub(crate) mod system;
 mod utils;
 mod zone;
 

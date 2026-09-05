@@ -5,18 +5,16 @@ use std::str::FromStr as _;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::common::config::ConfigLoader as _;
 use crate::common::config::TomlConfigLoader;
 use crate::common::global_ctx::GlobalCtx;
 use crate::common::global_ctx::tests::get_mock_global_ctx;
-use crate::connector::udp_hole_punch::tests::replace_stun_info_collector;
+use crate::dns::config::{DnsConfigLoaderExt, DnsGlobalCtxExt};
 use crate::dns::node::DnsNode;
 use crate::dns::peer_mgr::DnsPeerMgr;
-use crate::instance::instance::ArcNicCtx;
 use crate::instance::virtual_nic::NicCtx;
-use crate::peers::create_packet_recv_chan;
-use crate::peers::peer_manager::{PeerManager, RouteAlgoType};
-use crate::peers::tests::{connect_peer_manager, wait_route_appear};
-use crate::proto::common::{NatType, Url};
+use crate::proto::common::Url;
+use crate::proto::dns::ZoneDataExt;
 use crate::proto::dns::{DnsSnapshot, HeartbeatRequest, ZoneData};
 use cidr::Ipv4Inet;
 use hickory_net::client::{Client, ClientHandle};
@@ -32,72 +30,178 @@ use maplit::hashset;
 use tokio::sync::Notify;
 use uuid::Uuid;
 
-// TODO: move to system::tests
-pub async fn prepare_env(dns_name: &str, tun_ip: Ipv4Inet) -> (Arc<PeerManager>, NicCtx) {
-    prepare_env_with_tld_dns_zone(dns_name, tun_ip, None).await
+pub(crate) struct DnsTestPeer {
+    pub(crate) core: Arc<crate::instance::composition::NativeCoreInstance>,
+    ctx: crate::common::global_ctx::ArcGlobalCtx,
+    process: Arc<easytier_core::process_runtime::CoreProcessRuntime>,
 }
 
-pub async fn prepare_env_with_tld_dns_zone(
-    dns_name: &str,
-    tun_ip: Ipv4Inet,
-    tld_dns_zone: Option<&str>,
-) -> (Arc<PeerManager>, NicCtx) {
+impl DnsTestPeer {
+    pub(crate) fn get_global_ctx(&self) -> crate::common::global_ctx::ArcGlobalCtx {
+        self.ctx.clone()
+    }
+    pub(crate) fn access(&self) -> Arc<easytier_core::instance::CoreDnsPeerAccess> {
+        self.core.packet_plane().dns_peer_access()
+    }
+    fn my_peer_id(&self) -> u32 {
+        self.core.peer_id()
+    }
+    async fn list_routes(&self) -> Vec<easytier_proto::core_peer::peer::Route> {
+        self.core.route_snapshots().await
+    }
+    fn get_peer_map(&self) -> &Self {
+        self
+    }
+    async fn list_peer_conns(
+        &self,
+        peer_id: u32,
+    ) -> Option<Vec<easytier_proto::core_peer::peer::PeerConnInfo>> {
+        self.core
+            .peer_snapshots()
+            .await
+            .into_iter()
+            .find(|p| p.peer_id == peer_id)
+            .map(|p| p.conns)
+    }
+    async fn close_peer_conn(&self, peer_id: u32, conn_id: &Uuid) -> anyhow::Result<()> {
+        self.core
+            .close_peer_conn(peer_id, conn_id)
+            .await
+            .map_err(Into::into)
+    }
+}
+
+async fn build_test_peer(
+    ctx: crate::common::global_ctx::ArcGlobalCtx,
+) -> (
+    Arc<DnsTestPeer>,
+    easytier_core::host::packet::HostPacketReceiver,
+) {
+    use crate::instance::{
+        composition::{NativeCoreInstance, runtime_core_host_adapters},
+        config::test_core_instance_config,
+    };
+    use easytier_core::host::packet::{HostPacket, HostPacketChannelSink, HostPacketReceiver};
+    use easytier_core::process_runtime::CoreProcessRuntime;
+
+    static PROCESS: std::sync::OnceLock<Arc<CoreProcessRuntime>> = std::sync::OnceLock::new();
+    let process = PROCESS.get_or_init(CoreProcessRuntime::new).clone();
+    ctx.config
+        .set_listeners(vec![format!("ring://{}", Uuid::new_v4()).parse().unwrap()]);
+    let (sink, receiver) = tokio::sync::mpsc::channel::<HostPacket>(128);
+    let adapters = runtime_core_host_adapters(
+        ctx.clone(),
+        process.clone(),
+        Arc::new(HostPacketChannelSink::new(sink)),
+    );
+    let core = NativeCoreInstance::new(test_core_instance_config(&ctx), adapters).unwrap();
+    core.start().await.unwrap();
+    let peer = Arc::new(DnsTestPeer { core, ctx, process });
+    peer.access()
+        .publish_export(peer.ctx.try_dns_export_config().unwrap());
+    (peer, HostPacketReceiver::new(receiver))
+}
+
+pub async fn prepare_env(dns_name: &str, tun_ip: Ipv4Inet) -> (Arc<DnsTestPeer>, NicCtx) {
     let ctx = get_mock_global_ctx();
     ctx.set_hostname(dns_name.to_owned());
     ctx.set_ipv4(Some(tun_ip));
-
-    let mut dns_config = ctx.config.get_dns().into_raw();
-    dns_config.name = Some(dns_name.parse().unwrap());
-    if let Some(zone) = tld_dns_zone {
-        dns_config.domain = Some(zone.parse().expect("invalid test dns zone"));
-    }
-    ctx.config.set_dns(dns_config.into());
-
-    let (s, r) = create_packet_recv_chan();
-    let peer_mgr = Arc::new(PeerManager::new(RouteAlgoType::Ospf, ctx, s));
-    peer_mgr.run().await.unwrap();
-    replace_stun_info_collector(peer_mgr.clone(), NatType::PortRestricted);
-
-    let r = Arc::new(tokio::sync::Mutex::new(r));
-    let mut virtual_nic = NicCtx::new(
-        peer_mgr.get_global_ctx(),
-        &peer_mgr,
-        r,
+    let mut dns = ctx.config.try_get_dns().unwrap().into_raw();
+    dns.name = Some(dns_name.parse().unwrap());
+    ctx.config.set_dns(dns.into());
+    let (peer, receiver) = build_test_peer(ctx.clone()).await;
+    let mut nic = NicCtx::new(
+        ctx,
+        peer.core.packet_plane(),
+        Arc::new(tokio::sync::Mutex::new(receiver)),
         Arc::new(Notify::new()),
     );
-    virtual_nic.run(Some(tun_ip), None).await.unwrap();
-
-    (peer_mgr, virtual_nic)
+    nic.run(Some(tun_ip), None).await.unwrap();
+    (peer, nic)
 }
 
-pub fn start_dns_node(peer_mgr: Arc<PeerManager>, virtual_nic: NicCtx) -> DnsNode {
-    let global_ctx = peer_mgr.get_global_ctx();
-    let nic_ctx: ArcNicCtx = Arc::new(tokio::sync::Mutex::new(Some(Box::new(virtual_nic))));
+pub struct TestDnsNode {
+    node: DnsNode,
+    _peer: Arc<DnsTestPeer>,
+}
 
-    let mut node = DnsNode::new(peer_mgr, global_ctx, nic_ctx);
+impl TestDnsNode {
+    pub async fn stop(&mut self) -> std::io::Result<()> {
+        self.node.stop().await
+    }
+}
+
+pub async fn start_dns_node(peer: Arc<DnsTestPeer>, nic: NicCtx) -> TestDnsNode {
+    let primary = peer
+        .ctx
+        .get_ipv4()
+        .map(|ip| std::net::IpAddr::V4(ip.address()))
+        .into_iter()
+        .chain(
+            peer.ctx
+                .get_ipv6()
+                .map(|ip| std::net::IpAddr::V6(ip.address())),
+        )
+        .collect();
+    let host = crate::instance::runtime_host::test_dns_host(nic, primary).await;
+    let mut node = DnsNode::new(peer.access(), peer.ctx.clone(), host);
     node.start();
-    node
+    TestDnsNode { node, _peer: peer }
 }
 
-pub fn start_dns_node_without_nic(peer_mgr: Arc<PeerManager>) -> DnsNode {
-    let global_ctx = peer_mgr.get_global_ctx();
-    let nic_ctx: ArcNicCtx = Arc::new(tokio::sync::Mutex::new(None));
-
-    let mut node = DnsNode::new(peer_mgr, global_ctx, nic_ctx);
+pub fn start_dns_node_without_nic(peer: Arc<DnsTestPeer>) -> TestDnsNode {
+    let mut node = DnsNode::new(
+        peer.access(),
+        peer.ctx.clone(),
+        Arc::new(crate::dns::host::NoDnsInterface),
+    );
     node.start();
-    node
+    TestDnsNode { node, _peer: peer }
 }
 
-pub async fn prepare_env_from_config_str(config_str: &str) -> Arc<PeerManager> {
+pub async fn prepare_env_from_config_str(config_str: &str) -> Arc<DnsTestPeer> {
     let config = TomlConfigLoader::new_from_str(config_str).expect("invalid test config");
     let ctx = Arc::new(GlobalCtx::new(config));
+    let (peer, mut receiver) = build_test_peer(ctx).await;
+    tokio::spawn(async move { while receiver.recv().await.is_some() {} });
+    peer
+}
 
-    let (s, _r) = create_packet_recv_chan();
-    let peer_mgr = Arc::new(PeerManager::new(RouteAlgoType::Ospf, ctx, s));
-    peer_mgr.run().await.unwrap();
-    replace_stun_info_collector(peer_mgr.clone(), NatType::PortRestricted);
+async fn connect_peer_manager(local: Arc<DnsTestPeer>, remote: Arc<DnsTestPeer>) {
+    let url = remote
+        .core
+        .running_listeners()
+        .into_iter()
+        .find(|u| u.scheme() == "ring")
+        .unwrap();
+    let id = url.host_str().unwrap().parse().unwrap();
+    let tunnel = local.process.connect_ring_tunnel(id).unwrap();
+    local
+        .core
+        .admit_client_tunnel_for_test(tunnel, true)
+        .await
+        .unwrap();
+}
 
-    peer_mgr
+async fn wait_route_appear(
+    local: Arc<DnsTestPeer>,
+    remote: Arc<DnsTestPeer>,
+) -> anyhow::Result<()> {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if local
+                .access()
+                .dns_advertisement(remote.my_peer_id())
+                .await
+                .is_some_and(|d| !d.is_empty())
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await?;
+    Ok(())
 }
 
 pub fn zone_data_a(origin: &str, record: &str) -> ZoneData {
@@ -260,7 +364,7 @@ pub fn new_request(name: &str, rtype: RecordType) -> anyhow::Result<Request> {
     )?)
 }
 
-async fn wait_route_disappear(peer_mgr: Arc<PeerManager>, target_peer_id: u32) {
+async fn wait_route_disappear(peer_mgr: Arc<DnsTestPeer>, target_peer_id: u32) {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let has_route = peer_mgr
@@ -281,7 +385,7 @@ async fn wait_route_disappear(peer_mgr: Arc<PeerManager>, target_peer_id: u32) {
     }
 }
 
-async fn disconnect_all_peer_conns(a: Arc<PeerManager>, b: Arc<PeerManager>) {
+async fn disconnect_all_peer_conns(a: Arc<DnsTestPeer>, b: Arc<DnsTestPeer>) {
     if let Some(conns) = a.get_peer_map().list_peer_conns(b.my_peer_id()).await {
         for conn in conns {
             let conn_id = conn.conn_id.parse().expect("invalid conn id");
@@ -331,12 +435,12 @@ async fn check_dns_unavailable_at(server_addr: SocketAddr, domain: &str) {
 }
 
 async fn wait_peer_zone_visibility(
-    peer_mgr: Arc<PeerManager>,
+    peer_mgr: Arc<DnsTestPeer>,
     target_peer_id: u32,
     zone_origin_substr: &str,
     expected_visible: bool,
 ) {
-    let dns = DnsPeerMgr::new(peer_mgr.clone(), peer_mgr.get_global_ctx());
+    let dns = DnsPeerMgr::new(peer_mgr.access(), peer_mgr.get_global_ctx());
     let deadline = Instant::now() + Duration::from_secs(20);
 
     loop {
@@ -344,7 +448,7 @@ async fn wait_peer_zone_visibility(
             .refresh(target_peer_id, Default::default(), Default::default())
             .await;
 
-        let snapshot = dns.snapshot();
+        let snapshot = dns.snapshot().unwrap();
 
         let visible = snapshot.zones.iter().any(|z| {
             z.content
@@ -480,16 +584,16 @@ records = ["secret IN A 10.99.0.9"]
 
     // Export behavior is determined by whether `[dns.zone.export]` exists.
     // Verify from peer-sync view to avoid host-wide DNS-server election side effects.
-    let dns_a = DnsPeerMgr::new(peer_a.clone(), peer_a.get_global_ctx());
+    let dns_a = DnsPeerMgr::new(peer_a.access(), peer_a.get_global_ctx());
     dns_a.register();
-    let dns_b = DnsPeerMgr::new(peer_b.clone(), peer_b.get_global_ctx());
+    let dns_b = DnsPeerMgr::new(peer_b.access(), peer_b.get_global_ctx());
     dns_b.register();
     dns_b
         .refresh(peer_a.my_peer_id(), Default::default(), Default::default())
         .await
         .unwrap();
 
-    let snapshot = dns_b.snapshot();
+    let snapshot = dns_b.snapshot().unwrap();
     assert!(
         !snapshot
             .zones
@@ -528,16 +632,16 @@ disabled = true
         .await
         .expect("route should appear");
 
-    let dns_a = DnsPeerMgr::new(peer_a.clone(), peer_a.get_global_ctx());
+    let dns_a = DnsPeerMgr::new(peer_a.access(), peer_a.get_global_ctx());
     dns_a.register();
-    let dns_b = DnsPeerMgr::new(peer_b.clone(), peer_b.get_global_ctx());
+    let dns_b = DnsPeerMgr::new(peer_b.access(), peer_b.get_global_ctx());
     dns_b.register();
     dns_b
         .refresh(peer_a.my_peer_id(), Default::default(), Default::default())
         .await
         .unwrap();
 
-    let snapshot = dns_b.snapshot();
+    let snapshot = dns_b.snapshot().unwrap();
     assert!(
         !snapshot
             .zones
@@ -570,7 +674,12 @@ records = ["api IN A 10.80.0.1"]
 
     check_dns_record_at(server_addr, "api.patch.mesh-test.", "10.80.0.1").await;
 
-    let mut dns = peer.get_global_ctx().config.get_dns().into_raw();
+    let mut dns = peer
+        .get_global_ctx()
+        .config
+        .try_get_dns()
+        .unwrap()
+        .into_raw();
     let mut zones = dns.zones.unwrap();
     let zone_idx = zones
         .iter()
@@ -581,6 +690,7 @@ records = ["api IN A 10.80.0.1"]
     zones[zone_idx] = zone.try_into().expect("patch zone update should be valid");
     dns.zones = Some(zones);
     peer.get_global_ctx().config.set_dns(dns.into());
+    #[cfg(feature = "management")]
     peer.get_global_ctx()
         .issue_event(crate::common::global_ctx::GlobalCtxEvent::ConfigPatched(
             crate::proto::api::config::InstanceConfigPatch::default(),
@@ -610,7 +720,12 @@ async fn config_patch_reloads_listener_binding() {
     let new_addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), listener_new);
     check_dns_record_at(old_addr, "listener-patch.mesh-test.", "10.144.150.11").await;
 
-    let mut dns = peer.get_global_ctx().config.get_dns().into_raw();
+    let mut dns = peer
+        .get_global_ctx()
+        .config
+        .try_get_dns()
+        .unwrap()
+        .into_raw();
     dns.listeners = Some(
         vec![
             format!("udp://127.0.0.1:{listener_new}")
@@ -620,6 +735,7 @@ async fn config_patch_reloads_listener_binding() {
         .into(),
     );
     peer.get_global_ctx().config.set_dns(dns.into());
+    #[cfg(feature = "management")]
     peer.get_global_ctx()
         .issue_event(crate::common::global_ctx::GlobalCtxEvent::ConfigPatched(
             crate::proto::api::config::InstanceConfigPatch::default(),
@@ -873,16 +989,16 @@ records = ["secret IN A 10.66.3.8"]
         .await
         .expect("route a-c should appear via b");
 
-    let dns_c = DnsPeerMgr::new(peer_c.clone(), peer_c.get_global_ctx());
+    let dns_c = DnsPeerMgr::new(peer_c.access(), peer_c.get_global_ctx());
     dns_c.register();
-    let dns_a = DnsPeerMgr::new(peer_a.clone(), peer_a.get_global_ctx());
+    let dns_a = DnsPeerMgr::new(peer_a.access(), peer_a.get_global_ctx());
     dns_a.register();
     dns_a
         .refresh(peer_c.my_peer_id(), Default::default(), Default::default())
         .await
         .unwrap();
 
-    let snapshot = dns_a.snapshot();
+    let snapshot = dns_a.snapshot().unwrap();
     assert!(
         !snapshot
             .zones
@@ -909,9 +1025,9 @@ async fn config_string_two_nodes_peer_dns_offline_then_rejoin() {
         .await
         .expect("route should appear");
 
-    let dns_b = DnsPeerMgr::new(peer_b.clone(), peer_b.get_global_ctx());
+    let dns_b = DnsPeerMgr::new(peer_b.access(), peer_b.get_global_ctx());
     dns_b.register();
-    let dns_a_online = DnsPeerMgr::new(peer_a.clone(), peer_a.get_global_ctx());
+    let dns_a_online = DnsPeerMgr::new(peer_a.access(), peer_a.get_global_ctx());
     dns_a_online.register();
     dns_a_online
         .refresh(peer_b.my_peer_id(), Default::default(), Default::default())
@@ -920,6 +1036,7 @@ async fn config_string_two_nodes_peer_dns_offline_then_rejoin() {
     assert!(
         dns_a_online
             .snapshot()
+            .unwrap()
             .zones
             .iter()
             .any(|z| z.content.contains("$ORIGIN node-b6.mesh6-test")),
@@ -953,10 +1070,11 @@ async fn config_string_two_nodes_peer_dns_offline_then_rejoin() {
 
     // Cached remote zones should be purged after peer cache idle timeout.
     tokio::time::sleep(Duration::from_secs(4)).await;
-    let dns_a_offline = DnsPeerMgr::new(peer_a.clone(), peer_a.get_global_ctx());
+    let dns_a_offline = DnsPeerMgr::new(peer_a.access(), peer_a.get_global_ctx());
     assert!(
         !dns_a_offline
             .snapshot()
+            .unwrap()
             .zones
             .iter()
             .any(|z| z.content.contains("$ORIGIN node-b6.mesh6-test")),
@@ -968,7 +1086,7 @@ async fn config_string_two_nodes_peer_dns_offline_then_rejoin() {
         .await
         .expect("route should re-appear");
 
-    let dns_a_rejoin = DnsPeerMgr::new(peer_a.clone(), peer_a.get_global_ctx());
+    let dns_a_rejoin = DnsPeerMgr::new(peer_a.access(), peer_a.get_global_ctx());
     dns_a_rejoin
         .refresh(peer_b.my_peer_id(), Default::default(), Default::default())
         .await
@@ -976,6 +1094,7 @@ async fn config_string_two_nodes_peer_dns_offline_then_rejoin() {
     assert!(
         dns_a_rejoin
             .snapshot()
+            .unwrap()
             .zones
             .iter()
             .any(|z| z.content.contains("$ORIGIN node-b6.mesh6-test")),

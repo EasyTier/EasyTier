@@ -3,16 +3,16 @@ use crate::dns::config::{
     DNS_NODE_HEARTBEAT_INTERVAL, DNS_NODE_RECONCILE_INTERVAL, DNS_PEER_REFRESH_ATTEMPTS,
     DNS_PEER_REFRESH_BACKOFF, DNS_SERVER_ELECTION_INTERVAL, DNS_SERVER_RPC_ADDR,
 };
+use crate::dns::host::DnsHost;
 use crate::dns::peer_mgr::DnsPeerMgr;
 use crate::dns::server::DnsServer;
-#[cfg(feature = "tun")]
-use crate::instance::instance::ArcNicCtx;
-use crate::peers::peer_manager::PeerManager;
 use crate::proto::dns::{DnsNodeMgrRpcClientFactory, HeartbeatRequest};
-use crate::proto::rpc_impl::standalone::{StandAloneClient, StandAloneServer};
+use crate::proto::rpc::standalone::{
+    RuntimeRpcClient, StandAloneServer, runtime_rpc_client, runtime_rpc_listener,
+};
 use crate::proto::rpc_types::controller::BaseController;
-use crate::tunnel::tcp::{TcpTunnelConnector, TcpTunnelListener};
 use crate::utils::task::CancellableTask;
+use easytier_core::instance::CoreDnsPeerAccess;
 use std::io;
 use std::sync::Arc;
 use tokio::sync::{Notify, broadcast};
@@ -26,10 +26,7 @@ use uuid::Uuid;
 struct DnsNodeRuntime {
     mgr: DnsPeerMgr,
 
-    #[cfg(feature = "tun")]
-    nic_ctx: ArcNicCtx, // TODO: REMOVE THIS
-
-    peer_mgr: Arc<PeerManager>,
+    host: Arc<dyn DnsHost>,
     global_ctx: ArcGlobalCtx,
 
     elect: Arc<Notify>,
@@ -58,8 +55,11 @@ impl DnsNodeRuntime {
 
             tracing::info!("trying to become DNS server");
 
-            let mut rpc =
-                StandAloneServer::new(TcpTunnelListener::new(DNS_SERVER_RPC_ADDR.clone()));
+            let mut rpc = StandAloneServer::new(runtime_rpc_listener(
+                DNS_SERVER_RPC_ADDR
+                    .socket_addrs(|| None)
+                    .expect("valid DNS RPC address")[0],
+            ));
 
             if rpc.serve().await.is_err() {
                 // Another node already owns the address — that's fine.
@@ -71,12 +71,7 @@ impl DnsNodeRuntime {
 
             tracing::info!("won DNS server election, starting DnsServer");
 
-            let server = Arc::new(DnsServer::new(
-                self.peer_mgr.clone(),
-                self.global_ctx.clone(),
-                #[cfg(feature = "tun")]
-                self.nic_ctx.clone(),
-            ));
+            let server = Arc::new(DnsServer::new(self.global_ctx.clone(), self.host.clone()));
             server.register(&rpc);
             server.run(token.child_token()).await;
 
@@ -86,7 +81,7 @@ impl DnsNodeRuntime {
 
     #[instrument(skip_all, name = "DnsNode main loop")]
     async fn run(&self, token: CancellationToken) {
-        let mut rpc = StandAloneClient::new(TcpTunnelConnector::new(DNS_SERVER_RPC_ADDR.clone()));
+        let mut rpc = runtime_rpc_client(DNS_SERVER_RPC_ADDR.clone());
 
         let mut heartbeat = HeartbeatRequest {
             id: Some(self.id().into()),
@@ -113,7 +108,11 @@ impl DnsNodeRuntime {
                 }
 
                 _ = heartbeat_interval.tick() => {
-                    if let Err(error) = self.heartbeat(&mut rpc, &mut heartbeat).await {
+                    let result = tokio::select! {
+                        _ = token.cancelled() => break,
+                        result = self.heartbeat(&mut rpc, &mut heartbeat) => result,
+                    };
+                    if let Err(error) = result {
                         tracing::error!(?error, "heartbeat failed");
                         self.elect.notify_one();
                     }
@@ -125,8 +124,6 @@ impl DnsNodeRuntime {
                         mgr.reconcile().await;
                     });
                 }
-
-                _ = self.mgr.dirty.wait() => {}
 
                 event = subscriber.recv() => {
                     match event {
@@ -147,6 +144,7 @@ impl DnsNodeRuntime {
                         ) => {
                             tracing::info!(?event, "ip change detected, rebuilding snapshot");
                         }
+                        #[cfg(feature = "management")]
                         Ok(GlobalCtxEvent::ConfigPatched(patch)) => {
                             // TODO: inspect patch
                             tracing::info!(?patch, "config change detected, rebuilding snapshot");
@@ -161,6 +159,9 @@ impl DnsNodeRuntime {
                         _ => continue,
                     }
 
+                    if let Err(error) = self.mgr.publish_local_export() {
+                        tracing::warn!(?error, "failed to publish local DNS configuration");
+                    }
                     self.mgr.dirty.mark();
                 }
 
@@ -175,11 +176,12 @@ impl DnsNodeRuntime {
 
     async fn heartbeat(
         &self,
-        rpc: &mut StandAloneClient<TcpTunnelConnector>,
+        rpc: &mut RuntimeRpcClient,
         heartbeat: &mut HeartbeatRequest,
     ) -> anyhow::Result<()> {
-        let request = if heartbeat.snapshot.is_none() || self.mgr.dirty.reset() {
-            heartbeat.update(self.mgr.snapshot());
+        let dirty = self.mgr.dirty.reset();
+        let request = if heartbeat.snapshot.is_none() || dirty {
+            heartbeat.update(self.mgr.snapshot()?);
             heartbeat.clone()
         } else {
             let snapshot = heartbeat.snapshot.take();
@@ -212,15 +214,13 @@ pub struct DnsNode {
 
 impl DnsNode {
     pub fn new(
-        peer_mgr: Arc<PeerManager>,
+        peer_mgr: Arc<CoreDnsPeerAccess>,
         global_ctx: ArcGlobalCtx,
-        #[cfg(feature = "tun")] nic_ctx: ArcNicCtx, // TODO: REMOVE THIS
+        host: Arc<dyn DnsHost>,
     ) -> Self {
         let runtime = DnsNodeRuntime {
             mgr: DnsPeerMgr::new(peer_mgr.clone(), global_ctx.clone()),
-            #[cfg(feature = "tun")]
-            nic_ctx,
-            peer_mgr,
+            host,
             global_ctx,
             elect: Default::default(),
         };
@@ -232,27 +232,49 @@ impl DnsNode {
     }
 
     pub fn start(&mut self) {
+        self.start_with_token(CancellationToken::new());
+    }
+
+    pub(crate) fn start_with_token(&mut self, token: CancellationToken) {
+        if let Err(error) = self.runtime.mgr.publish_local_export() {
+            tracing::warn!(?error, "failed to publish local DNS configuration");
+        }
+        self.runtime.mgr.register();
         let runtime = self.runtime.clone();
         self.task
-            .replace(CancellableTask::spawn(|token| async move {
+            .replace(CancellableTask::new(token.clone(), async move {
                 runtime.elect.notify_one();
                 tokio::join!(runtime.run_election(token.clone()), runtime.run(token));
             }));
-        self.runtime.mgr.register();
     }
 
     pub async fn stop(&mut self) -> io::Result<()> {
-        self.runtime.mgr.unregister();
         let Some(task) = self.task.take() else {
+            self.runtime.mgr.unregister();
             return Ok(());
         };
-        task.stop(None).await
+        let result = task.stop(None).await;
+        self.runtime.mgr.unregister();
+        result
     }
 }
 
 impl Drop for DnsNode {
     fn drop(&mut self) {
-        self.runtime.mgr.unregister();
+        let Some(task) = self.task.take() else {
+            self.runtime.mgr.unregister();
+            return;
+        };
+        task.token().cancel();
+        let mgr = self.runtime.mgr.clone();
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                let _ = task.stop(Some(std::time::Duration::from_secs(10))).await;
+                mgr.unregister();
+            });
+        } else {
+            mgr.unregister();
+        }
     }
 }
 
@@ -260,10 +282,10 @@ impl Drop for DnsNode {
 mod tests {
     use super::*;
     use crate::common::global_ctx::GlobalCtxEvent;
-    use crate::peers::tests::create_mock_peer_manager;
+    #[cfg(feature = "management")]
     use crate::proto::api::config::InstanceConfigPatch;
     use crate::proto::dns::{DnsNodeMgrRpc, DnsNodeMgrRpcServer, HeartbeatResponse};
-    use crate::proto::rpc_impl::standalone::StandAloneServer;
+    use crate::proto::rpc::standalone::{RuntimeRpcListener, StandAloneServer};
     use crate::proto::rpc_types;
     use crate::tunnel::common::tests::wait_for_condition;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -311,17 +333,19 @@ mod tests {
         }
     }
 
-    async fn build_test_runtime() -> DnsNodeRuntime {
-        let peer_mgr = create_mock_peer_manager().await;
-        let global_ctx = peer_mgr.get_global_ctx();
-        let nic_ctx: ArcNicCtx = Arc::new(Mutex::new(None));
-        DnsNodeRuntime {
-            mgr: DnsPeerMgr::new(peer_mgr.clone(), global_ctx.clone()),
-            nic_ctx,
-            peer_mgr,
+    async fn build_test_runtime() -> (DnsNodeRuntime, Arc<crate::dns::tests::DnsTestPeer>) {
+        let peer = crate::dns::tests::prepare_env_from_config_str(
+            "hostname = \"node-test\"\n[flags]\nno_tun = true\n[dns]\naddresses = []",
+        )
+        .await;
+        let global_ctx = peer.get_global_ctx();
+        let runtime = DnsNodeRuntime {
+            mgr: DnsPeerMgr::new(peer.access(), global_ctx.clone()),
+            host: Arc::new(crate::dns::host::NoDnsInterface),
             global_ctx,
             elect: Default::default(),
-        }
+        };
+        (runtime, peer)
     }
 
     async fn start_recording_rpc_server(
@@ -329,10 +353,11 @@ mod tests {
         resync_on_first: bool,
     ) -> anyhow::Result<(
         Arc<RecordingDnsNodeMgr>,
-        StandAloneServer<TcpTunnelListener>,
+        StandAloneServer<RuntimeRpcListener>,
     )> {
         let mgr = Arc::new(RecordingDnsNodeMgr::new(resync_on_first));
-        let mut server = StandAloneServer::new(TcpTunnelListener::new(rpc_addr));
+        let mut server =
+            StandAloneServer::new(runtime_rpc_listener(rpc_addr.socket_addrs(|| None)?[0]));
         server
             .registry()
             .register(DnsNodeMgrRpcServer::new_arc(mgr.clone()), "");
@@ -341,8 +366,10 @@ mod tests {
         Ok((mgr, server))
     }
 
-    async fn occupy_dns_rpc_addr(rpc_addr: Url) -> StandAloneServer<TcpTunnelListener> {
-        let mut server = StandAloneServer::new(TcpTunnelListener::new(rpc_addr));
+    async fn occupy_dns_rpc_addr(rpc_addr: Url) -> StandAloneServer<RuntimeRpcListener> {
+        let mut server = StandAloneServer::new(runtime_rpc_listener(
+            rpc_addr.socket_addrs(|| None).unwrap()[0],
+        ));
         server.serve().await.unwrap();
         server
     }
@@ -353,9 +380,9 @@ mod tests {
         let (_mgr, server) = start_recording_rpc_server(rpc_addr.clone(), false)
             .await
             .unwrap();
-        let node = build_test_runtime().await;
+        let (node, _peer) = build_test_runtime().await;
 
-        let mut rpc = StandAloneClient::new(TcpTunnelConnector::new(rpc_addr));
+        let mut rpc = runtime_rpc_client(rpc_addr);
         let mut heartbeat = HeartbeatRequest {
             id: Some(node.id().into()),
             ..Default::default()
@@ -376,9 +403,9 @@ mod tests {
         let (mgr, server) = start_recording_rpc_server(rpc_addr.clone(), false)
             .await
             .unwrap();
-        let node = build_test_runtime().await;
+        let (node, _peer) = build_test_runtime().await;
 
-        let mut rpc = StandAloneClient::new(TcpTunnelConnector::new(rpc_addr));
+        let mut rpc = runtime_rpc_client(rpc_addr);
         let mut heartbeat = HeartbeatRequest {
             id: Some(node.id().into()),
             ..Default::default()
@@ -404,9 +431,9 @@ mod tests {
         let (mgr, server) = start_recording_rpc_server(rpc_addr.clone(), false)
             .await
             .unwrap();
-        let node = build_test_runtime().await;
+        let (node, _peer) = build_test_runtime().await;
 
-        let mut rpc = StandAloneClient::new(TcpTunnelConnector::new(rpc_addr));
+        let mut rpc = runtime_rpc_client(rpc_addr);
         let mut heartbeat = HeartbeatRequest {
             id: Some(node.id().into()),
             ..Default::default()
@@ -431,9 +458,9 @@ mod tests {
         let (mgr, server) = start_recording_rpc_server(rpc_addr.clone(), true)
             .await
             .unwrap();
-        let node = build_test_runtime().await;
+        let (node, _peer) = build_test_runtime().await;
 
-        let mut rpc = StandAloneClient::new(TcpTunnelConnector::new(rpc_addr));
+        let mut rpc = runtime_rpc_client(rpc_addr);
         let mut heartbeat = HeartbeatRequest {
             id: Some(node.id().into()),
             ..Default::default()
@@ -451,9 +478,9 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial_test::serial(dns_node_rpc_addr)]
+    #[serial_test::serial(dns_integration_rpc)]
     async fn run_marks_dirty_on_dhcp_event() {
-        let node = build_test_runtime().await;
+        let (node, _peer) = build_test_runtime().await;
 
         let _ = node.mgr.dirty.reset();
         assert!(!node.mgr.dirty.peek());
@@ -478,9 +505,10 @@ mod tests {
             .unwrap();
     }
 
+    #[cfg(feature = "management")]
     #[tokio::test]
     async fn run_marks_dirty_on_config_patched_event() {
-        let node = build_test_runtime().await;
+        let (node, _peer) = build_test_runtime().await;
 
         let _ = node.mgr.dirty.reset();
         assert!(!node.mgr.dirty.peek());
@@ -507,7 +535,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_peer_info_updated_non_self_does_not_mark_dirty() {
-        let node = build_test_runtime().await;
+        let (node, _peer) = build_test_runtime().await;
 
         let _ = node.mgr.dirty.reset();
         assert!(!node.mgr.dirty.peek());
@@ -535,7 +563,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_heartbeat_error_notifies_election() {
-        let node = build_test_runtime().await;
+        let (node, _peer) = build_test_runtime().await;
 
         let _ = node.mgr.dirty.reset();
 

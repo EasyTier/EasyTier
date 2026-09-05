@@ -218,7 +218,56 @@ class WebRemoteClient implements Api.RemoteClient {
     }
     async get_network_info(inst_id: string): Promise<NetworkTypes.NetworkInstanceRunningInfo | undefined> {
         const response = await this.client.get<any, Api.CollectNetworkInfoResponse>('/machines/' + this.machine_id + '/networks/info/' + inst_id);
-        return response.info.map[inst_id];
+        return response.info?.map?.[inst_id];
+    }
+    async get_vpn_portal_info(inst_id: string): Promise<NetworkTypes.VpnPortalInfo | undefined> {
+        const response = await this.client.post<any, { vpn_portal_info?: NetworkTypes.VpnPortalInfo }>(
+            `/machines/${this.machine_id}/proxy-rpc`,
+            {
+                service_name: 'api.instance.VpnPortalRpcService',
+                method_name: 'get_vpn_portal_info',
+                payload: {
+                    instance: {
+                        id: Utils.StrToUuid(inst_id),
+                    },
+                },
+            },
+        );
+        return response.vpn_portal_info
+            ? NetworkTypes.normalizeVpnPortalInfo(response.vpn_portal_info)
+            : undefined;
+    }
+    async patch_vpn_portal_clients(inst_id: string, patches: Array<Record<string, any>>): Promise<undefined> {
+        await this.client.post(
+            `/machines/${this.machine_id}/proxy-rpc`,
+            {
+                service_name: 'api.config.ConfigRpcService',
+                method_name: 'patch_config',
+                payload: {
+                    instance: {
+                        id: Utils.StrToUuid(inst_id),
+                    },
+                    patch: {
+                        vpn_portal_clients: patches,
+                    },
+                },
+            },
+        );
+    }
+    async add_vpn_portal_client(inst_id: string, client: { name: string, virtual_ip: string, groups: string[] }): Promise<undefined> {
+        await this.patch_vpn_portal_clients(inst_id, [{
+            action: 'ADD',
+            client,
+        }]);
+    }
+    async remove_vpn_portal_client(inst_id: string, name: string): Promise<undefined> {
+        await this.patch_vpn_portal_clients(inst_id, [{
+            action: 'REMOVE',
+            client: { name, virtual_ip: '', groups: [] },
+        }]);
+    }
+    async clear_vpn_portal_clients(inst_id: string): Promise<undefined> {
+        await this.patch_vpn_portal_clients(inst_id, [{ action: 'CLEAR' }]);
     }
     async list_network_instance_ids(): Promise<Api.ListNetworkInstanceIdResponse> {
         const response = await this.client.get<any, ListNetworkInstanceIdResponse>('/machines/' + this.machine_id + '/networks');

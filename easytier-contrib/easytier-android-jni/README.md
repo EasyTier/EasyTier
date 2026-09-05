@@ -8,6 +8,7 @@
 - 📱 原生 Android JNI 支持
 - 🔧 支持多种 Android 架构 (arm64-v8a, armeabi-v7a, x86, x86_64)
 - 🛡️ 类型安全的 Java 接口
+- 🔌 支持通过 JSON 调用已暴露的 EasyTier RPC 查询/管理接口
 - 📝 详细的错误处理和日志记录
 
 ## 支持的架构
@@ -174,6 +175,20 @@ public class EasyTierManager {
         }
     }
 }
+```
+
+### 通用 JSON RPC
+
+`EasyTierJNI.callJsonRpc(serviceName, methodName, domainName, payloadJson)` 可以调用已暴露的
+EasyTier RPC 服务，payload 和返回值均为 protobuf JSON。该接口不支持
+`api.manage.WebClientService`；实例启动、保留、删除、信息收集仍使用专用 JNI API。
+
+```java
+String response = EasyTierJNI.callJsonRpc(
+    "api.logger.LoggerRpcService",
+    "get_logger_config",
+    "{}"
+);
 ```
 
 ### VPN 服务集成

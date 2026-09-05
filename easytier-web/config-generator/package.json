@@ -1,0 +1,24 @@
+{
+  "name": "easytier-config-generator",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "build:config-wasm": "wasm-pack build ../../easytier-core --target web --out-dir ../easytier-web/config-generator/src/generated/config-wasm --out-name easytier_config --release --no-pack -- --no-default-features --features browser-config",
+    "dev": "pnpm build:config-wasm && pnpm --dir ../frontend-lib build && vite",
+    "build": "pnpm build:config-wasm && pnpm --dir ../frontend-lib build && vue-tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@primeuix/themes": "^1.2.3",
+    "easytier-frontend-lib": "workspace:*",
+    "primevue": "^4.3.9",
+    "vue": "^3.5.12"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.1.4",
+    "typescript": "~5.6.2",
+    "vite": "^5.4.21",
+    "vue-tsc": "^2.1.10"
+  }
+}

@@ -1,13 +1,17 @@
+#[cfg(feature = "magic-dns")]
 pub mod dirty;
+#[cfg(feature = "magic-dns")]
 pub mod dns;
-pub mod error;
+#[cfg(feature = "management")]
 pub mod panic;
 pub mod string;
+#[cfg(feature = "magic-dns")]
 pub mod task;
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
 use std::sync::{Arc, Weak};
 
+#[cfg(feature = "management")]
 pub type PeerRoutePair = crate::proto::api::instance::PeerRoutePair;
 
 pub fn check_tcp_available(port: u16) -> bool {

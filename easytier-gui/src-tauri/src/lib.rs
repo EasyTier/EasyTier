@@ -4,27 +4,41 @@
 mod elevate;
 
 use anyhow::Context;
+#[cfg(target_os = "android")]
+use easytier::instance::factory::subscribe_native_instance_event;
+use easytier::proto::api::config::{
+    ConfigPatchAction, ConfigRpc, ConfigRpcClientFactory, InstanceConfigPatch, PatchConfigRequest,
+    VpnPortalClientPatch,
+};
+use easytier::proto::api::instance::{
+    GetVpnPortalInfoRequest, InstanceIdentifier, VpnPortalInfo, VpnPortalRpc,
+    VpnPortalRpcClientFactory, instance_identifier,
+};
 use easytier::proto::api::manage::{
-    CollectNetworkInfoResponse, ValidateConfigResponse, WebClientService,
+    CollectNetworkInfoResponse, ValidateConfigResponse, VpnPortalClientConfig, WebClientService,
     WebClientServiceClientFactory,
 };
-use easytier::rpc_service::remote_client::{
-    GetNetworkMetasResponse, ListNetworkInstanceIdsJsonResp, ListNetworkProps, RemoteClientManager,
-    Storage,
-};
+use easytier::proto::rpc_types::controller::BaseController;
 use easytier::web_client::{self, WebClient};
 use easytier::{
+    common::config::{NetworkConfig, NetworkConfigExt},
     common::{
         config::{ConfigLoader, ConfigSource, FileLoggerConfig, LoggingConfig, TomlConfigLoader},
         log,
     },
-    instance_manager::NetworkInstanceManager,
-    launcher::NetworkConfig,
+    instance::factory::{NativeInstanceManager, native_instance_manager},
+    proto::rpc::standalone::{runtime_rpc_dialer, runtime_rpc_listener},
     rpc_service::ApiRpcServer,
-    tunnel::TunnelListener,
-    tunnel::ring::RingTunnelListener,
-    tunnel::tcp::TcpTunnelListener,
     utils::panic::setup_panic_handler,
+};
+use easytier_core::management::config_source_to_rpc;
+use easytier_core::management::remote_client::{
+    GetNetworkMetasResponse, ListNetworkInstanceIdsJsonResp, ListNetworkProps, RemoteClientManager,
+    Storage,
+};
+use easytier_core::{
+    connectivity::protocol::raw::TunnelDialer as _, process_runtime::CoreProcessRuntime,
+    socket::SocketListener, tunnel::Tunnel,
 };
 use std::ops::Deref;
 use std::sync::Arc;
@@ -36,7 +50,7 @@ use tauri::{AppHandle, Emitter, Manager as _};
 #[cfg(not(target_os = "android"))]
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
-static INSTANCE_MANAGER: once_cell::sync::Lazy<RwLock<Option<Arc<NetworkInstanceManager>>>> =
+static INSTANCE_MANAGER: once_cell::sync::Lazy<RwLock<Option<Arc<NativeInstanceManager>>>> =
     once_cell::sync::Lazy::new(|| RwLock::new(None));
 
 static RPC_RING_UUID: once_cell::sync::Lazy<uuid::Uuid> =
@@ -45,7 +59,7 @@ static RPC_RING_UUID: once_cell::sync::Lazy<uuid::Uuid> =
 static CLIENT_MANAGER: once_cell::sync::Lazy<RwLock<Option<manager::GUIClientManager>>> =
     once_cell::sync::Lazy::new(|| RwLock::new(None));
 
-type BoxedTunnelListener = Box<dyn TunnelListener>;
+type BoxedTunnelListener = Box<dyn SocketListener<Accepted = Box<dyn Tunnel>>>;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RpcServerKind {
@@ -145,6 +159,82 @@ async fn collect_network_info(
 }
 
 #[tauri::command]
+async fn get_vpn_portal_info(instance_id: String) -> Result<Option<VpnPortalInfo>, String> {
+    let instance_id = instance_id
+        .parse::<uuid::Uuid>()
+        .map_err(|e| e.to_string())?;
+    let client_manager = get_client_manager!()?;
+    let client = client_manager
+        .rpc_manager
+        .rpc_client()
+        .scoped_client::<VpnPortalRpcClientFactory<BaseController>>(1, 1, "".to_string());
+    let response = client
+        .get_vpn_portal_info(
+            BaseController::default(),
+            GetVpnPortalInfoRequest {
+                instance: Some(InstanceIdentifier {
+                    selector: Some(instance_identifier::Selector::Id(instance_id.into())),
+                }),
+            },
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(response.vpn_portal_info)
+}
+
+#[tauri::command]
+async fn patch_vpn_portal_clients(
+    instance_id: String,
+    action: String,
+    name: Option<String>,
+    virtual_ip: Option<String>,
+    groups: Option<Vec<String>>,
+) -> Result<(), String> {
+    let instance_id = instance_id
+        .parse::<uuid::Uuid>()
+        .map_err(|e| e.to_string())?;
+    let action = match action.as_str() {
+        "add" => ConfigPatchAction::Add,
+        "remove" => ConfigPatchAction::Remove,
+        "clear" => ConfigPatchAction::Clear,
+        other => return Err(format!("invalid vpn portal client patch action: {other}")),
+    };
+    let client = if action == ConfigPatchAction::Clear {
+        None
+    } else {
+        Some(VpnPortalClientConfig {
+            name: name.unwrap_or_default(),
+            virtual_ip: virtual_ip.unwrap_or_default(),
+            groups: groups.unwrap_or_default(),
+        })
+    };
+
+    let client_manager = get_client_manager!()?;
+    let rpc = client_manager
+        .rpc_manager
+        .rpc_client()
+        .scoped_client::<ConfigRpcClientFactory<BaseController>>(1, 1, "".to_string());
+    rpc.patch_config(
+        BaseController::default(),
+        PatchConfigRequest {
+            instance: Some(InstanceIdentifier {
+                selector: Some(instance_identifier::Selector::Id(instance_id.into())),
+            }),
+            patch: Some(InstanceConfigPatch {
+                vpn_portal_clients: vec![VpnPortalClientPatch {
+                    action: action as i32,
+                    client,
+                }],
+                ..Default::default()
+            }),
+        },
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 async fn set_logging_level(level: String) -> Result<(), String> {
     get_client_manager!()?
         .set_logging_level(level.clone())
@@ -163,7 +253,7 @@ async fn set_tun_fd(fd: i32) -> Result<(), String> {
         .next()
     {
         instance_manager
-            .set_tun_fd(&uuid, fd)
+            .attach_tun_fd(uuid, fd)
             .map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -370,6 +460,21 @@ fn normalize_normal_mode_rpc_portal(portal: &str) -> Result<(url::Url, url::Url)
     Ok((bind_url, connect_url))
 }
 
+async fn resolve_rpc_bind_url(url: &url::Url) -> Result<std::net::SocketAddr, String> {
+    if url.scheme() != "tcp" {
+        return Err(format!("RPC portal requires tcp URL: {url}"));
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| format!("RPC portal has no host: {url}"))?;
+    let port = url.port().unwrap_or(11010);
+    tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|error| format!("failed to resolve RPC portal {url}: {error}"))?
+        .next()
+        .ok_or_else(|| format!("RPC portal has no resolved address: {url}"))
+}
+
 #[tauri::command]
 async fn init_rpc_connection(
     _app: AppHandle,
@@ -388,11 +493,12 @@ async fn init_rpc_connection(
         .map_err(|_| "Failed to acquire lock for rpc server")?;
 
     let mut client_url = url.clone();
+    let mut local_process_runtime = None;
     if is_normal_mode {
         let instance_manager = if let Some(im) = instance_manager_guard.take() {
             im
         } else {
-            Arc::new(NetworkInstanceManager::new())
+            Arc::new(native_instance_manager())
         };
 
         let portal = url.and_then(|s| {
@@ -420,12 +526,14 @@ async fn init_rpc_connection(
             *rpc_server_guard = None;
 
             let tunnel: BoxedTunnelListener = match desired_kind {
-                RpcServerKind::Ring => Box::new(RingTunnelListener::new(
-                    format!("ring://{}", RPC_RING_UUID.deref()).parse().unwrap(),
-                )),
-                RpcServerKind::Tcp => Box::new(TcpTunnelListener::new(
-                    bind_url.clone().expect("tcp rpc must have bind url"),
-                )),
+                RpcServerKind::Ring => instance_manager
+                    .process_runtime()
+                    .bind_ring_tunnel(*RPC_RING_UUID.deref())
+                    .map_err(|error| error.to_string())?,
+                RpcServerKind::Tcp => {
+                    let bind_url = bind_url.as_ref().expect("tcp rpc must have bind url");
+                    Box::new(runtime_rpc_listener(resolve_rpc_bind_url(bind_url).await?))
+                }
             };
 
             let rpc_server = ApiRpcServer::from_tunnel(tunnel, instance_manager.clone())
@@ -440,6 +548,7 @@ async fn init_rpc_connection(
             });
         }
 
+        local_process_runtime = Some(instance_manager.process_runtime());
         *instance_manager_guard = Some(instance_manager);
         client_url = connect_url.map(|u| u.to_string());
     } else {
@@ -448,7 +557,7 @@ async fn init_rpc_connection(
 
     let client_manager = tokio::time::timeout(
         std::time::Duration::from_millis(1000),
-        manager::GUIClientManager::new(client_url),
+        manager::GUIClientManager::new(client_url, local_process_runtime),
     )
     .await
     .map_err(|_| "connect remote rpc timed out".to_string())?
@@ -460,7 +569,8 @@ async fn init_rpc_connection(
         drop(WEB_CLIENT.write().await.take());
         if let Some(instance_manager) = instance_manager_guard.take() {
             instance_manager
-                .retain_network_instance(vec![])
+                .retain_network_instances(&[])
+                .await
                 .map_err(|e| e.to_string())?;
             drop(instance_manager);
         }
@@ -598,19 +708,13 @@ mod manager {
     use super::*;
     use async_trait::async_trait;
     use dashmap::{DashMap, DashSet};
-    use easytier::common::global_ctx::GlobalCtx;
-    use easytier::common::stun::MockStunInfoCollector;
-    use easytier::launcher::NetworkConfig;
+    use easytier::common::config::{NetworkConfig, NetworkConfigExt};
     use easytier::proto::api::logger::{LoggerRpc, LoggerRpcClientFactory, SetLoggerConfigRequest};
     use easytier::proto::api::manage::RunNetworkInstanceRequest;
-    use easytier::proto::common::NatType;
-    use easytier::proto::rpc_impl::bidirect::BidirectRpcManager;
+    use easytier::proto::rpc::bidirect::BidirectRpcManager;
     use easytier::proto::rpc_types::controller::BaseController;
-    use easytier::rpc_service::logger::LoggerRpcService;
-    use easytier::rpc_service::remote_client::PersistentConfig;
-    use easytier::tunnel::TunnelConnector;
-    use easytier::tunnel::ring::RingTunnelConnector;
     use easytier::web_client::WebClientHooks;
+    use easytier_core::management::remote_client::PersistentConfig;
 
     pub(super) struct GuiHooks {
         pub(super) app: AppHandle,
@@ -652,7 +756,8 @@ mod manager {
     #[derive(Default)]
     pub(super) enum PersistedConfigSource {
         User,
-        Webhook,
+        #[serde(alias = "webhook")]
+        Web,
         #[serde(other)]
         #[default]
         Legacy,
@@ -662,15 +767,15 @@ mod manager {
         pub(super) fn from_runtime_source(source: ConfigSource) -> Self {
             match source {
                 ConfigSource::User => Self::User,
-                ConfigSource::Webhook => Self::Webhook,
+                ConfigSource::Web => Self::Web,
             }
         }
 
         fn merge_persisted(self, incoming: Self) -> Self {
             match (self, incoming) {
                 // Older runtimes report missing source as `user`. Keep the stronger persisted
-                // ownership until webhook sync or an explicit user save repairs it.
-                (Self::Webhook, Self::User) | (Self::Legacy, Self::User) => self,
+                // ownership until web sync or an explicit user save repairs it.
+                (Self::Web, Self::User) | (Self::Legacy, Self::User) => self,
                 (_, next) => next,
             }
         }
@@ -678,13 +783,13 @@ mod manager {
         fn to_runtime_source(self) -> ConfigSource {
             match self {
                 Self::User | Self::Legacy => ConfigSource::User,
-                Self::Webhook => ConfigSource::Webhook,
+                Self::Web => ConfigSource::Web,
             }
         }
 
         #[cfg(any(test, target_os = "android"))]
-        fn is_webhook_like(self) -> bool {
-            matches!(self, Self::Webhook)
+        fn is_web_like(self) -> bool {
+            matches!(self, Self::Web)
         }
     }
 
@@ -874,27 +979,16 @@ mod manager {
         pub(super) rpc_manager: BidirectRpcManager,
     }
     impl GUIClientManager {
-        pub async fn new(rpc_url: Option<String>) -> Result<Self, anyhow::Error> {
-            let global_ctx = Arc::new(GlobalCtx::new(TomlConfigLoader::default()));
-            global_ctx.replace_stun_info_collector(Box::new(MockStunInfoCollector {
-                udp_nat_type: NatType::Unknown,
-            }));
-            let mut flags = global_ctx.get_flags();
-            flags.bind_device = false;
-            global_ctx.set_flags(flags);
+        pub async fn new(
+            rpc_url: Option<String>,
+            local_process_runtime: Option<Arc<CoreProcessRuntime>>,
+        ) -> Result<Self, anyhow::Error> {
             let tunnel = if let Some(url) = rpc_url {
-                let mut connector = easytier::connector::create_connector_by_url(
-                    &url,
-                    &global_ctx,
-                    easytier::tunnel::IpVersion::Both,
-                )
-                .await?;
-                connector.connect().await?
+                runtime_rpc_dialer(url.parse()?).connect().await?
             } else {
-                let mut connector = RingTunnelConnector::new(
-                    format!("ring://{}", RPC_RING_UUID.deref()).parse().unwrap(),
-                );
-                connector.connect().await?
+                local_process_runtime
+                    .context("local RPC requires a core process runtime")?
+                    .connect_ring_tunnel(*RPC_RING_UUID.deref())?
             };
 
             let rpc_manager = BidirectRpcManager::new();
@@ -916,7 +1010,7 @@ mod manager {
         }
 
         #[cfg(target_os = "android")]
-        pub fn get_enabled_instances_with_webhook_like_tun_ids(
+        pub fn get_enabled_instances_with_web_like_tun_ids(
             &self,
         ) -> impl Iterator<Item = uuid::Uuid> + '_ {
             self.storage
@@ -924,7 +1018,7 @@ mod manager {
                 .iter()
                 .filter(|v| self.storage.enabled_networks.contains(v.key()))
                 .filter(|v| !v.config.no_tun())
-                .filter(|v| v.source.is_webhook_like())
+                .filter(|v| v.source.is_web_like())
                 .filter_map(|c| c.config.instance_id().parse::<uuid::Uuid>().ok())
         }
 
@@ -932,12 +1026,11 @@ mod manager {
         pub(super) async fn disable_instances_with_tun(
             &self,
             app: &AppHandle,
-            webhook_only: bool,
-        ) -> Result<(), easytier::rpc_service::remote_client::RemoteClientError<anyhow::Error>>
+            web_only: bool,
+        ) -> Result<(), easytier_core::management::remote_client::RemoteClientError<anyhow::Error>>
         {
-            let inst_ids: Vec<uuid::Uuid> = if webhook_only {
-                self.get_enabled_instances_with_webhook_like_tun_ids()
-                    .collect()
+            let inst_ids: Vec<uuid::Uuid> = if web_only {
+                self.get_enabled_instances_with_web_like_tun_ids().collect()
             } else {
                 self.get_enabled_instances_with_tun_ids().collect()
             };
@@ -975,7 +1068,7 @@ mod manager {
                             .await
                             .map_err(|e| e.to_string())?;
                     }
-                    PersistedConfigSource::Webhook => {
+                    PersistedConfigSource::Web => {
                         self.disable_instances_with_tun(app, true)
                             .await
                             .map_err(|e| e.to_string())?;
@@ -1009,11 +1102,8 @@ mod manager {
             #[cfg(target_os = "android")]
             if let Some(instance_manager) = super::INSTANCE_MANAGER.read().await.as_ref() {
                 let instance_uuid = *instance_id;
-                if let Some(instance_ref) = instance_manager
-                    .iter()
-                    .find(|item| *item.key() == instance_uuid)
-                {
-                    if let Some(mut event_receiver) = instance_ref.value().subscribe_event() {
+                if let Some(instance) = instance_manager.instance(instance_uuid) {
+                    if let Some(mut event_receiver) = subscribe_native_instance_event(&instance) {
                         let app_clone = app.clone();
                         let instance_id_clone = *instance_id;
                         tokio::spawn(async move {
@@ -1088,7 +1178,7 @@ mod manager {
                 .set_logger_config(
                     BaseController::default(),
                     SetLoggerConfigRequest {
-                        level: LoggerRpcService::string_to_log_level(&level).into(),
+                        level: easytier_core::management::parse_log_level(&level).into(),
                     },
                 )
                 .await?;
@@ -1137,7 +1227,7 @@ mod manager {
                                 inst_id: None,
                                 config: Some(config),
                                 overwrite: false,
-                                source: source.to_runtime_source().to_rpc(),
+                                source: config_source_to_rpc(source.to_runtime_source()),
                             },
                         )
                         .await?;
@@ -1185,26 +1275,46 @@ mod manager {
         }
 
         #[test]
-        fn persisted_source_merge_keeps_legacy_and_webhook_over_ambiguous_user() {
+        fn stored_gui_config_deserializes_webhook_source_as_web() {
+            let stored: StoredGuiConfig = serde_json::from_value(serde_json::json!({
+                "config": NetworkConfig::default(),
+                "source": "webhook",
+            }))
+            .unwrap();
+            assert_eq!(stored.source, PersistedConfigSource::Web);
+        }
+
+        #[test]
+        fn stored_gui_config_defaults_unknown_source_to_legacy() {
+            let stored: StoredGuiConfig = serde_json::from_value(serde_json::json!({
+                "config": NetworkConfig::default(),
+                "source": "unknown",
+            }))
+            .unwrap();
+            assert_eq!(stored.source, PersistedConfigSource::Legacy);
+        }
+
+        #[test]
+        fn persisted_source_merge_keeps_legacy_and_web_over_ambiguous_user() {
             assert_eq!(
                 PersistedConfigSource::Legacy.merge_persisted(PersistedConfigSource::User),
                 PersistedConfigSource::Legacy
             );
             assert_eq!(
-                PersistedConfigSource::Webhook.merge_persisted(PersistedConfigSource::User),
-                PersistedConfigSource::Webhook
+                PersistedConfigSource::Web.merge_persisted(PersistedConfigSource::User),
+                PersistedConfigSource::Web
             );
             assert_eq!(
-                PersistedConfigSource::Legacy.merge_persisted(PersistedConfigSource::Webhook),
-                PersistedConfigSource::Webhook
+                PersistedConfigSource::Legacy.merge_persisted(PersistedConfigSource::Web),
+                PersistedConfigSource::Web
             );
         }
 
         #[test]
-        fn only_webhook_configs_are_webhook_like() {
-            assert!(!PersistedConfigSource::Legacy.is_webhook_like());
-            assert!(!PersistedConfigSource::User.is_webhook_like());
-            assert!(PersistedConfigSource::Webhook.is_webhook_like());
+        fn only_web_configs_are_web_like() {
+            assert!(!PersistedConfigSource::Legacy.is_web_like());
+            assert!(!PersistedConfigSource::User.is_web_like());
+            assert!(PersistedConfigSource::Web.is_web_like());
         }
     }
 }
@@ -1244,12 +1354,24 @@ mod service {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    fn service_environment() -> Option<Vec<(String, String)>> {
+        // System LaunchDaemons run as root but launchd does not provide HOME.
+        Some(vec![("HOME".to_string(), "/var/root".to_string())])
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn service_environment() -> Option<Vec<(String, String)>> {
+        None
+    }
+
     pub fn install(opts: ServiceOptions) -> anyhow::Result<()> {
         let service = easytier::service_manager::Service::new(env!("CARGO_PKG_NAME").to_string())?;
         let options = easytier::service_manager::ServiceInstallOptions {
             program: super::get_exe_path().into(),
             args: opts.to_args_vec(),
             work_directory: std::env::current_dir()?,
+            environment: service_environment(),
             disable_autostart: false,
             description: Some("EasyTier Gui Service".to_string()),
             display_name: Some("EasyTier Gui Service".to_string()),
@@ -1284,6 +1406,21 @@ mod service {
     pub fn status() -> anyhow::Result<easytier::service_manager::ServiceStatus> {
         let service = easytier::service_manager::Service::new(env!("CARGO_PKG_NAME").to_string())?;
         service.status()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn service_environment_matches_platform() {
+            #[cfg(target_os = "macos")]
+            assert_eq!(
+                super::service_environment(),
+                Some(vec![("HOME".to_string(), "/var/root".to_string())])
+            );
+
+            #[cfg(not(target_os = "macos"))]
+            assert_eq!(super::service_environment(), None);
+        }
     }
 }
 
@@ -1324,15 +1461,16 @@ pub fn run_gui() -> std::process::ExitCode {
             let Ok(log_dir) = get_log_dir(app.app_handle()) else {
                 return Ok(());
             };
-            let config = LoggingConfig::builder()
-                .file_logger(FileLoggerConfig {
+            let config = LoggingConfig {
+                file_logger: Some(FileLoggerConfig {
                     dir: Some(log_dir.to_string_lossy().to_string()),
                     level: None,
                     file: None,
                     size_mb: None,
                     count: None,
-                })
-                .build();
+                }),
+                console_logger: None,
+            };
             let Ok(_) = log::init(&config, true) else {
                 return Ok(());
             };
@@ -1365,6 +1503,8 @@ pub fn run_gui() -> std::process::ExitCode {
             generate_network_config,
             run_network_instance,
             collect_network_info,
+            get_vpn_portal_info,
+            patch_vpn_portal_clients,
             set_logging_level,
             set_tun_fd,
             easytier_version,

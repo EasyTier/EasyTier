@@ -48,7 +48,7 @@ impl MigrationTrait for Migration {
                 device_id,
                 network_instance_id,
                 network_config,
-                'legacy',
+                'user',
                 disabled,
                 create_time,
                 update_time

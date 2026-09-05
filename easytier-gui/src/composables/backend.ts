@@ -1,12 +1,11 @@
 import { invoke } from '@tauri-apps/api/core'
 import { Api, NetworkTypes } from 'easytier-frontend-lib'
 import { GetNetworkMetasResponse } from 'node_modules/easytier-frontend-lib/dist/modules/api'
-
+import { type ConfigSource, normalizeConfigSource } from './config_source'
 
 type NetworkConfig = NetworkTypes.NetworkConfig
 type ValidateConfigResponse = Api.ValidateConfigResponse
 type ListNetworkInstanceIdResponse = Api.ListNetworkInstanceIdResponse
-type ConfigSource = 'user' | 'webhook' | 'legacy'
 interface ServiceOptions {
   config_dir: string
   rpc_portal: string
@@ -32,14 +31,14 @@ function parseStoredConfigs(raw: string | null): StoredGuiConfig[] {
     if (entry && typeof entry === 'object' && 'config' in entry) {
       const { config, source } = entry as {
         config?: NetworkConfig
-        source?: ConfigSource
+        source?: unknown
       }
       if (!config) {
         return []
       }
       return [{
         config: NetworkTypes.normalizeNetworkConfig(config),
-        source: source === 'user' || source === 'webhook' ? source : 'legacy',
+        source: normalizeConfigSource(source),
       }]
     }
 
@@ -65,6 +64,23 @@ export async function runNetworkInstance(cfg: NetworkConfig, save: boolean) {
 
 export async function collectNetworkInfo(instanceId: string) {
   return await invoke<Api.CollectNetworkInfoResponse>('collect_network_info', { instanceId })
+}
+
+export async function getVpnPortalInfo(instanceId: string) {
+  const info = await invoke<NetworkTypes.VpnPortalInfo | undefined>('get_vpn_portal_info', { instanceId })
+  return info ? NetworkTypes.normalizeVpnPortalInfo(info) : undefined
+}
+
+export async function addVpnPortalClient(instanceId: string, client: { name: string, virtual_ip: string, groups: string[] }) {
+  return invoke('patch_vpn_portal_clients', { instanceId, action: 'add', name: client.name, virtualIp: client.virtual_ip, groups: client.groups })
+}
+
+export async function removeVpnPortalClient(instanceId: string, name: string) {
+  return invoke('patch_vpn_portal_clients', { instanceId, action: 'remove', name })
+}
+
+export async function clearVpnPortalClients(instanceId: string) {
+  return invoke('patch_vpn_portal_clients', { instanceId, action: 'clear' })
 }
 
 export async function setLoggingLevel(level: string) {

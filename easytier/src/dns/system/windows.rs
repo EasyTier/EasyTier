@@ -128,7 +128,6 @@ impl InterfaceControl {
 
 #[derive(Clone)]
 pub struct WindowsDNSManager {
-    tun_dev_name: String,
     interface_control: InterfaceControl,
 }
 
@@ -136,7 +135,6 @@ impl WindowsDNSManager {
     pub fn new(tun_dev_name: &str) -> io::Result<Self> {
         let interface_guid = RegistryManager::find_interface_guid(tun_dev_name)?;
         Ok(WindowsDNSManager {
-            tun_dev_name: tun_dev_name.to_string(),
             interface_control: InterfaceControl::new(&interface_guid),
         })
     }
@@ -172,25 +170,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_windows_set_primary_server() {
-        use std::{str::FromStr as _, sync::Arc, time::Duration};
+        use std::{str::FromStr as _, time::Duration};
 
         use crate::dns::{
             config::DNS_DEFAULT_ADDRESSES,
             tests::{prepare_env, start_dns_node},
         };
-        use crate::instance::proxy_cidrs_monitor::ProxyCidrsMonitor;
-        use crate::instance::virtual_nic::NicCtx;
-        use crate::peers::peer_manager::PeerManager;
 
         let tun_ip = Ipv4Inet::from_str("10.144.144.10/24").unwrap();
-        let (peer_mgr, virtual_nic): (Arc<PeerManager>, NicCtx) =
-            prepare_env("test1", tun_ip).await;
+        let (peer_mgr, virtual_nic) = prepare_env("test1", tun_ip).await;
         let tun_name = virtual_nic.ifname().await.unwrap();
 
-        // prepare_env does not run full Instance::run, so start the monitor explicitly in test.
-        let _monitor = ProxyCidrsMonitor::new(peer_mgr.clone(), peer_mgr.get_global_ctx()).start();
-
-        let mut dns_node = start_dns_node(peer_mgr, virtual_nic);
+        let mut dns_node = start_dns_node(peer_mgr, virtual_nic).await;
 
         println!("dev_name: {}", tun_name);
         let fake_ip = match DNS_DEFAULT_ADDRESSES[0].addr.ip() {

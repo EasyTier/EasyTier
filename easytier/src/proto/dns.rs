@@ -1,20 +1,22 @@
 use crate::dns::config::zone::Fallthrough;
 use crate::proto::common::Url;
-use crate::proto::utils::TransientDigest;
 use hickory_proto::rr::LowerName;
 use std::fmt::Write;
 
-include!(concat!(env!("OUT_DIR"), "/dns.rs"));
+pub use easytier_proto::dns::*;
 
-impl HeartbeatRequest {
-    pub fn update(&mut self, snapshot: DnsSnapshot) {
-        self.digest = snapshot.digest().into();
-        self.snapshot = Some(snapshot);
-    }
+pub trait ZoneDataExt {
+    fn new<Record: AsRef<str>>(
+        origin: &LowerName,
+        ttl: u32,
+        records: impl IntoIterator<Item = Record>,
+        forwarders: impl IntoIterator<Item = Url>,
+        fallthrough: impl IntoIterator<Item = Fallthrough>,
+    ) -> Self;
 }
 
-impl ZoneData {
-    pub fn new<Record: AsRef<str>>(
+impl ZoneDataExt for ZoneData {
+    fn new<Record: AsRef<str>>(
         origin: &LowerName,
         ttl: u32,
         records: impl IntoIterator<Item = Record>,

@@ -17,6 +17,8 @@ pub struct StorageToken {
 struct ClientInfo {
     storage_token: StorageToken,
     report_time: i64,
+    authorized: bool,
+    session_epoch: u64,
 }
 
 #[derive(Debug)]
@@ -45,17 +47,36 @@ impl Storage {
         }))
     }
 
-    fn remove_client_info_map(map: &DashMap<uuid::Uuid, ClientInfo>, stoken: &StorageToken) {
+    fn remove_client_info_map(
+        map: &DashMap<uuid::Uuid, ClientInfo>,
+        stoken: &StorageToken,
+        session_epoch: u64,
+    ) {
         map.remove_if(&stoken.machine_id, |_, v| {
             v.storage_token.client_url == stoken.client_url
                 && v.storage_token.user_id == stoken.user_id
+                && v.session_epoch == session_epoch
         });
     }
 
     fn update_client_info_map(map: &DashMap<uuid::Uuid, ClientInfo>, client_info: &ClientInfo) {
         map.entry(client_info.storage_token.machine_id)
             .and_modify(|e| {
-                if e.report_time < client_info.report_time {
+                let same_client = e.storage_token.client_url
+                    == client_info.storage_token.client_url
+                    && e.storage_token.user_id == client_info.storage_token.user_id;
+                let should_replace = if e.session_epoch != client_info.session_epoch {
+                    e.session_epoch < client_info.session_epoch
+                } else if (same_client && e.authorized != client_info.authorized)
+                    || (!e.authorized && client_info.authorized)
+                {
+                    true
+                } else if e.authorized && !client_info.authorized && !same_client {
+                    false
+                } else {
+                    e.report_time < client_info.report_time
+                };
+                if should_replace {
                     assert_eq!(
                         e.storage_token.machine_id,
                         client_info.storage_token.machine_id
@@ -66,21 +87,38 @@ impl Storage {
             .or_insert(client_info.clone());
     }
 
-    pub fn update_client(&self, stoken: StorageToken, report_time: i64) {
+    #[cfg(test)]
+    pub fn update_client(&self, stoken: StorageToken, report_time: i64, authorized: bool) {
+        self.update_session_client(stoken, report_time, authorized, 0);
+    }
+
+    pub(super) fn update_session_client(
+        &self,
+        stoken: StorageToken,
+        report_time: i64,
+        authorized: bool,
+        session_epoch: u64,
+    ) {
         let inner = self.0.user_clients_map.entry(stoken.user_id).or_default();
 
         let client_info = ClientInfo {
             storage_token: stoken.clone(),
             report_time,
+            authorized,
+            session_epoch,
         };
         Self::update_client_info_map(&inner, &client_info);
     }
 
     pub fn remove_client(&self, stoken: &StorageToken) {
+        self.remove_session_client(stoken, 0);
+    }
+
+    pub(super) fn remove_session_client(&self, stoken: &StorageToken, session_epoch: u64) {
         self.0
             .user_clients_map
             .remove_if(&stoken.user_id, |_, set| {
-                Self::remove_client_info_map(set, stoken);
+                Self::remove_client_info_map(set, stoken, session_epoch);
                 set.is_empty()
             });
     }
@@ -94,10 +132,20 @@ impl Storage {
         user_id: UserIdInDb,
         machine_id: &uuid::Uuid,
     ) -> Option<url::Url> {
+        self.get_client_url_by_machine_id_with_auth(user_id, machine_id, true)
+    }
+
+    pub fn get_client_url_by_machine_id_with_auth(
+        &self,
+        user_id: UserIdInDb,
+        machine_id: &uuid::Uuid,
+        require_authorized: bool,
+    ) -> Option<url::Url> {
         self.0.user_clients_map.get(&user_id).and_then(|info_map| {
-            info_map
-                .get(machine_id)
-                .map(|info| info.storage_token.client_url.clone())
+            info_map.get(machine_id).and_then(|info| {
+                (!require_authorized || info.authorized)
+                    .then(|| info.storage_token.client_url.clone())
+            })
         })
     }
 
@@ -108,10 +156,49 @@ impl Storage {
             .map(|info_map| {
                 info_map
                     .iter()
+                    .filter(|info| info.value().authorized)
                     .map(|info| info.value().storage_token.client_url.clone())
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    pub fn list_clients(&self) -> Vec<StorageToken> {
+        self.list_clients_with_auth(true)
+    }
+
+    /// List authorized client sessions that belong to a single user only.
+    pub fn list_user_client_tokens(&self, user_id: UserIdInDb) -> Vec<StorageToken> {
+        self.0
+            .user_clients_map
+            .get(&user_id)
+            .map(|info_map| {
+                info_map
+                    .iter()
+                    .filter(|info| info.value().authorized)
+                    .map(|info| info.value().storage_token.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn list_all_clients(&self) -> Vec<StorageToken> {
+        self.list_clients_with_auth(false)
+    }
+
+    fn list_clients_with_auth(&self, require_authorized: bool) -> Vec<StorageToken> {
+        self.0
+            .user_clients_map
+            .iter()
+            .flat_map(|user_clients| {
+                user_clients
+                    .value()
+                    .iter()
+                    .filter(|info| !require_authorized || info.value().authorized)
+                    .map(|info| info.value().storage_token.clone())
+                    .collect::<Vec<_>>()
+            })
+            .collect()
     }
 
     pub fn db(&self) -> &Db {
@@ -150,8 +237,8 @@ mod tests {
         let user1_token = make_storage_token(1, machine_id, "tcp://127.0.0.1:1001");
         let user2_token = make_storage_token(2, machine_id, "tcp://127.0.0.1:1002");
 
-        storage.update_client(user1_token.clone(), 10);
-        storage.update_client(user2_token.clone(), 20);
+        storage.update_client(user1_token.clone(), 10, true);
+        storage.update_client(user2_token.clone(), 20, true);
 
         assert_eq!(
             storage.get_client_url_by_machine_id(1, &machine_id),
@@ -173,5 +260,131 @@ mod tests {
         storage.remove_client(&user2_token);
 
         assert_eq!(storage.get_client_url_by_machine_id(2, &machine_id), None);
+    }
+
+    #[tokio::test]
+    async fn newer_session_epoch_owns_route_until_it_is_removed() {
+        let storage = Storage::new(Db::memory_db().await);
+        let machine_id = uuid::Uuid::new_v4();
+        let old = make_storage_token(1, machine_id, "tcp://127.0.0.1:1001");
+        let current = make_storage_token(1, machine_id, "tcp://127.0.0.1:1002");
+
+        storage.update_session_client(old.clone(), 20, true, 1);
+        storage.update_session_client(current.clone(), 20, true, 2);
+        storage.update_session_client(old.clone(), 30, true, 1);
+
+        assert_eq!(
+            storage.get_client_url_by_machine_id(1, &machine_id),
+            Some(current.client_url.clone())
+        );
+
+        storage.remove_session_client(&old, 1);
+        assert_eq!(
+            storage.get_client_url_by_machine_id(1, &machine_id),
+            Some(current.client_url.clone())
+        );
+        storage.remove_session_client(&current, 2);
+        assert_eq!(storage.get_client_url_by_machine_id(1, &machine_id), None);
+    }
+
+    #[tokio::test]
+    async fn list_clients_returns_current_storage_tokens() {
+        let storage = Storage::new(Db::memory_db().await);
+        let user1_token = make_storage_token(1, uuid::Uuid::new_v4(), "tcp://127.0.0.1:1001");
+        let user2_token = make_storage_token(2, uuid::Uuid::new_v4(), "tcp://127.0.0.1:1002");
+
+        storage.update_client(user1_token.clone(), 10, true);
+        storage.update_client(user2_token.clone(), 20, true);
+
+        let tokens = storage.list_clients();
+        assert_eq!(tokens.len(), 2);
+        assert!(tokens.iter().any(|token| token.token == user1_token.token));
+        assert!(tokens.iter().any(|token| token.token == user2_token.token));
+
+        storage.remove_client(&user1_token);
+
+        let tokens = storage.list_clients();
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].token, user2_token.token);
+    }
+
+    #[tokio::test]
+    async fn pending_client_is_listed_but_not_authorized_for_machine_lookup() {
+        let storage = Storage::new(Db::memory_db().await);
+        let machine_id = uuid::Uuid::new_v4();
+        let token = make_storage_token(1, machine_id, "tcp://127.0.0.1:1001");
+
+        storage.update_client(token.clone(), 10, false);
+
+        assert_eq!(storage.list_clients().len(), 0);
+        assert_eq!(storage.list_all_clients().len(), 1);
+        assert_eq!(storage.list_user_clients(1), Vec::<url::Url>::new());
+        assert_eq!(storage.get_client_url_by_machine_id(1, &machine_id), None);
+        assert_eq!(
+            storage.get_client_url_by_machine_id_with_auth(1, &machine_id, false),
+            Some(token.client_url.clone())
+        );
+
+        storage.update_client(token.clone(), 11, true);
+
+        assert_eq!(
+            storage.get_client_url_by_machine_id(1, &machine_id),
+            Some(token.client_url.clone())
+        );
+
+        storage.update_client(token.clone(), 11, false);
+
+        assert_eq!(storage.get_client_url_by_machine_id(1, &machine_id), None);
+        assert_eq!(storage.list_clients().len(), 0);
+        assert_eq!(storage.list_all_clients().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn stale_client_authorization_update_does_not_replace_newer_client() {
+        let storage = Storage::new(Db::memory_db().await);
+        let machine_id = uuid::Uuid::new_v4();
+        let old_token = make_storage_token(1, machine_id, "tcp://127.0.0.1:1001");
+        let new_token = make_storage_token(1, machine_id, "tcp://127.0.0.1:1002");
+
+        storage.update_client(old_token.clone(), 10, true);
+        storage.update_client(new_token.clone(), 20, true);
+        storage.update_client(old_token, 10, false);
+
+        assert_eq!(
+            storage.get_client_url_by_machine_id(1, &machine_id),
+            Some(new_token.client_url)
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_client_does_not_replace_authorized_route() {
+        let storage = Storage::new(Db::memory_db().await);
+        let machine_id = uuid::Uuid::new_v4();
+        let authorized_token = make_storage_token(1, machine_id, "tcp://127.0.0.1:1001");
+        let pending_token = make_storage_token(1, machine_id, "tcp://127.0.0.1:1002");
+
+        storage.update_client(authorized_token.clone(), 10, true);
+        storage.update_client(pending_token, i64::MAX, false);
+
+        assert_eq!(
+            storage.get_client_url_by_machine_id(1, &machine_id),
+            Some(authorized_token.client_url)
+        );
+    }
+
+    #[tokio::test]
+    async fn authorized_client_replaces_pending_route_regardless_of_report_time() {
+        let storage = Storage::new(Db::memory_db().await);
+        let machine_id = uuid::Uuid::new_v4();
+        let pending_token = make_storage_token(1, machine_id, "tcp://127.0.0.1:1001");
+        let authorized_token = make_storage_token(1, machine_id, "tcp://127.0.0.1:1002");
+
+        storage.update_client(pending_token, i64::MAX, false);
+        storage.update_client(authorized_token.clone(), 10, true);
+
+        assert_eq!(
+            storage.get_client_url_by_machine_id(1, &machine_id),
+            Some(authorized_token.client_url)
+        );
     }
 }

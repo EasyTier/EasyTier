@@ -570,3 +570,4 @@ mod tests {
         Ok(())
     }
 }
+use crate::proto::dns::ZoneDataExt;

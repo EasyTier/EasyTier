@@ -1,8 +1,8 @@
-use crate::common::config::ConfigBase;
+use super::ConfigBase;
 use crate::dns::config::policy::{DnsExportPolicy, ZonePolicyConfig};
 use crate::dns::utils::addr::NameServerAddrGroup;
 use crate::dns::zone::Zone;
-use crate::proto::dns::ZoneData;
+use crate::proto::dns::{ZoneData, ZoneDataExt};
 use derive_more::From;
 use hickory_proto::op::ResponseCode;
 use hickory_proto::rr::LowerName;

@@ -18,9 +18,20 @@ network_secret: 网络密码
 public_server_url: 公共服务器地址
 peer_urls: 对等节点地址
 proxy_cidrs: 子网代理CIDR
-enable_vpn_portal: 启用VPN门户
-vpn_portal_listen_port: 监听端口
-vpn_portal_client_network: 客户端子网
+vpn_portal_wireguard_listen: WireGuard 监听地址
+vpn_portal_wireguard_listen_placeholder: 例如：0.0.0.0:22022
+vpn_portal_wireguard_private_key: WireGuard 服务端私钥
+vpn_portal_wireguard_private_key_placeholder: 必填 Base64 密钥（可用 wg genkey 生成）
+vpn_portal_clients: WireGuard 客户端
+vpn_portal_add_client: 添加客户端
+vpn_portal_no_clients: 尚未配置客户端
+vpn_portal_client_name: 客户端名称
+vpn_portal_client_name_placeholder: 例如：alice-phone
+vpn_portal_client_virtual_ip: 虚拟网 CIDR
+vpn_portal_client_virtual_ip_placeholder: 例如：10.126.126.10/24
+vpn_portal_client_groups: ACL 组
+vpn_portal_client_groups_placeholder: 选择 ACL 组
+vpn_portal_remove_client: 删除客户端
 dev_name: TUN接口名称
 advanced_settings: 高级设置
 basic_settings: 基础设置
@@ -43,6 +54,12 @@ network_instances: 网络实例
 instance_id: 实例ID
 network_infos: 网络信息
 parse_network_config: 解析网络配置
+config_generator_placeholder: 生成的 TOML 配置将显示在这里
+generate_config: 生成配置
+copy_config: 复制配置
+config_copied: 已复制
+config_generation_failed: 生成失败
+config_copy_failed: 复制失败
 retain_network_instance: 保留网络实例
 collect_network_infos: 收集网络信息
 settings: 设置
@@ -55,6 +72,11 @@ logging_level_trace: 跟踪
 logging_level_off: 关闭
 logging_open_dir: 打开日志目录
 logging_copy_dir: 复制日志路径
+vpn_tile_no_network: 没有已配置的网络
+vpn_tile_no_network_description: 请先在 EasyTier 中配置网络，再使用 VPN 快捷磁贴。
+vpn_tile_started: VPN 网络已启动
+vpn_tile_stopped: VPN 网络已停止
+vpn_tile_action_failed: 'VPN 磁贴操作失败：{error}'
 disable_auto_launch: 关闭开机自启
 enable_auto_launch: 开启开机自启
 hide_dock_icon: 隐藏 Dock 图标
@@ -81,6 +103,21 @@ upload: 上传
 download: 下载
 show_vpn_portal_config: 显示VPN门户配置
 vpn_portal_config: VPN门户配置
+vpn_portal_not_configured: 当前节点未配置 VPN 门户
+vpn_portal_load_failed: VPN 门户信息加载失败
+vpn_portal_listener: 监听地址
+vpn_portal_type: 类型
+vpn_portal_state: 状态
+vpn_portal_peer_id: 节点 ID
+vpn_portal_endpoint: 客户端端点
+vpn_portal_tunnel_ip: 客户端隧道地址
+vpn_portal_client_config: 客户端配置
+vpn_portal_copy_client_config: 复制客户端配置
+vpn_portal_state_unspecified: 未知
+vpn_portal_state_offline: 离线
+vpn_portal_state_connecting: 连接中
+vpn_portal_state_online: 在线
+vpn_portal_state_error: 错误
 show_event_log: 显示事件日志
 event_log: 事件日志
 peer_info: 节点信息
@@ -341,6 +378,8 @@ web:
     import_config: 导入配置
     create_new: 创建新网络
     network_status: 网络状态
+    loading_network_status: 正在加载网络状态
+    network_info_unavailable: 网络状态不可用
     network_configuration: 网络配置
     loading_network_configuration: 加载网络配置
     no_network_selected: 未选择网络

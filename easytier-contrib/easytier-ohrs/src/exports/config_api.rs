@@ -1,7 +1,12 @@
 use crate::config;
+use crate::config::types::stored_config::SnapshotImportResult;
 
 pub(crate) fn init_config_store(root_dir: String) -> bool {
     config::repository::init_config_store(root_dir)
+}
+
+pub(crate) fn reset_config_store() -> bool {
+    config::repository::reset_config_store()
 }
 
 pub(crate) fn list_configs() -> String {
@@ -36,6 +41,10 @@ pub(crate) fn set_config_field(config_id: String, field: String, json_value: Str
     config::repository::set_config_field_value(&config_id, &field, &json_value)
 }
 
+pub(crate) fn set_config_favorite(config_id: String, favorite: bool) -> bool {
+    config::storage::config_meta::set_config_favorite(config_id, favorite).is_some()
+}
+
 pub(crate) fn import_toml(toml_text: String, display_name: Option<String>) -> Option<String> {
     config::repository::import_toml_config(toml_text, display_name)
         .map(|record| record.meta.config_id)
@@ -43,4 +52,18 @@ pub(crate) fn import_toml(toml_text: String, display_name: Option<String>) -> Op
 
 pub(crate) fn export_toml(config_id: String) -> Option<String> {
     config::repository::export_config_toml(&config_id).map(|ret| ret.toml_text)
+}
+
+pub(crate) fn export_config_store_snapshot(target_path: String) -> bool {
+    config::storage::config_meta::export_config_store_snapshot(target_path)
+}
+
+pub(crate) fn import_config_store_snapshot(source_path: String) -> bool {
+    config::storage::config_meta::import_config_store_snapshot(source_path)
+}
+
+pub(crate) fn import_config_store_snapshot_with_result(
+    source_path: String,
+) -> SnapshotImportResult {
+    config::storage::config_meta::import_config_store_snapshot_with_result(source_path)
 }

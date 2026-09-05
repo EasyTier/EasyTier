@@ -1,12 +1,14 @@
-use axum::extract::Path;
+use axum::extract::{DefaultBodyLimit, Path};
 use axum::http::StatusCode;
-use axum::routing::{delete, post};
+use axum::routing::{delete, post, put};
 use axum::{Json, Router, extract::State, routing::get};
 use axum_login::AuthUser;
-use easytier::launcher::NetworkConfig;
+use easytier::common::config::{
+    ConfigSource as RuntimeConfigSource, NetworkConfig, config_source_from_rpc,
+};
 use easytier::proto::common::Void;
 use easytier::proto::{api::manage::*, web::*};
-use easytier::rpc_service::remote_client::{
+use easytier_core::management::remote_client::{
     GetNetworkMetasResponse, ListNetworkInstanceIdsJsonResp, RemoteClientError, RemoteClientManager,
 };
 use sea_orm::DbErr;
@@ -19,6 +21,8 @@ use super::{
     AppState, AppStateInner, Error, HttpHandleError, RpcError, convert_db_error, other_error,
 };
 
+const MAX_MANAGED_CONFIG_REQUEST_BODY_SIZE: usize = 32 * 1024 * 1024;
+
 fn convert_rpc_error(e: RpcError) -> (StatusCode, Json<Error>) {
     let status_code = match &e {
         RpcError::ExecutionError(_) => StatusCode::BAD_REQUEST,
@@ -27,6 +31,8 @@ fn convert_rpc_error(e: RpcError) -> (StatusCode, Json<Error>) {
     };
     let error = Error {
         message: format!("{:?}", e),
+        code: None,
+        current_config_revision: None,
     };
     (status_code, Json(error))
 }
@@ -60,6 +66,7 @@ struct SaveNetworkJsonReq {
 struct RunNetworkJsonReq {
     config: NetworkConfig,
     save: bool,
+    source: Option<i32>,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -83,6 +90,27 @@ struct RemoveNetworkJsonReq {
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct ManagedNetworkConfigJson {
+    instance_id: uuid::Uuid,
+    network_config: serde_json::Value,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct ReconcileManagedNetworkConfigsJsonReq {
+    managed_network_configs: Vec<ManagedNetworkConfigJson>,
+    config_revision: Option<String>,
+    expected_config_revision: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct PatchManagedNetworkConfigsJsonReq {
+    upserts: Vec<ManagedNetworkConfigJson>,
+    delete_instance_ids: Vec<uuid::Uuid>,
+    config_revision: String,
+    expected_config_revision: String,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct ListMachineItem {
     client_url: Option<url::Url>,
     info: Option<HeartbeatRequest>,
@@ -97,6 +125,37 @@ struct ListMachineJsonResp {
 pub struct NetworkApi;
 
 impl NetworkApi {
+    fn convert_managed_config_error(error: anyhow::Error) -> HttpHandleError {
+        let (status, code, current_config_revision) =
+            match error.downcast_ref::<crate::client_manager::ManagedConfigError>() {
+                Some(crate::client_manager::ManagedConfigError::Invalid(_)) => {
+                    (StatusCode::BAD_REQUEST, None, None)
+                }
+                Some(crate::client_manager::ManagedConfigError::RevisionConflict {
+                    current,
+                    ..
+                }) => (
+                    StatusCode::CONFLICT,
+                    Some("managed_config_revision_conflict".to_string()),
+                    current.clone(),
+                ),
+                Some(crate::client_manager::ManagedConfigError::OwnershipConflict { .. }) => (
+                    StatusCode::CONFLICT,
+                    Some("managed_config_ownership_conflict".to_string()),
+                    None,
+                ),
+                None => (StatusCode::INTERNAL_SERVER_ERROR, None, None),
+            };
+        (
+            status,
+            Json(Error {
+                message: error.to_string(),
+                code,
+                current_config_revision,
+            }),
+        )
+    }
+
     fn get_user_id(auth_session: &AuthSession) -> Result<UserIdInDb, (StatusCode, Json<Error>)> {
         let Some(user_id) = auth_session.user.as_ref().map(|x| x.id()) else {
             return Err((
@@ -129,14 +188,22 @@ impl NetworkApi {
         Path(machine_id): Path<uuid::Uuid>,
         Json(payload): Json<RunNetworkJsonReq>,
     ) -> Result<Json<Void>, HttpHandleError> {
+        let user_id = Self::get_user_id(&auth_session)?;
         client_mgr
-            .handle_run_network_instance(
-                (Self::get_user_id(&auth_session)?, machine_id),
+            .invalidate_applied_config_revision(user_id, machine_id)
+            .await;
+        let result = client_mgr
+            .handle_run_network_instance_with_source(
+                (user_id, machine_id),
                 payload.config,
                 payload.save,
+                RuntimeConfigSource::Web,
             )
-            .await
-            .map_err(convert_error)?;
+            .await;
+        client_mgr
+            .invalidate_applied_config_revision(user_id, machine_id)
+            .await;
+        result.map_err(convert_error)?;
         Ok(Void::default().into())
     }
 
@@ -188,13 +255,18 @@ impl NetworkApi {
         State(client_mgr): AppState,
         Path((machine_id, inst_id)): Path<(uuid::Uuid, uuid::Uuid)>,
     ) -> Result<(), HttpHandleError> {
+        let user_id = Self::get_user_id(&auth_session)?;
         client_mgr
-            .handle_remove_network_instances(
-                (Self::get_user_id(&auth_session)?, machine_id),
-                vec![inst_id],
-            )
-            .await
-            .map_err(convert_error)
+            .invalidate_applied_config_revision(user_id, machine_id)
+            .await;
+        let result = client_mgr
+            .handle_remove_network_instances((user_id, machine_id), vec![inst_id])
+            .await;
+        client_mgr
+            .invalidate_applied_config_revision(user_id, machine_id)
+            .await;
+        result.map_err(convert_error)?;
+        Ok(())
     }
 
     async fn handle_list_machines(
@@ -234,14 +306,18 @@ impl NetworkApi {
             ));
         };
 
+        let user_id = Self::get_user_id(&auth_session)?;
         client_mgr
-            .handle_update_network_state(
-                (auth_session.user.unwrap().id(), machine_id),
-                inst_id,
-                payload.disabled,
-            )
-            .await
-            .map_err(convert_error)
+            .invalidate_applied_config_revision(user_id, machine_id)
+            .await;
+        let result = client_mgr
+            .handle_update_network_state((user_id, machine_id), inst_id, payload.disabled)
+            .await;
+        client_mgr
+            .invalidate_applied_config_revision(user_id, machine_id)
+            .await;
+        result.map_err(convert_error)?;
+        Ok(())
     }
 
     async fn handle_get_network_metas(
@@ -273,14 +349,23 @@ impl NetworkApi {
                 other_error("Instance ID mismatch".to_string()).into(),
             ));
         }
+        let user_id = Self::get_user_id(&auth_session)?;
         client_mgr
-            .handle_save_network_config(
-                (Self::get_user_id(&auth_session)?, machine_id),
+            .invalidate_applied_config_revision(user_id, machine_id)
+            .await;
+        let result = client_mgr
+            .handle_save_network_config_with_source(
+                (user_id, machine_id),
                 inst_id,
                 payload.config,
+                RuntimeConfigSource::Web,
             )
-            .await
-            .map_err(convert_error)
+            .await;
+        client_mgr
+            .invalidate_applied_config_revision(user_id, machine_id)
+            .await;
+        result.map_err(convert_error)?;
+        Ok(())
     }
 
     async fn handle_get_network_config(
@@ -302,10 +387,25 @@ impl NetworkApi {
         Path((user_id, machine_id)): Path<(UserIdInDb, uuid::Uuid)>,
         Json(payload): Json<RunNetworkJsonReq>,
     ) -> Result<Json<Void>, HttpHandleError> {
+        let source = payload
+            .source
+            .and_then(config_source_from_rpc)
+            .unwrap_or(RuntimeConfigSource::Web);
         client_mgr
-            .handle_run_network_instance((user_id, machine_id), payload.config, payload.save)
-            .await
-            .map_err(convert_error)?;
+            .invalidate_applied_config_revision(user_id, machine_id)
+            .await;
+        let result = client_mgr
+            .handle_run_network_instance_with_source(
+                (user_id, machine_id),
+                payload.config,
+                payload.save,
+                source,
+            )
+            .await;
+        client_mgr
+            .invalidate_applied_config_revision(user_id, machine_id)
+            .await;
+        result.map_err(convert_error)?;
         Ok(Void::default().into())
     }
 
@@ -314,9 +414,69 @@ impl NetworkApi {
         Path((user_id, machine_id, inst_id)): Path<(UserIdInDb, uuid::Uuid, uuid::Uuid)>,
     ) -> Result<(), HttpHandleError> {
         client_mgr
+            .invalidate_applied_config_revision(user_id, machine_id)
+            .await;
+        let result = client_mgr
             .handle_remove_network_instances((user_id, machine_id), vec![inst_id])
+            .await;
+        client_mgr
+            .invalidate_applied_config_revision(user_id, machine_id)
+            .await;
+        result.map_err(convert_error)?;
+        Ok(())
+    }
+
+    async fn handle_reconcile_managed_network_configs_internal(
+        State(client_mgr): AppState,
+        Path((user_id, machine_id)): Path<(UserIdInDb, uuid::Uuid)>,
+        Json(payload): Json<ReconcileManagedNetworkConfigsJsonReq>,
+    ) -> Result<StatusCode, HttpHandleError> {
+        let desired = payload
+            .managed_network_configs
+            .into_iter()
+            .map(|item| crate::webhook::ManagedNetworkConfig {
+                instance_id: item.instance_id.to_string(),
+                network_config: item.network_config,
+            })
+            .collect();
+        client_mgr
+            .reconcile_managed_network_configs(
+                user_id,
+                machine_id,
+                desired,
+                payload.config_revision,
+                payload.expected_config_revision,
+            )
             .await
-            .map_err(convert_error)
+            .map_err(Self::convert_managed_config_error)?;
+        Ok(StatusCode::NO_CONTENT)
+    }
+
+    async fn handle_patch_managed_network_configs_internal(
+        State(client_mgr): AppState,
+        Path((user_id, machine_id)): Path<(UserIdInDb, uuid::Uuid)>,
+        Json(payload): Json<PatchManagedNetworkConfigsJsonReq>,
+    ) -> Result<StatusCode, HttpHandleError> {
+        let upserts = payload
+            .upserts
+            .into_iter()
+            .map(|item| crate::webhook::ManagedNetworkConfig {
+                instance_id: item.instance_id.to_string(),
+                network_config: item.network_config,
+            })
+            .collect();
+        client_mgr
+            .patch_managed_network_configs(
+                user_id,
+                machine_id,
+                upserts,
+                payload.delete_instance_ids,
+                payload.config_revision,
+                payload.expected_config_revision,
+            )
+            .await
+            .map_err(Self::convert_managed_config_error)?;
+        Ok(StatusCode::NO_CONTENT)
     }
 
     async fn handle_list_network_instance_ids_internal(
@@ -346,7 +506,10 @@ impl NetworkApi {
         Router::new()
             .route(
                 "/api/internal/users/:user-id/machines/:machine-id/networks",
-                post(Self::handle_run_network_instance_internal)
+                put(Self::handle_reconcile_managed_network_configs_internal)
+                    .patch(Self::handle_patch_managed_network_configs_internal)
+                    .layer(DefaultBodyLimit::max(MAX_MANAGED_CONFIG_REQUEST_BODY_SIZE))
+                    .post(Self::handle_run_network_instance_internal)
                     .get(Self::handle_list_network_instance_ids_internal),
             )
             .route(
@@ -390,5 +553,43 @@ impl NetworkApi {
                 "/api/v1/machines/:machine-id/networks/metas",
                 post(Self::handle_get_network_metas),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn revision_conflict_response_exposes_machine_readable_current_revision() {
+        let error = crate::client_manager::ManagedConfigError::RevisionConflict {
+            expected: Some("rev-1".to_string()),
+            current: Some("rev-2".to_string()),
+        };
+
+        let (status, Json(body)) = NetworkApi::convert_managed_config_error(error.into());
+
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(
+            body.code.as_deref(),
+            Some("managed_config_revision_conflict")
+        );
+        assert_eq!(body.current_config_revision.as_deref(), Some("rev-2"));
+    }
+
+    #[test]
+    fn ownership_conflict_is_distinct_from_revision_conflict() {
+        let error = crate::client_manager::ManagedConfigError::OwnershipConflict {
+            instance_id: uuid::Uuid::new_v4(),
+        };
+
+        let (status, Json(body)) = NetworkApi::convert_managed_config_error(error.into());
+
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(
+            body.code.as_deref(),
+            Some("managed_config_ownership_conflict")
+        );
+        assert_eq!(body.current_config_revision, None);
     }
 }

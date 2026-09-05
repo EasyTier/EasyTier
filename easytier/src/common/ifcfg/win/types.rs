@@ -4,9 +4,7 @@
 //
 
 use cidr::{Ipv4Inet, Ipv6Inet};
-use std::ffi::OsString;
 use std::net::{Ipv4Addr, Ipv6Addr};
-use std::os::windows::prelude::*;
 use winapi::shared::ws2def::*;
 use winapi::shared::ws2ipdef::*;
 
@@ -65,38 +63,4 @@ pub fn convert_ipv6addr_to_sockaddr(ip: &Ipv6Addr) -> SOCKADDR_IN6 {
         sin6_addr: convert_ipv6addr_to_inaddr(ip),
         ..Default::default()
     }
-}
-
-/// This function converts winapi::shared::ws2def::SOCKADDR_IN to std::net::Ipv4Addr
-pub fn convert_sockaddr_to_ipv4addr(sockaddr: &SOCKADDR_IN) -> Ipv4Addr {
-    unsafe {
-        Ipv4Addr::new(
-            sockaddr.sin_addr.S_un.S_un_b().s_b1,
-            sockaddr.sin_addr.S_un.S_un_b().s_b2,
-            sockaddr.sin_addr.S_un.S_un_b().s_b3,
-            sockaddr.sin_addr.S_un.S_un_b().s_b4,
-        )
-    }
-}
-
-/// This function converts a null-terminated Windows Unicode PWCHAR/LPWSTR to an OsString
-pub fn u16_ptr_to_osstring(ptr: *const u16) -> OsString {
-    assert!(!ptr.is_null());
-    let len = (0..)
-        .take_while(|&i| unsafe { *ptr.offset(i) } != 0)
-        .count();
-    let slice = unsafe { std::slice::from_raw_parts(ptr, len) };
-
-    OsString::from_wide(slice)
-}
-
-/// This function converts a null-terminated Windows PWCHAR/LPWSTR to a String
-pub fn u16_ptr_to_string(ptr: *const u16) -> String {
-    assert!(!ptr.is_null());
-    let len = (0..)
-        .take_while(|&i| unsafe { *ptr.offset(i) } != 0)
-        .count();
-    let slice = unsafe { std::slice::from_raw_parts(ptr, len) };
-
-    String::from_utf16_lossy(slice)
 }

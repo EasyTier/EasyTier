@@ -38,14 +38,6 @@ pub struct ExportTomlResult {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[napi(object)]
-pub struct StoredConfigSummary {
-    pub config_id: String,
-    pub display_name: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-#[napi(object)]
 pub struct SharedConfigLinkPayload {
     pub config_json: String,
     pub display_name: Option<String>,
@@ -65,4 +57,14 @@ pub struct LocalSocketSyncMessage {
 pub struct KeyValuePair {
     pub key: String,
     pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[napi(object)]
+pub struct SnapshotImportResult {
+    pub ok: bool,
+    pub error_code: String,
+    pub error_message: String,
+    pub snapshot_invalid: bool,
 }

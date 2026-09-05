@@ -8,42 +8,32 @@ use std::{
 };
 
 use anyhow::{Context, anyhow, bail};
+use easytier_core::{
+    connectivity::stun::{StunInfoProvider, StunSocketMapper},
+    process_runtime::CoreProcessRuntime,
+};
 use igd_next::{
     GetGenericPortMappingEntryError, PortMappingEntry, PortMappingProtocol, SearchOptions,
     aio::tokio::search_gateway,
 };
 use tempfile::TempDir;
-use tokio::net::UdpSocket;
 
-use super::{create_netns, del_netns, drop_insts, get_host_veth_name, ping_test};
+use super::{
+    InstanceTestExt as _, create_netns, del_netns, drop_insts, get_host_veth_name, ping_test,
+};
 use crate::{
     common::{
         config::{ConfigLoader, TomlConfigLoader},
         error::Error,
-        global_ctx::{GlobalCtx, GlobalCtxEvent},
+        global_ctx::GlobalCtxEvent,
         netns::NetNS,
-        stun::{MockStunInfoCollector, StunInfoCollectorTrait},
+        stun::MockStunInfoCollector,
     },
-    connector::udp_hole_punch::{UdpHolePunchConnector, common::UdpHolePunchListener},
-    instance::instance::Instance,
-    peers::{
-        create_packet_recv_chan,
-        peer_manager::{PeerManager, RouteAlgoType},
-        tests::{connect_peer_manager, wait_route_appear, wait_route_appear_with_cost},
-    },
+    instance::test_instance::TestInstance as Instance,
     proto::common::{NatType, StunInfo},
-    tunnel::{common::tests::wait_for_condition, ring::RingTunnelConnector},
+    tunnel::common::tests::wait_for_condition,
 };
 
-const TEST_NS_A: &str = "upnp_a";
-const TEST_NS_C: &str = "upnp_c";
-const TEST_BRIDGE: &str = "br_upnp";
-const TEST_WAN_IF: &str = "upnp_wan0";
-const TEST_GATEWAY_IP: Ipv4Addr = Ipv4Addr::new(172, 31, 255, 1);
-const TEST_CLIENT_A_IP: Ipv4Addr = Ipv4Addr::new(172, 31, 255, 2);
-const TEST_CLIENT_C_IP: Ipv4Addr = Ipv4Addr::new(172, 31, 255, 3);
-const TEST_EXTERNAL_IP: Ipv4Addr = Ipv4Addr::new(11, 22, 33, 44);
-const TEST_CONTROL_PORT: u16 = 5000;
 const TEST_IGD_DESCRIPTION: &str = "EasyTier udp hole punch";
 
 const DUAL_NS_A: &str = "upnp2_a";
@@ -65,90 +55,6 @@ const DUAL_WAN_IF_C: &str = "upnp2_wan_c";
 const DUAL_WAN_IF_C_PEER: &str = "upnp2_wan_c_p";
 const DUAL_GW_NS_A: &str = "upnp2_gw_a";
 const DUAL_GW_NS_C: &str = "upnp2_gw_c";
-
-struct UpnpIntegrationEnv {
-    _tempdir: TempDir,
-    child: Option<Child>,
-}
-
-impl UpnpIntegrationEnv {
-    async fn new() -> anyhow::Result<Self> {
-        cleanup_miniupnpd_processes();
-        cleanup_test_net();
-        create_test_net()?;
-
-        let tempdir = tempfile::tempdir().context("create miniupnpd tempdir")?;
-        let conf_path = tempdir.path().join("miniupnpd.conf");
-        let leases_path = tempdir.path().join("miniupnpd.leases");
-        std::fs::write(&leases_path, "").context("create miniupnpd lease file")?;
-        std::fs::write(
-            &conf_path,
-            format!(
-                "\
-ext_ifname={TEST_WAN_IF}
-listening_ip={TEST_BRIDGE}
-port={TEST_CONTROL_PORT}
-enable_natpmp=no
-enable_upnp=yes
-secure_mode=no
-system_uptime=yes
-lease_file={}
-ext_ip={}
-friendly_name=EasyTier Test IGD
-model_name=EasyTier Test
-serial=12345678
-uuid=9f0c5a3a-c4f0-4f1e-b4df-8a8c7b1e2d00
-allow 1024-65535 172.31.255.0/24 1024-65535
-deny 0-65535 0.0.0.0/0 0-65535
-",
-                leases_path.display(),
-                TEST_EXTERNAL_IP
-            ),
-        )
-        .context("write miniupnpd config")?;
-
-        let miniupnpd_bin = find_miniupnpd_bin()?;
-        let child = Command::new(miniupnpd_bin)
-            .args(["-d", "-f"])
-            .arg(&conf_path)
-            .stdin(Stdio::null())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .context("spawn miniupnpd")?;
-
-        let env = Self {
-            _tempdir: tempdir,
-            child: Some(child),
-        };
-        env.wait_ready().await?;
-        Ok(env)
-    }
-
-    async fn wait_ready(&self) -> anyhow::Result<()> {
-        wait_for_condition(
-            || async {
-                tokio::net::TcpStream::connect((TEST_GATEWAY_IP, TEST_CONTROL_PORT))
-                    .await
-                    .is_ok()
-            },
-            Duration::from_secs(10),
-        )
-        .await;
-        Ok(())
-    }
-}
-
-impl Drop for UpnpIntegrationEnv {
-    fn drop(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        cleanup_miniupnpd_processes();
-        cleanup_test_net();
-    }
-}
 
 struct DualGatewayUpnpIntegrationEnv {
     _tempdir: TempDir,
@@ -294,7 +200,7 @@ struct GatewayBackedStunCollector {
 }
 
 #[async_trait::async_trait]
-impl StunInfoCollectorTrait for GatewayBackedStunCollector {
+impl StunInfoProvider for GatewayBackedStunCollector {
     fn get_stun_info(&self) -> StunInfo {
         StunInfo {
             udp_nat_type: NatType::PortRestricted as i32,
@@ -306,104 +212,32 @@ impl StunInfoCollectorTrait for GatewayBackedStunCollector {
         }
     }
 
-    async fn get_udp_port_mapping(&self, local_port: u16) -> Result<SocketAddr, Error> {
-        query_udp_mapping(self.netns, self.external_ip, self.client_ip, local_port).await
+    async fn get_udp_port_mapping(&self, local_port: u16) -> anyhow::Result<SocketAddr> {
+        Ok(query_udp_mapping(self.netns, self.external_ip, self.client_ip, local_port).await?)
     }
 
+    async fn get_tcp_port_mapping(&self, local_port: u16) -> anyhow::Result<SocketAddr> {
+        Ok(SocketAddr::new(IpAddr::V4(self.external_ip), local_port))
+    }
+
+    fn update_stun_info(&self) {}
+}
+
+#[async_trait::async_trait]
+impl StunSocketMapper<crate::socket::udp::RuntimeUdpSocket> for GatewayBackedStunCollector {
     async fn get_udp_port_mapping_with_socket(
         &self,
-        udp: Arc<UdpSocket>,
-    ) -> Result<SocketAddr, Error> {
-        query_udp_mapping(
+        udp: Arc<crate::socket::udp::RuntimeUdpSocket>,
+    ) -> anyhow::Result<SocketAddr> {
+        use easytier_core::socket::udp::VirtualUdpSocket as _;
+        Ok(query_udp_mapping(
             self.netns,
             self.external_ip,
             self.client_ip,
             udp.local_addr()?.port(),
         )
-        .await
+        .await?)
     }
-
-    async fn get_tcp_port_mapping(&self, local_port: u16) -> Result<SocketAddr, Error> {
-        Ok(SocketAddr::new(IpAddr::V4(self.external_ip), local_port))
-    }
-}
-
-fn create_test_net() -> anyhow::Result<()> {
-    create_netns(TEST_NS_A, &format!("{TEST_CLIENT_A_IP}/24"), "fd10::2/64");
-    create_netns(TEST_NS_C, &format!("{TEST_CLIENT_C_IP}/24"), "fd10::3/64");
-    run_cmd(
-        "ip",
-        &["link", "add", "name", TEST_BRIDGE, "type", "bridge"],
-    )?;
-    for netns in [TEST_NS_A, TEST_NS_C] {
-        run_cmd(
-            "ip",
-            &[
-                "link",
-                "set",
-                get_host_veth_name(netns),
-                "master",
-                TEST_BRIDGE,
-            ],
-        )?;
-    }
-
-    run_cmd(
-        "ip",
-        &[
-            "addr",
-            "add",
-            &format!("{TEST_GATEWAY_IP}/24"),
-            "dev",
-            TEST_BRIDGE,
-        ],
-    )?;
-    run_cmd("ip", &["link", "add", TEST_WAN_IF, "type", "dummy"])?;
-    run_cmd(
-        "ip",
-        &[
-            "addr",
-            "add",
-            &format!("{TEST_EXTERNAL_IP}/24"),
-            "dev",
-            TEST_WAN_IF,
-        ],
-    )?;
-    run_cmd("ip", &["link", "set", TEST_WAN_IF, "up"])?;
-    run_cmd("ip", &["link", "set", TEST_BRIDGE, "up"])?;
-    setup_iptables_rules()?;
-    for (netns, guest_veth) in [(TEST_NS_A, "veth_upnp_a_g"), (TEST_NS_C, "veth_upnp_c_g")] {
-        run_cmd(
-            "ip",
-            &[
-                "netns",
-                "exec",
-                netns,
-                "ip",
-                "route",
-                "add",
-                "default",
-                "via",
-                &TEST_GATEWAY_IP.to_string(),
-                "dev",
-                guest_veth,
-            ],
-        )?;
-    }
-    run_cmd("sysctl", &["-w", "net.ipv4.ip_forward=1"])?;
-    Ok(())
-}
-
-fn cleanup_test_net() {
-    cleanup_iptables_rules();
-    del_netns(TEST_NS_A);
-    del_netns(TEST_NS_C);
-    let _ = Command::new("ip")
-        .args(["link", "del", TEST_BRIDGE])
-        .output();
-    let _ = Command::new("ip")
-        .args(["link", "del", TEST_WAN_IF])
-        .output();
 }
 
 fn write_dual_gateway_config(dir: &Path, config: DualGatewayConfig<'_>) -> anyhow::Result<PathBuf> {
@@ -739,151 +573,6 @@ fn cleanup_miniupnpd_processes() {
     let _ = Command::new("pkill").args(["-x", "miniupnpd"]).output();
 }
 
-fn setup_gateway_iptables_rules(
-    ext_if: &str,
-    lan_bridge: &str,
-    chain_name: &str,
-    postrouting_chain_name: &str,
-) -> anyhow::Result<()> {
-    cleanup_gateway_iptables_rules(ext_if, lan_bridge, chain_name, postrouting_chain_name);
-    let iptables = find_iptables_legacy_bin()?;
-
-    run_cmd(&iptables, &["-t", "nat", "-N", chain_name])?;
-    run_cmd(
-        &iptables,
-        &[
-            "-t",
-            "nat",
-            "-A",
-            "PREROUTING",
-            "-i",
-            ext_if,
-            "-j",
-            chain_name,
-        ],
-    )?;
-    run_cmd(&iptables, &["-t", "nat", "-N", postrouting_chain_name])?;
-    run_cmd(
-        &iptables,
-        &[
-            "-t",
-            "nat",
-            "-A",
-            "POSTROUTING",
-            "-o",
-            ext_if,
-            "-j",
-            postrouting_chain_name,
-        ],
-    )?;
-    run_cmd(&iptables, &["-t", "mangle", "-N", chain_name])?;
-    run_cmd(
-        &iptables,
-        &[
-            "-t",
-            "mangle",
-            "-A",
-            "PREROUTING",
-            "-i",
-            ext_if,
-            "-j",
-            chain_name,
-        ],
-    )?;
-    run_cmd(&iptables, &["-N", chain_name])?;
-    run_cmd(
-        &iptables,
-        &[
-            "-A", "FORWARD", "-i", ext_if, "!", "-o", ext_if, "-j", chain_name,
-        ],
-    )?;
-    run_cmd(
-        &iptables,
-        &[
-            "-A", "FORWARD", "-i", lan_bridge, "-o", ext_if, "-j", "ACCEPT",
-        ],
-    )?;
-    Ok(())
-}
-
-fn cleanup_gateway_iptables_rules(
-    ext_if: &str,
-    lan_bridge: &str,
-    chain_name: &str,
-    postrouting_chain_name: &str,
-) {
-    let Ok(iptables) = find_iptables_legacy_bin() else {
-        return;
-    };
-
-    let _ = Command::new(&iptables)
-        .args([
-            "-t",
-            "nat",
-            "-D",
-            "PREROUTING",
-            "-i",
-            ext_if,
-            "-j",
-            chain_name,
-        ])
-        .output();
-    let _ = Command::new(&iptables)
-        .args([
-            "-t",
-            "nat",
-            "-D",
-            "POSTROUTING",
-            "-o",
-            ext_if,
-            "-j",
-            postrouting_chain_name,
-        ])
-        .output();
-    let _ = Command::new(&iptables)
-        .args([
-            "-t",
-            "mangle",
-            "-D",
-            "PREROUTING",
-            "-i",
-            ext_if,
-            "-j",
-            chain_name,
-        ])
-        .output();
-    let _ = Command::new(&iptables)
-        .args([
-            "-D", "FORWARD", "-i", ext_if, "!", "-o", ext_if, "-j", chain_name,
-        ])
-        .output();
-    let _ = Command::new(&iptables)
-        .args([
-            "-D", "FORWARD", "-i", lan_bridge, "-o", ext_if, "-j", "ACCEPT",
-        ])
-        .output();
-    let _ = Command::new(&iptables).args(["-F", chain_name]).output();
-    let _ = Command::new(&iptables).args(["-X", chain_name]).output();
-    let _ = Command::new(&iptables)
-        .args(["-t", "mangle", "-F", chain_name])
-        .output();
-    let _ = Command::new(&iptables)
-        .args(["-t", "mangle", "-X", chain_name])
-        .output();
-    let _ = Command::new(&iptables)
-        .args(["-t", "nat", "-F", chain_name])
-        .output();
-    let _ = Command::new(&iptables)
-        .args(["-t", "nat", "-X", chain_name])
-        .output();
-    let _ = Command::new(&iptables)
-        .args(["-t", "nat", "-F", postrouting_chain_name])
-        .output();
-    let _ = Command::new(&iptables)
-        .args(["-t", "nat", "-X", postrouting_chain_name])
-        .output();
-}
-
 fn setup_gateway_iptables_rules_in_netns(
     netns: &str,
     ext_if: &str,
@@ -1052,174 +741,6 @@ fn cleanup_gateway_iptables_rules_in_netns(
     );
 }
 
-fn setup_iptables_rules() -> anyhow::Result<()> {
-    cleanup_iptables_rules();
-    let iptables = find_iptables_legacy_bin()?;
-
-    run_cmd(&iptables, &["-t", "nat", "-N", "MINIUPNPD"])?;
-    run_cmd(
-        &iptables,
-        &[
-            "-t",
-            "nat",
-            "-A",
-            "PREROUTING",
-            "-i",
-            TEST_WAN_IF,
-            "-j",
-            "MINIUPNPD",
-        ],
-    )?;
-    run_cmd(&iptables, &["-t", "nat", "-N", "MINIUPNPD-POSTROUTING"])?;
-    run_cmd(
-        &iptables,
-        &[
-            "-t",
-            "nat",
-            "-A",
-            "POSTROUTING",
-            "-o",
-            TEST_WAN_IF,
-            "-j",
-            "MINIUPNPD-POSTROUTING",
-        ],
-    )?;
-
-    run_cmd(&iptables, &["-t", "mangle", "-N", "MINIUPNPD"])?;
-    run_cmd(
-        &iptables,
-        &[
-            "-t",
-            "mangle",
-            "-A",
-            "PREROUTING",
-            "-i",
-            TEST_WAN_IF,
-            "-j",
-            "MINIUPNPD",
-        ],
-    )?;
-
-    run_cmd(&iptables, &["-N", "MINIUPNPD"])?;
-    run_cmd(
-        &iptables,
-        &[
-            "-A",
-            "FORWARD",
-            "-i",
-            TEST_WAN_IF,
-            "!",
-            "-o",
-            TEST_WAN_IF,
-            "-j",
-            "MINIUPNPD",
-        ],
-    )?;
-    run_cmd(
-        &iptables,
-        &[
-            "-A",
-            "FORWARD",
-            "-i",
-            TEST_BRIDGE,
-            "-o",
-            TEST_WAN_IF,
-            "-j",
-            "ACCEPT",
-        ],
-    )?;
-
-    Ok(())
-}
-
-fn cleanup_iptables_rules() {
-    let Ok(iptables) = find_iptables_legacy_bin() else {
-        return;
-    };
-
-    let _ = Command::new(&iptables)
-        .args([
-            "-t",
-            "nat",
-            "-D",
-            "PREROUTING",
-            "-i",
-            TEST_WAN_IF,
-            "-j",
-            "MINIUPNPD",
-        ])
-        .output();
-    let _ = Command::new(&iptables)
-        .args([
-            "-t",
-            "nat",
-            "-D",
-            "POSTROUTING",
-            "-o",
-            TEST_WAN_IF,
-            "-j",
-            "MINIUPNPD-POSTROUTING",
-        ])
-        .output();
-    let _ = Command::new(&iptables)
-        .args([
-            "-t",
-            "mangle",
-            "-D",
-            "PREROUTING",
-            "-i",
-            TEST_WAN_IF,
-            "-j",
-            "MINIUPNPD",
-        ])
-        .output();
-    let _ = Command::new(&iptables)
-        .args([
-            "-D",
-            "FORWARD",
-            "-i",
-            TEST_WAN_IF,
-            "!",
-            "-o",
-            TEST_WAN_IF,
-            "-j",
-            "MINIUPNPD",
-        ])
-        .output();
-    let _ = Command::new(&iptables)
-        .args([
-            "-D",
-            "FORWARD",
-            "-i",
-            TEST_BRIDGE,
-            "-o",
-            TEST_WAN_IF,
-            "-j",
-            "ACCEPT",
-        ])
-        .output();
-    let _ = Command::new(&iptables).args(["-F", "MINIUPNPD"]).output();
-    let _ = Command::new(&iptables).args(["-X", "MINIUPNPD"]).output();
-    let _ = Command::new(&iptables)
-        .args(["-t", "mangle", "-F", "MINIUPNPD"])
-        .output();
-    let _ = Command::new(&iptables)
-        .args(["-t", "mangle", "-X", "MINIUPNPD"])
-        .output();
-    let _ = Command::new(&iptables)
-        .args(["-t", "nat", "-F", "MINIUPNPD"])
-        .output();
-    let _ = Command::new(&iptables)
-        .args(["-t", "nat", "-X", "MINIUPNPD"])
-        .output();
-    let _ = Command::new(&iptables)
-        .args(["-t", "nat", "-F", "MINIUPNPD-POSTROUTING"])
-        .output();
-    let _ = Command::new(&iptables)
-        .args(["-t", "nat", "-X", "MINIUPNPD-POSTROUTING"])
-        .output();
-}
-
 fn run_cmd<S: AsRef<OsStr>>(cmd: S, args: &[&str]) -> anyhow::Result<()> {
     let cmd = cmd.as_ref();
     let output = Command::new(cmd)
@@ -1366,36 +887,6 @@ async fn query_udp_mapping(
     ))
 }
 
-async fn mapping_exists(local_port: u16) -> bool {
-    query_udp_mapping(TEST_NS_A, TEST_EXTERNAL_IP, TEST_CLIENT_A_IP, local_port)
-        .await
-        .is_ok()
-}
-
-async fn create_test_peer_manager(
-    inst_name: &str,
-    netns: Option<&str>,
-    disable_upnp: bool,
-    stun_collector: Box<dyn StunInfoCollectorTrait>,
-) -> Arc<PeerManager> {
-    let config = TomlConfigLoader::default();
-    config.set_inst_name(inst_name.to_owned());
-    config.set_netns(netns.map(ToOwned::to_owned));
-
-    let global_ctx = Arc::new(GlobalCtx::new(config));
-    if disable_upnp {
-        let mut flags = global_ctx.get_flags();
-        flags.disable_upnp = true;
-        global_ctx.set_flags(flags);
-    }
-    global_ctx.replace_stun_info_collector(stun_collector);
-
-    let (packet_tx, _packet_rx) = create_packet_recv_chan();
-    let peer_mgr = Arc::new(PeerManager::new(RouteAlgoType::Ospf, global_ctx, packet_tx));
-    peer_mgr.run().await.unwrap();
-    peer_mgr
-}
-
 fn create_test_instance_config(
     inst_name: &str,
     netns: Option<&str>,
@@ -1411,13 +902,14 @@ fn create_test_instance_config(
     config
 }
 
-fn create_test_instance(
+fn create_test_instance_with_process_runtime(
     inst_name: &str,
     netns: Option<&str>,
     ipv4: &str,
     ipv6: &str,
-    stun_collector: Box<dyn StunInfoCollectorTrait>,
+    stun_collector: Box<dyn StunSocketMapper<crate::socket::udp::RuntimeUdpSocket>>,
     configure_flags: impl FnOnce(&mut crate::common::config::Flags),
+    process_runtime: Arc<CoreProcessRuntime>,
 ) -> Instance {
     let config = create_test_instance_config(inst_name, netns, ipv4, ipv6);
     let mut flags = config.get_flags();
@@ -1425,11 +917,7 @@ fn create_test_instance(
     configure_flags(&mut flags);
     config.set_flags(flags);
 
-    let instance = Instance::new(config);
-    instance
-        .get_global_ctx()
-        .replace_stun_info_collector(stun_collector);
-    instance
+    Instance::new_with_process_runtime_and_stun_provider(config, process_runtime, stun_collector)
 }
 
 async fn wait_for_port_mapping_event(
@@ -1457,15 +945,20 @@ where
 }
 
 async fn peer_has_udp_conn_to_remote_addr(
-    peer_mgr: Arc<PeerManager>,
+    core: Arc<crate::instance::composition::NativeCoreInstance>,
     peer_id: u32,
     expected_remote_addr: SocketAddr,
 ) -> bool {
-    let Some(conns) = peer_mgr.get_peer_map().list_peer_conns(peer_id).await else {
+    let Some(peer) = core
+        .peer_snapshots()
+        .await
+        .into_iter()
+        .find(|peer| peer.peer_id == peer_id)
+    else {
         return false;
     };
 
-    conns.iter().any(|conn| {
+    peer.conns.iter().any(|conn| {
         let Some(tunnel) = conn.tunnel.as_ref() else {
             return false;
         };
@@ -1489,263 +982,34 @@ async fn peer_has_udp_conn_to_remote_addr(
     })
 }
 
-#[tokio::test]
-#[serial_test::serial(upnp)]
-async fn udp_hole_punch_listener_establishes_upnp_mapping() {
-    let _env = UpnpIntegrationEnv::new().await.unwrap();
-    let peer_mgr = create_test_peer_manager(
-        "upnp-test-listener",
-        Some(TEST_NS_A),
-        false,
-        Box::new(GatewayBackedStunCollector {
-            netns: TEST_NS_A,
-            client_ip: TEST_CLIENT_A_IP,
-            external_ip: TEST_EXTERNAL_IP,
-        }),
-    )
-    .await;
-    let mut event_rx = peer_mgr.get_global_ctx().subscribe();
-
-    let listener = UdpHolePunchListener::new(peer_mgr.clone()).await.unwrap();
-    let local_port = listener.get_socket().await.local_addr().unwrap().port();
-
-    let event = wait_for_port_mapping_event(&mut event_rx).await;
-    let mapped_addr = query_udp_mapping(TEST_NS_A, TEST_EXTERNAL_IP, TEST_CLIENT_A_IP, local_port)
-        .await
-        .unwrap();
-
-    match event {
-        GlobalCtxEvent::ListenerPortMappingEstablished {
-            local_listener,
-            mapped_listener,
-            backend,
-        } => {
-            let expected_external_ip = TEST_EXTERNAL_IP.to_string();
-            assert_eq!(backend, "igd");
-            assert_eq!(local_listener.scheme(), "udp");
-            assert_eq!(local_listener.port(), Some(local_port));
-            assert_eq!(mapped_listener.scheme(), "udp");
-            assert_eq!(
-                mapped_listener.host_str(),
-                Some(expected_external_ip.as_str())
-            );
-            assert_eq!(mapped_listener.port(), Some(mapped_addr.port()));
+async fn wait_instance_route(
+    inst: &Instance,
+    peer_id: u32,
+    cost: Option<i32>,
+) -> Result<(), Error> {
+    let core = inst.get_core_instance();
+    let now = std::time::Instant::now();
+    while now.elapsed() < Duration::from_secs(5) {
+        if core
+            .route_snapshots()
+            .await
+            .iter()
+            .any(|route| route.peer_id == peer_id && cost.is_none_or(|cost| route.cost == cost))
+        {
+            return Ok(());
         }
-        other => panic!("unexpected event: {other:?}"),
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
-
-    assert!(mapping_exists(local_port).await);
-
-    drop(listener);
-
-    wait_for_condition(
-        || async { !mapping_exists(local_port).await },
-        Duration::from_secs(10),
-    )
-    .await;
-}
-
-#[tokio::test]
-#[serial_test::serial(upnp)]
-async fn udp_hole_punch_listener_skips_upnp_when_disabled() {
-    let _env = UpnpIntegrationEnv::new().await.unwrap();
-    let peer_mgr = create_test_peer_manager(
-        "upnp-test-disabled",
-        Some(TEST_NS_A),
-        true,
-        Box::new(MockStunInfoCollector {
-            udp_nat_type: NatType::PortRestricted,
-        }),
-    )
-    .await;
-    let mut event_rx = peer_mgr.get_global_ctx().subscribe();
-
-    let listener = UdpHolePunchListener::new(peer_mgr.clone()).await.unwrap();
-    let local_port = listener.get_socket().await.local_addr().unwrap().port();
-
-    let event = tokio::time::timeout(Duration::from_secs(2), event_rx.recv()).await;
-    assert!(event.is_err(), "unexpected port mapping event: {event:?}");
-    assert!(!mapping_exists(local_port).await);
-
-    drop(listener);
-}
-
-#[tokio::test]
-#[serial_test::serial(upnp)]
-async fn udp_hole_punch_succeeds_via_upnp_mappings_with_different_external_ports() {
-    let _env = DualGatewayUpnpIntegrationEnv::new().await.unwrap();
-
-    let p_a = create_test_peer_manager(
-        "upnp-test-a",
-        Some(DUAL_NS_A),
-        false,
-        Box::new(GatewayBackedStunCollector {
-            netns: DUAL_NS_A,
-            client_ip: DUAL_CLIENT_A_IP,
-            external_ip: DUAL_EXTERNAL_A_IP,
-        }),
-    )
-    .await;
-    let mut event_rx_a = p_a.get_global_ctx().subscribe();
-    let p_b = create_test_peer_manager(
-        "upnp-test-b",
-        None,
-        false,
-        Box::new(MockStunInfoCollector {
-            udp_nat_type: NatType::Unknown,
-        }),
-    )
-    .await;
-    let p_c = create_test_peer_manager(
-        "upnp-test-c",
-        Some(DUAL_NS_C),
-        false,
-        Box::new(GatewayBackedStunCollector {
-            netns: DUAL_NS_C,
-            client_ip: DUAL_CLIENT_C_IP,
-            external_ip: DUAL_EXTERNAL_C_IP,
-        }),
-    )
-    .await;
-    let mut event_rx_c = p_c.get_global_ctx().subscribe();
-
-    connect_peer_manager(p_a.clone(), p_b.clone()).await;
-    connect_peer_manager(p_b.clone(), p_c.clone()).await;
-    timeout_stage(
-        "wait_route_appear(a,c)",
-        Duration::from_secs(10),
-        wait_route_appear(p_a.clone(), p_c.clone()),
-    )
-    .await
-    .unwrap();
-    timeout_stage(
-        "wait_route_appear_with_cost(a,c,2)",
-        Duration::from_secs(10),
-        wait_route_appear_with_cost(p_a.clone(), p_c.my_peer_id(), Some(2)),
-    )
-    .await
-    .unwrap();
-    let mut hole_punching_a = UdpHolePunchConnector::new(p_a.clone());
-    let mut hole_punching_c = UdpHolePunchConnector::new(p_c.clone());
-    hole_punching_a.run_as_client().await.unwrap();
-    hole_punching_c.run_as_server().await.unwrap();
-
-    timeout_stage(
-        "udp_hole_punch_run_immediately(a)",
-        Duration::from_secs(10),
-        hole_punching_a.run_immediately_for_test(),
-    )
-    .await;
-
-    let event_a = timeout_stage(
-        "wait_port_mapping_event(a)",
-        Duration::from_secs(15),
-        wait_for_port_mapping_event(&mut event_rx_a),
-    )
-    .await;
-    let event_c = timeout_stage(
-        "wait_port_mapping_event(c)",
-        Duration::from_secs(15),
-        wait_for_port_mapping_event(&mut event_rx_c),
-    )
-    .await;
-
-    let (local_port_a, mapped_port_a) = match event_a {
-        GlobalCtxEvent::ListenerPortMappingEstablished {
-            local_listener,
-            mapped_listener,
-            backend,
-        } => {
-            assert_eq!(backend, "igd");
-            (
-                local_listener.port().unwrap(),
-                mapped_listener.port().unwrap(),
-            )
-        }
-        other => panic!("unexpected event for a: {other:?}"),
-    };
-    let (local_port_c, mapped_port_c) = match event_c {
-        GlobalCtxEvent::ListenerPortMappingEstablished {
-            local_listener,
-            mapped_listener,
-            backend,
-        } => {
-            assert_eq!(backend, "igd");
-            (
-                local_listener.port().unwrap(),
-                mapped_listener.port().unwrap(),
-            )
-        }
-        other => panic!("unexpected event for c: {other:?}"),
-    };
-
-    assert_ne!(mapped_port_a, local_port_a);
-    assert_ne!(mapped_port_c, local_port_c);
-
-    let mapped_addr_a = timeout_stage(
-        "query_udp_mapping(a)",
-        Duration::from_secs(10),
-        query_udp_mapping(
-            DUAL_NS_A,
-            DUAL_EXTERNAL_A_IP,
-            DUAL_CLIENT_A_IP,
-            local_port_a,
-        ),
-    )
-    .await
-    .unwrap();
-    let mapped_addr_c = timeout_stage(
-        "query_udp_mapping(c)",
-        Duration::from_secs(10),
-        query_udp_mapping(
-            DUAL_NS_C,
-            DUAL_EXTERNAL_C_IP,
-            DUAL_CLIENT_C_IP,
-            local_port_c,
-        ),
-    )
-    .await
-    .unwrap();
-
-    assert_eq!(mapped_addr_a.port(), mapped_port_a);
-    assert_eq!(mapped_addr_c.port(), mapped_port_c);
-
-    timeout_stage(
-        "wait_route_cost_1_after_udp_hole_punch",
-        Duration::from_secs(15),
-        wait_for_condition(
-            || {
-                let p_a = p_a.clone();
-                let p_c = p_c.clone();
-                async move {
-                    let a_ok = p_a
-                        .list_routes()
-                        .await
-                        .iter()
-                        .any(|route| route.peer_id == p_c.my_peer_id() && route.cost == 1);
-                    let c_ok = p_c
-                        .list_routes()
-                        .await
-                        .iter()
-                        .any(|route| route.peer_id == p_a.my_peer_id() && route.cost == 1);
-                    a_ok && c_ok
-                }
-            },
-            Duration::from_secs(15),
-        ),
-    )
-    .await;
-
-    assert_ne!(mapped_addr_a.port(), local_port_a);
-    assert_ne!(mapped_addr_c.port(), local_port_c);
+    Err(Error::NotFound)
 }
 
 #[tokio::test]
 #[serial_test::serial(upnp)]
 async fn instances_build_direct_connection_via_upnp_udp_hole_punch() {
     let _env = DualGatewayUpnpIntegrationEnv::new().await.unwrap();
+    let process_runtime = CoreProcessRuntime::new();
 
-    let mut inst_a = create_test_instance(
+    let mut inst_a = create_test_instance_with_process_runtime(
         "upnp-inst-a",
         Some(DUAL_NS_A),
         "10.144.200.1/24",
@@ -1756,10 +1020,11 @@ async fn instances_build_direct_connection_via_upnp_udp_hole_punch() {
             external_ip: DUAL_EXTERNAL_A_IP,
         }),
         |flags| flags.need_p2p = true,
+        process_runtime.clone(),
     );
     let mut event_rx_a = inst_a.get_global_ctx().subscribe();
 
-    let mut inst_b = create_test_instance(
+    let mut inst_b = create_test_instance_with_process_runtime(
         "upnp-inst-b",
         None,
         "10.144.200.2/24",
@@ -1768,9 +1033,10 @@ async fn instances_build_direct_connection_via_upnp_udp_hole_punch() {
             udp_nat_type: NatType::Unknown,
         }),
         |_| {},
+        process_runtime.clone(),
     );
 
-    let mut inst_c = create_test_instance(
+    let mut inst_c = create_test_instance_with_process_runtime(
         "upnp-inst-c",
         Some(DUAL_NS_C),
         "10.144.200.3/24",
@@ -1781,6 +1047,7 @@ async fn instances_build_direct_connection_via_upnp_udp_hole_punch() {
             external_ip: DUAL_EXTERNAL_C_IP,
         }),
         |flags| flags.need_p2p = true,
+        process_runtime,
     );
     let mut event_rx_c = inst_c.get_global_ctx().subscribe();
 
@@ -1788,28 +1055,23 @@ async fn instances_build_direct_connection_via_upnp_udp_hole_punch() {
     inst_b.run().await.unwrap();
     inst_c.run().await.unwrap();
 
-    inst_a
-        .get_conn_manager()
-        .add_connector(RingTunnelConnector::new(
-            format!("ring://{}", inst_b.id()).parse().unwrap(),
-        ));
-    inst_c
-        .get_conn_manager()
-        .add_connector(RingTunnelConnector::new(
-            format!("ring://{}", inst_b.id()).parse().unwrap(),
-        ));
+    inst_a.add_connector_url(inst_b.ring_listener_url());
+    inst_c.add_connector_url(inst_b.ring_listener_url());
 
     timeout_stage(
         "wait_route_appear(inst_a, inst_c)",
         Duration::from_secs(10),
-        wait_route_appear(inst_a.get_peer_manager(), inst_c.get_peer_manager()),
+        async {
+            wait_instance_route(&inst_a, inst_c.peer_id(), None).await?;
+            wait_instance_route(&inst_c, inst_a.peer_id(), None).await
+        },
     )
     .await
     .unwrap();
     timeout_stage(
         "wait_route_cost_2(inst_a -> inst_c)",
         Duration::from_secs(10),
-        wait_route_appear_with_cost(inst_a.get_peer_manager(), inst_c.peer_id(), Some(2)),
+        wait_instance_route(&inst_a, inst_c.peer_id(), Some(2)),
     )
     .await
     .unwrap();
@@ -1902,31 +1164,31 @@ async fn instances_build_direct_connection_via_upnp_udp_hole_punch() {
         Duration::from_secs(20),
         wait_for_condition(
             || {
-                let peer_mgr_a = inst_a.get_peer_manager();
-                let peer_mgr_c = inst_c.get_peer_manager();
+                let core_a = inst_a.get_core_instance();
+                let core_c = inst_c.get_core_instance();
                 let peer_id_a = inst_a.peer_id();
                 let peer_id_c = inst_c.peer_id();
                 async move {
-                    peer_mgr_a.get_peer_map().has_peer(peer_id_c)
-                        && peer_mgr_c.get_peer_map().has_peer(peer_id_a)
-                        && peer_mgr_a
-                            .list_routes()
+                    core_a.connected_peers().await.contains(&peer_id_c)
+                        && core_c.connected_peers().await.contains(&peer_id_a)
+                        && core_a
+                            .route_snapshots()
                             .await
                             .iter()
                             .any(|route| route.peer_id == peer_id_c && route.cost == 1)
-                        && peer_mgr_c
-                            .list_routes()
+                        && core_c
+                            .route_snapshots()
                             .await
                             .iter()
                             .any(|route| route.peer_id == peer_id_a && route.cost == 1)
                         && peer_has_udp_conn_to_remote_addr(
-                            peer_mgr_a.clone(),
+                            core_a.clone(),
                             peer_id_c,
                             mapped_addr_c,
                         )
                         .await
                         && peer_has_udp_conn_to_remote_addr(
-                            peer_mgr_c.clone(),
+                            core_c.clone(),
                             peer_id_a,
                             mapped_addr_a,
                         )

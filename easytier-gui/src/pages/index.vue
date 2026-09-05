@@ -9,7 +9,13 @@ import { exit } from '@tauri-apps/plugin-process'
 import { I18nUtils, RemoteManagement, Utils } from "easytier-frontend-lib"
 import type { MenuItem } from 'primevue/menuitem'
 import { useTray } from '~/composables/tray'
-import { initMobileVpnService } from '~/composables/mobile_vpn'
+import {
+  consumePendingMobileVpnTileAction,
+  initMobileVpnService,
+  setMobileVpnTileActionHandler,
+  syncMobileVpnService,
+} from '~/composables/mobile_vpn'
+import { executeVpnTileAction } from '~/composables/mobile_vpn_tile'
 import { GUIRemoteClient } from '~/modules/api'
 
 import { useToast, useConfirm } from 'primevue'
@@ -213,7 +219,6 @@ onMounted(async () => {
   if (type() === 'android') {
     try {
       await initMobileVpnService()
-      console.error("easytier init vpn service done")
     } catch (e: any) {
       console.error("easytier init vpn service failed", e)
     }
@@ -222,6 +227,17 @@ onMounted(async () => {
   cleanupFns.push(await listenGlobalEvents())
   currentMode.value = loadMode()
   await initWithMode(currentMode.value);
+
+  if (type() === 'android') {
+    setMobileVpnTileActionHandler(handleMobileVpnTileAction)
+    cleanupFns.push(() => setMobileVpnTileActionHandler())
+    try {
+      await consumePendingMobileVpnTileAction()
+      await syncMobileVpnService()
+    } catch (e: any) {
+      console.error("easytier sync vpn service failed", e)
+    }
+  }
 
   onUnmounted(() => {
     cleanupFns.forEach(unlisten => unlisten())
@@ -234,6 +250,42 @@ let toast = useToast();
 const remoteClient = computed(() => new GUIRemoteClient());
 const instanceId = ref<string | undefined>(undefined);
 const clientRunning = ref(false);
+
+async function handleMobileVpnTileAction(action: 'start' | 'stop') {
+  try {
+    const result = await executeVpnTileAction(action, remoteClient.value, {
+      lastInstanceId: loadLastNetworkInstanceId(),
+      syncVpnService: syncMobileVpnService,
+    })
+
+    if (!result.instanceId) {
+      toast.add({
+        severity: 'warn',
+        summary: t('vpn_tile_no_network'),
+        detail: t('vpn_tile_no_network_description'),
+        life: 5000,
+      })
+      return
+    }
+
+    instanceId.value = result.instanceId
+    saveLastNetworkInstanceId(result.instanceId)
+    toast.add({
+      severity: action === 'start' ? 'success' : 'secondary',
+      summary: t(action === 'start' ? 'vpn_tile_started' : 'vpn_tile_stopped'),
+      life: 3000,
+    })
+  }
+  catch (error) {
+    console.error('VPN tile action failed', action, error)
+    toast.add({
+      severity: 'error',
+      summary: t('error'),
+      detail: t('vpn_tile_action_failed', { error: String(error) }),
+      life: 8000,
+    })
+  }
+}
 
 watch(instanceId, (newVal) => {
   if (newVal) {
