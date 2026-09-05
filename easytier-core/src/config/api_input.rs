@@ -51,23 +51,6 @@ pub fn add_proxy_network_to_config(
 pub type NetworkingMethod = easytier_proto::api::manage::NetworkingMethod;
 pub type NetworkConfig = easytier_proto::api::manage::NetworkConfig;
 
-/// Preserve the native-owned DNS schema through the management envelope.
-#[allow(deprecated)]
-pub(crate) fn project_dns_config(
-    config: &(impl ConfigLoader + ?Sized),
-    result: &mut NetworkConfig,
-) {
-    let dns = config.get_dns_config();
-    result.enable_magic_dns = dns.as_ref().map(|table| {
-        !table
-            .get("disabled")
-            .and_then(toml::Value::as_bool)
-            .unwrap_or(false)
-    });
-    result.dns_toml =
-        dns.map(|table| toml::to_string(&table).expect("a DNS TOML table serializes to TOML"));
-}
-
 pub(crate) fn managed_credential_from_proto(
     credential: &manage::ManagedCredentialConfig,
 ) -> ManagedCredentialConfig {
@@ -147,26 +130,8 @@ impl NetworkConfigExt for NetworkConfig {
     fn gen_config(&self) -> Result<TomlConfigLoader, anyhow::Error> {
         let cfg = TomlConfigLoader::default();
         if let Some(dns_toml) = &self.dns_toml {
-            let mut dns: toml::Table =
-                toml::from_str(dns_toml).context("invalid DNS TOML table")?;
-            if let Some(enabled) = self.enable_magic_dns {
-                let disabled = dns
-                    .get("disabled")
-                    .map(|value| value.as_bool().context("dns.disabled must be a boolean"))
-                    .transpose()?
-                    .unwrap_or(false);
-                // A changed legacy UI switch updates only this field; all
-                // other DNS policy entries stay in the preserved table.
-                if enabled == disabled {
-                    dns.insert("disabled".to_owned(), toml::Value::Boolean(!enabled));
-                }
-            }
+            let dns = toml::from_str(dns_toml).context("invalid DNS TOML table")?;
             cfg.set_dns_config(Some(dns));
-        } else if let Some(enabled) = self.enable_magic_dns {
-            cfg.set_dns_config(Some(toml::Table::from_iter([(
-                "disabled".to_owned(),
-                toml::Value::Boolean(!enabled),
-            )])));
         }
         cfg.set_id(
             self.instance_id
@@ -524,10 +489,6 @@ impl NetworkConfigExt for NetworkConfig {
             flags.disable_sym_hole_punching = disable_sym_hole_punching;
         }
 
-        if let Some(enable_magic_dns) = self.enable_magic_dns {
-            flags.accept_dns = enable_magic_dns;
-        }
-
         if let Some(mtu) = self.mtu {
             flags.mtu = mtu as u32;
         }
@@ -718,7 +679,9 @@ impl NetworkConfigExt for NetworkConfig {
         result.prefer_peer_relay = Some(flags.prefer_peer_relay);
         result.enable_udp_broadcast_relay = Some(flags.enable_udp_broadcast_relay);
         result.disable_sym_hole_punching = Some(flags.disable_sym_hole_punching);
-        project_dns_config(&config, &mut result);
+        result.dns_toml = config
+            .get_dns_config()
+            .map(|table| toml::to_string(&table).expect("a DNS TOML table serializes to TOML"));
         result.mtu = Some(flags.mtu as i32);
         result.data_compress_algo = (flags.data_compress_algo != default_flags.data_compress_algo)
             .then_some(flags.data_compress_algo);
@@ -760,7 +723,6 @@ mod tests {
     fn dns_policy_survives_both_management_projections() {
         let input = NetworkConfig {
             dns_toml: Some("domain = 'mesh.example.'\n[[zone]]\norigin = 'svc.mesh.example.'\nrecords = ['@ IN A 10.0.0.9']\n[zone.export]\ndisabled = false\n".into()),
-            enable_magic_dns: Some(true),
             ..standalone_config()
         };
         let config = input.gen_config().unwrap();
@@ -776,7 +738,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_dns_switch_is_explicit_and_can_edit_a_preserved_dns_table() {
+    fn dns_api_preserves_absence_and_explicit_disabled_state() {
         let implicit = standalone_config().gen_config().unwrap();
         assert_eq!(implicit.get_dns_config(), None);
         assert_eq!(
@@ -787,45 +749,44 @@ mod tests {
                 .get_dns_config(),
             None
         );
-        for enabled in [false, true] {
+        for disabled in [false, true] {
             let config = NetworkConfig {
-                enable_magic_dns: Some(enabled),
+                dns_toml: Some(format!("disabled = {disabled}\ndomain = 'mesh.example.'\n")),
                 ..standalone_config()
             }
             .gen_config()
             .unwrap();
             assert_eq!(
                 config.get_dns_config().unwrap()["disabled"].as_bool(),
-                Some(!enabled)
+                Some(disabled)
             );
+            let expected = config.get_dns_config();
             assert_eq!(
                 NetworkConfig::new_from_config(&config)
                     .unwrap()
-                    .enable_magic_dns,
-                Some(enabled)
+                    .gen_config()
+                    .unwrap()
+                    .get_dns_config(),
+                expected
+            );
+            #[cfg(feature = "web-client")]
+            assert_eq!(
+                crate::config::api::network_config_from_toml(&config)
+                    .gen_config()
+                    .unwrap()
+                    .get_dns_config(),
+                expected
             );
         }
+    }
+
+    #[test]
+    fn dns_api_rejects_invalid_toml() {
         let invalid = NetworkConfig {
             dns_toml: Some("domain = [".into()),
             ..standalone_config()
         };
         assert!(invalid.gen_config().is_err());
-
-        let config = NetworkConfig {
-            dns_toml: Some("domain = 'mesh.example.'\n".into()),
-            enable_magic_dns: Some(false),
-            ..standalone_config()
-        }
-        .gen_config()
-        .unwrap();
-        let dns = config.get_dns_config().unwrap();
-        assert_eq!(dns["domain"].as_str(), Some("mesh.example."));
-        assert_eq!(dns["disabled"].as_bool(), Some(true));
-        let mut enabled = NetworkConfig::new_from_config(&config).unwrap();
-        enabled.enable_magic_dns = Some(true);
-        let dns = enabled.gen_config().unwrap().get_dns_config().unwrap();
-        assert_eq!(dns["domain"].as_str(), Some("mesh.example."));
-        assert_eq!(dns["disabled"].as_bool(), Some(false));
     }
 
     fn api_portal_config() -> manage::VpnPortalConfig {

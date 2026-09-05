@@ -51,7 +51,6 @@ pub(crate) fn runtime_core_host_config() -> CoreInstanceHostConfig {
         gateway_enabled: cfg!(feature = "socks5"),
         proxy_enabled: cfg!(any(feature = "kcp", feature = "quic")),
         vpn_portal_enabled: cfg!(feature = "wireguard"),
-        magic_dns_enabled: cfg!(feature = "magic-dns"),
         kcp_enabled: cfg!(feature = "kcp"),
         quic_enabled: cfg!(feature = "quic"),
         udp_broadcast_enabled: cfg!(all(target_os = "windows", feature = "tun")),
@@ -71,7 +70,6 @@ pub(crate) fn compact_runtime_core_host_config() -> CoreInstanceHostConfig {
     config.gateway_enabled = false;
     config.proxy_enabled = false;
     config.vpn_portal_enabled = false;
-    config.magic_dns_enabled = false;
     config.kcp_enabled = false;
     config.quic_enabled = false;
     config.udp_broadcast_enabled = false;

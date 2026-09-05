@@ -17,8 +17,6 @@ use crate::proto::{
     common::{CompressionAlgoPb, SecureModeConfig},
 };
 
-pub const DEFAULT_ET_DNS_ZONE: &str = "et.net.";
-
 pub type Flags = crate::proto::common::FlagsInConfig;
 
 pub(crate) fn default_instance_name() -> String {
@@ -52,7 +50,6 @@ pub fn gen_default_flags() -> Flags {
         disable_kcp_input: false,
         disable_relay_kcp: false,
         enable_relay_foreign_network_kcp: false,
-        accept_dns: false,
         private_mode: false,
         enable_quic_proxy: false,
         disable_quic_input: false,
@@ -62,7 +59,6 @@ pub fn gen_default_flags() -> Flags {
         multi_thread_count: 2,
         encryption_algorithm: EncryptionAlgorithm::default().to_string(),
         disable_sym_hole_punching: false,
-        tld_dns_zone: DEFAULT_ET_DNS_ZONE.to_string(),
 
         quic_listen_port: u32::MAX,
         need_p2p: false,
@@ -145,7 +141,6 @@ define_flags_diff! {
         disable_kcp_input,
         disable_relay_kcp,
         proxy_forward_by_system,
-        accept_dns,
         private_mode,
         enable_quic_proxy,
         disable_quic_input,
@@ -156,7 +151,6 @@ define_flags_diff! {
         enable_relay_foreign_network_quic,
         encryption_algorithm,
         disable_sym_hole_punching,
-        tld_dns_zone,
         p2p_only,
         disable_tcp_hole_punching,
         lazy_p2p,
@@ -708,25 +702,6 @@ impl TomlConfig {
     }
 
     fn new_from_config(mut config: Config) -> Result<Self, anyhow::Error> {
-        // Only explicitly supplied legacy flags migrate. A [dns] section owns
-        // its defaults and always takes precedence over the old switches.
-        if config.dns.is_none() {
-            if let Some(flags) = &config.flags {
-                let mut dns = toml::Table::new();
-                if let Some(accept_dns) = flags.get("accept_dns").and_then(|value| value.as_bool())
-                {
-                    dns.insert("disabled".to_owned(), toml::Value::Boolean(!accept_dns));
-                }
-                if let Some(domain) = flags.get("tld_dns_zone").and_then(|value| value.as_str()) {
-                    if !domain.is_empty() {
-                        dns.insert("domain".to_owned(), toml::Value::String(domain.to_owned()));
-                    }
-                }
-                if !dns.is_empty() {
-                    config.dns = Some(dns);
-                }
-            }
-        }
         config.flags_struct = Some(
             Self::gen_flags(config.flags.clone().unwrap_or_default())
                 .context("failed to parse flags")?,
@@ -1258,24 +1233,21 @@ disabled = false
     }
 
     #[test]
-    fn only_explicit_legacy_dns_flags_migrate_and_new_section_wins() {
+    fn dns_defaults_belong_to_the_dns_section() {
         assert_eq!(TomlConfig::default().get_dns_config(), None);
         let config = TomlConfig::new_from_str(
             r#"
-[flags]
-accept_dns = false
-tld_dns_zone = "old.example."
+[dns]
+disabled = true
+domain = "mesh.example."
 "#,
         )
         .unwrap();
         let dns = config.get_dns_config().unwrap();
         assert_eq!(dns["disabled"].as_bool(), Some(true));
-        assert_eq!(dns["domain"].as_str(), Some("old.example."));
+        assert_eq!(dns["domain"].as_str(), Some("mesh.example."));
         let config = TomlConfig::new_from_str(
             r#"
-[flags]
-accept_dns = false
-tld_dns_zone = "old.example."
 [dns]
 domain = "new.example."
 "#,

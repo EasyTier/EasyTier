@@ -1451,16 +1451,6 @@ impl PeerManagerCore {
         &self.network_name
     }
 
-    pub(crate) fn dns_route_identity(
-        &self,
-    ) -> (String, Option<crate::proto::common::Ipv4Inet>, String) {
-        (
-            self.context.hostname(),
-            self.context.ipv4().map(Into::into),
-            self.context.flags().tld_dns_zone,
-        )
-    }
-
     pub fn p2p_policy_flags(&self) -> P2pPolicyFlags {
         let flags = self.context.flags();
         P2pPolicyFlags {
@@ -4036,16 +4026,6 @@ mod tests {
         assert_eq!(snapshot.version, env!("CARGO_PKG_VERSION"));
         assert!(snapshot.public_ipv6_addr.is_none());
         assert!(snapshot.ipv6_public_addr_prefix.is_none());
-
-        let dns_identity = core.dns_route_identity();
-        assert_eq!(
-            dns_identity,
-            (
-                "portable-node".to_owned(),
-                Some("10.20.0.91/16".parse::<cidr::Ipv4Inet>().unwrap().into()),
-                String::new(),
-            )
-        );
     }
 
     #[tokio::test]

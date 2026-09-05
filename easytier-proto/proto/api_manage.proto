@@ -20,6 +20,9 @@ enum ConfigSource {
 }
 
 message NetworkConfig {
+  reserved 42;
+  reserved "enable_magic_dns";
+
   optional string instance_id = 1;
 
   optional bool dhcp = 2;
@@ -72,7 +75,6 @@ message NetworkConfig {
   optional int32 mtu = 40;
   repeated string mapped_listeners = 41;
 
-  optional bool enable_magic_dns = 42 [deprecated = true];
   optional bool enable_private_mode = 43;
 
   // repeated string rpc_portal_whitelists = 44;
@@ -106,8 +108,8 @@ message NetworkConfig {
   optional VpnPortalConfig vpn_portal_config = 69;
   repeated ManagedCredentialConfig managed_credentials = 71;
   optional bool prefer_peer_relay = 72;
-  // Contents of the [dns] table, without its outer header. Preserves DNS policy
-  // fields when management clients read and replace a complete configuration.
+  // DNS configuration: contents of the [dns] table, without its outer header.
+  // This is the only DNS input; omitted means native DNS defaults apply.
   optional string dns_toml = 73;
 }
 

@@ -1,10 +1,7 @@
 use std::{collections::BTreeSet, net::IpAddr, sync::Arc};
 
-use async_trait::async_trait;
-
 use crate::{
     config::runtime::CoreRuntimeConfigStore,
-    gateway::magic_dns::{MagicDnsRouteSnapshot, MagicDnsRouteSource},
     gateway::proxy::cidr_monitor::{ProxyCidrDiff, collect_proxy_cidr_diff},
     host::packet::HostPacket,
     peers::peer_manager::PeerManagerCore,
@@ -12,10 +9,6 @@ use crate::{
 
 #[cfg(feature = "proxy-packet")]
 use crate::foundation::stats::{LabelSet, LabelType, MetricName};
-#[cfg(feature = "proxy-packet")]
-use crate::gateway::magic_dns::{
-    MagicDnsQueryResolver, MagicDnsResolverRegistration, magic_dns_packet_filter,
-};
 #[cfg(feature = "proxy-packet")]
 use crate::gateway::udp_broadcast::UdpBroadcastRelayStats;
 
@@ -107,34 +100,5 @@ impl CorePacketPlane {
             ),
             stats.get_counter(MetricName::UdpBroadcastRelayPacketsForwardFailed, labels),
         )
-    }
-
-    #[cfg(feature = "proxy-packet")]
-    pub async fn register_magic_dns_resolver(
-        &self,
-        fake_ip: std::net::Ipv4Addr,
-        resolver: Arc<dyn MagicDnsQueryResolver>,
-    ) -> MagicDnsResolverRegistration {
-        let runtime = tokio::runtime::Handle::current();
-        let pipeline = self
-            .peer_manager
-            .add_managed_nic_packet_process_pipeline(magic_dns_packet_filter(
-                fake_ip,
-                self.peer_manager.my_peer_id(),
-                resolver,
-            ))
-            .await;
-        MagicDnsResolverRegistration::new(Arc::downgrade(&self.peer_manager), pipeline, runtime)
-    }
-}
-
-#[async_trait]
-impl MagicDnsRouteSource for CorePacketPlane {
-    async fn snapshot(&self) -> MagicDnsRouteSnapshot {
-        MagicDnsRouteSource::snapshot(self.peer_manager.as_ref()).await
-    }
-
-    async fn revision(&self) -> quanta::Instant {
-        MagicDnsRouteSource::revision(self.peer_manager.as_ref()).await
     }
 }

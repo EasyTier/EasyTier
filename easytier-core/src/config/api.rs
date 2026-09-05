@@ -5,7 +5,7 @@ use easytier_proto::api::manage::{
 };
 
 use super::{
-    api_input::{managed_credential_to_proto, project_dns_config},
+    api_input::managed_credential_to_proto,
     toml::{ConfigLoader as _, TomlConfig},
 };
 
@@ -156,7 +156,9 @@ pub fn network_config_from_toml(config: &TomlConfig) -> NetworkConfig {
     result.prefer_peer_relay = Some(flags.prefer_peer_relay);
     result.enable_udp_broadcast_relay = Some(flags.enable_udp_broadcast_relay);
     result.disable_sym_hole_punching = Some(flags.disable_sym_hole_punching);
-    project_dns_config(config, &mut result);
+    result.dns_toml = config
+        .get_dns_config()
+        .map(|table| toml::to_string(&table).expect("a DNS TOML table serializes to TOML"));
     result.mtu = Some(flags.mtu as i32);
     result.data_compress_algo = (flags.data_compress_algo != default_flags.data_compress_algo)
         .then_some(flags.data_compress_algo);

@@ -15,11 +15,15 @@ Core 只存储可无损往返的原始 `[dns]` TOML table，不依赖 Hickory。
 
 配置文件加载、实例构造和管理入口增加 native 校验。管理器在保存配置、替换正在运行的实例之前调用校验，避免把无效 zone 留到异步运行阶段才报错。
 
-`NetworkConfig.dns_toml` 保存完整 DNS table，解决管理 API 逐字段转换丢失 policy/zone 的问题。已有 GUI 的 `enable_magic_dns` 开关只修改 `disabled`，不覆盖其余策略。旧 TOML 中明确设置的 `accept_dns` 和 `tld_dns_zone` 在没有 `[dns]` 时迁移；不会用旧 flags 的默认值覆盖新 DNS 默认行为。
+`NetworkConfig.dns_toml` 保存完整 DNS table，解决管理 API 逐字段转换丢失 policy/zone 的问题。按后续要求，配置和 API 完全以新版 `[dns]` 为准：删除 `enable_magic_dns`、`accept_dns`、`tld_dns_zone` 字段及其迁移逻辑，旧 protobuf 编号和名称仅标记 reserved，防止将来误复用。`project_dns_config` 随双写逻辑一起删除，两处管理转换直接序列化 DNS table。
+
+GUI 改为编辑 DNS TOML 内容（不带外层 `[dns]`），留空使用新版默认，关闭使用 `disabled = true`。移动 VPN 通过 native 解析器获取 Host 支持的 DNS 地址，不再读取旧开关或硬编码地址。OH 桥接也改为携带 `dnsServers` 列表及对应路由，外部 OH 客户端需要同步该接口。
 
 ### 路由和 RPC
 
 DNS protobuf 移到 `easytier-proto`。Native 通过 `CoreDnsPeerAccess` 获取可信路由中的 DNS 摘要、可达节点和导出 RPC，不再获取整个 PeerManager。
+
+删除没有生产调用者的旧 core `gateway/magic_dns` 模块，包括 route record store/publisher、packet resolver 及专属测试；不再保留第二套 DNS 路由和查询入口。被删除的三个已跟踪文件可从 Git 历史恢复。
 
 本机导出正文和摘要作为一个不可变版本一起发布；OSPF 在路由表发布后通知 DNS 消费者。注册 guard 共享计数，旧 guard 释放不会提前注销仍在使用的服务。
 
@@ -45,7 +49,7 @@ DNS 生命周期独立于 TUN，可以在无 TUN 构建中使用显式监听地�
 - DNS 监听后台任务异常结束时允许重新启动。
 - GUI 日志配置改为直接初始化，移除构造器接口差异。
 
-## 验证
+## 合并时验证
 
 按最终要求只运行 `cargo check`，不运行测试。下面的 `--all-targets` 只检查测试等 target 的编译，不执行它们。
 
@@ -63,14 +67,25 @@ DNS 生命周期独立于 TUN，可以在无 TUN 构建中使用显式监听地�
 
 最终要求提出之前，配置子任务曾运行 69 项 core 配置测试并通过；这不代表最终合并代码通过完整运行测试。上述 check 仍有 deprecated/dead-code warnings，不是零警告构建。
 
-## 兼容边界和未验证事项
+## 新版配置统一后的验证（2026-09-05）
 
-- 保留 DNS policy 分支的新默认行为及删除旧 CLI DNS flags 的决定；旧 TOML/API 开关仍兼容迁移。GUI 新建配置的旧默认关闭行为没有擅自改为开启。
+只进行编译和静态检查，没有运行测试；Cargo.lock 和 pnpm 锁文件保持不变。
+
+- `cargo check --workspace --all-targets --locked --offline` 通过，覆盖 Linux 当前目标下的主程序、core、proto、web、GUI 和 workspace 内的 contrib crates；不代表通过移动目标交叉编译。
+- `cargo check -p easytier --no-default-features --features magic-dns --locked --offline` 通过。
+- `cargo check -p easytier --no-default-features --locked --offline` 和 `cargo check -p easytier-core --no-default-features --locked --offline` 通过。
+- 前端库 proto codegen、`vue-tsc -b` 和 `vite build` 通过。
+- VPN 插件 `rollup -c`、GUI `vue-tsc --noEmit` 通过。构建产物均不跟踪。
+- `git diff --check` 通过。编译仍有现存 unused/dead-code warnings。
+
+## 当前边界和未验证事项
+
+- 保留 DNS policy 分支的新默认行为：缺省启用，`[dns].disabled = true` 显式关闭。GUI 不再写入旧版默认关闭开关，旧 TOML/API 字段不再迁移。
 - 新的 DNS 导出协议需要对端支持；旧 main 节点不会自动拥有新的 policy/export 能力。本机新旧 DNS 实现并行运行的兼容性未验证。
 - Linux 自动设置系统 DNS 仍未实现；Windows 清理系统 DNS 的旧实现仍不恢复原设置。未声称本次解决完整的跨平台 DNS 恢复。
-- 移动平台不通过桌面网卡接口添加 DNS 地址；未恢复 main 旧有的虚拟 DNS 报文拦截方案，也未验证 Android/iOS 的系统 DNS 接入。
+- 移动平台尚不能添加新版虚拟 DNS 地址；因此 native VPN 配置接口返回空 DNS 地址列表并记录警告，避免向系统注入没有实际监听器的地址。没有恢复 main 的旧虚拟 DNS 报文拦截方案，Android/iOS/OH 的新版虚拟 DNS 接入仍待实现；显式 DNS listeners 与这项 VPN 地址能力分开。
 - 多进程选举若由无 TUN 实例获胜，仍无法借用另一个进程的 TUN；本次没有新增跨进程网卡代理。
-- Windows/macOS/移动端交叉编译、实际网卡变更、权限相关操作、GUI 前端构建及运行期网络行为没有验证。新增和移植的回归测试保留在代码中，供后续按需运行。
+- Windows/macOS/移动端交叉编译、实际网卡变更、权限相关操作及运行期网络行为没有验证。OH crate 依赖专用 SDK 且排除在 workspace 外，本轮未编译；它的外部客户端需要同步新的 `dnsServers` 接口。前端已通过类型检查，未验证 GUI 实际交互。新增和移植的回归测试保留在代码中，供后续按需运行。
 - 合入 main 自身已有两处 whitespace 提示（`CONTRIBUTING.md` 和 FFI `Cargo.toml`），未为本次 DNS 合并改动这些无关文件。
 
 ## 工作区保护

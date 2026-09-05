@@ -51,6 +51,47 @@ fn validate_native_config(config: &TomlConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Virtual DNS addresses this Host can expose to a VPN's system resolver.
+/// Only UDP port 53 is supported; listener readiness is managed by the DNS runtime.
+pub fn vpn_dns_servers(
+    config: &(impl ConfigLoader + ?Sized),
+) -> anyhow::Result<Vec<std::net::IpAddr>> {
+    #[cfg(feature = "magic-dns")]
+    {
+        use crate::dns::config::DnsConfigLoaderExt as _;
+        use hickory_net::xfer::Protocol;
+
+        let dns = config.try_get_dns()?;
+        // Mobile Hosts cannot yet assign the virtual addresses used by the new
+        // DNS server. Do not direct system queries to an address with no listener.
+        if cfg!(mobile) && !dns.disabled && !dns.addresses.is_empty() {
+            tracing::warn!(
+                "virtual DNS addresses are not supported by the mobile Host; leaving VPN DNS unset"
+            );
+            return Ok(Vec::new());
+        }
+        let mut servers = Vec::new();
+        if !dns.disabled {
+            for address in dns.addresses.iter() {
+                let ip = address.addr.ip();
+                if address.protocol == Protocol::Udp
+                    && address.addr.port() == 53
+                    && !ip.is_unspecified()
+                    && !servers.contains(&ip)
+                {
+                    servers.push(ip);
+                }
+            }
+        }
+        Ok(servers)
+    }
+    #[cfg(not(feature = "magic-dns"))]
+    {
+        let _ = config;
+        Ok(Vec::new())
+    }
+}
+
 #[cfg(feature = "management-rpc")]
 pub use easytier_core::management::{ConfigFileControl, ConfigFilePermission};
 
@@ -132,6 +173,35 @@ mod tests {
     use tempfile::NamedTempFile;
 
     use super::*;
+
+    #[cfg(all(feature = "magic-dns", not(mobile)))]
+    #[test]
+    fn vpn_dns_servers_follow_native_defaults_and_addresses() {
+        use crate::dns::config::DNS_DEFAULT_ADDRESSES;
+
+        let default_servers = vpn_dns_servers(&TomlConfig::default()).unwrap();
+        assert_eq!(default_servers, vec![DNS_DEFAULT_ADDRESSES[0].addr.ip()]);
+
+        for body in ["disabled = true", "addresses = []"] {
+            let config = TomlConfig::new_from_str(&format!("[dns]\n{body}\n")).unwrap();
+            assert!(vpn_dns_servers(&config).unwrap().is_empty());
+        }
+
+        let config = TomlConfig::new_from_str(
+            "[dns]\naddresses = ['10.10.0.53', 'udp://10.10.0.53:53', \
+             'tcp://10.10.0.54:53', 'udp://10.10.0.55:5353', '0.0.0.0', 'fd00::53']\n",
+        )
+        .unwrap();
+        assert_eq!(
+            vpn_dns_servers(&config).unwrap(),
+            vec![
+                "10.10.0.53".parse::<std::net::IpAddr>().unwrap(),
+                "fd00::53".parse::<std::net::IpAddr>().unwrap(),
+            ]
+        );
+        let invalid = TomlConfig::new_from_str("[dns]\naddresses = ['not-an-ip']\n").unwrap();
+        assert!(vpn_dns_servers(&invalid).is_err());
+    }
 
     #[test]
     fn path_adapter_preserves_file_name_in_parse_error() {

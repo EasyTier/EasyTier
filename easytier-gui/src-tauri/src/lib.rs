@@ -124,6 +124,14 @@ fn generate_network_config(toml_config: String) -> Result<NetworkConfig, String>
 }
 
 #[tauri::command]
+fn get_dns_servers(cfg: NetworkConfig) -> Result<Vec<String>, String> {
+    let config = cfg.gen_config().map_err(|e| e.to_string())?;
+    easytier::common::config::vpn_dns_servers(&config)
+        .map(|servers| servers.into_iter().map(|ip| ip.to_string()).collect())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn run_network_instance(
     app: AppHandle,
     cfg: NetworkConfig,
@@ -1501,6 +1509,7 @@ pub fn run_gui() -> std::process::ExitCode {
         .invoke_handler(tauri::generate_handler![
             parse_network_config,
             generate_network_config,
+            get_dns_servers,
             run_network_instance,
             collect_network_info,
             get_vpn_portal_info,
