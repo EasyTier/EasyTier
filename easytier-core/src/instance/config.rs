@@ -354,6 +354,7 @@ impl CoreInstanceConfig {
                 runtime,
                 startup_plan: super::CoreInstanceStartupPlan {
                     gateway: host.gateway_enabled,
+                    packet_proxy: host.proxy_enabled,
                     connectivity: host.connectivity,
                 },
                 stun: StunServerConfig {
@@ -685,6 +686,7 @@ data_compress_algo = "Zstd"
         let normalized = CoreInstanceConfig::from_toml_with_host(&config, &host).unwrap();
 
         assert_eq!(config.dump(), before);
+        assert!(!normalized.connectivity.startup_plan.packet_proxy);
         assert_eq!(normalized.connectivity.initial_peers.len(), 1);
         assert_eq!(
             normalized

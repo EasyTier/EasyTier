@@ -23,6 +23,9 @@ importers:
       binaryen:
         specifier: 131.0.0
         version: 131.0.0
+      esbuild:
+        specifier: 0.25.9
+        version: 0.25.9
       typescript:
         specifier: 5.9.3
         version: 5.9.3

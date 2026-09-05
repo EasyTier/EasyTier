@@ -216,6 +216,14 @@ unsafe extern "C" {
     /// Reports completion of one host WebSocket send.
     pub(crate) fn take_websocket_send(operation: u64) -> i32;
 
+    #[cfg(feature = "wasm-host-websocket-outbound")]
+    /// Starts opening one outbound host WebSocket for the requested URL.
+    pub(crate) fn start_websocket_connect(operation: u64, url: u32, url_len: u32) -> i32;
+
+    #[cfg(feature = "wasm-host-websocket-outbound")]
+    /// Returns the connected WebSocket handle, or a negative host status.
+    pub(crate) fn take_websocket_connect(operation: u64) -> i64;
+
     /// Cancels a pending or completed-but-unread operation and releases host state.
     ///
     /// Cancellation must be idempotent when the operation is already absent.

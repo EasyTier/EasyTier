@@ -134,7 +134,9 @@ where
             wrapped_transport.start().await?;
         }
         #[cfg(feature = "proxy-packet")]
-        self.start_packet_proxy().await?;
+        if self.startup_plan.packet_proxy {
+            self.start_packet_proxy().await?;
+        }
         if let Some(udp_hole_punch) = &self.udp_hole_punch {
             udp_hole_punch.start().await?;
         }

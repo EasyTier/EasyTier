@@ -89,6 +89,10 @@ export class WasiClock {
     this.syncWallClock();
   }
 
+  syncWallTime(): void {
+    this.syncWallClock();
+  }
+
   private readClockSubscriptions(
     pointer: number,
     count: number,
