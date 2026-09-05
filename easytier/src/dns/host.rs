@@ -37,9 +37,11 @@ pub trait DnsHost: Send + Sync + std::fmt::Debug {
     async fn release(&self, owner: Uuid) -> anyhow::Result<()>;
 }
 
+#[cfg(any(test, not(feature = "tun")))]
 #[derive(Debug, Default)]
 pub struct NoDnsInterface;
 
+#[cfg(any(test, not(feature = "tun")))]
 #[async_trait::async_trait]
 impl DnsHost for NoDnsInterface {
     fn subscribe(&self) -> watch::Receiver<DnsInterfaceState> {

@@ -231,6 +231,7 @@ impl DnsNode {
         }
     }
 
+    #[cfg(all(test, feature = "tun"))]
     pub fn start(&mut self) {
         self.start_with_token(CancellationToken::new());
     }
@@ -364,14 +365,6 @@ mod tests {
         server.serve().await?;
         sleep(Duration::from_millis(50)).await;
         Ok((mgr, server))
-    }
-
-    async fn occupy_dns_rpc_addr(rpc_addr: Url) -> StandAloneServer<RuntimeRpcListener> {
-        let mut server = StandAloneServer::new(runtime_rpc_listener(
-            rpc_addr.socket_addrs(|| None).unwrap()[0],
-        ));
-        server.serve().await.unwrap();
-        server
     }
 
     #[tokio::test]

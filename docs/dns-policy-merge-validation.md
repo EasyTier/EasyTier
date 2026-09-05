@@ -51,7 +51,7 @@ DNS 生命周期独立于 TUN，可以在无 TUN 构建中使用显式监听地�
 
 ## 合并时验证
 
-按最终要求只运行 `cargo check`，不运行测试。下面的 `--all-targets` 只检查测试等 target 的编译，不执行它们。
+合并阶段按当时要求只运行 `cargo check`，不运行测试。下面的 `--all-targets` 只检查测试等 target 的编译，不执行它们。后续定向测试结果见下文。
 
 已通过（Linux x86_64、Rust 1.95）：
 
@@ -69,7 +69,7 @@ DNS 生命周期独立于 TUN，可以在无 TUN 构建中使用显式监听地�
 
 ## 新版配置统一后的验证（2026-09-05）
 
-只进行编译和静态检查，没有运行测试；Cargo.lock 和 pnpm 锁文件保持不变。
+这一阶段只进行编译和静态检查，没有运行测试；Cargo.lock 和 pnpm 锁文件保持不变。
 
 - `cargo check --workspace --all-targets --locked --offline` 通过，覆盖 Linux 当前目标下的主程序、core、proto、web、GUI 和 workspace 内的 contrib crates；不代表通过移动目标交叉编译。
 - `cargo check -p easytier --no-default-features --features magic-dns --locked --offline` 通过。
@@ -78,6 +78,23 @@ DNS 生命周期独立于 TUN，可以在无 TUN 构建中使用显式监听地�
 - VPN 插件 `rollup -c`、GUI `vue-tsc --noEmit` 通过。构建产物均不跟踪。
 - `git diff --check` 通过。编译仍有现存 unused/dead-code warnings。
 
+## Clippy 和 DNS 导出回归验证（2026-09-05）
+
+按后续要求，先以 `9c32932b`（`refactor(dns): use the new DNS configuration throughout`）提交新版配置统一，再执行 Clippy 修复和指定测试。本节记录该提交之后的 Clippy 清理和回归修复。
+
+7 个指定失败具有同一根因：`ZoneConfig::dedicated()` 构造了正确的 parsed/data，但 raw 仍为默认空配置。新版 `set_dns` 经原始 TOML table 保存配置时，`ConfigBase` 只序列化 raw，因此丢失了 zone origin、records 和 export policy。现在通过 `parsed.clone().downgrade()` 同步 raw，并显式保留空 fallthrough，避免反序列化成普通 zone 的默认 `Any`。新增回归测试覆盖配置往返、解析结果、ZoneData 和最终导出，没有放宽原测试断言或延长超时。
+
+验证环境为 Linux x86_64、Rust/Clippy 1.95；构建目标位于工作目录内的 `target/dns-validation`，设置 `CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0`，使用 `--jobs 4` 限制资源占用。
+
+- `cargo clippy --fix --workspace --all-targets --features full --allow-dirty --locked --offline` 已完成；同时清理无调用者的旧包装函数和测试辅助代码，按实际平台/feature 限制辅助定义。
+- `cargo clippy --workspace --all-targets --features full --locked --offline -- -D warnings` 通过，当前 Linux/full 配置零警告。
+- `cargo test -p easytier --lib --features full --locked --offline --no-run` 通过，然后直接执行该次构建生成的测试二进制。
+- 首轮定向验证：指定的 5 个 `dns::peer_mgr` 测试、`three_node_dns_export`、`three_node_dns_export_chain` 和新增配置往返回归测试，**8/8 通过**。
+- 扩大验证：全部 `dns::peer_mgr::tests`、`dns::config` 测试及上述两个三节点测试，**23/23 通过**。指定的 7 个测试在两轮中均通过。
+- 网络测试在独立 network/mount/PID namespace 内串行执行；测试自己的 TUN、bridge 和 netns 不影响主机网络。本轮未执行整个 workspace 测试套件。
+- `cargo check -p easytier --no-default-features --features magic-dns --locked --offline` 通过，保留无 TUN 的生产构建能力；这一精简 feature 组合仍有 6 个 unused/dead-code warnings，不属于上述 full 配置零警告结论。
+- 变更的 Rust 文件经过格式化；`git diff --check` 通过，Cargo.lock 和 pnpm 锁文件未修改。
+
 ## 当前边界和未验证事项
 
 - 保留 DNS policy 分支的新默认行为：缺省启用，`[dns].disabled = true` 显式关闭。GUI 不再写入旧版默认关闭开关，旧 TOML/API 字段不再迁移。
@@ -85,11 +102,11 @@ DNS 生命周期独立于 TUN，可以在无 TUN 构建中使用显式监听地�
 - Linux 自动设置系统 DNS 仍未实现；Windows 清理系统 DNS 的旧实现仍不恢复原设置。未声称本次解决完整的跨平台 DNS 恢复。
 - 移动平台尚不能添加新版虚拟 DNS 地址；因此 native VPN 配置接口返回空 DNS 地址列表并记录警告，避免向系统注入没有实际监听器的地址。没有恢复 main 的旧虚拟 DNS 报文拦截方案，Android/iOS/OH 的新版虚拟 DNS 接入仍待实现；显式 DNS listeners 与这项 VPN 地址能力分开。
 - 多进程选举若由无 TUN 实例获胜，仍无法借用另一个进程的 TUN；本次没有新增跨进程网卡代理。
-- Windows/macOS/移动端交叉编译、实际网卡变更、权限相关操作及运行期网络行为没有验证。OH crate 依赖专用 SDK 且排除在 workspace 外，本轮未编译；它的外部客户端需要同步新的 `dnsServers` 接口。前端已通过类型检查，未验证 GUI 实际交互。新增和移植的回归测试保留在代码中，供后续按需运行。
+- Windows/macOS/移动端交叉编译及真实主机上的网卡、权限和系统 DNS 行为没有验证；Linux 隔离环境内的 DNS 导出网络测试结果见上文，不代表所有运行场景。OH crate 依赖专用 SDK 且排除在 workspace 外，本轮未编译；它的外部客户端需要同步新的 `dnsServers` 接口。前端已通过类型检查，未验证 GUI 实际交互。其他新增和移植的回归测试未在本轮全面运行。
 - 合入 main 自身已有两处 whitespace 提示（`CONTRIBUTING.md` 和 FFI `Cargo.toml`），未为本次 DNS 合并改动这些无关文件。
 
 ## 工作区保护
 
-按用户最终指示，原工作区的 `Cargo.lock` 改动直接丢弃，不创建 stash。合并使用按新 crate 布局及 DNS 依赖重新解析的 lock，不把旧 workspace 的 lock 原样覆盖回来。前期隔离分析时留下的原始文件及补丁仍位于 `/tmp/easytier-dns-merge.TsWys3/`。
+按用户指示，原工作区的 `Cargo.lock` 改动直接丢弃，不创建 stash。合并使用按新 crate 布局及 DNS 依赖重新解析的 lock，不把旧 workspace 的 lock 原样覆盖回来。前期隔离分析时留下的原始文件及补丁已迁至工作目录内的 `target/dns-merge-workspace/easytier-dns-merge.TsWys3/`；其他本任务临时 workspace 和前端缓存也移至 `target/dns-merge-workspace/`，不再占用 `/tmp` 的内存文件系统。
 
 合并以真正的双父提交完成：第一父提交为原分支 `b207b8a7`，第二父提交为 `main` 的 `f19bcfb4`。当前分支历史包含该 main 提交，不再只是工作区中存在合并后的文件。原先两份未跟踪的分析报告保持不动。

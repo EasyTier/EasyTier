@@ -27,7 +27,7 @@ mod tun_runtime;
 use event_journal::EventJournal;
 use tun_runtime::NativeTunRuntime;
 
-#[cfg(all(test, feature = "magic-dns", feature = "tun"))]
+#[cfg(all(test, target_os = "windows", feature = "magic-dns", feature = "tun"))]
 pub(crate) async fn test_dns_host(
     nic: crate::instance::virtual_nic::NicCtx,
     primary: std::collections::HashSet<std::net::IpAddr>,

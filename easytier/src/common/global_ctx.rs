@@ -379,10 +379,6 @@ impl GlobalCtx {
 
 #[cfg(feature = "magic-dns")]
 impl DnsGlobalCtxExt for GlobalCtx {
-    fn try_dns_self_zone(&self) -> anyhow::Result<ZoneConfig> {
-        self.dns_self_zone_from_config(&self.config.try_get_dns()?)
-    }
-
     fn try_dns_export_config(&self) -> anyhow::Result<DnsExportConfig> {
         Ok(DnsExportConfig {
             zones: self

@@ -8,14 +8,18 @@ use std::time::{Duration, Instant};
 use crate::common::config::ConfigLoader as _;
 use crate::common::config::TomlConfigLoader;
 use crate::common::global_ctx::GlobalCtx;
+#[cfg(target_os = "windows")]
 use crate::common::global_ctx::tests::get_mock_global_ctx;
-use crate::dns::config::{DnsConfigLoaderExt, DnsGlobalCtxExt};
+use crate::dns::config::DnsConfigLoaderExt;
+use crate::dns::config::DnsGlobalCtxExt;
 use crate::dns::node::DnsNode;
 use crate::dns::peer_mgr::DnsPeerMgr;
+#[cfg(target_os = "windows")]
 use crate::instance::virtual_nic::NicCtx;
 use crate::proto::common::Url;
 use crate::proto::dns::ZoneDataExt;
 use crate::proto::dns::{DnsSnapshot, HeartbeatRequest, ZoneData};
+#[cfg(target_os = "windows")]
 use cidr::Ipv4Inet;
 use hickory_net::client::{Client, ClientHandle};
 use hickory_net::runtime::TokioRuntimeProvider;
@@ -27,6 +31,7 @@ use hickory_proto::rr::{DNSClass, Name, RData, RecordType};
 use hickory_proto::serialize::binary::{BinEncodable, BinEncoder};
 use hickory_server::server::Request;
 use maplit::hashset;
+#[cfg(target_os = "windows")]
 use tokio::sync::Notify;
 use uuid::Uuid;
 
@@ -102,6 +107,7 @@ async fn build_test_peer(
     (peer, HostPacketReceiver::new(receiver))
 }
 
+#[cfg(target_os = "windows")]
 pub async fn prepare_env(dns_name: &str, tun_ip: Ipv4Inet) -> (Arc<DnsTestPeer>, NicCtx) {
     let ctx = get_mock_global_ctx();
     ctx.set_hostname(dns_name.to_owned());
@@ -131,6 +137,7 @@ impl TestDnsNode {
     }
 }
 
+#[cfg(target_os = "windows")]
 pub async fn start_dns_node(peer: Arc<DnsTestPeer>, nic: NicCtx) -> TestDnsNode {
     let primary = peer
         .ctx
@@ -253,10 +260,6 @@ fn find_free_udp_port() -> u16 {
         .port()
 }
 
-pub async fn check_dns_record(fake_ip: &Ipv4Addr, domain: &str, expected_ip: &str) {
-    check_dns_record_at(SocketAddr::new((*fake_ip).into(), 53), domain, expected_ip).await;
-}
-
 pub async fn check_dns_record_at(server_addr: SocketAddr, domain: &str, expected_ip: &str) {
     let expected = expected_ip.parse::<Ipv4Addr>().unwrap();
     let name = Name::from_str(domain).unwrap();
@@ -302,10 +305,6 @@ pub async fn check_dns_record_at(server_addr: SocketAddr, domain: &str, expected
 
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
-}
-
-pub async fn check_dns_record_missing(fake_ip: &Ipv4Addr, domain: &str) {
-    check_dns_record_missing_at(SocketAddr::new((*fake_ip).into(), 53), domain).await;
 }
 
 pub async fn check_dns_record_missing_at(server_addr: SocketAddr, domain: &str) {

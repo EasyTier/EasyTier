@@ -44,6 +44,7 @@ impl From<DnsConfigRaw> for DnsConfig {
 
 pub trait DnsConfigLoaderExt {
     fn try_get_dns(&self) -> anyhow::Result<DnsConfig>;
+    #[cfg(test)]
     fn set_dns(&self, dns: DnsConfig);
 }
 
@@ -57,6 +58,7 @@ impl<T: ConfigLoader + ?Sized> DnsConfigLoaderExt for T {
         }
     }
 
+    #[cfg(test)]
     fn set_dns(&self, dns: DnsConfig) {
         let raw =
             toml::Table::try_from(dns.raw()).expect("DNS raw config serializes to a TOML table");
@@ -72,7 +74,6 @@ pub fn validate_dns_config(config: &(impl ConfigLoader + ?Sized)) -> anyhow::Res
 pub type DnsExportConfig = GetExportConfigResponse;
 
 pub trait DnsGlobalCtxExt {
-    fn try_dns_self_zone(&self) -> anyhow::Result<ZoneConfig>;
     fn try_dns_export_config(&self) -> anyhow::Result<DnsExportConfig>;
     fn try_dns_iter_zones(&self) -> anyhow::Result<Vec<ZoneConfig>>;
 }
@@ -81,6 +82,41 @@ pub trait DnsGlobalCtxExt {
 mod tests {
     use super::*;
     use crate::common::config::TomlConfig;
+
+    #[test]
+    fn dedicated_zone_survives_config_round_trip_and_remains_exported() {
+        use crate::common::global_ctx::GlobalCtx;
+
+        let zone = ZoneConfig::dedicated(
+            "dedicated.example.".parse().unwrap(),
+            Some("192.0.2.10".parse().unwrap()),
+            vec!["2001:db8::10".parse().unwrap()],
+        );
+        assert!(zone.fallthrough.is_empty());
+        let config = TomlConfig::default();
+        config.set_dns(
+            DnsConfigRaw {
+                zones: Some(vec![zone.clone()]),
+                ..Default::default()
+            }
+            .into(),
+        );
+
+        // Omitting this field would restore the ordinary zone default of Any.
+        let raw = config.get_dns_config().unwrap();
+        assert!(
+            raw["zone"][0]["fallthrough"]
+                .as_array()
+                .is_some_and(Vec::is_empty)
+        );
+        let restored = config.try_get_dns().unwrap();
+        assert_eq!(restored.zones.len(), 1);
+        assert_eq!(restored.zones[0], zone);
+        assert_eq!(restored.zones[0].data(), zone.data());
+
+        let export = GlobalCtx::new(config).try_dns_export_config().unwrap();
+        assert!(export.zones.contains(zone.data()));
+    }
 
     #[test]
     fn invalid_zone_is_rejected_at_native_validation_boundary() {

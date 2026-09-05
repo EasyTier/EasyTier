@@ -139,7 +139,7 @@ impl DnsServer {
                 };
                 match result {
                     Ok(()) => {
-                        runtime.bindings.insert(binding.clone());
+                        runtime.bindings.insert(*binding);
                     }
                     Err(error) => {
                         tracing::warn!(?binding, ?error, "failed to bind DNS listener; will retry")
@@ -166,12 +166,12 @@ impl DnsServer {
             nameservers: runtime
                 .bindings
                 .iter()
-                .filter_map(|a| {
-                    (a.protocol == Protocol::Udp
+                .filter(|&a| {
+                    a.protocol == Protocol::Udp
                         && a.addr.port() == 53
-                        && !a.addr.ip().is_unspecified())
-                    .then(|| a.addr.ip().to_string())
+                        && !a.addr.ip().is_unspecified()
                 })
+                .map(|a| a.addr.ip().to_string())
                 .collect(),
             search_domains: vec![domain.clone()],
             match_domains: std::iter::once(domain)

@@ -57,16 +57,11 @@ where
     pub fn into_parsed(self) -> Parsed {
         self.parsed
     }
+    #[cfg(test)]
     pub fn into_raw(self) -> Raw {
         self.raw
     }
     pub fn into_data(self) -> Data {
         self.data
-    }
-
-    pub fn update(self, config: Raw) -> Result<Self, <Self as TryFrom<Raw>>::Error> {
-        let mut raw = self.into_raw();
-        raw.merge(config);
-        raw.try_into()
     }
 }

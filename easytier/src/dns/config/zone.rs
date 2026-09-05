@@ -105,7 +105,9 @@ impl ZoneConfig {
         };
 
         let data = (&parsed).into();
-
-        Self::new(parsed, Default::default(), data)
+        // ConfigBase serializes raw, so programmatic zones must preserve the
+        // same records and policy there, including the explicit empty fallthrough.
+        let raw = parsed.clone().downgrade();
+        Self::new(parsed, raw, data)
     }
 }

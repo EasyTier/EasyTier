@@ -1,7 +1,7 @@
 use crate::dns::config::zone::Fallthrough;
 use crate::dns::utils::addr::{NameServerAddr, NameServerAddrGroup};
 use crate::dns::utils::zone_handler::{ArcZoneHandler, ChainedZoneHandler};
-use crate::proto::dns::ZoneData;
+use crate::proto::dns::{ZoneData, ZoneDataExt};
 use crate::proto::utils::RepeatedMessageModel;
 use crate::utils::dns::resolver_conf;
 use hickory_net::runtime::TokioRuntimeProvider;
@@ -145,7 +145,6 @@ impl ZoneGroup {
         })
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -570,4 +569,3 @@ mod tests {
         Ok(())
     }
 }
-use crate::proto::dns::ZoneDataExt;

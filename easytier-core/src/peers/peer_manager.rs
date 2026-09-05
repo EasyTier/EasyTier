@@ -1642,14 +1642,6 @@ impl PeerManagerCore {
         guard
     }
 
-    #[cfg(feature = "proxy-packet")]
-    pub(crate) async fn remove_managed_nic_packet_process_pipeline(
-        &self,
-        registration: &PipelineRegistrationGuard,
-    ) {
-        registration.close();
-    }
-
     pub async fn add_route<T>(&self, route: Arc<T>)
     where
         T: Route + PeerPacketFilter + Send + Sync + 'static,
