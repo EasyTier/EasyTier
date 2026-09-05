@@ -1,0 +1,4 @@
+src/generated/
+dist/
+.wrangler/
+node_modules/

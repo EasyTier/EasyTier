@@ -12,17 +12,15 @@ importers:
 
   .: {}
 
-  easytier-contrib/easytier-cloudflare-worker:
+  easytier-contrib/easytier-browser:
+    dependencies:
+      '@easytier/runtime':
+        specifier: workspace:0.1.0
+        version: link:../easytier-runtime
     devDependencies:
-      '@cloudflare/workers-types':
-        specifier: 5.20260724.1
-        version: 5.20260724.1
       '@types/node':
         specifier: 22.18.1
         version: 22.18.1
-      binaryen:
-        specifier: 131.0.0
-        version: 131.0.0
       esbuild:
         specifier: 0.25.9
         version: 0.25.9
@@ -32,9 +30,43 @@ importers:
       vitest:
         specifier: 2.1.9
         version: 2.1.9(@types/node@22.18.1)(happy-dom@16.8.1)
+
+  easytier-contrib/easytier-cloudflare:
+    dependencies:
+      '@cloudflare/workers-types':
+        specifier: 5.20260724.1
+        version: 5.20260724.1
+      '@easytier/runtime':
+        specifier: workspace:0.1.0
+        version: link:../easytier-runtime
+    devDependencies:
+      '@types/node':
+        specifier: 22.18.1
+        version: 22.18.1
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: 2.1.9
+        version: 2.1.9(@types/node@22.18.1)(happy-dom@16.8.1)
       wrangler:
         specifier: 4.114.0
         version: 4.114.0(@cloudflare/workers-types@5.20260724.1)
+
+  easytier-contrib/easytier-runtime:
+    devDependencies:
+      '@types/node':
+        specifier: 22.18.1
+        version: 22.18.1
+      binaryen:
+        specifier: 131.0.0
+        version: 131.0.0
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: 2.1.9
+        version: 2.1.9(@types/node@22.18.1)(happy-dom@16.8.1)
 
   easytier-gui:
     dependencies:

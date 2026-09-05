@@ -1,6 +1,8 @@
 packages:
   - 'easytier-web/config-generator'
-  - 'easytier-contrib/easytier-cloudflare-worker'
+  - 'easytier-contrib/easytier-runtime'
+  - 'easytier-contrib/easytier-browser'
+  - 'easytier-contrib/easytier-cloudflare'
   - 'easytier-web/frontend'
   - 'easytier-web/frontend-lib'
   - 'easytier-gui'
