@@ -1,14 +1,20 @@
 packages:
   - 'easytier-web/config-generator'
+  - 'easytier-contrib/easytier-cloudflare-worker'
   - 'easytier-web/frontend'
   - 'easytier-web/frontend-lib'
   - 'easytier-gui'
   - 'tauri-plugin-vpnservice'
 
 overrides:
+  happy-dom: 16.8.1
   minimatch: 10.2.4
 
 allowBuilds:
   esbuild: true
   unrs-resolver: true
   vue-demi: true
+  workerd: true
+
+minimumReleaseAgeExclude:
+  - '@cloudflare/workers-types@5.20260724.1'

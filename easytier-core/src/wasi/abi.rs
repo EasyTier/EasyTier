@@ -54,6 +54,8 @@ pub const DATA_PLANE_UDP_CAPABILITY: u64 = 1 << 2;
 pub const DATA_PLANE_DEADLINE_READ: u32 = 1 << 0;
 /// Update the write deadline in `easytier_data_plane_resource_deadline_set`.
 pub const DATA_PLANE_DEADLINE_WRITE: u32 = 1 << 1;
+/// Version of the host WebSocket tunnel metadata and export contract.
+pub const HOST_WEBSOCKET_ABI_VERSION: u32 = 1;
 
 /// Guest exports a WASI runtime calls to manage a core instance.
 ///
@@ -62,6 +64,9 @@ pub const DATA_PLANE_DEADLINE_WRITE: u32 = 1 << 1;
 /// all asynchronous guest work through `easytier_instance_drive` and host
 /// completion notifications.
 pub const GUEST_EXPORTS: &[&str] = &[
+    // WASI command initialization. This only binds the runtime; core lifecycle
+    // still starts through the instance exports below.
+    "_start",
     // Guest-memory buffers.
     "easytier_buffer_alloc",
     "easytier_buffer_free",
@@ -110,6 +115,13 @@ pub const RPC_GUEST_EXPORTS: &[&str] = &[
     "easytier_rpc_request_submit",
     "easytier_rpc_response_take",
     "easytier_rpc_operation_free",
+];
+
+/// Guest exports present with the host WebSocket tunnel feature.
+#[cfg(feature = "wasm-host-websocket")]
+pub const HOST_WEBSOCKET_GUEST_EXPORTS: &[&str] = &[
+    "easytier_host_websocket_abi_version",
+    "easytier_instance_accept_websocket",
 ];
 
 /// Guest exports present when the core is built with the smoltcp data plane.

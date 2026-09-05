@@ -15,6 +15,8 @@ use crate::{
 };
 
 pub mod plan;
+#[cfg(any(test, feature = "wasm-host-websocket"))]
+pub(crate) mod queue;
 pub mod transport;
 
 pub trait ExternalListenerFactory<Accepted>: Send + Sync + 'static
@@ -34,6 +36,10 @@ pub struct ExternalListenerRequest {
     pub url: Url,
     pub socket_context: SocketContext,
 }
+
+/// One listener supplied by the Host rather than the portable TOML model.
+/// Host listeners are mandatory: startup fails when one cannot bind.
+pub type HostListenerRegistration = ExternalListenerRequest;
 
 #[async_trait]
 pub trait AcceptedSocketHandler<Accepted>: Send + Sync {

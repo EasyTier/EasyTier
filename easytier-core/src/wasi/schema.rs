@@ -60,3 +60,33 @@ impl WasiWebClientCreateConfig {
         Ok(())
     }
 }
+
+#[cfg(feature = "wasm-host-websocket")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct WasiHostWebSocketMetadata {
+    pub version: u32,
+    pub local_url: url::Url,
+    pub remote_url: url::Url,
+    #[serde(default)]
+    pub resolved_remote_url: Option<url::Url>,
+}
+
+#[cfg(feature = "wasm-host-websocket")]
+impl WasiHostWebSocketMetadata {
+    pub(crate) fn validate(&self) -> anyhow::Result<()> {
+        if self.version != crate::wasi::abi::HOST_WEBSOCKET_ABI_VERSION {
+            anyhow::bail!("unsupported host WebSocket ABI version: {}", self.version);
+        }
+        for (description, url) in [("local", &self.local_url), ("remote", &self.remote_url)] {
+            if !matches!(url.scheme(), "ws" | "wss") {
+                anyhow::bail!("host WebSocket {description} URL must use ws or wss");
+            }
+        }
+        if let Some(url) = &self.resolved_remote_url
+            && !matches!(url.scheme(), "ws" | "wss")
+        {
+            anyhow::bail!("resolved host WebSocket URL must use ws or wss");
+        }
+        Ok(())
+    }
+}

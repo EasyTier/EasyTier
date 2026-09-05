@@ -1,0 +1,20 @@
+{
+  "name": "@easytier/cloudflare-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:wasm": "node scripts/build-wasm.mjs",
+    "check": "pnpm build:wasm && tsc --noEmit && wrangler deploy --dry-run",
+    "deploy": "pnpm build:wasm && wrangler deploy",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260724.1",
+    "@types/node": "22.18.1",
+    "binaryen": "131.0.0",
+    "typescript": "5.9.3",
+    "vitest": "2.1.9",
+    "wrangler": "4.114.0"
+  }
+}

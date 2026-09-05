@@ -1,0 +1,36 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "wasi-relay",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-22",
+  "compatibility_flags": ["nodejs_compat"],
+  "rules": [
+    {
+      "type": "CompiledWasm",
+      "globs": ["**/*.wasm"],
+      "fallthrough": true
+    }
+  ],
+  "vars": {
+    "EASYTIER_OBJECT_NAME": "primary",
+    "EASYTIER_CONFIG": "instance_id = \"019f94c2-8a97-7be3-b7a5-d6cea838c5d4\"\ninstance_name = \"cloudflare-worker\"\nlisteners = []\n\n[network_identity]\nnetwork_name = \"cf-wasi\"\nnetwork_secret = \"cf-wasi-test\"\n\n[flags]\nno_tun = false\nproxy_forward_by_system = true\ndisable_p2p = true\nenable_encryption = false\nbind_device = false\n"
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "EASYTIER_CORE",
+        "class_name": "EasyTierCoreObject"
+      }
+    ]
+  },
+  "exports": {
+    "EasyTierCoreObject": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    }
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  }
+}
