@@ -254,7 +254,7 @@ impl ClientManager {
             .get_client_url_by_machine_id(user_id, machine_id)?;
         self.client_sessions
             .get(&c_url)
-            .map(|item| item.value().clone())
+            .and_then(|item| item.is_running().then(|| item.value().clone()))
     }
 
     pub async fn disconnect_session_by_machine_id(
@@ -542,7 +542,7 @@ mod tests {
 
     use crate::{
         FeatureFlags,
-        client_manager::{ClientManager, HeartbeatPolicy},
+        client_manager::{ClientManager, HeartbeatPolicy, session::Session, storage::StorageToken},
         db::Db,
         webhook::ManagedNetworkConfig,
     };
@@ -773,6 +773,51 @@ mod tests {
 
         webhook_state.allow_connected();
         webhook_server.abort();
+    }
+
+    #[tokio::test]
+    async fn non_running_session_is_not_routable_by_machine_id() {
+        let db = Db::memory_db().await;
+        let mgr = ClientManager::new(
+            db.clone(),
+            None,
+            HeartbeatPolicy::default(),
+            Arc::new(FeatureFlags::default()),
+            Arc::new(crate::webhook::WebhookConfig::new(
+                None, None, None, None, None,
+            )),
+        );
+        let user_id = db.auto_create_user("token").await.unwrap().id;
+        let machine_id = uuid::Uuid::new_v4();
+        let client_url = url::Url::parse("udp://127.0.0.1:22020").unwrap();
+        mgr.storage.update_client(
+            StorageToken {
+                token: "token".to_string(),
+                client_url: client_url.clone(),
+                machine_id,
+                user_id,
+            },
+            1,
+            true,
+        );
+        let session = Arc::new(Session::new(
+            mgr.storage.weak_ref(),
+            client_url.clone(),
+            None,
+            HeartbeatPolicy::default(),
+            Arc::new(FeatureFlags::default()),
+            Arc::new(crate::webhook::WebhookConfig::new(
+                None, None, None, None, None,
+            )),
+            1,
+        ));
+        assert!(!session.is_running());
+        mgr.client_sessions.insert(client_url, session);
+
+        assert!(
+            mgr.get_session_by_machine_id(user_id, &machine_id)
+                .is_none()
+        );
     }
 
     async fn wait_for_validated_user(mgr: &ClientManager, machine_id: uuid::Uuid) -> i32 {
