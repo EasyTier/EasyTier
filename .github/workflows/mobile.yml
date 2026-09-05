@@ -124,6 +124,125 @@ jobs:
           path: |
             ./artifacts/*
 
+  # Sign Android APKs with Certum SimplySign cloud certificate (PKCS#11)
+  # Uncomment when ready to sign APKs
+  # sign-mobile:
+  #   name: Sign Android APKs (Certum SimplySign)
+  #   needs: [build-mobile]
+  #   if: needs.pre_job.outputs.should_skip != 'true' && !cancelled()
+  #   runs-on: windows-latest
+  #   continue-on-error: true
+  #   strategy:
+  #     fail-fast: false
+  #     matrix:
+  #       include:
+  #         - ARCH: aarch64
+  #         - ARCH: armv7
+  #         - ARCH: i686
+  #         - ARCH: x86_64
+  #   steps:
+  #     - name: Checkout
+  #       uses: actions/checkout@v5
+  #
+  #     - name: Download artifact
+  #       uses: actions/download-artifact@v4
+  #       with:
+  #         name: easytier-mobile-android-${{ matrix.ARCH }}
+  #         path: sign_binaries
+  #
+  #     - name: Setup JDK (for jarsigner)
+  #       uses: actions/setup-java@v4
+  #       with:
+  #         java-version: '17'
+  #         distribution: 'temurin'
+  #
+  #     - name: Install SimplySign Desktop
+  #       shell: bash
+  #       run: |
+  #         chmod +x .github/scripts/install-simplysign.sh
+  #         .github/scripts/install-simplysign.sh
+  #       continue-on-error: true
+  #
+  #     - name: Configure SimplySign Registry
+  #       shell: pwsh
+  #       run: |
+  #         ./.github/scripts/configure-simplysign-registry.ps1
+  #       continue-on-error: true
+  #
+  #     - name: Connect to SimplySign (TOTP Authentication)
+  #       shell: pwsh
+  #       env:
+  #         CERTUM_OTP_URI: ${{ secrets.CERTUM_OTP_URI }}
+  #         CERTUM_USERNAME: ${{ secrets.CERTUM_USERNAME }}
+  #         CERTUM_EXE_PATH: ${{ secrets.CERTUM_EXE_PATH }}
+  #       run: |
+  #         ./.github/scripts/Connect-SimplySign-Enhanced.ps1
+  #       continue-on-error: true
+  #
+  #     - name: Sign Android APKs (jarsigner + PKCS#11)
+  #       shell: pwsh
+  #       run: |
+  #         Write-Host "=== SIGNING ANDROID APKs WITH CERTUM CLOUD CERTIFICATE (PKCS#11) ==="
+  #
+  #         $pkcs11Config = @"
+  #         name = CertumSimplySign
+  #         library = C:\Program Files\Certum\SimplySign Desktop\cryptoCertum3PKCS.dll
+  #         slot = 0
+  #         "@
+  #         $pkcs11Config | Out-File -FilePath "pkcs11.cfg" -Encoding ASCII
+  #
+  #         $apkFiles = Get-ChildItem -Path "sign_binaries" -Recurse -Include *.apk
+  #
+  #         if ($apkFiles.Count -eq 0) {
+  #           Write-Host "No APK files found to sign"
+  #           exit 0
+  #         }
+  #
+  #         Write-Host "Found $($apkFiles.Count) APK files to sign"
+  #
+  #         # Certum SimplySign default key alias is "1"
+  #         $keyAlias = "1"
+  #
+  #         foreach ($apk in $apkFiles) {
+  #           Write-Host "Signing APK: $($apk.FullName)"
+  #           try {
+  #             & jarsigner -verbose `
+  #               -keystore NONE `
+  #               -storetype PKCS11 `
+  #               -providerClass sun.security.pkcs11.SunPKCS11 `
+  #               -providerArg pkcs11.cfg `
+  #               -tsa http://time.certum.pl `
+  #               -signedjar "$($apk.DirectoryName)\signed-$($apk.Name)" `
+  #               "$($apk.FullName)" `
+  #               $keyAlias
+  #
+  #             Move-Item -Path "$($apk.DirectoryName)\signed-$($apk.Name)" -Destination $apk.FullName -Force
+  #             Write-Host "  OK: APK signed successfully"
+  #           } catch {
+  #             Write-Host "  WARNING: Failed to sign APK - $($_.Exception.Message)"
+  #           }
+  #         }
+  #
+  #         Write-Host "=== ANDROID APK SIGNING COMPLETE ==="
+  #       continue-on-error: true
+  #
+  #     - name: Verify APK Signatures
+  #       shell: pwsh
+  #       run: |
+  #         $apkFiles = Get-ChildItem -Path "sign_binaries" -Recurse -Include *.apk
+  #         foreach ($apk in $apkFiles) {
+  #           Write-Host "Verifying: $($apk.Name)"
+  #           & jarsigner -verify -verbose -certs "$($apk.FullName)" 2>&1 | Select-Object -First 10
+  #         }
+  #       continue-on-error: true
+  #
+  #     - name: Re-upload signed artifact
+  #       uses: actions/upload-artifact@v5
+  #       with:
+  #         name: easytier-mobile-android-${{ matrix.ARCH }}
+  #         path: sign_binaries/*
+  #         overwrite: true
+
   mobile-result:
     runs-on: ubuntu-latest
     needs: [ pre_job, build-mobile ]
