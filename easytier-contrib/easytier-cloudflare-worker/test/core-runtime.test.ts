@@ -161,3 +161,84 @@ describe("EasyTierRuntime WebSocket ownership", () => {
     expect(events).toEqual(["transferToGuest", "abort"]);
   });
 });
+
+describe("EasyTierRuntime data plane", () => {
+  it("exposes TCP listener creation after runtime initialization", async () => {
+    const listener = {} as Awaited<ReturnType<EasyTierRuntime["bindTcp"]>>;
+    const bindTcp = vi.fn().mockResolvedValue(listener);
+    const runtime = Object.create(
+      EasyTierRuntime.prototype,
+    ) as EasyTierRuntime;
+    Object.assign(runtime, {
+      ready: Promise.resolve(),
+      dataPlane: { bindTcp },
+    });
+
+    await expect(runtime.bindTcp(22, 500)).resolves.toBe(listener);
+    expect(bindTcp).toHaveBeenCalledWith(22, 500);
+  });
+
+  it("stops and drops the guest exactly once before releasing host resources", async () => {
+    const calls: string[] = [];
+    let driveCount = 0;
+    const dataPlane = {
+      drainCompletions: vi.fn().mockResolvedValue(undefined),
+      shutdown: vi.fn(),
+    };
+    const host = { shutdown: vi.fn() };
+    const clock = {
+      interrupt: vi.fn(),
+      advanceMillis: vi.fn(),
+    };
+    const runtime = Object.create(
+      EasyTierRuntime.prototype,
+    ) as EasyTierRuntime;
+    Object.assign(runtime, {
+      ready: Promise.resolve(),
+      serial: Promise.resolve(),
+      instanceHandle: 7n,
+      dataPlane,
+      host,
+      clock,
+      stopping: false,
+      stopPromise: undefined,
+      armRequest: 0,
+      timer: undefined,
+      timerGeneration: 0,
+      timerDueAt: undefined,
+      completionRequested: false,
+      pumpQueued: false,
+      call: async (name: string) => {
+        calls.push(name);
+        switch (name) {
+          case "instanceStop":
+          case "instanceDrop":
+            return 0;
+          case "instanceDrive":
+            driveCount += 1;
+            return driveCount === 1 ? 3 : 4;
+          case "nextDeadlineMillis":
+            return 0n;
+          default:
+            throw new Error(`unexpected call: ${name}`);
+        }
+      },
+    });
+
+    const stopping = runtime.stop();
+    expect(runtime.stop()).toBe(stopping);
+    await stopping;
+
+    expect(calls).toEqual([
+      "instanceStop",
+      "instanceDrive",
+      "nextDeadlineMillis",
+      "instanceDrive",
+      "instanceDrop",
+    ]);
+    expect(dataPlane.drainCompletions).toHaveBeenCalledTimes(2);
+    expect(dataPlane.shutdown).toHaveBeenCalledOnce();
+    expect(host.shutdown).toHaveBeenCalledOnce();
+    expect(clock.interrupt).toHaveBeenCalledTimes(2);
+  });
+});

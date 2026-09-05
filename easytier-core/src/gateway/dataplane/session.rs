@@ -168,6 +168,7 @@ enum PendingOperationResult {
         eof: bool,
     },
     TcpWritten(usize),
+    TcpWriteShutdown,
     UdpBound(DataPlaneUdpSocket),
     UdpReceived {
         data: Vec<u8>,
@@ -624,6 +625,36 @@ where
         Ok(operation_id)
     }
 
+    pub fn submit_tcp_shutdown_write(
+        self: &Arc<Self>,
+        stream_id: DataPlaneResourceId,
+    ) -> DataPlaneResult<DataPlaneOperationId> {
+        Self::ensure_executor()?;
+        let (stream, operation_id, cancel) = {
+            let mut state = self.lock_state();
+            let stream = Self::require_tcp(&state, stream_id)?;
+            let (operation_id, cancel) = self.admit_locked(
+                &mut state,
+                DataPlaneOperationKind::TcpShutdownWrite,
+                Some(stream_id),
+                0,
+                false,
+            )?;
+            (stream, operation_id, cancel)
+        };
+        self.spawn_operation(operation_id, async move {
+            stream
+                .write_deadline
+                .run(cancel, async {
+                    stream.write.lock().await.shutdown().await?;
+                    Ok::<_, std::io::Error>(())
+                })
+                .await?;
+            Ok(PendingOperationResult::TcpWriteShutdown)
+        });
+        Ok(operation_id)
+    }
+
     pub fn submit_udp_bind(
         self: &Arc<Self>,
         local_port: u16,
@@ -880,6 +911,7 @@ where
                 DataPlaneOperationResult::TcpRead { data, eof }
             }
             PendingOperationResult::TcpWritten(len) => DataPlaneOperationResult::TcpWritten { len },
+            PendingOperationResult::TcpWriteShutdown => DataPlaneOperationResult::TcpWriteShutdown,
             PendingOperationResult::UdpBound(socket) => {
                 let local_addr = socket.local_addr();
                 let socket = Self::insert_udp_resource_locked(resources, socket)?;

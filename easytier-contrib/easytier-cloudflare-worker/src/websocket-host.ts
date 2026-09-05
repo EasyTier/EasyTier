@@ -278,6 +278,17 @@ export class WebSocketHost {
     };
   }
 
+  shutdown(reason = "EasyTier runtime stopped"): void {
+    for (const [handle, state] of [...this.sockets]) {
+      this.releaseSocket(handle, state, 1000, reason);
+    }
+    this.tcpPortLeases.clear();
+    this.operations.clear();
+    this.totalQueuedBytes = 0;
+    this.wasmMemory = undefined;
+    this.wakeGuest = () => {};
+  }
+
   private emitEvent(
     handle: bigint,
     kindPointer: number,
