@@ -22,7 +22,7 @@ pub(crate) fn decode_ipv4_socket_address(wire: &[u8]) -> io::Result<SocketAddr> 
     if !address.is_ipv4() {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "data-plane ABI v2 supports IPv4 only",
+            "data-plane ABI supports IPv4 only",
         ));
     }
     Ok(address)

@@ -199,11 +199,14 @@ impl AsyncWrite for TcpStream {
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
         let mut socket = self.reactor.get_socket::<tcp::Socket>(*self.handle);
 
-        if socket.is_open() {
+        if socket.may_send() {
             socket.close();
             self.reactor.notify();
         }
-        if socket.state() == tcp::State::Closed {
+        if matches!(
+            socket.state(),
+            tcp::State::FinWait2 | tcp::State::TimeWait | tcp::State::Closed
+        ) {
             return Poll::Ready(Ok(()));
         }
 

@@ -30,19 +30,29 @@ where
     }
 
     pub fn add_connector(&self, url: Url) -> anyhow::Result<()> {
-        self.manual.add_connector(url)
+        self.manual
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("inbound-only connectivity has no outbound connectors"))?
+            .add_connector(url)
     }
 
     pub fn remove_connector(&self, url: &Url) -> bool {
-        self.manual.remove_connector(url)
+        self.manual
+            .as_ref()
+            .is_some_and(|manual| manual.remove_connector(url))
     }
 
     pub fn clear_connectors(&self) {
-        self.manual.clear_connectors();
+        if let Some(manual) = &self.manual {
+            manual.clear_connectors();
+        }
     }
 
     pub fn list_connectors(&self) -> Vec<ManualConnectorSnapshot> {
-        self.manual.list_connectors()
+        self.manual
+            .as_ref()
+            .map(|manual| manual.list_connectors())
+            .unwrap_or_default()
     }
 
     pub fn running_listeners(&self) -> Vec<Url> {
@@ -92,10 +102,11 @@ where
             .peer_manager
             .node_snapshot(self.running_listeners())
             .await;
-        snapshot.ip_list = self
-            .direct
-            .local_address_observations_with_stun(&snapshot.stun_info)
-            .await;
+        if let Some(direct) = &self.direct {
+            snapshot.ip_list = direct
+                .local_address_observations_with_stun(&snapshot.stun_info)
+                .await;
+        }
         snapshot
     }
 

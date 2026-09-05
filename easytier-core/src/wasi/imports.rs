@@ -6,6 +6,10 @@
 
 pub(crate) const HOST_PENDING: i32 = -1;
 pub(crate) const HOST_WOULD_BLOCK: i32 = -5;
+#[cfg(feature = "wasm-host-websocket")]
+pub(crate) const HOST_WEBSOCKET_CLOSED: i32 = -10;
+#[cfg(feature = "wasm-host-websocket")]
+pub(crate) const HOST_WEBSOCKET_TEXT: i32 = -11;
 
 #[link(wasm_import_module = "easytier_host")]
 unsafe extern "C" {
@@ -187,6 +191,38 @@ unsafe extern "C" {
 
     /// Reports packet-sink write readiness; it never accepts a packet itself.
     pub(crate) fn take_packet_write_ready(operation: u64) -> i32;
+
+    #[cfg(feature = "wasm-host-websocket")]
+    /// Starts receiving one complete host WebSocket message.
+    pub(crate) fn start_websocket_receive(handle: u64, operation: u64, capacity: u32) -> i32;
+
+    #[cfg(feature = "wasm-host-websocket")]
+    /// Probes or copies one binary message, or returns the closed/text sentinel.
+    ///
+    /// A null destination with zero capacity returns the binary message length
+    /// without consuming it. A second call copies and consumes the message.
+    pub(crate) fn take_websocket_receive(operation: u64, destination: u32, capacity: u32) -> i32;
+
+    #[cfg(feature = "wasm-host-websocket")]
+    /// Starts sending one complete binary host WebSocket message.
+    pub(crate) fn start_websocket_send(
+        handle: u64,
+        operation: u64,
+        source: u32,
+        length: u32,
+    ) -> i32;
+
+    #[cfg(feature = "wasm-host-websocket")]
+    /// Reports completion of one host WebSocket send.
+    pub(crate) fn take_websocket_send(operation: u64) -> i32;
+
+    #[cfg(feature = "wasm-host-websocket-outbound")]
+    /// Starts opening one outbound host WebSocket for the requested URL.
+    pub(crate) fn start_websocket_connect(operation: u64, url: u32, url_len: u32) -> i32;
+
+    #[cfg(feature = "wasm-host-websocket-outbound")]
+    /// Returns the connected WebSocket handle, or a negative host status.
+    pub(crate) fn take_websocket_connect(operation: u64) -> i64;
 
     /// Cancels a pending or completed-but-unread operation and releases host state.
     ///

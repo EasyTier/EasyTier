@@ -53,6 +53,7 @@ pub enum DataPlaneOperationKind {
     UdpBind = 6,
     UdpReceive = 7,
     UdpSend = 8,
+    TcpShutdownWrite = 9,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -100,6 +101,7 @@ pub enum DataPlaneOperationResult {
     TcpWritten {
         len: usize,
     },
+    TcpWriteShutdown,
     UdpBound {
         socket: DataPlaneResourceId,
         local_addr: SocketAddr,
@@ -136,6 +138,7 @@ impl DataPlaneOperationResult {
             Self::UdpBound { socket, .. } => Some(*socket),
             Self::TcpRead { .. }
             | Self::TcpWritten { .. }
+            | Self::TcpWriteShutdown
             | Self::UdpReceived { .. }
             | Self::UdpSent { .. } => None,
         }
