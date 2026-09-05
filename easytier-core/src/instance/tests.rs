@@ -660,6 +660,24 @@ mod portable_runtime {
         );
     }
 
+    #[tokio::test]
+    async fn from_toml_normalizes_secure_mode_keypair() {
+        let config = TomlConfig::new_from_str(
+            r#"
+[secure_mode]
+enabled = true
+"#,
+        )
+        .unwrap();
+        let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+
+        CoreInstance::from_toml(config.clone(), adapters(None, Arc::new(packet_sink))).unwrap();
+
+        let secure_mode = config.get_secure_mode().unwrap();
+        assert!(secure_mode.local_private_key.is_some());
+        assert!(secure_mode.local_public_key.is_some());
+    }
+
     #[cfg(all(feature = "proxy-packet", feature = "management"))]
     #[tokio::test]
     async fn process_management_rpc_resolves_and_calls_core_instance_directly() {
