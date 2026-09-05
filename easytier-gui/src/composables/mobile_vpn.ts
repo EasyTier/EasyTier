@@ -1,7 +1,14 @@
 import type { NetworkTypes } from 'easytier-frontend-lib'
 import { addPluginListener } from '@tauri-apps/api/core'
 import { Utils } from 'easytier-frontend-lib'
-import { get_vpn_status, prepare_vpn, start_vpn, stop_vpn } from 'tauri-plugin-vpnservice-api'
+import {
+  consume_vpn_tile_action,
+  get_vpn_status,
+  prepare_vpn,
+  start_vpn,
+  stop_vpn,
+  type VpnTileAction,
+} from 'tauri-plugin-vpnservice-api'
 import { collectNetworkInfo, getConfig, listNetworkInstanceIds, setTunFd } from './backend'
 
 type Route = NetworkTypes.Route
@@ -24,6 +31,8 @@ let vpnReconcileGeneration = 0
 let vpnReconcileAttempts = 0
 let vpnReconcileQueue: Promise<void> = Promise.resolve()
 let vpnPermissionRequest: Promise<boolean> | null = null
+let vpnTileActionHandler: ((action: VpnTileAction) => Promise<void>) | undefined
+let vpnTileActionQueue: Promise<void> = Promise.resolve()
 
 const curVpnStatus: vpnStatus = {
   running: false,
@@ -31,6 +40,31 @@ const curVpnStatus: vpnStatus = {
   ipv4Cidr: undefined,
   routes: [],
   dns: undefined,
+}
+
+export function setMobileVpnTileActionHandler(
+  handler?: (action: VpnTileAction) => Promise<void>,
+) {
+  vpnTileActionHandler = handler
+}
+
+export async function consumePendingMobileVpnTileAction() {
+  const handler = vpnTileActionHandler
+  if (!handler) {
+    return false
+  }
+
+  const action = (await consume_vpn_tile_action())?.action
+  if (action !== 'start' && action !== 'stop') {
+    return false
+  }
+
+  const run = vpnTileActionQueue
+    .catch(error => console.error('previous VPN tile action failed', error))
+    .then(() => handler(action))
+  vpnTileActionQueue = run.catch(error => console.error('VPN tile action failed', error))
+  await run
+  return true
 }
 
 async function requestVpnPermissionOnce() {
@@ -243,6 +277,16 @@ async function registerVpnServiceListener() {
     'vpnservice',
     'vpn_service_stop',
     onVpnServiceStop,
+  )
+
+  await addPluginListener(
+    'vpnservice',
+    'vpn_tile_action',
+    () => {
+      void consumePendingMobileVpnTileAction().catch((error) => {
+        console.error('consume VPN tile action failed', error)
+      })
+    },
   )
 }
 
