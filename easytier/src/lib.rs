@@ -12,6 +12,8 @@ mod vpn_portal;
 pub mod common;
 #[cfg(feature = "management")]
 pub mod core;
+#[cfg(feature = "upnp")]
+pub(crate) mod igd_next;
 pub mod proto;
 #[cfg(feature = "management-rpc")]
 pub mod rpc_service;

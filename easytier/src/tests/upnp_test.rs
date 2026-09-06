@@ -7,14 +7,14 @@ use std::{
     time::Duration,
 };
 
+use crate::igd_next::{
+    GetGenericPortMappingEntryError, PortMappingEntry, PortMappingProtocol, SearchOptions,
+    search_gateway,
+};
 use anyhow::{Context, anyhow, bail};
 use easytier_core::{
     connectivity::stun::{StunInfoProvider, StunSocketMapper},
     process_runtime::CoreProcessRuntime,
-};
-use igd_next::{
-    GetGenericPortMappingEntryError, PortMappingEntry, PortMappingProtocol, SearchOptions,
-    aio::tokio::search_gateway,
 };
 use tempfile::TempDir;
 
