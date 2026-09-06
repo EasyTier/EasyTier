@@ -7,12 +7,10 @@ mod errors;
 mod messages;
 mod parsing;
 
-use std::{
-    collections::HashMap,
-    fmt,
-    net::{IpAddr, SocketAddr},
-    time::Duration,
-};
+use std::{collections::HashMap, fmt, net::SocketAddr, time::Duration};
+
+#[cfg(test)]
+use std::net::IpAddr;
 
 use bytes::Bytes;
 use easytier_core::socket::{tcp::TcpConnectOptions, udp::UdpBindOptions};
@@ -26,11 +24,12 @@ use hyper_util::rt::TokioIo;
 use rand::Rng as _;
 use tokio::time::timeout;
 
-pub(crate) use errors::{AddAnyPortError, GetGenericPortMappingEntryError};
-use errors::{
-    AddPortError, GetExternalIpError, HttpTransportError, RemovePortError, RequestError,
-    SearchError,
-};
+pub(crate) use errors::AddAnyPortError;
+#[cfg(test)]
+use errors::GetExternalIpError;
+#[cfg(test)]
+pub(crate) use errors::GetGenericPortMappingEntryError;
+use errors::{AddPortError, HttpTransportError, RemovePortError, RequestError, SearchError};
 
 use crate::socket::{tcp::connect_tcp, udp::create_udp_socket};
 
@@ -42,15 +41,17 @@ const MAX_HTTP_RESPONSE_SIZE: usize = 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PortMappingProtocol {
-    TCP,
-    UDP,
+    #[cfg(test)]
+    Tcp,
+    Udp,
 }
 
 impl fmt::Display for PortMappingProtocol {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
-            Self::TCP => "TCP",
-            Self::UDP => "UDP",
+            #[cfg(test)]
+            Self::Tcp => "TCP",
+            Self::Udp => "UDP",
         })
     }
 }
@@ -81,15 +82,13 @@ pub(crate) struct Gateway {
     service_type: String,
 }
 
+#[cfg(test)]
 pub(crate) struct PortMappingEntry {
-    pub(crate) remote_host: String,
     pub(crate) external_port: u16,
     pub(crate) protocol: PortMappingProtocol,
     pub(crate) internal_port: u16,
     pub(crate) internal_client: String,
-    pub(crate) enabled: bool,
     pub(crate) port_mapping_description: String,
-    pub(crate) lease_duration: u32,
 }
 
 pub(crate) async fn search_gateway(options: SearchOptions) -> Result<Gateway, SearchError> {
@@ -260,6 +259,7 @@ impl Gateway {
         parsing::parse_response(response, expected_response)
     }
 
+    #[cfg(test)]
     pub(crate) async fn get_external_ip(&self) -> Result<IpAddr, GetExternalIpError> {
         let result = self
             .perform_request(
@@ -460,6 +460,7 @@ impl Gateway {
         parsing::parse_delete_port_mapping_response(result)
     }
 
+    #[cfg(test)]
     pub(crate) async fn get_generic_port_mapping_entry(
         &self,
         index: u32,

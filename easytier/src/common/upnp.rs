@@ -377,7 +377,7 @@ async fn add_udp_mapping_port_igd(
 ) -> anyhow::Result<u16> {
     match gateway
         .add_any_port(
-            PortMappingProtocol::UDP,
+            PortMappingProtocol::Udp,
             local_addr,
             UPNP_LEASE_DURATION_SECS,
             UPNP_DESCRIPTION,
@@ -396,7 +396,7 @@ async fn add_udp_mapping_port_igd(
 
             gateway
                 .add_port(
-                    PortMappingProtocol::UDP,
+                    PortMappingProtocol::Udp,
                     local_addr.port(),
                     local_addr,
                     UPNP_LEASE_DURATION_SECS,
@@ -563,7 +563,7 @@ async fn renew_udp_mapping_igd(
 ) -> anyhow::Result<()> {
     gateway
         .add_port(
-            PortMappingProtocol::UDP,
+            PortMappingProtocol::Udp,
             external_port,
             local_addr,
             UPNP_LEASE_DURATION_SECS,
@@ -579,7 +579,7 @@ async fn remove_udp_mapping_igd(
     local_listener: &url::Url,
 ) -> anyhow::Result<()> {
     gateway
-        .remove_port(PortMappingProtocol::UDP, external_port)
+        .remove_port(PortMappingProtocol::Udp, external_port)
         .await
         .with_context(|| format!("remove udp port mapping {local_listener}"))
 }

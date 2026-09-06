@@ -94,6 +94,7 @@ pub(crate) enum RemovePortError {
     RequestError(#[source] RequestError),
 }
 
+#[cfg(test)]
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum GetExternalIpError {
     #[error("the client is not authorized to get the external IP address")]
@@ -102,6 +103,7 @@ pub(crate) enum GetExternalIpError {
     RequestError(#[source] RequestError),
 }
 
+#[cfg(test)]
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum GetGenericPortMappingEntryError {
     #[error("the client is not authorized to look up port mappings")]
@@ -112,6 +114,7 @@ pub(crate) enum GetGenericPortMappingEntryError {
     RequestError(#[source] RequestError),
 }
 
+#[cfg(test)]
 impl From<RequestError> for GetGenericPortMappingEntryError {
     fn from(error: RequestError) -> Self {
         match error {

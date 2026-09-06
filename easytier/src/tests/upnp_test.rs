@@ -843,7 +843,7 @@ async fn query_mappings(
                 for index in 0..64 {
                     match gateway.get_generic_port_mapping_entry(index).await {
                         Ok(entry) => {
-                            if entry.protocol == PortMappingProtocol::UDP
+                            if entry.protocol == PortMappingProtocol::Udp
                                 && entry.port_mapping_description == TEST_IGD_DESCRIPTION
                             {
                                 entries.push(entry);

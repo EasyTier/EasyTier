@@ -1,14 +1,16 @@
-use std::{collections::HashMap, io, net::SocketAddr, str::FromStr};
+use std::{collections::HashMap, io, net::SocketAddr};
+
+#[cfg(test)]
+use std::str::FromStr;
 
 use url::Url;
 use xmltree::Element;
 
+use super::errors::{AddAnyPortError, AddPortError, RemovePortError, RequestError, SearchError};
+#[cfg(test)]
 use super::{
     PortMappingEntry, PortMappingProtocol,
-    errors::{
-        AddAnyPortError, AddPortError, GetExternalIpError, GetGenericPortMappingEntryError,
-        RemovePortError, RequestError, SearchError,
-    },
+    errors::{GetExternalIpError, GetGenericPortMappingEntryError},
 };
 
 pub(super) fn parse_search_result(text: &str) -> Result<(SocketAddr, String), SearchError> {
@@ -169,6 +171,7 @@ pub(super) fn parse_response(text: String, expected: &str) -> RequestResult {
     Err(RequestError::ErrorCode(code, description))
 }
 
+#[cfg(test)]
 pub(super) fn parse_get_external_ip_response(
     result: RequestResult,
 ) -> Result<std::net::IpAddr, GetExternalIpError> {
@@ -251,6 +254,7 @@ pub(super) fn parse_delete_port_mapping_response(
     }
 }
 
+#[cfg(test)]
 pub(super) fn parse_get_generic_port_mapping_entry(
     result: RequestResult,
 ) -> Result<PortMappingEntry, GetGenericPortMappingEntryError> {
@@ -263,14 +267,11 @@ pub(super) fn parse_get_generic_port_mapping_entry(
         xml.get_child(name)
             .ok_or_else(|| invalid(format!("{name} is missing")))
     };
-    let remote_host = field("NewRemoteHost")?
-        .get_text()
-        .map(|text| text.into_owned())
-        .unwrap_or_default();
+    field("NewRemoteHost")?;
     let external_port = parse_number(&xml, "NewExternalPort")?;
     let protocol = match field("NewProtocol")?.get_text().as_deref() {
-        Some("UDP") => PortMappingProtocol::UDP,
-        Some("TCP") => PortMappingProtocol::TCP,
+        Some("UDP") => PortMappingProtocol::Udp,
+        Some("TCP") => PortMappingProtocol::Tcp,
         _ => return Err(invalid("NewProtocol is invalid".to_owned())),
     };
     let internal_port = parse_number(&xml, "NewInternalPort")?;
@@ -278,29 +279,26 @@ pub(super) fn parse_get_generic_port_mapping_entry(
         .get_text()
         .map(|text| text.into_owned())
         .ok_or_else(|| invalid("NewInternalClient is empty".to_owned()))?;
-    let enabled = match parse_number::<u16>(&xml, "NewEnabled")? {
-        0 => false,
-        1 => true,
+    match parse_number::<u16>(&xml, "NewEnabled")? {
+        0 | 1 => {}
         _ => return Err(invalid("NewEnabled is invalid".to_owned())),
-    };
+    }
     let port_mapping_description = field("NewPortMappingDescription")?
         .get_text()
         .map(|text| text.into_owned())
         .unwrap_or_default();
-    let lease_duration = parse_number(&xml, "NewLeaseDuration")?;
+    parse_number::<u32>(&xml, "NewLeaseDuration")?;
 
     Ok(PortMappingEntry {
-        remote_host,
         external_port,
         protocol,
         internal_port,
         internal_client,
-        enabled,
         port_mapping_description,
-        lease_duration,
     })
 }
 
+#[cfg(test)]
 fn parse_number<T: FromStr>(
     xml: &Element,
     name: &str,
