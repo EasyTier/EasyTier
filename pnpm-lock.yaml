@@ -53,6 +53,31 @@ importers:
         specifier: 4.114.0
         version: 4.114.0(@cloudflare/workers-types@5.20260724.1)
 
+  easytier-contrib/easytier-web-example:
+    dependencies:
+      '@easytier/browser':
+        specifier: workspace:0.1.0
+        version: link:../easytier-browser
+      '@easytier/cloudflare':
+        specifier: workspace:0.1.0
+        version: link:../easytier-cloudflare
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: 5.20260724.1
+        version: 5.20260724.1
+      '@types/node':
+        specifier: 22.18.1
+        version: 22.18.1
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+      vite:
+        specifier: 5.4.21
+        version: 5.4.21(@types/node@22.18.1)
+      wrangler:
+        specifier: 4.114.0
+        version: 4.114.0(@cloudflare/workers-types@5.20260724.1)
+
   easytier-contrib/easytier-runtime:
     devDependencies:
       '@types/node':

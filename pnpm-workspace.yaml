@@ -3,6 +3,7 @@ packages:
   - 'easytier-contrib/easytier-runtime'
   - 'easytier-contrib/easytier-browser'
   - 'easytier-contrib/easytier-cloudflare'
+  - 'easytier-contrib/easytier-web-example'
   - 'easytier-web/frontend'
   - 'easytier-web/frontend-lib'
   - 'easytier-gui'
