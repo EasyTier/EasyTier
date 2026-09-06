@@ -1,4 +1,4 @@
-use std::{collections::HashSet, net::Ipv4Addr, sync::Arc, time::Duration};
+use std::{collections::HashSet, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use cidr::Ipv4Inet;
@@ -24,20 +24,23 @@ pub enum DhcpIpv4Decision {
 
 #[derive(Debug)]
 pub struct DhcpIpv4Allocator {
-    default_subnet: Ipv4Inet,
+    default_subnet: Option<Ipv4Inet>,
     current: Option<Ipv4Inet>,
 }
 
 impl Default for DhcpIpv4Allocator {
     fn default() -> Self {
-        Self::new(Ipv4Inet::new(Ipv4Addr::new(10, 126, 126, 0), 24).unwrap())
+        Self {
+            default_subnet: None,
+            current: None,
+        }
     }
 }
 
 impl DhcpIpv4Allocator {
     pub fn new(default_subnet: Ipv4Inet) -> Self {
         Self {
-            default_subnet,
+            default_subnet: Some(default_subnet),
             current: None,
         }
     }
@@ -59,7 +62,13 @@ impl DhcpIpv4Allocator {
             return DhcpIpv4Decision::WaitForPeers;
         }
 
-        let subnet = used_ipv4.iter().next().unwrap_or(&self.default_subnet);
+        let Some(subnet) = self
+            .default_subnet
+            .as_ref()
+            .or_else(|| used_ipv4.iter().next())
+        else {
+            return DhcpIpv4Decision::WaitForPeers;
+        };
         if let Some(current) = self.current
             && current.network() == subnet.network()
             && !used_ipv4.contains(&current)
@@ -410,15 +419,12 @@ mod tests {
     }
 
     #[test]
-    fn uses_default_subnet_when_routes_have_no_ipv4() {
+    fn does_not_fall_back_to_a_builtin_subnet_without_assigned_ipv4() {
         let allocator = DhcpIpv4Allocator::default();
 
         assert_eq!(
             allocator.evaluate(true, &HashSet::new()),
-            DhcpIpv4Decision::Change {
-                previous: None,
-                next: Some("10.126.126.1/24".parse().unwrap()),
-            }
+            DhcpIpv4Decision::WaitForPeers
         );
     }
 
@@ -460,7 +466,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn service_commits_only_after_host_apply_succeeds() {
+    async fn service_does_not_apply_ipv4_when_no_peer_has_one() {
         let host = Arc::new(RecordingHost::default());
         let (service, runtime_config) = service(
             DhcpIpv4RouteSnapshot {
@@ -472,21 +478,49 @@ mod tests {
 
         assert!(service.reconcile_once().await);
 
-        assert_eq!(service.current(), Some("10.126.126.1/24".parse().unwrap()));
+        assert_eq!(service.current(), None);
+        assert!(host.changes.lock().unwrap().is_empty());
+        assert!(host.published.lock().unwrap().is_empty());
+        assert!(
+            runtime_config
+                .snapshot()
+                .peer
+                .runtime
+                .core
+                .routes
+                .ipv4
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn service_commits_only_after_host_apply_succeeds() {
+        let host = Arc::new(RecordingHost::default());
+        let (service, runtime_config) = service(
+            DhcpIpv4RouteSnapshot {
+                has_routes: true,
+                used_ipv4: HashSet::from(["198.18.0.2/24".parse().unwrap()]),
+            },
+            host.clone(),
+        );
+
+        assert!(service.reconcile_once().await);
+
+        assert_eq!(service.current(), Some("198.18.0.1/24".parse().unwrap()));
         assert_eq!(
             *host.changes.lock().unwrap(),
-            [(None, Some("10.126.126.1/24".parse().unwrap()))]
+            [(None, Some("198.18.0.1/24".parse().unwrap()))]
         );
         assert_eq!(
             runtime_config.snapshot().peer.runtime.core.routes.ipv4,
-            Some(IpPrefix::new("10.126.126.1".parse().unwrap(), 24).unwrap())
+            Some(IpPrefix::new("198.18.0.1".parse().unwrap(), 24).unwrap())
         );
         assert_eq!(
             *host.published.lock().unwrap(),
             [(
                 None,
-                Some("10.126.126.1/24".parse().unwrap()),
-                Some("10.126.126.1/24".parse().unwrap())
+                Some("198.18.0.1/24".parse().unwrap()),
+                Some("198.18.0.1/24".parse().unwrap())
             )]
         );
     }
@@ -498,14 +532,14 @@ mod tests {
         let (service, _runtime_config) = service(
             DhcpIpv4RouteSnapshot {
                 has_routes: true,
-                used_ipv4: HashSet::new(),
+                used_ipv4: HashSet::from(["198.18.0.2/24".parse().unwrap()]),
             },
             host.clone(),
         );
 
         service.reconcile_once().await;
 
-        let expected = Some(IpPrefix::new("10.126.126.1".parse().unwrap(), 24).unwrap());
+        let expected = Some(IpPrefix::new("198.18.0.1".parse().unwrap(), 24).unwrap());
         assert!(host.published_with_permit.load(Ordering::Acquire));
         assert_eq!(
             host.published_runtime_ipv4.lock().unwrap().as_slice(),
@@ -521,7 +555,7 @@ mod tests {
         let (service, runtime_config) = service(
             DhcpIpv4RouteSnapshot {
                 has_routes: true,
-                used_ipv4: HashSet::new(),
+                used_ipv4: HashSet::from(["198.18.0.2/24".parse().unwrap()]),
             },
             host.clone(),
         );
@@ -544,7 +578,7 @@ mod tests {
         let (service, _runtime_config) = service(
             DhcpIpv4RouteSnapshot {
                 has_routes: true,
-                used_ipv4: HashSet::new(),
+                used_ipv4: HashSet::from(["198.18.0.2/24".parse().unwrap()]),
             },
             host.clone(),
         );
@@ -556,8 +590,8 @@ mod tests {
         assert_eq!(
             host.changes.lock().unwrap().as_slice(),
             [
-                (None, Some("10.126.126.1/24".parse().unwrap())),
-                (None, Some("10.126.126.1/24".parse().unwrap())),
+                (None, Some("198.18.0.1/24".parse().unwrap())),
+                (None, Some("198.18.0.1/24".parse().unwrap())),
             ]
         );
     }
