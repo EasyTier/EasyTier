@@ -1,4 +1,4 @@
-module github.com/EasyTier/easytier-go
+module github.com/EasyTier/EasyTier/easytier-go
 
 go 1.20
 

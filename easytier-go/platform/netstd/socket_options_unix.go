@@ -5,7 +5,7 @@ package netstd
 import (
 	"fmt"
 
-	"github.com/EasyTier/easytier-go/platform"
+	"github.com/EasyTier/EasyTier/easytier-go/platform"
 	"golang.org/x/sys/unix"
 )
 

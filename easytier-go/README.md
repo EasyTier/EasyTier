@@ -1,6 +1,6 @@
-# EasyTier Go Host
+# EasyTier Go
 
-`easytier-go-host` runs the `wasm32-wasip1` build of `easytier-core` in a
+`easytier-go` runs the `wasm32-wasip1` build of `easytier-core` in a
 pure-Go process through wazero. EasyTier remains the source and producer of the
 embedded WASM; this repository adapts Go host capabilities to the ABI exported
 and imported by that artifact.
@@ -9,7 +9,7 @@ and imported by that artifact.
 import (
     "net/netip"
 
-    corehost "github.com/EasyTier/easytier-go"
+    corehost "github.com/EasyTier/EasyTier/easytier-go"
 )
 ```
 

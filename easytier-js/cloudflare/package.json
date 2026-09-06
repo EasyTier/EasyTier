@@ -7,7 +7,7 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/EasyTier/EasyTier.git",
-    "directory": "easytier-contrib/easytier-cloudflare"
+    "directory": "easytier-js/cloudflare"
   },
   "homepage": "https://github.com/EasyTier/EasyTier",
   "bugs": "https://github.com/EasyTier/EasyTier/issues",
@@ -24,8 +24,8 @@
   ],
   "scripts": {
     "build:dependencies": "pnpm --filter @easytier/runtime build",
-    "build:wasm": "node ../easytier-runtime/scripts/build-wasm.mjs cloudflare src/generated/easytier_core.wasm && node ../easytier-runtime/scripts/validate-wasm.mjs cloudflare src/generated/easytier_core.wasm",
-    "build": "pnpm build:dependencies && tsc -p tsconfig.build.json && node ../easytier-runtime/scripts/copy-artifact.mjs src/generated/easytier_core.wasm dist/generated/easytier_core.wasm",
+    "build:wasm": "node ../runtime/scripts/build-wasm.mjs cloudflare src/generated/easytier_core.wasm && node ../runtime/scripts/validate-wasm.mjs cloudflare src/generated/easytier_core.wasm",
+    "build": "pnpm build:dependencies && tsc -p tsconfig.build.json && node ../runtime/scripts/copy-artifact.mjs src/generated/easytier_core.wasm dist/generated/easytier_core.wasm",
     "check": "pnpm build:wasm && pnpm build && tsc --noEmit && wrangler deploy --dry-run",
     "deploy": "pnpm build:wasm && pnpm build && wrangler deploy",
     "test": "pnpm build:dependencies && vitest run",

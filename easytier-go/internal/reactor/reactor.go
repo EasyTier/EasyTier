@@ -7,8 +7,8 @@ import (
 	"net"
 	"sync"
 
-	"github.com/EasyTier/easytier-go/internal/contextutil"
-	"github.com/EasyTier/easytier-go/platform"
+	"github.com/EasyTier/EasyTier/easytier-go/internal/contextutil"
+	"github.com/EasyTier/EasyTier/easytier-go/platform"
 )
 
 var (

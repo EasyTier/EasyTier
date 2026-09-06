@@ -12,11 +12,11 @@ importers:
 
   .: {}
 
-  easytier-contrib/easytier-browser:
+  easytier-js/browser:
     dependencies:
       '@easytier/runtime':
         specifier: workspace:0.1.0
-        version: link:../easytier-runtime
+        version: link:../runtime
     devDependencies:
       '@types/node':
         specifier: 22.18.1
@@ -31,14 +31,14 @@ importers:
         specifier: 2.1.9
         version: 2.1.9(@types/node@22.18.1)(happy-dom@16.8.1)
 
-  easytier-contrib/easytier-cloudflare:
+  easytier-js/cloudflare:
     dependencies:
       '@cloudflare/workers-types':
         specifier: 5.20260724.1
         version: 5.20260724.1
       '@easytier/runtime':
         specifier: workspace:0.1.0
-        version: link:../easytier-runtime
+        version: link:../runtime
     devDependencies:
       '@types/node':
         specifier: 22.18.1
@@ -53,14 +53,14 @@ importers:
         specifier: 4.114.0
         version: 4.114.0(@cloudflare/workers-types@5.20260724.1)
 
-  easytier-contrib/easytier-web-example:
+  easytier-js/examples/web:
     dependencies:
       '@easytier/browser':
         specifier: workspace:0.1.0
-        version: link:../easytier-browser
+        version: link:../../browser
       '@easytier/cloudflare':
         specifier: workspace:0.1.0
-        version: link:../easytier-cloudflare
+        version: link:../../cloudflare
     devDependencies:
       '@cloudflare/workers-types':
         specifier: 5.20260724.1
@@ -78,7 +78,7 @@ importers:
         specifier: 4.114.0
         version: 4.114.0(@cloudflare/workers-types@5.20260724.1)
 
-  easytier-contrib/easytier-runtime:
+  easytier-js/runtime:
     devDependencies:
       '@types/node':
         specifier: 22.18.1

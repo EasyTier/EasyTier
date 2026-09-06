@@ -54,7 +54,7 @@ func update(source string) error {
 	}
 	repositoryRoot := filepath.Dir(moduleFile)
 	if source == "" {
-		source = filepath.Join(repositoryRoot, "..", "EasyTier")
+		source = filepath.Join(repositoryRoot, "..")
 	}
 	source, err = filepath.Abs(source)
 	if err != nil {

@@ -7,7 +7,7 @@
 package peer_rpc
 
 import (
-	common "github.com/EasyTier/easytier-go/proto/common"
+	common "github.com/EasyTier/EasyTier/easytier-go/proto/common"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	timestamppb "google.golang.org/protobuf/types/known/timestamppb"

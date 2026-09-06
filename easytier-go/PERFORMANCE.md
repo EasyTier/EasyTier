@@ -1,6 +1,6 @@
 # Performance log
 
-This file records reproducible `easytier-go-host` data-plane optimizations.
+This file records reproducible `easytier-go` data-plane optimizations.
 Each round must describe the change, the benchmark conditions, the before and
 after result, and any profile evidence used to choose the next change.
 

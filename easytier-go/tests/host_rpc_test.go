@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	corehost "github.com/EasyTier/easytier-go"
+	corehost "github.com/EasyTier/EasyTier/easytier-go"
 )
 
 func TestPublicManagementRPCMethods(t *testing.T) {

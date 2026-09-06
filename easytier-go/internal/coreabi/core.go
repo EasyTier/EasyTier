@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/EasyTier/easytier-go/internal/contextutil"
+	"github.com/EasyTier/EasyTier/easytier-go/internal/contextutil"
 	"github.com/metacubex/wazero/api"
 )
 

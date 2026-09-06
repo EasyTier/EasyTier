@@ -7,7 +7,7 @@
 package common
 
 import (
-	error1 "github.com/EasyTier/easytier-go/proto/error"
+	error1 "github.com/EasyTier/EasyTier/easytier-go/proto/error"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"

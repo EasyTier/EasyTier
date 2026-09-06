@@ -7,14 +7,14 @@ import (
 	"net/netip"
 	"strconv"
 
-	"github.com/EasyTier/easytier-go/internal/artifact"
-	"github.com/EasyTier/easytier-go/internal/contextutil"
-	"github.com/EasyTier/easytier-go/internal/coreabi"
-	"github.com/EasyTier/easytier-go/internal/engine"
-	"github.com/EasyTier/easytier-go/platform"
-	"github.com/EasyTier/easytier-go/platform/netstd"
-	hostproto "github.com/EasyTier/easytier-go/proto"
-	"github.com/EasyTier/easytier-go/proto/api/manage"
+	"github.com/EasyTier/EasyTier/easytier-go/internal/artifact"
+	"github.com/EasyTier/EasyTier/easytier-go/internal/contextutil"
+	"github.com/EasyTier/EasyTier/easytier-go/internal/coreabi"
+	"github.com/EasyTier/EasyTier/easytier-go/internal/engine"
+	"github.com/EasyTier/EasyTier/easytier-go/platform"
+	"github.com/EasyTier/EasyTier/easytier-go/platform/netstd"
+	hostproto "github.com/EasyTier/EasyTier/easytier-go/proto"
+	"github.com/EasyTier/EasyTier/easytier-go/proto/api/manage"
 )
 
 type State int32

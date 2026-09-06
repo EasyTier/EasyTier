@@ -6,7 +6,7 @@ import (
 	"net"
 	"net/netip"
 
-	"github.com/EasyTier/easytier-go/platform"
+	"github.com/EasyTier/EasyTier/easytier-go/platform"
 )
 
 type DNSKind uint8

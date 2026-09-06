@@ -5,7 +5,7 @@ import (
 	"net"
 	"testing"
 
-	"github.com/EasyTier/easytier-go/platform"
+	"github.com/EasyTier/EasyTier/easytier-go/platform"
 )
 
 func TestDNSResolverNormalizesIPv4Literal(t *testing.T) {

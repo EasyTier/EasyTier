@@ -23,8 +23,8 @@ artifacts in the npm packages.
 Copy the example file and replace its placeholder with a local secret:
 
 ```sh
-cp easytier-contrib/easytier-web-example/cloudflare/.dev.vars.example \
-  easytier-contrib/easytier-web-example/cloudflare/.dev.vars
+cp easytier-js/examples/web/cloudflare/.dev.vars.example \
+  easytier-js/examples/web/cloudflare/.dev.vars
 ```
 
 The `.dev.vars` file is ignored by Git. Enter the same value in the Browser UI.

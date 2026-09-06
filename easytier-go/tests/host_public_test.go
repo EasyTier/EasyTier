@@ -14,10 +14,10 @@ import (
 	"testing"
 	"time"
 
-	corehost "github.com/EasyTier/easytier-go"
-	"github.com/EasyTier/easytier-go/platform"
-	"github.com/EasyTier/easytier-go/platform/netstd"
-	hostproto "github.com/EasyTier/easytier-go/proto"
+	corehost "github.com/EasyTier/EasyTier/easytier-go"
+	"github.com/EasyTier/EasyTier/easytier-go/platform"
+	"github.com/EasyTier/EasyTier/easytier-go/platform/netstd"
+	hostproto "github.com/EasyTier/EasyTier/easytier-go/proto"
 )
 
 func TestPublicLifecycleDoesNotExposeWazero(t *testing.T) {

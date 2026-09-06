@@ -7,10 +7,10 @@
 package manage
 
 import (
-	acl "github.com/EasyTier/easytier-go/proto/acl"
-	instance "github.com/EasyTier/easytier-go/proto/api/instance"
-	common "github.com/EasyTier/easytier-go/proto/common"
-	peer_rpc "github.com/EasyTier/easytier-go/proto/peer_rpc"
+	acl "github.com/EasyTier/EasyTier/easytier-go/proto/acl"
+	instance "github.com/EasyTier/EasyTier/easytier-go/proto/api/instance"
+	common "github.com/EasyTier/EasyTier/easytier-go/proto/common"
+	peer_rpc "github.com/EasyTier/EasyTier/easytier-go/proto/peer_rpc"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"

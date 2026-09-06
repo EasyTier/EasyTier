@@ -20,8 +20,8 @@ import (
 	"sync/atomic"
 	"syscall"
 
-	corehost "github.com/EasyTier/easytier-go"
-	"github.com/EasyTier/easytier-go/internal/contextutil"
+	corehost "github.com/EasyTier/EasyTier/easytier-go"
+	"github.com/EasyTier/EasyTier/easytier-go/internal/contextutil"
 )
 
 type options struct {

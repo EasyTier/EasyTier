@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/EasyTier/easytier-go/internal/coreabi"
+	"github.com/EasyTier/EasyTier/easytier-go/internal/coreabi"
 )
 
 type rpcCore interface {

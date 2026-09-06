@@ -17,7 +17,7 @@ import (
 	"syscall"
 	"time"
 
-	corehost "github.com/EasyTier/easytier-go"
+	corehost "github.com/EasyTier/EasyTier/easytier-go"
 	tun "github.com/sagernet/sing-tun"
 )
 

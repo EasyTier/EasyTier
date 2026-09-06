@@ -1,9 +1,9 @@
 packages:
   - 'easytier-web/config-generator'
-  - 'easytier-contrib/easytier-runtime'
-  - 'easytier-contrib/easytier-browser'
-  - 'easytier-contrib/easytier-cloudflare'
-  - 'easytier-contrib/easytier-web-example'
+  - 'easytier-js/runtime'
+  - 'easytier-js/browser'
+  - 'easytier-js/cloudflare'
+  - 'easytier-js/examples/web'
   - 'easytier-web/frontend'
   - 'easytier-web/frontend-lib'
   - 'easytier-gui'
