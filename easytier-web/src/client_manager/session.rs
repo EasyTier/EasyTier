@@ -2,7 +2,7 @@ use std::{
     collections::HashSet,
     fmt::Debug,
     str::FromStr as _,
-    sync::Arc,
+    sync::{Arc, Mutex, MutexGuard},
     time::{Duration, Instant},
 };
 
@@ -56,7 +56,7 @@ pub(super) struct ManagedConfigPersistedChange {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum ManagedConfigReconcileHint {
+pub(super) enum ManagedConfigReconcileHint {
     Full,
     Dirty {
         expected_revision: String,
@@ -65,7 +65,7 @@ enum ManagedConfigReconcileHint {
     },
 }
 
-fn record_managed_config_reconcile_hint(
+pub(super) fn record_managed_config_reconcile_hint(
     pending: &mut Option<ManagedConfigReconcileHint>,
     hint: ManagedConfigReconcileHint,
 ) {
@@ -102,6 +102,18 @@ fn record_managed_config_reconcile_hint(
     }
 }
 
+#[derive(Debug, Default)]
+pub(super) struct ManagedRuntimeState {
+    pub(super) applied_config_revision: Option<String>,
+    pub(super) applied_config_revision_known: bool,
+    pub(super) known_runtime_base_revision: Option<String>,
+    pub(super) pending_managed_config_reconcile: Option<ManagedConfigReconcileHint>,
+    pub(super) runtime_config_epoch: u64,
+    pub(super) runtime_config_cache_epoch: u64,
+}
+
+pub(super) type SharedManagedRuntimeState = Arc<Mutex<ManagedRuntimeState>>;
+
 impl SessionAuthState {
     fn is_authorized(self) -> bool {
         matches!(self, Self::Authorized)
@@ -117,13 +129,8 @@ pub struct SessionData {
 
     storage_token: Option<StorageToken>,
     binding_version: Option<u64>,
-    applied_config_revision: Option<String>,
-    applied_config_revision_known: bool,
-    known_runtime_base_revision: Option<String>,
-    pending_managed_config_reconcile: Option<ManagedConfigReconcileHint>,
+    managed_runtime: SharedManagedRuntimeState,
     direct_run_failed_instance_ids: HashSet<String>,
-    runtime_config_epoch: u64,
-    runtime_config_cache_epoch: u64,
     notifier: broadcast::Sender<HeartbeatRequest>,
     req: Option<HeartbeatRequest>,
     location: Option<Location>,
@@ -154,13 +161,8 @@ impl SessionData {
             client_url,
             storage_token: None,
             binding_version: None,
-            applied_config_revision: None,
-            applied_config_revision_known: false,
-            known_runtime_base_revision: None,
-            pending_managed_config_reconcile: None,
+            managed_runtime: Arc::new(Mutex::new(ManagedRuntimeState::default())),
             direct_run_failed_instance_ids: HashSet::new(),
-            runtime_config_epoch: 0,
-            runtime_config_cache_epoch: 0,
             notifier: tx,
             req: None,
             location,
@@ -185,6 +187,12 @@ impl SessionData {
 
     pub fn location(&self) -> Option<&Location> {
         self.location.as_ref()
+    }
+
+    fn managed_runtime(&self) -> MutexGuard<'_, ManagedRuntimeState> {
+        self.managed_runtime
+            .lock()
+            .expect("managed runtime state lock poisoned")
     }
 }
 
@@ -469,11 +477,16 @@ fn should_notify_webhook_validation(heartbeat_count: u32) -> bool {
 struct HeartbeatIdentity {
     token: String,
     machine_id: uuid::Uuid,
+    runtime_id: Option<uuid::Uuid>,
 }
 
 impl HeartbeatIdentity {
-    fn new(token: String, machine_id: uuid::Uuid) -> Self {
-        Self { token, machine_id }
+    fn new(token: String, machine_id: uuid::Uuid, runtime_id: Option<uuid::Uuid>) -> Self {
+        Self {
+            token,
+            machine_id,
+            runtime_id,
+        }
     }
 }
 
@@ -517,8 +530,8 @@ impl SessionRpcService {
         let Some(session_data) = session_data.upgrade() else {
             return false;
         };
-        let mut data = session_data.write().await;
-        Self::runtime_heartbeat_is_current_or_invalidate_locked(&mut data, req)
+        let data = session_data.read().await;
+        Self::runtime_heartbeat_is_current_locked(&data, req)
     }
 
     fn runtime_heartbeat_is_current_locked(data: &SessionData, req: &HeartbeatRequest) -> bool {
@@ -534,23 +547,6 @@ impl SessionRpcService {
         })
     }
 
-    fn runtime_heartbeat_is_current_or_invalidate_locked(
-        data: &mut SessionData,
-        req: &HeartbeatRequest,
-    ) -> bool {
-        if Self::runtime_heartbeat_is_current_locked(data, req) {
-            return true;
-        }
-
-        data.applied_config_revision = None;
-        data.applied_config_revision_known = false;
-        data.known_runtime_base_revision = None;
-        data.pending_managed_config_reconcile = Some(ManagedConfigReconcileHint::Full);
-        data.runtime_config_epoch = data.runtime_config_epoch.wrapping_add(1);
-        data.runtime_config_cache_epoch = data.runtime_config_cache_epoch.wrapping_add(1);
-        false
-    }
-
     fn heartbeat_matches_identity(
         req: &HeartbeatRequest,
         token: &str,
@@ -560,7 +556,15 @@ impl SessionRpcService {
     }
 
     fn heartbeat_identity(req: &HeartbeatRequest, machine_id: uuid::Uuid) -> HeartbeatIdentity {
-        HeartbeatIdentity::new(req.user_token.clone(), machine_id)
+        HeartbeatIdentity::new(
+            req.user_token.clone(),
+            machine_id,
+            Self::heartbeat_runtime_id(req),
+        )
+    }
+
+    fn heartbeat_runtime_id(req: &HeartbeatRequest) -> Option<uuid::Uuid> {
+        req.inst_id.map(uuid::Uuid::from).filter(|id| !id.is_nil())
     }
 
     fn ensure_session_identity_locked(
@@ -797,6 +801,12 @@ impl SessionRpcService {
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if is_new_storage_token {
                 assert!(data.storage_token.is_none());
+                data.managed_runtime = storage.bind_managed_runtime_state(
+                    user_id,
+                    machine_id,
+                    Self::heartbeat_runtime_id(&runtime_req),
+                    data.session_epoch,
+                );
                 data.storage_token = Some(StorageToken {
                     token: runtime_req.user_token.clone(),
                     client_url: data.client_url.clone(),
@@ -997,14 +1007,13 @@ impl Session {
         self.scoped_client::<ConfigRpcClientFactory<BaseController>>()
     }
 
-    pub(super) async fn notify_full_config_revision_changed(
+    pub(super) async fn notify_managed_runtime_state_changed(
         &self,
         user_id: i32,
         machine_id: uuid::Uuid,
-        config_revision: String,
     ) {
         let notify = {
-            let mut data = self.data.write().await;
+            let data = self.data.read().await;
             if !data.auth_state.is_authorized() {
                 return;
             }
@@ -1015,87 +1024,6 @@ impl Session {
             {
                 return;
             }
-            let target_already_applied =
-                data.applied_config_revision.as_deref() == Some(config_revision.as_str());
-            if target_already_applied && data.pending_managed_config_reconcile.is_none() {
-                return;
-            }
-            if !target_already_applied {
-                record_managed_config_reconcile_hint(
-                    &mut data.pending_managed_config_reconcile,
-                    ManagedConfigReconcileHint::Full,
-                );
-            }
-            data.runtime_config_epoch = data.runtime_config_epoch.wrapping_add(1);
-            data.req.clone().map(|req| (data.notifier.clone(), req))
-        };
-        if let Some((notifier, req)) = notify {
-            let _ = notifier.send(req);
-        }
-    }
-
-    pub(super) async fn notify_patch_config_revision_changed(
-        &self,
-        user_id: i32,
-        machine_id: uuid::Uuid,
-        change: ManagedConfigPersistedChange,
-    ) {
-        let notify = {
-            let mut data = self.data.write().await;
-            if !data.auth_state.is_authorized() {
-                return;
-            }
-            if !data
-                .storage_token
-                .as_ref()
-                .is_some_and(|token| token.user_id == user_id && token.machine_id == machine_id)
-            {
-                return;
-            }
-            let target_already_applied =
-                data.applied_config_revision.as_deref() == Some(change.target_revision.as_str());
-            if target_already_applied && data.pending_managed_config_reconcile.is_none() {
-                return;
-            }
-
-            if !target_already_applied {
-                record_managed_config_reconcile_hint(
-                    &mut data.pending_managed_config_reconcile,
-                    ManagedConfigReconcileHint::Dirty {
-                        expected_revision: change.expected_revision,
-                        target_revision: change.target_revision,
-                        instance_ids: change.dirty_instance_ids,
-                    },
-                );
-            }
-            data.runtime_config_epoch = data.runtime_config_epoch.wrapping_add(1);
-            data.req.clone().map(|req| (data.notifier.clone(), req))
-        };
-        if let Some((notifier, req)) = notify {
-            let _ = notifier.send(req);
-        }
-    }
-
-    pub(super) async fn invalidate_applied_config_revision(
-        &self,
-        user_id: i32,
-        machine_id: uuid::Uuid,
-    ) {
-        let notify = {
-            let mut data = self.data.write().await;
-            if !data
-                .storage_token
-                .as_ref()
-                .is_some_and(|token| token.user_id == user_id && token.machine_id == machine_id)
-            {
-                return;
-            }
-            data.applied_config_revision = None;
-            data.applied_config_revision_known = true;
-            data.known_runtime_base_revision = None;
-            data.pending_managed_config_reconcile = Some(ManagedConfigReconcileHint::Full);
-            data.runtime_config_epoch = data.runtime_config_epoch.wrapping_add(1);
-            data.runtime_config_cache_epoch = data.runtime_config_cache_epoch.wrapping_add(1);
             data.req.clone().map(|req| (data.notifier.clone(), req))
         };
         if let Some((notifier, req)) = notify {
@@ -1105,16 +1033,18 @@ impl Session {
 
     pub(crate) async fn invalidate_runtime_config_for_direct_mutation(&self) {
         let notify = {
-            let mut data = self.data.write().await;
+            let data = self.data.write().await;
             if data.storage_token.is_none() {
                 return;
             }
-            data.applied_config_revision = None;
-            data.applied_config_revision_known = true;
-            data.known_runtime_base_revision = None;
-            data.pending_managed_config_reconcile = Some(ManagedConfigReconcileHint::Full);
-            data.runtime_config_epoch = data.runtime_config_epoch.wrapping_add(1);
-            data.runtime_config_cache_epoch = data.runtime_config_cache_epoch.wrapping_add(1);
+            let mut runtime = data.managed_runtime();
+            runtime.applied_config_revision = None;
+            runtime.applied_config_revision_known = true;
+            runtime.known_runtime_base_revision = None;
+            runtime.pending_managed_config_reconcile = Some(ManagedConfigReconcileHint::Full);
+            runtime.runtime_config_epoch = runtime.runtime_config_epoch.wrapping_add(1);
+            runtime.runtime_config_cache_epoch = runtime.runtime_config_cache_epoch.wrapping_add(1);
+            drop(runtime);
             data.req.clone().map(|req| (data.notifier.clone(), req))
         };
         if let Some((notifier, req)) = notify {
@@ -1132,7 +1062,9 @@ impl Session {
 
     #[cfg(test)]
     pub(super) async fn applied_config_revision(&self) -> Option<String> {
-        self.data.read().await.applied_config_revision.clone()
+        let data = self.data.read().await;
+        let revision = data.managed_runtime().applied_config_revision.clone();
+        revision
     }
 }
 
@@ -1657,6 +1589,21 @@ mod tests {
             "token-a",
             other_machine_id
         ));
+    }
+
+    #[test]
+    fn session_identity_includes_runtime_id() {
+        let machine_id = uuid::Uuid::new_v4();
+        let mut request = heartbeat_request("token", machine_id);
+        let first_runtime_id = uuid::Uuid::new_v4();
+        request.inst_id = Some(first_runtime_id.into());
+        let first = SessionRpcService::heartbeat_identity(&request, machine_id);
+
+        request.inst_id = Some(uuid::Uuid::new_v4().into());
+        let restarted = SessionRpcService::heartbeat_identity(&request, machine_id);
+
+        assert_eq!(first.runtime_id, Some(first_runtime_id));
+        assert_ne!(first, restarted);
     }
 
     #[tokio::test]
@@ -2224,7 +2171,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runtime_heartbeat_rechecks_webhook_state_before_reconcile() {
+    async fn rejected_session_stops_reconcile_without_clearing_runtime_state() {
         let machine_id = uuid::Uuid::new_v4();
         let req = heartbeat_request("token", machine_id);
         let storage = Storage::new(crate::db::Db::memory_db().await);
@@ -2253,9 +2200,12 @@ mod tests {
         data.session_identity = Some(SessionRpcService::heartbeat_identity(&req, machine_id));
         data.req = Some(req.clone());
         data.auth_state = SessionAuthState::Authorized;
-        data.applied_config_revision = Some("rev-1".to_string());
-        data.applied_config_revision_known = true;
-        data.known_runtime_base_revision = Some("rev-1".to_string());
+        {
+            let mut runtime = data.managed_runtime();
+            runtime.applied_config_revision = Some("rev-1".to_string());
+            runtime.applied_config_revision_known = true;
+            runtime.known_runtime_base_revision = Some("rev-1".to_string());
+        }
         let session_data = Arc::new(RwLock::new(data));
         let weak_session = Arc::downgrade(&session_data);
 
@@ -2280,9 +2230,13 @@ mod tests {
 
         assert!(!SessionRpcService::runtime_heartbeat_is_current(&weak_session, &req).await);
         let data = session_data.read().await;
-        assert_eq!(data.applied_config_revision, None);
-        assert!(!data.applied_config_revision_known);
-        assert_eq!(data.known_runtime_base_revision, None);
+        let runtime = data.managed_runtime();
+        assert_eq!(runtime.applied_config_revision.as_deref(), Some("rev-1"));
+        assert!(runtime.applied_config_revision_known);
+        assert_eq!(
+            runtime.known_runtime_base_revision.as_deref(),
+            Some("rev-1")
+        );
     }
 
     #[tokio::test]
@@ -2298,8 +2252,9 @@ mod tests {
             )),
         );
 
-        assert_eq!(data.applied_config_revision, None);
-        assert!(!data.applied_config_revision_known);
+        let runtime = data.managed_runtime();
+        assert_eq!(runtime.applied_config_revision, None);
+        assert!(!runtime.applied_config_revision_known);
     }
 
     #[test]

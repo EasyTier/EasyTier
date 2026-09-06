@@ -1,8 +1,13 @@
 use std::sync::{Arc, Weak};
 
-use dashmap::DashMap;
+use dashmap::{DashMap, mapref::entry::Entry};
 
 use crate::db::{Db, UserIdInDb};
+
+use super::session::{
+    ManagedConfigPersistedChange, ManagedConfigReconcileHint, ManagedRuntimeState,
+    SharedManagedRuntimeState, record_managed_config_reconcile_hint,
+};
 
 // use this to maintain Storage
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -21,9 +26,21 @@ struct ClientInfo {
     session_epoch: u64,
 }
 
+#[derive(Debug, Clone)]
+struct ManagedRuntimeContinuity {
+    // Accepted trade-off: continuity assumes managed configuration is only
+    // mutated through easytier-web. A local management RPC can make Core
+    // drift without invalidating this state; detecting that would require a
+    // Core-wide mutation generation outside this compatibility path.
+    runtime_id: Option<uuid::Uuid>,
+    session_epoch: u64,
+    state: SharedManagedRuntimeState,
+}
+
 #[derive(Debug)]
 pub struct StorageInner {
     user_clients_map: DashMap<UserIdInDb, DashMap<uuid::Uuid, ClientInfo>>,
+    managed_runtime_states: DashMap<(UserIdInDb, uuid::Uuid), ManagedRuntimeContinuity>,
     pub db: Db,
 }
 
@@ -65,8 +82,133 @@ impl Storage {
     pub fn new(db: Db) -> Self {
         Storage(Arc::new(StorageInner {
             user_clients_map: DashMap::new(),
+            managed_runtime_states: DashMap::new(),
             db,
         }))
+    }
+
+    pub(super) fn bind_managed_runtime_state(
+        &self,
+        user_id: UserIdInDb,
+        machine_id: uuid::Uuid,
+        runtime_id: Option<uuid::Uuid>,
+        session_epoch: u64,
+    ) -> SharedManagedRuntimeState {
+        let new_state = || Arc::new(std::sync::Mutex::new(ManagedRuntimeState::default()));
+        match self.0.managed_runtime_states.entry((user_id, machine_id)) {
+            Entry::Occupied(mut entry) => {
+                let current = entry.get();
+                if runtime_id.is_some() && current.runtime_id == runtime_id {
+                    let state = current.state.clone();
+                    if session_epoch > current.session_epoch {
+                        entry.get_mut().session_epoch = session_epoch;
+                    }
+                    return state;
+                }
+                if session_epoch < current.session_epoch {
+                    return new_state();
+                }
+                let state = new_state();
+                entry.insert(ManagedRuntimeContinuity {
+                    runtime_id,
+                    session_epoch,
+                    state: state.clone(),
+                });
+                state
+            }
+            Entry::Vacant(entry) => {
+                let state = new_state();
+                entry.insert(ManagedRuntimeContinuity {
+                    runtime_id,
+                    session_epoch,
+                    state: state.clone(),
+                });
+                state
+            }
+        }
+    }
+
+    fn current_managed_runtime_state(
+        &self,
+        user_id: UserIdInDb,
+        machine_id: uuid::Uuid,
+    ) -> Option<SharedManagedRuntimeState> {
+        self.0
+            .managed_runtime_states
+            .get(&(user_id, machine_id))
+            .map(|entry| entry.state.clone())
+    }
+
+    pub(super) fn record_full_managed_config_change(
+        &self,
+        user_id: UserIdInDb,
+        machine_id: uuid::Uuid,
+        config_revision: &str,
+    ) -> bool {
+        let Some(state) = self.current_managed_runtime_state(user_id, machine_id) else {
+            return false;
+        };
+        let mut state = state.lock().expect("managed runtime state lock poisoned");
+        let target_already_applied =
+            state.applied_config_revision.as_deref() == Some(config_revision);
+        if target_already_applied && state.pending_managed_config_reconcile.is_none() {
+            return false;
+        }
+        if !target_already_applied {
+            record_managed_config_reconcile_hint(
+                &mut state.pending_managed_config_reconcile,
+                ManagedConfigReconcileHint::Full,
+            );
+        }
+        state.runtime_config_epoch = state.runtime_config_epoch.wrapping_add(1);
+        true
+    }
+
+    pub(super) fn record_patch_managed_config_change(
+        &self,
+        user_id: UserIdInDb,
+        machine_id: uuid::Uuid,
+        change: ManagedConfigPersistedChange,
+    ) -> bool {
+        let Some(state) = self.current_managed_runtime_state(user_id, machine_id) else {
+            return false;
+        };
+        let mut state = state.lock().expect("managed runtime state lock poisoned");
+        let target_already_applied =
+            state.applied_config_revision.as_deref() == Some(change.target_revision.as_str());
+        if target_already_applied && state.pending_managed_config_reconcile.is_none() {
+            return false;
+        }
+        if !target_already_applied {
+            record_managed_config_reconcile_hint(
+                &mut state.pending_managed_config_reconcile,
+                ManagedConfigReconcileHint::Dirty {
+                    expected_revision: change.expected_revision,
+                    target_revision: change.target_revision,
+                    instance_ids: change.dirty_instance_ids,
+                },
+            );
+        }
+        state.runtime_config_epoch = state.runtime_config_epoch.wrapping_add(1);
+        true
+    }
+
+    pub(super) fn invalidate_managed_runtime_state(
+        &self,
+        user_id: UserIdInDb,
+        machine_id: uuid::Uuid,
+    ) -> bool {
+        let Some(state) = self.current_managed_runtime_state(user_id, machine_id) else {
+            return false;
+        };
+        let mut state = state.lock().expect("managed runtime state lock poisoned");
+        state.applied_config_revision = None;
+        state.applied_config_revision_known = true;
+        state.known_runtime_base_revision = None;
+        state.pending_managed_config_reconcile = Some(ManagedConfigReconcileHint::Full);
+        state.runtime_config_epoch = state.runtime_config_epoch.wrapping_add(1);
+        state.runtime_config_cache_epoch = state.runtime_config_cache_epoch.wrapping_add(1);
+        true
     }
 
     fn remove_client_info_map(
@@ -122,6 +264,20 @@ impl Storage {
         authorized: bool,
         session_epoch: u64,
     ) {
+        let mut continuity = self
+            .0
+            .managed_runtime_states
+            .entry((stoken.user_id, stoken.machine_id))
+            .or_insert_with(|| ManagedRuntimeContinuity {
+                runtime_id: None,
+                session_epoch,
+                state: Arc::new(std::sync::Mutex::new(ManagedRuntimeState::default())),
+            });
+        if session_epoch < continuity.session_epoch {
+            return;
+        }
+        continuity.session_epoch = session_epoch;
+
         let inner = self.0.user_clients_map.entry(stoken.user_id).or_default();
 
         let client_info = ClientInfo {
@@ -138,6 +294,18 @@ impl Storage {
     }
 
     pub(super) fn remove_session_client(&self, stoken: &StorageToken, session_epoch: u64) -> bool {
+        let Some(mut continuity) = self
+            .0
+            .managed_runtime_states
+            .get_mut(&(stoken.user_id, stoken.machine_id))
+        else {
+            return false;
+        };
+        if session_epoch < continuity.session_epoch {
+            return false;
+        }
+        continuity.session_epoch = session_epoch;
+
         let mut removed = false;
         self.0
             .user_clients_map
@@ -312,6 +480,113 @@ mod tests {
         );
         assert!(storage.remove_session_client(&current, 2));
         assert_eq!(storage.get_client_url_by_machine_id(1, &machine_id), None);
+
+        storage.update_session_client(old.clone(), 40, true, 1);
+        assert!(!storage.0.owns_authorized_session(&old, 1));
+        assert_eq!(storage.get_client_url_by_machine_id(1, &machine_id), None);
+    }
+
+    #[tokio::test]
+    async fn same_runtime_reuses_state_across_sessions() {
+        let storage = Storage::new(Db::memory_db().await);
+        let machine_id = uuid::Uuid::new_v4();
+        let runtime_id = uuid::Uuid::new_v4();
+
+        let first = storage.bind_managed_runtime_state(1, machine_id, Some(runtime_id), 1);
+        {
+            let mut state = first.lock().unwrap();
+            state.applied_config_revision = Some("rev-a".to_string());
+            state.applied_config_revision_known = true;
+        }
+
+        let reconnected = storage.bind_managed_runtime_state(1, machine_id, Some(runtime_id), 2);
+
+        assert!(Arc::ptr_eq(&first, &reconnected));
+        let state = reconnected.lock().unwrap();
+        assert_eq!(state.applied_config_revision.as_deref(), Some("rev-a"));
+        assert!(state.applied_config_revision_known);
+    }
+
+    #[tokio::test]
+    async fn changed_or_missing_runtime_id_starts_with_unknown_state() {
+        let storage = Storage::new(Db::memory_db().await);
+        let machine_id = uuid::Uuid::new_v4();
+        let first =
+            storage.bind_managed_runtime_state(1, machine_id, Some(uuid::Uuid::new_v4()), 1);
+        {
+            let mut state = first.lock().unwrap();
+            state.applied_config_revision = Some("rev-a".to_string());
+            state.applied_config_revision_known = true;
+        }
+
+        let restarted =
+            storage.bind_managed_runtime_state(1, machine_id, Some(uuid::Uuid::new_v4()), 2);
+        assert!(!Arc::ptr_eq(&first, &restarted));
+        assert!(!restarted.lock().unwrap().applied_config_revision_known);
+
+        let legacy = storage.bind_managed_runtime_state(1, machine_id, None, 3);
+        assert!(!Arc::ptr_eq(&restarted, &legacy));
+        let legacy_reconnected = storage.bind_managed_runtime_state(1, machine_id, None, 4);
+        assert!(!Arc::ptr_eq(&legacy, &legacy_reconnected));
+        assert!(
+            !legacy_reconnected
+                .lock()
+                .unwrap()
+                .applied_config_revision_known
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_session_cannot_replace_current_runtime_state() {
+        let storage = Storage::new(Db::memory_db().await);
+        let machine_id = uuid::Uuid::new_v4();
+        let current_runtime_id = uuid::Uuid::new_v4();
+        let current =
+            storage.bind_managed_runtime_state(1, machine_id, Some(current_runtime_id), 2);
+
+        let stale =
+            storage.bind_managed_runtime_state(1, machine_id, Some(uuid::Uuid::new_v4()), 1);
+        assert!(!Arc::ptr_eq(&current, &stale));
+
+        let reconnected =
+            storage.bind_managed_runtime_state(1, machine_id, Some(current_runtime_id), 3);
+        assert!(Arc::ptr_eq(&current, &reconnected));
+    }
+
+    #[tokio::test]
+    async fn patch_hint_survives_disconnect_until_same_runtime_reconnects() {
+        let storage = Storage::new(Db::memory_db().await);
+        let machine_id = uuid::Uuid::new_v4();
+        let runtime_id = uuid::Uuid::new_v4();
+        let state = storage.bind_managed_runtime_state(1, machine_id, Some(runtime_id), 1);
+        {
+            let mut state = state.lock().unwrap();
+            state.applied_config_revision = Some("rev-a".to_string());
+            state.applied_config_revision_known = true;
+            state.known_runtime_base_revision = Some("rev-a".to_string());
+        }
+
+        assert!(storage.record_patch_managed_config_change(
+            1,
+            machine_id,
+            ManagedConfigPersistedChange {
+                expected_revision: "rev-a".to_string(),
+                target_revision: "rev-b".to_string(),
+                dirty_instance_ids: std::collections::HashSet::from(["instance-a".to_string(),]),
+            },
+        ));
+
+        let reconnected = storage.bind_managed_runtime_state(1, machine_id, Some(runtime_id), 2);
+        let state = reconnected.lock().unwrap();
+        assert_eq!(
+            state.pending_managed_config_reconcile,
+            Some(ManagedConfigReconcileHint::Dirty {
+                expected_revision: "rev-a".to_string(),
+                target_revision: "rev-b".to_string(),
+                instance_ids: std::collections::HashSet::from(["instance-a".to_string(),]),
+            })
+        );
+        assert_eq!(state.runtime_config_epoch, 1);
     }
 
     #[tokio::test]

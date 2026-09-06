@@ -370,12 +370,13 @@ async fn prepare_reconcile_round(
             return RoundStatus::Stop;
         };
         let data = data.read().await;
+        let runtime = data.managed_runtime();
         (
-            data.applied_config_revision.clone(),
-            data.known_runtime_base_revision.clone(),
-            data.pending_managed_config_reconcile.clone(),
-            data.runtime_config_epoch,
-            data.runtime_config_cache_epoch,
+            runtime.applied_config_revision.clone(),
+            runtime.known_runtime_base_revision.clone(),
+            runtime.pending_managed_config_reconcile.clone(),
+            runtime.runtime_config_epoch,
+            runtime.runtime_config_cache_epoch,
         )
     };
     let target_config_revision =
@@ -465,10 +466,10 @@ async fn update_direct_run_failures_if_current(
     };
     let notify = {
         let mut data = data.write().await;
-        if !SessionRpcService::runtime_heartbeat_is_current_or_invalidate_locked(
-            &mut data, &round.req,
-        ) || data.runtime_config_epoch != round.runtime_config_epoch
-        {
+        if !SessionRpcService::runtime_heartbeat_is_current_locked(&data, &round.req) {
+            return RoundStatus::Skip;
+        }
+        if data.managed_runtime().runtime_config_epoch != round.runtime_config_epoch {
             return RoundStatus::Skip;
         }
         update(&mut data)
@@ -858,17 +859,22 @@ async fn begin_managed_runtime_mutation(
     let Some(data) = session_data.upgrade() else {
         return false;
     };
-    let mut data = data.write().await;
-    if !SessionRpcService::runtime_heartbeat_is_current_or_invalidate_locked(&mut data, &round.req)
-        || data.runtime_config_epoch != round.runtime_config_epoch
-    {
+    let data = data.write().await;
+    if !SessionRpcService::runtime_heartbeat_is_current_locked(&data, &round.req) {
+        return false;
+    }
+    let managed_runtime = data.managed_runtime.clone();
+    let mut runtime = managed_runtime
+        .lock()
+        .expect("managed runtime state lock poisoned");
+    if runtime.runtime_config_epoch != round.runtime_config_epoch {
         return false;
     }
     if !mutation_fence.started {
-        data.applied_config_revision = None;
-        data.applied_config_revision_known = true;
+        runtime.applied_config_revision = None;
+        runtime.applied_config_revision_known = true;
         if matches!(round.scope, ReconcileScope::Full) {
-            data.known_runtime_base_revision = None;
+            runtime.known_runtime_base_revision = None;
         }
         mutation_fence.started = true;
     }
@@ -1219,15 +1225,14 @@ async fn mark_config_revision_applied_if_current(
     };
     let notify = {
         let mut data = data.write().await;
-        if !SessionRpcService::runtime_heartbeat_is_current_or_invalidate_locked(
-            &mut data, &round.req,
-        ) {
+        if !SessionRpcService::runtime_heartbeat_is_current_locked(&data, &round.req) {
             return RoundStatus::Ready(());
         }
-        if data.runtime_config_epoch != round.runtime_config_epoch {
-            return RoundStatus::Ready(());
-        }
-        record_applied_config_revision(&mut data, round.target_config_revision.clone())
+        record_applied_config_revision(
+            &mut data,
+            Some(round.runtime_config_epoch),
+            round.target_config_revision.clone(),
+        )
     };
     if let Some(notify) = notify {
         notify.notify_one();
@@ -1238,22 +1243,34 @@ async fn mark_config_revision_applied_if_current(
 
 fn record_applied_config_revision(
     data: &mut SessionData,
+    expected_runtime_config_epoch: Option<u64>,
     revision: Option<String>,
 ) -> Option<std::sync::Arc<tokio::sync::Notify>> {
-    let changed = !data.applied_config_revision_known || data.applied_config_revision != revision;
+    let managed_runtime = data.managed_runtime.clone();
+    let mut runtime = managed_runtime
+        .lock()
+        .expect("managed runtime state lock poisoned");
+    if expected_runtime_config_epoch
+        .is_some_and(|expected| runtime.runtime_config_epoch != expected)
+    {
+        return None;
+    }
+    let changed =
+        !runtime.applied_config_revision_known || runtime.applied_config_revision != revision;
     if changed {
         tracing::info!(
             machine_id = ?data.req.as_ref().and_then(|req| req.machine_id),
             user_token = ?data.req.as_ref().map(|req| &req.user_token),
-            previous_revision = ?data.applied_config_revision,
+            previous_revision = ?runtime.applied_config_revision,
             applied_revision = ?revision,
             "managed config revision applied"
         );
     }
-    data.known_runtime_base_revision = revision.clone();
-    data.applied_config_revision = revision;
-    data.applied_config_revision_known = true;
-    data.pending_managed_config_reconcile = None;
+    runtime.known_runtime_base_revision = revision.clone();
+    runtime.applied_config_revision = revision;
+    runtime.applied_config_revision_known = true;
+    runtime.pending_managed_config_reconcile = None;
+    drop(runtime);
     changed.then(|| SessionRpcService::mark_webhook_validation_state_changed_locked(data))
 }
 
@@ -1392,21 +1409,29 @@ mod tests {
                 None, None, None, None, None,
             )),
         );
-        data.pending_managed_config_reconcile = Some(ManagedConfigReconcileHint::Dirty {
-            expected_revision: "rev-a".to_string(),
-            target_revision: "rev-b".to_string(),
-            instance_ids: HashSet::from(["managed".to_string()]),
-        });
+        data.managed_runtime().pending_managed_config_reconcile =
+            Some(ManagedConfigReconcileHint::Dirty {
+                expected_revision: "rev-a".to_string(),
+                target_revision: "rev-b".to_string(),
+                instance_ids: HashSet::from(["managed".to_string()]),
+            });
 
-        let notify = record_applied_config_revision(&mut data, Some("rev-applied".to_string()))
-            .expect("new applied revision should wake validation");
-        assert_eq!(data.applied_config_revision.as_deref(), Some("rev-applied"));
-        assert!(data.applied_config_revision_known);
-        assert_eq!(
-            data.known_runtime_base_revision.as_deref(),
-            Some("rev-applied")
-        );
-        assert_eq!(data.pending_managed_config_reconcile, None);
+        let notify =
+            record_applied_config_revision(&mut data, None, Some("rev-applied".to_string()))
+                .expect("new applied revision should wake validation");
+        {
+            let runtime = data.managed_runtime();
+            assert_eq!(
+                runtime.applied_config_revision.as_deref(),
+                Some("rev-applied")
+            );
+            assert!(runtime.applied_config_revision_known);
+            assert_eq!(
+                runtime.known_runtime_base_revision.as_deref(),
+                Some("rev-applied")
+            );
+            assert_eq!(runtime.pending_managed_config_reconcile, None);
+        }
         assert!(data.webhook_validation_dirty);
         assert_eq!(data.webhook_validation_change_epoch, 1);
 
@@ -1429,17 +1454,51 @@ mod tests {
                 None, None, None, None, None,
             )),
         );
-        data.applied_config_revision = Some("rev-applied".to_string());
-        data.applied_config_revision_known = true;
+        {
+            let mut runtime = data.managed_runtime();
+            runtime.applied_config_revision = Some("rev-applied".to_string());
+            runtime.applied_config_revision_known = true;
+        }
 
         assert!(
-            record_applied_config_revision(&mut data, Some("rev-applied".to_string())).is_none()
+            record_applied_config_revision(&mut data, None, Some("rev-applied".to_string()))
+                .is_none()
         );
         assert_eq!(
-            data.known_runtime_base_revision.as_deref(),
+            data.managed_runtime()
+                .known_runtime_base_revision
+                .as_deref(),
             Some("rev-applied")
         );
         assert!(!data.webhook_validation_dirty);
+    }
+
+    #[tokio::test]
+    async fn stale_round_cannot_record_applied_revision() {
+        let storage =
+            crate::client_manager::storage::Storage::new(crate::db::Db::memory_db().await);
+        let mut data = SessionData::new(
+            storage.weak_ref(),
+            url::Url::parse("http://127.0.0.1").unwrap(),
+            None,
+            std::sync::Arc::new(crate::FeatureFlags::default()),
+            std::sync::Arc::new(crate::webhook::WebhookConfig::new(
+                None, None, None, None, None,
+            )),
+        );
+        {
+            let mut runtime = data.managed_runtime();
+            runtime.applied_config_revision = Some("rev-a".to_string());
+            runtime.applied_config_revision_known = true;
+            runtime.runtime_config_epoch = 2;
+        }
+
+        assert!(
+            record_applied_config_revision(&mut data, Some(1), Some("rev-b".to_string())).is_none()
+        );
+        let runtime = data.managed_runtime();
+        assert_eq!(runtime.applied_config_revision.as_deref(), Some("rev-a"));
+        assert_eq!(runtime.runtime_config_epoch, 2);
     }
 
     #[test]
@@ -1497,14 +1556,17 @@ mod tests {
         data.storage_token = Some(storage_token);
         data.req = Some(req.clone());
         data.auth_state = super::super::SessionAuthState::Authorized;
-        data.applied_config_revision = Some("rev-a".to_string());
-        data.known_runtime_base_revision = Some("rev-a".to_string());
-        data.pending_managed_config_reconcile = Some(ManagedConfigReconcileHint::Dirty {
-            expected_revision: "rev-a".to_string(),
-            target_revision: "rev-b".to_string(),
-            instance_ids: HashSet::from(["managed".to_string()]),
-        });
-        data.runtime_config_epoch = 11;
+        {
+            let mut runtime = data.managed_runtime();
+            runtime.applied_config_revision = Some("rev-a".to_string());
+            runtime.known_runtime_base_revision = Some("rev-a".to_string());
+            runtime.pending_managed_config_reconcile = Some(ManagedConfigReconcileHint::Dirty {
+                expected_revision: "rev-a".to_string(),
+                target_revision: "rev-b".to_string(),
+                instance_ids: HashSet::from(["managed".to_string()]),
+            });
+            runtime.runtime_config_epoch = 11;
+        }
         let session_data = std::sync::Arc::new(RwLock::new(data));
         let mut round = ReconcileRound {
             req,
@@ -1533,34 +1595,39 @@ mod tests {
         );
 
         let data = session_data.read().await;
+        let runtime = data.managed_runtime();
         assert!(mutation_fence.started);
-        assert_eq!(data.applied_config_revision, None);
-        assert!(data.applied_config_revision_known);
-        assert_eq!(data.known_runtime_base_revision.as_deref(), Some("rev-a"));
+        assert_eq!(runtime.applied_config_revision, None);
+        assert!(runtime.applied_config_revision_known);
         assert_eq!(
-            data.pending_managed_config_reconcile,
+            runtime.known_runtime_base_revision.as_deref(),
+            Some("rev-a")
+        );
+        assert_eq!(
+            runtime.pending_managed_config_reconcile,
             Some(ManagedConfigReconcileHint::Dirty {
                 expected_revision: "rev-a".to_string(),
                 target_revision: "rev-b".to_string(),
                 instance_ids: HashSet::from(["managed".to_string()]),
             })
         );
-        assert_eq!(data.runtime_config_epoch, 11);
+        assert_eq!(runtime.runtime_config_epoch, 11);
         assert_eq!(
             select_reconcile_scope(
-                data.pending_managed_config_reconcile.as_ref(),
-                data.known_runtime_base_revision.as_deref(),
+                runtime.pending_managed_config_reconcile.as_ref(),
+                runtime.known_runtime_base_revision.as_deref(),
                 Some("rev-b"),
             ),
             ReconcileScope::Patch {
                 dirty_instance_ids: HashSet::from(["managed".to_string()]),
             }
         );
+        drop(runtime);
         drop(data);
 
         {
-            let mut data = session_data.write().await;
-            data.applied_config_revision = Some("rev-a".to_string());
+            let data = session_data.write().await;
+            data.managed_runtime().applied_config_revision = Some("rev-a".to_string());
         }
         round.scope = ReconcileScope::Full;
         let mut mutation_fence = RuntimeMutationFence::default();
@@ -1574,9 +1641,10 @@ mod tests {
         );
 
         let data = session_data.read().await;
-        assert_eq!(data.applied_config_revision, None);
-        assert!(data.applied_config_revision_known);
-        assert_eq!(data.known_runtime_base_revision, None);
+        let runtime = data.managed_runtime();
+        assert_eq!(runtime.applied_config_revision, None);
+        assert!(runtime.applied_config_revision_known);
+        assert_eq!(runtime.known_runtime_base_revision, None);
     }
 
     #[test]

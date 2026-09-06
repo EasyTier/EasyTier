@@ -228,6 +228,7 @@ where
 struct WebClientController {
     config: WebClientConfig,
     backend: Arc<dyn WebClientBackend>,
+    runtime_id: uuid::Uuid,
 }
 
 /// Portable config-server client. Hosts only supply identity and adapters.
@@ -283,7 +284,11 @@ impl<F> WebClient<F> {
         backend: Arc<dyn WebClientBackend>,
         manager_guard: Option<DaemonGuard>,
     ) -> Self {
-        let controller = Arc::new(WebClientController { config, backend });
+        let controller = Arc::new(WebClientController {
+            config,
+            backend,
+            runtime_id: uuid::Uuid::new_v4(),
+        });
         let connected = Arc::new(AtomicBool::new(false));
         let tasks = AbortOnDropHandle::new(tokio::spawn(web_client_routine(
             controller.clone(),
@@ -396,13 +401,13 @@ struct WebClientSession {
 
 fn build_heartbeat_request(
     config: &WebClientConfig,
-    session_id: uuid::Uuid,
+    runtime_id: uuid::Uuid,
     running_network_instances: Vec<uuid::Uuid>,
     failed_network_instances: Vec<uuid::Uuid>,
 ) -> HeartbeatRequest {
     HeartbeatRequest {
         machine_id: Some(config.machine_id.into()),
-        inst_id: Some(session_id.into()),
+        inst_id: Some(runtime_id.into()),
         user_token: config.token.clone(),
         easytier_version: config.easytier_version.clone(),
         hostname: config.hostname.clone(),
@@ -463,7 +468,6 @@ impl WebClientSession {
         tasks: &mut JoinSet<()>,
     ) {
         let controller = controller.upgrade().expect("web client controller");
-        let session_id = uuid::Uuid::new_v4();
         let controller = Arc::downgrade(&controller);
         let client = rpc
             .rpc_client()
@@ -486,7 +490,7 @@ impl WebClientSession {
                 };
                 let request = build_heartbeat_request(
                     &controller.config,
-                    session_id,
+                    controller.runtime_id,
                     running_network_instances,
                     controller.backend.failed_instance_ids(),
                 );
@@ -680,6 +684,7 @@ mod tests {
 
     #[test]
     fn heartbeat_request_carries_registered_and_failed_instance_ids() {
+        let runtime_id = uuid::Uuid::new_v4();
         let registered = uuid::Uuid::new_v4();
         let failed = uuid::Uuid::new_v4();
         let request = build_heartbeat_request(
@@ -691,11 +696,12 @@ mod tests {
                 easytier_version: "test-version".to_owned(),
                 secure_mode: false,
             },
-            uuid::Uuid::new_v4(),
+            runtime_id,
             vec![registered],
             vec![failed],
         );
 
+        assert_eq!(request.inst_id.map(uuid::Uuid::from), Some(runtime_id));
         assert_eq!(
             request
                 .running_network_instances

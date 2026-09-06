@@ -305,10 +305,13 @@ impl ClientManager {
             status,
             managed_config::ManagedConfigApplyStatus::Applied { .. }
         ) && let Some(config_revision) = config_revision
+            && self
+                .storage
+                .record_full_managed_config_change(user_id, machine_id, &config_revision)
             && let Some(session) = self.get_session_by_machine_id(user_id, &machine_id)
         {
             session
-                .notify_full_config_revision_changed(user_id, machine_id, config_revision)
+                .notify_managed_runtime_state_changed(user_id, machine_id)
                 .await;
         }
         Ok(())
@@ -342,24 +345,26 @@ impl ClientManager {
         if let managed_config::ManagedConfigApplyStatus::Applied {
             deleted_web_instance_ids,
         } = status
-            && let Some(session) = self.get_session_by_machine_id(user_id, &machine_id)
         {
             dirty_instance_ids.extend(
                 deleted_web_instance_ids
                     .into_iter()
                     .map(|instance_id| instance_id.to_string()),
             );
-            session
-                .notify_patch_config_revision_changed(
-                    user_id,
-                    machine_id,
-                    ManagedConfigPersistedChange {
-                        expected_revision: expected_config_revision,
-                        target_revision: config_revision,
-                        dirty_instance_ids,
-                    },
-                )
-                .await;
+            let changed = self.storage.record_patch_managed_config_change(
+                user_id,
+                machine_id,
+                ManagedConfigPersistedChange {
+                    expected_revision: expected_config_revision,
+                    target_revision: config_revision,
+                    dirty_instance_ids,
+                },
+            );
+            if changed && let Some(session) = self.get_session_by_machine_id(user_id, &machine_id) {
+                session
+                    .notify_managed_runtime_state_changed(user_id, machine_id)
+                    .await;
+            }
         }
         Ok(())
     }
@@ -369,9 +374,13 @@ impl ClientManager {
         user_id: UserIdInDb,
         machine_id: uuid::Uuid,
     ) {
-        if let Some(session) = self.get_session_by_machine_id(user_id, &machine_id) {
+        if self
+            .storage
+            .invalidate_managed_runtime_state(user_id, machine_id)
+            && let Some(session) = self.get_session_by_machine_id(user_id, &machine_id)
+        {
             session
-                .invalidate_applied_config_revision(user_id, machine_id)
+                .notify_managed_runtime_state_changed(user_id, machine_id)
                 .await;
         }
     }
