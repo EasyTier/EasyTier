@@ -39,7 +39,7 @@ fn bind_options_constructors_describe_socket_purpose() {
             reuse_port: false,
             only_v6: false,
             purpose: UdpSocketPurpose::HolePunchControl,
-            need_protect: false,
+            need_protect: true,
         }
     );
     assert_eq!(
@@ -91,7 +91,7 @@ fn bind_options_constructors_describe_socket_purpose() {
             reuse_port: false,
             only_v6: false,
             purpose: UdpSocketPurpose::Socks5,
-            need_protect: false,
+            need_protect: true,
         }
     );
     assert_eq!(
@@ -104,7 +104,7 @@ fn bind_options_constructors_describe_socket_purpose() {
     );
     assert_eq!(
         UdpBindOptions::default(),
-        UdpBindOptions::hole_punch_control().with_need_protect(true)
+        UdpBindOptions::hole_punch_control()
     );
 }
 
@@ -2051,6 +2051,7 @@ async fn v4_hole_punch_control_sender_uses_factory_socket() {
         factory.bind_options(),
         vec![
             UdpBindOptions::hole_punch_control()
+                .with_need_protect(false)
                 .with_context(context.with_ip_version(IpVersion::V4))
                 .with_local_addr(Some(SocketAddr::V4(SocketAddrV4::new(
                     Ipv4Addr::LOCALHOST,
@@ -2095,6 +2096,7 @@ async fn v6_hole_punch_control_sender_uses_factory_socket() {
         factory.bind_options(),
         vec![
             UdpBindOptions::hole_punch_control()
+                .with_need_protect(false)
                 .with_context(context.with_ip_version(IpVersion::V6))
                 .with_local_addr(Some(SocketAddr::V6(SocketAddrV6::new(
                     Ipv6Addr::LOCALHOST,
