@@ -47,6 +47,8 @@ pub(crate) fn compose_native_core_instance(
     process_runtime: Arc<CoreProcessRuntime>,
     compact_runtime: bool,
 ) -> anyhow::Result<Arc<NativeCoreInstance>> {
+    #[cfg(feature = "magic-dns")]
+    crate::dns::config::validate_dns_config(&toml_config)?;
     let host_config = if compact_runtime {
         compact_runtime_core_host_config()
     } else {
@@ -74,6 +76,7 @@ impl CoreEventSink for GlobalCtx {
         let event = match event {
             CoreEvent::PeerAdded(peer_id) => GlobalCtxEvent::PeerAdded(peer_id),
             CoreEvent::PeerRemoved(peer_id) => GlobalCtxEvent::PeerRemoved(peer_id),
+            CoreEvent::PeerInfoUpdated(peer_ids) => GlobalCtxEvent::PeerInfoUpdated(peer_ids),
             CoreEvent::PeerConnAdded(info) => GlobalCtxEvent::PeerConnAdded(info.into()),
             CoreEvent::PeerConnRemoved(info) => GlobalCtxEvent::PeerConnRemoved(info.into()),
             CoreEvent::CredentialChanged => GlobalCtxEvent::CredentialChanged,

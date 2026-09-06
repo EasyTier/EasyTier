@@ -75,6 +75,7 @@ pub(crate) fn aggregate_tun_routes(instance: &RuntimeInstanceState) -> Vec<Strin
     raw_routes.extend(manual_routes.iter().cloned());
     raw_routes.extend(config_proxy_cidrs.iter().cloned());
     raw_routes.extend(runtime_proxy_cidrs.iter().cloned());
+    raw_routes.extend(instance.dns_servers.iter().cloned());
     simplify_routes(raw_routes)
 }
 

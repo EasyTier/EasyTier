@@ -206,9 +206,13 @@ disable_upnp_help: 禁用符合条件监听器的运行时 UPnP/NAT-PMP 端口�
 disable_sym_hole_punching: 禁用对称NAT打洞
 disable_sym_hole_punching_help: 禁用对称NAT的打洞（生日攻击），将对称NAT视为锥形NAT处理
 
-enable_magic_dns: 启用魔法DNS
-enable_magic_dns_help: |
-  启用魔法DNS，允许通过EasyTier的DNS服务器访问其他节点的虚拟IPv4地址， 如 node1.et.net。
+dns_config: DNS 配置（TOML）
+dns_config_help: |
+  编辑 [dns] 内的完整 TOML 配置，无需填写 [dns] 标题。留空使用新版默认配置（DNS 默认启用）；填写 disabled = true 可禁用。支持 domain、addresses、listeners、zone 和域名策略。
+  移动端暂不支持将新版虚拟 DNS 地址接入系统 DNS。
+dns_config_placeholder: |
+  disabled = false
+  domain = "et.net."
 
 enable_private_mode: 启用私有模式
 enable_private_mode_help: |

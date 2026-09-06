@@ -55,12 +55,18 @@ arc-swap = "1.7"
 toml = "0.8.12"
 chrono = { version = "0.4.37", features = ["serde"] }
 
+getset = "0.1.6"
+optionize = "0.2"
+delegate = "0.13.5"
+derivative = "2.2"
+itertools = "0.14.0"
 guarden = "0.2"
 quanta = "0.12"
 
 strum = { version = "0.27.2", features = ["derive"] }
 
-gethostname = "0.5.0"
+hostname = "0.4.2"
+idna = { version = "1", optional = true }
 
 futures = { version = "0.3", features = ["bilock", "unstable"] }
 
@@ -79,6 +85,7 @@ tokio-util = { version = "0.7.9", features = ["codec", "net", "io", "rt"] }
 
 async-trait = "0.1.74"
 
+maplit = "1.0.2"
 dashmap = "6.0"
 moka = { version = "0.12", features = ["future"] }
 # for full-path zero-copy
@@ -162,6 +169,7 @@ smoltcp = { git = "https://github.com/smoltcp-rs/smoltcp.git", rev = "0a926767a6
     "socket-raw",
 ] }
 serde_json = "1"
+serde_with = "3"
 
 clap = { version = "4.5.30", features = [
     "string",
@@ -176,6 +184,7 @@ clap_complete_nushell = { version = "4.5.10" }
 async-recursion = "1.0.5"
 
 network-interface = "2.0.5"
+indexmap = "2.13.1"
 
 # for wireguard
 boringtun = { package = "boringtun-easytier", version = "0.6.1", optional = true }
@@ -207,17 +216,14 @@ service-manager = { git = "https://github.com/EasyTier/service-manager-rs.git", 
 kcp-sys = { git = "https://github.com/EasyTier/kcp-sys", rev = "d7427c22d764deb1860a7d37acc446ed5033464c", optional = true }
 
 # for dns connector
-hickory-resolver = { version = "0.25.2", optional = true }
-hickory-proto = { version = "0.25.2", optional = true }
+hickory-proto = { version = "0.26.0", optional = true }
+hickory-net = { version = "0.26.0", features = ["serde"], optional = true }
+hickory-resolver = { version = "0.26.0", optional = true }
 
 # for magic dns
-hickory-client = { version = "0.25.2", optional = true }
-hickory-server = { version = "0.25.2", features = [
-    "resolver",
-], optional = true }
+hickory-server = { version = "0.26.0", features = ["resolver"], optional = true }
 
 bon = "3.9.1"
-derive_builder = "0.20.2"
 humantime-serde = "1.1.1"
 shellexpand = "3.1.1"
 
@@ -287,11 +293,11 @@ thunk-rs = { git = "https://github.com/easytier/thunk.git", default-features = f
 criterion = "0.5.1"
 easytier-core = { path = "../easytier-core", version = "2.6.4", default-features = false, features = [
     "test-utils",
+    "proxy-packet",
 ] }
 serial_test = "3.0.0"
 rstest = "0.25.0"
 futures-util = "0.3.31"
-maplit = "1.0.2"
 tempfile = "3.22.0"
 ctor = "0.8.0"
 stun_codec = "0.3.4"
@@ -384,13 +390,12 @@ jemalloc-prof = [
 tracing = ["tokio/tracing", "dep:console-subscriber", "dep:tracing-subscriber"]
 tracing-log = ["tracing/log", "easytier-core/tracing-log"]
 logging = []
-dns-resolver = ["dep:hickory-proto", "dep:hickory-resolver"]
+dns-resolver = ["dep:hickory-proto", "dep:hickory-resolver", "dep:hickory-net"]
 magic-dns = [
     "dns-resolver",
-    "dep:hickory-client",
     "dep:hickory-server",
-    "easytier-core/proxy-packet",
-    "easytier-proto/magic-dns",
+    "dep:sha2",
+    "dep:idna",
 ]
 faketcp = [
     "dep:flume",

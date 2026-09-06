@@ -44,7 +44,6 @@ const BOOLEAN_CONFIG_FIELDS = [
   'disable_encryption',
   'enable_socks5',
   'disable_udp_hole_punching',
-  'enable_magic_dns',
   'enable_private_mode',
   'enable_quic_proxy',
   'disable_quic_input',
@@ -163,7 +162,7 @@ function allFieldFixture() {
     disable_udp_hole_punching: true,
     mtu: 1280,
     mapped_listeners: ['tcp://127.0.0.1:13010'],
-    enable_magic_dns: true,
+    dns_toml: 'domain = "mesh.example."\ndisabled = false\n',
     enable_private_mode: true,
     enable_quic_proxy: true,
     disable_quic_input: true,
@@ -344,6 +343,23 @@ function assertBooleanFieldValuesPreserved() {
       input[field],
       `backend JSON should preserve boolean field ${field}`,
     )
+  }
+}
+
+function assertDnsConfigurationPreserved() {
+  assert.equal(DEFAULT_NETWORK_CONFIG().dns_toml, undefined)
+
+  for (const dnsToml of [
+    undefined,
+    'disabled = true',
+    'domain = "mesh.example."\n[[zone]]\norigin = "internal.example."\n',
+  ]) {
+    const normalized = normalizeNetworkConfig({
+      ...DEFAULT_NETWORK_CONFIG(),
+      dns_toml: dnsToml,
+    })
+    assert.equal(normalized.dns_toml, dnsToml)
+    assert.equal(toBackendNetworkConfig(normalized).dns_toml, dnsToml)
   }
 }
 
@@ -578,6 +594,7 @@ const tests = [
   assertLegacyVpnPortalFieldsReachBackendValidation,
   assertVpnPortalRpcJsonNormalization,
   assertBooleanFieldValuesPreserved,
+  assertDnsConfigurationPreserved,
   assertEnumCompatibility,
   assertAclDefaultsAndExplicitZero,
   assertNetworkingMethodNormalization,

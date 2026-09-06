@@ -58,6 +58,10 @@ export async function generateNetworkConfig(tomlConfig: string) {
   return NetworkTypes.normalizeNetworkConfig(config)
 }
 
+export async function getDnsServers(cfg: NetworkConfig) {
+  return invoke<string[]>('get_dns_servers', { cfg: NetworkTypes.toBackendNetworkConfig(cfg) })
+}
+
 export async function runNetworkInstance(cfg: NetworkConfig, save: boolean) {
   return invoke('run_network_instance', { cfg: NetworkTypes.toBackendNetworkConfig(cfg), save })
 }

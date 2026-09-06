@@ -17,8 +17,6 @@ use crate::proto::{
     common::{CompressionAlgoPb, SecureModeConfig},
 };
 
-pub const DEFAULT_ET_DNS_ZONE: &str = "et.net.";
-
 pub type Flags = crate::proto::common::FlagsInConfig;
 
 pub(crate) fn default_instance_name() -> String {
@@ -52,7 +50,6 @@ pub fn gen_default_flags() -> Flags {
         disable_kcp_input: false,
         disable_relay_kcp: false,
         enable_relay_foreign_network_kcp: false,
-        accept_dns: false,
         private_mode: false,
         enable_quic_proxy: false,
         disable_quic_input: false,
@@ -62,7 +59,6 @@ pub fn gen_default_flags() -> Flags {
         multi_thread_count: 2,
         encryption_algorithm: EncryptionAlgorithm::default().to_string(),
         disable_sym_hole_punching: false,
-        tld_dns_zone: DEFAULT_ET_DNS_ZONE.to_string(),
 
         quic_listen_port: u32::MAX,
         need_p2p: false,
@@ -145,7 +141,6 @@ define_flags_diff! {
         disable_kcp_input,
         disable_relay_kcp,
         proxy_forward_by_system,
-        accept_dns,
         private_mode,
         enable_quic_proxy,
         disable_quic_input,
@@ -156,7 +151,6 @@ define_flags_diff! {
         enable_relay_foreign_network_quic,
         encryption_algorithm,
         disable_sym_hole_punching,
-        tld_dns_zone,
         p2p_only,
         disable_tcp_hole_punching,
         lazy_p2p,
@@ -173,6 +167,10 @@ define_flags_diff! {
 
 #[auto_impl::auto_impl(Box, &)]
 pub trait ConfigLoader: Send + Sync {
+    /// Canonical DNS input, interpreted by the native DNS implementation.
+    fn get_dns_config(&self) -> Option<toml::Table>;
+    fn set_dns_config(&self, config: Option<toml::Table>);
+
     fn get_id(&self) -> uuid::Uuid;
     fn set_id(&self, id: uuid::Uuid);
 
@@ -534,6 +532,9 @@ struct Config {
     peer: Option<Vec<PeerConfig>>,
     proxy_network: Option<Vec<ProxyNetworkConfig>>,
 
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    dns: Option<toml::Table>,
+
     vpn_portal_config: Option<VpnPortalConfig>,
 
     routes: Option<Vec<cidr::Ipv4Cidr>>,
@@ -752,6 +753,14 @@ impl TomlConfig {
 mod snapshot;
 
 impl ConfigLoader for TomlConfig {
+    fn get_dns_config(&self) -> Option<toml::Table> {
+        self.config.lock().unwrap().dns.clone()
+    }
+
+    fn set_dns_config(&self, config: Option<toml::Table>) {
+        self.config.lock().unwrap().dns = config;
+    }
+
     fn get_inst_name(&self) -> String {
         self.config
             .lock()
@@ -1193,6 +1202,61 @@ pub type TomlConfigLoader = TomlConfig;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dns_table_survives_unrelated_snapshot_commit_and_dump() {
+        let config = TomlConfig::new_from_str(
+            r#"
+[dns]
+domain = "mesh.example."
+addresses = ["100.100.100.101", "tcp://127.0.0.1:5353"]
+[[dns.zone]]
+origin = "service.mesh.example."
+records = ["@ IN A 10.0.0.9"]
+[dns.zone.export]
+disabled = false
+"#,
+        )
+        .unwrap();
+        let original = config.get_dns_config();
+        let candidate = config.detached_snapshot();
+        candidate.set_hostname(Some("changed-host".into()));
+        config.replace_from_snapshot(&candidate);
+        assert_eq!(config.get_dns_config(), original);
+        #[cfg(feature = "config-write")]
+        assert_eq!(
+            TomlConfig::new_from_str(&config.dump())
+                .unwrap()
+                .get_dns_config(),
+            original
+        );
+    }
+
+    #[test]
+    fn dns_defaults_belong_to_the_dns_section() {
+        assert_eq!(TomlConfig::default().get_dns_config(), None);
+        let config = TomlConfig::new_from_str(
+            r#"
+[dns]
+disabled = true
+domain = "mesh.example."
+"#,
+        )
+        .unwrap();
+        let dns = config.get_dns_config().unwrap();
+        assert_eq!(dns["disabled"].as_bool(), Some(true));
+        assert_eq!(dns["domain"].as_str(), Some("mesh.example."));
+        let config = TomlConfig::new_from_str(
+            r#"
+[dns]
+domain = "new.example."
+"#,
+        )
+        .unwrap();
+        let dns = config.get_dns_config().unwrap();
+        assert_eq!(dns["domain"].as_str(), Some("new.example."));
+        assert!(!dns.contains_key("disabled"));
+    }
 
     #[test]
     fn parse_error_preserves_source_and_location() {

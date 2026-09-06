@@ -17,6 +17,11 @@ pub(super) struct NativeTunRuntime {
 }
 
 impl NativeTunRuntime {
+    #[cfg(feature = "magic-dns")]
+    pub(super) fn dns_host(&self) -> Arc<dyn crate::dns::host::DnsHost> {
+        Arc::new(crate::dns::host::NoDnsInterface)
+    }
+
     pub(super) fn new(global_ctx: ArcGlobalCtx, cancel: CancellationToken) -> Self {
         Self { global_ctx, cancel }
     }

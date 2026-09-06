@@ -205,9 +205,13 @@ disable_upnp_help: Disable runtime UPnP/NAT-PMP port mapping for eligible listen
 disable_sym_hole_punching: Disable Symmetric NAT Hole Punching
 disable_sym_hole_punching_help: Disable special hole punching handling for symmetric NAT (based on birthday attack), treat symmetric NAT as cone NAT
 
-enable_magic_dns: Enable Magic DNS
-enable_magic_dns_help: |
-  Enable magic dns, all nodes in the network can access each other by domain name, e.g.: node1.et.net.
+dns_config: DNS configuration (TOML)
+dns_config_help: |
+  Edit the full contents of [dns] without the [dns] heading. Leave empty to use the new defaults (DNS is enabled); set disabled = true to disable it. Supports domain, addresses, listeners, zone, and domain policies.
+  Mobile platforms do not yet support using the new virtual DNS addresses as system DNS servers.
+dns_config_placeholder: |
+  disabled = false
+  domain = "et.net."
 
 enable_private_mode: Enable Private Mode
 enable_private_mode_help: |

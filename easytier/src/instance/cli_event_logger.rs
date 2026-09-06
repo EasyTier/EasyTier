@@ -56,6 +56,7 @@ async fn log_events(instance_id: Uuid, mut events: EventBusSubscriber) {
 
 fn log_event(instance_id: Uuid, event: GlobalCtxEvent) {
     match event {
+        GlobalCtxEvent::PeerInfoUpdated(_) => {}
         GlobalCtxEvent::PeerAdded(peer_id) => {
             event!(info, peer_id, "[{}] new peer added", instance_id);
         }

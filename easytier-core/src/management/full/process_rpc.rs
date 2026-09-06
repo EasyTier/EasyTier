@@ -221,6 +221,9 @@ where
         overwrite: bool,
         requested_source: Option<ConfigSource>,
     ) -> anyhow::Result<uuid::Uuid> {
+        self.instances
+            .validate_config(&config)
+            .map_err(|error| anyhow::anyhow!("invalid instance configuration: {error}"))?;
         let mut instance_id = config.get_id();
         if let Some(requested_id) = requested_id {
             instance_id = requested_id;
@@ -576,8 +579,13 @@ where
         _: BaseController,
         request: ValidateConfigRequest,
     ) -> rpc_types::error::Result<ValidateConfigResponse> {
+        let config = request.config.unwrap_or_default().gen_config()?;
+        self.management
+            .instances
+            .validate_config(&config)
+            .map_err(|error| anyhow::anyhow!("invalid instance configuration: {error}"))?;
         Ok(ValidateConfigResponse {
-            toml_config: request.config.unwrap_or_default().gen_config()?.dump(),
+            toml_config: config.dump(),
         })
     }
 

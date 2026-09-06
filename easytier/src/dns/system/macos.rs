@@ -6,13 +6,13 @@ use std::{
     path::Path,
 };
 
-use super::{OSConfig, SystemConfig};
+use super::{SystemConfig, SystemConfigurator};
 
 const MAC_RESOLVER_FILE_HEADER: &str = "# Added by easytier\n";
 const ETC_RESOLVER: &str = "/etc/resolver";
 const ETC_RESOLV_CONF: &str = "/etc/resolv.conf";
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct DarwinConfigurator {}
 impl DarwinConfigurator {
     pub fn new() -> Self {
@@ -27,7 +27,7 @@ impl DarwinConfigurator {
         true
     }
 
-    pub fn do_set_dns(&self, cfg: &OSConfig) -> io::Result<()> {
+    pub fn do_set_dns(&self, cfg: &SystemConfig) -> io::Result<()> {
         fs::create_dir_all(ETC_RESOLVER)?;
         let mut keep = HashSet::new();
 
@@ -104,12 +104,12 @@ impl DarwinConfigurator {
     }
 }
 
-impl SystemConfig for DarwinConfigurator {
-    fn set_dns(&self, cfg: &OSConfig) -> io::Result<()> {
+impl SystemConfigurator for DarwinConfigurator {
+    fn set_dns(&self, cfg: &SystemConfig) -> io::Result<()> {
         self.do_set_dns(cfg)
     }
 
-    fn close(&self) -> io::Result<()> {
+    fn clean(&self) -> io::Result<()> {
         self.do_close()
     }
 }
@@ -120,7 +120,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_dns_test() -> io::Result<()> {
-        let config = OSConfig {
+        let config = SystemConfig {
             nameservers: vec!["8.8.8.8".into()],
             search_domains: vec!["example.com".into()],
             match_domains: vec!["test.local".into()],
@@ -128,7 +128,7 @@ mod tests {
         let configurator = DarwinConfigurator::new();
 
         configurator.set_dns(&config)?;
-        configurator.close()?;
+        configurator.clean()?;
 
         Ok(())
     }

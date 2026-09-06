@@ -12,7 +12,7 @@ pub(crate) struct TunRequestPayload {
     pub virtual_ipv4: Option<String>,
     pub virtual_ipv4_cidr: Option<String>,
     pub aggregated_routes: Vec<String>,
-    pub magic_dns_enabled: bool,
+    pub dns_servers: Vec<String>,
     pub need_exit_node: bool,
 }
 

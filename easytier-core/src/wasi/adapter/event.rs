@@ -34,6 +34,7 @@ fn event_kind(event: &CoreEvent) -> &'static str {
     match event {
         CoreEvent::PeerAdded(_) => "peer_added",
         CoreEvent::PeerRemoved(_) => "peer_removed",
+        CoreEvent::PeerInfoUpdated(_) => "peer_info_updated",
         CoreEvent::PeerConnAdded(_) => "peer_connection_added",
         CoreEvent::PeerConnRemoved(_) => "peer_connection_removed",
         CoreEvent::CredentialChanged => "credential_changed",

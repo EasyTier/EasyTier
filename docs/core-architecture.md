@@ -276,7 +276,6 @@ Generated service descriptors and message types remain in `easytier-proto`.
 - SOCKS5 framing, authentication, association, routing, and session state;
 - wrapped-transport planning and session state used by KCP and QUIC Adapters;
 - DHCP allocation policy;
-- Magic DNS route and response policy;
 - VPN portal client/session policy;
 - UDP broadcast classification and rewrite policy.
 
@@ -288,6 +287,12 @@ facts.
 TUN, raw sockets, transparent-destination lookup, concrete protocol engines,
 native DNS servers, namespace operations, and route application stay in native
 Adapters.
+
+DNS policy, zone compilation, and TCP/UDP serving belong to the native DNS
+module. Core carries published DNS exports and their routing digests through
+`CoreDnsPeerAccess`; it does not maintain a second DNS record store or packet
+query resolver. The native `[dns]` schema is carried intact by the management
+API's `dns_toml` field.
 
 Optional gateway capabilities are selected by cohesive Modules. Disabled
 implementations retain stable lifecycle calls and report unsupported
@@ -437,8 +442,7 @@ Important core feature relationships are:
 - `dns-resolver` is the shared Hickory resolver leaf used by endpoint
   discovery and Magic DNS without coupling either capability to the other.
 - `endpoint-discovery` adds HTTPS endpoint discovery dependencies.
-- `magic-dns` enables its DNS server, management wire messages, and portable
-  packet-query integration.
+- `magic-dns` enables the native DNS policy runtime and TCP/UDP server.
 - `tcp-hole-punch` enables the TCP hole-punch runtime.
 - `dhcp-ipv4`, `public-ipv6-provider`, `vpn-portal`,
   `wrapped-transport`, and `proxy-cidr-monitor` are independent gateway or

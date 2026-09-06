@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { v4 as uuidv4 } from 'uuid'
-import { AutoComplete, Button, Checkbox, Dialog, Divider, InputNumber, InputText, MultiSelect, Panel, Password, SelectButton, ToggleButton } from 'primevue'
+import { AutoComplete, Button, Checkbox, Dialog, Divider, InputNumber, InputText, MultiSelect, Panel, Password, SelectButton, Textarea, ToggleButton } from 'primevue'
 import InputGroup from 'primevue/inputgroup'
 import InputGroupAddon from 'primevue/inputgroupaddon'
 import {
@@ -106,7 +106,6 @@ const bool_flags: BoolFlag[] = [
   { field: 'enable_udp_broadcast_relay', help: 'enable_udp_broadcast_relay_help' },
   { field: 'disable_upnp', help: 'disable_upnp_help' },
   { field: 'disable_sym_hole_punching', help: 'disable_sym_hole_punching_help' },
-  { field: 'enable_magic_dns', help: 'enable_magic_dns_help' },
   { field: 'enable_private_mode', help: 'enable_private_mode_help' },
 ]
 
@@ -166,6 +165,13 @@ function syncNormalizedNetwork(network: NetworkConfig | undefined): void {
 }
 
 watch(() => curNetwork.value, syncNormalizedNetwork, { immediate: true, deep: false })
+
+const dnsTomlInput = computed({
+  get: () => curNetwork.value.dns_toml ?? '',
+  set: (value: string) => {
+    curNetwork.value.dns_toml = value.trim().length > 0 ? value : undefined
+  },
+})
 
 function parseInstanceRecvBpsLimitInput(value: string): number | string | null | undefined {
   const trimmed = value.trim()
@@ -309,6 +315,13 @@ function removeVpnPortalClient(index: number) {
 
           <Panel :header="t('advanced_settings')" toggleable collapsed>
             <div class="flex flex-col gap-y-2">
+
+              <div class="flex flex-col gap-2">
+                <label for="dns_toml">{{ t('dns_config') }}</label>
+                <Textarea id="dns_toml" v-model="dnsTomlInput" :rows="8" class="w-full font-mono"
+                  aria-describedby="dns_config_help" :placeholder="t('dns_config_placeholder')" />
+                <small id="dns_config_help">{{ t('dns_config_help') }}</small>
+              </div>
 
               <div class="flex flex-row gap-x-9 flex-wrap">
                 <div class="flex flex-col gap-2 basis-5/12 grow">

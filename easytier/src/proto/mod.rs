@@ -6,7 +6,9 @@ pub use easytier_proto::{
 };
 
 #[cfg(feature = "magic-dns")]
-pub use easytier_proto::magic_dns;
+pub mod dns;
+#[cfg(feature = "magic-dns")]
+pub mod utils;
 
 #[cfg(test)]
 pub mod tests;
