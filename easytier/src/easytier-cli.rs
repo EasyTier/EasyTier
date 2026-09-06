@@ -2054,7 +2054,11 @@ impl<'a> CommandHandler<'a> {
         }
 
         let acl = if let Ok(parsed_req) = serde_json::from_str::<PatchRequestJson>(&text) {
-            parsed_req.patch.and_then(|p| p.acl).and_then(|a| a.acl).unwrap_or_default()
+            parsed_req
+                .patch
+                .and_then(|p| p.acl)
+                .and_then(|a| a.acl)
+                .unwrap_or_default()
         } else if let Ok(parsed_json) = serde_json::from_str::<AclWrapper>(&text) {
             parsed_json.acl.unwrap_or_default()
         } else if let Ok(parsed_json_direct) = serde_json::from_str::<Acl>(&text) {
@@ -2065,8 +2069,9 @@ impl<'a> CommandHandler<'a> {
             struct AclToml {
                 acl: Option<Acl>,
             }
-            let parsed_toml: AclToml = toml::from_str(&text)
-                .with_context(|| "failed to parse ACL as either JSON or TOML (expected `[acl.acl_v1]` structure)")?;
+            let parsed_toml: AclToml = toml::from_str(&text).with_context(
+                || "failed to parse ACL as either JSON or TOML (expected `[acl.acl_v1]` structure)",
+            )?;
             parsed_toml.acl.unwrap_or_default()
         };
         if acl.is_empty() {
