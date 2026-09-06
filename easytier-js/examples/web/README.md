@@ -10,28 +10,29 @@ handles, or Host Tunnel internals.
 From the EasyTier repository root:
 
 ```sh
+cd easytier-js
 pnpm install
 pnpm --filter @easytier/web-example build:packages
 ```
 
-The second command is needed only when running this workspace example from the
-EasyTier source tree. Published package consumers receive the matching Wasm
-artifacts in the npm packages.
+The build starts from source and generates both required Wasm profiles. No
+artifact from an earlier build is required. Published package consumers receive
+the matching Wasm artifacts in the npm packages.
 
 ## Set the local secret
 
 Copy the example file and replace its placeholder with a local secret:
 
 ```sh
-cp easytier-js/examples/web/cloudflare/.dev.vars.example \
-  easytier-js/examples/web/cloudflare/.dev.vars
+cp examples/web/cloudflare/.dev.vars.example \
+  examples/web/cloudflare/.dev.vars
 ```
 
 The `.dev.vars` file is ignored by Git. Enter the same value in the Browser UI.
 
 ## Start the Cloudflare relay
 
-In one terminal, from the repository root:
+In one terminal, from the `easytier-js` workspace:
 
 ```sh
 pnpm --filter @easytier/web-example dev:cloudflare

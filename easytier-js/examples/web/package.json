@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build:packages": "pnpm --filter @easytier/browser build:wasm && pnpm --filter @easytier/browser build && pnpm --filter @easytier/cloudflare build:wasm && pnpm --filter @easytier/cloudflare build",
+    "build:packages": "pnpm --filter @easytier/browser build && pnpm --filter @easytier/cloudflare build",
     "build:browser": "tsc --noEmit -p browser/tsconfig.json && vite build browser",
     "types:cloudflare": "wrangler types cloudflare/worker-configuration.d.ts --config cloudflare/wrangler.jsonc",
     "check:cloudflare": "pnpm types:cloudflare && tsc --noEmit -p cloudflare/tsconfig.json && wrangler deploy --dry-run --config cloudflare/wrangler.jsonc",

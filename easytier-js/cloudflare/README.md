@@ -112,6 +112,8 @@ in-memory state and cannot be reconstructed from socket attachments alone.
 For local development in the EasyTier repository:
 
 ```sh
+cd easytier-js
+pnpm install
 pnpm --filter @easytier/web-example build:packages
 pnpm --filter @easytier/web-example dev:cloudflare
 ```

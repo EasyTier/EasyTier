@@ -13,10 +13,24 @@ runtimes while keeping application-facing APIs small:
 A complete browser and Cloudflare Worker walkthrough is available in
 [`examples/web`](./examples/web).
 
-From the repository root, install dependencies and run the package checks with:
+Source builds require Node.js 22, pnpm 10 or newer, Rust 1.95 with the
+`wasm32-wasip1` target, and Protocol Buffers 35.1. Install the Rust target with:
 
 ```sh
-pnpm install
-pnpm --filter @easytier/browser check
-pnpm --filter @easytier/cloudflare check
+rustup target add wasm32-wasip1
 ```
+
+The JavaScript hosts use their own workspace so their Cloudflare development
+toolchain does not affect EasyTier's existing GUI and web workspace. From a
+clean repository checkout, run:
+
+```sh
+cd easytier-js
+pnpm install
+pnpm check
+```
+
+The check command builds both Wasm profiles from source, builds and tests the
+three packages, and validates the complete example. No pre-generated Wasm file
+is required. Published packages already contain their compiled JavaScript,
+type declarations, and Wasm artifacts; package consumers do not need Rust.
