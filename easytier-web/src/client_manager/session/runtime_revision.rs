@@ -723,6 +723,7 @@ async fn cleanup_stale_web_source_instances(
             );
             return RoundStatus::Skip;
         }
+        let operation_started_at = std::time::Instant::now();
         let ret = rpc_client
             .delete_network_instance(
                 BaseController::default(),
@@ -733,6 +734,8 @@ async fn cleanup_stale_web_source_instances(
             .await;
         tracing::info!(
             user_id = ?round.user_id,
+            machine_id = ?round.machine_id,
+            elapsed_ms = operation_started_at.elapsed().as_millis(),
             "Clean stale web-source network instances on heartbeat: {:?}, user_token: {:?}",
             ret,
             round.req.user_token
@@ -803,6 +806,7 @@ async fn cleanup_patch_deleted_instances(
         return RoundStatus::Skip;
     }
 
+    let operation_started_at = std::time::Instant::now();
     let ret = rpc_client
         .delete_network_instance(
             BaseController::default(),
@@ -815,6 +819,8 @@ async fn cleanup_patch_deleted_instances(
         .await;
     tracing::info!(
         user_id = ?round.user_id,
+        machine_id = ?round.machine_id,
+        elapsed_ms = operation_started_at.elapsed().as_millis(),
         deleted_instance_ids = ?running_web_instance_ids,
         "Apply managed config Patch deletions at runtime: {:?}",
         ret
@@ -1016,6 +1022,7 @@ async fn reconcile_running_web_config(
         return ConfigActionResult::StopRound;
     }
 
+    let operation_started_at = std::time::Instant::now();
     let ret = async {
         let action =
             match runtime_config_cache.plan(&config.network_instance_id, desired_config.clone())? {
@@ -1054,7 +1061,9 @@ async fn reconcile_running_web_config(
     .await;
     tracing::info!(
         user_id = ?round.user_id,
+        machine_id = ?round.machine_id,
         instance_id = %config.network_instance_id,
+        elapsed_ms = operation_started_at.elapsed().as_millis(),
         "Reconcile running web-source network instance: {:?}, user_token: {:?}",
         ret,
         round.req.user_token
@@ -1097,6 +1106,7 @@ async fn run_missing_network_config(
         return ConfigActionResult::StopRound;
     }
 
+    let operation_started_at = std::time::Instant::now();
     let ret = rpc_client
         .run_network_instance(
             BaseController::default(),
@@ -1110,6 +1120,9 @@ async fn run_missing_network_config(
         .await;
     tracing::info!(
         user_id = ?round.user_id,
+        machine_id = ?round.machine_id,
+        instance_id = %config.network_instance_id,
+        elapsed_ms = operation_started_at.elapsed().as_millis(),
         "Run network instance: {:?}, user_token: {:?}",
         ret,
         round.req.user_token
@@ -1228,6 +1241,15 @@ fn record_applied_config_revision(
     revision: Option<String>,
 ) -> Option<std::sync::Arc<tokio::sync::Notify>> {
     let changed = !data.applied_config_revision_known || data.applied_config_revision != revision;
+    if changed {
+        tracing::info!(
+            machine_id = ?data.req.as_ref().and_then(|req| req.machine_id),
+            user_token = ?data.req.as_ref().map(|req| &req.user_token),
+            previous_revision = ?data.applied_config_revision,
+            applied_revision = ?revision,
+            "managed config revision applied"
+        );
+    }
     data.known_runtime_base_revision = revision.clone();
     data.applied_config_revision = revision;
     data.applied_config_revision_known = true;

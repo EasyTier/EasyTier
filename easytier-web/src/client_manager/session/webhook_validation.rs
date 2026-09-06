@@ -385,6 +385,7 @@ pub(super) async fn apply_success(
 
         let previous_connected_binding_version = data.webhook_connected_binding_version;
         let client_url = data.client_url.clone();
+        let is_new_storage_token = data.storage_token.is_none();
         let storage_token = data.storage_token.get_or_insert_with(|| StorageToken {
             token: runtime_req.user_token.clone(),
             client_url,
@@ -394,6 +395,17 @@ pub(super) async fn apply_success(
         let storage_token = storage_token.clone();
         data.auth_state = SessionAuthState::Authorized;
         data.binding_version = Some(binding_version);
+        if is_new_storage_token {
+            tracing::info!(
+                machine_id = %input.machine_id,
+                user_id,
+                session_epoch = data.session_epoch,
+                binding_version,
+                user_token = %runtime_req.user_token,
+                client_url = %data.client_url,
+                "session identity established"
+            );
+        }
         let should_notify_connected = previous_connected_binding_version != Some(binding_version);
         let disconnect_notification = previous_connected_binding_version
             .filter(|previous_binding_version| *previous_binding_version != binding_version)

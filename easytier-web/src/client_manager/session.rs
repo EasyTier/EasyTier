@@ -307,6 +307,7 @@ async fn send_webhook_connection_transition(
     let Some(connect) = connect else {
         return;
     };
+    let delivery_started_at = Instant::now();
     let mut attempt = 1;
     loop {
         if !connected_delivery_is_current(
@@ -319,7 +320,19 @@ async fn send_webhook_connection_transition(
             return;
         }
         match connect.webhook.notify_node_connected(&connect.req).await {
-            Ok(()) => break,
+            Ok(()) => {
+                let elapsed = delivery_started_at.elapsed();
+                if attempt > 1 || elapsed >= Duration::from_secs(2) {
+                    tracing::info!(
+                        machine_id = %connect.storage_token.machine_id,
+                        binding_version = connect.binding_version,
+                        attempt,
+                        elapsed_ms = elapsed.as_millis(),
+                        "node-connected webhook delivery completed"
+                    );
+                }
+                break;
+            }
             Err(error) => {
                 let retry_delay = if error.is_retryable() {
                     CONNECTED_WEBHOOK_RETRY_DELAYS.get(attempt - 1).copied()
@@ -330,6 +343,7 @@ async fn send_webhook_connection_transition(
                     machine_id = %connect.storage_token.machine_id,
                     binding_version = connect.binding_version,
                     attempt,
+                    elapsed_ms = delivery_started_at.elapsed().as_millis(),
                     will_retry = retry_delay.is_some(),
                     %error,
                     "node-connected webhook delivery failed"
@@ -382,6 +396,16 @@ impl Drop for SessionData {
             && let Some(token) = self.storage_token.as_ref()
         {
             let removed_current_session = storage.remove_session_client(token, self.session_epoch);
+
+            if removed_current_session {
+                tracing::info!(
+                    machine_id = %token.machine_id,
+                    user_id = token.user_id,
+                    session_epoch = self.session_epoch,
+                    user_token = %token.token,
+                    "session disconnected"
+                );
+            }
 
             // Notify the webhook receiver when a node disconnects.
             if removed_current_session
@@ -600,8 +624,16 @@ impl SessionRpcService {
         let previous_instance_ids = Self::failed_instance_ids_locked(data);
         let next_instance_ids =
             Self::failed_instance_ids(Some(req), &data.direct_run_failed_instance_ids);
-        (next_instance_ids != previous_instance_ids)
-            .then(|| Self::mark_webhook_validation_state_changed_locked(data))
+        if next_instance_ids == previous_instance_ids {
+            return None;
+        }
+        tracing::info!(
+            machine_id = ?req.machine_id,
+            user_token = %req.user_token,
+            failed_instance_ids = ?next_instance_ids,
+            "heartbeat failed instance set changed"
+        );
+        Some(Self::mark_webhook_validation_state_changed_locked(data))
     }
 
     fn update_direct_run_failures_locked(
@@ -771,6 +803,14 @@ impl SessionRpcService {
                     machine_id,
                     user_id,
                 });
+                tracing::info!(
+                    %machine_id,
+                    user_id,
+                    session_epoch = data.session_epoch,
+                    user_token = %runtime_req.user_token,
+                    client_url = %data.client_url,
+                    "session identity established"
+                );
             }
             data.auth_state = SessionAuthState::Authorized;
 

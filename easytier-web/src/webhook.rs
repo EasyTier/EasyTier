@@ -406,7 +406,10 @@ impl WebhookConfig {
         http_timeout: Duration,
     ) -> anyhow::Result<ValidateTokenResponse> {
         let url = self.webhook_endpoint("validate-token")?;
+        let started_at = Instant::now();
         let permit = self.validate_limiter.acquire().await;
+        let queue_elapsed = started_at.elapsed();
+        let http_started_at = Instant::now();
         let ret = match tokio::time::timeout(http_timeout, async {
             let resp = self
                 .client
@@ -428,6 +431,19 @@ impl WebhookConfig {
             Err(_) => Err(anyhow::anyhow!("webhook validate-token timed out")),
         };
         permit.complete(ret.is_ok());
+        let http_elapsed = http_started_at.elapsed();
+        let elapsed = started_at.elapsed();
+        if queue_elapsed >= Duration::from_secs(1) || http_elapsed >= VALIDATE_TOKEN_SLOW_THRESHOLD
+        {
+            tracing::warn!(
+                machine_id = %req.machine_id,
+                queue_ms = queue_elapsed.as_millis(),
+                http_ms = http_elapsed.as_millis(),
+                elapsed_ms = elapsed.as_millis(),
+                success = ret.is_ok(),
+                "validate-token completed slowly"
+            );
+        }
         ret
     }
 
@@ -465,13 +481,38 @@ impl WebhookConfig {
             tracing::warn!("skip node-disconnected webhook because webhook_url is not configured");
             return;
         };
-        let _ = self
+        let started_at = Instant::now();
+        let result = self
             .client
             .post(&url)
             .header("X-Internal-Auth", self.webhook_auth_secret())
             .json(req)
             .send()
             .await;
+        let elapsed = started_at.elapsed();
+        match result {
+            Err(error) => tracing::warn!(
+                machine_id = %req.machine_id,
+                user_token = %req.token,
+                elapsed_ms = elapsed.as_millis(),
+                %error,
+                "node-disconnected webhook delivery failed"
+            ),
+            Ok(response) if !response.status().is_success() => tracing::warn!(
+                machine_id = %req.machine_id,
+                user_token = %req.token,
+                status = %response.status(),
+                elapsed_ms = elapsed.as_millis(),
+                "node-disconnected webhook returned failure status"
+            ),
+            Ok(_) if elapsed >= VALIDATE_TOKEN_SLOW_THRESHOLD => tracing::warn!(
+                machine_id = %req.machine_id,
+                user_token = %req.token,
+                elapsed_ms = elapsed.as_millis(),
+                "node-disconnected webhook completed slowly"
+            ),
+            Ok(_) => {}
+        }
     }
 
     fn webhook_auth_secret(&self) -> &str {

@@ -296,7 +296,21 @@ async fn main() {
     setup_panic_handler();
 
     let cli = Cli::parse();
-    log::init(&cli, false).unwrap();
+    log::init_with_default_console_targets(&cli, false, &["CORE", "easytier_web"]).unwrap();
+    tracing::info!(
+        version = EASYTIER_VERSION,
+        web_instance_id = ?cli.webhook.web_instance_id,
+        api_address = %cli.api_server_addr,
+        api_port = cli.api_server_port,
+        config_protocol = %cli.config_server_protocol,
+        config_port = cli.config_server_port,
+        heartbeat_min_response_ms = cli.heartbeat_min_response_ms,
+        heartbeat_timeout_ms = cli.heartbeat_timeout_ms,
+        webhook_enabled = cli.webhook.webhook_url.as_deref().is_some_and(|url| !url.trim().is_empty()),
+        rust_log_override = std::env::var_os("RUST_LOG").is_some(),
+        console_log_override = cli.console_log_level.is_some(),
+        "easytier-web starting"
+    );
 
     // Validate OIDC configuration: check split-deploy specific requirements
     // Basic OIDC parameter validation is handled in OidcConfig::from_params
