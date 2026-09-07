@@ -327,6 +327,55 @@ async fn data_plane_sessions_complete_tcp_operations_end_to_end() {
     assert_eq!(written, 4);
     assert_eq!(received, b"ping");
 
+    let eof_read = session_b.submit_tcp_read(server, 16).unwrap();
+    let shutdown = session_a.submit_tcp_shutdown_write(client).unwrap();
+    let shutdown_completion = wait_for_session_completion(&session_a).await;
+    let eof_completion = wait_for_session_completion(&session_b).await;
+    assert_eq!(shutdown_completion.operation_id, shutdown);
+    assert_eq!(eof_completion.operation_id, eof_read);
+    session_a
+        .take_result_with(shutdown, |outcome| match outcome {
+            Ok(DataPlaneOperationResult::TcpWriteShutdown) => Some(()),
+            _ => None,
+        })
+        .unwrap()
+        .unwrap();
+    let eof = session_b
+        .take_result_with(eof_read, |outcome| match outcome {
+            Ok(DataPlaneOperationResult::TcpRead { data, eof }) => Some((data.clone(), *eof)),
+            _ => None,
+        })
+        .unwrap()
+        .unwrap();
+    assert_eq!(eof, (Vec::new(), true));
+
+    let response_read = session_a.submit_tcp_read(client, 16).unwrap();
+    let response_write = session_b
+        .submit_tcp_write(server, b"pong".to_vec())
+        .unwrap();
+    let (response_read_completion, response_write_completion) = tokio::join!(
+        wait_for_session_completion(&session_a),
+        wait_for_session_completion(&session_b),
+    );
+    assert_eq!(response_read_completion.operation_id, response_read);
+    assert_eq!(response_write_completion.operation_id, response_write);
+    let response = session_a
+        .take_result_with(response_read, |outcome| match outcome {
+            Ok(DataPlaneOperationResult::TcpRead { data, eof }) if !eof => Some(data.clone()),
+            _ => None,
+        })
+        .unwrap()
+        .unwrap();
+    let response_len = session_b
+        .take_result_with(response_write, |outcome| match outcome {
+            Ok(DataPlaneOperationResult::TcpWritten { len }) => Some(*len),
+            _ => None,
+        })
+        .unwrap()
+        .unwrap();
+    assert_eq!(response, b"pong");
+    assert_eq!(response_len, 4);
+
     let blocked_read = session_b.submit_tcp_read(server, 16).unwrap();
     session_b.close_resource(server);
     let close_completion = wait_for_session_completion(&session_b).await;

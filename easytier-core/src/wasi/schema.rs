@@ -60,3 +60,40 @@ impl WasiWebClientCreateConfig {
         Ok(())
     }
 }
+
+#[cfg(feature = "wasm-host-tunnel")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct WasiHostTunnelMetadata {
+    pub version: u32,
+    pub local_url: url::Url,
+    pub remote_url: url::Url,
+    #[serde(default)]
+    pub resolved_remote_url: Option<url::Url>,
+}
+
+#[cfg(feature = "wasm-host-tunnel")]
+impl WasiHostTunnelMetadata {
+    pub(crate) fn validate(&self) -> anyhow::Result<()> {
+        if self.version != crate::wasi::abi::HOST_TUNNEL_ABI_VERSION {
+            anyhow::bail!("unsupported host tunnel ABI version: {}", self.version);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(all(test, feature = "wasm-host-tunnel"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_tunnel_metadata_accepts_transport_neutral_urls() {
+        let metadata = WasiHostTunnelMetadata {
+            version: crate::wasi::abi::HOST_TUNNEL_ABI_VERSION,
+            local_url: "test-tunnel://listener.example/".parse().unwrap(),
+            remote_url: "test-tunnel://peer.example/".parse().unwrap(),
+            resolved_remote_url: None,
+        };
+
+        metadata.validate().unwrap();
+    }
+}

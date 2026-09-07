@@ -1,0 +1,27 @@
+{
+  "name": "@easytier/web-example",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:packages": "pnpm --filter @easytier/browser build && pnpm --filter @easytier/cloudflare build",
+    "build:browser": "tsc --noEmit -p browser/tsconfig.json && vite build browser",
+    "types:cloudflare": "wrangler types cloudflare/worker-configuration.d.ts --config cloudflare/wrangler.jsonc",
+    "check:cloudflare": "pnpm types:cloudflare && tsc --noEmit -p cloudflare/tsconfig.json && wrangler deploy --dry-run --config cloudflare/wrangler.jsonc",
+    "check": "pnpm build:browser && pnpm check:cloudflare",
+    "dev:browser": "vite browser --host 127.0.0.1",
+    "dev:cloudflare": "pnpm types:cloudflare && wrangler dev --local --config cloudflare/wrangler.jsonc",
+    "deploy:cloudflare": "pnpm types:cloudflare && wrangler deploy --config cloudflare/wrangler.jsonc"
+  },
+  "dependencies": {
+    "@easytier/browser": "workspace:0.1.0",
+    "@easytier/cloudflare": "workspace:0.1.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260724.1",
+    "@types/node": "22.18.1",
+    "typescript": "5.9.3",
+    "vite": "5.4.21",
+    "wrangler": "4.114.0"
+  }
+}

@@ -1,6 +1,7 @@
 name: EasyTier Core
 
 on:
+  workflow_dispatch:
   push:
     branches: [ "develop", "main", "releases/**" ]
   pull_request:
@@ -260,6 +261,47 @@ jobs:
           name: easytier-${{ matrix.ARTIFACT_NAME }}
           path: |
             ./artifacts/*
+
+      - name: Prepare SignPath test artifact
+        if: ${{ github.event_name == 'workflow_dispatch' && contains(matrix.TARGET, 'windows') }}
+        run: |
+          mkdir -p ./signpath-artifacts
+          cp \
+            ./artifacts/easytier-core.exe \
+            ./artifacts/easytier-cli.exe \
+            ./artifacts/easytier-web.exe \
+            ./artifacts/easytier-web-embed.exe \
+            ./signpath-artifacts/
+
+      - name: Upload unsigned SignPath test artifact
+        if: ${{ github.event_name == 'workflow_dispatch' && contains(matrix.TARGET, 'windows') }}
+        id: signpath-upload
+        uses: actions/upload-artifact@v5
+        with:
+          name: signpath-unsigned-${{ matrix.ARTIFACT_NAME }}
+          path: ./signpath-artifacts/*
+          if-no-files-found: error
+
+      - name: Submit SignPath test-signing request
+        if: ${{ github.event_name == 'workflow_dispatch' && contains(matrix.TARGET, 'windows') }}
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: 368cf38d-86d5-4bfe-a1fa-82a50dce7e9f
+          project-slug: EasyTier
+          signing-policy-slug: test-signing
+          artifact-configuration-slug: initial
+          github-artifact-id: ${{ steps.signpath-upload.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: ./signpath-signed-artifacts
+
+      - name: Upload signed SignPath test artifact
+        if: ${{ github.event_name == 'workflow_dispatch' && contains(matrix.TARGET, 'windows') }}
+        uses: actions/upload-artifact@v5
+        with:
+          name: signpath-signed-${{ matrix.ARTIFACT_NAME }}
+          path: ./signpath-signed-artifacts/*
+          if-no-files-found: error
 
   build_magisk:
     runs-on: ubuntu-latest

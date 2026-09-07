@@ -6,6 +6,7 @@ packages:
   - 'tauri-plugin-vpnservice'
 
 overrides:
+  happy-dom: 16.8.1
   minimatch: 10.2.4
 
 allowBuilds:

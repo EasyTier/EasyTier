@@ -5,9 +5,8 @@
 Accepted.
 
 This document is the implementation plan for restructuring the EasyTier data
-plane and exposing it through native FFI and the standalone
-`easytier-go-host` project. It describes a target architecture, not the current
-implementation.
+plane and exposing it through native FFI and the `easytier-go` module. It
+describes a target architecture, not the current implementation.
 
 The implementation scope is:
 
@@ -16,7 +15,7 @@ The implementation scope is:
   backend;
 - `easytier-contrib/easytier-ffi`;
 - the WASI guest ABI implemented by `easytier-core`;
-- `/data/project/easytier-go-host`;
+- `easytier-go`;
 - TCP, UDP, and smoltcp data-plane paths;
 - moving KCP route selection and source-connection ownership below the
   `DataPlaneRuntime` Interface without making KCP portable.
@@ -987,7 +986,7 @@ Repository: EasyTier.
 
 ### Phase 8: Go `coreabi` and engine
 
-Repository: `easytier-go-host`.
+Repository: EasyTier (`easytier-go`).
 
 - Add typed data-plane guest calls and wire codecs.
 - Extend the single driver with submit, cancel, close, and completion drain.
@@ -996,7 +995,7 @@ Repository: `easytier-go-host`.
 
 ### Phase 9: Go standard network Adapters and artifact
 
-Repository: `easytier-go-host`.
+Repository: EasyTier (`easytier-go`).
 
 - Add `Dial`, `Listen`, and `ListenPacket`.
 - Implement TCP, UDP, deadlines, cancellation, close, and error mapping.
@@ -1006,7 +1005,8 @@ Repository: `easytier-go-host`.
 - Run real two-instance TCP and UDP integration tests.
 
 Each phase ends in a reviewable commit. Commit messages use a 72-column text
-width. The complete task receives one final review across both repositories.
+width. The complete task receives one final review across both implementation
+areas.
 The operation-broker commit may receive an additional high-risk incremental
 review because it contains concurrency logic.
 

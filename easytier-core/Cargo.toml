@@ -146,6 +146,8 @@ proxy-smoltcp-stack = [
     "smoltcp/proto-ipv6",
     "smoltcp/async",
 ]
+wasm-host-tunnel = []
+wasm-host-tunnel-outbound = ["wasm-host-tunnel"]
 test-utils = []
 tracing-log = ["tracing/log"]
 zstd = ["dep:zstd"]

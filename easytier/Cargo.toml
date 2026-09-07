@@ -223,8 +223,13 @@ shellexpand = "3.1.1"
 
 # for fake tcp
 flume = { version = "0.12", optional = true }
-igd-next = { version = "0.17.0", features = ["aio_tokio"], optional = true }
+
+# for upnp
+http-body-util = { version = "0.1", optional = true }
+hyper = { version = "1", default-features = false, features = ["client", "http1"], optional = true }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio"], optional = true }
 natpmp = { version = "0.5.0", optional = true }
+xmltree = { version = "0.10", optional = true }
 
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "freebsd"))'.dependencies]
 machine-uid = "0.5.3"
@@ -399,7 +404,13 @@ faketcp = [
     "easytier-proto/faketcp",
 ]
 zstd = ["easytier-core/zstd", "easytier-proto/zstd"]
-upnp = ["dep:igd-next", "dep:natpmp"]
+upnp = [
+    "dep:http-body-util",
+    "dep:hyper",
+    "dep:hyper-util",
+    "dep:natpmp",
+    "dep:xmltree",
+]
 endpoint-discovery = [
     "dns-resolver",
     "easytier-core/endpoint-discovery",

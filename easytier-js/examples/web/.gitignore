@@ -1,0 +1,6 @@
+node_modules/
+browser/dist/
+cloudflare/.dev.vars*
+!cloudflare/.dev.vars.example
+cloudflare/.wrangler/
+cloudflare/worker-configuration.d.ts

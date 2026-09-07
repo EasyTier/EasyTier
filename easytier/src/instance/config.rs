@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use easytier_core::{
-    config::peers::HostRoutingPolicy, instance::CoreInstanceHostConfig,
+    config::peers::HostRoutingPolicy,
+    instance::{CoreConnectivityMode, CoreInstanceHostConfig},
     peers::credential_manager::CredentialStorage,
 };
 use strum::VariantArray as _;
@@ -58,6 +59,7 @@ pub(crate) fn runtime_core_host_config() -> CoreInstanceHostConfig {
         upnp_enabled: cfg!(feature = "upnp"),
         tcp_hole_punching_enabled: cfg!(feature = "tcp-hole-punch"),
         ignore_unsupported_config: false,
+        connectivity: CoreConnectivityMode::Full,
         easytier_version: EASYTIER_VERSION.to_owned(),
         endpoint_protocols: IpScheme::VARIANTS.iter().map(ToString::to_string).collect(),
     }

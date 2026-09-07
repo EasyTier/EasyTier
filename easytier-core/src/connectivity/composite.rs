@@ -103,6 +103,17 @@ impl InterfaceAddrCache {
 /// Mechanical connector operations supplied by one process-wide runtime.
 #[async_trait]
 pub trait ConnectorRuntime: VirtualTcpSocketFactory + Send + Sync + 'static {
+    fn supports_external_tunnel(&self, _scheme: &str) -> bool {
+        false
+    }
+
+    async fn connect_external_tunnel(
+        &self,
+        _url: &Url,
+    ) -> anyhow::Result<Option<Box<dyn crate::tunnel::Tunnel>>> {
+        Ok(None)
+    }
+
     async fn connect_byte_stream(
         &self,
         url: &Url,
@@ -207,6 +218,17 @@ where
     S: ConnectorRuntime + VirtualUdpSocketFactory,
     E: ConnectorEnvironment,
 {
+    fn supports_external_tunnel(&self, scheme: &str) -> bool {
+        self.sockets.supports_external_tunnel(scheme)
+    }
+
+    async fn connect_external_tunnel(
+        &self,
+        url: &Url,
+    ) -> anyhow::Result<Option<Box<dyn crate::tunnel::Tunnel>>> {
+        self.sockets.connect_external_tunnel(url).await
+    }
+
     async fn local_addr_for_remote(
         &self,
         remote_addr: SocketAddr,
