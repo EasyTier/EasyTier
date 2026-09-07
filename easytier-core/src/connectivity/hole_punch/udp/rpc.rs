@@ -26,9 +26,9 @@ use crate::{
     },
 };
 
-const CONE_RPC_TIMEOUT_MS: i32 = 4000;
-const SYMMETRIC_RPC_TIMEOUT_MS: i32 = 4000;
-const BOTH_EASY_SYMMETRIC_RPC_TIMEOUT_MS: i32 = 2000;
+const CONE_RPC_TIMEOUT_MS: i32 = 15000;
+const SYMMETRIC_RPC_TIMEOUT_MS: i32 = 15000;
+const BOTH_EASY_SYMMETRIC_RPC_TIMEOUT_MS: i32 = 15000;
 
 fn cone_controller() -> BaseController {
     BaseController {
