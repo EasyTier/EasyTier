@@ -166,10 +166,10 @@ function syncNormalizedNetwork(network: NetworkConfig | undefined): void {
 
 watch(() => curNetwork.value, syncNormalizedNetwork, { immediate: true, deep: false })
 
-const dnsTomlInput = computed({
-  get: () => curNetwork.value.dns_toml ?? '',
+const dnsInput = computed({
+  get: () => curNetwork.value.dns ?? '',
   set: (value: string) => {
-    curNetwork.value.dns_toml = value.trim().length > 0 ? value : undefined
+    curNetwork.value.dns = value.trim().length > 0 ? value : undefined
   },
 })
 
@@ -317,8 +317,8 @@ function removeVpnPortalClient(index: number) {
             <div class="flex flex-col gap-y-2">
 
               <div class="flex flex-col gap-2">
-                <label for="dns_toml">{{ t('dns_config') }}</label>
-                <Textarea id="dns_toml" v-model="dnsTomlInput" :rows="8" class="w-full font-mono"
+                <label for="dns">{{ t('dns_config') }}</label>
+                <Textarea id="dns" v-model="dnsInput" :rows="8" class="w-full font-mono"
                   aria-describedby="dns_config_help" :placeholder="t('dns_config_placeholder')" />
                 <small id="dns_config_help">{{ t('dns_config_help') }}</small>
               </div>

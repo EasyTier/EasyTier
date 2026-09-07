@@ -129,8 +129,8 @@ impl NetworkConfigExt for NetworkConfig {
     #[allow(deprecated)]
     fn gen_config(&self) -> Result<TomlConfigLoader, anyhow::Error> {
         let cfg = TomlConfigLoader::default();
-        if let Some(dns_toml) = &self.dns_toml {
-            let dns = toml::from_str(dns_toml).context("invalid DNS TOML table")?;
+        if let Some(dns) = &self.dns {
+            let dns = toml::from_str(dns).context("invalid DNS configuration")?;
             cfg.set_dns_config(Some(dns));
         }
         cfg.set_id(
@@ -679,7 +679,7 @@ impl NetworkConfigExt for NetworkConfig {
         result.prefer_peer_relay = Some(flags.prefer_peer_relay);
         result.enable_udp_broadcast_relay = Some(flags.enable_udp_broadcast_relay);
         result.disable_sym_hole_punching = Some(flags.disable_sym_hole_punching);
-        result.dns_toml = config
+        result.dns = config
             .get_dns_config()
             .map(|table| toml::to_string(&table).expect("a DNS TOML table serializes to TOML"));
         result.mtu = Some(flags.mtu as i32);
@@ -722,7 +722,7 @@ mod tests {
     #[test]
     fn dns_policy_survives_both_management_projections() {
         let input = NetworkConfig {
-            dns_toml: Some("domain = 'mesh.example.'\n[[zone]]\norigin = 'svc.mesh.example.'\nrecords = ['@ IN A 10.0.0.9']\n[zone.export]\ndisabled = false\n".into()),
+            dns: Some("domain = 'mesh.example.'\n[[zone]]\norigin = 'svc.mesh.example.'\nrecords = ['@ IN A 10.0.0.9']\n[zone.export]\ndisabled = false\n".into()),
             ..standalone_config()
         };
         let config = input.gen_config().unwrap();
@@ -751,7 +751,7 @@ mod tests {
         );
         for disabled in [false, true] {
             let config = NetworkConfig {
-                dns_toml: Some(format!("disabled = {disabled}\ndomain = 'mesh.example.'\n")),
+                dns: Some(format!("disabled = {disabled}\ndomain = 'mesh.example.'\n")),
                 ..standalone_config()
             }
             .gen_config()
@@ -781,9 +781,36 @@ mod tests {
     }
 
     #[test]
+    fn deprecated_dns_switch_does_not_override_dns_configuration() {
+        for enable_magic_dns in [false, true] {
+            let implicit = NetworkConfig {
+                enable_magic_dns: Some(enable_magic_dns),
+                ..standalone_config()
+            };
+            assert_eq!(implicit.gen_config().unwrap().get_dns_config(), None);
+
+            let explicit = NetworkConfig {
+                dns: Some(format!("disabled = {enable_magic_dns}\n")),
+                ..implicit
+            };
+            let config = explicit.gen_config().unwrap();
+            assert_eq!(
+                config.get_dns_config().unwrap()["disabled"].as_bool(),
+                Some(enable_magic_dns)
+            );
+            assert_eq!(
+                NetworkConfig::new_from_config(&config)
+                    .unwrap()
+                    .enable_magic_dns,
+                None
+            );
+        }
+    }
+
+    #[test]
     fn dns_api_rejects_invalid_toml() {
         let invalid = NetworkConfig {
-            dns_toml: Some("domain = [".into()),
+            dns: Some("domain = [".into()),
             ..standalone_config()
         };
         assert!(invalid.gen_config().is_err());

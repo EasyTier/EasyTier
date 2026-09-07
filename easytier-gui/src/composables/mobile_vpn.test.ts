@@ -64,7 +64,7 @@ function setConfig(instanceId: string, noTun = false) {
   mocks.configs.set(instanceId, {
     no_tun: noTun,
     dhcp: false,
-    dns_toml: 'disabled = true',
+    dns: 'disabled = true',
     routes: [],
   })
 }
@@ -112,14 +112,14 @@ beforeEach(() => {
 
 describe('mobile VPN reconciliation ownership', () => {
   it.each([
-    { dnsToml: 'disabled = true', servers: [], dns: undefined, routes: [] },
-    { dnsToml: undefined, servers: ['100.100.100.101'], dns: '100.100.100.101', routes: ['100.100.100.101/32'] },
-    { dnsToml: 'addresses = ["10.7.0.53"]', servers: ['10.7.0.53', '10.7.0.54'], dns: '10.7.0.53', routes: ['10.7.0.53/32'] },
-    { dnsToml: 'addresses = ["fd00::53"]', servers: ['fd00::53'], dns: 'fd00::53', routes: ['fd00::53/128'] },
-  ])('uses native DNS addresses for $dnsToml', async ({ dnsToml, servers, dns, routes }) => {
+    { dnsInput: 'disabled = true', servers: [], dns: undefined, routes: [] },
+    { dnsInput: undefined, servers: ['100.100.100.101'], dns: '100.100.100.101', routes: ['100.100.100.101/32'] },
+    { dnsInput: 'addresses = ["10.7.0.53"]', servers: ['10.7.0.53', '10.7.0.54'], dns: '10.7.0.53', routes: ['10.7.0.53/32'] },
+    { dnsInput: 'addresses = ["fd00::53"]', servers: ['fd00::53'], dns: 'fd00::53', routes: ['fd00::53/128'] },
+  ])('uses native DNS addresses for $dnsInput', async ({ dnsInput, servers, dns, routes }) => {
     setConfig('A')
     const config = mocks.configs.get('A')!
-    config.dns_toml = dnsToml
+    config.dns = dnsInput
     mocks.getDnsServers.mockResolvedValue(servers)
     setReady('A', '10.0.0.1')
     const vpn = await loadVpnModule()

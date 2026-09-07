@@ -4640,31 +4640,6 @@ pub async fn relay_peer_e2e_encryption(#[values("tcp", "udp")] proto: &str) {
     )
     .await;
 
-    // Verify inst1 sees inst3 via inst2 (non-direct path)
-    let next_hop_to_inst3 = insts[0]
-        .get_core_instance()
-        .route_snapshots()
-        .await
-        .into_iter()
-        .find(|route| route.peer_id == inst3_peer_id)
-        .map(|route| route.next_hop_peer_id);
-    println!("Next hop from inst1 to inst3: {:?}", next_hop_to_inst3);
-    assert_eq!(
-        next_hop_to_inst3,
-        Some(inst2_peer_id),
-        "inst1 should reach inst3 via inst2 (relay)"
-    );
-
-    // Verify inst1 has no direct connection to inst3
-    assert!(
-        !insts[0]
-            .get_core_instance()
-            .connected_peers()
-            .await
-            .contains(&inst3_peer_id),
-        "inst1 should NOT have direct connection to inst3"
-    );
-
     // Check if noise_static_pubkey is available for relay handshake
     let route_has_static_key = insts[0]
         .get_core_instance()
@@ -4687,12 +4662,38 @@ pub async fn relay_peer_e2e_encryption(#[values("tcp", "udp")] proto: &str) {
     )
     .await;
 
-    // Test basic connectivity through relay
+    // Background RPCs can start a relay handshake before the reverse route is
+    // available. Route convergence does not complete that pending handshake;
+    // allow its timeout/retry before requiring the encrypted path to be ready.
     println!("Starting ping test from net_a to 10.144.144.3...");
+    wait_for_condition(
+        || async { ping_test("net_a", "10.144.144.3", None).await },
+        Duration::from_secs(10),
+    )
+    .await;
 
+    // Check the topology after readiness so a direct connection established
+    // during the wait cannot make this relay test pass accidentally.
+    let next_hop_to_inst3 = insts[0]
+        .get_core_instance()
+        .route_snapshots()
+        .await
+        .into_iter()
+        .find(|route| route.peer_id == inst3_peer_id)
+        .map(|route| route.next_hop_peer_id);
+    println!("Next hop from inst1 to inst3: {:?}", next_hop_to_inst3);
+    assert_eq!(
+        next_hop_to_inst3,
+        Some(inst2_peer_id),
+        "inst1 should reach inst3 via inst2 (relay)"
+    );
     assert!(
-        ping_test("net_a", "10.144.144.3", None).await,
-        "Ping from net_a to inst3 should succeed"
+        !insts[0]
+            .get_core_instance()
+            .connected_peers()
+            .await
+            .contains(&inst3_peer_id),
+        "inst1 should NOT have direct connection to inst3"
     );
 
     // Verify relay sessions are established
@@ -4706,6 +4707,14 @@ pub async fn relay_peer_e2e_encryption(#[values("tcp", "udp")] proto: &str) {
     println!(
         "Relay states after ping: inst1->inst3: {}, inst3->inst1: {}",
         relay_1.has_state, relay_3.has_state
+    );
+    assert!(
+        relay_1.has_session,
+        "inst1 should have a session with inst3"
+    );
+    assert!(
+        relay_3.has_session,
+        "inst3 should have a session with inst1"
     );
 
     // Test bidirectional connectivity

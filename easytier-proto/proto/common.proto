@@ -5,9 +5,6 @@ import "error.proto";
 package common;
 
 message FlagsInConfig {
-  reserved 22, 31;
-  reserved "accept_dns", "tld_dns_zone";
-
   string default_protocol = 1;
   string dev_name = 2;
   bool enable_encryption = 3;
@@ -34,6 +31,9 @@ message FlagsInConfig {
   // disable relay local network kcp packets
   bool disable_relay_kcp = 20;
   bool proxy_forward_by_system = 21;
+
+  // Ignored. Use the dns configuration instead.
+  bool accept_dns = 22 [deprecated = true];
 
   // enable private mode
   bool private_mode = 23;
@@ -64,6 +64,9 @@ message FlagsInConfig {
 
   // disable symmetric nat hole punching, treat symmetric as cone when enabled
   bool disable_sym_hole_punching = 30;
+
+  // Ignored. Use dns.domain instead.
+  string tld_dns_zone = 31 [deprecated = true];
 
   bool p2p_only = 32;
 

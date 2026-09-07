@@ -59,11 +59,12 @@ const BOOLEAN_CONFIG_FIELDS = [
   'disable_tcp_hole_punching',
 ]
 
-const LEGACY_VPN_PORTAL_FIELDS = [
+const LEGACY_CONFIG_FIELDS = [
   'enable_vpn_portal',
   'vpn_portal_listen_port',
   'vpn_portal_client_network_addr',
   'vpn_portal_client_network_len',
+  'enable_magic_dns',
 ]
 
 function readGeneratedNetworkConfigFields() {
@@ -162,7 +163,7 @@ function allFieldFixture() {
     disable_udp_hole_punching: true,
     mtu: 1280,
     mapped_listeners: ['tcp://127.0.0.1:13010'],
-    dns_toml: 'domain = "mesh.example."\ndisabled = false\n',
+    dns: 'domain = "mesh.example."\ndisabled = false\n',
     enable_private_mode: true,
     enable_quic_proxy: true,
     disable_quic_input: true,
@@ -250,7 +251,7 @@ function allFieldFixture() {
 
 function assertFixtureCoversGeneratedFields() {
   const generatedFields = readGeneratedNetworkConfigFields()
-    .filter((field) => !LEGACY_VPN_PORTAL_FIELDS.includes(field))
+    .filter((field) => !LEGACY_CONFIG_FIELDS.includes(field))
   const fixtureFields = new Set(Object.keys(allFieldFixture()))
   const missing = generatedFields.filter((field) => !fixtureFields.has(field))
 
@@ -271,7 +272,7 @@ function assertFullFieldRoundTrip() {
   expectNoCamelCaseKeys(backend)
 
   for (const field of readGeneratedNetworkConfigFields()
-    .filter((field) => !LEGACY_VPN_PORTAL_FIELDS.includes(field))) {
+    .filter((field) => !LEGACY_CONFIG_FIELDS.includes(field))) {
     assert.ok(field in backend, `backend JSON should include fixture field ${field}`)
   }
 
@@ -347,19 +348,21 @@ function assertBooleanFieldValuesPreserved() {
 }
 
 function assertDnsConfigurationPreserved() {
-  assert.equal(DEFAULT_NETWORK_CONFIG().dns_toml, undefined)
+  assert.equal(DEFAULT_NETWORK_CONFIG().dns, undefined)
+  assert.equal(DEFAULT_NETWORK_CONFIG().enable_magic_dns, undefined)
 
-  for (const dnsToml of [
+  for (const dns of [
     undefined,
     'disabled = true',
     'domain = "mesh.example."\n[[zone]]\norigin = "internal.example."\n',
   ]) {
     const normalized = normalizeNetworkConfig({
       ...DEFAULT_NETWORK_CONFIG(),
-      dns_toml: dnsToml,
+      dns,
     })
-    assert.equal(normalized.dns_toml, dnsToml)
-    assert.equal(toBackendNetworkConfig(normalized).dns_toml, dnsToml)
+    assert.equal(normalized.dns, dns)
+    assert.equal(toBackendNetworkConfig(normalized).dns, dns)
+    assert.equal(toBackendNetworkConfig(normalized).enable_magic_dns, undefined)
   }
 }
 

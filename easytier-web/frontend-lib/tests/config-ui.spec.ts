@@ -423,20 +423,20 @@ describe('Config.vue network config projection', () => {
     const { curNetwork, wrapper } = mountConfig()
     await nextTick()
 
-    expect(input(wrapper, '#dns_toml').value).toBe('')
-    expect(curNetwork.dns_toml).toBeUndefined()
+    expect(input(wrapper, '#dns').value).toBe('')
+    expect(curNetwork.dns).toBeUndefined()
 
-    const dnsToml = 'domain = "mesh.example."\n[[zone]]\norigin = "internal.example."\n'
-    await setInput(wrapper, '#dns_toml', dnsToml)
-    expect(curNetwork.dns_toml).toBe(dnsToml)
-    expect(toBackendNetworkConfig(curNetwork).dns_toml).toBe(dnsToml)
+    const dns = 'domain = "mesh.example."\n[[zone]]\norigin = "internal.example."\n'
+    await setInput(wrapper, '#dns', dns)
+    expect(curNetwork.dns).toBe(dns)
+    expect(toBackendNetworkConfig(curNetwork).dns).toBe(dns)
 
-    await setInput(wrapper, '#dns_toml', 'disabled = true')
-    expect(toBackendNetworkConfig(curNetwork).dns_toml).toBe('disabled = true')
+    await setInput(wrapper, '#dns', 'disabled = true')
+    expect(toBackendNetworkConfig(curNetwork).dns).toBe('disabled = true')
 
-    await setInput(wrapper, '#dns_toml', '  ')
-    expect(curNetwork.dns_toml).toBeUndefined()
-    expect(toBackendNetworkConfig(curNetwork).dns_toml).toBeUndefined()
+    await setInput(wrapper, '#dns', '  ')
+    expect(curNetwork.dns).toBeUndefined()
+    expect(toBackendNetworkConfig(curNetwork).dns).toBeUndefined()
   })
 
   it('projects config values into the visible form controls', async () => {

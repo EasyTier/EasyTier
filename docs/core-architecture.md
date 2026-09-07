@@ -292,7 +292,7 @@ DNS policy, zone compilation, and TCP/UDP serving belong to the native DNS
 module. Core carries published DNS exports and their routing digests through
 `CoreDnsPeerAccess`; it does not maintain a second DNS record store or packet
 query resolver. The native `[dns]` schema is carried intact by the management
-API's `dns_toml` field.
+API's `dns` field.
 
 Optional gateway capabilities are selected by cohesive Modules. Disabled
 implementations retain stable lifecycle calls and report unsupported

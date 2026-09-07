@@ -156,7 +156,7 @@ pub fn network_config_from_toml(config: &TomlConfig) -> NetworkConfig {
     result.prefer_peer_relay = Some(flags.prefer_peer_relay);
     result.enable_udp_broadcast_relay = Some(flags.enable_udp_broadcast_relay);
     result.disable_sym_hole_punching = Some(flags.disable_sym_hole_punching);
-    result.dns_toml = config
+    result.dns = config
         .get_dns_config()
         .map(|table| toml::to_string(&table).expect("a DNS TOML table serializes to TOML"));
     result.mtu = Some(flags.mtu as i32);

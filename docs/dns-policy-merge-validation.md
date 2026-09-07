@@ -15,7 +15,7 @@ Core 只存储可无损往返的原始 `[dns]` TOML table，不依赖 Hickory。
 
 配置文件加载、实例构造和管理入口增加 native 校验。管理器在保存配置、替换正在运行的实例之前调用校验，避免把无效 zone 留到异步运行阶段才报错。
 
-`NetworkConfig.dns_toml` 保存完整 DNS table，解决管理 API 逐字段转换丢失 policy/zone 的问题。按后续要求，配置和 API 完全以新版 `[dns]` 为准：删除 `enable_magic_dns`、`accept_dns`、`tld_dns_zone` 字段及其迁移逻辑，旧 protobuf 编号和名称仅标记 reserved，防止将来误复用。`project_dns_config` 随双写逻辑一起删除，两处管理转换直接序列化 DNS table。
+`NetworkConfig.dns` 保存完整 DNS 配置，解决管理 API 逐字段转换丢失 policy/zone 的问题；当前编码为 `[dns]` TOML table 内容，但字段命名不绑定编码格式。配置和 API 完全以新版 `[dns]` 为准：不再用 `enable_magic_dns`、`accept_dns`、`tld_dns_zone` 控制 DNS，也不将它们迁移到新版配置。这三个旧 protobuf 字段按仓库惯例保留原类型及编号并标记 `[deprecated = true]`，不恢复旧 DNS 行为；旧 flags 仍可作为无效数据经通用配置序列化保留。`project_dns_config` 随双写逻辑一起删除，两处管理转换直接序列化 DNS table。
 
 GUI 改为编辑 DNS TOML 内容（不带外层 `[dns]`），留空使用新版默认，关闭使用 `disabled = true`。移动 VPN 通过 native 解析器获取 Host 支持的 DNS 地址，不再读取旧开关或硬编码地址。OH 桥接也改为携带 `dnsServers` 列表及对应路由，外部 OH 客户端需要同步该接口。
 
@@ -94,6 +94,26 @@ DNS 生命周期独立于 TUN，可以在无 TUN 构建中使用显式监听地�
 - 网络测试在独立 network/mount/PID namespace 内串行执行；测试自己的 TUN、bridge 和 netns 不影响主机网络。本轮未执行整个 workspace 测试套件。
 - `cargo check -p easytier --no-default-features --features magic-dns --locked --offline` 通过，保留无 TUN 的生产构建能力；这一精简 feature 组合仍有 6 个 unused/dead-code warnings，不属于上述 full 配置零警告结论。
 - 变更的 Rust 文件经过格式化；`git diff --check` 通过，Cargo.lock 和 pnpm 锁文件未修改。
+
+## 命名、协议弃用和加密测试修正（2026-09-07）
+
+管理 API 字段统一命名为 `dns`（protobuf 编号仍为 73），Rust 双向配置转换、Web/GUI 输入、移动 VPN 测试及生成类型同步更新，不保留旧名称别名。字段名称与承载格式解耦，当前仍使用原有 TOML 编解码。
+
+检查本地 `main` 的全部 `.proto` 文件后确认：已有弃用字段使用 `[deprecated = true]`，没有 `reserved` 声明。此前按“彻底删除字段”选择 reserved，是为了防止旧编号和名称被复用；它与保留字段但标记弃用的语义不同，参见 [Protobuf 字段删除规则](https://protobuf.dev/programming-guides/proto3/#deleting-fields)。现在恢复三个旧 DNS 字段的原类型、编号并标记 deprecated，不恢复运行逻辑或配置迁移。新增管理 API 测试验证旧开关不会覆盖新版 DNS 配置，也不会由出向投影重新生成。
+
+`relay_peer_e2e_encryption` 的 TCP/UDP 两个用例均已复现失败。诊断中，初次 ping 前后双方 `has_session` 都为 false；握手处理出现 `route peer info not found` 和双向握手竞争错误。新版 DNS 默认启用，会在路由逐步同步时提前触发后台 RPC：本端已有目的路由不代表对端已有反向路由，过早的握手可能等待 5 秒超时重试。原测试只发一个 ping、等待 1 秒，早于这个异步就绪过程完成；加密算法和 relay 实现本身与 main 一致。
+
+首次探测改为最多 10 秒的就绪等待，之后检查下一跳仍为中继、没有直连，并新增双方 `has_session` 断言，再执行原来的单包双向 ping。DNS 保持启用，不增加固定 sleep，也不修改加密/握手控制流程。生产代码仅为此前静默忽略的握手处理错误增加 debug 日志；临时诊断输出已撤回。
+
+验证结果（构建位置和资源设置同上）：
+
+- TCP/UDP 两个指定测试各连续 **5 轮通过**，共 10 次执行。
+- 全部 DNS 配置/peer manager 测试、两个三节点 DNS 导出测试及相邻 UDP 加密指标测试，**24/24 通过**；网络测试均在隔离 namespace 中串行执行。
+- `cargo test -p easytier-core --lib --features web-client --locked --offline config:: -- --test-threads=1`：**71/71 通过**，含旧开关无效性及 protobuf flags 完整覆盖测试。这一单独 feature 组合仍有既有 unused/dead-code warnings。
+- `cargo clippy --workspace --all-targets --features full --locked --offline -- -D warnings`：通过。
+- 前端 proto codegen、frontend-lib 类型检查和构建、GUI 类型检查通过；Config/RemoteManagement 测试 **10/10**，mobile VPN 测试 **13/13**，独立 DNS 往返检查通过。
+- 完整 `test-network-config.mjs` 仍因既有全字段 fixture 缺少 `prefer_peer_relay` 失败；本轮未修改该无关 fixture，不声称整个前端测试套件通过。
+- Rust 变更已格式化，`git diff --check` 通过；Cargo.lock、pnpm 锁文件及两份历史未跟踪报告未修改。
 
 ## 当前边界和未验证事项
 

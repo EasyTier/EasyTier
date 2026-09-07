@@ -3153,7 +3153,14 @@ impl PeerPacketRouter {
             if packet_type == PacketType::RelayHandshake as u8
                 || packet_type == PacketType::RelayHandshakeAck as u8
             {
-                let _ = self.relay_peer_map.handle_handshake_packet(ret).await;
+                if let Err(error) = self.relay_peer_map.handle_handshake_packet(ret).await {
+                    tracing::debug!(
+                        %error,
+                        ?from_peer_id,
+                        ?to_peer_id,
+                        "relay handshake handling failed"
+                    );
+                }
                 return;
             }
             if !self.secure_mode_enabled {
