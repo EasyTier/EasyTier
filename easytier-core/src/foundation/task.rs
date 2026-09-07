@@ -1,6 +1,6 @@
 use std::{
     result::Result,
-    sync::{Arc, Mutex, atomic::Ordering},
+    sync::{Arc, Mutex, Weak, atomic::Ordering},
     time::Duration,
 };
 
@@ -15,11 +15,10 @@ use tokio::{
 };
 use tokio_util::task::AbortOnDropHandle;
 
-pub(crate) async fn reap_joinset_background<T>(tasks: Arc<Mutex<JoinSet<T>>>, origin: &'static str)
+pub(crate) async fn reap_joinset_background<T>(tasks: Weak<Mutex<JoinSet<T>>>, origin: &'static str)
 where
     T: Send + 'static,
 {
-    let tasks = Arc::downgrade(&tasks);
     loop {
         crate::foundation::time::sleep(Duration::from_secs(1)).await;
         let Some(tasks) = tasks.upgrade() else {
@@ -280,6 +279,20 @@ mod tests {
                 Ok(())
             })
         }
+    }
+
+    #[tokio::test]
+    async fn joinset_reaper_does_not_keep_task_set_alive() {
+        let tasks = Arc::new(Mutex::new(JoinSet::new()));
+        let weak_tasks = Arc::downgrade(&tasks);
+        tasks
+            .lock()
+            .unwrap()
+            .spawn(reap_joinset_background(weak_tasks.clone(), "test"));
+
+        drop(tasks);
+
+        assert!(weak_tasks.upgrade().is_none());
     }
 
     #[tokio::test]

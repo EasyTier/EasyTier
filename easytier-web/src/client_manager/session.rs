@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     fmt::Debug,
     str::FromStr as _,
     sync::Arc,
@@ -42,6 +43,14 @@ enum SessionAuthState {
     Invalid,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ManagedConfigRevisionDelta {
+    pub expected_revision: String,
+    pub target_revision: String,
+    pub upsert_instance_ids: HashSet<String>,
+    pub delete_instance_ids: HashSet<String>,
+}
+
 impl SessionAuthState {
     fn is_authorized(self) -> bool {
         matches!(self, Self::Authorized)
@@ -58,6 +67,8 @@ pub struct SessionData {
     storage_token: Option<StorageToken>,
     binding_version: Option<u64>,
     applied_config_revision: Option<String>,
+    pending_managed_config_delta: Option<ManagedConfigRevisionDelta>,
+    runtime_config_epoch: u64,
     notifier: broadcast::Sender<HeartbeatRequest>,
     req: Option<HeartbeatRequest>,
     location: Option<Location>,
@@ -67,6 +78,7 @@ pub struct SessionData {
     webhook_connected_binding_version: Option<u64>,
     webhook_validation_dirty: bool,
     webhook_validation_notify: Arc<Notify>,
+    session_epoch: u64,
 }
 
 impl SessionData {
@@ -87,6 +99,8 @@ impl SessionData {
             storage_token: None,
             binding_version: None,
             applied_config_revision: None,
+            pending_managed_config_delta: None,
+            runtime_config_epoch: 0,
             notifier: tx,
             req: None,
             location,
@@ -96,6 +110,7 @@ impl SessionData {
             webhook_connected_binding_version: None,
             webhook_validation_dirty: false,
             webhook_validation_notify: Arc::new(Notify::new()),
+            session_epoch: 0,
         }
     }
 
@@ -252,7 +267,7 @@ impl Drop for SessionData {
         if let Ok(storage) = Storage::try_from(self.storage.clone())
             && let Some(token) = self.storage_token.as_ref()
         {
-            storage.remove_client(token);
+            storage.remove_session_client(token, self.session_epoch);
 
             // Notify the webhook receiver when a node disconnects.
             if self.webhook_config.is_enabled()
@@ -426,7 +441,12 @@ impl SessionRpcService {
             let authorized = data.auth_state.is_authorized();
             if let Some(storage_token) = data.storage_token.clone() {
                 let report_time = Self::heartbeat_report_timestamp(&runtime_req);
-                storage.update_client(storage_token, report_time, authorized);
+                storage.update_session_client(
+                    storage_token,
+                    report_time,
+                    authorized,
+                    data.session_epoch,
+                );
             }
             let runtime_notify = (authorized && data.storage_token.is_some())
                 .then(|| (data.notifier.clone(), runtime_req));
@@ -498,7 +518,7 @@ impl SessionRpcService {
             }
         };
 
-        let (storage_token, notifier, runtime_req) = {
+        let (storage_token, notifier, runtime_req, session_epoch) = {
             let mut data = self.data.write().await;
             let is_new_storage_token = data.storage_token.is_none();
             let runtime_req = Self::store_latest_heartbeat_req(&mut data, req.clone());
@@ -519,11 +539,16 @@ impl SessionRpcService {
                 tracing::error!("Heartbeat succeeded before session token was initialized");
                 return Ok(HeartbeatResponse {});
             };
-            (storage_token, data.notifier.clone(), runtime_req)
+            (
+                storage_token,
+                data.notifier.clone(),
+                runtime_req,
+                data.session_epoch,
+            )
         };
 
         let report_time = Self::heartbeat_report_timestamp(&runtime_req);
-        storage.update_client(storage_token, report_time, true);
+        storage.update_session_client(storage_token, report_time, true, session_epoch);
         let _ = notifier.send(runtime_req);
         Ok(HeartbeatResponse {})
     }
@@ -575,6 +600,7 @@ pub struct Session {
 
     webhook_validation_task: Option<AbortOnDropHandle<()>>,
     config_reconcile_task: Option<AbortOnDropHandle<()>>,
+    route_ready: Arc<Notify>,
 }
 
 impl Debug for Session {
@@ -594,9 +620,11 @@ impl Session {
         heartbeat_min_response_delay: Duration,
         feature_flags: Arc<FeatureFlags>,
         webhook_config: SharedWebhookConfig,
+        session_epoch: u64,
     ) -> Self {
-        let session_data =
+        let mut session_data =
             SessionData::new(storage, client_url, location, feature_flags, webhook_config);
+        session_data.session_epoch = session_epoch;
         let data = Arc::new(RwLock::new(session_data));
 
         let rpc_mgr =
@@ -615,6 +643,7 @@ impl Session {
             data,
             webhook_validation_task: None,
             config_reconcile_task: None,
+            route_ready: Arc::new(Notify::new()),
         }
     }
 
@@ -623,10 +652,13 @@ impl Session {
 
         let data = self.data.read().await;
         if data.webhook_config.is_enabled() {
+            let route_ready = self.route_ready.clone();
+            let session_data = Arc::downgrade(&self.data);
             self.webhook_validation_task
-                .replace(AbortOnDropHandle::new(tokio::spawn(
-                    webhook_validation::run_worker(Arc::downgrade(&self.data)),
-                )));
+                .replace(AbortOnDropHandle::new(tokio::spawn(async move {
+                    route_ready.notified().await;
+                    webhook_validation::run_worker(session_data).await;
+                })));
         }
         self.config_reconcile_task
             .replace(AbortOnDropHandle::new(tokio::spawn(
@@ -638,6 +670,10 @@ impl Session {
                     self.scoped_config_client(),
                 ),
             )));
+    }
+
+    pub fn mark_route_ready(&self) {
+        self.route_ready.notify_one();
     }
 
     pub fn is_running(&self) -> bool {
@@ -675,14 +711,14 @@ impl Session {
         self.scoped_client::<ConfigRpcClientFactory<BaseController>>()
     }
 
-    pub async fn notify_config_revision_changed(
+    pub(super) async fn notify_full_config_revision_changed(
         &self,
         user_id: i32,
         machine_id: uuid::Uuid,
         config_revision: String,
     ) {
         let notify = {
-            let data = self.data.read().await;
+            let mut data = self.data.write().await;
             if !data.auth_state.is_authorized() {
                 return;
             }
@@ -696,6 +732,84 @@ impl Session {
             if data.applied_config_revision.as_deref() == Some(config_revision.as_str()) {
                 return;
             }
+            data.pending_managed_config_delta = None;
+            data.req.clone().map(|req| (data.notifier.clone(), req))
+        };
+        if let Some((notifier, req)) = notify {
+            let _ = notifier.send(req);
+        }
+    }
+
+    pub(super) async fn notify_patch_config_revision_changed(
+        &self,
+        user_id: i32,
+        machine_id: uuid::Uuid,
+        delta: ManagedConfigRevisionDelta,
+    ) {
+        let notify = {
+            let mut data = self.data.write().await;
+            if !data.auth_state.is_authorized() {
+                return;
+            }
+            if !data
+                .storage_token
+                .as_ref()
+                .is_some_and(|token| token.user_id == user_id && token.machine_id == machine_id)
+            {
+                return;
+            }
+            if data.applied_config_revision.as_deref() == Some(delta.target_revision.as_str()) {
+                return;
+            }
+
+            // A Patch may drive a targeted runtime reconcile only when the
+            // connected Session has applied its exact base and no earlier
+            // Patch is still pending. Otherwise the normal Full reconcile is
+            // the safe convergence path.
+            data.pending_managed_config_delta = (data.applied_config_revision.as_deref()
+                == Some(delta.expected_revision.as_str())
+                && data.pending_managed_config_delta.is_none())
+            .then_some(delta);
+            data.req.clone().map(|req| (data.notifier.clone(), req))
+        };
+        if let Some((notifier, req)) = notify {
+            let _ = notifier.send(req);
+        }
+    }
+
+    pub(super) async fn invalidate_applied_config_revision(
+        &self,
+        user_id: i32,
+        machine_id: uuid::Uuid,
+    ) {
+        let notify = {
+            let mut data = self.data.write().await;
+            if !data
+                .storage_token
+                .as_ref()
+                .is_some_and(|token| token.user_id == user_id && token.machine_id == machine_id)
+            {
+                return;
+            }
+            data.applied_config_revision = None;
+            data.pending_managed_config_delta = None;
+            data.runtime_config_epoch = data.runtime_config_epoch.wrapping_add(1);
+            data.req.clone().map(|req| (data.notifier.clone(), req))
+        };
+        if let Some((notifier, req)) = notify {
+            let _ = notifier.send(req);
+        }
+    }
+
+    pub(crate) async fn invalidate_runtime_config_for_direct_mutation(&self) {
+        let notify = {
+            let mut data = self.data.write().await;
+            if data.storage_token.is_none() {
+                return;
+            }
+            data.applied_config_revision = None;
+            data.pending_managed_config_delta = None;
+            data.runtime_config_epoch = data.runtime_config_epoch.wrapping_add(1);
             data.req.clone().map(|req| (data.notifier.clone(), req))
         };
         if let Some((notifier, req)) = notify {
@@ -709,6 +823,11 @@ impl Session {
 
     pub async fn get_heartbeat_req(&self) -> Option<HeartbeatRequest> {
         self.data.read().await.req()
+    }
+
+    #[cfg(test)]
+    pub(super) async fn applied_config_revision(&self) -> Option<String> {
+        self.data.read().await.applied_config_revision.clone()
     }
 }
 
@@ -796,6 +915,8 @@ mod tests {
     struct ValidateWebhookTestState {
         received: Arc<Mutex<Option<oneshot::Sender<()>>>>,
         release: Arc<Notify>,
+        connected_received: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+        connected_release: Option<Arc<Notify>>,
     }
 
     async fn valid_validate_token_handler(
@@ -813,11 +934,25 @@ mod tests {
         }))
     }
 
+    async fn node_connected_handler(
+        State(state): State<ValidateWebhookTestState>,
+    ) -> Json<serde_json::Value> {
+        if let Some(sender) = state.connected_received.lock().await.take() {
+            let _ = sender.send(());
+        }
+        if let Some(release) = state.connected_release {
+            release.notified().await;
+        }
+
+        Json(json!({}))
+    }
+
     async fn test_webhook_config(
         state: ValidateWebhookTestState,
     ) -> (SharedWebhookConfig, tokio::task::JoinHandle<()>) {
         let app = Router::new()
             .route("/validate-token", post(valid_validate_token_handler))
+            .route("/webhook/node-connected", post(node_connected_handler))
             .with_state(state);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -907,10 +1042,14 @@ mod tests {
         let req = heartbeat_request("token", machine_id);
         let storage = Storage::new(crate::db::Db::memory_db().await);
         let (received_tx, received_rx) = oneshot::channel();
+        let (connected_tx, connected_rx) = oneshot::channel();
         let release = Arc::new(Notify::new());
+        let connected_release = Arc::new(Notify::new());
         let (webhook_config, server) = test_webhook_config(ValidateWebhookTestState {
             received: Arc::new(Mutex::new(Some(received_tx))),
             release: release.clone(),
+            connected_received: Arc::new(Mutex::new(Some(connected_tx))),
+            connected_release: Some(connected_release.clone()),
         })
         .await;
         let mut session = SessionData::new(
@@ -938,6 +1077,18 @@ mod tests {
         ));
         received_rx.await.unwrap();
         release.notify_waiters();
+        connected_rx.await.unwrap();
+        let user_id = storage
+            .db()
+            .get_user_id_by_token("token")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            storage.get_client_url_by_machine_id(user_id, &machine_id),
+            Some(url::Url::parse("http://127.0.0.1").unwrap())
+        );
+        connected_release.notify_waiters();
         validation.await.unwrap().unwrap();
         server.abort();
 
@@ -970,6 +1121,8 @@ mod tests {
         let (webhook_config, server) = test_webhook_config(ValidateWebhookTestState {
             received: Arc::new(Mutex::new(Some(received_tx))),
             release,
+            connected_received: Arc::new(Mutex::new(None)),
+            connected_release: None,
         })
         .await;
         let mut data = SessionData::new(

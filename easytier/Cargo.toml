@@ -87,6 +87,7 @@ bytes = "1.5.0"
 pin-project-lite = "0.2.13"
 
 atomic_refcell = "0.1.13"
+atomic-write-file = { version = "0.2.3", optional = true }
 
 quinn = { version = "0.11.8", optional = true, features = ["ring"] }
 quinn-proto = { version = "0.11.12", optional = true }
@@ -178,6 +179,8 @@ network-interface = "2.0.5"
 
 # for wireguard
 boringtun = { package = "boringtun-easytier", version = "0.6.1", optional = true }
+hkdf = { version = "0.12", optional = true }
+sha2 = { version = "0.10", optional = true }
 
 # for cli
 tabled = "0.16"
@@ -347,7 +350,7 @@ full = [
     "extended-services",
     "tcp-hole-punch",
 ]
-wireguard = ["vpn-portal", "dep:boringtun", "ring-crypto", "easytier-proto/wireguard"]
+wireguard = ["vpn-portal", "dep:boringtun", "dep:hkdf", "dep:sha2", "ring-crypto", "easytier-proto/wireguard"]
 quic = ["wrapped-transport", "easytier-core/proxy-packet", "dep:quinn", "dep:quinn-proto", "dep:seahash", "dep:rustls", "easytier-proto/quic"]
 kcp = ["wrapped-transport", "easytier-core/proxy-packet", "dep:kcp-sys"]
 mimalloc = ["dep:mimalloc"]
@@ -413,6 +416,7 @@ extended-services = [
     "proxy-cidr-monitor",
 ]
 management = [
+    "dep:atomic-write-file",
     "web-client",
     "logging",
     "easytier-core/management",

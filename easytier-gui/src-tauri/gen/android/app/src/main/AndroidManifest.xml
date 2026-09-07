@@ -4,6 +4,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
     <application
         android:icon="@mipmap/ic_launcher"
@@ -22,6 +23,16 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity-alias
+            android:name=".VpnTilePreferencesActivity"
+            android:targetActivity=".MainActivity"
+            android:exported="true"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE_PREFERENCES" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity-alias>
         <service
             android:name=".MainForegroundService"
             android:foregroundServiceType="dataSync"
@@ -46,6 +57,9 @@
             android:label="@string/main_activity_title"
             android:permission="android.permission.BIND_VPN_SERVICE"
             android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Maintains the user-initiated EasyTier VPN connection." />
             <intent-filter>
                 <action android:name="android.net.VpnService" />
             </intent-filter>

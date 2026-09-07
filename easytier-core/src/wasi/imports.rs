@@ -6,6 +6,8 @@
 
 pub(crate) const HOST_PENDING: i32 = -1;
 pub(crate) const HOST_WOULD_BLOCK: i32 = -5;
+#[cfg(feature = "wasm-host-tunnel")]
+pub(crate) const HOST_TUNNEL_CLOSED: i32 = -10;
 
 #[link(wasm_import_module = "easytier_host")]
 unsafe extern "C" {
@@ -187,6 +189,33 @@ unsafe extern "C" {
 
     /// Reports packet-sink write readiness; it never accepts a packet itself.
     pub(crate) fn take_packet_write_ready(operation: u64) -> i32;
+
+    #[cfg(feature = "wasm-host-tunnel")]
+    /// Starts receiving one complete host tunnel payload.
+    pub(crate) fn start_tunnel_receive(handle: u64, operation: u64, capacity: u32) -> i32;
+
+    #[cfg(feature = "wasm-host-tunnel")]
+    /// Probes or copies one payload, or returns the closed sentinel.
+    ///
+    /// A null destination with zero capacity returns the payload length without
+    /// consuming it. A second call copies and consumes the payload.
+    pub(crate) fn take_tunnel_receive(operation: u64, destination: u32, capacity: u32) -> i32;
+
+    #[cfg(feature = "wasm-host-tunnel")]
+    /// Starts sending one complete host tunnel payload.
+    pub(crate) fn start_tunnel_send(handle: u64, operation: u64, source: u32, length: u32) -> i32;
+
+    #[cfg(feature = "wasm-host-tunnel")]
+    /// Reports completion of one host tunnel send.
+    pub(crate) fn take_tunnel_send(operation: u64) -> i32;
+
+    #[cfg(feature = "wasm-host-tunnel-outbound")]
+    /// Starts opening one outbound host tunnel for the requested URL.
+    pub(crate) fn start_tunnel_connect(operation: u64, url: u32, url_len: u32) -> i32;
+
+    #[cfg(feature = "wasm-host-tunnel-outbound")]
+    /// Returns the connected tunnel handle, or a negative host status.
+    pub(crate) fn take_tunnel_connect(operation: u64) -> i64;
 
     /// Cancels a pending or completed-but-unread operation and releases host state.
     ///

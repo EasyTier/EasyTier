@@ -11,6 +11,7 @@ pub struct ServiceInstallOptions {
     pub program: PathBuf,
     pub args: Vec<OsString>,
     pub work_directory: PathBuf,
+    pub environment: Option<Vec<(String, String)>>,
     pub disable_autostart: bool,
     pub description: Option<String>,
     pub display_name: Option<String>,
@@ -92,7 +93,7 @@ impl Service {
             autostart: !options.disable_autostart,
             username: None,
             working_directory: Some(options.work_directory.clone()),
-            environment: None,
+            environment: options.environment.clone(),
             disable_restart_on_failure: options.disable_restart_on_failure,
         };
 

@@ -145,6 +145,15 @@ impl CoreRuntimeConfigStore {
     pub fn subscribe_service_runtime_changes(&self) -> tokio::sync::watch::Receiver<u64> {
         self.inner.service_changes.subscribe()
     }
+    #[cfg(test)]
+    pub(crate) fn peer_change_subscriber_count(&self) -> usize {
+        self.inner.peer_changes.receiver_count()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn service_change_subscriber_count(&self) -> usize {
+        self.inner.service_changes.receiver_count()
+    }
 }
 
 #[cfg(test)]

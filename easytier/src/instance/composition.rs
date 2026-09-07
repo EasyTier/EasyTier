@@ -3,7 +3,7 @@ use std::sync::Arc;
 #[cfg(feature = "wrapped-transport")]
 use easytier_core::gateway::proxy::wrapped_transport::WrappedTransportEngines;
 #[cfg(feature = "wireguard")]
-use easytier_core::gateway::vpn_portal::VpnPortalHost;
+use easytier_core::gateway::vpn_portal::PortalHost;
 #[cfg(test)]
 use easytier_core::host::packet::{HostPacket, PacketSink};
 #[cfg(feature = "web-client")]
@@ -255,13 +255,12 @@ fn configure_runtime_core_host_adapters(
     if host_config.vpn_portal_enabled {
         use crate::common::config::ConfigLoader as _;
 
-        adapters.vpn_portal = Some(crate::vpn_portal::wireguard::WireGuardPortalHost::new(
-            global_ctx.clone(),
-            global_ctx
-                .config
-                .get_vpn_portal_config()
-                .map(|config| config.wireguard_listen),
-        ) as Arc<dyn VpnPortalHost>);
+        if let Some(config) = global_ctx.config.get_vpn_portal_config() {
+            adapters.vpn_portal = Some(crate::vpn_portal::wireguard::WireGuardPortalHost::new(
+                global_ctx.clone(),
+                config,
+            ) as Arc<dyn PortalHost>);
+        }
     }
     adapters
 }

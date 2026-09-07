@@ -9,6 +9,7 @@
 //! - `parseConfig(config)`: validate TOML config text.
 //! - `runNetworkInstance(config)`: start a local network instance.
 //! - `retainNetworkInstance(instanceNames)`: retain named instances and stop the rest.
+//! - `deleteNetworkInstance(instanceName)`: stop exactly one named instance.
 //! - `listInstances()`: return running instance names and IDs as JSON.
 //! - `collectNetworkInfos()`: return running instance info as a JSON string.
 //! - `callJsonRpc(...)`: call an exposed EasyTier RPC service with JSON payload.
@@ -104,6 +105,23 @@ pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_retainNetworkInstance(
 ) -> jint {
     logger::init();
     network_api::retain_network_instance_jni(env, class, instance_names)
+}
+
+/// Stop exactly one named network instance without affecting other instances.
+///
+/// Java signature:
+/// `EasyTierJNI.deleteNetworkInstance(instanceName: String): Int`
+///
+/// An unknown name is a no-op. On failure this returns `-1` and throws
+/// `RuntimeException`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_deleteNetworkInstance(
+    env: JNIEnv,
+    class: JClass,
+    instance_name: JString,
+) -> jint {
+    logger::init();
+    network_api::delete_network_instance_jni(env, class, instance_name)
 }
 
 /// Collect running network instance information.

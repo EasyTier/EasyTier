@@ -1,0 +1,44 @@
+{
+  "name": "@easytier/runtime",
+  "version": "0.1.0",
+  "description": "Shared WebAssembly runtime for EasyTier web hosts",
+  "type": "module",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/EasyTier/EasyTier.git",
+    "directory": "easytier-js/runtime"
+  },
+  "homepage": "https://github.com/EasyTier/EasyTier",
+  "bugs": "https://github.com/EasyTier/EasyTier/issues",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./adapter": {
+      "types": "./dist/adapter.d.ts",
+      "import": "./dist/adapter.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "check": "tsc --noEmit && pnpm build",
+    "test": "vitest run",
+    "prepack": "pnpm check"
+  },
+  "devDependencies": {
+    "@types/node": "22.18.1",
+    "binaryen": "131.0.0",
+    "typescript": "5.9.3",
+    "vitest": "2.1.9"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

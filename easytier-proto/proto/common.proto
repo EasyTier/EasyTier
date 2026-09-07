@@ -84,6 +84,10 @@ message FlagsInConfig {
   // applied via setsockopt. Requires CAP_NET_ADMIN; silently ignored on
   // non-Linux platforms.
   optional uint32 socket_mark = 43;
+
+  // Prefer direct credential peers that already relay to a destination over
+  // advertising another direct edge to the same destination.
+  bool prefer_peer_relay = 44;
 }
 
 message RpcDescriptor {

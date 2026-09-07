@@ -6,10 +6,19 @@ mod elevate;
 use anyhow::Context;
 #[cfg(target_os = "android")]
 use easytier::instance::factory::subscribe_native_instance_event;
+use easytier::proto::api::config::{
+    ConfigPatchAction, ConfigRpc, ConfigRpcClientFactory, InstanceConfigPatch, PatchConfigRequest,
+    VpnPortalClientPatch,
+};
+use easytier::proto::api::instance::{
+    GetVpnPortalInfoRequest, InstanceIdentifier, VpnPortalInfo, VpnPortalRpc,
+    VpnPortalRpcClientFactory, instance_identifier,
+};
 use easytier::proto::api::manage::{
-    CollectNetworkInfoResponse, ValidateConfigResponse, WebClientService,
+    CollectNetworkInfoResponse, ValidateConfigResponse, VpnPortalClientConfig, WebClientService,
     WebClientServiceClientFactory,
 };
+use easytier::proto::rpc_types::controller::BaseController;
 use easytier::web_client::{self, WebClient};
 use easytier::{
     common::config::{NetworkConfig, NetworkConfigExt},
@@ -149,6 +158,82 @@ async fn collect_network_info(
         .handle_collect_network_info(app, Some(vec![instance_id]))
         .await
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_vpn_portal_info(instance_id: String) -> Result<Option<VpnPortalInfo>, String> {
+    let instance_id = instance_id
+        .parse::<uuid::Uuid>()
+        .map_err(|e| e.to_string())?;
+    let client_manager = get_client_manager!()?;
+    let client = client_manager
+        .rpc_manager
+        .rpc_client()
+        .scoped_client::<VpnPortalRpcClientFactory<BaseController>>(1, 1, "".to_string());
+    let response = client
+        .get_vpn_portal_info(
+            BaseController::default(),
+            GetVpnPortalInfoRequest {
+                instance: Some(InstanceIdentifier {
+                    selector: Some(instance_identifier::Selector::Id(instance_id.into())),
+                }),
+            },
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(response.vpn_portal_info)
+}
+
+#[tauri::command]
+async fn patch_vpn_portal_clients(
+    instance_id: String,
+    action: String,
+    name: Option<String>,
+    virtual_ip: Option<String>,
+    groups: Option<Vec<String>>,
+) -> Result<(), String> {
+    let instance_id = instance_id
+        .parse::<uuid::Uuid>()
+        .map_err(|e| e.to_string())?;
+    let action = match action.as_str() {
+        "add" => ConfigPatchAction::Add,
+        "remove" => ConfigPatchAction::Remove,
+        "clear" => ConfigPatchAction::Clear,
+        other => return Err(format!("invalid vpn portal client patch action: {other}")),
+    };
+    let client = if action == ConfigPatchAction::Clear {
+        None
+    } else {
+        Some(VpnPortalClientConfig {
+            name: name.unwrap_or_default(),
+            virtual_ip: virtual_ip.unwrap_or_default(),
+            groups: groups.unwrap_or_default(),
+        })
+    };
+
+    let client_manager = get_client_manager!()?;
+    let rpc = client_manager
+        .rpc_manager
+        .rpc_client()
+        .scoped_client::<ConfigRpcClientFactory<BaseController>>(1, 1, "".to_string());
+    rpc.patch_config(
+        BaseController::default(),
+        PatchConfigRequest {
+            instance: Some(InstanceIdentifier {
+                selector: Some(instance_identifier::Selector::Id(instance_id.into())),
+            }),
+            patch: Some(InstanceConfigPatch {
+                vpn_portal_clients: vec![VpnPortalClientPatch {
+                    action: action as i32,
+                    client,
+                }],
+                ..Default::default()
+            }),
+        },
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -1271,12 +1356,24 @@ mod service {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    fn service_environment() -> Option<Vec<(String, String)>> {
+        // System LaunchDaemons run as root but launchd does not provide HOME.
+        Some(vec![("HOME".to_string(), "/var/root".to_string())])
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn service_environment() -> Option<Vec<(String, String)>> {
+        None
+    }
+
     pub fn install(opts: ServiceOptions) -> anyhow::Result<()> {
         let service = easytier::service_manager::Service::new(env!("CARGO_PKG_NAME").to_string())?;
         let options = easytier::service_manager::ServiceInstallOptions {
             program: super::get_exe_path().into(),
             args: opts.to_args_vec(),
             work_directory: std::env::current_dir()?,
+            environment: service_environment(),
             disable_autostart: false,
             description: Some("EasyTier Gui Service".to_string()),
             display_name: Some("EasyTier Gui Service".to_string()),
@@ -1311,6 +1408,21 @@ mod service {
     pub fn status() -> anyhow::Result<easytier::service_manager::ServiceStatus> {
         let service = easytier::service_manager::Service::new(env!("CARGO_PKG_NAME").to_string())?;
         service.status()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn service_environment_matches_platform() {
+            #[cfg(target_os = "macos")]
+            assert_eq!(
+                super::service_environment(),
+                Some(vec![("HOME".to_string(), "/var/root".to_string())])
+            );
+
+            #[cfg(not(target_os = "macos"))]
+            assert_eq!(super::service_environment(), None);
+        }
     }
 }
 
@@ -1393,6 +1505,8 @@ pub fn run_gui() -> std::process::ExitCode {
             generate_network_config,
             run_network_instance,
             collect_network_info,
+            get_vpn_portal_info,
+            patch_vpn_portal_clients,
             set_logging_level,
             set_tun_fd,
             easytier_version,

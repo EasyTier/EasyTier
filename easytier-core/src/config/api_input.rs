@@ -8,8 +8,8 @@ use easytier_proto::api::manage;
 use crate::config::{
     MappedListenerPolicy, normalize_secure_mode_config,
     toml::{
-        ConfigLoader, NetworkIdentity, PeerConfig, PortForwardConfig, TomlConfigLoader,
-        VpnPortalConfig, gen_default_flags,
+        ConfigLoader, ManagedCredentialConfig, NetworkIdentity, PeerConfig, PortForwardConfig,
+        TomlConfigLoader, VpnPortalClientConfig, VpnPortalConfig, gen_default_flags,
     },
 };
 
@@ -50,6 +50,34 @@ pub fn add_proxy_network_to_config(
 
 pub type NetworkingMethod = easytier_proto::api::manage::NetworkingMethod;
 pub type NetworkConfig = easytier_proto::api::manage::NetworkConfig;
+
+pub(crate) fn managed_credential_from_proto(
+    credential: &manage::ManagedCredentialConfig,
+) -> ManagedCredentialConfig {
+    ManagedCredentialConfig {
+        credential_id: credential.credential_id.clone(),
+        credential_secret: credential.credential_secret.clone(),
+        groups: credential.groups.clone(),
+        allow_relay: credential.allow_relay,
+        allowed_proxy_cidrs: credential.allowed_proxy_cidrs.clone(),
+        expiry_unix: credential.expiry_unix,
+        reusable: credential.reusable.unwrap_or(true),
+    }
+}
+
+pub(crate) fn managed_credential_to_proto(
+    credential: ManagedCredentialConfig,
+) -> manage::ManagedCredentialConfig {
+    manage::ManagedCredentialConfig {
+        credential_id: credential.credential_id,
+        credential_secret: credential.credential_secret,
+        groups: credential.groups,
+        allow_relay: credential.allow_relay,
+        allowed_proxy_cidrs: credential.allowed_proxy_cidrs,
+        expiry_unix: credential.expiry_unix,
+        reusable: Some(credential.reusable),
+    }
+}
 
 pub trait NetworkConfigExt {
     fn gen_config(&self) -> Result<TomlConfigLoader, anyhow::Error>;
@@ -98,6 +126,7 @@ fn parse_peer_urls(peer_urls: &[String]) -> Result<Vec<PeerConfig>, anyhow::Erro
 }
 
 impl NetworkConfigExt for NetworkConfig {
+    #[allow(deprecated)]
     fn gen_config(&self) -> Result<TomlConfigLoader, anyhow::Error> {
         let cfg = TomlConfigLoader::default();
         cfg.set_id(
@@ -219,29 +248,37 @@ impl NetworkConfigExt for NetworkConfig {
             );
         }
 
-        if self.enable_vpn_portal.unwrap_or_default() {
-            let cidr = format!(
-                "{}/{}",
-                self.vpn_portal_client_network_addr
-                    .clone()
-                    .unwrap_or_default(),
-                self.vpn_portal_client_network_len.unwrap_or(24)
+        if self.enable_vpn_portal == Some(true) {
+            anyhow::bail!(
+                "legacy VPN portal configuration is no longer supported; configure vpn_portal_config with named clients"
             );
+        }
+
+        if let Some(vpn_config) = &self.vpn_portal_config {
             cfg.set_vpn_portal_config(VpnPortalConfig {
-                client_cidr: cidr
-                    .parse()
-                    .with_context(|| format!("failed to parse vpn portal client cidr: {}", cidr))?,
-                wireguard_listen: format!(
-                    "0.0.0.0:{}",
-                    self.vpn_portal_listen_port.unwrap_or_default()
-                )
-                .parse()
-                .with_context(|| {
+                wireguard_listen: vpn_config.wireguard_listen.parse().with_context(|| {
                     format!(
-                        "failed to parse vpn portal wireguard listen port. {:?}",
-                        self.vpn_portal_listen_port
+                        "failed to parse vpn portal wireguard listen address: {}",
+                        vpn_config.wireguard_listen
                     )
                 })?,
+                wireguard_private_key: vpn_config.wireguard_private_key.clone(),
+                clients: vpn_config
+                    .clients
+                    .iter()
+                    .map(|client| {
+                        Ok(VpnPortalClientConfig {
+                            name: client.name.clone(),
+                            virtual_ip: client.virtual_ip.parse().with_context(|| {
+                                format!(
+                                    "failed to parse vpn portal virtual IP for client {}: {}",
+                                    client.name, client.virtual_ip
+                                )
+                            })?,
+                            groups: client.groups.clone(),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, anyhow::Error>>()?,
             });
         }
 
@@ -288,6 +325,13 @@ impl NetworkConfigExt for NetworkConfig {
         {
             cfg.set_credential_file(Some(credential_file.into()));
         }
+
+        cfg.set_managed_credentials(
+            self.managed_credentials
+                .iter()
+                .map(managed_credential_from_proto)
+                .collect(),
+        );
 
         if let Some(credential_secret) = credential_secret {
             cfg.set_secure_mode(Some(normalize_secure_mode_config(
@@ -429,6 +473,10 @@ impl NetworkConfigExt for NetworkConfig {
             flags.disable_relay_data = disable_relay_data;
         }
 
+        if let Some(prefer_peer_relay) = self.prefer_peer_relay {
+            flags.prefer_peer_relay = prefer_peer_relay;
+        }
+
         if let Some(enable_udp_broadcast_relay) = self.enable_udp_broadcast_relay {
             flags.enable_udp_broadcast_relay = enable_udp_broadcast_relay;
         }
@@ -556,13 +604,19 @@ impl NetworkConfigExt for NetworkConfig {
         }
 
         if let Some(vpn_config) = config.get_vpn_portal_config() {
-            result.enable_vpn_portal = Some(true);
-
-            let cidr = vpn_config.client_cidr;
-            result.vpn_portal_client_network_addr = Some(cidr.first_address().to_string());
-            result.vpn_portal_client_network_len = Some(cidr.network_length() as i32);
-
-            result.vpn_portal_listen_port = Some(vpn_config.wireguard_listen.port() as i32);
+            result.vpn_portal_config = Some(manage::VpnPortalConfig {
+                wireguard_listen: vpn_config.wireguard_listen.to_string(),
+                wireguard_private_key: vpn_config.wireguard_private_key,
+                clients: vpn_config
+                    .clients
+                    .into_iter()
+                    .map(|client| manage::VpnPortalClientConfig {
+                        name: client.name,
+                        virtual_ip: client.virtual_ip.to_string(),
+                        groups: client.groups,
+                    })
+                    .collect(),
+            });
         }
 
         if let Some(routes) = config.get_routes()
@@ -591,6 +645,11 @@ impl NetworkConfigExt for NetworkConfig {
         result.credential_file = config
             .get_credential_file()
             .map(|path| path.to_string_lossy().into_owned());
+        result.managed_credentials = config
+            .get_managed_credentials()
+            .into_iter()
+            .map(managed_credential_to_proto)
+            .collect();
         let flags = config.get_flags();
         let default_flags = default_config.get_flags();
         result.latency_first = Some(flags.latency_first);
@@ -617,6 +676,7 @@ impl NetworkConfigExt for NetworkConfig {
         result.disable_udp_hole_punching = Some(flags.disable_udp_hole_punching);
         result.disable_upnp = Some(flags.disable_upnp);
         result.disable_relay_data = Some(flags.disable_relay_data);
+        result.prefer_peer_relay = Some(flags.prefer_peer_relay);
         result.enable_udp_broadcast_relay = Some(flags.enable_udp_broadcast_relay);
         result.disable_sym_hole_punching = Some(flags.disable_sym_hole_punching);
         result.enable_magic_dns = Some(flags.accept_dns);
@@ -648,5 +708,121 @@ impl NetworkConfigExt for NetworkConfig {
         }
 
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(deprecated)]
+
+    use super::*;
+
+    fn api_portal_config() -> manage::VpnPortalConfig {
+        manage::VpnPortalConfig {
+            wireguard_listen: "0.0.0.0:51820".to_owned(),
+            wireguard_private_key: Some("server-private-key".to_owned()),
+            clients: vec![manage::VpnPortalClientConfig {
+                name: "alice".to_owned(),
+                virtual_ip: "10.144.144.10/16".to_owned(),
+                groups: vec!["staff".to_owned()],
+            }],
+        }
+    }
+
+    fn standalone_config() -> NetworkConfig {
+        NetworkConfig {
+            networking_method: Some(NetworkingMethod::Standalone as i32),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn vpn_portal_api_config_round_trips_through_toml_model() {
+        let input = NetworkConfig {
+            vpn_portal_config: Some(api_portal_config()),
+            ..standalone_config()
+        };
+
+        let config = input.gen_config().unwrap();
+        let portal = config.get_vpn_portal_config().unwrap();
+        assert_eq!(portal.wireguard_listen, "0.0.0.0:51820".parse().unwrap());
+        assert_eq!(
+            portal.wireguard_private_key.as_deref(),
+            Some("server-private-key")
+        );
+        assert_eq!(portal.clients[0].name, "alice");
+        assert_eq!(portal.clients[0].virtual_ip.to_string(), "10.144.144.10/16");
+        assert_eq!(portal.clients[0].groups, vec!["staff".to_owned()]);
+
+        let output = NetworkConfig::new_from_config(&config).unwrap();
+        assert_eq!(output.vpn_portal_config, input.vpn_portal_config);
+        assert_eq!(output.enable_vpn_portal, None);
+    }
+
+    #[test]
+    fn managed_credentials_round_trip_through_toml_model() {
+        let input = NetworkConfig {
+            managed_credentials: vec![manage::ManagedCredentialConfig {
+                credential_id: "managed-a".to_owned(),
+                credential_secret: "secret".to_owned(),
+                groups: vec!["ops".to_owned()],
+                allow_relay: true,
+                allowed_proxy_cidrs: vec!["10.0.0.0/24".to_owned()],
+                expiry_unix: 2_000_000_000,
+                reusable: None,
+            }],
+            ..standalone_config()
+        };
+
+        let config = input.gen_config().unwrap();
+        let output = NetworkConfig::new_from_config(&config).unwrap();
+        assert_eq!(output.managed_credentials[0].credential_id, "managed-a");
+        assert_eq!(output.managed_credentials[0].reusable, Some(true));
+    }
+
+    #[test]
+    fn peer_relay_preference_round_trips_independently() {
+        let input = NetworkConfig {
+            disable_relay_data: Some(false),
+            prefer_peer_relay: Some(true),
+            ..standalone_config()
+        };
+
+        let config = input.gen_config().unwrap();
+        let flags = config.get_flags();
+        assert!(!flags.disable_relay_data);
+        assert!(flags.prefer_peer_relay);
+
+        let output = NetworkConfig::new_from_config(&config).unwrap();
+        assert_eq!(output.disable_relay_data, Some(false));
+        assert_eq!(output.prefer_peer_relay, Some(true));
+    }
+
+    #[test]
+    fn legacy_enabled_vpn_portal_config_reports_migration_error() {
+        let error = NetworkConfig {
+            enable_vpn_portal: Some(true),
+            ..standalone_config()
+        }
+        .gen_config()
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("legacy VPN portal"), "{error}");
+    }
+
+    #[test]
+    fn legacy_disabled_vpn_portal_defaults_are_ignored() {
+        let config = NetworkConfig {
+            enable_vpn_portal: Some(false),
+            vpn_portal_listen_port: Some(0),
+            vpn_portal_client_network_addr: Some(String::new()),
+            vpn_portal_client_network_len: Some(0),
+            ..standalone_config()
+        }
+        .gen_config()
+        .unwrap();
+
+        assert!(config.get_vpn_portal_config().is_none());
     }
 }

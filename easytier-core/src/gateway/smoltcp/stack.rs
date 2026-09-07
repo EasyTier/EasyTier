@@ -4,22 +4,16 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinSet;
 
-use crate::{
-    foundation::time::{Duration, timeout},
-    packet::ZCPacket,
-};
+use crate::packet::ZCPacket;
 
-use super::tokio_smoltcp::{BufferSize, Net, NetConfig, channel_device};
+use super::tokio_smoltcp::{BufferSize, Net, NetConfig, TcpListener, channel_device};
 use crate::gateway::proxy::traits::TcpProxyStream;
-
-type SmolTcpAcceptResult = anyhow::Result<(super::tokio_smoltcp::TcpStream, SocketAddr)>;
 
 pub struct SmolTcpStack {
     ingress_tx: mpsc::Sender<ZCPacket>,
     output_rx: Mutex<Option<mpsc::Receiver<Vec<u8>>>>,
-    net: Arc<Mutex<Option<Net>>>,
-    listener_tx: mpsc::UnboundedSender<SmolTcpAcceptResult>,
-    listener_rx: Mutex<mpsc::UnboundedReceiver<SmolTcpAcceptResult>>,
+    listener: Mutex<TcpListener>,
+    _net: Net,
     tasks: Arc<std::sync::Mutex<JoinSet<()>>>,
 }
 
@@ -68,14 +62,16 @@ impl SmolTcpStack {
             ),
         );
         net.set_any_ip(true);
+        let listener = net
+            .tcp_bind("0.0.0.0:8899".parse().unwrap())
+            .await
+            .map_err(|error| anyhow::anyhow!("bind smoltcp listener failed: {error}"))?;
 
-        let (listener_tx, listener_rx) = mpsc::unbounded_channel();
         Ok(Arc::new(Self {
             ingress_tx,
             output_rx: Mutex::new(Some(stack_stream)),
-            net: Arc::new(Mutex::new(Some(net))),
-            listener_tx,
-            listener_rx: Mutex::new(listener_rx),
+            listener: Mutex::new(listener),
+            _net: net,
             tasks,
         }))
     }
@@ -99,43 +95,14 @@ impl SmolTcpStack {
             .ok_or_else(|| anyhow::anyhow!("smoltcp output receiver already taken"))
     }
 
-    pub async fn add_listener(&self) {
-        let tx = self.listener_tx.clone();
-        let locked_net = self.net.lock().await;
-        let mut tcp = locked_net
-            .as_ref()
-            .expect("smoltcp net initialized")
-            .tcp_bind("0.0.0.0:8899".parse().unwrap())
-            .await
-            .unwrap();
-        self.tasks.lock().unwrap().spawn(async move {
-            let ret = timeout(Duration::from_secs(10), tcp.accept()).await;
-            if let Ok(accept_ret) = ret {
-                let _ =
-                    tx.send(accept_ret.map_err(|err| {
-                        anyhow::anyhow!("smol tcp listener accept failed: {:?}", err)
-                    }));
-            } else {
-                tracing::error!(
-                    target: "easytier_core::gateway::stack",
-                    "smol tcp listener accept timeout"
-                );
-            }
-        });
-        tracing::info!(
-            target: "easytier_core::gateway::stack",
-            "smol tcp listener added"
-        );
-    }
-
     pub async fn accept(&self) -> anyhow::Result<(SocketAddr, Box<dyn TcpProxyStream>)> {
         let (stream, src) = self
-            .listener_rx
+            .listener
             .lock()
             .await
-            .recv()
+            .accept()
             .await
-            .ok_or_else(|| anyhow::anyhow!("smoltcp listener closed"))??;
+            .map_err(|error| anyhow::anyhow!("smoltcp listener accept failed: {error}"))?;
         tracing::info!(
             target: "easytier_core::gateway::stack",
             ?src,
@@ -155,4 +122,71 @@ pub fn output_dst_ip(data: &[u8]) -> anyhow::Result<IpAddr> {
     let ipv4 = smoltcp::wire::Ipv4Packet::new_checked(data)
         .map_err(|err| anyhow::anyhow!("smoltcp output is not an IPv4 packet: {:?}", err))?;
     Ok(IpAddr::V4(ipv4.dst_addr()))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use smoltcp::wire::{Ipv4Address, TcpControl, TcpSeqNumber};
+
+    use super::SmolTcpStack;
+    use crate::{
+        gateway::smoltcp::tokio_smoltcp::test_utils::{TcpPackets, recv_tcp},
+        packet::ZCPacket,
+    };
+
+    const LOCAL_ADDR: Ipv4Address = Ipv4Address::new(192, 88, 99, 254);
+    const LOCAL_PORT: u16 = 8899;
+    const PACKETS: TcpPackets = TcpPackets::new(LOCAL_ADDR, LOCAL_PORT);
+
+    #[tokio::test]
+    async fn accepts_concurrent_connections_with_one_logical_listener() {
+        let stack = SmolTcpStack::new(LOCAL_ADDR).await.unwrap();
+        let mut output = stack.take_output_rx().await.unwrap();
+        let client_addr = Ipv4Address::new(192, 88, 99, 1);
+
+        for (port, sequence) in [(40000, 1000), (40001, 2000)] {
+            stack
+                .send_ingress(ZCPacket::new_with_payload(&PACKETS.syn(
+                    client_addr,
+                    port,
+                    sequence,
+                )))
+                .await
+                .unwrap();
+        }
+
+        let mut syn_acks = Vec::new();
+        for _ in 0..2 {
+            let syn_ack = recv_tcp(&mut output).await;
+            assert_eq!(syn_ack.control, TcpControl::Syn);
+            syn_acks.push((syn_ack.dst_port, syn_ack.sequence));
+        }
+        for (port, sequence) in syn_acks {
+            let client_sequence = if port == 40000 { 1001 } else { 2001 };
+            stack
+                .send_ingress(ZCPacket::new_with_payload(&PACKETS.ack(
+                    client_addr,
+                    port,
+                    TcpSeqNumber(client_sequence),
+                    sequence + 1,
+                )))
+                .await
+                .unwrap();
+        }
+
+        let mut peers = Vec::new();
+        let mut streams = Vec::new();
+        for _ in 0..2 {
+            let (peer, stream) = tokio::time::timeout(Duration::from_secs(1), stack.accept())
+                .await
+                .unwrap()
+                .unwrap();
+            peers.push(peer.port());
+            streams.push(stream);
+        }
+        peers.sort_unstable();
+        assert_eq!(peers, vec![40000, 40001]);
+    }
 }

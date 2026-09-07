@@ -295,6 +295,18 @@
       "type": "string",
       "oneOf": [
         {
+          "description": "Enables the consume_vpn_tile_action command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-consume-vpn-tile-action",
+          "markdownDescription": "Enables the consume_vpn_tile_action command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the consume_vpn_tile_action command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-consume-vpn-tile-action",
+          "markdownDescription": "Denies the consume_vpn_tile_action command without any pre-configured scope."
+        },
+        {
           "description": "Enables the get_vpn_status command without any pre-configured scope.",
           "type": "string",
           "const": "allow-get-vpn-status",

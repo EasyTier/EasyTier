@@ -361,7 +361,7 @@ where
             let listener = self.listener()?;
             match listener.accept().await {
                 Ok((socket, _)) => return Ok(socket),
-                Err(error) if is_retryable_tcp_accept_error(&error) => {
+                Err(error) if is_retryable_tcp_io_error(&error) => {
                     tracing::warn!(?error, "tcp accept failed with retryable error");
                 }
                 Err(error) => {
@@ -377,7 +377,7 @@ where
     }
 }
 
-fn is_retryable_tcp_accept_error(error: &io::Error) -> bool {
+pub(crate) fn is_retryable_tcp_io_error(error: &io::Error) -> bool {
     use io::ErrorKind::*;
     matches!(
         error.kind(),

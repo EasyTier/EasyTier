@@ -231,10 +231,32 @@ service MappedListenerManageRpc {
       returns (ListMappedListenerResponse);
 }
 
+enum VpnPortalClientState {
+  VPN_PORTAL_CLIENT_STATE_UNSPECIFIED = 0;
+  VPN_PORTAL_CLIENT_STATE_OFFLINE = 1;
+  VPN_PORTAL_CLIENT_STATE_CONNECTING = 2;
+  VPN_PORTAL_CLIENT_STATE_ONLINE = 3;
+  VPN_PORTAL_CLIENT_STATE_ERROR = 4;
+}
+
+message VpnPortalClientInfo {
+  string name = 1;
+  string virtual_ip = 2;
+  repeated string groups = 3;
+  VpnPortalClientState state = 4;
+  optional uint32 peer_id = 5;
+  optional string endpoint = 6;
+  optional string tunnel_ip = 7;
+  string client_config = 8;
+  optional string error = 9;
+}
+
 message VpnPortalInfo {
   string vpn_type = 1;
-  string client_config = 2;
-  repeated string connected_clients = 3;
+  string client_config = 2 [deprecated = true];
+  repeated string connected_clients = 3 [deprecated = true];
+  repeated VpnPortalClientInfo clients = 4;
+  optional string listener = 5;
 }
 
 message GetVpnPortalInfoRequest { InstanceIdentifier instance = 1; }
@@ -345,6 +367,22 @@ message GenerateCredentialRequest {
 message GenerateCredentialResponse {
   string credential_id = 1;       // UUID
   string credential_secret = 2;   // private key base64
+  int64 expiry_unix = 3;
+}
+
+message UpsertCredentialRequest {
+  string credential_id = 1;
+  string credential_secret = 2;
+  repeated string groups = 3;
+  bool allow_relay = 4;
+  repeated string allowed_proxy_cidrs = 5;
+  int64 expiry_unix = 6;
+  optional bool reusable = 7;
+  InstanceIdentifier instance = 8;
+}
+
+message UpsertCredentialResponse {
+  bool changed = 1;
 }
 
 message RevokeCredentialRequest {
@@ -367,6 +405,7 @@ message CredentialInfo {
   int64 expiry_unix = 4;
   repeated string allowed_proxy_cidrs = 5;
   optional bool reusable = 6;
+  string public_key_fingerprint = 7;
 }
 
 message ListCredentialsResponse {
@@ -377,4 +416,5 @@ service CredentialManageRpc {
   rpc GenerateCredential(GenerateCredentialRequest) returns (GenerateCredentialResponse);
   rpc RevokeCredential(RevokeCredentialRequest) returns (RevokeCredentialResponse);
   rpc ListCredentials(ListCredentialsRequest) returns (ListCredentialsResponse);
+  rpc UpsertCredential(UpsertCredentialRequest) returns (UpsertCredentialResponse);
 }

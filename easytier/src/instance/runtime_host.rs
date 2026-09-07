@@ -108,7 +108,7 @@ impl NativeInstanceRuntimeHost {
                     &config.peer,
                 ));
         }
-        if patch.disable_relay_data.is_some() {
+        if patch.disable_relay_data.is_some() || patch.prefer_peer_relay.is_some() {
             self.global_ctx.set_flags(config.peer.flags.clone());
         }
     }
@@ -173,12 +173,14 @@ mod tests {
         assert_eq!(global_ctx.get_ipv4(), Some("10.20.0.1/24".parse().unwrap()));
         assert_eq!(global_ctx.get_ipv6(), Some("fd00::1/64".parse().unwrap()));
         assert!(!global_ctx.get_flags().disable_relay_data);
+        assert!(!global_ctx.get_flags().prefer_peer_relay);
 
         config.set_hostname(Some("after".to_owned()));
         config.set_ipv4(Some("10.20.0.2/24".parse().unwrap()));
         config.set_ipv6(Some("fd00::2/64".parse().unwrap()));
         let mut flags = config.get_flags();
         flags.disable_relay_data = true;
+        flags.prefer_peer_relay = true;
         config.set_flags(flags);
         runtime_host.synchronize_config(
             &crate::proto::api::config::InstanceConfigPatch {
@@ -186,6 +188,7 @@ mod tests {
                 ipv4: Some("10.99.0.1/24".parse::<cidr::Ipv4Inet>().unwrap().into()),
                 ipv6: Some("fd99::1/64".parse::<cidr::Ipv6Inet>().unwrap().into()),
                 disable_relay_data: Some(false),
+                prefer_peer_relay: Some(false),
                 ..Default::default()
             },
             &runtime_config(&config),
@@ -195,6 +198,7 @@ mod tests {
         assert_eq!(global_ctx.get_ipv4(), Some("10.20.0.2/24".parse().unwrap()));
         assert_eq!(global_ctx.get_ipv6(), Some("fd00::2/64".parse().unwrap()));
         assert!(global_ctx.get_flags().disable_relay_data);
+        assert!(global_ctx.get_flags().prefer_peer_relay);
     }
 
     #[cfg(feature = "web-client")]

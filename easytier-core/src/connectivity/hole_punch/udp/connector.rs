@@ -206,7 +206,9 @@ where
                     op(true);
                     false
                 } else {
-                    tracing::info!("hole punching transport admitted successfully");
+                    tracing::info!(
+                        "hole punching transport admitted; awaiting liveness measurement"
+                    );
                     true
                 }
             }

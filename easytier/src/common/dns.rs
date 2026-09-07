@@ -23,6 +23,8 @@ use once_cell::sync::Lazy;
 use tokio::net::lookup_host;
 #[cfg(feature = "dns-resolver")]
 use tokio::net::{TcpSocket, TcpStream, UdpSocket};
+#[cfg(feature = "dns-resolver")]
+use tokio::sync::Semaphore;
 
 use super::error::Error;
 use super::netns::NetNS;
@@ -65,6 +67,79 @@ static RESOLVER: Lazy<Arc<Resolver<GenericConnector<TokioRuntimeProvider>>>> = L
         .with_options(options);
     Arc::new(builder.build())
 });
+
+#[cfg(feature = "dns-resolver")]
+const SYSTEM_DNS_LOOKUP_TIMEOUT: Duration = Duration::from_millis(800);
+
+#[cfg(feature = "dns-resolver")]
+#[derive(Debug)]
+struct SystemDnsResolver {
+    lookup_slot: Arc<Semaphore>,
+    timeout: Duration,
+}
+
+#[cfg(feature = "dns-resolver")]
+impl Default for SystemDnsResolver {
+    fn default() -> Self {
+        Self::new(SYSTEM_DNS_LOOKUP_TIMEOUT)
+    }
+}
+
+#[cfg(feature = "dns-resolver")]
+impl SystemDnsResolver {
+    fn new(timeout: Duration) -> Self {
+        Self {
+            lookup_slot: Arc::new(Semaphore::new(1)),
+            timeout,
+        }
+    }
+
+    async fn resolve<SystemFuture, FallbackFuture>(
+        &self,
+        system_lookup: SystemFuture,
+        fallback_lookup: FallbackFuture,
+    ) -> anyhow::Result<Vec<IpAddr>>
+    where
+        SystemFuture: Future<Output = anyhow::Result<Vec<IpAddr>>> + Send + 'static,
+        FallbackFuture: Future<Output = anyhow::Result<Vec<IpAddr>>> + Send,
+    {
+        // Tokio runs getaddrinfo on its blocking pool and cannot cancel it.
+        // Keep the permit in a detached task after a timeout so reconnects do
+        // not accumulate blocked system lookups. Once it finishes, later
+        // requests can use the system resolver again.
+        let lookup_slot = self.lookup_slot.clone();
+        let system_attempt = async move {
+            let permit = lookup_slot
+                .acquire_owned()
+                .await
+                .context("system DNS lookup slot closed")?;
+            tokio::spawn(async move {
+                let _permit = permit;
+                system_lookup.await
+            })
+            .await
+            .context("system DNS lookup task failed")?
+        };
+
+        match tokio::time::timeout(self.timeout, system_attempt).await {
+            Ok(Ok(addresses)) => {
+                tracing::debug!(?addresses, "system dns lookup done");
+                return Ok(addresses);
+            }
+            Ok(Err(error)) => {
+                tracing::warn!(?error, "system dns lookup failed, fallback to hickory");
+            }
+            Err(_) => {
+                tracing::warn!(
+                    timeout = ?self.timeout,
+                    "system dns lookup timed out, fallback to hickory"
+                );
+            }
+        }
+
+        fallback_lookup.await
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct RuntimeDnsIoContext {
@@ -200,12 +275,15 @@ impl RuntimeProvider for RuntimeDnsIoProvider {
 #[cfg(feature = "dns-resolver")]
 type ContextualResolver = Resolver<GenericConnector<RuntimeDnsIoProvider>>;
 
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct RuntimeDnsResolver;
+#[derive(Debug, Default)]
+pub(crate) struct RuntimeDnsResolver {
+    #[cfg(feature = "dns-resolver")]
+    system_dns: SystemDnsResolver,
+}
 
 impl RuntimeDnsResolver {
     pub(crate) fn new() -> Self {
-        Self
+        Self::default()
     }
 
     // A netns token can be deleted and recreated. Keep contextual resolvers
@@ -220,37 +298,73 @@ impl RuntimeDnsResolver {
     }
 
     #[cfg(feature = "dns-resolver")]
-    async fn resolve_contextual_ips(
-        &self,
+    async fn resolve_contextual_with_hickory(
         context: RuntimeDnsIoContext,
         host: String,
     ) -> anyhow::Result<Vec<IpAddr>> {
-        if context.socket_mark.is_none() {
-            // libc DNS cannot attach SO_MARK. It remains usable for a
-            // namespace-only context when confined to one blocking thread.
-            let lookup_host = host.clone();
-            let netns = context.netns();
-            match tokio::task::spawn_blocking(move || {
-                netns.run(|| {
-                    (lookup_host.as_str(), 0)
-                        .to_socket_addrs()
-                        .map(|addrs| addrs.map(|addr| addr.ip()).collect())
-                })
-            })
-            .await
-            .context("contextual system DNS task failed")?
-            {
-                Ok(addresses) => return Ok(addresses),
-                Err(error) => tracing::error!(?error, "contextual system dns lookup failed"),
-            }
-        }
-
         let resolver = Self::contextual_resolver(context);
         let response = resolver
             .lookup_ip(&host)
             .await
             .with_context(|| format!("contextual hickory lookup_ip failed, host: {host}"))?;
         Ok(response.iter().collect())
+    }
+
+    #[cfg(feature = "dns-resolver")]
+    async fn resolve_process_ips(&self, host: &str) -> anyhow::Result<Vec<IpAddr>> {
+        let system_host = host.to_owned();
+        self.system_dns
+            .resolve(
+                async move {
+                    let addresses = lookup_host((system_host.as_str(), 0))
+                        .await?
+                        .map(|address| address.ip())
+                        .collect();
+                    Ok(addresses)
+                },
+                async {
+                    let response = RESOLVER
+                        .lookup_ip(host)
+                        .await
+                        .with_context(|| format!("hickory dns lookup_ip failed, host: {host}"))?;
+                    Ok(response.iter().collect())
+                },
+            )
+            .await
+    }
+
+    #[cfg(feature = "dns-resolver")]
+    async fn resolve_contextual_ips(
+        &self,
+        context: RuntimeDnsIoContext,
+        host: String,
+    ) -> anyhow::Result<Vec<IpAddr>> {
+        if context.socket_mark.is_some() {
+            return Self::resolve_contextual_with_hickory(context, host).await;
+        }
+
+        // libc DNS cannot attach SO_MARK. It remains usable for a
+        // namespace-only context when confined to one blocking thread.
+        let system_context = context.clone();
+        let system_host = host.clone();
+        self.system_dns
+            .resolve(
+                async move {
+                    let netns = system_context.netns();
+                    let addresses = tokio::task::spawn_blocking(move || {
+                        netns.run(|| {
+                            (system_host.as_str(), 0)
+                                .to_socket_addrs()
+                                .map(|addrs| addrs.map(|addr| addr.ip()).collect())
+                        })
+                    })
+                    .await
+                    .context("contextual system DNS task failed")??;
+                    Ok(addresses)
+                },
+                Self::resolve_contextual_with_hickory(context, host),
+            )
+            .await
     }
 }
 
@@ -261,7 +375,7 @@ impl DnsResolver for RuntimeDnsResolver {
         #[cfg(feature = "dns-resolver")]
         {
             if context.is_process_default() {
-                return Ok(resolve_ips(&query.host).await?);
+                return self.resolve_process_ips(&query.host).await;
             }
             return self.resolve_contextual_ips(context, query.host).await;
         }
@@ -426,26 +540,6 @@ async fn socket_addrs_with_system_resolver(
     unreachable!("the system resolver error returns above")
 }
 
-#[cfg(feature = "dns-resolver")]
-async fn resolve_ips(host: &str) -> Result<Vec<IpAddr>, Error> {
-    match lookup_host((host, 0)).await {
-        Ok(a) => {
-            let a = a.map(|addr| addr.ip()).collect();
-            tracing::debug!(?a, "system dns lookup done");
-            return Ok(a);
-        }
-        Err(e) => {
-            tracing::error!(?e, "system dns lookup failed");
-        }
-    }
-
-    let ret = RESOLVER
-        .lookup_ip(host)
-        .await
-        .with_context(|| format!("hickory dns lookup_ip failed, host: {}", host))?;
-    Ok(ret.iter().collect::<Vec<_>>())
-}
-
 #[cfg(not(feature = "dns-resolver"))]
 async fn resolve_ips(host: &str) -> Result<Vec<IpAddr>, Error> {
     Ok(lookup_host((host, 0))
@@ -457,6 +551,71 @@ async fn resolve_ips(host: &str) -> Result<Vec<IpAddr>, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "dns-resolver")]
+    #[tokio::test]
+    async fn timed_out_system_lookup_is_not_retried() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let resolver = SystemDnsResolver::new(Duration::from_millis(10));
+        let system_calls = Arc::new(AtomicUsize::new(0));
+        let fallback_calls = AtomicUsize::new(0);
+        let expected = vec![IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)];
+
+        let first_system_calls = system_calls.clone();
+        let first = resolver
+            .resolve(
+                async move {
+                    first_system_calls.fetch_add(1, Ordering::Relaxed);
+                    std::future::pending::<anyhow::Result<Vec<IpAddr>>>().await
+                },
+                async {
+                    fallback_calls.fetch_add(1, Ordering::Relaxed);
+                    Ok(expected.clone())
+                },
+            )
+            .await;
+        let second_system_calls = system_calls.clone();
+        let second = resolver
+            .resolve(
+                async move {
+                    second_system_calls.fetch_add(1, Ordering::Relaxed);
+                    std::future::pending::<anyhow::Result<Vec<IpAddr>>>().await
+                },
+                async {
+                    fallback_calls.fetch_add(1, Ordering::Relaxed);
+                    Ok(expected.clone())
+                },
+            )
+            .await;
+
+        assert_eq!(first.unwrap(), expected);
+        assert_eq!(second.unwrap(), expected);
+        assert_eq!(system_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(fallback_calls.load(Ordering::Relaxed), 2);
+    }
+
+    #[cfg(feature = "dns-resolver")]
+    #[tokio::test]
+    async fn successful_system_lookup_skips_hickory() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let resolver = SystemDnsResolver::new(Duration::from_millis(10));
+        let fallback_calls = AtomicUsize::new(0);
+        let expected = vec![IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)];
+        let system_result = expected.clone();
+
+        let addresses = resolver
+            .resolve(async move { Ok(system_result) }, async {
+                fallback_calls.fetch_add(1, Ordering::Relaxed);
+                Ok(Vec::new())
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(addresses, expected);
+        assert_eq!(fallback_calls.load(Ordering::Relaxed), 0);
+    }
 
     #[test]
     fn runtime_dns_context_preserves_process_routing_inputs() {

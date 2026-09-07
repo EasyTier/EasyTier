@@ -15,6 +15,7 @@ use crate::{
         manual::{ManualConnectorOptions, discovery::ManualEndpointDiscoveryConfig},
         stun::StunServerConfig,
     },
+    gateway::vpn_portal::{PortalClientConfig, PortalRuntimeConfig},
     listener::plan::ListenerRuntimeConfig,
     packet::CompressorAlgo,
     peers::{
@@ -27,7 +28,7 @@ use crate::{
 
 use easytier_proto::common::CompressionAlgoPb;
 
-use super::{CoreConnectivityConfig, CoreInstanceConfig};
+use super::{CoreConnectivityConfig, CoreConnectivityMode, CoreInstanceConfig};
 
 const OSPF_UPDATE_MY_FOREIGN_NETWORK_INTERVAL_SEC: u64 = 10;
 const MAX_DIRECT_CONNS_PER_PEER_IN_FOREIGN_NETWORK: usize = 3;
@@ -57,6 +58,7 @@ pub struct CoreInstanceHostConfig {
     pub upnp_enabled: bool,
     pub tcp_hole_punching_enabled: bool,
     pub ignore_unsupported_config: bool,
+    pub connectivity: CoreConnectivityMode,
     pub easytier_version: String,
     pub endpoint_protocols: Vec<String>,
 }
@@ -82,6 +84,7 @@ impl Default for CoreInstanceHostConfig {
             upnp_enabled: true,
             tcp_hole_punching_enabled: true,
             ignore_unsupported_config: false,
+            connectivity: CoreConnectivityMode::Full,
             easytier_version: env!("CARGO_PKG_VERSION").to_owned(),
             endpoint_protocols: ManualEndpointDiscoveryConfig::default().srv_protocols,
         }
@@ -172,6 +175,12 @@ impl CoreInstanceConfig {
         let flags = host.runtime_flags(config.get_flags());
         let instance_id = config.get_id();
         let identity: crate::config::NetworkIdentity = config.get_network_identity().into();
+        let managed_credentials = config.get_managed_credentials();
+        if !managed_credentials.is_empty() && identity.network_secret.is_none() {
+            anyhow::bail!(
+                "only admin nodes with a network_secret can configure managed credentials"
+            );
+        }
         let network_name = identity.network_name.clone();
         let socket_context = SocketContext::default()
             .with_socket_mark(flags.socket_mark)
@@ -231,10 +240,6 @@ impl CoreInstanceConfig {
                 host_routing: host.host_routing,
                 acl: acl.clone(),
                 easytier_version: host.easytier_version.clone(),
-                vpn_portal_cidr: (!host.ignore_unsupported_config || host.vpn_portal_enabled)
-                    .then(|| config.get_vpn_portal_config())
-                    .flatten()
-                    .map(|portal| portal.client_cidr),
                 pinned_peers: peers
                     .iter()
                     .cloned()
@@ -323,25 +328,47 @@ impl CoreInstanceConfig {
                 provider_supported: host.public_ipv6_provider_supported,
             },
         };
+        let stun_servers = config.get_stun_servers();
 
         Ok(Self {
             instance_name: config.get_inst_name(),
             peer,
+            managed_credentials,
+            vpn_portal: (!host.ignore_unsupported_config || host.vpn_portal_enabled)
+                .then(|| config.get_vpn_portal_config())
+                .flatten()
+                .map(|config| PortalRuntimeConfig {
+                    clients: config
+                        .clients
+                        .into_iter()
+                        .map(|client| PortalClientConfig {
+                            name: client.name,
+                            virtual_ip: client.virtual_ip,
+                            groups: client.groups,
+                        })
+                        .collect(),
+                }),
             connectivity: CoreConnectivityConfig {
                 initial_peers: peers.into_iter().map(|peer| peer.uri).collect(),
                 listeners,
                 runtime,
                 startup_plan: super::CoreInstanceStartupPlan {
                     gateway: host.gateway_enabled,
+                    packet_proxy: host.proxy_enabled,
+                    connectivity: host.connectivity,
                 },
                 stun: StunServerConfig {
-                    udp_servers: config
-                        .get_stun_servers()
+                    udp_servers: stun_servers
+                        .clone()
                         .unwrap_or_else(|| StunServerConfig::default().udp_servers),
+                    tcp_servers: config
+                        .get_tcp_stun_servers()
+                        .or_else(|| stun_servers.clone())
+                        .unwrap_or_else(|| StunServerConfig::default().tcp_servers),
                     udp_v6_servers: config
                         .get_stun_servers_v6()
+                        .or_else(|| stun_servers.as_ref().map(|_| Vec::new()))
                         .unwrap_or_else(|| StunServerConfig::default().udp_v6_servers),
-                    ..StunServerConfig::default()
                 },
                 endpoint_discovery: ManualEndpointDiscoveryConfig {
                     user_agent: format!("easytier/{}", host.easytier_version),
@@ -375,7 +402,121 @@ impl CoreInstanceConfig {
 
 #[cfg(test)]
 mod tests {
+    use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+
     use super::*;
+
+    #[test]
+    fn tcp_stun_servers_follow_toml_override_rules() {
+        let fallback = TomlConfig::new_from_str(
+            r#"
+stun_servers = ["fallback.example.com:3478"]
+"#,
+        )
+        .unwrap();
+        let normalized = CoreInstanceConfig::from_toml(&fallback).unwrap();
+        assert_eq!(
+            normalized.connectivity.stun.tcp_servers,
+            ["fallback.example.com:3478"]
+        );
+
+        let overridden = TomlConfig::new_from_str(
+            r#"
+stun_servers = ["fallback.example.com:3478"]
+tcp_stun_servers = ["tcp.example.com:3478"]
+"#,
+        )
+        .unwrap();
+        let normalized = CoreInstanceConfig::from_toml(&overridden).unwrap();
+        assert_eq!(
+            normalized.connectivity.stun.tcp_servers,
+            ["tcp.example.com:3478"]
+        );
+
+        let disabled = TomlConfig::new_from_str(
+            r#"
+stun_servers = ["fallback.example.com:3478"]
+tcp_stun_servers = []
+"#,
+        )
+        .unwrap();
+        let normalized = CoreInstanceConfig::from_toml(&disabled).unwrap();
+        assert!(normalized.connectivity.stun.tcp_servers.is_empty());
+    }
+
+    #[test]
+    fn custom_udp_stun_servers_disable_default_ipv6_servers() {
+        let config = TomlConfig::new_from_str(
+            r#"
+stun_servers = ["custom.example.com:3478"]
+"#,
+        )
+        .unwrap();
+        let normalized = CoreInstanceConfig::from_toml(&config).unwrap();
+        assert!(normalized.connectivity.stun.udp_v6_servers.is_empty());
+
+        let config = TomlConfig::new_from_str(
+            r#"
+stun_servers = ["custom.example.com:3478"]
+stun_servers_v6 = ["custom-v6.example.com:3478"]
+"#,
+        )
+        .unwrap();
+        let normalized = CoreInstanceConfig::from_toml(&config).unwrap();
+        assert_eq!(
+            normalized.connectivity.stun.udp_v6_servers,
+            ["custom-v6.example.com:3478"]
+        );
+    }
+
+    #[test]
+    fn credential_nodes_cannot_declare_managed_credentials() {
+        let config = TomlConfig::default();
+        config.set_network_identity(crate::config::toml::NetworkIdentity::new_credential(
+            "credential-network".to_owned(),
+        ));
+        config.set_managed_credentials(vec![crate::config::toml::ManagedCredentialConfig {
+            credential_id: "managed".to_owned(),
+            credential_secret: BASE64_STANDARD.encode([1u8; 32]),
+            groups: Vec::new(),
+            allow_relay: false,
+            allowed_proxy_cidrs: Vec::new(),
+            expiry_unix: 2_000_000_000,
+            reusable: true,
+        }]);
+
+        let error = CoreInstanceConfig::from_toml(&config).unwrap_err();
+        assert!(error.to_string().contains("only admin nodes"));
+    }
+
+    #[cfg(feature = "config-write")]
+    #[test]
+    fn explicit_stun_servers_survive_dump_reload() {
+        let assert_roundtrip = |config: TomlConfig| {
+            let before = CoreInstanceConfig::from_toml(&config)
+                .unwrap()
+                .connectivity
+                .stun;
+            let reloaded = TomlConfig::new_from_str(&config.dump()).unwrap();
+            let after = CoreInstanceConfig::from_toml(&reloaded)
+                .unwrap()
+                .connectivity
+                .stun;
+
+            assert_eq!(after, before);
+        };
+
+        let defaults = StunServerConfig::default();
+        let config = TomlConfig::default();
+        config.set_stun_servers(Some(defaults.udp_servers.clone()));
+        assert_roundtrip(config);
+
+        let config = TomlConfig::default();
+        config.set_stun_servers(Some(vec!["custom.example.com:3478".to_string()]));
+        config.set_tcp_stun_servers(Some(defaults.tcp_servers));
+        config.set_stun_servers_v6(Some(defaults.udp_v6_servers));
+        assert_roundtrip(config);
+    }
 
     #[test]
     fn shared_toml_normalizes_instance_identity_and_connectivity() {
@@ -451,6 +592,7 @@ disable_p2p = true
             icmp_failure_is_fatal: true,
             public_ipv6_provider_supported: true,
             gateway_enabled: false,
+            connectivity: CoreConnectivityMode::InboundOnly,
             easytier_version: "host-version".to_owned(),
             endpoint_protocols: vec!["host-protocol".to_owned()],
             ..Default::default()
@@ -468,6 +610,10 @@ disable_p2p = true
                 .hostname
                 .as_deref(),
             Some("host-fallback")
+        );
+        assert_eq!(
+            normalized.connectivity.startup_plan.connectivity,
+            CoreConnectivityMode::InboundOnly
         );
         assert!(
             normalized
@@ -540,6 +686,7 @@ data_compress_algo = "Zstd"
         let normalized = CoreInstanceConfig::from_toml_with_host(&config, &host).unwrap();
 
         assert_eq!(config.dump(), before);
+        assert!(!normalized.connectivity.startup_plan.packet_proxy);
         assert_eq!(normalized.connectivity.initial_peers.len(), 1);
         assert_eq!(
             normalized

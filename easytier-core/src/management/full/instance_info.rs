@@ -9,6 +9,7 @@ use crate::{
 };
 
 /// Builds the process-level running snapshot directly from one core Instance.
+#[allow(deprecated)]
 pub async fn network_instance_running_info<H>(
     instance: &CoreInstance<H>,
 ) -> anyhow::Result<NetworkInstanceRunningInfo>
@@ -50,10 +51,6 @@ where
         .map(Into::into)
         .collect::<Vec<_>>();
     let peer_route_pairs = list_peer_route_pair(peers.clone(), routes.clone());
-    #[cfg(feature = "vpn-portal")]
-    let vpn_portal_cfg = Some(instance.vpn_portal_info().await.client_config);
-    #[cfg(not(feature = "vpn-portal"))]
-    let vpn_portal_cfg = Some(String::new());
     let dev_name = instance
         .toml_config()
         .map(|config| config.get_flags().dev_name)
@@ -68,7 +65,8 @@ where
             ips: Some(node.ip_list),
             stun_info: Some(node.stun_info),
             listeners: node.listeners.into_iter().map(Into::into).collect(),
-            vpn_portal_cfg,
+            // Client private keys are returned only by the explicit portal RPC.
+            vpn_portal_cfg: None,
             peer_id: node.peer_id,
         }),
         events: instance.management_events(),

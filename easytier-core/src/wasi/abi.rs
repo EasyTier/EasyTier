@@ -34,7 +34,7 @@ pub const CORE_INSTANCE_CONFIG_VERSION: u32 = 14;
 pub const WEB_CLIENT_CONFIG_VERSION: u32 = 1;
 
 /// Version of the public data-plane guest export contract.
-pub const DATA_PLANE_ABI_VERSION: u32 = 3;
+pub const DATA_PLANE_ABI_VERSION: u32 = 4;
 
 /// Version of the protobuf RPC guest export contract.
 #[cfg(feature = "management-rpc")]
@@ -54,6 +54,8 @@ pub const DATA_PLANE_UDP_CAPABILITY: u64 = 1 << 2;
 pub const DATA_PLANE_DEADLINE_READ: u32 = 1 << 0;
 /// Update the write deadline in `easytier_data_plane_resource_deadline_set`.
 pub const DATA_PLANE_DEADLINE_WRITE: u32 = 1 << 1;
+/// Version of the host tunnel metadata and export contract.
+pub const HOST_TUNNEL_ABI_VERSION: u32 = 1;
 
 /// Guest exports a WASI runtime calls to manage a core instance.
 ///
@@ -62,6 +64,9 @@ pub const DATA_PLANE_DEADLINE_WRITE: u32 = 1 << 1;
 /// all asynchronous guest work through `easytier_instance_drive` and host
 /// completion notifications.
 pub const GUEST_EXPORTS: &[&str] = &[
+    // WASI command initialization. This only binds the runtime; core lifecycle
+    // still starts through the instance exports below.
+    "_start",
     // Guest-memory buffers.
     "easytier_buffer_alloc",
     "easytier_buffer_free",
@@ -112,6 +117,13 @@ pub const RPC_GUEST_EXPORTS: &[&str] = &[
     "easytier_rpc_operation_free",
 ];
 
+/// Guest exports present with the host tunnel feature.
+#[cfg(feature = "wasm-host-tunnel")]
+pub const HOST_TUNNEL_GUEST_EXPORTS: &[&str] = &[
+    "easytier_host_tunnel_abi_version",
+    "easytier_instance_accept_tunnel",
+];
+
 /// Guest exports present when the core is built with the smoltcp data plane.
 #[cfg(feature = "proxy-smoltcp-stack")]
 pub const DATA_PLANE_GUEST_EXPORTS: &[&str] = &[
@@ -124,6 +136,7 @@ pub const DATA_PLANE_GUEST_EXPORTS: &[&str] = &[
     "easytier_data_plane_tcp_accept_submit",
     "easytier_data_plane_tcp_read_submit",
     "easytier_data_plane_tcp_write_submit",
+    "easytier_data_plane_tcp_shutdown_write_submit",
     "easytier_data_plane_udp_bind_submit",
     "easytier_data_plane_udp_receive_submit",
     "easytier_data_plane_udp_send_submit",
@@ -136,6 +149,7 @@ pub const DATA_PLANE_GUEST_EXPORTS: &[&str] = &[
     "easytier_data_plane_tcp_accept_result_take",
     "easytier_data_plane_tcp_read_result_take",
     "easytier_data_plane_tcp_write_result_take",
+    "easytier_data_plane_tcp_shutdown_write_result_take",
     "easytier_data_plane_udp_bind_result_take",
     "easytier_data_plane_udp_receive_result_take",
     "easytier_data_plane_udp_send_result_take",

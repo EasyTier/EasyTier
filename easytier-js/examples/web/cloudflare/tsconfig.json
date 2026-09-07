@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022"],
+    "types": ["./worker-configuration.d.ts"],
+    "strict": true,
+    "noEmit": true,
+    "noUncheckedIndexedAccess": true,
+    "useDefineForClassFields": true
+  },
+  "include": ["worker.ts", "worker-configuration.d.ts"]
+}

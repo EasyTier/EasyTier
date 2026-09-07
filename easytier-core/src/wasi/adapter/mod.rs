@@ -7,3 +7,5 @@ pub mod event;
 pub mod management;
 pub mod packet;
 pub mod socket;
+#[cfg(feature = "wasm-host-tunnel")]
+pub mod tunnel;

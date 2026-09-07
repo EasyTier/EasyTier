@@ -7,6 +7,8 @@ use std::{
     time::Duration,
 };
 
+#[cfg(feature = "wireguard")]
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use easytier_core::{
     connectivity::protocol::raw::TunnelDialer,
     foundation::stats::{LabelSet, LabelType, MetricName, MetricSnapshot},
@@ -99,7 +101,18 @@ async fn set_foreign_network_refresh_interval(inst: &Instance, seconds: u64) {
 }
 
 #[cfg(feature = "wireguard")]
-use crate::{common::config::VpnPortalConfig, vpn_portal::wireguard::get_wg_config_for_portal};
+use crate::{
+    common::config::{VpnPortalClientConfig, VpnPortalConfig},
+    vpn_portal::wireguard::test_wireguard_keys,
+};
+
+#[cfg(feature = "wireguard")]
+use easytier_core::gateway::vpn_portal::PortalClientState;
+#[cfg(feature = "wireguard")]
+use easytier_proto::api::{
+    config::{ConfigPatchAction, InstanceConfigPatch, VpnPortalClientPatch},
+    manage::VpnPortalClientConfig as VpnPortalClientConfigPb,
+};
 
 pub fn prepare_linux_namespaces() {
     del_netns("net_a");
@@ -107,12 +120,14 @@ pub fn prepare_linux_namespaces() {
     del_netns("net_c");
     del_netns("net_d");
     del_netns("net_e");
+    del_netns("net_f");
 
     create_netns("net_a", "10.1.1.1/24", "fd11::1/64");
     create_netns("net_b", "10.1.1.2/24", "fd11::2/64");
     create_netns("net_c", "10.1.2.3/24", "fd12::3/64");
     create_netns("net_d", "10.1.2.4/24", "fd12::4/64");
     create_netns("net_e", "10.1.1.3/24", "fd11::3/64");
+    create_netns("net_f", "10.1.2.5/24", "fd12::5/64");
 
     prepare_bridge("br_a");
     prepare_bridge("br_b");
@@ -122,6 +137,7 @@ pub fn prepare_linux_namespaces() {
     add_ns_to_bridge("br_a", "net_e");
     add_ns_to_bridge("br_b", "net_c");
     add_ns_to_bridge("br_b", "net_d");
+    add_ns_to_bridge("br_b", "net_f");
 }
 
 pub fn get_inst_config(
@@ -1541,9 +1557,9 @@ pub async fn proxy_three_node_disconnect_test(#[values("tcp", "wg")] proto: &str
                         .any(|r| *r == inst4.peer_id())
                 },
                 // 0 down, assume last packet is recv in -0.01
-                // [2, 7) send ping
-                // [4, 9) ping fail and close connection
-                Duration::from_secs(11),
+                // one ping outstanding at a time, each waits up to 2s:
+                // 5 consecutive failures close the connection at ~[4, 11)
+                Duration::from_secs(15),
             )
             .await;
 
@@ -1676,7 +1692,17 @@ use defguard_wireguard_rs::{
     InterfaceConfiguration, WGApi, WireguardInterfaceApi, host::Peer, key::Key, net::IpAddrMask,
 };
 
+fn wireguard_ifname(base: &str) -> String {
+    if cfg!(target_os = "linux") || cfg!(target_os = "freebsd") {
+        base.to_owned()
+    } else {
+        "utun3".into()
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn run_wireguard_client(
+    ifname: &str,
     endpoint: SocketAddr,
     peer_public_key: Key,
     client_private_key: Key,
@@ -1684,12 +1710,7 @@ fn run_wireguard_client(
     client_ip: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Create new API object for interface
-    let ifname: String = if cfg!(target_os = "linux") || cfg!(target_os = "freebsd") {
-        "wg0".into()
-    } else {
-        "utun3".into()
-    };
-    let wgapi = WGApi::new(ifname.clone(), false)?;
+    let wgapi = WGApi::new(ifname.to_owned(), false)?;
 
     // create interface
     wgapi.create_interface()?;
@@ -1707,7 +1728,7 @@ fn run_wireguard_client(
 
     // interface configuration
     let interface_config = InterfaceConfiguration {
-        name: ifname.clone(),
+        name: ifname.to_owned(),
         prvkey: client_private_key.to_string(),
         address: client_ip,
         port: 12345,
@@ -1730,10 +1751,25 @@ pub async fn wireguard_vpn_portal(#[values(true, false)] test_v6: bool) {
     let insts = init_three_node_ex(
         "tcp",
         |config| {
+            let identity = config.get_network_identity();
+            config.set_network_identity(NetworkIdentity::new(
+                identity.network_name,
+                "wireguard-portal-test".to_owned(),
+            ));
+            if config.get_inst_name() == "inst1" {
+                config
+                    .add_proxy_cidr("198.51.100.0/24".parse().unwrap(), None)
+                    .unwrap();
+            }
             if config.get_inst_name() == "inst3" {
                 config.set_vpn_portal_config(VpnPortalConfig {
                     wireguard_listen: "0.0.0.0:22121".parse().unwrap(),
-                    client_cidr: "10.14.14.0/24".parse().unwrap(),
+                    wireguard_private_key: Some(BASE64_STANDARD.encode([42u8; 32])),
+                    clients: vec![VpnPortalClientConfig {
+                        name: "test-client".to_owned(),
+                        virtual_ip: "10.144.144.4/24".parse().unwrap(),
+                        groups: Vec::new(),
+                    }],
                 });
             }
             config
@@ -1756,13 +1792,37 @@ pub async fn wireguard_vpn_portal(#[values(true, false)] test_v6: bool) {
 
     let net_ns = NetNS::new(Some("net_d".into()));
     let _g = net_ns.guard();
-    let wg_cfg = get_wg_config_for_portal(&insts[2].get_global_ctx().get_network_identity());
+    let portal_config = insts[2]
+        .get_global_ctx()
+        .config
+        .get_vpn_portal_config()
+        .unwrap();
+    let portal_info = insts[2].get_core_instance().vpn_portal_info().await;
+    assert_eq!(portal_info.clients.len(), 1);
+    let client_info = portal_info
+        .clients
+        .iter()
+        .find(|client| client.name == "test-client")
+        .expect("configured client must be reported");
+    assert!(
+        client_info.client_config.contains("198.51.100.0/24"),
+        "client config must include remote proxy CIDRs"
+    );
+    assert!(
+        client_info
+            .client_config
+            .contains("Address = 10.144.144.4/32"),
+        "client config must assign the attached peer virtual IP"
+    );
+    let (server_public, client_private) =
+        test_wireguard_keys(&portal_config, "test-client").unwrap();
     run_wireguard_client(
+        &wireguard_ifname("wg0"),
         dst_socket_addr,
-        Key::try_from(wg_cfg.my_public_key()).unwrap(),
-        Key::try_from(wg_cfg.peer_secret_key()).unwrap(),
-        vec!["10.14.14.0/24".to_string(), "10.144.144.0/24".to_string()],
-        "10.14.14.2".to_string(),
+        Key::try_from(server_public.as_slice()).unwrap(),
+        Key::try_from(client_private.as_slice()).unwrap(),
+        vec!["10.144.144.0/24".to_string()],
+        "10.144.144.4".to_owned(),
     )
     .unwrap();
 
@@ -1785,6 +1845,498 @@ pub async fn wireguard_vpn_portal(#[values(true, false)] test_v6: bool) {
     )
     .await;
 
+    drop_insts(insts).await;
+}
+
+#[cfg(feature = "wireguard")]
+#[tokio::test]
+#[serial_test::serial]
+pub async fn wireguard_vpn_portal_multi_client() {
+    use rand::Rng as _;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::{TcpListener, TcpStream},
+    };
+
+    let insts = init_three_node_ex(
+        "tcp",
+        |config| {
+            let identity = config.get_network_identity();
+            config.set_network_identity(NetworkIdentity::new(
+                identity.network_name,
+                "wireguard-portal-multi-client-test".to_owned(),
+            ));
+            if config.get_inst_name() == "inst3" {
+                config.set_vpn_portal_config(VpnPortalConfig {
+                    wireguard_listen: "0.0.0.0:22121".parse().unwrap(),
+                    wireguard_private_key: Some(BASE64_STANDARD.encode([42u8; 32])),
+                    clients: vec![
+                        VpnPortalClientConfig {
+                            name: "client-a".to_owned(),
+                            virtual_ip: "10.144.144.4/24".parse().unwrap(),
+                            groups: Vec::new(),
+                        },
+                        VpnPortalClientConfig {
+                            name: "client-b".to_owned(),
+                            virtual_ip: "10.144.144.5/24".parse().unwrap(),
+                            groups: Vec::new(),
+                        },
+                    ],
+                });
+            }
+            config
+        },
+        false,
+    )
+    .await;
+
+    let portal_config = insts[2]
+        .get_global_ctx()
+        .config
+        .get_vpn_portal_config()
+        .unwrap();
+
+    for (ns, client_name, virtual_ip) in [
+        ("net_d", "client-a", "10.144.144.4"),
+        ("net_f", "client-b", "10.144.144.5"),
+    ] {
+        let net_ns = NetNS::new(Some(ns.into()));
+        let _g = net_ns.guard();
+        let (server_public, client_private) =
+            test_wireguard_keys(&portal_config, client_name).unwrap();
+        run_wireguard_client(
+            &wireguard_ifname("wg0"),
+            "10.1.2.3:22121".parse().unwrap(),
+            Key::try_from(server_public.as_slice()).unwrap(),
+            Key::try_from(client_private.as_slice()).unwrap(),
+            vec!["10.144.144.0/24".to_string()],
+            virtual_ip.to_owned(),
+        )
+        .unwrap();
+    }
+
+    // 两个客户端各自 ping mesh 内节点
+    for ns in ["net_d", "net_f"] {
+        wait_for_condition(
+            || async { ping_test(ns, "10.144.144.1", None).await },
+            Duration::from_secs(10),
+        )
+        .await;
+        wait_for_condition(
+            || async { ping_test(ns, "10.144.144.2", None).await },
+            Duration::from_secs(10),
+        )
+        .await;
+    }
+
+    // 跨客户端互 ping 对方的虚拟 IP，验证 WireGuard 地址与 attached
+    // peer 地址相同且双向数据包无需地址改写。
+    wait_for_condition(
+        || async { ping_test("net_d", "10.144.144.5", None).await },
+        Duration::from_secs(10),
+    )
+    .await;
+    wait_for_condition(
+        || async { ping_test("net_f", "10.144.144.4", None).await },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    // TCP 数据面：node1 侧看到的连接源地址必须是 client-a 的虚拟 IP，
+    // 并做一段随机数据回环，验证传输层校验和保持不变。
+    let mut buf = vec![0u8; 1024];
+    rand::thread_rng().fill(&mut buf[..]);
+    let expected = buf.clone();
+    let echo_task = tokio::spawn(async move {
+        let net_ns = NetNS::new(Some("net_a".into()));
+        let _g = net_ns.guard();
+        let socket = TcpListener::bind("0.0.0.0:22222").await.unwrap();
+        let (mut st, addr) = socket.accept().await.unwrap();
+        assert_eq!(addr.ip().to_string(), "10.144.144.4".to_string());
+        let mut rbuf = vec![0u8; 1024];
+        st.read_exact(&mut rbuf).await.unwrap();
+        assert_eq!(rbuf, expected);
+        st.write_all(&rbuf).await.unwrap();
+    });
+    {
+        let net_ns = NetNS::new(Some("net_d".into()));
+        let _g = net_ns.guard();
+        let mut stream = TcpStream::connect("10.144.144.1:22222").await.unwrap();
+        stream.write_all(&buf).await.unwrap();
+        let mut rbuf = vec![0u8; 1024];
+        stream.read_exact(&mut rbuf).await.unwrap();
+        assert_eq!(rbuf, buf);
+    }
+    echo_task.await.unwrap();
+
+    // portal 状态：两个客户端均在线，隧道地址等于各自的 attached peer
+    // 虚拟 IP，peer_id 互不相同。
+    let portal_info = insts[2].get_core_instance().vpn_portal_info().await;
+    assert_eq!(portal_info.clients.len(), 2);
+    let client_a = portal_info
+        .clients
+        .iter()
+        .find(|client| client.name == "client-a")
+        .expect("client-a must be reported");
+    let client_b = portal_info
+        .clients
+        .iter()
+        .find(|client| client.name == "client-b")
+        .expect("client-b must be reported");
+    for client in [client_a, client_b] {
+        assert_eq!(client.state, PortalClientState::Online);
+        assert!(client.peer_id.is_some());
+    }
+    assert_ne!(client_a.peer_id, client_b.peer_id);
+    assert_eq!(client_a.tunnel_ip, Some("10.144.144.4".parse().unwrap()));
+    assert_eq!(client_b.tunnel_ip, Some("10.144.144.5".parse().unwrap()));
+
+    drop_insts(insts).await;
+}
+
+#[cfg(feature = "wireguard")]
+#[tokio::test]
+#[serial_test::serial]
+pub async fn wireguard_vpn_portal_client_roaming() {
+    let insts = init_three_node_ex(
+        "tcp",
+        |config| {
+            let identity = config.get_network_identity();
+            config.set_network_identity(NetworkIdentity::new(
+                identity.network_name,
+                "wireguard-portal-roaming-test".to_owned(),
+            ));
+            if config.get_inst_name() == "inst3" {
+                config.set_vpn_portal_config(VpnPortalConfig {
+                    wireguard_listen: "0.0.0.0:22121".parse().unwrap(),
+                    wireguard_private_key: Some(BASE64_STANDARD.encode([42u8; 32])),
+                    clients: vec![VpnPortalClientConfig {
+                        name: "roaming-client".to_owned(),
+                        virtual_ip: "10.144.144.4/24".parse().unwrap(),
+                        groups: Vec::new(),
+                    }],
+                });
+            }
+            config
+        },
+        false,
+    )
+    .await;
+
+    let portal_config = insts[2]
+        .get_global_ctx()
+        .config
+        .get_vpn_portal_config()
+        .unwrap();
+    {
+        let net_ns = NetNS::new(Some("net_d".into()));
+        let _g = net_ns.guard();
+        let (server_public, client_private) =
+            test_wireguard_keys(&portal_config, "roaming-client").unwrap();
+        run_wireguard_client(
+            &wireguard_ifname("wg0"),
+            "10.1.2.3:22121".parse().unwrap(),
+            Key::try_from(server_public.as_slice()).unwrap(),
+            Key::try_from(client_private.as_slice()).unwrap(),
+            vec!["10.144.144.0/24".to_string()],
+            "10.144.144.4".to_owned(),
+        )
+        .unwrap();
+    }
+
+    // 客户端在 net_d（源地址 10.1.2.4）上线
+    wait_for_condition(
+        || async { ping_test("net_d", "10.144.144.1", None).await },
+        Duration::from_secs(10),
+    )
+    .await;
+    let peer_id = {
+        let info = insts[2].get_core_instance().vpn_portal_info().await;
+        let client = info
+            .clients
+            .iter()
+            .find(|client| client.name == "roaming-client")
+            .expect("roaming client must be reported");
+        assert_eq!(client.state, PortalClientState::Online);
+        assert!(
+            client
+                .endpoint
+                .as_deref()
+                .is_some_and(|endpoint| endpoint.starts_with("10.1.2.4:")),
+            "unexpected endpoint before roaming: {:?}",
+            client.endpoint
+        );
+        client.peer_id
+    };
+    assert!(peer_id.is_some());
+
+    // 模拟客户端换网络：net_d 把地址从 10.1.2.4 换成 10.1.2.9。内核
+    // WireGuard 为 peer endpoint 缓存的源地址随旧地址一起失效，客户端
+    // 不重建 peer、不重新握手，直接用原 session 从新源继续发数据包，
+    // portal 应在数据路径上更新 endpoint
+    for args in [
+        vec![
+            "netns".to_owned(),
+            "exec".to_owned(),
+            "net_d".to_owned(),
+            "ip".to_owned(),
+            "addr".to_owned(),
+            "del".to_owned(),
+            "10.1.2.4/24".to_owned(),
+            "dev".to_owned(),
+            get_guest_veth_name("net_d").to_owned(),
+        ],
+        vec![
+            "netns".to_owned(),
+            "exec".to_owned(),
+            "net_d".to_owned(),
+            "ip".to_owned(),
+            "addr".to_owned(),
+            "add".to_owned(),
+            "10.1.2.9/24".to_owned(),
+            "dev".to_owned(),
+            get_guest_veth_name("net_d").to_owned(),
+        ],
+    ] {
+        let ret = std::process::Command::new("ip")
+            .args(&args)
+            .output()
+            .unwrap();
+        assert!(
+            ret.status.success(),
+            "ip {args:?} failed: {}",
+            String::from_utf8_lossy(&ret.stderr)
+        );
+    }
+
+    // 驱动流量（ping 经内核 WireGuard 加密后从新源发出），portal 应在
+    // 同一个 peer 上更新 endpoint：peer_id 不变说明是同代漫游，客户端没有掉线重连
+    wait_for_condition(
+        || async {
+            ping_test("net_d", "10.144.144.1", None).await;
+            let info = insts[2].get_core_instance().vpn_portal_info().await;
+            info.clients.iter().any(|client| {
+                client.name == "roaming-client"
+                    && client.state == PortalClientState::Online
+                    && client.peer_id == peer_id
+                    && client
+                        .endpoint
+                        .as_deref()
+                        .is_some_and(|endpoint| endpoint.starts_with("10.1.2.9:"))
+            })
+        },
+        Duration::from_secs(20),
+    )
+    .await;
+
+    // 漫游后连通性保持
+    wait_for_condition(
+        || async { ping_test("net_d", "10.144.144.1", None).await },
+        Duration::from_secs(10),
+    )
+    .await;
+    wait_for_condition(
+        || async { ping_test("net_d", "10.144.144.3", None).await },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    drop_insts(insts).await;
+}
+
+#[cfg(feature = "wireguard")]
+#[tokio::test]
+#[serial_test::serial]
+pub async fn wireguard_vpn_portal_dynamic_clients() {
+    let insts = init_three_node_ex(
+        "tcp",
+        |config| {
+            let identity = config.get_network_identity();
+            config.set_network_identity(NetworkIdentity::new(
+                identity.network_name,
+                "wireguard-portal-dynamic-clients-test".to_owned(),
+            ));
+            if config.get_inst_name() == "inst3" {
+                config.set_vpn_portal_config(VpnPortalConfig {
+                    wireguard_listen: "0.0.0.0:22121".parse().unwrap(),
+                    wireguard_private_key: Some(BASE64_STANDARD.encode([42u8; 32])),
+                    clients: vec![VpnPortalClientConfig {
+                        name: "client-a".to_owned(),
+                        virtual_ip: "10.144.144.4/24".parse().unwrap(),
+                        groups: Vec::new(),
+                    }],
+                });
+            }
+            config
+        },
+        false,
+    )
+    .await;
+
+    let core = insts[2].get_core_instance();
+    let portal_config = insts[2]
+        .get_global_ctx()
+        .config
+        .get_vpn_portal_config()
+        .unwrap();
+
+    // 初始客户端上线
+    {
+        let net_ns = NetNS::new(Some("net_d".into()));
+        let _g = net_ns.guard();
+        let (server_public, client_private) =
+            test_wireguard_keys(&portal_config, "client-a").unwrap();
+        run_wireguard_client(
+            &wireguard_ifname("wg0"),
+            "10.1.2.3:22121".parse().unwrap(),
+            Key::try_from(server_public.as_slice()).unwrap(),
+            Key::try_from(client_private.as_slice()).unwrap(),
+            vec!["10.144.144.0/24".to_string()],
+            "10.144.144.4".to_owned(),
+        )
+        .unwrap();
+    }
+    wait_for_condition(
+        || async { ping_test("net_d", "10.144.144.1", None).await },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    // 不重启实例，通过配置补丁动态添加第二个客户端
+    easytier_core::management::apply_config_patch(
+        &core,
+        InstanceConfigPatch {
+            vpn_portal_clients: vec![VpnPortalClientPatch {
+                action: ConfigPatchAction::Add as i32,
+                client: Some(VpnPortalClientConfigPb {
+                    name: "client-b".to_owned(),
+                    virtual_ip: "10.144.144.5/24".to_owned(),
+                    groups: Vec::new(),
+                }),
+            }],
+            ..Default::default()
+        },
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        insts[2]
+            .get_global_ctx()
+            .config
+            .get_vpn_portal_config()
+            .unwrap()
+            .clients
+            .len(),
+        2,
+        "shared TOML model must reflect the runtime update"
+    );
+
+    // 拒绝的补丁不能污染共享 TOML 模型：重复添加 client-b 必须整体失败
+    let error = easytier_core::management::apply_config_patch(
+        &core,
+        InstanceConfigPatch {
+            vpn_portal_clients: vec![VpnPortalClientPatch {
+                action: ConfigPatchAction::Add as i32,
+                client: Some(VpnPortalClientConfigPb {
+                    name: "client-b".to_owned(),
+                    virtual_ip: "10.144.144.9/24".to_owned(),
+                    groups: Vec::new(),
+                }),
+            }],
+            ..Default::default()
+        },
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("duplicate VPN portal client name"),
+        "unexpected rejection reason: {error:#}"
+    );
+    assert_eq!(
+        insts[2]
+            .get_global_ctx()
+            .config
+            .get_vpn_portal_config()
+            .unwrap()
+            .clients
+            .len(),
+        2,
+        "rejected patch must leave the shared TOML model unchanged"
+    );
+
+    // 新客户端立即可以握手上线，原客户端不受影响
+    {
+        let net_ns = NetNS::new(Some("net_f".into()));
+        let _g = net_ns.guard();
+        let (server_public, client_private) =
+            test_wireguard_keys(&portal_config, "client-b").unwrap();
+        run_wireguard_client(
+            &wireguard_ifname("wg0"),
+            "10.1.2.3:22121".parse().unwrap(),
+            Key::try_from(server_public.as_slice()).unwrap(),
+            Key::try_from(client_private.as_slice()).unwrap(),
+            vec!["10.144.144.0/24".to_string()],
+            "10.144.144.5".to_owned(),
+        )
+        .unwrap();
+    }
+    wait_for_condition(
+        || async { ping_test("net_f", "10.144.144.1", None).await },
+        Duration::from_secs(10),
+    )
+    .await;
+    wait_for_condition(
+        || async { ping_test("net_d", "10.144.144.1", None).await },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    // 动态移除 client-a：其会话被拆除，client-b 保持在线
+    easytier_core::management::apply_config_patch(
+        &core,
+        InstanceConfigPatch {
+            vpn_portal_clients: vec![VpnPortalClientPatch {
+                action: ConfigPatchAction::Remove as i32,
+                client: Some(VpnPortalClientConfigPb {
+                    name: "client-a".to_owned(),
+                    virtual_ip: String::new(),
+                    groups: Vec::new(),
+                }),
+            }],
+            ..Default::default()
+        },
+        None,
+    )
+    .await
+    .unwrap();
+
+    wait_for_condition(
+        || async { !ping_test("net_d", "10.144.144.1", None).await },
+        Duration::from_secs(20),
+    )
+    .await;
+    wait_for_condition(
+        || async { ping_test("net_f", "10.144.144.1", None).await },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    let info = core.vpn_portal_info().await;
+    assert_eq!(info.clients.len(), 1);
+    assert_eq!(info.clients[0].name, "client-b");
+    assert_eq!(info.clients[0].state, PortalClientState::Online);
+    assert_eq!(
+        info.clients[0].tunnel_ip,
+        Some("10.144.144.5".parse().unwrap())
+    );
+
+    // Release the held CoreInstance Arc so drop_insts can observe a clean
+    // drop instead of swallowing its debug assertion.
+    drop(core);
     drop_insts(insts).await;
 }
 

@@ -252,8 +252,12 @@ ios <-.-> nodea <--> nodeb <-.-> id1
 1. Start EasyTier with WireGuard portal enabled:
 
 ```bash
-# Listen on 0.0.0.0:11013 and use 10.14.14.0/24 subnet for WireGuard clients
-sudo easytier-core -i 10.144.144.1 --vpn-portal wg://0.0.0.0:11013/10.14.14.0/24
+# Register one WireGuard client as virtual peer 10.144.144.3
+sudo easytier-core -i 10.144.144.1 \
+  --network-secret portal-secret \
+  --vpn-portal wg://0.0.0.0:11013 \
+  --vpn-portal-private-key "$(wg genkey)" \
+  --vpn-portal-client phone=10.144.144.3
 ```
 
 2. Get WireGuard client configuration:
@@ -263,10 +267,10 @@ sudo easytier-core -i 10.144.144.1 --vpn-portal wg://0.0.0.0:11013/10.14.14.0/24
 easytier-cli vpn-portal
 ```
 
-3. In the output configuration:
-   - Set `Interface.Address` to an available IP from the WireGuard subnet
-   - Set `Peer.Endpoint` to the public IP/domain of your EasyTier node
-   - Import the modified configuration into your WireGuard client
+3. In the output configuration, replace a wildcard `Peer.Endpoint` with the
+   public IP/domain of your EasyTier node, then import it. `Interface.Address`
+   is local to that WireGuard client and may be changed to any IPv4 address;
+   EasyTier translates it to the registered virtual-peer address.
 
 #### Self-Hosted Public Shared Node
 

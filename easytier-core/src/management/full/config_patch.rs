@@ -3,21 +3,29 @@ use std::{fmt::Debug, sync::Arc};
 use anyhow::Context as _;
 use easytier_proto::api::config::{
     self, AclPatch, ConfigPatchAction, ExitNodePatch, InstanceConfigPatch, Patchable,
-    PortForwardPatch, ProxyNetworkPatch, RoutePatch, UrlPatch,
+    PortForwardPatch, ProxyNetworkPatch, RoutePatch, UrlPatch, VpnPortalClientPatch,
 };
 
 use crate::{
     config::{
+        api_input::managed_credential_from_proto,
         peers::AclRuleConfig,
         runtime::CoreInstanceRuntimeConfig,
         toml::{ConfigLoader as _, TomlConfig},
     },
     instance::{CoreInstance, CoreInstanceConfig, CoreInstanceHost, CoreInstanceState},
+    peers::credential_manager::CredentialManager,
 };
+
+#[async_trait::async_trait]
+pub trait ConfigPatchPersistence: Send + Sync {
+    async fn persist(&self, instance_id: uuid::Uuid, config: &TomlConfig) -> anyhow::Result<()>;
+}
 
 pub async fn apply_config_patch<H>(
     instance: &Arc<CoreInstance<H>>,
     patch: InstanceConfigPatch,
+    persistence: Option<&dyn ConfigPatchPersistence>,
 ) -> anyhow::Result<()>
 where
     H: CoreInstanceHost,
@@ -33,36 +41,42 @@ where
     let candidate = config.detached_snapshot();
     let parsed_prefix =
         parse_ipv6_public_addr_prefix_patch(patch.ipv6_public_addr_prefix.as_deref())?;
-    let patch_for_host = patch.clone();
+    // Take the credential set out first so the host-facing copy below never
+    // clones secret material.
+    let mut patch = patch;
+    let managed_credentials = patch.managed_credentials.take();
+    let patch_for_host = patch_without_managed_credentials(&patch);
 
     // Preserve the existing ordered partial-commit contract: earlier valid
     // sub-patches remain applied if a later sub-patch fails.
-    let patch_result: anyhow::Result<bool> = async {
+    let patch_result: anyhow::Result<(bool, bool)> = async {
         let result = patch_port_forwards(&candidate, patch.port_forwards);
-        validate_and_commit_candidate(instance, &config, &candidate)?;
+        validate_persist_and_commit_candidate(instance, &config, &candidate, persistence).await?;
         result?;
 
         let result = patch_acl(&candidate, patch.acl);
-        validate_and_commit_candidate(instance, &config, &candidate)?;
+        validate_persist_and_commit_candidate(instance, &config, &candidate, persistence).await?;
         result?;
 
         let result = patch_proxy_networks(&candidate, patch.proxy_networks);
-        validate_and_commit_candidate(instance, &config, &candidate)?;
+        validate_persist_and_commit_candidate(instance, &config, &candidate, persistence).await?;
         result?;
 
         let result = patch_routes(&candidate, patch.routes);
-        validate_and_commit_candidate(instance, &config, &candidate)?;
+        validate_persist_and_commit_candidate(instance, &config, &candidate, persistence).await?;
         result?;
 
         let result = patch_exit_nodes_config(&candidate, patch.exit_nodes);
-        let normalized = validate_and_commit_candidate(instance, &config, &candidate)?;
+        let normalized =
+            validate_persist_and_commit_candidate(instance, &config, &candidate, persistence)
+                .await?;
         result?;
         instance
             .update_exit_nodes(normalized.peer.exit_nodes.clone())
             .await;
 
         let result = patch_mapped_listeners(&candidate, patch.mapped_listeners);
-        validate_and_commit_candidate(instance, &config, &candidate)?;
+        validate_persist_and_commit_candidate(instance, &config, &candidate, persistence).await?;
         result?;
 
         patch_connectors(instance, patch.connectors)?;
@@ -84,6 +98,11 @@ where
             flags.disable_relay_data = disable_relay_data;
             candidate.set_flags(flags);
         }
+        if let Some(prefer_peer_relay) = patch.prefer_peer_relay {
+            let mut flags = candidate.get_flags();
+            flags.prefer_peer_relay = prefer_peer_relay;
+            candidate.set_flags(flags);
+        }
         if let Some(enabled) = patch.ipv6_public_addr_provider {
             candidate.set_ipv6_public_addr_provider(enabled);
             provider_config_changed = true;
@@ -95,22 +114,124 @@ where
             candidate.set_ipv6_public_addr_prefix(prefix);
             provider_config_changed = true;
         }
-        let normalized = validate_and_commit_candidate(instance, &config, &candidate)?;
+        let mut managed_credentials_changed = false;
+
+        // Runs last so client validation sees the fully patched candidate,
+        // including routes and the node IPv4 set earlier in this request.
+        if !patch.vpn_portal_clients.is_empty() {
+            let previous = config.detached_snapshot();
+            apply_vpn_portal_client_patches(&candidate, patch.vpn_portal_clients)?;
+            // Deep-validate and durably persist before hot-applying. A failed
+            // write leaves the live Portal untouched. If the host rejects the
+            // hot update, restore the previous durable snapshot before
+            // returning so a later patch cannot overwrite from stale shared
+            // state and a restart cannot apply a rejected client set.
+            let normalized = validate_candidate(instance, &candidate)?;
+            persist_candidate_if_changed(instance, &config, &candidate, persistence).await?;
+            #[cfg(feature = "vpn-portal")]
+            {
+                let portal = normalized
+                    .vpn_portal
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("VPN portal is not configured"))?;
+                if let Err(error) = instance
+                    .update_vpn_portal_clients(
+                        portal.clients,
+                        &runtime_config_from_normalized(&normalized),
+                    )
+                    .await
+                {
+                    if let Some(persistence) = persistence
+                        && let Err(rollback_error) =
+                            persistence.persist(instance.instance_id(), &previous).await
+                    {
+                        return Err(error.context(format!(
+                            "failed to restore durable configuration after VPN portal update: \
+                             {rollback_error:#}"
+                        )));
+                    }
+                    return Err(error);
+                }
+            }
+            #[cfg(not(feature = "vpn-portal"))]
+            {
+                let _ = normalized;
+            }
+            config.replace_from_snapshot(&candidate);
+        }
+
+        if let Some(managed) = &managed_credentials {
+            // Managed credential patch transaction: validate and reserve →
+            // persist → install. The reservation prevents base or ephemeral
+            // credential mutations from invalidating the replacement while
+            // the durable write is in flight, without holding a synchronous
+            // lock across the await. Dropping the replacement before install
+            // releases the reservation.
+            //
+            // Accepted consistency limits:
+            //
+            // 1. A persistence implementation may finish its write after this
+            //    RPC future is cancelled. The reservation is then released and
+            //    the running instance keeps its previous credentials even if
+            //    the durable file contains the replacement. A retry, controller
+            //    reconcile, or restart is required to converge; until then a
+            //    removed credential may remain trusted by the running instance.
+            //
+            // 2. This instance operation is not serialized with a process-level
+            //    instance overwrite. The built-in web reconciler serializes its
+            //    own actions, but independently concurrent admin RPCs are
+            //    last-writer-wins and may leave the running instance and durable
+            //    file on different config generations. A restart aligns runtime
+            //    with the file; controller reconcile is required to restore its
+            //    desired generation.
+            let credential_manager = instance.credential_manager();
+            let entries = managed
+                .entries
+                .iter()
+                .map(managed_credential_from_proto)
+                .collect::<Vec<_>>();
+            let replacement = credential_manager
+                .validate_managed_credentials(&entries)
+                .map_err(anyhow::Error::msg)?;
+            candidate.set_managed_credentials(entries);
+            validate_candidate(instance, &candidate)?;
+            // When durable storage is configured, persist before installing
+            // secret authority so a successful replacement survives restart.
+            if let Some(persistence) = persistence {
+                persistence
+                    .persist(instance.instance_id(), &candidate)
+                    .await?;
+            }
+            config.replace_from_snapshot(&candidate);
+            managed_credentials_changed =
+                CredentialManager::install_managed_credentials(replacement);
+        } else {
+            validate_persist_and_commit_candidate(instance, &config, &candidate, persistence)
+                .await?;
+        }
+        let normalized = validate_candidate(instance, &candidate)?;
         let runtime = runtime_config_from_normalized(&normalized);
-        instance
-            .instance_runtime
-            .synchronize_config(&patch_for_host, &runtime);
-        Ok(provider_config_changed)
+        if patch_for_host != InstanceConfigPatch::default() {
+            instance
+                .instance_runtime
+                .synchronize_config(&patch_for_host, &runtime);
+        }
+        Ok((provider_config_changed, managed_credentials_changed))
     }
     .await;
 
     instance
         .update_runtime_config_under_operation(runtime_config_from_toml(instance, &config)?)
         .await?;
-    let provider_config_changed = patch_result?;
-    instance
-        .instance_runtime
-        .publish_config_patch(patch_for_host);
+    let (provider_config_changed, managed_credentials_changed) = patch_result?;
+    if patch_for_host != InstanceConfigPatch::default() {
+        instance
+            .instance_runtime
+            .publish_config_patch(patch_for_host);
+    }
+    if managed_credentials_changed {
+        instance.notify_credential_changed();
+    }
     #[cfg(feature = "public-ipv6-provider")]
     if provider_config_changed && instance.state() == CoreInstanceState::Running {
         instance.reconcile_public_ipv6_provider().await;
@@ -120,9 +241,14 @@ where
     Ok(())
 }
 
-fn validate_and_commit_candidate<H>(
+fn patch_without_managed_credentials(patch: &InstanceConfigPatch) -> InstanceConfigPatch {
+    let mut patch = patch.clone();
+    patch.managed_credentials = None;
+    patch
+}
+
+fn validate_candidate<H>(
     instance: &CoreInstance<H>,
-    shared: &TomlConfig,
     candidate: &TomlConfig,
 ) -> anyhow::Result<CoreInstanceConfig>
 where
@@ -132,8 +258,43 @@ where
     let runtime = runtime_config_from_normalized(&normalized);
     runtime.services.public_ipv6_provider.validate()?;
     instance.validate_runtime_config_capabilities(&runtime)?;
-    shared.replace_from_snapshot(candidate);
     Ok(normalized)
+}
+
+async fn validate_persist_and_commit_candidate<H>(
+    instance: &CoreInstance<H>,
+    shared: &TomlConfig,
+    candidate: &TomlConfig,
+    persistence: Option<&dyn ConfigPatchPersistence>,
+) -> anyhow::Result<CoreInstanceConfig>
+where
+    H: CoreInstanceHost,
+{
+    let normalized = validate_candidate(instance, candidate)?;
+    if persist_candidate_if_changed(instance, shared, candidate, persistence).await? {
+        shared.replace_from_snapshot(candidate);
+    }
+    Ok(normalized)
+}
+
+async fn persist_candidate_if_changed<H>(
+    instance: &CoreInstance<H>,
+    shared: &TomlConfig,
+    candidate: &TomlConfig,
+    persistence: Option<&dyn ConfigPatchPersistence>,
+) -> anyhow::Result<bool>
+where
+    H: CoreInstanceHost,
+{
+    if shared.dump() == candidate.dump() {
+        return Ok(false);
+    }
+    if let Some(persistence) = persistence {
+        persistence
+            .persist(instance.instance_id(), candidate)
+            .await?;
+    }
+    Ok(true)
 }
 
 fn runtime_config_from_toml<H>(
@@ -184,6 +345,27 @@ fn trace_patchables<T: Debug>(patches: &[Patchable<T>]) {
             }
             None => tracing::warn!("ignored invalid configuration patch action"),
         }
+    }
+}
+
+#[cfg(test)]
+mod managed_credential_tests {
+    use easytier_proto::api::manage::ManagedCredentialSet;
+
+    use super::*;
+
+    #[test]
+    fn event_patch_drops_managed_credential_secrets() {
+        let patch = InstanceConfigPatch {
+            managed_credentials: Some(ManagedCredentialSet::default()),
+            ..Default::default()
+        };
+
+        assert!(
+            patch_without_managed_credentials(&patch)
+                .managed_credentials
+                .is_none()
+        );
     }
 }
 
@@ -312,6 +494,68 @@ fn patch_mapped_listeners(config: &TomlConfig, patches: Vec<UrlPatch>) -> anyhow
     Ok(())
 }
 
+/// Applies VPN portal client patches to the candidate TOML model. The live
+/// portal is updated by the caller after the candidate commits, so deep
+/// validation runs against the final configuration state.
+fn apply_vpn_portal_client_patches(
+    config: &TomlConfig,
+    patches: Vec<VpnPortalClientPatch>,
+) -> anyhow::Result<()> {
+    if patches.is_empty() {
+        return Ok(());
+    }
+    let mut portal = config
+        .get_vpn_portal_config()
+        .ok_or_else(|| anyhow::anyhow!("VPN portal is not configured; cannot patch its clients"))?;
+    for patch in patches {
+        match ConfigPatchAction::try_from(patch.action) {
+            Ok(ConfigPatchAction::Add) => {
+                let Some(client) = patch.client else {
+                    tracing::warn!("ignored VPN portal client add without client");
+                    continue;
+                };
+                let virtual_ip =
+                    client
+                        .virtual_ip
+                        .parse::<cidr::Ipv4Inet>()
+                        .with_context(|| {
+                            format!(
+                                "invalid VPN portal client virtual CIDR: {}",
+                                client.virtual_ip
+                            )
+                        })?;
+                portal
+                    .clients
+                    .push(crate::config::toml::VpnPortalClientConfig {
+                        name: client.name,
+                        virtual_ip,
+                        groups: client.groups,
+                    });
+            }
+            Ok(ConfigPatchAction::Remove) => {
+                let Some(client) = patch.client else {
+                    tracing::warn!("ignored VPN portal client remove without client");
+                    continue;
+                };
+                let before = portal.clients.len();
+                portal
+                    .clients
+                    .retain(|existing| existing.name != client.name);
+                if portal.clients.len() == before {
+                    anyhow::bail!("VPN portal client not found: {}", client.name);
+                }
+            }
+            Ok(ConfigPatchAction::Clear) => portal.clients.clear(),
+            Err(_) => tracing::warn!(
+                action = patch.action,
+                "ignored invalid VPN portal client action"
+            ),
+        }
+    }
+    config.set_vpn_portal_config(portal);
+    Ok(())
+}
+
 fn patch_connectors<H>(instance: &CoreInstance<H>, patches: Vec<UrlPatch>) -> anyhow::Result<()>
 where
     H: CoreInstanceHost,
@@ -345,4 +589,98 @@ where
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::toml::{VpnPortalClientConfig, VpnPortalConfig};
+    use easytier_proto::api::manage::VpnPortalClientConfig as ClientPb;
+
+    fn portal_config() -> TomlConfig {
+        let config = TomlConfig::default();
+        config.set_vpn_portal_config(VpnPortalConfig {
+            wireguard_listen: "0.0.0.0:51820".parse().unwrap(),
+            wireguard_private_key: None,
+            clients: vec![VpnPortalClientConfig {
+                name: "alice".to_owned(),
+                virtual_ip: "10.0.0.2/24".parse().unwrap(),
+                groups: Vec::new(),
+            }],
+        });
+        config
+    }
+
+    fn configured_names(config: &TomlConfig) -> Vec<String> {
+        config
+            .get_vpn_portal_config()
+            .unwrap()
+            .clients
+            .into_iter()
+            .map(|client| client.name)
+            .collect()
+    }
+
+    fn add(name: &str, ip: &str) -> VpnPortalClientPatch {
+        VpnPortalClientPatch {
+            action: ConfigPatchAction::Add as i32,
+            client: Some(ClientPb {
+                name: name.to_owned(),
+                virtual_ip: ip.to_owned(),
+                groups: Vec::new(),
+            }),
+        }
+    }
+
+    fn remove(name: &str) -> VpnPortalClientPatch {
+        VpnPortalClientPatch {
+            action: ConfigPatchAction::Remove as i32,
+            client: Some(ClientPb {
+                name: name.to_owned(),
+                virtual_ip: String::new(),
+                groups: Vec::new(),
+            }),
+        }
+    }
+
+    #[test]
+    fn vpn_portal_client_patches_add_remove_and_clear() {
+        let config = portal_config();
+
+        apply_vpn_portal_client_patches(&config, vec![add("bob", "10.0.0.3/24")]).unwrap();
+        assert_eq!(configured_names(&config), ["alice", "bob"]);
+
+        apply_vpn_portal_client_patches(&config, vec![remove("alice")]).unwrap();
+        assert_eq!(configured_names(&config), ["bob"]);
+
+        apply_vpn_portal_client_patches(
+            &config,
+            vec![VpnPortalClientPatch {
+                action: ConfigPatchAction::Clear as i32,
+                client: None,
+            }],
+        )
+        .unwrap();
+        assert!(configured_names(&config).is_empty());
+    }
+
+    #[test]
+    fn vpn_portal_client_patches_reject_missing_prerequisites() {
+        let bare = TomlConfig::default();
+        let error =
+            apply_vpn_portal_client_patches(&bare, vec![add("alice", "10.0.0.2")]).unwrap_err();
+        assert!(error.to_string().contains("not configured"));
+
+        let config = portal_config();
+        let error = apply_vpn_portal_client_patches(&config, vec![remove("ghost")]).unwrap_err();
+        assert!(error.to_string().contains("not found"));
+
+        let error =
+            apply_vpn_portal_client_patches(&config, vec![add("bob", "not-an-ip")]).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("invalid VPN portal client virtual CIDR")
+        );
+    }
 }

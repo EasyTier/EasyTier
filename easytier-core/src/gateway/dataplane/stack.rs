@@ -105,7 +105,7 @@ impl SmoltcpPlane {
 
         let forward_tasks = Arc::new(std::sync::Mutex::new(forward_tasks));
         forward_tasks.lock().unwrap().spawn(reap_joinset_background(
-            forward_tasks.clone(),
+            Arc::downgrade(&forward_tasks),
             "SmoltcpPlane",
         ));
 

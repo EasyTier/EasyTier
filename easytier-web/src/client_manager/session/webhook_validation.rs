@@ -228,7 +228,7 @@ pub(super) async fn apply_rejected(
     let Some(session_data) = session_data.upgrade() else {
         return;
     };
-    let (storage_token, disconnect_notification) = {
+    let (storage_token, disconnect_notification, session_epoch) = {
         let mut data = session_data.write().await;
         if !data.req.as_ref().is_some_and(|req| {
             SessionRpcService::heartbeat_matches_identity(
@@ -248,6 +248,7 @@ pub(super) async fn apply_rejected(
         data.webhook_validation_dirty = false;
         data.binding_version = None;
         data.applied_config_revision = None;
+        data.pending_managed_config_delta = None;
         let storage_token = data.storage_token.clone();
         let disconnect_notification = storage_token.as_ref().and_then(|storage_token| {
             data.webhook_connected_binding_version
@@ -258,13 +259,13 @@ pub(super) async fn apply_rejected(
                     binding_version,
                 })
         });
-        (storage_token, disconnect_notification)
+        (storage_token, disconnect_notification, data.session_epoch)
     };
     if let Some(storage_token) = storage_token {
         let report_time = SessionRpcService::heartbeat_report_timestamp(&input.req);
         input
             .storage
-            .update_client(storage_token, report_time, false);
+            .update_session_client(storage_token, report_time, false, session_epoch);
     }
     if disconnect_notification.is_some() {
         wait_webhook_connection_transition(
@@ -290,7 +291,14 @@ pub(super) async fn apply_success(
     let Some(session_data) = session_data.upgrade() else {
         return;
     };
-    let (storage_token, notifier, disconnect_notification, connect_notification, runtime_req) = {
+    let (
+        storage_token,
+        notifier,
+        disconnect_notification,
+        connect_notification,
+        runtime_req,
+        session_epoch,
+    ) = {
         let mut data = session_data.write().await;
         let Some(runtime_req) = data.req.clone() else {
             return;
@@ -367,8 +375,14 @@ pub(super) async fn apply_success(
             disconnect_notification,
             connect_notification,
             runtime_req,
+            data.session_epoch,
         )
     };
+
+    let report_time = SessionRpcService::heartbeat_report_timestamp(&runtime_req);
+    input
+        .storage
+        .update_session_client(storage_token, report_time, true, session_epoch);
 
     if disconnect_notification.is_some() || connect_notification.is_some() {
         wait_webhook_connection_transition(
@@ -379,10 +393,6 @@ pub(super) async fn apply_success(
         .await;
     }
 
-    let report_time = SessionRpcService::heartbeat_report_timestamp(&runtime_req);
-    input
-        .storage
-        .update_client(storage_token, report_time, true);
     let _ = notifier.send(runtime_req);
 }
 

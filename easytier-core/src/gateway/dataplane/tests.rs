@@ -327,6 +327,55 @@ async fn data_plane_sessions_complete_tcp_operations_end_to_end() {
     assert_eq!(written, 4);
     assert_eq!(received, b"ping");
 
+    let eof_read = session_b.submit_tcp_read(server, 16).unwrap();
+    let shutdown = session_a.submit_tcp_shutdown_write(client).unwrap();
+    let shutdown_completion = wait_for_session_completion(&session_a).await;
+    let eof_completion = wait_for_session_completion(&session_b).await;
+    assert_eq!(shutdown_completion.operation_id, shutdown);
+    assert_eq!(eof_completion.operation_id, eof_read);
+    session_a
+        .take_result_with(shutdown, |outcome| match outcome {
+            Ok(DataPlaneOperationResult::TcpWriteShutdown) => Some(()),
+            _ => None,
+        })
+        .unwrap()
+        .unwrap();
+    let eof = session_b
+        .take_result_with(eof_read, |outcome| match outcome {
+            Ok(DataPlaneOperationResult::TcpRead { data, eof }) => Some((data.clone(), *eof)),
+            _ => None,
+        })
+        .unwrap()
+        .unwrap();
+    assert_eq!(eof, (Vec::new(), true));
+
+    let response_read = session_a.submit_tcp_read(client, 16).unwrap();
+    let response_write = session_b
+        .submit_tcp_write(server, b"pong".to_vec())
+        .unwrap();
+    let (response_read_completion, response_write_completion) = tokio::join!(
+        wait_for_session_completion(&session_a),
+        wait_for_session_completion(&session_b),
+    );
+    assert_eq!(response_read_completion.operation_id, response_read);
+    assert_eq!(response_write_completion.operation_id, response_write);
+    let response = session_a
+        .take_result_with(response_read, |outcome| match outcome {
+            Ok(DataPlaneOperationResult::TcpRead { data, eof }) if !eof => Some(data.clone()),
+            _ => None,
+        })
+        .unwrap()
+        .unwrap();
+    let response_len = session_b
+        .take_result_with(response_write, |outcome| match outcome {
+            Ok(DataPlaneOperationResult::TcpWritten { len }) => Some(*len),
+            _ => None,
+        })
+        .unwrap()
+        .unwrap();
+    assert_eq!(response, b"pong");
+    assert_eq!(response_len, 4);
+
     let blocked_read = session_b.submit_tcp_read(server, 16).unwrap();
     session_b.close_resource(server);
     let close_completion = wait_for_session_completion(&session_b).await;
@@ -651,6 +700,53 @@ async fn immediate_consumer_reacquire_never_leases_closing_generation() {
 
     endpoint.gateway.stop_runtime().await;
     endpoint.peer_manager.clear_resources().await;
+}
+
+#[tokio::test]
+async fn tcp_connect_survives_ipv4_generation_replacement() {
+    let (a, b) = setup_data_plane_pair().await;
+    let _consumer = b.gateway.acquire_consumer_lease().unwrap();
+
+    for ip in ["10.126.127.2", "10.126.126.2"] {
+        let ip: IpAddr = ip.parse().unwrap();
+        b.gateway.runtime_config.update_peer_with(|peer| {
+            peer.runtime.core.routes.ipv4 = Some(IpPrefix::new(ip, 24).unwrap());
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if b.gateway
+                    .net
+                    .lock()
+                    .await
+                    .as_ref()
+                    .is_some_and(|plane| IpAddr::V4(plane.ipv4_addr.address()) == ip)
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("data-plane IPv4 generation did not update");
+    }
+
+    let timeout = Duration::from_secs(10);
+    let mut listener = b.gateway.data_plane_tcp_bind(0, timeout).await.unwrap();
+    let listen_addr = SocketAddr::new(b.ip.address().into(), listener.local_addr().port());
+    let (accepted, client) = tokio::join!(
+        listener.accept(),
+        a.gateway.data_plane_tcp_connect(listen_addr, timeout),
+    );
+    let (mut server, _) = accepted.unwrap();
+    let mut client = client.unwrap();
+
+    client.write_all(b"ping").await.unwrap();
+    client.flush().await.unwrap();
+    let mut buf = [0u8; 4];
+    server.read_exact(&mut buf).await.unwrap();
+    assert_eq!(&buf, b"ping");
+
+    stop_data_plane_pair(&a, &b).await;
 }
 
 #[tokio::test]

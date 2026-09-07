@@ -63,6 +63,8 @@ pub trait ConfigFileStorage: Send + Sync + 'static {
 
     async fn read(&self, path: &Path) -> anyhow::Result<Option<Vec<u8>>>;
 
+    /// Atomically replaces the file and restricts newly created files to the
+    /// current user when the Host supports file permissions.
     async fn write(&self, path: &Path, contents: &[u8]) -> anyhow::Result<()>;
 
     async fn remove(&self, path: &Path) -> anyhow::Result<()>;

@@ -233,7 +233,7 @@ fn require_ipv4(address: SocketAddr) -> Result<SocketAddr, DataPlaneError> {
     address.is_ipv4().then_some(address).ok_or_else(|| {
         error(
             DataPlaneErrorKind::AddressFamilyUnsupported,
-            "data-plane ABI v2 supports IPv4 only",
+            "data-plane ABI supports IPv4 only",
         )
     })
 }
@@ -352,6 +352,24 @@ pub extern "C" fn easytier_data_plane_tcp_write_submit(
     };
     submit_operation(handle, output_operation, |instance| {
         instance.submit_data_plane(|session| session.submit_tcp_write(stream, data))
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn easytier_data_plane_tcp_shutdown_write_submit(
+    handle: u64,
+    stream: u64,
+    output_operation: u32,
+) -> i32 {
+    let stream = match resource_id(stream) {
+        Ok(stream) => stream,
+        Err(error) => {
+            set_instance_error(handle, error.message());
+            return error_status(error.kind());
+        }
+    };
+    submit_operation(handle, output_operation, |instance| {
+        instance.submit_data_plane(|session| session.submit_tcp_shutdown_write(stream))
     })
 }
 
@@ -657,6 +675,26 @@ pub extern "C" fn easytier_data_plane_tcp_write_result_take(handle: u64, operati
             },
         )?;
         i32::try_from(len).map_err(|_| invalid_input("TCP write result exceeds i32"))
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn easytier_data_plane_tcp_shutdown_write_result_take(
+    handle: u64,
+    operation: u64,
+) -> i32 {
+    data_plane_call(handle, |instance| {
+        let session = instance.data_plane_session();
+        take_result(
+            &session,
+            operation_id(operation)?,
+            DataPlaneOperationKind::TcpShutdownWrite,
+            |result| match result {
+                DataPlaneOperationResult::TcpWriteShutdown => Ok(()),
+                _ => Err(invalid_input("TCP write shutdown result variant mismatch")),
+            },
+        )?;
+        Ok(0)
     })
 }
 
