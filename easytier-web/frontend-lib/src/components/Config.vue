@@ -32,6 +32,26 @@ const curNetwork = defineModel('curNetwork', {
 
 const { t } = useI18n()
 
+// Credential mode: once a credential is filled, configure secure_mode with the
+// credential as local_private_key; the backend (api_input) normalizes it and
+// derives the public key. Password must stay empty in credential mode.
+const credential = computed({
+  get: () => curNetwork.value.secure_mode?.local_private_key ?? '',
+  set: (v: string) => {
+    const val = v.trim()
+    if (val) {
+      curNetwork.value.secure_mode = { enabled: true, local_private_key: val, local_public_key: undefined }
+      curNetwork.value.network_secret = ''
+    } else {
+      curNetwork.value.secure_mode = undefined
+    }
+  },
+})
+// Password and credential are mutually exclusive: typing a password clears credential mode.
+watch(() => curNetwork.value.network_secret, (v) => {
+  if (v) curNetwork.value.secure_mode = undefined
+})
+
 const protos: { [proto: string]: number } = {
   tcp: 11010,
   udp: 11010,
@@ -286,6 +306,17 @@ function removeVpnPortalClient(index: number) {
                   <label for="network_secret">{{ t('network_secret') }}</label>
                   <Password id="network_secret" v-model="curNetwork.network_secret"
                     aria-describedby="network_secret-help" toggleMask :feedback="false" fluid />
+                </div>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap">
+                <div class="flex flex-col gap-2 basis-5/12 grow">
+                  <div class="flex items-center">
+                    <label for="credential">{{ t('credential') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('credential_help')"></span>
+                  </div>
+                  <InputText id="credential" v-model="credential" aria-describedby="credential-help"
+                    :placeholder="t('credential_placeholder')" />
                 </div>
               </div>
 
