@@ -140,3 +140,21 @@ func quoteTOMLString(value string) string {
 	}
 	return string(encoded)
 }
+
+func stripInstanceIdentity(configTOML string) string {
+	var kept []string
+	for _, line := range strings.Split(configTOML, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "instance_id") || strings.HasPrefix(trimmed, "instance_name") {
+			key := trimmed
+			if idx := strings.IndexByte(trimmed, '='); idx >= 0 {
+				key = strings.TrimSpace(trimmed[:idx])
+			}
+			if key == "instance_id" || key == "instance_name" {
+				continue
+			}
+		}
+		kept = append(kept, line)
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n"))
+}

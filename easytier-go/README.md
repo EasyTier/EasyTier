@@ -55,6 +55,17 @@ connection, err := instance.Dial(ctx, "tcp4", "10.144.0.2:8080")
 packets, err := instance.ListenPacket("udp4", ":5353")
 ```
 
+`CreateInstanceTOML` loads a native EasyTier TOML document. Pass an empty
+`instanceID` to allocate a UUID. Existing `instance_id` and `instance_name`
+keys in the document are replaced by the host.
+
+```go
+instance, err := host.CreateInstanceTOML(ctx, "office", "", configTOML)
+```
+
+`Instance.ShowNodeInfo` returns this instance's virtual IPv4 address and
+advertised hostname.
+
 ### Web Client management
 
 A host can also connect to an EasyTier Web configuration server. The embedded

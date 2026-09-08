@@ -6,6 +6,9 @@ import (
 	"net"
 	"net/netip"
 	"strconv"
+	"strings"
+
+	"github.com/EasyTier/EasyTier/easytier-go/proto/common"
 
 	"github.com/EasyTier/EasyTier/easytier-go/internal/artifact"
 	"github.com/EasyTier/EasyTier/easytier-go/internal/contextutil"
@@ -125,6 +128,66 @@ func (host *Host) CreateInstance(
 		owner:    instanceOwnerApplication,
 		source:   manage.ConfigSource_ConfigSourceUser,
 		name:     config.document.networkName,
+	}); err != nil {
+		_ = runtime.Close(contextutil.WithoutCancel(ctx))
+		return nil, err
+	}
+	return instance, nil
+}
+
+// CreateInstanceTOML creates an EasyTier instance from a TOML configuration.
+// instanceName is used as the instance_name field. If instanceID is empty, a
+// new UUID is generated. Existing instance_id and instance_name keys in the
+// TOML are replaced by bindInstanceIdentity.
+func (host *Host) CreateInstanceTOML(
+	ctx context.Context,
+	instanceName string,
+	instanceID string,
+	configTOML string,
+) (*Instance, error) {
+	if host == nil {
+		return nil, fmt.Errorf("create instance with nil EasyTier host")
+	}
+	if ctx == nil {
+		return nil, fmt.Errorf("create EasyTier instance with nil context")
+	}
+	if strings.TrimSpace(configTOML) == "" {
+		return nil, fmt.Errorf("EasyTier TOML configuration is empty")
+	}
+	if instanceName == "" {
+		instanceName = "easytier"
+	}
+	var (
+		id       *common.UUID
+		idString string
+		err      error
+	)
+	if instanceID != "" {
+		id, idString, err = parseInstanceUUID(instanceID)
+	} else {
+		id, idString, err = newInstanceUUID()
+	}
+	if err != nil {
+		return nil, err
+	}
+	runtime, err := host.engine.CreateInstance(
+		ctx,
+		bindInstanceIdentity(stripInstanceIdentity(configTOML), idString, instanceName),
+	)
+	if err != nil {
+		return nil, err
+	}
+	instance := &Instance{
+		engine:  runtime,
+		id:      idString,
+		manager: host.manager,
+	}
+	if err := host.manager.register(&managedInstance{
+		id:       id,
+		instance: instance,
+		owner:    instanceOwnerApplication,
+		source:   manage.ConfigSource_ConfigSourceUser,
+		name:     instanceName,
 	}); err != nil {
 		_ = runtime.Close(contextutil.WithoutCancel(ctx))
 		return nil, err

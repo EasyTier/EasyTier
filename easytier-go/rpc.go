@@ -7,3 +7,6 @@ type PeerInfo = internalhost.PeerInfo
 
 // Route describes one route visible to an EasyTier instance.
 type Route = internalhost.Route
+
+// NodeInfo describes this EasyTier instance.
+type NodeInfo = internalhost.NodeInfo

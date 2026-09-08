@@ -23,6 +23,9 @@ type PeerInfo = apiinstance.PeerInfo
 // Route describes one route visible to an EasyTier instance.
 type Route = apiinstance.Route
 
+// NodeInfo describes this EasyTier instance.
+type NodeInfo = apiinstance.NodeInfo
+
 // ListPeer returns the peers visible to this EasyTier instance.
 func (instance *Instance) ListPeer(
 	ctx context.Context,
@@ -63,6 +66,19 @@ func (instance *Instance) listRouteResponse(
 		return nil, err
 	}
 	return response, nil
+}
+
+// ShowNodeInfo returns this instance's node information, including its
+// virtual IPv4 address and advertised hostname.
+func (instance *Instance) ShowNodeInfo(ctx context.Context) (*NodeInfo, error) {
+	response, err := instance.showNodeInfo(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if response.NodeInfo == nil {
+		return nil, fmt.Errorf("EasyTier ShowNodeInfo returned no node info")
+	}
+	return response.NodeInfo, nil
 }
 
 func (instance *Instance) showNodeInfo(

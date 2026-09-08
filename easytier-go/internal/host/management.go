@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
@@ -708,6 +709,26 @@ func peerRoutePairs(
 			right.GetIpv4Addr().GetAddress().GetAddr()
 	})
 	return pairs
+}
+
+func parseInstanceUUID(text string) (*common.UUID, string, error) {
+	normalized := strings.ReplaceAll(strings.TrimSpace(text), "-", "")
+	if len(normalized) != 32 {
+		return nil, "", fmt.Errorf("invalid EasyTier instance ID %q", text)
+	}
+	var value [16]byte
+	decoded, err := hex.DecodeString(normalized)
+	if err != nil || len(decoded) != 16 {
+		return nil, "", fmt.Errorf("invalid EasyTier instance ID %q", text)
+	}
+	copy(value[:], decoded)
+	id := &common.UUID{
+		Part1: binary.BigEndian.Uint32(value[0:4]),
+		Part2: binary.BigEndian.Uint32(value[4:8]),
+		Part3: binary.BigEndian.Uint32(value[8:12]),
+		Part4: binary.BigEndian.Uint32(value[12:16]),
+	}
+	return id, uuidString(id), nil
 }
 
 func newInstanceUUID() (*common.UUID, string, error) {
