@@ -4,6 +4,7 @@ use easytier_core::{
     },
     rpc::standalone::StandAloneClient,
     socket::SocketListener,
+    socket::tcp::TcpBindOptions,
     socket::udp::{UdpBindOptions, UdpSessionListenRequest},
     tunnel::Tunnel,
 };
@@ -28,7 +29,12 @@ pub fn runtime_rpc_client(remote_url: url::Url) -> RuntimeRpcClient {
 }
 
 pub fn runtime_rpc_listener(local_addr: std::net::SocketAddr) -> RuntimeRpcListener {
-    TcpTunnelListener::new(local_addr, native_host_runtime())
+    // RPC clients may arrive through TUN; their replies must retain VPN routing.
+    let bind = TcpBindOptions::default()
+        .with_local_addr(Some(local_addr))
+        .with_only_v6(true)
+        .with_need_protect(false);
+    TcpTunnelListener::new_with_bind(local_addr, bind, native_host_runtime())
 }
 
 pub fn runtime_udp_tunnel_dialer(remote_url: url::Url) -> impl TunnelDialer {

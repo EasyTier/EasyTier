@@ -354,7 +354,8 @@ mod tests {
         assert_eq!(listen_false[43], 0);
 
         let udp_true = encode_udp_bind_options(&UdpBindOptions::direct_connect()).unwrap();
-        let udp_false = encode_udp_bind_options(&UdpBindOptions::socks5()).unwrap();
+        let udp_false =
+            encode_udp_bind_options(&UdpBindOptions::socks5().with_need_protect(false)).unwrap();
         assert_eq!(udp_true[43], 1);
         assert_eq!(udp_false[43], 0);
     }

@@ -79,6 +79,7 @@ pub(crate) async fn protect_native_socket(
 mod tests {
     use super::*;
     use easytier_core::socket::{
+        SocketListener,
         tcp::{TcpBindOptions, TcpConnectOptions, TcpListenOptions, VirtualTcpListener},
         udp::UdpBindOptions,
     };
@@ -192,6 +193,11 @@ mod tests {
                 }
                 let udp = udp.with_need_protect(false);
                 crate::socket::udp::create_udp_socket(&udp).await.unwrap();
+                let mut rpc = crate::proto::rpc::standalone::runtime_rpc_listener(local);
+                rpc.listen().await.unwrap();
+                let rpc_addr = rpc.local_url().socket_addrs(|| None).unwrap()[0];
+                let _client = tokio::net::TcpStream::connect(rpc_addr).await.unwrap();
+                rpc.accept().await.unwrap();
                 assert_eq!(protector.calls.load(Ordering::SeqCst), 3);
             })
             .await;
