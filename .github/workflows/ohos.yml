@@ -18,6 +18,7 @@ on:
         type: boolean
 
 permissions:
+  actions: write
   contents: read
   pull-requests: read
 
@@ -29,9 +30,24 @@ defaults:
     shell: bash
 
 jobs:
+  pre_job:
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    outputs:
+      should_skip: ${{ steps.skip_check.outputs.should_skip == 'true' && github.ref_type != 'tag' && github.ref_name != 'main' && !startsWith(github.ref_name, 'releases/') }}
+    steps:
+      - id: skip_check
+        uses: fkirc/skip-duplicate-actions@v5
+        with:
+          concurrent_skipping: 'same_content_newer'
+          skip_after_successful_duplicate: 'true'
+          cancel_others: 'true'
+          paths: '["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/**", "easytier/**", "easytier-core/**", "easytier-proto/**", "easytier-contrib/easytier-ohrs/**", ".github/workflows/ohos.yml", ".github/actions/**"]'
+
   ohos:
     name: ohos
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    needs: pre_job
+    if: needs.pre_job.outputs.should_skip != 'true'
     runs-on: ubuntu-latest
 
     steps:
