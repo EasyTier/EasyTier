@@ -6,7 +6,7 @@ import (
 	"os"
 	"runtime"
 
-	"github.com/EasyTier/EasyTier/easytier-go/internal/engine"
+	"github.com/easytier/easytier/easytier-go/internal/engine"
 )
 
 type WebClientOptions struct {

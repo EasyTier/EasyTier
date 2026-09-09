@@ -11,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/EasyTier/EasyTier/easytier-go/internal/coreabi"
+	"github.com/easytier/easytier/easytier-go/internal/coreabi"
 )
 
 const dataPlaneCompletionBatch = 64

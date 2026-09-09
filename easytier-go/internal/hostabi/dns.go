@@ -3,7 +3,7 @@ package hostabi
 import (
 	"context"
 
-	"github.com/EasyTier/EasyTier/easytier-go/internal/reactor"
+	"github.com/easytier/easytier/easytier-go/internal/reactor"
 	"github.com/metacubex/wazero/api"
 )
 

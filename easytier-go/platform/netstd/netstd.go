@@ -7,7 +7,7 @@ import (
 	"net/netip"
 	"syscall"
 
-	"github.com/EasyTier/EasyTier/easytier-go/platform"
+	"github.com/easytier/easytier/easytier-go/platform"
 )
 
 // SocketFactory implements platform.SocketFactory with the Go standard

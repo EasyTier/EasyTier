@@ -6,7 +6,7 @@ import (
 	"net"
 	"unicode/utf8"
 
-	"github.com/EasyTier/EasyTier/easytier-go/platform"
+	"github.com/easytier/easytier/easytier-go/platform"
 	"github.com/metacubex/wazero/api"
 )
 

@@ -16,8 +16,8 @@ import (
 	"syscall"
 	"time"
 
-	corehost "github.com/EasyTier/EasyTier/easytier-go"
-	"github.com/EasyTier/EasyTier/easytier-go/internal/contextutil"
+	corehost "github.com/easytier/easytier/easytier-go"
+	"github.com/easytier/easytier/easytier-go/internal/contextutil"
 )
 
 const maxUDPPayload = 65507

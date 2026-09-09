@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/EasyTier/EasyTier/easytier-go/internal/coreabi"
-	"github.com/EasyTier/EasyTier/easytier-go/platform/netstd"
+	"github.com/easytier/easytier/easytier-go/internal/coreabi"
+	"github.com/easytier/easytier/easytier-go/platform/netstd"
 )
 
 const minimalConfig = `instance_id = "018f4fb1-7a2c-7d1f-9d89-935b0ad7e135"

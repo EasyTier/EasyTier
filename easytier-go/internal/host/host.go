@@ -8,16 +8,16 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/EasyTier/EasyTier/easytier-go/proto/common"
+	"github.com/easytier/easytier/easytier-go/proto/common"
 
-	"github.com/EasyTier/EasyTier/easytier-go/internal/artifact"
-	"github.com/EasyTier/EasyTier/easytier-go/internal/contextutil"
-	"github.com/EasyTier/EasyTier/easytier-go/internal/coreabi"
-	"github.com/EasyTier/EasyTier/easytier-go/internal/engine"
-	"github.com/EasyTier/EasyTier/easytier-go/platform"
-	"github.com/EasyTier/EasyTier/easytier-go/platform/netstd"
-	hostproto "github.com/EasyTier/EasyTier/easytier-go/proto"
-	"github.com/EasyTier/EasyTier/easytier-go/proto/api/manage"
+	"github.com/easytier/easytier/easytier-go/internal/artifact"
+	"github.com/easytier/easytier/easytier-go/internal/contextutil"
+	"github.com/easytier/easytier/easytier-go/internal/coreabi"
+	"github.com/easytier/easytier/easytier-go/internal/engine"
+	"github.com/easytier/easytier/easytier-go/platform"
+	"github.com/easytier/easytier/easytier-go/platform/netstd"
+	hostproto "github.com/easytier/easytier/easytier-go/proto"
+	"github.com/easytier/easytier/easytier-go/proto/api/manage"
 )
 
 type State int32

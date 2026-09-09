@@ -9,7 +9,7 @@ and imported by that artifact.
 import (
     "net/netip"
 
-    corehost "github.com/EasyTier/EasyTier/easytier-go"
+    corehost "github.com/easytier/easytier/easytier-go"
 )
 ```
 

@@ -7,7 +7,7 @@
 package acl
 
 import (
-	common "github.com/EasyTier/EasyTier/easytier-go/proto/common"
+	common "github.com/easytier/easytier/easytier-go/proto/common"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"

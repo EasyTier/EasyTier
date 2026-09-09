@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	apiinstance "github.com/EasyTier/EasyTier/easytier-go/proto/api/instance"
-	"github.com/EasyTier/EasyTier/easytier-go/proto/common"
+	apiinstance "github.com/easytier/easytier/easytier-go/proto/api/instance"
+	"github.com/easytier/easytier/easytier-go/proto/common"
 	"google.golang.org/protobuf/proto"
 )
 
