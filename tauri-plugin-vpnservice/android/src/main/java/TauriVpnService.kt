@@ -63,6 +63,7 @@ class TauriVpnService : VpnService() {
     override fun onDestroy() {
         println("vpn on destroy")
         disconnect()
+        setMainForegroundServiceEnabled(true)
         stopForeground(STOP_FOREGROUND_REMOVE)
         self = null
         EasyTierVpnTileService.requestStateUpdate(this)
@@ -72,6 +73,7 @@ class TauriVpnService : VpnService() {
     override fun onRevoke() {
         println("vpn on revoke")
         disconnect()
+        setMainForegroundServiceEnabled(true)
         stopForeground(STOP_FOREGROUND_REMOVE)
         self = null
         EasyTierVpnTileService.requestStateUpdate(this)
@@ -125,6 +127,24 @@ class TauriVpnService : VpnService() {
             )
         } else {
             startForeground(NOTIFICATION_ID, notification)
+        }
+
+        // A TUN-backed network is now protected by this foreground service, so the
+        // no-TUN keepalive service is redundant and would show a second notification.
+        setMainForegroundServiceEnabled(false)
+    }
+
+    private fun setMainForegroundServiceEnabled(enabled: Boolean) {
+        val intent = Intent().setClassName(packageName, "$packageName.MainForegroundService")
+        if (!enabled) {
+            stopService(intent)
+            return
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent)
+        } else {
+            startService(intent)
         }
     }
 
