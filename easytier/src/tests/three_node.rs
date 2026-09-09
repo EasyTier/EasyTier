@@ -3224,6 +3224,46 @@ pub async fn acl_rule_test_inbound(
     drop_insts(insts).await;
 }
 
+#[tokio::test]
+#[serial_test::serial]
+pub async fn acl_inbound_default_drop_blocks_bidirectional_icmp() {
+    use crate::proto::acl::*;
+
+    let insts = init_three_node("udp").await;
+    let mut acl = Acl::default();
+    let mut acl_v1 = AclV1::default();
+    acl_v1.chains.push(Chain {
+        name: "drop_inbound".to_string(),
+        chain_type: ChainType::Inbound as i32,
+        enabled: true,
+        default_action: Action::Drop as i32,
+        ..Default::default()
+    });
+    acl.acl_v1 = Some(acl_v1);
+
+    reload_instance_acl(&insts[0], Some(&acl)).await;
+    reload_instance_acl(&insts[1], Some(&acl)).await;
+
+    for payload_size in [None, Some(5 * 1024)] {
+        for _ in 0..2 {
+            assert!(!ping_test("net_a", "10.144.144.2", payload_size).await);
+            assert!(!ping_test("net_b", "10.144.144.1", payload_size).await);
+        }
+    }
+
+    reload_instance_acl(&insts[1], None).await;
+    for payload_size in [None, Some(5 * 1024)] {
+        wait_for_condition(
+            || async { ping_test("net_a", "10.144.144.2", payload_size).await },
+            Duration::from_secs(5),
+        )
+        .await;
+        assert!(!ping_test("net_b", "10.144.144.1", payload_size).await);
+    }
+
+    drop_insts(insts).await;
+}
+
 #[rstest::rstest]
 #[tokio::test]
 #[serial_test::serial]
