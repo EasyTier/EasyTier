@@ -7,7 +7,6 @@ use anyhow::{Context, Error, anyhow, ensure};
 use atomic_refcell::AtomicRefCell;
 use bytes::{BufMut, Bytes, BytesMut};
 use derive_more::{Constructor, Deref, DerefMut, From, Into};
-use dashmap::DashSet;
 use easytier_core::config::PeerId;
 use easytier_core::packet::{PacketType, TAIL_RESERVED_SIZE, ZCPacket, ZCPacketType};
 use moka::future::Cache;
@@ -37,6 +36,7 @@ use tokio_util::sync::{CancellationToken, PollSender};
 use tracing::{debug, error, info, instrument, trace, warn};
 
 use easytier_core::{
+    foundation::expiring_set::ExpiringSet,
     gateway::proxy::traits::TcpProxyStream,
     gateway::proxy::wrapped_transport::{
         WrappedTransportAcceptedStream, WrappedTransportConnect, WrappedTransportDatagram,
@@ -265,13 +265,19 @@ impl From<(SendStream, RecvStream)> for QuicStream {
 }
 //endregion
 
+/// How long to keep dialing a peer with legacy QUIC version 1 after it
+/// rejected `QUIC_VERSION_ETQ1`, before probing ETQ1 again. Bounds the set
+/// and lets peers that upgrade mid-flight pick up the fix.
+const LEGACY_VERSION_TTL: Duration = Duration::from_secs(3600);
+
 #[derive(Debug, Clone)]
 pub struct NatDstQuicConnector {
     pub(crate) endpoint: Endpoint,
     pub(crate) conn_map: Cache<PeerId, Connection>,
-    /// Peers that rejected `QUIC_VERSION_ETQ1` via version negotiation and
-    /// must be dialed with legacy version 1 from now on.
-    pub(crate) legacy_version_peers: Arc<DashSet<PeerId>>,
+    /// Peers that recently rejected `QUIC_VERSION_ETQ1` via version
+    /// negotiation and are dialed with legacy version 1 until the entry
+    /// expires.
+    pub(crate) legacy_version_peers: Arc<ExpiringSet<PeerId>>,
 }
 
 impl NatDstQuicConnector {
@@ -304,9 +310,10 @@ impl NatDstQuicConnector {
                     if let Some(ConnectionError::VersionMismatch) =
                         ret.as_ref().err().and_then(|e| e.downcast_ref())
                     {
-                        // Remote only supports legacy version 1; remember it so
-                        // later connects skip the rejected version.
-                        legacy_version_peers.insert(dst_peer);
+                        // Remote only supports legacy version 1; remember it
+                        // so later connects skip the rejected version for a
+                        // while.
+                        legacy_version_peers.insert(dst_peer, LEGACY_VERSION_TTL);
                     }
                     ret
                 }
@@ -316,6 +323,7 @@ impl NatDstQuicConnector {
 
     async fn connect(&self, dst_peer: PeerId) -> anyhow::Result<Connection> {
         self.conn_map.invalidate(&dst_peer).await;
+        self.legacy_version_peers.cleanup();
 
         if !self.legacy_version_peers.contains(&dst_peer) {
             let result = self
@@ -745,7 +753,7 @@ impl QuicProxy {
                     .max_capacity(u8::MAX.into()) // cf. quinn transport config (max_concurrent_bidi_streams)
                     .time_to_idle(Duration::from_secs(600)) // cf. quinn transport config (max_idle_timeout)
                     .build(),
-                legacy_version_peers: Arc::new(DashSet::new()),
+                legacy_version_peers: Arc::new(ExpiringSet::default()),
             });
         }
 
