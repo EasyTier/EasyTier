@@ -35,6 +35,7 @@ pub(crate) use session_socket::QuicUdpSessionSocket;
 
 // region config
 mod crypto {
+    use crate::tunnel::quic::QUIC_VERSION_ETQ1;
     use crate::utils::BoxExt;
     use bytes::{Buf, BytesMut};
     use quinn_proto::crypto::{
@@ -52,9 +53,20 @@ mod crypto {
     use tracing::{error, instrument, trace};
 
     #[derive(Debug, Clone, Copy)]
-    struct CryptoKey;
+    struct CryptoKey {
+        /// Bind the packet checksum to the packet number so that a truncated
+        /// packet number decoded out of window (RFC 9000 Appendix A) fails
+        /// authentication instead of acknowledging an unsent packet number.
+        pn_bound: bool,
+    }
 
     impl CryptoKey {
+        fn for_version(version: u32) -> Self {
+            Self {
+                pn_bound: version == QUIC_VERSION_ETQ1,
+            }
+        }
+
         fn header(self) -> KeyPair<Box<dyn HeaderKey>> {
             KeyPair {
                 local: Box::new(self),
@@ -94,6 +106,28 @@ mod crypto {
             }
             hasher.finish()
         }
+
+        // The packet number is mixed into the checksum before the slices. Real
+        // QUIC derives the AEAD nonce from the packet number, so a number
+        // decoded differently from how it was encoded fails authentication;
+        // this mirrors that property for the SeaHash integrity check.
+        fn checksum_with_packet(packet: u64, slices: &[&[u8]]) -> u64 {
+            let mut hasher = SeaHasher::default();
+            hasher.write(&packet.to_le_bytes());
+            for slice in slices {
+                hasher.write(&(slice.len() as u64).to_le_bytes());
+                hasher.write(slice);
+            }
+            hasher.finish()
+        }
+
+        fn checksum_for(&self, packet: u64, slices: &[&[u8]]) -> u64 {
+            if self.pn_bound {
+                Self::checksum_with_packet(packet, slices)
+            } else {
+                Self::checksum(slices)
+            }
+        }
     }
 
     impl PacketKey for CryptoKey {
@@ -101,7 +135,7 @@ mod crypto {
         fn encrypt(&self, packet: u64, buf: &mut [u8], header_len: usize) {
             let (header, rest) = buf.split_at_mut(header_len);
             let (payload, tag) = rest.split_at_mut(rest.len() - self.tag_len());
-            let checksum = Self::checksum(&[header, payload]);
+            let checksum = self.checksum_for(packet, &[header, payload]);
             tag.copy_from_slice(&checksum.to_be_bytes());
             trace!(checksum, ?header, ?payload, ?tag);
         }
@@ -115,7 +149,7 @@ mod crypto {
         ) -> Result<(), CryptoError> {
             let tag = payload.split_off(payload.len() - self.tag_len()).get_u64();
             trace!(tag, ?payload);
-            let checksum = Self::checksum(&[header, payload]);
+            let checksum = self.checksum_for(packet, &[header, payload]);
             if checksum != tag {
                 error!(tag, checksum, "checksum mismatch");
                 return Err(CryptoError);
@@ -146,15 +180,17 @@ mod crypto {
     #[derive(Debug)]
     struct QuicSession {
         side: Side,
+        key: CryptoKey,
         state: HandshakeState,
         local: TransportParameters,
         remote: Option<TransportParameters>,
     }
 
     impl QuicSession {
-        fn new(side: Side, params: TransportParameters) -> Self {
+        fn new(side: Side, version: u32, params: TransportParameters) -> Self {
             Self {
                 side,
+                key: CryptoKey::for_version(version),
                 state: HandshakeState::EmitInitial,
                 local: params,
                 remote: None,
@@ -164,7 +200,7 @@ mod crypto {
 
     impl Session for QuicSession {
         fn initial_keys(&self, _: &ConnectionId, _: Side) -> Keys {
-            CryptoKey.keys()
+            self.key.keys()
         }
 
         fn handshake_data(&self) -> Option<Box<dyn Any>> {
@@ -212,21 +248,21 @@ mod crypto {
                         self.local.write(buf);
                     }
                     self.state = HandshakeState::EmitHandshake;
-                    Some(CryptoKey.keys())
+                    Some(self.key.keys())
                 }
                 HandshakeState::EmitHandshake => {
                     if self.side.is_server() {
                         self.local.write(buf);
                     }
                     self.state = HandshakeState::Done;
-                    Some(CryptoKey.keys())
+                    Some(self.key.keys())
                 }
                 HandshakeState::Done => None,
             }
         }
 
         fn next_1rtt_keys(&mut self) -> Option<KeyPair<Box<dyn PacketKey>>> {
-            Some(CryptoKey.packet())
+            Some(self.key.packet())
         }
 
         fn is_valid_retry(&self, _: &ConnectionId, _: &[u8], _: &[u8]) -> bool {
@@ -254,13 +290,13 @@ mod crypto {
             server_name: &str,
             params: &TransportParameters,
         ) -> Result<Box<dyn Session>, ConnectError> {
-            Ok(Box::new(QuicSession::new(Side::Client, *params)))
+            Ok(Box::new(QuicSession::new(Side::Client, version, *params)))
         }
     }
 
     impl ServerConfig for CryptoConfig {
-        fn initial_keys(&self, _: u32, _: &ConnectionId) -> Result<Keys, UnsupportedVersion> {
-            Ok(CryptoKey.keys())
+        fn initial_keys(&self, version: u32, _: &ConnectionId) -> Result<Keys, UnsupportedVersion> {
+            Ok(CryptoKey::for_version(version).keys())
         }
 
         fn retry_tag(&self, _: u32, _: &ConnectionId, _: &[u8]) -> [u8; 16] {
@@ -273,10 +309,55 @@ mod crypto {
             version: u32,
             params: &TransportParameters,
         ) -> Box<dyn Session> {
-            Box::new(QuicSession::new(Side::Server, *params))
+            Box::new(QuicSession::new(Side::Server, version, *params))
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn roundtrip(pn_bound: bool, encrypt_pn: u64, decrypt_pn: u64) -> Result<(), CryptoError> {
+            let key = CryptoKey { pn_bound };
+            let mut buf = vec![7u8; 8 + 32 + key.tag_len()];
+            quinn_proto::crypto::PacketKey::encrypt(&key, encrypt_pn, &mut buf, 8);
+            let header = buf[..8].to_vec();
+            let mut payload = BytesMut::from(&buf[8..]);
+            quinn_proto::crypto::PacketKey::decrypt(&key, decrypt_pn, &header, &mut payload)
+        }
+
+        #[test]
+        fn legacy_checksum_ignores_packet_number() {
+            // Documents the original flaw: a packet number decoded differently
+            // from how it was encoded still passes authentication.
+            assert!(roundtrip(false, 100, 356).is_ok());
+        }
+
+        #[test]
+        fn pn_bound_checksum_rejects_shifted_packet_number() {
+            assert!(roundtrip(true, 100, 100).is_ok());
+            // A 1-byte truncated packet number decoded one window (+256) ahead,
+            // as happens when reordering exceeds the RFC 9000 Appendix A
+            // decode window, must fail authentication.
+            assert!(roundtrip(true, 100, 356).is_err());
         }
     }
 }
+
+/// EasyTier custom QUIC version "ETQ1" (0x45545131, outside the reserved
+/// `0x??a?a?a?a` grease pattern).
+///
+/// Connections negotiated on this version bind the packet integrity checksum
+/// to the packet number. With the legacy checksum, a 1-byte-encoded packet
+/// number that arrives re-ordered beyond the decode window (RFC 9000
+/// Appendix A) is decoded as a future packet number; the checksum still
+/// passes, the peer ACKs a number that was never sent, and the connection is
+/// torn down with `PROTOCOL_VIOLATION("unsent packet acked")`. Binding the
+/// checksum to the packet number makes such a misdecode fail authentication,
+/// mirroring real QUIC where the AEAD nonce is derived from the packet
+/// number. Peers that only speak version 1 reject it via version
+/// negotiation, so callers must fall back to [`client_config`] for them.
+pub const QUIC_VERSION_ETQ1: u32 = 0x45545131;
 
 pub fn transport_config() -> Arc<TransportConfig> {
     let mut config = TransportConfig::default();
@@ -305,10 +386,28 @@ pub fn client_config() -> ClientConfig {
     config
 }
 
-pub fn endpoint_config() -> EndpointConfig {
+/// Client config negotiating [`QUIC_VERSION_ETQ1`] for the QUIC proxy.
+pub fn proxy_client_config() -> ClientConfig {
+    let mut config = client_config();
+    config.version(QUIC_VERSION_ETQ1);
+    config
+}
+
+fn endpoint_config_with_versions(versions: Vec<u32>) -> EndpointConfig {
     let mut config = EndpointConfig::default();
     config.max_udp_payload_size(1200).unwrap();
+    config.supported_versions(versions);
     config
+}
+
+pub fn endpoint_config() -> EndpointConfig {
+    endpoint_config_with_versions(vec![1])
+}
+
+/// Endpoint config for the QUIC proxy: accepts both [`QUIC_VERSION_ETQ1`]
+/// and legacy version 1, so new and old peers can connect.
+pub fn proxy_endpoint_config() -> EndpointConfig {
+    endpoint_config_with_versions(vec![QUIC_VERSION_ETQ1, 1])
 }
 //endregion
 

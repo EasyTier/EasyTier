@@ -1,10 +1,13 @@
-use super::hedge::HedgeExt;
+use super::hedge::{ErrorCollection, HedgeExt};
 use crate::proto::peer_rpc::KcpConnData as QuicConnData;
-use crate::tunnel::quic::{client_config, endpoint_config, server_config};
+use crate::tunnel::quic::{
+    QUIC_VERSION_ETQ1, client_config, proxy_client_config, proxy_endpoint_config, server_config,
+};
 use anyhow::{Context, Error, anyhow, ensure};
 use atomic_refcell::AtomicRefCell;
 use bytes::{BufMut, Bytes, BytesMut};
 use derive_more::{Constructor, Deref, DerefMut, From, Into};
+use dashmap::DashSet;
 use easytier_core::config::PeerId;
 use easytier_core::packet::{PacketType, TAIL_RESERVED_SIZE, ZCPacket, ZCPacketType};
 use moka::future::Cache;
@@ -15,6 +18,7 @@ use quinn::{
     WriteError, default_runtime,
 };
 use std::cmp::min;
+use std::future::Future;
 use std::io::IoSliceMut;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::pin::Pin;
@@ -265,9 +269,77 @@ impl From<(SendStream, RecvStream)> for QuicStream {
 pub struct NatDstQuicConnector {
     pub(crate) endpoint: Endpoint,
     pub(crate) conn_map: Cache<PeerId, Connection>,
+    /// Peers that rejected `QUIC_VERSION_ETQ1` via version negotiation and
+    /// must be dialed with legacy version 1 from now on.
+    pub(crate) legacy_version_peers: Arc<DashSet<PeerId>>,
 }
 
 impl NatDstQuicConnector {
+    fn connect_hedge(
+        &self,
+        dst_peer: PeerId,
+        version: u32,
+    ) -> impl Future<Output = Result<Connection, ErrorCollection<anyhow::Error>>> + '_ {
+        let endpoint = self.endpoint.clone();
+        let legacy_version_peers = self.legacy_version_peers.clone();
+        (0..5)
+            .map(move |_| {
+                let endpoint = endpoint.clone();
+                let legacy_version_peers = legacy_version_peers.clone();
+                async move {
+                    let config = if version == QUIC_VERSION_ETQ1 {
+                        proxy_client_config()
+                    } else {
+                        client_config()
+                    };
+                    let ret = endpoint
+                        .connect_with(
+                            config,
+                            QuicAddr::new(dst_peer, PacketType::QuicSrc).into(),
+                            "",
+                        )
+                        .context("failed to create connection")?
+                        .await
+                        .context("connection failed");
+                    if let Some(ConnectionError::VersionMismatch) =
+                        ret.as_ref().err().and_then(|e| e.downcast_ref())
+                    {
+                        // Remote only supports legacy version 1; remember it so
+                        // later connects skip the rejected version.
+                        legacy_version_peers.insert(dst_peer);
+                    }
+                    ret
+                }
+            })
+            .hedge(Duration::from_millis(200))
+    }
+
+    async fn connect(&self, dst_peer: PeerId) -> anyhow::Result<Connection> {
+        self.conn_map.invalidate(&dst_peer).await;
+
+        if !self.legacy_version_peers.contains(&dst_peer) {
+            let result = self
+                .conn_map
+                .try_get_with(dst_peer, self.connect_hedge(dst_peer, QUIC_VERSION_ETQ1))
+                .await;
+            match result {
+                Ok(conn) => return Ok(conn),
+                Err(_) if self.legacy_version_peers.contains(&dst_peer) => {
+                    debug!(
+                        ?dst_peer,
+                        "remote rejected ETQ1, falling back to quic version 1"
+                    );
+                }
+                Err(errors) => return Err(anyhow!("failed to connect to peer: {errors}")),
+            }
+        }
+
+        self.conn_map
+            .try_get_with(dst_peer, self.connect_hedge(dst_peer, 1))
+            .await
+            .map_err(|errors| anyhow!("failed to connect to peer: {errors}"))
+    }
+
     async fn connect_to_peer(
         &self,
         dst_peer: PeerId,
@@ -293,27 +365,7 @@ impl NatDstQuicConnector {
             buf.freeze()
         };
 
-        let reconnect = || async move {
-            self.conn_map.invalidate(&dst_peer).await;
-
-            let connect = (0..5)
-                .map(|_| {
-                    let endpoint = self.endpoint.clone();
-                    async move {
-                        endpoint
-                            .connect(QuicAddr::new(dst_peer, PacketType::QuicSrc).into(), "")
-                            .context("failed to create connection")?
-                            .await
-                            .context("connection failed")
-                    }
-                })
-                .hedge(Duration::from_millis(200));
-
-            self.conn_map
-                .try_get_with(dst_peer, connect)
-                .await
-                .context("failed to connect to peer")
-        };
+        let reconnect = || async move { self.connect(dst_peer).await };
 
         let mut reconnected = false;
 
@@ -658,12 +710,15 @@ impl QuicProxy {
         };
 
         let mut endpoint = Endpoint::new_with_abstract_socket(
-            endpoint_config(),
+            proxy_endpoint_config(),
             Some(server_config()),
             Arc::new(socket),
             default_runtime().unwrap(),
         )
         .unwrap(); // TODO: maybe a different transport config
+        // Default stays on legacy version 1; ETQ1 is negotiated per attempt in
+        // NatDstQuicConnector so that peers which only speak version 1 keep
+        // working.
         endpoint.set_default_client_config(client_config());
         self.endpoint = Some(endpoint.clone());
 
@@ -690,6 +745,7 @@ impl QuicProxy {
                     .max_capacity(u8::MAX.into()) // cf. quinn transport config (max_concurrent_bidi_streams)
                     .time_to_idle(Duration::from_secs(600)) // cf. quinn transport config (max_idle_timeout)
                     .build(),
+                legacy_version_peers: Arc::new(DashSet::new()),
             });
         }
 
@@ -845,6 +901,9 @@ mod tests {
     use super::*;
     use bytes::Buf;
     use quanta::Instant;
+    use quinn::EndpointConfig;
+
+    use crate::tunnel::quic::endpoint_config;
 
     /// Helper function: Create a pair of interconnected QuicSockets.
     /// Data sent by socket_a will enter socket_b's rx, and vice versa.
@@ -1261,5 +1320,154 @@ mod tests {
         let chunk3_start = actual_segment_size * 2 + margins.header;
         let chunk3_data = &payload[chunk3_start..chunk3_start + segment_size];
         assert_eq!(chunk3_data[0], 3u8, "Chunk 3 corrupted");
+    }
+
+    fn endpoint_pair_with_configs(
+        client_endpoint_config: EndpointConfig,
+        server_endpoint_config: EndpointConfig,
+    ) -> (Endpoint, Endpoint) {
+        let server_config = server_config();
+        let client_config = client_config();
+
+        let (socket_client, socket_server) = make_socket_pair();
+
+        let mut client_endpoint = Endpoint::new_with_abstract_socket(
+            client_endpoint_config,
+            Some(server_config.clone()),
+            Arc::new(socket_client),
+            default_runtime().unwrap(),
+        )
+        .unwrap();
+        client_endpoint.set_default_client_config(client_config.clone());
+
+        let mut server_endpoint = Endpoint::new_with_abstract_socket(
+            server_endpoint_config,
+            Some(server_config),
+            Arc::new(socket_server),
+            default_runtime().unwrap(),
+        )
+        .unwrap();
+        server_endpoint.set_default_client_config(client_config);
+
+        (client_endpoint, server_endpoint)
+    }
+
+    async fn assert_stream_roundtrip(connection: &Connection) -> anyhow::Result<()> {
+        let (mut send, mut recv) = connection.open_bi().await?;
+        send.write_all(b"ping").await?;
+        send.finish()?;
+        let mut buf = vec![0u8; 4];
+        recv.read_exact(&mut buf).await?;
+        assert_eq!(&buf, b"ping");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn etq1_handshake_streams_both_ways() -> anyhow::Result<()> {
+        // New client and new server negotiate ETQ1 and echo a stream in both
+        // directions, exercising the packet-number-bound checksum on
+        // Initial, Handshake and 1-RTT packets.
+        let (client_endpoint, server_endpoint) =
+            endpoint_pair_with_configs(proxy_endpoint_config(), proxy_endpoint_config());
+        let server_addr = server_endpoint.local_addr()?;
+
+        let server = tokio::spawn(async move {
+            let Some(incoming) = server_endpoint.accept().await else {
+                panic!("no incoming connection");
+            };
+            let connection = incoming.await.unwrap();
+            let (mut send, mut recv) = connection.accept_bi().await.unwrap();
+            let mut buf = vec![0u8; 4];
+            recv.read_exact(&mut buf).await.unwrap();
+            send.write_all(&buf).await.unwrap();
+            send.finish().unwrap();
+            let _ = connection.closed().await;
+        });
+
+        let connection = client_endpoint
+            .connect_with(proxy_client_config(), server_addr, "localhost")?
+            .await?;
+
+        let (mut send, mut recv) = connection.open_bi().await?;
+        send.write_all(b"ping").await?;
+        send.finish()?;
+        let mut buf = vec![0u8; 4];
+        recv.read_exact(&mut buf).await?;
+        assert_eq!(&buf, b"ping");
+
+        connection.close(0u32.into(), b"done");
+        let _ = tokio::time::timeout(Duration::from_secs(2), server).await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn etq1_against_legacy_server_falls_back_to_version_1() -> anyhow::Result<()> {
+        // A new client dialing a legacy (version 1 only) server must see
+        // VersionMismatch for ETQ1 and succeed after falling back to the
+        // legacy client config, mirroring NatDstQuicConnector::connect.
+        let (client_endpoint, server_endpoint) =
+            endpoint_pair_with_configs(proxy_endpoint_config(), endpoint_config());
+        let server_addr = server_endpoint.local_addr()?;
+
+        let server = tokio::spawn(async move {
+            let Some(incoming) = server_endpoint.accept().await else {
+                return;
+            };
+            let connection = incoming.await.unwrap();
+            if let Ok((mut send, mut recv)) = connection.accept_bi().await {
+                let mut buf = vec![0u8; 4];
+                recv.read_exact(&mut buf).await.unwrap();
+                send.write_all(&buf).await.unwrap();
+                send.finish().unwrap();
+            }
+            let _ = connection.closed().await;
+        });
+
+        let err = client_endpoint
+            .connect_with(proxy_client_config(), server_addr, "localhost")?
+            .await
+            .expect_err("legacy server must reject ETQ1");
+        assert!(
+            matches!(err, ConnectionError::VersionMismatch),
+            "unexpected error: {err:?}"
+        );
+
+        let connection = client_endpoint
+            .connect_with(client_config(), server_addr, "localhost")?
+            .await?;
+        assert_stream_roundtrip(&connection).await?;
+
+        connection.close(0u32.into(), b"done");
+        let _ = tokio::time::timeout(Duration::from_secs(2), server).await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn legacy_client_against_etq1_server() -> anyhow::Result<()> {
+        // An old client keeps working against a new (dual version) server.
+        let (client_endpoint, server_endpoint) =
+            endpoint_pair_with_configs(endpoint_config(), proxy_endpoint_config());
+        let server_addr = server_endpoint.local_addr()?;
+
+        let server = tokio::spawn(async move {
+            let Some(incoming) = server_endpoint.accept().await else {
+                return;
+            };
+            let connection = incoming.await.unwrap();
+            if let Ok((mut send, mut recv)) = connection.accept_bi().await {
+                let mut buf = vec![0u8; 4];
+                recv.read_exact(&mut buf).await.unwrap();
+                send.write_all(&buf).await.unwrap();
+                send.finish().unwrap();
+            }
+            let _ = connection.closed().await;
+        });
+
+        let connection = client_endpoint.connect(server_addr, "localhost")?.await?;
+        assert_stream_roundtrip(&connection).await?;
+
+        connection.close(0u32.into(), b"done");
+        let _ = tokio::time::timeout(Duration::from_secs(2), server).await;
+        Ok(())
     }
 }
