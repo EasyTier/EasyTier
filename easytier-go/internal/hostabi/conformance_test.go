@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/EasyTier/EasyTier/easytier-go/internal/contextutil"
-	"github.com/EasyTier/EasyTier/easytier-go/internal/reactor"
-	"github.com/EasyTier/EasyTier/easytier-go/platform"
+	"github.com/easytier/easytier/easytier-go/internal/contextutil"
+	"github.com/easytier/easytier/easytier-go/internal/reactor"
+	"github.com/easytier/easytier/easytier-go/platform"
 	"github.com/metacubex/wazero"
 	"github.com/metacubex/wazero/api"
 	"github.com/metacubex/wazero/imports/wasi_snapshot_preview1"

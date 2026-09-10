@@ -8,7 +8,7 @@ import (
 	"math"
 	"net/netip"
 
-	"github.com/EasyTier/EasyTier/easytier-go/internal/contextutil"
+	"github.com/easytier/easytier/easytier-go/internal/contextutil"
 )
 
 const (

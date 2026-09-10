@@ -5,7 +5,7 @@ import (
 	"net/netip"
 	"testing"
 
-	"github.com/EasyTier/EasyTier/easytier-go/platform"
+	"github.com/easytier/easytier/easytier-go/platform"
 )
 
 func TestEncodeCreateEnvelopeOwnsVersionAndEnvironmentSchema(t *testing.T) {

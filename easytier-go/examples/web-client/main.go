@@ -10,7 +10,7 @@ import (
 	"strings"
 	"syscall"
 
-	corehost "github.com/EasyTier/EasyTier/easytier-go"
+	corehost "github.com/easytier/easytier/easytier-go"
 )
 
 type options struct {

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/EasyTier/EasyTier/easytier-go/platform"
+	"github.com/easytier/easytier/easytier-go/platform"
 )
 
 type environmentOperation struct {

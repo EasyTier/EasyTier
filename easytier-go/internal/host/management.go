@@ -12,12 +12,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/EasyTier/EasyTier/easytier-go/internal/contextutil"
-	apiconfig "github.com/EasyTier/EasyTier/easytier-go/proto/api/config"
-	apiinstance "github.com/EasyTier/EasyTier/easytier-go/proto/api/instance"
-	"github.com/EasyTier/EasyTier/easytier-go/proto/api/manage"
-	"github.com/EasyTier/EasyTier/easytier-go/proto/common"
-	errorpb "github.com/EasyTier/EasyTier/easytier-go/proto/error"
+	"github.com/easytier/easytier/easytier-go/internal/contextutil"
+	apiconfig "github.com/easytier/easytier/easytier-go/proto/api/config"
+	apiinstance "github.com/easytier/easytier/easytier-go/proto/api/instance"
+	"github.com/easytier/easytier/easytier-go/proto/api/manage"
+	"github.com/easytier/easytier/easytier-go/proto/common"
+	errorpb "github.com/easytier/easytier/easytier-go/proto/error"
 	"google.golang.org/protobuf/proto"
 )
 

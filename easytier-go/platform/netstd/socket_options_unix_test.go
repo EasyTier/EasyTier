@@ -6,7 +6,7 @@ import (
 	"net"
 	"testing"
 
-	"github.com/EasyTier/EasyTier/easytier-go/platform"
+	"github.com/easytier/easytier/easytier-go/platform"
 )
 
 func TestSocketFactoryUsesNativeTCPReuseAddrDefault(t *testing.T) {
