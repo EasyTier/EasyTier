@@ -17,8 +17,9 @@ use easytier_core::{
     },
 };
 use quinn::{
-    AsyncUdpSocket, ClientConfig, Connecting, Connection, Endpoint, EndpointConfig, Incoming,
-    ServerConfig, TransportConfig, congestion::BbrConfig, default_runtime,
+    AsyncUdpSocket, ClientConfig, Connecting, Connection, ConnectionError, Endpoint,
+    EndpointConfig, Incoming, ServerConfig, TransportConfig, congestion::BbrConfig,
+    default_runtime,
 };
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::{
@@ -355,8 +356,11 @@ mod crypto {
 /// torn down with `PROTOCOL_VIOLATION("unsent packet acked")`. Binding the
 /// checksum to the packet number makes such a misdecode fail authentication,
 /// mirroring real QUIC where the AEAD nonce is derived from the packet
-/// number. Peers that only speak version 1 reject it via version
-/// negotiation, so callers must fall back to [`client_config`] for them.
+/// number.
+///
+/// Used by both the QUIC proxy and the quic:// tunnel. Peers that only speak
+/// version 1 reject it via version negotiation, so dialers must fall back to
+/// [`client_config`] on `VersionMismatch` (see [`connect_with_etq1`]).
 pub const QUIC_VERSION_ETQ1: u32 = 0x45545131;
 
 pub fn transport_config() -> Arc<TransportConfig> {
@@ -386,28 +390,47 @@ pub fn client_config() -> ClientConfig {
     config
 }
 
-/// Client config negotiating [`QUIC_VERSION_ETQ1`] for the QUIC proxy.
-pub fn proxy_client_config() -> ClientConfig {
+/// Client config negotiating [`QUIC_VERSION_ETQ1`], the first choice of
+/// dialers that support the fallback (see [`connect_with_etq1`]).
+pub fn etq1_client_config() -> ClientConfig {
     let mut config = client_config();
     config.version(QUIC_VERSION_ETQ1);
     config
 }
 
-fn endpoint_config_with_versions(versions: Vec<u32>) -> EndpointConfig {
+pub(crate) fn endpoint_config_with_versions(versions: Vec<u32>) -> EndpointConfig {
     let mut config = EndpointConfig::default();
     config.max_udp_payload_size(1200).unwrap();
     config.supported_versions(versions);
     config
 }
 
+/// Endpoint config accepting both [`QUIC_VERSION_ETQ1`] and legacy version
+/// 1, so new dialers negotiate ETQ1 while old peers keep working.
 pub fn endpoint_config() -> EndpointConfig {
-    endpoint_config_with_versions(vec![1])
+    endpoint_config_with_versions(vec![QUIC_VERSION_ETQ1, 1])
 }
 
-/// Endpoint config for the QUIC proxy: accepts both [`QUIC_VERSION_ETQ1`]
-/// and legacy version 1, so new and old peers can connect.
-pub fn proxy_endpoint_config() -> EndpointConfig {
-    endpoint_config_with_versions(vec![QUIC_VERSION_ETQ1, 1])
+/// Dial `endpoint` preferring [`QUIC_VERSION_ETQ1`], falling back to legacy
+/// version 1 when the remote rejects ETQ1 via version negotiation.
+pub(crate) async fn connect_with_etq1(
+    endpoint: &Endpoint,
+    addr: SocketAddr,
+    server_name: &str,
+) -> anyhow::Result<Connection> {
+    match endpoint
+        .connect_with(etq1_client_config(), addr, server_name)
+        .with_context(|| format!("failed to start connection to {addr}"))?
+        .await
+    {
+        Ok(connection) => Ok(connection),
+        Err(ConnectionError::VersionMismatch) => endpoint
+            .connect_with(client_config(), addr, server_name)
+            .with_context(|| format!("failed to start connection to {addr}"))?
+            .await
+            .with_context(|| format!("failed to connect to {addr}")),
+        Err(error) => Err(error).with_context(|| format!("failed to connect to {addr}")),
+    }
 }
 //endregion
 
@@ -437,13 +460,7 @@ pub(crate) async fn upgrade_connected(
     let mut endpoint =
         Endpoint::new_with_abstract_socket(endpoint_config(), None, socket, runtime)?;
     endpoint.set_default_client_config(client_config());
-    let connecting = endpoint
-        .connect(remote_addr, "localhost")
-        .map_err(anyhow::Error::new)
-        .with_context(|| format!("failed to start connection to {remote_addr}"))?;
-    let connection = connecting
-        .await
-        .with_context(|| format!("failed to connect to {remote_addr}"))?;
+    let connection = connect_with_etq1(&endpoint, remote_addr, "localhost").await?;
     let (write, read) = connection
         .open_bi()
         .await
