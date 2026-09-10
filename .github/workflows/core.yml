@@ -61,7 +61,6 @@ jobs:
         with:
           filters: |
             relevant: ${{ env.RELEVANT_PATHS }}
-
   build_web:
     runs-on: ubuntu-latest
     needs: pre_job
@@ -342,13 +341,22 @@ jobs:
           name: easytier-linux-aarch64
           path: ./downloaded-binaries/  # 独立目录避免冲突
 
-      # 将二进制文件复制到 Magisk 模块目录
-      - name: Prepare binaries
+      - name: Download Magisk WebUI
+        uses: actions/download-artifact@v4
+        with:
+          name: easytier-web-dashboard
+          path: ./downloaded-webui/
+
+      # 将二进制文件和 WebUI 复制到 Magisk 模块目录
+      - name: Prepare Magisk module
         run: |
-          mkdir -p ./easytier-contrib/easytier-magisk/
-          cp ./downloaded-binaries/easytier-core ./easytier-contrib/easytier-magisk/
-          cp ./downloaded-binaries/easytier-cli ./easytier-contrib/easytier-magisk/
-          cp ./downloaded-binaries/easytier-web ./easytier-contrib/easytier-magisk/
+          module_dir=./easytier-contrib/easytier-magisk
+          mkdir -p "$module_dir/webroot"
+          cp ./downloaded-binaries/easytier-core "$module_dir/"
+          cp ./downloaded-binaries/easytier-cli "$module_dir/"
+          cp ./downloaded-binaries/easytier-web "$module_dir/"
+          cp -R ./downloaded-webui/config-generator/. "$module_dir/webroot/"
+          test -f "$module_dir/webroot/index.html"
 
       # 上传生成的模块
       - name: Upload Magisk Module

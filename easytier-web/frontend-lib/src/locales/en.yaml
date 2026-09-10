@@ -61,6 +61,18 @@ copy_config: Copy Config
 config_copied: Copied
 config_generation_failed: Generation failed
 config_copy_failed: Copy failed
+magisk_module_configuration: EasyTier Module Configuration
+magisk_status_loading: Loading status
+magisk_status_running: Running
+magisk_status_stopped: Stopped
+magisk_status_restarting: Restarting
+magisk_save_restart: Save and Restart
+magisk_command_args_warning: Startup argument mode is active, so the module ignores config.toml. Remove config/command_args before saving configuration here.
+magisk_invalid_module_directory: KernelSU returned an invalid module directory
+magisk_load_failed: 'Failed to load module configuration: {error}'
+magisk_save_failed: 'Failed to save module configuration: {error}'
+magisk_config_saved: Configuration validated and saved; EasyTier restarted
+magisk_config_saved_restart_pending: Configuration validated and saved; the EasyTier supervisor is still starting
 retain_network_instance: Retain Network Instance
 collect_network_infos: Collect Network Infos
 settings: Settings
