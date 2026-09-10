@@ -1,0 +1,5 @@
+dist/
+src/generated/
+demo/generated/
+demo/smoke.js
+node_modules/

@@ -4,6 +4,7 @@ mod m20241029_000001_init;
 mod m20260403_000002_scope_network_config_unique;
 mod m20260421_000003_add_network_config_source;
 mod m20260514_000004_rename_web_config_source;
+mod m20260619_000005_managed_config_revisions;
 
 pub struct Migrator;
 
@@ -15,6 +16,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260403_000002_scope_network_config_unique::Migration),
             Box::new(m20260421_000003_add_network_config_source::Migration),
             Box::new(m20260514_000004_rename_web_config_source::Migration),
+            Box::new(m20260619_000005_managed_config_revisions::Migration),
         ]
     }
 }

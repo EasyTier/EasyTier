@@ -66,6 +66,23 @@ export async function collectNetworkInfo(instanceId: string) {
   return await invoke<Api.CollectNetworkInfoResponse>('collect_network_info', { instanceId })
 }
 
+export async function getVpnPortalInfo(instanceId: string) {
+  const info = await invoke<NetworkTypes.VpnPortalInfo | undefined>('get_vpn_portal_info', { instanceId })
+  return info ? NetworkTypes.normalizeVpnPortalInfo(info) : undefined
+}
+
+export async function addVpnPortalClient(instanceId: string, client: { name: string, virtual_ip: string, groups: string[] }) {
+  return invoke('patch_vpn_portal_clients', { instanceId, action: 'add', name: client.name, virtualIp: client.virtual_ip, groups: client.groups })
+}
+
+export async function removeVpnPortalClient(instanceId: string, name: string) {
+  return invoke('patch_vpn_portal_clients', { instanceId, action: 'remove', name })
+}
+
+export async function clearVpnPortalClients(instanceId: string) {
+  return invoke('patch_vpn_portal_clients', { instanceId, action: 'clear' })
+}
+
 export async function setLoggingLevel(level: string) {
   return await invoke('set_logging_level', { level })
 }

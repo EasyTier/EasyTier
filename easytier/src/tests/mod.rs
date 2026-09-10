@@ -7,10 +7,39 @@ mod ipv6_test;
 mod credential_tests;
 
 #[cfg(target_os = "linux")]
+#[cfg(feature = "upnp")]
 mod upnp_test;
 
-use crate::common::PeerId;
-use crate::peers::peer_manager::PeerManager;
+use crate::instance::test_instance::TestInstance as Instance;
+use easytier_core::config::PeerId;
+
+trait InstanceTestExt {
+    fn add_connector_url(&self, url: url::Url);
+
+    fn peer_id(&self) -> PeerId;
+
+    fn ring_listener_url(&self) -> url::Url;
+}
+
+impl InstanceTestExt for Instance {
+    fn add_connector_url(&self, url: url::Url) {
+        self.get_core_instance()
+            .add_connector(url)
+            .expect("test connector URL should be supported");
+    }
+
+    fn peer_id(&self) -> PeerId {
+        self.get_core_instance().peer_id()
+    }
+
+    fn ring_listener_url(&self) -> url::Url {
+        self.get_core_instance()
+            .running_listeners()
+            .into_iter()
+            .find(|url| url.scheme() == "ring")
+            .expect("test instance has no running Ring listener")
+    }
+}
 
 pub fn set_env_var<K: AsRef<std::ffi::OsStr>, V: AsRef<std::ffi::OsStr>>(key: K, value: V) {
     unsafe { std::env::set_var(key, value) }
@@ -108,58 +137,6 @@ pub fn create_netns(name: &str, ipv4: &str, ipv6: &str) {
     }
 }
 
-pub struct TestNetnsGuard {
-    name: String,
-    host_ipv4: Option<String>,
-}
-
-impl TestNetnsGuard {
-    fn run_ip(args: &[&str]) {
-        let status = std::process::Command::new("ip")
-            .args(args)
-            .status()
-            .unwrap();
-        assert!(status.success(), "ip command failed: {:?}", args);
-    }
-
-    pub fn new(name: &str, guest_ipv4: &str, guest_ipv6: &str) -> Self {
-        del_netns(name);
-        create_netns(name, guest_ipv4, guest_ipv6);
-        Self {
-            name: name.to_string(),
-            host_ipv4: None,
-        }
-    }
-
-    pub fn set_host_ipv4(&mut self, host_ipv4: &str) {
-        Self::run_ip(&[
-            "addr",
-            "add",
-            host_ipv4,
-            "dev",
-            get_host_veth_name(&self.name),
-        ]);
-        self.host_ipv4 = Some(host_ipv4.to_string());
-    }
-}
-
-impl Drop for TestNetnsGuard {
-    fn drop(&mut self) {
-        if let Some(host_ipv4) = self.host_ipv4.as_deref() {
-            let _ = std::process::Command::new("ip")
-                .args([
-                    "addr",
-                    "del",
-                    host_ipv4,
-                    "dev",
-                    get_host_veth_name(&self.name),
-                ])
-                .status();
-        }
-        del_netns(&self.name);
-    }
-}
-
 pub fn prepare_bridge(name: &str) {
     // del bridge with brctl
     let _ = std::process::Command::new("brctl")
@@ -186,7 +163,11 @@ pub fn add_ns_to_bridge(br_name: &str, ns_name: &str) {
         .unwrap();
 }
 
-fn check_route(ipv4: &str, dst_peer_id: PeerId, routes: Vec<crate::proto::api::instance::Route>) {
+fn check_route(
+    ipv4: &str,
+    dst_peer_id: PeerId,
+    routes: Vec<easytier_proto::core_peer::peer::Route>,
+) {
     let mut found = false;
     for r in routes.iter() {
         if r.ipv4_addr == Some(ipv4.parse().unwrap()) {
@@ -202,9 +183,9 @@ fn check_route(ipv4: &str, dst_peer_id: PeerId, routes: Vec<crate::proto::api::i
 }
 
 fn check_route_ex(
-    routes: Vec<crate::proto::api::instance::Route>,
+    routes: Vec<easytier_proto::core_peer::peer::Route>,
     peer_id: PeerId,
-    checker: impl Fn(&crate::proto::api::instance::Route) -> bool,
+    checker: impl Fn(&easytier_proto::core_peer::peer::Route) -> bool,
 ) {
     let mut found = false;
     for r in routes.iter() {
@@ -217,14 +198,14 @@ fn check_route_ex(
 }
 
 async fn wait_proxy_route_appear(
-    mgr: &std::sync::Arc<PeerManager>,
+    core: &std::sync::Arc<crate::instance::composition::NativeCoreInstance>,
     ipv4: &str,
     dst_peer_id: PeerId,
     proxy_cidr: &str,
 ) {
     let now = std::time::Instant::now();
     loop {
-        for r in mgr.list_routes().await.iter() {
+        for r in core.route_snapshots().await.iter() {
             if r.proxy_cidrs.contains(&proxy_cidr.to_owned()) {
                 assert_eq!(r.peer_id, dst_peer_id);
                 assert_eq!(r.ipv4_addr, Some(ipv4.parse().unwrap()));
@@ -255,18 +236,18 @@ fn set_link_status(net_ns: &str, up: bool) {
     tracing::info!("set link status: {:?}, net_ns: {}, up: {}", ret, net_ns, up);
 }
 
-pub async fn drop_insts(insts: Vec<crate::instance::instance::Instance>) {
+pub async fn drop_insts(insts: Vec<Instance>) {
     let mut set = tokio::task::JoinSet::new();
     for mut inst in insts {
         set.spawn(async move {
             inst.clear_resources().await;
-            let pm = std::sync::Arc::downgrade(&inst.get_peer_manager());
+            let core = std::sync::Arc::downgrade(&inst.get_core_instance());
             drop(inst);
             let now = std::time::Instant::now();
-            while now.elapsed().as_secs() < 5 && pm.strong_count() > 0 {
+            while now.elapsed().as_secs() < 5 && core.strong_count() > 0 {
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             }
-            assert_eq!(pm.strong_count(), 0, "PeerManager should be dropped");
+            assert_eq!(core.strong_count(), 0, "CoreInstance should be dropped");
         });
     }
     while set.join_next().await.is_some() {}

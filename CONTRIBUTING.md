@@ -113,6 +113,17 @@ cargo build --release --target x86_64-pc-windows-msvc        # Windows x86_64
 
 Build artifacts: `target/[target-triple]/release/`
 
+### Building the WASI core
+
+```bash
+script/build-wasi-core.sh
+```
+
+This builds the `easytier-core` Go-host profile for `wasm32-wasip1`, then
+optimizes it with the pinned official Binaryen release. Binaryen is downloaded
+once into `target/binaryen/` and verified by SHA-256; set `WASM_OPT` to use an
+existing matching binary.
+
 ### Building GUI
 
 ```bash

@@ -1,99 +1,106 @@
 use std::{sync::Arc, time::Duration};
 
+use easytier_core::gateway::magic_dns::{
+    MagicDnsRoutePublisher, MagicDnsRouteSnapshot, run_magic_dns_route_publisher,
+};
+use easytier_core::instance::CorePacketPlane;
 use tokio::task::JoinSet;
 
-use crate::{
-    peers::peer_manager::PeerManager,
-    proto::{
-        api::instance::Route,
-        common::Void,
-        magic_dns::{
-            HandshakeRequest, MagicDnsServerRpc, MagicDnsServerRpcClientFactory,
-            UpdateDnsRecordRequest,
-        },
-        rpc_impl::standalone::StandAloneClient,
-        rpc_types::controller::BaseController,
+use crate::proto::{
+    api::instance::Route,
+    common::Void,
+    magic_dns::{
+        HandshakeRequest, MagicDnsServerRpc, MagicDnsServerRpcClientFactory, UpdateDnsRecordRequest,
     },
-    tunnel::tcp::TcpTunnelConnector,
+    rpc::standalone::{RuntimeRpcClient, runtime_rpc_client},
+    rpc_types::controller::BaseController,
 };
 
 use super::MAGIC_DNS_INSTANCE_ADDR;
 
 pub struct MagicDnsClientInstance {
-    rpc_client: StandAloneClient<TcpTunnelConnector>,
+    rpc_client: RuntimeRpcClient,
     rpc_stub: Option<Box<dyn MagicDnsServerRpc<Controller = BaseController> + Send>>,
-    peer_mgr: Arc<PeerManager>,
+    route_source: Arc<CorePacketPlane>,
     tasks: JoinSet<()>,
 }
 
+struct RpcMagicDnsRoutePublisher {
+    rpc_stub: Box<dyn MagicDnsServerRpc<Controller = BaseController> + Send>,
+}
+
+#[async_trait::async_trait]
+impl MagicDnsRoutePublisher for RpcMagicDnsRoutePublisher {
+    async fn handshake(&mut self) -> anyhow::Result<()> {
+        self.rpc_stub
+            .handshake(BaseController::default(), HandshakeRequest::default())
+            .await?;
+        Ok(())
+    }
+
+    async fn heartbeat(&mut self) -> anyhow::Result<()> {
+        self.rpc_stub
+            .heartbeat(BaseController::default(), Void::default())
+            .await?;
+        Ok(())
+    }
+
+    async fn publish(&mut self, snapshot: &MagicDnsRouteSnapshot) -> anyhow::Result<()> {
+        let request = UpdateDnsRecordRequest {
+            routes: snapshot
+                .routes
+                .iter()
+                .map(|route| Route {
+                    hostname: route.hostname.clone(),
+                    ipv4_addr: route.ipv4_addr,
+                    ..Default::default()
+                })
+                .collect(),
+            zone: snapshot.zone.clone(),
+        };
+        tracing::debug!(
+            "MagicDnsClientInstance::update_dns_task: update dns records: {:?}",
+            request
+        );
+        self.rpc_stub
+            .update_dns_record(BaseController::default(), request)
+            .await?;
+        Ok(())
+    }
+}
+
 impl MagicDnsClientInstance {
-    pub async fn new(peer_mgr: Arc<PeerManager>) -> Result<Self, anyhow::Error> {
-        let tcp_connector = TcpTunnelConnector::new(MAGIC_DNS_INSTANCE_ADDR.parse().unwrap());
-        let mut rpc_client = StandAloneClient::new(tcp_connector);
+    pub(crate) async fn new(route_source: Arc<CorePacketPlane>) -> Result<Self, anyhow::Error> {
+        let mut rpc_client = runtime_rpc_client(MAGIC_DNS_INSTANCE_ADDR.parse().unwrap());
         let rpc_stub = rpc_client
             .scoped_client::<MagicDnsServerRpcClientFactory<BaseController>>("".to_string())
             .await?;
         Ok(MagicDnsClientInstance {
             rpc_client,
             rpc_stub: Some(rpc_stub),
-            peer_mgr,
+            route_source,
             tasks: JoinSet::new(),
         })
     }
 
     async fn update_dns_task(
-        peer_mgr: Arc<PeerManager>,
+        route_source: Arc<CorePacketPlane>,
         rpc_stub: Box<dyn MagicDnsServerRpc<Controller = BaseController> + Send>,
     ) -> Result<(), anyhow::Error> {
-        let mut prev_last_update = None;
-        rpc_stub
-            .handshake(BaseController::default(), HandshakeRequest::default())
-            .await?;
-        loop {
-            rpc_stub
-                .heartbeat(BaseController::default(), Void::default())
-                .await?;
-
-            let last_update = peer_mgr.get_route_peer_info_last_update_time().await;
-            if Some(last_update) == prev_last_update {
-                tokio::time::sleep(Duration::from_millis(500)).await;
-                continue;
-            }
-
-            let mut routes = peer_mgr.list_routes().await;
-            // add self as a route
-            let ctx = peer_mgr.get_global_ctx();
-            routes.push(Route {
-                hostname: ctx.get_hostname(),
-                ipv4_addr: ctx.get_ipv4().map(Into::into),
-                ..Default::default()
-            });
-            // Use configured tld_dns_zone (always set by default)
-            let flags = ctx.config.get_flags();
-            let req = UpdateDnsRecordRequest {
-                routes,
-                zone: flags.tld_dns_zone.clone(),
-            };
-            tracing::debug!(
-                "MagicDnsClientInstance::update_dns_task: update dns records: {:?}",
-                req
-            );
-            rpc_stub
-                .update_dns_record(BaseController::default(), req)
-                .await?;
-
-            let last_update_after_rpc = peer_mgr.get_route_peer_info_last_update_time().await;
-            if last_update_after_rpc == last_update {
-                prev_last_update = Some(last_update);
-            }
-        }
+        let mut publisher = RpcMagicDnsRoutePublisher { rpc_stub };
+        run_magic_dns_route_publisher(
+            route_source.as_ref(),
+            &mut publisher,
+            Duration::from_millis(500),
+        )
+        .await
     }
 
     pub async fn run_and_wait(&mut self) {
         let rpc_stub = self.rpc_stub.take().unwrap();
-        let peer_mgr = self.peer_mgr.clone();
+        let route_source = self.route_source.clone();
         self.tasks.spawn(async move {
-            let ret = Self::update_dns_task(peer_mgr, rpc_stub).await;
+            let ret = Self::update_dns_task(route_source, rpc_stub).await;
             if let Err(e) = ret {
                 tracing::error!("MagicDnsServerInstanceData::run_and_wait: {:?}", e);
             }

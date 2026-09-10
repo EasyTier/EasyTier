@@ -1,0 +1,21 @@
+[package]
+name = "easytier-mini"
+description = "Minimal native EasyTier node with TCP/UDP tunnels, TUN and UDP hole punching."
+version = "2.6.4"
+edition.workspace = true
+rust-version.workspace = true
+license-file = "../../LICENSE"
+build = "build.rs"
+
+[dependencies]
+anyhow = "1.0"
+easytier = { path = "../../easytier", version = "2.6.4", default-features = false, features = [
+    "aes-gcm",
+    "dhcp-ipv4",
+    "logging",
+    "proxy-cidr-monitor",
+    "smoltcp",
+    "tun",
+    "web-client",
+] }
+tokio = { version = "1", default-features = false, features = ["macros", "rt", "signal"] }

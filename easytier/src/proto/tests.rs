@@ -1,12 +1,11 @@
-include!(concat!(env!("OUT_DIR"), "/tests.rs"));
-include!(concat!(env!("OUT_DIR"), "/tests.serde.rs"));
+pub use easytier_proto::tests::*;
 
 use std::sync::{Arc, Mutex};
 
 use futures::StreamExt as _;
 use tokio::task::JoinSet;
 
-use super::rpc_impl::RpcController;
+use super::rpc::RpcController;
 
 #[derive(Clone, Default)]
 struct GreetingJsonCallHandler;
@@ -138,13 +137,13 @@ impl Greeting for GreetingService {
 }
 
 use crate::proto::common::{CompressionAlgoPb, RpcCompressionInfo};
-use crate::proto::rpc_impl::client::Client;
-use crate::proto::rpc_impl::server::Server;
+use crate::proto::rpc::client::Client;
+use crate::proto::rpc::server::Server;
 
 struct TestContext {
     client: Client,
     server: Server,
-    tasks: Arc<Mutex<JoinSet<()>>>,
+    _tasks: Arc<Mutex<JoinSet<()>>>,
 }
 
 impl TestContext {
@@ -186,7 +185,7 @@ impl TestContext {
         Self {
             client,
             server: rpc_server,
-            tasks,
+            _tasks: tasks,
         }
     }
 }
@@ -294,7 +293,7 @@ async fn rpc_timeout_test() {
 #[tokio::test]
 async fn rpc_tunnel_stuck_test() {
     use crate::proto::rpc_types;
-    use crate::tunnel::ring::RING_TUNNEL_CAP;
+    use easytier_core::tunnel::ring::RING_TUNNEL_CAP;
 
     let rpc_server = Server::new();
     rpc_server.run();
@@ -373,61 +372,10 @@ async fn rpc_tunnel_stuck_test() {
 }
 
 #[tokio::test]
-async fn standalone_rpc_test() {
-    use crate::proto::rpc_impl::standalone::{StandAloneClient, StandAloneServer};
-    use crate::tunnel::tcp::{TcpTunnelConnector, TcpTunnelListener};
-
-    let mut server = StandAloneServer::new(TcpTunnelListener::new(
-        "tcp://0.0.0.0:33455".parse().unwrap(),
-    ));
-    let service = GreetingServer::new(GreetingService {
-        delay_ms: 0,
-        prefix: "Hello".to_string(),
-    });
-    server.registry().register(service, "test");
-    server.serve().await.unwrap();
-
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-    let mut client = StandAloneClient::new(TcpTunnelConnector::new(
-        "tcp://127.0.0.1:33455".parse().unwrap(),
-    ));
-
-    let out = client
-        .scoped_client::<GreetingClientFactory<RpcController>>("test".to_string())
-        .await
-        .unwrap();
-
-    let ctrl = RpcController::default();
-    let input = SayHelloRequest {
-        name: "world".to_string(),
-    };
-    let ret = out.say_hello(ctrl, input).await;
-    assert_eq!(ret.unwrap().greeting, "Hello world!");
-
-    let out = client
-        .scoped_client::<GreetingClientFactory<RpcController>>("test".to_string())
-        .await
-        .unwrap();
-
-    let ctrl = RpcController::default();
-    let input = SayGoodbyeRequest {
-        name: "world".to_string(),
-    };
-    let ret = out.say_goodbye(ctrl, input).await;
-    assert_eq!(ret.unwrap().greeting, "Goodbye, world!");
-
-    drop(client);
-
-    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-    assert_eq!(0, server.inflight_server());
-}
-
-#[tokio::test]
 async fn test_bidirect_rpc_manager() {
-    use crate::proto::rpc_impl::bidirect::BidirectRpcManager;
-    use crate::tunnel::tcp::{TcpTunnelConnector, TcpTunnelListener};
-    use crate::tunnel::{TunnelConnector, TunnelListener};
+    use crate::proto::rpc::bidirect::BidirectRpcManager;
+    use crate::proto::rpc::standalone::{runtime_rpc_dialer, runtime_rpc_listener};
+    use easytier_core::{connectivity::protocol::raw::TunnelDialer, socket::SocketListener};
     use tokio::sync::Notify;
     use tokio_util::task::AbortOnDropHandle;
 
@@ -448,7 +396,7 @@ async fn test_bidirect_rpc_manager() {
 
     let server_test_done = Arc::new(Notify::new());
     let server_test_done_clone = server_test_done.clone();
-    let mut tcp_listener = TcpTunnelListener::new("tcp://0.0.0.0:55443".parse().unwrap());
+    let mut tcp_listener = runtime_rpc_listener("0.0.0.0:55443".parse().unwrap());
     let s_task = AbortOnDropHandle::new(tokio::spawn(async move {
         tcp_listener.listen().await.unwrap();
         let tunnel = tcp_listener.accept().await.unwrap();
@@ -476,7 +424,7 @@ async fn test_bidirect_rpc_manager() {
 
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
-    let mut tcp_connector = TcpTunnelConnector::new("tcp://0.0.0.0:55443".parse().unwrap());
+    let tcp_connector = runtime_rpc_dialer("tcp://0.0.0.0:55443".parse().unwrap());
     let c_tunnel = tcp_connector.connect().await.unwrap();
     c.run_with_tunnel(c_tunnel);
 

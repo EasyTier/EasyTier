@@ -34,6 +34,9 @@ easytier-panic.log
 
 # web
 node_modules
+easytier-web/frontend-lib/src/generated/
+easytier-web/config-generator/dist/
+easytier-web/config-generator/src/generated/
 
 .vite
 

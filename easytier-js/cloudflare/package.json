@@ -1,0 +1,47 @@
+{
+  "name": "@easytier/cloudflare",
+  "version": "0.1.0",
+  "description": "Run an EasyTier relay in a Cloudflare Durable Object",
+  "type": "module",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/EasyTier/EasyTier.git",
+    "directory": "easytier-js/cloudflare"
+  },
+  "homepage": "https://github.com/EasyTier/EasyTier",
+  "bugs": "https://github.com/EasyTier/EasyTier/issues",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build:dependencies": "pnpm --filter @easytier/runtime build",
+    "build:wasm": "node ../runtime/scripts/build-wasm.mjs cloudflare src/generated/easytier_core.wasm && node ../runtime/scripts/validate-wasm.mjs cloudflare src/generated/easytier_core.wasm",
+    "build": "pnpm build:wasm && pnpm build:dependencies && tsc -p tsconfig.build.json && node ../runtime/scripts/copy-artifact.mjs src/generated/easytier_core.wasm dist/generated/easytier_core.wasm",
+    "check": "pnpm build && tsc --noEmit && wrangler deploy --dry-run",
+    "deploy": "pnpm build && wrangler deploy",
+    "test": "pnpm build && vitest run",
+    "prepack": "pnpm check"
+  },
+  "dependencies": {
+    "@cloudflare/workers-types": "5.20260724.1",
+    "@easytier/runtime": "workspace:0.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.18.1",
+    "typescript": "5.9.3",
+    "vitest": "2.1.9",
+    "wrangler": "4.114.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

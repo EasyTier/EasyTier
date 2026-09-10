@@ -3,8 +3,8 @@
 #[macro_use]
 extern crate rust_i18n;
 
-use std::net::IpAddr;
 use std::sync::Arc;
+use std::{net::IpAddr, time::Duration};
 
 use clap::Parser;
 use easytier::tunnel::websocket::WsTunnelListener;
@@ -16,12 +16,12 @@ use easytier::{
         log,
         network::{local_ipv4, local_ipv6},
     },
-    tunnel::{TunnelListener, tcp::TcpTunnelListener, udp::UdpTunnelListener},
+    proto::rpc::standalone::{runtime_rpc_listener, runtime_udp_tunnel_listener},
     utils::panic::setup_panic_handler,
 };
+use easytier_core::{socket::SocketListener, tunnel::Tunnel};
 
 use easytier::tunnel::IpScheme;
-use easytier::utils::BoxExt;
 use mimalloc::MiMalloc;
 
 mod client_manager;
@@ -112,6 +112,14 @@ struct Cli {
         help = t!("cli.geoip_db").to_string(),
     )]
     geoip_db: Option<String>,
+
+    #[arg(
+        long,
+        env = "ET_HEARTBEAT_MIN_RESPONSE_MS",
+        default_value = "0",
+        help = t!("cli.heartbeat_min_response_ms").to_string(),
+    )]
+    heartbeat_min_response_ms: u64,
 
     #[cfg(feature = "embed")]
     #[arg(
@@ -222,11 +230,20 @@ impl LoggingConfigLoader for &Cli {
     }
 }
 
-pub fn get_listener_by_url(scheme: IpScheme, l: &url::Url) -> Option<Box<dyn TunnelListener>> {
+pub fn get_listener_by_url(
+    scheme: IpScheme,
+    l: &url::Url,
+) -> Option<Box<dyn SocketListener<Accepted = Box<dyn Tunnel>>>> {
     Some(match scheme {
-        IpScheme::Tcp => TcpTunnelListener::new(l.clone()).boxed(),
-        IpScheme::Udp => UdpTunnelListener::new(l.clone()).boxed(),
-        IpScheme::Ws => WsTunnelListener::new(l.clone()).boxed(),
+        IpScheme::Tcp => {
+            let addr = l.socket_addrs(|| Some(11010)).ok()?.into_iter().next()?;
+            Box::new(runtime_rpc_listener(addr))
+        }
+        IpScheme::Udp => {
+            let addr = l.socket_addrs(|| Some(11010)).ok()?.into_iter().next()?;
+            Box::new(runtime_udp_tunnel_listener(l.clone(), addr))
+        }
+        IpScheme::Ws => Box::new(WsTunnelListener::new(l.clone())),
         _ => return None,
     })
 }
@@ -236,8 +253,8 @@ async fn get_dual_stack_listener(
     port: u16,
 ) -> Result<
     (
-        Option<Box<dyn TunnelListener>>,
-        Option<Box<dyn TunnelListener>>,
+        Option<Box<dyn SocketListener<Accepted = Box<dyn Tunnel>>>>,
+        Option<Box<dyn SocketListener<Accepted = Box<dyn Tunnel>>>>,
     ),
     Error,
 > {
@@ -312,6 +329,7 @@ async fn main() {
     let mut mgr = client_manager::ClientManager::new(
         db.clone(),
         cli.geoip_db,
+        Duration::from_millis(cli.heartbeat_min_response_ms),
         feature_flags.clone(),
         webhook_config.clone(),
     );
