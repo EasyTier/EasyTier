@@ -3,7 +3,7 @@ name = "easytier"
 description = "A full meshed p2p VPN, connecting all your devices in one network with one command."
 homepage = "https://github.com/EasyTier/EasyTier"
 repository = "https://github.com/EasyTier/EasyTier"
-version = "2.6.4"
+version = "2.7.0"
 edition.workspace = true
 rust-version.workspace = true
 authors = ["kkrainbow"]
@@ -35,8 +35,8 @@ name = "packet_bytes_extraction"
 harness = false
 
 [dependencies]
-easytier-core = { path = "../easytier-core", version = "2.6.4", default-features = false }
-easytier-proto = { path = "../easytier-proto", version = "2.6.4", default-features = false, features = ["api", "core"] }
+easytier-core = { path = "../easytier-core", version = "2.7.0", default-features = false }
+easytier-proto = { path = "../easytier-proto", version = "2.7.0", default-features = false, features = ["api", "core"] }
 git-version = "0.3.9"
 
 tracing = "0.1"
@@ -290,7 +290,7 @@ thunk-rs = { git = "https://github.com/easytier/thunk.git", default-features = f
 
 [dev-dependencies]
 criterion = "0.5.1"
-easytier-core = { path = "../easytier-core", version = "2.6.4", default-features = false, features = [
+easytier-core = { path = "../easytier-core", version = "2.7.0", default-features = false, features = [
     "test-utils",
 ] }
 serial_test = "3.0.0"
