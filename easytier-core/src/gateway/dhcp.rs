@@ -28,15 +28,6 @@ pub struct DhcpIpv4Allocator {
     current: Option<Ipv4Inet>,
 }
 
-impl Default for DhcpIpv4Allocator {
-    fn default() -> Self {
-        Self {
-            default_subnet: None,
-            current: None,
-        }
-    }
-}
-
 impl DhcpIpv4Allocator {
     pub fn new(default_subnet: Ipv4Inet) -> Self {
         Self {
