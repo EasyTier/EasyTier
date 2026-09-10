@@ -1204,10 +1204,21 @@ impl NetworkOptions {
         } else if let Some(secure_mode) = self.secure_mode
             && secure_mode
         {
+            // CLI key options replace the file's [secure_mode] keypair as a unit;
+            // without them the keys already loaded from the config file win.
+            let cli_private_key = self.local_private_key.clone().filter(|k| !k.is_empty());
+            let cli_public_key = self.local_public_key.clone().filter(|k| !k.is_empty());
+            let (local_private_key, local_public_key) =
+                if cli_private_key.is_some() || cli_public_key.is_some() {
+                    (cli_private_key, cli_public_key)
+                } else {
+                    cfg.get_secure_mode()
+                        .map_or((None, None), |c| (c.local_private_key, c.local_public_key))
+                };
             let c = SecureModeConfig {
                 enabled: secure_mode,
-                local_private_key: self.local_private_key.clone(),
-                local_public_key: self.local_public_key.clone(),
+                local_private_key,
+                local_public_key,
             };
             cfg.set_secure_mode(Some(normalize_secure_mode_config(c)?));
         }
@@ -1917,6 +1928,66 @@ enabled = true
         assert_eq!(identity.network_secret, None);
         assert_eq!(identity.network_secret_digest, None);
         assert_eq!(cfg.get_hostname(), "override-host");
+    }
+
+    #[test]
+    fn secure_mode_cli_flag_preserves_config_file_keypair() {
+        use base64::{Engine as _, prelude::BASE64_STANDARD};
+        let private = x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng);
+        let cfg = TomlConfigLoader::new_from_str(&format!(
+            r#"
+[secure_mode]
+enabled = true
+local_private_key = "{}"
+"#,
+            BASE64_STANDARD.encode(private.as_bytes())
+        ))
+        .unwrap();
+        let file_keypair = cfg.get_secure_mode().unwrap();
+
+        NetworkOptions {
+            secure_mode: Some(true),
+            ..Default::default()
+        }
+        .merge_into(&cfg)
+        .unwrap();
+
+        let merged = cfg.get_secure_mode().unwrap();
+        assert!(merged.enabled);
+        assert_eq!(merged.local_private_key, file_keypair.local_private_key);
+        assert_eq!(merged.local_public_key, file_keypair.local_public_key);
+        assert_eq!(merged.private_key().unwrap().as_bytes(), private.as_bytes());
+    }
+
+    #[test]
+    fn secure_mode_cli_key_replaces_config_file_keypair() {
+        use base64::{Engine as _, prelude::BASE64_STANDARD};
+        let cfg = TomlConfigLoader::new_from_str(
+            r#"
+[secure_mode]
+enabled = true
+"#,
+        )
+        .unwrap();
+        let cli_private = x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng);
+
+        NetworkOptions {
+            secure_mode: Some(true),
+            local_private_key: Some(BASE64_STANDARD.encode(cli_private.as_bytes())),
+            ..Default::default()
+        }
+        .merge_into(&cfg)
+        .unwrap();
+
+        let merged = cfg.get_secure_mode().unwrap();
+        assert_eq!(
+            merged.private_key().unwrap().as_bytes(),
+            cli_private.as_bytes()
+        );
+        assert_eq!(
+            merged.public_key().unwrap().as_bytes(),
+            x25519_dalek::PublicKey::from(&cli_private).as_bytes()
+        );
     }
 
     #[test]
