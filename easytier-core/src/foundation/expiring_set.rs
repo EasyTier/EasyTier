@@ -34,14 +34,16 @@ where
     }
 
     pub fn contains(&self, key: &K) -> bool {
-        let active = self
+        match self
             .entries
-            .get(key)
-            .is_some_and(|expires_at| *expires_at > Instant::now());
-        if !active {
-            self.entries.remove(key);
+            .remove_if(key, |_, expires_at| *expires_at <= Instant::now())
+        {
+            // Existed and expired: removed while holding the shard lock, so a
+            // concurrent insert of the same key cannot be dropped by us.
+            Some(_) => false,
+            // Not removed: either absent, or still fresh.
+            None => self.entries.contains_key(key),
         }
-        active
     }
 
     pub fn cleanup(&self) {
