@@ -1071,7 +1071,76 @@ async fn wait_stable_single_visible_peer_on_admins(
 
         assert!(
             start.elapsed() < timeout,
-            "timed out waiting for a stable single visible peer on both admins: a={:?} c={:?}",
+            "timed out waiting for a stable single visible peer on both admins after {:?}: a_has_a={} a_has_b={} c_has_a={} c_has_b={} a={:?} c={:?}",
+            start.elapsed(),
+            admin_a_has_a,
+            admin_a_has_b,
+            admin_c_has_a,
+            admin_c_has_b,
+            admin_a_routes.iter().map(|r| r.peer_id).collect::<Vec<_>>(),
+            admin_c_routes.iter().map(|r| r.peer_id).collect::<Vec<_>>()
+        );
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+async fn wait_stable_failover_visibility_on_admins(
+    admin_a_inst: &Instance,
+    admin_c_inst: &Instance,
+    present_peer_id: u32,
+    absent_peer_id: u32,
+    timeout: Duration,
+) {
+    let start = std::time::Instant::now();
+    let mut stable_samples = 0;
+
+    loop {
+        let admin_a_routes = admin_a_inst.get_core_instance().route_snapshots().await;
+        let admin_c_routes = admin_c_inst.get_core_instance().route_snapshots().await;
+
+        let admin_a_has_present = admin_a_routes.iter().any(|r| r.peer_id == present_peer_id);
+        let admin_c_has_present = admin_c_routes.iter().any(|r| r.peer_id == present_peer_id);
+        let admin_a_has_absent = admin_a_routes.iter().any(|r| r.peer_id == absent_peer_id);
+        let admin_c_has_absent = admin_c_routes.iter().any(|r| r.peer_id == absent_peer_id);
+
+        let failover_stable = admin_a_has_present
+            && admin_c_has_present
+            && !admin_a_has_absent
+            && !admin_c_has_absent;
+
+        println!(
+            "failover visibility: present={} a_has_present={} c_has_present={} absent={} a_has_absent={} c_has_absent={} stable={} samples={}",
+            present_peer_id,
+            admin_a_has_present,
+            admin_c_has_present,
+            absent_peer_id,
+            admin_a_has_absent,
+            admin_c_has_absent,
+            failover_stable,
+            stable_samples
+        );
+
+        if failover_stable {
+            stable_samples += 1;
+        } else {
+            stable_samples = 0;
+        }
+
+        if stable_samples >= 3 {
+            return;
+        }
+
+        assert!(
+            start.elapsed() < timeout,
+            "timed out waiting for stable failover visibility on both admins after {:?}: present={} a_has_present={} c_has_present={} absent={} a_has_absent={} c_has_absent={} a={:?} c={:?}",
+            start.elapsed(),
+            present_peer_id,
+            admin_a_has_present,
+            admin_c_has_present,
+            absent_peer_id,
+            admin_a_has_absent,
+            admin_c_has_absent,
             admin_a_routes.iter().map(|r| r.peer_id).collect::<Vec<_>>(),
             admin_c_routes.iter().map(|r| r.peer_id).collect::<Vec<_>>()
         );
@@ -2598,9 +2667,9 @@ async fn credential_non_reusable_across_two_admins_allows_only_one_peer() {
             let a_routes = admin_a_inst.get_core_instance().route_snapshots().await;
             let c_routes = admin_c_inst.get_core_instance().route_snapshots().await;
             a_routes.iter().any(|r| r.peer_id == admin_c_peer_id)
-                || c_routes.iter().any(|r| r.peer_id == admin_a_inst.peer_id())
+                && c_routes.iter().any(|r| r.peer_id == admin_a_inst.peer_id())
         },
-        Duration::from_secs(10),
+        Duration::from_secs(20),
     )
     .await;
 
@@ -2718,15 +2787,11 @@ async fn credential_non_reusable_across_two_admins_allows_only_one_peer() {
         drop_insts(vec![cred_right_inst.take().unwrap()]).await;
     }
 
-    wait_for_condition(
-        || async {
-            let admin_a_routes = admin_a_inst.get_core_instance().route_snapshots().await;
-            let admin_c_routes = admin_c_inst.get_core_instance().route_snapshots().await;
-            admin_a_routes.iter().any(|r| r.peer_id == loser_peer_id)
-                && admin_c_routes.iter().any(|r| r.peer_id == loser_peer_id)
-                && !admin_a_routes.iter().any(|r| r.peer_id == winner_peer_id)
-                && !admin_c_routes.iter().any(|r| r.peer_id == winner_peer_id)
-        },
+    wait_stable_failover_visibility_on_admins(
+        &admin_a_inst,
+        &admin_c_inst,
+        loser_peer_id,
+        winner_peer_id,
         Duration::from_secs(60),
     )
     .await;
