@@ -22,7 +22,7 @@ pub enum DhcpIpv4Decision {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct DhcpIpv4Allocator {
     default_subnet: Option<Ipv4Inet>,
     current: Option<Ipv4Inet>,
