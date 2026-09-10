@@ -1,6 +1,9 @@
 #!/system/bin/sh
 
-MODDIR=${0%/*}
+MODDIR=$(CDPATH= cd "${0%/*}" 2>/dev/null && pwd -P) || {
+    echo "Failed to resolve module directory" >&2
+    exit 1
+}
 CONFIG_FILE="${MODDIR}/config/config.toml"
 COMMAND_ARGS="${MODDIR}/config/command_args"
 EASYTIER="${MODDIR}/easytier-core"
@@ -10,8 +13,15 @@ fail() {
     exit 1
 }
 
+running_pids() {
+    for process_dir in /proc/[0-9]*; do
+        [ "$(readlink "${process_dir}/exe" 2>/dev/null)" = "${EASYTIER}" ] || continue
+        printf '%s\n' "${process_dir#/proc/}"
+    done
+}
+
 is_running() {
-    pgrep -f "${EASYTIER}" >/dev/null 2>&1
+    [ -n "$(running_pids)" ]
 }
 
 case "$1" in
@@ -55,9 +65,10 @@ case "$1" in
             || fail "Failed to replace configuration"
         trap - EXIT HUP INT TERM
 
-        if is_running; then
-            pkill -f "${EASYTIER}" || fail "Failed to restart EasyTier"
-        fi
+        RUNNING_PIDS=$(running_pids)
+        for pid in ${RUNNING_PIDS}; do
+            kill "${pid}" || fail "Failed to restart EasyTier"
+        done
         echo "saved"
         ;;
     *)

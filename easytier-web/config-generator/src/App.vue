@@ -5,6 +5,7 @@ import { Button, SelectButton, Textarea } from 'primevue'
 import { computed, onMounted, ref, watch } from 'vue'
 import initConfigWasm, {
   generate_config as generateTomlConfig,
+  merge_config as mergeTomlConfig,
   parse_config as parseTomlConfig,
 } from './generated/config-wasm/easytier_config'
 
@@ -33,6 +34,7 @@ const moduleMessage = ref('')
 const isSaving = ref(false)
 const networkConfig = ref<NetworkTypes.NetworkConfig>(NetworkTypes.DEFAULT_NETWORK_CONFIG())
 const tomlConfig = ref('')
+const originalTomlConfig = ref('')
 const errorMessage = ref('')
 const configCopied = ref(false)
 function t(key: string, params: Record<string, unknown> = {}): string {
@@ -72,7 +74,7 @@ function moduleDirFromBridge(): string {
 }
 
 async function runModuleCommand(command: string): Promise<string> {
-  const { errno, stdout, stderr } = await exec(`./webui.sh ${command}`, {
+  const { errno, stdout, stderr } = await exec(`${moduleDirectory.value}/webui.sh ${command}`, {
     cwd: moduleDirectory.value,
   })
   if (errno !== 0)
@@ -116,6 +118,7 @@ async function loadModuleConfig(): Promise<void> {
   networkConfig.value = NetworkTypes.normalizeNetworkConfig(
     JSON.parse(parseTomlConfig(rawConfig)) as NetworkTypes.NetworkConfig,
   )
+  originalTomlConfig.value = rawConfig
   tomlConfig.value = rawConfig
   commandArgsMode.value = mode.trim() === 'command-args'
   moduleReady.value = true
@@ -157,12 +160,15 @@ async function generateConfig(config: NetworkTypes.NetworkConfig): Promise<void>
     isSaving.value = isModuleWebUi
     const configJson = JSON.stringify(NetworkTypes.toBackendNetworkConfig(config))
     await ensureConfigWasm()
-    const generatedConfig = generateTomlConfig(configJson)
+    const generatedConfig = isModuleWebUi
+      ? mergeTomlConfig(originalTomlConfig.value, configJson)
+      : generateTomlConfig(configJson)
     tomlConfig.value = generatedConfig
 
     if (isModuleWebUi) {
       moduleStatus.value = 'restarting'
       await runModuleCommand(`save-and-restart ${encodeBase64(generatedConfig)}`)
+      originalTomlConfig.value = generatedConfig
       const status = await refreshModuleState(true)
       moduleMessage.value = t(
         status === 'running'
