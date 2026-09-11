@@ -15,3 +15,4 @@ pub mod packet;
 pub mod socket;
 #[cfg(test)]
 pub(crate) mod testkit;
+pub mod tunnel;

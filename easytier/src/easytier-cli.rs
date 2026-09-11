@@ -2031,8 +2031,8 @@ impl<'a> CommandHandler<'a> {
     }
 
     async fn handle_acl_set(&self, raw: &str) -> Result<(), Error> {
-        // Load the TOML content either from a file (`@path`) or inline.
-        let toml_text = if let Some(path) = raw.strip_prefix('@') {
+        // Load the content either from a file (`@path`) or inline.
+        let text = if let Some(path) = raw.strip_prefix('@') {
             tokio::fs::read_to_string(path)
                 .await
                 .with_context(|| format!("failed to read ACL file `{path}`"))?
@@ -2040,16 +2040,40 @@ impl<'a> CommandHandler<'a> {
             raw.to_string()
         };
 
-        // The input mirrors the `[acl]` section of an easytier TOML config, so
-        // we wrap the parsed `Acl` inside a top-level `acl` table.
+        // Try parsing as JSON first, then fallback to TOML if JSON parsing fails.
         #[derive(serde::Deserialize, Default)]
-        struct AclToml {
+        struct AclWrapper {
             acl: Option<Acl>,
         }
 
-        let parsed: AclToml = toml::from_str(&toml_text)
-            .with_context(|| "failed to parse ACL TOML (expected `[acl.acl_v1]` structure)")?;
-        let acl = parsed.acl.unwrap_or_default();
+        // Your JSON file includes a full PatchConfigRequest structure: {"instance": ..., "patch": {"acl": {"acl": ...}}}
+        // Let's support parsing full PatchConfigRequest or patch payload or Acl directly.
+        #[derive(serde::Deserialize, Default)]
+        struct PatchRequestJson {
+            patch: Option<InstanceConfigPatch>,
+        }
+
+        let acl = if let Ok(parsed_req) = serde_json::from_str::<PatchRequestJson>(&text) {
+            parsed_req
+                .patch
+                .and_then(|p| p.acl)
+                .and_then(|a| a.acl)
+                .unwrap_or_default()
+        } else if let Ok(parsed_json) = serde_json::from_str::<AclWrapper>(&text) {
+            parsed_json.acl.unwrap_or_default()
+        } else if let Ok(parsed_json_direct) = serde_json::from_str::<Acl>(&text) {
+            parsed_json_direct
+        } else {
+            // Fallback to TOML
+            #[derive(serde::Deserialize, Default)]
+            struct AclToml {
+                acl: Option<Acl>,
+            }
+            let parsed_toml: AclToml = toml::from_str(&text).with_context(
+                || "failed to parse ACL as either JSON or TOML (expected `[acl.acl_v1]` structure)",
+            )?;
+            parsed_toml.acl.unwrap_or_default()
+        };
         if acl.is_empty() {
             anyhow::bail!(
                 "parsed ACL is empty; provide at least one chain or a non-empty group under `[acl.acl_v1]`"

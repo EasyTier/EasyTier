@@ -72,7 +72,6 @@ fn setup_socket2_ext(
     only_v6: bool,
     reuse_addr: bool,
     reuse_port: bool,
-    socket_mark: Option<u32>,
 ) -> Result<(), TunnelError> {
     #[cfg(target_os = "windows")]
     {
@@ -94,11 +93,6 @@ fn setup_socket2_ext(
     {
         let _ = reuse_port;
     }
-
-    // SO_MARK must be set before bind() so the kernel applies the mark to
-    // any source-address selection bind() triggers on unspecified binds.
-    // Accepted child sockets inherit the mark from the listener on Linux.
-    apply_socket_mark(socket2_socket, socket_mark)?;
 
     if let Err(e) = socket2_socket.bind(&socket2::SockAddr::from(*bind_addr)) {
         if bind_addr.is_ipv4() {
@@ -197,6 +191,8 @@ impl From<&str> for BindDev {
 /// This function creates a new socket, applies specific configurations (such as
 /// binding to a device or setting IPv6-only flags), and finalizes it into the
 /// requested [`Bindable`] type.
+/// Protection is acknowledged before bind/listen; namespace guards never cross
+/// an await. Failures drop the unbound socket instead of allowing early I/O.
 ///
 /// # Arguments
 ///
@@ -216,7 +212,7 @@ impl From<&str> for BindDev {
 ///
 /// Returns a [`TunnelError`] if socket creation, configuration, or finalization fails.
 #[builder]
-pub fn bind<B: Bindable>(
+pub async fn bind<B: Bindable>(
     addr: SocketAddr,
     #[builder(default, into)] dev: BindDev,
     net_ns: Option<NetNS>,
@@ -226,23 +222,26 @@ pub fn bind<B: Bindable>(
     /// Linux SO_MARK (fwmark) to apply to the socket. `None` leaves SO_MARK
     /// untouched; `Some(mark)` applies that exact value, including `Some(0)`.
     socket_mark: Option<u32>,
+    #[builder(default)] need_protect: bool,
 ) -> Result<B, TunnelError> {
-    let _g = net_ns.map(|n| n.guard());
-    let dev = match dev {
-        BindDev::Auto => get_interface_name_by_ip(&addr.ip()),
-        BindDev::Disabled => None,
-        BindDev::Custom(s) => Some(s),
+    let (socket, dev) = {
+        let _g = net_ns.as_ref().map(|n| n.guard());
+        let dev = match dev {
+            BindDev::Auto => get_interface_name_by_ip(&addr.ip()),
+            BindDev::Disabled => None,
+            BindDev::Custom(s) => Some(s),
+        };
+        let socket =
+            socket2::Socket::new(socket2::Domain::for_address(addr), B::TYPE, B::PROTOCOL)?;
+        // A platform protector may set its own routing mark. Never overwrite
+        // that mark with caller options after its acknowledgement.
+        apply_socket_mark(&socket, socket_mark)?;
+        (socket, dev)
     };
-    let socket = socket2::Socket::new(socket2::Domain::for_address(addr), B::TYPE, B::PROTOCOL)?;
-    setup_socket2_ext(
-        &socket,
-        &addr,
-        dev,
-        only_v6,
-        reuse_addr,
-        reuse_port,
-        socket_mark,
-    )?;
+    crate::socket_protector::protect_native_socket(&socket, need_protect).await?;
+    // Restore the requested namespace for synchronous bind/device lookup only.
+    let _g = net_ns.as_ref().map(|n| n.guard());
+    setup_socket2_ext(&socket, &addr, dev, only_v6, reuse_addr, reuse_port)?;
     B::finalize(socket)
 }
 
@@ -322,8 +321,8 @@ pub(crate) mod tests {
         target_os = "linux",
         target_env = "ohos"
     ))]
-    #[test]
-    fn bind_custom_device_is_applied_for_unspecified_addr() {
+    #[tokio::test]
+    async fn bind_custom_device_is_applied_for_unspecified_addr() {
         use std::net::SocketAddr;
         use tokio::net::UdpSocket;
 
@@ -332,6 +331,7 @@ pub(crate) mod tests {
             .addr(addr)
             .dev("et/invalid-device-name")
             .call()
+            .await
             .expect_err("custom device must not be skipped for unspecified bind addr");
     }
 

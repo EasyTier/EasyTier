@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => {
     collectNetworkInfo: vi.fn(async (instanceId: string) => ({
       info: { map: { [instanceId]: networkInfo.get(instanceId) } },
     })),
+    consumeVpnTileAction: vi.fn(async () => ({})),
     getConfig: vi.fn(async (instanceId: string) => configs.get(instanceId)),
     getVpnStatus: vi.fn<() => Promise<Record<string, unknown>>>(async () => ({ running: false })),
     listNetworkInstanceIds: vi.fn<() => Promise<{ running_inst_ids: unknown[] }>>(async () => ({ running_inst_ids: [] })),
@@ -43,6 +44,7 @@ vi.mock('easytier-frontend-lib', () => ({
 }))
 
 vi.mock('tauri-plugin-vpnservice-api', () => ({
+  consume_vpn_tile_action: mocks.consumeVpnTileAction,
   get_vpn_status: mocks.getVpnStatus,
   prepare_vpn: mocks.prepareVpn,
   start_vpn: mocks.startVpn,
@@ -91,6 +93,8 @@ beforeEach(() => {
   mocks.networkInfo.clear()
   mocks.addPluginListener.mockClear()
   mocks.collectNetworkInfo.mockClear()
+  mocks.consumeVpnTileAction.mockReset()
+  mocks.consumeVpnTileAction.mockResolvedValue({})
   mocks.getConfig.mockClear()
   mocks.getVpnStatus.mockReset()
   mocks.getVpnStatus.mockResolvedValue({ running: false })
@@ -228,5 +232,24 @@ describe('mobile VPN reconciliation ownership', () => {
 
     expect(mocks.stopVpn).toHaveBeenCalledTimes(1)
     expect(mocks.startVpn).not.toHaveBeenCalled()
+  })
+})
+
+describe('mobile VPN tile action delivery', () => {
+  it('does not consume a pending action before a handler is ready', async () => {
+    const vpn = await loadVpnModule()
+
+    expect(await vpn.consumePendingMobileVpnTileAction()).toBe(false)
+    expect(mocks.consumeVpnTileAction).not.toHaveBeenCalled()
+  })
+
+  it('consumes and dispatches a pending action once a handler is registered', async () => {
+    const vpn = await loadVpnModule()
+    const handler = vi.fn(async () => undefined)
+    mocks.consumeVpnTileAction.mockResolvedValue({ action: 'start' })
+    vpn.setMobileVpnTileActionHandler(handler)
+
+    expect(await vpn.consumePendingMobileVpnTileAction()).toBe(true)
+    expect(handler).toHaveBeenCalledWith('start')
   })
 })

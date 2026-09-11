@@ -23,6 +23,7 @@ use tokio::{
 
 use crate::{
     common::netns::NetNS,
+    socket_protector::protect_native_socket,
     tunnel::common::{BindDev, apply_socket_mark, bind},
 };
 
@@ -183,12 +184,7 @@ impl VirtualTcpSocket for RuntimeTcpSocket {
 pub struct RuntimeTcpListener {
     listener: TcpListener,
     purpose: TcpListenPurpose,
-}
-
-impl RuntimeTcpListener {
-    pub(crate) fn new(listener: TcpListener, purpose: TcpListenPurpose) -> Self {
-        Self { listener, purpose }
-    }
+    need_protect: bool,
 }
 
 #[async_trait::async_trait]
@@ -201,6 +197,7 @@ impl VirtualTcpListener for RuntimeTcpListener {
 
     async fn accept(&self) -> io::Result<(Self::Socket, SocketAddr)> {
         let (stream, addr) = self.listener.accept().await?;
+        protect_native_socket(&SockRef::from(&stream), self.need_protect).await?;
         if self.purpose == TcpListenPurpose::ProxyNat {
             prepare_proxy_tcp_socket(&stream)?;
         }
@@ -229,45 +226,53 @@ fn bind_dev_from_options(options: &TcpBindOptions, local_addr_was_defaulted: boo
         })
 }
 
-fn bind_tcp_socket(
+async fn bind_tcp_socket(
     remote_addr: SocketAddr,
-    bind_options: TcpBindOptions,
+    bind_options: &TcpBindOptions,
 ) -> Result<TcpSocket, TunnelError> {
     let (bind_addr, local_addr_was_defaulted) = match bind_options.local_addr {
         Some(addr) => (addr, false),
         None => (unspecified_bind_addr(remote_addr), true),
     };
-    let bind_dev = bind_dev_from_options(&bind_options, local_addr_was_defaulted);
+    let bind_dev = bind_dev_from_options(bind_options, local_addr_was_defaulted);
 
     bind::<TcpSocket>()
         .addr(bind_addr)
         .dev(bind_dev)
         .net_ns(NetNS::from_socket_context(&bind_options.context))
         .only_v6(bind_options.only_v6)
-        .reuse_addr(native_reuse_addr(&bind_options))
+        .reuse_addr(native_reuse_addr(bind_options))
         .reuse_port(bind_options.reuse_port)
         .maybe_socket_mark(bind_options.context.socket_mark)
+        .need_protect(bind_options.need_protect)
         .call()
+        .await
 }
 
-fn create_tcp_socket(
+pub(crate) async fn create_tcp_socket(
     remote_addr: SocketAddr,
     bind_options: &TcpBindOptions,
 ) -> Result<TcpSocket, TunnelError> {
+    if must_bind_before_connect(bind_options) {
+        return bind_tcp_socket(remote_addr, bind_options).await;
+    }
     // A network namespace is a thread property, but the socket retains its
     // namespace after creation. Never keep the guard across connect().await.
-    NetNS::from_socket_context(&bind_options.context).run(|| {
-        let socket = if remote_addr.is_ipv4() {
-            TcpSocket::new_v4()?
-        } else {
-            TcpSocket::new_v6()?
-        };
-        apply_socket_mark(
-            &socket2::SockRef::from(&socket),
-            bind_options.context.socket_mark,
-        )?;
-        Ok(socket)
-    })
+    let socket =
+        NetNS::from_socket_context(&bind_options.context).run(|| -> Result<_, TunnelError> {
+            let socket = if remote_addr.is_ipv4() {
+                TcpSocket::new_v4()?
+            } else {
+                TcpSocket::new_v6()?
+            };
+            apply_socket_mark(
+                &socket2::SockRef::from(&socket),
+                bind_options.context.socket_mark,
+            )?;
+            Ok(socket)
+        })?;
+    protect_native_socket(&SockRef::from(&socket), bind_options.need_protect).await?;
+    Ok(socket)
 }
 
 fn must_bind_before_connect(bind_options: &TcpBindOptions) -> bool {
@@ -290,30 +295,23 @@ fn native_reuse_addr(bind_options: &TcpBindOptions) -> bool {
         .unwrap_or_else(native_reuse_addr_default)
 }
 
-pub(crate) fn bind_tcp_listener(
+pub(crate) async fn bind_tcp_listener(
     options: TcpListenOptions,
 ) -> Result<RuntimeTcpListener, TunnelError> {
     let purpose = options.purpose;
-    let bind_options = options.bind;
-    let net_ns = NetNS::from_socket_context(&bind_options.context);
+    let mut bind_options = options.bind;
     let addr = bind_options.local_addr.ok_or_else(|| {
         TunnelError::InvalidAddr("tcp listener requires a local bind address".to_owned())
     })?;
-    let bind_dev = if bind_options.bind_device.is_none() && purpose == TcpListenPurpose::PortLease {
-        BindDev::Disabled
-    } else {
-        bind_dev_from_options(&bind_options, false)
-    };
-    let listener = bind::<TcpListener>()
-        .addr(addr)
-        .dev(bind_dev)
-        .maybe_net_ns(Some(net_ns))
-        .only_v6(bind_options.only_v6)
-        .reuse_addr(native_reuse_addr(&bind_options))
-        .reuse_port(bind_options.reuse_port)
-        .maybe_socket_mark(bind_options.context.socket_mark)
-        .call()?;
-    Ok(RuntimeTcpListener::new(listener, purpose))
+    if bind_options.bind_device.is_none() && purpose == TcpListenPurpose::PortLease {
+        bind_options.bind_device = Some(String::new());
+    }
+    let listener = create_tcp_socket(addr, &bind_options).await?.listen(1024)?;
+    Ok(RuntimeTcpListener {
+        listener,
+        purpose,
+        need_protect: bind_options.need_protect,
+    })
 }
 
 pub(crate) async fn connect_tcp(
@@ -323,14 +321,7 @@ pub(crate) async fn connect_tcp(
     let purpose = options.purpose;
     let bind_options = options.bind;
 
-    if !must_bind_before_connect(&bind_options) {
-        let socket = create_tcp_socket(remote_addr, &bind_options)?;
-        let stream = socket.connect(remote_addr).await?;
-        prepare_connected_tcp_socket(&stream, purpose)?;
-        return Ok(RuntimeTcpSocket::new(stream));
-    }
-
-    let socket = bind_tcp_socket(remote_addr, bind_options)?;
+    let socket = create_tcp_socket(remote_addr, &bind_options).await?;
     let stream = socket.connect(remote_addr).await?;
     prepare_connected_tcp_socket(&stream, purpose)?;
     Ok(RuntimeTcpSocket::new(stream))
@@ -398,6 +389,12 @@ mod tests {
 
     #[test]
     fn tcp_connect_binds_when_socket_option_requires_pre_connect_setup() {
+        assert!(must_bind_before_connect(
+            &TcpBindOptions::default().with_local_addr(Some("127.0.0.1:0".parse().unwrap()))
+        ));
+        assert!(must_bind_before_connect(
+            &TcpBindOptions::default().with_reuse_port(true)
+        ));
         assert!(must_bind_before_connect(
             &TcpBindOptions::default().with_only_v6(true)
         ));

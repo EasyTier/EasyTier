@@ -28,7 +28,7 @@ use crate::{
 
 use easytier_proto::common::CompressionAlgoPb;
 
-use super::{CoreConnectivityConfig, CoreInstanceConfig};
+use super::{CoreConnectivityConfig, CoreConnectivityMode, CoreInstanceConfig};
 
 const OSPF_UPDATE_MY_FOREIGN_NETWORK_INTERVAL_SEC: u64 = 10;
 const MAX_DIRECT_CONNS_PER_PEER_IN_FOREIGN_NETWORK: usize = 3;
@@ -58,6 +58,7 @@ pub struct CoreInstanceHostConfig {
     pub upnp_enabled: bool,
     pub tcp_hole_punching_enabled: bool,
     pub ignore_unsupported_config: bool,
+    pub connectivity: CoreConnectivityMode,
     pub easytier_version: String,
     pub endpoint_protocols: Vec<String>,
 }
@@ -83,6 +84,7 @@ impl Default for CoreInstanceHostConfig {
             upnp_enabled: true,
             tcp_hole_punching_enabled: true,
             ignore_unsupported_config: false,
+            connectivity: CoreConnectivityMode::Full,
             easytier_version: env!("CARGO_PKG_VERSION").to_owned(),
             endpoint_protocols: ManualEndpointDiscoveryConfig::default().srv_protocols,
         }
@@ -352,6 +354,8 @@ impl CoreInstanceConfig {
                 runtime,
                 startup_plan: super::CoreInstanceStartupPlan {
                     gateway: host.gateway_enabled,
+                    packet_proxy: host.proxy_enabled,
+                    connectivity: host.connectivity,
                 },
                 stun: StunServerConfig {
                     udp_servers: stun_servers
@@ -588,6 +592,7 @@ disable_p2p = true
             icmp_failure_is_fatal: true,
             public_ipv6_provider_supported: true,
             gateway_enabled: false,
+            connectivity: CoreConnectivityMode::InboundOnly,
             easytier_version: "host-version".to_owned(),
             endpoint_protocols: vec!["host-protocol".to_owned()],
             ..Default::default()
@@ -605,6 +610,10 @@ disable_p2p = true
                 .hostname
                 .as_deref(),
             Some("host-fallback")
+        );
+        assert_eq!(
+            normalized.connectivity.startup_plan.connectivity,
+            CoreConnectivityMode::InboundOnly
         );
         assert!(
             normalized
@@ -677,6 +686,7 @@ data_compress_algo = "Zstd"
         let normalized = CoreInstanceConfig::from_toml_with_host(&config, &host).unwrap();
 
         assert_eq!(config.dump(), before);
+        assert!(!normalized.connectivity.startup_plan.packet_proxy);
         assert_eq!(normalized.connectivity.initial_peers.len(), 1);
         assert_eq!(
             normalized

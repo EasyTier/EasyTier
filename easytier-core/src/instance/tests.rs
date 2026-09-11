@@ -185,6 +185,10 @@ fn core_instance_config_round_trips_as_normalized_json() {
 
     assert!(!decoded.connectivity.direct.testing);
     assert!(decoded.connectivity.startup_plan.gateway);
+    assert_eq!(
+        decoded.connectivity.startup_plan.connectivity,
+        CoreConnectivityMode::Full
+    );
     assert_eq!(serde_json::to_value(&decoded).unwrap(), encoded);
 
     let mut legacy = encoded;
@@ -3015,5 +3019,89 @@ virtual_ip = "10.82.0.2/24"
 
         instance.stop().await;
         assert!(instance.running_listeners().is_empty());
+    }
+
+    #[tokio::test]
+    async fn inbound_only_uses_host_registered_listener_lifecycle() {
+        let external_url: Url = "unix:///tmp/easytier-host-listener-test".parse().unwrap();
+        let mut config = test_config("host-listener");
+        config.connectivity.startup_plan.connectivity = CoreConnectivityMode::InboundOnly;
+        let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+        let mut adapters = adapters(
+            Some(Arc::new(ReadyExternalListenerFactory)),
+            Arc::new(packet_sink),
+        );
+        adapters
+            .host_listener_registrations
+            .push(ExternalListenerRequest {
+                url: external_url.clone(),
+                socket_context: SocketContext::default(),
+            });
+        let instance = CoreInstance::new(config, adapters).unwrap();
+
+        assert!(
+            instance
+                .add_connector("tcp://127.0.0.1:11010".parse().unwrap())
+                .is_err()
+        );
+        instance.start().await.unwrap();
+        assert!(instance.running_listeners().contains(&external_url));
+
+        instance.stop().await;
+        assert!(instance.running_listeners().is_empty());
+    }
+
+    #[tokio::test]
+    async fn inbound_only_rejects_initial_peers() {
+        let mut config = test_config("inbound-only-peer");
+        config.connectivity.startup_plan.connectivity = CoreConnectivityMode::InboundOnly;
+        config
+            .connectivity
+            .initial_peers
+            .push("tcp://127.0.0.1:11010".parse().unwrap());
+
+        let Err(error) = build_instance(config) else {
+            panic!("inbound-only instance accepted an outbound peer");
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("inbound-only connectivity does not support outbound peers"),
+            "unexpected construction error: {error:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn outbound_only_ignores_configured_and_host_registered_listeners() {
+        let configured_url: Url = "unix:///tmp/easytier-outbound-configured-listener"
+            .parse()
+            .unwrap();
+        let host_url: Url = "unix:///tmp/easytier-outbound-host-listener"
+            .parse()
+            .unwrap();
+        let mut config = test_config("outbound-only-listeners");
+        config.connectivity.startup_plan.connectivity = CoreConnectivityMode::OutboundOnly;
+        config.connectivity.listeners = Some(ListenerRuntimeConfig::new(
+            vec![configured_url],
+            false,
+            SocketContext::default(),
+        ));
+        let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+        let mut adapters = adapters(
+            Some(Arc::new(ReadyExternalListenerFactory)),
+            Arc::new(packet_sink),
+        );
+        adapters
+            .host_listener_registrations
+            .push(ExternalListenerRequest {
+                url: host_url,
+                socket_context: SocketContext::default(),
+            });
+        let instance = CoreInstance::new(config, adapters).unwrap();
+
+        instance.start().await.unwrap();
+        assert!(instance.running_listeners().is_empty());
+
+        instance.stop().await;
     }
 }

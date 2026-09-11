@@ -24,6 +24,7 @@ use url::Url;
 use crate::{
     connectivity::{
         composite::{ConnectorEnvironment, ConnectorHostAdapter, ConnectorRuntime},
+        manual::ExternalTunnelConnector,
         transport::ConnectedByteStream,
     },
     host::environment::{HostConnectorEnvironmentIo, local_addr_for_remote},
@@ -113,6 +114,7 @@ where
     listeners: HostTcpListenerFactory<B>,
     environment: Arc<HostConnectorEnvironmentSnapshot>,
     environment_io: Arc<E>,
+    external_tunnel_connector: Option<Arc<dyn ExternalTunnelConnector>>,
 }
 
 impl<B, E> HostConnectorRuntime<B, E>
@@ -132,7 +134,16 @@ where
             listeners: HostTcpListenerFactory::new(runtime, backend),
             environment: Arc::new(environment),
             environment_io,
+            external_tunnel_connector: None,
         }
+    }
+
+    pub fn with_external_tunnel_connector(
+        mut self,
+        connector: Arc<dyn ExternalTunnelConnector>,
+    ) -> Self {
+        self.external_tunnel_connector = Some(connector);
+        self
     }
 }
 
@@ -181,6 +192,25 @@ where
     B: ConnectorHostSocketBackend,
     E: HostConnectorEnvironmentIo,
 {
+    fn supports_external_tunnel(&self, scheme: &str) -> bool {
+        self.external_tunnel_connector
+            .as_ref()
+            .is_some_and(|connector| connector.supports_scheme(scheme))
+    }
+
+    async fn connect_external_tunnel(
+        &self,
+        url: &Url,
+    ) -> anyhow::Result<Option<Box<dyn crate::tunnel::Tunnel>>> {
+        let Some(connector) = &self.external_tunnel_connector else {
+            return Ok(None);
+        };
+        if !connector.supports_scheme(url.scheme()) {
+            return Ok(None);
+        }
+        Ok(Some(connector.connect(url).await?))
+    }
+
     async fn connect_byte_stream(
         &self,
         url: &Url,
@@ -257,6 +287,24 @@ where
     ConnectorHostAdapter::new(runtime.clone(), runtime)
 }
 
+pub fn new_connector_host_with_external_tunnel<B, E>(
+    socket_runtime: HostSocketRuntime,
+    backend: Arc<B>,
+    environment: HostConnectorEnvironmentSnapshot,
+    environment_io: Arc<E>,
+    connector: Arc<dyn ExternalTunnelConnector>,
+) -> ConnectorHost<B, E>
+where
+    B: ConnectorHostSocketBackend,
+    E: HostConnectorEnvironmentIo,
+{
+    let runtime = Arc::new(
+        HostConnectorRuntime::new(socket_runtime, backend, environment, environment_io)
+            .with_external_tunnel_connector(connector),
+    );
+    ConnectorHostAdapter::new(runtime.clone(), runtime)
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -298,6 +346,19 @@ mod tests {
     }
 
     struct FixedStunProvider;
+
+    struct ExternalFailingConnector;
+
+    #[async_trait]
+    impl ExternalTunnelConnector for ExternalFailingConnector {
+        fn supports_scheme(&self, scheme: &str) -> bool {
+            scheme == "ws"
+        }
+
+        async fn connect(&self, _url: &Url) -> anyhow::Result<Box<dyn crate::tunnel::Tunnel>> {
+            anyhow::bail!("external connector called")
+        }
+    }
 
     #[async_trait]
     impl StunInfoProvider for FixedStunProvider {
@@ -576,6 +637,34 @@ mod tests {
         assert_eq!(
             DirectConnectorHost::mapped_listeners(&host),
             vec!["tcp://192.0.2.1:11010".parse::<Url>().unwrap()]
+        );
+    }
+
+    #[tokio::test]
+    async fn delegates_external_tunnel_connections() {
+        let host = new_connector_host_with_external_tunnel(
+            HostSocketRuntime::new(),
+            Arc::new(UnsupportedBackend::default()),
+            test_environment_snapshot(),
+            Arc::new(TestEnvironmentIo::default()),
+            Arc::new(ExternalFailingConnector),
+        );
+
+        let error = ManualConnectorHost::connect_external_tunnel(
+            &host,
+            &"ws://relay.example/".parse().unwrap(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.to_string(), "external connector called");
+        assert!(
+            ManualConnectorHost::connect_external_tunnel(
+                &host,
+                &"tcp://relay.example:11010".parse().unwrap(),
+            )
+            .await
+            .unwrap()
+            .is_none()
         );
     }
 

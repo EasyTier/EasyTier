@@ -157,19 +157,10 @@ pub(crate) fn collect_runtime_state() -> RuntimeAggregateState {
                 .as_ref()
                 .map(|snapshot| snapshot.display_name.clone())
                 .unwrap_or_else(|| config_id.clone());
-            let magic_dns_enabled = snapshot
-                .as_ref()
-                .and_then(|snapshot| snapshot.config.enable_magic_dns)
-                .unwrap_or(false);
-            let need_exit_node = snapshot
-                .as_ref()
-                .map(|snapshot| !snapshot.config.exit_nodes.is_empty())
-                .unwrap_or(false);
             instances.push(runtime_instance_from_running_info(
                 config_id,
                 display_name,
-                magic_dns_enabled,
-                need_exit_node,
+                snapshot.map(|snapshot| snapshot.config),
                 info,
             ));
         } else if let Some(snapshot) = get_runtime_config_snapshot(&config_id) {
@@ -195,6 +186,7 @@ pub(crate) fn collect_runtime_state() -> RuntimeAggregateState {
                 events: Vec::new(),
                 routes: Vec::new(),
                 peers: Vec::new(),
+                manual_routes: Vec::new(),
             });
         }
     }

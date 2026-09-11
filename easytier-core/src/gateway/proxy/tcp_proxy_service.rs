@@ -262,6 +262,7 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
             .bind_tcp(
                 TcpListenOptions::proxy_nat(listen_addr).with_bind(
                     TcpBindOptions::default()
+                        .with_need_protect(false)
                         .with_context(
                             self.socket_context
                                 .clone()

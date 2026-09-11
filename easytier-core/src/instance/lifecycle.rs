@@ -111,10 +111,16 @@ where
             .ok_or_else(|| anyhow::anyhow!("packet egress is one-shot and already started"))?;
         self.packet_egress.start(packet_receiver).await?;
         self.peer_manager.run().await.map_err(anyhow::Error::from)?;
-        self.direct.run();
+        if let Some(direct) = &self.direct {
+            direct.run();
+        }
         #[cfg(feature = "tcp-hole-punch")]
-        self.tcp_hole_punch.run();
-        self.manual.start();
+        if let Some(tcp_hole_punch) = &self.tcp_hole_punch {
+            tcp_hole_punch.run();
+        }
+        if let Some(manual) = &self.manual {
+            manual.start();
+        }
         #[cfg(feature = "public-ipv6-provider")]
         self.public_ipv6_provider.start().await;
 
@@ -128,8 +134,12 @@ where
             wrapped_transport.start().await?;
         }
         #[cfg(feature = "proxy-packet")]
-        self.start_packet_proxy().await?;
-        self.udp_hole_punch.start().await?;
+        if self.startup_plan.packet_proxy {
+            self.start_packet_proxy().await?;
+        }
+        if let Some(udp_hole_punch) = &self.udp_hole_punch {
+            udp_hole_punch.start().await?;
+        }
         self.peer_center.init().await;
         #[cfg(feature = "proxy-cidr-monitor")]
         self.proxy_cidr_monitor
@@ -170,7 +180,9 @@ where
         if let Some(listener) = &self.listener {
             listener.stop().await;
         }
-        self.udp_hole_punch.stop().await;
+        if let Some(udp_hole_punch) = &self.udp_hole_punch {
+            udp_hole_punch.stop().await;
+        }
         #[cfg(feature = "proxy-smoltcp-stack")]
         self.port_forward_adapter.stop().await;
         #[cfg(feature = "proxy-smoltcp-stack")]
@@ -185,10 +197,16 @@ where
         }
         #[cfg(feature = "proxy-packet")]
         self.packet_proxy.stop().await;
-        self.manual.stop().await;
+        if let Some(manual) = &self.manual {
+            manual.stop().await;
+        }
         #[cfg(feature = "tcp-hole-punch")]
-        self.tcp_hole_punch.stop().await;
-        self.direct.stop().await;
+        if let Some(tcp_hole_punch) = &self.tcp_hole_punch {
+            tcp_hole_punch.stop().await;
+        }
+        if let Some(direct) = &self.direct {
+            direct.stop().await;
+        }
         self.peer_center.stop().await;
 
         // Host packet tasks can still call the packet plane, so stop them

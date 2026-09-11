@@ -1,0 +1,15 @@
+packages:
+  - 'runtime'
+  - 'browser'
+  - 'cloudflare'
+  - 'examples/web'
+
+overrides:
+  minimatch: 10.2.4
+
+allowBuilds:
+  esbuild: true
+  workerd: true
+
+minimumReleaseAgeExclude:
+  - '@cloudflare/workers-types@5.20260724.1'

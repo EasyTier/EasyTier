@@ -22,28 +22,14 @@ macro_rules! ohrs_log_info {
     }};
 }
 
-macro_rules! ohrs_log_debug {
-    ($($arg:tt)*) => {{
-        if $crate::platform::logging::log_manager::app_log_enabled(3) {
-            $crate::platform::logging::log_manager::record_app_log(
-                3,
-                "RustOhrs",
-                &std::format!($($arg)*),
-            );
-        }
-    }};
-}
-
-mod config;
 mod exports;
 mod kernel_bridge;
+mod napi_types;
 mod nearby_management;
 mod platform;
-mod runtime;
 
-use config::repository::{cache_runtime_config_snapshot, start_kernel_with_config_id};
+use config::repository::cache_runtime_config_snapshot;
 use config::services::schema_service::{
-    ConfigFieldMapping, NetworkConfigSchema,
     get_network_config_field_mappings as build_network_config_field_mappings,
     get_network_config_schema as build_network_config_schema,
 };
@@ -53,42 +39,42 @@ use config::services::share_link_service::{
     parse_config_share_link as parse_config_share_link_inner,
 };
 use config::storage::config_meta::get_config_display_name;
-use config::types::stored_config::{KeyValuePair, SharedConfigLinkPayload, SnapshotImportResult};
 use easytier::common::config::NetworkConfigExt;
 use easytier::common::constants::EASYTIER_VERSION;
 use easytier::common::{
     MachineIdOptions,
     config::{ConfigLoader, TomlConfigLoader},
 };
-use easytier::instance::factory::{NativeInstanceManager, native_instance_manager_with_runtime};
 use easytier::proto::api::manage::NetworkConfig;
 use easytier::proto::api::manage::NetworkingMethod;
 use easytier::web_client::{WebClient, WebClientHooks, run_web_client};
+use easytier_ohos_core::runtime;
+use easytier_ohos_core::{ASYNC_RUNTIME, INSTANCE_MANAGER};
+use easytier_ohos_features::config;
 use kernel_bridge::{
     start_local_socket_server as start_local_socket_server_inner,
     stop_local_socket_server as stop_local_socket_server_inner,
 };
 use napi_derive_ohos::napi;
 use napi_ohos::bindgen_prelude::Uint8Array;
+use napi_types::{
+    ConfigFieldMapping, KeyValuePair, NetworkConfigSchema, SharedConfigLinkPayload,
+    SnapshotImportResult, SocketProtectionRequest,
+};
 use runtime::state::runtime_state::{RuntimeAggregateState, RuntimeInstanceState};
 use std::collections::{HashMap, HashSet};
 use std::format;
 use std::sync::{Arc, Mutex};
-use tokio::runtime::{Builder, Runtime};
 use uuid::Uuid;
 
-static ASYNC_RUNTIME: once_cell::sync::Lazy<Runtime> = once_cell::sync::Lazy::new(|| {
-    Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime for easytier-ohrs")
-});
-pub(crate) static INSTANCE_MANAGER: once_cell::sync::Lazy<Arc<NativeInstanceManager>> =
-    once_cell::sync::Lazy::new(|| {
-        Arc::new(native_instance_manager_with_runtime(
-            ASYNC_RUNTIME.handle().clone(),
-        ))
-    });
+pub(crate) fn feature_log_sink(level: i32, target: &str, message: &str) {
+    platform::logging::log_manager::record_app_log(level, target, message);
+}
+
+pub(crate) fn feature_log_enabled(level: i32) -> bool {
+    platform::logging::log_manager::app_log_enabled(level)
+}
+
 static WEB_CLIENTS: once_cell::sync::Lazy<Mutex<HashMap<String, ManagedWebClient>>> =
     once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
 const PRO_CONFIG_SERVER_CLIENT_ID: &str = "__easytier_pro_config_server_client__";
@@ -668,12 +654,6 @@ fn resolve_instance_id_inner(instance_name: &str) -> Option<String> {
     resolve_instance_id_from_state(&collect_runtime_state_inner(), instance_name)
 }
 
-pub(crate) fn build_default_network_config_json() -> Result<String, String> {
-    let config = NetworkConfig::new_from_config(TomlConfigLoader::default())
-        .map_err(|e| format!("default_network_config failed {}", e))?;
-    serde_json::to_string(&config).map_err(|e| format!("default_network_config failed {}", e))
-}
-
 fn convert_toml_to_network_config_inner(toml_text: &str) -> Result<String, String> {
     let config = NetworkConfig::new_from_config(
         TomlConfigLoader::new_from_str(toml_text).map_err(|e| e.to_string())?,
@@ -748,6 +728,18 @@ pub(crate) fn run_network_instance_from_json(cfg_json: &str) -> bool {
             false
         }
     }
+}
+
+fn start_kernel_with_config_id(config_id: &str) -> bool {
+    let Some(raw) = config::repository::load_config_json(config_id) else {
+        return false;
+    };
+    let display_name = get_config_display_name(config_id).unwrap_or_else(|| config_id.to_string());
+    let started = run_network_instance_from_json(&raw);
+    if started && let Ok(config) = serde_json::from_str::<NetworkConfig>(&raw) {
+        cache_runtime_config_snapshot(config_id.to_string(), display_name, config);
+    }
+    started
 }
 
 fn parse_instance_uuid(config_id: &str) -> Option<Uuid> {
@@ -847,7 +839,7 @@ pub fn import_config_store_snapshot(source_path: String) -> bool {
 
 #[napi]
 pub fn import_config_store_snapshot_with_result(source_path: String) -> SnapshotImportResult {
-    exports::config_api::import_config_store_snapshot_with_result(source_path)
+    exports::config_api::import_config_store_snapshot_with_result(source_path).into()
 }
 
 #[napi]
@@ -1056,6 +1048,9 @@ pub async fn call_nearby_management_json_rpc(
 #[napi]
 pub fn collect_network_infos() -> Vec<KeyValuePair> {
     exports::runtime_api::collect_network_infos()
+        .into_iter()
+        .map(Into::into)
+        .collect()
 }
 
 #[napi]
@@ -1064,13 +1059,52 @@ pub fn set_tun_fd(config_id: String, fd: i32) -> bool {
 }
 
 #[napi]
+pub fn enable_socket_protection() -> bool {
+    easytier_ohos_core::socket_protection::enable_socket_protection()
+}
+
+#[napi]
+pub async fn next_socket_protection_request() -> Option<SocketProtectionRequest> {
+    easytier_ohos_core::socket_protection::SOCKET_PROTECTION_MANAGER
+        .next_request()
+        .await
+        .map(Into::into)
+}
+
+#[napi]
+pub fn complete_socket_protection(
+    request_id: String,
+    success: bool,
+    error: Option<String>,
+) -> bool {
+    let Ok(request_id) = request_id.parse::<u64>() else {
+        return false;
+    };
+    easytier_ohos_core::socket_protection::SOCKET_PROTECTION_MANAGER
+        .complete_request(request_id, success, error)
+}
+
+#[napi]
+pub fn disable_socket_protection() -> bool {
+    easytier_ohos_core::socket_protection::disable_socket_protection()
+}
+
+#[napi]
+pub fn fail_socket_protection() -> bool {
+    easytier_ohos_core::socket_protection::fail_socket_protection()
+}
+
+#[napi]
 pub fn get_network_config_schema() -> NetworkConfigSchema {
-    build_network_config_schema()
+    build_network_config_schema().into()
 }
 
 #[napi]
 pub fn get_network_config_field_mappings() -> Vec<ConfigFieldMapping> {
     build_network_config_field_mappings()
+        .into_iter()
+        .map(Into::into)
+        .collect()
 }
 
 #[cfg(test)]
@@ -1118,6 +1152,7 @@ mod tests {
                     events: vec![],
                     routes: vec![],
                     peers: vec![],
+                    manual_routes: vec![],
                 },
                 RuntimeInstanceState {
                     config_id: "ec7b6a3c-aeae-4c0e-844e-f7ec2dbdc2ce".to_string(),
@@ -1133,6 +1168,7 @@ mod tests {
                     events: vec![],
                     routes: vec![],
                     peers: vec![],
+                    manual_routes: vec![],
                 },
             ],
             tun: runtime::state::runtime_state::TunAggregateState {
@@ -1199,7 +1235,7 @@ pub fn build_config_share_link(config_id: String, only_start: Option<bool>) -> O
 
 #[napi]
 pub fn parse_config_share_link(share_link: String) -> Option<SharedConfigLinkPayload> {
-    parse_config_share_link_inner(&share_link)
+    parse_config_share_link_inner(&share_link).map(Into::into)
 }
 
 #[napi]

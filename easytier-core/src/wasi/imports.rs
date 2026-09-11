@@ -6,6 +6,8 @@
 
 pub(crate) const HOST_PENDING: i32 = -1;
 pub(crate) const HOST_WOULD_BLOCK: i32 = -5;
+#[cfg(feature = "wasm-host-tunnel")]
+pub(crate) const HOST_TUNNEL_CLOSED: i32 = -10;
 
 #[link(wasm_import_module = "easytier_host")]
 unsafe extern "C" {
@@ -112,30 +114,36 @@ unsafe extern "C" {
     pub(crate) fn take_udp_send_ready(operation: u64) -> i32;
 
     /// Starts a TCP connection using an encoded `TcpConnectOptions` document.
+    /// Requested socket protection must complete before the host connects.
     pub(crate) fn start_tcp_connect(operation: u64, options: u32, options_len: u32) -> i32;
 
     /// Copies the completed TCP connection handle and addresses into `result`.
     pub(crate) fn take_tcp_connect(operation: u64, result: u32, result_len: u32) -> i32;
 
-    /// Starts a UDP bind using an encoded `UdpBindOptions` document.
+    /// Starts a UDP bind using an encoded `UdpBindOptions` document. Requested
+    /// socket protection must complete before bind or datagram I/O.
     pub(crate) fn start_udp_bind(operation: u64, options: u32, options_len: u32) -> i32;
 
     /// Copies the completed UDP socket handle and local address into `result`.
     pub(crate) fn take_udp_bind(operation: u64, result: u32, result_len: u32) -> i32;
 
     /// Starts a TCP listener bind using an encoded `TcpListenOptions` document.
+    /// Requested socket protection must complete before bind/listen.
     pub(crate) fn start_tcp_bind(operation: u64, options: u32, options_len: u32) -> i32;
 
     /// Copies the completed listener handle and local address into `result`.
     pub(crate) fn take_tcp_bind(operation: u64, result: u32, result_len: u32) -> i32;
 
-    /// Starts accepting one TCP stream from a listener handle.
+    /// Starts accepting one TCP stream from a listener handle. A protected
+    /// listener's accepted child must be protected before it is exposed.
     pub(crate) fn start_tcp_accept(handle: u64, operation: u64) -> i32;
 
     /// Copies the accepted TCP stream handle and addresses into `result`.
     pub(crate) fn take_tcp_accept(operation: u64, result: u32, result_len: u32) -> i32;
 
     /// Starts an address-record DNS lookup for an encoded [`crate::host::dns::DnsQuery`].
+    /// When VPN bypass is active, the host must protect every underlying DNS
+    /// socket before sending a query or opening a DNS TCP connection.
     pub(crate) fn start_dns_resolve(operation: u64, query: u32, query_len: u32) -> i32;
 
     /// Probes or copies the encoded DNS address result for `operation`.
@@ -157,6 +165,8 @@ unsafe extern "C" {
     pub(crate) fn take_dns_srv(operation: u64, result: u32, result_capacity: u32) -> i32;
 
     /// Starts finding the local address and source context needed to reach `remote_addr`.
+    /// When VPN bypass is active, the host must protect the underlying route-
+    /// probe socket before connecting or sending through it.
     pub(crate) fn start_local_addr_for_remote(
         operation: u64,
         remote_addr: u32,
@@ -187,6 +197,33 @@ unsafe extern "C" {
 
     /// Reports packet-sink write readiness; it never accepts a packet itself.
     pub(crate) fn take_packet_write_ready(operation: u64) -> i32;
+
+    #[cfg(feature = "wasm-host-tunnel")]
+    /// Starts receiving one complete host tunnel payload.
+    pub(crate) fn start_tunnel_receive(handle: u64, operation: u64, capacity: u32) -> i32;
+
+    #[cfg(feature = "wasm-host-tunnel")]
+    /// Probes or copies one payload, or returns the closed sentinel.
+    ///
+    /// A null destination with zero capacity returns the payload length without
+    /// consuming it. A second call copies and consumes the payload.
+    pub(crate) fn take_tunnel_receive(operation: u64, destination: u32, capacity: u32) -> i32;
+
+    #[cfg(feature = "wasm-host-tunnel")]
+    /// Starts sending one complete host tunnel payload.
+    pub(crate) fn start_tunnel_send(handle: u64, operation: u64, source: u32, length: u32) -> i32;
+
+    #[cfg(feature = "wasm-host-tunnel")]
+    /// Reports completion of one host tunnel send.
+    pub(crate) fn take_tunnel_send(operation: u64) -> i32;
+
+    #[cfg(feature = "wasm-host-tunnel-outbound")]
+    /// Starts opening one outbound host tunnel for the requested URL.
+    pub(crate) fn start_tunnel_connect(operation: u64, url: u32, url_len: u32) -> i32;
+
+    #[cfg(feature = "wasm-host-tunnel-outbound")]
+    /// Returns the connected tunnel handle, or a negative host status.
+    pub(crate) fn take_tunnel_connect(operation: u64) -> i64;
 
     /// Cancels a pending or completed-but-unread operation and releases host state.
     ///

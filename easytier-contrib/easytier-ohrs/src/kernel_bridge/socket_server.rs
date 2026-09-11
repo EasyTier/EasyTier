@@ -1,15 +1,15 @@
-use super::protocol::{
-    TunRequestPayload, broadcast_local_socket_json_payload_message, broadcast_local_socket_message,
-};
 use crate::collect_runtime_state_inner;
 use crate::config::repository::kernel_socket_path;
-use crate::kernel_bridge::routing::aggregate_tun_routes;
 use crate::runtime::state::runtime_state::{
     PeerConnInfo as RuntimePeerConnInfo, RuntimeAggregateState, peer_conn_to_view,
 };
 use crate::{ASYNC_RUNTIME, INSTANCE_MANAGER};
 use easytier::common::global_ctx::{EventBusSubscriber, GlobalCtxEvent};
 use easytier::instance::factory::subscribe_native_instance_event;
+use easytier_ohos_core::protocol::{
+    TunRequestPayload, broadcast_local_socket_json_payload_message, broadcast_local_socket_message,
+};
+use easytier_ohos_core::routing::aggregate_tun_routes;
 use once_cell::sync::Lazy;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};

@@ -22,14 +22,19 @@ use hickory_resolver::{Resolver, TokioResolver};
 use once_cell::sync::Lazy;
 use tokio::net::lookup_host;
 #[cfg(feature = "dns-resolver")]
-use tokio::net::{TcpSocket, TcpStream, UdpSocket};
+use tokio::net::{TcpStream, UdpSocket};
 #[cfg(feature = "dns-resolver")]
 use tokio::sync::Semaphore;
 
 use super::error::Error;
 use super::netns::NetNS;
 #[cfg(feature = "dns-resolver")]
-use crate::tunnel::common::apply_socket_mark;
+use crate::{
+    socket::{tcp::create_tcp_socket, udp::create_udp_socket},
+    socket_protector::native_socket_protection_available,
+};
+#[cfg(feature = "dns-resolver")]
+use easytier_core::socket::{NetNamespace, tcp::TcpBindOptions, udp::UdpBindOptions};
 
 #[cfg(feature = "dns-resolver")]
 pub fn get_default_resolver_config() -> ResolverConfig {
@@ -164,7 +169,14 @@ impl RuntimeDnsIoContext {
 
     #[cfg(feature = "dns-resolver")]
     fn is_process_default(&self) -> bool {
-        self.netns.is_none() && self.socket_mark.is_none()
+        self.netns.is_none() && self.socket_mark.is_none() && !native_socket_protection_available()
+    }
+
+    #[cfg(feature = "dns-resolver")]
+    fn socket_context(&self) -> SocketContext {
+        SocketContext::default()
+            .with_netns(self.netns.clone().map(NetNamespace::new))
+            .with_socket_mark(self.socket_mark)
     }
 }
 
@@ -186,47 +198,6 @@ impl RuntimeDnsIoProvider {
 }
 
 #[cfg(feature = "dns-resolver")]
-fn create_dns_tcp_socket(
-    context: &RuntimeDnsIoContext,
-    server_addr: SocketAddr,
-    bind_addr: Option<SocketAddr>,
-) -> io::Result<TcpSocket> {
-    context.netns().run(|| {
-        let socket = if server_addr.is_ipv4() {
-            TcpSocket::new_v4()?
-        } else {
-            TcpSocket::new_v6()?
-        };
-        apply_socket_mark(&socket2::SockRef::from(&socket), context.socket_mark)
-            .map_err(io::Error::other)?;
-        if let Some(bind_addr) = bind_addr {
-            socket.bind(bind_addr)?;
-        }
-        socket.set_nodelay(true)?;
-        Ok(socket)
-    })
-}
-
-#[cfg(feature = "dns-resolver")]
-fn create_dns_udp_socket(
-    context: &RuntimeDnsIoContext,
-    local_addr: SocketAddr,
-) -> io::Result<UdpSocket> {
-    context.netns().run(|| {
-        let socket = socket2::Socket::new(
-            socket2::Domain::for_address(local_addr),
-            socket2::Type::DGRAM,
-            Some(socket2::Protocol::UDP),
-        )?;
-        socket.set_nonblocking(true)?;
-        apply_socket_mark(&socket, context.socket_mark).map_err(io::Error::other)?;
-        socket.bind(&socket2::SockAddr::from(local_addr))?;
-        let socket: std::net::UdpSocket = socket.into();
-        UdpSocket::from_std(socket)
-    })
-}
-
-#[cfg(feature = "dns-resolver")]
 impl RuntimeProvider for RuntimeDnsIoProvider {
     type Handle = <TokioRuntimeProvider as RuntimeProvider>::Handle;
     type Timer = <TokioRuntimeProvider as RuntimeProvider>::Timer;
@@ -243,13 +214,21 @@ impl RuntimeProvider for RuntimeDnsIoProvider {
         bind_addr: Option<SocketAddr>,
         wait_for: Option<Duration>,
     ) -> Pin<Box<dyn Send + Future<Output = io::Result<Self::Tcp>>>> {
-        // setns is thread-local. Create the socket synchronously while the
-        // guard is active, then perform only descriptor I/O after it is gone.
-        let socket = create_dns_tcp_socket(&self.context, server_addr, bind_addr);
+        let options = TcpBindOptions::default()
+            .with_context(self.context.socket_context())
+            .with_local_addr(bind_addr)
+            .with_bind_device(Some(String::new()))
+            .with_reuse_addr(false);
         Box::pin(async move {
-            let socket = socket?;
             let wait_for = wait_for.unwrap_or(Duration::from_secs(5));
-            match tokio::time::timeout(wait_for, socket.connect(server_addr)).await {
+            let connect = async {
+                let socket = create_tcp_socket(server_addr, &options)
+                    .await
+                    .map_err(io::Error::other)?;
+                socket.set_nodelay(true)?;
+                socket.connect(server_addr).await
+            };
+            match tokio::time::timeout(wait_for, connect).await {
                 Ok(Ok(stream)) => Ok(AsyncIoTokioAsStd(stream)),
                 Ok(Err(error)) => Err(error),
                 Err(_) => Err(io::Error::new(
@@ -265,10 +244,10 @@ impl RuntimeProvider for RuntimeDnsIoProvider {
         local_addr: SocketAddr,
         _server_addr: SocketAddr,
     ) -> Pin<Box<dyn Send + Future<Output = io::Result<Self::Udp>>>> {
-        // Keep namespace switching out of the returned future for the same
-        // reason as TCP above.
-        let socket = create_dns_udp_socket(&self.context, local_addr);
-        Box::pin(async move { socket })
+        let options = UdpBindOptions::default()
+            .with_context(self.context.socket_context())
+            .with_local_addr(Some(local_addr));
+        Box::pin(async move { create_udp_socket(&options).await.map_err(io::Error::other) })
     }
 }
 
@@ -339,7 +318,7 @@ impl RuntimeDnsResolver {
         context: RuntimeDnsIoContext,
         host: String,
     ) -> anyhow::Result<Vec<IpAddr>> {
-        if context.socket_mark.is_some() {
+        if context.socket_mark.is_some() || native_socket_protection_available() {
             return Self::resolve_contextual_with_hickory(context, host).await;
         }
 
@@ -381,8 +360,10 @@ impl DnsResolver for RuntimeDnsResolver {
         }
         #[cfg(not(feature = "dns-resolver"))]
         {
-            if context.socket_mark.is_some() {
-                anyhow::bail!("socket-marked DNS requires DNS resolver support");
+            if context.socket_mark.is_some()
+                || crate::socket_protector::native_socket_protection_available()
+            {
+                anyhow::bail!("socket-marked or VPN-protected DNS requires DNS resolver support");
             }
             if context.netns.is_none() {
                 return Ok(resolve_ips(&query.host).await?);

@@ -312,7 +312,8 @@ impl WsTunnelListener {
             .addr(addr)
             .only_v6(true)
             .maybe_socket_mark(self.socket_mark)
-            .call()?;
+            .call()
+            .await?;
 
         self.addr
             .set_port(Some(listener.local_addr()?.port()))

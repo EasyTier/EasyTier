@@ -184,11 +184,26 @@ wire codecs. It does not own socket I/O or connection policy.
 - DNS and DNS record resolution;
 - connector environment observations;
 - packet ingress and egress;
-- Host socket operation bridges and handle-based TCP/UDP/listener adapters.
+- Host socket operation bridges and handle-based TCP/UDP/listener adapters;
+- host-owned, message-preserving tunnel endpoints.
 
 Core owns scheduling, backpressure, cancellation, UDP session state, and
 protocol state even when each actual operation crosses a Host Adapter. A Host
 Adapter owns the real resource and performs the OS operation.
+
+For host-owned tunnels, ownership crosses the guest ABI only after a bounded
+Host listener queue accepts the tunnel. The queue is registered through
+`CoreHostAdapters` and consumed by the normal `CoreListenerRuntime`, so the
+tunnel still reaches `PeerAcceptedTunnelHandler` and cannot bypass peer
+handshake, admission, events, or routing policy. Each Host receive produces
+one complete `DummyTunnel` payload; no stream framing is added. The Host owns
+transport-specific message validation and maps a clean close to tunnel EOF.
+
+Hosts without outbound sockets select `CoreConnectivityMode::InboundOnly` for
+one instance. That startup plan retains listeners and the peer/router while
+omitting STUN, outbound connectors, and hole punching. Cargo features only
+compile Host Adapters; they do not change `CoreInstance` fields, lifecycle, or
+management semantics.
 
 The native `NativeHostRuntime` is process-wide and does not retain an instance
 `GlobalCtx`, namespace guard, socket mark, or connectivity state. Differences

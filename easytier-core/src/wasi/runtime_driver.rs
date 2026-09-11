@@ -12,6 +12,10 @@ use std::{
 
 use tokio::runtime::Runtime;
 
+// A zero-duration timer can win before the executor's park hook observes
+// quiescence, especially when JSPI resumes the guest on a slower embedder.
+const DRIVE_BUDGET: Duration = Duration::from_millis(10);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum RuntimeDriveOutcome {
     Quiescent,
@@ -52,7 +56,7 @@ impl RuntimeDriver {
 
         let _active = RuntimeDriverGuard::activate(self.state.as_ref());
         runtime.block_on(async {
-            let budget = tokio::time::sleep(Duration::ZERO);
+            let budget = tokio::time::sleep(DRIVE_BUDGET);
             tokio::pin!(budget);
             poll_fn(|context| {
                 if self.state.poll_quiescent(context.waker()) {

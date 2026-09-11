@@ -141,6 +141,7 @@ where
     let socket = factory
         .bind_udp(
             UdpBindOptions::hole_punch_control()
+                .with_need_protect(false)
                 .with_context(context.with_ip_version(IpVersion::V4))
                 .with_local_addr(Some(SocketAddr::V4(SocketAddrV4::new(
                     Ipv4Addr::LOCALHOST,
@@ -167,6 +168,7 @@ where
     let socket = factory
         .bind_udp(
             UdpBindOptions::hole_punch_control()
+                .with_need_protect(false)
                 .with_context(context.with_ip_version(IpVersion::V6))
                 .with_local_addr(Some(SocketAddr::V6(SocketAddrV6::new(
                     Ipv6Addr::LOCALHOST,
@@ -199,6 +201,11 @@ pub enum UdpSocketPurpose {
 pub struct UdpBindOptions {
     #[serde(default)]
     pub context: SocketContext,
+    /// Request host VPN bypass before bind or datagram I/O. Protection must be
+    /// acknowledged inside creation, not emitted as a fire-and-forget event.
+    /// Defaults to true; local/TUN-facing endpoints explicitly opt out.
+    #[serde(default = "crate::socket::default_need_protect")]
+    pub need_protect: bool,
     pub local_addr: Option<SocketAddr>,
     pub bind_device: Option<String>,
     pub reuse_addr: bool,
@@ -211,6 +218,7 @@ impl UdpBindOptions {
     fn for_purpose(purpose: UdpSocketPurpose) -> Self {
         Self {
             context: SocketContext::default(),
+            need_protect: crate::socket::default_need_protect(),
             local_addr: None,
             bind_device: None,
             reuse_addr: false,
@@ -252,11 +260,15 @@ impl UdpBindOptions {
     }
 
     pub fn port_forward(local_addr: SocketAddr) -> Self {
-        Self::for_purpose(UdpSocketPurpose::PortForward).with_local_addr(Some(local_addr))
+        Self::for_purpose(UdpSocketPurpose::PortForward)
+            .with_need_protect(false)
+            .with_local_addr(Some(local_addr))
     }
 
     pub fn port_lease(local_addr: SocketAddr) -> Self {
-        Self::for_purpose(UdpSocketPurpose::PortLease).with_local_addr(Some(local_addr))
+        Self::for_purpose(UdpSocketPurpose::PortLease)
+            .with_need_protect(false)
+            .with_local_addr(Some(local_addr))
     }
 
     pub fn with_local_addr(mut self, local_addr: Option<SocketAddr>) -> Self {
@@ -271,6 +283,11 @@ impl UdpBindOptions {
 
     pub fn with_context(mut self, context: SocketContext) -> Self {
         self.context = context;
+        self
+    }
+
+    pub fn with_need_protect(mut self, need_protect: bool) -> Self {
+        self.need_protect = need_protect;
         self
     }
 
@@ -302,7 +319,44 @@ impl UdpBindOptions {
 
 impl Default for UdpBindOptions {
     fn default() -> Self {
-        Self::hole_punch_control()
+        // Preserve the existing default purpose/socket setup; local-only
+        // control packets opt out explicitly at their loopback call sites.
+        Self::for_purpose(UdpSocketPurpose::HolePunchControl)
+    }
+}
+
+#[cfg(test)]
+mod option_tests {
+    use super::*;
+
+    #[test]
+    fn udp_constructor_protection_defaults_match_endpoint_role() {
+        let local = SocketAddr::from(([0, 0, 0, 0], 11010));
+
+        assert!(UdpBindOptions::default().need_protect);
+        assert!(UdpBindOptions::hole_punch_control().need_protect);
+        assert!(UdpBindOptions::hole_punch_candidate().need_protect);
+        assert!(UdpBindOptions::direct_connect().need_protect);
+        assert!(UdpBindOptions::port_bound_listener(local).need_protect);
+        assert!(UdpBindOptions::proxy_nat().need_protect);
+        assert!(UdpBindOptions::stun_probe().need_protect);
+        assert!(UdpBindOptions::socks5().need_protect);
+        assert!(!UdpBindOptions::port_forward(local).need_protect);
+        assert!(!UdpBindOptions::port_lease(local).need_protect);
+    }
+
+    #[test]
+    fn udp_bind_serde_defaults_to_protected_and_preserves_opt_out() {
+        let options: UdpBindOptions = serde_json::from_str(
+            r#"{"local_addr":null,"bind_device":null,"reuse_addr":false,"reuse_port":false,"only_v6":false,"purpose":"DirectConnect"}"#,
+        )
+        .unwrap();
+        assert!(options.need_protect);
+        let local = UdpBindOptions::port_forward("0.0.0.0:15555".parse().unwrap());
+        let restored: UdpBindOptions =
+            serde_json::from_str(&serde_json::to_string(&local).unwrap()).unwrap();
+        assert_eq!(restored, local);
+        assert!(!restored.need_protect);
     }
 }
 

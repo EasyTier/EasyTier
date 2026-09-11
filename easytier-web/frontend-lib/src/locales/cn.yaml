@@ -38,6 +38,7 @@ basic_settings: 基础设置
 listener_urls: 监听地址
 rpc_port: RPC端口
 port: 端口
+path: 路径
 rpc_portal_whitelists: RPC白名单
 config_network: 配置网络
 running: 运行中
@@ -60,6 +61,18 @@ copy_config: 复制配置
 config_copied: 已复制
 config_generation_failed: 生成失败
 config_copy_failed: 复制失败
+magisk_module_configuration: EasyTier 模块配置
+magisk_status_loading: 正在读取状态
+magisk_status_running: 运行中
+magisk_status_stopped: 已停止
+magisk_status_restarting: 正在重启
+magisk_save_restart: 保存并重启
+magisk_command_args_warning: 当前启用了启动参数模式，模块会忽略 config.toml。请先删除 config/command_args，才能在此保存配置。
+magisk_invalid_module_directory: KernelSU 返回了无效的模块目录
+magisk_load_failed: '加载模块配置失败：{error}'
+magisk_save_failed: '保存模块配置失败：{error}'
+magisk_config_saved: 配置已验证并保存，EasyTier 已重新启动
+magisk_config_saved_restart_pending: 配置已验证并保存，EasyTier 守护进程仍在启动
 retain_network_instance: 保留网络实例
 collect_network_infos: 收集网络信息
 settings: 设置
@@ -72,6 +85,11 @@ logging_level_trace: 跟踪
 logging_level_off: 关闭
 logging_open_dir: 打开日志目录
 logging_copy_dir: 复制日志路径
+vpn_tile_no_network: 没有已配置的网络
+vpn_tile_no_network_description: 请先在 EasyTier 中配置网络，再使用 VPN 快捷磁贴。
+vpn_tile_started: VPN 网络已启动
+vpn_tile_stopped: VPN 网络已停止
+vpn_tile_action_failed: 'VPN 磁贴操作失败：{error}'
 disable_auto_launch: 关闭开机自启
 enable_auto_launch: 开启开机自启
 hide_dock_icon: 隐藏 Dock 图标

@@ -84,6 +84,120 @@ pub trait NetworkConfigExt {
     fn new_from_config(config: impl ConfigLoader) -> Result<NetworkConfig, anyhow::Error>;
 }
 
+#[cfg(all(
+    feature = "browser-config",
+    any(test, all(target_arch = "wasm32", target_os = "unknown"))
+))]
+const FORM_MANAGED_TOML_FIELDS: &[&str] = &[
+    "hostname",
+    "instance_id",
+    "ipv4",
+    "ipv6_public_addr_provider",
+    "ipv6_public_addr_auto",
+    "ipv6_public_addr_prefix",
+    "dhcp",
+    "network_identity",
+    "listeners",
+    "mapped_listeners",
+    "exit_nodes",
+    "peer",
+    "proxy_network",
+    "vpn_portal_config",
+    "routes",
+    "socks5_proxy",
+    "port_forward",
+    "secure_mode",
+    "acl",
+    "credential_file",
+    "managed_credentials",
+];
+
+#[cfg(all(
+    feature = "browser-config",
+    any(test, all(target_arch = "wasm32", target_os = "unknown"))
+))]
+const FORM_MANAGED_FLAG_FIELDS: &[&str] = &[
+    "latency_first",
+    "dev_name",
+    "use_smoltcp",
+    "enable_ipv6",
+    "enable_kcp_proxy",
+    "disable_kcp_input",
+    "enable_quic_proxy",
+    "disable_quic_input",
+    "disable_p2p",
+    "p2p_only",
+    "lazy_p2p",
+    "bind_device",
+    "socket_mark",
+    "no_tun",
+    "enable_exit_node",
+    "relay_all_peer_rpc",
+    "need_p2p",
+    "multi_thread",
+    "proxy_forward_by_system",
+    "enable_encryption",
+    "relay_network_whitelist",
+    "disable_tcp_hole_punching",
+    "disable_udp_hole_punching",
+    "disable_upnp",
+    "disable_relay_data",
+    "prefer_peer_relay",
+    "enable_udp_broadcast_relay",
+    "disable_sym_hole_punching",
+    "accept_dns",
+    "mtu",
+    "instance_recv_bps_limit",
+    "private_mode",
+    "encryption_algorithm",
+    "data_compress_algo",
+];
+
+#[cfg(all(
+    feature = "browser-config",
+    any(test, all(target_arch = "wasm32", target_os = "unknown"))
+))]
+pub(crate) fn merge_network_config_toml(
+    original_toml: &str,
+    config: &NetworkConfig,
+) -> Result<String, anyhow::Error> {
+    let generated_toml = config.gen_config()?.dump();
+    let mut original = toml::from_str::<toml::Table>(original_toml)
+        .context("failed to parse the original TOML document")?;
+    let mut generated = toml::from_str::<toml::Table>(&generated_toml)
+        .context("failed to parse the generated TOML document")?;
+
+    for (key, value) in original.iter() {
+        if key != "flags" && !FORM_MANAGED_TOML_FIELDS.contains(&key.as_str()) {
+            generated.insert(key.clone(), value.clone());
+        }
+    }
+    if !original.contains_key("instance_name") {
+        generated.remove("instance_name");
+    }
+
+    let mut merged_flags: toml::Table = original
+        .remove("flags")
+        .and_then(|value| value.try_into().ok())
+        .unwrap_or_default();
+    let generated_flags: toml::Table = generated
+        .remove("flags")
+        .and_then(|value| value.try_into().ok())
+        .unwrap_or_default();
+    for key in FORM_MANAGED_FLAG_FIELDS {
+        if let Some(value) = generated_flags.get(*key) {
+            merged_flags.insert((*key).to_owned(), value.clone());
+        } else {
+            merged_flags.remove(*key);
+        }
+    }
+    if !merged_flags.is_empty() {
+        generated.insert("flags".to_owned(), toml::Value::Table(merged_flags));
+    }
+
+    toml::to_string_pretty(&generated).context("failed to serialize the merged TOML document")
+}
+
 fn parse_peer(peer: &manage::NetworkPeerConfig) -> Result<Option<PeerConfig>, anyhow::Error> {
     let uri = peer.uri.trim();
     if uri.is_empty() {
@@ -829,5 +943,50 @@ mod tests {
         .unwrap();
 
         assert!(config.get_vpn_portal_config().is_none());
+    }
+
+    #[cfg(feature = "browser-config")]
+    #[test]
+    fn browser_merge_preserves_fields_outside_the_shared_form() {
+        let original = r#"
+instance_name = "module-instance"
+rpc_portal = "0.0.0.0:15888"
+tcp_whitelist = ["22"]
+stun_servers = ["custom.example.com:3478"]
+
+[network_identity]
+network_name = "old-network"
+network_secret = "secret"
+
+[flags]
+default_protocol = "udp"
+disable_p2p = true
+"#;
+        let parsed = TomlConfigLoader::new_from_str(original).unwrap();
+        let mut network_config = NetworkConfig::new_from_config(&parsed).unwrap();
+        network_config.network_name = Some("edited-network".to_owned());
+        network_config.disable_p2p = Some(false);
+
+        let merged = merge_network_config_toml(original, &network_config).unwrap();
+        let merged: toml::Table = toml::from_str(&merged).unwrap();
+
+        assert_eq!(merged["instance_name"].as_str(), Some("module-instance"));
+        assert_eq!(merged["rpc_portal"].as_str(), Some("0.0.0.0:15888"));
+        assert_eq!(merged["tcp_whitelist"][0].as_str(), Some("22"));
+        assert_eq!(
+            merged["stun_servers"][0].as_str(),
+            Some("custom.example.com:3478")
+        );
+        assert_eq!(
+            merged["network_identity"]["network_name"].as_str(),
+            Some("edited-network")
+        );
+        assert_eq!(merged["flags"]["default_protocol"].as_str(), Some("udp"));
+        assert!(
+            !merged["flags"]
+                .as_table()
+                .unwrap()
+                .contains_key("disable_p2p")
+        );
     }
 }

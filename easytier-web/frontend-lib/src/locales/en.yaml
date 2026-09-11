@@ -38,6 +38,7 @@ basic_settings: Basic Settings
 listener_urls: Listener URLs
 rpc_port: RPC Port
 port: Port
+path: Path
 rpc_portal_whitelists: RPC Whitelist
 config_network: Config Network
 running: Running
@@ -60,6 +61,18 @@ copy_config: Copy Config
 config_copied: Copied
 config_generation_failed: Generation failed
 config_copy_failed: Copy failed
+magisk_module_configuration: EasyTier Module Configuration
+magisk_status_loading: Loading status
+magisk_status_running: Running
+magisk_status_stopped: Stopped
+magisk_status_restarting: Restarting
+magisk_save_restart: Save and Restart
+magisk_command_args_warning: Startup argument mode is active, so the module ignores config.toml. Remove config/command_args before saving configuration here.
+magisk_invalid_module_directory: KernelSU returned an invalid module directory
+magisk_load_failed: 'Failed to load module configuration: {error}'
+magisk_save_failed: 'Failed to save module configuration: {error}'
+magisk_config_saved: Configuration validated and saved; EasyTier restarted
+magisk_config_saved_restart_pending: Configuration validated and saved; the EasyTier supervisor is still starting
 retain_network_instance: Retain Network Instance
 collect_network_infos: Collect Network Infos
 settings: Settings
@@ -72,6 +85,11 @@ logging_level_trace: Trace
 logging_level_off: Off
 logging_open_dir: Open Log Directory
 logging_copy_dir: Copy Log Path
+vpn_tile_no_network: No configured network
+vpn_tile_no_network_description: Configure a network in EasyTier before using the VPN tile.
+vpn_tile_started: VPN network started
+vpn_tile_stopped: VPN network stopped
+vpn_tile_action_failed: 'VPN tile action failed: {error}'
 disable_auto_launch: Disable Launch on Reboot
 enable_auto_launch: Enable Launch on Reboot
 hide_dock_icon: Hide Dock Icon
