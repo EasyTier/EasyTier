@@ -1,5 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
+use anyhow::Context;
 use easytier_core::gateway::magic_dns::{
     MagicDnsRoutePublisher, MagicDnsRouteSnapshot, run_magic_dns_route_publisher,
 };
@@ -16,13 +17,14 @@ use crate::proto::{
     rpc_types::controller::BaseController,
 };
 
-use super::MAGIC_DNS_INSTANCE_ADDR;
+use super::endpoint::discover_magic_dns_endpoint;
 
 pub struct MagicDnsClientInstance {
     rpc_client: RuntimeRpcClient,
     rpc_stub: Option<Box<dyn MagicDnsServerRpc<Controller = BaseController> + Send>>,
     route_source: Arc<CorePacketPlane>,
-    tasks: JoinSet<()>,
+    tasks: JoinSet<anyhow::Result<()>>,
+    endpoint: url::Url,
 }
 
 struct RpcMagicDnsRoutePublisher {
@@ -71,7 +73,8 @@ impl MagicDnsRoutePublisher for RpcMagicDnsRoutePublisher {
 
 impl MagicDnsClientInstance {
     pub(crate) async fn new(route_source: Arc<CorePacketPlane>) -> Result<Self, anyhow::Error> {
-        let mut rpc_client = runtime_rpc_client(MAGIC_DNS_INSTANCE_ADDR.parse().unwrap());
+        let endpoint = discover_magic_dns_endpoint()?;
+        let mut rpc_client = runtime_rpc_client(endpoint.clone());
         let rpc_stub = rpc_client
             .scoped_client::<MagicDnsServerRpcClientFactory<BaseController>>("".to_string())
             .await?;
@@ -80,7 +83,12 @@ impl MagicDnsClientInstance {
             rpc_stub: Some(rpc_stub),
             route_source,
             tasks: JoinSet::new(),
+            endpoint,
         })
+    }
+
+    pub(crate) fn endpoint(&self) -> &url::Url {
+        &self.endpoint
     }
 
     async fn update_dns_task(
@@ -96,22 +104,22 @@ impl MagicDnsClientInstance {
         .await
     }
 
-    pub async fn run_and_wait(&mut self) {
+    pub async fn run_and_wait(&mut self) -> anyhow::Result<()> {
         let rpc_stub = self.rpc_stub.take().unwrap();
         let route_source = self.route_source.clone();
-        self.tasks.spawn(async move {
-            let ret = Self::update_dns_task(route_source, rpc_stub).await;
-            if let Err(e) = ret {
-                tracing::error!("MagicDnsServerInstanceData::run_and_wait: {:?}", e);
-            }
-        });
+        self.tasks
+            .spawn(Self::update_dns_task(route_source, rpc_stub));
 
         tokio::select! {
-            _ = self.tasks.join_next() => {
-                tracing::warn!("MagicDnsServerInstanceData::run_and_wait: dns record update task exited");
+            result = self.tasks.join_next() => {
+                match result {
+                    Some(Ok(result)) => result.context("Magic DNS route publisher exited"),
+                    Some(Err(error)) => Err(error).context("Magic DNS route publisher task failed"),
+                    None => anyhow::bail!("Magic DNS route publisher task was not running"),
+                }
             }
             _ = self.rpc_client.wait() => {
-                tracing::warn!("MagicDnsServerInstanceData::run_and_wait: rpc client exited");
+                anyhow::bail!("Magic DNS RPC client exited")
             }
         }
     }
