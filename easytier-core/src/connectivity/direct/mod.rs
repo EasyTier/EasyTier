@@ -1095,11 +1095,13 @@ where
                 .as_ref(),
         )
         .await;
+        let mut seen_listeners = HashSet::new();
         response.listeners = self
             .host
             .mapped_listeners()
             .into_iter()
             .chain(self.running_listeners.local_listener_urls())
+            .filter(|url| seen_listeners.insert(url.clone()))
             .map(Into::into)
             .collect();
         Ok(response)
