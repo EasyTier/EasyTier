@@ -796,21 +796,15 @@ impl SessionRpcService {
             .db()
             .get_user_id_by_token(req.user_token.clone())
             .await
-            .with_context(|| {
-                format!(
-                    "Failed to get user id by token from db: {:?}",
-                    req.user_token
-                )
-            })? {
+            .with_context(|| "Failed to get user id by token from db".to_string())?
+        {
             Some(id) => id,
             None if feature_flags.allow_auto_create_user => storage
                 .auto_create_user(&req.user_token)
                 .await
-                .with_context(|| format!("Failed to auto-create user: {:?}", req.user_token))?,
+                .with_context(|| "Failed to auto-create user".to_string())?,
             None => {
-                return Err(
-                    anyhow::anyhow!("User not found by token: {:?}", req.user_token).into(),
-                );
+                return Err(anyhow::anyhow!("User not found by token").into());
             }
         };
 

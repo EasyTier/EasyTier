@@ -740,9 +740,8 @@ async fn cleanup_stale_web_source_instances(
             user_id = ?round.user_id,
             machine_id = ?round.machine_id,
             elapsed_ms = operation_started_at.elapsed().as_millis(),
-            "Clean stale web-source network instances on heartbeat: {:?}, user_token: {:?}",
-            ret,
-            round.req.user_token
+            "Clean stale web-source network instances on heartbeat: {:?}",
+            ret
         );
         match ret {
             Err(_) => outcome.record_failure(true),
@@ -1085,9 +1084,8 @@ async fn reconcile_running_web_config(
         machine_id = ?round.machine_id,
         instance_id = %config.network_instance_id,
         elapsed_ms = operation_started_at.elapsed().as_millis(),
-        "Reconcile running web-source network instance: {:?}, user_token: {:?}",
-        ret,
-        round.req.user_token
+        "Reconcile running web-source network instance: {:?}",
+        ret
     );
 
     if ret.is_ok() {
@@ -1144,9 +1142,8 @@ async fn run_missing_network_config(
         machine_id = ?round.machine_id,
         instance_id = %config.network_instance_id,
         elapsed_ms = operation_started_at.elapsed().as_millis(),
-        "Run network instance: {:?}, user_token: {:?}",
-        ret,
-        round.req.user_token
+        "Run network instance: {:?}",
+        ret
     );
 
     let action_result = if ret.is_ok() {

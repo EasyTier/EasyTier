@@ -100,7 +100,7 @@ async fn resolve_user_id(storage: &Storage, token: &str) -> anyhow::Result<i32> 
         None => storage
             .auto_create_user(token)
             .await
-            .with_context(|| format!("Failed to auto-create webhook user: {:?}", token))?,
+            .with_context(|| "Failed to auto-create webhook user".to_string())?,
     };
 
     Ok(user_id)
