@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::{
     Arc, Weak,
     atomic::{AtomicBool, Ordering},
@@ -399,6 +400,17 @@ struct WebClientSession {
     tasks: Mutex<JoinSet<()>>,
 }
 
+fn running_instances_for_heartbeat(
+    instance_ids: Vec<uuid::Uuid>,
+    failed_instance_ids: &[uuid::Uuid],
+) -> Vec<uuid::Uuid> {
+    let failed_instance_ids: HashSet<_> = failed_instance_ids.iter().copied().collect();
+    instance_ids
+        .into_iter()
+        .filter(|instance_id| !failed_instance_ids.contains(instance_id))
+        .collect()
+}
+
 fn build_heartbeat_request(
     config: &WebClientConfig,
     runtime_id: uuid::Uuid,
@@ -481,8 +493,11 @@ impl WebClientSession {
                     break;
                 };
                 let observed_generation = controller.backend.instance_state_generation();
+                let failed_network_instances = controller.backend.failed_instance_ids();
                 let running_network_instances = match controller.backend.instance_ids().await {
-                    Ok(instance_ids) => instance_ids,
+                    Ok(instance_ids) => {
+                        running_instances_for_heartbeat(instance_ids, &failed_network_instances)
+                    }
                     Err(error) => {
                         tracing::error!(%error, "failed to list config-server instances");
                         break;
@@ -492,7 +507,7 @@ impl WebClientSession {
                     &controller.config,
                     controller.runtime_id,
                     running_network_instances,
-                    controller.backend.failed_instance_ids(),
+                    failed_network_instances,
                 );
 
                 match client
@@ -603,6 +618,20 @@ mod tests {
         fn remote_url(&self) -> Url {
             "ring://config-server".parse().unwrap()
         }
+    }
+
+    #[test]
+    fn heartbeat_hides_failed_instances_from_the_running_list() {
+        let running = uuid::Uuid::new_v4();
+        let failed = uuid::Uuid::new_v4();
+        let stopped_clean = uuid::Uuid::new_v4();
+        let instance_ids = vec![running, failed, stopped_clean];
+        let failed_instance_ids = vec![failed];
+
+        let reported = running_instances_for_heartbeat(instance_ids.clone(), &failed_instance_ids);
+
+        assert_eq!(reported, vec![running, stopped_clean]);
+        assert!(running_instances_for_heartbeat(instance_ids, &[]).len() == 3);
     }
 
     #[tokio::test]
