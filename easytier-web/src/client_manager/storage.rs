@@ -143,14 +143,17 @@ impl Storage {
         &self,
         user_id: UserIdInDb,
         machine_id: uuid::Uuid,
-        config_revision: &str,
+        config_revision: Option<&str>,
     ) -> bool {
         let Some(state) = self.current_managed_runtime_state(user_id, machine_id) else {
             return false;
         };
         let mut state = state.lock().expect("managed runtime state lock poisoned");
-        let target_already_applied =
-            state.applied_config_revision.as_deref() == Some(config_revision);
+        // Unrevisioned legacy updates carry no revision to compare against,
+        // so they always invalidate: record the hint and bump the epoch that
+        // fences in-flight reconcile rounds.
+        let target_already_applied = config_revision
+            .is_some_and(|revision| state.applied_config_revision.as_deref() == Some(revision));
         if target_already_applied && state.pending_managed_config_reconcile.is_none() {
             return false;
         }
@@ -453,6 +456,36 @@ mod tests {
         storage.remove_client(&user2_token);
 
         assert_eq!(storage.get_client_url_by_machine_id(2, &machine_id), None);
+    }
+
+    #[tokio::test]
+    async fn unrevisioned_full_change_always_fences_runtime_epochs() {
+        let storage = Storage::new(Db::memory_db().await);
+        let machine_id = uuid::Uuid::new_v4();
+        let state = storage.bind_managed_runtime_state(7, machine_id, None, 1);
+        {
+            let mut runtime = state.lock().unwrap();
+            runtime.applied_config_revision = Some("rev-1".to_string());
+            runtime.applied_config_revision_known = true;
+        }
+
+        assert!(storage.record_full_managed_config_change(7, machine_id, None));
+        {
+            let runtime = state.lock().unwrap();
+            assert_eq!(runtime.runtime_config_epoch, 1);
+            assert!(matches!(
+                runtime.pending_managed_config_reconcile,
+                Some(ManagedConfigReconcileHint::Full)
+            ));
+        }
+
+        // Repeated unrevisioned updates keep fencing, while a revision that
+        // is already applied with no pending hint stays a no-op.
+        assert!(storage.record_full_managed_config_change(7, machine_id, None));
+        assert_eq!(state.lock().unwrap().runtime_config_epoch, 2);
+        state.lock().unwrap().pending_managed_config_reconcile = None;
+        assert!(!storage.record_full_managed_config_change(7, machine_id, Some("rev-1")));
+        assert_eq!(state.lock().unwrap().runtime_config_epoch, 2);
     }
 
     #[tokio::test]

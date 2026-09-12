@@ -1958,6 +1958,7 @@ mod tests {
         data.webhook_connected_binding_version = Some(3);
         let session_data = Arc::new(RwLock::new(data));
 
+        let validation_change_epoch = session_data.read().await.webhook_validation_change_epoch;
         webhook_validation::apply_rejected(
             &Arc::downgrade(&session_data),
             &webhook_validation::WebhookValidationInput {
@@ -1972,6 +1973,7 @@ mod tests {
                 req,
                 machine_id,
             },
+            validation_change_epoch,
         )
         .await;
 
@@ -2038,7 +2040,8 @@ mod tests {
             req: req.clone(),
             machine_id,
         };
-        webhook_validation::apply_rejected(&weak_session, &input).await;
+        let validation_change_epoch = session_data.read().await.webhook_validation_change_epoch;
+        webhook_validation::apply_rejected(&weak_session, &input, validation_change_epoch).await;
         assert_eq!(
             session_data.read().await.webhook_connected_binding_version,
             None
@@ -2052,6 +2055,7 @@ mod tests {
             Some(client_url.clone())
         );
 
+        let validation_change_epoch = session_data.read().await.webhook_validation_change_epoch;
         webhook_validation::apply_success(
             &weak_session,
             input,
@@ -2060,6 +2064,7 @@ mod tests {
                 binding_version: 7,
             },
             user_id,
+            validation_change_epoch,
         )
         .await;
 
@@ -2209,6 +2214,7 @@ mod tests {
         data.webhook_connected_binding_version = Some(6);
         let session_data = Arc::new(RwLock::new(data));
 
+        let validation_change_epoch = session_data.read().await.webhook_validation_change_epoch;
         webhook_validation::apply_success(
             &Arc::downgrade(&session_data),
             webhook_validation::WebhookValidationInput {
@@ -2228,6 +2234,7 @@ mod tests {
                 binding_version: 7,
             },
             user_id,
+            validation_change_epoch,
         )
         .await;
 
@@ -2278,6 +2285,7 @@ mod tests {
 
         assert!(SessionRpcService::runtime_heartbeat_is_current(&weak_session, &req).await);
 
+        let validation_change_epoch = session_data.read().await.webhook_validation_change_epoch;
         webhook_validation::apply_rejected(
             &weak_session,
             &webhook_validation::WebhookValidationInput {
@@ -2292,6 +2300,7 @@ mod tests {
                 req: req.clone(),
                 machine_id,
             },
+            validation_change_epoch,
         )
         .await;
 

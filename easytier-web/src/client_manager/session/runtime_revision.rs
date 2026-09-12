@@ -368,6 +368,7 @@ async fn prepare_reconcile_round(
         pending_reconcile,
         runtime_config_epoch,
         runtime_config_cache_epoch,
+        failed_instance_ids,
     ) = {
         let Some(data) = session_data.upgrade() else {
             return RoundStatus::Stop;
@@ -380,6 +381,7 @@ async fn prepare_reconcile_round(
             runtime.pending_managed_config_reconcile.clone(),
             runtime.runtime_config_epoch,
             runtime.runtime_config_cache_epoch,
+            SessionRpcService::failed_instance_ids_locked(&data),
         )
     };
     let target_config_revision =
@@ -405,6 +407,7 @@ async fn prepare_reconcile_round(
         user_id,
         machine_id,
         should_apply_runtime_revision,
+        &failed_instance_ids,
     )
     .await
     {
@@ -574,31 +577,38 @@ async fn running_instance_ids_for_round(
     user_id: i32,
     machine_id: uuid::Uuid,
     should_apply_runtime_revision: bool,
+    failed_instance_ids: &HashSet<String>,
 ) -> RoundStatus<HashSet<String>> {
-    if !should_apply_runtime_revision {
-        return RoundStatus::Ready(
-            req.running_network_instances
-                .iter()
-                .map(|x| x.to_string())
-                .collect(),
-        );
-    }
-
-    match rpc_client
-        .list_network_instance(BaseController::default(), ListNetworkInstanceRequest {})
-        .await
-    {
-        Ok(resp) => RoundStatus::Ready(resp.inst_ids.iter().map(|x| x.to_string()).collect()),
-        Err(error) => {
-            tracing::warn!(
-                ?user_id,
-                ?machine_id,
-                ?error,
-                "Failed to refresh running instances for managed config revision"
-            );
-            RoundStatus::Skip
+    // Both sources must agree on which instances are running: instances
+    // known to have failed are excluded so the reconciler restarts them
+    // instead of hot-patching a stopped instance forever.
+    let ids = if !should_apply_runtime_revision {
+        req.running_network_instances
+            .iter()
+            .map(|x| x.to_string())
+            .collect::<HashSet<_>>()
+    } else {
+        match rpc_client
+            .list_network_instance(BaseController::default(), ListNetworkInstanceRequest {})
+            .await
+        {
+            Ok(resp) => resp.inst_ids.iter().map(|x| x.to_string()).collect(),
+            Err(error) => {
+                tracing::warn!(
+                    ?user_id,
+                    ?machine_id,
+                    ?error,
+                    "Failed to refresh running instances for managed config revision"
+                );
+                return RoundStatus::Skip;
+            }
         }
-    }
+    };
+    RoundStatus::Ready(
+        ids.into_iter()
+            .filter(|id| !failed_instance_ids.contains(id))
+            .collect(),
+    )
 }
 
 async fn sync_running_sources_for_round(

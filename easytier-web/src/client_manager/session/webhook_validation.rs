@@ -260,12 +260,19 @@ pub(super) async fn run_round(
     }
 
     let Some(validation) = validation else {
-        apply_rejected(&session_data, &input).await;
+        apply_rejected(&session_data, &input, validation_change_epoch).await;
         return Ok(());
     };
 
     let user_id = resolve_user_id(&input.storage, &input.req.user_token).await?;
-    apply_success(&session_data, input, validation, user_id).await;
+    apply_success(
+        &session_data,
+        input,
+        validation,
+        user_id,
+        validation_change_epoch,
+    )
+    .await;
     Ok(())
 }
 
@@ -319,6 +326,7 @@ async fn mark_dirty_if_current(
 pub(super) async fn apply_rejected(
     session_data: &std::sync::Weak<RwLock<SessionData>>,
     input: &WebhookValidationInput,
+    validation_change_epoch: u64,
 ) {
     let Some(session_data) = session_data.upgrade() else {
         return;
@@ -332,6 +340,13 @@ pub(super) async fn apply_rejected(
                 input.machine_id,
             )
         }) {
+            return;
+        }
+        if data.webhook_validation_change_epoch != validation_change_epoch {
+            tracing::debug!(
+                machine_id = %input.machine_id,
+                "discard stale webhook validation rejection"
+            );
             return;
         }
         tracing::info!(
@@ -375,6 +390,7 @@ pub(super) async fn apply_success(
     input: WebhookValidationInput,
     validation: WebhookHeartbeatValidation,
     user_id: i32,
+    validation_change_epoch: u64,
 ) {
     let WebhookHeartbeatValidation {
         config_revision: _,
@@ -402,6 +418,13 @@ pub(super) async fn apply_success(
             &input.req.user_token,
             input.machine_id,
         ) {
+            return;
+        }
+        if data.webhook_validation_change_epoch != validation_change_epoch {
+            tracing::debug!(
+                machine_id = %input.machine_id,
+                "discard stale webhook validation success"
+            );
             return;
         }
         if matches!(data.auth_state, SessionAuthState::Invalid) {
@@ -592,6 +615,7 @@ mod tests {
         data.session_epoch = 2;
         let session_data = Arc::new(RwLock::new(data));
 
+        let validation_change_epoch = session_data.read().await.webhook_validation_change_epoch;
         apply_success(
             &Arc::downgrade(&session_data),
             WebhookValidationInput {
@@ -611,6 +635,7 @@ mod tests {
                 binding_version: 1,
             },
             user_id,
+            validation_change_epoch,
         )
         .await;
 
@@ -782,5 +807,52 @@ mod tests {
             !validation_results_are_current(&weak_session, &input, 7).await,
             "dropped session discards results"
         );
+    }
+
+    #[tokio::test]
+    async fn apply_paths_discard_results_from_stale_epochs() {
+        let machine_id = uuid::Uuid::new_v4();
+        let session_data = validation_session(machine_id).await;
+        session_data.write().await.webhook_connected_binding_version = Some(3);
+        let input = WebhookValidationInput {
+            storage: Storage::new(crate::db::Db::memory_db().await),
+            webhook_config: Arc::new(crate::webhook::WebhookConfig::new(
+                None, None, None, None, None,
+            )),
+            client_url: url::Url::parse("http://127.0.0.1").unwrap(),
+            applied_config_revision: None,
+            applied_config_revision_known: false,
+            failed_instance_ids: Vec::new(),
+            req: HeartbeatRequest {
+                user_token: "token".to_string(),
+                machine_id: Some(machine_id.into()),
+                ..Default::default()
+            },
+            machine_id,
+        };
+
+        let stale_epoch = session_data.read().await.webhook_validation_change_epoch;
+        session_data.write().await.webhook_validation_change_epoch = stale_epoch + 1;
+
+        apply_rejected(&Arc::downgrade(&session_data), &input, stale_epoch).await;
+        let data = session_data.read().await;
+        assert_eq!(data.auth_state, SessionAuthState::Authorized);
+        assert_eq!(data.webhook_connected_binding_version, Some(3));
+        drop(data);
+
+        apply_success(
+            &Arc::downgrade(&session_data),
+            input,
+            WebhookHeartbeatValidation {
+                config_revision: "rev-1".to_string(),
+                binding_version: 9,
+            },
+            1,
+            stale_epoch,
+        )
+        .await;
+        let data = session_data.read().await;
+        assert_eq!(data.binding_version, None);
+        assert_eq!(data.webhook_connected_binding_version, Some(3));
     }
 }
