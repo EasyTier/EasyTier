@@ -1594,36 +1594,36 @@ mod tests {
             .await
         );
 
-        let data = session_data.read().await;
-        let runtime = data.managed_runtime();
-        assert!(mutation_fence.started);
-        assert_eq!(runtime.applied_config_revision, None);
-        assert!(runtime.applied_config_revision_known);
-        assert_eq!(
-            runtime.known_runtime_base_revision.as_deref(),
-            Some("rev-a")
-        );
-        assert_eq!(
-            runtime.pending_managed_config_reconcile,
-            Some(ManagedConfigReconcileHint::Dirty {
-                expected_revision: "rev-a".to_string(),
-                target_revision: "rev-b".to_string(),
-                instance_ids: HashSet::from(["managed".to_string()]),
-            })
-        );
-        assert_eq!(runtime.runtime_config_epoch, 11);
-        assert_eq!(
-            select_reconcile_scope(
-                runtime.pending_managed_config_reconcile.as_ref(),
+        {
+            let data = session_data.read().await;
+            let runtime = data.managed_runtime();
+            assert!(mutation_fence.started);
+            assert_eq!(runtime.applied_config_revision, None);
+            assert!(runtime.applied_config_revision_known);
+            assert_eq!(
                 runtime.known_runtime_base_revision.as_deref(),
-                Some("rev-b"),
-            ),
-            ReconcileScope::Patch {
-                dirty_instance_ids: HashSet::from(["managed".to_string()]),
-            }
-        );
-        drop(runtime);
-        drop(data);
+                Some("rev-a")
+            );
+            assert_eq!(
+                runtime.pending_managed_config_reconcile,
+                Some(ManagedConfigReconcileHint::Dirty {
+                    expected_revision: "rev-a".to_string(),
+                    target_revision: "rev-b".to_string(),
+                    instance_ids: HashSet::from(["managed".to_string()]),
+                })
+            );
+            assert_eq!(runtime.runtime_config_epoch, 11);
+            assert_eq!(
+                select_reconcile_scope(
+                    runtime.pending_managed_config_reconcile.as_ref(),
+                    runtime.known_runtime_base_revision.as_deref(),
+                    Some("rev-b"),
+                ),
+                ReconcileScope::Patch {
+                    dirty_instance_ids: HashSet::from(["managed".to_string()]),
+                }
+            );
+        }
 
         {
             let data = session_data.write().await;
@@ -1640,11 +1640,13 @@ mod tests {
             .await
         );
 
-        let data = session_data.read().await;
-        let runtime = data.managed_runtime();
-        assert_eq!(runtime.applied_config_revision, None);
-        assert!(runtime.applied_config_revision_known);
-        assert_eq!(runtime.known_runtime_base_revision, None);
+        {
+            let data = session_data.read().await;
+            let runtime = data.managed_runtime();
+            assert_eq!(runtime.applied_config_revision, None);
+            assert!(runtime.applied_config_revision_known);
+            assert_eq!(runtime.known_runtime_base_revision, None);
+        }
     }
 
     #[test]

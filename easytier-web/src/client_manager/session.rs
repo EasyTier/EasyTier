@@ -1063,8 +1063,7 @@ impl Session {
     #[cfg(test)]
     pub(super) async fn applied_config_revision(&self) -> Option<String> {
         let data = self.data.read().await;
-        let revision = data.managed_runtime().applied_config_revision.clone();
-        revision
+        data.managed_runtime().applied_config_revision.clone()
     }
 }
 

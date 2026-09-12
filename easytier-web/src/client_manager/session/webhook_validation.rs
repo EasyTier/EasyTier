@@ -42,32 +42,39 @@ pub(super) fn retry_delay(machine_id: uuid::Uuid) -> Duration {
 }
 
 async fn request_heartbeat_validation(
-    webhook_config: &crate::webhook::WebhookConfig,
-    client_url: &url::Url,
+    input: &WebhookValidationInput,
     persisted_config_revision: Option<&str>,
-    applied_config_revision: Option<&str>,
-    applied_config_revision_known: bool,
-    failed_instance_ids: &[String],
-    req: &HeartbeatRequest,
-    machine_id: uuid::Uuid,
 ) -> anyhow::Result<Option<WebhookHeartbeatValidation>> {
     let webhook_req = crate::webhook::ValidateTokenRequest {
-        token: req.user_token.clone(),
-        machine_id: machine_id.to_string(),
-        public_ip: client_url.host_str().map(str::to_string),
-        hostname: req.hostname.clone(),
-        version: req.easytier_version.clone(),
-        os_type: req.device_os.as_ref().map(|info| info.os_type.clone()),
-        os_version: req.device_os.as_ref().map(|info| info.version.clone()),
-        os_distribution: req.device_os.as_ref().map(|info| info.distribution.clone()),
-        web_instance_id: webhook_config.web_instance_id.clone(),
-        web_instance_api_base_url: webhook_config.web_instance_api_base_url.clone(),
+        token: input.req.user_token.clone(),
+        machine_id: input.machine_id.to_string(),
+        public_ip: input.client_url.host_str().map(str::to_string),
+        hostname: input.req.hostname.clone(),
+        version: input.req.easytier_version.clone(),
+        os_type: input
+            .req
+            .device_os
+            .as_ref()
+            .map(|info| info.os_type.clone()),
+        os_version: input
+            .req
+            .device_os
+            .as_ref()
+            .map(|info| info.version.clone()),
+        os_distribution: input
+            .req
+            .device_os
+            .as_ref()
+            .map(|info| info.distribution.clone()),
+        web_instance_id: input.webhook_config.web_instance_id.clone(),
+        web_instance_api_base_url: input.webhook_config.web_instance_api_base_url.clone(),
         persisted_config_revision: persisted_config_revision.map(str::to_string),
-        applied_config_revision: applied_config_revision.map(str::to_string),
-        applied_config_revision_known,
-        failed_instance_ids: failed_instance_ids.to_vec(),
+        applied_config_revision: input.applied_config_revision.as_deref().map(str::to_string),
+        applied_config_revision_known: input.applied_config_revision_known,
+        failed_instance_ids: input.failed_instance_ids.to_vec(),
     };
-    let resp = webhook_config
+    let resp = input
+        .webhook_config
         .validate_token(&webhook_req)
         .await
         .map_err(|e| anyhow::anyhow!("Webhook token validation failed: {:?}", e))?;
@@ -240,17 +247,8 @@ pub(super) async fn run_round(
         input.machine_id,
     )
     .await?;
-    let validation = request_heartbeat_validation(
-        &input.webhook_config,
-        &input.client_url,
-        persisted_config_revision.as_deref(),
-        input.applied_config_revision.as_deref(),
-        input.applied_config_revision_known,
-        &input.failed_instance_ids,
-        &input.req,
-        input.machine_id,
-    )
-    .await?;
+    let validation =
+        request_heartbeat_validation(&input, persisted_config_revision.as_deref()).await?;
 
     let Some(validation) = validation else {
         apply_rejected(&session_data, &input).await;
