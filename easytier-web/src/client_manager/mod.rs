@@ -304,15 +304,24 @@ impl ClientManager {
         if matches!(
             status,
             managed_config::ManagedConfigApplyStatus::Applied { .. }
-        ) && let Some(config_revision) = config_revision
-            && self
-                .storage
-                .record_full_managed_config_change(user_id, machine_id, &config_revision)
-            && let Some(session) = self.get_session_by_machine_id(user_id, &machine_id)
-        {
-            session
-                .notify_managed_runtime_state_changed(user_id, machine_id)
-                .await;
+        ) {
+            let revision_invalidated = match config_revision.as_deref() {
+                Some(config_revision) => self.storage.record_full_managed_config_change(
+                    user_id,
+                    machine_id,
+                    config_revision,
+                ),
+                // Legacy unrevisioned updates have no revision row to reset;
+                // still wake the session so running configs reconcile promptly.
+                None => true,
+            };
+            if revision_invalidated
+                && let Some(session) = self.get_session_by_machine_id(user_id, &machine_id)
+            {
+                session
+                    .notify_managed_runtime_state_changed(user_id, machine_id)
+                    .await;
+            }
         }
         Ok(())
     }

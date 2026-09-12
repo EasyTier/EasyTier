@@ -282,20 +282,35 @@ async fn connected_delivery_is_current(
     connected_delivery_state_matches(&data, storage_token, binding_version)
 }
 
+enum ConnectedBindingRecord {
+    Recorded,
+    /// The session identity moved on; the delivered connected webhook should
+    /// be compensated with a disconnect.
+    IdentityStale,
+    /// A newer session already owns the machine route; its bindings must be
+    /// left untouched so a stale disconnect cannot revoke them.
+    OwnershipLost,
+}
+
 async fn record_webhook_connected_binding_if_current(
     session_data: &std::sync::Weak<RwLock<SessionData>>,
     storage_token: &StorageToken,
     binding_version: u64,
-) -> bool {
-    let Some(session_data) = session_data.upgrade() else {
-        return false;
-    };
+) -> Option<ConnectedBindingRecord> {
+    let session_data = session_data.upgrade()?;
     let mut data = session_data.write().await;
     if !connection_state_matches(&data, storage_token, binding_version) {
-        return false;
+        return Some(ConnectedBindingRecord::IdentityStale);
+    }
+    if !data
+        .storage
+        .upgrade()
+        .is_some_and(|storage| storage.owns_authorized_session(storage_token, data.session_epoch))
+    {
+        return Some(ConnectedBindingRecord::OwnershipLost);
     }
     data.webhook_connected_binding_version = Some(binding_version);
-    true
+    Some(ConnectedBindingRecord::Recorded)
 }
 
 async fn send_webhook_connection_transition(
@@ -382,19 +397,29 @@ async fn send_webhook_connection_transition(
     {
         return;
     }
-    if !record_webhook_connected_binding_if_current(
+    match record_webhook_connected_binding_if_current(
         &session_data,
         &connect.storage_token,
         connect.binding_version,
     )
     .await
     {
-        send_webhook_node_disconnected(
-            connect.webhook,
-            connect.storage_token,
-            connect.binding_version,
-        )
-        .await;
+        Some(ConnectedBindingRecord::Recorded) => {}
+        Some(ConnectedBindingRecord::OwnershipLost) => {
+            tracing::debug!(
+                machine_id = %connect.storage_token.machine_id,
+                binding_version = connect.binding_version,
+                "skip disconnect compensation because a newer session owns the route"
+            );
+        }
+        Some(ConnectedBindingRecord::IdentityStale) | None => {
+            send_webhook_node_disconnected(
+                connect.webhook,
+                connect.storage_token,
+                connect.binding_version,
+            )
+            .await;
+        }
     }
 }
 
@@ -410,7 +435,6 @@ impl Drop for SessionData {
                     machine_id = %token.machine_id,
                     user_id = token.user_id,
                     session_epoch = self.session_epoch,
-                    user_token = %token.token,
                     "session disconnected"
                 );
             }
@@ -633,7 +657,6 @@ impl SessionRpcService {
         }
         tracing::info!(
             machine_id = ?req.machine_id,
-            user_token = %req.user_token,
             failed_instance_ids = ?next_instance_ids,
             "heartbeat failed instance set changed"
         );
@@ -817,7 +840,6 @@ impl SessionRpcService {
                     %machine_id,
                     user_id,
                     session_epoch = data.session_epoch,
-                    user_token = %runtime_req.user_token,
                     client_url = %data.client_url,
                     "session identity established"
                 );
@@ -1524,6 +1546,57 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn connected_binding_record_respects_route_ownership() {
+        let webhook_config = Arc::new(crate::webhook::WebhookConfig::new(
+            None, None, None, None, None,
+        ));
+        let fixture = connected_delivery_fixture(webhook_config).await;
+        let session_data = fixture.session_data.clone();
+        let storage_token = fixture.notification.storage_token.clone();
+
+        let outcome = record_webhook_connected_binding_if_current(
+            &Arc::downgrade(&session_data),
+            &storage_token,
+            1,
+        )
+        .await;
+        assert!(matches!(outcome, Some(ConnectedBindingRecord::Recorded)));
+        assert_eq!(
+            session_data.read().await.webhook_connected_binding_version,
+            Some(1)
+        );
+
+        // A replacement session wins the machine route; the stale task must
+        // neither record its binding nor earn disconnect compensation.
+        fixture.storage.update_session_client(
+            StorageToken {
+                token: storage_token.token.clone(),
+                client_url: url::Url::parse("http://127.0.0.1:2000").unwrap(),
+                machine_id: fixture.machine_id,
+                user_id: fixture.user_id,
+            },
+            2,
+            true,
+            2,
+        );
+        session_data.write().await.webhook_connected_binding_version = None;
+        let outcome = record_webhook_connected_binding_if_current(
+            &Arc::downgrade(&session_data),
+            &storage_token,
+            1,
+        )
+        .await;
+        assert!(matches!(
+            outcome,
+            Some(ConnectedBindingRecord::OwnershipLost)
+        ));
+        assert_eq!(
+            session_data.read().await.webhook_connected_binding_version,
+            None
+        );
+    }
+
     async fn run_failed_connected_delivery(status: StatusCode) -> (usize, Option<u64>) {
         let attempts = Arc::new(AtomicUsize::new(0));
         let app = Router::new()
@@ -1693,6 +1766,7 @@ mod tests {
                 req,
                 machine_id,
             },
+            session_data.read().await.webhook_validation_change_epoch,
         ));
         received_rx.await.unwrap();
         release.notify_waiters();

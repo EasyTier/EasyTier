@@ -350,7 +350,10 @@ async fn prepare_reconcile_round(
     {
         Ok(Some(user_id)) => user_id,
         Ok(None) => {
-            tracing::info!("User not found by token: {:?}", req.user_token);
+            tracing::info!(
+                machine_id = ?req.machine_id,
+                "user not found by heartbeat token"
+            );
             return RoundStatus::Skip;
         }
         Err(e) => {
@@ -893,6 +896,19 @@ fn retained_requested_instance_ids(
         .collect()
 }
 
+fn should_reconcile_running_web_config(
+    is_running: bool,
+    source: PersistedConfigSource,
+    round: &ReconcileRound,
+) -> bool {
+    is_running
+        && source == PersistedConfigSource::Web
+        // Legacy consoles update web configs without a revision. With no
+        // revision to compare against, running web configs are checked
+        // every round so unrevisioned changes still converge.
+        && (round.should_apply_runtime_revision || round.target_config_revision.is_none())
+}
+
 async fn reconcile_desired_runtime_configs(
     context: &ReconcileRoundContext<'_>,
     rpc_client: &mut SessionRpcClient,
@@ -911,9 +927,8 @@ async fn reconcile_desired_runtime_configs(
     for config in &round.local_configs {
         let source = PersistedConfigSource::from_db(&config.source);
         let is_running = round.running_inst_ids.contains(&config.network_instance_id);
-        let should_reconcile_running_web_config = is_running
-            && round.should_apply_runtime_revision
-            && source == PersistedConfigSource::Web;
+        let should_reconcile_running_web_config =
+            should_reconcile_running_web_config(is_running, source, round);
         if is_running && !should_reconcile_running_web_config {
             continue;
         }
@@ -1260,7 +1275,6 @@ fn record_applied_config_revision(
     if changed {
         tracing::info!(
             machine_id = ?data.req.as_ref().and_then(|req| req.machine_id),
-            user_token = ?data.req.as_ref().map(|req| &req.user_token),
             previous_revision = ?runtime.applied_config_revision,
             applied_revision = ?revision,
             "managed config revision applied"
@@ -1971,5 +1985,78 @@ mod tests {
                 .contains("runtime config still differs after managed run")
         );
         assert!(!cache.entries.contains_key("managed"));
+    }
+
+    #[test]
+    fn restored_omitted_hostname_prevents_repeated_hostname_patch() {
+        let mut desired = config_with_port_forwards(Vec::new());
+        desired.hostname = Some("device-host".to_string());
+        let mut observed = desired.clone();
+        observed.hostname = None;
+
+        runtime_reconcile::restore_omitted_hostname(&mut observed, &desired, true);
+        assert_eq!(observed.hostname.as_deref(), Some("device-host"));
+
+        let mut cache = SessionRuntimeConfigCache::default();
+        cache.remember("managed", observed);
+        let action = cache
+            .plan("managed", desired)
+            .expect("prepare action after restore")
+            .expect("cached action");
+
+        assert!(matches!(
+            action,
+            runtime_reconcile::RuntimeReconcileAction::Unchanged(_)
+        ));
+    }
+
+    fn round_with_revision_state(
+        target_config_revision: Option<&str>,
+        should_apply_runtime_revision: bool,
+    ) -> ReconcileRound {
+        ReconcileRound {
+            req: HeartbeatRequest::default(),
+            machine_id: uuid::Uuid::new_v4(),
+            user_id: 1,
+            running_inst_ids: HashSet::new(),
+            local_configs: Vec::new(),
+            delete_instance_ids: HashSet::new(),
+            target_config_revision: target_config_revision.map(str::to_string),
+            should_apply_runtime_revision,
+            scope: ReconcileScope::Full,
+            runtime_config_epoch: 0,
+            runtime_config_cache_epoch: 0,
+        }
+    }
+
+    #[test]
+    fn running_web_configs_reconcile_without_tracked_revision() {
+        use crate::client_manager::managed_config::PersistedConfigSource;
+
+        assert!(should_reconcile_running_web_config(
+            true,
+            PersistedConfigSource::Web,
+            &round_with_revision_state(None, false),
+        ));
+        assert!(!should_reconcile_running_web_config(
+            true,
+            PersistedConfigSource::Web,
+            &round_with_revision_state(Some("rev-a"), false),
+        ));
+        assert!(should_reconcile_running_web_config(
+            true,
+            PersistedConfigSource::Web,
+            &round_with_revision_state(Some("rev-a"), true),
+        ));
+        assert!(!should_reconcile_running_web_config(
+            true,
+            PersistedConfigSource::User,
+            &round_with_revision_state(None, false),
+        ));
+        assert!(!should_reconcile_running_web_config(
+            false,
+            PersistedConfigSource::Web,
+            &round_with_revision_state(None, false),
+        ));
     }
 }

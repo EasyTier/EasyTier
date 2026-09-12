@@ -220,7 +220,7 @@ async fn wait_for_retry_or_state_change(
 pub(super) async fn run_worker(session_data: std::sync::Weak<RwLock<SessionData>>) {
     while let Some((input, validation_change_epoch)) = wait_for_input(session_data.clone()).await {
         let machine_id = input.machine_id;
-        if let Err(error) = run_round(session_data.clone(), input).await {
+        if let Err(error) = run_round(session_data.clone(), input, validation_change_epoch).await {
             tracing::warn!(
                 ?machine_id,
                 %error,
@@ -240,6 +240,7 @@ pub(super) async fn run_worker(session_data: std::sync::Weak<RwLock<SessionData>
 pub(super) async fn run_round(
     session_data: std::sync::Weak<RwLock<SessionData>>,
     input: WebhookValidationInput,
+    validation_change_epoch: u64,
 ) -> anyhow::Result<()> {
     let persisted_config_revision = persisted_config_revision_for_token(
         &input.storage,
@@ -250,6 +251,14 @@ pub(super) async fn run_round(
     let validation =
         request_heartbeat_validation(&input, persisted_config_revision.as_deref()).await?;
 
+    // The HTTP round trip can span heartbeats, revision updates, and
+    // failed-instance changes. Results older than the current epoch are
+    // discarded so a stale rejection cannot invalidate the session and a
+    // stale success cannot emit outdated connection transitions.
+    if !validation_results_are_current(&session_data, &input, validation_change_epoch).await {
+        return Ok(());
+    }
+
     let Some(validation) = validation else {
         apply_rejected(&session_data, &input).await;
         return Ok(());
@@ -258,6 +267,25 @@ pub(super) async fn run_round(
     let user_id = resolve_user_id(&input.storage, &input.req.user_token).await?;
     apply_success(&session_data, input, validation, user_id).await;
     Ok(())
+}
+
+async fn validation_results_are_current(
+    session_data: &std::sync::Weak<RwLock<SessionData>>,
+    input: &WebhookValidationInput,
+    validation_change_epoch: u64,
+) -> bool {
+    let Some(session_data) = session_data.upgrade() else {
+        return false;
+    };
+    let data = session_data.read().await;
+    if data.webhook_validation_change_epoch != validation_change_epoch {
+        tracing::debug!(
+            machine_id = %input.machine_id,
+            "discard stale webhook validation result"
+        );
+        return false;
+    }
+    true
 }
 
 async fn mark_dirty_if_current(
@@ -416,7 +444,6 @@ pub(super) async fn apply_success(
                 user_id,
                 session_epoch = data.session_epoch,
                 binding_version,
-                user_token = %runtime_req.user_token,
                 client_url = %data.client_url,
                 "session identity established"
             );
@@ -719,5 +746,41 @@ mod tests {
         .await
         .expect("invalid session should stop waiting");
         assert!(!session_data.read().await.webhook_validation_dirty);
+    }
+
+    #[tokio::test]
+    async fn validation_results_require_current_epoch_or_live_session() {
+        let machine_id = uuid::Uuid::new_v4();
+        let session_data = validation_session(machine_id).await;
+        let input = WebhookValidationInput {
+            storage: Storage::new(crate::db::Db::memory_db().await),
+            webhook_config: Arc::new(crate::webhook::WebhookConfig::new(
+                None, None, None, None, None,
+            )),
+            client_url: url::Url::parse("http://127.0.0.1").unwrap(),
+            applied_config_revision: None,
+            applied_config_revision_known: false,
+            failed_instance_ids: Vec::new(),
+            req: HeartbeatRequest::default(),
+            machine_id,
+        };
+        let weak_session = Arc::downgrade(&session_data);
+
+        assert!(
+            validation_results_are_current(&weak_session, &input, 0).await,
+            "matching epoch is current"
+        );
+
+        session_data.write().await.webhook_validation_change_epoch = 7;
+        assert!(
+            !validation_results_are_current(&weak_session, &input, 0).await,
+            "epoch bump discards stale results"
+        );
+
+        drop(session_data);
+        assert!(
+            !validation_results_are_current(&weak_session, &input, 7).await,
+            "dropped session discards results"
+        );
     }
 }

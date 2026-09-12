@@ -493,21 +493,18 @@ impl WebhookConfig {
         match result {
             Err(error) => tracing::warn!(
                 machine_id = %req.machine_id,
-                user_token = %req.token,
                 elapsed_ms = elapsed.as_millis(),
                 %error,
                 "node-disconnected webhook delivery failed"
             ),
             Ok(response) if !response.status().is_success() => tracing::warn!(
                 machine_id = %req.machine_id,
-                user_token = %req.token,
                 status = %response.status(),
                 elapsed_ms = elapsed.as_millis(),
                 "node-disconnected webhook returned failure status"
             ),
             Ok(_) if elapsed >= VALIDATE_TOKEN_SLOW_THRESHOLD => tracing::warn!(
                 machine_id = %req.machine_id,
-                user_token = %req.token,
                 elapsed_ms = elapsed.as_millis(),
                 "node-disconnected webhook completed slowly"
             ),

@@ -378,7 +378,21 @@ fn web_source_runtime_patch(
     Ok(Some(patch))
 }
 
-fn ensure_runtime_config_converged(
+// Release 2.6.4 omits a configured hostname that matches the device
+// hostname from config readback. After a successful hostname mutation the
+// desired value must be restored into the observed config, otherwise every
+// later plan re-sends the same hostname patch.
+pub(super) fn restore_omitted_hostname(
+    current: &mut NetworkConfig,
+    desired: &NetworkConfig,
+    hostname_applied: bool,
+) {
+    if hostname_applied && current.hostname.is_none() && desired.hostname.is_some() {
+        current.hostname = desired.hostname.clone();
+    }
+}
+
+pub(super) fn ensure_runtime_config_converged(
     current: &NetworkConfig,
     desired: &NetworkConfig,
     hostname_applied: bool,
@@ -492,8 +506,9 @@ pub(super) async fn apply_web_source_runtime_reconcile(
         RuntimeReconcileAction::Run { config, overwrite } => {
             let hostname_applied = config.hostname.is_some();
             run_web_source_instance(rpc_client, inst_id, *config, overwrite).await?;
-            let current_config = get_runtime_config(rpc_client, inst_id).await?;
+            let mut current_config = get_runtime_config(rpc_client, inst_id).await?;
             ensure_runtime_config_converged(&current_config, &desired_config, hostname_applied)?;
+            restore_omitted_hostname(&mut current_config, &desired_config, hostname_applied);
             Ok(current_config)
         }
         RuntimeReconcileAction::Patch(patch) => {
@@ -507,8 +522,9 @@ pub(super) async fn apply_web_source_runtime_reconcile(
                     },
                 )
                 .await?;
-            let current_config = get_runtime_config(rpc_client, inst_id).await?;
+            let mut current_config = get_runtime_config(rpc_client, inst_id).await?;
             ensure_runtime_config_converged(&current_config, &desired_config, hostname_applied)?;
+            restore_omitted_hostname(&mut current_config, &desired_config, hostname_applied);
             Ok(current_config)
         }
     }
