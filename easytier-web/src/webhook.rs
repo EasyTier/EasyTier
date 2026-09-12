@@ -308,6 +308,8 @@ pub struct ValidateTokenRequest {
     pub persisted_config_revision: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub applied_config_revision: Option<String>,
+    pub applied_config_revision_known: bool,
+    pub failed_instance_ids: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -350,6 +352,26 @@ pub struct NodeDisconnectedRequest {
     pub binding_version: Option<u64>,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum WebhookDeliveryError {
+    #[error("webhook endpoint is invalid: {0}")]
+    Configuration(#[source] anyhow::Error),
+    #[error("webhook request failed: {0}")]
+    Transport(#[source] reqwest::Error),
+    #[error("webhook returned status {0}")]
+    ResponseStatus(reqwest::StatusCode),
+}
+
+impl WebhookDeliveryError {
+    pub(crate) fn is_retryable(&self) -> bool {
+        match self {
+            Self::Transport(_) => true,
+            Self::ResponseStatus(status) => status.is_server_error(),
+            Self::Configuration(_) => false,
+        }
+    }
+}
+
 // --- Webhook client ---
 
 impl WebhookConfig {
@@ -384,7 +406,10 @@ impl WebhookConfig {
         http_timeout: Duration,
     ) -> anyhow::Result<ValidateTokenResponse> {
         let url = self.webhook_endpoint("validate-token")?;
+        let started_at = Instant::now();
         let permit = self.validate_limiter.acquire().await;
+        let queue_elapsed = started_at.elapsed();
+        let http_started_at = Instant::now();
         let ret = match tokio::time::timeout(http_timeout, async {
             let resp = self
                 .client
@@ -406,25 +431,45 @@ impl WebhookConfig {
             Err(_) => Err(anyhow::anyhow!("webhook validate-token timed out")),
         };
         permit.complete(ret.is_ok());
+        let http_elapsed = http_started_at.elapsed();
+        let elapsed = started_at.elapsed();
+        if queue_elapsed >= Duration::from_secs(1) || http_elapsed >= VALIDATE_TOKEN_SLOW_THRESHOLD
+        {
+            tracing::warn!(
+                machine_id = %req.machine_id,
+                queue_ms = queue_elapsed.as_millis(),
+                http_ms = http_elapsed.as_millis(),
+                elapsed_ms = elapsed.as_millis(),
+                success = ret.is_ok(),
+                "validate-token completed slowly"
+            );
+        }
         ret
     }
 
     /// Notify the webhook receiver that a node has connected.
-    pub async fn notify_node_connected(&self, req: &NodeConnectedRequest) {
+    pub(crate) async fn notify_node_connected(
+        &self,
+        req: &NodeConnectedRequest,
+    ) -> Result<(), WebhookDeliveryError> {
         if !self.is_enabled() {
-            return;
+            return Ok(());
         }
-        let Ok(url) = self.webhook_endpoint("webhook/node-connected") else {
-            tracing::warn!("skip node-connected webhook because webhook_url is not configured");
-            return;
-        };
-        let _ = self
+        let url = self
+            .webhook_endpoint("webhook/node-connected")
+            .map_err(WebhookDeliveryError::Configuration)?;
+        let response = self
             .client
             .post(&url)
             .header("X-Internal-Auth", self.webhook_auth_secret())
             .json(req)
             .send()
-            .await;
+            .await
+            .map_err(WebhookDeliveryError::Transport)?;
+        if !response.status().is_success() {
+            return Err(WebhookDeliveryError::ResponseStatus(response.status()));
+        }
+        Ok(())
     }
 
     /// Notify the webhook receiver that a node has disconnected.
@@ -436,13 +481,35 @@ impl WebhookConfig {
             tracing::warn!("skip node-disconnected webhook because webhook_url is not configured");
             return;
         };
-        let _ = self
+        let started_at = Instant::now();
+        let result = self
             .client
             .post(&url)
             .header("X-Internal-Auth", self.webhook_auth_secret())
             .json(req)
             .send()
             .await;
+        let elapsed = started_at.elapsed();
+        match result {
+            Err(error) => tracing::warn!(
+                machine_id = %req.machine_id,
+                elapsed_ms = elapsed.as_millis(),
+                %error,
+                "node-disconnected webhook delivery failed"
+            ),
+            Ok(response) if !response.status().is_success() => tracing::warn!(
+                machine_id = %req.machine_id,
+                status = %response.status(),
+                elapsed_ms = elapsed.as_millis(),
+                "node-disconnected webhook returned failure status"
+            ),
+            Ok(_) if elapsed >= VALIDATE_TOKEN_SLOW_THRESHOLD => tracing::warn!(
+                machine_id = %req.machine_id,
+                elapsed_ms = elapsed.as_millis(),
+                "node-disconnected webhook completed slowly"
+            ),
+            Ok(_) => {}
+        }
     }
 
     fn webhook_auth_secret(&self) -> &str {
@@ -460,6 +527,21 @@ mod tests {
     use super::*;
     use axum::{Json, Router, routing::post};
     use serde_json::json;
+
+    fn node_connected_request() -> NodeConnectedRequest {
+        NodeConnectedRequest {
+            machine_id: uuid::Uuid::new_v4().to_string(),
+            token: "token".to_string(),
+            user_id: Some(1),
+            hostname: String::new(),
+            version: String::new(),
+            os_type: None,
+            os_version: None,
+            os_distribution: None,
+            web_instance_id: None,
+            binding_version: Some(1),
+        }
+    }
 
     #[test]
     fn adaptive_validate_limiter_increases_under_queue_pressure() {
@@ -736,6 +818,8 @@ mod tests {
                 web_instance_api_base_url: None,
                 persisted_config_revision: None,
                 applied_config_revision: None,
+                applied_config_revision_known: false,
+                failed_instance_ids: Vec::new(),
             };
             validate_webhook
                 .validate_token_with_http_timeout(&req, Duration::from_millis(20))
@@ -772,5 +856,24 @@ mod tests {
         let resp: ValidateTokenResponse = serde_json::from_str(r#"{"valid":true}"#).unwrap();
         assert!(resp.valid);
         assert!(resp.config_revision.is_empty());
+    }
+
+    #[tokio::test]
+    async fn node_connected_transport_error_is_retryable() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let webhook = WebhookConfig::new(Some(format!("http://{addr}")), None, None, None, None);
+
+        let error = tokio::time::timeout(
+            Duration::from_secs(1),
+            webhook.notify_node_connected(&node_connected_request()),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+
+        assert!(matches!(error, WebhookDeliveryError::Transport(_)));
+        assert!(error.is_retryable());
     }
 }

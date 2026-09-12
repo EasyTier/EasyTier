@@ -22,9 +22,14 @@ message HeartbeatRequest {
   repeated common.UUID running_network_instances = 7;
   DeviceOsInfo device_os = 8;
   bool support_config_source = 9;
+  repeated common.UUID failed_network_instances = 10;
+  bool support_heartbeat_policy = 11;
 }
 
-message HeartbeatResponse {}
+message HeartbeatResponse {
+  optional uint32 heartbeat_interval_ms = 1;
+  optional uint32 heartbeat_timeout_ms = 2;
+}
 
 message GetFeatureRequest {}
 

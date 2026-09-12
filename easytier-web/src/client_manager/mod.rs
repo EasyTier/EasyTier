@@ -3,15 +3,20 @@ mod runtime_reconcile;
 pub mod session;
 pub mod storage;
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicU32, AtomicU64, Ordering},
-};
 use std::time::Duration;
+use std::{
+    collections::HashSet,
+    sync::{
+        Arc,
+        atomic::{AtomicU32, AtomicU64, Ordering},
+    },
+};
 
 use dashmap::DashMap;
 use easytier::proto::{
-    api::manage::WebClientService, rpc_types::controller::BaseController, web::HeartbeatRequest,
+    api::manage::WebClientService,
+    rpc_types::controller::BaseController,
+    web::{HeartbeatRequest, HeartbeatResponse},
 };
 use easytier_core::{
     management::remote_client::{self, RemoteClientManager},
@@ -19,7 +24,7 @@ use easytier_core::{
     tunnel::{Tunnel, web_security},
 };
 use maxminddb::geoip2;
-use session::{Location, ManagedConfigRevisionDelta, Session};
+use session::{Location, ManagedConfigPersistedChange, Session};
 use storage::{Storage, StorageToken};
 
 use crate::FeatureFlags;
@@ -29,6 +34,67 @@ use tokio::task::JoinSet;
 use crate::db::{Db, UserIdInDb, entity::user_running_network_configs};
 
 pub(crate) use managed_config::ManagedConfigError;
+
+const DEFAULT_HEARTBEAT_INTERVAL: Duration = Duration::from_millis(3_500);
+const DEFAULT_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(15);
+const MIN_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
+const MAX_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
+const MIN_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(120);
+const HEARTBEAT_TIMEOUT_MARGIN: Duration = Duration::from_secs(5);
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct HeartbeatPolicy {
+    interval: Duration,
+    timeout: Duration,
+}
+
+impl Default for HeartbeatPolicy {
+    fn default() -> Self {
+        Self {
+            interval: DEFAULT_HEARTBEAT_INTERVAL,
+            timeout: DEFAULT_HEARTBEAT_TIMEOUT,
+        }
+    }
+}
+
+impl HeartbeatPolicy {
+    pub(crate) fn from_millis(interval_ms: u64, timeout_ms: u64) -> anyhow::Result<Self> {
+        let interval = if interval_ms == 0 {
+            DEFAULT_HEARTBEAT_INTERVAL
+        } else {
+            Duration::from_millis(interval_ms)
+        };
+        let timeout = Duration::from_millis(timeout_ms);
+        if !(MIN_HEARTBEAT_INTERVAL..=MAX_HEARTBEAT_INTERVAL).contains(&interval) {
+            anyhow::bail!("heartbeat interval must be between 1000 and 60000 milliseconds");
+        }
+        if !(MIN_HEARTBEAT_TIMEOUT..=MAX_HEARTBEAT_TIMEOUT).contains(&timeout) {
+            anyhow::bail!("heartbeat timeout must be between 5000 and 120000 milliseconds");
+        }
+        if timeout < interval.saturating_add(HEARTBEAT_TIMEOUT_MARGIN) {
+            anyhow::bail!(
+                "heartbeat timeout must exceed the interval by at least 5000 milliseconds"
+            );
+        }
+        Ok(Self { interval, timeout })
+    }
+
+    fn response(self) -> HeartbeatResponse {
+        HeartbeatResponse {
+            heartbeat_interval_ms: Some(self.interval.as_millis() as u32),
+            heartbeat_timeout_ms: Some(self.timeout.as_millis() as u32),
+        }
+    }
+
+    fn session_rx_timeout(self) -> Duration {
+        Duration::from_secs(30).max(self.timeout.saturating_add(HEARTBEAT_TIMEOUT_MARGIN))
+    }
+
+    fn legacy_response_delay(self) -> Duration {
+        self.interval.min(DEFAULT_HEARTBEAT_INTERVAL)
+    }
+}
 
 #[derive(rust_embed::Embed)]
 #[folder = "resources/"]
@@ -69,14 +135,14 @@ pub struct ClientManager {
     webhook_config: SharedWebhookConfig,
 
     geoip_db: Arc<Option<maxminddb::Reader<Vec<u8>>>>,
-    heartbeat_min_response_delay: Duration,
+    heartbeat_policy: HeartbeatPolicy,
 }
 
 impl ClientManager {
     pub fn new(
         db: Db,
         geoip_db: Option<String>,
-        heartbeat_min_response_delay: Duration,
+        heartbeat_policy: HeartbeatPolicy,
         feature_flags: Arc<FeatureFlags>,
         webhook_config: SharedWebhookConfig,
     ) -> Self {
@@ -101,7 +167,7 @@ impl ClientManager {
             webhook_config,
 
             geoip_db: Arc::new(load_geoip_db(geoip_db)),
-            heartbeat_min_response_delay,
+            heartbeat_policy,
         }
     }
 
@@ -117,7 +183,7 @@ impl ClientManager {
         let listeners_cnt = self.listeners_cnt.clone();
         let next_session_epoch = self.next_session_epoch.clone();
         let geoip_db = self.geoip_db.clone();
-        let heartbeat_min_response_delay = self.heartbeat_min_response_delay;
+        let heartbeat_policy = self.heartbeat_policy;
         let feature_flags = self.feature_flags.clone();
         let webhook_config = self.webhook_config.clone();
         self.tasks.spawn(async move {
@@ -146,7 +212,7 @@ impl ClientManager {
                     storage.clone(),
                     client_url.clone(),
                     location,
-                    heartbeat_min_response_delay,
+                    heartbeat_policy,
                     feature_flags.clone(),
                     webhook_config.clone(),
                     next_session_epoch.fetch_add(1, Ordering::Relaxed) + 1,
@@ -188,7 +254,7 @@ impl ClientManager {
             .get_client_url_by_machine_id(user_id, machine_id)?;
         self.client_sessions
             .get(&c_url)
-            .map(|item| item.value().clone())
+            .and_then(|item| item.is_running().then(|| item.value().clone()))
     }
 
     pub async fn disconnect_session_by_machine_id(
@@ -238,11 +304,14 @@ impl ClientManager {
         if matches!(
             status,
             managed_config::ManagedConfigApplyStatus::Applied { .. }
-        ) && let Some(config_revision) = config_revision
-            && let Some(session) = self.get_session_by_machine_id(user_id, &machine_id)
+        ) && self.storage.record_full_managed_config_change(
+            user_id,
+            machine_id,
+            config_revision.as_deref(),
+        ) && let Some(session) = self.get_session_by_machine_id(user_id, &machine_id)
         {
             session
-                .notify_full_config_revision_changed(user_id, machine_id, config_revision)
+                .notify_managed_runtime_state_changed(user_id, machine_id)
                 .await;
         }
         Ok(())
@@ -259,7 +328,7 @@ impl ClientManager {
     ) -> anyhow::Result<()> {
         let config_revision = config_revision.trim().to_string();
         let expected_config_revision = expected_config_revision.trim().to_string();
-        let upsert_instance_ids = upserts
+        let mut dirty_instance_ids: HashSet<_> = upserts
             .iter()
             .map(|config| config.instance_id.clone())
             .collect();
@@ -276,23 +345,26 @@ impl ClientManager {
         if let managed_config::ManagedConfigApplyStatus::Applied {
             deleted_web_instance_ids,
         } = status
-            && let Some(session) = self.get_session_by_machine_id(user_id, &machine_id)
         {
-            session
-                .notify_patch_config_revision_changed(
-                    user_id,
-                    machine_id,
-                    ManagedConfigRevisionDelta {
-                        expected_revision: expected_config_revision,
-                        target_revision: config_revision,
-                        upsert_instance_ids,
-                        delete_instance_ids: deleted_web_instance_ids
-                            .into_iter()
-                            .map(|instance_id| instance_id.to_string())
-                            .collect(),
-                    },
-                )
-                .await;
+            dirty_instance_ids.extend(
+                deleted_web_instance_ids
+                    .into_iter()
+                    .map(|instance_id| instance_id.to_string()),
+            );
+            let changed = self.storage.record_patch_managed_config_change(
+                user_id,
+                machine_id,
+                ManagedConfigPersistedChange {
+                    expected_revision: expected_config_revision,
+                    target_revision: config_revision,
+                    dirty_instance_ids,
+                },
+            );
+            if changed && let Some(session) = self.get_session_by_machine_id(user_id, &machine_id) {
+                session
+                    .notify_managed_runtime_state_changed(user_id, machine_id)
+                    .await;
+            }
         }
         Ok(())
     }
@@ -302,9 +374,13 @@ impl ClientManager {
         user_id: UserIdInDb,
         machine_id: uuid::Uuid,
     ) {
-        if let Some(session) = self.get_session_by_machine_id(user_id, &machine_id) {
+        if self
+            .storage
+            .invalidate_managed_runtime_state(user_id, machine_id)
+            && let Some(session) = self.get_session_by_machine_id(user_id, &machine_id)
+        {
             session
-                .invalidate_applied_config_revision(user_id, machine_id)
+                .notify_managed_runtime_state_changed(user_id, machine_id)
                 .await;
         }
     }
@@ -474,10 +550,35 @@ mod tests {
     use sqlx::Executor;
 
     use crate::{
-        FeatureFlags, client_manager::ClientManager, db::Db, webhook::ManagedNetworkConfig,
+        FeatureFlags,
+        client_manager::{ClientManager, HeartbeatPolicy, session::Session, storage::StorageToken},
+        db::Db,
+        webhook::ManagedNetworkConfig,
     };
 
     const MANAGED_CONFIG_TOKEN: &str = "managed-config-token";
+
+    #[test]
+    fn heartbeat_policy_validates_server_configuration() {
+        let policy = HeartbeatPolicy::from_millis(3_500, 15_000).unwrap();
+        let response = policy.response();
+        assert_eq!(response.heartbeat_interval_ms, Some(3_500));
+        assert_eq!(response.heartbeat_timeout_ms, Some(15_000));
+        assert_eq!(policy.session_rx_timeout(), Duration::from_secs(30));
+
+        let legacy_default = HeartbeatPolicy::from_millis(0, 15_000).unwrap();
+        assert_eq!(legacy_default.response().heartbeat_interval_ms, Some(3_500));
+
+        let slow = HeartbeatPolicy::from_millis(60_000, 65_000).unwrap();
+        assert_eq!(slow.session_rx_timeout(), Duration::from_secs(70));
+        assert_eq!(slow.legacy_response_delay(), Duration::from_millis(3_500));
+
+        assert!(HeartbeatPolicy::from_millis(999, 15_000).is_err());
+        assert!(HeartbeatPolicy::from_millis(60_001, 120_000).is_err());
+        assert!(HeartbeatPolicy::from_millis(3_500, 4_999).is_err());
+        assert!(HeartbeatPolicy::from_millis(60_000, 64_999).is_err());
+        assert!(HeartbeatPolicy::from_millis(3_500, 120_001).is_err());
+    }
 
     async fn wait_for_condition<F, Fut>(mut condition: F, timeout: Duration)
     where
@@ -655,7 +756,7 @@ mod tests {
         let mut mgr = ClientManager::new(
             Db::memory_db().await,
             None,
-            Duration::ZERO,
+            HeartbeatPolicy::from_millis(0, 15_000).unwrap(),
             Arc::new(FeatureFlags::default()),
             webhook_config,
         );
@@ -681,6 +782,51 @@ mod tests {
 
         webhook_state.allow_connected();
         webhook_server.abort();
+    }
+
+    #[tokio::test]
+    async fn non_running_session_is_not_routable_by_machine_id() {
+        let db = Db::memory_db().await;
+        let mgr = ClientManager::new(
+            db.clone(),
+            None,
+            HeartbeatPolicy::default(),
+            Arc::new(FeatureFlags::default()),
+            Arc::new(crate::webhook::WebhookConfig::new(
+                None, None, None, None, None,
+            )),
+        );
+        let user_id = db.auto_create_user("token").await.unwrap().id;
+        let machine_id = uuid::Uuid::new_v4();
+        let client_url = url::Url::parse("udp://127.0.0.1:22020").unwrap();
+        mgr.storage.update_client(
+            StorageToken {
+                token: "token".to_string(),
+                client_url: client_url.clone(),
+                machine_id,
+                user_id,
+            },
+            1,
+            true,
+        );
+        let session = Arc::new(Session::new(
+            mgr.storage.weak_ref(),
+            client_url.clone(),
+            None,
+            HeartbeatPolicy::default(),
+            Arc::new(FeatureFlags::default()),
+            Arc::new(crate::webhook::WebhookConfig::new(
+                None, None, None, None, None,
+            )),
+            1,
+        ));
+        assert!(!session.is_running());
+        mgr.client_sessions.insert(client_url, session);
+
+        assert!(
+            mgr.get_session_by_machine_id(user_id, &machine_id)
+                .is_none()
+        );
     }
 
     async fn wait_for_validated_user(mgr: &ClientManager, machine_id: uuid::Uuid) -> i32 {
@@ -1008,7 +1154,7 @@ mod tests {
         let mut mgr = ClientManager::new(
             Db::memory_db().await,
             None,
-            Duration::ZERO,
+            HeartbeatPolicy::from_millis(0, 15_000).unwrap(),
             Arc::new(FeatureFlags::default()),
             Arc::new(crate::webhook::WebhookConfig::new(
                 None, None, None, None, None,
@@ -1075,7 +1221,7 @@ mod tests {
         let mut mgr = ClientManager::new(
             Db::memory_db().await,
             None,
-            Duration::ZERO,
+            HeartbeatPolicy::from_millis(0, 15_000).unwrap(),
             Arc::new(FeatureFlags::default()),
             webhook_config,
         );
@@ -1141,7 +1287,7 @@ mod tests {
         let mut mgr = ClientManager::new(
             Db::memory_db().await,
             None,
-            Duration::ZERO,
+            HeartbeatPolicy::from_millis(0, 15_000).unwrap(),
             Arc::new(FeatureFlags::default()),
             webhook_config,
         );
@@ -1333,7 +1479,7 @@ mod tests {
         let mut mgr = ClientManager::new(
             Db::memory_db().await,
             None,
-            Duration::ZERO,
+            HeartbeatPolicy::from_millis(0, 15_000).unwrap(),
             Arc::new(FeatureFlags::default()),
             webhook_config,
         );

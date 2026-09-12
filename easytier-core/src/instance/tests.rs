@@ -1396,6 +1396,74 @@ virtual_ip = "10.82.0.2/24"
     }
 
     #[tokio::test]
+    async fn manager_reports_only_stopped_instances_with_errors() {
+        use crate::instance::manager::{InstanceFactory, InstanceManager};
+
+        struct StateTestFactory;
+
+        impl InstanceFactory for StateTestFactory {
+            type Instance = CoreInstance<TestHost>;
+            type CreateContext = ();
+            type Error = anyhow::Error;
+
+            fn create(
+                &self,
+                config: TomlConfig,
+                (): Self::CreateContext,
+            ) -> Result<Arc<Self::Instance>, Self::Error> {
+                let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+                CoreInstance::from_toml(config, adapters(None, Arc::new(packet_sink)))
+            }
+        }
+
+        fn create_instance(
+            manager: &InstanceManager<StateTestFactory>,
+            name: &str,
+        ) -> Arc<CoreInstance<TestHost>> {
+            let config = TomlConfig::new_from_str(&format!("instance_name = \"{name}\"")).unwrap();
+            manager.create(config, ()).unwrap()
+        }
+
+        let manager = InstanceManager::new(StateTestFactory, None);
+        let running = create_instance(&manager, "running");
+        running
+            .latest_error
+            .write()
+            .replace("old startup error".to_owned());
+        running.set_state(CoreInstanceState::Running);
+
+        let starting = create_instance(&manager, "starting");
+        starting
+            .latest_error
+            .write()
+            .replace("old startup error".to_owned());
+        starting.set_state(CoreInstanceState::Starting);
+
+        let stopped_without_error = create_instance(&manager, "stopped-without-error");
+        stopped_without_error.set_state(CoreInstanceState::Stopped);
+
+        let stopped_with_blank_error = create_instance(&manager, "stopped-with-blank-error");
+        stopped_with_blank_error
+            .latest_error
+            .write()
+            .replace("  \n".to_owned());
+        stopped_with_blank_error.set_state(CoreInstanceState::Stopped);
+
+        let failed = create_instance(&manager, "failed");
+        failed
+            .latest_error
+            .write()
+            .replace("startup failed".to_owned());
+        failed.set_state(CoreInstanceState::Stopped);
+        let failed_id = failed.instance_id();
+
+        assert_eq!(manager.failed_instance_ids(), vec![failed_id]);
+
+        manager.delete_network_instances([failed_id]).await.unwrap();
+        assert!(manager.failed_instance_ids().is_empty());
+    }
+
+    #[tokio::test]
     async fn aborting_host_prepare_runs_unified_cleanup() {
         #[derive(Default)]
         struct BlockingPrepareRuntimeHost {
@@ -1737,6 +1805,142 @@ virtual_ip = "10.82.0.2/24"
             .unwrap();
         assert!(deleted.remain_inst_ids.is_empty());
         assert!(instances.instances().is_empty());
+    }
+
+    #[cfg(feature = "web-client")]
+    #[tokio::test]
+    async fn process_management_rpc_collects_only_requested_instances() {
+        use std::{collections::VecDeque, sync::Mutex as StdMutex};
+
+        use crate::{
+            config::toml::TomlConfig,
+            instance::manager::InstanceFactory,
+            management::{InstanceManager, ProcessManagementRpc, UnsupportedConfigFileStorage},
+        };
+        use easytier_proto::{
+            api::manage::{CollectNetworkInfoRequest, WebClientService},
+            rpc_types::controller::BaseController,
+        };
+
+        #[derive(Default)]
+        struct RecordingRuntimeHost {
+            collection_count: AtomicUsize,
+        }
+
+        #[async_trait]
+        impl InstanceRuntimeHost for RecordingRuntimeHost {
+            async fn prepare(
+                &self,
+                _packet_plane: Arc<CorePacketPlane>,
+            ) -> anyhow::Result<Option<Arc<dyn DhcpIpv4Host>>> {
+                Ok(None)
+            }
+
+            async fn shutdown(&self) {}
+
+            fn management_events(&self) -> Vec<String> {
+                self.collection_count.fetch_add(1, Ordering::Relaxed);
+                Vec::new()
+            }
+        }
+
+        struct RecordingFactory {
+            process_runtime: Arc<CoreProcessRuntime>,
+            runtime_hosts: StdMutex<VecDeque<Arc<RecordingRuntimeHost>>>,
+        }
+
+        impl InstanceFactory for RecordingFactory {
+            type Instance = CoreInstance<TestHost>;
+            type CreateContext = ();
+            type Error = anyhow::Error;
+
+            fn create(
+                &self,
+                config: TomlConfig,
+                (): Self::CreateContext,
+            ) -> Result<Arc<Self::Instance>, Self::Error> {
+                let runtime_host = self.runtime_hosts.lock().unwrap().pop_front().unwrap();
+                let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+                let mut adapters = adapters_with_process_runtime(
+                    None,
+                    Arc::new(packet_sink),
+                    self.process_runtime.clone(),
+                );
+                adapters.instance_runtime = runtime_host;
+                CoreInstance::from_toml(config, adapters)
+            }
+        }
+
+        let requested_runtime = Arc::new(RecordingRuntimeHost::default());
+        let unrequested_runtime = Arc::new(RecordingRuntimeHost::default());
+        let instances = Arc::new(InstanceManager::new(
+            RecordingFactory {
+                process_runtime: CoreProcessRuntime::new(),
+                runtime_hosts: StdMutex::new(VecDeque::from([
+                    requested_runtime.clone(),
+                    unrequested_runtime.clone(),
+                ])),
+            },
+            Some(tokio::runtime::Handle::current()),
+        ));
+        let requested_id = uuid::Uuid::new_v4();
+        let unrequested_id = uuid::Uuid::new_v4();
+        for instance_id in [requested_id, unrequested_id] {
+            let config = TomlConfig::default();
+            config.set_id(instance_id);
+            config.set_listeners(Vec::new());
+            instances
+                .create(config, ())
+                .unwrap()
+                .set_state(CoreInstanceState::Running);
+        }
+        let rpc = ProcessManagementRpc::<RecordingFactory>::new(
+            instances,
+            Arc::new(()),
+            Arc::new(UnsupportedConfigFileStorage),
+        );
+
+        let response = rpc
+            .collect_network_info(
+                BaseController::default(),
+                CollectNetworkInfoRequest {
+                    inst_ids: vec![
+                        requested_id.into(),
+                        requested_id.into(),
+                        uuid::Uuid::new_v4().into(),
+                    ],
+                },
+            )
+            .await
+            .unwrap();
+        let info = response.info.unwrap().map;
+        assert_eq!(info.len(), 1);
+        assert!(info.contains_key(&requested_id.to_string()));
+        assert_eq!(
+            requested_runtime.collection_count.load(Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            unrequested_runtime.collection_count.load(Ordering::Relaxed),
+            0
+        );
+
+        let response = rpc
+            .collect_network_info(
+                BaseController::default(),
+                CollectNetworkInfoRequest::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.info.unwrap().map.len(), 2);
+        assert_eq!(
+            requested_runtime.collection_count.load(Ordering::Relaxed),
+            2
+        );
+        assert_eq!(
+            unrequested_runtime.collection_count.load(Ordering::Relaxed),
+            1
+        );
     }
 
     #[cfg(feature = "management")]

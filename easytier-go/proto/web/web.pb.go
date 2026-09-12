@@ -93,6 +93,8 @@ type HeartbeatRequest struct {
 	RunningNetworkInstances []*common.UUID         `protobuf:"bytes,7,rep,name=running_network_instances,json=runningNetworkInstances,proto3" json:"running_network_instances,omitempty"`
 	DeviceOs                *DeviceOsInfo          `protobuf:"bytes,8,opt,name=device_os,json=deviceOs,proto3" json:"device_os,omitempty"`
 	SupportConfigSource     bool                   `protobuf:"varint,9,opt,name=support_config_source,json=supportConfigSource,proto3" json:"support_config_source,omitempty"`
+	FailedNetworkInstances  []*common.UUID         `protobuf:"bytes,10,rep,name=failed_network_instances,json=failedNetworkInstances,proto3" json:"failed_network_instances,omitempty"`
+	SupportHeartbeatPolicy  bool                   `protobuf:"varint,11,opt,name=support_heartbeat_policy,json=supportHeartbeatPolicy,proto3" json:"support_heartbeat_policy,omitempty"`
 	unknownFields           protoimpl.UnknownFields
 	sizeCache               protoimpl.SizeCache
 }
@@ -190,10 +192,26 @@ func (x *HeartbeatRequest) GetSupportConfigSource() bool {
 	return false
 }
 
+func (x *HeartbeatRequest) GetFailedNetworkInstances() []*common.UUID {
+	if x != nil {
+		return x.FailedNetworkInstances
+	}
+	return nil
+}
+
+func (x *HeartbeatRequest) GetSupportHeartbeatPolicy() bool {
+	if x != nil {
+		return x.SupportHeartbeatPolicy
+	}
+	return false
+}
+
 type HeartbeatResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state               protoimpl.MessageState `protogen:"open.v1"`
+	HeartbeatIntervalMs *uint32                `protobuf:"varint,1,opt,name=heartbeat_interval_ms,json=heartbeatIntervalMs,proto3,oneof" json:"heartbeat_interval_ms,omitempty"`
+	HeartbeatTimeoutMs  *uint32                `protobuf:"varint,2,opt,name=heartbeat_timeout_ms,json=heartbeatTimeoutMs,proto3,oneof" json:"heartbeat_timeout_ms,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *HeartbeatResponse) Reset() {
@@ -224,6 +242,20 @@ func (x *HeartbeatResponse) ProtoReflect() protoreflect.Message {
 // Deprecated: Use HeartbeatResponse.ProtoReflect.Descriptor instead.
 func (*HeartbeatResponse) Descriptor() ([]byte, []int) {
 	return file_web_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *HeartbeatResponse) GetHeartbeatIntervalMs() uint32 {
+	if x != nil && x.HeartbeatIntervalMs != nil {
+		return *x.HeartbeatIntervalMs
+	}
+	return 0
+}
+
+func (x *HeartbeatResponse) GetHeartbeatTimeoutMs() uint32 {
+	if x != nil && x.HeartbeatTimeoutMs != nil {
+		return *x.HeartbeatTimeoutMs
+	}
+	return 0
 }
 
 type GetFeatureRequest struct {
@@ -314,7 +346,7 @@ const file_web_proto_rawDesc = "" +
 	"\fDeviceOsInfo\x12\x17\n" +
 	"\aos_type\x18\x01 \x01(\tR\x06osType\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x12\"\n" +
-	"\fdistribution\x18\x03 \x01(\tR\fdistribution\"\x9b\x03\n" +
+	"\fdistribution\x18\x03 \x01(\tR\fdistribution\"\x9d\x04\n" +
 	"\x10HeartbeatRequest\x12+\n" +
 	"\n" +
 	"machine_id\x18\x01 \x01(\v2\f.common.UUIDR\tmachineId\x12%\n" +
@@ -327,8 +359,15 @@ const file_web_proto_rawDesc = "" +
 	"\bhostname\x18\x06 \x01(\tR\bhostname\x12H\n" +
 	"\x19running_network_instances\x18\a \x03(\v2\f.common.UUIDR\x17runningNetworkInstances\x12.\n" +
 	"\tdevice_os\x18\b \x01(\v2\x11.web.DeviceOsInfoR\bdeviceOs\x122\n" +
-	"\x15support_config_source\x18\t \x01(\bR\x13supportConfigSource\"\x13\n" +
-	"\x11HeartbeatResponse\"\x13\n" +
+	"\x15support_config_source\x18\t \x01(\bR\x13supportConfigSource\x12F\n" +
+	"\x18failed_network_instances\x18\n" +
+	" \x03(\v2\f.common.UUIDR\x16failedNetworkInstances\x128\n" +
+	"\x18support_heartbeat_policy\x18\v \x01(\bR\x16supportHeartbeatPolicy\"\xb6\x01\n" +
+	"\x11HeartbeatResponse\x127\n" +
+	"\x15heartbeat_interval_ms\x18\x01 \x01(\rH\x00R\x13heartbeatIntervalMs\x88\x01\x01\x125\n" +
+	"\x14heartbeat_timeout_ms\x18\x02 \x01(\rH\x01R\x12heartbeatTimeoutMs\x88\x01\x01B\x18\n" +
+	"\x16_heartbeat_interval_msB\x17\n" +
+	"\x15_heartbeat_timeout_ms\"\x13\n" +
 	"\x11GetFeatureRequest\"C\n" +
 	"\x12GetFeatureResponse\x12-\n" +
 	"\x12support_encryption\x18\x01 \x01(\bR\x11supportEncryption2\x8d\x01\n" +
@@ -363,15 +402,16 @@ var file_web_proto_depIdxs = []int32{
 	5, // 1: web.HeartbeatRequest.inst_id:type_name -> common.UUID
 	5, // 2: web.HeartbeatRequest.running_network_instances:type_name -> common.UUID
 	0, // 3: web.HeartbeatRequest.device_os:type_name -> web.DeviceOsInfo
-	1, // 4: web.WebServerService.Heartbeat:input_type -> web.HeartbeatRequest
-	3, // 5: web.WebServerService.GetFeature:input_type -> web.GetFeatureRequest
-	2, // 6: web.WebServerService.Heartbeat:output_type -> web.HeartbeatResponse
-	4, // 7: web.WebServerService.GetFeature:output_type -> web.GetFeatureResponse
-	6, // [6:8] is the sub-list for method output_type
-	4, // [4:6] is the sub-list for method input_type
-	4, // [4:4] is the sub-list for extension type_name
-	4, // [4:4] is the sub-list for extension extendee
-	0, // [0:4] is the sub-list for field type_name
+	5, // 4: web.HeartbeatRequest.failed_network_instances:type_name -> common.UUID
+	1, // 5: web.WebServerService.Heartbeat:input_type -> web.HeartbeatRequest
+	3, // 6: web.WebServerService.GetFeature:input_type -> web.GetFeatureRequest
+	2, // 7: web.WebServerService.Heartbeat:output_type -> web.HeartbeatResponse
+	4, // 8: web.WebServerService.GetFeature:output_type -> web.GetFeatureResponse
+	7, // [7:9] is the sub-list for method output_type
+	5, // [5:7] is the sub-list for method input_type
+	5, // [5:5] is the sub-list for extension type_name
+	5, // [5:5] is the sub-list for extension extendee
+	0, // [0:5] is the sub-list for field type_name
 }
 
 func init() { file_web_proto_init() }
@@ -379,6 +419,7 @@ func file_web_proto_init() {
 	if File_web_proto != nil {
 		return
 	}
+	file_web_proto_msgTypes[2].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
