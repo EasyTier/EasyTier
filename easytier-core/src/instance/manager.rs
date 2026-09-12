@@ -224,6 +224,11 @@ impl InstanceStateChanges {
     async fn wait_for_change(&self, generation: usize) -> usize {
         loop {
             let notified = self.notify.notified();
+            tokio::pin!(notified);
+            // Register the waiter before reading the generation: notify_waiters
+            // does not retain permits, so a change landing between the read
+            // and the await would otherwise be missed until the next change.
+            notified.as_mut().enable();
             let current = self.generation();
             if current != generation {
                 return current;
