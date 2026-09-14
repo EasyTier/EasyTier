@@ -159,6 +159,10 @@ where
     let is_syn = tcp_packet.syn() && !tcp_packet.ack();
 
     if is_syn {
+        // Own virtual IP traffic must stay local; it can never reach a peer.
+        if ctx.local_ipv4 == Some(dst_ip) {
+            return false;
+        }
         if !check_dst_allowed(dst_ip).await {
             tracing::warn!(
                 ?ctx.transport,
@@ -446,5 +450,34 @@ mod tests {
             )
             .await
         );
+    }
+
+    #[tokio::test]
+    async fn own_virtual_ip_syn_is_not_marked() {
+        let own_ip = "10.144.144.204".parse().unwrap();
+        let src = SocketAddrV4::new(own_ip, 50000);
+        let dst = SocketAddrV4::new(own_ip, 80);
+
+        for transport in [
+            WrappedTcpProxyTransport::Kcp,
+            WrappedTcpProxyTransport::Quic,
+        ] {
+            let mut packet = build_tcp_packet(src, dst, true, false);
+
+            assert!(
+                !try_process_wrapped_tcp_packet_from_nic(
+                    &mut packet,
+                    context(transport),
+                    |_| false,
+                    |_| async { true },
+                )
+                .await
+            );
+
+            assert_eq!(
+                packet.peer_manager_header().unwrap().packet_type,
+                PacketType::Data as u8
+            );
+        }
     }
 }
