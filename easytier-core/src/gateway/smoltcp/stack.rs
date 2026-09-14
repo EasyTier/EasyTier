@@ -11,6 +11,7 @@ use crate::gateway::proxy::traits::TcpProxyStream;
 
 pub struct SmolTcpStack {
     ingress_tx: mpsc::Sender<ZCPacket>,
+    local_port: u16,
     output_rx: Mutex<Option<mpsc::Receiver<Vec<u8>>>>,
     listener: Mutex<TcpListener>,
     _net: Net,
@@ -18,7 +19,7 @@ pub struct SmolTcpStack {
 }
 
 impl SmolTcpStack {
-    pub async fn new(local_ip: Ipv4Addr) -> anyhow::Result<Arc<Self>> {
+    pub async fn new(local_ip: Ipv4Addr, local_port: u16) -> anyhow::Result<Arc<Self>> {
         let tasks = Arc::new(std::sync::Mutex::new(JoinSet::new()));
         let mut cap = smoltcp::phy::DeviceCapabilities::default();
         cap.max_transmission_unit = 1280;
@@ -63,12 +64,13 @@ impl SmolTcpStack {
         );
         net.set_any_ip(true);
         let listener = net
-            .tcp_bind("0.0.0.0:8899".parse().unwrap())
+            .tcp_bind(SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), local_port))
             .await
             .map_err(|error| anyhow::anyhow!("bind smoltcp listener failed: {error}"))?;
 
         Ok(Arc::new(Self {
             ingress_tx,
+            local_port,
             output_rx: Mutex::new(Some(stack_stream)),
             listener: Mutex::new(listener),
             _net: net,
@@ -77,7 +79,7 @@ impl SmolTcpStack {
     }
 
     pub fn local_port(&self) -> u16 {
-        8899
+        self.local_port
     }
 
     pub async fn send_ingress(&self, packet: ZCPacket) -> anyhow::Result<()> {
@@ -137,12 +139,12 @@ mod tests {
     };
 
     const LOCAL_ADDR: Ipv4Address = Ipv4Address::new(192, 88, 99, 254);
-    const LOCAL_PORT: u16 = 8899;
+    const LOCAL_PORT: u16 = 8900;
     const PACKETS: TcpPackets = TcpPackets::new(LOCAL_ADDR, LOCAL_PORT);
 
     #[tokio::test]
     async fn accepts_concurrent_connections_with_one_logical_listener() {
-        let stack = SmolTcpStack::new(LOCAL_ADDR).await.unwrap();
+        let stack = SmolTcpStack::new(LOCAL_ADDR, LOCAL_PORT).await.unwrap();
         let mut output = stack.take_output_rx().await.unwrap();
         let client_addr = Ipv4Address::new(192, 88, 99, 1);
 

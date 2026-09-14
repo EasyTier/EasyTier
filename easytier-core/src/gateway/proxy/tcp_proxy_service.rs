@@ -3,6 +3,7 @@ use std::sync::{Arc, Weak, atomic::Ordering};
 use std::time::Duration;
 
 use atomic_shim::AtomicU64;
+use parking_lot::Mutex;
 use tokio::io::{AsyncWriteExt, copy};
 use tokio::task::JoinSet;
 
@@ -34,10 +35,10 @@ use crate::gateway::smoltcp::{SmolTcpStack, output_dst_ip};
 fn spawn_tcp_proxy_task(
     lifecycle: &AtomicU64,
     expected_generation: u64,
-    tasks: &std::sync::Mutex<JoinSet<()>>,
+    tasks: &Mutex<JoinSet<()>>,
     task: impl Future<Output = ()> + Send + 'static,
 ) -> bool {
-    let mut tasks = tasks.lock().unwrap();
+    let mut tasks = tasks.lock();
     if lifecycle.load(Ordering::Acquire) != expected_generation {
         return false;
     }
@@ -57,12 +58,12 @@ pub struct TcpProxyService<
     connector: Arc<C>,
     engine: Arc<TcpProxyEngine>,
     mode: TcpProxyMode,
-    peer_pipeline_guard: std::sync::Mutex<Option<PipelineRegistrationGuard>>,
-    nic_pipeline_guard: std::sync::Mutex<Option<PipelineRegistrationGuard>>,
-    kernel_listener: std::sync::Mutex<Option<Arc<F::Listener>>>,
+    peer_pipeline_guard: Mutex<Option<PipelineRegistrationGuard>>,
+    nic_pipeline_guard: Mutex<Option<PipelineRegistrationGuard>>,
+    kernel_listener: Mutex<Option<Arc<F::Listener>>>,
     #[cfg(feature = "proxy-smoltcp-stack")]
-    smoltcp_stack: std::sync::Mutex<Option<Arc<SmolTcpStack>>>,
-    tasks: std::sync::Mutex<JoinSet<()>>,
+    smoltcp_stack: Mutex<Option<Arc<SmolTcpStack>>>,
+    tasks: Mutex<JoinSet<()>>,
     lifecycle: AtomicU64,
 }
 
@@ -86,12 +87,12 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
             connector,
             engine: Arc::new(TcpProxyEngine::new(cidr_table)),
             mode,
-            peer_pipeline_guard: std::sync::Mutex::new(None),
-            nic_pipeline_guard: std::sync::Mutex::new(None),
-            kernel_listener: std::sync::Mutex::new(None),
+            peer_pipeline_guard: Mutex::new(None),
+            nic_pipeline_guard: Mutex::new(None),
+            kernel_listener: Mutex::new(None),
             #[cfg(feature = "proxy-smoltcp-stack")]
-            smoltcp_stack: std::sync::Mutex::new(None),
-            tasks: std::sync::Mutex::new(JoinSet::new()),
+            smoltcp_stack: Mutex::new(None),
+            tasks: Mutex::new(JoinSet::new()),
             lifecycle: AtomicU64::new(0),
         })
     }
@@ -119,6 +120,8 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
                 break active;
             }
         };
+
+        self.engine.clear();
 
         let snapshot = self.runtime.proxy_runtime_snapshot();
         let start_result = if snapshot.smoltcp_enabled {
@@ -157,13 +160,15 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
 
     pub fn stop(&self) {
         self.stop_resources();
-        self.tasks.lock().unwrap().abort_all();
+        self.tasks.lock().abort_all();
+        self.engine.clear();
     }
 
     pub(crate) async fn stop_and_wait(&self) {
         self.stop_resources();
-        let mut tasks = std::mem::take(&mut *self.tasks.lock().unwrap());
+        let mut tasks = std::mem::take(&mut *self.tasks.lock());
         tasks.shutdown().await;
+        self.engine.clear();
     }
 
     fn stop_resources(&self) {
@@ -183,17 +188,17 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
                 break;
             }
         }
-        if let Some(guard) = self.peer_pipeline_guard.lock().unwrap().take() {
+        if let Some(guard) = self.peer_pipeline_guard.lock().take() {
             guard.close();
         }
-        if let Some(guard) = self.nic_pipeline_guard.lock().unwrap().take() {
+        if let Some(guard) = self.nic_pipeline_guard.lock().take() {
             guard.close();
         }
-        if let Some(listener) = self.kernel_listener.lock().unwrap().take() {
+        if let Some(listener) = self.kernel_listener.lock().take() {
             drop(listener);
         }
         #[cfg(feature = "proxy-smoltcp-stack")]
-        if let Some(stack) = self.smoltcp_stack.lock().unwrap().take() {
+        if let Some(stack) = self.smoltcp_stack.lock().take() {
             drop(stack);
         }
     }
@@ -204,7 +209,7 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
     }
 
     pub async fn register_peer_pipeline(self: &Arc<Self>) {
-        if self.peer_pipeline_guard.lock().unwrap().is_some() {
+        if self.peer_pipeline_guard.lock().is_some() {
             return;
         }
         let peer_guard = self
@@ -213,11 +218,11 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
                 service: Arc::downgrade(self),
             }))
             .await;
-        self.peer_pipeline_guard.lock().unwrap().replace(peer_guard);
+        self.peer_pipeline_guard.lock().replace(peer_guard);
     }
 
     pub async fn register_nic_pipeline(self: &Arc<Self>) {
-        if self.nic_pipeline_guard.lock().unwrap().is_some() {
+        if self.nic_pipeline_guard.lock().is_some() {
             return;
         }
         let nic_guard = self
@@ -226,7 +231,7 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
                 service: Arc::downgrade(self),
             }))
             .await;
-        self.nic_pipeline_guard.lock().unwrap().replace(nic_guard);
+        self.nic_pipeline_guard.lock().replace(nic_guard);
     }
 
     fn spawn_syn_cleanup(self: &Arc<Self>, generation: u64) {
@@ -244,7 +249,7 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
     }
 
     fn drain_completed_tasks(&self) {
-        let mut tasks = self.tasks.lock().unwrap();
+        let mut tasks = self.tasks.lock();
         while let Some(result) = tasks.try_join_next() {
             if let Err(err) = result {
                 tracing::warn!(?err, "tcp proxy task finished with error");
@@ -273,10 +278,7 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
             )
             .await?;
         self.engine.set_local_port(listener.local_addr()?.port());
-        self.kernel_listener
-            .lock()
-            .unwrap()
-            .replace(listener.clone());
+        self.kernel_listener.lock().replace(listener.clone());
 
         let service = Arc::downgrade(self);
         let _ = spawn_tcp_proxy_task(&self.lifecycle, generation, &self.tasks, async move {
@@ -309,7 +311,7 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
             .local_inet
             .map(|inet| inet.address())
             .unwrap_or(std::net::Ipv4Addr::new(192, 88, 99, 254));
-        let stack = SmolTcpStack::new(local_ip).await?;
+        let stack = SmolTcpStack::new(local_ip, self.mode.smoltcp_listener_port()).await?;
         self.engine.set_local_port(stack.local_port());
 
         let mut output_rx = stack.take_output_rx().await?;
@@ -350,7 +352,7 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
             }
         });
 
-        self.smoltcp_stack.lock().unwrap().replace(stack);
+        self.smoltcp_stack.lock().replace(stack);
         Ok(())
     }
 
@@ -462,9 +464,11 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
                 smoltcp_enabled: snapshot.smoltcp_enabled,
             },
         );
-        let TcpProxyPacketAction::Handled { new_syn: _new_syn } = action else {
-            return Some(packet);
-        };
+        match action {
+            TcpProxyPacketAction::Handled { new_syn: _ } => {}
+            TcpProxyPacketAction::Drop => return None,
+            TcpProxyPacketAction::Pass => return Some(packet),
+        }
 
         if snapshot.smoltcp_enabled {
             #[cfg(feature = "proxy-smoltcp-stack")]
@@ -486,7 +490,7 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
 
     #[cfg(feature = "proxy-smoltcp-stack")]
     async fn handle_smoltcp_packet(&self, packet: ZCPacket) {
-        let stack = self.smoltcp_stack.lock().unwrap().clone();
+        let stack = self.smoltcp_stack.lock().clone();
         let Some(stack) = stack else {
             tracing::error!("smoltcp stack is not started");
             return;
@@ -595,7 +599,7 @@ mod tests {
     #[tokio::test]
     async fn stop_fence_linearizes_task_registration() {
         let lifecycle = AtomicU64::new(1);
-        let tasks = std::sync::Mutex::new(JoinSet::new());
+        let tasks = Mutex::new(JoinSet::new());
         let accepted_dropped = Arc::new(AtomicBool::new(false));
 
         assert!(spawn_tcp_proxy_task(
@@ -605,7 +609,7 @@ mod tests {
             pending_task(accepted_dropped.clone()),
         ));
         lifecycle.store(2, Ordering::Release);
-        let mut stopping = std::mem::take(&mut *tasks.lock().unwrap());
+        let mut stopping = std::mem::take(&mut *tasks.lock());
         stopping.shutdown().await;
         assert!(accepted_dropped.load(Ordering::Acquire));
 
@@ -627,7 +631,7 @@ mod tests {
             &tasks,
             pending_task(current_dropped.clone()),
         ));
-        let mut current = std::mem::take(&mut *tasks.lock().unwrap());
+        let mut current = std::mem::take(&mut *tasks.lock());
         current.shutdown().await;
         assert!(current_dropped.load(Ordering::Acquire));
     }

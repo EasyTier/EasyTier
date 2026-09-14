@@ -128,11 +128,11 @@ pub struct WrappedTcpProxyNicContext {
 pub async fn try_process_wrapped_tcp_packet_from_nic<ConnectionLookup, AllowCheck, AllowCheckFut>(
     zc_packet: &mut ZCPacket,
     ctx: WrappedTcpProxyNicContext,
-    is_tcp_proxy_connection: ConnectionLookup,
+    is_tcp_proxy_flow: ConnectionLookup,
     check_dst_allowed: AllowCheck,
 ) -> bool
 where
-    ConnectionLookup: Fn(SocketAddr) -> bool,
+    ConnectionLookup: Fn(SocketAddr, SocketAddr) -> bool,
     AllowCheck: FnOnce(Ipv4Addr) -> AllowCheckFut,
     AllowCheckFut: Future<Output = bool>,
 {
@@ -156,6 +156,7 @@ where
     let src_ip = ip_packet.src_addr();
     let dst_ip = ip_packet.dst_addr();
     let src_port = tcp_packet.src_port();
+    let dst_port = tcp_packet.dst_port();
     let is_syn = tcp_packet.syn() && !tcp_packet.ack();
 
     if is_syn {
@@ -167,7 +168,10 @@ where
             );
             return false;
         }
-    } else if !is_tcp_proxy_connection(SocketAddr::V4(SocketAddrV4::new(src_ip, src_port))) {
+    } else if !is_tcp_proxy_flow(
+        SocketAddr::V4(SocketAddrV4::new(src_ip, src_port)),
+        SocketAddr::V4(SocketAddrV4::new(dst_ip, dst_port)),
+    ) {
         return false;
     }
 
@@ -362,7 +366,7 @@ mod tests {
             try_process_wrapped_tcp_packet_from_nic(
                 &mut packet,
                 context(WrappedTcpProxyTransport::Kcp),
-                |_| false,
+                |_, _| false,
                 |_| async { true },
             )
             .await
@@ -383,7 +387,7 @@ mod tests {
             !try_process_wrapped_tcp_packet_from_nic(
                 &mut packet,
                 context(WrappedTcpProxyTransport::Kcp),
-                |_| false,
+                |_, _| false,
                 |_| async { false },
             )
             .await
@@ -403,7 +407,9 @@ mod tests {
             try_process_wrapped_tcp_packet_from_nic(
                 &mut packet,
                 context(WrappedTcpProxyTransport::Quic),
-                |addr| addr == SocketAddr::V4(src),
+                |src_addr, dst_addr| {
+                    src_addr == SocketAddr::V4(src) && dst_addr == SocketAddr::V4(dst)
+                },
                 |_| async { false },
             )
             .await
@@ -424,7 +430,7 @@ mod tests {
             !try_process_wrapped_tcp_packet_from_nic(
                 &mut packet,
                 context(WrappedTcpProxyTransport::Quic),
-                |_| false,
+                |_, _| false,
                 |_| async { true },
             )
             .await
@@ -441,7 +447,7 @@ mod tests {
             !try_process_wrapped_tcp_packet_from_nic(
                 &mut packet,
                 context(WrappedTcpProxyTransport::Kcp),
-                |_| false,
+                |_, _| false,
                 |_| async { true },
             )
             .await
