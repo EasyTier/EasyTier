@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use atomic_shim::AtomicU64;
 use parking_lot::Mutex;
-use tokio::io::{AsyncWriteExt, copy};
+use tokio::io::AsyncWriteExt;
 use tokio::task::JoinSet;
 
 use crate::{
@@ -431,7 +431,7 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
             entry.set_state(TcpNatEntryState::Connected);
         }
 
-        let ret = copy_bidirectional_no_shutdown(src_stream.as_mut(), dst_stream.as_mut()).await;
+        let ret = copy_bidirectional(src_stream.as_mut(), dst_stream.as_mut()).await;
         tracing::info!(nat_entry = ?entry, ret = ?ret, "nat tcp connection closed");
 
         entry.set_state(TcpNatEntryState::ClosingSrc);
@@ -514,24 +514,13 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
     }
 }
 
-async fn copy_bidirectional_no_shutdown(
+async fn copy_bidirectional(
     src: &mut dyn TcpProxyStream,
     dst: &mut dyn TcpProxyStream,
 ) -> Result<(), ProxyRuntimeError> {
-    let (mut src_reader, mut src_writer) = tokio::io::split(src);
-    let (mut dst_reader, mut dst_writer) = tokio::io::split(dst);
-    let src_to_dst = copy(&mut src_reader, &mut dst_writer);
-    let dst_to_src = copy(&mut dst_reader, &mut src_writer);
-    tokio::pin!(src_to_dst);
-    tokio::pin!(dst_to_src);
-    tokio::select! {
-        result = &mut src_to_dst => {
-            result?;
-        }
-        result = &mut dst_to_src => {
-            result?;
-        }
-    }
+    // Forward EOF to the opposite writer while continuing to relay its reply.
+    // Returning on the first EOF would discard responses to half-closed requests.
+    tokio::io::copy_bidirectional(src, dst).await?;
     Ok(())
 }
 
@@ -579,6 +568,57 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicBool;
+    use tokio::io::AsyncReadExt;
+
+    async fn response_after_half_close(source_closes_first: bool, request_size: usize) {
+        // Small buffers force the relay to make progress in both directions;
+        // the response is deliberately larger than either relay buffer.
+        let (mut client, mut src) = tokio::io::duplex(64);
+        let (mut dst, mut server) = tokio::io::duplex(64);
+        let request = vec![0x35; request_size];
+        let response = vec![0xa7; 64 * 1024];
+        let relay = async {
+            if source_closes_first {
+                copy_bidirectional(&mut src, &mut dst).await
+            } else {
+                copy_bidirectional(&mut dst, &mut src).await
+            }
+            .unwrap();
+        };
+        let requester = async {
+            client.write_all(&request).await.unwrap();
+            client.shutdown().await.unwrap();
+            let mut received = Vec::new();
+            client.read_to_end(&mut received).await.unwrap();
+            assert_eq!(received, response);
+        };
+        let responder = async {
+            let mut received = Vec::new();
+            server.read_to_end(&mut received).await.unwrap();
+            assert_eq!(received, request);
+            server.write_all(&response).await.unwrap();
+            server.shutdown().await.unwrap();
+        };
+        timeout(Duration::from_secs(5), async {
+            tokio::join!(relay, requester, responder);
+        })
+        .await
+        .expect("half-closed relay did not finish");
+    }
+
+    #[tokio::test]
+    async fn source_half_close_preserves_response() {
+        for request_size in [0, 32 * 1024] {
+            response_after_half_close(true, request_size).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn destination_half_close_preserves_response() {
+        for request_size in [0, 32 * 1024] {
+            response_after_half_close(false, request_size).await;
+        }
+    }
 
     struct DropSignal(Arc<AtomicBool>);
 
