@@ -28,20 +28,16 @@ easytier = { workspace = true, default-features = true }
 easytier-core = { workspace = true, default-features = true }
 tokio = { workspace = true, default-features = true, features = ["full"] }
 anyhow.workspace = true
-chrono = { workspace = true, features = ["serde"] }
 
 once_cell.workspace = true
 dashmap.workspace = true
-gethostname = "1.0.2"
 
-dunce = "1.0.4"
 
-tauri-plugin-shell = "2.3.0"
-tauri-plugin-process = "2.3.0"
-tauri-plugin-clipboard-manager = "2.3.0"
-tauri-plugin-positioner = { version = "2.3.0", features = ["tray-icon"] }
+tauri-plugin-shell = "2.3.6"
+tauri-plugin-process = "2.3.1"
+tauri-plugin-clipboard-manager = "2.3.3"
 tauri-plugin-vpnservice = { path = "../../tauri-plugin-vpnservice" }
-tauri-plugin-os = "2.3.0"
+tauri-plugin-os = "2.3.2"
 
 uuid.workspace = true
 async-trait.workspace = true
@@ -49,18 +45,18 @@ async-trait.workspace = true
 url = { workspace = true, features = ["serde"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.52", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 winapi = { workspace = true, features = ["securitybaseapi", "processthreadsapi"] }
 
 [target.'cfg(target_family = "unix")'.dependencies]
 libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-security-framework-sys = "2.9.0"
+security-framework-sys = "2.17.0"
 
 
 [build-dependencies]
-tauri-build = { version = "2.0.0-rc", features = [] }
+tauri-build = { version = "2.6.3", features = [] }
 thunk-rs = { workspace = true, features = [
     "win7",
 ] }
@@ -71,4 +67,11 @@ thunk-rs = { workspace = true, features = [
 custom-protocol = ["tauri/custom-protocol"]
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
-tauri-plugin-single-instance = "2.3.2"
+tauri-plugin-single-instance = "2.4.4"
+
+[package.metadata.cargo-machete]
+ignored = [
+    # Called by build.rs; thunk is only used on Windows.
+    "tauri-build",
+    "thunk-rs",
+]

@@ -23,7 +23,6 @@ tokio = { workspace = true, default-features = true, features = ["rt-multi-threa
 async-trait.workspace = true
 log.workspace = true
 
-serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 uuid.workspace = true
 
@@ -32,3 +31,8 @@ thunk-rs = { workspace = true, features = [
     "win7",
 ] }
 
+[package.metadata.cargo-machete]
+ignored = [
+    # Windows-only build.rs setup calls thunk::thunk().
+    "thunk-rs",
+]

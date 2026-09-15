@@ -505,7 +505,7 @@ impl NetworkApi {
     pub fn build_route_internal() -> Router<AppStateInner> {
         Router::new()
             .route(
-                "/api/internal/users/:user-id/machines/:machine-id/networks",
+                "/api/internal/users/{user-id}/machines/{machine-id}/networks",
                 put(Self::handle_reconcile_managed_network_configs_internal)
                     .patch(Self::handle_patch_managed_network_configs_internal)
                     .layer(DefaultBodyLimit::max(MAX_MANAGED_CONFIG_REQUEST_BODY_SIZE))
@@ -513,11 +513,11 @@ impl NetworkApi {
                     .get(Self::handle_list_network_instance_ids_internal),
             )
             .route(
-                "/api/internal/users/:user-id/machines/:machine-id/networks/:inst-id",
+                "/api/internal/users/{user-id}/machines/{machine-id}/networks/{inst-id}",
                 delete(Self::handle_remove_network_instance_internal),
             )
             .route(
-                "/api/internal/users/:user-id/machines/:machine-id/networks/info",
+                "/api/internal/users/{user-id}/machines/{machine-id}/networks/info",
                 get(Self::handle_collect_network_info_internal),
             )
     }
@@ -526,31 +526,31 @@ impl NetworkApi {
         Router::new()
             .route("/api/v1/machines", get(Self::handle_list_machines))
             .route(
-                "/api/v1/machines/:machine-id/validate-config",
+                "/api/v1/machines/{machine-id}/validate-config",
                 post(Self::handle_validate_config),
             )
             .route(
-                "/api/v1/machines/:machine-id/networks",
+                "/api/v1/machines/{machine-id}/networks",
                 post(Self::handle_run_network_instance).get(Self::handle_list_network_instance_ids),
             )
             .route(
-                "/api/v1/machines/:machine-id/networks/:inst-id",
+                "/api/v1/machines/{machine-id}/networks/{inst-id}",
                 delete(Self::handle_remove_network_instance).put(Self::handle_update_network_state),
             )
             .route(
-                "/api/v1/machines/:machine-id/networks/info",
+                "/api/v1/machines/{machine-id}/networks/info",
                 get(Self::handle_collect_network_info),
             )
             .route(
-                "/api/v1/machines/:machine-id/networks/info/:inst-id",
+                "/api/v1/machines/{machine-id}/networks/info/{inst-id}",
                 get(Self::handle_collect_one_network_info),
             )
             .route(
-                "/api/v1/machines/:machine-id/networks/config/:inst-id",
+                "/api/v1/machines/{machine-id}/networks/config/{inst-id}",
                 get(Self::handle_get_network_config).put(Self::handle_save_network_config),
             )
             .route(
-                "/api/v1/machines/:machine-id/networks/metas",
+                "/api/v1/machines/{machine-id}/networks/metas",
                 post(Self::handle_get_network_metas),
             )
     }

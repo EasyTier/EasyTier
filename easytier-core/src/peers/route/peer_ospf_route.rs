@@ -702,7 +702,7 @@ impl OspfRouteTable {
             .load()
             .iter()
             .filter(|(_, pv)| pv.peer_id != peer_id)
-            .map(|(cidr, _)| *cidr)
+            .map(|(cidr, _)| cidr)
             .collect()
     }
 
@@ -711,7 +711,7 @@ impl OspfRouteTable {
             .load()
             .iter()
             .filter(|(_, pv)| pv.peer_id != peer_id)
-            .map(|(cidr, _)| *cidr)
+            .map(|(cidr, _)| cidr)
             .collect()
     }
 }

@@ -24,7 +24,7 @@ use easytier_core::connectivity::stun::StunInfoProvider as _;
 use humansize::format_size;
 use rust_i18n::t;
 use service_manager::*;
-use tabled::settings::{Disable, Modify, Style, Width, location::ByColumnName, object::Columns};
+use tabled::settings::{Modify, Remove, Style, Width, location::ByColumnName, object::Columns};
 use terminal_size::{Width as TerminalWidth, terminal_size};
 use unicode_width::UnicodeWidthStr;
 
@@ -1847,7 +1847,7 @@ impl<'a> CommandHandler<'a> {
         struct RouteTableItem {
             ipv4: String,
             hostname: String,
-            #[tabled(display_with = "format_proxy_cidrs")]
+            #[tabled(display("format_proxy_cidrs"))]
             proxy_cidrs: String,
 
             next_hop_ipv4: String,
@@ -3129,7 +3129,7 @@ fn apply_column_drops(table: &mut tabled::Table, drop_indices: &[usize]) {
     let mut indices = drop_indices.to_vec();
     indices.sort_unstable_by(|a, b| b.cmp(a));
     for index in indices {
-        table.with(Disable::column(Columns::single(index)));
+        table.with(Remove::column(Columns::one(index)));
     }
 }
 

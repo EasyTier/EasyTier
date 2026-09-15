@@ -19,13 +19,13 @@ wasm-opt = ["-Oz", "--enable-bulk-memory", "--enable-nontrapping-float-to-int"]
 
 [dependencies]
 anyhow.workspace = true
-ariadne = { version = "0.5", optional = true }
+ariadne = { version = "0.6", optional = true }
 arc-swap.workspace = true
-async-ringbuf = "0.3.1"
+async-ringbuf = "0.3.9"
 async-trait.workspace = true
 auto_impl.workspace = true
 base64.workspace = true
-bitflags = "2.5"
+bitflags = "2.13"
 bytecodec.workspace = true
 bytes.workspace = true
 chrono = { workspace = true, features = ["clock"] }
@@ -40,14 +40,14 @@ hmac.workspace = true
 http-body-util = { workspace = true, optional = true }
 hyper = { workspace = true, features = ["client", "http1"], optional = true }
 hyper-util = { workspace = true, features = ["tokio"], optional = true }
-idna = "1.0"
+idna = "1.1"
 atomic-shim.workspace = true
-ordered_hash_map = "0.5.0"
+ordered_hash_map = "0.6.1"
 parking_lot.workspace = true
 percent-encoding.workspace = true
-petgraph = "0.8.1"
+petgraph = "0.8.3"
 pin-project-lite.workspace = true
-prefix-trie = { version = "0.7.0", features = ["cidr"] }
+prefix-trie = { version = "0.10.1", features = ["cidr"] }
 prost.workspace = true
 prost-types.workspace = true
 rand.workspace = true
@@ -73,19 +73,19 @@ tokio = { workspace = true, features = [
 tokio-util = { workspace = true, features = ["io", "rt"] }
 tokio-rustls = { workspace = true, optional = true }
 url = { workspace = true, features = ["serde"] }
-wildmatch = "2.3.4"
+wildmatch = "2.6.1"
 uuid = { workspace = true, features = ["v4", "fast-rng", "serde"] }
-webpki-roots = { version = "0.26", optional = true }
+webpki-roots = { version = "1.0", optional = true }
 x25519-dalek = { workspace = true, features = ["static_secrets"] }
 zerocopy = { workspace = true, features = ["derive", "simd"] }
-zstd = { version = "0.13", optional = true }
-aes-gcm = { version = "0.10.3", optional = true }
-chacha20poly1305 = { version = "0.10.1", optional = true }
+zstd = { version = "0.14", optional = true }
+aes-gcm = { version = "0.11.1", optional = true }
+chacha20poly1305 = { version = "0.11.0", optional = true }
 openssl = { version = "0.10", optional = true, features = ["vendored"] }
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
-getrandom-02 = { package = "getrandom", version = "0.2.15", features = ["js"] }
-getrandom-03 = { package = "getrandom", version = "0.3.2", features = ["wasm_js"] }
+getrandom-02 = { package = "getrandom", version = "0.2.17", features = ["js"] }
+getrandom-03 = { package = "getrandom", version = "0.3.4", features = ["wasm_js"] }
 snow = { version = "0.10.0", default-features = false, features = ["default-resolver", "default-resolver-crypto"] }
 uuid = { workspace = true, features = ["js"] }
 wasm-bindgen = "0.2"
@@ -154,3 +154,10 @@ zstd = ["dep:zstd"]
 
 [target.'cfg(not(target_os = "wasi"))'.dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+[package.metadata.cargo-machete]
+ignored = [
+    # Enable browser entropy backends for transitive rand/snow dependencies.
+    "getrandom-02",
+    "getrandom-03",
+]

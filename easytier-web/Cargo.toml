@@ -16,17 +16,18 @@ dashmap.workspace = true
 url.workspace = true
 async-trait.workspace = true
 
-maxminddb = "0.24"
-once_cell.workspace = true
+maxminddb = "0.32"
 
-axum = { version = "0.7", features = ["macros"] }
-axum-login = { version = "0.16" }
+axum = { version = "0.8", features = ["macros"] }
+axum-login = { version = "0.18" }
 password-auth = { version = "1.0.0" }
-axum-messages = "0.7.0"
+axum-messages = "0.8.0"
 axum-embed = { version = "0.1.0", optional = true }
-tower-sessions-sqlx-store = { version = "0.14.1", features = ["sqlite"] }
-tower-sessions = { version = "0.13.0", default-features = false, features = [
+tower-sessions-sqlx-store = { version = "0.15.0", features = ["sqlite"] }
+# Match axum-login 0.18 and the SQLx session store.
+tower-sessions = { version = "0.14.0", default-features = false, features = [
     "signed",
+    "axum-core",
 ] }
 tower-http = { workspace = true, features = ["cors", "compression-full"] }
 sqlx = { workspace = true, features = ["sqlite"] }
@@ -39,12 +40,12 @@ sea-orm-migration.workspace = true
 
 
 # for captcha
-rust-embed = { version = "8.5.0", features = ["debug-embed", "include-exclude"] }
+rust-embed = { version = "8.12.0", features = ["debug-embed", "include-exclude"] }
 base64.workspace = true
 rand.workspace = true
-image = { version = "0.24", default-features = false, features = ["png"] }
-rusttype = "0.9.3"
-imageproc = "0.23.0"
+image = { version = "0.25", default-features = false, features = ["png"] }
+ab_glyph = "0.2.32"
+imageproc = { version = "0.27.0", default-features = false, features = ["text"] }
 
 
 rust-i18n.workspace = true
@@ -67,7 +68,7 @@ uuid = { workspace = true, features = [
 
 chrono = { workspace = true, features = ["serde"] }
 openidconnect = { version = "4.0", default-features = false, features = ["accept-rfc3339-timestamps", "reqwest"] }
-reqwest = { workspace = true, features = ["json", "rustls-tls"] }
+reqwest = { workspace = true, features = ["json", "rustls"] }
 subtle = "2.6"
 
 mimalloc.workspace = true
@@ -80,3 +81,9 @@ thunk-rs = { workspace = true, features = [
 [features]
 default = []
 embed = ["dep:axum-embed"]
+
+[package.metadata.cargo-machete]
+ignored = [
+    # Windows-only build.rs setup calls thunk::thunk().
+    "thunk-rs",
+]

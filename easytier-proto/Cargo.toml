@@ -23,7 +23,7 @@ cidr = { workspace = true, features = ["serde"], optional = true }
 hmac = { workspace = true, optional = true }
 prost = { workspace = true, optional = true }
 prost-types = { workspace = true, optional = true }
-prost-wkt-types = { version = "0.7.1", optional = true }
+prost-wkt-types = { version = "0.7.2", optional = true }
 pbjson = { version = "0.9.0", optional = true }
 serde = { workspace = true, features = ["derive"], optional = true }
 serde_json = { workspace = true, optional = true }
@@ -38,12 +38,12 @@ x25519-dalek = { workspace = true, features = ["static_secrets"], optional = tru
 indoc.workspace = true
 pbjson-build = "0.9.0"
 proc-macro2 = "1"
-prost-build = "0.14.3"
+prost-build = "0.14.4"
 quote = "1"
 
 [target.'cfg(windows)'.build-dependencies]
 reqwest = { workspace = true, default-features = true, features = ["blocking"] }
-zip = "4.0.0"
+zip = "8.6.0"
 
 [dev-dependencies]
 tokio = { workspace = true, features = [
@@ -99,3 +99,19 @@ websocket = []
 wireguard = []
 zstd = []
 json-rpc = ["dep:prost-wkt-types"]
+
+[package.metadata.cargo-machete]
+ignored = [
+    # Used by build/main.rs and build/rpc.rs, including the Windows protoc download.
+    "indoc",
+    "pbjson-build",
+    "proc-macro2",
+    "prost-build",
+    "quote",
+    "reqwest",
+    "zip",
+    # Referenced by generated protobuf, serde and RPC code.
+    "auto_impl",
+    "pbjson",
+    "serde",
+]

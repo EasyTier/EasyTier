@@ -12,13 +12,11 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 chrono = { workspace = true, features = ["serde"] }
 uuid = { workspace = true, features = ["v4", "serde"] }
-guarden = "0.1"
 
 # Axum web framework
-axum = { version = "0.8.4", features = ["macros"] }
-axum-extra = { version = "0.10", features = ["query"] }
+axum = { version = "0.8.9", features = ["macros"] }
+axum-extra = { version = "0.12", features = ["query"] }
 tower-http = { workspace = true, features = ["cors", "compression-full"] }
-tower = "0.5"
 
 # SeaORM dependencies
 sea-orm = { workspace = true, features = [
@@ -33,35 +31,19 @@ sea-orm-migration.workspace = true
 sqlx = { workspace = true, features = ["sqlite", "runtime-tokio-rustls", "chrono", "uuid"] }
 
 # Validation
-validator = { version = "0.18", features = ["derive"] }
+validator = { version = "0.21", features = ["derive"] }
 thiserror.workspace = true
-jsonwebtoken = "9.0"
-
-# Configuration and serialization
-serde_yaml = "0.9"
-toml.workspace = true
+jsonwebtoken = { version = "11.0", features = ["rust_crypto"] }
 
 # Network and async
 async-trait.workspace = true
-futures.workspace = true
 tokio-util = { workspace = true, features = ["full"] }
-
-# Filesystem operations
-tempfile.workspace = true
 
 # Additional utilities
 dashmap.workspace = true
 clap = { workspace = true, features = ["derive"] }
-parking_lot.workspace = true
-once_cell.workspace = true
 
 # EasyTier core
 easytier = { workspace = true, default-features = true }
 
 mimalloc.workspace = true
-
-# Testing
-[dev-dependencies]
-mockall = "0.12"
-tokio-test = "0.4"
-reqwest = { workspace = true, default-features = true }

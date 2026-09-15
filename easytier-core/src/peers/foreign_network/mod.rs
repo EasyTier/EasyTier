@@ -12,7 +12,7 @@ use std::{
 
 use dashmap::{DashMap, DashSet};
 use easytier_proto::common::FlagsInConfig;
-use guarden::{Guard, defer};
+use guarden::defer;
 use tokio::sync::{
     Mutex, RwLock, RwLockReadGuard,
     mpsc::{self, UnboundedReceiver, UnboundedSender},

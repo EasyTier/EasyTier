@@ -1742,7 +1742,15 @@ pub(super) fn run_wireguard_client(
     wgapi.configure_interface(&interface_config)?;
     #[cfg(windows)]
     wgapi.configure_interface(&interface_config, &[])?;
-    wgapi.configure_peer_routing(&interface_config.peers)?;
+    // These split-tunnel clients reach the endpoint through an existing route.
+    // defguard 0.12 also rewrites endpoint routes (or blackholes them without a
+    // default gateway), so pass only the allowed IPs to its routing helper.
+    // The actual WireGuard peer above retains its endpoint.
+    let mut routing_peers = interface_config.peers.clone();
+    for peer in &mut routing_peers {
+        peer.endpoint = None;
+    }
+    wgapi.configure_peer_routing(&routing_peers)?;
     Ok(())
 }
 

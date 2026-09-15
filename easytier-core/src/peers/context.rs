@@ -16,7 +16,7 @@ use easytier_proto::{
     common::{FlagsInConfig, PeerFeatureFlag, SecureModeConfig, StunInfo, TunnelInfo},
     peer_rpc::{PeerGroupInfo, TrustedCredentialPubkeyProof},
 };
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 
 pub use crate::config::{NetworkIdentity, NetworkSecretDigest};

@@ -16,7 +16,6 @@ easytier-ffi = { workspace = true, features = [
 
 [dev-dependencies]
 uuid.workspace = true
-tokio = { workspace = true, default-features = true, features = ["io-util"] }
 easytier-core = { workspace = true, default-features = true }
 easytier-ffi = { workspace = true, features = [
     "c-abi",
