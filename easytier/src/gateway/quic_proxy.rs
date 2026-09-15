@@ -1,37 +1,20 @@
-use crate::common::PeerId;
-use crate::common::acl_processor::PacketInfo;
-use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtx};
-use crate::gateway::CidrSet;
-use crate::gateway::tcp_proxy::{NatDstConnector, TcpProxy};
-use crate::gateway::wrapped_proxy::{ProxyAclHandler, TcpProxyForWrappedSrcTrait};
-use crate::peers::PeerPacketFilter;
-use crate::peers::peer_manager::PeerManager;
-use crate::proto::acl::{ChainType, Protocol};
-use crate::proto::api::instance::{
-    ListTcpProxyEntryRequest, ListTcpProxyEntryResponse, TcpProxyEntry, TcpProxyEntryState,
-    TcpProxyEntryTransportType, TcpProxyRpc,
-};
+use super::hedge::{ErrorCollection, HedgeExt};
 use crate::proto::peer_rpc::KcpConnData as QuicConnData;
-use crate::proto::rpc_types;
-use crate::proto::rpc_types::controller::BaseController;
-use crate::tunnel::packet_def::{
-    PacketType, PeerManagerHeader, TAIL_RESERVED_SIZE, ZCPacket, ZCPacketType,
+use crate::tunnel::quic::{
+    QUIC_VERSION_ETQ1, client_config, endpoint_config, etq1_client_config, server_config,
 };
-use crate::tunnel::quic::{client_config, endpoint_config, server_config};
-use crate::utils::task::HedgeExt;
-use anyhow::{Context, Error, anyhow, bail, ensure};
+use anyhow::{Context, Error, anyhow, ensure};
 use atomic_refcell::AtomicRefCell;
 use bytes::{BufMut, Bytes, BytesMut};
-use dashmap::DashMap;
-use derivative::Derivative;
 use derive_more::{Constructor, Deref, DerefMut, From, Into};
-use guarden::defer;
+use easytier_core::config::PeerId;
+use easytier_core::packet::{PacketType, TAIL_RESERVED_SIZE, ZCPacket, ZCPacketType};
 use moka::future::Cache;
 use prost::Message;
 use quinn::udp::{EcnCodepoint, RecvMeta, Transmit};
 use quinn::{
-    AsyncUdpSocket, Connection, ConnectionError, Endpoint, RecvStream, SendStream, StreamId,
-    UdpPoller, WriteError, default_runtime,
+    AsyncUdpSocket, Connection, ConnectionError, Endpoint, RecvStream, SendStream, UdpPoller,
+    WriteError, default_runtime,
 };
 use std::cmp::min;
 use std::future::Future;
@@ -39,17 +22,28 @@ use std::io::IoSliceMut;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::pin::Pin;
 use std::ptr::copy_nonoverlapping;
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 use std::task::Poll;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, Join, join};
+use tokio::select;
+use tokio::sync::Mutex;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::{Receiver, Sender, channel};
-use tokio::task::JoinSet;
+use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::timeout;
-use tokio::{join, select};
-use tokio_util::sync::PollSender;
+use tokio_util::sync::{CancellationToken, PollSender};
 use tracing::{debug, error, info, instrument, trace, warn};
+
+use easytier_core::{
+    foundation::expiring_set::ExpiringSet,
+    gateway::proxy::traits::TcpProxyStream,
+    gateway::proxy::wrapped_transport::{
+        WrappedTransportAcceptedStream, WrappedTransportConnect, WrappedTransportDatagram,
+        WrappedTransportDatagramBuffer, WrappedTransportDestinationIngress, WrappedTransportEngine,
+        WrappedTransportEngineStart, WrappedTransportKind, WrappedTransportRole,
+    },
+};
 
 //region packet
 #[derive(Debug, Constructor)]
@@ -263,13 +257,6 @@ struct QuicStream {
     inner: QuicStreamInner,
 }
 
-impl QuicStream {
-    #[inline]
-    fn id(&self) -> (StreamId, StreamId) {
-        (self.reader().id(), self.writer().id())
-    }
-}
-
 impl From<(SendStream, RecvStream)> for QuicStream {
     #[inline]
     fn from(value: (SendStream, RecvStream)) -> Self {
@@ -278,38 +265,95 @@ impl From<(SendStream, RecvStream)> for QuicStream {
 }
 //endregion
 
+/// How long to keep dialing a peer with legacy QUIC version 1 after it
+/// rejected `QUIC_VERSION_ETQ1`, before probing ETQ1 again. Bounds the set
+/// and lets peers that upgrade mid-flight pick up the fix.
+const LEGACY_VERSION_TTL: Duration = Duration::from_secs(3600);
+
 #[derive(Debug, Clone)]
 pub struct NatDstQuicConnector {
     pub(crate) endpoint: Endpoint,
-    pub(crate) peer_mgr: Weak<PeerManager>,
     pub(crate) conn_map: Cache<PeerId, Connection>,
+    /// Peers that recently rejected `QUIC_VERSION_ETQ1` via version
+    /// negotiation and are dialed with legacy version 1 until the entry
+    /// expires.
+    pub(crate) legacy_version_peers: Arc<ExpiringSet<PeerId>>,
 }
 
-#[async_trait::async_trait]
-impl NatDstConnector for NatDstQuicConnector {
-    type DstStream = QuicStreamInner;
-
-    async fn connect(
+impl NatDstQuicConnector {
+    fn connect_hedge(
         &self,
+        dst_peer: PeerId,
+        version: u32,
+    ) -> impl Future<Output = Result<Connection, ErrorCollection<anyhow::Error>>> + '_ {
+        let endpoint = self.endpoint.clone();
+        let legacy_version_peers = self.legacy_version_peers.clone();
+        (0..5)
+            .map(move |_| {
+                let endpoint = endpoint.clone();
+                let legacy_version_peers = legacy_version_peers.clone();
+                async move {
+                    let config = if version == QUIC_VERSION_ETQ1 {
+                        etq1_client_config()
+                    } else {
+                        client_config()
+                    };
+                    let ret = endpoint
+                        .connect_with(
+                            config,
+                            QuicAddr::new(dst_peer, PacketType::QuicSrc).into(),
+                            "",
+                        )
+                        .context("failed to create connection")?
+                        .await
+                        .context("connection failed");
+                    if let Some(ConnectionError::VersionMismatch) =
+                        ret.as_ref().err().and_then(|e| e.downcast_ref())
+                    {
+                        // Remote only supports legacy version 1; remember it
+                        // so later connects skip the rejected version for a
+                        // while.
+                        legacy_version_peers.insert(dst_peer, LEGACY_VERSION_TTL);
+                    }
+                    ret
+                }
+            })
+            .hedge(Duration::from_millis(200))
+    }
+
+    async fn connect(&self, dst_peer: PeerId) -> anyhow::Result<Connection> {
+        self.conn_map.invalidate(&dst_peer).await;
+        self.legacy_version_peers.cleanup();
+
+        if !self.legacy_version_peers.contains(&dst_peer) {
+            let result = self
+                .conn_map
+                .try_get_with(dst_peer, self.connect_hedge(dst_peer, QUIC_VERSION_ETQ1))
+                .await;
+            match result {
+                Ok(conn) => return Ok(conn),
+                Err(_) if self.legacy_version_peers.contains(&dst_peer) => {
+                    debug!(
+                        ?dst_peer,
+                        "remote rejected ETQ1, falling back to quic version 1"
+                    );
+                }
+                Err(errors) => return Err(anyhow!("failed to connect to peer: {errors}")),
+            }
+        }
+
+        self.conn_map
+            .try_get_with(dst_peer, self.connect_hedge(dst_peer, 1))
+            .await
+            .map_err(|errors| anyhow!("failed to connect to peer: {errors}"))
+    }
+
+    async fn connect_to_peer(
+        &self,
+        dst_peer: PeerId,
         src: SocketAddr,
         nat_dst: SocketAddr,
-    ) -> anyhow::Result<Self::DstStream> {
-        let peer_mgr = self
-            .peer_mgr
-            .upgrade()
-            .ok_or_else(|| anyhow!("peer manager is not available"))?;
-
-        let dst_peer = {
-            let SocketAddr::V4(addr) = nat_dst else {
-                bail!("ipv6 is not supported");
-            };
-            peer_mgr
-                .get_peer_map()
-                .get_peer_id_by_ipv4(addr.ip())
-                .await
-                .ok_or_else(|| anyhow!("no peer found for nat dst: {}", nat_dst))?
-        };
-
+    ) -> anyhow::Result<QuicStreamInner> {
         tracing::trace!(?nat_dst, ?dst_peer, "quic nat");
 
         let header = {
@@ -329,27 +373,7 @@ impl NatDstConnector for NatDstQuicConnector {
             buf.freeze()
         };
 
-        let reconnect = || async move {
-            self.conn_map.invalidate(&dst_peer).await;
-
-            let connect = (0..5)
-                .map(|_| {
-                    let endpoint = self.endpoint.clone();
-                    async move {
-                        endpoint
-                            .connect(QuicAddr::new(dst_peer, PacketType::QuicSrc).into(), "")
-                            .context("failed to create connection")?
-                            .await
-                            .context("connection failed")
-                    }
-                })
-                .hedge(Duration::from_millis(200));
-
-            self.conn_map
-                .try_get_with(dst_peer, connect)
-                .await
-                .context("failed to connect to peer")
-        };
+        let reconnect = || async move { self.connect(dst_peer).await };
 
         let mut reconnected = false;
 
@@ -405,56 +429,6 @@ impl NatDstConnector for NatDstQuicConnector {
             break result;
         }
     }
-
-    #[inline]
-    fn check_packet_from_peer_fast(&self, _cidr_set: &CidrSet, _global_ctx: &GlobalCtx) -> bool {
-        true
-    }
-
-    #[inline]
-    fn check_packet_from_peer(
-        &self,
-        _cidr_set: &CidrSet,
-        _global_ctx: &GlobalCtx,
-        hdr: &PeerManagerHeader,
-        _ipv4: &Ipv4Addr,
-        _real_dst_ip: &mut Ipv4Addr,
-    ) -> bool {
-        hdr.from_peer_id == hdr.to_peer_id && hdr.is_quic_src_modified()
-    }
-
-    #[inline]
-    fn transport_type(&self) -> TcpProxyEntryTransportType {
-        TcpProxyEntryTransportType::Quic
-    }
-}
-
-#[derive(Clone)]
-struct TcpProxyForQuicSrc(Arc<TcpProxy<NatDstQuicConnector>>);
-
-#[async_trait::async_trait]
-impl TcpProxyForWrappedSrcTrait for TcpProxyForQuicSrc {
-    type Connector = NatDstQuicConnector;
-
-    #[inline]
-    fn get_tcp_proxy(&self) -> &Arc<TcpProxy<Self::Connector>> {
-        &self.0
-    }
-
-    #[inline]
-    fn mark_src_modified(hdr: &mut PeerManagerHeader) -> &mut PeerManagerHeader {
-        hdr.mark_quic_src_modified()
-    }
-
-    #[inline]
-    async fn check_dst_allow_wrapped_input(&self, dst_ip: &Ipv4Addr) -> bool {
-        let Some(peer_manager) = self.0.get_peer_manager() else {
-            return false;
-        };
-        peer_manager
-            .check_allow_quic_to_dst(&IpAddr::V4(*dst_ip))
-            .await
-    }
 }
 
 #[derive(Debug)]
@@ -465,14 +439,6 @@ enum QuicProxyRole {
 
 impl QuicProxyRole {
     #[inline]
-    const fn incoming(&self) -> PacketType {
-        match self {
-            QuicProxyRole::Src => PacketType::QuicDst,
-            QuicProxyRole::Dst => PacketType::QuicSrc,
-        }
-    }
-
-    #[inline]
     const fn outgoing(&self) -> PacketType {
         match self {
             QuicProxyRole::Src => PacketType::QuicSrc,
@@ -481,41 +447,10 @@ impl QuicProxyRole {
     }
 }
 
-// Receive packets from peers and forward them to the QUIC endpoint
-#[derive(Debug)]
-struct QuicPacketReceiver {
-    tx: Sender<QuicPacket>,
-    role: QuicProxyRole,
-}
-
-#[async_trait::async_trait]
-impl PeerPacketFilter for QuicPacketReceiver {
-    async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
-        let header = packet.peer_manager_header().unwrap();
-
-        if header.packet_type != self.role.incoming() as u8 {
-            return Some(packet);
-        }
-
-        let addr = QuicAddr::new(header.from_peer_id.get(), self.role.outgoing());
-
-        if let Err(e) = self.tx.try_send(QuicPacket::new(
-            addr.into(),
-            packet.payload_bytes(),
-            None,
-            None,
-        )) {
-            debug!("failed to send quic packet to endpoint: {:?}", e);
-        }
-
-        None
-    }
-}
-
 // Send to peers packets received from the QUIC endpoint
 #[derive(Debug)]
 struct QuicPacketSender {
-    peer_mgr: Arc<PeerManager>,
+    datagrams: Sender<WrappedTransportDatagram>,
     rx: Receiver<QuicPacket>,
 
     header: Bytes,
@@ -542,40 +477,31 @@ impl QuicPacketSender {
                 let mut payload = payload.split_to(len);
                 payload[..self.margins.header].copy_from_slice(&self.header);
                 payload.truncate(len - self.margins.trailer);
-                let mut packet = ZCPacket::new_from_buf(payload, self.zc_packet_type);
-
-                packet.fill_peer_manager_hdr(
-                    self.peer_mgr.my_peer_id(),
-                    addr.peer_id,
-                    addr.packet_type as u8,
-                );
-
-                if let Err(e) = self.peer_mgr.send_msg_for_proxy(packet, addr.peer_id).await {
-                    error!("failed to send QUIC packet to peer: {:?}", e);
+                let role = match addr.packet_type {
+                    PacketType::QuicSrc => WrappedTransportRole::Source,
+                    PacketType::QuicDst => WrappedTransportRole::Destination,
+                    packet_type => {
+                        error!(?packet_type, "invalid QUIC proxy output packet type");
+                        continue;
+                    }
+                };
+                if self
+                    .datagrams
+                    .send(WrappedTransportDatagram {
+                        transport: WrappedTransportKind::Quic,
+                        role,
+                        peer_id: addr.peer_id,
+                        buffer: WrappedTransportDatagramBuffer::from_packet_buffer(
+                            payload,
+                            self.zc_packet_type,
+                        ),
+                    })
+                    .await
+                    .is_err()
+                {
+                    break;
                 }
             }
-        }
-    }
-}
-
-#[derive(Derivative, Clone)]
-#[derivative(Debug)]
-struct QuicStreamContext {
-    global_ctx: ArcGlobalCtx,
-    proxy_entries: Arc<DashMap<(StreamId, StreamId), TcpProxyEntry>>,
-    cidr_set: Arc<CidrSet>,
-    #[derivative(Debug = "ignore")]
-    route: Arc<dyn crate::peers::route_trait::Route + Send + Sync + 'static>,
-}
-
-impl QuicStreamContext {
-    fn new(peer_mgr: Arc<PeerManager>) -> Self {
-        let global_ctx = peer_mgr.get_global_ctx();
-        Self {
-            global_ctx: global_ctx.clone(),
-            proxy_entries: Arc::new(DashMap::new()),
-            cidr_set: Arc::new(CidrSet::new(global_ctx.clone())),
-            route: Arc::new(peer_mgr.get_route()),
         }
     }
 }
@@ -583,7 +509,8 @@ impl QuicStreamContext {
 struct QuicStreamReceiver {
     endpoint: Endpoint,
     tasks: JoinSet<()>,
-    ctx: Arc<QuicStreamContext>,
+    destination_ingress: WrappedTransportDestinationIngress,
+    cancel: CancellationToken,
 }
 
 impl QuicStreamReceiver {
@@ -591,6 +518,8 @@ impl QuicStreamReceiver {
         loop {
             select! {
                 biased;
+
+                _ = self.cancel.cancelled() => break,
 
                 Some(incoming) = self.endpoint.accept() => {
                     let addr = incoming.remote_address();
@@ -603,20 +532,29 @@ impl QuicStreamReceiver {
                     };
 
                     let addr = connection.remote_address();
-                    let connection = match connection.await {
-                        Ok(connection) => connection,
-                        Err(e) => {
-                            error!("failed to accept quic connection from {:?}: {:?}", addr, e);
-                            continue;
+                    let connection = select! {
+                        biased;
+                        _ = self.cancel.cancelled() => break,
+                        result = connection => {
+                            match result {
+                                Ok(connection) => connection,
+                                Err(e) => {
+                                    error!("failed to accept quic connection from {:?}: {:?}", addr, e);
+                                    continue;
+                                }
+                            }
                         }
                     };
 
-                    let ctx = self.ctx.clone();
+                    let destination_ingress = self.destination_ingress.clone();
+                    let cancel = self.cancel.clone();
                     self.tasks.spawn(async move {
                         let mut tasks = JoinSet::new();
                         loop {
                             select! {
                                 biased;
+
+                                _ = cancel.cancelled() => break,
 
                                 e = connection.closed() => {
                                     info!("connection to {:?} closed: {:?}", addr, e);
@@ -632,15 +570,10 @@ impl QuicStreamReceiver {
                                         }
                                     };
 
-                                    let ctx = ctx.clone();
+                                    let destination_ingress = destination_ingress.clone();
                                     tasks.spawn(async move {
-                                        match Self::establish_stream(stream, ctx).await {
-                                            Ok(transfer_fut) => {
-                                                if let Err(e) = transfer_fut.await {
-                                                    warn!("quic stream transfer error: {:?}", e);
-                                                }
-                                            }
-                                            Err(e) => warn!("failed to establish quic stream: {:?}", e),
+                                        if let Err(e) = Self::submit_stream(stream, destination_ingress).await {
+                                            warn!("failed to submit quic stream: {:?}", e);
                                         }
                                     });
                                 }
@@ -651,6 +584,7 @@ impl QuicStreamReceiver {
                             }
                         }
 
+                        tasks.shutdown().await;
                         connection.close(1u32.into(), b"error");
                     });
                 }
@@ -662,6 +596,11 @@ impl QuicStreamReceiver {
                     break;
                 }
             }
+        }
+        if self.cancel.is_cancelled() {
+            while self.tasks.join_next().await.is_some() {}
+        } else {
+            self.tasks.shutdown().await;
         }
     }
 
@@ -687,144 +626,66 @@ impl QuicStreamReceiver {
         Ok(header.into())
     }
 
-    async fn establish_stream(
+    async fn submit_stream(
         mut stream: QuicStream,
-        ctx: Arc<QuicStreamContext>,
-    ) -> Result<impl Future<Output = crate::common::error::Result<()>>, Error> {
+        destination_ingress: WrappedTransportDestinationIngress,
+    ) -> Result<(), Error> {
         let conn_data = Self::read_stream_header(&mut stream).await?;
         let conn_data_parsed = QuicConnData::decode(conn_data.as_ref())
             .context("failed to decode quic stream header")?;
-
-        let handle = stream.id();
-        let proxy_entries = &ctx.proxy_entries;
-        proxy_entries.insert(
-            handle,
-            TcpProxyEntry {
-                src: conn_data_parsed.src,
-                dst: conn_data_parsed.dst,
-                start_time: chrono::Local::now().timestamp() as u64,
-                state: TcpProxyEntryState::ConnectingDst.into(),
-                transport_type: TcpProxyEntryTransportType::Quic.into(),
-            },
-        );
-        defer! {
-            proxy_entries.remove(&handle);
-            if proxy_entries.capacity() - proxy_entries.len() > 16 {
-                proxy_entries.shrink_to_fit();
-            }
-        }
 
         let src_socket: SocketAddr = conn_data_parsed
             .src
             .ok_or_else(|| anyhow!("missing src addr in quic stream header"))?
             .into();
-        let mut dst_socket: SocketAddr = conn_data_parsed
+        let dst_socket: SocketAddr = conn_data_parsed
             .dst
             .ok_or_else(|| anyhow!("missing dst addr in quic stream header"))?
             .into();
 
-        if let IpAddr::V4(dst_v4_ip) = dst_socket.ip() {
-            let mut real_ip = dst_v4_ip;
-            if ctx.cidr_set.contains_v4(dst_v4_ip, &mut real_ip) {
-                dst_socket.set_ip(real_ip.into());
-            }
-        };
-
-        let src_ip = src_socket.ip();
-        let dst_ip = dst_socket.ip();
-
-        let route = ctx.route.clone();
-        let (src_groups, dst_groups) = join!(
-            route.get_peer_groups_by_ip(&src_ip),
-            route.get_peer_groups_by_ip(&dst_ip)
-        );
-
-        let global_ctx = ctx.global_ctx.clone();
-        if global_ctx.should_deny_proxy(&dst_socket, false) {
-            return Err(anyhow::anyhow!(
-                "dst socket {:?} is in running listeners, ignore it",
-                dst_socket
-            ));
-        }
-
-        let send_to_self = global_ctx.is_ip_local_virtual_ip(&dst_ip);
-        if send_to_self && global_ctx.no_tun() {
-            dst_socket = format!("127.0.0.1:{}", dst_socket.port()).parse()?;
-        }
-
-        let acl_handler = ProxyAclHandler {
-            acl_filter: global_ctx.get_acl_filter().clone(),
-            packet_info: PacketInfo {
-                src_ip,
-                dst_ip,
-                src_port: Some(src_socket.port()),
-                dst_port: Some(dst_socket.port()),
-                protocol: Protocol::Tcp,
-                packet_size: conn_data.len(),
-                src_groups,
-                dst_groups,
-            },
-            chain_type: if send_to_self {
-                ChainType::Inbound
-            } else {
-                ChainType::Forward
-            },
-        };
-        acl_handler.handle_packet(&conn_data)?;
-
-        debug!("quic connect to dst socket: {:?}", dst_socket);
-
-        let _g = global_ctx.net_ns.guard();
-        let connector = crate::gateway::tcp_proxy::NatDstTcpConnector {};
-        let ret = connector.connect("0.0.0.0:0".parse()?, dst_socket).await?;
-
-        if let Some(mut e) = proxy_entries.get_mut(&handle) {
-            e.state = TcpProxyEntryState::Connected.into();
-        }
-
-        Ok(async move {
-            acl_handler
-                .copy_bidirection_with_acl(stream.inner, ret)
-                .await
-        })
+        destination_ingress
+            .submit(WrappedTransportAcceptedStream {
+                src: src_socket,
+                dst: dst_socket,
+                initial_acl_packet_size: conn_data.len(),
+                stream: Box::new(stream.inner),
+            })
+            .await
     }
 }
 
 pub struct QuicProxy {
-    peer_mgr: Arc<PeerManager>,
-
     endpoint: Option<Endpoint>,
+    input_tx: Option<Arc<Sender<QuicPacket>>>,
 
-    src: Option<QuicProxySrc>,
-    dst: Option<QuicProxyDst>,
+    source_connector: Option<NatDstQuicConnector>,
+    destination_ingress: Option<WrappedTransportDestinationIngress>,
 
     tasks: JoinSet<()>,
+    stream_cancel: CancellationToken,
+    stream_task: Option<JoinHandle<()>>,
 }
 
 impl QuicProxy {
-    #[inline]
-    pub fn src(&self) -> Option<&QuicProxySrc> {
-        self.src.as_ref()
-    }
-
-    #[inline]
-    pub fn dst(&self) -> Option<&QuicProxyDst> {
-        self.dst.as_ref()
-    }
-}
-
-impl QuicProxy {
-    pub fn new(peer_mgr: Arc<PeerManager>) -> Self {
+    pub fn new() -> Self {
         Self {
-            peer_mgr,
             endpoint: None,
-            src: None,
-            dst: None,
+            input_tx: None,
+            source_connector: None,
+            destination_ingress: None,
             tasks: JoinSet::new(),
+            stream_cancel: CancellationToken::new(),
+            stream_task: None,
         }
     }
 
-    pub async fn run(&mut self, src: bool, dst: bool) {
+    pub async fn prepare(
+        &mut self,
+        my_peer_id: u32,
+        src: bool,
+        destination_ingress: Option<WrappedTransportDestinationIngress>,
+        datagrams: Sender<WrappedTransportDatagram>,
+    ) {
         trace!("quic proxy starting");
 
         if self.endpoint.is_some() {
@@ -845,10 +706,12 @@ impl QuicProxy {
         let margins = (header.len(), TAIL_RESERVED_SIZE).into();
 
         let (in_tx, in_rx) = channel(1024);
+        let in_tx = Arc::new(in_tx);
+        self.input_tx = Some(in_tx.clone());
         let (out_tx, out_rx) = channel(1024);
 
         let socket = QuicSocket {
-            addr: SocketAddr::new(Ipv4Addr::from(self.peer_mgr.my_peer_id()).into(), 0),
+            addr: SocketAddr::new(Ipv4Addr::from(my_peer_id).into(), 0),
             rx: AtomicRefCell::new(in_rx),
             tx: out_tx,
             margins,
@@ -861,13 +724,15 @@ impl QuicProxy {
             default_runtime().unwrap(),
         )
         .unwrap(); // TODO: maybe a different transport config
+        // Default stays on legacy version 1; ETQ1 is negotiated per attempt in
+        // NatDstQuicConnector so that peers which only speak version 1 keep
+        // working.
         endpoint.set_default_client_config(client_config());
         self.endpoint = Some(endpoint.clone());
 
-        let peer_mgr = self.peer_mgr.clone();
         self.tasks.spawn(
             QuicPacketSender {
-                peer_mgr,
+                datagrams,
                 rx: out_rx,
                 header,
                 zc_packet_type,
@@ -876,141 +741,166 @@ impl QuicProxy {
             .run(),
         );
 
-        let peer_mgr = self.peer_mgr.clone();
-
         if src {
-            if self.src.is_some() {
+            if self.source_connector.is_some() {
                 error!("quic proxy src already running");
                 return;
             }
 
-            let tcp_proxy = TcpProxyForQuicSrc(TcpProxy::new(
-                peer_mgr.clone(),
-                NatDstQuicConnector {
-                    endpoint: endpoint.clone(),
-                    peer_mgr: Arc::downgrade(&peer_mgr),
-                    conn_map: Cache::builder()
-                        .max_capacity(u8::MAX.into()) // cf. quinn transport config (max_concurrent_bidi_streams)
-                        .time_to_idle(Duration::from_secs(600)) // cf. quinn transport config (max_idle_timeout)
-                        .build(),
-                },
-            ));
-
-            let src = QuicProxySrc {
-                peer_mgr: peer_mgr.clone(),
-                tcp_proxy,
-                tx: in_tx.clone(),
-            };
-            src.run().await;
-
-            self.src = Some(src);
+            self.source_connector = Some(NatDstQuicConnector {
+                endpoint: endpoint.clone(),
+                conn_map: Cache::builder()
+                    .max_capacity(u8::MAX.into()) // cf. quinn transport config (max_concurrent_bidi_streams)
+                    .time_to_idle(Duration::from_secs(600)) // cf. quinn transport config (max_idle_timeout)
+                    .build(),
+                legacy_version_peers: Arc::new(ExpiringSet::default()),
+            });
         }
 
-        if dst {
-            if self.dst.is_some() {
+        if let Some(destination_ingress) = destination_ingress {
+            if self.destination_ingress.is_some() {
                 error!("quic proxy dst already running");
                 return;
             }
+            self.destination_ingress = Some(destination_ingress);
+        }
+    }
 
-            let stream_ctx = Arc::new(QuicStreamContext::new(peer_mgr.clone()));
-
-            let dst = QuicProxyDst {
-                peer_mgr: peer_mgr.clone(),
-                tx: in_tx.clone(),
-                stream_ctx: stream_ctx.clone(),
-            };
-            dst.run().await;
-
-            self.tasks.spawn(
+    async fn activate(&mut self) -> anyhow::Result<()> {
+        if let Some(destination_ingress) = self.destination_ingress.as_ref() {
+            let endpoint = self
+                .endpoint
+                .as_ref()
+                .cloned()
+                .ok_or_else(|| anyhow!("QUIC endpoint is not prepared"))?;
+            self.stream_task = Some(tokio::spawn(
                 QuicStreamReceiver {
-                    endpoint: endpoint.clone(),
+                    endpoint,
                     tasks: JoinSet::new(),
-                    ctx: stream_ctx,
+                    destination_ingress: destination_ingress.clone(),
+                    cancel: self.stream_cancel.clone(),
                 }
                 .run(),
-            );
+            ));
+        }
+        Ok(())
+    }
 
-            self.dst = Some(dst);
+    async fn stop(&mut self) {
+        self.stream_cancel.cancel();
+        if let Some(task) = self.stream_task.as_mut() {
+            let _ = task.await;
+        }
+        self.stream_task.take();
+        self.tasks.shutdown().await;
+        if let Some(endpoint) = self.endpoint.take() {
+            endpoint.close(1u32.into(), b"stopped");
         }
     }
 }
 
-pub struct QuicProxySrc {
-    peer_mgr: Arc<PeerManager>,
-    tcp_proxy: TcpProxyForQuicSrc,
-
-    tx: Sender<QuicPacket>,
+pub struct QuicProxyService {
+    state: Mutex<Option<QuicProxy>>,
 }
 
-impl QuicProxySrc {
-    #[inline]
-    pub fn get_tcp_proxy(&self) -> Arc<TcpProxy<NatDstQuicConnector>> {
-        self.tcp_proxy.get_tcp_proxy().clone()
-    }
-}
-
-impl QuicProxySrc {
-    async fn run(&self) {
-        trace!("quic proxy src starting");
-        self.peer_mgr
-            .add_nic_packet_process_pipeline(Box::new(self.tcp_proxy.clone()))
-            .await;
-        self.peer_mgr
-            .add_packet_process_pipeline(Box::new(self.tcp_proxy.0.clone()))
-            .await;
-        self.peer_mgr
-            .add_packet_process_pipeline(Box::new(QuicPacketReceiver {
-                tx: self.tx.clone(),
-                role: QuicProxyRole::Src,
-            }))
-            .await;
-        self.tcp_proxy.0.start(false).await.unwrap();
-    }
-}
-
-pub struct QuicProxyDst {
-    peer_mgr: Arc<PeerManager>,
-
-    tx: Sender<QuicPacket>,
-    stream_ctx: Arc<QuicStreamContext>,
-}
-
-impl QuicProxyDst {
-    async fn run(&self) {
-        trace!("quic proxy dst starting");
-        self.peer_mgr
-            .add_packet_process_pipeline(Box::new(QuicPacketReceiver {
-                tx: self.tx.clone(),
-                role: QuicProxyRole::Dst,
-            }))
-            .await;
-    }
-}
-
-#[derive(Clone, Deref, DerefMut, From, Into)]
-pub struct QuicProxyDstRpcService(Weak<DashMap<(StreamId, StreamId), TcpProxyEntry>>);
-
-impl QuicProxyDstRpcService {
-    pub fn new(quic_proxy_dst: &QuicProxyDst) -> Self {
-        Self(Arc::downgrade(&quic_proxy_dst.stream_ctx.proxy_entries))
+impl QuicProxyService {
+    pub fn new() -> Self {
+        Self {
+            state: Mutex::new(None),
+        }
     }
 }
 
 #[async_trait::async_trait]
-impl TcpProxyRpc for QuicProxyDstRpcService {
-    type Controller = BaseController;
-    async fn list_tcp_proxy_entry(
-        &self,
-        _: BaseController,
-        _request: ListTcpProxyEntryRequest, // Accept request of type HelloRequest
-    ) -> Result<ListTcpProxyEntryResponse, rpc_types::error::Error> {
-        let mut reply = ListTcpProxyEntryResponse::default();
-        if let Some(tcp_proxy) = self.0.upgrade() {
-            for item in tcp_proxy.iter() {
-                reply.entries.push(*item.value());
-            }
+impl WrappedTransportEngine for QuicProxyService {
+    async fn prepare(&self, options: WrappedTransportEngineStart) -> anyhow::Result<()> {
+        let mut state = self.state.lock().await;
+        if state.is_some() {
+            return Ok(());
         }
-        Ok(reply)
+        let directions = options.directions;
+        let destination_ingress = if directions.destination {
+            Some(
+                options
+                    .destination_ingress
+                    .ok_or_else(|| anyhow!("QUIC destination ingress is required"))?,
+            )
+        } else {
+            None
+        };
+
+        let mut proxy = QuicProxy::new();
+        if directions.source || directions.destination {
+            proxy
+                .prepare(
+                    options.my_peer_id,
+                    directions.source,
+                    destination_ingress,
+                    options.datagrams,
+                )
+                .await;
+        }
+
+        *state = Some(proxy);
+        Ok(())
+    }
+
+    async fn activate(&self) -> anyhow::Result<()> {
+        let mut state = self.state.lock().await;
+        state
+            .as_mut()
+            .ok_or_else(|| anyhow!("QUIC engine is not prepared"))?
+            .activate()
+            .await
+    }
+
+    async fn inject_peer_datagram(
+        &self,
+        role: WrappedTransportRole,
+        from_peer_id: u32,
+        payload: Bytes,
+    ) -> anyhow::Result<()> {
+        let tx = {
+            let state = self.state.lock().await;
+            state.as_ref().and_then(|proxy| proxy.input_tx.clone())
+        }
+        .ok_or_else(|| anyhow!("QUIC endpoint is not active"))?;
+        let role = match role {
+            WrappedTransportRole::Source => QuicProxyRole::Src,
+            WrappedTransportRole::Destination => QuicProxyRole::Dst,
+        };
+        tx.try_send(QuicPacket::new(
+            QuicAddr::new(from_peer_id, role.outgoing()).into(),
+            payload.into(),
+            None,
+            None,
+        ))
+        .map_err(|error| anyhow!("failed to inject QUIC datagram: {error}"))
+    }
+
+    async fn connect_source(
+        &self,
+        request: WrappedTransportConnect,
+    ) -> anyhow::Result<Box<dyn TcpProxyStream>> {
+        let connector = {
+            let state = self.state.lock().await;
+            state
+                .as_ref()
+                .and_then(|proxy| proxy.source_connector.clone())
+        }
+        .ok_or_else(|| anyhow!("QUIC source endpoint is not prepared"))?;
+        let stream = connector
+            .connect_to_peer(request.dst_peer_id, request.src, request.dst)
+            .await?;
+        Ok(Box::new(stream))
+    }
+
+    async fn stop(&self) {
+        let mut state = self.state.lock().await;
+        if let Some(active) = state.as_mut() {
+            active.stop().await;
+        }
+        state.take();
     }
 }
 
@@ -1018,6 +908,10 @@ impl TcpProxyRpc for QuicProxyDstRpcService {
 mod tests {
     use super::*;
     use bytes::Buf;
+    use quanta::Instant;
+    use quinn::EndpointConfig;
+
+    use crate::tunnel::quic::{connect_with_etq1, endpoint_config_with_versions};
 
     /// Helper function: Create a pair of interconnected QuicSockets.
     /// Data sent by socket_a will enter socket_b's rx, and vice versa.
@@ -1197,7 +1091,7 @@ mod tests {
                 // Accept unidirectional stream
                 let mut recv = connection.accept_uni().await.unwrap();
 
-                let start = std::time::Instant::now();
+                let start = Instant::now();
                 let mut received = 0;
 
                 // Loop read until the stream ends
@@ -1234,7 +1128,7 @@ mod tests {
         let bytes_data = Bytes::from(data_chunk); // Use Bytes to avoid repeated allocation
 
         println!("Client: Start sending {} MB...", TOTAL_SIZE / 1024 / 1024);
-        let start_send = std::time::Instant::now();
+        let start_send = Instant::now();
 
         let chunks = TOTAL_SIZE / CHUNK_SIZE;
         for _ in 0..chunks {
@@ -1276,7 +1170,7 @@ mod tests {
                 println!("Server: Accepted connection");
 
                 let mut stream_handles = Vec::new();
-                let start = std::time::Instant::now();
+                let start = Instant::now();
 
                 // Accept an expected number of streams
                 for i in 0..STREAM_COUNT {
@@ -1346,7 +1240,7 @@ mod tests {
             STREAM_COUNT
         );
 
-        let start_send = std::time::Instant::now();
+        let start_send = Instant::now();
         let mut client_tasks = Vec::new();
 
         // Start sending tasks concurrently
@@ -1434,5 +1328,184 @@ mod tests {
         let chunk3_start = actual_segment_size * 2 + margins.header;
         let chunk3_data = &payload[chunk3_start..chunk3_start + segment_size];
         assert_eq!(chunk3_data[0], 3u8, "Chunk 3 corrupted");
+    }
+
+    fn endpoint_pair_with_configs(
+        client_endpoint_config: EndpointConfig,
+        server_endpoint_config: EndpointConfig,
+    ) -> (Endpoint, Endpoint) {
+        let server_config = server_config();
+        let client_config = client_config();
+
+        let (socket_client, socket_server) = make_socket_pair();
+
+        let mut client_endpoint = Endpoint::new_with_abstract_socket(
+            client_endpoint_config,
+            Some(server_config.clone()),
+            Arc::new(socket_client),
+            default_runtime().unwrap(),
+        )
+        .unwrap();
+        client_endpoint.set_default_client_config(client_config.clone());
+
+        let mut server_endpoint = Endpoint::new_with_abstract_socket(
+            server_endpoint_config,
+            Some(server_config),
+            Arc::new(socket_server),
+            default_runtime().unwrap(),
+        )
+        .unwrap();
+        server_endpoint.set_default_client_config(client_config);
+
+        (client_endpoint, server_endpoint)
+    }
+
+    async fn assert_stream_roundtrip(connection: &Connection) -> anyhow::Result<()> {
+        let (mut send, mut recv) = connection.open_bi().await?;
+        send.write_all(b"ping").await?;
+        send.finish()?;
+        let mut buf = vec![0u8; 4];
+        recv.read_exact(&mut buf).await?;
+        assert_eq!(&buf, b"ping");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn etq1_handshake_streams_both_ways() -> anyhow::Result<()> {
+        // New client and new server negotiate ETQ1 and echo a stream in both
+        // directions, exercising the packet-number-bound checksum on
+        // Initial, Handshake and 1-RTT packets.
+        let (client_endpoint, server_endpoint) =
+            endpoint_pair_with_configs(endpoint_config(), endpoint_config());
+        let server_addr = server_endpoint.local_addr()?;
+
+        let server = tokio::spawn(async move {
+            let Some(incoming) = server_endpoint.accept().await else {
+                panic!("no incoming connection");
+            };
+            let connection = incoming.await.unwrap();
+            let (mut send, mut recv) = connection.accept_bi().await.unwrap();
+            let mut buf = vec![0u8; 4];
+            recv.read_exact(&mut buf).await.unwrap();
+            send.write_all(&buf).await.unwrap();
+            send.finish().unwrap();
+            let _ = connection.closed().await;
+        });
+
+        let connection = client_endpoint
+            .connect_with(etq1_client_config(), server_addr, "localhost")?
+            .await?;
+
+        let (mut send, mut recv) = connection.open_bi().await?;
+        send.write_all(b"ping").await?;
+        send.finish()?;
+        let mut buf = vec![0u8; 4];
+        recv.read_exact(&mut buf).await?;
+        assert_eq!(&buf, b"ping");
+
+        connection.close(0u32.into(), b"done");
+        let _ = tokio::time::timeout(Duration::from_secs(2), server).await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn etq1_against_legacy_server_falls_back_to_version_1() -> anyhow::Result<()> {
+        // A new client dialing a legacy (version 1 only) server must see
+        // VersionMismatch for ETQ1 and succeed after falling back to the
+        // legacy client config, mirroring NatDstQuicConnector::connect.
+        let (client_endpoint, server_endpoint) =
+            endpoint_pair_with_configs(endpoint_config(), endpoint_config_with_versions(vec![1]));
+        let server_addr = server_endpoint.local_addr()?;
+
+        let server = tokio::spawn(async move {
+            let Some(incoming) = server_endpoint.accept().await else {
+                return;
+            };
+            let connection = incoming.await.unwrap();
+            if let Ok((mut send, mut recv)) = connection.accept_bi().await {
+                let mut buf = vec![0u8; 4];
+                recv.read_exact(&mut buf).await.unwrap();
+                send.write_all(&buf).await.unwrap();
+                send.finish().unwrap();
+            }
+            let _ = connection.closed().await;
+        });
+
+        let err = client_endpoint
+            .connect_with(etq1_client_config(), server_addr, "localhost")?
+            .await
+            .expect_err("legacy server must reject ETQ1");
+        assert!(
+            matches!(err, ConnectionError::VersionMismatch),
+            "unexpected error: {err:?}"
+        );
+
+        let connection = client_endpoint
+            .connect_with(client_config(), server_addr, "localhost")?
+            .await?;
+        assert_stream_roundtrip(&connection).await?;
+
+        connection.close(0u32.into(), b"done");
+        let _ = tokio::time::timeout(Duration::from_secs(2), server).await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn legacy_client_against_etq1_server() -> anyhow::Result<()> {
+        // An old client keeps working against a new (dual version) server.
+        let (client_endpoint, server_endpoint) =
+            endpoint_pair_with_configs(endpoint_config_with_versions(vec![1]), endpoint_config());
+        let server_addr = server_endpoint.local_addr()?;
+
+        let server = tokio::spawn(async move {
+            let Some(incoming) = server_endpoint.accept().await else {
+                return;
+            };
+            let connection = incoming.await.unwrap();
+            if let Ok((mut send, mut recv)) = connection.accept_bi().await {
+                let mut buf = vec![0u8; 4];
+                recv.read_exact(&mut buf).await.unwrap();
+                send.write_all(&buf).await.unwrap();
+                send.finish().unwrap();
+            }
+            let _ = connection.closed().await;
+        });
+
+        let connection = client_endpoint.connect(server_addr, "localhost")?.await?;
+        assert_stream_roundtrip(&connection).await?;
+
+        connection.close(0u32.into(), b"done");
+        let _ = tokio::time::timeout(Duration::from_secs(2), server).await;
+        Ok(())
+    }
+    #[tokio::test]
+    async fn connect_with_etq1_falls_back_for_legacy_server() -> anyhow::Result<()> {
+        // The shared ETQ1-first dial helper used by the quic:// tunnel: a
+        // legacy server rejects ETQ1 via version negotiation and the helper
+        // must transparently fall back to version 1.
+        let (client_endpoint, server_endpoint) =
+            endpoint_pair_with_configs(endpoint_config(), endpoint_config_with_versions(vec![1]));
+        let server_addr = server_endpoint.local_addr()?;
+
+        let server = tokio::spawn(async move {
+            let Some(incoming) = server_endpoint.accept().await else {
+                return;
+            };
+            let connection = incoming.await.unwrap();
+            if let Ok((mut send, mut recv)) = connection.accept_bi().await {
+                let mut buf = vec![0u8; 4];
+                recv.read_exact(&mut buf).await.unwrap();
+                send.write_all(&buf).await.unwrap();
+                send.finish().unwrap();
+            }
+            let _ = connection.closed().await;
+        });
+
+        let connection = connect_with_etq1(&client_endpoint, server_addr, "localhost").await?;
+        assert_stream_roundtrip(&connection).await?;
+
+        connection.close(0u32.into(), b"done");
+        let _ = tokio::time::timeout(Duration::from_secs(2), server).await;
+        Ok(())
     }
 }

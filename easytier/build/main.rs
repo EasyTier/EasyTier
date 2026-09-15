@@ -1,75 +1,11 @@
-mod rpc;
-
-use crate::rpc::ServiceGenerator;
 use cfg_aliases::cfg_aliases;
-#[cfg(target_os = "windows")]
-use std::io::Cursor;
-use std::{env, path::PathBuf};
+use std::env;
 
 #[cfg(target_os = "windows")]
 struct WindowsBuild {}
 
 #[cfg(target_os = "windows")]
 impl WindowsBuild {
-    fn check_protoc_exist() -> Option<PathBuf> {
-        let path = env::var_os("PROTOC").map(PathBuf::from);
-        if path.is_some() && path.as_ref().unwrap().exists() {
-            return path;
-        }
-
-        let path = env::var_os("PATH").unwrap_or_default();
-        for p in env::split_paths(&path) {
-            let p = p.join("protoc.exe");
-            if p.exists() && p.is_file() {
-                return Some(p);
-            }
-        }
-
-        None
-    }
-
-    fn get_cargo_target_dir() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
-        let out_dir = std::path::PathBuf::from(std::env::var("OUT_DIR")?);
-        let profile = std::env::var("PROFILE")?;
-        let mut target_dir = None;
-        let mut sub_path = out_dir.as_path();
-        while let Some(parent) = sub_path.parent() {
-            if parent.ends_with(&profile) {
-                target_dir = Some(parent);
-                break;
-            }
-            sub_path = parent;
-        }
-        let target_dir = target_dir.ok_or("not found")?;
-        Ok(target_dir.to_path_buf())
-    }
-
-    fn download_protoc() -> PathBuf {
-        println!("cargo:info=use exist protoc: {:?}", "k");
-        let out_dir = Self::get_cargo_target_dir().unwrap().join("protobuf");
-        let fname = out_dir.join("bin/protoc.exe");
-        if fname.exists() {
-            println!("cargo:info=use exist protoc: {:?}", fname);
-            return fname;
-        }
-
-        println!("cargo:info=need download protoc, please wait...");
-
-        let url = "https://github.com/protocolbuffers/protobuf/releases/download/v26.0-rc1/protoc-26.0-rc-1-win64.zip";
-        let response = reqwest::blocking::get(url).unwrap();
-        println!("{:?}", response);
-        let mut content = response
-            .bytes()
-            .map(|v| v.to_vec())
-            .map(Cursor::new)
-            .map(zip::ZipArchive::new)
-            .unwrap()
-            .unwrap();
-        content.extract(out_dir).unwrap();
-
-        fname
-    }
-
     pub fn check_for_win() {
         // add third_party dir to link search path
         let target = std::env::var("TARGET").unwrap_or_default();
@@ -80,16 +16,6 @@ impl WindowsBuild {
             println!("cargo:rustc-link-search=native=easytier/third_party/i686/");
         } else if target.contains("aarch64") {
             println!("cargo:rustc-link-search=native=easytier/third_party/arm64/");
-        }
-
-        let protoc_path = if let Some(o) = Self::check_protoc_exist() {
-            println!("cargo:info=use os exist protoc: {:?}", o);
-            o
-        } else {
-            Self::download_protoc()
-        };
-        unsafe {
-            std::env::set_var("PROTOC", protoc_path);
         }
     }
 }
@@ -154,50 +80,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     #[cfg(target_os = "windows")]
     WindowsBuild::check_for_win();
-
-    let proto_files_reflect = ["src/proto/peer_rpc.proto", "src/proto/common.proto"];
-
-    let proto_files = [
-        "src/proto/error.proto",
-        "src/proto/tests.proto",
-        "src/proto/api_instance.proto",
-        "src/proto/api_logger.proto",
-        "src/proto/api_config.proto",
-        "src/proto/api_manage.proto",
-        "src/proto/web.proto",
-        "src/proto/magic_dns.proto",
-        "src/proto/acl.proto",
-    ];
-
-    for proto_file in proto_files.iter().chain(proto_files_reflect.iter()) {
-        println!("cargo:rerun-if-changed={proto_file}");
-    }
-
-    let out = PathBuf::from(env::var("OUT_DIR")?);
-    let descriptor = out.join("descriptors.bin");
-
-    let mut config = prost_build::Config::new();
-    config
-        .extern_path(".google.protobuf.Any", "::prost_wkt_types::Any")
-        .extern_path(".google.protobuf.Timestamp", "::prost_wkt_types::Timestamp")
-        .extern_path(".google.protobuf.Value", "::prost_wkt_types::Value")
-        .file_descriptor_set_path(&descriptor)
-        .service_generator(Box::new(ServiceGenerator::default()))
-        .btree_map(["."])
-        .skip_debug([".common.Ipv4Addr", ".common.Ipv6Addr", ".common.UUID"]);
-
-    config.compile_protos(&proto_files, &["src/proto/"])?;
-
-    prost_reflect_build::Builder::new()
-        .file_descriptor_set_bytes("crate::proto::DESCRIPTOR_POOL_BYTES")
-        .compile_protos_with_config(config, &proto_files_reflect, &["src/proto/"])?;
-
-    let descriptor = std::fs::read(descriptor)?;
-    pbjson_build::Builder::new()
-        .register_descriptors(&descriptor)?
-        .preserve_proto_field_names()
-        .btree_map(["."])
-        .build(&["."])?;
 
     check_locale();
     Ok(())

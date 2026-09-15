@@ -6,10 +6,6 @@ pub fn cost_to_str(cost: i32) -> String {
     }
 }
 
-pub fn float_to_str(f: f64, precision: usize) -> String {
-    format!("{:.1$}", f, precision)
-}
-
 #[cfg(target_os = "windows")]
 pub fn utf8_or_gbk_to_string(s: &[u8]) -> String {
     use encoding::{DecoderTrap, Encoding, all::GBK};

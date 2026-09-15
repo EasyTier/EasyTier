@@ -16,12 +16,12 @@ use easytier::{
         log,
         network::{local_ipv4, local_ipv6},
     },
-    tunnel::{TunnelListener, tcp::TcpTunnelListener, udp::UdpTunnelListener},
+    proto::rpc::standalone::{runtime_rpc_listener, runtime_udp_tunnel_listener},
     utils::panic::setup_panic_handler,
 };
+use easytier_core::{socket::SocketListener, tunnel::Tunnel};
 
 use easytier::tunnel::IpScheme;
-use easytier::utils::BoxExt;
 use mimalloc::MiMalloc;
 
 mod client_manager;
@@ -112,6 +112,22 @@ struct Cli {
         help = t!("cli.geoip_db").to_string(),
     )]
     geoip_db: Option<String>,
+
+    #[arg(
+        long,
+        env = "ET_HEARTBEAT_MIN_RESPONSE_MS",
+        default_value = "3500",
+        help = t!("cli.heartbeat_min_response_ms").to_string(),
+    )]
+    heartbeat_min_response_ms: u64,
+
+    #[arg(
+        long,
+        env = "ET_HEARTBEAT_TIMEOUT_MS",
+        default_value = "15000",
+        help = t!("cli.heartbeat_timeout_ms").to_string(),
+    )]
+    heartbeat_timeout_ms: u64,
 
     #[cfg(feature = "embed")]
     #[arg(
@@ -222,11 +238,20 @@ impl LoggingConfigLoader for &Cli {
     }
 }
 
-pub fn get_listener_by_url(scheme: IpScheme, l: &url::Url) -> Option<Box<dyn TunnelListener>> {
+pub fn get_listener_by_url(
+    scheme: IpScheme,
+    l: &url::Url,
+) -> Option<Box<dyn SocketListener<Accepted = Box<dyn Tunnel>>>> {
     Some(match scheme {
-        IpScheme::Tcp => TcpTunnelListener::new(l.clone()).boxed(),
-        IpScheme::Udp => UdpTunnelListener::new(l.clone()).boxed(),
-        IpScheme::Ws => WsTunnelListener::new(l.clone()).boxed(),
+        IpScheme::Tcp => {
+            let addr = l.socket_addrs(|| Some(11010)).ok()?.into_iter().next()?;
+            Box::new(runtime_rpc_listener(addr))
+        }
+        IpScheme::Udp => {
+            let addr = l.socket_addrs(|| Some(11010)).ok()?.into_iter().next()?;
+            Box::new(runtime_udp_tunnel_listener(l.clone(), addr))
+        }
+        IpScheme::Ws => Box::new(WsTunnelListener::new(l.clone())),
         _ => return None,
     })
 }
@@ -236,8 +261,8 @@ async fn get_dual_stack_listener(
     port: u16,
 ) -> Result<
     (
-        Option<Box<dyn TunnelListener>>,
-        Option<Box<dyn TunnelListener>>,
+        Option<Box<dyn SocketListener<Accepted = Box<dyn Tunnel>>>>,
+        Option<Box<dyn SocketListener<Accepted = Box<dyn Tunnel>>>>,
     ),
     Error,
 > {
@@ -271,7 +296,21 @@ async fn main() {
     setup_panic_handler();
 
     let cli = Cli::parse();
-    log::init(&cli, false).unwrap();
+    log::init_with_default_console_targets(&cli, false, &["CORE", "easytier_web"]).unwrap();
+    tracing::info!(
+        version = EASYTIER_VERSION,
+        web_instance_id = ?cli.webhook.web_instance_id,
+        api_address = %cli.api_server_addr,
+        api_port = cli.api_server_port,
+        config_protocol = %cli.config_server_protocol,
+        config_port = cli.config_server_port,
+        heartbeat_min_response_ms = cli.heartbeat_min_response_ms,
+        heartbeat_timeout_ms = cli.heartbeat_timeout_ms,
+        webhook_enabled = cli.webhook.webhook_url.as_deref().is_some_and(|url| !url.trim().is_empty()),
+        rust_log_override = std::env::var_os("RUST_LOG").is_some(),
+        console_log_override = cli.console_log_level.is_some(),
+        "easytier-web starting"
+    );
 
     // Validate OIDC configuration: check split-deploy specific requirements
     // Basic OIDC parameter validation is handled in OidcConfig::from_params
@@ -309,9 +348,18 @@ async fn main() {
         cli.webhook.web_instance_id,
         cli.webhook.web_instance_api_base_url,
     ));
+    let heartbeat_policy = client_manager::HeartbeatPolicy::from_millis(
+        cli.heartbeat_min_response_ms,
+        cli.heartbeat_timeout_ms,
+    )
+    .unwrap_or_else(|error| {
+        eprintln!("Invalid heartbeat configuration: {error}");
+        std::process::exit(2);
+    });
     let mut mgr = client_manager::ClientManager::new(
         db.clone(),
         cli.geoip_db,
+        heartbeat_policy,
         feature_flags.clone(),
         webhook_config.clone(),
     );

@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { AutoComplete, Button, Checkbox, Dialog, InputNumber, InputText, MultiSelect, Panel, SelectButton, ToggleButton } from 'primevue';
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { AclAction, AclProtocol, AclRule } from '../../types/network';
+import { AclAction, AclProtocol, AclRule, ensureAclRuleLists } from '../../types/network';
 
 const props = defineProps<{
   visible: boolean
@@ -31,6 +31,8 @@ const actionOptions = [
 const showPorts = computed(() => {
   return rule.value.protocol === AclProtocol.TCP || rule.value.protocol === AclProtocol.UDP || rule.value.protocol === AclProtocol.Any
 })
+
+watch(() => rule.value, ensureAclRuleLists, { immediate: true })
 
 function close() {
   emit('update:visible', false)

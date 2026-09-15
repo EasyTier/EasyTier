@@ -1,3 +1,4 @@
+use easytier_core::socket::SocketContext;
 use futures::Future;
 
 #[cfg(target_os = "linux")]
@@ -82,6 +83,15 @@ pub struct NetNS {
 impl NetNS {
     pub fn new(name: Option<String>) -> Self {
         NetNS { name }
+    }
+
+    pub fn from_socket_context(context: &SocketContext) -> Self {
+        Self::new(
+            context
+                .netns
+                .as_ref()
+                .map(|namespace| namespace.token().to_owned()),
+        )
     }
 
     pub async fn run_async<F, Fut, Ret>(&self, f: F) -> Ret

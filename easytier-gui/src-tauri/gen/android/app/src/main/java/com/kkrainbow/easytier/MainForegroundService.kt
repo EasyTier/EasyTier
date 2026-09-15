@@ -1,5 +1,4 @@
 package com.kkrainbow.easytier
-import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
@@ -24,15 +23,15 @@ class MainForegroundService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         createNotificationChannel()
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("easytier Running")
-            .setContentText("easytier is available on localhost")
+            .setContentTitle("EasyTier is running")
+            .setContentText("EasyTier background service is active")
             .setSmallIcon(android.R.drawable.ic_menu_manage)
             .build()
-       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             startForeground(
                 NOTIFICATION_ID,
                 notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
             )
         } else {
             startForeground(NOTIFICATION_ID, notification)
@@ -52,7 +51,7 @@ class MainForegroundService : Service() {
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 "easytier notice",
-                NotificationManager.IMPORTANCE_DEFAULT
+                NotificationManager.IMPORTANCE_LOW
             )
             val manager = getSystemService(NotificationManager::class.java)
             manager?.createNotificationChannel(channel)

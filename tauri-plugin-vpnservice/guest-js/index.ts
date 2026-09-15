@@ -28,6 +28,12 @@ export interface VpnStatusResponse {
   dns?: string;
 }
 
+export type VpnTileAction = 'start' | 'stop';
+
+export interface VpnTileActionResponse {
+  action?: VpnTileAction;
+}
+
 export async function prepare_vpn(): Promise<InvokeResponse | null> {
   return await invoke<InvokeResponse>('plugin:vpnservice|prepare_vpn', {})
 }
@@ -44,4 +50,8 @@ export async function stop_vpn(): Promise<InvokeResponse | null> {
 
 export async function get_vpn_status(): Promise<VpnStatusResponse | null> {
   return await invoke<VpnStatusResponse>('plugin:vpnservice|get_vpn_status', {})
+}
+
+export async function consume_vpn_tile_action(): Promise<VpnTileActionResponse> {
+  return await invoke<VpnTileActionResponse>('plugin:vpnservice|consume_vpn_tile_action', {})
 }

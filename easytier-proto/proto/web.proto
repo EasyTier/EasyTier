@@ -1,0 +1,43 @@
+syntax = "proto3";
+
+import "common.proto";
+
+package web;
+
+message DeviceOsInfo {
+  string os_type = 1;
+  string version = 2;
+  string distribution = 3;
+}
+
+message HeartbeatRequest {
+  common.UUID machine_id = 1;
+  common.UUID inst_id = 2;
+  string user_token = 3;
+
+  string easytier_version = 4;
+  string report_time = 5;
+  string hostname = 6;
+
+  repeated common.UUID running_network_instances = 7;
+  DeviceOsInfo device_os = 8;
+  bool support_config_source = 9;
+  repeated common.UUID failed_network_instances = 10;
+  bool support_heartbeat_policy = 11;
+}
+
+message HeartbeatResponse {
+  optional uint32 heartbeat_interval_ms = 1;
+  optional uint32 heartbeat_timeout_ms = 2;
+}
+
+message GetFeatureRequest {}
+
+message GetFeatureResponse {
+  bool support_encryption = 1;
+}
+
+service WebServerService {
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  rpc GetFeature(GetFeatureRequest) returns (GetFeatureResponse);
+}

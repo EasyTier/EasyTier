@@ -4,8 +4,8 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "vue-tsc -b && vite build",
+    "dev": "pnpm --dir ../frontend-lib build && vite",
+    "build": "pnpm --dir ../frontend-lib build && vue-tsc -b && vite build",
     "preview": "vite preview"
   },
   "dependencies": {
