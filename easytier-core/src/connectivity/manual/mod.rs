@@ -8,6 +8,7 @@ use std::{
     time::Duration,
 };
 
+use anyhow::Context as _;
 use async_trait::async_trait;
 use dashmap::DashSet;
 use percent_encoding::percent_decode_str;
@@ -183,7 +184,9 @@ where
             self.endpoint_resolver.as_ref(),
             convert_idn_to_ascii(requested_url.clone())?,
         )
-        .await?;
+        .await
+        .with_context(|| format!("discovering {requested_url}"))?;
+        let endpoint_context = resolved_endpoint_context(&endpoint.url, &requested_url);
         if endpoint.url.scheme() == "ring" {
             let registry = self
                 .ring_registry
@@ -214,7 +217,14 @@ where
 
         let transport = ManualTransport::from_url(&endpoint.url)?;
         let connected = if transport == ManualTransport::ByteStream {
-            ConnectedTransport::ByteStream(self.host.connect_byte_stream(&endpoint.url).await?)
+            ConnectedTransport::ByteStream(
+                self.host
+                    .connect_byte_stream(&endpoint.url)
+                    .await
+                    .with_context(|| {
+                        format!("connecting via byte stream for {endpoint_context}")
+                    })?,
+            )
         } else {
             let remote_addr = resolve_url_addrs(
                 &endpoint.url,
@@ -222,7 +232,8 @@ where
                 self.options.socket_context(transport, ip_version),
                 self.dns.as_ref(),
             )
-            .await?
+            .await
+            .with_context(|| format!("resolving addresses for {endpoint_context}"))?
             .choose(&mut rand::thread_rng())
             .copied()
             .ok_or(TunnelError::NoDnsRecordFound(ip_version))?;
@@ -234,13 +245,15 @@ where
                 self.options.tcp_bind.clone(),
                 self.options.udp_bind.clone(),
             )
-            .await?
+            .await
+            .with_context(|| format!("connecting to {remote_addr} for {endpoint_context}"))?
         };
 
         let tunnel = self
             .protocol
-            .upgrade_client(connected, endpoint.url)
-            .await?;
+            .upgrade_client(connected, endpoint.url.clone())
+            .await
+            .with_context(|| format!("upgrading for {endpoint_context}"))?;
         Ok(apply_resolved_endpoint_info(
             tunnel,
             requested_url,
@@ -795,7 +808,9 @@ where
             convert_idn_to_ascii(requested_url.clone())?,
         ),
     )
-    .await?;
+    .await
+    .with_context(|| format!("discovering {requested_url}"))?;
+    let endpoint_context = resolved_endpoint_context(&endpoint.url, &requested_url);
     let uses_external_tunnel = data.host.supports_external_tunnel(endpoint.url.scheme());
     if endpoint.url.scheme() != "ring"
         && !uses_external_tunnel
@@ -841,9 +856,14 @@ where
                 };
                 Ok((remote_addr, bind_addrs))
             })
-            .await?,
+            .await
+            .with_context(|| format!("resolving addresses for {endpoint_context}"))?,
         ),
     };
+    let resolved_target = resolved.as_ref().map(|(remote_addr, _)| *remote_addr);
+    let connect_target = resolved_target
+        .map(|addr| addr.to_string())
+        .unwrap_or_else(|| endpoint.url.to_string());
     data.events.emit(CoreEvent::ManualConnecting {
         url: requested_url.clone(),
     });
@@ -878,9 +898,12 @@ where
                 ConnectedTransport::ByteStream(data.host.connect_byte_stream(&endpoint.url).await?)
             }
         };
-        data.protocol.upgrade_client(connected, endpoint.url).await
+        data.protocol
+            .upgrade_client(connected, endpoint.url.clone())
+            .await
     })
-    .await?;
+    .await
+    .with_context(|| format!("connecting to {connect_target} for {endpoint_context}"))?;
     let tunnel =
         apply_resolved_endpoint_info(tunnel, requested_url.clone(), endpoint.tunnel_prefixes);
     let peer_manager = data
@@ -894,7 +917,8 @@ where
                 .await
                 .map_err(anyhow::Error::from)
         })
-        .await?;
+        .await
+        .with_context(|| format!("handshaking with {connect_target} for {endpoint_context}"))?;
     tracing::info!(peer_id, %conn_id, %requested_url, "manual reconnect succeeded");
     Ok(())
 }
@@ -1058,6 +1082,27 @@ pub(crate) fn convert_idn_to_ascii(mut url: Url) -> anyhow::Result<Url> {
         url.set_host(Some(&domain))?;
     }
     Ok(url)
+}
+
+/// Describes the resolved endpoint hop in connect failures so logs show
+/// which concrete endpoint (and which requested url) actually failed.
+fn resolved_endpoint_context(endpoint_url: &Url, requested_url: &Url) -> String {
+    if endpoint_url == requested_url {
+        format!("resolved endpoint {endpoint_url}")
+    } else {
+        format!("resolved endpoint {endpoint_url} (from {requested_url})")
+    }
+}
+
+fn connect_failure_context(
+    remote_addr: Option<SocketAddr>,
+    endpoint_url: &Url,
+    requested_url: &Url,
+) -> String {
+    let target = remote_addr
+        .map(|addr| addr.to_string())
+        .unwrap_or_else(|| format!("byte stream {endpoint_url}"));
+    format!("connecting to {target} for {}", resolved_endpoint_context(endpoint_url, requested_url))
 }
 
 fn emit_connect_error<H>(
@@ -1288,6 +1333,41 @@ mod tests {
         assert!(resolver.queries.lock().unwrap().is_empty());
     }
 
+    #[test]
+    fn connect_failure_context_names_the_concrete_target() {
+        let requested: Url = "srv://discovery.example.com".parse().unwrap();
+        let resolved: Url = "tcp://peer.example.com:11010".parse().unwrap();
+
+        assert_eq!(
+            resolved_endpoint_context(&resolved, &requested),
+            "resolved endpoint tcp://peer.example.com:11010 (from srv://discovery.example.com)"
+        );
+
+        let addr: SocketAddr = "192.0.2.10:11010".parse().unwrap();
+        assert_eq!(
+            connect_failure_context(Some(addr), &resolved, &requested),
+            "connecting to 192.0.2.10:11010 for resolved endpoint \
+             tcp://peer.example.com:11010 (from srv://discovery.example.com)"
+        );
+    }
+
+    #[test]
+    fn connect_failure_context_handles_direct_urls_and_byte_streams() {
+        let direct: Url = "tcp://peer.example:11010".parse().unwrap();
+        assert_eq!(
+            resolved_endpoint_context(&direct, &direct),
+            "resolved endpoint tcp://peer.example:11010"
+        );
+
+        let addr: SocketAddr = "127.0.0.1:11010".parse().unwrap();
+        let message = connect_failure_context(Some(addr), &direct, &direct);
+        assert!(message.contains("connecting to 127.0.0.1:11010"), "{message}");
+        assert!(message.contains("resolved endpoint tcp://peer.example:11010"), "{message}");
+
+        let byte_stream = connect_failure_context(None, &direct, &direct);
+        assert!(byte_stream.contains("byte stream tcp://peer.example:11010"), "{byte_stream}");
+    }
+
     #[tokio::test]
     async fn external_byte_stream_does_not_require_address_records() {
         let resolver = StaticDnsResolver {
@@ -1306,6 +1386,7 @@ mod tests {
         assert_eq!(versions, [IpVersion::Both]);
         assert!(resolver.queries.lock().unwrap().is_empty());
     }
+
 
     #[test]
     fn external_protocol_and_discovery_timeouts_are_explicit() {
