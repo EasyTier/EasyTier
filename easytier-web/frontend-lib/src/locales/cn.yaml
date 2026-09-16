@@ -465,6 +465,8 @@ mode:
   remote_rpc_address_empty: 远程RPC地址不能为空
   service_config_empty: 服务配置不能为空
   rpc_connection_failed: "RPC 连接失败：{error}"
+  autostart: 开机自启
+  autostart_hint: 开机自启由服务模式提供。切换为「服务模式」并保存后，EasyTier 将注册为系统服务，开机自动启动并在后台运行。
 
 config-server:
   title: 配置服务器
