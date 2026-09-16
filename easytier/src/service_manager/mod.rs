@@ -338,11 +338,12 @@ impl Service {
 
 #[cfg(target_os = "windows")]
 mod win_service_manager {
-    use std::{ffi::OsStr, ffi::OsString, io, path::PathBuf};
+    use std::{ffi::OsStr, ffi::OsString, io, path::PathBuf, time::Duration};
     use windows_service::{
         service::{
-            ServiceAccess, ServiceDependency, ServiceErrorControl, ServiceInfo, ServiceStartType,
-            ServiceType,
+            Service, ServiceAccess, ServiceAction, ServiceActionType, ServiceDependency,
+            ServiceErrorControl, ServiceFailureActions, ServiceFailureResetPeriod, ServiceInfo,
+            ServiceStartType, ServiceType,
         },
         service_manager::{ServiceManager, ServiceManagerAccess},
     };
@@ -442,6 +443,8 @@ mod win_service_manager {
                 set_service_work_directory(&ctx.label.to_qualified_name(), work_dir)?;
             }
 
+            configure_failure_actions(&service, ctx.disable_restart_on_failure)?;
+
             Ok(())
         }
 
@@ -533,6 +536,8 @@ mod win_service_manager {
                 set_service_work_directory(&ctx.label.to_qualified_name(), work_dir)?;
             }
 
+            configure_failure_actions(&service, ctx.disable_restart_on_failure)?;
+
             Ok(())
         }
     }
@@ -542,6 +547,51 @@ mod win_service_manager {
             RegKey::predef(HKEY_LOCAL_MACHINE).create_subkey(WIN_SERVICE_WORK_DIR_REG_KEY)?;
         reg_key
             .set_value::<OsString, _>(service_name, &work_directory.as_os_str().to_os_string())?;
+        Ok(())
+    }
+
+    fn configure_failure_actions(
+        service: &Service,
+        disable_restart_on_failure: bool,
+    ) -> io::Result<()> {
+        // the SCM repeats the last action once the failure count exceeds the
+        // actions array, so Restart actions retry indefinitely.
+        let actions = if disable_restart_on_failure {
+            // empty actions clear previously configured ones
+            Vec::new()
+        } else {
+            vec![
+                ServiceAction {
+                    action_type: ServiceActionType::Restart,
+                    delay: Duration::from_secs(1),
+                },
+                ServiceAction {
+                    action_type: ServiceActionType::Restart,
+                    delay: Duration::from_secs(5),
+                },
+                ServiceAction {
+                    action_type: ServiceActionType::Restart,
+                    delay: Duration::from_secs(10),
+                },
+            ]
+        };
+
+        service
+            .update_failure_actions(ServiceFailureActions {
+                reset_period: ServiceFailureResetPeriod::Never,
+                reboot_msg: None,
+                command: None,
+                actions: Some(actions),
+            })
+            .map_err(io::Error::other)?;
+
+        // by default the SCM only performs failure actions on crashes; our
+        // service reports SERVICE_STOPPED with a non-zero exit code on
+        // failure, which requires this flag to be treated as a failure.
+        service
+            .set_failure_actions_on_non_crash_failures(!disable_restart_on_failure)
+            .map_err(io::Error::other)?;
+
         Ok(())
     }
 }
