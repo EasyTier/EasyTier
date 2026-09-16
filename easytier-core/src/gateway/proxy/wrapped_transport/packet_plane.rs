@@ -260,7 +260,7 @@ where
                 local_ipv4: snapshot.virtual_ipv4,
                 smoltcp_enabled: snapshot.smoltcp_enabled,
             },
-            move |src| connection_engine.is_tcp_proxy_connection(src),
+            move |src, mapped_dst| connection_engine.is_tcp_proxy_flow(src, mapped_dst),
             move |dst_ip| async move {
                 match transport {
                     WrappedTransportKind::Kcp => {

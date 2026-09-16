@@ -203,7 +203,7 @@ sys-locale.workspace = true
 
 service-manager = { git = "https://github.com/EasyTier/service-manager-rs.git", branch = "main" }
 
-kcp-sys = { git = "https://github.com/EasyTier/kcp-sys", rev = "d7427c22d764deb1860a7d37acc446ed5033464c", optional = true }
+kcp-sys = { git = "https://github.com/EasyTier/kcp-sys", rev = "268533568d734ae89dc89603078da3ca522effe1", optional = true }
 
 # for dns connector
 hickory-resolver = { version = "0.25.2", optional = true }

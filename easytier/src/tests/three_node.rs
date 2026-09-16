@@ -1457,6 +1457,98 @@ pub async fn subnet_proxy_three_node_test(
 #[rstest::rstest]
 #[tokio::test]
 #[serial_test::serial]
+pub async fn subnet_proxy_half_close_test(
+    #[values("tcp", "kcp", "quic")] transport: &str,
+    #[values(false, true)] use_smoltcp: bool,
+) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let insts = init_three_node_ex(
+        "udp",
+        |cfg| {
+            let mut flags = cfg.get_flags();
+            flags.use_smoltcp = use_smoltcp;
+            if cfg.get_inst_name() == "inst1" {
+                flags.enable_kcp_proxy = transport == "kcp";
+                flags.enable_quic_proxy = transport == "quic";
+            }
+            cfg.set_flags(flags);
+            if cfg.get_inst_name() == "inst3" {
+                cfg.add_proxy_cidr(
+                    "10.1.2.0/24".parse().unwrap(),
+                    Some("10.1.3.0/24".parse().unwrap()),
+                )
+                .unwrap();
+            }
+            cfg
+        },
+        false,
+    )
+    .await;
+    wait_proxy_route_appear(
+        &insts[0].get_core_instance(),
+        "10.144.144.3/24",
+        insts[2].peer_id(),
+        "10.1.3.0/24",
+    )
+    .await;
+
+    // The advertised route can precede installation of the host TUN route.
+    wait_for_condition(
+        || async { ping_test("net_a", "10.1.3.4", None).await },
+        Duration::from_secs(5),
+    )
+    .await;
+
+    let result = tokio::time::timeout(Duration::from_secs(10), async {
+        let listener = NetNS::new(Some("net_d".into())).run(|| {
+            let listener = std::net::TcpListener::bind("10.1.2.4:22224").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            tokio::net::TcpListener::from_std(listener).unwrap()
+        });
+        for (source_closes_first, request_size) in
+            [(true, 0), (false, 0), (true, 64 * 1024), (false, 64 * 1024)]
+        {
+            let socket =
+                NetNS::new(Some("net_a".into())).run(|| tokio::net::TcpSocket::new_v4().unwrap());
+            let (client, (server, _)) = tokio::try_join!(
+                socket.connect("10.1.3.4:22224".parse().unwrap()),
+                listener.accept(),
+            )
+            .expect("failed to establish the proxied connection");
+            let (mut requester, mut responder) = if source_closes_first {
+                (client, server)
+            } else {
+                (server, client)
+            };
+            let request = vec![0x35; request_size];
+            let response = vec![0xa7; 128 * 1024];
+            tokio::join!(
+                async {
+                    requester.write_all(&request).await.unwrap();
+                    requester.shutdown().await.unwrap();
+                    let mut received = Vec::new();
+                    requester.read_to_end(&mut received).await.unwrap();
+                    assert_eq!(received, response);
+                },
+                async {
+                    let mut received = Vec::new();
+                    responder.read_to_end(&mut received).await.unwrap();
+                    assert_eq!(received, request);
+                    responder.write_all(&response).await.unwrap();
+                    responder.shutdown().await.unwrap();
+                },
+            );
+        }
+    })
+    .await;
+    drop_insts(insts).await;
+    result.expect("proxy did not forward the response after half-close");
+}
+
+#[rstest::rstest]
+#[tokio::test]
+#[serial_test::serial]
 pub async fn data_compress(
     #[values(true, false)] inst1_compress: bool,
     #[values(true, false)] inst2_compress: bool,
