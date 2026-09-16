@@ -1440,6 +1440,11 @@ fn win_service_event_loop(
                         Err(error) => {
                             status_handle.set_service_status(error_status).unwrap();
                             log::error!(?error);
+                            // exit with non-zero code so the SCM treats this as
+                            // a non-crash failure and applies the configured
+                            // failure actions; staying alive would leave a
+                            // zombie process until the SCM force-kills it.
+                            std::process::exit(1);
                         }
                     }
                 },

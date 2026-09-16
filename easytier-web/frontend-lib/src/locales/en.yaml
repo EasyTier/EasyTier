@@ -465,6 +465,8 @@ mode:
   remote_rpc_address_empty: Remote RPC Address cannot be empty
   service_config_empty: Service Config cannot be empty
   rpc_connection_failed: "RPC connection failed: {error}"
+  autostart: Start on Boot
+  autostart_hint: Auto-start on boot is provided by service mode. After switching to Service mode and saving, EasyTier will be registered as a system service that starts automatically at boot and keeps running in the background.
 
 config-server:
   title: Config Server
