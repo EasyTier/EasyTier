@@ -4,24 +4,22 @@ version = "0.1.0"
 edition.workspace = true
 
 [dependencies]
-tokio = { version = "1.0", features = ["full"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-anyhow = "1.0"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1.0", features = ["v4", "serde"] }
-guarden = "0.1"
+tokio = { workspace = true, default-features = true, features = ["full"] }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, default-features = true, features = ["env-filter"] }
+anyhow.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+chrono = { workspace = true, features = ["serde"] }
+uuid = { workspace = true, features = ["v4", "serde"] }
 
 # Axum web framework
-axum = { version = "0.8.4", features = ["macros"] }
-axum-extra = { version = "0.10", features = ["query"] }
-tower-http = { version = "0.6", features = ["cors", "compression-full"] }
-tower = "0.5"
+axum = { version = "0.8.9", features = ["macros"] }
+axum-extra = { version = "0.12", features = ["query"] }
+tower-http = { workspace = true, features = ["cors", "compression-full"] }
 
 # SeaORM dependencies
-sea-orm = { version = "1.1", features = [
+sea-orm = { workspace = true, features = [
     "sqlx-sqlite",
     "runtime-tokio-rustls",
     "macros",
@@ -29,39 +27,23 @@ sea-orm = { version = "1.1", features = [
     "with-uuid",
     "with-json"
 ] }
-sea-orm-migration = { version = "1.1" }
-sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio-rustls", "chrono", "uuid"] }
+sea-orm-migration.workspace = true
+sqlx = { workspace = true, features = ["sqlite", "runtime-tokio-rustls", "chrono", "uuid"] }
 
 # Validation
-validator = { version = "0.18", features = ["derive"] }
-thiserror = "1.0"
-jsonwebtoken = "9.0"
-
-# Configuration and serialization
-serde_yaml = "0.9"
-toml = "0.8"
+validator = { version = "0.21", features = ["derive"] }
+thiserror.workspace = true
+jsonwebtoken = { version = "11.0", features = ["rust_crypto"] }
 
 # Network and async
-async-trait = "0.1"
-futures = "0.3"
-tokio-util = { version = "0.7", features = ["full"] }
-
-# Filesystem operations
-tempfile = "3.8"
+async-trait.workspace = true
+tokio-util = { workspace = true, features = ["full"] }
 
 # Additional utilities
-dashmap = "6.1.0"
-clap = { version = "4.0", features = ["derive"] }
-parking_lot = "0.12"
-once_cell = "1.19"
+dashmap.workspace = true
+clap = { workspace = true, features = ["derive"] }
 
 # EasyTier core
-easytier = { path = "../../easytier" }
+easytier = { workspace = true, default-features = true }
 
-mimalloc = { version = "*" }
-
-# Testing
-[dev-dependencies]
-mockall = "0.12"
-tokio-test = "0.4"
-reqwest = "0.12"
+mimalloc.workspace = true

@@ -1781,7 +1781,8 @@ pub async fn foreign_network_forward_nic_data() {
 use std::{net::SocketAddr, str::FromStr};
 
 use defguard_wireguard_rs::{
-    InterfaceConfiguration, WGApi, WireguardInterfaceApi, host::Peer, key::Key, net::IpAddrMask,
+    InterfaceConfiguration, Kernel, WGApi, WireguardInterfaceApi, key::Key, net::IpAddrMask,
+    peer::Peer,
 };
 
 pub(super) fn wireguard_ifname(base: &str) -> String {
@@ -1802,7 +1803,7 @@ pub(super) fn run_wireguard_client(
     client_ip: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Create new API object for interface
-    let wgapi = WGApi::new(ifname.to_owned(), false)?;
+    let mut wgapi = WGApi::<Kernel>::new(ifname.to_owned())?;
 
     // create interface
     wgapi.create_interface()?;
@@ -1822,16 +1823,26 @@ pub(super) fn run_wireguard_client(
     let interface_config = InterfaceConfiguration {
         name: ifname.to_owned(),
         prvkey: client_private_key.to_string(),
-        address: client_ip,
+        addresses: vec![IpAddrMask::from_str(client_ip.as_str())?],
         port: 12345,
         peers: vec![peer],
+        mtu: None,
+        fwmark: None,
     };
 
     #[cfg(not(windows))]
     wgapi.configure_interface(&interface_config)?;
     #[cfg(windows)]
     wgapi.configure_interface(&interface_config, &[])?;
-    wgapi.configure_peer_routing(&interface_config.peers)?;
+    // These split-tunnel clients reach the endpoint through an existing route.
+    // defguard 0.12 also rewrites endpoint routes (or blackholes them without a
+    // default gateway), so pass only the allowed IPs to its routing helper.
+    // The actual WireGuard peer above retains its endpoint.
+    let mut routing_peers = interface_config.peers.clone();
+    for peer in &mut routing_peers {
+        peer.endpoint = None;
+    }
+    wgapi.configure_peer_routing(&routing_peers)?;
     Ok(())
 }
 

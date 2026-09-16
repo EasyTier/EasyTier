@@ -1,5 +1,5 @@
-use chacha20poly1305::{AeadCore, AeadInPlace, ChaCha20Poly1305, Key, KeyInit};
-use rand::rngs::OsRng;
+use chacha20poly1305::{AeadInOut, ChaCha20Poly1305, Key, KeyInit};
+use rand::{RngCore, rngs::OsRng};
 use zerocopy::{AsBytes, FromBytes};
 
 use crate::packet::{StandardAeadTail, ZCPacket};
@@ -42,7 +42,12 @@ impl Encryptor for ChaCha20Cipher {
         let tag = tail.tag.into();
 
         self.cipher
-            .decrypt_in_place_detached(&nonce, &[], &mut zc_packet.mut_payload()[..text_len], &tag)
+            .decrypt_inout_detached(
+                &nonce,
+                &[],
+                (&mut zc_packet.mut_payload()[..text_len]).into(),
+                &tag,
+            )
             .map_err(|_| Error::DecryptionFailed)?;
 
         let pm_header = zc_packet.mut_peer_manager_header().unwrap();
@@ -76,11 +81,15 @@ impl Encryptor for ChaCha20Cipher {
                     .map_err(|_| Error::EncryptionFailed)
             })
             .transpose()?
-            .unwrap_or_else(|| ChaCha20Poly1305::generate_nonce(&mut OsRng));
+            .unwrap_or_else(|| {
+                let mut nonce = [0u8; StandardAeadTail::NONCE_SIZE];
+                OsRng.fill_bytes(&mut nonce);
+                nonce.into()
+            });
 
         let tag = self
             .cipher
-            .encrypt_in_place_detached(&nonce, &[], zc_packet.mut_payload())
+            .encrypt_inout_detached(&nonce, &[], zc_packet.mut_payload().into())
             .map_err(|_| Error::EncryptionFailed)?;
 
         let tail = StandardAeadTail {

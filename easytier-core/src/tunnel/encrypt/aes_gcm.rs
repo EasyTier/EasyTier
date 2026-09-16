@@ -1,5 +1,5 @@
-use aes_gcm::{AeadCore, AeadInPlace, Aes128Gcm, Aes256Gcm, Key, KeyInit};
-use rand::rngs::OsRng;
+use aes_gcm::{AeadInOut, Aes128Gcm, Aes256Gcm, Key, KeyInit};
+use rand::{RngCore, rngs::OsRng};
 use zerocopy::{AsBytes, FromBytes};
 
 use crate::packet::{StandardAeadTail, ZCPacket};
@@ -54,16 +54,16 @@ impl Encryptor for AesGcmCipher {
         let tag = aes_tail.tag.into();
 
         let rs = match &self.cipher {
-            AesGcmEnum::AES128GCM(aes_gcm) => aes_gcm.decrypt_in_place_detached(
+            AesGcmEnum::AES128GCM(aes_gcm) => aes_gcm.decrypt_inout_detached(
                 &nonce,
                 &[],
-                &mut zc_packet.mut_payload()[..text_len],
+                (&mut zc_packet.mut_payload()[..text_len]).into(),
                 &tag,
             ),
-            AesGcmEnum::AES256GCM(aes_gcm) => aes_gcm.decrypt_in_place_detached(
+            AesGcmEnum::AES256GCM(aes_gcm) => aes_gcm.decrypt_inout_detached(
                 &nonce,
                 &[],
-                &mut zc_packet.mut_payload()[..text_len],
+                (&mut zc_packet.mut_payload()[..text_len]).into(),
                 &tag,
             ),
         };
@@ -107,16 +107,24 @@ impl Encryptor for AesGcmCipher {
 
         let (tag, nonce) = match &self.cipher {
             AesGcmEnum::AES128GCM(aes_gcm) => {
-                let nonce = nonce.unwrap_or_else(|| Aes128Gcm::generate_nonce(&mut OsRng));
+                let nonce = nonce.unwrap_or_else(|| {
+                    let mut nonce = [0u8; StandardAeadTail::NONCE_SIZE];
+                    OsRng.fill_bytes(&mut nonce);
+                    nonce.into()
+                });
                 (
-                    aes_gcm.encrypt_in_place_detached(&nonce, &[], zc_packet.mut_payload()),
+                    aes_gcm.encrypt_inout_detached(&nonce, &[], zc_packet.mut_payload().into()),
                     nonce,
                 )
             }
             AesGcmEnum::AES256GCM(aes_gcm) => {
-                let nonce = nonce.unwrap_or_else(|| Aes256Gcm::generate_nonce(&mut OsRng));
+                let nonce = nonce.unwrap_or_else(|| {
+                    let mut nonce = [0u8; StandardAeadTail::NONCE_SIZE];
+                    OsRng.fill_bytes(&mut nonce);
+                    nonce.into()
+                });
                 (
-                    aes_gcm.encrypt_in_place_detached(&nonce, &[], zc_packet.mut_payload()),
+                    aes_gcm.encrypt_inout_detached(&nonce, &[], zc_packet.mut_payload().into()),
                     nonce,
                 )
             }

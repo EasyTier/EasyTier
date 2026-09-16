@@ -485,9 +485,7 @@ mod tests {
         common::config::{ConfigLoader as _, ConfigSource, NetworkConfigExt},
         proto::api::manage::{ConfigSource as RpcConfigSource, NetworkConfig, NetworkMeta},
     };
-    use easytier_core::management::remote_client::{
-        ListNetworkProps, PersistentConfig as _, Storage as _,
-    };
+    use easytier_core::management::remote_client::ListNetworkProps;
     use serde_json::json;
 
     use super::*;

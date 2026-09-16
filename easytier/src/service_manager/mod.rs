@@ -124,7 +124,7 @@ impl Service {
         let status = self.status()?;
 
         if status == service_manager::ServiceStatus::NotInstalled {
-            return Err(anyhow::anyhow!("Service is not installed"))?;
+            return Err(anyhow::anyhow!("Service is not installed"));
         }
 
         if status == service_manager::ServiceStatus::Running {

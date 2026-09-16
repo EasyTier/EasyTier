@@ -474,7 +474,7 @@ mod tests {
                 !try_process_wrapped_tcp_packet_from_nic(
                     &mut packet,
                     context(transport),
-                    |_| false,
+                    |_, _| false,
                     |_| async { true },
                 )
                 .await

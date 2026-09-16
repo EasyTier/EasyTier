@@ -23,9 +23,7 @@ use easytier::web_client::{self, WebClient};
 use easytier::{
     common::config::{NetworkConfig, NetworkConfigExt},
     common::{
-        config::{
-            ConfigLoader, ConfigSource, FileLoggerConfig, LoggingConfigBuilder, TomlConfigLoader,
-        },
+        config::{ConfigLoader, ConfigSource, FileLoggerConfig, LoggingConfig, TomlConfigLoader},
         log,
     },
     instance::factory::{NativeInstanceManager, native_instance_manager},
@@ -1463,7 +1461,7 @@ pub fn run_gui() -> std::process::ExitCode {
             let Ok(log_dir) = get_log_dir(app.app_handle()) else {
                 return Ok(());
             };
-            let config = LoggingConfigBuilder::default()
+            let config = LoggingConfig::builder()
                 .file_logger(FileLoggerConfig {
                     dir: Some(log_dir.to_string_lossy().to_string()),
                     level: None,
@@ -1471,8 +1469,7 @@ pub fn run_gui() -> std::process::ExitCode {
                     size_mb: None,
                     count: None,
                 })
-                .build()
-                .map_err(|e| e.to_string())?;
+                .build();
             let Ok(_) = log::init(&config, true) else {
                 return Ok(());
             };
