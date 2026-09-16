@@ -45,6 +45,8 @@ use hickory_proto::rr::LowerName;
 use hickory_proto::serialize::binary::{BinDecodable, BinEncoder};
 use hickory_server::authority::{MessageRequest, MessageResponse};
 use hickory_server::server::{Request, RequestHandler, ResponseHandler, ResponseInfo};
+use tokio::net::UdpSocket;
+use std::net::{SocketAddr, SocketAddrV4};
 use std::sync::Mutex;
 use std::{collections::BTreeMap, io, net::Ipv4Addr, str::FromStr, sync::Arc, time::Duration};
 
@@ -144,6 +146,7 @@ impl MagicDnsServerInstanceData {
                 nameservers: vec![self.fake_ip.to_string()],
                 search_domains: vec![zone.to_string()],
                 match_domains: vec![zone.to_string()],
+                interface_name: self.tun_dev.clone(),
             })?;
         }
         Ok(())
@@ -333,6 +336,7 @@ pub struct MagicDnsServerInstance {
     pub(super) data: Arc<MagicDnsServerInstanceData>,
     packet_filter: MagicDnsResolverRegistration,
     tun_inet: Ipv4Inet,
+    _udp_task: tokio::task::JoinHandle<()>,
 }
 
 fn get_system_config(
@@ -349,6 +353,12 @@ fn get_system_config(
     {
         use super::system_config::darwin::DarwinConfigurator;
         return Ok(Some(Box::new(DarwinConfigurator::new())));
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        use super::system_config::linux::LinuxSystemConfig;
+        return Ok(Some(Box::new(LinuxSystemConfig::new())));
     }
 
     #[allow(unreachable_code)]
@@ -411,7 +421,8 @@ impl MagicDnsServerInstance {
             .context("Failed to initialize DNS zone")?;
 
         let data_clone = data.clone();
-        tokio::task::spawn_blocking(move || data_clone.do_system_config(&tld_dns_zone_clone))
+        let zone_for_config = tld_dns_zone_clone.clone();
+        tokio::task::spawn_blocking(move || data_clone.do_system_config(&zone_for_config))
             .await
             .context("Failed to configure system")??;
 
@@ -422,11 +433,94 @@ impl MagicDnsServerInstance {
             .register_magic_dns_resolver(fake_ip, data.clone())
             .await;
 
+        // Add fake_ip to lo so the kernel routes packets to us, and set up a UDP listener
+        // for DNS queries. This avoids relying on the NIC packet pipeline's self-send path,
+        // which cannot deliver responses back to the local TUN device.
+        let ifcfg = IfConfiger {};
+        if let Err(e) = ifcfg.add_ipv4_ip("lo", fake_ip, 32).await {
+            tracing::warn!("add {}/32 to lo failed: {:?}, continuing", fake_ip, e);
+        } else {
+            tracing::info!("Added {}/32 to lo for MagicDNS", fake_ip);
+        }
+
+        let socket = {
+            let addr: SocketAddr =
+                SocketAddrV4::new(fake_ip, 53).into();
+            let domain = socket2::Domain::IPV4;
+            let socket_type = socket2::Type::DGRAM;
+            let socket = socket2::Socket::new(domain, socket_type, Some(socket2::Protocol::UDP))
+                .context("Failed to create MagicDNS UDP socket")?;
+            socket.set_reuse_address(true)?;
+            socket.set_nonblocking(true)?;
+            socket.bind(&addr.into()).with_context(|| {
+                format!("Failed to bind MagicDNS UDP socket to {}", addr)
+            })?;
+            UdpSocket::from_std(socket.into())
+                .context("Failed to convert MagicDNS UDP socket")?
+        };
+        tracing::info!("MagicDNS UDP listener bound on {}/53", fake_ip);
+
+        let listen_data = data.clone();
+        let udp_task = tokio::task::spawn(async move {
+            let mut buf = vec![0u8; 1500];
+            loop {
+                let (len, src) = match socket.recv_from(&mut buf).await {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::error!("MagicDNS UDP recv error: {:?}", e);
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        continue;
+                    }
+                };
+
+                let request_payload = &buf[..len];
+                let msg = match MessageRequest::from_bytes(request_payload) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        tracing::debug!("MagicDNS: invalid DNS query: {:?}", e);
+                        continue;
+                    }
+                };
+                let request = Request::new(
+                    msg,
+                    src,
+                    hickory_proto::xfer::Protocol::Udp,
+                );
+
+                let response_buf = Arc::new(Mutex::new(Vec::with_capacity(512)));
+                listen_data
+                    .dns_server
+                    .read_catalog()
+                    .await
+                    .handle_request(
+                        &request,
+                        ResponseWrapper {
+                            response: response_buf.clone(),
+                        },
+                    )
+                    .await;
+
+                let response_bytes = match Arc::into_inner(response_buf) {
+                    Some(mutex) => mutex.into_inner().unwrap_or_default(),
+                    None => continue,
+                };
+
+                if response_bytes.is_empty() {
+                    continue;
+                }
+
+                if let Err(e) = socket.send_to(&response_bytes, src).await {
+                    tracing::error!("MagicDNS UDP send error: {:?}", e);
+                }
+            }
+        });
+
         Ok(Self {
             _rpc_server: rpc_server,
             data,
             packet_filter,
             tun_inet,
+            _udp_task: udp_task,
         })
     }
 
@@ -447,6 +541,14 @@ impl MagicDnsServerInstance {
         }
 
         self.packet_filter.close().await;
+
+        // Remove fake_ip from lo
+        let ifcfg = IfConfiger {};
+        let inet = cidr::Ipv4Inet::new(self.data.fake_ip, 32)
+            .expect("fake_ip/32 is always a valid CIDR");
+        if let Err(e) = ifcfg.remove_ip("lo", Some(inet)).await {
+            tracing::warn!("remove {}/32 from lo failed: {:?}", self.data.fake_ip, e);
+        }
     }
 }
 
