@@ -37,6 +37,7 @@ use crate::{
 };
 
 const MANUAL_PREFLIGHT_DEFAULT_PORT: u16 = 1000;
+const MAX_ENDPOINT_CANDIDATES: usize = 8;
 const MAX_MANUAL_ENDPOINT_HOPS: usize = 16;
 
 fn manual_default_port(url: &Url) -> u16 {
@@ -128,6 +129,13 @@ pub trait ExternalTunnelConnector: Send + Sync + 'static {
 #[async_trait]
 pub(crate) trait ManualEndpointResolver: Send + Sync + 'static {
     async fn resolve_endpoint(&self, url: &Url) -> anyhow::Result<Url>;
+
+    /// Resolves a discovery url into concrete transport candidates, ordered
+    /// by preference. Implementations with a single result may rely on the
+    /// default, which wraps [`ManualEndpointResolver::resolve_endpoint`].
+    async fn resolve_endpoint_candidates(&self, url: &Url) -> anyhow::Result<Vec<Url>> {
+        Ok(vec![self.resolve_endpoint(url).await?])
+    }
 }
 
 /// Connects one endpoint without owning peer-manager retry or admission policy.
@@ -184,48 +192,61 @@ where
             convert_idn_to_ascii(requested_url.clone())?,
         )
         .await?;
-        if endpoint.url.scheme() == "ring" {
+
+        let mut last_error = anyhow::anyhow!("no endpoint candidates for {requested_url}");
+        for endpoint_url in &endpoint.urls {
+            match self.connect_endpoint(endpoint_url, ip_version).await {
+                Ok(tunnel) => {
+                    return Ok(apply_resolved_endpoint_info(
+                        tunnel,
+                        requested_url,
+                        endpoint.tunnel_prefixes,
+                    ));
+                }
+                Err(error) => {
+                    tracing::warn!(%endpoint_url, %error, "endpoint candidate failed");
+                    last_error = error.context(format!("endpoint candidate {endpoint_url}"));
+                }
+            }
+        }
+        Err(last_error)
+    }
+
+    async fn connect_endpoint(
+        &self,
+        endpoint_url: &Url,
+        ip_version: IpVersion,
+    ) -> anyhow::Result<Box<dyn Tunnel>> {
+        if endpoint_url.scheme() == "ring" {
             let registry = self
                 .ring_registry
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("ring registry is not configured"))?;
-            let tunnel = connect_ring_tunnel(registry, &endpoint.url)?;
-            return Ok(apply_resolved_endpoint_info(
-                tunnel,
-                requested_url,
-                endpoint.tunnel_prefixes,
-            ));
+            return connect_ring_tunnel(registry, endpoint_url);
         }
 
-        if let Some(tunnel) = self.host.connect_external_tunnel(&endpoint.url).await? {
-            return Ok(apply_resolved_endpoint_info(
-                tunnel,
-                requested_url,
-                endpoint.tunnel_prefixes,
-            ));
+        if let Some(tunnel) = self.host.connect_external_tunnel(endpoint_url).await? {
+            return Ok(tunnel);
         }
 
-        if !self.protocol.supports_scheme(endpoint.url.scheme()) {
+        if !self.protocol.supports_scheme(endpoint_url.scheme()) {
             anyhow::bail!(
                 "unsupported client protocol upgrader: {}",
-                endpoint.url.scheme()
+                endpoint_url.scheme()
             );
         }
 
-        let transport = ManualTransport::from_url(&endpoint.url)?;
+        let transport = ManualTransport::from_url(endpoint_url)?;
         let connected = if transport == ManualTransport::ByteStream {
-            ConnectedTransport::ByteStream(self.host.connect_byte_stream(&endpoint.url).await?)
+            ConnectedTransport::ByteStream(self.host.connect_byte_stream(endpoint_url).await?)
         } else {
-            let remote_addr = resolve_url_addrs(
-                &endpoint.url,
-                manual_default_port(&endpoint.url),
-                self.options.socket_context(transport, ip_version),
+            let (_url, remote_addr) = resolve_first_reachable_addr(
                 self.dns.as_ref(),
+                std::slice::from_ref(endpoint_url),
+                manual_default_port(endpoint_url),
+                self.options.socket_context(transport, ip_version),
             )
-            .await?
-            .choose(&mut rand::thread_rng())
-            .copied()
-            .ok_or(TunnelError::NoDnsRecordFound(ip_version))?;
+            .await?;
             connect_resolved(
                 self.host.clone(),
                 transport,
@@ -237,15 +258,9 @@ where
             .await?
         };
 
-        let tunnel = self
-            .protocol
-            .upgrade_client(connected, endpoint.url)
-            .await?;
-        Ok(apply_resolved_endpoint_info(
-            tunnel,
-            requested_url,
-            endpoint.tunnel_prefixes,
-        ))
+        self.protocol
+            .upgrade_client(connected, endpoint_url.clone())
+            .await
     }
 }
 
@@ -266,7 +281,8 @@ impl Tunnel for ResolvedManualTunnel {
 
 #[derive(Debug)]
 struct ResolvedManualEndpoint {
-    url: Url,
+    /// Concrete transport candidates ordered by preference; never empty.
+    urls: Vec<Url>,
     tunnel_prefixes: Vec<String>,
 }
 
@@ -623,27 +639,70 @@ async fn resolve_manual_endpoint(
     resolver: &dyn ManualEndpointResolver,
     requested_url: Url,
 ) -> anyhow::Result<ResolvedManualEndpoint> {
-    let mut url = requested_url;
+    let mut frontier = vec![requested_url];
     let mut tunnel_prefixes = Vec::new();
     let mut visited = BTreeSet::new();
     loop {
-        if !visited.insert(url.clone()) {
-            anyhow::bail!("manual endpoint resolution cycle detected at {url}");
+        for url in &frontier {
+            if !visited.insert(url.clone()) {
+                anyhow::bail!("manual endpoint resolution cycle detected at {url}");
+            }
         }
-        if ManualTransport::from_url(&url).is_ok() {
+
+        let mut next = Vec::new();
+        let mut layer_schemes: Vec<String> = Vec::new();
+        for url in &frontier {
+            if ManualTransport::from_url(url).is_ok() {
+                if !next.contains(url) {
+                    next.push(url.clone());
+                }
+                continue;
+            }
+            if !is_manual_endpoint_scheme(url.scheme()) {
+                anyhow::bail!("unsupported resolved manual connector URL: {url}");
+            }
+            let scheme = url.scheme().to_owned();
+            if !layer_schemes.contains(&scheme) {
+                layer_schemes.push(scheme);
+            }
+        }
+
+        if layer_schemes.is_empty() {
             return Ok(ResolvedManualEndpoint {
-                url,
+                urls: next,
                 tunnel_prefixes,
             });
         }
-        if !is_manual_endpoint_scheme(url.scheme()) {
-            anyhow::bail!("unsupported resolved manual connector URL: {url}");
-        }
-        if tunnel_prefixes.len() >= MAX_MANUAL_ENDPOINT_HOPS {
+
+        if tunnel_prefixes.len() + layer_schemes.len() > MAX_MANUAL_ENDPOINT_HOPS {
             anyhow::bail!("manual endpoint resolution exceeded {MAX_MANUAL_ENDPOINT_HOPS} hops");
         }
-        tunnel_prefixes.push(url.scheme().to_owned());
-        url = convert_idn_to_ascii(resolver.resolve_endpoint(&url).await?)?;
+        tunnel_prefixes.append(&mut layer_schemes);
+
+        for url in &frontier {
+            if ManualTransport::from_url(url).is_ok() {
+                continue;
+            }
+            for candidate in resolver.resolve_endpoint_candidates(url).await? {
+                let candidate = convert_idn_to_ascii(candidate)?;
+                if !next.contains(&candidate) {
+                    next.push(candidate);
+                }
+            }
+        }
+
+        if next.is_empty() {
+            anyhow::bail!("manual endpoint resolution produced no candidates");
+        }
+        if next.len() > MAX_ENDPOINT_CANDIDATES {
+            tracing::warn!(
+                limit = MAX_ENDPOINT_CANDIDATES,
+                total = next.len(),
+                "truncating manual endpoint candidates"
+            );
+            next.truncate(MAX_ENDPOINT_CANDIDATES);
+        }
+        frontier = next;
     }
 }
 
@@ -796,107 +855,159 @@ where
         ),
     )
     .await?;
-    let uses_external_tunnel = data.host.supports_external_tunnel(endpoint.url.scheme());
-    if endpoint.url.scheme() != "ring"
-        && !uses_external_tunnel
-        && !data.protocol.supports_scheme(endpoint.url.scheme())
-    {
-        anyhow::bail!(
-            "unsupported client protocol upgrader: {}",
-            endpoint.url.scheme()
-        );
-    }
-    let transport = (endpoint.url.scheme() != "ring" && !uses_external_tunnel)
-        .then(|| ManualTransport::from_url(&endpoint.url))
-        .transpose()?;
-    let resolved = match transport {
-        None | Some(ManualTransport::ByteStream) => None,
-        Some(transport) => Some(
-            with_timeout_budget("resolve", started_at, connect_timeout, async {
-                let peer_manager = data.peer_manager.upgrade().ok_or_else(|| {
-                    anyhow::anyhow!("peer manager is gone, cannot resolve connector")
-                })?;
-                let remote_addr = resolve_remote_addr(
-                    peer_manager.as_ref(),
-                    data.host.as_ref(),
-                    data.dns.as_ref(),
-                    &endpoint.url,
-                    manual_default_port(&endpoint.url),
-                    data.options.socket_context(transport, ip_version),
-                )
-                .await?;
-                let bind_addrs = if data.options.bind_device
-                    && data.options.allow_interface_bind
-                    && transport.supports_interface_bind()
-                {
-                    collect_bind_addrs(
-                        peer_manager.as_ref(),
-                        data.host.as_ref(),
-                        transport.is_udp(),
-                        remote_addr,
-                    )
-                    .await?
-                } else {
-                    Vec::new()
-                };
-                Ok((remote_addr, bind_addrs))
-            })
-            .await?,
-        ),
-    };
     data.events.emit(CoreEvent::ManualConnecting {
         url: requested_url.clone(),
     });
 
-    let tunnel = with_timeout_budget("connect", started_at, connect_timeout, async {
-        if endpoint.url.scheme() == "ring" {
-            return connect_ring_tunnel(&data.ring_registry, &endpoint.url);
+    let mut candidate_errors: Vec<String> = Vec::new();
+    for endpoint_url in &endpoint.urls {
+        if started_at.elapsed() >= connect_timeout {
+            break;
         }
-        if uses_external_tunnel {
-            return data
-                .host
-                .connect_external_tunnel(&endpoint.url)
-                .await?
-                .ok_or_else(|| {
-                    anyhow::anyhow!("host did not provide external tunnel for {}", endpoint.url)
-                });
+
+        let uses_external_tunnel = data.host.supports_external_tunnel(endpoint_url.scheme());
+        if endpoint_url.scheme() != "ring"
+            && !uses_external_tunnel
+            && !data.protocol.supports_scheme(endpoint_url.scheme())
+        {
+            candidate_errors.push(format!(
+                "{endpoint_url}: unsupported client protocol upgrader"
+            ));
+            continue;
         }
-        let transport = transport.expect("non-Ring endpoint should have a transport");
-        let connected = match resolved {
-            Some((remote_addr, bind_addrs)) => {
-                connect_resolved(
-                    data.host.clone(),
-                    transport,
-                    remote_addr,
-                    bind_addrs,
-                    data.options.tcp_bind.clone(),
-                    data.options.udp_bind.clone(),
-                )
-                .await?
-            }
-            None => {
-                ConnectedTransport::ByteStream(data.host.connect_byte_stream(&endpoint.url).await?)
+        let transport = (endpoint_url.scheme() != "ring" && !uses_external_tunnel)
+            .then(|| ManualTransport::from_url(endpoint_url))
+            .transpose();
+        let transport = match transport {
+            Ok(transport) => transport,
+            Err(error) => {
+                candidate_errors.push(format!("{endpoint_url}: {error}"));
+                continue;
             }
         };
-        data.protocol.upgrade_client(connected, endpoint.url).await
-    })
-    .await?;
-    let tunnel =
-        apply_resolved_endpoint_info(tunnel, requested_url.clone(), endpoint.tunnel_prefixes);
-    let peer_manager = data
-        .peer_manager
-        .upgrade()
-        .ok_or_else(|| anyhow::anyhow!("peer manager is gone, cannot reconnect"))?;
-    let (peer_id, conn_id) =
-        with_timeout_budget("handshake", started_at, connect_timeout, async move {
+
+        let resolved = match transport {
+            None | Some(ManualTransport::ByteStream) => None,
+            Some(transport) => {
+                // A candidate whose addresses cannot be resolved (for example
+                // an IPv6-only target queried from a network without IPv6)
+                // must not abort the whole attempt: fall through to the next
+                // candidate.
+                match with_timeout_budget("resolve", started_at, connect_timeout, async {
+                    let peer_manager = data.peer_manager.upgrade().ok_or_else(|| {
+                        anyhow::anyhow!("peer manager is gone, cannot resolve connector")
+                    })?;
+                    let remote_addr = resolve_remote_addr(
+                        peer_manager.as_ref(),
+                        data.host.as_ref(),
+                        data.dns.as_ref(),
+                        endpoint_url,
+                        manual_default_port(endpoint_url),
+                        data.options.socket_context(transport, ip_version),
+                    )
+                    .await?;
+                    let bind_addrs = if data.options.bind_device
+                        && data.options.allow_interface_bind
+                        && transport.supports_interface_bind()
+                    {
+                        collect_bind_addrs(
+                            peer_manager.as_ref(),
+                            data.host.as_ref(),
+                            transport.is_udp(),
+                            remote_addr,
+                        )
+                        .await?
+                    } else {
+                        Vec::new()
+                    };
+                    Ok((remote_addr, bind_addrs))
+                })
+                .await
+                {
+                    Ok(resolved) => Some(resolved),
+                    Err(error) => {
+                        candidate_errors.push(format!("{endpoint_url}: {error:#}"));
+                        continue;
+                    }
+                }
+            }
+        };
+
+        let tunnel = match with_timeout_budget("connect", started_at, connect_timeout, async {
+            if endpoint_url.scheme() == "ring" {
+                return connect_ring_tunnel(&data.ring_registry, endpoint_url);
+            }
+            if uses_external_tunnel {
+                return data
+                    .host
+                    .connect_external_tunnel(endpoint_url)
+                    .await?
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("host did not provide external tunnel for {}", endpoint_url)
+                    });
+            }
+            let transport = transport.expect("non-Ring endpoint should have a transport");
+            let connected = match resolved {
+                Some((remote_addr, bind_addrs)) => {
+                    connect_resolved(
+                        data.host.clone(),
+                        transport,
+                        remote_addr,
+                        bind_addrs,
+                        data.options.tcp_bind.clone(),
+                        data.options.udp_bind.clone(),
+                    )
+                    .await?
+                }
+                None => ConnectedTransport::ByteStream(
+                    data.host.connect_byte_stream(endpoint_url).await?,
+                ),
+            };
+            data.protocol
+                .upgrade_client(connected, endpoint_url.clone())
+                .await
+        })
+        .await
+        {
+            Ok(tunnel) => tunnel,
+            Err(error) => {
+                candidate_errors.push(format!("{endpoint_url}: {error:#}"));
+                continue;
+            }
+        };
+        let tunnel = apply_resolved_endpoint_info(
+            tunnel,
+            requested_url.clone(),
+            endpoint.tunnel_prefixes.clone(),
+        );
+        let peer_manager = data
+            .peer_manager
+            .upgrade()
+            .ok_or_else(|| anyhow::anyhow!("peer manager is gone, cannot reconnect"))?;
+        let handshake = with_timeout_budget("handshake", started_at, connect_timeout, async move {
             peer_manager
                 .add_client_tunnel_with_peer_id_hint(tunnel, true, None)
                 .await
                 .map_err(anyhow::Error::from)
         })
-        .await?;
-    tracing::info!(peer_id, %conn_id, %requested_url, "manual reconnect succeeded");
-    Ok(())
+        .await;
+        match handshake {
+            Ok((peer_id, conn_id)) => {
+                tracing::info!(peer_id, %conn_id, %requested_url, "manual reconnect succeeded");
+                return Ok(());
+            }
+            Err(error) => {
+                candidate_errors.push(format!("{endpoint_url}: {error:#}"));
+                continue;
+            }
+        }
+    }
+
+    anyhow::bail!(
+        "all {} endpoint candidates failed: {}",
+        candidate_errors.len(),
+        candidate_errors.join("; ")
+    )
 }
 
 pub(crate) async fn connect_resolved<H>(
@@ -1013,6 +1124,35 @@ where
     Ok(ret)
 }
 
+/// Resolves the candidate urls in order and returns the first one that
+/// yields addresses together with a randomly chosen socket address. The
+/// returned error names every candidate and its resolution failure.
+async fn resolve_first_reachable_addr(
+    dns: &dyn DnsResolver,
+    urls: &[Url],
+    default_port: u16,
+    context: SocketContext,
+) -> anyhow::Result<(Url, SocketAddr)> {
+    anyhow::ensure!(!urls.is_empty(), "no endpoint urls to resolve");
+    let mut failures = Vec::new();
+    for url in urls {
+        match resolve_url_addrs(url, default_port, context.clone(), dns).await {
+            Ok(addrs) => {
+                let Some(addr) = addrs.choose(&mut rand::thread_rng()).copied() else {
+                    failures.push(format!("{url}: no addresses"));
+                    continue;
+                };
+                return Ok((url.clone(), addr));
+            }
+            Err(error) => failures.push(format!("{url}: {error:#}")),
+        }
+    }
+    anyhow::bail!(
+        "failed to resolve any endpoint candidate: {}",
+        failures.join("; ")
+    )
+}
+
 pub(crate) async fn resolve_url_addrs(
     url: &Url,
     default_port: u16,
@@ -1095,7 +1235,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
+    use std::{collections::HashMap, sync::Mutex};
 
     use crate::socket::udp::UdpSessionProtocol;
 
@@ -1166,6 +1306,7 @@ mod tests {
 
     struct StaticDnsResolver {
         ips: Vec<IpAddr>,
+        per_host_errors: HashMap<String, String>,
         queries: Mutex<Vec<DnsQuery>>,
     }
 
@@ -1194,6 +1335,11 @@ mod tests {
     #[async_trait]
     impl DnsResolver for StaticDnsResolver {
         async fn resolve(&self, query: DnsQuery) -> anyhow::Result<Vec<IpAddr>> {
+            if let Some(error) = self.per_host_errors.get(query.host.as_str()) {
+                let error = anyhow::anyhow!(error.clone());
+                self.queries.lock().unwrap().push(query);
+                return Err(error);
+            }
             self.queries.lock().unwrap().push(query);
             Ok(self.ips.clone())
         }
@@ -1253,7 +1399,7 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(endpoint.url.as_str(), "tcp://peer.example:12000");
+        assert_eq!(endpoint.urls, ["tcp://peer.example:12000".parse().unwrap()]);
         assert_eq!(endpoint.tunnel_prefixes, ["http", "txt"]);
     }
 
@@ -1273,6 +1419,7 @@ mod tests {
     async fn txt_discovery_does_not_require_address_records() {
         let resolver = StaticDnsResolver {
             ips: Vec::new(),
+            per_host_errors: HashMap::new(),
             queries: Mutex::new(Vec::new()),
         };
         let versions = resolve_reconnect_ip_versions(
@@ -1289,9 +1436,80 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn manual_endpoint_resolution_expands_multiple_candidates() {
+        struct MultiCandidateEndpointResolver;
+
+        #[async_trait]
+        impl ManualEndpointResolver for MultiCandidateEndpointResolver {
+            async fn resolve_endpoint(&self, _url: &Url) -> anyhow::Result<Url> {
+                Ok("tcp://peer.example:12000".parse().unwrap())
+            }
+
+            async fn resolve_endpoint_candidates(&self, _url: &Url) -> anyhow::Result<Vec<Url>> {
+                Ok(vec![
+                    "tcp://peer-a.example:12000".parse().unwrap(),
+                    "tcp://peer-b.example:12001".parse().unwrap(),
+                ])
+            }
+        }
+
+        let endpoint = resolve_manual_endpoint(
+            &MultiCandidateEndpointResolver,
+            "srv://discovery.example".parse().unwrap(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            endpoint.urls,
+            [
+                "tcp://peer-a.example:12000".parse().unwrap(),
+                "tcp://peer-b.example:12001".parse().unwrap()
+            ]
+        );
+        assert_eq!(endpoint.tunnel_prefixes, ["srv"]);
+    }
+
+    #[tokio::test]
+    async fn resolve_first_reachable_addr_falls_back_to_next_candidate() {
+        // note: `tcp://` is an opaque scheme, so the url crate keeps even an
+        // IPv4 literal as a Domain host which goes through the dns mock.
+        let resolver = StaticDnsResolver {
+            ips: vec!["192.0.2.10".parse().unwrap()],
+            per_host_errors: [(
+                "v6-fail.example".to_owned(),
+                "no AAAA record found".to_owned(),
+            )]
+            .into(),
+            queries: Mutex::new(Vec::new()),
+        };
+
+        let urls = vec![
+            "tcp://v6-fail.example:11010".parse().unwrap(),
+            "tcp://192.0.2.10:11010".parse().unwrap(),
+        ];
+        let (url, addr) =
+            resolve_first_reachable_addr(&resolver, &urls, 11010, SocketContext::default())
+                .await
+                .unwrap();
+        assert_eq!(url.as_str(), "tcp://192.0.2.10:11010");
+        assert_eq!(addr, "192.0.2.10:11010".parse::<SocketAddr>().unwrap());
+
+        let unreachable = vec!["tcp://v6-fail.example:11010".parse().unwrap()];
+        let error =
+            resolve_first_reachable_addr(&resolver, &unreachable, 11010, SocketContext::default())
+                .await
+                .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("v6-fail.example"), "{message}");
+        assert!(message.contains("no AAAA record found"), "{message}");
+    }
+
+    #[tokio::test]
     async fn external_byte_stream_does_not_require_address_records() {
         let resolver = StaticDnsResolver {
             ips: Vec::new(),
+            per_host_errors: HashMap::new(),
             queries: Mutex::new(Vec::new()),
         };
         let versions = resolve_reconnect_ip_versions(
@@ -1349,6 +1567,7 @@ mod tests {
     async fn resolver_receives_instance_socket_context_and_filters_family() {
         let resolver = StaticDnsResolver {
             ips: vec![IpAddr::from([127, 0, 0, 1]), Ipv6Addr::LOCALHOST.into()],
+            per_host_errors: HashMap::new(),
             queries: Mutex::new(Vec::new()),
         };
         let url: Url = "udp://example.com:12000".parse().unwrap();
