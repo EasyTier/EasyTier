@@ -8,6 +8,7 @@ use std::{
     time::Duration,
 };
 
+use anyhow::Context as _;
 use async_trait::async_trait;
 use dashmap::DashSet;
 use percent_encoding::percent_decode_str;
@@ -191,7 +192,8 @@ where
             self.endpoint_resolver.as_ref(),
             convert_idn_to_ascii(requested_url.clone())?,
         )
-        .await?;
+        .await
+        .with_context(|| format!("discovering {requested_url}"))?;
 
         let mut last_error = anyhow::anyhow!("no endpoint candidates for {requested_url}");
         for endpoint_url in &endpoint.urls {
@@ -238,7 +240,12 @@ where
 
         let transport = ManualTransport::from_url(endpoint_url)?;
         let connected = if transport == ManualTransport::ByteStream {
-            ConnectedTransport::ByteStream(self.host.connect_byte_stream(endpoint_url).await?)
+            ConnectedTransport::ByteStream(
+                self.host
+                    .connect_byte_stream(endpoint_url)
+                    .await
+                    .with_context(|| format!("connecting via byte stream for {endpoint_url}"))?,
+            )
         } else {
             let (_url, remote_addr) = resolve_first_reachable_addr(
                 self.dns.as_ref(),
@@ -246,7 +253,8 @@ where
                 manual_default_port(endpoint_url),
                 self.options.socket_context(transport, ip_version),
             )
-            .await?;
+            .await
+            .with_context(|| format!("resolving addresses for {endpoint_url}"))?;
             connect_resolved(
                 self.host.clone(),
                 transport,
@@ -255,12 +263,14 @@ where
                 self.options.tcp_bind.clone(),
                 self.options.udp_bind.clone(),
             )
-            .await?
+            .await
+            .with_context(|| format!("connecting to {remote_addr} for {endpoint_url}"))?
         };
 
         self.protocol
             .upgrade_client(connected, endpoint_url.clone())
             .await
+            .with_context(|| format!("upgrading for {endpoint_url}"))
     }
 }
 
@@ -854,7 +864,8 @@ where
             convert_idn_to_ascii(requested_url.clone())?,
         ),
     )
-    .await?;
+    .await
+    .with_context(|| format!("discovering {requested_url}"))?;
     data.events.emit(CoreEvent::ManualConnecting {
         url: requested_url.clone(),
     });
@@ -933,6 +944,10 @@ where
             }
         };
 
+        let dial_target = resolved
+            .as_ref()
+            .map(|(remote_addr, _)| remote_addr.to_string())
+            .unwrap_or_else(|| "byte stream".to_owned());
         let tunnel = match with_timeout_budget("connect", started_at, connect_timeout, async {
             if endpoint_url.scheme() == "ring" {
                 return connect_ring_tunnel(&data.ring_registry, endpoint_url);
@@ -971,7 +986,7 @@ where
         {
             Ok(tunnel) => tunnel,
             Err(error) => {
-                candidate_errors.push(format!("{endpoint_url}: {error:#}"));
+                candidate_errors.push(format!("{endpoint_url} [dial {dial_target}]: {error:#}"));
                 continue;
             }
         };
