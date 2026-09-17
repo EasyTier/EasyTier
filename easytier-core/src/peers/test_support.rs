@@ -76,6 +76,11 @@ impl NoopPeerContext {
         self.secure_mode = Some(secure_mode);
         self
     }
+
+    pub(crate) fn with_flags(mut self, flags: FlagsInConfig) -> Self {
+        self.flags = flags;
+        self
+    }
 }
 
 impl Default for NoopPeerContext {

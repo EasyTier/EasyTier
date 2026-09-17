@@ -334,6 +334,35 @@ pub mod manage {
     include!(concat!(env!("OUT_DIR"), "/api.manage.rs"));
     #[cfg(feature = "json-rpc")]
     include!(concat!(env!("OUT_DIR"), "/api.manage.serde.rs"));
+
+    impl std::fmt::Debug for ManagedCredentialConfig {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter
+                .debug_struct("ManagedCredentialConfig")
+                .field("credential_id", &self.credential_id)
+                .field("credential_secret", &"<redacted>")
+                .field("groups", &self.groups)
+                .field("allow_relay", &self.allow_relay)
+                .field("allowed_proxy_cidrs", &self.allowed_proxy_cidrs)
+                .field("expiry_unix", &self.expiry_unix)
+                .field("reusable", &self.reusable)
+                .finish()
+        }
+    }
+
+    impl std::fmt::Debug for VpnPortalConfig {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter
+                .debug_struct("VpnPortalConfig")
+                .field("wireguard_listen", &self.wireguard_listen)
+                .field(
+                    "wireguard_private_key",
+                    &self.wireguard_private_key.as_ref().map(|_| "<redacted>"),
+                )
+                .field("clients", &self.clients)
+                .finish()
+        }
+    }
 }
 
 #[cfg(test)]
@@ -351,6 +380,32 @@ mod tests {
     use crate::proto::rpc_types::descriptor::ServiceDescriptor;
     use crate::proto::rpc_types::error::Error;
     use crate::proto::rpc_types::handler::Handler;
+
+    #[test]
+    fn vpn_portal_debug_redacts_private_key() {
+        let config = super::manage::VpnPortalConfig {
+            wireguard_listen: "0.0.0.0:51820".to_owned(),
+            wireguard_private_key: Some("private-key-material".to_owned()),
+            clients: Vec::new(),
+        };
+
+        let debug = format!("{config:?}");
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("private-key-material"));
+    }
+
+    #[test]
+    fn managed_credential_debug_redacts_secret() {
+        let credential = super::manage::ManagedCredentialConfig {
+            credential_id: "managed".to_owned(),
+            credential_secret: "private-key-material".to_owned(),
+            ..Default::default()
+        };
+
+        let debug = format!("{credential:?}");
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("private-key-material"));
+    }
 
     #[derive(Clone, Default)]
     struct WebClientServiceJsonCallHandler;

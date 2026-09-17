@@ -1,0 +1,38 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "easytier-web-example",
+  "main": "worker.ts",
+  "compatibility_date": "2026-07-29",
+  "compatibility_flags": ["nodejs_compat"],
+  "rules": [
+    {
+      "type": "CompiledWasm",
+      "globs": ["**/*.wasm"],
+      "fallthrough": true
+    }
+  ],
+  "vars": {
+    "EASYTIER_NETWORK_NAME": "easytier-web-example"
+  },
+  "secrets": {
+    "required": ["EASYTIER_NETWORK_SECRET"]
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "EASYTIER_CORE",
+        "class_name": "EasyTierCoreObject"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["EasyTierCoreObject"]
+    }
+  ],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  }
+}

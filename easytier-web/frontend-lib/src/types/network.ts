@@ -5,7 +5,15 @@ import {
   type NetworkPeerConfig,
   type NetworkConfig as ProtoNetworkConfig,
   type PortForwardConfig,
+  type VpnPortalClientConfig,
+  type VpnPortalConfig,
 } from '../generated/proto/api_manage'
+import {
+  VpnPortalClientState,
+  VpnPortalInfo as VpnPortalInfoPb,
+  type VpnPortalClientInfo,
+  type VpnPortalInfo,
+} from '../generated/proto/api_instance'
 import {
   Action as AclAction,
   ChainType as AclChainType,
@@ -26,11 +34,15 @@ import {
 import { prepareNetworkConfigForProtoJson } from './networkCompat'
 
 export { AclAction, AclChainType, AclProtocol, CompressionAlgoPb, NatType, NetworkingMethod }
-export type { Acl, AclChain, AclRule, AclV1, GroupIdentity, GroupInfo, NetworkPeerConfig, PeerFeatureFlag, PortForwardConfig, SecureModeConfig }
+export { VpnPortalClientState }
+export type { Acl, AclChain, AclRule, AclV1, GroupIdentity, GroupInfo, NetworkPeerConfig, PeerFeatureFlag, PortForwardConfig, SecureModeConfig, VpnPortalClientConfig, VpnPortalClientInfo, VpnPortalConfig, VpnPortalInfo }
 
 export type NetworkConfig = Omit<
   ProtoNetworkConfig,
-  'instance_id' | 'instance_recv_bps_limit' | 'mtu' | 'networking_method'
+  | 'instance_id'
+  | 'instance_recv_bps_limit'
+  | 'mtu'
+  | 'networking_method'
 > & {
   instance_id: string
   mtu: number | null
@@ -89,11 +101,6 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     peer_urls: [],
 
     proxy_cidrs: [],
-
-    enable_vpn_portal: false,
-    vpn_portal_listen_port: 22022,
-    vpn_portal_client_network_addr: '',
-    vpn_portal_client_network_len: 24,
 
     advanced_settings: false,
 
@@ -308,6 +315,12 @@ export function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
   normalized.exit_nodes ??= []
   normalized.mapped_listeners ??= []
   normalized.port_forwards ??= []
+  if (normalized.vpn_portal_config) {
+    normalized.vpn_portal_config.clients ??= []
+    normalized.vpn_portal_config.clients.forEach((client) => {
+      client.groups ??= []
+    })
+  }
   normalized.acl = config.acl === undefined ? undefined : normalizeAcl(normalized.acl)
 
   return normalized
@@ -328,6 +341,10 @@ export function toBackendNetworkConfig(config: NetworkConfig): NetworkConfig {
   return NetworkConfigPb.toJson(backend, {
     useProtoFieldName: true,
   }) as unknown as NetworkConfig
+}
+
+export function normalizeVpnPortalInfo(info: unknown): VpnPortalInfo {
+  return VpnPortalInfoPb.fromJson(info as any, { ignoreUnknownFields: true })
 }
 
 export interface NetworkInstance {
@@ -394,7 +411,6 @@ export interface NodeInfo {
   }
   stun_info: StunInfo
   listeners: Url[]
-  vpn_portal_cfg?: string
   peer_id: number
 }
 

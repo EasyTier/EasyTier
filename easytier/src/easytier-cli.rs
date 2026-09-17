@@ -1,3 +1,5 @@
+#![cfg(feature = "cli")]
+
 use std::{
     collections::{BTreeMap, HashMap},
     ffi::OsString,
@@ -22,7 +24,7 @@ use easytier_core::connectivity::stun::StunInfoProvider as _;
 use humansize::format_size;
 use rust_i18n::t;
 use service_manager::*;
-use tabled::settings::{Disable, Modify, Style, Width, location::ByColumnName, object::Columns};
+use tabled::settings::{Modify, Remove, Style, Width, location::ByColumnName, object::Columns};
 use terminal_size::{Width as TerminalWidth, terminal_size};
 use unicode_width::UnicodeWidthStr;
 
@@ -32,11 +34,12 @@ use tokio::time::timeout;
 use easytier::{
     common::{constants::EASYTIER_VERSION, stun::runtime_stun_info_collector},
     proto::{
-        acl::AclStats,
+        acl::{Acl, AclStats},
         api::{
             config::{
                 AclPatch, ConfigPatchAction, ConfigRpc, ConfigRpcClientFactory,
                 InstanceConfigPatch, PatchConfigRequest, PortForwardPatch, StringPatch, UrlPatch,
+                VpnPortalClientPatch,
             },
             instance::{
                 AclManageRpc, AclManageRpcClientFactory, Connector, ConnectorManageRpc,
@@ -64,7 +67,8 @@ use easytier::{
                 SetLoggerConfigRequest,
             },
             manage::{
-                ListNetworkInstanceMetaRequest, ListNetworkInstanceRequest, WebClientService,
+                ListNetworkInstanceMetaRequest, ListNetworkInstanceRequest,
+                VpnPortalClientConfig as ManageVpnPortalClientConfig, WebClientService,
                 WebClientServiceClientFactory,
             },
         },
@@ -130,8 +134,8 @@ enum SubCommand {
     Route(RouteArgs),
     #[command(about = "show global peers info")]
     PeerCenter,
-    #[command(about = "show vpn portal (wireguard) info")]
-    VpnPortal,
+    #[command(about = "manage vpn portal (wireguard) clients")]
+    VpnPortal(VpnPortalArgs),
     #[command(about = "inspect self easytier-core status")]
     Node(NodeArgs),
     #[command(about = "manage easytier-core as a system service")]
@@ -265,6 +269,32 @@ enum MappedListenerSubCommand {
     List,
 }
 
+#[derive(Args, Debug)]
+struct VpnPortalArgs {
+    #[command(subcommand)]
+    sub_command: Option<VpnPortalSubCommand>,
+}
+
+#[derive(Subcommand, Debug)]
+enum VpnPortalSubCommand {
+    /// Add a WireGuard portal client
+    AddClient {
+        #[arg(help = "client name")]
+        name: String,
+        #[arg(long, help = "client virtual IPv4 CIDR inside the mesh network")]
+        virtual_ip: String,
+        #[arg(long, help = "ACL groups assigned to the client")]
+        groups: Vec<String>,
+    },
+    /// Remove a WireGuard portal client
+    RemoveClient {
+        #[arg(help = "client name")]
+        name: String,
+    },
+    /// Remove all WireGuard portal clients
+    ClearClients,
+}
+
 #[derive(Subcommand, Debug)]
 enum NodeSubCommand {
     #[command(about = "show node info")]
@@ -285,10 +315,38 @@ struct AclArgs {
     sub_command: Option<AclSubCommand>,
 }
 
+#[derive(Args, Debug)]
+struct AclSetArgs {
+    /// Full ACL as a TOML string, or a path to a TOML file prefixed by '@'.
+    ///
+    /// The TOML uses the same shape as the `[acl]` section of an easytier
+    /// configuration file, for example:
+    ///
+    /// ```toml
+    /// [acl.acl_v1]
+    /// [[acl.acl_v1.chains]]
+    /// name = "Inbound"
+    /// chain_type = 1
+    /// enabled = true
+    /// default_action = 2
+    /// [[acl.acl_v1.chains.rules]]
+    /// protocol = 3
+    /// action = 1
+    /// ```
+    ///
+    /// Using `@/path/to/acl.toml` makes it easy to manage and debug the full
+    /// ACL offline. The whole ACL is replaced at runtime without restarting
+    /// easytier-core.
+    #[arg(help = "full ACL TOML string or '@path/to/acl.toml'")]
+    acl: String,
+}
+
 #[derive(Subcommand, Debug)]
 enum AclSubCommand {
     /// Show ACL rule hit statistics
     Stats,
+    /// Replace the whole ACL at runtime without restarting easytier-core
+    Set(AclSetArgs),
 }
 
 #[derive(Args, Debug)]
@@ -477,9 +535,10 @@ struct InstallArgs {
     service_work_dir: Option<PathBuf>,
 
     #[arg(
-        trailing_var_arg = true,
+        long,
+        num_args = 1..,
         allow_hyphen_values = true,
-        help = "args to pass to easytier-core"
+        help = "args to pass to easytier-core, must be the last option of install"
     )]
     core_args: Option<Vec<OsString>>,
 }
@@ -556,6 +615,16 @@ fn is_missing_web_client_service(error: &RpcError) -> bool {
     )
 }
 
+fn parse_vpn_portal_client_cidr(value: &str) -> anyhow::Result<cidr::Ipv4Inet> {
+    let value = value.trim();
+    if !value.contains('/') {
+        anyhow::bail!("client virtual IPv4 must include its network prefix");
+    }
+    value
+        .parse::<cidr::Ipv4Inet>()
+        .map_err(|error| anyhow::anyhow!("invalid client virtual IPv4 CIDR ({value}): {error}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -579,6 +648,13 @@ mod tests {
         let error = RpcError::InvalidServiceKey("PeerManageRpc".to_string(), "".to_string());
 
         assert!(!is_missing_web_client_service(&error));
+    }
+
+    #[test]
+    fn vpn_portal_client_requires_a_complete_ipv4_cidr() {
+        let client = parse_vpn_portal_client_cidr("10.90.0.2/16").unwrap();
+        assert_eq!(client.to_string(), "10.90.0.2/16");
+        assert!(parse_vpn_portal_client_cidr("10.90.0.2").is_err());
     }
 
     #[test]
@@ -625,6 +701,69 @@ mod tests {
         assert!(active[proxy_index]);
         assert!(!dropped.contains(&proxy_index));
         assert!(total_width <= 79);
+    }
+
+    fn parse_install_core_args(argv: &[&str]) -> Vec<OsString> {
+        let cli = Cli::try_parse_from(argv).expect("failed to parse cli");
+        let SubCommand::Service(service_args) = cli.sub_command else {
+            panic!("not a service subcommand");
+        };
+        let ServiceSubCommand::Install(install_args) = service_args.sub_command else {
+            panic!("not an install subcommand");
+        };
+        install_args.core_args.expect("no core args")
+    }
+
+    #[test]
+    fn install_core_args_do_not_include_the_flag_itself() {
+        // trailing_var_arg used to collect the "--core-args" token itself into
+        // the value, breaking the installed service's command line.
+        let args = parse_install_core_args(&[
+            "easytier-cli",
+            "service",
+            "install",
+            "--core-args",
+            "--daemon",
+            "--config-dir",
+            "/nonexistent",
+        ]);
+        assert_eq!(args, vec!["--daemon", "--config-dir", "/nonexistent"]);
+    }
+
+    #[test]
+    fn install_core_args_support_equals_form() {
+        let args = parse_install_core_args(&[
+            "easytier-cli",
+            "service",
+            "install",
+            "--core-args=--daemon",
+        ]);
+        assert_eq!(args, vec!["--daemon"]);
+    }
+
+    #[test]
+    fn install_options_before_core_args_still_parse() {
+        let cli = Cli::try_parse_from([
+            "easytier-cli",
+            "service",
+            "install",
+            "--disable-autostart",
+            "true",
+            "--core-args",
+            "--daemon",
+        ])
+        .expect("failed to parse cli");
+        let SubCommand::Service(service_args) = cli.sub_command else {
+            panic!("not a service subcommand");
+        };
+        let ServiceSubCommand::Install(install_args) = service_args.sub_command else {
+            panic!("not an install subcommand");
+        };
+        assert_eq!(install_args.disable_autostart, Some(true));
+        assert_eq!(
+            install_args.core_args.expect("no core args"),
+            vec!["--daemon"]
+        );
     }
 }
 
@@ -1772,7 +1911,7 @@ impl<'a> CommandHandler<'a> {
         struct RouteTableItem {
             ipv4: String,
             hostname: String,
-            #[tabled(display_with = "format_proxy_cidrs")]
+            #[tabled(display("format_proxy_cidrs"))]
             proxy_cidrs: String,
 
             next_hop_ipv4: String,
@@ -1935,6 +2074,173 @@ impl<'a> CommandHandler<'a> {
             }
             Ok(())
         })
+    }
+
+    async fn apply_acl_set(&self, acl: Acl) -> Result<(), Error> {
+        // tcp_whitelist/udp_whitelist are separate config knobs that remain in
+        // effect alongside the ACL; updating them is out of scope for `acl set`.
+        let client = self.get_config_client().await?;
+        let request = PatchConfigRequest {
+            instance: Some(self.instance_selector.clone()),
+            patch: Some(InstanceConfigPatch {
+                acl: Some(AclPatch {
+                    acl: Some(acl),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+        };
+        let _response = client
+            .patch_config(BaseController::default(), request)
+            .await?;
+        Ok(())
+    }
+
+    async fn handle_acl_set(&self, raw: &str) -> Result<(), Error> {
+        // Load the content either from a file (`@path`) or inline.
+        let text = if let Some(path) = raw.strip_prefix('@') {
+            tokio::fs::read_to_string(path)
+                .await
+                .with_context(|| format!("failed to read ACL file `{path}`"))?
+        } else {
+            raw.to_string()
+        };
+
+        // Try parsing as JSON first, then fallback to TOML if JSON parsing fails.
+        #[derive(serde::Deserialize, Default)]
+        struct AclWrapper {
+            acl: Option<Acl>,
+        }
+
+        // Your JSON file includes a full PatchConfigRequest structure: {"instance": ..., "patch": {"acl": {"acl": ...}}}
+        // Let's support parsing full PatchConfigRequest or patch payload or Acl directly.
+        #[derive(serde::Deserialize, Default)]
+        struct PatchRequestJson {
+            patch: Option<InstanceConfigPatch>,
+        }
+
+        let acl = if let Ok(parsed_req) = serde_json::from_str::<PatchRequestJson>(&text) {
+            parsed_req
+                .patch
+                .and_then(|p| p.acl)
+                .and_then(|a| a.acl)
+                .unwrap_or_default()
+        } else if let Ok(parsed_json) = serde_json::from_str::<AclWrapper>(&text) {
+            parsed_json.acl.unwrap_or_default()
+        } else if let Ok(parsed_json_direct) = serde_json::from_str::<Acl>(&text) {
+            parsed_json_direct
+        } else {
+            // Fallback to TOML
+            #[derive(serde::Deserialize, Default)]
+            struct AclToml {
+                acl: Option<Acl>,
+            }
+            let parsed_toml: AclToml = toml::from_str(&text).with_context(
+                || "failed to parse ACL as either JSON or TOML (expected `[acl.acl_v1]` structure)",
+            )?;
+            parsed_toml.acl.unwrap_or_default()
+        };
+        if acl.is_empty() {
+            anyhow::bail!(
+                "parsed ACL is empty; provide at least one chain or a non-empty group under `[acl.acl_v1]`"
+            );
+        }
+
+        // Redact group secrets before any JSON echo so credentials are never
+        // written to stdout or captured logs (matches core's dump redaction).
+        let mut sanitized = acl.clone();
+        if let Some(group) = sanitized.acl_v1.as_mut().and_then(|v| v.group.as_mut()) {
+            for declaration in group.declares.iter_mut() {
+                if !declaration.group_secret.is_empty() {
+                    declaration.group_secret = "<redacted>".to_string();
+                }
+            }
+        }
+
+        let chain_count = acl
+            .acl_v1
+            .as_ref()
+            .map(|v| v.chains.len())
+            .unwrap_or_default();
+
+        // Apply to each selected instance, collecting per-instance outcomes so
+        // a failure on one instance does not leave others partially or
+        // silently updated.
+        let outcomes: Vec<(String, Result<(), Error>)> = match self.fanout_targets().await? {
+            Some(targets) => {
+                let mut list = Vec::with_capacity(targets.len());
+                for target in targets {
+                    let label = target.label();
+                    let scoped = self.scoped_to_instance(&target);
+                    list.push((label, scoped.apply_acl_set(acl.clone()).await));
+                }
+                list
+            }
+            None => vec![(
+                "selected instance".to_string(),
+                self.apply_acl_set(acl.clone()).await,
+            )],
+        };
+
+        let mut failures: Vec<(String, Error)> = Vec::new();
+        let mut ok = 0usize;
+        for (label, result) in outcomes {
+            match result {
+                Ok(()) => {
+                    ok += 1;
+                    if *self.output_format == OutputFormat::Json {
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&serde_json::json!({
+                                "instance": label,
+                                "success": true,
+                                "chains": chain_count,
+                                "acl": &sanitized,
+                            }))?
+                        );
+                    } else {
+                        println!("== {} ==", label);
+                        println!("ACL updated successfully ({chain_count} chain(s))");
+                    }
+                }
+                Err(e) => {
+                    if *self.output_format == OutputFormat::Json {
+                        let _ = serde_json::to_writer(
+                            std::io::stdout(),
+                            &serde_json::json!({
+                                "instance": label,
+                                "success": false,
+                                "error": e.to_string(),
+                            }),
+                        );
+                    } else {
+                        println!("== {} ==", label);
+                        println!("ACL update failed: {e:#}");
+                    }
+                    failures.push((label, e));
+                }
+            }
+        }
+
+        if ok == 0 {
+            return Err(anyhow::anyhow!(
+                "ACL update failed on all {} selected instance(s)",
+                failures.len()
+            ));
+        }
+        if !failures.is_empty() {
+            return Err(anyhow::anyhow!(
+                "ACL update failed on {} of {} selected instance(s): {}",
+                failures.len(),
+                ok + failures.len(),
+                failures
+                    .iter()
+                    .map(|(label, _)| label.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        Ok(())
     }
 
     async fn handle_mapped_listener_list(&self) -> Result<(), Error> {
@@ -2502,6 +2808,84 @@ impl<'a> CommandHandler<'a> {
         })
     }
 
+    async fn apply_vpn_portal_client_patch(
+        &self,
+        patch: VpnPortalClientPatch,
+    ) -> Result<(), Error> {
+        let client = self.get_config_client().await?;
+        let request = PatchConfigRequest {
+            instance: Some(self.instance_selector.clone()),
+            patch: Some(InstanceConfigPatch {
+                vpn_portal_clients: vec![patch],
+                ..Default::default()
+            }),
+        };
+        let _response = client
+            .patch_config(BaseController::default(), request)
+            .await?;
+        Ok(())
+    }
+
+    async fn handle_vpn_portal_add_client(
+        &self,
+        name: String,
+        virtual_ip: String,
+        groups: Vec<String>,
+    ) -> Result<(), Error> {
+        let virtual_ip = parse_vpn_portal_client_cidr(&virtual_ip)?.to_string();
+        self.apply_to_instances(|handler| {
+            let name = name.clone();
+            let virtual_ip = virtual_ip.clone();
+            let groups = groups.clone();
+            Box::pin(async move {
+                handler
+                    .apply_vpn_portal_client_patch(VpnPortalClientPatch {
+                        action: ConfigPatchAction::Add as i32,
+                        client: Some(ManageVpnPortalClientConfig {
+                            name,
+                            virtual_ip,
+                            groups,
+                        }),
+                    })
+                    .await
+            })
+        })
+        .await
+    }
+
+    async fn handle_vpn_portal_remove_client(&self, name: String) -> Result<(), Error> {
+        self.apply_to_instances(|handler| {
+            let name = name.clone();
+            Box::pin(async move {
+                handler
+                    .apply_vpn_portal_client_patch(VpnPortalClientPatch {
+                        action: ConfigPatchAction::Remove as i32,
+                        client: Some(ManageVpnPortalClientConfig {
+                            name,
+                            virtual_ip: String::new(),
+                            groups: Vec::new(),
+                        }),
+                    })
+                    .await
+            })
+        })
+        .await
+    }
+
+    async fn handle_vpn_portal_clear_clients(&self) -> Result<(), Error> {
+        self.apply_to_instances(|handler| {
+            Box::pin(async move {
+                handler
+                    .apply_vpn_portal_client_patch(VpnPortalClientPatch {
+                        action: ConfigPatchAction::Clear as i32,
+                        client: None,
+                    })
+                    .await
+            })
+        })
+        .await
+    }
+
     async fn handle_vpn_portal(&self) -> Result<(), Error> {
         let results = self
             .collect_instance_results(|handler| Box::pin(handler.fetch_vpn_portal_info()))
@@ -2513,15 +2897,35 @@ impl<'a> CommandHandler<'a> {
 
         self.print_results(&results, |resp| {
             println!("portal_name: {}", resp.vpn_type);
-            println!(
-                r#"
-############### client_config_start ###############
-{}
-############### client_config_end ###############
-"#,
-                resp.client_config
-            );
-            println!("connected_clients:\n{:#?}", resp.connected_clients);
+            if let Some(listener) = &resp.listener {
+                println!("listener: {listener}");
+            }
+            for client in &resp.clients {
+                let state = easytier_proto::api::instance::VpnPortalClientState::try_from(
+                    client.state,
+                )
+                .map_or("UNKNOWN", |state| state.as_str_name());
+                println!(
+                    "\nclient: {}\nvirtual_ip: {}\nstate: {}\npeer_id: {}\nendpoint: {}\ntunnel_ip: {}\ngroups: {}",
+                    client.name,
+                    client.virtual_ip,
+                    state,
+                    client
+                        .peer_id
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "-".to_owned()),
+                    client.endpoint.as_deref().unwrap_or("-"),
+                    client.tunnel_ip.as_deref().unwrap_or("-"),
+                    client.groups.join(", "),
+                );
+                println!(
+                    "############### client_config_start ###############\n{}############### client_config_end ###############",
+                    client.client_config
+                );
+                if let Some(error) = &client.error {
+                    println!("error: {error}");
+                }
+            }
             Ok(())
         })
     }
@@ -2789,7 +3193,7 @@ fn apply_column_drops(table: &mut tabled::Table, drop_indices: &[usize]) {
     let mut indices = drop_indices.to_vec();
     indices.sort_unstable_by(|a, b| b.cmp(a));
     for index in indices {
-        table.with(Disable::column(Columns::single(index)));
+        table.with(Remove::column(Columns::one(index)));
     }
 }
 
@@ -3033,9 +3437,24 @@ async fn main() -> Result<(), Error> {
         SubCommand::PeerCenter => {
             handler.handle_peer_center().await?;
         }
-        SubCommand::VpnPortal => {
-            handler.handle_vpn_portal().await?;
-        }
+        SubCommand::VpnPortal(args) => match args.sub_command {
+            None => handler.handle_vpn_portal().await?,
+            Some(VpnPortalSubCommand::AddClient {
+                name,
+                virtual_ip,
+                groups,
+            }) => {
+                handler
+                    .handle_vpn_portal_add_client(name, virtual_ip, groups)
+                    .await?;
+            }
+            Some(VpnPortalSubCommand::RemoveClient { name }) => {
+                handler.handle_vpn_portal_remove_client(name).await?;
+            }
+            Some(VpnPortalSubCommand::ClearClients) => {
+                handler.handle_vpn_portal_clear_clients().await?;
+            }
+        },
         SubCommand::Node(sub_cmd) => {
             handler.handle_node(sub_cmd.sub_command.as_ref()).await?;
         }
@@ -3084,6 +3503,7 @@ async fn main() -> Result<(), Error> {
                         program: bin_path,
                         args: bin_args,
                         work_directory: work_dir,
+                        environment: None,
                         disable_autostart: install_args.disable_autostart.unwrap_or(false),
                         description: Some(install_args.description),
                         display_name: install_args.display_name,
@@ -3169,6 +3589,9 @@ async fn main() -> Result<(), Error> {
         SubCommand::Acl(acl_args) => match &acl_args.sub_command {
             Some(AclSubCommand::Stats) | None => {
                 handler.handle_acl_stats().await?;
+            }
+            Some(AclSubCommand::Set(args)) => {
+                handler.handle_acl_set(&args.acl).await?;
             }
         },
         SubCommand::PortForward(port_forward_args) => match &port_forward_args.sub_command {

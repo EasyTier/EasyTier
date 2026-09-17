@@ -77,14 +77,12 @@ impl AcceptedTunnelHandler for PeerAcceptedTunnelHandler {
 }
 
 pub(crate) struct RawAcceptedTransportHandler {
-    peer_manager: Weak<PeerManagerCore>,
+    tunnel_handler: Arc<dyn AcceptedTunnelHandler>,
 }
 
 impl RawAcceptedTransportHandler {
-    pub(crate) fn new(peer_manager: &Arc<PeerManagerCore>) -> Self {
-        Self {
-            peer_manager: Arc::downgrade(peer_manager),
-        }
+    pub(crate) fn new(tunnel_handler: Arc<dyn AcceptedTunnelHandler>) -> Self {
+        Self { tunnel_handler }
     }
 }
 
@@ -97,10 +95,6 @@ where
         &self,
         accepted: AcceptedTransport<TcpSocket>,
     ) -> anyhow::Result<()> {
-        let peer_manager = self
-            .peer_manager
-            .upgrade()
-            .ok_or_else(|| anyhow::anyhow!("peer manager is gone"))?;
         let tunnel = match accepted {
             AcceptedTransport::Tunnel { tunnel, .. } => tunnel,
             AcceptedTransport::Tcp {
@@ -125,7 +119,48 @@ where
                 remote_url,
             } => raw::upgrade_accepted_byte_stream(socket, local_url, remote_url)?,
         };
-        peer_manager.add_tunnel_as_server(tunnel, true).await?;
-        Ok(())
+        self.tunnel_handler.handle_tunnel(tunnel).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    use super::*;
+    use crate::{host::testkit::TestTcpSocket, tunnel::ring::RingTunnelRegistry};
+
+    struct RecordingTunnelHandler(AtomicUsize);
+
+    #[async_trait]
+    impl AcceptedTunnelHandler for RecordingTunnelHandler {
+        async fn handle_tunnel(&self, _tunnel: Box<dyn Tunnel>) -> anyhow::Result<()> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn raw_transport_delegates_tunnel_to_shared_admission_handler() {
+        let registry = Arc::new(RingTunnelRegistry::default());
+        let local_id = uuid::Uuid::new_v4();
+        let mut listener = registry.bind(local_id).unwrap();
+        let _client = registry.connect(local_id).unwrap();
+        let tunnel = listener.accept().await.unwrap().into_tunnel();
+        let recorder = Arc::new(RecordingTunnelHandler(AtomicUsize::new(0)));
+        let handler = RawAcceptedTransportHandler::new(recorder.clone());
+
+        handler
+            .handle_accepted_socket(AcceptedTransport::<TestTcpSocket>::Tunnel {
+                tunnel,
+                local_url: format!("ring://{local_id}").parse().unwrap(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(recorder.0.load(Ordering::Relaxed), 1);
     }
 }

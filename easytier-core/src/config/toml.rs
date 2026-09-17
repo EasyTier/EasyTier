@@ -6,6 +6,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use super::normalize_secure_mode_config;
 pub use super::{EncryptionAlgorithm, gateway::PortForwardConfig};
 use anyhow::Context;
 #[cfg(feature = "rich-config-errors")]
@@ -69,6 +70,7 @@ pub fn gen_default_flags() -> Flags {
         instance_recv_bps_limit: u64::MAX,
         disable_upnp: false,
         disable_relay_data: false,
+        prefer_peer_relay: false,
         enable_udp_broadcast_relay: false,
         socket_mark: None,
     }
@@ -162,6 +164,7 @@ define_flags_diff! {
         need_p2p,
         disable_upnp,
         disable_relay_data,
+        prefer_peer_relay,
         enable_udp_broadcast_relay,
         socket_mark,
     ],
@@ -270,12 +273,20 @@ pub trait ConfigLoader: Send + Sync {
     }
     fn set_credential_file(&self, _path: Option<std::path::PathBuf>) {}
 
+    fn get_managed_credentials(&self) -> Vec<ManagedCredentialConfig> {
+        Vec::new()
+    }
+    fn set_managed_credentials(&self, _credentials: Vec<ManagedCredentialConfig>) {}
+
     fn get_network_config_source(&self) -> ConfigSource {
         ConfigSource::User
     }
     fn set_network_config_source(&self, _source: Option<ConfigSource>) {}
 
     fn dump(&self) -> String;
+    fn dump_redacted(&self) -> String {
+        self.dump()
+    }
 }
 
 pub trait LoggingConfigLoader {
@@ -417,11 +428,11 @@ pub struct ConsoleLoggerConfig {
     pub level: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, derive_builder::Builder)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, bon::Builder)]
 pub struct LoggingConfig {
-    #[builder(setter(into, strip_option), default = None)]
+    #[builder(into)]
     pub file_logger: Option<FileLoggerConfig>,
-    #[builder(setter(into, strip_option), default = None)]
+    #[builder(into)]
     pub console_logger: Option<ConsoleLoggerConfig>,
 }
 
@@ -435,10 +446,72 @@ impl LoggingConfigLoader for &LoggingConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct VpnPortalConfig {
-    pub client_cidr: cidr::Ipv4Cidr,
     pub wireguard_listen: SocketAddr,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wireguard_private_key: Option<String>,
+    #[serde(default)]
+    pub clients: Vec<VpnPortalClientConfig>,
+}
+
+impl std::fmt::Debug for VpnPortalConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("VpnPortalConfig")
+            .field("wireguard_listen", &self.wireguard_listen)
+            .field(
+                "wireguard_private_key",
+                &self.wireguard_private_key.as_ref().map(|_| "<redacted>"),
+            )
+            .field("clients", &self.clients)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct VpnPortalClientConfig {
+    pub name: String,
+    pub virtual_ip: cidr::Ipv4Inet,
+    #[serde(default)]
+    pub groups: Vec<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ManagedCredentialConfig {
+    pub credential_id: String,
+    pub credential_secret: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<String>,
+    #[serde(default)]
+    pub allow_relay: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_proxy_cidrs: Vec<String>,
+    pub expiry_unix: i64,
+    #[serde(default = "default_true")]
+    pub reusable: bool,
+}
+
+impl std::fmt::Debug for ManagedCredentialConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ManagedCredentialConfig")
+            .field("credential_id", &self.credential_id)
+            .field("credential_secret", &"<redacted>")
+            .field("groups", &self.groups)
+            .field("allow_relay", &self.allow_relay)
+            .field("allowed_proxy_cidrs", &self.allowed_proxy_cidrs)
+            .field("expiry_unix", &self.expiry_unix)
+            .field("reusable", &self.reusable)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -486,6 +559,8 @@ struct Config {
     stun_servers_v6: Option<Vec<String>>,
 
     credential_file: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    managed_credentials: Vec<ManagedCredentialConfig>,
     source: Option<ConfigSourceConfig>,
 }
 
@@ -549,6 +624,62 @@ impl TomlConfig {
         }
     }
 
+    #[cfg(feature = "config-write")]
+    fn config_for_dump(&self) -> Config {
+        let mut config = self.config.lock().unwrap().clone();
+        Self::normalize_config_source(&mut config);
+        config.flags = Some(flags_diff_from_default(&self.get_flags()));
+        config
+    }
+
+    #[cfg(feature = "config-write")]
+    fn redact_secrets(config: &mut Config) {
+        const REDACTED: &str = "<redacted>";
+
+        if let Some(secret) = config
+            .network_identity
+            .as_mut()
+            .and_then(|identity| identity.network_secret.as_mut())
+            && !secret.is_empty()
+        {
+            *secret = REDACTED.to_owned();
+        }
+        if let Some(private_key) = config
+            .secure_mode
+            .as_mut()
+            .and_then(|secure_mode| secure_mode.local_private_key.as_mut())
+            && !private_key.is_empty()
+        {
+            *private_key = REDACTED.to_owned();
+        }
+        if let Some(private_key) = config
+            .vpn_portal_config
+            .as_mut()
+            .and_then(|portal| portal.wireguard_private_key.as_mut())
+            && !private_key.is_empty()
+        {
+            *private_key = REDACTED.to_owned();
+        }
+        if let Some(declarations) = config
+            .acl
+            .as_mut()
+            .and_then(|acl| acl.acl_v1.as_mut())
+            .and_then(|acl| acl.group.as_mut())
+            .map(|group| &mut group.declares)
+        {
+            for declaration in declarations {
+                if !declaration.group_secret.is_empty() {
+                    declaration.group_secret = REDACTED.to_owned();
+                }
+            }
+        }
+        for credential in &mut config.managed_credentials {
+            if !credential.credential_secret.is_empty() {
+                credential.credential_secret = REDACTED.to_owned();
+            }
+        }
+    }
+
     pub fn new_from_str(config_str: &str) -> Result<Self, anyhow::Error> {
         Self::new_from_str_with_source("inline config", config_str)
     }
@@ -575,6 +706,12 @@ impl TomlConfig {
             Self::gen_flags(config.flags.clone().unwrap_or_default())
                 .context("failed to parse flags")?,
         );
+        config.secure_mode = config
+            .secure_mode
+            .take()
+            .map(normalize_secure_mode_config)
+            .transpose()
+            .context("failed to normalize [secure_mode] config")?;
         let has_network_identity = config.network_identity.is_some();
 
         let config = TomlConfig {
@@ -1007,6 +1144,14 @@ impl ConfigLoader for TomlConfig {
         self.config.lock().unwrap().credential_file = path;
     }
 
+    fn get_managed_credentials(&self) -> Vec<ManagedCredentialConfig> {
+        self.config.lock().unwrap().managed_credentials.clone()
+    }
+
+    fn set_managed_credentials(&self, credentials: Vec<ManagedCredentialConfig>) {
+        self.config.lock().unwrap().managed_credentials = credentials;
+    }
+
     fn get_network_config_source(&self) -> ConfigSource {
         self.config
             .lock()
@@ -1027,9 +1172,19 @@ impl ConfigLoader for TomlConfig {
     fn dump(&self) -> String {
         #[cfg(feature = "config-write")]
         {
-            let mut config = self.config.lock().unwrap().clone();
-            Self::normalize_config_source(&mut config);
-            config.flags = Some(flags_diff_from_default(&self.get_flags()));
+            toml::to_string_pretty(&self.config_for_dump()).unwrap()
+        }
+        #[cfg(not(feature = "config-write"))]
+        {
+            panic!("this build does not include TOML configuration serialization")
+        }
+    }
+
+    fn dump_redacted(&self) -> String {
+        #[cfg(feature = "config-write")]
+        {
+            let mut config = self.config_for_dump();
+            Self::redact_secrets(&mut config);
             toml::to_string_pretty(&config).unwrap()
         }
         #[cfg(not(feature = "config-write"))]
@@ -1098,6 +1253,102 @@ socket_mark = 0
     }
 
     #[test]
+    fn legacy_vpn_portal_client_cidr_is_rejected_explicitly() {
+        let error = TomlConfig::new_from_str(
+            r#"
+[vpn_portal_config]
+client_cidr = "10.14.14.0/24"
+wireguard_listen = "0.0.0.0:51820"
+"#,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("client_cidr"), "{error}");
+    }
+
+    #[cfg(feature = "config-write")]
+    #[test]
+    fn vpn_portal_round_trip_and_redacted_dump_preserve_dump_semantics() {
+        let config = TomlConfig::new_from_str(
+            r#"
+[network_identity]
+network_name = "network-a"
+network_secret = "network-secret"
+
+[secure_mode]
+enabled = true
+local_private_key = "YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE="
+
+[vpn_portal_config]
+wireguard_listen = "0.0.0.0:51820"
+wireguard_private_key = "wireguard-private-key"
+
+[[vpn_portal_config.clients]]
+name = "alice"
+virtual_ip = "10.144.144.10/24"
+groups = ["staff"]
+
+[acl.acl_v1.group]
+
+[[acl.acl_v1.group.declares]]
+group_name = "staff"
+group_secret = "group-secret"
+"#,
+        )
+        .unwrap();
+
+        let dumped = config.dump();
+        assert!(dumped.contains("network-secret"));
+        assert!(dumped.contains("YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE="));
+        assert!(dumped.contains("wireguard-private-key"));
+        assert!(dumped.contains("group-secret"));
+        assert_eq!(
+            TomlConfig::new_from_str(&dumped)
+                .unwrap()
+                .get_vpn_portal_config(),
+            config.get_vpn_portal_config()
+        );
+
+        let redacted = config.dump_redacted();
+        assert!(!redacted.contains("network-secret"));
+        assert!(!redacted.contains("YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE="));
+        assert!(!redacted.contains("wireguard-private-key"));
+        assert!(!redacted.contains("group-secret"));
+        assert_eq!(redacted.matches("<redacted>").count(), 4);
+    }
+
+    #[cfg(feature = "config-write")]
+    #[test]
+    fn managed_credentials_round_trip_and_redact_secret() {
+        let config = TomlConfig::new_from_str(
+            r#"
+[[managed_credentials]]
+credential_id = "managed-a"
+credential_secret = "private-key-material"
+groups = ["ops"]
+allow_relay = true
+allowed_proxy_cidrs = ["10.0.0.0/24"]
+expiry_unix = 2000000000
+"#,
+        )
+        .unwrap();
+
+        let dumped = config.dump();
+        let restored = TomlConfig::new_from_str(&dumped).unwrap();
+        assert_eq!(
+            restored.get_managed_credentials(),
+            config.get_managed_credentials()
+        );
+        assert!(dumped.contains("private-key-material"));
+
+        let redacted = config.dump_redacted();
+        assert!(!redacted.contains("private-key-material"));
+        assert!(redacted.contains("<redacted>"));
+        assert!(!TomlConfig::default().dump().contains("managed_credentials"));
+    }
+
+    #[test]
     fn hostname_normalization_is_portable_and_has_no_host_fallback() {
         let absent = TomlConfig::default();
         assert_eq!(absent.get_hostname(), "");
@@ -1152,6 +1403,7 @@ source = "web"
 #[cfg(test)]
 mod compatibility_tests {
     use super::*;
+    use base64::{Engine as _, prelude::BASE64_STANDARD};
 
     #[cfg(feature = "config-write")]
     #[test]
@@ -1246,6 +1498,7 @@ socket_mark = 66
         flags.bind_device = false;
         flags.enable_ipv6 = false;
         flags.relay_network_whitelist = "".to_string();
+        flags.prefer_peer_relay = true;
         flags.mtu = 0;
         flags.foreign_relay_bps_limit = u64::MAX - 1;
         flags.instance_recv_bps_limit = u64::MAX - 2;
@@ -1279,6 +1532,7 @@ socket_mark = 66
         assert!(!reloaded_flags.bind_device);
         assert!(!reloaded_flags.enable_ipv6);
         assert_eq!(reloaded_flags.relay_network_whitelist, "");
+        assert!(reloaded_flags.prefer_peer_relay);
         assert_eq!(reloaded_flags.mtu, 0);
         assert_eq!(reloaded_flags.foreign_relay_bps_limit, u64::MAX - 1);
         assert_eq!(reloaded_flags.instance_recv_bps_limit, u64::MAX - 2);
@@ -1401,6 +1655,112 @@ enabled = true
         assert_eq!(identity.network_name, "default");
         assert_eq!(identity.network_secret.as_deref(), Some(""));
         assert!(identity.network_secret_digest.is_some());
+    }
+
+    #[test]
+    fn test_toml_secure_mode_generates_keypair_when_keys_missing() {
+        let config = TomlConfigLoader::new_from_str(
+            r#"
+[secure_mode]
+enabled = true
+"#,
+        )
+        .unwrap();
+
+        let secure_mode = config.get_secure_mode().unwrap();
+        let private_key = secure_mode.private_key().unwrap();
+        let public_key = secure_mode.public_key().unwrap();
+        assert_eq!(
+            x25519_dalek::PublicKey::from(&private_key).as_bytes(),
+            public_key.as_bytes()
+        );
+    }
+
+    #[test]
+    fn test_toml_secure_mode_derives_public_key_from_private_key() {
+        let private = x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng);
+        let config = TomlConfigLoader::new_from_str(&format!(
+            r#"
+[secure_mode]
+enabled = true
+local_private_key = "{}"
+"#,
+            BASE64_STANDARD.encode(private.as_bytes())
+        ))
+        .unwrap();
+
+        let secure_mode = config.get_secure_mode().unwrap();
+        let private_key = secure_mode.private_key().unwrap();
+        assert_eq!(private_key.as_bytes(), private.as_bytes());
+        assert_eq!(
+            secure_mode.public_key().unwrap().as_bytes(),
+            x25519_dalek::PublicKey::from(&private).as_bytes()
+        );
+    }
+
+    #[test]
+    fn test_toml_secure_mode_rejects_mismatched_keypair() {
+        let private = x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng);
+        let other_public = x25519_dalek::PublicKey::from(
+            &x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng),
+        );
+        let error = TomlConfigLoader::new_from_str(&format!(
+            r#"
+[secure_mode]
+enabled = true
+local_private_key = "{}"
+local_public_key = "{}"
+"#,
+            BASE64_STANDARD.encode(private.as_bytes()),
+            BASE64_STANDARD.encode(other_public.as_bytes())
+        ))
+        .unwrap_err();
+        let error = format!("{error:#}");
+
+        assert!(
+            error.contains("failed to normalize [secure_mode] config"),
+            "{error}"
+        );
+        assert!(
+            error.contains("does not match generated public key"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn test_toml_secure_mode_disabled_keeps_keys_unset() {
+        let config = TomlConfigLoader::new_from_str(
+            r#"
+[secure_mode]
+enabled = false
+"#,
+        )
+        .unwrap();
+
+        let secure_mode = config.get_secure_mode().unwrap();
+        assert!(!secure_mode.enabled);
+        assert_eq!(secure_mode.local_private_key, None);
+        assert_eq!(secure_mode.local_public_key, None);
+    }
+
+    #[cfg(feature = "config-write")]
+    #[test]
+    fn test_toml_secure_mode_keypair_survives_roundtrip() {
+        let config = TomlConfigLoader::new_from_str(
+            r#"
+[secure_mode]
+enabled = true
+"#,
+        )
+        .unwrap();
+
+        let dumped = config.dump();
+        let restored = TomlConfigLoader::new_from_str(&dumped).unwrap();
+
+        assert_eq!(
+            config.get_secure_mode().unwrap(),
+            restored.get_secure_mode().unwrap()
+        );
     }
 
     #[test]

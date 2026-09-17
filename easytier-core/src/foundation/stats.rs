@@ -169,6 +169,15 @@ pub enum MetricName {
     /// Traffic packets forwarded for foreign network, forward
     TrafficPacketsForeignForwardForwarded,
 
+    /// Bytes accepted from one VPN portal client into the mesh
+    VpnPortalClientBytesTx,
+    /// Bytes delivered from the mesh to one VPN portal client
+    VpnPortalClientBytesRx,
+    /// Packets accepted from one VPN portal client into the mesh
+    VpnPortalClientPacketsTx,
+    /// Packets delivered from the mesh to one VPN portal client
+    VpnPortalClientPacketsRx,
+
     /// UDP broadcast relay packets captured from the raw socket
     UdpBroadcastRelayPacketsCaptured,
     /// UDP broadcast relay packets ignored before forwarding
@@ -260,6 +269,15 @@ impl fmt::Display for MetricName {
                 write!(f, "traffic_packets_foreign_forward_forwarded")
             }
 
+            MetricName::VpnPortalClientBytesTx => write!(f, "vpn_portal_client_bytes_tx"),
+            MetricName::VpnPortalClientBytesRx => write!(f, "vpn_portal_client_bytes_rx"),
+            MetricName::VpnPortalClientPacketsTx => {
+                write!(f, "vpn_portal_client_packets_tx")
+            }
+            MetricName::VpnPortalClientPacketsRx => {
+                write!(f, "vpn_portal_client_packets_rx")
+            }
+
             MetricName::UdpBroadcastRelayPacketsCaptured => {
                 write!(f, "udp_broadcast_relay_packets_captured")
             }
@@ -314,6 +332,8 @@ pub enum LabelType {
     DstIp(String),
     /// Mapped Dst Ip
     MappedDstIp(String),
+    /// Stable VPN portal client name
+    VpnPortalClient(String),
 }
 
 impl fmt::Display for LabelType {
@@ -333,6 +353,7 @@ impl fmt::Display for LabelType {
             LabelType::Status(status) => write!(f, "status={}", status),
             LabelType::DstIp(ip) => write!(f, "dst_ip={}", ip),
             LabelType::MappedDstIp(ip) => write!(f, "mapped_dst_ip={}", ip),
+            LabelType::VpnPortalClient(client) => write!(f, "vpn_portal_client={}", client),
         }
     }
 }
@@ -354,6 +375,7 @@ impl LabelType {
             LabelType::Status(_) => "status",
             LabelType::DstIp(_) => "dst_ip",
             LabelType::MappedDstIp(_) => "mapped_dst_ip",
+            LabelType::VpnPortalClient(_) => "vpn_portal_client",
         }
     }
 
@@ -373,6 +395,7 @@ impl LabelType {
             LabelType::Status(status) => status.clone(),
             LabelType::DstIp(ip) => ip.clone(),
             LabelType::MappedDstIp(ip) => ip.clone(),
+            LabelType::VpnPortalClient(client) => client.clone(),
         }
     }
 }

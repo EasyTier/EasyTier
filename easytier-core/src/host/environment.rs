@@ -13,6 +13,9 @@ use super::socket::{HostOperationId, HostSocketRuntime};
 /// take retains the operation; a `Ready` take consumes both successful and
 /// failed results. Cancellation must remove pending and completed-but-unread
 /// state and is idempotent for an already-absent operation.
+/// Source-address probes describe the underlay route: if VPN bypass is active,
+/// protect the probe socket before connect/source-address selection. Protection
+/// acknowledgement belongs inside this host operation, not a later guest call.
 pub trait HostConnectorEnvironmentIo: Send + Sync + 'static {
     fn submit_local_addr_for_remote(
         &self,

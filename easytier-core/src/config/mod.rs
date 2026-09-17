@@ -119,13 +119,12 @@ pub fn normalize_secure_mode_config(
     match config.local_public_key.as_ref() {
         None => config.local_public_key = Some(generated_public_key),
         Some(configured_public_key) => {
-            let public_key = config.public_key()?;
-            let canonical_public_key = BASE64_STANDARD.encode(public_key.as_bytes());
-            if configured_public_key != &canonical_public_key {
+            config.public_key()?;
+            if configured_public_key != &generated_public_key {
                 anyhow::bail!(
                     "local public key {} does not match generated public key {}",
                     configured_public_key,
-                    canonical_public_key
+                    generated_public_key
                 );
             }
         }
@@ -745,6 +744,24 @@ mod tests {
         assert_eq!(
             normalize_secure_mode_config(config.clone()).unwrap(),
             config
+        );
+    }
+
+    #[test]
+    fn secure_mode_normalization_rejects_mismatched_public_key() {
+        let private_key = StaticSecret::from([7; 32]);
+        let other_public_key = PublicKey::from(&StaticSecret::from([9; 32]));
+        let error = normalize_secure_mode_config(common_pb::SecureModeConfig {
+            enabled: true,
+            local_private_key: Some(BASE64_STANDARD.encode(private_key.as_bytes())),
+            local_public_key: Some(BASE64_STANDARD.encode(other_public_key.as_bytes())),
+        })
+        .unwrap_err()
+        .to_string();
+
+        assert!(
+            error.contains("does not match generated public key"),
+            "{error}"
         );
     }
 

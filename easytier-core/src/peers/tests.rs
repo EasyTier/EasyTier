@@ -8,6 +8,7 @@ use crate::foundation::time::{Duration, timeout};
 use crate::{
     packet::{PacketType, ZCPacket},
     peers::{
+        PeerConnectionOrigin, PeerPacketIngress,
         conn::{
             peer_conn::{PeerConn, PeerConnId},
             peer_map::PeerMap,
@@ -16,6 +17,7 @@ use crate::{
         context::NetworkIdentity,
         create_packet_recv_chan,
         error::Error,
+        recv_packet_envelope_from_chan,
         test_support::NoopPeerContext,
     },
     tunnel::ring::create_ring_tunnel_pair,
@@ -125,6 +127,20 @@ async fn peer_conn_handshake_matches_plaintext_secret_identity() {
 }
 
 #[tokio::test]
+async fn local_packet_channel_injection_has_no_attached_privilege() {
+    let (sender, mut receiver) = create_packet_recv_chan();
+    let mut packet = ZCPacket::new_with_payload(b"local");
+    packet.fill_peer_manager_hdr(77, 3, PacketType::Data as u8);
+
+    sender.send(packet).await.unwrap();
+
+    let envelope = recv_packet_envelope_from_chan(&mut receiver).await.unwrap();
+    let (_, ingress) = envelope.into_parts();
+    assert_eq!(ingress, PeerPacketIngress::Local);
+    assert!(!ingress.is_attached());
+}
+
+#[tokio::test]
 async fn peer_map_forwards_packet_over_memory_tunnel() {
     let peer_session_store = Arc::new(PeerSessionStore::new());
     let (client_tunnel, server_tunnel) = create_ring_tunnel_pair();
@@ -163,6 +179,70 @@ async fn peer_map_forwards_packet_over_memory_tunnel() {
         .unwrap()
         .unwrap();
     assert_eq!(received.payload(), b"hello");
+}
+
+#[tokio::test]
+async fn peer_channel_uses_admission_origin_instead_of_packet_header() {
+    let peer_session_store = Arc::new(PeerSessionStore::new());
+    let (client_tunnel, server_tunnel) = create_ring_tunnel_pair();
+    let client_ctx = Arc::new(NoopPeerContext::default());
+    let server_ctx = Arc::new(NoopPeerContext::default());
+
+    let mut client_conn = PeerConn::new(
+        1,
+        client_ctx.clone(),
+        client_tunnel,
+        peer_session_store.clone(),
+    );
+    let mut server_conn = PeerConn::new_with_peer_id_hint_and_origin(
+        2,
+        server_ctx.clone(),
+        server_tunnel,
+        None,
+        peer_session_store,
+        PeerConnectionOrigin::Attached,
+    );
+    let (client_ret, server_ret) = tokio::join!(
+        client_conn.do_handshake_as_client(),
+        server_conn.do_handshake_as_server()
+    );
+    client_ret.unwrap();
+    server_ret.unwrap();
+    server_conn.set_is_hole_punched(false);
+    let server_conn_id = server_conn.get_conn_id();
+
+    let (client_tx, _client_rx) = create_packet_recv_chan();
+    let (server_tx, mut server_rx) = create_packet_recv_chan();
+    let client_map = PeerMap::new(client_tx, client_ctx, 1);
+    let server_map = PeerMap::new(server_tx, server_ctx, 2);
+    client_map.add_new_peer_conn(client_conn).await.unwrap();
+    server_map.add_new_peer_conn(server_conn).await.unwrap();
+    assert!(server_map.has_direct_attached_peer(1));
+
+    let mut packet = ZCPacket::new_with_payload(b"forged source");
+    packet.fill_peer_manager_hdr(77, 3, PacketType::Data as u8);
+    client_map.send_msg_directly(packet, 2).await.unwrap();
+
+    let envelope = timeout(
+        Duration::from_secs(1),
+        recv_packet_envelope_from_chan(&mut server_rx),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let (received, ingress) = envelope.into_parts();
+    assert_eq!(
+        received.peer_manager_header().unwrap().from_peer_id.get(),
+        77
+    );
+    assert_eq!(
+        ingress,
+        PeerPacketIngress::Peer {
+            peer_id: 1,
+            conn_id: server_conn_id,
+            origin: PeerConnectionOrigin::Attached,
+        }
+    );
 }
 
 #[tokio::test]

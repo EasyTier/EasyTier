@@ -474,7 +474,7 @@ where
             self.stopping.store(false, Ordering::Release);
         }
         reaper.replace(AbortOnDropHandle::new(tokio::spawn(
-            reap_joinset_background(self.tasks.clone(), "tcp hole punch"),
+            reap_joinset_background(Arc::downgrade(&self.tasks), "tcp hole punch"),
         )));
     }
 

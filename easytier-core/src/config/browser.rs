@@ -1,7 +1,7 @@
 use wasm_bindgen::prelude::*;
 
 use super::{
-    api_input::{NetworkConfig, NetworkConfigExt},
+    api_input::{NetworkConfig, NetworkConfigExt, merge_network_config_toml},
     toml::{ConfigLoader, TomlConfig},
 };
 
@@ -16,6 +16,12 @@ pub fn generate_config(config_json: &str) -> Result<String, JsValue> {
         .gen_config()
         .map(|config| config.dump())
         .map_err(js_error)
+}
+
+#[wasm_bindgen]
+pub fn merge_config(original_toml: &str, config_json: &str) -> Result<String, JsValue> {
+    let config: NetworkConfig = serde_json::from_str(config_json).map_err(js_error)?;
+    merge_network_config_toml(original_toml, &config).map_err(js_error)
 }
 
 #[wasm_bindgen]

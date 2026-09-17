@@ -94,6 +94,14 @@ pub struct ManualInterfaceAddrs {
 
 #[async_trait]
 pub trait ManualConnectorHost: VirtualTcpSocketFactory + VirtualUdpSocketFactory {
+    fn supports_external_tunnel(&self, _scheme: &str) -> bool {
+        false
+    }
+
+    async fn connect_external_tunnel(&self, _url: &Url) -> anyhow::Result<Option<Box<dyn Tunnel>>> {
+        Ok(None)
+    }
+
     async fn local_addr_for_remote(
         &self,
         remote_addr: SocketAddr,
@@ -108,6 +116,13 @@ pub trait ManualConnectorHost: VirtualTcpSocketFactory + VirtualUdpSocketFactory
     ) -> anyhow::Result<ConnectedByteStream<<Self as VirtualTcpSocketFactory>::Socket>> {
         anyhow::bail!("host does not support external byte stream: {url}")
     }
+}
+
+#[async_trait]
+pub trait ExternalTunnelConnector: Send + Sync + 'static {
+    fn supports_scheme(&self, scheme: &str) -> bool;
+
+    async fn connect(&self, url: &Url) -> anyhow::Result<Box<dyn Tunnel>>;
 }
 
 #[async_trait]
@@ -175,6 +190,14 @@ where
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("ring registry is not configured"))?;
             let tunnel = connect_ring_tunnel(registry, &endpoint.url)?;
+            return Ok(apply_resolved_endpoint_info(
+                tunnel,
+                requested_url,
+                endpoint.tunnel_prefixes,
+            ));
+        }
+
+        if let Some(tunnel) = self.host.connect_external_tunnel(&endpoint.url).await? {
             return Ok(apply_resolved_endpoint_info(
                 tunnel,
                 requested_url,
@@ -710,17 +733,20 @@ where
             return Err(error);
         }
     };
-    let ip_versions = match resolve_reconnect_ip_versions(
-        &normalized_url,
-        connect_timeout,
-        ManualTransport::from_url(&normalized_url)
-            .ok()
-            .map(|transport| data.options.socket_context(transport, IpVersion::Both))
-            .unwrap_or_default(),
-        data.dns.as_ref(),
-    )
-    .await
-    {
+    let ip_versions = match if data.host.supports_external_tunnel(normalized_url.scheme()) {
+        Ok(vec![IpVersion::Both])
+    } else {
+        resolve_reconnect_ip_versions(
+            &normalized_url,
+            connect_timeout,
+            ManualTransport::from_url(&normalized_url)
+                .ok()
+                .map(|transport| data.options.socket_context(transport, IpVersion::Both))
+                .unwrap_or_default(),
+            data.dns.as_ref(),
+        )
+        .await
+    } {
         Ok(ip_versions) => ip_versions,
         Err(error) => {
             emit_connect_error(&data, &url, IpVersion::Both, &error);
@@ -770,13 +796,17 @@ where
         ),
     )
     .await?;
-    if endpoint.url.scheme() != "ring" && !data.protocol.supports_scheme(endpoint.url.scheme()) {
+    let uses_external_tunnel = data.host.supports_external_tunnel(endpoint.url.scheme());
+    if endpoint.url.scheme() != "ring"
+        && !uses_external_tunnel
+        && !data.protocol.supports_scheme(endpoint.url.scheme())
+    {
         anyhow::bail!(
             "unsupported client protocol upgrader: {}",
             endpoint.url.scheme()
         );
     }
-    let transport = (endpoint.url.scheme() != "ring")
+    let transport = (endpoint.url.scheme() != "ring" && !uses_external_tunnel)
         .then(|| ManualTransport::from_url(&endpoint.url))
         .transpose()?;
     let resolved = match transport {
@@ -821,6 +851,15 @@ where
     let tunnel = with_timeout_budget("connect", started_at, connect_timeout, async {
         if endpoint.url.scheme() == "ring" {
             return connect_ring_tunnel(&data.ring_registry, &endpoint.url);
+        }
+        if uses_external_tunnel {
+            return data
+                .host
+                .connect_external_tunnel(&endpoint.url)
+                .await?
+                .ok_or_else(|| {
+                    anyhow::anyhow!("host did not provide external tunnel for {}", endpoint.url)
+                });
         }
         let transport = transport.expect("non-Ring endpoint should have a transport");
         let connected = match resolved {

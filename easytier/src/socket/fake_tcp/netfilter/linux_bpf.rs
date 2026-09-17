@@ -221,11 +221,7 @@ fn build_tcp_filter(
         b.set_label(l_v4_proto_ok);
         let l_v4_fragment_ok = b.new_label();
         b.push(stmt(BPF_LD | BPF_H | BPF_ABS, 6));
-        b.push_jset(
-            IPV4_FRAGMENT_OFFSET_MASK,
-            l_reject,
-            l_v4_fragment_ok,
-        );
+        b.push_jset(IPV4_FRAGMENT_OFFSET_MASK, l_reject, l_v4_fragment_ok);
 
         b.set_label(l_v4_fragment_ok);
         let dst_ip = match dst_addr.ip() {
@@ -271,9 +267,9 @@ fn build_tcp_filter(
             IpAddr::V6(ip) => ip.octets(),
             _ => unreachable!(),
         };
-        for (i, chunk) in dst_ip.chunks_exact(4).enumerate() {
+        for (i, chunk) in dst_ip.as_chunks::<4>().0.iter().enumerate() {
             let off = 24 + (i * 4);
-            let v = u32::from_be_bytes(chunk.try_into().unwrap());
+            let v = u32::from_be_bytes(*chunk);
             let l_v6_dstip_word_ok = b.new_label();
             b.push(stmt(BPF_LD | BPF_W | BPF_ABS, off as u32));
             b.push_jeq(v, l_v6_dstip_word_ok, l_reject);
@@ -285,9 +281,9 @@ fn build_tcp_filter(
                 IpAddr::V6(ip) => ip.octets(),
                 _ => unreachable!(),
             };
-            for (i, chunk) in src_ip.chunks_exact(4).enumerate() {
+            for (i, chunk) in src_ip.as_chunks::<4>().0.iter().enumerate() {
                 let off = 8 + (i * 4);
-                let v = u32::from_be_bytes(chunk.try_into().unwrap());
+                let v = u32::from_be_bytes(*chunk);
                 let l_v6_srcip_word_ok = b.new_label();
                 b.push(stmt(BPF_LD | BPF_W | BPF_ABS, off as u32));
                 b.push_jeq(v, l_v6_srcip_word_ok, l_reject);
@@ -747,7 +743,7 @@ mod tests {
         packet[10..12].fill(0);
 
         let mut sum = 0u32;
-        for word in packet[..header_len].chunks_exact(2) {
+        for word in packet[..header_len].as_chunks::<2>().0 {
             sum += u32::from(u16::from_be_bytes([word[0], word[1]]));
         }
         while sum > u16::MAX as u32 {

@@ -433,7 +433,11 @@ mod tests {
     }
 
     /// Test high load with concurrent access
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[cfg_attr(
+        not(target_os = "wasi"),
+        tokio::test(flavor = "multi_thread", worker_threads = 4)
+    )]
+    #[cfg_attr(target_os = "wasi", tokio::test)]
     async fn test_concurrent_access() {
         let bucket = TokenBucket::new(10_000, 1);
         let mut handles = vec![];

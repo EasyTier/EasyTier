@@ -60,16 +60,16 @@ fn validate_snapshot(
             || runtime.public_ipv6_provider.configured_prefix.is_some(),
         "public IPv6 services",
     )?;
-    require(
-        VPN_PORTAL_AVAILABLE,
-        peer.vpn_portal_cidr.is_some(),
-        "the VPN portal",
-    )?;
     Ok(())
 }
 
 pub(super) fn validate(config: &CoreInstanceConfig) -> anyhow::Result<()> {
-    validate_snapshot(&config.connectivity.runtime, &config.peer.snapshot)
+    validate_snapshot(&config.connectivity.runtime, &config.peer.snapshot)?;
+    require(
+        VPN_PORTAL_AVAILABLE,
+        config.vpn_portal.is_some(),
+        "the VPN portal",
+    )
 }
 
 pub(super) fn validate_runtime(

@@ -9,7 +9,13 @@ import { exit } from '@tauri-apps/plugin-process'
 import { I18nUtils, RemoteManagement, Utils } from "easytier-frontend-lib"
 import type { MenuItem } from 'primevue/menuitem'
 import { useTray } from '~/composables/tray'
-import { initMobileVpnService, syncMobileVpnService } from '~/composables/mobile_vpn'
+import {
+  consumePendingMobileVpnTileAction,
+  initMobileVpnService,
+  setMobileVpnTileActionHandler,
+  syncMobileVpnService,
+} from '~/composables/mobile_vpn'
+import { executeVpnTileAction } from '~/composables/mobile_vpn_tile'
 import { GUIRemoteClient } from '~/modules/api'
 
 import { useToast, useConfirm } from 'primevue'
@@ -30,8 +36,18 @@ const manualDisconnect = ref(false)
 const configServerDialogVisible = ref(false)
 const configServerConnected = ref(false)
 
+const showAutostartHint = ref(false)
+
 async function openModeDialog() {
   editingMode.value = JSON.parse(JSON.stringify(loadMode()))
+  showAutostartHint.value = false
+  modeDialogVisible.value = true
+}
+
+async function openAutostartDialog() {
+  editingMode.value = JSON.parse(JSON.stringify(loadMode()))
+  editingMode.value.mode = 'service'
+  showAutostartHint.value = true
   modeDialogVisible.value = true
 }
 
@@ -223,7 +239,10 @@ onMounted(async () => {
   await initWithMode(currentMode.value);
 
   if (type() === 'android') {
+    setMobileVpnTileActionHandler(handleMobileVpnTileAction)
+    cleanupFns.push(() => setMobileVpnTileActionHandler())
     try {
+      await consumePendingMobileVpnTileAction()
       await syncMobileVpnService()
     } catch (e: any) {
       console.error("easytier sync vpn service failed", e)
@@ -241,6 +260,42 @@ let toast = useToast();
 const remoteClient = computed(() => new GUIRemoteClient());
 const instanceId = ref<string | undefined>(undefined);
 const clientRunning = ref(false);
+
+async function handleMobileVpnTileAction(action: 'start' | 'stop') {
+  try {
+    const result = await executeVpnTileAction(action, remoteClient.value, {
+      lastInstanceId: loadLastNetworkInstanceId(),
+      syncVpnService: syncMobileVpnService,
+    })
+
+    if (!result.instanceId) {
+      toast.add({
+        severity: 'warn',
+        summary: t('vpn_tile_no_network'),
+        detail: t('vpn_tile_no_network_description'),
+        life: 5000,
+      })
+      return
+    }
+
+    instanceId.value = result.instanceId
+    saveLastNetworkInstanceId(result.instanceId)
+    toast.add({
+      severity: action === 'start' ? 'success' : 'secondary',
+      summary: t(action === 'start' ? 'vpn_tile_started' : 'vpn_tile_stopped'),
+      life: 3000,
+    })
+  }
+  catch (error) {
+    console.error('VPN tile action failed', action, error)
+    toast.add({
+      severity: 'error',
+      summary: t('error'),
+      detail: t('vpn_tile_action_failed', { error: String(error) }),
+      life: 8000,
+    })
+  }
+}
 
 watch(instanceId, (newVal) => {
   if (newVal) {
@@ -356,6 +411,12 @@ const setting_menu_items: Ref<MenuItem[]> = ref([
     visible: () => type() !== 'android',
   },
   {
+    label: () => t('mode.autostart'),
+    icon: 'pi pi-clock',
+    command: openAutostartDialog,
+    visible: () => type() !== 'android',
+  },
+  {
     label: () => `${t('config-server.title')}${t('config-server.' + configServerConnectionStatus.value)}`,
     icon: 'pi pi-globe',
     command: openConfigServerDialog,
@@ -452,6 +513,9 @@ const configServerConnectionStatus = computed(() => {
       <About />
     </Dialog>
     <Dialog v-model:visible="modeDialogVisible" modal :header="t('mode.switch_mode')" :style="{ width: '50vw' }">
+      <Message v-if="showAutostartHint" severity="info" :closable="false" class="mb-4">
+        {{ t('mode.autostart_hint') }}
+      </Message>
       <ModeSwitcher v-model="editingMode" @uninstall-service="onUninstallService" @stop-service="onStopService" />
       <template #footer>
         <Button :label="t('web.common.cancel')" icon="pi pi-times" @click="modeDialogVisible = false" text />

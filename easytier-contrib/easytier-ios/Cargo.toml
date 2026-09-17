@@ -1,0 +1,23 @@
+[package]
+name = "easytier-ios"
+version = "0.1.0"
+edition.workspace = true
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, default-features = true, features = ["env-filter"] }
+easytier-ffi = { workspace = true, features = [
+    "c-abi",
+] }
+
+[dev-dependencies]
+uuid.workspace = true
+easytier-core = { workspace = true, default-features = true }
+easytier-ffi = { workspace = true, features = [
+    "c-abi",
+    "ffi-dataplane",
+] }

@@ -3,7 +3,7 @@ name = "easytier"
 description = "A full meshed p2p VPN, connecting all your devices in one network with one command."
 homepage = "https://github.com/EasyTier/EasyTier"
 repository = "https://github.com/EasyTier/EasyTier"
-version = "2.6.4"
+version = "2.7.0"
 edition.workspace = true
 rust-version.workspace = true
 authors = ["kkrainbow"]
@@ -24,7 +24,7 @@ required-features = ["management"]
 [[bin]]
 name = "easytier-cli"
 path = "src/easytier-cli.rs"
-required-features = ["management"]
+required-features = ["management", "cli"]
 
 [lib]
 name = "easytier"
@@ -35,36 +35,35 @@ name = "packet_bytes_extraction"
 harness = false
 
 [dependencies]
-easytier-core = { path = "../easytier-core", version = "2.6.4", default-features = false }
-easytier-proto = { path = "../easytier-proto", version = "2.6.4", default-features = false, features = ["api", "core"] }
+easytier-core.workspace = true
+easytier-proto = { workspace = true, features = ["api", "core"] }
 git-version = "0.3.9"
 
-tracing = "0.1"
-log = { version = "0.4", features = ["std"] }
-tracing-subscriber = { version = "0.3", default-features = false, features = [
+tracing.workspace = true
+log = { workspace = true, features = ["std"] }
+tracing-subscriber = { workspace = true, features = [
     "registry",
 ], optional = true }
 derive_more = { version = "2.1.1", features = ["full"] }
-console-subscriber = { version = "0.4.1", optional = true }
-indoc = "2.0.7"
+console-subscriber = { version = "0.5.0", optional = true }
+indoc.workspace = true
 paste = "1.0"
-thiserror = "1.0"
-auto_impl = "1.1.0"
-crossbeam = "0.8.4"
-arc-swap = "1.7"
-toml = "0.8.12"
-chrono = { version = "0.4.37", features = ["serde"] }
+thiserror.workspace = true
+crossbeam.workspace = true
+arc-swap.workspace = true
+toml.workspace = true
+chrono = { workspace = true, features = ["serde"] }
 
-guarden = "0.2"
-quanta = "0.12"
+guarden.workspace = true
+quanta.workspace = true
 
-strum = { version = "0.27.2", features = ["derive"] }
+strum = { workspace = true, features = ["derive"] }
 
-gethostname = "0.5.0"
+gethostname = "1.1.0"
 
-futures = { version = "0.3", features = ["bilock", "unstable"] }
+futures = { workspace = true, features = ["bilock", "unstable"] }
 
-tokio = { version = "1", default-features = false, features = [
+tokio = { workspace = true, features = [
     "fs",
     "io-util",
     "macros",
@@ -75,27 +74,27 @@ tokio = { version = "1", default-features = false, features = [
     "sync",
     "time",
 ] }
-tokio-util = { version = "0.7.9", features = ["codec", "net", "io", "rt"] }
+tokio-util = { workspace = true, features = ["codec", "net", "io", "rt"] }
 
-async-trait = "0.1.74"
+async-trait.workspace = true
 
-dashmap = "6.0"
+dashmap.workspace = true
 moka = { version = "0.12", features = ["future"] }
 # for full-path zero-copy
-zerocopy = { version = "0.7.32", features = ["derive", "simd"] }
-bytes = "1.5.0"
-pin-project-lite = "0.2.13"
+zerocopy = { workspace = true, features = ["derive", "simd"] }
+bytes.workspace = true
+pin-project-lite.workspace = true
 
-atomic_refcell = "0.1.13"
-atomic-write-file = { version = "0.2.3", optional = true }
+atomic_refcell = "0.1.14"
+atomic-write-file = { version = "0.3.1", optional = true }
 
-quinn = { version = "0.11.8", optional = true, features = ["ring"] }
-quinn-proto = { version = "0.11.12", optional = true }
+quinn = { version = "0.11.12", optional = true, features = ["ring"] }
+quinn-proto = { version = "0.11.18", optional = true }
 seahash = { version = "4.1.0", optional = true }
 
-rustls = { version = "0.23.0", features = [
+rustls = { workspace = true, features = [
     "ring", "tls12"
-], default-features = false, optional = true }
+], optional = true }
 
 # for websocket
 tokio-websockets = { version = "0.13.2", git = "https://github.com/EasyTier/tokio-websockets", optional = true, features = [
@@ -109,15 +108,15 @@ forwarded-header-value = { version = "0.1.1", optional = true }
 http = { version = "1", default-features = false, features = [
     "std",
 ], optional = true }
-rcgen = { version = "0.12.1", optional = true }
-tokio-rustls = { version = "0.26", default-features = false, optional = true }
+rcgen = { version = "0.14.10", optional = true }
+tokio-rustls = { workspace = true, optional = true }
 
 # for tap device
 tun = { package = "tun-easytier", git = "https://github.com/EasyTier/rust-tun", features = [
     "async",
 ], optional = true }
 # for net ns
-nix = { version = "0.29.0", features = [
+nix = { version = "0.31.3", features = [
     "sched",
     "socket",
     "ioctl",
@@ -125,7 +124,7 @@ nix = { version = "0.29.0", features = [
     "fs",
 ] }
 
-uuid = { version = "1.5.0", features = [
+uuid = { workspace = true, features = [
     "v4",
     "fast-rng",
     "macro-diagnostics",
@@ -133,76 +132,78 @@ uuid = { version = "1.5.0", features = [
 ] }
 
 # for ring tunnel
-once_cell = "1.18.0"
+once_cell.workspace = true
 
 # for rpc
-prost = "0.14.3"
-anyhow = "1.0"
+prost.workspace = true
+anyhow.workspace = true
 
-url = { version = "2.5", features = ["serde"] }
-percent-encoding = "2.3.1"
+url = { workspace = true, features = ["serde"] }
+percent-encoding.workspace = true
 
 # for tun packet
 byteorder = "1.5.0"
 
 # for proxy
-cidr = { version = "0.3.1", features = ["serde"] }
-socket2 = { version = "0.5.10", features = ["all"] }
+cidr = { workspace = true, features = ["serde"] }
+socket2 = { version = "0.6.5", features = ["all"] }
 
 # for hole punching
-rand = "0.8.5"
+rand.workspace = true
 
-serde = { version = "1.0", features = ["derive"] }
+serde = { workspace = true, features = ["derive"] }
 pnet_datalink = { version = "0.35.0", optional = true }
-smoltcp = { git = "https://github.com/smoltcp-rs/smoltcp.git", rev = "0a926767a68bc88d5512afefa7529c5ecdade4ea", optional = true, default-features = false, features = [
+smoltcp = { workspace = true, optional = true, features = [
     "std",
     "medium-ethernet",
     "proto-ipv4",
     "proto-ipv6",
     "socket-raw",
 ] }
-serde_json = "1"
+serde_json.workspace = true
 
-clap = { version = "4.5.30", features = [
+clap = { workspace = true, features = [
     "string",
     "unicode",
     "derive",
     "wrap_help",
     "env",
 ] }
-clap_complete = { version = "4.5.55" }
-clap_complete_nushell = { version = "4.5.10" }
+clap_complete = { version = "4.6.10" }
+clap_complete_nushell = { version = "4.6.2" }
 
-async-recursion = "1.0.5"
+async-recursion = "1.1.1"
 
 network-interface = "2.0.5"
 
 # for wireguard
 boringtun = { package = "boringtun-easytier", version = "0.6.1", optional = true }
+hkdf = { version = "0.13", optional = true }
+sha2 = { workspace = true, optional = true }
 
 # for cli
-tabled = "0.16"
-humansize = "2.1.3"
-terminal_size = "0.4"
-unicode-width = "0.1"
+tabled = { version = "0.22", optional = true }
+humansize = { version = "2.1.3", optional = true }
+terminal_size = { version = "0.4", optional = true }
+unicode-width = { version = "0.2", optional = true }
 
-base64 = "0.22"
+base64.workspace = true
 
-mimalloc = { version = "*", optional = true }
+mimalloc = { workspace = true, optional = true }
 
 # mips
-atomic-shim = "0.2.0"
+atomic-shim.workspace = true
 
-parking_lot = { version = "0.12.0" }
+parking_lot.workspace = true
 
 
-rust-i18n = "3"
-sys-locale = "0.3"
+rust-i18n.workspace = true
+sys-locale.workspace = true
 
 
 service-manager = { git = "https://github.com/EasyTier/service-manager-rs.git", branch = "main" }
 
-kcp-sys = { git = "https://github.com/EasyTier/kcp-sys", rev = "d7427c22d764deb1860a7d37acc446ed5033464c", optional = true }
+kcp-sys = { git = "https://github.com/EasyTier/kcp-sys", rev = "268533568d734ae89dc89603078da3ca522effe1", optional = true }
 
 # for dns connector
 hickory-resolver = { version = "0.25.2", optional = true }
@@ -214,21 +215,26 @@ hickory-server = { version = "0.25.2", features = [
     "resolver",
 ], optional = true }
 
-bon = "3.9.1"
-derive_builder = "0.20.2"
-humantime-serde = "1.1.1"
-shellexpand = "3.1.1"
+bon.workspace = true
+derive_builder = { version = "0.20.2", optional = true }
+humantime-serde = { version = "1.1.1", optional = true }
+shellexpand = "3.1.2"
 
 # for fake tcp
 flume = { version = "0.12", optional = true }
-igd-next = { version = "0.17.0", features = ["aio_tokio"], optional = true }
+
+# for upnp
+http-body-util = { workspace = true, optional = true }
+hyper = { workspace = true, features = ["client", "http1"], optional = true }
+hyper-util = { workspace = true, features = ["tokio"], optional = true }
 natpmp = { version = "0.5.0", optional = true }
+xmltree = { version = "0.12", optional = true }
 
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "freebsd"))'.dependencies]
-machine-uid = "0.5.3"
+machine-uid = "0.6.0"
 
 [target.'cfg(any(target_os = "linux"))'.dependencies]
-netlink-sys = { version = "0.8.7", optional = true }
+netlink-sys = { version = "0.9.0", optional = true }
 [target.'cfg(all(windows, any(target_arch = "x86_64", target_arch = "x86")))'.dependencies]
 windivert = { git = "https://github.com/EasyTier/windivert-rust.git", rev = "adcc56d1550f7b5377ec2b3429f413ee24a77375", features = [
     "static",
@@ -250,52 +256,50 @@ windows = { version = "0.62.2", features = [
     "Win32_System_IO",
 ] }
 encoding = "0.2"
-winreg = "0.52"
-windows-service = "0.7.0"
-winapi = { version = "0.3.9", features = ["impl-default"] }
+winreg = "0.56"
+windows-service = "0.8.1"
+winapi = { workspace = true, features = ["impl-default"] }
 
 [target.'cfg(not(windows))'.dependencies]
-jemallocator = { package = "tikv-jemallocator", version = "0.6.0", optional = true, features = [
+jemallocator = { package = "tikv-jemallocator", version = "0.7.0", optional = true, features = [
     "unprefixed_malloc_on_supported_platforms",
 ] }
-jemalloc-ctl = { package = "tikv-jemalloc-ctl", version = "0.6.0", optional = true, features = [
+jemalloc-ctl = { package = "tikv-jemalloc-ctl", version = "0.7.0", optional = true, features = [
     "use_std",
 ] }
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
-jemalloc-sys = { package = "tikv-jemalloc-sys", version = "0.6.0", features = [
+jemalloc-sys = { package = "tikv-jemalloc-sys", version = "0.7.1", features = [
     "background_threads_runtime_support",
     "background_threads",
 ], optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-jemalloc-sys = { package = "tikv-jemalloc-sys", version = "0.6.0", features = [
+jemalloc-sys = { package = "tikv-jemalloc-sys", version = "0.7.1", features = [
 ], optional = true }
 
 [build-dependencies]
-cfg_aliases = "0.2.1"
-globwalk = "0.8.1"
+cfg_aliases = "0.2.2"
+globwalk = "0.9.1"
 regex = "1"
-thunk-rs = { git = "https://github.com/easytier/thunk.git", default-features = false, features = [
+thunk-rs = { workspace = true, features = [
     "win7",
 ] }
 
 
 [dev-dependencies]
-criterion = "0.5.1"
-easytier-core = { path = "../easytier-core", version = "2.6.4", default-features = false, features = [
+criterion = "0.8.2"
+easytier-core = { workspace = true, features = [
     "test-utils",
 ] }
-serial_test = "3.0.0"
-rstest = "0.25.0"
-futures-util = "0.3.31"
+serial_test = "4.0.1"
+rstest = "0.27.0"
 maplit = "1.0.2"
-tempfile = "3.22.0"
-ctor = "0.8.0"
-stun_codec = "0.3.4"
-bytecodec = "0.4.15"
-x25519-dalek = { version = "2.0", features = ["static_secrets"] }
-smoltcp = { git = "https://github.com/smoltcp-rs/smoltcp.git", rev = "0a926767a68bc88d5512afefa7529c5ecdade4ea", default-features = false, features = [
+tempfile.workspace = true
+stun_codec.workspace = true
+bytecodec.workspace = true
+x25519-dalek = { workspace = true, features = ["static_secrets"] }
+smoltcp = { workspace = true, features = [
     "std",
     "medium-ethernet",
     "proto-ipv4",
@@ -304,12 +308,13 @@ smoltcp = { git = "https://github.com/smoltcp-rs/smoltcp.git", rev = "0a926767a6
 ] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-defguard_wireguard_rs = "0.4.2"
-tokio-socks = "0.5.2"
+defguard_wireguard_rs = "0.12.0"
+tokio-socks = "0.5.3"
 
 
 [features]
 default = [
+    "cli",
     "wireguard",
     "websocket",
     "smoltcp",
@@ -329,6 +334,7 @@ default = [
     "tcp-hole-punch",
 ]
 full = [
+    "cli",
     "websocket",
     "wireguard",
     "aes-gcm",
@@ -348,7 +354,8 @@ full = [
     "extended-services",
     "tcp-hole-punch",
 ]
-wireguard = ["vpn-portal", "dep:boringtun", "ring-crypto", "easytier-proto/wireguard"]
+cli = ["management", "dep:tabled", "dep:humansize", "dep:terminal_size", "dep:unicode-width"]
+wireguard = ["vpn-portal", "dep:boringtun", "dep:hkdf", "dep:sha2", "ring-crypto", "easytier-proto/wireguard"]
 quic = ["wrapped-transport", "easytier-core/proxy-packet", "dep:quinn", "dep:quinn-proto", "dep:seahash", "dep:rustls", "easytier-proto/quic"]
 kcp = ["wrapped-transport", "easytier-core/proxy-packet", "dep:kcp-sys"]
 mimalloc = ["dep:mimalloc"]
@@ -371,7 +378,7 @@ smoltcp = ["easytier-core/proxy-smoltcp-stack"]
 icmp-proxy = ["easytier-core/proxy-packet"]
 socks5 = ["smoltcp"]
 ffi-dataplane = ["socks5"]
-jemalloc = ["dep:jemallocator", "dep:jemalloc-sys"]
+jemalloc = ["dep:jemallocator"]
 jemalloc-prof = [
     "jemalloc",
     "dep:jemalloc-ctl",
@@ -384,6 +391,8 @@ tracing-log = ["tracing/log", "easytier-core/tracing-log"]
 logging = []
 dns-resolver = ["dep:hickory-proto", "dep:hickory-resolver"]
 magic-dns = [
+    "dep:derive_builder",
+    "dep:humantime-serde",
     "dns-resolver",
     "dep:hickory-client",
     "dep:hickory-server",
@@ -397,7 +406,13 @@ faketcp = [
     "easytier-proto/faketcp",
 ]
 zstd = ["easytier-core/zstd", "easytier-proto/zstd"]
-upnp = ["dep:igd-next", "dep:natpmp"]
+upnp = [
+    "dep:http-body-util",
+    "dep:hyper",
+    "dep:hyper-util",
+    "dep:natpmp",
+    "dep:xmltree",
+]
 endpoint-discovery = [
     "dns-resolver",
     "easytier-core/endpoint-discovery",
@@ -433,3 +448,15 @@ hotpath-cpu = ["hotpath"]
 hotpath-alloc = ["hotpath"]
 # For Network Extension on macOS
 macos-ne = []
+
+[package.metadata.cargo-machete]
+ignored = [
+    # Used by build/main.rs, including the Windows-only thunk setup.
+    "cfg_aliases",
+    "globwalk",
+    "regex",
+    "thunk-rs",
+    # Referenced by serde attributes or enabled for allocator feature unification.
+    "humantime-serde",
+    "jemalloc-sys",
+]

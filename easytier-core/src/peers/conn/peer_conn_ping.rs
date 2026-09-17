@@ -372,7 +372,11 @@ mod tests {
         );
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[cfg_attr(
+        not(target_os = "wasi"),
+        tokio::test(flavor = "multi_thread", worker_threads = 2)
+    )]
+    #[cfg_attr(target_os = "wasi", tokio::test)]
     async fn echoed_business_traffic_keeps_connection_alive_when_pongs_are_lost() {
         let local_liveness = PeerConnLiveness::new();
         let remote_liveness = PeerConnLiveness::new();

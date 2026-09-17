@@ -159,7 +159,7 @@ where
         let consumer_lease = self.data_plane.acquire_consumer_lease()?;
 
         self.tasks.lock().unwrap().spawn(reap_joinset_background(
-            self.tasks.clone(),
+            Arc::downgrade(&self.tasks),
             "SOCKS5 gateway adapter",
         ));
         let data_plane = self.data_plane.clone();

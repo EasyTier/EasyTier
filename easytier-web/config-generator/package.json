@@ -12,6 +12,7 @@
   "dependencies": {
     "@primeuix/themes": "^1.2.3",
     "easytier-frontend-lib": "workspace:*",
+    "kernelsu": "3.0.2",
     "primevue": "^4.3.9",
     "vue": "^3.5.12"
   },

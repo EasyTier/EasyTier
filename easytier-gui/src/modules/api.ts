@@ -11,6 +11,18 @@ export class GUIRemoteClient implements Api.RemoteClient {
     async get_network_info(inst_id: string): Promise<NetworkTypes.NetworkInstanceRunningInfo | undefined> {
         return backend.collectNetworkInfo(inst_id).then(infos => infos.info?.map?.[inst_id]);
     }
+    async get_vpn_portal_info(inst_id: string): Promise<NetworkTypes.VpnPortalInfo | undefined> {
+        return backend.getVpnPortalInfo(inst_id);
+    }
+    async add_vpn_portal_client(inst_id: string, client: { name: string, virtual_ip: string, groups: string[] }): Promise<undefined> {
+        await backend.addVpnPortalClient(inst_id, client);
+    }
+    async remove_vpn_portal_client(inst_id: string, name: string): Promise<undefined> {
+        await backend.removeVpnPortalClient(inst_id, name);
+    }
+    async clear_vpn_portal_clients(inst_id: string): Promise<undefined> {
+        await backend.clearVpnPortalClients(inst_id);
+    }
     async list_network_instance_ids(): Promise<Api.ListNetworkInstanceIdResponse> {
         return backend.listNetworkInstanceIds();
     }

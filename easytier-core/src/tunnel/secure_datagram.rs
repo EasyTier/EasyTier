@@ -8,7 +8,7 @@ use std::{
 
 use anyhow::anyhow;
 use atomic_shim::AtomicU64;
-use hmac::{Hmac, Mac as _};
+use hmac::{Hmac, KeyInit as _, Mac as _};
 use rand::RngCore as _;
 use sha2::Sha256;
 use zerocopy::FromBytes;

@@ -16,6 +16,7 @@ use crate::{
         tcp::{
             TcpBindOptions, TcpListenOptions, TcpSocketListener, TcpSocketPurpose,
             VirtualTcpListenerFactory, VirtualTcpSocket, VirtualTcpSocketFactory,
+            is_retryable_tcp_io_error,
         },
         udp::{
             UdpBindOptions, UdpSession, UdpSessionAcceptKind, UdpSessionListenRequest,
@@ -165,9 +166,20 @@ where
     }
 
     async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
-        let local_url = self.inner.local_url();
-        let socket = self.inner.accept().await?;
-        Ok(upgrade_accepted_tcp_with_local_url(socket, local_url)?)
+        loop {
+            let local_url = self.inner.local_url();
+            let socket = self.inner.accept().await?;
+            match upgrade_accepted_tcp_with_local_url(socket, local_url) {
+                Ok(tunnel) => return Ok(tunnel),
+                Err(error) if is_retryable_accepted_tcp_error(&error) => {
+                    tracing::warn!(
+                        ?error,
+                        "accepted tcp connection failed with retryable error"
+                    );
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
     }
 
     fn local_url(&self) -> Url {
@@ -406,6 +418,14 @@ where
     TcpTunnelUpgrader::new(info).upgrade(socket)
 }
 
+fn is_retryable_accepted_tcp_error(error: &TunnelError) -> bool {
+    matches!(
+        error,
+        TunnelError::IOError(error)
+            if is_retryable_tcp_io_error(error)
+    )
+}
+
 pub(crate) fn upgrade_accepted_byte_stream<S>(
     socket: S,
     local_url: Url,
@@ -493,8 +513,10 @@ fn socket_url(scheme: &str, addr: SocketAddr) -> Url {
 #[cfg(test)]
 pub(crate) mod tests {
     use std::{
+        collections::VecDeque,
         io,
         pin::Pin,
+        sync::Mutex,
         task::{Context, Poll},
     };
 
@@ -503,6 +525,7 @@ pub(crate) mod tests {
 
     use crate::{
         packet::ZCPacket,
+        socket::tcp::VirtualTcpListener,
         socket::udp::{UdpSessionKind, VirtualUdpSocket},
     };
 
@@ -527,6 +550,7 @@ pub(crate) mod tests {
         stream: DuplexStream,
         local_addr: SocketAddr,
         peer_addr: SocketAddr,
+        peer_addr_error: Option<io::ErrorKind>,
         transport_label: Option<&'static str>,
     }
 
@@ -545,12 +569,18 @@ pub(crate) mod tests {
                 stream,
                 local_addr,
                 peer_addr,
+                peer_addr_error: None,
                 transport_label: None,
             }
         }
 
         fn with_transport_label(mut self, transport_label: &'static str) -> Self {
             self.transport_label = Some(transport_label);
+            self
+        }
+
+        fn with_peer_addr_error(mut self, kind: io::ErrorKind) -> Self {
+            self.peer_addr_error = Some(kind);
             self
         }
     }
@@ -589,11 +619,64 @@ pub(crate) mod tests {
         }
 
         fn peer_addr(&self) -> io::Result<SocketAddr> {
+            if let Some(kind) = self.peer_addr_error {
+                return Err(io::Error::new(kind, "mock peer address failure"));
+            }
             Ok(self.peer_addr)
         }
 
         fn transport_label(&self) -> Option<&str> {
             self.transport_label
+        }
+    }
+
+    struct MockTcpListener {
+        local_addr: SocketAddr,
+        accepts: Mutex<VecDeque<io::Result<(MockTcpSocket, SocketAddr)>>>,
+    }
+
+    impl MockTcpListener {
+        fn new(
+            local_addr: SocketAddr,
+            accepts: Vec<io::Result<(MockTcpSocket, SocketAddr)>>,
+        ) -> Self {
+            Self {
+                local_addr,
+                accepts: Mutex::new(accepts.into_iter().collect()),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl VirtualTcpListener for MockTcpListener {
+        type Socket = MockTcpSocket;
+
+        fn local_addr(&self) -> io::Result<SocketAddr> {
+            Ok(self.local_addr)
+        }
+
+        async fn accept(&self) -> io::Result<(Self::Socket, SocketAddr)> {
+            let result = { self.accepts.lock().unwrap().pop_front() };
+            match result {
+                Some(result) => result,
+                None => std::future::pending().await,
+            }
+        }
+    }
+
+    struct MockTcpListenerFactory {
+        listener: Arc<MockTcpListener>,
+    }
+
+    #[async_trait]
+    impl VirtualTcpListenerFactory for MockTcpListenerFactory {
+        type Listener = MockTcpListener;
+
+        async fn bind_tcp(
+            &self,
+            _options: TcpListenOptions,
+        ) -> anyhow::Result<Arc<Self::Listener>> {
+            Ok(self.listener.clone())
         }
     }
 
@@ -684,6 +767,57 @@ pub(crate) mod tests {
             accepted_info.remote_addr,
             accepted_info.resolved_remote_addr
         );
+    }
+
+    #[tokio::test]
+    async fn tcp_tunnel_listener_rejects_transient_peer_addr_error_and_continues() {
+        let local_addr: SocketAddr = "127.0.0.1:11013".parse().unwrap();
+        let rejected_peer_addr: SocketAddr = "127.0.0.1:21013".parse().unwrap();
+        let accepted_peer_addr: SocketAddr = "127.0.0.1:21014".parse().unwrap();
+        let listener = Arc::new(MockTcpListener::new(
+            local_addr,
+            vec![
+                Ok((
+                    MockTcpSocket::new(local_addr, rejected_peer_addr)
+                        .with_peer_addr_error(io::ErrorKind::NotConnected),
+                    rejected_peer_addr,
+                )),
+                Ok((
+                    MockTcpSocket::new(local_addr, accepted_peer_addr),
+                    accepted_peer_addr,
+                )),
+            ],
+        ));
+        let factory = Arc::new(MockTcpListenerFactory { listener });
+        let mut tunnel_listener = TcpTunnelListener::new(local_addr, factory);
+
+        tunnel_listener.listen().await.unwrap();
+        let tunnel = tunnel_listener.accept().await.unwrap();
+        let info = tunnel.info().unwrap();
+
+        assert_eq!(
+            info.remote_addr.unwrap().url,
+            format!("tcp://{accepted_peer_addr}")
+        );
+    }
+
+    #[tokio::test]
+    async fn tcp_tunnel_listener_propagates_non_retryable_peer_addr_error() {
+        let local_addr: SocketAddr = "127.0.0.1:11013".parse().unwrap();
+        let peer_addr: SocketAddr = "127.0.0.1:21013".parse().unwrap();
+        let listener = Arc::new(MockTcpListener::new(
+            local_addr,
+            vec![Ok((
+                MockTcpSocket::new(local_addr, peer_addr)
+                    .with_peer_addr_error(io::ErrorKind::Other),
+                peer_addr,
+            ))],
+        ));
+        let factory = Arc::new(MockTcpListenerFactory { listener });
+        let mut tunnel_listener = TcpTunnelListener::new(local_addr, factory);
+
+        tunnel_listener.listen().await.unwrap();
+        assert!(tunnel_listener.accept().await.is_err());
     }
 
     #[test]

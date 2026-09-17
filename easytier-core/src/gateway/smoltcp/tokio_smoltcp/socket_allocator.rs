@@ -3,11 +3,15 @@ use smoltcp::{
     iface::{SocketHandle as InnerSocketHandle, SocketSet},
     socket::{tcp, udp},
     time::Duration,
+    wire::IpEndpoint,
 };
 use std::{
     ops::{Deref, DerefMut},
     sync::Arc,
 };
+
+pub(super) const TCP_TIMEOUT: Duration = Duration::from_secs(60);
+pub(super) const TCP_LISTENER_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// `BufferSize` is used to configure the size of the socket buffer.
 #[derive(Debug, Clone, Copy)]
@@ -59,13 +63,26 @@ impl SocketAlloctor {
         let handle = set.add(self.alloc_tcp_socket());
         SocketHandle::new(handle, self.sockets.clone())
     }
+    pub(super) fn add_tcp_listener_socket(
+        &self,
+        sockets: &mut SocketSet<'static>,
+        local_endpoint: IpEndpoint,
+    ) -> Result<InnerSocketHandle, tcp::ListenError> {
+        let mut socket = self.alloc_tcp_socket();
+        socket.set_timeout(Some(TCP_LISTENER_TIMEOUT));
+        socket.listen(local_endpoint)?;
+        Ok(sockets.add(socket))
+    }
+    pub(super) fn own_socket(&self, handle: InnerSocketHandle) -> SocketHandle {
+        SocketHandle::new(handle, self.sockets.clone())
+    }
     fn alloc_tcp_socket(&self) -> tcp::Socket<'static> {
         let rx_buffer = tcp::SocketBuffer::new(vec![0; self.buffer_size.tcp_rx_size]);
         let tx_buffer = tcp::SocketBuffer::new(vec![0; self.buffer_size.tcp_tx_size]);
         let mut tcp = tcp::Socket::new(rx_buffer, tx_buffer);
         tcp.set_nagle_enabled(false);
         tcp.set_keep_alive(Some(Duration::from_secs(10)));
-        tcp.set_timeout(Some(Duration::from_secs(60)));
+        tcp.set_timeout(Some(TCP_TIMEOUT));
 
         tcp
     }

@@ -184,7 +184,7 @@ impl HostSocketRuntime {
         }
     }
 
-    pub(in crate::host) async fn run_operation<I, T>(
+    pub(crate) async fn run_operation<I, T>(
         &self,
         io: Arc<I>,
         submit: impl FnOnce(&I, HostOperationId) -> io::Result<()>,

@@ -1,14 +1,12 @@
 use std::{
     collections::HashSet,
-    hash::Hash,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     sync::{Arc, Weak},
-    time::{Duration, Instant as StdInstant},
+    time::Duration,
 };
 
 use anyhow::Context;
 use async_trait::async_trait;
-use dashmap::DashMap;
 use quanta::Instant;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -26,6 +24,7 @@ use crate::{
         },
         transport::{self, ConnectedTransport, UdpSessionMode},
     },
+    foundation::expiring_set::ExpiringSet,
     foundation::task::{PeerTaskLauncher, PeerTaskManager},
     host::dns::DnsResolver,
     peers::{
@@ -154,50 +153,6 @@ impl DirectConnectorOptions {
             DirectTransport::Udp(_) => self.udp_bind.context.clone(),
         };
         context.with_ip_version(ip_version)
-    }
-}
-
-#[derive(Debug)]
-struct ExpiringSet<K>
-where
-    K: Eq + Hash,
-{
-    entries: DashMap<K, StdInstant>,
-}
-
-impl<K> Default for ExpiringSet<K>
-where
-    K: Eq + Hash,
-{
-    fn default() -> Self {
-        Self {
-            entries: DashMap::new(),
-        }
-    }
-}
-
-impl<K> ExpiringSet<K>
-where
-    K: Eq + Hash + Clone,
-{
-    fn insert(&self, key: K, ttl: Duration) {
-        self.entries.insert(key, StdInstant::now() + ttl);
-    }
-
-    fn contains(&self, key: &K) -> bool {
-        let active = self
-            .entries
-            .get(key)
-            .is_some_and(|expires_at| *expires_at > StdInstant::now());
-        if !active {
-            self.entries.remove(key);
-        }
-        active
-    }
-
-    fn cleanup(&self) {
-        let now = StdInstant::now();
-        self.entries.retain(|_, expires_at| *expires_at > now);
     }
 }
 

@@ -28,7 +28,7 @@ use crate::{
 
 use super::{
     ConfigFileControl, ConfigFilePermission, InstanceManager, config_source_from_rpc,
-    config_source_to_rpc,
+    config_source_to_rpc, network_instance_running_info,
 };
 
 #[async_trait::async_trait]
@@ -63,6 +63,8 @@ pub trait ConfigFileStorage: Send + Sync + 'static {
 
     async fn read(&self, path: &Path) -> anyhow::Result<Option<Vec<u8>>>;
 
+    /// Atomically replaces the file and restricts newly created files to the
+    /// current user when the Host supports file permissions.
     async fn write(&self, path: &Path, contents: &[u8]) -> anyhow::Result<()>;
 
     async fn remove(&self, path: &Path) -> anyhow::Result<()>;
@@ -631,17 +633,29 @@ where
         let included = request
             .inst_ids
             .into_iter()
-            .map(|id| uuid::Uuid::from(id).to_string())
+            .map(uuid::Uuid::from)
             .collect::<HashSet<_>>();
-        let map = self
-            .management
-            .instances
-            .collect_network_infos()
-            .await?
-            .into_iter()
-            .map(|(id, info)| (id.to_string(), info))
-            .filter(|(id, _)| included.is_empty() || included.contains(id))
-            .collect();
+        let map = if included.is_empty() {
+            self.management
+                .instances
+                .collect_network_infos()
+                .await?
+                .into_iter()
+                .map(|(id, info)| (id.to_string(), info))
+                .collect()
+        } else {
+            let mut map = std::collections::BTreeMap::new();
+            for instance_id in included {
+                let Some(instance) = self.management.instances.instance(instance_id) else {
+                    continue;
+                };
+                map.insert(
+                    instance_id.to_string(),
+                    network_instance_running_info(instance.as_ref()).await?,
+                );
+            }
+            map
+        };
         Ok(CollectNetworkInfoResponse {
             info: Some(NetworkInstanceRunningInfoMap { map }),
         })
