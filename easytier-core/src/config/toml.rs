@@ -483,19 +483,30 @@ fn default_true() -> bool {
     true
 }
 
+#[optionize::optionized]
+#[cfg_attr(any(feature = "web-client", feature = "browser-config"), optionize(object = easytier_proto::api::manage::ManagedCredentialConfig))]
 #[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ManagedCredentialConfig {
+    #[optionize(flatten)]
     pub credential_id: String,
+    #[optionize(flatten)]
     pub credential_secret: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[optionize(flatten)]
     pub groups: Vec<String>,
     #[serde(default)]
+    #[optionize(flatten)]
     pub allow_relay: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[optionize(flatten)]
     pub allowed_proxy_cidrs: Vec<String>,
+    #[optionize(flatten)]
     pub expiry_unix: i64,
     #[serde(default = "default_true")]
+    // The mapped field is `Option<bool>` (the protocol spells it `optional bool`),
+    // so this document default does not describe it.
+    #[optionize(attrs(.., -serde), default = |_| default_true())]
     pub reusable: bool,
 }
 

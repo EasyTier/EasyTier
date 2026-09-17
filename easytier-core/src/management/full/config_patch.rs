@@ -6,9 +6,10 @@ use easytier_proto::api::config::{
     PortForwardPatch, ProxyNetworkPatch, RoutePatch, UrlPatch, VpnPortalClientPatch,
 };
 
+use optionize::Optionized as _;
+
 use crate::{
     config::{
-        api_input::managed_credential_from_proto,
         peers::AclRuleConfig,
         runtime::CoreInstanceRuntimeConfig,
         toml::{ConfigLoader as _, TomlConfig},
@@ -188,8 +189,8 @@ where
             let entries = managed
                 .entries
                 .iter()
-                .map(managed_credential_from_proto)
-                .collect::<Vec<_>>();
+                .map(|credential| credential.clone().upgrade())
+                .collect::<Result<Vec<_>, _>>()?;
             let replacement = credential_manager
                 .validate_managed_credentials(&entries)
                 .map_err(anyhow::Error::msg)?;
