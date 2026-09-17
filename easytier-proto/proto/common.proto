@@ -4,7 +4,7 @@ import "error.proto";
 
 package common;
 
-message FlagsInConfig {
+message Flags {
   string default_protocol = 1;
   string dev_name = 2;
   bool enable_encryption = 3;
@@ -89,6 +89,7 @@ message FlagsInConfig {
   // advertising another direct edge to the same destination.
   bool prefer_peer_relay = 44;
 }
+
 
 message RpcDescriptor {
   // allow same service registered multiple times in different domain
