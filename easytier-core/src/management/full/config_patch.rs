@@ -5,7 +5,7 @@ use easytier_proto::api::config::{
     self, AclPatch, ConfigPatchAction, ExitNodePatch, InstanceConfigPatch, Patchable,
     PortForwardPatch, ProxyNetworkPatch, RoutePatch, UrlPatch, VpnPortalClientPatch,
 };
-
+use easytier_proto::common::FlagsPatch;
 use optionize::Optionized as _;
 
 use crate::{
@@ -94,16 +94,11 @@ where
         if let Some(ipv6) = patch.ipv6 {
             candidate.set_ipv6(Some(ipv6.into()));
         }
-        if let Some(disable_relay_data) = patch.disable_relay_data {
-            let mut flags = candidate.get_flags();
-            flags.disable_relay_data = disable_relay_data;
-            candidate.set_flags(flags);
-        }
-        if let Some(prefer_peer_relay) = patch.prefer_peer_relay {
-            let mut flags = candidate.get_flags();
-            flags.prefer_peer_relay = prefer_peer_relay;
-            candidate.set_flags(flags);
-        }
+        candidate.patch_flags(FlagsPatch {
+            disable_relay_data: patch.disable_relay_data,
+            prefer_peer_relay: patch.prefer_peer_relay,
+            ..Default::default()
+        });
         if let Some(enabled) = patch.ipv6_public_addr_provider {
             candidate.set_ipv6_public_addr_provider(enabled);
             provider_config_changed = true;
