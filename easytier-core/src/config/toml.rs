@@ -20,7 +20,7 @@ use crate::proto::{
 
 pub const DEFAULT_ET_DNS_ZONE: &str = "et.net.";
 
-pub type Flags = crate::proto::common::FlagsInConfig;
+pub type Flags = crate::proto::common::Flags;
 
 pub(crate) fn default_instance_name() -> String {
     "default".to_owned()
@@ -1430,7 +1430,7 @@ mod compatibility_tests {
             .and_then(|file| {
                 file.message_type
                     .iter()
-                    .find(|message| message.name.as_deref() == Some("FlagsInConfig"))
+                    .find(|message| message.name.as_deref() == Some("Flags"))
             })
             .unwrap()
             .field
