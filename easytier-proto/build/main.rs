@@ -106,7 +106,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let out = PathBuf::from(env::var("OUT_DIR")?);
-    let descriptor = out.join("descriptors.bin");
 
     let mut config = prost_build::Config::new();
     if env::var_os("CARGO_FEATURE_JSON_RPC").is_some() {
@@ -121,7 +120,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .extern_path(".google.protobuf.Value", "::prost_types::Value");
     }
     config
-        .file_descriptor_set_path(&descriptor)
+        .file_descriptor_set_path(out.join("descriptors.bin"))
         .service_generator(Box::new(ServiceGenerator::default()))
         .btree_map(["."])
         .skip_debug([
@@ -132,14 +131,62 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ".api.manage.VpnPortalConfig",
         ]);
 
-    config.compile_protos(&proto_files, &["proto/"])?;
+    let mut descriptor_set = config.load_fds(&proto_files, &["proto/"])?;
+
+    {
+        let common = descriptor_set
+            .file
+            .iter_mut()
+            .find(|file| file.package.as_deref() == Some("common"))
+            .unwrap();
+        let flags = common
+            .message_type
+            .iter()
+            .find(|message| message.name.as_deref() == Some("Flags"))
+            .unwrap();
+        config
+            .type_attribute(".common.Flags", "#[optionize::optionized]")
+            .type_attribute(".common.Flags", "#[optionize(object = FlagsPatch)]");
+
+        let flattened = flags
+            .field
+            .iter()
+            .filter(|field| field.proto3_optional())
+            .map(|field| field.name().to_owned());
+        for name in flattened {
+            config.field_attribute(format!(".common.Flags.{name}"), "#[optionize(flatten)]");
+        }
+
+        let mut patch = flags.clone();
+        patch.name = Some("FlagsPatch".to_owned());
+        // Proto3 spells `optional` as one synthetic one-of per field.
+        let oneofs = patch
+            .field
+            .iter()
+            .map(|field| prost_types::OneofDescriptorProto {
+                name: Some(format!("_{}", field.name())),
+                ..Default::default()
+            })
+            .collect::<Vec<_>>();
+        patch.oneof_decl = oneofs;
+        for (index, field) in patch.field.iter_mut().enumerate() {
+            field.proto3_optional = Some(true);
+            field.label = Some(prost_types::field_descriptor_proto::Label::Optional as i32);
+            field.oneof_index = Some(index as i32);
+        }
+        common.message_type.push(patch);
+
+        config.disable_comments([".common.FlagsPatch"]);
+    }
+
+    let descriptors = prost::Message::encode_to_vec(&descriptor_set);
 
     config.file_descriptor_set_path(out.join("file_descriptor_set.bin"));
     config.compile_protos(&proto_files_reflect, &["proto/"])?;
+    config.compile_fds(descriptor_set)?;
 
-    let descriptor = std::fs::read(descriptor)?;
     pbjson_build::Builder::new()
-        .register_descriptors(&descriptor)?
+        .register_descriptors(&descriptors)?
         .preserve_proto_field_names()
         .btree_map(["."])
         .build(&["."])?;
