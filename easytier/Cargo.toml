@@ -317,6 +317,7 @@ default = [
     "cli",
     "wireguard",
     "websocket",
+    "tls",
     "smoltcp",
     "tun",
     "socks5",
@@ -373,6 +374,11 @@ websocket = [
     "dep:tokio-rustls",
     "dep:rustls",
     "easytier-proto/websocket",
+]
+tls = [
+    "dep:rcgen",
+    "dep:tokio-rustls",
+    "dep:rustls",
 ]
 smoltcp = ["easytier-core/proxy-smoltcp-stack"]
 icmp-proxy = ["easytier-core/proxy-packet"]

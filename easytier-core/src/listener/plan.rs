@@ -144,6 +144,7 @@ where
     for (scheme, kind) in [
         ("ws", ListenerKind::TcpStream),
         ("wss", ListenerKind::TcpStream),
+        ("tls", ListenerKind::TcpStream),
         ("wg", ListenerKind::UdpSession),
         ("quic", ListenerKind::UdpSession),
     ] {

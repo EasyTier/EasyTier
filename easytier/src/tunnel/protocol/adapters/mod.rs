@@ -6,6 +6,8 @@ use crate::{common::global_ctx::ArcGlobalCtx, socket::tcp::RuntimeTcpSocket};
 
 #[cfg(feature = "quic")]
 mod quic;
+#[cfg(feature = "tls")]
+mod tls;
 #[cfg(feature = "websocket")]
 mod websocket;
 #[cfg(feature = "wireguard")]
@@ -19,6 +21,8 @@ pub(super) fn client_adapters(global_ctx: &ArcGlobalCtx) -> Vec<ClientAdapter> {
     [
         #[cfg(feature = "websocket")]
         websocket::client_adapter(global_ctx),
+        #[cfg(feature = "tls")]
+        tls::client_adapter(global_ctx),
         #[cfg(feature = "wireguard")]
         wireguard::client_adapter(global_ctx),
         #[cfg(feature = "quic")]
@@ -33,6 +37,8 @@ pub(super) fn server_adapters(global_ctx: &ArcGlobalCtx) -> Vec<ServerAdapter> {
     [
         #[cfg(feature = "websocket")]
         websocket::server_adapter(global_ctx),
+        #[cfg(feature = "tls")]
+        tls::server_adapter(global_ctx),
         #[cfg(feature = "wireguard")]
         wireguard::server_adapter(global_ctx),
         #[cfg(feature = "quic")]

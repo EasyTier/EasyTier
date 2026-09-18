@@ -1,10 +1,20 @@
 use std::{collections::hash_map::DefaultHasher, hash::Hasher, net::SocketAddr};
 
-#[cfg(any(feature = "faketcp", feature = "websocket", feature = "wireguard"))]
+#[cfg(any(
+    feature = "faketcp",
+    feature = "websocket",
+    feature = "wireguard",
+    feature = "tls"
+))]
 use crate::common::dns::socket_addrs;
 use crate::common::error::Error;
 use derive_more::{From, TryInto};
-#[cfg(any(feature = "faketcp", feature = "websocket", feature = "wireguard"))]
+#[cfg(any(
+    feature = "faketcp",
+    feature = "websocket",
+    feature = "wireguard",
+    feature = "tls"
+))]
 use easytier_core::tunnel::{IpVersion, TunnelError};
 use strum::{Display, EnumString, IntoStaticStr, VariantArray};
 
@@ -20,6 +30,9 @@ pub mod quic;
 #[cfg(feature = "websocket")]
 pub mod websocket;
 
+#[cfg(feature = "tls")]
+pub mod tls;
+
 pub fn build_url_from_socket_addr(addr: &String, scheme: &str) -> url::Url {
     if let Ok(sock_addr) = addr.parse::<SocketAddr>() {
         let url_str = format!("{}://0.0.0.0", scheme);
@@ -34,7 +47,12 @@ pub fn build_url_from_socket_addr(addr: &String, scheme: &str) -> url::Url {
 }
 
 #[async_trait::async_trait]
-#[cfg(any(feature = "faketcp", feature = "websocket", feature = "wireguard"))]
+#[cfg(any(
+    feature = "faketcp",
+    feature = "websocket",
+    feature = "wireguard",
+    feature = "tls"
+))]
 pub(crate) trait FromUrl {
     async fn from_url(url: url::Url, ip_version: IpVersion) -> Result<Self, TunnelError>
     where
@@ -42,7 +60,12 @@ pub(crate) trait FromUrl {
 }
 
 #[async_trait::async_trait]
-#[cfg(any(feature = "faketcp", feature = "websocket", feature = "wireguard"))]
+#[cfg(any(
+    feature = "faketcp",
+    feature = "websocket",
+    feature = "wireguard",
+    feature = "tls"
+))]
 impl FromUrl for SocketAddr {
     async fn from_url(url: url::Url, ip_version: IpVersion) -> Result<Self, TunnelError> {
         let addrs = socket_addrs(&url, || {
@@ -137,6 +160,8 @@ pub enum IpScheme {
     Ws,
     #[cfg(feature = "websocket")]
     Wss,
+    #[cfg(feature = "tls")]
+    Tls,
     #[cfg(feature = "faketcp")]
     FakeTcp,
 }

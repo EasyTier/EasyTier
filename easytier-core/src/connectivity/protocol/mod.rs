@@ -22,7 +22,7 @@ pub(crate) enum ProtocolTransport {
 
 pub(crate) const fn protocol_transport(scheme: &str) -> Option<ProtocolTransport> {
     match scheme.as_bytes() {
-        b"tcp" | b"ws" | b"wss" => Some(ProtocolTransport::Tcp),
+        b"tcp" | b"ws" | b"wss" | b"tls" => Some(ProtocolTransport::Tcp),
         b"faketcp" => Some(ProtocolTransport::FakeTcp),
         b"udp" => Some(ProtocolTransport::Udp(UdpSessionMode::EasyTierMux)),
         b"wg" => Some(ProtocolTransport::Udp(UdpSessionMode::Classified(
@@ -43,7 +43,7 @@ pub(crate) const fn protocol_uses_udp(scheme: &str) -> bool {
 /// into EasyTier's protocol-specific listener set.
 pub const fn protocol_port_offset(scheme: &str) -> Option<u16> {
     match scheme.as_bytes() {
-        b"tcp" | b"udp" => Some(0),
+        b"tcp" | b"udp" | b"tls" => Some(0),
         b"wg" | b"ws" => Some(1),
         b"quic" | b"wss" => Some(2),
         b"faketcp" => Some(3),

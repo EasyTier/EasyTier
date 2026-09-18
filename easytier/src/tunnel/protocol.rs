@@ -279,6 +279,58 @@ mod tests {
         .unwrap();
     }
 
+    #[cfg(feature = "tls")]
+    #[tokio::test]
+    async fn runtime_tls_upgraders_share_one_native_engine() {
+        use easytier_core::packet::ZCPacket;
+        use futures::{SinkExt, StreamExt};
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url: url::Url = format!("tls://{addr}").parse().unwrap();
+        let global_ctx = get_mock_global_ctx();
+        let server = runtime_server_protocol_upgrader(global_ctx.clone());
+        let client = runtime_client_protocol_upgrader(global_ctx);
+
+        assert_eq!(
+            client.connect_timeout("tls"),
+            Some(crate::tunnel::tls::CONNECT_TIMEOUT)
+        );
+
+        let server_url = url.clone();
+        let server_task = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let ServerProtocolUpgrade::Tunnel(tunnel) = server
+                .upgrade_tcp(RuntimeTcpSocket::new(socket), server_url)
+                .await
+                .unwrap()
+            else {
+                panic!("TLS must upgrade directly to a tunnel");
+            };
+            crate::tunnel::common::tests::_tunnel_echo_server(tunnel, true).await;
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let socket = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let tunnel = client
+                .upgrade_client(ConnectedTransport::Tcp(RuntimeTcpSocket::new(socket)), url)
+                .await
+                .unwrap();
+            let (mut recv, mut send) = tunnel.split();
+            send.send(ZCPacket::new_with_payload(b"runtime tls seam"))
+                .await
+                .unwrap();
+            let packet = recv.next().await.unwrap().unwrap();
+            assert_eq!(packet.payload(), b"runtime tls seam".as_slice());
+            send.close().await.unwrap();
+            server_task.await.unwrap();
+        })
+        .await
+        .unwrap();
+    }
+
     #[cfg(feature = "websocket")]
     #[tokio::test]
     async fn runtime_websocket_upgraders_reject_ws_client_for_wss_server() {
