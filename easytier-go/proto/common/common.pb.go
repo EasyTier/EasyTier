@@ -255,9 +255,12 @@ type FlagsInConfig struct {
 	// SO_MARK untouched (kernel default 0). Any set value (including 0) is
 	// applied via setsockopt. Requires CAP_NET_ADMIN; silently ignored on
 	// non-Linux platforms.
-	SocketMark    *uint32 `protobuf:"varint,43,opt,name=socket_mark,json=socketMark,proto3,oneof" json:"socket_mark,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	SocketMark *uint32 `protobuf:"varint,43,opt,name=socket_mark,json=socketMark,proto3,oneof" json:"socket_mark,omitempty"`
+	// Prefer direct credential peers that already relay to a destination over
+	// advertising another direct edge to the same destination.
+	PreferPeerRelay bool `protobuf:"varint,44,opt,name=prefer_peer_relay,json=preferPeerRelay,proto3" json:"prefer_peer_relay,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *FlagsInConfig) Reset() {
@@ -583,6 +586,13 @@ func (x *FlagsInConfig) GetSocketMark() uint32 {
 		return *x.SocketMark
 	}
 	return 0
+}
+
+func (x *FlagsInConfig) GetPreferPeerRelay() bool {
+	if x != nil {
+		return x.PreferPeerRelay
+	}
+	return false
 }
 
 type RpcDescriptor struct {
@@ -2071,66 +2081,6 @@ func (x *ProxyDstInfo) GetDstAddr() *SocketAddr {
 	return nil
 }
 
-type LimiterConfig struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	BurstRate      *uint64                `protobuf:"varint,1,opt,name=burst_rate,json=burstRate,proto3,oneof" json:"burst_rate,omitempty"`                  // default 1 means no burst (capacity is same with bps)
-	Bps            *uint64                `protobuf:"varint,2,opt,name=bps,proto3,oneof" json:"bps,omitempty"`                                               // default 0 means no limit (unit is B/s)
-	FillDurationMs *uint64                `protobuf:"varint,3,opt,name=fill_duration_ms,json=fillDurationMs,proto3,oneof" json:"fill_duration_ms,omitempty"` // default 10ms, the period to fill the bucket
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
-}
-
-func (x *LimiterConfig) Reset() {
-	*x = LimiterConfig{}
-	mi := &file_common_proto_msgTypes[23]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *LimiterConfig) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*LimiterConfig) ProtoMessage() {}
-
-func (x *LimiterConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_common_proto_msgTypes[23]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use LimiterConfig.ProtoReflect.Descriptor instead.
-func (*LimiterConfig) Descriptor() ([]byte, []int) {
-	return file_common_proto_rawDescGZIP(), []int{23}
-}
-
-func (x *LimiterConfig) GetBurstRate() uint64 {
-	if x != nil && x.BurstRate != nil {
-		return *x.BurstRate
-	}
-	return 0
-}
-
-func (x *LimiterConfig) GetBps() uint64 {
-	if x != nil && x.Bps != nil {
-		return *x.Bps
-	}
-	return 0
-}
-
-func (x *LimiterConfig) GetFillDurationMs() uint64 {
-	if x != nil && x.FillDurationMs != nil {
-		return *x.FillDurationMs
-	}
-	return 0
-}
-
 type SecureModeConfig struct {
 	state   protoimpl.MessageState `protogen:"open.v1"`
 	Enabled bool                   `protobuf:"varint,1,opt,name=enabled,proto3" json:"enabled,omitempty"`
@@ -2144,7 +2094,7 @@ type SecureModeConfig struct {
 
 func (x *SecureModeConfig) Reset() {
 	*x = SecureModeConfig{}
-	mi := &file_common_proto_msgTypes[24]
+	mi := &file_common_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2156,7 +2106,7 @@ func (x *SecureModeConfig) String() string {
 func (*SecureModeConfig) ProtoMessage() {}
 
 func (x *SecureModeConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_common_proto_msgTypes[24]
+	mi := &file_common_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2169,7 +2119,7 @@ func (x *SecureModeConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SecureModeConfig.ProtoReflect.Descriptor instead.
 func (*SecureModeConfig) Descriptor() ([]byte, []int) {
-	return file_common_proto_rawDescGZIP(), []int{24}
+	return file_common_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *SecureModeConfig) GetEnabled() bool {
@@ -2197,7 +2147,7 @@ var File_common_proto protoreflect.FileDescriptor
 
 const file_common_proto_rawDesc = "" +
 	"\n" +
-	"\fcommon.proto\x12\x06common\x1a\verror.proto\"\xc9\x0e\n" +
+	"\fcommon.proto\x12\x06common\x1a\verror.proto\"\xf5\x0e\n" +
 	"\rFlagsInConfig\x12)\n" +
 	"\x10default_protocol\x18\x01 \x01(\tR\x0fdefaultProtocol\x12\x19\n" +
 	"\bdev_name\x18\x02 \x01(\tR\adevName\x12+\n" +
@@ -2248,7 +2198,8 @@ const file_common_proto_rawDesc = "" +
 	"\x12disable_relay_data\x18) \x01(\bR\x10disableRelayData\x12;\n" +
 	"\x1aenable_udp_broadcast_relay\x18* \x01(\bR\x17enableUdpBroadcastRelay\x12$\n" +
 	"\vsocket_mark\x18+ \x01(\rH\x00R\n" +
-	"socketMark\x88\x01\x01B\x0e\n" +
+	"socketMark\x88\x01\x01\x12*\n" +
+	"\x11prefer_peer_relay\x18, \x01(\bR\x0fpreferPeerRelayB\x0e\n" +
 	"\f_socket_mark\"\x95\x01\n" +
 	"\rRpcDescriptor\x12\x1f\n" +
 	"\vdomain_name\x18\x01 \x01(\tR\n" +
@@ -2374,15 +2325,7 @@ const file_common_proto_rawDesc = "" +
 	"\vsocket_type\x18\x03 \x01(\x0e2\x12.common.SocketTypeR\n" +
 	"socketType\"=\n" +
 	"\fProxyDstInfo\x12-\n" +
-	"\bdst_addr\x18\x01 \x01(\v2\x12.common.SocketAddrR\adstAddr\"\xa5\x01\n" +
-	"\rLimiterConfig\x12\"\n" +
-	"\n" +
-	"burst_rate\x18\x01 \x01(\x04H\x00R\tburstRate\x88\x01\x01\x12\x15\n" +
-	"\x03bps\x18\x02 \x01(\x04H\x01R\x03bps\x88\x01\x01\x12-\n" +
-	"\x10fill_duration_ms\x18\x03 \x01(\x04H\x02R\x0efillDurationMs\x88\x01\x01B\r\n" +
-	"\v_burst_rateB\x06\n" +
-	"\x04_bpsB\x13\n" +
-	"\x11_fill_duration_ms\"\xb7\x01\n" +
+	"\bdst_addr\x18\x01 \x01(\v2\x12.common.SocketAddrR\adstAddr\"\xb7\x01\n" +
 	"\x10SecureModeConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12/\n" +
 	"\x11local_private_key\x18\x02 \x01(\tH\x00R\x0flocalPrivateKey\x88\x01\x01\x12-\n" +
@@ -2423,7 +2366,7 @@ func file_common_proto_rawDescGZIP() []byte {
 }
 
 var file_common_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_common_proto_msgTypes = make([]protoimpl.MessageInfo, 25)
+var file_common_proto_msgTypes = make([]protoimpl.MessageInfo, 24)
 var file_common_proto_goTypes = []any{
 	(CompressionAlgoPb)(0),        // 0: common.CompressionAlgoPb
 	(NatType)(0),                  // 1: common.NatType
@@ -2451,16 +2394,15 @@ var file_common_proto_goTypes = []any{
 	(*PeerFeatureFlag)(nil),       // 23: common.PeerFeatureFlag
 	(*PortForwardConfigPb)(nil),   // 24: common.PortForwardConfigPb
 	(*ProxyDstInfo)(nil),          // 25: common.ProxyDstInfo
-	(*LimiterConfig)(nil),         // 26: common.LimiterConfig
-	(*SecureModeConfig)(nil),      // 27: common.SecureModeConfig
-	(*error1.Error)(nil),          // 28: error.Error
+	(*SecureModeConfig)(nil),      // 26: common.SecureModeConfig
+	(*error1.Error)(nil),          // 27: error.Error
 }
 var file_common_proto_depIdxs = []int32{
 	0,  // 0: common.FlagsInConfig.data_compress_algo:type_name -> common.CompressionAlgoPb
 	4,  // 1: common.RpcRequest.descriptor:type_name -> common.RpcDescriptor
 	6,  // 2: common.HostManagementRequest.rpc:type_name -> common.DirectRpcRequest
 	12, // 3: common.HostManagementRequest.prepared_instance_id:type_name -> common.UUID
-	28, // 4: common.RpcResponse.error:type_name -> error.Error
+	27, // 4: common.RpcResponse.error:type_name -> error.Error
 	0,  // 5: common.RpcCompressionInfo.algo:type_name -> common.CompressionAlgoPb
 	0,  // 6: common.RpcCompressionInfo.accepted_algo:type_name -> common.CompressionAlgoPb
 	4,  // 7: common.RpcPacket.descriptor:type_name -> common.RpcDescriptor
@@ -2510,14 +2452,13 @@ func file_common_proto_init() {
 		(*SocketAddr_Ipv6)(nil),
 	}
 	file_common_proto_msgTypes[23].OneofWrappers = []any{}
-	file_common_proto_msgTypes[24].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_common_proto_rawDesc), len(file_common_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   25,
+			NumMessages:   24,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
