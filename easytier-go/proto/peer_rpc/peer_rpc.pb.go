@@ -2756,6 +2756,7 @@ type PeerConnNoiseMsg1Pb struct {
 	ASessionGeneration        *uint32                `protobuf:"varint,3,opt,name=a_session_generation,json=aSessionGeneration,proto3,oneof" json:"a_session_generation,omitempty"`
 	AConnId                   *common.UUID           `protobuf:"bytes,4,opt,name=a_conn_id,json=aConnId,proto3" json:"a_conn_id,omitempty"`
 	ClientEncryptionAlgorithm string                 `protobuf:"bytes,5,opt,name=client_encryption_algorithm,json=clientEncryptionAlgorithm,proto3" json:"client_encryption_algorithm,omitempty"`
+	Features                  []string               `protobuf:"bytes,6,rep,name=features,proto3" json:"features,omitempty"`
 	unknownFields             protoimpl.UnknownFields
 	sizeCache                 protoimpl.SizeCache
 }
@@ -2825,6 +2826,13 @@ func (x *PeerConnNoiseMsg1Pb) GetClientEncryptionAlgorithm() string {
 	return ""
 }
 
+func (x *PeerConnNoiseMsg1Pb) GetFeatures() []string {
+	if x != nil {
+		return x.Features
+	}
+	return nil
+}
+
 type PeerConnNoiseMsg2Pb struct {
 	state                     protoimpl.MessageState  `protogen:"open.v1"`
 	BNetworkName              string                  `protobuf:"bytes,1,opt,name=b_network_name,json=bNetworkName,proto3" json:"b_network_name,omitempty"`
@@ -2837,6 +2845,7 @@ type PeerConnNoiseMsg2Pb struct {
 	AConnIdEcho               *common.UUID            `protobuf:"bytes,8,opt,name=a_conn_id_echo,json=aConnIdEcho,proto3" json:"a_conn_id_echo,omitempty"`
 	SecretProof_32            []byte                  `protobuf:"bytes,9,opt,name=secret_proof_32,json=secretProof32,proto3,oneof" json:"secret_proof_32,omitempty"`
 	ServerEncryptionAlgorithm string                  `protobuf:"bytes,10,opt,name=server_encryption_algorithm,json=serverEncryptionAlgorithm,proto3" json:"server_encryption_algorithm,omitempty"`
+	Features                  []string                `protobuf:"bytes,11,rep,name=features,proto3" json:"features,omitempty"`
 	unknownFields             protoimpl.UnknownFields
 	sizeCache                 protoimpl.SizeCache
 }
@@ -2939,6 +2948,13 @@ func (x *PeerConnNoiseMsg2Pb) GetServerEncryptionAlgorithm() string {
 		return x.ServerEncryptionAlgorithm
 	}
 	return ""
+}
+
+func (x *PeerConnNoiseMsg2Pb) GetFeatures() []string {
+	if x != nil {
+		return x.Features
+	}
+	return nil
 }
 
 type RelayNoiseMsg1Pb struct {
@@ -3574,14 +3590,15 @@ const file_peer_rpc_proto_rawDesc = "" +
 	"\x15network_secret_digest\x18\x06 \x01(\fR\x13networkSecretDigest\"Y\n" +
 	"\vKcpConnData\x12$\n" +
 	"\x03src\x18\x01 \x01(\v2\x12.common.SocketAddrR\x03src\x12$\n" +
-	"\x03dst\x18\x04 \x01(\v2\x12.common.SocketAddrR\x03dst\"\x8f\x02\n" +
+	"\x03dst\x18\x04 \x01(\v2\x12.common.SocketAddrR\x03dst\"\xab\x02\n" +
 	"\x13PeerConnNoiseMsg1Pb\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\rR\aversion\x12$\n" +
 	"\x0ea_network_name\x18\x02 \x01(\tR\faNetworkName\x125\n" +
 	"\x14a_session_generation\x18\x03 \x01(\rH\x00R\x12aSessionGeneration\x88\x01\x01\x12(\n" +
 	"\ta_conn_id\x18\x04 \x01(\v2\f.common.UUIDR\aaConnId\x12>\n" +
-	"\x1bclient_encryption_algorithm\x18\x05 \x01(\tR\x19clientEncryptionAlgorithmB\x17\n" +
-	"\x15_a_session_generation\"\xfd\x03\n" +
+	"\x1bclient_encryption_algorithm\x18\x05 \x01(\tR\x19clientEncryptionAlgorithm\x12\x1a\n" +
+	"\bfeatures\x18\x06 \x03(\tR\bfeaturesB\x17\n" +
+	"\x15_a_session_generation\"\x99\x04\n" +
 	"\x13PeerConnNoiseMsg2Pb\x12$\n" +
 	"\x0eb_network_name\x18\x01 \x01(\tR\fbNetworkName\x12\x1b\n" +
 	"\trole_hint\x18\x02 \x01(\rR\broleHint\x129\n" +
@@ -3593,7 +3610,8 @@ const file_peer_rpc_proto_rawDesc = "" +
 	"\x0ea_conn_id_echo\x18\b \x01(\v2\f.common.UUIDR\vaConnIdEcho\x12+\n" +
 	"\x0fsecret_proof_32\x18\t \x01(\fH\x01R\rsecretProof32\x88\x01\x01\x12>\n" +
 	"\x1bserver_encryption_algorithm\x18\n" +
-	" \x01(\tR\x19serverEncryptionAlgorithmB\x0e\n" +
+	" \x01(\tR\x19serverEncryptionAlgorithm\x12\x1a\n" +
+	"\bfeatures\x18\v \x03(\tR\bfeaturesB\x0e\n" +
 	"\f_root_key_32B\x12\n" +
 	"\x10_secret_proof_32\"\xe6\x01\n" +
 	"\x10RelayNoiseMsg1Pb\x12\x18\n" +
