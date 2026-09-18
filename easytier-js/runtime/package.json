@@ -34,9 +34,9 @@
   },
   "devDependencies": {
     "@types/node": "22.18.1",
-    "binaryen": "131.0.0",
+    "binaryen": "132.0.0",
     "typescript": "5.9.3",
-    "vitest": "2.1.9"
+    "vitest": "3.2.7"
   },
   "publishConfig": {
     "access": "public"
