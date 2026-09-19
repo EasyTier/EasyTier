@@ -46,6 +46,7 @@ easytier-ohos-features = { version = "0.1.0", path = "easytier-contrib/easytier-
 easytier-proto = { version = "2.7.0", path = "easytier-proto", default-features = false }
 futures = "0.3"
 gethostname = "1.1"
+getset = "0.1.7"
 guarden = "0.3"
 hmac = "0.13.0"
 http-body-util = "0.1"
