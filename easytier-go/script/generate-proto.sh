@@ -11,8 +11,8 @@ if [[ ! -f "${proto_root}/api_instance.proto" ]]; then
     exit 1
 fi
 
-if [[ "$(protoc --version)" != "libprotoc 35.1" ]]; then
-    echo "protoc 35.1 is required" >&2
+if [[ "$(protoc --version)" != "libprotoc 35.1" && "$(protoc --version)" != "libprotoc 36.1" ]]; then
+    echo "protoc 35.1 or 36.1 is required" >&2
     exit 1
 fi
 if [[ "$(protoc-gen-go --version)" != "protoc-gen-go v1.36.11" ]]; then
