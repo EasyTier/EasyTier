@@ -3,13 +3,14 @@
 use std::net::SocketAddr;
 
 use anyhow::Context;
-use easytier_proto::api::manage;
+use easytier_proto::{api::manage, common::FlagsPatch};
+use optionize::{Optionizable, Optionized};
 
 use crate::config::{
     MappedListenerPolicy, normalize_secure_mode_config,
     toml::{
-        ConfigLoader, ManagedCredentialConfig, NetworkIdentity, PeerConfig, PortForwardConfig,
-        TomlConfigLoader, VpnPortalClientConfig, VpnPortalConfig, gen_default_flags,
+        ConfigLoader, NetworkIdentity, PeerConfig, PortForwardConfig, TomlConfigLoader,
+        VpnPortalClientConfig, VpnPortalConfig,
     },
 };
 
@@ -51,32 +52,50 @@ pub fn add_proxy_network_to_config(
 pub type NetworkingMethod = easytier_proto::api::manage::NetworkingMethod;
 pub type NetworkConfig = easytier_proto::api::manage::NetworkConfig;
 
-pub(crate) fn managed_credential_from_proto(
-    credential: &manage::ManagedCredentialConfig,
-) -> ManagedCredentialConfig {
-    ManagedCredentialConfig {
-        credential_id: credential.credential_id.clone(),
-        credential_secret: credential.credential_secret.clone(),
-        groups: credential.groups.clone(),
-        allow_relay: credential.allow_relay,
-        allowed_proxy_cidrs: credential.allowed_proxy_cidrs.clone(),
-        expiry_unix: credential.expiry_unix,
-        reusable: credential.reusable.unwrap_or(true),
-    }
-}
+pub(crate) fn set_network_flags(result: &mut NetworkConfig, flags: FlagsPatch) {
+    result.latency_first = flags.latency_first;
+    result.dev_name = flags.dev_name;
+    result.use_smoltcp = flags.use_smoltcp;
+    result.disable_ipv6 = flags.enable_ipv6.map(|enabled| !enabled);
+    result.enable_kcp_proxy = flags.enable_kcp_proxy;
+    result.disable_kcp_input = flags.disable_kcp_input;
+    result.enable_quic_proxy = flags.enable_quic_proxy;
+    result.disable_quic_input = flags.disable_quic_input;
+    result.disable_p2p = flags.disable_p2p;
+    result.p2p_only = flags.p2p_only;
+    result.lazy_p2p = flags.lazy_p2p;
+    result.bind_device = flags.bind_device;
+    result.socket_mark = flags.socket_mark;
+    result.no_tun = flags.no_tun;
+    result.enable_exit_node = flags.enable_exit_node;
+    result.relay_all_peer_rpc = flags.relay_all_peer_rpc;
+    result.need_p2p = flags.need_p2p;
+    result.multi_thread = flags.multi_thread;
+    result.proxy_forward_by_system = flags.proxy_forward_by_system;
+    result.disable_encryption = flags.enable_encryption.map(|enabled| !enabled);
+    result.disable_tcp_hole_punching = flags.disable_tcp_hole_punching;
+    result.disable_udp_hole_punching = flags.disable_udp_hole_punching;
+    result.disable_upnp = flags.disable_upnp;
+    result.disable_relay_data = flags.disable_relay_data;
+    result.prefer_peer_relay = flags.prefer_peer_relay;
+    result.enable_udp_broadcast_relay = flags.enable_udp_broadcast_relay;
+    result.disable_sym_hole_punching = flags.disable_sym_hole_punching;
+    result.enable_magic_dns = flags.accept_dns;
+    result.mtu = flags.mtu.map(|mtu| mtu as i32);
+    result.data_compress_algo = flags.data_compress_algo;
+    result.encryption_algorithm = flags.encryption_algorithm;
+    result.instance_recv_bps_limit = flags.instance_recv_bps_limit;
+    result.enable_private_mode = flags.private_mode;
 
-pub(crate) fn managed_credential_to_proto(
-    credential: ManagedCredentialConfig,
-) -> manage::ManagedCredentialConfig {
-    manage::ManagedCredentialConfig {
-        credential_id: credential.credential_id,
-        credential_secret: credential.credential_secret,
-        groups: credential.groups,
-        allow_relay: credential.allow_relay,
-        allowed_proxy_cidrs: credential.allowed_proxy_cidrs,
-        expiry_unix: credential.expiry_unix,
-        reusable: Some(credential.reusable),
-    }
+    result.enable_relay_network_whitelist = flags
+        .relay_network_whitelist
+        .as_ref()
+        .map(|list| list != "*");
+    result.relay_network_whitelist = flags
+        .relay_network_whitelist
+        .filter(|list| list != "*")
+        .map(|list| list.split_whitespace().map(ToOwned::to_owned).collect())
+        .unwrap_or_default();
 }
 
 pub trait NetworkConfigExt {
@@ -443,8 +462,8 @@ impl NetworkConfigExt for NetworkConfig {
         cfg.set_managed_credentials(
             self.managed_credentials
                 .iter()
-                .map(managed_credential_from_proto)
-                .collect(),
+                .map(|credential| credential.clone().upgrade())
+                .collect::<Result<Vec<_>, _>>()?,
         );
 
         if let Some(credential_secret) = credential_secret {
@@ -462,19 +481,6 @@ impl NetworkConfigExt for NetworkConfig {
                     .map(normalize_secure_mode_config)
                     .transpose()?,
             );
-        }
-
-        let mut flags = gen_default_flags();
-        if let Some(latency_first) = self.latency_first {
-            flags.latency_first = latency_first;
-        }
-
-        if let Some(dev_name) = self.dev_name.clone() {
-            flags.dev_name = dev_name;
-        }
-
-        if let Some(use_smoltcp) = self.use_smoltcp {
-            flags.use_smoltcp = use_smoltcp;
         }
 
         if let Some(ipv6_public_addr_provider) = self.ipv6_public_addr_provider {
@@ -495,145 +501,59 @@ impl NetworkConfigExt for NetworkConfig {
             )?));
         }
 
-        if let Some(disable_ipv6) = self.disable_ipv6 {
-            flags.enable_ipv6 = !disable_ipv6;
-        }
-
-        if let Some(enable_kcp_proxy) = self.enable_kcp_proxy {
-            flags.enable_kcp_proxy = enable_kcp_proxy;
-        }
-
-        if let Some(disable_kcp_input) = self.disable_kcp_input {
-            flags.disable_kcp_input = disable_kcp_input;
-        }
-
-        if let Some(enable_quic_proxy) = self.enable_quic_proxy {
-            flags.enable_quic_proxy = enable_quic_proxy;
-        }
-
-        if let Some(disable_quic_input) = self.disable_quic_input {
-            flags.disable_quic_input = disable_quic_input;
-        }
-
-        if let Some(disable_p2p) = self.disable_p2p {
-            flags.disable_p2p = disable_p2p;
-        }
-
-        if let Some(p2p_only) = self.p2p_only {
-            flags.p2p_only = p2p_only;
-        }
-
-        if let Some(lazy_p2p) = self.lazy_p2p {
-            flags.lazy_p2p = lazy_p2p;
-        }
-
-        if let Some(bind_device) = self.bind_device {
-            flags.bind_device = bind_device;
-        }
-
-        if self.socket_mark.is_some() {
-            flags.socket_mark = self.socket_mark;
-        }
-
-        if let Some(no_tun) = self.no_tun {
-            flags.no_tun = no_tun;
-        }
-
-        if let Some(enable_exit_node) = self.enable_exit_node {
-            flags.enable_exit_node = enable_exit_node;
-        }
-
-        if let Some(relay_all_peer_rpc) = self.relay_all_peer_rpc {
-            flags.relay_all_peer_rpc = relay_all_peer_rpc;
-        }
-
-        if let Some(need_p2p) = self.need_p2p {
-            flags.need_p2p = need_p2p;
-        }
-
-        if let Some(multi_thread) = self.multi_thread {
-            flags.multi_thread = multi_thread;
-        }
-
-        if let Some(proxy_forward_by_system) = self.proxy_forward_by_system {
-            flags.proxy_forward_by_system = proxy_forward_by_system;
-        }
-
-        if let Some(disable_encryption) = self.disable_encryption {
-            flags.enable_encryption = !disable_encryption;
-        }
-
-        if self.enable_relay_network_whitelist.unwrap_or_default() {
-            if !self.relay_network_whitelist.is_empty() {
-                flags.relay_network_whitelist = self.relay_network_whitelist.join(" ");
-            } else {
-                flags.relay_network_whitelist = "".to_string();
-            }
-        }
-
-        if let Some(disable_tcp_hole_punching) = self.disable_tcp_hole_punching {
-            flags.disable_tcp_hole_punching = disable_tcp_hole_punching;
-        }
-
-        if let Some(disable_udp_hole_punching) = self.disable_udp_hole_punching {
-            flags.disable_udp_hole_punching = disable_udp_hole_punching;
-        }
-
-        if let Some(disable_upnp) = self.disable_upnp {
-            flags.disable_upnp = disable_upnp;
-        }
-
-        if let Some(disable_relay_data) = self.disable_relay_data {
-            flags.disable_relay_data = disable_relay_data;
-        }
-
-        if let Some(prefer_peer_relay) = self.prefer_peer_relay {
-            flags.prefer_peer_relay = prefer_peer_relay;
-        }
-
-        if let Some(enable_udp_broadcast_relay) = self.enable_udp_broadcast_relay {
-            flags.enable_udp_broadcast_relay = enable_udp_broadcast_relay;
-        }
-
-        if let Some(disable_sym_hole_punching) = self.disable_sym_hole_punching {
-            flags.disable_sym_hole_punching = disable_sym_hole_punching;
-        }
-
-        if let Some(enable_magic_dns) = self.enable_magic_dns {
-            flags.accept_dns = enable_magic_dns;
-        }
-
-        if let Some(mtu) = self.mtu {
-            flags.mtu = mtu as u32;
-        }
-
-        if let Some(instance_recv_bps_limit) = self.instance_recv_bps_limit {
-            flags.instance_recv_bps_limit = instance_recv_bps_limit;
-        }
-
-        if let Some(enable_private_mode) = self.enable_private_mode {
-            flags.private_mode = enable_private_mode;
-        }
-
-        if let Some(encryption_algorithm) = self.encryption_algorithm.clone() {
-            flags.encryption_algorithm = encryption_algorithm;
-        }
-
         if let Some(acl) = self.acl.as_ref()
             && !acl.is_empty()
         {
             cfg.set_acl(Some(acl.clone()));
         }
 
-        if let Some(data_compress_algo) = self.data_compress_algo {
-            if data_compress_algo < 1 {
-                flags.data_compress_algo = 1;
-            } else {
-                flags.data_compress_algo = data_compress_algo
-            }
-        }
-
-        cfg.set_flags(flags);
+        cfg.patch_flags(FlagsPatch {
+            dev_name: self.dev_name.clone(),
+            enable_ipv6: self.disable_ipv6.map(|disabled| !disabled),
+            socket_mark: self.socket_mark,
+            enable_encryption: self.disable_encryption.map(|disabled| !disabled),
+            relay_network_whitelist: self.enable_relay_network_whitelist.map(|enabled| {
+                if enabled {
+                    self.relay_network_whitelist.join(" ")
+                } else {
+                    "*".to_owned()
+                }
+            }),
+            accept_dns: self.enable_magic_dns,
+            mtu: self
+                .mtu
+                .map(u32::try_from)
+                .transpose()
+                .context("invalid mtu: expected a non-negative integer")?,
+            private_mode: self.enable_private_mode,
+            encryption_algorithm: self.encryption_algorithm.clone(),
+            data_compress_algo: self.data_compress_algo.map(|algorithm| algorithm.max(1)),
+            latency_first: self.latency_first,
+            use_smoltcp: self.use_smoltcp,
+            enable_kcp_proxy: self.enable_kcp_proxy,
+            disable_kcp_input: self.disable_kcp_input,
+            enable_quic_proxy: self.enable_quic_proxy,
+            disable_quic_input: self.disable_quic_input,
+            disable_p2p: self.disable_p2p,
+            p2p_only: self.p2p_only,
+            lazy_p2p: self.lazy_p2p,
+            bind_device: self.bind_device,
+            no_tun: self.no_tun,
+            enable_exit_node: self.enable_exit_node,
+            relay_all_peer_rpc: self.relay_all_peer_rpc,
+            need_p2p: self.need_p2p,
+            multi_thread: self.multi_thread,
+            proxy_forward_by_system: self.proxy_forward_by_system,
+            disable_tcp_hole_punching: self.disable_tcp_hole_punching,
+            disable_udp_hole_punching: self.disable_udp_hole_punching,
+            disable_upnp: self.disable_upnp,
+            disable_relay_data: self.disable_relay_data,
+            prefer_peer_relay: self.prefer_peer_relay,
+            enable_udp_broadcast_relay: self.enable_udp_broadcast_relay,
+            disable_sym_hole_punching: self.disable_sym_hole_punching,
+            instance_recv_bps_limit: self.instance_recv_bps_limit,
+            ..Default::default()
+        });
         Ok(cfg)
     }
 
@@ -762,64 +682,10 @@ impl NetworkConfigExt for NetworkConfig {
         result.managed_credentials = config
             .get_managed_credentials()
             .into_iter()
-            .map(managed_credential_to_proto)
+            .map(|credential| credential.downgrade())
             .collect();
-        let flags = config.get_flags();
-        let default_flags = default_config.get_flags();
-        result.latency_first = Some(flags.latency_first);
-        result.dev_name = Some(flags.dev_name.clone());
-        result.use_smoltcp = Some(flags.use_smoltcp);
-        result.disable_ipv6 = Some(!flags.enable_ipv6);
-        result.enable_kcp_proxy = Some(flags.enable_kcp_proxy);
-        result.disable_kcp_input = Some(flags.disable_kcp_input);
-        result.enable_quic_proxy = Some(flags.enable_quic_proxy);
-        result.disable_quic_input = Some(flags.disable_quic_input);
-        result.disable_p2p = Some(flags.disable_p2p);
-        result.p2p_only = Some(flags.p2p_only);
-        result.lazy_p2p = Some(flags.lazy_p2p);
-        result.bind_device = Some(flags.bind_device);
-        result.socket_mark = flags.socket_mark;
-        result.no_tun = Some(flags.no_tun);
-        result.enable_exit_node = Some(flags.enable_exit_node);
-        result.relay_all_peer_rpc = Some(flags.relay_all_peer_rpc);
-        result.need_p2p = Some(flags.need_p2p);
-        result.multi_thread = Some(flags.multi_thread);
-        result.proxy_forward_by_system = Some(flags.proxy_forward_by_system);
-        result.disable_encryption = Some(!flags.enable_encryption);
-        result.disable_tcp_hole_punching = Some(flags.disable_tcp_hole_punching);
-        result.disable_udp_hole_punching = Some(flags.disable_udp_hole_punching);
-        result.disable_upnp = Some(flags.disable_upnp);
-        result.disable_relay_data = Some(flags.disable_relay_data);
-        result.prefer_peer_relay = Some(flags.prefer_peer_relay);
-        result.enable_udp_broadcast_relay = Some(flags.enable_udp_broadcast_relay);
-        result.disable_sym_hole_punching = Some(flags.disable_sym_hole_punching);
-        result.enable_magic_dns = Some(flags.accept_dns);
-        result.mtu = Some(flags.mtu as i32);
-        result.data_compress_algo = (flags.data_compress_algo != default_flags.data_compress_algo)
-            .then_some(flags.data_compress_algo);
-        result.encryption_algorithm = (flags.encryption_algorithm
-            != default_flags.encryption_algorithm)
-            .then_some(flags.encryption_algorithm.clone());
-        result.instance_recv_bps_limit =
-            (flags.instance_recv_bps_limit != u64::MAX).then_some(flags.instance_recv_bps_limit);
-        result.enable_private_mode = Some(flags.private_mode);
-
+        set_network_flags(&mut result, config.get_flags_patch());
         result.acl = config.get_acl();
-
-        if flags.relay_network_whitelist == "*" {
-            result.enable_relay_network_whitelist = Some(false);
-        } else {
-            result.enable_relay_network_whitelist = Some(true);
-            if flags.relay_network_whitelist.is_empty() {
-                result.relay_network_whitelist = vec![];
-            } else {
-                result.relay_network_whitelist = flags
-                    .relay_network_whitelist
-                    .split_whitespace()
-                    .map(|s| s.to_string())
-                    .collect();
-            }
-        }
 
         Ok(result)
     }
@@ -848,6 +714,41 @@ mod tests {
             networking_method: Some(NetworkingMethod::Standalone as i32),
             ..Default::default()
         }
+    }
+
+    #[cfg(feature = "config-write")]
+    #[test]
+    fn api_flags_round_trip_preserves_missing_default_and_custom_values() {
+        for disabled in [None, Some(false), Some(true)] {
+            for whitelist in [None, Some(false), Some(true)] {
+                let input = NetworkConfig {
+                    disable_encryption: disabled,
+                    enable_relay_network_whitelist: whitelist,
+                    latency_first: Some(false),
+                    mtu: Some(0),
+                    instance_recv_bps_limit: Some(u64::MAX),
+                    ..standalone_config()
+                };
+                let config = input.gen_config().unwrap();
+                let config = TomlConfigLoader::new_from_str(&config.dump()).unwrap();
+                let output = NetworkConfig::new_from_config(&config).unwrap();
+                assert_eq!(output.disable_encryption, disabled);
+                assert_eq!(output.enable_relay_network_whitelist, whitelist);
+                assert_eq!(output.latency_first, Some(false));
+                assert_eq!(output.mtu, Some(0));
+                assert_eq!(output.instance_recv_bps_limit, Some(u64::MAX));
+                assert_eq!(output.disable_ipv6, None);
+                assert_eq!(output.encryption_algorithm, None);
+            }
+        }
+        assert!(
+            NetworkConfig {
+                mtu: Some(-1),
+                ..standalone_config()
+            }
+            .gen_config()
+            .is_err()
+        );
     }
 
     #[test]
@@ -977,11 +878,6 @@ disable_p2p = true
             Some("edited-network")
         );
         assert_eq!(merged["flags"]["default_protocol"].as_str(), Some("udp"));
-        assert!(
-            !merged["flags"]
-                .as_table()
-                .unwrap()
-                .contains_key("disable_p2p")
-        );
+        assert_eq!(merged["flags"]["disable_p2p"].as_bool(), Some(false));
     }
 }

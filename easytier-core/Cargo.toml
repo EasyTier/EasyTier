@@ -18,6 +18,7 @@ crate-type = ["rlib", "cdylib"]
 wasm-opt = ["-Oz", "--enable-bulk-memory", "--enable-nontrapping-float-to-int"]
 
 [dependencies]
+optionize.workspace = true
 anyhow.workspace = true
 ariadne = { version = "0.6", optional = true }
 arc-swap.workspace = true

@@ -1,15 +1,49 @@
 use anyhow::Context;
 use base64::{Engine as _, prelude::BASE64_STANDARD};
+use prost::Message as _;
 use std::time::SystemTime;
 use std::{
     fmt::{self, Display},
     str::FromStr,
+    sync::OnceLock,
 };
 
 const IP_SCHEMES: &[&str] = &["tcp", "udp", "wg", "quic", "ws", "wss", "faketcp"];
 
 include!(concat!(env!("OUT_DIR"), "/common.rs"));
 include!(concat!(env!("OUT_DIR"), "/common.serde.rs"));
+
+impl Flags {
+    /// The flags the message declares, in declaration order, less the ones it
+    /// has deprecated: what a user can still set.
+    ///
+    /// Read back from the descriptor set this crate embeds, so a flag added to
+    /// the message shows up here without a second list to keep in step.
+    pub fn flags() -> &'static [prost_types::FieldDescriptorProto] {
+        static FLAGS: OnceLock<Vec<prost_types::FieldDescriptorProto>> = OnceLock::new();
+        FLAGS.get_or_init(|| {
+            prost_types::FileDescriptorSet::decode(crate::DESCRIPTOR_POOL_BYTES)
+                .unwrap()
+                .file
+                .into_iter()
+                .find(|file| file.package() == "common")
+                .unwrap()
+                .message_type
+                .into_iter()
+                .find(|message| message.name() == "Flags")
+                .unwrap()
+                .field
+                .into_iter()
+                .filter(|field| {
+                    !field
+                        .options
+                        .as_ref()
+                        .is_some_and(|options| options.deprecated())
+                })
+                .collect()
+        })
+    }
+}
 
 pub trait TimestampExt {
     fn now() -> Self;

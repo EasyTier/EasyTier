@@ -4,8 +4,10 @@ use easytier_proto::api::manage::{
     self, NetworkConfig, NetworkingMethod, PortForwardConfig as ApiPortForwardConfig,
 };
 
+use optionize::Optionizable as _;
+
 use super::{
-    api_input::managed_credential_to_proto,
+    api_input::set_network_flags,
     toml::{ConfigLoader as _, TomlConfig},
 };
 
@@ -124,60 +126,11 @@ pub fn network_config_from_toml(config: &TomlConfig) -> NetworkConfig {
     result.managed_credentials = config
         .get_managed_credentials()
         .into_iter()
-        .map(managed_credential_to_proto)
+        .map(|credential| credential.downgrade())
         .collect();
 
-    let flags = config.get_flags();
-    let default_flags = default_config.get_flags();
-    result.latency_first = Some(flags.latency_first);
-    result.dev_name = Some(flags.dev_name.clone());
-    result.use_smoltcp = Some(flags.use_smoltcp);
-    result.disable_ipv6 = Some(!flags.enable_ipv6);
-    result.enable_kcp_proxy = Some(flags.enable_kcp_proxy);
-    result.disable_kcp_input = Some(flags.disable_kcp_input);
-    result.enable_quic_proxy = Some(flags.enable_quic_proxy);
-    result.disable_quic_input = Some(flags.disable_quic_input);
-    result.disable_p2p = Some(flags.disable_p2p);
-    result.p2p_only = Some(flags.p2p_only);
-    result.lazy_p2p = Some(flags.lazy_p2p);
-    result.bind_device = Some(flags.bind_device);
-    result.socket_mark = flags.socket_mark;
-    result.no_tun = Some(flags.no_tun);
-    result.enable_exit_node = Some(flags.enable_exit_node);
-    result.relay_all_peer_rpc = Some(flags.relay_all_peer_rpc);
-    result.need_p2p = Some(flags.need_p2p);
-    result.multi_thread = Some(flags.multi_thread);
-    result.proxy_forward_by_system = Some(flags.proxy_forward_by_system);
-    result.disable_encryption = Some(!flags.enable_encryption);
-    result.disable_tcp_hole_punching = Some(flags.disable_tcp_hole_punching);
-    result.disable_udp_hole_punching = Some(flags.disable_udp_hole_punching);
-    result.disable_upnp = Some(flags.disable_upnp);
-    result.disable_relay_data = Some(flags.disable_relay_data);
-    result.prefer_peer_relay = Some(flags.prefer_peer_relay);
-    result.enable_udp_broadcast_relay = Some(flags.enable_udp_broadcast_relay);
-    result.disable_sym_hole_punching = Some(flags.disable_sym_hole_punching);
-    result.enable_magic_dns = Some(flags.accept_dns);
-    result.mtu = Some(flags.mtu as i32);
-    result.data_compress_algo = (flags.data_compress_algo != default_flags.data_compress_algo)
-        .then_some(flags.data_compress_algo);
-    result.encryption_algorithm = (flags.encryption_algorithm
-        != default_flags.encryption_algorithm)
-        .then_some(flags.encryption_algorithm);
-    result.instance_recv_bps_limit =
-        (flags.instance_recv_bps_limit != u64::MAX).then_some(flags.instance_recv_bps_limit);
-    result.enable_private_mode = Some(flags.private_mode);
+    set_network_flags(&mut result, config.get_flags_patch());
     result.acl = config.get_acl();
-
-    if flags.relay_network_whitelist == "*" {
-        result.enable_relay_network_whitelist = Some(false);
-    } else {
-        result.enable_relay_network_whitelist = Some(true);
-        result.relay_network_whitelist = flags
-            .relay_network_whitelist
-            .split_whitespace()
-            .map(ToOwned::to_owned)
-            .collect();
-    }
 
     result
 }
