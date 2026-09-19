@@ -1,0 +1,56 @@
+name: EasyTier Magisk Version
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - "easytier-contrib/easytier-magisk/module.prop"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  update-version-code:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Update versionCode
+        run: |
+          module_dir="easytier-contrib/easytier-magisk"
+          module_prop="$module_dir/module.prop"
+
+          commit_count=$(git rev-list --count HEAD -- "$module_dir")
+          version_code=$((commit_count + 1))
+
+          sed -i -E \
+            "s/^versionCode=.*/versionCode=$version_code/" \
+            "$module_prop"
+
+          git diff -- "$module_prop"
+
+      - name: Commit changes
+        run: |
+          module_prop="easytier-contrib/easytier-magisk/module.prop"
+
+          if git diff --quiet -- "$module_prop"; then
+            echo "module.prop already has the expected versionCode."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add "$module_prop"
+          git commit -m "chore(magisk): update versionCode"
+          git push origin HEAD:main
