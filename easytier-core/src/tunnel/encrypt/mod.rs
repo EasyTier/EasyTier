@@ -277,7 +277,7 @@ fn maybe_offload_aead(
 pub(crate) fn validate_algorithm(algorithm: &str) -> Result<(), Error> {
     let parsed = algorithm
         .parse::<EncryptionAlgorithm>()
-        .map_err(|()| Error::InvalidAlgorithm(algorithm.to_owned()))?;
+        .map_err(|_| Error::InvalidAlgorithm(algorithm.to_owned()))?;
     if algorithm_is_available(parsed) {
         Ok(())
     } else {

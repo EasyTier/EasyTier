@@ -11,7 +11,7 @@ use crate::{
         log,
     },
     instance::factory::native_cli_instance_manager,
-    proto::common::{Flags, FlagsPatch, SecureModeConfig},
+    proto::common::{CompressionAlgoPb, Flags, FlagsPatch, SecureModeConfig},
     rpc_service::ApiRpcServer,
     utils::panic::setup_panic_handler,
     web_client,
@@ -19,7 +19,7 @@ use crate::{
 use anyhow::Context;
 use cidr::IpCidr;
 use clap::{Arg, ArgMatches, CommandFactory, FromArgMatches, Parser};
-use easytier_core::config::normalize_secure_mode_config;
+use easytier_core::config::{EncryptionAlgorithm, normalize_secure_mode_config};
 use guarden::defer;
 use prost_types::field_descriptor_proto::Type;
 use rust_i18n::t;
@@ -1089,7 +1089,10 @@ fn cli_command() -> clap::Command {
                 .value_parser(negated),
             // The command line names the algorithm instead of spelling the field.
             // The values are the schema's own, which the patch reads.
-            "data_compress_algo" => arg(name, "compression").value_parser(parsed::<String>),
+            "data_compress_algo" => {
+                arg(name, "compression").value_parser(parsed::<CompressionAlgoPb>)
+            }
+            "encryption_algorithm" => arg(name, name).value_parser(parsed::<EncryptionAlgorithm>),
             _ => {
                 let arg = arg(name, name);
                 match field.r#type() {
@@ -1629,7 +1632,41 @@ enabled = true
         let patch = parse_flags(&["easytier", "--disable-ipv6"]).unwrap();
         assert_eq!(patch.enable_ipv6, Some(false));
 
+        // Compression tests: case-insensitive, accepts None/none/zstd/Zstd/ZSTD, rejects invalid
+        let patch = parse_flags(&["easytier", "--compression", "none"]).unwrap();
+        assert_eq!(
+            patch.data_compress_algo,
+            Some(CompressionAlgoPb::None as i32)
+        );
+        let patch = parse_flags(&["easytier", "--compression", "zstd"]).unwrap();
+        assert_eq!(
+            patch.data_compress_algo,
+            Some(CompressionAlgoPb::Zstd as i32)
+        );
+        let patch = parse_flags(&["easytier", "--compression", "ZSTD"]).unwrap();
+        assert_eq!(
+            patch.data_compress_algo,
+            Some(CompressionAlgoPb::Zstd as i32)
+        );
         assert!(parse_flags(&["easytier", "--compression", "invalid"]).is_err());
+        assert!(parse_flags(&["easytier", "--compression", "lz4"]).is_err());
+
+        // Encryption algorithm tests: case-insensitive, aliases, rejects invalid
+        let patch = parse_flags(&["easytier", "--encryption-algorithm", "aes-gcm"]).unwrap();
+        assert_eq!(patch.encryption_algorithm, Some("aes-gcm".to_string()));
+        let patch = parse_flags(&["easytier", "--encryption-algorithm", "AES-GCM"]).unwrap();
+        assert_eq!(patch.encryption_algorithm, Some("aes-gcm".to_string()));
+        let patch =
+            parse_flags(&["easytier", "--encryption-algorithm", "openssl-aes-gcm"]).unwrap();
+        assert_eq!(patch.encryption_algorithm, Some("aes-gcm".to_string()));
+        let patch =
+            parse_flags(&["easytier", "--encryption-algorithm", "chacha20-poly1305"]).unwrap();
+        assert_eq!(patch.encryption_algorithm, Some("chacha20".to_string()));
+        let patch = parse_flags(&["easytier", "--encryption-algorithm", "xor"]).unwrap();
+        assert_eq!(patch.encryption_algorithm, Some("xor".to_string()));
+        assert!(parse_flags(&["easytier", "--encryption-algorithm", "rot13"]).is_err());
+        assert!(parse_flags(&["easytier", "--encryption-algorithm", "des"]).is_err());
+
         // Deprecated flag is not accepted.
         assert!(parse_flags(&["easytier", "--quic-listen-port", "1234"]).is_err());
     }

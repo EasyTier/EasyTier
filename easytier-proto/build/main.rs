@@ -129,7 +129,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ".common.UUID",
             ".api.manage.ManagedCredentialConfig",
             ".api.manage.VpnPortalConfig",
-        ]);
+        ])
+        .type_attribute(
+            ".common.CompressionAlgoPb",
+            "#[derive(strum::EnumString, strum::Display)]",
+        )
+        .type_attribute(
+            ".common.CompressionAlgoPb",
+            "#[strum(ascii_case_insensitive)]",
+        )
+        .field_attribute(".common.CompressionAlgoPb.Invalid", "#[strum(disabled)]");
 
     let mut descriptor_set = config.load_fds(&proto_files, &["proto/"])?;
 
