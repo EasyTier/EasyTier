@@ -68,7 +68,11 @@ impl TunRx {
             header -= net::VNET_HDR_LEN;
         }
 
-        let max_packet_size = if has_vnet_hdr { 1 << 16 } else { mtu };
+        let max_packet_size = if has_vnet_hdr {
+            easytier_core::tunnel::framed::MAX_PACKET_SIZE
+        } else {
+            mtu
+        };
 
         Self {
             reader,

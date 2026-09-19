@@ -41,10 +41,12 @@ fn runtime_server_protocol_adapter(global_ctx: &ArcGlobalCtx) -> RuntimeServerPr
 pub(crate) fn runtime_client_protocol_upgrader(
     global_ctx: ArcGlobalCtx,
 ) -> Arc<dyn ClientProtocolUpgrader<RuntimeTcpSocket>> {
+    let mtu = global_ctx.get_flags().mtu as usize;
     Arc::new(CoreClientProtocolUpgrader::with_external(
         CoreClientProtocolConfig {
             unix: cfg!(unix),
             faketcp: cfg!(feature = "faketcp"),
+            mtu,
         },
         Arc::new(runtime_client_protocol_adapter(&global_ctx)),
     ))
@@ -53,10 +55,12 @@ pub(crate) fn runtime_client_protocol_upgrader(
 pub(crate) fn runtime_server_protocol_upgrader(
     global_ctx: ArcGlobalCtx,
 ) -> Arc<dyn ServerProtocolUpgrader<RuntimeTcpSocket>> {
+    let mtu = global_ctx.get_flags().mtu as usize;
     Arc::new(CoreServerProtocolUpgrader::with_external(
         CoreServerProtocolConfig {
             unix: cfg!(unix),
             faketcp: cfg!(feature = "faketcp"),
+            mtu,
         },
         Arc::new(runtime_server_protocol_adapter(&global_ctx)),
     ))

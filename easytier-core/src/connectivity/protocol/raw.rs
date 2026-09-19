@@ -28,7 +28,6 @@ use crate::{
 
 use super::protocol_default_port;
 
-const BYTE_STREAM_MAX_PACKET_SIZE: usize = 4096;
 const TCP_DEFAULT_PORT: u16 = protocol_default_port("tcp").expect("tcp must have a default port");
 const UDP_DEFAULT_PORT: u16 = protocol_default_port("udp").expect("udp must have a default port");
 
@@ -358,14 +357,23 @@ where
         remote_addr: Some(remote_url.clone().into()),
         resolved_remote_addr: Some(resolved_remote_url.unwrap_or(remote_url).into()),
     };
-    TcpTunnelUpgrader::new(info)
-        .with_max_packet_size(BYTE_STREAM_MAX_PACKET_SIZE)
-        .upgrade(socket)
+    TcpTunnelUpgrader::new(info).upgrade(socket)
 }
 
 pub(crate) fn upgrade_connected_tcp<S>(
     socket: S,
     requested_remote_addr: Url,
+) -> Result<Box<dyn Tunnel>, TunnelError>
+where
+    S: VirtualTcpSocket,
+{
+    upgrade_connected_tcp_with_mtu(socket, requested_remote_addr, 0)
+}
+
+pub(crate) fn upgrade_connected_tcp_with_mtu<S>(
+    socket: S,
+    requested_remote_addr: Url,
+    mtu: usize,
 ) -> Result<Box<dyn Tunnel>, TunnelError>
 where
     S: VirtualTcpSocket,
@@ -381,7 +389,7 @@ where
         resolved_remote_addr,
         requested_remote_addr,
     );
-    TcpTunnelUpgrader::new(info).upgrade(socket)
+    TcpTunnelUpgrader::new(info).with_mtu(mtu).upgrade(socket)
 }
 
 pub(crate) fn upgrade_connected_udp(
@@ -406,6 +414,17 @@ pub(crate) fn upgrade_accepted_tcp_with_local_url<S>(
 where
     S: VirtualTcpSocket,
 {
+    upgrade_accepted_tcp_with_mtu(socket, local_url, 0)
+}
+
+pub(crate) fn upgrade_accepted_tcp_with_mtu<S>(
+    socket: S,
+    local_url: Url,
+    mtu: usize,
+) -> Result<Box<dyn Tunnel>, TunnelError>
+where
+    S: VirtualTcpSocket,
+{
     let remote_addr = socket.peer_addr()?;
     let scheme = local_url.scheme().to_owned();
     let remote_url = socket_url(&scheme, remote_addr);
@@ -415,7 +434,7 @@ where
         remote_addr: Some(remote_url.clone().into()),
         resolved_remote_addr: Some(remote_url.into()),
     };
-    TcpTunnelUpgrader::new(info).upgrade(socket)
+    TcpTunnelUpgrader::new(info).with_mtu(mtu).upgrade(socket)
 }
 
 fn is_retryable_accepted_tcp_error(error: &TunnelError) -> bool {
@@ -440,9 +459,7 @@ where
         remote_addr: remote_url.clone().map(Into::into),
         resolved_remote_addr: remote_url.map(Into::into),
     };
-    TcpTunnelUpgrader::new(info)
-        .with_max_packet_size(BYTE_STREAM_MAX_PACKET_SIZE)
-        .upgrade(socket)
+    TcpTunnelUpgrader::new(info).upgrade(socket)
 }
 
 pub(crate) fn upgrade_accepted_udp_with_local_url(
@@ -954,7 +971,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn byte_stream_upgrader_preserves_legacy_unix_packet_limit() {
+    async fn byte_stream_upgrader_supports_unix_socket() {
         let (client_stream, server_stream) = tokio::io::duplex(8192);
         let client = upgrade_connected_byte_stream(ConnectedByteStream::new(
             MockTcpSocket::from_stream(
