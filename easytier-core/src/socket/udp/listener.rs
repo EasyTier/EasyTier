@@ -15,10 +15,71 @@ use super::{
     UdpSessionStunResponder, VirtualUdpSocket, VirtualUdpSocketFactory,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum UdpSessionAcceptKind {
     EasyTierMux,
     Classified(UdpSessionProtocol),
+}
+
+impl UdpSessionAcceptKind {
+    pub(crate) const ALL: [Self; 3] = [
+        Self::EasyTierMux,
+        Self::Classified(UdpSessionProtocol::WireGuard),
+        Self::Classified(UdpSessionProtocol::Quic),
+    ];
+
+    pub(crate) const fn scheme(self) -> &'static str {
+        match self {
+            Self::EasyTierMux => "udp",
+            Self::Classified(UdpSessionProtocol::WireGuard) => "wg",
+            Self::Classified(UdpSessionProtocol::Quic) => "quic",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct UdpSessionRouteSet(u8);
+
+impl UdpSessionRouteSet {
+    pub(crate) fn new(routes: impl IntoIterator<Item = UdpSessionAcceptKind>) -> Self {
+        Self(
+            routes
+                .into_iter()
+                .fold(0, |bits, route| bits | route_bit(route)),
+        )
+    }
+
+    pub(crate) fn singleton(route: UdpSessionAcceptKind) -> Self {
+        Self(route_bit(route))
+    }
+
+    pub(crate) fn contains(self, route: UdpSessionAcceptKind) -> bool {
+        self.0 & route_bit(route) != 0
+    }
+
+    pub(crate) fn iter(self) -> impl Iterator<Item = UdpSessionAcceptKind> {
+        UdpSessionAcceptKind::ALL
+            .into_iter()
+            .filter(move |route| self.contains(*route))
+    }
+
+    pub(crate) fn len(self) -> usize {
+        self.0.count_ones() as usize
+    }
+}
+
+const fn route_bit(route: UdpSessionAcceptKind) -> u8 {
+    match route {
+        UdpSessionAcceptKind::EasyTierMux => 1 << 0,
+        UdpSessionAcceptKind::Classified(UdpSessionProtocol::WireGuard) => 1 << 1,
+        UdpSessionAcceptKind::Classified(UdpSessionProtocol::Quic) => 1 << 2,
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct RoutedUdpSession {
+    pub(crate) session: UdpSession,
+    pub(crate) route: UdpSessionAcceptKind,
 }
 
 pub async fn accept_udp_session<S, R>(
@@ -45,7 +106,7 @@ where
 {
     url: Url,
     request: UdpSessionListenRequest,
-    accept_kind: UdpSessionAcceptKind,
+    routes: UdpSessionRouteSet,
     factory: Arc<F>,
     socket: Option<Arc<F::Socket>>,
     layer: Option<Arc<Layer<F>>>,
@@ -69,10 +130,24 @@ where
         accept_kind: UdpSessionAcceptKind,
         factory: Arc<F>,
     ) -> Self {
+        Self::new_with_routes(
+            url,
+            request,
+            UdpSessionRouteSet::singleton(accept_kind),
+            factory,
+        )
+    }
+
+    pub(crate) fn new_with_routes(
+        url: Url,
+        request: UdpSessionListenRequest,
+        routes: UdpSessionRouteSet,
+        factory: Arc<F>,
+    ) -> Self {
         Self {
             url,
             request,
-            accept_kind,
+            routes,
             factory,
             socket: None,
             layer: None,
@@ -87,10 +162,27 @@ where
     }
 
     pub async fn accept_session(&self) -> anyhow::Result<UdpSession> {
+        if self.routes.len() != 1 {
+            anyhow::bail!("accept_session requires exactly one UDP session route");
+        }
+        Ok(self.accept_routed_session().await?.session)
+    }
+
+    pub(crate) async fn accept_routed_session(&self) -> anyhow::Result<RoutedUdpSession> {
         let layer = self.layer()?;
-        let mut session = accept_udp_session(&layer, self.accept_kind).await?;
+        let easy_tier = UdpSessionAcceptKind::EasyTierMux;
+        let wireguard = UdpSessionAcceptKind::Classified(UdpSessionProtocol::WireGuard);
+        let quic = UdpSessionAcceptKind::Classified(UdpSessionProtocol::Quic);
+        let (mut session, route) = tokio::select! {
+            result = accept_udp_session(&layer, easy_tier),
+                if self.routes.contains(easy_tier) => (result?, easy_tier),
+            result = accept_udp_session(&layer, wireguard),
+                if self.routes.contains(wireguard) => (result?, wireguard),
+            result = accept_udp_session(&layer, quic),
+                if self.routes.contains(quic) => (result?, quic),
+        };
         session.keep_layer_alive(layer);
-        Ok(session)
+        Ok(RoutedUdpSession { session, route })
     }
 }
 
@@ -102,7 +194,7 @@ where
         f.debug_struct("UdpSessionSocketListener")
             .field("url", &self.url)
             .field("request", &self.request)
-            .field("accept_kind", &self.accept_kind)
+            .field("routes", &self.routes)
             .field("listening", &self.socket.is_some())
             .finish()
     }
@@ -126,13 +218,11 @@ where
             .set_port(Some(local_addr.port()))
             .map_err(|_| anyhow::anyhow!("failed to update udp listener port for {}", self.url))?;
 
-        let layer = Arc::new(UdpSessionLayer::new_with_stun_responder(
+        let layer = Arc::new(UdpSessionLayer::new_with_stun_responder_and_routes(
             socket.clone(),
             self.factory.clone(),
+            self.routes,
         ));
-        if let UdpSessionAcceptKind::Classified(protocol) = self.accept_kind {
-            layer.enable_classified_accept(protocol)?;
-        }
 
         *self.layer_ref.lock().unwrap() = Some(Arc::downgrade(&layer));
         self.socket = Some(socket);

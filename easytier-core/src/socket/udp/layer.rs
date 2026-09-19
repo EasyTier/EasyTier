@@ -16,6 +16,7 @@ use crate::packet::{ZCPacket, new_hole_punch_packet};
 
 use super::{
     UDP_SESSION_CONNECT_TIMEOUT, UDP_SESSION_QUEUE_CAPACITY, UDP_SESSION_RESEND_INTERVAL,
+    listener::{UdpSessionAcceptKind, UdpSessionRouteSet},
     packet::{
         EasyTierUdpPacketKind, UdpDatagramClassification, UdpSessionPacketKind,
         classify_session_udp_datagram, classify_udp_datagram,
@@ -28,9 +29,10 @@ use super::{
         UdpConnectControl, UdpSession, UdpSessionClose, UdpSessionCodec, UdpSessionConnectError,
         UdpSessionConnectRequest, UdpSessionConnector, UdpSessionDatagram, UdpSessionEnqueuePolicy,
         UdpSessionKey, UdpSessionKind, UdpSessionLayerControl, UdpSessionProtocol,
-        UdpSessionRegistry, close_all_classified_udp_sessions, close_all_udp_sessions,
-        close_classified_udp_session, close_udp_session, create_udp_session_rings,
-        dispatch_payload_to_session, udp_session_registry_entry,
+        UdpSessionRegistry, UdpTupleOwnerLease, UdpTupleOwners, close_all_classified_udp_sessions,
+        close_all_udp_sessions, close_classified_udp_session, close_udp_session,
+        create_udp_session_rings, dispatch_payload_to_session, udp_session_registry_entry,
+        udp_session_registry_entry_with_owner,
     },
     virtual_socket::{
         MAX_UDP_SESSION_DATAGRAM_SIZE, NoopUdpSessionStunResponder, PreferredIpv6Source,
@@ -55,16 +57,19 @@ pub struct UdpSessionLayer<S, R = NoopUdpSessionStunResponder> {
     recv_task: JoinHandle<()>,
 }
 
-pub(super) fn create_classified_udp_session_accepts() -> Arc<ClassifiedUdpSessionAccepts> {
+pub(super) fn create_classified_udp_session_accepts(
+    routes: UdpSessionRouteSet,
+) -> Arc<ClassifiedUdpSessionAccepts> {
     let accepts = Arc::new(DashMap::new());
     for protocol in [UdpSessionProtocol::WireGuard, UdpSessionProtocol::Quic] {
         let (accepted, accepted_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
+        let accept_enabled = routes.contains(UdpSessionAcceptKind::Classified(protocol));
         accepts.insert(
             protocol,
             Arc::new(ClassifiedUdpSessionAccept {
                 accepted,
                 accepted_rx: TokioMutex::new(accepted_rx),
-                accept_enabled: std::sync::atomic::AtomicBool::new(false),
+                accept_enabled: std::sync::atomic::AtomicBool::new(accept_enabled),
             }),
         );
     }
@@ -86,9 +91,22 @@ where
     R: UdpSessionStunResponder<S>,
 {
     pub fn new_with_stun_responder(socket: Arc<S>, stun_responder: Arc<R>) -> Self {
+        Self::new_with_stun_responder_and_routes(
+            socket,
+            stun_responder,
+            UdpSessionRouteSet::singleton(UdpSessionAcceptKind::EasyTierMux),
+        )
+    }
+
+    pub(crate) fn new_with_stun_responder_and_routes(
+        socket: Arc<S>,
+        stun_responder: Arc<R>,
+        routes: UdpSessionRouteSet,
+    ) -> Self {
         let sessions = Arc::new(DashMap::new());
         let classified_sessions = Arc::new(DashMap::new());
-        let classified_accepts = create_classified_udp_session_accepts();
+        let tuple_owners = Arc::new(DashMap::new());
+        let classified_accepts = create_classified_udp_session_accepts(routes);
         let pending_connects = Arc::new(DashMap::new());
         let (mux_accepted_tx, mux_accepted_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
         let (control_tx, control_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
@@ -97,12 +115,14 @@ where
             socket.clone(),
             sessions.clone(),
             classified_sessions.clone(),
+            tuple_owners,
             classified_accepts.clone(),
             pending_connects.clone(),
             mux_accepted_tx,
             control_tx,
             stun_responder.clone(),
             session_shutdown_tx.clone(),
+            routes.contains(UdpSessionAcceptKind::EasyTierMux),
         ));
 
         Self {
@@ -435,12 +455,14 @@ pub(super) async fn udp_session_layer_recv_task<S, R>(
     socket: Arc<S>,
     sessions: Arc<UdpSessionRegistry>,
     classified_sessions: Arc<ClassifiedUdpSessionRegistry>,
+    tuple_owners: Arc<UdpTupleOwners>,
     classified_accepts: Arc<ClassifiedUdpSessionAccepts>,
     pending_connects: Arc<PendingUdpSessionConnects>,
     mux_accepted: mpsc::Sender<UdpSession>,
     control: mpsc::Sender<UdpSessionLayerControl>,
     stun_responder: Arc<R>,
     session_shutdown_tx: watch::Sender<bool>,
+    mux_accept_enabled: bool,
 ) where
     S: VirtualUdpSocket,
     R: UdpSessionStunResponder<S>,
@@ -471,12 +493,18 @@ pub(super) async fn udp_session_layer_recv_task<S, R>(
             continue;
         }
         let quic_key = ClassifiedUdpSessionKey::new(UdpSessionProtocol::Quic, remote_addr);
-        if classified_sessions.contains_key(&quic_key) {
-            dispatch_existing_classified_udp_datagram(
-                &classified_sessions,
-                quic_key,
-                UdpSessionDatagram::new(payload, recv_meta),
+        if let Some(entry) = classified_sessions.get(&quic_key) {
+            let datagram = UdpSessionDatagram::new(payload, recv_meta);
+            let dispatched = dispatch_payload_to_session(
+                &entry.incoming,
+                datagram,
+                UdpSessionEnqueuePolicy::Reliable,
             );
+            drop(entry);
+            if !dispatched {
+                close_classified_udp_session(&classified_sessions, quic_key);
+                tracing::debug!(?quic_key, "classified udp session data queue closed");
+            }
             continue;
         }
         match classify_udp_datagram(payload) {
@@ -503,6 +531,7 @@ pub(super) async fn udp_session_layer_recv_task<S, R>(
                 dispatch_session_udp_datagram(
                     socket.clone(),
                     &classified_sessions,
+                    &tuple_owners,
                     &classified_accepts,
                     session_shutdown_tx.subscribe(),
                     remote_addr,
@@ -518,6 +547,7 @@ pub(super) async fn udp_session_layer_recv_task<S, R>(
                 let unconsumed = dispatch_easy_tier_udp_datagram(
                     &socket,
                     &sessions,
+                    &tuple_owners,
                     &pending_connects,
                     &mux_accepted,
                     &control,
@@ -528,6 +558,7 @@ pub(super) async fn udp_session_layer_recv_task<S, R>(
                     packet,
                     recv_meta,
                     &session_shutdown_tx,
+                    mux_accept_enabled,
                 );
                 if let Some(packet) = unconsumed {
                     let datagram = BytesMut::from(packet.into_bytes());
@@ -535,6 +566,7 @@ pub(super) async fn udp_session_layer_recv_task<S, R>(
                     dispatch_session_udp_datagram(
                         socket.clone(),
                         &classified_sessions,
+                        &tuple_owners,
                         &classified_accepts,
                         session_shutdown_tx.subscribe(),
                         remote_addr,
@@ -547,28 +579,11 @@ pub(super) async fn udp_session_layer_recv_task<S, R>(
     }
 }
 
-fn dispatch_existing_classified_udp_datagram(
-    classified_sessions: &Arc<ClassifiedUdpSessionRegistry>,
-    key: ClassifiedUdpSessionKey,
-    datagram: UdpSessionDatagram,
-) {
-    let Some(entry) = classified_sessions.get(&key) else {
-        return;
-    };
-
-    let dispatched =
-        dispatch_payload_to_session(&entry.incoming, datagram, UdpSessionEnqueuePolicy::Reliable);
-    drop(entry);
-    if !dispatched {
-        close_classified_udp_session(classified_sessions, key);
-        tracing::debug!(?key, "classified udp session data queue closed");
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 fn dispatch_easy_tier_udp_datagram<S>(
     socket: &Arc<S>,
     sessions: &Arc<UdpSessionRegistry>,
+    tuple_owners: &Arc<UdpTupleOwners>,
     pending_connects: &Arc<PendingUdpSessionConnects>,
     mux_accepted: &mpsc::Sender<UdpSession>,
     control: &mpsc::Sender<UdpSessionLayerControl>,
@@ -579,6 +594,7 @@ fn dispatch_easy_tier_udp_datagram<S>(
     packet: ZCPacket,
     recv_meta: UdpSocketRecvMeta,
     session_shutdown: &watch::Sender<bool>,
+    mux_accept_enabled: bool,
 ) -> Option<ZCPacket>
 where
     S: VirtualUdpSocket,
@@ -587,15 +603,17 @@ where
         EasyTierUdpPacketKind::Data => {
             return dispatch_data_packet(sessions, remote_addr, conn_id, packet, recv_meta).err();
         }
-        EasyTierUdpPacketKind::Syn => handle_new_easy_tier_mux_connect(
+        EasyTierUdpPacketKind::Syn if mux_accept_enabled => handle_new_easy_tier_mux_connect(
             socket.clone(),
             sessions.clone(),
+            tuple_owners.clone(),
             mux_accepted.clone(),
             remote_addr,
             conn_id,
             &packet,
             session_shutdown.subscribe(),
         ),
+        EasyTierUdpPacketKind::Syn => false,
         EasyTierUdpPacketKind::Sack => {
             dispatch_sack_packet(sessions, pending_connects, remote_addr, conn_id, &packet)
         }
@@ -647,9 +665,11 @@ pub(super) fn dispatch_data_packet(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn dispatch_session_udp_datagram<S>(
     socket: Arc<S>,
     classified_sessions: &Arc<ClassifiedUdpSessionRegistry>,
+    tuple_owners: &Arc<UdpTupleOwners>,
     classified_accepts: &Arc<ClassifiedUdpSessionAccepts>,
     session_shutdown: watch::Receiver<bool>,
     remote_addr: SocketAddr,
@@ -662,6 +682,7 @@ fn dispatch_session_udp_datagram<S>(
         UdpSessionPacketKind::Classified(protocol) => dispatch_classified_udp_datagram(
             socket,
             classified_sessions,
+            tuple_owners,
             classified_accepts,
             protocol,
             session_shutdown,
@@ -674,9 +695,11 @@ fn dispatch_session_udp_datagram<S>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn dispatch_classified_udp_datagram<S>(
     socket: Arc<S>,
     classified_sessions: &Arc<ClassifiedUdpSessionRegistry>,
+    tuple_owners: &Arc<UdpTupleOwners>,
     classified_accepts: &Arc<ClassifiedUdpSessionAccepts>,
     protocol: UdpSessionProtocol,
     session_shutdown: watch::Receiver<bool>,
@@ -730,10 +753,20 @@ fn dispatch_classified_udp_datagram<S>(
             return;
         }
     };
+    let Some(tuple_owner) =
+        UdpTupleOwnerLease::try_acquire(tuple_owners.clone(), remote_addr, protocol.session_kind())
+    else {
+        tracing::trace!(
+            ?protocol,
+            ?remote_addr,
+            "udp tuple is owned by another protocol"
+        );
+        return;
+    };
     let rings = create_udp_session_rings();
     match classified_sessions.entry(key) {
         dashmap::mapref::entry::Entry::Vacant(entry) => {
-            entry.insert(udp_session_registry_entry(&rings));
+            entry.insert(udp_session_registry_entry_with_owner(&rings, tuple_owner));
         }
         dashmap::mapref::entry::Entry::Occupied(entry) => {
             let entry = entry.get().clone();
@@ -773,9 +806,11 @@ fn dispatch_classified_udp_datagram<S>(
     accept_permit.send(session);
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn handle_new_easy_tier_mux_connect<S>(
     socket: Arc<S>,
     sessions: Arc<UdpSessionRegistry>,
+    tuple_owners: Arc<UdpTupleOwners>,
     mux_accepted: mpsc::Sender<UdpSession>,
     remote_addr: SocketAddr,
     conn_id: u32,
@@ -824,8 +859,21 @@ where
             return true;
         }
     };
+    let Some(tuple_owner) =
+        UdpTupleOwnerLease::try_acquire(tuple_owners, remote_addr, UdpSessionKind::EasyTierMux)
+    else {
+        tracing::trace!(
+            ?remote_addr,
+            ?conn_id,
+            "udp tuple is owned by another protocol"
+        );
+        return false;
+    };
     let rings = create_udp_session_rings();
-    sessions.insert(key, udp_session_registry_entry(&rings));
+    sessions.insert(
+        key,
+        udp_session_registry_entry_with_owner(&rings, tuple_owner),
+    );
     let close = UdpSessionClose::easy_tier(key, rings.close_tx.clone(), sessions.clone());
     let session = UdpSession::new(
         socket.clone(),
