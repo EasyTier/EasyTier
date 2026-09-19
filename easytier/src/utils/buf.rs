@@ -158,7 +158,6 @@ impl<'p, const SIZE: usize> Drop for FixedBufGuard<'p, SIZE> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bytes::{Buf, Bytes};
 
     #[test]
     fn test_buf_pool_write() {

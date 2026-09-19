@@ -33,6 +33,7 @@ use tokio_util::codec::FramedRead;
 use tokio_util::task::AbortOnDropHandle;
 
 mod session_socket;
+
 pub(crate) use session_socket::QuicUdpSessionSocket;
 
 // region config
@@ -465,12 +466,7 @@ pub(crate) async fn upgrade_connected(
         ),
     };
     Ok(Box::new(TunnelWrapper::new(
-        FramedRead::new(
-            read,
-            TunnelCodec {
-                max_packet_size: 4500,
-            },
-        ),
+        FramedRead::new(read, TunnelCodec::new(0)),
         FramedWriter::new(write),
         Some(info),
     )))
@@ -511,12 +507,7 @@ async fn finish_quic_session_tunnel(
         resolved_remote_addr: Some(remote_url.into()),
     };
     Ok(Box::new(TunnelWrapper::new(
-        FramedRead::new(
-            read,
-            TunnelCodec {
-                max_packet_size: 2000,
-            },
-        ),
+        FramedRead::new(read, TunnelCodec::new(0)),
         FramedWriter::new(write),
         Some(info),
     )))
@@ -756,12 +747,7 @@ mod tests {
             first_connection.close(0u32.into(), b"first connection done");
 
             let echo_task = tokio::spawn(_tunnel_echo_server(second_server, false));
-            let mut recv = FramedRead::new(
-                second_read,
-                TunnelCodec {
-                    max_packet_size: 4500,
-                },
-            );
+            let mut recv = FramedRead::new(second_read, TunnelCodec::new(0));
             let ready = recv.next().await.unwrap().unwrap();
             assert_eq!(ready.payload(), b"second QUIC connection ready".as_slice());
             second_send

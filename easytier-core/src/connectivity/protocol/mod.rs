@@ -157,6 +157,7 @@ pub trait ServerProtocolUpgrader<TcpSocket>: Send + Sync + 'static {
 pub struct CoreClientProtocolConfig {
     pub unix: bool,
     pub faketcp: bool,
+    pub mtu: usize,
 }
 
 /// Owns portable client protocol dispatch and delegates only protocol engines
@@ -216,9 +217,11 @@ where
     ) -> anyhow::Result<Box<dyn Tunnel>> {
         match requested_url.scheme() {
             "tcp" => match connected {
-                ConnectedTransport::Tcp(socket) => {
-                    Ok(raw::upgrade_connected_tcp(socket, requested_url)?)
-                }
+                ConnectedTransport::Tcp(socket) => Ok(raw::upgrade_connected_tcp_with_mtu(
+                    socket,
+                    requested_url,
+                    self.config.mtu,
+                )?),
                 ConnectedTransport::Udp(_) | ConnectedTransport::ByteStream(_) => {
                     anyhow::bail!("TCP protocol requires a TCP transport")
                 }
@@ -234,9 +237,11 @@ where
             "ring" => upgrade_byte_stream(connected),
             "unix" if self.config.unix => upgrade_byte_stream(connected),
             "faketcp" if self.config.faketcp => match connected {
-                ConnectedTransport::Tcp(socket) => {
-                    Ok(raw::upgrade_connected_tcp(socket, requested_url)?)
-                }
+                ConnectedTransport::Tcp(socket) => Ok(raw::upgrade_connected_tcp_with_mtu(
+                    socket,
+                    requested_url,
+                    self.config.mtu,
+                )?),
                 ConnectedTransport::Udp(_) | ConnectedTransport::ByteStream(_) => {
                     anyhow::bail!("FakeTCP protocol requires a TCP transport")
                 }
@@ -276,6 +281,7 @@ where
 pub struct CoreServerProtocolConfig {
     pub unix: bool,
     pub faketcp: bool,
+    pub mtu: usize,
 }
 
 /// Owns portable server protocol dispatch and delegates only protocol engines
@@ -428,10 +434,12 @@ where
     TcpSocket: VirtualTcpSocket,
 {
     match local_url.scheme() {
-        "tcp" => Ok(raw::upgrade_accepted_tcp_with_local_url(socket, local_url)?),
-        "faketcp" if config.faketcp => {
-            Ok(raw::upgrade_accepted_tcp_with_local_url(socket, local_url)?)
-        }
+        "tcp" => Ok(raw::upgrade_accepted_tcp_with_mtu(
+            socket, local_url, config.mtu,
+        )?),
+        "faketcp" if config.faketcp => Ok(raw::upgrade_accepted_tcp_with_mtu(
+            socket, local_url, config.mtu,
+        )?),
         scheme => anyhow::bail!("unsupported TCP listener protocol: {scheme}"),
     }
 }
@@ -626,6 +634,7 @@ mod tests {
             CoreClientProtocolConfig {
                 unix: false,
                 faketcp: false,
+                mtu: 0,
             },
             Arc::new(MockExternalUpgrader),
         );

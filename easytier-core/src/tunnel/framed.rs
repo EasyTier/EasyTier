@@ -9,6 +9,7 @@ use tokio_util::codec::Decoder;
 use tokio_util::io::poll_write_buf;
 use zerocopy::FromBytes as _;
 
+use crate::packet::TAIL_RESERVED_SIZE;
 use crate::{
     packet::{
         PEER_MANAGER_HEADER_SIZE, TCP_TUNNEL_HEADER_SIZE, TCPTunnelHeader, ZCPacket, ZCPacketType,
@@ -16,11 +17,22 @@ use crate::{
     tunnel::{SinkError, SinkItem, TunnelError, buf::BufList},
 };
 
-pub const TCP_MTU_BYTES: usize = 2000;
+pub const MAX_PACKET_SIZE: usize = 1 << 16;
+pub const DEFAULT_TUNNEL_MTU: usize = 1420;
 
 #[derive(Copy, Clone, Debug)]
 pub struct TunnelCodec {
-    pub max_packet_size: usize,
+    pub mtu: usize,
+    pub gso: bool,
+}
+
+impl TunnelCodec {
+    pub fn new(mtu: usize) -> Self {
+        Self {
+            mtu: if mtu > 0 { mtu } else { DEFAULT_TUNNEL_MTU },
+            gso: false,
+        }
+    }
 }
 
 impl Decoder for TunnelCodec {
@@ -28,13 +40,26 @@ impl Decoder for TunnelCodec {
     type Error = TunnelError;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+        let packet_len = self.mtu.max(DEFAULT_TUNNEL_MTU)
+            + TCP_TUNNEL_HEADER_SIZE
+            + PEER_MANAGER_HEADER_SIZE
+            + TAIL_RESERVED_SIZE;
+        let reserved_len = packet_len * 4;
+
+        if src.is_empty() {
+            if src.capacity() > reserved_len {
+                *src = BytesMut::with_capacity(reserved_len);
+            }
+            return Ok(None);
+        }
+
         let Some(header) = TCPTunnelHeader::ref_from_prefix(src) else {
             return Ok(None);
         };
 
         let len = {
             let len = header.len.get() as usize;
-            if len > self.max_packet_size {
+            if len > MAX_PACKET_SIZE {
                 return Err(TunnelError::InvalidPacket("body too long".to_string()));
             }
             if len < PEER_MANAGER_HEADER_SIZE {
@@ -44,15 +69,26 @@ impl Decoder for TunnelCodec {
             TCP_TUNNEL_HEADER_SIZE + len
         };
 
+        if len > packet_len + 32 {
+            self.gso = true;
+        }
+
         if src.len() < len {
             if src.capacity() < len {
-                src.reserve((len - src.len()).max(self.max_packet_size << 4));
+                let reserve = if self.gso {
+                    (len - src.len()).max(MAX_PACKET_SIZE * 2)
+                } else {
+                    (len - src.len()).max(reserved_len)
+                };
+                src.reserve(reserve);
             }
             return Ok(None);
         }
 
-        let packet_buf = src.split_to(len);
-        Ok(Some(ZCPacket::new_from_buf(packet_buf, ZCPacketType::TCP)))
+        Ok(Some(ZCPacket::new_from_buf(
+            src.split_to(len),
+            ZCPacketType::TCP,
+        )))
     }
 }
 
@@ -159,14 +195,71 @@ mod tests {
         buf.put_u32_le((PEER_MANAGER_HEADER_SIZE - 1) as u32);
         buf.resize(TCP_TUNNEL_HEADER_SIZE + PEER_MANAGER_HEADER_SIZE - 1, 0);
 
-        let ret = TunnelCodec {
-            max_packet_size: 2000,
-        }
-        .decode(&mut buf);
+        let ret = TunnelCodec::new(DEFAULT_TUNNEL_MTU).decode(&mut buf);
 
         assert!(matches!(
             ret,
             Err(TunnelError::InvalidPacket(msg)) if msg == "body too short"
+        ));
+    }
+
+    #[test]
+    fn test_tunnel_codec_gso_promotion_and_idle_shrink() {
+        use tokio_util::codec::Decoder;
+
+        let mut codec = TunnelCodec::new(1500);
+        assert!(!codec.gso);
+
+        // 1. Small packet (1000 bytes body)
+        let mut buf = BytesMut::new();
+        buf.put_u32_le(1000);
+        buf.resize(TCP_TUNNEL_HEADER_SIZE + 1000, 0);
+
+        let decoded = codec.decode(&mut buf).unwrap();
+        assert!(decoded.is_some());
+        assert!(!codec.gso);
+
+        // 2. Large packet exceeding MTU (e.g. 5000 bytes body)
+        let mut buf = BytesMut::new();
+        buf.put_u32_le(5000);
+        buf.resize(TCP_TUNNEL_HEADER_SIZE + 5000, 0);
+
+        let decoded = codec.decode(&mut buf).unwrap();
+        assert!(decoded.is_some());
+        assert!(codec.gso);
+
+        // 3. Subsequent small packet keeps GSO flag (one-way promotion)
+        let mut buf = BytesMut::new();
+        buf.put_u32_le(100);
+        buf.resize(TCP_TUNNEL_HEADER_SIZE + 100, 0);
+
+        let decoded = codec.decode(&mut buf).unwrap();
+        assert!(decoded.is_some());
+        assert!(codec.gso);
+
+        // 4. Idle shrink: when empty and capacity > small_reserve, capacity shrinks back
+        let small_reserve =
+            (1500 + TCP_TUNNEL_HEADER_SIZE + PEER_MANAGER_HEADER_SIZE + TAIL_RESERVED_SIZE) * 4;
+        buf.reserve(MAX_PACKET_SIZE * 2);
+        assert!(buf.capacity() > small_reserve);
+        let decoded = codec.decode(&mut buf).unwrap();
+        assert!(decoded.is_none());
+        assert_eq!(buf.capacity(), small_reserve);
+        assert!(codec.gso); // GSO flag preserved!
+    }
+
+    #[test]
+    fn test_tunnel_codec_rejects_oversized_packet() {
+        use tokio_util::codec::Decoder;
+
+        let mut buf = BytesMut::new();
+        buf.put_u32_le((MAX_PACKET_SIZE + 1) as u32);
+        buf.resize(TCP_TUNNEL_HEADER_SIZE + 10, 0);
+
+        let ret = TunnelCodec::new(1500).decode(&mut buf);
+        assert!(matches!(
+            ret,
+            Err(TunnelError::InvalidPacket(msg)) if msg == "body too long"
         ));
     }
 
