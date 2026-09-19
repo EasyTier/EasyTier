@@ -56,69 +56,30 @@ impl Decoder for TunnelCodec {
     }
 }
 
-pub trait ZCPacketToBytes {
-    fn zcpacket_into_bytes(&self, zc_packet: ZCPacket) -> Result<Bytes, TunnelError>;
-}
-
-pub struct TcpZCPacketToBytes;
-
-impl ZCPacketToBytes for TcpZCPacketToBytes {
-    fn zcpacket_into_bytes(&self, item: ZCPacket) -> Result<Bytes, TunnelError> {
-        let mut item = item.convert_type(ZCPacketType::TCP);
-
-        let tcp_len = PEER_MANAGER_HEADER_SIZE + item.payload_len();
-        let Some(header) = item.mut_tcp_tunnel_header() else {
-            return Err(TunnelError::InvalidPacket("packet too short".to_owned()));
-        };
-        header.len.set(tcp_len.try_into().unwrap());
-
-        Ok(item.into_bytes())
-    }
-}
-
 pin_project! {
-    pub struct FramedWriter<W, C> {
+    pub struct FramedWriter<W> {
         #[pin]
         writer: W,
         sending_bufs: BufList<Bytes>,
-        converter: C,
     }
 }
 
-impl<W, C> FramedWriter<W, C> {
+impl<W> FramedWriter<W> {
     fn max_buffer_count(&self) -> usize {
         64
     }
-}
 
-impl<W> FramedWriter<W, TcpZCPacketToBytes> {
     pub fn new(writer: W) -> Self {
-        Self {
+        FramedWriter {
             writer,
             sending_bufs: BufList::new(),
-            converter: TcpZCPacketToBytes,
         }
     }
 }
 
-impl<W, C: ZCPacketToBytes + Send + 'static> FramedWriter<W, C> {
-    pub fn with_converter(writer: W, converter: C) -> Self {
-        Self {
-            writer,
-            sending_bufs: BufList::new(),
-            converter,
-        }
-    }
-
-    pub fn new_with_converter(writer: W, converter: C) -> Self {
-        Self::with_converter(writer, converter)
-    }
-}
-
-impl<W, C> Sink<SinkItem> for FramedWriter<W, C>
+impl<W> Sink<SinkItem> for FramedWriter<W>
 where
     W: AsyncWrite + Send + 'static,
-    C: ZCPacketToBytes + Send + 'static,
 {
     type Error = SinkError;
 
@@ -136,8 +97,18 @@ where
 
     fn start_send(self: Pin<&mut Self>, item: SinkItem) -> Result<(), Self::Error> {
         let this = self.project();
-        this.sending_bufs
-            .push(this.converter.zcpacket_into_bytes(item)?);
+
+        let mut packet = item.convert_type(ZCPacketType::TCP);
+        let payload_len = packet.payload_len();
+        let Some(header) = packet.mut_tcp_tunnel_header() else {
+            return Err(TunnelError::InvalidPacket("packet too short".to_string()));
+        };
+        header
+            .len
+            .set((PEER_MANAGER_HEADER_SIZE + payload_len).try_into().unwrap());
+
+        this.sending_bufs.push(packet.into_bytes());
+
         Ok(())
     }
 
@@ -171,12 +142,6 @@ where
         ready!(self.as_mut().poll_flush(cx))?;
         ready!(self.project().writer.poll_shutdown(cx))?;
         Poll::Ready(Ok(()))
-    }
-}
-
-pub fn reserve_buf(buf: &mut BytesMut, min_size: usize, max_size: usize) {
-    if buf.capacity() - buf.len() < min_size {
-        buf.reserve(max_size);
     }
 }
 

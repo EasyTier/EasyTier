@@ -112,9 +112,11 @@ rcgen = { version = "0.14.10", optional = true }
 tokio-rustls = { workspace = true, optional = true }
 
 # for tap device
-tun = { package = "tun-easytier", git = "https://github.com/EasyTier/rust-tun", features = [
+tun = { package = "tun-easytier", git = "https://github.com/ZnqbuZ/rust-tun", features = [
     "async",
 ], optional = true }
+etherparse = "0.20.2"
+internet-checksum = "0.2.1"
 # for net ns
 nix = { version = "0.31.3", features = [
     "sched",
@@ -306,6 +308,9 @@ smoltcp = { workspace = true, features = [
     "proto-ipv6",
     "socket-raw",
 ] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+virtio-bindings = "0.2.7"
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 defguard_wireguard_rs = "0.12.0"
