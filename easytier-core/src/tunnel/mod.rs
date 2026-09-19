@@ -15,6 +15,7 @@ use crate::{foundation::time::error::Elapsed, packet::ZCPacket, proto::common::T
 
 pub use crate::socket::IpVersion;
 
+pub mod buf;
 pub(crate) mod encrypt;
 pub mod filter;
 pub mod framed;
