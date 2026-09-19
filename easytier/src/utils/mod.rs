@@ -1,3 +1,4 @@
+pub mod buf;
 #[cfg(feature = "management")]
 pub mod panic;
 pub mod string;
