@@ -1,9 +1,10 @@
 use std::sync::Mutex as StdMutex;
+use tokio_util::codec::FramedRead;
 
 use crate::{
     proto::common::TunnelInfo,
     socket::tcp::VirtualTcpSocket,
-    tunnel::framed::{FramedReader, FramedWriter, TCP_MTU_BYTES},
+    tunnel::framed::{FramedWriter, TCP_MTU_BYTES, TunnelCodec},
     tunnel::{SplitTunnel, Tunnel, TunnelError},
 };
 
@@ -36,7 +37,12 @@ where
             .expect("TcpTunnel can only be split once");
         let (reader, writer) = socket.into_split();
         (
-            Box::pin(FramedReader::new(reader, self.max_packet_size)),
+            Box::pin(FramedRead::new(
+                reader,
+                TunnelCodec {
+                    max_packet_size: self.max_packet_size,
+                },
+            )),
             Box::pin(FramedWriter::new(writer)),
         )
     }

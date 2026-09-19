@@ -70,7 +70,7 @@ tokio = { workspace = true, features = [
     "macros",
     "io-util",
 ] }
-tokio-util = { workspace = true, features = ["io", "rt"] }
+tokio-util = { workspace = true, features = ["io", "rt", "codec"] }
 tokio-rustls = { workspace = true, optional = true }
 url = { workspace = true, features = ["serde"] }
 wildmatch = "2.6.1"
