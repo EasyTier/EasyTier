@@ -19,6 +19,7 @@ use tokio_util::task::AbortOnDropHandle;
 
 use crate::{
     config::{P2pPolicyFlags, PeerId},
+    connectivity::configured_bind_addr,
     connectivity::{
         hole_punch::{
             HolePunchRpcRegistry, HolePunchTunnelSink,
@@ -196,23 +197,35 @@ pub(super) type TcpHolePunchTransportSinkFor<H> = dyn TcpHolePunchTransportSink<
         AcceptedSocket = AcceptedTcpSocket<H>,
     >;
 
-fn bind_addr_for_port(port: u16, is_v6: bool) -> SocketAddr {
-    if is_v6 {
-        SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port)
-    } else {
-        SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port)
-    }
+fn bind_addr_for_port_with_bind_address(
+    port: u16,
+    is_v6: bool,
+    bind_address: Option<IpAddr>,
+) -> SocketAddr {
+    configured_bind_addr(
+        bind_address,
+        if is_v6 { IpVersion::V6 } else { IpVersion::V4 },
+        port,
+    )
+    .unwrap_or_else(|| {
+        if is_v6 {
+            SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port)
+        } else {
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port)
+        }
+    })
 }
 
-pub async fn select_local_port<H>(
+pub async fn select_local_port_with_bind_address<H>(
     host: &H,
     context: SocketContext,
     is_v6: bool,
+    bind_address: Option<IpAddr>,
 ) -> anyhow::Result<u16>
 where
     H: VirtualTcpListenerFactory,
 {
-    let bind_addr = bind_addr_for_port(0, is_v6);
+    let bind_addr = bind_addr_for_port_with_bind_address(0, is_v6, bind_address);
     tracing::trace!(?bind_addr, is_v6, "tcp hole punch select local port");
     let context = context.with_ip_version(if is_v6 { IpVersion::V6 } else { IpVersion::V4 });
     let listener = host
@@ -230,7 +243,7 @@ where
 }
 
 // TCP supports simultaneous connect, so both peers may dial from the mapped port.
-pub async fn try_connect_to_remote<H, AcceptedSocket>(
+pub async fn try_connect_to_remote_with_bind_address<H, AcceptedSocket>(
     host: Arc<H>,
     transport_sink: Arc<
         dyn TcpHolePunchTransportSink<
@@ -243,6 +256,7 @@ pub async fn try_connect_to_remote<H, AcceptedSocket>(
     context: SocketContext,
     admission: TcpHolePunchAdmission,
     max_attempts: u32,
+    bind_address: Option<IpAddr>,
 ) -> anyhow::Result<()>
 where
     H: VirtualTcpSocketFactory,
@@ -254,7 +268,11 @@ where
         "tcp hole punch server start connect loop"
     );
 
-    let bind_addr = bind_addr_for_port(local_port, remote_mapped_addr.is_ipv6());
+    let bind_addr = bind_addr_for_port_with_bind_address(
+        local_port,
+        remote_mapped_addr.is_ipv6(),
+        bind_address,
+    );
     let context = context.with_ip_version(if remote_mapped_addr.is_ipv6() {
         IpVersion::V6
     } else {
@@ -437,6 +455,7 @@ where
     host: Arc<H>,
     stun: Arc<dyn StunInfoProvider>,
     socket_context: SocketContext,
+    bind_address: Option<IpAddr>,
     transport_sink: Arc<TcpHolePunchTransportSinkFor<H>>,
     tasks: Arc<Mutex<JoinSet<()>>>,
     reaper: Mutex<Option<AbortOnDropHandle<()>>>,
@@ -451,12 +470,14 @@ where
         host: Arc<H>,
         stun: Arc<dyn StunInfoProvider>,
         socket_context: SocketContext,
+        bind_address: Option<IpAddr>,
         transport_sink: Arc<TcpHolePunchTransportSinkFor<H>>,
     ) -> Arc<Self> {
         Arc::new(Self {
             host,
             stun,
             socket_context,
+            bind_address,
             transport_sink,
             tasks: Arc::new(Mutex::new(JoinSet::new())),
             reaper: Mutex::new(None),
@@ -531,10 +552,11 @@ where
             return Err(anyhow::anyhow!("connector_mapped_addr is malformed").into());
         }
 
-        let local_port = select_local_port(
+        let local_port = select_local_port_with_bind_address(
             self.host.as_ref(),
             self.socket_context.clone(),
             remote_mapped_addr.is_ipv6(),
+            self.bind_address,
         )
         .await?;
         let local_mapped_addr = self
@@ -552,13 +574,14 @@ where
 
         let host = self.host.clone();
         let socket_context = self.socket_context.clone();
+        let bind_address = self.bind_address;
         let transport_sink = self.transport_sink.clone();
         let mut tasks = self.tasks.lock().unwrap();
         if self.stopping.load(Ordering::Acquire) {
             return Err(rpc_types::error::Error::Shutdown);
         }
         tasks.spawn(async move {
-            let _ = try_connect_to_remote(
+            let _ = try_connect_to_remote_with_bind_address(
                 host,
                 transport_sink,
                 remote_mapped_addr,
@@ -566,6 +589,7 @@ where
                 socket_context,
                 TcpHolePunchAdmission::Client,
                 5,
+                bind_address,
             )
             .await;
         });
@@ -584,6 +608,7 @@ where
     host: Arc<H>,
     stun: Arc<dyn StunInfoProvider>,
     socket_context: SocketContext,
+    bind_address: Option<IpAddr>,
     peer_source: Arc<P>,
     transport_sink: Arc<TcpHolePunchTransportSinkFor<H>>,
     blacklist: TcpHolePunchBlacklist,
@@ -625,8 +650,13 @@ where
             return Ok(());
         }
 
-        let local_port =
-            select_local_port(self.host.as_ref(), self.socket_context.clone(), false).await?;
+        let local_port = select_local_port_with_bind_address(
+            self.host.as_ref(),
+            self.socket_context.clone(),
+            false,
+            self.bind_address,
+        )
+        .await?;
         let local_mapped_addr = self
             .stun
             .get_tcp_port_mapping(local_port)
@@ -663,7 +693,7 @@ where
             "tcp hole punch initiator rpc returned"
         );
 
-        if try_connect_to_remote(
+        if try_connect_to_remote_with_bind_address(
             self.host.clone(),
             self.transport_sink.clone(),
             remote_mapped_addr,
@@ -671,6 +701,7 @@ where
             self.socket_context.clone(),
             TcpHolePunchAdmission::Server,
             1,
+            self.bind_address,
         )
         .await
         .is_ok()
@@ -691,8 +722,7 @@ where
             "tcp hole punch initiator sent syn to remote mapped addr"
         );
 
-        let bind_addr =
-            std::net::SocketAddr::new(std::net::Ipv4Addr::UNSPECIFIED.into(), local_port);
+        let bind_addr = bind_addr_for_port_with_bind_address(local_port, false, self.bind_address);
         let listener = self
             .host
             .bind_tcp(fallback_listener_options(
@@ -846,11 +876,12 @@ where
     H: TcpHolePunchHost,
     P: TcpHolePunchPeerSource + HolePunchTunnelSink + HolePunchRpcRegistry,
 {
-    pub fn new(
+    pub fn new_with_bind_address(
         peer_source: Arc<P>,
         host: Arc<H>,
         stun: Arc<dyn StunInfoProvider>,
         socket_context: SocketContext,
+        bind_address: Option<IpAddr>,
         client_protocol: Arc<dyn ClientProtocolUpgrader<ConnectedTcpSocket<H>>>,
         server_protocol: Arc<dyn ServerProtocolUpgrader<AcceptedTcpSocket<H>>>,
     ) -> Self {
@@ -864,12 +895,19 @@ where
             host: host.clone(),
             stun: stun.clone(),
             socket_context: socket_context.clone(),
+            bind_address,
             peer_source: peer_source.clone(),
             transport_sink: transport_sink.clone(),
             blacklist: TcpHolePunchBlacklist::new(),
         });
         Self {
-            server: TcpHolePunchServer::new(host, stun, socket_context, transport_sink),
+            server: TcpHolePunchServer::new(
+                host,
+                stun,
+                socket_context,
+                bind_address,
+                transport_sink,
+            ),
             client: PeerTaskManager::new_with_external_signal(
                 TcpHolePunchPeerTaskLauncher(data),
                 Some(peer_source.p2p_demand_notify()),
@@ -1047,10 +1085,13 @@ mod tests {
     #[test]
     fn bind_address_tracks_requested_family_and_port() {
         assert_eq!(
-            bind_addr_for_port(1234, false),
+            bind_addr_for_port_with_bind_address(1234, false, None),
             "0.0.0.0:1234".parse().unwrap()
         );
-        assert_eq!(bind_addr_for_port(4321, true), "[::]:4321".parse().unwrap());
+        assert_eq!(
+            bind_addr_for_port_with_bind_address(4321, true, None),
+            "[::]:4321".parse().unwrap()
+        );
     }
 
     #[test]

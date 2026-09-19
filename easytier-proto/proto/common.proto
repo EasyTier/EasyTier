@@ -88,6 +88,11 @@ message FlagsInConfig {
   // Prefer direct credential peers that already relay to a destination over
   // advertising another direct edge to the same destination.
   bool prefer_peer_relay = 44;
+
+  // Optional local IP address used by EasyTier underlay connectors, hole
+  // punching, and STUN probes. Empty means automatic interface selection.
+  // This does not change listener URLs or TUN device configuration.
+  string bind_address = 45;
 }
 
 message RpcDescriptor {
