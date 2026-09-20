@@ -17,6 +17,7 @@ import {
   syncMobileVpnService,
 } from '~/composables/mobile_vpn'
 import { executeVpnTileAction } from '~/composables/mobile_vpn_tile'
+import { bootstrapAndroidManagement } from '~/composables/android_management'
 import { GUIRemoteClient } from '~/modules/api'
 
 import { useToast, useConfirm } from 'primevue'
@@ -38,6 +39,7 @@ const currentMode = ref<Mode>({ mode: 'normal' })
 const editingMode = ref<Mode>({ mode: 'normal' })
 const isModeSaving = ref(false)
 const manualDisconnect = ref(false)
+const managementReady = ref(type() !== 'android')
 
 const configServerDialogVisible = ref(false)
 const configServerConnected = ref(false)
@@ -225,7 +227,7 @@ async function initWithMode(mode: Mode) {
     initWebClient(mode.config_server_url)
   }
   currentMode.value = mode
-  saveMode(mode)
+  await saveMode(mode)
   clientRunning.value = await isClientRunning()
 }
 
@@ -236,6 +238,13 @@ onMounted(async () => {
     setMobileVpnErrorHandler(error => toast.add({ severity: 'error', summary: t('error'), detail: error, life: 10000 }))
     cleanupFns.push(() => setMobileVpnErrorHandler())
     try {
+      await bootstrapAndroidManagement()
+      managementReady.value = true
+    } catch (error) {
+      toast.add({ severity: 'error', summary: t('error'), detail: String(error), life: 10000 })
+      return
+    }
+    try {
       await initMobileVpnService()
     } catch (e: any) {
       console.error("easytier init vpn service failed", e)
@@ -244,7 +253,12 @@ onMounted(async () => {
 
   cleanupFns.push(await listenGlobalEvents())
   currentMode.value = loadMode()
-  await initWithMode(currentMode.value);
+  try {
+    await initWithMode(currentMode.value);
+  } catch (error) {
+    toast.add({ severity: 'error', summary: t('error'), detail: String(error), life: 10000 })
+    return
+  }
 
   if (type() === 'android') {
     setMobileVpnTileActionHandler(handleMobileVpnTileAction)
@@ -289,7 +303,7 @@ async function handleMobileVpnTileAction(action: 'start' | 'stop') {
     }
 
     instanceId.value = result.instanceId
-    saveLastNetworkInstanceId(result.instanceId)
+    await saveLastNetworkInstanceId(result.instanceId)
     toast.add({
       severity: action === 'start' ? 'success' : 'secondary',
       summary: t(action === 'start' ? 'vpn_tile_started' : 'vpn_tile_stopped'),
@@ -307,13 +321,18 @@ async function handleMobileVpnTileAction(action: 'start' | 'stop') {
   }
 }
 
-watch(instanceId, (newVal) => {
+watch(instanceId, async (newVal) => {
   if (newVal) {
-    saveLastNetworkInstanceId(newVal);
+    try {
+      await saveLastNetworkInstanceId(newVal);
+    } catch (error) {
+      toast.add({ severity: 'error', summary: t('error'), detail: String(error), life: 8000 })
+    }
   }
 });
 
 watch(clientRunning, async (newVal, oldVal) => {
+  if (!managementReady.value) return
   if (!newVal && oldVal) {
     if (manualDisconnect.value) {
       manualDisconnect.value = false
@@ -329,8 +348,11 @@ watch(clientRunning, async (newVal, oldVal) => {
 })
 
 onMounted(async () => {
-  clientRunning.value = await isClientRunning().catch(() => false)
+  if (managementReady.value) {
+    clientRunning.value = await isClientRunning().catch(() => false)
+  }
   const timer = setInterval(async () => {
+    if (!managementReady.value) return
     try {
       clientRunning.value = await isClientRunning()
     } catch (e) {
