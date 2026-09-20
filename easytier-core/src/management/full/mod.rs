@@ -1,4 +1,8 @@
 #[cfg(feature = "management")]
+pub mod application_client;
+#[cfg(feature = "management")]
+pub mod application_snapshot;
+#[cfg(feature = "management")]
 mod compiled;
 mod config_patch;
 mod instance_info;

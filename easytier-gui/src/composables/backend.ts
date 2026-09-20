@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
+import { type } from '@tauri-apps/plugin-os'
 import { Api, NetworkTypes } from 'easytier-frontend-lib'
 import { GetNetworkMetasResponse } from 'node_modules/easytier-frontend-lib/dist/modules/api'
 import { type ConfigSource, normalizeConfigSource } from './config_source'
@@ -21,7 +22,7 @@ interface StoredGuiConfig {
   source: ConfigSource
 }
 
-function parseStoredConfigs(raw: string | null): StoredGuiConfig[] {
+export function parseStoredConfigs(raw: string | null): StoredGuiConfig[] {
   const parsed: unknown = JSON.parse(raw || '[]')
   if (!Array.isArray(parsed)) {
     return []
@@ -121,7 +122,7 @@ export async function getConfig(instanceId: string) {
 }
 
 export async function sendConfigs(enabledNetworks: string[]) {
-  const networkList = parseStoredConfigs(localStorage.getItem('networkList'))
+  const networkList = type() === 'android' ? [] : parseStoredConfigs(localStorage.getItem('networkList'))
   return await invoke('load_configs', {
     configs: networkList.map(({ config, source }) => ({
       config: NetworkTypes.toBackendNetworkConfig(config),
