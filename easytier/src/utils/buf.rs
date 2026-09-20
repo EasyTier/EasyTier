@@ -1,6 +1,6 @@
 use bytes::{BufMut, BytesMut};
-use derive_more::{From, Into};
-use std::mem::MaybeUninit;
+use derive_more::{AsMut, AsRef, Deref, DerefMut, From, Into};
+use std::mem::{MaybeUninit, take};
 use std::ptr::copy_nonoverlapping;
 
 pub use easytier_core::tunnel::buf::BufList;
@@ -119,6 +119,42 @@ impl<'t> BufPoolWriter<'t> {
     }
 }
 
+/// A lock-free object pool for fixed-capacity reusable scratch buffers.
+#[derive(Debug)]
+pub struct FixedBufPool<const SIZE: usize> {
+    queue: crossbeam::queue::ArrayQueue<Vec<u8>>,
+}
+
+impl<const SIZE: usize> FixedBufPool<SIZE> {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            queue: crossbeam::queue::ArrayQueue::new(capacity),
+        }
+    }
+
+    pub fn acquire(&self) -> FixedBufGuard<'_, SIZE> {
+        let buf = self.queue.pop().unwrap_or_else(|| vec![0u8; SIZE]);
+        FixedBufGuard { pool: self, buf }
+    }
+}
+
+#[derive(Debug, Deref, DerefMut, AsRef, AsMut)]
+pub struct FixedBufGuard<'p, const SIZE: usize> {
+    pool: &'p FixedBufPool<SIZE>,
+    #[deref]
+    #[deref_mut]
+    #[as_ref([u8])]
+    #[as_mut([u8])]
+    buf: Vec<u8>,
+}
+
+impl<'p, const SIZE: usize> Drop for FixedBufGuard<'p, SIZE> {
+    #[inline(always)]
+    fn drop(&mut self) {
+        let _ = self.pool.queue.push(take(&mut self.buf));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,5 +192,35 @@ mod tests {
         let buf = writer.split();
         assert_eq!(buf.len(), 10 + data.len() + 6);
         assert_eq!(&buf[10..10 + data.len()], data);
+    }
+
+    #[test]
+    fn test_fixed_buf_pool() {
+        let pool = FixedBufPool::<2048>::new(2);
+
+        // 1. Acquire and verify size
+        let ptr1;
+        {
+            let mut buf1 = pool.acquire();
+            assert_eq!(buf1.len(), 2048);
+            buf1[0] = 42;
+            ptr1 = buf1.as_ptr();
+        }
+
+        // 2. Re-acquire: should reuse the recycled buffer from the pool
+        {
+            let buf2 = pool.acquire();
+            assert_eq!(buf2.len(), 2048);
+            assert_eq!(buf2[0], 42); // Same underlying memory was recycled
+            assert_eq!(buf2.as_ptr(), ptr1);
+        }
+
+        // 3. Exceed pool capacity
+        let b1 = pool.acquire();
+        let b2 = pool.acquire();
+        let b3 = pool.acquire(); // exceeds capacity=2, allocates on demand
+        assert_eq!(b1.len(), 2048);
+        assert_eq!(b2.len(), 2048);
+        assert_eq!(b3.len(), 2048);
     }
 }
