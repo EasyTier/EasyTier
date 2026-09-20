@@ -1044,7 +1044,14 @@ fn flags_from(matches: &ArgMatches) -> Result<FlagsPatch, clap::Error> {
         .iter()
         .filter_map(|field| {
             let name = field.name();
-            Some((name.to_owned(), matches.get_one::<Value>(name)?.clone()))
+            let value = if let Ok(Some(values)) = matches.try_get_many::<String>(name) {
+                json!(values.map(|s| s.as_str()).collect::<Vec<_>>().join(" "))
+            } else if let Ok(Some(value)) = matches.try_get_one::<Value>(name) {
+                value.clone()
+            } else {
+                return None;
+            };
+            Some((name.to_owned(), value))
         })
         .collect::<serde_json::Map<_, _>>();
     serde_json::from_value(Value::Object(given)).map_err(|error| {
@@ -1093,6 +1100,11 @@ fn cli_command() -> clap::Command {
                 arg(name, "compression").value_parser(parsed::<CompressionAlgoPb>)
             }
             "encryption_algorithm" => arg(name, name).value_parser(parsed::<EncryptionAlgorithm>),
+            "mtu" => arg(name, name).value_parser(parsed::<u16>),
+            "relay_network_whitelist" => arg(name, name)
+                .value_delimiter(',')
+                .num_args(0..)
+                .action(clap::ArgAction::Append),
             _ => {
                 let arg = arg(name, name);
                 match field.r#type() {
@@ -1669,6 +1681,32 @@ enabled = true
 
         // Deprecated flag is not accepted.
         assert!(parse_flags(&["easytier", "--quic-listen-port", "1234"]).is_err());
+
+        // MTU tests: u16 range validation
+        let patch = parse_flags(&["easytier", "--mtu", "1400"]).unwrap();
+        assert_eq!(patch.mtu, Some(1400));
+        let patch = parse_flags(&["easytier", "--mtu", "65535"]).unwrap();
+        assert_eq!(patch.mtu, Some(65535));
+        assert!(parse_flags(&["easytier", "--mtu", "65536"]).is_err());
+        assert!(parse_flags(&["easytier", "--mtu", "70000"]).is_err());
+
+        // Relay network whitelist tests: comma, multiple values, bare clearing
+        let patch = parse_flags(&["easytier", "--relay-network-whitelist", "net1,net2"]).unwrap();
+        assert_eq!(patch.relay_network_whitelist, Some("net1 net2".to_string()));
+        let patch =
+            parse_flags(&["easytier", "--relay-network-whitelist", "net1", "net2"]).unwrap();
+        assert_eq!(patch.relay_network_whitelist, Some("net1 net2".to_string()));
+        let patch = parse_flags(&[
+            "easytier",
+            "--relay-network-whitelist",
+            "net1",
+            "--relay-network-whitelist",
+            "net2",
+        ])
+        .unwrap();
+        assert_eq!(patch.relay_network_whitelist, Some("net1 net2".to_string()));
+        let patch = parse_flags(&["easytier", "--relay-network-whitelist"]).unwrap();
+        assert_eq!(patch.relay_network_whitelist, Some("".to_string()));
     }
 
     #[test]

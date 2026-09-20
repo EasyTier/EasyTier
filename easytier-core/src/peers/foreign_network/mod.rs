@@ -1873,6 +1873,8 @@ mod tests {
         assert!(check_network_in_relay_whitelist("*", "any-network").is_ok());
         assert!(check_network_in_relay_whitelist("", "net1").is_err());
         assert!(check_network_in_relay_whitelist("net1 net2*", "net3").is_err());
+        assert!(check_network_in_relay_whitelist("net1,net2*", "net1").is_ok());
+        assert!(check_network_in_relay_whitelist("net1, net2*", "net2-west").is_ok());
     }
 
     #[test]
