@@ -95,7 +95,7 @@ fn log_event(instance_id: Uuid, event: GlobalCtxEvent) {
             event!(
                 info,
                 %listener,
-                "[{}] new listener added",
+                "[{}] listener endpoint available",
                 instance_id
             );
         }

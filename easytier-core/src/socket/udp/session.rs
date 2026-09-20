@@ -22,7 +22,9 @@ use crate::{
 use super::{
     MAX_UDP_SESSION_DATAGRAM_SIZE, UDP_SESSION_QUEUE_CAPACITY,
     packet::{new_data_packet, udp_session_payload_len},
-    virtual_socket::{PreferredIpv6Source, UdpBindOptions, UdpSocketRecvMeta, VirtualUdpSocket},
+    virtual_socket::{
+        PreferredIpv6Source, UdpBindOptions, UdpSocketRecvMeta, UdpSocketSendMeta, VirtualUdpSocket,
+    },
 };
 
 #[derive(Debug)]
@@ -107,6 +109,11 @@ pub trait UdpSessionSocket: Send + Sync + 'static {
     fn peer_addr(&self) -> std::io::Result<SocketAddr>;
 
     async fn send(&self, data: &[u8]) -> std::io::Result<usize>;
+
+    async fn send_with_meta(&self, data: &[u8], meta: UdpSocketSendMeta) -> std::io::Result<usize> {
+        let _ = meta;
+        self.send(data).await
+    }
 
     async fn recv(&self, buf: &mut [u8]) -> std::io::Result<usize>;
 
@@ -201,6 +208,69 @@ pub(super) type ClassifiedUdpSessionRegistry =
 pub(super) type ClassifiedUdpSessionAccepts =
     DashMap<UdpSessionProtocol, Arc<ClassifiedUdpSessionAccept>>;
 pub(super) type PendingUdpSessionConnects = DashMap<u32, PendingUdpSessionConnect>;
+pub(super) type UdpTupleOwners = DashMap<SocketAddr, UdpTupleOwner>;
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct UdpTupleOwner {
+    kind: UdpSessionKind,
+    sessions: usize,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct UdpTupleOwnerLease {
+    _inner: Arc<UdpTupleOwnerLeaseInner>,
+}
+
+#[derive(Debug)]
+struct UdpTupleOwnerLeaseInner {
+    owners: Arc<UdpTupleOwners>,
+    peer_addr: SocketAddr,
+    kind: UdpSessionKind,
+}
+
+impl UdpTupleOwnerLease {
+    pub(super) fn try_acquire(
+        owners: Arc<UdpTupleOwners>,
+        peer_addr: SocketAddr,
+        kind: UdpSessionKind,
+    ) -> Option<Self> {
+        match owners.entry(peer_addr) {
+            dashmap::mapref::entry::Entry::Vacant(entry) => {
+                entry.insert(UdpTupleOwner { kind, sessions: 1 });
+            }
+            dashmap::mapref::entry::Entry::Occupied(mut entry) => {
+                if entry.get().kind != kind {
+                    return None;
+                }
+                entry.get_mut().sessions += 1;
+            }
+        }
+        Some(Self {
+            _inner: Arc::new(UdpTupleOwnerLeaseInner {
+                owners,
+                peer_addr,
+                kind,
+            }),
+        })
+    }
+}
+
+impl Drop for UdpTupleOwnerLeaseInner {
+    fn drop(&mut self) {
+        let dashmap::mapref::entry::Entry::Occupied(mut entry) = self.owners.entry(self.peer_addr)
+        else {
+            return;
+        };
+        if entry.get().kind != self.kind {
+            return;
+        }
+        if entry.get().sessions == 1 {
+            entry.remove();
+        } else {
+            entry.get_mut().sessions -= 1;
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) struct ClassifiedUdpSessionKey {
@@ -228,6 +298,7 @@ pub(super) struct ClassifiedUdpSessionAccept {
 pub(super) struct UdpSessionRegistryEntry {
     pub(super) incoming: Arc<StdMutex<RingSocketSender<UdpSessionDatagram>>>,
     pub(super) close: watch::Sender<bool>,
+    _tuple_owner: Option<UdpTupleOwnerLease>,
 }
 
 #[derive(Debug, Clone)]
@@ -278,6 +349,7 @@ pub struct UdpSession {
 pub(crate) enum UdpSessionOutbound {
     Datagram {
         payload: BytesMut,
+        meta: UdpSocketSendMeta,
         completion: oneshot::Sender<io::Result<usize>>,
     },
     TunnelPacket(ZCPacket),
@@ -397,10 +469,10 @@ impl UdpSessionClose {
             #[cfg(test)]
             UdpSessionCloseTarget::SignalOnly => {}
             UdpSessionCloseTarget::EasyTier { key, sessions } => {
-                close_udp_session(sessions, *key);
+                close_udp_session_if_current(sessions, *key, &self.close);
             }
             UdpSessionCloseTarget::Classified { key, sessions } => {
-                close_classified_udp_session(sessions, *key);
+                close_classified_udp_session_if_current(sessions, *key, &self.close);
             }
         }
         let _ = self.close.send(true);
@@ -494,6 +566,12 @@ impl UdpSession {
         self._cleanup.layer_guard = Some(Box::new(layer_guard));
     }
 
+    pub fn close(&self) {
+        if let Some(close) = &self._cleanup.session_close {
+            close.close();
+        }
+    }
+
     pub(crate) fn into_tunnel_parts(self) -> UdpSessionTunnelParts {
         let Self {
             local_addr,
@@ -544,6 +622,11 @@ impl UdpSessionSocket for UdpSession {
     }
 
     async fn send(&self, data: &[u8]) -> std::io::Result<usize> {
+        self.send_with_meta(data, UdpSocketSendMeta::default())
+            .await
+    }
+
+    async fn send_with_meta(&self, data: &[u8], meta: UdpSocketSendMeta) -> std::io::Result<usize> {
         self.codec.validate_payload(data)?;
         let mut closed = self.closed.clone();
         if *closed.borrow() {
@@ -552,6 +635,7 @@ impl UdpSessionSocket for UdpSession {
         let (completion, sent) = oneshot::channel();
         let outbound = UdpSessionOutbound::Datagram {
             payload: BytesMut::from(data),
+            meta,
             completion,
         };
         tokio::select! {
@@ -631,6 +715,18 @@ pub(super) fn udp_session_registry_entry(rings: &UdpSessionRingParts) -> UdpSess
     UdpSessionRegistryEntry {
         incoming: rings.session_recv_tx.clone(),
         close: rings.close_tx.clone(),
+        _tuple_owner: None,
+    }
+}
+
+pub(super) fn udp_session_registry_entry_with_owner(
+    rings: &UdpSessionRingParts,
+    tuple_owner: UdpTupleOwnerLease,
+) -> UdpSessionRegistryEntry {
+    UdpSessionRegistryEntry {
+        incoming: rings.session_recv_tx.clone(),
+        close: rings.close_tx.clone(),
+        _tuple_owner: Some(tuple_owner),
     }
 }
 
@@ -645,6 +741,30 @@ pub(super) fn close_classified_udp_session(
     key: ClassifiedUdpSessionKey,
 ) {
     if let Some((_, entry)) = classified_sessions.remove(&key) {
+        let _ = entry.close.send(true);
+    }
+}
+
+fn close_udp_session_if_current(
+    sessions: &UdpSessionRegistry,
+    key: UdpSessionKey,
+    expected_close: &watch::Sender<bool>,
+) {
+    if let Some((_, entry)) =
+        sessions.remove_if(&key, |_, entry| entry.close.same_channel(expected_close))
+    {
+        let _ = entry.close.send(true);
+    }
+}
+
+fn close_classified_udp_session_if_current(
+    classified_sessions: &ClassifiedUdpSessionRegistry,
+    key: ClassifiedUdpSessionKey,
+    expected_close: &watch::Sender<bool>,
+) {
+    if let Some((_, entry)) =
+        classified_sessions.remove_if(&key, |_, entry| entry.close.same_channel(expected_close))
+    {
         let _ = entry.close.send(true);
     }
 }
@@ -713,9 +833,10 @@ async fn forward_udp_session_to_socket<S>(
                 break;
             }
         };
-        let (datagram, completion) = match outbound {
+        let (datagram, meta, completion) = match outbound {
             UdpSessionOutbound::Datagram {
                 payload,
+                meta,
                 completion,
             } => {
                 let payload_len = payload.len();
@@ -733,7 +854,7 @@ async fn forward_udp_session_to_socket<S>(
                         break;
                     }
                 };
-                (datagram, Some((completion, payload_len)))
+                (datagram, meta, Some((completion, payload_len)))
             }
             UdpSessionOutbound::TunnelPacket(packet) => {
                 let datagram = match codec.encode_tunnel_packet(packet) {
@@ -744,10 +865,15 @@ async fn forward_udp_session_to_socket<S>(
                         break;
                     }
                 };
-                (datagram, None)
+                (datagram, UdpSocketSendMeta::default(), None)
             }
         };
-        match socket.send_to(&datagram, peer_addr).await {
+        let result = if meta == UdpSocketSendMeta::default() {
+            socket.send_to(&datagram, peer_addr).await
+        } else {
+            socket.send_to_with_meta(&datagram, peer_addr, meta).await
+        };
+        match result {
             Ok(_) => {
                 if let Some((completion, payload_len)) = completion {
                     let _ = completion.send(Ok(payload_len));
