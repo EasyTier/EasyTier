@@ -7,6 +7,7 @@
 package common
 
 import (
+	_ "github.com/easytier/easytier/easytier-go/proto/easytier"
 	error1 "github.com/easytier/easytier/easytier-go/proto/error"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
@@ -2147,59 +2148,108 @@ var File_common_proto protoreflect.FileDescriptor
 
 const file_common_proto_rawDesc = "" +
 	"\n" +
-	"\fcommon.proto\x12\x06common\x1a\verror.proto\"\xed\x0e\n" +
-	"\x05Flags\x12)\n" +
-	"\x10default_protocol\x18\x01 \x01(\tR\x0fdefaultProtocol\x12\x19\n" +
-	"\bdev_name\x18\x02 \x01(\tR\adevName\x12+\n" +
-	"\x11enable_encryption\x18\x03 \x01(\bR\x10enableEncryption\x12\x1f\n" +
-	"\venable_ipv6\x18\x04 \x01(\bR\n" +
-	"enableIpv6\x12\x10\n" +
-	"\x03mtu\x18\x05 \x01(\rR\x03mtu\x12#\n" +
-	"\rlatency_first\x18\x06 \x01(\bR\flatencyFirst\x12(\n" +
-	"\x10enable_exit_node\x18\a \x01(\bR\x0eenableExitNode\x12\x15\n" +
-	"\x06no_tun\x18\b \x01(\bR\x05noTun\x12\x1f\n" +
-	"\vuse_smoltcp\x18\t \x01(\bR\n" +
-	"useSmoltcp\x126\n" +
+	"\fcommon.proto\x12\x06common\x1a\x11annotations.proto\x1a\verror.proto\"\x8a\x14\n" +
+	"\x05Flags\x124\n" +
+	"\x10default_protocol\x18\x01 \x01(\tB\t\x8a\xb5\x18\x05\n" +
+	"\x03tcpR\x0fdefaultProtocol\x12#\n" +
+	"\bdev_name\x18\x02 \x01(\tB\b\x8a\xb5\x18\x04\n" +
+	"\x00\x18\x01R\adevName\x12O\n" +
+	"\x11enable_encryption\x18\x03 \x01(\bB\"\x8a\xb5\x18\x1e\n" +
+	"\x04true\x12\x16\n" +
+	"\x12disable_encryption\x10\x01R\x10enableEncryption\x12=\n" +
+	"\venable_ipv6\x18\x04 \x01(\bB\x1c\x8a\xb5\x18\x18\n" +
+	"\x04true\x12\x10\n" +
+	"\fdisable_ipv6\x10\x01R\n" +
+	"enableIpv6\x12\x1e\n" +
+	"\x03mtu\x18\x05 \x01(\rB\f\x8a\xb5\x18\b\n" +
+	"\x041380\x18\x01R\x03mtu\x120\n" +
+	"\rlatency_first\x18\x06 \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\flatencyFirst\x125\n" +
+	"\x10enable_exit_node\x18\a \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x0eenableExitNode\x12\"\n" +
+	"\x06no_tun\x18\b \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x05noTun\x12,\n" +
+	"\vuse_smoltcp\x18\t \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\n" +
+	"useSmoltcp\x12A\n" +
 	"\x17relay_network_whitelist\x18\n" +
-	" \x01(\tR\x15relayNetworkWhitelist\x12\x1f\n" +
-	"\vdisable_p2p\x18\v \x01(\bR\n" +
-	"disableP2p\x12+\n" +
-	"\x12relay_all_peer_rpc\x18\f \x01(\bR\x0frelayAllPeerRpc\x129\n" +
-	"\x19disable_udp_hole_punching\x18\r \x01(\bR\x16disableUdpHolePunching\x12!\n" +
-	"\fmulti_thread\x18\x0f \x01(\bR\vmultiThread\x12G\n" +
-	"\x12data_compress_algo\x18\x10 \x01(\x0e2\x19.common.CompressionAlgoPbR\x10dataCompressAlgo\x12\x1f\n" +
-	"\vbind_device\x18\x11 \x01(\bR\n" +
-	"bindDevice\x12(\n" +
-	"\x10enable_kcp_proxy\x18\x12 \x01(\bR\x0eenableKcpProxy\x12*\n" +
-	"\x11disable_kcp_input\x18\x13 \x01(\bR\x0fdisableKcpInput\x12*\n" +
-	"\x11disable_relay_kcp\x18\x14 \x01(\bR\x0fdisableRelayKcp\x125\n" +
-	"\x17proxy_forward_by_system\x18\x15 \x01(\bR\x14proxyForwardBySystem\x12\x1d\n" +
+	" \x01(\tB\t\x8a\xb5\x18\x05\n" +
+	"\x01*\x18\x01R\x15relayNetworkWhitelist\x12,\n" +
+	"\vdisable_p2p\x18\v \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\n" +
+	"disableP2p\x128\n" +
+	"\x12relay_all_peer_rpc\x18\f \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x0frelayAllPeerRpc\x12F\n" +
+	"\x19disable_udp_hole_punching\x18\r \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x16disableUdpHolePunching\x12-\n" +
+	"\fmulti_thread\x18\x0f \x01(\bB\n" +
+	"\x8a\xb5\x18\x06\n" +
+	"\x04trueR\vmultiThread\x12U\n" +
+	"\x12data_compress_algo\x18\x10 \x01(\x0e2\x19.common.CompressionAlgoPbB\f\x8a\xb5\x18\b\n" +
+	"\x04None\x18\x01R\x10dataCompressAlgo\x12+\n" +
+	"\vbind_device\x18\x11 \x01(\bB\n" +
+	"\x8a\xb5\x18\x06\n" +
+	"\x04trueR\n" +
+	"bindDevice\x125\n" +
+	"\x10enable_kcp_proxy\x18\x12 \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x0eenableKcpProxy\x127\n" +
+	"\x11disable_kcp_input\x18\x13 \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x0fdisableKcpInput\x127\n" +
+	"\x11disable_relay_kcp\x18\x14 \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x0fdisableRelayKcp\x12B\n" +
+	"\x17proxy_forward_by_system\x18\x15 \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x14proxyForwardBySystem\x12>\n" +
 	"\n" +
-	"accept_dns\x18\x16 \x01(\bR\tacceptDns\x12!\n" +
-	"\fprivate_mode\x18\x17 \x01(\bR\vprivateMode\x12*\n" +
-	"\x11enable_quic_proxy\x18\x18 \x01(\bR\x0fenableQuicProxy\x12,\n" +
-	"\x12disable_quic_input\x18\x19 \x01(\bR\x10disableQuicInput\x12,\n" +
-	"\x12disable_relay_quic\x18# \x01(\bR\x10disableRelayQuic\x12,\n" +
-	"\x10quic_listen_port\x18! \x01(\rB\x02\x18\x01R\x0equicListenPort\x125\n" +
-	"\x17foreign_relay_bps_limit\x18\x1a \x01(\x04R\x14foreignRelayBpsLimit\x12,\n" +
-	"\x12multi_thread_count\x18\x1b \x01(\rR\x10multiThreadCount\x12F\n" +
-	" enable_relay_foreign_network_kcp\x18\x1c \x01(\bR\x1cenableRelayForeignNetworkKcp\x12H\n" +
-	"!enable_relay_foreign_network_quic\x18$ \x01(\bR\x1denableRelayForeignNetworkQuic\x121\n" +
-	"\x14encryption_algorithm\x18\x1d \x01(\tR\x13encryptionAlgorithm\x129\n" +
-	"\x19disable_sym_hole_punching\x18\x1e \x01(\bR\x16disableSymHolePunching\x12 \n" +
-	"\ftld_dns_zone\x18\x1f \x01(\tR\n" +
-	"tldDnsZone\x12\x19\n" +
-	"\bp2p_only\x18  \x01(\bR\ap2pOnly\x129\n" +
-	"\x19disable_tcp_hole_punching\x18\" \x01(\bR\x16disableTcpHolePunching\x12\x19\n" +
-	"\blazy_p2p\x18% \x01(\bR\alazyP2p\x12\x19\n" +
-	"\bneed_p2p\x18& \x01(\bR\aneedP2p\x125\n" +
-	"\x17instance_recv_bps_limit\x18' \x01(\x04R\x14instanceRecvBpsLimit\x12!\n" +
-	"\fdisable_upnp\x18( \x01(\bR\vdisableUpnp\x12,\n" +
-	"\x12disable_relay_data\x18) \x01(\bR\x10disableRelayData\x12;\n" +
-	"\x1aenable_udp_broadcast_relay\x18* \x01(\bR\x17enableUdpBroadcastRelay\x12$\n" +
-	"\vsocket_mark\x18+ \x01(\rH\x00R\n" +
-	"socketMark\x88\x01\x01\x12*\n" +
-	"\x11prefer_peer_relay\x18, \x01(\bR\x0fpreferPeerRelayB\x0e\n" +
+	"accept_dns\x18\x16 \x01(\bB\x1f\x8a\xb5\x18\x1b\n" +
+	"\x05false\x12\x12\n" +
+	"\x10enable_magic_dnsR\tacceptDns\x12E\n" +
+	"\fprivate_mode\x18\x17 \x01(\bB\"\x8a\xb5\x18\x1e\n" +
+	"\x05false\x12\x15\n" +
+	"\x13enable_private_modeR\vprivateMode\x127\n" +
+	"\x11enable_quic_proxy\x18\x18 \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x0fenableQuicProxy\x129\n" +
+	"\x12disable_quic_input\x18\x19 \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x10disableQuicInput\x129\n" +
+	"\x12disable_relay_quic\x18# \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x10disableRelayQuic\x12>\n" +
+	"\x10quic_listen_port\x18! \x01(\rB\x14\x8a\xb5\x18\x0e\n" +
+	"\n" +
+	"4294967295 \x01\x18\x01R\x0equicListenPort\x12Q\n" +
+	"\x17foreign_relay_bps_limit\x18\x1a \x01(\x04B\x1a\x8a\xb5\x18\x16\n" +
+	"\x1418446744073709551615R\x14foreignRelayBpsLimit\x125\n" +
+	"\x12multi_thread_count\x18\x1b \x01(\rB\a\x8a\xb5\x18\x03\n" +
+	"\x012R\x10multiThreadCount\x12S\n" +
+	" enable_relay_foreign_network_kcp\x18\x1c \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x1cenableRelayForeignNetworkKcp\x12U\n" +
+	"!enable_relay_foreign_network_quic\x18$ \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x1denableRelayForeignNetworkQuic\x12B\n" +
+	"\x14encryption_algorithm\x18\x1d \x01(\tB\x0f\x8a\xb5\x18\v\n" +
+	"\aaes-gcm\x18\x01R\x13encryptionAlgorithm\x12F\n" +
+	"\x19disable_sym_hole_punching\x18\x1e \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x16disableSymHolePunching\x12/\n" +
+	"\ftld_dns_zone\x18\x1f \x01(\tB\r\x8a\xb5\x18\t\n" +
+	"\aet.net.R\n" +
+	"tldDnsZone\x12&\n" +
+	"\bp2p_only\x18  \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\ap2pOnly\x12F\n" +
+	"\x19disable_tcp_hole_punching\x18\" \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x16disableTcpHolePunching\x12&\n" +
+	"\blazy_p2p\x18% \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\alazyP2p\x12&\n" +
+	"\bneed_p2p\x18& \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\aneedP2p\x12S\n" +
+	"\x17instance_recv_bps_limit\x18' \x01(\x04B\x1c\x8a\xb5\x18\x18\n" +
+	"\x1418446744073709551615\x18\x01R\x14instanceRecvBpsLimit\x12.\n" +
+	"\fdisable_upnp\x18( \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\vdisableUpnp\x129\n" +
+	"\x12disable_relay_data\x18) \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x10disableRelayData\x12H\n" +
+	"\x1aenable_udp_broadcast_relay\x18* \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x17enableUdpBroadcastRelay\x12,\n" +
+	"\vsocket_mark\x18+ \x01(\rB\x06\x8a\xb5\x18\x02\x18\x01H\x00R\n" +
+	"socketMark\x88\x01\x01\x127\n" +
+	"\x11prefer_peer_relay\x18, \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x0fpreferPeerRelayB\x0e\n" +
 	"\f_socket_mark\"\x95\x01\n" +
 	"\rRpcDescriptor\x12\x1f\n" +
 	"\vdomain_name\x18\x01 \x01(\tR\n" +
