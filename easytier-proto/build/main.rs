@@ -1,3 +1,4 @@
+mod flags;
 mod rpc;
 
 use crate::rpc::ServiceGenerator;
@@ -81,7 +82,7 @@ fn ensure_protoc_for_windows() {
     }
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> anyhow::Result<()> {
     #[cfg(target_os = "windows")]
     ensure_protoc_for_windows();
 
@@ -141,6 +142,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .field_attribute(".common.CompressionAlgoPb.Invalid", "#[strum(disabled)]");
 
     let mut descriptor_set = config.load_fds(&proto_files, &["proto/"])?;
+    // What protoc wrote (this set carries every file, imports included), read
+    // before anything else may touch it: the annotations are extension fields,
+    // which a prost-types round-trip drops.
+    let annotated = std::fs::read(out.join("descriptors.bin"))?;
 
     {
         let common = descriptor_set
@@ -193,6 +198,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     config.file_descriptor_set_path(out.join("file_descriptor_set.bin"));
     config.compile_protos(&proto_files_reflect, &["proto/"])?;
     config.compile_fds(descriptor_set)?;
+    flags::write(&annotated, &out)?;
 
     pbjson_build::Builder::new()
         .register_descriptors(&descriptors)?

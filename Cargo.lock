@@ -2674,6 +2674,7 @@ dependencies = [
  "pin-project-lite",
  "prefix-trie 0.10.1",
  "prost",
+ "prost-reflect",
  "prost-types",
  "quanta",
  "rand 0.8.8",
@@ -2787,6 +2788,7 @@ dependencies = [
  "proc-macro2",
  "prost",
  "prost-build",
+ "prost-reflect",
  "prost-types",
  "prost-wkt-types",
  "quote",
@@ -7090,6 +7092,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "prost-reflect"
+version = "0.16.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "01b80ea363c31af2de2b92e3c07ed1156628f7838c4afb4df75ee78a37fedbd1"
+dependencies = [
+ "prost",
+ "prost-types",
 ]
 
 [[package]]

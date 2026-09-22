@@ -14,10 +14,7 @@ use ariadne::{CharSet, Config as AriadneConfig, IndexType, Label, Report, Report
 use optionize::Optionizable;
 use serde::{Deserialize, Serialize};
 
-use crate::proto::{
-    acl::Acl,
-    common::{CompressionAlgoPb, SecureModeConfig},
-};
+use crate::proto::{acl::Acl, common::SecureModeConfig};
 
 pub const DEFAULT_ET_DNS_ZONE: &str = "et.net.";
 
@@ -25,73 +22,6 @@ pub use crate::proto::common::{Flags, FlagsPatch};
 
 pub(crate) fn default_instance_name() -> String {
     "default".to_owned()
-}
-
-/// Resolves flag input into the complete configuration a network runs with.
-///
-/// An extension trait because `Flags` is generated in `easytier-proto`, while
-/// the defaults it starts from are this crate's policy. This is not
-/// `Flags::default()`, which prost implements as the protobuf zero value and
-/// which the codec needs.
-pub trait FlagsExt {
-    /// Applies `patch` over EasyTier's defaults. A field the user left out keeps
-    /// its default, so nothing downstream has to decide what "unset" means.
-    fn resolve(patch: FlagsPatch) -> Self;
-}
-
-impl FlagsExt for Flags {
-    fn resolve(patch: FlagsPatch) -> Self {
-        // The values a network runs with when the user sets no flags at all.
-        #[allow(deprecated)]
-        let mut flags = Flags {
-            default_protocol: "tcp".to_string(),
-            dev_name: "".to_string(),
-            enable_encryption: true,
-            enable_ipv6: true,
-            mtu: 1380,
-            latency_first: false,
-            enable_exit_node: false,
-            proxy_forward_by_system: false,
-            no_tun: false,
-            use_smoltcp: false,
-            relay_network_whitelist: "*".to_string(),
-            disable_p2p: false,
-            p2p_only: false,
-            lazy_p2p: false,
-            relay_all_peer_rpc: false,
-            disable_tcp_hole_punching: false,
-            disable_udp_hole_punching: false,
-            multi_thread: true,
-            data_compress_algo: CompressionAlgoPb::None.into(),
-            bind_device: true,
-            enable_kcp_proxy: false,
-            disable_kcp_input: false,
-            disable_relay_kcp: false,
-            enable_relay_foreign_network_kcp: false,
-            accept_dns: false,
-            private_mode: false,
-            enable_quic_proxy: false,
-            disable_quic_input: false,
-            disable_relay_quic: false,
-            enable_relay_foreign_network_quic: false,
-            foreign_relay_bps_limit: u64::MAX,
-            multi_thread_count: 2,
-            encryption_algorithm: EncryptionAlgorithm::default().to_string(),
-            disable_sym_hole_punching: false,
-            tld_dns_zone: DEFAULT_ET_DNS_ZONE.to_string(),
-
-            quic_listen_port: u32::MAX,
-            need_p2p: false,
-            instance_recv_bps_limit: u64::MAX,
-            disable_upnp: false,
-            disable_relay_data: false,
-            prefer_peer_relay: false,
-            enable_udp_broadcast_relay: false,
-            socket_mark: None,
-        };
-        flags.load(patch);
-        flags
-    }
 }
 
 #[auto_impl::auto_impl(Box, &)]
@@ -1334,6 +1264,7 @@ source = "web"
 #[cfg(test)]
 mod compatibility_tests {
     use super::*;
+    use crate::proto::common::CompressionAlgoPb;
     use base64::{Engine as _, prelude::BASE64_STANDARD};
 
     #[test]

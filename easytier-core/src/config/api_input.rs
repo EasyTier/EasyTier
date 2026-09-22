@@ -4,6 +4,12 @@ use std::net::SocketAddr;
 
 use anyhow::Context;
 use easytier_proto::{api::manage, common::FlagsPatch};
+
+#[cfg(all(
+    feature = "browser-config",
+    any(test, all(target_arch = "wasm32", target_os = "unknown"))
+))]
+use easytier_proto::common::Flags;
 use optionize::{Optionizable, Optionized};
 
 use crate::config::{
@@ -135,47 +141,6 @@ const FORM_MANAGED_TOML_FIELDS: &[&str] = &[
     feature = "browser-config",
     any(test, all(target_arch = "wasm32", target_os = "unknown"))
 ))]
-const FORM_MANAGED_FLAG_FIELDS: &[&str] = &[
-    "latency_first",
-    "dev_name",
-    "use_smoltcp",
-    "enable_ipv6",
-    "enable_kcp_proxy",
-    "disable_kcp_input",
-    "enable_quic_proxy",
-    "disable_quic_input",
-    "disable_p2p",
-    "p2p_only",
-    "lazy_p2p",
-    "bind_device",
-    "socket_mark",
-    "no_tun",
-    "enable_exit_node",
-    "relay_all_peer_rpc",
-    "need_p2p",
-    "multi_thread",
-    "proxy_forward_by_system",
-    "enable_encryption",
-    "relay_network_whitelist",
-    "disable_tcp_hole_punching",
-    "disable_udp_hole_punching",
-    "disable_upnp",
-    "disable_relay_data",
-    "prefer_peer_relay",
-    "enable_udp_broadcast_relay",
-    "disable_sym_hole_punching",
-    "accept_dns",
-    "mtu",
-    "instance_recv_bps_limit",
-    "private_mode",
-    "encryption_algorithm",
-    "data_compress_algo",
-];
-
-#[cfg(all(
-    feature = "browser-config",
-    any(test, all(target_arch = "wasm32", target_os = "unknown"))
-))]
 pub(crate) fn merge_network_config_toml(
     original_toml: &str,
     config: &NetworkConfig,
@@ -203,7 +168,9 @@ pub(crate) fn merge_network_config_toml(
         .remove("flags")
         .and_then(|value| value.try_into().ok())
         .unwrap_or_default();
-    for key in FORM_MANAGED_FLAG_FIELDS {
+    // The keys a config form owns are the flags it offers a control for, which
+    // the schema declares with `(easytier.flag)`.
+    for key in Flags::form() {
         if let Some(value) = generated_flags.get(*key) {
             merged_flags.insert((*key).to_owned(), value.clone());
         } else {
@@ -696,6 +663,7 @@ mod tests {
     #![allow(deprecated)]
 
     use super::*;
+    use easytier_proto::common::Flags;
 
     fn api_portal_config() -> manage::VpnPortalConfig {
         manage::VpnPortalConfig {
@@ -713,6 +681,68 @@ mod tests {
         NetworkConfig {
             networking_method: Some(NetworkingMethod::Standalone as i32),
             ..Default::default()
+        }
+    }
+
+    /// The management API's name for a flag is the schema's to state, and the
+    /// projection is what actually names the fields. Turning the flag the
+    /// annotation names must turn the field it points at, in the direction the
+    /// annotation declares.
+    #[test]
+    fn declared_api_names_match_the_projection() {
+        use prost_reflect::{DescriptorPool, Value};
+
+        let pool = DescriptorPool::decode(easytier_proto::ALL_DESCRIPTOR_BYTES).unwrap();
+        let flags = pool.get_message_by_name("common.Flags").unwrap();
+        let extension = pool.get_extension_by_name("easytier.flag").unwrap();
+
+        // A patch states every field, so the values survive serialization:
+        // protobuf JSON omits a field holding its zero value.
+        let patch: FlagsPatch = Flags::defaults().downgrade();
+        let defaults = serde_json::to_value(&patch).unwrap();
+
+        for field in flags.fields() {
+            let name = field.name();
+            let options = field.options();
+            let annotation = options.get_extension(&extension).into_owned();
+            let Value::Message(meta) = annotation else {
+                panic!("{name}: the annotation is not a message");
+            };
+            if !meta.has_field_by_name("api") {
+                continue;
+            }
+            let Value::Message(spelling) = meta.get_field_by_name("api").unwrap().into_owned()
+            else {
+                panic!("{name}: the api spelling is not a message");
+            };
+            let api_field = match spelling.get_field_by_name("field").as_deref() {
+                Some(Value::String(api_field)) if !api_field.is_empty() => api_field.clone(),
+                _ => continue,
+            };
+            let negate = matches!(
+                spelling.get_field_by_name("negate").as_deref(),
+                Some(Value::Bool(true))
+            );
+
+            let declared = defaults[name]
+                .as_bool()
+                .unwrap_or_else(|| panic!("{name} is not a boolean flag"));
+
+            let mut flipped = defaults.clone();
+            flipped[name] = serde_json::json!(!declared);
+            let patch: FlagsPatch = serde_json::from_value(flipped).unwrap();
+
+            let mut projected = NetworkConfig::default();
+            set_network_flags(&mut projected, patch);
+
+            // Protobuf JSON omits a field holding its zero value.
+            let projected = serde_json::to_value(&projected).unwrap();
+            let value = projected[&api_field].as_bool().unwrap_or(false);
+            assert_eq!(
+                value,
+                if negate { declared } else { !declared },
+                "flipping {name} should leave {api_field} as the annotation declares"
+            );
         }
     }
 
