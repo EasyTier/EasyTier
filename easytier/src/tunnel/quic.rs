@@ -12,7 +12,7 @@ use easytier_core::{
     socket::udp::UdpSession,
     tunnel::{
         Tunnel, TunnelError,
-        framed::{FramedReader, FramedWriter},
+        framed::{FramedWriter, TunnelCodec},
         wrapper::TunnelWrapper,
     },
 };
@@ -29,9 +29,11 @@ use tokio::{
     },
     task::JoinSet,
 };
+use tokio_util::codec::FramedRead;
 use tokio_util::task::AbortOnDropHandle;
 
 mod session_socket;
+
 pub(crate) use session_socket::QuicUdpSessionSocket;
 
 // region config
@@ -436,17 +438,6 @@ pub(crate) async fn connect_with_etq1(
 
 const QUIC_ACCEPT_COMPLETION_TIMEOUT: Duration = Duration::from_secs(10);
 
-struct ConnWrapper {
-    conn: Connection,
-    _endpoint: Endpoint,
-}
-
-impl Drop for ConnWrapper {
-    fn drop(&mut self) {
-        self.conn.close(0u32.into(), b"done");
-    }
-}
-
 pub(crate) async fn upgrade_connected(
     connected: ConnectedUdpSession,
     remote_url: url::Url,
@@ -466,10 +457,6 @@ pub(crate) async fn upgrade_connected(
         .await
         .with_context(|| "open_bi failed")?;
     let resolved_remote_addr = connection.remote_address();
-    let connection = Arc::new(ConnWrapper {
-        conn: connection,
-        _endpoint: endpoint,
-    });
     let info = TunnelInfo {
         tunnel_type: "quic".to_owned(),
         local_addr: Some(super::build_url_from_socket_addr(&local_addr.to_string(), "quic").into()),
@@ -479,8 +466,8 @@ pub(crate) async fn upgrade_connected(
         ),
     };
     Ok(Box::new(TunnelWrapper::new(
-        FramedReader::new_with_associate_data(read, 4500, Some(Box::new(connection.clone()))),
-        FramedWriter::new_with_associate_data(write, Some(Box::new(connection))),
+        FramedRead::new(read, TunnelCodec::new(0)),
+        FramedWriter::new(write),
         Some(info),
     )))
 }
@@ -498,7 +485,7 @@ async fn finish_quic_session_tunnel(
 ) -> Result<Box<dyn Tunnel>, TunnelError> {
     let PendingQuicSessionTunnel {
         connecting,
-        endpoint,
+        endpoint: _endpoint,
         local_url,
         remote_addr,
         _handshake_permit,
@@ -512,10 +499,6 @@ async fn finish_quic_session_tunnel(
             .await
             .map_err(TunnelError::Timeout)?
             .with_context(|| "accept_bi failed")?;
-    let connection = Arc::new(ConnWrapper {
-        conn: connection,
-        _endpoint: endpoint,
-    });
     let remote_url = super::build_url_from_socket_addr(&remote_addr.to_string(), "quic");
     let info = TunnelInfo {
         tunnel_type: "quic".to_owned(),
@@ -524,8 +507,8 @@ async fn finish_quic_session_tunnel(
         resolved_remote_addr: Some(remote_url.into()),
     };
     Ok(Box::new(TunnelWrapper::new(
-        FramedReader::new_with_associate_data(read, 2000, Some(Box::new(connection.clone()))),
-        FramedWriter::new_with_associate_data(write, Some(Box::new(connection))),
+        FramedRead::new(read, TunnelCodec::new(0)),
+        FramedWriter::new(write),
         Some(info),
     )))
 }
@@ -764,7 +747,7 @@ mod tests {
             first_connection.close(0u32.into(), b"first connection done");
 
             let echo_task = tokio::spawn(_tunnel_echo_server(second_server, false));
-            let mut recv = FramedReader::new(second_read, 4500);
+            let mut recv = FramedRead::new(second_read, TunnelCodec::new(0));
             let ready = recv.next().await.unwrap().unwrap();
             assert_eq!(ready.payload(), b"second QUIC connection ready".as_slice());
             second_send
