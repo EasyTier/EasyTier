@@ -15,6 +15,9 @@ virtual_ipv4: Virtual IPv4
 virtual_ipv4_dhcp: DHCP
 network_name: Network Name
 network_secret: Network Secret
+credential: Credential
+credential_help: "Credential mode: paste the server-issued credential and leave the password empty (secure mode is enabled automatically; join by network name only)"
+credential_placeholder: Server-issued credential (e.g. sxs3K94/...)
 public_server_url: Public Server URL
 peer_urls: Peer URLs
 proxy_cidrs: Subnet Proxy CIDRs
