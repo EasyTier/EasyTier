@@ -24,6 +24,7 @@ protoc \
     -I "${proto_root}" \
     --go_out="${repository_root}" \
     --go_opt=module=github.com/easytier/easytier/easytier-go \
+    --go_opt=Mannotations.proto=github.com/easytier/easytier/easytier-go/proto/easytier \
     --go_opt=Mcommon.proto=github.com/easytier/easytier/easytier-go/proto/common \
     --go_opt=Merror.proto=github.com/easytier/easytier/easytier-go/proto/error \
     --go_opt=Macl.proto=github.com/easytier/easytier/easytier-go/proto/acl \
@@ -32,6 +33,7 @@ protoc \
     --go_opt=Mapi_config.proto=github.com/easytier/easytier/easytier-go/proto/api/config \
     --go_opt=Mapi_manage.proto=github.com/easytier/easytier/easytier-go/proto/api/manage \
     --go_opt=Mweb.proto=github.com/easytier/easytier/easytier-go/proto/web \
+    "${proto_root}/annotations.proto" \
     "${proto_root}/common.proto" \
     "${proto_root}/error.proto" \
     "${proto_root}/acl.proto" \
