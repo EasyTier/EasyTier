@@ -430,6 +430,8 @@ async fn run_accepted_task_runner(
     handler_tasks: Arc<Mutex<JoinSet<()>>>,
     cancel: CancellationToken,
 ) {
+    // Preserve the reaping deadline when new accepts win the select.
+    let mut reap_interval = crate::foundation::time::interval(Duration::from_secs(1));
     loop {
         tokio::select! {
             _ = cancel.cancelled() => break,
@@ -441,7 +443,7 @@ async fn run_accepted_task_runner(
                     None => break,
                 }
             }
-            _ = crate::foundation::time::sleep(Duration::from_secs(1)) => {
+            _ = reap_interval.tick() => {
                 let mut handler_tasks = handler_tasks.lock().await;
                 while let Some(task) = handler_tasks.try_join_next() {
                     if let Err(error) = task {
@@ -887,6 +889,40 @@ mod tests {
             std::future::pending::<()>().await;
             Ok(())
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn continuous_accepts_do_not_prevent_completed_handler_reaping() {
+        let (spawner, rx) = AcceptedTaskSpawner::new();
+        let handler_tasks = Arc::new(tokio::sync::Mutex::new(JoinSet::new()));
+        let cancel = CancellationToken::new();
+        let runner = tokio::spawn(run_accepted_task_runner(
+            rx,
+            handler_tasks.clone(),
+            cancel.clone(),
+        ));
+
+        // Keep accepting more frequently than the one-second reaping period.
+        // Waiting for completion ensures that retained entries are finished tasks.
+        for _ in 0..100 {
+            let (completed_tx, completed_rx) = tokio::sync::oneshot::channel();
+            spawner.spawn(async move {
+                completed_tx.send(()).unwrap();
+            });
+            completed_rx.await.unwrap();
+            tokio::time::advance(Duration::from_millis(100)).await;
+            tokio::task::yield_now().await;
+        }
+
+        let retained = handler_tasks.lock().await.len();
+        cancel.cancel();
+        runner.await.unwrap();
+
+        assert!(
+            retained <= 10,
+            "continuous accepts retained {retained} completed handlers"
+        );
+        assert!(handler_tasks.lock().await.is_empty());
     }
 
     #[tokio::test]

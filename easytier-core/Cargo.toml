@@ -153,7 +153,7 @@ tracing-log = ["tracing/log"]
 zstd = ["dep:zstd"]
 
 [target.'cfg(not(target_os = "wasi"))'.dev-dependencies]
-tokio = { workspace = true, features = ["rt-multi-thread"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
 
 [package.metadata.cargo-machete]
 ignored = [
