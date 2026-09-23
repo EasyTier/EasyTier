@@ -36,6 +36,45 @@ describe('vpn quick settings tile actions', () => {
     syncVpnService.mockClear()
   })
 
+  it('restores the whole stopped group across tile stop and start', async () => {
+    const running = ['first', 'last', 'headless']
+    const disabled: string[] = []
+    const { api, configs } = createApi(running, disabled, ['headless'])
+    let stoppedInstanceIds: string[] = []
+    const saveStoppedInstanceIds = (ids: string[]) => { stoppedInstanceIds = ids }
+    const result = await executeVpnTileAction('stop', api, { lastInstanceId: 'last', syncVpnService, saveStoppedInstanceIds })
+    expect(stoppedInstanceIds).toEqual(['first', 'last'])
+    disabled.push('first', 'last')
+    running.splice(0, 2)
+    await executeVpnTileAction('start', api, { lastInstanceId: result.instanceId, stoppedInstanceIds, syncVpnService, saveStoppedInstanceIds })
+    expect(api.run_network).toHaveBeenCalledWith(configs.get('first'), true)
+    expect(api.run_network).toHaveBeenCalledWith(configs.get('last'), true)
+    expect(api.run_network).toHaveBeenCalledTimes(2)
+    expect(stoppedInstanceIds).toEqual([])
+  })
+
+  it('skips removed and no_tun members when restoring the stopped group', async () => {
+    const { api, configs } = createApi(['running'], ['first', 'headless'], ['headless'])
+    await executeVpnTileAction('start', api, { stoppedInstanceIds: ['removed', 'headless', 'first', 'running', 'first'], syncVpnService })
+    expect(api.run_network).toHaveBeenCalledOnce()
+    expect(api.run_network).toHaveBeenCalledWith(configs.get('first'), true)
+  })
+
+  it.each(['removed', 'headless'])('does not start another network when the saved group only contains %s', async (stoppedId) => {
+    const { api } = createApi([], ['unrelated', 'headless'], ['headless'])
+    const saveStoppedInstanceIds = vi.fn()
+    const result = await executeVpnTileAction('start', api, {
+      lastInstanceId: 'unrelated',
+      stoppedInstanceIds: [stoppedId],
+      syncVpnService,
+      saveStoppedInstanceIds,
+    })
+    expect(api.run_network).not.toHaveBeenCalled()
+    expect(saveStoppedInstanceIds).toHaveBeenCalledWith([])
+    expect(syncVpnService).not.toHaveBeenCalled()
+    expect(result).toEqual({ action: 'start', changed: false })
+  })
+
   it('starts the last configured network and reconciles the Android VPN', async () => {
     const { api, configs } = createApi([], ['first', 'last'])
 
@@ -88,7 +127,7 @@ describe('vpn quick settings tile actions', () => {
     expect(result.changed).toBe(false)
   })
 
-  it('stops the last running network, falling back to the first running network', async () => {
+  it('stops all running TUN networks when the last network is disabled', async () => {
     const { api } = createApi(['first', 'second'], ['disabled'])
 
     const result = await executeVpnTileAction('stop', api, {
@@ -97,8 +136,25 @@ describe('vpn quick settings tile actions', () => {
     })
 
     expect(api.update_network_instance_state).toHaveBeenCalledWith('first', true)
+    expect(api.update_network_instance_state).toHaveBeenCalledWith('second', true)
+    expect(api.update_network_instance_state).toHaveBeenCalledTimes(2)
     expect(syncVpnService).toHaveBeenCalledOnce()
     expect(result).toEqual({ action: 'stop', instanceId: 'first', changed: true })
+  })
+
+  it('stops all running TUN networks while preserving no_tun networks', async () => {
+    const { api } = createApi(['headless', 'first', 'last'], ['disabled'], ['headless'])
+
+    const result = await executeVpnTileAction('stop', api, {
+      lastInstanceId: 'last',
+      syncVpnService,
+    })
+
+    expect(api.update_network_instance_state).toHaveBeenCalledWith('first', true)
+    expect(api.update_network_instance_state).toHaveBeenCalledWith('last', true)
+    expect(api.update_network_instance_state).toHaveBeenCalledTimes(2)
+    expect(syncVpnService).toHaveBeenCalledOnce()
+    expect(result).toEqual({ action: 'stop', instanceId: 'last', changed: true })
   })
 
   it('does not select a running no_tun network for stop', async () => {
