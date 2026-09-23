@@ -3,11 +3,42 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
-use easytier_core::host::packet::HostPacketReceiver;
+use easytier_core::{host::packet::HostPacketReceiver, instance::CorePacketPlane};
 use tokio::{sync::Mutex, task::JoinSet};
 
 use super::MagicDnsRuntime;
-use crate::instance::virtual_nic::NicCtx;
+use crate::{
+    common::{error::Error, global_ctx::ArcGlobalCtx},
+    instance::{shared_virtual_nic::ArcSharedVirtualNicRegistry, virtual_nic::NicCtx},
+};
+
+pub(super) async fn create_nic_ctx(
+    global_ctx: ArcGlobalCtx,
+    packet_plane: Arc<CorePacketPlane>,
+    receiver: Arc<Mutex<HostPacketReceiver>>,
+    close_notifier: Arc<tokio::sync::Notify>,
+    registry: ArcSharedVirtualNicRegistry,
+) -> Result<NicCtx, Error> {
+    if global_ctx.get_flags().dev_name.is_empty() {
+        return Ok(NicCtx::new(
+            global_ctx,
+            packet_plane,
+            receiver,
+            close_notifier,
+        ));
+    }
+
+    let member_id = global_ctx.get_id();
+    NicCtx::new_shared(
+        global_ctx,
+        packet_plane,
+        receiver,
+        close_notifier,
+        registry,
+        member_id,
+    )
+    .await
+}
 
 struct NicCtxContainer {
     _nic_ctx: Option<Box<dyn Any + Send>>,

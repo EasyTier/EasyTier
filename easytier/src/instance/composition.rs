@@ -32,6 +32,8 @@ use crate::{
 };
 
 use super::host::{NativeInstanceHost, native_instance_host};
+#[cfg(feature = "tun")]
+use super::shared_virtual_nic::ArcSharedVirtualNicRegistry;
 #[cfg(feature = "kcp")]
 use crate::gateway::kcp_proxy::KcpProxyService;
 #[cfg(feature = "quic")]
@@ -45,6 +47,7 @@ pub(crate) type NativeCoreInstance = CoreInstance<NativeInstanceHost>;
 pub(crate) fn compose_native_core_instance(
     toml_config: TomlConfig,
     process_runtime: Arc<CoreProcessRuntime>,
+    #[cfg(feature = "tun")] shared_virtual_nic_registry: ArcSharedVirtualNicRegistry,
     compact_runtime: bool,
 ) -> anyhow::Result<Arc<NativeCoreInstance>> {
     let host_config = if compact_runtime {
@@ -58,7 +61,11 @@ pub(crate) fn compose_native_core_instance(
         &normalized,
         &host_config,
     ));
-    let runtime_host = NativeInstanceRuntimeHost::new(global_ctx.clone());
+    let runtime_host = NativeInstanceRuntimeHost::new(
+        global_ctx.clone(),
+        #[cfg(feature = "tun")]
+        shared_virtual_nic_registry,
+    );
     let mut adapters = runtime_core_host_adapters_with_packet_egress_and_config(
         global_ctx.clone(),
         process_runtime,

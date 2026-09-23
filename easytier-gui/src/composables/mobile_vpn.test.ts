@@ -58,13 +58,15 @@ vi.mock('./backend', () => ({
   setTunFd: mocks.setTunFd,
 }))
 
-function setConfig(instanceId: string, noTun = false) {
+function setConfig(instanceId: string, noTun = false, devName?: string) {
   mocks.configs.set(instanceId, {
     no_tun: noTun,
+    dev_name: devName,
     dhcp: false,
     enable_magic_dns: false,
     routes: [],
   })
+  mocks.listNetworkInstanceIds.mockResolvedValue({ running_inst_ids: [...mocks.configs.keys()] })
 }
 
 function setReady(instanceId: string, ipv4: string) {
@@ -107,6 +109,76 @@ beforeEach(() => {
 })
 
 describe('mobile VPN reconciliation ownership', () => {
+  it('keeps attached shared members during a temporary status gap', async () => {
+    setConfig('A', false, 'shared0')
+    setConfig('B', false, 'shared0')
+    setReady('A', '10.0.0.1')
+    setReady('B', '10.0.1.1')
+    const vpn = await loadVpnModule()
+    await vpn.onNetworkInstanceChange('A')
+    mocks.startVpn.mockClear()
+
+    mocks.networkInfo.delete('B')
+    await vpn.onNetworkInstanceUpdate('B')
+    expect(mocks.stopVpn).not.toHaveBeenCalled()
+    expect(mocks.startVpn).not.toHaveBeenCalled()
+
+    setReady('B', '10.0.1.2')
+    await vpn.onNetworkInstanceUpdate('B')
+    expect(mocks.stopVpn).toHaveBeenCalledTimes(1)
+    expect(mocks.startVpn).toHaveBeenLastCalledWith(expect.objectContaining({
+      ipv4Addrs: ['10.0.0.1/24', '10.0.1.2/24'],
+    }))
+  })
+
+  it('keeps a ready member active while a new shared member awaits an IP', async () => {
+    setConfig('A', false, 'shared0')
+    setReady('A', '10.0.0.1')
+    const vpn = await loadVpnModule()
+    await vpn.onNetworkInstanceChange('A')
+
+    setConfig('B', false, 'shared0')
+    await vpn.onNetworkInstanceChange('B')
+    expect(mocks.stopVpn).not.toHaveBeenCalled()
+    expect(mocks.startVpn).toHaveBeenCalledTimes(1)
+
+    setReady('B', '10.0.1.1')
+    await vpn.onNetworkInstanceUpdate('B')
+    expect(mocks.stopVpn).toHaveBeenCalledTimes(1)
+    expect(mocks.startVpn).toHaveBeenLastCalledWith(expect.objectContaining({
+      ipv4Addrs: ['10.0.0.1/24', '10.0.1.1/24'],
+    }))
+  })
+
+  it('keeps the shared group attached when one member stops', async () => {
+    setConfig('A', false, 'shared0')
+    setConfig('B', false, 'shared0')
+    setConfig('C')
+    setReady('A', '10.0.0.1')
+    setReady('B', '10.0.1.1')
+    const vpn = await loadVpnModule()
+
+    await vpn.onNetworkInstanceChange('A')
+    expect(mocks.startVpn).toHaveBeenCalledWith(expect.objectContaining({
+      ipv4Addrs: ['10.0.0.1/24', '10.0.1.1/24'],
+    }))
+    expect(mocks.setTunFd).toHaveBeenCalledWith(1, ['A', 'B'], expect.arrayContaining([
+      expect.objectContaining({ instanceId: 'A' }),
+      expect.objectContaining({ instanceId: 'B' }),
+    ]))
+
+    mocks.startVpn.mockClear()
+    mocks.stopVpn.mockClear()
+    mocks.listNetworkInstanceIds.mockResolvedValue({ running_inst_ids: ['C', 'B'] })
+    await vpn.onNetworkInstanceChange('A')
+
+    expect(mocks.stopVpn).toHaveBeenCalledTimes(1)
+    expect(mocks.startVpn).toHaveBeenCalledWith(expect.objectContaining({
+      ipv4Addrs: ['10.0.1.1/24'],
+    }))
+    expect(mocks.setTunFd).toHaveBeenLastCalledWith(1, ['B'], [expect.objectContaining({ instanceId: 'B' })])
+  })
+
   it('stops A before retrying an unavailable B, then starts B when it becomes ready', async () => {
     setConfig('A')
     setConfig('B')
