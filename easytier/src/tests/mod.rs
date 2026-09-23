@@ -4,6 +4,9 @@ mod three_node;
 #[cfg(target_os = "linux")]
 mod network;
 
+#[cfg(all(target_os = "linux", feature = "tun"))]
+mod shared_virtual_nic;
+
 mod ipv6_test;
 
 #[cfg(target_os = "linux")]
