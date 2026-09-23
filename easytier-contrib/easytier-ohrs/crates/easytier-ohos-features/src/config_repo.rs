@@ -171,9 +171,10 @@ pub fn save_config_record(
     tx.commit().ok()?;
 
     if let Some(legacy_path) = legacy_config_file_path(&config_id)
-        && legacy_path.exists() {
-            let _ = std::fs::remove_file(legacy_path);
-        }
+        && legacy_path.exists()
+    {
+        let _ = std::fs::remove_file(legacy_path);
+    }
 
     Some(StoredConfigRecord {
         meta,
@@ -286,9 +287,10 @@ pub fn delete_config_record(config_id: &str) -> bool {
         return false;
     }
     if let Some(path) = legacy_config_file_path(config_id)
-        && path.exists() {
-            let _ = std::fs::remove_file(path);
-        }
+        && path.exists()
+    {
+        let _ = std::fs::remove_file(path);
+    }
 
     let conn = match open_db() {
         Some(conn) => conn,

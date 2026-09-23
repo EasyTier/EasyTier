@@ -30,7 +30,6 @@ struct LogOptions {
     debug_log: bool,
 }
 
-
 #[derive(Default)]
 struct LogManagerState {
     log_dir: Option<PathBuf>,

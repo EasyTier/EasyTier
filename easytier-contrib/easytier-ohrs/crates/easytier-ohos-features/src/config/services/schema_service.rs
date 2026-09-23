@@ -230,9 +230,10 @@ fn build_map_entry_node(message_desc: &MessageDescriptor) -> NetworkConfigSchema
 
 fn field_children(field: &FieldDescriptor) -> Vec<NetworkConfigSchema> {
     if field.is_map()
-        && let Kind::Message(message_desc) = field.kind() {
-            return vec![build_map_entry_node(&message_desc)];
-        }
+        && let Kind::Message(message_desc) = field.kind()
+    {
+        return vec![build_map_entry_node(&message_desc)];
+    }
 
     match field.kind() {
         Kind::Message(message_desc) => build_message_children(&message_desc),
