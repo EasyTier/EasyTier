@@ -1,4 +1,5 @@
 import type { NetworkTypes } from 'easytier-frontend-lib'
+import type { TunFdInstanceSources } from './backend'
 import { addPluginListener } from '@tauri-apps/api/core'
 import { Utils } from 'easytier-frontend-lib'
 import {
@@ -16,9 +17,12 @@ type Route = NetworkTypes.Route
 interface vpnStatus {
   running: boolean
   ipv4Addr: string | null | undefined
+  ipv4Addrs: string[]
   ipv4Cidr: number | null | undefined
   routes: string[]
   dns: string | null | undefined
+  instanceIds: string[]
+  instanceSources: TunFdInstanceSources[]
 }
 
 let vpnReconcileTimer: ReturnType<typeof setTimeout> | null = null
@@ -37,9 +41,12 @@ let vpnTileActionQueue: Promise<void> = Promise.resolve()
 const curVpnStatus: vpnStatus = {
   running: false,
   ipv4Addr: undefined,
+  ipv4Addrs: [],
   ipv4Cidr: undefined,
   routes: [],
   dns: undefined,
+  instanceIds: [],
+  instanceSources: [],
 }
 
 export function setMobileVpnTileActionHandler(
@@ -154,9 +161,12 @@ function scheduleVpnReconcile(instanceId: string, generation: number, reason: st
 
 function resetVpnConfigStatus() {
   curVpnStatus.ipv4Addr = undefined
+  curVpnStatus.ipv4Addrs = []
   curVpnStatus.ipv4Cidr = undefined
   curVpnStatus.routes = []
   curVpnStatus.dns = undefined
+  curVpnStatus.instanceIds = []
+  curVpnStatus.instanceSources = []
 }
 
 function syncVpnStatusFromNative(status: Awaited<ReturnType<typeof get_vpn_status>>) {
@@ -167,7 +177,13 @@ function syncVpnStatusFromNative(status: Awaited<ReturnType<typeof get_vpn_statu
     return
   }
 
-  const ipv4WithCidr = status?.ipv4Addr
+  const ipv4Addrs = status?.ipv4Addrs?.length
+    ? [...status.ipv4Addrs]
+    : status?.ipv4Addr
+      ? [status.ipv4Addr]
+      : []
+  curVpnStatus.ipv4Addrs = ipv4Addrs
+  const ipv4WithCidr = ipv4Addrs[0]
   if (ipv4WithCidr?.length) {
     const [ipv4Addr, cidr] = ipv4WithCidr.split('/')
     curVpnStatus.ipv4Addr = ipv4Addr
@@ -194,12 +210,24 @@ async function waitVpnStatus(target_status: boolean, timeout_sec: number) {
   }
 }
 
+async function detachTunFd(instanceIds: string[], instanceSources: TunFdInstanceSources[]) {
+  try {
+    await setTunFd(0, instanceIds, instanceSources)
+  }
+  catch (e) {
+    console.error('detach tun fd failed', e)
+  }
+}
+
 async function doStopVpn(force = false) {
   const wasRunning = curVpnStatus.running
   if (!force && !wasRunning) {
     activeVpnInstanceId = undefined
     return
   }
+  const instanceIds = [...curVpnStatus.instanceIds]
+  const instanceSources = [...curVpnStatus.instanceSources]
+  await detachTunFd(instanceIds, instanceSources)
   console.log('stop vpn')
   const stop_ret = await stop_vpn()
   console.log('stop vpn', JSON.stringify((stop_ret)))
@@ -211,14 +239,24 @@ async function doStopVpn(force = false) {
   resetVpnConfigStatus()
 }
 
-async function doStartVpn(instanceId: string, ipv4Addr: string, cidr: number, routes: string[], dns?: string) {
+async function doStartVpn(
+  ipv4Addrs: string[],
+  routes: string[],
+  dns: string | undefined,
+  instanceIds: string[],
+  instanceSources: TunFdInstanceSources[],
+) {
   if (curVpnStatus.running) {
     return
   }
 
-  console.log('start vpn service', ipv4Addr, cidr, routes, dns)
+  const [ipv4Addr, cidr] = ipv4Addrs[0].split('/')
+  curVpnStatus.instanceIds = [...instanceIds]
+  curVpnStatus.instanceSources = [...instanceSources]
+  console.log('start vpn service', ipv4Addrs, routes, dns, instanceIds)
   const request = {
-    ipv4Addr: `${ipv4Addr}/${cidr}`,
+    ipv4Addr: ipv4Addrs[0],
+    ipv4Addrs,
     routes,
     dns,
     disallowedApplications: ['com.kkrainbow.easytier'],
@@ -242,24 +280,29 @@ async function doStartVpn(instanceId: string, ipv4Addr: string, cidr: number, ro
   await waitVpnStatus(true, 3)
 
   curVpnStatus.ipv4Addr = ipv4Addr
-  curVpnStatus.ipv4Cidr = cidr
+  curVpnStatus.ipv4Addrs = [...ipv4Addrs]
+  curVpnStatus.ipv4Cidr = Number(cidr)
   curVpnStatus.routes = routes
   curVpnStatus.dns = dns
-  activeVpnInstanceId = instanceId
+  activeVpnInstanceId = instanceIds[0]
 }
 
 async function onVpnServiceStart(payload: any) {
   console.log('vpn service start', JSON.stringify(payload))
   curVpnStatus.running = true
   if (payload.fd) {
-    await setTunFd(payload.fd).catch((e) => {
+    await setTunFd(payload.fd, curVpnStatus.instanceIds, curVpnStatus.instanceSources).catch(async (e) => {
       console.error('set tun fd failed', e)
+      await doStopVpn(true).catch(stopError => console.error('stop vpn after tun attach failure', stopError))
     })
   }
 }
 
 async function onVpnServiceStop(payload: any) {
   console.log('vpn service stop', JSON.stringify(payload))
+  const instanceIds = [...curVpnStatus.instanceIds]
+  const instanceSources = [...curVpnStatus.instanceSources]
+  await detachTunFd(instanceIds, instanceSources)
   curVpnStatus.running = false
   activeVpnInstanceId = undefined
   resetVpnConfigStatus()
@@ -313,13 +356,98 @@ function getRoutesForVpn(routes: Route[] | undefined, node_config: NetworkTypes.
   return Array.from(new Set(ret)).sort()
 }
 
+function ipv4CidrToRoute(cidr: string): string | undefined {
+  const [address, prefixText] = cidr.split('/')
+  const prefix = Number(prefixText)
+  const octets = address?.split('.').map(octet => Number(octet))
+
+  if (
+    octets?.length !== 4
+    || !Number.isInteger(prefix)
+    || prefix < 0
+    || prefix > 32
+    || octets.some((octet) => {
+      return !Number.isInteger(octet) || octet < 0 || octet > 255
+    })
+  ) {
+    return undefined
+  }
+
+  const ip = (
+    octets[0] * 0x1000000
+    + octets[1] * 0x10000
+    + octets[2] * 0x100
+    + octets[3]
+  ) >>> 0
+  const mask = prefix === 0 ? 0 : (0xFFFFFFFF << (32 - prefix)) >>> 0
+  const network = (ip & mask) >>> 0
+  const route = [
+    (network >>> 24) & 0xFF,
+    (network >>> 16) & 0xFF,
+    (network >>> 8) & 0xFF,
+    network & 0xFF,
+  ].join('.')
+
+  return `${route}/${prefix}`
+}
+
+function getCollectedNetworkInfo(response: Awaited<ReturnType<typeof collectNetworkInfo>>, instanceId: string) {
+  const info = response.info as any
+  const map = info?.map ?? info
+  return map?.[instanceId]
+}
+
+function sortInstanceSources(sources: TunFdInstanceSources[]): TunFdInstanceSources[] {
+  return sources
+    .map(source => ({
+      instanceId: source.instanceId,
+      ipv4Addrs: [...source.ipv4Addrs].sort(),
+      ipv6Addrs: [...(source.ipv6Addrs ?? [])].sort(),
+      ipv4Routes: [...(source.ipv4Routes ?? [])].sort(),
+      ipv6Routes: [...(source.ipv6Routes ?? [])].sort(),
+    }))
+    .sort((a, b) => a.instanceId.localeCompare(b.instanceId))
+}
+
+function splitRoutesByFamily(routes: string[]) {
+  const ipv4Routes: string[] = []
+  const ipv6Routes: string[] = []
+  routes.forEach((route) => {
+    if (route.includes(':')) {
+      ipv6Routes.push(route)
+    }
+    else {
+      ipv4Routes.push(route)
+    }
+  })
+  return { ipv4Routes, ipv6Routes }
+}
+
 async function stopVpnOwnedByOtherInstance(instanceId: string, generation: number) {
   if (!isCurrentVpnReconcile(instanceId, generation))
     return false
 
   if (curVpnStatus.running && activeVpnInstanceId !== instanceId) {
-    console.warn('vpn service owner changed', activeVpnInstanceId, instanceId)
-    await doStopVpn()
+    let sameSharedDevice = curVpnStatus.instanceIds.includes(instanceId)
+    if (!sameSharedDevice && activeVpnInstanceId) {
+      try {
+        const [activeConfig, nextConfig] = await Promise.all([
+          getConfig(activeVpnInstanceId),
+          getConfig(instanceId),
+        ])
+        sameSharedDevice = !!nextConfig.dev_name?.length
+          && nextConfig.dev_name === activeConfig.dev_name
+      }
+      catch (error) {
+        console.warn('vpn service owner config unavailable', error)
+      }
+    }
+    if (!isCurrentVpnReconcile(instanceId, generation))
+      return false
+    if (!sameSharedDevice) {
+      console.warn('vpn service owner changed', activeVpnInstanceId, instanceId)
+      await doStopVpn()
+    }
   }
 
   return isCurrentVpnReconcile(instanceId, generation)
@@ -331,118 +459,161 @@ async function reconcileNetworkInstance(instanceId: string, generation: number) 
 
   clearVpnReconcileTimer()
 
-  if (!instanceId) {
-    console.warn('vpn service skipped because instance id is empty')
-    if (curVpnStatus.running) {
-      await doStopVpn()
-    }
+  let group: Awaited<ReturnType<typeof findRunningTunInstanceGroup>>
+  try {
+    group = await findRunningTunInstanceGroup(instanceId || undefined)
+  }
+  catch (error) {
+    console.warn('vpn service instance group query failed', instanceId, error)
+    scheduleVpnReconcile(instanceId, generation, 'instance_group_unavailable')
     return
   }
-  const config = await getConfig(instanceId)
+
   if (!isCurrentVpnReconcile(instanceId, generation))
     return
 
-  console.log('vpn service loaded config', instanceId, JSON.stringify({
-    no_tun: config.no_tun,
-    dhcp: config.dhcp,
-    enable_magic_dns: config.enable_magic_dns,
-  }))
-  if (config.no_tun) {
-    console.log('vpn service skipped because no_tun is enabled', instanceId)
-    if (activeVpnInstanceId === instanceId) {
+  if (!group.length) {
+    if (curVpnStatus.running)
       await doStopVpn()
-    }
     return
   }
 
   if (!await stopVpnOwnedByOtherInstance(instanceId, generation))
     return
 
-  let curNetworkInfo
-  try {
-    curNetworkInfo = (await collectNetworkInfo(instanceId))?.info?.map?.[instanceId]
+  const ipv4Addrs: string[] = []
+  const instanceSources: TunFdInstanceSources[] = []
+  const routes = new Set<string>()
+  let dns: string | undefined
+  let retryReason: string | undefined
+  const retainCurrentSource = (memberId: string, enableMagicDns?: boolean) => {
+    const source = curVpnStatus.running
+      ? curVpnStatus.instanceSources.find(source => source.instanceId === memberId)
+      : undefined
+    if (!source)
+      return
+
+    ipv4Addrs.push(...source.ipv4Addrs)
+    for (const route of [...(source.ipv4Routes ?? []), ...(source.ipv6Routes ?? [])])
+      routes.add(route)
+    instanceSources.push(source)
+    if (enableMagicDns)
+      dns = '100.100.100.101'
   }
-  catch (e) {
-    console.warn('vpn service network info query failed', instanceId, e)
-    scheduleVpnReconcile(instanceId, generation, 'network_info_query_failed')
-    return
+
+  for (const { instanceId: memberId, config } of group) {
+    let curNetworkInfo
+    try {
+      curNetworkInfo = getCollectedNetworkInfo(await collectNetworkInfo(memberId), memberId)
+    }
+    catch (error) {
+      console.warn('vpn service network info query failed', memberId, error)
+      retryReason ??= 'network_info_query_failed'
+      retainCurrentSource(memberId, config.enable_magic_dns)
+      continue
+    }
+
+    if (!isCurrentVpnReconcile(instanceId, generation))
+      return
+
+    if (!curNetworkInfo) {
+      console.warn('vpn service network info unavailable', memberId, curNetworkInfo?.error_msg)
+      retryReason ??= 'network_info_unavailable'
+      retainCurrentSource(memberId, config.enable_magic_dns)
+      continue
+    }
+
+    if (curNetworkInfo.error_msg?.length) {
+      console.warn('vpn service network failed', memberId, curNetworkInfo.error_msg)
+      retryReason ??= 'network_failed'
+      continue
+    }
+
+    const virtualIpv4 = curNetworkInfo.my_node_info?.virtual_ipv4
+    const virtualIp = virtualIpv4?.address?.addr ? Utils.ipv4ToString(virtualIpv4.address) : undefined
+    if (!virtualIp) {
+      retryReason ??= config.dhcp ? 'dhcp_ipv4_unavailable' : 'static_ipv4_unavailable'
+      retainCurrentSource(memberId, config.enable_magic_dns)
+      continue
+    }
+
+    const networkLength = virtualIpv4?.network_length || 24
+    const sourceIpv4 = virtualIp + '/' + networkLength
+    ipv4Addrs.push(sourceIpv4)
+    const instanceRoutes = new Set<string>()
+    const localRoute = ipv4CidrToRoute(sourceIpv4)
+    if (localRoute) {
+      routes.add(localRoute)
+      instanceRoutes.add(localRoute)
+    }
+    getRoutesForVpn(curNetworkInfo.routes, config).forEach((route) => {
+      routes.add(route)
+      instanceRoutes.add(route)
+    })
+    const { ipv4Routes, ipv6Routes } = splitRoutesByFamily([...instanceRoutes])
+    instanceSources.push({
+      instanceId: memberId,
+      ipv4Addrs: [sourceIpv4],
+      ipv6Addrs: [],
+      ipv4Routes,
+      ipv6Routes,
+    })
+    if (config.enable_magic_dns)
+      dns = '100.100.100.101'
   }
 
   if (!isCurrentVpnReconcile(instanceId, generation))
     return
 
-  if (!curNetworkInfo) {
-    scheduleVpnReconcile(instanceId, generation, 'network_info_unavailable')
+  if (!ipv4Addrs.length) {
+    if (retryReason)
+      scheduleVpnReconcile(instanceId, generation, retryReason)
+    const selectedIds = group.map(({ instanceId }) => instanceId).sort()
+    const activeIds = curVpnStatus.instanceIds
+    if (curVpnStatus.running && (!activeIds.length || activeIds.some(id => !selectedIds.includes(id))))
+      await doStopVpn()
     return
   }
 
-  if (curNetworkInfo.error_msg?.length) {
-    console.warn('vpn service skipped because network instance failed', instanceId, curNetworkInfo.error_msg)
+  if (retryReason)
+    scheduleVpnReconcile(instanceId, generation, retryReason)
+  else
     vpnReconcileAttempts = 0
-    await doStopVpn()
-    return
-  }
+  const sortedIpv4Addrs = [...ipv4Addrs].sort()
+  const sortedRoutes = [...routes].sort()
+  const sortedInstanceIds = instanceSources.map(({ instanceId }) => instanceId).sort()
+  const sortedInstanceSources = sortInstanceSources(instanceSources)
+  const configChanged
+    = JSON.stringify(sortedIpv4Addrs) !== JSON.stringify(curVpnStatus.ipv4Addrs)
+      || JSON.stringify(sortedRoutes) !== JSON.stringify(curVpnStatus.routes)
+      || dns !== curVpnStatus.dns
+      || JSON.stringify(sortedInstanceIds) !== JSON.stringify(curVpnStatus.instanceIds)
+      || JSON.stringify(sortedInstanceSources) !== JSON.stringify(sortInstanceSources(curVpnStatus.instanceSources))
 
-  const virtualIpv4 = curNetworkInfo.my_node_info?.virtual_ipv4
-  const virtual_ip = virtualIpv4?.address?.addr ? Utils.ipv4ToString(virtualIpv4.address) : undefined
-
-  if (!virtual_ip || !virtual_ip.length) {
-    scheduleVpnReconcile(
-      instanceId,
-      generation,
-      config.dhcp ? 'dhcp_ipv4_unavailable' : 'static_ipv4_unavailable',
-    )
-    return
-  }
-
-  vpnReconcileAttempts = 0
-
-  let network_length = virtualIpv4?.network_length
-  if (!network_length) {
-    network_length = 24
-  }
-
-  const routes = getRoutesForVpn(curNetworkInfo?.routes, config)
-
-  const dns = config.enable_magic_dns ? '100.100.100.101' : undefined
-
-  const ipChanged = virtual_ip !== curVpnStatus.ipv4Addr
-  const cidrChanged = network_length !== curVpnStatus.ipv4Cidr
-  const routesChanged = JSON.stringify(routes) !== JSON.stringify(curVpnStatus.routes)
-  const dnsChanged = dns != curVpnStatus.dns
-  const configChanged = ipChanged || cidrChanged || routesChanged || dnsChanged
-  const shouldStartVpn = !curVpnStatus.running
-
-  if (shouldStartVpn || configChanged) {
-    console.info('vpn service virtual ip changed', JSON.stringify(curVpnStatus), virtual_ip)
+  if (!curVpnStatus.running || configChanged) {
     if (curVpnStatus.running) {
       try {
         await doStopVpn()
       }
-      catch (e) {
-        console.error(e)
+      catch (error) {
+        console.error('stop vpn service failed', error)
       }
     }
+
+    if (!isCurrentVpnReconcile(instanceId, generation))
+      return
 
     try {
-      if (!isCurrentVpnReconcile(instanceId, generation))
-        return
-
-      await doStartVpn(instanceId, virtual_ip, network_length, routes, dns)
-      if (!isCurrentVpnReconcile(instanceId, generation) && activeVpnInstanceId === instanceId) {
+      await doStartVpn(sortedIpv4Addrs, sortedRoutes, dns, sortedInstanceIds, sortedInstanceSources)
+      if (!isCurrentVpnReconcile(instanceId, generation) && activeVpnInstanceId === sortedInstanceIds[0])
         await doStopVpn()
-      }
     }
-    catch (e) {
-      if (e instanceof Error && e.message === 'need_prepare') {
-        console.info('vpn permission is required before starting the Android VPN service')
-        return
-      }
-      if (e instanceof Error && e.message === 'vpn_permission_denied') {
+    catch (error) {
+      if (error instanceof Error && error.message === 'vpn_permission_denied') {
         console.info('vpn permission request was denied or dismissed')
         return
       }
-      console.error('start vpn service failed', e)
+      console.error('start vpn service failed', error)
     }
   }
 }
@@ -465,36 +636,27 @@ function enqueueVpnReconcile(instanceId: string, generation: number) {
 
 export async function onNetworkInstanceChange(instanceId: string) {
   const generation = beginVpnReconcile(instanceId || undefined)
-
-  if (instanceId && await isNoTunEnabled(instanceId)) {
-    if (vpnReconcileGeneration !== generation)
-      return
-
-    if (activeVpnInstanceId === instanceId) {
-      desiredVpnInstanceId = undefined
-      await enqueueVpnReconcile('', generation)
-      return
-    }
-
-    desiredVpnInstanceId = activeVpnInstanceId
-    if (activeVpnInstanceId) {
-      await enqueueVpnReconcile(activeVpnInstanceId, generation)
-    }
-    return
-  }
+  const group = await findRunningTunInstanceGroup(instanceId || undefined)
 
   if (vpnReconcileGeneration !== generation)
     return
 
-  await enqueueVpnReconcile(instanceId, generation)
+  const selectedId = group[0]?.instanceId
+  desiredVpnInstanceId = selectedId
+  await enqueueVpnReconcile(selectedId || '', generation)
 }
 
 export async function onNetworkInstanceUpdate(instanceId: string) {
-  if (!instanceId || instanceId !== desiredVpnInstanceId)
+  if (!instanceId)
     return
 
-  const generation = beginVpnReconcile(instanceId)
-  await enqueueVpnReconcile(instanceId, generation)
+  if (instanceId !== desiredVpnInstanceId && !curVpnStatus.instanceIds.includes(instanceId)) {
+    const group = await findRunningTunInstanceGroup(desiredVpnInstanceId)
+    if (!group.some(inst => inst.instanceId === instanceId))
+      return
+  }
+
+  await onNetworkInstanceChange(desiredVpnInstanceId || instanceId)
 }
 
 async function isNoTunEnabled(instanceId: string | undefined) {
@@ -518,6 +680,31 @@ async function findRunningTunInstanceId() {
   }
 
   return undefined
+}
+
+async function findRunningTunInstanceGroup(preferredInstanceId?: string) {
+  const instanceIds = await listNetworkInstanceIds()
+  const runningIds = (instanceIds.running_inst_ids ?? []).map(Utils.UuidToStr)
+  const runningTunInstances = []
+
+  for (const instanceId of runningIds) {
+    const config = await getConfig(instanceId)
+    if (config.no_tun)
+      continue
+    runningTunInstances.push({ instanceId, config })
+  }
+
+  const selected = runningTunInstances.find(inst => inst.instanceId === preferredInstanceId)
+    ?? runningTunInstances.find(inst => curVpnStatus.instanceIds.includes(inst.instanceId))
+    ?? runningTunInstances[0]
+  if (!selected)
+    return []
+
+  const devName = selected.config.dev_name
+  if (!devName?.length)
+    return [selected]
+
+  return runningTunInstances.filter(inst => inst.config.dev_name === devName)
 }
 
 export async function initMobileVpnService() {

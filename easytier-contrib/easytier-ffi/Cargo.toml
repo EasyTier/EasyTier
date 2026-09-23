@@ -13,6 +13,7 @@ ffi-dataplane = [
     "easytier/ffi-dataplane",
     "easytier-core/proxy-smoltcp-stack",
 ]
+macos-ne = ["easytier/macos-ne"]
 
 [dependencies]
 easytier = { workspace = true, default-features = true, features = ["tracing-log"] }
