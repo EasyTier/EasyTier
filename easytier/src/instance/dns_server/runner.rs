@@ -5,7 +5,15 @@ use std::{net::Ipv4Addr, sync::Arc, time::Duration};
 
 use easytier_core::instance::CorePacketPlane;
 
-use crate::common::global_ctx::ArcGlobalCtx;
+use crate::{
+    common::{
+        error::Error as EtError,
+        global_ctx::ArcGlobalCtx,
+        ifcfg::{IfConfiger, IfConfiguerTrait},
+        netns::NetNS,
+    },
+    instance::virtual_nic::NicBackend,
+};
 
 use super::{client_instance::MagicDnsClientInstance, server_instance::MagicDnsServerInstance};
 
@@ -17,6 +25,52 @@ pub struct DnsRunner {
     tun_dev: Option<String>,
     tun_inet: Ipv4Inet,
     fake_ip: Ipv4Addr,
+    shared_route_backend: Option<NicBackend>,
+}
+
+#[derive(Clone)]
+struct MagicDnsFakeIpRouteClaim {
+    tun_dev: Option<String>,
+    net_ns: NetNS,
+    fake_ip: Ipv4Addr,
+    route_backend: NicBackend,
+}
+
+impl MagicDnsFakeIpRouteClaim {
+    async fn add(&self) -> anyhow::Result<()> {
+        let cost = if cfg!(target_os = "windows") {
+            Some(4)
+        } else {
+            None
+        };
+
+        match self
+            .route_backend
+            .add_route_with_cost(self.fake_ip, 32, cost)
+            .await
+        {
+            Err(EtError::IOError(err))
+                if err.kind() == std::io::ErrorKind::AlreadyExists && self.tun_dev.is_some() =>
+            {
+                let ifcfg = IfConfiger::default();
+                let _guard = self.net_ns.guard();
+                ifcfg
+                    .remove_ipv4_route(self.tun_dev.as_deref().unwrap(), self.fake_ip, 32)
+                    .await?;
+                self.route_backend
+                    .add_route_with_cost(self.fake_ip, 32, cost)
+                    .await?;
+                Ok(())
+            }
+            result => result.map_err(Into::into),
+        }
+    }
+
+    async fn remove(&self) {
+        if let Err(err) = self.route_backend.remove_route(self.fake_ip, 32).await {
+            tracing::warn!(?err, fake_ip = ?self.fake_ip, "remove magic dns route failed");
+        }
+    }
 }
 
 impl DnsRunner {
@@ -35,7 +89,13 @@ impl DnsRunner {
             tun_dev,
             tun_inet,
             fake_ip,
+            shared_route_backend: None,
         }
+    }
+
+    pub(crate) fn with_shared_route_backend(mut self, route_backend: Option<NicBackend>) -> Self {
+        self.shared_route_backend = route_backend;
+        self
     }
 
     async fn clean_env(&mut self) {
@@ -45,17 +105,53 @@ impl DnsRunner {
         self.client.take();
     }
 
+    fn should_manage_fake_ip_route_externally(&self) -> bool {
+        self.shared_route_backend.is_some() && !self.tun_inet.contains(&self.fake_ip)
+    }
+
+    fn fake_ip_route_claim(&self) -> Option<MagicDnsFakeIpRouteClaim> {
+        if !self.should_manage_fake_ip_route_externally() {
+            return None;
+        }
+
+        Some(MagicDnsFakeIpRouteClaim {
+            tun_dev: self.tun_dev.clone(),
+            net_ns: self.global_ctx.net_ns.clone(),
+            fake_ip: self.fake_ip,
+            route_backend: self.shared_route_backend.clone()?,
+        })
+    }
+
     async fn run_once(&mut self) -> anyhow::Result<()> {
+        if let Some(claim) = self.fake_ip_route_claim() {
+            claim
+                .add()
+                .await
+                .map_err(|err| anyhow::anyhow!("failed to add magic dns fake-ip route: {err}"))?;
+        }
+
         // try server first
-        match MagicDnsServerInstance::new(
-            self.packet_plane.clone(),
-            self.global_ctx.clone(),
-            self.tun_dev.clone(),
-            self.tun_inet,
-            self.fake_ip,
-        )
-        .await
-        {
+        let server_result = if self.should_manage_fake_ip_route_externally() {
+            MagicDnsServerInstance::new_with_external_fake_ip_route(
+                self.packet_plane.clone(),
+                self.global_ctx.clone(),
+                self.tun_dev.clone(),
+                self.tun_inet,
+                self.fake_ip,
+            )
+            .await
+        } else {
+            MagicDnsServerInstance::new(
+                self.packet_plane.clone(),
+                self.global_ctx.clone(),
+                self.tun_dev.clone(),
+                self.tun_inet,
+                self.fake_ip,
+            )
+            .await
+        };
+
+        match server_result {
             Ok(server) => {
                 self.server = Some(server);
                 tracing::info!("DnsRunner::run_once: server started");
@@ -74,11 +170,16 @@ impl DnsRunner {
     }
 
     pub async fn run(&mut self, canel_token: CancellationToken) {
+        let fake_ip_route_claim = self.fake_ip_route_claim();
+
         loop {
             tracing::info!("DnsRunner::run: start");
             tokio::select! {
                 _ = canel_token.cancelled() => {
                     self.clean_env().await;
+                    if let Some(claim) = &fake_ip_route_claim {
+                        claim.remove().await;
+                    }
                     tracing::info!("DnsRunner::run: cancelled");
                     return;
                 }

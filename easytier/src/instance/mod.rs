@@ -19,6 +19,9 @@ pub(crate) mod listeners;
 pub(crate) mod public_ipv6_provider;
 
 #[cfg(feature = "tun")]
+pub mod shared_virtual_nic;
+
+#[cfg(feature = "tun")]
 pub mod virtual_nic;
 
 #[cfg(any(all(windows, feature = "tun"), test))]

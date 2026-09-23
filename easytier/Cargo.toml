@@ -153,6 +153,7 @@ rand.workspace = true
 
 serde = { workspace = true, features = ["derive"] }
 pnet_datalink = { version = "0.35.0", optional = true }
+pnet_packet = "0.35.0"
 smoltcp = { workspace = true, optional = true, features = [
     "std",
     "medium-ethernet",
