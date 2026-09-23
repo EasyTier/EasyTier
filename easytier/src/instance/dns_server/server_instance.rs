@@ -14,8 +14,10 @@ use super::{
 };
 use crate::{
     common::{
+        error::Error as EtError,
         global_ctx::ArcGlobalCtx,
         ifcfg::{IfConfiger, IfConfiguerTrait},
+        netns::NetNS,
     },
     instance::dns_server::{
         config::{Record, RecordBuilder, RecordType},
@@ -51,7 +53,9 @@ use std::{collections::BTreeMap, io, net::Ipv4Addr, str::FromStr, sync::Arc, tim
 pub(super) struct MagicDnsServerInstanceData {
     dns_server: Server,
     tun_dev: Option<String>,
+    net_ns: NetNS,
     fake_ip: Ipv4Addr,
+    manage_fake_ip_route: bool,
     route_store: MagicDnsRecordStore,
     record_apply: tokio::sync::Mutex<()>,
 
@@ -356,12 +360,66 @@ fn get_system_config(
 }
 
 impl MagicDnsServerInstance {
+    async fn add_fake_ip_route(
+        tun_dev_name: &str,
+        fake_ip: Ipv4Addr,
+        net_ns: &NetNS,
+        cost: Option<i32>,
+    ) -> Result<(), anyhow::Error> {
+        let ifcfg = IfConfiger::default();
+        let _guard = net_ns.guard();
+        match ifcfg.add_ipv4_route(tun_dev_name, fake_ip, 32, cost).await {
+            Err(EtError::IOError(err)) if err.kind() == io::ErrorKind::AlreadyExists => {
+                ifcfg.remove_ipv4_route(tun_dev_name, fake_ip, 32).await?;
+                ifcfg
+                    .add_ipv4_route(tun_dev_name, fake_ip, 32, cost)
+                    .await?;
+                Ok(())
+            }
+            ret => ret.map_err(Into::into),
+        }
+    }
+
+    async fn remove_fake_ip_route(tun_dev_name: &str, fake_ip: Ipv4Addr, net_ns: &NetNS) {
+        let ifcfg = IfConfiger::default();
+        let _guard = net_ns.guard();
+        if let Err(err) = ifcfg.remove_ipv4_route(tun_dev_name, fake_ip, 32).await {
+            tracing::warn!(
+                ?err,
+                ?tun_dev_name,
+                ?fake_ip,
+                "remove magic dns route failed"
+            );
+        }
+    }
+
     pub(crate) async fn new(
         packet_plane: Arc<CorePacketPlane>,
         global_ctx: ArcGlobalCtx,
         tun_dev: Option<String>,
         tun_inet: Ipv4Inet,
         fake_ip: Ipv4Addr,
+    ) -> Result<Self, anyhow::Error> {
+        Self::new_inner(packet_plane, global_ctx, tun_dev, tun_inet, fake_ip, true).await
+    }
+
+    pub(crate) async fn new_with_external_fake_ip_route(
+        packet_plane: Arc<CorePacketPlane>,
+        global_ctx: ArcGlobalCtx,
+        tun_dev: Option<String>,
+        tun_inet: Ipv4Inet,
+        fake_ip: Ipv4Addr,
+    ) -> Result<Self, anyhow::Error> {
+        Self::new_inner(packet_plane, global_ctx, tun_dev, tun_inet, fake_ip, false).await
+    }
+
+    async fn new_inner(
+        packet_plane: Arc<CorePacketPlane>,
+        global_ctx: ArcGlobalCtx,
+        tun_dev: Option<String>,
+        tun_inet: Ipv4Inet,
+        fake_ip: Ipv4Addr,
+        manage_fake_ip_route: bool,
     ) -> Result<Self, anyhow::Error> {
         let tcp_listener = runtime_rpc_listener(MAGIC_DNS_INSTANCE_SOCKET_ADDR.parse()?);
         let mut rpc_server = StandAloneServer::new(tcp_listener);
@@ -374,7 +432,8 @@ impl MagicDnsServerInstance {
         let mut dns_server = Server::new(dns_config);
         dns_server.run().await?;
 
-        if !tun_inet.contains(&fake_ip)
+        if manage_fake_ip_route
+            && !tun_inet.contains(&fake_ip)
             && let Some(tun_dev_name) = &tun_dev
         {
             let cost = if cfg!(target_os = "windows") {
@@ -382,16 +441,15 @@ impl MagicDnsServerInstance {
             } else {
                 None
             };
-            let ifcfg = IfConfiger {};
-            ifcfg
-                .add_ipv4_route(tun_dev_name, fake_ip, 32, cost)
-                .await?;
+            Self::add_fake_ip_route(tun_dev_name, fake_ip, &global_ctx.net_ns, cost).await?;
         }
 
         let data = Arc::new(MagicDnsServerInstanceData {
             dns_server,
             tun_dev: tun_dev.clone(),
+            net_ns: global_ctx.net_ns.clone(),
             fake_ip,
+            manage_fake_ip_route,
             route_store: MagicDnsRecordStore::default(),
             record_apply: tokio::sync::Mutex::new(()),
             system_config: get_system_config(tun_dev.as_deref())?,
@@ -436,14 +494,13 @@ impl MagicDnsServerInstance {
             if let Err(e) = ret {
                 tracing::error!("Failed to close system config: {:?}", e);
             }
-            if !self.tun_inet.contains(&self.data.fake_ip)
-                && let Some(tun_dev_name) = &self.data.tun_dev
-            {
-                let ifcfg = IfConfiger {};
-                let _ = ifcfg
-                    .remove_ipv4_route(tun_dev_name, self.data.fake_ip, 32)
-                    .await;
-            }
+        }
+
+        if self.data.manage_fake_ip_route
+            && !self.tun_inet.contains(&self.data.fake_ip)
+            && let Some(tun_dev_name) = &self.data.tun_dev
+        {
+            Self::remove_fake_ip_route(tun_dev_name, self.data.fake_ip, &self.data.net_ns).await;
         }
 
         self.packet_filter.close().await;

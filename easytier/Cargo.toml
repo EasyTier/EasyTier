@@ -153,6 +153,7 @@ rand.workspace = true
 
 serde = { workspace = true, features = ["derive"] }
 pnet_datalink = { version = "0.35.0", optional = true }
+pnet_packet = "0.35.0"
 smoltcp = { workspace = true, optional = true, features = [
     "std",
     "medium-ethernet",
@@ -362,7 +363,7 @@ mimalloc = ["dep:mimalloc"]
 aes-gcm = ["easytier-core/aes-gcm"]
 openssl-crypto = ["easytier-core/openssl-crypto"]
 ring-crypto = ["easytier-core/ring-crypto"]
-tun = ["dep:tun", "linux-netlink"]
+tun = ["dep:tun", "linux-netlink", "tokio/rt-multi-thread"]
 linux-netlink = ["dep:netlink-sys"]
 proxy-cidr-monitor = ["easytier-core/proxy-cidr-monitor"]
 websocket = [
