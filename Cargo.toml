@@ -28,6 +28,7 @@ arc-swap = "1.9"
 async-trait = "0.1.92"
 atomic-shim = "0.2.0"
 auto_impl = "1.3.0"
+axum = "0.8"
 base64 = "0.23"
 bon = "3.10.1"
 bytecodec = "0.5.0"
@@ -40,8 +41,11 @@ dashmap = "6.2.1"
 easytier = { version = "2.7.0", path = "easytier", default-features = false }
 easytier-core = { version = "2.7.0", path = "easytier-core", default-features = false }
 easytier-ffi = { version = "0.1.0", path = "easytier-contrib/easytier-ffi", default-features = false }
+easytier-ohos-core = { version = "0.1.0", path = "easytier-contrib/easytier-ohrs/crates/easytier-ohos-core", default-features = false }
+easytier-ohos-features = { version = "0.1.0", path = "easytier-contrib/easytier-ohrs/crates/easytier-ohos-features", default-features = false }
 easytier-proto = { version = "2.7.0", path = "easytier-proto", default-features = false }
 futures = "0.3"
+gethostname = "1.1"
 guarden = "0.3"
 hmac = "0.13.0"
 http-body-util = "0.1"
@@ -87,6 +91,7 @@ tracing-subscriber = { version = "0.3", default-features = false }
 url = "2.5"
 uuid = "1.26.1"
 winapi = "0.3.9"
+windows = "0.62"
 x25519-dalek = "2.0.1"
 # zerocopy 0.8 requires migrating the packet layout and casting APIs.
 zerocopy = "0.7.35"

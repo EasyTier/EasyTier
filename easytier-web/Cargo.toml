@@ -2,6 +2,7 @@
 name = "easytier-web"
 version = "2.7.0"
 edition.workspace = true
+rust-version.workspace = true
 description = "Config server for easytier. easytier-core gets config from this and web frontend use it as restful api server."
 
 [dependencies]
@@ -18,7 +19,7 @@ async-trait.workspace = true
 
 maxminddb = "0.32"
 
-axum = { version = "0.8", features = ["macros"] }
+axum = { workspace = true, features = ["macros"] }
 axum-login = { version = "0.18" }
 password-auth = { version = "1.0.0" }
 axum-messages = "0.8.0"

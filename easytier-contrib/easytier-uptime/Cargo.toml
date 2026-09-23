@@ -2,6 +2,7 @@
 name = "easytier-uptime"
 version = "0.1.0"
 edition.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 tokio = { workspace = true, default-features = true, features = ["full"] }
@@ -14,7 +15,7 @@ chrono = { workspace = true, features = ["serde"] }
 uuid = { workspace = true, features = ["v4", "serde"] }
 
 # Axum web framework
-axum = { version = "0.8.9", features = ["macros"] }
+axum = { workspace = true, features = ["macros"] }
 axum-extra = { version = "0.12", features = ["query"] }
 tower-http = { workspace = true, features = ["cors", "compression-full"] }
 

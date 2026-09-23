@@ -2799,7 +2799,6 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "easytier",
- "easytier-core",
  "ipnet",
  "once_cell",
  "serde",
@@ -2812,7 +2811,7 @@ dependencies = [
 name = "easytier-ohos-features"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "easytier",
  "flate2",
  "gethostname",
@@ -2847,7 +2846,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
- "tracing-core",
  "tracing-subscriber",
  "url",
  "uuid",

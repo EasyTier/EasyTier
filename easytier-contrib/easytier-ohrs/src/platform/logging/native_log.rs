@@ -2,8 +2,7 @@ use super::log_manager;
 use napi_derive_ohos::napi;
 use std::collections::HashMap;
 use std::panic;
-use tracing::{Event, Subscriber};
-use tracing_core::Level;
+use tracing::{Event, Level, Subscriber};
 use tracing_subscriber::layer::{Context, Layer};
 use tracing_subscriber::prelude::*;
 
