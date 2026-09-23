@@ -1514,7 +1514,7 @@ dependencies = [
  "flate2",
  "gethostname",
  "once_cell",
- "prost-reflect",
+ "prost-reflect 0.14.7",
  "rusqlite",
  "serde",
  "serde_json",
@@ -1569,6 +1569,7 @@ dependencies = [
  "proc-macro2",
  "prost 0.14.4",
  "prost-build",
+ "prost-reflect 0.16.5",
  "prost-types 0.14.4",
  "prost-wkt-types",
  "quote",
@@ -3831,6 +3832,16 @@ dependencies = [
  "prost 0.13.5",
  "prost-reflect-derive",
  "prost-types 0.13.5",
+]
+
+[[package]]
+name = "prost-reflect"
+version = "0.16.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "01b80ea363c31af2de2b92e3c07ed1156628f7838c4afb4df75ee78a37fedbd1"
+dependencies = [
+ "prost 0.14.4",
+ "prost-types 0.14.4",
 ]
 
 [[package]]
