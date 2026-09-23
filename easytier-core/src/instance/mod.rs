@@ -4,6 +4,7 @@ mod build_capabilities;
 mod config;
 #[cfg(feature = "proxy-smoltcp-stack")]
 mod data_plane_extension;
+pub(crate) mod dns_peer;
 mod lifecycle;
 mod management;
 #[cfg(feature = "web-client")]
@@ -12,7 +13,6 @@ mod management_state;
 pub mod manager;
 mod packet_io;
 mod packet_plane;
-pub(crate) mod dns_peer;
 #[cfg(feature = "proxy-packet")]
 mod packet_proxy_extension;
 #[cfg(feature = "public-ipv6-provider")]
@@ -114,11 +114,11 @@ use crate::gateway::{
 #[cfg(feature = "public-ipv6-provider")]
 use crate::peers::public_ipv6::provider::PublicIpv6ProviderRuntime;
 pub use config::CoreInstanceHostConfig;
+pub use dns_peer::{CoreDnsPeerAccess, DnsExportRegistration};
 use management_state::ManagementState;
 pub use packet_io::PacketEgressHost;
 use packet_io::PacketSinkEgress;
 pub use packet_plane::CorePacketPlane;
-pub use dns_peer::{CoreDnsPeerAccess, DnsExportRegistration};
 
 /// Complete Host capability set required by one portable core instance.
 pub trait CoreInstanceHost: DirectConnectorHost + TcpHolePunchHost {}
