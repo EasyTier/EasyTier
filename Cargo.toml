@@ -4,18 +4,18 @@ members = [
     "easytier-core",
     "easytier-proto",
     "easytier",
-    "easytier-gui/src-tauri",
     "easytier-web",
+    "easytier-gui/src-tauri",
     "easytier-contrib/easytier-mini",
     "easytier-contrib/easytier-ffi",
     "easytier-contrib/easytier-uptime",
     "easytier-contrib/easytier-android-jni",
     "easytier-contrib/easytier-ios",
+    "easytier-contrib/easytier-ohrs", # it needs ohrs sdk
+    "easytier-contrib/easytier-ohrs/crates/*",
 ]
 default-members = ["easytier", "easytier-web"]
-exclude = [
-    "easytier-contrib/easytier-ohrs", # it needs ohrs sdk
-]
+exclude = []
 
 [workspace.package]
 edition = "2024"
@@ -39,7 +39,7 @@ crossbeam = "0.8.5"
 dashmap = "6.2.1"
 easytier = { version = "2.7.0", path = "easytier", default-features = false }
 easytier-core = { version = "2.7.0", path = "easytier-core", default-features = false }
-easytier-ffi = { path = "easytier-contrib/easytier-ffi", default-features = false }
+easytier-ffi = { version = "0.1.0", path = "easytier-contrib/easytier-ffi", default-features = false }
 easytier-proto = { version = "2.7.0", path = "easytier-proto", default-features = false }
 futures = "0.3"
 guarden = "0.3"
