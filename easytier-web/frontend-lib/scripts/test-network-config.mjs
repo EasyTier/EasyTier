@@ -44,7 +44,6 @@ const BOOLEAN_CONFIG_FIELDS = [
   'disable_encryption',
   'enable_socks5',
   'disable_udp_hole_punching',
-  'enable_magic_dns',
   'enable_private_mode',
   'enable_quic_proxy',
   'disable_quic_input',
@@ -60,11 +59,12 @@ const BOOLEAN_CONFIG_FIELDS = [
   'disable_tcp_hole_punching',
 ]
 
-const LEGACY_VPN_PORTAL_FIELDS = [
+const LEGACY_CONFIG_FIELDS = [
   'enable_vpn_portal',
   'vpn_portal_listen_port',
   'vpn_portal_client_network_addr',
   'vpn_portal_client_network_len',
+  'enable_magic_dns',
 ]
 
 function readGeneratedNetworkConfigFields() {
@@ -163,7 +163,7 @@ function allFieldFixture() {
     disable_udp_hole_punching: true,
     mtu: 1280,
     mapped_listeners: ['tcp://127.0.0.1:13010'],
-    enable_magic_dns: true,
+    dns: 'domain = "mesh.example."\ndisabled = false\n',
     enable_private_mode: true,
     enable_quic_proxy: true,
     disable_quic_input: true,
@@ -251,7 +251,7 @@ function allFieldFixture() {
 
 function assertFixtureCoversGeneratedFields() {
   const generatedFields = readGeneratedNetworkConfigFields()
-    .filter((field) => !LEGACY_VPN_PORTAL_FIELDS.includes(field))
+    .filter((field) => !LEGACY_CONFIG_FIELDS.includes(field))
   const fixtureFields = new Set(Object.keys(allFieldFixture()))
   const missing = generatedFields.filter((field) => !fixtureFields.has(field))
 
@@ -272,7 +272,7 @@ function assertFullFieldRoundTrip() {
   expectNoCamelCaseKeys(backend)
 
   for (const field of readGeneratedNetworkConfigFields()
-    .filter((field) => !LEGACY_VPN_PORTAL_FIELDS.includes(field))) {
+    .filter((field) => !LEGACY_CONFIG_FIELDS.includes(field))) {
     assert.ok(field in backend, `backend JSON should include fixture field ${field}`)
   }
 
@@ -344,6 +344,25 @@ function assertBooleanFieldValuesPreserved() {
       input[field],
       `backend JSON should preserve boolean field ${field}`,
     )
+  }
+}
+
+function assertDnsConfigurationPreserved() {
+  assert.equal(DEFAULT_NETWORK_CONFIG().dns, undefined)
+  assert.equal(DEFAULT_NETWORK_CONFIG().enable_magic_dns, undefined)
+
+  for (const dns of [
+    undefined,
+    'disabled = true',
+    'domain = "mesh.example."\n[[zone]]\norigin = "internal.example."\n',
+  ]) {
+    const normalized = normalizeNetworkConfig({
+      ...DEFAULT_NETWORK_CONFIG(),
+      dns,
+    })
+    assert.equal(normalized.dns, dns)
+    assert.equal(toBackendNetworkConfig(normalized).dns, dns)
+    assert.equal(toBackendNetworkConfig(normalized).enable_magic_dns, undefined)
   }
 }
 
@@ -578,6 +597,7 @@ const tests = [
   assertLegacyVpnPortalFieldsReachBackendValidation,
   assertVpnPortalRpcJsonNormalization,
   assertBooleanFieldValuesPreserved,
+  assertDnsConfigurationPreserved,
   assertEnumCompatibility,
   assertAclDefaultsAndExplicitZero,
   assertNetworkingMethodNormalization,

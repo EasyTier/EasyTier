@@ -4,6 +4,7 @@ mod build_capabilities;
 mod config;
 #[cfg(feature = "proxy-smoltcp-stack")]
 mod data_plane_extension;
+pub(crate) mod dns_peer;
 mod lifecycle;
 mod management;
 #[cfg(feature = "web-client")]
@@ -113,6 +114,7 @@ use crate::gateway::{
 #[cfg(feature = "public-ipv6-provider")]
 use crate::peers::public_ipv6::provider::PublicIpv6ProviderRuntime;
 pub use config::CoreInstanceHostConfig;
+pub use dns_peer::{CoreDnsPeerAccess, DnsExportRegistration};
 use management_state::ManagementState;
 pub use packet_io::PacketEgressHost;
 use packet_io::PacketSinkEgress;

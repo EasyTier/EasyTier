@@ -1,4 +1,8 @@
-use easytier::proto::{api, common};
+use anyhow::Context as _;
+use easytier::{
+    common::config::{NetworkConfigExt as _, vpn_dns_servers},
+    proto::{api, common},
+};
 use serde::Serialize;
 use std::collections::HashSet;
 use std::sync::Mutex;
@@ -107,7 +111,7 @@ pub struct RuntimeInstanceState {
     pub running: bool,
     pub tun_required: bool,
     pub tun_attached: bool,
-    pub magic_dns_enabled: bool,
+    pub dns_servers: Vec<String>,
     pub need_exit_node: bool,
     pub error_message: Option<String>,
     pub my_node_info: Option<MyNodeInfo>,
@@ -392,22 +396,13 @@ fn my_node_info_to_view(info: api::manage::MyNodeInfo) -> MyNodeInfo {
 pub fn runtime_instance_from_running_info(
     config_id: String,
     display_name: String,
-    config: Option<api::manage::NetworkConfig>,
+    dns_servers: Vec<String>,
+    need_exit_node: bool,
+    manual_routes: Vec<String>,
     info: api::manage::NetworkInstanceRunningInfo,
 ) -> RuntimeInstanceState {
     let tun_attached = info.running && is_tun_attached(&config_id);
     let tun_required = info.running && (info.dev_name != "no_tun" || tun_attached);
-    let magic_dns_enabled = config
-        .as_ref()
-        .and_then(|config| config.enable_magic_dns)
-        .unwrap_or(false);
-    let need_exit_node = config
-        .as_ref()
-        .is_some_and(|config| !config.exit_nodes.is_empty());
-    let manual_routes = config
-        .as_ref()
-        .map(|config| config.routes.clone())
-        .unwrap_or_default();
 
     RuntimeInstanceState {
         config_id: config_id.clone(),
@@ -416,7 +411,7 @@ pub fn runtime_instance_from_running_info(
         running: info.running,
         tun_required,
         tun_attached,
-        magic_dns_enabled,
+        dns_servers,
         need_exit_node,
         error_message: info.error_msg,
         my_node_info: info.my_node_info.map(my_node_info_to_view),
@@ -425,6 +420,17 @@ pub fn runtime_instance_from_running_info(
         peers: info.peers.into_iter().map(peer_to_view).collect(),
         manual_routes,
     }
+}
+
+pub fn config_dns_servers(
+    config: &api::manage::NetworkConfig,
+) -> anyhow::Result<Vec<String>> {
+    let config = config
+        .gen_config()
+        .context("invalid network configuration")?;
+    vpn_dns_servers(&config)
+        .context("invalid DNS configuration")
+        .map(|servers| servers.into_iter().map(|ip| ip.to_string()).collect())
 }
 
 pub fn runtime_instance_from_config_snapshot(
@@ -450,6 +456,13 @@ pub fn runtime_instance_from_config_snapshot(
         udp_nat_type: None,
         tcp_nat_type: None,
     };
+    let (dns_servers, error_message) = match config_dns_servers(&config) {
+        Ok(servers) => (servers, None),
+        Err(error) => {
+            let message = format!("Failed to configure VPN DNS: {error:#}");
+            (Vec::new(), Some(message))
+        }
+    };
 
     RuntimeInstanceState {
         config_id: config_id.clone(),
@@ -458,9 +471,9 @@ pub fn runtime_instance_from_config_snapshot(
         running,
         tun_required,
         tun_attached,
-        magic_dns_enabled: config.enable_magic_dns.unwrap_or(false),
+        dns_servers,
         need_exit_node: !config.exit_nodes.is_empty(),
-        error_message: None,
+        error_message,
         my_node_info: Some(my_node_info),
         events: Vec::new(),
         routes: configured_route_views(&endpoint_urls, public_server_url.as_deref()),

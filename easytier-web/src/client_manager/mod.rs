@@ -1033,7 +1033,7 @@ mod tests {
         assert_eq!(updated.disable_sym_hole_punching, Some(true));
         assert_eq!(updated.disable_upnp, Some(true));
         assert_eq!(updated.disable_relay_data, Some(true));
-        assert_eq!(updated.enable_magic_dns, Some(true));
+        assert_eq!(updated.dns.as_deref(), Some("disabled = false\n"));
         assert_eq!(updated.enable_private_mode, Some(true));
         assert_eq!(updated.mtu, Some(1360));
         assert_eq!(
@@ -1109,7 +1109,7 @@ mod tests {
             disable_sym_hole_punching: Some(true),
             disable_upnp: Some(true),
             disable_relay_data: Some(true),
-            enable_magic_dns: Some(true),
+            dns: Some("disabled = false\n".to_owned()),
             enable_private_mode: Some(true),
             mtu: Some(1360),
             data_compress_algo: Some(CompressionAlgoPb::Zstd as i32),

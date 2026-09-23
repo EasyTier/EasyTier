@@ -1,6 +1,12 @@
+#[cfg(feature = "magic-dns")]
+pub mod dirty;
+#[cfg(feature = "magic-dns")]
+pub mod dns;
 #[cfg(feature = "management")]
 pub mod panic;
 pub mod string;
+#[cfg(feature = "magic-dns")]
+pub mod task;
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
 use std::sync::{Arc, Weak};
@@ -20,6 +26,13 @@ pub fn find_free_tcp_port(mut range: std::ops::Range<u16>) -> Option<u16> {
 pub fn weak_upgrade<T>(weak: &Weak<T>) -> anyhow::Result<Arc<T>> {
     weak.upgrade()
         .ok_or_else(|| anyhow::anyhow!("{} not available", std::any::type_name::<T>()))
+}
+
+pub fn hostname() -> String {
+    hostname::get()
+        .unwrap_or_else(|_| "localhost".into())
+        .to_string_lossy()
+        .into_owned()
 }
 
 pub trait BoxExt: Sized {

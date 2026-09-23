@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
+#[cfg(feature = "web-client")]
+use easytier_core::config::runtime::CoreInstanceRuntimeConfig;
 use easytier_core::{
-    config::runtime::CoreInstanceRuntimeConfig, gateway::dhcp::DhcpIpv4Host,
-    host::packet::HostPacketReceiver, instance::CorePacketPlane,
+    gateway::dhcp::DhcpIpv4Host, host::packet::HostPacketReceiver, instance::CorePacketPlane,
 };
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -11,8 +12,6 @@ use crate::common::global_ctx::ArcGlobalCtx;
 
 mod event_journal;
 mod implementation;
-#[cfg(feature = "tun")]
-mod magic_dns;
 #[cfg(feature = "tun")]
 mod tun_common;
 #[cfg(not(feature = "tun"))]
@@ -26,9 +25,17 @@ mod tun_runtime;
 mod tun_runtime;
 
 use event_journal::EventJournal;
-#[cfg(feature = "tun")]
-use magic_dns::MagicDnsRuntime;
 use tun_runtime::NativeTunRuntime;
+
+#[cfg(all(test, target_os = "windows", feature = "magic-dns", feature = "tun"))]
+pub(crate) async fn test_dns_host(
+    nic: crate::instance::virtual_nic::NicCtx,
+    primary: std::collections::HashSet<std::net::IpAddr>,
+) -> Arc<dyn crate::dns::host::DnsHost> {
+    let state = tun_common::TunNicState::empty();
+    state.install(nic, primary).await;
+    Arc::new(state)
+}
 
 pub(crate) struct NativeInstanceRuntimeHost {
     global_ctx: ArcGlobalCtx,
@@ -36,6 +43,8 @@ pub(crate) struct NativeInstanceRuntimeHost {
     cancel: CancellationToken,
     event_journal: EventJournal,
     tun: NativeTunRuntime,
+    #[cfg(feature = "magic-dns")]
+    dns: Mutex<Option<crate::dns::node::DnsNode>>,
 }
 
 impl NativeInstanceRuntimeHost {
@@ -49,6 +58,8 @@ impl NativeInstanceRuntimeHost {
             operation: Arc::new(Mutex::new(())),
             cancel,
             tun,
+            #[cfg(feature = "magic-dns")]
+            dns: Mutex::new(None),
         })
     }
 
@@ -58,6 +69,19 @@ impl NativeInstanceRuntimeHost {
     ) -> anyhow::Result<Option<Arc<dyn DhcpIpv4Host>>> {
         self.event_journal.start(self.cancel.clone()).await;
         self.tun.prepare(packet_plane.clone()).await?;
+        #[cfg(feature = "magic-dns")]
+        {
+            use crate::dns::config::DnsConfigLoaderExt as _;
+            if !self.global_ctx.config.try_get_dns()?.disabled {
+                let mut dns = crate::dns::node::DnsNode::new(
+                    packet_plane.dns_peer_access(),
+                    self.global_ctx.clone(),
+                    self.tun.dns_host(),
+                );
+                dns.start_with_token(self.cancel.child_token());
+                self.dns.lock().await.replace(dns);
+            }
+        }
         Ok(Some(
             self.tun.dhcp_host(self.operation.clone(), packet_plane),
         ))
@@ -65,6 +89,12 @@ impl NativeInstanceRuntimeHost {
 
     async fn shutdown_runtime(&self) {
         self.cancel.cancel();
+        #[cfg(feature = "magic-dns")]
+        if let Some(mut dns) = self.dns.lock().await.take()
+            && let Err(error) = dns.stop().await
+        {
+            tracing::warn!(?error, "failed to stop instance DNS");
+        }
         let _operation = self.operation.lock().await;
         self.event_journal.stop().await;
         self.tun.shutdown().await;

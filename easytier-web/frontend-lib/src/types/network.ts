@@ -145,7 +145,6 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     mtu: null,
     instance_recv_bps_limit: null,
     mapped_listeners: [],
-    enable_magic_dns: false,
     enable_private_mode: false,
     port_forwards: [],
     acl: emptyAcl(),

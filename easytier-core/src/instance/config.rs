@@ -51,7 +51,6 @@ pub struct CoreInstanceHostConfig {
     pub gateway_enabled: bool,
     pub proxy_enabled: bool,
     pub vpn_portal_enabled: bool,
-    pub magic_dns_enabled: bool,
     pub kcp_enabled: bool,
     pub quic_enabled: bool,
     pub udp_broadcast_enabled: bool,
@@ -77,7 +76,6 @@ impl Default for CoreInstanceHostConfig {
             gateway_enabled: true,
             proxy_enabled: true,
             vpn_portal_enabled: true,
-            magic_dns_enabled: true,
             kcp_enabled: true,
             quic_enabled: true,
             udp_broadcast_enabled: true,
@@ -111,9 +109,6 @@ impl CoreInstanceHostConfig {
         }
         if !self.proxy_enabled {
             flags.enable_exit_node = false;
-        }
-        if !self.magic_dns_enabled {
-            flags.accept_dns = false;
         }
         if !self.kcp_enabled {
             flags.enable_kcp_proxy = false;
@@ -659,7 +654,6 @@ uri = "quic://127.0.0.1:11011"
 [flags]
 enable_exit_node = true
 enable_kcp_proxy = true
-accept_dns = true
 encryption_algorithm = "chacha20"
 data_compress_algo = "Zstd"
 "#,
@@ -676,7 +670,6 @@ data_compress_algo = "Zstd"
             proxy_enabled: false,
             gateway_enabled: false,
             public_ipv6_provider_supported: false,
-            magic_dns_enabled: false,
             kcp_enabled: false,
             quic_enabled: false,
             endpoint_protocols: vec!["tcp".to_owned(), "udp".to_owned()],
@@ -720,7 +713,6 @@ data_compress_algo = "Zstd"
         let flags = &normalized.peer.snapshot.flags;
         assert!(!flags.enable_kcp_proxy);
         assert!(flags.disable_kcp_input);
-        assert!(!flags.accept_dns);
         let expected_encryption = if algorithm_is_available(EncryptionAlgorithm::ChaCha20) {
             EncryptionAlgorithm::ChaCha20
         } else {

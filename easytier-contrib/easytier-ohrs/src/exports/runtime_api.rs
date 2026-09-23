@@ -6,7 +6,7 @@ use crate::kernel_bridge::{
 };
 use crate::runtime::state::runtime_state::{
     RuntimeAggregateState, RuntimeInstanceState, TunAggregateState, clear_tun_attached,
-    is_tun_attached, mark_tun_attached, runtime_instance_from_config_snapshot,
+    config_dns_servers, is_tun_attached, mark_tun_attached, runtime_instance_from_config_snapshot,
     runtime_instance_from_running_info,
 };
 use crate::{ASYNC_RUNTIME, INSTANCE_MANAGER, WEB_CLIENTS};
@@ -151,16 +151,42 @@ pub(crate) fn collect_runtime_state() -> RuntimeAggregateState {
 
     let mut instances = Vec::with_capacity(active_config_ids.len());
     for config_id in active_config_ids {
-        if let Some(info) = live_infos.remove(&config_id) {
+        if let Some(mut info) = live_infos.remove(&config_id) {
             let snapshot = get_runtime_config_snapshot(&config_id);
             let display_name = snapshot
                 .as_ref()
                 .map(|snapshot| snapshot.display_name.clone())
                 .unwrap_or_else(|| config_id.clone());
+            let dns_servers = match snapshot
+                .as_ref()
+                .map(|snapshot| config_dns_servers(&snapshot.config))
+                .transpose()
+            {
+                Ok(servers) => servers.unwrap_or_default(),
+                Err(error) => {
+                    let message = format!("Failed to configure VPN DNS: {error:#}");
+                    ohrs_log_error!("[Rust] {} instance={}", message, config_id);
+                    info.error_msg = Some(match info.error_msg.take() {
+                        Some(existing) if !existing.is_empty() => format!("{existing}; {message}"),
+                        _ => message,
+                    });
+                    Vec::new()
+                }
+            };
+            let need_exit_node = snapshot
+                .as_ref()
+                .map(|snapshot| !snapshot.config.exit_nodes.is_empty())
+                .unwrap_or(false);
+            let manual_routes = snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.config.routes.clone())
+                .unwrap_or_default();
             instances.push(runtime_instance_from_running_info(
                 config_id,
                 display_name,
-                snapshot.map(|snapshot| snapshot.config),
+                dns_servers,
+                need_exit_node,
+                manual_routes,
                 info,
             ));
         } else if let Some(snapshot) = get_runtime_config_snapshot(&config_id) {
@@ -179,7 +205,7 @@ pub(crate) fn collect_runtime_state() -> RuntimeAggregateState {
                 running: true,
                 tun_required: tun_attached,
                 tun_attached,
-                magic_dns_enabled: false,
+                dns_servers: Vec::new(),
                 need_exit_node: false,
                 error_message: None,
                 my_node_info: None,
@@ -205,6 +231,14 @@ pub(crate) fn collect_runtime_state() -> RuntimeAggregateState {
     let running_instance_count =
         instances.iter().filter(|instance| instance.running).count() as i32;
     let tun_active = !attached_instance_ids.is_empty();
+    let mut dns_servers = Vec::new();
+    for instance in instances.iter().filter(|instance| instance.tun_required) {
+        for server in &instance.dns_servers {
+            if !dns_servers.contains(server) {
+                dns_servers.push(server.clone());
+            }
+        }
+    }
 
     RuntimeAggregateState {
         instances,
@@ -212,7 +246,7 @@ pub(crate) fn collect_runtime_state() -> RuntimeAggregateState {
             active: tun_active,
             attached_instance_ids,
             aggregated_routes,
-            dns_servers: vec![],
+            dns_servers,
             need_rebuild: false,
         },
         running_instance_count,

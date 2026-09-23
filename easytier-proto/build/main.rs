@@ -97,7 +97,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "proto/api_config.proto",
         "proto/api_manage.proto",
         "proto/web.proto",
-        "proto/magic_dns.proto",
+        "proto/dns.proto",
         "proto/acl.proto",
     ];
 

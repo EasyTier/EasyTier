@@ -74,6 +74,7 @@ pub fn aggregate_tun_routes(instance: &RuntimeInstanceState) -> Vec<String> {
     // node. Installing them into the same local TUN would recapture the proxy's
     // own destination sockets instead of using the physical network.
     raw_routes.extend(runtime_proxy_cidrs.iter().cloned());
+    raw_routes.extend(instance.dns_servers.iter().cloned());
     simplify_routes(raw_routes)
 }
 

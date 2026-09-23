@@ -6,6 +6,7 @@ description = "HarmonyOS-side EasyTier runtime, instance lifecycle and kernel in
 publish = false
 
 [dependencies]
+anyhow = "1.0"
 async-trait = "0.1"
 easytier = { path = "../../../../easytier" }
 easytier-core = { path = "../../../../easytier-core", default-features = false }

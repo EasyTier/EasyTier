@@ -9,7 +9,7 @@ import {
   stop_vpn,
   type VpnTileAction,
 } from 'tauri-plugin-vpnservice-api'
-import { collectNetworkInfo, getConfig, listNetworkInstanceIds, setTunFd } from './backend'
+import { collectNetworkInfo, getConfig, getDnsServers, listNetworkInstanceIds, setTunFd } from './backend'
 
 type Route = NetworkTypes.Route
 
@@ -290,7 +290,7 @@ async function registerVpnServiceListener() {
   )
 }
 
-function getRoutesForVpn(routes: Route[] | undefined, node_config: NetworkTypes.NetworkConfig): string[] {
+function getRoutesForVpn(routes: Route[] | undefined, node_config: NetworkTypes.NetworkConfig, dns?: string): string[] {
   const ret = []
   for (const r of routes ?? []) {
     for (let cidr of r.proxy_cidrs ?? []) {
@@ -305,8 +305,8 @@ function getRoutesForVpn(routes: Route[] | undefined, node_config: NetworkTypes.
     ret.push(route)
   }
 
-  if (node_config.enable_magic_dns) {
-    ret.push('100.100.100.101/32')
+  if (dns) {
+    ret.push(`${dns}/${dns.includes(':') ? 128 : 32}`)
   }
 
   // sort and dedup
@@ -345,7 +345,6 @@ async function reconcileNetworkInstance(instanceId: string, generation: number) 
   console.log('vpn service loaded config', instanceId, JSON.stringify({
     no_tun: config.no_tun,
     dhcp: config.dhcp,
-    enable_magic_dns: config.enable_magic_dns,
   }))
   if (config.no_tun) {
     console.log('vpn service skipped because no_tun is enabled', instanceId)
@@ -395,16 +394,29 @@ async function reconcileNetworkInstance(instanceId: string, generation: number) 
     return
   }
 
-  vpnReconcileAttempts = 0
-
   let network_length = virtualIpv4?.network_length
   if (!network_length) {
     network_length = 24
   }
 
-  const routes = getRoutesForVpn(curNetworkInfo?.routes, config)
+  // The native DNS parser owns defaults and address/protocol semantics. The VPN
+  // plugin currently accepts one DNS server, so use its first usable address.
+  let dns: string | undefined
+  try {
+    dns = (await getDnsServers(config))[0]
+  }
+  catch (error) {
+    console.warn('vpn service DNS config query failed', instanceId, error)
+    scheduleVpnReconcile(instanceId, generation, 'dns_config_query_failed')
+    return
+  }
 
-  const dns = config.enable_magic_dns ? '100.100.100.101' : undefined
+  if (!isCurrentVpnReconcile(instanceId, generation))
+    return
+
+  vpnReconcileAttempts = 0
+
+  const routes = getRoutesForVpn(curNetworkInfo?.routes, config, dns)
 
   const ipChanged = virtual_ip !== curVpnStatus.ipv4Addr
   const cidrChanged = network_length !== curVpnStatus.ipv4Cidr

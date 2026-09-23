@@ -5,7 +5,6 @@
 #[cfg(feature = "proxy-smoltcp-stack")]
 mod dataplane;
 pub mod dhcp;
-pub mod magic_dns;
 #[cfg(feature = "proxy-smoltcp-stack")]
 mod port_forward;
 pub mod proxy;

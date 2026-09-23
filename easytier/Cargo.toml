@@ -54,12 +54,18 @@ arc-swap.workspace = true
 toml.workspace = true
 chrono = { workspace = true, features = ["serde"] }
 
+getset = "0.1.6"
+optionize = "0.2"
+delegate = "0.13.5"
+derivative = "2.2"
+itertools = "0.14.0"
 guarden.workspace = true
 quanta.workspace = true
 
 strum = { workspace = true, features = ["derive"] }
 
-gethostname = "1.1.0"
+hostname = "0.4.2"
+idna = { version = "1", optional = true }
 
 futures = { workspace = true, features = ["bilock", "unstable"] }
 
@@ -78,6 +84,7 @@ tokio-util = { workspace = true, features = ["codec", "net", "io", "rt"] }
 
 async-trait.workspace = true
 
+maplit = "1.0.2"
 dashmap.workspace = true
 moka = { version = "0.12", features = ["future"] }
 # for full-path zero-copy
@@ -161,6 +168,7 @@ smoltcp = { workspace = true, optional = true, features = [
     "socket-raw",
 ] }
 serde_json.workspace = true
+serde_with = "3"
 
 clap = { workspace = true, features = [
     "string",
@@ -175,6 +183,7 @@ clap_complete_nushell = { version = "4.6.2" }
 async-recursion = "1.1.1"
 
 network-interface = "2.0.5"
+indexmap = "2.13.1"
 
 # for wireguard
 boringtun = { package = "boringtun-easytier", version = "0.6.1", optional = true }
@@ -206,14 +215,12 @@ service-manager = { git = "https://github.com/EasyTier/service-manager-rs.git", 
 kcp-sys = { git = "https://github.com/EasyTier/kcp-sys", rev = "268533568d734ae89dc89603078da3ca522effe1", optional = true }
 
 # for dns connector
-hickory-resolver = { version = "0.25.2", optional = true }
-hickory-proto = { version = "0.25.2", optional = true }
+hickory-proto = { version = "0.26.0", optional = true }
+hickory-net = { version = "0.26.0", features = ["serde"], optional = true }
+hickory-resolver = { version = "0.26.0", optional = true }
 
 # for magic dns
-hickory-client = { version = "0.25.2", optional = true }
-hickory-server = { version = "0.25.2", features = [
-    "resolver",
-], optional = true }
+hickory-server = { version = "0.26.0", features = ["resolver"], optional = true }
 
 bon.workspace = true
 derive_builder = { version = "0.20.2", optional = true }
@@ -291,6 +298,7 @@ thunk-rs = { workspace = true, features = [
 criterion = "0.8.2"
 easytier-core = { workspace = true, features = [
     "test-utils",
+    "proxy-packet",
 ] }
 serial_test = "4.0.1"
 rstest = "0.27.0"
@@ -389,15 +397,14 @@ jemalloc-prof = [
 tracing = ["tokio/tracing", "dep:console-subscriber", "dep:tracing-subscriber"]
 tracing-log = ["tracing/log", "easytier-core/tracing-log"]
 logging = []
-dns-resolver = ["dep:hickory-proto", "dep:hickory-resolver"]
+dns-resolver = ["dep:hickory-proto", "dep:hickory-resolver", "dep:hickory-net"]
 magic-dns = [
     "dep:derive_builder",
     "dep:humantime-serde",
     "dns-resolver",
-    "dep:hickory-client",
     "dep:hickory-server",
-    "easytier-core/proxy-packet",
-    "easytier-proto/magic-dns",
+    "dep:sha2",
+    "dep:idna",
 ]
 faketcp = [
     "dep:flume",

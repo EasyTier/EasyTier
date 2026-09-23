@@ -260,6 +260,7 @@ pub(crate) struct CorePeerContextAdapters {
 /// Peer context backed by one core-owned submitted snapshot and its instance
 /// runtime resources.
 pub(crate) struct CorePeerContext {
+    dns_export: Arc<crate::instance::dns_peer::DnsExportState>,
     config: CoreRuntimeConfigStore,
     avoid_relay_data_preference: AtomicBool,
     stun_info_source: Option<Arc<dyn PeerStunInfoSource>>,
@@ -312,6 +313,7 @@ impl CorePeerContext {
         );
         Self {
             config,
+            dns_export: Arc::new(crate::instance::dns_peer::DnsExportState::default()),
             avoid_relay_data_preference,
             stun_info_source: adapters.stun_info_source,
             public_ipv6_state,
@@ -330,6 +332,10 @@ impl CorePeerContext {
 
     pub(crate) fn runtime_config_store(&self) -> CoreRuntimeConfigStore {
         self.config.clone()
+    }
+
+    pub(crate) fn dns_export_state(&self) -> Arc<crate::instance::dns_peer::DnsExportState> {
+        self.dns_export.clone()
     }
 
     pub fn stats_manager(&self) -> Arc<StatsManager> {
@@ -539,6 +545,19 @@ impl PeerPacketPolicy {
 }
 
 pub(crate) trait PeerContext: Send + Sync {
+    fn dns_export_digest(&self) -> Vec<u8> {
+        Vec::new()
+    }
+
+    fn subscribe_dns_export_changes(
+        &self,
+    ) -> Option<tokio::sync::watch::Receiver<Arc<crate::instance::dns_peer::DnsExportVersion>>>
+    {
+        None
+    }
+
+    fn issue_route_info_updated(&self, _peer_ids: Vec<PeerId>) {}
+
     fn host_routing_policy(&self) -> HostRoutingPolicy {
         HostRoutingPolicy::default()
     }
@@ -735,6 +754,21 @@ pub(crate) fn secret_proof_from_secret(secret: &str, challenge: &[u8]) -> Option
 }
 
 impl PeerContext for CorePeerContext {
+    fn dns_export_digest(&self) -> Vec<u8> {
+        self.dns_export.snapshot().digest.clone()
+    }
+
+    fn subscribe_dns_export_changes(
+        &self,
+    ) -> Option<tokio::sync::watch::Receiver<Arc<crate::instance::dns_peer::DnsExportVersion>>>
+    {
+        Some(self.dns_export.subscribe())
+    }
+
+    fn issue_route_info_updated(&self, peer_ids: Vec<PeerId>) {
+        self.events.emit(CoreEvent::PeerInfoUpdated(peer_ids));
+    }
+
     fn max_direct_conns_per_peer_in_foreign_network(&self) -> usize {
         self.snapshot().max_direct_conns_per_peer_in_foreign_network
     }

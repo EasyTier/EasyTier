@@ -14,7 +14,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use super::{MagicDnsRuntime, tun_common::TunNicState};
+use super::tun_common::TunNicState;
 use crate::{
     common::{
         error::Error,
@@ -38,6 +38,11 @@ impl NativeTunRuntime {
             nic: TunNicState::empty(),
             static_ip_task: Mutex::new(None),
         }
+    }
+
+    #[cfg(feature = "magic-dns")]
+    pub(super) fn dns_host(&self) -> Arc<dyn crate::dns::host::DnsHost> {
+        Arc::new(self.nic.clone())
     }
 
     pub(super) fn install_packet_receiver(
@@ -103,17 +108,12 @@ impl NativeTunRuntime {
                     continue;
                 }
 
-                let magic_dns = if let Some(ip) = ipv4 {
-                    MagicDnsRuntime::start(
-                        global_ctx.clone(),
-                        packet_plane.clone(),
-                        nic.ifname().await,
-                        ip,
-                    )
-                } else {
-                    MagicDnsRuntime::default()
-                };
-                nic_state.install(nic, magic_dns).await;
+                let primary_ips = ipv4
+                    .map(|ip| std::net::IpAddr::V4(ip.address()))
+                    .into_iter()
+                    .chain(ipv6.map(|ip| std::net::IpAddr::V6(ip.address())))
+                    .collect();
+                nic_state.install(nic, primary_ips).await;
                 if let Some(output) = output.take() {
                     let _ = output.send(Ok(()));
                 }
@@ -209,13 +209,14 @@ impl NativeDhcpIpv4Host {
             _ = self.cancel.cancelled() => anyhow::bail!("instance is closing; DHCP update cancelled"),
             result = nic.run(Some(ip), self.global_ctx.get_ipv6()) => result?,
         }
-        let magic_dns = MagicDnsRuntime::start(
-            self.global_ctx.clone(),
-            self.packet_plane.clone(),
-            nic.ifname().await,
-            ip,
-        );
-        self.nic.install(nic, magic_dns).await;
+        let primary_ips = std::iter::once(std::net::IpAddr::V4(ip.address()))
+            .chain(
+                self.global_ctx
+                    .get_ipv6()
+                    .map(|ip| std::net::IpAddr::V6(ip.address())),
+            )
+            .collect();
+        self.nic.install(nic, primary_ips).await;
         self.global_ctx.set_ipv4(Some(ip));
         Ok(Some(ip))
     }

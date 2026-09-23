@@ -13,6 +13,7 @@ use crate::{
 pub enum CoreEvent {
     PeerAdded(PeerId),
     PeerRemoved(PeerId),
+    PeerInfoUpdated(Vec<PeerId>),
     PeerConnAdded(easytier_proto::core_peer::peer::PeerConnInfo),
     PeerConnRemoved(easytier_proto::core_peer::peer::PeerConnInfo),
     CredentialChanged,
