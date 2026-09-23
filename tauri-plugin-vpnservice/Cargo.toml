@@ -8,9 +8,15 @@ exclude = ["/examples", "/webview-dist", "/webview-src", "/node_modules"]
 links = "tauri-plugin-vpnservice"
 
 [dependencies]
-tauri = { version = "2.0.0-rc" }
-serde = "1.0"
-thiserror = "1.0"
+tauri.workspace = true
+serde.workspace = true
+thiserror.workspace = true
 
 [build-dependencies]
-tauri-plugin = { version = "2.0.0-rc", features = ["build"] }
+tauri-plugin = { version = "2.6.3", features = ["build"] }
+
+[package.metadata.cargo-machete]
+ignored = [
+    # Called by build.rs to generate plugin permissions and bindings.
+    "tauri-plugin",
+]

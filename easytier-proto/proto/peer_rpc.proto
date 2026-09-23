@@ -131,6 +131,9 @@ message SyncRouteInfoResponse {
   bool is_initiator = 1;
   uint64 session_id = 2;
   optional SyncRouteInfoError error = 3;
+  // Missing data for peers referenced by accepted topology. Empty in steady state.
+  repeated uint32 missing_peer_ids = 4;
+  repeated uint32 missing_conn_peer_ids = 5;
 }
 
 service OspfRouteRpc {

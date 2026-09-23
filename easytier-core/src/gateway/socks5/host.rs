@@ -67,6 +67,7 @@ where
 
     fn udp_bind_options(&self) -> UdpBindOptions {
         UdpBindOptions::socks5()
+            .with_need_protect(false)
             .with_context(self.socket_context.clone().with_ip_version(IpVersion::V6))
             .with_local_addr(Some(SocketAddr::V6(SocketAddrV6::new(
                 Ipv6Addr::UNSPECIFIED,
@@ -289,6 +290,10 @@ mod tests {
         );
         assert_eq!(options[0].context.socket_mark, context.socket_mark);
         assert_eq!(options[0].context.ip_version, IpVersion::V6);
+        assert!(
+            !options[0].need_protect,
+            "SOCKS5 association socket is inbound"
+        );
     }
 
     #[tokio::test]

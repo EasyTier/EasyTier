@@ -265,6 +265,10 @@ impl WebClientBackend for WasiWebClientBackend {
             .await?;
         Ok(response.inst_ids.into_iter().map(Into::into).collect())
     }
+
+    fn failed_instance_ids(&self) -> Vec<uuid::Uuid> {
+        Vec::new()
+    }
 }
 
 pub(super) struct WasiWebClientRuntime {

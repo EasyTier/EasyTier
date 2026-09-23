@@ -299,6 +299,10 @@ sudo easytier-core --network-name mysharednode --network-secret mysharednode
 
 EasyTier 在 [LGPL-3.0](https://github.com/EasyTier/EasyTier/blob/main/LICENSE) 许可下发布。
 
+## 使用规范
+
+请仅将 EasyTier 用于合法用途，并遵守适用的法律法规。使用者有责任确保其已获授权连接和管理相关网络与设备。
+
 ## 赞助
 
 本项目的 CDN 加速和安全防护由腾讯云 EdgeOne 赞助。

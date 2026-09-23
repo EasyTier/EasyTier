@@ -3,7 +3,7 @@ name = "easytier-proto"
 description = "EasyTier protobuf and generated RPC types."
 homepage = "https://github.com/EasyTier/EasyTier"
 repository = "https://github.com/EasyTier/EasyTier"
-version = "2.6.4"
+version = "2.7.0"
 edition.workspace = true
 rust-version.workspace = true
 authors = ["kkrainbow"]
@@ -13,44 +13,44 @@ license-file = "../LICENSE"
 build = "build/main.rs"
 
 [dependencies]
-anyhow = { version = "1.0", optional = true }
-async-trait = { version = "0.1.74", optional = true }
-auto_impl = { version = "1.1.0", optional = true }
-base64 = { version = "0.22", optional = true }
-bytes = { version = "1.5.0", optional = true }
-chrono = { version = "0.4.37", features = ["serde"], optional = true }
-cidr = { version = "0.3.1", features = ["serde"], optional = true }
-hmac = { version = "0.12.1", optional = true }
-prost = { version = "0.14.3", optional = true }
-prost-types = { version = "0.14.3", optional = true }
-prost-wkt-types = { version = "0.7.1", optional = true }
+anyhow = { workspace = true, optional = true }
+async-trait = { workspace = true, optional = true }
+auto_impl = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
+chrono = { workspace = true, features = ["serde"], optional = true }
+cidr = { workspace = true, features = ["serde"], optional = true }
+hmac = { workspace = true, optional = true }
+prost = { workspace = true, optional = true }
+prost-types = { workspace = true, optional = true }
+prost-wkt-types = { version = "0.7.2", optional = true }
 pbjson = { version = "0.9.0", optional = true }
-serde = { version = "1.0", features = ["derive"], optional = true }
-serde_json = { version = "1", optional = true }
-sha2 = { version = "0.10.8", optional = true }
-thiserror = { version = "1.0", optional = true }
-tokio = { version = "1", default-features = false, features = ["time"], optional = true }
-url = { version = "2.5", features = ["serde"], optional = true }
-uuid = { version = "1.5.0", features = ["serde"], optional = true }
-x25519-dalek = { version = "2.0", features = ["static_secrets"], optional = true }
+serde = { workspace = true, features = ["derive"], optional = true }
+serde_json = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+thiserror = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["time"], optional = true }
+url = { workspace = true, features = ["serde"], optional = true }
+uuid = { workspace = true, features = ["serde"], optional = true }
+x25519-dalek = { workspace = true, features = ["static_secrets"], optional = true }
 
 [build-dependencies]
-indoc = "2.0"
+indoc.workspace = true
 pbjson-build = "0.9.0"
 proc-macro2 = "1"
-prost-build = "0.14.3"
+prost-build = "0.14.4"
 quote = "1"
 
 [target.'cfg(windows)'.build-dependencies]
-reqwest = { version = "0.12.12", features = ["blocking"] }
-zip = "4.0.0"
+reqwest = { workspace = true, default-features = true, features = ["blocking"] }
+zip = "8.6.0"
 
 [dev-dependencies]
-tokio = { version = "1", default-features = false, features = [
+tokio = { workspace = true, features = [
     "macros",
     "rt",
 ] }
-uuid = { version = "1.5.0", features = [
+uuid = { workspace = true, features = [
     "v4",
     "fast-rng",
 ] }
@@ -99,3 +99,19 @@ websocket = []
 wireguard = []
 zstd = []
 json-rpc = ["dep:prost-wkt-types"]
+
+[package.metadata.cargo-machete]
+ignored = [
+    # Used by build/main.rs and build/rpc.rs, including the Windows protoc download.
+    "indoc",
+    "pbjson-build",
+    "proc-macro2",
+    "prost-build",
+    "quote",
+    "reqwest",
+    "zip",
+    # Referenced by generated protobuf, serde and RPC code.
+    "auto_impl",
+    "pbjson",
+    "serde",
+]

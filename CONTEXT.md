@@ -90,3 +90,16 @@ A compact compatibility Host retains accepted values in the authoritative TOML
 model for management readback, while the shared host-aware normalization path
 omits capabilities that the compact runtime cannot execute. Omitted settings
 are silent no-ops and must not be advertised as live network capabilities.
+
+## Web compatibility Host
+
+The Web compatibility Host runs the portable EasyTier guest in JavaScript
+runtimes that provide WebAssembly JSPI. Its shared runtime Module owns guest
+lifecycle, Host capability operations, data-plane resources, and WebSocket
+message handling. Browser and Cloudflare Adapters own only the platform-specific
+way that WebSockets are dialed or accepted and the matching guest artifact.
+
+The Browser Adapter is an outbound-only EasyTier instance with a smoltcp TCP
+data plane. The Cloudflare Adapter is an inbound-only relay hosted by one named
+Durable Object. Their public configuration exposes only capabilities each Host
+can execute; guest ABI details and serialized TOML remain internal.

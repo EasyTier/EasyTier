@@ -702,7 +702,7 @@ impl OspfRouteTable {
             .load()
             .iter()
             .filter(|(_, pv)| pv.peer_id != peer_id)
-            .map(|(cidr, _)| *cidr)
+            .map(|(cidr, _)| cidr)
             .collect()
     }
 
@@ -711,7 +711,7 @@ impl OspfRouteTable {
             .load()
             .iter()
             .filter(|(_, pv)| pv.peer_id != peer_id)
-            .map(|(cidr, _)| *cidr)
+            .map(|(cidr, _)| cidr)
             .collect()
     }
 }
@@ -2000,6 +2000,9 @@ struct SyncRouteSession {
     unreachable_peers_for_peer_info: parking_lot::Mutex<BTreeMap<PeerId, Version>>,
     unreachable_peers_for_conn_info: parking_lot::Mutex<BTreeMap<PeerId, Version>>,
 
+    // Keep requests until the data arrives, including when an RPC response is lost.
+    missing_peer_ids: parking_lot::Mutex<BTreeSet<PeerId>>,
+
     last_sync_succ_timestamp: AtomicCell<Option<SystemTime>>,
 
     // Last time any sync interaction (inbound request or successful
@@ -2040,6 +2043,8 @@ impl SyncRouteSession {
 
             unreachable_peers_for_peer_info: parking_lot::Mutex::new(BTreeMap::new()),
             unreachable_peers_for_conn_info: parking_lot::Mutex::new(BTreeMap::new()),
+
+            missing_peer_ids: parking_lot::Mutex::new(BTreeSet::new()),
 
             last_sync_succ_timestamp: AtomicCell::new(None),
 
@@ -2212,6 +2217,7 @@ impl SyncRouteSession {
             self.last_sync_succ_timestamp.store(None);
             self.unreachable_peers_for_peer_info.lock().clear();
             self.unreachable_peers_for_conn_info.lock().clear();
+            self.missing_peer_ids.lock().clear();
         }
 
         if initiator_changed {
@@ -2991,8 +2997,110 @@ impl PeerRouteServiceImpl {
         }
     }
 
+    fn collect_missing_peer_ids(
+        &self,
+        session: &SyncRouteSession,
+        conn_info: Option<&ConnInfo>,
+        from_is_credential: bool,
+        untrusted_peers: &[PeerId],
+    ) -> (Vec<PeerId>, Vec<PeerId>) {
+        let mut missing = session.missing_peer_ids.lock();
+        match conn_info {
+            Some(ConnInfo::ConnBitmap(bitmap)) => {
+                missing.extend(bitmap.peer_ids.iter().map(|p| p.peer_id));
+            }
+            Some(ConnInfo::ConnPeerList(list)) => {
+                for row in &list.peer_conn_infos {
+                    if let Some(peer) = row.peer_id {
+                        missing.insert(peer.peer_id);
+                        missing.extend(row.connected_peer_ids.iter().copied());
+                    }
+                }
+            }
+            None => {}
+        }
+        if missing.is_empty() {
+            return (Vec::new(), Vec::new());
+        }
+
+        let mut missing_peer_ids = Vec::new();
+        let mut missing_conn_peer_ids = Vec::new();
+        let peer_infos = self.synced_route_info.peer_infos.read();
+        let conn_map = self.synced_route_info.conn_map.read();
+        missing.retain(|peer_id| {
+            if *peer_id == self.my_peer_id
+                || (from_is_credential && *peer_id != session.dst_peer_id)
+                || untrusted_peers.contains(peer_id)
+            {
+                return false;
+            }
+            let info = peer_infos.get(peer_id);
+            let conn = conn_map.get(peer_id);
+            // GC and trust rejection remove both records. Do not resurrect them
+            // unless a later accepted topology update references this peer again.
+            if info.is_none() && conn.is_none() {
+                return false;
+            }
+            let missing_info = info.is_none_or(|p| p.version == 0);
+            // Non-relaying credential nodes do not advertise connection rows.
+            let needs_conn = info.is_none_or(|p| {
+                !SyncedRouteInfo::is_credential_peer_info(p)
+                    || self
+                        .synced_route_info
+                        .get_credential_info_by_pubkey(&p.noise_static_pubkey)
+                        .is_some_and(|credential| credential.allow_relay)
+            });
+            let missing_conn = needs_conn && conn.is_none_or(|c| c.version.get() == 0);
+            if missing_info {
+                missing_peer_ids.push(*peer_id);
+            }
+            if missing_conn {
+                missing_conn_peer_ids.push(*peer_id);
+            }
+            missing_info || missing_conn
+        });
+        (missing_peer_ids, missing_conn_peer_ids)
+    }
+
+    // Called with the session lock held, after acknowledging the outgoing data.
+    fn request_missing_peer_infos(
+        &self,
+        session: &SyncRouteSession,
+        response: &SyncRouteInfoResponse,
+    ) {
+        if response.missing_peer_ids.is_empty() && response.missing_conn_peer_ids.is_empty() {
+            return;
+        }
+        let peer_infos = self.synced_route_info.peer_infos.read();
+        let mut pending = session.unreachable_peers_for_peer_info.lock();
+        let conn_map = self.synced_route_info.conn_map.read();
+        let mut pending_conn = session.unreachable_peers_for_conn_info.lock();
+        for peer_id in &response.missing_peer_ids {
+            if *peer_id == session.dst_peer_id {
+                continue;
+            }
+            let Some(info) = peer_infos.get(peer_id).filter(|p| p.version != 0) else {
+                continue;
+            };
+            // Invalidate only this peer's acknowledgement. The existing pending
+            // paths bypass the time cursor and retry until a sync succeeds.
+            session.dst_saved_peer_info_versions.remove(peer_id);
+            pending.insert(*peer_id, info.version);
+        }
+        for peer_id in &response.missing_conn_peer_ids {
+            if *peer_id == session.dst_peer_id {
+                continue;
+            }
+            if let Some(conn) = conn_map.get(peer_id).filter(|c| c.version.get() != 0) {
+                session.dst_saved_conn_info_version.remove(peer_id);
+                pending_conn.insert(*peer_id, conn.version.get());
+            }
+        }
+    }
+
     fn build_route_info(&self, session: &SyncRouteSession) -> Option<Vec<RoutePeerInfo>> {
         let mut route_infos = Vec::new();
+        let mut included_peer_ids = HashSet::new();
         let peer_infos = self.synced_route_info.peer_infos.read();
         let mut unreachable_peers_for_peer_info = session.unreachable_peers_for_peer_info.lock();
         let last_sync_succ_timestamp = session.last_sync_succ_timestamp.load();
@@ -3015,6 +3123,7 @@ impl PeerRouteServiceImpl {
                 continue;
             }
 
+            included_peer_ids.insert(*peer_id);
             route_infos.push(peer_info.clone());
         }
 
@@ -3028,7 +3137,9 @@ impl PeerRouteServiceImpl {
                 return false;
             };
 
-            if self.route_table.topology_peer_reachable(*peer_id) {
+            if self.route_table.topology_peer_reachable(*peer_id)
+                && included_peer_ids.insert(*peer_id)
+            {
                 route_infos.push(peer_info.clone());
             }
 
@@ -3050,12 +3161,16 @@ impl PeerRouteServiceImpl {
     ) -> Option<RouteConnPeerList> {
         let last_sync_succ_timestamp = session.last_sync_succ_timestamp.load();
         let mut peer_conn_infos = Vec::new();
+        let mut included_peer_ids = HashSet::new();
         *estimated_size = 0;
 
         let conn_map = self.synced_route_info.conn_map.read();
         let mut unreachable_peers_for_conn_info = session.unreachable_peers_for_conn_info.lock();
 
         let mut add_to_conn_peer_list = |peer_id: PeerId, conn_info: &RouteConnInfo| {
+            if !included_peer_ids.insert(peer_id) {
+                return;
+            }
             peer_conn_infos.push(PeerConnInfo {
                 peer_id: Some(PeerIdVersion {
                     peer_id,
@@ -3533,6 +3648,7 @@ impl PeerRouteServiceImpl {
                             .update_dst_saved_foreign_network_version(foreign_network, dst_peer_id);
                     }
                     session.update_last_sync_succ_timestamp(next_last_sync_succ_timestamp);
+                    self.request_missing_peer_infos(&session, resp);
                 }
             }
         }
@@ -4029,6 +4145,7 @@ impl RouteSessionManager {
 
         let mut need_update_route_table = false;
         let mut untrusted_peers = Vec::new();
+        let mut accepted_conn_info = None;
 
         if let Some(peer_infos) = &peer_infos {
             // Step 9b: credential peers can only propagate their own route info
@@ -4078,6 +4195,7 @@ impl RouteSessionManager {
             if accept_conn_info {
                 service_impl.synced_route_info.update_conn_info(conn_info);
                 session.update_dst_saved_conn_info_version(conn_info, from_peer_id);
+                accepted_conn_info = Some(conn_info);
                 need_update_route_table = true;
             }
         }
@@ -4120,6 +4238,12 @@ impl RouteSessionManager {
 
         let is_initiator = session.we_are_initiator.load(Ordering::Relaxed);
         let session_id = session.my_session_id.load(Ordering::Relaxed);
+        let (missing_peer_ids, missing_conn_peer_ids) = service_impl.collect_missing_peer_ids(
+            &session,
+            accepted_conn_info,
+            from_is_credential,
+            &untrusted_peers,
+        );
 
         drop(_session_lock);
         service_impl
@@ -4138,6 +4262,8 @@ impl RouteSessionManager {
             is_initiator,
             session_id,
             error: None,
+            missing_peer_ids,
+            missing_conn_peer_ids,
         })
     }
 }
@@ -5648,6 +5774,325 @@ mod tests {
         );
         assert_eq!(list_peers_calls.load(Ordering::Relaxed), 2);
         assert_eq!(get_peer_identity_type_calls.load(Ordering::Relaxed), 4);
+    }
+
+    #[tokio::test]
+    async fn missing_peer_resync_recovers_expired_multihop_route() {
+        for use_bitmap in [false, true] {
+            // B(1) -- C(2) -- A(3) -- D(4). Only B expires A's old metadata.
+            let (receiver, _peer_rpc) =
+                test_route_with_admin_peer(Arc::new(NoopPeerContext::default())).await;
+            let service = &receiver.service_impl;
+            service.update_my_infos().await;
+            service.get_or_create_session(2);
+            let sender = test_service_impl(2);
+            let old = SystemTime::now() - Duration::from_secs(120);
+            for peer_id in 1..=4 {
+                install_peer_info(&sender, peer_id, Vec::new(), false);
+                if peer_id != 1 {
+                    install_peer_info(service, peer_id, Vec::new(), false);
+                }
+            }
+            for (_, info) in sender.synced_route_info.peer_infos.write().iter_mut() {
+                info.last_update = Some(old.into());
+                info.feature_flag.as_mut().unwrap().support_conn_list_sync = true;
+            }
+            for (peer_id, info) in service.synced_route_info.peer_infos.write().iter_mut() {
+                info.last_update = Some(
+                    if *peer_id == 3 {
+                        old
+                    } else {
+                        SystemTime::now()
+                    }
+                    .into(),
+                );
+            }
+            for (peer_id, neighbors) in
+                [(1, vec![2]), (2, vec![1, 3]), (3, vec![2, 4]), (4, vec![3])]
+            {
+                install_conn_row(&sender, peer_id, neighbors.clone());
+                install_conn_row(service, peer_id, neighbors);
+            }
+            install_conn_row(service, 2, [1]);
+            sender
+                .synced_route_info
+                .conn_map
+                .read()
+                .get(&2)
+                .unwrap()
+                .version
+                .set_if_larger(2);
+            service.update_route_table_and_cached_local_conn_bitmap();
+            assert!(!service.route_table.topology_peer_reachable(3));
+            service.clear_expired_peer().await;
+            assert!(!service.synced_route_info.peer_infos.read().contains_key(&3));
+
+            sender.synced_route_info.version.inc();
+            sender.update_route_table_and_cached_local_conn_bitmap();
+            let session = sender.get_or_create_session(1);
+            let infos: Vec<_> = sender
+                .synced_route_info
+                .peer_infos
+                .read()
+                .values()
+                .cloned()
+                .collect();
+            session.update_dst_saved_peer_info_version(&infos, 1);
+            session.update_dst_saved_conn_info_version(&sender.build_conn_bitmap().into(), 1);
+            let cursor = SystemTime::now();
+            session.update_last_sync_succ_timestamp(cursor);
+            assert!(sender.build_route_info(&session).is_none());
+
+            let conn_info = if use_bitmap {
+                sender.build_conn_bitmap().into()
+            } else {
+                RouteConnPeerList {
+                    peer_conn_infos: vec![PeerConnInfo {
+                        peer_id: Some(PeerIdVersion {
+                            peer_id: 2,
+                            version: 2,
+                        }),
+                        connected_peer_ids: vec![1, 3],
+                    }],
+                }
+                .into()
+            };
+            let response = receiver
+                .session_mgr
+                .do_sync_route_info(2, 10, true, None, None, Some(conn_info), None)
+                .await
+                .unwrap();
+            assert_eq!(response.missing_peer_ids, vec![3]);
+            assert!(!service.route_table.topology_peer_reachable(4));
+
+            // Lose the first response. A retry/keepalive without topology still
+            // reports the missing peer; no periodic full topology scan is needed.
+            let response = receiver
+                .session_mgr
+                .do_sync_route_info(2, 10, true, None, None, None, None)
+                .await
+                .unwrap();
+            assert_eq!(response.missing_peer_ids, vec![3]);
+            sender.request_missing_peer_infos(&session, &response);
+            assert_eq!(session.last_sync_succ_timestamp.load(), Some(cursor));
+            assert!(session.check_saved_peer_info_update_to_date(4, 1));
+
+            let (infos, conn_info, foreign) = sender.build_sync_request(&session, 1);
+            let infos = infos.unwrap();
+            assert_eq!(infos.iter().map(|p| p.peer_id).collect::<Vec<_>>(), vec![3]);
+            assert!(foreign.is_none());
+            if use_bitmap {
+                assert!(conn_info.is_none());
+            } else {
+                let Some(ConnInfo::ConnPeerList(list)) = &conn_info else {
+                    panic!("a single missing row should use the smaller incremental list");
+                };
+                assert_eq!(list.peer_conn_infos.len(), 1);
+                assert_eq!(list.peer_conn_infos[0].peer_id.unwrap().peer_id, 3);
+                assert_eq!(list.peer_conn_infos[0].connected_peer_ids, vec![2, 4]);
+            }
+
+            // A failed supplement must remain eligible despite the old timestamp.
+            assert_eq!(sender.build_route_info(&session).unwrap(), infos);
+            assert_eq!(sender.build_conn_info(&session, 1), conn_info);
+
+            // Metadata alone is insufficient when the connection row was also lost.
+            let response = receiver
+                .session_mgr
+                .do_sync_route_info(
+                    2,
+                    10,
+                    true,
+                    Some(infos.clone()),
+                    Some(infos.iter().map(raw_route_peer_info).collect()),
+                    None,
+                    None,
+                )
+                .await
+                .unwrap();
+            assert!(response.missing_peer_ids.is_empty());
+            assert_eq!(
+                response.missing_conn_peer_ids,
+                if use_bitmap { vec![] } else { vec![3] }
+            );
+            session.update_dst_saved_peer_info_version(&infos, 1);
+            sender.request_missing_peer_infos(&session, &response);
+            assert!(sender.build_route_info(&session).is_none());
+            if !use_bitmap {
+                assert!(!service.route_table.topology_peer_reachable(4));
+            }
+            let response = receiver
+                .session_mgr
+                .do_sync_route_info(2, 10, true, None, None, conn_info.clone(), None)
+                .await
+                .unwrap();
+            assert!(response.missing_peer_ids.is_empty());
+            assert!(response.missing_conn_peer_ids.is_empty());
+            assert!(service.route_table.topology_peer_reachable(4));
+            assert_eq!(
+                service
+                    .synced_route_info
+                    .get_peer_info_version_with_default(3),
+                1
+            );
+
+            session.update_dst_saved_peer_info_version(&infos, 1);
+            if let Some(conn_info) = &conn_info {
+                session.update_dst_saved_conn_info_version(conn_info, 1);
+            }
+            sender.request_missing_peer_infos(&session, &response);
+            assert!(sender.build_route_info(&session).is_none());
+            assert!(sender.build_conn_info(&session, 1).is_none());
+            receiver.stop().await;
+        }
+    }
+
+    #[test]
+    fn missing_peer_resync_discards_collected_and_rejected_peers() {
+        let service = test_service_impl(1);
+        let session = SyncRouteSession::new(1, 2);
+        let conn_info: ConnInfo = RouteConnPeerList {
+            peer_conn_infos: vec![PeerConnInfo {
+                peer_id: Some(PeerIdVersion {
+                    peer_id: 2,
+                    version: 1,
+                }),
+                connected_peer_ids: vec![1, 3, 4],
+            }],
+        }
+        .into();
+        service.synced_route_info.update_conn_info(&conn_info);
+        assert_eq!(
+            service.collect_missing_peer_ids(&session, Some(&conn_info), false, &[4]),
+            (vec![2, 3], vec![3])
+        );
+        service.synced_route_info.remove_peer(3);
+        assert_eq!(
+            service.collect_missing_peer_ids(&session, None, false, &[]),
+            (vec![2], vec![])
+        );
+        // A credential peer cannot supply metadata for other nodes.
+        assert_eq!(
+            service.collect_missing_peer_ids(&session, Some(&conn_info), true, &[]),
+            (vec![2], vec![])
+        );
+        session.update_remote_state_locked(123, true);
+        assert!(session.missing_peer_ids.lock().is_empty());
+    }
+
+    #[test]
+    fn missing_peer_resync_does_not_repeat_metadata_for_absent_connection_rows() {
+        let service = test_service_impl(1);
+        for peer_id in 1..=3 {
+            install_peer_info(&service, peer_id, Vec::new(), false);
+        }
+        install_conn_row(&service, 1, [2]);
+        let conn_info: ConnInfo = RouteConnPeerList {
+            peer_conn_infos: vec![PeerConnInfo {
+                peer_id: Some(PeerIdVersion {
+                    peer_id: 2,
+                    version: 1,
+                }),
+                connected_peer_ids: vec![1, 3],
+            }],
+        }
+        .into();
+        service.synced_route_info.update_conn_info(&conn_info);
+        service.update_route_table();
+        let session = SyncRouteSession::new(1, 2);
+        let (missing_peer_ids, missing_conn_peer_ids) =
+            service.collect_missing_peer_ids(&session, Some(&conn_info), false, &[]);
+        assert!(missing_peer_ids.is_empty());
+        assert_eq!(missing_conn_peer_ids, vec![3]);
+
+        let sender_session = SyncRouteSession::new(1, 2);
+        let infos = service.build_route_info(&sender_session).unwrap();
+        sender_session.update_dst_saved_peer_info_version(&infos, 2);
+        service.request_missing_peer_infos(
+            &sender_session,
+            &SyncRouteInfoResponse {
+                missing_peer_ids,
+                missing_conn_peer_ids,
+                ..Default::default()
+            },
+        );
+        assert!(service.build_route_info(&sender_session).is_none());
+        assert!(
+            sender_session
+                .unreachable_peers_for_conn_info
+                .lock()
+                .is_empty()
+        );
+
+        // Credential endpoints without relay permission never publish a row.
+        service
+            .synced_route_info
+            .peer_infos
+            .write()
+            .get_mut(&3)
+            .unwrap()
+            .feature_flag
+            .as_mut()
+            .unwrap()
+            .is_credential_peer = true;
+        assert_eq!(
+            service.collect_missing_peer_ids(&session, None, false, &[]),
+            (vec![], vec![])
+        );
+        // A credential allowed to relay still needs its outgoing connections.
+        service
+            .synced_route_info
+            .peer_infos
+            .write()
+            .get_mut(&3)
+            .unwrap()
+            .noise_static_pubkey = vec![3; 32];
+        install_credential_grant(&service, vec![3; 32], true);
+        assert_eq!(
+            service.collect_missing_peer_ids(&session, Some(&conn_info), false, &[]),
+            (vec![], vec![3])
+        );
+    }
+
+    #[test]
+    fn missing_peer_resync_deduplicates_new_versions_and_waits_for_reachability() {
+        let service = test_service_impl(1);
+        for peer_id in 1..=3 {
+            install_peer_info(&service, peer_id, Vec::new(), false);
+        }
+        install_conn_row(&service, 1, [2]);
+        install_conn_row(&service, 2, [1]);
+        install_conn_row(&service, 3, [2]);
+        service.update_route_table_and_cached_local_conn_bitmap();
+        let session = SyncRouteSession::new(1, 2);
+        service.request_missing_peer_infos(
+            &session,
+            &SyncRouteInfoResponse {
+                missing_peer_ids: vec![3, 3, 99, 2],
+                missing_conn_peer_ids: vec![3, 3, 99, 2],
+                ..Default::default()
+            },
+        );
+        assert_eq!(session.unreachable_peers_for_peer_info.lock().len(), 1);
+        assert!(
+            !service
+                .build_route_info(&session)
+                .unwrap()
+                .iter()
+                .any(|p| p.peer_id == 3)
+        );
+        install_conn_row(&service, 2, [1, 3]);
+        service.update_route_table_and_cached_local_conn_bitmap();
+        let infos = service.build_route_info(&session).unwrap();
+        assert_eq!(infos.iter().filter(|p| p.peer_id == 3).count(), 1);
+        let list = service.build_conn_peer_list(&session, &mut 0).unwrap();
+        assert_eq!(
+            list.peer_conn_infos
+                .iter()
+                .filter(|p| p.peer_id.unwrap().peer_id == 3)
+                .count(),
+            1
+        );
     }
 
     #[test]

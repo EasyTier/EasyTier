@@ -36,8 +36,18 @@ const manualDisconnect = ref(false)
 const configServerDialogVisible = ref(false)
 const configServerConnected = ref(false)
 
+const showAutostartHint = ref(false)
+
 async function openModeDialog() {
   editingMode.value = JSON.parse(JSON.stringify(loadMode()))
+  showAutostartHint.value = false
+  modeDialogVisible.value = true
+}
+
+async function openAutostartDialog() {
+  editingMode.value = JSON.parse(JSON.stringify(loadMode()))
+  editingMode.value.mode = 'service'
+  showAutostartHint.value = true
   modeDialogVisible.value = true
 }
 
@@ -401,6 +411,12 @@ const setting_menu_items: Ref<MenuItem[]> = ref([
     visible: () => type() !== 'android',
   },
   {
+    label: () => t('mode.autostart'),
+    icon: 'pi pi-clock',
+    command: openAutostartDialog,
+    visible: () => type() !== 'android',
+  },
+  {
     label: () => `${t('config-server.title')}${t('config-server.' + configServerConnectionStatus.value)}`,
     icon: 'pi pi-globe',
     command: openConfigServerDialog,
@@ -497,6 +513,9 @@ const configServerConnectionStatus = computed(() => {
       <About />
     </Dialog>
     <Dialog v-model:visible="modeDialogVisible" modal :header="t('mode.switch_mode')" :style="{ width: '50vw' }">
+      <Message v-if="showAutostartHint" severity="info" :closable="false" class="mb-4">
+        {{ t('mode.autostart_hint') }}
+      </Message>
       <ModeSwitcher v-model="editingMode" @uninstall-service="onUninstallService" @stop-service="onStopService" />
       <template #footer>
         <Button :label="t('web.common.cancel')" icon="pi pi-times" @click="modeDialogVisible = false" text />

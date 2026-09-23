@@ -300,6 +300,12 @@ sudo easytier-core --network-name mysharednode --network-secret mysharednode
 
 EasyTier is released under the [LGPL-3.0](https://github.com/EasyTier/EasyTier/blob/main/LICENSE).
 
+## Responsible Use
+
+Use EasyTier only for lawful purposes and in compliance with applicable laws
+and regulations. You are responsible for ensuring that you are authorized to
+connect to and administer the networks and devices involved.
+
 ## Sponsor
 
 CDN acceleration and security protection for this project are sponsored by Tencent EdgeOne.

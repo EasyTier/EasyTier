@@ -108,25 +108,18 @@ impl ConnectorRuntime for NativeHostRuntime {
         remote_addr: SocketAddr,
         context: SocketContext,
     ) -> anyhow::Result<SocketAddr> {
-        let socket = NetNS::from_socket_context(&context).run(|| -> anyhow::Result<_> {
-            let (domain, bind_addr) = match remote_addr {
-                SocketAddr::V4(_) => (
-                    socket2::Domain::IPV4,
-                    SocketAddr::V4(SocketAddrV4::new(std::net::Ipv4Addr::UNSPECIFIED, 0)),
-                ),
-                SocketAddr::V6(_) => (
-                    socket2::Domain::IPV6,
-                    SocketAddr::V6(SocketAddrV6::new(std::net::Ipv6Addr::UNSPECIFIED, 0, 0, 0)),
-                ),
-            };
-            let socket =
-                socket2::Socket::new(domain, socket2::Type::DGRAM, Some(socket2::Protocol::UDP))?;
-            crate::tunnel::common::apply_socket_mark(&socket, context.socket_mark)?;
-            socket.set_nonblocking(true)?;
-            socket.bind(&socket2::SockAddr::from(bind_addr))?;
-            Ok(std::net::UdpSocket::from(socket))
-        })?;
-        let socket = tokio::net::UdpSocket::from_std(socket)?;
+        let bind_addr = match remote_addr {
+            SocketAddr::V4(_) => {
+                SocketAddr::V4(SocketAddrV4::new(std::net::Ipv4Addr::UNSPECIFIED, 0))
+            }
+            SocketAddr::V6(_) => {
+                SocketAddr::V6(SocketAddrV6::new(std::net::Ipv6Addr::UNSPECIFIED, 0, 0, 0))
+            }
+        };
+        let options = UdpBindOptions::default()
+            .with_context(context)
+            .with_local_addr(Some(bind_addr));
+        let socket = crate::socket::udp::create_udp_socket(&options).await?;
         socket.connect(remote_addr).await?;
         Ok(socket.local_addr()?)
     }
@@ -168,7 +161,9 @@ impl VirtualTcpListenerFactory for NativeHostRuntime {
     type Listener = RuntimeTcpListener;
 
     async fn bind_tcp(&self, options: TcpListenOptions) -> anyhow::Result<Arc<Self::Listener>> {
-        Ok(Arc::new(crate::socket::tcp::bind_tcp_listener(options)?))
+        Ok(Arc::new(
+            crate::socket::tcp::bind_tcp_listener(options).await?,
+        ))
     }
 }
 

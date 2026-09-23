@@ -177,11 +177,16 @@ pub(crate) fn collect_runtime_state() -> RuntimeAggregateState {
                 .as_ref()
                 .map(|snapshot| !snapshot.config.exit_nodes.is_empty())
                 .unwrap_or(false);
+            let manual_routes = snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.config.routes.clone())
+                .unwrap_or_default();
             instances.push(runtime_instance_from_running_info(
                 config_id,
                 display_name,
                 dns_servers,
                 need_exit_node,
+                manual_routes,
                 info,
             ));
         } else if let Some(snapshot) = get_runtime_config_snapshot(&config_id) {
@@ -207,6 +212,7 @@ pub(crate) fn collect_runtime_state() -> RuntimeAggregateState {
                 events: Vec::new(),
                 routes: Vec::new(),
                 peers: Vec::new(),
+                manual_routes: Vec::new(),
             });
         }
     }

@@ -3,6 +3,7 @@
 //! Everything in `foundation` may be used by any layer, and nothing here may
 //! depend on a domain Module. See `CONTEXT.md` "Module layers".
 
+pub mod expiring_set;
 #[cfg(any(
     feature = "proxy-smoltcp-stack",
     test,

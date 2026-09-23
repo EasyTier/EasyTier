@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EasyTier Web example</title>
+    <style>
+      :root {
+        color: #17211b;
+        background: #eef2ed;
+        font: 16px/1.5 system-ui, sans-serif;
+      }
+      body {
+        margin: 0;
+      }
+      main {
+        box-sizing: border-box;
+        max-width: 48rem;
+        min-height: 100vh;
+        margin: auto;
+        padding: 4rem 1.5rem;
+      }
+      form {
+        display: grid;
+        gap: 1rem;
+        padding: 1.5rem;
+        background: white;
+        border: 1px solid #cbd5cc;
+      }
+      label {
+        display: grid;
+        gap: 0.35rem;
+      }
+      input, button {
+        box-sizing: border-box;
+        min-height: 2.75rem;
+        padding: 0.6rem 0.75rem;
+        font: inherit;
+      }
+      .actions {
+        display: flex;
+        gap: 0.75rem;
+      }
+      output {
+        display: block;
+        margin-top: 1.5rem;
+        font-weight: 700;
+      }
+      pre {
+        min-height: 12rem;
+        padding: 1rem;
+        overflow: auto;
+        color: #d9f7df;
+        background: #142019;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>EasyTier Browser → Cloudflare</h1>
+      <p>Connect a browser EasyTier Instance to the local Worker relay.</p>
+      <form id="connection-form">
+        <label>
+          Relay URL
+          <input name="relay" value="ws://127.0.0.1:8787/" required>
+        </label>
+        <label>
+          Network name
+          <input name="network" value="easytier-web-example" required>
+        </label>
+        <label>
+          Network secret
+          <input name="secret" type="password" required>
+        </label>
+        <label>
+          Browser IPv4
+          <input name="ipv4" value="10.144.144.2/24" required>
+        </label>
+        <div class="actions">
+          <button id="connect" type="submit">Connect</button>
+          <button id="disconnect" type="button" disabled>Disconnect</button>
+        </div>
+      </form>
+      <output id="status">Not connected</output>
+      <pre id="events" aria-live="polite"></pre>
+    </main>
+    <script type="module" src="/main.ts"></script>
+  </body>
+</html>

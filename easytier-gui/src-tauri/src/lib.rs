@@ -1469,16 +1469,15 @@ pub fn run_gui() -> std::process::ExitCode {
             let Ok(log_dir) = get_log_dir(app.app_handle()) else {
                 return Ok(());
             };
-            let config = LoggingConfig {
-                file_logger: Some(FileLoggerConfig {
+            let config = LoggingConfig::builder()
+                .file_logger(FileLoggerConfig {
                     dir: Some(log_dir.to_string_lossy().to_string()),
                     level: None,
                     file: None,
                     size_mb: None,
                     count: None,
-                }),
-                console_logger: None,
-            };
+                })
+                .build();
             let Ok(_) = log::init(&config, true) else {
                 return Ok(());
             };

@@ -205,7 +205,7 @@ pub async fn handle_proxy_rpc(
 
 pub fn router() -> Router<super::AppStateInner> {
     Router::new().route(
-        "/api/v1/machines/:machine-id/proxy-rpc",
+        "/api/v1/machines/{machine-id}/proxy-rpc",
         post(handle_proxy_rpc),
     )
 }
@@ -227,7 +227,7 @@ pub async fn handle_proxy_rpc_internal(
 
 pub fn router_internal() -> Router<super::AppStateInner> {
     Router::new().route(
-        "/api/internal/users/:user-id/machines/:machine-id/proxy-rpc",
+        "/api/internal/users/{user-id}/machines/{machine-id}/proxy-rpc",
         post(handle_proxy_rpc_internal),
     )
 }

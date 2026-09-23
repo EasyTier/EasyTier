@@ -252,7 +252,7 @@ impl RestfulServer {
                     get(Self::handle_list_all_sessions_internal),
                 )
                 .route(
-                    "/api/internal/users/:user-id/sessions/:machine-id",
+                    "/api/internal/users/{user-id}/sessions/{machine-id}",
                     delete(Self::handle_disconnect_session_internal),
                 )
                 .merge(NetworkApi::build_route_internal())

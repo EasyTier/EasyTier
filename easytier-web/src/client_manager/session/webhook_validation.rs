@@ -25,6 +25,8 @@ pub(super) struct WebhookValidationInput {
     pub(super) webhook_config: SharedWebhookConfig,
     pub(super) client_url: url::Url,
     pub(super) applied_config_revision: Option<String>,
+    pub(super) applied_config_revision_known: bool,
+    pub(super) failed_instance_ids: Vec<String>,
     pub(super) req: HeartbeatRequest,
     pub(super) machine_id: uuid::Uuid,
 }
@@ -40,28 +42,39 @@ pub(super) fn retry_delay(machine_id: uuid::Uuid) -> Duration {
 }
 
 async fn request_heartbeat_validation(
-    webhook_config: &crate::webhook::WebhookConfig,
-    client_url: &url::Url,
+    input: &WebhookValidationInput,
     persisted_config_revision: Option<&str>,
-    applied_config_revision: Option<&str>,
-    req: &HeartbeatRequest,
-    machine_id: uuid::Uuid,
 ) -> anyhow::Result<Option<WebhookHeartbeatValidation>> {
     let webhook_req = crate::webhook::ValidateTokenRequest {
-        token: req.user_token.clone(),
-        machine_id: machine_id.to_string(),
-        public_ip: client_url.host_str().map(str::to_string),
-        hostname: req.hostname.clone(),
-        version: req.easytier_version.clone(),
-        os_type: req.device_os.as_ref().map(|info| info.os_type.clone()),
-        os_version: req.device_os.as_ref().map(|info| info.version.clone()),
-        os_distribution: req.device_os.as_ref().map(|info| info.distribution.clone()),
-        web_instance_id: webhook_config.web_instance_id.clone(),
-        web_instance_api_base_url: webhook_config.web_instance_api_base_url.clone(),
+        token: input.req.user_token.clone(),
+        machine_id: input.machine_id.to_string(),
+        public_ip: input.client_url.host_str().map(str::to_string),
+        hostname: input.req.hostname.clone(),
+        version: input.req.easytier_version.clone(),
+        os_type: input
+            .req
+            .device_os
+            .as_ref()
+            .map(|info| info.os_type.clone()),
+        os_version: input
+            .req
+            .device_os
+            .as_ref()
+            .map(|info| info.version.clone()),
+        os_distribution: input
+            .req
+            .device_os
+            .as_ref()
+            .map(|info| info.distribution.clone()),
+        web_instance_id: input.webhook_config.web_instance_id.clone(),
+        web_instance_api_base_url: input.webhook_config.web_instance_api_base_url.clone(),
         persisted_config_revision: persisted_config_revision.map(str::to_string),
-        applied_config_revision: applied_config_revision.map(str::to_string),
+        applied_config_revision: input.applied_config_revision.as_deref().map(str::to_string),
+        applied_config_revision_known: input.applied_config_revision_known,
+        failed_instance_ids: input.failed_instance_ids.to_vec(),
     };
-    let resp = webhook_config
+    let resp = input
+        .webhook_config
         .validate_token(&webhook_req)
         .await
         .map_err(|e| anyhow::anyhow!("Webhook token validation failed: {:?}", e))?;
@@ -87,7 +100,7 @@ async fn resolve_user_id(storage: &Storage, token: &str) -> anyhow::Result<i32> 
         None => storage
             .auto_create_user(token)
             .await
-            .with_context(|| format!("Failed to auto-create webhook user: {:?}", token))?,
+            .with_context(|| "Failed to auto-create webhook user".to_string())?,
     };
 
     Ok(user_id)
@@ -115,7 +128,7 @@ async fn persisted_config_revision_for_token(
 
 async fn wait_for_input(
     session_data: std::sync::Weak<RwLock<SessionData>>,
-) -> Option<WebhookValidationInput> {
+) -> Option<(WebhookValidationInput, u64)> {
     loop {
         let notify = {
             let session_data = session_data.upgrade()?;
@@ -133,14 +146,28 @@ async fn wait_for_input(
                 let req = data.req.clone()?;
                 let machine_id = req.machine_id.map(Into::into)?;
                 let storage = Storage::try_from(data.storage.clone()).ok()?;
-                return Some(WebhookValidationInput {
-                    storage,
-                    webhook_config: data.webhook_config.clone(),
-                    client_url: data.client_url.clone(),
-                    applied_config_revision: data.applied_config_revision.clone(),
-                    req,
-                    machine_id,
-                });
+                let (applied_config_revision, applied_config_revision_known) = {
+                    let runtime = data.managed_runtime();
+                    (
+                        runtime.applied_config_revision.clone(),
+                        runtime.applied_config_revision_known,
+                    )
+                };
+                return Some((
+                    WebhookValidationInput {
+                        storage,
+                        webhook_config: data.webhook_config.clone(),
+                        client_url: data.client_url.clone(),
+                        applied_config_revision,
+                        applied_config_revision_known,
+                        failed_instance_ids: SessionRpcService::sorted_failed_instance_ids_locked(
+                            &data,
+                        ),
+                        req,
+                        machine_id,
+                    },
+                    data.webhook_validation_change_epoch,
+                ));
             }
             data.webhook_validation_notify.clone()
         };
@@ -148,17 +175,64 @@ async fn wait_for_input(
     }
 }
 
+async fn wait_for_retry_or_state_change(
+    session_data: &std::sync::Weak<RwLock<SessionData>>,
+    machine_id: uuid::Uuid,
+    validation_change_epoch: u64,
+    delay: Duration,
+) {
+    let retry_deadline = tokio::time::sleep(delay);
+    tokio::pin!(retry_deadline);
+
+    loop {
+        let notify = {
+            let Some(session_data) = session_data.upgrade() else {
+                return;
+            };
+            let data = session_data.read().await;
+            let Some(req) = data.req.as_ref() else {
+                return;
+            };
+            if req.machine_id.map(uuid::Uuid::from) != Some(machine_id)
+                || matches!(data.auth_state, SessionAuthState::Invalid)
+            {
+                return;
+            }
+            if data.webhook_validation_change_epoch != validation_change_epoch {
+                return;
+            }
+            data.webhook_validation_notify.clone()
+        };
+
+        // Notify is only a wake-up hint. Periodic validation can set dirty,
+        // but only a meaningful validation-state change may bypass backoff.
+        // Recheck the epoch after every wake without resetting the deadline.
+        tokio::select! {
+            _ = &mut retry_deadline => {
+                mark_dirty_if_current(session_data, machine_id).await;
+                return;
+            }
+            _ = notify.notified() => {}
+        }
+    }
+}
+
 pub(super) async fn run_worker(session_data: std::sync::Weak<RwLock<SessionData>>) {
-    while let Some(input) = wait_for_input(session_data.clone()).await {
+    while let Some((input, validation_change_epoch)) = wait_for_input(session_data.clone()).await {
         let machine_id = input.machine_id;
-        if let Err(error) = run_round(session_data.clone(), input).await {
+        if let Err(error) = run_round(session_data.clone(), input, validation_change_epoch).await {
             tracing::warn!(
                 ?machine_id,
                 %error,
                 "webhook validation failed, will retry later"
             );
-            tokio::time::sleep(retry_delay(machine_id)).await;
-            mark_dirty_if_current(&session_data, machine_id).await;
+            wait_for_retry_or_state_change(
+                &session_data,
+                machine_id,
+                validation_change_epoch,
+                retry_delay(machine_id),
+            )
+            .await;
         }
     }
 }
@@ -166,6 +240,7 @@ pub(super) async fn run_worker(session_data: std::sync::Weak<RwLock<SessionData>
 pub(super) async fn run_round(
     session_data: std::sync::Weak<RwLock<SessionData>>,
     input: WebhookValidationInput,
+    validation_change_epoch: u64,
 ) -> anyhow::Result<()> {
     let persisted_config_revision = persisted_config_revision_for_token(
         &input.storage,
@@ -173,24 +248,51 @@ pub(super) async fn run_round(
         input.machine_id,
     )
     .await?;
-    let validation = request_heartbeat_validation(
-        &input.webhook_config,
-        &input.client_url,
-        persisted_config_revision.as_deref(),
-        input.applied_config_revision.as_deref(),
-        &input.req,
-        input.machine_id,
-    )
-    .await?;
+    let validation =
+        request_heartbeat_validation(&input, persisted_config_revision.as_deref()).await?;
+
+    // The HTTP round trip can span heartbeats, revision updates, and
+    // failed-instance changes. Results older than the current epoch are
+    // discarded so a stale rejection cannot invalidate the session and a
+    // stale success cannot emit outdated connection transitions.
+    if !validation_results_are_current(&session_data, &input, validation_change_epoch).await {
+        return Ok(());
+    }
 
     let Some(validation) = validation else {
-        apply_rejected(&session_data, &input).await;
+        apply_rejected(&session_data, &input, validation_change_epoch).await;
         return Ok(());
     };
 
     let user_id = resolve_user_id(&input.storage, &input.req.user_token).await?;
-    apply_success(&session_data, input, validation, user_id).await;
+    apply_success(
+        &session_data,
+        input,
+        validation,
+        user_id,
+        validation_change_epoch,
+    )
+    .await;
     Ok(())
+}
+
+async fn validation_results_are_current(
+    session_data: &std::sync::Weak<RwLock<SessionData>>,
+    input: &WebhookValidationInput,
+    validation_change_epoch: u64,
+) -> bool {
+    let Some(session_data) = session_data.upgrade() else {
+        return false;
+    };
+    let data = session_data.read().await;
+    if data.webhook_validation_change_epoch != validation_change_epoch {
+        tracing::debug!(
+            machine_id = %input.machine_id,
+            "discard stale webhook validation result"
+        );
+        return false;
+    }
+    true
 }
 
 async fn mark_dirty_if_current(
@@ -224,6 +326,7 @@ async fn mark_dirty_if_current(
 pub(super) async fn apply_rejected(
     session_data: &std::sync::Weak<RwLock<SessionData>>,
     input: &WebhookValidationInput,
+    validation_change_epoch: u64,
 ) {
     let Some(session_data) = session_data.upgrade() else {
         return;
@@ -239,6 +342,13 @@ pub(super) async fn apply_rejected(
         }) {
             return;
         }
+        if data.webhook_validation_change_epoch != validation_change_epoch {
+            tracing::debug!(
+                machine_id = %input.machine_id,
+                "discard stale webhook validation rejection"
+            );
+            return;
+        }
         tracing::info!(
             machine_id = %input.machine_id,
             client_url = %data.client_url,
@@ -247,8 +357,6 @@ pub(super) async fn apply_rejected(
         data.auth_state = SessionAuthState::Invalid;
         data.webhook_validation_dirty = false;
         data.binding_version = None;
-        data.applied_config_revision = None;
-        data.pending_managed_config_delta = None;
         let storage_token = data.storage_token.clone();
         let disconnect_notification = storage_token.as_ref().and_then(|storage_token| {
             data.webhook_connected_binding_version
@@ -282,6 +390,7 @@ pub(super) async fn apply_success(
     input: WebhookValidationInput,
     validation: WebhookHeartbeatValidation,
     user_id: i32,
+    validation_change_epoch: u64,
 ) {
     let WebhookHeartbeatValidation {
         config_revision: _,
@@ -296,6 +405,7 @@ pub(super) async fn apply_success(
         notifier,
         disconnect_notification,
         connect_notification,
+        validation_notify,
         runtime_req,
         session_epoch,
     ) = {
@@ -310,6 +420,13 @@ pub(super) async fn apply_success(
         ) {
             return;
         }
+        if data.webhook_validation_change_epoch != validation_change_epoch {
+            tracing::debug!(
+                machine_id = %input.machine_id,
+                "discard stale webhook validation success"
+            );
+            return;
+        }
         if matches!(data.auth_state, SessionAuthState::Invalid) {
             tracing::info!(
                 machine_id = %input.machine_id,
@@ -321,6 +438,20 @@ pub(super) async fn apply_success(
 
         let previous_connected_binding_version = data.webhook_connected_binding_version;
         let client_url = data.client_url.clone();
+        let is_new_storage_token = data.storage_token.is_none();
+        let mut restored_runtime_revision = false;
+        if is_new_storage_token {
+            data.managed_runtime = input.storage.bind_managed_runtime_state(
+                user_id,
+                input.machine_id,
+                SessionRpcService::heartbeat_runtime_id(&runtime_req),
+                data.session_epoch,
+            );
+            let runtime = data.managed_runtime();
+            restored_runtime_revision = runtime.applied_config_revision_known
+                && (!input.applied_config_revision_known
+                    || input.applied_config_revision != runtime.applied_config_revision);
+        }
         let storage_token = data.storage_token.get_or_insert_with(|| StorageToken {
             token: runtime_req.user_token.clone(),
             client_url,
@@ -330,6 +461,16 @@ pub(super) async fn apply_success(
         let storage_token = storage_token.clone();
         data.auth_state = SessionAuthState::Authorized;
         data.binding_version = Some(binding_version);
+        if is_new_storage_token {
+            tracing::info!(
+                machine_id = %input.machine_id,
+                user_id,
+                session_epoch = data.session_epoch,
+                binding_version,
+                client_url = %data.client_url,
+                "session identity established"
+            );
+        }
         let should_notify_connected = previous_connected_binding_version != Some(binding_version);
         let disconnect_notification = previous_connected_binding_version
             .filter(|previous_binding_version| *previous_binding_version != binding_version)
@@ -368,12 +509,15 @@ pub(super) async fn apply_success(
                 binding_version: Some(binding_version),
             },
         });
+        let validation_notify = restored_runtime_revision
+            .then(|| SessionRpcService::mark_webhook_validation_state_changed_locked(&mut data));
 
         (
             storage_token,
             data.notifier.clone(),
             disconnect_notification,
             connect_notification,
+            validation_notify,
             runtime_req,
             data.session_epoch,
         )
@@ -383,6 +527,10 @@ pub(super) async fn apply_success(
     input
         .storage
         .update_session_client(storage_token, report_time, true, session_epoch);
+
+    if let Some(validation_notify) = validation_notify {
+        validation_notify.notify_one();
+    }
 
     if disconnect_notification.is_some() || connect_notification.is_some() {
         wait_webhook_connection_transition(
@@ -408,5 +556,303 @@ async fn wait_webhook_connection_transition(
     ));
     if let Err(error) = transition.await {
         tracing::warn!(%error, "webhook connection transition task failed");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn validation_session(machine_id: uuid::Uuid) -> Arc<RwLock<SessionData>> {
+        let storage = Storage::new(crate::db::Db::memory_db().await);
+        let mut data = SessionData::new(
+            storage.weak_ref(),
+            url::Url::parse("http://127.0.0.1").unwrap(),
+            None,
+            Arc::new(crate::FeatureFlags::default()),
+            Arc::new(crate::webhook::WebhookConfig::new(
+                None, None, None, None, None,
+            )),
+        );
+        data.req = Some(HeartbeatRequest {
+            user_token: "token".to_string(),
+            machine_id: Some(machine_id.into()),
+            ..Default::default()
+        });
+        data.auth_state = SessionAuthState::Authorized;
+        Arc::new(RwLock::new(data))
+    }
+
+    #[tokio::test]
+    async fn reconnect_immediately_reports_restored_runtime_revision() {
+        let storage = Storage::new(crate::db::Db::memory_db().await);
+        let user_id = storage.db().auto_create_user("token").await.unwrap().id;
+        let machine_id = uuid::Uuid::new_v4();
+        let runtime_id = uuid::Uuid::new_v4();
+        let shared = storage.bind_managed_runtime_state(user_id, machine_id, Some(runtime_id), 1);
+        {
+            let mut runtime = shared.lock().unwrap();
+            runtime.applied_config_revision = Some("rev-applied".to_string());
+            runtime.applied_config_revision_known = true;
+        }
+        let request = HeartbeatRequest {
+            user_token: "token".to_string(),
+            machine_id: Some(machine_id.into()),
+            inst_id: Some(runtime_id.into()),
+            ..Default::default()
+        };
+        let mut data = SessionData::new(
+            storage.weak_ref(),
+            url::Url::parse("http://127.0.0.1").unwrap(),
+            None,
+            Arc::new(crate::FeatureFlags::default()),
+            Arc::new(crate::webhook::WebhookConfig::new(
+                None, None, None, None, None,
+            )),
+        );
+        data.req = Some(request.clone());
+        data.session_identity = Some(SessionRpcService::heartbeat_identity(&request, machine_id));
+        data.session_epoch = 2;
+        let session_data = Arc::new(RwLock::new(data));
+
+        let validation_change_epoch = session_data.read().await.webhook_validation_change_epoch;
+        apply_success(
+            &Arc::downgrade(&session_data),
+            WebhookValidationInput {
+                storage,
+                webhook_config: Arc::new(crate::webhook::WebhookConfig::new(
+                    None, None, None, None, None,
+                )),
+                client_url: url::Url::parse("http://127.0.0.1").unwrap(),
+                applied_config_revision: None,
+                applied_config_revision_known: false,
+                failed_instance_ids: Vec::new(),
+                req: request,
+                machine_id,
+            },
+            WebhookHeartbeatValidation {
+                config_revision: "rev-applied".to_string(),
+                binding_version: 1,
+            },
+            user_id,
+            validation_change_epoch,
+        )
+        .await;
+
+        let data = session_data.read().await;
+        assert!(Arc::ptr_eq(&data.managed_runtime, &shared));
+        assert!(data.webhook_validation_dirty);
+        assert_eq!(data.webhook_validation_change_epoch, 1);
+    }
+
+    #[tokio::test]
+    async fn validation_input_carries_merged_failed_instance_ids() {
+        let machine_id = uuid::Uuid::new_v4();
+        let core_failed = uuid::Uuid::new_v4();
+        let local_failed = uuid::Uuid::new_v4().to_string();
+        let session_data = validation_session(machine_id).await;
+        let storage = Storage::new(crate::db::Db::memory_db().await);
+        {
+            let mut data = session_data.write().await;
+            data.storage = storage.weak_ref();
+            data.req
+                .as_mut()
+                .unwrap()
+                .failed_network_instances
+                .push(core_failed.into());
+            data.direct_run_failed_instance_ids
+                .insert(local_failed.clone());
+            data.webhook_validation_dirty = true;
+        }
+
+        let (input, _) = wait_for_input(Arc::downgrade(&session_data))
+            .await
+            .expect("validation input");
+        let mut expected = vec![core_failed.to_string(), local_failed];
+        expected.sort_unstable();
+
+        assert_eq!(input.failed_instance_ids, expected);
+    }
+
+    #[tokio::test]
+    async fn stale_notification_does_not_bypass_validation_retry_delay() {
+        let machine_id = uuid::Uuid::new_v4();
+        let session_data = validation_session(machine_id).await;
+        let notify = session_data.read().await.webhook_validation_notify.clone();
+        notify.notify_one();
+        let weak_session = Arc::downgrade(&session_data);
+
+        let wait =
+            wait_for_retry_or_state_change(&weak_session, machine_id, 0, Duration::from_secs(10));
+        tokio::pin!(wait);
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut wait)
+                .await
+                .is_err()
+        );
+        assert!(!session_data.read().await.webhook_validation_dirty);
+    }
+
+    #[tokio::test]
+    async fn validation_retry_deadline_rearms_dirty_state() {
+        let machine_id = uuid::Uuid::new_v4();
+        let session_data = validation_session(machine_id).await;
+        let weak_session = Arc::downgrade(&session_data);
+
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            wait_for_retry_or_state_change(&weak_session, machine_id, 0, Duration::from_millis(20)),
+        )
+        .await
+        .expect("retry deadline should eventually expire");
+        assert!(session_data.read().await.webhook_validation_dirty);
+    }
+
+    #[tokio::test]
+    async fn periodic_dirty_state_does_not_interrupt_validation_retry_delay() {
+        let machine_id = uuid::Uuid::new_v4();
+        let session_data = validation_session(machine_id).await;
+        let weak_session = Arc::downgrade(&session_data);
+        let wait =
+            wait_for_retry_or_state_change(&weak_session, machine_id, 0, Duration::from_secs(10));
+        tokio::pin!(wait);
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut wait)
+                .await
+                .is_err()
+        );
+        mark_dirty_if_current(&weak_session, machine_id).await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut wait)
+                .await
+                .is_err()
+        );
+        assert!(session_data.read().await.webhook_validation_dirty);
+    }
+
+    #[tokio::test]
+    async fn validation_state_change_interrupts_retry_delay() {
+        let machine_id = uuid::Uuid::new_v4();
+        let session_data = validation_session(machine_id).await;
+        let weak_session = Arc::downgrade(&session_data);
+        let wait =
+            wait_for_retry_or_state_change(&weak_session, machine_id, 0, Duration::from_secs(10));
+        tokio::pin!(wait);
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut wait)
+                .await
+                .is_err()
+        );
+        let notify = {
+            let mut data = session_data.write().await;
+            SessionRpcService::mark_webhook_validation_state_changed_locked(&mut data)
+        };
+        notify.notify_one();
+        tokio::time::timeout(Duration::from_millis(500), &mut wait)
+            .await
+            .expect("validation state change should interrupt retry delay");
+        assert!(session_data.read().await.webhook_validation_dirty);
+    }
+
+    #[tokio::test]
+    async fn invalid_session_does_not_rearm_validation_retry() {
+        let machine_id = uuid::Uuid::new_v4();
+        let session_data = validation_session(machine_id).await;
+        session_data.write().await.auth_state = SessionAuthState::Invalid;
+        let weak_session = Arc::downgrade(&session_data);
+
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            wait_for_retry_or_state_change(&weak_session, machine_id, 0, Duration::from_secs(10)),
+        )
+        .await
+        .expect("invalid session should stop waiting");
+        assert!(!session_data.read().await.webhook_validation_dirty);
+    }
+
+    #[tokio::test]
+    async fn validation_results_require_current_epoch_or_live_session() {
+        let machine_id = uuid::Uuid::new_v4();
+        let session_data = validation_session(machine_id).await;
+        let input = WebhookValidationInput {
+            storage: Storage::new(crate::db::Db::memory_db().await),
+            webhook_config: Arc::new(crate::webhook::WebhookConfig::new(
+                None, None, None, None, None,
+            )),
+            client_url: url::Url::parse("http://127.0.0.1").unwrap(),
+            applied_config_revision: None,
+            applied_config_revision_known: false,
+            failed_instance_ids: Vec::new(),
+            req: HeartbeatRequest::default(),
+            machine_id,
+        };
+        let weak_session = Arc::downgrade(&session_data);
+
+        assert!(
+            validation_results_are_current(&weak_session, &input, 0).await,
+            "matching epoch is current"
+        );
+
+        session_data.write().await.webhook_validation_change_epoch = 7;
+        assert!(
+            !validation_results_are_current(&weak_session, &input, 0).await,
+            "epoch bump discards stale results"
+        );
+
+        drop(session_data);
+        assert!(
+            !validation_results_are_current(&weak_session, &input, 7).await,
+            "dropped session discards results"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_paths_discard_results_from_stale_epochs() {
+        let machine_id = uuid::Uuid::new_v4();
+        let session_data = validation_session(machine_id).await;
+        session_data.write().await.webhook_connected_binding_version = Some(3);
+        let input = WebhookValidationInput {
+            storage: Storage::new(crate::db::Db::memory_db().await),
+            webhook_config: Arc::new(crate::webhook::WebhookConfig::new(
+                None, None, None, None, None,
+            )),
+            client_url: url::Url::parse("http://127.0.0.1").unwrap(),
+            applied_config_revision: None,
+            applied_config_revision_known: false,
+            failed_instance_ids: Vec::new(),
+            req: HeartbeatRequest {
+                user_token: "token".to_string(),
+                machine_id: Some(machine_id.into()),
+                ..Default::default()
+            },
+            machine_id,
+        };
+
+        let stale_epoch = session_data.read().await.webhook_validation_change_epoch;
+        session_data.write().await.webhook_validation_change_epoch = stale_epoch + 1;
+
+        apply_rejected(&Arc::downgrade(&session_data), &input, stale_epoch).await;
+        let data = session_data.read().await;
+        assert_eq!(data.auth_state, SessionAuthState::Authorized);
+        assert_eq!(data.webhook_connected_binding_version, Some(3));
+        drop(data);
+
+        apply_success(
+            &Arc::downgrade(&session_data),
+            input,
+            WebhookHeartbeatValidation {
+                config_revision: "rev-1".to_string(),
+                binding_version: 9,
+            },
+            1,
+            stale_epoch,
+        )
+        .await;
+        let data = session_data.read().await;
+        assert_eq!(data.binding_version, None);
+        assert_eq!(data.webhook_connected_binding_version, Some(3));
     }
 }

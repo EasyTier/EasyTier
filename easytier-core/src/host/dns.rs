@@ -47,6 +47,10 @@ pub trait DnsRecordResolver: Send + Sync + 'static {
 /// Submit methods must return without waiting for DNS. Completion methods own
 /// their returned data and must not retain guest-memory borrows. Cancellation
 /// removes pending or completed-but-unobserved operation state.
+/// When the host uses VPN bypass, every underlying DNS socket (including TCP
+/// fallback) must be protected before sending queries. A system resolver is only
+/// suitable if the host can guarantee equivalent routing; errors must not fall
+/// back to unprotected DNS traffic.
 pub trait HostDnsIo: Send + Sync + 'static {
     fn submit_resolve(&self, operation: HostOperationId, query: &DnsQuery) -> io::Result<()>;
 

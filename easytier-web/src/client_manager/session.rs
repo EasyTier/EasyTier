@@ -2,7 +2,7 @@ use std::{
     collections::HashSet,
     fmt::Debug,
     str::FromStr as _,
-    sync::Arc,
+    sync::{Arc, Mutex, MutexGuard},
     time::{Duration, Instant},
 };
 
@@ -20,7 +20,10 @@ use easytier_core::tunnel::Tunnel;
 use tokio::sync::{Notify, RwLock, broadcast};
 use tokio_util::task::AbortOnDropHandle;
 
-use super::storage::{Storage, StorageToken, WeakRefStorage};
+use super::{
+    HeartbeatPolicy,
+    storage::{Storage, StorageToken, WeakRefStorage},
+};
 use crate::FeatureFlags;
 use crate::webhook::SharedWebhookConfig;
 
@@ -28,6 +31,8 @@ mod runtime_revision;
 mod webhook_validation;
 
 const WEBHOOK_VALIDATION_HEARTBEAT_INTERVAL: u32 = 10;
+const CONNECTED_WEBHOOK_RETRY_DELAYS: [Duration; 2] =
+    [Duration::from_millis(100), Duration::from_millis(500)];
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Location {
@@ -44,12 +49,70 @@ enum SessionAuthState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct ManagedConfigRevisionDelta {
+pub(super) struct ManagedConfigPersistedChange {
     pub expected_revision: String,
     pub target_revision: String,
-    pub upsert_instance_ids: HashSet<String>,
-    pub delete_instance_ids: HashSet<String>,
+    pub dirty_instance_ids: HashSet<String>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum ManagedConfigReconcileHint {
+    Full,
+    Dirty {
+        expected_revision: String,
+        target_revision: String,
+        instance_ids: HashSet<String>,
+    },
+}
+
+pub(super) fn record_managed_config_reconcile_hint(
+    pending: &mut Option<ManagedConfigReconcileHint>,
+    hint: ManagedConfigReconcileHint,
+) {
+    match hint {
+        ManagedConfigReconcileHint::Full => {
+            *pending = Some(ManagedConfigReconcileHint::Full);
+        }
+        ManagedConfigReconcileHint::Dirty {
+            expected_revision,
+            target_revision,
+            instance_ids,
+        } => match pending {
+            Some(ManagedConfigReconcileHint::Full) => {}
+            Some(ManagedConfigReconcileHint::Dirty {
+                target_revision: pending_target,
+                instance_ids: pending_ids,
+                ..
+            }) => {
+                if *pending_target == expected_revision {
+                    *pending_target = target_revision;
+                    pending_ids.extend(instance_ids);
+                } else {
+                    *pending = Some(ManagedConfigReconcileHint::Full);
+                }
+            }
+            None => {
+                *pending = Some(ManagedConfigReconcileHint::Dirty {
+                    expected_revision,
+                    target_revision,
+                    instance_ids,
+                });
+            }
+        },
+    }
+}
+
+#[derive(Debug, Default)]
+pub(super) struct ManagedRuntimeState {
+    pub(super) applied_config_revision: Option<String>,
+    pub(super) applied_config_revision_known: bool,
+    pub(super) known_runtime_base_revision: Option<String>,
+    pub(super) pending_managed_config_reconcile: Option<ManagedConfigReconcileHint>,
+    pub(super) runtime_config_epoch: u64,
+    pub(super) runtime_config_cache_epoch: u64,
+}
+
+pub(super) type SharedManagedRuntimeState = Arc<Mutex<ManagedRuntimeState>>;
 
 impl SessionAuthState {
     fn is_authorized(self) -> bool {
@@ -66,9 +129,8 @@ pub struct SessionData {
 
     storage_token: Option<StorageToken>,
     binding_version: Option<u64>,
-    applied_config_revision: Option<String>,
-    pending_managed_config_delta: Option<ManagedConfigRevisionDelta>,
-    runtime_config_epoch: u64,
+    managed_runtime: SharedManagedRuntimeState,
+    direct_run_failed_instance_ids: HashSet<String>,
     notifier: broadcast::Sender<HeartbeatRequest>,
     req: Option<HeartbeatRequest>,
     location: Option<Location>,
@@ -77,6 +139,7 @@ pub struct SessionData {
     auth_state: SessionAuthState,
     webhook_connected_binding_version: Option<u64>,
     webhook_validation_dirty: bool,
+    webhook_validation_change_epoch: u64,
     webhook_validation_notify: Arc<Notify>,
     session_epoch: u64,
 }
@@ -98,9 +161,8 @@ impl SessionData {
             client_url,
             storage_token: None,
             binding_version: None,
-            applied_config_revision: None,
-            pending_managed_config_delta: None,
-            runtime_config_epoch: 0,
+            managed_runtime: Arc::new(Mutex::new(ManagedRuntimeState::default())),
+            direct_run_failed_instance_ids: HashSet::new(),
             notifier: tx,
             req: None,
             location,
@@ -109,6 +171,7 @@ impl SessionData {
             auth_state: SessionAuthState::Init,
             webhook_connected_binding_version: None,
             webhook_validation_dirty: false,
+            webhook_validation_change_epoch: 0,
             webhook_validation_notify: Arc::new(Notify::new()),
             session_epoch: 0,
         }
@@ -124,6 +187,12 @@ impl SessionData {
 
     pub fn location(&self) -> Option<&Location> {
         self.location.as_ref()
+    }
+
+    fn managed_runtime(&self) -> MutexGuard<'_, ManagedRuntimeState> {
+        self.managed_runtime
+            .lock()
+            .expect("managed runtime state lock poisoned")
     }
 }
 
@@ -190,7 +259,18 @@ fn connection_state_matches(
             .is_some_and(|current| storage_tokens_match(current, storage_token))
 }
 
-async fn connection_state_is_current(
+fn connected_delivery_state_matches(
+    data: &SessionData,
+    storage_token: &StorageToken,
+    binding_version: u64,
+) -> bool {
+    connection_state_matches(data, storage_token, binding_version)
+        && data.storage.upgrade().is_some_and(|storage| {
+            storage.owns_authorized_session(storage_token, data.session_epoch)
+        })
+}
+
+async fn connected_delivery_is_current(
     session_data: &std::sync::Weak<RwLock<SessionData>>,
     storage_token: &StorageToken,
     binding_version: u64,
@@ -199,23 +279,38 @@ async fn connection_state_is_current(
         return false;
     };
     let data = session_data.read().await;
-    connection_state_matches(&data, storage_token, binding_version)
+    connected_delivery_state_matches(&data, storage_token, binding_version)
+}
+
+enum ConnectedBindingRecord {
+    Recorded,
+    /// The session identity moved on; the delivered connected webhook should
+    /// be compensated with a disconnect.
+    IdentityStale,
+    /// A newer session already owns the machine route; its bindings must be
+    /// left untouched so a stale disconnect cannot revoke them.
+    OwnershipLost,
 }
 
 async fn record_webhook_connected_binding_if_current(
     session_data: &std::sync::Weak<RwLock<SessionData>>,
     storage_token: &StorageToken,
     binding_version: u64,
-) -> bool {
-    let Some(session_data) = session_data.upgrade() else {
-        return false;
-    };
+) -> Option<ConnectedBindingRecord> {
+    let session_data = session_data.upgrade()?;
     let mut data = session_data.write().await;
     if !connection_state_matches(&data, storage_token, binding_version) {
-        return false;
+        return Some(ConnectedBindingRecord::IdentityStale);
+    }
+    if !data
+        .storage
+        .upgrade()
+        .is_some_and(|storage| storage.owns_authorized_session(storage_token, data.session_epoch))
+    {
+        return Some(ConnectedBindingRecord::OwnershipLost);
     }
     data.webhook_connected_binding_version = Some(binding_version);
-    true
+    Some(ConnectedBindingRecord::Recorded)
 }
 
 async fn send_webhook_connection_transition(
@@ -235,7 +330,65 @@ async fn send_webhook_connection_transition(
     let Some(connect) = connect else {
         return;
     };
-    if !connection_state_is_current(
+    let delivery_started_at = Instant::now();
+    let mut attempt = 1;
+    loop {
+        if !connected_delivery_is_current(
+            &session_data,
+            &connect.storage_token,
+            connect.binding_version,
+        )
+        .await
+        {
+            return;
+        }
+        match connect.webhook.notify_node_connected(&connect.req).await {
+            Ok(()) => {
+                let elapsed = delivery_started_at.elapsed();
+                if attempt > 1 || elapsed >= Duration::from_secs(2) {
+                    tracing::info!(
+                        machine_id = %connect.storage_token.machine_id,
+                        binding_version = connect.binding_version,
+                        attempt,
+                        elapsed_ms = elapsed.as_millis(),
+                        "node-connected webhook delivery completed"
+                    );
+                }
+                break;
+            }
+            Err(error) => {
+                let retry_delay = if error.is_retryable() {
+                    CONNECTED_WEBHOOK_RETRY_DELAYS.get(attempt - 1).copied()
+                } else {
+                    None
+                };
+                tracing::warn!(
+                    machine_id = %connect.storage_token.machine_id,
+                    binding_version = connect.binding_version,
+                    attempt,
+                    elapsed_ms = delivery_started_at.elapsed().as_millis(),
+                    will_retry = retry_delay.is_some(),
+                    %error,
+                    "node-connected webhook delivery failed"
+                );
+                let Some(retry_delay) = retry_delay else {
+                    return;
+                };
+                if !connected_delivery_is_current(
+                    &session_data,
+                    &connect.storage_token,
+                    connect.binding_version,
+                )
+                .await
+                {
+                    return;
+                }
+                tokio::time::sleep(retry_delay).await;
+                attempt += 1;
+            }
+        }
+    }
+    if !connected_delivery_is_current(
         &session_data,
         &connect.storage_token,
         connect.binding_version,
@@ -244,21 +397,29 @@ async fn send_webhook_connection_transition(
     {
         return;
     }
-
-    connect.webhook.notify_node_connected(&connect.req).await;
-    if !record_webhook_connected_binding_if_current(
+    match record_webhook_connected_binding_if_current(
         &session_data,
         &connect.storage_token,
         connect.binding_version,
     )
     .await
     {
-        send_webhook_node_disconnected(
-            connect.webhook,
-            connect.storage_token,
-            connect.binding_version,
-        )
-        .await;
+        Some(ConnectedBindingRecord::Recorded) => {}
+        Some(ConnectedBindingRecord::OwnershipLost) => {
+            tracing::debug!(
+                machine_id = %connect.storage_token.machine_id,
+                binding_version = connect.binding_version,
+                "skip disconnect compensation because a newer session owns the route"
+            );
+        }
+        Some(ConnectedBindingRecord::IdentityStale) | None => {
+            send_webhook_node_disconnected(
+                connect.webhook,
+                connect.storage_token,
+                connect.binding_version,
+            )
+            .await;
+        }
     }
 }
 
@@ -267,10 +428,20 @@ impl Drop for SessionData {
         if let Ok(storage) = Storage::try_from(self.storage.clone())
             && let Some(token) = self.storage_token.as_ref()
         {
-            storage.remove_session_client(token, self.session_epoch);
+            let removed_current_session = storage.remove_session_client(token, self.session_epoch);
+
+            if removed_current_session {
+                tracing::info!(
+                    machine_id = %token.machine_id,
+                    user_id = token.user_id,
+                    session_epoch = self.session_epoch,
+                    "session disconnected"
+                );
+            }
 
             // Notify the webhook receiver when a node disconnects.
-            if self.webhook_config.is_enabled()
+            if removed_current_session
+                && self.webhook_config.is_enabled()
                 && let Some(binding_version) = self.webhook_connected_binding_version
             {
                 notify_webhook_node_disconnected(
@@ -288,7 +459,13 @@ pub type SharedSessionData = Arc<RwLock<SessionData>>;
 #[derive(Clone)]
 pub(super) struct SessionRpcService {
     data: SharedSessionData,
-    heartbeat_min_response_delay: Duration,
+    heartbeat_policy: HeartbeatPolicy,
+}
+
+impl SessionRpcService {
+    fn heartbeat_response(&self) -> HeartbeatResponse {
+        self.heartbeat_policy.response()
+    }
 }
 
 fn heartbeat_response_delay(elapsed: Duration, min_response_delay: Duration) -> Option<Duration> {
@@ -297,12 +474,20 @@ fn heartbeat_response_delay(elapsed: Duration, min_response_delay: Duration) -> 
         .filter(|delay| !delay.is_zero())
 }
 
-fn should_delay_heartbeat_response(is_paced_session: bool, is_first_heartbeat: bool) -> bool {
-    is_paced_session && !is_first_heartbeat
+fn should_delay_heartbeat_response(
+    supports_heartbeat_policy: bool,
+    is_paced_session: bool,
+    is_first_heartbeat: bool,
+) -> bool {
+    !supports_heartbeat_policy && is_paced_session && !is_first_heartbeat
 }
 
-fn should_delay_session_heartbeat_response(data: &SessionData) -> bool {
+fn should_delay_session_heartbeat_response(
+    data: &SessionData,
+    supports_heartbeat_policy: bool,
+) -> bool {
     should_delay_heartbeat_response(
+        supports_heartbeat_policy,
         data.webhook_config.is_enabled() || data.auth_state.is_authorized(),
         data.req.is_none(),
     )
@@ -316,11 +501,16 @@ fn should_notify_webhook_validation(heartbeat_count: u32) -> bool {
 struct HeartbeatIdentity {
     token: String,
     machine_id: uuid::Uuid,
+    runtime_id: Option<uuid::Uuid>,
 }
 
 impl HeartbeatIdentity {
-    fn new(token: String, machine_id: uuid::Uuid) -> Self {
-        Self { token, machine_id }
+    fn new(token: String, machine_id: uuid::Uuid, runtime_id: Option<uuid::Uuid>) -> Self {
+        Self {
+            token,
+            machine_id,
+            runtime_id,
+        }
     }
 }
 
@@ -375,6 +565,9 @@ impl SessionRpcService {
                     Self::storage_token_matches_heartbeat(storage_token, current_req)
                 })
                 && data.auth_state.is_authorized()
+                && data.storage.upgrade().is_some_and(|storage| {
+                    storage.owns_authorized_session(storage_token, data.session_epoch)
+                })
         })
     }
 
@@ -387,7 +580,15 @@ impl SessionRpcService {
     }
 
     fn heartbeat_identity(req: &HeartbeatRequest, machine_id: uuid::Uuid) -> HeartbeatIdentity {
-        HeartbeatIdentity::new(req.user_token.clone(), machine_id)
+        HeartbeatIdentity::new(
+            req.user_token.clone(),
+            machine_id,
+            Self::heartbeat_runtime_id(req),
+        )
+    }
+
+    fn heartbeat_runtime_id(req: &HeartbeatRequest) -> Option<uuid::Uuid> {
+        req.inst_id.map(uuid::Uuid::from).filter(|id| !id.is_nil())
     }
 
     fn ensure_session_identity_locked(
@@ -414,6 +615,98 @@ impl SessionRpcService {
         data.webhook_validation_notify.clone()
     }
 
+    fn mark_webhook_validation_state_changed_locked(data: &mut SessionData) -> Arc<Notify> {
+        data.webhook_validation_change_epoch = data.webhook_validation_change_epoch.wrapping_add(1);
+        Self::mark_webhook_validation_dirty_locked(data)
+    }
+
+    fn failed_instance_ids(
+        req: Option<&HeartbeatRequest>,
+        direct_run_failed_instance_ids: &HashSet<String>,
+    ) -> HashSet<String> {
+        let mut instance_ids = req
+            .into_iter()
+            .flat_map(|req| &req.failed_network_instances)
+            .map(ToString::to_string)
+            .collect::<HashSet<_>>();
+        instance_ids.extend(direct_run_failed_instance_ids.iter().cloned());
+        instance_ids
+    }
+
+    fn failed_instance_ids_locked(data: &SessionData) -> HashSet<String> {
+        Self::failed_instance_ids(data.req.as_ref(), &data.direct_run_failed_instance_ids)
+    }
+
+    fn sorted_failed_instance_ids_locked(data: &SessionData) -> Vec<String> {
+        let mut instance_ids = Self::failed_instance_ids_locked(data)
+            .into_iter()
+            .collect::<Vec<_>>();
+        instance_ids.sort_unstable();
+        instance_ids
+    }
+
+    fn update_heartbeat_failed_instance_ids_locked(
+        data: &mut SessionData,
+        req: &HeartbeatRequest,
+    ) -> Option<Arc<Notify>> {
+        let previous_instance_ids = Self::failed_instance_ids_locked(data);
+        let next_instance_ids =
+            Self::failed_instance_ids(Some(req), &data.direct_run_failed_instance_ids);
+        if next_instance_ids == previous_instance_ids {
+            return None;
+        }
+        tracing::info!(
+            machine_id = ?req.machine_id,
+            failed_instance_ids = ?next_instance_ids,
+            "heartbeat failed instance set changed"
+        );
+        Some(Self::mark_webhook_validation_state_changed_locked(data))
+    }
+
+    fn update_direct_run_failures_locked(
+        data: &mut SessionData,
+        update: impl FnOnce(&mut HashSet<String>),
+    ) -> Option<Arc<Notify>> {
+        let previous_failed_instance_ids = Self::failed_instance_ids_locked(data);
+        update(&mut data.direct_run_failed_instance_ids);
+        let failed_instance_ids = Self::failed_instance_ids_locked(data);
+        (failed_instance_ids != previous_failed_instance_ids)
+            .then(|| Self::mark_webhook_validation_state_changed_locked(data))
+    }
+
+    fn update_direct_run_failure_locked(
+        data: &mut SessionData,
+        instance_id: &str,
+        failed: bool,
+    ) -> Option<Arc<Notify>> {
+        Self::update_direct_run_failures_locked(data, |direct_run_instance_ids| {
+            if failed {
+                direct_run_instance_ids.insert(instance_id.to_owned());
+            } else {
+                direct_run_instance_ids.remove(instance_id);
+            }
+        })
+    }
+
+    fn retain_direct_run_failures_locked(
+        data: &mut SessionData,
+        desired_instance_ids: &HashSet<String>,
+    ) -> Option<Arc<Notify>> {
+        Self::update_direct_run_failures_locked(data, |direct_run_instance_ids| {
+            direct_run_instance_ids
+                .retain(|instance_id| desired_instance_ids.contains(instance_id));
+        })
+    }
+
+    fn remove_direct_run_failures_locked(
+        data: &mut SessionData,
+        instance_ids: &HashSet<String>,
+    ) -> Option<Arc<Notify>> {
+        Self::update_direct_run_failures_locked(data, |direct_run_instance_ids| {
+            direct_run_instance_ids.retain(|instance_id| !instance_ids.contains(instance_id));
+        })
+    }
+
     async fn handle_webhook_heartbeat(
         &self,
         storage: &Storage,
@@ -431,13 +724,16 @@ impl SessionRpcService {
                 );
                 return Err(anyhow::anyhow!("webhook session is invalid").into());
             }
+            let failure_notify = Self::update_heartbeat_failed_instance_ids_locked(&mut data, &req);
             let runtime_req = Self::store_latest_heartbeat_req(&mut data, req);
             let heartbeat_count = data
                 .heartbeat_count
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                 + 1;
-            let notify = should_notify_webhook_validation(heartbeat_count)
-                .then(|| Self::mark_webhook_validation_dirty_locked(&mut data));
+            let notify = failure_notify.or_else(|| {
+                should_notify_webhook_validation(heartbeat_count)
+                    .then(|| Self::mark_webhook_validation_dirty_locked(&mut data))
+            });
             let authorized = data.auth_state.is_authorized();
             if let Some(storage_token) = data.storage_token.clone() {
                 let report_time = Self::heartbeat_report_timestamp(&runtime_req);
@@ -459,7 +755,7 @@ impl SessionRpcService {
         if let Some(notify) = notify {
             notify.notify_one();
         }
-        Ok(HeartbeatResponse {})
+        Ok(self.heartbeat_response())
     }
 
     async fn handle_heartbeat(
@@ -470,7 +766,7 @@ impl SessionRpcService {
             let data = self.data.read().await;
             let Ok(storage) = Storage::try_from(data.storage.clone()) else {
                 tracing::error!("Failed to get storage");
-                return Ok(HeartbeatResponse {});
+                return Ok(self.heartbeat_response());
             };
             (
                 storage,
@@ -500,57 +796,70 @@ impl SessionRpcService {
             .db()
             .get_user_id_by_token(req.user_token.clone())
             .await
-            .with_context(|| {
-                format!(
-                    "Failed to get user id by token from db: {:?}",
-                    req.user_token
-                )
-            })? {
+            .with_context(|| "Failed to get user id by token from db".to_string())?
+        {
             Some(id) => id,
             None if feature_flags.allow_auto_create_user => storage
                 .auto_create_user(&req.user_token)
                 .await
-                .with_context(|| format!("Failed to auto-create user: {:?}", req.user_token))?,
+                .with_context(|| "Failed to auto-create user".to_string())?,
             None => {
-                return Err(
-                    anyhow::anyhow!("User not found by token: {:?}", req.user_token).into(),
-                );
+                return Err(anyhow::anyhow!("User not found by token").into());
             }
         };
 
-        let (storage_token, notifier, runtime_req, session_epoch) = {
+        let (storage_token, notifier, runtime_req, session_epoch, validation_notify) = {
             let mut data = self.data.write().await;
             let is_new_storage_token = data.storage_token.is_none();
+            let validation_notify =
+                Self::update_heartbeat_failed_instance_ids_locked(&mut data, &req);
             let runtime_req = Self::store_latest_heartbeat_req(&mut data, req.clone());
             data.heartbeat_count
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if is_new_storage_token {
                 assert!(data.storage_token.is_none());
+                data.managed_runtime = storage.bind_managed_runtime_state(
+                    user_id,
+                    machine_id,
+                    Self::heartbeat_runtime_id(&runtime_req),
+                    data.session_epoch,
+                );
                 data.storage_token = Some(StorageToken {
                     token: runtime_req.user_token.clone(),
                     client_url: data.client_url.clone(),
                     machine_id,
                     user_id,
                 });
+                tracing::info!(
+                    %machine_id,
+                    user_id,
+                    session_epoch = data.session_epoch,
+                    client_url = %data.client_url,
+                    "session identity established"
+                );
             }
             data.auth_state = SessionAuthState::Authorized;
 
             let Some(storage_token) = data.storage_token.as_ref().cloned() else {
                 tracing::error!("Heartbeat succeeded before session token was initialized");
-                return Ok(HeartbeatResponse {});
+                return Ok(self.heartbeat_response());
             };
             (
                 storage_token,
                 data.notifier.clone(),
                 runtime_req,
                 data.session_epoch,
+                validation_notify,
             )
         };
 
         let report_time = Self::heartbeat_report_timestamp(&runtime_req);
         storage.update_session_client(storage_token, report_time, true, session_epoch);
         let _ = notifier.send(runtime_req);
-        Ok(HeartbeatResponse {})
+        if let Some(notify) = validation_notify {
+            notify.notify_one();
+        }
+        Ok(self.heartbeat_response())
     }
 }
 
@@ -564,9 +873,10 @@ impl WebServerService for SessionRpcService {
         req: HeartbeatRequest,
     ) -> rpc_types::error::Result<HeartbeatResponse> {
         let started_at = Instant::now();
+        let support_heartbeat_policy = req.support_heartbeat_policy;
         let should_delay_response = {
             let data = self.data.read().await;
-            should_delay_session_heartbeat_response(&data)
+            should_delay_session_heartbeat_response(&data, support_heartbeat_policy)
         };
         let ret = self.handle_heartbeat(req).await;
         if ret.is_err() {
@@ -574,8 +884,10 @@ impl WebServerService for SessionRpcService {
             // sleep for a while to avoid client busy loop
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         } else if should_delay_response
-            && let Some(delay) =
-                heartbeat_response_delay(started_at.elapsed(), self.heartbeat_min_response_delay)
+            && let Some(delay) = heartbeat_response_delay(
+                started_at.elapsed(),
+                self.heartbeat_policy.legacy_response_delay(),
+            )
         {
             tokio::time::sleep(delay).await;
         }
@@ -617,7 +929,7 @@ impl Session {
         storage: WeakRefStorage,
         client_url: url::Url,
         location: Option<Location>,
-        heartbeat_min_response_delay: Duration,
+        heartbeat_policy: HeartbeatPolicy,
         feature_flags: Arc<FeatureFlags>,
         webhook_config: SharedWebhookConfig,
         session_epoch: u64,
@@ -628,12 +940,12 @@ impl Session {
         let data = Arc::new(RwLock::new(session_data));
 
         let rpc_mgr =
-            BidirectRpcManager::new().set_rx_timeout(Some(std::time::Duration::from_secs(30)));
+            BidirectRpcManager::new().set_rx_timeout(Some(heartbeat_policy.session_rx_timeout()));
 
         rpc_mgr.rpc_server().registry().register(
             WebServerServiceServer::new(SessionRpcService {
                 data: data.clone(),
-                heartbeat_min_response_delay,
+                heartbeat_policy,
             }),
             "",
         );
@@ -711,14 +1023,13 @@ impl Session {
         self.scoped_client::<ConfigRpcClientFactory<BaseController>>()
     }
 
-    pub(super) async fn notify_full_config_revision_changed(
+    pub(super) async fn notify_managed_runtime_state_changed(
         &self,
         user_id: i32,
         machine_id: uuid::Uuid,
-        config_revision: String,
     ) {
         let notify = {
-            let mut data = self.data.write().await;
+            let data = self.data.read().await;
             if !data.auth_state.is_authorized() {
                 return;
             }
@@ -729,71 +1040,6 @@ impl Session {
             {
                 return;
             }
-            if data.applied_config_revision.as_deref() == Some(config_revision.as_str()) {
-                return;
-            }
-            data.pending_managed_config_delta = None;
-            data.req.clone().map(|req| (data.notifier.clone(), req))
-        };
-        if let Some((notifier, req)) = notify {
-            let _ = notifier.send(req);
-        }
-    }
-
-    pub(super) async fn notify_patch_config_revision_changed(
-        &self,
-        user_id: i32,
-        machine_id: uuid::Uuid,
-        delta: ManagedConfigRevisionDelta,
-    ) {
-        let notify = {
-            let mut data = self.data.write().await;
-            if !data.auth_state.is_authorized() {
-                return;
-            }
-            if !data
-                .storage_token
-                .as_ref()
-                .is_some_and(|token| token.user_id == user_id && token.machine_id == machine_id)
-            {
-                return;
-            }
-            if data.applied_config_revision.as_deref() == Some(delta.target_revision.as_str()) {
-                return;
-            }
-
-            // A Patch may drive a targeted runtime reconcile only when the
-            // connected Session has applied its exact base and no earlier
-            // Patch is still pending. Otherwise the normal Full reconcile is
-            // the safe convergence path.
-            data.pending_managed_config_delta = (data.applied_config_revision.as_deref()
-                == Some(delta.expected_revision.as_str())
-                && data.pending_managed_config_delta.is_none())
-            .then_some(delta);
-            data.req.clone().map(|req| (data.notifier.clone(), req))
-        };
-        if let Some((notifier, req)) = notify {
-            let _ = notifier.send(req);
-        }
-    }
-
-    pub(super) async fn invalidate_applied_config_revision(
-        &self,
-        user_id: i32,
-        machine_id: uuid::Uuid,
-    ) {
-        let notify = {
-            let mut data = self.data.write().await;
-            if !data
-                .storage_token
-                .as_ref()
-                .is_some_and(|token| token.user_id == user_id && token.machine_id == machine_id)
-            {
-                return;
-            }
-            data.applied_config_revision = None;
-            data.pending_managed_config_delta = None;
-            data.runtime_config_epoch = data.runtime_config_epoch.wrapping_add(1);
             data.req.clone().map(|req| (data.notifier.clone(), req))
         };
         if let Some((notifier, req)) = notify {
@@ -803,13 +1049,18 @@ impl Session {
 
     pub(crate) async fn invalidate_runtime_config_for_direct_mutation(&self) {
         let notify = {
-            let mut data = self.data.write().await;
+            let data = self.data.write().await;
             if data.storage_token.is_none() {
                 return;
             }
-            data.applied_config_revision = None;
-            data.pending_managed_config_delta = None;
-            data.runtime_config_epoch = data.runtime_config_epoch.wrapping_add(1);
+            let mut runtime = data.managed_runtime();
+            runtime.applied_config_revision = None;
+            runtime.applied_config_revision_known = true;
+            runtime.known_runtime_base_revision = None;
+            runtime.pending_managed_config_reconcile = Some(ManagedConfigReconcileHint::Full);
+            runtime.runtime_config_epoch = runtime.runtime_config_epoch.wrapping_add(1);
+            runtime.runtime_config_cache_epoch = runtime.runtime_config_cache_epoch.wrapping_add(1);
+            drop(runtime);
             data.req.clone().map(|req| (data.notifier.clone(), req))
         };
         if let Some((notifier, req)) = notify {
@@ -827,13 +1078,16 @@ impl Session {
 
     #[cfg(test)]
     pub(super) async fn applied_config_revision(&self) -> Option<String> {
-        self.data.read().await.applied_config_revision.clone()
+        let data = self.data.read().await;
+        data.managed_runtime().applied_config_revision.clone()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use axum::{Json, Router, extract::State, routing::post};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use axum::{Json, Router, extract::State, http::StatusCode, routing::post};
     use serde_json::json;
     use tokio::sync::{Mutex, Notify, oneshot};
 
@@ -857,10 +1111,12 @@ mod tests {
 
     #[test]
     fn heartbeat_response_delay_skips_unpaced_and_first_heartbeat() {
-        assert!(!should_delay_heartbeat_response(false, true));
-        assert!(!should_delay_heartbeat_response(false, false));
-        assert!(!should_delay_heartbeat_response(true, true));
-        assert!(should_delay_heartbeat_response(true, false));
+        assert!(!HeartbeatRequest::default().support_heartbeat_policy);
+        assert!(!should_delay_heartbeat_response(false, false, true));
+        assert!(!should_delay_heartbeat_response(false, false, false));
+        assert!(!should_delay_heartbeat_response(false, true, true));
+        assert!(should_delay_heartbeat_response(false, true, false));
+        assert!(!should_delay_heartbeat_response(true, true, false));
     }
 
     #[tokio::test]
@@ -881,13 +1137,14 @@ mod tests {
             )),
         );
 
-        assert!(!should_delay_session_heartbeat_response(&data));
+        assert!(!should_delay_session_heartbeat_response(&data, false));
 
         data.req = Some(heartbeat_request("token", machine_id));
-        assert!(should_delay_session_heartbeat_response(&data));
+        assert!(should_delay_session_heartbeat_response(&data, false));
+        assert!(!should_delay_session_heartbeat_response(&data, true));
 
         data.auth_state = SessionAuthState::Invalid;
-        assert!(should_delay_session_heartbeat_response(&data));
+        assert!(should_delay_session_heartbeat_response(&data, false));
     }
 
     #[test]
@@ -909,6 +1166,118 @@ mod tests {
             user_token: token.to_string(),
             ..Default::default()
         }
+    }
+
+    async fn failure_state_test_data() -> SessionData {
+        let storage = Storage::new(crate::db::Db::memory_db().await);
+        SessionData::new(
+            storage.weak_ref(),
+            url::Url::parse("http://127.0.0.1").unwrap(),
+            None,
+            Arc::new(FeatureFlags::default()),
+            Arc::new(crate::webhook::WebhookConfig::new(
+                None, None, None, None, None,
+            )),
+        )
+    }
+
+    #[tokio::test]
+    async fn failed_instance_ids_merge_core_and_web_local_failures() {
+        let mut data = failure_state_test_data().await;
+        let core_failed = uuid::Uuid::new_v4();
+        let local_failed = uuid::Uuid::new_v4().to_string();
+        let core_failed_req = HeartbeatRequest {
+            failed_network_instances: vec![core_failed.into()],
+            ..Default::default()
+        };
+
+        assert!(
+            SessionRpcService::update_heartbeat_failed_instance_ids_locked(
+                &mut data,
+                &core_failed_req,
+            )
+            .is_some()
+        );
+        SessionRpcService::store_latest_heartbeat_req(&mut data, core_failed_req);
+        assert_eq!(
+            SessionRpcService::failed_instance_ids_locked(&data),
+            HashSet::from([core_failed.to_string()])
+        );
+
+        assert!(
+            SessionRpcService::update_direct_run_failure_locked(&mut data, &local_failed, true)
+                .is_some()
+        );
+        assert_eq!(
+            SessionRpcService::failed_instance_ids_locked(&data),
+            HashSet::from([core_failed.to_string(), local_failed.clone()])
+        );
+
+        let recovered_req = HeartbeatRequest::default();
+        SessionRpcService::update_heartbeat_failed_instance_ids_locked(&mut data, &recovered_req);
+        SessionRpcService::store_latest_heartbeat_req(&mut data, recovered_req);
+        assert_eq!(
+            SessionRpcService::failed_instance_ids_locked(&data),
+            HashSet::from([local_failed])
+        );
+    }
+
+    #[tokio::test]
+    async fn stable_failed_instance_ids_do_not_repeat_validation_work() {
+        let mut data = failure_state_test_data().await;
+        let failed = uuid::Uuid::new_v4();
+        let failed_req = HeartbeatRequest {
+            failed_network_instances: vec![failed.into()],
+            ..Default::default()
+        };
+        assert!(
+            SessionRpcService::update_heartbeat_failed_instance_ids_locked(&mut data, &failed_req)
+                .is_some()
+        );
+        SessionRpcService::store_latest_heartbeat_req(&mut data, failed_req);
+        data.webhook_validation_dirty = false;
+        let change_epoch = data.webhook_validation_change_epoch;
+
+        assert!(
+            SessionRpcService::update_direct_run_failure_locked(
+                &mut data,
+                &failed.to_string(),
+                true,
+            )
+            .is_none()
+        );
+        let recovered_req = HeartbeatRequest::default();
+        assert!(
+            SessionRpcService::update_heartbeat_failed_instance_ids_locked(
+                &mut data,
+                &recovered_req,
+            )
+            .is_none()
+        );
+        SessionRpcService::store_latest_heartbeat_req(&mut data, recovered_req);
+        assert!(!data.webhook_validation_dirty);
+        assert_eq!(data.webhook_validation_change_epoch, change_epoch);
+    }
+
+    #[tokio::test]
+    async fn direct_run_failure_is_added_and_direct_success_clears_it() {
+        let mut data = failure_state_test_data().await;
+        let instance_id = uuid::Uuid::new_v4().to_string();
+
+        assert!(
+            SessionRpcService::update_direct_run_failure_locked(&mut data, &instance_id, true)
+                .is_some()
+        );
+        assert_eq!(
+            SessionRpcService::failed_instance_ids_locked(&data),
+            HashSet::from([instance_id.clone()])
+        );
+
+        assert!(
+            SessionRpcService::update_direct_run_failure_locked(&mut data, &instance_id, false)
+                .is_some()
+        );
+        assert!(SessionRpcService::failed_instance_ids_locked(&data).is_empty());
     }
 
     #[derive(Clone)]
@@ -954,6 +1323,12 @@ mod tests {
             .route("/validate-token", post(valid_validate_token_handler))
             .route("/webhook/node-connected", post(node_connected_handler))
             .with_state(state);
+        test_webhook_server(app).await
+    }
+
+    async fn test_webhook_server(
+        app: Router,
+    ) -> (SharedWebhookConfig, tokio::task::JoinHandle<()>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
@@ -968,6 +1343,299 @@ mod tests {
         ));
 
         (webhook_config, server)
+    }
+
+    #[derive(Clone)]
+    struct RetryingConnectedWebhookState {
+        attempts: Arc<AtomicUsize>,
+        second_received: Arc<Notify>,
+        second_release: Arc<Notify>,
+    }
+
+    async fn retrying_node_connected_handler(
+        State(state): State<RetryingConnectedWebhookState>,
+    ) -> (StatusCode, Json<serde_json::Value>) {
+        let attempt = state.attempts.fetch_add(1, Ordering::Relaxed) + 1;
+        if attempt == 1 {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"status": "error"})),
+            );
+        }
+        state.second_received.notify_one();
+        state.second_release.notified().await;
+        (StatusCode::OK, Json(json!({"status": "ok"})))
+    }
+
+    #[tokio::test]
+    async fn connected_webhook_is_confirmed_only_after_successful_retry() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let second_received = Arc::new(Notify::new());
+        let second_release = Arc::new(Notify::new());
+        let app = Router::new()
+            .route(
+                "/webhook/node-connected",
+                post(retrying_node_connected_handler),
+            )
+            .with_state(RetryingConnectedWebhookState {
+                attempts: attempts.clone(),
+                second_received: second_received.clone(),
+                second_release: second_release.clone(),
+            });
+        let (webhook_config, server) = test_webhook_server(app).await;
+        let fixture = connected_delivery_fixture(webhook_config).await;
+        let session_data = fixture.session_data.clone();
+        let delivery = tokio::spawn(send_webhook_connection_transition(
+            Arc::downgrade(&session_data),
+            None,
+            Some(fixture.notification),
+        ));
+
+        tokio::time::timeout(Duration::from_secs(1), second_received.notified())
+            .await
+            .expect("5xx connected webhook should be retried");
+        assert_eq!(
+            session_data.read().await.webhook_connected_binding_version,
+            None
+        );
+
+        second_release.notify_one();
+        delivery.await.unwrap();
+        server.abort();
+
+        assert_eq!(attempts.load(Ordering::Relaxed), 2);
+        assert_eq!(
+            session_data.read().await.webhook_connected_binding_version,
+            Some(1)
+        );
+    }
+
+    #[derive(Clone)]
+    struct FailingConnectedWebhookState {
+        attempts: Arc<AtomicUsize>,
+        first_received: Arc<Notify>,
+        first_release: Option<Arc<Notify>>,
+        status: StatusCode,
+    }
+
+    async fn failing_node_connected_handler(
+        State(state): State<FailingConnectedWebhookState>,
+    ) -> (StatusCode, Json<serde_json::Value>) {
+        let attempt = state.attempts.fetch_add(1, Ordering::Relaxed) + 1;
+        if attempt == 1 {
+            state.first_received.notify_one();
+            if let Some(first_release) = state.first_release {
+                first_release.notified().await;
+            }
+        }
+        (state.status, Json(json!({"status": "error"})))
+    }
+
+    struct ConnectedDeliveryFixture {
+        storage: Storage,
+        session_data: Arc<RwLock<SessionData>>,
+        notification: WebhookConnectNotification,
+        machine_id: uuid::Uuid,
+        user_id: i32,
+    }
+
+    async fn connected_delivery_fixture(
+        webhook_config: SharedWebhookConfig,
+    ) -> ConnectedDeliveryFixture {
+        let machine_id = uuid::Uuid::new_v4();
+        let storage = Storage::new(crate::db::Db::memory_db().await);
+        let user_id = storage.db().auto_create_user("token").await.unwrap().id;
+        let storage_token = StorageToken {
+            token: "token".to_string(),
+            client_url: url::Url::parse("http://127.0.0.1:1000").unwrap(),
+            machine_id,
+            user_id,
+        };
+        storage.update_session_client(storage_token.clone(), 1, true, 1);
+        let mut session = SessionData::new(
+            storage.weak_ref(),
+            storage_token.client_url.clone(),
+            None,
+            Arc::new(FeatureFlags::default()),
+            webhook_config.clone(),
+        );
+        session.storage_token = Some(storage_token.clone());
+        session.auth_state = SessionAuthState::Authorized;
+        session.binding_version = Some(1);
+        session.session_epoch = 1;
+
+        ConnectedDeliveryFixture {
+            storage,
+            session_data: Arc::new(RwLock::new(session)),
+            notification: WebhookConnectNotification {
+                webhook: webhook_config,
+                storage_token,
+                binding_version: 1,
+                req: crate::webhook::NodeConnectedRequest {
+                    machine_id: machine_id.to_string(),
+                    token: "token".to_string(),
+                    user_id: Some(user_id),
+                    hostname: String::new(),
+                    version: String::new(),
+                    os_type: None,
+                    os_version: None,
+                    os_distribution: None,
+                    web_instance_id: None,
+                    binding_version: Some(1),
+                },
+            },
+            machine_id,
+            user_id,
+        }
+    }
+
+    #[tokio::test]
+    async fn connected_webhook_retry_stops_after_session_replacement() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let first_received = Arc::new(Notify::new());
+        let first_release = Arc::new(Notify::new());
+        let app = Router::new()
+            .route(
+                "/webhook/node-connected",
+                post(failing_node_connected_handler),
+            )
+            .with_state(FailingConnectedWebhookState {
+                attempts: attempts.clone(),
+                first_received: first_received.clone(),
+                first_release: Some(first_release.clone()),
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+            });
+        let (webhook_config, server) = test_webhook_server(app).await;
+
+        let fixture = connected_delivery_fixture(webhook_config).await;
+        let session_data = fixture.session_data.clone();
+        let delivery = tokio::spawn(send_webhook_connection_transition(
+            Arc::downgrade(&session_data),
+            None,
+            Some(fixture.notification),
+        ));
+
+        tokio::time::timeout(Duration::from_secs(1), first_received.notified())
+            .await
+            .unwrap();
+        fixture.storage.update_session_client(
+            StorageToken {
+                token: "token".to_string(),
+                client_url: url::Url::parse("http://127.0.0.1:2000").unwrap(),
+                machine_id: fixture.machine_id,
+                user_id: fixture.user_id,
+            },
+            2,
+            true,
+            2,
+        );
+        first_release.notify_one();
+        delivery.await.unwrap();
+        server.abort();
+
+        assert_eq!(attempts.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            session_data.read().await.webhook_connected_binding_version,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn connected_binding_record_respects_route_ownership() {
+        let webhook_config = Arc::new(crate::webhook::WebhookConfig::new(
+            None, None, None, None, None,
+        ));
+        let fixture = connected_delivery_fixture(webhook_config).await;
+        let session_data = fixture.session_data.clone();
+        let storage_token = fixture.notification.storage_token.clone();
+
+        let outcome = record_webhook_connected_binding_if_current(
+            &Arc::downgrade(&session_data),
+            &storage_token,
+            1,
+        )
+        .await;
+        assert!(matches!(outcome, Some(ConnectedBindingRecord::Recorded)));
+        assert_eq!(
+            session_data.read().await.webhook_connected_binding_version,
+            Some(1)
+        );
+
+        // A replacement session wins the machine route; the stale task must
+        // neither record its binding nor earn disconnect compensation.
+        fixture.storage.update_session_client(
+            StorageToken {
+                token: storage_token.token.clone(),
+                client_url: url::Url::parse("http://127.0.0.1:2000").unwrap(),
+                machine_id: fixture.machine_id,
+                user_id: fixture.user_id,
+            },
+            2,
+            true,
+            2,
+        );
+        session_data.write().await.webhook_connected_binding_version = None;
+        let outcome = record_webhook_connected_binding_if_current(
+            &Arc::downgrade(&session_data),
+            &storage_token,
+            1,
+        )
+        .await;
+        assert!(matches!(
+            outcome,
+            Some(ConnectedBindingRecord::OwnershipLost)
+        ));
+        assert_eq!(
+            session_data.read().await.webhook_connected_binding_version,
+            None
+        );
+    }
+
+    async fn run_failed_connected_delivery(status: StatusCode) -> (usize, Option<u64>) {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let app = Router::new()
+            .route(
+                "/webhook/node-connected",
+                post(failing_node_connected_handler),
+            )
+            .with_state(FailingConnectedWebhookState {
+                attempts: attempts.clone(),
+                first_received: Arc::new(Notify::new()),
+                first_release: None,
+                status,
+            });
+        let (webhook_config, server) = test_webhook_server(app).await;
+        let fixture = connected_delivery_fixture(webhook_config).await;
+        let session_data = fixture.session_data.clone();
+
+        send_webhook_connection_transition(
+            Arc::downgrade(&session_data),
+            None,
+            Some(fixture.notification),
+        )
+        .await;
+        server.abort();
+
+        let confirmed_binding_version = session_data.read().await.webhook_connected_binding_version;
+        (attempts.load(Ordering::Relaxed), confirmed_binding_version)
+    }
+
+    #[tokio::test]
+    async fn connected_webhook_retry_is_bounded_when_receiver_keeps_failing() {
+        let (attempts, confirmed_binding_version) =
+            run_failed_connected_delivery(StatusCode::INTERNAL_SERVER_ERROR).await;
+
+        assert_eq!(attempts, CONNECTED_WEBHOOK_RETRY_DELAYS.len() + 1);
+        assert_eq!(confirmed_binding_version, None);
+    }
+
+    #[tokio::test]
+    async fn connected_webhook_does_not_retry_or_confirm_client_error() {
+        let (attempts, confirmed_binding_version) =
+            run_failed_connected_delivery(StatusCode::BAD_REQUEST).await;
+
+        assert_eq!(attempts, 1);
+        assert_eq!(confirmed_binding_version, None);
     }
 
     #[test]
@@ -989,6 +1657,21 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn session_identity_includes_runtime_id() {
+        let machine_id = uuid::Uuid::new_v4();
+        let mut request = heartbeat_request("token", machine_id);
+        let first_runtime_id = uuid::Uuid::new_v4();
+        request.inst_id = Some(first_runtime_id.into());
+        let first = SessionRpcService::heartbeat_identity(&request, machine_id);
+
+        request.inst_id = Some(uuid::Uuid::new_v4().into());
+        let restarted = SessionRpcService::heartbeat_identity(&request, machine_id);
+
+        assert_eq!(first.runtime_id, Some(first_runtime_id));
+        assert_ne!(first, restarted);
+    }
+
     #[tokio::test]
     async fn webhook_heartbeat_saves_latest_and_marks_validation_dirty() {
         let machine_id = uuid::Uuid::new_v4();
@@ -1008,7 +1691,7 @@ mod tests {
         )));
         let service = SessionRpcService {
             data: data.clone(),
-            heartbeat_min_response_delay: Duration::ZERO,
+            heartbeat_policy: HeartbeatPolicy::default(),
         };
 
         service
@@ -1018,6 +1701,7 @@ mod tests {
 
         let data = data.read().await;
         assert!(data.webhook_validation_dirty);
+        assert_eq!(data.webhook_validation_change_epoch, 0);
         assert_eq!(data.auth_state, SessionAuthState::Init);
         assert!(data.storage_token.is_none());
         assert!(SessionRpcService::heartbeat_matches_identity(
@@ -1071,9 +1755,12 @@ mod tests {
                 webhook_config,
                 client_url: url::Url::parse("http://127.0.0.1").unwrap(),
                 applied_config_revision: None,
+                applied_config_revision_known: false,
+                failed_instance_ids: Vec::new(),
                 req,
                 machine_id,
             },
+            session_data.read().await.webhook_validation_change_epoch,
         ));
         received_rx.await.unwrap();
         release.notify_waiters();
@@ -1147,7 +1834,7 @@ mod tests {
         let session_data = Arc::new(RwLock::new(data));
         let service = SessionRpcService {
             data: session_data.clone(),
-            heartbeat_min_response_delay: Duration::ZERO,
+            heartbeat_policy: HeartbeatPolicy::default(),
         };
 
         let err = service
@@ -1216,7 +1903,7 @@ mod tests {
         let session_data = Arc::new(RwLock::new(data));
         let service = SessionRpcService {
             data: session_data,
-            heartbeat_min_response_delay: Duration::ZERO,
+            heartbeat_policy: HeartbeatPolicy::default(),
         };
 
         let err = service
@@ -1271,6 +1958,7 @@ mod tests {
         data.webhook_connected_binding_version = Some(3);
         let session_data = Arc::new(RwLock::new(data));
 
+        let validation_change_epoch = session_data.read().await.webhook_validation_change_epoch;
         webhook_validation::apply_rejected(
             &Arc::downgrade(&session_data),
             &webhook_validation::WebhookValidationInput {
@@ -1280,9 +1968,12 @@ mod tests {
                 )),
                 client_url: url::Url::parse("http://127.0.0.1").unwrap(),
                 applied_config_revision: None,
+                applied_config_revision_known: false,
+                failed_instance_ids: Vec::new(),
                 req,
                 machine_id,
             },
+            validation_change_epoch,
         )
         .await;
 
@@ -1344,10 +2035,13 @@ mod tests {
             )),
             client_url: client_url.clone(),
             applied_config_revision: None,
+            applied_config_revision_known: false,
+            failed_instance_ids: Vec::new(),
             req: req.clone(),
             machine_id,
         };
-        webhook_validation::apply_rejected(&weak_session, &input).await;
+        let validation_change_epoch = session_data.read().await.webhook_validation_change_epoch;
+        webhook_validation::apply_rejected(&weak_session, &input, validation_change_epoch).await;
         assert_eq!(
             session_data.read().await.webhook_connected_binding_version,
             None
@@ -1361,6 +2055,7 @@ mod tests {
             Some(client_url.clone())
         );
 
+        let validation_change_epoch = session_data.read().await.webhook_validation_change_epoch;
         webhook_validation::apply_success(
             &weak_session,
             input,
@@ -1369,6 +2064,7 @@ mod tests {
                 binding_version: 7,
             },
             user_id,
+            validation_change_epoch,
         )
         .await;
 
@@ -1424,7 +2120,7 @@ mod tests {
         let session_data = Arc::new(RwLock::new(data));
         let service = SessionRpcService {
             data: session_data.clone(),
-            heartbeat_min_response_delay: Duration::ZERO,
+            heartbeat_policy: HeartbeatPolicy::default(),
         };
 
         service
@@ -1470,7 +2166,7 @@ mod tests {
         let session_data = Arc::new(RwLock::new(data));
         let service = SessionRpcService {
             data: session_data,
-            heartbeat_min_response_delay: Duration::ZERO,
+            heartbeat_policy: HeartbeatPolicy::default(),
         };
 
         service
@@ -1518,6 +2214,7 @@ mod tests {
         data.webhook_connected_binding_version = Some(6);
         let session_data = Arc::new(RwLock::new(data));
 
+        let validation_change_epoch = session_data.read().await.webhook_validation_change_epoch;
         webhook_validation::apply_success(
             &Arc::downgrade(&session_data),
             webhook_validation::WebhookValidationInput {
@@ -1527,6 +2224,8 @@ mod tests {
                 )),
                 client_url,
                 applied_config_revision: None,
+                applied_config_revision_known: false,
+                failed_instance_ids: Vec::new(),
                 req,
                 machine_id,
             },
@@ -1535,6 +2234,7 @@ mod tests {
                 binding_version: 7,
             },
             user_id,
+            validation_change_epoch,
         )
         .await;
 
@@ -1545,7 +2245,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runtime_heartbeat_rechecks_webhook_state_before_reconcile() {
+    async fn rejected_session_stops_reconcile_without_clearing_runtime_state() {
         let machine_id = uuid::Uuid::new_v4();
         let req = heartbeat_request("token", machine_id);
         let storage = Storage::new(crate::db::Db::memory_db().await);
@@ -1569,15 +2269,23 @@ mod tests {
                 None,
             )),
         );
+        storage.update_session_client(storage_token.clone(), 1, true, 0);
         data.storage_token = Some(storage_token);
         data.session_identity = Some(SessionRpcService::heartbeat_identity(&req, machine_id));
         data.req = Some(req.clone());
         data.auth_state = SessionAuthState::Authorized;
+        {
+            let mut runtime = data.managed_runtime();
+            runtime.applied_config_revision = Some("rev-1".to_string());
+            runtime.applied_config_revision_known = true;
+            runtime.known_runtime_base_revision = Some("rev-1".to_string());
+        }
         let session_data = Arc::new(RwLock::new(data));
         let weak_session = Arc::downgrade(&session_data);
 
         assert!(SessionRpcService::runtime_heartbeat_is_current(&weak_session, &req).await);
 
+        let validation_change_epoch = session_data.read().await.webhook_validation_change_epoch;
         webhook_validation::apply_rejected(
             &weak_session,
             &webhook_validation::WebhookValidationInput {
@@ -1587,13 +2295,42 @@ mod tests {
                 )),
                 client_url: url::Url::parse("http://127.0.0.1").unwrap(),
                 applied_config_revision: None,
+                applied_config_revision_known: false,
+                failed_instance_ids: Vec::new(),
                 req: req.clone(),
                 machine_id,
             },
+            validation_change_epoch,
         )
         .await;
 
         assert!(!SessionRpcService::runtime_heartbeat_is_current(&weak_session, &req).await);
+        let data = session_data.read().await;
+        let runtime = data.managed_runtime();
+        assert_eq!(runtime.applied_config_revision.as_deref(), Some("rev-1"));
+        assert!(runtime.applied_config_revision_known);
+        assert_eq!(
+            runtime.known_runtime_base_revision.as_deref(),
+            Some("rev-1")
+        );
+    }
+
+    #[tokio::test]
+    async fn fresh_session_application_revision_is_unknown() {
+        let storage = Storage::new(crate::db::Db::memory_db().await);
+        let data = SessionData::new(
+            storage.weak_ref(),
+            url::Url::parse("http://127.0.0.1").unwrap(),
+            None,
+            Arc::new(FeatureFlags::default()),
+            Arc::new(crate::webhook::WebhookConfig::new(
+                None, None, None, None, None,
+            )),
+        );
+
+        let runtime = data.managed_runtime();
+        assert_eq!(runtime.applied_config_revision, None);
+        assert!(!runtime.applied_config_revision_known);
     }
 
     #[test]
@@ -1611,6 +2348,8 @@ mod tests {
             web_instance_api_base_url: Some("http://console".to_string()),
             persisted_config_revision: Some("rev-0".to_string()),
             applied_config_revision: Some("rev-1".to_string()),
+            applied_config_revision_known: true,
+            failed_instance_ids: vec!["failed-instance".to_string()],
         };
 
         let value = serde_json::to_value(req).unwrap();
@@ -1626,5 +2365,95 @@ mod tests {
                 .and_then(|v| v.as_str()),
             Some("rev-1")
         );
+        assert_eq!(
+            value
+                .get("applied_config_revision_known")
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            value.get("failed_instance_ids"),
+            Some(&json!(["failed-instance"]))
+        );
+    }
+
+    #[test]
+    fn managed_patch_hints_merge_while_runtime_lags() {
+        let mut hint = None;
+
+        record_managed_config_reconcile_hint(
+            &mut hint,
+            ManagedConfigReconcileHint::Dirty {
+                expected_revision: "rev-a".to_string(),
+                target_revision: "rev-b".to_string(),
+                instance_ids: HashSet::from(["instance-a".to_string()]),
+            },
+        );
+        record_managed_config_reconcile_hint(
+            &mut hint,
+            ManagedConfigReconcileHint::Dirty {
+                expected_revision: "rev-b".to_string(),
+                target_revision: "rev-c".to_string(),
+                instance_ids: HashSet::from(["instance-b".to_string()]),
+            },
+        );
+
+        assert_eq!(
+            hint,
+            Some(ManagedConfigReconcileHint::Dirty {
+                expected_revision: "rev-a".to_string(),
+                target_revision: "rev-c".to_string(),
+                instance_ids: HashSet::from(["instance-a".to_string(), "instance-b".to_string(),]),
+            })
+        );
+    }
+
+    #[test]
+    fn non_contiguous_managed_patch_hints_require_full_reconcile() {
+        let mut hint = Some(ManagedConfigReconcileHint::Dirty {
+            expected_revision: "rev-a".to_string(),
+            target_revision: "rev-b".to_string(),
+            instance_ids: HashSet::from(["instance-a".to_string()]),
+        });
+
+        record_managed_config_reconcile_hint(
+            &mut hint,
+            ManagedConfigReconcileHint::Dirty {
+                expected_revision: "rev-c".to_string(),
+                target_revision: "rev-d".to_string(),
+                instance_ids: HashSet::from(["instance-b".to_string()]),
+            },
+        );
+
+        assert_eq!(hint, Some(ManagedConfigReconcileHint::Full));
+    }
+
+    #[test]
+    fn managed_patch_hint_does_not_narrow_pending_full_reconcile() {
+        let mut hint = Some(ManagedConfigReconcileHint::Full);
+
+        record_managed_config_reconcile_hint(
+            &mut hint,
+            ManagedConfigReconcileHint::Dirty {
+                expected_revision: "rev-0".to_string(),
+                target_revision: "rev-a".to_string(),
+                instance_ids: HashSet::from(["instance-a".to_string()]),
+            },
+        );
+
+        assert_eq!(hint, Some(ManagedConfigReconcileHint::Full));
+    }
+
+    #[test]
+    fn full_reconcile_hint_replaces_pending_dirty_instances() {
+        let mut hint = Some(ManagedConfigReconcileHint::Dirty {
+            expected_revision: "rev-0".to_string(),
+            target_revision: "rev-a".to_string(),
+            instance_ids: HashSet::from(["instance-a".to_string()]),
+        });
+
+        record_managed_config_reconcile_hint(&mut hint, ManagedConfigReconcileHint::Full);
+
+        assert_eq!(hint, Some(ManagedConfigReconcileHint::Full));
     }
 }

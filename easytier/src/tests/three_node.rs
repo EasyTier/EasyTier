@@ -1457,6 +1457,98 @@ pub async fn subnet_proxy_three_node_test(
 #[rstest::rstest]
 #[tokio::test]
 #[serial_test::serial]
+pub async fn subnet_proxy_half_close_test(
+    #[values("tcp", "kcp", "quic")] transport: &str,
+    #[values(false, true)] use_smoltcp: bool,
+) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let insts = init_three_node_ex(
+        "udp",
+        |cfg| {
+            let mut flags = cfg.get_flags();
+            flags.use_smoltcp = use_smoltcp;
+            if cfg.get_inst_name() == "inst1" {
+                flags.enable_kcp_proxy = transport == "kcp";
+                flags.enable_quic_proxy = transport == "quic";
+            }
+            cfg.set_flags(flags);
+            if cfg.get_inst_name() == "inst3" {
+                cfg.add_proxy_cidr(
+                    "10.1.2.0/24".parse().unwrap(),
+                    Some("10.1.3.0/24".parse().unwrap()),
+                )
+                .unwrap();
+            }
+            cfg
+        },
+        false,
+    )
+    .await;
+    wait_proxy_route_appear(
+        &insts[0].get_core_instance(),
+        "10.144.144.3/24",
+        insts[2].peer_id(),
+        "10.1.3.0/24",
+    )
+    .await;
+
+    // The advertised route can precede installation of the host TUN route.
+    wait_for_condition(
+        || async { ping_test("net_a", "10.1.3.4", None).await },
+        Duration::from_secs(5),
+    )
+    .await;
+
+    let result = tokio::time::timeout(Duration::from_secs(10), async {
+        let listener = NetNS::new(Some("net_d".into())).run(|| {
+            let listener = std::net::TcpListener::bind("10.1.2.4:22224").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            tokio::net::TcpListener::from_std(listener).unwrap()
+        });
+        for (source_closes_first, request_size) in
+            [(true, 0), (false, 0), (true, 64 * 1024), (false, 64 * 1024)]
+        {
+            let socket =
+                NetNS::new(Some("net_a".into())).run(|| tokio::net::TcpSocket::new_v4().unwrap());
+            let (client, (server, _)) = tokio::try_join!(
+                socket.connect("10.1.3.4:22224".parse().unwrap()),
+                listener.accept(),
+            )
+            .expect("failed to establish the proxied connection");
+            let (mut requester, mut responder) = if source_closes_first {
+                (client, server)
+            } else {
+                (server, client)
+            };
+            let request = vec![0x35; request_size];
+            let response = vec![0xa7; 128 * 1024];
+            tokio::join!(
+                async {
+                    requester.write_all(&request).await.unwrap();
+                    requester.shutdown().await.unwrap();
+                    let mut received = Vec::new();
+                    requester.read_to_end(&mut received).await.unwrap();
+                    assert_eq!(received, response);
+                },
+                async {
+                    let mut received = Vec::new();
+                    responder.read_to_end(&mut received).await.unwrap();
+                    assert_eq!(received, request);
+                    responder.write_all(&response).await.unwrap();
+                    responder.shutdown().await.unwrap();
+                },
+            );
+        }
+    })
+    .await;
+    drop_insts(insts).await;
+    result.expect("proxy did not forward the response after half-close");
+}
+
+#[rstest::rstest]
+#[tokio::test]
+#[serial_test::serial]
 pub async fn data_compress(
     #[values(true, false)] inst1_compress: bool,
     #[values(true, false)] inst2_compress: bool,
@@ -1689,10 +1781,11 @@ pub async fn foreign_network_forward_nic_data() {
 use std::{net::SocketAddr, str::FromStr};
 
 use defguard_wireguard_rs::{
-    InterfaceConfiguration, WGApi, WireguardInterfaceApi, host::Peer, key::Key, net::IpAddrMask,
+    InterfaceConfiguration, Kernel, WGApi, WireguardInterfaceApi, key::Key, net::IpAddrMask,
+    peer::Peer,
 };
 
-fn wireguard_ifname(base: &str) -> String {
+pub(super) fn wireguard_ifname(base: &str) -> String {
     if cfg!(target_os = "linux") || cfg!(target_os = "freebsd") {
         base.to_owned()
     } else {
@@ -1701,7 +1794,7 @@ fn wireguard_ifname(base: &str) -> String {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_wireguard_client(
+pub(super) fn run_wireguard_client(
     ifname: &str,
     endpoint: SocketAddr,
     peer_public_key: Key,
@@ -1710,7 +1803,7 @@ fn run_wireguard_client(
     client_ip: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Create new API object for interface
-    let wgapi = WGApi::new(ifname.to_owned(), false)?;
+    let mut wgapi = WGApi::<Kernel>::new(ifname.to_owned())?;
 
     // create interface
     wgapi.create_interface()?;
@@ -1730,16 +1823,26 @@ fn run_wireguard_client(
     let interface_config = InterfaceConfiguration {
         name: ifname.to_owned(),
         prvkey: client_private_key.to_string(),
-        address: client_ip,
+        addresses: vec![IpAddrMask::from_str(client_ip.as_str())?],
         port: 12345,
         peers: vec![peer],
+        mtu: None,
+        fwmark: None,
     };
 
     #[cfg(not(windows))]
     wgapi.configure_interface(&interface_config)?;
     #[cfg(windows)]
     wgapi.configure_interface(&interface_config, &[])?;
-    wgapi.configure_peer_routing(&interface_config.peers)?;
+    // These split-tunnel clients reach the endpoint through an existing route.
+    // defguard 0.12 also rewrites endpoint routes (or blackholes them without a
+    // default gateway), so pass only the allowed IPs to its routing helper.
+    // The actual WireGuard peer above retains its endpoint.
+    let mut routing_peers = interface_config.peers.clone();
+    for peer in &mut routing_peers {
+        peer.endpoint = None;
+    }
+    wgapi.configure_peer_routing(&routing_peers)?;
     Ok(())
 }
 
@@ -3220,6 +3323,46 @@ pub async fn acl_rule_test_inbound(
 
     // remove acl, 8080 should succ
     reload_instance_acl(&insts[2], None).await;
+
+    drop_insts(insts).await;
+}
+
+#[tokio::test]
+#[serial_test::serial]
+pub async fn acl_inbound_default_drop_blocks_bidirectional_icmp() {
+    use crate::proto::acl::*;
+
+    let insts = init_three_node("udp").await;
+    let mut acl = Acl::default();
+    let mut acl_v1 = AclV1::default();
+    acl_v1.chains.push(Chain {
+        name: "drop_inbound".to_string(),
+        chain_type: ChainType::Inbound as i32,
+        enabled: true,
+        default_action: Action::Drop as i32,
+        ..Default::default()
+    });
+    acl.acl_v1 = Some(acl_v1);
+
+    reload_instance_acl(&insts[0], Some(&acl)).await;
+    reload_instance_acl(&insts[1], Some(&acl)).await;
+
+    for payload_size in [None, Some(5 * 1024)] {
+        for _ in 0..2 {
+            assert!(!ping_test("net_a", "10.144.144.2", payload_size).await);
+            assert!(!ping_test("net_b", "10.144.144.1", payload_size).await);
+        }
+    }
+
+    reload_instance_acl(&insts[1], None).await;
+    for payload_size in [None, Some(5 * 1024)] {
+        wait_for_condition(
+            || async { ping_test("net_a", "10.144.144.2", payload_size).await },
+            Duration::from_secs(5),
+        )
+        .await;
+        assert!(!ping_test("net_b", "10.144.144.1", payload_size).await);
+    }
 
     drop_insts(insts).await;
 }

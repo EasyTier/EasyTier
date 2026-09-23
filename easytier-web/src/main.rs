@@ -3,8 +3,8 @@
 #[macro_use]
 extern crate rust_i18n;
 
+use std::net::IpAddr;
 use std::sync::Arc;
-use std::{net::IpAddr, time::Duration};
 
 use clap::Parser;
 use easytier::tunnel::websocket::WsTunnelListener;
@@ -116,10 +116,18 @@ struct Cli {
     #[arg(
         long,
         env = "ET_HEARTBEAT_MIN_RESPONSE_MS",
-        default_value = "0",
+        default_value = "3500",
         help = t!("cli.heartbeat_min_response_ms").to_string(),
     )]
     heartbeat_min_response_ms: u64,
+
+    #[arg(
+        long,
+        env = "ET_HEARTBEAT_TIMEOUT_MS",
+        default_value = "15000",
+        help = t!("cli.heartbeat_timeout_ms").to_string(),
+    )]
+    heartbeat_timeout_ms: u64,
 
     #[cfg(feature = "embed")]
     #[arg(
@@ -288,7 +296,21 @@ async fn main() {
     setup_panic_handler();
 
     let cli = Cli::parse();
-    log::init(&cli, false).unwrap();
+    log::init_with_default_console_targets(&cli, false, &["CORE", "easytier_web"]).unwrap();
+    tracing::info!(
+        version = EASYTIER_VERSION,
+        web_instance_id = ?cli.webhook.web_instance_id,
+        api_address = %cli.api_server_addr,
+        api_port = cli.api_server_port,
+        config_protocol = %cli.config_server_protocol,
+        config_port = cli.config_server_port,
+        heartbeat_min_response_ms = cli.heartbeat_min_response_ms,
+        heartbeat_timeout_ms = cli.heartbeat_timeout_ms,
+        webhook_enabled = cli.webhook.webhook_url.as_deref().is_some_and(|url| !url.trim().is_empty()),
+        rust_log_override = std::env::var_os("RUST_LOG").is_some(),
+        console_log_override = cli.console_log_level.is_some(),
+        "easytier-web starting"
+    );
 
     // Validate OIDC configuration: check split-deploy specific requirements
     // Basic OIDC parameter validation is handled in OidcConfig::from_params
@@ -326,10 +348,18 @@ async fn main() {
         cli.webhook.web_instance_id,
         cli.webhook.web_instance_api_base_url,
     ));
+    let heartbeat_policy = client_manager::HeartbeatPolicy::from_millis(
+        cli.heartbeat_min_response_ms,
+        cli.heartbeat_timeout_ms,
+    )
+    .unwrap_or_else(|error| {
+        eprintln!("Invalid heartbeat configuration: {error}");
+        std::process::exit(2);
+    });
     let mut mgr = client_manager::ClientManager::new(
         db.clone(),
         cli.geoip_db,
-        Duration::from_millis(cli.heartbeat_min_response_ms),
+        heartbeat_policy,
         feature_flags.clone(),
         webhook_config.clone(),
     );

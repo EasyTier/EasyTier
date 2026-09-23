@@ -204,10 +204,10 @@ fn get_insecure_tls_cert<'a>() -> (
     rustls::pki_types::PrivateKeyDer<'a>,
 ) {
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
-    let cert_der = cert.serialize_der().unwrap();
-    let private_key = cert.serialize_private_key_der();
+    let cert_der = cert.cert.der().clone();
+    let private_key = cert.signing_key.serialize_der();
     let private_key = rustls::pki_types::PrivatePkcs8KeyDer::from(private_key);
-    (vec![cert_der.into()], private_key.into())
+    (vec![cert_der], private_key.into())
 }
 
 pub(crate) async fn upgrade_accepted<S>(
@@ -312,7 +312,8 @@ impl WsTunnelListener {
             .addr(addr)
             .only_v6(true)
             .maybe_socket_mark(self.socket_mark)
-            .call()?;
+            .call()
+            .await?;
 
         self.addr
             .set_port(Some(listener.local_addr()?.port()))

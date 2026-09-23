@@ -38,6 +38,7 @@ basic_settings: 基础设置
 listener_urls: 监听地址
 rpc_port: RPC端口
 port: 端口
+path: 路径
 rpc_portal_whitelists: RPC白名单
 config_network: 配置网络
 running: 运行中
@@ -60,6 +61,18 @@ copy_config: 复制配置
 config_copied: 已复制
 config_generation_failed: 生成失败
 config_copy_failed: 复制失败
+magisk_module_configuration: EasyTier 模块配置
+magisk_status_loading: 正在读取状态
+magisk_status_running: 运行中
+magisk_status_stopped: 已停止
+magisk_status_restarting: 正在重启
+magisk_save_restart: 保存并重启
+magisk_command_args_warning: 当前启用了启动参数模式，模块会忽略 config.toml。请先删除 config/command_args，才能在此保存配置。
+magisk_invalid_module_directory: KernelSU 返回了无效的模块目录
+magisk_load_failed: '加载模块配置失败：{error}'
+magisk_save_failed: '保存模块配置失败：{error}'
+magisk_config_saved: 配置已验证并保存，EasyTier 已重新启动
+magisk_config_saved_restart_pending: 配置已验证并保存，EasyTier 守护进程仍在启动
 retain_network_instance: 保留网络实例
 collect_network_infos: 收集网络信息
 settings: 设置
@@ -456,6 +469,8 @@ mode:
   remote_rpc_address_empty: 远程RPC地址不能为空
   service_config_empty: 服务配置不能为空
   rpc_connection_failed: "RPC 连接失败：{error}"
+  autostart: 开机自启
+  autostart_hint: 开机自启由服务模式提供。切换为「服务模式」并保存后，EasyTier 将注册为系统服务，开机自动启动并在后台运行。
 
 config-server:
   title: 配置服务器
