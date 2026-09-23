@@ -18,7 +18,7 @@ use crate::{
     connectivity::hole_punch::policy::{should_background_p2p_with_peer, should_try_p2p_with_peer},
     connectivity::stun::{StunInfoProvider, StunSocketMapper},
     connectivity::{
-        LocalListenerUrls, NoLocalListeners,
+        LocalListenerUrls, NoLocalListeners, configured_bind_addr,
         protocol::{
             ClientProtocolUpgrader, ProtocolTransport, protocol_transport, protocol_uses_udp,
         },
@@ -124,6 +124,7 @@ pub struct DirectConnectorOptions {
     pub enable_ipv6: bool,
     pub allow_public_server: bool,
     pub bind_device: bool,
+    pub bind_address: Option<IpAddr>,
     pub allow_interface_bind: bool,
     pub tcp_bind: TcpBindOptions,
     pub udp_bind: UdpBindOptions,
@@ -138,6 +139,7 @@ impl Default for DirectConnectorOptions {
             enable_ipv6: true,
             allow_public_server: false,
             bind_device: false,
+            bind_address: None,
             allow_interface_bind: true,
             tcp_bind: TcpBindOptions::default(),
             udp_bind: UdpBindOptions::direct_connect(),
@@ -664,7 +666,17 @@ where
             self.options.socket_context(transport, IpVersion::Both),
         )
         .await?;
-        let bind_addrs = if self.options.bind_device
+        let bind_addrs = if let Some(bind_addr) = configured_bind_addr(
+            self.options.bind_address,
+            if remote_addr.is_ipv6() {
+                IpVersion::V6
+            } else {
+                IpVersion::V4
+            },
+            0,
+        ) {
+            vec![bind_addr]
+        } else if self.options.bind_device
             && self.options.allow_interface_bind
             && transport.supports_interface_bind()
         {
@@ -712,6 +724,8 @@ where
         dst_peer_id: PeerId,
         url: &Url,
     ) -> anyhow::Result<(PeerId, PeerConnId)> {
+        let local_addr = configured_bind_addr(self.options.bind_address, IpVersion::V4, 0)
+            .unwrap_or_else(|| "0.0.0.0:0".parse().expect("static IPv4 bind address"));
         let socket = self
             .host
             .bind_udp(
@@ -723,7 +737,7 @@ where
                             .clone()
                             .with_ip_version(IpVersion::V4),
                     )
-                    .with_local_addr(Some("0.0.0.0:0".parse().unwrap())),
+                    .with_local_addr(Some(local_addr)),
             )
             .await?;
         let connector_addr = self
@@ -747,6 +761,8 @@ where
         dst_peer_id: PeerId,
         url: &Url,
     ) -> anyhow::Result<(PeerId, PeerConnId)> {
+        let local_addr = configured_bind_addr(self.options.bind_address, IpVersion::V6, 0)
+            .unwrap_or_else(|| "[::]:0".parse().expect("static IPv6 bind address"));
         let socket = self
             .host
             .bind_udp(
@@ -758,7 +774,7 @@ where
                             .clone()
                             .with_ip_version(IpVersion::V6),
                     )
-                    .with_local_addr(Some("[::]:0".parse().unwrap())),
+                    .with_local_addr(Some(local_addr)),
             )
             .await?;
         let connector_ips = self.collect_ipv6_hole_punch_candidates().await?;

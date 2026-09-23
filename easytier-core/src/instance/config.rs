@@ -1,6 +1,8 @@
 //! Portable normalization from the shared TOML model into one core instance.
 
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, net::IpAddr};
+
+use anyhow::Context as _;
 
 use crate::{
     config::{
@@ -173,6 +175,14 @@ impl CoreInstanceConfig {
         host: &CoreInstanceHostConfig,
     ) -> anyhow::Result<Self> {
         let flags = host.runtime_flags(config.get_flags());
+        let bind_address =
+            if flags.bind_address.is_empty() {
+                None
+            } else {
+                Some(flags.bind_address.parse::<IpAddr>().with_context(|| {
+                    format!("invalid [flags].bind_address: {}", flags.bind_address)
+                })?)
+            };
         let instance_id = config.get_id();
         let identity: crate::config::NetworkIdentity = config.get_network_identity().into();
         let managed_credentials = config.get_managed_credentials();
@@ -380,6 +390,7 @@ impl CoreInstanceConfig {
                 },
                 manual: ManualConnectorOptions {
                     bind_device: flags.bind_device,
+                    bind_address,
                     allow_interface_bind: host.allow_interface_bind,
                     tcp_bind: tcp_bind.clone(),
                     udp_bind: udp_bind.clone(),
@@ -390,6 +401,7 @@ impl CoreInstanceConfig {
                     enable_ipv6: flags.enable_ipv6,
                     allow_public_server: true,
                     bind_device: flags.bind_device,
+                    bind_address,
                     allow_interface_bind: host.allow_interface_bind,
                     tcp_bind,
                     udp_bind,
@@ -575,6 +587,41 @@ disable_p2p = true
             1
         );
         assert!(normalized.peer.snapshot.flags.disable_p2p);
+    }
+
+    #[test]
+    fn explicit_underlay_bind_address_is_normalized_for_connectivity() {
+        let config = TomlConfig::new_from_str(
+            r#"
+[flags]
+bind_address = "192.0.2.10"
+"#,
+        )
+        .unwrap();
+
+        let normalized = CoreInstanceConfig::from_toml(&config).unwrap();
+        assert_eq!(
+            normalized.connectivity.direct.bind_address,
+            Some("192.0.2.10".parse().unwrap())
+        );
+        assert_eq!(
+            normalized.connectivity.manual.bind_address,
+            Some("192.0.2.10".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn invalid_underlay_bind_address_is_rejected_during_normalization() {
+        let config = TomlConfig::new_from_str(
+            r#"
+[flags]
+bind_address = "not-an-ip"
+"#,
+        )
+        .unwrap();
+
+        let error = CoreInstanceConfig::from_toml(&config).unwrap_err();
+        assert!(error.to_string().contains("invalid [flags].bind_address"));
     }
 
     #[test]

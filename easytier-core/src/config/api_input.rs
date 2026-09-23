@@ -129,6 +129,7 @@ const FORM_MANAGED_FLAG_FIELDS: &[&str] = &[
     "p2p_only",
     "lazy_p2p",
     "bind_device",
+    "bind_address",
     "socket_mark",
     "no_tun",
     "enable_exit_node",
@@ -531,6 +532,10 @@ impl NetworkConfigExt for NetworkConfig {
             flags.bind_device = bind_device;
         }
 
+        if let Some(bind_address) = self.bind_address.as_deref() {
+            flags.bind_address = bind_address.trim().to_owned();
+        }
+
         if self.socket_mark.is_some() {
             flags.socket_mark = self.socket_mark;
         }
@@ -778,6 +783,7 @@ impl NetworkConfigExt for NetworkConfig {
         result.p2p_only = Some(flags.p2p_only);
         result.lazy_p2p = Some(flags.lazy_p2p);
         result.bind_device = Some(flags.bind_device);
+        result.bind_address = (!flags.bind_address.is_empty()).then_some(flags.bind_address);
         result.socket_mark = flags.socket_mark;
         result.no_tun = Some(flags.no_tun);
         result.enable_exit_node = Some(flags.enable_exit_node);
