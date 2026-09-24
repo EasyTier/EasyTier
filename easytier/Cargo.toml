@@ -59,7 +59,7 @@ quanta.workspace = true
 
 strum = { workspace = true, features = ["derive"] }
 
-gethostname = "1.1.0"
+gethostname.workspace = true
 
 futures = { workspace = true, features = ["bilock", "unstable"] }
 
@@ -241,7 +241,7 @@ windivert = { git = "https://github.com/EasyTier/windivert-rust.git", rev = "adc
 ] }
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.62.2", features = [
+windows = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_NetworkManagement_IpHelper",
     "Win32_NetworkManagement_Ndis",

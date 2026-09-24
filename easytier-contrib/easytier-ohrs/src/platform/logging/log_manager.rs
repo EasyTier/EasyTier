@@ -24,19 +24,10 @@ pub struct LogFileInfo {
     pub active: bool,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct LogOptions {
     core_log: bool,
     debug_log: bool,
-}
-
-impl Default for LogOptions {
-    fn default() -> Self {
-        Self {
-            core_log: false,
-            debug_log: false,
-        }
-    }
 }
 
 #[derive(Default)]
@@ -231,6 +222,7 @@ pub(crate) fn record_core_log(level: i32, target: &str, message: &str) {
     }
 }
 
+#[allow(dead_code)]
 #[napi]
 pub fn init_log_manager(root_dir: String, process_name: String) -> bool {
     let dir = log_dir(&root_dir);
@@ -286,16 +278,19 @@ pub fn init_log_manager(root_dir: String, process_name: String) -> bool {
     true
 }
 
+#[allow(dead_code)]
 #[napi]
 pub fn configure_log_manager(core_log: bool, debug_log: bool) {
     configure(core_log, debug_log);
 }
 
+#[allow(dead_code)]
 #[napi]
 pub fn write_app_log(level: i32, target: String, message: String) {
     record_app_log(level, &target, &message);
 }
 
+#[allow(dead_code)]
 #[napi]
 pub fn drain_log_lines() -> Vec<String> {
     LOG_MANAGER
@@ -304,6 +299,7 @@ pub fn drain_log_lines() -> Vec<String> {
         .unwrap_or_default()
 }
 
+#[allow(dead_code)]
 #[napi]
 pub fn list_log_files() -> Vec<LogFileInfo> {
     let Some((log_dir, active_file)) = current_log_state() else {
@@ -340,6 +336,7 @@ pub fn list_log_files() -> Vec<LogFileInfo> {
         .collect()
 }
 
+#[allow(dead_code)]
 #[napi]
 pub fn read_log_file(file_name: String) -> Option<String> {
     let (log_dir, _) = current_log_state()?;
@@ -347,6 +344,7 @@ pub fn read_log_file(file_name: String) -> Option<String> {
     fs::read_to_string(path).ok()
 }
 
+#[allow(dead_code)]
 #[napi]
 pub fn export_log_file(file_name: String, target_path: String) -> bool {
     let Some((log_dir, _)) = current_log_state() else {
@@ -358,6 +356,7 @@ pub fn export_log_file(file_name: String, target_path: String) -> bool {
     fs::copy(path, target_path).is_ok()
 }
 
+#[allow(dead_code)]
 #[napi]
 pub fn export_log_archive(target_path: String) -> bool {
     let log_dir = LOG_MANAGER
