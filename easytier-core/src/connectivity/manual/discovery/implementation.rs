@@ -5,7 +5,7 @@ use bytes::Bytes;
 use http_body_util::{BodyExt as _, Empty};
 use hyper::{Request, header};
 use hyper_util::rt::TokioIo;
-use rand::{Rng as _, seq::SliceRandom};
+use rand::seq::SliceRandom;
 use rustls::pki_types::ServerName;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_rustls::TlsConnector;
@@ -66,12 +66,11 @@ where
     }
 }
 
-#[async_trait::async_trait]
-impl<H> ManualEndpointResolver for CoreManualEndpointResolver<H>
+impl<H> CoreManualEndpointResolver<H>
 where
     H: VirtualTcpSocketFactory,
 {
-    async fn resolve_endpoint(&self, url: &Url) -> anyhow::Result<Url> {
+    async fn resolve_endpoint_candidate_urls(&self, url: &Url) -> anyhow::Result<Vec<Url>> {
         match url.scheme() {
             "http" | "https" => {
                 let response = fetch_http_discovery(
@@ -88,7 +87,7 @@ where
                 )
                 .await?;
                 resolve_http_endpoint(response)
-                    .map(|endpoint| endpoint.url)
+                    .map(|endpoint| vec![endpoint.url])
                     .map_err(|error| anyhow::anyhow!("Invalid Url: {error}"))
             }
             "txt" => {
@@ -99,10 +98,11 @@ where
                     self.config.dns_record_context.clone(),
                 )
                 .await
+                .map(|url| vec![url])
             }
             "srv" => {
                 let host = endpoint_host(url)?;
-                resolve_srv_endpoint(
+                resolve_srv_endpoint_candidates(
                     self.dns_records.as_ref(),
                     host,
                     &self.config.srv_protocols,
@@ -112,6 +112,24 @@ where
             }
             scheme => anyhow::bail!("unsupported manual endpoint resolver scheme: {scheme}"),
         }
+    }
+}
+
+#[async_trait::async_trait]
+impl<H> ManualEndpointResolver for CoreManualEndpointResolver<H>
+where
+    H: VirtualTcpSocketFactory,
+{
+    async fn resolve_endpoint(&self, url: &Url) -> anyhow::Result<Url> {
+        self.resolve_endpoint_candidate_urls(url)
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("no endpoint resolved for {url}"))
+    }
+
+    async fn resolve_endpoint_candidates(&self, url: &Url) -> anyhow::Result<Vec<Url>> {
+        self.resolve_endpoint_candidate_urls(url).await
     }
 }
 
@@ -354,19 +372,50 @@ pub(crate) fn resolve_http_endpoint(
     }
 }
 
-fn choose_weighted<T>(options: &[(T, u64)]) -> Option<&T> {
-    let total_weight = options.iter().map(|(_, weight)| *weight).sum();
-    let mut rng = rand::thread_rng();
-    let selected = rng.gen_range(0..total_weight);
-    let mut accumulated = 0;
+/// One SRV-derived endpoint candidate with its RFC 2782 fields.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(super) struct SrvCandidate {
+    pub url: Url,
+    pub priority: u16,
+    pub weight: u16,
+}
 
-    for (item, weight) in options {
-        accumulated += *weight;
-        if selected < accumulated {
-            return Some(item);
+/// Orders SRV candidates per RFC 2782: ascending priority, weighted random
+/// order inside an equal-priority group (uniformly random when every weight
+/// in the group is zero).
+fn order_srv_candidates(candidates: Vec<SrvCandidate>, rng: &mut impl rand::Rng) -> Vec<Url> {
+    let mut candidates = candidates;
+    candidates.sort_by_key(|candidate| candidate.priority);
+
+    let mut ordered = Vec::with_capacity(candidates.len());
+    let mut remaining = candidates;
+    while !remaining.is_empty() {
+        let priority = remaining[0].priority;
+        let group_len = remaining
+            .iter()
+            .take_while(|candidate| candidate.priority == priority)
+            .count();
+
+        let mut group: Vec<SrvCandidate> = remaining.drain(..group_len).collect();
+        while !group.is_empty() {
+            let total_weight: u64 = group.iter().map(|c| u64::from(c.weight)).sum();
+            let selected = if total_weight == 0 {
+                rng.gen_range(0..group.len())
+            } else {
+                let pick = rng.gen_range(0..total_weight);
+                let mut accumulated = 0u64;
+                group
+                    .iter()
+                    .position(|c| {
+                        accumulated += u64::from(c.weight);
+                        pick < accumulated
+                    })
+                    .unwrap_or(0)
+            };
+            ordered.push(group.remove(selected).url);
         }
     }
-    None
+    ordered
 }
 
 pub(crate) async fn resolve_txt_endpoint(
@@ -392,17 +441,19 @@ pub(crate) async fn resolve_txt_endpoint(
         })
 }
 
-fn srv_record_url(protocol: &str, record: DnsSrvRecord) -> anyhow::Result<(Url, u64)> {
+fn srv_record_url(protocol: &str, record: DnsSrvRecord) -> anyhow::Result<SrvCandidate> {
     if record.port == 0 {
         anyhow::bail!("SRV port must be non-zero");
     }
     let url = format!("{protocol}://{}:{}", record.target, record.port);
-    // Preserve the existing EasyTier selection rule, which treats SRV priority
-    // as the candidate weight.
-    Ok((Url::parse(&url)?, u64::from(record.priority)))
+    Ok(SrvCandidate {
+        url: Url::parse(&url)?,
+        priority: record.priority,
+        weight: record.weight,
+    })
 }
 
-pub(super) fn deduplicate_srv_candidates(candidates: Vec<(Url, u64)>) -> Vec<(Url, u64)> {
+pub(super) fn deduplicate_srv_candidates(candidates: Vec<SrvCandidate>) -> Vec<SrvCandidate> {
     candidates
         .into_iter()
         .collect::<HashSet<_>>()
@@ -410,12 +461,12 @@ pub(super) fn deduplicate_srv_candidates(candidates: Vec<(Url, u64)>) -> Vec<(Ur
         .collect()
 }
 
-pub(crate) async fn resolve_srv_endpoint(
+pub(crate) async fn resolve_srv_endpoint_candidates(
     resolver: &dyn DnsRecordResolver,
     domain_name: &str,
     supported_protocols: &[String],
     context: SocketContext,
-) -> anyhow::Result<Url> {
+) -> anyhow::Result<Vec<Url>> {
     let lookups = supported_protocols.iter().map(|protocol| {
         let protocol = protocol.clone();
         let query = DnsQuery::new(
@@ -449,9 +500,7 @@ pub(crate) async fn resolve_srv_endpoint(
     }
     let candidates = deduplicate_srv_candidates(candidates);
 
-    choose_weighted(&candidates)
-        .cloned()
-        .ok_or_else(|| anyhow::anyhow!("failed to choose an SRV endpoint for {domain_name}"))
+    Ok(order_srv_candidates(candidates, &mut rand::thread_rng()))
 }
 
 #[cfg(test)]
@@ -465,6 +514,8 @@ mod tests {
     };
 
     use async_trait::async_trait;
+    use rand::SeedableRng as _;
+    use rand::rngs::StdRng;
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _, DuplexStream, ReadBuf};
 
     use crate::socket::tcp::{TcpConnectOptions, VirtualTcpSocket, VirtualTcpSocketFactory};
@@ -889,7 +940,7 @@ mod tests {
             queries: Mutex::new(Vec::new()),
         };
 
-        let endpoint = resolve_srv_endpoint(
+        let endpoints = resolve_srv_endpoint_candidates(
             &resolver,
             "discovery.example",
             &["quic".to_owned()],
@@ -898,7 +949,10 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(endpoint.as_str(), "quic://peer.example.com.:11012");
+        assert_eq!(
+            endpoints.iter().map(|url| url.as_str()).collect::<Vec<_>>(),
+            ["quic://peer.example.com.:11012"]
+        );
         assert_eq!(
             *resolver.queries.lock().unwrap(),
             [DnsQuery::new(
@@ -910,15 +964,191 @@ mod tests {
 
     #[test]
     fn srv_discovery_deduplicates_url_and_priority() {
-        let endpoint: Url = "tcp://peer.example.com:11010".parse().unwrap();
-        let candidates = deduplicate_srv_candidates(vec![
-            (endpoint.clone(), 10),
-            (endpoint.clone(), 10),
-            (endpoint.clone(), 20),
-        ]);
+        let candidate = |priority: u16, weight: u16| SrvCandidate {
+            url: "tcp://peer.example.com:11010".parse().unwrap(),
+            priority,
+            weight,
+        };
+        let candidates =
+            deduplicate_srv_candidates(vec![candidate(10, 5), candidate(10, 5), candidate(20, 5)]);
 
         assert_eq!(candidates.len(), 2);
-        assert!(candidates.contains(&(endpoint.clone(), 10)));
-        assert!(candidates.contains(&(endpoint, 20)));
+        assert!(candidates.contains(&candidate(10, 5)));
+        assert!(candidates.contains(&candidate(20, 5)));
+    }
+
+    #[test]
+    fn order_srv_candidates_prefers_lower_priority_across_groups() {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+        let urls = [
+            "tcp://priority-5.example:11010",
+            "tcp://priority-10.example:11010",
+        ];
+        for _ in 0..32 {
+            let ordered = order_srv_candidates(
+                vec![
+                    SrvCandidate {
+                        url: urls[1].parse().unwrap(),
+                        priority: 10,
+                        weight: 0,
+                    },
+                    SrvCandidate {
+                        url: urls[0].parse().unwrap(),
+                        priority: 5,
+                        weight: 0,
+                    },
+                ],
+                &mut rng,
+            );
+            let ordered: Vec<String> = ordered.iter().map(|url| url.to_string()).collect();
+            let expected: Vec<String> = urls.iter().map(|url| url.to_string()).collect();
+            assert_eq!(ordered, expected);
+        }
+    }
+
+    #[test]
+    fn order_srv_candidates_weighted_shuffle_inside_equal_priority() {
+        let low_weight: Url = "tcp://low-weight.example:11010".parse().unwrap();
+        let high_weight: Url = "tcp://high-weight.example:11010".parse().unwrap();
+        let candidates = vec![
+            SrvCandidate {
+                url: low_weight.clone(),
+                priority: 7,
+                weight: 1,
+            },
+            SrvCandidate {
+                url: high_weight.clone(),
+                priority: 7,
+                weight: 100,
+            },
+        ];
+
+        // deterministic seed puts the heavy weight first
+        assert_eq!(
+            order_srv_candidates(
+                candidates.clone(),
+                &mut rand::rngs::StdRng::seed_from_u64(7)
+            ),
+            [high_weight.clone(), low_weight.clone()]
+        );
+
+        // statistically the heavy weight dominates the first position
+        let mut heavy_first = 0;
+        let mut rng = rand::rngs::StdRng::seed_from_u64(1234);
+        for _ in 0..200 {
+            let ordered = order_srv_candidates(candidates.clone(), &mut rng);
+            if ordered[0] == high_weight {
+                heavy_first += 1;
+            }
+        }
+        assert!(
+            heavy_first > 160,
+            "heavy weight first only {heavy_first}/200"
+        );
+    }
+
+    #[test]
+    fn order_srv_candidates_uniformly_shuffles_zero_weight_group() {
+        let first: Url = "tcp://first.example:11010".parse().unwrap();
+        let second: Url = "tcp://second.example:11010".parse().unwrap();
+        let candidates = vec![
+            SrvCandidate {
+                url: first.clone(),
+                priority: 3,
+                weight: 0,
+            },
+            SrvCandidate {
+                url: second.clone(),
+                priority: 3,
+                weight: 0,
+            },
+        ];
+
+        let mut rng = rand::rngs::StdRng::seed_from_u64(9);
+        let ordered = order_srv_candidates(candidates, &mut rng);
+        let mut expected = [first.to_string(), second.to_string()];
+        expected.sort();
+        let mut actual: Vec<String> = ordered.iter().map(|url| url.to_string()).collect();
+        actual.sort();
+        assert_eq!(actual, expected);
+        assert_eq!(ordered.len(), 2);
+        let _ = second;
+    }
+
+    #[test]
+    fn order_srv_candidates_handles_trivial_inputs() {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(1);
+        assert!(order_srv_candidates(Vec::new(), &mut rng).is_empty());
+
+        let single: Url = "tcp://only.example:11010".parse().unwrap();
+        assert_eq!(
+            order_srv_candidates(
+                vec![SrvCandidate {
+                    url: single.clone(),
+                    priority: 0,
+                    weight: 0
+                }],
+                &mut rng
+            ),
+            [single.clone()]
+        );
+
+        // priority 0 is the most preferred
+        let zero: Url = "tcp://zero.example:11010".parse().unwrap();
+        let later: Url = "tcp://later.example:11010".parse().unwrap();
+        assert_eq!(
+            order_srv_candidates(
+                vec![
+                    SrvCandidate {
+                        url: later.clone(),
+                        priority: 9,
+                        weight: 0
+                    },
+                    SrvCandidate {
+                        url: zero.clone(),
+                        priority: 0,
+                        weight: 0
+                    },
+                ],
+                &mut rng
+            ),
+            [zero, later]
+        );
+    }
+
+    #[tokio::test]
+    async fn srv_candidates_are_ordered_by_priority_then_weight() {
+        let resolver = TestResolver {
+            txt: String::new(),
+            srv: vec![
+                DnsSrvRecord {
+                    priority: 10,
+                    weight: 100,
+                    port: 11010,
+                    target: "v4.example.com.".to_owned(),
+                },
+                DnsSrvRecord {
+                    priority: 5,
+                    weight: 0,
+                    port: 11010,
+                    target: "v6.example.com.".to_owned(),
+                },
+            ],
+            queries: Mutex::new(Vec::new()),
+        };
+
+        let endpoints = resolve_srv_endpoint_candidates(
+            &resolver,
+            "discovery.example",
+            &["tcp".to_owned()],
+            SocketContext::default(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            endpoints.iter().map(|url| url.as_str()).collect::<Vec<_>>(),
+            ["tcp://v6.example.com.:11010", "tcp://v4.example.com.:11010"]
+        );
     }
 }
