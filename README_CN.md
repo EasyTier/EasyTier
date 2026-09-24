@@ -314,6 +314,7 @@ EasyTier 在 [LGPL-3.0](https://github.com/EasyTier/EasyTier/blob/main/LICENSE) 
 </p>
 
 特别感谢 [浪浪云](https://langlangy.cn/?i26c5a5) 和 [雨云](https://www.rainyun.com/NjM0NzQ1_) 赞助我们的公共服务器。
+也感谢 [林枫云](https://www.dkdun.cn/aff/RZGBFYSW) 对 EasyTier 的支持。
 
 <p align="center">
 <a href="https://langlangy.cn/?i26c5a5" target="_blank">
@@ -321,6 +322,9 @@ EasyTier 在 [LGPL-3.0](https://github.com/EasyTier/EasyTier/blob/main/LICENSE) 
 </a>
 <a href="https://langlangy.cn/?i26c5a5" target="_blank">
 <img src="assets/raincloud.png" width="200">
+</a>
+<a href="https://www.dkdun.cn/aff/RZGBFYSW" target="_blank">
+<img src="assets/linfengyun.png" width="200" alt="林枫云">
 </a>
 </p>
 
