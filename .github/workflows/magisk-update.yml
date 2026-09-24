@@ -1,0 +1,146 @@
+name: EasyTier Magisk Update
+
+on:
+  release:
+    types: [published]
+
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to update Magisk metadata for"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event.release.draft == false &&
+        github.event.release.prerelease == false
+      )
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: main
+
+      - name: Determine tag
+        id: tag
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          if [ -n "$INPUT_TAG" ]; then
+            tag="$INPUT_TAG"
+          else
+            tag="$RELEASE_TAG"
+          fi
+
+          if [ -z "$tag" ]; then
+            echo "Release tag is empty."
+            exit 1
+          fi
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Using tag: $tag"
+
+      - name: Download Magisk release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          asset="Easytier-Magisk-${TAG}.zip"
+
+          gh release download "$TAG" \
+            --repo "$REPO" \
+            --pattern "$asset" \
+            --dir ./magisk-release
+
+          test -f "./magisk-release/$asset"
+
+      - name: Read module.prop
+        id: module
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          asset="Easytier-Magisk-${TAG}.zip"
+
+          mkdir -p ./magisk-module
+          unzip -q "./magisk-release/$asset" -d ./magisk-module
+
+          module_prop="./magisk-module/module.prop"
+
+          if [ ! -f "$module_prop" ]; then
+            echo "module.prop not found in $asset"
+            exit 1
+          fi
+
+          version=$(sed -n 's/^version=//p' "$module_prop" | head -n 1)
+          version_code=$(sed -n 's/^versionCode=//p' "$module_prop" | head -n 1)
+
+          if [ -z "$version" ]; then
+            echo "version is missing from module.prop"
+            exit 1
+          fi
+
+          if ! [[ "$version_code" =~ ^[0-9]+$ ]]; then
+            echo "Invalid versionCode: $version_code"
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "versionCode=$version_code" >> "$GITHUB_OUTPUT"
+
+          echo "version=$version"
+          echo "versionCode=$version_code"
+
+      - name: Update magisk_update.json
+        env:
+          VERSION: ${{ steps.module.outputs.version }}
+          VERSION_CODE: ${{ steps.module.outputs.versionCode }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          update_json="easytier-contrib/easytier-magisk/magisk_update.json"
+
+          jq \
+            --arg version "$VERSION" \
+            --argjson versionCode "$VERSION_CODE" \
+            --arg zipUrl \
+              "https://github.com/${REPO}/releases/download/${TAG}/Easytier-Magisk-${TAG}.zip" \
+            '.version = $version
+             | .versionCode = $versionCode
+             | .zipUrl = $zipUrl' \
+            "$update_json" > "$update_json.tmp"
+
+          mv "$update_json.tmp" "$update_json"
+
+          cat "$update_json"
+
+      - name: Commit changes
+        run: |
+          update_json="easytier-contrib/easytier-magisk/magisk_update.json"
+
+          if git diff --quiet -- "$update_json"; then
+            echo "magisk_update.json is already up to date."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add "$update_json"
+          git commit -m "chore(magisk): update release metadata"
+          git push origin HEAD:main
