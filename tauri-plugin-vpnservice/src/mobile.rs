@@ -57,4 +57,13 @@ impl<R: Runtime> Vpnservice<R> {
             .run_mobile_plugin("get_vpn_status", payload)
             .map_err(Into::into)
     }
+
+    pub fn consume_vpn_tile_action(
+        &self,
+        payload: VoidRequest,
+    ) -> crate::Result<VpnTileActionResponse> {
+        self.0
+            .run_mobile_plugin("consume_vpn_tile_action", payload)
+            .map_err(Into::into)
+    }
 }

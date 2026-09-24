@@ -16,7 +16,6 @@ import DeviceManagement from './components/DeviceManagement.vue'
 import Dashboard from './components/Dashboard.vue'
 import DialogService from 'primevue/dialogservice';
 import ToastService from 'primevue/toastservice';
-import ConfigGenerator from './components/ConfigGenerator.vue'
 
 const routes = [
     {
@@ -67,10 +66,6 @@ const routes = [
                 return { name: 'login' }
             }
         }
-    },
-    {
-        path: '/config_generator',
-        component: ConfigGenerator,
     }
 ]
 

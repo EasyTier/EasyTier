@@ -3,13 +3,11 @@ _version: 2
 core_clap:
   config_server:
     en: |+
-      config server address, allow format:
-      full url: --config-server udp://127.0.0.1:22020/admin, 'udp' can be replaced with tcp, ws, wss (when config server ws is proxied to wss)
-      only user name: --config-server admin, will use official server
+      config server address, must be a full URL:
+      --config-server udp://127.0.0.1:22020/admin, 'udp' can be replaced with tcp, ws, wss (when config server ws is proxied to wss)
     zh-CN: |+
-      配置服务器地址。允许格式：
-      完整URL：--config-server udp://127.0.0.1:22020/admin，udp可以根据配置服务器替换为 tcp，ws，wss(配置服务器ws被代理为wss时)
-      仅用户名：--config-server admin，将使用官方的服务器
+      配置服务器地址，必须使用完整 URL：
+      --config-server udp://127.0.0.1:22020/admin，udp 可以根据配置服务器替换为 tcp、ws、wss（配置服务器 ws 被代理为 wss 时）
   machine_id:
     en: |+
       the machine id to identify this machine, used for config recovery after disconnection, must be unique and fixed. by default it is loaded from persisted local state; on first start it may be migrated from system information or generated, then remains fixed.
@@ -102,8 +100,17 @@ core_clap:
     en: "instance name to identify this vpn node in same machine"
     zh-CN: "实例名称，用于在同一台机器上标识此VPN节点"
   vpn_portal:
-    en: "url that defines the vpn portal, allow other vpn clients to connect. example: wg://0.0.0.0:11010/10.14.14.0/24, means the vpn portal is a wireguard server listening on vpn.example.com:11010, and the vpn client is in network of 10.14.14.0/24"
-    zh-CN: "定义VPN门户的URL，允许其他VPN客户端连接。示例：wg://0.0.0.0:11010/10.14.14.0/24，表示VPN门户是监听在vpn.example.com:11010的wireguard服务器，VPN客户端在10.14.14.0/24网络中"
+    en: "WireGuard VPN portal listener URL, for example wg://0.0.0.0:51820"
+    zh-CN: "WireGuard VPN 门户监听 URL，例如 wg://0.0.0.0:51820"
+  vpn_portal_private_key:
+    en: "base64 WireGuard server private key (prefer ET_VPN_PORTAL_PRIVATE_KEY over command-line exposure)"
+    zh-CN: "Base64 WireGuard 服务端私钥（建议通过 ET_VPN_PORTAL_PRIVATE_KEY 传入，避免命令行暴露）"
+  vpn_portal_client:
+    en: "named VPN portal client in NAME=CIDR form, for example alice=10.144.0.5/16; may be repeated"
+    zh-CN: "NAME=CIDR 格式的具名 VPN 门户客户端，例如 alice=10.144.0.5/16；可重复指定"
+  vpn_portal_client_group:
+    en: "VPN portal client group membership in NAME=GROUP form; may be repeated"
+    zh-CN: "NAME=GROUP 格式的 VPN 门户客户端组成员关系；可重复指定"
   default_protocol:
     en: "default protocol to use when connecting to peers"
     zh-CN: "连接到对等节点时使用的默认协议"
@@ -205,6 +212,9 @@ core_clap:
   bind_device:
     en: "bind the connector socket to physical devices to avoid routing issues. e.g.: subnet proxy segment conflicts with a node's segment, after binding the physical device, it can communicate with the node normally."
     zh-CN: "将连接器的套接字绑定到物理设备以避免路由问题。比如子网代理网段与某节点的网段冲突，绑定物理设备后可以与该节点正常通信。"
+  socket_mark:
+    en: "Linux only: set SO_MARK (fwmark) on EasyTier's underlay sockets (TCP, UDP, QUIC, WebSocket, WireGuard, and the FakeTCP decoy socket) so the host can policy-route or filter them with 'ip rule fwmark ...', nftables ('meta mark'), or iptables ('-m mark'). Any value is applied verbatim (0 is a valid mark); omit the flag to leave SO_MARK untouched. Requires CAP_NET_ADMIN. Note: FakeTCP payload travels via raw TUN writes which the kernel does not tag — mark those separately on the TUN device if needed."
+    zh-CN: "仅 Linux: 在 EasyTier 的底层套接字 (TCP、UDP、QUIC、WebSocket、WireGuard 以及 FakeTCP 诱饵套接字) 上设置 SO_MARK (fwmark)，使主机能用 'ip rule fwmark ...'、nftables ('meta mark') 或 iptables ('-m mark') 策略路由/过滤这些数据包。任何值都会原样应用 (0 也是合法的 mark)；不传该参数即保持 SO_MARK 不变。需要 CAP_NET_ADMIN 权限。注意：FakeTCP 的实际载荷通过原始 TUN 写入，内核不会为其打标记；如有需要请在 TUN 设备上单独打标记。"
   enable_kcp_proxy:
     en: "proxy tcp streams with kcp, improving the latency and throughput on the network with udp packet loss."
     zh-CN: "使用 KCP 代理 TCP 流，提高在 UDP 丢包网络上的延迟和吞吐量。"
@@ -248,11 +258,14 @@ core_clap:
     en: "if true, allow relay quic packets from foreign network. default is false (not forward foreign network quic packets)"
     zh-CN: "如果为true，则作为共享节点时也可以转发其他网络的 QUIC 数据包。默认值为false（不转发）"
   stun_servers:
-    en: "Override default STUN servers; If configured but empty, STUN servers are not used"
-    zh-CN: "覆盖内置的默认 STUN server 列表；如果设置了但是为空，则不使用 STUN servers；如果没设置，则使用默认 STUN server 列表"
+    en: "Override default UDP STUN servers. TCP STUN also uses this list when tcp-stun-servers is unset. If configured but empty, UDP STUN and fallback TCP/IPv6 STUN are disabled"
+    zh-CN: "覆盖内置的默认 UDP STUN server 列表；未设置 tcp-stun-servers 时，TCP STUN 也使用此列表；如果设置了但是为空，则禁用 UDP STUN 以及回退的 TCP/IPv6 STUN"
   stun_servers_v6:
-    en: "Override default STUN servers, IPv6; If configured but empty, IPv6 STUN servers are not used"
-    zh-CN: "覆盖内置的默认 IPv6 STUN server 列表；如果设置了但是为空，则不使用 IPv6 STUN servers；如果没设置，则使用默认 IPv6 STUN server 列表"
+    en: "Override default IPv6 STUN servers. If unset while stun-servers is configured, IPv6 STUN is disabled. If configured but empty, IPv6 STUN servers are not used"
+    zh-CN: "覆盖内置的默认 IPv6 STUN server 列表；如果未设置但已设置 stun-servers，则禁用 IPv6 STUN；如果设置了但是为空，则不使用 IPv6 STUN servers"
+  tcp_stun_servers:
+    en: "Override default TCP STUN servers. If unset, TCP STUN uses stun-servers when configured, otherwise default TCP STUN servers. If configured but empty, TCP STUN is disabled"
+    zh-CN: "覆盖内置的默认 TCP STUN server 列表；如果未设置，TCP STUN 会优先使用 stun-servers，否则使用默认 TCP STUN server 列表；如果设置了但是为空，则禁用 TCP STUN"
   secure_mode:
     en: "if true, enable secure mode. default is false"
     zh-CN: "如果为true，则启用安全模式。默认值为false"

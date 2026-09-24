@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+import "common.proto";
+
+package dns;
+
+message ZoneData {
+  string content = 1;
+  repeated common.Url forwarders = 2;
+  repeated int32 fallthrough = 3;
+}
+
+message GetExportConfigRequest {}
+
+message GetExportConfigResponse {
+  repeated ZoneData zones = 1;
+}
+
+service DnsPeerMgrRpc {
+    rpc GetExportConfig(GetExportConfigRequest) returns (GetExportConfigResponse) {}
+}
+
+message DnsSnapshot {
+  repeated ZoneData zones = 1;
+  repeated common.Url addresses = 2;
+  repeated common.Url listeners = 3;
+}
+
+message HeartbeatRequest {
+  common.UUID id = 1;
+  bytes digest = 2;
+  optional DnsSnapshot snapshot = 3;
+}
+
+message HeartbeatResponse {
+  bool resync = 1;
+}
+
+service DnsNodeMgrRpc {
+    rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse) {}
+}

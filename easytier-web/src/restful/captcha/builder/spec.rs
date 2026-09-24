@@ -7,10 +7,10 @@ use super::super::base::captcha::{AbstractCaptcha, Captcha};
 
 use super::super::{CaptchaFont, NewCaptcha};
 
+use ab_glyph::{FontArc, PxScale};
 use image::{ImageBuffer, Rgba};
 use imageproc::drawing;
 use rand::{Rng, rngs::ThreadRng};
-use rusttype::{Font, Scale};
 use std::io::{Cursor, Write};
 use std::sync::Arc;
 
@@ -40,7 +40,7 @@ mod color {
 }
 
 ///the builder of captcha
-pub struct CaptchaBuilder<'a, 'b> {
+pub struct CaptchaBuilder<'b> {
     ///captcha image width
     pub width: u32,
     ///captcha image height
@@ -55,7 +55,7 @@ pub struct CaptchaBuilder<'a, 'b> {
     ///image background color (optional)
     pub background_color: Option<Rgba<u8>>,
     ///fonts collection for text
-    pub fonts: &'b [Arc<Font<'a>>],
+    pub fonts: &'b [Arc<FontArc>],
     ///The maximum number of lines to draw behind of the image
     pub max_behind_lines: Option<u32>,
     ///The maximum number of lines to draw in front of the image
@@ -64,7 +64,7 @@ pub struct CaptchaBuilder<'a, 'b> {
     pub max_ellipse_lines: Option<u32>,
 }
 
-impl<'a, 'b> Default for CaptchaBuilder<'a, 'b> {
+impl<'b> Default for CaptchaBuilder<'b> {
     fn default() -> Self {
         Self {
             width: 150,
@@ -80,7 +80,7 @@ impl<'a, 'b> Default for CaptchaBuilder<'a, 'b> {
     }
 }
 
-impl<'a, 'b> CaptchaBuilder<'a, 'b> {
+impl<'b> CaptchaBuilder<'b> {
     fn write_phrase(
         &self,
         image: &mut ImageBuffer<Rgba<u8>, Vec<u8>>,
@@ -90,25 +90,13 @@ impl<'a, 'b> CaptchaBuilder<'a, 'b> {
         //println!("phrase={}", phrase);
         //println!("width={}, height={}", self.width, self.height);
         let font_size = (self.width as f32) / (self.length as f32) - rng.gen_range(1.0..=4.0);
-        let scale = Scale::uniform(font_size);
+        let scale = PxScale::from(font_size);
         if self.fonts.is_empty() {
             panic!("no fonts loaded");
         }
         let font_index = rng.gen_range(0..self.fonts.len());
-        let font = &self.fonts[font_index];
-        let glyphs: Vec<_> = font
-            .layout(phrase, scale, rusttype::point(0.0, 0.0))
-            .collect();
-        let text_height = {
-            let v_metrics = font.v_metrics(scale);
-            (v_metrics.ascent - v_metrics.descent).ceil() as u32
-        };
-        let text_width = {
-            let min_x = glyphs.first().unwrap().pixel_bounding_box().unwrap().min.x;
-            let max_x = glyphs.last().unwrap().pixel_bounding_box().unwrap().max.x;
-            let last_x_pos = glyphs.last().unwrap().position().x as i32;
-            (max_x + last_x_pos - min_x) as u32
-        };
+        let font = self.fonts[font_index].as_ref();
+        let (text_width, text_height) = drawing::text_size(scale, font, phrase);
         let node_width = text_width / self.length;
         //println!("text_width={}, text_height={}", text_width, text_height);
         let mut x = ((self.width as i32) - (text_width as i32)) / 2;
@@ -291,7 +279,7 @@ impl AbstractCaptcha for SpecCaptcha {
             ..Default::default()
         };
         let image = builder.build_image(phrase.iter().collect());
-        let format = image::ImageOutputFormat::Png;
+        let format = image::ImageFormat::Png;
         let mut raw_data: Vec<u8> = Vec::new();
         image.write_to(&mut Cursor::new(&mut raw_data), format)?;
         out.write_all(&raw_data)?;
@@ -313,6 +301,22 @@ impl AbstractCaptcha for SpecCaptcha {
 
 #[cfg(test)]
 mod test {
+    use super::*;
+
     #[test]
-    fn it_works() {}
+    fn captcha_renders_text_and_encodes_png() {
+        let mut captcha = SpecCaptcha::with_size_and_len(150, 48, 5);
+        let mut png = Vec::new();
+        captcha.out(&mut png).unwrap();
+        let decoded = image::load_from_memory_with_format(&png, image::ImageFormat::Png)
+            .unwrap()
+            .to_rgba8();
+        assert_eq!(decoded.dimensions(), (150, 48));
+        assert_eq!(captcha.get_chars().len(), 5);
+        assert!(
+            decoded
+                .pixels()
+                .any(|pixel| pixel[0] < 160 && pixel[1] < 160 && pixel[2] < 160)
+        );
+    }
 }

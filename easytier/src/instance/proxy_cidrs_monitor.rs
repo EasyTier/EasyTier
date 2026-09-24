@@ -2,7 +2,6 @@ use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtxEvent};
 use crate::peers::peer_manager::PeerManager;
 use std::collections::BTreeSet;
 use std::sync::{Arc, Weak};
-use std::time::Instant;
 use tokio_util::task::AbortOnDropHandle;
 
 /// ProxyCidrsMonitor monitors changes in proxy CIDRs from peer routes
@@ -40,7 +39,9 @@ impl ProxyCidrsMonitor {
 
             // Add VPN portal cidr to proxy_cidrs
             if let Some(vpn_cfg) = global_ctx.config.get_vpn_portal_config() {
-                proxy_cidrs.insert(vpn_cfg.client_cidr);
+                for client in &vpn_cfg.clients {
+                    proxy_cidrs.insert(client.virtual_ip.network());
+                }
             }
 
             proxy_cidrs
@@ -60,7 +61,7 @@ impl ProxyCidrsMonitor {
     pub fn start(self) -> AbortOnDropHandle<()> {
         AbortOnDropHandle::new(tokio::spawn(async move {
             let mut cur_proxy_cidrs = BTreeSet::new();
-            let mut last_update = None::<Instant>;
+            let mut last_update = None;
 
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;

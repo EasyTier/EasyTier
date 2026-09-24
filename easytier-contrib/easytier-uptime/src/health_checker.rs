@@ -10,9 +10,8 @@ use easytier::{
     common::config::{
         ConfigFileControl, ConfigLoader, NetworkIdentity, PeerConfig, TomlConfigLoader,
     },
-    instance_manager::NetworkInstanceManager,
+    instance::factory::{NativeInstanceManager, native_instance_manager},
 };
-use guarden::defer;
 use serde::{Deserialize, Serialize};
 use sqlx::any;
 use tokio_util::task::AbortOnDropHandle;
@@ -26,6 +25,32 @@ use crate::db::{
 
 pub struct HealthCheckOneNode {
     node_id: String,
+}
+
+struct InstanceCleanupGuard {
+    manager: Arc<NativeInstanceManager>,
+    instance_id: Option<uuid::Uuid>,
+    runtime: tokio::runtime::Handle,
+}
+
+impl InstanceCleanupGuard {
+    async fn cleanup(mut self) {
+        let instance_id = self.instance_id.unwrap();
+        let _ = self.manager.delete_network_instances([instance_id]).await;
+        self.instance_id = None;
+    }
+}
+
+impl Drop for InstanceCleanupGuard {
+    fn drop(&mut self) {
+        let Some(instance_id) = self.instance_id.take() else {
+            return;
+        };
+        let manager = self.manager.clone();
+        self.runtime.spawn(async move {
+            let _ = manager.delete_network_instances([instance_id]).await;
+        });
+    }
 }
 
 const HEALTH_CHECK_RING_GRANULARITY_SEC: usize = 60 * 15; // 15分钟
@@ -238,7 +263,7 @@ impl HealthyMemRecord {
 
 pub struct HealthChecker {
     db: Db,
-    instance_mgr: Arc<NetworkInstanceManager>,
+    instance_mgr: Arc<NativeInstanceManager>,
     inst_id_map: DashMap<i32, uuid::Uuid>,
     node_tasks: DashMap<i32, AbortOnDropHandle<()>>,
     node_records: Arc<DashMap<i32, HealthyMemRecord>>,
@@ -247,7 +272,7 @@ pub struct HealthChecker {
 
 impl HealthChecker {
     pub fn new(db: Db) -> Self {
-        let instance_mgr = Arc::new(NetworkInstanceManager::new());
+        let instance_mgr = Arc::new(native_instance_manager());
         Self {
             db,
             instance_mgr,
@@ -387,33 +412,38 @@ impl HealthChecker {
         max_time: Duration,
     ) -> anyhow::Result<()> {
         let cfg = self.get_node_cfg_with_model(node_info, None).await?;
-        defer!({
-            let _ = self
-                .instance_mgr
-                .delete_network_instance(vec![cfg.get_id()]);
-        });
         self.instance_mgr
-            .run_network_instance(cfg.clone(), false, ConfigFileControl::STATIC_CONFIG)
+            .run_network_instance(cfg.clone(), ConfigFileControl::STATIC_CONFIG)
             .with_context(|| "failed to run network instance")?;
+        let cleanup = InstanceCleanupGuard {
+            manager: self.instance_mgr.clone(),
+            instance_id: Some(cfg.get_id()),
+            runtime: tokio::runtime::Handle::current(),
+        };
 
-        let now = Instant::now();
-        let mut err = None;
-        while now.elapsed() < max_time {
-            match Self::test_node_healthy(cfg.get_id(), self.instance_mgr.clone()).await {
-                Ok(_) => {
-                    return Ok(());
+        let result = async {
+            let now = Instant::now();
+            let mut err = None;
+            while now.elapsed() < max_time {
+                match Self::test_node_healthy(cfg.get_id(), self.instance_mgr.clone()).await {
+                    Ok(_) => {
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        warn!(
+                            "test node healthy failed, node_info: {:?}, err: {}",
+                            node_info, e
+                        );
+                        err = Some(e);
+                    }
                 }
-                Err(e) => {
-                    warn!(
-                        "test node healthy failed, node_info: {:?}, err: {}",
-                        node_info, e
-                    );
-                    err = Some(e);
-                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
             }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            Err(anyhow::anyhow!("test node healthy failed, err: {:?}", err))
         }
-        Err(anyhow::anyhow!("test node healthy failed, err: {:?}", err))
+        .await;
+        cleanup.cleanup().await;
+        result
     }
 
     async fn get_node_cfg(
@@ -437,7 +467,7 @@ impl HealthChecker {
         );
 
         self.instance_mgr
-            .run_network_instance(cfg.clone(), true, ConfigFileControl::STATIC_CONFIG)
+            .run_network_instance(cfg.clone(), ConfigFileControl::STATIC_CONFIG)
             .with_context(|| "failed to run network instance")?;
         self.inst_id_map.insert(node_id, cfg.get_id());
 
@@ -481,7 +511,10 @@ impl HealthChecker {
     pub async fn remove_node(&self, node_id: i32) -> anyhow::Result<()> {
         self.node_tasks.remove(&node_id);
         if let Some(inst_id) = self.inst_id_map.remove(&node_id) {
-            let _ = self.instance_mgr.delete_network_instance(vec![inst_id.1]);
+            let _ = self
+                .instance_mgr
+                .delete_network_instances([inst_id.1])
+                .await;
         }
         self.node_cfg.remove(&node_id);
         // 保留内存记录，不删除，以便后续查询历史数据
@@ -495,10 +528,10 @@ impl HealthChecker {
     #[instrument(err, ret, skip(instance_mgr))]
     async fn test_node_healthy(
         inst_id: uuid::Uuid,
-        instance_mgr: Arc<NetworkInstanceManager>,
+        instance_mgr: Arc<NativeInstanceManager>,
         // return version, response time on healthy, conn_count
     ) -> anyhow::Result<(String, u64, u32)> {
-        let Some(instance) = instance_mgr.get_network_info(&inst_id).await else {
+        let Some(instance) = instance_mgr.network_info(inst_id).await else {
             anyhow::bail!("healthy check node is not started");
         };
 
@@ -566,7 +599,7 @@ impl HealthChecker {
     async fn node_health_check_task(
         node_id: i32,
         inst_id: uuid::Uuid,
-        instance_mgr: Arc<NetworkInstanceManager>,
+        instance_mgr: Arc<NativeInstanceManager>,
         db: Db,
         node_records: Arc<DashMap<i32, HealthyMemRecord>>,
     ) {

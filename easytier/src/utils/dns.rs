@@ -8,39 +8,12 @@ use hickory_resolver::config::{
 };
 use hickory_resolver::system_conf::read_system_conf;
 use hickory_resolver::{Resolver, TokioResolver};
-use idna::AsciiDenyList;
 use once_cell::sync::Lazy;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use tokio::net::lookup_host;
-
-pub fn sanitize(name: impl AsRef<str>) -> String {
-    let name = name.as_ref();
-    let dot = name.ends_with('.');
-    let mut name = idna::domain_to_ascii_cow(name.as_ref(), AsciiDenyList::EMPTY)
-        .unwrap_or_default()
-        .into_owned()
-        .to_lowercase()
-        .split('.')
-        .map(|label| {
-            label
-                .chars()
-                .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-                .take(63)
-                .collect::<String>()
-                .trim_matches('-')
-                .to_string()
-        })
-        .filter(|label| !label.is_empty())
-        .collect::<Vec<_>>()
-        .join(".");
-    name.truncate(253);
-    if dot {
-        name.push('.');
-    }
-    name
-}
+use easytier_core::config::sanitize;
 
 pub fn parse(name: impl AsRef<str>) -> LowerName {
     let name = name.as_ref();

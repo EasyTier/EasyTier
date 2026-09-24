@@ -1,0 +1,11 @@
+{
+  "name": "@easytier/js-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "pnpm --filter @easytier/browser build && pnpm --filter @easytier/cloudflare build",
+    "test": "pnpm build && pnpm test:unit",
+    "test:unit": "pnpm --filter @easytier/runtime test && pnpm --filter @easytier/browser exec vitest run && pnpm --filter @easytier/cloudflare exec vitest run",
+    "check": "pnpm build && pnpm test:unit && pnpm --filter @easytier/web-example check"
+  }
+}

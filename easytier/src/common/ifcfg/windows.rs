@@ -242,19 +242,13 @@ impl IfConfiguerTrait for WindowsIfConfiger {
     }
 
     async fn wait_interface_show(&self, name: &str) -> Result<(), Error> {
-        Ok(
-            tokio::time::timeout(std::time::Duration::from_secs(10), async move {
-                loop {
-                    if let Some(idx) = Self::get_interface_index(name) {
-                        tracing::info!(?name, ?idx, "Interface found");
-                        break;
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                }
-                Ok::<(), Error>(())
-            })
-            .await??,
-        )
+        loop {
+            if let Some(idx) = Self::get_interface_index(name) {
+                tracing::info!(?name, ?idx, "Interface found");
+                return Ok(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
     }
 
     async fn set_mtu(&self, name: &str, mtu: u32) -> Result<(), Error> {

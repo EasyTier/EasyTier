@@ -1,0 +1,4 @@
+repository=https://github.com/EasyTier/EasyTier
+commit=6a3d15f8758eed759d55401ff4ed7c47021b0819
+path=tools/wasi-socket-poc/guest
+sha256=b672ae94eb31219b49b9c7cbe974ace81bb28effefae1cabde1c8abd68c01959

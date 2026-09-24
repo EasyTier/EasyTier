@@ -38,12 +38,17 @@ where
 #[derive(
     Derivative, Debug, Clone, PartialEq, Eq, Hash, From, Deref, DerefMut, AsRef, AsMut, IntoIterator,
 )]
-#[derivative(Default(bound = ""))]
 #[as_ref(forward)]
 #[as_mut(forward)]
 #[into_iterator(owned, ref, ref_mut)]
 pub struct RepeatedMessageModel<Model> {
     pub models: Vec<Model>,
+}
+
+impl<Model> Default for RepeatedMessageModel<Model> {
+    fn default() -> Self {
+        Self { models: Vec::new() }
+    }
 }
 
 impl<Model> FromIterator<Model> for RepeatedMessageModel<Model> {

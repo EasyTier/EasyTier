@@ -1,19 +1,18 @@
+use super::log_manager;
 use napi_derive_ohos::napi;
-use ohos_hilog_binding::{
-    LogOptions, hilog_debug, hilog_error, hilog_info, hilog_warn, set_global_options,
-};
 use std::collections::HashMap;
 use std::panic;
-use tracing::{Event, Subscriber};
-use tracing_core::Level;
+use tracing::{Event, Level, Subscriber};
 use tracing_subscriber::layer::{Context, Layer};
 use tracing_subscriber::prelude::*;
 
 static INITIALIZED: std::sync::Once = std::sync::Once::new();
+static TRACING_INITIALIZED: std::sync::Once = std::sync::Once::new();
 fn panic_hook(info: &panic::PanicHookInfo) {
-    hilog_error!("RUST PANIC: {}", info);
+    log_manager::record_core_log(5, "RustPanic", &format!("{}", info));
 }
 
+#[allow(dead_code)]
 #[napi]
 pub fn init_panic_hook() {
     INITIALIZED.call_once(|| {
@@ -21,55 +20,64 @@ pub fn init_panic_hook() {
     });
 }
 
+#[allow(dead_code)]
 #[napi]
 pub fn hilog_global_options(domain: u32, tag: String) {
-    ohos_hilog_binding::forward_stdio_to_hilog();
-    set_global_options(LogOptions {
-        domain,
-        tag: Box::leak(tag.clone().into_boxed_str()),
-    })
+    let _ = domain;
+    let _ = tag;
 }
 
+#[allow(dead_code)]
 #[napi]
 pub fn init_tracing_subscriber() {
-    tracing_subscriber::registry()
-        .with(CallbackLayer {
-            callback: Box::new(tracing_callback),
-        })
-        .init();
+    TRACING_INITIALIZED.call_once(|| {
+        let _ = tracing_subscriber::registry()
+            .with(CallbackLayer {
+                callback: Box::new(tracing_callback),
+            })
+            .try_init();
+    });
 }
 
 fn tracing_callback(event: &Event, fields: HashMap<String, String>) {
     let metadata = event.metadata();
-    #[cfg(target_env = "ohos")]
-    {
-        let loc = metadata.target().split("::").last().unwrap();
-        match *metadata.level() {
-            Level::TRACE => {
-                hilog_debug!("[{}] {:?}", loc, fields.values().collect::<Vec<_>>());
-            }
-            Level::DEBUG => {
-                hilog_debug!("[{}] {:?}", loc, fields.values().collect::<Vec<_>>());
-            }
-            Level::INFO => {
-                hilog_info!("[{}] {:?}", loc, fields.values().collect::<Vec<_>>());
-            }
-            Level::WARN => {
-                hilog_warn!("[{}] {:?}", loc, fields.values().collect::<Vec<_>>());
-            }
-            Level::ERROR => {
-                hilog_error!("[{}] {:?}", loc, fields.values().collect::<Vec<_>>());
-            }
-        }
+    let loc = metadata
+        .target()
+        .split("::")
+        .last()
+        .unwrap_or(metadata.target());
+    let level = match *metadata.level() {
+        Level::TRACE => 2,
+        Level::DEBUG => 3,
+        Level::INFO => 4,
+        Level::WARN => 6,
+        Level::ERROR => 5,
+    };
+    if !log_manager::core_log_enabled(level) {
+        return;
     }
+    let values = fields.values().cloned().collect::<Vec<_>>().join(" ");
+    log_manager::record_core_log(level, &format!("Rust:{}", loc), &values);
 }
 
+type Callback = Box<dyn Fn(&Event, HashMap<String, String>) + Send + Sync>;
+
 struct CallbackLayer {
-    callback: Box<dyn Fn(&Event, HashMap<String, String>) + Send + Sync>,
+    callback: Callback,
 }
 
 impl<S: Subscriber> Layer<S> for CallbackLayer {
     fn on_event(&self, event: &Event, _ctx: Context<S>) {
+        let level = match *event.metadata().level() {
+            Level::TRACE => 2,
+            Level::DEBUG => 3,
+            Level::INFO => 4,
+            Level::WARN => 6,
+            Level::ERROR => 5,
+        };
+        if !log_manager::core_log_enabled(level) {
+            return;
+        }
         // 使用 fmt::format::FmtSpan 提取字段值
         let mut fields = HashMap::new();
         let mut visitor = FieldCollector(&mut fields);

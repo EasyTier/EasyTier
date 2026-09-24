@@ -1,0 +1,184 @@
+[package]
+name = "easytier-core"
+description = "EasyTier OS-free control-plane core primitives."
+homepage = "https://github.com/EasyTier/EasyTier"
+repository = "https://github.com/EasyTier/EasyTier"
+version = "2.7.0"
+edition.workspace = true
+rust-version.workspace = true
+authors = ["kkrainbow"]
+keywords = ["vpn", "p2p", "network", "easytier"]
+categories = ["network-programming"]
+license-file = "../LICENSE"
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-Oz", "--enable-bulk-memory", "--enable-nontrapping-float-to-int"]
+
+[dependencies]
+anyhow.workspace = true
+ariadne = { version = "0.6", optional = true }
+arc-swap.workspace = true
+async-ringbuf = "0.3.9"
+async-trait.workspace = true
+auto_impl.workspace = true
+base64.workspace = true
+bitflags = "2.13"
+bytecodec.workspace = true
+bytes.workspace = true
+chrono = { workspace = true, features = ["clock"] }
+cidr = { workspace = true, features = ["serde"] }
+crossbeam.workspace = true
+dashmap.workspace = true
+bon.workspace = true
+easytier-proto = { workspace = true, features = ["core", "dns"] }
+futures.workspace = true
+guarden.workspace = true
+hmac.workspace = true
+http-body-util = { workspace = true, optional = true }
+hyper = { workspace = true, features = ["client", "http1"], optional = true }
+hyper-util = { workspace = true, features = ["tokio"], optional = true }
+idna = "1.1"
+atomic-shim.workspace = true
+ordered_hash_map = "0.6.1"
+parking_lot.workspace = true
+percent-encoding.workspace = true
+petgraph = "0.8.3"
+pin-project-lite.workspace = true
+prefix-trie = { version = "0.10.1", features = ["cidr"] }
+prost.workspace = true
+prost-types.workspace = true
+rand.workspace = true
+quanta.workspace = true
+ring = { version = "0.17", optional = true }
+rustls = { workspace = true, features = ["ring", "std", "tls12"], optional = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2.workspace = true
+smoltcp = { workspace = true, optional = true }
+stun_codec.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+strum = { workspace = true, features = ["derive"] }
+toml.workspace = true
+tokio = { workspace = true, features = [
+    "rt",
+    "time",
+    "sync",
+    "macros",
+    "io-util",
+] }
+tokio-util = { workspace = true, features = ["io", "rt"] }
+tokio-rustls = { workspace = true, optional = true }
+url = { workspace = true, features = ["serde"] }
+wildmatch = "2.6.1"
+uuid = { workspace = true, features = ["v4", "fast-rng", "serde"] }
+webpki-roots = { version = "1.0", optional = true }
+x25519-dalek = { workspace = true, features = ["static_secrets"] }
+zerocopy = { workspace = true, features = ["derive", "simd"] }
+zstd = { version = "0.14", optional = true }
+aes-gcm = { version = "0.11.1", optional = true }
+chacha20poly1305 = { version = "0.11.0", optional = true }
+openssl = { version = "0.10", optional = true, features = ["vendored"] }
+derivative = { version = "2.2.0", optional = true }
+derive_more = { version = "2.1.1", features = ["full"], optional = true }
+getset = { version = "0.1.6", optional = true }
+hickory-net = { version = "0.26.0", features = ["serde"], optional = true }
+hickory-proto = { version = "0.26.0", features = ["serde"], optional = true }
+hickory-resolver = { version = "0.26.0", features = ["serde"], optional = true }
+maplit = { version = "1.0.2", optional = true }
+optionize = { version = "0.2", optional = true }
+serde_with = { version = "3", optional = true }
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+getrandom-02 = { package = "getrandom", version = "0.2.17", features = ["js"] }
+getrandom-03 = { package = "getrandom", version = "0.3.4", features = ["wasm_js"] }
+snow = { version = "0.10.0", default-features = false, features = ["default-resolver", "default-resolver-crypto"] }
+uuid = { workspace = true, features = ["js"] }
+wasm-bindgen = "0.2"
+
+[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
+snow = "0.10.0"
+
+[features]
+default = ["aes-gcm", "endpoint-discovery", "extended-services", "management", "tcp-hole-punch"]
+aes-gcm = ["dep:aes-gcm"]
+browser-config = ["config-write", "easytier-proto/api", "easytier-proto/json-rpc"]
+chacha20 = ["dep:chacha20poly1305"]
+openssl-crypto = ["dep:openssl"]
+ring-crypto = ["dep:ring"]
+wasi-crypto-offload = ["ring-crypto"]
+config-write = []
+endpoint-discovery = [
+    "dep:http-body-util",
+    "dep:hyper",
+    "dep:hyper-util",
+    "dep:rustls",
+    "dep:tokio-rustls",
+    "dep:webpki-roots",
+]
+dhcp-ipv4 = []
+public-ipv6-provider = []
+vpn-portal = []
+wrapped-transport = []
+extended-services = [
+    "dhcp-ipv4",
+    "public-ipv6-provider",
+    "vpn-portal",
+    "wrapped-transport",
+    "proxy-cidr-monitor",
+]
+web-client = ["management-rpc", "config-write"]
+management = ["web-client", "extended-services", "rich-config-errors", "easytier-proto/json-rpc"]
+management-rpc = ["easytier-proto/api"]
+proxy-cidr-monitor = []
+rich-config-errors = ["dep:ariadne"]
+tcp-hole-punch = []
+proxy-packet = [
+    "wrapped-transport",
+    "dep:smoltcp",
+    "smoltcp/std",
+    "smoltcp/proto-ipv4",
+    "smoltcp/proto-ipv4-fragmentation",
+    "smoltcp/fragmentation-buffer-size-65536",
+    "smoltcp/assembler-max-segment-count-16",
+    "smoltcp/reassembly-buffer-size-65536",
+    "smoltcp/reassembly-buffer-count-16",
+]
+proxy-smoltcp-stack = [
+    "proxy-packet",
+    "smoltcp/medium-ip",
+    "smoltcp/socket-tcp",
+    "smoltcp/socket-udp",
+    "smoltcp/proto-ipv6",
+    "smoltcp/async",
+]
+wasm-host-tunnel = []
+wasm-host-tunnel-outbound = ["wasm-host-tunnel"]
+test-utils = []
+tracing-log = ["tracing/log"]
+zstd = ["dep:zstd"]
+magic-dns = [
+    "dep:derivative",
+    "dep:derive_more",
+    "dep:getset",
+    "dep:hickory-net",
+    "dep:hickory-proto",
+    "dep:hickory-resolver",
+    "dep:maplit",
+    "dep:optionize",
+    "dep:serde_with",
+    "easytier-proto/dns",
+]
+
+[target.'cfg(not(target_os = "wasi"))'.dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
+
+[package.metadata.cargo-machete]
+ignored = [
+    # Enable browser entropy backends for transitive rand/snow dependencies.
+    "getrandom-02",
+    "getrandom-03",
+]

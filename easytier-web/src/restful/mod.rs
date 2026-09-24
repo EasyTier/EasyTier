@@ -14,10 +14,9 @@ use axum::response::Response;
 use axum::routing::{delete, post};
 use axum::{Extension, Json, Router, extract::State, routing::get};
 use axum_login::tower_sessions::{ExpiredDeletion, SessionManagerLayer};
-use axum_login::{AuthManagerLayerBuilder, AuthUser, AuthzBackend, login_required};
+use axum_login::{AuthManagerLayerBuilder, AuthUser, login_required};
 use axum_messages::MessagesManagerLayer;
-use easytier::common::config::{ConfigLoader, TomlConfigLoader};
-use easytier::launcher::NetworkConfig;
+use easytier::common::config::{ConfigLoader, NetworkConfig, NetworkConfigExt, TomlConfigLoader};
 use easytier::proto::rpc_types;
 use network::NetworkApi;
 use sea_orm::DbErr;
@@ -87,6 +86,10 @@ struct ParseConfigResponse {
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub struct Error {
     message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    current_config_revision: Option<String>,
 }
 type RpcError = rpc_types::error::Error;
 type HttpHandleError = (StatusCode, Json<Error>);
@@ -94,6 +97,8 @@ type HttpHandleError = (StatusCode, Json<Error>);
 pub fn other_error<T: ToString>(error_message: T) -> Error {
     Error {
         message: error_message.to_string(),
+        code: None,
+        current_config_revision: None,
     }
 }
 
@@ -131,13 +136,10 @@ impl RestfulServer {
         auth_session: AuthSession,
         State(client_mgr): AppState,
     ) -> Result<Json<ListSessionJsonResp>, HttpHandleError> {
-        let perms = auth_session
-            .backend
-            .get_group_permissions(auth_session.user.as_ref().unwrap())
-            .await
-            .unwrap();
-        println!("{:?}", perms);
-        let ret = client_mgr.list_sessions().await;
+        let Some(user) = auth_session.user else {
+            return Err((StatusCode::UNAUTHORIZED, other_error("No such user").into()));
+        };
+        let ret = client_mgr.list_sessions_by_user_id(user.id()).await;
         Ok(ListSessionJsonResp(ret).into())
     }
 
@@ -250,7 +252,7 @@ impl RestfulServer {
                     get(Self::handle_list_all_sessions_internal),
                 )
                 .route(
-                    "/api/internal/users/:user-id/sessions/:machine-id",
+                    "/api/internal/users/{user-id}/sessions/{machine-id}",
                     delete(Self::handle_disconnect_session_internal),
                 )
                 .merge(NetworkApi::build_route_internal())
@@ -307,7 +309,7 @@ impl RestfulServer {
     async fn handle_list_all_sessions_internal(
         State(client_mgr): AppState,
     ) -> Result<Json<ListSessionJsonResp>, HttpHandleError> {
-        let ret = client_mgr.list_sessions().await;
+        let ret = client_mgr.list_all_sessions().await;
         Ok(ListSessionJsonResp(ret).into())
     }
 

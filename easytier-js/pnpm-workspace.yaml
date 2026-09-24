@@ -1,0 +1,16 @@
+packages:
+  - 'runtime'
+  - 'browser'
+  - 'cloudflare'
+  - 'examples/web'
+
+overrides:
+  minimatch: 10.2.4
+
+allowBuilds:
+  esbuild: true
+  workerd: true
+
+minimumReleaseAgeExclude:
+  - miniflare@5.20260917.0-alpha
+  - wrangler@4.134.0
