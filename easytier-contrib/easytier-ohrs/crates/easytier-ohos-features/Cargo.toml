@@ -1,20 +1,27 @@
 [package]
 name = "easytier-ohos-features"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
+rust-version.workspace = true
 description = "HarmonyOS-side EasyTier configuration, schema, persistence and sharing features"
 publish = false
 
 [dependencies]
-base64 = "0.22"
-easytier = { path = "../../../../easytier" }
+base64.workspace = true
+easytier = { workspace = true, default-features = true }
 flate2 = "1.1"
-gethostname = "1.1"
-once_cell = "1.21.3"
+gethostname.workspace = true
+once_cell.workspace = true
 prost-reflect = { version = "0.14.5", default-features = false, features = ["derive"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0.125"
-tracing = "0.1.41"
-url = "2.5"
-uuid = { version = "1.5.0", features = ["v4", "fast-rng", "macro-diagnostics", "serde"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tracing.workspace = true
+url.workspace = true
+uuid = { workspace = true, features = [
+    "v4",
+    "fast-rng",
+    "macro-diagnostics",
+    "serde",
+] }
+
