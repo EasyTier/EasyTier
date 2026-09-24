@@ -7,7 +7,8 @@ pub(crate) fn check_network_in_relay_whitelist(
     network_name: &str,
 ) -> Result<(), anyhow::Error> {
     if relay_network_whitelist
-        .split(' ')
+        .split(|c: char| c.is_whitespace() || c == ',')
+        .filter(|s| !s.is_empty())
         .map(wildmatch::WildMatch::new)
         .any(|whitelist| whitelist.matches(network_name))
     {

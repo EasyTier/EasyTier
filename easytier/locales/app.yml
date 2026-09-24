@@ -204,8 +204,8 @@ core_clap:
     en: "the url of the ipv6 listener, e.g.: tcp://[::]:11010, if not set, will listen on random udp port"
     zh-CN: "IPv6 监听器的URL，例如：tcp://[::]:11010，如果未设置，将在随机UDP端口上监听"
   compression:
-    en: "compression algorithm to use, support none, zstd. default is none"
-    zh-CN: "要使用的压缩算法，支持 none、zstd。默认为 none"
+    en: "compression algorithm to use, support None, Zstd. default is None"
+    zh-CN: "要使用的压缩算法，支持 None、Zstd。默认为 None"
   mapped_listeners:
     en: "manually specify the public address of the listener, other nodes can use this address to connect to this node. e.g.: tcp://123.123.123.123:11223, can specify multiple."
     zh-CN: "手动指定监听器的公网地址，其他节点可以使用该地址连接到本节点。例如：tcp://123.123.123.123:11223，可以指定多个。"
@@ -215,6 +215,12 @@ core_clap:
   socket_mark:
     en: "Linux only: set SO_MARK (fwmark) on EasyTier's underlay sockets (TCP, UDP, QUIC, WebSocket, WireGuard, and the FakeTCP decoy socket) so the host can policy-route or filter them with 'ip rule fwmark ...', nftables ('meta mark'), or iptables ('-m mark'). Any value is applied verbatim (0 is a valid mark); omit the flag to leave SO_MARK untouched. Requires CAP_NET_ADMIN. Note: FakeTCP payload travels via raw TUN writes which the kernel does not tag — mark those separately on the TUN device if needed."
     zh-CN: "仅 Linux: 在 EasyTier 的底层套接字 (TCP、UDP、QUIC、WebSocket、WireGuard 以及 FakeTCP 诱饵套接字) 上设置 SO_MARK (fwmark)，使主机能用 'ip rule fwmark ...'、nftables ('meta mark') 或 iptables ('-m mark') 策略路由/过滤这些数据包。任何值都会原样应用 (0 也是合法的 mark)；不传该参数即保持 SO_MARK 不变。需要 CAP_NET_ADMIN 权限。注意：FakeTCP 的实际载荷通过原始 TUN 写入，内核不会为其打标记；如有需要请在 TUN 设备上单独打标记。"
+  disable_relay_data:
+    en: "if true, do not relay data packets for other peers, so this node carries no traffic it did not originate. default is false"
+    zh-CN: "如果为true，则不转发其他对等节点的数据包，本节点不承载自身以外的流量。默认值为false"
+  prefer_peer_relay:
+    en: "prefer a credential peer that already relays to a destination over advertising another direct edge to the same destination"
+    zh-CN: "优先通过已经转发到目标节点的凭证节点转发，而不是为同一目标再通告一条直连路径"
   enable_kcp_proxy:
     en: "proxy tcp streams with kcp, improving the latency and throughput on the network with udp packet loss."
     zh-CN: "使用 KCP 代理 TCP 流，提高在 UDP 丢包网络上的延迟和吞吐量。"

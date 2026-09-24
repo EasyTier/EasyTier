@@ -8,6 +8,7 @@
     "skipLibCheck": true,
 
     "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
 
     /* Bundler mode */
     "moduleResolution": "Bundler",

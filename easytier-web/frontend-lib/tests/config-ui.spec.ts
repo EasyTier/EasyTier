@@ -2,40 +2,36 @@ import { mount, type VueWrapper } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
 import { defineComponent, h, nextTick, reactive } from 'vue'
 import Config from '../src/components/Config.vue'
+import { ScalarType } from '@protobuf-ts/runtime'
+import type { FlagMeta } from '../src/generated/proto/annotations'
+import { NetworkConfig as NetworkConfigPb } from '../src/generated/proto/api_manage'
+import { Flags as FlagsPb } from '../src/generated/proto/common'
 import {
   DEFAULT_NETWORK_CONFIG,
   toBackendNetworkConfig,
   type NetworkConfig,
 } from '../src/types/network'
 
+/**
+ * The checkboxes the form is expected to offer, read off the schema the way a
+ * config form reads it: every boolean flag it declares, less the deprecated
+ * ones, plus the one network option the form adds itself.
+ */
 const CONFIG_FLAG_FIELDS = [
-  'latency_first',
-  'use_smoltcp',
-  'disable_ipv6',
+  ...FlagsPb.fields.flatMap((flag) => {
+    const meta = flag.options?.['easytier.flag'] as FlagMeta | undefined
+    if (meta?.deprecated) return []
+    if (flag.kind !== 'scalar' || flag.T !== ScalarType.BOOL) return []
+
+    return [(meta.api?.field ?? flag.name) as keyof NetworkConfig]
+  }),
   'ipv6_public_addr_auto',
-  'enable_kcp_proxy',
-  'disable_kcp_input',
-  'enable_quic_proxy',
-  'disable_quic_input',
-  'disable_p2p',
-  'p2p_only',
-  'lazy_p2p',
-  'bind_device',
-  'no_tun',
-  'enable_exit_node',
-  'relay_all_peer_rpc',
-  'need_p2p',
-  'multi_thread',
-  'proxy_forward_by_system',
-  'disable_encryption',
-  'disable_tcp_hole_punching',
-  'disable_udp_hole_punching',
-  'enable_udp_broadcast_relay',
-  'disable_upnp',
-  'disable_sym_hole_punching',
-  'enable_magic_dns',
-  'enable_private_mode',
 ] as const satisfies readonly (keyof NetworkConfig)[]
+
+/** The flags the management API carries, so a form's value reaches the backend. */
+function apiCarries(field: string): boolean {
+  return NetworkConfigPb.fields.some((declared) => declared.name === field)
+}
 
 const CONFIG_CHECKBOX_FIELDS = [
   ['dhcp', '#virtual_ip_auto'],
@@ -539,8 +535,28 @@ describe('Config.vue network config projection', () => {
     })
   })
 
+  it('shows a flag the configuration does not state as the value the core resolves', async () => {
+    const config = makeConfig()
+    delete config.bind_device
+    delete config.multi_thread
+
+    const { curNetwork, wrapper } = mountConfig(config)
+    await nextTick()
+
+    // Both default to on, so an unset flag must not read as off.
+    expect(input(wrapper, '#bind_device').checked).toBe(true)
+    expect(input(wrapper, '#multi_thread').checked).toBe(true)
+
+    // Toggling states the value, which is how a flag gets turned off.
+    await wrapper.find('#bind_device').setValue(false)
+    expect(curNetwork.bind_device).toBe(false)
+  })
+
   it('round-trips every visible boolean config control into backend JSON', async () => {
     const config = makeConfig()
+    // A checkbox for a flag the API has no field for states a value that stops
+    // at the form; the rest have to arrive at the backend.
+    const reachesBackend = CONFIG_UI_BOOLEAN_FIELDS.filter(apiCarries)
     const originalFlagValues = new Map(
       CONFIG_UI_BOOLEAN_FIELDS.map((field, index) => {
         const value = index % 2 === 0
@@ -574,6 +590,10 @@ describe('Config.vue network config projection', () => {
     for (const [field, value] of originalFlagValues) {
       const expectedValue = !value
       expect(curNetwork[field], `${field} should update config`).toBe(expectedValue)
+      if (!reachesBackend.includes(field)) {
+        expect(backend[field], `${field} has no api.manage.NetworkConfig field`).toBeUndefined()
+        continue
+      }
       expect(backend[field], `${field} should be preserved in backend JSON`).toBe(expectedValue)
     }
   })

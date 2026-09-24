@@ -18,6 +18,7 @@ crate-type = ["rlib", "cdylib"]
 wasm-opt = ["-Oz", "--enable-bulk-memory", "--enable-nontrapping-float-to-int"]
 
 [dependencies]
+optionize.workspace = true
 anyhow.workspace = true
 ariadne = { version = "0.6", optional = true }
 arc-swap.workspace = true
@@ -151,6 +152,10 @@ wasm-host-tunnel-outbound = ["wasm-host-tunnel"]
 test-utils = []
 tracing-log = ["tracing/log"]
 zstd = ["dep:zstd"]
+
+[dev-dependencies]
+# Tests read the (easytier.flag) annotations off the schema itself.
+prost-reflect = "0.16.4"
 
 [target.'cfg(not(target_os = "wasi"))'.dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
