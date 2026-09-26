@@ -335,6 +335,8 @@ pub mod manage {
     #[cfg(feature = "json-rpc")]
     include!(concat!(env!("OUT_DIR"), "/api.manage.serde.rs"));
 
+    pub use crate::common::{copy_flags_to_network_config, copy_network_config_to_flags};
+
     impl std::fmt::Debug for ManagedCredentialConfig {
         fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             formatter

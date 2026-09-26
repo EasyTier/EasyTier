@@ -14,6 +14,19 @@ use std::{
 use anyhow::{Context as _, bail, ensure};
 use prost_reflect::{DescriptorPool, DynamicMessage, Kind, Value};
 
+const EXPLICIT_FIELDS: &[&str] = &["mtu", "relay_network_whitelist", "data_compress_algo"];
+
+const CORE_ONLY_FLAGS: &[&str] = &[
+    "default_protocol",
+    "foreign_relay_bps_limit",
+    "multi_thread_count",
+    "enable_relay_foreign_network_kcp",
+    "enable_relay_foreign_network_quic",
+    "disable_relay_kcp",
+    "disable_relay_quic",
+    "tld_dns_zone",
+];
+
 pub fn write(descriptor_set: &[u8], out: &Path) -> anyhow::Result<PathBuf> {
     let pool = DescriptorPool::decode(descriptor_set)?;
     let message = pool
@@ -31,6 +44,8 @@ pub fn write(descriptor_set: &[u8], out: &Path) -> anyhow::Result<PathBuf> {
 
     let mut defaults: Vec<String> = Vec::new();
     let mut form = String::new();
+    let mut to_net = String::new();
+    let mut to_flags = String::new();
 
     for field in message.fields() {
         let name = field.name();
@@ -74,6 +89,14 @@ pub fn write(descriptor_set: &[u8], out: &Path) -> anyhow::Result<PathBuf> {
             );
         }
 
+        let negate = match meta.get_field_by_name("api").as_deref() {
+            Some(Value::Message(api)) => match api.get_field_by_name("negate").as_deref() {
+                Some(Value::Bool(negate)) => *negate,
+                _ => false,
+            },
+            _ => false,
+        };
+
         let deprecated = is_set(&meta, "deprecated");
 
         ensure!(
@@ -105,6 +128,61 @@ pub fn write(descriptor_set: &[u8], out: &Path) -> anyhow::Result<PathBuf> {
         {
             writeln!(form, "    {name:?},")?;
         }
+
+        if deprecated {
+            continue;
+        }
+
+        if EXPLICIT_FIELDS.contains(&name) {
+            ensure!(
+                api_carries(api_name),
+                "explicit field common.Flags.{name} is not carried by api.manage.NetworkConfig"
+            );
+            continue;
+        }
+
+        if !api_carries(api_name) {
+            ensure!(
+                CORE_ONLY_FLAGS.contains(&name),
+                "common.Flags.{name} is not carried by api.manage.NetworkConfig and not in CORE_ONLY_FLAGS; add mapping or declare core-only"
+            );
+            continue;
+        }
+
+        let api_field = api
+            .get_field_by_name(api_name)
+            .with_context(|| format!("NetworkConfig has no field {api_name}"))?;
+        ensure!(
+            api_field.supports_presence(),
+            "NetworkConfig.{api_name} must support presence"
+        );
+
+        if negate {
+            ensure!(
+                matches!(field.kind(), Kind::Bool),
+                "Flags.{name} is negated but is not bool"
+            );
+            ensure!(
+                matches!(api_field.kind(), Kind::Bool),
+                "NetworkConfig.{api_name} is negated but is not bool"
+            );
+            writeln!(to_net, "    result.{api_name} = flags.{name}.map(|v| !v);")?;
+            writeln!(to_flags, "    flags.{name} = net.{api_name}.map(|v| !v);")?;
+        } else {
+            ensure!(
+                field.kind() == api_field.kind(),
+                "Flags.{name} ({:?}) and NetworkConfig.{api_name} ({:?}) type mismatch",
+                field.kind(),
+                api_field.kind()
+            );
+            if matches!(field.kind(), Kind::String) {
+                writeln!(to_net, "    result.{api_name} = flags.{name}.clone();")?;
+                writeln!(to_flags, "    flags.{name} = net.{api_name}.clone();")?;
+            } else {
+                writeln!(to_net, "    result.{api_name} = flags.{name};")?;
+                writeln!(to_flags, "    flags.{name} = net.{api_name};")?;
+            }
+        }
     }
 
     let defaults = defaults.join(",\n");
@@ -121,6 +199,22 @@ pub const DEFAULTS: &str = r##\"{{
 /// The schema field names of flags managed by the config form.
 pub const FORM: &[&str] = &[
 {form}];
+
+#[cfg(feature = \"api\")]
+/// Copies mechanical flag values from `FlagsPatch` to `NetworkConfig`.
+pub fn copy_flags_to_network_config(
+    flags: &crate::common::FlagsPatch,
+    result: &mut crate::api::manage::NetworkConfig,
+) {{
+{to_net}}}
+
+#[cfg(feature = \"api\")]
+/// Copies mechanical flag values from `NetworkConfig` to `FlagsPatch`.
+pub fn copy_network_config_to_flags(
+    net: &crate::api::manage::NetworkConfig,
+    flags: &mut crate::common::FlagsPatch,
+) {{
+{to_flags}}}
 "
     );
 

@@ -58,41 +58,12 @@ pub fn add_proxy_network_to_config(
 pub type NetworkingMethod = easytier_proto::api::manage::NetworkingMethod;
 pub type NetworkConfig = easytier_proto::api::manage::NetworkConfig;
 
+use easytier_proto::api::manage::{copy_flags_to_network_config, copy_network_config_to_flags};
+
 pub(crate) fn set_network_flags(result: &mut NetworkConfig, flags: FlagsPatch) {
-    result.latency_first = flags.latency_first;
-    result.dev_name = flags.dev_name;
-    result.use_smoltcp = flags.use_smoltcp;
-    result.disable_ipv6 = flags.enable_ipv6.map(|enabled| !enabled);
-    result.enable_kcp_proxy = flags.enable_kcp_proxy;
-    result.disable_kcp_input = flags.disable_kcp_input;
-    result.enable_quic_proxy = flags.enable_quic_proxy;
-    result.disable_quic_input = flags.disable_quic_input;
-    result.disable_p2p = flags.disable_p2p;
-    result.p2p_only = flags.p2p_only;
-    result.lazy_p2p = flags.lazy_p2p;
-    result.bind_device = flags.bind_device;
-    result.socket_mark = flags.socket_mark;
-    result.no_tun = flags.no_tun;
-    result.enable_exit_node = flags.enable_exit_node;
-    result.relay_all_peer_rpc = flags.relay_all_peer_rpc;
-    result.need_p2p = flags.need_p2p;
-    result.multi_thread = flags.multi_thread;
-    result.proxy_forward_by_system = flags.proxy_forward_by_system;
-    result.disable_encryption = flags.enable_encryption.map(|enabled| !enabled);
-    result.disable_tcp_hole_punching = flags.disable_tcp_hole_punching;
-    result.disable_udp_hole_punching = flags.disable_udp_hole_punching;
-    result.disable_upnp = flags.disable_upnp;
-    result.disable_relay_data = flags.disable_relay_data;
-    result.prefer_peer_relay = flags.prefer_peer_relay;
-    result.enable_udp_broadcast_relay = flags.enable_udp_broadcast_relay;
-    result.disable_sym_hole_punching = flags.disable_sym_hole_punching;
-    result.enable_magic_dns = flags.accept_dns;
+    copy_flags_to_network_config(&flags, result);
     result.mtu = flags.mtu.map(|mtu| mtu as i32);
     result.data_compress_algo = flags.data_compress_algo;
-    result.encryption_algorithm = flags.encryption_algorithm;
-    result.instance_recv_bps_limit = flags.instance_recv_bps_limit;
-    result.enable_private_mode = flags.private_mode;
-
     result.enable_relay_network_whitelist = flags
         .relay_network_whitelist
         .as_ref()
@@ -102,6 +73,27 @@ pub(crate) fn set_network_flags(result: &mut NetworkConfig, flags: FlagsPatch) {
         .filter(|list| list != "*")
         .map(|list| list.split_whitespace().map(ToOwned::to_owned).collect())
         .unwrap_or_default();
+}
+
+pub(crate) fn flags_patch_from_network_config(
+    net: &NetworkConfig,
+) -> Result<FlagsPatch, anyhow::Error> {
+    let mut flags = FlagsPatch::default();
+    copy_network_config_to_flags(net, &mut flags);
+    flags.mtu = net
+        .mtu
+        .map(u32::try_from)
+        .transpose()
+        .context("invalid mtu: expected a non-negative integer")?;
+    flags.data_compress_algo = net.data_compress_algo.map(|algorithm| algorithm.max(1));
+    flags.relay_network_whitelist = net.enable_relay_network_whitelist.map(|enabled| {
+        if enabled {
+            net.relay_network_whitelist.join(" ")
+        } else {
+            "*".to_owned()
+        }
+    });
+    Ok(flags)
 }
 
 pub trait NetworkConfigExt {
@@ -481,189 +473,145 @@ impl NetworkConfigExt for NetworkConfig {
             cfg.set_acl(Some(acl.clone()));
         }
 
-        cfg.patch_flags(FlagsPatch {
-            dev_name: self.dev_name.clone(),
-            enable_ipv6: self.disable_ipv6.map(|disabled| !disabled),
-            socket_mark: self.socket_mark,
-            enable_encryption: self.disable_encryption.map(|disabled| !disabled),
-            relay_network_whitelist: self.enable_relay_network_whitelist.map(|enabled| {
-                if enabled {
-                    self.relay_network_whitelist.join(" ")
-                } else {
-                    "*".to_owned()
-                }
-            }),
-            accept_dns: self.enable_magic_dns,
-            mtu: self
-                .mtu
-                .map(u32::try_from)
-                .transpose()
-                .context("invalid mtu: expected a non-negative integer")?,
-            private_mode: self.enable_private_mode,
-            encryption_algorithm: self.encryption_algorithm.clone(),
-            data_compress_algo: self.data_compress_algo.map(|algorithm| algorithm.max(1)),
-            latency_first: self.latency_first,
-            use_smoltcp: self.use_smoltcp,
-            enable_kcp_proxy: self.enable_kcp_proxy,
-            disable_kcp_input: self.disable_kcp_input,
-            enable_quic_proxy: self.enable_quic_proxy,
-            disable_quic_input: self.disable_quic_input,
-            disable_p2p: self.disable_p2p,
-            p2p_only: self.p2p_only,
-            lazy_p2p: self.lazy_p2p,
-            bind_device: self.bind_device,
-            no_tun: self.no_tun,
-            enable_exit_node: self.enable_exit_node,
-            relay_all_peer_rpc: self.relay_all_peer_rpc,
-            need_p2p: self.need_p2p,
-            multi_thread: self.multi_thread,
-            proxy_forward_by_system: self.proxy_forward_by_system,
-            disable_tcp_hole_punching: self.disable_tcp_hole_punching,
-            disable_udp_hole_punching: self.disable_udp_hole_punching,
-            disable_upnp: self.disable_upnp,
-            disable_relay_data: self.disable_relay_data,
-            prefer_peer_relay: self.prefer_peer_relay,
-            enable_udp_broadcast_relay: self.enable_udp_broadcast_relay,
-            disable_sym_hole_punching: self.disable_sym_hole_punching,
-            instance_recv_bps_limit: self.instance_recv_bps_limit,
-            ..Default::default()
-        });
+        cfg.patch_flags(flags_patch_from_network_config(self)?);
         Ok(cfg)
     }
 
     fn new_from_config(config: impl ConfigLoader) -> Result<Self, anyhow::Error> {
-        let default_config = TomlConfigLoader::default();
+        Ok(network_config_from_loader(config))
+    }
+}
 
-        let mut result = Self {
-            ..Default::default()
-        };
+pub fn network_config_from_loader(config: impl ConfigLoader) -> NetworkConfig {
+    let default_config = TomlConfigLoader::default();
 
-        result.instance_id = Some(config.get_id().to_string());
-        if config.get_hostname() != default_config.get_hostname() {
-            result.hostname = Some(config.get_hostname());
-        }
+    let mut result = NetworkConfig {
+        instance_id: Some(config.get_id().to_string()),
+        dhcp: Some(config.get_dhcp()),
+        ..Default::default()
+    };
 
-        result.dhcp = Some(config.get_dhcp());
+    if config.get_hostname() != default_config.get_hostname() {
+        result.hostname = Some(config.get_hostname());
+    }
 
-        let network_identity = config.get_network_identity();
-        result.network_name = Some(network_identity.network_name.clone());
-        result.network_secret = network_identity.network_secret;
+    let network_identity = config.get_network_identity();
+    result.network_name = Some(network_identity.network_name);
+    result.network_secret = network_identity.network_secret;
 
-        if let Some(ipv4) = config.get_ipv4() {
-            result.virtual_ipv4 = Some(ipv4.address().to_string());
-            result.network_length = Some(ipv4.network_length() as i32);
-        }
+    if let Some(ipv4) = config.get_ipv4() {
+        result.virtual_ipv4 = Some(ipv4.address().to_string());
+        result.network_length = Some(ipv4.network_length() as i32);
+    }
 
-        if config.get_ipv6_public_addr_provider() != default_config.get_ipv6_public_addr_provider()
-        {
-            result.ipv6_public_addr_provider = Some(config.get_ipv6_public_addr_provider());
-        }
-        if config.get_ipv6_public_addr_auto() != default_config.get_ipv6_public_addr_auto() {
-            result.ipv6_public_addr_auto = Some(config.get_ipv6_public_addr_auto());
-        }
-        result.ipv6_public_addr_prefix = config
-            .get_ipv6_public_addr_prefix()
-            .map(|prefix| prefix.to_string());
+    if config.get_ipv6_public_addr_provider() != default_config.get_ipv6_public_addr_provider() {
+        result.ipv6_public_addr_provider = Some(config.get_ipv6_public_addr_provider());
+    }
+    if config.get_ipv6_public_addr_auto() != default_config.get_ipv6_public_addr_auto() {
+        result.ipv6_public_addr_auto = Some(config.get_ipv6_public_addr_auto());
+    }
+    result.ipv6_public_addr_prefix = config
+        .get_ipv6_public_addr_prefix()
+        .map(|prefix| prefix.to_string());
 
-        let peers = config.get_peers();
-        result.networking_method = Some(NetworkingMethod::Manual as i32);
-        if !peers.is_empty() {
-            result.peer_urls = peers.iter().map(|p| p.uri.to_string()).collect();
-            result.peers = peers
-                .iter()
-                .map(|p| manage::NetworkPeerConfig {
-                    uri: p.uri.to_string(),
-                    peer_public_key: p.peer_public_key.clone(),
-                })
-                .collect();
-        }
-
-        result.listener_urls = config
-            .get_listeners()
-            .unwrap_or_default()
+    let peers = config.get_peers();
+    result.networking_method = Some(NetworkingMethod::Manual as i32);
+    if !peers.is_empty() {
+        result.peer_urls = peers.iter().map(|p| p.uri.to_string()).collect();
+        result.peers = peers
             .iter()
-            .map(|l| l.to_string())
-            .collect();
-
-        result.proxy_cidrs = config
-            .get_proxy_cidrs()
-            .iter()
-            .map(|c| {
-                if let Some(mapped) = c.mapped_cidr {
-                    format!("{}->{}", c.cidr, mapped)
-                } else {
-                    c.cidr.to_string()
-                }
+            .map(|p| manage::NetworkPeerConfig {
+                uri: p.uri.to_string(),
+                peer_public_key: p.peer_public_key.clone(),
             })
             .collect();
 
-        let port_forwards = config.get_port_forwards();
-        if !port_forwards.is_empty() {
-            result.port_forwards = port_forwards
-                .iter()
-                .map(|f| manage::PortForwardConfig {
-                    proto: f.proto.clone(),
-                    bind_ip: f.bind_addr.ip().to_string(),
-                    bind_port: f.bind_addr.port() as u32,
-                    dst_ip: f.dst_addr.ip().to_string(),
-                    dst_port: f.dst_addr.port() as u32,
-                })
-                .collect();
-        }
-
-        if let Some(vpn_config) = config.get_vpn_portal_config() {
-            result.vpn_portal_config = Some(manage::VpnPortalConfig {
-                enabled: vpn_config.enabled,
-                wireguard_listen: vpn_config.wireguard_listen.to_string(),
-                wireguard_private_key: vpn_config.wireguard_private_key,
-                clients: vpn_config
-                    .clients
-                    .into_iter()
-                    .map(|client| manage::VpnPortalClientConfig {
-                        name: client.name,
-                        virtual_ip: client.virtual_ip.to_string(),
-                        groups: client.groups,
-                    })
-                    .collect(),
-            });
-        }
-
-        if let Some(routes) = config.get_routes()
-            && !routes.is_empty()
-        {
-            result.enable_manual_routes = Some(true);
-            result.routes = routes.iter().map(|r| r.to_string()).collect();
-        }
-
-        let exit_nodes = config.get_exit_nodes();
-        if !exit_nodes.is_empty() {
-            result.exit_nodes = exit_nodes.iter().map(|n| n.to_string()).collect();
-        }
-
-        if let Some(socks5_portal) = config.get_socks5_portal() {
-            result.enable_socks5 = Some(true);
-            result.socks5_port = socks5_portal.port().map(|p| p as i32);
-        }
-
-        let mapped_listeners = config.get_mapped_listeners();
-        if !mapped_listeners.is_empty() {
-            result.mapped_listeners = mapped_listeners.iter().map(|l| l.to_string()).collect();
-        }
-
-        result.secure_mode = config.get_secure_mode();
-        result.credential_file = config
-            .get_credential_file()
-            .map(|path| path.to_string_lossy().into_owned());
-        result.managed_credentials = config
-            .get_managed_credentials()
-            .into_iter()
-            .map(|credential| credential.downgrade())
-            .collect();
-        set_network_flags(&mut result, config.get_flags_patch());
-        result.acl = config.get_acl();
-
-        Ok(result)
     }
+
+    result.listener_urls = config
+        .get_listeners()
+        .unwrap_or_default()
+        .iter()
+        .map(|l| l.to_string())
+        .collect();
+
+    result.proxy_cidrs = config
+        .get_proxy_cidrs()
+        .iter()
+        .map(|c| {
+            if let Some(mapped) = c.mapped_cidr {
+                format!("{}->{}", c.cidr, mapped)
+            } else {
+                c.cidr.to_string()
+            }
+        })
+        .collect();
+
+    let port_forwards = config.get_port_forwards();
+    if !port_forwards.is_empty() {
+        result.port_forwards = port_forwards
+            .iter()
+            .map(|f| manage::PortForwardConfig {
+                proto: f.proto.clone(),
+                bind_ip: f.bind_addr.ip().to_string(),
+                bind_port: f.bind_addr.port() as u32,
+                dst_ip: f.dst_addr.ip().to_string(),
+                dst_port: f.dst_addr.port() as u32,
+            })
+            .collect();
+    }
+
+    if let Some(vpn_config) = config.get_vpn_portal_config() {
+        result.vpn_portal_config = Some(manage::VpnPortalConfig {
+            wireguard_listen: vpn_config.wireguard_listen.to_string(),
+            wireguard_private_key: vpn_config.wireguard_private_key,
+            clients: vpn_config
+                .clients
+                .into_iter()
+                .map(|client| manage::VpnPortalClientConfig {
+                    name: client.name,
+                    virtual_ip: client.virtual_ip.to_string(),
+                    groups: client.groups,
+                })
+                .collect(),
+        });
+    }
+
+    if let Some(routes) = config.get_routes()
+        && !routes.is_empty()
+    {
+        result.enable_manual_routes = Some(true);
+        result.routes = routes.iter().map(|r| r.to_string()).collect();
+    }
+
+    let exit_nodes = config.get_exit_nodes();
+    if !exit_nodes.is_empty() {
+        result.exit_nodes = exit_nodes.iter().map(|n| n.to_string()).collect();
+    }
+
+    if let Some(socks5_portal) = config.get_socks5_portal() {
+        result.enable_socks5 = Some(true);
+        result.socks5_port = socks5_portal.port().map(|p| p as i32);
+    }
+
+    let mapped_listeners = config.get_mapped_listeners();
+    if !mapped_listeners.is_empty() {
+        result.mapped_listeners = mapped_listeners.iter().map(|l| l.to_string()).collect();
+    }
+
+    result.secure_mode = config.get_secure_mode();
+    result.credential_file = config
+        .get_credential_file()
+        .map(|path| path.to_string_lossy().into_owned());
+    result.managed_credentials = config
+        .get_managed_credentials()
+        .into_iter()
+        .map(|credential| credential.downgrade())
+        .collect();
+    set_network_flags(&mut result, config.get_flags_patch());
+    result.acl = config.get_acl();
+
+    result
 }
 
 #[cfg(test)]
