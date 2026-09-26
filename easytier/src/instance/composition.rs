@@ -52,21 +52,27 @@ pub(crate) fn compose_native_core_instance(
     } else {
         runtime_core_host_config()
     };
-    let normalized = CoreInstanceConfig::from_toml_with_host(&toml_config, &host_config)?;
-    let global_ctx = Arc::new(GlobalCtx::new_with_runtime_config(
-        toml_config.clone(),
-        &normalized,
-        &host_config,
-    ));
-    let runtime_host = NativeInstanceRuntimeHost::new(global_ctx.clone());
-    let mut adapters = runtime_core_host_adapters_with_packet_egress_and_config(
-        global_ctx.clone(),
-        process_runtime,
-        runtime_host.clone(),
-        host_config,
-    );
-    adapters.instance_runtime = runtime_host;
-    NativeCoreInstance::from_toml(toml_config, adapters)
+
+    NativeCoreInstance::compose_with_toml(
+        &toml_config,
+        host_config.clone(),
+        |normalized, management_toml| {
+            let global_ctx = Arc::new(GlobalCtx::new_with_runtime_config(
+                management_toml.clone(),
+                normalized,
+                &host_config,
+            ));
+            let runtime_host = NativeInstanceRuntimeHost::new(global_ctx.clone());
+            let mut adapters = runtime_core_host_adapters_with_packet_egress_and_config(
+                global_ctx,
+                process_runtime,
+                runtime_host.clone(),
+                host_config,
+            );
+            adapters.instance_runtime = runtime_host;
+            Ok(adapters)
+        },
+    )
 }
 
 impl CoreEventSink for GlobalCtx {

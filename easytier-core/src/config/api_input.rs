@@ -13,7 +13,7 @@ use easytier_proto::common::Flags;
 use optionize::{Optionizable, Optionized};
 
 use crate::config::{
-    MappedListenerPolicy, normalize_secure_mode_config,
+    MappedListenerPolicy,
     toml::{
         ConfigLoader, NetworkIdentity, PeerConfig, PortForwardConfig, TomlConfigLoader,
         VpnPortalClientConfig, VpnPortalConfig,
@@ -434,20 +434,13 @@ impl NetworkConfigExt for NetworkConfig {
         );
 
         if let Some(credential_secret) = credential_secret {
-            cfg.set_secure_mode(Some(normalize_secure_mode_config(
-                easytier_proto::common::SecureModeConfig {
-                    enabled: true,
-                    local_private_key: Some(credential_secret),
-                    local_public_key: None,
-                },
-            )?));
+            cfg.set_secure_mode(Some(easytier_proto::common::SecureModeConfig {
+                enabled: true,
+                local_private_key: Some(credential_secret),
+                local_public_key: None,
+            }))?;
         } else {
-            cfg.set_secure_mode(
-                self.secure_mode
-                    .clone()
-                    .map(normalize_secure_mode_config)
-                    .transpose()?,
-            );
+            cfg.set_secure_mode(self.secure_mode.clone())?;
         }
 
         if let Some(ipv6_public_addr_provider) = self.ipv6_public_addr_provider {

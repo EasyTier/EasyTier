@@ -4,7 +4,8 @@ use std::collections::BTreeSet;
 
 use crate::{
     config::{
-        EncryptionAlgorithm, IpPrefix, NodeConfig, ProxyNetworkConfig, RouteConfig,
+        EncryptionAlgorithm, InstanceConfigParsed, IpPrefix, NodeConfig, ProxyNetworkConfig,
+        RouteConfig,
         gateway::{GatewayRuntimeConfig, ProxyRuntimeConfig},
         peers::{AclRuleConfig, HostRoutingPolicy, PublicIpv6ProviderConfig},
         runtime::CoreRuntimeConfig,
@@ -172,10 +173,20 @@ impl CoreInstanceConfig {
         config: &TomlConfig,
         host: &CoreInstanceHostConfig,
     ) -> anyhow::Result<Self> {
-        let flags = host.runtime_flags(config.get_flags());
-        let instance_id = config.get_id();
-        let identity: crate::config::NetworkIdentity = config.get_network_identity().into();
-        let managed_credentials = config.get_managed_credentials();
+        config.ensure_id();
+        let snapshot = config.snapshot()?;
+        Self::from_parsed_with_host(&snapshot, host)
+    }
+
+    /// Normalizes the typed configuration values with explicit Host facts and policy.
+    pub fn from_parsed_with_host(
+        parsed: &InstanceConfigParsed,
+        host: &CoreInstanceHostConfig,
+    ) -> anyhow::Result<Self> {
+        let flags = host.runtime_flags(parsed.flags.clone());
+        let instance_id = parsed.instance_id;
+        let identity: crate::config::NetworkIdentity = parsed.network_identity.clone().into();
+        let managed_credentials = parsed.managed_credentials.clone();
         if !managed_credentials.is_empty() && identity.network_secret.is_none() {
             anyhow::bail!(
                 "only admin nodes with a network_secret can configure managed credentials"
@@ -184,21 +195,22 @@ impl CoreInstanceConfig {
         let network_name = identity.network_name.clone();
         let socket_context = SocketContext::default()
             .with_socket_mark(flags.socket_mark)
-            .with_netns(config.get_netns().map(NetNamespace::new));
-        let hostname = match config.get_hostname() {
-            hostname if !hostname.is_empty() => hostname,
+            .with_netns(parsed.netns.clone().map(NetNamespace::new));
+        let hostname = match &parsed.hostname {
+            hostname if !hostname.is_empty() => hostname.clone(),
             _ => host.hostname_fallback.clone().unwrap_or_default(),
         };
-        let acl = config.get_acl();
-        let peers = config
-            .get_peers()
-            .into_iter()
+        let acl = parsed.acl.clone();
+        let peers = parsed
+            .peer
+            .iter()
             .filter(|peer| host.accepts_runtime_url(&peer.uri))
+            .cloned()
             .collect::<Vec<_>>();
         let proxy_networks = if host.ignore_unsupported_config && !host.proxy_enabled {
             Vec::new()
         } else {
-            config.get_proxy_cidrs()
+            parsed.proxy_network.clone()
         };
 
         let peer_snapshot =
@@ -210,11 +222,11 @@ impl CoreInstanceConfig {
                     network_name: network_name.clone(),
                 },
                 routes: RouteConfig {
-                    ipv4: config.get_ipv4().map(|value| IpPrefix {
+                    ipv4: parsed.ipv4.map(|value| IpPrefix {
                         address: value.address().into(),
                         prefix_len: value.network_length(),
                     }),
-                    ipv6: config.get_ipv6().map(|value| IpPrefix {
+                    ipv6: parsed.ipv6.map(|value| IpPrefix {
                         address: value.address().into(),
                         prefix_len: value.network_length(),
                     }),
@@ -236,7 +248,7 @@ impl CoreInstanceConfig {
                 network_identity: identity,
                 stun_info: Default::default(),
                 flags: flags.clone(),
-                secure_mode: config.get_secure_mode(),
+                secure_mode: parsed.secure_mode.clone(),
                 host_routing: host.host_routing,
                 acl: acl.clone(),
                 easytier_version: host.easytier_version.clone(),
@@ -257,7 +269,7 @@ impl CoreInstanceConfig {
             exit_nodes: if host.ignore_unsupported_config && !host.proxy_enabled {
                 Vec::new()
             } else {
-                config.get_exit_nodes()
+                parsed.exit_nodes.clone()
             },
             foreign_context_default_flags: host.runtime_flags(TomlConfig::default().get_flags()),
         };
@@ -265,8 +277,10 @@ impl CoreInstanceConfig {
         let tcp_bind = TcpBindOptions::default().with_context(socket_context.clone());
         let udp_bind = UdpBindOptions::direct_connect().with_context(socket_context.clone());
         let listeners = Some(ListenerRuntimeConfig::new(
-            config
-                .get_listener_uris()
+            parsed
+                .listeners
+                .clone()
+                .unwrap_or_default()
                 .into_iter()
                 .filter(|url| host.accepts_runtime_url(url))
                 .collect(),
@@ -274,7 +288,7 @@ impl CoreInstanceConfig {
             socket_context.clone(),
         ));
         let socks5_bind = (!host.ignore_unsupported_config || host.gateway_enabled)
-            .then(|| config.get_socks5_portal())
+            .then_some(parsed.socks5_proxy.as_ref())
             .flatten()
             .map(|url| {
                 let host = url
@@ -291,22 +305,23 @@ impl CoreInstanceConfig {
         let runtime = CoreRuntimeConfig {
             acl: AclRuleConfig {
                 acl,
-                tcp_whitelist: config.get_tcp_whitelist(),
-                udp_whitelist: config.get_udp_whitelist(),
+                tcp_whitelist: parsed.tcp_whitelist.clone(),
+                udp_whitelist: parsed.udp_whitelist.clone(),
                 whitelist_priority: None,
             },
-            dhcp_ipv4: config.get_dhcp(),
+            dhcp_ipv4: parsed.dhcp,
             gateway: GatewayRuntimeConfig {
                 socks5_bind,
                 port_forwards: if host.ignore_unsupported_config && !host.gateway_enabled {
                     Vec::new()
                 } else {
-                    config.get_port_forwards()
+                    parsed.port_forward.clone()
                 },
             },
-            manual_routes: config
-                .get_routes()
-                .map(|routes| routes.into_iter().collect::<BTreeSet<_>>()),
+            manual_routes: parsed
+                .routes
+                .as_ref()
+                .map(|routes| routes.iter().copied().collect::<BTreeSet<_>>()),
             proxy: ProxyRuntimeConfig {
                 enable_exit_node: flags.enable_exit_node || host.force_exit_node,
                 no_tun: flags.no_tun,
@@ -316,35 +331,35 @@ impl CoreInstanceConfig {
                 icmp_failure_is_fatal: host.icmp_failure_is_fatal,
                 udp_response_ipv4_mtu: 1280,
             },
-            public_ipv6_auto: config.get_ipv6_public_addr_auto()
+            public_ipv6_auto: parsed.ipv6_public_addr_auto
                 && (!host.ignore_unsupported_config || host.public_ipv6_provider_supported),
             public_ipv6_provider: PublicIpv6ProviderConfig {
-                provider_enabled: config.get_ipv6_public_addr_provider()
+                provider_enabled: parsed.ipv6_public_addr_provider
                     && (!host.ignore_unsupported_config || host.public_ipv6_provider_supported),
                 configured_prefix: (!host.ignore_unsupported_config
                     || host.public_ipv6_provider_supported)
-                    .then(|| config.get_ipv6_public_addr_prefix())
+                    .then_some(parsed.ipv6_public_addr_prefix)
                     .flatten(),
                 provider_supported: host.public_ipv6_provider_supported,
             },
         };
-        let stun_servers = config.get_stun_servers();
+        let stun_servers = parsed.stun_servers.clone();
 
         Ok(Self {
-            instance_name: config.get_inst_name(),
+            instance_name: parsed.instance_name.clone(),
             peer,
             managed_credentials,
             vpn_portal: (!host.ignore_unsupported_config || host.vpn_portal_enabled)
-                .then(|| config.get_vpn_portal_config())
+                .then_some(parsed.vpn_portal_config.as_ref())
                 .flatten()
                 .map(|config| PortalRuntimeConfig {
                     clients: config
                         .clients
-                        .into_iter()
+                        .iter()
                         .map(|client| PortalClientConfig {
-                            name: client.name,
+                            name: client.name.clone(),
                             virtual_ip: client.virtual_ip,
-                            groups: client.groups,
+                            groups: client.groups.clone(),
                         })
                         .collect(),
                 }),
@@ -361,12 +376,14 @@ impl CoreInstanceConfig {
                     udp_servers: stun_servers
                         .clone()
                         .unwrap_or_else(|| StunServerConfig::default().udp_servers),
-                    tcp_servers: config
-                        .get_tcp_stun_servers()
+                    tcp_servers: parsed
+                        .tcp_stun_servers
+                        .clone()
                         .or_else(|| stun_servers.clone())
                         .unwrap_or_else(|| StunServerConfig::default().tcp_servers),
-                    udp_v6_servers: config
-                        .get_stun_servers_v6()
+                    udp_v6_servers: parsed
+                        .stun_servers_v6
+                        .clone()
                         .or_else(|| stun_servers.as_ref().map(|_| Vec::new()))
                         .unwrap_or_else(|| StunServerConfig::default().udp_v6_servers),
                 },
@@ -667,7 +684,7 @@ data_compress_algo = "Zstd"
         .unwrap();
         config.set_exit_nodes(vec!["10.144.144.2".parse().unwrap()]);
         config.set_ipv6_public_addr_provider(true);
-        config.get_id();
+        config.ensure_id();
         let before = config.dump();
 
         let host = CoreInstanceHostConfig {

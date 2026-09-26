@@ -29,6 +29,7 @@ pub(crate) use forwarded_rpc::{
 #[cfg(all(feature = "management", target_os = "wasi"))]
 pub(crate) use full::WebClientBackend;
 #[cfg(all(feature = "web-client", test))]
+#[allow(unused_imports)]
 pub(crate) use full::register_web_client_rpc;
 #[cfg(feature = "management")]
 pub use full::remote_client;

@@ -4746,7 +4746,8 @@ pub async fn relay_peer_e2e_encryption(#[values("tcp", "udp")] proto: &str) {
     let insts = init_three_node_ex(
         proto,
         |cfg| {
-            cfg.set_secure_mode(Some(generate_secure_mode_config()));
+            cfg.set_secure_mode(Some(generate_secure_mode_config()))
+                .unwrap();
             cfg
         },
         false,
@@ -4871,7 +4872,8 @@ pub async fn relay_peer_e2e_encryption_udp() {
     let insts = init_three_node_ex(
         "udp",
         |cfg| {
-            cfg.set_secure_mode(Some(generate_secure_mode_config()));
+            cfg.set_secure_mode(Some(generate_secure_mode_config()))
+                .unwrap();
             cfg
         },
         false,
@@ -4952,7 +4954,8 @@ pub async fn relay_peer_session_cleanup() {
     let mut insts = init_three_node_ex(
         "tcp",
         |cfg| {
-            cfg.set_secure_mode(Some(generate_secure_mode_config()));
+            cfg.set_secure_mode(Some(generate_secure_mode_config()))
+                .unwrap();
             cfg
         },
         false,

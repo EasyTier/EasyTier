@@ -303,7 +303,9 @@ fn build_credential_config(
     config.set_ipv6(Some(ipv6.parse().unwrap()));
     config.set_listeners(vec![]);
     config.set_network_identity(NetworkIdentity::new_credential(network_name));
-    config.set_secure_mode(Some(generate_secure_mode_config_with_key(private_key)));
+    config
+        .set_secure_mode(Some(generate_secure_mode_config_with_key(private_key)))
+        .unwrap();
 
     config
 }
@@ -383,7 +385,9 @@ fn create_admin_config(
         "test_network".to_string(),
         "test_secret".to_string(),
     ));
-    config.set_secure_mode(Some(generate_secure_mode_config()));
+    config
+        .set_secure_mode(Some(generate_secure_mode_config()))
+        .unwrap();
 
     config
 }
@@ -407,7 +411,9 @@ fn create_shared_config(
         "shared_network".to_string(),
         "".to_string(),
     ));
-    config.set_secure_mode(Some(generate_secure_mode_config()));
+    config
+        .set_secure_mode(Some(generate_secure_mode_config()))
+        .unwrap();
     config
 }
 
@@ -421,7 +427,9 @@ fn create_public_server_config() -> TomlConfigLoader {
         PUBLIC_SERVER_NETWORK_NAME.to_string(),
         PUBLIC_SERVER_SHARED_SECRET.to_string(),
     ));
-    config.set_secure_mode(Some(generate_secure_mode_config()));
+    config
+        .set_secure_mode(Some(generate_secure_mode_config()))
+        .unwrap();
 
     let mut flags = config.get_flags();
     flags.no_tun = true;
@@ -445,7 +453,9 @@ fn create_need_p2p_admin_config(listener_scheme: &str) -> TomlConfigLoader {
         NEED_P2P_ADMIN_NETWORK_NAME.to_string(),
         PUBLIC_SERVER_SHARED_SECRET.to_string(),
     ));
-    config.set_secure_mode(Some(generate_secure_mode_config()));
+    config
+        .set_secure_mode(Some(generate_secure_mode_config()))
+        .unwrap();
 
     let mut flags = config.get_flags();
     flags.no_tun = true;
@@ -1385,7 +1395,9 @@ async fn prefer_peer_relay_single_admin(#[case] allow_relay: bool) {
                 .network_name
                 .clone(),
         ));
-        config.set_secure_mode(Some(generate_secure_mode_config_with_key(&private)));
+        config
+            .set_secure_mode(Some(generate_secure_mode_config_with_key(&private)))
+            .unwrap();
         disable_p2p(&config);
         config
     };
@@ -1414,7 +1426,9 @@ async fn prefer_peer_relay_single_admin(#[case] allow_relay: bool) {
                 .network_name
                 .clone(),
         ));
-        config.set_secure_mode(Some(generate_secure_mode_config_with_key(&private)));
+        config
+            .set_secure_mode(Some(generate_secure_mode_config_with_key(&private)))
+            .unwrap();
         disable_p2p(&config);
         config
     };
@@ -1445,7 +1459,9 @@ async fn prefer_peer_relay_single_admin(#[case] allow_relay: bool) {
                 .network_name
                 .clone(),
         ));
-        config.set_secure_mode(Some(generate_secure_mode_config_with_key(&private)));
+        config
+            .set_secure_mode(Some(generate_secure_mode_config_with_key(&private)))
+            .unwrap();
         disable_p2p(&config);
         config
     };
@@ -2078,7 +2094,9 @@ async fn credential_revocation_propagates() {
                 .network_name
                 .clone(),
         ));
-        config.set_secure_mode(Some(generate_secure_mode_config_with_key(&private)));
+        config
+            .set_secure_mode(Some(generate_secure_mode_config_with_key(&private)))
+            .unwrap();
         config
     };
 
@@ -2339,7 +2357,9 @@ async fn credential_unknown_rejected() {
                 .network_name
                 .clone(),
         ));
-        config.set_secure_mode(Some(generate_secure_mode_config_with_key(&random_private)));
+        config
+            .set_secure_mode(Some(generate_secure_mode_config_with_key(&random_private)))
+            .unwrap();
         config
     };
 

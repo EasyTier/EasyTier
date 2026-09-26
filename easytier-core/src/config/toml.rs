@@ -6,9 +6,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use super::normalize_secure_mode_config;
-pub use super::{EncryptionAlgorithm, gateway::PortForwardConfig};
-use anyhow::Context;
+pub use super::{
+    EncryptionAlgorithm, InstanceConfig, InstanceConfigRaw, gateway::PortForwardConfig,
+};
 #[cfg(feature = "rich-config-errors")]
 use ariadne::{CharSet, Config as AriadneConfig, IndexType, Label, Report, ReportKind, Source};
 use optionize::Optionizable;
@@ -123,7 +123,7 @@ pub trait ConfigLoader: Send + Sync {
     fn set_stun_servers_v6(&self, servers: Option<Vec<String>>);
 
     fn get_secure_mode(&self) -> Option<SecureModeConfig>;
-    fn set_secure_mode(&self, secure_mode: Option<SecureModeConfig>);
+    fn set_secure_mode(&self, secure_mode: Option<SecureModeConfig>) -> anyhow::Result<()>;
 
     fn get_credential_file(&self) -> Option<std::path::PathBuf> {
         None
@@ -157,6 +157,7 @@ use super::NetworkSecretDigest;
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct NetworkIdentity {
     pub network_name: String,
+    #[serde(default = "super::default_network_secret")]
     pub network_secret: Option<String>,
     #[serde(skip)]
     pub network_secret_digest: Option<NetworkSecretDigest>,
@@ -221,9 +222,9 @@ impl std::str::FromStr for ConfigSource {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-struct ConfigSourceConfig {
-    source: ConfigSource,
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
+pub struct ConfigSourceConfig {
+    pub source: ConfigSource,
 }
 
 impl PartialEq for NetworkIdentity {
@@ -382,54 +383,6 @@ impl std::fmt::Debug for ManagedCredentialConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-#[cfg_attr(feature = "config-write", derive(Serialize))]
-struct Config {
-    netns: Option<String>,
-    hostname: Option<String>,
-    instance_name: Option<String>,
-    instance_id: Option<uuid::Uuid>,
-    ipv4: Option<String>,
-    ipv6: Option<String>,
-    ipv6_public_addr_provider: Option<bool>,
-    ipv6_public_addr_auto: Option<bool>,
-    ipv6_public_addr_prefix: Option<String>,
-    dhcp: Option<bool>,
-    network_identity: Option<NetworkIdentity>,
-    listeners: Option<Vec<url::Url>>,
-    mapped_listeners: Option<Vec<url::Url>>,
-    exit_nodes: Option<Vec<IpAddr>>,
-
-    peer: Option<Vec<PeerConfig>>,
-    proxy_network: Option<Vec<ProxyNetworkConfig>>,
-
-    vpn_portal_config: Option<VpnPortalConfig>,
-
-    routes: Option<Vec<cidr::Ipv4Cidr>>,
-
-    socks5_proxy: Option<url::Url>,
-
-    port_forward: Option<Vec<PortForwardConfig>>,
-
-    secure_mode: Option<SecureModeConfig>,
-
-    #[serde(default)]
-    flags: FlagsPatch,
-
-    acl: Option<Acl>,
-
-    tcp_whitelist: Option<Vec<String>>,
-    udp_whitelist: Option<Vec<String>>,
-    stun_servers: Option<Vec<String>>,
-    tcp_stun_servers: Option<Vec<String>>,
-    stun_servers_v6: Option<Vec<String>>,
-
-    credential_file: Option<PathBuf>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    managed_credentials: Vec<ManagedCredentialConfig>,
-    source: Option<ConfigSourceConfig>,
-}
-
 #[cfg(feature = "rich-config-errors")]
 fn format_toml_parse_error(source_name: &str, config_str: &str, error: &toml::de::Error) -> String {
     let message = format!("failed to parse config TOML from {source_name}");
@@ -471,7 +424,7 @@ fn format_toml_parse_error(
 
 #[derive(Debug, Clone)]
 pub struct TomlConfig {
-    config: Arc<Mutex<Config>>,
+    config: Arc<Mutex<InstanceConfigRaw>>,
 }
 
 impl Default for TomlConfig {
@@ -481,7 +434,24 @@ impl Default for TomlConfig {
 }
 
 impl TomlConfig {
-    fn normalize_config_source(config: &mut Config) {
+    pub fn snapshot(&self) -> anyhow::Result<InstanceConfig> {
+        let raw = self.config.lock().unwrap().clone();
+        InstanceConfig::try_from(raw)
+    }
+
+    pub fn ensure_id(&self) -> uuid::Uuid {
+        let mut locked_config = self.config.lock().unwrap();
+        match locked_config.instance_id {
+            Some(id) => id,
+            None => {
+                let id = uuid::Uuid::new_v4();
+                locked_config.instance_id = Some(id);
+                id
+            }
+        }
+    }
+
+    pub(crate) fn normalize_config_source(config: &mut InstanceConfigRaw) {
         if matches!(
             config.source.as_ref().map(|source| source.source),
             Some(ConfigSource::User)
@@ -491,14 +461,14 @@ impl TomlConfig {
     }
 
     #[cfg(feature = "config-write")]
-    fn config_for_dump(&self) -> Config {
+    fn config_for_dump(&self) -> InstanceConfigRaw {
         let mut config = self.config.lock().unwrap().clone();
         Self::normalize_config_source(&mut config);
         config
     }
 
     #[cfg(feature = "config-write")]
-    fn redact_secrets(config: &mut Config) {
+    fn redact_secrets(config: &mut InstanceConfigRaw) {
         const REDACTED: &str = "<redacted>";
 
         if let Some(secret) = config
@@ -538,9 +508,11 @@ impl TomlConfig {
                 }
             }
         }
-        for credential in &mut config.managed_credentials {
-            if !credential.credential_secret.is_empty() {
-                credential.credential_secret = REDACTED.to_owned();
+        if let Some(credentials) = config.managed_credentials.as_mut() {
+            for credential in credentials {
+                if !credential.credential_secret.is_empty() {
+                    credential.credential_secret = REDACTED.to_owned();
+                }
             }
         }
     }
@@ -553,55 +525,28 @@ impl TomlConfig {
         source_name: &str,
         config_str: &str,
     ) -> Result<Self, anyhow::Error> {
-        let mut config = toml::de::from_str::<Config>(config_str).map_err(|err| {
+        let mut config = toml::de::from_str::<InstanceConfigRaw>(config_str).map_err(|err| {
             let message = format_toml_parse_error(source_name, config_str, &err);
             anyhow::Error::new(err).context(message)
         })?;
 
         Self::normalize_config_source(&mut config);
 
-        Self::new_from_config(config).map_err(|err| {
+        Self::new_from_raw(config).map_err(|err| {
             let message = format!("failed to load config from {source_name}: {err}");
             err.context(message)
         })
     }
 
-    fn new_from_config(mut config: Config) -> Result<Self, anyhow::Error> {
-        config.secure_mode = config
-            .secure_mode
-            .take()
-            .map(normalize_secure_mode_config)
-            .transpose()
-            .context("failed to normalize [secure_mode] config")?;
-        let has_network_identity = config.network_identity.is_some();
+    pub(crate) fn new_from_raw(raw: InstanceConfigRaw) -> Result<Self, anyhow::Error> {
+        let instance_config = InstanceConfig::try_from(raw)?;
+        Ok(Self::from_instance_config(instance_config))
+    }
 
-        let config = TomlConfig {
-            config: Arc::new(Mutex::new(config)),
-        };
-
-        let old_ns = config.get_network_identity();
-
-        // Detect credential mode: secure_mode enabled + no network_secret in TOML
-        let is_credential = has_network_identity
-            && config
-                .get_secure_mode()
-                .map(|sm| sm.enabled)
-                .unwrap_or(false)
-            && old_ns
-                .network_secret
-                .as_deref()
-                .is_none_or(|s| s.is_empty());
-
-        if is_credential {
-            config.set_network_identity(NetworkIdentity::new_credential(old_ns.network_name));
-        } else {
-            config.set_network_identity(NetworkIdentity::new(
-                old_ns.network_name,
-                old_ns.network_secret.unwrap_or_default(),
-            ));
+    pub(crate) fn from_instance_config(config: InstanceConfig) -> Self {
+        TomlConfig {
+            config: Arc::new(Mutex::new(config.into_raw())),
         }
-
-        Ok(config)
     }
 }
 
@@ -623,26 +568,7 @@ impl ConfigLoader for TomlConfig {
     }
 
     fn get_hostname(&self) -> String {
-        let hostname = self.config.lock().unwrap().hostname.clone();
-
-        match hostname {
-            Some(hostname) => {
-                let hostname = hostname
-                    .chars()
-                    .filter(|c| !c.is_control())
-                    .take(32)
-                    .collect::<String>();
-
-                if !hostname.is_empty() {
-                    self.set_hostname(Some(hostname.clone()));
-                    hostname
-                } else {
-                    self.set_hostname(None);
-                    String::new()
-                }
-            }
-            None => String::new(),
-        }
+        super::instance::normalize_hostname(self.config.lock().unwrap().hostname.as_deref())
     }
 
     fn set_hostname(&self, name: Option<String>) {
@@ -658,31 +584,20 @@ impl ConfigLoader for TomlConfig {
     }
 
     fn get_ipv4(&self) -> Option<cidr::Ipv4Inet> {
-        let locked_config = self.config.lock().unwrap();
-        locked_config
-            .ipv4
-            .as_ref()
-            .and_then(|s| s.parse().ok())
-            .map(|c: cidr::Ipv4Inet| {
-                if c.network_length() == 32 {
-                    cidr::Ipv4Inet::new(c.address(), 24).unwrap()
-                } else {
-                    c
-                }
-            })
+        super::instance::normalize_ipv4(self.config.lock().unwrap().ipv4)
     }
 
     fn set_ipv4(&self, addr: Option<cidr::Ipv4Inet>) {
-        self.config.lock().unwrap().ipv4 = addr.map(|addr| addr.to_string());
+        self.config.lock().unwrap().ipv4 = addr;
     }
 
     fn get_ipv6(&self) -> Option<cidr::Ipv6Inet> {
         let locked_config = self.config.lock().unwrap();
-        locked_config.ipv6.as_ref().and_then(|s| s.parse().ok())
+        locked_config.ipv6
     }
 
     fn set_ipv6(&self, addr: Option<cidr::Ipv6Inet>) {
-        self.config.lock().unwrap().ipv6 = addr.map(|addr| addr.to_string());
+        self.config.lock().unwrap().ipv6 = addr;
     }
 
     fn get_ipv6_public_addr_provider(&self) -> bool {
@@ -711,15 +626,11 @@ impl ConfigLoader for TomlConfig {
 
     fn get_ipv6_public_addr_prefix(&self) -> Option<cidr::Ipv6Cidr> {
         let locked_config = self.config.lock().unwrap();
-        locked_config
-            .ipv6_public_addr_prefix
-            .as_ref()
-            .and_then(|s| s.parse().ok())
+        locked_config.ipv6_public_addr_prefix
     }
 
     fn set_ipv6_public_addr_prefix(&self, prefix: Option<cidr::Ipv6Cidr>) {
-        self.config.lock().unwrap().ipv6_public_addr_prefix =
-            prefix.map(|prefix| prefix.to_string());
+        self.config.lock().unwrap().ipv6_public_addr_prefix = prefix;
     }
 
     fn get_dhcp(&self) -> bool {
@@ -792,15 +703,11 @@ impl ConfigLoader for TomlConfig {
     }
 
     fn get_id(&self) -> uuid::Uuid {
-        let mut locked_config = self.config.lock().unwrap();
-        match locked_config.instance_id {
-            Some(id) => id,
-            None => {
-                let id = uuid::Uuid::new_v4();
-                locked_config.instance_id = Some(id);
-                id
-            }
-        }
+        self.config
+            .lock()
+            .unwrap()
+            .instance_id
+            .unwrap_or(uuid::Uuid::nil())
     }
 
     fn set_id(&self, id: uuid::Uuid) {
@@ -808,16 +715,21 @@ impl ConfigLoader for TomlConfig {
     }
 
     fn get_network_identity(&self) -> NetworkIdentity {
-        self.config
-            .lock()
-            .unwrap()
-            .network_identity
-            .clone()
-            .unwrap_or_default()
+        let locked = self.config.lock().unwrap();
+        super::instance::normalize_network_identity(
+            locked.network_identity.as_ref(),
+            locked.secure_mode.as_ref(),
+        )
     }
 
     fn set_network_identity(&self, identity: NetworkIdentity) {
-        self.config.lock().unwrap().network_identity = Some(identity);
+        // An omitted identity represents the default admin, including in secure
+        // mode. Persist that representation when writing the resolved value back.
+        // Compare the secret itself: identity equality also accepts digest-only peers.
+        let default = NetworkIdentity::default();
+        let is_default_admin = identity.network_name == default.network_name
+            && identity.network_secret == default.network_secret;
+        self.config.lock().unwrap().network_identity = (!is_default_admin).then_some(identity);
     }
 
     fn get_listener_uris(&self) -> Vec<url::Url> {
@@ -993,8 +905,10 @@ impl ConfigLoader for TomlConfig {
         self.config.lock().unwrap().secure_mode.clone()
     }
 
-    fn set_secure_mode(&self, secure_mode: Option<SecureModeConfig>) {
-        self.config.lock().unwrap().secure_mode = secure_mode;
+    fn set_secure_mode(&self, value: Option<SecureModeConfig>) -> anyhow::Result<()> {
+        let value = value.map(super::normalize_secure_mode_config).transpose()?;
+        self.config.lock().unwrap().secure_mode = value;
+        Ok(())
     }
 
     fn get_credential_file(&self) -> Option<PathBuf> {
@@ -1006,11 +920,16 @@ impl ConfigLoader for TomlConfig {
     }
 
     fn get_managed_credentials(&self) -> Vec<ManagedCredentialConfig> {
-        self.config.lock().unwrap().managed_credentials.clone()
+        self.config
+            .lock()
+            .unwrap()
+            .managed_credentials
+            .clone()
+            .unwrap_or_default()
     }
 
     fn set_managed_credentials(&self, credentials: Vec<ManagedCredentialConfig>) {
-        self.config.lock().unwrap().managed_credentials = credentials;
+        self.config.lock().unwrap().managed_credentials = Some(credentials);
     }
 
     fn get_network_config_source(&self) -> ConfigSource {
