@@ -110,6 +110,7 @@ pub async fn check_dns_record(fake_ip: &Ipv4Addr, domain: &str, expected_ip: &st
 }
 
 #[tokio::test]
+#[serial_test::serial(magic_dns)]
 async fn test_magic_dns_server_instance() {
     let tun_ip = Ipv4Inet::from_str("10.144.144.10/24").unwrap();
     let (global_ctx, core_instance, virtual_nic) = prepare_env("test1", tun_ip).await;
@@ -123,6 +124,7 @@ async fn test_magic_dns_server_instance() {
         fake_ip,
     )
     .await
+    .unwrap()
     .unwrap();
 
     let routes = [
@@ -150,6 +152,7 @@ async fn test_magic_dns_server_instance() {
 }
 
 #[tokio::test]
+#[serial_test::serial(magic_dns)]
 async fn test_magic_dns_runner() {
     // Test first runner with default DNS settings
     {
@@ -215,6 +218,7 @@ async fn test_magic_dns_runner() {
 }
 
 #[tokio::test]
+#[serial_test::serial(magic_dns)]
 async fn test_magic_dns_update_replaces_records_for_same_client() {
     let tun_ip = Ipv4Inet::from_str("100.100.100.0/24").unwrap();
     let ctx = get_mock_global_ctx();
@@ -227,6 +231,7 @@ async fn test_magic_dns_update_replaces_records_for_same_client() {
     let dns_server_inst =
         MagicDnsServerInstance::new(core_instance.packet_plane(), ctx, None, tun_ip, fake_ip)
             .await
+            .unwrap()
             .unwrap();
 
     let mut ctrl = BaseController::default();
