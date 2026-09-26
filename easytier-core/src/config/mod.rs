@@ -147,6 +147,7 @@ pub struct NetworkIdentity {
     pub network_name: String,
     #[serde(default = "default_network_secret")]
     pub network_secret: Option<String>,
+    #[serde(skip)]
     pub network_secret_digest: Option<NetworkSecretDigest>,
 }
 

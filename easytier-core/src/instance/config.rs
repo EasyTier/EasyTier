@@ -185,7 +185,7 @@ impl CoreInstanceConfig {
     ) -> anyhow::Result<Self> {
         let flags = host.runtime_flags(parsed.flags.clone());
         let instance_id = parsed.instance_id;
-        let identity: crate::config::NetworkIdentity = parsed.network_identity.clone().into();
+        let identity = parsed.network_identity.clone();
         let managed_credentials = parsed.managed_credentials.clone();
         if !managed_credentials.is_empty() && identity.network_secret.is_none() {
             anyhow::bail!(

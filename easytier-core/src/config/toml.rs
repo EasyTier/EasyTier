@@ -152,46 +152,7 @@ pub trait LoggingConfigLoader {
     fn get_console_logger_config(&self) -> ConsoleLoggerConfig;
 }
 
-use super::NetworkSecretDigest;
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct NetworkIdentity {
-    pub network_name: String,
-    #[serde(default = "super::default_network_secret")]
-    pub network_secret: Option<String>,
-    #[serde(skip)]
-    pub network_secret_digest: Option<NetworkSecretDigest>,
-}
-
-impl From<super::NetworkIdentity> for NetworkIdentity {
-    fn from(value: super::NetworkIdentity) -> Self {
-        Self {
-            network_name: value.network_name,
-            network_secret: value.network_secret,
-            network_secret_digest: value.network_secret_digest,
-        }
-    }
-}
-
-impl From<&NetworkIdentity> for super::NetworkIdentity {
-    fn from(value: &NetworkIdentity) -> Self {
-        Self {
-            network_name: value.network_name.clone(),
-            network_secret: value.network_secret.clone(),
-            network_secret_digest: value.network_secret_digest,
-        }
-    }
-}
-
-impl From<NetworkIdentity> for super::NetworkIdentity {
-    fn from(value: NetworkIdentity) -> Self {
-        Self {
-            network_name: value.network_name,
-            network_secret: value.network_secret,
-            network_secret_digest: value.network_secret_digest,
-        }
-    }
-}
+pub use super::NetworkIdentity;
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -225,38 +186,6 @@ impl std::str::FromStr for ConfigSource {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
 pub struct ConfigSourceConfig {
     pub source: ConfigSource,
-}
-
-impl PartialEq for NetworkIdentity {
-    fn eq(&self, other: &Self) -> bool {
-        super::NetworkIdentity::from(self) == super::NetworkIdentity::from(other)
-    }
-}
-
-impl Eq for NetworkIdentity {}
-
-impl std::hash::Hash for NetworkIdentity {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        std::hash::Hash::hash(&super::NetworkIdentity::from(self), state);
-    }
-}
-
-impl NetworkIdentity {
-    pub fn new(network_name: String, network_secret: String) -> Self {
-        super::NetworkIdentity::new(network_name, network_secret).into()
-    }
-
-    /// Create a NetworkIdentity for a credential node (no network_secret).
-    /// The node identifies by network_name only and authenticates via credential keypair.
-    pub fn new_credential(network_name: String) -> Self {
-        super::NetworkIdentity::new_credential(network_name).into()
-    }
-}
-
-impl Default for NetworkIdentity {
-    fn default() -> Self {
-        super::NetworkIdentity::default().into()
-    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
