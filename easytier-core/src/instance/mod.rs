@@ -481,15 +481,37 @@ where
         Self::new_inner(config, None, host_config, adapters)
     }
 
+    pub fn compose_with_toml<F>(
+        toml_config: &TomlConfig,
+        host_config: CoreInstanceHostConfig,
+        build_adapters: F,
+    ) -> anyhow::Result<Arc<Self>>
+    where
+        F: FnOnce(&CoreInstanceConfig, &TomlConfig) -> anyhow::Result<CoreHostAdapters<H>>,
+    {
+        toml_config.ensure_id();
+        let snapshot = toml_config.snapshot()?;
+        let normalized = CoreInstanceConfig::from_parsed_with_host(&snapshot, &host_config)?;
+        let management_toml = TomlConfig::from_instance_config(snapshot);
+        let adapters = build_adapters(&normalized, &management_toml)?;
+        if adapters.config != host_config {
+            anyhow::bail!(
+                "adapters host configuration does not match the instance host configuration"
+            );
+        }
+        Self::new_inner(normalized, Some(management_toml), host_config, adapters)
+    }
+
     /// Constructs an instance from the shared TOML model and retains that
     /// model as the authoritative management configuration.
     pub fn from_toml(
-        toml_config: TomlConfig,
+        toml_config: impl std::borrow::Borrow<TomlConfig>,
         adapters: CoreHostAdapters<H>,
     ) -> anyhow::Result<Arc<Self>> {
         let host_config = adapters.config.clone();
-        let config = CoreInstanceConfig::from_toml_with_host(&toml_config, &host_config)?;
-        Self::new_inner(config, Some(toml_config), host_config, adapters)
+        Self::compose_with_toml(toml_config.borrow(), host_config, |_normalized, _toml| {
+            Ok(adapters)
+        })
     }
 
     fn new_inner(

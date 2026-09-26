@@ -20,7 +20,7 @@ use crate::{
 use anyhow::Context;
 use cidr::IpCidr;
 use clap::{Arg, ArgMatches, CommandFactory, FromArgMatches, Parser};
-use easytier_core::config::{EncryptionAlgorithm, normalize_secure_mode_config};
+use easytier_core::config::EncryptionAlgorithm;
 use guarden::defer;
 use prost_types::field_descriptor_proto::Type;
 use rust_i18n::t;
@@ -880,7 +880,7 @@ impl NetworkOptions {
                 local_private_key: Some(credential_secret.clone()),
                 local_public_key: None,
             };
-            cfg.set_secure_mode(Some(normalize_secure_mode_config(c)?));
+            cfg.set_secure_mode(Some(c))?;
         } else if let Some(secure_mode) = self.secure_mode
             && secure_mode
         {
@@ -900,7 +900,7 @@ impl NetworkOptions {
                 local_private_key,
                 local_public_key,
             };
-            cfg.set_secure_mode(Some(normalize_secure_mode_config(c)?));
+            cfg.set_secure_mode(Some(c))?;
         }
 
         cfg.patch_flags(self.flags.clone());
@@ -1772,6 +1772,33 @@ socket_mark = 42
         assert_eq!(flags.socket_mark, Some(0));
         #[cfg(not(feature = "tun"))]
         assert!(flags.no_tun);
+    }
+
+    #[test]
+    fn network_options_preserve_default_network_identity_in_secure_mode() {
+        for input in [
+            "",
+            "[secure_mode]\nenabled = true",
+            "[network_identity]\nnetwork_name = 'default'\n[secure_mode]\nenabled = true",
+        ] {
+            let cfg = TomlConfigLoader::new_from_str(input).unwrap();
+            let secret = cfg.get_network_identity().network_secret;
+            NetworkOptions {
+                hostname: Some("updated-hostname".to_owned()),
+                secure_mode: Some(true),
+                ..Default::default()
+            }
+            .merge_into(&cfg)
+            .unwrap();
+
+            assert_eq!(cfg.get_hostname(), "updated-hostname");
+            assert_eq!(
+                cfg.snapshot().unwrap().network_identity.network_secret,
+                secret
+            );
+            let restored = TomlConfigLoader::new_from_str(&cfg.dump()).unwrap();
+            assert_eq!(restored.get_network_identity().network_secret, secret);
+        }
     }
 
     #[test]

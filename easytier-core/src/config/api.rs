@@ -139,7 +139,31 @@ pub fn network_config_from_toml(config: &TomlConfig) -> NetworkConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::toml::ManagedCredentialConfig;
+    use crate::config::{api_input::NetworkConfigExt, toml::ManagedCredentialConfig};
+
+    #[test]
+    fn exporting_and_importing_secure_default_network_preserves_identity() {
+        for input in [
+            "[secure_mode]\nenabled = true",
+            "[network_identity]\nnetwork_name = 'default'\n[secure_mode]\nenabled = true",
+        ] {
+            let config = TomlConfig::new_from_str(input).unwrap();
+            let secret = config.get_network_identity().network_secret;
+            for exported in [
+                network_config_from_toml(&config),
+                NetworkConfig::new_from_config(&config).unwrap(),
+            ] {
+                assert_eq!(exported.network_secret, secret);
+                let imported = exported.gen_config().unwrap();
+                assert_eq!(
+                    imported.snapshot().unwrap().network_identity.network_secret,
+                    secret
+                );
+                let restored = TomlConfig::new_from_str(&imported.dump()).unwrap();
+                assert_eq!(restored.get_network_identity().network_secret, secret);
+            }
+        }
+    }
 
     #[test]
     fn includes_managed_credentials() {

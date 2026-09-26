@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use easytier_core::{
-    config::toml::TomlConfig, connectivity::stun::StunSocketMapper, instance::CoreInstance,
+    config::toml::TomlConfig, connectivity::stun::StunSocketMapper,
     process_runtime::CoreProcessRuntime,
 };
 
@@ -49,18 +49,38 @@ impl TestInstance {
             >,
         ),
     ) -> Self {
-        let global_ctx = Arc::new(GlobalCtx::new(config.clone()));
-        let runtime_host = NativeInstanceRuntimeHost::new(global_ctx.clone());
-        let mut adapters = runtime_core_host_adapters_with_packet_egress(
-            global_ctx.clone(),
-            process_runtime,
-            runtime_host.clone(),
-        );
-        customize(&mut adapters);
-        adapters.instance_runtime = runtime_host;
-        let core = CoreInstance::from_toml(config, adapters)
-            .expect("test CoreInstance composition should be valid");
-        Self { core, global_ctx }
+        let host_config = crate::instance::config::runtime_core_host_config();
+        let mut captured_global_ctx = None;
+        let mut customize = Some(customize);
+        let core = NativeCoreInstance::compose_with_toml(
+            &config,
+            host_config.clone(),
+            |normalized, management_toml| {
+                let global_ctx = Arc::new(GlobalCtx::new_with_runtime_config(
+                    management_toml.clone(),
+                    normalized,
+                    &host_config,
+                ));
+                captured_global_ctx = Some(global_ctx.clone());
+                let runtime_host = NativeInstanceRuntimeHost::new(global_ctx.clone());
+                let mut adapters = runtime_core_host_adapters_with_packet_egress(
+                    global_ctx,
+                    process_runtime,
+                    runtime_host.clone(),
+                );
+                if let Some(c) = customize.take() {
+                    c(&mut adapters);
+                }
+                adapters.instance_runtime = runtime_host;
+                Ok(adapters)
+            },
+        )
+        .expect("test CoreInstance composition should be valid");
+
+        Self {
+            core,
+            global_ctx: captured_global_ctx.expect("global_ctx should be created in callback"),
+        }
     }
 
     pub async fn run(&mut self) -> anyhow::Result<()> {
@@ -101,23 +121,19 @@ impl TestConfigPatcher {
 
 #[cfg(test)]
 mod tests {
-    use easytier_core::config::{
-        normalize_secure_mode_config,
-        toml::{ConfigLoader as _, TomlConfig},
-    };
+    use easytier_core::config::toml::{ConfigLoader as _, TomlConfig};
 
     use super::*;
 
     #[tokio::test]
     async fn composition_preserves_secure_admin_identity() {
         let config = TomlConfig::default();
-        config.set_secure_mode(Some(
-            normalize_secure_mode_config(crate::proto::common::SecureModeConfig {
+        config
+            .set_secure_mode(Some(crate::proto::common::SecureModeConfig {
                 enabled: true,
                 ..Default::default()
-            })
-            .unwrap(),
-        ));
+            }))
+            .unwrap();
 
         let instance = TestInstance::new_with_process_runtime(config, CoreProcessRuntime::new());
 
@@ -130,5 +146,77 @@ mod tests {
                 .as_deref(),
             Some("")
         );
+    }
+
+    #[tokio::test]
+    async fn test_instance_isolates_external_config_mutation() {
+        let config = TomlConfig::new_from_str(
+            r#"
+hostname = "original-host"
+[network_identity]
+network_name = "test"
+network_secret = "secret"
+"#,
+        )
+        .unwrap();
+        let instance =
+            TestInstance::new_with_process_runtime(config.clone(), CoreProcessRuntime::new());
+
+        config.set_hostname(Some("mutated-external-host".to_string()));
+        assert_eq!(
+            instance.get_global_ctx().config.get_hostname(),
+            "original-host"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_instance_shares_management_toml_with_global_ctx_on_patch() {
+        let config = TomlConfig::new_from_str(
+            r#"
+hostname = "before-patch"
+[network_identity]
+network_name = "test"
+network_secret = "secret"
+"#,
+        )
+        .unwrap();
+        let mut instance =
+            TestInstance::new_with_process_runtime(config, CoreProcessRuntime::new());
+
+        // Also verify direct management config modification is visible in GlobalCtx before start
+        instance
+            .get_core_instance()
+            .toml_config()
+            .unwrap()
+            .set_hostname(Some("staging-hostname".to_string()));
+        assert_eq!(
+            instance.get_global_ctx().config.get_hostname(),
+            "staging-hostname"
+        );
+
+        // Start instance and apply patch through management patcher
+        instance.run().await.unwrap();
+
+        let patcher = instance.get_config_patcher();
+        let patch = crate::proto::api::config::InstanceConfigPatch {
+            hostname: Some("after-patch".to_string()),
+            ..Default::default()
+        };
+        patcher.apply_patch(patch).await.unwrap();
+
+        assert_eq!(
+            instance.get_global_ctx().config.get_hostname(),
+            "after-patch"
+        );
+        assert_eq!(
+            instance
+                .get_core_instance()
+                .toml_config()
+                .unwrap()
+                .get_hostname(),
+            "after-patch"
+        );
+
+        instance.clear_resources().await;
     }
 }

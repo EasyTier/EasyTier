@@ -4,6 +4,7 @@
 pub mod api;
 #[cfg(any(feature = "web-client", feature = "browser-config"))]
 pub mod api_input;
+pub mod base;
 #[cfg(all(
     feature = "browser-config",
     target_arch = "wasm32",
@@ -12,11 +13,14 @@ pub mod api_input;
 mod browser;
 mod encryption;
 pub mod gateway;
+pub mod instance;
 pub mod peers;
 pub mod runtime;
 pub mod toml;
 
+pub use base::ConfigBase;
 pub use encryption::EncryptionAlgorithm;
+pub use instance::{InstanceConfig, InstanceConfigParsed, InstanceConfigRaw};
 
 pub(crate) const DEFAULT_UDP_STUN_SERVERS: &[&str] = &[
     "txt:stun.easytier.cn",
@@ -134,9 +138,14 @@ pub fn normalize_secure_mode_config(
     Ok(config)
 }
 
+pub(crate) fn default_network_secret() -> Option<String> {
+    Some(String::new())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkIdentity {
     pub network_name: String,
+    #[serde(default = "default_network_secret")]
     pub network_secret: Option<String>,
     pub network_secret_digest: Option<NetworkSecretDigest>,
 }

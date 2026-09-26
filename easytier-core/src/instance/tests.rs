@@ -248,9 +248,7 @@ mod portable_runtime {
     use crate::{
         config::peers::{HostRoutingPolicy, PeerRuntimeConfig},
         config::runtime::CoreInstanceRuntimeConfig,
-        config::{
-            CoreConfig, IpPrefix, NetworkIdentity, ProxyNetworkConfig, gateway::PortForwardConfig,
-        },
+        config::{CoreConfig, IpPrefix, NetworkIdentity, ProxyNetworkConfig},
         connectivity::manual::{ManualConnectorHost, ManualInterfaceAddrs},
         gateway::proxy::wrapped_transport::{
             WrappedTransportEngine, WrappedTransportEngineStart, WrappedTransportEngines,
@@ -263,6 +261,8 @@ mod portable_runtime {
         socket::{SocketContext, udp::PreferredIpv6Source},
     };
 
+    #[cfg(feature = "proxy-smoltcp-stack")]
+    use crate::config::gateway::PortForwardConfig;
     #[cfg(feature = "proxy-packet")]
     use crate::gateway::proxy::wrapped_transport::WrappedTransportKind;
 
@@ -3307,5 +3307,74 @@ virtual_ip = "10.82.0.2/24"
         assert!(instance.running_listeners().is_empty());
 
         instance.stop().await;
+    }
+
+    #[tokio::test]
+    async fn compose_with_toml_should_not_follow_original_alias() {
+        let original = TomlConfig::new_from_str("hostname = 'before'").unwrap();
+        let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+        let host_config = CoreInstanceHostConfig::default();
+        let instance = CoreInstance::compose_with_toml(
+            &original,
+            host_config,
+            |_normalized, _management_toml| Ok(adapters(None, Arc::new(packet_sink))),
+        )
+        .unwrap();
+
+        original.set_hostname(Some("after".into()));
+        assert_eq!(
+            instance.toml_config().unwrap().get_hostname().as_str(),
+            "before"
+        );
+    }
+
+    #[tokio::test]
+    async fn compose_with_toml_rejects_mismatched_host_config() {
+        let original = TomlConfig::new_from_str("hostname = 'test'").unwrap();
+        let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+        let host_config = CoreInstanceHostConfig::default();
+        let mut mismatched_adapters = adapters(None, Arc::new(packet_sink));
+        mismatched_adapters.config.gateway_enabled = !host_config.gateway_enabled;
+
+        let result = CoreInstance::compose_with_toml(
+            &original,
+            host_config,
+            |_normalized, _management_toml| Ok(mismatched_adapters),
+        );
+        let Err(err) = result else {
+            panic!("expected error for mismatched host config");
+        };
+        assert!(
+            err.to_string()
+                .contains("adapters host configuration does not match")
+        );
+    }
+
+    #[tokio::test]
+    async fn compose_with_toml_materializes_keys_in_management_config() {
+        let config = TomlConfig::default();
+        let template = TomlConfig::new_from_str("[secure_mode]\nenabled = true").unwrap();
+        let mut secure = template.get_secure_mode().unwrap();
+        secure.local_private_key = None;
+        secure.local_public_key = None;
+        config.set_secure_mode(Some(secure)).unwrap();
+
+        let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+        let host_config = CoreInstanceHostConfig::default();
+        let instance = CoreInstance::compose_with_toml(
+            &config,
+            host_config,
+            |_normalized, _management_toml| Ok(adapters(None, Arc::new(packet_sink))),
+        )
+        .unwrap();
+
+        let saved_has_key = instance
+            .toml_config()
+            .unwrap()
+            .get_secure_mode()
+            .unwrap()
+            .local_private_key
+            .is_some();
+        assert!(saved_has_key);
     }
 }

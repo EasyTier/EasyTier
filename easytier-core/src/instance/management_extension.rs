@@ -1,5 +1,6 @@
 use super::{CoreInstance, CoreInstanceHost, CoreInstanceHostConfig};
 
+#[cfg(any(feature = "web-client", test))]
 impl<H> CoreInstance<H>
 where
     H: CoreInstanceHost,
