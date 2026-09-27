@@ -911,15 +911,16 @@ mod tests {
     }
 
     fn test_global_ctx() -> Arc<GlobalCtx> {
-        Arc::new(GlobalCtx::new(TomlConfigLoader::default()))
+        crate::common::global_ctx::tests::get_mock_global_ctx()
     }
 
     #[tokio::test]
     async fn test_runtime_public_ipv6_provider_config_reads_provider_fields() {
-        let global_ctx = test_global_ctx();
+        let config = TomlConfigLoader::default();
         let prefix = "2001:db8::/48".parse().unwrap();
-        global_ctx.config.set_ipv6_public_addr_provider(true);
-        global_ctx.config.set_ipv6_public_addr_prefix(Some(prefix));
+        config.set_ipv6_public_addr_provider(true);
+        config.set_ipv6_public_addr_prefix(Some(prefix));
+        let global_ctx = crate::common::global_ctx::tests::get_mock_global_ctx_with_config(config);
 
         assert_eq!(
             PublicIpv6ProviderConfig::from(&test_instance_config(&global_ctx)),
@@ -1327,7 +1328,10 @@ mod tests {
         let prefix = "2001:db8:fade::/64".parse().unwrap();
         let wan_addr = "2001:db8:fade::1";
         let leased_addr = "2001:db8:fade::123".parse::<std::net::Ipv6Addr>().unwrap();
-        let global_ctx = test_global_ctx();
+        let config = TomlConfigLoader::default();
+        config.set_ipv6_public_addr_provider(true);
+        config.set_ipv6_public_addr_prefix(Some(prefix));
+        let global_ctx = crate::common::global_ctx::tests::get_mock_global_ctx_with_config(config);
 
         run_ip(&[
             "-6",
@@ -1347,8 +1351,6 @@ mod tests {
             &tun_if,
         ]);
 
-        global_ctx.config.set_ipv6_public_addr_provider(true);
-        global_ctx.config.set_ipv6_public_addr_prefix(Some(prefix));
         global_ctx.set_tun_device_ready(tun_if);
 
         let platform = super::RuntimePublicIpv6ProviderPlatform::new(&global_ctx);

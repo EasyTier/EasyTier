@@ -514,16 +514,18 @@ mod portable_runtime {
 
     #[tokio::test]
     async fn update_runtime_config_updates_management_toml_config() {
-        let mut initial = test_config("management-sync-before");
-        initial.update_parsed(|p| p.hostname = "management-sync-before".to_owned());
+        let mut initial_raw = test_config("management-sync-before").into_raw();
+        initial_raw.hostname = Some("management-sync-before".to_owned());
+        let initial = InstanceConfig::try_from(initial_raw).unwrap();
         let instance = build_instance(initial).unwrap();
         assert_eq!(
             instance.toml_config().unwrap().get_hostname(),
             "management-sync-before"
         );
 
-        let mut updated = (*instance.runtime_config.snapshot()).clone();
-        updated.update_parsed(|p| p.hostname = "management-sync-after".to_owned());
+        let mut updated_raw = instance.runtime_config.snapshot().raw().clone();
+        updated_raw.hostname = Some("management-sync-after".to_owned());
+        let updated = InstanceConfig::try_from(updated_raw).unwrap();
         instance.update_runtime_config(updated).await.unwrap();
 
         assert_eq!(
@@ -3237,11 +3239,9 @@ virtual_ip = "10.82.0.2/24"
         let original = TomlConfig::new_from_str("hostname = 'before'").unwrap();
         let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
         let host_config = CoreInstanceHostConfig::default();
-        let instance = CoreInstance::compose_with_toml(
-            &original,
-            host_config,
-            |_normalized, _management_toml| Ok(adapters(None, Arc::new(packet_sink))),
-        )
+        let instance = CoreInstance::compose_with_toml(&original, host_config, |_normalized| {
+            Ok(adapters(None, Arc::new(packet_sink)))
+        })
         .unwrap();
 
         original.set_hostname(Some("after".into()));
@@ -3259,11 +3259,9 @@ virtual_ip = "10.82.0.2/24"
         let mut mismatched_adapters = adapters(None, Arc::new(packet_sink));
         mismatched_adapters.config.gateway_enabled = !host_config.gateway_enabled;
 
-        let result = CoreInstance::compose_with_toml(
-            &original,
-            host_config,
-            |_normalized, _management_toml| Ok(mismatched_adapters),
-        );
+        let result = CoreInstance::compose_with_toml(&original, host_config, |_normalized| {
+            Ok(mismatched_adapters)
+        });
         let Err(err) = result else {
             panic!("expected error for mismatched host config");
         };
@@ -3284,11 +3282,9 @@ virtual_ip = "10.82.0.2/24"
 
         let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
         let host_config = CoreInstanceHostConfig::default();
-        let instance = CoreInstance::compose_with_toml(
-            &config,
-            host_config,
-            |_normalized, _management_toml| Ok(adapters(None, Arc::new(packet_sink))),
-        )
+        let instance = CoreInstance::compose_with_toml(&config, host_config, |_normalized| {
+            Ok(adapters(None, Arc::new(packet_sink)))
+        })
         .unwrap();
 
         let saved_has_key = instance

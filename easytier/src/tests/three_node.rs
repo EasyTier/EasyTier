@@ -80,8 +80,14 @@ fn core_udp_dialer(url: url::Url) -> impl TunnelDialer {
 }
 
 async fn reload_instance_acl(inst: &Instance, acl: Option<&crate::proto::acl::Acl>) {
-    let mut config = test_instance_config(&inst.get_global_ctx());
-    config.update_parsed(|c| c.acl = acl.cloned());
+    let mut raw = inst
+        .get_global_ctx()
+        .runtime_config_store()
+        .snapshot()
+        .raw()
+        .clone();
+    raw.acl = acl.cloned();
+    let config = easytier_core::config::InstanceConfig::try_from(raw).unwrap();
     inst.get_core_instance()
         .update_runtime_config(config)
         .await
@@ -811,8 +817,9 @@ pub async fn public_ipv6_auto_addr_end_to_end() {
     assert_eq!(
         provider
             .get_global_ctx()
-            .config
-            .get_ipv6_public_addr_prefix(),
+            .runtime_config_store()
+            .snapshot()
+            .ipv6_public_addr_prefix,
         None
     );
     assert_eq!(
@@ -1278,7 +1285,15 @@ pub async fn quic_proxy() {
     )
     .await;
 
-    assert_eq!(insts[2].get_global_ctx().config.get_proxy_cidrs().len(), 1);
+    assert_eq!(
+        insts[2]
+            .get_global_ctx()
+            .runtime_config_store()
+            .snapshot()
+            .proxy_network
+            .len(),
+        1
+    );
 
     wait_proxy_route_appear(
         &insts[0].get_core_instance(),
@@ -1365,7 +1380,15 @@ pub async fn subnet_proxy_three_node_test(
     )
     .await;
 
-    assert_eq!(insts[2].get_global_ctx().config.get_proxy_cidrs().len(), 2);
+    assert_eq!(
+        insts[2]
+            .get_global_ctx()
+            .runtime_config_store()
+            .snapshot()
+            .proxy_network
+            .len(),
+        2
+    );
 
     wait_proxy_route_appear(
         &insts[0].get_core_instance(),
@@ -1894,8 +1917,10 @@ pub async fn wireguard_vpn_portal(#[values(true, false)] test_v6: bool) {
     let _g = net_ns.guard();
     let portal_config = insts[2]
         .get_global_ctx()
-        .config
-        .get_vpn_portal_config()
+        .runtime_config_store()
+        .snapshot()
+        .vpn_portal_config
+        .clone()
         .unwrap();
     let portal_info = insts[2].get_core_instance().vpn_portal_info().await;
     assert_eq!(portal_info.clients.len(), 1);
@@ -1993,8 +2018,10 @@ pub async fn wireguard_vpn_portal_multi_client() {
 
     let portal_config = insts[2]
         .get_global_ctx()
-        .config
-        .get_vpn_portal_config()
+        .runtime_config_store()
+        .snapshot()
+        .vpn_portal_config
+        .clone()
         .unwrap();
 
     for (ns, client_name, virtual_ip) in [
@@ -2127,8 +2154,10 @@ pub async fn wireguard_vpn_portal_client_roaming() {
 
     let portal_config = insts[2]
         .get_global_ctx()
-        .config
-        .get_vpn_portal_config()
+        .runtime_config_store()
+        .snapshot()
+        .vpn_portal_config
+        .clone()
         .unwrap();
     {
         let net_ns = NetNS::new(Some("net_d".into()));
@@ -2279,8 +2308,10 @@ pub async fn wireguard_vpn_portal_dynamic_clients() {
     let core = insts[2].get_core_instance();
     let portal_config = insts[2]
         .get_global_ctx()
-        .config
-        .get_vpn_portal_config()
+        .runtime_config_store()
+        .snapshot()
+        .vpn_portal_config
+        .clone()
         .unwrap();
 
     // 初始客户端上线
@@ -2326,8 +2357,10 @@ pub async fn wireguard_vpn_portal_dynamic_clients() {
     assert_eq!(
         insts[2]
             .get_global_ctx()
-            .config
-            .get_vpn_portal_config()
+            .runtime_config_store()
+            .snapshot()
+            .vpn_portal_config
+            .as_ref()
             .unwrap()
             .clients
             .len(),
@@ -2362,8 +2395,10 @@ pub async fn wireguard_vpn_portal_dynamic_clients() {
     assert_eq!(
         insts[2]
             .get_global_ctx()
-            .config
-            .get_vpn_portal_config()
+            .runtime_config_store()
+            .snapshot()
+            .vpn_portal_config
+            .as_ref()
             .unwrap()
             .clients
             .len(),
@@ -4478,8 +4513,9 @@ pub async fn config_patch_test() {
     assert!(
         insts[1]
             .get_global_ctx()
-            .config
-            .get_proxy_cidrs()
+            .runtime_config_store()
+            .snapshot()
+            .proxy_network
             .is_empty()
     );
 
@@ -4499,15 +4535,23 @@ pub async fn config_patch_test() {
     assert!(
         insts[1]
             .get_global_ctx()
-            .config
-            .get_ipv6_public_addr_provider()
+            .runtime_config_store()
+            .snapshot()
+            .ipv6_public_addr_provider
     );
-    assert!(insts[1].get_global_ctx().config.get_ipv6_public_addr_auto());
+    assert!(
+        insts[1]
+            .get_global_ctx()
+            .runtime_config_store()
+            .snapshot()
+            .ipv6_public_addr_auto
+    );
     assert_eq!(
         insts[1]
             .get_global_ctx()
-            .config
-            .get_ipv6_public_addr_prefix(),
+            .runtime_config_store()
+            .snapshot()
+            .ipv6_public_addr_prefix,
         Some(public_prefix.parse().unwrap())
     );
     assert!(
@@ -4619,8 +4663,9 @@ pub async fn config_patch_disable_relay_data_test() {
     assert!(
         insts[1]
             .get_global_ctx()
-            .config
-            .get_flags()
+            .runtime_config_store()
+            .snapshot()
+            .flags
             .disable_relay_data
     );
     assert!(
@@ -4676,8 +4721,9 @@ pub async fn config_patch_disable_relay_data_test() {
     assert!(
         !insts[1]
             .get_global_ctx()
-            .config
-            .get_flags()
+            .runtime_config_store()
+            .snapshot()
+            .flags
             .disable_relay_data
     );
     assert!(
@@ -4764,9 +4810,24 @@ pub async fn relay_peer_e2e_encryption(#[values("tcp", "udp")] proto: &str) {
     );
 
     // Check secure mode is enabled
-    let secure_mode_1 = insts[0].get_global_ctx().config.get_secure_mode();
-    let secure_mode_2 = insts[1].get_global_ctx().config.get_secure_mode();
-    let secure_mode_3 = insts[2].get_global_ctx().config.get_secure_mode();
+    let secure_mode_1 = insts[0]
+        .get_global_ctx()
+        .runtime_config_store()
+        .snapshot()
+        .secure_mode
+        .clone();
+    let secure_mode_2 = insts[1]
+        .get_global_ctx()
+        .runtime_config_store()
+        .snapshot()
+        .secure_mode
+        .clone();
+    let secure_mode_3 = insts[2]
+        .get_global_ctx()
+        .runtime_config_store()
+        .snapshot()
+        .secure_mode
+        .clone();
     println!(
         "Secure mode enabled: inst1={}, inst2={}, inst3={}",
         secure_mode_1.is_some(),

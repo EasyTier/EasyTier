@@ -93,14 +93,11 @@ impl NativeInstanceRuntimeHost {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::{
-        config::TomlConfig,
-        global_ctx::{GlobalCtx, GlobalCtxEvent},
-    };
+    use crate::common::global_ctx::GlobalCtxEvent;
 
     #[test]
     fn runtime_host_owns_event_subscription_context() {
-        let global_ctx = Arc::new(GlobalCtx::new(TomlConfig::default()));
+        let global_ctx = crate::common::global_ctx::tests::get_mock_global_ctx();
         let runtime_host = NativeInstanceRuntimeHost::new(global_ctx.clone());
         let mut events = runtime_host.subscribe_event();
 

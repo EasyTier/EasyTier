@@ -52,15 +52,9 @@ impl TestInstance {
         let host_config = crate::instance::config::runtime_core_host_config();
         let mut captured_global_ctx = None;
         let mut customize = Some(customize);
-        let core = NativeCoreInstance::compose_with_toml(
-            &config,
-            host_config.clone(),
-            |normalized, management_toml| {
-                let global_ctx = Arc::new(GlobalCtx::new_with_runtime_config(
-                    management_toml.clone(),
-                    normalized,
-                    &host_config,
-                ));
+        let core =
+            NativeCoreInstance::compose_with_toml(&config, host_config.clone(), |normalized| {
+                let global_ctx = Arc::new(GlobalCtx::new(normalized.clone(), &host_config));
                 captured_global_ctx = Some(global_ctx.clone());
                 let runtime_host = NativeInstanceRuntimeHost::new(global_ctx.clone());
                 let mut adapters = runtime_core_host_adapters_with_packet_egress(
@@ -73,9 +67,8 @@ impl TestInstance {
                 }
                 adapters.instance_runtime = runtime_host;
                 Ok(adapters)
-            },
-        )
-        .expect("test CoreInstance composition should be valid");
+            })
+            .expect("test CoreInstance composition should be valid");
 
         Self {
             core,
@@ -140,8 +133,9 @@ mod tests {
         assert_eq!(
             instance
                 .get_global_ctx()
-                .config
-                .get_network_identity()
+                .runtime_config_store()
+                .snapshot()
+                .network_identity
                 .network_secret
                 .as_deref(),
             Some("")
@@ -163,10 +157,7 @@ network_secret = "secret"
             TestInstance::new_with_process_runtime(config.clone(), CoreProcessRuntime::new());
 
         config.set_hostname(Some("mutated-external-host".to_string()));
-        assert_eq!(
-            instance.get_global_ctx().config.get_hostname(),
-            "original-host"
-        );
+        assert_eq!(instance.get_global_ctx().get_hostname(), "original-host");
     }
 
     #[tokio::test]
