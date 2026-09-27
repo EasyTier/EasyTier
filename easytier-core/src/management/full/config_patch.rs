@@ -11,7 +11,7 @@ use optionize::Optionized as _;
 use crate::{
     config::{
         InstanceConfig,
-        peers::AclRuleConfig,
+        peers::{AclRuleConfig, PublicIpv6ProviderConfig},
         toml::{ConfigLoader as _, TomlConfig},
     },
     instance::{CoreInstance, CoreInstanceHost, CoreInstanceState, prepare_instance_config},
@@ -247,6 +247,12 @@ where
 {
     let snapshot = candidate.snapshot()?;
     let prepared = prepare_instance_config(snapshot, instance.host_config())?;
+    let provider_config = PublicIpv6ProviderConfig {
+        provider_enabled: prepared.parsed().ipv6_public_addr_provider,
+        configured_prefix: prepared.parsed().ipv6_public_addr_prefix,
+        provider_supported: instance.host_config().public_ipv6_provider_supported,
+    };
+    provider_config.validate()?;
     instance.validate_runtime_config_capabilities(prepared.parsed())?;
     Ok(prepared)
 }

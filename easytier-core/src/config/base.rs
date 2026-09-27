@@ -125,7 +125,19 @@ where
         (self.parsed, self.raw, self.data)
     }
 
-    pub fn parsed_mut(&mut self) -> &mut Parsed {
+    pub fn update_parsed<F, R>(&mut self, f: F) -> R
+    where
+        Parsed: optionize::Optionizable<Raw> + Clone,
+        F: FnOnce(&mut Parsed) -> R,
+    {
+        let res = f(&mut self.parsed);
+        self.raw = self.parsed.clone().downgrade();
+        res
+    }
+
+    #[doc(hidden)]
+    #[cfg(test)]
+    pub(crate) fn parsed_mut(&mut self) -> &mut Parsed {
         &mut self.parsed
     }
 

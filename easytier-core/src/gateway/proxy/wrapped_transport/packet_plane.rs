@@ -158,7 +158,7 @@ where
             running_listeners,
             runtime_config,
             protocol_label,
-            false,
+            Default::default(),
         );
         let connector = Arc::new(WrappedTransportSourceConnector {
             peer_manager: peer_manager.clone(),

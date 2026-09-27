@@ -399,7 +399,6 @@ where
     #[cfg(feature = "proxy-packet")]
     pub(super) startup_plan: CoreInstanceStartupPlan,
     pub(super) runtime_config: InstanceConfigStore,
-    pub(super) management_toml: Option<TomlConfig>,
     #[cfg(feature = "test-utils")]
     acl_reload_count: AtomicUsize,
 }
@@ -489,7 +488,7 @@ where
         runtime_config: InstanceConfigStore,
         host_config: CoreInstanceHostConfig,
         mut adapters: CoreHostAdapters<H>,
-        management_toml: Option<TomlConfig>,
+        _management_toml: Option<TomlConfig>,
     ) -> anyhow::Result<Arc<Self>> {
         let snapshot = runtime_config.snapshot();
         let parsed = snapshot.as_ref();
@@ -791,7 +790,7 @@ where
             // Raw ICMP shares the datagram/network-layer routing context.
             direct_options.udp_bind.context.clone(),
             icmp_proxy_host,
-            host_config.icmp_failure_is_fatal,
+            (&host_config).into(),
         );
         #[cfg(feature = "wrapped-transport")]
         let wrapped_transport = {
@@ -939,7 +938,6 @@ where
             #[cfg(feature = "proxy-packet")]
             startup_plan,
             runtime_config,
-            management_toml,
             #[cfg(feature = "test-utils")]
             acl_reload_count: AtomicUsize::new(0),
         }))

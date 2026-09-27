@@ -512,6 +512,59 @@ mod portable_runtime {
         instance.peer_manager.clear_resources().await;
     }
 
+    #[tokio::test]
+    async fn update_runtime_config_updates_management_toml_config() {
+        let mut initial = test_config("management-sync-before");
+        initial.update_parsed(|p| p.hostname = "management-sync-before".to_owned());
+        let instance = build_instance(initial).unwrap();
+        assert_eq!(
+            instance.toml_config().unwrap().get_hostname(),
+            "management-sync-before"
+        );
+
+        let mut updated = (*instance.runtime_config.snapshot()).clone();
+        updated.update_parsed(|p| p.hostname = "management-sync-after".to_owned());
+        instance.update_runtime_config(updated).await.unwrap();
+
+        assert_eq!(
+            instance.toml_config().unwrap().get_hostname(),
+            "management-sync-after"
+        );
+        instance.peer_manager.clear_resources().await;
+    }
+
+    #[cfg(feature = "management")]
+    #[tokio::test]
+    async fn config_patch_rejects_private_public_ipv6_prefix() {
+        use easytier_proto::api::config::InstanceConfigPatch;
+
+        let initial = test_config("public-ipv6-patch-reject");
+        let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+        let mut adapters = adapters(None, Arc::new(packet_sink));
+        adapters.config.public_ipv6_provider_supported = true;
+        let instance = CoreInstance::new(initial, adapters).unwrap();
+        instance.set_state(CoreInstanceState::Running);
+
+        let error = crate::management::apply_config_patch(
+            &instance,
+            InstanceConfigPatch {
+                ipv6_public_addr_provider: Some(true),
+                ipv6_public_addr_prefix: Some("fd00::/64".to_owned()),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("not a valid global unicast IPv6 prefix")
+        );
+        instance.peer_manager.clear_resources().await;
+    }
+
     #[cfg(feature = "dhcp-ipv4")]
     #[tokio::test]
     async fn runtime_update_preserves_dhcp_owned_ipv4() {

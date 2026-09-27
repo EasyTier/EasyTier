@@ -143,6 +143,7 @@ pub(crate) struct CorePeerContextAdapters {
 /// runtime resources.
 pub(crate) struct CorePeerContext {
     is_foreign: bool,
+    parent_feature_flags: Option<PeerFeatureFlag>,
     config: InstanceConfigStore,
     instance_id: uuid::Uuid,
     host_routing: HostRoutingPolicy,
@@ -183,7 +184,15 @@ impl CorePeerContext {
         parent: &CorePeerContext,
     ) -> Self {
         adapters.host_routing = parent.host_routing_policy();
-        Self::new_with_stats_manager(config, Arc::new(()), adapters, parent.stats_manager(), true)
+        let mut foreign = Self::new_with_stats_manager(
+            config,
+            Arc::new(()),
+            adapters,
+            parent.stats_manager(),
+            true,
+        );
+        foreign.parent_feature_flags = Some(parent.feature_flags());
+        foreign
     }
 
     fn new_with_stats_manager(
@@ -195,7 +204,7 @@ impl CorePeerContext {
     ) -> Self {
         let snapshot = config.snapshot();
         let instance_id = snapshot.instance_id;
-        let avoid_relay_data_preference = AtomicBool::new(snapshot.flags.disable_relay_data);
+        let avoid_relay_data_preference = AtomicBool::new(false);
         let credentials = Arc::new(
             adapters
                 .credential_storage
@@ -204,6 +213,7 @@ impl CorePeerContext {
         let fallback_stun_info = RwLock::new(StunInfo::default());
         Self {
             is_foreign,
+            parent_feature_flags: None,
             config,
             instance_id,
             host_routing: adapters.host_routing,
@@ -698,6 +708,24 @@ impl PeerContext for CorePeerContext {
 
     fn feature_flags(&self) -> PeerFeatureFlag {
         let snapshot = self.config.snapshot();
+        let (kcp_input, quic_input, no_relay_kcp, no_relay_quic, support_conn_list_sync) =
+            if let Some(parent) = self.parent_feature_flags {
+                (
+                    parent.kcp_input,
+                    parent.quic_input,
+                    parent.no_relay_kcp,
+                    parent.no_relay_quic,
+                    false,
+                )
+            } else {
+                (
+                    !snapshot.flags.disable_kcp_input,
+                    !snapshot.flags.disable_quic_input,
+                    snapshot.flags.disable_relay_kcp,
+                    snapshot.flags.disable_relay_quic,
+                    true,
+                )
+            };
         PeerFeatureFlag {
             is_public_server: self.is_foreign,
             is_credential_peer: snapshot.network_identity.network_secret.is_none(),
@@ -707,8 +735,11 @@ impl PeerContext for CorePeerContext {
                 || self.avoid_relay_data_preference.load(Ordering::Acquire),
             ipv6_public_addr_provider: snapshot.ipv6_public_addr_provider
                 || self.public_ipv6_state.public_ipv6_provider_enabled(),
-            kcp_input: false,
-            ..Default::default()
+            kcp_input,
+            quic_input,
+            no_relay_kcp,
+            no_relay_quic,
+            support_conn_list_sync,
         }
     }
 

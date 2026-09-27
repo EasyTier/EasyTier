@@ -170,7 +170,7 @@ network_secret = "secret"
     }
 
     #[tokio::test]
-    async fn test_instance_shares_management_toml_with_global_ctx_on_patch() {
+    async fn test_instance_updates_global_ctx_and_toml_config_on_patch() {
         let config = TomlConfig::new_from_str(
             r#"
 hostname = "before-patch"
@@ -183,16 +183,7 @@ network_secret = "secret"
         let mut instance =
             TestInstance::new_with_process_runtime(config, CoreProcessRuntime::new());
 
-        // Also verify direct management config modification is visible in GlobalCtx before start
-        instance
-            .get_core_instance()
-            .toml_config()
-            .unwrap()
-            .set_hostname(Some("staging-hostname".to_string()));
-        assert_eq!(
-            instance.get_global_ctx().config.get_hostname(),
-            "staging-hostname"
-        );
+        assert_eq!(instance.get_global_ctx().get_hostname(), "before-patch");
 
         // Start instance and apply patch through management patcher
         instance.run().await.unwrap();
@@ -204,10 +195,7 @@ network_secret = "secret"
         };
         patcher.apply_patch(patch).await.unwrap();
 
-        assert_eq!(
-            instance.get_global_ctx().config.get_hostname(),
-            "after-patch"
-        );
+        assert_eq!(instance.get_global_ctx().get_hostname(), "after-patch");
         assert_eq!(
             instance
                 .get_core_instance()

@@ -81,7 +81,7 @@ fn core_udp_dialer(url: url::Url) -> impl TunnelDialer {
 
 async fn reload_instance_acl(inst: &Instance, acl: Option<&crate::proto::acl::Acl>) {
     let mut config = test_instance_config(&inst.get_global_ctx());
-    config.parsed_mut().acl = acl.cloned();
+    config.update_parsed(|c| c.acl = acl.cloned());
     inst.get_core_instance()
         .update_runtime_config(config)
         .await

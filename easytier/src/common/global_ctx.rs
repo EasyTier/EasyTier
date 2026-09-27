@@ -94,6 +94,7 @@ pub struct GlobalCtx {
 
     flags: ArcSwap<Flags>,
     runtime_endpoint_protocols: Option<HashSet<String>>,
+    pub(crate) runtime_config_store: Option<InstanceConfigStore>,
 }
 
 impl std::fmt::Debug for GlobalCtx {
@@ -143,7 +144,7 @@ impl PublicIpv6Host for GlobalCtx {
 
 impl GlobalCtx {
     pub fn new(config_fs: impl ConfigLoader + 'static) -> Self {
-        Self::new_inner(config_fs, None, None)
+        Self::new_inner(config_fs, None, None, None)
     }
 
     pub(crate) fn new_with_runtime_config(
@@ -159,13 +160,14 @@ impl GlobalCtx {
                 .map(|protocol| protocol.to_ascii_lowercase())
                 .collect()
         });
-        Self::new_inner(config_fs, Some(parsed), protocols)
+        Self::new_inner(config_fs, Some(parsed), protocols, Some(store.clone()))
     }
 
     fn new_inner(
         config_fs: impl ConfigLoader + 'static,
         prepared: Option<&easytier_core::config::InstanceConfigParsed>,
         runtime_endpoint_protocols: Option<HashSet<String>>,
+        runtime_config_store: Option<InstanceConfigStore>,
     ) -> Self {
         let id = config_fs.get_id();
         let network = config_fs.get_network_identity();
@@ -209,6 +211,7 @@ impl GlobalCtx {
 
             flags: ArcSwap::new(Arc::new(flags)),
             runtime_endpoint_protocols,
+            runtime_config_store,
         }
     }
 
@@ -295,7 +298,13 @@ impl GlobalCtx {
     }
 
     pub fn get_hostname(&self) -> String {
-        return self.hostname.lock().unwrap().clone();
+        if let Some(store) = &self.runtime_config_store {
+            let hostname = store.snapshot().hostname.clone();
+            if !hostname.is_empty() {
+                return hostname;
+            }
+        }
+        self.hostname.lock().unwrap().clone()
     }
 
     pub fn set_hostname(&self, hostname: String) {
@@ -303,6 +312,14 @@ impl GlobalCtx {
     }
 
     pub fn get_flags(&self) -> Flags {
+        if let Some(store) = &self.runtime_config_store {
+            let mut flags = store.snapshot().flags.clone();
+            let local_flags = self.flags.load();
+            if flags.dev_name.is_empty() && !local_flags.dev_name.is_empty() {
+                flags.dev_name = local_flags.dev_name.clone();
+            }
+            return flags;
+        }
         self.flags.load().as_ref().clone()
     }
 
@@ -311,7 +328,7 @@ impl GlobalCtx {
     }
 
     pub fn flags_arc(&self) -> Arc<Flags> {
-        self.flags.load_full()
+        Arc::new(self.get_flags())
     }
 
     pub fn enable_exit_node(&self) -> bool {
@@ -467,6 +484,39 @@ pub mod tests {
         assert_eq!(config.get_mapped_listeners().len(), 2);
         assert_eq!(global_ctx.runtime_mapped_listeners().len(), 1);
         assert_eq!(global_ctx.runtime_mapped_listeners()[0].scheme(), "tcp");
+    }
+
+    #[tokio::test]
+    async fn global_ctx_reads_hostname_and_flags_directly_from_runtime_config_store() {
+        let config = TomlConfigLoader::new_from_str(
+            r#"
+hostname = "before"
+[network_identity]
+network_name = "test"
+network_secret = "secret"
+"#,
+        )
+        .unwrap();
+        let instance = crate::instance::test_instance::TestInstance::new_with_process_runtime(
+            config,
+            easytier_core::process_runtime::CoreProcessRuntime::new(),
+        );
+        let global_ctx = instance.get_global_ctx();
+        let core = instance.get_core_instance();
+
+        assert_eq!(global_ctx.get_hostname(), "before");
+        assert!(!global_ctx.get_flags().disable_relay_data);
+
+        // Store updates via update_runtime_config must be immediately visible to GlobalCtx
+        let mut update = (*core.config_store().snapshot()).clone();
+        update.update_parsed(|p| {
+            p.hostname = "after".to_owned();
+            p.flags.disable_relay_data = true;
+        });
+        core.update_runtime_config(update).await.unwrap();
+
+        assert_eq!(global_ctx.get_hostname(), "after");
+        assert!(global_ctx.get_flags().disable_relay_data);
     }
 
     pub fn get_mock_global_ctx_with_network(

@@ -1908,8 +1908,6 @@ mod tests {
         parsed.flags.need_p2p = true;
         parsed.flags.disable_kcp_input = true;
         parsed.flags.disable_quic_input = true;
-        parsed.flags.disable_relay_kcp = true;
-        parsed.flags.disable_relay_quic = true;
         let raw = parsed.generate_raw();
         let parent_config = InstanceConfigStore::new(InstanceConfig::new(parsed, raw, ()));
         let parent = Arc::new(CorePeerContext::new(
