@@ -29,7 +29,7 @@ use crate::{
         config::{ConfigLoader, NetworkIdentity, PortForwardConfig, TomlConfigLoader},
         netns::{NetNS, ROOT_NETNS_NAME},
     },
-    instance::config::test_runtime_instance_config,
+    instance::config::test_instance_config,
     instance::test_instance::TestInstance as Instance,
     proto::{
         api::instance::TcpProxyEntryTransportType,
@@ -80,20 +80,16 @@ fn core_udp_dialer(url: url::Url) -> impl TunnelDialer {
 }
 
 async fn reload_instance_acl(inst: &Instance, acl: Option<&crate::proto::acl::Acl>) {
-    let mut config = test_runtime_instance_config(&inst.get_global_ctx());
-    config.services.acl = easytier_core::config::peers::AclRuleConfig {
-        acl: acl.cloned(),
-        ..Default::default()
-    };
+    let mut config = test_instance_config(&inst.get_global_ctx());
+    config.parsed_mut().acl = acl.cloned();
     inst.get_core_instance()
         .update_runtime_config(config)
         .await
         .unwrap();
 }
 
-async fn set_foreign_network_refresh_interval(inst: &Instance, seconds: u64) {
-    let mut config = test_runtime_instance_config(&inst.get_global_ctx());
-    Arc::make_mut(&mut config.peer).ospf_update_my_foreign_network_interval_sec = seconds;
+async fn set_foreign_network_refresh_interval(inst: &Instance, _seconds: u64) {
+    let config = test_instance_config(&inst.get_global_ctx());
     inst.get_core_instance()
         .update_runtime_config(config)
         .await

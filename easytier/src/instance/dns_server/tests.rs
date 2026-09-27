@@ -19,7 +19,7 @@ use tokio_util::sync::CancellationToken;
 use crate::common::global_ctx::{ArcGlobalCtx, tests::get_mock_global_ctx};
 use crate::instance::{
     composition::{NativeCoreInstance, runtime_core_host_adapters},
-    config::test_core_instance_config,
+    config::test_instance_config,
 };
 
 use crate::instance::dns_server::runner::DnsRunner;
@@ -44,7 +44,7 @@ async fn build_test_core(ctx: ArcGlobalCtx) -> (Arc<NativeCoreInstance>, HostPac
         CoreProcessRuntime::new(),
         Arc::new(HostPacketChannelSink::new(packet_sink)),
     );
-    let core_instance = NativeCoreInstance::new(test_core_instance_config(&ctx), adapters).unwrap();
+    let core_instance = NativeCoreInstance::new(test_instance_config(&ctx), adapters).unwrap();
     core_instance.start().await.unwrap();
     (core_instance, HostPacketReceiver::new(packet_receiver))
 }

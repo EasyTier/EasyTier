@@ -21,6 +21,7 @@ pub mod toml;
 pub use base::ConfigBase;
 pub use encryption::EncryptionAlgorithm;
 pub use instance::{InstanceConfig, InstanceConfigParsed, InstanceConfigRaw};
+pub use runtime::InstanceConfigStore;
 
 pub(crate) const DEFAULT_UDP_STUN_SERVERS: &[&str] = &[
     "txt:stun.easytier.cn",

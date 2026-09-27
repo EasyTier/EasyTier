@@ -10,11 +10,11 @@ use optionize::Optionized as _;
 
 use crate::{
     config::{
+        InstanceConfig,
         peers::AclRuleConfig,
-        runtime::CoreInstanceRuntimeConfig,
         toml::{ConfigLoader as _, TomlConfig},
     },
-    instance::{CoreInstance, CoreInstanceConfig, CoreInstanceHost, CoreInstanceState},
+    instance::{CoreInstance, CoreInstanceHost, CoreInstanceState, prepare_instance_config},
     peers::credential_manager::CredentialManager,
 };
 
@@ -68,12 +68,12 @@ where
         result?;
 
         let result = patch_exit_nodes_config(&candidate, patch.exit_nodes);
-        let normalized =
+        let prepared =
             validate_persist_and_commit_candidate(instance, &config, &candidate, persistence)
                 .await?;
         result?;
         instance
-            .update_exit_nodes(normalized.peer.exit_nodes.clone())
+            .update_exit_nodes(prepared.parsed().exit_nodes.clone())
             .await;
 
         let result = patch_mapped_listeners(&candidate, patch.mapped_listeners);
@@ -122,19 +122,19 @@ where
             // hot update, restore the previous durable snapshot before
             // returning so a later patch cannot overwrite from stale shared
             // state and a restart cannot apply a rejected client set.
-            let normalized = validate_candidate(instance, &candidate)?;
+            let prepared = validate_candidate(instance, &candidate)?;
             persist_candidate_if_changed(instance, &config, &candidate, persistence).await?;
             #[cfg(feature = "vpn-portal")]
             {
-                let portal = normalized
-                    .vpn_portal
+                let portal = prepared
+                    .parsed()
+                    .vpn_portal_config
                     .clone()
                     .ok_or_else(|| anyhow::anyhow!("VPN portal is not configured"))?;
+                let clients: Vec<crate::gateway::vpn_portal::PortalClientConfig> =
+                    portal.clients.into_iter().map(Into::into).collect();
                 if let Err(error) = instance
-                    .update_vpn_portal_clients(
-                        portal.clients,
-                        &runtime_config_from_normalized(&normalized),
-                    )
+                    .update_vpn_portal_clients(clients, prepared.parsed())
                     .await
                 {
                     if let Some(persistence) = persistence
@@ -151,7 +151,7 @@ where
             }
             #[cfg(not(feature = "vpn-portal"))]
             {
-                let _ = normalized;
+                let _ = prepared;
             }
             config.replace_from_snapshot(&candidate);
         }
@@ -205,19 +205,14 @@ where
             validate_persist_and_commit_candidate(instance, &config, &candidate, persistence)
                 .await?;
         }
-        let normalized = validate_candidate(instance, &candidate)?;
-        let runtime = runtime_config_from_normalized(&normalized);
-        if patch_for_host != InstanceConfigPatch::default() {
-            instance
-                .instance_runtime
-                .synchronize_config(&patch_for_host, &runtime);
-        }
+        let _prepared = validate_candidate(instance, &candidate)?;
         Ok((provider_config_changed, managed_credentials_changed))
     }
     .await;
 
+    let prepared = validate_candidate(instance, &config)?;
     instance
-        .update_runtime_config_under_operation(runtime_config_from_toml(instance, &config)?)
+        .update_runtime_config_under_operation(prepared)
         .await?;
     let (provider_config_changed, managed_credentials_changed) = patch_result?;
     if patch_for_host != InstanceConfigPatch::default() {
@@ -246,15 +241,14 @@ fn patch_without_managed_credentials(patch: &InstanceConfigPatch) -> InstanceCon
 fn validate_candidate<H>(
     instance: &CoreInstance<H>,
     candidate: &TomlConfig,
-) -> anyhow::Result<CoreInstanceConfig>
+) -> anyhow::Result<InstanceConfig>
 where
     H: CoreInstanceHost,
 {
-    let normalized = CoreInstanceConfig::from_toml_with_host(candidate, instance.host_config())?;
-    let runtime = runtime_config_from_normalized(&normalized);
-    runtime.services.public_ipv6_provider.validate()?;
-    instance.validate_runtime_config_capabilities(&runtime)?;
-    Ok(normalized)
+    let snapshot = candidate.snapshot()?;
+    let prepared = prepare_instance_config(snapshot, instance.host_config())?;
+    instance.validate_runtime_config_capabilities(prepared.parsed())?;
+    Ok(prepared)
 }
 
 async fn validate_persist_and_commit_candidate<H>(
@@ -262,15 +256,15 @@ async fn validate_persist_and_commit_candidate<H>(
     shared: &TomlConfig,
     candidate: &TomlConfig,
     persistence: Option<&dyn ConfigPatchPersistence>,
-) -> anyhow::Result<CoreInstanceConfig>
+) -> anyhow::Result<InstanceConfig>
 where
     H: CoreInstanceHost,
 {
-    let normalized = validate_candidate(instance, candidate)?;
+    let prepared = validate_candidate(instance, candidate)?;
     if persist_candidate_if_changed(instance, shared, candidate, persistence).await? {
         shared.replace_from_snapshot(candidate);
     }
-    Ok(normalized)
+    Ok(prepared)
 }
 
 async fn persist_candidate_if_changed<H>(
@@ -291,24 +285,6 @@ where
             .await?;
     }
     Ok(true)
-}
-
-fn runtime_config_from_toml<H>(
-    instance: &CoreInstance<H>,
-    config: &TomlConfig,
-) -> anyhow::Result<CoreInstanceRuntimeConfig>
-where
-    H: CoreInstanceHost,
-{
-    let normalized = CoreInstanceConfig::from_toml_with_host(config, instance.host_config())?;
-    Ok(runtime_config_from_normalized(&normalized))
-}
-
-fn runtime_config_from_normalized(config: &CoreInstanceConfig) -> CoreInstanceRuntimeConfig {
-    CoreInstanceRuntimeConfig {
-        services: config.connectivity.runtime.clone(),
-        peer: Arc::new(config.peer.snapshot.clone()),
-    }
 }
 
 fn parse_ipv6_public_addr_prefix_patch(

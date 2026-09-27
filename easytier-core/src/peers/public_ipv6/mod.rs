@@ -10,7 +10,7 @@ use cidr::{Ipv6Cidr, Ipv6Inet};
 use crate::{
     config::PeerId,
     config::peers::PublicIpv6ProviderConfig,
-    config::runtime::CoreRuntimeConfigStore,
+    config::runtime::InstanceConfigStore,
     events::{CoreEvent, CoreEventSink},
     peers::context::PeerPublicIpv6State,
 };
@@ -142,7 +142,7 @@ pub(crate) trait PublicIpv6Runtime: Send + Sync {
 }
 
 pub struct CorePublicIpv6Runtime {
-    config: CoreRuntimeConfigStore,
+    config: InstanceConfigStore,
     host: Arc<dyn PublicIpv6Host>,
     events: Arc<dyn CoreEventSink>,
     provider_prefix: std::sync::Mutex<Option<Ipv6Cidr>>,
@@ -151,7 +151,7 @@ pub struct CorePublicIpv6Runtime {
 
 impl CorePublicIpv6Runtime {
     pub fn new(
-        config: CoreRuntimeConfigStore,
+        config: InstanceConfigStore,
         host: Arc<dyn PublicIpv6Host>,
         events: Arc<dyn CoreEventSink>,
     ) -> Arc<Self> {
@@ -194,37 +194,19 @@ impl PeerPublicIpv6State for CorePublicIpv6Runtime {
 #[async_trait::async_trait]
 impl PublicIpv6Runtime for CorePublicIpv6Runtime {
     fn ipv6_public_addr_auto(&self) -> bool {
-        self.config.snapshot().services.public_ipv6_auto
+        self.config.snapshot().ipv6_public_addr_auto
     }
 
     fn ipv6_public_addr_provider(&self) -> bool {
-        self.config
-            .snapshot()
-            .services
-            .public_ipv6_provider
-            .provider_enabled
+        self.config.snapshot().ipv6_public_addr_provider
     }
 
     fn instance_id(&self) -> uuid::Uuid {
-        self.config
-            .snapshot()
-            .peer
-            .runtime
-            .core
-            .node
-            .instance_id
-            .map(uuid::Uuid::from_bytes)
-            .expect("core peer identity must be finalized before public IPv6 starts")
+        self.config.snapshot().instance_id
     }
 
     fn network_name(&self) -> String {
-        self.config
-            .snapshot()
-            .peer
-            .runtime
-            .network_identity
-            .network_name
-            .clone()
+        self.config.snapshot().network_identity.network_name.clone()
     }
 
     async fn collect_reserved_public_ipv6_addrs(&self, prefix: Ipv6Cidr) -> HashSet<Ipv6Addr> {
@@ -296,7 +278,7 @@ mod tests {
 
     use crate::{
         config::PeerId,
-        config::runtime::{CoreRuntimeConfig, CoreRuntimeConfigStore},
+        config::{InstanceConfig, InstanceConfigParsed, runtime::InstanceConfigStore},
         events::{CoreEvent, CoreEventSink},
         peers::{context::PeerPublicIpv6State, peer_rpc::PeerRpcManager},
     };
@@ -431,21 +413,17 @@ mod tests {
     #[tokio::test]
     async fn core_runtime_owns_public_ipv6_state_and_projects_only_host_effects() {
         let instance_id = uuid::Uuid::from_u128(42);
-        let mut peer = crate::config::peers::PeerRuntimeSnapshot::default();
-        peer.runtime.core.node.instance_id = Some(*instance_id.as_bytes());
-        peer.runtime.network_identity.network_name = "owned-by-core".to_owned();
-        let config = CoreRuntimeConfigStore::new(
-            CoreRuntimeConfig {
-                public_ipv6_auto: true,
-                public_ipv6_provider: PublicIpv6ProviderConfig {
-                    provider_enabled: true,
-                    configured_prefix: None,
-                    provider_supported: true,
-                },
+        let parsed = InstanceConfigParsed {
+            instance_id,
+            ipv6_public_addr_auto: true,
+            ipv6_public_addr_provider: true,
+            network_identity: crate::config::toml::NetworkIdentity {
+                network_name: "owned-by-core".to_owned(),
                 ..Default::default()
             },
-            Arc::new(peer),
-        );
+            ..Default::default()
+        };
+        let config = InstanceConfigStore::from(parsed);
         let host = Arc::new(RecordingPublicIpv6Host::default());
         let events = Arc::new(RecordingPublicIpv6Events::default());
         let reserved = "2001:db8::10".parse().unwrap();
@@ -479,10 +457,10 @@ mod tests {
             &[(vec![route], Vec::new())]
         );
 
-        config.update_services(|services| {
-            services.public_ipv6_auto = false;
-            services.public_ipv6_provider.provider_enabled = false;
-        });
+        let mut next = (*config.snapshot()).clone();
+        next.parsed_mut().ipv6_public_addr_auto = false;
+        next.parsed_mut().ipv6_public_addr_provider = false;
+        config.replace(next);
         assert!(!runtime.ipv6_public_addr_auto());
         assert!(!runtime.ipv6_public_addr_provider());
     }

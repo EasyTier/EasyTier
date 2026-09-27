@@ -68,24 +68,26 @@ where
 
     #[cfg(feature = "dhcp-ipv4")]
     async fn start_dhcp_ipv4(&self, host: Option<Arc<dyn DhcpIpv4Host>>) -> anyhow::Result<()> {
-        if !self.runtime_config.snapshot().services.dhcp_ipv4 {
+        if !self.runtime_config.snapshot().dhcp {
             return Ok(());
         }
         let host = host.ok_or_else(|| {
             anyhow::anyhow!("DHCP IPv4 is enabled but no host adapter was provided")
         })?;
         let route_source: Arc<dyn DhcpIpv4RouteSource> = self.peer_manager.clone();
-        self.dhcp_ipv4
-            .start(route_source, self.runtime_config.clone(), host)
-            .await;
+        self.dhcp_ipv4.start(route_source, host).await;
         Ok(())
     }
 
     #[cfg(feature = "proxy-packet")]
     async fn start_packet_proxy(&self) -> anyhow::Result<()> {
         let config = self.runtime_config.snapshot();
-        let has_proxy_networks = !config.peer.runtime.core.routes.proxy_networks.is_empty();
-        if config.services.proxy.should_start(has_proxy_networks) {
+        let has_proxy_networks = !config.proxy_network.is_empty();
+        let should_start_packet_proxy = (has_proxy_networks
+            || config.flags.enable_exit_node
+            || self.host_config.force_exit_node)
+            && (!config.flags.proxy_forward_by_system || config.flags.no_tun);
+        if should_start_packet_proxy {
             self.packet_proxy
                 .start()
                 .await

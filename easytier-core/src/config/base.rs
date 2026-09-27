@@ -121,6 +121,14 @@ where
         &self.data
     }
 
+    pub fn into_parts(self) -> (Parsed, Raw, Data) {
+        (self.parsed, self.raw, self.data)
+    }
+
+    pub fn parsed_mut(&mut self) -> &mut Parsed {
+        &mut self.parsed
+    }
+
     pub fn into_parsed(self) -> Parsed {
         self.parsed
     }

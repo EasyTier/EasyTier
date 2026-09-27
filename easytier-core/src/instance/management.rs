@@ -152,7 +152,7 @@ where
 
     pub fn acl_whitelist_snapshot(&self) -> AclWhitelistSnapshot {
         let config = self.runtime_config.snapshot();
-        AclWhitelistSnapshot::from(&config.services.acl)
+        AclWhitelistSnapshot::from(&**config)
     }
 
     pub fn generate_credential(

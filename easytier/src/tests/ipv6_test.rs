@@ -33,9 +33,8 @@ async fn native_peer_config_normalizes_ipv6_route() {
     let ipv6_cidr = "fd00::1/64".parse().unwrap();
     global_ctx.set_ipv6(Some(ipv6_cidr));
 
-    let config = crate::instance::config::test_core_instance_config(&global_ctx).peer;
-    let ipv6 = config.snapshot.runtime.core.routes.ipv6.unwrap();
+    let config = crate::instance::config::test_instance_config(&global_ctx);
+    let ipv6 = config.parsed().ipv6.unwrap();
 
-    assert_eq!(ipv6.address, std::net::IpAddr::V6(ipv6_cidr.address()));
-    assert_eq!(ipv6.prefix_len, ipv6_cidr.network_length());
+    assert_eq!(ipv6, ipv6_cidr);
 }

@@ -11,8 +11,8 @@ use easytier_core::peers::public_ipv6::PublicIpv6Host;
 use easytier_core::socket::{NetNamespace, SocketContext};
 use easytier_core::tunnel::effective_encryption_uses_xor;
 use easytier_core::{
-    config::{PeerId, peers::PeerRuntimeSnapshot, runtime::CoreInstanceRuntimeConfig},
-    instance::{CoreInstanceConfig, CoreInstanceHostConfig},
+    config::{PeerId, runtime::InstanceConfigStore},
+    instance::CoreInstanceHostConfig,
 };
 
 use super::{
@@ -148,45 +148,46 @@ impl GlobalCtx {
 
     pub(crate) fn new_with_runtime_config(
         config_fs: impl ConfigLoader + 'static,
-        runtime: &CoreInstanceConfig,
+        store: &InstanceConfigStore,
         host: &CoreInstanceHostConfig,
     ) -> Self {
-        let runtime = CoreInstanceRuntimeConfig {
-            services: runtime.connectivity.runtime.clone(),
-            peer: Arc::new(runtime.peer.snapshot.clone()),
-        };
+        let snapshot = store.snapshot();
+        let parsed = snapshot.parsed();
         let protocols = host.ignore_unsupported_config.then(|| {
             host.endpoint_protocols
                 .iter()
                 .map(|protocol| protocol.to_ascii_lowercase())
                 .collect()
         });
-        Self::new_inner(config_fs, Some(&runtime), protocols)
+        Self::new_inner(config_fs, Some(parsed), protocols)
     }
 
     fn new_inner(
         config_fs: impl ConfigLoader + 'static,
-        runtime: Option<&CoreInstanceRuntimeConfig>,
+        prepared: Option<&easytier_core::config::InstanceConfigParsed>,
         runtime_endpoint_protocols: Option<HashSet<String>>,
     ) -> Self {
         let id = config_fs.get_id();
         let network = config_fs.get_network_identity();
         let net_ns = NetNS::new(config_fs.get_netns());
-        let hostname = runtime
-            .and_then(|runtime| runtime.peer.runtime.core.node.hostname.clone())
+        let hostname = prepared
+            .and_then(|p| {
+                let h = &p.hostname;
+                (!h.is_empty()).then(|| h.clone())
+            })
             .unwrap_or_else(|| match config_fs.get_hostname() {
                 hostname if !hostname.is_empty() => hostname,
                 _ => gethostname::gethostname().to_string_lossy().to_string(),
             });
-        let flags = runtime
-            .map(|runtime| runtime.peer.flags.clone())
+        let flags = prepared
+            .map(|p| p.flags.clone())
             .unwrap_or_else(|| config_fs.get_flags());
-        let ipv4 = runtime
-            .map(|runtime| Self::runtime_ipv4(&runtime.peer))
-            .unwrap_or_else(|| config_fs.get_ipv4());
-        let ipv6 = runtime
-            .map(|runtime| Self::runtime_ipv6(&runtime.peer))
-            .unwrap_or_else(|| config_fs.get_ipv6());
+        let ipv4 = prepared
+            .and_then(|p| p.ipv4)
+            .or_else(|| config_fs.get_ipv4());
+        let ipv6 = prepared
+            .and_then(|p| p.ipv6)
+            .or_else(|| config_fs.get_ipv6());
         if flags.enable_encryption && effective_encryption_uses_xor(&flags.encryption_algorithm) {
             tracing::warn!("using insecure XOR because no AEAD encryption is configured");
         }
@@ -209,22 +210,6 @@ impl GlobalCtx {
             flags: ArcSwap::new(Arc::new(flags)),
             runtime_endpoint_protocols,
         }
-    }
-
-    pub(crate) fn runtime_ipv4(peer: &PeerRuntimeSnapshot) -> Option<cidr::Ipv4Inet> {
-        let prefix = peer.runtime.core.routes.ipv4.as_ref()?;
-        let IpAddr::V4(address) = prefix.address else {
-            return None;
-        };
-        cidr::Ipv4Inet::new(address, prefix.prefix_len).ok()
-    }
-
-    pub(crate) fn runtime_ipv6(peer: &PeerRuntimeSnapshot) -> Option<cidr::Ipv6Inet> {
-        let prefix = peer.runtime.core.routes.ipv6.as_ref()?;
-        let IpAddr::V6(address) = prefix.address else {
-            return None;
-        };
-        cidr::Ipv6Inet::new(address, prefix.prefix_len).ok()
     }
 
     pub fn subscribe(&self) -> EventBusSubscriber {
@@ -465,17 +450,19 @@ pub mod tests {
 
     #[test]
     fn compact_runtime_does_not_advertise_unsupported_mapped_listeners() {
+        use easytier_core::config::{runtime::InstanceConfigStore, toml::ConfigLoader as _};
+
         let config = TomlConfigLoader::default();
         config.set_mapped_listeners(Some(vec![
             "tcp://127.0.0.1:11010".parse().unwrap(),
             "quic://127.0.0.1:11011".parse().unwrap(),
         ]));
         let host = crate::instance::config::compact_runtime_core_host_config();
-        let normalized =
-            easytier_core::instance::CoreInstanceConfig::from_toml_with_host(&config, &host)
-                .unwrap();
+        let snapshot = config.snapshot().unwrap();
+        let prepared = easytier_core::instance::prepare_instance_config(snapshot, &host).unwrap();
+        let store = InstanceConfigStore::new(prepared);
 
-        let global_ctx = GlobalCtx::new_with_runtime_config(config.clone(), &normalized, &host);
+        let global_ctx = GlobalCtx::new_with_runtime_config(config.clone(), &store, &host);
 
         assert_eq!(config.get_mapped_listeners().len(), 2);
         assert_eq!(global_ctx.runtime_mapped_listeners().len(), 1);

@@ -3,7 +3,7 @@ use std::{collections::BTreeSet, net::IpAddr, sync::Arc};
 use async_trait::async_trait;
 
 use crate::{
-    config::runtime::CoreRuntimeConfigStore,
+    config::runtime::InstanceConfigStore,
     gateway::magic_dns::{MagicDnsRouteSnapshot, MagicDnsRouteSource},
     gateway::proxy::cidr_monitor::{ProxyCidrDiff, collect_proxy_cidr_diff},
     host::packet::HostPacket,
@@ -24,14 +24,14 @@ use super::packet_io::parse_ip_packet;
 /// Stable packet- and route-plane projection for platform integrations.
 pub struct CorePacketPlane {
     peer_manager: Arc<PeerManagerCore>,
-    runtime_config: CoreRuntimeConfigStore,
+    runtime_config: InstanceConfigStore,
     proxy_cidr_monitor_available: bool,
 }
 
 impl CorePacketPlane {
     pub(super) fn new(
         peer_manager: Arc<PeerManagerCore>,
-        runtime_config: CoreRuntimeConfigStore,
+        runtime_config: InstanceConfigStore,
         proxy_cidr_monitor_available: bool,
     ) -> Self {
         Self {
@@ -87,8 +87,6 @@ impl CorePacketPlane {
         let network_name = self
             .runtime_config
             .snapshot()
-            .peer
-            .runtime
             .network_identity
             .network_name
             .clone();

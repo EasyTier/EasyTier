@@ -6,7 +6,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    net::{IpAddr, Ipv4Addr},
+    net::Ipv4Addr,
     sync::{Arc, RwLock as StdRwLock},
 };
 
@@ -20,7 +20,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    config::runtime::{CoreInstanceRuntimeConfig, CoreRuntimeConfigStore},
+    config::{InstanceConfigParsed, runtime::InstanceConfigStore},
     events::{CoreEvent, CoreEventSink},
     foundation::stats::{CounterHandle, LabelSet, LabelType, MetricName, StatsManager},
     peers::{
@@ -43,6 +43,52 @@ pub struct PortalClientConfig {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PortalRuntimeConfig {
     pub clients: Vec<PortalClientConfig>,
+}
+
+impl From<crate::config::toml::VpnPortalClientConfig> for PortalClientConfig {
+    fn from(client: crate::config::toml::VpnPortalClientConfig) -> Self {
+        Self {
+            name: client.name,
+            virtual_ip: client.virtual_ip,
+            groups: client.groups,
+        }
+    }
+}
+
+impl From<&crate::config::toml::VpnPortalClientConfig> for PortalClientConfig {
+    fn from(client: &crate::config::toml::VpnPortalClientConfig) -> Self {
+        Self {
+            name: client.name.clone(),
+            virtual_ip: client.virtual_ip,
+            groups: client.groups.clone(),
+        }
+    }
+}
+
+impl From<PortalClientConfig> for crate::config::toml::VpnPortalClientConfig {
+    fn from(client: PortalClientConfig) -> Self {
+        Self {
+            name: client.name,
+            virtual_ip: client.virtual_ip,
+            groups: client.groups,
+        }
+    }
+}
+
+impl From<crate::config::toml::VpnPortalConfig> for PortalRuntimeConfig {
+    fn from(portal: crate::config::toml::VpnPortalConfig) -> Self {
+        Self {
+            clients: portal.clients.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<&crate::config::toml::VpnPortalConfig> for PortalRuntimeConfig {
+    fn from(portal: &crate::config::toml::VpnPortalConfig) -> Self {
+        Self {
+            clients: portal.clients.iter().map(Into::into).collect(),
+        }
+    }
 }
 
 /// One authenticated protocol session produced by a native portal adapter. A
@@ -192,7 +238,7 @@ struct PortalRuntime {
 pub struct PortalModule {
     operation: Mutex<()>,
     peer_manager: Arc<PeerManagerCore>,
-    runtime_config: CoreRuntimeConfigStore,
+    runtime_config: InstanceConfigStore,
     config: Option<Arc<StdRwLock<PortalRuntimeConfig>>>,
     host: Option<Arc<dyn PortalHost>>,
     events: Arc<dyn CoreEventSink>,
@@ -205,7 +251,7 @@ pub struct PortalModule {
 impl PortalModule {
     pub fn new(
         peer_manager: Arc<PeerManagerCore>,
-        runtime_config: CoreRuntimeConfigStore,
+        runtime_config: InstanceConfigStore,
         config: Option<PortalRuntimeConfig>,
         host: Option<Arc<dyn PortalHost>>,
         events: Arc<dyn CoreEventSink>,
@@ -215,8 +261,6 @@ impl PortalModule {
         }
         let network_name = runtime_config
             .snapshot()
-            .peer
-            .runtime
             .network_identity
             .network_name
             .clone();
@@ -248,7 +292,7 @@ impl PortalModule {
     #[cfg(feature = "vpn-portal")]
     pub(crate) fn validate_runtime_config(
         &self,
-        runtime_config: &CoreInstanceRuntimeConfig,
+        runtime_config: &InstanceConfigParsed,
     ) -> anyhow::Result<()> {
         let Some(config) = self.config.as_ref() else {
             return Ok(());
@@ -267,7 +311,7 @@ impl PortalModule {
     pub async fn update_clients(
         &self,
         clients: Vec<PortalClientConfig>,
-        runtime: &CoreInstanceRuntimeConfig,
+        runtime: &InstanceConfigParsed,
     ) -> anyhow::Result<Vec<PortalClientConfig>> {
         let _operation = self.operation.lock().await;
         let Some(config) = self.config.as_ref() else {
@@ -307,8 +351,6 @@ impl PortalModule {
             let network_name = self
                 .runtime_config
                 .snapshot()
-                .peer
-                .runtime
                 .network_identity
                 .network_name
                 .clone();
@@ -417,7 +459,7 @@ impl PortalModule {
         mut listener: PortalListener,
         listener_url: url::Url,
         peer_manager: Arc<PeerManagerCore>,
-        runtime_config: CoreRuntimeConfigStore,
+        runtime_config: InstanceConfigStore,
         config: Arc<StdRwLock<PortalRuntimeConfig>>,
         statuses: Arc<RwLock<BTreeMap<String, ClientStatus>>>,
         session_locks: Arc<RwLock<BTreeMap<String, Arc<Mutex<()>>>>>,
@@ -469,7 +511,7 @@ impl PortalModule {
         mut session: PortalSession,
         listener_url: url::Url,
         peer_manager: Arc<PeerManagerCore>,
-        runtime_config: CoreRuntimeConfigStore,
+        runtime_config: InstanceConfigStore,
         config: Arc<StdRwLock<PortalRuntimeConfig>>,
         statuses: Arc<RwLock<BTreeMap<String, ClientStatus>>>,
         session_locks: Arc<RwLock<BTreeMap<String, Arc<Mutex<()>>>>>,
@@ -787,9 +829,9 @@ impl PortalModule {
         for route in self.peer_manager.list_route_snapshots().await {
             allowed.extend(route.proxy_cidrs);
         }
-        for proxy in &snapshot.peer.runtime.core.routes.proxy_networks {
-            let mapped = proxy.mapped.as_ref().unwrap_or(&proxy.real);
-            allowed.insert(format!("{}/{}", mapped.address, mapped.prefix_len));
+        for proxy in &snapshot.proxy_network {
+            let mapped = proxy.mapped_cidr.as_ref().unwrap_or(&proxy.cidr);
+            allowed.insert(mapped.to_string());
         }
         allowed.into_iter().collect()
     }
@@ -801,16 +843,15 @@ impl PortalModule {
 /// instance recreation.
 fn validate_clients(
     config: &PortalRuntimeConfig,
-    runtime_config: &CoreInstanceRuntimeConfig,
+    runtime_config: &InstanceConfigParsed,
 ) -> anyhow::Result<()> {
     if config.clients.len() > MAX_VPN_PORTAL_CLIENTS {
         anyhow::bail!("VPN portal supports at most {MAX_VPN_PORTAL_CLIENTS} clients");
     }
     validate_runtime_compatibility(config, runtime_config)?;
     let snapshot = runtime_config;
-    let declared_groups = snapshot
-        .peer
-        .acl_group_declarations
+    let (declarations, _) = crate::peers::context::peer_acl_groups(snapshot.acl.as_ref());
+    let declared_groups = declarations
         .iter()
         .map(|group| group.group_name.as_str())
         .collect::<BTreeSet<_>>();
@@ -838,12 +879,10 @@ fn validate_clients(
 
 fn validate_runtime_compatibility(
     config: &PortalRuntimeConfig,
-    runtime_config: &CoreInstanceRuntimeConfig,
+    runtime_config: &InstanceConfigParsed,
 ) -> anyhow::Result<()> {
     let snapshot = runtime_config;
     if snapshot
-        .peer
-        .runtime
         .network_identity
         .network_secret
         .as_deref()
@@ -851,17 +890,7 @@ fn validate_runtime_compatibility(
     {
         anyhow::bail!("VPN portal requires an admin node with a non-empty network secret");
     }
-    let host_address = snapshot
-        .peer
-        .runtime
-        .core
-        .routes
-        .ipv4
-        .as_ref()
-        .and_then(|prefix| match prefix.address {
-            IpAddr::V4(address) => Some(address),
-            IpAddr::V6(_) => None,
-        });
+    let host_address = snapshot.ipv4.as_ref().map(|prefix| prefix.address());
     for client in &config.clients {
         let address = client.virtual_ip.address();
         let network = client.virtual_ip.network();
@@ -919,14 +948,11 @@ fn has_ipv4_source(payload: &[u8], expected: Ipv4Addr) -> bool {
 mod tests {
     use super::*;
     use crate::{
-        config::{
-            IpPrefix, NetworkIdentity,
-            peers::{PeerGroupIdentity, PeerRuntimeSnapshot},
-            runtime::CoreRuntimeConfig,
-        },
+        config::{InstanceConfig, runtime::InstanceConfigStore},
         peers::peer_manager::PeerManagerCore,
     };
     use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+    use std::net::IpAddr;
     use std::{
         future::pending,
         sync::{
@@ -1115,19 +1141,31 @@ mod tests {
         }
     }
 
-    fn runtime_config() -> CoreRuntimeConfigStore {
-        let mut peer = PeerRuntimeSnapshot::default();
-        peer.runtime.network_identity =
-            NetworkIdentity::new("portal-test".to_owned(), "shared-secret".to_owned());
-        peer.runtime.core.routes.ipv4 = Some(IpPrefix {
-            address: IpAddr::V4(Ipv4Addr::new(10, 82, 0, 1)),
-            prefix_len: 24,
+    fn runtime_config() -> InstanceConfigStore {
+        let mut acl = easytier_proto::acl::Acl::default();
+        acl.acl_v1 = Some(easytier_proto::acl::AclV1 {
+            group: Some(easytier_proto::acl::GroupInfo {
+                declares: vec![easytier_proto::acl::GroupIdentity {
+                    group_name: "ops".to_owned(),
+                    group_secret: "ops-secret".to_owned(),
+                }],
+                members: Vec::new(),
+            }),
+            ..Default::default()
         });
-        peer.acl_group_declarations = vec![PeerGroupIdentity {
-            group_name: "ops".to_owned(),
-            group_secret: "ops-secret".to_owned(),
-        }];
-        CoreRuntimeConfigStore::new(CoreRuntimeConfig::default(), Arc::new(peer))
+        let parsed = crate::config::InstanceConfigParsed {
+            instance_id: uuid::Uuid::from_u128(1),
+            network_identity: crate::config::toml::NetworkIdentity {
+                network_name: "portal-test".to_owned(),
+                network_secret: Some("shared-secret".to_owned()),
+                network_secret_digest: None,
+            },
+            ipv4: Some(Ipv4Inet::new(Ipv4Addr::new(10, 82, 0, 1), 24).unwrap()),
+            acl: Some(acl),
+            ..Default::default()
+        };
+        let raw = parsed.generate_raw();
+        InstanceConfigStore::new(InstanceConfig::new(parsed, raw, ()))
     }
 
     fn client(name: &str, virtual_ip: Ipv4Addr, groups: &[&str]) -> PortalClientConfig {
@@ -1232,33 +1270,29 @@ mod tests {
         stats.stop_cleanup_task().await;
     }
 
-    fn network_runtime() -> (Arc<PeerManagerCore>, CoreRuntimeConfigStore) {
+    fn network_runtime() -> (Arc<PeerManagerCore>, InstanceConfigStore) {
         network_runtime_with_secure_mode(false)
     }
 
-    fn secure_network_runtime() -> (Arc<PeerManagerCore>, CoreRuntimeConfigStore) {
+    fn secure_network_runtime() -> (Arc<PeerManagerCore>, InstanceConfigStore) {
         network_runtime_with_secure_mode(true)
     }
 
     fn network_runtime_with_secure_mode(
         secure_mode: bool,
-    ) -> (Arc<PeerManagerCore>, CoreRuntimeConfigStore) {
+    ) -> (Arc<PeerManagerCore>, InstanceConfigStore) {
         let store = runtime_config();
         if secure_mode {
             let private = StaticSecret::from([42; 32]);
             let public = PublicKey::from(&private);
-            store.update_peer_with(|peer| {
-                peer.runtime.secure_mode = Some(crate::proto::common::SecureModeConfig {
-                    enabled: true,
-                    local_private_key: Some(BASE64_STANDARD.encode(private.to_bytes())),
-                    local_public_key: Some(BASE64_STANDARD.encode(public.as_bytes())),
-                });
+            let mut updated = (*store.snapshot()).clone();
+            updated.parsed_mut().secure_mode = Some(crate::proto::common::SecureModeConfig {
+                enabled: true,
+                local_private_key: Some(BASE64_STANDARD.encode(private.to_bytes())),
+                local_public_key: Some(BASE64_STANDARD.encode(public.as_bytes())),
             });
+            store.replace(updated);
         }
-        let snapshot = store.snapshot();
-        let runtime = snapshot.peer.runtime.clone();
-        let mut portable = crate::peers::peer_manager::PortablePeerManagerConfig::new(runtime);
-        portable.snapshot.acl_group_declarations = snapshot.peer.acl_group_declarations.clone();
         let (packet_sender, _packet_receiver) = crate::host::packet::host_packet_channel();
         let public_ipv6_runtime = crate::peers::public_ipv6::CorePublicIpv6Runtime::new(
             store.clone(),
@@ -1267,8 +1301,6 @@ mod tests {
         );
         let peer = Arc::new(
             PeerManagerCore::new(
-                portable,
-                Vec::new(),
                 store.clone(),
                 Arc::new(()),
                 packet_sender,
@@ -1276,6 +1308,7 @@ mod tests {
                 Arc::new(()),
                 None,
                 Arc::new(()),
+                crate::config::peers::HostRoutingPolicy::default(),
             )
             .unwrap(),
         );
@@ -1323,9 +1356,9 @@ mod tests {
     #[test]
     fn portal_runtime_rejects_credential_node() {
         let runtime_config = runtime_config();
-        runtime_config.update_peer_with(|peer| {
-            peer.runtime.network_identity.network_secret = None;
-        });
+        let mut updated = (*runtime_config.snapshot()).clone();
+        updated.parsed_mut().network_identity.network_secret = None;
+        runtime_config.replace(updated);
         let config = PortalRuntimeConfig {
             clients: vec![client("alice", Ipv4Addr::new(10, 82, 0, 2), &["ops"])],
         };
@@ -1340,8 +1373,10 @@ mod tests {
     #[test]
     fn portal_client_cidr_is_independent_of_host_addressing() {
         let runtime_config = runtime_config();
-        runtime_config.update_peer_with(|peer| peer.runtime.core.routes.ipv4 = None);
-        runtime_config.update_services(|services| services.dhcp_ipv4 = true);
+        let mut updated = (*runtime_config.snapshot()).clone();
+        updated.parsed_mut().ipv4 = None;
+        updated.parsed_mut().dhcp = true;
+        runtime_config.replace(updated);
         let config = PortalRuntimeConfig {
             clients: vec![PortalClientConfig {
                 name: "alice".to_owned(),
@@ -1980,7 +2015,7 @@ mod tests {
     ) -> (
         Arc<PortalModule>,
         Arc<RecordingPortalHost>,
-        CoreRuntimeConfigStore,
+        InstanceConfigStore,
     ) {
         let (peer_manager, runtime_config) = network_runtime();
         let host = Arc::new(RecordingPortalHost::default());

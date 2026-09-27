@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     config::peers::PublicIpv6ProviderConfig,
-    config::runtime::CoreRuntimeConfigStore,
+    config::runtime::InstanceConfigStore,
     peers::public_ipv6::{
         CorePublicIpv6Runtime, PublicIpv6ProviderResolution, resolve_public_ipv6_provider,
     },
@@ -114,7 +114,7 @@ struct PublicIpv6ProviderTask {
 
 pub struct PublicIpv6ProviderService {
     platform: Arc<dyn PublicIpv6ProviderPlatform>,
-    runtime_config: CoreRuntimeConfigStore,
+    runtime_config: InstanceConfigStore,
     runtime: Arc<CorePublicIpv6Runtime>,
     reconcile_interval: Duration,
     reconcile: Mutex<()>,
@@ -126,14 +126,14 @@ pub struct PublicIpv6ProviderService {
 #[cfg(feature = "public-ipv6-provider")]
 pub(crate) struct PublicIpv6ProviderRuntime {
     service: Option<Arc<PublicIpv6ProviderService>>,
-    runtime_config: CoreRuntimeConfigStore,
+    runtime_config: InstanceConfigStore,
 }
 
 #[cfg(feature = "public-ipv6-provider")]
 impl PublicIpv6ProviderRuntime {
     pub(crate) fn new(
         platform: Option<Arc<dyn PublicIpv6ProviderPlatform>>,
-        runtime_config: CoreRuntimeConfigStore,
+        runtime_config: InstanceConfigStore,
         runtime: Arc<CorePublicIpv6Runtime>,
     ) -> Self {
         let service = platform.map(|platform| {
@@ -146,7 +146,7 @@ impl PublicIpv6ProviderRuntime {
     }
 
     pub(crate) async fn validate_before_start(&self) -> anyhow::Result<()> {
-        let config = self.runtime_config.snapshot().services.public_ipv6_provider;
+        let config = PublicIpv6ProviderConfig::from(&*self.runtime_config.snapshot());
         config.validate().map_err(anyhow::Error::new)?;
         if config.provider_enabled && self.service.is_none() {
             anyhow::bail!("public IPv6 provider is enabled but no host adapter was provided");
@@ -182,7 +182,7 @@ impl PublicIpv6ProviderRuntime {
 impl PublicIpv6ProviderService {
     pub fn new(
         platform: Arc<dyn PublicIpv6ProviderPlatform>,
-        runtime_config: CoreRuntimeConfigStore,
+        runtime_config: InstanceConfigStore,
         runtime: Arc<CorePublicIpv6Runtime>,
     ) -> Arc<Self> {
         Self::new_with_interval(
@@ -195,7 +195,7 @@ impl PublicIpv6ProviderService {
 
     fn new_with_interval(
         platform: Arc<dyn PublicIpv6ProviderPlatform>,
-        runtime_config: CoreRuntimeConfigStore,
+        runtime_config: InstanceConfigStore,
         runtime: Arc<CorePublicIpv6Runtime>,
         reconcile_interval: Duration,
     ) -> Arc<Self> {
@@ -217,7 +217,7 @@ impl PublicIpv6ProviderService {
             return false;
         }
         for attempt in 0..MAX_CONFIG_RETRIES {
-            let config = self.runtime_config.snapshot().services.public_ipv6_provider;
+            let config = PublicIpv6ProviderConfig::from(&*self.runtime_config.snapshot());
             let observation = if config.provider_enabled && config.provider_supported {
                 match self.platform.inspect(config) {
                     Ok(observation) => Ok(observation),
@@ -236,7 +236,7 @@ impl PublicIpv6ProviderService {
                 ndp_target,
             );
 
-            if self.runtime_config.snapshot().services.public_ipv6_provider != config {
+            if PublicIpv6ProviderConfig::from(&*self.runtime_config.snapshot()) != config {
                 tracing::debug!(
                     attempt = attempt + 1,
                     max_retries = MAX_CONFIG_RETRIES,
@@ -274,7 +274,7 @@ impl PublicIpv6ProviderService {
 
     pub async fn start(self: &Arc<Self>) {
         let mut task = self.task.lock().await;
-        let config = self.runtime_config.snapshot().services.public_ipv6_provider;
+        let config = PublicIpv6ProviderConfig::from(&*self.runtime_config.snapshot());
         if self.closing.load(Ordering::Acquire) || task.is_some() || !config.should_run_reconcile()
         {
             return;
@@ -376,10 +376,10 @@ mod tests {
 
     use super::*;
     use crate::{
-        config::peers::PeerRuntimeSnapshot,
-        config::runtime::{CoreRuntimeConfig, CoreRuntimeConfigStore},
+        config::{InstanceConfig, InstanceConfigParsed, runtime::InstanceConfigStore},
         peers::context::PeerPublicIpv6State,
     };
+    use optionize::Optionizable;
 
     struct RecordingHost {
         observation: StdMutex<Result<PublicIpv6PlatformObservation, PublicIpv6PlatformError>>,
@@ -431,17 +431,23 @@ mod tests {
         }
     }
 
-    fn runtime_config(config: PublicIpv6ProviderConfig) -> CoreRuntimeConfigStore {
-        let services = CoreRuntimeConfig {
-            public_ipv6_provider: config,
+    fn test_instance_config(config: PublicIpv6ProviderConfig) -> InstanceConfig {
+        let parsed = InstanceConfigParsed {
+            ipv6_public_addr_provider: config.provider_enabled,
+            ipv6_public_addr_prefix: config.configured_prefix,
             ..Default::default()
         };
-        CoreRuntimeConfigStore::new(services, Arc::new(PeerRuntimeSnapshot::default()))
+        let raw = parsed.clone().downgrade();
+        InstanceConfig::new(parsed, raw, ())
+    }
+
+    fn runtime_config(config: PublicIpv6ProviderConfig) -> InstanceConfigStore {
+        InstanceConfigStore::new(test_instance_config(config))
     }
 
     fn runtime(
         config: PublicIpv6ProviderConfig,
-    ) -> (CoreRuntimeConfigStore, Arc<CorePublicIpv6Runtime>) {
+    ) -> (InstanceConfigStore, Arc<CorePublicIpv6Runtime>) {
         let config = runtime_config(config);
         let runtime = CorePublicIpv6Runtime::new(config.clone(), Arc::new(()), Arc::new(()));
         (config, runtime)
@@ -471,10 +477,10 @@ mod tests {
         service.start().await;
         assert_eq!(host.inspect_calls.load(Ordering::Acquire), 0);
 
-        runtime_config.update_services(|services| {
-            services.public_ipv6_provider =
-                provider_config(true, Some("2001:db8::/48".parse().unwrap()));
-        });
+        runtime_config.replace(test_instance_config(provider_config(
+            true,
+            Some("2001:db8::/48".parse().unwrap()),
+        )));
         service.start().await;
         wait_for_calls(&host.inspect_calls, 1).await;
         host.change.notify_one();
@@ -547,7 +553,7 @@ mod tests {
     }
 
     struct ReconfiguringHost {
-        runtime_config: CoreRuntimeConfigStore,
+        runtime_config: InstanceConfigStore,
         replacement: PublicIpv6ProviderConfig,
         inspect_calls: AtomicUsize,
     }
@@ -559,9 +565,8 @@ mod tests {
             _config: PublicIpv6ProviderConfig,
         ) -> Result<PublicIpv6PlatformObservation, PublicIpv6PlatformError> {
             if self.inspect_calls.fetch_add(1, Ordering::AcqRel) == 0 {
-                self.runtime_config.update_services(|services| {
-                    services.public_ipv6_provider = self.replacement;
-                });
+                self.runtime_config
+                    .replace(test_instance_config(self.replacement));
             }
             Ok(PublicIpv6PlatformObservation::default())
         }

@@ -13,7 +13,7 @@ use tokio::{sync::Mutex, task::JoinSet};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    config::runtime::CoreRuntimeConfigStore, connectivity::direct::DirectConnectorHost,
+    config::runtime::InstanceConfigStore, connectivity::direct::DirectConnectorHost,
     connectivity::hole_punch::tcp::TcpHolePunchHost, listener::RunningListenerRegistry,
     peers::peer_manager::PeerManagerCore, process_runtime::ProtectedTcpPortRegistry,
     socket::SocketContext,
@@ -162,7 +162,7 @@ where
         host: Arc<H>,
         protected_tcp_ports: Arc<ProtectedTcpPortRegistry>,
         running_listeners: Arc<RunningListenerRegistry>,
-        runtime_config: CoreRuntimeConfigStore,
+        runtime_config: InstanceConfigStore,
         cidr_table: Arc<ProxyCidrTable>,
         socket_context: SocketContext,
     ) -> Arc<Self> {
@@ -174,6 +174,7 @@ where
                 running_listeners,
                 runtime_config,
                 "TCP",
+                false,
             ),
             connector: TcpSocketProxyConnector::new(host).with_socket_context(socket_context),
             cidr_table,
