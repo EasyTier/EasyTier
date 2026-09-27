@@ -190,9 +190,10 @@ network_secret = "secret"
         assert_eq!(
             instance
                 .get_core_instance()
-                .toml_config()
-                .unwrap()
-                .get_hostname(),
+                .config_store()
+                .snapshot()
+                .parsed()
+                .hostname,
             "after-patch"
         );
 

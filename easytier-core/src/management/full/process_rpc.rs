@@ -19,7 +19,7 @@ use easytier_proto::{
 
 use crate::{
     config::{
-        api::network_config_from_toml,
+        api::network_config_from_raw,
         api_input::NetworkConfigExt as _,
         toml::{ConfigLoader as _, ConfigSource, TomlConfig},
     },
@@ -246,10 +246,12 @@ where
                 .await?;
             config.set_network_config_source(requested_source.or(existing_source));
             replacing = true;
-            restore_instance = self
-                .instances
-                .config(instance_id)
-                .map(|config| (config, control.clone()));
+            restore_instance = self.instances.config(instance_id).map(|config| {
+                (
+                    TomlConfig::from_instance_config((*config).clone()),
+                    control.clone(),
+                )
+            });
             control
         } else if let Some(config_dir) = self.instances.config_dir() {
             config.set_network_config_source(requested_source);
@@ -716,12 +718,11 @@ where
                 anyhow::anyhow!("configuration for instance {instance_id} is read-only").into(),
             );
         }
+        let snapshot = self.management.instances.config(instance_id);
         Ok(GetNetworkInstanceConfigResponse {
-            config: self
-                .management
-                .instances
-                .config(instance_id)
-                .map(|config| network_config_from_toml(&config)),
+            config: snapshot
+                .as_ref()
+                .map(|config| network_config_from_raw(config.raw())),
             source: config_source_to_rpc(
                 self.management
                     .instances
@@ -741,18 +742,22 @@ where
             let Some(instance) = self.management.instances.instance(instance_id) else {
                 continue;
             };
-            let Some(config) = instance.toml_config() else {
-                continue;
-            };
             let Some(control) = self.management.instances.config_control(instance_id) else {
                 continue;
             };
+            let snapshot = instance.config_store().snapshot();
+            let source = snapshot
+                .parsed()
+                .source
+                .as_ref()
+                .map(|s| s.source)
+                .unwrap_or(ConfigSource::User);
             metas.push(NetworkMeta {
                 inst_id: Some(instance_id.into()),
-                network_name: config.get_network_identity().network_name,
+                network_name: snapshot.parsed().network_identity.network_name.clone(),
                 config_permission: control.permission.into(),
                 instance_name: instance.instance_name().to_owned(),
-                source: config_source_to_rpc(config.get_network_config_source()),
+                source: config_source_to_rpc(source),
             });
         }
         Ok(ListNetworkInstanceMetaResponse { metas })

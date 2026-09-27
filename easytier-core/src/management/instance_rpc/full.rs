@@ -26,7 +26,6 @@ use easytier_proto::{
 };
 
 use crate::{
-    config::toml::ConfigLoader as _,
     gateway::vpn_portal::{PortalClientState, PortalInfoSnapshot},
     instance::{
         CoreInstance, CoreInstanceHost,
@@ -126,14 +125,14 @@ where
         _: BaseController,
         request: ListMappedListenerRequest,
     ) -> rpc_types::error::Result<ListMappedListenerResponse> {
-        let config = self
-            .instance(request.instance.as_ref())?
-            .toml_config()
-            .ok_or_else(|| anyhow::anyhow!("shared TOML configuration is not available"))?;
+        let instance = self.instance(request.instance.as_ref())?;
+        let snapshot = instance.config_store().snapshot();
         Ok(ListMappedListenerResponse {
-            mappedlisteners: config
-                .get_mapped_listeners()
-                .into_iter()
+            mappedlisteners: snapshot
+                .parsed()
+                .mapped_listeners
+                .iter()
+                .cloned()
                 .map(|url| MappedListener {
                     url: Some(url.into()),
                 })
@@ -252,14 +251,14 @@ where
         _: BaseController,
         request: ListPortForwardRequest,
     ) -> rpc_types::error::Result<ListPortForwardResponse> {
-        let config = self
-            .instance(request.instance.as_ref())?
-            .toml_config()
-            .ok_or_else(|| anyhow::anyhow!("shared TOML configuration is not available"))?;
+        let instance = self.instance(request.instance.as_ref())?;
+        let snapshot = instance.config_store().snapshot();
         Ok(ListPortForwardResponse {
-            cfgs: config
-                .get_port_forwards()
-                .into_iter()
+            cfgs: snapshot
+                .parsed()
+                .port_forward
+                .iter()
+                .cloned()
                 .map(PortForwardConfigPb::from)
                 .collect(),
         })

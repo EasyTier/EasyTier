@@ -14,14 +14,13 @@ use std::{
 use dashmap::DashMap;
 use uuid::Uuid;
 
+#[cfg(feature = "web-client")]
+use crate::config::InstanceConfig;
 use crate::config::toml::TomlConfig;
 use crate::instance::{CoreInstance, CoreInstanceHost, CoreInstanceState};
 use crate::process_runtime::CoreProcessRuntime;
 #[cfg(feature = "web-client")]
-use crate::{
-    config::toml::{ConfigLoader as _, ConfigSource},
-    management::network_instance_running_info,
-};
+use crate::{config::toml::ConfigSource, management::network_instance_running_info};
 #[cfg(feature = "web-client")]
 use easytier_proto::api::manage::NetworkInstanceRunningInfo;
 
@@ -501,15 +500,15 @@ where
     }
 
     #[cfg(feature = "web-client")]
-    pub fn config(&self, instance_id: Uuid) -> Option<TomlConfig> {
+    pub fn config(&self, instance_id: Uuid) -> Option<Arc<InstanceConfig>> {
         self.get(instance_id)
-            .and_then(|instance| instance.toml_config())
+            .map(|instance| instance.config_store().snapshot())
     }
 
     #[cfg(feature = "web-client")]
     pub fn config_source(&self, instance_id: Uuid) -> Option<ConfigSource> {
         self.config(instance_id)
-            .map(|config| config.get_network_config_source())
+            .and_then(|config| config.parsed().source.as_ref().map(|s| s.source))
     }
 
     #[cfg(feature = "web-client")]
@@ -638,6 +637,8 @@ mod tests {
     };
 
     use super::*;
+    use crate::config::toml::ConfigLoader as _;
+
     struct TestFactory {
         drops: Arc<AtomicUsize>,
     }

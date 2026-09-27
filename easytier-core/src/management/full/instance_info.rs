@@ -3,10 +3,7 @@ use easytier_proto::api::{
     manage::{MyNodeInfo, NetworkInstanceRunningInfo},
 };
 
-use crate::{
-    config::toml::ConfigLoader as _,
-    instance::{CoreInstance, CoreInstanceHost, CoreInstanceState},
-};
+use crate::instance::{CoreInstance, CoreInstanceHost, CoreInstanceState};
 
 /// Builds the process-level running snapshot directly from one core Instance.
 #[allow(deprecated)]
@@ -52,9 +49,12 @@ where
         .collect::<Vec<_>>();
     let peer_route_pairs = list_peer_route_pair(peers.clone(), routes.clone());
     let dev_name = instance
-        .toml_config()
-        .map(|config| config.get_flags().dev_name)
-        .unwrap_or_default();
+        .config_store()
+        .snapshot()
+        .parsed()
+        .flags
+        .dev_name
+        .clone();
 
     Ok(NetworkInstanceRunningInfo {
         dev_name,

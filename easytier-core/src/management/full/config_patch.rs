@@ -12,6 +12,7 @@ use crate::{
     config::{
         InstanceConfig,
         peers::{AclRuleConfig, PublicIpv6ProviderConfig},
+        serialize_raw_to_toml,
         toml::{ConfigLoader as _, TomlConfig},
     },
     instance::{CoreInstance, CoreInstanceHost, CoreInstanceState, prepare_instance_config},
@@ -20,7 +21,8 @@ use crate::{
 
 #[async_trait::async_trait]
 pub trait ConfigPatchPersistence: Send + Sync {
-    async fn persist(&self, instance_id: uuid::Uuid, config: &TomlConfig) -> anyhow::Result<()>;
+    async fn persist(&self, instance_id: uuid::Uuid, config: &InstanceConfig)
+    -> anyhow::Result<()>;
 }
 
 pub async fn apply_config_patch<H>(
@@ -36,10 +38,9 @@ where
         anyhow::bail!("instance is not ready; config patch rejected");
     }
 
-    let config = instance
-        .toml_config()
-        .ok_or_else(|| anyhow::anyhow!("shared TOML configuration is not available"))?;
-    let candidate = config.detached_snapshot();
+    let initial_snapshot = instance.config_store().snapshot();
+    let mut last_accepted: Arc<InstanceConfig> = initial_snapshot;
+    let candidate = TomlConfig::from_instance_config((*last_accepted).clone());
     let parsed_prefix =
         parse_ipv6_public_addr_prefix_patch(patch.ipv6_public_addr_prefix.as_deref())?;
     // Take the credential set out first so the host-facing copy below never
@@ -52,32 +53,66 @@ where
     // sub-patches remain applied if a later sub-patch fails.
     let patch_result: anyhow::Result<(bool, bool)> = async {
         let result = patch_port_forwards(&candidate, patch.port_forwards);
-        validate_persist_and_commit_candidate(instance, &config, &candidate, persistence).await?;
+        validate_persist_and_commit_candidate(
+            instance,
+            &mut last_accepted,
+            &candidate,
+            persistence,
+        )
+        .await?;
         result?;
 
         let result = patch_acl(&candidate, patch.acl);
-        validate_persist_and_commit_candidate(instance, &config, &candidate, persistence).await?;
+        validate_persist_and_commit_candidate(
+            instance,
+            &mut last_accepted,
+            &candidate,
+            persistence,
+        )
+        .await?;
         result?;
 
         let result = patch_proxy_networks(&candidate, patch.proxy_networks);
-        validate_persist_and_commit_candidate(instance, &config, &candidate, persistence).await?;
+        validate_persist_and_commit_candidate(
+            instance,
+            &mut last_accepted,
+            &candidate,
+            persistence,
+        )
+        .await?;
         result?;
 
         let result = patch_routes(&candidate, patch.routes);
-        validate_persist_and_commit_candidate(instance, &config, &candidate, persistence).await?;
+        validate_persist_and_commit_candidate(
+            instance,
+            &mut last_accepted,
+            &candidate,
+            persistence,
+        )
+        .await?;
         result?;
 
         let result = patch_exit_nodes_config(&candidate, patch.exit_nodes);
-        let prepared =
-            validate_persist_and_commit_candidate(instance, &config, &candidate, persistence)
-                .await?;
+        let prepared = validate_persist_and_commit_candidate(
+            instance,
+            &mut last_accepted,
+            &candidate,
+            persistence,
+        )
+        .await?;
         result?;
         instance
             .update_exit_nodes(prepared.parsed().exit_nodes.clone())
             .await;
 
         let result = patch_mapped_listeners(&candidate, patch.mapped_listeners);
-        validate_persist_and_commit_candidate(instance, &config, &candidate, persistence).await?;
+        validate_persist_and_commit_candidate(
+            instance,
+            &mut last_accepted,
+            &candidate,
+            persistence,
+        )
+        .await?;
         result?;
 
         patch_connectors(instance, patch.connectors)?;
@@ -115,7 +150,7 @@ where
         // Runs last so client validation sees the fully patched candidate,
         // including routes and the node IPv4 set earlier in this request.
         if !patch.vpn_portal_clients.is_empty() {
-            let previous = config.detached_snapshot();
+            let previous = last_accepted.clone();
             apply_vpn_portal_client_patches(&candidate, patch.vpn_portal_clients)?;
             // Deep-validate and durably persist before hot-applying. A failed
             // write leaves the live Portal untouched. If the host rejects the
@@ -123,7 +158,16 @@ where
             // returning so a later patch cannot overwrite from stale shared
             // state and a restart cannot apply a rejected client set.
             let prepared = validate_candidate(instance, &candidate)?;
-            persist_candidate_if_changed(instance, &config, &candidate, persistence).await?;
+            let changed = persist_candidate_if_changed(
+                instance,
+                last_accepted.as_ref(),
+                &prepared,
+                persistence,
+            )
+            .await?;
+            if changed {
+                last_accepted = Arc::new(prepared.clone());
+            }
             #[cfg(feature = "vpn-portal")]
             {
                 let portal = prepared
@@ -138,6 +182,7 @@ where
                     .await
                 {
                     if let Some(persistence) = persistence
+                        && changed
                         && let Err(rollback_error) =
                             persistence.persist(instance.instance_id(), &previous).await
                     {
@@ -146,6 +191,7 @@ where
                              {rollback_error:#}"
                         )));
                     }
+                    last_accepted = previous;
                     return Err(error);
                 }
             }
@@ -153,7 +199,6 @@ where
             {
                 let _ = prepared;
             }
-            config.replace_from_snapshot(&candidate);
         }
 
         if let Some(managed) = &managed_credentials {
@@ -190,29 +235,33 @@ where
                 .validate_managed_credentials(&entries)
                 .map_err(anyhow::Error::msg)?;
             candidate.set_managed_credentials(entries);
-            validate_candidate(instance, &candidate)?;
+            let prepared = validate_candidate(instance, &candidate)?;
             // When durable storage is configured, persist before installing
             // secret authority so a successful replacement survives restart.
             if let Some(persistence) = persistence {
                 persistence
-                    .persist(instance.instance_id(), &candidate)
+                    .persist(instance.instance_id(), &prepared)
                     .await?;
             }
-            config.replace_from_snapshot(&candidate);
+            last_accepted = Arc::new(prepared);
             managed_credentials_changed =
                 CredentialManager::install_managed_credentials(replacement);
         } else {
-            validate_persist_and_commit_candidate(instance, &config, &candidate, persistence)
-                .await?;
+            validate_persist_and_commit_candidate(
+                instance,
+                &mut last_accepted,
+                &candidate,
+                persistence,
+            )
+            .await?;
         }
         let _prepared = validate_candidate(instance, &candidate)?;
         Ok((provider_config_changed, managed_credentials_changed))
     }
     .await;
 
-    let prepared = validate_candidate(instance, &config)?;
     instance
-        .update_runtime_config_under_operation(prepared)
+        .update_runtime_config_under_operation((*last_accepted).clone())
         .await?;
     let (provider_config_changed, managed_credentials_changed) = patch_result?;
     if patch_for_host != InstanceConfigPatch::default() {
@@ -259,7 +308,7 @@ where
 
 async fn validate_persist_and_commit_candidate<H>(
     instance: &CoreInstance<H>,
-    shared: &TomlConfig,
+    last_accepted: &mut Arc<InstanceConfig>,
     candidate: &TomlConfig,
     persistence: Option<&dyn ConfigPatchPersistence>,
 ) -> anyhow::Result<InstanceConfig>
@@ -267,27 +316,33 @@ where
     H: CoreInstanceHost,
 {
     let prepared = validate_candidate(instance, candidate)?;
-    if persist_candidate_if_changed(instance, shared, candidate, persistence).await? {
-        shared.replace_from_snapshot(candidate);
+    if persist_candidate_if_changed(instance, last_accepted.as_ref(), &prepared, persistence)
+        .await?
+    {
+        *last_accepted = Arc::new(prepared.clone());
     }
     Ok(prepared)
 }
 
 async fn persist_candidate_if_changed<H>(
     instance: &CoreInstance<H>,
-    shared: &TomlConfig,
-    candidate: &TomlConfig,
+    last_accepted: &InstanceConfig,
+    prepared: &InstanceConfig,
     persistence: Option<&dyn ConfigPatchPersistence>,
 ) -> anyhow::Result<bool>
 where
     H: CoreInstanceHost,
 {
-    if shared.dump() == candidate.dump() {
+    let last_toml = serialize_raw_to_toml(last_accepted.raw())
+        .map_err(|e| anyhow::anyhow!("failed to serialize config: {e}"))?;
+    let candidate_toml = serialize_raw_to_toml(prepared.raw())
+        .map_err(|e| anyhow::anyhow!("failed to serialize config: {e}"))?;
+    if last_toml == candidate_toml {
         return Ok(false);
     }
     if let Some(persistence) = persistence {
         persistence
-            .persist(instance.instance_id(), candidate)
+            .persist(instance.instance_id(), prepared)
             .await?;
     }
     Ok(true)

@@ -169,7 +169,7 @@ impl ManagedConfigServerClientHooks {
         let network_name = ffi_context()
             .manager
             .config(instance_id)
-            .map(|config| config.get_network_identity().network_name)
+            .map(|config| config.parsed().network_identity.network_name.clone())
             .unwrap_or_default();
         let event_json = serde_json::json!({
             "event": event,
