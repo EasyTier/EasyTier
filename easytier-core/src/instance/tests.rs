@@ -403,6 +403,26 @@ mod portable_runtime {
     struct RecordingConfigPatchPersistence {
         writes: std::sync::Mutex<Vec<String>>,
         fail: AtomicBool,
+        fail_after_writes: AtomicUsize,
+    }
+
+    #[cfg(feature = "management")]
+    impl RecordingConfigPatchPersistence {
+        fn new(fail: bool) -> Self {
+            Self {
+                writes: std::sync::Mutex::new(Vec::new()),
+                fail: AtomicBool::new(fail),
+                fail_after_writes: AtomicUsize::new(0),
+            }
+        }
+
+        fn fail_after(limit: usize) -> Self {
+            Self {
+                writes: std::sync::Mutex::new(Vec::new()),
+                fail: AtomicBool::new(false),
+                fail_after_writes: AtomicUsize::new(limit),
+            }
+        }
     }
 
     #[cfg(feature = "management")]
@@ -411,12 +431,18 @@ mod portable_runtime {
         async fn persist(
             &self,
             _instance_id: uuid::Uuid,
-            config: &TomlConfig,
+            config: &crate::config::InstanceConfig,
         ) -> anyhow::Result<()> {
             if self.fail.load(Ordering::Relaxed) {
                 anyhow::bail!("injected config persistence failure");
             }
-            self.writes.lock().unwrap().push(config.dump());
+            let fail_after = self.fail_after_writes.load(Ordering::Relaxed);
+            let mut writes = self.writes.lock().unwrap();
+            if fail_after > 0 && writes.len() >= fail_after {
+                anyhow::bail!("injected config persistence failure after limit");
+            }
+            let dumped = crate::config::serialize_raw_to_toml(config.raw())?;
+            writes.push(dumped);
             Ok(())
         }
     }
@@ -513,13 +539,13 @@ mod portable_runtime {
     }
 
     #[tokio::test]
-    async fn update_runtime_config_updates_management_toml_config() {
+    async fn update_runtime_config_updates_management_snapshot() {
         let mut initial_raw = test_config("management-sync-before").into_raw();
         initial_raw.hostname = Some("management-sync-before".to_owned());
         let initial = InstanceConfig::try_from(initial_raw).unwrap();
         let instance = build_instance(initial).unwrap();
         assert_eq!(
-            instance.toml_config().unwrap().get_hostname(),
+            instance.config_store().snapshot().parsed().hostname,
             "management-sync-before"
         );
 
@@ -529,7 +555,7 @@ mod portable_runtime {
         instance.update_runtime_config(updated).await.unwrap();
 
         assert_eq!(
-            instance.toml_config().unwrap().get_hostname(),
+            instance.config_store().snapshot().parsed().hostname,
             "management-sync-after"
         );
         instance.peer_manager.clear_resources().await;
@@ -829,10 +855,7 @@ source = "web"
             }),
             ..Default::default()
         };
-        let persistence = RecordingConfigPatchPersistence {
-            writes: std::sync::Mutex::new(Vec::new()),
-            fail: AtomicBool::new(true),
-        };
+        let persistence = RecordingConfigPatchPersistence::new(true);
 
         let error =
             crate::management::apply_config_patch(&instance, patch.clone(), Some(&persistence))
@@ -845,9 +868,10 @@ source = "web"
         );
         assert!(
             instance
-                .toml_config()
-                .unwrap()
-                .get_managed_credentials()
+                .config_store()
+                .snapshot()
+                .parsed()
+                .managed_credentials
                 .is_empty()
         );
         let private_bytes: [u8; 32] = BASE64_STANDARD.decode(&secret).unwrap().try_into().unwrap();
@@ -873,9 +897,10 @@ source = "web"
         );
         assert_eq!(
             instance
-                .toml_config()
-                .unwrap()
-                .get_managed_credentials()
+                .config_store()
+                .snapshot()
+                .parsed()
+                .managed_credentials
                 .len(),
             1
         );
@@ -911,10 +936,7 @@ source = "web"
             hostname: Some("after".to_owned()),
             ..Default::default()
         };
-        let persistence = RecordingConfigPatchPersistence {
-            writes: std::sync::Mutex::new(Vec::new()),
-            fail: AtomicBool::new(true),
-        };
+        let persistence = RecordingConfigPatchPersistence::new(true);
 
         let error =
             crate::management::apply_config_patch(&instance, patch.clone(), Some(&persistence))
@@ -925,14 +947,20 @@ source = "web"
                 .to_string()
                 .contains("injected config persistence failure")
         );
-        assert_eq!(instance.toml_config().unwrap().get_hostname(), "before");
+        assert_eq!(
+            instance.config_store().snapshot().parsed().hostname,
+            "before"
+        );
 
         persistence.fail.store(false, Ordering::Relaxed);
         crate::management::apply_config_patch(&instance, patch, Some(&persistence))
             .await
             .unwrap();
 
-        assert_eq!(instance.toml_config().unwrap().get_hostname(), "after");
+        assert_eq!(
+            instance.config_store().snapshot().parsed().hostname,
+            "after"
+        );
         {
             let persisted = persistence.writes.lock().unwrap();
             assert_eq!(persisted.len(), 1);
@@ -978,10 +1006,7 @@ source = "web"
         )
         .unwrap();
         instance.set_state(CoreInstanceState::Running);
-        let persistence = RecordingConfigPatchPersistence {
-            writes: std::sync::Mutex::new(Vec::new()),
-            fail: AtomicBool::new(true),
-        };
+        let persistence = RecordingConfigPatchPersistence::new(true);
 
         let error = crate::management::apply_config_patch(
             &instance,
@@ -1016,11 +1041,14 @@ source = "web"
                 .contains("injected config persistence failure")
         );
         let clients = instance
-            .toml_config()
+            .config_store()
+            .snapshot()
+            .parsed()
+            .vpn_portal_config
+            .as_ref()
             .unwrap()
-            .get_vpn_portal_config()
-            .unwrap()
-            .clients;
+            .clients
+            .clone();
         assert_eq!(clients.len(), 1);
         assert_eq!(clients[0].name, "alice");
         assert!(persistence.writes.lock().unwrap().is_empty());
@@ -1131,9 +1159,10 @@ source = "web"
         );
         assert!(
             instance
-                .toml_config()
-                .unwrap()
-                .get_port_forwards()
+                .config_store()
+                .snapshot()
+                .parsed()
+                .port_forward
                 .is_empty()
         );
         assert!(instance.runtime_config.snapshot().port_forward.is_empty());
@@ -1185,7 +1214,7 @@ virtual_ip = "10.82.0.2/24"
             "unexpected config patch error: {error:#}"
         );
         assert_eq!(
-            instance.toml_config().unwrap().get_ipv4().unwrap(),
+            instance.config_store().snapshot().parsed().ipv4.unwrap(),
             "10.82.0.1/24".parse().unwrap()
         );
         assert_eq!(
@@ -1253,7 +1282,25 @@ virtual_ip = "10.82.0.2/24"
         .await
         .unwrap();
 
-        assert_eq!(instance.toml_config().unwrap().get_port_forwards().len(), 1);
+        assert_eq!(
+            instance
+                .config_store()
+                .snapshot()
+                .raw()
+                .port_forward
+                .as_ref()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            crate::config::api_input::network_config_from_raw(
+                instance.config_store().snapshot().raw()
+            )
+            .port_forwards
+            .len(),
+            1
+        );
         assert!(instance.runtime_config.snapshot().port_forward.is_empty());
         assert!(instance.list_connectors().is_empty());
         instance.stop().await;
@@ -3246,7 +3293,12 @@ virtual_ip = "10.82.0.2/24"
 
         original.set_hostname(Some("after".into()));
         assert_eq!(
-            instance.toml_config().unwrap().get_hostname().as_str(),
+            instance
+                .config_store()
+                .snapshot()
+                .parsed()
+                .hostname
+                .as_str(),
             "before"
         );
     }
@@ -3288,12 +3340,236 @@ virtual_ip = "10.82.0.2/24"
         .unwrap();
 
         let saved_has_key = instance
-            .toml_config()
-            .unwrap()
-            .get_secure_mode()
+            .config_store()
+            .snapshot()
+            .parsed()
+            .secure_mode
+            .as_ref()
             .unwrap()
             .local_private_key
             .is_some();
         assert!(saved_has_key);
+    }
+
+    #[cfg(feature = "management")]
+    #[tokio::test]
+    async fn get_config_returns_consistent_config_and_toml_from_store_snapshot() {
+        use crate::{
+            instance::manager::{InstanceFactory, InstanceManager},
+            management::InstanceManagementRpc,
+        };
+        use easytier_proto::{
+            api::config::{
+                ConfigRpc as _, GetConfigRequest, InstanceConfigPatch, PatchConfigRequest,
+            },
+            api::instance::{
+                InstanceIdentifier,
+                instance_identifier::{InstanceSelector, Selector},
+            },
+            rpc_types::controller::BaseController,
+        };
+
+        struct ConsistentGetFactory;
+
+        impl InstanceFactory for ConsistentGetFactory {
+            type Instance = CoreInstance<TestHost>;
+            type CreateContext = ();
+            type Error = anyhow::Error;
+
+            fn create(
+                &self,
+                config: TomlConfig,
+                (): Self::CreateContext,
+            ) -> Result<Arc<Self::Instance>, Self::Error> {
+                let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+                let adapters = adapters(None, Arc::new(packet_sink));
+                CoreInstance::from_toml(config, adapters)
+            }
+        }
+
+        let manager = Arc::new(InstanceManager::new(ConsistentGetFactory, None));
+        let config = TomlConfig::new_from_str(
+            r#"
+instance_name = "test-consistent-get"
+hostname = "host-initial"
+ipv4 = "10.14.0.1/24"
+dhcp = false
+
+[network_identity]
+network_name = "test-network"
+network_secret = "test-secret"
+"#,
+        )
+        .unwrap();
+        let instance = manager.create(config, ()).unwrap();
+        instance.start().await.unwrap();
+        let rpc = InstanceManagementRpc::<ConsistentGetFactory>::new(manager);
+
+        let selector = || InstanceIdentifier {
+            selector: Some(Selector::InstanceSelector(InstanceSelector {
+                name: Some("test-consistent-get".to_owned()),
+            })),
+        };
+
+        // 1. Initial read: both config and toml_config match Store snapshot
+        let res = rpc
+            .get_config(
+                BaseController::default(),
+                GetConfigRequest {
+                    instance: Some(selector()),
+                },
+            )
+            .await
+            .unwrap();
+
+        let net_cfg = res.config.expect("config must be present");
+        let toml_str = res.toml_config;
+
+        assert_eq!(net_cfg.hostname.as_deref(), Some("host-initial"));
+        assert_eq!(net_cfg.dhcp, Some(false));
+        assert_eq!(net_cfg.virtual_ipv4.as_deref(), Some("10.14.0.1"));
+        assert!(toml_str.contains("hostname = \"host-initial\""));
+        assert!(toml_str.contains("dhcp = false"));
+        assert!(toml_str.contains("ipv4 = \"10.14.0.1/24\""));
+
+        let parsed_toml = TomlConfig::new_from_str(&toml_str).unwrap();
+        assert_eq!(parsed_toml.get_hostname(), "host-initial");
+        assert_eq!(parsed_toml.snapshot().unwrap().dhcp, false);
+
+        // 2. Patch config
+        rpc.patch_config(
+            BaseController::default(),
+            PatchConfigRequest {
+                patch: Some(InstanceConfigPatch {
+                    hostname: Some("host-updated".to_owned()),
+                    ..Default::default()
+                }),
+                instance: Some(selector()),
+            },
+        )
+        .await
+        .unwrap();
+
+        // 3. Subsequent read immediately returns updated values from Store in both representations
+        let res2 = rpc
+            .get_config(
+                BaseController::default(),
+                GetConfigRequest {
+                    instance: Some(selector()),
+                },
+            )
+            .await
+            .unwrap();
+
+        let net_cfg2 = res2.config.expect("config must be present");
+        let toml_str2 = res2.toml_config;
+
+        assert_eq!(net_cfg2.hostname.as_deref(), Some("host-updated"));
+        assert!(toml_str2.contains("hostname = \"host-updated\""));
+
+        let parsed_toml2 = TomlConfig::new_from_str(&toml_str2).unwrap();
+        assert_eq!(parsed_toml2.get_hostname(), "host-updated");
+
+        let store_snap = instance.config_store().snapshot();
+        assert_eq!(store_snap.raw().hostname.as_deref(), Some("host-updated"));
+    }
+
+    #[cfg(all(feature = "management", feature = "vpn-portal"))]
+    #[tokio::test]
+    async fn persistence_failure_in_subsequent_step_leaves_previously_accepted_candidate_committed()
+    {
+        use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+        use easytier_proto::api::{
+            config::{ConfigPatchAction, InstanceConfigPatch, VpnPortalClientPatch},
+            manage::{ManagedCredentialConfig, ManagedCredentialSet, VpnPortalClientConfig},
+        };
+
+        let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+        let host_adapters = adapters(None, Arc::new(packet_sink));
+        let instance = CoreInstance::from_toml(
+            TomlConfig::new_from_str(
+                r#"
+instance_name = "partial-commit-test"
+ipv4 = "10.83.0.1/24"
+
+[network_identity]
+network_name = "partial-commit-network"
+network_secret = "network-secret"
+
+[vpn_portal_config]
+wireguard_listen = "0.0.0.0:51821"
+
+[source]
+source = "web"
+"#,
+            )
+            .unwrap(),
+            host_adapters,
+        )
+        .unwrap();
+        instance.set_state(CoreInstanceState::Running);
+
+        let persistence = RecordingConfigPatchPersistence::fail_after(1);
+        let secret = BASE64_STANDARD.encode([8u8; 32]);
+
+        let patch = InstanceConfigPatch {
+            vpn_portal_clients: vec![VpnPortalClientPatch {
+                action: ConfigPatchAction::Add as i32,
+                client: Some(VpnPortalClientConfig {
+                    name: "step-1-client".to_owned(),
+                    virtual_ip: "10.83.0.2/24".to_owned(),
+                    ..Default::default()
+                }),
+            }],
+            managed_credentials: Some(ManagedCredentialSet {
+                entries: vec![ManagedCredentialConfig {
+                    credential_id: "step-2-cred".to_owned(),
+                    credential_secret: secret.clone(),
+                    groups: vec!["ops".to_owned()],
+                    allow_relay: false,
+                    allowed_proxy_cidrs: Vec::new(),
+                    expiry_unix: 2_000_000_000,
+                    reusable: Some(true),
+                }],
+            }),
+            ..Default::default()
+        };
+
+        let error = crate::management::apply_config_patch(&instance, patch, Some(&persistence))
+            .await
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("injected config persistence failure after limit")
+        );
+
+        let snapshot = instance.config_store().snapshot();
+        let portal_clients = snapshot
+            .parsed()
+            .vpn_portal_config
+            .as_ref()
+            .unwrap()
+            .clients
+            .clone();
+        assert_eq!(portal_clients.len(), 1);
+        assert_eq!(portal_clients[0].name, "step-1-client");
+
+        assert!(snapshot.parsed().managed_credentials.is_empty());
+
+        let private_bytes: [u8; 32] = BASE64_STANDARD.decode(&secret).unwrap().try_into().unwrap();
+        let public_key =
+            x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(private_bytes));
+        assert!(
+            !instance
+                .credential_manager()
+                .is_pubkey_trusted(public_key.as_bytes())
+        );
+
+        let persisted = persistence.writes.lock().unwrap();
+        assert_eq!(persisted.len(), 1);
+        assert!(persisted[0].contains("step-1-client"));
+        assert!(!persisted[0].contains("step-2-cred"));
     }
 }

@@ -94,7 +94,7 @@ struct ManagedWebClient {
 fn network_name_for_instance(id: &Uuid) -> Option<String> {
     INSTANCE_MANAGER
         .config(*id)
-        .map(|config| config.get_network_identity().network_name)
+        .map(|config| config.parsed().network_identity.network_name.clone())
         .filter(|name| !name.trim().is_empty())
 }
 

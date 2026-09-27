@@ -13,7 +13,8 @@ use easytier_proto::common::Flags;
 use optionize::{Optionizable, Optionized};
 
 use crate::config::{
-    MappedListenerPolicy,
+    InstanceConfigParsed, InstanceConfigRaw, MappedListenerPolicy,
+    instance::{normalize_hostname, normalize_ipv4, normalize_network_identity},
     toml::{
         ConfigLoader, NetworkIdentity, PeerConfig, PortForwardConfig, TomlConfigLoader,
         VpnPortalClientConfig, VpnPortalConfig,
@@ -468,39 +469,47 @@ impl NetworkConfigExt for NetworkConfig {
     }
 }
 
-pub fn network_config_from_loader(config: impl ConfigLoader) -> NetworkConfig {
-    let default_config = TomlConfigLoader::default();
+pub fn network_config_from_raw(raw: &InstanceConfigRaw) -> NetworkConfig {
+    let defaults = InstanceConfigParsed::default();
 
     let mut result = NetworkConfig {
-        instance_id: Some(config.get_id().to_string()),
-        dhcp: Some(config.get_dhcp()),
+        instance_id: Some(raw.instance_id.unwrap_or_else(uuid::Uuid::nil).to_string()),
+        dhcp: Some(raw.dhcp.unwrap_or(defaults.dhcp)),
         ..Default::default()
     };
 
-    if config.get_hostname() != default_config.get_hostname() {
-        result.hostname = Some(config.get_hostname());
+    let normalized_hostname = normalize_hostname(raw.hostname.as_deref());
+    if normalized_hostname != normalize_hostname(None) {
+        result.hostname = Some(normalized_hostname);
     }
 
-    let network_identity = config.get_network_identity();
+    let network_identity =
+        normalize_network_identity(raw.network_identity.as_ref(), raw.secure_mode.as_ref());
     result.network_name = Some(network_identity.network_name);
     result.network_secret = network_identity.network_secret;
 
-    if let Some(ipv4) = config.get_ipv4() {
+    if let Some(ipv4) = normalize_ipv4(raw.ipv4) {
         result.virtual_ipv4 = Some(ipv4.address().to_string());
         result.network_length = Some(ipv4.network_length() as i32);
     }
 
-    if config.get_ipv6_public_addr_provider() != default_config.get_ipv6_public_addr_provider() {
-        result.ipv6_public_addr_provider = Some(config.get_ipv6_public_addr_provider());
+    if raw
+        .ipv6_public_addr_provider
+        .unwrap_or(defaults.ipv6_public_addr_provider)
+        != defaults.ipv6_public_addr_provider
+    {
+        result.ipv6_public_addr_provider = Some(raw.ipv6_public_addr_provider.unwrap_or_default());
     }
-    if config.get_ipv6_public_addr_auto() != default_config.get_ipv6_public_addr_auto() {
-        result.ipv6_public_addr_auto = Some(config.get_ipv6_public_addr_auto());
+    if raw
+        .ipv6_public_addr_auto
+        .unwrap_or(defaults.ipv6_public_addr_auto)
+        != defaults.ipv6_public_addr_auto
+    {
+        result.ipv6_public_addr_auto = Some(raw.ipv6_public_addr_auto.unwrap_or_default());
     }
-    result.ipv6_public_addr_prefix = config
-        .get_ipv6_public_addr_prefix()
-        .map(|prefix| prefix.to_string());
+    result.ipv6_public_addr_prefix = raw.ipv6_public_addr_prefix.map(|prefix| prefix.to_string());
 
-    let peers = config.get_peers();
+    let peers = raw.peer.as_deref().unwrap_or_default();
     result.networking_method = Some(NetworkingMethod::Manual as i32);
     if !peers.is_empty() {
         result.peer_urls = peers.iter().map(|p| p.uri.to_string()).collect();
@@ -513,15 +522,18 @@ pub fn network_config_from_loader(config: impl ConfigLoader) -> NetworkConfig {
             .collect();
     }
 
-    result.listener_urls = config
-        .get_listeners()
+    result.listener_urls = raw
+        .listeners
+        .as_deref()
         .unwrap_or_default()
         .iter()
         .map(|l| l.to_string())
         .collect();
 
-    result.proxy_cidrs = config
-        .get_proxy_cidrs()
+    result.proxy_cidrs = raw
+        .proxy_network
+        .as_deref()
+        .unwrap_or_default()
         .iter()
         .map(|c| {
             if let Some(mapped) = c.mapped_cidr {
@@ -532,7 +544,7 @@ pub fn network_config_from_loader(config: impl ConfigLoader) -> NetworkConfig {
         })
         .collect();
 
-    let port_forwards = config.get_port_forwards();
+    let port_forwards = raw.port_forward.as_deref().unwrap_or_default();
     if !port_forwards.is_empty() {
         result.port_forwards = port_forwards
             .iter()
@@ -546,13 +558,14 @@ pub fn network_config_from_loader(config: impl ConfigLoader) -> NetworkConfig {
             .collect();
     }
 
-    if let Some(vpn_config) = config.get_vpn_portal_config() {
+    if let Some(vpn_config) = raw.vpn_portal_config.as_ref() {
         result.vpn_portal_config = Some(manage::VpnPortalConfig {
             wireguard_listen: vpn_config.wireguard_listen.to_string(),
-            wireguard_private_key: vpn_config.wireguard_private_key,
+            wireguard_private_key: vpn_config.wireguard_private_key.clone(),
             clients: vpn_config
                 .clients
-                .into_iter()
+                .iter()
+                .cloned()
                 .map(|client| manage::VpnPortalClientConfig {
                     name: client.name,
                     virtual_ip: client.virtual_ip.to_string(),
@@ -562,41 +575,53 @@ pub fn network_config_from_loader(config: impl ConfigLoader) -> NetworkConfig {
         });
     }
 
-    if let Some(routes) = config.get_routes()
+    if let Some(routes) = raw.routes.as_ref()
         && !routes.is_empty()
     {
         result.enable_manual_routes = Some(true);
         result.routes = routes.iter().map(|r| r.to_string()).collect();
     }
 
-    let exit_nodes = config.get_exit_nodes();
+    let exit_nodes = raw.exit_nodes.as_deref().unwrap_or_default();
     if !exit_nodes.is_empty() {
         result.exit_nodes = exit_nodes.iter().map(|n| n.to_string()).collect();
     }
 
-    if let Some(socks5_portal) = config.get_socks5_portal() {
+    if let Some(socks5_portal) = raw.socks5_proxy.as_ref() {
         result.enable_socks5 = Some(true);
         result.socks5_port = socks5_portal.port().map(|p| p as i32);
     }
 
-    let mapped_listeners = config.get_mapped_listeners();
+    let mapped_listeners = raw.mapped_listeners.as_deref().unwrap_or_default();
     if !mapped_listeners.is_empty() {
         result.mapped_listeners = mapped_listeners.iter().map(|l| l.to_string()).collect();
     }
 
-    result.secure_mode = config.get_secure_mode();
-    result.credential_file = config
-        .get_credential_file()
+    result.secure_mode = raw.secure_mode.clone();
+    result.credential_file = raw
+        .credential_file
+        .as_ref()
         .map(|path| path.to_string_lossy().into_owned());
-    result.managed_credentials = config
-        .get_managed_credentials()
-        .into_iter()
+    result.managed_credentials = raw
+        .managed_credentials
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .cloned()
         .map(|credential| credential.downgrade())
         .collect();
-    set_network_flags(&mut result, config.get_flags_patch());
-    result.acl = config.get_acl();
+    set_network_flags(&mut result, raw.flags.clone());
+    result.acl = raw.acl.clone();
 
     result
+}
+
+pub fn network_config_from_loader(config: impl ConfigLoader) -> NetworkConfig {
+    if let Some(raw) = config.get_raw_config() {
+        network_config_from_raw(&raw)
+    } else {
+        NetworkConfig::default()
+    }
 }
 
 #[cfg(test)]

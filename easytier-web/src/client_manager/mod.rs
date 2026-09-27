@@ -903,7 +903,7 @@ mod tests {
             loop {
                 if let Some(config) = manager
                     .config(inst_id)
-                    .and_then(|config| NetworkConfig::new_from_config(&config).ok())
+                    .map(|config| easytier_core::config::api::network_config_from_raw(config.raw()))
                     .filter(|config| predicate(config))
                 {
                     break config;

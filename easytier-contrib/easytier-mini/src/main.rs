@@ -259,6 +259,10 @@ data_compress_algo = "Zstd"
 
         let instance = manager.create(config, ()).unwrap();
 
-        assert_eq!(instance.toml_config().unwrap().dump(), before);
+        assert_eq!(
+            easytier_core::config::serialize_raw_to_toml(instance.config_store().snapshot().raw())
+                .unwrap(),
+            before
+        );
     }
 }

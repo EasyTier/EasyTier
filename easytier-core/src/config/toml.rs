@@ -140,6 +140,10 @@ pub trait ConfigLoader: Send + Sync {
     }
     fn set_network_config_source(&self, _source: Option<ConfigSource>) {}
 
+    fn get_raw_config(&self) -> Option<InstanceConfigRaw> {
+        None
+    }
+
     fn dump(&self) -> String;
     fn dump_redacted(&self) -> String {
         self.dump()
@@ -363,6 +367,10 @@ impl Default for TomlConfig {
 }
 
 impl TomlConfig {
+    pub fn raw(&self) -> InstanceConfigRaw {
+        self.config.lock().unwrap().clone()
+    }
+
     pub fn snapshot(&self) -> anyhow::Result<InstanceConfig> {
         let raw = self.config.lock().unwrap().clone();
         InstanceConfig::try_from(raw)
@@ -387,13 +395,6 @@ impl TomlConfig {
         ) {
             config.source = None;
         }
-    }
-
-    #[cfg(feature = "config-write")]
-    fn config_for_dump(&self) -> InstanceConfigRaw {
-        let mut config = self.config.lock().unwrap().clone();
-        Self::normalize_config_source(&mut config);
-        config
     }
 
     #[cfg(feature = "config-write")]
@@ -478,9 +479,6 @@ impl TomlConfig {
         }
     }
 }
-
-#[cfg(feature = "web-client")]
-mod snapshot;
 
 impl ConfigLoader for TomlConfig {
     fn get_inst_name(&self) -> String {
@@ -878,10 +876,15 @@ impl ConfigLoader for TomlConfig {
         });
     }
 
+    fn get_raw_config(&self) -> Option<InstanceConfigRaw> {
+        Some(self.raw())
+    }
+
     fn dump(&self) -> String {
         #[cfg(feature = "config-write")]
         {
-            toml::to_string_pretty(&self.config_for_dump()).unwrap()
+            let raw = self.config.lock().unwrap();
+            serialize_raw_to_toml(&raw).unwrap()
         }
         #[cfg(not(feature = "config-write"))]
         {
@@ -892,15 +895,41 @@ impl ConfigLoader for TomlConfig {
     fn dump_redacted(&self) -> String {
         #[cfg(feature = "config-write")]
         {
-            let mut config = self.config_for_dump();
-            Self::redact_secrets(&mut config);
-            toml::to_string_pretty(&config).unwrap()
+            let raw = self.config.lock().unwrap();
+            serialize_raw_to_toml_redacted(&raw).unwrap()
         }
         #[cfg(not(feature = "config-write"))]
         {
             panic!("this build does not include TOML configuration serialization")
         }
     }
+}
+
+#[cfg(feature = "config-write")]
+pub fn serialize_raw_to_toml(raw: &InstanceConfigRaw) -> Result<String, toml::ser::Error> {
+    let mut config = raw.clone();
+    TomlConfig::normalize_config_source(&mut config);
+    toml::to_string_pretty(&config)
+}
+
+#[cfg(not(feature = "config-write"))]
+pub fn serialize_raw_to_toml(_raw: &InstanceConfigRaw) -> Result<String, toml::ser::Error> {
+    panic!("this build does not include TOML configuration serialization")
+}
+
+#[cfg(feature = "config-write")]
+pub fn serialize_raw_to_toml_redacted(raw: &InstanceConfigRaw) -> Result<String, toml::ser::Error> {
+    let mut config = raw.clone();
+    TomlConfig::normalize_config_source(&mut config);
+    TomlConfig::redact_secrets(&mut config);
+    toml::to_string_pretty(&config)
+}
+
+#[cfg(not(feature = "config-write"))]
+pub fn serialize_raw_to_toml_redacted(
+    _raw: &InstanceConfigRaw,
+) -> Result<String, toml::ser::Error> {
+    panic!("this build does not include TOML configuration serialization")
 }
 
 /// Transitional name retained while native consumers migrate to [`TomlConfig`].

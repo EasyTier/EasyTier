@@ -16,7 +16,7 @@ use easytier_proto::{
 };
 
 use crate::{
-    config::toml::{ConfigLoader as _, ProxyNetworkConfig, TomlConfig},
+    config::toml::ProxyNetworkConfig,
     connectivity::manual::{ManualConnectorSnapshot, ManualConnectorStatus},
     instance::{
         CoreInstance, CoreInstanceHost,
@@ -212,7 +212,11 @@ struct InMemoryConfigPatchPersistence;
 #[async_trait::async_trait]
 #[cfg(all(feature = "web-client", target_os = "wasi"))]
 impl ConfigPatchPersistence for InMemoryConfigPatchPersistence {
-    async fn persist(&self, _instance_id: uuid::Uuid, _config: &TomlConfig) -> anyhow::Result<()> {
+    async fn persist(
+        &self,
+        _instance_id: uuid::Uuid,
+        _config: &crate::config::InstanceConfig,
+    ) -> anyhow::Result<()> {
         Ok(())
     }
 }
@@ -232,7 +236,7 @@ where
 async fn persist_config_patch(
     storage: &dyn ConfigFileStorage,
     control: &crate::instance::manager::ConfigFileControl,
-    config: &TomlConfig,
+    config: &crate::config::InstanceConfig,
 ) -> anyhow::Result<()> {
     if control.is_read_only() {
         anyhow::bail!("configuration file is read-only");
@@ -246,7 +250,8 @@ async fn persist_config_patch(
             path.display()
         );
     }
-    storage.write(path, config.dump().as_bytes()).await
+    let contents = crate::config::serialize_raw_to_toml(config.raw())?;
+    storage.write(path, contents.as_bytes()).await
 }
 
 #[async_trait::async_trait]
@@ -256,7 +261,11 @@ where
     F: InstanceFactory<Instance = CoreInstance<H>>,
     H: CoreInstanceHost,
 {
-    async fn persist(&self, instance_id: uuid::Uuid, config: &TomlConfig) -> anyhow::Result<()> {
+    async fn persist(
+        &self,
+        instance_id: uuid::Uuid,
+        config: &crate::config::InstanceConfig,
+    ) -> anyhow::Result<()> {
         let control = self
             .manager
             .config_control(instance_id)
@@ -315,8 +324,11 @@ mod config_patch_persistence_tests {
     async fn pathless_config_patch_skips_persistence() {
         let storage = RecordingStorage::default();
         let control = ConfigFileControl::new(None, ConfigFilePermission::default());
+        let config =
+            crate::config::InstanceConfig::try_from(crate::config::InstanceConfigRaw::default())
+                .unwrap();
 
-        persist_config_patch(&storage, &control, &TomlConfig::default())
+        persist_config_patch(&storage, &control, &config)
             .await
             .unwrap();
 
@@ -332,8 +344,11 @@ mod config_patch_persistence_tests {
             Some(PathBuf::from("managed.toml")),
             ConfigFilePermission::default(),
         );
+        let config =
+            crate::config::InstanceConfig::try_from(crate::config::InstanceConfigRaw::default())
+                .unwrap();
 
-        let error = persist_config_patch(&storage, &control, &TomlConfig::default())
+        let error = persist_config_patch(&storage, &control, &config)
             .await
             .unwrap_err();
 
