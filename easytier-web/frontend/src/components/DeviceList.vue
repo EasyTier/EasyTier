@@ -45,7 +45,6 @@ const loadDevices = async () => {
     for (const device of (resp || [])) {
         devices.push(Utils.buildDeviceInfo(device));
     }
-    console.debug("device list", deviceList.value);
     deviceList.value = devices;
 };
 
@@ -53,8 +52,9 @@ const periodFunc = new Utils.PeriodicTask(async () => {
     try {
         await loadDevices();
     } catch (e) {
-        toast.add({ severity: 'error', summary: 'Load Device List Failed', detail: e, life: 2000 });
-        console.error(e);
+        const message = e instanceof Error ? e.message : typeof e === 'string' ? e : 'Unknown error';
+        toast.add({ severity: 'error', summary: 'Load Device List Failed', detail: message, life: 2000 });
+        console.error('Load Device List Failed:', message);
     }
 }, 1000);
 

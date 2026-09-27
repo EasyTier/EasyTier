@@ -82,24 +82,23 @@ export class ApiClient {
 
         // 添加响应拦截器
         this.client.interceptors.response.use((response: AxiosResponse) => {
-            console.debug('Axios Response:', response);
             return response.data; // 假设服务器返回的数据都在data属性中
-        }, (error: any) => {
+        }, (error: AxiosError) => {
             if (error.response) {
                 let response: AxiosResponse = error.response;
                 if (response.status == 401 && this.authFailedCb) {
-                    console.error('Unauthorized:', response.data);
+                    console.error('Unauthorized:', 'status:', response.status, 'code:', error.code, 'message:', error.message);
                     this.authFailedCb();
                 } else {
                     // 请求已发出，但是服务器响应的状态码不在2xx范围
-                    console.error('Response Error:', error.response.data);
+                    console.error('Response Error:', 'status:', response.status, 'code:', error.code, 'message:', error.message);
                 }
             } else if (error.request) {
                 // 请求已发出，但是没有收到响应
-                console.error('Request Error:', error.request);
+                console.error('Request Error:', 'code:', error.code, 'message:', error.message);
             } else {
                 // 发生了一些问题导致请求未发出
-                console.error('Error:', error.message);
+                console.error('Error:', 'code:', error.code, 'message:', error.message);
             }
             return Promise.reject(error);
         });
