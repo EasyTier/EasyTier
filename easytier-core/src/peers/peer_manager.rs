@@ -23,7 +23,7 @@ use url::Url;
 use crate::{
     config::{
         InstanceConfig, P2pPolicyFlags, PeerId,
-        peers::{AclRuleConfig, HostRoutingPolicy, PeerGroupIdentity},
+        peers::{AclRuleConfig, HostRoutingPolicy},
         runtime::InstanceConfigStore,
         toml::ProxyNetworkConfig,
     },
@@ -199,32 +199,6 @@ fn random_peer_id() -> PeerId {
 pub enum RouteAlgoType {
     Ospf,
     None,
-}
-
-fn matching_group_memberships(
-    declarations: &[PeerGroupIdentity],
-    configured_groups: &[String],
-) -> Vec<PeerGroupIdentity> {
-    let configured = configured_groups.iter().collect::<BTreeSet<_>>();
-    declarations
-        .iter()
-        .filter(|declaration| configured.contains(&declaration.group_name))
-        .cloned()
-        .collect()
-}
-
-fn first_missing_group<'a>(
-    memberships: &[PeerGroupIdentity],
-    configured_groups: &'a [String],
-) -> Option<&'a str> {
-    let resolved = memberships
-        .iter()
-        .map(|membership| membership.group_name.as_str())
-        .collect::<BTreeSet<_>>();
-    configured_groups
-        .iter()
-        .map(String::as_str)
-        .find(|group| !resolved.contains(group))
 }
 
 pub(crate) enum RouteAlgoInst {
@@ -1110,11 +1084,6 @@ impl PeerManagerCore {
 
     pub fn can_manage_credentials(&self) -> bool {
         self.context.network_identity().network_secret.is_some()
-    }
-
-    pub(crate) fn set_avoid_relay_data_preference(&self, avoid_relay_data: bool) {
-        self.context
-            .set_avoid_relay_data_preference(avoid_relay_data);
     }
 
     pub fn notify_credential_changed(&self) {
@@ -3422,10 +3391,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        config::{CoreConfig, IpPrefix, NetworkIdentity, NodeConfig, ProxyNetworkConfig},
         host::packet::{HostPacketSender, host_packet_channel},
         peers::context::{PeerContext, PeerEvent},
-        proto::common::{PeerFeatureFlag, StunInfo},
     };
 
     impl PeerManagerCore {
