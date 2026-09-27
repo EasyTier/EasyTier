@@ -6,11 +6,9 @@ where
     H: CoreInstanceHost,
 {
     pub fn toml_config(&self) -> Option<TomlConfig> {
-        self.management_toml.clone().or_else(|| {
-            Some(TomlConfig::from_instance_config(
-                (*self.runtime_config.snapshot()).clone(),
-            ))
-        })
+        Some(TomlConfig::from_instance_config(
+            (*self.runtime_config.snapshot()).clone(),
+        ))
     }
 
     pub(crate) fn host_config(&self) -> &CoreInstanceHostConfig {

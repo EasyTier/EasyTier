@@ -383,6 +383,7 @@ fn build_peer_snapshot(
     parsed.instance_id = uuid::Uuid::new_v4();
     parsed.hostname = config.name.clone();
     parsed.ipv4 = Some(config.virtual_ip);
+    parsed.dhcp = false;
     parsed.ipv6 = None;
     parsed.routes = None;
     parsed.proxy_network.clear();
@@ -1216,5 +1217,31 @@ mod tests {
         pause.resume.notify_one();
         pause.finished.notified().await;
         network_peer_manager.clear_resources().await;
+    }
+
+    #[tokio::test]
+    async fn attached_peer_overrides_dhcp_to_false_even_if_parent_enabled() {
+        let parent_parsed = InstanceConfigParsed {
+            dhcp: true,
+            network_identity: crate::peers::context::NetworkIdentity {
+                network_name: "test-net".to_owned(),
+                network_secret: Some("secret".to_owned()),
+                network_secret_digest: None,
+            },
+            ..Default::default()
+        };
+        let raw = parent_parsed.clone().downgrade();
+        let parent_config = InstanceConfig::new(parent_parsed, raw, ());
+
+        let client = AttachedPeerConfig {
+            name: "client-1".to_owned(),
+            virtual_ip: "10.144.144.10/24".parse().unwrap(),
+            groups: vec![],
+            identity_private_key: [1u8; 32],
+        };
+
+        let (snapshot, _) = build_peer_snapshot(&parent_config, &client).unwrap();
+        assert!(!snapshot.dhcp);
+        assert_eq!(snapshot.ipv4, Some("10.144.144.10/24".parse().unwrap()));
     }
 }

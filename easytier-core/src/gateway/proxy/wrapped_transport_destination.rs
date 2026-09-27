@@ -174,7 +174,7 @@ where
                 running_listeners,
                 runtime_config,
                 "TCP",
-                false,
+                Default::default(),
             ),
             connector: TcpSocketProxyConnector::new(host).with_socket_context(socket_context),
             cidr_table,

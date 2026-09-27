@@ -1021,6 +1021,11 @@ impl PeerManagerCore {
         self.my_peer_id
     }
 
+    #[allow(dead_code)]
+    pub(crate) fn my_ipv4(&self) -> Option<cidr::Ipv4Inet> {
+        self.context.ipv4()
+    }
+
     pub(crate) fn context(&self) -> &Arc<CorePeerContext> {
         &self.context
     }

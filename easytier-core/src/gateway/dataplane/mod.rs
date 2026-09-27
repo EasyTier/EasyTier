@@ -366,12 +366,12 @@ where
         })
     }
 
-    fn runtime_ipv4(runtime_config: &InstanceConfigStore) -> Option<cidr::Ipv4Inet> {
-        runtime_config.snapshot().ipv4
+    fn effective_ipv4(&self) -> Option<cidr::Ipv4Inet> {
+        self.peer_manager.upgrade().and_then(|pm| pm.my_ipv4())
     }
 
     pub(crate) fn is_local_virtual_ip(&self, ip: IpAddr) -> bool {
-        Self::runtime_ipv4(&self.runtime_config)
+        self.effective_ipv4()
             .is_some_and(|inet| IpAddr::V4(inet.address()) == ip)
     }
 
@@ -423,7 +423,7 @@ where
                     continue;
                 }
 
-                let cur_ipv4 = Self::runtime_ipv4(&runtime_config);
+                let cur_ipv4 = peer_manager.upgrade().and_then(|pm| pm.my_ipv4());
                 if prev_ipv4 != cur_ipv4 {
                     let old_ipv4 = prev_ipv4;
                     prev_ipv4 = cur_ipv4;
@@ -562,7 +562,7 @@ where
             ));
         };
         self.runtime_guard.ensure_open()?;
-        let local_virtual_ip = Self::runtime_ipv4(&self.runtime_config).map(|inet| inet.address());
+        let local_virtual_ip = self.effective_ipv4().map(|inet| inet.address());
         let local_virtual_destination = local_virtual_ip == Some(dst_ip);
         let local_endpoint = local_virtual_destination
             && self.entries.contains_key(&FlowKey {

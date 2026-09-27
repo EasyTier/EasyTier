@@ -357,10 +357,12 @@ mod tests {
         };
 
         let mut config = test_instance_config(&global_ctx);
-        config.parsed_mut().flags.bind_device = false;
-        config.parsed_mut().peer.clear();
-        config.parsed_mut().listeners = listeners;
-        config.parsed_mut().stun_servers = Some(Vec::new());
+        config.update_parsed(|c| {
+            c.flags.bind_device = false;
+            c.peer.clear();
+            c.listeners = listeners;
+            c.stun_servers = Some(Vec::new());
+        });
 
         let instance = NativeCoreInstance::new(config, adapters)?;
         Ok((instance, service))
@@ -481,10 +483,12 @@ mod tests {
         let (packet_sink_a, _packet_receiver_a) = create_host_packet_channel();
         let (packet_sink_b, mut packet_receiver_b) = create_host_packet_channel();
         let mut config_a = test_instance_config(&global_a);
-        config_a.parsed_mut().flags.bind_device = false;
-        config_a.parsed_mut().peer.clear();
-        config_a.parsed_mut().listeners = Some(vec!["tcp://127.0.0.1:0".parse().unwrap()]);
-        config_a.parsed_mut().stun_servers = Some(Vec::new());
+        config_a.update_parsed(|c| {
+            c.flags.bind_device = false;
+            c.peer.clear();
+            c.listeners = Some(vec!["tcp://127.0.0.1:0".parse().unwrap()]);
+            c.stun_servers = Some(Vec::new());
+        });
         let mut adapters_a = runtime_core_host_adapters(
             global_a.clone(),
             CoreProcessRuntime::new(),
@@ -494,10 +498,12 @@ mod tests {
         let instance_a = NativeCoreInstance::new(config_a, adapters_a).unwrap();
 
         let mut config_b = test_instance_config(&global_b);
-        config_b.parsed_mut().flags.bind_device = false;
-        config_b.parsed_mut().peer.clear();
-        config_b.parsed_mut().listeners = None;
-        config_b.parsed_mut().stun_servers = Some(Vec::new());
+        config_b.update_parsed(|c| {
+            c.flags.bind_device = false;
+            c.peer.clear();
+            c.listeners = None;
+            c.stun_servers = Some(Vec::new());
+        });
         let mut adapters_b = runtime_core_host_adapters(
             global_b.clone(),
             CoreProcessRuntime::new(),

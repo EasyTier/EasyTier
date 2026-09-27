@@ -39,7 +39,7 @@ impl InstanceConfigStore {
         self.inner.snapshot.load_full()
     }
 
-    pub fn replace(&self, config: InstanceConfig) -> Arc<InstanceConfig> {
+    pub(crate) fn replace(&self, config: InstanceConfig) -> Arc<InstanceConfig> {
         let _update = self.inner.update.lock();
         let config = Arc::new(config);
         self.inner.snapshot.store(config.clone());

@@ -62,14 +62,13 @@ fn data_plane_endpoint(host: Arc<TestHost>, ip: cidr::Ipv4Inet) -> DataPlaneEndp
     };
     let raw = parsed.clone().downgrade();
     let config = crate::config::InstanceConfig::new(parsed, raw, ());
-    let runtime_config = InstanceConfigStore::new(config.clone());
     let (packet_sender, packet_receiver) = host_packet_channel();
     let peer_manager = Arc::new(
         PeerManagerCore::new_portable_for_test(config, packet_sender)
             .expect("build portable peer manager"),
     );
     let gateway = DataPlaneRuntime::new(
-        runtime_config,
+        peer_manager.context().runtime_config_store(),
         peer_manager.clone(),
         None,
         host,

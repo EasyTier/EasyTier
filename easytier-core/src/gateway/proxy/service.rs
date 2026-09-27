@@ -48,13 +48,37 @@ pub fn smoltcp_proxy_inet() -> Ipv4Inet {
         .expect("smoltcp proxy address must be a valid IPv4 interface")
 }
 
-fn runtime_snapshot(config: &InstanceConfig, smoltcp_enabled: bool) -> ProxyRuntimeSnapshot {
-    let virtual_inet = config.ipv4;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct ProxyHostPolicy {
+    pub force_exit_node: bool,
+    pub smoltcp_available: bool,
+    pub requires_smoltcp: bool,
+    pub icmp_failure_is_fatal: bool,
+}
+
+impl From<&crate::instance::CoreInstanceHostConfig> for ProxyHostPolicy {
+    fn from(host: &crate::instance::CoreInstanceHostConfig) -> Self {
+        Self {
+            force_exit_node: host.force_exit_node,
+            smoltcp_available: host.smoltcp_available,
+            requires_smoltcp: host.requires_smoltcp,
+            icmp_failure_is_fatal: host.icmp_failure_is_fatal,
+        }
+    }
+}
+
+fn runtime_snapshot(
+    config: &InstanceConfig,
+    effective_ipv4: Option<Ipv4Inet>,
+    smoltcp_enabled: bool,
+    force_exit_node: bool,
+) -> ProxyRuntimeSnapshot {
+    let virtual_inet = effective_ipv4;
     ProxyRuntimeSnapshot {
         local_inet: smoltcp_enabled.then(smoltcp_proxy_inet).or(virtual_inet),
         virtual_ipv4: virtual_inet.map(|inet| inet.address()),
         no_tun: config.flags.no_tun,
-        enable_exit_node: config.flags.enable_exit_node,
+        enable_exit_node: config.flags.enable_exit_node || force_exit_node,
         smoltcp_enabled,
         latency_first: config.flags.latency_first && !config.flags.p2p_only,
     }
@@ -72,7 +96,7 @@ where
     stats: Arc<StatsManager>,
     protocol_label: &'static str,
     smoltcp_enabled: AtomicBool,
-    icmp_failure_is_fatal: bool,
+    host_policy: ProxyHostPolicy,
 }
 
 impl<H> CoreProxyRuntime<H>
@@ -87,7 +111,7 @@ where
         running_listeners: Arc<RunningListenerRegistry>,
         config: InstanceConfigStore,
         protocol_label: &'static str,
-        icmp_failure_is_fatal: bool,
+        host_policy: ProxyHostPolicy,
     ) -> Arc<Self> {
         Arc::new(Self {
             stats: peer_manager.stats_manager(),
@@ -98,16 +122,17 @@ where
             config,
             protocol_label,
             smoltcp_enabled: AtomicBool::new(false),
-            icmp_failure_is_fatal,
+            host_policy,
         })
     }
 
     pub(crate) fn latch_smoltcp(&self) {
         let snapshot = self.config.snapshot();
-        self.smoltcp_enabled.store(
-            snapshot.flags.use_smoltcp || snapshot.flags.no_tun,
-            Ordering::Release,
-        );
+        let force_smoltcp = self.host_policy.smoltcp_available
+            && (snapshot.flags.use_smoltcp
+                || snapshot.flags.no_tun
+                || self.host_policy.requires_smoltcp);
+        self.smoltcp_enabled.store(force_smoltcp, Ordering::Release);
     }
 
     fn should_deny_proxy(&self, destination: SocketAddr, is_udp: bool) -> bool {
@@ -135,7 +160,9 @@ where
     fn proxy_runtime_snapshot(&self) -> ProxyRuntimeSnapshot {
         runtime_snapshot(
             &self.config.snapshot(),
+            self.peer_manager.my_ipv4(),
             self.smoltcp_enabled.load(Ordering::Acquire),
+            self.host_policy.force_exit_node,
         )
     }
 
@@ -279,7 +306,7 @@ where
         udp_socket_context: SocketContext,
         icmp_socket_context: SocketContext,
         icmp_host: Option<Arc<dyn IcmpProxyHost>>,
-        icmp_failure_is_fatal: bool,
+        host_policy: ProxyHostPolicy,
     ) -> Arc<Self> {
         let runtime = CoreProxyRuntime::new(
             peer_manager.clone(),
@@ -288,7 +315,7 @@ where
             running_listeners,
             config,
             "TCP",
-            icmp_failure_is_fatal,
+            host_policy,
         );
         let tcp_connector = Arc::new(
             TcpSocketProxyConnector::new(host.clone())
@@ -377,7 +404,7 @@ where
             self.icmp_started.store(true, Ordering::Release);
             if let Err(error) = icmp.start().await {
                 self.icmp_started.store(false, Ordering::Release);
-                if self.runtime.icmp_failure_is_fatal {
+                if self.runtime.host_policy.icmp_failure_is_fatal {
                     self.stop_started();
                     return Err(error);
                 }
@@ -400,11 +427,11 @@ where
 mod tests {
     use std::net::Ipv4Addr;
 
+    use optionize::Optionizable;
+
     use super::*;
 
     fn test_config() -> InstanceConfig {
-        use optionize::Optionizable;
-
         let parsed = crate::config::InstanceConfigParsed {
             ipv4: Some(cidr::Ipv4Inet::new(Ipv4Addr::new(10, 1, 2, 3), 24).unwrap()),
             flags: crate::config::toml::Flags {
@@ -423,16 +450,33 @@ mod tests {
     fn runtime_snapshot_uses_submitted_policy_and_latched_smoltcp() {
         let config = test_config();
 
-        let kernel = runtime_snapshot(&config, false);
+        let kernel = runtime_snapshot(&config, config.ipv4, false, false);
         assert_eq!(kernel.local_inet.unwrap().to_string(), "10.1.2.3/24");
         assert_eq!(kernel.virtual_ipv4, Some(Ipv4Addr::new(10, 1, 2, 3)));
         assert!(kernel.enable_exit_node);
         assert!(kernel.no_tun);
         assert!(kernel.latency_first);
 
-        let smoltcp = runtime_snapshot(&config, true);
+        let smoltcp = runtime_snapshot(&config, config.ipv4, true, false);
         assert_eq!(smoltcp.local_inet, Some(smoltcp_proxy_inet()));
         assert_eq!(smoltcp.virtual_ipv4, kernel.virtual_ipv4);
+
+        // Host policy force_exit_node overrides disabled exit node in config
+        let mut disabled_exit_node_parsed = config.parsed().clone();
+        disabled_exit_node_parsed.flags.enable_exit_node = false;
+        disabled_exit_node_parsed.ipv4 = None;
+        let disabled_raw = disabled_exit_node_parsed.clone().downgrade();
+        let disabled_config = InstanceConfig::new(disabled_exit_node_parsed, disabled_raw, ());
+
+        let forced = runtime_snapshot(&disabled_config, None, false, true);
+        assert!(forced.enable_exit_node);
+        assert_eq!(forced.virtual_ipv4, None);
+
+        // Effective IPv4 provided from DHCP (even when config.ipv4 is unset)
+        let dhcp_inet: Ipv4Inet = "10.126.1.5/24".parse().unwrap();
+        let dhcp_snapshot = runtime_snapshot(&disabled_config, Some(dhcp_inet), false, false);
+        assert_eq!(dhcp_snapshot.local_inet, Some(dhcp_inet));
+        assert_eq!(dhcp_snapshot.virtual_ipv4, Some(dhcp_inet.address()));
     }
 
     #[test]
