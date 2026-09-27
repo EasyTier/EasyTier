@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
-    config::runtime::CoreRuntimeConfigStore, connectivity::direct::DirectConnectorHost,
+    config::runtime::InstanceConfigStore, connectivity::direct::DirectConnectorHost,
     connectivity::hole_punch::tcp::TcpHolePunchHost, gateway::proxy::cidr_table::ProxyCidrTable,
     listener::RunningListenerRegistry, peers::peer_manager::PeerManagerCore,
     process_runtime::ProtectedTcpPortRegistry, socket::SocketContext,
@@ -80,7 +80,7 @@ impl WrappedTransportPacketPlane {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new<H>(
         _peer_manager: Arc<PeerManagerCore>,
-        _runtime_config: CoreRuntimeConfigStore,
+        _runtime_config: InstanceConfigStore,
         _kcp: &Option<Arc<dyn WrappedTransportEngine>>,
         _quic: &Option<Arc<dyn WrappedTransportEngine>>,
         _host: Arc<H>,

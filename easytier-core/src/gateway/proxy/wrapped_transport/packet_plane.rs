@@ -6,7 +6,7 @@ use std::{
 use async_trait::async_trait;
 
 use crate::{
-    config::runtime::CoreRuntimeConfigStore,
+    config::runtime::InstanceConfigStore,
     connectivity::direct::DirectConnectorHost,
     connectivity::hole_punch::tcp::TcpHolePunchHost,
     gateway::proxy::{
@@ -141,7 +141,7 @@ where
         host: Arc<H>,
         protected_tcp_ports: Arc<ProtectedTcpPortRegistry>,
         running_listeners: Arc<RunningListenerRegistry>,
-        runtime_config: CoreRuntimeConfigStore,
+        runtime_config: InstanceConfigStore,
         cidr_table: Arc<ProxyCidrTable>,
         socket_context: SocketContext,
         engine: &Arc<dyn WrappedTransportEngine>,
@@ -158,6 +158,7 @@ where
             running_listeners,
             runtime_config,
             protocol_label,
+            false,
         );
         let connector = Arc::new(WrappedTransportSourceConnector {
             peer_manager: peer_manager.clone(),
@@ -473,7 +474,7 @@ impl WrappedTransportPacketPlane {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new<H>(
         peer_manager: Arc<PeerManagerCore>,
-        runtime_config: CoreRuntimeConfigStore,
+        runtime_config: InstanceConfigStore,
         kcp: &Option<Arc<dyn WrappedTransportEngine>>,
         quic: &Option<Arc<dyn WrappedTransportEngine>>,
         host: Arc<H>,

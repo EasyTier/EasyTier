@@ -1,44 +1,17 @@
-//! Portable normalization from the shared TOML model into one core instance.
-
-use std::collections::BTreeSet;
+//! Portable normalization from typed instance configuration values.
 
 use crate::{
-    config::{
-        EncryptionAlgorithm, InstanceConfigParsed, IpPrefix, NodeConfig, ProxyNetworkConfig,
-        RouteConfig,
-        gateway::{GatewayRuntimeConfig, ProxyRuntimeConfig},
-        peers::{AclRuleConfig, HostRoutingPolicy, PublicIpv6ProviderConfig},
-        runtime::CoreRuntimeConfig,
-        toml::{ConfigLoader as _, Flags, TomlConfig},
-    },
-    connectivity::{
-        direct::DirectConnectorOptions,
-        manual::{ManualConnectorOptions, discovery::ManualEndpointDiscoveryConfig},
-        stun::StunServerConfig,
-    },
-    gateway::vpn_portal::{PortalClientConfig, PortalRuntimeConfig},
-    listener::plan::ListenerRuntimeConfig,
+    config::{EncryptionAlgorithm, InstanceConfig, toml::Flags},
+    connectivity::manual::discovery::ManualEndpointDiscoveryConfig,
     packet::CompressorAlgo,
-    peers::{
-        context::PeerRuntimeSnapshotInput,
-        peer_manager::{PortablePeerManagerConfig, RouteAlgoType},
-    },
-    socket::{NetNamespace, SocketContext, tcp::TcpBindOptions, udp::UdpBindOptions},
     tunnel::encrypt::algorithm_is_available,
 };
-
 use easytier_proto::common::CompressionAlgoPb;
 
-use super::{CoreConnectivityConfig, CoreConnectivityMode, CoreInstanceConfig};
-
-const OSPF_UPDATE_MY_FOREIGN_NETWORK_INTERVAL_SEC: u64 = 10;
-const MAX_DIRECT_CONNS_PER_PEER_IN_FOREIGN_NETWORK: usize = 3;
+pub use crate::config::peers::HostRoutingPolicy;
+pub use crate::instance::CoreConnectivityMode;
 
 /// Host facts and policy that cannot be derived from the shared TOML model.
-///
-/// This input deliberately contains no routes, ACL, peer, gateway, listener,
-/// or other portable configuration. Core combines it with TOML through one
-/// normalization path for both initial construction and runtime patching.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoreInstanceHostConfig {
     pub hostname_fallback: Option<String>,
@@ -60,6 +33,7 @@ pub struct CoreInstanceHostConfig {
     pub tcp_hole_punching_enabled: bool,
     pub ignore_unsupported_config: bool,
     pub connectivity: CoreConnectivityMode,
+    pub direct_testing: bool,
     pub easytier_version: String,
     pub endpoint_protocols: Vec<String>,
 }
@@ -86,6 +60,7 @@ impl Default for CoreInstanceHostConfig {
             tcp_hole_punching_enabled: true,
             ignore_unsupported_config: false,
             connectivity: CoreConnectivityMode::Full,
+            direct_testing: false,
             easytier_version: env!("CARGO_PKG_VERSION").to_owned(),
             endpoint_protocols: ManualEndpointDiscoveryConfig::default().srv_protocols,
         }
@@ -101,7 +76,7 @@ impl CoreInstanceHostConfig {
                 .any(|scheme| scheme.eq_ignore_ascii_case(url.scheme()))
     }
 
-    fn runtime_flags(&self, mut flags: Flags) -> Flags {
+    pub(crate) fn runtime_flags(&self, mut flags: Flags) -> Flags {
         if !self.ignore_unsupported_config {
             return flags;
         }
@@ -158,512 +133,64 @@ impl CoreInstanceHostConfig {
     }
 }
 
-impl CoreInstanceConfig {
-    /// Normalizes the complete shared TOML model using OS-independent defaults.
-    ///
-    /// A Host may still project runtime facts such as a fallback hostname or
-    /// platform capability after parsing, but it does not need another network
-    /// configuration schema.
-    pub fn from_toml(config: &TomlConfig) -> anyhow::Result<Self> {
-        Self::from_toml_with_host(config, &CoreInstanceHostConfig::default())
+/// Normalizes the typed configuration values with explicit Host facts and policy.
+pub fn prepare_instance_config(
+    config: InstanceConfig,
+    host: &CoreInstanceHostConfig,
+) -> anyhow::Result<InstanceConfig> {
+    let raw = config.raw().clone();
+    let mut parsed = config.into_parsed();
+
+    if parsed.hostname.is_empty()
+        && let Some(fallback) = &host.hostname_fallback
+    {
+        parsed.hostname = fallback.clone();
     }
 
-    /// Normalizes TOML with explicit Host facts and policy.
-    pub fn from_toml_with_host(
-        config: &TomlConfig,
-        host: &CoreInstanceHostConfig,
-    ) -> anyhow::Result<Self> {
-        config.ensure_id();
-        let snapshot = config.snapshot()?;
-        Self::from_parsed_with_host(&snapshot, host)
+    parsed.flags = host.runtime_flags(parsed.flags);
+
+    if !parsed.managed_credentials.is_empty() && parsed.network_identity.network_secret.is_none() {
+        anyhow::bail!("only admin nodes with a network_secret can configure managed credentials");
     }
 
-    /// Normalizes the typed configuration values with explicit Host facts and policy.
-    pub fn from_parsed_with_host(
-        parsed: &InstanceConfigParsed,
-        host: &CoreInstanceHostConfig,
-    ) -> anyhow::Result<Self> {
-        let flags = host.runtime_flags(parsed.flags.clone());
-        let instance_id = parsed.instance_id;
-        let identity = parsed.network_identity.clone();
-        let managed_credentials = parsed.managed_credentials.clone();
-        if !managed_credentials.is_empty() && identity.network_secret.is_none() {
-            anyhow::bail!(
-                "only admin nodes with a network_secret can configure managed credentials"
-            );
+    if let Some(listeners) = &mut parsed.listeners {
+        listeners.retain(|url| host.accepts_runtime_url(url));
+    }
+    parsed
+        .peer
+        .retain(|peer| host.accepts_runtime_url(&peer.uri));
+
+    if host.ignore_unsupported_config {
+        if !host.proxy_enabled {
+            parsed.proxy_network.clear();
+            parsed.exit_nodes.clear();
         }
-        let network_name = identity.network_name.clone();
-        let socket_context = SocketContext::default()
-            .with_socket_mark(flags.socket_mark)
-            .with_netns(parsed.netns.clone().map(NetNamespace::new));
-        let hostname = match &parsed.hostname {
-            hostname if !hostname.is_empty() => hostname.clone(),
-            _ => host.hostname_fallback.clone().unwrap_or_default(),
-        };
-        let acl = parsed.acl.clone();
-        let peers = parsed
-            .peer
-            .iter()
-            .filter(|peer| host.accepts_runtime_url(&peer.uri))
-            .cloned()
-            .collect::<Vec<_>>();
-        let proxy_networks = if host.ignore_unsupported_config && !host.proxy_enabled {
-            Vec::new()
-        } else {
-            parsed.proxy_network.clone()
-        };
-
-        let peer_snapshot =
-            crate::config::peers::PeerRuntimeSnapshot::from_host_input(PeerRuntimeSnapshotInput {
-                node: NodeConfig {
-                    peer_id: None,
-                    instance_id: Some(*instance_id.as_bytes()),
-                    hostname: (!hostname.is_empty()).then_some(hostname),
-                    network_name: network_name.clone(),
-                },
-                routes: RouteConfig {
-                    ipv4: parsed.ipv4.map(|value| IpPrefix {
-                        address: value.address().into(),
-                        prefix_len: value.network_length(),
-                    }),
-                    ipv6: parsed.ipv6.map(|value| IpPrefix {
-                        address: value.address().into(),
-                        prefix_len: value.network_length(),
-                    }),
-                    proxy_networks: proxy_networks
-                        .into_iter()
-                        .map(|proxy| ProxyNetworkConfig {
-                            real: IpPrefix {
-                                address: proxy.cidr.first_address().into(),
-                                prefix_len: proxy.cidr.network_length(),
-                            },
-                            mapped: proxy.mapped_cidr.map(|mapped| IpPrefix {
-                                address: mapped.first_address().into(),
-                                prefix_len: mapped.network_length(),
-                            }),
-                        })
-                        .collect(),
-                    ..Default::default()
-                },
-                network_identity: identity,
-                stun_info: Default::default(),
-                flags: flags.clone(),
-                secure_mode: parsed.secure_mode.clone(),
-                host_routing: host.host_routing,
-                acl: acl.clone(),
-                easytier_version: host.easytier_version.clone(),
-                pinned_peers: peers
-                    .iter()
-                    .cloned()
-                    .map(|peer| (peer.uri, peer.peer_public_key))
-                    .collect(),
-                ospf_update_my_foreign_network_interval_sec:
-                    OSPF_UPDATE_MY_FOREIGN_NETWORK_INTERVAL_SEC,
-                max_direct_conns_per_peer_in_foreign_network:
-                    MAX_DIRECT_CONNS_PER_PEER_IN_FOREIGN_NETWORK,
-                hmac_secret_digest: false,
-            });
-        let peer = PortablePeerManagerConfig {
-            snapshot: peer_snapshot,
-            route_algo: RouteAlgoType::Ospf,
-            exit_nodes: if host.ignore_unsupported_config && !host.proxy_enabled {
-                Vec::new()
-            } else {
-                parsed.exit_nodes.clone()
-            },
-            foreign_context_default_flags: host.runtime_flags(TomlConfig::default().get_flags()),
-        };
-
-        let tcp_bind = TcpBindOptions::default().with_context(socket_context.clone());
-        let udp_bind = UdpBindOptions::direct_connect().with_context(socket_context.clone());
-        let listeners = Some(ListenerRuntimeConfig::new(
-            parsed
-                .listeners
-                .clone()
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|url| host.accepts_runtime_url(url))
-                .collect(),
-            flags.enable_ipv6,
-            socket_context.clone(),
-        ));
-        let socks5_bind = (!host.ignore_unsupported_config || host.gateway_enabled)
-            .then_some(parsed.socks5_proxy.as_ref())
-            .flatten()
-            .map(|url| {
-                let host = url
-                    .host_str()
-                    .ok_or_else(|| anyhow::anyhow!("SOCKS5 portal host is missing"))?;
-                let port = url
-                    .port()
-                    .ok_or_else(|| anyhow::anyhow!("SOCKS5 portal port is missing"))?;
-                format!("{host}:{port}")
-                    .parse()
-                    .map_err(|error| anyhow::anyhow!("invalid SOCKS5 portal address: {error}"))
-            })
-            .transpose()?;
-        let runtime = CoreRuntimeConfig {
-            acl: AclRuleConfig {
-                acl,
-                tcp_whitelist: parsed.tcp_whitelist.clone(),
-                udp_whitelist: parsed.udp_whitelist.clone(),
-                whitelist_priority: None,
-            },
-            dhcp_ipv4: parsed.dhcp,
-            gateway: GatewayRuntimeConfig {
-                socks5_bind,
-                port_forwards: if host.ignore_unsupported_config && !host.gateway_enabled {
-                    Vec::new()
-                } else {
-                    parsed.port_forward.clone()
-                },
-            },
-            manual_routes: parsed
-                .routes
-                .as_ref()
-                .map(|routes| routes.iter().copied().collect::<BTreeSet<_>>()),
-            proxy: ProxyRuntimeConfig {
-                enable_exit_node: flags.enable_exit_node || host.force_exit_node,
-                no_tun: flags.no_tun,
-                forward_by_system: flags.proxy_forward_by_system,
-                force_smoltcp: host.smoltcp_available
-                    && (flags.use_smoltcp || flags.no_tun || host.requires_smoltcp),
-                icmp_failure_is_fatal: host.icmp_failure_is_fatal,
-                udp_response_ipv4_mtu: 1280,
-            },
-            public_ipv6_auto: parsed.ipv6_public_addr_auto
-                && (!host.ignore_unsupported_config || host.public_ipv6_provider_supported),
-            public_ipv6_provider: PublicIpv6ProviderConfig {
-                provider_enabled: parsed.ipv6_public_addr_provider
-                    && (!host.ignore_unsupported_config || host.public_ipv6_provider_supported),
-                configured_prefix: (!host.ignore_unsupported_config
-                    || host.public_ipv6_provider_supported)
-                    .then_some(parsed.ipv6_public_addr_prefix)
-                    .flatten(),
-                provider_supported: host.public_ipv6_provider_supported,
-            },
-        };
-        let stun_servers = parsed.stun_servers.clone();
-
-        Ok(Self {
-            instance_name: parsed.instance_name.clone(),
-            peer,
-            managed_credentials,
-            vpn_portal: (!host.ignore_unsupported_config || host.vpn_portal_enabled)
-                .then_some(parsed.vpn_portal_config.as_ref())
-                .flatten()
-                .filter(|config| config.enabled != Some(false))
-                .map(|config| PortalRuntimeConfig {
-                    clients: config
-                        .clients
-                        .iter()
-                        .map(|client| PortalClientConfig {
-                            name: client.name.clone(),
-                            virtual_ip: client.virtual_ip,
-                            groups: client.groups.clone(),
-                        })
-                        .collect(),
-                }),
-            connectivity: CoreConnectivityConfig {
-                initial_peers: peers.into_iter().map(|peer| peer.uri).collect(),
-                listeners,
-                runtime,
-                startup_plan: super::CoreInstanceStartupPlan {
-                    gateway: host.gateway_enabled,
-                    packet_proxy: host.proxy_enabled,
-                    connectivity: host.connectivity,
-                },
-                stun: StunServerConfig {
-                    udp_servers: stun_servers
-                        .clone()
-                        .unwrap_or_else(|| StunServerConfig::default().udp_servers),
-                    tcp_servers: parsed
-                        .tcp_stun_servers
-                        .clone()
-                        .or_else(|| stun_servers.clone())
-                        .unwrap_or_else(|| StunServerConfig::default().tcp_servers),
-                    udp_v6_servers: parsed
-                        .stun_servers_v6
-                        .clone()
-                        .or_else(|| stun_servers.as_ref().map(|_| Vec::new()))
-                        .unwrap_or_else(|| StunServerConfig::default().udp_v6_servers),
-                },
-                endpoint_discovery: ManualEndpointDiscoveryConfig {
-                    user_agent: format!("easytier/{}", host.easytier_version),
-                    network_name: network_name.clone(),
-                    http_tcp_bind: tcp_bind.clone(),
-                    dns_record_context: socket_context,
-                    srv_protocols: host.endpoint_protocols.clone(),
-                    ..Default::default()
-                },
-                manual: ManualConnectorOptions {
-                    bind_device: flags.bind_device,
-                    allow_interface_bind: host.allow_interface_bind,
-                    tcp_bind: tcp_bind.clone(),
-                    udp_bind: udp_bind.clone(),
-                    ..Default::default()
-                },
-                direct: DirectConnectorOptions {
-                    default_protocol: flags.default_protocol,
-                    enable_ipv6: flags.enable_ipv6,
-                    allow_public_server: true,
-                    bind_device: flags.bind_device,
-                    allow_interface_bind: host.allow_interface_bind,
-                    tcp_bind,
-                    udp_bind,
-                    testing: false,
-                },
-            },
-        })
+        if !host.gateway_enabled {
+            parsed.port_forward.clear();
+            parsed.socks5_proxy = None;
+        }
+        if !host.vpn_portal_enabled {
+            parsed.vpn_portal_config = None;
+        }
+        if !host.public_ipv6_provider_supported {
+            parsed.ipv6_public_addr_auto = false;
+            parsed.ipv6_public_addr_provider = false;
+            parsed.ipv6_public_addr_prefix = None;
+        }
     }
+
+    Ok(InstanceConfig::new(parsed, raw, ()))
 }
 
 #[cfg(test)]
 mod tests {
-    use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
-
     use super::*;
+    use crate::config::InstanceConfigParsed;
+    use crate::config::toml::{ConfigLoader, TomlConfig};
 
     #[test]
-    fn tcp_stun_servers_follow_toml_override_rules() {
-        let fallback = TomlConfig::new_from_str(
-            r#"
-stun_servers = ["fallback.example.com:3478"]
-"#,
-        )
-        .unwrap();
-        let normalized = CoreInstanceConfig::from_toml(&fallback).unwrap();
-        assert_eq!(
-            normalized.connectivity.stun.tcp_servers,
-            ["fallback.example.com:3478"]
-        );
-
-        let overridden = TomlConfig::new_from_str(
-            r#"
-stun_servers = ["fallback.example.com:3478"]
-tcp_stun_servers = ["tcp.example.com:3478"]
-"#,
-        )
-        .unwrap();
-        let normalized = CoreInstanceConfig::from_toml(&overridden).unwrap();
-        assert_eq!(
-            normalized.connectivity.stun.tcp_servers,
-            ["tcp.example.com:3478"]
-        );
-
-        let disabled = TomlConfig::new_from_str(
-            r#"
-stun_servers = ["fallback.example.com:3478"]
-tcp_stun_servers = []
-"#,
-        )
-        .unwrap();
-        let normalized = CoreInstanceConfig::from_toml(&disabled).unwrap();
-        assert!(normalized.connectivity.stun.tcp_servers.is_empty());
-    }
-
-    #[test]
-    fn custom_udp_stun_servers_disable_default_ipv6_servers() {
-        let config = TomlConfig::new_from_str(
-            r#"
-stun_servers = ["custom.example.com:3478"]
-"#,
-        )
-        .unwrap();
-        let normalized = CoreInstanceConfig::from_toml(&config).unwrap();
-        assert!(normalized.connectivity.stun.udp_v6_servers.is_empty());
-
-        let config = TomlConfig::new_from_str(
-            r#"
-stun_servers = ["custom.example.com:3478"]
-stun_servers_v6 = ["custom-v6.example.com:3478"]
-"#,
-        )
-        .unwrap();
-        let normalized = CoreInstanceConfig::from_toml(&config).unwrap();
-        assert_eq!(
-            normalized.connectivity.stun.udp_v6_servers,
-            ["custom-v6.example.com:3478"]
-        );
-    }
-
-    #[test]
-    fn credential_nodes_cannot_declare_managed_credentials() {
-        let config = TomlConfig::default();
-        config.set_network_identity(crate::config::toml::NetworkIdentity::new_credential(
-            "credential-network".to_owned(),
-        ));
-        config.set_managed_credentials(vec![crate::config::toml::ManagedCredentialConfig {
-            credential_id: "managed".to_owned(),
-            credential_secret: BASE64_STANDARD.encode([1u8; 32]),
-            groups: Vec::new(),
-            allow_relay: false,
-            allowed_proxy_cidrs: Vec::new(),
-            expiry_unix: 2_000_000_000,
-            reusable: true,
-        }]);
-
-        let error = CoreInstanceConfig::from_toml(&config).unwrap_err();
-        assert!(error.to_string().contains("only admin nodes"));
-    }
-
-    #[cfg(feature = "config-write")]
-    #[test]
-    fn explicit_stun_servers_survive_dump_reload() {
-        let assert_roundtrip = |config: TomlConfig| {
-            let before = CoreInstanceConfig::from_toml(&config)
-                .unwrap()
-                .connectivity
-                .stun;
-            let reloaded = TomlConfig::new_from_str(&config.dump()).unwrap();
-            let after = CoreInstanceConfig::from_toml(&reloaded)
-                .unwrap()
-                .connectivity
-                .stun;
-
-            assert_eq!(after, before);
-        };
-
-        let defaults = StunServerConfig::default();
-        let config = TomlConfig::default();
-        config.set_stun_servers(Some(defaults.udp_servers.clone()));
-        assert_roundtrip(config);
-
-        let config = TomlConfig::default();
-        config.set_stun_servers(Some(vec!["custom.example.com:3478".to_string()]));
-        config.set_tcp_stun_servers(Some(defaults.tcp_servers));
-        config.set_stun_servers_v6(Some(defaults.udp_v6_servers));
-        assert_roundtrip(config);
-    }
-
-    #[test]
-    fn shared_toml_normalizes_instance_identity_and_connectivity() {
-        let config = TomlConfig::new_from_str(
-            r#"
-instance_id = "018f4fb1-7a2c-7d1f-9d89-935b0ad7e135"
-instance_name = "wasi-test"
-hostname = "portable-host"
-ipv4 = "10.144.0.2/24"
-listeners = ["tcp://0.0.0.0:11010"]
-
-[[peer]]
-uri = "tcp://127.0.0.1:11010"
-
-[network_identity]
-network_name = "portable"
-network_secret = "secret"
-
-[flags]
-disable_p2p = true
-"#,
-        )
-        .unwrap();
-
-        let normalized = CoreInstanceConfig::from_toml(&config).unwrap();
-        assert_eq!(normalized.instance_name, "wasi-test");
-        assert_eq!(
-            normalized.peer.snapshot.runtime.core.node.instance_id,
-            Some(*config.get_id().as_bytes())
-        );
-        assert_eq!(normalized.peer.snapshot.runtime.core.node.peer_id, None);
-        assert_eq!(
-            normalized
-                .peer
-                .snapshot
-                .runtime
-                .core
-                .node
-                .hostname
-                .as_deref(),
-            Some("portable-host")
-        );
-        assert_eq!(
-            normalized.peer.snapshot.runtime.core.node.network_name,
-            "portable"
-        );
-        assert_eq!(normalized.connectivity.initial_peers.len(), 1);
-        assert_eq!(
-            normalized
-                .connectivity
-                .listeners
-                .as_ref()
-                .unwrap()
-                .urls
-                .len(),
-            1
-        );
-        assert!(normalized.peer.snapshot.flags.disable_p2p);
-    }
-
-    #[test]
-    fn host_config_supplies_only_platform_policy() {
-        let config = TomlConfig::default();
-        let host = CoreInstanceHostConfig {
-            hostname_fallback: Some("host-fallback".to_owned()),
-            host_routing: HostRoutingPolicy {
-                local_exit_node_fallback: true,
-            },
-            force_exit_node: true,
-            allow_interface_bind: false,
-            smoltcp_available: true,
-            requires_smoltcp: true,
-            icmp_failure_is_fatal: true,
-            public_ipv6_provider_supported: true,
-            gateway_enabled: false,
-            connectivity: CoreConnectivityMode::InboundOnly,
-            easytier_version: "host-version".to_owned(),
-            endpoint_protocols: vec!["host-protocol".to_owned()],
-            ..Default::default()
-        };
-
-        let normalized = CoreInstanceConfig::from_toml_with_host(&config, &host).unwrap();
-
-        assert_eq!(
-            normalized
-                .peer
-                .snapshot
-                .runtime
-                .core
-                .node
-                .hostname
-                .as_deref(),
-            Some("host-fallback")
-        );
-        assert_eq!(
-            normalized.connectivity.startup_plan.connectivity,
-            CoreConnectivityMode::InboundOnly
-        );
-        assert!(
-            normalized
-                .peer
-                .snapshot
-                .runtime
-                .host_routing
-                .local_exit_node_fallback
-        );
-        assert_eq!(normalized.peer.snapshot.easytier_version, "host-version");
-        assert!(normalized.connectivity.runtime.proxy.enable_exit_node);
-        assert!(normalized.connectivity.runtime.proxy.force_smoltcp);
-        assert!(normalized.connectivity.runtime.proxy.icmp_failure_is_fatal);
-        assert!(
-            normalized
-                .connectivity
-                .runtime
-                .public_ipv6_provider
-                .provider_supported
-        );
-        assert!(!normalized.connectivity.startup_plan.gateway);
-        assert!(!normalized.connectivity.manual.allow_interface_bind);
-        assert!(!normalized.connectivity.direct.allow_interface_bind);
-        assert_eq!(
-            normalized.connectivity.endpoint_discovery.srv_protocols,
-            ["host-protocol"]
-        );
-    }
-
-    #[test]
-    fn ignored_capabilities_stay_in_toml_but_not_runtime_config() {
-        let config = TomlConfig::new_from_str(
+    fn host_config_normalizes_hostname_and_filters_unsupported_when_requested() {
+        let toml = TomlConfig::new_from_str(
             r#"
 listeners = ["tcp://127.0.0.1:11010", "quic://127.0.0.1:11011"]
 proxy_network = [{ cidr = "10.20.0.0/16" }]
@@ -678,17 +205,15 @@ uri = "quic://127.0.0.1:11011"
 enable_exit_node = true
 enable_kcp_proxy = true
 accept_dns = true
-encryption_algorithm = "chacha20"
-data_compress_algo = "Zstd"
 "#,
         )
         .unwrap();
-        config.set_exit_nodes(vec!["10.144.144.2".parse().unwrap()]);
-        config.set_ipv6_public_addr_provider(true);
-        config.ensure_id();
-        let before = config.dump();
+        toml.set_exit_nodes(vec!["10.144.144.2".parse().unwrap()]);
+        toml.set_ipv6_public_addr_provider(true);
+        let before_dump = toml.dump();
 
         let host = CoreInstanceHostConfig {
+            hostname_fallback: Some("fallback-host".to_owned()),
             ignore_unsupported_config: true,
             smoltcp_available: true,
             proxy_enabled: false,
@@ -701,57 +226,51 @@ data_compress_algo = "Zstd"
             ..Default::default()
         };
 
-        let normalized = CoreInstanceConfig::from_toml_with_host(&config, &host).unwrap();
+        let prepared = prepare_instance_config(toml.snapshot().unwrap(), &host).unwrap();
 
-        assert_eq!(config.dump(), before);
-        assert!(!normalized.connectivity.startup_plan.packet_proxy);
-        assert_eq!(normalized.connectivity.initial_peers.len(), 1);
-        assert_eq!(
-            normalized
-                .connectivity
-                .listeners
-                .as_ref()
-                .unwrap()
-                .urls
-                .len(),
-            1
-        );
-        assert!(
-            normalized
-                .peer
-                .snapshot
-                .runtime
-                .core
-                .routes
-                .proxy_networks
-                .is_empty()
-        );
-        assert!(normalized.peer.exit_nodes.is_empty());
-        assert!(!normalized.connectivity.runtime.proxy.enable_exit_node);
-        assert!(
-            !normalized
-                .connectivity
-                .runtime
-                .public_ipv6_provider
-                .provider_enabled
-        );
-        let flags = &normalized.peer.snapshot.flags;
-        assert!(!flags.enable_kcp_proxy);
-        assert!(flags.disable_kcp_input);
-        assert!(!flags.accept_dns);
-        let expected_encryption = if algorithm_is_available(EncryptionAlgorithm::ChaCha20) {
-            EncryptionAlgorithm::ChaCha20
-        } else {
-            EncryptionAlgorithm::AesGcm
+        assert_eq!(toml.dump(), before_dump);
+        assert_eq!(prepared.hostname, "fallback-host");
+        assert_eq!(prepared.listeners.as_ref().unwrap().len(), 1);
+        assert_eq!(prepared.peer.len(), 1);
+        assert!(prepared.proxy_network.is_empty());
+        assert!(prepared.exit_nodes.is_empty());
+        assert!(!prepared.flags.enable_exit_node);
+        assert!(!prepared.flags.enable_kcp_proxy);
+        assert!(prepared.flags.disable_kcp_input);
+        assert!(!prepared.flags.accept_dns);
+        assert!(!prepared.ipv6_public_addr_provider);
+    }
+
+    #[test]
+    fn managed_credentials_require_network_secret() {
+        let mut parsed = InstanceConfigParsed {
+            network_identity: crate::config::NetworkIdentity {
+                network_name: "test".to_string(),
+                network_secret: None,
+                network_secret_digest: None,
+            },
+            managed_credentials: vec![crate::config::toml::ManagedCredentialConfig {
+                credential_id: "alice".to_string(),
+                credential_secret: "secret".to_string(),
+                groups: vec!["admin".to_string()],
+                allow_relay: false,
+                allowed_proxy_cidrs: Vec::new(),
+                expiry_unix: 0,
+                reusable: true,
+            }],
+            ..Default::default()
         };
-        assert_eq!(flags.encryption_algorithm, expected_encryption.to_string());
-        assert_eq!(
-            flags.data_compress_algo,
-            if CompressorAlgo::ZstdDefault.is_available() {
-                CompressionAlgoPb::Zstd as i32
-            } else {
-                CompressionAlgoPb::None as i32
-            }
+        parsed.network_identity.network_secret = None;
+        let config = InstanceConfig::from_parsed(parsed);
+
+        let host = CoreInstanceHostConfig::default();
+        let result = prepare_instance_config(config, &host);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("only admin nodes with a network_secret")
         );
     }
 }

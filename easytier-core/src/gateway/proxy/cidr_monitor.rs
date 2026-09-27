@@ -6,7 +6,7 @@ use tokio::sync::Mutex;
 use tokio_util::task::AbortOnDropHandle;
 
 use crate::{
-    config::runtime::{CoreInstanceRuntimeConfig, CoreRuntimeConfigStore},
+    config::{InstanceConfig, InstanceConfigParsed, runtime::InstanceConfigStore},
     events::{CoreEvent, CoreEventSink},
     peers::peer_manager::PeerManagerCore,
 };
@@ -16,11 +16,17 @@ pub(crate) struct ProxyCidrConfigSnapshot {
     pub manual_routes: Option<BTreeSet<Ipv4Cidr>>,
 }
 
-impl From<&CoreInstanceRuntimeConfig> for ProxyCidrConfigSnapshot {
-    fn from(config: &CoreInstanceRuntimeConfig) -> Self {
+impl From<&InstanceConfigParsed> for ProxyCidrConfigSnapshot {
+    fn from(config: &InstanceConfigParsed) -> Self {
         Self {
-            manual_routes: config.services.manual_routes.clone(),
+            manual_routes: config.routes.as_ref().map(|r| r.iter().copied().collect()),
         }
+    }
+}
+
+impl From<&InstanceConfig> for ProxyCidrConfigSnapshot {
+    fn from(config: &InstanceConfig) -> Self {
+        config.parsed().into()
     }
 }
 
@@ -48,7 +54,7 @@ impl ProxyCidrMonitorRuntime {
     pub(crate) async fn start(
         &self,
         peer_manager: &Arc<PeerManagerCore>,
-        runtime_config: CoreRuntimeConfigStore,
+        runtime_config: InstanceConfigStore,
     ) {
         if !self.enabled {
             return;
@@ -98,7 +104,7 @@ pub(crate) fn diff_proxy_cidrs(
 
 pub(crate) async fn collect_proxy_cidrs(
     peer_manager: &PeerManagerCore,
-    config: &CoreInstanceRuntimeConfig,
+    config: &InstanceConfig,
 ) -> BTreeSet<Ipv4Cidr> {
     let peer_routes = peer_manager.get_route().list_proxy_cidrs().await;
     resolve_proxy_cidrs_from_runtime(peer_routes, config)
@@ -106,14 +112,14 @@ pub(crate) async fn collect_proxy_cidrs(
 
 fn resolve_proxy_cidrs_from_runtime(
     peer_routes: BTreeSet<Ipv4Cidr>,
-    config: &CoreInstanceRuntimeConfig,
+    config: &InstanceConfig,
 ) -> BTreeSet<Ipv4Cidr> {
     resolve_proxy_cidrs(peer_routes, config.into())
 }
 
 pub(crate) async fn collect_proxy_cidr_diff(
     peer_manager: &PeerManagerCore,
-    runtime_config: &CoreRuntimeConfigStore,
+    runtime_config: &InstanceConfigStore,
     previous: &BTreeSet<Ipv4Cidr>,
 ) -> ProxyCidrDiff {
     let config = runtime_config.snapshot();
@@ -122,7 +128,7 @@ pub(crate) async fn collect_proxy_cidr_diff(
 
 async fn collect_proxy_cidr_diff_from_snapshot(
     peer_manager: &PeerManagerCore,
-    config: &CoreInstanceRuntimeConfig,
+    config: &InstanceConfig,
     previous: &BTreeSet<Ipv4Cidr>,
 ) -> ProxyCidrDiff {
     let current = collect_proxy_cidrs(peer_manager, config).await;
@@ -132,7 +138,7 @@ async fn collect_proxy_cidr_diff_from_snapshot(
 #[cfg_attr(not(feature = "proxy-cidr-monitor"), allow(dead_code))]
 pub(crate) struct ProxyCidrMonitor {
     peer_manager: std::sync::Weak<PeerManagerCore>,
-    runtime_config: CoreRuntimeConfigStore,
+    runtime_config: InstanceConfigStore,
     events: Arc<dyn CoreEventSink>,
 }
 
@@ -140,7 +146,7 @@ pub(crate) struct ProxyCidrMonitor {
 impl ProxyCidrMonitor {
     pub(crate) fn new(
         peer_manager: &Arc<PeerManagerCore>,
-        runtime_config: CoreRuntimeConfigStore,
+        runtime_config: InstanceConfigStore,
         events: Arc<dyn CoreEventSink>,
     ) -> Self {
         Self {
@@ -154,7 +160,7 @@ impl ProxyCidrMonitor {
         AbortOnDropHandle::new(tokio::spawn(async move {
             let mut current = BTreeSet::new();
             let mut last_update = None;
-            let mut last_runtime_config: Option<Arc<CoreInstanceRuntimeConfig>> = None;
+            let mut last_runtime_config: Option<Arc<InstanceConfig>> = None;
 
             loop {
                 crate::foundation::time::sleep(Duration::from_secs(1)).await;
@@ -197,10 +203,6 @@ impl ProxyCidrMonitor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        config::peers::PeerRuntimeSnapshot,
-        config::runtime::{CoreInstanceRuntimeConfig, CoreRuntimeConfig},
-    };
 
     fn cidrs(values: &[&str]) -> BTreeSet<Ipv4Cidr> {
         values.iter().map(|value| value.parse().unwrap()).collect()
@@ -234,21 +236,19 @@ mod tests {
 
     #[test]
     fn runtime_store_update_changes_the_monitor_config_snapshot() {
-        let initial_peer = PeerRuntimeSnapshot::default();
-        let store = CoreRuntimeConfigStore::new(
-            CoreRuntimeConfig {
-                manual_routes: Some(cidrs(&["192.0.2.0/24"])),
-                ..Default::default()
-            },
-            Arc::new(initial_peer),
-        );
+        use optionize::Optionizable;
+
+        let initial_parsed = InstanceConfigParsed {
+            routes: Some(vec!["192.0.2.0/24".parse().unwrap()]),
+            ..Default::default()
+        };
+        let initial_raw = initial_parsed.clone().downgrade();
+        let store = InstanceConfigStore::new(InstanceConfig::new(initial_parsed, initial_raw, ()));
         let initial = store.snapshot();
 
-        let updated_peer = PeerRuntimeSnapshot::default();
-        store.replace(CoreInstanceRuntimeConfig {
-            services: CoreRuntimeConfig::default(),
-            peer: Arc::new(updated_peer),
-        });
+        let updated_parsed = InstanceConfigParsed::default();
+        let updated_raw = updated_parsed.clone().downgrade();
+        store.replace(InstanceConfig::new(updated_parsed, updated_raw, ()));
         let updated = store.snapshot();
 
         assert_eq!(

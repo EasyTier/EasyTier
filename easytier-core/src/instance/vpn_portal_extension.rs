@@ -1,5 +1,5 @@
 use crate::{
-    config::runtime::CoreInstanceRuntimeConfig,
+    config::InstanceConfigParsed,
     gateway::vpn_portal::{PortalClientConfig, PortalInfoSnapshot},
     instance::{CoreInstance, CoreInstanceHost},
 };
@@ -22,7 +22,7 @@ where
     pub(crate) async fn update_vpn_portal_clients(
         &self,
         clients: Vec<PortalClientConfig>,
-        runtime: &CoreInstanceRuntimeConfig,
+        runtime: &InstanceConfigParsed,
     ) -> anyhow::Result<Vec<PortalClientConfig>> {
         self.vpn_portal.update_clients(clients, runtime).await
     }

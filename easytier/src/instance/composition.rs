@@ -13,7 +13,7 @@ use easytier_core::{
 };
 use easytier_core::{
     events::{CoreEvent, CoreEventSink},
-    instance::{CoreHostAdapters, CoreInstance, CoreInstanceConfig, PacketEgressHost},
+    instance::{CoreHostAdapters, CoreInstance, PacketEgressHost},
     process_runtime::CoreProcessRuntime,
 };
 
@@ -281,7 +281,22 @@ pub(crate) fn runtime_one_shot_manual_connector(
     config: &TomlConfig,
     process_runtime: Arc<CoreProcessRuntime>,
 ) -> anyhow::Result<ManualTunnelConnector<NativeInstanceHost>> {
-    let normalized = CoreInstanceConfig::from_toml_with_host(config, &runtime_core_host_config())?;
+    use easytier_core::connectivity::manual::{
+        ManualConnectorOptions, discovery::ManualEndpointDiscoveryConfig,
+    };
+    use easytier_core::instance::prepare_instance_config;
+
+    let host_config = runtime_core_host_config();
+    let snapshot = config.snapshot()?;
+    let prepared = prepare_instance_config(snapshot, &host_config)?;
+    let parsed = prepared.parsed();
+    let endpoint_discovery = ManualEndpointDiscoveryConfig {
+        user_agent: format!("easytier/{}", host_config.easytier_version),
+        network_name: parsed.network_identity.network_name.clone(),
+        srv_protocols: host_config.endpoint_protocols.clone(),
+        ..Default::default()
+    };
+    let manual_options = ManualConnectorOptions::default();
     let host = native_instance_host(global_ctx.clone());
     let runtime_dns = native_host_runtime();
     let dns: Arc<dyn DnsResolver> = runtime_dns.clone();
@@ -291,8 +306,8 @@ pub(crate) fn runtime_one_shot_manual_connector(
         dns,
         dns_records,
         runtime_client_protocol_upgrader(global_ctx.clone()),
-        normalized.connectivity.endpoint_discovery,
-        normalized.connectivity.manual,
+        endpoint_discovery,
+        manual_options,
     ))
 }
 
@@ -304,16 +319,16 @@ mod tests {
     use easytier_core::gateway::proxy::wrapped_transport::{
         WrappedTransportConnect, WrappedTransportEngine,
     };
-    use easytier_core::listener::plan::ListenerRuntimeConfig;
     use smoltcp::wire::{IpAddress, IpProtocol, Ipv4Packet, UdpPacket};
     #[cfg(feature = "kcp")]
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use url::Url;
 
     #[cfg(feature = "kcp")]
     use crate::gateway::kcp_proxy::KcpProxyService;
     use crate::{
         common::{config::NetworkIdentity, global_ctx::tests::get_mock_global_ctx_with_network},
-        instance::config::test_core_instance_config,
+        instance::config::test_instance_config,
     };
 
     use super::*;
@@ -329,7 +344,7 @@ mod tests {
     fn build_native_kcp_test_instance(
         global_ctx: ArcGlobalCtx,
         packet_sink: tokio::sync::mpsc::Sender<Vec<u8>>,
-        listeners: Option<ListenerRuntimeConfig>,
+        listeners: Option<Vec<Url>>,
     ) -> anyhow::Result<(Arc<NativeCoreInstance>, Arc<KcpProxyService>)> {
         let mut adapters = runtime_core_host_adapters(
             global_ctx.clone(),
@@ -337,20 +352,19 @@ mod tests {
             Arc::new(packet_sink),
         );
         adapters.proxy_cidr_monitor_enabled = false;
+        adapters.config.gateway_enabled = false;
+        adapters.config.direct_testing = true;
         let service = Arc::new(KcpProxyService::new());
         adapters.wrapped_transports = WrappedTransportEngines {
             kcp: Some(service.clone()),
             quic: None,
         };
 
-        let mut config = test_core_instance_config(&global_ctx);
-        config.connectivity.listeners = listeners;
-        config.connectivity.startup_plan.gateway = false;
-        config.connectivity.stun.udp_servers.clear();
-        config.connectivity.stun.tcp_servers.clear();
-        config.connectivity.stun.udp_v6_servers.clear();
-        config.connectivity.manual = Default::default();
-        config.connectivity.direct.testing = true;
+        let mut config = test_instance_config(&global_ctx);
+        config.parsed_mut().flags.bind_device = false;
+        config.parsed_mut().peer.clear();
+        config.parsed_mut().listeners = listeners;
+        config.parsed_mut().stun_servers = Some(Vec::new());
 
         let instance = NativeCoreInstance::new(config, adapters)?;
         Ok((instance, service))
@@ -397,15 +411,7 @@ mod tests {
             let (instance_a, kcp_a) = build_native_kcp_test_instance(
                 global_a.clone(),
                 packet_sink_a,
-                Some(ListenerRuntimeConfig::new(
-                    vec!["tcp://127.0.0.1:0".parse().unwrap()],
-                    false,
-                    test_core_instance_config(&global_a)
-                        .connectivity
-                        .direct
-                        .tcp_bind
-                        .context,
-                )),
+                Some(vec!["tcp://127.0.0.1:0".parse().unwrap()]),
             )
             .unwrap();
             let (instance_b, _kcp_b) =
@@ -415,7 +421,11 @@ mod tests {
             start_a.unwrap();
             start_b.unwrap();
 
-            let listener = instance_a.running_listeners().pop().unwrap();
+            let listener = instance_a
+                .running_listeners()
+                .into_iter()
+                .find(|u| u.scheme() == "tcp")
+                .unwrap();
             instance_b.add_connector(listener).unwrap();
             let peer_a_id = instance_a.peer_id();
             let peer_b_id = instance_b.peer_id();
@@ -474,52 +484,40 @@ mod tests {
         global_b.set_ipv4(Some("10.250.0.2/24".parse().unwrap()));
         let (packet_sink_a, _packet_receiver_a) = create_host_packet_channel();
         let (packet_sink_b, mut packet_receiver_b) = create_host_packet_channel();
-        let mut config_a = test_core_instance_config(&global_a);
-        config_a.connectivity.initial_peers.clear();
-        config_a.connectivity.listeners = Some(ListenerRuntimeConfig::new(
-            vec!["tcp://127.0.0.1:0".parse().unwrap()],
-            false,
-            config_a.connectivity.direct.tcp_bind.context.clone(),
-        ));
-        config_a.connectivity.runtime = Default::default();
-        config_a.connectivity.stun.udp_servers.clear();
-        config_a.connectivity.stun.tcp_servers.clear();
-        config_a.connectivity.stun.udp_v6_servers.clear();
-        config_a.connectivity.manual = Default::default();
-        config_a.connectivity.direct.testing = true;
-        let instance_a = NativeCoreInstance::new(
-            config_a,
-            runtime_core_host_adapters(
-                global_a.clone(),
-                CoreProcessRuntime::new(),
-                Arc::new(packet_sink_a),
-            ),
-        )
-        .unwrap();
+        let mut config_a = test_instance_config(&global_a);
+        config_a.parsed_mut().flags.bind_device = false;
+        config_a.parsed_mut().peer.clear();
+        config_a.parsed_mut().listeners = Some(vec!["tcp://127.0.0.1:0".parse().unwrap()]);
+        config_a.parsed_mut().stun_servers = Some(Vec::new());
+        let mut adapters_a = runtime_core_host_adapters(
+            global_a.clone(),
+            CoreProcessRuntime::new(),
+            Arc::new(packet_sink_a),
+        );
+        adapters_a.config.direct_testing = true;
+        let instance_a = NativeCoreInstance::new(config_a, adapters_a).unwrap();
 
-        let mut config_b = test_core_instance_config(&global_b);
-        config_b.connectivity.initial_peers.clear();
-        config_b.connectivity.listeners = None;
-        config_b.connectivity.runtime = Default::default();
-        config_b.connectivity.stun.udp_servers.clear();
-        config_b.connectivity.stun.tcp_servers.clear();
-        config_b.connectivity.stun.udp_v6_servers.clear();
-        config_b.connectivity.manual = Default::default();
-        config_b.connectivity.direct.testing = true;
-        let instance_b = NativeCoreInstance::new(
-            config_b,
-            runtime_core_host_adapters(
-                global_b.clone(),
-                CoreProcessRuntime::new(),
-                Arc::new(packet_sink_b),
-            ),
-        )
-        .unwrap();
+        let mut config_b = test_instance_config(&global_b);
+        config_b.parsed_mut().flags.bind_device = false;
+        config_b.parsed_mut().peer.clear();
+        config_b.parsed_mut().listeners = None;
+        config_b.parsed_mut().stun_servers = Some(Vec::new());
+        let mut adapters_b = runtime_core_host_adapters(
+            global_b.clone(),
+            CoreProcessRuntime::new(),
+            Arc::new(packet_sink_b),
+        );
+        adapters_b.config.direct_testing = true;
+        let instance_b = NativeCoreInstance::new(config_b, adapters_b).unwrap();
 
         let (start_a, start_b) = tokio::join!(instance_a.start(), instance_b.start());
         start_a.unwrap();
         start_b.unwrap();
-        let listener = instance_a.running_listeners().pop().unwrap();
+        let listener = instance_a
+            .running_listeners()
+            .into_iter()
+            .find(|u| u.scheme() == "tcp")
+            .unwrap();
         instance_b.add_connector(listener).unwrap();
 
         let peer_a_id = instance_a.peer_id();

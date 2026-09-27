@@ -1,10 +1,9 @@
-use std::net::IpAddr;
 #[cfg(any(test, feature = "proxy-packet"))]
 use std::net::Ipv4Addr;
 
 use parking_lot::RwLock;
 
-use crate::config::{IpPrefix, ProxyNetworkConfig};
+use crate::config::toml::ProxyNetworkConfig;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProxyCidrRule {
@@ -25,17 +24,10 @@ impl ProxyCidrSnapshot {
     }
 }
 
-fn ipv4_cidr(prefix: &IpPrefix) -> Option<cidr::Ipv4Cidr> {
-    let IpAddr::V4(address) = prefix.address else {
-        return None;
-    };
-    cidr::Ipv4Cidr::new(address, prefix.prefix_len).ok()
-}
-
 fn proxy_cidr_rule(config: &ProxyNetworkConfig) -> Option<ProxyCidrRule> {
     Some(ProxyCidrRule {
-        cidr: ipv4_cidr(&config.real)?,
-        mapped_cidr: config.mapped.as_ref().and_then(ipv4_cidr),
+        cidr: config.cidr,
+        mapped_cidr: config.mapped_cidr,
     })
 }
 
@@ -107,7 +99,7 @@ impl ProxyCidrEntry {
 
 #[cfg(test)]
 mod tests {
-    use crate::config::{IpPrefix, ProxyNetworkConfig};
+    use crate::config::toml::ProxyNetworkConfig;
 
     use super::*;
 
@@ -145,14 +137,9 @@ mod tests {
     #[test]
     fn snapshot_normalizes_proxy_network_config() {
         let snapshot = ProxyCidrSnapshot::from_proxy_networks(&[ProxyNetworkConfig {
-            real: IpPrefix {
-                address: "192.0.2.0".parse().unwrap(),
-                prefix_len: 24,
-            },
-            mapped: Some(IpPrefix {
-                address: "198.51.100.0".parse().unwrap(),
-                prefix_len: 24,
-            }),
+            cidr: "192.0.2.0/24".parse().unwrap(),
+            mapped_cidr: Some("198.51.100.0/24".parse().unwrap()),
+            allow: None,
         }]);
         let table = ProxyCidrTable::from_snapshot(snapshot);
 

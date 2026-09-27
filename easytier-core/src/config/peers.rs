@@ -6,12 +6,9 @@
 
 use anyhow::Context as _;
 use cidr::Ipv6Cidr;
-use easytier_proto::common::{Flags, PeerFeatureFlag, SecureModeConfig, StunInfo};
 use serde::{Deserialize, Serialize};
 
 use crate::proto::acl::{Acl, AclV1, Action, Chain, ChainType, GroupInfo, Protocol, Rule};
-
-use super::{CoreConfig, NetworkIdentity};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct AclRuleConfig {
@@ -27,8 +24,34 @@ pub struct AclWhitelistSnapshot {
     pub udp_ports: Vec<String>,
 }
 
+impl From<&crate::config::InstanceConfigParsed> for AclRuleConfig {
+    fn from(config: &crate::config::InstanceConfigParsed) -> Self {
+        Self {
+            acl: config.acl.clone(),
+            tcp_whitelist: config.tcp_whitelist.clone(),
+            udp_whitelist: config.udp_whitelist.clone(),
+            whitelist_priority: None,
+        }
+    }
+}
+
+impl From<&crate::config::InstanceConfig> for AclRuleConfig {
+    fn from(config: &crate::config::InstanceConfig) -> Self {
+        Self::from(&**config)
+    }
+}
+
 impl From<&AclRuleConfig> for AclWhitelistSnapshot {
     fn from(config: &AclRuleConfig) -> Self {
+        Self {
+            tcp_ports: config.tcp_whitelist.clone(),
+            udp_ports: config.udp_whitelist.clone(),
+        }
+    }
+}
+
+impl From<&crate::config::InstanceConfigParsed> for AclWhitelistSnapshot {
+    fn from(config: &crate::config::InstanceConfigParsed) -> Self {
         Self {
             tcp_ports: config.tcp_whitelist.clone(),
             udp_ports: config.udp_whitelist.clone(),
@@ -193,11 +216,23 @@ impl AclRuleConfig {
         config
     }
 
+    pub fn strip_group_material_from_acl(acl: Option<&Acl>) -> Option<Acl> {
+        strip_group_material_from_acl(acl)
+    }
+
     pub fn build(&self) -> anyhow::Result<Option<Acl>> {
         let mut config = self.clone();
         config.generate_acl_from_whitelists()?;
         Ok(config.acl)
     }
+}
+
+pub fn strip_group_material_from_acl(acl: Option<&Acl>) -> Option<Acl> {
+    let mut acl = acl.cloned()?;
+    if let Some(acl_v1) = acl.acl_v1.as_mut() {
+        acl_v1.group = None;
+    }
+    Some(acl)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -213,14 +248,20 @@ impl PublicIpv6ProviderConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PeerRuntimeConfig {
-    pub core: CoreConfig,
-    pub network_identity: NetworkIdentity,
-    pub stun_info: StunInfo,
-    pub feature_flags: PeerFeatureFlag,
-    pub secure_mode: Option<SecureModeConfig>,
-    pub host_routing: HostRoutingPolicy,
+impl From<&crate::config::InstanceConfigParsed> for PublicIpv6ProviderConfig {
+    fn from(config: &crate::config::InstanceConfigParsed) -> Self {
+        Self {
+            provider_enabled: config.ipv6_public_addr_provider,
+            configured_prefix: config.ipv6_public_addr_prefix,
+            provider_supported: cfg!(target_os = "linux"),
+        }
+    }
+}
+
+impl From<&crate::config::InstanceConfig> for PublicIpv6ProviderConfig {
+    fn from(config: &crate::config::InstanceConfig) -> Self {
+        config.parsed().into()
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -228,55 +269,6 @@ pub struct HostRoutingPolicy {
     /// Route otherwise-unreachable external IPv4 traffic through this node and
     /// keep self-delivered packets eligible for the host TUN/proxy path.
     pub local_exit_node_fallback: bool,
-}
-
-/// One normalized peer configuration version submitted by a host.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PeerRuntimeSnapshot {
-    pub runtime: PeerRuntimeConfig,
-    pub easytier_version: String,
-    pub avoid_relay_data_preference: bool,
-    pub flags: Flags,
-    pub pinned_peers: Vec<(url::Url, Option<String>)>,
-    pub peer_group_memberships: Vec<PeerGroupIdentity>,
-    pub acl_group_declarations: Vec<PeerGroupIdentity>,
-    pub ospf_update_my_foreign_network_interval_sec: u64,
-    pub max_direct_conns_per_peer_in_foreign_network: usize,
-    pub hmac_secret_digest: bool,
-}
-
-impl PeerRuntimeSnapshot {
-    pub fn new(runtime: PeerRuntimeConfig, flags: Flags) -> Self {
-        let avoid_relay_data_preference = runtime.feature_flags.avoid_relay_data;
-        Self {
-            runtime,
-            easytier_version: env!("CARGO_PKG_VERSION").to_owned(),
-            avoid_relay_data_preference,
-            flags,
-            pinned_peers: Vec::new(),
-            peer_group_memberships: Vec::new(),
-            acl_group_declarations: Vec::new(),
-            ospf_update_my_foreign_network_interval_sec: 10,
-            max_direct_conns_per_peer_in_foreign_network: 3,
-            hmac_secret_digest: false,
-        }
-    }
-}
-
-impl Default for PeerRuntimeSnapshot {
-    fn default() -> Self {
-        Self::new(
-            PeerRuntimeConfig {
-                core: CoreConfig::default(),
-                network_identity: NetworkIdentity::default(),
-                stun_info: StunInfo::default(),
-                feature_flags: PeerFeatureFlag::default(),
-                secure_mode: None,
-                host_routing: HostRoutingPolicy::default(),
-            },
-            Flags::default(),
-        )
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

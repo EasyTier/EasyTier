@@ -17,8 +17,8 @@ use easytier_proto::{
 
 use crate::{
     config::{
-        IpPrefix, ProxyNetworkConfig,
-        toml::{ConfigLoader as _, TomlConfig},
+        IpPrefix,
+        toml::{ConfigLoader as _, ProxyNetworkConfig, TomlConfig},
     },
     connectivity::manual::{ManualConnectorSnapshot, ManualConnectorStatus},
     instance::{
@@ -403,9 +403,9 @@ fn format_prefix(prefix: &IpPrefix) -> String {
 }
 
 fn format_proxy_network(proxy: ProxyNetworkConfig) -> String {
-    let real = format_prefix(&proxy.real);
-    match proxy.mapped {
-        Some(mapped) => format!("{}->{}", real, format_prefix(&mapped)),
+    let real = proxy.cidr.to_string();
+    match proxy.mapped_cidr {
+        Some(mapped) => format!("{}->{}", real, mapped),
         None => real,
     }
 }

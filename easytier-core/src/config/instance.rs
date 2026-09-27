@@ -152,6 +152,12 @@ impl Default for InstanceConfigParsed {
     }
 }
 
+impl InstanceConfigParsed {
+    pub fn generate_raw(&self) -> InstanceConfigRaw {
+        self.clone().downgrade()
+    }
+}
+
 pub type InstanceConfig = ConfigBase<InstanceConfigRaw, InstanceConfigParsed>;
 
 impl TryFrom<InstanceConfigRaw> for InstanceConfig {
@@ -208,6 +214,19 @@ impl TryFrom<InstanceConfigRaw> for InstanceConfig {
         }
 
         Ok(ConfigBase::new(parsed, raw, ()))
+    }
+}
+
+impl From<InstanceConfigParsed> for InstanceConfig {
+    fn from(parsed: InstanceConfigParsed) -> Self {
+        let raw = parsed.generate_raw();
+        ConfigBase::new(parsed, raw, ())
+    }
+}
+
+impl InstanceConfig {
+    pub fn from_parsed(parsed: InstanceConfigParsed) -> Self {
+        parsed.into()
     }
 }
 
@@ -496,14 +515,9 @@ enabled = true
     fn review_repeated_projection_should_preserve_identity() {
         let config = TomlConfig::default().snapshot().unwrap();
         let host = crate::instance::CoreInstanceHostConfig::default();
-        let first =
-            crate::instance::CoreInstanceConfig::from_parsed_with_host(&config, &host).unwrap();
-        let second =
-            crate::instance::CoreInstanceConfig::from_parsed_with_host(&config, &host).unwrap();
-        assert_eq!(
-            first.peer.snapshot.runtime.core.node.instance_id,
-            second.peer.snapshot.runtime.core.node.instance_id,
-        );
+        let first = crate::instance::prepare_instance_config(config.clone(), &host).unwrap();
+        let second = crate::instance::prepare_instance_config(config, &host).unwrap();
+        assert_eq!(first.parsed().instance_id, second.parsed().instance_id,);
     }
 
     #[test]

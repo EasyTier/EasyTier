@@ -5,7 +5,7 @@ use bytes::BytesMut;
 use tokio::{sync::Mutex, task::JoinSet};
 
 use crate::{
-    config::runtime::CoreRuntimeConfigStore,
+    config::runtime::InstanceConfigStore,
     connectivity::direct::DirectConnectorHost,
     connectivity::hole_punch::tcp::TcpHolePunchHost,
     gateway::proxy::cidr_table::ProxyCidrTable,
@@ -175,7 +175,7 @@ impl PeerPacketFilter for WrappedTransportPeerFilter {
 
 pub(crate) struct WrappedTransportProxyModule {
     peer_manager: Arc<PeerManagerCore>,
-    runtime_config: CoreRuntimeConfigStore,
+    runtime_config: InstanceConfigStore,
     kcp: Option<Arc<dyn WrappedTransportEngine>>,
     quic: Option<Arc<dyn WrappedTransportEngine>>,
     packet_plane: WrappedTransportPacketPlane,
@@ -188,7 +188,7 @@ impl WrappedTransportProxyModule {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new<H>(
         peer_manager: Arc<PeerManagerCore>,
-        runtime_config: CoreRuntimeConfigStore,
+        runtime_config: InstanceConfigStore,
         kcp: Option<Arc<dyn WrappedTransportEngine>>,
         quic: Option<Arc<dyn WrappedTransportEngine>>,
         host: Arc<H>,
@@ -226,7 +226,7 @@ impl WrappedTransportProxyModule {
 
     fn directions(&self) -> (WrappedTransportDirections, WrappedTransportDirections) {
         let snapshot = self.runtime_config.snapshot();
-        let flags = &snapshot.peer.flags;
+        let flags = &snapshot.flags;
         (
             WrappedTransportDirections {
                 source: flags.enable_kcp_proxy,
@@ -450,6 +450,7 @@ mod tests {
     use bytes::Bytes;
     use tokio::sync::Notify;
 
+    use crate::config::toml::NetworkIdentity;
     #[cfg(feature = "proxy-packet")]
     use crate::gateway::proxy::{
         tcp_proxy_engine::TcpNatEntrySnapshot,
@@ -457,12 +458,6 @@ mod tests {
         wrapped_transport_destination::{
             WrappedTransportDestinationIngresses, WrappedTransportDestinationLifecycle,
         },
-    };
-    use crate::{
-        config::peers::{HostRoutingPolicy, PeerRuntimeConfig, PeerRuntimeSnapshot},
-        config::runtime::CoreRuntimeConfig,
-        config::{CoreConfig, NetworkIdentity, NodeConfig},
-        peers::peer_manager::PortablePeerManagerConfig,
     };
 
     use super::*;
@@ -514,7 +509,7 @@ mod tests {
     impl WrappedTransportProxyModule {
         fn new_without_sources(
             peer_manager: Arc<PeerManagerCore>,
-            runtime_config: CoreRuntimeConfigStore,
+            runtime_config: InstanceConfigStore,
             kcp: Option<Arc<dyn WrappedTransportEngine>>,
             quic: Option<Arc<dyn WrappedTransportEngine>>,
         ) -> Option<Arc<Self>> {
@@ -746,43 +741,30 @@ mod tests {
 
     fn wrapped_transport_peer_manager() -> Arc<PeerManagerCore> {
         let (packet_tx, _packet_rx) = crate::host::packet::host_packet_channel();
-        Arc::new(
-            PeerManagerCore::new_portable_for_test(
-                PortablePeerManagerConfig::new(PeerRuntimeConfig {
-                    core: CoreConfig {
-                        node: NodeConfig {
-                            peer_id: Some(1),
-                            network_name: "wrapped-transport-test".to_owned(),
-                            ..Default::default()
-                        },
-                        ..Default::default()
-                    },
-                    network_identity: NetworkIdentity {
-                        network_name: "wrapped-transport-test".to_owned(),
-                        network_secret: Some("secret".to_owned()),
-                        network_secret_digest: None,
-                    },
-                    stun_info: Default::default(),
-                    feature_flags: Default::default(),
-                    secure_mode: None,
-                    host_routing: HostRoutingPolicy::default(),
-                }),
-                packet_tx,
-            )
-            .unwrap(),
-        )
+        let parsed = crate::config::InstanceConfigParsed {
+            instance_id: uuid::Uuid::from_u128(1),
+            network_identity: NetworkIdentity {
+                network_name: "wrapped-transport-test".to_owned(),
+                network_secret: Some("secret".to_owned()),
+                network_secret_digest: None,
+            },
+            ..Default::default()
+        };
+        let raw = parsed.generate_raw();
+        let config = crate::config::InstanceConfig::new(parsed, raw, ());
+        Arc::new(PeerManagerCore::new_portable_for_test(config, packet_tx).unwrap())
     }
 
     fn wrapped_transport_runtime(
         kcp: WrappedTransportDirections,
         quic: WrappedTransportDirections,
-    ) -> CoreRuntimeConfigStore {
-        let mut peer = PeerRuntimeSnapshot::default();
-        peer.flags.enable_kcp_proxy = kcp.source;
-        peer.flags.disable_kcp_input = !kcp.destination;
-        peer.flags.enable_quic_proxy = quic.source;
-        peer.flags.disable_quic_input = !quic.destination;
-        CoreRuntimeConfigStore::new(CoreRuntimeConfig::default(), Arc::new(peer))
+    ) -> InstanceConfigStore {
+        let mut config = crate::config::InstanceConfig::default();
+        config.parsed_mut().flags.enable_kcp_proxy = kcp.source;
+        config.parsed_mut().flags.disable_kcp_input = !kcp.destination;
+        config.parsed_mut().flags.enable_quic_proxy = quic.source;
+        config.parsed_mut().flags.disable_quic_input = !quic.destination;
+        InstanceConfigStore::new(config)
     }
 
     #[tokio::test]
@@ -894,14 +876,12 @@ mod tests {
         )
         .unwrap();
 
-        runtime.update_peer(Arc::new({
-            let mut peer = PeerRuntimeSnapshot::default();
-            peer.flags.enable_kcp_proxy = true;
-            peer.flags.disable_kcp_input = true;
-            peer.flags.enable_quic_proxy = false;
-            peer.flags.disable_quic_input = false;
-            peer
-        }));
+        let mut next = (*runtime.snapshot()).clone();
+        next.parsed_mut().flags.enable_kcp_proxy = true;
+        next.parsed_mut().flags.disable_kcp_input = true;
+        next.parsed_mut().flags.enable_quic_proxy = false;
+        next.parsed_mut().flags.disable_quic_input = false;
+        runtime.replace(next);
 
         module.start().await.unwrap();
         module.start().await.unwrap();

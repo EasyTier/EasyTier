@@ -20,9 +20,8 @@ use tokio::sync::{
 use tokio::task::JoinSet;
 
 use crate::{
-    config::peers::{PeerRuntimeConfig, PeerRuntimeSnapshot},
-    config::runtime::{CoreRuntimeConfig, CoreRuntimeConfigStore},
-    config::{CoreConfig, NodeConfig, PeerId},
+    config::runtime::InstanceConfigStore,
+    config::{InstanceConfig, InstanceConfigParsed, PeerId},
     foundation::{
         stats::{CounterHandle, LabelSet, LabelType, MetricName, StatsManager},
         task::reap_joinset_background,
@@ -34,6 +33,9 @@ use crate::{
     proto::core_peer::peer::{PeerConnInfo, Route as CoreRoute},
     socket::SocketContext,
 };
+
+#[cfg(test)]
+use crate::config::peers::HostRoutingPolicy;
 
 use super::{
     conn::{
@@ -91,49 +93,42 @@ fn build_foreign_peer_context(
     flags.disable_relay_kcp = !parent_flags.enable_relay_foreign_network_kcp;
     flags.disable_relay_quic = !parent_flags.enable_relay_foreign_network_quic;
     flags.socket_mark = parent_flags.socket_mark;
+    flags.need_p2p = parent_flags.need_p2p;
+    flags.disable_p2p = parent_flags.disable_p2p;
 
-    let mut feature_flags = parent_context_dyn.feature_flags();
-    feature_flags.is_public_server = true;
-    feature_flags.avoid_relay_data =
-        desired_foreign_avoid_relay_data(&parent_context_dyn, relay_data);
-
+    let parent_feature_flags = parent_context_dyn.feature_flags();
     let instance_id = uuid::Uuid::new_v4();
-    let runtime = PeerRuntimeConfig {
-        core: CoreConfig {
-            node: NodeConfig {
-                instance_id: Some(*instance_id.as_bytes()),
-                hostname: Some(format!(
-                    "{PUBLIC_SERVER_HOSTNAME_PREFIX}{}",
-                    parent_context_dyn.hostname()
-                )),
-                network_name: network.network_name.clone(),
-                ..Default::default()
-            },
-            ..Default::default()
-        },
+    let parsed = InstanceConfigParsed {
+        instance_id,
+        hostname: format!(
+            "{PUBLIC_SERVER_HOSTNAME_PREFIX}{}",
+            parent_context_dyn.hostname()
+        ),
         network_identity: network.clone(),
-        stun_info: parent_context_dyn.stun_info(),
-        feature_flags,
         secure_mode: parent_context_dyn.secure_mode(),
-        host_routing: parent_context_dyn.host_routing_policy(),
+        ipv6_public_addr_provider: parent_feature_flags.ipv6_public_addr_provider,
+        flags,
+        ..Default::default()
     };
-    let mut snapshot = PeerRuntimeSnapshot::new(runtime, flags);
-    snapshot.easytier_version = parent_context_dyn.easytier_version();
-    snapshot.ospf_update_my_foreign_network_interval_sec =
-        parent_context_dyn.ospf_update_my_foreign_network_interval_sec();
-    snapshot.max_direct_conns_per_peer_in_foreign_network =
-        parent_context_dyn.max_direct_conns_per_peer_in_foreign_network();
-    snapshot.hmac_secret_digest = parent_context_dyn.hmac_secret_digest();
+    let raw = parsed.generate_raw();
+    let config = InstanceConfig::new(parsed, raw, ());
+    let store = InstanceConfigStore::new(config);
 
-    Arc::new(CorePeerContext::new_foreign(
-        CoreRuntimeConfigStore::new(CoreRuntimeConfig::default(), Arc::new(snapshot)),
+    let foreign = Arc::new(CorePeerContext::new_foreign(
+        store,
         CorePeerContextAdapters {
-            stun_info_source: Some(Arc::new(ParentStunInfoSource(parent_context_dyn))),
+            stun_info_source: Some(Arc::new(ParentStunInfoSource(parent_context_dyn.clone()))),
             events: Arc::new(()),
             credential_storage: None,
+            host_routing: parent_context_dyn.host_routing_policy(),
         },
         parent_context,
-    ))
+    ));
+    foreign.set_avoid_relay_data_preference(desired_foreign_avoid_relay_data(
+        &parent_context_dyn,
+        relay_data,
+    ));
+    foreign
 }
 
 struct ParentStunInfoSource(ArcPeerContext);
@@ -1604,8 +1599,9 @@ mod tests {
     use crate::peers::whitelist::check_network_in_relay_whitelist;
 
     use crate::{
-        config::peers::PeerRuntimeSnapshot,
-        config::runtime::{CoreRuntimeConfig, CoreRuntimeConfigStore},
+        config::InstanceConfig,
+        config::peers::HostRoutingPolicy,
+        config::runtime::InstanceConfigStore,
         foundation::stats::{LabelSet, LabelType, MetricName},
         peers::{
             conn::{peer_map::PeerMap, peer_session::PeerSessionStore},
@@ -1620,16 +1616,17 @@ mod tests {
     };
 
     fn new_test_foreign_entry(network_name: &str) -> Arc<ForeignNetworkEntry> {
+        let parsed = crate::config::InstanceConfigParsed::default();
+        let raw = parsed.generate_raw();
+        let store = InstanceConfigStore::new(InstanceConfig::new(parsed, raw, ()));
         let parent = Arc::new(CorePeerContext::new(
-            CoreRuntimeConfigStore::new(
-                CoreRuntimeConfig::default(),
-                Arc::new(PeerRuntimeSnapshot::default()),
-            ),
+            store,
             Arc::new(()),
             CorePeerContextAdapters {
                 stun_info_source: None,
                 events: Arc::new(()),
                 credential_storage: None,
+                host_routing: HostRoutingPolicy::default(),
             },
         ));
         let (packet_sender, _packet_receiver) = create_packet_recv_chan();
@@ -1902,35 +1899,22 @@ mod tests {
 
     #[test]
     fn foreign_context_resources_are_assembled_in_core() {
-        let mut parent_snapshot = PeerRuntimeSnapshot::default();
-        parent_snapshot.runtime.core.node.hostname = Some("parent".to_owned());
-        parent_snapshot.runtime.stun_info = StunInfo {
-            public_ip: vec!["198.51.100.1".to_owned()],
-            ..Default::default()
-        };
-        parent_snapshot
-            .runtime
-            .host_routing
-            .local_exit_node_fallback = true;
-        parent_snapshot.flags.enable_relay_foreign_network_kcp = true;
-        parent_snapshot.flags.enable_relay_foreign_network_quic = false;
-        parent_snapshot.flags.socket_mark = Some(7);
-        parent_snapshot.hmac_secret_digest = true;
-        parent_snapshot.runtime.feature_flags = PeerFeatureFlag {
-            kcp_input: false,
-            no_relay_kcp: false,
-            support_conn_list_sync: false,
-            quic_input: false,
-            no_relay_quic: false,
-            need_p2p: true,
-            disable_p2p: true,
+        let mut parsed = crate::config::InstanceConfigParsed {
+            hostname: "parent".to_owned(),
             ipv6_public_addr_provider: true,
             ..Default::default()
         };
-        let parent_config = CoreRuntimeConfigStore::new(
-            CoreRuntimeConfig::default(),
-            Arc::new(parent_snapshot.clone()),
-        );
+        parsed.flags.enable_relay_foreign_network_kcp = true;
+        parsed.flags.enable_relay_foreign_network_quic = false;
+        parsed.flags.socket_mark = Some(7);
+        parsed.flags.disable_p2p = true;
+        parsed.flags.need_p2p = true;
+        parsed.flags.disable_kcp_input = true;
+        parsed.flags.disable_quic_input = true;
+        parsed.flags.disable_relay_kcp = true;
+        parsed.flags.disable_relay_quic = true;
+        let raw = parsed.generate_raw();
+        let parent_config = InstanceConfigStore::new(InstanceConfig::new(parsed, raw, ()));
         let parent = Arc::new(CorePeerContext::new(
             parent_config.clone(),
             Arc::new(()),
@@ -1938,8 +1922,15 @@ mod tests {
                 stun_info_source: None,
                 events: Arc::new(()),
                 credential_storage: None,
+                host_routing: HostRoutingPolicy {
+                    local_exit_node_fallback: true,
+                },
             },
         ));
+        parent.set_fallback_stun_info(StunInfo {
+            public_ip: vec!["198.51.100.1".to_owned()],
+            ..Default::default()
+        });
         let network = NetworkIdentity {
             network_name: "foreign".to_owned(),
             network_secret: Some("secret".to_owned()),
@@ -1982,10 +1973,11 @@ mod tests {
         assert!(foreign.feature_flags().ipv6_public_addr_provider);
         assert_eq!(foreign.stun_info().public_ip, vec!["198.51.100.1"]);
         assert!(foreign.host_routing_policy().local_exit_node_fallback);
-        assert!(foreign.hmac_secret_digest());
 
-        parent_snapshot.runtime.stun_info.public_ip = vec!["203.0.113.2".to_owned()];
-        parent_config.update_peer(Arc::new(parent_snapshot));
+        parent.set_fallback_stun_info(StunInfo {
+            public_ip: vec!["203.0.113.2".to_owned()],
+            ..Default::default()
+        });
         assert_eq!(foreign.stun_info().public_ip, vec!["203.0.113.2"]);
 
         foreign.record_control_tx("foreign", 64);

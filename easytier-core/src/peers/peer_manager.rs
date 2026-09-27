@@ -22,13 +22,10 @@ use url::Url;
 
 use crate::{
     config::{
-        P2pPolicyFlags, PeerId, ProxyNetworkConfig,
-        peers::{
-            AclRuleConfig, HostRoutingPolicy, PeerGroupIdentity, PeerRuntimeConfig,
-            PeerRuntimeSnapshot,
-        },
-        runtime::{CoreInstanceRuntimeConfig, CoreRuntimeConfigStore},
-        toml::ManagedCredentialConfig,
+        InstanceConfig, P2pPolicyFlags, PeerId,
+        peers::{AclRuleConfig, HostRoutingPolicy, PeerGroupIdentity},
+        runtime::InstanceConfigStore,
+        toml::ProxyNetworkConfig,
     },
     events::CoreEventSink,
     foundation::task::ExternalTaskSignal,
@@ -204,47 +201,6 @@ pub enum RouteAlgoType {
     None,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PortablePeerManagerConfig {
-    pub snapshot: PeerRuntimeSnapshot,
-    pub route_algo: RouteAlgoType,
-    pub exit_nodes: Vec<IpAddr>,
-    /// Defaults inherited by peer contexts created for foreign networks.
-    ///
-    /// This is explicit because those contexts participate in the same
-    /// handshake as the parent but do not inherit all parent policy flags.
-    pub foreign_context_default_flags: Flags,
-}
-
-impl PortablePeerManagerConfig {
-    pub fn new(mut runtime: PeerRuntimeConfig) -> Self {
-        let policy = &runtime.core.peer_policy;
-        let traffic = &runtime.core.traffic;
-        let flags = Flags {
-            enable_encryption: policy.encryption_required,
-            encryption_algorithm: crate::config::EncryptionAlgorithm::default().to_string(),
-            disable_p2p: !policy.p2p_enabled,
-            relay_all_peer_rpc: policy.relay_peer_rpc,
-            disable_relay_data: !policy.relay_data,
-            latency_first: policy.latency_first,
-            data_compress_algo: crate::proto::common::CompressionAlgoPb::None.into(),
-            mtu: traffic.mtu.map(u32::from).unwrap_or_default(),
-            instance_recv_bps_limit: traffic.instance_recv_bps_limit.unwrap_or_default(),
-            foreign_relay_bps_limit: traffic.foreign_relay_bps_limit.unwrap_or_default(),
-            ..Default::default()
-        };
-        runtime.feature_flags.disable_p2p = flags.disable_p2p;
-        runtime.feature_flags.avoid_relay_data |= flags.disable_relay_data;
-        let foreign_context_default_flags = flags.clone();
-        Self {
-            snapshot: PeerRuntimeSnapshot::new(runtime, flags),
-            route_algo: RouteAlgoType::Ospf,
-            exit_nodes: Vec::new(),
-            foreign_context_default_flags,
-        }
-    }
-}
-
 fn matching_group_memberships(
     declarations: &[PeerGroupIdentity],
     configured_groups: &[String],
@@ -269,56 +225,6 @@ fn first_missing_group<'a>(
         .iter()
         .map(String::as_str)
         .find(|group| !resolved.contains(group))
-}
-
-fn retain_runtime_owned_peer_state(
-    current: &CoreInstanceRuntimeConfig,
-    next: &mut CoreInstanceRuntimeConfig,
-    peer_id: PeerId,
-) {
-    let next_peer = Arc::make_mut(&mut next.peer);
-    next_peer.runtime.core.node.peer_id = Some(peer_id);
-    next_peer.runtime.core.node.instance_id = current.peer.runtime.core.node.instance_id;
-    next_peer.runtime.stun_info = current.peer.runtime.stun_info.clone();
-    if current.services.dhcp_ipv4 && next.services.dhcp_ipv4 {
-        next_peer.runtime.core.routes.ipv4 = current.peer.runtime.core.routes.ipv4.clone();
-    }
-}
-
-fn validate_portable_routes(routes: &crate::config::RouteConfig) -> anyhow::Result<()> {
-    if !routes.advertised_routes.is_empty() {
-        anyhow::bail!("portable peer manager does not support advertised routes yet");
-    }
-    if !routes.foreign_networks.is_empty() {
-        anyhow::bail!("portable peer manager does not support foreign networks yet");
-    }
-    if let Some(prefix) = &routes.ipv4
-        && (!matches!(prefix.address, IpAddr::V4(_)) || prefix.prefix_len > 32)
-    {
-        anyhow::bail!("routes.ipv4 must contain a valid IPv4 prefix");
-    }
-    if let Some(prefix) = &routes.ipv6
-        && (!matches!(prefix.address, IpAddr::V6(_)) || prefix.prefix_len > 128)
-    {
-        anyhow::bail!("routes.ipv6 must contain a valid IPv6 prefix");
-    }
-    for proxy in &routes.proxy_networks {
-        for (field, prefix) in [
-            ("real", Some(&proxy.real)),
-            ("mapped", proxy.mapped.as_ref()),
-        ] {
-            let Some(prefix) = prefix else {
-                continue;
-            };
-            let IpAddr::V4(address) = prefix.address else {
-                anyhow::bail!("proxy network {field} prefix must be IPv4");
-            };
-            if cidr::Ipv4Cidr::new(address, prefix.prefix_len).is_err() {
-                anyhow::bail!("proxy network {field} must be a valid IPv4 network prefix");
-            }
-        }
-    }
-    Ok(())
 }
 
 pub(crate) enum RouteAlgoInst {
@@ -771,7 +677,7 @@ pub struct PeerManagerCore {
     exit_nodes: Arc<RwLock<Vec<IpAddr>>>,
     acl_filter: Arc<AclFilter>,
     context: Arc<CorePeerContext>,
-    runtime_config: CoreRuntimeConfigStore,
+    runtime_config: InstanceConfigStore,
     runtime_config_update: Mutex<()>,
     is_secure_mode_enabled: bool,
     route: ArcRoute,
@@ -811,37 +717,28 @@ fn check_resolved_remote_addr_not_from_virtual_network(
 impl PeerManagerCore {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        mut config: PortablePeerManagerConfig,
-        managed_credentials: Vec<ManagedCredentialConfig>,
-        runtime_config: CoreRuntimeConfigStore,
+        runtime_config: InstanceConfigStore,
         stun_info_source: Arc<dyn PeerStunInfoSource>,
         nic_channel: HostPacketSender,
         public_ipv6_runtime: Arc<CorePublicIpv6Runtime>,
         events: Arc<dyn CoreEventSink>,
         credential_storage: Option<Arc<dyn CredentialStorage>>,
         foreign_rpc_registrar: Arc<dyn ForeignNetworkRpcRegistrar>,
+        host_routing: HostRoutingPolicy,
     ) -> anyhow::Result<Self> {
-        let initial_acl = runtime_config.snapshot().services.acl.build()?;
-        let runtime = &mut config.snapshot.runtime;
-        let flags = &config.snapshot.flags;
-        let network_name = runtime.network_identity.network_name.clone();
+        let snapshot = runtime_config.snapshot();
+        let initial_acl = AclRuleConfig::from(&**snapshot).build()?;
+        let flags = snapshot.flags.clone();
+        let network_name = snapshot.network_identity.network_name.clone();
         if network_name.is_empty() {
             anyhow::bail!("network identity name cannot be empty");
         }
-        match runtime.core.node.network_name.as_str() {
-            "" => runtime.core.node.network_name = network_name.clone(),
-            configured if configured != network_name => anyhow::bail!(
-                "core node network name {configured:?} does not match identity {network_name:?}"
-            ),
-            _ => {}
-        }
-        validate_portable_routes(&runtime.core.routes)?;
 
         if let (Some(_), Some(expected_digest)) = (
-            runtime.network_identity.network_secret.as_ref(),
-            runtime.network_identity.network_secret_digest.as_ref(),
+            snapshot.network_identity.network_secret.as_ref(),
+            snapshot.network_identity.network_secret_digest.as_ref(),
         ) {
-            let mut identity = runtime.network_identity.clone();
+            let mut identity = snapshot.network_identity.clone();
             identity.network_secret_digest = None;
             let derived_digest = identity
                 .secret_digest()
@@ -850,8 +747,8 @@ impl PeerManagerCore {
                 anyhow::bail!("network secret does not match the configured digest");
             }
         }
-        if runtime.network_identity.network_secret.is_none()
-            && runtime
+        if snapshot.network_identity.network_secret.is_none()
+            && snapshot
                 .network_identity
                 .network_secret_digest
                 .as_ref()
@@ -859,16 +756,19 @@ impl PeerManagerCore {
         {
             anyhow::bail!("digest-only local identity requires credential key capabilities");
         }
-        let is_secure_mode_enabled = runtime
+        let is_secure_mode_enabled = snapshot
             .secure_mode
             .as_ref()
             .is_some_and(|secure| secure.enabled);
-        let is_credential_peer = runtime.network_identity.network_secret.is_none();
+        let is_credential_peer = snapshot.network_identity.network_secret.is_none();
         if is_credential_peer && !is_secure_mode_enabled {
             anyhow::bail!("credential peer identity requires secure mode and a local keypair");
         }
-        runtime.feature_flags.is_credential_peer = is_credential_peer;
-        if let Some(secure) = runtime.secure_mode.as_ref().filter(|secure| secure.enabled) {
+        if let Some(secure) = snapshot
+            .secure_mode
+            .as_ref()
+            .filter(|secure| secure.enabled)
+        {
             let private_key = secure.private_key()?;
             let public_key = secure.public_key()?;
             let derived_public = x25519_dalek::PublicKey::from(&private_key);
@@ -885,16 +785,8 @@ impl PeerManagerCore {
         // Peer IDs identify one live process incarnation. They are never
         // configuration: every new PeerManager gets a fresh runtime identity.
         let my_peer_id = random_peer_id();
-        runtime.core.node.peer_id = Some(my_peer_id);
-        let instance_id = runtime
-            .core
-            .node
-            .instance_id
-            .map(uuid::Uuid::from_bytes)
-            .unwrap_or_else(uuid::Uuid::new_v4);
-        runtime.core.node.instance_id = Some(*instance_id.as_bytes());
 
-        let secret = runtime
+        let secret = snapshot
             .network_identity
             .network_secret
             .as_deref()
@@ -909,10 +801,6 @@ impl PeerManagerCore {
         } else {
             Arc::new(NullCipher)
         };
-        runtime.feature_flags.disable_p2p = flags.disable_p2p;
-        runtime.feature_flags.need_p2p = flags.need_p2p;
-        runtime.feature_flags.avoid_relay_data |= flags.disable_relay_data;
-        runtime_config.update_peer(Arc::new(config.snapshot.clone()));
         let public_ipv6_state = public_ipv6_runtime.clone();
         let public_ipv6_runtime: Arc<dyn PublicIpv6Runtime> = public_ipv6_runtime;
         let context = Arc::new(CorePeerContext::new(
@@ -922,14 +810,15 @@ impl PeerManagerCore {
                 stun_info_source: Some(stun_info_source),
                 events,
                 credential_storage,
+                host_routing,
             },
         ));
         context
             .credential_manager()
-            .install_initial_managed_credentials(&managed_credentials)
+            .install_initial_managed_credentials(&snapshot.managed_credentials)
             .map_err(anyhow::Error::msg)?;
         let peer_manager = Self::assemble(
-            config.route_algo,
+            RouteAlgoType::Ospf,
             my_peer_id,
             context,
             public_ipv6_runtime,
@@ -937,8 +826,8 @@ impl PeerManagerCore {
             encryptor,
             is_secure_mode_enabled,
             data_compress_algo,
-            config.exit_nodes,
-            config.foreign_context_default_flags,
+            snapshot.exit_nodes.clone(),
+            snapshot.flags.clone(),
             foreign_rpc_registrar,
         );
         peer_manager.reload_acl(initial_acl.as_ref());
@@ -1158,6 +1047,10 @@ impl PeerManagerCore {
         self.my_peer_id
     }
 
+    pub(crate) fn context(&self) -> &Arc<CorePeerContext> {
+        &self.context
+    }
+
     pub(crate) fn credential_manager(&self) -> Arc<CredentialManager> {
         self.context.credential_manager()
     }
@@ -1329,25 +1222,27 @@ impl PeerManagerCore {
 
     pub(crate) async fn update_runtime_config(
         &self,
-        config: CoreInstanceRuntimeConfig,
-    ) -> anyhow::Result<Arc<CoreInstanceRuntimeConfig>> {
+        config: InstanceConfig,
+    ) -> anyhow::Result<Arc<InstanceConfig>> {
         let _update = self.runtime_config_update.lock().await;
         let current = self.runtime_config.snapshot();
-        let refresh_acl_groups = current.peer.peer_group_memberships
-            != config.peer.peer_group_memberships
-            || current.peer.acl_group_declarations != config.peer.acl_group_declarations;
-        let reload_acl = current.services.acl != config.services.acl;
-        let next_acl = reload_acl.then(|| config.services.acl.clone());
-        let next_built_acl = next_acl.as_ref().map(AclRuleConfig::build).transpose()?;
+        let (current_declares, current_members) =
+            super::context::peer_acl_groups(current.acl.as_ref());
+        let (next_declares, next_members) = super::context::peer_acl_groups(config.acl.as_ref());
+        let refresh_acl_groups =
+            current_members != next_members || current_declares != next_declares;
+        let reload_acl = current.acl != config.acl
+            || current.tcp_whitelist != config.tcp_whitelist
+            || current.udp_whitelist != config.udp_whitelist;
+        let next_built_acl = if reload_acl {
+            AclRuleConfig::from(&*config).build()?
+        } else {
+            None
+        };
 
-        self.set_avoid_relay_data_preference(config.peer.avoid_relay_data_preference);
-        let published = self
-            .runtime_config
-            .replace_with_current(config, |current, next| {
-                retain_runtime_owned_peer_state(current, next, self.my_peer_id);
-            });
-        if let Some(acl) = next_built_acl.as_ref() {
-            self.reload_acl(acl.as_ref());
+        let published = self.runtime_config.replace(config);
+        if reload_acl {
+            self.reload_acl(next_built_acl.as_ref());
         }
         if refresh_acl_groups {
             self.route.refresh_acl_groups().await;
@@ -1360,11 +1255,11 @@ impl PeerManagerCore {
     /// stopped with its other runtime tasks.
     pub(crate) async fn follow_network_policy(
         self: &Arc<Self>,
-        source: CoreRuntimeConfigStore,
+        source: InstanceConfigStore,
         configured_groups: Vec<String>,
     ) -> anyhow::Result<()> {
+        let mut changes = source.subscribe_changes();
         let mut peer_changes = source.subscribe_peer_runtime_changes();
-        let mut service_changes = source.subscribe_service_runtime_changes();
         let configured_groups: Arc<[String]> = configured_groups.into();
         self.apply_network_policy(&source, &configured_groups)
             .await?;
@@ -1373,14 +1268,14 @@ impl PeerManagerCore {
         self.tasks.lock().await.spawn(async move {
             loop {
                 let changed = tokio::select! {
+                    changed = changes.changed() => changed,
                     changed = peer_changes.changed() => changed,
-                    changed = service_changes.changed() => changed,
                 };
                 if changed.is_err() {
                     return;
                 }
+                let _ = changes.borrow_and_update();
                 let _ = peer_changes.borrow_and_update();
-                let _ = service_changes.borrow_and_update();
                 let Some(peer_manager) = peer_manager.upgrade() else {
                     return;
                 };
@@ -1401,38 +1296,60 @@ impl PeerManagerCore {
 
     async fn apply_network_policy(
         &self,
-        source: &CoreRuntimeConfigStore,
+        source: &InstanceConfigStore,
         configured_groups: &[String],
     ) -> anyhow::Result<()> {
-        let source = source.snapshot();
+        let source_snapshot = source.snapshot();
         let credential_peer = self.context.feature_flags().is_credential_peer;
-        let acl = if credential_peer {
-            source.services.acl.for_credential_peer()
+        let mut next_acl = if credential_peer {
+            crate::config::peers::strip_group_material_from_acl(source_snapshot.acl.as_ref())
         } else {
-            source.services.acl.clone()
+            source_snapshot.acl.clone()
         };
-        let (declarations, memberships, missing_group) = if credential_peer {
-            (Vec::new(), Vec::new(), None)
+        let missing_group = if !credential_peer {
+            if let Some(acl) = next_acl.as_mut().and_then(|acl| acl.acl_v1.as_mut()) {
+                if let Some(group) = acl.group.as_mut() {
+                    let declared_names: BTreeSet<&str> = group
+                        .declares
+                        .iter()
+                        .map(|d| d.group_name.as_str())
+                        .collect();
+                    group.members = configured_groups
+                        .iter()
+                        .filter(|g| declared_names.contains(g.as_str()))
+                        .cloned()
+                        .collect();
+                    let resolved: BTreeSet<&str> =
+                        group.members.iter().map(String::as_str).collect();
+                    configured_groups
+                        .iter()
+                        .map(String::as_str)
+                        .find(|group| !resolved.contains(group))
+                } else {
+                    configured_groups.first().map(String::as_str)
+                }
+            } else {
+                configured_groups.first().map(String::as_str)
+            }
         } else {
-            let declarations = source.peer.acl_group_declarations.clone();
-            let memberships = matching_group_memberships(&declarations, configured_groups);
-            let missing_group = first_missing_group(&memberships, configured_groups);
-            (declarations, memberships, missing_group)
+            None
         };
+
         let current = self.runtime_config.snapshot();
-        if current.services.acl == acl
-            && current.peer.acl_group_declarations == declarations
-            && current.peer.peer_group_memberships == memberships
+        if current.acl == next_acl
+            && current.tcp_whitelist == source_snapshot.tcp_whitelist
+            && current.udp_whitelist == source_snapshot.udp_whitelist
         {
             return Ok(());
         }
 
-        let mut next = current.as_ref().clone();
-        next.services.acl = acl;
-        let peer = Arc::make_mut(&mut next.peer);
-        peer.acl_group_declarations = declarations;
-        peer.peer_group_memberships = memberships;
-        self.update_runtime_config(next).await?;
+        let mut next = current.as_ref().clone().into_parsed();
+        next.acl = next_acl;
+        next.tcp_whitelist = source_snapshot.tcp_whitelist.clone();
+        next.udp_whitelist = source_snapshot.udp_whitelist.clone();
+        let raw = next.generate_raw();
+        let config = InstanceConfig::new(next, raw, ());
+        self.update_runtime_config(config).await?;
         if let Some(group) = missing_group {
             tracing::warn!(
                 peer_id = self.my_peer_id,
@@ -3505,7 +3422,6 @@ mod tests {
 
     use super::*;
     use crate::{
-        config::runtime::CoreRuntimeConfig,
         config::{CoreConfig, IpPrefix, NetworkIdentity, NodeConfig, ProxyNetworkConfig},
         host::packet::{HostPacketSender, host_packet_channel},
         peers::context::{PeerContext, PeerEvent},
@@ -3514,35 +3430,22 @@ mod tests {
 
     impl PeerManagerCore {
         pub(crate) fn new_portable_for_test(
-            config: PortablePeerManagerConfig,
+            config: InstanceConfig,
             nic_channel: HostPacketSender,
         ) -> anyhow::Result<Self> {
-            let runtime_config = CoreRuntimeConfigStore::new(
-                CoreRuntimeConfig::default(),
-                Arc::new(config.snapshot.clone()),
-            );
+            let runtime_config = InstanceConfigStore::new(config);
             let public_ipv6_runtime =
                 CorePublicIpv6Runtime::new(runtime_config.clone(), Arc::new(()), Arc::new(()));
-            let stun_info_source = Arc::new(RuntimeConfigStunInfoSource(runtime_config.clone()));
             Self::new(
-                config,
-                Vec::new(),
                 runtime_config,
-                stun_info_source,
+                Arc::new(()),
                 nic_channel,
                 public_ipv6_runtime,
                 Arc::new(()),
                 None,
                 Arc::new(()),
+                HostRoutingPolicy::default(),
             )
-        }
-    }
-
-    struct RuntimeConfigStunInfoSource(CoreRuntimeConfigStore);
-
-    impl PeerStunInfoSource for RuntimeConfigStunInfoSource {
-        fn stun_info(&self) -> StunInfo {
-            self.0.snapshot().peer.runtime.stun_info.clone()
         }
     }
 
@@ -3643,26 +3546,18 @@ mod tests {
         assert_eq!(drops.load(Ordering::Relaxed), 1);
     }
 
-    fn portable_runtime_config(network_name: &str) -> PeerRuntimeConfig {
-        PeerRuntimeConfig {
-            core: CoreConfig {
-                node: NodeConfig {
-                    peer_id: None,
-                    network_name: network_name.to_owned(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
+    fn portable_test_config(network_name: &str) -> InstanceConfig {
+        let parsed = crate::config::InstanceConfigParsed {
+            instance_id: uuid::Uuid::new_v4(),
             network_identity: NetworkIdentity {
                 network_name: network_name.to_owned(),
                 network_secret: Some("secret".to_owned()),
                 network_secret_digest: None,
             },
-            stun_info: StunInfo::default(),
-            feature_flags: PeerFeatureFlag::default(),
-            secure_mode: None,
-            host_routing: HostRoutingPolicy::default(),
-        }
+            ..Default::default()
+        };
+        let raw = parsed.generate_raw();
+        InstanceConfig::new(parsed, raw, ())
     }
 
     fn credential_secure_mode() -> crate::proto::common::SecureModeConfig {
@@ -3675,21 +3570,15 @@ mod tests {
         }
     }
 
-    fn build_portable_for_test(runtime: PeerRuntimeConfig) -> anyhow::Result<PeerManagerCore> {
-        build_portable_config_for_test(PortablePeerManagerConfig::new(runtime))
-    }
-
-    fn build_portable_config_for_test(
-        config: PortablePeerManagerConfig,
-    ) -> anyhow::Result<PeerManagerCore> {
+    fn build_portable_for_test(config: InstanceConfig) -> anyhow::Result<PeerManagerCore> {
         let (packet_tx, _packet_rx) = host_packet_channel();
         PeerManagerCore::new_portable_for_test(config, packet_tx)
     }
 
     #[tokio::test]
     async fn portable_peer_manager_builds_and_stops_from_normalized_config() {
-        let runtime = portable_runtime_config("portable-net");
-        let core = build_portable_for_test(runtime).unwrap();
+        let config = portable_test_config("portable-net");
+        let core = build_portable_for_test(config).unwrap();
 
         assert_eq!(core.context.network_name(), "portable-net");
         assert_ne!(core.context.instance_id(), uuid::Uuid::nil());
@@ -3713,44 +3602,31 @@ mod tests {
                 .await
         );
     }
+
     #[tokio::test]
     async fn runtime_updates_retain_manager_owned_peer_identity() {
-        let core = build_portable_for_test(portable_runtime_config("portable-net")).unwrap();
-        let current = core.runtime_config.snapshot();
+        let core = build_portable_for_test(portable_test_config("portable-net")).unwrap();
         let expected_peer_id = core.my_peer_id();
-        let expected_instance_id = current.peer.runtime.core.node.instance_id;
-        let mut next = current.as_ref().clone();
-        let next_peer = Arc::make_mut(&mut next.peer);
-        next_peer.runtime.core.node.peer_id = Some(expected_peer_id.wrapping_add(1));
-        next_peer.runtime.core.node.instance_id = Some([1; 16]);
-        let submitted = next.peer.clone();
+        let expected_instance_id = core.context.instance_id();
+        let current = core.runtime_config.snapshot();
+        let mut next = (*current).clone();
+        next.parsed_mut().instance_id = uuid::Uuid::new_v4();
 
-        let published = core.update_runtime_config(next).await.unwrap();
+        let _published = core.update_runtime_config(next).await.unwrap();
 
-        assert_eq!(
-            published.peer.runtime.core.node.peer_id,
-            Some(expected_peer_id)
-        );
-        assert_eq!(
-            published.peer.runtime.core.node.instance_id,
-            expected_instance_id
-        );
-        assert_eq!(
-            submitted.runtime.core.node.peer_id,
-            Some(expected_peer_id.wrapping_add(1))
-        );
-        assert_eq!(submitted.runtime.core.node.instance_id, Some([1; 16]));
+        assert_eq!(core.my_peer_id(), expected_peer_id);
+        assert_eq!(core.context.instance_id(), expected_instance_id);
         core.clear_resources().await;
     }
 
     #[cfg(not(feature = "zstd"))]
     #[tokio::test]
     async fn portable_peer_manager_rejects_requested_unavailable_zstd() {
-        let mut config = PortablePeerManagerConfig::new(portable_runtime_config("portable-net"));
-        config.snapshot.flags.data_compress_algo =
+        let mut config = portable_test_config("portable-net");
+        config.parsed_mut().flags.data_compress_algo =
             crate::proto::common::CompressionAlgoPb::Zstd.into();
 
-        let error = build_portable_config_for_test(config).err().unwrap();
+        let error = build_portable_for_test(config).err().unwrap();
 
         assert_eq!(
             error.to_string(),
@@ -3765,11 +3641,11 @@ mod tests {
     )))]
     #[tokio::test]
     async fn portable_peer_manager_rejects_requested_unavailable_aes() {
-        let mut config = PortablePeerManagerConfig::new(portable_runtime_config("portable-net"));
-        config.snapshot.flags.enable_encryption = true;
-        config.snapshot.flags.encryption_algorithm = "aes-gcm".to_owned();
+        let mut config = portable_test_config("portable-net");
+        config.parsed_mut().flags.enable_encryption = true;
+        config.parsed_mut().flags.encryption_algorithm = "aes-gcm".to_owned();
 
-        let error = build_portable_config_for_test(config).err().unwrap();
+        let error = build_portable_for_test(config).err().unwrap();
 
         assert_eq!(
             error.to_string(),
@@ -3779,18 +3655,18 @@ mod tests {
 
     #[tokio::test]
     async fn portable_peer_manager_rejects_unknown_encryption_algorithm() {
-        let mut config = PortablePeerManagerConfig::new(portable_runtime_config("portable-net"));
-        config.snapshot.flags.enable_encryption = true;
-        config.snapshot.flags.encryption_algorithm = "rot13".to_owned();
+        let mut config = portable_test_config("portable-net");
+        config.parsed_mut().flags.enable_encryption = true;
+        config.parsed_mut().flags.encryption_algorithm = "rot13".to_owned();
 
-        let error = build_portable_config_for_test(config).err().unwrap();
+        let error = build_portable_for_test(config).err().unwrap();
 
         assert_eq!(error.to_string(), "invalid encryption algorithm: rot13");
     }
 
     #[tokio::test]
     async fn unknown_ipv6_has_no_peer_destination() {
-        let core = build_portable_for_test(portable_runtime_config("ipv6-net")).unwrap();
+        let core = build_portable_for_test(portable_test_config("ipv6-net")).unwrap();
         let unknown = "fd00::2".parse().unwrap();
 
         let (peers, is_self) = core.get_msg_dst_peer_ipv6(&unknown).await;
@@ -3801,7 +3677,7 @@ mod tests {
 
     #[tokio::test]
     async fn foreign_network_stop_waits_for_inflight_admission() {
-        let core = build_portable_for_test(portable_runtime_config("portable-net")).unwrap();
+        let core = build_portable_for_test(portable_test_config("portable-net")).unwrap();
         let manager = core.foreign_network_manager.clone();
         let entered = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Notify::new());
@@ -3831,19 +3707,14 @@ mod tests {
 
     #[tokio::test]
     async fn portable_peer_manager_uses_host_context_adapters() {
-        let config = PortablePeerManagerConfig::new(portable_runtime_config("portable-net"));
-        let runtime_config = CoreRuntimeConfigStore::new(
-            CoreRuntimeConfig::default(),
-            Arc::new(config.snapshot.clone()),
-        );
+        let config = portable_test_config("portable-net");
+        let runtime_config = InstanceConfigStore::new(config);
         let public_ipv6_runtime =
             CorePublicIpv6Runtime::new(runtime_config.clone(), Arc::new(()), Arc::new(()));
         let events = Arc::new(CountingPeerEventSink::default());
         let (packet_tx, _packet_rx) = host_packet_channel();
 
         let core = PeerManagerCore::new(
-            config,
-            Vec::new(),
             runtime_config,
             Arc::new(()),
             packet_tx,
@@ -3851,6 +3722,7 @@ mod tests {
             events.clone(),
             None,
             Arc::new(()),
+            HostRoutingPolicy::default(),
         )
         .unwrap();
 
@@ -3861,7 +3733,7 @@ mod tests {
 
     #[tokio::test]
     async fn portable_peer_assembly_preserves_submitted_acl_groups() {
-        let mut config = PortablePeerManagerConfig::new(portable_runtime_config("portable-net"));
+        let mut config = portable_test_config("portable-net");
         let acl = crate::proto::acl::Acl {
             acl_v1: Some(crate::proto::acl::AclV1 {
                 chains: Vec::new(),
@@ -3874,7 +3746,7 @@ mod tests {
                 }),
             }),
         };
-        config.snapshot.set_acl_groups(Some(&acl));
+        config.parsed_mut().acl = Some(acl);
         let (packet_tx, _packet_rx) = host_packet_channel();
 
         let core = PeerManagerCore::new_portable_for_test(config, packet_tx).unwrap();
@@ -3889,11 +3761,11 @@ mod tests {
 
     #[tokio::test]
     async fn credential_peer_policy_sync_excludes_group_material() {
-        let mut runtime = portable_runtime_config("portable-net");
-        runtime.network_identity.network_secret = None;
-        runtime.network_identity.network_secret_digest = None;
-        runtime.secure_mode = Some(credential_secure_mode());
-        let core = Arc::new(build_portable_for_test(runtime).unwrap());
+        let mut config = portable_test_config("portable-net");
+        config.parsed_mut().network_identity.network_secret = None;
+        config.parsed_mut().network_identity.network_secret_digest = None;
+        config.parsed_mut().secure_mode = Some(credential_secure_mode());
+        let core = Arc::new(build_portable_for_test(config).unwrap());
 
         let acl = crate::proto::acl::Acl {
             acl_v1: Some(crate::proto::acl::AclV1 {
@@ -3907,23 +3779,20 @@ mod tests {
                 }),
             }),
         };
-        let mut services = CoreRuntimeConfig::default();
-        services.acl.acl = Some(acl.clone());
-        let mut source_peer = core.runtime_config.snapshot().peer.as_ref().clone();
-        source_peer.set_acl_groups(Some(&acl));
-        let source = CoreRuntimeConfigStore::new(services, Arc::new(source_peer));
+        let mut source_config = portable_test_config("portable-net");
+        source_config.parsed_mut().acl = Some(acl);
+        let source = InstanceConfigStore::new(source_config);
 
         core.follow_network_policy(source.clone(), vec!["ops".to_owned()])
             .await
             .unwrap();
 
         let applied = core.runtime_config.snapshot();
-        assert!(applied.peer.acl_group_declarations.is_empty());
-        assert!(applied.peer.peer_group_memberships.is_empty());
+        let (declares, members) = crate::peers::context::peer_acl_groups(applied.acl.as_ref());
+        assert!(declares.is_empty());
+        assert!(members.is_empty());
         assert!(
             applied
-                .services
-                .acl
                 .acl
                 .as_ref()
                 .unwrap()
@@ -3934,17 +3803,15 @@ mod tests {
                 .is_none()
         );
 
-        source.update_services(|services| {
-            services.acl.tcp_whitelist = vec!["22".to_owned()];
-        });
+        let mut next = (*source.snapshot()).clone();
+        next.parsed_mut().tcp_whitelist = vec!["22".to_owned()];
+        source.replace(next);
         tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 let applied = core.runtime_config.snapshot();
-                if applied.services.acl.tcp_whitelist == ["22"] {
+                if applied.tcp_whitelist == ["22"] {
                     assert!(
                         applied
-                            .services
-                            .acl
                             .acl
                             .as_ref()
                             .unwrap()
@@ -3967,16 +3834,16 @@ mod tests {
     #[tokio::test]
     async fn node_snapshot_exposes_normalized_runtime_state() {
         let instance_id = uuid::Uuid::from_u128(0x00112233445566778899aabbccddeeff);
-        let mut runtime = portable_runtime_config("portable-net");
-        runtime.core.node.instance_id = Some(*instance_id.as_bytes());
-        runtime.core.node.hostname = Some("portable-node".to_owned());
-        runtime.core.routes.ipv4 = Some(IpPrefix::new("10.20.0.91".parse().unwrap(), 16).unwrap());
-        runtime.core.routes.proxy_networks = vec![ProxyNetworkConfig {
-            real: IpPrefix::new("10.40.0.0".parse().unwrap(), 16).unwrap(),
-            mapped: Some(IpPrefix::new("10.50.0.0".parse().unwrap(), 16).unwrap()),
+        let mut config = portable_test_config("portable-net");
+        config.parsed_mut().instance_id = instance_id;
+        config.parsed_mut().hostname = "portable-node".to_owned();
+        config.parsed_mut().ipv4 = Some("10.20.0.91/16".parse().unwrap());
+        config.parsed_mut().proxy_network = vec![crate::config::toml::ProxyNetworkConfig {
+            cidr: "10.40.0.0/16".parse().unwrap(),
+            mapped_cidr: Some("10.50.0.0/16".parse().unwrap()),
+            allow: None,
         }];
-        runtime.stun_info.public_ip = vec!["192.0.2.91".to_owned()];
-        let core = build_portable_for_test(runtime).unwrap();
+        let core = build_portable_for_test(config).unwrap();
         let listener = Url::parse("tcp://0.0.0.0:11010").unwrap();
 
         let snapshot = core.node_snapshot(vec![listener.clone()]).await;
@@ -3987,7 +3854,6 @@ mod tests {
         assert_eq!(snapshot.ipv4_addr, Some("10.20.0.91/16".parse().unwrap()));
         assert_eq!(snapshot.proxy_networks.len(), 1);
         assert_eq!(snapshot.listeners, vec![listener]);
-        assert_eq!(snapshot.stun_info.public_ip, vec!["192.0.2.91"]);
         assert_eq!(snapshot.version, env!("CARGO_PKG_VERSION"));
         assert!(snapshot.public_ipv6_addr.is_none());
         assert!(snapshot.ipv6_public_addr_prefix.is_none());
@@ -3998,15 +3864,15 @@ mod tests {
             (
                 "portable-node".to_owned(),
                 Some("10.20.0.91/16".parse::<cidr::Ipv4Inet>().unwrap().into()),
-                String::new(),
+                "et.net.".to_owned(),
             )
         );
     }
 
     #[tokio::test]
     async fn portable_peer_manager_auth_uses_managed_credentials() {
-        let admin_a = build_portable_for_test(portable_runtime_config("portable-net")).unwrap();
-        let admin_b = build_portable_for_test(portable_runtime_config("portable-net")).unwrap();
+        let admin_a = build_portable_for_test(portable_test_config("portable-net")).unwrap();
+        let admin_b = build_portable_for_test(portable_test_config("portable-net")).unwrap();
         let generated = admin_a.credential_manager().generate_credential(
             vec!["guest".to_owned()],
             false,
@@ -4079,16 +3945,30 @@ mod tests {
     #[tokio::test]
     async fn portable_host_policy_controls_local_exit_node_fallback() {
         let external_ipv4 = Ipv4Addr::new(203, 0, 113, 10);
-        let default_core =
-            build_portable_for_test(portable_runtime_config("portable-net")).unwrap();
+        let default_core = build_portable_for_test(portable_test_config("portable-net")).unwrap();
         assert_eq!(
             default_core.get_msg_dst_peer_ipv4(&external_ipv4).await,
             (Vec::new(), false)
         );
 
-        let mut runtime = portable_runtime_config("portable-net");
-        runtime.host_routing.local_exit_node_fallback = true;
-        let fallback_core = build_portable_for_test(runtime).unwrap();
+        let config = portable_test_config("portable-net");
+        let runtime_config = InstanceConfigStore::new(config);
+        let public_ipv6_runtime =
+            CorePublicIpv6Runtime::new(runtime_config.clone(), Arc::new(()), Arc::new(()));
+        let (packet_tx, _packet_rx) = host_packet_channel();
+        let fallback_core = PeerManagerCore::new(
+            runtime_config,
+            Arc::new(()),
+            packet_tx,
+            public_ipv6_runtime,
+            Arc::new(()),
+            None,
+            Arc::new(()),
+            HostRoutingPolicy {
+                local_exit_node_fallback: true,
+            },
+        )
+        .unwrap();
         assert_eq!(
             fallback_core.get_msg_dst_peer_ipv4(&external_ipv4).await,
             (vec![fallback_core.my_peer_id()], true)
@@ -4096,46 +3976,39 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn portable_peer_manager_rejects_inconsistent_network_names() {
-        let mut runtime = portable_runtime_config("identity-net");
-        runtime.core.node.network_name = "node-net".to_owned();
-        let (packet_tx, _packet_rx) = host_packet_channel();
-
-        let result = PeerManagerCore::new_portable_for_test(
-            PortablePeerManagerConfig::new(runtime),
-            packet_tx,
-        );
-
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
     async fn portable_peer_manager_rejects_unavailable_config_capabilities() {
-        let mut digest_mismatch = portable_runtime_config("portable-net");
-        digest_mismatch.network_identity.network_secret_digest = Some([1; 32]);
+        let mut digest_mismatch = portable_test_config("portable-net");
+        digest_mismatch
+            .parsed_mut()
+            .network_identity
+            .network_secret_digest = Some([1; 32]);
         assert!(build_portable_for_test(digest_mismatch).is_err());
 
-        let mut secure_without_keys = portable_runtime_config("portable-net");
-        secure_without_keys.secure_mode = Some(crate::proto::common::SecureModeConfig {
-            enabled: true,
-            ..Default::default()
-        });
+        let mut secure_without_keys = portable_test_config("portable-net");
+        secure_without_keys.parsed_mut().secure_mode =
+            Some(crate::proto::common::SecureModeConfig {
+                enabled: true,
+                ..Default::default()
+            });
         assert!(build_portable_for_test(secure_without_keys).is_err());
 
-        let mut mismatched_keys = portable_runtime_config("portable-net");
-        mismatched_keys.secure_mode = Some(credential_secure_mode());
+        let mut mismatched_keys = portable_test_config("portable-net");
+        mismatched_keys.parsed_mut().secure_mode = Some(credential_secure_mode());
         mismatched_keys
+            .parsed_mut()
             .secure_mode
             .as_mut()
             .unwrap()
             .local_public_key = Some(BASE64_STANDARD.encode([9; 32]));
         assert!(build_portable_for_test(mismatched_keys).is_err());
 
-        let mut credential_without_secure_mode = portable_runtime_config("portable-net");
+        let mut credential_without_secure_mode = portable_test_config("portable-net");
         credential_without_secure_mode
+            .parsed_mut()
             .network_identity
             .network_secret = None;
         credential_without_secure_mode
+            .parsed_mut()
             .network_identity
             .network_secret_digest = None;
         assert!(build_portable_for_test(credential_without_secure_mode).is_err());
@@ -4143,12 +4016,12 @@ mod tests {
 
     #[tokio::test]
     async fn portable_peer_manager_accepts_credential_client_config() {
-        let mut runtime = portable_runtime_config("portable-net");
-        runtime.network_identity.network_secret = None;
-        runtime.network_identity.network_secret_digest = None;
-        runtime.secure_mode = Some(credential_secure_mode());
+        let mut config = portable_test_config("portable-net");
+        config.parsed_mut().network_identity.network_secret = None;
+        config.parsed_mut().network_identity.network_secret_digest = None;
+        config.parsed_mut().secure_mode = Some(credential_secure_mode());
 
-        let core = build_portable_for_test(runtime).unwrap();
+        let core = build_portable_for_test(config).unwrap();
         assert!(core.context.feature_flags().is_credential_peer);
         assert!(core.context.network_identity().network_secret.is_none());
         assert!(core.is_secure_mode_enabled);
@@ -4157,16 +4030,11 @@ mod tests {
 
     #[tokio::test]
     async fn portable_peer_manager_accepts_legacy_unlimited_limits() {
-        let runtime = portable_runtime_config("portable-net");
-        let mut flags = PortablePeerManagerConfig::new(runtime.clone())
-            .snapshot
-            .flags;
-        flags.instance_recv_bps_limit = u64::MAX;
-        flags.foreign_relay_bps_limit = u64::MAX;
-        let mut config = PortablePeerManagerConfig::new(runtime.clone());
-        config.snapshot = PeerRuntimeSnapshot::new(runtime, flags);
+        let mut config = portable_test_config("portable-net");
+        config.parsed_mut().flags.instance_recv_bps_limit = u64::MAX;
+        config.parsed_mut().flags.foreign_relay_bps_limit = u64::MAX;
 
-        let core = build_portable_config_for_test(config).unwrap();
+        let core = build_portable_for_test(config).unwrap();
         assert!(core.context.recv_limiter("portable-net", false).is_none());
         assert!(core.context.recv_limiter("foreign-net", true).is_none());
         core.clear_resources().await;
@@ -4174,10 +4042,10 @@ mod tests {
 
     #[tokio::test]
     async fn portable_peer_manager_builds_configured_recv_limiters() {
-        let mut runtime = portable_runtime_config("portable-net");
-        runtime.core.traffic.instance_recv_bps_limit = Some(1024);
-        runtime.core.traffic.foreign_relay_bps_limit = Some(2048);
-        let core = build_portable_for_test(runtime).unwrap();
+        let mut config = portable_test_config("portable-net");
+        config.parsed_mut().flags.instance_recv_bps_limit = 1024;
+        config.parsed_mut().flags.foreign_relay_bps_limit = 2048;
+        let core = build_portable_for_test(config).unwrap();
 
         let instance_a = core.context.recv_limiter("portable-net", false).unwrap();
         let instance_b = core.context.recv_limiter("other-net", false).unwrap();
@@ -4199,55 +4067,18 @@ mod tests {
 
     #[tokio::test]
     async fn portable_peer_manager_rejects_invalid_identity_and_prefixes() {
-        let mut digest_only = portable_runtime_config("portable-net");
-        digest_only.network_identity.network_secret = None;
-        digest_only.network_identity.network_secret_digest = Some([1; 32]);
+        let mut digest_only = portable_test_config("portable-net");
+        digest_only.parsed_mut().network_identity.network_secret = None;
+        digest_only
+            .parsed_mut()
+            .network_identity
+            .network_secret_digest = Some([1; 32]);
         assert!(build_portable_for_test(digest_only).is_err());
-
-        let mut wrong_family = portable_runtime_config("portable-net");
-        wrong_family.core.routes.ipv4 = Some(IpPrefix {
-            address: "2001:db8::1".parse().unwrap(),
-            prefix_len: 64,
-        });
-        assert!(build_portable_for_test(wrong_family).is_err());
-
-        let mut proxy_host_bits = portable_runtime_config("portable-net");
-        proxy_host_bits.core.routes.proxy_networks = vec![crate::config::ProxyNetworkConfig {
-            real: IpPrefix::new("10.50.0.7".parse().unwrap(), 16).unwrap(),
-            mapped: None,
-        }];
-        assert!(build_portable_for_test(proxy_host_bits).is_err());
-
-        let mut wrong_proxy_family = portable_runtime_config("portable-net");
-        wrong_proxy_family.core.routes.proxy_networks = vec![crate::config::ProxyNetworkConfig {
-            real: IpPrefix::new("10.50.0.0".parse().unwrap(), 16).unwrap(),
-            mapped: Some(IpPrefix::new("2001:db8::".parse().unwrap(), 64).unwrap()),
-        }];
-        assert!(build_portable_for_test(wrong_proxy_family).is_err());
-
-        let mut advertised = portable_runtime_config("portable-net");
-        advertised
-            .core
-            .routes
-            .advertised_routes
-            .push(IpPrefix::new("10.60.0.0".parse().unwrap(), 16).unwrap());
-        assert!(build_portable_for_test(advertised).is_err());
-
-        let mut foreign = portable_runtime_config("portable-net");
-        foreign
-            .core
-            .routes
-            .foreign_networks
-            .push(crate::config::ForeignNetworkConfig {
-                name: "other-net".to_owned(),
-                cidrs: Vec::new(),
-            });
-        assert!(build_portable_for_test(foreign).is_err());
     }
 
     #[test]
     fn portable_peer_manager_reports_missing_tokio_runtime() {
-        let result = build_portable_for_test(portable_runtime_config("portable-net"));
+        let result = build_portable_for_test(portable_test_config("portable-net"));
 
         let Err(error) = result else {
             panic!("construction outside Tokio must fail");

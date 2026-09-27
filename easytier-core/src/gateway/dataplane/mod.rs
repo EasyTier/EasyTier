@@ -31,7 +31,7 @@ use tokio::{
 };
 
 use crate::{
-    config::runtime::CoreRuntimeConfigStore,
+    config::runtime::InstanceConfigStore,
     foundation::task::reap_joinset_background,
     gateway::{
         proxy::{
@@ -183,7 +183,7 @@ where
     operation: Mutex<()>,
     pub(super) runtime_started: AtomicBool,
     runtime_guard: DataPlaneIoGuard,
-    runtime_config: CoreRuntimeConfigStore,
+    runtime_config: InstanceConfigStore,
     pub(super) peer_manager: Weak<PeerManagerCore>,
     pub(super) transport_proxy: Option<Weak<WrappedTransportProxyModule>>,
     pub(super) host: Arc<H>,
@@ -336,7 +336,7 @@ where
     H: VirtualTcpSocketFactory + VirtualTcpListenerFactory + VirtualUdpSocketFactory,
 {
     pub(crate) fn new(
-        runtime_config: CoreRuntimeConfigStore,
+        runtime_config: InstanceConfigStore,
         peer_manager: Arc<PeerManagerCore>,
         transport_proxy: Option<&Arc<WrappedTransportProxyModule>>,
         host: Arc<H>,
@@ -366,19 +366,8 @@ where
         })
     }
 
-    fn runtime_ipv4(runtime_config: &CoreRuntimeConfigStore) -> Option<cidr::Ipv4Inet> {
-        let prefix = runtime_config
-            .snapshot()
-            .peer
-            .runtime
-            .core
-            .routes
-            .ipv4
-            .clone()?;
-        let IpAddr::V4(address) = prefix.address else {
-            return None;
-        };
-        cidr::Ipv4Inet::new(address, prefix.prefix_len).ok()
+    fn runtime_ipv4(runtime_config: &InstanceConfigStore) -> Option<cidr::Ipv4Inet> {
+        runtime_config.snapshot().ipv4
     }
 
     pub(crate) fn is_local_virtual_ip(&self, ip: IpAddr) -> bool {
