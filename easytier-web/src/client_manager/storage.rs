@@ -45,6 +45,14 @@ pub struct StorageInner {
 }
 
 impl StorageInner {
+    pub(super) fn is_session_superseded(&self, stoken: &StorageToken, session_epoch: u64) -> bool {
+        // This epoch is established after authentication and survives disconnects.
+        // A newer session need not still be online for an older one to be retired.
+        self.managed_runtime_states
+            .get(&(stoken.user_id, stoken.machine_id))
+            .is_some_and(|current| current.session_epoch > session_epoch)
+    }
+
     pub(super) fn owns_authorized_session(
         &self,
         stoken: &StorageToken,

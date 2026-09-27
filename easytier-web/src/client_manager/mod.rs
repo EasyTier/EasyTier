@@ -152,7 +152,7 @@ impl ClientManager {
         tasks.spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(15)).await;
-                sessions.retain(|_, session| session.is_running());
+                Self::prune_sessions(&sessions).await;
             }
         });
         ClientManager {
@@ -168,6 +168,22 @@ impl ClientManager {
 
             geoip_db: Arc::new(load_geoip_db(geoip_db)),
             heartbeat_policy,
+        }
+    }
+
+    async fn prune_sessions(sessions: &DashMap<url::Url, Arc<Session>>) {
+        // Release the map guards before reading session state or stopping RPC tasks.
+        let snapshot = sessions
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .collect::<Vec<_>>();
+        for (client_url, session) in snapshot {
+            if session.is_running() && !session.is_superseded().await {
+                continue;
+            }
+            // A reconnect may have reused the URL since the snapshot was taken.
+            sessions.remove_if(&client_url, |_, current| Arc::ptr_eq(current, &session));
+            session.stop().await;
         }
     }
 
