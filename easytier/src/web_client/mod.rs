@@ -137,11 +137,14 @@ pub async fn run_web_client(
     let endpoint = parse_config_server_endpoint(config_server_url)?;
 
     let config = TomlConfigLoader::default();
-    let global_ctx = Arc::new(GlobalCtx::new(config.clone()));
-    let mut flags = global_ctx.get_flags();
+    let mut flags = config.get_flags();
     flags.bind_device = false;
-    config.set_flags(flags.clone());
-    global_ctx.set_flags(flags);
+    config.set_flags(flags);
+    let host_config = crate::instance::config::runtime_core_host_config();
+    let snapshot =
+        easytier_core::instance::prepare_instance_config(config.snapshot()?, &host_config)?;
+    let store = easytier_core::config::runtime::InstanceConfigStore::new(snapshot);
+    let global_ctx = Arc::new(GlobalCtx::new(store, &host_config));
     let hostname =
         hostname.unwrap_or_else(|| gethostname::gethostname().to_string_lossy().to_string());
     let connector =

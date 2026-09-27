@@ -552,11 +552,7 @@ impl VirtualNic {
                     .to_lowercase();
 
                 let random_dev_name = format!("et_{}_{}", c, s);
-                config.tun_name(random_dev_name.clone());
-
-                let mut flags = self.global_ctx.get_flags();
-                flags.dev_name = random_dev_name.clone();
-                self.global_ctx.set_flags(flags);
+                config.tun_name(random_dev_name);
             }
 
             config.platform_config(|config| {
@@ -1244,8 +1240,8 @@ impl NicCtx {
                 Ok(ret) => {
                     #[cfg(target_os = "windows")]
                     {
-                        let dev_name = self.global_ctx.get_flags().dev_name;
-                        let _ = RegistryManager::reg_change_catrgory_in_profile(&dev_name);
+                        let dev_name = nic.ifname();
+                        let _ = RegistryManager::reg_change_catrgory_in_profile(dev_name);
                     }
 
                     #[cfg(any(

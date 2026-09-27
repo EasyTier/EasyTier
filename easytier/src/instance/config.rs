@@ -94,28 +94,20 @@ pub(crate) fn runtime_peer_credential_storage(
         None
     }
     #[cfg(feature = "management")]
-    runtime_credential_storage(global_ctx.config.get_credential_file())
+    runtime_credential_storage(
+        global_ctx
+            .runtime_config_store()
+            .snapshot()
+            .credential_file
+            .clone(),
+    )
 }
 
 #[cfg(test)]
 pub(crate) fn test_instance_config(
     global_ctx: &ArcGlobalCtx,
 ) -> easytier_core::config::InstanceConfig {
-    use easytier_core::config::toml::{ConfigLoader as _, TomlConfig};
-
-    let config = TomlConfig::new_from_str(&global_ctx.config.dump())
-        .expect("test configuration should round-trip through TOML");
-    config.set_ipv4(global_ctx.get_ipv4());
-    config.set_ipv6(global_ctx.get_ipv6());
-    config.set_flags(global_ctx.get_flags());
-    let mut host = runtime_core_host_config();
-    let hostname = global_ctx.get_hostname();
-    host.hostname_fallback = (!hostname.is_empty()).then_some(hostname);
-    let snapshot = config
-        .snapshot()
-        .expect("test configuration should snapshot");
-    easytier_core::instance::prepare_instance_config(snapshot, &host)
-        .expect("test configuration should normalize")
+    (*global_ctx.runtime_config_store().snapshot()).clone()
 }
 
 #[cfg(test)]
@@ -170,8 +162,11 @@ mod tests {
 
     #[test]
     fn test_config_uses_current_global_context_hostname_as_fallback() {
-        let global_ctx = get_mock_global_ctx();
-        global_ctx.set_hostname("test-hostname".to_owned());
+        use easytier_core::config::toml::ConfigLoader as _;
+
+        let toml = TomlConfig::default();
+        toml.set_hostname(Some("test-hostname".to_owned()));
+        let global_ctx = crate::common::global_ctx::tests::get_mock_global_ctx_with_config(toml);
 
         let config = test_instance_config(&global_ctx);
 

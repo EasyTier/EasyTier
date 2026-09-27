@@ -53,26 +53,18 @@ pub(crate) fn compose_native_core_instance(
         runtime_core_host_config()
     };
 
-    NativeCoreInstance::compose_with_toml(
-        &toml_config,
-        host_config.clone(),
-        |normalized, management_toml| {
-            let global_ctx = Arc::new(GlobalCtx::new_with_runtime_config(
-                management_toml.clone(),
-                normalized,
-                &host_config,
-            ));
-            let runtime_host = NativeInstanceRuntimeHost::new(global_ctx.clone());
-            let mut adapters = runtime_core_host_adapters_with_packet_egress_and_config(
-                global_ctx,
-                process_runtime,
-                runtime_host.clone(),
-                host_config,
-            );
-            adapters.instance_runtime = runtime_host;
-            Ok(adapters)
-        },
-    )
+    NativeCoreInstance::compose_with_toml(&toml_config, host_config.clone(), |normalized| {
+        let global_ctx = Arc::new(GlobalCtx::new(normalized.clone(), &host_config));
+        let runtime_host = NativeInstanceRuntimeHost::new(global_ctx.clone());
+        let mut adapters = runtime_core_host_adapters_with_packet_egress_and_config(
+            global_ctx,
+            process_runtime,
+            runtime_host.clone(),
+            host_config,
+        );
+        adapters.instance_runtime = runtime_host;
+        Ok(adapters)
+    })
 }
 
 impl CoreEventSink for GlobalCtx {
@@ -259,9 +251,12 @@ fn configure_runtime_core_host_adapters(
     }
     #[cfg(feature = "wireguard")]
     if host_config.vpn_portal_enabled {
-        use crate::common::config::ConfigLoader as _;
-
-        if let Some(config) = global_ctx.config.get_vpn_portal_config() {
+        if let Some(config) = global_ctx
+            .runtime_config_store()
+            .snapshot()
+            .vpn_portal_config
+            .clone()
+        {
             adapters.vpn_portal = Some(crate::vpn_portal::wireguard::WireGuardPortalHost::new(
                 global_ctx.clone(),
                 config,
@@ -320,12 +315,13 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use url::Url;
 
+    use crate::common::{
+        config::{NetworkIdentity, TomlConfigLoader},
+        global_ctx::tests::get_mock_global_ctx_with_config,
+    };
     #[cfg(feature = "kcp")]
     use crate::gateway::kcp_proxy::KcpProxyService;
-    use crate::{
-        common::{config::NetworkIdentity, global_ctx::tests::get_mock_global_ctx_with_network},
-        instance::config::test_instance_config,
-    };
+    use easytier_core::config::toml::ConfigLoader as _;
 
     use super::*;
 
@@ -356,13 +352,12 @@ mod tests {
             quic: None,
         };
 
-        let mut config = test_instance_config(&global_ctx);
-        config.update_parsed(|c| {
-            c.flags.bind_device = false;
-            c.peer.clear();
-            c.listeners = listeners;
-            c.stun_servers = Some(Vec::new());
-        });
+        let mut raw = global_ctx.runtime_config_store().snapshot().raw().clone();
+        raw.flags.bind_device = Some(false);
+        raw.peer = Some(Vec::new());
+        raw.listeners = listeners;
+        raw.stun_servers = Some(Vec::new());
+        let config = easytier_core::config::InstanceConfig::try_from(raw)?;
 
         let instance = NativeCoreInstance::new(config, adapters)?;
         Ok((instance, service))
@@ -375,34 +370,37 @@ mod tests {
             const REQUEST: &[u8] = b"native-kcp-request";
             const REPLY: &[u8] = b"native-kcp-reply";
 
-            let global_a = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
+            let cfg_a = TomlConfigLoader::default();
+            cfg_a.set_network_identity(NetworkIdentity::new(
                 "native-kcp-round-trip".to_owned(),
                 "shared-secret".to_owned(),
-            )));
-            let global_b = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
-                "native-kcp-round-trip".to_owned(),
-                "shared-secret".to_owned(),
-            )));
-            global_a.set_ipv4(Some("10.250.0.1/24".parse().unwrap()));
-            global_b.set_ipv4(Some("10.250.0.2/24".parse().unwrap()));
-
-            let mut flags_a = global_a.get_flags();
+            ));
+            cfg_a.set_ipv4(Some("10.250.0.1/24".parse().unwrap()));
+            let mut flags_a = cfg_a.get_flags();
             flags_a.enable_kcp_proxy = true;
             flags_a.disable_kcp_input = true;
             flags_a.disable_tcp_hole_punching = true;
             flags_a.disable_udp_hole_punching = true;
             flags_a.disable_sym_hole_punching = true;
             flags_a.disable_upnp = true;
-            global_a.set_flags(flags_a);
+            cfg_a.set_flags(flags_a);
+            let global_a = get_mock_global_ctx_with_config(cfg_a);
 
-            let mut flags_b = global_b.get_flags();
+            let cfg_b = TomlConfigLoader::default();
+            cfg_b.set_network_identity(NetworkIdentity::new(
+                "native-kcp-round-trip".to_owned(),
+                "shared-secret".to_owned(),
+            ));
+            cfg_b.set_ipv4(Some("10.250.0.2/24".parse().unwrap()));
+            let mut flags_b = cfg_b.get_flags();
             flags_b.enable_kcp_proxy = false;
             flags_b.disable_kcp_input = false;
             flags_b.disable_tcp_hole_punching = true;
             flags_b.disable_udp_hole_punching = true;
             flags_b.disable_sym_hole_punching = true;
             flags_b.disable_upnp = true;
-            global_b.set_flags(flags_b);
+            cfg_b.set_flags(flags_b);
+            let global_b = get_mock_global_ctx_with_config(cfg_b);
 
             let (packet_sink_a, _packet_receiver_a) = create_host_packet_channel();
             let (packet_sink_b, _packet_receiver_b) = create_host_packet_channel();
@@ -470,25 +468,32 @@ mod tests {
 
     #[tokio::test]
     async fn portable_core_instances_connect_through_core_tcp_listener() {
-        let global_a = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
+        let cfg_a = TomlConfigLoader::default();
+        cfg_a.set_network_identity(NetworkIdentity::new(
             "portable-connect-listen".to_owned(),
             "shared-secret".to_owned(),
-        )));
-        let global_b = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
+        ));
+        cfg_a.set_ipv4(Some("10.250.0.1/24".parse().unwrap()));
+        let global_a = get_mock_global_ctx_with_config(cfg_a);
+
+        let cfg_b = TomlConfigLoader::default();
+        cfg_b.set_network_identity(NetworkIdentity::new(
             "portable-connect-listen".to_owned(),
             "shared-secret".to_owned(),
-        )));
-        global_a.set_ipv4(Some("10.250.0.1/24".parse().unwrap()));
-        global_b.set_ipv4(Some("10.250.0.2/24".parse().unwrap()));
+        ));
+        cfg_b.set_ipv4(Some("10.250.0.2/24".parse().unwrap()));
+        let global_b = get_mock_global_ctx_with_config(cfg_b);
+
         let (packet_sink_a, _packet_receiver_a) = create_host_packet_channel();
         let (packet_sink_b, mut packet_receiver_b) = create_host_packet_channel();
-        let mut config_a = test_instance_config(&global_a);
-        config_a.update_parsed(|c| {
-            c.flags.bind_device = false;
-            c.peer.clear();
-            c.listeners = Some(vec!["tcp://127.0.0.1:0".parse().unwrap()]);
-            c.stun_servers = Some(Vec::new());
-        });
+
+        let mut raw_a = global_a.runtime_config_store().snapshot().raw().clone();
+        raw_a.flags.bind_device = Some(false);
+        raw_a.peer = Some(Vec::new());
+        raw_a.listeners = Some(vec!["tcp://127.0.0.1:0".parse().unwrap()]);
+        raw_a.stun_servers = Some(Vec::new());
+        let config_a = easytier_core::config::InstanceConfig::try_from(raw_a).unwrap();
+
         let mut adapters_a = runtime_core_host_adapters(
             global_a.clone(),
             CoreProcessRuntime::new(),
@@ -497,13 +502,13 @@ mod tests {
         adapters_a.config.direct_testing = true;
         let instance_a = NativeCoreInstance::new(config_a, adapters_a).unwrap();
 
-        let mut config_b = test_instance_config(&global_b);
-        config_b.update_parsed(|c| {
-            c.flags.bind_device = false;
-            c.peer.clear();
-            c.listeners = None;
-            c.stun_servers = Some(Vec::new());
-        });
+        let mut raw_b = global_b.runtime_config_store().snapshot().raw().clone();
+        raw_b.flags.bind_device = Some(false);
+        raw_b.peer = Some(Vec::new());
+        raw_b.listeners = None;
+        raw_b.stun_servers = Some(Vec::new());
+        let config_b = easytier_core::config::InstanceConfig::try_from(raw_b).unwrap();
+
         let mut adapters_b = runtime_core_host_adapters(
             global_b.clone(),
             CoreProcessRuntime::new(),

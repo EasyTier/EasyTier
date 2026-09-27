@@ -447,21 +447,20 @@ where
         build_adapters: F,
     ) -> anyhow::Result<Arc<Self>>
     where
-        F: FnOnce(&InstanceConfigStore, &TomlConfig) -> anyhow::Result<CoreHostAdapters<H>>,
+        F: FnOnce(&InstanceConfigStore) -> anyhow::Result<CoreHostAdapters<H>>,
     {
         toml_config.ensure_id();
         let snapshot = toml_config.snapshot()?;
         let prepared = prepare_instance_config(snapshot, &host_config)?;
         build_capabilities::validate(prepared.parsed(), &host_config)?;
-        let management_toml = TomlConfig::from_instance_config(prepared.clone());
         let runtime_config = InstanceConfigStore::new(prepared);
-        let adapters = build_adapters(&runtime_config, &management_toml)?;
+        let adapters = build_adapters(&runtime_config)?;
         if adapters.config != host_config {
             anyhow::bail!(
                 "adapters host configuration does not match the instance host configuration"
             );
         }
-        Self::new_with_store_and_toml(runtime_config, host_config, adapters, Some(management_toml))
+        Self::new_with_store(runtime_config, host_config, adapters)
     }
 
     /// Constructs an instance from the shared TOML model and retains that
@@ -471,24 +470,13 @@ where
         adapters: CoreHostAdapters<H>,
     ) -> anyhow::Result<Arc<Self>> {
         let host_config = adapters.config.clone();
-        Self::compose_with_toml(toml_config.borrow(), host_config, |_store, _toml| {
-            Ok(adapters)
-        })
+        Self::compose_with_toml(toml_config.borrow(), host_config, |_store| Ok(adapters))
     }
 
     pub fn new_with_store(
         runtime_config: InstanceConfigStore,
         host_config: CoreInstanceHostConfig,
-        adapters: CoreHostAdapters<H>,
-    ) -> anyhow::Result<Arc<Self>> {
-        Self::new_with_store_and_toml(runtime_config, host_config, adapters, None)
-    }
-
-    pub fn new_with_store_and_toml(
-        runtime_config: InstanceConfigStore,
-        host_config: CoreInstanceHostConfig,
         mut adapters: CoreHostAdapters<H>,
-        _management_toml: Option<TomlConfig>,
     ) -> anyhow::Result<Arc<Self>> {
         let snapshot = runtime_config.snapshot();
         let parsed = snapshot.as_ref();

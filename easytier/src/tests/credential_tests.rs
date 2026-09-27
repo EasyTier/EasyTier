@@ -825,8 +825,10 @@ async fn credential_peer_reconnects_to_admin_with_portal_client_online() {
 
     let portal_config = admin_inst
         .get_global_ctx()
-        .config
-        .get_vpn_portal_config()
+        .runtime_config_store()
+        .snapshot()
+        .vpn_portal_config
+        .clone()
         .unwrap();
     let (server_public, client_private) =
         test_wireguard_keys(&portal_config, "portal-client").unwrap();
