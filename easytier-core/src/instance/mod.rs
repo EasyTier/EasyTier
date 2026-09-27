@@ -160,12 +160,6 @@ pub struct CoreInstanceStartupPlan {
     pub connectivity: CoreConnectivityMode,
 }
 
-impl CoreInstanceStartupPlan {
-    fn is_default(&self) -> bool {
-        self == &Self::default()
-    }
-}
-
 impl Default for CoreInstanceStartupPlan {
     fn default() -> Self {
         Self {
@@ -244,7 +238,7 @@ impl InstanceRuntimeHost for () {
 
 /// Host Adapters and optional native capabilities for one core instance.
 ///
-/// Callers provide this bundle and one normalized [`CoreInstanceConfig`] to
+/// Callers provide this bundle and one normalized [`InstanceConfig`] to
 /// [`CoreInstance::new`]. Core constructs and owns every portable runtime
 /// Module behind that seam.
 pub struct CoreHostAdapters<H>

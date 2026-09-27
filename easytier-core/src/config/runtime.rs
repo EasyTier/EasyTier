@@ -39,11 +39,6 @@ impl InstanceConfigStore {
         self.inner.snapshot.load_full()
     }
 
-    pub(crate) fn with_snapshot<T>(&self, read: impl FnOnce(&InstanceConfig) -> T) -> T {
-        let snapshot = self.inner.snapshot.load();
-        read(&snapshot)
-    }
-
     pub fn replace(&self, config: InstanceConfig) -> Arc<InstanceConfig> {
         let _update = self.inner.update.lock();
         let config = Arc::new(config);

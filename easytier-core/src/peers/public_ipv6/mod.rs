@@ -278,7 +278,7 @@ mod tests {
 
     use crate::{
         config::PeerId,
-        config::{InstanceConfig, InstanceConfigParsed, runtime::InstanceConfigStore},
+        config::{InstanceConfigParsed, runtime::InstanceConfigStore},
         events::{CoreEvent, CoreEventSink},
         peers::{context::PeerPublicIpv6State, peer_rpc::PeerRpcManager},
     };

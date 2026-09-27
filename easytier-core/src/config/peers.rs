@@ -208,14 +208,6 @@ impl AclRuleConfig {
         Ok(())
     }
 
-    pub(crate) fn for_credential_peer(&self) -> Self {
-        let mut config = self.clone();
-        if let Some(acl) = config.acl.as_mut().and_then(|acl| acl.acl_v1.as_mut()) {
-            acl.group = None;
-        }
-        config
-    }
-
     pub fn strip_group_material_from_acl(acl: Option<&Acl>) -> Option<Acl> {
         strip_group_material_from_acl(acl)
     }
@@ -338,14 +330,14 @@ mod tests {
             ..Default::default()
         };
 
-        let sanitized = config.for_credential_peer();
+        let sanitized = strip_group_material_from_acl(config.acl.as_ref()).unwrap();
 
-        let acl = sanitized.acl.unwrap().acl_v1.unwrap();
+        let acl = sanitized.acl_v1.unwrap();
         assert_eq!(acl.chains.len(), 1);
         assert_eq!(acl.chains[0].name, "forward");
         assert_eq!(acl.chains[0].rules[0].action, Action::Drop as i32);
         assert!(acl.group.is_none());
-        assert_eq!(sanitized.tcp_whitelist, ["22"]);
+        assert_eq!(config.tcp_whitelist, ["22"]);
         assert!(config.acl.unwrap().acl_v1.unwrap().group.is_some());
     }
 }

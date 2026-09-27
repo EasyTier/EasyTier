@@ -223,7 +223,7 @@ mod portable_runtime {
         },
         host::testkit::{TestDns, TestHost, TestTcpSocket},
         listener::transport::AcceptedTransport,
-        proto::{common::StunInfo, peer_rpc::GetIpListResponse},
+        proto::peer_rpc::GetIpListResponse,
         socket::{SocketContext, udp::PreferredIpv6Source},
     };
 

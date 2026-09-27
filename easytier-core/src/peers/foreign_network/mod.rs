@@ -34,9 +34,6 @@ use crate::{
     socket::SocketContext,
 };
 
-#[cfg(test)]
-use crate::config::peers::HostRoutingPolicy;
-
 use super::{
     conn::{
         peer_conn::{PeerConn, PeerConnId},

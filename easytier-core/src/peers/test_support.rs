@@ -3,8 +3,6 @@
 //! `context::tests`). Kept out of `context.rs` so the context unit tests and
 //! their consumers share one definition.
 
-use std::net::IpAddr;
-
 use easytier_proto::common::{Flags, SecureModeConfig};
 use hmac::Hmac;
 use sha2::Sha256;

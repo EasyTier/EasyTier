@@ -16,10 +16,7 @@ use easytier_proto::{
 };
 
 use crate::{
-    config::{
-        IpPrefix,
-        toml::{ConfigLoader as _, ProxyNetworkConfig, TomlConfig},
-    },
+    config::toml::{ConfigLoader as _, ProxyNetworkConfig, TomlConfig},
     connectivity::manual::{ManualConnectorSnapshot, ManualConnectorStatus},
     instance::{
         CoreInstance, CoreInstanceHost,
@@ -396,10 +393,6 @@ fn foreign_network_info_to_api(info: ForeignNetworkEntryInfo) -> ForeignNetworkE
             })
             .collect(),
     }
-}
-
-fn format_prefix(prefix: &IpPrefix) -> String {
-    format!("{}/{}", prefix.address, prefix.prefix_len)
 }
 
 fn format_proxy_network(proxy: ProxyNetworkConfig) -> String {
