@@ -31,7 +31,7 @@ pub async fn bootstrap_android_management(
     // Mobile plugin dispatch may block; never occupy the UI thread or a core worker.
     tauri::async_runtime::spawn_blocking(move || {
         if let Some(repo) = app.try_state::<Arc<Repository>>() {
-            return Ok(Some(repo.snapshot()));
+            return repo.snapshot().map(Some).map_err(|e| e.to_string());
         }
         let backend = AndroidSnapshotBackend(app.clone());
         if legacy.is_none() && backend.read().map_err(|e| e.to_string())?.is_none() {
@@ -48,7 +48,7 @@ pub async fn bootstrap_android_management(
             Repository::open(AndroidSnapshotBackend(app.clone()), legacy)
                 .map_err(|e| e.to_string())?,
         );
-        let snapshot = repo.snapshot();
+        let snapshot = repo.snapshot().map_err(|e| e.to_string())?;
         app.manage(repo);
         Ok(Some(snapshot))
     })
