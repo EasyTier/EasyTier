@@ -1425,6 +1425,384 @@ virtual_ip = "10.82.0.2/24"
         instance.stop().await;
     }
 
+    #[cfg(feature = "management")]
+    #[tokio::test]
+    async fn patch_only_hostname_preserves_unset_raw_fields() {
+        use easytier_proto::api::config::InstanceConfigPatch;
+
+        let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+        let instance = CoreInstance::from_toml(
+            TomlConfig::new_from_str(
+                r#"
+instance_name = "test-raw-intent"
+hostname = "before"
+"#,
+            )
+            .unwrap(),
+            adapters(None, Arc::new(packet_sink)),
+        )
+        .unwrap();
+        instance.set_state(CoreInstanceState::Running);
+
+        let before_raw = instance.config_store().snapshot().raw().clone();
+        assert_eq!(before_raw.hostname.as_deref(), Some("before"));
+        assert!(before_raw.tcp_whitelist.is_none());
+        assert!(before_raw.udp_whitelist.is_none());
+        assert!(before_raw.routes.is_none());
+        assert!(before_raw.mapped_listeners.is_none());
+        assert!(before_raw.port_forward.is_none());
+        assert!(before_raw.proxy_network.is_none());
+        assert!(before_raw.exit_nodes.is_none());
+
+        crate::management::apply_config_patch(
+            &instance,
+            InstanceConfigPatch {
+                hostname: Some("after".to_owned()),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+        let after_raw = instance.config_store().snapshot().raw().clone();
+        assert_eq!(after_raw.hostname.as_deref(), Some("after"));
+        // Crucial invariant: other unset fields remain unset!
+        assert!(after_raw.tcp_whitelist.is_none());
+        assert!(after_raw.udp_whitelist.is_none());
+        assert!(after_raw.routes.is_none());
+        assert!(after_raw.mapped_listeners.is_none());
+        assert!(after_raw.port_forward.is_none());
+        assert!(after_raw.proxy_network.is_none());
+        assert!(after_raw.exit_nodes.is_none());
+    }
+
+    #[cfg(feature = "management")]
+    #[tokio::test]
+    async fn patch_flags_explicit_false_and_zero_preserves_unprovided() {
+        use easytier_proto::api::config::InstanceConfigPatch;
+
+        let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+        let instance = CoreInstance::from_toml(
+            TomlConfig::new_from_str(
+                r#"
+instance_name = "test-flags-patch"
+[flags]
+enable_encryption = true
+latency_first = true
+"#,
+            )
+            .unwrap(),
+            adapters(None, Arc::new(packet_sink)),
+        )
+        .unwrap();
+        instance.set_state(CoreInstanceState::Running);
+
+        let before_raw = instance.config_store().snapshot().raw().clone();
+        assert_eq!(before_raw.flags.enable_encryption, Some(true));
+        assert_eq!(before_raw.flags.latency_first, Some(true));
+        assert_eq!(before_raw.flags.disable_relay_data, None);
+        assert_eq!(before_raw.flags.prefer_peer_relay, None);
+
+        // Explicitly set disable_relay_data to false, leaving prefer_peer_relay unset
+        crate::management::apply_config_patch(
+            &instance,
+            InstanceConfigPatch {
+                disable_relay_data: Some(false),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+        let after_raw = instance.config_store().snapshot().raw().clone();
+        assert_eq!(after_raw.flags.enable_encryption, Some(true));
+        assert_eq!(after_raw.flags.latency_first, Some(true));
+        assert_eq!(after_raw.flags.disable_relay_data, Some(false));
+        assert_eq!(after_raw.flags.prefer_peer_relay, None);
+    }
+
+    #[cfg(feature = "management")]
+    #[tokio::test]
+    async fn patch_clear_collections_follows_each_field_convention() {
+        use easytier_proto::api::config::{
+            ConfigPatchAction, ExitNodePatch, InstanceConfigPatch, PortForwardPatch,
+            ProxyNetworkPatch, RoutePatch, UrlPatch,
+        };
+
+        let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+        let mut host_adapters = adapters(None, Arc::new(packet_sink));
+        host_adapters.config.ignore_unsupported_config = true;
+        host_adapters.config.gateway_enabled = false;
+        host_adapters.config.proxy_enabled = false;
+        let instance = CoreInstance::from_toml(
+            TomlConfig::new_from_str(
+                r#"
+instance_name = "test-clear-collections"
+ipv4 = "10.0.0.1/24"
+exit_nodes = ["10.0.0.2"]
+routes = ["10.10.0.0/16"]
+mapped_listeners = ["tcp://1.2.3.4:11010"]
+
+[flags]
+proxy_forward_by_system = true
+
+[[port_forward]]
+bind_addr = "0.0.0.0:11011"
+dst_addr = "10.0.0.3:11011"
+proto = "tcp"
+
+[[proxy_network]]
+cidr = "10.20.0.0/24"
+"#,
+            )
+            .unwrap(),
+            host_adapters,
+        )
+        .unwrap();
+        instance.set_state(CoreInstanceState::Running);
+
+        let snap = instance.config_store().snapshot();
+        assert!(snap.raw().routes.is_some());
+        assert!(snap.raw().mapped_listeners.is_some());
+        assert!(snap.raw().port_forward.is_some());
+        assert!(snap.raw().exit_nodes.is_some());
+        assert!(snap.raw().proxy_network.is_some());
+
+        crate::management::apply_config_patch(
+            &instance,
+            InstanceConfigPatch {
+                routes: vec![RoutePatch {
+                    action: ConfigPatchAction::Clear as i32,
+                    cidr: None,
+                }],
+                mapped_listeners: vec![UrlPatch {
+                    action: ConfigPatchAction::Clear as i32,
+                    url: None,
+                }],
+                port_forwards: vec![PortForwardPatch {
+                    action: ConfigPatchAction::Clear as i32,
+                    cfg: None,
+                }],
+                exit_nodes: vec![ExitNodePatch {
+                    action: ConfigPatchAction::Clear as i32,
+                    node: None,
+                }],
+                proxy_networks: vec![ProxyNetworkPatch {
+                    action: ConfigPatchAction::Clear as i32,
+                    cidr: None,
+                    mapped_cidr: None,
+                }],
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+        let after = instance.config_store().snapshot();
+        // routes and mapped_listeners become None when empty
+        assert_eq!(after.raw().routes, None);
+        assert_eq!(after.raw().mapped_listeners, None);
+        // port_forward and exit_nodes become Some([])
+        assert_eq!(after.raw().port_forward, Some(vec![]));
+        assert_eq!(after.raw().exit_nodes, Some(vec![]));
+        // proxy_network becomes None on clear
+        assert_eq!(after.raw().proxy_network, None);
+    }
+
+    #[cfg(feature = "management")]
+    #[tokio::test]
+    async fn patch_proxy_networks_later_failure_commits_valid_prefix() {
+        use easytier_proto::api::config::{
+            ConfigPatchAction, InstanceConfigPatch, ProxyNetworkPatch,
+        };
+
+        let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+        let mut host_adapters = adapters(None, Arc::new(packet_sink));
+        host_adapters.config.ignore_unsupported_config = true;
+        let instance = CoreInstance::from_toml(
+            TomlConfig::new_from_str(
+                r#"
+instance_name = "test-proxy-prefix"
+ipv4 = "10.0.0.1/24"
+
+[flags]
+proxy_forward_by_system = true
+"#,
+            )
+            .unwrap(),
+            host_adapters,
+        )
+        .unwrap();
+        instance.set_state(CoreInstanceState::Running);
+
+        let error = crate::management::apply_config_patch(
+            &instance,
+            InstanceConfigPatch {
+                proxy_networks: vec![
+                    ProxyNetworkPatch {
+                        action: ConfigPatchAction::Add as i32,
+                        cidr: Some("10.1.0.0/24".parse::<cidr::Ipv4Inet>().unwrap().into()),
+                        mapped_cidr: None,
+                    },
+                    ProxyNetworkPatch {
+                        action: ConfigPatchAction::Add as i32,
+                        cidr: Some("10.2.0.0/24".parse::<cidr::Ipv4Inet>().unwrap().into()),
+                        // Invalid: mismatched mask length /16 vs /24
+                        mapped_cidr: Some("10.3.0.0/16".parse::<cidr::Ipv4Inet>().unwrap().into()),
+                    },
+                ],
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Mapped CIDR must have the same network length")
+        );
+
+        // Valid prefix (10.1.0.0/24) was committed!
+        let snapshot = instance.config_store().snapshot();
+        let proxies = snapshot.raw().proxy_network.as_ref().unwrap();
+        assert_eq!(proxies.len(), 1);
+        assert_eq!(
+            proxies[0].cidr,
+            "10.1.0.0/24".parse::<cidr::Ipv4Cidr>().unwrap()
+        );
+    }
+
+    #[cfg(feature = "management")]
+    #[tokio::test]
+    async fn patch_acl_validation_failure_does_not_commit_partial_acl() {
+        use easytier_proto::api::config::{
+            AclPatch, ConfigPatchAction, InstanceConfigPatch, StringPatch,
+        };
+
+        let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+        let instance = CoreInstance::from_toml(
+            TomlConfig::new_from_str(
+                r#"
+instance_name = "test-acl-validation"
+ipv4 = "10.0.0.1/24"
+"#,
+            )
+            .unwrap(),
+            adapters(None, Arc::new(packet_sink)),
+        )
+        .unwrap();
+        instance.set_state(CoreInstanceState::Running);
+
+        let error = crate::management::apply_config_patch(
+            &instance,
+            InstanceConfigPatch {
+                acl: Some(AclPatch {
+                    acl: None,
+                    tcp_whitelist: vec![StringPatch {
+                        action: ConfigPatchAction::Add as i32,
+                        value: "invalid-syntax-rule-!!!".to_owned(),
+                    }],
+                    udp_whitelist: vec![],
+                }),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            error.to_string().contains("Invalid port range format"),
+            "unexpected error: {error:#}"
+        );
+
+        // Raw ACL fields were not modified with invalid data
+        let snapshot = instance.config_store().snapshot();
+        assert!(snapshot.raw().tcp_whitelist.is_none());
+        assert!(snapshot.raw().udp_whitelist.is_none());
+        assert!(snapshot.raw().acl.is_none());
+    }
+
+    #[cfg(all(feature = "management", feature = "vpn-portal"))]
+    #[tokio::test]
+    async fn patch_portal_group_failure_does_not_commit_partial_clients() {
+        use easytier_proto::api::{
+            config::{ConfigPatchAction, InstanceConfigPatch, VpnPortalClientPatch},
+            manage::VpnPortalClientConfig,
+        };
+
+        let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+        let mut host_adapters = adapters(None, Arc::new(packet_sink));
+        host_adapters.vpn_portal = Some(Arc::new(SucceedingPortalHost));
+        let instance = CoreInstance::from_toml(
+            TomlConfig::new_from_str(
+                r#"
+instance_name = "test-portal-group"
+ipv4 = "10.0.0.1/24"
+[network_identity]
+network_name = "test-portal-net"
+network_secret = "test-portal-secret"
+[vpn_portal_config]
+wireguard_listen = "0.0.0.0:51820"
+[[vpn_portal_config.clients]]
+name = "alice"
+virtual_ip = "10.0.0.2/24"
+"#,
+            )
+            .unwrap(),
+            host_adapters,
+        )
+        .unwrap();
+        instance.set_state(CoreInstanceState::Running);
+
+        // Group patch: 1 valid add, 1 invalid remove (ghost does not exist)
+        let error = crate::management::apply_config_patch(
+            &instance,
+            InstanceConfigPatch {
+                vpn_portal_clients: vec![
+                    VpnPortalClientPatch {
+                        action: ConfigPatchAction::Add as i32,
+                        client: Some(VpnPortalClientConfig {
+                            name: "bob".to_owned(),
+                            virtual_ip: "10.0.0.3/24".to_owned(),
+                            ..Default::default()
+                        }),
+                    },
+                    VpnPortalClientPatch {
+                        action: ConfigPatchAction::Remove as i32,
+                        client: Some(VpnPortalClientConfig {
+                            name: "ghost".to_owned(),
+                            ..Default::default()
+                        }),
+                    },
+                ],
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("not found"));
+
+        // Neither bob nor ghost removal was committed
+        let snapshot = instance.config_store().snapshot();
+        let clients = snapshot
+            .parsed()
+            .vpn_portal_config
+            .as_ref()
+            .unwrap()
+            .clients
+            .clone();
+        assert_eq!(clients.len(), 1);
+        assert_eq!(clients[0].name, "alice");
+    }
+
     #[tokio::test]
     async fn dropping_core_instance_requests_host_shutdown() {
         struct DropAwareRuntimeHost(Arc<AtomicBool>);

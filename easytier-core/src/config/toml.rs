@@ -572,50 +572,18 @@ impl ConfigLoader for TomlConfig {
         cidr: cidr::Ipv4Cidr,
         mapped_cidr: Option<cidr::Ipv4Cidr>,
     ) -> Result<(), anyhow::Error> {
-        let mut locked_config = self.config.lock().unwrap();
-        if locked_config.proxy_network.is_none() {
-            locked_config.proxy_network = Some(vec![]);
-        }
-        if let Some(mapped_cidr) = mapped_cidr.as_ref()
-            && cidr.network_length() != mapped_cidr.network_length()
-        {
-            return Err(anyhow::anyhow!(
-                "Mapped CIDR must have the same network length as the original CIDR: {} != {}",
-                cidr.network_length(),
-                mapped_cidr.network_length()
-            ));
-        }
-        // insert if no duplicate
-        if !locked_config
-            .proxy_network
-            .as_ref()
+        self.config
+            .lock()
             .unwrap()
-            .iter()
-            .any(|c| c.cidr == cidr && c.mapped_cidr == mapped_cidr)
-        {
-            locked_config
-                .proxy_network
-                .as_mut()
-                .unwrap()
-                .push(ProxyNetworkConfig {
-                    cidr,
-                    mapped_cidr,
-                    allow: None,
-                });
-        }
-        Ok(())
+            .add_proxy_cidr(cidr, mapped_cidr)
     }
 
     fn remove_proxy_cidr(&self, cidr: cidr::Ipv4Cidr) {
-        let mut locked_config = self.config.lock().unwrap();
-        if let Some(proxy_cidrs) = &mut locked_config.proxy_network {
-            proxy_cidrs.retain(|c| c.cidr != cidr);
-        }
+        self.config.lock().unwrap().remove_proxy_cidr(cidr);
     }
 
     fn clear_proxy_cidrs(&self) {
-        let mut locked_config = self.config.lock().unwrap();
-        locked_config.proxy_network = None;
+        self.config.lock().unwrap().clear_proxy_cidrs();
     }
 
     fn get_proxy_cidrs(&self) -> Vec<ProxyNetworkConfig> {
@@ -716,15 +684,7 @@ impl ConfigLoader for TomlConfig {
     }
 
     fn patch_flags(&self, flags: FlagsPatch) {
-        // Protobuf merge: an update overwrites exactly the fields it carries,
-        // and presence is the encoding, so a flag explicitly set to its default
-        // value is applied like any other. Optionize's merge cannot express that
-        // here, because the one flattened nullable field would have to assign
-        // unconditionally.
-        let mut config = self.config.lock().unwrap();
-        let update = prost::Message::encode_to_vec(&flags);
-        prost::Message::merge(&mut config.flags, update.as_slice())
-            .expect("decoding the bytes just encoded cannot fail");
+        self.config.lock().unwrap().patch_flags(flags);
     }
 
     fn get_exit_nodes(&self) -> Vec<IpAddr> {
