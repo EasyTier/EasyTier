@@ -158,6 +158,65 @@ impl InstanceConfigParsed {
     }
 }
 
+pub fn validate_proxy_cidr_pair(cidr: Ipv4Cidr, mapped_cidr: Ipv4Cidr) -> anyhow::Result<()> {
+    if cidr.network_length() != mapped_cidr.network_length() {
+        anyhow::bail!(
+            "Mapped CIDR must have the same network length as the original CIDR: {} != {}",
+            cidr.network_length(),
+            mapped_cidr.network_length()
+        );
+    }
+    Ok(())
+}
+
+impl InstanceConfigRaw {
+    pub fn add_proxy_cidr(
+        &mut self,
+        cidr: Ipv4Cidr,
+        mapped_cidr: Option<Ipv4Cidr>,
+    ) -> anyhow::Result<()> {
+        if let Some(mapped_cidr) = mapped_cidr.as_ref() {
+            validate_proxy_cidr_pair(cidr, *mapped_cidr)?;
+        }
+        if self.proxy_network.is_none() {
+            self.proxy_network = Some(vec![]);
+        }
+        if !self
+            .proxy_network
+            .as_ref()
+            .unwrap()
+            .iter()
+            .any(|c| c.cidr == cidr && c.mapped_cidr == mapped_cidr)
+        {
+            self.proxy_network
+                .as_mut()
+                .unwrap()
+                .push(ProxyNetworkConfig {
+                    cidr,
+                    mapped_cidr,
+                    allow: None,
+                });
+        }
+        Ok(())
+    }
+
+    pub fn remove_proxy_cidr(&mut self, cidr: Ipv4Cidr) {
+        if let Some(proxy_cidrs) = &mut self.proxy_network {
+            proxy_cidrs.retain(|c| c.cidr != cidr);
+        }
+    }
+
+    pub fn clear_proxy_cidrs(&mut self) {
+        self.proxy_network = None;
+    }
+
+    pub fn patch_flags(&mut self, flags: FlagsPatch) {
+        let update = prost::Message::encode_to_vec(&flags);
+        prost::Message::merge(&mut self.flags, update.as_slice())
+            .expect("decoding the bytes just encoded cannot fail");
+    }
+}
+
 pub type InstanceConfig = ConfigBase<InstanceConfigRaw, InstanceConfigParsed>;
 
 impl TryFrom<InstanceConfigRaw> for InstanceConfig {
@@ -194,14 +253,8 @@ impl TryFrom<InstanceConfigRaw> for InstanceConfig {
         parsed.ipv4 = normalize_ipv4(parsed.ipv4);
 
         for proxy in &parsed.proxy_network {
-            if let Some(mapped) = &proxy.mapped_cidr
-                && proxy.cidr.network_length() != mapped.network_length()
-            {
-                anyhow::bail!(
-                    "Mapped CIDR must have the same network length as the original CIDR: {} != {}",
-                    proxy.cidr.network_length(),
-                    mapped.network_length()
-                );
+            if let Some(mapped) = &proxy.mapped_cidr {
+                validate_proxy_cidr_pair(proxy.cidr, *mapped)?;
             }
         }
 

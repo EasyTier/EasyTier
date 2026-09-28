@@ -10,10 +10,9 @@ use optionize::Optionized as _;
 
 use crate::{
     config::{
-        InstanceConfig,
+        InstanceConfig, InstanceConfigRaw,
         peers::{AclRuleConfig, PublicIpv6ProviderConfig},
         serialize_raw_to_toml,
-        toml::{ConfigLoader as _, TomlConfig},
     },
     instance::{CoreInstance, CoreInstanceHost, CoreInstanceState, prepare_instance_config},
     peers::credential_manager::CredentialManager,
@@ -40,7 +39,7 @@ where
 
     let initial_snapshot = instance.config_store().snapshot();
     let mut last_accepted: Arc<InstanceConfig> = initial_snapshot;
-    let candidate = TomlConfig::from_instance_config((*last_accepted).clone());
+    let mut candidate = last_accepted.raw().clone();
     let parsed_prefix =
         parse_ipv6_public_addr_prefix_patch(patch.ipv6_public_addr_prefix.as_deref())?;
     // Take the credential set out first so the host-facing copy below never
@@ -52,82 +51,96 @@ where
     // Preserve the existing ordered partial-commit contract: earlier valid
     // sub-patches remain applied if a later sub-patch fails.
     let patch_result: anyhow::Result<(bool, bool)> = async {
-        let result = patch_port_forwards(&candidate, patch.port_forwards);
-        validate_persist_and_commit_candidate(
-            instance,
-            &mut last_accepted,
-            &candidate,
-            persistence,
-        )
-        .await?;
-        result?;
+        if !patch.port_forwards.is_empty() {
+            let result = patch_port_forwards(&mut candidate, patch.port_forwards);
+            validate_persist_and_commit_candidate(
+                instance,
+                &mut last_accepted,
+                &candidate,
+                persistence,
+            )
+            .await?;
+            result?;
+        }
 
-        let result = patch_acl(&candidate, patch.acl);
-        validate_persist_and_commit_candidate(
-            instance,
-            &mut last_accepted,
-            &candidate,
-            persistence,
-        )
-        .await?;
-        result?;
+        if patch.acl.is_some() {
+            let result = patch_acl(&mut candidate, patch.acl);
+            validate_persist_and_commit_candidate(
+                instance,
+                &mut last_accepted,
+                &candidate,
+                persistence,
+            )
+            .await?;
+            result?;
+        }
 
-        let result = patch_proxy_networks(&candidate, patch.proxy_networks);
-        validate_persist_and_commit_candidate(
-            instance,
-            &mut last_accepted,
-            &candidate,
-            persistence,
-        )
-        .await?;
-        result?;
+        if !patch.proxy_networks.is_empty() {
+            let result = patch_proxy_networks(&mut candidate, patch.proxy_networks);
+            validate_persist_and_commit_candidate(
+                instance,
+                &mut last_accepted,
+                &candidate,
+                persistence,
+            )
+            .await?;
+            result?;
+        }
 
-        let result = patch_routes(&candidate, patch.routes);
-        validate_persist_and_commit_candidate(
-            instance,
-            &mut last_accepted,
-            &candidate,
-            persistence,
-        )
-        .await?;
-        result?;
+        if !patch.routes.is_empty() {
+            let result = patch_routes(&mut candidate, patch.routes);
+            validate_persist_and_commit_candidate(
+                instance,
+                &mut last_accepted,
+                &candidate,
+                persistence,
+            )
+            .await?;
+            result?;
+        }
 
-        let result = patch_exit_nodes_config(&candidate, patch.exit_nodes);
-        let prepared = validate_persist_and_commit_candidate(
-            instance,
-            &mut last_accepted,
-            &candidate,
-            persistence,
-        )
-        .await?;
-        result?;
-        instance
-            .update_exit_nodes(prepared.parsed().exit_nodes.clone())
-            .await;
+        if !patch.exit_nodes.is_empty() {
+            let result = patch_exit_nodes_config(&mut candidate, patch.exit_nodes);
+            validate_persist_and_commit_candidate(
+                instance,
+                &mut last_accepted,
+                &candidate,
+                persistence,
+            )
+            .await?;
+            result?;
+            instance
+                .update_exit_nodes(last_accepted.parsed().exit_nodes.clone())
+                .await;
+        }
 
-        let result = patch_mapped_listeners(&candidate, patch.mapped_listeners);
-        validate_persist_and_commit_candidate(
-            instance,
-            &mut last_accepted,
-            &candidate,
-            persistence,
-        )
-        .await?;
-        result?;
+        if !patch.mapped_listeners.is_empty() {
+            let result = patch_mapped_listeners(&mut candidate, patch.mapped_listeners);
+            validate_persist_and_commit_candidate(
+                instance,
+                &mut last_accepted,
+                &candidate,
+                persistence,
+            )
+            .await?;
+            result?;
+        }
 
-        patch_connectors(instance, patch.connectors)?;
+        if !patch.connectors.is_empty() {
+            patch_connectors(instance, patch.connectors)?;
+        }
 
         let mut provider_config_changed = false;
         if let Some(hostname) = patch.hostname {
-            candidate.set_hostname(Some(hostname));
+            candidate.hostname = Some(hostname);
         }
         if let Some(ipv4) = patch.ipv4
-            && !candidate.get_dhcp()
+            && !candidate.dhcp.unwrap_or_default()
         {
-            candidate.set_ipv4(Some(ipv4.into()));
+            candidate.ipv4 = Some(ipv4.into());
         }
         if let Some(ipv6) = patch.ipv6 {
-            candidate.set_ipv6(Some(ipv6.into()));
+            candidate.ipv6 = Some(ipv6.into());
         }
         candidate.patch_flags(FlagsPatch {
             disable_relay_data: patch.disable_relay_data,
@@ -135,14 +148,14 @@ where
             ..Default::default()
         });
         if let Some(enabled) = patch.ipv6_public_addr_provider {
-            candidate.set_ipv6_public_addr_provider(enabled);
+            candidate.ipv6_public_addr_provider = Some(enabled);
             provider_config_changed = true;
         }
         if let Some(enabled) = patch.ipv6_public_addr_auto {
-            candidate.set_ipv6_public_addr_auto(enabled);
+            candidate.ipv6_public_addr_auto = Some(enabled);
         }
         if let Some(prefix) = parsed_prefix {
-            candidate.set_ipv6_public_addr_prefix(prefix);
+            candidate.ipv6_public_addr_prefix = prefix;
             provider_config_changed = true;
         }
         let mut managed_credentials_changed = false;
@@ -151,7 +164,7 @@ where
         // including routes and the node IPv4 set earlier in this request.
         if !patch.vpn_portal_clients.is_empty() {
             let previous = last_accepted.clone();
-            apply_vpn_portal_client_patches(&candidate, patch.vpn_portal_clients)?;
+            apply_vpn_portal_client_patches(&mut candidate, patch.vpn_portal_clients)?;
             // Deep-validate and durably persist before hot-applying. A failed
             // write leaves the live Portal untouched. If the host rejects the
             // hot update, restore the previous durable snapshot before
@@ -196,7 +209,7 @@ where
                 let _ = prepared;
             }
             if changed {
-                last_accepted = Arc::new(prepared.clone());
+                last_accepted = Arc::new(prepared);
             }
         }
 
@@ -233,7 +246,7 @@ where
             let replacement = credential_manager
                 .validate_managed_credentials(&entries)
                 .map_err(anyhow::Error::msg)?;
-            candidate.set_managed_credentials(entries);
+            candidate.managed_credentials = Some(entries);
             let prepared = validate_candidate(instance, &candidate)?;
             // When durable storage is configured, persist before installing
             // secret authority so a successful replacement survives restart.
@@ -254,7 +267,6 @@ where
             )
             .await?;
         }
-        let _prepared = validate_candidate(instance, &candidate)?;
         Ok((provider_config_changed, managed_credentials_changed))
     }
     .await;
@@ -288,13 +300,13 @@ fn patch_without_managed_credentials(patch: &InstanceConfigPatch) -> InstanceCon
 
 fn validate_candidate<H>(
     instance: &CoreInstance<H>,
-    candidate: &TomlConfig,
+    candidate: &InstanceConfigRaw,
 ) -> anyhow::Result<InstanceConfig>
 where
     H: CoreInstanceHost,
 {
-    let snapshot = candidate.snapshot()?;
-    let prepared = prepare_instance_config(snapshot, instance.host_config())?;
+    let config = InstanceConfig::try_from(candidate.clone())?;
+    let prepared = prepare_instance_config(config, instance.host_config())?;
     let provider_config = PublicIpv6ProviderConfig {
         provider_enabled: prepared.parsed().ipv6_public_addr_provider,
         configured_prefix: prepared.parsed().ipv6_public_addr_prefix,
@@ -308,9 +320,9 @@ where
 async fn validate_persist_and_commit_candidate<H>(
     instance: &CoreInstance<H>,
     last_accepted: &mut Arc<InstanceConfig>,
-    candidate: &TomlConfig,
+    candidate: &InstanceConfigRaw,
     persistence: Option<&dyn ConfigPatchPersistence>,
-) -> anyhow::Result<InstanceConfig>
+) -> anyhow::Result<()>
 where
     H: CoreInstanceHost,
 {
@@ -318,9 +330,9 @@ where
     if persist_candidate_if_changed(instance, last_accepted.as_ref(), &prepared, persistence)
         .await?
     {
-        *last_accepted = Arc::new(prepared.clone());
+        *last_accepted = Arc::new(prepared);
     }
-    Ok(prepared)
+    Ok(())
 }
 
 async fn persist_candidate_if_changed<H>(
@@ -401,11 +413,14 @@ mod managed_credential_tests {
     }
 }
 
-fn patch_port_forwards(config: &TomlConfig, patches: Vec<PortForwardPatch>) -> anyhow::Result<()> {
+fn patch_port_forwards(
+    raw: &mut InstanceConfigRaw,
+    patches: Vec<PortForwardPatch>,
+) -> anyhow::Result<()> {
     if patches.is_empty() {
         return Ok(());
     }
-    let mut current = config.get_port_forwards();
+    let mut current = raw.port_forward.clone().unwrap_or_default();
     let patches = patches
         .into_iter()
         .map(|patch| Patchable {
@@ -415,18 +430,18 @@ fn patch_port_forwards(config: &TomlConfig, patches: Vec<PortForwardPatch>) -> a
         .collect::<Vec<_>>();
     trace_patchables(&patches);
     config::patch_vec(&mut current, patches);
-    config.set_port_forwards(current);
+    raw.port_forward = Some(current);
     Ok(())
 }
 
-fn patch_acl(config: &TomlConfig, patch: Option<AclPatch>) -> anyhow::Result<()> {
+fn patch_acl(raw: &mut InstanceConfigRaw, patch: Option<AclPatch>) -> anyhow::Result<()> {
     let Some(patch) = patch else {
         return Ok(());
     };
     let mut acl = AclRuleConfig {
-        acl: config.get_acl(),
-        tcp_whitelist: config.get_tcp_whitelist(),
-        udp_whitelist: config.get_udp_whitelist(),
+        acl: raw.acl.clone(),
+        tcp_whitelist: raw.tcp_whitelist.clone().unwrap_or_default(),
+        udp_whitelist: raw.udp_whitelist.clone().unwrap_or_default(),
         whitelist_priority: None,
     };
     if let Some(next) = patch.acl {
@@ -451,14 +466,14 @@ fn patch_acl(config: &TomlConfig, patch: Option<AclPatch>) -> anyhow::Result<()>
         config::patch_vec(&mut acl.udp_whitelist, patches);
     }
     acl.build()?;
-    config.set_acl(acl.acl);
-    config.set_tcp_whitelist(acl.tcp_whitelist);
-    config.set_udp_whitelist(acl.udp_whitelist);
+    raw.acl = acl.acl;
+    raw.tcp_whitelist = Some(acl.tcp_whitelist);
+    raw.udp_whitelist = Some(acl.udp_whitelist);
     Ok(())
 }
 
 fn patch_proxy_networks(
-    config: &TomlConfig,
+    raw: &mut InstanceConfigRaw,
     patches: Vec<ProxyNetworkPatch>,
 ) -> anyhow::Result<()> {
     for patch in patches {
@@ -468,16 +483,16 @@ fn patch_proxy_networks(
                     tracing::warn!("ignored proxy-network add without CIDR");
                     continue;
                 };
-                config.add_proxy_cidr(cidr, patch.mapped_cidr.map(Into::into))?;
+                raw.add_proxy_cidr(cidr, patch.mapped_cidr.map(Into::into))?;
             }
             Ok(ConfigPatchAction::Remove) => {
                 let Some(cidr) = patch.cidr.map(Into::into) else {
                     tracing::warn!("ignored proxy-network remove without CIDR");
                     continue;
                 };
-                config.remove_proxy_cidr(cidr);
+                raw.remove_proxy_cidr(cidr);
             }
-            Ok(ConfigPatchAction::Clear) => config.clear_proxy_cidrs(),
+            Ok(ConfigPatchAction::Clear) => raw.clear_proxy_cidrs(),
             Err(_) => tracing::warn!(
                 action = patch.action,
                 "ignored invalid proxy-network action"
@@ -487,58 +502,63 @@ fn patch_proxy_networks(
     Ok(())
 }
 
-fn patch_routes(config: &TomlConfig, patches: Vec<RoutePatch>) -> anyhow::Result<()> {
+fn patch_routes(raw: &mut InstanceConfigRaw, patches: Vec<RoutePatch>) -> anyhow::Result<()> {
     if patches.is_empty() {
         return Ok(());
     }
-    let mut current = config.get_routes().unwrap_or_default();
+    let mut current = raw.routes.clone().unwrap_or_default();
     let patches = patches.into_iter().map(Into::into).collect::<Vec<_>>();
     trace_patchables(&patches);
     config::patch_vec(&mut current, patches);
-    config.set_routes((!current.is_empty()).then_some(current));
+    raw.routes = (!current.is_empty()).then_some(current);
     Ok(())
 }
 
 fn patch_exit_nodes_config(
-    config: &TomlConfig,
+    raw: &mut InstanceConfigRaw,
     patches: Vec<ExitNodePatch>,
-) -> anyhow::Result<Vec<std::net::IpAddr>> {
-    if patches.is_empty() {
-        return Ok(config.get_exit_nodes());
-    }
-    let mut current = config.get_exit_nodes();
-    let patches = patches.into_iter().map(Into::into).collect::<Vec<_>>();
-    trace_patchables(&patches);
-    config::patch_vec(&mut current, patches);
-    config.set_exit_nodes(current.clone());
-    Ok(current)
-}
-
-fn patch_mapped_listeners(config: &TomlConfig, patches: Vec<UrlPatch>) -> anyhow::Result<()> {
+) -> anyhow::Result<()> {
     if patches.is_empty() {
         return Ok(());
     }
-    let mut current = config.get_mapped_listeners();
+    let mut current = raw.exit_nodes.clone().unwrap_or_default();
     let patches = patches.into_iter().map(Into::into).collect::<Vec<_>>();
     trace_patchables(&patches);
     config::patch_vec(&mut current, patches);
-    config.set_mapped_listeners((!current.is_empty()).then_some(current));
+    raw.exit_nodes = Some(current);
     Ok(())
 }
 
-/// Applies VPN portal client patches to the candidate TOML model. The live
+fn patch_mapped_listeners(
+    raw: &mut InstanceConfigRaw,
+    patches: Vec<UrlPatch>,
+) -> anyhow::Result<()> {
+    if patches.is_empty() {
+        return Ok(());
+    }
+    let mut current = raw.mapped_listeners.clone().unwrap_or_default();
+    let patches = patches.into_iter().map(Into::into).collect::<Vec<_>>();
+    trace_patchables(&patches);
+    config::patch_vec(&mut current, patches);
+    raw.mapped_listeners = (!current.is_empty()).then_some(current);
+    Ok(())
+}
+
+/// Applies VPN portal client patches to the candidate model. The live
 /// portal is updated by the caller after the candidate commits, so deep
 /// validation runs against the final configuration state.
 fn apply_vpn_portal_client_patches(
-    config: &TomlConfig,
+    raw: &mut InstanceConfigRaw,
     patches: Vec<VpnPortalClientPatch>,
 ) -> anyhow::Result<()> {
     if patches.is_empty() {
         return Ok(());
     }
-    let mut portal = config
-        .get_vpn_portal_config()
+    let portal = raw
+        .vpn_portal_config
+        .as_mut()
         .ok_or_else(|| anyhow::anyhow!("VPN portal is not configured; cannot patch its clients"))?;
+    let mut clients = portal.clients.clone();
     for patch in patches {
         match ConfigPatchAction::try_from(patch.action) {
             Ok(ConfigPatchAction::Add) => {
@@ -556,35 +576,31 @@ fn apply_vpn_portal_client_patches(
                                 client.virtual_ip
                             )
                         })?;
-                portal
-                    .clients
-                    .push(crate::config::toml::VpnPortalClientConfig {
-                        name: client.name,
-                        virtual_ip,
-                        groups: client.groups,
-                    });
+                clients.push(crate::config::toml::VpnPortalClientConfig {
+                    name: client.name,
+                    virtual_ip,
+                    groups: client.groups,
+                });
             }
             Ok(ConfigPatchAction::Remove) => {
                 let Some(client) = patch.client else {
                     tracing::warn!("ignored VPN portal client remove without client");
                     continue;
                 };
-                let before = portal.clients.len();
-                portal
-                    .clients
-                    .retain(|existing| existing.name != client.name);
-                if portal.clients.len() == before {
+                let before = clients.len();
+                clients.retain(|existing| existing.name != client.name);
+                if clients.len() == before {
                     anyhow::bail!("VPN portal client not found: {}", client.name);
                 }
             }
-            Ok(ConfigPatchAction::Clear) => portal.clients.clear(),
+            Ok(ConfigPatchAction::Clear) => clients.clear(),
             Err(_) => tracing::warn!(
                 action = patch.action,
                 "ignored invalid VPN portal client action"
             ),
         }
     }
-    config.set_vpn_portal_config(portal);
+    portal.clients = clients;
     Ok(())
 }
 
@@ -629,9 +645,9 @@ mod tests {
     use crate::config::toml::{VpnPortalClientConfig, VpnPortalConfig};
     use easytier_proto::api::manage::VpnPortalClientConfig as ClientPb;
 
-    fn portal_config() -> TomlConfig {
-        let config = TomlConfig::default();
-        config.set_vpn_portal_config(VpnPortalConfig {
+    fn portal_config() -> InstanceConfigRaw {
+        let mut raw = InstanceConfigRaw::default();
+        raw.vpn_portal_config = Some(VpnPortalConfig {
             wireguard_listen: "0.0.0.0:51820".parse().unwrap(),
             wireguard_private_key: None,
             clients: vec![VpnPortalClientConfig {
@@ -640,16 +656,16 @@ mod tests {
                 groups: Vec::new(),
             }],
         });
-        config
+        raw
     }
 
-    fn configured_names(config: &TomlConfig) -> Vec<String> {
-        config
-            .get_vpn_portal_config()
+    fn configured_names(raw: &InstanceConfigRaw) -> Vec<String> {
+        raw.vpn_portal_config
+            .as_ref()
             .unwrap()
             .clients
-            .into_iter()
-            .map(|client| client.name)
+            .iter()
+            .map(|client| client.name.clone())
             .collect()
     }
 
@@ -677,38 +693,38 @@ mod tests {
 
     #[test]
     fn vpn_portal_client_patches_add_remove_and_clear() {
-        let config = portal_config();
+        let mut raw = portal_config();
 
-        apply_vpn_portal_client_patches(&config, vec![add("bob", "10.0.0.3/24")]).unwrap();
-        assert_eq!(configured_names(&config), ["alice", "bob"]);
+        apply_vpn_portal_client_patches(&mut raw, vec![add("bob", "10.0.0.3/24")]).unwrap();
+        assert_eq!(configured_names(&raw), ["alice", "bob"]);
 
-        apply_vpn_portal_client_patches(&config, vec![remove("alice")]).unwrap();
-        assert_eq!(configured_names(&config), ["bob"]);
+        apply_vpn_portal_client_patches(&mut raw, vec![remove("alice")]).unwrap();
+        assert_eq!(configured_names(&raw), ["bob"]);
 
         apply_vpn_portal_client_patches(
-            &config,
+            &mut raw,
             vec![VpnPortalClientPatch {
                 action: ConfigPatchAction::Clear as i32,
                 client: None,
             }],
         )
         .unwrap();
-        assert!(configured_names(&config).is_empty());
+        assert!(configured_names(&raw).is_empty());
     }
 
     #[test]
     fn vpn_portal_client_patches_reject_missing_prerequisites() {
-        let bare = TomlConfig::default();
+        let mut bare = InstanceConfigRaw::default();
         let error =
-            apply_vpn_portal_client_patches(&bare, vec![add("alice", "10.0.0.2")]).unwrap_err();
+            apply_vpn_portal_client_patches(&mut bare, vec![add("alice", "10.0.0.2")]).unwrap_err();
         assert!(error.to_string().contains("not configured"));
 
-        let config = portal_config();
-        let error = apply_vpn_portal_client_patches(&config, vec![remove("ghost")]).unwrap_err();
+        let mut raw = portal_config();
+        let error = apply_vpn_portal_client_patches(&mut raw, vec![remove("ghost")]).unwrap_err();
         assert!(error.to_string().contains("not found"));
 
         let error =
-            apply_vpn_portal_client_patches(&config, vec![add("bob", "not-an-ip")]).unwrap_err();
+            apply_vpn_portal_client_patches(&mut raw, vec![add("bob", "not-an-ip")]).unwrap_err();
         assert!(
             error
                 .to_string()
