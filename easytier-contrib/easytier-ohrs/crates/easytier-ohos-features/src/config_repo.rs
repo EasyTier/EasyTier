@@ -264,7 +264,7 @@ pub fn set_config_field_value(config_id: &str, field: &str, json_value: &str) ->
 }
 
 pub fn get_default_config_json() -> Option<String> {
-    let mut config = NetworkConfig::new_from_config(TomlConfigLoader::default()).ok()?;
+    let mut config = NetworkConfig::new_from_config(&TomlConfigLoader::default()).ok()?;
     config.data_compress_algo = Some(CompressionAlgoPb::None as i32);
     serde_json::to_string(&config).ok()
 }

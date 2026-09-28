@@ -140,10 +140,6 @@ pub trait ConfigLoader: Send + Sync {
     }
     fn set_network_config_source(&self, _source: Option<ConfigSource>) {}
 
-    fn get_raw_config(&self) -> Option<InstanceConfigRaw> {
-        None
-    }
-
     fn dump(&self) -> String;
     fn dump_redacted(&self) -> String {
         self.dump()
@@ -877,10 +873,6 @@ impl ConfigLoader for TomlConfig {
             ConfigSource::User => None,
             other => Some(ConfigSourceConfig { source: other }),
         });
-    }
-
-    fn get_raw_config(&self) -> Option<InstanceConfigRaw> {
-        Some(self.raw())
     }
 
     fn dump(&self) -> String {

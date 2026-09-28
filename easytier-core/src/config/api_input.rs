@@ -16,7 +16,7 @@ use crate::config::{
     InstanceConfigParsed, InstanceConfigRaw, MappedListenerPolicy,
     instance::{normalize_hostname, normalize_ipv4, normalize_network_identity},
     toml::{
-        ConfigLoader, NetworkIdentity, PeerConfig, PortForwardConfig, TomlConfigLoader,
+        ConfigLoader, NetworkIdentity, PeerConfig, PortForwardConfig, TomlConfig, TomlConfigLoader,
         VpnPortalClientConfig, VpnPortalConfig,
     },
 };
@@ -99,7 +99,7 @@ pub(crate) fn flags_patch_from_network_config(
 
 pub trait NetworkConfigExt {
     fn gen_config(&self) -> Result<TomlConfigLoader, anyhow::Error>;
-    fn new_from_config(config: impl ConfigLoader) -> Result<NetworkConfig, anyhow::Error>;
+    fn new_from_config(config: &TomlConfig) -> Result<NetworkConfig, anyhow::Error>;
 }
 
 #[cfg(all(
@@ -478,8 +478,8 @@ impl NetworkConfigExt for NetworkConfig {
         Ok(cfg)
     }
 
-    fn new_from_config(config: impl ConfigLoader) -> Result<Self, anyhow::Error> {
-        Ok(network_config_from_loader(config))
+    fn new_from_config(config: &TomlConfig) -> Result<Self, anyhow::Error> {
+        Ok(network_config_from_raw(&config.raw()))
     }
 }
 
@@ -629,14 +629,6 @@ pub fn network_config_from_raw(raw: &InstanceConfigRaw) -> NetworkConfig {
     result.acl = raw.acl.clone();
 
     result
-}
-
-pub fn network_config_from_loader(config: impl ConfigLoader) -> NetworkConfig {
-    if let Some(raw) = config.get_raw_config() {
-        network_config_from_raw(&raw)
-    } else {
-        NetworkConfig::default()
-    }
 }
 
 #[cfg(test)]

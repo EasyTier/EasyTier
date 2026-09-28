@@ -58,7 +58,7 @@ fn hot_patch_base(config: &NetworkConfig) -> anyhow::Result<NetworkConfig> {
     // Runtime comparison intentionally resolves defaults. Configuration exports
     // otherwise preserve whether each flag was supplied by the user.
     config.set_flags(config.get_flags());
-    let mut config = NetworkConfig::new_from_config(config)?;
+    let mut config = NetworkConfig::new_from_config(&config)?;
     let is_credential_mode = config.network_secret.is_none()
         && config
             .secure_mode
@@ -263,7 +263,8 @@ fn client_name_only(name: &str) -> easytier::proto::api::manage::VpnPortalClient
 fn normalized_managed_credentials(
     config: &NetworkConfig,
 ) -> anyhow::Result<Vec<ManagedCredentialConfig>> {
-    Ok(NetworkConfig::new_from_config(config.gen_config()?)?.managed_credentials)
+    let generated = config.gen_config()?;
+    Ok(NetworkConfig::new_from_config(&generated)?.managed_credentials)
 }
 
 fn is_automatic_windows_dev_name(dev_name: &str) -> bool {
