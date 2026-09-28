@@ -52,7 +52,13 @@ pub trait SnapshotBackend: Send + Sync {
 
 pub struct SnapshotRepository<B: SnapshotBackend> {
     backend: B,
-    snapshot: Mutex<ApplicationSnapshot>,
+    state: Mutex<RepositoryState>,
+}
+
+struct RepositoryState {
+    snapshot: ApplicationSnapshot,
+    // A failed write is not proof that rename/commit did not occur.
+    needs_refresh: bool,
 }
 
 impl<B: SnapshotBackend> SnapshotRepository<B> {
@@ -71,21 +77,46 @@ impl<B: SnapshotBackend> SnapshotRepository<B> {
         };
         Ok(Self {
             backend,
-            snapshot: Mutex::new(snapshot),
+            state: Mutex::new(RepositoryState {
+                snapshot,
+                needs_refresh: false,
+            }),
         })
     }
 
-    pub fn snapshot(&self) -> ApplicationSnapshot {
-        self.snapshot.lock().unwrap().clone()
+    fn refresh(&self, state: &mut RepositoryState) -> anyhow::Result<()> {
+        if state.needs_refresh {
+            let raw = self
+                .backend
+                .read()?
+                .ok_or_else(|| anyhow::anyhow!("Committed application storage is missing"))?;
+            let snapshot: ApplicationSnapshot = serde_json::from_str(&raw)
+                .map_err(|_| anyhow::anyhow!("Invalid application storage after failed commit"))?;
+            snapshot.validate()?;
+            state.snapshot = snapshot;
+            state.needs_refresh = false;
+        }
+        Ok(())
+    }
+
+    pub fn snapshot(&self) -> anyhow::Result<ApplicationSnapshot> {
+        let mut state = self.state.lock().unwrap();
+        self.refresh(&mut state)?;
+        Ok(state.snapshot.clone())
     }
 
     fn update(&self, change: impl FnOnce(&mut ApplicationSnapshot)) -> anyhow::Result<()> {
-        let mut current = self.snapshot.lock().unwrap();
-        let mut next = current.clone();
+        let mut state = self.state.lock().unwrap();
+        self.refresh(&mut state)?;
+        let mut next = state.snapshot.clone();
         change(&mut next);
         next.validate()?;
-        self.backend.write(&serde_json::to_string(&next)?)?;
-        *current = next;
+        let payload = serde_json::to_string(&next)?;
+        if let Err(error) = self.backend.write(&payload) {
+            state.needs_refresh = true;
+            return Err(error);
+        }
+        state.snapshot = next;
         Ok(())
     }
 
@@ -103,7 +134,7 @@ impl<B: SnapshotBackend> SnapshotRepository<B> {
 
 impl<B: SnapshotBackend> ConfigRepository for SnapshotRepository<B> {
     fn load_or_import(&self, _legacy: &[StoredConfig]) -> anyhow::Result<Vec<StoredConfig>> {
-        Ok(self.snapshot().configs)
+        Ok(self.snapshot()?.configs)
     }
 
     fn save_configs(&self, configs: &[StoredConfig]) -> anyhow::Result<()> {
@@ -139,16 +170,57 @@ mod tests {
     struct MemoryBackend {
         data: Arc<Mutex<Option<String>>>,
         fail: Arc<AtomicBool>,
+        fail_after_commit: Arc<AtomicBool>,
+        fail_read: Arc<AtomicBool>,
     }
     impl SnapshotBackend for MemoryBackend {
         fn read(&self) -> anyhow::Result<Option<String>> {
+            anyhow::ensure!(
+                !self.fail_read.load(Ordering::SeqCst),
+                "simulated read failure"
+            );
             Ok(self.data.lock().unwrap().clone())
         }
         fn write(&self, payload: &str) -> anyhow::Result<()> {
             anyhow::ensure!(!self.fail.load(Ordering::SeqCst), "simulated write failure");
             *self.data.lock().unwrap() = Some(payload.to_owned());
+            anyhow::ensure!(
+                !self.fail_after_commit.load(Ordering::SeqCst),
+                "verification failed after commit"
+            );
             Ok(())
         }
+    }
+    #[test]
+    fn uncertain_commit_is_reloaded_before_next_update() {
+        let backend = MemoryBackend::default();
+        let repo = SnapshotRepository::open(backend.clone(), snapshot()).unwrap();
+        backend.fail_after_commit.store(true, Ordering::SeqCst);
+        assert!(
+            repo.save_preferences(serde_json::json!({"mode":"remote"}), None)
+                .is_err()
+        );
+        backend.fail_after_commit.store(false, Ordering::SeqCst);
+        repo.save_enabled(&[]).unwrap();
+        assert_eq!(repo.snapshot().unwrap().profile["mode"], "remote");
+    }
+    #[test]
+    fn unreadable_uncertain_commit_blocks_stale_writes() {
+        let backend = MemoryBackend::default();
+        let repo = SnapshotRepository::open(backend.clone(), snapshot()).unwrap();
+        backend.fail_after_commit.store(true, Ordering::SeqCst);
+        assert!(
+            repo.save_preferences(serde_json::json!({"mode":"remote"}), None)
+                .is_err()
+        );
+        let committed = backend.data.lock().unwrap().clone();
+        backend.fail_after_commit.store(false, Ordering::SeqCst);
+        backend.fail_read.store(true, Ordering::SeqCst);
+        assert!(repo.save_enabled(&[]).is_err());
+        assert!(repo.snapshot().is_err());
+        assert_eq!(*backend.data.lock().unwrap(), committed);
+        backend.fail_read.store(false, Ordering::SeqCst);
+        assert_eq!(repo.snapshot().unwrap().profile["mode"], "remote");
     }
     fn snapshot() -> ApplicationSnapshot {
         ApplicationSnapshot {
@@ -174,11 +246,11 @@ mod tests {
         stale.schema_version = 999;
         let reopened = SnapshotRepository::open(backend, stale).unwrap();
         assert_eq!(
-            repo.snapshot().configs[0].config.instance_id(),
-            reopened.snapshot().configs[0].config.instance_id()
+            repo.snapshot().unwrap().configs[0].config.instance_id(),
+            reopened.snapshot().unwrap().configs[0].config.instance_id()
         );
         assert_eq!(
-            repo.snapshot().configs[0].source,
+            repo.snapshot().unwrap().configs[0].source,
             PersistedConfigSource::Legacy
         );
     }
@@ -213,7 +285,7 @@ mod tests {
             repo.save_preferences(serde_json::json!({"mode":"remote"}), None)
                 .is_err()
         );
-        assert_eq!(repo.snapshot().profile["mode"], "normal");
+        assert_eq!(repo.snapshot().unwrap().profile["mode"], "normal");
     }
     #[test]
     fn complete_backend_profile_is_preserved_not_converted_to_local() {
@@ -223,11 +295,12 @@ mod tests {
             legacy.profile =
                 serde_json::json!({"mode":mode,"config_server_url":"wss://example.invalid/token"});
             let repo = SnapshotRepository::open(backend.clone(), legacy.clone()).unwrap();
-            assert_eq!(repo.snapshot().profile, legacy.profile);
+            assert_eq!(repo.snapshot().unwrap().profile, legacy.profile);
             assert_eq!(
                 SnapshotRepository::open(backend, snapshot())
                     .unwrap()
                     .snapshot()
+                    .unwrap()
                     .profile,
                 legacy.profile
             );
@@ -236,14 +309,17 @@ mod tests {
     #[test]
     fn deletion_prunes_desired_and_selected_state_in_same_commit() {
         let repo = SnapshotRepository::open(MemoryBackend::default(), snapshot()).unwrap();
-        let id = repo.snapshot().configs[0].config.instance_id().to_owned();
+        let id = repo.snapshot().unwrap().configs[0]
+            .config
+            .instance_id()
+            .to_owned();
         repo.save_enabled(&[id.clone()]).unwrap();
         repo.save_preferences(serde_json::json!({"mode":"normal"}), Some(id))
             .unwrap();
         repo.save_configs(&[]).unwrap();
-        assert!(repo.snapshot().configs.is_empty());
-        assert!(repo.snapshot().desired_enabled.is_empty());
-        assert!(repo.snapshot().selected_network.is_none());
+        assert!(repo.snapshot().unwrap().configs.is_empty());
+        assert!(repo.snapshot().unwrap().desired_enabled.is_empty());
+        assert!(repo.snapshot().unwrap().selected_network.is_none());
     }
     #[test]
     fn invalid_ids_and_duplicate_configs_are_rejected() {

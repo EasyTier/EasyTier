@@ -3,9 +3,7 @@ package com.plugin.vpnservice
 import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
-import android.util.AtomicFile
 import java.io.File
-import java.io.FileNotFoundException
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -20,7 +18,7 @@ internal object ManagementStorage {
     private const val KEY_ALIAS = "easytier.management.v1"
     private val HEADER = byteArrayOf(0x45, 0x54, 0x4d, 0x01)
 
-    private fun file(context: Context) = AtomicFile(
+    private fun file(context: Context) = AtomicSnapshotFile(
         File(context.applicationContext.noBackupFilesDir, "management-v1.enc")
     )
 
@@ -41,12 +39,7 @@ internal object ManagementStorage {
 
     @Synchronized
     fun read(context: Context): String? {
-        val target = file(context)
-        val bytes = try { target.readFully() } catch (error: FileNotFoundException) {
-            // AtomicFile can recover the legacy .bak format. Access errors are not absence.
-            if (target.baseFile.exists() || File(target.baseFile.path + ".bak").exists()) throw error
-            return null
-        }
+        val bytes = file(context).read() ?: return null
         require(bytes.size >= HEADER.size + 12 + 16 && bytes.copyOfRange(0, 4).contentEquals(HEADER)) {
             "Unsupported or damaged management storage"
         }
@@ -63,15 +56,6 @@ internal object ManagementStorage {
         require(cipher.iv.size == 12)
         cipher.updateAAD(HEADER)
         val bytes = HEADER + cipher.iv + cipher.doFinal(snapshot.toByteArray(Charsets.UTF_8))
-        val target = file(context)
-        val stream = target.startWrite()
-        try {
-            stream.write(bytes)
-            target.finishWrite(stream)
-            check(read(context) == snapshot) { "Management storage commit could not be verified" }
-        } catch (error: Exception) {
-            target.failWrite(stream)
-            throw error
-        }
+        file(context).write(bytes)
     }
 }
