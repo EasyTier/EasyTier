@@ -165,9 +165,6 @@ where
                 persistence,
             )
             .await?;
-            if changed {
-                last_accepted = Arc::new(prepared.clone());
-            }
             #[cfg(feature = "vpn-portal")]
             {
                 let portal = prepared
@@ -191,13 +188,15 @@ where
                              {rollback_error:#}"
                         )));
                     }
-                    last_accepted = previous;
                     return Err(error);
                 }
             }
             #[cfg(not(feature = "vpn-portal"))]
             {
                 let _ = prepared;
+            }
+            if changed {
+                last_accepted = Arc::new(prepared.clone());
             }
         }
 

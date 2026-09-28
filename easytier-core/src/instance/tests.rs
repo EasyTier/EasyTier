@@ -477,6 +477,37 @@ mod portable_runtime {
             anyhow::bail!("injected portal update failure")
         }
     }
+
+    #[cfg(feature = "vpn-portal")]
+    struct SucceedingPortalHost;
+
+    #[cfg(feature = "vpn-portal")]
+    #[async_trait]
+    impl crate::gateway::vpn_portal::PortalHost for SucceedingPortalHost {
+        async fn start_listeners(
+            &self,
+        ) -> anyhow::Result<Vec<crate::gateway::vpn_portal::PortalListener>> {
+            Ok(vec![])
+        }
+
+        fn name(&self) -> String {
+            "succeeding-test-portal".to_owned()
+        }
+
+        fn render_client_config(
+            &self,
+            _plan: &crate::gateway::vpn_portal::PortalClientConfigPlan,
+        ) -> String {
+            String::new()
+        }
+
+        async fn update_clients(
+            &self,
+            _clients: &[crate::gateway::vpn_portal::PortalClientConfig],
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
     #[cfg(feature = "vpn-portal")]
     #[tokio::test]
     async fn runtime_update_rejects_portal_client_address_conflict() {
@@ -1101,6 +1132,94 @@ source = "web"
             assert!(persisted[2].contains("name = \"alice\""));
             assert!(!persisted[2].contains("name = \"bob\""));
         }
+        instance.peer_manager.clear_resources().await;
+    }
+
+    #[cfg(all(feature = "management", feature = "vpn-portal"))]
+    #[tokio::test]
+    async fn portal_client_patch_rollback_persistence_failure_preserves_original_config_in_store() {
+        use easytier_proto::api::{
+            config::{ConfigPatchAction, InstanceConfigPatch, VpnPortalClientPatch},
+            manage::VpnPortalClientConfig,
+        };
+
+        let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+        let mut host_adapters = adapters(None, Arc::new(packet_sink));
+        host_adapters.vpn_portal = Some(Arc::new(RejectingPortalHost));
+        let instance = CoreInstance::from_toml(
+            TomlConfig::new_from_str(
+                r#"
+instance_name = "durable-portal-rollback-fail"
+ipv4 = "10.82.0.1/24"
+
+[network_identity]
+network_name = "durable-portal-network"
+network_secret = "network-secret"
+
+[vpn_portal_config]
+wireguard_listen = "0.0.0.0:51820"
+
+[[vpn_portal_config.clients]]
+name = "alice"
+virtual_ip = "10.82.0.2/24"
+
+[source]
+source = "web"
+"#,
+            )
+            .unwrap(),
+            host_adapters,
+        )
+        .unwrap();
+        instance.set_state(CoreInstanceState::Running);
+
+        // Allow 1 write (the patch candidate with "bob"), then fail the 2nd write (the rollback to "alice")
+        let persistence = RecordingConfigPatchPersistence::fail_after(1);
+
+        let error = crate::management::apply_config_patch(
+            &instance,
+            InstanceConfigPatch {
+                vpn_portal_clients: vec![
+                    VpnPortalClientPatch {
+                        action: ConfigPatchAction::Remove as i32,
+                        client: Some(VpnPortalClientConfig {
+                            name: "alice".to_owned(),
+                            ..Default::default()
+                        }),
+                    },
+                    VpnPortalClientPatch {
+                        action: ConfigPatchAction::Add as i32,
+                        client: Some(VpnPortalClientConfig {
+                            name: "bob".to_owned(),
+                            virtual_ip: "10.82.0.3/24".to_owned(),
+                            ..Default::default()
+                        }),
+                    },
+                ],
+                ..Default::default()
+            },
+            Some(&persistence),
+        )
+        .await
+        .unwrap_err();
+
+        // Error reports both host rejection and rollback failure
+        let err_msg = format!("{error:#}");
+        assert!(err_msg.contains("injected portal update failure"));
+        assert!(err_msg.contains("failed to restore durable configuration"));
+
+        // Crucial invariant: Store was NOT updated with rejected "bob", it still has "alice"
+        let snapshot = instance.config_store().snapshot();
+        let clients = snapshot
+            .parsed()
+            .vpn_portal_config
+            .as_ref()
+            .unwrap()
+            .clients
+            .clone();
+        assert_eq!(clients.len(), 1);
+        assert_eq!(clients[0].name, "alice");
+
         instance.peer_manager.clear_resources().await;
     }
 
@@ -3485,7 +3604,8 @@ network_secret = "test-secret"
         };
 
         let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
-        let host_adapters = adapters(None, Arc::new(packet_sink));
+        let mut host_adapters = adapters(None, Arc::new(packet_sink));
+        host_adapters.vpn_portal = Some(Arc::new(SucceedingPortalHost));
         let instance = CoreInstance::from_toml(
             TomlConfig::new_from_str(
                 r#"
