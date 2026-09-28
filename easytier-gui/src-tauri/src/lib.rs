@@ -32,6 +32,7 @@ use easytier::{
     rpc_service::ApiRpcServer,
     utils::panic::setup_panic_handler,
 };
+use easytier_core::management::application_client::{ManagementStatus, OperationOutcome};
 use easytier_core::management::remote_client::{
     GetNetworkMetasResponse, ListNetworkInstanceIdsJsonResp, RemoteClientManager,
 };
@@ -126,24 +127,22 @@ async fn run_network_instance(
     app: AppHandle,
     cfg: NetworkConfig,
     save: bool,
-) -> Result<(), String> {
+) -> Result<OperationOutcome, String> {
     let client_manager = get_client_manager!()?;
-    let toml_config = cfg.gen_config().map_err(|e| e.to_string())?;
+    // The existing pre-run hook saves the configuration even when `save` is false.
+    let _ = save;
     client_manager
-        .pre_run_network_instance_hook(
-            &manager::GuiHost(app.clone()),
-            &toml_config,
+        .run_network(
+            &manager::GuiHost(app),
+            cfg,
             manager::PersistedConfigSource::User,
         )
-        .await?;
-    client_manager
-        .handle_run_network_instance(manager::GuiHost(app.clone()), cfg, save)
         .await
-        .map_err(|e| e.to_string())?;
-    client_manager
-        .post_run_network_instance_hook(&manager::GuiHost(app.clone()), &toml_config.get_id())
-        .await?;
-    Ok(())
+}
+
+#[tauri::command]
+fn get_management_status() -> Result<ManagementStatus, String> {
+    Ok(get_client_manager!()?.management_status())
 }
 
 #[tauri::command]
@@ -272,20 +271,17 @@ async fn list_network_instance_ids(
 }
 
 #[tauri::command]
-async fn remove_network_instance(app: AppHandle, instance_id: String) -> Result<(), String> {
+async fn remove_network_instance(
+    app: AppHandle,
+    instance_id: String,
+) -> Result<OperationOutcome, String> {
     let instance_id = instance_id
         .parse()
         .map_err(|e: uuid::Error| e.to_string())?;
     let client_manager = get_client_manager!()?;
     client_manager
-        .handle_remove_network_instances(manager::GuiHost(app.clone()), vec![instance_id])
+        .stop_network(&manager::GuiHost(app), instance_id, true)
         .await
-        .map_err(|e| e.to_string())?;
-    client_manager
-        .post_stop_network_instances_hook(&manager::GuiHost(app.clone()))
-        .await?;
-
-    Ok(())
 }
 
 #[tauri::command]
@@ -293,52 +289,26 @@ async fn update_network_config_state(
     app: AppHandle,
     instance_id: String,
     disabled: bool,
-) -> Result<(), String> {
+) -> Result<OperationOutcome, String> {
     let instance_id = instance_id
         .parse()
         .map_err(|e: uuid::Error| e.to_string())?;
     let client_manager = get_client_manager!()?;
-    if !disabled {
-        let (cfg, source) = client_manager
-            .handle_get_network_config_with_source(manager::GuiHost(app.clone()), instance_id)
-            .await
-            .map_err(|e| e.to_string())?;
-        let toml_config = cfg.gen_config().map_err(|e| e.to_string())?;
-        client_manager
-            .pre_run_network_instance_hook(
-                &manager::GuiHost(app.clone()),
-                &toml_config,
-                manager::PersistedConfigSource::from_runtime_source(source),
-            )
-            .await?;
-    }
-    client_manager
-        .handle_update_network_state(manager::GuiHost(app.clone()), instance_id, disabled)
-        .await
-        .map_err(|e| e.to_string())?;
-
     if disabled {
         client_manager
-            .post_stop_network_instances_hook(&manager::GuiHost(app.clone()))
-            .await?;
+            .stop_network(&manager::GuiHost(app), instance_id, false)
+            .await
     } else {
         client_manager
-            .post_run_network_instance_hook(&manager::GuiHost(app.clone()), &instance_id)
-            .await?;
+            .enable_network(&manager::GuiHost(app), instance_id)
+            .await
     }
-
-    Ok(())
 }
 
 #[tauri::command]
 async fn save_network_config(app: AppHandle, cfg: NetworkConfig) -> Result<(), String> {
-    let instance_id = cfg
-        .instance_id()
-        .parse()
-        .map_err(|e: uuid::Error| e.to_string())?;
     get_client_manager!()?
-        .handle_save_network_config(manager::GuiHost(app), instance_id, cfg)
-        .await
+        .save_configuration(&manager::GuiHost(app), cfg)
         .map_err(|e| e.to_string())
 }
 
@@ -813,6 +783,7 @@ mod manager {
             client_manager
                 .post_run_network_instance_hook(&manager::GuiHost(self.app.clone()), instance_id)
                 .await
+                .map(|_| ())
         }
 
         async fn post_remove_network_instances(&self, ids: &[uuid::Uuid]) -> Result<(), String> {
@@ -1025,6 +996,7 @@ pub fn run_gui() -> std::process::ExitCode {
             get_config,
             load_configs,
             get_network_metas,
+            get_management_status,
             init_service,
             set_service_status,
             get_service_status,

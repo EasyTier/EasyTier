@@ -31,6 +31,7 @@ declare global {
   const getCurrentInstance: typeof import('vue')['getCurrentInstance']
   const getCurrentScope: typeof import('vue')['getCurrentScope']
   const getEasytierVersion: typeof import('./composables/backend')['getEasytierVersion']
+  const getManagementStatus: typeof import('./composables/backend')['getManagementStatus']
   const getNetworkMetas: typeof import('./composables/backend')['getNetworkMetas']
   const getServiceStatus: typeof import('./composables/backend')['getServiceStatus']
   const getVpnPortalInfo: typeof import('./composables/backend')['getVpnPortalInfo']
@@ -50,6 +51,7 @@ declare global {
   const listenGlobalEvents: typeof import('./composables/event')['listenGlobalEvents']
   const loadLastNetworkInstanceId: typeof import('./composables/config')['loadLastNetworkInstanceId']
   const loadMode: typeof import('./composables/mode')['loadMode']
+  const managementWarningDetails: typeof import('./composables/management_status')['managementWarningDetails']
   const mapActions: typeof import('pinia')['mapActions']
   const mapGetters: typeof import('pinia')['mapGetters']
   const mapState: typeof import('pinia')['mapState']
@@ -166,6 +168,7 @@ declare module 'vue' {
     readonly getCurrentInstance: UnwrapRef<typeof import('vue')['getCurrentInstance']>
     readonly getCurrentScope: UnwrapRef<typeof import('vue')['getCurrentScope']>
     readonly getEasytierVersion: UnwrapRef<typeof import('./composables/backend')['getEasytierVersion']>
+    readonly getManagementStatus: UnwrapRef<typeof import('./composables/backend')['getManagementStatus']>
     readonly getNetworkMetas: UnwrapRef<typeof import('./composables/backend')['getNetworkMetas']>
     readonly getServiceStatus: UnwrapRef<typeof import('./composables/backend')['getServiceStatus']>
     readonly getVpnPortalInfo: UnwrapRef<typeof import('./composables/backend')['getVpnPortalInfo']>
@@ -185,6 +188,7 @@ declare module 'vue' {
     readonly listenGlobalEvents: UnwrapRef<typeof import('./composables/event')['listenGlobalEvents']>
     readonly loadLastNetworkInstanceId: UnwrapRef<typeof import('./composables/config')['loadLastNetworkInstanceId']>
     readonly loadMode: UnwrapRef<typeof import('./composables/mode')['loadMode']>
+    readonly managementWarningDetails: UnwrapRef<typeof import('./composables/management_status')['managementWarningDetails']>
     readonly mapActions: UnwrapRef<typeof import('pinia')['mapActions']>
     readonly mapGetters: UnwrapRef<typeof import('pinia')['mapGetters']>
     readonly mapState: UnwrapRef<typeof import('pinia')['mapState']>

@@ -3,6 +3,7 @@
 import { type } from '@tauri-apps/plugin-os'
 
 import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import { writeText } from '@tauri-apps/plugin-clipboard-manager'
 import { open } from '@tauri-apps/plugin-shell'
 import { exit } from '@tauri-apps/plugin-process'
@@ -23,7 +24,8 @@ import { useToast, useConfirm } from 'primevue'
 import { loadMode, saveMode, WebClientConfig, type Mode } from '~/composables/mode'
 import { saveLastNetworkInstanceId, loadLastNetworkInstanceId } from '~/composables/config'
 import ModeSwitcher from '~/components/ModeSwitcher.vue'
-import { getEasytierVersion, getServiceStatus } from '~/composables/backend'
+import { getEasytierVersion, getServiceStatus, getManagementStatus } from '~/composables/backend'
+import { managementWarningDetails, type OperationOutcome } from '~/composables/management_status'
 
 const { t, locale } = useI18n()
 const confirm = useConfirm()
@@ -244,6 +246,7 @@ onMounted(async () => {
   }
 
   cleanupFns.push(await listenGlobalEvents())
+  cleanupFns.push(await listen<OperationOutcome>('management_warning', event => reportManagementWarning(event.payload)))
   currentMode.value = loadMode()
   try {
     await initWithMode(currentMode.value);
@@ -270,6 +273,14 @@ onMounted(async () => {
 
 useTray(true)
 let toast = useToast();
+let lastManagementWarning = ''
+function reportManagementWarning(outcome: OperationOutcome) {
+  const detail = managementWarningDetails(outcome, key => t(key))
+  if (detail && detail !== lastManagementWarning) {
+    toast.add({ severity: 'warn', summary: t('management_warning'), detail, life: 10000 })
+  }
+  lastManagementWarning = detail
+}
 
 const remoteClient = computed(() => new GUIRemoteClient());
 const instanceId = ref<string | undefined>(undefined);
@@ -345,6 +356,11 @@ onMounted(async () => {
     if (!managementReady.value) return
     try {
       clientRunning.value = await isClientRunning()
+      if (clientRunning.value) {
+        // Recover warnings even if a lifecycle event was missed during UI attachment.
+        const status = await getManagementStatus().catch(() => undefined)
+        if (status) reportManagementWarning(status.last_outcome)
+      }
     } catch (e) {
       clientRunning.value = false
       console.error("Error checking client running status", e)

@@ -3,6 +3,7 @@ import { type } from '@tauri-apps/plugin-os'
 import { Api, NetworkTypes } from 'easytier-frontend-lib'
 import { GetNetworkMetasResponse } from 'node_modules/easytier-frontend-lib/dist/modules/api'
 import { type ConfigSource, normalizeConfigSource } from './config_source'
+import type { OperationOutcome, ManagementStatus } from './management_status'
 
 type NetworkConfig = NetworkTypes.NetworkConfig
 type ValidateConfigResponse = Api.ValidateConfigResponse
@@ -60,7 +61,11 @@ export async function generateNetworkConfig(tomlConfig: string) {
 }
 
 export async function runNetworkInstance(cfg: NetworkConfig, save: boolean) {
-  return invoke('run_network_instance', { cfg: NetworkTypes.toBackendNetworkConfig(cfg), save })
+  return invoke<OperationOutcome>('run_network_instance', { cfg: NetworkTypes.toBackendNetworkConfig(cfg), save })
+}
+
+export async function getManagementStatus() {
+  return invoke<ManagementStatus>('get_management_status')
 }
 
 export async function collectNetworkInfo(instanceId: string) {
@@ -101,11 +106,11 @@ export async function listNetworkInstanceIds() {
 }
 
 export async function deleteNetworkInstance(instanceId: string) {
-  return await invoke('remove_network_instance', { instanceId })
+  return await invoke<OperationOutcome>('remove_network_instance', { instanceId })
 }
 
 export async function updateNetworkConfigState(instanceId: string, disabled: boolean) {
-  return await invoke('update_network_config_state', { instanceId, disabled })
+  return await invoke<OperationOutcome>('update_network_config_state', { instanceId, disabled })
 }
 
 export async function saveNetworkConfig(cfg: NetworkConfig) {

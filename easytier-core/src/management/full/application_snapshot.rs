@@ -133,6 +133,9 @@ impl<B: SnapshotBackend> SnapshotRepository<B> {
 }
 
 impl<B: SnapshotBackend> ConfigRepository for SnapshotRepository<B> {
+    fn load_desired_enabled(&self) -> anyhow::Result<Vec<String>> {
+        Ok(self.snapshot()?.desired_enabled)
+    }
     fn load_or_import(&self, _legacy: &[StoredConfig]) -> anyhow::Result<Vec<StoredConfig>> {
         Ok(self.snapshot()?.configs)
     }
