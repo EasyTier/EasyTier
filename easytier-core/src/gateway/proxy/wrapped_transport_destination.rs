@@ -20,6 +20,7 @@ use crate::{
 };
 
 use super::{
+    ProxyHostPolicy,
     cidr_table::ProxyCidrTable,
     service::CoreProxyRuntime,
     tcp_proxy_engine::{TcpNatEntrySnapshot, TcpNatEntryState},
@@ -165,6 +166,7 @@ where
         runtime_config: InstanceConfigStore,
         cidr_table: Arc<ProxyCidrTable>,
         socket_context: SocketContext,
+        host_policy: ProxyHostPolicy,
     ) -> Arc<Self> {
         Arc::new(Self {
             runtime: CoreProxyRuntime::new(
@@ -174,7 +176,7 @@ where
                 running_listeners,
                 runtime_config,
                 "TCP",
-                Default::default(),
+                host_policy,
             ),
             connector: TcpSocketProxyConnector::new(host).with_socket_context(socket_context),
             cidr_table,

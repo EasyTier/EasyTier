@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use crate::{
     config::runtime::InstanceConfigStore, connectivity::direct::DirectConnectorHost,
-    connectivity::hole_punch::tcp::TcpHolePunchHost, gateway::proxy::cidr_table::ProxyCidrTable,
+    connectivity::hole_punch::tcp::TcpHolePunchHost,
+    gateway::proxy::{cidr_table::ProxyCidrTable, ProxyHostPolicy},
     listener::RunningListenerRegistry, peers::peer_manager::PeerManagerCore,
     process_runtime::ProtectedTcpPortRegistry, socket::SocketContext,
 };
@@ -88,6 +89,7 @@ impl WrappedTransportPacketPlane {
         _running_listeners: Arc<RunningListenerRegistry>,
         _cidr_table: Arc<ProxyCidrTable>,
         _socket_context: SocketContext,
+        _host_policy: ProxyHostPolicy,
     ) -> Self
     where
         H: DirectConnectorHost + TcpHolePunchHost,
