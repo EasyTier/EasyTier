@@ -1,24 +1,25 @@
 use std::sync::Mutex as StdMutex;
+use tokio_util::codec::FramedRead;
 
 use crate::{
     proto::common::TunnelInfo,
     socket::tcp::VirtualTcpSocket,
-    tunnel::framed::{FramedReader, FramedWriter, TCP_MTU_BYTES},
+    tunnel::framed::{FramedWriter, TunnelCodec},
     tunnel::{SplitTunnel, Tunnel, TunnelError},
 };
 
 pub struct TcpTunnel<S> {
     info: Option<TunnelInfo>,
     socket: StdMutex<Option<S>>,
-    max_packet_size: usize,
+    mtu: usize,
 }
 
 impl<S> TcpTunnel<S> {
-    fn new(socket: S, tunnel_info: TunnelInfo, max_packet_size: usize) -> Self {
+    fn new(socket: S, tunnel_info: TunnelInfo, mtu: usize) -> Self {
         Self {
             info: Some(tunnel_info),
             socket: StdMutex::new(Some(socket)),
-            max_packet_size,
+            mtu,
         }
     }
 }
@@ -36,7 +37,7 @@ where
             .expect("TcpTunnel can only be split once");
         let (reader, writer) = socket.into_split();
         (
-            Box::pin(FramedReader::new(reader, self.max_packet_size)),
+            Box::pin(FramedRead::new(reader, TunnelCodec::new(self.mtu))),
             Box::pin(FramedWriter::new(writer)),
         )
     }
@@ -48,19 +49,21 @@ where
 
 pub struct TcpTunnelUpgrader {
     tunnel_info: TunnelInfo,
-    max_packet_size: usize,
+    mtu: usize,
 }
 
 impl TcpTunnelUpgrader {
     pub fn new(tunnel_info: TunnelInfo) -> Self {
         Self {
             tunnel_info,
-            max_packet_size: TCP_MTU_BYTES,
+            mtu: crate::tunnel::framed::DEFAULT_TUNNEL_MTU,
         }
     }
 
-    pub(crate) fn with_max_packet_size(mut self, max_packet_size: usize) -> Self {
-        self.max_packet_size = max_packet_size;
+    pub fn with_mtu(mut self, mtu: usize) -> Self {
+        if mtu > 0 {
+            self.mtu = mtu;
+        }
         self
     }
 
@@ -68,11 +71,7 @@ impl TcpTunnelUpgrader {
     where
         S: VirtualTcpSocket,
     {
-        Ok(Box::new(TcpTunnel::new(
-            socket,
-            self.tunnel_info,
-            self.max_packet_size,
-        )))
+        Ok(Box::new(TcpTunnel::new(socket, self.tunnel_info, self.mtu)))
     }
 }
 
