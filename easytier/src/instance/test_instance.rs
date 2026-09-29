@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use easytier_core::{
-    config::toml::TomlConfig, connectivity::stun::StunSocketMapper,
+    config::InstanceConfig, connectivity::stun::StunSocketMapper,
     process_runtime::CoreProcessRuntime,
 };
 
@@ -22,26 +22,42 @@ pub(crate) struct TestInstance {
 }
 
 impl TestInstance {
-    pub fn new_with_process_runtime(
-        config: TomlConfig,
+    pub fn new_with_process_runtime<C>(
+        config: C,
         process_runtime: Arc<CoreProcessRuntime>,
-    ) -> Self {
-        Self::compose(config, process_runtime, |_| {})
+    ) -> Self
+    where
+        C: TryInto<InstanceConfig>,
+        C::Error: std::fmt::Debug,
+    {
+        Self::compose(
+            config.try_into().expect("valid instance config"),
+            process_runtime,
+            |_| {},
+        )
     }
 
-    pub fn new_with_process_runtime_and_stun_provider(
-        config: TomlConfig,
+    pub fn new_with_process_runtime_and_stun_provider<C>(
+        config: C,
         process_runtime: Arc<CoreProcessRuntime>,
         provider: Box<dyn StunSocketMapper<RuntimeUdpSocket>>,
-    ) -> Self {
+    ) -> Self
+    where
+        C: TryInto<InstanceConfig>,
+        C::Error: std::fmt::Debug,
+    {
         let provider: Arc<dyn StunSocketMapper<RuntimeUdpSocket>> = Arc::from(provider);
-        Self::compose(config, process_runtime, move |adapters| {
-            adapters.replace_stun_provider(provider);
-        })
+        Self::compose(
+            config.try_into().expect("valid instance config"),
+            process_runtime,
+            move |adapters| {
+                adapters.replace_stun_provider(provider);
+            },
+        )
     }
 
     fn compose(
-        config: TomlConfig,
+        config: InstanceConfig,
         process_runtime: Arc<CoreProcessRuntime>,
         customize: impl FnOnce(
             &mut easytier_core::instance::CoreHostAdapters<
@@ -53,8 +69,8 @@ impl TestInstance {
         let mut captured_global_ctx = None;
         let mut customize = Some(customize);
         let core =
-            NativeCoreInstance::compose_with_toml(&config, host_config.clone(), |normalized| {
-                let global_ctx = Arc::new(GlobalCtx::new(normalized.clone(), &host_config));
+            NativeCoreInstance::compose(config, host_config.clone(), |config_store| {
+                let global_ctx = Arc::new(GlobalCtx::new(config_store.clone(), &host_config));
                 captured_global_ctx = Some(global_ctx.clone());
                 let runtime_host = NativeInstanceRuntimeHost::new(global_ctx.clone());
                 let mut adapters = runtime_core_host_adapters_with_packet_egress(
@@ -114,19 +130,19 @@ impl TestConfigPatcher {
 
 #[cfg(test)]
 mod tests {
-    use easytier_core::config::toml::{ConfigLoader as _, TomlConfig};
+    use easytier_core::config::parse_instance_config;
 
     use super::*;
 
     #[tokio::test]
     async fn composition_preserves_secure_admin_identity() {
-        let config = TomlConfig::default();
-        config
-            .set_secure_mode(Some(crate::proto::common::SecureModeConfig {
-                enabled: true,
-                ..Default::default()
-            }))
-            .unwrap();
+        let config = parse_instance_config(
+            "test",
+            r#"[secure_mode]
+enabled = true
+"#,
+        )
+        .unwrap();
 
         let instance = TestInstance::new_with_process_runtime(config, CoreProcessRuntime::new());
 
@@ -144,7 +160,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_instance_isolates_external_config_mutation() {
-        let config = TomlConfig::new_from_str(
+        let config = parse_instance_config(
+            "test",
             r#"
 hostname = "original-host"
 [network_identity]
@@ -156,13 +173,15 @@ network_secret = "secret"
         let instance =
             TestInstance::new_with_process_runtime(config.clone(), CoreProcessRuntime::new());
 
-        config.set_hostname(Some("mutated-external-host".to_string()));
+        let mut mutated = config.into_raw();
+        mutated.hostname = Some("mutated-external-host".to_string());
         assert_eq!(instance.get_global_ctx().get_hostname(), "original-host");
     }
 
     #[tokio::test]
     async fn test_instance_updates_global_ctx_and_toml_config_on_patch() {
-        let config = TomlConfig::new_from_str(
+        let config = parse_instance_config(
+            "test",
             r#"
 hostname = "before-patch"
 [network_identity]

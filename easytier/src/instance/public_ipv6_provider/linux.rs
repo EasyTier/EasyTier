@@ -715,11 +715,7 @@ mod tests {
     };
 
     use super::PublicIpv6ProviderConfig;
-    use crate::common::{
-        config::{ConfigLoader, TomlConfigLoader},
-        error::Error,
-        global_ctx::GlobalCtx,
-    };
+    use crate::common::{error::Error, global_ctx::GlobalCtx};
     use crate::instance::config::test_instance_config;
 
     fn run_ip(args: &[&str]) {
@@ -916,10 +912,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_runtime_public_ipv6_provider_config_reads_provider_fields() {
-        let config = TomlConfigLoader::default();
+        let mut raw = easytier_core::config::InstanceConfigRaw::default();
         let prefix = "2001:db8::/48".parse().unwrap();
-        config.set_ipv6_public_addr_provider(true);
-        config.set_ipv6_public_addr_prefix(Some(prefix));
+        raw.ipv6_public_addr_provider = Some(true);
+        raw.ipv6_public_addr_prefix = Some(prefix);
+        let config = easytier_core::config::InstanceConfig::try_from(raw).unwrap();
         let global_ctx = crate::common::global_ctx::tests::get_mock_global_ctx_with_config(config);
 
         assert_eq!(
@@ -1328,9 +1325,10 @@ mod tests {
         let prefix = "2001:db8:fade::/64".parse().unwrap();
         let wan_addr = "2001:db8:fade::1";
         let leased_addr = "2001:db8:fade::123".parse::<std::net::Ipv6Addr>().unwrap();
-        let config = TomlConfigLoader::default();
-        config.set_ipv6_public_addr_provider(true);
-        config.set_ipv6_public_addr_prefix(Some(prefix));
+        let mut raw = easytier_core::config::InstanceConfigRaw::default();
+        raw.ipv6_public_addr_provider = Some(true);
+        raw.ipv6_public_addr_prefix = Some(prefix);
+        let config = easytier_core::config::InstanceConfig::try_from(raw).unwrap();
         let global_ctx = crate::common::global_ctx::tests::get_mock_global_ctx_with_config(config);
 
         run_ip(&[

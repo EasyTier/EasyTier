@@ -16,13 +16,11 @@ use hickory_proto::udp::UdpClientStream;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
-use crate::common::config::TomlConfigLoader;
 use crate::common::global_ctx::{ArcGlobalCtx, tests::get_mock_global_ctx_with_config};
 use crate::instance::{
     composition::{NativeCoreInstance, runtime_core_host_adapters},
     config::test_instance_config,
 };
-use easytier_core::config::toml::ConfigLoader as _;
 
 use crate::instance::dns_server::runner::DnsRunner;
 use crate::instance::dns_server::server_instance::MagicDnsServerInstance;
@@ -56,18 +54,17 @@ pub async fn prepare_env_with_tld_dns_zone(
     tun_ip: Ipv4Inet,
     tld_dns_zone: Option<&str>,
 ) -> (ArcGlobalCtx, Arc<NativeCoreInstance>, NicCtx) {
-    let config = TomlConfigLoader::default();
-    config.set_hostname(Some(dns_name.to_owned()));
-    config.set_ipv4(Some(tun_ip));
+    let mut raw = easytier_core::config::InstanceConfigRaw::default();
+    raw.hostname = Some(dns_name.to_owned());
+    raw.ipv4 = Some(tun_ip);
 
     if tld_dns_zone.is_some() {
-        let mut flags = config.get_flags();
-        flags.accept_dns = true; // Enable DNS
+        raw.flags.accept_dns = Some(true); // Enable DNS
         if let Some(zone) = tld_dns_zone {
-            flags.tld_dns_zone = zone.to_string();
+            raw.flags.tld_dns_zone = Some(zone.to_string());
         }
-        config.set_flags(flags);
     }
+    let config = easytier_core::config::InstanceConfig::try_from(raw).unwrap();
     let ctx = get_mock_global_ctx_with_config(config);
 
     let (core_instance, host_packet_rx) = build_test_core(ctx.clone()).await;
@@ -220,10 +217,10 @@ async fn test_magic_dns_runner() {
 #[tokio::test]
 async fn test_magic_dns_update_replaces_records_for_same_client() {
     let tun_ip = Ipv4Inet::from_str("100.100.100.0/24").unwrap();
-    let config = TomlConfigLoader::default();
+    let mut config = easytier_core::config::InstanceConfigRaw::default();
     config.set_hostname(Some("test1".to_string()));
     config.set_ipv4(Some(tun_ip));
-    let ctx = get_mock_global_ctx_with_config(config);
+    let ctx = get_mock_global_ctx_with_config(config.try_into().unwrap());
 
     let (core_instance, _packet_receiver) = build_test_core(ctx.clone()).await;
 

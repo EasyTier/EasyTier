@@ -21,7 +21,7 @@ use crate::{
 };
 use crate::{
     common::{
-        config::{ConfigLoader, NetworkIdentity, PeerConfig, TomlConfigLoader},
+        config::{InstanceConfigRaw, NetworkIdentity, PeerConfig},
         global_ctx::GlobalCtxEvent,
     },
     instance::test_instance::TestInstance as Instance,
@@ -88,7 +88,7 @@ async fn generate_credential_with_options(
     (generated.credential_id, generated.secret)
 }
 
-fn disable_p2p(config: &TomlConfigLoader) {
+fn disable_p2p(config: &mut InstanceConfigRaw) {
     let mut flags = config.get_flags();
     flags.disable_p2p = true;
     config.set_flags(flags);
@@ -295,8 +295,8 @@ fn build_credential_config(
     ns: Option<&str>,
     ipv4: &str,
     ipv6: &str,
-) -> TomlConfigLoader {
-    let config = TomlConfigLoader::default();
+) -> InstanceConfigRaw {
+    let mut config = InstanceConfigRaw::default();
     config.set_inst_name(inst_name.to_owned());
     config.set_netns(ns.map(|s| s.to_owned()));
     config.set_ipv4(Some(ipv4.parse().unwrap()));
@@ -317,7 +317,7 @@ async fn create_credential_config(
     ns: Option<&str>,
     ipv4: &str,
     ipv6: &str,
-) -> TomlConfigLoader {
+) -> InstanceConfigRaw {
     let (_cred_id, cred_secret) =
         generate_credential(admin_inst, vec![], false, vec![], Duration::from_secs(3600)).await;
 
@@ -342,7 +342,7 @@ fn create_credential_config_from_secret(
     ns: Option<&str>,
     ipv4: &str,
     ipv6: &str,
-) -> TomlConfigLoader {
+) -> InstanceConfigRaw {
     build_credential_config(
         network_name,
         &credential_private_key_from_secret(credential_secret),
@@ -360,7 +360,7 @@ fn create_unknown_credential_config(
     ns: Option<&str>,
     ipv4: &str,
     ipv6: &str,
-) -> TomlConfigLoader {
+) -> InstanceConfigRaw {
     let random_private = x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng);
     build_credential_config(network_name, &random_private, inst_name, ns, ipv4, ipv6)
 }
@@ -371,8 +371,8 @@ fn create_admin_config(
     ns: Option<&str>,
     ipv4: &str,
     ipv6: &str,
-) -> TomlConfigLoader {
-    let config = TomlConfigLoader::default();
+) -> InstanceConfigRaw {
+    let mut config = InstanceConfigRaw::default();
     config.set_inst_name(inst_name.to_owned());
     config.set_netns(ns.map(|s| s.to_owned()));
     config.set_ipv4(Some(ipv4.parse().unwrap()));
@@ -397,8 +397,8 @@ fn create_shared_config(
     ns: Option<&str>,
     ipv4: &str,
     ipv6: &str,
-) -> TomlConfigLoader {
-    let config = TomlConfigLoader::default();
+) -> InstanceConfigRaw {
+    let mut config = InstanceConfigRaw::default();
     config.set_inst_name(inst_name.to_owned());
     config.set_netns(ns.map(|s| s.to_owned()));
     config.set_ipv4(Some(ipv4.parse().unwrap()));
@@ -417,8 +417,8 @@ fn create_shared_config(
     config
 }
 
-fn create_public_server_config() -> TomlConfigLoader {
-    let config = TomlConfigLoader::default();
+fn create_public_server_config() -> InstanceConfigRaw {
+    let mut config = InstanceConfigRaw::default();
     config.set_inst_name(PUBLIC_SERVER_NETWORK_NAME.to_string());
     config.set_hostname(Some("public-server".to_string()));
     config.set_netns(Some("ns_adm".to_string()));
@@ -441,8 +441,8 @@ fn create_public_server_config() -> TomlConfigLoader {
     config
 }
 
-fn create_need_p2p_admin_config(listener_scheme: &str) -> TomlConfigLoader {
-    let config = TomlConfigLoader::default();
+fn create_need_p2p_admin_config(listener_scheme: &str) -> InstanceConfigRaw {
+    let mut config = InstanceConfigRaw::default();
     config.set_inst_name(NEED_P2P_ADMIN_NETWORK_NAME.to_string());
     config.set_hostname(Some("need-p2p-admin".to_string()));
     config.set_netns(Some("ns_c3".to_string()));
@@ -480,8 +480,8 @@ fn create_public_server_credential_config(
     tcp_listener_port: u16,
     udp_listener_port: u16,
     proxy_cidrs: &[&str],
-) -> TomlConfigLoader {
-    let config = create_credential_config_from_secret(
+) -> InstanceConfigRaw {
+    let mut config = create_credential_config_from_secret(
         NEED_P2P_ADMIN_NETWORK_NAME.to_string(),
         credential_secret,
         inst_name,
@@ -745,7 +745,7 @@ async fn credential_peer_reconnects_to_admin_with_portal_client_online() {
     prepare_credential_network();
     let process_runtime = CoreProcessRuntime::new();
 
-    let public_server_config = create_public_server_config();
+    let mut public_server_config = create_public_server_config();
     let mut public_server_flags = public_server_config.get_flags();
     public_server_flags.disable_relay_data = true;
     public_server_config.set_flags(public_server_flags);
@@ -753,7 +753,7 @@ async fn credential_peer_reconnects_to_admin_with_portal_client_online() {
         Instance::new_with_process_runtime(public_server_config, process_runtime.clone());
     public_server_inst.run().await.unwrap();
 
-    let admin_config = create_need_p2p_admin_config("udp");
+    let mut admin_config = create_need_p2p_admin_config("udp");
     admin_config.set_vpn_portal_config(VpnPortalConfig {
         enabled: None,
         wireguard_listen: "0.0.0.0:22121".parse().unwrap(),
@@ -932,7 +932,7 @@ async fn create_generated_credential_config(
     ns: Option<&str>,
     ipv4: &str,
     ipv6: &str,
-) -> (TomlConfigLoader, String) {
+) -> (InstanceConfigRaw, String) {
     let (cred_id, cred_secret) =
         generate_credential(admin_inst, vec![], false, vec![], Duration::from_secs(3600)).await;
     let config = build_credential_config(
@@ -1178,13 +1178,13 @@ async fn credential_basic_connectivity(#[case] pin_admin: bool) {
     let admin_config = create_admin_config("admin", Some("ns_adm"), "10.144.144.1", "fd00::1/64");
     let admin_public_key = admin_config
         .get_secure_mode()
-        .and_then(|config| config.local_public_key)
+        .and_then(|config| config.local_public_key.clone())
         .unwrap();
     let mut admin_inst = Instance::new_with_process_runtime(admin_config, process_runtime.clone());
     admin_inst.run().await.unwrap();
 
     // Create credential node
-    let cred_config = create_credential_config(
+    let mut cred_config = create_credential_config(
         &admin_inst,
         "cred",
         Some("ns_c1"),
@@ -1277,12 +1277,12 @@ async fn credential_rejects_incorrect_admin_pin() {
     let admin_config = create_admin_config("admin", Some("ns_adm"), "10.144.144.1", "fd00::1/64");
     let admin_public_key = admin_config
         .get_secure_mode()
-        .and_then(|config| config.local_public_key)
+        .and_then(|config| config.local_public_key.clone())
         .unwrap();
     let mut admin_inst = Instance::new_with_process_runtime(admin_config, process_runtime.clone());
     admin_inst.run().await.unwrap();
 
-    let cred_config = create_credential_config(
+    let mut cred_config = create_credential_config(
         &admin_inst,
         "cred",
         Some("ns_c1"),
@@ -1386,7 +1386,7 @@ async fn prefer_peer_relay_single_admin(#[case] allow_relay: bool) {
             .try_into()
             .unwrap();
         let private = x25519_dalek::StaticSecret::from(privkey_bytes);
-        let config = TomlConfigLoader::default();
+        let mut config = InstanceConfigRaw::default();
         config.set_inst_name("cred_a".to_string());
         config.set_netns(Some("ns_c1".to_string()));
         config.set_ipv4(Some("10.144.144.2".parse().unwrap()));
@@ -1401,7 +1401,7 @@ async fn prefer_peer_relay_single_admin(#[case] allow_relay: bool) {
         config
             .set_secure_mode(Some(generate_secure_mode_config_with_key(&private)))
             .unwrap();
-        disable_p2p(&config);
+        disable_p2p(&mut config);
         config
     };
     let mut cred_a_inst =
@@ -1417,7 +1417,7 @@ async fn prefer_peer_relay_single_admin(#[case] allow_relay: bool) {
             .try_into()
             .unwrap();
         let private = x25519_dalek::StaticSecret::from(privkey_bytes);
-        let config = TomlConfigLoader::default();
+        let mut config = InstanceConfigRaw::default();
         config.set_inst_name("cred_b".to_string());
         config.set_netns(Some("ns_c2".to_string()));
         config.set_ipv4(Some("10.144.144.3".parse().unwrap()));
@@ -1432,7 +1432,7 @@ async fn prefer_peer_relay_single_admin(#[case] allow_relay: bool) {
         config
             .set_secure_mode(Some(generate_secure_mode_config_with_key(&private)))
             .unwrap();
-        disable_p2p(&config);
+        disable_p2p(&mut config);
         config
     };
     let mut cred_b_inst =
@@ -1448,7 +1448,7 @@ async fn prefer_peer_relay_single_admin(#[case] allow_relay: bool) {
             .try_into()
             .unwrap();
         let private = x25519_dalek::StaticSecret::from(privkey_bytes);
-        let config = TomlConfigLoader::default();
+        let mut config = InstanceConfigRaw::default();
         config.set_inst_name("cred_c".to_string());
         config.set_netns(Some("ns_c3".to_string()));
         config.set_ipv4(Some("10.144.144.4".parse().unwrap()));
@@ -1465,7 +1465,7 @@ async fn prefer_peer_relay_single_admin(#[case] allow_relay: bool) {
         config
             .set_secure_mode(Some(generate_secure_mode_config_with_key(&private)))
             .unwrap();
-        disable_p2p(&config);
+        disable_p2p(&mut config);
         config
     };
     let mut cred_c_inst =
@@ -1695,7 +1695,7 @@ async fn prefer_peer_relay_uses_forwarded_coverage_across_two_admins() {
         .get_network_identity()
         .network_name
         .clone();
-    let relay_config = create_credential_config_from_secret(
+    let mut relay_config = create_credential_config_from_secret(
         network_name.clone(),
         &relay_secret,
         "relay",
@@ -1704,9 +1704,9 @@ async fn prefer_peer_relay_uses_forwarded_coverage_across_two_admins() {
         "fd00::2/64",
     );
     relay_config.set_listeners(vec!["tcp://0.0.0.0:11020".parse().unwrap()]);
-    disable_p2p(&relay_config);
+    disable_p2p(&mut relay_config);
 
-    let target_config = create_credential_config_from_secret(
+    let mut target_config = create_credential_config_from_secret(
         network_name.clone(),
         &target_secret,
         "target",
@@ -1714,9 +1714,9 @@ async fn prefer_peer_relay_uses_forwarded_coverage_across_two_admins() {
         "10.144.144.3",
         "fd00::3/64",
     );
-    disable_p2p(&target_config);
+    disable_p2p(&mut target_config);
 
-    let source_config = create_credential_config_from_secret(
+    let mut source_config = create_credential_config_from_secret(
         network_name,
         &source_secret,
         "source",
@@ -1724,7 +1724,7 @@ async fn prefer_peer_relay_uses_forwarded_coverage_across_two_admins() {
         "10.144.144.5",
         "fd00::5/64",
     );
-    disable_p2p(&source_config);
+    disable_p2p(&mut source_config);
 
     let mut relay_inst = Instance::new_with_process_runtime(relay_config, process_runtime.clone());
     let mut target_inst =
@@ -2084,7 +2084,7 @@ async fn credential_revocation_propagates() {
             .unwrap();
         let private = x25519_dalek::StaticSecret::from(privkey_bytes);
 
-        let config = TomlConfigLoader::default();
+        let mut config = InstanceConfigRaw::default();
         config.set_inst_name("cred".to_string());
         config.set_netns(Some("ns_c1".to_string()));
         config.set_ipv4(Some("10.144.144.2".parse().unwrap()));
@@ -2347,7 +2347,7 @@ async fn credential_unknown_rejected() {
     // Create credential node with random key (not generated by admin)
     let random_private = x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng);
     let cred_config = {
-        let config = TomlConfigLoader::default();
+        let mut config = InstanceConfigRaw::default();
         config.set_inst_name("cred".to_string());
         config.set_netns(Some("ns_c1".to_string()));
         config.set_ipv4(Some("10.144.144.2".parse().unwrap()));

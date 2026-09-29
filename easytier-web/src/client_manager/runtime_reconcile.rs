@@ -1,7 +1,7 @@
 use anyhow::Context as _;
 use easytier::{
     common::config::{
-        ConfigLoader, EncryptionAlgorithm, NetworkConfigExt,
+        network_config_from_raw, EncryptionAlgorithm, NetworkConfigExt,
         PortForwardConfig as RuntimePortForwardConfig,
         VpnPortalClientConfig as RuntimeVpnPortalClientConfig,
         VpnPortalConfig as RuntimeVpnPortalConfig,
@@ -24,7 +24,7 @@ use easytier::{
         rpc_types::controller::BaseController,
     },
 };
-use optionize::Retain;
+use optionize::{Optionizable as _, Retain};
 
 use super::session::{SessionConfigClient, SessionRpcClient};
 
@@ -54,11 +54,10 @@ fn instance_identifier(inst_id: &str) -> anyhow::Result<InstanceIdentifier> {
 fn hot_patch_base(config: &NetworkConfig) -> anyhow::Result<NetworkConfig> {
     let data_compress_algo = normalized_data_compress_algo(config.data_compress_algo);
     let encryption_algorithm = normalized_encryption_algorithm(config.encryption_algorithm.clone());
-    let config = config.gen_config()?;
-    // Runtime comparison intentionally resolves defaults. Configuration exports
-    // otherwise preserve whether each flag was supplied by the user.
-    config.set_flags(config.get_flags());
-    let mut config = NetworkConfig::new_from_config(&config)?;
+    let instance_config = config.gen_config()?;
+    let mut raw = instance_config.raw().clone();
+    raw.flags = instance_config.parsed().flags.clone().downgrade();
+    let mut config = network_config_from_raw(&raw);
     let is_credential_mode = config.network_secret.is_none()
         && config
             .secure_mode
@@ -193,7 +192,9 @@ fn normalized_port_forwards(
 ) -> anyhow::Result<Vec<RuntimePortForwardConfig>> {
     Ok(config
         .gen_config()?
-        .get_port_forwards()
+        .parsed()
+        .port_forward
+        .clone()
         .into_iter()
         .map(|cfg| {
             RuntimePortForwardConfig::from(easytier::proto::common::PortForwardConfigPb::from(cfg))
@@ -204,7 +205,9 @@ fn normalized_port_forwards(
 fn normalized_proxy_networks(config: &NetworkConfig) -> anyhow::Result<Vec<RuntimeProxyNetwork>> {
     Ok(config
         .gen_config()?
-        .get_proxy_cidrs()
+        .parsed()
+        .proxy_network
+        .clone()
         .into_iter()
         .map(|proxy_network| RuntimeProxyNetwork {
             cidr: proxy_network.cidr.to_string(),
@@ -214,7 +217,7 @@ fn normalized_proxy_networks(config: &NetworkConfig) -> anyhow::Result<Vec<Runti
 }
 
 fn normalized_vpn_portal(config: &NetworkConfig) -> anyhow::Result<Option<RuntimeVpnPortalConfig>> {
-    Ok(config.gen_config()?.get_vpn_portal_config())
+    Ok(config.gen_config()?.parsed().vpn_portal_config.clone())
 }
 
 fn diff_vpn_portal_clients(
@@ -264,7 +267,7 @@ fn normalized_managed_credentials(
     config: &NetworkConfig,
 ) -> anyhow::Result<Vec<ManagedCredentialConfig>> {
     let generated = config.gen_config()?;
-    Ok(NetworkConfig::new_from_config(&generated)?.managed_credentials)
+    Ok(network_config_from_raw(generated.raw()).managed_credentials)
 }
 
 fn is_automatic_windows_dev_name(dev_name: &str) -> bool {
@@ -333,8 +336,8 @@ fn web_source_runtime_patch(
             diff_proxy_networks(&current_proxy_networks, &desired_proxy_networks)?;
     }
 
-    let current_flags = current.gen_config()?.get_flags();
-    let desired_flags = desired.gen_config()?.get_flags();
+    let current_flags = current.gen_config()?.parsed().flags.clone();
+    let desired_flags = desired.gen_config()?.parsed().flags.clone();
     let mut flags = FlagsPatch {
         disable_relay_data: Some(desired_flags.disable_relay_data),
         prefer_peer_relay: Some(desired_flags.prefer_peer_relay),

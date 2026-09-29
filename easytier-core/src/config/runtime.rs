@@ -92,17 +92,17 @@ impl From<crate::config::InstanceConfigParsed> for InstanceConfigStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::toml::TomlConfig;
+    use crate::config::parse_instance_config;
 
     #[test]
     fn replaces_config_as_one_version() {
-        let before_toml = TomlConfig::new_from_str("hostname = \"before\"").unwrap();
-        let store = InstanceConfigStore::new(before_toml.snapshot().unwrap());
+        let before_cfg = parse_instance_config("test", "hostname = \"before\"").unwrap();
+        let store = InstanceConfigStore::new(before_cfg);
         let before = store.snapshot();
         assert_eq!(before.hostname, "before");
 
-        let after_toml = TomlConfig::new_from_str("hostname = \"after\"\ndhcp = true").unwrap();
-        store.replace(after_toml.snapshot().unwrap());
+        let after_cfg = parse_instance_config("test", "hostname = \"after\"\ndhcp = true").unwrap();
+        store.replace(after_cfg);
 
         assert_eq!(before.hostname, "before");
         let after = store.snapshot();
@@ -112,12 +112,12 @@ mod tests {
 
     #[tokio::test]
     async fn notifies_config_changes() {
-        let toml = TomlConfig::new_from_str("hostname = \"initial\"").unwrap();
-        let store = InstanceConfigStore::new(toml.snapshot().unwrap());
+        let cfg = parse_instance_config("test", "hostname = \"initial\"").unwrap();
+        let store = InstanceConfigStore::new(cfg);
         let mut changes = store.subscribe_changes();
 
-        let updated_toml = TomlConfig::new_from_str("hostname = \"updated\"").unwrap();
-        store.replace(updated_toml.snapshot().unwrap());
+        let updated_cfg = parse_instance_config("test", "hostname = \"updated\"").unwrap();
+        store.replace(updated_cfg);
 
         assert!(changes.changed().await.is_ok());
         assert_eq!(store.snapshot().hostname, "updated");
@@ -125,8 +125,8 @@ mod tests {
 
     #[tokio::test]
     async fn notifies_peer_runtime_changes() {
-        let toml = TomlConfig::new_from_str("hostname = \"initial\"").unwrap();
-        let store = InstanceConfigStore::new(toml.snapshot().unwrap());
+        let cfg = parse_instance_config("test", "hostname = \"initial\"").unwrap();
+        let store = InstanceConfigStore::new(cfg);
         let mut changes = store.subscribe_peer_runtime_changes();
 
         store.notify_peer_runtime_changes();

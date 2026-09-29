@@ -186,11 +186,11 @@ pub fn prepare_instance_config(
 mod tests {
     use super::*;
     use crate::config::InstanceConfigParsed;
-    use crate::config::toml::{ConfigLoader, TomlConfig};
 
     #[test]
     fn host_config_normalizes_hostname_and_filters_unsupported_when_requested() {
-        let toml = TomlConfig::new_from_str(
+        let mut raw = crate::config::parse_instance_config(
+            "test",
             r#"
 listeners = ["tcp://127.0.0.1:11010", "quic://127.0.0.1:11011"]
 proxy_network = [{ cidr = "10.20.0.0/16" }]
@@ -207,10 +207,11 @@ enable_kcp_proxy = true
 accept_dns = true
 "#,
         )
-        .unwrap();
-        toml.set_exit_nodes(vec!["10.144.144.2".parse().unwrap()]);
-        toml.set_ipv6_public_addr_provider(true);
-        let before_dump = toml.dump();
+        .unwrap()
+        .into_raw();
+        raw.exit_nodes = Some(vec!["10.144.144.2".parse().unwrap()]);
+        raw.ipv6_public_addr_provider = Some(true);
+        let config = InstanceConfig::try_from(raw).unwrap();
 
         let host = CoreInstanceHostConfig {
             hostname_fallback: Some("fallback-host".to_owned()),
@@ -226,9 +227,7 @@ accept_dns = true
             ..Default::default()
         };
 
-        let prepared = prepare_instance_config(toml.snapshot().unwrap(), &host).unwrap();
-
-        assert_eq!(toml.dump(), before_dump);
+        let prepared = prepare_instance_config(config, &host).unwrap();
         assert_eq!(prepared.hostname, "fallback-host");
         assert_eq!(prepared.listeners.as_ref().unwrap().len(), 1);
         assert_eq!(prepared.peer.len(), 1);

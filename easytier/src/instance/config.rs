@@ -113,7 +113,7 @@ pub(crate) fn test_instance_config(
 #[cfg(test)]
 mod tests {
     use easytier_core::{
-        config::toml::TomlConfig,
+        config::parse_instance_config,
         events::{CoreEvent, CoreEventSink},
     };
 
@@ -142,14 +142,14 @@ mod tests {
     #[test]
     fn clearing_configured_hostname_does_not_reuse_the_old_value() {
         let host = runtime_core_host_config();
-        let initial = TomlConfig::new_from_str("hostname = \"configured-host\"").unwrap();
-        let cleared = TomlConfig::new_from_str("hostname = \"\"").unwrap();
+        let initial = parse_instance_config("test", "hostname = \"configured-host\"").unwrap();
+        let cleared = parse_instance_config("test", "hostname = \"\"").unwrap();
 
         let initial =
-            easytier_core::instance::prepare_instance_config(initial.snapshot().unwrap(), &host)
+            easytier_core::instance::prepare_instance_config(initial, &host)
                 .unwrap();
         let cleared =
-            easytier_core::instance::prepare_instance_config(cleared.snapshot().unwrap(), &host)
+            easytier_core::instance::prepare_instance_config(cleared, &host)
                 .unwrap();
 
         assert_eq!(initial.parsed().hostname.as_str(), "configured-host");
@@ -162,11 +162,8 @@ mod tests {
 
     #[test]
     fn test_config_uses_current_global_context_hostname_as_fallback() {
-        use easytier_core::config::toml::ConfigLoader as _;
-
-        let toml = TomlConfig::default();
-        toml.set_hostname(Some("test-hostname".to_owned()));
-        let global_ctx = crate::common::global_ctx::tests::get_mock_global_ctx_with_config(toml);
+        let config = parse_instance_config("test", "hostname = 'test-hostname'\n").unwrap();
+        let global_ctx = crate::common::global_ctx::tests::get_mock_global_ctx_with_config(config);
 
         let config = test_instance_config(&global_ctx);
 

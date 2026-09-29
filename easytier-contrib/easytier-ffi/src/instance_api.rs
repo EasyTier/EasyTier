@@ -1,6 +1,6 @@
 use std::ffi::{CString, c_char, c_int};
 
-use easytier::common::config::{ConfigFileControl, TomlConfigLoader};
+use easytier::common::config::{ConfigFileControl, parse_instance_config};
 
 use crate::{
     config_server::{in_config_server_callback, wait_for_config_server_delivery},
@@ -46,7 +46,7 @@ pub(crate) unsafe fn parse_config(cfg_str: *const std::ffi::c_char) -> std::ffi:
             .into_owned()
     };
 
-    if let Err(e) = TomlConfigLoader::new_from_str(&cfg_str) {
+    if let Err(e) = parse_instance_config("ffi", &cfg_str) {
         set_error_msg(&format!("failed to parse config: {:?}", e));
         return -1;
     }
@@ -68,7 +68,7 @@ pub(crate) unsafe fn run_network_instance(cfg_str: *const std::ffi::c_char) -> s
             .to_string_lossy()
             .into_owned()
     };
-    let cfg = match TomlConfigLoader::new_from_str(&cfg_str) {
+    let cfg = match parse_instance_config("ffi", &cfg_str) {
         Ok(cfg) => cfg,
         Err(e) => {
             set_error_msg(&format!("failed to parse config: {}", e));

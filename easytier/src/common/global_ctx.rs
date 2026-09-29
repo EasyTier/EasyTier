@@ -312,8 +312,7 @@ impl GlobalCtx {
 
 #[cfg(test)]
 pub mod tests {
-    use crate::common::config::TomlConfigLoader;
-    use easytier_core::config::toml::ConfigLoader as _;
+    use easytier_core::config::{parse_instance_config, serialize_raw_to_toml, InstanceConfig};
 
     use super::*;
 
@@ -377,17 +376,16 @@ pub mod tests {
 
     #[test]
     fn host_hostname_fallback_does_not_materialize_in_toml() {
-        let config = TomlConfigLoader::default();
+        let config = parse_instance_config("test", "").unwrap();
         let global_ctx = get_mock_global_ctx_with_config(config.clone());
 
         assert!(!global_ctx.get_hostname().is_empty());
-        assert!(!config.dump().contains("hostname"));
+        assert!(!serialize_raw_to_toml(config.raw()).unwrap().contains("hostname"));
     }
 
     #[test]
     fn active_dhcp_ipv4_survives_declarative_config_replacement() {
-        let config = TomlConfigLoader::default();
-        config.set_dhcp(true);
+        let config = parse_instance_config("test", "dhcp = true\n").unwrap();
         let global_ctx = get_mock_global_ctx_with_config(config);
         let lease = "10.144.144.7/24".parse().unwrap();
 
@@ -398,8 +396,7 @@ pub mod tests {
 
     #[test]
     fn runtime_state_does_not_rewrite_toml_config() {
-        let config = TomlConfigLoader::default();
-        config.set_dhcp(true);
+        let config = parse_instance_config("test", "dhcp = true\n").unwrap();
         let global_ctx = get_mock_global_ctx_with_config(config);
 
         global_ctx.set_applied_ipv4(Some("10.144.144.7/24".parse().unwrap()));
@@ -413,14 +410,13 @@ pub mod tests {
 
     #[test]
     fn compact_runtime_does_not_advertise_unsupported_mapped_listeners() {
-        let config = TomlConfigLoader::default();
-        config.set_mapped_listeners(Some(vec![
-            "tcp://127.0.0.1:11010".parse().unwrap(),
-            "quic://127.0.0.1:11011".parse().unwrap(),
-        ]));
+        let config = parse_instance_config(
+            "test",
+            r#"mapped_listeners = ["tcp://127.0.0.1:11010", "quic://127.0.0.1:11011"]"#,
+        )
+        .unwrap();
         let host = crate::instance::config::compact_runtime_core_host_config();
-        let snapshot = config.snapshot().unwrap();
-        let prepared = easytier_core::instance::prepare_instance_config(snapshot, &host).unwrap();
+        let prepared = easytier_core::instance::prepare_instance_config(config, &host).unwrap();
         let store = InstanceConfigStore::new(prepared);
 
         let global_ctx = GlobalCtx::new(store, &host);
@@ -431,7 +427,8 @@ pub mod tests {
 
     #[tokio::test]
     async fn global_ctx_reads_hostname_and_flags_directly_from_runtime_config_store() {
-        let config = TomlConfigLoader::new_from_str(
+        let config = parse_instance_config(
+            "test",
             r#"
 hostname = "before"
 [network_identity]
@@ -463,7 +460,8 @@ network_secret = "secret"
 
     #[tokio::test]
     async fn updating_static_ipv4_and_ipv6_is_consistent_between_core_and_global_ctx() {
-        let config = TomlConfigLoader::new_from_str(
+        let config = parse_instance_config(
+            "test",
             r#"
 hostname = "addr-sync"
 ipv4 = "10.144.144.1/24"
@@ -508,7 +506,8 @@ network_secret = "secret"
 
     #[tokio::test]
     async fn management_patch_mapped_listeners_updates_runtime_mapped_listeners() {
-        let config = TomlConfigLoader::new_from_str(
+        let config = parse_instance_config(
+            "test",
             r#"
 hostname = "listeners-patch"
 mapped_listeners = ["tcp://127.0.0.1:11010"]
@@ -542,12 +541,15 @@ network_secret = "secret"
 
     #[test]
     fn get_flags_is_consistent_with_convenience_getters() {
-        let config = TomlConfigLoader::default();
-        let mut flags = config.get_flags();
-        flags.enable_exit_node = true;
-        flags.proxy_forward_by_system = true;
-        flags.no_tun = true;
-        config.set_flags(flags);
+        let config = parse_instance_config(
+            "test",
+            r#"[flags]
+enable_exit_node = true
+proxy_forward_by_system = true
+no_tun = true
+"#,
+        )
+        .unwrap();
 
         let global_ctx = get_mock_global_ctx_with_config(config);
         let gflags = global_ctx.get_flags();
@@ -580,7 +582,8 @@ network_secret = "secret"
 
     #[test]
     fn secure_mode_default_admin_identity_preserved_across_serialization_and_reload() {
-        let config = TomlConfigLoader::new_from_str(
+        let config = parse_instance_config(
+            "test",
             r#"
 [secure_mode]
 enabled = true
@@ -588,15 +591,14 @@ enabled = true
         )
         .unwrap();
 
-        let snapshot = config.snapshot().unwrap();
-        assert!(snapshot.parsed().network_identity.network_secret.is_some());
+        assert!(config.parsed().network_identity.network_secret.is_some());
         assert_eq!(
-            snapshot.parsed().network_identity.network_secret.as_deref(),
+            config.parsed().network_identity.network_secret.as_deref(),
             Some("")
         );
-        assert_eq!(snapshot.raw().network_identity, None);
+        assert_eq!(config.raw().network_identity, None);
 
-        let mut raw = snapshot.raw().clone();
+        let mut raw = config.into_raw();
         raw.hostname = Some("new-host".to_string());
         let updated = easytier_core::config::InstanceConfig::try_from(raw).unwrap();
 
@@ -609,7 +611,8 @@ enabled = true
 
     #[tokio::test]
     async fn dhcp_allocated_address_not_overwritten_by_runtime_update_and_failure_returns_actual() {
-        let config = TomlConfigLoader::new_from_str(
+        let config = parse_instance_config(
+            "test",
             r#"
 hostname = "dhcp-node"
 dhcp = true
@@ -642,7 +645,8 @@ network_secret = "secret"
 
     #[test]
     fn windows_auto_device_name_does_not_pollute_config() {
-        let config = TomlConfigLoader::new_from_str(
+        let config = parse_instance_config(
+            "test",
             r#"
 hostname = "win-tun-test"
 [network_identity]
@@ -660,10 +664,9 @@ network_secret = "secret"
         );
     }
 
-    pub fn get_mock_global_ctx_with_config(config: TomlConfigLoader) -> ArcGlobalCtx {
+    pub fn get_mock_global_ctx_with_config(config: InstanceConfig) -> ArcGlobalCtx {
         let host = crate::instance::config::runtime_core_host_config();
-        let snapshot = config.snapshot().unwrap();
-        let prepared = easytier_core::instance::prepare_instance_config(snapshot, &host).unwrap();
+        let prepared = easytier_core::instance::prepare_instance_config(config, &host).unwrap();
         let store = InstanceConfigStore::new(prepared);
         Arc::new(GlobalCtx::new(store, &host))
     }
@@ -671,10 +674,12 @@ network_secret = "secret"
     pub fn get_mock_global_ctx_with_network(
         network_identy: Option<NetworkIdentity>,
     ) -> ArcGlobalCtx {
-        let config_fs = TomlConfigLoader::default();
-        config_fs.set_inst_name(format!("test_{}", config_fs.get_id()));
-        config_fs.set_network_identity(network_identy.unwrap_or_default());
-        get_mock_global_ctx_with_config(config_fs)
+        let mut raw = easytier_core::config::InstanceConfigRaw::default();
+        if let Some(id) = network_identy {
+            raw.network_identity = Some(id);
+        }
+        let config = easytier_core::config::InstanceConfig::try_from(raw).unwrap();
+        get_mock_global_ctx_with_config(config)
     }
 
     pub fn get_mock_global_ctx() -> ArcGlobalCtx {

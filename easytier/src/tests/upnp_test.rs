@@ -23,7 +23,7 @@ use super::{
 };
 use crate::{
     common::{
-        config::{ConfigLoader, TomlConfigLoader},
+        config::{InstanceConfig, InstanceConfigRaw},
         error::Error,
         global_ctx::GlobalCtxEvent,
         netns::NetNS,
@@ -892,14 +892,14 @@ fn create_test_instance_config(
     netns: Option<&str>,
     ipv4: &str,
     ipv6: &str,
-) -> TomlConfigLoader {
-    let config = TomlConfigLoader::default();
-    config.set_inst_name(inst_name.to_owned());
-    config.set_netns(netns.map(ToOwned::to_owned));
-    config.set_ipv4(Some(ipv4.parse().unwrap()));
-    config.set_ipv6(Some(ipv6.parse().unwrap()));
-    config.set_listeners(vec!["udp://0.0.0.0:11010".parse().unwrap()]);
-    config
+) -> InstanceConfigRaw {
+    let mut raw = InstanceConfigRaw::default();
+    raw.instance_name = Some(inst_name.to_owned());
+    raw.netns = netns.map(ToOwned::to_owned);
+    raw.ipv4 = Some(ipv4.parse().unwrap());
+    raw.ipv6 = Some(ipv6.parse().unwrap());
+    raw.listeners = Some(vec!["udp://0.0.0.0:11010".parse().unwrap()]);
+    raw
 }
 
 fn create_test_instance_with_process_runtime(
@@ -908,14 +908,13 @@ fn create_test_instance_with_process_runtime(
     ipv4: &str,
     ipv6: &str,
     stun_collector: Box<dyn StunSocketMapper<crate::socket::udp::RuntimeUdpSocket>>,
-    configure_flags: impl FnOnce(&mut crate::common::config::Flags),
+    configure_flags: impl FnOnce(&mut InstanceConfigRaw),
     process_runtime: Arc<CoreProcessRuntime>,
 ) -> Instance {
-    let config = create_test_instance_config(inst_name, netns, ipv4, ipv6);
-    let mut flags = config.get_flags();
-    flags.disable_tcp_hole_punching = true;
-    configure_flags(&mut flags);
-    config.set_flags(flags);
+    let mut raw = create_test_instance_config(inst_name, netns, ipv4, ipv6);
+    raw.flags.disable_tcp_hole_punching = Some(true);
+    configure_flags(&mut raw);
+    let config = InstanceConfig::try_from(raw).unwrap();
 
     Instance::new_with_process_runtime_and_stun_provider(config, process_runtime, stun_collector)
 }
@@ -1019,7 +1018,7 @@ async fn instances_build_direct_connection_via_upnp_udp_hole_punch() {
             client_ip: DUAL_CLIENT_A_IP,
             external_ip: DUAL_EXTERNAL_A_IP,
         }),
-        |flags| flags.need_p2p = true,
+        |raw| raw.flags.need_p2p = Some(true),
         process_runtime.clone(),
     );
     let mut event_rx_a = inst_a.get_global_ctx().subscribe();
@@ -1046,7 +1045,7 @@ async fn instances_build_direct_connection_via_upnp_udp_hole_punch() {
             client_ip: DUAL_CLIENT_C_IP,
             external_ip: DUAL_EXTERNAL_C_IP,
         }),
-        |flags| flags.need_p2p = true,
+        |raw| raw.flags.need_p2p = Some(true),
         process_runtime,
     );
     let mut event_rx_c = inst_c.get_global_ctx().subscribe();

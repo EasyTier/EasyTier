@@ -10,7 +10,12 @@ use tokio::io::AsyncReadExt as _;
 use easytier_core::config::MappedListenerPolicy;
 #[cfg(feature = "management")]
 pub use easytier_core::config::api_input::{
-    NetworkConfig, NetworkConfigExt, NetworkingMethod, add_proxy_network_to_config,
+    add_proxy_network_to_raw, NetworkConfig, NetworkConfigExt, NetworkingMethod,
+};
+pub use easytier_core::config::{
+    api::network_config_from_raw, normalize_config_source, parse_instance_config,
+    serialize_raw_to_toml, serialize_raw_to_toml_redacted, InstanceConfig, InstanceConfigParsed,
+    InstanceConfigRaw,
 };
 pub use easytier_core::config::toml::*;
 
@@ -30,7 +35,7 @@ pub fn parse_mapped_listener_urls(
         .parse_urls(mapped_listeners)
 }
 
-pub fn load_toml_config_from_path(path: &PathBuf) -> Result<TomlConfigLoader, anyhow::Error> {
+pub fn load_toml_config_from_path(path: &PathBuf) -> Result<InstanceConfig, anyhow::Error> {
     let config = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read config file: {}", path.display()))?;
     load_toml_config_from_str_with_source(&path.display().to_string(), &config)
@@ -39,8 +44,8 @@ pub fn load_toml_config_from_path(path: &PathBuf) -> Result<TomlConfigLoader, an
 pub fn load_toml_config_from_str_with_source(
     source_name: &str,
     config_str: &str,
-) -> Result<TomlConfigLoader, anyhow::Error> {
-    let config = TomlConfigLoader::new_from_str_with_source(source_name, config_str)?;
+) -> Result<InstanceConfig, anyhow::Error> {
+    let config = parse_instance_config(source_name, config_str)?;
     #[cfg(feature = "logging")]
     {
         let ignored_sections = ignored_logging_sections(config_str);
@@ -92,7 +97,7 @@ pub async fn load_config_from_file(
     config_file: &PathBuf,
     config_dir: Option<&PathBuf>,
     disable_env_parsing: bool,
-) -> Result<(TomlConfigLoader, ConfigFileControl), anyhow::Error> {
+) -> Result<(InstanceConfig, ConfigFileControl), anyhow::Error> {
     if config_file.as_os_str() == "-" {
         let mut stdin = String::new();
         tokio::io::stdin()
@@ -129,7 +134,7 @@ pub async fn load_config_from_file(
         control.set_no_delete(true);
     } else if let Some(config_dir) = config_dir {
         let is_managed_file = config_file.parent() == Some(config_dir.as_path())
-            && config_file.file_stem() == Some(config.get_id().to_string().as_ref())
+            && config_file.file_stem() == Some(config.parsed().instance_id.to_string().as_ref())
             && config_file.extension() == Some(std::ffi::OsStr::new("toml"));
         control.set_no_delete(!is_managed_file);
     } else {
@@ -204,7 +209,7 @@ level = 123
             .await
             .unwrap();
 
-        assert_eq!(config.get_inst_name(), "from-file");
+        assert_eq!(config.parsed().instance_name, "from-file");
         assert_eq!(control.path.as_deref(), Some(file.path()));
     }
 }
@@ -256,10 +261,10 @@ network_secret = "${TEST_SECRET}"
             .unwrap();
 
         // 验证环境变量已被替换
-        let network_identity = config.get_network_identity();
+        let network_identity = &config.parsed().network_identity;
         assert_eq!(network_identity.network_name, "test-network");
         assert_eq!(
-            network_identity.network_secret.as_ref().unwrap(),
+            network_identity.network_secret.as_deref().unwrap(),
             "my-test-secret-123"
         );
 
@@ -351,9 +356,9 @@ network_secret = "${DISABLED_TEST_VAR}"
             .unwrap();
 
         // 验证环境变量未被替换（保持原样）
-        let network_identity = config.get_network_identity();
+        let network_identity = &config.parsed().network_identity;
         assert_eq!(
-            network_identity.network_secret.as_ref().unwrap(),
+            network_identity.network_secret.as_deref().unwrap(),
             "${DISABLED_TEST_VAR}",
             "Env var should not be expanded when parsing is disabled"
         );
@@ -395,12 +400,13 @@ network_secret = "${INSTANCE_SECRET}"
             .unwrap();
 
         // 验证实例1的配置
-        assert_eq!(config1.get_inst_name(), "instance-one");
+        assert_eq!(config1.parsed().instance_name, "instance-one");
         assert_eq!(
             config1
-                .get_network_identity()
+                .parsed()
+                .network_identity
                 .network_secret
-                .as_ref()
+                .as_deref()
                 .unwrap(),
             "instance1-secret"
         );
@@ -419,21 +425,22 @@ network_secret = "${INSTANCE_SECRET}"
             .unwrap();
 
         // 验证实例2使用了不同的环境变量值
-        assert_eq!(config2.get_inst_name(), "instance-two");
+        assert_eq!(config2.parsed().instance_name, "instance-two");
         assert_eq!(
             config2
-                .get_network_identity()
+                .parsed()
+                .network_identity
                 .network_secret
-                .as_ref()
+                .as_deref()
                 .unwrap(),
             "instance2-secret"
         );
 
         // 验证两个实例的配置确实不同
-        assert_ne!(config1.get_inst_name(), config2.get_inst_name());
+        assert_ne!(config1.parsed().instance_name, config2.parsed().instance_name);
         assert_ne!(
-            config1.get_network_identity().network_secret,
-            config2.get_network_identity().network_secret
+            config1.parsed().network_identity.network_secret,
+            config2.parsed().network_identity.network_secret
         );
 
         // 清理
@@ -481,20 +488,20 @@ uri = "tcp://${PEER_HOST}:${PEER_PORT}"
             .unwrap();
 
         // 验证 network_identity 字段
-        let identity = config.get_network_identity();
+        let identity = &config.parsed().network_identity;
         assert_eq!(identity.network_name, "prod-network");
         assert_eq!(
-            identity.network_secret.as_ref().unwrap(),
+            identity.network_secret.as_deref().unwrap(),
             "production-secret-key"
         );
 
         // 验证 listeners 字段
-        let listeners = config.get_listener_uris();
+        let listeners = config.parsed().listeners.as_ref().unwrap();
         assert_eq!(listeners.len(), 1);
         assert_eq!(listeners[0].to_string(), "tcp://0.0.0.0:11010");
 
         // 验证 peer 字段
-        let peers = config.get_peers();
+        let peers = &config.parsed().peer;
         assert_eq!(peers.len(), 1);
         assert_eq!(peers[0].uri.to_string(), "tcp://peer.example.com:11011");
 
@@ -541,14 +548,15 @@ network_secret = "${UNDEFINED_SECRET:-default-secret}"
         // 验证使用了默认值
         assert_eq!(
             config
-                .get_network_identity()
+                .parsed()
+                .network_identity
                 .network_secret
-                .as_ref()
+                .as_deref()
                 .unwrap(),
             "default-secret"
         );
         assert_eq!(
-            config.get_listener_uris()[0].to_string(),
+            config.parsed().listeners.as_ref().unwrap()[0].to_string(),
             "tcp://0.0.0.0:11010"
         );
     }
@@ -580,9 +588,10 @@ network_secret = "${COMPLETELY_UNDEFINED}"
         // 验证变量保持原样
         assert_eq!(
             config
-                .get_network_identity()
+                .parsed()
+                .network_identity
                 .network_secret
-                .as_ref()
+                .as_deref()
                 .unwrap(),
             "${COMPLETELY_UNDEFINED}"
         );
@@ -625,9 +634,9 @@ enable_ipv6 = ${ENABLE_IPV6}
             .unwrap();
 
         // 验证布尔值被正确解析
-        assert!(config.get_dhcp(), "dhcp should be true");
+        assert!(config.parsed().dhcp, "dhcp should be true");
 
-        let flags = config.get_flags();
+        let flags = &config.parsed().flags;
         assert!(
             !flags.enable_encryption,
             "enable_encryption should be false"
@@ -676,7 +685,7 @@ multi_thread_count = ${THREAD_COUNT}
             .unwrap();
 
         // 验证数字值被正确解析
-        let flags = config.get_flags();
+        let flags = &config.parsed().flags;
         assert_eq!(flags.mtu, 1400, "mtu should be 1400");
         assert_eq!(
             flags.multi_thread_count, 4,
@@ -732,24 +741,24 @@ enable_encryption = ${MIXED_ENCRYPTION}
             .unwrap();
 
         // 验证字符串类型
-        let identity = config.get_network_identity();
+        let identity = &config.parsed().network_identity;
         assert_eq!(identity.network_name, "production");
         assert_eq!(
-            identity.network_secret.as_ref().unwrap(),
+            identity.network_secret.as_deref().unwrap(),
             "mixed-secret-key"
         );
 
         // 验证布尔类型
-        assert!(config.get_dhcp());
+        assert!(config.parsed().dhcp);
 
-        let flags = config.get_flags();
+        let flags = &config.parsed().flags;
         assert!(!flags.enable_encryption);
 
         // 验证数字类型
         assert_eq!(flags.mtu, 1500);
 
         // 验证 URL 中的端口号（数字）
-        let listeners = config.get_listener_uris();
+        let listeners = config.parsed().listeners.as_ref().unwrap();
         assert_eq!(listeners.len(), 1);
         assert_eq!(listeners[0].to_string(), "tcp://0.0.0.0:12345");
 

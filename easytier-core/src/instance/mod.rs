@@ -33,7 +33,7 @@ use tokio_util::sync::CancellationToken;
 use crate::connectivity::hole_punch::tcp::TcpHolePunchConnector;
 use crate::{
     config::{
-        InstanceConfig, InstanceConfigParsed, runtime::InstanceConfigStore, toml::TomlConfig,
+        InstanceConfig, InstanceConfigParsed, runtime::InstanceConfigStore,
     },
     connectivity::hole_punch::port_mapping::UdpPortMappingPlatform,
     connectivity::hole_punch::tcp::TcpHolePunchHost,
@@ -428,30 +428,15 @@ where
         ))
     }
 
-    /// Constructs the complete portable runtime for one EasyTier instance.
-    ///
-    /// This is the only instance construction entry. The normalized config is
-    /// authoritative after creation; all platform behavior enters through the
-    /// supplied Host Adapters.
-    pub fn new(config: InstanceConfig, adapters: CoreHostAdapters<H>) -> anyhow::Result<Arc<Self>> {
-        let host_config = adapters.config.clone();
-        let prepared = prepare_instance_config(config, &host_config)?;
-        build_capabilities::validate(prepared.parsed(), &host_config)?;
-        let runtime_config = InstanceConfigStore::new(prepared);
-        Self::new_with_store(runtime_config, host_config, adapters)
-    }
-
-    pub fn compose_with_toml<F>(
-        toml_config: &TomlConfig,
+    pub fn compose<F>(
+        config: InstanceConfig,
         host_config: CoreInstanceHostConfig,
         build_adapters: F,
     ) -> anyhow::Result<Arc<Self>>
     where
         F: FnOnce(&InstanceConfigStore) -> anyhow::Result<CoreHostAdapters<H>>,
     {
-        toml_config.ensure_id();
-        let snapshot = toml_config.snapshot()?;
-        let prepared = prepare_instance_config(snapshot, &host_config)?;
+        let prepared = prepare_instance_config(config, &host_config)?;
         build_capabilities::validate(prepared.parsed(), &host_config)?;
         let runtime_config = InstanceConfigStore::new(prepared);
         let adapters = build_adapters(&runtime_config)?;
@@ -463,14 +448,9 @@ where
         Self::new_with_store(runtime_config, host_config, adapters)
     }
 
-    /// Constructs an instance from the shared TOML model and retains that
-    /// model as the authoritative management configuration.
-    pub fn from_toml(
-        toml_config: impl std::borrow::Borrow<TomlConfig>,
-        adapters: CoreHostAdapters<H>,
-    ) -> anyhow::Result<Arc<Self>> {
+    pub fn new(config: InstanceConfig, adapters: CoreHostAdapters<H>) -> anyhow::Result<Arc<Self>> {
         let host_config = adapters.config.clone();
-        Self::compose_with_toml(toml_config.borrow(), host_config, |_store| Ok(adapters))
+        Self::compose(config, host_config, |_store| Ok(adapters))
     }
 
     pub fn new_with_store(

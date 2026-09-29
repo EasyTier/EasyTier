@@ -22,7 +22,7 @@ use crate::common::global_ctx::GlobalCtxEvent;
 use crate::instance::public_ipv6_provider::runtime_public_ipv6_provider_platform;
 use crate::{
     common::global_ctx::ArcGlobalCtx,
-    common::{config::TomlConfig, global_ctx::GlobalCtx},
+    common::{config::InstanceConfig, global_ctx::GlobalCtx},
     host_runtime::native_host_runtime,
     instance::config::{
         compact_runtime_core_host_config, runtime_core_host_config, runtime_peer_credential_storage,
@@ -43,7 +43,7 @@ use easytier_core::gateway::proxy::wrapped_transport::WrappedTransportEngine;
 pub(crate) type NativeCoreInstance = CoreInstance<NativeInstanceHost>;
 
 pub(crate) fn compose_native_core_instance(
-    toml_config: TomlConfig,
+    config: InstanceConfig,
     process_runtime: Arc<CoreProcessRuntime>,
     compact_runtime: bool,
 ) -> anyhow::Result<Arc<NativeCoreInstance>> {
@@ -53,8 +53,8 @@ pub(crate) fn compose_native_core_instance(
         runtime_core_host_config()
     };
 
-    NativeCoreInstance::compose_with_toml(&toml_config, host_config.clone(), |normalized| {
-        let global_ctx = Arc::new(GlobalCtx::new(normalized.clone(), &host_config));
+    NativeCoreInstance::compose(config, host_config.clone(), |config_store| {
+        let global_ctx = Arc::new(GlobalCtx::new(config_store.clone(), &host_config));
         let runtime_host = NativeInstanceRuntimeHost::new(global_ctx.clone());
         let mut adapters = runtime_core_host_adapters_with_packet_egress_and_config(
             global_ctx,
@@ -269,7 +269,7 @@ fn configure_runtime_core_host_adapters(
 #[cfg(feature = "web-client")]
 pub(crate) fn runtime_one_shot_manual_connector(
     global_ctx: ArcGlobalCtx,
-    config: &TomlConfig,
+    config: &InstanceConfig,
     process_runtime: Arc<CoreProcessRuntime>,
 ) -> anyhow::Result<ManualTunnelConnector<NativeInstanceHost>> {
     use easytier_core::connectivity::manual::{
@@ -278,8 +278,7 @@ pub(crate) fn runtime_one_shot_manual_connector(
     use easytier_core::instance::prepare_instance_config;
 
     let host_config = runtime_core_host_config();
-    let snapshot = config.snapshot()?;
-    let prepared = prepare_instance_config(snapshot, &host_config)?;
+    let prepared = prepare_instance_config(config.clone(), &host_config)?;
     let parsed = prepared.parsed();
     let endpoint_discovery = ManualEndpointDiscoveryConfig {
         user_agent: format!("easytier/{}", host_config.easytier_version),
@@ -315,13 +314,10 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use url::Url;
 
-    use crate::common::{
-        config::{NetworkIdentity, TomlConfigLoader},
-        global_ctx::tests::get_mock_global_ctx_with_config,
-    };
+    use crate::common::global_ctx::tests::get_mock_global_ctx_with_config;
     #[cfg(feature = "kcp")]
     use crate::gateway::kcp_proxy::KcpProxyService;
-    use easytier_core::config::toml::ConfigLoader as _;
+    use easytier_core::config::parse_instance_config;
 
     use super::*;
 
@@ -370,36 +366,42 @@ mod tests {
             const REQUEST: &[u8] = b"native-kcp-request";
             const REPLY: &[u8] = b"native-kcp-reply";
 
-            let cfg_a = TomlConfigLoader::default();
-            cfg_a.set_network_identity(NetworkIdentity::new(
-                "native-kcp-round-trip".to_owned(),
-                "shared-secret".to_owned(),
-            ));
-            cfg_a.set_ipv4(Some("10.250.0.1/24".parse().unwrap()));
-            let mut flags_a = cfg_a.get_flags();
-            flags_a.enable_kcp_proxy = true;
-            flags_a.disable_kcp_input = true;
-            flags_a.disable_tcp_hole_punching = true;
-            flags_a.disable_udp_hole_punching = true;
-            flags_a.disable_sym_hole_punching = true;
-            flags_a.disable_upnp = true;
-            cfg_a.set_flags(flags_a);
+            let cfg_a = parse_instance_config(
+                "test",
+                r#"
+ipv4 = "10.250.0.1/24"
+[network_identity]
+network_name = "native-kcp-round-trip"
+network_secret = "shared-secret"
+[flags]
+enable_kcp_proxy = true
+disable_kcp_input = true
+disable_tcp_hole_punching = true
+disable_udp_hole_punching = true
+disable_sym_hole_punching = true
+disable_upnp = true
+"#,
+            )
+            .unwrap();
             let global_a = get_mock_global_ctx_with_config(cfg_a);
 
-            let cfg_b = TomlConfigLoader::default();
-            cfg_b.set_network_identity(NetworkIdentity::new(
-                "native-kcp-round-trip".to_owned(),
-                "shared-secret".to_owned(),
-            ));
-            cfg_b.set_ipv4(Some("10.250.0.2/24".parse().unwrap()));
-            let mut flags_b = cfg_b.get_flags();
-            flags_b.enable_kcp_proxy = false;
-            flags_b.disable_kcp_input = false;
-            flags_b.disable_tcp_hole_punching = true;
-            flags_b.disable_udp_hole_punching = true;
-            flags_b.disable_sym_hole_punching = true;
-            flags_b.disable_upnp = true;
-            cfg_b.set_flags(flags_b);
+            let cfg_b = parse_instance_config(
+                "test",
+                r#"
+ipv4 = "10.250.0.2/24"
+[network_identity]
+network_name = "native-kcp-round-trip"
+network_secret = "shared-secret"
+[flags]
+enable_kcp_proxy = false
+disable_kcp_input = false
+disable_tcp_hole_punching = true
+disable_udp_hole_punching = true
+disable_sym_hole_punching = true
+disable_upnp = true
+"#,
+            )
+            .unwrap();
             let global_b = get_mock_global_ctx_with_config(cfg_b);
 
             let (packet_sink_a, _packet_receiver_a) = create_host_packet_channel();
@@ -468,20 +470,28 @@ mod tests {
 
     #[tokio::test]
     async fn portable_core_instances_connect_through_core_tcp_listener() {
-        let cfg_a = TomlConfigLoader::default();
-        cfg_a.set_network_identity(NetworkIdentity::new(
-            "portable-connect-listen".to_owned(),
-            "shared-secret".to_owned(),
-        ));
-        cfg_a.set_ipv4(Some("10.250.0.1/24".parse().unwrap()));
+        let cfg_a = parse_instance_config(
+            "test",
+            r#"
+ipv4 = "10.250.0.1/24"
+[network_identity]
+network_name = "portable-connect-listen"
+network_secret = "shared-secret"
+"#,
+        )
+        .unwrap();
         let global_a = get_mock_global_ctx_with_config(cfg_a);
 
-        let cfg_b = TomlConfigLoader::default();
-        cfg_b.set_network_identity(NetworkIdentity::new(
-            "portable-connect-listen".to_owned(),
-            "shared-secret".to_owned(),
-        ));
-        cfg_b.set_ipv4(Some("10.250.0.2/24".parse().unwrap()));
+        let cfg_b = parse_instance_config(
+            "test",
+            r#"
+ipv4 = "10.250.0.2/24"
+[network_identity]
+network_name = "portable-connect-listen"
+network_secret = "shared-secret"
+"#,
+        )
+        .unwrap();
         let global_b = get_mock_global_ctx_with_config(cfg_b);
 
         let (packet_sink_a, _packet_receiver_a) = create_host_packet_channel();

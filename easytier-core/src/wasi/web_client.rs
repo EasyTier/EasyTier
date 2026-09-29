@@ -7,7 +7,7 @@ use tokio::runtime::Builder;
 use url::Url;
 
 use crate::{
-    config::{api_input::NetworkConfigExt, toml::ConfigLoader},
+    config::{api_input::NetworkConfigExt, serialize_raw_to_toml, toml::ConfigSourceConfig},
     connectivity::{
         connector_host::{ConnectorHost, new_connector_host},
         manual::{
@@ -217,7 +217,7 @@ impl Handler for HostManagementHandler {
                 let network_config = request.config.unwrap_or_default();
                 let config = hosted_network_config(&network_config).gen_config()?;
                 Ok(ValidateConfigResponse {
-                    toml_config: config.dump(),
+                    toml_config: serialize_raw_to_toml(config.raw())?,
                 }
                 .encode_to_vec()
                 .into())
@@ -229,16 +229,21 @@ impl Handler for HostManagementHandler {
                     .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("config is required"))?;
                 let config = hosted_network_config(&network_config).gen_config()?;
+                let mut raw = config.into_raw();
                 let instance_id = request
                     .inst_id
                     .map(Into::into)
-                    .unwrap_or_else(|| config.get_id());
-                config.set_id(instance_id);
-                config.set_network_config_source(config_source_from_rpc(request.source));
+                    .or(raw.instance_id)
+                    .unwrap_or_else(uuid::Uuid::new_v4);
+                raw.instance_id = Some(instance_id);
+                if let Some(source) = config_source_from_rpc(request.source) {
+                    raw.source = Some(ConfigSourceConfig { source });
+                }
+                let toml_dump = serialize_raw_to_toml(&raw)?;
                 self.forward(
                     full_method_name,
                     input,
-                    Some(config.dump()),
+                    Some(toml_dump),
                     Some(instance_id),
                 )
                 .await

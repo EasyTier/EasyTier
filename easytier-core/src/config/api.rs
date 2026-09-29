@@ -1,21 +1,15 @@
 //! Portable conversion between the shared TOML model and management schema.
 
-use easytier_proto::api::manage::NetworkConfig;
-
-use super::toml::TomlConfig;
 
 pub use super::api_input::network_config_from_raw;
-
-pub fn network_config_from_toml(config: &TomlConfig) -> NetworkConfig {
-    network_config_from_raw(&config.raw())
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::{
+        InstanceConfigRaw,
         api_input::NetworkConfigExt,
-        toml::{ConfigLoader as _, ManagedCredentialConfig},
+        toml::ManagedCredentialConfig,
     };
     use easytier_proto::api::manage;
 
@@ -25,28 +19,28 @@ mod tests {
             "[secure_mode]\nenabled = true",
             "[network_identity]\nnetwork_name = 'default'\n[secure_mode]\nenabled = true",
         ] {
-            let config = TomlConfig::new_from_str(input).unwrap();
-            let secret = config.get_network_identity().network_secret;
-            for exported in [
-                network_config_from_toml(&config),
-                NetworkConfig::new_from_config(&config).unwrap(),
-            ] {
-                assert_eq!(exported.network_secret, secret);
-                let imported = exported.gen_config().unwrap();
-                assert_eq!(
-                    imported.snapshot().unwrap().network_identity.network_secret,
-                    secret
-                );
-                let restored = TomlConfig::new_from_str(&imported.dump()).unwrap();
-                assert_eq!(restored.get_network_identity().network_secret, secret);
-            }
+            let config = crate::config::parse_instance_config("test", input).unwrap();
+            let secret = config.parsed().network_identity.network_secret.clone();
+            let exported = network_config_from_raw(config.raw());
+            assert_eq!(exported.network_secret, secret);
+            let imported = exported.gen_config().unwrap();
+            assert_eq!(
+                imported.parsed().network_identity.network_secret,
+                secret
+            );
+            let restored = crate::config::parse_instance_config(
+                "restored",
+                &crate::config::serialize_raw_to_toml(imported.raw()).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(restored.parsed().network_identity.network_secret, secret);
         }
     }
 
     #[test]
     fn includes_managed_credentials() {
-        let config = TomlConfig::default();
-        config.set_managed_credentials(vec![ManagedCredentialConfig {
+        let mut raw = InstanceConfigRaw::default();
+        raw.set_managed_credentials(vec![ManagedCredentialConfig {
             credential_id: "managed-a".to_owned(),
             credential_secret: "credential-secret".to_owned(),
             groups: vec!["ops".to_owned()],
@@ -56,7 +50,7 @@ mod tests {
             reusable: false,
         }]);
 
-        let projected = network_config_from_toml(&config);
+        let projected = network_config_from_raw(&raw);
 
         assert_eq!(
             projected.managed_credentials,
@@ -79,8 +73,7 @@ hostname = "node-a"
 [[proxy_network]]
 cidr = "10.20.0.0/16"
 "#;
-        let toml = TomlConfig::new_from_str(input).unwrap();
-        let initial_instance_config = toml.snapshot().unwrap();
+        let initial_instance_config = crate::config::parse_instance_config("test", input).unwrap();
         let host = crate::instance::CoreInstanceHostConfig {
             ignore_unsupported_config: true,
             proxy_enabled: false,
@@ -95,8 +88,8 @@ cidr = "10.20.0.0/16"
         raw.hostname = Some("node-b".to_owned());
 
         let serialized = crate::config::serialize_raw_to_toml(&raw).unwrap();
-        let reloaded = TomlConfig::new_from_str(&serialized).unwrap();
-        assert_eq!(reloaded.get_hostname(), "node-b");
+        let reloaded = crate::config::parse_instance_config("reloaded", &serialized).unwrap();
+        assert_eq!(reloaded.parsed().hostname, "node-b");
         assert_eq!(reloaded.raw().proxy_network.as_ref().unwrap().len(), 1);
 
         let exported = network_config_from_raw(&reloaded.raw());
@@ -107,8 +100,7 @@ cidr = "10.20.0.0/16"
     #[test]
     fn secure_mode_default_admin_identity_preserved_across_raw_edit_and_reload() {
         let input = "[secure_mode]\nenabled = true\n";
-        let toml = TomlConfig::new_from_str(input).unwrap();
-        let initial_instance_config = toml.snapshot().unwrap();
+        let initial_instance_config = crate::config::parse_instance_config("test", input).unwrap();
         let host = crate::instance::CoreInstanceHostConfig::default();
         let prepared =
             crate::instance::prepare_instance_config(initial_instance_config, &host).unwrap();
@@ -122,11 +114,10 @@ cidr = "10.20.0.0/16"
         raw.hostname = Some("admin-node".to_owned());
 
         let serialized = crate::config::serialize_raw_to_toml(&raw).unwrap();
-        let reloaded = TomlConfig::new_from_str(&serialized).unwrap();
-        let reloaded_snapshot = reloaded.snapshot().unwrap();
-        assert_eq!(reloaded.get_hostname(), "admin-node");
+        let reloaded = crate::config::parse_instance_config("reloaded", &serialized).unwrap();
+        assert_eq!(reloaded.parsed().hostname, "admin-node");
         assert_eq!(
-            reloaded_snapshot.network_identity.network_secret.as_deref(),
+            reloaded.parsed().network_identity.network_secret.as_deref(),
             Some("")
         );
 
@@ -142,8 +133,7 @@ hostname = "worker"
 [[proxy_network]]
 cidr = "192.168.1.0/24"
 "#;
-        let toml = TomlConfig::new_from_str(input).unwrap();
-        let initial = toml.snapshot().unwrap();
+        let initial = crate::config::parse_instance_config("test", input).unwrap();
         let host = crate::instance::CoreInstanceHostConfig {
             ignore_unsupported_config: true,
             proxy_enabled: false,
