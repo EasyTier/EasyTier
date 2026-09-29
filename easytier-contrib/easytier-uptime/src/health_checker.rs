@@ -379,8 +379,7 @@ impl HealthChecker {
         node_info: &shared_nodes::Model,
         inst_id: Option<uuid::Uuid>,
     ) -> anyhow::Result<InstanceConfig> {
-        let mut raw = InstanceConfigRaw::default();
-        raw.peer = Some(vec![PeerConfig {
+        let peer_config = PeerConfig {
             uri: format!(
                 "{}://{}:{}",
                 node_info.protocol, node_info.host, node_info.port
@@ -388,16 +387,19 @@ impl HealthChecker {
             .parse()
             .with_context(|| "failed to parse peer uri")?,
             peer_public_key: None,
-        }]);
+        };
 
-        let inst_id = inst_id.unwrap_or(uuid::Uuid::new_v4());
-        raw.instance_id = Some(inst_id);
+        let inst_id = inst_id.unwrap_or_else(uuid::Uuid::new_v4);
+        let mut raw = InstanceConfigRaw {
+            peer: Some(vec![peer_config]),
+            instance_id: Some(inst_id),
+            hostname: Some("HealthCheckNode".to_string()),
+            ..Default::default()
+        };
         raw.set_network_identity(NetworkIdentity::new(
             node_info.network_name.clone(),
             node_info.network_secret.clone(),
         ));
-
-        raw.hostname = Some("HealthCheckNode".to_string());
 
         let mut flags = raw.get_flags();
         flags.no_tun = true;

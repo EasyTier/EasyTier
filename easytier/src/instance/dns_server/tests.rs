@@ -54,9 +54,11 @@ pub async fn prepare_env_with_tld_dns_zone(
     tun_ip: Ipv4Inet,
     tld_dns_zone: Option<&str>,
 ) -> (ArcGlobalCtx, Arc<NativeCoreInstance>, NicCtx) {
-    let mut raw = easytier_core::config::InstanceConfigRaw::default();
-    raw.hostname = Some(dns_name.to_owned());
-    raw.ipv4 = Some(tun_ip);
+    let mut raw = easytier_core::config::InstanceConfigRaw {
+        hostname: Some(dns_name.to_owned()),
+        ipv4: Some(tun_ip),
+        ..Default::default()
+    };
 
     if tld_dns_zone.is_some() {
         raw.flags.accept_dns = Some(true); // Enable DNS
@@ -217,9 +219,11 @@ async fn test_magic_dns_runner() {
 #[tokio::test]
 async fn test_magic_dns_update_replaces_records_for_same_client() {
     let tun_ip = Ipv4Inet::from_str("100.100.100.0/24").unwrap();
-    let mut config = easytier_core::config::InstanceConfigRaw::default();
-    config.hostname = Some("test1".to_string());
-    config.ipv4 = Some(tun_ip);
+    let config = easytier_core::config::InstanceConfigRaw {
+        hostname: Some("test1".to_string()),
+        ipv4: Some(tun_ip),
+        ..Default::default()
+    };
     let ctx = get_mock_global_ctx_with_config(config.try_into().unwrap());
 
     let (core_instance, _packet_receiver) = build_test_core(ctx.clone()).await;

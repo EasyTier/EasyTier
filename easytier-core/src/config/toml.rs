@@ -722,8 +722,10 @@ socketMark = "0"
         flags.data_compress_algo = CompressionAlgoPb::Zstd.into();
         flags.socket_mark = Some(0);
 
-        let mut raw = InstanceConfigRaw::default();
-        raw.flags = flags.downgrade();
+        let raw = InstanceConfigRaw {
+            flags: flags.downgrade(),
+            ..Default::default()
+        };
 
         let dumped = serialize_raw_to_toml(&raw).unwrap();
 
@@ -1093,10 +1095,12 @@ members = ["admin"]
     #[cfg(feature = "config-write")]
     #[test]
     fn test_network_config_source_user_is_implicit() {
-        let mut raw = InstanceConfigRaw::default();
-        raw.source = Some(ConfigSourceConfig {
-            source: ConfigSource::User,
-        });
+        let raw = InstanceConfigRaw {
+            source: Some(ConfigSourceConfig {
+                source: ConfigSource::User,
+            }),
+            ..Default::default()
+        };
         let dumped = serialize_raw_to_toml(&raw).unwrap();
 
         assert!(!dumped.contains("[source]"));

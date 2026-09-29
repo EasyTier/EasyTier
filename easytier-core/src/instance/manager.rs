@@ -689,8 +689,10 @@ mod tests {
     }
 
     fn config(instance_id: Uuid) -> InstanceConfig {
-        let mut raw = crate::config::InstanceConfigRaw::default();
-        raw.instance_id = Some(instance_id);
+        let raw = crate::config::InstanceConfigRaw {
+            instance_id: Some(instance_id),
+            ..Default::default()
+        };
         InstanceConfig::try_from(raw).unwrap()
     }
 

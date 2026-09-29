@@ -19,33 +19,92 @@ use std::{
 use uuid::Uuid;
 
 fn test_config(id: Uuid, name: impl Into<String>) -> InstanceConfig {
-    let mut raw = InstanceConfigRaw::default();
-    raw.instance_id = Some(id);
-    raw.instance_name = Some(name.into());
+    let raw = InstanceConfigRaw {
+        instance_id: Some(id),
+        instance_name: Some(name.into()),
+        ..Default::default()
+    };
     InstanceConfig::try_from(raw).unwrap()
 }
 
 #[test]
 fn test_parse_config() {
     let cfg_str = r#"
-            inst_name = "test"
-            network = "test_network"
-        "#;
+        instance_name = "test_parse"
+        instance_id = "11111111-2222-3333-4444-555555555555"
+        hostname = "ffi-parse-host"
+        [network_identity]
+        network_name = "test_network"
+        network_secret = "secret"
+    "#;
     let cstr = std::ffi::CString::new(cfg_str).unwrap();
     unsafe {
         assert_eq!(parse_config(cstr.as_ptr()), 0);
     }
+
+    // Invalid config should return -1 and set error message
+    let bad_cfg = r#"
+        instance_name = "bad"
+        routes = "not_a_cidr_list"
+    "#;
+    let bad_cstr = std::ffi::CString::new(bad_cfg).unwrap();
+    unsafe {
+        assert_eq!(parse_config(bad_cstr.as_ptr()), -1);
+    }
+    assert!(take_last_error().unwrap().contains("failed to parse config"));
 }
 
 #[test]
 fn test_run_network_instance() {
-    let cfg_str = r#"
-            inst_name = "test"
-            network = "test_network"
-        "#;
+    let instance_id = Uuid::new_v4();
+    let instance_name = format!("test-run-{}", instance_id);
+    let cfg_str = format!(
+        r#"
+        instance_name = "{instance_name}"
+        instance_id = "{instance_id}"
+        hostname = "ffi-test-node"
+        [network_identity]
+        network_name = "test_network"
+        network_secret = "test_secret"
+        "#
+    );
     let cstr = std::ffi::CString::new(cfg_str).unwrap();
     unsafe {
         assert_eq!(run_network_instance(cstr.as_ptr()), 0);
+    }
+
+    // Verify the instance is actually registered and running with expected ID and name
+    let resolved_id = find_instance_id_by_name(&instance_name);
+    assert_eq!(resolved_id, Some(instance_id));
+
+    // Verify list_instance returns this instance
+    let mut infos = vec![
+        KeyValuePair {
+            key: std::ptr::null(),
+            value: std::ptr::null(),
+        };
+        16
+    ];
+    let count = unsafe { list_instance(infos.as_mut_ptr(), infos.len()) };
+    assert!(count > 0);
+
+    let mut found = false;
+    for info in infos.iter().take(count as usize) {
+        let key = unsafe { CStr::from_ptr(info.key) }.to_string_lossy();
+        let value = unsafe { CStr::from_ptr(info.value) }.to_string_lossy();
+        if key == instance_name {
+            assert_eq!(value, instance_id.to_string());
+            found = true;
+        }
+    }
+    free_key_value_pairs(&infos[..count as usize]);
+    assert!(found);
+
+    // Clean up
+    let c_name = CString::new(instance_name).unwrap();
+    let names = [c_name.as_ptr()];
+    unsafe {
+        assert_eq!(delete_network_instance(names.as_ptr(), 1), 0);
     }
 }
 

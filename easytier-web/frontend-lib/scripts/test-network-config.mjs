@@ -246,6 +246,17 @@ function allFieldFixture() {
     disable_relay_data: true,
     enable_udp_broadcast_relay: true,
     socket_mark: 1234,
+    managed_credentials: [
+      {
+        credential_id: 'cred-1',
+        credential_secret: 'cred-secret-1',
+        groups: ['ops'],
+        allow_relay: true,
+        allowed_proxy_cidrs: ['10.0.0.0/8'],
+        expiry_unix: '1893456000',
+        reusable: true,
+      },
+    ],
   }
 }
 
@@ -294,6 +305,7 @@ function assertFullFieldRoundTrip() {
   assert.equal(backend.acl.acl_v1.chains[0].rules[0].action, 'Allow')
   assert.equal(backend.port_forwards[1].proto, 'udp')
   assert.equal(backend.socket_mark, 1234)
+  assert.equal(backend.managed_credentials[0].credential_id, 'cred-1')
 }
 
 function assertLegacyVpnPortalFieldsReachBackendValidation() {

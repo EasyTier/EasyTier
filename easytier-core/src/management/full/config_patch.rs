@@ -646,17 +646,18 @@ mod tests {
     use easytier_proto::api::manage::VpnPortalClientConfig as ClientPb;
 
     fn portal_config() -> InstanceConfigRaw {
-        let mut raw = InstanceConfigRaw::default();
-        raw.vpn_portal_config = Some(VpnPortalConfig {
-            wireguard_listen: "0.0.0.0:51820".parse().unwrap(),
-            wireguard_private_key: None,
-            clients: vec![VpnPortalClientConfig {
-                name: "alice".to_owned(),
-                virtual_ip: "10.0.0.2/24".parse().unwrap(),
-                groups: Vec::new(),
-            }],
-        });
-        raw
+        InstanceConfigRaw {
+            vpn_portal_config: Some(VpnPortalConfig {
+                wireguard_listen: "0.0.0.0:51820".parse().unwrap(),
+                wireguard_private_key: None,
+                clients: vec![VpnPortalClientConfig {
+                    name: "alice".to_owned(),
+                    virtual_ip: "10.0.0.2/24".parse().unwrap(),
+                    groups: Vec::new(),
+                }],
+            }),
+            ..Default::default()
+        }
     }
 
     fn configured_names(raw: &InstanceConfigRaw) -> Vec<String> {

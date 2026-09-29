@@ -3956,7 +3956,7 @@ network_secret = "test-secret"
 
         let parsed_toml = crate::config::parse_instance_config("test", &toml_str).unwrap();
         assert_eq!(parsed_toml.parsed().hostname, "host-initial");
-        assert_eq!(parsed_toml.parsed().dhcp, false);
+        assert!(!parsed_toml.parsed().dhcp);
 
         // 2. Patch config
         rpc.patch_config(

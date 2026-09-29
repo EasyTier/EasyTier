@@ -1325,9 +1325,11 @@ mod tests {
         let prefix = "2001:db8:fade::/64".parse().unwrap();
         let wan_addr = "2001:db8:fade::1";
         let leased_addr = "2001:db8:fade::123".parse::<std::net::Ipv6Addr>().unwrap();
-        let mut raw = easytier_core::config::InstanceConfigRaw::default();
-        raw.ipv6_public_addr_provider = Some(true);
-        raw.ipv6_public_addr_prefix = Some(prefix);
+        let raw = easytier_core::config::InstanceConfigRaw {
+            ipv6_public_addr_provider: Some(true),
+            ipv6_public_addr_prefix: Some(prefix),
+            ..Default::default()
+        };
         let config = easytier_core::config::InstanceConfig::try_from(raw).unwrap();
         let global_ctx = crate::common::global_ctx::tests::get_mock_global_ctx_with_config(config);
 
