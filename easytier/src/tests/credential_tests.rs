@@ -2534,25 +2534,25 @@ async fn credential_admin_shared_admin_credential_connectivity(
     // Keep traffic on the shared/admin relay path; direct P2P would bypass it.
 
     // 10.1.1.1
-    let admin_a_config =
+    let mut admin_a_config =
         create_admin_config("admin_a", Some("ns_adm"), "10.144.144.1", "fd00::1/64");
-    disable_p2p(&admin_a_config);
+    disable_p2p(&mut admin_a_config);
     let mut admin_a_inst =
         Instance::new_with_process_runtime(admin_a_config, process_runtime.clone());
     admin_a_inst.run().await.unwrap();
 
     // 10.1.1.2
-    let shared_b_config =
+    let mut shared_b_config =
         create_shared_config("shared_b", Some("ns_c1"), "10.144.144.2", "fd00::2/64");
-    disable_p2p(&shared_b_config);
+    disable_p2p(&mut shared_b_config);
     let mut shared_b_inst =
         Instance::new_with_process_runtime(shared_b_config, process_runtime.clone());
     shared_b_inst.run().await.unwrap();
 
     // 10.1.1.4
-    let admin_c_config =
+    let mut admin_c_config =
         create_admin_config("admin_c", Some("ns_c3"), "10.144.144.4", "fd00::4/64");
-    disable_p2p(&admin_c_config);
+    disable_p2p(&mut admin_c_config);
     let mut admin_c_inst =
         Instance::new_with_process_runtime(admin_c_config, process_runtime.clone());
     admin_c_inst.run().await.unwrap();
@@ -2582,7 +2582,7 @@ async fn credential_admin_shared_admin_credential_connectivity(
     )
     .await;
 
-    let cred_d_config = create_credential_config(
+    let mut cred_d_config = create_credential_config(
         &admin_a_inst,
         "cred_d",
         Some("ns_c2"),
@@ -2594,7 +2594,7 @@ async fn credential_admin_shared_admin_credential_connectivity(
         .get_global_ctx()
         .issue_event(GlobalCtxEvent::CredentialChanged);
 
-    disable_p2p(&cred_d_config);
+    disable_p2p(&mut cred_d_config);
     let mut cred_d_inst =
         Instance::new_with_process_runtime(cred_d_config, process_runtime.clone());
     cred_d_inst.run().await.unwrap();
