@@ -32,9 +32,7 @@ use tokio_util::sync::CancellationToken;
 #[cfg(feature = "tcp-hole-punch")]
 use crate::connectivity::hole_punch::tcp::TcpHolePunchConnector;
 use crate::{
-    config::{
-        InstanceConfig, InstanceConfigParsed, runtime::InstanceConfigStore,
-    },
+    config::{InstanceConfig, InstanceConfigParsed, runtime::InstanceConfigStore},
     connectivity::hole_punch::port_mapping::UdpPortMappingPlatform,
     connectivity::hole_punch::tcp::TcpHolePunchHost,
     connectivity::stun::{

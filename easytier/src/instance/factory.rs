@@ -180,9 +180,9 @@ mod tests {
         let manager = InstanceManager::new(factory, None);
         let config = parse_instance_config(
             "test",
-            r#"[flags]
+            r#"listeners = []
+[flags]
 no_tun = true
-listeners = []
 "#,
         )
         .unwrap();

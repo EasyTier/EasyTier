@@ -19,18 +19,18 @@ use easytier_proto::{
 
 use crate::{
     config::{
+        InstanceConfig,
         api::network_config_from_raw,
         api_input::NetworkConfigExt as _,
         serialize_raw_to_toml,
         toml::{ConfigSource, ConfigSourceConfig},
-        InstanceConfig,
     },
-    instance::{manager::InstanceFactory, CoreInstance, CoreInstanceHost},
+    instance::{CoreInstance, CoreInstanceHost, manager::InstanceFactory},
 };
 
 use super::{
-    config_source_from_rpc, config_source_to_rpc, network_instance_running_info,
-    ConfigFileControl, ConfigFilePermission, InstanceManager,
+    ConfigFileControl, ConfigFilePermission, InstanceManager, config_source_from_rpc,
+    config_source_to_rpc, network_instance_running_info,
 };
 
 #[async_trait::async_trait]
@@ -224,7 +224,9 @@ where
         requested_source: Option<ConfigSource>,
     ) -> anyhow::Result<uuid::Uuid> {
         let mut raw = config.into_raw();
-        let instance_id = requested_id.or(raw.instance_id).unwrap_or_else(uuid::Uuid::new_v4);
+        let instance_id = requested_id
+            .or(raw.instance_id)
+            .unwrap_or_else(uuid::Uuid::new_v4);
         raw.instance_id = Some(instance_id);
 
         let _mutation = self.mutation_lock.lock().await;
@@ -249,12 +251,10 @@ where
                 raw.source = Some(ConfigSourceConfig { source });
             }
             replacing = true;
-            restore_instance = self.instances.config(instance_id).map(|config| {
-                (
-                    (*config).clone(),
-                    control.clone(),
-                )
-            });
+            restore_instance = self
+                .instances
+                .config(instance_id)
+                .map(|config| ((*config).clone(), control.clone()));
             control
         } else if let Some(config_dir) = self.instances.config_dir() {
             if let Some(source) = requested_source {

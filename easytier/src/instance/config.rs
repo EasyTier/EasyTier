@@ -145,12 +145,8 @@ mod tests {
         let initial = parse_instance_config("test", "hostname = \"configured-host\"").unwrap();
         let cleared = parse_instance_config("test", "hostname = \"\"").unwrap();
 
-        let initial =
-            easytier_core::instance::prepare_instance_config(initial, &host)
-                .unwrap();
-        let cleared =
-            easytier_core::instance::prepare_instance_config(cleared, &host)
-                .unwrap();
+        let initial = easytier_core::instance::prepare_instance_config(initial, &host).unwrap();
+        let cleared = easytier_core::instance::prepare_instance_config(cleared, &host).unwrap();
 
         assert_eq!(initial.parsed().hostname.as_str(), "configured-host");
         assert_ne!(cleared.parsed().hostname.as_str(), "configured-host");

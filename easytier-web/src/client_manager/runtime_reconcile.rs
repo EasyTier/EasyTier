@@ -1,10 +1,9 @@
 use anyhow::Context as _;
 use easytier::{
     common::config::{
-        network_config_from_raw, EncryptionAlgorithm, NetworkConfigExt,
-        PortForwardConfig as RuntimePortForwardConfig,
+        EncryptionAlgorithm, NetworkConfigExt, PortForwardConfig as RuntimePortForwardConfig,
         VpnPortalClientConfig as RuntimeVpnPortalClientConfig,
-        VpnPortalConfig as RuntimeVpnPortalConfig,
+        VpnPortalConfig as RuntimeVpnPortalConfig, network_config_from_raw,
     },
     proto::{
         acl::Acl,

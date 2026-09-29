@@ -12,8 +12,8 @@ use super::base::ConfigBase;
 use super::gateway::PortForwardConfig;
 use super::normalize_secure_mode_config;
 use super::toml::{
-    default_instance_name, normalize_config_source, ConfigSourceConfig, ManagedCredentialConfig,
-    NetworkIdentity, PeerConfig, ProxyNetworkConfig, VpnPortalConfig,
+    ConfigSourceConfig, ManagedCredentialConfig, NetworkIdentity, PeerConfig, ProxyNetworkConfig,
+    VpnPortalConfig, default_instance_name, normalize_config_source,
 };
 
 pub fn normalize_hostname(hostname: Option<&str>) -> String {
@@ -228,98 +228,6 @@ impl InstanceConfigRaw {
         self.flags.clone()
     }
 
-    pub fn get_inst_name(&self) -> &str {
-        self.instance_name.as_deref().unwrap_or_default()
-    }
-
-    pub fn set_inst_name(&mut self, name: String) {
-        self.instance_name = Some(name);
-    }
-
-    pub fn get_hostname(&self) -> Option<&str> {
-        self.hostname.as_deref()
-    }
-
-    pub fn set_hostname(&mut self, name: Option<String>) {
-        self.hostname = name;
-    }
-
-    pub fn get_netns(&self) -> Option<&str> {
-        self.netns.as_deref()
-    }
-
-    pub fn set_netns(&mut self, ns: Option<String>) {
-        self.netns = ns;
-    }
-
-    pub fn get_ipv4(&self) -> Option<cidr::Ipv4Inet> {
-        self.ipv4
-    }
-
-    pub fn set_ipv4(&mut self, addr: Option<cidr::Ipv4Inet>) {
-        self.ipv4 = addr;
-    }
-
-    pub fn get_ipv6(&self) -> Option<cidr::Ipv6Inet> {
-        self.ipv6
-    }
-
-    pub fn set_ipv6(&mut self, addr: Option<cidr::Ipv6Inet>) {
-        self.ipv6 = addr;
-    }
-
-    pub fn get_ipv6_public_addr_provider(&self) -> bool {
-        self.ipv6_public_addr_provider.unwrap_or_default()
-    }
-
-    pub fn set_ipv6_public_addr_provider(&mut self, enabled: bool) {
-        self.ipv6_public_addr_provider = Some(enabled);
-    }
-
-    pub fn get_ipv6_public_addr_auto(&self) -> bool {
-        self.ipv6_public_addr_auto.unwrap_or_default()
-    }
-
-    pub fn set_ipv6_public_addr_auto(&mut self, enabled: bool) {
-        self.ipv6_public_addr_auto = Some(enabled);
-    }
-
-    pub fn get_ipv6_public_addr_prefix(&self) -> Option<cidr::Ipv6Cidr> {
-        self.ipv6_public_addr_prefix
-    }
-
-    pub fn set_ipv6_public_addr_prefix(&mut self, prefix: Option<cidr::Ipv6Cidr>) {
-        self.ipv6_public_addr_prefix = prefix;
-    }
-
-    pub fn get_dhcp(&self) -> bool {
-        self.dhcp.unwrap_or_default()
-    }
-
-    pub fn set_dhcp(&mut self, dhcp: bool) {
-        self.dhcp = Some(dhcp);
-    }
-
-    pub fn get_listeners(&self) -> Option<&[url::Url]> {
-        self.listeners.as_deref()
-    }
-
-    pub fn set_listeners(&mut self, listeners: Vec<url::Url>) {
-        self.listeners = Some(listeners);
-    }
-
-    pub fn get_listener_uris(&self) -> Vec<url::Url> {
-        self.listeners.clone().unwrap_or_default()
-    }
-
-    pub fn get_socks5_portal(&self) -> Option<&url::Url> {
-        self.socks5_proxy.as_ref()
-    }
-
-    pub fn set_socks5_portal(&mut self, addr: Option<url::Url>) {
-        self.socks5_proxy = addr;
-    }
-
     pub fn get_network_identity(&self) -> NetworkIdentity {
         normalize_network_identity(self.network_identity.as_ref(), self.secure_mode.as_ref())
     }
@@ -329,88 +237,6 @@ impl InstanceConfigRaw {
         let is_default_admin = identity.network_name == default.network_name
             && identity.network_secret == default.network_secret;
         self.network_identity = (!is_default_admin).then_some(identity);
-    }
-
-    pub fn get_secure_mode(&self) -> Option<&SecureModeConfig> {
-        self.secure_mode.as_ref()
-    }
-
-    pub fn set_secure_mode(&mut self, secure_mode: Option<SecureModeConfig>) -> anyhow::Result<()> {
-        let secure_mode = secure_mode.map(normalize_secure_mode_config).transpose()?;
-        self.secure_mode = secure_mode;
-        Ok(())
-    }
-
-    pub fn get_id(&self) -> uuid::Uuid {
-        self.instance_id.unwrap_or(uuid::Uuid::nil())
-    }
-
-    pub fn set_id(&mut self, id: uuid::Uuid) {
-        self.instance_id = Some(id);
-    }
-
-    pub fn get_peers(&self) -> &[PeerConfig] {
-        self.peer.as_deref().unwrap_or_default()
-    }
-
-    pub fn set_peers(&mut self, peers: Vec<PeerConfig>) {
-        self.peer = Some(peers);
-    }
-
-    pub fn get_vpn_portal_config(&self) -> Option<&VpnPortalConfig> {
-        self.vpn_portal_config.as_ref()
-    }
-
-    pub fn set_vpn_portal_config(&mut self, config: VpnPortalConfig) {
-        self.vpn_portal_config = Some(config);
-    }
-
-    pub fn get_routes(&self) -> Option<&[cidr::Ipv4Cidr]> {
-        self.routes.as_deref()
-    }
-
-    pub fn set_routes(&mut self, routes: Option<Vec<cidr::Ipv4Cidr>>) {
-        self.routes = routes;
-    }
-
-    pub fn get_port_forwards(&self) -> &[PortForwardConfig] {
-        self.port_forward.as_deref().unwrap_or_default()
-    }
-
-    pub fn set_port_forwards(&mut self, forwards: Vec<PortForwardConfig>) {
-        self.port_forward = Some(forwards);
-    }
-
-    pub fn get_acl(&self) -> Option<&Acl> {
-        self.acl.as_ref()
-    }
-
-    pub fn set_acl(&mut self, acl: Option<Acl>) {
-        self.acl = acl;
-    }
-
-    pub fn get_tcp_whitelist(&self) -> &[String] {
-        self.tcp_whitelist.as_deref().unwrap_or_default()
-    }
-
-    pub fn set_tcp_whitelist(&mut self, whitelist: Vec<String>) {
-        self.tcp_whitelist = Some(whitelist);
-    }
-
-    pub fn get_udp_whitelist(&self) -> &[String] {
-        self.udp_whitelist.as_deref().unwrap_or_default()
-    }
-
-    pub fn set_udp_whitelist(&mut self, whitelist: Vec<String>) {
-        self.udp_whitelist = Some(whitelist);
-    }
-
-    pub fn get_managed_credentials(&self) -> &[ManagedCredentialConfig] {
-        self.managed_credentials.as_deref().unwrap_or_default()
-    }
-
-    pub fn set_managed_credentials(&mut self, credentials: Vec<ManagedCredentialConfig>) {
-        self.managed_credentials = Some(credentials);
     }
 }
 
@@ -614,13 +440,10 @@ network_secret = "secret"
         let original_raw_hostname = cfg.raw().hostname.clone();
         assert_eq!(original_raw_hostname, Some("node\u{0007}-name".to_string()));
 
-        // Raw getter returns original string without normalization
-        let hostname = cfg.raw().get_hostname();
+        // Raw field returns original string without normalization
+        let hostname = cfg.raw().hostname.as_deref();
         assert_eq!(hostname, Some("node\u{0007}-name"));
-        assert_eq!(
-            cfg.raw().hostname,
-            Some("node\u{0007}-name".to_string())
-        );
+        assert_eq!(cfg.raw().hostname, Some("node\u{0007}-name".to_string()));
 
         // Parsed hostname is normalized
         assert_eq!(cfg.parsed().hostname, "node-name");
@@ -646,7 +469,7 @@ network_secret = "secret"
 
         // Mutating a raw clone and creating a new InstanceConfig does not affect the original
         let mut raw = cfg.raw().clone();
-        raw.set_hostname(Some("modified".to_string()));
+        raw.hostname = Some("modified".to_string());
         let cfg2 = InstanceConfig::try_from(raw).unwrap();
         assert_eq!(cfg.hostname, "original");
         assert_eq!(cfg2.hostname, "modified");
@@ -783,13 +606,14 @@ enabled = true
     #[test]
     fn secure_mode_setter_should_not_make_snapshots_rotate_keys() {
         let mut raw = InstanceConfigRaw::default();
-        let template = crate::config::parse_instance_config("test", "[secure_mode]\nenabled = true").unwrap();
-        let mut secure = template.raw().get_secure_mode().cloned().unwrap();
+        let template =
+            crate::config::parse_instance_config("test", "[secure_mode]\nenabled = true").unwrap();
+        let mut secure = template.raw().secure_mode.clone().unwrap();
         secure.local_private_key = None;
         secure.local_public_key = None;
-        raw.set_secure_mode(Some(secure)).unwrap();
-        let first = InstanceConfig::try_from(raw.clone()).unwrap();
-        let second = InstanceConfig::try_from(raw).unwrap();
+        raw.secure_mode = Some(secure);
+        let first = InstanceConfig::try_from(raw).unwrap();
+        let second = InstanceConfig::try_from(first.raw().clone()).unwrap();
         // Do not print private key material on failure.
         assert!(
             first.secure_mode.as_ref().unwrap().local_private_key
@@ -798,21 +622,24 @@ enabled = true
     }
 
     #[test]
-    fn secure_mode_setter_with_invalid_key_errors_and_preserves_old_config() {
+    fn secure_mode_with_invalid_key_errors_on_parse_and_preserves_old_config() {
         let mut raw = InstanceConfigRaw::default();
         let old_secure = crate::proto::common::SecureModeConfig {
             enabled: false,
             ..Default::default()
         };
-        raw.set_secure_mode(Some(old_secure.clone())).unwrap();
+        raw.secure_mode = Some(old_secure.clone());
+        let _ = InstanceConfig::try_from(raw.clone()).unwrap();
 
         let invalid_secure = crate::proto::common::SecureModeConfig {
             enabled: true,
             local_private_key: Some("not-a-valid-hex-or-base64-key".into()),
             local_public_key: None,
         };
-        assert!(raw.set_secure_mode(Some(invalid_secure)).is_err());
-        assert_eq!(raw.get_secure_mode(), Some(&old_secure));
+        let mut invalid_raw = raw.clone();
+        invalid_raw.secure_mode = Some(invalid_secure);
+        assert!(InstanceConfig::try_from(invalid_raw).is_err());
+        assert_eq!(raw.secure_mode.as_ref(), Some(&old_secure));
     }
 
     #[test]
@@ -824,12 +651,7 @@ enabled = true
             network_secret_digest: Some([7; 32]),
         });
         let config = InstanceConfig::try_from(raw).unwrap();
-        assert_eq!(
-            config
-                .network_identity
-                .network_secret_digest,
-            Some([7; 32])
-        );
+        assert_eq!(config.network_identity.network_secret_digest, Some([7; 32]));
     }
 
     #[test]
@@ -842,21 +664,18 @@ enabled = true
     #[test]
     fn enabling_secure_mode_after_loading_should_match_direct_loading() {
         let input = "[network_identity]\nnetwork_name = 'review'\nnetwork_secret = ''\n";
-        let direct =
-            crate::config::parse_instance_config("test", &format!("{input}\n[secure_mode]\nenabled = true\n")).unwrap();
+        let direct = crate::config::parse_instance_config(
+            "test",
+            &format!("{input}\n[secure_mode]\nenabled = true\n"),
+        )
+        .unwrap();
         let edited = crate::config::parse_instance_config("test", input).unwrap();
         let mut edited_raw = edited.into_raw();
-        edited_raw.set_secure_mode(direct.raw().get_secure_mode().cloned()).unwrap();
+        edited_raw.secure_mode = direct.raw().secure_mode.clone();
         let edited_config = InstanceConfig::try_from(edited_raw).unwrap();
         assert_eq!(
-            edited_config
-                .network_identity
-                .network_secret
-                .is_none(),
-            direct
-                .network_identity
-                .network_secret
-                .is_none(),
+            edited_config.network_identity.network_secret.is_none(),
+            direct.network_identity.network_secret.is_none(),
             "setter and file input disagree about credential identity"
         );
     }
@@ -868,9 +687,11 @@ enabled = true
             "[network_identity]\nnetwork_name = 'review'\nnetwork_secret = ''\n",
         )
         .unwrap();
-        let template = crate::config::parse_instance_config("test", "[secure_mode]\nenabled = true\n").unwrap();
+        let template =
+            crate::config::parse_instance_config("test", "[secure_mode]\nenabled = true\n")
+                .unwrap();
         let mut raw = config.into_raw();
-        raw.set_secure_mode(template.raw().get_secure_mode().cloned()).unwrap();
+        raw.secure_mode = template.raw().secure_mode.clone();
         let snapshot = InstanceConfig::try_from(raw).unwrap();
         let saved = toml::to_string(&snapshot).unwrap();
         let restored: InstanceConfig = toml::from_str(&saved).unwrap();
@@ -883,7 +704,8 @@ enabled = true
 
     #[test]
     fn writing_back_default_admin_preserves_identity_after_reload() {
-        let config = crate::config::parse_instance_config("test", "[secure_mode]\nenabled = true").unwrap();
+        let config =
+            crate::config::parse_instance_config("test", "[secure_mode]\nenabled = true").unwrap();
         let mut raw = config.into_raw();
         let identity = raw.get_network_identity();
         assert_eq!(identity.network_secret.as_deref(), Some(""));
@@ -918,7 +740,9 @@ enabled = true
             },
         ];
         for identity in identities {
-            let config = crate::config::parse_instance_config("test", "[secure_mode]\nenabled = true").unwrap();
+            let config =
+                crate::config::parse_instance_config("test", "[secure_mode]\nenabled = true")
+                    .unwrap();
             let mut raw = config.into_raw();
             raw.set_network_identity(identity.clone());
             let snapshot = InstanceConfig::try_from(raw).unwrap();

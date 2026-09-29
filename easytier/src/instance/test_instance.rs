@@ -22,10 +22,7 @@ pub(crate) struct TestInstance {
 }
 
 impl TestInstance {
-    pub fn new_with_process_runtime<C>(
-        config: C,
-        process_runtime: Arc<CoreProcessRuntime>,
-    ) -> Self
+    pub fn new_with_process_runtime<C>(config: C, process_runtime: Arc<CoreProcessRuntime>) -> Self
     where
         C: TryInto<InstanceConfig>,
         C::Error: std::fmt::Debug,
@@ -68,23 +65,22 @@ impl TestInstance {
         let host_config = crate::instance::config::runtime_core_host_config();
         let mut captured_global_ctx = None;
         let mut customize = Some(customize);
-        let core =
-            NativeCoreInstance::compose(config, host_config.clone(), |config_store| {
-                let global_ctx = Arc::new(GlobalCtx::new(config_store.clone(), &host_config));
-                captured_global_ctx = Some(global_ctx.clone());
-                let runtime_host = NativeInstanceRuntimeHost::new(global_ctx.clone());
-                let mut adapters = runtime_core_host_adapters_with_packet_egress(
-                    global_ctx,
-                    process_runtime,
-                    runtime_host.clone(),
-                );
-                if let Some(c) = customize.take() {
-                    c(&mut adapters);
-                }
-                adapters.instance_runtime = runtime_host;
-                Ok(adapters)
-            })
-            .expect("test CoreInstance composition should be valid");
+        let core = NativeCoreInstance::compose(config, host_config.clone(), |config_store| {
+            let global_ctx = Arc::new(GlobalCtx::new(config_store.clone(), &host_config));
+            captured_global_ctx = Some(global_ctx.clone());
+            let runtime_host = NativeInstanceRuntimeHost::new(global_ctx.clone());
+            let mut adapters = runtime_core_host_adapters_with_packet_egress(
+                global_ctx,
+                process_runtime,
+                runtime_host.clone(),
+            );
+            if let Some(c) = customize.take() {
+                c(&mut adapters);
+            }
+            adapters.instance_runtime = runtime_host;
+            Ok(adapters)
+        })
+        .expect("test CoreInstance composition should be valid");
 
         Self {
             core,

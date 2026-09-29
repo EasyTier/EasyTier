@@ -9,10 +9,7 @@ use std::{
 };
 
 use easytier::{
-    common::{
-        MachineIdOptions,
-        config::InstanceConfig,
-    },
+    common::{MachineIdOptions, config::InstanceConfig},
     web_client::{WebClient, WebClientHooks, parse_config_server_endpoint, run_web_client},
 };
 use uuid::Uuid;

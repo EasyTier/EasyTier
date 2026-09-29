@@ -149,18 +149,18 @@ pub fn get_inst_config(
     ipv6: &str,
 ) -> InstanceConfigRaw {
     let mut config = InstanceConfigRaw::default();
-    config.set_inst_name(inst_name.to_owned());
-    config.set_netns(ns.map(|s| s.to_owned()));
-    config.set_ipv4(Some(ipv4.parse().unwrap()));
-    config.set_ipv6(Some(ipv6.parse().unwrap()));
-    config.set_listeners(vec![
+    config.instance_name = Some(inst_name.to_owned());
+    config.netns = ns.map(|s| s.to_owned());
+    config.ipv4 = Some(ipv4.parse().unwrap());
+    config.ipv6 = Some(ipv6.parse().unwrap());
+    config.listeners = Some(vec![
         "tcp://0.0.0.0:11010".parse().unwrap(),
         "udp://0.0.0.0:11010".parse().unwrap(),
         "wg://0.0.0.0:11011".parse().unwrap(),
         "ws://0.0.0.0:11011".parse().unwrap(),
         "wss://0.0.0.0:11012".parse().unwrap(),
     ]);
-    config.set_socks5_portal(Some("socks5://0.0.0.0:12345".parse().unwrap()));
+    config.socks5_proxy = Some("socks5://0.0.0.0:12345".parse().unwrap());
     config
 }
 
@@ -675,15 +675,15 @@ fn get_public_ipv6_config(
     inst_id: uuid::Uuid,
 ) -> InstanceConfigRaw {
     let mut config = get_inst_config(inst_name, Some(netns), ipv4, "fd00::1/64");
-    config.set_id(inst_id);
-    config.set_ipv6(None);
-    config.set_socks5_portal(None);
+    config.instance_id = Some(inst_id);
+    config.ipv6 = None;
+    config.socks5_proxy = None;
     config.set_network_identity(NetworkIdentity {
         network_name: "public_ipv6_auto_addr_test".to_string(),
         network_secret: Some("public_ipv6_auto_addr_secret".to_string()),
         network_secret_digest: None,
     });
-    config.set_listeners(vec!["tcp://0.0.0.0:11010".parse().unwrap()]);
+    config.listeners = Some(vec!["tcp://0.0.0.0:11010".parse().unwrap()]);
     let mut flags = config.get_flags();
     flags.dev_name = dev_name.to_string();
     config.set_flags(flags);
@@ -711,7 +711,7 @@ async fn init_public_ipv6_two_node_with_topology(
         PublicIpv6Lab::PROVIDER_TUN,
         uuid::Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap(),
     );
-    provider_cfg.set_ipv6_public_addr_provider(true);
+    provider_cfg.ipv6_public_addr_provider = Some(true);
 
     let mut client_cfg = get_public_ipv6_config(
         "client_public_ipv6",
@@ -720,7 +720,7 @@ async fn init_public_ipv6_two_node_with_topology(
         PublicIpv6Lab::CLIENT_TUN,
         client_inst_id,
     );
-    client_cfg.set_ipv6_public_addr_auto(true);
+    client_cfg.ipv6_public_addr_auto = Some(true);
 
     let mut provider = Instance::new_with_process_runtime(provider_cfg, process_runtime.clone());
     let mut client = Instance::new_with_process_runtime(client_cfg, process_runtime.clone());
@@ -994,7 +994,7 @@ pub async fn public_ipv6_auto_addr_reconnect_reuses_same_address() {
         PublicIpv6Lab::CLIENT_TUN,
         client_id,
     );
-    client_cfg.set_ipv6_public_addr_auto(true);
+    client_cfg.ipv6_public_addr_auto = Some(true);
     let mut client = Instance::new_with_process_runtime(client_cfg, process_runtime.clone());
     client.run().await.unwrap();
     provider.add_connector_url("tcp://10.1.1.2:11010".parse().unwrap());
@@ -1046,7 +1046,7 @@ pub async fn basic_three_node_test(
         proto,
         |mut cfg| {
             let mut flags = cfg.get_flags();
-            if cfg.get_inst_name() == "inst0" {
+            if cfg.instance_name.as_deref().unwrap_or_default() == "inst0" {
                 flags.encryption_algorithm = encrypt_algorithm_pair[0].to_string();
             } else {
                 flags.encryption_algorithm = encrypt_algorithm_pair[1].to_string();
@@ -1121,11 +1121,11 @@ pub async fn subnet_proxy_loop_prevention_test() {
     let insts = init_three_node_ex(
         "udp",
         |mut cfg| {
-            if cfg.get_inst_name() == "inst1" {
+            if cfg.instance_name.as_deref().unwrap_or_default() == "inst1" {
                 // inst1 代理 10.1.2.0/24 网段
                 cfg.add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None)
                     .unwrap();
-            } else if cfg.get_inst_name() == "inst2" {
+            } else if cfg.instance_name.as_deref().unwrap_or_default() == "inst2" {
                 // inst2 也代理相同的 10.1.2.0/24 网段
                 cfg.add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None)
                     .unwrap();
@@ -1271,10 +1271,10 @@ pub async fn quic_proxy() {
     let insts = init_three_node_ex(
         "udp",
         |mut cfg| {
-            if cfg.get_inst_name() == "inst3" {
+            if cfg.instance_name.as_deref().unwrap_or_default() == "inst3" {
                 cfg.add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None)
                     .unwrap();
-            } else if cfg.get_inst_name() == "inst1" {
+            } else if cfg.instance_name.as_deref().unwrap_or_default() == "inst1" {
                 let mut flags = cfg.get_flags();
                 flags.enable_quic_proxy = true;
                 cfg.set_flags(flags);
@@ -1339,7 +1339,7 @@ pub async fn subnet_proxy_three_node_test(
     let insts = init_three_node_ex(
         "udp",
         |mut cfg| {
-            if cfg.get_inst_name() == "inst3" {
+            if cfg.instance_name.as_deref().unwrap_or_default() == "inst3" {
                 let mut flags = cfg.get_flags();
                 flags.no_tun = no_tun;
                 flags.disable_kcp_input = disable_kcp_input;
@@ -1356,14 +1356,15 @@ pub async fn subnet_proxy_three_node_test(
                 .unwrap();
             }
 
-            if cfg.get_inst_name() == "inst2" && relay_by_public_server {
+            if cfg.instance_name.as_deref().unwrap_or_default() == "inst2" && relay_by_public_server
+            {
                 cfg.set_network_identity(NetworkIdentity::new(
                     "public".to_string(),
                     "public".to_string(),
                 ));
             }
 
-            if cfg.get_inst_name() == "inst1" {
+            if cfg.instance_name.as_deref().unwrap_or_default() == "inst1" {
                 let mut flags = cfg.get_flags();
                 if enable_kcp_proxy {
                     flags.enable_kcp_proxy = true;
@@ -1487,12 +1488,12 @@ pub async fn subnet_proxy_half_close_test(
         |mut cfg| {
             let mut flags = cfg.get_flags();
             flags.use_smoltcp = use_smoltcp;
-            if cfg.get_inst_name() == "inst1" {
+            if cfg.instance_name.as_deref().unwrap_or_default() == "inst1" {
                 flags.enable_kcp_proxy = transport == "kcp";
                 flags.enable_quic_proxy = transport == "quic";
             }
             cfg.set_flags(flags);
-            if cfg.get_inst_name() == "inst3" {
+            if cfg.instance_name.as_deref().unwrap_or_default() == "inst3" {
                 cfg.add_proxy_cidr(
                     "10.1.2.0/24".parse().unwrap(),
                     Some("10.1.3.0/24".parse().unwrap()),
@@ -1575,13 +1576,13 @@ pub async fn data_compress(
     let _insts = init_three_node_ex(
         "udp",
         |mut cfg| {
-            if cfg.get_inst_name() == "inst1" && inst1_compress {
+            if cfg.instance_name.as_deref().unwrap_or_default() == "inst1" && inst1_compress {
                 let mut flags = cfg.get_flags();
                 flags.data_compress_algo = CompressionAlgoPb::Zstd.into();
                 cfg.set_flags(flags);
             }
 
-            if cfg.get_inst_name() == "inst3" && inst2_compress {
+            if cfg.instance_name.as_deref().unwrap_or_default() == "inst3" && inst2_compress {
                 let mut flags = cfg.get_flags();
                 flags.data_compress_algo = CompressionAlgoPb::Zstd.into();
                 cfg.set_flags(flags);
@@ -1753,7 +1754,8 @@ pub async fn foreign_network_forward_nic_data() {
     prepare_linux_namespaces();
     let process_runtime = CoreProcessRuntime::new();
 
-    let mut center_node_config = get_inst_config("inst1", Some("net_a"), "10.144.144.1", "fd00::1/64");
+    let mut center_node_config =
+        get_inst_config("inst1", Some("net_a"), "10.144.144.1", "fd00::1/64");
     center_node_config
         .set_network_identity(NetworkIdentity::new("center".to_string(), "".to_string()));
     let mut center_inst =
@@ -1878,13 +1880,13 @@ pub async fn wireguard_vpn_portal(#[values(true, false)] test_v6: bool) {
                 identity.network_name,
                 "wireguard-portal-test".to_owned(),
             ));
-            if config.get_inst_name() == "inst1" {
+            if config.instance_name.as_deref().unwrap_or_default() == "inst1" {
                 config
                     .add_proxy_cidr("198.51.100.0/24".parse().unwrap(), None)
                     .unwrap();
             }
-            if config.get_inst_name() == "inst3" {
-                config.set_vpn_portal_config(VpnPortalConfig {
+            if config.instance_name.as_deref().unwrap_or_default() == "inst3" {
+                config.vpn_portal_config = Some(VpnPortalConfig {
                     wireguard_listen: "0.0.0.0:22121".parse().unwrap(),
                     wireguard_private_key: Some(BASE64_STANDARD.encode([42u8; 32])),
                     clients: vec![VpnPortalClientConfig {
@@ -1990,8 +1992,8 @@ pub async fn wireguard_vpn_portal_multi_client() {
                 identity.network_name,
                 "wireguard-portal-multi-client-test".to_owned(),
             ));
-            if config.get_inst_name() == "inst3" {
-                config.set_vpn_portal_config(VpnPortalConfig {
+            if config.instance_name.as_deref().unwrap_or_default() == "inst3" {
+                config.vpn_portal_config = Some(VpnPortalConfig {
                     wireguard_listen: "0.0.0.0:22121".parse().unwrap(),
                     wireguard_private_key: Some(BASE64_STANDARD.encode([42u8; 32])),
                     clients: vec![
@@ -2132,8 +2134,8 @@ pub async fn wireguard_vpn_portal_client_roaming() {
                 identity.network_name,
                 "wireguard-portal-roaming-test".to_owned(),
             ));
-            if config.get_inst_name() == "inst3" {
-                config.set_vpn_portal_config(VpnPortalConfig {
+            if config.instance_name.as_deref().unwrap_or_default() == "inst3" {
+                config.vpn_portal_config = Some(VpnPortalConfig {
                     wireguard_listen: "0.0.0.0:22121".parse().unwrap(),
                     wireguard_private_key: Some(BASE64_STANDARD.encode([42u8; 32])),
                     clients: vec![VpnPortalClientConfig {
@@ -2284,8 +2286,8 @@ pub async fn wireguard_vpn_portal_dynamic_clients() {
                 identity.network_name,
                 "wireguard-portal-dynamic-clients-test".to_owned(),
             ));
-            if config.get_inst_name() == "inst3" {
-                config.set_vpn_portal_config(VpnPortalConfig {
+            if config.instance_name.as_deref().unwrap_or_default() == "inst3" {
+                config.vpn_portal_config = Some(VpnPortalConfig {
                     wireguard_listen: "0.0.0.0:22121".parse().unwrap(),
                     wireguard_private_key: Some(BASE64_STANDARD.encode([42u8; 32])),
                     clients: vec![VpnPortalClientConfig {
@@ -2491,7 +2493,7 @@ pub async fn socks5_vpn_portal(
     let _insts = init_three_node_ex(
         "tcp",
         |mut cfg| {
-            if cfg.get_inst_name() == "inst3" {
+            if cfg.instance_name.as_deref().unwrap_or_default() == "inst3" {
                 // 添加子网代理配置
                 cfg.add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None)
                     .unwrap();
@@ -2564,20 +2566,22 @@ pub async fn foreign_network_functional_cluster() {
     prepare_linux_namespaces();
     let process_runtime = CoreProcessRuntime::new();
 
-    let mut center_node_config1 = get_inst_config("inst1", Some("net_a"), "10.144.144.1", "fd00::1/64");
+    let mut center_node_config1 =
+        get_inst_config("inst1", Some("net_a"), "10.144.144.1", "fd00::1/64");
     center_node_config1
         .set_network_identity(NetworkIdentity::new("center".to_string(), "".to_string()));
     let mut center_inst1 =
         Instance::new_with_process_runtime(center_node_config1, process_runtime.clone());
 
-    let mut center_node_config2 = get_inst_config("inst2", Some("net_b"), "10.144.144.2", "fd00::2/64");
+    let mut center_node_config2 =
+        get_inst_config("inst2", Some("net_b"), "10.144.144.2", "fd00::2/64");
     center_node_config2
         .set_network_identity(NetworkIdentity::new("center".to_string(), "".to_string()));
     let mut center_inst2 =
         Instance::new_with_process_runtime(center_node_config2, process_runtime.clone());
 
     let mut inst1_config = get_inst_config("inst1", Some("net_c"), "10.144.145.1", "fd00:2::1/64");
-    inst1_config.set_listeners(vec![]);
+    inst1_config.listeners = Some(vec![]);
     let mut inst1 = Instance::new_with_process_runtime(inst1_config, process_runtime.clone());
 
     let mut inst2 = Instance::new_with_process_runtime(
@@ -2630,7 +2634,8 @@ pub async fn manual_reconnector(#[values(true, false)] is_foreign: bool) {
     prepare_linux_namespaces();
     let process_runtime = CoreProcessRuntime::new();
 
-    let mut center_node_config = get_inst_config("inst1", Some("net_a"), "10.144.144.1", "fd00::1/64");
+    let mut center_node_config =
+        get_inst_config("inst1", Some("net_a"), "10.144.144.1", "fd00::1/64");
     if is_foreign {
         center_node_config
             .set_network_identity(NetworkIdentity::new("center".to_string(), "".to_string()));
@@ -2639,7 +2644,7 @@ pub async fn manual_reconnector(#[values(true, false)] is_foreign: bool) {
         Instance::new_with_process_runtime(center_node_config, process_runtime.clone());
 
     let mut inst1_config = get_inst_config("inst1", Some("net_b"), "10.144.145.1", "fd00:1::1/64");
-    inst1_config.set_listeners(vec![]);
+    inst1_config.listeners = Some(vec![]);
     let mut inst1 = Instance::new_with_process_runtime(inst1_config, process_runtime.clone());
 
     let mut inst2 = Instance::new_with_process_runtime(
@@ -2707,8 +2712,8 @@ pub async fn port_forward_test(
     let _insts = init_three_node_ex(
         "udp",
         |mut cfg| {
-            if cfg.get_inst_name() == "inst1" {
-                cfg.set_port_forwards(vec![
+            if cfg.instance_name.as_deref().unwrap_or_default() == "inst1" {
+                cfg.port_forward = Some(vec![
                     // test port forward to other virtual node
                     PortForwardConfig {
                         bind_addr: "0.0.0.0:23456".parse().unwrap(),
@@ -2739,13 +2744,13 @@ pub async fn port_forward_test(
                 flags.no_tun = no_tun;
                 flags.enable_kcp_proxy = enable_kcp;
                 cfg.set_flags(flags);
-            } else if cfg.get_inst_name() == "inst3" {
+            } else if cfg.instance_name.as_deref().unwrap_or_default() == "inst3" {
                 cfg.add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None)
                     .unwrap();
                 let mut flags = cfg.get_flags();
                 flags.disable_kcp_input = dst_disable_kcp_input;
                 cfg.set_flags(flags);
-            } else if cfg.get_inst_name() == "inst2" {
+            } else if cfg.instance_name.as_deref().unwrap_or_default() == "inst2" {
                 let mut flags = cfg.get_flags();
                 flags.disable_relay_kcp = disable_relay_kcp;
                 cfg.set_flags(flags);
@@ -2856,13 +2861,13 @@ pub async fn port_forward_with_inbound_default_drop_acl_test(
     let insts = init_three_node_ex(
         "udp",
         |mut cfg| {
-            if cfg.get_inst_name() == "inst1" {
+            if cfg.instance_name.as_deref().unwrap_or_default() == "inst1" {
                 if dhcp {
-                    cfg.set_ipv4(None);
-                    cfg.set_dhcp(true);
+                    cfg.ipv4 = None;
+                    cfg.dhcp = Some(true);
                 }
-                cfg.set_acl(Some(acl.clone()));
-                cfg.set_port_forwards(vec![
+                cfg.acl = Some(acl.clone());
+                cfg.port_forward = Some(vec![
                     PortForwardConfig {
                         bind_addr: "0.0.0.0:23456".parse().unwrap(),
                         dst_addr: "10.144.144.3:23456".parse().unwrap(),
@@ -2880,7 +2885,7 @@ pub async fn port_forward_with_inbound_default_drop_acl_test(
                 flags.enable_kcp_proxy = false;
                 flags.enable_quic_proxy = enable_quic_proxy;
                 cfg.set_flags(flags);
-            } else if cfg.get_inst_name() == "inst3" {
+            } else if cfg.instance_name.as_deref().unwrap_or_default() == "inst3" {
                 cfg.add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None)
                     .unwrap();
 
@@ -2888,7 +2893,7 @@ pub async fn port_forward_with_inbound_default_drop_acl_test(
                 flags.disable_kcp_input = true;
                 flags.disable_quic_input = !enable_quic_proxy;
                 cfg.set_flags(flags);
-            } else if cfg.get_inst_name() == "inst2" {
+            } else if cfg.instance_name.as_deref().unwrap_or_default() == "inst2" {
                 let mut flags = cfg.get_flags();
                 flags.disable_relay_kcp = true;
                 cfg.set_flags(flags);
@@ -2952,7 +2957,7 @@ pub async fn relay_bps_limit_test(#[values(100, 200, 400, 800)] bps_limit: u64) 
     let insts = init_three_node_ex(
         "udp",
         |mut cfg| {
-            if cfg.get_inst_name() == "inst2" {
+            if cfg.instance_name.as_deref().unwrap_or_default() == "inst2" {
                 cfg.set_network_identity(NetworkIdentity::new(
                     "public".to_string(),
                     "public".to_string(),
@@ -2994,7 +2999,7 @@ pub async fn instance_recv_bps_limit_test(#[values(100, 800)] bps_limit: u64) {
     let insts = init_three_node_ex(
         "tcp",
         |mut cfg| {
-            if cfg.get_inst_name() == "inst2" {
+            if cfg.instance_name.as_deref().unwrap_or_default() == "inst2" {
                 let mut f = cfg.get_flags();
                 f.instance_recv_bps_limit = bps_limit * 1024;
                 cfg.set_flags(f);
@@ -3128,20 +3133,23 @@ async fn avoid_tunnel_loop_back_to_virtual_network(
     let insts = init_three_node_ex(
         "udp",
         |mut cfg| {
-            if matches!(cfg.get_inst_name(), "inst2" | "inst3") {
+            if matches!(
+                cfg.instance_name.as_deref().unwrap_or_default(),
+                "inst2" | "inst3"
+            ) {
                 let mut flags = cfg.get_flags();
                 flags.no_tun = no_tun;
                 cfg.set_flags(flags);
             }
 
-            if cfg.get_inst_name() == "inst1" {
+            if cfg.instance_name.as_deref().unwrap_or_default() == "inst1" {
                 let mut flags = cfg.get_flags();
                 flags.enable_kcp_proxy = enable_kcp_proxy;
                 flags.enable_quic_proxy = enable_quic_proxy;
                 cfg.set_flags(flags);
             }
 
-            if cfg.get_inst_name() == "inst3" {
+            if cfg.instance_name.as_deref().unwrap_or_default() == "inst3" {
                 cfg.add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None)
                     .unwrap();
             }
@@ -3177,7 +3185,7 @@ pub async fn acl_rule_test_inbound(
     let insts = init_three_node_ex(
         "udp",
         |mut cfg| {
-            if cfg.get_inst_name() == "inst1" {
+            if cfg.instance_name.as_deref().unwrap_or_default() == "inst1" {
                 let mut flags = cfg.get_flags();
                 flags.enable_kcp_proxy = enable_kcp_proxy;
                 flags.enable_quic_proxy = enable_quic_proxy;
@@ -3411,12 +3419,12 @@ pub async fn acl_rule_test_subnet_proxy(
     let insts = init_three_node_ex(
         "udp",
         |mut cfg| {
-            if cfg.get_inst_name() == "inst1" {
+            if cfg.instance_name.as_deref().unwrap_or_default() == "inst1" {
                 let mut flags = cfg.get_flags();
                 flags.enable_kcp_proxy = enable_kcp_proxy;
                 flags.enable_quic_proxy = enable_quic_proxy;
                 cfg.set_flags(flags);
-            } else if cfg.get_inst_name() == "inst3" {
+            } else if cfg.instance_name.as_deref().unwrap_or_default() == "inst3" {
                 // 添加子网代理配置
                 cfg.add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None)
                     .unwrap();
@@ -3676,14 +3684,14 @@ pub async fn p2p_only_test(
     let insts = init_three_node_ex(
         "udp",
         |mut cfg| {
-            if cfg.get_inst_name() == "inst1" {
+            if cfg.instance_name.as_deref().unwrap_or_default() == "inst1" {
                 let mut flags = cfg.get_flags();
                 flags.enable_kcp_proxy = enable_kcp_proxy;
                 flags.enable_quic_proxy = enable_quic_proxy;
                 flags.disable_p2p = true;
                 flags.p2p_only = true;
                 cfg.set_flags(flags);
-            } else if cfg.get_inst_name() == "inst3" {
+            } else if cfg.instance_name.as_deref().unwrap_or_default() == "inst3" {
                 // 添加子网代理配置
                 cfg.add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None)
                     .unwrap();
@@ -3827,15 +3835,15 @@ pub async fn acl_group_base_test(
     let insts = init_three_node_ex(
         protocol,
         move |mut cfg| {
-            match cfg.get_inst_name() {
+            match cfg.instance_name.as_deref().unwrap_or_default() {
                 "inst1" => {
-                    cfg.set_acl(Some(acl_admin.clone()));
+                    cfg.acl = Some(acl_admin.clone());
                 }
                 "inst2" => {
-                    cfg.set_acl(Some(acl_user.clone()));
+                    cfg.acl = Some(acl_user.clone());
                 }
                 "inst3" => {
-                    cfg.set_acl(Some(acl_target.clone()));
+                    cfg.acl = Some(acl_target.clone());
                 }
                 _ => {}
             }
@@ -3973,7 +3981,7 @@ pub async fn acl_group_base_test(
 #[serial_test::serial]
 pub async fn lazy_p2p_builds_direct_connection_on_demand() {
     let insts = init_lazy_p2p_three_node_ex("udp", |mut cfg| {
-        if cfg.get_inst_name() == "inst1" {
+        if cfg.instance_name.as_deref().unwrap_or_default() == "inst1" {
             let mut flags = cfg.get_flags();
             flags.lazy_p2p = true;
             cfg.set_flags(flags);
@@ -4019,10 +4027,10 @@ pub async fn lazy_p2p_builds_direct_connection_on_demand() {
 pub async fn need_p2p_overrides_lazy_p2p() {
     let insts = init_lazy_p2p_three_node_ex("udp", |mut cfg| {
         let mut flags = cfg.get_flags();
-        if cfg.get_inst_name() == "inst1" {
+        if cfg.instance_name.as_deref().unwrap_or_default() == "inst1" {
             flags.lazy_p2p = true;
         }
-        if cfg.get_inst_name() == "inst3" {
+        if cfg.instance_name.as_deref().unwrap_or_default() == "inst3" {
             flags.need_p2p = true;
         }
         cfg.set_flags(flags);
@@ -4053,10 +4061,10 @@ pub async fn need_p2p_overrides_lazy_p2p() {
 pub async fn disable_p2p_still_connects_to_need_p2p_peers() {
     let insts = init_lazy_p2p_three_node_ex("udp", |mut cfg| {
         let mut flags = cfg.get_flags();
-        if cfg.get_inst_name() == "inst1" {
+        if cfg.instance_name.as_deref().unwrap_or_default() == "inst1" {
             flags.disable_p2p = true;
         }
-        if cfg.get_inst_name() == "inst3" {
+        if cfg.instance_name.as_deref().unwrap_or_default() == "inst3" {
             flags.need_p2p = true;
         }
         cfg.set_flags(flags);
@@ -4086,7 +4094,7 @@ pub async fn disable_p2p_still_connects_to_need_p2p_peers() {
 #[serial_test::serial]
 pub async fn ordinary_nodes_do_not_proactively_connect_to_disable_p2p_peers() {
     let insts = init_lazy_p2p_three_node_ex("udp", |mut cfg| {
-        if cfg.get_inst_name() == "inst3" {
+        if cfg.instance_name.as_deref().unwrap_or_default() == "inst3" {
             let mut flags = cfg.get_flags();
             flags.disable_p2p = true;
             cfg.set_flags(flags);
@@ -4121,7 +4129,7 @@ pub async fn ordinary_nodes_do_not_proactively_connect_to_disable_p2p_peers() {
 #[serial_test::serial]
 pub async fn lazy_p2p_warms_up_before_p2p_only_send() {
     let insts = init_lazy_p2p_three_node_ex("udp", |mut cfg| {
-        if cfg.get_inst_name() == "inst1" {
+        if cfg.instance_name.as_deref().unwrap_or_default() == "inst1" {
             let mut flags = cfg.get_flags();
             flags.lazy_p2p = true;
             flags.p2p_only = true;
@@ -4225,15 +4233,15 @@ pub async fn acl_group_self_test(
     let insts = init_three_node_ex(
         protocol,
         move |mut cfg| {
-            match cfg.get_inst_name() {
+            match cfg.instance_name.as_deref().unwrap_or_default() {
                 "inst1" => {
-                    cfg.set_acl(Some(acl_admin.clone()));
+                    cfg.acl = Some(acl_admin.clone());
                 }
                 "inst2" => {
-                    cfg.set_acl(Some(acl_common.clone()));
+                    cfg.acl = Some(acl_common.clone());
                 }
                 "inst3" => {
-                    cfg.set_acl(Some(acl_admin.clone()));
+                    cfg.acl = Some(acl_admin.clone());
                 }
                 _ => {}
             }
@@ -4344,11 +4352,11 @@ pub async fn whitelist_test(
         protocol,
         move |mut cfg| {
             let port = if test_outbound_allow_list { 0 } else { port };
-            if cfg.get_inst_name() == acl_configured_inst {
+            if cfg.instance_name.as_deref().unwrap_or_default() == acl_configured_inst {
                 if protocol == "tcp" {
-                    cfg.set_tcp_whitelist(vec![format!("{}", port)]);
+                    cfg.tcp_whitelist = Some(vec![format!("{}", port)]);
                 } else if protocol == "udp" {
-                    cfg.set_udp_whitelist(vec![format!("{}", port)]);
+                    cfg.udp_whitelist = Some(vec![format!("{}", port)]);
                 }
             }
             cfg
@@ -4443,7 +4451,7 @@ pub async fn config_patch_test() {
     let insts = init_three_node_ex(
         "udp",
         |mut cfg| {
-            cfg.set_ipv6(None);
+            cfg.ipv6 = None;
             cfg
         },
         false,
@@ -4612,7 +4620,7 @@ pub async fn config_patch_disable_relay_data_test() {
     let insts = init_three_node_ex(
         "udp",
         |mut cfg| {
-            cfg.set_ipv6(None);
+            cfg.ipv6 = None;
             cfg
         },
         false,
@@ -4788,8 +4796,7 @@ pub async fn relay_peer_e2e_encryption(#[values("tcp", "udp")] proto: &str) {
     let insts = init_three_node_ex(
         proto,
         |mut cfg| {
-            cfg.set_secure_mode(Some(generate_secure_mode_config()))
-                .unwrap();
+            cfg.secure_mode = Some(generate_secure_mode_config());
             cfg
         },
         false,
@@ -4929,8 +4936,7 @@ pub async fn relay_peer_e2e_encryption_udp() {
     let insts = init_three_node_ex(
         "udp",
         |mut cfg| {
-            cfg.set_secure_mode(Some(generate_secure_mode_config()))
-                .unwrap();
+            cfg.secure_mode = Some(generate_secure_mode_config());
             cfg
         },
         false,
@@ -5011,8 +5017,7 @@ pub async fn relay_peer_session_cleanup() {
     let mut insts = init_three_node_ex(
         "tcp",
         |mut cfg| {
-            cfg.set_secure_mode(Some(generate_secure_mode_config()))
-                .unwrap();
+            cfg.secure_mode = Some(generate_secure_mode_config());
             cfg
         },
         false,

@@ -20,8 +20,8 @@ use uuid::Uuid;
 
 fn test_config(id: Uuid, name: impl Into<String>) -> InstanceConfig {
     let mut raw = InstanceConfigRaw::default();
-    raw.set_id(id);
-    raw.set_inst_name(name.into());
+    raw.instance_id = Some(id);
+    raw.instance_name = Some(name.into());
     InstanceConfig::try_from(raw).unwrap()
 }
 

@@ -218,8 +218,8 @@ async fn test_magic_dns_runner() {
 async fn test_magic_dns_update_replaces_records_for_same_client() {
     let tun_ip = Ipv4Inet::from_str("100.100.100.0/24").unwrap();
     let mut config = easytier_core::config::InstanceConfigRaw::default();
-    config.set_hostname(Some("test1".to_string()));
-    config.set_ipv4(Some(tun_ip));
+    config.hostname = Some("test1".to_string());
+    config.ipv4 = Some(tun_ip);
     let ctx = get_mock_global_ctx_with_config(config.try_into().unwrap());
 
     let (core_instance, _packet_receiver) = build_test_core(ctx.clone()).await;

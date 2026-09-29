@@ -9,8 +9,6 @@ pub use super::{
 use ariadne::{CharSet, Config as AriadneConfig, IndexType, Label, Report, ReportKind, Source};
 use serde::{Deserialize, Serialize};
 
-
-
 pub const DEFAULT_ET_DNS_ZONE: &str = "et.net.";
 
 pub use crate::proto::common::{Flags, FlagsPatch};
@@ -224,7 +222,6 @@ fn format_toml_parse_error(
     format!("failed to parse config TOML from {source_name}: {error}")
 }
 
-
 pub fn normalize_config_source(config: &mut InstanceConfigRaw) {
     if matches!(
         config.source.as_ref().map(|source| source.source),
@@ -334,8 +331,7 @@ mod tests {
 
     #[test]
     fn parse_error_preserves_source_and_location() {
-        let error =
-            parse_instance_config("fixture.toml", "dhcp = \"yes\"").unwrap_err();
+        let error = parse_instance_config("fixture.toml", "dhcp = \"yes\"").unwrap_err();
         let display = error.to_string();
 
         assert!(display.contains("fixture.toml"));
@@ -481,9 +477,11 @@ expiry_unix = 2000000000
         let redacted = serialize_raw_to_toml_redacted(config.raw()).unwrap();
         assert!(!redacted.contains("private-key-material"));
         assert!(redacted.contains("<redacted>"));
-        assert!(!serialize_raw_to_toml(&InstanceConfigRaw::default())
-            .unwrap()
-            .contains("managed_credentials"));
+        assert!(
+            !serialize_raw_to_toml(&InstanceConfigRaw::default())
+                .unwrap()
+                .contains("managed_credentials")
+        );
     }
 
     #[test]
@@ -527,7 +525,11 @@ source = "user"
         )
         .unwrap();
         assert_eq!(user.raw().source, None);
-        assert!(!serialize_raw_to_toml(user.raw()).unwrap().contains("[source]"));
+        assert!(
+            !serialize_raw_to_toml(user.raw())
+                .unwrap()
+                .contains("[source]")
+        );
 
         let web = parse_instance_config(
             "inline config",
@@ -541,7 +543,11 @@ source = "web"
             web.raw().source.as_ref().map(|source| source.source),
             Some(ConfigSource::Web)
         );
-        assert!(serialize_raw_to_toml(web.raw()).unwrap().contains("source = \"web\""));
+        assert!(
+            serialize_raw_to_toml(web.raw())
+                .unwrap()
+                .contains("source = \"web\"")
+        );
     }
 }
 
@@ -624,10 +630,7 @@ socket_mark = 66
         ] {
             let config =
                 parse_instance_config("inline config", &format!("[flags]\n{input}")).unwrap();
-            assert_eq!(
-                config.raw().flags.enable_encryption,
-                expected
-            );
+            assert_eq!(config.raw().flags.enable_encryption, expected);
             let mut raw = config.into_raw();
             let patch = FlagsPatch {
                 latency_first: Some(false),
@@ -636,17 +639,8 @@ socket_mark = 66
             raw.patch_flags(patch);
             let dumped = serialize_raw_to_toml(&raw).unwrap();
             let restored = parse_instance_config("inline config", &dumped).unwrap();
-            assert_eq!(
-                restored
-                    .raw()
-                    .flags
-                    .enable_encryption,
-                expected
-            );
-            assert_eq!(
-                restored.raw().flags.latency_first,
-                Some(false)
-            );
+            assert_eq!(restored.raw().flags.enable_encryption, expected);
+            assert_eq!(restored.raw().flags.latency_first, Some(false));
             assert_eq!(restored.raw().flags.mtu, None);
             assert_eq!(
                 restored.parsed().flags.enable_encryption,
@@ -694,7 +688,12 @@ socketMark = "0"
         let raw = InstanceConfigRaw::default();
         let dumped = serialize_raw_to_toml(&raw).unwrap();
         let document: toml::Table = toml::from_str(&dumped).unwrap();
-        assert!(document.get("flags").map(|f| f.as_table().unwrap().is_empty()).unwrap_or(true));
+        assert!(
+            document
+                .get("flags")
+                .map(|f| f.as_table().unwrap().is_empty())
+                .unwrap_or(true)
+        );
         assert_eq!(
             parse_instance_config("inline config", &dumped)
                 .unwrap()
@@ -869,9 +868,11 @@ enabled = true
             assert_eq!(identity.network_name, "credential-network");
             assert_eq!(identity.network_secret, None);
             assert_eq!(identity.network_secret_digest, None);
-            assert!(!serialize_raw_to_toml(config.raw())
-                .unwrap()
-                .contains("network_secret"));
+            assert!(
+                !serialize_raw_to_toml(config.raw())
+                    .unwrap()
+                    .contains("network_secret")
+            );
         }
     }
 
@@ -1112,9 +1113,11 @@ source = "user"
         )
         .unwrap();
         assert_eq!(explicit_user.raw().source, None);
-        assert!(!serialize_raw_to_toml(explicit_user.raw())
-            .unwrap()
-            .contains("[source]"));
+        assert!(
+            !serialize_raw_to_toml(explicit_user.raw())
+                .unwrap()
+                .contains("[source]")
+        );
     }
 
     #[cfg(feature = "config-write")]
@@ -1261,11 +1264,8 @@ mod diagnostic_compatibility_tests {
 
     #[test]
     fn flags_parse_error_keeps_source_span_and_cause_chain() {
-        let error = parse_instance_config(
-            "flags-fixture.toml",
-            "[flags]\nsocket_mark = \"bad\"",
-        )
-        .unwrap_err();
+        let error = parse_instance_config("flags-fixture.toml", "[flags]\nsocket_mark = \"bad\"")
+            .unwrap_err();
         let display = error.to_string();
 
         assert!(display.contains("flags-fixture.toml"));

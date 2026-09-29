@@ -17,8 +17,8 @@ use axum_login::tower_sessions::{ExpiredDeletion, SessionManagerLayer};
 use axum_login::{AuthManagerLayerBuilder, AuthUser, login_required};
 use axum_messages::MessagesManagerLayer;
 use easytier::common::config::{
-    network_config_from_raw, parse_instance_config, serialize_raw_to_toml, NetworkConfig,
-    NetworkConfigExt,
+    NetworkConfig, NetworkConfigExt, network_config_from_raw, parse_instance_config,
+    serialize_raw_to_toml,
 };
 use easytier::proto::rpc_types;
 use network::NetworkApi;

@@ -15,7 +15,9 @@ use optionize::{Optionizable, Optionized};
 use crate::config::{
     InstanceConfig, InstanceConfigParsed, InstanceConfigRaw, MappedListenerPolicy,
     instance::{normalize_hostname, normalize_ipv4, normalize_network_identity},
-    toml::{NetworkIdentity, PeerConfig, PortForwardConfig, VpnPortalClientConfig, VpnPortalConfig},
+    toml::{
+        NetworkIdentity, PeerConfig, PortForwardConfig, VpnPortalClientConfig, VpnPortalConfig,
+    },
 };
 
 fn parse_mapped_listener_urls(mapped_listeners: &[String]) -> Result<Vec<url::Url>, anyhow::Error> {
@@ -396,9 +398,7 @@ impl NetworkConfigExt for NetworkConfig {
         if self.enable_socks5.unwrap_or_default()
             && let Some(socks5_port) = self.socks5_port
         {
-            raw.socks5_proxy = Some(
-                format!("socks5://0.0.0.0:{}", socks5_port).parse().unwrap(),
-            );
+            raw.socks5_proxy = Some(format!("socks5://0.0.0.0:{}", socks5_port).parse().unwrap());
         }
 
         if !self.mapped_listeners.is_empty() {
@@ -446,9 +446,10 @@ impl NetworkConfigExt for NetworkConfig {
             .as_ref()
             .filter(|prefix| !prefix.is_empty())
         {
-            raw.ipv6_public_addr_prefix = Some(ipv6_public_addr_prefix.parse().with_context(
-                || format!("failed to parse ipv6 public address prefix: {ipv6_public_addr_prefix}"),
-            )?);
+            raw.ipv6_public_addr_prefix =
+                Some(ipv6_public_addr_prefix.parse().with_context(|| {
+                    format!("failed to parse ipv6 public address prefix: {ipv6_public_addr_prefix}")
+                })?);
         }
 
         if let Some(acl) = self.acl.as_ref()
