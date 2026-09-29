@@ -312,7 +312,7 @@ impl GlobalCtx {
 
 #[cfg(test)]
 pub mod tests {
-    use easytier_core::config::{parse_instance_config, serialize_raw_to_toml, InstanceConfig};
+    use easytier_core::config::{InstanceConfig, parse_instance_config, serialize_raw_to_toml};
 
     use super::*;
 
@@ -380,7 +380,11 @@ pub mod tests {
         let global_ctx = get_mock_global_ctx_with_config(config.clone());
 
         assert!(!global_ctx.get_hostname().is_empty());
-        assert!(!serialize_raw_to_toml(config.raw()).unwrap().contains("hostname"));
+        assert!(
+            !serialize_raw_to_toml(config.raw())
+                .unwrap()
+                .contains("hostname")
+        );
     }
 
     #[test]

@@ -1,15 +1,12 @@
 //! Portable conversion between the shared TOML model and management schema.
 
-
 pub use super::api_input::network_config_from_raw;
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::{
-        InstanceConfigRaw,
-        api_input::NetworkConfigExt,
-        toml::ManagedCredentialConfig,
+        InstanceConfigRaw, api_input::NetworkConfigExt, toml::ManagedCredentialConfig,
     };
     use easytier_proto::api::manage;
 
@@ -24,10 +21,7 @@ mod tests {
             let exported = network_config_from_raw(config.raw());
             assert_eq!(exported.network_secret, secret);
             let imported = exported.gen_config().unwrap();
-            assert_eq!(
-                imported.parsed().network_identity.network_secret,
-                secret
-            );
+            assert_eq!(imported.parsed().network_identity.network_secret, secret);
             let restored = crate::config::parse_instance_config(
                 "restored",
                 &crate::config::serialize_raw_to_toml(imported.raw()).unwrap(),
@@ -40,7 +34,7 @@ mod tests {
     #[test]
     fn includes_managed_credentials() {
         let mut raw = InstanceConfigRaw::default();
-        raw.set_managed_credentials(vec![ManagedCredentialConfig {
+        raw.managed_credentials = Some(vec![ManagedCredentialConfig {
             credential_id: "managed-a".to_owned(),
             credential_secret: "credential-secret".to_owned(),
             groups: vec!["ops".to_owned()],

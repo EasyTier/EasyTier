@@ -176,7 +176,10 @@ fn wasi_create_config_uses_shared_toml() {
     create.validate().unwrap();
     let config = create.parse_config().unwrap();
 
-    assert_eq!(config.parsed().instance_id, config.raw().instance_id.unwrap());
+    assert_eq!(
+        config.parsed().instance_id,
+        config.raw().instance_id.unwrap()
+    );
     assert!(config.parsed().flags.disable_p2p);
     create.version += 1;
     assert!(create.validate().is_err());
@@ -867,8 +870,7 @@ source = "web"
 "#,
         )
         .unwrap();
-        let instance =
-            CoreInstance::new(config, adapters(None, Arc::new(packet_sink))).unwrap();
+        let instance = CoreInstance::new(config, adapters(None, Arc::new(packet_sink))).unwrap();
         instance.start().await.unwrap();
         let peer_id = instance.peer_id();
         let secret = BASE64_STANDARD.encode([7u8; 32]);
@@ -961,8 +963,7 @@ source = "web"
 "#,
         )
         .unwrap();
-        let instance =
-            CoreInstance::new(config, adapters(None, Arc::new(packet_sink))).unwrap();
+        let instance = CoreInstance::new(config, adapters(None, Arc::new(packet_sink))).unwrap();
         instance.start().await.unwrap();
         let patch = InstanceConfigPatch {
             hostname: Some("after".to_owned()),
@@ -2127,7 +2128,7 @@ virtual_ip = "10.0.0.2/24"
             Some(tokio::runtime::Handle::current()),
         ));
         let mut raw = InstanceConfigRaw::default();
-        raw.set_listeners(Vec::new());
+        raw.listeners = Some(Vec::new());
         let config = InstanceConfig::try_from(raw).unwrap();
         let instance_id = config.parsed().instance_id;
         instances
@@ -2384,8 +2385,8 @@ virtual_ip = "10.0.0.2/24"
         let unrequested_id = uuid::Uuid::new_v4();
         for instance_id in [requested_id, unrequested_id] {
             let mut raw = InstanceConfigRaw::default();
-            raw.set_id(instance_id);
-            raw.set_listeners(Vec::new());
+            raw.instance_id = Some(instance_id);
+            raw.listeners = Some(Vec::new());
             let config = InstanceConfig::try_from(raw).unwrap();
             instances
                 .create(config, ())
@@ -2504,7 +2505,7 @@ virtual_ip = "10.0.0.2/24"
             Some(tokio::runtime::Handle::current()),
         ));
         let mut raw = InstanceConfigRaw::default();
-        raw.set_listeners(Vec::new());
+        raw.listeners = Some(Vec::new());
         let config = InstanceConfig::try_from(raw).unwrap();
         let instance_id = config.parsed().instance_id;
         instances
@@ -2538,9 +2539,9 @@ virtual_ip = "10.0.0.2/24"
         let old_name = format!("old-{instance_id}");
         let new_name = format!("new-{instance_id}");
         let mut old_raw = InstanceConfigRaw::default();
-        old_raw.set_id(instance_id);
-        old_raw.set_inst_name(old_name.clone());
-        old_raw.set_listeners(Vec::new());
+        old_raw.instance_id = Some(instance_id);
+        old_raw.instance_name = Some(old_name.clone());
+        old_raw.listeners = Some(Vec::new());
         let old_config = InstanceConfig::try_from(old_raw).unwrap();
         instances
             .run_network_instance(old_config, ConfigFileControl::STATIC_CONFIG)
@@ -2559,9 +2560,9 @@ virtual_ip = "10.0.0.2/24"
             .await
             .unwrap();
         let mut new_raw = InstanceConfigRaw::default();
-        new_raw.set_id(instance_id);
-        new_raw.set_inst_name(new_name.clone());
-        new_raw.set_listeners(Vec::new());
+        new_raw.instance_id = Some(instance_id);
+        new_raw.instance_name = Some(new_name.clone());
+        new_raw.listeners = Some(Vec::new());
         let new_config = InstanceConfig::try_from(new_raw).unwrap();
         instances
             .run_network_instance(new_config, ConfigFileControl::STATIC_CONFIG)
@@ -3804,8 +3805,7 @@ virtual_ip = "10.0.0.2/24"
 
     #[tokio::test]
     async fn compose_does_not_alias_caller_raw() {
-        let original =
-            crate::config::parse_instance_config("test", "hostname = 'before'").unwrap();
+        let original = crate::config::parse_instance_config("test", "hostname = 'before'").unwrap();
         let mut cloned_raw = original.raw().clone();
         let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
         let host_config = CoreInstanceHostConfig::default();
@@ -3834,8 +3834,7 @@ virtual_ip = "10.0.0.2/24"
         let mut mismatched_adapters = adapters(None, Arc::new(packet_sink));
         mismatched_adapters.config.gateway_enabled = !host_config.gateway_enabled;
 
-        let result =
-            CoreInstance::compose(original, host_config, |_store| Ok(mismatched_adapters));
+        let result = CoreInstance::compose(original, host_config, |_store| Ok(mismatched_adapters));
         let Err(err) = result else {
             panic!("expected error for mismatched host config");
         };

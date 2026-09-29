@@ -1,7 +1,9 @@
 use wasm_bindgen::prelude::*;
 
 use super::{
-    api_input::{NetworkConfig, NetworkConfigExt, merge_network_config_toml, network_config_from_raw},
+    api_input::{
+        NetworkConfig, NetworkConfigExt, merge_network_config_toml, network_config_from_raw,
+    },
     parse_instance_config, serialize_raw_to_toml,
 };
 

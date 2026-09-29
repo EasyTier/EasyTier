@@ -640,7 +640,7 @@ impl NetworkOptions {
 
     fn can_merge(
         &self,
-        raw: &InstanceConfigRaw,
+        config: &InstanceConfig,
         source: ConfigFileSource,
         explicit_config_file_count: usize,
         config_dir_file_count: usize,
@@ -660,17 +660,7 @@ impl NetworkOptions {
             return false;
         };
 
-        let raw_network_name = raw
-            .network_identity
-            .as_ref()
-            .map(|id| id.network_name.as_str())
-            .unwrap_or_default();
-
-        if source == ConfigFileSource::ConfigDir {
-            return raw_network_name == *network_name;
-        }
-
-        raw_network_name == *network_name
+        config.parsed().network_identity.network_name == *network_name
     }
 
     fn merge_into(&self, raw: &mut InstanceConfigRaw) -> anyhow::Result<()> {
@@ -700,15 +690,17 @@ impl NetworkOptions {
         }
 
         if let Some(ipv4) = &self.ipv4 {
-            raw.ipv4 = Some(ipv4.parse().with_context(|| {
-                format!("failed to parse ipv4 address: {}", ipv4)
-            })?);
+            raw.ipv4 = Some(
+                ipv4.parse()
+                    .with_context(|| format!("failed to parse ipv4 address: {}", ipv4))?,
+            );
         }
 
         if let Some(ipv6) = &self.ipv6 {
-            raw.ipv6 = Some(ipv6.parse().with_context(|| {
-                format!("failed to parse ipv6 address: {}", ipv6)
-            })?);
+            raw.ipv6 = Some(
+                ipv6.parse()
+                    .with_context(|| format!("failed to parse ipv6 address: {}", ipv6))?,
+            );
         }
 
         if let Some(enabled) = self.ipv6_public_addr_provider {
@@ -893,9 +885,9 @@ impl NetworkOptions {
                 if cli_private_key.is_some() || cli_public_key.is_some() {
                     (cli_private_key, cli_public_key)
                 } else {
-                    raw.secure_mode
-                        .as_ref()
-                        .map_or((None, None), |c| (c.local_private_key.clone(), c.local_public_key.clone()))
+                    raw.secure_mode.as_ref().map_or((None, None), |c| {
+                        (c.local_private_key.clone(), c.local_public_key.clone())
+                    })
                 };
             let c = SecureModeConfig {
                 enabled: secure_mode,
@@ -1288,23 +1280,23 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
         )
         .await?;
 
-        let mut raw = config.into_raw();
-
-        if cli.network_options.can_merge(
-            &raw,
+        let config = if cli.network_options.can_merge(
+            &config,
             source,
             explicit_config_file_count,
             config_dir_file_count,
         ) {
+            let mut raw = config.into_raw();
             cli.network_options
                 .merge_into(&mut raw)
                 .with_context(|| format!("failed to merge config from cli: {:?}", config_file))?;
             crate_cli_network = false;
             control.set_read_only(true);
             control.set_no_delete(true);
-        }
-
-        let config = InstanceConfig::try_from(raw)?;
+            InstanceConfig::try_from(raw)?
+        } else {
+            config
+        };
 
         log::info!(
             "\
@@ -1515,6 +1507,21 @@ mod tests {
     use super::*;
     use crate::common::config::serialize_raw_to_toml;
     use crate::proto::common::CompressionAlgoPb;
+
+    #[test]
+    fn review_default_network_name_matches_config_dir() {
+        let config = parse_instance_config("review", "hostname = 'file-node'\n").unwrap();
+        assert_eq!(config.parsed().network_identity.network_name, "default");
+        let options = NetworkOptions {
+            network_name: Some("default".to_owned()),
+            hostname: Some("override-node".to_owned()),
+            ..Default::default()
+        };
+        assert!(
+            options.can_merge(&config, ConfigFileSource::ConfigDir, 0, 1),
+            "a config with the effective default network must match --network-name default"
+        );
+    }
 
     /// Parses the flags the way the binary does.
     fn parse_flags(argv: &[&str]) -> Result<FlagsPatch, clap::Error> {

@@ -297,15 +297,13 @@ fn build_credential_config(
     ipv6: &str,
 ) -> InstanceConfigRaw {
     let mut config = InstanceConfigRaw::default();
-    config.set_inst_name(inst_name.to_owned());
-    config.set_netns(ns.map(|s| s.to_owned()));
-    config.set_ipv4(Some(ipv4.parse().unwrap()));
-    config.set_ipv6(Some(ipv6.parse().unwrap()));
-    config.set_listeners(vec![]);
+    config.instance_name = Some(inst_name.to_owned());
+    config.netns = ns.map(|s| s.to_owned());
+    config.ipv4 = Some(ipv4.parse().unwrap());
+    config.ipv6 = Some(ipv6.parse().unwrap());
+    config.listeners = Some(vec![]);
     config.set_network_identity(NetworkIdentity::new_credential(network_name));
-    config
-        .set_secure_mode(Some(generate_secure_mode_config_with_key(private_key)))
-        .unwrap();
+    config.secure_mode = Some(generate_secure_mode_config_with_key(private_key));
 
     config
 }
@@ -373,11 +371,11 @@ fn create_admin_config(
     ipv6: &str,
 ) -> InstanceConfigRaw {
     let mut config = InstanceConfigRaw::default();
-    config.set_inst_name(inst_name.to_owned());
-    config.set_netns(ns.map(|s| s.to_owned()));
-    config.set_ipv4(Some(ipv4.parse().unwrap()));
-    config.set_ipv6(Some(ipv6.parse().unwrap()));
-    config.set_listeners(vec![
+    config.instance_name = Some(inst_name.to_owned());
+    config.netns = ns.map(|s| s.to_owned());
+    config.ipv4 = Some(ipv4.parse().unwrap());
+    config.ipv6 = Some(ipv6.parse().unwrap());
+    config.listeners = Some(vec![
         "tcp://0.0.0.0:11010".parse().unwrap(),
         "udp://0.0.0.0:11010".parse().unwrap(),
     ]);
@@ -385,9 +383,7 @@ fn create_admin_config(
         "test_network".to_string(),
         "test_secret".to_string(),
     ));
-    config
-        .set_secure_mode(Some(generate_secure_mode_config()))
-        .unwrap();
+    config.secure_mode = Some(generate_secure_mode_config());
 
     config
 }
@@ -399,11 +395,11 @@ fn create_shared_config(
     ipv6: &str,
 ) -> InstanceConfigRaw {
     let mut config = InstanceConfigRaw::default();
-    config.set_inst_name(inst_name.to_owned());
-    config.set_netns(ns.map(|s| s.to_owned()));
-    config.set_ipv4(Some(ipv4.parse().unwrap()));
-    config.set_ipv6(Some(ipv6.parse().unwrap()));
-    config.set_listeners(vec![
+    config.instance_name = Some(inst_name.to_owned());
+    config.netns = ns.map(|s| s.to_owned());
+    config.ipv4 = Some(ipv4.parse().unwrap());
+    config.ipv6 = Some(ipv6.parse().unwrap());
+    config.listeners = Some(vec![
         "tcp://0.0.0.0:11010".parse().unwrap(),
         "udp://0.0.0.0:11010".parse().unwrap(),
     ]);
@@ -411,25 +407,21 @@ fn create_shared_config(
         "shared_network".to_string(),
         "".to_string(),
     ));
-    config
-        .set_secure_mode(Some(generate_secure_mode_config()))
-        .unwrap();
+    config.secure_mode = Some(generate_secure_mode_config());
     config
 }
 
 fn create_public_server_config() -> InstanceConfigRaw {
     let mut config = InstanceConfigRaw::default();
-    config.set_inst_name(PUBLIC_SERVER_NETWORK_NAME.to_string());
-    config.set_hostname(Some("public-server".to_string()));
-    config.set_netns(Some("ns_adm".to_string()));
-    config.set_listeners(vec!["udp://0.0.0.0:11010".parse().unwrap()]);
+    config.instance_name = Some(PUBLIC_SERVER_NETWORK_NAME.to_string());
+    config.hostname = Some("public-server".to_string());
+    config.netns = Some("ns_adm".to_string());
+    config.listeners = Some(vec!["udp://0.0.0.0:11010".parse().unwrap()]);
     config.set_network_identity(NetworkIdentity::new(
         PUBLIC_SERVER_NETWORK_NAME.to_string(),
         PUBLIC_SERVER_SHARED_SECRET.to_string(),
     ));
-    config
-        .set_secure_mode(Some(generate_secure_mode_config()))
-        .unwrap();
+    config.secure_mode = Some(generate_secure_mode_config());
 
     let mut flags = config.get_flags();
     flags.no_tun = true;
@@ -443,19 +435,17 @@ fn create_public_server_config() -> InstanceConfigRaw {
 
 fn create_need_p2p_admin_config(listener_scheme: &str) -> InstanceConfigRaw {
     let mut config = InstanceConfigRaw::default();
-    config.set_inst_name(NEED_P2P_ADMIN_NETWORK_NAME.to_string());
-    config.set_hostname(Some("need-p2p-admin".to_string()));
-    config.set_netns(Some("ns_c3".to_string()));
-    config.set_listeners(vec![
+    config.instance_name = Some(NEED_P2P_ADMIN_NETWORK_NAME.to_string());
+    config.hostname = Some("need-p2p-admin".to_string());
+    config.netns = Some("ns_c3".to_string());
+    config.listeners = Some(vec![
         format!("{listener_scheme}://0.0.0.0:0").parse().unwrap(),
     ]);
     config.set_network_identity(NetworkIdentity::new(
         NEED_P2P_ADMIN_NETWORK_NAME.to_string(),
         PUBLIC_SERVER_SHARED_SECRET.to_string(),
     ));
-    config
-        .set_secure_mode(Some(generate_secure_mode_config()))
-        .unwrap();
+    config.secure_mode = Some(generate_secure_mode_config());
 
     let mut flags = config.get_flags();
     flags.no_tun = true;
@@ -489,8 +479,8 @@ fn create_public_server_credential_config(
         ipv4,
         ipv6,
     );
-    config.set_hostname(Some(hostname.to_string()));
-    config.set_listeners(vec![
+    config.hostname = Some(hostname.to_string());
+    config.listeners = Some(vec![
         format!("tcp://0.0.0.0:{tcp_listener_port}")
             .parse()
             .unwrap(),
@@ -754,7 +744,7 @@ async fn credential_peer_reconnects_to_admin_with_portal_client_online() {
     public_server_inst.run().await.unwrap();
 
     let mut admin_config = create_need_p2p_admin_config("udp");
-    admin_config.set_vpn_portal_config(VpnPortalConfig {
+    admin_config.vpn_portal_config = Some(VpnPortalConfig {
         enabled: None,
         wireguard_listen: "0.0.0.0:22121".parse().unwrap(),
         wireguard_private_key: Some(BASE64_STANDARD.encode([42u8; 32])),
@@ -1177,7 +1167,8 @@ async fn credential_basic_connectivity(#[case] pin_admin: bool) {
     // Create admin node
     let admin_config = create_admin_config("admin", Some("ns_adm"), "10.144.144.1", "fd00::1/64");
     let admin_public_key = admin_config
-        .get_secure_mode()
+        .secure_mode
+        .as_ref()
         .and_then(|config| config.local_public_key.clone())
         .unwrap();
     let mut admin_inst = Instance::new_with_process_runtime(admin_config, process_runtime.clone());
@@ -1193,7 +1184,7 @@ async fn credential_basic_connectivity(#[case] pin_admin: bool) {
     )
     .await;
     if pin_admin {
-        cred_config.set_peers(vec![PeerConfig {
+        cred_config.peer = Some(vec![PeerConfig {
             uri: "tcp://10.1.1.1:11010".parse().unwrap(),
             peer_public_key: Some(admin_public_key),
         }]);
@@ -1276,7 +1267,8 @@ async fn credential_rejects_incorrect_admin_pin() {
 
     let admin_config = create_admin_config("admin", Some("ns_adm"), "10.144.144.1", "fd00::1/64");
     let admin_public_key = admin_config
-        .get_secure_mode()
+        .secure_mode
+        .as_ref()
         .and_then(|config| config.local_public_key.clone())
         .unwrap();
     let mut admin_inst = Instance::new_with_process_runtime(admin_config, process_runtime.clone());
@@ -1292,7 +1284,7 @@ async fn credential_rejects_incorrect_admin_pin() {
     .await;
     let incorrect_admin_public_key = generate_secure_mode_config().local_public_key.unwrap();
     assert_ne!(incorrect_admin_public_key, admin_public_key);
-    cred_config.set_peers(vec![PeerConfig {
+    cred_config.peer = Some(vec![PeerConfig {
         uri: "tcp://10.1.1.1:11010".parse().unwrap(),
         peer_public_key: Some(incorrect_admin_public_key),
     }]);
@@ -1387,10 +1379,10 @@ async fn prefer_peer_relay_single_admin(#[case] allow_relay: bool) {
             .unwrap();
         let private = x25519_dalek::StaticSecret::from(privkey_bytes);
         let mut config = InstanceConfigRaw::default();
-        config.set_inst_name("cred_a".to_string());
-        config.set_netns(Some("ns_c1".to_string()));
-        config.set_ipv4(Some("10.144.144.2".parse().unwrap()));
-        config.set_ipv6(Some("fd00::2/64".parse().unwrap()));
+        config.instance_name = Some("cred_a".to_string());
+        config.netns = Some("ns_c1".to_string());
+        config.ipv4 = Some("10.144.144.2".parse().unwrap());
+        config.ipv6 = Some("fd00::2/64".parse().unwrap());
         config.set_network_identity(NetworkIdentity::new_credential(
             admin_inst
                 .get_global_ctx()
@@ -1398,9 +1390,7 @@ async fn prefer_peer_relay_single_admin(#[case] allow_relay: bool) {
                 .network_name
                 .clone(),
         ));
-        config
-            .set_secure_mode(Some(generate_secure_mode_config_with_key(&private)))
-            .unwrap();
+        config.secure_mode = Some(generate_secure_mode_config_with_key(&private));
         disable_p2p(&mut config);
         config
     };
@@ -1418,10 +1408,10 @@ async fn prefer_peer_relay_single_admin(#[case] allow_relay: bool) {
             .unwrap();
         let private = x25519_dalek::StaticSecret::from(privkey_bytes);
         let mut config = InstanceConfigRaw::default();
-        config.set_inst_name("cred_b".to_string());
-        config.set_netns(Some("ns_c2".to_string()));
-        config.set_ipv4(Some("10.144.144.3".parse().unwrap()));
-        config.set_ipv6(Some("fd00::3/64".parse().unwrap()));
+        config.instance_name = Some("cred_b".to_string());
+        config.netns = Some("ns_c2".to_string());
+        config.ipv4 = Some("10.144.144.3".parse().unwrap());
+        config.ipv6 = Some("fd00::3/64".parse().unwrap());
         config.set_network_identity(NetworkIdentity::new_credential(
             admin_inst
                 .get_global_ctx()
@@ -1429,9 +1419,7 @@ async fn prefer_peer_relay_single_admin(#[case] allow_relay: bool) {
                 .network_name
                 .clone(),
         ));
-        config
-            .set_secure_mode(Some(generate_secure_mode_config_with_key(&private)))
-            .unwrap();
+        config.secure_mode = Some(generate_secure_mode_config_with_key(&private));
         disable_p2p(&mut config);
         config
     };
@@ -1449,12 +1437,12 @@ async fn prefer_peer_relay_single_admin(#[case] allow_relay: bool) {
             .unwrap();
         let private = x25519_dalek::StaticSecret::from(privkey_bytes);
         let mut config = InstanceConfigRaw::default();
-        config.set_inst_name("cred_c".to_string());
-        config.set_netns(Some("ns_c3".to_string()));
-        config.set_ipv4(Some("10.144.144.4".parse().unwrap()));
-        config.set_ipv6(Some("fd00::4/64".parse().unwrap()));
+        config.instance_name = Some("cred_c".to_string());
+        config.netns = Some("ns_c3".to_string());
+        config.ipv4 = Some("10.144.144.4".parse().unwrap());
+        config.ipv6 = Some("fd00::4/64".parse().unwrap());
         // C has listener so A and B can connect to it
-        config.set_listeners(vec!["tcp://0.0.0.0:11020".parse().unwrap()]);
+        config.listeners = Some(vec!["tcp://0.0.0.0:11020".parse().unwrap()]);
         config.set_network_identity(NetworkIdentity::new_credential(
             admin_inst
                 .get_global_ctx()
@@ -1462,9 +1450,7 @@ async fn prefer_peer_relay_single_admin(#[case] allow_relay: bool) {
                 .network_name
                 .clone(),
         ));
-        config
-            .set_secure_mode(Some(generate_secure_mode_config_with_key(&private)))
-            .unwrap();
+        config.secure_mode = Some(generate_secure_mode_config_with_key(&private));
         disable_p2p(&mut config);
         config
     };
@@ -1703,7 +1689,7 @@ async fn prefer_peer_relay_uses_forwarded_coverage_across_two_admins() {
         "10.144.144.2",
         "fd00::2/64",
     );
-    relay_config.set_listeners(vec!["tcp://0.0.0.0:11020".parse().unwrap()]);
+    relay_config.listeners = Some(vec!["tcp://0.0.0.0:11020".parse().unwrap()]);
     disable_p2p(&mut relay_config);
 
     let mut target_config = create_credential_config_from_secret(
@@ -2085,11 +2071,11 @@ async fn credential_revocation_propagates() {
         let private = x25519_dalek::StaticSecret::from(privkey_bytes);
 
         let mut config = InstanceConfigRaw::default();
-        config.set_inst_name("cred".to_string());
-        config.set_netns(Some("ns_c1".to_string()));
-        config.set_ipv4(Some("10.144.144.2".parse().unwrap()));
-        config.set_ipv6(Some("fd00::2/64".parse().unwrap()));
-        config.set_listeners(vec![]);
+        config.instance_name = Some("cred".to_string());
+        config.netns = Some("ns_c1".to_string());
+        config.ipv4 = Some("10.144.144.2".parse().unwrap());
+        config.ipv6 = Some("fd00::2/64".parse().unwrap());
+        config.listeners = Some(vec![]);
         config.set_network_identity(NetworkIdentity::new_credential(
             admin_inst
                 .get_global_ctx()
@@ -2097,9 +2083,7 @@ async fn credential_revocation_propagates() {
                 .network_name
                 .clone(),
         ));
-        config
-            .set_secure_mode(Some(generate_secure_mode_config_with_key(&private)))
-            .unwrap();
+        config.secure_mode = Some(generate_secure_mode_config_with_key(&private));
         config
     };
 
@@ -2348,11 +2332,11 @@ async fn credential_unknown_rejected() {
     let random_private = x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng);
     let cred_config = {
         let mut config = InstanceConfigRaw::default();
-        config.set_inst_name("cred".to_string());
-        config.set_netns(Some("ns_c1".to_string()));
-        config.set_ipv4(Some("10.144.144.2".parse().unwrap()));
-        config.set_ipv6(Some("fd00::2/64".parse().unwrap()));
-        config.set_listeners(vec![]);
+        config.instance_name = Some("cred".to_string());
+        config.netns = Some("ns_c1".to_string());
+        config.ipv4 = Some("10.144.144.2".parse().unwrap());
+        config.ipv6 = Some("fd00::2/64".parse().unwrap());
+        config.listeners = Some(vec![]);
         config.set_network_identity(NetworkIdentity::new_credential(
             admin_inst
                 .get_global_ctx()
@@ -2360,9 +2344,7 @@ async fn credential_unknown_rejected() {
                 .network_name
                 .clone(),
         ));
-        config
-            .set_secure_mode(Some(generate_secure_mode_config_with_key(&random_private)))
-            .unwrap();
+        config.secure_mode = Some(generate_secure_mode_config_with_key(&random_private));
         config
     };
 

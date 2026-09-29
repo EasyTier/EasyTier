@@ -217,7 +217,8 @@ impl Handler for HostManagementHandler {
                 let network_config = request.config.unwrap_or_default();
                 let config = hosted_network_config(&network_config).gen_config()?;
                 Ok(ValidateConfigResponse {
-                    toml_config: serialize_raw_to_toml(config.raw())?,
+                    toml_config: serialize_raw_to_toml(config.raw())
+                        .map_err(anyhow::Error::from)?,
                 }
                 .encode_to_vec()
                 .into())
@@ -239,14 +240,9 @@ impl Handler for HostManagementHandler {
                 if let Some(source) = config_source_from_rpc(request.source) {
                     raw.source = Some(ConfigSourceConfig { source });
                 }
-                let toml_dump = serialize_raw_to_toml(&raw)?;
-                self.forward(
-                    full_method_name,
-                    input,
-                    Some(toml_dump),
-                    Some(instance_id),
-                )
-                .await
+                let toml_dump = serialize_raw_to_toml(&raw).map_err(anyhow::Error::from)?;
+                self.forward(full_method_name, input, Some(toml_dump), Some(instance_id))
+                    .await
             }
             _ => self.forward(full_method_name, input, None, None).await,
         }

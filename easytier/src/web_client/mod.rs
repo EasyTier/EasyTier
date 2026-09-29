@@ -17,8 +17,11 @@ use crate::{
 };
 use crate::{
     common::{
-        MachineIdOptions, config::{InstanceConfig, InstanceConfigRaw}, constants::EASYTIER_VERSION,
-        global_ctx::GlobalCtx, resolve_machine_id,
+        MachineIdOptions,
+        config::{InstanceConfig, InstanceConfigRaw},
+        constants::EASYTIER_VERSION,
+        global_ctx::GlobalCtx,
+        resolve_machine_id,
     },
     instance::{
         composition::runtime_one_shot_manual_connector,
@@ -139,8 +142,7 @@ pub async fn run_web_client(
     raw.flags.bind_device = Some(false);
     let config = InstanceConfig::try_from(raw)?;
     let host_config = crate::instance::config::runtime_core_host_config();
-    let snapshot =
-        easytier_core::instance::prepare_instance_config(config.clone(), &host_config)?;
+    let snapshot = easytier_core::instance::prepare_instance_config(config.clone(), &host_config)?;
     let store = easytier_core::config::runtime::InstanceConfigStore::new(snapshot);
     let global_ctx = Arc::new(GlobalCtx::new(store, &host_config));
     let hostname =

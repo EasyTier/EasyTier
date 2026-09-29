@@ -21,8 +21,8 @@ use easytier::proto::rpc_types::controller::BaseController;
 use easytier::web_client::{self, WebClient};
 use easytier::{
     common::config::{
-        network_config_from_raw, parse_instance_config, serialize_raw_to_toml, ConfigSource,
-        FileLoggerConfig, LoggingConfig, NetworkConfig, NetworkConfigExt,
+        ConfigSource, FileLoggerConfig, LoggingConfig, NetworkConfig, NetworkConfigExt,
+        network_config_from_raw, parse_instance_config, serialize_raw_to_toml,
     },
     common::log,
     instance::factory::{NativeInstanceManager, native_instance_manager},
@@ -138,7 +138,7 @@ async fn run_network_instance(
         .await
         .map_err(|e| e.to_string())?;
     client_manager
-        .post_run_network_instance_hook(&app, &toml_config.raw().get_id())
+        .post_run_network_instance_hook(&app, &toml_config.parsed().instance_id)
         .await?;
     Ok(())
 }
@@ -727,7 +727,12 @@ mod manager {
                 .pre_run_network_instance_hook(
                     &self.app,
                     cfg,
-                    PersistedConfigSource::from_runtime_source(cfg.parsed().source.as_ref().map_or(ConfigSource::default(), |s| s.source)),
+                    PersistedConfigSource::from_runtime_source(
+                        cfg.parsed()
+                            .source
+                            .as_ref()
+                            .map_or(ConfigSource::default(), |s| s.source),
+                    ),
                 )
                 .await
         }
@@ -1081,12 +1086,7 @@ mod manager {
             }
 
             self.storage
-                .save_config(
-                    app,
-                    instance_id,
-                    network_config_from_raw(cfg.raw()),
-                    source,
-                )
+                .save_config(app, instance_id, network_config_from_raw(cfg.raw()), source)
                 .map_err(|e| e.to_string())?;
 
             Ok(())

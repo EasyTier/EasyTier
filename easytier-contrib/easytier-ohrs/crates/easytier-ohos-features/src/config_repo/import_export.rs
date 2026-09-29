@@ -10,9 +10,7 @@ pub(super) fn export_config_toml_from_record(
     let config = serde_json::from_str::<NetworkConfig>(&record.config_json).ok()?;
     let instance_config = config.gen_config().ok()?;
     let toml_text = serialize_raw_to_toml(instance_config.raw()).ok()?;
-    Some(ExportTomlResult {
-        toml_text,
-    })
+    Some(ExportTomlResult { toml_text })
 }
 
 pub(super) fn import_toml_to_record(

@@ -8,16 +8,17 @@ use strum::VariantArray as _;
 use tokio::io::AsyncReadExt as _;
 
 use easytier_core::config::MappedListenerPolicy;
+#[cfg(feature = "web-client")]
+pub use easytier_core::config::api::network_config_from_raw;
 #[cfg(feature = "management")]
 pub use easytier_core::config::api_input::{
-    add_proxy_network_to_raw, NetworkConfig, NetworkConfigExt, NetworkingMethod,
-};
-pub use easytier_core::config::{
-    api::network_config_from_raw, normalize_config_source, parse_instance_config,
-    serialize_raw_to_toml, serialize_raw_to_toml_redacted, InstanceConfig, InstanceConfigParsed,
-    InstanceConfigRaw,
+    NetworkConfig, NetworkConfigExt, NetworkingMethod, add_proxy_network_to_raw,
 };
 pub use easytier_core::config::toml::*;
+pub use easytier_core::config::{
+    InstanceConfig, InstanceConfigParsed, InstanceConfigRaw, normalize_config_source,
+    parse_instance_config, serialize_raw_to_toml, serialize_raw_to_toml_redacted,
+};
 
 #[cfg(feature = "management")]
 use crate::common::env_parser;
@@ -437,7 +438,10 @@ network_secret = "${INSTANCE_SECRET}"
         );
 
         // 验证两个实例的配置确实不同
-        assert_ne!(config1.parsed().instance_name, config2.parsed().instance_name);
+        assert_ne!(
+            config1.parsed().instance_name,
+            config2.parsed().instance_name
+        );
         assert_ne!(
             config1.parsed().network_identity.network_secret,
             config2.parsed().network_identity.network_secret
