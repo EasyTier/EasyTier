@@ -771,6 +771,7 @@ where
                 running_listeners.clone(),
                 proxy_cidr_table.clone(),
                 tcp_proxy_socket_context,
+                (&host_config).into(),
             )
         };
         #[cfg(feature = "proxy-smoltcp-stack")]

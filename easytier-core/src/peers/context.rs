@@ -532,7 +532,7 @@ pub(crate) trait PeerContext: Send + Sync {
     }
 
     fn ospf_update_my_foreign_network_interval_sec(&self) -> u64 {
-        10
+        1
     }
 
     fn max_direct_conns_per_peer_in_foreign_network(&self) -> usize {
@@ -763,7 +763,7 @@ impl PeerContext for CorePeerContext {
     }
 
     fn ospf_update_my_foreign_network_interval_sec(&self) -> u64 {
-        10
+        1
     }
 
     fn advertised_ipv6_public_addr_prefix(&self) -> Option<Ipv6Cidr> {

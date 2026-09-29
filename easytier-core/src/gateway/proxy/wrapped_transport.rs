@@ -8,7 +8,7 @@ use crate::{
     config::runtime::InstanceConfigStore,
     connectivity::direct::DirectConnectorHost,
     connectivity::hole_punch::tcp::TcpHolePunchHost,
-    gateway::proxy::cidr_table::ProxyCidrTable,
+    gateway::proxy::{cidr_table::ProxyCidrTable, ProxyHostPolicy},
     listener::RunningListenerRegistry,
     packet::{PacketType, ZCPacket, ZCPacketType},
     peers::{
@@ -196,6 +196,7 @@ impl WrappedTransportProxyModule {
         running_listeners: Arc<RunningListenerRegistry>,
         cidr_table: Arc<ProxyCidrTable>,
         socket_context: SocketContext,
+        host_policy: ProxyHostPolicy,
     ) -> Option<Arc<Self>>
     where
         H: DirectConnectorHost + TcpHolePunchHost,
@@ -213,6 +214,7 @@ impl WrappedTransportProxyModule {
             running_listeners,
             cidr_table,
             socket_context,
+            host_policy,
         );
         Some(Arc::new(Self {
             peer_manager,

@@ -32,3 +32,22 @@ pub(crate) mod udp_socket_runtime;
 pub(crate) mod wrapped_tcp_proxy;
 #[cfg(feature = "proxy-packet")]
 pub(crate) mod wrapped_transport_destination;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct ProxyHostPolicy {
+    pub force_exit_node: bool,
+    pub smoltcp_available: bool,
+    pub requires_smoltcp: bool,
+    pub icmp_failure_is_fatal: bool,
+}
+
+impl From<&crate::instance::CoreInstanceHostConfig> for ProxyHostPolicy {
+    fn from(host: &crate::instance::CoreInstanceHostConfig) -> Self {
+        Self {
+            force_exit_node: host.force_exit_node,
+            smoltcp_available: host.smoltcp_available,
+            requires_smoltcp: host.requires_smoltcp,
+            icmp_failure_is_fatal: host.icmp_failure_is_fatal,
+        }
+    }
+}
