@@ -1,7 +1,7 @@
 //! Runtime implementation and lifecycle exports for a WASI core instance.
 
 use crate::{
-    config::toml::TomlConfig,
+    config::InstanceConfig,
     connectivity::connector_host::HostConnectorEnvironmentSnapshot,
     gateway::dhcp::{DhcpIpv4ApplyOutcome, DhcpIpv4Host},
     instance::{CorePacketPlane, InstanceRuntimeHost},
@@ -85,7 +85,7 @@ impl WasiCoreRuntime {
 }
 
 pub(super) fn new_wasi_core_runtime(
-    config: TomlConfig,
+    config: InstanceConfig,
     process_runtime: std::sync::Arc<crate::process_runtime::CoreProcessRuntime>,
     environment_snapshot: HostConnectorEnvironmentSnapshot,
     packet_sink: crate::host::packet::HostPacketSinkHandle,
@@ -176,7 +176,7 @@ pub(super) fn new_wasi_core_runtime(
                 socket_context: crate::socket::SocketContext::default(),
             });
     }
-    let core = CoreInstance::from_toml(config, adapters)?;
+    let core = CoreInstance::new(config, adapters)?;
 
     Ok(WasiCoreRuntime {
         socket_runtime,
@@ -199,7 +199,7 @@ mod abi {
     use tokio::{runtime::Builder, task::JoinHandle};
 
     use crate::{
-        config::toml::{ConfigLoader as _, TomlConfig},
+        config::InstanceConfig,
         foundation::time::{clear_domain, enter_domain, next_deadline_millis},
         host::packet::{HostPacket, HostPacketSinkHandle},
         instance::{
@@ -330,10 +330,10 @@ mod abi {
 
         fn create(
             &self,
-            config: TomlConfig,
+            config: InstanceConfig,
             context: Self::CreateContext,
         ) -> Result<Arc<Self::Instance>, Self::Error> {
-            let instance_id = config.get_id();
+            let instance_id = config.parsed().instance_id;
             let protected_tcp_ports = context
                 .environment
                 .protected_tcp_ports
@@ -650,7 +650,7 @@ mod abi {
     }
 
     fn manager_create(
-        config: TomlConfig,
+        config: InstanceConfig,
         context: WasiCreateContext,
     ) -> Result<
         std::sync::Arc<WasiInstance>,

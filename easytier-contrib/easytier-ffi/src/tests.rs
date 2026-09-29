@@ -6,7 +6,7 @@ use crate::{
     *,
 };
 use easytier::{
-    common::config::{ConfigFileControl, ConfigLoader as _, TomlConfigLoader},
+    common::config::{ConfigFileControl, InstanceConfig, InstanceConfigRaw},
     web_client::WebClientHooks,
 };
 use serde_json::Value;
@@ -17,6 +17,13 @@ use std::{
     time::Duration,
 };
 use uuid::Uuid;
+
+fn test_config(id: Uuid, name: impl Into<String>) -> InstanceConfig {
+    let mut raw = InstanceConfigRaw::default();
+    raw.set_id(id);
+    raw.set_inst_name(name.into());
+    InstanceConfig::try_from(raw).unwrap()
+}
 
 #[test]
 fn test_parse_config() {
@@ -95,9 +102,7 @@ fn free_key_value_pairs(infos: &[KeyValuePair]) {
 fn list_instance_returns_instance_names_and_ids() {
     let instance_id = Uuid::new_v4();
     let instance_name = format!("list-instance-{}", instance_id);
-    let cfg = TomlConfigLoader::default();
-    cfg.set_id(instance_id);
-    cfg.set_inst_name(instance_name.clone());
+    let cfg = test_config(instance_id, instance_name.clone());
     ffi_context()
         .manager
         .run_network_instance(cfg, ConfigFileControl::STATIC_CONFIG)
@@ -257,10 +262,8 @@ async fn config_server_hooks_emit_run_event() {
         &events as *const _ as *mut c_void,
     );
     let instance_id = Uuid::new_v4();
-    let cfg = TomlConfigLoader::default();
-    cfg.set_id(instance_id);
     let inst_name = format!("test-{}", instance_id);
-    cfg.set_inst_name(inst_name.clone());
+    let cfg = test_config(instance_id, inst_name.clone());
     hooks.pre_run_network_instance(&cfg).await.unwrap();
     ffi_context()
         .manager
@@ -269,9 +272,7 @@ async fn config_server_hooks_emit_run_event() {
 
     hooks.post_run_network_instance(&instance_id).await.unwrap();
 
-    let duplicate_cfg = TomlConfigLoader::default();
-    duplicate_cfg.set_inst_name(inst_name);
-    duplicate_cfg.set_id(Uuid::new_v4());
+    let duplicate_cfg = test_config(Uuid::new_v4(), inst_name);
     assert!(
         hooks
             .pre_run_network_instance(&duplicate_cfg)
@@ -305,9 +306,7 @@ async fn config_server_hooks_emit_delete_events_for_tracked_instances() {
     let instance_id_2 = Uuid::new_v4();
     let unknown_instance_id = Uuid::new_v4();
     for id in [instance_id_1, instance_id_2] {
-        let cfg = TomlConfigLoader::default();
-        cfg.set_id(id);
-        cfg.set_inst_name(format!("test-{}", id));
+        let cfg = test_config(id, format!("test-{}", id));
         hooks.pre_run_network_instance(&cfg).await.unwrap();
         ffi_context()
             .manager
@@ -377,17 +376,13 @@ async fn config_server_hooks_reject_duplicate_instance_name() {
     let inst_name = format!("test-{}", Uuid::new_v4());
     let existing_id = Uuid::new_v4();
     let new_id = Uuid::new_v4();
-    let existing_cfg = TomlConfigLoader::default();
-    existing_cfg.set_inst_name(inst_name.clone());
-    existing_cfg.set_id(existing_id);
+    let existing_cfg = test_config(existing_id, inst_name.clone());
     ffi_context()
         .manager
         .run_network_instance(existing_cfg, ConfigFileControl::STATIC_CONFIG)
         .unwrap();
 
-    let cfg = TomlConfigLoader::default();
-    cfg.set_inst_name(inst_name.clone());
-    cfg.set_id(new_id);
+    let cfg = test_config(new_id, inst_name.clone());
 
     assert!(hooks.pre_run_network_instance(&cfg).await.is_err());
     assert_eq!(find_instance_id_by_name(&inst_name), Some(existing_id));
@@ -414,9 +409,7 @@ async fn config_server_hooks_remove_overwritten_id_before_duplicate_name_error()
         (overwritten_id, old_name.clone()),
         (duplicate_id, duplicate_name.clone()),
     ] {
-        let cfg = TomlConfigLoader::default();
-        cfg.set_id(id);
-        cfg.set_inst_name(name);
+        let cfg = test_config(id, name);
         ffi_context()
             .manager
             .run_network_instance(cfg, ConfigFileControl::STATIC_CONFIG)
@@ -433,9 +426,7 @@ async fn config_server_hooks_remove_overwritten_id_before_duplicate_name_error()
         .await
         .unwrap();
 
-    let cfg = TomlConfigLoader::default();
-    cfg.set_inst_name(duplicate_name.clone());
-    cfg.set_id(overwritten_id);
+    let cfg = test_config(overwritten_id, duplicate_name.clone());
 
     assert!(hooks.pre_run_network_instance(&cfg).await.is_err());
     assert!(hooks.tracked_instance_ids().is_empty());
@@ -459,9 +450,7 @@ async fn config_server_hooks_remove_tracked_state_before_overwrite_retry() {
     let instance_id = Uuid::new_v4();
     hooks.instance_ids.lock().unwrap().insert(instance_id);
 
-    let cfg = TomlConfigLoader::default();
-    cfg.set_inst_name(inst_name.clone());
-    cfg.set_id(instance_id);
+    let cfg = test_config(instance_id, inst_name.clone());
     ffi_context()
         .manager
         .run_network_instance(cfg.clone(), ConfigFileControl::STATIC_CONFIG)
@@ -486,9 +475,7 @@ async fn config_server_hooks_remove_tracked_state_before_overwrite_retry() {
 async fn config_server_hooks_reject_post_run_after_external_delete() {
     let hooks = ManagedConfigServerClientHooks::new(None, std::ptr::null_mut());
     let instance_id = Uuid::new_v4();
-    let cfg = TomlConfigLoader::default();
-    cfg.set_id(instance_id);
-    cfg.set_inst_name(format!("test-{}", instance_id));
+    let cfg = test_config(instance_id, format!("test-{}", instance_id));
     hooks.pre_run_network_instance(&cfg).await.unwrap();
     ffi_context()
         .manager
@@ -507,9 +494,7 @@ async fn config_server_hooks_reject_post_run_after_external_delete() {
 fn find_instance_id_by_name_resolves_uncommitted_manager_instance_name() {
     let instance_id = Uuid::new_v4();
     let inst_name = format!("test-{}", instance_id);
-    let cfg = TomlConfigLoader::default();
-    cfg.set_id(instance_id);
-    cfg.set_inst_name(inst_name.clone());
+    let cfg = test_config(instance_id, inst_name.clone());
     ffi_context()
         .manager
         .run_network_instance(cfg, ConfigFileControl::STATIC_CONFIG)
@@ -537,9 +522,7 @@ fn delete_network_instance_removes_only_named_instances() {
         (keep_id, keep_name.clone()),
         (delete_id, delete_name.clone()),
     ] {
-        let cfg = TomlConfigLoader::default();
-        cfg.set_id(id);
-        cfg.set_inst_name(name.clone());
+        let cfg = test_config(id, name.clone());
         ffi_context()
             .manager
             .run_network_instance(cfg, ConfigFileControl::STATIC_CONFIG)
@@ -625,9 +608,7 @@ fn delete_network_instance_rejects_an_ambiguous_name() {
     let duplicate_name = format!("duplicate-{}", Uuid::new_v4());
     let instance_ids = [Uuid::new_v4(), Uuid::new_v4()];
     for instance_id in instance_ids {
-        let config = TomlConfigLoader::default();
-        config.set_id(instance_id);
-        config.set_inst_name(duplicate_name.clone());
+        let config = test_config(instance_id, duplicate_name.clone());
         ffi_context()
             .manager
             .run_network_instance(config, ConfigFileControl::STATIC_CONFIG)

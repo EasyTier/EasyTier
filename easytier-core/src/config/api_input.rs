@@ -13,12 +13,9 @@ use easytier_proto::common::Flags;
 use optionize::{Optionizable, Optionized};
 
 use crate::config::{
-    InstanceConfigParsed, InstanceConfigRaw, MappedListenerPolicy,
+    InstanceConfig, InstanceConfigParsed, InstanceConfigRaw, MappedListenerPolicy,
     instance::{normalize_hostname, normalize_ipv4, normalize_network_identity},
-    toml::{
-        ConfigLoader, NetworkIdentity, PeerConfig, PortForwardConfig, TomlConfig, TomlConfigLoader,
-        VpnPortalClientConfig, VpnPortalConfig,
-    },
+    toml::{NetworkIdentity, PeerConfig, PortForwardConfig, VpnPortalClientConfig, VpnPortalConfig},
 };
 
 fn parse_mapped_listener_urls(mapped_listeners: &[String]) -> Result<Vec<url::Url>, anyhow::Error> {
@@ -26,9 +23,9 @@ fn parse_mapped_listener_urls(mapped_listeners: &[String]) -> Result<Vec<url::Ur
         .parse_urls(mapped_listeners)
 }
 
-pub fn add_proxy_network_to_config(
+pub fn add_proxy_network_to_raw(
     proxy_network: &str,
-    cfg: &TomlConfigLoader,
+    raw: &mut InstanceConfigRaw,
 ) -> Result<(), anyhow::Error> {
     let parts: Vec<&str> = proxy_network.split("->").collect();
     let real_cidr = parts[0]
@@ -37,10 +34,9 @@ pub fn add_proxy_network_to_config(
 
     if parts.len() > 2 {
         return Err(anyhow::anyhow!(
-                    "invalid proxy network format: {}, support format: <real_cidr> or <real_cidr>-><mapped_cidr>, example:
-                    10.0.0.0/24 or 10.0.0.0/24->192.168.0.0/24",
-                    proxy_network
-                ));
+            "invalid proxy network format: {}, support format: <real_cidr> or <real_cidr>-><mapped_cidr>, example:\n10.0.0.0/24 or 10.0.0.0/24->192.168.0.0/24",
+            proxy_network
+        ));
     }
 
     let mapped_cidr = if parts.len() == 2 {
@@ -52,7 +48,7 @@ pub fn add_proxy_network_to_config(
     } else {
         None
     };
-    cfg.add_proxy_cidr(real_cidr, mapped_cidr)?;
+    raw.add_proxy_cidr(real_cidr, mapped_cidr)?;
     Ok(())
 }
 
@@ -98,8 +94,7 @@ pub(crate) fn flags_patch_from_network_config(
 }
 
 pub trait NetworkConfigExt {
-    fn gen_config(&self) -> Result<TomlConfigLoader, anyhow::Error>;
-    fn new_from_config(config: &TomlConfig) -> Result<NetworkConfig, anyhow::Error>;
+    fn gen_config(&self) -> Result<InstanceConfig, anyhow::Error>;
 }
 
 #[cfg(all(
@@ -138,7 +133,8 @@ pub(crate) fn merge_network_config_toml(
     original_toml: &str,
     config: &NetworkConfig,
 ) -> Result<String, anyhow::Error> {
-    let generated_toml = config.gen_config()?.dump();
+    let generated = config.gen_config()?;
+    let generated_toml = crate::config::serialize_raw_to_toml(generated.raw())?;
     let mut original = toml::from_str::<toml::Table>(original_toml)
         .context("failed to parse the original TOML document")?;
     let mut generated = toml::from_str::<toml::Table>(&generated_toml)
@@ -219,19 +215,18 @@ fn parse_peer_urls(peer_urls: &[String]) -> Result<Vec<PeerConfig>, anyhow::Erro
 }
 
 impl NetworkConfigExt for NetworkConfig {
-    #[allow(deprecated)]
-    fn gen_config(&self) -> Result<TomlConfigLoader, anyhow::Error> {
-        let cfg = TomlConfigLoader::default();
-        cfg.set_id(
-            self.instance_id
-                .clone()
-                .unwrap_or(uuid::Uuid::new_v4().to_string())
-                .parse()
-                .with_context(|| format!("failed to parse instance id: {:?}", self.instance_id))?,
-        );
-        cfg.set_hostname(self.hostname.clone());
-        cfg.set_dhcp(self.dhcp.unwrap_or_default());
-        cfg.set_inst_name(self.network_name.clone().unwrap_or_default());
+    fn gen_config(&self) -> Result<InstanceConfig, anyhow::Error> {
+        let mut raw = InstanceConfigRaw::default();
+        let instance_id = self
+            .instance_id
+            .clone()
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+            .parse()
+            .with_context(|| format!("failed to parse instance id: {:?}", self.instance_id))?;
+        raw.instance_id = Some(instance_id);
+        raw.hostname = self.hostname.clone();
+        raw.dhcp = self.dhcp;
+        raw.instance_name = self.network_name.clone();
 
         // The web UI does not expose credential inputs directly, but imported/saved
         // NetworkConfig objects still need to preserve credential-mode instances via
@@ -246,17 +241,17 @@ impl NetworkConfigExt for NetworkConfig {
         };
 
         if credential_secret.is_some() {
-            cfg.set_network_identity(NetworkIdentity::new_credential(
+            raw.set_network_identity(NetworkIdentity::new_credential(
                 self.network_name.clone().unwrap_or_default(),
             ));
         } else {
-            cfg.set_network_identity(NetworkIdentity::new(
+            raw.set_network_identity(NetworkIdentity::new(
                 self.network_name.clone().unwrap_or_default(),
                 self.network_secret.clone().unwrap_or_default(),
             ));
         }
 
-        if !cfg.get_dhcp() {
+        if !self.dhcp.unwrap_or_default() {
             let virtual_ipv4 = self.virtual_ipv4.clone().unwrap_or_default();
             if !virtual_ipv4.is_empty() {
                 let ip = format!("{}/{}", virtual_ipv4, self.network_length.unwrap_or(24))
@@ -267,7 +262,7 @@ impl NetworkConfigExt for NetworkConfig {
                             virtual_ipv4, self.network_length
                         )
                     })?;
-                cfg.set_ipv4(Some(ip));
+                raw.ipv4 = Some(ip);
             }
         }
 
@@ -278,14 +273,14 @@ impl NetworkConfigExt for NetworkConfig {
                 let peers = parse_peers(&self.peers)?;
                 if peers.is_empty() {
                     let public_server_url = self.public_server_url.clone().unwrap_or_default();
-                    cfg.set_peers(vec![PeerConfig {
+                    raw.peer = Some(vec![PeerConfig {
                         uri: public_server_url.parse().with_context(|| {
                             format!("failed to parse public server uri: {}", public_server_url)
                         })?,
                         peer_public_key: None,
                     }]);
                 } else {
-                    cfg.set_peers(peers);
+                    raw.peer = Some(peers);
                 }
             }
             NetworkingMethod::Manual => {
@@ -294,7 +289,7 @@ impl NetworkConfigExt for NetworkConfig {
                     peers = parse_peer_urls(&self.peer_urls)?;
                 }
                 if !peers.is_empty() {
-                    cfg.set_peers(peers);
+                    raw.peer = Some(peers);
                 }
             }
             NetworkingMethod::Standalone => {}
@@ -311,14 +306,14 @@ impl NetworkConfigExt for NetworkConfig {
                     .with_context(|| format!("failed to parse listener uri: {}", listener_url))?,
             );
         }
-        cfg.set_listeners(listener_urls);
+        raw.listeners = Some(listener_urls);
 
         for n in self.proxy_cidrs.iter() {
-            add_proxy_network_to_config(n, &cfg)?;
+            add_proxy_network_to_raw(n, &mut raw)?;
         }
 
         if !self.port_forwards.is_empty() {
-            cfg.set_port_forwards(
+            raw.port_forward = Some(
                 self.port_forwards
                     .iter()
                     .filter(|pf| !pf.bind_ip.is_empty() && !pf.dst_ip.is_empty())
@@ -348,7 +343,7 @@ impl NetworkConfigExt for NetworkConfig {
         }
 
         if let Some(vpn_config) = &self.vpn_portal_config {
-            cfg.set_vpn_portal_config(VpnPortalConfig {
+            raw.vpn_portal_config = Some(VpnPortalConfig {
                 wireguard_listen: vpn_config.wireguard_listen.parse().with_context(|| {
                     format!(
                         "failed to parse vpn portal wireguard listen address: {}",
@@ -384,7 +379,7 @@ impl NetworkConfigExt for NetworkConfig {
                         .with_context(|| format!("failed to parse route: {}", route))?,
                 );
             }
-            cfg.set_routes(Some(routes));
+            raw.routes = Some(routes);
         }
 
         if !self.exit_nodes.is_empty() {
@@ -395,20 +390,20 @@ impl NetworkConfigExt for NetworkConfig {
                         .with_context(|| format!("failed to parse exit node: {}", node))?,
                 );
             }
-            cfg.set_exit_nodes(exit_nodes);
+            raw.exit_nodes = Some(exit_nodes);
         }
 
         if self.enable_socks5.unwrap_or_default()
             && let Some(socks5_port) = self.socks5_port
         {
-            cfg.set_socks5_portal(Some(
+            raw.socks5_proxy = Some(
                 format!("socks5://0.0.0.0:{}", socks5_port).parse().unwrap(),
-            ));
+            );
         }
 
         if !self.mapped_listeners.is_empty() {
             let mapped_listeners = parse_mapped_listener_urls(&self.mapped_listeners)?;
-            cfg.set_mapped_listeners(Some(mapped_listeners));
+            raw.mapped_listeners = Some(mapped_listeners);
         }
 
         if let Some(credential_file) = self
@@ -416,32 +411,34 @@ impl NetworkConfigExt for NetworkConfig {
             .as_ref()
             .filter(|path| !path.is_empty())
         {
-            cfg.set_credential_file(Some(credential_file.into()));
+            raw.credential_file = Some(credential_file.into());
         }
 
-        cfg.set_managed_credentials(
-            self.managed_credentials
-                .iter()
-                .map(|credential| credential.clone().upgrade())
-                .collect::<Result<Vec<_>, _>>()?,
-        );
+        let managed_credentials = self
+            .managed_credentials
+            .iter()
+            .map(|credential| credential.clone().upgrade())
+            .collect::<Result<Vec<_>, _>>()?;
+        if !managed_credentials.is_empty() {
+            raw.managed_credentials = Some(managed_credentials);
+        }
 
         if let Some(credential_secret) = credential_secret {
-            cfg.set_secure_mode(Some(easytier_proto::common::SecureModeConfig {
+            raw.secure_mode = Some(easytier_proto::common::SecureModeConfig {
                 enabled: true,
                 local_private_key: Some(credential_secret),
                 local_public_key: None,
-            }))?;
+            });
         } else {
-            cfg.set_secure_mode(self.secure_mode.clone())?;
+            raw.secure_mode = self.secure_mode.clone();
         }
 
         if let Some(ipv6_public_addr_provider) = self.ipv6_public_addr_provider {
-            cfg.set_ipv6_public_addr_provider(ipv6_public_addr_provider);
+            raw.ipv6_public_addr_provider = Some(ipv6_public_addr_provider);
         }
 
         if let Some(ipv6_public_addr_auto) = self.ipv6_public_addr_auto {
-            cfg.set_ipv6_public_addr_auto(ipv6_public_addr_auto);
+            raw.ipv6_public_addr_auto = Some(ipv6_public_addr_auto);
         }
 
         if let Some(ipv6_public_addr_prefix) = self
@@ -449,23 +446,19 @@ impl NetworkConfigExt for NetworkConfig {
             .as_ref()
             .filter(|prefix| !prefix.is_empty())
         {
-            cfg.set_ipv6_public_addr_prefix(Some(ipv6_public_addr_prefix.parse().with_context(
+            raw.ipv6_public_addr_prefix = Some(ipv6_public_addr_prefix.parse().with_context(
                 || format!("failed to parse ipv6 public address prefix: {ipv6_public_addr_prefix}"),
-            )?));
+            )?);
         }
 
         if let Some(acl) = self.acl.as_ref()
             && !acl.is_empty()
         {
-            cfg.set_acl(Some(acl.clone()));
+            raw.acl = Some(acl.clone());
         }
 
-        cfg.patch_flags(flags_patch_from_network_config(self)?);
-        Ok(cfg)
-    }
-
-    fn new_from_config(config: &TomlConfig) -> Result<Self, anyhow::Error> {
-        Ok(network_config_from_raw(&config.raw()))
+        raw.patch_flags(flags_patch_from_network_config(self)?);
+        InstanceConfig::try_from(raw)
     }
 }
 
@@ -718,8 +711,9 @@ mod tests {
                     ..standalone_config()
                 };
                 let config = input.gen_config().unwrap();
-                let config = TomlConfigLoader::new_from_str(&config.dump()).unwrap();
-                let output = NetworkConfig::new_from_config(&config).unwrap();
+                let dumped = crate::config::serialize_raw_to_toml(config.raw()).unwrap();
+                let config = crate::config::parse_instance_config("round_trip", &dumped).unwrap();
+                let output = network_config_from_raw(config.raw());
                 assert_eq!(output.disable_encryption, disabled);
                 assert_eq!(output.enable_relay_network_whitelist, whitelist);
                 assert_eq!(output.latency_first, Some(false));
@@ -747,7 +741,7 @@ mod tests {
         };
 
         let config = input.gen_config().unwrap();
-        let portal = config.get_vpn_portal_config().unwrap();
+        let portal = config.parsed().vpn_portal_config.as_ref().unwrap();
         assert_eq!(portal.wireguard_listen, "0.0.0.0:51820".parse().unwrap());
         assert_eq!(
             portal.wireguard_private_key.as_deref(),
@@ -757,7 +751,7 @@ mod tests {
         assert_eq!(portal.clients[0].virtual_ip.to_string(), "10.144.144.10/16");
         assert_eq!(portal.clients[0].groups, vec!["staff".to_owned()]);
 
-        let output = NetworkConfig::new_from_config(&config).unwrap();
+        let output = network_config_from_raw(config.raw());
         assert_eq!(output.vpn_portal_config, input.vpn_portal_config);
         assert_eq!(output.enable_vpn_portal, None);
     }
@@ -778,7 +772,7 @@ mod tests {
         };
 
         let config = input.gen_config().unwrap();
-        let output = NetworkConfig::new_from_config(&config).unwrap();
+        let output = network_config_from_raw(config.raw());
         assert_eq!(output.managed_credentials[0].credential_id, "managed-a");
         assert_eq!(output.managed_credentials[0].reusable, Some(true));
     }
@@ -792,11 +786,11 @@ mod tests {
         };
 
         let config = input.gen_config().unwrap();
-        let flags = config.get_flags();
+        let flags = &config.parsed().flags;
         assert!(!flags.disable_relay_data);
         assert!(flags.prefer_peer_relay);
 
-        let output = NetworkConfig::new_from_config(&config).unwrap();
+        let output = network_config_from_raw(config.raw());
         assert_eq!(output.disable_relay_data, Some(false));
         assert_eq!(output.prefer_peer_relay, Some(true));
     }
@@ -826,7 +820,7 @@ mod tests {
         .gen_config()
         .unwrap();
 
-        assert!(config.get_vpn_portal_config().is_none());
+        assert!(config.raw().vpn_portal_config.is_none());
     }
 
     #[cfg(feature = "browser-config")]
@@ -846,8 +840,8 @@ network_secret = "secret"
 default_protocol = "udp"
 disable_p2p = true
 "#;
-        let parsed = TomlConfigLoader::new_from_str(original).unwrap();
-        let mut network_config = NetworkConfig::new_from_config(&parsed).unwrap();
+        let parsed = crate::config::parse_instance_config("browser_test", original).unwrap();
+        let mut network_config = network_config_from_raw(parsed.raw());
         network_config.network_name = Some("edited-network".to_owned());
         network_config.disable_p2p = Some(false);
 

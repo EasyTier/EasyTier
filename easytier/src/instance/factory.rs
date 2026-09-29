@@ -5,7 +5,7 @@ use easytier_core::instance::manager::InstanceManager;
 #[cfg(feature = "management-rpc")]
 use easytier_core::management::ProcessRuntimeProvider;
 use easytier_core::{
-    config::toml::TomlConfig,
+    config::InstanceConfig,
     instance::{CoreInstance, manager::InstanceFactory},
     process_runtime::CoreProcessRuntime,
 };
@@ -38,7 +38,7 @@ pub fn native_cli_instance_manager() -> NativeInstanceManager {
     )
 }
 
-pub fn create_native_instance(config: TomlConfig) -> anyhow::Result<Arc<NativeCoreInstance>> {
+pub fn create_native_instance(config: InstanceConfig) -> anyhow::Result<Arc<NativeCoreInstance>> {
     NativeInstanceFactory::new(CoreProcessRuntime::new()).create(config, ())
 }
 
@@ -139,7 +139,7 @@ impl InstanceFactory for NativeInstanceFactory {
 
     fn create(
         &self,
-        config: TomlConfig,
+        config: InstanceConfig,
         (): Self::CreateContext,
     ) -> Result<Arc<Self::Instance>, Self::Error> {
         let _runtime = self
@@ -170,7 +170,7 @@ impl ProcessRuntimeProvider for NativeInstanceFactory {
 
 #[cfg(test)]
 mod tests {
-    use easytier_core::{config::toml::ConfigLoader as _, instance::CoreInstanceState};
+    use easytier_core::{config::parse_instance_config, instance::CoreInstanceState};
 
     use super::*;
 
@@ -178,11 +178,14 @@ mod tests {
     async fn core_manager_stores_and_runs_native_core_instance_directly() {
         let factory = NativeInstanceFactory::new(CoreProcessRuntime::new());
         let manager = InstanceManager::new(factory, None);
-        let config = TomlConfig::default();
-        let mut flags = config.get_flags();
-        flags.no_tun = true;
-        config.set_flags(flags);
-        config.set_listeners(Vec::new());
+        let config = parse_instance_config(
+            "test",
+            r#"[flags]
+no_tun = true
+listeners = []
+"#,
+        )
+        .unwrap();
 
         let instance = manager.create(config, ()).unwrap();
         instance.start().await.unwrap();
@@ -201,8 +204,7 @@ mod tests {
         let factory = NativeInstanceFactory::new(CoreProcessRuntime::new())
             .with_runtime_handle(Some(runtime.handle().clone()));
         let manager = InstanceManager::new(factory, Some(runtime.handle().clone()));
-        let config = TomlConfig::default();
-        config.set_listeners(Vec::new());
+        let config = parse_instance_config("test", "listeners = []\n").unwrap();
 
         let instance = manager.create(config, ()).unwrap();
 
@@ -215,8 +217,7 @@ mod tests {
         let factory = NativeInstanceFactory::new(CoreProcessRuntime::new())
             .with_runtime_handle(Some(runtime.handle().clone()));
         let manager = InstanceManager::new(factory, Some(runtime.handle().clone()));
-        let config = TomlConfig::default();
-        config.set_listeners(Vec::new());
+        let config = parse_instance_config("test", "listeners = []\n").unwrap();
 
         let instance = manager.create(config, ()).unwrap();
         assert!(subscribe_native_instance_event(&instance).is_some());

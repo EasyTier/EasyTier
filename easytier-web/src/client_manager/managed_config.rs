@@ -482,7 +482,7 @@ mod tests {
     use std::collections::HashSet;
 
     use easytier::{
-        common::config::{ConfigLoader as _, ConfigSource, NetworkConfigExt},
+        common::config::{ConfigSource, NetworkConfigExt},
         proto::api::manage::{ConfigSource as RpcConfigSource, NetworkConfig, NetworkMeta},
     };
     use easytier_core::management::remote_client::ListNetworkProps;
@@ -1149,7 +1149,7 @@ mod tests {
         assert_eq!(config.port_forwards.len(), 1);
 
         let runtime_config = config.gen_config().unwrap();
-        let flags = runtime_config.get_flags();
+        let flags = runtime_config.parsed().flags.clone();
         assert!(flags.no_tun);
         assert!(flags.private_mode);
         assert!(flags.need_p2p);
@@ -1157,7 +1157,7 @@ mod tests {
         assert!(flags.disable_tcp_hole_punching);
         assert!(flags.disable_udp_hole_punching);
         assert!(flags.disable_sym_hole_punching);
-        assert_eq!(runtime_config.get_port_forwards().len(), 1);
+        assert_eq!(runtime_config.parsed().port_forward.len(), 1);
     }
 
     #[test]

@@ -2,9 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    config::toml::TomlConfig, connectivity::connector_host::HostConnectorEnvironmentSnapshot,
-};
+use crate::connectivity::connector_host::HostConnectorEnvironmentSnapshot;
 
 pub(crate) const WASI_CORE_INSTANCE_CONFIG_VERSION: u32 =
     crate::wasi::abi::CORE_INSTANCE_CONFIG_VERSION;
@@ -30,8 +28,8 @@ impl WasiCoreInstanceCreateConfig {
         Ok(())
     }
 
-    pub fn parse_config(&self) -> anyhow::Result<TomlConfig> {
-        TomlConfig::new_from_str_with_source("WASI create config", &self.config)
+    pub fn parse_config(&self) -> anyhow::Result<crate::config::InstanceConfig> {
+        crate::config::parse_instance_config("WASI create config", &self.config)
     }
 }
 

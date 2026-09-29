@@ -187,7 +187,7 @@ async fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use easytier::common::config::{ConfigLoader as _, TomlConfigLoader};
+    use easytier::common::config::{parse_instance_config, serialize_raw_to_toml};
 
     #[test]
     fn parses_minimal_config_argument() {
@@ -240,7 +240,8 @@ mod tests {
 
     #[tokio::test]
     async fn compact_factory_accepts_unsupported_config_without_changing_it() {
-        let config = TomlConfigLoader::new_from_str(
+        let config = parse_instance_config(
+            "test",
             r#"
 dhcp = true
 listeners = ["quic://127.0.0.1:11010"]
@@ -252,16 +253,14 @@ data_compress_algo = "Zstd"
 "#,
         )
         .unwrap();
-        config.get_id();
-        let before = config.dump();
+        let before = serialize_raw_to_toml(config.raw()).unwrap();
         let manager =
             native_compact_instance_manager_with_runtime(tokio::runtime::Handle::current());
 
         let instance = manager.create(config, ()).unwrap();
 
         assert_eq!(
-            easytier_core::config::serialize_raw_to_toml(instance.config_store().snapshot().raw())
-                .unwrap(),
+            serialize_raw_to_toml(instance.config_store().snapshot().raw()).unwrap(),
             before
         );
     }

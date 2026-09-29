@@ -3,7 +3,6 @@ use std::sync::Arc;
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
 use easytier_core::{
-    config::toml::ConfigLoader as _,
     connectivity::{manual::ManualTunnelConnector, protocol::raw::TunnelDialer},
     management::{ConfigServerEndpoint, WebClientConfig},
     socket::IpVersion,
@@ -18,7 +17,7 @@ use crate::{
 };
 use crate::{
     common::{
-        MachineIdOptions, config::TomlConfigLoader, constants::EASYTIER_VERSION,
+        MachineIdOptions, config::{InstanceConfig, InstanceConfigRaw}, constants::EASYTIER_VERSION,
         global_ctx::GlobalCtx, resolve_machine_id,
     },
     instance::{
@@ -136,13 +135,12 @@ pub async fn run_web_client(
         .with_context(|| "failed to resolve machine id for web client")?;
     let endpoint = parse_config_server_endpoint(config_server_url)?;
 
-    let config = TomlConfigLoader::default();
-    let mut flags = config.get_flags();
-    flags.bind_device = false;
-    config.set_flags(flags);
+    let mut raw = InstanceConfigRaw::default();
+    raw.flags.bind_device = Some(false);
+    let config = InstanceConfig::try_from(raw)?;
     let host_config = crate::instance::config::runtime_core_host_config();
     let snapshot =
-        easytier_core::instance::prepare_instance_config(config.snapshot()?, &host_config)?;
+        easytier_core::instance::prepare_instance_config(config.clone(), &host_config)?;
     let store = easytier_core::config::runtime::InstanceConfigStore::new(snapshot);
     let global_ctx = Arc::new(GlobalCtx::new(store, &host_config));
     let hostname =

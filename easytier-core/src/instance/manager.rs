@@ -14,9 +14,7 @@ use std::{
 use dashmap::DashMap;
 use uuid::Uuid;
 
-#[cfg(feature = "web-client")]
 use crate::config::InstanceConfig;
-use crate::config::toml::TomlConfig;
 use crate::instance::{CoreInstance, CoreInstanceHost, CoreInstanceState};
 use crate::process_runtime::CoreProcessRuntime;
 #[cfg(feature = "web-client")]
@@ -46,7 +44,7 @@ pub trait InstanceFactory: Send + Sync + 'static {
 
     fn create(
         &self,
-        config: TomlConfig,
+        config: InstanceConfig,
         context: Self::CreateContext,
     ) -> Result<Arc<Self::Instance>, Self::Error>;
 }
@@ -282,7 +280,7 @@ impl<F: InstanceFactory> InstanceManager<F> {
 
     pub fn create(
         &self,
-        config: TomlConfig,
+        config: InstanceConfig,
         context: F::CreateContext,
     ) -> Result<Arc<F::Instance>, InstanceCreateError<F::Error>> {
         let instance = self
@@ -371,7 +369,7 @@ where
 {
     pub fn run_network_instance(
         &self,
-        config: TomlConfig,
+        config: InstanceConfig,
         control: ConfigFileControl,
     ) -> anyhow::Result<Uuid> {
         let runtime = self
@@ -637,7 +635,6 @@ mod tests {
     };
 
     use super::*;
-    use crate::config::toml::ConfigLoader as _;
 
     struct TestFactory {
         drops: Arc<AtomicUsize>,
@@ -668,11 +665,11 @@ mod tests {
 
         fn create(
             &self,
-            config: TomlConfig,
+            config: InstanceConfig,
             (): Self::CreateContext,
         ) -> Result<Arc<Self::Instance>, Self::Error> {
             Ok(Arc::new(TestInstance {
-                id: config.get_id(),
+                id: config.parsed().instance_id,
                 drops: self.drops.clone(),
             }))
         }
@@ -691,10 +688,10 @@ mod tests {
         )
     }
 
-    fn config(instance_id: Uuid) -> TomlConfig {
-        let config = TomlConfig::default();
-        config.set_id(instance_id);
-        config
+    fn config(instance_id: Uuid) -> InstanceConfig {
+        let mut raw = crate::config::InstanceConfigRaw::default();
+        raw.instance_id = Some(instance_id);
+        InstanceConfig::try_from(raw).unwrap()
     }
 
     #[test]

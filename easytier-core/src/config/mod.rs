@@ -22,7 +22,10 @@ pub use base::ConfigBase;
 pub use encryption::EncryptionAlgorithm;
 pub use instance::{InstanceConfig, InstanceConfigParsed, InstanceConfigRaw};
 pub use runtime::InstanceConfigStore;
-pub use toml::{ProxyNetworkConfig, serialize_raw_to_toml, serialize_raw_to_toml_redacted};
+pub use toml::{
+    ProxyNetworkConfig, normalize_config_source, parse_instance_config, serialize_raw_to_toml,
+    serialize_raw_to_toml_redacted,
+};
 
 pub(crate) const DEFAULT_UDP_STUN_SERVERS: &[&str] = &[
     "txt:stun.easytier.cn",

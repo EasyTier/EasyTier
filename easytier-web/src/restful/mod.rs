@@ -16,7 +16,10 @@ use axum::{Extension, Json, Router, extract::State, routing::get};
 use axum_login::tower_sessions::{ExpiredDeletion, SessionManagerLayer};
 use axum_login::{AuthManagerLayerBuilder, AuthUser, login_required};
 use axum_messages::MessagesManagerLayer;
-use easytier::common::config::{ConfigLoader, NetworkConfig, NetworkConfigExt, TomlConfigLoader};
+use easytier::common::config::{
+    network_config_from_raw, parse_instance_config, serialize_raw_to_toml, NetworkConfig,
+    NetworkConfigExt,
+};
 use easytier::proto::rpc_types;
 use network::NetworkApi;
 use sea_orm::DbErr;
@@ -162,11 +165,14 @@ impl RestfulServer {
     async fn handle_generate_config(
         Json(req): Json<GenerateConfigRequest>,
     ) -> Result<Json<GenerateConfigResponse>, HttpHandleError> {
-        let config = req.config.gen_config();
+        let config = req
+            .config
+            .gen_config()
+            .and_then(|c| serialize_raw_to_toml(c.raw()).map_err(Into::into));
         match config {
             Ok(c) => Ok(GenerateConfigResponse {
                 error: None,
-                toml_config: Some(c.dump()),
+                toml_config: Some(c),
             }
             .into()),
             Err(e) => Ok(GenerateConfigResponse {
@@ -180,8 +186,8 @@ impl RestfulServer {
     async fn handle_parse_config(
         Json(req): Json<ParseConfigRequest>,
     ) -> Result<Json<ParseConfigResponse>, HttpHandleError> {
-        let config = TomlConfigLoader::new_from_str(&req.toml_config)
-            .and_then(|config| NetworkConfig::new_from_config(&config));
+        let config = parse_instance_config("parse_config", &req.toml_config)
+            .map(|c| network_config_from_raw(c.raw()));
         match config {
             Ok(c) => Ok(ParseConfigResponse {
                 error: None,

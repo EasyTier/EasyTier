@@ -539,7 +539,7 @@ mod tests {
     use easytier::{
         common::{
             MachineIdOptions,
-            config::{ConfigSource, NetworkConfigExt},
+            config::ConfigSource,
         },
         instance::factory::{
             NativeInstanceManager, native_compact_instance_manager_with_runtime,
