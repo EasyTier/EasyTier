@@ -360,6 +360,13 @@ export function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
   normalized.exit_nodes ??= []
   normalized.mapped_listeners ??= []
   normalized.port_forwards ??= []
+  normalized.managed_credentials ??= []
+  if (normalized.managed_credentials) {
+    normalized.managed_credentials.forEach((client) => {
+      client.groups ??= []
+      client.allowed_proxy_cidrs ??= []
+    })
+  }
   if (normalized.vpn_portal_config) {
     normalized.vpn_portal_config.clients ??= []
     normalized.vpn_portal_config.clients.forEach((client) => {

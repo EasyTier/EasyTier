@@ -161,8 +161,10 @@ mod tests {
     }
 
     fn add(manager: &InstanceManager<TestFactory>, id: Uuid, name: &str) {
-        let mut raw = InstanceConfigRaw::default();
-        raw.instance_id = Some(id);
+        let raw = InstanceConfigRaw {
+            instance_id: Some(id),
+            ..Default::default()
+        };
         let config = InstanceConfig::try_from(raw).unwrap();
         manager.create(config, name.to_owned()).unwrap();
     }

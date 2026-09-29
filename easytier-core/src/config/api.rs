@@ -33,16 +33,18 @@ mod tests {
 
     #[test]
     fn includes_managed_credentials() {
-        let mut raw = InstanceConfigRaw::default();
-        raw.managed_credentials = Some(vec![ManagedCredentialConfig {
-            credential_id: "managed-a".to_owned(),
-            credential_secret: "credential-secret".to_owned(),
-            groups: vec!["ops".to_owned()],
-            allow_relay: true,
-            allowed_proxy_cidrs: vec!["10.0.0.0/24".to_owned()],
-            expiry_unix: 2_000_000_000,
-            reusable: false,
-        }]);
+        let raw = InstanceConfigRaw {
+            managed_credentials: Some(vec![ManagedCredentialConfig {
+                credential_id: "managed-a".to_owned(),
+                credential_secret: "credential-secret".to_owned(),
+                groups: vec!["ops".to_owned()],
+                allow_relay: true,
+                allowed_proxy_cidrs: vec!["10.0.0.0/24".to_owned()],
+                expiry_unix: 2_000_000_000,
+                reusable: false,
+            }]),
+            ..Default::default()
+        };
 
         let projected = network_config_from_raw(&raw);
 
@@ -86,7 +88,7 @@ cidr = "10.20.0.0/16"
         assert_eq!(reloaded.parsed().hostname, "node-b");
         assert_eq!(reloaded.raw().proxy_network.as_ref().unwrap().len(), 1);
 
-        let exported = network_config_from_raw(&reloaded.raw());
+        let exported = network_config_from_raw(reloaded.raw());
         assert_eq!(exported.proxy_cidrs.len(), 1);
         assert_eq!(exported.proxy_cidrs[0], "10.20.0.0/16");
     }
@@ -115,7 +117,7 @@ cidr = "10.20.0.0/16"
             Some("")
         );
 
-        let exported = network_config_from_raw(&reloaded.raw());
+        let exported = network_config_from_raw(reloaded.raw());
         assert_eq!(exported.network_name.as_deref(), Some("default"));
         assert_eq!(exported.network_secret.as_deref(), Some(""));
     }

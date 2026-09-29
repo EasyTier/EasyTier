@@ -250,18 +250,17 @@ fn configure_runtime_core_host_adapters(
         adapters.public_ipv6_provider = Some(runtime_public_ipv6_provider_platform(&global_ctx));
     }
     #[cfg(feature = "wireguard")]
-    if host_config.vpn_portal_enabled {
-        if let Some(config) = global_ctx
+    if host_config.vpn_portal_enabled
+        && let Some(config) = global_ctx
             .runtime_config_store()
             .snapshot()
             .vpn_portal_config
             .clone()
-        {
-            adapters.vpn_portal = Some(crate::vpn_portal::wireguard::WireGuardPortalHost::new(
-                global_ctx.clone(),
-                config,
-            ) as Arc<dyn PortalHost>);
-        }
+    {
+        adapters.vpn_portal = Some(crate::vpn_portal::wireguard::WireGuardPortalHost::new(
+            global_ctx.clone(),
+            config,
+        ) as Arc<dyn PortalHost>);
     }
     adapters
 }

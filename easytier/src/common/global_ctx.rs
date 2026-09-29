@@ -568,14 +568,16 @@ no_tun = true
 
     #[test]
     fn modifying_hostname_retains_raw_fields_ignored_by_host() {
-        let mut raw = easytier_core::config::InstanceConfigRaw::default();
-        raw.hostname = Some("original".to_string());
-        raw.network_identity = Some(NetworkIdentity::new("test".into(), "secret".into()));
-        raw.proxy_network = Some(vec![easytier_core::config::toml::ProxyNetworkConfig {
-            cidr: "10.1.2.0/24".parse().unwrap(),
-            mapped_cidr: None,
-            allow: None,
-        }]);
+        let mut raw = easytier_core::config::InstanceConfigRaw {
+            hostname: Some("original".to_string()),
+            network_identity: Some(NetworkIdentity::new("test".into(), "secret".into())),
+            proxy_network: Some(vec![easytier_core::config::toml::ProxyNetworkConfig {
+                cidr: "10.1.2.0/24".parse().unwrap(),
+                mapped_cidr: None,
+                allow: None,
+            }]),
+            ..Default::default()
+        };
 
         raw.hostname = Some("renamed".to_string());
         let candidate = easytier_core::config::InstanceConfig::try_from(raw).unwrap();

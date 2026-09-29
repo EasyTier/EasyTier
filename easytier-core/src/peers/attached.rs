@@ -656,26 +656,30 @@ mod tests {
         .unwrap();
         wait_for_acl_groups(&network_peer_manager, attached.peer_id(), &["ops"]).await;
         let mut next = (*store.snapshot()).clone();
-        if let Some(acl) = next.parsed_mut().acl.as_mut() {
-            if let Some(acl_v1) = acl.acl_v1.as_mut() {
-                if let Some(group) = acl_v1.group.as_mut() {
-                    group.declares.push(crate::proto::acl::GroupIdentity {
-                        group_name: "audit".to_owned(),
-                        group_secret: "audit-secret".to_owned(),
-                    });
-                }
-            }
+        if let Some(group) = next
+            .parsed_mut()
+            .acl
+            .as_mut()
+            .and_then(|acl| acl.acl_v1.as_mut())
+            .and_then(|acl_v1| acl_v1.group.as_mut())
+        {
+            group.declares.push(crate::proto::acl::GroupIdentity {
+                group_name: "audit".to_owned(),
+                group_secret: "audit-secret".to_owned(),
+            });
         }
         store.replace(next);
         wait_for_acl_groups(&network_peer_manager, attached.peer_id(), &["audit", "ops"]).await;
 
         let mut next = (*store.snapshot()).clone();
-        if let Some(acl) = next.parsed_mut().acl.as_mut() {
-            if let Some(acl_v1) = acl.acl_v1.as_mut() {
-                if let Some(group) = acl_v1.group.as_mut() {
-                    group.declares.clear();
-                }
-            }
+        if let Some(group) = next
+            .parsed_mut()
+            .acl
+            .as_mut()
+            .and_then(|acl| acl.acl_v1.as_mut())
+            .and_then(|acl_v1| acl_v1.group.as_mut())
+        {
+            group.declares.clear();
         }
         store.replace(next);
 
@@ -948,12 +952,14 @@ mod tests {
         wait_for_acl_groups(&network_peer_manager, first.peer_id(), &["ops"]).await;
 
         let mut next = (*store.snapshot()).clone();
-        if let Some(acl) = next.parsed_mut().acl.as_mut() {
-            if let Some(acl_v1) = acl.acl_v1.as_mut() {
-                if let Some(group) = acl_v1.group.as_mut() {
-                    group.declares.clear();
-                }
-            }
+        if let Some(group) = next
+            .parsed_mut()
+            .acl
+            .as_mut()
+            .and_then(|acl| acl.acl_v1.as_mut())
+            .and_then(|acl_v1| acl_v1.group.as_mut())
+        {
+            group.declares.clear();
         }
         store.replace(next);
         wait_for_acl_groups(&network_peer_manager, first.peer_id(), &[]).await;
@@ -986,12 +992,14 @@ mod tests {
         let (network_peer_manager, store) = peer_manager();
         network_peer_manager.run().await.unwrap();
         let mut next = (*store.snapshot()).clone();
-        if let Some(acl) = next.parsed_mut().acl.as_mut() {
-            if let Some(acl_v1) = acl.acl_v1.as_mut() {
-                if let Some(group) = acl_v1.group.as_mut() {
-                    group.declares.clear();
-                }
-            }
+        if let Some(group) = next
+            .parsed_mut()
+            .acl
+            .as_mut()
+            .and_then(|acl| acl.acl_v1.as_mut())
+            .and_then(|acl_v1| acl_v1.group.as_mut())
+        {
+            group.declares.clear();
         }
         store.replace(next);
 
