@@ -229,6 +229,15 @@ impl RelayPeerMap {
         dst_peer_id: PeerId,
         policy: NextHopPolicy,
     ) -> Result<(), Error> {
+        // Forwarded packets belong to the original sender's end-to-end session.
+        // Do not establish another session or encrypt them at this hop.
+        if msg
+            .peer_manager_header()
+            .is_some_and(|hdr| hdr.from_peer_id.get() != self.my_peer_id)
+        {
+            return self.send_via_next_hop(msg, dst_peer_id, policy).await;
+        }
+
         let now = Instant::now();
 
         self.states.entry(dst_peer_id).or_default().last_active_at = now;
@@ -863,6 +872,74 @@ mod tests {
             },
         };
         (Arc::new(context), public.as_bytes().to_vec())
+    }
+
+    #[derive(Default)]
+    struct ForwardedPacketTransport {
+        packets: StdMutex<Vec<(ZCPacket, PeerId, NextHopPolicy)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl RelayRouteTransport for ForwardedPacketTransport {
+        async fn get_route_peer_info(&self, _peer_id: PeerId) -> Option<RoutePeerInfo> {
+            None
+        }
+
+        async fn send_msg_to_next_hop(
+            &self,
+            msg: ZCPacket,
+            dst_peer_id: PeerId,
+            policy: NextHopPolicy,
+        ) -> Result<(), Error> {
+            self.packets
+                .lock()
+                .unwrap()
+                .push((msg, dst_peer_id, policy));
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn secure_relay_forwards_remote_packets_without_changing_payload() {
+        let (context, _) = relay_test_context(2);
+        let transport = Arc::new(ForwardedPacketTransport::default());
+        let relay = RelayPeerMap::new(
+            transport.clone(),
+            context,
+            2,
+            Arc::new(PeerSessionStore::new()),
+        );
+
+        for packet_type in [
+            PacketType::RelayHandshake,
+            PacketType::RelayHandshakeAck,
+            PacketType::Data,
+        ] {
+            let mut packet = ZCPacket::new_with_payload(b"end-to-end payload");
+            packet.fill_peer_manager_hdr(1, 3, packet_type as u8);
+            if matches!(packet_type, PacketType::Data) {
+                packet
+                    .mut_peer_manager_header()
+                    .unwrap()
+                    .set_encrypted(true);
+            }
+            let expected = packet.clone();
+            relay
+                .send_msg(packet, 3, NextHopPolicy::LeastCost)
+                .await
+                .unwrap();
+
+            let mut packets = transport.packets.lock().unwrap();
+            assert_eq!(
+                packets.len(),
+                1,
+                "forwarded packet was held for a local handshake"
+            );
+            let (forwarded, destination, policy) = packets.pop().unwrap();
+            assert_eq!(forwarded.into_bytes(), expected.into_bytes());
+            assert_eq!(destination, 3);
+            assert!(matches!(policy, NextHopPolicy::LeastCost));
+        }
     }
 
     #[tokio::test]
