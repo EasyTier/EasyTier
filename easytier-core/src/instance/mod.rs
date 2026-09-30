@@ -898,6 +898,12 @@ where
         CoreInstanceState::from_u8(self.state.load(Ordering::Acquire))
     }
 
+    /// Returns the peer manager for tunnels accepted outside this instance's
+    /// regular listener path, such as the shared Web listener.
+    pub fn peer_manager(&self) -> &Arc<PeerManagerCore> {
+        &self.peer_manager
+    }
+
     fn set_state(&self, state: CoreInstanceState) {
         self.state.store(state as u8, Ordering::Release);
     }

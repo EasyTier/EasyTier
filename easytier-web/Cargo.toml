@@ -16,6 +16,8 @@ tokio-util = { workspace = true, features = ["rt"] }
 dashmap.workspace = true
 url.workspace = true
 async-trait.workspace = true
+futures.workspace = true
+prost.workspace = true
 
 maxminddb = "0.32"
 
@@ -43,7 +45,11 @@ sea-orm-migration.workspace = true
 # for captcha
 rust-embed = { version = "8.12.0", features = ["debug-embed", "include-exclude"] }
 base64.workspace = true
+cidr.workspace = true
 rand.workspace = true
+sha2.workspace = true
+x25519-dalek = { workspace = true, features = ["static_secrets"] }
+easytier-proto.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
 ab_glyph = "0.2.32"
 imageproc = { version = "0.27.0", default-features = false, features = ["text"] }
@@ -88,3 +94,6 @@ ignored = [
     # Windows-only build.rs setup calls thunk::thunk().
     "thunk-rs",
 ]
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }

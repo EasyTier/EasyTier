@@ -1123,6 +1123,11 @@ impl NetworkOptions {
                 .vpn_portal_private_key
                 .clone()
                 .or_else(|| existing.as_ref()?.wireguard_private_key.clone());
+            let enabled = if self.vpn_portal.is_some() {
+                Some(true)
+            } else {
+                existing.as_ref().and_then(|portal| portal.enabled)
+            };
             let clients = if self.vpn_portal_clients.is_empty() {
                 existing.map_or_else(Vec::new, |portal| portal.clients)
             } else {
@@ -1130,6 +1135,7 @@ impl NetworkOptions {
             };
 
             cfg.set_vpn_portal_config(VpnPortalConfig {
+                enabled,
                 wireguard_listen,
                 wireguard_private_key,
                 clients,

@@ -14,7 +14,7 @@ use std::{
 
 use dashmap::DashMap;
 use easytier::proto::{
-    api::manage::WebClientService,
+    api::{config::ConfigRpc, manage::WebClientService},
     rpc_types::controller::BaseController,
     web::{HeartbeatRequest, HeartbeatResponse},
 };
@@ -510,6 +510,14 @@ impl
     ) -> Option<Box<dyn WebClientService<Controller = BaseController> + Send>> {
         let s = self.get_session_by_machine_id(user_id, &machine_id)?;
         Some(s.scoped_rpc_client())
+    }
+
+    fn get_config_rpc_client(
+        &self,
+        (user_id, machine_id): (UserIdInDb, uuid::Uuid),
+    ) -> Option<Box<dyn ConfigRpc<Controller = BaseController> + Send>> {
+        let session = self.get_session_by_machine_id(user_id, &machine_id)?;
+        Some(session.scoped_config_client())
     }
 
     fn get_storage(

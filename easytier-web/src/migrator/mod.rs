@@ -5,6 +5,10 @@ mod m20260403_000002_scope_network_config_unique;
 mod m20260421_000003_add_network_config_source;
 mod m20260514_000004_rename_web_config_source;
 mod m20260619_000005_managed_config_revisions;
+mod m20260920_000007_device_registry;
+mod m20260920_000009_central_network_intent;
+
+mod m20261001_000010_member_ip_allocation;
 
 pub struct Migrator;
 
@@ -17,6 +21,9 @@ impl MigratorTrait for Migrator {
             Box::new(m20260421_000003_add_network_config_source::Migration),
             Box::new(m20260514_000004_rename_web_config_source::Migration),
             Box::new(m20260619_000005_managed_config_revisions::Migration),
+            Box::new(m20260920_000007_device_registry::Migration),
+            Box::new(m20260920_000009_central_network_intent::Migration),
+            Box::new(m20261001_000010_member_ip_allocation::Migration),
         ]
     }
 }
