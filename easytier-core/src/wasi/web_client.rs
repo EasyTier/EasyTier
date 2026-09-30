@@ -85,8 +85,12 @@ fn hosted_network_config(config: &NetworkConfig) -> NetworkConfig {
     hosted.public_server_url = public_server_url;
     hosted.peers = peers;
     hosted.networking_method = Some(networking_method as i32);
-    hosted.peer_urls.retain(|url| supports_hosted_tunnel_url(url));
-    hosted.listener_urls.retain(|url| supports_hosted_tunnel_url(url));
+    hosted
+        .peer_urls
+        .retain(|url| supports_hosted_tunnel_url(url));
+    hosted
+        .listener_urls
+        .retain(|url| supports_hosted_tunnel_url(url));
     hosted.enable_vpn_portal = None;
     hosted.data_compress_algo = None;
     hosted.credential_file = None;

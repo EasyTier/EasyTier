@@ -8,7 +8,7 @@ use crate::{
     config::runtime::InstanceConfigStore,
     connectivity::direct::DirectConnectorHost,
     connectivity::hole_punch::tcp::TcpHolePunchHost,
-    gateway::proxy::{cidr_table::ProxyCidrTable, ProxyHostPolicy},
+    gateway::proxy::{ProxyHostPolicy, cidr_table::ProxyCidrTable},
     listener::RunningListenerRegistry,
     packet::{PacketType, ZCPacket, ZCPacketType},
     peers::{

@@ -893,13 +893,14 @@ fn create_test_instance_config(
     ipv4: &str,
     ipv6: &str,
 ) -> InstanceConfigRaw {
-    let mut raw = InstanceConfigRaw::default();
-    raw.instance_name = Some(inst_name.to_owned());
-    raw.netns = netns.map(ToOwned::to_owned);
-    raw.ipv4 = Some(ipv4.parse().unwrap());
-    raw.ipv6 = Some(ipv6.parse().unwrap());
-    raw.listeners = Some(vec!["udp://0.0.0.0:11010".parse().unwrap()]);
-    raw
+    InstanceConfigRaw {
+        instance_name: Some(inst_name.to_owned()),
+        netns: netns.map(ToOwned::to_owned),
+        ipv4: Some(ipv4.parse().unwrap()),
+        ipv6: Some(ipv6.parse().unwrap()),
+        listeners: Some(vec!["udp://0.0.0.0:11010".parse().unwrap()]),
+        ..Default::default()
+    }
 }
 
 fn create_test_instance_with_process_runtime(
